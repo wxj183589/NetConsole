@@ -35,6 +35,7 @@ SectionNodeType = Literal["station", "terminal_endpoint", "legacy", "unknown"]
 SectionSourceKind = Literal["generated", "manual", "template", "legacy_ap_derived"]
 SectionMileageSource = Literal["generated", "manual", "unavailable"]
 SectionGenerationResult = Literal["CREATE", "UPDATE", "UNCHANGED", "CONFLICT", "STALE"]
+LineSideSource = Literal["section_direction", "manual", "import", "legacy", "unavailable"]
 MrPositionCode = Literal["CT", "CW", "unknown"]
 MrPhysicalEnd = Literal["car_1_end", "car_6_end", "unknown"]
 IncreasingDirectionLeadingEnd = MrPhysicalEnd
@@ -100,6 +101,10 @@ class MileageDTO(ApiModel):
 
 
 class RelatedRuntimeStatusDTO(ApiModel):
+    fit_ap_id: str = ""
+    fit_ap_ac_id: str = ""
+    fit_ap_name: str = ""
+    fit_ap_match_status: str = "unmatched"
     fit_ap_status: str = "unknown"
     optical_status: str = "no_data"
     mesh_status: str = "unknown"
@@ -158,6 +163,8 @@ class RailTransitSummaryDTO(ApiModel):
     main_path_code: str = "MAIN"
     increasing_direction_name: str = "上行"
     decreasing_direction_name: str = "下行"
+    increasing_direction_line_side: str = "右线"
+    decreasing_direction_line_side: str = "左线"
     increasing_direction_leading_end: IncreasingDirectionLeadingEnd = "unknown"
     station_source_group_name: str = "车站"
     station_source_field: str = "station"
@@ -347,6 +354,8 @@ class SectionGenerationLineMetadataDTO(ApiModel):
     main_path_code: str = "MAIN"
     increasing_direction_name: str = "上行"
     decreasing_direction_name: str = "下行"
+    increasing_direction_line_side: str = "右线"
+    decreasing_direction_line_side: str = "左线"
 
 
 class SectionGenerationPreviewRequestDTO(ApiModel):
@@ -403,6 +412,9 @@ class TracksideApDTO(ApiModel):
     section_end_station: str = ""
     mileage: MileageDTO
     line_side: str = ""
+    line_side_source: LineSideSource = "unavailable"
+    line_side_derivation_issue_code: str = ""
+    line_side_derivation_issue_message: str = ""
     direction: str = ""
     radios: list[MeshRadioDTO] = Field(default_factory=list)
     remark: str = ""

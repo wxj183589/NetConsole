@@ -62,6 +62,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
   let summaryBusy = false
   let apsBusy = false
   let detailBusy = false
+  let detailRequestId = 0
   let snapshotBusy = false
   let polling = false
   let summaryTimer: number | null = null
@@ -105,18 +106,25 @@ export const useAcManagementStore = defineStore('ac-management', () => {
   }
 
   async function selectAp(apId: string): Promise<void> {
-    if (detailBusy) return
+    const requestId = ++detailRequestId
     detailBusy = true
     detailLoading.value = true
     try {
-      selected.value = await getAcApDetail(apId)
-      recordSuccess()
+      const detail = await getAcApDetail(apId)
+      if (requestId === detailRequestId) {
+        selected.value = detail
+        recordSuccess()
+      }
     } catch (cause) {
-      recordFailure(cause)
-      if (cause instanceof Error) error.value = cause.message
+      if (requestId === detailRequestId) {
+        recordFailure(cause)
+        if (cause instanceof Error) error.value = cause.message
+      }
     } finally {
-      detailBusy = false
-      detailLoading.value = false
+      if (requestId === detailRequestId) {
+        detailBusy = false
+        detailLoading.value = false
+      }
     }
   }
 

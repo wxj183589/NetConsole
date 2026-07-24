@@ -8,6 +8,8 @@
 
 `RailTransitBaseDataView.vue` 是基础资料唯一入口，默认锁定并通过 revision + Application Service 单事务维护线路参数、站点、区间、轨旁 AP、车载 MR 和轨旁 AP 规划。站点来源预览由后端只读读取设备管理“车站”分组的 `station` 字段，页面只把候选或四工作表 XLSX 模板预览应用到当前草稿；多轨道设施、中心里程和端点延伸都随草稿统一保存。AP 点表也只从本页进入统一预览、非空字段合并、审计和回滚，`ap_switch_port_point_table` 允许缺少里程并跳过 MAC 为 `-` 的空端口行；AC 管理不得恢复独立导入入口。区间生成只向后端提交当前站点/区间草稿并展示双向与端点预览，人工区间、冲突项和默认保留的过期自动区间不得在前端被静默覆盖或删除。旧独立规划路由只做兼容重定向，不得恢复重复页面或导航。
 
+轨旁 AP 表格将 AC 当前真实名称与项目点位编号分开显示：名称来自运行态 `fit_ap_name`，点位编号来自基础资料 `point_code`。FIT-AP 按规范化 MAC 唯一关联；基础资料提供“导出重命名命令”，仅通过任务中心生成受控 TXT Artifact，不执行设备命令，并支持未保存草稿的明确选择。
+
 基础资料、Online MR、Mesh 原始回显和通信日志均消费共享面板、状态和代码 Token；图表配色只从 `theme/echarts.ts` 读取。轨旁 AP 业务页首次加载才使用整表遮罩，后续刷新保留上一次成功数据；接口简称和光衰中文展示只是 presentation，导出通过 Task/Artifact 和 Runtime Adapter 保存。
 
 `OnlineMrAnalysisView.vue` 始终先读取会话 metadata，再按 `database_summary.status` 局部加载 parsed 指标；缺库、旧库和不可读库不能阻止原始日志或采集日志展示。切换会话必须立即清空全部派生展示缓存，并通过请求 generation/AbortController 丢弃迟到响应。Online MR 与离线 MESH 的解析/重建均进入 Job Center，不在 Renderer 或 FastAPI 请求线程同步运行。

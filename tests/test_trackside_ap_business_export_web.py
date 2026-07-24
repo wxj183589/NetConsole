@@ -187,6 +187,25 @@ def test_trackside_business_export_api_uses_owned_artifact_and_supports_cancel(
         assert export.jobs[base_template.json()["task_id"]].job_type == "trackside_ap_base_xlsx"
         export.complete(base_template.json()["task_id"], b"base-template-fixture")
 
+        rename_export = client.post(
+            "/api/rail-transit/trackside-ap-business/base/rename-commands/export",
+            json={},
+        )
+        assert rename_export.status_code == 202
+        rename_payload = rename_export.json()
+        expected_rename_name = "轨旁AP重命名命令_宁波地铁12号线_20260721_234501.txt"
+        assert rename_payload["action"] == "trackside_ap_rename_command_export"
+        assert rename_payload["artifact_name"] == expected_rename_name
+        assert export.jobs[rename_payload["task_id"]].job_type == "trackside_ap_rename_commands"
+        export.complete(rename_payload["task_id"], b"rename-fixture")
+        rename_download = client.get(
+            "/api/rail-transit/trackside-ap-business/base/rename-commands/artifacts/"
+            f"{rename_payload['artifact_id']}/download"
+        )
+        assert rename_download.status_code == 200
+        assert rename_download.content == b"rename-fixture"
+        assert expected_rename_name in unquote(rename_download.headers["content-disposition"])
+
     schema = app.openapi()
     assert "/api/rail-transit/trackside-ap-business/export" in schema["paths"]
     assert (
@@ -195,6 +214,8 @@ def test_trackside_business_export_api_uses_owned_artifact_and_supports_cancel(
     )
     assert "/api/rail-transit/trackside-ap-business/plan/export" in schema["paths"]
     assert "/api/rail-transit/trackside-ap-business/base/export" in schema["paths"]
+    assert "/api/rail-transit/trackside-ap-business/base/rename-commands/export" in schema["paths"]
+    assert "/api/rail-transit/trackside-ap-business/base/rename-commands/artifacts/{artifact_id}/download" in schema["paths"]
 
 
 def test_trackside_business_workbook_preserves_sheets_and_export_style(

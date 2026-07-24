@@ -18,6 +18,7 @@ from netconsole.models.api.rail_transit_base_data import (
     StationTemplateSectionPreviewRowDTO,
 )
 from netconsole.services.excel_report_utils import apply_standard_sheet_style
+from netconsole.services.rail_transit.ap_line_side_service import LineSideConfig
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.station_source_utils import (
     DEFAULT_MAIN_PATH_CODE,
@@ -49,6 +50,8 @@ LINE_PARAM_HEADERS = (
     "主线路径编码",
     "站序递增方向名称",
     "站序递减方向名称",
+    "站序递增方向线路侧",
+    "站序递减方向线路侧",
     "设备来源分组",
     "设备来源字段",
     "备注",
@@ -461,6 +464,8 @@ class StationTemplateService:
                 metadata.get("main_path_code") or DEFAULT_MAIN_PATH_CODE,
                 metadata.get("increasing_direction_name") or "上行",
                 metadata.get("decreasing_direction_name") or "下行",
+                metadata.get("increasing_direction_line_side") or "右线",
+                metadata.get("decreasing_direction_line_side") or "左线",
                 metadata.get("station_source_group_name") or DEFAULT_STATION_SOURCE_GROUP,
                 STATION_SOURCE_FIELD,
                 metadata.get("remark") or "",
@@ -545,6 +550,8 @@ class StationTemplateService:
             "main_path_code": str(values.get("主线路径编码") or DEFAULT_MAIN_PATH_CODE).strip() or DEFAULT_MAIN_PATH_CODE,
             "increasing_direction_name": str(values.get("站序递增方向名称") or "上行").strip() or "上行",
             "decreasing_direction_name": str(values.get("站序递减方向名称") or "下行").strip() or "下行",
+            "increasing_direction_line_side": str(values.get("站序递增方向线路侧") or "右线").strip() or "右线",
+            "decreasing_direction_line_side": str(values.get("站序递减方向线路侧") or "左线").strip() or "左线",
             "station_source_group_name": str(values.get("设备来源分组") or DEFAULT_STATION_SOURCE_GROUP).strip() or DEFAULT_STATION_SOURCE_GROUP,
             "station_source_field": str(values.get("设备来源字段") or STATION_SOURCE_FIELD).strip() or STATION_SOURCE_FIELD,
             "remark": str(values.get("备注") or "").strip(),
@@ -754,6 +761,10 @@ class StationTemplateService:
         if auto_generated and (not generation_key or not start_uid or not end_uid):
             raise ValueError("自动区间缺少稳定生成标识或正式节点")
         line_direction = str(raw.get("线路方向") or "").strip()
+        line_side_config = LineSideConfig.from_mapping(line_metadata)
+        line_side_role = direction_role
+        if line_side_role not in {"increasing", "decreasing"}:
+            line_side_role = line_side_config.role_for_direction(line_direction)
         mileage_columns_present = "物理起点里程(m)" in raw
         mileage_start = self._float_or_none(raw.get("物理起点里程(m)")) if mileage_columns_present else None
         mileage_end = self._float_or_none(raw.get("物理终点里程(m)")) if mileage_columns_present else None
@@ -804,7 +815,7 @@ class StationTemplateService:
             end_node_type=end_node_type,  # type: ignore[arg-type]
             end_node_uid=end_uid,
             end_station=end_station,
-            line_side=line_direction,
+            line_side=line_side_config.side_for_role(line_side_role),
             auto_generated=auto_generated,
             generation_key=generation_key,
             manual_override_fields=manual_override_fields,
@@ -898,6 +909,8 @@ class StationTemplateService:
             "main_path_code": str(metadata.get("main_path_code") or DEFAULT_MAIN_PATH_CODE),
             "increasing_direction_name": str(metadata.get("increasing_direction_name") or "上行"),
             "decreasing_direction_name": str(metadata.get("decreasing_direction_name") or "下行"),
+            "increasing_direction_line_side": str(metadata.get("increasing_direction_line_side") or "右线"),
+            "decreasing_direction_line_side": str(metadata.get("decreasing_direction_line_side") or "左线"),
             "station_source_group_name": str(metadata.get("station_source_group_name") or DEFAULT_STATION_SOURCE_GROUP),
             "station_source_field": STATION_SOURCE_FIELD,
             "remark": str(metadata.get("remark") or ""),

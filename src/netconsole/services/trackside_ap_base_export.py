@@ -49,8 +49,8 @@ TRACKSIDE_AP_BASE_COLUMNS = (
 )
 
 _FIELD_NOTES = (
-    ("AP名称", "可选", "正式 AP 名称；来源名称等于 MAC 时不会覆盖已采集到的真实名称。"),
-    ("点位编号", "条件必填", "业务点位标识；没有 AP MAC 时必须满足项目既有唯一身份规则。"),
+    ("AP名称", "只读", "AC 当前真实 FIT-AP 名称；未匹配运行态时回退为基础资料中的名称。"),
+    ("点位编号", "条件必填", "项目定义的 AP 点位编号，也是重命名命令的目标名称。"),
     ("AP MAC", "条件必填", "首选唯一匹配键，支持常见 MAC 格式，导入后规范化为 xxxx-xxxx-xxxx。"),
     ("管理 IP", "只读", "来自当前 FIT-AP 运行态；重新导入不会覆盖正式基础资料。"),
     ("型号", "只读", "来自当前 FIT-AP 运行态；重新导入不会覆盖正式基础资料。"),
@@ -62,7 +62,7 @@ _FIELD_NOTES = (
     ("场段", "可选", "停车场、车辆段等场段名称。"),
     ("区域", "可选", "安装区域。"),
     ("网络", "可选", "信号/PIS 或 A/B 网等现有业务网络语义。"),
-    ("线别", "可选", "沿用项目现有线别语义；不会把上行/下行自动改成左右线。"),
+    ("线别", "自动/可选", "优先按正式区间方向和局点映射自动生成；人工或导入确认值不会被静默覆盖。"),
     ("行车方向", "可选", "例如上行、下行。"),
     ("里程", "可选", "允许为空；空白默认 KEEP，不清除已有里程。"),
     ("点位说明", "可选", "安装位置或点位说明。"),
@@ -151,7 +151,7 @@ def _export_row(raw: Mapping[str, Any]) -> dict[str, object]:
     mileage_raw = raw.get("mileage")
     mileage = dict(mileage_raw) if isinstance(mileage_raw, Mapping) else {}
     return {
-        "ap_name": raw.get("name") or raw.get("ap_name") or "",
+        "ap_name": runtime.get("fit_ap_name") or raw.get("name") or raw.get("ap_name") or "",
         "ap_point_code": raw.get("point_code") or raw.get("ap_point_code") or "",
         "ap_mac": raw.get("mac") or raw.get("ap_mac_display") or raw.get("ap_mac_norm") or "",
         "management_ip": raw.get("management_ip") or "",

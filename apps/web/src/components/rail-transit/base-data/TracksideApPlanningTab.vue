@@ -36,6 +36,12 @@ const loading = ref(false)
 const error = ref('')
 const dirty = ref(false)
 const task = ref<TracksideApTask | null>(null)
+type TracksideApPlanExportKind = 'template' | 'current'
+interface PendingDownload { taskId: string; kind: TracksideApPlanExportKind }
+const pendingDownload = ref<PendingDownload | null>(null)
+const downloadingArtifact = ref(false)
+const taskKinds = new Map<string, TracksideApPlanExportKind>()
+const autoDownloadedTaskIds = new Set<string>()
 const importInput = ref<HTMLInputElement | null>(null)
 const duplicateStrategy = ref<'replace' | 'skip' | 'error'>('replace')
 const preview = ref<TracksideApPlanPreview | null>(null)
@@ -115,7 +121,12 @@ function poll(): void {
   stopPolling()
   if (!task.value || terminalStates.has(task.value.status)) return
   pollTimer = window.setTimeout(async () => {
-    try { rememberTask(await getTracksideApTask(task.value!.task_id)); error.value = ''; poll() }
+    try {
+      const latest = await getTracksideApTask(task.value!.task_id)
+      error.value = ''
+      await handleTaskUpdate(latest)
+      poll()
+    }
     catch (reason) { error.value = failure(reason, '轨旁 AP 规划任务状态读取失败') }
   }, 1000)
 }
@@ -123,9 +134,12 @@ async function exportPlan(template: boolean): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    rememberTask(await exportTracksideApPlan(template, !template && dirty.value ? copyRows() : undefined))
+    const created = await exportTracksideApPlan(template, !template && dirty.value ? copyRows() : undefined)
+    const kind: TracksideApPlanExportKind = template ? 'template' : 'current'
+    taskKinds.set(created.task_id, kind)
+    pendingDownload.value = { taskId: created.task_id, kind }
+    await handleTaskUpdate(created)
     poll()
-    openTaskWindow()
   } catch (reason) { error.value = failure(reason, template ? '规划模板导出启动失败' : '轨旁 AP 规划导出启动失败') }
   finally { loading.value = false }
 }
@@ -158,13 +172,50 @@ function openTaskWindow(): void {
 }
 async function downloadArtifact(): Promise<void> {
   const current = task.value
-  if (!current?.available || !current.artifact_id) return
-  const result = await downloadBackendResource(
-    tracksideApPlanDownloadRequest(current.artifact_id, current.artifact_name || '轨旁AP规划.xlsx'),
-  )
-  if (result.status === 'saved') ElMessage.success(`已保存 ${current.artifact_name || '轨旁 AP 规划文件'}`)
-  else if (result.status === 'started') ElMessage.success('浏览器已开始下载轨旁 AP 规划文件')
-  else if (result.status === 'failed') ElMessage.error(result.error || '轨旁 AP 规划文件下载失败')
+  if (current) await downloadCompletedTask(current, false)
+}
+async function downloadCompletedTask(current: TracksideApTask, automatic: boolean): Promise<void> {
+  if (current.status !== 'COMPLETED') return
+  if (automatic && autoDownloadedTaskIds.has(current.task_id)) return
+  if (!current.available || !current.artifact_id) {
+    if (automatic) error.value = '轨旁 AP 规划任务已完成，但没有可下载的 Artifact'
+    else ElMessage.error('轨旁 AP 规划文件暂不可下载')
+    return
+  }
+  if (automatic) autoDownloadedTaskIds.add(current.task_id)
+  const kind = taskKinds.get(current.task_id) || 'current'
+  const suggestedName = current.artifact_name || (kind === 'template' ? '轨旁AP规划模板.xlsx' : '轨旁AP规划.xlsx')
+  downloadingArtifact.value = true
+  try {
+    const result = await downloadBackendResource(tracksideApPlanDownloadRequest(current.artifact_id, suggestedName))
+    if (result.status === 'saved') ElMessage.success(`已保存 ${suggestedName}`)
+    else if (result.status === 'started') ElMessage.success(`浏览器已开始下载 ${suggestedName}`)
+    else if (result.status === 'cancelled') {
+      ElMessage.info('下载已取消')
+      if (automatic) error.value = '自动下载已取消，可使用“下载文件”重试'
+    } else if (result.status === 'failed') {
+      const message = result.error || '轨旁 AP 规划文件下载失败'
+      ElMessage.error(message)
+      if (automatic) error.value = `${message}，可使用“下载文件”重试`
+    }
+  } catch (reason) {
+    const message = failure(reason, '轨旁 AP 规划文件下载失败')
+    ElMessage.error(message)
+    if (automatic) error.value = `${message}，可使用“下载文件”重试`
+  } finally { downloadingArtifact.value = false }
+}
+async function handleTaskUpdate(value: TracksideApTask): Promise<void> {
+  rememberTask(value)
+  const pending = pendingDownload.value
+  if (!pending || pending.taskId !== value.task_id || !terminalStates.has(value.status)) return
+  pendingDownload.value = null
+  if (value.status === 'COMPLETED') {
+    await downloadCompletedTask(value, true)
+  } else if (value.status === 'FAILED') {
+    error.value = value.error_message || '轨旁 AP 规划导出失败'
+  } else if (value.status === 'CANCELLED') {
+    error.value = '轨旁 AP 规划导出已取消'
+  }
 }
 async function recoverTasks(): Promise<void> {
   try {
@@ -204,7 +255,7 @@ onBeforeUnmount(stopPolling)
       <template #cell-ap_management_vlans="{ row }"><el-input v-if="canWrite" v-model="row.ap_management_vlans" @input="publishDirty" /><span v-else>{{ row.ap_management_vlans || '--' }}</span></template>
       <template #cell-remark="{ row }"><el-input v-if="canWrite" v-model="row.remark" @input="publishDirty" /><span v-else>{{ row.remark || '--' }}</span></template>
     </NcDataTable>
-    <el-alert v-if="task" :title="`${task.status} · ${task.message || task.task_id}`" :type="task.error_message ? 'error' : 'info'" :closable="false"><el-button v-if="task.available && task.artifact_id" link type="primary" @click="downloadArtifact">下载文件</el-button><el-button link @click="openTaskWindow">打开任务窗口</el-button></el-alert>
+    <el-alert v-if="task" :title="`${task.status} · ${task.message || task.task_id}`" :type="task.error_message ? 'error' : 'info'" :closable="false"><el-button v-if="task.available && task.artifact_id" link type="primary" :loading="downloadingArtifact" @click="downloadArtifact">下载文件</el-button><el-button link @click="openTaskWindow">打开任务窗口</el-button></el-alert>
     <el-dialog v-model="previewVisible" title="导入预览" width="900px" destroy-on-close>
       <div v-if="preview" class="preview">
         <el-descriptions :column="5" border><el-descriptions-item label="总行数">{{ preview.total_count }}</el-descriptions-item><el-descriptions-item label="有效">{{ preview.valid_count }}</el-descriptions-item><el-descriptions-item label="重复">{{ preview.duplicate_count }}</el-descriptions-item><el-descriptions-item label="错误">{{ preview.error_count }}</el-descriptions-item><el-descriptions-item label="SHA-256">{{ preview.file_sha256.slice(0, 12) }}…</el-descriptions-item></el-descriptions>

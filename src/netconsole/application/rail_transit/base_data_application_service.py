@@ -18,6 +18,7 @@ from netconsole.models.api.rail_transit_base_data import (
     BaseDataValidationResultDTO,
     SectionGenerationPreviewDTO,
     SectionGenerationPreviewRequestDTO,
+    SectionDTO,
 )
 from netconsole.repositories.rail_transit_base_data_repository import (
     RailTransitBaseDataCompensationError,
@@ -28,6 +29,10 @@ from netconsole.repositories.rail_transit_base_data_repository import (
 from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.base_data_write_guard import BaseDataWriteGuard, BaseDataWriteGuardError
+from netconsole.services.rail_transit.ap_line_side_service import (
+    derive_ap_line_side,
+    line_side_metadata,
+)
 from netconsole.services.rail_transit.section_generation_service import SectionGenerationService
 from netconsole.services.rail_transit.station_source_utils import (
     DEFAULT_MAIN_PATH_CODE,
@@ -152,7 +157,24 @@ class RailTransitBaseDataApplicationService:
             except ValueError as exc:
                 issues.append(self._issue(index, "BASE_DATA_VALIDATION_FAILED", str(exc)))
         if not issues:
+            projected_metadata = self._projected_site_metadata(site_id, normalized)
+            projected_sections = self._projected_sections(site_id, normalized)
+            issues.extend(
+                self._derive_changed_ap_line_sides(
+                    normalized,
+                    projected_sections,
+                    projected_metadata,
+                )
+            )
             issues.extend(self._cross_validate(site_id, normalized))
+            normalized.extend(
+                self._legacy_ap_line_side_completions(
+                    site_id,
+                    normalized,
+                    projected_sections,
+                    projected_metadata,
+                )
+            )
         return BaseDataValidationResultDTO(valid=not any(issue.blocking for issue in issues), issues=issues), normalized
 
     def save_changes(
@@ -271,6 +293,8 @@ class RailTransitBaseDataApplicationService:
             "main_path_code": str(raw.get("main_path_code") or DEFAULT_MAIN_PATH_CODE).strip()[:50] or DEFAULT_MAIN_PATH_CODE,
             "increasing_direction_name": str(raw.get("increasing_direction_name") or "上行").strip()[:50] or "上行",
             "decreasing_direction_name": str(raw.get("decreasing_direction_name") or "下行").strip()[:50] or "下行",
+            "increasing_direction_line_side": str(raw.get("increasing_direction_line_side") or "右线").strip()[:50] or "右线",
+            "decreasing_direction_line_side": str(raw.get("decreasing_direction_line_side") or "左线").strip()[:50] or "左线",
             "increasing_direction_leading_end": _enum(
                 raw.get("increasing_direction_leading_end"),
                 _INCREASING_DIRECTION_LEADING_ENDS,
@@ -789,6 +813,198 @@ class RailTransitBaseDataApplicationService:
             if len(items) >= page_data.total or not page_data.items:
                 return items
             page += 1
+
+    def _all_aps(self, site_id: str):
+        items = []
+        page = 1
+        while True:
+            page_data = self.query_service.list_aps(site_id, page=page, page_size=200)
+            items.extend(page_data.items)
+            if len(items) >= page_data.total or not page_data.items:
+                return items
+            page += 1
+
+    def _projected_site_metadata(
+        self,
+        site_id: str,
+        changes: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        metadata = SiteManager(self.paths).load_site_metadata(site_id)
+        for change in changes:
+            if change["entity_type"] == "site_metadata" and change["action"] == "update":
+                metadata.update(change["values"])
+        return metadata
+
+    def _projected_sections(
+        self,
+        site_id: str,
+        changes: list[dict[str, Any]],
+    ) -> list[SectionDTO]:
+        sections = {item.id: item for item in self._all_sections(site_id)}
+        for change in changes:
+            if change["entity_type"] != "section":
+                continue
+            entity_id = str(change.get("entity_id") or "")
+            values = change["values"]
+            if change["action"] == "delete":
+                sections.pop(entity_id, None)
+                continue
+            section_id = entity_id or f"new:section:{len(sections) + 1}"
+            sections[section_id] = self._section_from_values(section_id, values)
+        return list(sections.values())
+
+    @staticmethod
+    def _section_from_values(section_id: str, values: Mapping[str, Any]) -> SectionDTO:
+        return SectionDTO(
+            id=section_id,
+            name=str(values.get("name") or ""),
+            section_code=str(values.get("section_code") or ""),
+            section_kind=str(values.get("section_kind") or "manual"),  # type: ignore[arg-type]
+            path_code=str(values.get("path_code") or DEFAULT_MAIN_PATH_CODE),
+            direction_role=str(values.get("direction_role") or "unknown"),  # type: ignore[arg-type]
+            line_direction=str(values.get("line_direction") or ""),
+            start_node_type=str(values.get("start_node_type") or "legacy"),  # type: ignore[arg-type]
+            start_node_uid=str(values.get("start_node_uid") or ""),
+            start_station=str(values.get("start_station") or ""),
+            end_node_type=str(values.get("end_node_type") or "legacy"),  # type: ignore[arg-type]
+            end_node_uid=str(values.get("end_node_uid") or ""),
+            end_station=str(values.get("end_station") or ""),
+            line_side=str(values.get("line_side") or ""),
+            auto_generated=bool(values.get("auto_generated")),
+            generation_key=str(values.get("generation_key") or ""),
+            manual_override_fields=list(values.get("manual_override_fields") or []),
+            section_mileage_start_m=values.get("section_mileage_start_m"),
+            section_mileage_end_m=values.get("section_mileage_end_m"),
+            section_mileage_open_end=bool(values.get("section_mileage_open_end")),
+            section_mileage_source=str(values.get("section_mileage_source") or "unavailable"),  # type: ignore[arg-type]
+            enabled=bool(values.get("enabled", True)),
+            source_kind=str(values.get("source_kind") or "manual"),  # type: ignore[arg-type]
+            remark=str(values.get("remark") or ""),
+        )
+
+    def _derive_changed_ap_line_sides(
+        self,
+        changes: list[dict[str, Any]],
+        sections: list[SectionDTO],
+        metadata: Mapping[str, Any],
+    ) -> list[BaseDataValidationIssueDTO]:
+        issues: list[BaseDataValidationIssueDTO] = []
+        for index, change in enumerate(changes):
+            if change["entity_type"] != "trackside_ap" or change["action"] == "delete":
+                continue
+            derivation = self._derive_ap_values(change["values"], sections, metadata)
+            if derivation:
+                issues.append(
+                    self._issue(
+                        index,
+                        derivation[0],
+                        derivation[1],
+                        "line_side",
+                        blocking=False,
+                    )
+                )
+        return issues
+
+    def _legacy_ap_line_side_completions(
+        self,
+        site_id: str,
+        changes: list[dict[str, Any]],
+        sections: list[SectionDTO],
+        metadata: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        changed_ids = {
+            str(change.get("entity_id") or "")
+            for change in changes
+            if change["entity_type"] == "trackside_ap"
+        }
+        persisted = {
+            f"ap:{row['id']}": row
+            for row in self.repository.list_ap_records(site_id)
+        }
+        completions: list[dict[str, Any]] = []
+        for ap in self._all_aps(site_id):
+            if ap.id in changed_ids or ap.id not in persisted:
+                continue
+            row = persisted[ap.id]
+            current_metadata = self._metadata_object(row.get("raw_payload_json"))
+            working_metadata = dict(current_metadata)
+            for field in (
+                "line_side_source",
+                "section_id",
+                "section_name",
+                "section_code",
+                "section_generation_key",
+            ):
+                if field not in working_metadata and field in ap.base_metadata:
+                    working_metadata[field] = ap.base_metadata[field]
+            values: dict[str, Any] = {
+                "section_name": ap.section,
+                "section_start_station": ap.section_start_station,
+                "section_end_station": ap.section_end_station,
+                "line_side": str(row.get("line_side") or ""),
+                "raw_payload_json": json.dumps(working_metadata, ensure_ascii=False, sort_keys=True),
+            }
+            self._derive_ap_values(values, sections, metadata)
+            changed = any(
+                values.get(field) != row.get(field)
+                for field in (
+                    "section_name",
+                    "section_start_station",
+                    "section_end_station",
+                    "line_side",
+                )
+            ) or self._metadata_object(values.get("raw_payload_json")) != current_metadata
+            if changed:
+                completions.append(
+                    {
+                        "entity_type": "trackside_ap",
+                        "action": "update",
+                        "entity_id": ap.id,
+                        "values": values,
+                    }
+                )
+        return completions
+
+    @classmethod
+    def _derive_ap_values(
+        cls,
+        values: dict[str, Any],
+        sections: list[SectionDTO],
+        metadata: Mapping[str, Any],
+    ) -> tuple[str, str] | None:
+        base_metadata = cls._metadata_object(values.get("raw_payload_json"))
+        ap = {
+            "section": values.get("section_name"),
+            "section_start_station": values.get("section_start_station"),
+            "section_end_station": values.get("section_end_station"),
+            "direction": values.get("direction"),
+            "line_side": values.get("line_side"),
+            "base_metadata": base_metadata,
+        }
+        derivation = derive_ap_line_side(ap, sections, metadata)
+        values["line_side"] = derivation.line_side
+        values["raw_payload_json"] = json.dumps(
+            line_side_metadata(base_metadata, derivation),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        if derivation.matched_section is not None:
+            values["section_name"] = derivation.matched_section.name
+            values["section_start_station"] = derivation.matched_section.start_station
+            values["section_end_station"] = derivation.matched_section.end_station
+        if derivation.issue_code:
+            return derivation.issue_code, derivation.issue_message
+        return None
+
+    @staticmethod
+    def _metadata_object(value: object) -> dict[str, Any]:
+        if isinstance(value, Mapping):
+            return dict(value)
+        try:
+            parsed = json.loads(str(value or "{}"))
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
 
     def _mr_has_history(self, site_id: str, name: str) -> bool:
         try:

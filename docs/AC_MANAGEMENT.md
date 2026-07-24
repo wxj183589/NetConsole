@@ -126,7 +126,7 @@ display wlan mesh-link switch-history  # 仅布尔开关启用
 - AP 信息导出以及详情页 Radio/LLDP/光衰历史 XLSX 导出仍需按当前代码和 Feature 状态复核；批量删除、详情元数据保存及历史查看已进入永久链。AP 点表导入已归并到“轨道交通 / 基础资料”的统一预览、合并和审计链，AC 页不再显示独立导入入口；
 - AC OmniPeek NAM 已接入共享 Export Process、`WebArtifactStore` 当前局点 `trackside_ap_outputs` 受控根、统一任务中心和 Electron 受控另存为；仍需用现场 OmniPeek 验证实际导入结果；
 - 旧版 FIT-AP 登录凭据保存实现已废弃；当前 FIT-AP 外部终端固定生成 SecureCRT `/TELNET <AP_IP> 23`、Xshell `-url telnet://<AP_IP>:23` 或 PuTTY `-telnet <AP_IP> -P 23`，即使系统设置启用“启动外部终端时传递密码”也不会传递 FIT-AP 用户名或密码，也不会查询设备管理中的同 IP 记录。真实 AP 可达性和三类终端版本兼容仍需人工验收；
-- AP 扩展信息导入由轨道交通基础资料统一承载；AC 侧仍需继续复核扩展导出与真实 FIT-AP 关联结果；
+- AP 扩展信息导入和重命名命令导出由轨道交通基础资料统一承载；AC 侧不提供第二套入口。基础资料联动详情使用规范化 MAC 唯一匹配得到的 FIT-AP/AC ID，重复 MAC 不自动择一；
 - 配置采集任务属于配置采集中心的对等范围，不在 AC 页扩展新设备命令；
 - Electron 原生另存为、打开文件/目录和真实 AC 工作流人工验收。
 

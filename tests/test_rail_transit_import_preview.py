@@ -4,6 +4,7 @@ import hashlib
 from io import BytesIO
 import json
 from pathlib import Path
+import sqlite3
 
 from openpyxl import Workbook
 
@@ -113,7 +114,64 @@ def test_import_preview_accepts_ap_switch_port_table_and_skips_placeholders(tmp_
     assert result.merge_plan.items[0].source_values["ap_point_code"] == "AP0127"
     assert result.merge_plan.items[0].source_values["uplink_switch"] == "11-高桥西1"
     assert json.loads(result.merge_plan.items[0].source_values["raw_payload_json"]) == {
-        "import_source": {"station_name": "11-高桥西"}
+        "import_source": {"station_name": "11-高桥西"},
+        "line_side_source": "unavailable",
     }
     assert result.merge_plan.items[1].issues[0].code == "ap_mac_placeholder"
     assert _fingerprint(db_path) == before
+
+
+def test_import_preview_derives_line_side_and_warns_on_explicit_conflict(tmp_path: Path) -> None:
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    section_metadata = {
+        "section_code": "SEC-UP",
+        "section_kind": "between_stations",
+        "direction_role": "increasing",
+        "line_direction": "上行",
+        "start_node_type": "legacy",
+        "end_node_type": "legacy",
+        "source_kind": "manual",
+    }
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO ap_extension_points (
+                site_id, belong_type, section_name, section_start_station,
+                section_end_station, line_side, ap_point_code, source_file,
+                raw_payload_json, created_at, updated_at
+            ) VALUES ('demo', '__base_section__', '高桥西-高桥-上行', '高桥西',
+                      '高桥', '', '-', 'manual-base-data', ?, '2026-07-25', '2026-07-25')
+            """,
+            (json.dumps(section_metadata, ensure_ascii=False),),
+        )
+        connection.commit()
+    service = RailTransitImportPreviewService(RailTransitBaseDataQueryService(paths))
+    content = json.dumps(
+        [
+            {
+                "ap_name": "AP-AUTO",
+                "ap_mac_display": "0011-2233-4491",
+                "section_name": "高桥西-高桥-上行",
+            },
+            {
+                "ap_name": "AP-CONFLICT",
+                "ap_mac_display": "0011-2233-4492",
+                "section_name": "高桥西-高桥-上行",
+                "line_side": "左线",
+            },
+        ],
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+    result = service.preview(
+        site_id="demo",
+        file_name="line-side.json",
+        content=content,
+        content_type="application/json",
+    )
+
+    assert result.rows[0].values["line_side"] == "右线"
+    assert json.loads(result.rows[0].values["raw_payload_json"])["line_side_source"] == "section_direction"
+    assert result.rows[1].values["line_side"] == "左线"
+    conflict = next(issue for issue in result.rows[1].issues if issue.code == "ap_line_side_section_conflict")
+    assert conflict.blocking is False

@@ -230,6 +230,7 @@ class SectionGenerationService:
                 path_code=path_code,
                 direction_role="increasing",
                 line_direction=metadata.increasing_direction_name,
+                line_side=metadata.increasing_direction_line_side,
                 start_node_type="station",
                 start_node_uid=lower.node_uid,
                 start_station=lower.name,
@@ -247,6 +248,7 @@ class SectionGenerationService:
                 path_code=path_code,
                 direction_role="decreasing",
                 line_direction=metadata.decreasing_direction_name,
+                line_side=metadata.decreasing_direction_line_side,
                 start_node_type="station",
                 start_node_uid=higher.node_uid,
                 start_station=higher.name,
@@ -330,6 +332,11 @@ class SectionGenerationService:
                 ("increasing", metadata.increasing_direction_name),
                 ("decreasing", metadata.decreasing_direction_name),
             ):
+                line_side = (
+                    metadata.increasing_direction_line_side
+                    if direction_role == "increasing"
+                    else metadata.decreasing_direction_line_side
+                )
                 sections.append(
                     self._section(
                         name=f"{physical_name}-{line_direction}",
@@ -337,6 +344,7 @@ class SectionGenerationService:
                         path_code=path_code,
                         direction_role=direction_role,
                         line_direction=line_direction,
+                        line_side=line_side,
                         start_node_type=start_node_type,
                         start_node_uid=start_node_uid,
                         start_station=start_station,
@@ -617,6 +625,7 @@ class SectionGenerationService:
         path_code: str,
         direction_role: str,
         line_direction: str,
+        line_side: str,
         start_node_type: str,
         start_node_uid: str,
         start_station: str,
@@ -644,7 +653,7 @@ class SectionGenerationService:
             end_node_type=end_node_type,  # type: ignore[arg-type]
             end_node_uid=end_node_uid,
             end_station=end_station,
-            line_side=line_direction,
+            line_side=line_side,
             auto_generated=True,
             generation_key=generation_key,
             section_mileage_start_m=section_mileage_start_m,

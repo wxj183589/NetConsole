@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { Refresh, View } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
@@ -175,12 +175,27 @@ const fitApContextMenuItems = computed<NcDataTableContextMenuItem<AcAp>[]>(() =>
   { key: 'copy-row', label: t('ac.context.copy_row', '复制整行'), action: ({ row }) => copyApRow(row) },
 ])
 
+async function openRouteApDetail(): Promise<void> {
+  const acId = typeof route.query.ac_id === 'string' ? route.query.ac_id : ''
+  const apId = typeof route.query.ap === 'string' ? route.query.ap : ''
+  if (!apId) {
+    detailVisible.value = false
+    return
+  }
+  if (acId && store.filters.ac_id !== acId) {
+    store.filters.ac_id = acId
+    await store.refreshAps()
+  }
+  await openDetailById(apId)
+}
+
+watch(() => [route.query.ac_id, route.query.ap], () => { void openRouteApDetail() })
+
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibility)
   store.startPolling()
   taskStore.acquirePolling(pollingConsumer)
-  const apId = typeof route.query.ap === 'string' ? route.query.ap : ''
-  if (apId) void openDetailById(apId)
+  void openRouteApDetail()
   void recoverActionPlan()
 })
 

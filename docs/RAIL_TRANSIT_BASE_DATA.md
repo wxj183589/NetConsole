@@ -38,12 +38,12 @@ revision 校验 + SQLite BEGIN IMMEDIATE 单事务
 - 局点沿用当前 Site 模型；本阶段不改变“一条线路一个局点”的既有方式。
 - 站点查询优先读取正式 `__base_station__` 资料，再用 AP 点位的 `station_name`、区间起终点作为兼容补充；设备管理来源只用于预览、来源设备数和 `matched/stale/conflict/manual/legacy` 状态。
 - 区间由 `section_name + 起点 + 终点 + 线别` 派生；站点为空但区间有效是合法资料。
-- 线路级 metadata 增加主线路径编码、站序递增/递减方向名称、`increasing_direction_leading_end`、站点来源分组和固定来源字段。`increasing_direction_leading_end` 仅允许 `car_1_end / car_6_end / unknown`，默认 `unknown`；方向判断基于正式节点的 `sort_order`，不直接使用节点编码。
+- 线路级 metadata 增加主线路径编码、站序递增/递减方向名称、递增/递减方向线路侧、`increasing_direction_leading_end`、站点来源分组和固定来源字段。线路侧默认 `increasing_direction_line_side=右线`、`decreasing_direction_line_side=左线`，局点可反转；`increasing_direction_leading_end` 仅允许 `car_1_end / car_6_end / unknown`，默认 `unknown`。方向判断基于正式节点的 `sort_order`，不直接使用节点编码。
 - 站点模型包含稳定 `node_uid`、来源站点值/来源键、节点类型、路径、方向参与、结构、站台形式、中心里程、终点属性、轨道设施、端点延伸、启用和来源类型。`track_facilities` 是允许多选的正式字段，支持折返线、渡线、存车线、出入段线、站后折返线、环形折返、其他侧线和其他；`turnback_capable` 仍表示实际运营折返能力，不能由任意设施自动推断。旧 `turnback_type` 继续兼容读取和导出，其中 `pocket_track` 安全映射为折返线与存车线。旧 AP 派生站点保留为 `legacy_ap_derived`，不会启动时自动转换。
 - MAIN 路径的新普通车站在手工新增、设备来源预览和模板空单元格场景默认 `underground / island`；停车场、车辆段、接轨点和其他路径默认 `unknown / unknown`。已有高架、地面、侧式等明确值不会被覆盖；设备来源再次应用到草稿时，只允许补齐 MAIN 普通站仍为 `unknown` 的字段，不在页面加载或应用启动时静默写库。
 - `center_mileage_text` 保留业务原文，`center_mileage_m` 保存安全解析结果；支持 `ZDK12+345`、`YDK12+345`、`K12+345`、`12+345` 和纯米数。本字段用于后续站点定位、区间设计与方向分析，本阶段不作为 MR 方向判断硬条件，也不冒充 AP 实际覆盖里程。
 - `ap_extension_points` 可能包含站点标题、设计起点等定位辅助行。Web 轨旁 AP 列表只纳入具有 `ap_name`、有效 MAC 或非空且非 `-` 的 `ap_point_code` 的记录；站点和区间派生仍读取全部定位行。
-- AP 正式名称与 AP 点位编号分字段保留。正式名称为空时页面可显示点位编号，但不得把点位编号写回为正式名称。
+- AP 正式名称与 AP 点位编号分字段保留。AP 名称优先显示 AC 当前真实 FIT-AP 名称，未匹配时才回退基础资料名称；点位编号不写回 AP 名称。
 - 列车和车载 MR 来自 `devices` 与 `device_groups`；只读取显式安全字段，不读取账号、密码、Community、Token 或隧道凭据。
 - 车载 MR 的 `mr_position_code`、`physical_end` 和 `car_number` 是独立的固定安装资料：`MR-CT = CT / 1车厢端 / 1`，`MR-CW = CW / 6车厢端 / 6`。兼容字段 `role` 仍返回原名称解析结果，但不再表示运行头尾。当前运行角色只能由“实际运行方向 + `increasing_direction_leading_end` + 物理安装位置”计算为 `leading_end / trailing_end / turnback_transition / unknown`；RSSI 信号模型只做一致性验证，不能静默交换 CT/CW。
 - AP、MR、设备之间不因 MAC 相同而自动合并。运行态关联继续复用现有 AC 和 Mesh-Link 匹配结果，不接管 AP Identity 生产匹配。
@@ -58,17 +58,21 @@ revision 校验 + SQLite BEGIN IMMEDIATE 单事务
 
 来源预览只给出候选、匹配和冲突，不提供直接写库接口。前端“从设备管理生成”和“导入模板”都只能应用到当前解锁草稿，最后仍通过全局 `validate` 与 `changes` 保存，继续保留 `base_revision`、明确确认、事务回滚和保存失败保留草稿。来源确认默认只补充 `source_station_value/source_station_key/source_kind` 以及响应中的设备数量状态；结构和站台仅在 MAIN 普通站仍为 `unknown` 时补齐默认值，顺序、路径、端点、轨道设施、启用、备注和已有明确结构/站台等人工字段不会被来源同步覆盖。设备管理中来源后来消失时只把正式站点标为 `stale`，不删除站点，也不修改 `devices` 或 `device_groups`。
 
-站点模板为 XLSX，包含 `01_线路参数`、`02_线路节点`、`03_区间配置` 和 `字段说明` 四个工作表。线路参数包含线路名称、项目类型、网络类型、主线路径编码、站序递增/递减方向、设备来源分组、固定来源字段 `station` 和备注；线路节点包含中心里程、多轨道设施与端点延伸字段；区间配置包含稳定生成标识、正式起终节点和只读 AP 数量/里程范围。旧三工作表模板仍可导入，缺少区间页时只提示“模板未包含区间配置”，不删除现有区间。导入预览会映射中文枚举、设施分隔符和 `是/否、true/false、1/0` 布尔值，模板文件路径和原文件内容不写入正式数据库。
+站点模板为 XLSX，包含 `01_线路参数`、`02_线路节点`、`03_区间配置` 和 `字段说明` 四个工作表。线路参数包含线路名称、项目类型、网络类型、主线路径编码、站序递增/递减方向及对应线路侧、设备来源分组、固定来源字段 `station` 和备注；线路节点包含中心里程、多轨道设施与端点延伸字段；区间配置包含稳定生成标识、正式起终节点和只读 AP 数量/里程范围。旧三工作表模板仍可导入，缺少区间页时只提示“模板未包含区间配置”，不删除现有区间。导入预览会映射中文枚举、设施分隔符和 `是/否、true/false、1/0` 布尔值，模板文件路径和原文件内容不写入正式数据库。
 
 桌面下载通过受控 `downloadBackendResource` 白名单、当前 Electron Session 和原子 `.part` 文件保存；取消保存不显示成功，API、IPC 或文件系统失败返回安全错误。浏览器模式继续使用原生下载。模板文件名为 `线路站点与区间基础资料模板.xlsx`，正式导出文件名为 `线路站点与区间基础资料.xlsx`；导出始终读取已保存版本，页面有未保存草稿时明确提示其不包含在导出中。
 
 ## 轨旁 AP 文件闭环
 
-“轨旁 AP”标签页直接提供“下载模板 / 导入并预览 / 导出当前 / 新增轨旁 AP”。模板和当前导出均通过独立 Export Process 生成 `轨旁AP` 与 `字段说明` 两个工作表，并经 `source=trackside_ap_base` 的公共 Artifact 完成校验和受控下载。模板包含点位编号、AP MAC、站点/区间、方向、可选里程、上联交换机/端口、供电和光缆等正式字段；FIT-AP 关联、当前光衰、来源和问题数为只读导出列。
+“轨旁 AP”标签页直接提供“下载模板 / 导入并预览 / 导出当前 / 导出重命名命令 / 新增轨旁 AP”。模板和当前导出均通过独立 Export Process 生成 `轨旁AP` 与 `字段说明` 两个工作表，并经 `source=trackside_ap_base` 的公共 Artifact 完成校验和受控下载。模板包含 AP 名称、点位编号、AP MAC、站点/区间、方向、可选里程、上联交换机/端口、供电和光缆等正式字段；FIT-AP 关联、当前光衰、来源和问题数为只读导出列。
 
 锁定状态允许下载、导出和只读预览，不能应用；解锁后“应用到编辑草稿”只更新 `editingDraft.aps` 和 `pendingChanges`，不调用独立写库接口，仍由页面右上角“保存并锁定”统一提交 revision 校验与事务。导入空值默认 KEEP，不能清除已有里程、位置或上联资料；删除只能通过页面明确操作。当前 FIT-AP 未发现相同 MAC 时只产生非阻断提示，资料仍可新增，后续继续按规范化 MAC 关联。
 
-`ap_switch_port_point_table` 兼容 `轨旁AP业务` 工作表：`AP编号 → point_code`、`AP_MAC → mac`、`归属站点 → station`、`区间 → section/direction`、`室内交换机 → uplink_switch`、`接口名称 → uplink_port`。带编号站点保留原文到来源 metadata 后再匹配正式站名；`AP名称` 等于 MAC 时不覆盖真实名称；缺少里程不阻断，MAC 为占位符的空端口行跳过。
+`ap_switch_port_point_table` 兼容 `轨旁AP业务` 工作表：`AP编号/点位编号/AP点位/AP名称编号 → point_code`、`AP_MAC → mac`、`归属站点 → station`、`区间 → section/direction`、`室内交换机 → uplink_switch`、`接口名称 → uplink_port`。带编号站点保留原文到来源 metadata 后再匹配正式站名；文件中的 `AP名称` 不覆盖 AC 当前真实名称；缺少里程不阻断，MAC 为占位符的空端口行跳过。
+
+轨旁 AP 的 `line_side` 不在主表显示或筛选，但仍保存在 `ap_extension_points`、进入基础资料 XLSX 的“线别”列并供里程与分析使用。推导优先按 AP 保存的区间身份（ID、编码、生成标识）和完整正式区间名称匹配，再使用带方向的结构化起终节点；正式区间的 `line_direction` 优先于 `direction_role`，区间名称末尾仅作旧数据兼容。空值和 `line_side_source=section_direction` 可随区间或局点映射重算，`manual/import/legacy` 非空值保持原值；冲突、方向缺失、区间不匹配或歧义进入数据质量问题。查询只做非破坏性兼容补全，实际持久化发生在受控导入或基础资料统一保存时，不执行粗暴数据库迁移。
+
+“导出重命名命令”只读取当前局点的结构化轨旁 AP 资料或用户明确选择的未保存草稿，通过 Export Process 生成 UTF-8 BOM、Windows CRLF 的 TXT Artifact。每条命令使用唯一 MAC 和 `point_code` 生成 `wlan rename-ap <AP_MAC> <点位编号>`，空值、无效 MAC、名称已一致和不安全目标名称记录为跳过；同一 MAC 多目标或同一目标多 MAC 直接阻断。该功能只导出命令，不连接 AC、不执行命令，也不附加保存、重启、删除等高风险命令。FIT-AP 详情联动只接受按规范化 MAC 唯一匹配出的 `fit_ap_id`；未匹配或重复匹配不会打开错误详情。
 
 “轨旁 AP 规划”标签页复用同一任务与下载体验，按钮为“下载模板 / 导入并预览 / 导出当前 / 新增 / 删除”。规划预览不受基础资料锁定影响，但应用仍要求解锁；未保存规划修改导出当前草稿。规划模板通过 `source=trackside_ap_plan` 生成 `轨旁AP规划` 与 `字段说明`，不再依赖任意服务端路径。
 
@@ -169,7 +173,7 @@ POST /api/rail-transit/base-data/import-operations/{operation_id}/rollback
 - 返回值只保留基础资料安全字段。账号、密码、Token、Community、Secret、Credential、上传模板原路径和用户本机绝对路径不返回、不记录。
 - 预览不写 `devices.db`、`tasks.db` 或正式资料目录，不创建 Task，不生成正式资产。合并计划以 `preview_id` 保存到 `.local/runtime/base_data_import_previews/`，只包含安全字段、文件 basename/SHA-256、数据库 SHA-256、问题和 15 分钟有效期，不保存上传原文件或绝对路径；过期预览会被受控清理。
 - 预览逐行返回 `CREATE / UPDATE / UNCHANGED / SKIP / CONFLICT / NEEDS_CONFIRMATION`，并展示字段级现值、候选值、来源、动作和警告。
-- `ap_switch_port_point_table`（AP 交换机端口点表）识别 `轨旁AP业务` 中的 `AP_MAC`、`AP编号`、`归属站点`、`区间`、`室内交换机` 和 `接口名称`。带数字前缀的站点以安全来源元数据保留原值并规范为正式站名，区间末尾提取上下行；缺少里程允许导入且不会清除已有里程或备注，MAC 为 `-` 的空端口行只进入 `SKIP`。文件中的 `AP名称=MAC` 不进入正式名称合并，轨旁 AP 页面优先展示点位编号。
+- `ap_switch_port_point_table`（AP 交换机端口点表）识别 `轨旁AP业务` 中的 `AP_MAC`、`AP编号`、`AP名称编号`、`归属站点`、`区间`、`室内交换机` 和 `接口名称`。带数字前缀的站点以安全来源元数据保留原值并规范为正式站名，区间末尾提取上下行；缺少里程允许导入且不会清除已有里程或备注，MAC 为 `-` 的空端口行只进入 `SKIP`。文件中的 `AP名称` 不进入点位编号字段，轨旁 AP 页面显示 AC 当前真实 AP 名称并单独显示点位编号。
 - 数据质量按实体分组。同一 AP 或 MR 的多个问题只占一个实体组；阻断项、警告项和仅提示项分开统计，页面不得把字段问题数误称为设备数。
 - 重复 MAC、重复静态 IP、MR 角色冲突和身份冲突属于阻断项。缺少 AP 正式名称、缺少 MAC、里程缺失等可进入补录队列，但不得绕过冲突检查。
 

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 from netconsole.models.api.rail_transit_base_data import SectionDTO
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
@@ -58,7 +61,7 @@ def test_base_data_mac_mileage_filters_and_public_dto_have_no_secrets(tmp_path: 
     paths, _db_path = build_rail_transit_base_data_fixture(tmp_path)
     service = RailTransitBaseDataQueryService(paths)
 
-    page = service.list_aps("demo", section="A-B", has_issue=False, page_size=200)
+    page = service.list_aps("demo", section="A-B", query="AP-Section", has_issue=True, page_size=200)
     invalid = service.list_issues("demo", severity="error", entity_type="ap", query="里程", page_size=200)
     payload = str(service.list_mrs("demo").model_dump()).casefold()
 
@@ -69,6 +72,97 @@ def test_base_data_mac_mileage_filters_and_public_dto_have_no_secrets(tmp_path: 
     assert "private-user" not in payload
     assert "private-pass" not in payload
     assert "password" not in payload
+
+
+def test_query_non_destructively_completes_empty_line_side_from_formal_section(tmp_path: Path) -> None:
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    metadata = {
+        "section_code": "SEC-UP",
+        "section_kind": "between_stations",
+        "path_code": "MAIN",
+        "direction_role": "increasing",
+        "line_direction": "上行",
+        "start_node_type": "legacy",
+        "end_node_type": "legacy",
+        "source_kind": "manual",
+    }
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO ap_extension_points (
+                site_id, belong_type, section_name, section_start_station,
+                section_end_station, line_side, ap_point_code, source_file,
+                raw_payload_json, created_at, updated_at
+            ) VALUES ('demo', '__base_section__', ?, '高桥西', '高桥', '', '-',
+                      'manual-base-data', ?, '2026-07-25', '2026-07-25')
+            """,
+            ("高桥西-高桥-上行", json.dumps(metadata, ensure_ascii=False)),
+        )
+        connection.execute(
+            """
+            UPDATE ap_extension_points
+            SET section_name = '高桥西-高桥-上行', line_side = '', raw_payload_json = '{}'
+            WHERE ap_name = 'AP-Section'
+            """
+        )
+        connection.commit()
+    before = _fingerprint(db_path)
+
+    ap = next(
+        item
+        for item in RailTransitBaseDataQueryService(paths).list_aps("demo", page_size=200).items
+        if item.name == "AP-Section"
+    )
+
+    assert (ap.line_side, ap.line_side_source) == ("右线", "section_direction")
+    assert ap.base_metadata["section_code"] == "SEC-UP"
+    assert ap.line_side_derivation_issue_code == ""
+    assert _fingerprint(db_path) == before
+
+
+def test_trackside_ap_runtime_uses_unique_mac_and_marks_ambiguous_matches(tmp_path: Path) -> None:
+    paths, _db_path = build_rail_transit_base_data_fixture(tmp_path)
+
+    def detail(ap_id: str, mac: str, name: str, ac_id: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            ap=SimpleNamespace(
+                id=ap_id,
+                ac_id=ac_id,
+                mac=mac,
+                name=name,
+                status="online",
+                updated_at="2026-07-24T12:00:00",
+                ip="192.0.2.10",
+                model="WA6638",
+            ),
+            radios=[],
+            optical=SimpleNamespace(optical_status="normal"),
+        )
+
+    class FakeAcQuery:
+        def list_all_ap_details(self, _site_id: str) -> list[SimpleNamespace]:
+            return [
+                detail("fit-1", "00:00:00:00:00:01", "AC-REAL-1", "ac-1"),
+                detail("fit-2a", "00-00-00-00-00-02", "AC-REAL-2A", "ac-1"),
+                detail("fit-2b", "000000000002", "AC-REAL-2B", "ac-1"),
+            ]
+
+    class EmptyMeshQuery:
+        def list_current_links(self, _site_id: str, *, page: int, page_size: int) -> SimpleNamespace:
+            return SimpleNamespace(items=[])
+
+    service = RailTransitBaseDataQueryService(paths, ac_query=FakeAcQuery(), mesh_query=EmptyMeshQuery())  # type: ignore[arg-type]
+    items = service.list_aps("demo", page_size=200).items
+    by_point_code = {item.point_code: item for item in items}
+
+    assert by_point_code["AP001"].runtime.fit_ap_id == "fit-1"
+    assert by_point_code["AP001"].runtime.fit_ap_ac_id == "ac-1"
+    assert by_point_code["AP001"].runtime.fit_ap_name == "AC-REAL-1"
+    assert by_point_code["AP001"].runtime.fit_ap_match_status == "matched"
+    assert by_point_code["AP002"].runtime.fit_ap_id == ""
+    assert by_point_code["AP002"].runtime.fit_ap_name == ""
+    assert by_point_code["AP002"].runtime.fit_ap_match_status == "conflict"
+    assert any(issue.code == "fit_ap_mac_ambiguous" for issue in service.get_ap("demo", by_point_code["AP002"].id).issues)
 
 
 def test_section_quality_reports_invalid_physical_mileage_shapes(tmp_path: Path) -> None:

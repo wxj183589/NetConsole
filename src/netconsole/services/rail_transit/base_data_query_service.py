@@ -42,6 +42,10 @@ from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
+from netconsole.services.rail_transit.ap_line_side_service import (
+    derive_ap_line_side,
+    line_side_metadata,
+)
 from netconsole.services.rail_transit.source_policy import is_blocking_issue
 from netconsole.services.rail_transit.mr_end_role_service import mr_position
 from netconsole.services.rail_transit.station_source_utils import (
@@ -171,6 +175,8 @@ class RailTransitBaseDataQueryService:
             main_path_code=str(meta.get("main_path_code") or DEFAULT_MAIN_PATH_CODE),
             increasing_direction_name=str(meta.get("increasing_direction_name") or "上行"),
             decreasing_direction_name=str(meta.get("decreasing_direction_name") or "下行"),
+            increasing_direction_line_side=str(meta.get("increasing_direction_line_side") or "右线"),
+            decreasing_direction_line_side=str(meta.get("decreasing_direction_line_side") or "左线"),
             increasing_direction_leading_end=increasing_direction_leading_end,
             station_source_group_name=str(meta.get("station_source_group_name") or DEFAULT_STATION_SOURCE_GROUP),
             station_source_field=STATION_SOURCE_FIELD,
@@ -254,6 +260,7 @@ class RailTransitBaseDataQueryService:
     ) -> TracksideApPageDTO:
         items = self._all_aps(site_id, include_runtime=True)
         issues = self._issues(site_id, aps=self._all_aps(site_id, include_runtime=False), mrs=self._all_mrs(site_id, include_runtime=False))
+        issues.extend(self._runtime_ap_issues(items))
         issue_map = self._issue_map(issues, "ap")
         items = [self._with_ap_issues(item, issue_map.get(item.id, [])) for item in items]
         for field, value in (("station", station), ("section", section), ("line_side", line_side)):
@@ -287,6 +294,7 @@ class RailTransitBaseDataQueryService:
             aps=self._all_aps(site_id, include_runtime=False),
             mrs=self._all_mrs(site_id, include_runtime=False),
         )
+        issues.extend(self._runtime_ap_issues(items))
         issue_map = self._issue_map(issues, "ap")
         return [self._with_ap_issues(item, issue_map.get(item.id, [])) for item in items]
 
@@ -294,7 +302,11 @@ class RailTransitBaseDataQueryService:
         item = next((row for row in self._all_aps(site_id, include_runtime=True) if row.id == ap_id), None)
         if item is None:
             return None
-        issues = [issue for issue in self._issues(site_id) if issue.entity_type == "ap" and issue.entity_id == ap_id]
+        issues = [
+            issue
+            for issue in [*self._issues(site_id), *self._runtime_ap_issues([item])]
+            if issue.entity_type == "ap" and issue.entity_id == ap_id
+        ]
         return TracksideApDetailDTO(ap=self._with_ap_issues(item, issues), issues=issues)
 
     def list_mrs(
@@ -485,16 +497,14 @@ class RailTransitBaseDataQueryService:
 
     def _all_points(self, site_id: str, *, include_runtime: bool) -> list[TracksideApDTO]:
         rows = self._read_rows(site_id, "ap_extension_points", _AP_FIELDS)
-        ac_by_mac: dict[str, Any] = {}
-        ac_by_name: dict[str, Any] = {}
+        ac_by_mac: dict[str, list[Any]] = defaultdict(list)
         links_by_ap: dict[str, list[Any]] = defaultdict(list)
         if include_runtime:
             try:
                 for detail in self.ac_query.list_all_ap_details(site_id):
                     mac_key = self._mac_key(detail.ap.mac)
                     if mac_key:
-                        ac_by_mac[mac_key] = detail
-                    ac_by_name[detail.ap.name.casefold()] = detail
+                        ac_by_mac[mac_key].append(detail)
             except (OSError, ValueError, sqlite3.Error):
                 pass
             try:
@@ -508,7 +518,8 @@ class RailTransitBaseDataQueryService:
         for row in rows:
             name = str(row.get("ap_name") or "")
             mac_key = self._mac_key(row.get("ap_mac_norm") or row.get("ap_mac_display"))
-            ac = ac_by_mac.get(mac_key) or ac_by_name.get(name.casefold())
+            ac_matches = ac_by_mac.get(mac_key, []) if mac_key else []
+            ac = ac_matches[0] if len(ac_matches) == 1 else None
             links = links_by_ap.get(mac_key) or links_by_ap.get(name.casefold()) or []
             parsed = self._mileage(row.get("mileage_text"), row.get("mileage_m"))
             record_kind = str(row.get("belong_type") or "")
@@ -538,6 +549,10 @@ class RailTransitBaseDataQueryService:
                 ]
             related_names = sorted({link.mr_name for link in links if link.mr_name})
             runtime = RelatedRuntimeStatusDTO(
+                fit_ap_id=ac.ap.id if ac else "",
+                fit_ap_ac_id=ac.ap.ac_id if ac else "",
+                fit_ap_name=ac.ap.name if ac else "",
+                fit_ap_match_status="matched" if ac else "conflict" if len(ac_matches) > 1 else "unmatched",
                 fit_ap_status=ac.ap.status if ac else "unknown",
                 optical_status=ac.optical.optical_status if ac else "no_data",
                 mesh_status="online" if links else "unknown",
@@ -572,7 +587,35 @@ class RailTransitBaseDataQueryService:
                     base_metadata=base_metadata,
                 )
             )
-        return result
+        formal_sections = [
+            section
+            for section in self._sections(result)
+            if section.source_kind != "legacy_ap_derived"
+        ]
+        site_metadata = self._site_meta(site_id)
+        derived_result: list[TracksideApDTO] = []
+        for item in result:
+            if not self._is_ap_record(item):
+                derived_result.append(item)
+                continue
+            derivation = derive_ap_line_side(
+                item.model_dump(),
+                formal_sections,
+                site_metadata,
+            )
+            derived_result.append(
+                item.model_copy(
+                    update={
+                        "line_side": derivation.line_side,
+                        "line_side_source": derivation.source,
+                        "line_side_derivation_issue_code": derivation.issue_code,
+                        "line_side_derivation_issue_message": derivation.issue_message,
+                        "base_metadata": line_side_metadata(item.base_metadata, derivation),
+                    },
+                    deep=True,
+                )
+            )
+        return derived_result
 
     def _all_mrs(self, site_id: str, *, include_runtime: bool) -> list[VehicleMrDTO]:
         db_path = self.paths.site_db_path(site_id)
@@ -669,6 +712,20 @@ class RailTransitBaseDataQueryService:
                 issues.append(self._issue("error", "ap_mac_duplicate", "ap", ap.id, ap.name, "mac", ap.mac, "同一局点存在重复 AP MAC", "核对 AP 点表"))
             if not ap.station and not ap.section:
                 issues.append(self._issue("warning", "ap_location_missing", "ap", ap.id, ap.name, "station/section", "", "AP 未填写站点或区间", "补充位置归属"))
+            if ap.line_side_derivation_issue_code:
+                issues.append(
+                    self._issue(
+                        "warning",
+                        ap.line_side_derivation_issue_code,
+                        "ap",
+                        ap.id,
+                        ap.name or ap.point_code,
+                        "line_side",
+                        ap.line_side,
+                        ap.line_side_derivation_issue_message,
+                        "核对归属区间、区间方向和线路方向来源",
+                    )
+                )
             if not ap.mileage.raw:
                 issues.append(self._issue("warning", "ap_mileage_missing", "ap", ap.id, ap.name, "mileage", "", "AP 里程为空", "补充正式里程"))
             elif not ap.mileage.valid:
@@ -696,6 +753,23 @@ class RailTransitBaseDataQueryService:
         issues.extend(self._station_issues(stations))
         issues.extend(self._section_issues(sections, stations))
         return issues
+
+    def _runtime_ap_issues(self, aps: list[TracksideApDTO]) -> list[DataQualityIssueDTO]:
+        return [
+            self._issue(
+                "error",
+                "fit_ap_mac_ambiguous",
+                "ap",
+                ap.id,
+                ap.runtime.fit_ap_name or ap.name or ap.point_code,
+                "mac",
+                ap.mac,
+                "同一 AP MAC 匹配到多个 AC FIT-AP，未自动关联",
+                "核对 AC FIT-AP 资源中的重复 MAC",
+            )
+            for ap in aps
+            if ap.runtime.fit_ap_match_status == "conflict"
+        ]
 
     def _unbound_mr_issues(self, site_id: str) -> list[DataQualityIssueDTO]:
         db_path = self.paths.site_db_path(site_id)

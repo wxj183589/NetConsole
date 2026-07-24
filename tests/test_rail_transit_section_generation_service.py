@@ -93,6 +93,7 @@ def test_generates_bidirectional_sections_with_physical_pair_names(tmp_path: Pat
     decreasing = sections["高桥西-高桥-下行"]
     assert (increasing.start_station, increasing.end_station) == ("高桥西", "高桥")
     assert (decreasing.start_station, decreasing.end_station) == ("高桥", "高桥西")
+    assert (increasing.line_side, decreasing.line_side) == ("右线", "左线")
     assert decreasing.direction_role == "decreasing"
     assert result.create_count == 2
 
