@@ -125,6 +125,8 @@ describe('PythonBackendManager', () => {
     expect((spawnCalls[0].options.env as NodeJS.ProcessEnv).NETCONSOLE_RUNTIME_MODE).toBe(
       'desktop-development',
     )
+    expect((spawnCalls[0].options.env as NodeJS.ProcessEnv).PYTHONUTF8).toBe('1')
+    expect((spawnCalls[0].options.env as NodeJS.ProcessEnv).PYTHONIOENCODING).toBe('utf-8')
     expect(JSON.parse(handshake).session_token).toBe(TOKEN)
     expect(manager.getStatus()).toEqual({ state: 'ready', baseUrl: first.baseUrl })
 

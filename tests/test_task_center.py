@@ -119,6 +119,122 @@ def test_task_runtime_preserves_chinese_when_utf8_is_split_at_every_byte(
     assert "�" not in serialized
 
 
+def test_task_runtime_rejects_cp936_worker_protocol_without_persisting_corrupted_text(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    task_id = "cp936-worker-protocol"
+    service.prepare(BackgroundJob(job_id=task_id, task_type="demo_task"))
+    service.mark_running(task_id)
+    legacy_payload = (
+        json.dumps(
+            progress_event(task_id, "auth", 1, 2, "正在验证设备凭据"),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("cp936")
+
+    service.feed_stdout(task_id, legacy_payload)
+    service.complete(task_id, 0)
+
+    restored = service.get_task(task_id)
+    events = service.list_events(task_id)
+    serialized = json.dumps(events, ensure_ascii=False)
+    detail = JobCenterQueryService(service.paths).get_task("demo", task_id)
+    assert restored is not None
+    assert restored.status is TaskState.FAILED
+    assert restored.result["error_code"] == "WORKER_TEXT_PROTOCOL_CORRUPTED"
+    assert "正在验证设备凭据" not in serialized
+    assert "�" not in serialized
+    assert detail is not None
+    assert detail.text_integrity == "current_corrupted"
+    assert detail.text_integrity_reason == "worker_protocol_decode_failed"
+
+
+def test_task_runtime_rejects_replacement_character_from_current_worker_event(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    task_id = "replacement-worker-protocol"
+    service.prepare(BackgroundJob(job_id=task_id, task_type="demo_task"))
+    service.mark_running(task_id)
+
+    service.feed_stdout(
+        task_id,
+        encode_event(progress_event(task_id, "auth", 1, 2, "正在验证�设备凭据")).encode("ascii"),
+    )
+    service.complete(task_id, 0)
+
+    events = service.list_events(task_id)
+    assert all("�" not in json.dumps(event, ensure_ascii=False) for event in events)
+    restored = service.get_task(task_id)
+    assert restored is not None and restored.status is TaskState.FAILED
+    assert restored.result["text_integrity_reason"] == "replacement_character_detected_in_current_event"
+
+
+def test_task_persistence_guard_blocks_corrupted_worker_event(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    task_id = "persistence-integrity-guard"
+    service.prepare(BackgroundJob(job_id=task_id, task_type="demo_task"))
+    service.mark_running(task_id)
+
+    service.events.publish(
+        progress_event(task_id, "auth", 1, 2, "当前事件�损坏"),
+        source="worker",
+    )
+
+    restored = service.get_task(task_id)
+    events = service.list_events(task_id)
+    assert restored is not None and restored.status is TaskState.FAILED
+    assert restored.result["error_code"] == "WORKER_TEXT_PROTOCOL_CORRUPTED"
+    assert all("�" not in json.dumps(event, ensure_ascii=False) for event in events)
+
+
+def test_job_center_reports_backend_text_integrity_for_current_historical_and_ok(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    query = JobCenterQueryService(service.paths)
+    for task_id, status, message in (
+        ("current-damaged", TaskState.RUNNING, "当前�异常"),
+        ("historical-damaged", TaskState.COMPLETED, "历史�异常"),
+        ("normal-text", TaskState.COMPLETED, "中文正常"),
+    ):
+        now = utc_now_iso()
+        service.repository("demo").save(
+            TaskSnapshot(
+                task_id=task_id,
+                task_type="demo_task",
+                task_name=task_id,
+                status=status,
+                created_time=now,
+                updated_time=now,
+                message=message,
+                site_name="demo",
+            )
+        )
+
+    current = query.get_task("demo", "current-damaged")
+    historical = query.get_task("demo", "historical-damaged")
+    normal = query.get_task("demo", "normal-text")
+    assert current is not None and current.text_integrity == "current_corrupted"
+    assert current.text_integrity_reason == "replacement_character_detected_in_current_event"
+    assert historical is not None and historical.text_integrity == "historical_corrupted"
+    assert historical.text_integrity_reason == "legacy_task_before_encoding_fix"
+    assert normal is not None and normal.text_integrity == "ok"
+    assert normal.text_integrity_reason == ""
+
+
+def test_task_runtime_enables_utf8_for_worker_process(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+
+    launch = service.prepare(BackgroundJob(job_id="utf8-environment", task_type="demo_task"))
+
+    assert launch.environment["PYTHONUTF8"] == "1"
+    assert launch.environment["PYTHONIOENCODING"] == "utf-8"
+
+
 def test_structured_progress_details_persist_and_can_cap_running_progress(tmp_path: Path) -> None:
     service = _service(tmp_path)
     task_id = "structured-progress"

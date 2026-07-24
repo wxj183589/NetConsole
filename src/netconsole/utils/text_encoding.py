@@ -33,9 +33,12 @@ class TextDecodeResult:
 class Utf8IncrementalTextDecoder:
     """Decode one internal UTF-8 byte stream without corrupting split code points."""
 
-    def __init__(self, *, source: str) -> None:
+    def __init__(self, *, source: str, errors: str = "replace") -> None:
         self.source = str(source or "internal_stream")
-        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        if errors not in {"strict", "replace"}:
+            raise ValueError("内部 UTF-8 解码器只支持 strict 或 replace")
+        self.errors = errors
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors=errors)
 
     def decode(self, data: bytes, *, final: bool = False) -> TextDecodeResult:
         text = self._decoder.decode(bytes(data), final=final)

@@ -443,7 +443,7 @@ class LocalProcessAdapter:
                 chunk = read_chunk(self._read_size)
                 if not chunk:
                     break
-                payload = chunk.encode("utf-8", errors="replace") if isinstance(chunk, str) else bytes(chunk)
+                payload = chunk.encode("utf-8", errors="strict") if isinstance(chunk, str) else bytes(chunk)
                 with self._service_lock:
                     if is_stderr:
                         self.task_service.feed_stderr(job_id, payload)
@@ -463,7 +463,7 @@ class LocalProcessAdapter:
         except Exception as exc:
             exit_code = -1
             with self._service_lock:
-                self.task_service.feed_stderr(state.job_id, str(exc).encode("utf-8", errors="replace"))
+                self.task_service.feed_stderr(state.job_id, str(exc).encode("utf-8", errors="strict"))
         # Worker 被终止时，其子进程可能仍持有 stdout/stderr 管道。先关闭 Job
         # Object 回收整棵进程树，避免下面的 pipe join 永久等待。
         self._close_process_tree(state)

@@ -12,7 +12,7 @@ from typing import Any
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.job_events import log_event, progress_event
 from netconsole.services.job_center.job_runner import run_job as run_center_job
-from netconsole.services.job_center.worker_protocol import write_event
+from netconsole.services.job_center.worker_protocol import configure_standard_streams, write_event
 from netconsole.services.job_center.sensitive_bootstrap import (
     SensitiveBootstrap,
     SensitiveBootstrapError,
@@ -54,6 +54,7 @@ def run_job(job: BackgroundJob, sensitive_bootstrap: SensitiveBootstrap | None =
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_standard_streams()
     parser = argparse.ArgumentParser(description="NetConsole background worker")
     parser.add_argument("--job", required=True, help="后台任务 JSON 文件")
     args = parser.parse_args(argv)

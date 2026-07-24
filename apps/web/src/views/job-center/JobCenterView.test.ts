@@ -7,10 +7,13 @@ import type { TaskItem } from '../../types/task'
 import JobCenterView from './JobCenterView.vue'
 import source from './JobCenterView.vue?raw'
 
-it('warns instead of guessing when historical task text contains replacement characters', () => {
+it('uses Backend text integrity instead of guessing from replacement characters', () => {
   expect(source).toContain('historicalTextDamaged')
-  expect(source).toContain('该历史日志在旧版本中已发生编码损坏，原始字节不存在时无法恢复。')
-  expect(source).toContain("value.includes('\\uFFFD')")
+  expect(source).toContain("store.selected?.text_integrity === 'historical_corrupted'")
+  expect(source).toContain("store.selected?.text_integrity === 'current_corrupted'")
+  expect(source).toContain('该历史日志由旧版本生成，文字已经发生编码损坏；没有原始字节时无法恢复。')
+  expect(source).toContain('当前任务发生内部编码错误，请停止任务并查看应用日志。这不是历史日志问题。')
+  expect(source).not.toContain("value.includes('\\uFFFD')")
 })
 
 const platformMocks = vi.hoisted(() => ({
@@ -212,6 +215,8 @@ function task(id: string): TaskItem {
     error_code: '',
     error_summary: '',
     has_warning: false,
+    text_integrity: 'ok',
+    text_integrity_reason: '',
     snapshot_id: null,
     records_count: null,
     parser_version: '',
@@ -290,6 +295,45 @@ describe('Job Center saved artifact capability lifecycle', () => {
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
     })
+  })
+
+  it('shows distinct current and historical encoding states from Backend metadata', async () => {
+    const root = node('root')
+    const pinia = createPinia()
+    const store = useTaskStore(pinia)
+    vi.spyOn(store, 'acquirePolling').mockImplementation(() => undefined)
+    vi.spyOn(store, 'releasePolling').mockImplementation(() => undefined)
+    store.selected = {
+      ...task('current-corrupted'),
+      status: 'RUNNING',
+      message: '当前�异常',
+      text_integrity: 'current_corrupted',
+      text_integrity_reason: 'replacement_character_detected_in_current_event',
+    }
+
+    const app = renderer.createApp(JobCenterView)
+    app.use(pinia)
+    app.mount(root)
+    await nextTick()
+
+    expect(alertTitles(root)).toContain('当前任务发生内部编码错误，请停止任务并查看应用日志。这不是历史日志问题。')
+    expect(alertTitles(root)).not.toContain('该历史日志由旧版本生成，文字已经发生编码损坏；没有原始字节时无法恢复。')
+
+    store.selected = {
+      ...task('historical-corrupted'),
+      message: '历史�异常',
+      text_integrity: 'historical_corrupted',
+      text_integrity_reason: 'legacy_task_before_encoding_fix',
+    }
+    await nextTick()
+    expect(alertTitles(root)).toContain('该历史日志由旧版本生成，文字已经发生编码损坏；没有原始字节时无法恢复。')
+    expect(alertTitles(root)).not.toContain('当前任务发生内部编码错误，请停止任务并查看应用日志。这不是历史日志问题。')
+
+    store.selected = task('normal')
+    await nextTick()
+    expect(alertTitles(root)).not.toContain('该历史日志由旧版本生成，文字已经发生编码损坏；没有原始字节时无法恢复。')
+    expect(alertTitles(root)).not.toContain('当前任务发生内部编码错误，请停止任务并查看应用日志。这不是历史日志问题。')
+    app.unmount()
   })
 
   afterEach(() => {

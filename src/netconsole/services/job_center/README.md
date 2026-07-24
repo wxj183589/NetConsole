@@ -18,7 +18,7 @@ Job Center 由 Application/API 调用，依赖 Service、Repository、LocalProce
 
 ## 数据与状态
 
-任务快照和事件写入每局点 `tasks.db`，Worker 通过 JSONL/协议传递进度；SQLite connection 不跨进程共享，敏感 bootstrap 不进入日志。
+任务快照和事件写入每局点 `tasks.db`。Worker 以 `ensure_ascii=True` 的 ASCII JSON bytes 传递进度，Backend strict 增量解码；非法协议或当前事件中的 U+FFFD 受控失败且不持久化损坏文本。SQLite connection 不跨进程共享，敏感 bootstrap 不进入日志。
 
 ## 测试与修改
 

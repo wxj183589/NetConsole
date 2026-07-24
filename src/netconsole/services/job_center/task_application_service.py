@@ -424,6 +424,44 @@ class TaskApplicationService:
             if is_web_export_task(snapshot.task_type):
                 payload = sanitize_web_export_event(payload)
             event_type = str(envelope.get("type") or "")
+            source = str(envelope.get("source") or "service")
+            if source == "worker" and _contains_replacement_character(payload):
+                app_logger.log_error(
+                    "TASK_CURRENT_TEXT_CORRUPTED",
+                    f"task_id={task_id}; event_type={event_type}; producer=worker",
+                )
+                now = str(envelope.get("time") or utc_now_iso())
+                safe_payload = {
+                    "type": "error",
+                    "job_id": task_id,
+                    "stage": "worker_protocol",
+                    "message": "Worker 内部文本协议损坏，任务已停止",
+                    "error": "Worker 内部文本协议损坏，任务已停止",
+                    "error_code": "WORKER_TEXT_PROTOCOL_CORRUPTED",
+                    "result": {
+                        "error_code": "WORKER_TEXT_PROTOCOL_CORRUPTED",
+                        "text_integrity": "current_corrupted",
+                        "text_integrity_reason": "replacement_character_detected_in_current_event",
+                    },
+                    "cancelled": False,
+                }
+                safe_event = TaskEvent(
+                    event_id=uuid.uuid4().hex,
+                    task_id=task_id,
+                    type="error",
+                    time=now,
+                    source="integrity_guard",
+                    payload=safe_payload,
+                )
+                updated = self._apply_event(snapshot, "error", safe_payload, now)
+                persisted = repository.record(
+                    updated,
+                    safe_event,
+                    allowed_from={snapshot.status},
+                )
+                if persisted:
+                    self.events.publish_persisted(safe_event.to_dict())
+                return False
             updated = self._apply_event(snapshot, event_type, payload, str(envelope.get("time") or utc_now_iso()))
             return repository.record(
                 updated,
@@ -481,11 +519,13 @@ class TaskApplicationService:
                 }
             )
         elif event_type == "error":
+            result = payload.get("result")
             values.update(
                 {
                     "status": TaskState.FAILED,
                     "finished_time": event_time,
                     "error_message": str(payload.get("error") or payload.get("message") or "任务失败"),
+                    **({"result": dict(result)} if isinstance(result, dict) else {}),
                 }
             )
         elif event_type == "cancelled":
@@ -658,3 +698,13 @@ class TaskApplicationService:
         except OSError:
             return False
         return True
+
+
+def _contains_replacement_character(value: object) -> bool:
+    if isinstance(value, str):
+        return "\ufffd" in value
+    if isinstance(value, dict):
+        return any(_contains_replacement_character(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_replacement_character(item) for item in value)
+    return False

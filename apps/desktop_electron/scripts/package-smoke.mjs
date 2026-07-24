@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, relative, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { isDeepStrictEqual } from 'node:util'
@@ -333,6 +333,7 @@ const smokeUserDataRoot = resolve(smokeRoot, 'electron-user-data')
 mkdirSync(smokeDataRoot, { recursive: true })
 mkdirSync(smokeUserDataRoot, { recursive: true })
 try {
+  validateFrozenWorkerTextProtocol(smokeRoot)
   const result = spawnSync(
     executable,
     [`--user-data-dir=${smokeUserDataRoot}`],
@@ -357,7 +358,56 @@ try {
   rmSync(smokeRoot, { recursive: true, force: true })
 }
 
-console.log('Electron packaged smoke passed without Qt runtime residue and with NOTICE/SBOM metadata.')
+console.log('Electron packaged smoke passed with frozen Worker Chinese protocol, no Qt residue, and NOTICE/SBOM metadata.')
+
+function validateFrozenWorkerTextProtocol(root) {
+  const backend = resolve(unpackedRoot, 'resources', 'backend', 'NetConsoleBackend.exe')
+  const jobPath = resolve(root, 'frozen-worker-encoding-job.json')
+  writeFileSync(jobPath, JSON.stringify({
+    job_id: 'package-smoke-worker-encoding',
+    task_type: 'open_source_notice_scan',
+    params: {},
+    cancel_path: '',
+  }), 'utf8')
+  const environment = { ...process.env }
+  delete environment.PYTHONUTF8
+  delete environment.PYTHONIOENCODING
+  const result = spawnSync(
+    backend,
+    ['--background-worker', '--job', jobPath],
+    {
+      cwd: resolve(unpackedRoot, 'resources', 'backend'),
+      env: environment,
+      encoding: null,
+      timeout: 30_000,
+      windowsHide: true,
+    },
+  )
+  if (result.error) throw result.error
+  if (result.status !== 0) {
+    throw new Error(`冻结 Worker 中文探针失败，exit=${result.status}`)
+  }
+  const stdout = Buffer.from(result.stdout ?? [])
+  if (!stdout.length || stdout.some((value) => value > 0x7f)) {
+    throw new Error('冻结 Worker 内部协议不是代码页无关的 ASCII JSON bytes。')
+  }
+  let text
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(stdout)
+  } catch (cause) {
+    throw new Error('冻结 Worker stdout 不是严格 UTF-8。', { cause })
+  }
+  const events = text.split(/\r?\n/u).filter(Boolean).map((line) => JSON.parse(line))
+  const serialized = JSON.stringify(events)
+  const messages = events.map((event) => String(event.message ?? ''))
+  if (
+    serialized.includes('\uFFFD')
+    || !messages.includes('正在扫描运行依赖')
+    || !messages.includes('后台任务完成')
+  ) {
+    throw new Error('冻结 Worker 中文事件未逐字恢复或包含替换字符。')
+  }
+}
 
 function resolveWindowsExecutableName(packageJsonPath) {
   const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'))

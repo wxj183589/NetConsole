@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import io
 import subprocess
 import sys
 from pathlib import Path
@@ -30,8 +31,10 @@ from netconsole.services.job_center.job_registry import (
 from netconsole.services.job_center.job_runner import run_job
 from netconsole.services.job_center.worker_protocol import (
     encode_event,
+    encode_event_bytes,
     feed_jsonl,
     parse_event_line,
+    write_event,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -123,6 +126,20 @@ def test_worker_protocol_handles_partial_jsonl_and_diagnostics() -> None:
     assert (
         parse_event_line('{"event":"cancelled","job_id":"job-1"}')["cancelled"] is True
     )
+
+
+def test_worker_protocol_is_ascii_binary_and_bypasses_cp936_text_wrapper() -> None:
+    event = progress_event("job-encoding", "auth", 1, 2, "正在验证设备凭据 · 宁波地铁12号线")
+    direct = encode_event_bytes(event)
+    raw = io.BytesIO()
+    cp936_stdout = io.TextIOWrapper(raw, encoding="cp936", errors="strict", newline="")
+
+    write_event(event, cp936_stdout)
+    wrapped = raw.getvalue()
+
+    assert direct == wrapped
+    assert all(value < 128 for value in wrapped)
+    assert json.loads(wrapped.decode("ascii"))["message"] == "正在验证设备凭据 · 宁波地铁12号线"
 
 
 def test_job_runner_returns_structured_cancelled_result() -> None:

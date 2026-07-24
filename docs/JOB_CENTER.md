@@ -15,7 +15,7 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 - `job_context.py`：params、progress、cancel、`PathResolver`。
 - `job_registry.py`：`task_type → handler` 注册和分发。
 - `job_runner.py`：统一捕获取消、异常和 traceback。
-- `worker_protocol.py`：UTF-8 JSONL 编码、解析和分块缓冲。
+- `worker_protocol.py`：代码页无关的 ASCII JSON bytes 编码、严格 UTF-8 解析和分块缓冲。
 - `services/job_center/runtime/task_state.py`：`PENDING / STARTING / RUNNING / STOPPING / COMPLETED / FAILED / CANCELLED` 状态契约。
 - `services/job_center/runtime/task_event_hub.py`：统一任务 Worker/Service 事件并提供 WebSocket stream；Agent 配置和健康状态使用独立 `AgentEventHub`。
 - `services/job_center/runtime/task_runtime.py`：Job/取消文件、JSONL 分块解析、状态、终态和清理；提供 `TaskApplicationService`。
@@ -37,9 +37,11 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 - 网络、重 IO、重 CPU、解析和批量操作在进程内创建自己的 service/repository/数据库连接。
 - stdout 只写统一 JSONL，原始日志和诊断信息进入 stderr 或结构化 log event。
 
-Worker JSONL 是本程序内部生成的 UTF-8 字节流。`TaskRuntime` 对 stdout/stderr 各维护一个增量 UTF-8 decoder，不在每个读取 chunk 上独立执行 `decode(errors="replace")`，因此汉字多字节序列即使跨 chunk 也不会生成 U+FFFD。只有真实非法字节在最终严格边界失败后才受控替代，并记录 `TASK_TEXT_DECODE_WARNING`；正常流记录编码识别和终态持久化事件。外部设备字节仍走统一的 UTF-8/BOM/GB18030/cp936 严格候选解码，已经是 Python `str` 的内容不得再次 encode/decode。
+Worker JSONL 是本程序内部协议，不使用 Windows 当前代码页。Worker 使用 `ensure_ascii=True` 序列化后直接向 `stdout.buffer` 写 ASCII bytes；Electron 启动 Backend、Backend 启动 Worker 时均默认设置 `PYTHONUTF8=1` 和 `PYTHONIOENCODING=utf-8`，Worker 入口同时把标准流重配为 UTF-8。环境变量是附加保护，二进制协议才是代码页无关的主保证。
 
-旧任务中已经持久化的 `�` 缺少原始字节时不可恢复，页面只显示历史损坏提示，不猜测替换或改写历史数据库。
+`TaskRuntime` 对 stdout/stderr 各维护 strict 增量 UTF-8 decoder，汉字即使跨任意 chunk 也能恢复；非法 bytes、无效 JSONL 或当前 Worker 事件中的 U+FFFD 不执行 `errors="replace"`，不写入损坏事件，并以 `WORKER_TEXT_PROTOCOL_CORRUPTED` 受控失败。持久化入口还有同源防线，记录 `WORKER_PROTOCOL_DECODE_FAILED` 或 `TASK_CURRENT_TEXT_CORRUPTED` 时只包含 task id、事件类型、stream 和 worker mode，不记录原始参数。外部设备字节仍走统一的 UTF-8/BOM/GB18030/cp936 严格候选解码，已经是 Python `str` 的内容不得再次 encode/decode。
+
+旧任务中已经持久化的 `�` 缺少原始字节时不可恢复。Backend 详情返回 `text_integrity=ok | historical_corrupted | current_corrupted` 及 reason；活动任务不能标为历史损坏，Vue 不再递归扫描字段猜测状态，也不替换或改写历史数据库。
 
 ### 一次性敏感 bootstrap
 

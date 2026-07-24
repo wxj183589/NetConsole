@@ -3,25 +3,72 @@ from __future__ import annotations
 import json
 import os
 import sys
-from typing import Any, TextIO
+from typing import Any, BinaryIO, TextIO
 
-_FALLBACK_STDOUT: TextIO | None = None
+_FALLBACK_STDOUT: BinaryIO | None = None
 
 
 def encode_event(event: dict[str, Any]) -> str:
-    return json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+    return json.dumps(event, ensure_ascii=True, separators=(",", ":")) + "\n"
 
 
-def write_event(event: dict[str, Any], stream: TextIO | None = None) -> None:
-    target = stream or getattr(sys, "__stdout__", None) or sys.stdout or _fallback_stdout()
-    target.write(encode_event(event))
-    target.flush()
+def encode_event_bytes(event: dict[str, Any]) -> bytes:
+    return encode_event(event).encode("ascii", errors="strict")
 
 
-def _fallback_stdout() -> TextIO:
+def write_event(event: dict[str, Any], stream: BinaryIO | TextIO | None = None) -> None:
+    payload = encode_event_bytes(event)
+    if stream is None:
+        target = _stdout_binary_stream()
+        target.write(payload)
+        target.flush()
+        return
+    binary_target = getattr(stream, "buffer", None)
+    if binary_target is not None:
+        binary_target.write(payload)
+        binary_target.flush()
+        return
+    try:
+        stream.write(payload)  # type: ignore[arg-type]
+    except TypeError:
+        stream.write(payload.decode("ascii"))  # type: ignore[arg-type]
+    stream.flush()
+
+
+def configure_standard_streams() -> None:
+    _reconfigure_stream(sys.stdin, encoding="utf-8", errors="strict")
+    _reconfigure_stream(sys.stdout, encoding="utf-8", errors="strict", newline="\n", write_through=True)
+    _reconfigure_stream(
+        sys.stderr,
+        encoding="utf-8",
+        errors="backslashreplace",
+        newline="\n",
+        write_through=True,
+    )
+
+
+def _reconfigure_stream(stream: object, **options: object) -> None:
+    reconfigure = getattr(stream, "reconfigure", None)
+    if not callable(reconfigure):
+        return
+    try:
+        reconfigure(**options)
+    except (OSError, TypeError, ValueError):
+        return
+
+
+def _stdout_binary_stream() -> BinaryIO:
+    for stream in (getattr(sys, "__stdout__", None), sys.stdout):
+        target = getattr(stream, "buffer", None)
+        if target is not None:
+            return target
+    return _fallback_stdout()
+
+
+def _fallback_stdout() -> BinaryIO:
     global _FALLBACK_STDOUT
     if _FALLBACK_STDOUT is None:
-        _FALLBACK_STDOUT = os.fdopen(os.dup(1), "w", encoding="utf-8", newline="\n")
+        _FALLBACK_STDOUT = os.fdopen(os.dup(1), "wb", buffering=0)
     return _FALLBACK_STDOUT
 
 

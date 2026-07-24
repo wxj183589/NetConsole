@@ -28,7 +28,7 @@ from netconsole.services.job_center.web_export_event_safety import (
     redact_web_export_text,
     sanitize_web_export_value,
 )
-from netconsole.services.job_center.worker_protocol import write_event
+from netconsole.services.job_center.worker_protocol import configure_standard_streams, write_event
 from netconsole.services.mesh_analysis_report import MeshReportOptions
 from netconsole.services.mesh_report_process import MeshReportProcessRequest, run_mesh_report_process
 from netconsole.services.trackside_ap_business import TracksideApExportCancelled
@@ -326,6 +326,7 @@ def _cleanup_tmp(job: ExportJob) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_standard_streams()
     parser = argparse.ArgumentParser(description="NetConsole export worker")
     parser.add_argument("--job", required=True, help="导出任务 JSON 文件")
     args = parser.parse_args(argv)

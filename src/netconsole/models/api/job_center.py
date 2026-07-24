@@ -41,6 +41,8 @@ class JobCenterTaskDTO(ApiModel):
     error_code: str = ""
     error_summary: str = ""
     has_warning: bool = False
+    text_integrity: str = "ok"
+    text_integrity_reason: str = ""
     snapshot_id: int | None = None
     records_count: int | None = None
     parser_version: str = ""

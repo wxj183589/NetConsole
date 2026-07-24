@@ -328,6 +328,9 @@ async function startDesktop(): Promise<void> {
       secure: false,
       path: cookiePath,
     })
+    if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1') {
+      await runManagedBackendWorkerTextSmoke(runtime)
+    }
     if (desktopStorageContext.persistent && desktopActiveSiteId) {
       bootstrapStore.save({ schema_version: 1, data_root: desktopDataRoot, active_site_id: desktopActiveSiteId })
     }
@@ -550,6 +553,53 @@ async function readBackendActiveSiteId(baseUrl: string, apiToken: string, fallba
   } catch {
     return fallback
   }
+}
+
+async function runManagedBackendWorkerTextSmoke(runtime: BackendRuntimeInfo): Promise<void> {
+  const headers = {
+    [DESKTOP_SESSION_HEADER]: runtime.apiToken,
+    'content-type': 'application/json',
+  }
+  const startedResponse = await fetch(`${runtime.baseUrl}/api/system-maintenance/open-source/tasks`, {
+    method: 'POST',
+    cache: 'no-store',
+    headers,
+    body: '{}',
+  })
+  if (!startedResponse.ok) throw new Error(`冻结 Worker 中文任务提交失败：HTTP ${startedResponse.status}`)
+  const started = await startedResponse.json() as { task_id?: unknown }
+  const taskId = typeof started.task_id === 'string' ? started.task_id : ''
+  if (!taskId) throw new Error('冻结 Worker 中文任务没有返回 task_id')
+
+  let detail: Record<string, unknown> | undefined
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const response = await fetch(`${runtime.baseUrl}/api/job-center/tasks/${encodeURIComponent(taskId)}`, {
+      cache: 'no-store',
+      headers,
+    })
+    if (!response.ok) throw new Error(`冻结 Worker 中文任务读取失败：HTTP ${response.status}`)
+    detail = await response.json() as Record<string, unknown>
+    if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(String(detail.status ?? ''))) break
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100))
+  }
+  if (!detail || detail.status !== 'COMPLETED' || detail.text_integrity !== 'ok') {
+    throw new Error('冻结 Worker 中文任务未以 text_integrity=ok 完成')
+  }
+  const logsResponse = await fetch(
+    `${runtime.baseUrl}/api/job-center/tasks/${encodeURIComponent(taskId)}/logs?tail=300`,
+    { cache: 'no-store', headers },
+  )
+  if (!logsResponse.ok) throw new Error(`冻结 Worker 中文日志读取失败：HTTP ${logsResponse.status}`)
+  const logs = await logsResponse.json() as { lines?: Array<{ message?: unknown }> }
+  const messages = (logs.lines ?? []).map((line) => String(line.message ?? ''))
+  if (
+    JSON.stringify({ detail, logs }).includes('\uFFFD')
+    || !messages.includes('正在扫描运行依赖')
+    || !messages.includes('后台任务完成')
+  ) {
+    throw new Error('Electron 受管 Backend 的冻结 Worker 中文事件不完整或包含替换字符')
+  }
+  logger('ELECTRON_FROZEN_WORKER_TEXT_SMOKE_PASSED')
 }
 
 function installManagedWindowDiagnostics(window: BrowserWindow, smoke = false): void {

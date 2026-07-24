@@ -47,12 +47,8 @@ const artifactDownloadLabel = computed(() => (
   isTracksideApBusinessArtifactTask(store.selected) ? '保存导出表格' : 'Artifact 下载'
 ))
 const selectedDetails = computed<Record<string, unknown>>(() => store.selected?.details || {})
-const historicalTextDamaged = computed(() => containsReplacementCharacter({
-  message: store.selected?.message,
-  errorSummary: store.selected?.error_summary,
-  details: selectedDetails.value,
-  logs: store.logs,
-}))
+const historicalTextDamaged = computed(() => store.selected?.text_integrity === 'historical_corrupted')
+const currentTextDamaged = computed(() => store.selected?.text_integrity === 'current_corrupted')
 const showCurrentProcessing = computed(() => {
   const details = selectedDetails.value
   const phase = String(details.phase || '')
@@ -106,13 +102,6 @@ const columns: NcTableColumn<TaskItem>[] = [
   { key: 'error_summary', label: '错误 / 告警', valueType: 'error', align: 'left', alignmentReason: 'long-text' },
   { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['详情'] },
 ]
-
-function containsReplacementCharacter(value: unknown): boolean {
-  if (typeof value === 'string') return value.includes('\uFFFD')
-  if (Array.isArray(value)) return value.some(containsReplacementCharacter)
-  if (value && typeof value === 'object') return Object.values(value).some(containsReplacementCharacter)
-  return false
-}
 
 watch(drawerVisible, (visible) => {
   store.setDetailVisible(visible)
@@ -449,8 +438,16 @@ const revealSaved = () => runSavedAction('reveal')
         <el-alert v-if="store.selected.error_summary" :title="store.selected.error_summary" :type="store.selected.status === 'FAILED' ? 'error' : 'warning'" :closable="false" show-icon class="detail-alert" />
         <el-alert
           v-if="historicalTextDamaged"
-          title="该历史日志在旧版本中已发生编码损坏，原始字节不存在时无法恢复。"
+          title="该历史日志由旧版本生成，文字已经发生编码损坏；没有原始字节时无法恢复。"
           type="warning"
+          :closable="false"
+          show-icon
+          class="detail-alert"
+        />
+        <el-alert
+          v-if="currentTextDamaged"
+          title="当前任务发生内部编码错误，请停止任务并查看应用日志。这不是历史日志问题。"
+          type="error"
           :closable="false"
           show-icon
           class="detail-alert"

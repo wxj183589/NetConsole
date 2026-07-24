@@ -185,6 +185,8 @@ export class PythonBackendManager {
       ...process.env,
       ...this.options.environment,
       PYTHONUNBUFFERED: '1',
+      PYTHONUTF8: '1',
+      PYTHONIOENCODING: 'utf-8',
       NETCONSOLE_DATA_ROOT: this.options.dataRoot,
       ...(this.options.activeSiteId ? { NETCONSOLE_ACTIVE_SITE_ID: this.options.activeSiteId } : {}),
       NETCONSOLE_RUNTIME_MODE: this.options.runtimeMode,
