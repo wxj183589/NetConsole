@@ -54,6 +54,14 @@ describe('App layout foundation', () => {
     expect(source).toContain('<WorkspaceTabBar />')
     expect(routeViewSource).toContain(':include="cachedWorkspaceComponentNames"')
     expect(routeViewSource).toContain(':key="workspace.routeCacheKey(viewRoute.fullPath)"')
+    expect(routeViewSource).toContain('class="app-route-viewport"')
+  })
+
+  it('passes the remaining shell height through one scrollable route viewport', () => {
+    expect(styles).toContain('.app-shell { position: relative; height: 100dvh; overflow: hidden; }')
+    expect(styles).toContain('.app-main.el-main { display: flex; width: 100%; min-height: 0;')
+    expect(styles).toContain('.app-route-viewport { flex: 1 1 auto; min-height: 0; overflow: auto; }')
+    expect(styles).toContain('.frontend-build-warning { flex: 0 0 auto;')
   })
 
   it('keeps the root menu on the sidebar palette after lazy Element Plus styles load', () => {
@@ -65,10 +73,10 @@ describe('App layout foundation', () => {
   })
 
   it('lets routed pages use all desktop workspace width without breaking narrow tables', () => {
-    expect(styles).toContain('.app-workspace { flex: 1 1 auto; width: 0; min-width: 0; }')
+    expect(styles).toContain('.app-workspace { width: 0; height: 100%; min-width: 0; min-height: 0; flex: 1 1 auto; }')
     expect(styles).toContain('.app-shell .app-workspace .app-main > * { width: 100%; max-width: var(--nc-content-max-width); margin-inline: 0; }')
     expect(styles).toContain('.app-main .el-table { width: 100%; }')
-    expect(styles).toContain('.app-main { width: 100%;')
+    expect(styles).toContain('.app-main.el-main { display: flex; width: 100%;')
     expect(styles).toContain('.task-center { max-width: var(--nc-content-max-width); margin-inline: 0; }')
     expect(styles).toContain('.agent-center { max-width: var(--nc-content-max-width); margin-inline: 0; }')
     expect(styles).toContain('@media (max-width: 850px)')

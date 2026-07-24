@@ -46,6 +46,7 @@ vi.mock('element-plus', async (importOriginal) => ({
 }))
 
 import CommandReferenceView from './CommandReferenceView.vue'
+import source from './CommandReferenceView.vue?raw'
 
 const page: CommandReferencePage = {
   items: [{
@@ -169,6 +170,15 @@ afterEach(() => {
 })
 
 describe('Command Reference mounted behavior', () => {
+  it('uses the remaining route height for equal internally scrolling list and detail panes', () => {
+    expect(source).toContain('.command-reference { display: flex; width: 100%; height: 100%;')
+    expect(source).toContain('.content { display: grid; min-width: 0; min-height: 0; flex: 1;')
+    expect(source).toContain('.table-card, .detail-card { display: flex; height: auto; min-width: 0; min-height: 0;')
+    expect(source).toContain('.detail-card :deep(.el-card__body) { min-height: 0; flex: 1; overflow: auto; }')
+    expect(source).not.toContain('min-height:520px')
+    expect(source).not.toContain('height:520px')
+  })
+
   it('debounces textChanged queries, sends empty queries, and ignores stale responses', async () => {
     const wrapper = await renderView()
     const input = wrapper.get('input[placeholder="搜索命令、用途、模块、源码位置"]')

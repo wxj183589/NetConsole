@@ -35,6 +35,11 @@ WinSCP 动作只允许 Renderer 提交 60 秒有效、一次性消费的 `action
 不进入 Web DTO 或 Electron IPC，安全命令同时遮蔽原始密码与编码后密码。设备未配置 SSH 密码时拒绝
 启动并给出明确说明。若受控 SFTP 已连接，WinSCP 复用实际成功的主用、备用或隧道目标。
 
+本地目录、下载结果和所在目录继续只允许 Renderer 提交一次性 `action_ref`。Backend 消费动作并校验
+目标仍位于受控数据根后，把目标交给 Electron Main；实际打开统一使用 `shell.openPath`。打开前主窗口
+主动释放焦点，成功后若 Windows 仍让 NetConsole 保持前台则最小化主窗口，避免资源管理器只在任务栏
+闪烁；打开失败时不最小化，并恢复动作前的置顶状态。Renderer 不接收本机路径，也不执行系统命令。
+
 “MESH 日志”只勾选当前远程目录中的 `meshlog.log`、`meshlog.log.gz` 和
 `YYYY_MM_DD_Nmeshlog.log.gz`，不会创建任务；所有文件统一由“下载选中”提交，且只下载当前明确勾选项。
 车载 MR 的这些日志下载只准备 MR Profile 身份、catalog 与 raw/parsed/export

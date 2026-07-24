@@ -14,9 +14,9 @@ body { overflow: hidden; color: var(--nc-text-primary); background: var(--nc-bg-
 *::-webkit-scrollbar-thumb { background: var(--nc-scrollbar-thumb); border: 2px solid transparent; border-radius: 999px; background-clip: padding-box; }
 *::-webkit-scrollbar-thumb:hover { background-color: var(--nc-scrollbar-thumb-hover); }
 
-.app-shell, .app-workspace, .app-main, .content-card, .el-table { min-width: 0; }
-.app-shell { position: relative; height: 100%; }
-.app-workspace { flex: 1 1 auto; width: 0; min-width: 0; }
+.app-shell, .app-workspace, .app-main, .app-route-viewport, .content-card, .el-table { min-width: 0; }
+.app-shell { position: relative; height: 100dvh; overflow: hidden; }
+.app-workspace { width: 0; height: 100%; min-width: 0; min-height: 0; flex: 1 1 auto; }
 
 .workspace-tab-bar {
   position: relative;
@@ -186,10 +186,11 @@ body { overflow: hidden; color: var(--nc-text-primary); background: var(--nc-bg-
 .status-dot { display: inline-block; width: 8px; height: 8px; margin-right: 7px; border-radius: 50%; }
 .status-dot.online { background: var(--nc-success); box-shadow: 0 0 0 4px var(--nc-status-success-bg); }
 .status-dot.offline { background: var(--nc-danger); box-shadow: 0 0 0 4px var(--nc-status-danger-bg); }
-.app-main { width: 100%; padding: var(--nc-content-padding); overflow: auto; background: var(--nc-bg-app); }
+.app-main.el-main { display: flex; width: 100%; min-height: 0; flex: 1 1 auto; flex-direction: column; padding: var(--nc-content-padding); overflow: hidden; background: var(--nc-bg-app); }
 .app-shell .app-workspace .app-main > * { width: 100%; max-width: var(--nc-content-max-width); margin-inline: 0; }
+.app-route-viewport { flex: 1 1 auto; min-height: 0; overflow: auto; }
 .app-main .el-table { width: 100%; }
-.frontend-build-warning { margin-bottom: 16px; }
+.frontend-build-warning { flex: 0 0 auto; margin-bottom: 16px; }
 .sidebar-overlay { position: fixed; z-index: 19; inset: 0; background: var(--nc-overlay); }
 
 .el-menu--popup {
@@ -249,7 +250,7 @@ body { overflow: hidden; color: var(--nc-text-primary); background: var(--nc-bg-
   .header-subtitle { display: none; }
   .current-site-slot { flex-basis: 190px; }
   .header-status .el-divider, .header-status > span:last-child { display: none; }
-  .app-main { padding: 16px; }
+  .app-main.el-main { padding: 16px; }
 }
 
 .agent-center { max-width: var(--nc-content-max-width); margin-inline: 0; }

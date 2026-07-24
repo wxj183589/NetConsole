@@ -3,6 +3,15 @@ import { describe, expect, it } from 'vitest'
 import source from './RailTransitBaseDataView.vue?raw'
 
 describe('Rail Transit base data maintenance view', () => {
+  it('fills the available route width and height while keeping tab content scrollable', () => {
+    expect(source).toContain('.rail-base-data { display: flex; width: 100%; height: 100%; max-width: none;')
+    expect(source).toContain('.content-card { display: flex; min-width: 0; min-height: 0; flex: 1;')
+    expect(source).toContain('.content-card > :deep(.el-tabs) { display: flex; min-width: 0; min-height: 0; flex: 1;')
+    expect(source).toContain('.content-card > :deep(.el-tabs > .el-tabs__content) { min-width: 0; min-height: 0; flex: 1; overflow: hidden; }')
+    expect(source).toContain('.content-card > :deep(.el-tabs > .el-tabs__content > .el-tab-pane) { width: 100%; height: 100%; overflow: auto; }')
+    expect(source).not.toContain('max-width: 1760px')
+  })
+
   it('provides one locked maintenance workspace with guarded import workflow', () => {
     expect(source).toContain('基础资料总览')
     expect(source).toContain('站点与区间')

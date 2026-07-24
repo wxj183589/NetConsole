@@ -54,6 +54,18 @@ vi.mock('element-plus', async (importOriginal) => {
 })
 
 import ConfigCollectionView from './ConfigCollectionView.vue'
+import source from './ConfigCollectionView.vue?raw'
+
+describe('Config collection responsive layout', () => {
+  it('fills the route and gives both tables their card remaining height', () => {
+    expect(source).toContain('.config-collection { display: flex; width: 100%; height: 100%; max-width: none;')
+    expect(source).toContain('.main-grid { display: grid; min-width: 0; min-height: 0; flex: 1;')
+    expect(source).toContain('.device-card, .snapshot-card { display: flex; min-width: 0; min-height: 0;')
+    expect(source).toContain('height="100%"')
+    expect(source).not.toContain('max-width: 1780px')
+    expect(source).not.toContain('height="calc(100vh - 430px)"')
+  })
+})
 
 const deviceA: ConfigDevice = {
   id: 1,

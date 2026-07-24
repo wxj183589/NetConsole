@@ -147,4 +147,12 @@ describe('Dashboard home page', () => {
     expect(jobCenterSource).toContain('requestCancel')
     expect(jobCenterSource).toContain('保存导出表格')
   })
+
+  it('fills the desktop route viewport with a responsive two-by-two card grid', () => {
+    expect(source).toContain('.dashboard-page{display:flex;width:100%;height:100%;min-width:0;min-height:0;')
+    expect(source).toContain('grid-template-rows:repeat(2,minmax(0,1fr))')
+    expect(source).toContain('.dashboard-card{display:flex;min-width:0;min-height:0;')
+    expect(source).toContain('.dashboard-card-body{display:flex;min-height:0;flex:1;')
+    expect(source).toContain('@media (max-width: 1000px)')
+  })
 })

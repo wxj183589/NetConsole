@@ -639,7 +639,7 @@ function formatBytes(value: number | null): string {
           table-id="config-devices"
           route-key="/config-collection"
           row-key="id"
-          height="calc(100vh - 430px)"
+          height="100%"
           @row-click="selectDevice"
           @selection-change="selectedDevices = $event"
         >
@@ -665,7 +665,7 @@ function formatBytes(value: number | null): string {
           table-id="config-snapshots"
           route-key="/config-collection"
           row-key="id"
-          height="calc(100vh - 430px)"
+          height="100%"
           @selection-change="selectSnapshots"
         >
           <template #cell-type="{ row }"><el-tag :type="row.type === 'diff' ? 'warning' : row.type === 'saved' ? 'success' : 'info'">{{ row.type === 'running' ? '运行配置' : row.type === 'saved' ? '保存配置' : '差异' }}</el-tag></template>
@@ -696,12 +696,14 @@ function formatBytes(value: number | null): string {
 </template>
 
 <style scoped>
-.config-collection { max-width: 1780px; margin: 0 auto; }
+.config-collection { display: flex; width: 100%; height: 100%; max-width: none; min-width: 0; min-height: 0; flex-direction: column; margin: 0; overflow: hidden; }
 .page-alert, .page-error { margin-bottom: 16px; }
 .content-card { overflow: hidden; background: var(--nc-bg-panel); border: 1px solid var(--nc-border); border-radius: 10px; }
-.toolbar { display: grid; grid-template-columns: minmax(260px, 1fr) 210px minmax(520px, auto); gap: 10px; padding: 14px 16px; margin-bottom: 16px; }
+.toolbar { display: grid; flex: none; grid-template-columns: minmax(260px, 1fr) 210px minmax(520px, auto); gap: 10px; padding: 14px 16px; margin-bottom: 16px; }
 .toolbar-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-.main-grid { display: grid; grid-template-columns: minmax(420px, 0.85fr) minmax(560px, 1.15fr); gap: 16px; }
+.main-grid { display: grid; min-width: 0; min-height: 0; flex: 1; grid-template-columns: minmax(420px, 0.85fr) minmax(560px, 1.15fr); gap: 16px; }
+.device-card, .snapshot-card { display: flex; min-width: 0; min-height: 0; flex-direction: column; }
+.device-card > .nc-data-table, .snapshot-card > .nc-data-table { min-height: 0; flex: 1; }
 .card-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 15px 17px; border-bottom: 1px solid var(--nc-divider); }
 .card-heading h2 { margin: 0; color: var(--nc-text-primary); font-size: 18px; }
 .card-heading p { margin: 5px 0 0; color: var(--nc-text-secondary); font-size: 12px; }
@@ -714,7 +716,7 @@ function formatBytes(value: number | null): string {
 .snapshot-choice strong { overflow: hidden; color: var(--nc-text-primary); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .snapshot-choice small { color: var(--nc-primary); font-size: 11px; white-space: nowrap; }
 .comparison-actions { display: flex; align-items: center; gap: 8px; }
-.result-card { margin-top: 16px; }
+.result-card { display: flex; min-height: 0; max-height: 45%; flex: none; flex-direction: column; margin-top: 16px; }
 .code-panel { max-height: 470px; margin: 0; padding: 16px; overflow: auto; color: var(--nc-text-code); background: var(--nc-bg-code); font: 12px/1.55 Consolas, "Microsoft YaHei", monospace; white-space: pre; }
 .diff-panel { color: var(--nc-text-code); }
 .diff-position { min-width: 48px; color: var(--nc-text-code-muted); text-align: center; }
@@ -729,7 +731,7 @@ function formatBytes(value: number | null): string {
 .diff-row.is-added { color: var(--nc-text-code-success); background: var(--nc-bg-code-added); }
 .diff-row.is-removed { color: var(--nc-text-code-danger); background: var(--nc-bg-code-removed); }
 .diff-row.is-modified { color: var(--nc-text-code-warning); background: var(--nc-bg-code-modified); }
-@media (max-width: 1200px) { .main-grid { grid-template-columns: 1fr; } }
+@media (max-width: 1200px) { .config-collection { height: auto; min-height: 100%; overflow: visible; } .main-grid { flex: none; grid-template-columns: 1fr; } .device-card, .snapshot-card { min-height: 55dvh; } .result-card { max-height: none; } }
 @media (max-width: 1200px) { .comparison-basket { grid-template-columns: 1fr 1fr; } .comparison-actions { grid-column: 1 / -1; } }
 @media (max-width: 1200px) { .toolbar { grid-template-columns: minmax(260px, 1fr) 210px; } .toolbar-actions { grid-column: 1 / -1; justify-content: flex-start; } }
 @media (max-width: 760px) { .toolbar { grid-template-columns: 1fr; } .toolbar-actions { grid-column: auto; } .card-heading { align-items: flex-start; flex-direction: column; } .heading-actions { flex-wrap: wrap; width: 100%; } }

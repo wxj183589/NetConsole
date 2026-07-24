@@ -3,6 +3,15 @@ import { describe, expect, it } from 'vitest'
 import source from './DeviceManagementView.vue?raw'
 
 describe('Device Management Web view', () => {
+  it('fills the route width and gives the device table the remaining window height', () => {
+    expect(source).toContain('.device-management { display: flex; width: 100%; height: 100%; max-width: none;')
+    expect(source).toContain('.table-card { display: flex; min-height: 0; flex: 1;')
+    expect(source).toContain('.device-table-host { display: flex; min-height: 0; flex: 1;')
+    expect(source).toContain('height="100%"')
+    expect(source).not.toContain('max-width: 1720px')
+    expect(source).not.toContain('height="calc(100vh - 380px)"')
+  })
+
   it('covers loading, empty, error and success states', () => {
     expect(source).toContain('v-loading="loading"')
     expect(source).toContain('v-if="isEmpty"')

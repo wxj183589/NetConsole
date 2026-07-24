@@ -152,6 +152,7 @@ class FileDesktopActionResultDTO(ApiModel):
     action: str
     success: bool
     message: str
+    target_path: str = ""
 
 
 class FileDownloadResultDTO(ApiModel):

@@ -877,7 +877,7 @@ function diffLineClass(line: string): string {
 </template>
 
 <style scoped>
-.ac-management { max-width: 1780px; margin: 0 auto; }
+.ac-management { width: 100%; max-width: none; margin: 0; }
 .page-error { margin-bottom: 16px; }
 .task-summary { margin-bottom: 16px; }
 .page-toolbar, .config-toolbar, .detail-heading, .config-searchbar, .pagination-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }

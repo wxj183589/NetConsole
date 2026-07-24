@@ -2360,7 +2360,7 @@ function sectionSourceLabel(row: Section): string {
 </template>
 
 <style scoped>
-.rail-base-data { max-width: 1760px; margin: 0 auto; }
+.rail-base-data { display: flex; width: 100%; height: 100%; max-width: none; min-width: 0; min-height: 0; flex-direction: column; margin: 0; overflow: hidden; }
 .page-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 18px 0; }
 .toolbar-actions, .edit-toolbar, .connection-editor { display: flex; align-items: center; gap: 10px; }
 .toolbar-actions { flex-wrap: wrap; justify-content: flex-end; }
@@ -2371,7 +2371,11 @@ function sectionSourceLabel(row: Section): string {
 .page-toolbar p { margin: 5px 0 0; color: var(--nc-text-secondary); font-size: 12px; }
 .page-error { margin-bottom: 14px; }
 .validation-list { margin: 6px 0 0; padding-left: 20px; }
-.content-card { min-width: 0; padding: 0 18px 18px; background: var(--nc-bg-panel); border: 1px solid var(--nc-border); border-radius: 10px; }
+.content-card { display: flex; min-width: 0; min-height: 0; flex: 1; padding: 0 18px 18px; overflow: hidden; background: var(--nc-bg-panel); border: 1px solid var(--nc-border); border-radius: 10px; }
+.content-card > :deep(.el-tabs) { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; }
+.content-card > :deep(.el-tabs > .el-tabs__header) { flex: none; }
+.content-card > :deep(.el-tabs > .el-tabs__content) { min-width: 0; min-height: 0; flex: 1; overflow: hidden; }
+.content-card > :deep(.el-tabs > .el-tabs__content > .el-tab-pane) { width: 100%; height: 100%; overflow: auto; }
 .summary-grid, .preview-summary { display: grid; grid-template-columns: repeat(5, minmax(120px, 1fr)); gap: 12px; margin: 8px 0 18px; }
 .summary-grid article, .preview-summary article { min-height: 86px; padding: 14px 16px; background: var(--nc-bg-muted); border-left: 3px solid var(--nc-border-strong); border-radius: 8px; }
 .summary-grid article.normal, .preview-summary article.normal { border-left-color: var(--nc-success); }
@@ -2413,6 +2417,10 @@ function sectionSourceLabel(row: Section): string {
   .filter-bar { grid-template-columns: repeat(3, 1fr); }
 }
 @media (max-width: 900px) {
+  .rail-base-data { height: auto; min-height: 100%; overflow: visible; }
+  .content-card { min-height: 55dvh; flex: none; overflow: visible; }
+  .content-card > :deep(.el-tabs > .el-tabs__content) { overflow: visible; }
+  .content-card > :deep(.el-tabs > .el-tabs__content > .el-tab-pane) { height: auto; overflow: visible; }
   .page-toolbar { align-items: flex-start; flex-direction: column; }
   .toolbar-actions { justify-content: flex-start; }
   .summary-grid, .source-summary, .template-summary, .section-generation-summary { grid-template-columns: repeat(2, minmax(120px, 1fr)); }

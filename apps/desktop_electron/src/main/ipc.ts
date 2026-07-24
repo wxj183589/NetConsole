@@ -71,6 +71,15 @@ interface ShellLike {
   openExternal(url: string): Promise<void>
 }
 
+interface ExternalWindowLike {
+  isDestroyed?(): boolean
+  isFocused?(): boolean
+  isAlwaysOnTop?(): boolean
+  setAlwaysOnTop?(flag: boolean): void
+  blur?(): void
+  minimize?(): void
+}
+
 interface BackendLike {
   getStatus(): BackendStatus
   getRuntimeInfo(): BackendRuntimeInfo
@@ -346,11 +355,13 @@ export function registerDesktopIpc(
   )
   dependencies.ipcMain.handle(
     DESKTOP_IPC.executeFileDesktopAction,
-    trusted((value) => executeFileDesktopAction(
+    trusted((value, event) => executeFileDesktopAction(
       dependencies.backend,
       validateFileDesktopActionRef(value),
       dependencies.fetchImpl ?? fetch,
+      dependencies.shell,
       dependencies.logger,
+      dependencies.windowForEvent?.(event) ?? dependencies.window,
     )),
   )
   dependencies.ipcMain.handle(
@@ -373,25 +384,35 @@ export function registerDesktopIpc(
   )
   dependencies.ipcMain.handle(
     DESKTOP_IPC.openPath,
-    trusted(async (value) => {
+    trusted(async (value, event) => {
+      const sourceWindow = dependencies.windowForEvent?.(event) ?? dependencies.window
+      const handoff = prepareExternalWindowHandoff(sourceWindow)
       try {
         const path = registry.requireCapability(value, 'artifact-download', 'open')
         const error = await dependencies.shell.openPath(path)
-        return error
-          ? { success: false, error: '系统未能打开所选路径' }
-          : { success: true }
+        if (error) {
+          restoreExternalWindowState(sourceWindow, handoff)
+          return { success: false, error: '系统未能打开所选路径' }
+        }
+        scheduleExternalWindowHandoff(sourceWindow)
+        return { success: true }
       } catch (cause) {
+        restoreExternalWindowState(sourceWindow, handoff)
         return { success: false, error: safeActionError(cause) }
       }
     }),
   )
   dependencies.ipcMain.handle(
     DESKTOP_IPC.showItemInFolder,
-    trusted((value) => {
+    trusted((value, event) => {
+      const sourceWindow = dependencies.windowForEvent?.(event) ?? dependencies.window
+      const handoff = prepareExternalWindowHandoff(sourceWindow)
       try {
         dependencies.shell.showItemInFolder(registry.requireCapability(value, 'artifact-download', 'reveal'))
+        scheduleExternalWindowHandoff(sourceWindow)
         return { success: true }
       } catch (cause) {
+        restoreExternalWindowState(sourceWindow, handoff)
         return { success: false, error: safeActionError(cause) }
       }
     }),
@@ -486,12 +507,48 @@ function backendRestartErrorMessage(cause: unknown): string {
     : '本地 Backend 重启失败，请检查日志后重试。'
 }
 
+interface ExternalWindowHandoff {
+  window: ExternalWindowLike | null
+  wasAlwaysOnTop: boolean
+}
+
+function asExternalWindow(value: unknown): ExternalWindowLike | null {
+  return value && typeof value === 'object' ? value as ExternalWindowLike : null
+}
+
+function prepareExternalWindowHandoff(value: unknown): ExternalWindowHandoff {
+  const window = asExternalWindow(value)
+  if (!window || window.isDestroyed?.()) return { window: null, wasAlwaysOnTop: false }
+  const wasAlwaysOnTop = window.isAlwaysOnTop?.() === true
+  if (wasAlwaysOnTop) window.setAlwaysOnTop?.(false)
+  window.blur?.()
+  return { window, wasAlwaysOnTop }
+}
+
+function restoreExternalWindowState(value: unknown, handoff: ExternalWindowHandoff): void {
+  const window = handoff.window ?? asExternalWindow(value)
+  if (!window || window.isDestroyed?.() || !handoff.wasAlwaysOnTop) return
+  window.setAlwaysOnTop?.(true)
+}
+
+function scheduleExternalWindowHandoff(value: unknown): void {
+  const window = asExternalWindow(value)
+  if (!window || window.isDestroyed?.()) return
+  const timer = setTimeout(() => {
+    if (!window.isDestroyed?.() && window.isFocused?.() === true) window.minimize?.()
+  }, 350)
+  timer.unref?.()
+}
+
 async function executeFileDesktopAction(
   backend: BackendLike,
   actionRef: string,
   fetchImpl: typeof fetch,
+  shell: ShellLike,
   logger: DesktopLogger = () => undefined,
+  sourceWindow?: unknown,
 ): Promise<{ success: boolean; error?: string }> {
+  let handoff: ExternalWindowHandoff | null = null
   try {
     const runtime = backend.getRuntimeInfo()
     const base = new URL(runtime.baseUrl)
@@ -512,11 +569,22 @@ async function executeFileDesktopAction(
       redirect: 'error',
     })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const body = await response.json() as { success?: unknown }
+    const body = await response.json() as { action?: unknown; success?: unknown; target_path?: unknown }
     if (body.success !== true) throw new Error('action rejected')
+    if (body.action === 'open_local' || body.action === 'open_result' || body.action === 'open_result_dir') {
+      if (typeof body.target_path !== 'string' || !body.target_path) throw new Error('desktop action target missing')
+      handoff = prepareExternalWindowHandoff(sourceWindow)
+      const error = await shell.openPath(body.target_path)
+      if (error) {
+        restoreExternalWindowState(sourceWindow, handoff)
+        return { success: false, error: '系统未能打开所选路径' }
+      }
+      scheduleExternalWindowHandoff(sourceWindow)
+    }
     logger('ELECTRON_FILE_DESKTOP_ACTION_COMPLETED')
     return { success: true }
   } catch {
+    if (handoff) restoreExternalWindowState(sourceWindow, handoff)
     logger('ELECTRON_FILE_DESKTOP_ACTION_FAILED')
     return { success: false, error: '桌面操作失败，请检查本机设置后重试。' }
   }

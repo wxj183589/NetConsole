@@ -4,6 +4,11 @@ import source from './AcManagementView.vue?raw'
 import omniPeekSource from './AcOmniPeekExportDialog.vue?raw'
 
 describe('AC Management resource view', () => {
+  it('uses the full routed workspace width instead of centering a fixed-width shell', () => {
+    expect(source).toContain('.ac-management { width: 100%; max-width: none; margin: 0; }')
+    expect(source).not.toContain('max-width: 1780px')
+  })
+
   it('shows real refresh, connection record, radio fields, optical relation and config diff', () => {
     expect(source).toContain('更新 FIT-AP 资源')
     expect(source).toContain('更新 AC 信息')

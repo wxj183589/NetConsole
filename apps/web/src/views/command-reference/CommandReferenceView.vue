@@ -294,7 +294,7 @@ onUnmounted(() => {
       <div class="actions"><el-button @click="loadReferences">{{ t('refresh') }}</el-button><el-button :disabled="!selected" @click="copyCommand">{{ t('copy') }}</el-button><el-button type="primary" :loading="exporting" @click="startExport">{{ t('exportMarkdown') }}</el-button></div>
     </header>
 
-    <el-card shadow="never">
+    <el-card shadow="never" class="filter-card">
       <div class="filters">
         <el-input v-model="filters.query" clearable :placeholder="t('searchPlaceholder')" @keyup.enter="searchNow" />
         <el-select v-for="field in filterFields" :key="field[0]" v-model="filters[field[0]]" clearable :placeholder="field[1]" @change="loadReferences">
@@ -355,5 +355,30 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.command-reference{display:flex;flex-direction:column;gap:16px;min-width:0}.heading,.actions,.filters{display:flex;align-items:center;gap:10px}.heading{justify-content:space-between}.heading h1{margin:4px 0}.heading p,.summary{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:0}.filters{flex-wrap:wrap}.filters .el-input{width:300px}.filters .el-select{width:150px}.summary{margin-top:12px}.content{display:grid;grid-template-columns:minmax(620px,3fr) minmax(360px,2fr);gap:16px;min-height:520px}.table-card,.detail-card{min-width:0;height:520px}.detail-card{overflow:auto}.detail-card p{margin:0}.task-summary{margin-right:12px}@media(max-width:1000px){.heading{align-items:flex-start;flex-direction:column}.content{grid-template-columns:1fr}.table-card,.detail-card{height:auto;min-height:360px}}
+.command-reference { display: flex; width: 100%; height: 100%; min-width: 0; min-height: 0; flex-direction: column; gap: 16px; overflow: hidden; }
+.heading, .actions, .filters { display: flex; align-items: center; gap: 10px; }
+.heading, .filter-card, .command-reference > .el-alert { flex: none; }
+.heading { justify-content: space-between; }
+.heading h1 { margin: 4px 0; }
+.heading p, .summary { margin: 0; color: var(--el-text-color-secondary); }
+.eyebrow { color: var(--el-color-primary) !important; font-size: 12px; font-weight: 700; letter-spacing: 0; }
+.filters { flex-wrap: wrap; }
+.filters .el-input { width: 300px; }
+.filters .el-select { width: 150px; }
+.summary { margin-top: 12px; }
+.content { display: grid; min-width: 0; min-height: 0; flex: 1; grid-template-columns: minmax(0, 3fr) minmax(360px, 2fr); gap: 16px; overflow: hidden; }
+.content > .el-empty { grid-column: 1 / -1; }
+.table-card, .detail-card { display: flex; height: auto; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden; }
+.table-card :deep(.el-card__body) { display: flex; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }
+.detail-card :deep(.el-card__header) { flex: none; }
+.detail-card :deep(.el-card__body) { min-height: 0; flex: 1; overflow: auto; }
+.detail-card p { margin: 0; }
+.task-summary { margin-right: 12px; }
+@media (max-width: 1000px) {
+  .command-reference { height: auto; min-height: 100%; overflow: visible; }
+  .heading { align-items: flex-start; flex-direction: column; }
+  .content { min-height: 0; flex: none; grid-template-columns: 1fr; overflow: visible; }
+  .table-card, .detail-card { height: auto; min-height: 360px; }
+  .table-card :deep(.el-card__body), .detail-card :deep(.el-card__body) { min-height: 360px; }
+}
 </style>

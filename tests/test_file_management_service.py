@@ -186,14 +186,14 @@ def test_file_desktop_actions_are_one_time_controlled_and_winscp_passes_password
             ssh_password="secret",
         )
     )
-    opened: list[tuple[Path, bool]] = []
+    resolved: list[tuple[Path, bool]] = []
 
     class FakeDesktopActionService:
         runtime_mode = RuntimeMode.DESKTOP
 
-        def open_controlled_path(self, path: Path, *, expect_directory: bool):
-            opened.append((path, expect_directory))
-            return SimpleNamespace(success=True, code="completed", message="")
+        def resolve_controlled_path(self, path: Path, *, expect_directory: bool):
+            resolved.append((path, expect_directory))
+            return path.resolve()
 
     winscp_calls: list[tuple[str, bool]] = []
 
@@ -219,8 +219,10 @@ def test_file_desktop_actions_are_one_time_controlled_and_winscp_passes_password
         site_id="demo",
         local_entry_id=local.current_entry_id,
     )
-    assert service.execute_desktop_action(open_action.action_ref).success is True
-    assert opened == [(paths.file_downloads_root("demo").resolve(), True)]
+    open_result = service.execute_desktop_action(open_action.action_ref)
+    assert open_result.success is True
+    assert open_result.target_path == str(paths.file_downloads_root("demo").resolve())
+    assert resolved == [(paths.file_downloads_root("demo").resolve(), True)]
     with pytest.raises(FileReferenceNotFound):
         service.execute_desktop_action(open_action.action_ref)
 
@@ -229,8 +231,10 @@ def test_file_desktop_actions_are_one_time_controlled_and_winscp_passes_password
     local = service.list_local_files("demo")
     file_entry = next(item for item in local.items if item.name == downloaded.name)
     file_action = service.desktop_action("open_local", site_id="demo", local_entry_id=file_entry.entry_id)
-    assert service.execute_desktop_action(file_action.action_ref).success is True
-    assert opened[-1] == (downloaded.resolve(), False)
+    file_result = service.execute_desktop_action(file_action.action_ref)
+    assert file_result.success is True
+    assert file_result.target_path == str(downloaded.resolve())
+    assert resolved[-1] == (downloaded.resolve(), False)
 
     winscp_action = service.desktop_action(
         "winscp",

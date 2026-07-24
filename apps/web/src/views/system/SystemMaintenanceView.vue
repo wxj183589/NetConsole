@@ -392,26 +392,30 @@ onBeforeUnmount(() => {
         <p class="hint">右键任意表格单元格可复制该单元格；Web 展示与导出会隐藏秘密、私有地址和本机绝对路径。</p>
       </el-tab-pane>
 
-      <el-tab-pane label="安全清理" name="cleanup">
+      <el-tab-pane label="安全清理" name="cleanup" class="maintenance-tab-pane">
         <div class="toolbar"><span>保留最近</span><el-input-number v-model="retentionDays" :min="1" :max="365" controls-position="right" /><span>天</span><el-button :loading="taskBusy" :disabled="!isFeatureEnabled('system.disk_cleanup')" @click="scanCleanup">扫描白名单</el-button><el-button type="danger" plain :loading="taskBusy" :disabled="!isFeatureEnabled('system.disk_cleanup') || !selectedCleanupItemIds.length" @click="confirmCleanup">清理所选项目</el-button><el-button :disabled="!isFeatureEnabled('desktop.native_bridge')" @click="openDirectory('cache')">打开缓存目录</el-button></div>
-        <NcDataTable :data="cleanupItems" :columns="cleanupColumns" table-id="system-cleanup-items" route-key="/logs" empty-text="请先扫描白名单">
-          <template #cell-selected="{ row }"><el-checkbox :model-value="selectedCleanupItemIds.includes(row.item_id)" :disabled="row.file_count === 0" @change="setCleanupSelected(row.item_id, $event)" /></template>
-        </NcDataTable>
+        <div class="maintenance-table-host">
+          <NcDataTable :data="cleanupItems" :columns="cleanupColumns" table-id="system-cleanup-items" route-key="/logs" height="100%" empty-text="请先扫描白名单">
+            <template #cell-selected="{ row }"><el-checkbox :model-value="selectedCleanupItemIds.includes(row.item_id)" :disabled="row.file_count === 0" @change="setCleanupSelected(row.item_id, $event)" /></template>
+          </NcDataTable>
+        </div>
         <p v-if="currentTask?.action === 'cleanup_clean'" class="hint">已处理 {{ currentTask.processed_files }} 项，已删除 {{ currentTask.deleted_files }} 项，失败 {{ currentTask.failed_count }} 项，释放 {{ formatBytes(currentTask.freed_bytes) }}。</p>
       </el-tab-pane>
 
-      <el-tab-pane label="版本更新日志" name="changelog">
+      <el-tab-pane label="版本更新日志" name="changelog" class="maintenance-tab-pane document-tab-pane">
         <pre class="document">{{ changelog?.content || '更新日志暂不可用' }}</pre>
       </el-tab-pane>
 
-      <el-tab-pane label="开源许可" name="open-source">
+      <el-tab-pane label="开源许可" name="open-source" class="maintenance-tab-pane">
         <div class="toolbar"><el-button :loading="taskBusy" :disabled="!isFeatureEnabled('system.open_source')" @click="scanOpenSource">刷新组件列表</el-button><el-button :disabled="taskBusy || !isFeatureEnabled('system.open_source')" @click="runOpenSourceExport('txt')">导出 TXT</el-button><el-button :disabled="taskBusy || !isFeatureEnabled('system.open_source')" @click="runOpenSourceExport('xlsx')">导出 XLSX</el-button></div>
-        <NcDataTable :data="components" :columns="componentColumns" table-id="system-open-source-components" route-key="/logs" height="520" empty-text="请先扫描运行依赖">
-          <template #cell-actions="{ row, $index }"><el-button link @click="copyText(componentText(row), '组件信息已复制')">复制</el-button><el-button link :disabled="!row.homepage" @click="openComponentLink($index)">打开</el-button></template>
-        </NcDataTable>
+        <div class="maintenance-table-host">
+          <NcDataTable :data="components" :columns="componentColumns" table-id="system-open-source-components" route-key="/logs" height="100%" empty-text="请先扫描运行依赖">
+            <template #cell-actions="{ row, $index }"><el-button link @click="copyText(componentText(row), '组件信息已复制')">复制</el-button><el-button link :disabled="!row.homepage" @click="openComponentLink($index)">打开</el-button></template>
+          </NcDataTable>
+        </div>
       </el-tab-pane>
 
-      <el-tab-pane label="关于" name="about">
+      <el-tab-pane label="关于" name="about" class="maintenance-tab-pane maintenance-tab-pane--scroll">
         <el-descriptions v-if="about" :column="1" border><el-descriptions-item label="应用">{{ about.title }}</el-descriptions-item><el-descriptions-item label="版本">{{ about.version }}</el-descriptions-item><el-descriptions-item label="作者">{{ about.author }}</el-descriptions-item><el-descriptions-item label="外部工具说明">{{ about.external_tool_notice }}</el-descriptions-item></el-descriptions>
         <el-card v-for="repository in about?.repositories || []" :key="repository.link_id" shadow="never" class="repository"><span>{{ repository.label }}</span><div><el-button link @click="copyText(repository.label, '仓库地址已复制')">复制</el-button><el-button link @click="openAboutLink(repository.link_id)">浏览器打开</el-button></div></el-card>
       </el-tab-pane>
@@ -420,7 +424,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.maintenance-page { display: flex; flex-direction: column; gap: 16px; width: 100%; height: calc(100dvh - var(--nc-shell-header-height) - var(--nc-content-padding) - var(--nc-content-padding)); min-width: 0; min-height: 0; overflow: hidden; }
+.maintenance-page { display: flex; width: 100%; height: 100%; min-width: 0; min-height: 0; flex-direction: column; gap: 16px; overflow: hidden; }
 .page-heading, .repository, .pagination { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 16px; }
 .page-heading h1 { margin: 2px 0 6px; }
 .page-heading p, .hint { margin: 0; color: var(--el-text-color-secondary); }
@@ -437,16 +441,17 @@ onBeforeUnmount(() => {
 .task-status :deep(.el-progress) { margin-top: 8px; }
 .maintenance-tabs { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
 .maintenance-tabs :deep(.el-tabs__header) { flex: none; }
-.maintenance-tabs :deep(.el-tabs__content) { flex: 1; min-height: 0; overflow: hidden; }
-.maintenance-tabs :deep(.el-tab-pane) { height: 100%; min-height: 0; overflow: auto; }
+.maintenance-tabs :deep(.el-tabs__content) { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+.maintenance-tabs :deep(.el-tab-pane) { position: absolute; inset: 0; display: flex; min-height: 0; flex-direction: column; overflow: hidden; }
+.maintenance-tabs :deep(.maintenance-tab-pane--scroll) { overflow: auto; }
 .maintenance-tabs :deep(.log-tab-pane) { display: flex; min-height: 0; flex-direction: column; overflow: hidden; }
 .toolbar, .actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .toolbar .el-input { width: min(360px, 100%); }
 .toolbar .el-select { width: 140px; }
-.log-table-host { flex: 1; min-height: 0; overflow: hidden; }
+.log-table-host, .maintenance-table-host { flex: 1; min-height: 0; overflow: hidden; }
 .pagination { padding-top: 12px; }
-.document { max-height: 620px; overflow: auto; margin: 0; padding: 18px; border-radius: 8px; background: var(--el-fill-color-light); white-space: pre-wrap; line-height: 1.65; }
+.document { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 18px; border-radius: 8px; background: var(--el-fill-color-light); white-space: pre-wrap; line-height: 1.65; }
 .repository { margin-top: 10px; }
 .hint { padding-top: 8px; font-size: 12px; }
-@media (max-width: 900px) { .page-heading, .repository { align-items: flex-start; flex-direction: column; } .task-status__row, .task-status__copy, .pagination { align-items: flex-start; flex-direction: column; } .task-status--active { max-height: none; } }
+@media (max-width: 900px) { .maintenance-page { height: auto; min-height: 100%; overflow: visible; } .maintenance-tabs { min-height: 55dvh; flex: none; } .page-heading, .repository { align-items: flex-start; flex-direction: column; } .task-status__row, .task-status__copy, .pagination { align-items: flex-start; flex-direction: column; } .task-status--active { max-height: none; } }
 </style>

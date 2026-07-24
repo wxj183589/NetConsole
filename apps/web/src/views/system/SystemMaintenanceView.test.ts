@@ -48,6 +48,7 @@ vi.mock('element-plus', async (importOriginal) => ({
 }))
 
 import SystemMaintenanceView from './SystemMaintenanceView.vue'
+import source from './SystemMaintenanceView.vue?raw'
 
 const cleanupItems: CleanupItem[] = [
   {
@@ -139,6 +140,17 @@ const SlotStub = defineComponent({
 })
 
 describe('SystemMaintenanceView mounted workflow', () => {
+  it('uses the route remainder for tab documents and tables without fixed workspace heights', () => {
+    expect(source).toContain('.maintenance-page { display: flex; width: 100%; height: 100%;')
+    expect(source).toContain('.maintenance-tabs :deep(.el-tab-pane) { position: absolute; inset: 0; display: flex; min-height: 0;')
+    expect(source).toContain('.log-table-host, .maintenance-table-host { flex: 1; min-height: 0; overflow: hidden; }')
+    expect(source).toContain('.document { flex: 1; min-height: 0; overflow: auto;')
+    expect(source).not.toContain('height="520"')
+    expect(source).not.toContain('min-height: 520px')
+    expect(source).not.toContain('max-height: 620px')
+    expect(source).not.toContain('height: calc(100dvh')
+  })
+
   beforeEach(() => {
     vi.clearAllMocks()
     api.getLogs.mockResolvedValue({ items: [], page: 1, page_size: 200, total: 0, total_pages: 0 })

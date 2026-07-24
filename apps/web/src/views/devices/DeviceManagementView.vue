@@ -1352,31 +1352,33 @@ function errorMessage(cause: unknown, fallback: string): string {
     </el-alert>
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" class="state-alert" />
     <div v-loading="loading" class="content-card table-card" :data-state="isEmpty ? 'empty' : 'success'">
-      <el-empty v-if="isEmpty" description="没有符合条件的设备" />
-      <NcDataTable
-        v-else
-        ref="deviceTable"
-        table-id="device-list"
-        route-key="/devices"
-        :data="pageData.items"
-        :columns="deviceColumns"
-        row-key="device_uuid"
-        height="calc(100vh - 380px)"
-        empty-text="暂无设备"
-        @selection-change="onSelectionChange"
-        @row-dblclick="openDetail"
-        @row-contextmenu="showContextMenu"
-      >
-        <template #cell-connection_status="{ row }"><el-tag :type="statusType(row.connection_status)">{{ statusLabel(row.connection_status) }}</el-tag></template>
-        <template #cell-credential_status="{ row }">
-          <el-tooltip :content="row.credential_message || '凭据可用'">
-            <el-tag :type="row.credential_status === 'available' ? 'success' : row.credential_status === 'needs_reentry' ? 'warning' : 'danger'">
-              {{ row.credential_status === 'available' ? '可用' : row.credential_status === 'needs_reentry' ? '需重新录入' : '缺失' }}
-            </el-tag>
-          </el-tooltip>
-        </template>
-        <template #cell-actions="{ row }"><el-button link type="primary" :icon="View" @click="openDetail(row)">详情</el-button><el-button link :disabled="!isFeatureEnabled('web.device_management_write')" @click="editRow(row)">编辑</el-button><el-button link type="danger" :disabled="!isFeatureEnabled('web.device_management_write')" @click="deleteRows([row.device_uuid])">删除</el-button></template>
-      </NcDataTable>
+      <div class="device-table-host">
+        <el-empty v-if="isEmpty" description="没有符合条件的设备" />
+        <NcDataTable
+          v-else
+          ref="deviceTable"
+          table-id="device-list"
+          route-key="/devices"
+          :data="pageData.items"
+          :columns="deviceColumns"
+          row-key="device_uuid"
+          height="100%"
+          empty-text="暂无设备"
+          @selection-change="onSelectionChange"
+          @row-dblclick="openDetail"
+          @row-contextmenu="showContextMenu"
+        >
+          <template #cell-connection_status="{ row }"><el-tag :type="statusType(row.connection_status)">{{ statusLabel(row.connection_status) }}</el-tag></template>
+          <template #cell-credential_status="{ row }">
+            <el-tooltip :content="row.credential_message || '凭据可用'">
+              <el-tag :type="row.credential_status === 'available' ? 'success' : row.credential_status === 'needs_reentry' ? 'warning' : 'danger'">
+                {{ row.credential_status === 'available' ? '可用' : row.credential_status === 'needs_reentry' ? '需重新录入' : '缺失' }}
+              </el-tag>
+            </el-tooltip>
+          </template>
+          <template #cell-actions="{ row }"><el-button link type="primary" :icon="View" @click="openDetail(row)">详情</el-button><el-button link :disabled="!isFeatureEnabled('web.device_management_write')" @click="editRow(row)">编辑</el-button><el-button link type="danger" :disabled="!isFeatureEnabled('web.device_management_write')" @click="deleteRows([row.device_uuid])">删除</el-button></template>
+        </NcDataTable>
+      </div>
       <el-pagination
         v-if="pageData.total"
         v-model:current-page="filters.page"
@@ -1556,7 +1558,7 @@ function errorMessage(cause: unknown, fallback: string): string {
 </template>
 
 <style scoped>
-.device-management { max-width: 1720px; margin: 0 auto; }
+.device-management { display: flex; width: 100%; height: 100%; max-width: none; min-width: 0; min-height: 0; flex-direction: column; margin: 0; overflow: hidden; }
 .page-heading, .detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .heading-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .group-list { margin-top: 16px; max-height: 260px; overflow-y: auto; }
@@ -1568,7 +1570,9 @@ function errorMessage(cause: unknown, fallback: string): string {
 .action-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 14px; margin-bottom: 14px; }
 .action-bar > span { margin-right: 4px; color: var(--nc-text-secondary); font-size: 13px; }
 .task-summary { margin-bottom: 14px; }
-.table-card { min-height: 300px; padding: 0 0 12px; }
+.table-card { display: flex; min-height: 0; flex: 1; flex-direction: column; padding: 0 0 12px; overflow: hidden; }
+.device-table-host { display: flex; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }
+.device-table-host > .el-empty { flex: 1; }
 .table-card :deep(.el-pagination) { justify-content: flex-end; padding: 14px 16px 0; }
 .table-card strong, .table-card small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .table-card small { margin-top: 4px; color: var(--nc-text-tertiary); }
@@ -1601,5 +1605,5 @@ function errorMessage(cause: unknown, fallback: string): string {
 .import-file-picker { display: flex; align-items: center; gap: 12px; margin-top: 18px; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (max-width: 1280px) { .filters { grid-template-columns: repeat(3, minmax(150px, 1fr)); } }
-@media (max-width: 760px) { .filters, .form-grid, .form-grid.two-columns { grid-template-columns: 1fr; } .page-heading { align-items: flex-start; } }
+@media (max-width: 760px) { .device-management { height: auto; min-height: 100%; overflow: visible; } .table-card { min-height: 55dvh; flex: none; } .filters, .form-grid, .form-grid.two-columns { grid-template-columns: 1fr; } .page-heading { align-items: flex-start; } }
 </style>

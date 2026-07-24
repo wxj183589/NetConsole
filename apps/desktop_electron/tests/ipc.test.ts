@@ -256,6 +256,106 @@ describe('desktop IPC', () => {
     expect(shell.showItemInFolder).toHaveBeenCalledOnce()
   })
 
+  it('hands external paths to Explorer and minimizes NetConsole only when it keeps focus', async () => {
+    vi.useFakeTimers()
+    try {
+      const managedWindow = {
+        isDestroyed: vi.fn(() => false),
+        isFocused: vi.fn(() => true),
+        isAlwaysOnTop: vi.fn(() => true),
+        setAlwaysOnTop: vi.fn(),
+        blur: vi.fn(),
+        minimize: vi.fn(),
+      }
+      const { ipcMain, sender, selectedFile, pathRegistry } = createHarness({ windowForEvent: () => managedWindow })
+      const handler = ipcMain.handlers.get(DESKTOP_IPC.openPath)!
+
+      await expect(handler({ sender }, pathRegistry.grantCapability(selectedFile)!)).resolves.toEqual({ success: true })
+      expect(managedWindow.setAlwaysOnTop).toHaveBeenCalledWith(false)
+      expect(managedWindow.blur).toHaveBeenCalledOnce()
+
+      vi.advanceTimersByTime(350)
+      expect(managedWindow.minimize).toHaveBeenCalledOnce()
+      expect(managedWindow.setAlwaysOnTop).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not minimize or leave a failed external open in a released topmost state', async () => {
+    vi.useFakeTimers()
+    try {
+      const managedWindow = {
+        isDestroyed: vi.fn(() => false),
+        isFocused: vi.fn(() => true),
+        isAlwaysOnTop: vi.fn(() => true),
+        setAlwaysOnTop: vi.fn(),
+        blur: vi.fn(),
+        minimize: vi.fn(),
+      }
+      const { ipcMain, sender, selectedFile, pathRegistry, shell } = createHarness({ windowForEvent: () => managedWindow })
+      shell.openPath.mockResolvedValue('系统未能打开')
+      const handler = ipcMain.handlers.get(DESKTOP_IPC.openPath)!
+
+      await expect(handler({ sender }, pathRegistry.grantCapability(selectedFile)!)).resolves.toEqual({
+        success: false,
+        error: '系统未能打开所选路径',
+      })
+      vi.advanceTimersByTime(350)
+      expect(managedWindow.minimize).not.toHaveBeenCalled()
+      expect(managedWindow.setAlwaysOnTop).toHaveBeenLastCalledWith(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('leaves an external window that took focus alone', async () => {
+    vi.useFakeTimers()
+    try {
+      const managedWindow = {
+        isDestroyed: vi.fn(() => false),
+        isFocused: vi.fn(() => false),
+        isAlwaysOnTop: vi.fn(() => false),
+        setAlwaysOnTop: vi.fn(),
+        blur: vi.fn(),
+        minimize: vi.fn(),
+      }
+      const { ipcMain, sender, selectedFile, pathRegistry } = createHarness({ windowForEvent: () => managedWindow })
+      const handler = ipcMain.handlers.get(DESKTOP_IPC.openPath)!
+
+      await expect(handler({ sender }, pathRegistry.grantCapability(selectedFile)!)).resolves.toEqual({ success: true })
+      vi.advanceTimersByTime(350)
+      expect(managedWindow.minimize).not.toHaveBeenCalled()
+      expect(managedWindow.setAlwaysOnTop).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ignores a destroyed source window during external path handoff', async () => {
+    vi.useFakeTimers()
+    try {
+      const managedWindow = {
+        isDestroyed: vi.fn(() => true),
+        isFocused: vi.fn(() => true),
+        isAlwaysOnTop: vi.fn(() => true),
+        setAlwaysOnTop: vi.fn(),
+        blur: vi.fn(),
+        minimize: vi.fn(),
+      }
+      const { ipcMain, sender, selectedFile, pathRegistry } = createHarness({ windowForEvent: () => managedWindow })
+      const handler = ipcMain.handlers.get(DESKTOP_IPC.openPath)!
+
+      await expect(handler({ sender }, pathRegistry.grantCapability(selectedFile)!)).resolves.toEqual({ success: true })
+      vi.advanceTimersByTime(350)
+      expect(managedWindow.blur).not.toHaveBeenCalled()
+      expect(managedWindow.minimize).not.toHaveBeenCalled()
+      expect(managedWindow.setAlwaysOnTop).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('expires, evicts and isolates capability purpose and actions', () => {
     let now = 1_000
     const registry = new GrantedPathRegistry({ now: () => now, ttlMs: 10, maxCapabilities: 2 })
@@ -387,10 +487,10 @@ describe('desktop IPC', () => {
 
   it('executes only opaque file actions through the fixed loopback endpoint', async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => new Response(
-      JSON.stringify({ action: 'open_local', success: true, message: '已打开目录。' }),
+      JSON.stringify({ action: 'open_local', success: true, message: '已打开目录。', target_path: 'C:\\Users\\测试 用户\\下载' }),
       { status: 200, headers: { 'content-type': 'application/json' } },
     ))
-    const { ipcMain, sender } = createHarness({ fetchImpl: fetchMock })
+    const { ipcMain, sender, shell } = createHarness({ fetchImpl: fetchMock })
     const handler = ipcMain.handlers.get(DESKTOP_IPC.executeFileDesktopAction)!
     const actionRef = `fda1_${'a'.repeat(32)}`
 
@@ -404,6 +504,7 @@ describe('desktop IPC', () => {
       headers: { 'X-NetConsole-Session': 'secret-token' },
       redirect: 'error',
     })
+    expect(shell.openPath).toHaveBeenCalledWith('C:\\Users\\测试 用户\\下载')
   })
 
   it('resolves and opens an Online MR location only through the fixed authenticated endpoint', async () => {

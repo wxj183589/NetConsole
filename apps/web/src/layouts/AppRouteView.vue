@@ -1,12 +1,14 @@
 <template>
-  <RouterView v-slot="{ Component, route: viewRoute }">
-    <KeepAlive :include="cachedWorkspaceComponentNames" :max="10">
-      <component
-        :is="cachedRouteComponent(Component, workspace.routeCacheKey(viewRoute.fullPath))"
-        :key="workspace.routeCacheKey(viewRoute.fullPath)"
-      />
-    </KeepAlive>
-  </RouterView>
+  <div class="app-route-viewport">
+    <RouterView v-slot="{ Component, route: viewRoute }">
+      <KeepAlive :include="cachedWorkspaceComponentNames" :max="10">
+        <component
+          :is="cachedRouteComponent(Component, workspace.routeCacheKey(viewRoute.fullPath))"
+          :key="workspace.routeCacheKey(viewRoute.fullPath)"
+        />
+      </KeepAlive>
+    </RouterView>
+  </div>
 </template>
 
 <script setup lang="ts">

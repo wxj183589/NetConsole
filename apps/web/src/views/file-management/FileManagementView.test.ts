@@ -112,6 +112,12 @@ describe('file management API contract', () => {
     expect(source).not.toContain("deliverTask(row, 'save')")
   })
 
+  it('prevents duplicate desktop directory actions while the bridge request is active', () => {
+    expect(source).toContain('const desktopActionBusy = ref(false)')
+    expect(source).toContain('if (desktopActionBusy.value) return')
+    expect(source).toContain(':loading="desktopActionBusy" :disabled="!localPage || desktopActionBusy"')
+  })
+
   it('reveals the page after minimal status and loads each region independently', () => {
     expect(source).not.toContain('v-loading="loading"')
     expect(source).toContain('const deviceLoading = ref(false)')

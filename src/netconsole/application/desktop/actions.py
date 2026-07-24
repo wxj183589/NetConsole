@@ -247,7 +247,7 @@ class DesktopActionService:
         if rejection := self._server_rejection():
             return self._audit_result("open_controlled_path", target, rejection)
         try:
-            resolved = self.resolver.controlled_path(path, expect_directory=expect_directory)
+            resolved = self.resolve_controlled_path(path, expect_directory=expect_directory)
             result = (
                 self.adapter.open_controlled_directory(resolved)
                 if expect_directory
@@ -256,6 +256,12 @@ class DesktopActionService:
         except DesktopActionResolutionError as exc:
             result = _rejected(exc)
         return self._audit_result("open_controlled_path", target, result)
+
+    def resolve_controlled_path(self, path: Path, *, expect_directory: bool) -> Path:
+        """只解析并校验桌面目标，供受信任的桌面宿主执行打开动作。"""
+        if rejection := self._server_rejection():
+            raise DesktopActionResolutionError(rejection.code, rejection.message)
+        return self.resolver.controlled_path(path, expect_directory=expect_directory)
 
     def launch_registered_terminal(self, action_id: str, object_id: str) -> DesktopActionResult:
         target = _audit_identifier(action_id, object_id)

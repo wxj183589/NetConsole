@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterable
 from uuid import uuid4
 
+from netconsole.application.desktop.actions import DesktopActionResolutionError
 from netconsole.core import app_logger
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
@@ -1036,13 +1037,15 @@ class FileManagementApplicationService:
             if command.path is None:
                 raise FileManagementError("桌面动作目标不存在")
             expect_directory = command.action == "open_result_dir" or command.path.is_dir()
-            result = service.open_controlled_path(command.path, expect_directory=expect_directory)
-            if not result.success:
-                raise FileManagementError(result.message or result.code)
+            try:
+                target_path = service.resolve_controlled_path(command.path, expect_directory=expect_directory)
+            except DesktopActionResolutionError as exc:
+                raise FileManagementError(str(exc)) from exc
             return FileDesktopActionResultDTO(
                 action=command.action,
                 success=True,
                 message="已打开目录。" if expect_directory else "已打开文件。",
+                target_path=str(target_path),
             )
         if command.action == "winscp":
             device = self._resolve_device(command.site_id, command.device_id)

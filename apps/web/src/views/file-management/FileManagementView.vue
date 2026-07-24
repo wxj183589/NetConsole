@@ -62,6 +62,7 @@ const localPage = ref<LocalFilePage | null>(null)
 const localLoading = ref(false)
 const deviceLoading = ref(false)
 const queueLoading = ref(false)
+const desktopActionBusy = ref(false)
 const localPageNumber = ref(1)
 const devices = ref<FileRemoteDevice[]>([])
 const selectedDeviceId = ref('')
@@ -440,6 +441,8 @@ async function showDesktopDependency(
   action: 'winscp' | 'open_local' | 'open_result' | 'open_result_dir',
   values: { device_id?: string; local_entry_id?: string; task_id?: string },
 ): Promise<void> {
+  if (desktopActionBusy.value) return
+  desktopActionBusy.value = true
   try {
     if (!window.netconsoleDesktop) throw new Error('该操作只能在 Electron Desktop 中执行')
     const result = await prepareFileDesktopAction(action, { site_id: siteId.value, ...values })
@@ -448,6 +451,8 @@ async function showDesktopDependency(
     ElMessage.success(action === 'winscp' ? '已启动 WinSCP' : action === 'open_result' ? '已打开文件' : '已打开目录')
   } catch (reason) {
     error.value = messageOf(reason, '桌面操作失败')
+  } finally {
+    desktopActionBusy.value = false
   }
 }
 
@@ -569,7 +574,7 @@ function messageOf(reason: unknown, fallback: string): string {
           <el-button :disabled="!localPage" @click="loadLocal(localPage?.root_entry_id, 1)">{{ t('root') }}</el-button>
           <el-button :loading="localLoading" :disabled="!localPage" @click="loadLocal(localPage?.current_entry_id, localPageNumber)">{{ t('refresh') }}</el-button>
           <el-button v-if="isFeatureEnabled('web.file_management_local_write')" :disabled="!localPage" @click="createDirectory">{{ t('newDirectory') }}</el-button>
-          <el-button v-if="isFeatureEnabled('web.file_management_desktop_actions') && desktopAvailable" :disabled="!localPage" @click="prepareLocalOpen">{{ t('openCurrent') }}</el-button>
+          <el-button v-if="isFeatureEnabled('web.file_management_desktop_actions') && desktopAvailable" :loading="desktopActionBusy" :disabled="!localPage || desktopActionBusy" @click="prepareLocalOpen">{{ t('openCurrent') }}</el-button>
         </div>
         <NcDataTable
           v-loading="localLoading"
@@ -645,8 +650,8 @@ function messageOf(reason: unknown, fallback: string): string {
           <el-button v-if="activeTasks.some((item) => item.task_id === row.task_id)" link type="warning" @click="cancelTask(row)">{{ t('cancel') }}</el-button>
           <el-button v-if="row.retryable" link type="primary" @click="retryTask(row)">{{ t('retry') }}</el-button>
           <template v-if="row.status === 'COMPLETED' && row.result">
-            <el-button link type="primary" @click="openTaskResult(row)">{{ t('open') }}</el-button>
-            <el-button link type="primary" @click="openTaskResult(row, true)">{{ t('containingFolder') }}</el-button>
+            <el-button link type="primary" :loading="desktopActionBusy" :disabled="desktopActionBusy" @click="openTaskResult(row)">{{ t('open') }}</el-button>
+            <el-button link type="primary" :loading="desktopActionBusy" :disabled="desktopActionBusy" @click="openTaskResult(row, true)">{{ t('containingFolder') }}</el-button>
           </template>
         </template>
       </NcDataTable>
