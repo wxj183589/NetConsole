@@ -542,7 +542,7 @@ const revealSaved = () => runSavedAction('reveal')
 
         <section class="log-section">
           <div class="log-heading">
-            <div><h3>任务日志 tail</h3><p>默认隐藏；展开后每秒读取最后 300 条结构化事件。</p></div>
+            <div><h3>任务日志 tail</h3><p>默认展开；每秒读取最后 300 条结构化事件。</p></div>
             <div class="log-actions">
               <el-switch v-model="followLatestLogs" active-text="跟随最新" inactive-text="暂停跟随" />
               <el-button @click="store.setLogsExpanded(!store.logsExpanded)">{{ store.logsExpanded ? '隐藏日志' : '显示日志' }}</el-button>

@@ -18,6 +18,11 @@ it('uses Backend text integrity instead of guessing from replacement characters'
   expect(source).not.toContain("value.includes('\\uFFFD')")
 })
 
+it('describes task logs as expanded by default and keeps the manual toggle', () => {
+  expect(source).toContain('默认展开；每秒读取最后 300 条结构化事件。')
+  expect(source).toContain("store.logsExpanded ? '隐藏日志' : '显示日志'")
+})
+
 const platformMocks = vi.hoisted(() => ({
   download: vi.fn(),
   open: vi.fn(),

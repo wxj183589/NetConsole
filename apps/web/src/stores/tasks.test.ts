@@ -47,7 +47,7 @@ describe('Job Center polling store', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.mocked(listTasks).mockReset().mockResolvedValue([task])
-    vi.mocked(getTask).mockReset().mockResolvedValue(task)
+    vi.mocked(getTask).mockReset().mockImplementation(async (id) => ({ ...task, id }))
     vi.mocked(getTaskLogs).mockReset().mockResolvedValue({
       task_id: task.id,
       lines: [{ sequence: 1, time: task.updated_time, level: 'INFO', type: 'log', source: 'worker', message: '采集中' }],
@@ -106,7 +106,7 @@ describe('Job Center polling store', () => {
     expect(store.tasks[0].text_integrity).toBe('ok')
   })
 
-  it('keeps logs hidden by default and stops detail/log polling on final cleanup', async () => {
+  it('expands logs for every selected task and stops detail/log polling on final cleanup', async () => {
     vi.useFakeTimers()
     window.setTimeout = setTimeout
     window.clearTimeout = clearTimeout
@@ -117,13 +117,26 @@ describe('Job Center polling store', () => {
     store.acquirePolling('main-window')
     await vi.runAllTicks()
     await store.selectTask(task.id)
-    expect(store.logsExpanded).toBe(false)
-    expect(getTaskLogs).not.toHaveBeenCalled()
+    await vi.runAllTicks()
+    expect(store.logsExpanded).toBe(true)
+    expect(getTaskLogs).toHaveBeenLastCalledWith(task.id, 300)
+
+    store.setLogsExpanded(false)
+    const hiddenLogCalls = vi.mocked(getTaskLogs).mock.calls.length
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(getTaskLogs).toHaveBeenCalledTimes(hiddenLogCalls)
+    expect(store.logs).toHaveLength(1)
 
     store.setLogsExpanded(true)
     await vi.runAllTicks()
-    await vi.advanceTimersByTimeAsync(1000)
-    expect(getTaskLogs).toHaveBeenCalled()
+    expect(getTaskLogs).toHaveBeenCalledTimes(hiddenLogCalls + 1)
+
+    store.setDetailVisible(false)
+    expect(store.logsExpanded).toBe(false)
+    await store.selectTask('task-2')
+    await vi.runAllTicks()
+    expect(store.logsExpanded).toBe(true)
+    expect(getTaskLogs).toHaveBeenLastCalledWith('task-2', 300)
 
     const detailCalls = vi.mocked(getTask).mock.calls.length
     const logCalls = vi.mocked(getTaskLogs).mock.calls.length
@@ -132,6 +145,46 @@ describe('Job Center polling store', () => {
     expect(getTask).toHaveBeenCalledTimes(detailCalls)
     expect(getTaskLogs).toHaveBeenCalledTimes(logCalls)
     expect('requestCancel' in store).toBe(true)
+    vi.useRealTimers()
+  })
+
+  it('does not overlap log requests or apply a previous task response after switching', async () => {
+    vi.useFakeTimers()
+    window.setTimeout = setTimeout
+    window.clearTimeout = clearTimeout
+    window.setInterval = setInterval
+    window.clearInterval = clearInterval
+    let resolveFirst: ((value: Awaited<ReturnType<typeof getTaskLogs>>) => void) | undefined
+    vi.mocked(getTaskLogs)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve }))
+      .mockResolvedValueOnce({
+        task_id: 'task-2',
+        lines: [{ sequence: 2, time: task.updated_time, level: 'INFO', type: 'log', source: 'worker', message: '任务 B' }],
+        message: '',
+      })
+    const store = useTaskStore()
+    store.acquirePolling('main-window')
+    await vi.runAllTicks()
+
+    await store.selectTask(task.id)
+    await vi.runAllTicks()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(getTaskLogs).toHaveBeenCalledTimes(1)
+
+    await store.selectTask('task-2')
+    await vi.runAllTicks()
+    expect(getTaskLogs).toHaveBeenCalledTimes(2)
+    expect(store.logs[0]?.message).toBe('任务 B')
+
+    resolveFirst?.({
+      task_id: task.id,
+      lines: [{ sequence: 1, time: task.updated_time, level: 'INFO', type: 'log', source: 'worker', message: '任务 A' }],
+      message: '',
+    })
+    await vi.runAllTicks()
+    expect(store.logs[0]?.message).toBe('任务 B')
+
+    store.releasePolling('main-window')
     vi.useRealTimers()
   })
 

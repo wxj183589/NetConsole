@@ -16,12 +16,13 @@ export const useTaskStore = defineStore('tasks', () => {
   const detailError = ref('')
   const logError = ref('')
   const failures = ref(0)
-  const logsExpanded = ref(false)
+  const logsExpanded = ref(true)
   const pollingConsumers = new Set<string>()
   let detailVisible = false
   let listBusy = false
   let detailBusy = false
-  let logBusy = false
+  let logContextGeneration = 0
+  let activeLogRequest: { generation: number; taskId: string } | null = null
   let listTimer: number | null = null
   let detailTimer: number | null = null
   let logTimer: number | null = null
@@ -57,6 +58,9 @@ export const useTaskStore = defineStore('tasks', () => {
     detailError.value = ''
     logs.value = []
     logError.value = ''
+    logContextGeneration += 1
+    activeLogRequest = null
+    setLogsExpanded(true)
   }
 
   async function refreshSelected(): Promise<void> {
@@ -73,16 +77,27 @@ export const useTaskStore = defineStore('tasks', () => {
   }
 
   async function refreshLogs(): Promise<void> {
-    if (!detailVisible || !logsExpanded.value || !selected.value || logBusy) return
-    logBusy = true
+    if (!detailVisible || !logsExpanded.value || !selected.value) return
+    const generation = logContextGeneration
+    const taskId = selected.value.id
+    if (activeLogRequest?.generation === generation && activeLogRequest.taskId === taskId) return
+    const request = { generation, taskId }
+    activeLogRequest = request
     try {
-      const payload = await getTaskLogs(selected.value.id, 300)
+      const payload = await getTaskLogs(taskId, 300)
+      if (
+        generation !== logContextGeneration
+        || selected.value?.id !== taskId
+        || !detailVisible
+        || !logsExpanded.value
+      ) return
       logs.value = payload.lines
       logError.value = ''
     } catch (cause) {
+      if (generation !== logContextGeneration || selected.value?.id !== taskId) return
       logError.value = cause instanceof Error ? cause.message : '任务日志读取失败'
     } finally {
-      logBusy = false
+      if (activeLogRequest === request) activeLogRequest = null
     }
   }
 
@@ -107,7 +122,11 @@ export const useTaskStore = defineStore('tasks', () => {
 
   function setDetailVisible(value: boolean): void {
     detailVisible = value
-    if (!value) setLogsExpanded(false)
+    if (!value) {
+      logContextGeneration += 1
+      activeLogRequest = null
+      setLogsExpanded(false)
+    }
   }
 
   function setLogsExpanded(value: boolean): void {
