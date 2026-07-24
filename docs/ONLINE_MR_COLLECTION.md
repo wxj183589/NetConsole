@@ -4,7 +4,7 @@
 
 Online MR 面向车载 MR 的实时 SSH/终端采集、fping 业务质量、随采集 iPerf3、手工备注、会话打包和离线诊断。原始文件是事实来源；实时视图用于现场观察，正式离线解析由 `online_mr_parse` Background Job 完成，报告由 Export Process 生成。
 
-当前最多同时采集 2 台 MR。超过 2 台会在选择和启动阶段被拒绝；页面按当前局点的 ApplicationService 操作引用计算可用并发，不再使用旧采集管理器作为运行状态来源。
+人工页面仍最多同时选择 2 台 MR；站点级“只能有一个 Online MR 任务”的旧 Web 限制已取消。`OnlineMrConcurrencyPolicy` 继续保证同一 MR 只有一个任务，并统一活动、启动中和最终化预算。人工任务优先使用可用设备；地面无人值守只在剩余 MR 上运行，不停止人工任务。无人值守默认最多 2 辆列车/4 台 MR，且强制关闭 Session 内 iPerf 和 fping，复用独立全车长 Ping。完整边界见[轨道交通地面无人值守](GROUND_UNATTENDED.md)。
 
 页面操作顺序：选择 1～2 台 MR；配置采集周期和高频 Ping；按需配置 iPerf；点击开始并在确认窗口复核设备/参数；启用 iPerf 时完成服务端预检；创建会话后自动收起设备列表和输入区；以实时状态、解析和采集输出为主；运行中可随时添加带时间戳备注；停止后保存并打包会话。页面不再提供独立“收起设备列表”按钮，自动折叠逻辑保留，输入区的展开操作会同时恢复设备选择区域。Vue 只调用 `OnlineMrApplicationService` 对应 API；重复停止由 Application Service 幂等过滤，页面状态由 operation 查询和 Task Event Hub 共同驱动。
 

@@ -127,6 +127,19 @@ files/rail_transit/
 │     ├─ outputs/
 │     └─ mesh.sqlite
 ├─ online_mr/<mr>/sessions/<session>/
+├─ ground_unattended/
+│  ├─ active/<run_date>/
+│  │  ├─ fleet_ping/             # 按小时、按分片 JSONL
+│  │  ├─ ac_snapshots/           # 按小时 AC 快照 JSONL
+│  │  ├─ timeline/               # AC/Ping 关联 JSONL
+│  │  ├─ scheduler_events.jsonl
+│  │  ├─ coverage_summary.csv
+│  │  ├─ deep_collection_manifest.json
+│  │  ├─ daily_summary.json
+│  │  ├─ errors.jsonl
+│  │  └─ manifest.json
+│  ├─ archives/<run_date>_ground_unattended.zip
+│  └─ index.sqlite               # 配置、运行/覆盖/事件、分段索引和汇总
 ├─ base_data_import/             # 仅显式授权的受控基础资料写入产生
 │  ├─ backups/<operation>.sqlite # SQLite Backup API 生成的写前备份
 │  └─ operations/<operation>.json# 脱敏审计与相对备份引用

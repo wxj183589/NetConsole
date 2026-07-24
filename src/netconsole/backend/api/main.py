@@ -64,6 +64,11 @@ from netconsole.services.online_mr.agent_web_control_service import OnlineMrAgen
 from netconsole.services.online_mr.errors import OnlineMrWebControlError
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.online_mr.web_control_service import OnlineMrWebControlService
+from netconsole.repositories.ground_unattended_repository import GroundUnattendedRepository
+from netconsole.services.ground_unattended.application_service import (
+    GroundUnattendedApplicationService,
+)
+from netconsole.services.ground_unattended.supervisor import GroundUnattendedSupervisor
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.base_data_import_service import RailTransitBaseDataImportService
 from netconsole.services.rail_transit.base_data_write_guard import BaseDataWriteGuard, WRITE_FEATURE_ID
@@ -221,6 +226,7 @@ def create_app(
             ),
         )
     feature_gate = FeatureGate(paths.app_root, runtime_path=paths.runtime_dir)
+    ground_unattended_feature_enabled = feature_gate.is_enabled("web.ground_unattended")
     web_process_adapter = LocalProcessAdapter(task_service)
     site_application_service = SiteApplicationService(paths, task_service)
     data_root_application_service = DataRootApplicationService(paths, site_application_service)
@@ -279,11 +285,13 @@ def create_app(
         desktop_action_service=desktop_action_service,
         device_operation_service=device_operation_service,
     )
-    owns_online_mr_application_service = (
-        online_mr_application_service is None
-        and online_mr_web_control_service is None
-        and online_mr_agent_web_control_service is None
-        and (online_mr_web_control_enabled or online_mr_agent_executor_enabled)
+    owns_online_mr_application_service = online_mr_application_service is None and (
+        (ground_unattended_feature_enabled and runtime_mode is RuntimeMode.DESKTOP)
+        or (
+            online_mr_web_control_service is None
+            and online_mr_agent_web_control_service is None
+            and (online_mr_web_control_enabled or online_mr_agent_executor_enabled)
+        )
     )
     if owns_online_mr_application_service:
         online_mr_application_service = OnlineMrApplicationService(
@@ -292,6 +300,8 @@ def create_app(
             task_service=task_service,
             agent_profile_controller=agent_service,
         )
+
+    ground_unattended_supervisor: GroundUnattendedSupervisor | None = None
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -308,6 +318,8 @@ def create_app(
                     await asyncio.to_thread(reconcile_traffic)
                 await traffic_service.start()
                 await asyncio.to_thread(file_management_service.start)
+                if ground_unattended_supervisor is not None:
+                    await asyncio.to_thread(ground_unattended_supervisor.start)
                 app.state.runtime_services_ready = True
             except Exception as exc:
                 app.state.runtime_services_error = exc.__class__.__name__
@@ -343,6 +355,8 @@ def create_app(
                 await agent_service.start()
                 await traffic_service.start()
                 file_management_service.start()
+                if ground_unattended_supervisor is not None:
+                    ground_unattended_supervisor.start()
                 app.state.runtime_services_ready = True
             yield
         finally:
@@ -351,6 +365,14 @@ def create_app(
             if auto_cleanup_task is not None:
                 auto_cleanup_task.cancel()
                 await asyncio.gather(auto_cleanup_task, return_exceptions=True)
+            if ground_unattended_supervisor is not None:
+                try:
+                    await asyncio.to_thread(ground_unattended_supervisor.close)
+                except BaseException as exc:
+                    app_logger.log_error(
+                        "WEB_LIFESPAN_STOP_FAILED",
+                        f"component=ground_unattended error={exc.__class__.__name__}: {exc}",
+                    )
             try:
                 # 文件下载队列必须先退出，之后才能关闭它共用的 LocalProcessAdapter。
                 await asyncio.to_thread(file_management_service.close)
@@ -564,6 +586,45 @@ def create_app(
         web_process_adapter,
         app.state.rail_transit_base_data_query_service,
     )
+    app.state.ground_unattended_repository = None
+    app.state.ground_unattended_supervisor = None
+    app.state.ground_unattended_application_service = None
+    app.state.ground_unattended_startup_error = ""
+    if ground_unattended_feature_enabled:
+        try:
+            ground_unattended_repository = GroundUnattendedRepository(
+                paths.ground_unattended_db_path(site_name),
+                site_id=site_name,
+            )
+            ground_unattended_supervisor = GroundUnattendedSupervisor(
+                paths,
+                site_id=site_name,
+                repository=ground_unattended_repository,
+                base_query=app.state.rail_transit_base_data_query_service,
+                mesh_query=app.state.ac_mesh_link_query_service,
+                vehicle_query=app.state.vehicle_mr_online_query_service,
+                ac_refresh_service=ac_mesh_link_refresh_service,
+                online_mr_application_service=online_mr_application_service,
+                online_mr_query_service=online_mr_query_service,
+            )
+            app.state.ground_unattended_repository = ground_unattended_repository
+            app.state.ground_unattended_supervisor = ground_unattended_supervisor
+            app.state.ground_unattended_application_service = (
+                GroundUnattendedApplicationService(
+                    paths,
+                    site_id=site_name,
+                    repository=ground_unattended_repository,
+                    supervisor=ground_unattended_supervisor,
+                    desktop_action_service=desktop_action_service,
+                )
+            )
+        except Exception as exc:
+            app.state.ground_unattended_startup_error = exc.__class__.__name__
+            app_logger.log_error(
+                "GROUND_UNATTENDED_START_FAILED",
+                f"component=ground_unattended error={exc.__class__.__name__}: "
+                f"{_safe_error_message(str(exc))}",
+            )
     if desktop_session_token:
         app.add_middleware(DesktopSessionMiddleware, token=desktop_session_token)
 

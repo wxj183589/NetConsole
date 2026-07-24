@@ -59,7 +59,8 @@ WebHost 默认窗口为约 `1360×860`，最小尺寸为 `1024×680`。Vue 导�
 
 - Qt 启动壳和页面已经删除，历史业务去向已记录在最终迁移矩阵；模块是否可用仍以自动测试、Electron 人工和真实设备验收为准。Electron Bridge 见 [Electron Desktop](ELECTRON_DESKTOP.md)；
 
-- 当前 Web 页面包含 Dashboard、任务中心、Agent 管理、AC FIT-AP 资源、Traffic、Online MR、轨道交通基础资料、列车在线情况、车内通信检测、Mesh 原始日志分析和轨道交通无线综合看板；独立 AC Mesh-Link 页面已删除，列车 Mesh-Link 状态统一由“列车在线情况”展示并通过任务窗口查看刷新任务；
+- 当前 Web 页面包含 Dashboard、任务中心、Agent 管理、AC FIT-AP 资源、Traffic、Online MR、轨道交通基础资料、列车在线情况、独立地面无人值守、车内通信检测、Mesh 原始日志分析和轨道交通无线综合看板；独立 AC Mesh-Link 页面已删除，列车 Mesh-Link 状态统一由“列车在线情况”展示并通过任务窗口查看刷新任务；
+- `/rail-transit/ground-unattended` 只轮询持久化状态；页面关闭不停止 AC、全车 Ping 或深度采集。正式 Electron 的 FastAPI lifespan 持有 Supervisor；压缩、清理和停止收口不在 Router 中执行。源码 Server 可查询和验证 API，但真实自动深采仍以受管 Desktop Runtime 为产品边界；
 - 任务列表按运行状态动态使用 2 秒或 5 秒轮询，连续失败后降为 10 秒；详情每 2 秒刷新，日志展开后每秒读取最后 300 条，页面隐藏或关闭后停止全部轮询；
 - Job Center 查询以 SQLite `mode=ro` 和 `query_only` 打开当前局点 `tasks.db`，不初始化 schema、不修复状态，也不返回任务结果中的完整业务 payload；
 - Online MR 在显式启用时提供 LOCAL start/normal stop/force-stop/recover；正式 Electron Runtime 显式启用，其他宿主未传参时仍由 `ONLINE_MR_WEB_CONTROL_ENABLED` 控制。在 `ONLINE_MR_AGENT_EXECUTOR_ENABLED=1` 时提供独立 AGENT start/status/normal stop；两类控制路由都要求 Desktop 模式、严格 `127.0.0.1` 与已认证短期 Cookie。WebHost 没有 Agent 强停、任意命令或任意 URL API；

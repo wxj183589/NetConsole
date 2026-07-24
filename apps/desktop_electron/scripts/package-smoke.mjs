@@ -110,6 +110,7 @@ const requiredProductionFeatureIds = [
   'web.file_management_download',
   'web.file_management_remote',
   'web.job_center',
+  'web.ground_unattended',
   'web.logs',
   'web.mesh_analysis',
   'web.mesh_analysis_import',

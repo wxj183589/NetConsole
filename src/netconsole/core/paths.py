@@ -214,6 +214,24 @@ class PathResolver:
     def rail_transit_base_data_preview_root(self) -> Path:
         return self.runtime_dir / "base_data_import_previews"
 
+    def ground_unattended_root(self, site_name: str = "demo") -> Path:
+        return self.rail_transit_root(site_name) / "ground_unattended"
+
+    def ground_unattended_active_root(self, site_name: str = "demo") -> Path:
+        return self.ground_unattended_root(site_name) / "active"
+
+    def ground_unattended_active_dir(self, site_name: str, run_date: str) -> Path:
+        value = str(run_date or "").strip()
+        if not value or Path(value).name != value or "/" in value or "\\" in value:
+            raise ValueError("invalid ground unattended run date")
+        return self.ground_unattended_active_root(site_name) / value
+
+    def ground_unattended_archives_dir(self, site_name: str = "demo") -> Path:
+        return self.ground_unattended_root(site_name) / "archives"
+
+    def ground_unattended_db_path(self, site_name: str = "demo") -> Path:
+        return self.ground_unattended_root(site_name) / "index.sqlite"
+
     def trackside_ap_root(self, site_name: str = "demo") -> Path:
         return self.rail_transit_root(site_name) / "trackside_ap"
 

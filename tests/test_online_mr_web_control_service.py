@@ -136,6 +136,21 @@ def test_web_control_resolves_formal_mr_and_repository_credentials(tmp_path: Pat
     assert not control.paths.site_tasks_db_path("site-a").exists()
 
 
+def test_web_control_allows_different_mrs_in_same_site(tmp_path: Path) -> None:
+    control, _application, adapter, first_device_id = _service(tmp_path)
+    second = control.base_query.get_mr("demo", "mr-01-cw")
+    assert second is not None and second.mr.device_id is not None
+
+    first = control.start(_request(first_device_id), current_site_id="demo")
+    second_started = control.start(
+        _request(second.mr.device_id, mr_id="mr-01-cw"),
+        current_site_id="demo",
+    )
+
+    assert first.operation_id != second_started.operation_id
+    assert len(adapter.jobs) == 2
+
+
 def test_web_control_normal_stop_is_idempotent_and_uses_application_service(tmp_path: Path) -> None:
     control, application, adapter, device_id = _service(tmp_path)
     started = control.start(_request(device_id), current_site_id="demo")

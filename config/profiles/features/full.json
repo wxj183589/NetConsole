@@ -218,6 +218,12 @@
       "client_package": true,
       "internal_only": false
     },
+    "web.ground_unattended": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
     "mesh.generate_report": {
       "visible": true,
       "enabled": true,

@@ -1,0 +1,145 @@
+# 轨道交通地面无人值守
+
+## 定位
+
+“轨道交通 / 地面无人值守”是独立一级页面，路由为
+`/rail-transit/ground-unattended`，Feature key 为 `web.ground_unattended`。它不复用人工
+“车载 MR 实时收集”页面的组件状态，也不把无人值守运行塞入单一 Online MR Session。
+
+正式调用链为：
+
+```text
+Vue 独立页面
+  -> /api/rail-transit/ground-unattended
+  -> GroundUnattendedApplicationService
+  -> GroundUnattendedSupervisor（FastAPI lifespan）
+  -> AC/基础资料/Online MR/fping/Repository
+```
+
+页面卸载只停止 5 秒 REST 轮询。Electron 主窗口隐藏到通知区域时 Backend、AC 轮询、全车长
+Ping 和深度采集继续；明确退出时 lifespan 先关闭 Supervisor，fping 进程仍由统一
+`ShutdownManager` 登记和回收，Online MR Worker 继续使用既有 `LocalProcessAdapter` 进程树收口。
+功能关闭时不创建无人值守 Repository 或 Supervisor；索引库初始化失败也只让本功能 API 返回结构化
+`GROUND_UNATTENDED_UNAVAILABLE`，不会阻断人工 Online MR 或整个 Backend 启动。
+
+## 配置和时间窗口
+
+配置按局点保存在 `ground_unattended_profiles`。默认值为：
+
+- `schedule_start_time=07:00`、`schedule_end_time=23:00`、`timezone=system`；
+- AC 轮询 10 秒，同 AP 静止阈值 10 分钟，AC 异常 Ping 宽限 120 秒；
+- Ping 间隔 1000 ms、超时 4000 ms、包大小 64、每分片 12 个目标；
+- 最多 2 辆活动列车、4 台活动 MR、2 台启动中 MR、2 台最终化 MR；
+- 深度采集最低/建议/最大时长为 10/20/30 分钟；
+- 详细归档保留 30 天，轻量汇总保留 180 天。
+
+开始和结束时间不能相同，支持 `22:00-06:00` 跨午夜窗口，运行日期取窗口开始日期。运行中保存
+配置不会重启当前 fping 或 SSH 任务，新配置从下一次调度周期生效；状态接口同时返回下一次开始和
+结束时间。
+
+## 正线分类
+
+`GroundUnattendedEligibilityClassifier` 组合当前局点：
+
+- `main_path_code`；
+- 站点 `node_type/path_code/participates_in_direction/track_facilities`；
+- 区间 `section_kind/path_code`；
+- 轨旁 AP 的稳定 ID、规范化 MAC、唯一精确名称、站点、区间和结构化 metadata；
+- `AcMeshLinkQueryService` 的 fresh/online、当前 AP 和本机接收时间。
+
+AP 只按稳定 ID、规范化 MAC 或唯一精确名称匹配，不使用模糊名称。停车场、车辆段、存车线、出入
+段连接线、非主路径和不参与方向判断的站点分别返回明确状态。`UNKNOWN/STALE`、查询失败或 AP
+无法匹配不会伪装为入段；这些状态暂停新深采，已有深采保持运行，已有 Ping 在
+`ac_stale_grace_seconds` 内继续。
+
+同一正线 AP 达到 `stationary_exclusion_minutes` 后返回 `MAINLINE_STATIONARY`：长 Ping 保持，
+不启动新深采，已有自动深采走正常停止和既有最终化；AP 改变后计时清零并恢复深采资格。
+
+## AC 轮询与长 Ping
+
+Supervisor 每个轮询周期复用 `AcMeshLinkRefreshApplicationService` 创建或复用 AC Mesh-Link 只读
+任务，并从 `AcMeshLinkQueryService` 读取现有解析结果。无人值守索引保存 AC 设备时间、本机接收
+时间、来源快照 ID、列车/MR、端位、AP、站点、区间、里程、RSSI、freshness 和受控 raw 引用；
+同一批记录另追加到当日按小时 AC JSONL。
+
+`fping_v5_runner` 保持 `target: str` 向后兼容，并增加 `targets`。`FleetPingSupervisor` 默认每进程
+12 个目标，目标变化时保留不受影响的分片，先启动替换分片再停止旧分片。多目标 JSON 在实际二进制
+不可用时，每个分片降级为一个有界单目标轮询进程，不会为每台 MR 无上限创建进程；页面和事件表会
+显示降级警告。
+
+Ping 样本使用毫秒时间戳，按小时写入 `fleet_ping/*.jsonl`。索引库只保存分段元数据和 1 分钟、
+5 分钟、AC 轮询窗口、AP 停留段、每日 MR/列车汇总。`GroundUnattendedTimelineCorrelator` 以本机
+接收时间关联最近 AC 快照，并记录切换前后窗口、AC 位置未知、CT 单端、CW 单端和双端同时丢包。
+
+## 深度采集与覆盖
+
+`DeepMrCollectionScheduler` 只构造强类型 `OnlineMrStartRequest`，底层继续使用
+`OnlineMrApplicationService`、Job Center、原始命令、Session、正常停止、解析和原子 ZIP。无人值守
+模板固定：terminal monitor、MESH、信道繁忙度、AP 射频统计、切换记录和接口速率开启；无线状态
+默认关闭；会话级 fping 与 iPerf 均强制关闭。全车 Ping 不受深采轮换影响。
+
+`OnlineMrConcurrencyPolicy` 统一设备互斥和活动/启动/最终化预算。人工任务不再受“整个局点只能有
+一个任务”限制；同一 MR 仍只允许一个任务。自动调度先读取全部人工和自动 allocation，只使用剩余
+资源，不停止人工任务。
+
+每日随机队列保存 seed、候选和稳定顺序。第一轮排序固定为：置顶未完成、从未采集、PARTIAL 补采、
+采集次数少、持久随机顺序。只要仍有可采集列车未完成第一轮，已完成列车不会因 Ping 异常进入第二轮；
+全部完成后才按置顶、次数、异常和随机顺序开始后续轮次。
+
+Session 只有满足最低时长、Mesh raw 存在且增长、最终化完成、正式包可用且完整性为 complete 时才
+计为 `COVERED`；单端失败、时长不足、静止/离线、软件中断或最终化不完整为 `PARTIAL`，后续重新
+符合条件时继续补采。
+
+## 数据、归档和恢复
+
+```text
+files/rail_transit/ground_unattended/
+├─ active/<run_date>/
+├─ archives/<run_date>_ground_unattended.zip
+└─ index.sqlite
+```
+
+每日结束先停止新调度，按配置限制深度任务最终化，停止/flush Ping，再生成 daily summary、覆盖 CSV、
+调度事件、错误、深度 Session 引用和 manifest。ZIP 先写隐藏临时文件，逐成员 CRC、manifest 和 SHA-256
+校验后原子发布；索引先标记 READY，之后才用白名单递归清理对应 `active/<run_date>`。任一步失败均
+显示“归档失败，原始数据仍保留”。深度 Session ZIP 只引用、不嵌入每日 ZIP。
+
+启动恢复会核对 RUNNING/STOPPING/FINALIZING/ARCHIVING，收口上次 OPEN Ping 分段，调用现有
+Online MR mapping 恢复；窗口内恢复 Ping 与调度，窗口外继续最终化和归档。无法恢复的自动 operation
+标记为 PARTIAL。BUILDING/FAILED 且 active 仍存在的归档会在下一次 Backend 启动重试。
+
+详细保留到期只删除已校验正式归档及对应 AC/Ping 分段/事件/深采索引；每日汇总保留至
+`summary_retention_days`。手工删除同样走 Supervisor 队列、明确确认和受管路径校验，正在使用的当日
+数据拒绝删除。
+
+## API
+
+前缀为 `/api/rail-transit/ground-unattended`：
+
+```text
+GET/PUT  /profile
+GET      /status
+POST     /start | /pause | /resume | /stop | /stop-and-archive
+GET      /trains | /trains/{train_id}
+PUT      /trains/{train_id}/priority
+GET      /ping-targets | /ping-summary | /timeline
+GET      /deep-collections | /coverage
+GET      /archives | /archives/{archive_id}
+GET      /archives/{archive_id}/summary-download
+POST     /archives/open-directory
+DELETE   /archives/{archive_id}
+```
+
+写接口校验当前局点和 Pydantic 范围，返回结构化错误；停止、压缩、清理和归档由 Supervisor 执行，
+不会在 Router 请求线程运行。
+
+## 验证边界
+
+自动测试覆盖时间窗口/跨午夜、同日手工停止抑制、配置持久化、结构化正线排除、静止恢复、多目标与
+动态分片、轮转/汇总、CT/CW 错峰补齐、覆盖轮次去重、首轮覆盖排序、可复现队列、ZIP 成功清理、
+ZIP 失败保留、Repository 故障隔离、API 空态和前端七页签。`vue-tsc`、Vitest、Web production build
+和 Electron 定向测试作为提交门。
+
+以下仍是人工现场门禁，不得由 fake 或本机回环测试提升为已验证：主备 AC 真实切换与设备时钟偏差、
+十几小时持续多目标 fping、真实列车 AP 漫游、2 车/4 MR 并发 SSH、Session 现场 ZIP、低磁盘故障注入、
+Electron 隐藏到通知区域后的整窗运行，以及退出后的 fping/Worker/SSH 进程核对。
