@@ -431,6 +431,8 @@ export interface ImportPreviewResult {
   valid_rows: number
   error_count: number
   warning_count: number
+  sheet_names?: string[]
+  statistics?: Record<string, number>
   rows: ImportPreviewRow[]
   merge_plan: MergePlan | null
   database_hash: string
@@ -460,7 +462,9 @@ export interface MergePlanItem {
   result: MergeResult
   conflict_summary: string
   field_diffs: MergeFieldDiff[]
+  source_values: Record<string, unknown>
   blocking: boolean
+  issues: DataQualityIssue[]
 }
 
 export interface MergePlan {

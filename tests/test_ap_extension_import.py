@@ -5,6 +5,7 @@ from openpyxl import Workbook
 from netconsole.core.database import Database
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.services.ap_extension_import import (
+    AP_SWITCH_PORT_POINT_TABLE,
     AP_NAME_MAC_LIST,
     PIS_LAYOUT_TABLE,
     SIGNAL_AB_NETWORK_TABLE,
@@ -167,6 +168,39 @@ def test_preview_scans_multiple_sheets(tmp_path):
 
     assert [sheet.sheet_name for sheet in preview.sheets] == ["AP清单"]
     assert preview.summary["total_rows"] == 1
+
+
+def test_preview_ap_switch_port_point_table_maps_access_fields_without_mileage(tmp_path):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "轨旁AP业务"
+    sheet.append(["归属站点", "室内交换机", "接口名称", "AP_MAC", "AP名称", "区间", "AP编号"])
+    sheet.append(["11-高桥西", "11-高桥西1", "GE1/0/1", "1c94-6876-8ee0", "1c94-6876-8ee0", "高桥西-高桥-上行", "AP0127"])
+    sheet.append(["50-高桥西停车场", "50-高桥西停车场1", "GE1/0/2", "1c94-6876-8ee1", "1c94-6876-8ee1", "", "AP0683"])
+    sheet.append(["11-高桥西", "11-高桥西1", "GE1/0/3", "-", "-", "", ""])
+    path = tmp_path / "ap-switch-port.xlsx"
+    workbook.save(path)
+
+    preview = ApExtensionImportService().preview_file(path)
+
+    assert preview.template_type == AP_SWITCH_PORT_POINT_TABLE
+    assert preview.confidence_score == 95
+    assert preview.summary["total_rows"] == 3
+    assert preview.summary["missing_mac_rows"] == 1
+    assert preview.summary["error_rows"] == 0
+    section, yard, placeholder = preview.standard_rows
+    assert section["station_name"] == "高桥西"
+    assert section["section_name"] == "高桥西-高桥-上行"
+    assert section["section_start_station"] == "高桥西"
+    assert section["section_end_station"] == "高桥"
+    assert section["direction"] == "上行"
+    assert section["belong_type"] == "section"
+    assert section["uplink_switch"] == "11-高桥西1"
+    assert section["uplink_port"] == "GE1/0/1"
+    assert section["mileage_text"] == ""
+    assert yard["station_name"] == "高桥西停车场"
+    assert yard["belong_type"] == "yard"
+    assert placeholder["ap_mac_display"] == "-"
 
 
 def test_standard_template_import_keeps_direction_mileage_and_infers_section(tmp_path):

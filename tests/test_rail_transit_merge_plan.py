@@ -52,3 +52,22 @@ def test_section_without_station_is_valid_and_quality_groups_are_entity_scoped(t
     assert duplicate_group.issue_count >= 2
     assert duplicate_group.blocking is True
     assert groups.total < groups.issue_total
+
+
+def test_merge_plan_uses_point_code_identity_and_keeps_empty_fields_out_of_update(tmp_path: Path) -> None:
+    paths, _db_path = build_rail_transit_base_data_fixture(tmp_path)
+    service = RailTransitBaseDataImportService(paths)
+    plan = service.build_merge_plan(
+        site_id="demo",
+        source_file_name="AP点表宁波1.xlsx",
+        source_file_sha256="b" * 64,
+        rows=[
+            _row(2, ap_name="", ap_point_code="AP0127", ap_mac_norm="1c9468768ee0", mileage_text="", remark=""),
+            _row(3, ap_name="", ap_point_code="", ap_mac_display="-"),
+        ],
+    )
+
+    assert plan.items[0].result == "CREATE"
+    assert plan.items[0].source_identity["ap_name"] == "AP0127"
+    assert not any(diff.field_name in {"mileage_text", "remark"} for diff in plan.items[0].field_diffs)
+    assert plan.items[1].result == "SKIP"

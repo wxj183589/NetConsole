@@ -10,6 +10,8 @@ FIT-AP OmniPeek 入口提交当前 AC、勾选 AP UUID、数据源/内容/颜色
 
 FIT-AP 资源、配置快照、Radio、历史和 AP 扩展表格使用 `NcDataTable`。FIT-AP 页面原有私有列显隐已由公共列设置替代；排序、筛选、光衰状态、选择和详情操作继续使用原 Store/API 语义。页面不得重新直接声明 `el-table-column` 或私有列宽算法。
 
+AP 点表导入入口归属“轨道交通 / 基础资料”；AC 管理不显示独立“导入 AP 元数据”按钮。FIT-AP 仍可按 MAC 消费共享基础资料关联结果，但不得在 AC 页面建立第二套点表预览或写入流程。
+
 页面卡片、状态、配置文本和原始回显统一消费 `theme/` 的面板、状态和代码语义 Token，不维护固定浅色面板或隐式深色日志主题。
 
 表格展示改动运行本目录 Vitest、公共表格测试、`vue-tsc` 和 `scripts/ui` Guard；真实 AC/FIT-AP 数据和 Electron 多尺寸视觉仍按既有验收边界单独确认。

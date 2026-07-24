@@ -189,7 +189,7 @@ const sectionColumns: NcTableColumn<Section>[] = [
   { key: 'remark', label: '备注', valueType: 'description', minWidth: 180, displayValue: (row) => display(row.remark), alignmentReason: 'long-text' },
 ]
 const apColumns: NcTableColumn<TracksideAp>[] = [
-  { key: 'name', label: 'AP 名称 / 点位', valueType: 'name', minWidth: 170, fixed: 'left', displayValue: (row) => row.name || row.point_code || '--' },
+  { key: 'name', label: 'AP 名称 / 点位', valueType: 'name', minWidth: 170, fixed: 'left', displayValue: (row) => row.point_code || row.name || '--' },
   { key: 'point_code', label: '点位编号', minWidth: 120, displayValue: (row) => display(row.point_code) },
   { key: 'mac', label: 'AP MAC', valueType: 'mac', minWidth: 150 },
   { key: 'management_ip', label: '管理 IP', valueType: 'ip', minWidth: 125, displayValue: (row) => display(row.management_ip) },
@@ -248,11 +248,17 @@ const mergeColumns: NcTableColumn<MergePlanItem>[] = [
   { key: 'expand', label: '', type: 'expand', width: 48, hideable: false },
   { key: 'row_number', label: '行号', valueType: 'number', width: 80 },
   { key: 'result', label: '处理结果', valueType: 'status', width: 150 },
-  { key: 'source_identity', label: '来源身份', minWidth: 210, displayValue: (row) => `${display(row.source_identity.ap_name)} / ${display(row.source_identity.ap_mac)}` },
+  { key: 'ap_point_code', label: '点位编号', minWidth: 130, displayValue: (row) => display(row.source_values.ap_point_code) },
+  { key: 'ap_mac', label: 'AP MAC', valueType: 'mac', minWidth: 150, displayValue: (row) => display(row.source_identity.ap_mac) },
+  { key: 'station_name', label: '归属站点', minWidth: 130, displayValue: (row) => display(row.source_values.station_name) },
+  { key: 'section_name', label: '归属区间', minWidth: 210, displayValue: (row) => display(row.source_values.section_name) },
+  { key: 'direction', label: '线路方向', width: 100, displayValue: (row) => display(row.source_values.direction) },
+  { key: 'uplink_switch', label: '室内交换机', minWidth: 140, displayValue: (row) => display(row.source_values.uplink_switch) },
+  { key: 'uplink_port', label: '接口名称', minWidth: 120, displayValue: (row) => display(row.source_values.uplink_port) },
   { key: 'matched_entity_name', label: '正式实体', valueType: 'name', minWidth: 170, displayValue: (row) => display(row.matched_entity_name) },
   { key: 'match_method', label: '匹配方式', width: 140 },
   { key: 'field_diffs', label: '字段差异', valueType: 'description', minWidth: 320, alignmentReason: 'long-text', displayValue: (row) => diffSummary(row.field_diffs), showOverflowTooltip: true },
-  { key: 'conflict_summary', label: '冲突', valueType: 'error', minWidth: 240, alignmentReason: 'long-text', displayValue: (row) => display(row.conflict_summary) },
+  { key: 'issues', label: '问题', valueType: 'error', minWidth: 240, alignmentReason: 'long-text', displayValue: (row) => row.issues.map((issue) => issue.message).join('；') || display(row.conflict_summary), showOverflowTooltip: true },
 ]
 const mergeFieldColumns: NcTableColumn<MergeFieldDiff>[] = [
   { key: 'field_name', label: '字段', minWidth: 160 },
@@ -1280,6 +1286,9 @@ function mergeType(value: string): 'success' | 'danger' | 'warning' | 'info' {
   if (value === 'NEEDS_CONFIRMATION') return 'warning'
   return 'info'
 }
+function templateLabel(value: string): string {
+  return value === 'ap_switch_port_point_table' ? 'AP 交换机端口点表' : value || '未识别模板'
+}
 function diffSummary(diffs: Array<{ field_name: string; action: string }>): string {
   return diffs.map((item) => `${item.field_name}: ${item.action}`).join('；') || '--'
 }
@@ -1748,7 +1757,7 @@ function sectionSourceLabel(row: Section): string {
             <el-button :disabled="locked || saving" @click="addAp">新增轨旁 AP</el-button>
           </div>
           <NcDataTable table-id="rail-base-trackside-aps" route-key="/rail-transit/base-data" :data="apRows" :columns="apColumns" height="calc(100vh - 430px)" empty-text="暂无轨旁 AP 扩展资料">
-            <template #cell-name="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.name" :class="{ 'field-error': fieldError('trackside_ap', row.id, 'name') }" @input="markAp(row)" /><span v-else>{{ row.name || row.point_code || '--' }}</span></template>
+            <template #cell-name="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.name" :class="{ 'field-error': fieldError('trackside_ap', row.id, 'name') }" @input="markAp(row)" /><span v-else>{{ row.point_code || row.name || '--' }}</span></template>
             <template #cell-point_code="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.point_code" :class="{ 'field-error': fieldError('trackside_ap', row.id, 'point_code') }" @input="markAp(row)" /><span v-else>{{ display(row.point_code) }}</span></template>
             <template #cell-mac="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.mac" :class="{ 'field-error': fieldError('trackside_ap', row.id, 'mac') }" @input="markAp(row)" /><span v-else>{{ display(row.mac) }}</span></template>
             <template #cell-station="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.station" @input="markAp(row)" /><span v-else>{{ display(row.station) }}</span></template>
@@ -1821,13 +1830,19 @@ function sectionSourceLabel(row: Section): string {
           <el-alert title="基础资料写入默认关闭" description="支持 XLSX、CSV、JSON；原文件不会保存在运行目录。只有明确授权的范围可以应用，正式身份和运行态字段不会被自动覆盖。" type="warning" :closable="false" show-icon />
           <div class="preview-toolbar">
             <label class="file-picker"><el-icon><UploadFilled /></el-icon><span>{{ store.selectedFileName || '选择预览文件' }}</span><input type="file" accept=".xlsx,.csv,.json" @change="handleFile" /></label>
-            <span v-if="store.importPreview">{{ formatBytes(store.importPreview.file_size) }} · {{ store.importPreview.template_type }} · 置信度 {{ store.importPreview.confidence_score }}</span>
+            <span v-if="store.importPreview">{{ formatBytes(store.importPreview.file_size) }} · {{ templateLabel(store.importPreview.template_type) }} · 工作表 {{ store.importPreview.sheet_names?.join('、') || '--' }} · 置信度 {{ store.importPreview.confidence_score }}</span>
           </div>
           <div v-if="store.importPreview" class="preview-summary">
             <article><span>解析行数</span><strong>{{ store.importPreview.total_rows }}</strong></article>
             <article class="normal"><span>有效行</span><strong>{{ store.importPreview.valid_rows }}</strong></article>
             <article class="danger"><span>错误</span><strong>{{ store.importPreview.error_count }}</strong></article>
             <article class="warning"><span>警告</span><strong>{{ store.importPreview.warning_count }}</strong></article>
+            <template v-if="store.importPreview.template_type === 'ap_switch_port_point_table'">
+              <article><span>带归属区间</span><strong>{{ store.importPreview.statistics?.section_rows || 0 }}</strong></article>
+              <article><span>无归属区间</span><strong>{{ store.importPreview.statistics?.without_section_rows || 0 }}</strong></article>
+              <article class="warning"><span>缺少里程（允许）</span><strong>{{ store.importPreview.statistics?.missing_mileage_rows || 0 }}</strong></article>
+              <article class="warning"><span>无效占位行</span><strong>{{ store.importPreview.statistics?.placeholder_rows || 0 }}</strong></article>
+            </template>
           </div>
           <div v-if="store.importPreview" class="preview-actions">
             <el-radio-group v-model="previewFilter" class="preview-filter"><el-radio-button value="all">全部</el-radio-button><el-radio-button value="CREATE">CREATE</el-radio-button><el-radio-button value="UPDATE">UPDATE</el-radio-button><el-radio-button value="UNCHANGED">UNCHANGED</el-radio-button><el-radio-button value="CONFLICT">CONFLICT</el-radio-button><el-radio-button value="NEEDS_CONFIRMATION">待人工确认</el-radio-button></el-radio-group>

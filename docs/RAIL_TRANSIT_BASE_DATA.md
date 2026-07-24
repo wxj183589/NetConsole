@@ -159,6 +159,7 @@ POST /api/rail-transit/base-data/import-operations/{operation_id}/rollback
 - 返回值只保留基础资料安全字段。账号、密码、Token、Community、Secret、Credential、上传模板原路径和用户本机绝对路径不返回、不记录。
 - 预览不写 `devices.db`、`tasks.db` 或正式资料目录，不创建 Task，不生成正式资产。合并计划以 `preview_id` 保存到 `.local/runtime/base_data_import_previews/`，只包含安全字段、文件 basename/SHA-256、数据库 SHA-256、问题和 15 分钟有效期，不保存上传原文件或绝对路径；过期预览会被受控清理。
 - 预览逐行返回 `CREATE / UPDATE / UNCHANGED / SKIP / CONFLICT / NEEDS_CONFIRMATION`，并展示字段级现值、候选值、来源、动作和警告。
+- `ap_switch_port_point_table`（AP 交换机端口点表）识别 `轨旁AP业务` 中的 `AP_MAC`、`AP编号`、`归属站点`、`区间`、`室内交换机` 和 `接口名称`。带数字前缀的站点以安全来源元数据保留原值并规范为正式站名，区间末尾提取上下行；缺少里程允许导入且不会清除已有里程或备注，MAC 为 `-` 的空端口行只进入 `SKIP`。文件中的 `AP名称=MAC` 不进入正式名称合并，轨旁 AP 页面优先展示点位编号。
 - 数据质量按实体分组。同一 AP 或 MR 的多个问题只占一个实体组；阻断项、警告项和仅提示项分开统计，页面不得把字段问题数误称为设备数。
 - 重复 MAC、重复静态 IP、MR 角色冲突和身份冲突属于阻断项。缺少 AP 正式名称、缺少 MAC、里程缺失等可进入补录队列，但不得绕过冲突检查。
 
@@ -195,6 +196,8 @@ Electron Desktop 受管会话由短期 `desktop_session_token` 显式启用正�
 5. 失败事务全部回滚；回滚前还要确认数据库仍等于本次写入后的哈希，避免覆盖后续修改。
 
 同一 `preview_id` 只处理一次；重复提交返回 `ALREADY_APPLIED`，不得重复 CREATE/UPDATE。`NEEDS_CONFIRMATION` 必须逐字段选择保留正式值或采用导入值，后端重新校验；blocking 冲突、运行态字段和空值覆盖不能由前端决策绕过。
+
+AP 点表导入、预览、确认、审计和回滚只在“轨道交通 / 基础资料”显示。AC 管理不再提供独立“导入 AP 元数据”入口；FIT-AP 运行态仍通过共享 MAC 关联读取基础资料，不建立第二套导入数据。
 
 备份和审计位于当前局点 `files/rail_transit/base_data_import/backups/` 与 `operations/`。审计不保存凭据、连接串、源文件绝对路径或本机临时路径。
 

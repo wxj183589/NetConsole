@@ -13,7 +13,7 @@ from netconsole.models.api.rail_transit_base_data import (
     ImportPreviewResultDTO,
     ImportPreviewRowDTO,
 )
-from netconsole.services.ap_extension_import import ApExtensionImportService, normalize_ap_mac
+from netconsole.services.ap_extension_import import AP_SWITCH_PORT_POINT_TABLE, ApExtensionImportService, normalize_ap_mac
 from netconsole.services.rail_transit.base_data_import_service import RailTransitBaseDataImportService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.source_policy import is_blocking_issue
@@ -119,14 +119,21 @@ class RailTransitImportPreviewService:
         output: list[ImportPreviewRowDTO] = []
         for index, raw in enumerate(rows, 1):
             values = self._safe_values(raw, index)
+            if template_type == AP_SWITCH_PORT_POINT_TABLE and self._same_mac_text(values.get("ap_name"), values.get("ap_mac_display")):
+                values["ap_name"] = ""
             row_number = int(values.get("source_row") or index)
             row_issues = issues_by_row[row_number]
-            row_issues.extend(self._validate_row(values, row_number, mac_counts, known_stations, known_sections))
+            row_issues.extend(self._validate_row(values, row_number, mac_counts, known_stations, known_sections, template_type=template_type))
             row_issues = self._deduplicate_issues(row_issues)
             output.append(ImportPreviewRowDTO(row_number=row_number, values=values, issues=row_issues))
         error_count = sum(issue.severity == "error" for row in output for issue in row.issues)
         warning_count = sum(issue.severity == "warning" for row in output for issue in row.issues)
-        valid_rows = sum(not any(issue.severity == "error" for issue in row.issues) for row in output)
+        valid_rows = sum(
+            not any(issue.severity == "error" for issue in row.issues)
+            and not any(issue.code == "ap_mac_placeholder" for issue in row.issues)
+            for row in output
+        )
+        statistics = self._statistics(output)
         merge_plan = self.import_service.build_merge_plan(
             site_id=site_id,
             rows=output,
@@ -145,12 +152,31 @@ class RailTransitImportPreviewService:
             valid_rows=valid_rows,
             error_count=error_count,
             warning_count=warning_count,
+            sheet_names=sorted({str(row.values.get("source_sheet") or "") for row in output if row.values.get("source_sheet")}),
+            statistics=statistics,
             rows=output,
             merge_plan=merge_plan,
             database_hash=merge_plan.database_hash,
             preview_expires_at=merge_plan.preview_expires_at,
             write_enabled=merge_plan.write_enabled,
         )
+
+    @staticmethod
+    def _statistics(rows: list[ImportPreviewRowDTO]) -> dict[str, int]:
+        return {
+            "valid_ap_rows": sum(bool(normalize_ap_mac(row.values.get("ap_mac_norm") or row.values.get("ap_mac_display")).valid) for row in rows),
+            "placeholder_rows": sum(any(issue.code == "ap_mac_placeholder" for issue in row.issues) for row in rows),
+            "section_rows": sum(bool(str(row.values.get("section_name") or "").strip()) for row in rows),
+            "without_section_rows": sum(not str(row.values.get("section_name") or "").strip() for row in rows),
+            "missing_mileage_rows": sum(
+                normalize_ap_mac(row.values.get("ap_mac_norm") or row.values.get("ap_mac_display")).valid
+                and not str(row.values.get("mileage_text") or "").strip()
+                and row.values.get("mileage_m") is None
+                for row in rows
+            ),
+            "up_direction_rows": sum(str(row.values.get("direction") or "").strip() == "上行" for row in rows),
+            "down_direction_rows": sum(str(row.values.get("direction") or "").strip() == "下行" for row in rows),
+        }
 
     @staticmethod
     def _json_rows(content: bytes) -> list[dict[str, Any]]:
@@ -179,7 +205,26 @@ class RailTransitImportPreviewService:
         values["ap_mac_display"] = mac.display or mac.raw
         mileage = parse_track_mileage(values.get("mileage_text") or values.get("mileage_m"))
         values["mileage_m"] = mileage.meters
+        source_station_name = cls._source_station_name(row)
+        if source_station_name:
+            values["raw_payload_json"] = json.dumps(
+                {"import_source": {"station_name": source_station_name}},
+                ensure_ascii=False,
+            )
         return values
+
+    @staticmethod
+    def _source_station_name(row: dict[str, Any]) -> str:
+        try:
+            payload = json.loads(str(row.get("raw_payload_json") or "{}"))
+            raw_values = payload.get("values")
+            mapping = payload.get("mapping")
+            index = mapping.get("station_name") if isinstance(mapping, dict) else None
+            if not isinstance(raw_values, list) or not isinstance(index, int) or not 0 <= index < len(raw_values):
+                return ""
+            return str(raw_values[index] or "").strip()[:2_000]
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+            return ""
 
     @classmethod
     def _validate_row(
@@ -189,14 +234,18 @@ class RailTransitImportPreviewService:
         mac_counts: Counter[str],
         known_stations: set[str],
         known_sections: set[str],
+        *,
+        template_type: str = "",
     ) -> list[DataQualityIssueDTO]:
         issues: list[DataQualityIssueDTO] = []
         name = str(values.get("ap_name") or "").strip()
         mac = normalize_ap_mac(values.get("ap_mac_norm") or values.get("ap_mac_display"))
-        if not name:
+        if not name and template_type != AP_SWITCH_PORT_POINT_TABLE:
             issues.append(cls._issue("warning", "ap_name_missing", row_number, "ap_name", "", "AP 名称为空", "补充正式 AP 名称"))
         if not mac.raw:
             issues.append(cls._issue("warning", "ap_mac_missing", row_number, "ap_mac_display", "", "AP MAC 为空", "补充有效 AP MAC"))
+        elif template_type == AP_SWITCH_PORT_POINT_TABLE and str(mac.raw or "").strip().casefold() in {"-", "--", "无", "n/a", "na", "none"}:
+            issues.append(cls._issue("warning", "ap_mac_placeholder", row_number, "ap_mac_display", mac.raw, "无效占位行，将跳过导入", "确认是否为无效空端口行"))
         elif not mac.valid:
             issues.append(cls._issue("error", "ap_mac_invalid", row_number, "ap_mac_display", mac.raw, "AP MAC 格式无效", "使用项目支持的常见 MAC 格式"))
         elif mac_counts[mac.normalized] > 1:
@@ -228,6 +277,12 @@ class RailTransitImportPreviewService:
         if "入" in text:
             return "RDK"
         return ""
+
+    @staticmethod
+    def _same_mac_text(left: object, right: object) -> bool:
+        left_mac = normalize_ap_mac(left).normalized
+        right_mac = normalize_ap_mac(right).normalized
+        return bool(left_mac and right_mac and left_mac == right_mac)
 
     @staticmethod
     def _parser_issue(issue: dict[str, Any], row_number: int) -> DataQualityIssueDTO:

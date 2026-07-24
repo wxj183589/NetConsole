@@ -34,9 +34,11 @@ AP_MERGE_FIELDS = (
     "ap_mac_display",
     "uplink_switch",
     "uplink_port",
+    "remark",
     "source_file",
     "source_sheet",
     "source_row",
+    "raw_payload_json",
 )
 
 

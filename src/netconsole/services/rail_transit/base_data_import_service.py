@@ -47,6 +47,7 @@ from netconsole.services.rail_transit.base_data_write_guard import (
 
 
 PREVIEW_TTL_MINUTES = 15
+_SOURCE_TRACKING_FIELDS = {"source_file", "source_sheet", "source_row", "raw_payload_json"}
 
 
 class BaseDataImportError(RuntimeError):
@@ -434,10 +435,16 @@ class RailTransitBaseDataImportService:
             issue.model_copy(update={"blocking": issue.blocking or is_blocking_issue(issue.code, issue.severity)})
             for issue in row.issues
         ]
+        placeholder_mac = str(values.get("ap_mac_display") or "").strip().casefold() in {"-", "--", "无", "n/a", "na", "none"}
         blocking = any(issue.blocking for issue in issues) or match.status == "conflict"
         current = by_id.get(match.entity_id, {})
+        if values.get("raw_payload_json"):
+            values["raw_payload_json"] = self._merge_raw_payload_json(
+                current.get("raw_payload_json"),
+                values["raw_payload_json"],
+            )
         diffs: list[MergeFieldDiffDTO] = []
-        for field in (item for item in AP_MERGE_FIELDS if item not in {"source_file", "source_sheet", "source_row"}):
+        for field in (item for item in AP_MERGE_FIELDS if item not in _SOURCE_TRACKING_FIELDS):
             proposed = values.get(field)
             if proposed is None or proposed == "":
                 continue
@@ -472,16 +479,19 @@ class RailTransitBaseDataImportService:
         has_business_value = any(
             str(values.get(field) or "").strip()
             for field in AP_MERGE_FIELDS
-            if field not in {"source_file", "source_sheet", "source_row"}
+            if field not in _SOURCE_TRACKING_FIELDS
         )
-        if not has_business_value:
+        if placeholder_mac:
+            result = "SKIP"
+        elif not has_business_value:
             result = "SKIP"
         elif blocking:
             result = "CONFLICT"
         elif not any(str(values.get(field) or "").strip() for field in ("ap_name", "ap_mac_norm", "ap_mac_display")):
             result = "NEEDS_CONFIRMATION"
         elif match.status == "create":
-            result = "NEEDS_CONFIRMATION" if not values.get("ap_name") or not values.get("ap_mac_norm") else "CREATE"
+            display_identity = values.get("ap_name") or values.get("ap_point_code")
+            result = "NEEDS_CONFIRMATION" if not display_identity or not values.get("ap_mac_norm") else "CREATE"
         elif any(diff.action == "manual_review" for diff in diffs):
             result = "NEEDS_CONFIRMATION"
         elif diffs:
@@ -491,7 +501,7 @@ class RailTransitBaseDataImportService:
         return MergePlanItemDTO(
             row_number=row.row_number,
             source_identity={
-                "ap_name": values.get("ap_name") or "",
+                "ap_name": values.get("ap_name") or values.get("ap_point_code") or "",
                 "ap_mac": values.get("ap_mac_display") or values.get("ap_mac_norm") or "",
                 "ap_point_code": values.get("ap_point_code") or "",
             },
@@ -518,9 +528,26 @@ class RailTransitBaseDataImportService:
                     for diff in item.field_diffs
                     if diff.action in {"fill_missing", "use_imported"}
                 }
+                for field in _SOURCE_TRACKING_FIELDS:
+                    value = item.source_values.get(field)
+                    if value is not None and value != "":
+                        fields[field] = value
                 fields["source_file"] = plan.source_file_name
                 operations.append({"kind": "update", "entity_id": item.matched_entity_id, "values": fields})
         return operations
+
+    @staticmethod
+    def _merge_raw_payload_json(current: object, imported: object) -> str:
+        def object_value(value: object) -> dict[str, Any]:
+            try:
+                parsed = json.loads(str(value or "{}"))
+            except json.JSONDecodeError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+
+        payload = object_value(current)
+        payload.update(object_value(imported))
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
     def _audit_payload(
         self,
@@ -580,7 +607,7 @@ class RailTransitBaseDataImportService:
         allowed = [
             field
             for field in AP_MERGE_FIELDS
-            if field not in {"source_file", "source_sheet", "source_row"}
+            if field not in _SOURCE_TRACKING_FIELDS
         ]
         output = []
         for item, change in zip(actionable, changes, strict=True):

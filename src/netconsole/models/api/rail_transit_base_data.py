@@ -624,6 +624,8 @@ class ImportPreviewResultDTO(ApiModel):
     valid_rows: int = 0
     error_count: int = 0
     warning_count: int = 0
+    sheet_names: list[str] = Field(default_factory=list)
+    statistics: dict[str, int] = Field(default_factory=dict)
     rows: list[ImportPreviewRowDTO] = Field(default_factory=list)
     merge_plan: MergePlanDTO | None = None
     database_hash: str = ""

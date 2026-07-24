@@ -17,6 +17,7 @@ PIS_LAYOUT_TABLE = "pis_layout_table"
 NINGBO_PIS_LAYOUT_LIKE = "ningbo_pis_layout_like"
 AP_NAME_MAC_LIST = "ap_name_mac_list"
 SIGNAL_AB_NETWORK_TABLE = "signal_ab_network_table"
+AP_SWITCH_PORT_POINT_TABLE = "ap_switch_port_point_table"
 GENERIC_MAPPING = "generic_mapping"
 UNKNOWN_TEMPLATE = "unknown"
 
@@ -57,8 +58,8 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "power_distribution": ("电源分配", "供电分配", "power_distribution"),
     "fiber_access_station": ("光缆接入站", "AP光缆接入站", "fiber_access_station"),
     "fiber_distribution": ("光缆分配", "光交分配", "fiber_distribution"),
-    "uplink_switch": ("上联交换机", "上联设备", "uplink_switch"),
-    "uplink_port": ("上联端口", "交换机端口", "uplink_port"),
+    "uplink_switch": ("上联交换机", "上联设备", "室内交换机", "uplink_switch"),
+    "uplink_port": ("上联端口", "交换机端口", "接口名称", "uplink_port"),
     "optical_port": ("光模块端口", "光口", "optical_port"),
     "location_desc": ("点位说明", "安装位置说明", "location_desc"),
     "remark": ("备注", "remark"),
@@ -277,6 +278,8 @@ class ApExtensionImportService:
             standard_rows, issues = _convert_signal_ab_network_rows(file_name, str(sheet["name"]), rows)
         else:
             standard_rows, issues = _convert_rows(file_name, str(sheet["name"]), rows, data_start, mapping, titles)
+        if template_type == AP_SWITCH_PORT_POINT_TABLE:
+            standard_rows = _normalize_ap_switch_port_rows(standard_rows)
         standard_rows = _infer_sections_by_mileage(standard_rows)
         duplicates = _duplicate_records(standard_rows)
         for duplicate in duplicates:
@@ -405,6 +408,15 @@ def _detect_template_type(
     if {"left_mileage", "right_mileage"} & fields and {"ap_point_code", "section_name"} & fields:
         confidence = 86 if "宁波" in name or "PIS" in name.upper() else 78
         return (NINGBO_PIS_LAYOUT_LIKE if "宁波" in name else PIS_LAYOUT_TABLE), confidence
+    if {
+        "ap_mac_display",
+        "ap_point_code",
+        "station_name",
+        "section_name",
+        "uplink_switch",
+        "uplink_port",
+    } <= fields and ("轨旁AP业务" in name or "section_name" in fields):
+        return AP_SWITCH_PORT_POINT_TABLE, 95
     if {"ap_name", "ap_mac_display"} <= fields and len(fields) <= 4:
         return AP_NAME_MAC_LIST, 82
     if {"ap_mac_display", "network_domain"} <= fields or _contains_any(rows, ("A网", "B网", "红网", "蓝网")):
@@ -434,7 +446,7 @@ def _convert_rows(
         converted = _convert_row(file_name, sheet_name, row_index, values, mapping, segment_titles)
         if not _has_business_value(converted):
             continue
-        if converted.get("ap_mac_display") and not converted.get("ap_mac_norm"):
+        if converted.get("ap_mac_display") and not converted.get("ap_mac_norm") and not _is_placeholder_mac(converted.get("ap_mac_display")):
             issues.append({"type": "invalid_mac", "severity": "error", "source_row": row_index, "message": "MAC格式无效"})
         if converted.get("mileage_text") and converted.get("mileage_m") is None:
             issues.append({"type": "invalid_mileage", "severity": "warning", "source_row": row_index, "message": "里程无法解析"})
@@ -520,7 +532,7 @@ def _convert_row(
 
 
 def _direction_from_labels(values: list[str], mapping: dict[str, int]) -> str:
-    for field_name in ("ap_name", "ap_point_code", "left_mileage", "right_mileage"):
+    for field_name in ("ap_name", "ap_point_code", "section_name", "left_mileage", "right_mileage"):
         index = mapping.get(field_name)
         if index is None or index < 0 or index >= len(values):
             continue
@@ -528,6 +540,42 @@ def _direction_from_labels(values: list[str], mapping: dict[str, int]) -> str:
         if direction:
             return direction
     return ""
+
+
+def _normalize_ap_switch_port_rows(rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:
+    for row in rows:
+        station = str(row.get("station_name") or "").strip()
+        section = str(row.get("section_name") or "").strip()
+        row["station_name"] = _normalize_point_table_station(station)
+        if section:
+            row["belong_type"] = "section"
+            row["direction"] = row.get("direction") or _direction_from_text(section)
+            start_station, end_station = _section_stations_from_point_table(section)
+            row["section_start_station"] = row.get("section_start_station") or start_station
+            row["section_end_station"] = row.get("section_end_station") or end_station
+        elif any(keyword in station for keyword in YARD_KEYWORDS):
+            row["belong_type"] = "yard"
+        else:
+            row["belong_type"] = "station" if row.get("station_name") else "unknown"
+    return rows
+
+
+def _normalize_point_table_station(value: str) -> str:
+    match = re.fullmatch(r"\s*\d+\s*[-_]\s*(.+?)\s*", value)
+    return match.group(1).strip() if match else value
+
+
+def _section_stations_from_point_table(value: str) -> tuple[str, str]:
+    parts = [part.strip() for part in re.split(r"[-－—]", value) if part.strip()]
+    if len(parts) >= 3 and parts[-1] in {"上行", "下行"}:
+        return parts[0], parts[1]
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    return "", ""
+
+
+def _is_placeholder_mac(value: object) -> bool:
+    return str(value or "").strip().casefold() in {"-", "--", "无", "n/a", "na", "none"}
 
 
 def _direction_from_text(value: object) -> str:

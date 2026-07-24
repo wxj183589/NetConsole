@@ -140,6 +140,48 @@ def test_update_rollback_restores_tracking_fields(tmp_path: Path) -> None:
     assert after == before
 
 
+def test_partial_update_keeps_existing_mileage_remark_and_merges_source_metadata(tmp_path: Path) -> None:
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE ap_extension_points SET mileage_text = ?, mileage_m = ?, remark = ?, raw_payload_json = ? WHERE ap_name = ?",
+            ("YDK12+350", 12350, "现场确认", json.dumps({"existing": "kept"}), "AP-Section"),
+        )
+        connection.commit()
+    mark_base_data_copy(paths)
+    service = _service(paths)
+    plan = _plan(
+        service,
+        ImportPreviewRowDTO(
+            row_number=2,
+            values={
+                "ap_name": "AP-Section",
+                "ap_mac_norm": "000000000002",
+                "mileage_text": "",
+                "remark": "",
+                "uplink_switch": "SW-POINT-TABLE",
+                "source_sheet": "轨旁AP业务",
+                "source_row": 2,
+                "raw_payload_json": json.dumps({"import_source": {"station_name": "11-高桥西"}}, ensure_ascii=False),
+            },
+        ),
+    )
+
+    service.apply_merge_plan(plan, confirmed=True)
+    after = next(row for row in service.repository.list_ap_records("demo") if row["ap_name"] == "AP-Section")
+
+    assert after["mileage_text"] == "YDK12+350"
+    assert after["mileage_m"] == 12350
+    assert after["remark"] == "现场确认"
+    assert after["uplink_switch"] == "SW-POINT-TABLE"
+    assert after["source_sheet"] == "轨旁AP业务"
+    assert after["source_row"] == 2
+    assert json.loads(after["raw_payload_json"]) == {
+        "existing": "kept",
+        "import_source": {"station_name": "11-高桥西"},
+    }
+
+
 def test_transaction_failure_rolls_back_all_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     paths, _db_path = build_rail_transit_base_data_fixture(tmp_path)
     mark_base_data_copy(paths)
