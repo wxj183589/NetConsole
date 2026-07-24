@@ -89,9 +89,14 @@ SECTION_HEADERS = (
     "终到节点",
     "自动生成",
     "生成标识",
+    "物理起点里程(m)",
+    "物理终点里程(m)",
+    "开放终点",
+    "里程范围来源",
+    "人工覆盖字段",
     "启用",
     "AP数量",
-    "里程范围",
+    "AP里程统计",
     "备注",
 )
 SECTION_KIND_LABELS = {
@@ -112,6 +117,11 @@ SECTION_NODE_TYPE_LABELS = {
     "terminal_endpoint": "线路端点",
     "legacy": "兼容节点",
     "unknown": "未知",
+}
+SECTION_MILEAGE_SOURCE_LABELS = {
+    "generated": "自动生成",
+    "manual": "人工填写",
+    "unavailable": "未生成",
 }
 
 
@@ -384,14 +394,23 @@ class StationTemplateService:
                     or existing_by_name.get(proposed.name.casefold())
                 )
                 if matched:
-                    proposed = proposed.model_copy(
-                        update={
-                            "id": matched.id,
-                            "ap_count": matched.ap_count,
-                            "mileage_min": matched.mileage_min,
-                            "mileage_max": matched.mileage_max,
-                        }
-                    )
+                    preserved = {
+                        "id": matched.id,
+                        "ap_count": matched.ap_count,
+                        "mileage_min": matched.mileage_min,
+                        "mileage_max": matched.mileage_max,
+                    }
+                    if "物理起点里程(m)" not in raw:
+                        preserved.update(
+                            {
+                                "section_mileage_start_m": matched.section_mileage_start_m,
+                                "section_mileage_end_m": matched.section_mileage_end_m,
+                                "section_mileage_open_end": matched.section_mileage_open_end,
+                                "section_mileage_source": matched.section_mileage_source,
+                                "manual_override_fields": matched.manual_override_fields,
+                            }
+                        )
+                    proposed = proposed.model_copy(update=preserved)
                 action = (
                     "update"
                     if matched and self._section_payload(matched) != self._section_payload(proposed)
@@ -496,6 +515,11 @@ class StationTemplateService:
                     section.end_station,
                     bool_label(section.auto_generated),
                     section.generation_key,
+                    section.section_mileage_start_m if section.section_mileage_start_m is not None else "",
+                    section.section_mileage_end_m if section.section_mileage_end_m is not None else "",
+                    bool_label(section.section_mileage_open_end),
+                    label_for(SECTION_MILEAGE_SOURCE_LABELS, section.section_mileage_source),
+                    "、".join(section.manual_override_fields),
                     bool_label(section.enabled),
                     section.ap_count,
                     self._mileage_range(section.mileage_min, section.mileage_max),
@@ -730,6 +754,42 @@ class StationTemplateService:
         if auto_generated and (not generation_key or not start_uid or not end_uid):
             raise ValueError("自动区间缺少稳定生成标识或正式节点")
         line_direction = str(raw.get("线路方向") or "").strip()
+        mileage_columns_present = "物理起点里程(m)" in raw
+        mileage_start = self._float_or_none(raw.get("物理起点里程(m)")) if mileage_columns_present else None
+        mileage_end = self._float_or_none(raw.get("物理终点里程(m)")) if mileage_columns_present else None
+        mileage_open_end = bool_from_template(raw.get("开放终点"), default=False) if mileage_columns_present else False
+        mileage_source = value_from_label(
+            SECTION_MILEAGE_SOURCE_LABELS,
+            raw.get("里程范围来源"),
+            default="unavailable",
+        ) if mileage_columns_present else "unavailable"
+        if mileage_source not in SECTION_MILEAGE_SOURCE_LABELS:
+            raise ValueError("区间里程范围来源无效")
+        if mileage_start is not None and mileage_start < 0:
+            raise ValueError("区间物理起点里程不能小于 0")
+        if mileage_end is not None and mileage_end < 0:
+            raise ValueError("区间物理终点里程不能小于 0")
+        if mileage_open_end:
+            if (
+                mileage_source == "unavailable"
+                or section_kind != "terminal_extension"
+                or mileage_start is None
+                or mileage_end is not None
+            ):
+                raise ValueError("开放终点仅适用于端点延伸区间，且必须保留起点、清空终点")
+        elif mileage_source != "unavailable":
+            if mileage_start is None or mileage_end is None or mileage_end <= mileage_start:
+                raise ValueError("非开放区间必须填写有效的物理起点和终点里程")
+        elif mileage_start is not None or mileage_end is not None:
+            raise ValueError("已填写物理里程时，范围来源不能为未生成")
+        override_text = str(raw.get("人工覆盖字段") or "").strip()
+        manual_override_fields = sorted(
+            {
+                field.strip()
+                for field in re.split(r"[、,，;；\s]+", override_text)
+                if field.strip()
+            }
+        )
         return SectionDTO(
             id=f"new:template-section:{uuid4().hex}",
             name=name,
@@ -747,6 +807,11 @@ class StationTemplateService:
             line_side=line_direction,
             auto_generated=auto_generated,
             generation_key=generation_key,
+            manual_override_fields=manual_override_fields,
+            section_mileage_start_m=mileage_start,
+            section_mileage_end_m=mileage_end,
+            section_mileage_open_end=mileage_open_end,
+            section_mileage_source=mileage_source,  # type: ignore[arg-type]
             enabled=bool_from_template(raw.get("启用"), default=True),
             source_kind="generated" if auto_generated else "template",
             ap_count=0,
@@ -811,8 +876,13 @@ class StationTemplateService:
             ("端点延伸区间", "否", "终点站外侧至线路物理端点仍有轨道时启用", "是/否", "否", "是"),
             ("区间类型", "是", "区间业务类型", "、".join(SECTION_KIND_LABELS.values()), "人工区间", "站间区间"),
             ("方向角色", "是", "站序递增或递减方向", "、".join(SECTION_DIRECTION_LABELS.values()), "无", "站序递增"),
+            ("物理起点里程(m)", "有范围时必填", "根据站台中心里程或人工配置得到的区间物理起点", "非负数", "", "152"),
+            ("物理终点里程(m)", "非开放范围必填", "区间物理终点；开放终点时必须留空", "大于起点的非负数", "", "1801"),
+            ("开放终点", "否", "高里程端未明确终点时使用，不伪造终点数值", "是/否", "否", "是"),
+            ("里程范围来源", "是", "区分自动生成、人工填写和未生成的物理范围", "、".join(SECTION_MILEAGE_SOURCE_LABELS.values()), "未生成", "自动生成"),
+            ("人工覆盖字段", "否", "保留自动区间已人工调整的字段状态", "字段名，以顿号分隔", "", "section_mileage_start_m"),
             ("AP数量", "只读", "根据轨旁 AP 正式区间归属实时统计，导入时忽略", "非负整数", "0", "9"),
-            ("里程范围", "只读", "根据关联轨旁 AP 有效里程统计，导入时忽略", "文本", "--", "12000–13000 m"),
+            ("AP里程统计", "只读", "根据关联轨旁 AP 有效里程统计，导入时忽略", "文本", "--", "12000–13000 m"),
             ("生成标识", "自动区间必填", "稳定区间身份，不使用区间名称替代", "文本", "", "MAIN|between|...|increasing"),
         ]
         for row in rows:
@@ -907,6 +977,11 @@ class StationTemplateService:
                 "line_side",
                 "auto_generated",
                 "generation_key",
+                "manual_override_fields",
+                "section_mileage_start_m",
+                "section_mileage_end_m",
+                "section_mileage_open_end",
+                "section_mileage_source",
                 "enabled",
                 "source_kind",
                 "remark",

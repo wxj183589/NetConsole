@@ -181,8 +181,9 @@ const sectionColumns: NcTableColumn<Section>[] = [
   { key: 'start_station', label: '起始节点', minWidth: 170, displayValue: (row) => display(row.start_station) },
   { key: 'end_station', label: '终到节点', minWidth: 170, displayValue: (row) => display(row.end_station) },
   { key: 'line_direction', label: '线路方向', minWidth: 120, displayValue: (row) => display(row.line_direction || row.line_side) },
+  { key: 'section_mileage_range', label: '区间里程范围', valueType: 'mileage', minWidth: 340, displayValue: (row) => sectionMileageRange(row) },
   { key: 'ap_count', label: 'AP 数量', valueType: 'number', width: 110 },
-  { key: 'mileage_range', label: '里程范围', valueType: 'mileage', minWidth: 160, displayValue: (row) => mileageRange(row.mileage_min, row.mileage_max) },
+  { key: 'mileage_range', label: 'AP 里程统计', valueType: 'mileage', minWidth: 160, displayValue: (row) => mileageRange(row.mileage_min, row.mileage_max) },
   { key: 'source_kind', label: '来源', valueType: 'status', width: 120, displayValue: (row) => sectionSourceLabel(row) },
   { key: 'enabled', label: '状态', valueType: 'status', width: 90, displayValue: (row) => row.enabled ? '启用' : '停用' },
   { key: 'remark', label: '备注', valueType: 'description', minWidth: 180, displayValue: (row) => display(row.remark), alignmentReason: 'long-text' },
@@ -304,6 +305,7 @@ const sectionGenerationColumns: NcTableColumn<SectionGenerationPreviewItem>[] = 
   { key: 'line_direction', label: '线路方向', width: 110, displayValue: (row) => generationSection(row)?.line_direction || '--' },
   { key: 'start_station', label: '起始节点', minWidth: 170, displayValue: (row) => generationSection(row)?.start_station || '--' },
   { key: 'end_station', label: '终到节点', minWidth: 170, displayValue: (row) => generationSection(row)?.end_station || '--' },
+  { key: 'section_mileage_range', label: '区间里程范围', valueType: 'mileage', minWidth: 170, displayValue: (row) => generationSection(row) ? sectionMileageRange(generationSection(row) as Section) : '未生成' },
   { key: 'result', label: '处理结果', valueType: 'status', width: 110 },
   { key: 'issues', label: '问题', valueType: 'description', minWidth: 240, alignmentReason: 'long-text', displayValue: (row) => row.issues.map((item) => item.message).join('；') || '--' },
 ]
@@ -564,6 +566,7 @@ function markSection(row: Section): void { recordChange('section', row.id, secti
 const sectionGeneratorFields = new Set([
   'name', 'section_kind', 'path_code', 'start_node_type', 'start_node_uid', 'start_station',
   'end_node_type', 'end_node_uid', 'end_station', 'direction_role', 'line_direction', 'line_side', 'enabled',
+  'section_mileage_start_m', 'section_mileage_end_m', 'section_mileage_open_end', 'section_mileage_source',
 ])
 function markSectionField(row: Section, ...fields: string[]): void {
   if (row.auto_generated) {
@@ -572,6 +575,24 @@ function markSectionField(row: Section, ...fields: string[]): void {
     row.manual_override_fields = [...overrides].sort()
   }
   markSection(row)
+}
+function markSectionMileage(row: Section, field: 'section_mileage_start_m' | 'section_mileage_end_m'): void {
+  row.section_mileage_source = 'manual'
+  markSectionField(row, field, 'section_mileage_source')
+}
+function handleSectionMileageOpenEnd(row: Section, openEnd: boolean): void {
+  row.section_mileage_open_end = openEnd
+  if (openEnd) row.section_mileage_end_m = null
+  row.section_mileage_source = 'manual'
+  markSectionField(row, 'section_mileage_open_end', 'section_mileage_end_m', 'section_mileage_source')
+}
+function handleSectionKindChange(row: Section): void {
+  if (row.section_kind !== 'terminal_extension' && row.section_mileage_open_end) {
+    row.section_mileage_open_end = false
+    markSectionField(row, 'section_kind', 'section_mileage_open_end')
+    return
+  }
+  markSectionField(row, 'section_kind')
 }
 function markAp(row: TracksideAp): void { recordChange('trackside_ap', row.id, apValues(row)) }
 function markMr(row: VehicleMr): void { recordChange('vehicle_mr', row.id, mrValues(row)) }
@@ -758,6 +779,10 @@ function sectionValues(row: Section): Record<string, unknown> {
     auto_generated: row.auto_generated,
     generation_key: row.generation_key,
     manual_override_fields: row.manual_override_fields,
+    section_mileage_start_m: row.section_mileage_start_m,
+    section_mileage_end_m: row.section_mileage_end_m,
+    section_mileage_open_end: row.section_mileage_open_end,
+    section_mileage_source: row.section_mileage_source,
     enabled: row.enabled,
     source_kind: row.source_kind,
     remark: row.remark,
@@ -1023,7 +1048,6 @@ function applyStationTemplateToDraft(): void {
         ap_count: matched.ap_count,
         mileage_min: matched.mileage_min,
         mileage_max: matched.mileage_max,
-        manual_override_fields: matched.manual_override_fields,
       })
       markSection(matched)
     } else {
@@ -1329,6 +1353,10 @@ function defaultSection(values: Partial<Section> = {}): Section {
     auto_generated: false,
     generation_key: '',
     manual_override_fields: [],
+    section_mileage_start_m: null,
+    section_mileage_end_m: null,
+    section_mileage_open_end: false,
+    section_mileage_source: 'unavailable',
     enabled: true,
     source_kind: 'manual',
     ap_count: 0,
@@ -1343,6 +1371,14 @@ function mileageRange(minimum: number | null, maximum: number | null): string {
   if (minimum === maximum || maximum === null) return `${minimum} m`
   return `${minimum}–${maximum} m`
 }
+function sectionMileageRange(row: Section): string {
+  if (row.section_mileage_source === 'unavailable' || row.section_mileage_start_m === null) return '未生成'
+  const start = formatMileageNumber(row.section_mileage_start_m)
+  if (row.section_mileage_open_end) return `${start}+ m`
+  if (row.section_mileage_end_m === null) return '未生成'
+  return `${start}–${formatMileageNumber(row.section_mileage_end_m)} m`
+}
+function formatMileageNumber(value: number): string { return String(Number(value)) }
 function formatBytes(value: number): string {
   if (value < 1024) return `${value} B`
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`
@@ -1660,7 +1696,7 @@ function sectionSourceLabel(row: Section): string {
               <NcDataTable table-id="rail-base-sections" route-key="/rail-transit/base-data" :data="sectionRows" :columns="sectionEditColumns" height="calc(100vh - 410px)" empty-text="暂无区间资料">
                 <template #cell-name="{ row }"><el-input v-if="canEditRow('section', row.id)" v-model="row.name" data-field="section-name" :class="{ 'field-error': fieldError('section', row.id, 'name') }" @input="markSectionField(row, 'name')" /><span v-else>{{ display(row.name) }}</span></template>
                 <template #cell-section_kind="{ row }">
-                  <el-select v-if="canEditRow('section', row.id)" v-model="row.section_kind" @change="markSectionField(row, 'section_kind')"><el-option label="站间区间" value="between_stations" /><el-option label="端点延伸" value="terminal_extension" /><el-option label="人工区间" value="manual" /><el-option label="出入段连接" value="depot_connection" /></el-select>
+                  <el-select v-if="canEditRow('section', row.id)" v-model="row.section_kind" @change="handleSectionKindChange(row)"><el-option label="站间区间" value="between_stations" /><el-option label="端点延伸" value="terminal_extension" /><el-option label="人工区间" value="manual" /><el-option label="出入段连接" value="depot_connection" /></el-select>
                   <el-tag v-else :type="row.section_kind === 'terminal_extension' ? 'warning' : row.auto_generated ? 'success' : 'info'">{{ sectionKindLabel(row.section_kind) }}</el-tag>
                 </template>
                 <template #cell-path_code="{ row }"><el-input v-if="canEditRow('section', row.id)" v-model="row.path_code" @input="markSectionField(row, 'path_code')" /><span v-else>{{ display(row.path_code) }}</span></template>
@@ -1682,6 +1718,15 @@ function sectionSourceLabel(row: Section): string {
                     <el-option :label="editingDraft?.metadata.decreasing_direction_name || store.summary?.decreasing_direction_name || '下行'" :value="editingDraft?.metadata.decreasing_direction_name || store.summary?.decreasing_direction_name || '下行'" />
                   </el-select>
                   <span v-else>{{ display(row.line_direction || row.line_side) }}</span>
+                </template>
+                <template #cell-section_mileage_range="{ row }">
+                  <div v-if="canEditRow('section', row.id)" class="section-mileage-editor">
+                    <el-input-number v-model="row.section_mileage_start_m" data-field="section-mileage-start" :min="0" :controls="false" placeholder="起点" @change="markSectionMileage(row, 'section_mileage_start_m')" />
+                    <span>至</span>
+                    <el-input-number v-model="row.section_mileage_end_m" data-field="section-mileage-end" :min="0" :controls="false" placeholder="终点" :disabled="row.section_mileage_open_end" @change="markSectionMileage(row, 'section_mileage_end_m')" />
+                    <el-checkbox :model-value="row.section_mileage_open_end" data-field="section-mileage-open-end" :disabled="row.section_kind !== 'terminal_extension'" @change="(value: boolean) => handleSectionMileageOpenEnd(row, value)">开放</el-checkbox>
+                  </div>
+                  <span v-else>{{ sectionMileageRange(row) }}</span>
                 </template>
                 <template #cell-source_kind="{ row }"><el-tag :type="row.auto_generated ? 'success' : row.source_kind === 'legacy_ap_derived' ? 'warning' : 'info'">{{ sectionSourceLabel(row) }}</el-tag></template>
                 <template #cell-enabled="{ row }"><el-switch v-if="canEditRow('section', row.id)" v-model="row.enabled" @change="markSectionField(row, 'enabled')" /><el-tag v-else :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag></template>
@@ -2121,6 +2166,8 @@ function sectionSourceLabel(row: Section): string {
 .inline-file-button { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; color: var(--nc-text-primary); background: var(--nc-bg-panel); border: 1px solid var(--nc-border); border-radius: 6px; cursor: pointer; }
 .inline-file-button input { display: none; }
 .compact-pair { display: grid; grid-template-columns: minmax(58px, 0.7fr) minmax(115px, 1.3fr); gap: 8px; align-items: center; min-width: 190px; }
+.section-mileage-editor { display: grid; grid-template-columns: minmax(78px, 1fr) auto minmax(78px, 1fr) auto; gap: 6px; align-items: center; min-width: 310px; }
+.section-mileage-editor :deep(.el-input-number) { width: 100%; }
 .inline-checks { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .facility-tags { display: flex; flex-wrap: wrap; gap: 4px; min-width: 160px; }
 .terminal-extension-editor { display: grid; grid-template-columns: auto minmax(100px, 1fr) 130px minmax(110px, 1fr); gap: 6px; align-items: center; min-width: 420px; }

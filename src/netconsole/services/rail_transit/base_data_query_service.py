@@ -879,6 +879,29 @@ class RailTransitBaseDataQueryService:
                         issues.append(self._issue("error", "section_generation_node_identity_missing", "section", section.id, section.name, field, node_uid, "自动区间引用的稳定节点不存在", "重新生成区间并核对站点"))
             elif not section.start_node_uid or not section.end_node_uid:
                 issues.append(self._issue("warning", "section_legacy_node_unresolved", "section", section.id, section.name, "start_node_uid/end_node_uid", "", "旧区间尚未关联正式节点", "在区间维护中关联正式站点或端点"))
+            if section.section_mileage_source == "unavailable":
+                if (
+                    section.section_mileage_start_m is not None
+                    or section.section_mileage_end_m is not None
+                    or section.section_mileage_open_end
+                ):
+                    issues.append(self._issue("error", "section_mileage_range_invalid", "section", section.id, section.name, "section_mileage_source", section.section_mileage_source, "区间里程来源为未生成，但仍保存了范围值", "清空范围或重新生成区间"))
+                else:
+                    issues.append(self._issue("warning", "section_mileage_unavailable", "section", section.id, section.name, "section_mileage_start_m", "", "区间物理里程范围未生成", "补充站台中心里程后重新生成区间，或人工填写范围"))
+            elif section.section_mileage_open_end:
+                if (
+                    section.section_kind != "terminal_extension"
+                    or section.section_mileage_start_m is None
+                    or section.section_mileage_end_m is not None
+                ):
+                    issues.append(self._issue("error", "section_mileage_range_invalid", "section", section.id, section.name, "section_mileage_open_end", "true", "区间开放终点范围无效", "仅在端点延伸区间保留起点并清空终点"))
+            elif (
+                section.section_mileage_start_m is None
+                or section.section_mileage_end_m is None
+                or section.section_mileage_start_m < 0
+                or section.section_mileage_end_m <= section.section_mileage_start_m
+            ):
+                issues.append(self._issue("error", "section_mileage_range_invalid", "section", section.id, section.name, "section_mileage_start_m/section_mileage_end_m", "", "区间物理里程范围无效", "填写非负起点，并确保终点大于起点"))
             if section.ap_count == 0:
                 issues.append(self._issue("warning", "section_ap_reference_unresolved", "section", section.id, section.name, "ap_count", "0", "区间没有关联轨旁 AP", "核对轨旁 AP 正式区间归属"))
         return issues
@@ -1039,6 +1062,14 @@ class RailTransitBaseDataQueryService:
                         for field in metadata.get("manual_override_fields", [])
                         if isinstance(field, str) and field
                     ] if isinstance(metadata.get("manual_override_fields"), list) else [],
+                    section_mileage_start_m=self._float_or_none(metadata.get("section_mileage_start_m")),
+                    section_mileage_end_m=self._float_or_none(metadata.get("section_mileage_end_m")),
+                    section_mileage_open_end=bool(metadata.get("section_mileage_open_end", False)),
+                    section_mileage_source=(
+                        str(metadata.get("section_mileage_source"))
+                        if str(metadata.get("section_mileage_source") or "") in {"generated", "manual", "unavailable"}
+                        else "unavailable"
+                    ),  # type: ignore[arg-type]
                     enabled=bool(metadata.get("enabled", True)),
                     source_kind=str(metadata.get("source_kind") or "manual"),  # type: ignore[arg-type]
                     ap_count=len(ap_rows),

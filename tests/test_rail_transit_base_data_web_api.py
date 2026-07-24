@@ -336,6 +336,8 @@ def test_section_generation_preview_uses_request_draft_and_is_read_only(
                     "participates_in_direction": True,
                     "structure_type": "underground",
                     "platform_layout": "island",
+                    "center_mileage_text": "100",
+                    "center_mileage_m": 100,
                 },
                 {
                     "id": "new:high",
@@ -346,6 +348,8 @@ def test_section_generation_preview_uses_request_draft_and_is_read_only(
                     "participates_in_direction": True,
                     "structure_type": "underground",
                     "platform_layout": "island",
+                    "center_mileage_text": "200",
+                    "center_mileage_m": 200,
                 },
             ],
             "current_sections": [],
@@ -369,6 +373,10 @@ def test_section_generation_preview_uses_request_draft_and_is_read_only(
     }
     assert sections["草稿甲站-草稿乙站-上行"]["start_station"] == "草稿甲站"
     assert sections["草稿甲站-草稿乙站-下行"]["start_station"] == "草稿乙站"
+    assert sections["草稿甲站-草稿乙站-上行"]["section_mileage_start_m"] == 100
+    assert sections["草稿甲站-草稿乙站-上行"]["section_mileage_end_m"] == 200
+    assert sections["草稿甲站-草稿乙站-下行"]["section_mileage_start_m"] == 100
+    assert sections["草稿甲站-草稿乙站-下行"]["section_mileage_end_m"] == 200
 
 
 def test_station_template_real_file_preview_save_export_and_reimport_round_trip(
@@ -462,6 +470,11 @@ def test_station_template_real_file_preview_save_export_and_reimport_round_trip(
             "验收乙站",
             "是",
             "MAIN|between|acceptance-low|acceptance-high|increasing",
+            81000,
+            82250.5,
+            "否",
+            "自动生成",
+            "",
             "是",
             9,
             "0-99999 m",
@@ -537,6 +550,10 @@ def test_station_template_real_file_preview_save_export_and_reimport_round_trip(
             "auto_generated",
             "generation_key",
             "manual_override_fields",
+            "section_mileage_start_m",
+            "section_mileage_end_m",
+            "section_mileage_open_end",
+            "section_mileage_source",
             "enabled",
             "source_kind",
             "remark",
@@ -617,8 +634,11 @@ def test_station_template_real_file_preview_save_export_and_reimport_round_trip(
         assert exported_nodes["验收乙站"][7].value == "82+250.5"
         section_row = exported_sections["验收甲站-验收乙站-上行"]
         assert section_row[11].value == "MAIN|between|acceptance-low|acceptance-high|increasing"
-        assert section_row[13].value == 0
-        assert section_row[14].value == "--"
+        assert section_row[12].value == 81000
+        assert section_row[13].value == 82250.5
+        assert section_row[15].value == "自动生成"
+        assert section_row[18].value == 0
+        assert section_row[19].value == "--"
         exported_workbook.close()
 
         reimported = client.post(
@@ -651,3 +671,7 @@ def test_station_template_real_file_preview_save_export_and_reimport_round_trip(
         assert first_section["ap_count"] == 0
         assert first_section["mileage_min"] is None
         assert first_section["mileage_max"] is None
+        assert first_section["section_mileage_start_m"] == 81000
+        assert first_section["section_mileage_end_m"] == 82250.5
+        assert first_section["section_mileage_open_end"] is False
+        assert first_section["section_mileage_source"] == "generated"

@@ -3,8 +3,9 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
+from netconsole.models.api.rail_transit_base_data import SectionDTO
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
+from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
 
 
 def _fingerprint(path: Path) -> tuple[str, int]:
@@ -33,6 +34,7 @@ def test_base_data_queries_relations_and_quality_are_read_only(tmp_path: Path) -
     assert stations.total == 3
     assert sections.total == 3
     assert all(item.manual_override_fields == [] for item in sections.items)
+    assert all(item.section_mileage_source == "unavailable" for item in sections.items)
     assert aps.total == 3
     assert len(aps.items) == 2
     assert len(ap_locations) == 3
@@ -48,7 +50,7 @@ def test_base_data_queries_relations_and_quality_are_read_only(tmp_path: Path) -
     assert summary.increasing_direction_leading_end == "unknown"
     assert trains.items[0].mr_count == 2
     codes = {item.code for item in issues.items}
-    assert {"ap_mac_duplicate", "ap_mileage_invalid", "static_ip_duplicate", "mr_train_unbound"} <= codes
+    assert {"ap_mac_duplicate", "ap_mileage_invalid", "static_ip_duplicate", "mr_train_unbound", "section_mileage_unavailable"} <= codes
     assert _fingerprint(db_path) == before
 
 
@@ -67,3 +69,34 @@ def test_base_data_mac_mileage_filters_and_public_dto_have_no_secrets(tmp_path: 
     assert "private-user" not in payload
     assert "private-pass" not in payload
     assert "password" not in payload
+
+
+def test_section_quality_reports_invalid_physical_mileage_shapes(tmp_path: Path) -> None:
+    paths, _db_path = build_rail_transit_base_data_fixture(tmp_path)
+    service = RailTransitBaseDataQueryService(paths)
+    sections = [
+        SectionDTO(
+            id="section:reversed",
+            name="倒置范围",
+            section_mileage_start_m=200,
+            section_mileage_end_m=100,
+            section_mileage_source="manual",
+        ),
+        SectionDTO(
+            id="section:ordinary-open",
+            name="普通开放范围",
+            section_kind="between_stations",
+            section_mileage_start_m=100,
+            section_mileage_open_end=True,
+            section_mileage_source="manual",
+        ),
+    ]
+
+    issues = service._section_issues(sections, [])
+
+    invalid_ids = {
+        issue.entity_id
+        for issue in issues
+        if issue.code == "section_mileage_range_invalid"
+    }
+    assert invalid_ids == {"section:reversed", "section:ordinary-open"}

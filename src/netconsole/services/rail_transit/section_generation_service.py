@@ -15,6 +15,7 @@ from netconsole.models.api.rail_transit_base_data import (
 from netconsole.repositories.rail_transit_base_data_repository import (
     RailTransitBaseDataRepository,
 )
+from netconsole.utils.mileage import parse_track_mileage
 
 
 class SectionGenerationError(RuntimeError):
@@ -131,8 +132,33 @@ class SectionGenerationService:
                 )
                 continue
             ordered = sorted(path_stations, key=lambda station: (station.sort_order, station.node_uid))
+            mileage_counts = Counter(
+                station.center_mileage_m
+                for station in ordered
+                if station.center_mileage_m is not None
+            )
+            duplicate_mileages = {
+                mileage for mileage, count in mileage_counts.items() if count > 1
+            }
+            if duplicate_mileages:
+                issues.append(
+                    self._issue(
+                        "warning",
+                        "section_generation_station_mileage_duplicate",
+                        f"{path_code} 路径存在重复站台中心里程："
+                        f"{', '.join(self._format_mileage(item) for item in sorted(duplicate_mileages))} m",
+                        "center_mileage_m",
+                    )
+                )
             for lower, higher in zip(ordered, ordered[1:]):
-                generated.extend(self._between_sections(metadata, path_code, lower, higher))
+                between_sections, between_issues = self._between_sections(
+                    metadata,
+                    path_code,
+                    lower,
+                    higher,
+                )
+                generated.extend(between_sections)
+                issues.extend(between_issues)
             if path_code.casefold() == metadata.main_path_code.casefold():
                 terminal_sections, terminal_issues = self._terminal_sections(
                     metadata,
@@ -163,9 +189,41 @@ class SectionGenerationService:
         path_code: str,
         lower: StationDTO,
         higher: StationDTO,
-    ) -> list[SectionDTO]:
+    ) -> tuple[list[SectionDTO], list[StationSourceIssueDTO]]:
         physical_name = f"{lower.name}-{higher.name}"
-        return [
+        mileage_start, mileage_end, mileage_source = self._closed_mileage_range(
+            lower.center_mileage_m,
+            higher.center_mileage_m,
+        )
+        issues: list[StationSourceIssueDTO] = []
+        if mileage_source == "unavailable":
+            if lower.center_mileage_m is None or higher.center_mileage_m is None:
+                missing_names = "、".join(
+                    station.name
+                    for station in (lower, higher)
+                    if station.center_mileage_m is None
+                )
+                message = f"{physical_name} 缺少站台中心里程（{missing_names}），无法生成区间里程范围"
+            else:
+                message = f"{physical_name} 的站台中心里程相同，无法生成零长度区间里程范围"
+            issues.append(
+                self._issue(
+                    "warning",
+                    "section_generation_mileage_unavailable",
+                    message,
+                    "center_mileage_m",
+                )
+            )
+        elif lower.center_mileage_m > higher.center_mileage_m:
+            issues.append(
+                self._issue(
+                    "warning",
+                    "section_generation_station_mileage_reversed",
+                    f"{physical_name} 的站点顺序与站台中心里程方向相反，已按物理里程从小到大生成范围",
+                    "center_mileage_m",
+                )
+            )
+        sections = [
             self._section(
                 name=f"{physical_name}-{metadata.increasing_direction_name}",
                 section_kind="between_stations",
@@ -179,6 +237,9 @@ class SectionGenerationService:
                 end_node_uid=higher.node_uid,
                 end_station=higher.name,
                 generation_key=f"{path_code}|between|{lower.node_uid}|{higher.node_uid}|increasing",
+                section_mileage_start_m=mileage_start,
+                section_mileage_end_m=mileage_end,
+                section_mileage_source=mileage_source,
             ),
             self._section(
                 name=f"{physical_name}-{metadata.decreasing_direction_name}",
@@ -193,8 +254,12 @@ class SectionGenerationService:
                 end_node_uid=lower.node_uid,
                 end_station=lower.name,
                 generation_key=f"{path_code}|between|{lower.node_uid}|{higher.node_uid}|decreasing",
+                section_mileage_start_m=mileage_start,
+                section_mileage_end_m=mileage_end,
+                section_mileage_source=mileage_source,
             ),
         ]
+        return sections, issues
 
     def _terminal_sections(
         self,
@@ -246,6 +311,11 @@ class SectionGenerationService:
                 )
                 continue
             side = "low" if station.node_uid == low_station.node_uid else "high"
+            mileage_start, mileage_end, mileage_open_end, mileage_source, mileage_issue = (
+                self._terminal_mileage_range(path_code, station, side)
+            )
+            if mileage_issue:
+                issues.append(mileage_issue)
             endpoint_uid = f"endpoint:{path_code}:{side}"
             endpoint_label = station.terminal_endpoint_label.strip() or "端点"
             if side == "low":
@@ -274,9 +344,90 @@ class SectionGenerationService:
                         end_node_uid=end_node_uid,
                         end_station=end_station,
                         generation_key=f"{path_code}|terminal|{endpoint_uid}|{station.node_uid}|{direction_role}",
+                        section_mileage_start_m=mileage_start,
+                        section_mileage_end_m=mileage_end,
+                        section_mileage_open_end=mileage_open_end,
+                        section_mileage_source=mileage_source,
                     )
                 )
         return sections, issues
+
+    def _terminal_mileage_range(
+        self,
+        path_code: str,
+        station: StationDTO,
+        side: str,
+    ) -> tuple[float | None, float | None, bool, str, StationSourceIssueDTO | None]:
+        center = station.center_mileage_m
+        if center is None:
+            return (
+                None,
+                None,
+                False,
+                "unavailable",
+                self._issue(
+                    "warning",
+                    "section_generation_mileage_unavailable",
+                    f"{station.name} 缺少站台中心里程，无法生成端点区间里程范围",
+                    "center_mileage_m",
+                    entity_id=station.id,
+                ),
+            )
+
+        endpoint: float | None = None
+        endpoint_text = station.terminal_endpoint_mileage_text.strip()
+        if endpoint_text:
+            parsed = parse_track_mileage(endpoint_text)
+            if parsed.meters is not None and not parsed.error:
+                endpoint = float(parsed.meters)
+            else:
+                return (
+                    None,
+                    None,
+                    False,
+                    "unavailable",
+                    self._issue(
+                        "warning",
+                        "section_generation_terminal_mileage_invalid",
+                        f"{station.name} 的端点里程无法解析，无法生成端点区间里程范围",
+                        "terminal_endpoint_mileage_text",
+                        entity_id=station.id,
+                    ),
+                )
+        elif station.terminal_extension_distance_m is not None:
+            distance = station.terminal_extension_distance_m
+            endpoint = center - distance if side == "low" else center + distance
+        elif side == "low":
+            endpoint = 0.0
+        else:
+            return center, None, True, "generated", None
+
+        mileage_start, mileage_end, mileage_source = self._closed_mileage_range(center, endpoint)
+        if mileage_source == "generated":
+            return mileage_start, mileage_end, False, mileage_source, None
+        reason = "计算结果小于 0" if endpoint is not None and endpoint < 0 else "端点里程与站台中心里程相同"
+        return (
+            None,
+            None,
+            False,
+            "unavailable",
+            self._issue(
+                "warning",
+                "section_generation_mileage_unavailable",
+                f"{path_code} 路径 {station.name} 的{reason}，无法生成端点区间里程范围",
+                "terminal_endpoint_mileage_text",
+                entity_id=station.id,
+            ),
+        )
+
+    @staticmethod
+    def _closed_mileage_range(
+        first: float | None,
+        second: float | None,
+    ) -> tuple[float | None, float | None, str]:
+        if first is None or second is None or first < 0 or second < 0 or first == second:
+            return None, None, "unavailable"
+        return min(first, second), max(first, second), "generated"
 
     def _compare(
         self,
@@ -382,6 +533,8 @@ class SectionGenerationService:
                     "name", "section_kind", "path_code", "start_node_type", "start_node_uid",
                     "start_station", "end_node_type", "end_node_uid", "end_station",
                     "direction_role", "line_direction", "line_side", "enabled",
+                    "section_mileage_start_m", "section_mileage_end_m",
+                    "section_mileage_open_end", "section_mileage_source",
                 }
                 for field in override_fields & managed_fields:
                     merged_values[field] = getattr(current_section, field)
@@ -471,6 +624,10 @@ class SectionGenerationService:
         end_node_uid: str,
         end_station: str,
         generation_key: str,
+        section_mileage_start_m: float | None = None,
+        section_mileage_end_m: float | None = None,
+        section_mileage_open_end: bool = False,
+        section_mileage_source: str = "unavailable",
     ) -> SectionDTO:
         digest = hashlib.sha1(generation_key.encode("utf-8")).hexdigest()
         return SectionDTO(
@@ -490,6 +647,10 @@ class SectionGenerationService:
             line_side=line_direction,
             auto_generated=True,
             generation_key=generation_key,
+            section_mileage_start_m=section_mileage_start_m,
+            section_mileage_end_m=section_mileage_end_m,
+            section_mileage_open_end=section_mileage_open_end,
+            section_mileage_source=section_mileage_source,  # type: ignore[arg-type]
             enabled=True,
             source_kind="generated",
         )
@@ -512,9 +673,17 @@ class SectionGenerationService:
             section.line_side,
             section.auto_generated,
             section.generation_key,
+            section.section_mileage_start_m,
+            section.section_mileage_end_m,
+            section.section_mileage_open_end,
+            section.section_mileage_source,
             section.enabled,
             section.source_kind,
         )
+
+    @staticmethod
+    def _format_mileage(value: float) -> str:
+        return f"{value:g}"
 
     @staticmethod
     def _item_id(prefix: str, value: str) -> str:

@@ -407,6 +407,10 @@ class RailTransitBaseDataRepository:
                 "auto_generated",
                 "generation_key",
                 "manual_override_fields",
+                "section_mileage_start_m",
+                "section_mileage_end_m",
+                "section_mileage_open_end",
+                "section_mileage_source",
             )
             if key in values
         }

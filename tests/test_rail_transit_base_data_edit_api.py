@@ -307,6 +307,10 @@ def test_generated_section_edit_persists_overrides_and_cascades_all_named_ap_ref
         "auto_generated": True,
         "generation_key": "MAIN|between|node-a|node-b|increasing",
         "manual_override_fields": [],
+        "section_mileage_start_m": 100,
+        "section_mileage_end_m": 200,
+        "section_mileage_open_end": False,
+        "section_mileage_source": "generated",
         "enabled": True,
         "source_kind": "generated",
         "remark": "保留备注",
@@ -324,7 +328,9 @@ def test_generated_section_edit_persists_overrides_and_cascades_all_named_ap_ref
         "old_end_station": "车站B",
         "old_line_side": "上行",
         "start_node_uid": "node-a-adjusted",
-        "manual_override_fields": ["name", "start_node_uid"],
+        "manual_override_fields": ["name", "section_mileage_start_m", "section_mileage_source", "start_node_uid"],
+        "section_mileage_start_m": 110,
+        "section_mileage_source": "manual",
     }
 
     repository.apply_base_data_changes(
@@ -340,7 +346,9 @@ def test_generated_section_edit_persists_overrides_and_cascades_all_named_ap_ref
     )
     assert saved.name == "现场专用区间"
     assert saved.start_node_uid == "node-a-adjusted"
-    assert saved.manual_override_fields == ["name", "start_node_uid"]
+    assert set(saved.manual_override_fields) == {"name", "section_mileage_source", "section_mileage_start_m", "start_node_uid"}
+    assert (saved.section_mileage_start_m, saved.section_mileage_end_m) == (110, 200)
+    assert saved.section_mileage_source == "manual"
     assert saved.auto_generated is True
     assert saved.source_kind == "generated"
     assert saved.generation_key == create_values["generation_key"]
@@ -353,6 +361,64 @@ def test_generated_section_edit_persists_overrides_and_cascades_all_named_ap_ref
             """
         ).fetchall()
     assert {row[0] for row in references} == {"现场专用区间"}
+
+
+def test_section_physical_mileage_validation_rejects_invalid_ranges(tmp_path: Path) -> None:
+    paths, _database = build_rail_transit_base_data_fixture(tmp_path)
+    base_values = {
+        "name": "非法范围区间",
+        "section_kind": "between_stations",
+        "path_code": "MAIN",
+        "direction_role": "increasing",
+        "line_direction": "上行",
+        "start_node_type": "station",
+        "start_node_uid": "node-a",
+        "start_station": "车站A",
+        "end_node_type": "station",
+        "end_node_uid": "node-b",
+        "end_station": "车站B",
+        "line_side": "上行",
+        "section_mileage_start_m": 200,
+        "section_mileage_end_m": 100,
+        "section_mileage_open_end": False,
+        "section_mileage_source": "manual",
+        "source_kind": "manual",
+    }
+    with TestClient(_app(paths, tmp_path)) as client:
+        revision = client.get("/api/rail-transit/base-data/revision").json()["base_revision"]
+        reversed_range = client.post(
+            "/api/rail-transit/base-data/validate",
+            json={
+                "site_id": "demo",
+                "base_revision": revision,
+                "changes": [{"entity_type": "section", "action": "create", "entity_id": "new:invalid", "values": base_values}],
+            },
+        )
+        ordinary_open_end = client.post(
+            "/api/rail-transit/base-data/validate",
+            json={
+                "site_id": "demo",
+                "base_revision": revision,
+                "changes": [{
+                    "entity_type": "section",
+                    "action": "create",
+                    "entity_id": "new:open",
+                    "values": {
+                        **base_values,
+                        "section_mileage_start_m": 100,
+                        "section_mileage_end_m": None,
+                        "section_mileage_open_end": True,
+                    },
+                }],
+            },
+        )
+
+    assert reversed_range.status_code == 200
+    assert reversed_range.json()["valid"] is False
+    assert reversed_range.json()["issues"][0]["code"] == "section_mileage_range_invalid"
+    assert ordinary_open_end.status_code == 200
+    assert ordinary_open_end.json()["valid"] is False
+    assert ordinary_open_end.json()["issues"][0]["code"] == "section_mileage_open_end_invalid"
 
 
 def test_station_source_confirmation_preserves_manual_fields_and_marks_stale_without_deleting(

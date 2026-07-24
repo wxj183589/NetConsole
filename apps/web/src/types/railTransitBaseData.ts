@@ -287,6 +287,10 @@ export interface Section {
   auto_generated: boolean
   generation_key: string
   manual_override_fields: string[]
+  section_mileage_start_m: number | null
+  section_mileage_end_m: number | null
+  section_mileage_open_end: boolean
+  section_mileage_source: SectionMileageSource
   enabled: boolean
   source_kind: SectionSourceKind
   ap_count: number
@@ -299,6 +303,7 @@ export type SectionKind = 'between_stations' | 'terminal_extension' | 'depot_con
 export type SectionDirectionRole = 'increasing' | 'decreasing' | 'none' | 'unknown'
 export type SectionNodeType = 'station' | 'terminal_endpoint' | 'legacy' | 'unknown'
 export type SectionSourceKind = 'generated' | 'manual' | 'template' | 'legacy_ap_derived'
+export type SectionMileageSource = 'generated' | 'manual' | 'unavailable'
 export type SectionGenerationResult = 'CREATE' | 'UPDATE' | 'UNCHANGED' | 'CONFLICT' | 'STALE'
 
 export interface SectionGenerationPreviewItem {

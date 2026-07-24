@@ -80,6 +80,10 @@ def test_new_template_has_four_sheets_and_round_trips_station_and_section_fields
             line_side="上行",
             auto_generated=True,
             generation_key="MAIN|between|node-low|node-high|increasing",
+            manual_override_fields=["section_mileage_start_m", "section_mileage_source"],
+            section_mileage_start_m=12345.5,
+            section_mileage_end_m=13000,
+            section_mileage_source="manual",
             source_kind="generated",
             ap_count=4,
             mileage_min=12360,
@@ -107,9 +111,9 @@ def test_new_template_has_four_sheets_and_round_trips_station_and_section_fields
     assert workbook["02_线路节点"]["H2"].value == "K12+345.5"
     assert workbook["02_线路节点"]["N2"].value == "折返线、存车线"
 
-    # AP 数量和里程范围是只读导出字段，导入修改必须被忽略。
-    workbook["03_区间配置"]["N2"] = 9
-    workbook["03_区间配置"]["O2"] = "0–99999 m"
+    # AP 数量和 AP 里程统计是只读导出字段，导入修改必须被忽略。
+    workbook["03_区间配置"]["S2"] = 9
+    workbook["03_区间配置"]["T2"] = "0–99999 m"
     stream = BytesIO()
     workbook.save(stream)
     preview = service.preview("demo", stream.getvalue(), "基础资料.xlsx")
@@ -122,6 +126,9 @@ def test_new_template_has_four_sheets_and_round_trips_station_and_section_fields
     assert station.center_mileage_m == 12345.5
     assert section is not None
     assert section.generation_key == "MAIN|between|node-low|node-high|increasing"
+    assert (section.section_mileage_start_m, section.section_mileage_end_m) == (12345.5, 13000)
+    assert section.section_mileage_source == "manual"
+    assert section.manual_override_fields == ["section_mileage_source", "section_mileage_start_m"]
     assert section.ap_count == 0
     assert section.mileage_min is None
     assert section.mileage_max is None
@@ -186,3 +193,95 @@ def test_old_three_sheet_template_imports_without_deleting_sections(tmp_path: Pa
     assert station.structure_type == "underground"
     assert station.platform_layout == "island"
     assert station.track_facilities == ["turnback_track", "storage_track"]
+
+
+def test_old_section_columns_preserve_existing_physical_mileage_and_overrides(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append([
+        "区间编码",
+        "区间名称",
+        "区间类型",
+        "所属路径",
+        "方向角色",
+        "线路方向",
+        "起始节点类型",
+        "起始节点",
+        "终到节点类型",
+        "终到节点",
+        "自动生成",
+        "生成标识",
+        "启用",
+        "AP数量",
+        "里程范围",
+        "备注",
+    ])
+    sheet.append([
+        "AUTO-OLD",
+        "高桥西-高桥-上行",
+        "站间区间",
+        "MAIN",
+        "站序递增",
+        "上行",
+        "车站",
+        "高桥西",
+        "车站",
+        "高桥",
+        "是",
+        "MAIN|between|node-low|node-high|increasing",
+        "是",
+        0,
+        "--",
+        "旧模板",
+    ])
+    stations = {
+        "高桥西": StationDTO(id="station:low", node_uid="node-low", name="高桥西"),
+        "高桥": StationDTO(id="station:high", node_uid="node-high", name="高桥"),
+    }
+    existing = SectionDTO(
+        id="section:existing",
+        name="高桥西-高桥-上行",
+        section_code="AUTO-OLD",
+        section_kind="between_stations",
+        path_code="MAIN",
+        direction_role="increasing",
+        line_direction="上行",
+        start_node_type="station",
+        start_node_uid="node-low",
+        start_station="高桥西",
+        end_node_type="station",
+        end_node_uid="node-high",
+        end_station="高桥",
+        line_side="上行",
+        auto_generated=True,
+        generation_key="MAIN|between|node-low|node-high|increasing",
+        manual_override_fields=["section_mileage_start_m", "section_mileage_source"],
+        section_mileage_start_m=160,
+        section_mileage_end_m=1801,
+        section_mileage_source="manual",
+        source_kind="generated",
+        remark="旧模板",
+    )
+    issues = []
+
+    rows = service._preview_sections(
+        sheet,
+        {
+            "main_path_code": "MAIN",
+            "increasing_direction_name": "上行",
+            "decreasing_direction_name": "下行",
+        },
+        stations,
+        [existing],
+        issues,
+    )
+
+    proposed = rows[0].proposed_section
+    assert proposed is not None
+    assert rows[0].action == "unchanged"
+    assert (proposed.section_mileage_start_m, proposed.section_mileage_end_m) == (160, 1801)
+    assert proposed.section_mileage_source == "manual"
+    assert proposed.manual_override_fields == ["section_mileage_start_m", "section_mileage_source"]

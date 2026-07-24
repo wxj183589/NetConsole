@@ -55,6 +55,7 @@ _SECTION_KINDS = {"between_stations", "terminal_extension", "depot_connection", 
 _SECTION_DIRECTIONS = {"increasing", "decreasing", "none", "unknown"}
 _SECTION_NODE_TYPES = {"station", "terminal_endpoint", "legacy", "unknown"}
 _SECTION_SOURCE_KINDS = {"generated", "manual", "template", "legacy_ap_derived"}
+_SECTION_MILEAGE_SOURCES = {"generated", "manual", "unavailable"}
 
 
 class RailTransitBaseDataApplicationError(RuntimeError):
@@ -392,11 +393,77 @@ class RailTransitBaseDataApplicationService:
         manual_override_fields = raw.get("manual_override_fields") or []
         if not isinstance(manual_override_fields, list):
             raise ValueError("区间人工覆盖字段格式无效")
+        section_kind = _enum(raw.get("section_kind"), _SECTION_KINDS, "manual", "区间类型无效")
+        mileage_start = _float_or_none(raw.get("section_mileage_start_m"))
+        mileage_end = _float_or_none(raw.get("section_mileage_end_m"))
+        mileage_open_end = _bool(raw.get("section_mileage_open_end"), default=False)
+        mileage_source = _enum(
+            raw.get("section_mileage_source"),
+            _SECTION_MILEAGE_SOURCES,
+            "unavailable",
+            "区间里程范围来源无效",
+        )
+        if mileage_start is not None and mileage_start < 0:
+            raise BaseDataFieldValidationError(
+                "section_mileage_start_invalid",
+                "区间物理起点里程不能小于 0",
+                "section_mileage_start_m",
+            )
+        if mileage_end is not None and mileage_end < 0:
+            raise BaseDataFieldValidationError(
+                "section_mileage_end_invalid",
+                "区间物理终点里程不能小于 0",
+                "section_mileage_end_m",
+            )
+        if mileage_open_end:
+            if mileage_source == "unavailable":
+                raise BaseDataFieldValidationError(
+                    "section_mileage_source_invalid",
+                    "开放区间的范围来源不能为 unavailable",
+                    "section_mileage_source",
+                )
+            if section_kind != "terminal_extension":
+                raise BaseDataFieldValidationError(
+                    "section_mileage_open_end_invalid",
+                    "只有端点延伸区间允许开放终点",
+                    "section_mileage_open_end",
+                )
+            if mileage_start is None:
+                raise BaseDataFieldValidationError(
+                    "section_mileage_start_required",
+                    "开放区间必须填写物理起点里程",
+                    "section_mileage_start_m",
+                )
+            if mileage_end is not None:
+                raise BaseDataFieldValidationError(
+                    "section_mileage_open_end_invalid",
+                    "开放区间的物理终点里程必须为空",
+                    "section_mileage_end_m",
+                )
+        elif mileage_source != "unavailable":
+            if mileage_start is None or mileage_end is None:
+                raise BaseDataFieldValidationError(
+                    "section_mileage_range_incomplete",
+                    "非开放区间必须填写物理起点和终点里程",
+                    "section_mileage_start_m" if mileage_start is None else "section_mileage_end_m",
+                )
+            if mileage_end <= mileage_start:
+                raise BaseDataFieldValidationError(
+                    "section_mileage_range_invalid",
+                    "区间物理终点里程必须大于起点里程",
+                    "section_mileage_end_m",
+                )
+        elif mileage_start is not None or mileage_end is not None:
+            raise BaseDataFieldValidationError(
+                "section_mileage_source_invalid",
+                "已填写物理里程时，范围来源不能为 unavailable",
+                "section_mileage_source",
+            )
         return {
             "name": name,
             "old_name": str(raw.get("old_name") or name).strip(),
             "section_code": str(raw.get("section_code") or "").strip(),
-            "section_kind": _enum(raw.get("section_kind"), _SECTION_KINDS, "manual", "区间类型无效"),
+            "section_kind": section_kind,
             "path_code": str(raw.get("path_code") or DEFAULT_MAIN_PATH_CODE).strip() or DEFAULT_MAIN_PATH_CODE,
             "direction_role": direction_role,
             "line_direction": str(raw.get("line_direction") or raw.get("line_side") or "").strip(),
@@ -413,6 +480,10 @@ class RailTransitBaseDataApplicationService:
             "auto_generated": auto_generated,
             "generation_key": generation_key,
             "manual_override_fields": sorted({str(field).strip() for field in manual_override_fields if str(field).strip()}),
+            "section_mileage_start_m": mileage_start,
+            "section_mileage_end_m": mileage_end,
+            "section_mileage_open_end": mileage_open_end,
+            "section_mileage_source": mileage_source,
             "enabled": _bool(raw.get("enabled"), default=True),
             "source_kind": _enum(raw.get("source_kind"), _SECTION_SOURCE_KINDS, "manual", "区间来源类型无效"),
             "remark": str(raw.get("remark") or "").strip(),

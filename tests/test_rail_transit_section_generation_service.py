@@ -27,6 +27,9 @@ def _station(
     node_type: str = "station",
     participates: bool = True,
     enabled: bool = True,
+    center_mileage_m: float | None = None,
+    terminal_distance_m: float | None = None,
+    terminal_mileage_text: str = "",
 ) -> StationDTO:
     return StationDTO(
         id=f"station:{uid}",
@@ -39,12 +42,15 @@ def _station(
         participates_in_direction=participates,
         structure_type="underground",
         platform_layout="island",
+        center_mileage_m=center_mileage_m,
         is_line_terminal=terminal,
         is_service_terminal=terminal,
         turnback_capable=terminal,
         track_facilities=["turnback_track"] if terminal else [],
         turnback_direction="both" if terminal else "none",
         terminal_extension_enabled=extension,
+        terminal_extension_distance_m=terminal_distance_m,
+        terminal_endpoint_mileage_text=terminal_mileage_text,
         enabled=enabled,
     )
 
@@ -180,6 +186,213 @@ def test_generates_four_distinct_terminal_extension_directions(tmp_path: Path) -
         if uid.startswith("endpoint:")
     }
     assert endpoint_uids == {"endpoint:MAIN:low", "endpoint:MAIN:high"}
+
+
+def test_generates_physical_mileage_ranges_for_between_and_terminal_sections(
+    tmp_path: Path,
+) -> None:
+    result = _preview(
+        tmp_path,
+        [
+            _station(
+                "高桥西",
+                11,
+                "node-low",
+                terminal=True,
+                extension=True,
+                center_mileage_m=152,
+            ),
+            _station("高桥", 12, "node-middle", center_mileage_m=1801),
+            _station(
+                "霞浦",
+                39,
+                "node-high",
+                terminal=True,
+                extension=True,
+                center_mileage_m=45574,
+            ),
+        ],
+    )
+
+    sections = {
+        item.proposed_section.name: item.proposed_section
+        for item in result.generated_sections
+        if item.proposed_section
+    }
+    for name in ("端点-高桥西-上行", "端点-高桥西-下行"):
+        section = sections[name]
+        assert (section.section_mileage_start_m, section.section_mileage_end_m) == (0, 152)
+        assert section.section_mileage_open_end is False
+        assert section.section_mileage_source == "generated"
+    for name in ("高桥西-高桥-上行", "高桥西-高桥-下行"):
+        section = sections[name]
+        assert (section.section_mileage_start_m, section.section_mileage_end_m) == (152, 1801)
+        assert section.section_mileage_open_end is False
+        assert section.section_mileage_source == "generated"
+    for name in ("霞浦-端点-上行", "霞浦-端点-下行"):
+        section = sections[name]
+        assert section.section_mileage_start_m == 45574
+        assert section.section_mileage_end_m is None
+        assert section.section_mileage_open_end is True
+        assert section.section_mileage_source == "generated"
+
+
+def test_terminal_explicit_mileage_precedes_extension_distance(tmp_path: Path) -> None:
+    result = _preview(
+        tmp_path,
+        [
+            _station("低端", 1, "low", center_mileage_m=100),
+            _station(
+                "高端",
+                2,
+                "high",
+                terminal=True,
+                extension=True,
+                center_mileage_m=1000,
+                terminal_distance_m=200,
+                terminal_mileage_text="K1+500",
+            ),
+        ],
+    )
+
+    terminal_sections = [
+        item.proposed_section
+        for item in result.generated_sections
+        if item.proposed_section and item.proposed_section.section_kind == "terminal_extension"
+    ]
+    assert terminal_sections
+    assert all(
+        (section.section_mileage_start_m, section.section_mileage_end_m) == (1000, 1500)
+        for section in terminal_sections
+    )
+    assert all(section.section_mileage_open_end is False for section in terminal_sections)
+
+
+def test_missing_duplicate_and_reversed_station_mileages_warn_without_blocking_sections(
+    tmp_path: Path,
+) -> None:
+    result = _preview(
+        tmp_path,
+        [
+            _station("甲", 1, "a", center_mileage_m=200),
+            _station("乙", 2, "b", center_mileage_m=100),
+            _station("丙", 3, "c", center_mileage_m=100),
+            _station("丁", 4, "d"),
+        ],
+    )
+
+    sections = {
+        item.proposed_section.name: item.proposed_section
+        for item in result.generated_sections
+        if item.proposed_section
+    }
+    assert (
+        sections["甲-乙-上行"].section_mileage_start_m,
+        sections["甲-乙-上行"].section_mileage_end_m,
+    ) == (100, 200)
+    assert sections["乙-丙-上行"].section_mileage_source == "unavailable"
+    assert sections["丙-丁-上行"].section_mileage_source == "unavailable"
+    assert result.blocking_count == 0
+    assert {issue.code for issue in result.issues} >= {
+        "section_generation_station_mileage_duplicate",
+        "section_generation_station_mileage_reversed",
+        "section_generation_mileage_unavailable",
+    }
+
+
+def test_regeneration_preserves_manually_overridden_physical_mileage(tmp_path: Path) -> None:
+    stations = [
+        _station("高桥西", 11, "node-low", center_mileage_m=160),
+        _station("高桥", 12, "node-high", center_mileage_m=1801),
+    ]
+    current = SectionDTO(
+        id="section:mileage-adjusted",
+        name="高桥西-高桥-上行",
+        section_kind="between_stations",
+        path_code="MAIN",
+        direction_role="increasing",
+        line_direction="上行",
+        start_node_type="station",
+        start_node_uid="node-low",
+        start_station="高桥西",
+        end_node_type="station",
+        end_node_uid="node-high",
+        end_station="高桥",
+        line_side="上行",
+        auto_generated=True,
+        generation_key="MAIN|between|node-low|node-high|increasing",
+        manual_override_fields=[
+            "section_mileage_start_m",
+            "section_mileage_end_m",
+            "section_mileage_source",
+        ],
+        section_mileage_start_m=155,
+        section_mileage_end_m=1800,
+        section_mileage_source="manual",
+        source_kind="generated",
+    )
+
+    item = next(
+        item
+        for item in _preview(tmp_path, stations, [current]).generated_sections
+        if item.current_section
+    )
+
+    assert item.proposed_section is not None
+    assert (
+        item.proposed_section.section_mileage_start_m,
+        item.proposed_section.section_mileage_end_m,
+        item.proposed_section.section_mileage_source,
+    ) == (155, 1800, "manual")
+    assert item.selected_by_default is False
+    assert item.issues[0].code == "section_generation_manual_override"
+
+
+def test_station_center_mileage_change_updates_unadjusted_generated_range(
+    tmp_path: Path,
+) -> None:
+    current = SectionDTO(
+        id="section:generated",
+        name="高桥西-高桥-上行",
+        section_kind="between_stations",
+        path_code="MAIN",
+        direction_role="increasing",
+        line_direction="上行",
+        start_node_type="station",
+        start_node_uid="node-low",
+        start_station="高桥西",
+        end_node_type="station",
+        end_node_uid="node-high",
+        end_station="高桥",
+        line_side="上行",
+        auto_generated=True,
+        generation_key="MAIN|between|node-low|node-high|increasing",
+        section_mileage_start_m=152,
+        section_mileage_end_m=1801,
+        section_mileage_source="generated",
+        source_kind="generated",
+    )
+
+    item = next(
+        item
+        for item in _preview(
+            tmp_path,
+            [
+                _station("高桥西", 11, "node-low", center_mileage_m=160),
+                _station("高桥", 12, "node-high", center_mileage_m=1801),
+            ],
+            [current],
+        ).generated_sections
+        if item.current_section
+    )
+
+    assert item.result == "UPDATE"
+    assert item.selected_by_default is True
+    assert item.proposed_section is not None
+    assert (
+        item.proposed_section.section_mileage_start_m,
+        item.proposed_section.section_mileage_end_m,
+    ) == (160, 1801)
 
 
 def test_existing_terminal_generation_keys_are_updated_without_duplicates(tmp_path: Path) -> None:

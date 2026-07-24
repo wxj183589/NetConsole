@@ -33,6 +33,7 @@ SectionKind = Literal["between_stations", "terminal_extension", "depot_connectio
 SectionDirectionRole = Literal["increasing", "decreasing", "none", "unknown"]
 SectionNodeType = Literal["station", "terminal_endpoint", "legacy", "unknown"]
 SectionSourceKind = Literal["generated", "manual", "template", "legacy_ap_derived"]
+SectionMileageSource = Literal["generated", "manual", "unavailable"]
 SectionGenerationResult = Literal["CREATE", "UPDATE", "UNCHANGED", "CONFLICT", "STALE"]
 MrPositionCode = Literal["CT", "CW", "unknown"]
 MrPhysicalEnd = Literal["car_1_end", "car_6_end", "unknown"]
@@ -330,6 +331,10 @@ class SectionDTO(ApiModel):
     auto_generated: bool = False
     generation_key: str = ""
     manual_override_fields: list[str] = Field(default_factory=list)
+    section_mileage_start_m: float | None = None
+    section_mileage_end_m: float | None = None
+    section_mileage_open_end: bool = False
+    section_mileage_source: SectionMileageSource = "unavailable"
     enabled: bool = True
     source_kind: SectionSourceKind = "legacy_ap_derived"
     ap_count: int = 0

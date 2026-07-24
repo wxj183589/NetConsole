@@ -123,9 +123,17 @@ const OptionStub = defineComponent({
 })
 const InputNumberStub = defineComponent({
   inheritAttrs: false,
-  props: { modelValue: { type: Number, default: 0 } },
+  props: { modelValue: { type: Number, default: null } },
   emits: ['update:modelValue', 'change'],
-  template: '<input v-bind="$attrs" type="number" :value="modelValue">',
+  methods: {
+    update(event: Event) {
+      const value = (event.target as HTMLInputElement).value
+      const numberValue = value === '' ? null : Number(value)
+      this.$emit('update:modelValue', numberValue)
+      this.$emit('change', numberValue)
+    },
+  },
+  template: '<input v-bind="$attrs" type="number" :value="modelValue ?? \'\'" @input="update">',
 })
 const CheckboxStub = defineComponent({
   inheritAttrs: false,
@@ -164,6 +172,7 @@ const DataTableStub = defineComponent({
         <slot name="cell-start_station" :row="row" />
         <slot name="cell-end_station" :row="row" />
         <slot name="cell-line_direction" :row="row" />
+        <slot name="cell-section_mileage_range" :row="row" />
         <slot name="cell-source_kind" :row="row" />
         <slot name="cell-enabled" :row="row" />
         <slot name="cell-remark" :row="row" />
@@ -435,6 +444,10 @@ const generatedIncreasingSection = {
   auto_generated: true,
   generation_key: 'MAIN|between|node-low|node-high|increasing',
   manual_override_fields: [],
+  section_mileage_start_m: 152,
+  section_mileage_end_m: 1801,
+  section_mileage_open_end: false,
+  section_mileage_source: 'generated',
   enabled: true,
   source_kind: 'generated',
   ap_count: 0,
@@ -962,9 +975,63 @@ describe('轨道交通基础资料编辑闭环', () => {
     wrapper.unmount()
   })
 
+  it('显示并编辑独立的区间物理里程范围，不改写 AP 统计字段', async () => {
+    mocks.sectionsPage.mockResolvedValue({ items: [generatedIncreasingSection], total: 1, page: 1, page_size: 50 })
+    const wrapper = await mountView()
+    const sectionTable = wrapper.get('[data-table-id="rail-base-sections"]')
+
+    expect(sectionTable.text()).toContain('152–1801 m')
+    await button(wrapper, '解锁').trigger('click')
+    await flushPromises()
+    await sectionTable.get('input[data-field="section-mileage-start"]').setValue('160')
+    await sectionTable.get('input[data-field="section-mileage-end"]').setValue('1800')
+
+    await button(wrapper, '保存').trigger('click')
+    await flushPromises()
+    const sectionChange = mocks.validate.mock.calls.at(-1)?.[0].changes.find((change: { entity_type: string }) => change.entity_type === 'section')
+    expect(sectionChange.values).toMatchObject({
+      section_mileage_start_m: 160,
+      section_mileage_end_m: 1800,
+      section_mileage_open_end: false,
+      section_mileage_source: 'manual',
+    })
+    expect(sectionChange.values.manual_override_fields).toEqual(expect.arrayContaining([
+      'section_mileage_start_m', 'section_mileage_end_m', 'section_mileage_source',
+    ]))
+    expect(sectionChange.values).not.toHaveProperty('mileage_min')
+    expect(sectionChange.values).not.toHaveProperty('mileage_max')
+    wrapper.unmount()
+  })
+
+  it('高里程端开放范围显示为加号格式', async () => {
+    mocks.sectionsPage.mockResolvedValue({
+      items: [{
+        ...generatedIncreasingSection,
+        id: 'section:terminal-high',
+        name: '霞浦-端点-上行',
+        section_kind: 'terminal_extension',
+        section_mileage_start_m: 45574,
+        section_mileage_end_m: null,
+        section_mileage_open_end: true,
+      }],
+      total: 1,
+      page: 1,
+      page_size: 50,
+    })
+    const wrapper = await mountView()
+    expect(wrapper.get('[data-table-id="rail-base-sections"]').text()).toContain('45574+ m')
+    wrapper.unmount()
+  })
+
   it('恢复自动值只修改草稿并清空人工覆盖字段', async () => {
     mocks.sectionsPage.mockResolvedValue({
-      items: [{ ...generatedIncreasingSection, name: '已保存人工名称', manual_override_fields: ['name'] }],
+      items: [{
+        ...generatedIncreasingSection,
+        name: '已保存人工名称',
+        manual_override_fields: ['name', 'section_mileage_start_m', 'section_mileage_source'],
+        section_mileage_start_m: 155,
+        section_mileage_source: 'manual',
+      }],
       total: 1,
       page: 1,
       page_size: 50,
@@ -987,6 +1054,9 @@ describe('轨道交通基础资料编辑闭环', () => {
     await flushPromises()
     const sectionChange = mocks.validate.mock.calls.at(-1)?.[0].changes.find((change: { entity_type: string }) => change.entity_type === 'section')
     expect(sectionChange.values.manual_override_fields).toEqual([])
+    expect(sectionChange.values.section_mileage_start_m).toBe(152)
+    expect(sectionChange.values.section_mileage_end_m).toBe(1801)
+    expect(sectionChange.values.section_mileage_source).toBe('generated')
     wrapper.unmount()
   })
 
