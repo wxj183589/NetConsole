@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import { DESKTOP_IPC, DESKTOP_SESSION_COOKIE, DESKTOP_SESSION_HEADER, type CloseToTrayState, type NativeActionResult, type RendererHostReport, type RendererRecoveryState, type RendererWorkloadReport, type SiteStorageRestartRequest, type TaskWindowContext, type WorkspaceWindowOpenRequest, type WorkspaceWindowSnapshot, type WorkspaceWindowStateResult } from '../shared/bridge'
-import { PythonBackendManager } from './backend-manager'
+import { PythonBackendManager, type BackendRuntimeInfo } from './backend-manager'
 import { DesktopBootstrapStore } from './bootstrap'
 import { DESKTOP_SAFE_BACKGROUND_COLOR, isDevelopmentMenuEnabled, loadDesktopConfig, resolveDesktopBackgroundColor } from './config'
 import { registerDesktopIpc, type DesktopIpcRegistration } from './ipc'
@@ -468,46 +468,73 @@ async function restartManagedBackend(update: SiteStorageRestartRequest): Promise
   const previousSite = desktopActiveSiteId
   const nextRoot = update.dataRoot ?? previousRoot
   const nextSite = update.activeSiteId ?? previousSite
+  logger('SITE_SWITCH_STARTED', `site_changed=${nextSite !== previousSite} data_root_changed=${nextRoot !== previousRoot}`)
   await backend.stop()
   backend.configureStorage(nextRoot, nextSite)
   try {
     const runtime = await backend.start()
-    desktopDataRoot = nextRoot
-    desktopActiveSiteId = nextSite
-    bootstrapStore.save({ schema_version: 1, data_root: nextRoot, active_site_id: nextSite })
-    const backendOrigin = new URL(runtime.baseUrl).origin
-    connectionOrigins.add(backendOrigin)
-    const cookiePath = desktopSessionCookiePath(rendererDevelopment)
-    await cookieWindow.webContents.session.cookies.set({
-      url: new URL(cookiePath, `${runtime.baseUrl}/`).toString(),
-      name: DESKTOP_SESSION_COOKIE,
-      value: runtime.apiToken,
-      httpOnly: true,
-      sameSite: 'strict',
-      secure: false,
-      path: cookiePath,
-    })
-    if (!rendererDevelopment) {
-      rendererUrl = runtime.baseUrl
-      rendererOrigins.clear()
-      rendererOrigins.add(backendOrigin)
+    await applyManagedBackendRuntime(runtime, nextRoot, nextSite)
+    logger('SITE_SWITCH_BACKEND_RESTARTED', `site_changed=${nextSite !== previousSite} data_root_changed=${nextRoot !== previousRoot}`)
+    setImmediate(() => { void reloadManagedRenderersAfterBackendRestart() })
+  } catch (cause) {
+    try {
+      await backend.stop()
+      backend.configureStorage(previousRoot, previousSite)
+      const restoredRuntime = await backend.start()
+      await applyManagedBackendRuntime(restoredRuntime, previousRoot, previousSite)
+    } catch (restoreCause) {
+      logger('SITE_SWITCH_FAILED', `stage=backend_restore restored=false type=${restoreCause instanceof Error ? restoreCause.name : 'unknown'}`)
+      throw new Error('Backend 重启失败，原局点恢复失败，请重新启动应用。')
     }
-    trayController?.updateContext({ activeSiteName: desktopActiveSiteId })
-    for (const window of getAllDesktopWindows()) {
-      const previousTarget = windowRendererTargets.get(window)
-      if (!previousTarget) continue
+    logger('SITE_SWITCH_FAILED', `stage=backend_start restored=true type=${cause instanceof Error ? cause.name : 'unknown'}`)
+    throw new Error('Backend 重启失败，已恢复原局点。')
+  }
+}
+
+async function applyManagedBackendRuntime(runtime: BackendRuntimeInfo, dataRoot: string, activeSiteId: string): Promise<void> {
+  const cookieWindow = getAllDesktopWindows()[0]
+  if (!cookieWindow || !bootstrapStore) throw new Error('desktop runtime is unavailable')
+  desktopDataRoot = dataRoot
+  desktopActiveSiteId = activeSiteId
+  bootstrapStore.save({ schema_version: 1, data_root: dataRoot, active_site_id: activeSiteId })
+  const backendOrigin = new URL(runtime.baseUrl).origin
+  connectionOrigins.add(backendOrigin)
+  const cookiePath = desktopSessionCookiePath(rendererDevelopment)
+  await cookieWindow.webContents.session.cookies.set({
+    url: new URL(cookiePath, `${runtime.baseUrl}/`).toString(),
+    name: DESKTOP_SESSION_COOKIE,
+    value: runtime.apiToken,
+    httpOnly: true,
+    sameSite: 'strict',
+    secure: false,
+    path: cookiePath,
+  })
+  if (!rendererDevelopment) {
+    rendererUrl = runtime.baseUrl
+    rendererOrigins.clear()
+    rendererOrigins.add(backendOrigin)
+  }
+  trayController?.updateContext({ activeSiteName: desktopActiveSiteId })
+}
+
+async function reloadManagedRenderersAfterBackendRestart(): Promise<void> {
+  let reloaded = 0
+  for (const window of getAllDesktopWindows()) {
+    if (window.isDestroyed()) continue
+    const previousTarget = windowRendererTargets.get(window)
+    if (!previousTarget) continue
+    try {
       const previousUrl = new URL(previousTarget)
       const nextTarget = new URL(`${previousUrl.pathname}${previousUrl.search}`, rendererUrl).toString()
       rememberManagedRendererTarget(window, nextTarget)
       armRendererThemeDisplay(window)
       await window.loadURL(nextTarget)
+      reloaded += 1
+    } catch (cause) {
+      logger('SITE_SWITCH_FAILED', `stage=renderer_reload type=${cause instanceof Error ? cause.name : 'unknown'}`)
     }
-  } catch (cause) {
-    await backend.stop()
-    backend.configureStorage(previousRoot, previousSite)
-    await backend.start()
-    throw cause
   }
+  logger('SITE_SWITCH_COMPLETED', `renderer_reloaded=${reloaded}`)
 }
 
 async function readBackendActiveSiteId(baseUrl: string, apiToken: string, fallback: string): Promise<string> {

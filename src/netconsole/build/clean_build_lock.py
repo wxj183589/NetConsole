@@ -40,6 +40,8 @@ ALLOWED_RUNTIME = (
     "src/netconsole/assets/licenses/pyinstaller_hooks_contrib_license.txt",
     "apps/web/dist",
     "resources/device_command_profiles.json",
+    "resources/runtime/build_info.json",
+    "resources/runtime/feature_flags.json",
     "resources/tools",
     "resources/tools/windows-x64",
     "resources/tools/windows-x64/fping",
@@ -67,6 +69,7 @@ ALLOWED_RUNTIME = (
     "netconsole/assets/third_party_components.md",
     "netconsole/assets/ipop_v4.1_notice.md",
     "netconsole/assets/device_command_profiles.json",
+    "netconsole/assets/runtime",
     "netconsole/assets/web",
 )
 ALLOWED_DIST_ROOT = (EXE_NAME, INTERNAL_DIR, "tools")

@@ -319,8 +319,8 @@ export function registerDesktopIpc(
       try {
         await dependencies.restartBackend?.(validateSiteStorageRestartRequest(value))
         return { success: true }
-      } catch {
-        return { success: false, error: '本地 Backend 重启失败，请检查日志后重试。' }
+      } catch (cause) {
+        return { success: false, error: backendRestartErrorMessage(cause) }
       }
     }),
   )
@@ -472,6 +472,18 @@ function safeActionError(cause: unknown): string {
     return cause.message
   }
   return '桌面操作失败'
+}
+
+function backendRestartErrorMessage(cause: unknown): string {
+  if (!(cause instanceof Error)) return '本地 Backend 重启失败，请检查日志后重试。'
+  const allowed = new Set([
+    '隔离测试模式不允许修改正式局点或数据根',
+    'Backend 重启失败，已恢复原局点。',
+    'Backend 重启失败，原局点恢复失败，请重新启动应用。',
+  ])
+  return allowed.has(cause.message)
+    ? cause.message
+    : '本地 Backend 重启失败，请检查日志后重试。'
 }
 
 async function executeFileDesktopAction(

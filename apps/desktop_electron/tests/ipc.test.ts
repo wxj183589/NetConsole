@@ -42,6 +42,7 @@ function createHarness(overrides: {
   getWorkspaceWindowState?: (window: unknown) => { windowId: string; snapshot: WorkspaceWindowSnapshot | null }
   saveWorkspaceWindowState?: (window: unknown, value: WorkspaceWindowSnapshot) => void
   setWorkspaceWindowTitle?: (window: unknown, title: string) => void
+  restartBackend?: (value: { activeSiteId?: string; dataRoot?: string }) => Promise<void>
   windowForEvent?: (event: { sender: unknown }) => unknown
   fetchImpl?: typeof fetch
 } = {}) {
@@ -85,6 +86,7 @@ function createHarness(overrides: {
     getWorkspaceWindowState: overrides.getWorkspaceWindowState,
     saveWorkspaceWindowState: overrides.saveWorkspaceWindowState,
     setWorkspaceWindowTitle: overrides.setWorkspaceWindowTitle,
+    restartBackend: overrides.restartBackend,
     fetchImpl: overrides.fetchImpl,
   })
   return { ipcMain, sender, selectedFile, selectedDirectory, savedFile, shell, pathRegistry, dialog }
@@ -132,6 +134,32 @@ describe('desktop IPC', () => {
     ipcMain.listeners.get(DESKTOP_IPC.setWorkspaceWindowTitle)?.({ sender: {} }, '设备：AC2')
     expect(setWorkspaceWindowTitle).toHaveBeenCalledWith(managedWindow, '设备：AC1')
     expect(setWorkspaceWindowTitle).toHaveBeenCalledOnce()
+  })
+
+  it('returns restart success only after the managed Backend is ready', async () => {
+    const restartBackend = vi.fn(async () => undefined)
+    const { ipcMain, sender } = createHarness({ restartBackend })
+
+    await expect(ipcMain.handlers.get(DESKTOP_IPC.restartBackend)!({ sender }, {
+      activeSiteId: 'line-12',
+    })).resolves.toEqual({ success: true })
+    expect(restartBackend).toHaveBeenCalledWith({ activeSiteId: 'line-12' })
+  })
+
+  it('classifies managed restart failures without exposing raw errors', async () => {
+    const restored = createHarness({
+      restartBackend: vi.fn(async () => { throw new Error('Backend 重启失败，已恢复原局点。') }),
+    })
+    await expect(restored.ipcMain.handlers.get(DESKTOP_IPC.restartBackend)!({ sender: restored.sender }, {
+      activeSiteId: 'line-12',
+    })).resolves.toEqual({ success: false, error: 'Backend 重启失败，已恢复原局点。' })
+
+    const sensitive = createHarness({
+      restartBackend: vi.fn(async () => { throw new Error('token=secret C:\\private\\data') }),
+    })
+    await expect(sensitive.ipcMain.handlers.get(DESKTOP_IPC.restartBackend)!({ sender: sensitive.sender }, {
+      activeSiteId: 'line-12',
+    })).resolves.toEqual({ success: false, error: '本地 Backend 重启失败，请检查日志后重试。' })
   })
 
   it('accepts only validated one-way workload reports and returns in-memory recovery state', () => {

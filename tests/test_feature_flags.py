@@ -483,3 +483,82 @@ def test_customer_zip_keeps_allowlist_and_hidden_feature_config(tmp_path: Path) 
     assert embedded_flags["features"]["system.feature_flags"] == PROTECTED_INTERNAL_STATE
     assert embedded_full_flags["features"]["module.feature_switch"] == PROTECTED_INTERNAL_STATE
     assert embedded_full_flags["features"]["system.feature_flags"] == PROTECTED_INTERNAL_STATE
+
+
+def test_packaged_runtime_ignores_external_overrides_and_protects_core_features(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_runtime_feature_files(tmp_path, edition="customer", profile="customer")
+    (tmp_path / "runtime" / "feature_flags.local.json").write_text(
+        json.dumps(
+            {
+                "features": {
+                    "module.system_settings": {"visible": False, "enabled": False}
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NETCONSOLE_EDITION", "internal")
+    monkeypatch.setenv("NETCONSOLE_FEATURE_PROFILE", "full")
+
+    gate = FeatureGate(tmp_path, packaged_runtime=True, allow_local_override=True)
+
+    assert gate.resolution.source == "embedded"
+    assert gate.allow_local_override is False
+    for feature_id in (
+        "module.system_settings",
+        "web.system_settings",
+        "web.job_center",
+        "module.logs",
+        "web.logs",
+    ):
+        assert gate.is_visible(feature_id)
+        assert gate.is_enabled(feature_id)
+    assert not gate.is_visible("module.feature_switch")
+    assert not gate.is_visible("system.feature_flags")
+
+
+@pytest.mark.parametrize("baseline_state", ["missing", "invalid"])
+def test_packaged_runtime_falls_back_to_registry_when_baseline_unavailable(
+    tmp_path: Path, baseline_state: str
+) -> None:
+    install_runtime_feature_files(tmp_path, edition="customer", profile="customer")
+    baseline = (
+        tmp_path
+        / "_internal"
+        / "netconsole"
+        / "assets"
+        / "runtime"
+        / "feature_flags.json"
+    )
+    if baseline_state == "missing":
+        baseline.unlink()
+    else:
+        baseline.write_text("{broken", encoding="utf-8")
+
+    gate = FeatureGate(tmp_path, packaged_runtime=True)
+
+    assert gate.resolution.embedded_flags_status == baseline_state
+    for feature_id in (
+        "module.system_settings",
+        "web.system_settings",
+        "web.job_center",
+        "module.logs",
+        "web.logs",
+    ):
+        assert gate.is_visible(feature_id)
+        assert gate.is_enabled(feature_id)
+    assert not gate.is_visible("module.feature_switch")
+    assert not gate.is_visible("system.feature_flags")
+
+
+def test_packaged_runtime_missing_build_info_uses_production_identity(
+    tmp_path: Path,
+) -> None:
+    gate = FeatureGate(tmp_path, packaged_runtime=True)
+
+    assert gate.build_info == {"edition": "customer", "feature_profile": "production"}
+    assert gate.resolution.source == "packaged_registry_fallback"
+    assert gate.is_visible("module.system_settings")
+    assert gate.is_visible("web.job_center")

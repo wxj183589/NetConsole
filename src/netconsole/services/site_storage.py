@@ -17,14 +17,16 @@ from pathlib import Path
 from threading import RLock
 from typing import Callable, Iterator
 
+from netconsole.core import app_logger
 from netconsole.core.database import Database
 from netconsole.core.interprocess_lock import interprocess_file_lock
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_environment import persistent_storage
 from netconsole.core.sites import DEFAULT_SITE, SiteManager
 from netconsole.core.version import APP_VERSION
-from netconsole.repositories.device_group_repository import DeviceGroupRepository
+from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TaskState
+from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.services.site_sync import (
     COLLECTION_RETURN,
     FIELD_COLLECTION,
@@ -38,8 +40,15 @@ from netconsole.services.site_sync import (
 class SiteStorageError(RuntimeError):
     """可安全返回给 Desktop API 的局点/数据存储错误。"""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        details: dict[str, object] | None = None,
+    ) -> None:
         self.code = code
+        self.details = dict(details or {})
         super().__init__(message)
 
 
@@ -473,10 +482,14 @@ class SiteApplicationService:
     def switch_site(self, site_id: str) -> dict[str, object]:
         site_id = validate_site_id(site_id)
         with storage_lock(self.paths, "site-switch"):
-            self._ensure_no_active_tasks(site_id)
             record = self.registry.get(site_id)
             previous = self.active_site_id()
             previous_directory = self.registry.resolve_directory_name(previous)
+            app_logger.log_info(
+                "SITE_SWITCH_STARTED",
+                f"previous_site_id={previous} target_site_id={site_id}",
+            )
+            self.ensure_no_active_tasks_anywhere()
             try:
                 self.manager.switch_site(record.root_path.name)
                 return {**record.to_public(), "active": True, "previous_site_id": previous, "restart_required": True}
@@ -485,6 +498,10 @@ class SiteApplicationService:
                     self.manager.switch_site(previous_directory)
                 except Exception:
                     pass
+                app_logger.log_error(
+                    "SITE_SWITCH_FAILED",
+                    f"stage=activate previous_site_id={previous} target_site_id={site_id} error_type={exc.__class__.__name__}",
+                )
                 raise SiteStorageError("SITE_SWITCH_BLOCKED", "局点切换失败，已恢复原局点") from exc
 
     def migrate_site(self, site_id: str, destination_root: Path, *, check_cancel: Callable[[], None] | None = None) -> dict[str, object]:
@@ -519,22 +536,74 @@ class SiteApplicationService:
                 raise SiteStorageError("SITE_MIGRATION_FAILED", "单局点迁移失败，源数据未改变") from exc
 
     def _ensure_no_active_tasks(self, site_id: str) -> None:
+        active = self._list_blocking_tasks(site_id)
+        if active:
+            app_logger.log_warning(
+                "SITE_SWITCH_BLOCKED_BY_ACTIVE_TASK",
+                f"site_id={site_id} task_count={len(active)} task_ids={','.join(str(item['task_id']) for item in active)}",
+            )
+            raise SiteStorageError(
+                "SITE_HAS_ACTIVE_TASKS",
+                "局点存在仍在运行的任务，无法切换",
+                details={"blocking_tasks": active},
+            )
+
+    def _list_blocking_tasks(self, site_id: str) -> list[dict[str, object]]:
         service = self.task_service
         if service is None:
-            return
-        repository = getattr(service, "repository", lambda _site: None)(self.registry.directory_name(site_id))
-        if repository is None:
-            return
-        active = repository.list(statuses={TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING})
-        if active:
-            raise SiteStorageError("SITE_HAS_ACTIVE_TASKS", "局点存在未完成任务，无法切换")
+            return []
+        directory_name = self.registry.directory_name(site_id)
+        list_blocking = getattr(service, "list_site_blocking_tasks", None)
+        if callable(list_blocking):
+            snapshots, reconciled = list_blocking(directory_name)
+        else:
+            repository = getattr(service, "repository", lambda _site: None)(directory_name)
+            if repository is None:
+                return []
+            snapshots = repository.list(
+                statuses={TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING},
+                limit=1000,
+            )
+            reconciled = []
+        for task in reconciled:
+            app_logger.log_warning(
+                "SITE_SWITCH_STALE_TASK_RECONCILED",
+                f"site_id={site_id} task_id={task.task_id} previous_status=active new_status={task.status.value}",
+            )
+        return [self._blocking_task_detail(snapshot) for snapshot in snapshots]
+
+    @staticmethod
+    def _blocking_task_detail(snapshot: TaskSnapshot) -> dict[str, object]:
+        status = snapshot.status.value
+        return {
+            "task_id": snapshot.task_id,
+            "task_type": snapshot.task_type,
+            "task_name": snapshot.task_name,
+            "status": status,
+            "created_at": snapshot.created_time,
+            "updated_at": snapshot.updated_time,
+            "blocking_reason": f"任务状态为 {status}，任务宿主仍可能继续执行",
+            "recoverable": False,
+            "stale": False,
+        }
 
     def ensure_no_active_tasks(self, site_id: str) -> None:
         self._ensure_no_active_tasks(validate_site_id(site_id))
 
     def ensure_no_active_tasks_anywhere(self) -> None:
+        blocking: list[dict[str, object]] = []
         for site in self.registry.list():
-            self._ensure_no_active_tasks(site.site_id)
+            blocking.extend(self._list_blocking_tasks(site.site_id))
+        if blocking:
+            app_logger.log_warning(
+                "SITE_SWITCH_BLOCKED_BY_ACTIVE_TASK",
+                f"scope=all_sites task_count={len(blocking)} task_ids={','.join(str(item['task_id']) for item in blocking)}",
+            )
+            raise SiteStorageError(
+                "SITE_HAS_ACTIVE_TASKS",
+                "存在仍在运行的任务，无法切换局点",
+                details={"blocking_tasks": blocking},
+            )
 
 
 class DataRootApplicationService:

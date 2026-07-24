@@ -350,7 +350,10 @@ def _call(callback):
         return callback()
     except SiteStorageError as exc:
         status_code = 404 if exc.code == "SITE_NOT_FOUND" else 409 if exc.code.endswith(("CONFLICT", "EXISTS", "BLOCKED", "ACTIVE_TASKS")) else 422
-        raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+        detail: dict[str, object] = {"code": exc.code, "message": str(exc)}
+        if exc.details:
+            detail["details"] = exc.details
+        raise HTTPException(status_code=status_code, detail=detail) from exc
     except OSError as exc:
         raise HTTPException(status_code=503, detail={"code": "SITE_STORAGE_UNAVAILABLE", "message": "局点存储暂时不可用"}) from exc
 

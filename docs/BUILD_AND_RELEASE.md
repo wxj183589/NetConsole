@@ -64,6 +64,8 @@ node scripts/package-smoke.mjs
 
 `package.mjs` 只接受项目 `.venv` Python 来生成 Backend，安装包通过 `extraResources` 固定放在 `resources/backend/`，运行时不依赖客户机系统 Python。`package-smoke.mjs` 只按安装包相对路径和精确 basename/目录规则扫描 Qt 残留，阻断 PySide/PyQt、shiboken、QFluentWidgets、SIP、Qt5/6 库、Qt WebEngine 进程、Qt plugin DLL 和 `qt.conf`，不会因为构建机父目录名或普通 `plugins/imageformats` 目录误报。
 
+干净 PyInstaller 构建会在临时 build 目录生成并嵌入 `_internal/netconsole/assets/runtime/{build_info.json,feature_flags.json}`：edition 固定为 `customer`，profile 固定为 `production`，不从源码目录或客户机外部配置取值。Backend dist 校验与 Electron package smoke 都会解析这两个 JSON，并拒绝任何 `feature_flags.local.json`。冻结运行时即使缺少或损坏 `feature_flags.json`，也必须通过 Registry fallback 保留系统设置、局点管理、任务中心和日志，同时继续隐藏 internal/development 功能。
+
 `build.electronDist` 固定为 `apps/desktop_electron/node_modules/electron/dist`。完成锁定依赖安装后，`electron-builder` 必须复用本机已安装的 Electron 43.1.1 分发目录，不再访问 GitHub 获取 Electron ZIP 或 `SHASUMS256.txt`；日志应出现 `using custom unpacked Electron distribution`。这项约束只消除重复下载，不绕过 `pnpm install --frozen-lockfile` 的依赖完整性，也不得通过关闭 `signAndEditExecutable` 丢弃 EXE 资源元数据。
 
 安装包 smoke 以 `ELECTRON_RUN_AS_NODE=1` 读取最终 `NetConsole.exe` 的 `process.versions`，逐项核对 Electron、Chromium 和 Node.js Notice/SBOM 版本；同时要求 electron-builder 输出中的 `LICENSE.electron.txt`、`LICENSES.chromium.html`、Backend 第三方说明、Notice 和 SBOM 都存在。包内 `device_command_profiles.json` 还必须保持 schema `2026.07.device-command-profiles.v1`，且只包含 `device.inventory.collect` 的受控只读 Profile，不得包含 `device.sftp.enable` 等写入型 Profile。

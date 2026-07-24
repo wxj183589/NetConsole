@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown } from '@element-plus/icons-vue'
 
 import { activateSite, applySiteCleanup, auditSite, createSite, exportSite, getDataRoot, getLatestSiteAudit, importSite, inspectSitePackage, listSites, migrateDataRoot, migrateSite, prepareSiteCleanup, rebuildDemoSite, validateDataRoot, type DataRootSnapshot, type SiteConflictChoice, type SiteConflictResolution, type SitePackageInspection, type SitePackageType, type SiteRecord } from '../../api/siteStorage'
+import { ApiRequestError } from '../../api/client'
 import { getPlatformAdapter } from '../../platform/runtime'
 import { getTask } from '../../api/tasks'
 import { useConfirm } from '../../components/feedback/useConfirm'
@@ -15,6 +16,14 @@ const root = ref<DataRootSnapshot | null>(null)
 const loading = ref(false)
 const busy = ref(false)
 const error = ref('')
+interface BlockingTask {
+  task_id: string
+  task_type: string
+  task_name: string
+  status: string
+  blocking_reason: string
+}
+const blockingTasks = ref<BlockingTask[]>([])
 const importDialogVisible = ref(false)
 const importInspection = ref<SitePackageInspection | null>(null)
 const importPackagePath = ref('')
@@ -52,12 +61,17 @@ async function newSite(): Promise<void> {
 async function switchSite(site: SiteRecord): Promise<void> {
   if (site.active || !(await confirmAction({ type: 'WARNING', title: '切换当前局点', message: `切换到“${site.display_name}”并重启本地 Backend？`, confirmText: '确认切换局点' }))) return
   busy.value = true
+  error.value = ''
+  blockingTasks.value = []
   try {
     await activateSite(site.site_id)
     const result = await getPlatformAdapter().restartBackend({ activeSiteId: site.site_id })
     if (!result.success) throw new Error(result.error || 'Backend 重启失败')
     ElMessage.success('局点已切换')
-  } catch (cause) { showError(cause, '局点切换失败') }
+  } catch (cause) {
+    blockingTasks.value = blockingTasksFrom(cause)
+    showError(cause, '局点切换失败')
+  }
   finally { busy.value = false }
 }
 
@@ -237,6 +251,25 @@ async function openTask(taskId: string): Promise<void> {
   if (!result.success && result.error) ElMessage.warning(result.error)
 }
 
+function blockingTasksFrom(cause: unknown): BlockingTask[] {
+  if (!(cause instanceof ApiRequestError) || cause.code !== 'SITE_HAS_ACTIVE_TASKS') return []
+  const tasks = cause.details.blocking_tasks
+  if (!Array.isArray(tasks)) return []
+  return tasks.flatMap((item) => {
+    if (!item || typeof item !== 'object') return []
+    const value = item as Record<string, unknown>
+    const taskId = typeof value.task_id === 'string' ? value.task_id : ''
+    if (!taskId) return []
+    return [{
+      task_id: taskId,
+      task_type: typeof value.task_type === 'string' ? value.task_type : '',
+      task_name: typeof value.task_name === 'string' ? value.task_name : taskId,
+      status: typeof value.status === 'string' ? value.status : 'UNKNOWN',
+      blocking_reason: typeof value.blocking_reason === 'string' ? value.blocking_reason : '任务仍在运行',
+    }]
+  })
+}
+
 async function waitForTask(taskId: string): Promise<string> {
   const deadline = Date.now() + 10 * 60_000
   while (Date.now() < deadline) {
@@ -291,11 +324,22 @@ function displayValue(value: unknown): string { if (value === null || value === 
     </div>
     <el-alert v-if="root?.persistent === false" data-testid="isolated-storage-alert" title="隔离测试模式：当前数据将在退出后删除，不会写入正式 NetConsole 数据。" type="warning" :closable="false" show-icon />
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
+    <div v-if="blockingTasks.length" data-testid="site-blocking-tasks" class="blocking-tasks">
+      <div v-for="task in blockingTasks" :key="task.task_id" class="blocking-task">
+        <div>
+          <strong>{{ task.task_name || task.task_type }}</strong>
+          <el-tag size="small" type="warning">{{ task.status }}</el-tag>
+          <code>{{ task.task_id }}</code>
+          <p>{{ task.blocking_reason }}</p>
+        </div>
+        <el-button size="small" @click="openTask(task.task_id)">打开任务中心</el-button>
+      </div>
+    </div>
     <div v-if="root" class="root-summary"><span>{{ root.persistent ? '全局数据根' : '临时测试数据根' }}</span><code :title="root.persistent ? root.data_root : undefined">{{ root.data_root }}</code><span>{{ root.site_count }} 个局点</span><template v-if="root.persistent"><el-button data-testid="migrate-data-root" size="small" @click="chooseRoot">选择并迁移</el-button><el-button data-testid="restore-data-root" size="small" :disabled="root.data_root === root.default_data_root" @click="restoreDefaultRoot">恢复默认路径</el-button></template></div>
     <div class="site-list">
       <article v-for="site in sites" :key="site.site_id" class="site-item" :class="{ active: site.active }">
         <div class="site-main"><strong>{{ site.display_name }}</strong><el-tag v-if="site.active" type="success">当前</el-tag><el-tag size="small" :type="classificationTag(site)">{{ classificationLabel(site.classification || 'unknown') }}</el-tag><code>{{ site.site_id }}</code><span>{{ formatBytes(site.size_bytes) }}</span><span>完整性：{{ integrityLabel(site.data_integrity) }}</span></div>
-        <div v-if="root?.persistent" class="site-actions"><el-button :data-testid="`audit-site-${site.site_id}`" size="small" :disabled="busy" @click="auditSelectedSite(site)">审计</el-button><el-button v-if="site.audited_at" :data-testid="`show-audit-${site.site_id}`" size="small" :disabled="busy" @click="showAudit(site)">查看清单</el-button><el-button v-if="site.classification === 'empty_shell'" :data-testid="`cleanup-site-${site.site_id}`" size="small" type="danger" plain :disabled="site.active || busy" @click="cleanupSite(site)">安全清理</el-button><el-button v-if="site.site_kind === 'demo'" :data-testid="`rebuild-demo-${site.site_id}`" size="small" :disabled="site.active || busy" @click="rebuildDemo(site)">重建 Demo</el-button><el-button size="small" :disabled="site.active || busy" @click="switchSite(site)">{{ site.active ? '当前局点' : '切换' }}</el-button><el-button v-if="site.active" size="small" @click="openCurrentSite">打开目录</el-button><el-button v-if="site.active" size="small" :disabled="busy" @click="moveCurrentSite">迁移局点</el-button></div>
+        <div v-if="root?.persistent" class="site-actions"><el-button :data-testid="`audit-site-${site.site_id}`" size="small" :disabled="busy" @click="auditSelectedSite(site)">审计</el-button><el-button v-if="site.audited_at" :data-testid="`show-audit-${site.site_id}`" size="small" :disabled="busy" @click="showAudit(site)">查看清单</el-button><el-button v-if="site.classification === 'empty_shell'" :data-testid="`cleanup-site-${site.site_id}`" size="small" type="danger" plain :disabled="site.active || busy" @click="cleanupSite(site)">安全清理</el-button><el-button v-if="site.site_kind === 'demo'" :data-testid="`rebuild-demo-${site.site_id}`" size="small" :disabled="site.active || busy" @click="rebuildDemo(site)">重建 Demo</el-button><el-button :data-testid="`switch-site-${site.site_id}`" size="small" :disabled="site.active || busy" @click="switchSite(site)">{{ site.active ? '当前局点' : '切换' }}</el-button><el-button v-if="site.active" size="small" @click="openCurrentSite">打开目录</el-button><el-button v-if="site.active" size="small" :disabled="busy" @click="moveCurrentSite">迁移局点</el-button></div>
       </article>
     </div>
     <el-dialog v-model="importDialogVisible" class="site-import-dialog" width="min(920px, 94vw)" :close-on-click-modal="false" title="数据包导入预检">
@@ -381,5 +425,5 @@ function displayValue(value: unknown): string { if (value === null || value === 
 
 <style scoped>
 .el-alert{margin-top:14px}
-.storage-panel{padding:18px 20px;scroll-margin-top:16px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px;transition:outline-color .18s ease,box-shadow .18s ease}.storage-panel--focused{outline:1px solid var(--nc-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--nc-primary),transparent 82%)}.panel-heading,.actions,.root-summary,.site-item,.site-main,.site-actions{display:flex;align-items:center;gap:10px}.panel-heading{justify-content:space-between;gap:18px}.panel-heading h2{margin:0 0 5px;font-size:17px}.panel-heading p{margin:0;color:var(--nc-text-secondary);font-size:13px}.actions,.site-actions{flex-wrap:wrap;justify-content:flex-end}.root-summary{margin:16px 0;padding:10px 12px;background:var(--nc-surface-muted);border-radius:6px;flex-wrap:wrap}.root-summary code{flex:1;min-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.site-list{display:grid;gap:8px}.site-item{justify-content:space-between;padding:11px 12px;border:1px solid var(--el-border-color-lighter);border-radius:6px}.site-item.active{border-color:var(--el-color-success-light-5);background:var(--el-color-success-light-9)}.site-main{min-width:0;flex-wrap:wrap}.site-main strong{font-size:14px}.site-main code{color:var(--nc-text-secondary)}.site-main span{color:var(--nc-text-secondary);font-size:12px}.preflight-grid{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:8px;margin:14px 0}.preflight-grid span{padding:9px 10px;background:var(--nc-surface-muted);border-radius:6px;color:var(--nc-text-secondary);font-size:12px}.preflight-grid strong{display:block;margin-bottom:2px;color:var(--nc-text-primary);font-size:16px}.preflight-grid .danger strong{color:var(--el-color-danger)}.import-options{display:grid;gap:14px;margin-top:16px}.import-options :deep(.el-form){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.import-options :deep(.el-form-item){margin-bottom:0}.full-width{width:100%}.raw-only-option{margin:14px 0}.conflict-section{margin-top:4px}.section-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:8px}.section-heading span{color:var(--nc-text-secondary);font-size:12px}.conflict-table-wrap{width:100%;overflow-x:auto}.conflict-table-wrap :deep(.el-table){min-width:980px}.site-import-dialog code{overflow-wrap:anywhere}@media(max-width:900px){.panel-heading{align-items:flex-start;flex-direction:column}.actions{justify-content:flex-start}.site-item{align-items:flex-start;flex-direction:column}.site-actions{justify-content:flex-start}.preflight-grid{grid-template-columns:repeat(2,minmax(110px,1fr))}.import-options :deep(.el-form){grid-template-columns:1fr}.section-heading{align-items:flex-start;flex-direction:column}}
+.storage-panel{padding:18px 20px;scroll-margin-top:16px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px;transition:outline-color .18s ease,box-shadow .18s ease}.storage-panel--focused{outline:1px solid var(--nc-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--nc-primary),transparent 82%)}.panel-heading,.actions,.root-summary,.site-item,.site-main,.site-actions{display:flex;align-items:center;gap:10px}.panel-heading{justify-content:space-between;gap:18px}.panel-heading h2{margin:0 0 5px;font-size:17px}.panel-heading p{margin:0;color:var(--nc-text-secondary);font-size:13px}.actions,.site-actions{flex-wrap:wrap;justify-content:flex-end}.blocking-tasks{display:grid;gap:8px;margin-top:10px}.blocking-task{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--el-color-warning-light-5);border-radius:6px;background:var(--el-color-warning-light-9)}.blocking-task>div{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}.blocking-task code{overflow-wrap:anywhere}.blocking-task p{width:100%;margin:0;color:var(--nc-text-secondary);font-size:12px}.root-summary{margin:16px 0;padding:10px 12px;background:var(--nc-surface-muted);border-radius:6px;flex-wrap:wrap}.root-summary code{flex:1;min-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.site-list{display:grid;gap:8px}.site-item{justify-content:space-between;padding:11px 12px;border:1px solid var(--el-border-color-lighter);border-radius:6px}.site-item.active{border-color:var(--el-color-success-light-5);background:var(--el-color-success-light-9)}.site-main{min-width:0;flex-wrap:wrap}.site-main strong{font-size:14px}.site-main code{color:var(--nc-text-secondary)}.site-main span{color:var(--nc-text-secondary);font-size:12px}.preflight-grid{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:8px;margin:14px 0}.preflight-grid span{padding:9px 10px;background:var(--nc-surface-muted);border-radius:6px;color:var(--nc-text-secondary);font-size:12px}.preflight-grid strong{display:block;margin-bottom:2px;color:var(--nc-text-primary);font-size:16px}.preflight-grid .danger strong{color:var(--el-color-danger)}.import-options{display:grid;gap:14px;margin-top:16px}.import-options :deep(.el-form){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.import-options :deep(.el-form-item){margin-bottom:0}.full-width{width:100%}.raw-only-option{margin:14px 0}.conflict-section{margin-top:4px}.section-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:8px}.section-heading span{color:var(--nc-text-secondary);font-size:12px}.conflict-table-wrap{width:100%;overflow-x:auto}.conflict-table-wrap :deep(.el-table){min-width:980px}.site-import-dialog code{overflow-wrap:anywhere}@media(max-width:900px){.panel-heading{align-items:flex-start;flex-direction:column}.actions{justify-content:flex-start}.blocking-task{align-items:flex-start;flex-direction:column}.site-item{align-items:flex-start;flex-direction:column}.site-actions{justify-content:flex-start}.preflight-grid{grid-template-columns:repeat(2,minmax(110px,1fr))}.import-options :deep(.el-form){grid-template-columns:1fr}.section-heading{align-items:flex-start;flex-direction:column}}
 </style>

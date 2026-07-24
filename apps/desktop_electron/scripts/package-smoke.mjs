@@ -254,6 +254,7 @@ const residue = walk(unpackedRoot).filter((path) => {
 if (residue.length) throw new Error(`Electron 包检测到 Qt 残留：${residue.slice(0, 20).join(', ')}`)
 
 validateDeviceCommandProfiles()
+validatePackagedRuntimeFeaturePolicy()
 validateIperfDistribution()
 validateFpingDistribution()
 const runtimeVersions = readElectronRuntimeVersions()
@@ -359,6 +360,31 @@ function validateComplianceArtifacts(runtimeVersions) {
   validateRuntimeVersion(sbom.components, 'Chromium', runtimeVersions.chrome)
   validateRuntimeVersion(sbom.components, 'Node.js', runtimeVersions.node)
   validatePythonArtifactInventory(backendRoot, sbom)
+}
+
+function validatePackagedRuntimeFeaturePolicy() {
+  const backendRoot = resolve(unpackedRoot, 'resources', 'backend')
+  const runtimeRoot = resolve(backendRoot, '_internal', 'netconsole', 'assets', 'runtime')
+  const buildInfo = JSON.parse(readFileSync(resolve(runtimeRoot, 'build_info.json'), 'utf8'))
+  const featureFlags = JSON.parse(readFileSync(resolve(runtimeRoot, 'feature_flags.json'), 'utf8'))
+  if (buildInfo.edition !== 'customer' || buildInfo.feature_profile !== 'production') {
+    throw new Error('Electron 包 build_info 不是固定 customer/production 策略。')
+  }
+  if (featureFlags.profile !== 'production' || !featureFlags.features || typeof featureFlags.features !== 'object') {
+    throw new Error('Electron 包缺少有效生产功能基线。')
+  }
+  for (const path of [
+    resolve(runtimeRoot, 'feature_flags.local.json'),
+    resolve(backendRoot, 'runtime', 'feature_flags.local.json'),
+  ]) {
+    try {
+      readFileSync(path)
+      throw new Error('Electron 包不得包含本地功能 override。')
+    } catch (cause) {
+      if (cause instanceof Error && cause.message === 'Electron 包不得包含本地功能 override。') throw cause
+      if (!cause || typeof cause !== 'object' || cause.code !== 'ENOENT') throw cause
+    }
+  }
 }
 
 function validatePythonArtifactInventory(backendRoot, sbom) {

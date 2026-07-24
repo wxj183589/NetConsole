@@ -346,6 +346,21 @@ class TaskApplicationService:
     def reconcile_orphaned_local_tasks(self) -> list[TaskSnapshot]:
         return self.repository().reconcile_orphaned_local_tasks(self._is_process_alive)
 
+    def list_site_blocking_tasks(
+        self,
+        site_name: str,
+    ) -> tuple[list[TaskSnapshot], list[TaskSnapshot]]:
+        """先核对失去本地宿主的快照，再返回仍真实活动的任务。"""
+
+        repository = self.repository(site_name)
+        reconciled = repository.reconcile_orphaned_local_tasks(
+            self._is_process_alive,
+            lambda task_id: self.runtime.is_running(task_id)
+            or task_id in self._job_sites,
+        )
+        blocking = repository.list(statuses=set(_ACTIVE_TASK_STATES), limit=1000)
+        return blocking, reconciled
+
     @staticmethod
     def _resource_keys(params: dict[str, Any]) -> list[str]:
         values = params.get("resource_keys")

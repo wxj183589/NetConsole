@@ -42,6 +42,8 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 
 模块、页面、Tab、动作和按钮的真实启用状态以 `src/netconsole/core/feature_registry.py` 为准。新增用户可见能力必须先登记 Feature key，再由页面通过 `FeatureGate` 控制。
 
+源码开发态继续提供功能配置、影响预览和恢复能力；正式 Electron 包采用不可编辑的固定生产功能集，不显示或调用功能配置入口。打包基线缺失或损坏时回退到 Feature Registry 的稳定生产默认，而不是关闭全部功能。系统设置、局点与数据管理、任务中心和运行日志属于正式包核心能力，不依赖 customer profile 或本地 override；`client_package` 只表达构建选择/发布元数据，不作为正式运行时的通用权限开关。
+
 ## 仓库结构
 
 ```text

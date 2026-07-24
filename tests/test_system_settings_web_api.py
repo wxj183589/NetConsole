@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from netconsole.backend.api import system_settings_router
 from netconsole.backend.api.main import create_app
 from netconsole.core import settings as settings_module
+from netconsole.core.feature_flags import FeatureGate
 from netconsole.core.i18n import TRANSLATIONS
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
@@ -279,3 +280,21 @@ def test_browser_runtime_cannot_read_or_write_settings(tmp_path: Path) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path / "data")
     client = TestClient(create_app(RuntimeMode.SERVER, paths=paths), base_url="http://127.0.0.1")
     assert client.get("/api/settings").status_code == 403
+
+
+def test_packaged_runtime_keeps_settings_but_rejects_feature_configuration(
+    tmp_path: Path,
+) -> None:
+    client, _paths = _client(tmp_path)
+    client.app.state.feature_gate = FeatureGate(tmp_path, packaged_runtime=True)
+
+    assert client.get("/api/settings").status_code == 200
+    for method, path, payload in (
+        ("get", "/api/settings/features", None),
+        ("put", "/api/settings/features", {"items": []}),
+        ("post", "/api/settings/features/preview", {"items": []}),
+        ("post", "/api/settings/features/restore", {"confirmed": True}),
+    ):
+        response = client.request(method, path, json=payload)
+        assert response.status_code == 403
+        assert "固定生产功能集" in response.json()["detail"]

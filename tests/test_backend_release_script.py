@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import zipfile
 from pathlib import Path
 
 import pytest
 
 from netconsole.core.version import APP_VERSION
+from scripts.build import clean_build_spec
 from scripts.build.build_config import BuildConfig, load_config
 from scripts.build.build_release import (
     BACKEND_ALLOWED_RELEASE_ITEMS,
@@ -49,6 +51,27 @@ def test_backend_build_script_does_not_call_publish_flow() -> None:
 
     for token in ("git commit", "git tag", "git push", "git remote", "build_nuitka_release"):
         assert token not in combined
+
+
+def test_clean_build_generates_fixed_packaged_runtime_feature_policy() -> None:
+    paths = clean_build_spec.write_packaged_runtime_feature_policy()
+
+    build_info = json.loads(
+        paths[clean_build_spec.PACKAGED_BUILD_INFO_SOURCE].read_text(encoding="utf-8")
+    )
+    feature_flags = json.loads(
+        paths[clean_build_spec.PACKAGED_FEATURE_FLAGS_SOURCE].read_text(
+            encoding="utf-8"
+        )
+    )
+    assert build_info == {
+        "edition": "customer",
+        "feature_profile": "production",
+        "admin_unlock_enabled": False,
+    }
+    assert feature_flags["profile"] == "production"
+    assert "module.system_settings" in feature_flags["features"]
+    assert "web.job_center" in feature_flags["features"]
 
 
 def test_backend_release_allowlist_rejects_project_root_pollution(tmp_path: Path) -> None:
