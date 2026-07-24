@@ -117,6 +117,20 @@ def test_data_root_migration_keeps_old_data_and_verifies_sqlite(tmp_path: Path) 
     assert paths.site_db_path("site-one").is_file()
     assert (target / "sites" / "site-one" / "db" / "devices.db").is_file()
     assert next((target / "migrations").glob("migration-*.json")).is_file()
+    assert not list(tmp_path.glob("migrated-root.staging-*"))
+
+
+def test_data_root_migration_rebinds_the_storage_manifest_to_the_published_root(tmp_path: Path) -> None:
+    from netconsole.core.storage_manifest import prepare_storage_manifest
+
+    paths = _paths(tmp_path)
+    prepare_storage_manifest(paths)
+    target = tmp_path / "migrated-root"
+
+    DataRootApplicationService(paths).migrate(target)
+
+    manifest = json.loads((target / "config" / "storage-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["data_root"] == str(target.resolve())
 
 
 def test_site_package_sanitizes_credentials_and_has_checksums(tmp_path: Path) -> None:

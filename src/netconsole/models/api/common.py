@@ -32,3 +32,6 @@ class HealthResponse(ApiModel):
     status: str = "ok"
     version: str
     build_id: str
+    data_root: str
+    active_site_id: str
+    storage_schema_version: int

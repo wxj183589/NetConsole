@@ -78,6 +78,7 @@ describe('desktop config', () => {
       env: {
         NETCONSOLE_PYTHON: 'C:\\untrusted\\python.exe',
       },
+      resolvedDataRoot: 'D:\\NetConsoleData',
       fileExists: () => true,
     })
 
@@ -124,9 +125,21 @@ describe('desktop config', () => {
       platform: 'win32',
       storageMode: 'persistent',
       env: { NETCONSOLE_PYTHON: 'C:\\repo\\.venv\\Scripts\\python.exe' },
+      resolvedDataRoot: 'D:\\NetConsoleData',
       fileExists: () => true,
     })
     expect(config.activeSiteId).toBeUndefined()
+  })
+
+  it('requires an installer-selected or explicit persistent data root', () => {
+    expect(() => loadDesktopConfig({
+      isPackaged: true,
+      appPath: 'C:\\installed\\resources\\app.asar',
+      resourcesPath: 'C:\\installed\\resources',
+      platform: 'win32',
+      env: {},
+      fileExists: () => true,
+    })).toThrow('尚未配置')
   })
 
   it('shows the default menu only for an explicitly enabled development server', () => {

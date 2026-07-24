@@ -66,6 +66,9 @@ def test_unified_migration_preserves_conflicts_and_never_changes_sources(tmp_pat
     assert len(conflicts) == 1
     assert conflicts[0].read_bytes() == secondary_hash
     assert json.loads((target / "config" / "site_registry.json").read_text(encoding="utf-8"))["sites"][0]["relative_path"] == "sites/line-12"
+    manifest = json.loads((target / "config" / "storage-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["format_version"] == 1
+    assert manifest["installation_id"]
     assert json.loads((target / "runtime" / "electron" / "user-data" / "bootstrap.json").read_text(encoding="utf-8"))["data_root"] == str(target.resolve())
     assert not any((target / "staging").iterdir())
     assert {item.name for item in target.iterdir()} == ALLOWED_TARGET_ROOTS

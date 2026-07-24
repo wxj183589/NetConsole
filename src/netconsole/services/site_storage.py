@@ -638,9 +638,15 @@ class DataRootApplicationService:
             raise SiteStorageError("DATA_ROOT_INVALID", "目标数据根与当前路径相同")
         with storage_lock(self.paths, "global-data-migration"):
             operation_id = uuid.uuid4().hex
-            staging = destination / "staging" / operation_id
+            staging = destination.with_name(f"{destination.name}.staging-{operation_id}")
             payload = staging / "payload"
+            published = False
             try:
+                if staging.exists():
+                    raise SiteStorageError("DATA_ROOT_INVALID", "数据根迁移暂存目录已存在")
+                occupied = list(destination.iterdir())
+                if occupied:
+                    raise SiteStorageError("DATA_ROOT_INVALID", "目标数据根必须为空")
                 _write_migration_operation(staging, "created", self.paths.data_root, destination)
                 for source in self.paths.data_root.iterdir():
                     if source.name in {"runtime", "staging"}:
@@ -656,6 +662,7 @@ class DataRootApplicationService:
                         shutil.copy2(source, target_path)
                 _write_migration_operation(staging, "verifying", self.paths.data_root, destination)
                 _quick_check_site_tree(payload / "sites")
+                _rewrite_migrated_storage_manifest(payload, destination)
                 manifest = {
                     "format": "netconsole-data-root-migration",
                     "version": 2,
@@ -665,12 +672,10 @@ class DataRootApplicationService:
                     "destination": str(destination),
                 }
                 _atomic_json(payload / "migrations" / f"migration-{operation_id}.json", manifest)
-                occupied = [item for item in destination.iterdir() if item.name != "staging"]
-                if occupied:
-                    raise SiteStorageError("DATA_ROOT_INVALID", "目标数据根必须为空或只包含本次 staging")
                 _write_migration_operation(staging, "committing", self.paths.data_root, destination)
-                for source in payload.iterdir():
-                    _publish_directory(source, destination / source.name)
+                destination.rmdir()
+                _publish_data_root(payload, destination)
+                published = True
                 _write_migration_operation(staging, "completed", self.paths.data_root, destination)
                 shutil.rmtree(staging, ignore_errors=True)
                 return {"data_root": str(destination), "restart_required": True, "old_data_root_retained": True}
@@ -680,6 +685,9 @@ class DataRootApplicationService:
             except Exception as exc:
                 _write_migration_operation(staging, "failed", self.paths.data_root, destination)
                 raise SiteStorageError("DATA_ROOT_MIGRATION_FAILED", "数据根迁移失败，旧数据未改变") from exc
+            finally:
+                if published:
+                    shutil.rmtree(staging, ignore_errors=True)
 
     def _validate_target(self, target: Path) -> Path:
         candidate = Path(target).expanduser().resolve()
@@ -1024,6 +1032,50 @@ def _publish_directory(source: Path, destination: Path) -> None:
     shutil.rmtree(source, ignore_errors=True)
 
 
+def _publish_data_root(source: Path, destination: Path) -> None:
+    """Publish a complete data root by same-volume rename only.
+
+    The caller creates `<data-root>.staging-<id>` beside the selected root, so
+    no partially copied tree can become the configured root.  A fallback copy
+    would violate that invariant and is intentionally refused.
+    """
+
+    last_error: OSError | None = None
+    for _attempt in range(20):
+        for publish in (os.replace, os.rename):
+            try:
+                publish(source, destination)
+                return
+            except (OSError, PermissionError) as exc:
+                last_error = exc
+        # SQLite connections opened for the final integrity check can retain a
+        # Windows directory handle briefly after close.  Retrying preserves the
+        # atomic same-volume publish invariant without falling back to copying.
+        time.sleep(0.05)
+    raise SiteStorageError("DATA_ROOT_MIGRATION_FAILED", "无法原子发布新的数据根") from last_error
+
+
+def _rewrite_migrated_storage_manifest(payload: Path, destination: Path) -> None:
+    """Keep the copied manifest bound to the root that will be published.
+
+    Updating the manifest while it is still in sibling staging prevents a
+    successfully published migration from being rejected on its first startup
+    because it still names the source root.
+    """
+
+    manifest_path = payload / "config" / "storage-manifest.json"
+    if not manifest_path.is_file():
+        return
+    try:
+        value = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError("manifest must be an object")
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise SiteStorageError("DATA_ROOT_MIGRATION_FAILED", "storage-manifest.json 无效，无法迁移") from exc
+    value["data_root"] = str(destination)
+    _atomic_json(manifest_path, value)
+
+
 def _directory_size(root: Path) -> int:
     total = 0
     for item in root.rglob("*"):
@@ -1037,8 +1089,11 @@ def _directory_size(root: Path) -> int:
 
 def _quick_check_site(root: Path) -> None:
     for db in root.rglob("*.db"):
-        with sqlite3.connect(db) as connection:
+        connection = sqlite3.connect(db)
+        try:
             result = connection.execute("PRAGMA quick_check").fetchone()
+        finally:
+            connection.close()
         if not result or str(result[0]).lower() != "ok":
             raise SiteStorageError("SITE_MIGRATION_FAILED", "SQLite 完整性检查失败")
 

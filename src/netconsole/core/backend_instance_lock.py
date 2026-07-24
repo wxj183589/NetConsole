@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO
@@ -99,6 +100,7 @@ def _write_owner(handle: BinaryIO, paths: PathResolver) -> None:
         "version": APP_VERSION,
         "executable": str(executable),
         "data_root": str(paths.data_root),
+        "instance_id": uuid.uuid4().hex,
     }
     encoded = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     handle.seek(0)

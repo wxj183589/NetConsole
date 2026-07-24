@@ -1,0 +1,151 @@
+; NetConsole business data must never share the application installation tree.
+; This file is included by electron-builder's existing assisted NSIS installer.
+
+!include "LogicLib.nsh"
+!include "nsDialogs.nsh"
+
+Var NetConsoleDataRoot
+Var NetConsoleExistingDataRoot
+Var NetConsoleDataRootChanged
+Var NetConsoleDataRootInput
+Var NetConsoleDataRootStatus
+
+!macro customInit
+  ReadRegStr $NetConsoleExistingDataRoot HKLM "Software\NetConsole" "DataRoot"
+  ${If} $NetConsoleExistingDataRoot != ""
+    StrCpy $NetConsoleDataRoot "$NetConsoleExistingDataRoot"
+  ${Else}
+    ; D: is only a suggestion when it is an actual fixed disk.  The page blocks
+    ; the install until a non-system fixed disk has been selected and validated.
+    StrCpy $0 "D:\"
+    System::Call 'kernel32::GetDriveTypeW(w r0)i.r1'
+    ${If} $1 == 3
+      StrCpy $NetConsoleDataRoot "D:\NetConsoleData"
+    ${Else}
+      StrCpy $NetConsoleDataRoot ""
+    ${EndIf}
+  ${EndIf}
+  StrCpy $NetConsoleDataRootChanged "0"
+!macroend
+
+!macro customPageAfterChangeDir
+  Page custom NetConsoleDataRootPageCreate NetConsoleDataRootPageLeave
+!macroend
+
+!macro customInstall
+  ; A relocation is never a pointer-only update.  The packaged helper stages,
+  ; verifies SQLite files and publishes the new root before this registry value
+  ; changes.  The source root remains untouched on every failure path.
+  ${If} $NetConsoleDataRootChanged == "1"
+    IfFileExists "$NetConsoleExistingDataRoot\*.*" +2 0
+      Abort "已配置的数据目录当前不可用。请恢复磁盘连接或重新选择数据目录。"
+    DetailPrint "正在迁移现有 NetConsole 数据；旧数据将保留为只读备份。"
+    ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --migrate-data-root --source "$NetConsoleExistingDataRoot" --target "$NetConsoleDataRoot" --installation-root "$INSTDIR"' $0
+    ${If} $0 != 0
+      Abort "NetConsole 数据迁移失败，旧数据目录未改变。安装器不会修改 DataRoot。"
+    ${EndIf}
+  ${EndIf}
+  ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --installation-root "$INSTDIR"' $0
+  ${If} $0 != 0
+    Abort "数据目录校验失败。请返回选择容量充足的非系统固定磁盘目录。"
+  ${EndIf}
+  WriteRegStr HKLM "Software\NetConsole" "DataRoot" "$NetConsoleDataRoot"
+!macroend
+
+Function NetConsoleDataRootPageCreate
+  nsDialogs::Create 1018
+  Pop $0
+  ${If} $0 == error
+    Abort
+  ${EndIf}
+  ${NSD_CreateLabel} 0 0 100% 28u "NetConsole 会在此目录保存局点数据库、MR 原始日志、采集文件、分析结果、报告和备份，数据量可能持续增长。请选择容量充足的非系统固定磁盘。"
+  Pop $0
+  ${NSD_CreateLabel} 0 34u 100% 12u "数据存放位置（建议至少 100 GB 可用空间）："
+  Pop $0
+  ${NSD_CreateText} 0 50u 76% 12u "$NetConsoleDataRoot"
+  Pop $NetConsoleDataRootInput
+  ${NSD_CreateButton} 79% 50u 21% 12u "浏览..."
+  Pop $0
+  ${NSD_OnClick} $0 NetConsoleBrowseDataRoot
+  ${NSD_CreateLabel} 0 72u 100% 36u ""
+  Pop $NetConsoleDataRootStatus
+  Call NetConsoleRefreshDataRootStatus
+  nsDialogs::Show
+FunctionEnd
+
+Function NetConsoleBrowseDataRoot
+  nsDialogs::SelectFolderDialog "选择 NetConsole 数据存放位置（非系统固定磁盘）" "$NetConsoleDataRoot"
+  Pop $0
+  ${If} $0 != error
+    StrCpy $NetConsoleDataRoot "$0"
+    ${NSD_SetText} $NetConsoleDataRootInput "$NetConsoleDataRoot"
+    Call NetConsoleRefreshDataRootStatus
+  ${EndIf}
+FunctionEnd
+
+Function NetConsoleRefreshDataRootStatus
+  ${NSD_GetText} $NetConsoleDataRootInput $NetConsoleDataRoot
+  ${If} $NetConsoleDataRoot == ""
+    ${NSD_SetText} $NetConsoleDataRootStatus "尚未选择数据目录。安装不会写入 C 盘或 AppData。"
+    Return
+  ${EndIf}
+  IfFileExists "$NetConsoleDataRoot\config\storage-manifest.json" 0 +3
+    ${NSD_SetText} $NetConsoleDataRootStatus "发现现有 NetConsole 数据：将继续使用，不会覆盖局点和采集文件。"
+    Return
+  IfFileExists "$NetConsoleDataRoot\*.*" 0 +3
+    ${NSD_SetText} $NetConsoleDataRootStatus "目录非空且不是已识别的数据根：安装器将要求创建 NetConsoleData 子目录。"
+    Return
+  ${NSD_SetText} $NetConsoleDataRootStatus "空目录：将在此创建新的 NetConsole 数据根。安装前会检查可写性、重命名和 SQLite 锁。"
+FunctionEnd
+
+Function NetConsoleDataRootPageLeave
+  NetConsoleDataRootValidateAgain:
+  ${NSD_GetText} $NetConsoleDataRootInput $NetConsoleDataRoot
+  StrCmp $NetConsoleDataRoot "" 0 +3
+    MessageBox MB_ICONSTOP "必须选择 NetConsole 数据存放位置。"
+    Abort
+  GetFullPathName $NetConsoleDataRoot "$NetConsoleDataRoot"
+  StrCpy $0 "$NetConsoleDataRoot" 2
+  ReadEnvStr $1 "SystemDrive"
+  StrCmp $1 "" 0 +2
+    StrCpy $1 "C:"
+  StrCmp $0 $1 0 +3
+    MessageBox MB_ICONSTOP "NetConsole 会保存大量采集和分析数据，当前配置禁止将业务数据存放在系统盘。请选择其他磁盘。"
+    Abort
+  StrCpy $0 "$NetConsoleDataRoot"
+  StrCpy $1 "$NetConsoleDataRoot" 3
+  StrCmp $1 "\\\\" 0 +3
+    MessageBox MB_ICONSTOP "当前安装仅支持本地固定磁盘，不支持网络共享路径。"
+    Abort
+  System::Call 'kernel32::GetDriveTypeW(w r0)i.r1'
+  StrCmp $1 3 0 +3
+    MessageBox MB_ICONSTOP "数据目录必须位于本地固定磁盘，不能使用 U 盘、光驱或临时映射盘。"
+    Abort
+  CreateDirectory "$NetConsoleDataRoot"
+  ClearErrors
+  FileOpen $0 "$NetConsoleDataRoot\.netconsole-installer-write-test.tmp" w
+  IfErrors 0 +3
+    MessageBox MB_ICONSTOP "数据目录不可写。请选择其他目录。"
+    Abort
+  FileWrite $0 "NetConsole"
+  FileClose $0
+  Rename "$NetConsoleDataRoot\.netconsole-installer-write-test.tmp" "$NetConsoleDataRoot\.netconsole-installer-rename-test.tmp"
+  IfErrors 0 +3
+    Delete "$NetConsoleDataRoot\.netconsole-installer-write-test.tmp"
+    MessageBox MB_ICONSTOP "数据目录不支持安全重命名。请选择其他目录。"
+    Abort
+  Delete "$NetConsoleDataRoot\.netconsole-installer-rename-test.tmp"
+  IfFileExists "$NetConsoleDataRoot\config\storage-manifest.json" NetConsoleDataRootReady
+  IfFileExists "$NetConsoleDataRoot\*.*" 0 NetConsoleDataRootReady
+  MessageBox MB_ICONEXCLAMATION|MB_YESNO "所选目录非空且不是已识别的 NetConsole 数据根。是否在其中创建 NetConsoleData 子目录？" IDYES +2
+    Abort
+  StrCpy $NetConsoleDataRoot "$NetConsoleDataRoot\NetConsoleData"
+  Goto NetConsoleDataRootValidateAgain
+  NetConsoleDataRootReady:
+  ${If} $NetConsoleExistingDataRoot != ""
+  ${AndIf} $NetConsoleExistingDataRoot != $NetConsoleDataRoot
+    MessageBox MB_ICONEXCLAMATION|MB_YESNO "当前数据目录：$NetConsoleExistingDataRoot$\r$\n新数据目录：$NetConsoleDataRoot$\r$\n$\r$\n继续将执行完整复制、SQLite 校验和原子发布；旧目录将保留，绝不自动删除。是否继续？" IDYES +2
+      Abort
+    StrCpy $NetConsoleDataRootChanged "1"
+  ${EndIf}
+FunctionEnd

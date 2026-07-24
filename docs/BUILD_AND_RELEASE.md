@@ -2,7 +2,9 @@
 
 NetConsole v1.4.2 的正式桌面产品只有 Electron + Vue + Python Backend。Python Backend 使用 PyInstaller 生成受 Electron 管理的 `NetConsoleBackend.exe`；PyInstaller、测试工具和许可证/SBOM 工具只属于构建环境，不属于产品运行时依赖。
 
-安装包升级和卸载不得删除 Electron `userData/bootstrap.json` 或用户选择的数据根。发布 smoke 必须确认 Backend 从 bootstrap 指定的数据根启动，且仓库根没有生成 `data/` 或新的 `.local/` 运行数据。
+安装包升级和卸载不得删除 Electron `userData/bootstrap.json` 或用户选择的数据根。electron-builder 的既有 NSIS 安装器必须分别显示程序安装目录与数据存放目录；数据根在完成路径、磁盘、可写/重命名、SQLite 锁与空间校验后写入 `HKLM\Software\NetConsole\DataRoot`。发布 smoke 必须确认 Backend 从该机器级配置显式传入的数据根启动，且仓库根没有生成 `data/` 或新的 `.local/` 运行数据。
+
+安装包人工验收至少覆盖：程序安装在 C 盘而数据在 D 盘、阻止 C 盘数据根、空目录创建、合法既有根复用、非空普通目录拒绝/创建子目录、升级/修复保持旧根、更换根的 staging/SQLite 校验失败回滚，以及普通卸载保留数据和注册表指针。源码 `pnpm dev` 还必须读取同一指针；测试模式不得读取注册表或真实根。
 
 ## 依赖安装
 

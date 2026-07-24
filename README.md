@@ -141,7 +141,7 @@ Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 
 
 ## 数据与发布边界
 
-- 源码开发、Electron 开发、Python Backend、打包验证与正式安装包共用唯一数据根 `D:\NetConsoleData`；只允许 `RuntimeMode.TEST` 使用显式的 `D:\NetConsoleTestData\<run-id>`。不会依赖当前工作目录、LocalAppData、用户目录或源码目录；仓库 `.local/` 和根 `data/` 仅作为历史迁移源。
+- Windows NSIS 安装向导分别选择程序安装目录与业务数据目录；业务数据根由 `HKLM\Software\NetConsole\DataRoot` 持久化，当前机器配置为 `D:\NetConsoleData`。程序升级、修复和普通卸载只处理程序文件，不会删除该数据根。源码开发、Electron 开发、Python Backend、打包验证与正式安装包都读取同一机器配置；只有 `RuntimeMode.TEST` 可使用显式的 `D:\NetConsoleTestData\<run-id>`。不会依赖当前工作目录、LocalAppData、用户目录或源码目录；仓库 `.local/` 和根 `data/` 仅作为历史迁移源。
 - 主应用数据库（尤其设备管理和 FIT AP 资源）默认保持兼容；会话解析库与可重建分析表可在明确任务范围内重构。
 - SNMP Center、通用 MIB/OID 字典与无线勘测已从活动产品、源码资源和发布依赖中删除；历史用户数据库与文件不做破坏性清理。设备管理只保留 SNMP v1/v2c 只读基础识别，网络工具无线扫描仍是独立能力。
 - `resources/tools/` 是主程序和 Agent 随包运行工具的唯一源码来源；构建后交付包内统一使用 `tools/windows-x64/{fping,iperf3}`。根 `tools/` 不再保存 fping/iPerf 运行依赖，IPOP 仅为用户自备外部工具，任何正式包都不得携带 `IPOP.EXE`。

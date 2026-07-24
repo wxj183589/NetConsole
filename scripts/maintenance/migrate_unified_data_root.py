@@ -237,7 +237,7 @@ def migrate(
                 )
         _migrate_desktop_bootstrap(payload, destination, desktop_bootstrap)
         _normalize_target_configuration(payload)
-        _write_storage_manifest(payload, migration_id)
+        _write_storage_manifest(payload, migration_id, destination)
         _write_operation(staging, report, "verifying")
         report.databases = _verify_databases(payload)
         _verify_allowed_top_level(payload)
@@ -436,14 +436,20 @@ def _normalize_target_configuration(payload: Path) -> None:
             _atomic_json(registry_path, value)
 
 
-def _write_storage_manifest(payload: Path, migration_id: str) -> None:
+def _write_storage_manifest(payload: Path, migration_id: str, data_root: Path) -> None:
+    now = _now()
     _atomic_json(
         payload / "config" / "storage-manifest.json",
         {
+            "format_version": 1,
+            "data_root": str(data_root),
+            "created_at": now,
+            "last_opened_at": now,
+            "installation_id": uuid.uuid4().hex,
             "schema_version": CURRENT_STORAGE_SCHEMA_VERSION,
             "minimum_app_version": APP_VERSION,
             "last_opened_app_version": APP_VERSION,
-            "last_migration_time": _now(),
+            "last_migration_time": now,
             "migration_id": migration_id,
         },
     )

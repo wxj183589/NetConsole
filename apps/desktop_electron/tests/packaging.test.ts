@@ -30,7 +30,24 @@ describe('Electron-only packaging', () => {
     expect(packageJson.build.nsis.uninstallerIcon).toBe('../../resources/branding/netconsole.ico')
     expect(packageJson.build.nsis.installerHeaderIcon).toBe('../../resources/branding/netconsole.ico')
     expect(packageJson.build.nsis.deleteAppDataOnUninstall).toBe(false)
+    expect(packageJson.build.nsis.perMachine).toBe(true)
+    expect(packageJson.build.nsis.include).toBe('build/installer-data-root.nsh')
     expect(packageJson.build.win.target[0]).toEqual({ target: 'nsis', arch: ['x64'] })
+  })
+
+  it('adds a separate, validated business-data-root page to the existing NSIS installer', () => {
+    const script = readFileSync(resolve(appRoot, 'build', 'installer-data-root.nsh'), 'utf8')
+
+    expect(script).toContain('Page custom NetConsoleDataRootPageCreate NetConsoleDataRootPageLeave')
+    expect(script).toContain('选择 NetConsole 数据存放位置')
+    expect(script).toContain('GetDriveTypeW')
+    expect(script).toContain('禁止将业务数据存放在系统盘')
+    expect(script).toContain('storage-manifest.json')
+    expect(script).toContain('NetConsoleDataRootChanged')
+    expect(script).toContain('--migrate-data-root')
+    expect(script).toContain('--validate-data-root')
+    expect(script).toContain('WriteRegStr HKLM "Software\\NetConsole" "DataRoot"')
+    expect(script).not.toContain('DeleteRegKey HKLM "Software\\NetConsole"')
   })
 
   it('resolves the packaged executable from the Electron Builder contract', () => {

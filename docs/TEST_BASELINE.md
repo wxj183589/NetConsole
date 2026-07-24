@@ -8,6 +8,7 @@ NetConsole 开发默认先跑与改动直接相关的定向测试，所有待合
 
 - pytest 在收集测试模块前创建独立的临时 `NETCONSOLE_DATA_ROOT`。
 - 测试不得读取或写入 `D:\NetConsoleData`、正式局点数据库、真实会话和报告；必须使用 `D:\NetConsoleTestData\<run-id>`。
+- `RuntimeMode.TEST` 未显式给出测试根时必须失败，且测试配置解析不得读取 `HKLM\Software\NetConsole\DataRoot`。
 - 需要特定数据布局时使用 `tmp_path`、测试 fixture 或 Fake 服务；不得依赖当前机器已有 Task、Session 或设备数量。
 - 独立工作树的虚拟环境若未执行 editable 安装，运行会启动 Python 子进程的测试时应显式设置 `PYTHONPATH=src`；不能把 `ModuleNotFoundError: netconsole` 误判为 Worker 业务失败。
 
@@ -39,7 +40,7 @@ Electron 改动还需在 `apps/desktop_electron` 运行 `pnpm test`、`pnpm run 
 - MESH/Online MR/Agent：旧日志/缺 Peer Name、按来源独立报告、参数快照、正常/partial/failed 包、LOCAL/AGENT 停止与恢复、真实 fping 与 TCP connect probe 区分。
 - 正式包跨电脑交付：生产 Feature 必要集合、`client_package=false` 不作为运行时拒绝、internal/development 仍关闭、普通局点包秘密清洗与 `needs_reentry`、空凭据创建 Job 前阻断、ASCII JSON bytes 不依赖 CP936/locale、strict UTF-8 汉字任意 chunk/1-byte 分块、非法协议不落库、Backend `text_integrity`、冻结 Worker、统一 Git HEAD/UTC/dirty 构建元数据、`win-unpacked/NetConsole.exe` 受管 Backend 的 REST/任务日志中文探针，以及 WebSocket 中文探针和环境自检。
 
-Windows 图形人工验收必须单独记录在[正式包功能矩阵](PACKAGED_FEATURE_MATRIX.md)：NSIS 安装/卸载、全新普通用户、空 AppData、无开发工具、中文路径、跨电脑导入、凭据重新录入、真实或仿真 H3C SSH、中文任务标题/消息/progress/log/finished。未执行的项目标为 `PENDING`，不得由单元测试或 package smoke 推断为通过。
+Windows 图形人工验收必须单独记录在[正式包功能矩阵](PACKAGED_FEATURE_MATRIX.md)：NSIS 安装/卸载、程序目录与数据目录分离、系统盘拒绝、现有根复用、升级/修复/迁移和卸载保留数据、全新普通用户、空 AppData、无开发工具、中文路径、跨电脑导入、凭据重新录入、真实或仿真 H3C SSH、中文任务标题/消息/progress/log/finished。未执行的项目标为 `PENDING`，不得由单元测试或 package smoke 推断为通过。
 
 Netmiko 当前既有定向基线为 `20 passed, 2 failed`，失败位于 `tests/test_netmiko_connection.py:280` 与 `tests/test_netmiko_connection.py:301`。该两项不属于本轮发布生命周期修复范围，交付时必须如实列出，不能用其他测试结果覆盖。
 

@@ -44,7 +44,6 @@ describe('real Python backend integration', () => {
     const logs: string[] = []
     const sourcePath = resolve(
       dataRoot,
-      'data',
       'sites',
       'demo',
       'files',
@@ -64,6 +63,7 @@ describe('real Python backend integration', () => {
       projectRoot,
       dataRoot,
       runtimeMode: 'desktop-development',
+      storageMode: 'isolated_test',
       pythonPath: resolve(projectRoot, 'src'),
       startupTimeoutMs: 15_000,
       stopTimeoutMs: 8_000,
