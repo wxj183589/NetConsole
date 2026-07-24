@@ -536,6 +536,7 @@ def test_station_template_real_file_preview_save_export_and_reimport_round_trip(
             "line_side",
             "auto_generated",
             "generation_key",
+            "manual_override_fields",
             "enabled",
             "source_kind",
             "remark",

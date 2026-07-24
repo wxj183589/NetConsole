@@ -109,11 +109,11 @@ const stationTemplateSectionRows = computed(() => store.stationTemplatePreview?.
 const sectionGenerationRows = computed(() => store.sectionGenerationPreview?.generated_sections || [])
 const sectionNodeOptions = computed(() => {
   const rows = editingDraft.value?.stations ?? store.stations
-  const options: Array<{ label: string; value: string; uid: string; type: 'station' | 'terminal_endpoint' }> = rows
+  const options: Array<{ display_label: string; persisted_name: string; uid: string; type: 'station' | 'terminal_endpoint' }> = rows
     .filter((station) => station.enabled)
     .map((station) => ({
-      label: station.name,
-      value: station.name,
+      display_label: station.name,
+      persisted_name: station.name,
       uid: station.node_uid,
       type: 'station',
     }))
@@ -128,10 +128,10 @@ const sectionNodeOptions = computed(() => {
         ? 'high'
         : ''
     if (!side) continue
-    const label = `${station.terminal_endpoint_label || '端点'}（${station.name}端）`
+    const persistedName = station.terminal_endpoint_label || '端点'
     options.push({
-      label,
-      value: label,
+      display_label: `${persistedName}（${station.name}端）`,
+      persisted_name: persistedName,
       uid: `endpoint:${station.path_code}:${side}`,
       type: 'terminal_endpoint',
     })
@@ -339,7 +339,7 @@ const stationEditColumns: NcTableColumn<Station>[] = [
 ]
 const sectionEditColumns: NcTableColumn<Section>[] = [
   ...sectionColumns,
-  { key: 'edit_actions', label: '操作', valueType: 'actions', width: 90, fixed: 'right', hideable: false },
+  { key: 'edit_actions', label: '操作', valueType: 'actions', width: 160, fixed: 'right', hideable: false },
 ]
 const mrEditColumns: NcTableColumn<VehicleMr>[] = [
   ...mrColumns,
@@ -535,7 +535,7 @@ function captureBaselines(): void {
       remark: store.summary?.remark || '',
     },
     stations: cloneDto(store.stations),
-    sections: cloneDto(store.sections),
+    sections: cloneDto(store.sections.map((section) => defaultSection(section))),
     aps: cloneDto(store.aps),
     mrs: cloneDto(store.mrs),
   }
@@ -561,6 +561,18 @@ function markMetadata(): void {
 
 function markStation(row: Station): void { recordChange('station', row.id, stationValues(row)) }
 function markSection(row: Section): void { recordChange('section', row.id, sectionValues(row)) }
+const sectionGeneratorFields = new Set([
+  'name', 'section_kind', 'path_code', 'start_node_type', 'start_node_uid', 'start_station',
+  'end_node_type', 'end_node_uid', 'end_station', 'direction_role', 'line_direction', 'line_side', 'enabled',
+])
+function markSectionField(row: Section, ...fields: string[]): void {
+  if (row.auto_generated) {
+    const overrides = new Set(row.manual_override_fields || [])
+    for (const field of fields) if (sectionGeneratorFields.has(field)) overrides.add(field)
+    row.manual_override_fields = [...overrides].sort()
+  }
+  markSection(row)
+}
 function markAp(row: TracksideAp): void { recordChange('trackside_ap', row.id, apValues(row)) }
 function markMr(row: VehicleMr): void { recordChange('vehicle_mr', row.id, mrValues(row)) }
 
@@ -745,6 +757,7 @@ function sectionValues(row: Section): Record<string, unknown> {
     line_side: row.line_side,
     auto_generated: row.auto_generated,
     generation_key: row.generation_key,
+    manual_override_fields: row.manual_override_fields,
     enabled: row.enabled,
     source_kind: row.source_kind,
     remark: row.remark,
@@ -823,17 +836,29 @@ function handleLineTerminalChange(row: Station): void {
   markStation(row)
 }
 
-function handleSectionNodeChange(row: Section, endpoint: 'start' | 'end'): void {
-  const field = endpoint === 'start' ? 'start_station' : 'end_station'
-  const selected = sectionNodeOptions.value.find((item) => item.value === row[field])
+function sectionNodeValue(row: Section, endpoint: 'start' | 'end'): string {
+  return endpoint === 'start' ? row.start_node_uid || row.start_station : row.end_node_uid || row.end_station
+}
+function handleSectionNodeChange(row: Section, endpoint: 'start' | 'end', value: string): void {
+  const selected = sectionNodeOptions.value.find((item) => item.uid === value)
   if (endpoint === 'start') {
     row.start_node_type = selected?.type || 'legacy'
     row.start_node_uid = selected?.uid || ''
+    row.start_station = selected?.persisted_name || value
   } else {
     row.end_node_type = selected?.type || 'legacy'
     row.end_node_uid = selected?.uid || ''
+    row.end_station = selected?.persisted_name || value
   }
-  markSection(row)
+  markSectionField(row, endpoint === 'start' ? 'start_node_type' : 'end_node_type', endpoint === 'start' ? 'start_node_uid' : 'end_node_uid', endpoint === 'start' ? 'start_station' : 'end_station')
+}
+function handleSectionDirectionChange(row: Section, direction: string): void {
+  row.line_direction = direction
+  row.line_side = direction
+  const increasing = editingDraft.value?.metadata.increasing_direction_name || store.summary?.increasing_direction_name || '上行'
+  const decreasing = editingDraft.value?.metadata.decreasing_direction_name || store.summary?.decreasing_direction_name || '下行'
+  row.direction_role = direction === increasing ? 'increasing' : direction === decreasing ? 'decreasing' : 'none'
+  markSectionField(row, 'line_direction', 'line_side', 'direction_role')
 }
 
 async function openStationSourcePreview(): Promise<void> {
@@ -998,6 +1023,7 @@ function applyStationTemplateToDraft(): void {
         ap_count: matched.ap_count,
         mileage_min: matched.mileage_min,
         mileage_max: matched.mileage_max,
+        manual_override_fields: matched.manual_override_fields,
       })
       markSection(matched)
     } else {
@@ -1108,6 +1134,7 @@ function applySectionGenerationToDraft(): void {
         ap_count: current.ap_count,
         mileage_min: current.mileage_min,
         mileage_max: current.mileage_max,
+        manual_override_fields: current.manual_override_fields,
       })
       markSection(current)
     } else {
@@ -1121,6 +1148,37 @@ function applySectionGenerationToDraft(): void {
   updateEditState()
   sectionGenerationDialogVisible.value = false
   ElMessage.success(`已应用 ${applied} 项区间生成结果到当前草稿，保存后才会写入数据库`)
+}
+
+async function restoreSectionAutomaticValues(row: Section): Promise<void> {
+  if (locked.value || !editingDraft.value || !row.auto_generated || !row.generation_key) return
+  try {
+    const preview = await store.previewSectionsFromDraft(
+      cloneDto(editingDraft.value.metadata),
+      cloneDto(editingDraft.value.stations),
+      cloneDto(editingDraft.value.sections.filter((section) => section.id !== row.id)),
+    )
+    const suggestion = preview.generated_sections.find((item) => (
+      item.result !== 'CONFLICT' && item.proposed_section?.generation_key === row.generation_key
+    ))?.proposed_section
+    if (!suggestion) {
+      ElMessage.warning('当前站点顺序无法生成该区间，不能恢复自动值')
+      return
+    }
+    Object.assign(row, {
+      ...defaultSection(suggestion),
+      id: row.id,
+      remark: row.remark,
+      ap_count: row.ap_count,
+      mileage_min: row.mileage_min,
+      mileage_max: row.mileage_max,
+      manual_override_fields: [],
+    })
+    markSection(row)
+    ElMessage.success('已恢复自动建议值，保存后才会写入数据库')
+  } catch {
+    ElMessage.error('恢复自动值失败，请稍后重试')
+  }
 }
 
 async function handleFile(event: Event): Promise<void> {
@@ -1270,6 +1328,7 @@ function defaultSection(values: Partial<Section> = {}): Section {
     line_side: '',
     auto_generated: false,
     generation_key: '',
+    manual_override_fields: [],
     enabled: true,
     source_kind: 'manual',
     ap_count: 0,
@@ -1340,8 +1399,8 @@ function sectionKindLabel(value: string): string {
   return ({ between_stations: '站间区间', terminal_extension: '端点延伸', depot_connection: '出入段连接', manual: '人工区间', legacy: '兼容区间' } as Record<string, string>)[value] || value || '--'
 }
 function sectionSourceLabel(row: Section): string {
-  if (row.section_kind === 'terminal_extension') return '端点延伸'
-  return ({ generated: '自动生成', manual: '人工维护', template: '模板导入', legacy_ap_derived: '兼容数据' } as Record<string, string>)[row.source_kind] || row.source_kind || '--'
+  if (row.auto_generated) return (row.manual_override_fields || []).length ? '自动生成 · 已调整' : '自动生成'
+  return ({ manual: '人工创建', template: '模板导入', legacy_ap_derived: '旧资料派生' } as Record<string, string>)[row.source_kind] || row.source_kind || '--'
 }
 </script>
 
@@ -1599,35 +1658,35 @@ function sectionSourceLabel(row: Section): string {
                 <el-button :icon="Plus" :disabled="locked || saving" @click="addSection">新增区间</el-button>
               </div>
               <NcDataTable table-id="rail-base-sections" route-key="/rail-transit/base-data" :data="sectionRows" :columns="sectionEditColumns" height="calc(100vh - 410px)" empty-text="暂无区间资料">
-                <template #cell-name="{ row }"><el-input v-if="canEditRow('section', row.id) && !row.auto_generated" v-model="row.name" :class="{ 'field-error': fieldError('section', row.id, 'name') }" @input="markSection(row)" /><span v-else>{{ display(row.name) }}</span></template>
+                <template #cell-name="{ row }"><el-input v-if="canEditRow('section', row.id)" v-model="row.name" data-field="section-name" :class="{ 'field-error': fieldError('section', row.id, 'name') }" @input="markSectionField(row, 'name')" /><span v-else>{{ display(row.name) }}</span></template>
                 <template #cell-section_kind="{ row }">
-                  <el-select v-if="canEditRow('section', row.id) && !row.auto_generated" v-model="row.section_kind" @change="markSection(row)"><el-option label="人工区间" value="manual" /><el-option label="出入段连接" value="depot_connection" /></el-select>
+                  <el-select v-if="canEditRow('section', row.id)" v-model="row.section_kind" @change="markSectionField(row, 'section_kind')"><el-option label="站间区间" value="between_stations" /><el-option label="端点延伸" value="terminal_extension" /><el-option label="人工区间" value="manual" /><el-option label="出入段连接" value="depot_connection" /></el-select>
                   <el-tag v-else :type="row.section_kind === 'terminal_extension' ? 'warning' : row.auto_generated ? 'success' : 'info'">{{ sectionKindLabel(row.section_kind) }}</el-tag>
                 </template>
-                <template #cell-path_code="{ row }"><el-input v-if="canEditRow('section', row.id) && !row.auto_generated" v-model="row.path_code" @input="markSection(row)" /><span v-else>{{ display(row.path_code) }}</span></template>
+                <template #cell-path_code="{ row }"><el-input v-if="canEditRow('section', row.id)" v-model="row.path_code" @input="markSectionField(row, 'path_code')" /><span v-else>{{ display(row.path_code) }}</span></template>
                 <template #cell-start_station="{ row }">
-                  <el-select v-if="canEditRow('section', row.id) && !row.auto_generated" v-model="row.start_station" filterable allow-create default-first-option @change="handleSectionNodeChange(row, 'start')">
-                    <el-option v-for="option in sectionNodeOptions" :key="`start:${option.uid}`" :label="option.label" :value="option.value" />
+                  <el-select v-if="canEditRow('section', row.id)" :model-value="sectionNodeValue(row, 'start')" data-field="section-start-node" filterable allow-create default-first-option @change="(value: string) => handleSectionNodeChange(row, 'start', value)">
+                    <el-option v-for="option in sectionNodeOptions" :key="`start:${option.uid}`" :label="option.display_label" :value="option.uid" />
                   </el-select>
                   <span v-else>{{ display(row.start_station) }}</span>
                 </template>
                 <template #cell-end_station="{ row }">
-                  <el-select v-if="canEditRow('section', row.id) && !row.auto_generated" v-model="row.end_station" filterable allow-create default-first-option @change="handleSectionNodeChange(row, 'end')">
-                    <el-option v-for="option in sectionNodeOptions" :key="`end:${option.uid}`" :label="option.label" :value="option.value" />
+                  <el-select v-if="canEditRow('section', row.id)" :model-value="sectionNodeValue(row, 'end')" data-field="section-end-node" filterable allow-create default-first-option @change="(value: string) => handleSectionNodeChange(row, 'end', value)">
+                    <el-option v-for="option in sectionNodeOptions" :key="`end:${option.uid}`" :label="option.display_label" :value="option.uid" />
                   </el-select>
                   <span v-else>{{ display(row.end_station) }}</span>
                 </template>
                 <template #cell-line_direction="{ row }">
-                  <el-select v-if="canEditRow('section', row.id) && !row.auto_generated" v-model="row.line_direction" @change="() => { row.line_side = row.line_direction; markSection(row) }">
+                  <el-select v-if="canEditRow('section', row.id)" v-model="row.line_direction" data-field="section-direction" @change="(value: string) => handleSectionDirectionChange(row, value)">
                     <el-option :label="editingDraft?.metadata.increasing_direction_name || store.summary?.increasing_direction_name || '上行'" :value="editingDraft?.metadata.increasing_direction_name || store.summary?.increasing_direction_name || '上行'" />
                     <el-option :label="editingDraft?.metadata.decreasing_direction_name || store.summary?.decreasing_direction_name || '下行'" :value="editingDraft?.metadata.decreasing_direction_name || store.summary?.decreasing_direction_name || '下行'" />
                   </el-select>
                   <span v-else>{{ display(row.line_direction || row.line_side) }}</span>
                 </template>
                 <template #cell-source_kind="{ row }"><el-tag :type="row.auto_generated ? 'success' : row.source_kind === 'legacy_ap_derived' ? 'warning' : 'info'">{{ sectionSourceLabel(row) }}</el-tag></template>
-                <template #cell-enabled="{ row }"><el-switch v-if="canEditRow('section', row.id)" v-model="row.enabled" @change="markSection(row)" /><el-tag v-else :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag></template>
+                <template #cell-enabled="{ row }"><el-switch v-if="canEditRow('section', row.id)" v-model="row.enabled" @change="markSectionField(row, 'enabled')" /><el-tag v-else :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag></template>
                 <template #cell-remark="{ row }"><el-input v-if="canEditRow('section', row.id)" v-model="row.remark" @input="markSection(row)" /><span v-else>{{ display(row.remark) }}</span></template>
-                <template #cell-edit_actions="{ row }"><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('section', row)">移除</el-button><template v-if="isPendingDelete('section', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('section', row)">撤销</el-button></template><el-button v-else-if="!row.id.startsWith('new:')" link type="danger" :disabled="locked || saving" @click="deleteEntity('section', row)">删除</el-button></template>
+                <template #cell-edit_actions="{ row }"><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.auto_generated && !locked && !saving" link type="primary" @click="restoreSectionAutomaticValues(row)">恢复自动值</el-button><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('section', row)">移除</el-button><template v-if="isPendingDelete('section', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('section', row)">撤销</el-button></template><el-button v-else-if="!row.id.startsWith('new:')" link type="danger" :disabled="locked || saving" @click="deleteEntity('section', row)">删除</el-button></template>
               </NcDataTable>
             </el-tab-pane>
           </el-tabs>

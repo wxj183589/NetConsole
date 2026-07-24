@@ -1034,6 +1034,11 @@ class RailTransitBaseDataQueryService:
                     line_side=metadata_row.line_side,
                     auto_generated=bool(metadata.get("auto_generated", False)),
                     generation_key=generation_key,
+                    manual_override_fields=[
+                        str(field)
+                        for field in metadata.get("manual_override_fields", [])
+                        if isinstance(field, str) and field
+                    ] if isinstance(metadata.get("manual_override_fields"), list) else [],
                     enabled=bool(metadata.get("enabled", True)),
                     source_kind=str(metadata.get("source_kind") or "manual"),  # type: ignore[arg-type]
                     ap_count=len(ap_rows),

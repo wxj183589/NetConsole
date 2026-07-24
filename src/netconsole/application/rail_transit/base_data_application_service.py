@@ -389,6 +389,9 @@ class RailTransitBaseDataApplicationService:
                 "自动区间必须包含稳定生成标识",
                 "generation_key",
             )
+        manual_override_fields = raw.get("manual_override_fields") or []
+        if not isinstance(manual_override_fields, list):
+            raise ValueError("区间人工覆盖字段格式无效")
         return {
             "name": name,
             "old_name": str(raw.get("old_name") or name).strip(),
@@ -409,6 +412,7 @@ class RailTransitBaseDataApplicationService:
             "old_line_side": str(raw.get("old_line_side") or raw.get("line_side") or "").strip(),
             "auto_generated": auto_generated,
             "generation_key": generation_key,
+            "manual_override_fields": sorted({str(field).strip() for field in manual_override_fields if str(field).strip()}),
             "enabled": _bool(raw.get("enabled"), default=True),
             "source_kind": _enum(raw.get("source_kind"), _SECTION_SOURCE_KINDS, "manual", "区间来源类型无效"),
             "remark": str(raw.get("remark") or "").strip(),

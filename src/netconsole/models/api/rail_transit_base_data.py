@@ -329,6 +329,7 @@ class SectionDTO(ApiModel):
     line_side: str = ""
     auto_generated: bool = False
     generation_key: str = ""
+    manual_override_fields: list[str] = Field(default_factory=list)
     enabled: bool = True
     source_kind: SectionSourceKind = "legacy_ap_derived"
     ap_count: int = 0

@@ -15,6 +15,7 @@ from netconsole.repositories.rail_transit_base_data_repository import (
     RailTransitBaseDataConstraintError,
     RailTransitBaseDataRepository,
 )
+from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture, mark_base_data_copy
 
 
@@ -279,6 +280,79 @@ def test_transactional_save_updates_ap_station_and_plan_with_revision(tmp_path: 
         assert connection.execute("SELECT remark FROM ap_extension_points WHERE id = ?", (numeric_ap_id,)).fetchone()[0] == "统一保存"
         assert connection.execute("SELECT station_name FROM ac_trackside_ap_plan WHERE mode = 'unified'").fetchone()[0] == "车站D"
         assert tuple(connection.execute("SELECT primary_address, remark FROM devices WHERE device_uuid = 'mr-01-ct'").fetchone()) == ("10.10.0.11", "统一维护")
+
+
+def test_generated_section_edit_persists_overrides_and_cascades_all_named_ap_references(tmp_path: Path) -> None:
+    paths, database = build_rail_transit_base_data_fixture(tmp_path)
+    repository = RailTransitBaseDataRepository(paths)
+    with Database(database).connect() as connection:
+        connection.execute(
+            "UPDATE ap_extension_points SET section_name = '自动区间' WHERE section_name = 'A-B 区间'"
+        )
+        connection.commit()
+    create_values = {
+        "name": "自动区间",
+        "section_code": "AUTO-001",
+        "section_kind": "between_stations",
+        "path_code": "MAIN",
+        "direction_role": "increasing",
+        "line_direction": "上行",
+        "start_node_type": "station",
+        "start_node_uid": "node-a",
+        "start_station": "车站A",
+        "end_node_type": "station",
+        "end_node_uid": "node-b",
+        "end_station": "车站B",
+        "line_side": "上行",
+        "auto_generated": True,
+        "generation_key": "MAIN|between|node-a|node-b|increasing",
+        "manual_override_fields": [],
+        "enabled": True,
+        "source_kind": "generated",
+        "remark": "保留备注",
+    }
+    repository.apply_base_data_changes(
+        "demo",
+        repository.base_data_revision("demo"),
+        [{"entity_type": "section", "action": "create", "entity_id": "new:auto", "values": create_values}],
+    )
+    update_values = {
+        **create_values,
+        "name": "现场专用区间",
+        "old_name": "自动区间",
+        "old_start_station": "车站A",
+        "old_end_station": "车站B",
+        "old_line_side": "上行",
+        "start_node_uid": "node-a-adjusted",
+        "manual_override_fields": ["name", "start_node_uid"],
+    }
+
+    repository.apply_base_data_changes(
+        "demo",
+        repository.base_data_revision("demo"),
+        [{"entity_type": "section", "action": "update", "entity_id": "section:auto", "values": update_values}],
+    )
+
+    saved = next(
+        item
+        for item in RailTransitBaseDataQueryService(paths).list_sections("demo", page_size=200).items
+        if item.generation_key == create_values["generation_key"]
+    )
+    assert saved.name == "现场专用区间"
+    assert saved.start_node_uid == "node-a-adjusted"
+    assert saved.manual_override_fields == ["name", "start_node_uid"]
+    assert saved.auto_generated is True
+    assert saved.source_kind == "generated"
+    assert saved.generation_key == create_values["generation_key"]
+    with Database(database).connect() as connection:
+        references = connection.execute(
+            """
+            SELECT DISTINCT section_name FROM ap_extension_points
+            WHERE belong_type NOT IN ('__base_station__', '__base_section__')
+              AND ap_name IN ('AP-Online', 'AP-Section')
+            """
+        ).fetchall()
+    assert {row[0] for row in references} == {"现场专用区间"}
 
 
 def test_station_source_confirmation_preserves_manual_fields_and_marks_stale_without_deleting(
