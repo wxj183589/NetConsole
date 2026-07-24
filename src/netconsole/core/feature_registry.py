@@ -192,6 +192,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("web.rail_trackside_ap_plan", "轨旁 AP 规划（基础资料页签）", "web.rail_transit_base_data", "tab"),
     FeatureItem("web.rail_trackside_ap_plan_write", "轨旁 AP 规划维护（Web）", "web.rail_trackside_ap_plan", "action"),
     FeatureItem("web.rail_trackside_ap_plan_export", "轨旁 AP 规划导出（Web）", "web.rail_trackside_ap_plan", "action"),
+    FeatureItem("web.rail_trackside_ap_base_io", "轨旁 AP 基础资料导入导出（Web）", "web.rail_transit_base_data", "action"),
     FeatureItem(
         "web.online_mr_analysis",
         "车载 MR 收集分析（Web）",

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
@@ -510,7 +512,7 @@ class RailTransitBaseDataApplicationService:
         section = str(raw.get("section") or raw.get("section_name") or "").strip()
         if not station and not section:
             raise ValueError("轨旁 AP 必须填写归属站点或归属区间")
-        return {
+        values: dict[str, Any] = {
             "line_name": str(raw.get("line_name") or "").strip(),
             "station_name": station,
             "section_name": section,
@@ -526,6 +528,46 @@ class RailTransitBaseDataApplicationService:
             "ap_mac_display": mac.display or mac.raw,
             "remark": str(raw.get("remark") or "").strip(),
         }
+        for field_name in (
+            "system_type",
+            "network_domain",
+            "yard_name",
+            "area_name",
+            "curve_start_text",
+            "curve_end_text",
+            "install_scene",
+            "location_desc",
+            "power_station",
+            "power_distribution",
+            "fiber_access_station",
+            "fiber_distribution",
+            "uplink_switch",
+            "uplink_port",
+            "optical_port",
+        ):
+            values[field_name] = str(raw.get(field_name) or "").strip()
+        values["belong_type"] = str(
+            raw.get("belong_type") or ("section" if section else "station")
+        ).strip()
+        for field_name in ("distance_to_prev_m", "curve_radius_m"):
+            value = raw.get(field_name)
+            if value in (None, ""):
+                values[field_name] = None
+            else:
+                try:
+                    values[field_name] = float(value)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"{field_name} 必须为数字") from exc
+        values["source_file"] = Path(str(raw.get("source_file") or "")).name
+        values["source_sheet"] = str(raw.get("source_sheet") or "").strip()
+        source_row = raw.get("source_row")
+        values["source_row"] = int(source_row) if source_row not in (None, "") else None
+        metadata = raw.get("base_metadata")
+        if isinstance(metadata, Mapping):
+            values["raw_payload_json"] = json.dumps(
+                dict(metadata), ensure_ascii=False, sort_keys=True
+            )
+        return values
 
     @staticmethod
     def _mr_values(raw: Mapping[str, Any], action: str) -> dict[str, Any]:

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ElMessage } from 'element-plus'
+import { Delete, Download, Plus, UploadFilled } from '@element-plus/icons-vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
@@ -9,7 +10,9 @@ import {
   getTracksideApTask,
   previewTracksideApPlan,
   recoverTracksideApTasks,
+  tracksideApPlanDownloadRequest,
 } from '../../../api/tracksideApBusiness'
+import { downloadBackendResource } from '../../../platform/runtime'
 import { useConfirm } from '../../feedback/useConfirm'
 import NcDataTable from '../../table/NcDataTable.vue'
 import type { NcTableColumn } from '../../table/NcTableColumn'
@@ -56,7 +59,9 @@ const previewColumns: NcTableColumn<TracksideApPlanPreviewRow>[] = [
   { key: 'message', label: '说明', valueType: 'description', align: 'left', alignmentReason: 'long-text' },
 ]
 // 基础资料页的编辑会话已经由父页面和后端 write guard 授权，规划表不再维护第二个写入开关。
-const canWrite = computed(() => !props.locked && !props.saving)
+const canPreviewImport = computed(() => !props.saving)
+const canApplyImport = computed(() => !props.locked && !props.saving)
+const canWrite = canApplyImport
 const taskRunning = computed(() => Boolean(task.value && !terminalStates.has(task.value.status)))
 
 function failure(reason: unknown, fallback: string): string { return reason instanceof Error ? reason.message : fallback }
@@ -118,7 +123,7 @@ async function exportPlan(template: boolean): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    rememberTask(await exportTracksideApPlan(template))
+    rememberTask(await exportTracksideApPlan(template, !template && dirty.value ? copyRows() : undefined))
     poll()
     openTaskWindow()
   } catch (reason) { error.value = failure(reason, template ? '规划模板导出启动失败' : '轨旁 AP 规划导出启动失败') }
@@ -128,7 +133,7 @@ async function chooseImport(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
-  if (!file || !canWrite.value) return
+  if (!file || !canPreviewImport.value) return
   loading.value = true
   error.value = ''
   try { preview.value = await previewTracksideApPlan(file, duplicateStrategy.value); previewVisible.value = true }
@@ -136,7 +141,7 @@ async function chooseImport(event: Event): Promise<void> {
   finally { loading.value = false }
 }
 function applyPreview(): void {
-  if (!preview.value?.can_apply || !canWrite.value) return
+  if (!preview.value?.can_apply || !canApplyImport.value) return
   rows.value = preview.value.result_rows
   renumber()
   previewVisible.value = false
@@ -150,6 +155,16 @@ function openTaskWindow(): void {
     return
   }
   void router.push({ name: 'tasks', query: { module: 'rail', ...(taskId ? { task_id: taskId } : {}) } })
+}
+async function downloadArtifact(): Promise<void> {
+  const current = task.value
+  if (!current?.available || !current.artifact_id) return
+  const result = await downloadBackendResource(
+    tracksideApPlanDownloadRequest(current.artifact_id, current.artifact_name || '轨旁AP规划.xlsx'),
+  )
+  if (result.status === 'saved') ElMessage.success(`已保存 ${current.artifact_name || '轨旁 AP 规划文件'}`)
+  else if (result.status === 'started') ElMessage.success('浏览器已开始下载轨旁 AP 规划文件')
+  else if (result.status === 'failed') ElMessage.error(result.error || '轨旁 AP 规划文件下载失败')
 }
 async function recoverTasks(): Promise<void> {
   try {
@@ -173,11 +188,11 @@ onBeforeUnmount(stopPolling)
     <div class="toolbar">
       <el-select v-model="duplicateStrategy" aria-label="重复策略" style="width:150px"><el-option label="重复时覆盖" value="replace" /><el-option label="重复时跳过" value="skip" /><el-option label="重复时报错" value="error" /></el-select>
       <input ref="importInput" class="hidden" type="file" accept=".xlsx,.csv" @change="chooseImport">
-      <el-button :disabled="!canWrite || taskRunning" @click="addRow">新增</el-button>
-      <el-button :disabled="!canWrite || !selectedRows.length || taskRunning" @click="deleteRows">删除</el-button>
-      <el-button :disabled="!canWrite || taskRunning" @click="importInput?.click()">导入并预览</el-button>
-      <el-button :disabled="!isFeatureEnabled('web.rail_trackside_ap_plan_export') || taskRunning" @click="exportPlan(false)">导出规划</el-button>
-      <el-button :disabled="!isFeatureEnabled('web.rail_trackside_ap_plan_export') || taskRunning" @click="exportPlan(true)">导出模板</el-button>
+      <el-button :icon="Download" :disabled="!isFeatureEnabled('web.rail_trackside_ap_plan_export') || taskRunning" @click="exportPlan(true)">下载模板</el-button>
+      <el-button :icon="UploadFilled" :disabled="!canPreviewImport || taskRunning" @click="importInput?.click()">导入并预览</el-button>
+      <el-button :icon="Download" :disabled="!isFeatureEnabled('web.rail_trackside_ap_plan_export') || taskRunning" @click="exportPlan(false)">导出当前</el-button>
+      <el-button :icon="Plus" :disabled="!canWrite || taskRunning" @click="addRow">新增</el-button>
+      <el-button :icon="Delete" :disabled="!canWrite || !selectedRows.length || taskRunning" @click="deleteRows">删除</el-button>
       <span class="dirty">{{ dirty ? '有未保存修改' : `已加载 ${rows.length} 行` }}</span>
     </div>
     <NcDataTable v-loading="loading" table-id="rail-base-trackside-ap-planning" route-key="/rail-transit/base-data" :data="rows" :columns="planColumns" border height="calc(100vh - 390px)" empty-text="暂无轨旁 AP 规划，可解锁后新增或导入" @selection-change="(value: TracksideApPlanRow[]) => selectedRows = value">
@@ -189,14 +204,14 @@ onBeforeUnmount(stopPolling)
       <template #cell-ap_management_vlans="{ row }"><el-input v-if="canWrite" v-model="row.ap_management_vlans" @input="publishDirty" /><span v-else>{{ row.ap_management_vlans || '--' }}</span></template>
       <template #cell-remark="{ row }"><el-input v-if="canWrite" v-model="row.remark" @input="publishDirty" /><span v-else>{{ row.remark || '--' }}</span></template>
     </NcDataTable>
-    <el-alert v-if="task" :title="`${task.status} · ${task.message || task.task_id}`" :type="task.error_message ? 'error' : 'info'" :closable="false"><el-button link @click="openTaskWindow">打开任务窗口</el-button></el-alert>
+    <el-alert v-if="task" :title="`${task.status} · ${task.message || task.task_id}`" :type="task.error_message ? 'error' : 'info'" :closable="false"><el-button v-if="task.available && task.artifact_id" link type="primary" @click="downloadArtifact">下载文件</el-button><el-button link @click="openTaskWindow">打开任务窗口</el-button></el-alert>
     <el-dialog v-model="previewVisible" title="导入预览" width="900px" destroy-on-close>
       <div v-if="preview" class="preview">
         <el-descriptions :column="5" border><el-descriptions-item label="总行数">{{ preview.total_count }}</el-descriptions-item><el-descriptions-item label="有效">{{ preview.valid_count }}</el-descriptions-item><el-descriptions-item label="重复">{{ preview.duplicate_count }}</el-descriptions-item><el-descriptions-item label="错误">{{ preview.error_count }}</el-descriptions-item><el-descriptions-item label="SHA-256">{{ preview.file_sha256.slice(0, 12) }}…</el-descriptions-item></el-descriptions>
         <NcDataTable table-id="rail-base-trackside-ap-plan-import-preview" route-key="/rail-transit/base-data" :data="preview.rows" :columns="previewColumns" border height="360" :show-column-settings="false" />
         <el-alert v-if="!preview.can_apply" title="预览存在阻断错误，请修正文件或更换重复策略后重新导入" type="error" :closable="false" />
       </div>
-      <template #footer><el-button @click="previewVisible = false">取消</el-button><el-button type="primary" :disabled="!preview?.can_apply || !canWrite" @click="applyPreview">应用到编辑区</el-button></template>
+      <template #footer><el-button @click="previewVisible = false">取消</el-button><el-button type="primary" :disabled="!preview?.can_apply || !canApplyImport" @click="applyPreview">应用到编辑区</el-button></template>
     </el-dialog>
   </section>
 </template>

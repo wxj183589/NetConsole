@@ -29,6 +29,15 @@ TRACKSIDE_PLAN_COLUMN_WIDTHS = {
     "ap_management_vlans": 170,
     "remark": 220,
 }
+TRACKSIDE_PLAN_FIELD_NOTES = (
+    {"field": "站点", "requirement": "必填", "description": "站点名称不能为空；重复站点按导入时选择的覆盖、跳过或报错策略处理。"},
+    {"field": "AP 数", "requirement": "必填", "description": "非负整数；AP 数为 0 时允许 AP 起始地址为空。"},
+    {"field": "AP 起始地址", "requirement": "条件必填", "description": "AP 数大于 0 时必须填写；支持完整 IPv4 或项目现有带 X 地址格式。"},
+    {"field": "掩码", "requirement": "可选", "description": "支持 0-32 或合法连续 IPv4 掩码。"},
+    {"field": "AP 网关", "requirement": "可选", "description": "填写时必须为有效 IPv4。"},
+    {"field": "管理 VLAN", "requirement": "可选", "description": "支持项目现有单值、逗号分隔和范围格式。"},
+    {"field": "备注", "requirement": "可选", "description": "规划备注。"},
+)
 MASK_ERROR_TEXT = "必须是0-32或合法连续IPv4掩码"
 
 

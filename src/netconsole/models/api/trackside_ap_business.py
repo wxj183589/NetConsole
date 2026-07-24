@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from netconsole.models.api.common import ApiModel
+from netconsole.models.api.rail_transit_base_data import TracksideApDTO
 
 
 class TracksideApBusinessRowDTO(ApiModel):
@@ -96,6 +97,12 @@ class TracksideApPlanPreviewDTO(ApiModel):
 
 class TracksideApPlanExportRequestDTO(ApiModel):
     template: bool = False
+    rows: list[TracksideApPlanRowDTO] | None = Field(default=None, max_length=2000)
+
+
+class TracksideApBaseExportRequestDTO(ApiModel):
+    template: bool = False
+    rows: list[TracksideApDTO] | None = Field(default=None, max_length=2000)
 
 
 __all__ = [name for name in globals() if name.startswith("TracksideAp")]

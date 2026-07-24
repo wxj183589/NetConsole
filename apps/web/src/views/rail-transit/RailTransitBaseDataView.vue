@@ -6,6 +6,13 @@ import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import { downloadBackendResource } from '../../platform/runtime'
 import { stationTemplateDownloadRequest, stationTemplateExportDownloadRequest } from '../../api/railTransitBaseData'
+import {
+  exportTracksideApBase,
+  getTracksideApTask,
+  recoverTracksideApTasks,
+  tracksideApBaseDownloadRequest,
+} from '../../api/tracksideApBusiness'
+import { isFeatureEnabled } from '../../features'
 
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
@@ -33,7 +40,7 @@ import type {
   Train,
   VehicleMr,
 } from '../../types/railTransitBaseData'
-import type { TracksideApPlanRow } from '../../types/tracksideApBusiness'
+import type { TracksideApPlanRow, TracksideApTask } from '../../types/tracksideApBusiness'
 
 const store = useRailTransitBaseDataStore()
 const route = useRoute()
@@ -89,6 +96,12 @@ const previewFilter = ref('all')
 const stationSourceDialogVisible = ref(false)
 const stationTemplateDialogVisible = ref(false)
 const sectionGenerationDialogVisible = ref(false)
+const apImportDialogVisible = ref(false)
+const tracksideApImportInput = ref<HTMLInputElement | null>(null)
+const apBaseTask = ref<TracksideApTask | null>(null)
+const apBaseTaskStorageKey = 'netconsole.trackside-ap-base.last-task'
+const apTaskTerminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
+let apBasePollTimer: number | undefined
 const selectedStationSourceIds = ref<string[]>([])
 const selectedTemplateRows = ref<number[]>([])
 const selectedTemplateSectionRows = ref<number[]>([])
@@ -359,11 +372,13 @@ onMounted(() => {
   window.addEventListener('beforeunload', beforeUnload)
   store.startPolling()
   void store.refreshImportGovernance().catch(() => undefined)
+  void recoverApBaseTask()
 })
 onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', handleVisibility)
   window.removeEventListener('beforeunload', beforeUnload)
   store.stopPolling()
+  stopApBasePolling()
 })
 onBeforeRouteLeave(async () => !dirty.value || confirmUnsavedChanges())
 
@@ -717,8 +732,11 @@ function addSection(): void {
 }
 function addAp(): void {
   if (!editingDraft.value) return
-  const row: TracksideAp = { id: temporaryId(), site_id: store.editSession?.site_id || '', line_name: store.summary?.line_name || '', name: '', point_code: '', mac: '', management_ip: '', model: '', station: '', section: '', section_start_station: '', section_end_station: '', mileage: { raw: '', normalized: '', meters: null, line_type: '', valid: false, error: '' }, line_side: '', direction: '', radios: [], remark: '', source_file: '', source_sheet: '', source_row: null, updated_at: '', runtime: emptyRuntime(), issue_count: 0, highest_issue_severity: '', record_kind: 'manual', base_metadata: {} }
+  const row = newTracksideAp()
   editingDraft.value.aps.push(row); markAp(row)
+}
+function newTracksideAp(): TracksideAp {
+  return { id: temporaryId(), site_id: store.editSession?.site_id || '', line_name: store.summary?.line_name || '', name: '', point_code: '', mac: '', management_ip: '', model: '', station: '', section: '', section_start_station: '', section_end_station: '', mileage: { raw: '', normalized: '', meters: null, line_type: '', valid: false, error: '' }, line_side: '', direction: '', radios: [], remark: '', source_file: '', source_sheet: '', source_row: null, updated_at: '', runtime: emptyRuntime(), issue_count: 0, highest_issue_severity: '', record_kind: 'manual', base_metadata: {} }
 }
 function addMr(): void {
   if (!editingDraft.value) return
@@ -794,7 +812,30 @@ function sectionValues(row: Section): Record<string, unknown> {
     remark: row.remark,
   }
 }
-function apValues(row: TracksideAp): Record<string, unknown> { return { line_name: row.line_name, name: row.name, point_code: row.point_code, mac: row.mac, station: row.station, section: row.section, section_start_station: row.section_start_station, section_end_station: row.section_end_station, mileage: row.mileage.raw, line_side: row.line_side, direction: row.direction, remark: row.remark } }
+function apValues(row: TracksideAp): Record<string, unknown> {
+  return {
+    line_name: row.line_name,
+    ap_name: row.name,
+    ap_point_code: row.point_code,
+    ap_mac_display: row.mac,
+    station_name: row.station,
+    section_name: row.section,
+    section_start_station: row.section_start_station,
+    section_end_station: row.section_end_station,
+    mileage: row.mileage.raw,
+    line_side: row.line_side,
+    direction: row.direction,
+    remark: row.remark,
+    source_file: row.source_file,
+    source_sheet: row.source_sheet,
+    source_row: row.source_row,
+    base_metadata: row.base_metadata,
+    ...Object.fromEntries(
+      ['system_type', 'network_domain', 'belong_type', 'yard_name', 'area_name', 'distance_to_prev_m', 'curve_radius_m', 'curve_start_text', 'curve_end_text', 'install_scene', 'location_desc', 'power_station', 'power_distribution', 'fiber_access_station', 'fiber_distribution', 'uplink_switch', 'uplink_port', 'optical_port']
+        .map((field) => [field, row.base_metadata[field] ?? '']),
+    ),
+  }
+}
 function mrValues(row: VehicleMr): Record<string, unknown> { return { name: row.name, station: row.station, management_ip: row.management_ip, mac: row.mac, protocol: row.protocol, port: row.port, remark: row.remark } }
 function metadataValues(metadata: BaseDataDraft['metadata']): Record<string, unknown> {
   return {
@@ -964,6 +1005,91 @@ async function downloadStationTemplate(): Promise<void> {
   } catch (cause) {
     ElMessage.error(message(cause, '基础资料模板下载失败'))
   }
+}
+
+function stopApBasePolling(): void {
+  if (apBasePollTimer !== undefined) window.clearTimeout(apBasePollTimer)
+  apBasePollTimer = undefined
+}
+
+function rememberApBaseTask(value: TracksideApTask | null): void {
+  apBaseTask.value = value
+  if (value) localStorage.setItem(apBaseTaskStorageKey, value.task_id)
+  else localStorage.removeItem(apBaseTaskStorageKey)
+}
+
+function pollApBaseTask(): void {
+  stopApBasePolling()
+  if (!apBaseTask.value || apTaskTerminalStates.has(apBaseTask.value.status)) return
+  apBasePollTimer = window.setTimeout(async () => {
+    try {
+      rememberApBaseTask(await getTracksideApTask(apBaseTask.value!.task_id))
+      pollApBaseTask()
+    } catch (cause) {
+      ElMessage.error(message(cause, '轨旁 AP 导出任务状态读取失败'))
+    }
+  }, 1000)
+}
+
+async function recoverApBaseTask(): Promise<void> {
+  try {
+    const tasks = await recoverTracksideApTasks()
+    const saved = localStorage.getItem(apBaseTaskStorageKey) || ''
+    rememberApBaseTask(
+      tasks.find((item) => item.task_id === saved)
+      || tasks.find((item) => item.action === 'trackside_ap_base_export' && !apTaskTerminalStates.has(item.status))
+      || tasks.find((item) => item.action === 'trackside_ap_base_export')
+      || null,
+    )
+    pollApBaseTask()
+  } catch { /* 页面主数据仍可使用，任务恢复失败由后续操作重试。 */ }
+}
+
+async function startApBaseExport(template: boolean): Promise<void> {
+  let draftRows: TracksideAp[] | undefined
+  if (!template && !locked.value && dirty.value) {
+    const choice = await confirmChoice({
+      type: 'WARNING',
+      title: '选择导出数据',
+      message: '当前页面存在未保存修改，请明确选择导出当前草稿或数据库中已保存的数据。',
+      confirmText: '导出当前草稿',
+      secondaryText: '导出已保存数据',
+      cancelText: '取消',
+    })
+    if (choice === 'cancel') return
+    if (choice === 'confirm') draftRows = cloneDto(apRows.value)
+  }
+  try {
+    rememberApBaseTask(await exportTracksideApBase(template, draftRows))
+    pollApBaseTask()
+    ElMessage.success(template ? '轨旁 AP 模板导出任务已启动' : '轨旁 AP 当前数据导出任务已启动')
+  } catch (cause) {
+    ElMessage.error(message(cause, template ? '轨旁 AP 模板导出启动失败' : '轨旁 AP 当前数据导出启动失败'))
+  }
+}
+
+async function downloadApBaseArtifact(): Promise<void> {
+  const current = apBaseTask.value
+  if (!current?.available || !current.artifact_id) return
+  try {
+    const result = await downloadBackendResource(
+      tracksideApBaseDownloadRequest(current.artifact_id, current.artifact_name || '轨旁AP基础资料.xlsx'),
+    )
+    if (result.status === 'saved') ElMessage.success(`已保存 ${current.artifact_name || '轨旁 AP 基础资料'}`)
+    else if (result.status === 'started') ElMessage.success('浏览器已开始下载轨旁 AP 基础资料')
+    else if (result.status === 'failed') ElMessage.error(result.error || '轨旁 AP 基础资料下载失败')
+  } catch (cause) {
+    ElMessage.error(message(cause, '轨旁 AP 基础资料下载失败'))
+  }
+}
+
+function openApBaseTaskWindow(): void {
+  const taskId = apBaseTask.value?.task_id || ''
+  if (window.netconsoleDesktop) {
+    void window.netconsoleDesktop.openTaskWindow({ module: 'rail', ...(taskId ? { taskId } : {}) })
+    return
+  }
+  void router.push({ name: 'tasks', query: { module: 'rail', ...(taskId ? { task_id: taskId } : {}) } })
 }
 
 async function exportCurrentStations(): Promise<void> {
@@ -1215,15 +1341,29 @@ async function handleFile(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   if (!file) return
+  await previewApImport(file)
+  input.value = ''
+}
+
+async function handleTracksideApFile(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  const completed = await previewApImport(file)
+  input.value = ''
+  if (completed) apImportDialogVisible.value = true
+}
+
+async function previewApImport(file: File): Promise<boolean> {
   try {
     await store.previewImport(file)
     applyConfirmed.value = false
     decisionSelections.value = {}
     ElMessage.success('导入预览解析完成，未写入数据库')
+    return true
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '导入预览失败')
-  } finally {
-    input.value = ''
+    return false
   }
 }
 
@@ -1242,15 +1382,74 @@ function manualDecisions(): MergeFieldDecision[] {
 }
 
 async function handleApply(): Promise<void> {
-  if (!applyConfirmed.value || locked.value) return
+  if (!applyConfirmed.value || locked.value || !editingDraft.value || !store.canApplyImport()) return
   try {
-    const operationId = await store.applyImport(manualDecisions())
+    const decisions = new Map(
+      manualDecisions().map((item) => [decisionKey(item.row_number, item.field_name), item.action]),
+    )
+    let applied = 0
+    for (const item of store.importPreview?.merge_plan?.items || []) {
+      if (item.blocking || !['CREATE', 'UPDATE'].includes(item.result)) continue
+      if (item.result === 'CREATE') {
+        const row = newTracksideAp()
+        for (const [field, value] of Object.entries(item.source_values)) {
+          if (value !== null && value !== '') applyImportedApValue(row, field, value)
+        }
+        editingDraft.value.aps.push(row)
+        markAp(row)
+        applied += 1
+        continue
+      }
+      const row = editingDraft.value.aps.find((candidate) => candidate.id === item.matched_entity_id)
+      if (!row) continue
+      for (const diff of item.field_diffs) {
+        const selected = decisions.get(decisionKey(item.row_number, diff.field_name))
+        if (diff.action === 'manual_review' && selected !== 'use_imported') continue
+        if (diff.action === 'keep_existing') continue
+        applyImportedApValue(row, diff.field_name, diff.proposed_value)
+      }
+      for (const field of ['source_file', 'source_sheet', 'source_row', 'raw_payload_json']) {
+        const value = item.source_values[field]
+        if (value !== null && value !== '') applyImportedApValue(row, field, value)
+      }
+      markAp(row)
+      applied += 1
+    }
     applyConfirmed.value = false
-    await store.manualRefresh()
-    ElMessage.success(`基础资料已应用，操作号：${operationId}`)
+    apImportDialogVisible.value = false
+    ElMessage.success(`已应用 ${applied} 行到当前编辑草稿，保存后才会写入数据库`)
   } catch (cause) {
-    ElMessage.error(cause instanceof Error ? cause.message : '基础资料应用失败')
+    ElMessage.error(cause instanceof Error ? cause.message : '导入应用失败')
   }
+}
+
+function applyImportedApValue(row: TracksideAp, field: string, value: unknown): void {
+  const text = value === null || value === undefined ? '' : String(value)
+  if (field === 'line_name') row.line_name = text
+  else if (field === 'ap_name') row.name = text
+  else if (field === 'ap_point_code') row.point_code = text
+  else if (field === 'ap_mac_display') row.mac = text
+  else if (field === 'ap_mac_norm' && !row.mac) row.mac = text.replace(/[^0-9a-f]/gi, '').replace(/^(.{4})(.{4})(.{4})$/, '$1-$2-$3')
+  else if (field === 'station_name') row.station = text
+  else if (field === 'section_name') row.section = text
+  else if (field === 'section_start_station') row.section_start_station = text
+  else if (field === 'section_end_station') row.section_end_station = text
+  else if (field === 'line_side') row.line_side = text
+  else if (field === 'direction') row.direction = text
+  else if (field === 'mileage_text') row.mileage = { ...row.mileage, raw: text, normalized: text }
+  else if (field === 'remark') row.remark = text
+  else if (field === 'source_file') row.source_file = text
+  else if (field === 'source_sheet') row.source_sheet = text
+  else if (field === 'source_row') row.source_row = Number.isFinite(Number(value)) ? Number(value) : null
+  else if (field === 'belong_type') {
+    row.record_kind = text || 'unknown'
+    row.base_metadata.belong_type = text || 'unknown'
+  } else if (field === 'raw_payload_json') {
+    try {
+      const parsed = JSON.parse(text)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) row.base_metadata = { ...row.base_metadata, ...parsed }
+    } catch { /* 无效来源元数据不影响已校验的正式字段。 */ }
+  } else if (!['id', 'mileage_m'].includes(field)) row.base_metadata[field] = value
 }
 
 async function handleRollback(operationId: string): Promise<void> {
@@ -1754,8 +1953,13 @@ function sectionSourceLabel(row: Section): string {
             <el-select v-model="store.apFilters.line_side" clearable placeholder="线路方向"><el-option label="左线" value="左线" /><el-option label="右线" value="右线" /><el-option label="出段线" value="出段线" /><el-option label="入段线" value="入段线" /></el-select>
             <el-select v-model="store.apFilters.has_issue" clearable placeholder="数据质量"><el-option label="只看异常" :value="true" /><el-option label="只看正常" :value="false" /></el-select>
             <el-button type="primary" :disabled="!locked" @click="store.applyApFilters">应用筛选</el-button>
-            <el-button :disabled="locked || saving" @click="addAp">新增轨旁 AP</el-button>
+            <input ref="tracksideApImportInput" type="file" accept=".xlsx,.csv,.json" hidden @change="handleTracksideApFile">
+            <el-button v-if="isFeatureEnabled('web.rail_trackside_ap_base_io')" :icon="Download" :disabled="Boolean(apBaseTask && !apTaskTerminalStates.has(apBaseTask.status))" @click="startApBaseExport(true)">下载模板</el-button>
+            <el-button v-if="isFeatureEnabled('web.rail_trackside_ap_base_io')" :icon="UploadFilled" :loading="store.previewLoading" :disabled="saving" @click="tracksideApImportInput?.click()">导入并预览</el-button>
+            <el-button v-if="isFeatureEnabled('web.rail_trackside_ap_base_io')" :icon="Download" :disabled="Boolean(apBaseTask && !apTaskTerminalStates.has(apBaseTask.status))" @click="startApBaseExport(false)">导出当前</el-button>
+            <el-button :icon="Plus" :disabled="locked || saving" @click="addAp">新增轨旁 AP</el-button>
           </div>
+          <el-alert v-if="apBaseTask" :title="`${apBaseTask.status} · ${apBaseTask.message || apBaseTask.task_id}`" :type="apBaseTask.error_message ? 'error' : 'info'" :closable="false"><el-button v-if="apBaseTask.available && apBaseTask.artifact_id" link type="primary" @click="downloadApBaseArtifact">下载文件</el-button><el-button link @click="openApBaseTaskWindow">打开任务窗口</el-button></el-alert>
           <NcDataTable table-id="rail-base-trackside-aps" route-key="/rail-transit/base-data" :data="apRows" :columns="apColumns" height="calc(100vh - 430px)" empty-text="暂无轨旁 AP 扩展资料">
             <template #cell-name="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.name" :class="{ 'field-error': fieldError('trackside_ap', row.id, 'name') }" @input="markAp(row)" /><span v-else>{{ row.point_code || row.name || '--' }}</span></template>
             <template #cell-point_code="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.point_code" :class="{ 'field-error': fieldError('trackside_ap', row.id, 'point_code') }" @input="markAp(row)" /><span v-else>{{ display(row.point_code) }}</span></template>
@@ -1773,6 +1977,20 @@ function sectionSourceLabel(row: Section): string {
             <template #cell-actions="{ row }"><el-button link type="primary" @click="openApAc(row)">FIT-AP</el-button><el-button link type="primary" @click="openApMesh(row)">Mesh-Link</el-button><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('trackside_ap', row)">移除</el-button><template v-if="isPendingDelete('trackside_ap', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('trackside_ap', row)">撤销</el-button></template><el-button v-else-if="!row.id.startsWith('new:')" link type="danger" :disabled="locked || saving" @click="deleteEntity('trackside_ap', row)">删除</el-button></template>
           </NcDataTable>
           <el-pagination background :disabled="!locked" layout="total, prev, pager, next, sizes" :total="store.apTotal" :current-page="store.apFilters.page" :page-size="store.apFilters.page_size" :page-sizes="[20, 50, 100, 200]" @current-change="store.setApPage" @size-change="(size: number) => { store.apFilters.page_size = size; store.applyApFilters() }" />
+          <el-dialog v-model="apImportDialogVisible" title="轨旁 AP 导入预览" width="min(1400px, 94vw)" destroy-on-close>
+            <template v-if="store.importPreview">
+              <el-descriptions :column="5" border>
+                <el-descriptions-item label="文件名">{{ store.importPreview.file_name }}</el-descriptions-item><el-descriptions-item label="工作表">{{ store.importPreview.sheet_names?.join('、') || '--' }}</el-descriptions-item><el-descriptions-item label="模板类型">{{ templateLabel(store.importPreview.template_type) }}</el-descriptions-item><el-descriptions-item label="总行数">{{ store.importPreview.total_rows }}</el-descriptions-item><el-descriptions-item label="有效行">{{ store.importPreview.valid_rows }}</el-descriptions-item>
+                <el-descriptions-item label="新增">{{ store.importPreview.merge_plan?.summary.create_count || 0 }}</el-descriptions-item><el-descriptions-item label="更新">{{ store.importPreview.merge_plan?.summary.update_count || 0 }}</el-descriptions-item><el-descriptions-item label="不变">{{ store.importPreview.merge_plan?.summary.unchanged_count || 0 }}</el-descriptions-item><el-descriptions-item label="冲突">{{ store.importPreview.merge_plan?.summary.conflict_count || 0 }}</el-descriptions-item><el-descriptions-item label="待人工确认">{{ store.importPreview.merge_plan?.summary.needs_confirmation_count || 0 }}</el-descriptions-item>
+                <el-descriptions-item label="缺少里程">{{ store.importPreview.statistics?.missing_mileage_rows || 0 }}</el-descriptions-item><el-descriptions-item label="未匹配 FIT-AP">{{ store.importPreview.statistics?.unmatched_fit_ap_rows || 0 }}</el-descriptions-item><el-descriptions-item label="无效行">{{ store.importPreview.error_count + (store.importPreview.statistics?.placeholder_rows || 0) }}</el-descriptions-item>
+              </el-descriptions>
+              <NcDataTable table-id="rail-base-trackside-ap-direct-preview" route-key="/rail-transit/base-data" :data="mergeRows" :columns="mergeColumns" height="430" empty-text="当前文件没有可预览数据">
+                <template #cell-expand="{ row }"><NcDataTable table-id="rail-base-trackside-ap-direct-field-diffs" route-key="/rail-transit/base-data" :preference-scope="String(row.row_number)" :data="row.field_diffs" :columns="mergeFieldColumns" compact :show-column-settings="false"><template #cell-decision="{ row: field }"><el-select v-if="field.action === 'manual_review'" v-model="decisionSelections[decisionKey(row.row_number, field.field_name)]" placeholder="请选择"><el-option label="保留正式值" value="keep_existing" /><el-option label="采用导入值" value="use_imported" /></el-select><span v-else>{{ field.action }}</span></template></NcDataTable></template>
+                <template #cell-result="{ row }"><el-tag :type="mergeType(row.result)">{{ row.result }}</el-tag></template>
+              </NcDataTable>
+            </template>
+            <template #footer><el-button @click="apImportDialogVisible = false">关闭</el-button><el-checkbox v-model="applyConfirmed" :disabled="locked">我已核对差异、冲突和目标局点</el-checkbox><el-button type="primary" :disabled="locked || saving || !store.canApplyImport() || !applyConfirmed || previewBlocked" @click="handleApply">应用到编辑草稿</el-button></template>
+          </el-dialog>
         </el-tab-pane>
 
         <el-tab-pane label="轨旁 AP 规划" name="trackside-ap-planning">

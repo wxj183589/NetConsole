@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from openpyxl import load_workbook
 
 from web_parity_test_support import FakeExportProcessAdapter, FakeLocalProcessAdapter
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
+from netconsole.application.web_artifacts import WebArtifactError
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.job_registry import registered_task_types
 from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.export.export_handlers import run_generic_export_handler
 from netconsole.services.rail_transit import trackside_ap_business_query_service, trackside_ap_update_job, trackside_optical_collection
 from netconsole.services.trackside_ap_export_service import TracksideApBusinessLoadResult
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
@@ -539,7 +543,7 @@ def test_trackside_skipped_classification_ignores_optional_station_switch_branch
     assert reason_counts == {"no_station_switches": 1, "connection_incomplete": 1}
 
 
-def test_trackside_plan_preview_save_and_task_window_blocker(tmp_path: Path) -> None:
+def test_trackside_plan_preview_save_export_and_artifact_download(tmp_path: Path) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     paths.ensure_site_dirs("demo")
     database = Database(paths.site_db_path("demo"))
@@ -551,11 +555,12 @@ def test_trackside_plan_preview_save_and_task_window_blocker(tmp_path: Path) -> 
     )
     tasks = TaskApplicationService(paths=paths, site_name="demo")
     process = FakeLocalProcessAdapter(tasks)
+    export = FakeExportProcessAdapter(tasks)
     service = RailTransitWebApplicationService(
         paths,
         tasks,
         process_adapter=process,  # type: ignore[arg-type]
-        export_adapter=FakeExportProcessAdapter(tasks),  # type: ignore[arg-type]
+        export_adapter=export,  # type: ignore[arg-type]
     )
     content = (
         "车站名称,AP数量,AP起始地址,掩码,AP网关,AP管理VLAN,备注\r\n"
@@ -580,6 +585,110 @@ def test_trackside_plan_preview_save_and_task_window_blocker(tmp_path: Path) -> 
     )
     assert process.jobs[started.task_id].task_type == "trackside_ap_plan_save"
     assert process.jobs[started.task_id].params["audit"] == {"source": "test"}
-    with pytest.raises(RailTransitWebError) as blocked:
-        service.start_trackside_ap_plan_export("demo", template=False)
-    assert blocked.value.code == "BLOCKED_ON_TASK_WINDOW"
+    current = service.start_trackside_ap_plan_export("demo", template=False)
+    current_job = export.jobs[current.task_id]
+    run_generic_export_handler(current_job)
+    current_content = Path(current_job.output_path).read_bytes()
+    export.complete(current.task_id, current_content)
+    completed = service.get_task("demo", current.task_id)
+    assert completed.available is True
+    current_path, _name = service.open_trackside_ap_plan_export("demo", completed.artifact_id)
+    current_workbook = load_workbook(current_path)
+    assert current_workbook.sheetnames[:2] == ["轨旁AP规划", "字段说明"]
+    assert current_workbook["轨旁AP规划"]["A3"].value == "站点A"
+    assert current_workbook["字段说明"]["A2"].value == "站点"
+    current_workbook.close()
+    snapshot = tasks.repository("demo").get(current.task_id)
+    assert snapshot is not None
+    assert snapshot.result["sha256"] == hashlib.sha256(current_content).hexdigest()
+    assert snapshot.result["size_bytes"] == len(current_content)
+
+    template = service.start_trackside_ap_plan_export("demo", template=True)
+    template_job = export.jobs[template.task_id]
+    run_generic_export_handler(template_job)
+    template_content = Path(template_job.output_path).read_bytes()
+    export.complete(template.task_id, template_content)
+    template_task = service.get_task("demo", template.task_id)
+    template_path, _name = service.open_trackside_ap_plan_export("demo", template_task.artifact_id)
+    template_workbook = load_workbook(template_path)
+    assert template_workbook.sheetnames[:2] == ["轨旁AP规划", "字段说明"]
+    assert template_workbook["轨旁AP规划"].max_row == 2
+    template_workbook.close()
+
+
+def test_trackside_ap_base_template_and_draft_export_use_controlled_artifacts(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.ensure_site_dirs("demo")
+    Database(paths.site_db_path("demo")).initialize()
+    tasks = TaskApplicationService(paths=paths, site_name="demo")
+    export = FakeExportProcessAdapter(tasks)
+    service = RailTransitWebApplicationService(
+        paths,
+        tasks,
+        process_adapter=FakeLocalProcessAdapter(tasks),  # type: ignore[arg-type]
+        export_adapter=export,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(WebArtifactError, match="路径不在受控目录"):
+        service.artifact_store.reserve(
+            site_id="demo",
+            owner=service._OWNER,
+            source="trackside_ap_plan",
+            artifact_type="xlsx",
+            task_id="outside-task",
+            task_type=service._ARTIFACT_TASK_TYPES["trackside_ap_plan"],
+            output_root=tmp_path / "outside",
+            preferred_name="outside.xlsx",
+        )
+
+    template = service.start_trackside_ap_base_export("demo", template=True)
+    template_job = export.jobs[template.task_id]
+    run_generic_export_handler(template_job)
+    template_content = Path(template_job.output_path).read_bytes()
+    export.complete(template.task_id, template_content)
+    template_task = service.get_task("demo", template.task_id)
+    template_path, _name = service.open_trackside_ap_base_export("demo", template_task.artifact_id)
+    workbook = load_workbook(template_path)
+    assert workbook.sheetnames[:2] == ["轨旁AP", "字段说明"]
+    assert [cell.value for cell in workbook["轨旁AP"][1]][:5] == ["AP名称", "点位编号", "AP MAC", "管理 IP", "型号"]
+    assert workbook["字段说明"]["A2"].value == "AP名称"
+    workbook.close()
+
+    draft = service.start_trackside_ap_base_export(
+        "demo",
+        template=False,
+        rows=[
+            {
+                "id": "new:1",
+                "site_id": "demo",
+                "line_name": "宁波地铁1号线",
+                "name": "",
+                "point_code": "AP0127",
+                "mac": "1c94-6876-8ee0",
+                "station": "高桥西",
+                "section": "高桥西-高桥-上行",
+                "section_start_station": "高桥西",
+                "section_end_station": "高桥",
+                "mileage": {"raw": "", "normalized": "", "meters": None, "valid": False},
+                "direction": "上行",
+                "runtime": {"fit_ap_status": "unknown", "optical_status": "no_data"},
+                "record_kind": "section",
+                "base_metadata": {"uplink_switch": "11-高桥西1", "uplink_port": "GE1/0/1"},
+            }
+        ],
+    )
+    draft_job = export.jobs[draft.task_id]
+    run_generic_export_handler(draft_job)
+    draft_content = Path(draft_job.output_path).read_bytes()
+    export.complete(draft.task_id, draft_content)
+    draft_task = service.get_task("demo", draft.task_id)
+    draft_path, draft_name = service.open_trackside_ap_base_export("demo", draft_task.artifact_id)
+    assert draft_name.startswith("demo_轨旁AP基础资料_")
+    workbook = load_workbook(draft_path)
+    header = [cell.value for cell in workbook["轨旁AP"][1]]
+    values = [cell.value for cell in workbook["轨旁AP"][2]]
+    row = dict(zip(header, values, strict=True))
+    assert row["点位编号"] == "AP0127"
+    assert row["上联交换机"] == "11-高桥西1"
+    assert row["上联端口"] == "GE1/0/1"
+    workbook.close()

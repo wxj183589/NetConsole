@@ -102,6 +102,7 @@ def test_import_preview_accepts_ap_switch_port_table_and_skips_placeholders(tmp_
         "section_rows": 1,
         "without_section_rows": 1,
         "missing_mileage_rows": 1,
+        "unmatched_fit_ap_rows": 1,
         "up_direction_rows": 1,
         "down_direction_rows": 0,
     }

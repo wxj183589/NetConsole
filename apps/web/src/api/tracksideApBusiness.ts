@@ -4,6 +4,7 @@ import type {
   TracksideApBusinessPage, TracksideApPlan, TracksideApPlanPreview, TracksideApPlanRow,
   TracksideApTask, TracksideApUpdateRequest,
 } from '../types/tracksideApBusiness'
+import type { TracksideAp } from '../types/railTransitBaseData'
 
 const root = '/api/rail-transit/trackside-ap-business'
 const invalidArtifactNamePattern = /[\u0000-\u001f\u007f<>:"/\\|?*]/
@@ -54,13 +55,22 @@ export function saveTracksideApPlan(rows: TracksideApPlanRow[]): Promise<Tracksi
   })
 }
 
-export function exportTracksideApPlan(template = false): Promise<TracksideApTask> {
-  return apiRequest(`${root}/plan/export`, { method: 'POST', body: JSON.stringify({ template }) })
+export function exportTracksideApPlan(template = false, rows?: TracksideApPlanRow[]): Promise<TracksideApTask> {
+  return apiRequest(`${root}/plan/export`, { method: 'POST', body: JSON.stringify({ template, ...(rows ? { rows } : {}) }) })
 }
 
-export const tracksideApPlanDownloadRequest = (artifactId: string, template = false): BackendDownloadRequest => ({
+export const tracksideApPlanDownloadRequest = (artifactId: string, suggestedName = '轨旁AP规划.xlsx'): BackendDownloadRequest => ({
   apiPath: `${root}/plan/artifacts/${encodeURIComponent(artifactId)}/download`,
-  suggestedName: template ? '轨旁AP规划模板.xlsx' : '轨旁AP规划.xlsx',
+  suggestedName,
+})
+
+export function exportTracksideApBase(template = false, rows?: TracksideAp[]): Promise<TracksideApTask> {
+  return apiRequest(`${root}/base/export`, { method: 'POST', body: JSON.stringify({ template, ...(rows ? { rows } : {}) }) })
+}
+
+export const tracksideApBaseDownloadRequest = (artifactId: string, suggestedName: string): BackendDownloadRequest => ({
+  apiPath: `${root}/base/artifacts/${encodeURIComponent(artifactId)}/download`,
+  suggestedName,
 })
 
 function normalizeTracksideApBusinessArtifactName(value: string): string {

@@ -51,10 +51,11 @@ from netconsole.services.ac.fit_ap_optical_task_guard import fit_ap_optical_reso
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.export.export_job import ExportJob
 from netconsole.services.export.export_task_builders import (
+    ExportTaskSpec,
     car_network_point_table_spec,
+    inline_rows_source,
     online_mr_report_xlsx_spec,
     repository_query_source,
-    table_xlsx_source_spec,
     table_xlsx_spec,
     vehicle_mr_history_xlsx_spec,
 )
@@ -102,11 +103,13 @@ from netconsole.services.trackside_ap_plan_io import (
     TRACKSIDE_PLAN_COLUMNS,
     TRACKSIDE_PLAN_COLUMN_WIDTHS,
     TRACKSIDE_PLAN_HEADERS,
+    TRACKSIDE_PLAN_FIELD_NOTES,
     normalize_trackside_plan_row,
     normalize_trackside_plan_rows,
     read_trackside_plan_file,
 )
 from netconsole.services.trackside_ap_export_service import build_trackside_ap_business_export_name
+from netconsole.services.trackside_ap_base_export import build_trackside_ap_base_export_name
 from netconsole.services.vehicle_mr_online import VehicleMrOnlineStore
 from netconsole.services.rail_transit.vehicle_mr_mapping_io import (
     VEHICLE_MR_MAPPING_TEMPLATE_COLUMNS,
@@ -152,6 +155,8 @@ class RailTransitWebApplicationService:
         "web_export_mesh_link_detail_export",
         "web_export_car_network_point_table",
         "web_export_trackside_ap_business",
+        "web_export_trackside_ap_base_xlsx",
+        "web_export_multi_sheet_xlsx",
         "web_export_table_xlsx",
         "web_export_vehicle_mr_history_xlsx",
     }
@@ -162,7 +167,8 @@ class RailTransitWebApplicationService:
         "mesh_link_detail_export": "web_export_mesh_link_detail_export",
         "car_network_point_table": "web_export_car_network_point_table",
         "trackside_ap_business": "web_export_trackside_ap_business",
-        "trackside_ap_plan": "web_export_table_xlsx",
+        "trackside_ap_base": "web_export_trackside_ap_base_xlsx",
+        "trackside_ap_plan": "web_export_multi_sheet_xlsx",
         "vehicle_mr_history": "web_export_vehicle_mr_history_xlsx",
         "vehicle_mr_mapping_template": "web_export_table_xlsx",
     }
@@ -172,6 +178,8 @@ class RailTransitWebApplicationService:
         "web_export_mesh_link_detail_export": "mesh_link_detail_export",
         "web_export_car_network_point_table": "car_network_point_table_export",
         "web_export_trackside_ap_business": "trackside_ap_business_export",
+        "web_export_trackside_ap_base_xlsx": "trackside_ap_base_export",
+        "web_export_multi_sheet_xlsx": "trackside_ap_plan_export",
         "web_export_table_xlsx": "trackside_ap_plan_export",
         "web_export_vehicle_mr_history_xlsx": "vehicle_mr_history_export",
     }
@@ -181,6 +189,7 @@ class RailTransitWebApplicationService:
         "mesh_link_detail_export": "mesh_link_detail_export",
         "car_network_point_table": "car_network_point_table_export",
         "trackside_ap_business": "trackside_ap_business_export",
+        "trackside_ap_base": "trackside_ap_base_export",
         "trackside_ap_plan": "trackside_ap_plan_export",
         "vehicle_mr_history": "vehicle_mr_history_export",
         "vehicle_mr_mapping_template": "vehicle_mr_mapping_template_export",
@@ -587,6 +596,81 @@ class RailTransitWebApplicationService:
     ) -> tuple[Path, str]:
         return self._open_artifact(site_id, artifact_id, "trackside_ap_business")
 
+    def start_trackside_ap_base_export(
+        self,
+        site_id: str,
+        *,
+        template: bool,
+        rows: list[dict[str, object]] | None = None,
+    ) -> RailTransitTaskDTO:
+        site_id = self._site(site_id)
+        task_id = f"rail-export-{uuid4().hex}"
+        if template:
+            preferred_name = "轨旁AP基础资料模板.xlsx"
+        else:
+            try:
+                preferred_name = build_trackside_ap_base_export_name(
+                    self._site_display_name(site_id), datetime.now()
+                )
+            except ValueError as exc:
+                raise RailTransitWebError("SITE_DISPLAY_NAME_INVALID", str(exc)) from exc
+        try:
+            reservation = self.artifact_store.reserve(
+                site_id=site_id,
+                owner=self._OWNER,
+                source="trackside_ap_base",
+                artifact_type="xlsx",
+                task_id=task_id,
+                task_type=self._ARTIFACT_TASK_TYPES["trackside_ap_base"],
+                output_root=self.paths.trackside_ap_outputs_dir(site_id) / "web_base",
+                preferred_name=preferred_name,
+                use_display_name_as_file_name=not template,
+            )
+        except WebArtifactError as exc:
+            self._task_window_blocked("轨旁 AP 基础资料导出", exc)
+        payload: dict[str, object] = {
+            "source_module": "rail.trackside_ap_base",
+            "site_id": site_id,
+            "app_root": str(self.paths.app_root),
+            "data_root": str(self.paths.data_root),
+            "template": template,
+        }
+        if rows is not None:
+            payload["draft_rows"] = rows
+        job = replace(
+            ExportTaskSpec(
+                task_type="trackside_ap_base_xlsx",
+                output_path=str(reservation.output_path),
+                payload=payload,
+                site_name=site_id,
+            )
+            .to_job(task_id)
+            .with_runtime_paths(
+                tmp_path=str(
+                    reservation.output_path.with_name(
+                        f"{reservation.output_path.name}.{task_id}.tmp"
+                    )
+                ),
+                cancel_path=str(
+                    self.paths.runtime_cache_dir / "export_jobs" / f"{task_id}.cancel"
+                ),
+            ),
+            site_name=site_id,
+        )
+        return self._start_export(
+            site_id,
+            job,
+            "trackside_ap_base_export",
+            reservation,
+        )
+
+    def open_trackside_ap_base_export(
+        self,
+        site_id: str,
+        artifact_id: str,
+    ) -> tuple[Path, str]:
+        return self._open_artifact(site_id, artifact_id, "trackside_ap_base")
+
     def get_trackside_ap_plan(self, site_id: str) -> TracksideApPlanDTO:
         site_id = self._site(site_id)
         rows = AcRepository(Database(self.paths.site_db_path(site_id))).list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE)
@@ -700,7 +784,13 @@ class RailTransitWebApplicationService:
             },
         )
 
-    def start_trackside_ap_plan_export(self, site_id: str, *, template: bool) -> RailTransitTaskDTO:
+    def start_trackside_ap_plan_export(
+        self,
+        site_id: str,
+        *,
+        template: bool,
+        rows: list[dict[str, object | None]] | None = None,
+    ) -> RailTransitTaskDTO:
         site_id = self._site(site_id)
         task_id = f"rail-export-{uuid4().hex}"
         try:
@@ -724,35 +814,67 @@ class RailTransitWebApplicationService:
             }
             for index, (_key, field) in enumerate(TRACKSIDE_PLAN_COLUMNS)
         ]
-        spec = (
-            table_xlsx_spec(
-                reservation.output_path,
-                columns=columns,
-                rows=[],
-                sheet_name="轨旁AP规划",
-                title="轨旁 AP 规划模板",
-                open_dir_on_success=False,
+        if template:
+            plan_source = inline_rows_source(
+                [],
                 allow_inline_rows=True,
                 inline_reason="轨旁 AP 规划空白模板",
             )
-            if template
-            else table_xlsx_source_spec(
-                reservation.output_path,
-                columns=columns,
-                source=repository_query_source(
-                    db_path=self.paths.site_db_path(site_id),
-                    repository="ac_repository",
-                    method="list_trackside_ap_plan",
-                    filters={"mode": TRACKSIDE_AP_PLAN_MODE},
-                ),
-                sheet_name="轨旁AP规划",
-                title="轨旁 AP 规划",
-                open_dir_on_success=False,
+        elif rows is not None:
+            plan_source = inline_rows_source(
+                normalize_trackside_plan_rows(rows),
+                allow_inline_rows=True,
+                inline_reason="用户明确选择导出当前规划编辑草稿",
             )
+        else:
+            plan_source = repository_query_source(
+                db_path=self.paths.site_db_path(site_id),
+                repository="ac_repository",
+                method="list_trackside_ap_plan",
+                filters={"mode": TRACKSIDE_AP_PLAN_MODE},
+            )
+        job = replace(
+            ExportTaskSpec(
+                task_type="multi_sheet_xlsx",
+                output_path=str(reservation.output_path),
+                site_name=site_id,
+                payload={
+                    "source_module": "ac.trackside_ap_plan",
+                    "sheets": [
+                        {
+                            "sheet_name": "轨旁AP规划",
+                            "title": "轨旁 AP 规划模板" if template else "轨旁 AP 规划",
+                            "columns": columns,
+                            "source": plan_source,
+                        },
+                        {
+                            "sheet_name": "字段说明",
+                            "columns": [
+                                {"key": "field", "title": "字段"},
+                                {"key": "requirement", "title": "填写要求"},
+                                {"key": "description", "title": "说明", "width": 60},
+                            ],
+                            "rows": [dict(item) for item in TRACKSIDE_PLAN_FIELD_NOTES],
+                        },
+                    ],
+                },
+            )
+            .to_job(task_id)
+            .with_runtime_paths(
+                tmp_path=str(
+                    reservation.output_path.with_name(
+                        f"{reservation.output_path.name}.{task_id}.tmp"
+                    )
+                ),
+                cancel_path=str(
+                    self.paths.runtime_cache_dir / "export_jobs" / f"{task_id}.cancel"
+                ),
+            ),
+            site_name=site_id,
         )
         return self._start_export(
             site_id,
-            replace(spec.to_job(task_id), site_name=site_id),
+            job,
             "trackside_ap_plan_export",
             reservation,
         )

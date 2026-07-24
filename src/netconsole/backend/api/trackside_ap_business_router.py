@@ -10,6 +10,7 @@ from netconsole.backend.api.feature_access import require_feature
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 from netconsole.models.api.trackside_ap_business import (
+    TracksideApBaseExportRequestDTO,
     TracksideApBusinessPageDTO,
     TracksideApPlanDTO,
     TracksideApPlanExportRequestDTO,
@@ -107,6 +108,44 @@ def download_business_artifact(request: Request, artifact_id: str) -> FileRespon
         _raise_error(exc)
 
 
+@router.post(
+    "/base/export",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[
+        Depends(require_feature("web.rail_trackside_ap_base_io")),
+        Depends(require_feature("web.rail_task_control")),
+    ],
+)
+def export_base(
+    request: Request,
+    payload: TracksideApBaseExportRequestDTO,
+) -> RailTransitTaskDTO:
+    try:
+        return _application_service(request).start_trackside_ap_base_export(
+            _site_id(request),
+            template=payload.template,
+            rows=None if payload.rows is None else [row.model_dump() for row in payload.rows],
+        )
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
+@router.get(
+    "/base/artifacts/{artifact_id}/download",
+    response_class=FileResponse,
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_base_io"))],
+)
+def download_base_artifact(request: Request, artifact_id: str) -> FileResponse:
+    try:
+        path, name = _application_service(request).open_trackside_ap_base_export(
+            _site_id(request), artifact_id
+        )
+        return FileResponse(path, filename=name)
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
 @router.get(
     "/plan",
     response_model=TracksideApPlanDTO,
@@ -174,6 +213,7 @@ def export_plan(request: Request, payload: TracksideApPlanExportRequestDTO) -> R
         return _application_service(request).start_trackside_ap_plan_export(
             _site_id(request),
             template=payload.template,
+            rows=None if payload.rows is None else [row.model_dump() for row in payload.rows],
         )
     except RailTransitWebError as exc:
         _raise_error(exc)

@@ -62,6 +62,16 @@ revision 校验 + SQLite BEGIN IMMEDIATE 单事务
 
 桌面下载通过受控 `downloadBackendResource` 白名单、当前 Electron Session 和原子 `.part` 文件保存；取消保存不显示成功，API、IPC 或文件系统失败返回安全错误。浏览器模式继续使用原生下载。模板文件名为 `线路站点与区间基础资料模板.xlsx`，正式导出文件名为 `线路站点与区间基础资料.xlsx`；导出始终读取已保存版本，页面有未保存草稿时明确提示其不包含在导出中。
 
+## 轨旁 AP 文件闭环
+
+“轨旁 AP”标签页直接提供“下载模板 / 导入并预览 / 导出当前 / 新增轨旁 AP”。模板和当前导出均通过独立 Export Process 生成 `轨旁AP` 与 `字段说明` 两个工作表，并经 `source=trackside_ap_base` 的公共 Artifact 完成校验和受控下载。模板包含点位编号、AP MAC、站点/区间、方向、可选里程、上联交换机/端口、供电和光缆等正式字段；FIT-AP 关联、当前光衰、来源和问题数为只读导出列。
+
+锁定状态允许下载、导出和只读预览，不能应用；解锁后“应用到编辑草稿”只更新 `editingDraft.aps` 和 `pendingChanges`，不调用独立写库接口，仍由页面右上角“保存并锁定”统一提交 revision 校验与事务。导入空值默认 KEEP，不能清除已有里程、位置或上联资料；删除只能通过页面明确操作。当前 FIT-AP 未发现相同 MAC 时只产生非阻断提示，资料仍可新增，后续继续按规范化 MAC 关联。
+
+`ap_switch_port_point_table` 兼容 `轨旁AP业务` 工作表：`AP编号 → point_code`、`AP_MAC → mac`、`归属站点 → station`、`区间 → section/direction`、`室内交换机 → uplink_switch`、`接口名称 → uplink_port`。带编号站点保留原文到来源 metadata 后再匹配正式站名；`AP名称` 等于 MAC 时不覆盖真实名称；缺少里程不阻断，MAC 为占位符的空端口行跳过。
+
+“轨旁 AP 规划”标签页复用同一任务与下载体验，按钮为“下载模板 / 导入并预览 / 导出当前 / 新增 / 删除”。规划预览不受基础资料锁定影响，但应用仍要求解锁；未保存规划修改导出当前草稿。规划模板通过 `source=trackside_ap_plan` 生成 `轨旁AP规划` 与 `字段说明`，不再依赖任意服务端路径。
+
 ## 区间生成与统计
 
 - `POST /api/rail-transit/base-data/section-generation-preview` 接收当前线路参数、站点草稿和区间草稿，只计算预览，不读取一轮前的站点顺序，也不写数据库。前端只选择结果并应用到 `editingDraft.sections`，最终仍由全局保存统一提交。

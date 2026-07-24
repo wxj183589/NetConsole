@@ -32,6 +32,7 @@ from netconsole.services.export.common_exporters import (
 )
 from netconsole.services.export.export_job import ExportJob
 from netconsole.services.file_contract import attach_export_metadata
+from netconsole.services.trackside_ap_base_export import export_trackside_ap_base_xlsx_task
 
 ProgressCallback = Callable[[str, int, int, str], None]
 CancelCallback = Callable[[], bool]
@@ -62,6 +63,7 @@ GENERIC_EXPORT_TASK_TYPES = {
     "car_network_point_table",
     "command_reference_markdown",
     "vehicle_mr_history_xlsx",
+    "trackside_ap_base_xlsx",
 }
 
 
@@ -120,6 +122,8 @@ def run_generic_export_handler(job: ExportJob, progress_callback: ProgressCallba
         row_count = export_command_reference_markdown(tmp_path, payload, progress_callback, should_cancel)
     elif job.job_type == "vehicle_mr_history_xlsx":
         row_count = export_vehicle_mr_history_xlsx(tmp_path, payload, progress_callback, should_cancel)
+    elif job.job_type == "trackside_ap_base_xlsx":
+        row_count = export_trackside_ap_base_xlsx_task(tmp_path, payload, progress_callback, should_cancel)
     else:
         raise ValueError(f"不支持的通用导出任务类型：{job.job_type}")
     if should_cancel and should_cancel():

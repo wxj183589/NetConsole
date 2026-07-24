@@ -504,6 +504,8 @@ class WebArtifactStore:
             "mesh_analysis_report": self.paths.site_mesh_root(site_id),
             "mesh_link_detail_export": self.paths.site_mesh_root(site_id),
             "trackside_ap_business": self.paths.trackside_ap_outputs_dir(site_id),
+            "trackside_ap_base": self.paths.trackside_ap_outputs_dir(site_id),
+            "trackside_ap_plan": self.paths.trackside_ap_outputs_dir(site_id),
             "system_logs_current": self.paths.site_files_dir(site_id) / "system_maintenance" / "outputs",
             "system_logs_all": self.paths.site_files_dir(site_id) / "system_maintenance" / "outputs",
             "system_open_source_txt": self.paths.site_files_dir(site_id) / "system_maintenance" / "outputs",

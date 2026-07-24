@@ -40,6 +40,7 @@ const configVisible = ref(false)
 const configSearch = ref('')
 const currentMatch = ref(-1)
 const selectedApIds = ref(new Set<string>())
+const metadataInput = ref<HTMLInputElement | null>(null)
 const desktopHost = computed(() => getRuntimeConfig().hostType === 'electron')
 const pollingConsumer = 'ac-management-view'
 const metadataForm = reactive({ site_name: '', mileage: '', location_note: '', direction: '' })
@@ -256,6 +257,13 @@ async function deleteSelectedAps(): Promise<void> {
   }
   await store.startFitApDelete(apIds)
   if (store.refreshTask?.action === 'ac_fit_ap_delete_many') selectedApIds.value = new Set()
+}
+
+async function chooseMetadataFile(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (file) await store.startFitApMetadataImport(file)
 }
 
 async function openAcWeb(): Promise<void> {
@@ -624,6 +632,13 @@ function diffLineClass(line: string): string {
             <el-button @click="selectCurrentPage">选择本页</el-button>
             <el-button @click="invertCurrentPage">反选本页</el-button>
             <el-button :disabled="!selectedApIds.size" @click="selectedApIds = new Set()">清空选择</el-button>
+            <input ref="metadataInput" type="file" accept=".csv,.xlsx" hidden @change="chooseMetadataFile">
+            <el-button
+              v-if="isFeatureEnabled('web.ac_fit_ap_metadata_import')"
+              :loading="store.refreshStarting"
+              :disabled="taskActive"
+              @click="metadataInput?.click()"
+            >导入 AP 元数据</el-button>
             <el-button
               v-if="isFeatureEnabled('ac.omnipeek_name_table_export')"
               :disabled="!store.filters.ac_id"

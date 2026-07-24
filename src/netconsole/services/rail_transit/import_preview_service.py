@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import sqlite3
 import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -47,8 +48,21 @@ _SAFE_FIELDS = (
     "ap_mac_display",
     "mileage_text",
     "mileage_m",
+    "distance_to_prev_m",
+    "yard_name",
+    "area_name",
+    "curve_radius_m",
+    "curve_start_text",
+    "curve_end_text",
+    "install_scene",
+    "location_desc",
+    "power_station",
+    "power_distribution",
+    "fiber_access_station",
+    "fiber_distribution",
     "uplink_switch",
     "uplink_port",
+    "optical_port",
     "remark",
     "source_sheet",
     "source_row",
@@ -107,6 +121,14 @@ class RailTransitImportPreviewService:
         if len(rows) > MAX_IMPORT_PREVIEW_ROWS:
             raise ValueError(f"导入预览最多支持 {MAX_IMPORT_PREVIEW_ROWS} 行")
         known_stations, known_sections = self.query_service.known_locations(site_id)
+        try:
+            fit_ap_macs = {
+                normalize_ap_mac(detail.ap.mac).normalized
+                for detail in self.query_service.ac_query.list_all_ap_details(site_id)
+                if normalize_ap_mac(detail.ap.mac).normalized
+            }
+        except (OSError, ValueError, sqlite3.Error):
+            fit_ap_macs = set()
         issues_by_row: dict[int, list[DataQualityIssueDTO]] = defaultdict(list)
         for issue in parser_issues:
             row_number = self._row_number(issue)
@@ -123,7 +145,17 @@ class RailTransitImportPreviewService:
                 values["ap_name"] = ""
             row_number = int(values.get("source_row") or index)
             row_issues = issues_by_row[row_number]
-            row_issues.extend(self._validate_row(values, row_number, mac_counts, known_stations, known_sections, template_type=template_type))
+            row_issues.extend(
+                self._validate_row(
+                    values,
+                    row_number,
+                    mac_counts,
+                    known_stations,
+                    known_sections,
+                    template_type=template_type,
+                    fit_ap_macs=fit_ap_macs,
+                )
+            )
             row_issues = self._deduplicate_issues(row_issues)
             output.append(ImportPreviewRowDTO(row_number=row_number, values=values, issues=row_issues))
         error_count = sum(issue.severity == "error" for row in output for issue in row.issues)
@@ -172,6 +204,10 @@ class RailTransitImportPreviewService:
                 normalize_ap_mac(row.values.get("ap_mac_norm") or row.values.get("ap_mac_display")).valid
                 and not str(row.values.get("mileage_text") or "").strip()
                 and row.values.get("mileage_m") is None
+                for row in rows
+            ),
+            "unmatched_fit_ap_rows": sum(
+                any(issue.code == "fit_ap_unmatched" for issue in row.issues)
                 for row in rows
             ),
             "up_direction_rows": sum(str(row.values.get("direction") or "").strip() == "上行" for row in rows),
@@ -236,6 +272,7 @@ class RailTransitImportPreviewService:
         known_sections: set[str],
         *,
         template_type: str = "",
+        fit_ap_macs: set[str] | None = None,
     ) -> list[DataQualityIssueDTO]:
         issues: list[DataQualityIssueDTO] = []
         name = str(values.get("ap_name") or "").strip()
@@ -250,6 +287,18 @@ class RailTransitImportPreviewService:
             issues.append(cls._issue("error", "ap_mac_invalid", row_number, "ap_mac_display", mac.raw, "AP MAC 格式无效", "使用项目支持的常见 MAC 格式"))
         elif mac_counts[mac.normalized] > 1:
             issues.append(cls._issue("error", "ap_mac_duplicate", row_number, "ap_mac_display", mac.raw, "预览文件内 AP MAC 重复", "核对重复行"))
+        elif fit_ap_macs is not None and mac.normalized not in fit_ap_macs:
+            issues.append(
+                cls._issue(
+                    "warning",
+                    "fit_ap_unmatched",
+                    row_number,
+                    "ap_mac_display",
+                    mac.display,
+                    "尚未关联 FIT-AP，仍可作为轨旁 AP 基础资料保存",
+                    "后续 AC 采集到相同 MAC 后自动关联",
+                )
+            )
         station = str(values.get("station_name") or "").strip()
         section = str(values.get("section_name") or "").strip()
         if station and known_stations and station not in known_stations:

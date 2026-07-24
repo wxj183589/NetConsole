@@ -68,10 +68,25 @@ _AP_FIELDS = (
     "direction",
     "mileage_text",
     "mileage_m",
+    "distance_to_prev_m",
     "ap_point_code",
     "ap_name",
     "ap_mac_norm",
     "ap_mac_display",
+    "yard_name",
+    "area_name",
+    "curve_radius_m",
+    "curve_start_text",
+    "curve_end_text",
+    "install_scene",
+    "location_desc",
+    "power_station",
+    "power_distribution",
+    "fiber_access_station",
+    "fiber_distribution",
+    "uplink_switch",
+    "uplink_port",
+    "optical_port",
     "remark",
     "source_file",
     "source_sheet",
@@ -263,6 +278,17 @@ class RailTransitBaseDataQueryService:
     def list_ap_location_items(self, site_id: str) -> list[TracksideApDTO]:
         """一次返回 AP 位置基础字段，不拼接运行态、质量问题或分页结果。"""
         return self._all_aps(site_id, include_runtime=False)
+
+    def list_ap_export_items(self, site_id: str) -> list[TracksideApDTO]:
+        """一次返回导出所需的 AP 基础资料、运行态和质量摘要。"""
+        items = self._all_aps(site_id, include_runtime=True)
+        issues = self._issues(
+            site_id,
+            aps=self._all_aps(site_id, include_runtime=False),
+            mrs=self._all_mrs(site_id, include_runtime=False),
+        )
+        issue_map = self._issue_map(issues, "ap")
+        return [self._with_ap_issues(item, issue_map.get(item.id, [])) for item in items]
 
     def get_ap(self, site_id: str, ap_id: str) -> TracksideApDetailDTO | None:
         item = next((row for row in self._all_aps(site_id, include_runtime=True) if row.id == ap_id), None)
@@ -487,6 +513,16 @@ class RailTransitBaseDataQueryService:
             parsed = self._mileage(row.get("mileage_text"), row.get("mileage_m"))
             record_kind = str(row.get("belong_type") or "")
             base_metadata = self._base_metadata(row.get("raw_payload_json"))
+            for field_name in (
+                "belong_type", "system_type", "network_domain", "yard_name", "area_name",
+                "distance_to_prev_m", "curve_radius_m", "curve_start_text", "curve_end_text",
+                "install_scene", "location_desc", "power_station", "power_distribution",
+                "fiber_access_station", "fiber_distribution", "uplink_switch", "uplink_port",
+                "optical_port",
+            ):
+                value = row.get(field_name)
+                if value not in (None, ""):
+                    base_metadata[field_name] = value
             radios = []
             if ac:
                 radios = [

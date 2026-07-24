@@ -102,6 +102,8 @@ def test_trackside_business_export_api_uses_owned_artifact_and_supports_cancel(
         export_adapter=export,  # type: ignore[arg-type]
     )
     _enable_feature(app, "web.rail_trackside_ap_business_export")
+    _enable_feature(app, "web.rail_trackside_ap_base_io")
+    _enable_feature(app, "web.rail_trackside_ap_plan_export")
     _enable_feature(app, "web.rail_task_control")
 
     with TestClient(app) as client:
@@ -169,12 +171,30 @@ def test_trackside_business_export_api_uses_owned_artifact_and_supports_cancel(
         )
         assert missing.status_code == 404
 
+        plan_template = client.post(
+            "/api/rail-transit/trackside-ap-business/plan/export",
+            json={"template": True},
+        )
+        assert plan_template.status_code == 202
+        assert export.jobs[plan_template.json()["task_id"]].job_type == "multi_sheet_xlsx"
+        export.complete(plan_template.json()["task_id"], b"plan-template-fixture")
+
+        base_template = client.post(
+            "/api/rail-transit/trackside-ap-business/base/export",
+            json={"template": True},
+        )
+        assert base_template.status_code == 202
+        assert export.jobs[base_template.json()["task_id"]].job_type == "trackside_ap_base_xlsx"
+        export.complete(base_template.json()["task_id"], b"base-template-fixture")
+
     schema = app.openapi()
     assert "/api/rail-transit/trackside-ap-business/export" in schema["paths"]
     assert (
         "/api/rail-transit/trackside-ap-business/artifacts/{artifact_id}/download"
         in schema["paths"]
     )
+    assert "/api/rail-transit/trackside-ap-business/plan/export" in schema["paths"]
+    assert "/api/rail-transit/trackside-ap-business/base/export" in schema["paths"]
 
 
 def test_trackside_business_workbook_preserves_sheets_and_export_style(
