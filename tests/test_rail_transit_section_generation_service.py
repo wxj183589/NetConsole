@@ -164,10 +164,15 @@ def test_generates_four_distinct_terminal_extension_directions(tmp_path: Path) -
     ]
     assert {section.name for section in terminal_items} == {
         "端点-高桥西-上行",
-        "高桥西-端点-下行",
+        "端点-高桥西-下行",
         "霞浦-端点-上行",
-        "端点-霞浦-下行",
+        "霞浦-端点-下行",
     }
+    low_sections = [section for section in terminal_items if "endpoint:MAIN:low" in {section.start_node_uid, section.end_node_uid}]
+    high_sections = [section for section in terminal_items if "endpoint:MAIN:high" in {section.start_node_uid, section.end_node_uid}]
+    assert {(section.start_station, section.end_station) for section in low_sections} == {("端点", "高桥西")}
+    assert {(section.start_station, section.end_station) for section in high_sections} == {("霞浦", "端点")}
+    assert all("（" not in section.start_station + section.end_station for section in terminal_items)
     endpoint_uids = {
         uid
         for section in terminal_items
@@ -175,6 +180,135 @@ def test_generates_four_distinct_terminal_extension_directions(tmp_path: Path) -
         if uid.startswith("endpoint:")
     }
     assert endpoint_uids == {"endpoint:MAIN:low", "endpoint:MAIN:high"}
+
+
+def test_existing_terminal_generation_keys_are_updated_without_duplicates(tmp_path: Path) -> None:
+    stations = [
+        _station("高桥西", 11, "node-low", terminal=True, extension=True),
+        _station("霞浦", 39, "node-high", terminal=True, extension=True),
+    ]
+    current = SectionDTO(
+        id="section:old-low-decreasing",
+        name="高桥西-端点-下行",
+        section_kind="terminal_extension",
+        path_code="MAIN",
+        direction_role="decreasing",
+        line_direction="下行",
+        start_node_type="station",
+        start_node_uid="node-low",
+        start_station="高桥西",
+        end_node_type="terminal_endpoint",
+        end_node_uid="endpoint:MAIN:low",
+        end_station="端点（高桥西端）",
+        line_side="下行",
+        auto_generated=True,
+        generation_key="MAIN|terminal|endpoint:MAIN:low|node-low|decreasing",
+        source_kind="generated",
+    )
+
+    result = _preview(tmp_path, stations, [current])
+
+    matched = next(item for item in result.generated_sections if item.current_section)
+    assert matched.result == "UPDATE"
+    assert matched.proposed_section is not None
+    assert matched.proposed_section.id == current.id
+    assert matched.proposed_section.generation_key == current.generation_key
+    assert matched.proposed_section.name == "端点-高桥西-下行"
+    assert (matched.proposed_section.start_station, matched.proposed_section.end_station) == ("端点", "高桥西")
+
+
+def test_regeneration_preserves_manual_overrides_and_updates_other_fields(tmp_path: Path) -> None:
+    stations = [_station("高桥西新", 11, "node-low"), _station("高桥", 12, "node-high")]
+    current = SectionDTO(
+        id="section:adjusted",
+        name="现场专用名称",
+        section_code="AUTO-OLD",
+        section_kind="between_stations",
+        path_code="MAIN",
+        direction_role="increasing",
+        line_direction="旧上行",
+        start_node_type="station",
+        start_node_uid="node-low",
+        start_station="高桥西",
+        end_node_type="station",
+        end_node_uid="node-high",
+        end_station="高桥",
+        line_side="旧上行",
+        auto_generated=True,
+        generation_key="MAIN|between|node-low|node-high|increasing",
+        manual_override_fields=["name"],
+        source_kind="generated",
+        ap_count=3,
+        mileage_min=100.0,
+        mileage_max=200.0,
+        remark="保留备注",
+    )
+
+    item = next(item for item in _preview(tmp_path, stations, [current]).generated_sections if item.current_section)
+
+    assert item.result == "UPDATE"
+    assert item.selected_by_default is False
+    assert item.proposed_section is not None
+    assert item.proposed_section.name == "现场专用名称"
+    assert item.proposed_section.start_station == "高桥西新"
+    assert item.proposed_section.line_direction == "上行"
+    assert item.proposed_section.manual_override_fields == ["name"]
+    assert item.proposed_section.auto_generated is True
+    assert item.proposed_section.source_kind == "generated"
+    assert (item.proposed_section.ap_count, item.proposed_section.mileage_min, item.proposed_section.mileage_max) == (3, 100.0, 200.0)
+    assert item.proposed_section.remark == "保留备注"
+    assert item.issues[0].code == "section_generation_manual_override"
+
+
+def test_stale_adjusted_generated_section_is_retained_with_specific_warning(tmp_path: Path) -> None:
+    stale = SectionDTO(
+        id="section:stale-adjusted",
+        name="人工保留区间",
+        auto_generated=True,
+        generation_key="MAIN|between|missing-a|missing-b|increasing",
+        manual_override_fields=["name"],
+        source_kind="generated",
+    )
+
+    item = next(item for item in _preview(tmp_path, [], [stale]).generated_sections if item.result == "STALE")
+
+    assert item.selected_by_default is False
+    assert "含人工修改" in item.issues[0].message
+
+
+def test_missing_manually_overridden_node_blocks_regeneration(tmp_path: Path) -> None:
+    current = SectionDTO(
+        id="section:invalid-node",
+        name="人工节点区间",
+        section_kind="between_stations",
+        path_code="MAIN",
+        direction_role="increasing",
+        line_direction="上行",
+        start_node_type="station",
+        start_node_uid="removed-node",
+        start_station="已删除站",
+        end_node_type="station",
+        end_node_uid="node-high",
+        end_station="高桥",
+        line_side="上行",
+        auto_generated=True,
+        generation_key="MAIN|between|node-low|node-high|increasing",
+        manual_override_fields=["start_node_uid", "start_station"],
+        source_kind="generated",
+    )
+
+    result = _preview(
+        tmp_path,
+        [_station("高桥西", 11, "node-low"), _station("高桥", 12, "node-high")],
+        [current],
+    )
+    item = next(item for item in result.generated_sections if item.current_section)
+
+    assert item.result == "CONFLICT"
+    assert item.selectable is False
+    assert item.issues[0].code == "section_generation_manual_node_missing"
+    assert item.issues[0].field_name == "start_node_uid"
+    assert result.blocking_count == 1
 
 
 def test_manual_section_is_protected_and_old_generated_section_is_stale(tmp_path: Path) -> None:

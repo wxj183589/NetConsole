@@ -286,6 +286,7 @@ export interface Section {
   line_side: string
   auto_generated: boolean
   generation_key: string
+  manual_override_fields: string[]
   enabled: boolean
   source_kind: SectionSourceKind
   ap_count: number

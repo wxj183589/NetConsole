@@ -46,7 +46,14 @@ class SectionGenerationService:
         station_rows = list(stations)
         current_rows = list(current_sections)
         generated, issues = self._generate(line_metadata, station_rows)
-        items, compare_issues = self._compare(generated, current_rows)
+        valid_node_uids = {station.node_uid for station in station_rows if station.node_uid}
+        valid_node_uids.update(
+            uid
+            for section in generated
+            for uid in (section.start_node_uid, section.end_node_uid)
+            if uid
+        )
+        items, compare_issues = self._compare(generated, current_rows, valid_node_uids)
         issues.extend(compare_issues)
         return SectionGenerationPreviewDTO(
             site_id=site_id,
@@ -241,72 +248,33 @@ class SectionGenerationService:
             side = "low" if station.node_uid == low_station.node_uid else "high"
             endpoint_uid = f"endpoint:{path_code}:{side}"
             endpoint_label = station.terminal_endpoint_label.strip() or "端点"
-            endpoint_display = f"{endpoint_label}（{station.name}端）"
             if side == "low":
-                sections.extend(
-                    [
-                        self._section(
-                            name=f"{endpoint_label}-{station.name}-{metadata.increasing_direction_name}",
-                            section_kind="terminal_extension",
-                            path_code=path_code,
-                            direction_role="increasing",
-                            line_direction=metadata.increasing_direction_name,
-                            start_node_type="terminal_endpoint",
-                            start_node_uid=endpoint_uid,
-                            start_station=endpoint_display,
-                            end_node_type="station",
-                            end_node_uid=station.node_uid,
-                            end_station=station.name,
-                            generation_key=f"{path_code}|terminal|{endpoint_uid}|{station.node_uid}|increasing",
-                        ),
-                        self._section(
-                            name=f"{station.name}-{endpoint_label}-{metadata.decreasing_direction_name}",
-                            section_kind="terminal_extension",
-                            path_code=path_code,
-                            direction_role="decreasing",
-                            line_direction=metadata.decreasing_direction_name,
-                            start_node_type="station",
-                            start_node_uid=station.node_uid,
-                            start_station=station.name,
-                            end_node_type="terminal_endpoint",
-                            end_node_uid=endpoint_uid,
-                            end_station=endpoint_display,
-                            generation_key=f"{path_code}|terminal|{endpoint_uid}|{station.node_uid}|decreasing",
-                        ),
-                    ]
-                )
+                start_node_type, start_node_uid, start_station = "terminal_endpoint", endpoint_uid, endpoint_label
+                end_node_type, end_node_uid, end_station = "station", station.node_uid, station.name
+                physical_name = f"{endpoint_label}-{station.name}"
             else:
-                sections.extend(
-                    [
-                        self._section(
-                            name=f"{station.name}-{endpoint_label}-{metadata.increasing_direction_name}",
-                            section_kind="terminal_extension",
-                            path_code=path_code,
-                            direction_role="increasing",
-                            line_direction=metadata.increasing_direction_name,
-                            start_node_type="station",
-                            start_node_uid=station.node_uid,
-                            start_station=station.name,
-                            end_node_type="terminal_endpoint",
-                            end_node_uid=endpoint_uid,
-                            end_station=endpoint_display,
-                            generation_key=f"{path_code}|terminal|{endpoint_uid}|{station.node_uid}|increasing",
-                        ),
-                        self._section(
-                            name=f"{endpoint_label}-{station.name}-{metadata.decreasing_direction_name}",
-                            section_kind="terminal_extension",
-                            path_code=path_code,
-                            direction_role="decreasing",
-                            line_direction=metadata.decreasing_direction_name,
-                            start_node_type="terminal_endpoint",
-                            start_node_uid=endpoint_uid,
-                            start_station=endpoint_display,
-                            end_node_type="station",
-                            end_node_uid=station.node_uid,
-                            end_station=station.name,
-                            generation_key=f"{path_code}|terminal|{endpoint_uid}|{station.node_uid}|decreasing",
-                        ),
-                    ]
+                start_node_type, start_node_uid, start_station = "station", station.node_uid, station.name
+                end_node_type, end_node_uid, end_station = "terminal_endpoint", endpoint_uid, endpoint_label
+                physical_name = f"{station.name}-{endpoint_label}"
+            for direction_role, line_direction in (
+                ("increasing", metadata.increasing_direction_name),
+                ("decreasing", metadata.decreasing_direction_name),
+            ):
+                sections.append(
+                    self._section(
+                        name=f"{physical_name}-{line_direction}",
+                        section_kind="terminal_extension",
+                        path_code=path_code,
+                        direction_role=direction_role,
+                        line_direction=line_direction,
+                        start_node_type=start_node_type,
+                        start_node_uid=start_node_uid,
+                        start_station=start_station,
+                        end_node_type=end_node_type,
+                        end_node_uid=end_node_uid,
+                        end_station=end_station,
+                        generation_key=f"{path_code}|terminal|{endpoint_uid}|{station.node_uid}|{direction_role}",
+                    )
                 )
         return sections, issues
 
@@ -314,6 +282,7 @@ class SectionGenerationService:
         self,
         generated: list[SectionDTO],
         current: list[SectionDTO],
+        valid_node_uids: set[str],
     ) -> tuple[list[SectionGenerationPreviewItemDTO], list[StationSourceIssueDTO]]:
         items: list[SectionGenerationPreviewItemDTO] = []
         issues: list[StationSourceIssueDTO] = []
@@ -371,23 +340,76 @@ class SectionGenerationService:
                 )
                 continue
             if current_section:
-                merged = proposed.model_copy(
-                    update={
-                        "id": current_section.id,
-                        "remark": current_section.remark,
-                        "ap_count": current_section.ap_count,
-                        "mileage_min": current_section.mileage_min,
-                        "mileage_max": current_section.mileage_max,
-                    }
+                override_fields = set(current_section.manual_override_fields)
+                missing_node_field = next(
+                    (
+                        field
+                        for field in ("start_node_uid", "end_node_uid")
+                        if field in override_fields and getattr(current_section, field) not in valid_node_uids
+                    ),
+                    "",
                 )
+                if missing_node_field:
+                    missing_issue = self._issue(
+                        "error",
+                        "section_generation_manual_node_missing",
+                        f"人工调整的节点已不存在：{getattr(current_section, missing_node_field) or '未设置'}",
+                        missing_node_field,
+                        blocking=True,
+                        entity_id=current_section.id,
+                    )
+                    issues.append(missing_issue)
+                    items.append(
+                        SectionGenerationPreviewItemDTO(
+                            item_id=self._item_id("conflict", proposed.generation_key),
+                            result="CONFLICT",
+                            proposed_section=proposed,
+                            current_section=current_section,
+                            selectable=False,
+                            issues=[missing_issue],
+                        )
+                    )
+                    continue
+                merged_values = {
+                    "id": current_section.id,
+                    "remark": current_section.remark,
+                    "ap_count": current_section.ap_count,
+                    "mileage_min": current_section.mileage_min,
+                    "mileage_max": current_section.mileage_max,
+                    "manual_override_fields": current_section.manual_override_fields,
+                }
+                managed_fields = {
+                    "name", "section_kind", "path_code", "start_node_type", "start_node_uid",
+                    "start_station", "end_node_type", "end_node_uid", "end_station",
+                    "direction_role", "line_direction", "line_side", "enabled",
+                }
+                for field in override_fields & managed_fields:
+                    merged_values[field] = getattr(current_section, field)
+                merged = proposed.model_copy(update=merged_values)
                 unchanged = self._comparable(merged) == self._comparable(current_section)
+                override_differences = [
+                    field for field in override_fields & managed_fields
+                    if getattr(proposed, field) != getattr(current_section, field)
+                ]
+                item_issues = []
+                if override_differences:
+                    item_issues.append(
+                        self._issue(
+                            "warning",
+                            "section_generation_manual_override",
+                            f"已保留人工调整字段：{'、'.join(sorted(override_differences))}",
+                            "manual_override_fields",
+                            entity_id=current_section.id,
+                        )
+                    )
                 items.append(
                     SectionGenerationPreviewItemDTO(
                         item_id=self._item_id("current", proposed.generation_key),
                         result="UNCHANGED" if unchanged else "UPDATE",
                         proposed_section=merged,
                         current_section=current_section,
-                        selected_by_default=not unchanged,
+                        selected_by_default=not unchanged and not override_differences,
+                        issues=item_issues,
                     )
                 )
             else:
@@ -404,10 +426,11 @@ class SectionGenerationService:
                 continue
             if section.generation_key in generated_keys:
                 continue
+            stale_message = "站点顺序已不再生成该区间，但该区间含人工修改" if section.manual_override_fields else "该自动区间已不在当前站点顺序的生成结果中，默认保留"
             stale_issue = self._issue(
                 "warning",
                 "section_generation_stale",
-                "该自动区间已不在当前站点顺序的生成结果中，默认保留",
+                stale_message,
                 "generation_key",
                 entity_id=section.id,
             )

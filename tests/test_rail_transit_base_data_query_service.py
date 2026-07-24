@@ -32,6 +32,7 @@ def test_base_data_queries_relations_and_quality_are_read_only(tmp_path: Path) -
     assert summary.mr_count == 2
     assert stations.total == 3
     assert sections.total == 3
+    assert all(item.manual_override_fields == [] for item in sections.items)
     assert aps.total == 3
     assert len(aps.items) == 2
     assert len(ap_locations) == 3

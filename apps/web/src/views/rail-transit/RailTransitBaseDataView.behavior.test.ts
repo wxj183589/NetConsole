@@ -159,6 +159,15 @@ const DataTableStub = defineComponent({
         <slot name="cell-issues" :row="row" />
         <slot name="cell-node_type" :row="row" />
         <slot name="cell-name" :row="row" />
+        <slot name="cell-section_kind" :row="row" />
+        <slot name="cell-path_code" :row="row" />
+        <slot name="cell-start_station" :row="row" />
+        <slot name="cell-end_station" :row="row" />
+        <slot name="cell-line_direction" :row="row" />
+        <slot name="cell-source_kind" :row="row" />
+        <slot name="cell-enabled" :row="row" />
+        <slot name="cell-remark" :row="row" />
+        <slot name="cell-edit_actions" :row="row" />
         <slot name="cell-match_status" :row="row" />
         <slot name="cell-action" :row="row" />
         <slot name="cell-center_mileage_text" :row="row" />
@@ -425,6 +434,7 @@ const generatedIncreasingSection = {
   line_side: '上行',
   auto_generated: true,
   generation_key: 'MAIN|between|node-low|node-high|increasing',
+  manual_override_fields: [],
   enabled: true,
   source_kind: 'generated',
   ap_count: 0,
@@ -897,6 +907,86 @@ describe('轨道交通基础资料编辑闭环', () => {
         end_station: '高桥',
       },
     })
+    wrapper.unmount()
+  })
+
+  it('解锁后可编辑自动区间并记录人工覆盖，端点展示名不会进入保存值', async () => {
+    mocks.stationsPage.mockResolvedValue({
+      items: [
+        { ...sourceStationWuxiang, id: 'station:low', node_uid: 'node-low', name: '高桥西', sort_order: 11, is_line_terminal: true, terminal_extension_enabled: true },
+        { ...sourceStationWuxiang, id: 'station:high', node_uid: 'node-high', name: '高桥', sort_order: 12 },
+      ],
+      total: 2,
+      page: 1,
+      page_size: 50,
+    })
+    mocks.sectionsPage.mockResolvedValue({ items: [generatedIncreasingSection], total: 1, page: 1, page_size: 50 })
+    const wrapper = await mountView()
+    const sectionTable = wrapper.get('[data-table-id="rail-base-sections"]')
+    expect(sectionTable.find('input[data-field="section-name"]').exists()).toBe(false)
+
+    await button(wrapper, '解锁').trigger('click')
+    await flushPromises()
+
+    const nameInput = sectionTable.get('input[data-field="section-name"]')
+    await nameInput.setValue('现场专用区间')
+    const startSelect = sectionTable.get('select[data-field="section-start-node"]')
+    expect(startSelect.text()).toContain('端点（高桥西端）')
+    await startSelect.setValue('endpoint:MAIN:low')
+    await sectionTable.get('select[data-field="section-direction"]').setValue('下行')
+    await nextTick()
+
+    expect(sectionTable.text()).toContain('自动生成 · 已调整')
+    expect(wrapper.text()).toContain('未保存修改')
+    expect(mocks.save).not.toHaveBeenCalled()
+
+    await button(wrapper, '保存').trigger('click')
+    await flushPromises()
+    const sectionChange = mocks.validate.mock.calls.at(-1)?.[0].changes.find((change: { entity_type: string }) => change.entity_type === 'section')
+    expect(sectionChange.values).toMatchObject({
+      name: '现场专用区间',
+      start_node_type: 'terminal_endpoint',
+      start_node_uid: 'endpoint:MAIN:low',
+      start_station: '端点',
+      direction_role: 'decreasing',
+      line_direction: '下行',
+      line_side: '下行',
+      auto_generated: true,
+      source_kind: 'generated',
+      generation_key: generatedIncreasingSection.generation_key,
+    })
+    expect(sectionChange.values.start_station).not.toContain('高桥西端')
+    expect(sectionChange.values.manual_override_fields).toEqual(expect.arrayContaining([
+      'name', 'start_node_type', 'start_node_uid', 'start_station', 'direction_role', 'line_direction', 'line_side',
+    ]))
+    wrapper.unmount()
+  })
+
+  it('恢复自动值只修改草稿并清空人工覆盖字段', async () => {
+    mocks.sectionsPage.mockResolvedValue({
+      items: [{ ...generatedIncreasingSection, name: '已保存人工名称', manual_override_fields: ['name'] }],
+      total: 1,
+      page: 1,
+      page_size: 50,
+    })
+    const wrapper = await mountView()
+    await button(wrapper, '解锁').trigger('click')
+    await flushPromises()
+
+    const sectionTable = wrapper.get('[data-table-id="rail-base-sections"]')
+    await button(wrapper, '恢复自动值').trigger('click')
+    await flushPromises()
+
+    expect(mocks.sectionGenerationPreview).toHaveBeenCalledWith(expect.objectContaining({ current_sections: [] }))
+    expect(mocks.save).not.toHaveBeenCalled()
+    expect((sectionTable.get('input[data-field="section-name"]').element as HTMLInputElement).value).toBe('高桥西-高桥-上行')
+    expect(sectionTable.text()).toContain('自动生成')
+    expect(sectionTable.text()).not.toContain('自动生成 · 已调整')
+
+    await button(wrapper, '保存').trigger('click')
+    await flushPromises()
+    const sectionChange = mocks.validate.mock.calls.at(-1)?.[0].changes.find((change: { entity_type: string }) => change.entity_type === 'section')
+    expect(sectionChange.values.manual_override_fields).toEqual([])
     wrapper.unmount()
   })
 
