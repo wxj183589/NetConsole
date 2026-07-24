@@ -20,6 +20,15 @@ class FeatureDisabledError(RuntimeError):
 
 
 PROTECTED_INTERNAL_FEATURE_IDS = {"module.feature_switch", "system.feature_flags"}
+PACKAGED_CORE_FEATURE_IDS = frozenset(
+    {
+        "module.logs",
+        "module.system_settings",
+        "web.job_center",
+        "web.logs",
+        "web.system_settings",
+    }
+)
 FEATURE_STATE_KEYS = ("visible", "enabled", "client_package", "internal_only")
 FEATURE_PROFILE_SCHEMA_VERSION = 2
 LEGACY_FORMALIZED_FEATURE_IDS = frozenset(
@@ -55,20 +64,65 @@ class BuildInfoResolution(NamedTuple):
     external_build_info: dict[str, Any]
     embedded_available: bool
     external_runtime_exists: bool
+    embedded_build_info_status: str
+    embedded_flags_status: str
+
+
+class PackagedRuntimeFeaturePolicy:
+    """正式包只执行不可编辑的生产基线，并保护桌面核心能力。"""
+
+    def __init__(self, active: bool) -> None:
+        self.active = bool(active)
+
+    @property
+    def feature_configuration_available(self) -> bool:
+        return not self.active
+
+    def apply(self, item: FeatureItem, state: dict[str, bool]) -> dict[str, bool]:
+        if not self.active:
+            return state
+        effective = dict(state)
+        if item.feature_id in PACKAGED_CORE_FEATURE_IDS and item.status is FeatureStatus.ENABLED:
+            defaults = default_feature_state(item)
+            effective.update(visible=defaults["visible"], enabled=defaults["enabled"])
+        if (
+            item.internal_only
+            or item.feature_id in PROTECTED_INTERNAL_FEATURE_IDS
+            or item.status in {FeatureStatus.DISABLED, FeatureStatus.HIDDEN, FeatureStatus.DEVELOPMENT}
+        ):
+            effective.update(visible=False, enabled=False, client_package=False)
+        if not effective["visible"]:
+            effective["enabled"] = False
+        return effective
 
 
 def load_build_info(root: Path | None = None) -> dict[str, Any]:
     return resolve_build_info(root).info
 
 
-def resolve_build_info(root: Path | None = None) -> BuildInfoResolution:
+def resolve_build_info(
+    root: Path | None = None,
+    *,
+    packaged_runtime: bool | None = None,
+) -> BuildInfoResolution:
     app_root_path = Path(root or app_root()).resolve()
     target_runtime = runtime_dir(app_root_path)
-    embedded_build_info = _read_embedded_runtime_json(app_root_path, "build_info.json")
-    embedded_flags = _read_embedded_runtime_json(app_root_path, "feature_flags.json")
+    packaged = is_packaged_runtime() if packaged_runtime is None else bool(packaged_runtime)
+    embedded_build_info, embedded_build_info_status = _resolve_embedded_runtime_json(app_root_path, "build_info.json")
+    embedded_flags, embedded_flags_status = _resolve_embedded_runtime_json(app_root_path, "feature_flags.json")
     external_build_info = _read_json(target_runtime / "build_info.json") if (target_runtime / "build_info.json").exists() else {}
     env_info = _env_build_info()
-    if env_info:
+    if packaged and embedded_build_info:
+        source = "embedded"
+        info = _normalized_build_info(embedded_build_info, "customer", "production")
+    elif packaged:
+        source = "packaged_registry_fallback"
+        info = {"edition": "customer", "feature_profile": "production"}
+        app_logger.log_warning(
+            "PACKAGED_FEATURE_POLICY_FALLBACK",
+            f"component=build_info reason={embedded_build_info_status}",
+        )
+    elif env_info:
         source = "env_override"
         info = env_info
     elif embedded_build_info:
@@ -80,11 +134,6 @@ def resolve_build_info(root: Path | None = None) -> BuildInfoResolution:
     else:
         source = "dev_default"
         info = {"edition": "dev", "feature_profile": "full"}
-    if source == "dev_default" and is_packaged_runtime():
-        app_logger.log_error(
-            "FEATURE_GATE_PACKAGED_DEFAULT_FALLBACK_ERROR",
-            f"root={app_root_path} runtime_path={target_runtime}",
-        )
     return BuildInfoResolution(
         info=info,
         source=source,
@@ -93,6 +142,8 @@ def resolve_build_info(root: Path | None = None) -> BuildInfoResolution:
         external_build_info=external_build_info,
         embedded_available=bool(embedded_build_info or embedded_flags),
         external_runtime_exists=target_runtime.exists(),
+        embedded_build_info_status=embedded_build_info_status,
+        embedded_flags_status=embedded_flags_status,
     )
 
 
@@ -101,13 +152,25 @@ def is_internal_edition(root: Path | None = None) -> bool:
 
 
 class FeatureGate:
-    def __init__(self, root: Path | None = None, *, allow_local_override: bool | None = None) -> None:
+    def __init__(
+        self,
+        root: Path | None = None,
+        *,
+        allow_local_override: bool | None = None,
+        packaged_runtime: bool | None = None,
+    ) -> None:
         self.root = Path(root or app_root()).resolve()
-        self.resolution = resolve_build_info(self.root)
+        self.packaged_policy = PackagedRuntimeFeaturePolicy(
+            is_packaged_runtime() if packaged_runtime is None else packaged_runtime
+        )
+        self.resolution = resolve_build_info(
+            self.root,
+            packaged_runtime=self.packaged_policy.active,
+        )
         self.build_info = self.resolution.info
         self.edition = str(self.build_info.get("edition") or "dev")
         self.allow_local_override = self.edition in {"dev", "internal", "engineer"} if allow_local_override is None else allow_local_override
-        if self.edition == "customer":
+        if self.edition == "customer" or self.packaged_policy.active:
             self.allow_local_override = False
         self.base_profile = str(self.build_info.get("feature_profile") or "full")
         self.profile = self.base_profile
@@ -121,14 +184,27 @@ class FeatureGate:
     def reload(self) -> None:
         self.profile = self._effective_profile()
         self.features = {item.feature_id: default_feature_state(item) for item in list_features()}
-        if self._session_customer_preview_features is not None:
+        if self.packaged_policy.active:
+            if self.resolution.embedded_flags:
+                self._merge_data(self.resolution.embedded_flags)
+                app_logger.log_info(
+                    "PACKAGED_FEATURE_POLICY_LOADED",
+                    f"source=embedded profile={self.profile} feature_count={len(self.features)}",
+                )
+            else:
+                app_logger.log_warning(
+                    "PACKAGED_FEATURE_POLICY_FALLBACK",
+                    f"component=feature_flags reason={self.resolution.embedded_flags_status} source=registry_defaults",
+                )
+        elif self._session_customer_preview_features is not None:
             self._merge_data({"profile": "customer", "features": self._session_customer_preview_features})
         elif self._session_override_profile == "full":
             self._merge_data(self._session_full_profile_data())
         elif self.resolution.embedded_flags:
             self._merge_data(self.resolution.embedded_flags)
         if (
-            not self.is_session_override_active()
+            not self.packaged_policy.active
+            and not self.is_session_override_active()
             and not self.is_customer_preview_active()
             and (self.resolution.source == "external_runtime" or self.edition in {"dev", "internal", "engineer"})
         ):
@@ -169,6 +245,7 @@ class FeatureGate:
         return self._effective_state(feature_id)["client_package"]
 
     def enable_session_full_mode(self, reason: str, operator: str) -> None:
+        self._assert_feature_configuration_available()
         self._session_override_profile = "full"
         self._session_customer_preview_features = None
         self._session_override_reason = reason
@@ -183,6 +260,7 @@ class FeatureGate:
         )
 
     def disable_session_override(self, reason: str = "manual") -> None:
+        self._assert_feature_configuration_available()
         if not self._session_override_profile:
             return
         self._session_override_profile = None
@@ -195,6 +273,7 @@ class FeatureGate:
         )
 
     def enable_session_customer_preview(self, features: dict[str, dict[str, bool]], *, reason: str = "preview") -> None:
+        self._assert_feature_configuration_available()
         self._session_customer_preview_features = normalize_feature_states(features)
         self._session_override_profile = None
         self._session_override_reason = reason
@@ -204,6 +283,7 @@ class FeatureGate:
         _feature_switch_log("preview client mode: on")
 
     def disable_session_customer_preview(self, reason: str = "manual") -> None:
+        self._assert_feature_configuration_available()
         if self._session_customer_preview_features is None:
             return
         self._session_customer_preview_features = None
@@ -217,6 +297,15 @@ class FeatureGate:
 
     def is_customer_preview_active(self) -> bool:
         return self._session_customer_preview_features is not None
+
+    def is_feature_configuration_available(self) -> bool:
+        return self.packaged_policy.feature_configuration_available
+
+    def _assert_feature_configuration_available(self) -> None:
+        if self.is_feature_configuration_available():
+            return
+        app_logger.log_warning("FEATURE_CONFIGURATION_DISABLED", "runtime=packaged")
+        raise FeatureDisabledError("feature_configuration")
 
     def current_profile_source(self) -> str:
         if self.is_customer_preview_active():
@@ -299,10 +388,10 @@ class FeatureGate:
     def _effective_state(self, feature_id: str, seen: set[str] | None = None) -> dict[str, bool]:
         item = FEATURE_BY_ID[feature_id]
         state = normalize_feature_state(item, self.features.get(feature_id))
-        if feature_id in PROTECTED_INTERNAL_FEATURE_IDS and is_packaged_runtime():
+        if feature_id in PROTECTED_INTERNAL_FEATURE_IDS and self.packaged_policy.active:
             state.update({"visible": False, "enabled": False, "client_package": False, "internal_only": True})
         if self._is_protected_internal_feature(feature_id) and not self._is_customer_mode():
-            if not is_packaged_runtime():
+            if not self.packaged_policy.active:
                 state.update({"visible": True, "enabled": True, "client_package": False, "internal_only": True})
         if item.parent_id:
             seen = set(seen or ())
@@ -320,7 +409,11 @@ class FeatureGate:
                     and not state["internal_only"]
                     and not parent_state["internal_only"]
                 )
-        if self._is_customer_mode() and (state["internal_only"] or not state["client_package"]):
+        if (
+            not self.packaged_policy.active
+            and self._is_customer_mode()
+            and (state["internal_only"] or not state["client_package"])
+        ):
             state["visible"] = False
             state["enabled"] = False
         if item.status is FeatureStatus.DISABLED:
@@ -328,7 +421,7 @@ class FeatureGate:
         elif item.status is FeatureStatus.HIDDEN:
             state.update({"visible": False, "enabled": False})
         elif item.status is FeatureStatus.DEVELOPMENT:
-            development_allowed = self.edition in {"dev", "internal", "engineer"} and not is_packaged_runtime()
+            development_allowed = self.edition in {"dev", "internal", "engineer"} and not self.packaged_policy.active
             state.update(
                 {
                     "visible": state["visible"] and development_allowed,
@@ -336,11 +429,23 @@ class FeatureGate:
                     "client_package": False,
                 }
             )
+        state = self.packaged_policy.apply(item, state)
         if not state["visible"]:
             state["enabled"] = False
         return state
 
     def _log_loaded(self) -> None:
+        if self.packaged_policy.active:
+            app_logger.log_info(
+                "FEATURE_GATE_LOADED",
+                (
+                    f"runtime=packaged edition={self.edition} feature_profile={self.profile} "
+                    f"source={self.current_profile_source()} allow_local_override=false"
+                ),
+            )
+            _feature_switch_log(f"loaded features: {len(self.features)}")
+            _feature_switch_log(f"effective state calculated: {len(self.features)}")
+            return
         app_logger.log_info(
             "FEATURE_GATE_LOADED",
             (
@@ -573,6 +678,10 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _read_embedded_runtime_json(root: Path, filename: str) -> dict[str, Any]:
+    return _resolve_embedded_runtime_json(root, filename)[0]
+
+
+def _resolve_embedded_runtime_json(root: Path, filename: str) -> tuple[dict[str, Any], str]:
     candidates = [
         root / "_internal" / "netconsole" / "assets" / "runtime" / filename,
         root / "netconsole" / "assets" / "runtime" / filename,
@@ -582,8 +691,12 @@ def _read_embedded_runtime_json(root: Path, filename: str) -> dict[str, Any]:
         candidates.append(resource)
     for path in candidates:
         if path.exists():
-            return _read_json(path)
-    return {}
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return {}, "invalid"
+            return (data, "valid") if isinstance(data, dict) else ({}, "invalid")
+    return {}, "missing"
 
 
 def _normalized_build_info(data: dict[str, Any], default_edition: str, default_profile: str) -> dict[str, Any]:

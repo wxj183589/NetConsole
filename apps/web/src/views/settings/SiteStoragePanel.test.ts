@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as api from '../../api/siteStorage'
 import * as tasks from '../../api/tasks'
+import { ApiRequestError } from '../../api/client'
 import type { SiteRecord } from '../../api/siteStorage'
 import SiteStoragePanel from './SiteStoragePanel.vue'
 
@@ -17,7 +18,7 @@ const adapter = {
   selectDataRootDirectory: vi.fn(async () => ({ cancelled: true })),
   selectSitePackage: vi.fn(async () => ({ cancelled: true })),
   selectSiteExportDestination: vi.fn(async () => ({ cancelled: true })),
-  restartBackend: vi.fn(async () => ({ success: true })),
+  restartBackend: vi.fn(async (): Promise<{ success: boolean; error?: string }> => ({ success: true })),
   openTaskWindow: vi.fn(async () => ({ success: true })),
   executeSettingsAction: vi.fn(async () => ({ success: true })),
 }
@@ -126,6 +127,49 @@ describe('SiteStoragePanel', () => {
     expect(wrapper.text()).toContain('宁波地铁12号线')
     expect(wrapper.text()).toContain('legacy-dfd356e96ea0')
     expect(wrapper.text()).toContain('2 个局点')
+  })
+
+  it('shows concrete blocking tasks and opens the selected task in Task Center', async () => {
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce('confirm' as never)
+    vi.mocked(api.listSites).mockResolvedValue([
+      site(),
+      site({ site_id: 'line-12', display_name: '十二号线', active: false, site_kind: 'formal', classification: 'normal_site', managed_demo: false }),
+    ])
+    vi.mocked(api.activateSite).mockRejectedValueOnce(new ApiRequestError(
+      '存在仍在运行的任务，无法切换局点',
+      409,
+      'SITE_HAS_ACTIVE_TASKS',
+      { blocking_tasks: [{ task_id: 'task-1', task_type: 'device_collect', task_name: '设备采集', status: 'RUNNING', blocking_reason: '任务宿主仍在运行' }] },
+    ))
+    const wrapper = mount(SiteStoragePanel)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="switch-site-line-12"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="site-blocking-tasks"]').text()).toContain('设备采集')
+    expect(wrapper.get('[data-testid="site-blocking-tasks"]').text()).toContain('RUNNING')
+    expect(wrapper.get('[data-testid="site-blocking-tasks"]').text()).toContain('task-1')
+    await wrapper.get('[data-testid="site-blocking-tasks"] button').trigger('click')
+    expect(adapter.openTaskWindow).toHaveBeenCalledWith({ taskId: 'task-1', module: 'logs' })
+  })
+
+  it('releases the switch button after Backend restart failure', async () => {
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce('confirm' as never)
+    vi.mocked(api.listSites).mockResolvedValue([
+      site(),
+      site({ site_id: 'line-12', display_name: '十二号线', active: false, site_kind: 'formal', classification: 'normal_site', managed_demo: false }),
+    ])
+    vi.mocked(api.activateSite).mockResolvedValueOnce(site({ site_id: 'line-12', active: true }) as never)
+    adapter.restartBackend.mockResolvedValueOnce({ success: false, error: 'Backend 重启失败，已恢复原局点。' })
+    const wrapper = mount(SiteStoragePanel)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="switch-site-line-12"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Backend 重启失败，已恢复原局点。')
+    expect(wrapper.get('[data-testid="switch-site-line-12"]').attributes('disabled')).toBeUndefined()
   })
 
   it('creates a site only after collecting display name and stable id', async () => {

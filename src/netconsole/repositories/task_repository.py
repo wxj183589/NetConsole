@@ -396,11 +396,19 @@ class TaskRepository:
             row = conn.execute("SELECT COALESCE(MAX(sequence), 0) AS value FROM task_events").fetchone()
         return int(row["value"] if row is not None else 0)
 
-    def reconcile_orphaned_local_tasks(self, is_process_alive) -> list[TaskSnapshot]:
+    def reconcile_orphaned_local_tasks(
+        self,
+        is_process_alive,
+        is_locally_hosted=None,
+    ) -> list[TaskSnapshot]:
         active = {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING}
         changed: list[TaskSnapshot] = []
         for snapshot in self.list(statuses=active, limit=1000):
-            if snapshot.source != "local" or snapshot.owner_pid <= 0 or is_process_alive(snapshot.owner_pid):
+            if snapshot.source != "local":
+                continue
+            hosted = bool(is_locally_hosted and is_locally_hosted(snapshot.task_id))
+            process_alive = snapshot.owner_pid > 0 and is_process_alive(snapshot.owner_pid)
+            if hosted or process_alive or (snapshot.owner_pid <= 0 and is_locally_hosted is None):
                 continue
             now = utc_now_iso()
             form_connection_test = snapshot.task_id.startswith("device-form-test-")

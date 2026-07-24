@@ -9,19 +9,20 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from scripts.build import clean_build_spec
-from scripts.build.build_config import BuildConfig, load_config
-from scripts.build.check_runtime_deps import check_locked_environment
 from netconsole.core.feature_flags import (
+    PACKAGED_CORE_FEATURE_IDS,
     FeatureGate,
     engineer_package_enabled,
     install_runtime_feature_files,
     load_profile,
     profiles_dir,
 )
-from netconsole.core.feature_registry import list_features
+from netconsole.core.feature_registry import FeatureStatus, list_features
 from netconsole.core.version import GIT_COMMIT
 from netconsole.services.tool_smoke_test import run_tool_smoke_tests
+from scripts.build import clean_build_spec
+from scripts.build.build_config import BuildConfig, load_config
+from scripts.build.check_runtime_deps import check_locked_environment
 from scripts.build.web_frontend_meta import validate_web_frontend_meta
 
 
@@ -267,7 +268,7 @@ def remove_copied_zip_files(destination: Path) -> None:
 def validate_embedded_feature_gate(
     destination: Path, *, edition: str, profile: str
 ) -> None:
-    gate = FeatureGate(destination)
+    gate = FeatureGate(destination, packaged_runtime=True)
     if (
         gate.build_info.get("edition") != edition
         or gate.build_info.get("feature_profile") != profile
@@ -282,7 +283,7 @@ def validate_embedded_feature_gate(
     if runtime.exists():
         runtime.rename(hidden_runtime)
     try:
-        embedded_gate = FeatureGate(destination)
+        embedded_gate = FeatureGate(destination, packaged_runtime=True)
         if (
             embedded_gate.build_info.get("edition") != edition
             or embedded_gate.build_info.get("feature_profile") != profile
@@ -292,6 +293,22 @@ def validate_embedded_feature_gate(
             )
         if profile == "customer":
             validate_customer_feature_gate(embedded_gate)
+        validate_packaged_core_features(embedded_gate)
+        embedded_flags = (
+            destination
+            / "_internal"
+            / "netconsole"
+            / "assets"
+            / "runtime"
+            / "feature_flags.json"
+        )
+        hidden_flags = embedded_flags.with_suffix(".json.validation")
+        embedded_flags.rename(hidden_flags)
+        try:
+            fallback_gate = FeatureGate(destination, packaged_runtime=True)
+            validate_packaged_core_features(fallback_gate)
+        finally:
+            hidden_flags.rename(embedded_flags)
     finally:
         if hidden_runtime.exists():
             if runtime.exists():
@@ -316,6 +333,20 @@ def validate_customer_feature_gate(gate: FeatureGate) -> None:
             raise BuildError(
                 f"Customer build exposes internal-only feature: {item.feature_id}"
             )
+
+
+def validate_packaged_core_features(gate: FeatureGate) -> None:
+    for feature_id in PACKAGED_CORE_FEATURE_IDS:
+        if not gate.is_visible(feature_id) or not gate.is_enabled(feature_id):
+            raise BuildError(f"Packaged build disables core feature: {feature_id}")
+    for item in list_features():
+        if item.internal_only or item.status in {
+            FeatureStatus.DISABLED,
+            FeatureStatus.HIDDEN,
+            FeatureStatus.DEVELOPMENT,
+        }:
+            if gate.is_visible(item.feature_id) or gate.is_enabled(item.feature_id):
+                raise BuildError(f"Packaged build exposes restricted feature: {item.feature_id}")
 
 
 def pyinstaller_command(config: BuildConfig) -> list[str]:

@@ -80,7 +80,8 @@ def _show_managed_backend_standalone_message() -> None:
 
 
 def _verify_release_contract() -> None:
-    from netconsole.core.feature_flags import FeatureGate
+    from netconsole.core.feature_flags import PACKAGED_CORE_FEATURE_IDS, FeatureGate
+    from netconsole.core.feature_registry import FeatureStatus, list_features
     from netconsole.core.resources import runtime_base_dir
     from netconsole.core.version import APP_TITLE_DISPLAY, REPOSITORY_WEB_URLS
 
@@ -97,10 +98,21 @@ def _verify_release_contract() -> None:
     missing_assets = [str(path) for path in required_assets if not path.is_file()]
     if missing_assets:
         raise RuntimeError("发布包缺少第三方说明：" + ", ".join(missing_assets))
-    gate = FeatureGate(BASE_DIR)
+    gate = FeatureGate(BASE_DIR, packaged_runtime=True)
     for feature_id in ("module.feature_switch", "system.feature_flags"):
         if gate.is_visible(feature_id) or gate.is_enabled(feature_id):
             raise RuntimeError(f"打包版暴露了开发功能：{feature_id}")
+    for feature_id in PACKAGED_CORE_FEATURE_IDS:
+        if not gate.is_visible(feature_id) or not gate.is_enabled(feature_id):
+            raise RuntimeError(f"打包版缺少核心生产功能：{feature_id}")
+    for item in list_features():
+        if item.internal_only or item.status in {
+            FeatureStatus.DISABLED,
+            FeatureStatus.HIDDEN,
+            FeatureStatus.DEVELOPMENT,
+        }:
+            if gate.is_visible(item.feature_id) or gate.is_enabled(item.feature_id):
+                raise RuntimeError(f"打包版暴露了受限功能：{item.feature_id}")
     forbidden_ipop = [
         path
         for path in Path(BASE_DIR).rglob("*")

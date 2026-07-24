@@ -8,6 +8,8 @@ from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.models.task_snapshot import TaskSnapshot, utc_now_iso
+from netconsole.models.task_state import TaskState
 from netconsole.services.site_lifecycle import SiteAuditService
 from netconsole.services.site_storage import SiteRecord, SiteRegistryRepository
 
@@ -72,6 +74,113 @@ def test_site_switch_is_blocked_by_active_task(tmp_path: Path) -> None:
 
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "SITE_HAS_ACTIVE_TASKS"
+    blocking = response.json()["detail"]["details"]["blocking_tasks"]
+    assert blocking[0] == {
+        "task_id": "running-task",
+        "task_type": "test",
+        "task_name": "运行任务",
+        "status": "PENDING",
+        "created_at": blocking[0]["created_at"],
+        "updated_at": blocking[0]["updated_at"],
+        "blocking_reason": "任务状态为 PENDING，任务宿主仍可能继续执行",
+        "recoverable": False,
+        "stale": False,
+    }
+
+
+def test_terminal_task_history_does_not_block_site_switch(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    client.post("/api/v1/sites", json={"site_id": "line-12", "display_name": "十二号线"})
+    repository = client.app.state.task_service.repository("line-12")
+    now = utc_now_iso()
+    for status in (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED):
+        repository.save(
+            TaskSnapshot(
+                task_id=f"history-{status.value.lower()}",
+                task_type="test",
+                task_name="历史任务",
+                status=status,
+                created_time=now,
+                updated_time=now,
+                source="local",
+                site_name="line-12",
+            )
+        )
+
+    response = client.post("/api/v1/sites/line-12/activate", json={"confirmed": True})
+
+    assert response.status_code == 200, response.text
+    assert client.get("/api/v1/sites/active").json()["site_id"] == "line-12"
+
+
+def test_dead_local_task_is_reconciled_before_site_switch(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    client.post("/api/v1/sites", json={"site_id": "line-12", "display_name": "十二号线"})
+    repository = client.app.state.task_service.repository("line-12")
+    now = utc_now_iso()
+    repository.save(
+        TaskSnapshot(
+            task_id="stale-running",
+            task_type="test",
+            task_name="残留任务",
+            status=TaskState.RUNNING,
+            created_time=now,
+            updated_time=now,
+            source="local",
+            owner_pid=999999,
+            site_name="line-12",
+        )
+    )
+
+    response = client.post("/api/v1/sites/line-12/activate", json={"confirmed": True})
+
+    assert response.status_code == 200, response.text
+    restored = repository.get("stale-running")
+    assert restored is not None and restored.status is TaskState.FAILED
+
+
+def test_unhosted_pending_task_is_reconciled_before_site_switch(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    client.post("/api/v1/sites", json={"site_id": "line-12", "display_name": "十二号线"})
+    repository = client.app.state.task_service.repository("line-12")
+    now = utc_now_iso()
+    repository.save(
+        TaskSnapshot(
+            task_id="stale-pending",
+            task_type="test",
+            task_name="未启动残留任务",
+            status=TaskState.PENDING,
+            created_time=now,
+            updated_time=now,
+            source="local",
+            owner_pid=0,
+            site_name="line-12",
+        )
+    )
+
+    response = client.post("/api/v1/sites/line-12/activate", json={"confirmed": True})
+
+    assert response.status_code == 200, response.text
+    restored = repository.get("stale-pending")
+    assert restored is not None and restored.status is TaskState.FAILED
+
+
+def test_active_task_in_current_site_blocks_switch(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    client.post("/api/v1/sites", json={"site_id": "line-12", "display_name": "十二号线"})
+    client.app.state.task_service.create_external_task(
+        task_id="current-site-task",
+        task_type="test",
+        task_name="当前局点任务",
+        source="external",
+        site_name="demo",
+    )
+
+    response = client.post("/api/v1/sites/line-12/activate", json={"confirmed": True})
+
+    assert response.status_code == 409
+    tasks = response.json()["detail"]["details"]["blocking_tasks"]
+    assert [item["task_id"] for item in tasks] == ["current-site-task"]
 
 
 def test_data_root_validation_returns_safe_error_and_snapshot(tmp_path: Path) -> None:

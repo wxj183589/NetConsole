@@ -40,12 +40,14 @@ const featurePreview = ref(false)
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
+const featureError = ref('')
+const featureConfigurationAllowed = ref(getPlatformAdapter().hostType !== 'electron')
 const siteStorageFocused = ref(false)
 const siteStoragePanel = ref<InstanceType<typeof SiteStoragePanel> | null>(null)
 let siteStorageFocusTimer: ReturnType<typeof setTimeout> | undefined
 const runtimeToolErrors = reactive<Partial<Record<SettingsToolId, string>>>({})
 const dirty = computed(() => Boolean(baseline.value && JSON.stringify(form) !== JSON.stringify(baseline.value)))
-const featuresDirty = computed(() => JSON.stringify(features.value) !== featureBaseline.value)
+const featuresDirty = computed(() => featureSwitchAvailable.value && JSON.stringify(features.value) !== featureBaseline.value)
 const anyDirty = computed(() => dirty.value || featuresDirty.value)
 const pathErrors = computed<Record<SettingsToolId, string>>(() => ({
   iperf3: toolPathError('iperf3', form.iperf_path),
@@ -56,7 +58,7 @@ const pathErrors = computed<Record<SettingsToolId, string>>(() => ({
   putty: toolPathError('putty', form.terminal_paths.putty),
 }))
 const hasBlockingPathError = computed(() => Object.values(pathErrors.value).some(Boolean))
-const featureSwitchAvailable = computed(() => isFeatureEnabled('web.feature_switch'))
+const featureSwitchAvailable = computed(() => featureConfigurationAllowed.value && isFeatureEnabled('web.feature_switch'))
 const featureColumns: NcTableColumn<FeatureSetting>[] = [
   { key: 'title', label: '功能', valueType: 'name', align: 'left', alignmentReason: 'description' },
   { key: 'feature_id', label: 'ID', valueType: 'description', alignmentReason: 'code' },
@@ -82,12 +84,13 @@ onBeforeRouteLeave(async () => {
 })
 
 async function load(): Promise<void> {
-  loading.value = true; error.value = ''
+  loading.value = true; error.value = ''; featureError.value = ''
   try {
-    acceptSnapshot(await getSystemSettings())
-    await loadFeatureSettings()
-  } catch (cause) { error.value = message(cause, '系统设置加载失败') }
-  finally { loading.value = false }
+    await resolveFeatureConfigurationAvailability()
+    try { acceptSnapshot(await getSystemSettings()) }
+    catch (cause) { error.value = message(cause, '系统设置加载失败') }
+    await loadFeatureSettingsSafely()
+  } finally { loading.value = false }
 }
 
 async function save(): Promise<void> {
@@ -129,18 +132,50 @@ async function save(): Promise<void> {
 }
 
 async function reload(): Promise<void> {
-  loading.value = true; error.value = ''
-  try { acceptSnapshot(await reloadSystemSettings()); await loadFeatureSettings(); ElMessage.success('已重载') }
-  catch (cause) { restoreAppearance(); showError(cause, '重载失败') }
-  finally { loading.value = false }
+  loading.value = true; error.value = ''; featureError.value = ''
+  try {
+    try { acceptSnapshot(await reloadSystemSettings()); ElMessage.success('系统设置已重载') }
+    catch (cause) { restoreAppearance(); showError(cause, '重载失败') }
+    await loadFeatureSettingsSafely()
+  } finally { loading.value = false }
+}
+
+async function resolveFeatureConfigurationAvailability(): Promise<void> {
+  const runtime = getPlatformAdapter()
+  if (runtime.hostType !== 'electron') {
+    featureConfigurationAllowed.value = true
+    return
+  }
+  try {
+    featureConfigurationAllowed.value = !(await runtime.getAppInfo()).isPackaged
+  } catch {
+    featureConfigurationAllowed.value = false
+  }
+  if (!featureConfigurationAllowed.value) resetFeatureConfigurationState()
+}
+
+async function loadFeatureSettingsSafely(): Promise<void> {
+  featureError.value = ''
+  try { await loadFeatureSettings() }
+  catch (cause) { featureError.value = message(cause, '功能配置加载失败') }
 }
 
 async function loadFeatureSettings(): Promise<void> {
-  if (!featureSwitchAvailable.value) return
+  if (!featureSwitchAvailable.value) {
+    resetFeatureConfigurationState()
+    return
+  }
   const featureData = await getFeatureSettings()
   features.value = featureData.items
   featureBaseline.value = JSON.stringify(featureData.items)
   featurePreview.value = featureData.preview_active
+}
+
+function resetFeatureConfigurationState(): void {
+  features.value = []
+  featureBaseline.value = JSON.stringify([])
+  featurePreview.value = false
+  featureError.value = ''
 }
 
 function acceptSnapshot(value: SystemSettingsSnapshot): void {
@@ -264,6 +299,7 @@ function message(cause: unknown, fallback: string): string { return cause instan
       </div>
     </header>
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
+    <el-alert v-if="featureSwitchAvailable && featureError" :title="featureError" type="warning" :closable="false" />
 
     <section class="settings-band"><h2>{{ t('settings.appearance', '外观') }}</h2>
       <el-form class="settings-grid" label-position="top">

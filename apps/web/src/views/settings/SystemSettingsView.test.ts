@@ -20,6 +20,7 @@ vi.mock('../../features', () => ({
 
 const settingsBridge = {
   hostType: 'electron' as const,
+  getAppInfo: vi.fn(async () => ({ version: '1.4.2', platform: 'win32', isPackaged: false })),
   selectSettingsTool: vi.fn(async () => ({ cancelled: false, path: 'C:\\tools\\Xshell.exe' })),
   selectSettingsDirectory: vi.fn(async () => ({ cancelled: false, path: 'C:\\sessions' })),
   selectSettingsColor: vi.fn(async () => ({ cancelled: false, color: '#2563EB' as const })),
@@ -65,6 +66,7 @@ beforeEach(() => {
   settingsBridge.selectSettingsDirectory.mockResolvedValue({ cancelled: false, path: 'C:\\sessions' })
   settingsBridge.selectSettingsColor.mockResolvedValue({ cancelled: false, color: '#2563EB' })
   settingsBridge.executeSettingsAction.mockResolvedValue({ success: true })
+  settingsBridge.getAppInfo.mockResolvedValue({ version: '1.4.2', platform: 'win32', isPackaged: false })
 })
 
 describe('SystemSettingsView mounted behavior', () => {
@@ -202,7 +204,7 @@ describe('SystemSettingsView mounted behavior', () => {
     wrapper.unmount()
   })
 
-  it('does not report reload success when feature loading fails', async () => {
+  it('keeps system settings reload successful when feature loading fails', async () => {
     const { wrapper } = await mounted()
     const success = vi.spyOn(ElMessage, 'success')
     vi.mocked(api.reloadSystemSettings).mockResolvedValueOnce(snapshot())
@@ -211,7 +213,21 @@ describe('SystemSettingsView mounted behavior', () => {
     await wrapper.find('[data-testid="reload"]').trigger('click'); await flushPromises()
 
     expect(wrapper.text()).toContain('feature load failed')
-    expect(success).not.toHaveBeenCalledWith('已重载')
+    expect(success).toHaveBeenCalledWith('系统设置已重载')
+    wrapper.unmount()
+  })
+
+  it('keeps site storage but never requests feature configuration in a packaged runtime', async () => {
+    settingsBridge.getAppInfo.mockResolvedValueOnce({ version: '1.4.2', platform: 'win32', isPackaged: true })
+
+    const { wrapper } = await mounted()
+
+    expect(wrapper.find('#site-storage-management').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="preview-features"]').exists()).toBe(false)
+    expect(api.getFeatureSettings).not.toHaveBeenCalled()
+    expect(api.previewFeatureSettings).not.toHaveBeenCalled()
+    expect(api.restoreFeatureSettings).not.toHaveBeenCalled()
+    expect(api.saveFeatureSettings).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 

@@ -29,6 +29,8 @@ from netconsole.build.clean_build_lock import (
     validate_dist_output,
     validate_project_safety,
 )
+from netconsole.core.feature_flags import default_profile
+from netconsole.core.version import APP_VERSION, GIT_COMMIT
 from scripts.build.check_runtime_deps import (
     check_python_environment,
     check_runtime_deps,
@@ -47,13 +49,15 @@ from scripts.build.pyinstaller_artifact_inventory import (
     write_inventory,
 )
 from scripts.build.web_frontend_meta import validate_web_frontend_meta
-from netconsole.core.version import APP_VERSION, GIT_COMMIT
 
 CLEAN_BUILD = True
 ROOT = PROJECT_ROOT
 SRC_ROOT = ROOT / "src"
 DEVICE_COMMAND_PROFILES_SOURCE = "resources/device_command_profiles.json"
 PACKAGED_DEVICE_COMMAND_PROFILES = BUILD_ROOT / "packaged_assets" / "device_command_profiles.json"
+PACKAGED_RUNTIME_ROOT = BUILD_ROOT / "packaged_assets" / "runtime"
+PACKAGED_BUILD_INFO_SOURCE = "resources/runtime/build_info.json"
+PACKAGED_FEATURE_FLAGS_SOURCE = "resources/runtime/feature_flags.json"
 PACKAGED_DEVICE_COMMAND_PROFILE_OPERATION = "device.inventory.collect"
 APPROVED_DISTRIBUTIONS_PATH = (
     ROOT / "config" / "pyinstaller-approved-distributions.json"
@@ -75,6 +79,8 @@ ALLOWED_DATA = [
         "netconsole/assets/licenses",
     ),
     (DEVICE_COMMAND_PROFILES_SOURCE, "netconsole/assets"),
+    (PACKAGED_BUILD_INFO_SOURCE, "netconsole/assets/runtime"),
+    (PACKAGED_FEATURE_FLAGS_SOURCE, "netconsole/assets/runtime"),
 ]
 FORBIDDEN_DATA = [(item, item) for item in FORBIDDEN_DATAS]
 EXCLUDE_DIRS = [
@@ -333,11 +339,12 @@ def build_runtime_datas_from_import_graph() -> list[tuple[str, str]]:
     if changelog.is_file():
         datas.append((str(changelog), "netconsole/assets"))
     for source, destination in ALLOWED_DATA:
-        source_path = (
-            write_packaged_device_command_profiles()
-            if source == DEVICE_COMMAND_PROFILES_SOURCE
-            else ROOT / source
-        )
+        if source == DEVICE_COMMAND_PROFILES_SOURCE:
+            source_path = write_packaged_device_command_profiles()
+        elif source in {PACKAGED_BUILD_INFO_SOURCE, PACKAGED_FEATURE_FLAGS_SOURCE}:
+            source_path = write_packaged_runtime_feature_policy()[source]
+        else:
+            source_path = ROOT / source
         if (
             source == "apps/web/dist" and source_path.is_dir()
         ) or source_path.is_file():
@@ -380,6 +387,27 @@ def write_packaged_device_command_profiles() -> Path:
         encoding="utf-8",
     )
     return PACKAGED_DEVICE_COMMAND_PROFILES
+
+
+def write_packaged_runtime_feature_policy() -> dict[str, Path]:
+    PACKAGED_RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
+    payloads = {
+        PACKAGED_BUILD_INFO_SOURCE: {
+            "edition": "customer",
+            "feature_profile": "production",
+            "admin_unlock_enabled": False,
+        },
+        PACKAGED_FEATURE_FLAGS_SOURCE: default_profile("production"),
+    }
+    paths: dict[str, Path] = {}
+    for source, payload in payloads.items():
+        path = PACKAGED_RUNTIME_ROOT / Path(source).name
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        paths[source] = path
+    return paths
 
 
 def build_non_runtime_module_excludes() -> list[str]:
@@ -630,6 +658,7 @@ def write_version_info_file() -> Path:
 def validate_dist() -> None:
     app_dist = DIST_ROOT / "NetConsoleBackend"
     validate_dist_output(app_dist)
+    validate_packaged_runtime_feature_policy(app_dist)
     check_packaged_tools(app_dist)
     validate_packaged_web_frontend(app_dist)
     try:
@@ -659,6 +688,21 @@ def validate_dist() -> None:
         print(message)
     if not runtime_result.ok:
         raise CleanBuildLockError("packaged runtime dependency check failed")
+
+
+def validate_packaged_runtime_feature_policy(app_dist: Path) -> None:
+    runtime = app_dist / "_internal" / "netconsole" / "assets" / "runtime"
+    try:
+        build_info = json.loads((runtime / "build_info.json").read_text(encoding="utf-8"))
+        feature_flags = json.loads((runtime / "feature_flags.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CleanBuildLockError("packaged runtime feature policy is missing or invalid") from exc
+    if build_info.get("edition") != "customer" or build_info.get("feature_profile") != "production":
+        raise CleanBuildLockError("packaged build_info must use customer/production")
+    if feature_flags.get("profile") != "production" or not isinstance(feature_flags.get("features"), dict):
+        raise CleanBuildLockError("packaged feature_flags must contain the production baseline")
+    if (runtime / "feature_flags.local.json").exists() or (app_dist / "runtime" / "feature_flags.local.json").exists():
+        raise CleanBuildLockError("packaged runtime must not contain a local feature override")
 
 
 def load_packaged_distribution_approval() -> dict[str, str]:

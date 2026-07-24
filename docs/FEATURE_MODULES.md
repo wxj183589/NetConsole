@@ -6,6 +6,8 @@
 
 内部功能开关页面使用 `module.feature_switch`。该页面只在源码开发态注册；所有冻结/安装包运行态（包括 internal、customer、engineer）都强制隐藏并禁用，不能通过 profile 或本地覆盖重新开启。
 
+正式 Electron 包由 `PackagedRuntimeFeaturePolicy` 执行固定生产功能集：只读取包内 `customer/production` 基线，忽略环境变量、外部 runtime 配置和 `feature_flags.local.json`；功能配置读写、预览和恢复 API 固定拒绝。包内基线缺失或损坏时，Gate 记录 `PACKAGED_FEATURE_POLICY_FALLBACK` 并回退 Registry 稳定默认。`module.system_settings`、`web.system_settings`、`web.job_center`、`module.logs` 和 `web.logs` 受到核心保护；internal-only 以及 `DISABLED / HIDDEN / DEVELOPMENT` 状态仍强制关闭。
+
 ## 2. 一级模块
 
 | Feature key | 中文模块 | 状态 | 说明 |
@@ -49,6 +51,8 @@ Registry 当前显式登记的主要子功能包括：设备管理页面、连�
 ## 5. Edition 与运行时配置
 
 构建配置可按 internal/customer/engineer edition 或 profile 生成默认功能集合，但运行时仍由统一 Registry/Gate 判定。客户 profile 的 `build_options.engineer_package` 只决定 `both` 是否附加工程师包，不是运行时功能开关。不得在页面用 edition 名称硬编码同一能力的第二套开关。
+
+`client_package` 只表示构建选择或发布元数据。源码开发态的 customer 预览可继续据此模拟客户集合；正式包运行时不得再因为 `client_package=false` 自动关闭稳定业务能力，是否可见和可执行最终由打包基线、Registry 状态及正式包策略共同决定。
 
 ## 6. AP Identity 特例
 

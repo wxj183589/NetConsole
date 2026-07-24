@@ -5,6 +5,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
+from netconsole.core import app_logger
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.settings import SettingsConflictError, SettingsFileInvalidError, SettingsStore
 from netconsole.models.api.system_settings import (
@@ -46,6 +47,9 @@ def _desktop(request: Request) -> None:
 
 def _feature_switch(request: Request) -> None:
     gate = request.app.state.feature_gate
+    if not gate.is_feature_configuration_available():
+        app_logger.log_warning("FEATURE_CONFIGURATION_DISABLED", "runtime=packaged endpoint=system_settings")
+        raise HTTPException(status_code=403, detail="正式包使用固定生产功能集，功能配置不可用")
     if gate.is_enabled("web.feature_switch") or gate.is_customer_preview_active():
         return
     raise HTTPException(status_code=404, detail="功能未启用")
