@@ -475,14 +475,13 @@ def validate_release_fping(release_root: Path) -> None:
 
 
 def run_packaged_smoke(exe: Path, cwd: Path) -> None:
-    with tempfile.TemporaryDirectory(prefix="netconsole-backend-smoke-") as data_root:
+    with _temporary_smoke_data_root("netconsole-backend-smoke-") as data_root:
         for marker in (
             "NETCONSOLE_SMOKE_TEST",
             "NETCONSOLE_RUNTIME_SMOKE_TEST",
             "NETCONSOLE_TOOL_SMOKE_TEST",
         ):
-            env = os.environ.copy()
-            env["NETCONSOLE_DATA_ROOT"] = data_root
+            env = _smoke_environment(Path(data_root))
             env[marker] = "1"
             run([str(exe)], cwd=cwd, env=env, timeout=30)
         run_packaged_release_contract(exe, cwd, data_root=Path(data_root))
@@ -492,15 +491,34 @@ def run_packaged_release_contract(
     exe: Path, cwd: Path, *, data_root: Path | None = None
 ) -> None:
     if data_root is None:
-        with tempfile.TemporaryDirectory(
-            prefix="netconsole-backend-contract-"
-        ) as temporary_data_root:
+        with _temporary_smoke_data_root("netconsole-backend-contract-") as temporary_data_root:
             run_packaged_release_contract(exe, cwd, data_root=Path(temporary_data_root))
         return
-    env = os.environ.copy()
-    env["NETCONSOLE_DATA_ROOT"] = str(data_root)
+    env = _smoke_environment(data_root)
     env["NETCONSOLE_RELEASE_CONTRACT_SMOKE_TEST"] = "1"
     run([str(exe)], cwd=cwd, env=env, timeout=30)
+
+
+def _temporary_smoke_data_root(prefix: str) -> tempfile.TemporaryDirectory[str]:
+    """Create release smoke storage without consulting or touching real data."""
+
+    if os.name == "nt":
+        base = _smoke_data_root_base()
+        base.mkdir(parents=True, exist_ok=True)
+        return tempfile.TemporaryDirectory(prefix=prefix, dir=base)
+    return tempfile.TemporaryDirectory(prefix=prefix)
+
+
+def _smoke_data_root_base() -> Path:
+    return Path(r"D:\NetConsoleTestData")
+
+
+def _smoke_environment(data_root: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env["NETCONSOLE_DATA_ROOT"] = str(data_root)
+    env["NETCONSOLE_RUNTIME_MODE"] = "test"
+    env["NETCONSOLE_STORAGE_MODE"] = "isolated_test"
+    return env
 
 
 def validate_payload_source(source: Path, allowed_items: frozenset[str]) -> None:

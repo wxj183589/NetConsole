@@ -1081,3 +1081,54 @@ def test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs():
         check=True,
         timeout=20,
     )
+
+
+def test_packaged_smokes_use_a_unique_isolated_data_root(tmp_path, monkeypatch) -> None:
+    smoke_base = tmp_path / "NetConsoleTestData"
+    calls: list[dict[str, str]] = []
+    contract_roots: list[Path] = []
+
+    monkeypatch.setattr(build_release, "_smoke_data_root_base", lambda: smoke_base)
+    monkeypatch.setattr(
+        build_release,
+        "run",
+        lambda _command, **kwargs: calls.append(dict(kwargs["env"])),
+    )
+    monkeypatch.setattr(
+        build_release,
+        "run_packaged_release_contract",
+        lambda _exe, _cwd, *, data_root: contract_roots.append(data_root),
+    )
+
+    build_release.run_packaged_smoke(tmp_path / "NetConsoleBackend.exe", tmp_path)
+
+    assert len(calls) == 3
+    assert len(contract_roots) == 1
+    roots = [Path(env["NETCONSOLE_DATA_ROOT"]) for env in calls] + contract_roots
+    assert all(root.is_relative_to(smoke_base) and root != smoke_base for root in roots)
+    assert all(env["NETCONSOLE_RUNTIME_MODE"] == "test" for env in calls)
+    assert all(env["NETCONSOLE_STORAGE_MODE"] == "isolated_test" for env in calls)
+    assert all(not root.exists() for root in roots)
+
+
+def test_packaged_release_contract_uses_an_isolated_data_root(tmp_path, monkeypatch) -> None:
+    smoke_base = tmp_path / "NetConsoleTestData"
+    calls: list[dict[str, str]] = []
+
+    monkeypatch.setattr(build_release, "_smoke_data_root_base", lambda: smoke_base)
+    monkeypatch.setattr(
+        build_release,
+        "run",
+        lambda _command, **kwargs: calls.append(dict(kwargs["env"])),
+    )
+
+    build_release.run_packaged_release_contract(tmp_path / "NetConsoleBackend.exe", tmp_path)
+
+    assert len(calls) == 1
+    environment = calls[0]
+    root = Path(environment["NETCONSOLE_DATA_ROOT"])
+    assert root.is_relative_to(smoke_base) and root != smoke_base
+    assert environment["NETCONSOLE_RUNTIME_MODE"] == "test"
+    assert environment["NETCONSOLE_STORAGE_MODE"] == "isolated_test"
+    assert environment["NETCONSOLE_RELEASE_CONTRACT_SMOKE_TEST"] == "1"
+    assert not root.exists()
