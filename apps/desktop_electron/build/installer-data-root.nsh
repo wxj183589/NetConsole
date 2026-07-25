@@ -18,6 +18,9 @@ Var NetConsoleDataRootProbeResult
 Var NetConsoleDataRootProbeErrorCode
 Var NetConsoleDataRootProbePid
 Var NetConsoleDataRootProbeTick
+Var NetConsoleDataRootFindHandle
+Var NetConsoleDataRootFindName
+Var NetConsoleDataRootHasEntries
 !endif
 
 !macro customInit
@@ -115,10 +118,42 @@ Function NetConsoleRefreshDataRootStatus
   IfFileExists "$NetConsoleDataRoot\config\storage-manifest.json" 0 +3
     ${NSD_SetText} $NetConsoleDataRootStatus "发现现有 NetConsole 数据：将继续使用，不会覆盖局点和采集文件。"
     Return
-  IfFileExists "$NetConsoleDataRoot\*.*" 0 +3
-    ${NSD_SetText} $NetConsoleDataRootStatus "目录非空且不是已识别的数据根：安装器将要求创建 NetConsoleData 子目录。"
+  Call NetConsoleDataRootCheckEntries
+  ${If} $NetConsoleDataRootHasEntries == "1"
+    ${NSD_SetText} $NetConsoleDataRootStatus "目录非空且不是已识别的数据根：请选择空目录或已有 NetConsole 数据根。安装器不会修改该目录。"
     Return
+  ${EndIf}
   ${NSD_SetText} $NetConsoleDataRootStatus "空目录：将在此创建新的 NetConsole 数据根。安装前会检查可写性、重命名和 SQLite 锁。"
+FunctionEnd
+
+Function NetConsoleDataRootCheckEntries
+  ; IfFileExists "$root\*.*" reports some empty Windows directories as
+  ; non-empty. Enumerate the directory and ignore only the virtual dot entries.
+  StrCpy $NetConsoleDataRootHasEntries "0"
+  ClearErrors
+  FindFirst $NetConsoleDataRootFindHandle $NetConsoleDataRootFindName "$NetConsoleDataRoot\*"
+  IfErrors NetConsoleDataRootCheckEntriesEmpty
+
+  NetConsoleDataRootCheckEntriesLoop:
+  StrCmp $NetConsoleDataRootFindName "." NetConsoleDataRootCheckEntriesNext
+  StrCmp $NetConsoleDataRootFindName ".." NetConsoleDataRootCheckEntriesNext
+  ; Old v1.4.3 installers could leave these fixed-name probe files behind.
+  ; They are never business data and must not force a nested data root.
+  StrCmp $NetConsoleDataRootFindName ".netconsole-installer-write-test.tmp" NetConsoleDataRootCheckEntriesNext
+  StrCmp $NetConsoleDataRootFindName ".netconsole-installer-rename-test.tmp" NetConsoleDataRootCheckEntriesNext
+  StrCpy $NetConsoleDataRootHasEntries "1"
+  FindClose $NetConsoleDataRootFindHandle
+  Return
+
+  NetConsoleDataRootCheckEntriesNext:
+  ClearErrors
+  FindNext $NetConsoleDataRootFindHandle $NetConsoleDataRootFindName
+  IfErrors NetConsoleDataRootCheckEntriesDone
+  Goto NetConsoleDataRootCheckEntriesLoop
+
+  NetConsoleDataRootCheckEntriesDone:
+  FindClose $NetConsoleDataRootFindHandle
+  NetConsoleDataRootCheckEntriesEmpty:
 FunctionEnd
 
 Function NetConsoleRunDataRootProbe
@@ -266,7 +301,6 @@ Function NetConsoleRunDataRootProbe
 FunctionEnd
 
 Function NetConsoleDataRootPageLeave
-  NetConsoleDataRootValidateAgain:
   ${NSD_GetText} $NetConsoleDataRootInput $NetConsoleDataRoot
   StrCmp $NetConsoleDataRoot "" 0 +3
     MessageBox MB_ICONSTOP "必须选择 NetConsole 数据存放位置。"
@@ -295,11 +329,11 @@ Function NetConsoleDataRootPageLeave
     Abort
   ${EndIf}
   IfFileExists "$NetConsoleDataRoot\config\storage-manifest.json" NetConsoleDataRootReady
-  IfFileExists "$NetConsoleDataRoot\*.*" 0 NetConsoleDataRootReady
-  MessageBox MB_ICONEXCLAMATION|MB_YESNO "所选目录非空且不是已识别的 NetConsole 数据根。是否在其中创建 NetConsoleData 子目录？" IDYES +2
+  Call NetConsoleDataRootCheckEntries
+  ${If} $NetConsoleDataRootHasEntries == "1"
+    MessageBox MB_ICONSTOP "所选目录非空且不是已识别的 NetConsole 数据根。请选择空目录或已有 NetConsole 数据根。安装器不会创建嵌套目录，也不会删除或修改当前目录内容。"
     Abort
-  StrCpy $NetConsoleDataRoot "$NetConsoleDataRoot\NetConsoleData"
-  Goto NetConsoleDataRootValidateAgain
+  ${EndIf}
   NetConsoleDataRootReady:
   ${If} $NetConsoleExistingDataRoot != ""
   ${AndIf} $NetConsoleExistingDataRoot != $NetConsoleDataRoot

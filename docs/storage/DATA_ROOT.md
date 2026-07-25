@@ -8,7 +8,7 @@ Windows 的 electron-builder NSIS 向导先选择程序安装位置，再显示�
 
 安装器在发布机器级指针前调用打包 Backend 完成候选根校验，并在空根中原子创建完整目录结构和 `config/storage-manifest.json`；已有 manifest 只做兼容性校验，损坏、根不一致或版本不兼容时安装失败且原文件不被覆盖。校验和初始化全部成功后，唯一持久化路径指针才写入 `HKLM\Software\NetConsole\DataRoot`。manifest 记录 `format_version`、`data_root`、`created_at`、`last_opened_at`、`installation_id`、schema 和迁移兼容字段。运行时优先使用显式 `NETCONSOLE_DATA_ROOT`，否则读取该机器级指针；未配置时停止启动，绝不回退 LocalAppData、用户目录、安装目录、仓库或 C 盘。
 
-空目录会初始化为新数据根；已有 manifest 或 `config/` + `sites/` 的合法根会原样复用。非空普通目录必须在其中新建 `NetConsoleData` 子目录或重新选择，安装器不会混写文件。升级/修复默认继续使用已登记根；选择不同根时，打包后的 Backend 在更新注册表前执行 sibling staging、SQLite 校验和原子发布，旧根保持不删除。普通卸载保留数据根及其机器级指针。
+空目录通过逐项枚举确认后直接初始化为新数据根；已有 manifest 或 `config/` + `sites/` 的合法根会原样复用。非空普通目录直接拒绝，安装器不会自动拼接或创建 `NetConsoleData` 子目录，也不会删除、改名或修改所选目录。枚举明确跳过 `.`、`..` 和旧 v1.4.3 固定名称探测残留，避免 Windows 空目录或历史探测文件被误判为业务内容。升级/修复默认继续使用已登记根；选择不同根时，打包后的 Backend 在更新注册表前执行 sibling staging、SQLite 校验和原子发布，旧根保持不删除。普通卸载保留数据根及其机器级指针。
 
 `app_root` 是程序和只读资源位置，`data_root` 是唯一的业务数据位置，`site_root` 是 `<data_root>/sites/<site_id>`。路径事实源是 `src/netconsole/core/paths.py`，运行时不得从当前工作目录、源码目录、安装目录、用户目录、LocalAppData 或系统 Temp 推导数据根。
 
