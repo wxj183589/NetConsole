@@ -33,6 +33,11 @@ Ping 和深度采集继续；明确退出时 lifespan 先关闭 Supervisor，fpi
 - 深度采集最低/建议/最大时长为 10/20/30 分钟；
 - 详细归档保留 30 天，轻量汇总保留 180 天。
 
+第一阶段还增加了局点级 UDP 和高频写入参数：`udp_listen_host=0.0.0.0`、
+`udp_listen_port=514`、有界接收队列 20,000、原始流每 100 条或 1 秒 flush、关键事件每 100
+条或 1 秒批量提交。`syslog_server_ip` 默认留空，避免将 `0.0.0.0` 或监听地址错误下发到 MR；
+只有配置为有效 IPv4 后，Supervisor 才会安排设备配置检查。
+
 开始和结束时间不能相同，支持 `22:00-06:00` 跨午夜窗口，运行日期取窗口开始日期。运行中保存
 配置不会重启当前 fping 或 SSH 任务，新配置从下一次调度周期生效；状态接口同时返回下一次开始和
 结束时间。
@@ -75,6 +80,35 @@ Ping 样本使用毫秒时间戳，按小时写入 `fleet_ping/*.jsonl`。索引
 一次 AP 切换；后续真实 AP identity 变化才建立切换前后窗口。`GroundUnattendedTimelineCorrelator`
 以本机接收时间关联最近 AC 快照；即使样本携带快照 ID，只要接收时间超出配置容差，丢包仍明确标记为
 AC 位置未知，并继续识别 CT 单端、CW 单端和双端同时丢包。
+
+## 第一阶段实时采集基础
+
+`TrainInventorySyncService` 从现有 `RailTransitBaseDataQueryService` 增量聚合当前局点的车载
+MR。设备主体、地址和凭据仍只存在于设备管理；无人值守只保存列车/端点绑定、启用、置顶、调度优先级、
+深采开关、仅监测和备注。缺少 CT 或 CW 会保留列车并显示端点缺失；设备移除只标记绑定移除，既有策略和
+历史不会被物理删除。
+
+`SyslogUdpReceiver` 的接收线程只负责 `recv -> 接收时间 -> 有界队列`。独立处理线程完成 MR 映射、
+WMESH 关键事件解析、状态聚合、按小时追加和批量入库；来源按管理 IP、hostname、二者组合依次匹配，
+无法确认的消息写入独立 `_unidentified` 流，不会绑定到其他 MR。队列溢出、乱序、重复、时钟跳变和来源
+不明均作为数据质量事件，而不是把无人值守运行标成失败。
+
+原始流均由 `RawStreamWriter` 单线程追加并登记：Ping 为
+`active/<run_date>/fleet_ping/<train>/<CT|CW>/<date>/<hour>_<generation>.ndjson`，WMESH Syslog
+为 `active/<run_date>/realtime/syslog/<train>/<CT|CW>/<date>/<hour>_<generation>.ndjson`。当前打开
+文件不会被压缩；停止、轮转或重启恢复后才登记为关闭/恢复文件。SQLite 只保存分钟汇总、连续丢包区间、
+WMESH 关键事件、原始文件索引和健康事件，不逐条保存秒级原始 Ping 或 Syslog。
+
+Ping 稳定成功后，`MrSyslogConfigService` 通过既有设备凭据先执行 `display version`，以 uptime 和
+估算启动时间建立或更新 boot session；再检查 `display current-configuration | include info-center`，不支持
+过滤时才回退完整运行配置。固定 H3C Profile 只允许 `info-center`、当前 UDP loghost、默认来源禁止和
+WMESH notification 四项命令；不会执行 `save`、重启、删除或停止时回滚配置。完整配置不重复下发，缺项
+只补缺。当前实现对目标 IP/端口不一致会补充当前 NetConsole 目标，但不会发送未经设备型号现场验证的
+`undo` 命令，因此旧目标清理仍需在真实 MR 命令验证后补充。
+
+`ground_unattended` 索引库的 additive schema v2 新增列车清单/端点绑定/策略、boot session、Syslog
+配置审计、WMESH 事件、原始文件索引、Ping 丢包区间和健康事件表；启动迁移为幂等加列与 `CREATE TABLE IF
+NOT EXISTS`，不重建既有局点数据库。
 
 ## 深度采集与覆盖
 
@@ -136,8 +170,11 @@ Online MR mapping 恢复；窗口内恢复 Ping 与调度，窗口外继续最�
 GET/PUT  /profile
 GET      /status
 POST     /start | /pause | /resume | /stop | /stop-and-archive
+POST     /inventory/sync | /config-check
+GET      /health | /raw-files
 GET      /trains | /trains/{train_id}
 PUT      /trains/{train_id}/priority
+PUT      /trains/{train_id}/policy
 GET      /ping-targets | /ping-summary | /timeline
 GET      /deep-collections | /coverage
 GET      /archives | /archives/{archive_id}
@@ -153,8 +190,9 @@ DELETE   /archives/{archive_id}
 
 自动测试覆盖时间窗口/跨午夜、同日手工停止抑制、配置持久化、结构化正线排除、静止恢复、多目标与
 动态分片、轮转/汇总、CT/CW 错峰补齐、覆盖轮次去重、首轮覆盖排序、可复现队列、ZIP 成功清理、
-ZIP 失败保留、Repository 故障隔离、API 空态和前端七页签。`vue-tsc`、Vitest、Web production build
-和 Electron 定向测试作为提交门。
+ZIP 失败保留、Repository 故障隔离、API 空态和前端七页签。第一阶段还覆盖清单增量同步/策略保留、
+多 MR UDP 分流与未知来源隔离、上电周期重启识别，以及不执行 `save` 的 Syslog Profile。`vue-tsc`、
+定向 Vitest 和 Web production build 作为提交门。
 
 以下仍是人工现场门禁，不得由 fake 或本机回环测试提升为已验证：主备 AC 真实切换与设备时钟偏差、
 十几小时持续多目标 fping、真实列车 AP 漫游、2 车/4 MR 并发 SSH、Session 现场 ZIP、低磁盘故障注入、

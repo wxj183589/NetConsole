@@ -119,7 +119,9 @@ class GroundUnattendedTimelineCorrelator:
         if transition_at is None:
             return "same_ap"
         delta = (ts - transition_at).total_seconds()
-        if 0 <= delta <= self.switch_after_seconds:
+        # fping 进程可能在控制面切换目标元数据前已经吐出一条样本；
+        # 该样本在切换后被顺序处理时归入切换后窗口，避免产生虚假的时间轴空洞。
+        if -1.0 <= delta <= self.switch_after_seconds:
             return "after_transition"
         return "same_ap"
 

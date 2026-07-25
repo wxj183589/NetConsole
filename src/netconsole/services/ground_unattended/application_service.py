@@ -14,6 +14,11 @@ from netconsole.models.api.ground_unattended import (
     GroundDeepCollectionPageDTO,
     GroundPingSummaryPageDTO,
     GroundPingTargetDTO,
+    GroundHealthDTO,
+    GroundInventorySummaryDTO,
+    GroundRawFileDTO,
+    GroundRawFilePageDTO,
+    GroundTrainPolicyUpdateDTO,
     GroundTimelineEventDTO,
     GroundTimelinePageDTO,
     GroundUnattendedEndpointDTO,
@@ -29,6 +34,7 @@ from netconsole.repositories.ground_unattended_repository import (
 from netconsole.services.ground_unattended.deep_scheduler import (
     DeepMrCollectionScheduler,
 )
+from netconsole.services.ground_unattended.inventory import TrainInventorySyncService
 from netconsole.services.ground_unattended.schedule import schedule_window
 from netconsole.services.ground_unattended.supervisor import GroundUnattendedSupervisor
 from netconsole.models.api.system_maintenance import DesktopActionDTO
@@ -78,6 +84,16 @@ class GroundUnattendedApplicationService:
         self.supervisor = supervisor
         self.base_query = base_query
         self.desktop_action_service = desktop_action_service
+        self.inventory_sync = (
+            TrainInventorySyncService(
+                paths,
+                site_id=site_id,
+                repository=repository,
+                base_query=base_query,
+            )
+            if base_query is not None
+            else None
+        )
 
     def get_profile(self, site_id: str) -> GroundUnattendedProfileDTO:
         self._require_site(site_id)
@@ -116,6 +132,22 @@ class GroundUnattendedApplicationService:
         run_id = str(run.get("run_id") or "")
         trains = self.repository.list_train_runs(run_id) if run_id else []
         archives = self.repository.list_archives()
+        inventory = self.repository.list_inventory(include_removed=False)
+        syslog_health = self._syslog_health()
+        config_abnormal = 0
+        syslog_active = 0
+        for train in inventory:
+            for endpoint in train.get("endpoints", []):
+                boot = self.repository.latest_boot_session(
+                    str(endpoint.get("device_uuid") or "")
+                )
+                if boot and boot.get("last_syslog_received_at"):
+                    syslog_active += 1
+                audit = self.repository.latest_syslog_config_audit(
+                    str(endpoint.get("device_uuid") or "")
+                )
+                if audit and audit.get("status") == "CONFIG_FAILED":
+                    config_abnormal += 1
         disk = shutil.disk_usage(self.paths.ground_unattended_root(site_id).parent)
         state = str(
             run.get("state") or ("WAITING_WINDOW" if profile.enabled else "DISABLED")
@@ -160,6 +192,13 @@ class GroundUnattendedApplicationService:
                 row.get("coverage_status") not in {"COVERED", "EXCLUDED"}
                 for row in trains
             ),
+            inventory_train_count=len(inventory),
+            syslog_active_mr_count=syslog_active,
+            config_abnormal_count=config_abnormal,
+            data_quality_warning_count=int(
+                syslog_health.get("udp_unidentified_count") or 0
+            )
+            + int(syslog_health.get("udp_dropped_count") or 0),
             disk_used_bytes=int((run.get("summary") or {}).get("disk_used_bytes") or 0),
             disk_free_bytes=disk.free,
             disk_status=(
@@ -239,13 +278,35 @@ class GroundUnattendedApplicationService:
         )
 
     def list_trains(self, site_id: str) -> GroundUnattendedTrainPageDTO:
+        self._require_site(site_id)
+        if self.inventory_sync is not None and not self.repository.list_inventory():
+            self.inventory_sync.synchronize()
         run = self._latest_run(site_id)
         rows = self.repository.list_train_runs(str(run["run_id"])) if run else []
         items = [self._train_dto(row) for row in rows]
         if not items:
-            items = self._base_train_candidates()
+            items = self._inventory_train_candidates()
+        items = self._merge_inventory_policy(items)
         items = self._enrich_train_endpoints(items, run)
         return GroundUnattendedTrainPageDTO(items=items, total=len(items))
+
+    def sync_inventory(self, site_id: str) -> GroundInventorySummaryDTO:
+        self._require_site(site_id)
+        if self.inventory_sync is None:
+            raise GroundUnattendedError(
+                "INVENTORY_SYNC_UNAVAILABLE", "设备清单同步服务不可用", status_code=503
+            )
+        result = self.inventory_sync.synchronize()
+        receiver = getattr(self.supervisor, "syslog_receiver", None)
+        if receiver is not None:
+            receiver.refresh_inventory()
+        self.repository.add_event(
+            event_type="inventory_synchronized",
+            title="无人值守设备清单已同步",
+            message=f"发现 {result.discovered_train_count} 辆列车",
+            details=result.model_dump(mode="json"),
+        )
+        return result
 
     def get_train(self, site_id: str, train_id: str) -> GroundUnattendedTrainDTO:
         candidate = next(
@@ -273,6 +334,99 @@ class GroundUnattendedApplicationService:
                 str(run["run_id"]), train_id, priority=priority
             )
         return self.get_train(site_id, train_id)
+
+    def update_train_policy(
+        self,
+        site_id: str,
+        train_id: str,
+        policy: GroundTrainPolicyUpdateDTO,
+    ) -> GroundUnattendedTrainDTO:
+        self._require_site(site_id)
+        if not any(
+            str(row.get("train_id") or "") == train_id
+            for row in self.repository.list_inventory()
+        ):
+            raise GroundUnattendedError(
+                "TRAIN_NOT_FOUND", "无人值守列车不存在", status_code=404
+            )
+        values = policy.model_dump(mode="json")
+        self.repository.save_train_policy(train_id, values)
+        self.repository.set_priority(train_id, policy.priority)
+        run = self.repository.get_active_run()
+        if run:
+            self.repository.update_train_run(
+                str(run["run_id"]), train_id, priority=policy.priority
+            )
+        self.supervisor.profile_updated()
+        return self.get_train(site_id, train_id)
+
+    def request_config_check(
+        self, site_id: str, *, device_uuid: str = ""
+    ) -> GroundActionResponseDTO:
+        run = self._active(site_id)
+        profile = self.repository.get_profile()
+        if not profile.syslog_server_ip:
+            raise GroundUnattendedError(
+                "SYSLOG_TARGET_REQUIRED",
+                "请先设置 Syslog 服务器 IP，再执行配置检查",
+                status_code=409,
+            )
+        if device_uuid and self.repository.get_inventory_endpoint(device_uuid) is None:
+            raise GroundUnattendedError(
+                "MR_NOT_FOUND", "MR 不在当前无人值守清单中", status_code=404
+            )
+        self.supervisor.request_config_check(device_uuid)
+        return GroundActionResponseDTO(
+            state=str(run["state"]),
+            run_id=str(run["run_id"]),
+            message="MR 配置检查请求已提交",
+        )
+
+    def health(self, site_id: str) -> GroundHealthDTO:
+        self._require_site(site_id)
+        values = self._syslog_health()
+        latest = self.repository.latest_health_event() or {}
+        disk = shutil.disk_usage(self.paths.ground_unattended_root(site_id).parent)
+        deep_queue = sum(
+            item.status in {"NOT_SEEN", "WAITING", "PARTIAL"}
+            for item in self.deep_collections(site_id).items
+        )
+        archives = self.repository.list_archives()
+        last_error = str(values.pop("last_error", "") or latest.get("message") or "")
+        status = "ERROR" if last_error else "WARNING" if values.get("udp_dropped_count") else "OK"
+        return GroundHealthDTO(
+            site_id=site_id,
+            status=status,
+            **values,
+            ping_target_count=int(getattr(self.supervisor.fleet_ping, "target_count", 0)),
+            ping_process_count=int(getattr(self.supervisor.fleet_ping, "process_count", 0)),
+            deep_queue_length=deep_queue,
+            archive_pending_count=sum(
+                row.get("archive_status") in {"PENDING", "BUILDING", "FAILED"}
+                for row in archives
+            ),
+            disk_free_bytes=disk.free,
+            last_error=last_error,
+            updated_at=datetime.now().astimezone().isoformat(timespec="milliseconds"),
+        )
+
+    def raw_files(
+        self,
+        site_id: str,
+        *,
+        data_type: str = "",
+        status: str = "",
+        limit: int = 200,
+        offset: int = 0,
+    ) -> GroundRawFilePageDTO:
+        self._require_site(site_id)
+        rows = self.repository.list_raw_files(
+            data_type=data_type, status=status, limit=limit, offset=offset
+        )
+        return GroundRawFilePageDTO(
+            items=[GroundRawFileDTO.model_validate(row) for row in rows],
+            total=self.repository.count_raw_files(data_type=data_type, status=status),
+        )
 
     def ping_summary(self, site_id: str) -> GroundPingSummaryPageDTO:
         run = self._latest_run(site_id)
@@ -363,12 +517,22 @@ class GroundUnattendedApplicationService:
         return GroundDeepCollectionPageDTO(items=items, total=len(items))
 
     def timeline(
-        self, site_id: str, *, train_id: str = "", event_type: str = ""
+        self,
+        site_id: str,
+        *,
+        train_id: str = "",
+        event_type: str = "",
+        limit: int = 200,
+        offset: int = 0,
     ) -> GroundTimelinePageDTO:
         run = self._latest_run(site_id)
         rows = (
             self.repository.list_events(
-                str(run["run_id"]), train_id=train_id, event_type=event_type
+                str(run["run_id"]),
+                train_id=train_id,
+                event_type=event_type,
+                limit=limit,
+                offset=offset,
             )
             if run
             else []
@@ -387,7 +551,14 @@ class GroundUnattendedApplicationService:
             )
             for row in rows
         ]
-        return GroundTimelinePageDTO(items=items, total=len(items))
+        return GroundTimelinePageDTO(
+            items=items,
+            total=self.repository.count_events(
+                str(run["run_id"]), train_id=train_id, event_type=event_type
+            )
+            if run
+            else 0,
+        )
 
     def archives(self, site_id: str) -> GroundArchivePageDTO:
         self._require_site(site_id)
@@ -485,6 +656,99 @@ class GroundUnattendedApplicationService:
             updated_at=row.get("updated_at", ""),
         )
 
+    def _inventory_train_candidates(self) -> list[GroundUnattendedTrainDTO]:
+        result: list[GroundUnattendedTrainDTO] = []
+        for row in self.repository.list_inventory(include_removed=True):
+            endpoints_by_role = {
+                str(item.get("mr_role") or ""): item
+                for item in row.get("endpoints", [])
+                if item.get("binding_status") == "ACTIVE"
+            }
+            endpoints = []
+            for role in ("CT", "CW"):
+                endpoint = endpoints_by_role.get(role) or {}
+                endpoints.append(
+                    GroundUnattendedEndpointDTO(
+                        endpoint=role,  # type: ignore[arg-type]
+                        mr_id=str(endpoint.get("device_uuid") or ""),
+                        mr_name=str(endpoint.get("device_name") or ""),
+                        device_id=endpoint.get("device_id"),
+                        management_ip=str(endpoint.get("management_ip") or ""),
+                        online_status="UNKNOWN" if endpoint else "MISSING",
+                    )
+                )
+            result.append(
+                GroundUnattendedTrainDTO(
+                    train_id=str(row["train_id"]),
+                    train_no=str(row.get("train_no") or ""),
+                    train_name=str(row.get("train_name") or row["train_id"]),
+                    eligibility_status="AC_UNKNOWN",
+                    exclusion_reason="设备已移除"
+                    if row.get("inventory_status") == "REMOVED"
+                    else "尚未开始无人值守运行，等待实时状态",
+                    coverage_status="EXCLUDED"
+                    if row.get("inventory_status") == "REMOVED"
+                    else "NOT_SEEN",
+                    priority=bool(row.get("priority")),
+                    enabled=bool(row.get("enabled", True)),
+                    scheduling_priority=int(row.get("scheduling_priority") or 0),
+                    deep_collection_enabled=bool(
+                        row.get("deep_collection_enabled", True)
+                    ),
+                    monitor_only=bool(row.get("monitor_only", False)),
+                    remark=str(row.get("remark") or ""),
+                    inventory_status=str(row.get("inventory_status") or "ACTIVE"),
+                    endpoints=endpoints,
+                    updated_at=str(row.get("updated_at") or ""),
+                )
+            )
+        return result
+
+    def _merge_inventory_policy(
+        self, items: list[GroundUnattendedTrainDTO]
+    ) -> list[GroundUnattendedTrainDTO]:
+        inventory = {
+            str(row["train_id"]): row for row in self.repository.list_inventory()
+        }
+        result = []
+        for item in items:
+            row = inventory.get(item.train_id) or {}
+            result.append(
+                item.model_copy(
+                    update={
+                        "priority": bool(row.get("priority", item.priority)),
+                        "enabled": bool(row.get("enabled", item.enabled)),
+                        "scheduling_priority": int(
+                            row.get("scheduling_priority", item.scheduling_priority)
+                            or 0
+                        ),
+                        "deep_collection_enabled": bool(
+                            row.get(
+                                "deep_collection_enabled",
+                                item.deep_collection_enabled,
+                            )
+                        ),
+                        "monitor_only": bool(
+                            row.get("monitor_only", item.monitor_only)
+                        ),
+                        "remark": str(row.get("remark", item.remark) or ""),
+                        "inventory_status": str(
+                            row.get("inventory_status", item.inventory_status)
+                            or "ACTIVE"
+                        ),
+                    }
+                )
+            )
+        return sorted(
+            result,
+            key=lambda item: (
+                not item.priority,
+                -item.scheduling_priority,
+                item.train_no,
+                item.train_id,
+            ),
+        )
+
     def _base_train_candidates(self) -> list[GroundUnattendedTrainDTO]:
         if self.base_query is None:
             return []
@@ -578,6 +842,8 @@ class GroundUnattendedApplicationService:
                 end_key = (train.train_id, f"end:{endpoint.endpoint}")
                 summary = summaries.get(mr_key) or summaries.get(end_key) or {}
                 operation = operations.get((train.train_id, endpoint.endpoint)) or {}
+                boot = self.repository.latest_boot_session(endpoint.mr_id) if endpoint.mr_id else None
+                wmesh = self.repository.latest_wmesh_event(endpoint.mr_id) if endpoint.mr_id else None
                 endpoints.append(
                     endpoint.model_copy(
                         update={
@@ -595,11 +861,63 @@ class GroundUnattendedApplicationService:
                             not in {"COMPLETED", "PARTIAL", "FAILED"}
                             else "",
                             "latest_session_id": str(operation.get("session_id") or ""),
+                            "syslog_status": "ACTIVE"
+                            if (boot or {}).get("last_syslog_received_at")
+                            else "WAITING",
+                            "last_syslog_received_at": str(
+                                (boot or {}).get("last_syslog_received_at") or ""
+                            ),
+                            "current_active_peer": str(
+                                (wmesh or {}).get("peer_name") or ""
+                            ),
+                            "last_link_switch_at": str(
+                                (wmesh or {}).get("receive_time") or ""
+                            )
+                            if (wmesh or {}).get("event_type")
+                            == "MESH_ACTIVELINK_SWITCH"
+                            else "",
+                            "boot_session_id": str(
+                                (boot or {}).get("boot_session_id") or ""
+                            ),
+                            "estimated_boot_time": str(
+                                (boot or {}).get("estimated_boot_time") or ""
+                            ),
+                            "uptime_seconds": (boot or {}).get(
+                                "last_uptime_seconds"
+                            ),
+                            "config_status": str(
+                                (boot or {}).get("config_status") or "NOT_CHECKED"
+                            ),
+                            "config_checked_at": str(
+                                (boot or {}).get("config_checked_at") or ""
+                            ),
                         }
                     )
                 )
             result.append(train.model_copy(update={"endpoints": endpoints}))
         return result
+
+    def _syslog_health(self) -> dict[str, Any]:
+        receiver = getattr(self.supervisor, "syslog_receiver", None)
+        if receiver is None:
+            return {
+                "udp_running": False,
+                "udp_listen_address": "",
+                "udp_receive_rate_per_second": 0.0,
+                "udp_received_count": 0,
+                "udp_unidentified_count": 0,
+                "udp_queue_length": 0,
+                "udp_queue_capacity": 0,
+                "udp_dropped_count": 0,
+                "raw_records_written": 0,
+                "raw_bytes_written": 0,
+                "raw_last_write_duration_ms": 0.0,
+                "database_pending_count": 0,
+                "database_last_batch_duration_ms": 0.0,
+                "open_file_count": 0,
+                "last_error": "",
+            }
+        return dict(receiver.health_snapshot())
 
     @staticmethod
     def _archive_dto(row: dict[str, Any]) -> GroundArchiveDTO:

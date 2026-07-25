@@ -7,6 +7,9 @@ export interface GroundProfile {
   ac_ping_correlation_tolerance_seconds: number; ap_switch_before_seconds: number; ap_switch_after_seconds: number
   max_active_trains: number; max_active_mrs: number; max_starting_mrs: number; max_finalizing_mrs: number
   fleet_ping_interval_ms: number; fleet_ping_timeout_ms: number; fleet_ping_packet_size: number; fleet_ping_shard_size: number
+  udp_listen_host: string; udp_listen_port: number; udp_queue_capacity: number; raw_flush_interval_seconds: number; raw_flush_record_count: number
+  event_batch_size: number; event_batch_interval_seconds: number; boot_time_tolerance_seconds: number; config_check_cooldown_seconds: number
+  syslog_server_ip: string; syslog_server_port: number; ping_raw_retention_days: number; syslog_raw_retention_days: number
   minimum_valid_collection_minutes: number; preferred_collection_minutes: number; maximum_collection_minutes: number
   start_jitter_seconds: number; start_batch_size: number; detail_retention_days: number; summary_retention_days: number
   storage_warning_free_gb: number; storage_critical_free_gb: number; created_at: string; updated_at: string
@@ -17,18 +20,22 @@ export interface GroundStatus {
   next_start_at: string; next_end_at: string; profile_effective_at: string; ac_last_updated_at: string; ac_freshness_status: string
   mainline_train_count: number; ping_target_count: number; active_deep_train_count: number; covered_train_count: number
   incomplete_train_count: number; disk_used_bytes: number; disk_free_bytes: number; disk_status: string
+  inventory_train_count: number; syslog_active_mr_count: number; config_abnormal_count: number; data_quality_warning_count: number
   latest_archive_status: string; latest_archive_message: string; message: string; updated_at: string
 }
 export interface GroundEndpoint {
   endpoint: 'CT' | 'CW'; mr_id: string; mr_name: string; device_id: number | null; management_ip: string; online_status: string
   ping_active: boolean; ping_sent_count: number; ping_success_count: number; ping_loss_rate_percent: number | null
   ping_avg_rtt_ms: number | null; active_operation_id: string; latest_session_id: string
+  syslog_status: string; last_syslog_received_at: string; current_active_peer: string; last_link_switch_at: string
+  boot_session_id: string; estimated_boot_time: string; uptime_seconds: number | null; config_status: string; config_checked_at: string
 }
 export interface GroundTrain {
   train_id: string; train_no: string; train_name: string; ping_eligible: boolean; deep_collection_eligible: boolean
   eligibility_status: string; exclusion_reason: string; current_ap_name: string; current_ap_mac: string
   station: string; section: string; mileage: string; rssi: number | null; same_ap_duration_seconds: number
   ac_snapshot_id: number | null; ac_received_at: string; coverage_status: GroundCoverageStatus; priority: boolean
+  enabled: boolean; scheduling_priority: number; deep_collection_enabled: boolean; monitor_only: boolean; remark: string; inventory_status: string
   attempt_count: number; covered_rounds: number; selection_reason: string; failure_reason: string; endpoints: GroundEndpoint[]; updated_at: string
 }
 export interface GroundPingTarget {
@@ -54,3 +61,15 @@ export interface GroundArchive {
 }
 export interface GroundActionResponse { accepted: boolean; state: GroundRunState; run_id: string; message: string }
 export interface GroundPage<T> { items: T[]; total: number }
+export interface GroundInventorySummary {
+  site_id: string; discovered_train_count: number; complete_train_count: number; ct_only_count: number; cw_only_count: number
+  missing_management_ip_count: number; missing_credential_count: number; added_endpoint_count: number; updated_endpoint_count: number; removed_endpoint_count: number; removed_train_count: number; synchronized_at: string
+}
+export interface GroundTrainPolicy { enabled: boolean; priority: boolean; scheduling_priority: number; deep_collection_enabled: boolean; monitor_only: boolean; remark: string }
+export interface GroundHealth {
+  site_id: string; status: string; udp_running: boolean; udp_listen_address: string; udp_receive_rate_per_second: number; udp_received_count: number
+  udp_unidentified_count: number; udp_queue_length: number; udp_queue_capacity: number; udp_dropped_count: number; raw_records_written: number; raw_bytes_written: number
+  raw_last_write_duration_ms: number; database_pending_count: number; database_last_batch_duration_ms: number; open_file_count: number
+  ping_target_count: number; ping_process_count: number; deep_queue_length: number; archive_pending_count: number; disk_free_bytes: number; last_error: string; updated_at: string
+}
+export interface GroundRawFile { file_id: string; site_id: string; run_id: string; train_id: string; device_id: number | null; mr_role: string; data_type: string; relative_path: string; start_time: string; end_time: string; record_count: number; size_bytes: number; sha256: string; status: string; archive_status: string; parse_status: string; compressed_path: string; created_at: string; updated_at: string }

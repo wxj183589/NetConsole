@@ -18,6 +18,7 @@ from netconsole.repositories.ground_unattended_repository import (
 from netconsole.services.ground_unattended.timeline import (
     GroundUnattendedTimelineCorrelator,
 )
+from netconsole.services.ground_unattended.syslog_runtime import RawStreamWriter
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,7 @@ class FleetPingTarget:
     train_no: str
     mr_id: str
     mr_position_code: str
+    device_id: int | None = None
     ac_snapshot_id: int | None = None
     ac_received_at: str = ""
     current_ap_identity: str = ""
@@ -230,6 +232,7 @@ class FleetPingSupervisor:
         self._started_at: dict[str, str] = {}
         self._transition_at: dict[str, str] = {}
         self._backend_warnings: list[str] = []
+        self._raw_writer: RawStreamWriter | None = None
 
     def start(
         self,
@@ -261,6 +264,32 @@ class FleetPingSupervisor:
             self._transition_at = {}
             self._backend_warnings = []
             self._output_dir = Path(active_dir) / "fleet_ping"
+            self._output_dir.mkdir(parents=True, exist_ok=True)
+            (self._output_dir / "layout.jsonl").write_text(
+                json.dumps(
+                    {
+                        "schema": "ground_unattended_ping_per_mr_v1",
+                        "run_id": run_id,
+                        "generated_at": datetime.now()
+                        .astimezone()
+                        .isoformat(timespec="milliseconds"),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            self._raw_writer = RawStreamWriter(
+                root=Path(active_dir),
+                repository=self.repository,
+                site_id=self.site_id,
+                run_id=run_id,
+                run_date=run_date,
+                data_type="ping",
+                directory_name="fleet_ping",
+                flush_records=100,
+                flush_interval_seconds=1.0,
+            )
             self._period_ms = int(period_ms)
             self._timeout_ms = int(timeout_ms)
             self._packet_size = int(packet_size)
@@ -351,6 +380,9 @@ class FleetPingSupervisor:
             self._targets = {}
             self._transition_at = {}
             self._run_id = ""
+            if self._raw_writer is not None:
+                self._raw_writer.close()
+            self._raw_writer = None
 
     def target_summaries(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -515,15 +547,6 @@ class FleetPingSupervisor:
         stop_event: threading.Event,
         started_event: threading.Event,
     ) -> None:
-        writer = _SegmentWriter(
-            root=self._output_dir or Path("."),
-            repository=self.repository,
-            site_id=self.site_id,
-            run_id=self._run_id,
-            shard_id=shard_id,
-            generation=generation,
-            target_count=len(targets),
-        )
         started_event.set()
         parsed = 0
         try:
@@ -537,10 +560,10 @@ class FleetPingSupervisor:
                 stop_event=stop_event,
             ):
                 parsed += 1
-                self._record_sample(sample, shard_id, writer)
+                self._record_sample(sample, shard_id)
             if not stop_event.is_set() and parsed == 0 and len(targets) > 1:
                 self._bounded_single_target_fallback(
-                    targets, stop_event, shard_id, writer
+                    targets, stop_event, shard_id
                 )
         except Exception as exc:
             self.repository.add_event(
@@ -553,13 +576,11 @@ class FleetPingSupervisor:
             )
             if not stop_event.is_set() and len(targets) > 1:
                 self._bounded_single_target_fallback(
-                    targets, stop_event, shard_id, writer
+                    targets, stop_event, shard_id
                 )
-        finally:
-            writer.close()
 
     def _bounded_single_target_fallback(
-        self, targets, stop_event, shard_id, writer
+        self, targets, stop_event, shard_id
     ) -> None:
         warning = f"{shard_id}: multi-target JSON unavailable; bounded round-robin fallback active"
         with self._lock:
@@ -595,13 +616,13 @@ class FleetPingSupervisor:
                                 "raw": raw,
                             }
                         )
-                        self._record_sample(sample, shard_id, writer)
+                        self._record_sample(sample, shard_id)
                 except Exception:
                     if stop_event.wait(min(1.0, self._period_ms / 1000)):
                         return
 
     def _record_sample(
-        self, sample: FpingV5Sample, shard_id: str, writer: _SegmentWriter
+        self, sample: FpingV5Sample, shard_id: str
     ) -> None:
         with self._lock:
             target = self._targets.get(sample.target)
@@ -620,6 +641,8 @@ class FleetPingSupervisor:
                 "train_no": target.train_no,
                 "mr_id": target.mr_id,
                 "mr_position_code": target.mr_position_code,
+                "device_id": target.device_id,
+                "device_uuid": target.mr_id,
                 "seq": sample.seq,
                 "ok": bool(sample.ok),
                 "rtt_ms": sample.rtt_ms,
@@ -629,7 +652,8 @@ class FleetPingSupervisor:
                 "error": sample.error,
                 "shard_id": shard_id,
             }
-            writer.write(payload, ts)
+            if self._raw_writer is not None:
+                self._raw_writer.write(payload, ts)
             self._stats.setdefault(sample.target, _Stats()).add(sample)
             for kind, bucket_start, ap_identity in self._bucket_keys(ts, target):
                 key = (kind, bucket_start, sample.target, ap_identity)

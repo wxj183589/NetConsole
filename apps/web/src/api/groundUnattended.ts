@@ -2,7 +2,7 @@ import { apiRequest } from './client'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 import type {
   GroundActionResponse, GroundArchive, GroundDeepCollection, GroundPage, GroundPingTarget,
-  GroundProfile, GroundStatus, GroundTimelineEvent, GroundTrain,
+  GroundProfile, GroundStatus, GroundTimelineEvent, GroundTrain, GroundHealth, GroundInventorySummary, GroundRawFile, GroundTrainPolicy,
 } from '../types/groundUnattended'
 
 const root = '/api/rail-transit/ground-unattended'
@@ -16,8 +16,13 @@ export const resumeGroundRun = (): Promise<GroundActionResponse> => apiRequest(`
 export const stopGroundRun = (): Promise<GroundActionResponse> => apiRequest(`${root}/stop`, { method: 'POST' })
 export const stopAndArchiveGroundRun = (): Promise<GroundActionResponse> => apiRequest(`${root}/stop-and-archive`, { method: 'POST' })
 export const listGroundTrains = (): Promise<GroundPage<GroundTrain>> => apiRequest(`${root}/trains`)
+export const syncGroundInventory = (): Promise<GroundInventorySummary> => apiRequest(`${root}/inventory/sync`, { method: 'POST' })
 export const getGroundTrain = (trainId: string): Promise<GroundTrain> => apiRequest(`${root}/trains/${encodeURIComponent(trainId)}`)
 export const setGroundTrainPriority = (trainId: string, priority: boolean): Promise<GroundTrain> => apiRequest(`${root}/trains/${encodeURIComponent(trainId)}/priority`, { method: 'PUT', body: JSON.stringify({ priority }) })
+export const saveGroundTrainPolicy = (trainId: string, value: GroundTrainPolicy): Promise<GroundTrain> => apiRequest(`${root}/trains/${encodeURIComponent(trainId)}/policy`, { method: 'PUT', body: JSON.stringify(value) })
+export const requestGroundConfigCheck = (deviceUuid = ''): Promise<GroundActionResponse> => apiRequest(`${root}/config-check`, { method: 'POST', body: JSON.stringify({ device_uuid: deviceUuid }) })
+export const getGroundHealth = (): Promise<GroundHealth> => apiRequest(`${root}/health`)
+export const listGroundRawFiles = (): Promise<GroundPage<GroundRawFile>> => apiRequest(`${root}/raw-files?limit=100`)
 export const listGroundPingTargets = (): Promise<GroundPage<GroundPingTarget>> => apiRequest(`${root}/ping-targets`)
 export const listGroundDeepCollections = (): Promise<GroundPage<GroundDeepCollection>> => apiRequest(`${root}/deep-collections`)
 export function listGroundTimeline(trainId = '', eventType = ''): Promise<GroundPage<GroundTimelineEvent>> {

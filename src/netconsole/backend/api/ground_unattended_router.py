@@ -11,9 +11,14 @@ from netconsole.models.api.ground_unattended import (
     GroundArchiveDTO,
     GroundArchiveDeleteRequestDTO,
     GroundArchivePageDTO,
+    GroundConfigCheckRequestDTO,
     GroundDeepCollectionPageDTO,
+    GroundHealthDTO,
+    GroundInventorySummaryDTO,
     GroundPingSummaryPageDTO,
     GroundPriorityUpdateDTO,
+    GroundRawFilePageDTO,
+    GroundTrainPolicyUpdateDTO,
     GroundTimelinePageDTO,
     GroundUnattendedProfileDTO,
     GroundUnattendedProfileUpdateDTO,
@@ -128,6 +133,14 @@ def trains(request: Request) -> GroundUnattendedTrainPageDTO:
     return _call(lambda: _service(request).list_trains(_site_id(request)))
 
 
+@router.post(
+    "/inventory/sync",
+    response_model=GroundInventorySummaryDTO,
+)
+def sync_inventory(request: Request) -> GroundInventorySummaryDTO:
+    return _call(lambda: _service(request).sync_inventory(_site_id(request)))
+
+
 @router.get("/trains/{train_id}", response_model=GroundUnattendedTrainDTO)
 def train(request: Request, train_id: str) -> GroundUnattendedTrainDTO:
     return _call(lambda: _service(request).get_train(_site_id(request), train_id))
@@ -142,6 +155,58 @@ def update_priority(
     return _call(
         lambda: _service(request).set_priority(
             _site_id(request), train_id, payload.priority
+        )
+    )
+
+
+@router.put("/trains/{train_id}/policy", response_model=GroundUnattendedTrainDTO)
+def update_policy(
+    request: Request,
+    train_id: str,
+    payload: GroundTrainPolicyUpdateDTO,
+) -> GroundUnattendedTrainDTO:
+    return _call(
+        lambda: _service(request).update_train_policy(
+            _site_id(request), train_id, payload
+        )
+    )
+
+
+@router.post(
+    "/config-check",
+    response_model=GroundActionResponseDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def config_check(
+    request: Request, payload: GroundConfigCheckRequestDTO
+) -> GroundActionResponseDTO:
+    return _call(
+        lambda: _service(request).request_config_check(
+            _site_id(request), device_uuid=payload.device_uuid
+        )
+    )
+
+
+@router.get("/health", response_model=GroundHealthDTO)
+def health(request: Request) -> GroundHealthDTO:
+    return _call(lambda: _service(request).health(_site_id(request)))
+
+
+@router.get("/raw-files", response_model=GroundRawFilePageDTO)
+def raw_files(
+    request: Request,
+    data_type: str = Query(default="", max_length=30),
+    file_status: str = Query(default="", max_length=30),
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> GroundRawFilePageDTO:
+    return _call(
+        lambda: _service(request).raw_files(
+            _site_id(request),
+            data_type=data_type,
+            status=file_status,
+            limit=limit,
+            offset=offset,
         )
     )
 
@@ -161,10 +226,16 @@ def timeline(
     request: Request,
     train_id: str = Query(default="", max_length=100),
     event_type: str = Query(default="", max_length=100),
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> GroundTimelinePageDTO:
     return _call(
         lambda: _service(request).timeline(
-            _site_id(request), train_id=train_id, event_type=event_type
+            _site_id(request),
+            train_id=train_id,
+            event_type=event_type,
+            limit=limit,
+            offset=offset,
         )
     )
 

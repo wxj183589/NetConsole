@@ -6,16 +6,16 @@ import { Box, Delete, Download, FolderOpened, Refresh, SwitchButton, VideoPause,
 
 import {
   deleteGroundArchive, getGroundArchive, getGroundProfile, getGroundStatus, getGroundTrain, groundArchiveSummaryDownloadRequest, listGroundArchives,
-  listGroundDeepCollections, listGroundPingTargets, listGroundTimeline, listGroundTrains,
+  getGroundHealth, listGroundDeepCollections, listGroundPingTargets, listGroundTimeline, listGroundTrains, requestGroundConfigCheck,
   openGroundArchiveDirectory, pauseGroundRun, resumeGroundRun, saveGroundProfile, setGroundTrainPriority, startGroundRun,
-  stopAndArchiveGroundRun, stopGroundRun,
+  stopAndArchiveGroundRun, stopGroundRun, saveGroundTrainPolicy, syncGroundInventory,
 } from '../../api/groundUnattended'
 import { NcDataTable, type NcTableColumn } from '../../components/table'
 import { t } from '../../i18n/runtime'
 import { downloadBackendResource } from '../../platform/runtime'
 import type {
   GroundArchive, GroundDeepCollection, GroundPingTarget, GroundProfile, GroundStatus,
-  GroundTimelineEvent, GroundTrain,
+  GroundHealth, GroundTimelineEvent, GroundTrain,
 } from '../../types/groundUnattended'
 
 const activeTab = ref('overview')
@@ -30,6 +30,7 @@ const pingTargets = ref<GroundPingTarget[]>([])
 const deepCollections = ref<GroundDeepCollection[]>([])
 const timeline = ref<GroundTimelineEvent[]>([])
 const archives = ref<GroundArchive[]>([])
+const health = ref<GroundHealth | null>(null)
 const selectedArchive = ref<GroundArchive | null>(null)
 const selectedTrain = ref<GroundTrain | null>(null)
 const archiveDialog = ref(false)
@@ -68,6 +69,8 @@ const trainColumns: NcTableColumn<GroundTrain>[] = [
   { key: 'ct_ping', label: 'CT Ping', valueType: 'status', displayValue: (row) => endpoint(row, 'CT')?.ping_active ? 'PINGING' : 'STOPPED' },
   { key: 'cw_ping', label: 'CW Ping', valueType: 'status', displayValue: (row) => endpoint(row, 'CW')?.ping_active ? 'PINGING' : 'STOPPED' },
   { key: 'coverage_status', label: t('ground.coverage', '今日深度采集'), valueType: 'status' },
+  { key: 'enabled', label: t('ground.enabled', '启用'), valueType: 'status', displayValue: (row) => row.enabled ? 'ENABLED' : 'DISABLED' },
+  { key: 'syslog', label: 'WMESH Syslog', valueType: 'status', displayValue: (row) => `${endpoint(row, 'CT')?.syslog_status || 'WAITING'} / ${endpoint(row, 'CW')?.syslog_status || 'WAITING'}` },
   { key: 'updated_at', label: t('ground.updated_at', '最近更新时间'), valueType: 'datetime' },
   { key: 'actions', label: t('ground.actions', '操作'), valueType: 'actions', fixed: 'right', width: 154, hideable: false },
 ]
@@ -131,9 +134,9 @@ const archiveColumns: NcTableColumn<GroundArchive>[] = [
 async function loadAll(silent = false): Promise<void> {
   if (!silent) loading.value = true
   try {
-    const [nextStatus, nextProfile, nextTrains, nextPing, nextDeep, nextTimeline, nextArchives] = await Promise.all([
+    const [nextStatus, nextProfile, nextTrains, nextPing, nextDeep, nextTimeline, nextArchives, nextHealth] = await Promise.all([
       getGroundStatus(), getGroundProfile(), listGroundTrains(), listGroundPingTargets(),
-      listGroundDeepCollections(), listGroundTimeline(timelineFilter.trainId, timelineFilter.eventType), listGroundArchives(),
+      listGroundDeepCollections(), listGroundTimeline(timelineFilter.trainId, timelineFilter.eventType), listGroundArchives(), getGroundHealth(),
     ])
     if (disposed) return
     status.value = nextStatus
@@ -143,6 +146,7 @@ async function loadAll(silent = false): Promise<void> {
     deepCollections.value = nextDeep.items
     timeline.value = nextTimeline.items
     archives.value = nextArchives.items
+    health.value = nextHealth
   } catch (reason) {
     if (!silent) ElMessage.error(errorText(reason, t('ground.load_failed', '地面无人值守数据加载失败')))
   } finally {
@@ -175,6 +179,25 @@ async function runAction(key: string, callback: () => Promise<unknown>): Promise
 async function togglePriority(row: GroundTrain): Promise<void> {
   try { await setGroundTrainPriority(row.train_id, !row.priority); await loadAll(true) }
   catch (reason) { ElMessage.error(errorText(reason, t('ground.priority_failed', '置顶状态保存失败'))) }
+}
+async function syncInventory(): Promise<void> {
+  try { const result = await syncGroundInventory(); ElMessage.success(`已同步 ${result.discovered_train_count} 辆列车`); await loadAll(true) }
+  catch (reason) { ElMessage.error(errorText(reason, '设备清单同步失败')) }
+}
+async function updatePolicy(row: GroundTrain, changes: Partial<GroundTrain>): Promise<void> {
+  try {
+    await saveGroundTrainPolicy(row.train_id, {
+      enabled: changes.enabled ?? row.enabled, priority: changes.priority ?? row.priority,
+      scheduling_priority: changes.scheduling_priority ?? row.scheduling_priority,
+      deep_collection_enabled: changes.deep_collection_enabled ?? row.deep_collection_enabled,
+      monitor_only: changes.monitor_only ?? row.monitor_only, remark: changes.remark ?? row.remark,
+    })
+    await loadAll(true)
+  } catch (reason) { ElMessage.error(errorText(reason, '列车策略保存失败')) }
+}
+async function checkConfigs(deviceUuid = ''): Promise<void> {
+  try { await requestGroundConfigCheck(deviceUuid); ElMessage.success('配置检查请求已提交'); await loadAll(true) }
+  catch (reason) { ElMessage.error(errorText(reason, '配置检查提交失败')) }
 }
 async function showTrain(row: GroundTrain): Promise<void> {
   try { selectedTrain.value = await getGroundTrain(row.train_id); trainDialog.value = true }
@@ -233,6 +256,8 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
       </div>
       <div class="heading-actions">
         <el-button :icon="Refresh" circle :title="t('common.refresh', '刷新')" @click="loadAll()" />
+        <el-button :icon="Refresh" :loading="action === 'sync'" @click="runAction('sync', syncInventory)">同步设备</el-button>
+        <el-button :loading="action === 'config'" :disabled="!running || !profile?.syslog_server_ip" @click="runAction('config', () => checkConfigs())">检查 MR 配置</el-button>
         <el-button :icon="VideoPlay" type="primary" :loading="action === 'start'" :disabled="running || !profile?.enabled" @click="runAction('start', startGroundRun)">{{ t('ground.start_now', '立即开始') }}</el-button>
         <el-button :icon="VideoPause" :loading="action === 'pause'" :disabled="status?.state !== 'RUNNING'" @click="runAction('pause', pauseGroundRun)">{{ t('ground.pause', '暂停调度') }}</el-button>
         <el-button :icon="VideoPlay" :loading="action === 'resume'" :disabled="status?.state !== 'PAUSED'" @click="runAction('resume', resumeGroundRun)">{{ t('ground.resume', '继续调度') }}</el-button>
@@ -261,6 +286,8 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
             <article><span>{{ t('ground.covered_today', '今日已完成 / 未完成') }}</span><strong>{{ status?.covered_train_count ?? 0 }} / {{ status?.incomplete_train_count ?? 0 }}</strong></article>
             <article><span>{{ t('ground.disk_usage', '当前占用 / 磁盘剩余') }}</span><strong>{{ bytes(status?.disk_used_bytes ?? 0) }} / {{ bytes(status?.disk_free_bytes ?? 0) }}</strong><el-tag size="small" :type="statusType(status?.disk_status || '')">{{ status?.disk_status }}</el-tag></article>
             <article><span>{{ t('ground.latest_archive', '最近归档') }}</span><strong>{{ status?.latest_archive_status || '—' }}</strong><small>{{ status?.latest_archive_message }}</small></article>
+            <article><span>Syslog 活跃 / 配置异常</span><strong>{{ status?.syslog_active_mr_count ?? 0 }} / {{ status?.config_abnormal_count ?? 0 }}</strong></article>
+            <article><span>UDP 队列 / 丢弃</span><strong>{{ health?.udp_queue_length ?? 0 }} / {{ health?.udp_dropped_count ?? 0 }}</strong><small>{{ health?.udp_listen_address || '未监听' }}</small></article>
           </div>
         </section>
       </el-tab-pane>
@@ -270,7 +297,7 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
         <div class="table-frame"><NcDataTable :data="filteredTrains" :columns="trainColumns" table-id="ground-trains" route-key="rail-ground-unattended" row-key="train_id" compact>
           <template #cell-eligibility_status="{ row }"><el-tag size="small" :type="statusType(row.eligibility_status)">{{ row.eligibility_status }}</el-tag></template>
           <template #cell-coverage_status="{ row }"><el-tag size="small" :type="statusType(row.coverage_status)">{{ row.coverage_status }}</el-tag></template>
-          <template #cell-actions="{ row }"><div class="row-actions"><el-button size="small" text type="primary" @click="showTrain(row)">{{ t('common.view', '查看') }}</el-button><el-button size="small" text type="primary" @click="togglePriority(row)">{{ row.priority ? t('ground.unpin', '取消置顶') : t('ground.pin', '置顶') }}</el-button></div></template>
+          <template #cell-actions="{ row }"><div class="row-actions"><el-button size="small" text type="primary" @click="showTrain(row)">{{ t('common.view', '查看') }}</el-button><el-button size="small" text type="primary" @click="togglePriority(row)">{{ row.priority ? t('ground.unpin', '取消置顶') : t('ground.pin', '置顶') }}</el-button><el-button size="small" text @click="updatePolicy(row, { enabled: !row.enabled })">{{ row.enabled ? '停用' : '启用' }}</el-button></div></template>
         </NcDataTable></div>
       </el-tab-pane>
 
@@ -295,6 +322,17 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
       <el-tab-pane :label="t('ground.timeline', '时间轴')" name="timeline">
         <div class="toolbar"><el-input v-model="timelineFilter.trainId" clearable :placeholder="t('ground.train_id', '列车 ID')" /><el-input v-model="timelineFilter.eventType" clearable :placeholder="t('ground.event_type', '事件类型')" /><el-button :icon="Refresh" @click="loadAll()">{{ t('common.query', '查询') }}</el-button></div>
         <div class="table-frame"><NcDataTable :data="timeline" :columns="timelineColumns" table-id="ground-timeline" route-key="rail-ground-unattended" row-key="event_id" compact /></div>
+      </el-tab-pane>
+
+      <el-tab-pane label="系统健康" name="health">
+        <section class="health-grid">
+          <article><span>UDP 接收速率</span><strong>{{ health?.udp_receive_rate_per_second ?? 0 }} /s</strong></article>
+          <article><span>未知来源</span><strong>{{ health?.udp_unidentified_count ?? 0 }}</strong></article>
+          <article><span>原始写入</span><strong>{{ health?.raw_records_written ?? 0 }}</strong><small>{{ bytes(health?.raw_bytes_written ?? 0) }}</small></article>
+          <article><span>数据库待写 / 耗时</span><strong>{{ health?.database_pending_count ?? 0 }} / {{ health?.database_last_batch_duration_ms?.toFixed(1) ?? 0 }} ms</strong></article>
+          <article><span>Ping 目标 / 分片</span><strong>{{ health?.ping_target_count ?? 0 }} / {{ health?.ping_process_count ?? 0 }}</strong></article>
+          <article><span>最近系统错误</span><strong>{{ health?.last_error || '—' }}</strong></article>
+        </section>
       </el-tab-pane>
 
       <el-tab-pane :label="t('ground.archives', '历史归档')" name="archives">
@@ -338,6 +376,16 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
             <el-form-item :label="t('ground.warning_space', '空间预警阈值（GB）')"><el-input-number v-model="profile.storage_warning_free_gb" :min="0.1" :max="1024" /></el-form-item>
             <el-form-item :label="t('ground.critical_space', '严重空间阈值（GB）')"><el-input-number v-model="profile.storage_critical_free_gb" :min="0.1" :max="1024" /></el-form-item>
           </div><p class="muted">{{ t('ground.storage_path', '存储路径：当前局点 / files / rail_transit / ground_unattended。深度 Session ZIP 仍保存在既有 Online MR 目录，每日归档只保存引用。') }}</p></section>
+          <section><h2>UDP Syslog 与上电检查</h2><div class="form-grid">
+            <el-form-item label="UDP 监听地址"><el-input v-model="profile.udp_listen_host" /></el-form-item>
+            <el-form-item label="UDP 监听端口"><el-input-number v-model="profile.udp_listen_port" :min="1" :max="65535" /></el-form-item>
+            <el-form-item label="Syslog 服务器 IP"><el-input v-model="profile.syslog_server_ip" placeholder="配置检查所使用的本机 IPv4" /></el-form-item>
+            <el-form-item label="Syslog 服务器端口"><el-input-number v-model="profile.syslog_server_port" :min="1" :max="65535" /></el-form-item>
+            <el-form-item label="UDP 队列容量"><el-input-number v-model="profile.udp_queue_capacity" :min="100" :max="500000" /></el-form-item>
+            <el-form-item label="批量事件数"><el-input-number v-model="profile.event_batch_size" :min="1" :max="5000" /></el-form-item>
+            <el-form-item label="配置检查冷却（秒）"><el-input-number v-model="profile.config_check_cooldown_seconds" :min="30" :max="86400" /></el-form-item>
+            <el-form-item label="上电时间误差（秒）"><el-input-number v-model="profile.boot_time_tolerance_seconds" :min="10" :max="900" /></el-form-item>
+          </div><p class="muted">仅检查并补齐临时 WMESH UDP 日志配置；不会保存设备配置，也不会在停止时删除运行配置。</p></section>
           <section><h2>{{ t('ground.priority_trains', '置顶列车') }}</h2><div class="priority-grid"><el-checkbox v-for="row in trains" :key="row.train_id" :model-value="row.priority" @change="togglePriority(row)">{{ row.train_no || row.train_name }}</el-checkbox><span v-if="!trains.length" class="muted">{{ t('ground.no_priority_candidates', '暂无列车基础资料或 AC 在线状态') }}</span></div></section>
           <div class="form-actions"><el-button type="primary" :loading="saving" @click="saveProfile()">{{ t('common.save', '保存设置') }}</el-button><span class="muted">{{ t('ground.profile_effective', '运行中修改默认从下一次调度周期生效') }}</span></div>
         </el-form>
@@ -367,10 +415,13 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
           <el-descriptions-item :label="t('ground.exclusion_reason', '排除原因')" :span="2">{{ selectedTrain.exclusion_reason || '—' }}</el-descriptions-item>
           <el-descriptions-item label="CT Session">{{ selectedTrainCollection?.ct_session_id || '—' }}</el-descriptions-item>
           <el-descriptions-item label="CW Session">{{ selectedTrainCollection?.cw_session_id || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="CT Syslog">{{ endpoint(selectedTrain, 'CT')?.syslog_status || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="CW Syslog">{{ endpoint(selectedTrain, 'CW')?.syslog_status || '—' }}</el-descriptions-item>
         </el-descriptions>
         <div class="dialog-actions">
           <el-button @click="showTrainPing(selectedTrain)">{{ t('ground.view_ping', '查看长 Ping') }}</el-button>
           <el-button @click="showTrainTimeline(selectedTrain)">{{ t('ground.view_timeline', '查看事件时间轴') }}</el-button>
+          <el-button :disabled="!running" @click="checkConfigs(endpoint(selectedTrain, 'CT')?.mr_id || '')">检查 CT 配置</el-button>
           <el-button :disabled="!selectedTrainCollection?.ct_session_id" @click="openDeepSession(selectedTrainCollection?.ct_session_id || '')">{{ t('ground.open_ct_session', '打开 CT Session') }}</el-button>
           <el-button :disabled="!selectedTrainCollection?.cw_session_id" @click="openDeepSession(selectedTrainCollection?.cw_session_id || '')">{{ t('ground.open_cw_session', '打开 CW Session') }}</el-button>
         </div>
@@ -380,5 +431,5 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
 </template>
 
 <style scoped>
-.ground-page{display:flex;flex-direction:column;gap:12px;min-width:0;min-height:0}.page-heading,.heading-actions,.status-line,.toolbar,.coverage-strip,.row-actions,.form-actions,.inline-numbers,.dialog-actions{display:flex;align-items:center;gap:10px}.page-heading{justify-content:space-between;flex-wrap:wrap}.page-heading h1{margin:2px 0 0;font-size:24px;letter-spacing:0}.eyebrow{margin:0;color:var(--el-color-primary);font-size:12px;font-weight:700;letter-spacing:0}.heading-actions,.toolbar,.dialog-actions{flex-wrap:wrap}.ground-tabs{min-width:0}.overview-band{padding:2px 0}.status-line{min-height:42px;flex-wrap:wrap;border-bottom:1px solid var(--el-border-color-lighter)}.metric-grid{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:1px;margin-top:12px;background:var(--el-border-color-lighter);border:1px solid var(--el-border-color-lighter)}.metric-grid article{min-width:0;padding:12px;background:var(--el-bg-color)}.metric-grid span,.metric-grid small{display:block;color:var(--el-text-color-secondary);font-size:12px}.metric-grid strong{display:block;min-height:24px;margin:6px 0 3px;font-size:18px;letter-spacing:0;overflow-wrap:anywhere}.toolbar{min-height:42px}.toolbar .el-input{width:210px}.toolbar .el-select{width:130px}.toolbar .el-input-number{width:110px}.table-frame{height:clamp(360px,calc(100vh - 310px),680px);min-width:0;overflow:hidden;border-top:1px solid var(--el-border-color-lighter)}.coverage-strip{flex-wrap:wrap;margin-bottom:8px}.coverage-strip span{display:flex;align-items:center;gap:5px;padding:5px 8px;background:var(--el-fill-color-light);border-radius:4px;color:var(--el-text-color-secondary);font-size:12px}.coverage-strip b{color:var(--el-text-color-primary);font-size:16px}.settings-form{display:flex;flex-direction:column;gap:18px;max-width:1180px}.settings-form section{padding-bottom:16px;border-bottom:1px solid var(--el-border-color-lighter)}.settings-form h2{margin:0 0 12px;font-size:16px;letter-spacing:0}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:0 16px}.form-grid :deep(.el-input-number),.form-grid :deep(.el-select),.form-grid :deep(.el-input){width:100%}.inline-numbers{width:100%}.priority-grid{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:8px}.muted{color:var(--el-text-color-secondary);font-size:12px}.form-actions{position:sticky;bottom:0;padding:10px 0;background:var(--el-bg-color)}.dialog-actions{justify-content:flex-end;margin-top:14px}@media(max-width:1300px){.metric-grid{grid-template-columns:repeat(3,minmax(150px,1fr))}.form-grid{grid-template-columns:repeat(3,minmax(170px,1fr))}.priority-grid{grid-template-columns:repeat(4,minmax(110px,1fr))}}@media(max-width:900px){.page-heading{align-items:flex-start;flex-direction:column}.metric-grid{grid-template-columns:repeat(2,minmax(140px,1fr))}.form-grid{grid-template-columns:repeat(2,minmax(150px,1fr))}.priority-grid{grid-template-columns:repeat(3,minmax(100px,1fr))}.table-frame{height:clamp(340px,calc(100vh - 350px),620px)}}@media(max-width:620px){.metric-grid,.form-grid{grid-template-columns:1fr}.priority-grid{grid-template-columns:repeat(2,minmax(100px,1fr))}.heading-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}.heading-actions .el-button{margin:0}.toolbar .el-input,.toolbar .el-select{width:100%}}
+.ground-page{display:flex;flex-direction:column;gap:12px;min-width:0;min-height:0}.page-heading,.heading-actions,.status-line,.toolbar,.coverage-strip,.row-actions,.form-actions,.inline-numbers,.dialog-actions{display:flex;align-items:center;gap:10px}.page-heading{justify-content:space-between;flex-wrap:wrap}.page-heading h1{margin:2px 0 0;font-size:24px;letter-spacing:0}.eyebrow{margin:0;color:var(--el-color-primary);font-size:12px;font-weight:700;letter-spacing:0}.heading-actions,.toolbar,.dialog-actions{flex-wrap:wrap}.ground-tabs{min-width:0}.overview-band{padding:2px 0}.status-line{min-height:42px;flex-wrap:wrap;border-bottom:1px solid var(--el-border-color-lighter)}.metric-grid,.health-grid{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:1px;margin-top:12px;background:var(--el-border-color-lighter);border:1px solid var(--el-border-color-lighter)}.metric-grid article,.health-grid article{min-width:0;padding:12px;background:var(--el-bg-color)}.metric-grid span,.metric-grid small,.health-grid span,.health-grid small{display:block;color:var(--el-text-color-secondary);font-size:12px}.metric-grid strong,.health-grid strong{display:block;min-height:24px;margin:6px 0 3px;font-size:18px;letter-spacing:0;overflow-wrap:anywhere}.toolbar{min-height:42px}.toolbar .el-input{width:210px}.toolbar .el-select{width:130px}.toolbar .el-input-number{width:110px}.table-frame{height:clamp(360px,calc(100vh - 310px),680px);min-width:0;overflow:hidden;border-top:1px solid var(--el-border-color-lighter)}.coverage-strip{flex-wrap:wrap;margin-bottom:8px}.coverage-strip span{display:flex;align-items:center;gap:5px;padding:5px 8px;background:var(--el-fill-color-light);border-radius:4px;color:var(--el-text-color-secondary);font-size:12px}.coverage-strip b{color:var(--el-text-color-primary);font-size:16px}.settings-form{display:flex;flex-direction:column;gap:18px;max-width:1180px}.settings-form section{padding-bottom:16px;border-bottom:1px solid var(--el-border-color-lighter)}.settings-form h2{margin:0 0 12px;font-size:16px;letter-spacing:0}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:0 16px}.form-grid :deep(.el-input-number),.form-grid :deep(.el-select),.form-grid :deep(.el-input){width:100%}.inline-numbers{width:100%}.priority-grid{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:8px}.muted{color:var(--el-text-color-secondary);font-size:12px}.form-actions{position:sticky;bottom:0;padding:10px 0;background:var(--el-bg-color)}.dialog-actions{justify-content:flex-end;margin-top:14px}@media(max-width:1300px){.metric-grid,.health-grid{grid-template-columns:repeat(3,minmax(150px,1fr))}.form-grid{grid-template-columns:repeat(3,minmax(170px,1fr))}.priority-grid{grid-template-columns:repeat(4,minmax(110px,1fr))}}@media(max-width:900px){.page-heading{align-items:flex-start;flex-direction:column}.metric-grid,.health-grid{grid-template-columns:repeat(2,minmax(140px,1fr))}.form-grid{grid-template-columns:repeat(2,minmax(150px,1fr))}.priority-grid{grid-template-columns:repeat(3,minmax(100px,1fr))}.table-frame{height:clamp(340px,calc(100vh - 350px),620px)}}@media(max-width:620px){.metric-grid,.health-grid,.form-grid{grid-template-columns:1fr}.priority-grid{grid-template-columns:repeat(2,minmax(100px,1fr))}.heading-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}.heading-actions .el-button{margin:0}.toolbar .el-input,.toolbar .el-select{width:100%}}
 </style>

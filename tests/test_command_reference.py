@@ -27,6 +27,7 @@ def test_command_reference_json_covers_switch_baseline():
         "display lldp neighbor-information list",
         "display lldp neighbor-information verbose",
         "display current-configuration",
+        "display current-configuration | include info-center",
         "display saved-configuration",
         "save force",
         "display diagnostic-information",
@@ -49,7 +50,7 @@ def test_command_reference_json_is_unique_and_has_non_cli_section():
     items = data["items"]
     ids = [item["id"] for item in items]
 
-    assert len(items) == 72
+    assert len(items) == 73
     assert len(ids) == len(set(ids))
     assert {
         "ac_display_wlan_ap_all_connection_record",

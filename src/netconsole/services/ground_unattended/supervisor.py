@@ -5,6 +5,7 @@ import json
 import shutil
 import threading
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable
@@ -38,6 +39,9 @@ from netconsole.services.ground_unattended.schedule import (
     resolve_timezone,
     schedule_window,
 )
+from netconsole.services.ground_unattended.boot_config import MrSyslogConfigService
+from netconsole.services.ground_unattended.inventory import TrainInventorySyncService
+from netconsole.services.ground_unattended.syslog_runtime import SyslogUdpReceiver
 from netconsole.services.rail_transit.base_data_query_service import (
     RailTransitBaseDataQueryService,
 )
@@ -104,6 +108,27 @@ class GroundUnattendedSupervisor:
             site_id=site_id,
             repository=repository,
         )
+        self.inventory_sync = TrainInventorySyncService(
+            paths,
+            site_id=site_id,
+            repository=repository,
+            base_query=base_query,
+        )
+        self.syslog_receiver = SyslogUdpReceiver(
+            repository=repository,
+            site_id=site_id,
+        )
+        self.config_service = MrSyslogConfigService(
+            paths,
+            site_id=site_id,
+            repository=repository,
+        )
+        self._config_executor = ThreadPoolExecutor(
+            max_workers=2,
+            thread_name_prefix="ground-syslog-config",
+        )
+        self._config_futures: dict[str, Future] = {}
+        self._manual_config_checks: set[str] = set()
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -140,8 +165,10 @@ class GroundUnattendedSupervisor:
                 )
         self._thread = None
         self.fleet_ping.stop()
+        self.syslog_receiver.stop()
         if self.deep_scheduler is not None:
             self.deep_scheduler.close()
+        self._config_executor.shutdown(wait=True, cancel_futures=True)
 
     def request(self, action: str, *, archive: bool = False) -> None:
         if action not in {"start", "pause", "resume", "stop"}:
@@ -156,6 +183,11 @@ class GroundUnattendedSupervisor:
     def request_archive_delete(self, archive_id: str) -> None:
         with self._lock:
             self._archive_delete_requests.append(str(archive_id))
+        self._wake_event.set()
+
+    def request_config_check(self, device_uuid: str = "") -> None:
+        with self._lock:
+            self._manual_config_checks.add(str(device_uuid or "*"))
         self._wake_event.set()
 
     @property
@@ -219,7 +251,9 @@ class GroundUnattendedSupervisor:
             (window.active and run["run_date"] == window.run_date) or manual_run_active
         ):
             self._active_profile = profile
+            self.inventory_sync.synchronize()
             self._start_fleet_ping(run, profile)
+            self._start_syslog(run, profile)
             self.repository.update_run(
                 str(run["run_id"]), state="RUNNING", error_code="", error_message=""
             )
@@ -240,6 +274,7 @@ class GroundUnattendedSupervisor:
             )
 
     def _tick(self) -> None:
+        self._collect_config_checks()
         self._handle_archive_deletes()
         self._handle_commands()
         profile = self.repository.get_profile()
@@ -374,7 +409,9 @@ class GroundUnattendedSupervisor:
         run = self.repository.get_run(str(run["run_id"])) or run
         self._manual_start = False
         self._active_profile = profile
+        inventory_summary = self.inventory_sync.synchronize()
         self._start_fleet_ping(run, profile)
+        self._start_syslog(run, profile)
         self._last_ac_poll_monotonic = 0.0
         self.repository.update_run(str(run["run_id"]), state="RUNNING")
         self.repository.add_event(
@@ -382,6 +419,7 @@ class GroundUnattendedSupervisor:
             event_type="run_started",
             title="地面无人值守运行已开始",
             message=f"运行窗口 {profile.schedule_start_time} - {profile.schedule_end_time}",
+            details=inventory_summary.model_dump(mode="json"),
         )
         return self.repository.get_run(str(run["run_id"])) or run
 
@@ -481,7 +519,13 @@ class GroundUnattendedSupervisor:
         )
         if persisted_rows:
             self._append_ac_snapshot_file(str(run["run_date"]), persisted_rows, now)
-        priorities = self.repository.list_priority_train_ids()
+        policies = {
+            str(row["train_id"]): row
+            for row in self.repository.list_inventory(include_removed=False)
+        }
+        priorities = {
+            train_id for train_id, policy in policies.items() if policy.get("priority")
+        }
         previous_rows = {
             row["train_id"]: row
             for row in self.repository.list_train_runs(str(run["run_id"]))
@@ -508,7 +552,26 @@ class GroundUnattendedSupervisor:
         valid_ping_targets: dict[str, FleetPingTarget] = {}
         for result in results:
             train = result.train
+            policy = policies.get(train.train_id) or {}
             train.priority = train.train_id in priorities
+            train.enabled = bool(policy.get("enabled", True))
+            train.scheduling_priority = int(policy.get("scheduling_priority") or 0)
+            train.deep_collection_enabled = bool(
+                policy.get("deep_collection_enabled", True)
+            )
+            train.monitor_only = bool(policy.get("monitor_only", False))
+            train.remark = str(policy.get("remark") or "")
+            train.inventory_status = str(policy.get("inventory_status") or "ACTIVE")
+            if not train.enabled:
+                train.ping_eligible = False
+                train.deep_collection_eligible = False
+                train.exclusion_reason = "列车已在无人值守策略中停用"
+            elif train.monitor_only or not train.deep_collection_enabled:
+                train.deep_collection_eligible = False
+                train.exclusion_reason = (
+                    train.exclusion_reason
+                    or "当前策略仅执行基础监测，不进入深度采集"
+                )
             train.coverage_status = self._coverage_status_for_classification(
                 previous_rows.get(train.train_id), train
             )
@@ -556,6 +619,7 @@ class GroundUnattendedSupervisor:
                         train_no=train.train_no,
                         mr_id=endpoint.mr_id,
                         mr_position_code=endpoint.endpoint,
+                        device_id=endpoint.device_id,
                         ac_snapshot_id=train.ac_snapshot_id,
                         ac_received_at=received_at,
                         current_ap_identity=result.tracker.ap_identity,
@@ -610,6 +674,11 @@ class GroundUnattendedSupervisor:
                 self._last_valid_ping_targets.pop(address, None)
         self.fleet_ping.update_targets(list(valid_ping_targets.values()))
         self.fleet_ping.flush_summaries()
+        self.syslog_receiver.refresh_inventory()
+        self.syslog_receiver.update_ap_locations(
+            self.base_query.list_ap_location_items(self.site_id)
+        )
+        self._schedule_config_checks(run, profile, valid_ping_targets)
         current_trains = self.repository.list_train_runs(str(run["run_id"]))
         disk_free = shutil.disk_usage(
             self.paths.ground_unattended_root(self.site_id).parent
@@ -733,6 +802,7 @@ class GroundUnattendedSupervisor:
                     operations_json={},
                 )
         self.fleet_ping.stop()
+        self.syslog_receiver.stop()
         ended_at = self._now().isoformat(timespec="milliseconds")
         self.repository.update_run(
             run_id,
@@ -792,6 +862,125 @@ class GroundUnattendedSupervisor:
             switch_before_seconds=profile.ap_switch_before_seconds,
             switch_after_seconds=profile.ap_switch_after_seconds,
         )
+
+    def _start_syslog(
+        self, run: dict[str, Any], profile: GroundUnattendedProfileDTO
+    ) -> None:
+        try:
+            self.syslog_receiver.start(
+                run_id=str(run["run_id"]),
+                run_date=str(run["run_date"]),
+                active_dir=self.paths.ground_unattended_active_dir(
+                    self.site_id, str(run["run_date"])
+                ),
+                listen_host=profile.udp_listen_host,
+                listen_port=profile.udp_listen_port,
+                queue_capacity=profile.udp_queue_capacity,
+                flush_records=profile.raw_flush_record_count,
+                flush_interval_seconds=profile.raw_flush_interval_seconds,
+                event_batch_size=profile.event_batch_size,
+                event_batch_interval_seconds=profile.event_batch_interval_seconds,
+            )
+            self.syslog_receiver.update_ap_locations(
+                self.base_query.list_ap_location_items(self.site_id)
+            )
+        except Exception as exc:
+            self.repository.add_health_event(
+                run_id=str(run["run_id"]),
+                component="udp_receiver",
+                severity="error",
+                code="UDP_LISTEN_START_FAILED",
+                message=f"{exc.__class__.__name__}: {exc}",
+                details={
+                    "listen_host": profile.udp_listen_host,
+                    "listen_port": profile.udp_listen_port,
+                },
+            )
+            raise
+
+    def _schedule_config_checks(
+        self,
+        run: dict[str, Any],
+        profile: GroundUnattendedProfileDTO,
+        targets: dict[str, FleetPingTarget],
+    ) -> None:
+        target_ip = str(profile.syslog_server_ip or "").strip()
+        if not target_ip:
+            return
+        live = {
+            str(row.get("mr_id") or ""): row
+            for row in self.fleet_ping.target_summaries()
+        }
+        with self._lock:
+            manual = set(self._manual_config_checks)
+            self._manual_config_checks.clear()
+        policies = {
+            str(row["train_id"]): row
+            for row in self.repository.list_inventory(include_removed=False)
+        }
+        endpoints = {
+            target.mr_id: target for target in targets.values() if target.mr_id
+        }
+        if "*" in manual:
+            manual.update(endpoints)
+        now = self._now()
+        ordered = sorted(
+            endpoints.items(),
+            key=lambda item: (
+                0 if policies.get(item[1].train_id, {}).get("priority") else 1,
+                -int(
+                    policies.get(item[1].train_id, {}).get("scheduling_priority")
+                    or 0
+                ),
+                item[1].train_no,
+                item[0],
+            ),
+        )
+        for device_uuid, target in ordered:
+            if device_uuid in self._config_futures:
+                continue
+            if (
+                device_uuid not in manual
+                and int((live.get(device_uuid) or {}).get("success_count") or 0) <= 0
+            ):
+                continue
+            latest = self.repository.latest_syslog_config_audit(device_uuid)
+            if device_uuid not in manual and latest:
+                checked_at = self._parse_datetime(str(latest.get("checked_at") or ""))
+                if (
+                    checked_at
+                    and (now - checked_at).total_seconds()
+                    < profile.config_check_cooldown_seconds
+                ):
+                    continue
+            self._config_futures[device_uuid] = self._config_executor.submit(
+                self.config_service.check,
+                run_id=str(run["run_id"]),
+                run_date=str(run["run_date"]),
+                device_uuid=device_uuid,
+                target_ip=target_ip,
+                target_port=profile.syslog_server_port,
+                boot_tolerance_seconds=profile.boot_time_tolerance_seconds,
+            )
+
+    def _collect_config_checks(self) -> None:
+        for device_uuid, future in tuple(self._config_futures.items()):
+            if not future.done():
+                continue
+            self._config_futures.pop(device_uuid, None)
+            try:
+                future.result()
+            except Exception:
+                # Service 已持久化结构化失败审计，Supervisor 继续调度其他 MR。
+                pass
+
+    @staticmethod
+    def _parse_datetime(value: str) -> datetime | None:
+        try:
+            result = datetime.fromisoformat(value)
+            return result if result.tzinfo else result.astimezone()
+        except (TypeError, ValueError):
+            return None
 
     def _handle_archive_deletes(self) -> None:
         with self._lock:

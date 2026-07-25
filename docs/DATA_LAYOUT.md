@@ -87,7 +87,10 @@ files/rail_transit/
 ├─ online_mr/<mr>/sessions/<session>/
 ├─ ground_unattended/
 │  ├─ active/<run_date>/
-│  │  ├─ fleet_ping/             # 按小时、按分片 JSONL
+│  │  ├─ fleet_ping/<train>/<mr>/<date>/<hour>_<generation>.ndjson
+│  │  │                           # 按 MR/小时顺序追加的 Ping 原始流
+│  │  ├─ realtime/syslog/<train>/<mr>/<date>/<hour>_<generation>.ndjson
+│  │  │                           # UDP WMESH 原始流；未识别来源写入 _unidentified
 │  │  ├─ ac_snapshots/           # 按小时 AC 快照 JSONL
 │  │  ├─ timeline/               # AC/Ping 关联 JSONL
 │  │  ├─ scheduler_events.jsonl

@@ -206,6 +206,12 @@ class GroundUnattendedArchiveService:
                     "updated_at": _now(),
                 }
             )
+            self.repository.mark_raw_files_archived(
+                run_id,
+                final_path.relative_to(
+                    self.paths.ground_unattended_root(self.site_id)
+                ).as_posix(),
+            )
             cleanup_pending = False
             try:
                 self._safe_remove_active_dir(active_dir)

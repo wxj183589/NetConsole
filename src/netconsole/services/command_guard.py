@@ -150,6 +150,13 @@ SAFE_SFTP_ENABLE_COMMANDS = {
     "quit",
 }
 
+SAFE_GROUND_UNATTENDED_SYSLOG_READ_COMMANDS = {
+    "screen-length disable",
+    "display version",
+    "display current-configuration | include info-center",
+    "display current-configuration",
+}
+
 SAFE_ENABLE_AP_CONSOLE_COMMANDS = {
     "screen-length disable",
     "system-view",
@@ -181,6 +188,7 @@ CONTEXT_COMMANDS = {
     "diagnostic_download": SAFE_DIAGNOSTIC_DOWNLOAD_COMMANDS,
     "file_management": SAFE_FILE_MANAGEMENT_COMMANDS,
     "device.sftp.enable": SAFE_SFTP_ENABLE_COMMANDS,
+    "ground_unattended_syslog_read": SAFE_GROUND_UNATTENDED_SYSLOG_READ_COMMANDS,
     "ac_enable_ap_console": SAFE_ENABLE_AP_CONSOLE_COMMANDS,
     "ac_persist_auto_ap": SAFE_PERSIST_AUTO_AP_COMMANDS,
     "ac_enable_ap_remote_login": SAFE_ENABLE_AP_CONSOLE_COMMANDS,
@@ -232,6 +240,7 @@ PIPE_ALLOWLIST = {
     "display current-configuration | include sysname",
     "display ip https | include port",
     "display wlan ap all radio verbose filter bbssid",
+    "display current-configuration | include info-center",
 }
 DANGEROUS_ALLOWLIST_EXCEPTIONS = {
     "display boot-loader",

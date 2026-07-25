@@ -15,7 +15,30 @@ def parse_version(version_output: str, device_output: str = "", manuinfo_output:
         "bootrom_version": _first_match(text, r"(?i)Boot(?:Rom|Ware)?\s+(?:Version|version)\s*[:：]?\s*(.+)"),
         "vendor": chassis.get("vendor") or "H3C",
         "uptime": _parse_uptime(version_output or ""),
+        "uptime_seconds": parse_uptime_seconds(_parse_uptime(version_output or "")),
     }
+
+
+def parse_uptime_seconds(value: object) -> int | None:
+    """解析 Comware v7/v9 display version 的英文 uptime 文本。"""
+
+    text = str(value or "").strip().casefold()
+    if not text:
+        return None
+    units = {
+        "year": 365 * 24 * 3600,
+        "week": 7 * 24 * 3600,
+        "day": 24 * 3600,
+        "hour": 3600,
+        "minute": 60,
+        "second": 1,
+    }
+    matches = re.findall(
+        r"(\d+)\s*(years?|weeks?|days?|hours?|minutes?|seconds?)\b", text
+    )
+    if not matches:
+        return None
+    return sum(int(number) * units[unit.removesuffix("s")] for number, unit in matches)
 
 
 def _first_match(text: str, pattern: str, flags: int = 0) -> str | None:
