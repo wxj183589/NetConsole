@@ -26,6 +26,7 @@ def test_ground_unattended_syslog_read_context_is_fixed_and_read_only():
         (
             "screen-length disable",
             "display version",
+            "display info-center",
             "display current-configuration | include info-center",
             "display current-configuration",
         ),

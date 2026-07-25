@@ -306,6 +306,9 @@ CREATE TABLE IF NOT EXISTS ground_unattended_train_endpoints (
     protocol TEXT NOT NULL DEFAULT '',
     port INTEGER,
     source_hostname TEXT NOT NULL DEFAULT '',
+    last_syslog_source_ip TEXT NOT NULL DEFAULT '',
+    syslog_hostname TEXT NOT NULL DEFAULT '',
+    last_syslog_identity_verified_at TEXT NOT NULL DEFAULT '',
     binding_status TEXT NOT NULL DEFAULT 'ACTIVE',
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL,
@@ -352,6 +355,7 @@ CREATE TABLE IF NOT EXISTS ground_unattended_boot_sessions (
     first_syslog_received_at TEXT NOT NULL DEFAULT '',
     last_syslog_received_at TEXT NOT NULL DEFAULT '',
     config_fingerprint TEXT NOT NULL DEFAULT '',
+    info_center_metrics_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -401,6 +405,7 @@ CREATE TABLE IF NOT EXISTS ground_unattended_wmesh_events (
     section TEXT NOT NULL DEFAULT '',
     data_quality TEXT NOT NULL DEFAULT 'COMPLETE',
     receive_delay_ms REAL,
+    clock_offset_ms REAL,
     raw_file_id TEXT NOT NULL DEFAULT '',
     raw_line_number INTEGER,
     details_json TEXT NOT NULL DEFAULT '{}',
@@ -481,6 +486,20 @@ _PROFILE_MIGRATION_COLUMNS = {
     "syslog_raw_retention_days": "INTEGER NOT NULL DEFAULT 30",
 }
 
+_ENDPOINT_MIGRATION_COLUMNS = {
+    "last_syslog_source_ip": "TEXT NOT NULL DEFAULT ''",
+    "syslog_hostname": "TEXT NOT NULL DEFAULT ''",
+    "last_syslog_identity_verified_at": "TEXT NOT NULL DEFAULT ''",
+}
+
+_BOOT_SESSION_MIGRATION_COLUMNS = {
+    "info_center_metrics_json": "TEXT NOT NULL DEFAULT '{}'",
+}
+
+_WMESH_EVENT_MIGRATION_COLUMNS = {
+    "clock_offset_ms": "REAL",
+}
+
 
 _RUN_STATES_ACTIVE = {
     "STARTING",
@@ -503,23 +522,27 @@ class GroundUnattendedRepository:
     def initialize(self) -> None:
         with self._connection() as conn:
             conn.executescript(SCHEMA)
-            existing = {
-                str(row[1])
-                for row in conn.execute("PRAGMA table_info(ground_unattended_profiles)")
-            }
-            for name, declaration in _PROFILE_MIGRATION_COLUMNS.items():
-                if name not in existing:
-                    conn.execute(
-                        f"ALTER TABLE ground_unattended_profiles ADD COLUMN {name} {declaration}"
-                    )
+            self._ensure_columns(conn, "ground_unattended_profiles", _PROFILE_MIGRATION_COLUMNS)
+            self._ensure_columns(conn, "ground_unattended_train_endpoints", _ENDPOINT_MIGRATION_COLUMNS)
+            self._ensure_columns(conn, "ground_unattended_boot_sessions", _BOOT_SESSION_MIGRATION_COLUMNS)
+            self._ensure_columns(conn, "ground_unattended_wmesh_events", _WMESH_EVENT_MIGRATION_COLUMNS)
             conn.execute(
                 """
                 INSERT INTO ground_unattended_schema(key, value, updated_at)
-                VALUES('schema_version', '2', ?)
+                VALUES('schema_version', '3', ?)
                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
                 """,
                 (_now(),),
             )
+
+    @staticmethod
+    def _ensure_columns(
+        conn: sqlite3.Connection, table: str, columns: dict[str, str]
+    ) -> None:
+        existing = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
+        for name, declaration in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
 
     def get_profile(self) -> GroundUnattendedProfileDTO:
         with self._connection() as conn:
@@ -1493,6 +1516,7 @@ class GroundUnattendedRepository:
             "section",
             "data_quality",
             "receive_delay_ms",
+            "clock_offset_ms",
             "raw_file_id",
             "raw_line_number",
             "details_json",
@@ -1572,6 +1596,7 @@ class GroundUnattendedRepository:
             "first_syslog_received_at",
             "last_syslog_received_at",
             "config_fingerprint",
+            "info_center_metrics_json",
             "created_at",
             "updated_at",
         )
@@ -1580,6 +1605,14 @@ class GroundUnattendedRepository:
         row.setdefault("site_id", self.site_id)
         row.setdefault("created_at", now)
         row["updated_at"] = now
+        if "info_center_metrics" in row and "info_center_metrics_json" not in row:
+            row["info_center_metrics_json"] = json.dumps(
+                row.pop("info_center_metrics") or {}, ensure_ascii=False
+            )
+        elif isinstance(row.get("info_center_metrics_json"), (dict, list)):
+            row["info_center_metrics_json"] = json.dumps(
+                row["info_center_metrics_json"], ensure_ascii=False
+            )
         with self._transaction() as conn:
             conn.execute(
                 f"INSERT INTO ground_unattended_boot_sessions ({', '.join(fields)}) "
@@ -1638,14 +1671,42 @@ class GroundUnattendedRepository:
             ).fetchone()
         return _decode_row(row) if row else None
 
-    def touch_boot_syslog(self, device_uuid: str, received_at: str) -> None:
+    def confirm_syslog_identity(
+        self,
+        *,
+        device_uuid: str,
+        source_ip: str,
+        hostname: str,
+        verified_at: str,
+    ) -> None:
+        with self._transaction() as conn:
+            conn.execute(
+                "UPDATE ground_unattended_train_endpoints SET last_syslog_source_ip=?, "
+                "syslog_hostname=?, last_syslog_identity_verified_at=?, updated_at=? "
+                "WHERE site_id=? AND device_uuid=?",
+                (source_ip, hostname, verified_at, _now(), self.site_id, device_uuid),
+            )
+
+    def touch_boot_syslog(
+        self,
+        device_uuid: str,
+        received_at: str,
+        *,
+        source_ip: str = "",
+        hostname: str = "",
+        identity_verified: bool = False,
+    ) -> None:
+        if not identity_verified:
+            return
         with self._transaction() as conn:
             row = conn.execute(
-                "SELECT boot_session_id, first_syslog_received_at FROM ground_unattended_boot_sessions "
+                "SELECT boot_session_id, first_syslog_received_at, config_status FROM ground_unattended_boot_sessions "
                 "WHERE site_id=? AND device_uuid=? ORDER BY last_checked_at DESC LIMIT 1",
                 (self.site_id, device_uuid),
             ).fetchone()
             if row is None:
+                return
+            if str(row["config_status"] or "") not in {"WAITING_FIRST_LOG", "LOG_ACTIVE"}:
                 return
             first = str(row["first_syslog_received_at"] or received_at)
             conn.execute(
@@ -1654,6 +1715,12 @@ class GroundUnattendedRepository:
                 "WHERE boot_session_id=?",
                 (first, received_at, _now(), str(row["boot_session_id"])),
             )
+        self.confirm_syslog_identity(
+            device_uuid=device_uuid,
+            source_ip=source_ip,
+            hostname=hostname,
+            verified_at=received_at,
+        )
 
     def add_health_event(
         self,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import queue
@@ -16,19 +17,48 @@ from typing import Any
 from netconsole.repositories.ground_unattended_repository import (
     GroundUnattendedRepository,
 )
-from netconsole.services.online_mr_terminal_log_parser import (
-    parse_active_link_switch_logs,
-)
-
-
-_HOSTNAME_RE = re.compile(
-    r"^(?:<\d+>)?(?:\*|%|#)?(?:[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}(?::\d{1,3})?(?:\s+\d{4})?\s+)?(?P<hostname>[A-Za-z0-9_.-]+)\s+WMESH/",
+_WMESH_EVENT_RE = re.compile(
+    r"WMESH/\d+/(?P<event>MESH_LINKUP|MESH_LINKDOWN|MESH_ACTIVELINK_SWITCH)\s*:",
     re.IGNORECASE,
 )
-_EVENT_RE = re.compile(r"WMESH/\d+/(?P<event>MESH_LINKUP|MESH_LINKDOWN|MESH_ACTIVELINK_SWITCH)\s*:", re.IGNORECASE)
-_PEER_RE = re.compile(
-    r"(?:(?:peer|link)(?:\s+(?:name|ap))?\s*[=:]\s*)?"
-    r"(?P<name>[A-Za-z0-9_.-]+)[_\s]+(?P<mac>[0-9A-Fa-f]{4}[-:.][0-9A-Fa-f]{4}[-:.][0-9A-Fa-f]{4})",
+_IFNET_EVENT_RE = re.compile(r"IFNET/\d+/PHY_UPDOWN\s*:", re.IGNORECASE)
+_PRI_RE = re.compile(r"^<(?P<priority>\d{1,3})>")
+_FACILITY_SEVERITY_RE = re.compile(
+    r"\b(?P<facility>(?:local\d|kern|user|mail|daemon|auth|syslog|lpr|news|uucp|cron))\.(?P<severity>"
+    r"emerg|alert|crit|err|warning|notice|info|debug)\b",
+    re.IGNORECASE,
+)
+_LINKUP_RE = re.compile(
+    r"mesh\s+link\s+on\s+(?:the\s+)?interface\s+(?P<interface>\S+)\s+is\s+up\s*:\s*"
+    r".*?peer\s+MAC\s*=\s*(?P<peer_mac>[0-9A-Fa-f]{4}[-:.][0-9A-Fa-f]{4}[-:.][0-9A-Fa-f]{4})"
+    r".*?peer\s+radio\s+mode\s*=\s*(?P<radio_mode>\d+)"
+    r".*?RSSI\s*=\s*(?P<rssi>-?\d+)",
+    re.IGNORECASE | re.DOTALL,
+)
+_LINKDOWN_RE = re.compile(
+    r"mesh\s+link\s+on\s+(?:the\s+)?interface\s+(?P<interface>\S+)\s+is\s+down\s*:\s*"
+    r".*?peer\s+MAC\s*=\s*(?P<peer_mac>[0-9A-Fa-f]{4}[-:.][0-9A-Fa-f]{4}[-:.][0-9A-Fa-f]{4})"
+    r".*?RSSI\s*=\s*(?P<rssi>-?\d+)\s*,?\s*reason\s*:\s*(?P<reason>.+?)\.?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+_ACTIVE_LINK_SWITCH_RE = re.compile(
+    r"switch\s+an\s+active\s+link\s+from\s+(?P<old>\S+)\s+to\s+(?P<new>\S+)\s*:\s*"
+    r"peer\s+quantity\s*=\s*(?P<peer_quantity>\d+)\s*,\s*"
+    r"link\s+quantity\s*=\s*(?P<link_quantity>\d+)\s*,\s*"
+    r"switch\s+reason\s*=\s*(?P<reason>\d+)\s*\.",
+    re.IGNORECASE | re.DOTALL,
+)
+_ACTIVE_LINK_ENDPOINT_RE = re.compile(
+    r"^(?P<radio>[0-9A-Fa-f]{4}[-:.][0-9A-Fa-f]{4}[-:.][0-9A-Fa-f]{4})_"
+    r"(?P<peer>[0-9A-Fa-f]{4}[-:.][0-9A-Fa-f]{4}[-:.][0-9A-Fa-f]{4})"
+    r"\((?P<rssi>-?\d+)\)$"
+)
+_IFNET_PHY_RE = re.compile(
+    r"physical\s+state\s+on\s+the\s+interface\s+(?P<interface>\S+)\s+changed\s+to\s+(?P<state>up|down)\b",
+    re.IGNORECASE,
+)
+_LEGACY_PEER_RE = re.compile(
+    r"(?P<name>[A-Za-z0-9_.-]+)_?(?P<mac>[0-9A-Fa-f]{4}[-:.][0-9A-Fa-f]{4}[-:.][0-9A-Fa-f]{4})",
     re.IGNORECASE,
 )
 _DEVICE_TIME_RE = re.compile(
@@ -50,6 +80,8 @@ class UdpEnvelope:
     source_ip: str
     source_port: int
     receive_time: str
+    global_receive_sequence: int
+    source_receive_sequence: int
     payload: bytes
 
 
@@ -200,42 +232,99 @@ class RawStreamWriter:
 
 class WmeshRealtimeParser:
     def parse(self, raw_text: str, *, receive_time: datetime) -> dict[str, Any] | None:
-        event_match = _EVENT_RE.search(raw_text)
-        if not event_match:
-            return None
-        event_type = event_match.group("event").upper()
-        device_time = _parse_device_time(raw_text, receive_time)
-        peer_name = ""
-        peer_mac = ""
-        previous_peer_name = ""
-        previous_peer_mac = ""
-        details: dict[str, Any] = {}
-        if event_type == "MESH_ACTIVELINK_SWITCH":
-            switches = parse_active_link_switch_logs(raw_text, fallback_year=receive_time.year)
-            if switches:
-                switch = switches[-1]
-                device_time = switch.log_time.astimezone().isoformat(timespec="milliseconds")
-                peer_name, peer_mac = switch.to_peer_name, switch.to_peer_mac
-                previous_peer_name, previous_peer_mac = switch.from_peer_name, switch.from_peer_mac
-                details = {
-                    "from_rssi": switch.from_peer_rssi,
-                    "to_rssi": switch.to_peer_rssi,
-                    "switch_reason_code": switch.switch_reason_code,
-                    "switch_reason_text": switch.switch_reason_text,
-                }
+        event_match = _WMESH_EVENT_RE.search(raw_text)
+        if event_match:
+            event_type = event_match.group("event").upper()
+            payload = self._parse_wmesh_event(event_type, raw_text)
+        elif _IFNET_EVENT_RE.search(raw_text):
+            event_type = "IFNET_PHY_UPDOWN"
+            payload = self._parse_ifnet_event(raw_text)
         else:
-            peers = list(_PEER_RE.finditer(raw_text[event_match.end() :]))
-            if peers:
-                peer_name = peers[-1].group("name")
-                peer_mac = peers[-1].group("mac")
+            return None
+        if payload is None:
+            return None
         return {
             "event_type": event_type,
-            "device_time": device_time,
-            "peer_name": peer_name,
-            "peer_mac": peer_mac,
-            "previous_peer_name": previous_peer_name,
-            "previous_peer_mac": previous_peer_mac,
-            "details": details,
+            "device_time": _parse_device_time(raw_text, receive_time),
+            **payload,
+        }
+
+    @staticmethod
+    def _parse_wmesh_event(event_type: str, raw_text: str) -> dict[str, Any] | None:
+        if event_type == "MESH_LINKUP":
+            match = _LINKUP_RE.search(raw_text)
+            if not match:
+                return _legacy_link_event(raw_text)
+            peer_mac = match.group("peer_mac")
+            return {
+                "peer_name": "",
+                "peer_mac": peer_mac,
+                "previous_peer_name": "",
+                "previous_peer_mac": "",
+                "details": {
+                    "mesh_interface": match.group("interface"),
+                    "peer_mac": peer_mac,
+                    "peer_radio_mode": int(match.group("radio_mode")),
+                    "rssi": int(match.group("rssi")),
+                },
+            }
+        if event_type == "MESH_LINKDOWN":
+            match = _LINKDOWN_RE.search(raw_text)
+            if not match:
+                return _legacy_link_event(raw_text)
+            peer_mac = match.group("peer_mac")
+            reason = match.group("reason").strip().rstrip(".")
+            return {
+                "peer_name": "",
+                "peer_mac": peer_mac,
+                "previous_peer_name": "",
+                "previous_peer_mac": "",
+                "details": {
+                    "mesh_interface": match.group("interface"),
+                    "peer_mac": peer_mac,
+                    "rssi": int(match.group("rssi")),
+                    "reason_raw": reason,
+                    "reason_code": _linkdown_reason_code(reason),
+                },
+            }
+        match = _ACTIVE_LINK_SWITCH_RE.search(raw_text)
+        if not match:
+            return None
+        old = _parse_active_endpoint(match.group("old"))
+        new = _parse_active_endpoint(match.group("new"))
+        return {
+            "peer_name": "",
+            "peer_mac": str(new["peer_mac"] or ""),
+            "previous_peer_name": "",
+            "previous_peer_mac": str(old["peer_mac"] or ""),
+            "details": {
+                "old_peer_radio_mac": old["radio_mac"],
+                "old_peer_mac": old["peer_mac"],
+                "old_rssi": old["rssi"],
+                "old_active_link_missing": old["missing"],
+                "new_peer_radio_mac": new["radio_mac"],
+                "new_peer_mac": new["peer_mac"],
+                "new_rssi": new["rssi"],
+                "peer_quantity": int(match.group("peer_quantity")),
+                "link_quantity": int(match.group("link_quantity")),
+                "switch_reason_code": int(match.group("reason")),
+            },
+        }
+
+    @staticmethod
+    def _parse_ifnet_event(raw_text: str) -> dict[str, Any] | None:
+        match = _IFNET_PHY_RE.search(raw_text)
+        if not match:
+            return None
+        return {
+            "peer_name": "",
+            "peer_mac": "",
+            "previous_peer_name": "",
+            "previous_peer_mac": "",
+            "details": {
+                "interface": match.group("interface"),
+                "physical_state": match.group("state").casefold(),
+            },
         }
 
 
@@ -260,8 +349,8 @@ class SyslogUdpReceiver:
         self._writer: RawStreamWriter | None = None
         self._run_id = ""
         self._listen_address = ""
-        self._endpoint_by_ip: dict[str, dict[str, Any]] = {}
-        self._endpoint_by_hostname: dict[str, dict[str, Any]] = {}
+        self._endpoint_by_ip: dict[str, list[dict[str, Any]]] = {}
+        self._endpoint_by_hostname: dict[str, list[dict[str, Any]]] = {}
         self._received_count = 0
         self._unidentified_count = 0
         self._dropped_count = 0
@@ -270,8 +359,10 @@ class SyslogUdpReceiver:
         self._event_batch: list[dict[str, Any]] = []
         self._timeline_batch: list[dict[str, Any]] = []
         self._last_batch_at = time.monotonic()
-        self._last_device_time: dict[str, datetime] = {}
+        self._last_clock_offset_ms: dict[str, float] = {}
         self._last_line_hash: dict[str, str] = {}
+        self._global_receive_sequence = 0
+        self._source_receive_sequences: dict[tuple[str, int], int] = {}
         self._batch_duration_ms = 0.0
         self._reported_dropped_count = 0
         self._ap_by_name: dict[str, dict[str, str]] = {}
@@ -298,6 +389,10 @@ class SyslogUdpReceiver:
         self._run_id = run_id
         self._stop.clear()
         self._received_count = self._unidentified_count = self._dropped_count = 0
+        self._global_receive_sequence = 0
+        self._source_receive_sequences = {}
+        self._last_clock_offset_ms = {}
+        self._last_line_hash = {}
         self._last_error = ""
         self._reported_dropped_count = 0
         self._event_batch_size = max(1, int(event_batch_size))
@@ -365,8 +460,8 @@ class SyslogUdpReceiver:
 
     def refresh_inventory(self) -> None:
         active = self.repository.list_inventory(include_removed=False)
-        by_ip: dict[str, dict[str, Any]] = {}
-        by_host: dict[str, dict[str, Any]] = {}
+        by_ip: dict[str, list[dict[str, Any]]] = {}
+        by_host: dict[str, list[dict[str, Any]]] = {}
         for train in active:
             if not bool(train.get("enabled", True)):
                 continue
@@ -374,12 +469,19 @@ class SyslogUdpReceiver:
                 if endpoint.get("binding_status") != "ACTIVE":
                     continue
                 value = {**endpoint, "train_id": train["train_id"], "train_no": train.get("train_no", "")}
-                address = str(endpoint.get("management_ip") or "").strip()
-                hostname = str(endpoint.get("source_hostname") or endpoint.get("device_name") or "").strip().casefold()
-                if address:
-                    by_ip[address] = value
-                if hostname:
-                    by_host[hostname] = value
+                addresses = {
+                    str(endpoint.get("management_ip") or "").strip(),
+                    str(endpoint.get("last_syslog_source_ip") or "").strip(),
+                }
+                hostnames = {
+                    str(endpoint.get("source_hostname") or "").strip().casefold(),
+                    str(endpoint.get("syslog_hostname") or "").strip().casefold(),
+                    str(endpoint.get("device_name") or "").strip().casefold(),
+                }
+                for address in addresses - {""}:
+                    by_ip.setdefault(address, []).append(value)
+                for hostname in hostnames - {""}:
+                    by_host.setdefault(hostname, []).append(value)
         self._endpoint_by_ip = by_ip
         self._endpoint_by_hostname = by_host
 
@@ -421,6 +523,16 @@ class SyslogUdpReceiver:
             "last_error": self._last_error,
         }
 
+    def _next_global_receive_sequence(self) -> int:
+        self._global_receive_sequence += 1
+        return self._global_receive_sequence
+
+    def _next_source_receive_sequence(self, source_ip: str, source_port: int) -> int:
+        key = (source_ip, source_port)
+        value = self._source_receive_sequences.get(key, 0) + 1
+        self._source_receive_sequences[key] = value
+        return value
+
     def _recv_loop(self) -> None:
         while not self._stop.is_set():
             sock = self._socket
@@ -436,6 +548,10 @@ class SyslogUdpReceiver:
                 source_ip=str(address[0]),
                 source_port=int(address[1]),
                 receive_time=datetime.now().astimezone().isoformat(timespec="milliseconds"),
+                global_receive_sequence=self._next_global_receive_sequence(),
+                source_receive_sequence=self._next_source_receive_sequence(
+                    str(address[0]), int(address[1])
+                ),
                 payload=payload,
             )
             self._received_count += 1
@@ -474,23 +590,30 @@ class SyslogUdpReceiver:
     def _process(self, envelope: UdpEnvelope) -> None:
         receive_time = datetime.fromisoformat(envelope.receive_time)
         raw_text = envelope.payload.decode("utf-8", errors="replace").strip("\x00\r\n")
-        hostname_match = _HOSTNAME_RE.search(raw_text)
-        hostname = hostname_match.group("hostname") if hostname_match else ""
-        by_ip = self._endpoint_by_ip.get(envelope.source_ip)
-        by_host = self._endpoint_by_hostname.get(hostname.casefold()) if hostname else None
-        endpoint = by_ip or by_host
-        if by_ip and by_host and by_ip.get("device_uuid") != by_host.get("device_uuid"):
-            endpoint = None
-        if endpoint is None:
+        hostname = _extract_hostname(raw_text)
+        facility, severity = _extract_facility_severity(raw_text)
+        endpoint, identity_status = self._resolve_identity(envelope.source_ip, hostname)
+        if identity_status in {"UNIDENTIFIED", "IDENTITY_CONFLICT"}:
             self._unidentified_count += 1
         parsed = self.parser.parse(raw_text, receive_time=receive_time)
-        quality = self._quality(endpoint, raw_text, parsed, receive_time)
+        quality, clock_offset_ms = self._quality(
+            endpoint,
+            identity_status,
+            raw_text,
+            parsed,
+            receive_time,
+        )
         record = {
             "source_ip": envelope.source_ip,
             "source_port": envelope.source_port,
             "hostname": hostname,
+            "facility": facility,
+            "severity": severity,
+            "raw_bytes_base64": base64.b64encode(envelope.payload).decode("ascii"),
             "raw_text": raw_text,
             "receive_time": envelope.receive_time,
+            "global_receive_sequence": envelope.global_receive_sequence,
+            "source_receive_sequence": envelope.source_receive_sequence,
             "device_time": str((parsed or {}).get("device_time") or ""),
             "device_id": (endpoint or {}).get("device_id"),
             "device_uuid": str((endpoint or {}).get("device_uuid") or ""),
@@ -499,14 +622,14 @@ class SyslogUdpReceiver:
             "site_id": self.site_id,
             "parse_status": "PARSED" if parsed else "IGNORED",
             "data_quality": quality,
+            "identity_status": identity_status,
+            "clock_offset_ms": clock_offset_ms,
         }
         if self._writer is None:
             return
         file_id, line_number = self._writer.write(record, receive_time)
         if parsed is None:
             return
-        device_time = _datetime_or_none(str(parsed.get("device_time") or ""))
-        delay_ms = (receive_time - device_time).total_seconds() * 1000 if device_time else None
         event = {
             **parsed,
             "run_id": self._run_id,
@@ -518,9 +641,18 @@ class SyslogUdpReceiver:
             "source_ip": envelope.source_ip,
             "hostname": hostname,
             "data_quality": quality,
-            "receive_delay_ms": delay_ms,
+            "receive_delay_ms": clock_offset_ms,
+            "clock_offset_ms": clock_offset_ms,
             "raw_file_id": file_id,
             "raw_line_number": line_number,
+            "details": {
+                **dict(parsed.get("details") or {}),
+                "facility": facility,
+                "severity": severity,
+                "identity_status": identity_status,
+                "global_receive_sequence": envelope.global_receive_sequence,
+                "source_receive_sequence": envelope.source_receive_sequence,
+            },
         }
         location = self._ap_by_name.get(str(parsed.get("peer_name") or "").casefold()) or self._ap_by_mac.get(
             _normalize_mac(parsed.get("peer_mac"))
@@ -538,35 +670,72 @@ class SyslogUdpReceiver:
                 "mr_id": record["device_uuid"],
                 "title": _event_title(str(parsed["event_type"])),
                 "message": str(parsed.get("peer_name") or ""),
-                "details": {"data_quality": quality, "raw_file_id": file_id, **dict(parsed.get("details") or {})},
+                "details": {
+                    "data_quality": quality,
+                    "identity_status": identity_status,
+                    "raw_file_id": file_id,
+                    "global_receive_sequence": envelope.global_receive_sequence,
+                    "source_receive_sequence": envelope.source_receive_sequence,
+                    "clock_offset_ms": clock_offset_ms,
+                    **dict(parsed.get("details") or {}),
+                },
             }
         )
-        if record["device_uuid"]:
-            self.repository.touch_boot_syslog(record["device_uuid"], envelope.receive_time)
+        if record["device_uuid"] and identity_status == "VERIFIED":
+            self.repository.touch_boot_syslog(
+                record["device_uuid"],
+                envelope.receive_time,
+                source_ip=envelope.source_ip,
+                hostname=hostname,
+                identity_verified=True,
+            )
+
+    def _resolve_identity(
+        self, source_ip: str, hostname: str
+    ) -> tuple[dict[str, Any] | None, str]:
+        by_ip = self._endpoint_by_ip.get(source_ip, [])
+        by_host = self._endpoint_by_hostname.get(hostname.casefold(), []) if hostname else []
+        ip_by_uuid = {str(item.get("device_uuid") or ""): item for item in by_ip}
+        host_by_uuid = {str(item.get("device_uuid") or ""): item for item in by_host}
+        if ip_by_uuid and host_by_uuid:
+            overlap = set(ip_by_uuid) & set(host_by_uuid)
+            if len(overlap) == 1:
+                return ip_by_uuid[overlap.pop()], "VERIFIED"
+            return None, "IDENTITY_CONFLICT"
+        if len(host_by_uuid) == 1:
+            return next(iter(host_by_uuid.values())), "UNCONFIRMED_HOSTNAME"
+        if len(ip_by_uuid) == 1:
+            return next(iter(ip_by_uuid.values())), "UNCONFIRMED_SOURCE_IP"
+        return None, "UNIDENTIFIED"
 
     def _quality(
         self,
         endpoint: dict[str, Any] | None,
+        identity_status: str,
         raw_text: str,
         parsed: dict[str, Any] | None,
         receive_time: datetime,
-    ) -> str:
+    ) -> tuple[str, float | None]:
+        if identity_status == "IDENTITY_CONFLICT":
+            return "IDENTITY_CONFLICT", None
         if endpoint is None:
-            return "UNIDENTIFIED_SOURCE"
-        device_uuid = str(endpoint.get("device_uuid") or "")
+            return "UNIDENTIFIED_SOURCE", None
+        device_uuid = str(endpoint.get("device_uuid") or f"{identity_status}:{endpoint.get('management_ip') or ''}")
         line_hash = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
         if self._last_line_hash.get(device_uuid) == line_hash:
-            return "DUPLICATE"
+            return "DUPLICATE", None
         self._last_line_hash[device_uuid] = line_hash
         current = _datetime_or_none(str((parsed or {}).get("device_time") or ""))
-        previous = self._last_device_time.get(device_uuid)
         if current is not None:
-            self._last_device_time[device_uuid] = current
-            if previous is not None and current < previous:
-                return "OUT_OF_ORDER" if (previous - current).total_seconds() < 300 else "CLOCK_JUMP"
-            if abs((receive_time - current).total_seconds()) > 300:
-                return "CLOCK_JUMP"
-        return "COMPLETE"
+            offset_ms = (receive_time - current).total_seconds() * 1000
+            previous_offset = self._last_clock_offset_ms.get(device_uuid)
+            self._last_clock_offset_ms[device_uuid] = offset_ms
+            if previous_offset is not None and abs(offset_ms - previous_offset) >= 60_000:
+                return "CLOCK_JUMP", offset_ms
+            if abs(offset_ms) >= 5_000:
+                return "CLOCK_OFFSET", offset_ms
+            return "COMPLETE", offset_ms
+        return "COMPLETE", None
 
     def _flush_if_due(self) -> None:
         if self._dropped_count > self._reported_dropped_count:
@@ -629,6 +798,79 @@ def _parse_device_time(raw_text: str, receive_time: datetime) -> str:
     return value.isoformat(timespec="milliseconds")
 
 
+def _extract_hostname(raw_text: str) -> str:
+    event_match = _WMESH_EVENT_RE.search(raw_text) or _IFNET_EVENT_RE.search(raw_text)
+    if not event_match:
+        return ""
+    prefix = raw_text[: event_match.start()]
+    time_match = _DEVICE_TIME_RE.search(prefix)
+    if time_match:
+        prefix = prefix[time_match.end() :]
+    prefix = _PRI_RE.sub("", prefix).strip()
+    tokens = re.findall(r"[A-Za-z][A-Za-z0-9_.-]*", prefix)
+    return tokens[0] if tokens else ""
+
+
+def _extract_facility_severity(raw_text: str) -> tuple[str, str]:
+    explicit = _FACILITY_SEVERITY_RE.search(raw_text)
+    if explicit:
+        return explicit.group("facility").casefold(), explicit.group("severity").casefold()
+    priority = _PRI_RE.search(raw_text)
+    if not priority:
+        return "", ""
+    value = int(priority.group("priority"))
+    facilities = (
+        "kern", "user", "mail", "daemon", "auth", "syslog", "lpr", "news",
+        "uucp", "cron", "authpriv", "ftp", "ntp", "audit", "alert", "clock",
+        "local0", "local1", "local2", "local3", "local4", "local5", "local6", "local7",
+    )
+    severities = ("emerg", "alert", "crit", "err", "warning", "notice", "info", "debug")
+    facility_code, severity_code = divmod(value, 8)
+    return (
+        facilities[facility_code] if 0 <= facility_code < len(facilities) else "",
+        severities[severity_code] if 0 <= severity_code < len(severities) else "",
+    )
+
+
+def _parse_active_endpoint(value: str) -> dict[str, Any]:
+    candidate = str(value or "").strip()
+    if candidate.casefold() == "na_0000-0000-0000(0)":
+        return {"radio_mac": "", "peer_mac": "", "rssi": None, "missing": True}
+    match = _ACTIVE_LINK_ENDPOINT_RE.fullmatch(candidate)
+    if not match:
+        return {"radio_mac": "", "peer_mac": "", "rssi": None, "missing": False}
+    return {
+        "radio_mac": match.group("radio"),
+        "peer_mac": match.group("peer"),
+        "rssi": int(match.group("rssi")),
+        "missing": False,
+    }
+
+
+def _linkdown_reason_code(reason: str) -> str:
+    normalized = " ".join(str(reason or "").casefold().split())
+    if "weak rssi" in normalized:
+        return "WEAK_RSSI_LOCAL" if "local" in normalized else "WEAK_RSSI"
+    if "radio status change" in normalized:
+        return "RADIO_STATUS_CHANGE_LOCAL" if "local" in normalized else "RADIO_STATUS_CHANGE"
+    return "UNKNOWN"
+
+
+def _legacy_link_event(raw_text: str) -> dict[str, Any] | None:
+    """Keep historical compact WMESH records parseable when detail fields are absent."""
+
+    match = _LEGACY_PEER_RE.search(raw_text)
+    if not match:
+        return None
+    return {
+        "peer_name": match.group("name"),
+        "peer_mac": match.group("mac"),
+        "previous_peer_name": "",
+        "previous_peer_mac": "",
+        "details": {"legacy_compact_format": True},
+    }
+
+
 def _datetime_or_none(value: str) -> datetime | None:
     try:
         result = datetime.fromisoformat(value)
@@ -661,6 +903,7 @@ def _event_title(event_type: str) -> str:
         "MESH_LINKUP": "WMESH 链路建立",
         "MESH_LINKDOWN": "WMESH 链路断开",
         "MESH_ACTIVELINK_SWITCH": "WMESH 主链路切换",
+        "IFNET_PHY_UPDOWN": "接口物理状态变化",
     }.get(event_type, event_type)
 
 

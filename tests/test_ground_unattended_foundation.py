@@ -215,6 +215,18 @@ def test_boot_session_and_fixed_syslog_profile_do_not_save(tmp_path: Path) -> No
     connection = _Connection(
         version="H3C MR uptime is 1 day, 2 hours, 3 minutes\n",
         config="",
+        config_after=(
+            "info-center enable\n"
+            "info-center loghost 192.0.2.100 port 5514\n"
+            "info-center source default loghost deny\n"
+            "info-center source WMESH loghost level notification\n"
+        ),
+        info_after=(
+            "Information Center: Enabled\n"
+            "Log host: Enabled\n"
+            "    192.0.2.100,\n"
+            "    port number: 5514, host facility: local7\n"
+        ),
     )
     service = MrSyslogConfigService(
         paths,
@@ -262,17 +274,33 @@ class _BaseQuery:
 
 
 class _Connection:
-    def __init__(self, *, version: str, config: str) -> None:
+    def __init__(
+        self,
+        *,
+        version: str,
+        config: str,
+        config_after: str = "",
+        info_before: str = "",
+        info_after: str = "",
+    ) -> None:
         self.version = version
         self.config = config
+        self.config_after = config_after
+        self.info_before = info_before
+        self.info_after = info_after
         self.commands: list[str] = []
+        self._write_started = False
 
     def send_command(self, command: str, _timeout: int) -> str:
         self.commands.append(command)
         if command == "display version":
             return self.version
+        if command == "display info-center":
+            return self.info_after if self._write_started else self.info_before
         if command.startswith("display current-configuration"):
-            return self.config
+            return self.config_after if self._write_started else self.config
+        if command not in {"screen-length disable"}:
+            self._write_started = True
         return ""
 
     def close(self) -> None:

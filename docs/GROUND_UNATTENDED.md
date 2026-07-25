@@ -88,10 +88,13 @@ MR。设备主体、地址和凭据仍只存在于设备管理；无人值守只
 深采开关、仅监测和备注。缺少 CT 或 CW 会保留列车并显示端点缺失；设备移除只标记绑定移除，既有策略和
 历史不会被物理删除。
 
-`SyslogUdpReceiver` 的接收线程只负责 `recv -> 接收时间 -> 有界队列`。独立处理线程完成 MR 映射、
-WMESH 关键事件解析、状态聚合、按小时追加和批量入库；来源按管理 IP、hostname、二者组合依次匹配，
-无法确认的消息写入独立 `_unidentified` 流，不会绑定到其他 MR。队列溢出、乱序、重复、时钟跳变和来源
-不明均作为数据质量事件，而不是把无人值守运行标成失败。
+`SyslogUdpReceiver` 的接收线程只负责 `recv -> 本机接收时间/全局与来源序号 -> 有界队列`。独立处理
+线程完成 MR 映射、WMESH/IFNET 关键事件解析、状态聚合、按小时追加和批量入库。原始 NDJSON 保留原始
+字节的安全编码、原文、设备时间、接收时间、两个接收序号、来源 IP/端口、主机名和 facility/severity。
+身份只有在来源 IP 与 hostname 同时指向同一 MR 时才是 `VERIFIED`；单项唯一匹配仅标记未确认，冲突绝不
+绑定，未知来源写入独立 `_unidentified` 流。设备时间与本机接收时间的差为 `CLOCK_OFFSET`，突变才是
+`CLOCK_JUMP`，它们不表示网络传输延迟。队列溢出、重复和来源问题均作为数据质量事件，而不是把无人值守
+运行标成失败。
 
 原始流均由 `RawStreamWriter` 单线程追加并登记：Ping 为
 `active/<run_date>/fleet_ping/<train>/<CT|CW>/<date>/<hour>_<generation>.ndjson`，WMESH Syslog
@@ -100,15 +103,21 @@ WMESH 关键事件解析、状态聚合、按小时追加和批量入库；来�
 WMESH 关键事件、原始文件索引和健康事件，不逐条保存秒级原始 Ping 或 Syslog。
 
 Ping 稳定成功后，`MrSyslogConfigService` 通过既有设备凭据先执行 `display version`，以 uptime 和
-估算启动时间建立或更新 boot session；再检查 `display current-configuration | include info-center`，不支持
-过滤时才回退完整运行配置。固定 H3C Profile 只允许 `info-center`、当前 UDP loghost、默认来源禁止和
-WMESH notification 四项命令；不会执行 `save`、重启、删除或停止时回滚配置。完整配置不重复下发，缺项
-只补缺。当前实现对目标 IP/端口不一致会补充当前 NetConsole 目标，但不会发送未经设备型号现场验证的
-`undo` 命令，因此旧目标清理仍需在真实 MR 命令验证后补充。
+估算启动时间建立或更新 boot session；随后将 `display info-center` 作为运行态主检查，并以
+`display current-configuration | include info-center` 补充验证来源规则，过滤不支持时才回退完整运行配置。
+运行态必须确认 Information Center、loghost、目标 IP 和端口；配置规则必须包含 enable、目标 loghost、
+默认来源禁止和 WMESH notification。默认 UDP 端口 514 的省略端口配置与显式 `port 514` 等价，其他端口
+必须显式匹配。下发缺项后逐条检查命令回显，再执行两层复查：完整才为 `CONFIG_SENT` 或 `CONFIG_REPAIRED`，
+复查缺项为 `CONFIG_VERIFY_FAILED`，异常为 `CONFIG_FAILED`。只有双层验证成功后才可进入
+`WAITING_FIRST_LOG`；仅已验证匹配的 UDP 才可进入 `LOG_ACTIVE`。审计证据保存配置前后输出、运行态前后
+输出、命令回显、缺项与校验时间；固定 H3C Profile 不会执行 `save`、`undo`、重启、删除或停止时回滚。
+`display info-center` 还解析 loghost 和其他输出目的地的时间格式，以及独占或同行展示的缓冲计数。dropped
+计数增长是日志数据质量告警；overwritten 增长仅表示设备本地环形缓冲覆盖，不等同于 UDP 网络丢包。旧目标的
+`undo` 清理仍需真实设备命令验证后单独实现。
 
-`ground_unattended` 索引库的 additive schema v2 新增列车清单/端点绑定/策略、boot session、Syslog
-配置审计、WMESH 事件、原始文件索引、Ping 丢包区间和健康事件表；启动迁移为幂等加列与 `CREATE TABLE IF
-NOT EXISTS`，不重建既有局点数据库。
+`ground_unattended` 索引库的 additive schema v3 包含列车清单/端点绑定/策略、boot session、Syslog
+配置审计、WMESH 事件、原始文件索引、Ping 丢包区间和健康事件表；v3 额外保存已验证来源证据、最近
+Info Center 指标和规范化时钟偏差。启动迁移为幂等加列与 `CREATE TABLE IF NOT EXISTS`，不重建既有局点数据库。
 
 ## 深度采集与覆盖
 

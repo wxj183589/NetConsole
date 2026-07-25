@@ -14,6 +14,10 @@ from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.models.online_mr_models import OnlineMrConnectionConfig
+from netconsole.parsers.h3c.info_center_parser import (
+    InfoCenterRuntime,
+    parse_info_center_runtime,
+)
 from netconsole.parsers.h3c.version_parser import parse_version
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.ground_unattended_repository import (
@@ -27,12 +31,15 @@ from netconsole.services.online_mr_collector import NetmikoShellConnection
 READ_COMMANDS = (
     "screen-length disable",
     "display version",
+    "display info-center",
     "display current-configuration | include info-center",
 )
 CONFIG_FAILURE_MARKERS = (
     "% unrecognized command",
     "% incomplete command",
     "% wrong parameter",
+    "% error",
+    "error:",
     "permission denied",
 )
 
@@ -48,6 +55,14 @@ class SyslogConfigDiff:
     complete: bool
     missing_commands: tuple[str, ...]
     target_present: bool
+
+
+@dataclass(frozen=True)
+class SyslogProfileVerification:
+    complete: bool
+    config: SyslogConfigDiff
+    runtime_missing: tuple[str, ...]
+    runtime: InfoCenterRuntime
 
 
 @dataclass(frozen=True)
@@ -125,6 +140,7 @@ class MrBootSessionService:
                 "first_syslog_received_at": "",
                 "last_syslog_received_at": "",
                 "config_fingerprint": "",
+                "info_center_metrics": {},
             }
             created = True
         self.repository.upsert_boot_session(row)
@@ -176,16 +192,37 @@ class MrSyslogConfigService:
         checked_at = self.now_provider()
         audit_id = f"sysaudit_{uuid.uuid4().hex}"
         connection: MrCommandConnection | None = None
-        version_output = ""
-        config_output = ""
+        evidence: dict[str, Any] = {
+            "display_version": "",
+            "display_info_center_before": "",
+            "configuration_before": "",
+            "configuration_before_command": "",
+            "configuration_before_fallback_used": False,
+            "applied_commands": [],
+            "command_results": [],
+            "display_info_center_after": "",
+            "configuration_after": "",
+            "configuration_after_command": "",
+            "configuration_after_fallback_used": False,
+            "missing_before": {},
+            "missing_after": {},
+            "checked_at": checked_at.isoformat(timespec="milliseconds"),
+            "verified_at": "",
+        }
         applied: tuple[str, ...] = ()
         boot: dict[str, Any] | None = None
         created = False
         evidence_path = ""
+        status = "CONFIG_FAILED"
         try:
             connection = self.connection_factory(config)
-            connection.send_command(READ_COMMANDS[0], config.command_timeout)
+            screen_output = str(connection.send_command(READ_COMMANDS[0], config.command_timeout) or "")
+            if _command_failed(screen_output):
+                raise RuntimeError("screen-length disable 执行失败")
             version_output = str(connection.send_command(READ_COMMANDS[1], config.command_timeout) or "")
+            if _command_failed(version_output):
+                raise RuntimeError("display version 执行失败")
+            evidence["display_version"] = version_output
             parsed_version = parse_version(version_output)
             uptime_seconds = parsed_version.get("uptime_seconds")
             if not isinstance(uptime_seconds, int):
@@ -194,7 +231,7 @@ class MrSyslogConfigService:
                 run_date,
                 device_uuid,
                 audit_id,
-                {"display_version": version_output},
+                evidence,
             )
             boot, created = MrBootSessionService(
                 repository=self.repository,
@@ -208,47 +245,106 @@ class MrSyslogConfigService:
                 uptime_seconds=uptime_seconds,
                 evidence_path=evidence_path,
             )
-            config_output = str(connection.send_command(READ_COMMANDS[2], config.command_timeout) or "")
-            if _command_failed(config_output):
-                validate_command_list(
-                    ("display current-configuration",),
-                    "ground_unattended_syslog_read",
+
+            info_before = str(connection.send_command(READ_COMMANDS[2], config.command_timeout) or "")
+            if _command_failed(info_before):
+                raise RuntimeError("display info-center 执行失败")
+            evidence["display_info_center_before"] = info_before
+            config_before, before_command, before_fallback = self._read_configuration(
+                connection, config.command_timeout
+            )
+            evidence["configuration_before"] = config_before
+            evidence["configuration_before_command"] = before_command
+            evidence["configuration_before_fallback_used"] = before_fallback
+            before = verify_syslog_profile(
+                info_before,
+                config_before,
+                target_ip=target_ip,
+                target_port=target_port,
+            )
+            evidence["missing_before"] = _verification_evidence(before)
+
+            info_after = info_before
+            config_after = config_before
+            after_command = before_command
+            after_fallback = before_fallback
+            verified = before.complete
+            if before.complete:
+                status = "CONFIG_PRESENT"
+            else:
+                applied = build_syslog_config_commands(before.config.missing_commands)
+                if applied:
+                    _validate_syslog_write_commands(applied, target_ip=target_ip, target_port=target_port)
+                    for command in applied:
+                        output = str(connection.send_command(command, config.command_timeout) or "")
+                        command_result = {
+                            "command": command,
+                            "output": output,
+                            "failed": _command_failed(output),
+                        }
+                        evidence["command_results"].append(command_result)
+                        if command_result["failed"]:
+                            raise RuntimeError(f"Syslog 配置命令执行失败：{command}")
+                info_after = str(connection.send_command(READ_COMMANDS[2], config.command_timeout) or "")
+                if _command_failed(info_after):
+                    raise RuntimeError("display info-center 复查失败")
+                config_after, after_command, after_fallback = self._read_configuration(
+                    connection, config.command_timeout
                 )
-                config_output = str(
-                    connection.send_command("display current-configuration", config.command_timeout) or ""
+                after = verify_syslog_profile(
+                    info_after,
+                    config_after,
+                    target_ip=target_ip,
+                    target_port=target_port,
                 )
-            diff = analyze_syslog_config(config_output, target_ip=target_ip, target_port=target_port)
-            status = "CONFIG_PRESENT"
-            if not diff.complete:
-                applied = build_syslog_config_commands(diff.missing_commands)
-                _validate_syslog_write_commands(applied, target_ip=target_ip, target_port=target_port)
-                for command in applied:
-                    connection.send_command(command, config.command_timeout)
-                status = "CONFIG_SENT" if len(diff.missing_commands) == 4 else "CONFIG_REPAIRED"
+                verified = after.complete
+                if verified:
+                    status = "CONFIG_SENT" if len(before.config.missing_commands) == 4 else "CONFIG_REPAIRED"
+                else:
+                    status = "CONFIG_VERIFY_FAILED"
+
+            after = verify_syslog_profile(
+                info_after,
+                config_after,
+                target_ip=target_ip,
+                target_port=target_port,
+            )
+            evidence["display_info_center_after"] = info_after
+            evidence["configuration_after"] = config_after
+            evidence["configuration_after_command"] = after_command
+            evidence["configuration_after_fallback_used"] = after_fallback
+            evidence["missing_after"] = _verification_evidence(after)
+            if verified:
+                evidence["verified_at"] = self.now_provider().isoformat(timespec="milliseconds")
             evidence_path = self._write_evidence(
                 run_date,
                 device_uuid,
                 audit_id,
-                {
-                    "display_version": version_output,
-                    "display_current_configuration": config_output,
-                    "applied_commands": list(applied),
-                },
+                evidence,
             )
             fingerprint = hashlib.sha256(
-                f"{target_ip}:{target_port}\n{config_output}".encode("utf-8")
+                f"{target_ip}:{target_port}\n{config_after}".encode("utf-8")
             ).hexdigest()
+            metrics = after.runtime.as_dict()
+            previous_metrics = dict(boot.get("info_center_metrics") or {})
+            boot_status = _verified_boot_status(boot) if verified else status
             boot.update(
                 {
-                    "config_status": "LOG_ACTIVE"
-                    if boot.get("last_syslog_received_at")
-                    else "WAITING_FIRST_LOG",
+                    "config_status": boot_status,
                     "config_checked_at": checked_at.isoformat(timespec="milliseconds"),
                     "config_applied_at": checked_at.isoformat(timespec="milliseconds") if applied else str(boot.get("config_applied_at") or ""),
                     "config_fingerprint": fingerprint,
+                    "version_evidence_path": evidence_path,
+                    "info_center_metrics": metrics,
                 }
             )
             self.repository.upsert_boot_session(boot)
+            self._record_info_center_metric_changes(
+                run_id=run_id,
+                device_uuid=device_uuid,
+                previous=previous_metrics,
+                current=metrics,
+            )
             self.repository.save_syslog_config_audit(
                 {
                     "audit_id": audit_id,
@@ -260,12 +356,21 @@ class MrSyslogConfigService:
                     "target_ip": target_ip,
                     "target_port": target_port,
                     "status": status,
-                    "missing_commands": list(diff.missing_commands),
+                    "missing_commands": list(before.config.missing_commands),
                     "applied_commands": list(applied),
                     "evidence_path": evidence_path,
                     "evidence_sha256": _sha256(self.repository.db_path.parent / evidence_path),
                 }
             )
+            if status == "CONFIG_VERIFY_FAILED":
+                self.repository.add_health_event(
+                    run_id=run_id,
+                    component="mr_syslog_config",
+                    severity="warning",
+                    code="CONFIG_VERIFY_FAILED",
+                    message="MR Syslog 配置写入后未通过运行态和配置规则复查",
+                    details={"device_uuid": device_uuid, "missing_after": evidence["missing_after"]},
+                )
             self.repository.add_event(
                 run_id=run_id,
                 event_type="mr_boot_session_created" if created else "mr_config_checked",
@@ -286,6 +391,21 @@ class MrSyslogConfigService:
                 applied_commands=applied,
             )
         except Exception as exc:
+            evidence["error_code"] = exc.__class__.__name__
+            evidence["error_message"] = str(exc)
+            try:
+                evidence_path = self._write_evidence(run_date, device_uuid, audit_id, evidence)
+            except OSError:
+                pass
+            if boot is not None:
+                boot.update(
+                    {
+                        "config_status": "CONFIG_FAILED",
+                        "config_checked_at": checked_at.isoformat(timespec="milliseconds"),
+                        "version_evidence_path": evidence_path or str(boot.get("version_evidence_path") or ""),
+                    }
+                )
+                self.repository.upsert_boot_session(boot)
             self.repository.save_syslog_config_audit(
                 {
                     "audit_id": audit_id,
@@ -312,6 +432,14 @@ class MrSyslogConfigService:
                 title="MR Syslog 配置检查失败",
                 message=f"{exc.__class__.__name__}: {exc}",
             )
+            self.repository.add_health_event(
+                run_id=run_id,
+                component="mr_syslog_config",
+                severity="error",
+                code="CONFIG_FAILED",
+                message=f"{exc.__class__.__name__}: {exc}",
+                details={"device_uuid": device_uuid, "audit_id": audit_id},
+            )
             raise
         finally:
             if connection is not None:
@@ -319,6 +447,62 @@ class MrSyslogConfigService:
                     connection.close()
                 except Exception:
                     pass
+
+    @staticmethod
+    def _read_configuration(
+        connection: MrCommandConnection, timeout: int
+    ) -> tuple[str, str, bool]:
+        command = "display current-configuration | include info-center"
+        output = str(connection.send_command(command, timeout) or "")
+        if not _command_failed(output):
+            return output, command, False
+        fallback = "display current-configuration"
+        validate_command_list((fallback,), "ground_unattended_syslog_read")
+        output = str(connection.send_command(fallback, timeout) or "")
+        if _command_failed(output):
+            raise RuntimeError("display current-configuration 执行失败")
+        return output, fallback, True
+
+    def _record_info_center_metric_changes(
+        self,
+        *,
+        run_id: str,
+        device_uuid: str,
+        previous: dict[str, Any] | None,
+        current: dict[str, Any],
+    ) -> None:
+        previous = previous or {}
+        for metric, code, severity, message in (
+            (
+                "dropped_messages",
+                "INFO_CENTER_DROPPED_MESSAGES_INCREASED",
+                "warning",
+                "设备 Information Center dropped messages 计数增长，可能影响日志数据完整性",
+            ),
+            (
+                "overwritten_messages",
+                "INFO_CENTER_BUFFER_OVERWRITTEN_INCREASED",
+                "info",
+                "设备本地 Information Center 环形缓冲覆盖计数增长，不等同于 UDP 网络丢包",
+            ),
+        ):
+            before = _int_or_none(previous.get(metric))
+            after = _int_or_none(current.get(metric))
+            if before is not None and after is not None and after > before:
+                self.repository.add_health_event(
+                    run_id=run_id,
+                    component="mr_info_center",
+                    severity=severity,
+                    code=code,
+                    message=message,
+                    details={
+                        "device_uuid": device_uuid,
+                        "metric": metric,
+                        "previous": before,
+                        "current": after,
+                        "increase": after - before,
+                    },
+                )
 
     def _write_evidence(
         self, run_date: str, device_uuid: str, audit_id: str, payload: dict[str, Any]
@@ -334,18 +518,87 @@ class MrSyslogConfigService:
 
 def analyze_syslog_config(output: str, *, target_ip: str, target_port: int) -> SyslogConfigDiff:
     lines = {_normalize(line) for line in str(output or "").splitlines() if line.strip()}
+    target_ip = str(ipaddress.ip_address(str(target_ip).strip()))
+    target_port = int(target_port)
     required = (
         "info-center enable",
         f"info-center loghost {target_ip} port {target_port}",
         "info-center source default loghost deny",
         "info-center source wmesh loghost level notification",
     )
-    missing = tuple(command for command in required if _normalize(command) not in lines)
+    missing = tuple(
+        command
+        for command in required
+        if not (
+            command.startswith("info-center loghost ")
+            and _has_matching_loghost(lines, target_ip=target_ip, target_port=target_port)
+        )
+        and _normalize(command) not in lines
+    )
     return SyslogConfigDiff(
         complete=not missing,
         missing_commands=missing,
         target_present=required[1] not in missing,
     )
+
+
+def verify_syslog_profile(
+    info_center_output: str,
+    configuration_output: str,
+    *,
+    target_ip: str,
+    target_port: int,
+) -> SyslogProfileVerification:
+    """Require both runtime delivery state and the fixed source rules."""
+
+    target_ip = str(ipaddress.ip_address(str(target_ip).strip()))
+    target_port = int(target_port)
+    runtime = parse_info_center_runtime(info_center_output)
+    missing_runtime: list[str] = []
+    if runtime.information_center_enabled is not True:
+        missing_runtime.append("information_center_enabled")
+    if runtime.loghost_enabled is not True:
+        missing_runtime.append("loghost_enabled")
+    if not any(host.ip == target_ip and host.port == target_port for host in runtime.log_hosts):
+        missing_runtime.append("loghost_target")
+    config = analyze_syslog_config(
+        configuration_output,
+        target_ip=target_ip,
+        target_port=target_port,
+    )
+    return SyslogProfileVerification(
+        complete=config.complete and not missing_runtime,
+        config=config,
+        runtime_missing=tuple(missing_runtime),
+        runtime=runtime,
+    )
+
+
+def _has_matching_loghost(lines: set[str], *, target_ip: str, target_port: int) -> bool:
+    escaped_ip = re.escape(target_ip)
+    if target_port == 514:
+        pattern = re.compile(rf"^info-center loghost {escaped_ip}(?: port 514)?$")
+    else:
+        pattern = re.compile(rf"^info-center loghost {escaped_ip} port {target_port}$")
+    return any(pattern.fullmatch(line) is not None for line in lines)
+
+
+def _verification_evidence(verification: SyslogProfileVerification) -> dict[str, Any]:
+    return {
+        "configuration": list(verification.config.missing_commands),
+        "runtime": list(verification.runtime_missing),
+    }
+
+
+def _verified_boot_status(boot: dict[str, Any]) -> str:
+    return "LOG_ACTIVE" if boot.get("last_syslog_received_at") else "WAITING_FIRST_LOG"
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def build_syslog_config_commands(missing_commands: tuple[str, ...]) -> tuple[str, ...]:
@@ -429,6 +682,8 @@ __all__ = [
     "MrConfigCheckResult",
     "MrSyslogConfigService",
     "SyslogConfigDiff",
+    "SyslogProfileVerification",
     "analyze_syslog_config",
     "build_syslog_config_commands",
+    "verify_syslog_profile",
 ]
