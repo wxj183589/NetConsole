@@ -24,8 +24,15 @@ TOKEN = "site-storage-session-token-123456"
 def _client(tmp_path: Path) -> TestClient:
     app_root = tmp_path / "app"
     paths = PathResolver(app_root=app_root, data_root=tmp_path / "data")
-    app = create_app(RuntimeMode.DESKTOP, paths=paths, desktop_session_token=TOKEN, api_documentation_enabled=True)
-    return TestClient(app, base_url="http://127.0.0.1", headers={"X-NetConsole-Session": TOKEN})
+    app = create_app(
+        RuntimeMode.DESKTOP,
+        paths=paths,
+        desktop_session_token=TOKEN,
+        api_documentation_enabled=True,
+    )
+    return TestClient(
+        app, base_url="http://127.0.0.1", headers={"X-NetConsole-Session": TOKEN}
+    )
 
 
 def test_site_registry_create_list_and_activate(tmp_path: Path) -> None:
@@ -33,11 +40,17 @@ def test_site_registry_create_list_and_activate(tmp_path: Path) -> None:
 
     created = client.post(
         "/api/v1/sites",
-        json={"site_id": "line-12", "display_name": "宁波地铁12号线", "activate": False},
+        json={
+            "site_id": "line-12",
+            "display_name": "宁波地铁12号线",
+            "activate": False,
+        },
     )
     assert created.status_code == 201, created.text
     assert created.json()["site_id"] == "line-12"
-    assert any(item["site_id"] == "line-12" for item in client.get("/api/v1/sites").json())
+    assert any(
+        item["site_id"] == "line-12" for item in client.get("/api/v1/sites").json()
+    )
 
     preflight = client.post("/api/v1/sites/line-12/activate/preflight")
     assert preflight.status_code == 200, preflight.text
@@ -53,7 +66,9 @@ def test_site_registry_create_list_and_activate(tmp_path: Path) -> None:
     assert activated.json()["restart_required"] is True
 
 
-def test_legacy_chinese_site_is_listed_and_activated_by_stable_id(tmp_path: Path) -> None:
+def test_legacy_chinese_site_is_listed_and_activated_by_stable_id(
+    tmp_path: Path,
+) -> None:
     client = _client(tmp_path)
     paths = client.app.state.paths
     legacy_name = "宁波地铁12号线"
@@ -66,7 +81,9 @@ def test_legacy_chinese_site_is_listed_and_activated_by_stable_id(tmp_path: Path
     legacy = next(item for item in listed.json() if item["display_name"] == legacy_name)
     assert legacy["site_id"].startswith("legacy-")
 
-    activated = client.post(f"/api/v1/sites/{legacy['site_id']}/activate", json={"confirmed": True})
+    activated = client.post(
+        f"/api/v1/sites/{legacy['site_id']}/activate", json={"confirmed": True}
+    )
 
     assert activated.status_code == 200, activated.text
     assert activated.json()["site_id"] == legacy["site_id"]
@@ -74,7 +91,9 @@ def test_legacy_chinese_site_is_listed_and_activated_by_stable_id(tmp_path: Path
 
 def test_site_switch_is_blocked_by_active_task(tmp_path: Path) -> None:
     client = _client(tmp_path)
-    client.post("/api/v1/sites", json={"site_id": "line-12", "display_name": "十二号线"})
+    client.post(
+        "/api/v1/sites", json={"site_id": "line-12", "display_name": "十二号线"}
+    )
     client.app.state.task_service.create_external_task(
         task_id="running-task",
         task_type="test",
@@ -107,7 +126,9 @@ def test_site_switch_is_blocked_by_active_task(tmp_path: Path) -> None:
 
 def test_terminal_task_history_does_not_block_site_switch(tmp_path: Path) -> None:
     client = _client(tmp_path)
-    client.post("/api/v1/sites", json={"site_id": "line-12", "display_name": "十二号线"})
+    client.post(
+        "/api/v1/sites", json={"site_id": "line-12", "display_name": "十二号线"}
+    )
     repository = client.app.state.task_service.repository("line-12")
     now = utc_now_iso()
     for status in (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED):
@@ -132,7 +153,9 @@ def test_terminal_task_history_does_not_block_site_switch(tmp_path: Path) -> Non
 
 def test_dead_local_task_is_reconciled_before_site_switch(tmp_path: Path) -> None:
     client = _client(tmp_path)
-    client.post("/api/v1/sites", json={"site_id": "line-12", "display_name": "十二号线"})
+    client.post(
+        "/api/v1/sites", json={"site_id": "line-12", "display_name": "十二号线"}
+    )
     repository = client.app.state.task_service.repository("line-12")
     now = utc_now_iso()
     repository.save(
@@ -158,7 +181,9 @@ def test_dead_local_task_is_reconciled_before_site_switch(tmp_path: Path) -> Non
 
 def test_unhosted_pending_task_is_reconciled_before_site_switch(tmp_path: Path) -> None:
     client = _client(tmp_path)
-    client.post("/api/v1/sites", json={"site_id": "line-12", "display_name": "十二号线"})
+    client.post(
+        "/api/v1/sites", json={"site_id": "line-12", "display_name": "十二号线"}
+    )
     repository = client.app.state.task_service.repository("line-12")
     now = utc_now_iso()
     repository.save(
@@ -184,7 +209,9 @@ def test_unhosted_pending_task_is_reconciled_before_site_switch(tmp_path: Path) 
 
 def test_active_task_in_current_site_blocks_switch(tmp_path: Path) -> None:
     client = _client(tmp_path)
-    client.post("/api/v1/sites", json={"site_id": "line-12", "display_name": "十二号线"})
+    client.post(
+        "/api/v1/sites", json={"site_id": "line-12", "display_name": "十二号线"}
+    )
     client.app.state.task_service.create_external_task(
         task_id="current-site-task",
         task_type="test",
@@ -206,7 +233,10 @@ def test_data_root_validation_returns_safe_error_and_snapshot(tmp_path: Path) ->
     assert snapshot.status_code == 200
     assert snapshot.json()["active_site_id"]
 
-    unsafe = client.post("/api/v1/storage/data-root/validate", json={"path": str(tmp_path / "app" / "nested")})
+    unsafe = client.post(
+        "/api/v1/storage/data-root/validate",
+        json={"path": str(tmp_path / "app" / "nested")},
+    )
     assert unsafe.status_code == 422
     assert unsafe.json()["detail"]["code"] == "DATA_ROOT_UNSAFE_LOCATION"
 
@@ -216,15 +246,18 @@ def test_site_package_inspect_does_not_write_on_invalid_package(tmp_path: Path) 
     package = tmp_path / "invalid.ncsite"
     package.write_bytes(b"not a zip")
 
-    response = client.post("/api/v1/sites/import/inspect", json={"package_path": str(package)})
+    response = client.post(
+        "/api/v1/sites/import/inspect", json={"package_path": str(package)}
+    )
 
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "SITE_IMPORT_INVALID_PACKAGE"
 
 
-def test_full_package_password_uses_one_shot_worker_bootstrap(tmp_path: Path) -> None:
+def test_full_package_export_requires_no_password_or_sensitive_bootstrap(
+    tmp_path: Path,
+) -> None:
     client = _client(tmp_path)
-    password = "migration-api-secret"
     captured: list[tuple[object, dict[str, object]]] = []
 
     def capture(job: object, **kwargs: object) -> str:
@@ -237,48 +270,35 @@ def test_full_package_password_uses_one_shot_worker_bootstrap(tmp_path: Path) ->
         json={
             "destination_path": str(tmp_path / "full.ncsite"),
             "package_type": "full_migration",
-            "migration_password": password,
         },
     )
 
     assert response.status_code == 202, response.text
     job, kwargs = captured[0]
     serialized = str(getattr(job, "to_dict")())
-    assert password not in serialized
-    assert kwargs == {"sensitive_bootstrap": {"migration_password": password}}
+    assert "migration_password" not in serialized
+    assert "credential_policy" not in serialized
+    assert kwargs == {}
 
 
-def test_full_package_inspect_and_import_require_password_without_persisting_it(
+def test_full_package_inspect_and_import_require_no_password(
     tmp_path: Path,
 ) -> None:
     client = _client(tmp_path)
     package = tmp_path / "full.ncsite"
-    password = "migration-api-secret"
     SitePackageService(
         client.app.state.paths,
         client.app.state.site_application_service,
-    ).export_site("demo", package, migration_password=password)
+    ).export_site("demo", package)
 
-    required = client.post(
+    inspected = client.post(
         "/api/v1/sites/import/inspect",
         json={"package_path": str(package)},
     )
-    wrong = client.post(
-        "/api/v1/sites/import/inspect",
-        json={"package_path": str(package), "migration_password": "wrong-password"},
-    )
-    inspected = client.post(
-        "/api/v1/sites/import/inspect",
-        json={"package_path": str(package), "migration_password": password},
-    )
 
-    assert required.status_code == 422
-    assert required.json()["detail"]["code"] == "SITE_IMPORT_PASSWORD_REQUIRED"
-    assert wrong.status_code == 422
-    assert wrong.json()["detail"]["code"] == "SITE_IMPORT_AUTHENTICATION_FAILED"
     assert inspected.status_code == 200, inspected.text
-    assert inspected.json()["encrypted"] is True
-    assert password not in inspected.text
+    assert inspected.json()["encrypted"] is False
+    assert inspected.json()["contains_credentials"] is True
 
     captured: list[tuple[object, dict[str, object]]] = []
 
@@ -293,16 +313,15 @@ def test_full_package_inspect_and_import_require_password_without_persisting_it(
             "package_path": str(package),
             "site_id": "restored-demo",
             "display_name": "恢复演示局点",
-            "migration_password": password,
         },
     )
 
     assert submitted.status_code == 202, submitted.text
     job, kwargs = captured[0]
     serialized = str(getattr(job, "to_dict")())
-    assert password not in serialized
     assert "migration_password" not in serialized
-    assert kwargs == {"sensitive_bootstrap": {"migration_password": password}}
+    assert "credential_policy" not in serialized
+    assert kwargs == {}
 
 
 def test_site_storage_contract_is_in_openapi(tmp_path: Path) -> None:
@@ -332,7 +351,14 @@ def test_site_audit_and_cleanup_prepare_are_redacted(tmp_path: Path) -> None:
     assert "manifest_path" not in audit.json()
     assert str(paths.data_root) not in audit.text
     assert plan.status_code == 200, plan.text
-    assert set(plan.json()) == {"cleanup_token", "site_id", "classification", "blocking_reasons", "recoverable", "can_delete"}
+    assert set(plan.json()) == {
+        "cleanup_token",
+        "site_id",
+        "classification",
+        "blocking_reasons",
+        "recoverable",
+        "can_delete",
+    }
 
 
 def test_cleanup_api_requires_audit_and_explicit_confirmation(tmp_path: Path) -> None:
@@ -340,7 +366,9 @@ def test_cleanup_api_requires_audit_and_explicit_confirmation(tmp_path: Path) ->
     paths = client.app.state.paths
     shell = paths.ensure_site_dirs("legacy-shell")
     Database(shell / "db" / "devices.db").initialize()
-    SiteRegistryRepository(paths).register(SiteRecord("legacy-shell-id", "Legacy 空壳", shell))
+    SiteRegistryRepository(paths).register(
+        SiteRecord("legacy-shell-id", "Legacy 空壳", shell)
+    )
 
     missing = client.post("/api/v1/sites/legacy-shell-id/cleanup/prepare")
     assert missing.status_code == 422
@@ -359,12 +387,16 @@ def test_cleanup_api_requires_audit_and_explicit_confirmation(tmp_path: Path) ->
 
 def test_demo_rebuild_rejects_user_data_bypass(tmp_path: Path) -> None:
     client = _client(tmp_path)
-    response = client.post("/api/v1/sites/demo/rebuild", json={"confirmed": True, "allow_user_data": True})
+    response = client.post(
+        "/api/v1/sites/demo/rebuild", json={"confirmed": True, "allow_user_data": True}
+    )
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "DEMO_USER_DATA_EXPORT_REQUIRED"
 
 
-def test_isolated_storage_is_read_only_and_redacted(tmp_path: Path, monkeypatch) -> None:
+def test_isolated_storage_is_read_only_and_redacted(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("NETCONSOLE_STORAGE_MODE", "isolated_test")
     client = _client(tmp_path)
 
@@ -391,15 +423,24 @@ def test_isolated_storage_is_read_only_and_redacted(tmp_path: Path, monkeypatch)
         ("/api/v1/sites", {"site_id": "line-12", "display_name": "十二号线"}),
         ("/api/v1/sites/demo/activate", {"confirmed": True}),
         ("/api/v1/sites/demo/migrate", {"path": str(tmp_path / "target")}),
-        ("/api/v1/sites/demo/export", {"destination_path": str(tmp_path / "site.ncsite")}),
-        ("/api/v1/sites/import/inspect", {"package_path": str(tmp_path / "site.ncsite")}),
+        (
+            "/api/v1/sites/demo/export",
+            {"destination_path": str(tmp_path / "site.ncsite")},
+        ),
+        (
+            "/api/v1/sites/import/inspect",
+            {"package_path": str(tmp_path / "site.ncsite")},
+        ),
         ("/api/v1/sites/import", {"package_path": str(tmp_path / "site.ncsite")}),
         ("/api/v1/sites/demo/audit", {}),
         ("/api/v1/sites/demo/cleanup/prepare", {}),
         ("/api/v1/sites/demo/rebuild", {"confirmed": True}),
         ("/api/v1/sites/recycle/1234567890abcdef/restore", {"confirmed": True}),
         ("/api/v1/storage/data-root/validate", {"path": str(tmp_path / "target")}),
-        ("/api/v1/storage/data-root/migration-plan", {"path": str(tmp_path / "target")}),
+        (
+            "/api/v1/storage/data-root/migration-plan",
+            {"path": str(tmp_path / "target")},
+        ),
         ("/api/v1/storage/data-root/migrate", {"path": str(tmp_path / "target")}),
     )
     for path, payload in writes:
@@ -407,7 +448,9 @@ def test_isolated_storage_is_read_only_and_redacted(tmp_path: Path, monkeypatch)
         assert response.status_code == 403, (path, response.text)
 
 
-def test_site_storage_tasks_are_visible_as_cancellable_in_job_center(tmp_path: Path) -> None:
+def test_site_storage_tasks_are_visible_as_cancellable_in_job_center(
+    tmp_path: Path,
+) -> None:
     client = _client(tmp_path)
     client.app.state.task_service.create_external_task(
         task_id="site-export-task",

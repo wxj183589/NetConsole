@@ -31,7 +31,7 @@ PACKAGE_TYPES = frozenset(
     {FULL_MIGRATION, SANITIZED_SHARE, FIELD_COLLECTION, COLLECTION_RETURN}
 )
 PACKAGE_FORMAT = "netconsole-site-package"
-PACKAGE_FORMAT_VERSION = 3
+PACKAGE_FORMAT_VERSION = 4
 
 _DATABASE_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
 _EXCLUDED_PARTS = {
@@ -137,7 +137,9 @@ class SiteSyncService:
         baseline_id = str(uuid.uuid4())
         destination = _with_suffix(destination, ".ncsite")
         files = list(self._field_collection_files(record.root_path))
-        with tempfile.TemporaryDirectory(prefix="netconsole-field-package-") as temporary:
+        with tempfile.TemporaryDirectory(
+            prefix="netconsole-field-package-"
+        ) as temporary:
             temp_root = Path(temporary)
             checksums = self._copy_package_files(
                 files,
@@ -193,7 +195,10 @@ class SiteSyncService:
         metadata = self._read_metadata(record.root_path)
         origin = metadata.get("sync_origin")
         if not isinstance(origin, dict) or not str(origin.get("baseline_id") or ""):
-            _raise("SITE_SYNC_BASELINE_REQUIRED", "当前局点不是由现场采集包建立，不能导出采集回传包")
+            _raise(
+                "SITE_SYNC_BASELINE_REQUIRED",
+                "当前局点不是由现场采集包建立，不能导出采集回传包",
+            )
         baseline_id = str(origin["baseline_id"])
         baseline_root = self._baseline_root(record.root_path, baseline_id)
         baseline_manifest = _read_json(baseline_root / "manifest.json")
@@ -204,10 +209,14 @@ class SiteSyncService:
         source_machine_id = self._installation_id()
         baseline_files = {
             str(name): str(value)
-            for name, value in dict(baseline_manifest.get("baseline_files") or {}).items()
+            for name, value in dict(
+                baseline_manifest.get("baseline_files") or {}
+            ).items()
         }
 
-        with tempfile.TemporaryDirectory(prefix="netconsole-return-package-") as temporary:
+        with tempfile.TemporaryDirectory(
+            prefix="netconsole-return-package-"
+        ) as temporary:
             temp_root = Path(temporary)
             payload_root = temp_root / "return"
             file_entries: list[dict[str, object]] = []
@@ -264,11 +273,17 @@ class SiteSyncService:
             base_devices = baseline_root / "devices.db"
             if not current_devices.is_file() or not base_devices.is_file():
                 _raise("SITE_SYNC_BASELINE_INVALID", "现场采集基准缺少主数据库副本")
-            _copy_sanitized_database(base_devices, payload_root / "databases" / "base" / "devices.db")
-            _copy_sanitized_database(current_devices, payload_root / "databases" / "current" / "devices.db")
+            _copy_sanitized_database(
+                base_devices, payload_root / "databases" / "base" / "devices.db"
+            )
+            _copy_sanitized_database(
+                current_devices, payload_root / "databases" / "current" / "devices.db"
+            )
             tasks = record.root_path / "db" / "tasks.db"
             if tasks.is_file():
-                _copy_database(tasks, payload_root / "databases" / "current" / "tasks.db")
+                _copy_database(
+                    tasks, payload_root / "databases" / "current" / "tasks.db"
+                )
 
             checksums = {
                 item.relative_to(temp_root).as_posix(): _sha256(item)
@@ -312,8 +327,12 @@ class SiteSyncService:
         *,
         target_site_id: str | None = None,
     ) -> dict[str, object]:
-        target = self._resolve_target(str(manifest.get("site_uuid") or ""), target_site_id)
-        with tempfile.TemporaryDirectory(prefix="netconsole-return-inspect-") as temporary:
+        target = self._resolve_target(
+            str(manifest.get("site_uuid") or ""), target_site_id
+        )
+        with tempfile.TemporaryDirectory(
+            prefix="netconsole-return-inspect-"
+        ) as temporary:
             extracted = Path(temporary)
             _extract_selected(
                 package,
@@ -339,8 +358,12 @@ class SiteSyncService:
             for item in self._sync_candidate_files(target.root_path)
             if item.suffix.casefold() not in _DATABASE_SUFFIXES
         }
-        entries = [item for item in manifest.get("file_entries", []) if isinstance(item, dict)]
-        duplicate_files = sum(1 for item in entries if str(item.get("sha256") or "") in file_hashes)
+        entries = [
+            item for item in manifest.get("file_entries", []) if isinstance(item, dict)
+        ]
+        duplicate_files = sum(
+            1 for item in entries if str(item.get("sha256") or "") in file_hashes
+        )
         new_files = len(entries) - duplicate_files
         conflicts = [item.to_public() for item in database_plan.conflicts]
         conflicts.extend(task_preview["conflicts"])
@@ -371,7 +394,13 @@ class SiteSyncService:
             "unsupported_records": database_plan.unsupported_records,
             "deletion_requests": database_plan.deletion_requests
             + int(task_preview["deletion_requests"])
-            + len([item for item in manifest.get("deletions", []) if isinstance(item, dict)]),
+            + len(
+                [
+                    item
+                    for item in manifest.get("deletions", [])
+                    if isinstance(item, dict)
+                ]
+            ),
             "conflict_count": len(conflicts),
             "conflicts": conflicts,
             "invalid_count": 0,
@@ -389,32 +418,47 @@ class SiteSyncService:
         raw_only: bool,
         conflict_resolutions: Iterable[dict[str, object]],
     ) -> dict[str, object]:
-        target = self._resolve_target(str(manifest.get("site_uuid") or ""), target_site_id)
+        target = self._resolve_target(
+            str(manifest.get("site_uuid") or ""), target_site_id
+        )
         import_id = str(uuid.uuid4())
         resolution_map = {
             str(item.get("conflict_id") or ""): item
             for item in conflict_resolutions
             if isinstance(item, dict)
         }
-        recovery = self.paths.site_backups_dir(target.root_path.name) / f"sync-import-{import_id}"
+        recovery = (
+            self.paths.site_backups_dir(target.root_path.name)
+            / f"sync-import-{import_id}"
+        )
         created_files: list[Path] = []
         archived_files: list[Path] = []
         recovery.mkdir(parents=True, exist_ok=False)
 
-        with tempfile.TemporaryDirectory(prefix="netconsole-return-import-") as temporary:
+        with tempfile.TemporaryDirectory(
+            prefix="netconsole-return-import-"
+        ) as temporary:
             extracted = Path(temporary)
             _extract_all(package, extracted)
             devices_base = extracted / "return" / "databases" / "base" / "devices.db"
-            devices_returned = extracted / "return" / "databases" / "current" / "devices.db"
+            devices_returned = (
+                extracted / "return" / "databases" / "current" / "devices.db"
+            )
             tasks_returned = extracted / "return" / "databases" / "current" / "tasks.db"
             devices_local = target.root_path / "db" / "devices.db"
             tasks_local = target.root_path / "db" / "tasks.db"
-            database_plan = _plan_database_merge(devices_local, devices_base, devices_returned)
+            database_plan = _plan_database_merge(
+                devices_local, devices_base, devices_returned
+            )
             task_preview = _preview_task_merge(tasks_local, tasks_returned)
             unresolved = [
                 conflict
-                for conflict in [*database_plan.conflicts, *_task_conflicts(task_preview)]
-                if str(resolution_map.get(conflict.conflict_id, {}).get("choice") or "") not in {
+                for conflict in [
+                    *database_plan.conflicts,
+                    *_task_conflicts(task_preview),
+                ]
+                if str(resolution_map.get(conflict.conflict_id, {}).get("choice") or "")
+                not in {
                     "local",
                     "returned",
                     "manual",
@@ -422,7 +466,10 @@ class SiteSyncService:
             ]
             if unresolved and not raw_only:
                 shutil.rmtree(recovery, ignore_errors=True)
-                _raise("SITE_IMPORT_CONFLICT", "回传包仍有未处理冲突，请先在预检页面选择处理方式")
+                _raise(
+                    "SITE_IMPORT_CONFLICT",
+                    "回传包仍有未处理冲突，请先在预检页面选择处理方式",
+                )
 
             try:
                 _copy_database(devices_local, recovery / "db" / "devices.db")
@@ -430,7 +477,9 @@ class SiteSyncService:
                     _copy_database(tasks_local, recovery / "db" / "tasks.db")
                 metadata_path = target.root_path / "site_meta.json"
                 if metadata_path.is_file():
-                    recovery.joinpath("site_meta.json").write_bytes(metadata_path.read_bytes())
+                    recovery.joinpath("site_meta.json").write_bytes(
+                        metadata_path.read_bytes()
+                    )
 
                 file_result = self._merge_return_files(
                     target.root_path,
@@ -452,7 +501,9 @@ class SiteSyncService:
                         database_plan,
                         resolution_map,
                     )
-                    task_result = _apply_task_merge(tasks_local, tasks_returned, resolution_map)
+                    task_result = _apply_task_merge(
+                        tasks_local, tasks_returned, resolution_map
+                    )
 
                 metadata = self._read_metadata(target.root_path)
                 metadata["revision"] = int(metadata.get("revision") or 1) + 1
@@ -473,14 +524,22 @@ class SiteSyncService:
                     "database": database_result,
                     "tasks": task_result,
                     "deletion_requests_ignored": len(
-                        [item for item in manifest.get("deletions", []) if isinstance(item, dict)]
+                        [
+                            item
+                            for item in manifest.get("deletions", [])
+                            if isinstance(item, dict)
+                        ]
                     )
                     + database_plan.deletion_requests
                     + int(task_preview["deletion_requests"]),
-                    "recovery_snapshot": recovery.relative_to(target.root_path).as_posix(),
+                    "recovery_snapshot": recovery.relative_to(
+                        target.root_path
+                    ).as_posix(),
                 }
                 _atomic_json(
-                    self.paths.site_sync_dir(target.root_path.name) / "imports" / f"{import_id}.json",
+                    self.paths.site_sync_dir(target.root_path.name)
+                    / "imports"
+                    / f"{import_id}.json",
                     audit,
                 )
                 return {
@@ -504,7 +563,9 @@ class SiteSyncService:
                 for path in reversed(archived_files):
                     path.unlink(missing_ok=True)
                 if (recovery / "site_meta.json").is_file():
-                    shutil.copy2(recovery / "site_meta.json", target.root_path / "site_meta.json")
+                    shutil.copy2(
+                        recovery / "site_meta.json", target.root_path / "site_meta.json"
+                    )
                 raise
 
     def record_field_baseline(
@@ -531,8 +592,12 @@ class SiteSyncService:
             },
         )
         metadata = self._read_metadata(site_root)
-        metadata["site_uuid"] = str(manifest.get("site_uuid") or metadata.get("site_uuid") or "")
-        metadata["revision"] = int(manifest.get("base_revision") or metadata.get("revision") or 1)
+        metadata["site_uuid"] = str(
+            manifest.get("site_uuid") or metadata.get("site_uuid") or ""
+        )
+        metadata["revision"] = int(
+            manifest.get("base_revision") or metadata.get("revision") or 1
+        )
         metadata["sync_origin"] = {
             "baseline_id": baseline_id,
             "base_revision": int(manifest.get("base_revision") or 1),
@@ -558,7 +623,10 @@ class SiteSyncService:
             from netconsole.services.site_lifecycle import SiteAuditService
 
             if not SiteAuditService(self.paths).latest(record.site_id):
-                _raise("SITE_SYNC_AUDIT_REQUIRED", "Legacy 局点必须先完成只读审计，才能建立跨电脑同步标识")
+                _raise(
+                    "SITE_SYNC_AUDIT_REQUIRED",
+                    "Legacy 局点必须先完成只读审计，才能建立跨电脑同步标识",
+                )
         metadata["site_uuid"] = f"site-{uuid.uuid4()}"
         metadata["revision"] = max(1, int(metadata.get("revision") or 1))
         metadata["sync_schema_version"] = 1
@@ -598,7 +666,9 @@ class SiteSyncService:
             for item in self._sync_candidate_files(site_root)
             if item.suffix.casefold() not in _DATABASE_SUFFIXES
         }
-        source_machine = _safe_component(str(manifest.get("source_machine_id") or "unknown"))
+        source_machine = _safe_component(
+            str(manifest.get("source_machine_id") or "unknown")
+        )
         imported = 0
         duplicates = 0
         renamed = 0
@@ -657,7 +727,9 @@ class SiteSyncService:
             "package_id": str(uuid.uuid4()),
             "package_type": package_type,
             "app_version": APP_VERSION.removeprefix("v"),
-            "database_schema_version": _database_schema_version(record.root_path / "db" / "devices.db"),
+            "database_schema_version": _database_schema_version(
+                record.root_path / "db" / "devices.db"
+            ),
             "site_id": record.site_id,
             "site_uuid": identity["site_uuid"],
             "site_name": record.display_name,
@@ -685,7 +757,9 @@ class SiteSyncService:
                 "NetConsole 局点数据包；不包含本机设置、Token、密码或设备凭据。\n",
                 encoding="utf-8",
             )
-            with zipfile.ZipFile(staging, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            with zipfile.ZipFile(
+                staging, "w", compression=zipfile.ZIP_DEFLATED
+            ) as archive:
                 for item in temp_root.rglob("*"):
                     if item.is_file():
                         archive.write(item, item.relative_to(temp_root).as_posix())
@@ -738,7 +812,10 @@ class SiteSyncService:
             parts = {part.casefold() for part in relative.parts}
             if parts & _EXCLUDED_PARTS:
                 continue
-            if item.name.endswith((".tmp", ".lock", ".part", "-wal", "-shm")) or ".db-" in item.name:
+            if (
+                item.name.endswith((".tmp", ".lock", ".part", "-wal", "-shm"))
+                or ".db-" in item.name
+            ):
                 continue
             yield item
 
@@ -747,7 +824,9 @@ class SiteSyncService:
             normalized = str(uuid.UUID(baseline_id))
         except ValueError:
             _raise("SITE_SYNC_BASELINE_INVALID", "现场采集基准标识无效")
-        root = (self.paths.site_sync_dir(site_root.name) / "baselines" / normalized).resolve()
+        root = (
+            self.paths.site_sync_dir(site_root.name) / "baselines" / normalized
+        ).resolve()
         _require_inside(site_root, root)
         return root
 
@@ -807,13 +886,17 @@ def _plan_database_merge(local: Path, base: Path, returned: Path) -> DatabaseMer
                 if table not in {"schema_metadata", "sqlite_sequence"}:
                     unsupported_records += _table_count(returned_db, table)
                 continue
-            if table not in _table_names(local_db) or table not in _table_names(base_db):
+            if table not in _table_names(local_db) or table not in _table_names(
+                base_db
+            ):
                 unsupported_records += _table_count(returned_db, table)
                 continue
             base_rows = _rows_by_key(base_db, table, key_columns)
             local_rows = _rows_by_key(local_db, table, key_columns)
             returned_rows = _rows_by_key(returned_db, table, key_columns)
-            for key in sorted(set(base_rows) | set(returned_rows), key=lambda value: repr(value)):
+            for key in sorted(
+                set(base_rows) | set(returned_rows), key=lambda value: repr(value)
+            ):
                 base_row = base_rows.get(key)
                 local_row = local_rows.get(key)
                 returned_row = returned_rows.get(key)
@@ -825,18 +908,24 @@ def _plan_database_merge(local: Path, base: Path, returned: Path) -> DatabaseMer
                 if base_row is None:
                     if local_row is None:
                         insert_values = _writable_row(returned_row)
-                        actions.append(MergeAction(table, key_columns, key, insert_values, {}))
+                        actions.append(
+                            MergeAction(table, key_columns, key, insert_values, {})
+                        )
                         new_records += 1
                     elif _comparable_row(local_row) == _comparable_row(returned_row):
                         duplicate_records += 1
                     else:
                         conflicts.extend(
-                            _row_conflicts(table, entity_id, {}, local_row, returned_row)
+                            _row_conflicts(
+                                table, entity_id, {}, local_row, returned_row
+                            )
                         )
                     continue
                 if local_row is None:
                     conflicts.append(
-                        _conflict(table, entity_id, "__entity__", base_row, None, returned_row)
+                        _conflict(
+                            table, entity_id, "__entity__", base_row, None, returned_row
+                        )
                     )
                     continue
                 updates: dict[str, object] = {}
@@ -898,9 +987,9 @@ def _apply_database_plan(
             if choice == "manual"
             else conflict.returned_value
         )
-        actions_by_entity.setdefault(
-            (conflict.entity_type, conflict.entity_id), {}
-        )[conflict.field] = value
+        actions_by_entity.setdefault((conflict.entity_type, conflict.entity_id), {})[
+            conflict.field
+        ] = value
 
     inserted = 0
     updated = 0
@@ -1012,7 +1101,9 @@ def _apply_task_merge(
             for task_id, returned_row in returned_rows.items():
                 local_row = local_rows.get(task_id)
                 if local_row is None:
-                    _insert_row(local_db, "task_snapshots", returned_row, skip={"sequence"})
+                    _insert_row(
+                        local_db, "task_snapshots", returned_row, skip={"sequence"}
+                    )
                     inserted += 1
                     continue
                 if _comparable_row(local_row) == _comparable_row(returned_row):
@@ -1027,11 +1118,16 @@ def _apply_task_merge(
                     _task_summary(returned_row),
                 )
                 resolution = resolutions.get(conflict.conflict_id, {})
-                if _prefer_returned_task(local_row, returned_row) or resolution.get("choice") == "returned":
+                if (
+                    _prefer_returned_task(local_row, returned_row)
+                    or resolution.get("choice") == "returned"
+                ):
                     _replace_row(local_db, "task_snapshots", returned_row, ("task_id",))
                     updated += 1
             if "task_events" in _table_names(returned_db):
-                events = returned_db.execute("SELECT * FROM task_events ORDER BY sequence").fetchall()
+                events = returned_db.execute(
+                    "SELECT * FROM task_events ORDER BY sequence"
+                ).fetchall()
                 for event in events:
                     values = dict(event)
                     values.pop("sequence", None)
@@ -1079,7 +1175,9 @@ def _task_rows(path: Path) -> dict[str, dict[str, object]]:
         return _task_rows_from_connection(connection)
 
 
-def _task_rows_from_connection(connection: sqlite3.Connection) -> dict[str, dict[str, object]]:
+def _task_rows_from_connection(
+    connection: sqlite3.Connection,
+) -> dict[str, dict[str, object]]:
     if "task_snapshots" not in _table_names(connection):
         return {}
     return {
@@ -1088,9 +1186,15 @@ def _task_rows_from_connection(connection: sqlite3.Connection) -> dict[str, dict
     }
 
 
-def _prefer_returned_task(local: dict[str, object], returned: dict[str, object]) -> bool:
-    local_priority = _TASK_STATUS_PRIORITY.get(str(local.get("status") or "").upper(), 0)
-    returned_priority = _TASK_STATUS_PRIORITY.get(str(returned.get("status") or "").upper(), 0)
+def _prefer_returned_task(
+    local: dict[str, object], returned: dict[str, object]
+) -> bool:
+    local_priority = _TASK_STATUS_PRIORITY.get(
+        str(local.get("status") or "").upper(), 0
+    )
+    returned_priority = _TASK_STATUS_PRIORITY.get(
+        str(returned.get("status") or "").upper(), 0
+    )
     if returned_priority != local_priority:
         return returned_priority > local_priority
     return _nonempty_score(returned) > _nonempty_score(local)
@@ -1118,7 +1222,14 @@ def _row_conflicts(
     returned: dict[str, object],
 ) -> list[MergeConflict]:
     return [
-        _conflict(table, entity_id, field, base.get(field), local.get(field), returned.get(field))
+        _conflict(
+            table,
+            entity_id,
+            field,
+            base.get(field),
+            local.get(field),
+            returned.get(field),
+        )
         for field in sorted(set(local) | set(returned))
         if field not in {"id", *_CREDENTIAL_COLUMNS}
         and local.get(field) != returned.get(field)
@@ -1183,7 +1294,11 @@ def _update_row(
     action: MergeAction,
     values: dict[str, object],
 ) -> None:
-    clean = {key: value for key, value in values.items() if key not in {"id", *action.key_columns}}
+    clean = {
+        key: value
+        for key, value in values.items()
+        if key not in {"id", *action.key_columns}
+    }
     if not clean:
         return
     columns = sorted(clean)
@@ -1222,7 +1337,8 @@ def _replace_row(
     connection.execute(
         f"UPDATE {_quote(table)} SET {', '.join(f'{_quote(column)} = ?' for column in columns)} "
         f"WHERE {' AND '.join(f'{_quote(column)} = ?' for column in key_columns)}",
-        [values[column] for column in columns] + [row[column] for column in key_columns],
+        [values[column] for column in columns]
+        + [row[column] for column in key_columns],
     )
 
 
@@ -1236,7 +1352,9 @@ def _table_names(connection: sqlite3.Connection) -> set[str]:
 
 
 def _table_count(connection: sqlite3.Connection, table: str) -> int:
-    return int(connection.execute(f"SELECT COUNT(*) FROM {_quote(table)}").fetchone()[0])
+    return int(
+        connection.execute(f"SELECT COUNT(*) FROM {_quote(table)}").fetchone()[0]
+    )
 
 
 def _quote(identifier: str) -> str:

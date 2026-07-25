@@ -6,33 +6,33 @@ NetConsole 使用 ZIP 容器传递局点数据。`.ncsite` 与 `.ncresult` 均�
 
 | 类型 | 扩展名 | 用途 | 导入语义 |
 | --- | --- | --- | --- |
-| `full_migration` | `.ncsite` | 用户自己的电脑之间换机、完整备份、灾难恢复 | 输入迁移密码后恢复完整局点和设备凭据 |
+| `full_migration` | `.ncsite` | 用户自己的电脑之间换机、完整备份、灾难恢复 | 无需密码，直接恢复完整局点和包内设备凭据 |
 | `sanitized_share` | `.ncsite` | 问题分析、交给其他人或公开交流 | 恢复非秘密数据，相关设备标记为需要重新录入凭据 |
 | `field_collection` | `.ncsite` | 主电脑下发现场采集资料 | 建立同一 `site_uuid` 的现场基准 |
 | `collection_return` | `.ncresult` | 现场采集后回传增量 | 对同一 `site_uuid` 预检后增量合并 |
 
-当前格式版本为 3。旧版 `format_version=1/2` 的 `.ncsite` 继续兼容读取，但只按无凭据旧包处理；它们没有 v3 完整迁移包的认证加密能力，也不能因类型名称为 `full_migration` 而恢复已被旧流程清除的凭据。
+当前格式版本为 4。旧版 `format_version=1/2` 的 `.ncsite` 继续兼容读取，但只按无凭据旧包处理；它们不能因类型名称为 `full_migration` 而恢复已被旧流程清除的凭据。曾短暂生成的实验性 `format_version=3` 加密包不属于当前兼容输入；需要从仍持有原局点数据的来源端重新导出 v4 包。
 
 ## 通用 manifest
 
-版本 3 的外层 `manifest.json` 至少包含：
+版本 4 的 `manifest.json` 至少包含：
 
 ```text
 format / format_version / package_id / package_type
 site_id / site_uuid / site_name / site_revision / base_revision
-created_at / source_platform / contains_credentials / encrypted
-credential_reentry_count / payload_ciphertext_sha256 / payload_size_bytes
-encryption.algorithm / encryption.kdf / encryption.salt_b64
-encryption.n / encryption.r / encryption.p / encryption.nonce_b64 / encryption.tag_b64
+created_at / source_platform / contains_credentials / credential_reentry_count
+databases / artifacts / checksums
 ```
+
+`full_migration` 还明确记录 `encrypted=false`。包中不包含加密参数、`payload.enc`、迁移密码或凭据冲突策略。
 
 `site_id` 是 Registry 的稳定内部标识；`site_uuid` 是跨电脑判断“是否同一局点”的不可变标识。显示名称可修改，不能参与匹配。新局点会创建 `site_uuid`；Legacy 局点必须先完成只读审计，才允许建立同步标识和导出现场/回传包。
 
 ## 内容与安全边界
 
-完整迁移包的外层 ZIP 只包含 `manifest.json`、`README.txt` 和 `payload.enc`。明文载荷包含完整 `site/` 快照、载荷 manifest 和逐文件 SHA-256，只在数据根的 `runtime/temp/` 中短暂生成并在成功、失败或取消后清理。Scrypt 参数固定为 `N=32768, r=8, p=1`，派生 256 位密钥；AES-256-GCM 同时保护载荷机密性与完整性，外层局点身份、包类型和加密参数作为 AAD 认证。迁移密码至少 8 个字符，错误密码、密文或 manifest 被修改时在发布任何局点数据前终止。
+完整迁移包是普通 ZIP，直接包含 `manifest.json`、`checksums.json`、`README.txt` 和完整 `site/` 快照。SQLite 通过 Backup API 生成一致副本，每个文件都有 SHA-256；导入先完成路径、符号链接、解压大小、checksum、manifest 和 SQLite 完整性校验，全部成功后才原子发布。任何校验失败都不会发布半个局点。
 
-完整迁移包保留设备用户名、SSH/Telnet 密码、SNMP community 和隧道凭据。导入新设备直接采用包内凭据；替换已有局点时可选择“保留本地凭据”或“使用包内凭据”，默认保留按 `device_uuid` 匹配到的本地凭据。包密码只经一次性 Worker stdin 敏感启动帧传递，不写入 Job 参数、`tasks.db`、日志、结果或 manifest。
+完整迁移包保留设备用户名、SSH/Telnet 密码、SNMP community 和隧道凭据。导入新局点或替换已有局点都直接使用包内数据库及其凭据，不提供 `credential_policy`，也不会因来源电脑不同设置 `needs_reentry`。它不要求或接收迁移密码，也不生成加密载荷；导出页和导入预检会明确警告“完整迁移包包含设备用户名和密码”。该包不提供机密性，必须只保存到可信位置。
 
 脱敏分享包、现场采集包和采集回传包均不包含秘密。现场采集包仅下发 `site_meta.json`、清洗后的 `db/devices.db`、配置中心资料和车内通信点表，不下发任务历史、大量原始日志或历史报告。导入现场包后，本机在 `sync/baselines/<baseline_id>/` 保存不可变基准。
 
@@ -44,9 +44,9 @@ encryption.n / encryption.r / encryption.p / encryption.nonce_b64 / encryption.t
 - 基准以后新增或变更的非数据库文件、其 SHA-256、来源电脑和可识别任务 ID；
 - 基准中已消失文件的删除请求。
 
-所有包都排除 SSH 主机密钥确认、本机 Agent 地址、窗口布局、运行队列、缓存、锁、`.part`、WAL/SHM 和本机运行日志。除认证加密的 `full_migration` 载荷外，其他包还必须清空 `devices` 表中的密码、SSH/Telnet 密码、SNMP community 和隧道密码。清洗前确有凭据或旧包可确认已配置认证方式的设备会获得非秘密 `needs_reentry` 标记；manifest 的 `credential_reentry_count` 只记录受影响设备数。
+所有包都排除 SSH 主机密钥确认、本机 Agent 地址、窗口布局、运行队列、缓存、锁、`.part`、WAL/SHM 和本机运行日志。除 `full_migration` 外，其他包还必须清空 `devices` 表中的密码、SSH/Telnet 密码、SNMP community 和隧道密码。清洗前确有凭据或旧包可确认已配置认证方式的设备会获得非秘密 `needs_reentry` 标记；manifest 的 `credential_reentry_count` 只记录受影响设备数。
 
-导入 `sanitized_share` 或旧无凭据 `.ncsite` 后，设备列表显示“需重新录入”，API 返回 `credential_status / credential_source / credential_error_code`。连接测试在创建 Job 前返回 `CREDENTIAL_REENTRY_REQUIRED`，不会使用空密码尝试认证。设备编辑时密码留空保留原值，输入新密码会替换并在凭据完整后清除重录标记，只有显式“清除已保存值”才删除秘密；API 只返回 `has_password`/配置状态，不回传旧明文密码。完整迁移包导入后若真实凭据完整则保持 `available / local_database`。
+导入 `sanitized_share` 或旧无凭据 `.ncsite` 后，设备列表显示“需重新录入”，API 返回 `credential_status / credential_source / credential_error_code`。连接测试在创建 Job 前返回 `CREDENTIAL_REENTRY_REQUIRED`，不会使用空密码尝试认证。设备编辑时密码留空保留原值，输入新密码会替换并在凭据完整后清除重录标记，只有显式“清除已保存值”才删除秘密；普通 DTO 只返回配置状态，不回传旧明文。Electron 本机编辑页可在用户点击眼睛后，通过 Desktop/`127.0.0.1`/短期会话保护接口按字段读取，关闭编辑器即清理本次显示值。完整迁移包导入后若真实凭据完整则保持 `available / local_database`。
 
 ## 回传预检与合并
 

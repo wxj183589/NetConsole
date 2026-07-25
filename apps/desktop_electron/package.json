@@ -74,6 +74,7 @@
       "artifactName": "NetConsole-${version}-${arch}-setup.${ext}"
     },
     "nsis": {
+      "unicode": true,
       "oneClick": false,
       "perMachine": true,
       "allowToChangeInstallationDirectory": true,

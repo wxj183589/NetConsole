@@ -38,9 +38,13 @@ def read_machine_data_root() -> Path | None:
         import winreg
 
         access = winreg.KEY_READ | getattr(winreg, "KEY_WOW64_64KEY", 0)
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, DATA_ROOT_REGISTRY_KEY, 0, access) as key:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, DATA_ROOT_REGISTRY_KEY, 0, access
+        ) as key:
             value, value_type = winreg.QueryValueEx(key, DATA_ROOT_REGISTRY_VALUE)
-        if value_type not in {winreg.REG_SZ, winreg.REG_EXPAND_SZ} or not isinstance(value, str):
+        if value_type not in {winreg.REG_SZ, winreg.REG_EXPAND_SZ} or not isinstance(
+            value, str
+        ):
             return None
         candidate = os.path.expandvars(value).strip()
         path = Path(candidate).expanduser()
@@ -64,7 +68,9 @@ def resolve_persistent_data_root(*, test_mode: bool) -> DataRootConfiguration:
     )
 
 
-def validate_installation_data_root(candidate: Path, *, installation_root: Path | None = None) -> Path:
+def validate_installation_data_root(
+    candidate: Path, *, installation_root: Path | None = None
+) -> Path:
     """Validate the root selected by the NSIS installer before committing it.
 
     The installer only writes HKLM after this check succeeds.  Temporary files
@@ -88,8 +94,10 @@ def validate_installation_data_root(candidate: Path, *, installation_root: Path 
     try:
         root.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        raise DataRootConfigurationError(_probe_failure("数据目录无法创建", exc)) from exc
-    _require_recognized_or_empty_root(root)
+        raise DataRootConfigurationError(
+            _probe_failure("数据目录无法创建", exc)
+        ) from exc
+    _require_no_data_root_path_conflicts(root)
     free_bytes = shutil.disk_usage(root).free
     if free_bytes < MINIMUM_DATA_ROOT_FREE_BYTES:
         raise DataRootConfigurationError("数据目录可用空间不足 10 GB")
@@ -98,7 +106,9 @@ def validate_installation_data_root(candidate: Path, *, installation_root: Path 
     return root
 
 
-def prepare_installation_data_root(candidate: Path, *, installation_root: Path | None = None) -> Path:
+def prepare_installation_data_root(
+    candidate: Path, *, installation_root: Path | None = None
+) -> Path:
     """Validate and initialize the selected root before the installer publishes it.
 
     Existing manifests are compatibility-checked by ``prepare_storage_manifest``
@@ -107,7 +117,9 @@ def prepare_installation_data_root(candidate: Path, *, installation_root: Path |
     the first Electron launch.
     """
 
-    root = validate_installation_data_root(candidate, installation_root=installation_root)
+    root = validate_installation_data_root(
+        candidate, installation_root=installation_root
+    )
     from netconsole.core.paths import PathResolver
     from netconsole.core.storage_manifest import prepare_storage_manifest
 
@@ -126,15 +138,18 @@ def _require_windows_fixed_drive(root: Path) -> None:
         raise DataRootConfigurationError("无法验证数据目录所在磁盘类型") from exc
 
 
-def _require_recognized_or_empty_root(root: Path) -> None:
-    children = [item for item in root.iterdir() if item.name not in {".netconsole-installer-write-test.tmp", ".netconsole-installer-rename-test.tmp"}]
-    if not children:
-        return
+def _require_no_data_root_path_conflicts(root: Path) -> None:
+    for name in ("config", "sites", "runtime", "agents", "migrations", "staging"):
+        required = root / name
+        if required.is_symlink() or (required.exists() and not required.is_dir()):
+            raise DataRootConfigurationError(
+                f"数据目录中的必需路径发生冲突：{name} 必须是目录"
+            )
     manifest = root / "config" / "storage-manifest.json"
-    legacy_layout = (root / "config").is_dir() and (root / "sites").is_dir()
-    if manifest.is_file() or legacy_layout:
-        return
-    raise DataRootConfigurationError("数据目录非空且不是合法 NetConsole 数据根")
+    if manifest.is_symlink() or (manifest.exists() and not manifest.is_file()):
+        raise DataRootConfigurationError(
+            "数据目录中的必需路径发生冲突：config/storage-manifest.json 必须是文件"
+        )
 
 
 def _verify_writable_and_renamable(root: Path) -> None:
@@ -153,7 +168,9 @@ def _verify_writable_and_renamable(root: Path) -> None:
             except FileExistsError:
                 continue
             except OSError as exc:
-                raise DataRootConfigurationError(_probe_failure("临时探测文件创建失败", exc)) from exc
+                raise DataRootConfigurationError(
+                    _probe_failure("临时探测文件创建失败", exc)
+                ) from exc
             temporary = candidate
             renamed = candidate_renamed
             break
@@ -166,16 +183,22 @@ def _verify_writable_and_renamable(root: Path) -> None:
             handle.close()
             handle = None
         except OSError as exc:
-            raise DataRootConfigurationError(_probe_failure("临时探测文件写入或刷新失败", exc)) from exc
+            raise DataRootConfigurationError(
+                _probe_failure("临时探测文件写入或刷新失败", exc)
+            ) from exc
         try:
             os.rename(temporary, renamed)
         except OSError as exc:
-            raise DataRootConfigurationError(_probe_failure("同目录临时文件重命名失败", exc)) from exc
+            raise DataRootConfigurationError(
+                _probe_failure("同目录临时文件重命名失败", exc)
+            ) from exc
         try:
             if renamed.read_text(encoding="ascii") != "NetConsole-install-probe-v1":
                 raise DataRootConfigurationError("重命名后的临时文件内容校验失败")
         except OSError as exc:
-            raise DataRootConfigurationError(_probe_failure("重命名后的临时文件读取失败", exc)) from exc
+            raise DataRootConfigurationError(
+                _probe_failure("重命名后的临时文件读取失败", exc)
+            ) from exc
     finally:
         if handle is not None:
             handle.close()
@@ -188,7 +211,9 @@ def _verify_writable_and_renamable(root: Path) -> None:
             except OSError as exc:
                 cleanup_errors.append(exc)
         if cleanup_errors and sys.exc_info()[0] is None:
-            raise DataRootConfigurationError(_probe_failure("临时探测文件清理失败", cleanup_errors[0]))
+            raise DataRootConfigurationError(
+                _probe_failure("临时探测文件清理失败", cleanup_errors[0])
+            )
 
 
 def _probe_failure(step: str, error: OSError) -> str:

@@ -3,8 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from netconsole.services.job_center.job_context import JobContext
-from netconsole.services.site_lifecycle import DemoSiteSeedService, SiteAuditService, SiteCleanupApplicationService
-from netconsole.services.site_storage import DataRootApplicationService, SiteApplicationService, SitePackageService
+from netconsole.services.site_lifecycle import (
+    DemoSiteSeedService,
+    SiteAuditService,
+    SiteCleanupApplicationService,
+)
+from netconsole.services.site_storage import (
+    DataRootApplicationService,
+    SiteApplicationService,
+    SitePackageService,
+)
 
 
 SITE_STORAGE_OWNER = "site-storage"
@@ -20,14 +28,18 @@ SITE_STORAGE_TASK_TYPES = frozenset(
         "site_migration",
     }
 )
-SITE_STORAGE_NONCANCELLABLE_TASK_TYPES = frozenset({"site_cleanup_apply", "site_cleanup_restore", "site_demo_rebuild"})
+SITE_STORAGE_NONCANCELLABLE_TASK_TYPES = frozenset(
+    {"site_cleanup_apply", "site_cleanup_restore", "site_demo_rebuild"}
+)
 
 
 def site_audit(context: JobContext) -> dict[str, object]:
     result = SiteAuditService(context.paths).audit_all(
         site_id=str(context.params.get("site_id") or "") or None,
         check_cancel=context.check_cancelled,
-        progress=lambda current, total, message: context.progress("audit", current, total, message),
+        progress=lambda current, total, message: context.progress(
+            "audit", current, total, message
+        ),
     )
     result.pop("data_root", None)
     result.pop("manifest_path", None)
@@ -36,20 +48,26 @@ def site_audit(context: JobContext) -> dict[str, object]:
         if isinstance(site, dict):
             site.pop("physical_path", None)
             site.pop("file_manifest", None)
-    context.progress("audit", int(result["site_count"]), int(result["site_count"]), "局点审计完成")
+    context.progress(
+        "audit", int(result["site_count"]), int(result["site_count"]), "局点审计完成"
+    )
     return result
 
 
 def site_cleanup_apply(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
-    result = SiteCleanupApplicationService(context.paths).apply_cleanup(str(context.params.get("cleanup_token") or ""))
+    result = SiteCleanupApplicationService(context.paths).apply_cleanup(
+        str(context.params.get("cleanup_token") or "")
+    )
     context.progress("recycle", 1, 1, "局点已移入受控回收区")
     return result
 
 
 def site_cleanup_restore(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
-    result = SiteCleanupApplicationService(context.paths).restore_cleanup(str(context.params.get("cleanup_token") or ""))
+    result = SiteCleanupApplicationService(context.paths).restore_cleanup(
+        str(context.params.get("cleanup_token") or "")
+    )
     context.progress("restore", 1, 1, "局点已从回收区恢复")
     return result
 
@@ -68,7 +86,8 @@ def site_demo_rebuild(context: JobContext) -> dict[str, object]:
 def site_data_root_migration(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
     result = DataRootApplicationService(context.paths).migrate(
-        Path(str(context.params.get("destination_root") or "")), check_cancel=context.check_cancelled
+        Path(str(context.params.get("destination_root") or "")),
+        check_cancel=context.check_cancelled,
     )
     context.progress("verify", 1, 1, "数据根迁移完成")
     return result
@@ -82,17 +101,13 @@ def site_export(context: JobContext) -> dict[str, object]:
     if not destination:
         record = sites.registry.get(str(context.params.get("site_id") or ""))
         suffix = ".ncresult" if package_type == "collection_return" else ".ncsite"
-        destination = str(record.root_path / "files" / "exports" / f"{record.site_id}{suffix}")
-    migration_password = None
-    if package_type == "full_migration":
-        migration_password = context.consume_sensitive_bootstrap().get(
-            "migration_password"
+        destination = str(
+            record.root_path / "files" / "exports" / f"{record.site_id}{suffix}"
         )
     result = SitePackageService(context.paths, sites).export_site(
         str(context.params.get("site_id") or ""),
         Path(destination),
         package_type=package_type,
-        migration_password=migration_password,
         check_cancel=context.check_cancelled,
     )
     context.progress("publish", 1, 1, "局点数据包导出完成")
@@ -113,11 +128,6 @@ def site_migration(context: JobContext) -> dict[str, object]:
 def site_import(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
     sites = SiteApplicationService(context.paths)
-    migration_password = None
-    if bool(context.params.get("encrypted_package")):
-        migration_password = context.consume_sensitive_bootstrap().get(
-            "migration_password"
-        )
     result = SitePackageService(context.paths, sites).import_site(
         Path(str(context.params.get("package_path") or "")),
         site_id=str(context.params.get("site_id") or "") or None,
@@ -129,10 +139,6 @@ def site_import(context: JobContext) -> dict[str, object]:
             for item in context.params.get("conflict_resolutions", [])
             if isinstance(item, dict)
         ],
-        migration_password=migration_password,
-        credential_policy=str(
-            context.params.get("credential_policy") or "preserve_local"
-        ),
     )
     if bool(context.params.get("activate")):
         result["activation"] = sites.switch_site(str(result["site_id"]))

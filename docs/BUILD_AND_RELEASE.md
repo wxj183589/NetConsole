@@ -2,11 +2,11 @@
 
 NetConsole v1.4.3 的正式桌面产品只有 Electron + Vue + Python Backend。Python Backend 使用 PyInstaller 生成受 Electron 管理的 `NetConsoleBackend.exe`；PyInstaller、测试工具和许可证/SBOM 工具只属于构建环境，不属于产品运行时依赖。
 
-安装包升级和卸载不得删除 Electron `userData/bootstrap.json` 或用户选择的数据根。electron-builder 的既有 NSIS 安装器必须分别显示程序安装目录与数据存放目录；数据根在完成路径、磁盘、可写/重命名、SQLite 锁与空间校验后，由打包 Backend 在空根中原子初始化标准结构与 `storage-manifest.json`，或验证已有 manifest 兼容性，最后才写入 `HKLM\Software\NetConsole\DataRoot`。初始化/兼容性校验失败不得发布指针，也不得覆盖已有 manifest。发布 smoke 在唯一 `D:\NetConsoleTestData\<run-id>` 中以 `RuntimeMode.TEST` 运行并自动清理，绝不读取机器级指针或真实数据根；同时确认仓库根没有生成 `data/` 或新的 `.local/` 运行数据。
+安装包升级和卸载不得删除 Electron `userData/bootstrap.json` 或用户选择的数据根。electron-builder 的既有 NSIS 安装器必须分别显示程序安装目录与数据存放目录；数据根在完成路径、磁盘、可写/重命名、SQLite 锁与空间校验后，由打包 Backend 在空根或含无冲突普通文件的目录中原子初始化标准结构与 `storage-manifest.json`，或验证已有 manifest 兼容性，最后才写入 `HKLM\Software\NetConsole\DataRoot`。初始化/兼容性校验失败不得发布指针，也不得覆盖已有 manifest 或普通文件。发布 smoke 在唯一 `D:\NetConsoleTestData\<run-id>` 中以 `RuntimeMode.TEST` 运行并自动清理，绝不读取机器级指针或真实数据根；同时确认仓库根没有生成 `data/` 或新的 `.local/` 运行数据。
 
-NSIS 必须先在零写入状态下完成候选目录分类，再执行可写/重命名预检；探测成功后禁止重新使用普通目录非空规则。NSIS 预检和安装后的 Backend 复验必须使用候选数据根内部的唯一临时文件，完成 flush/close、同目录文件重命名、内容回读和清理。禁止固定源/目标文件名、目录级 Rename、从安装器临时目录跨卷移动或使用现有业务文件作为探测对象。失败日志只记录步骤和 Win32 错误码，不写用户配置内容；测试修复包使用独立 artifact 名称，不能覆盖同版本既有正式安装包。
+NSIS 必须显式启用 Unicode 安装器，并先在零写入状态下识别候选目录和实际条目，再执行可写/重命名预检；探测成功后禁止重新使用普通目录非空规则。NSIS 预检和安装后的 Backend 复验必须使用候选数据根内部的唯一临时文件，完成 flush/close、同目录文件重命名、内容回读和清理。禁止固定源/目标文件名、目录级 Rename、从安装器临时目录跨卷移动或使用现有业务文件作为探测对象。失败日志只记录步骤和 Win32 错误码，不写用户配置内容；测试修复包使用独立 artifact 名称，不能覆盖同版本既有正式安装包。
 
-安装包人工验收至少覆盖：程序安装在 C 盘而数据在 D 盘、阻止 C 盘数据根、Windows 空目录逐项枚举后直接作为数据根并生成有效 manifest、合法既有根复用、损坏 manifest 原样保留并阻止安装、非空普通目录只拒绝且不自动创建嵌套子目录、旧固定探测残留不误判、安装失败不删除或修改用户所选目录、升级/修复保持旧根、更换根的 staging/SQLite 校验失败回滚，以及普通卸载保留数据和注册表指针。源码 `pnpm dev` 还必须读取同一指针；测试模式不得读取注册表或真实根。Backend 向 Electron 输出的监听、关闭和启动失败握手必须是代码页无关的 ASCII JSON；中文通过 JSON Unicode 转义逐字恢复。
+安装包人工验收至少覆盖：程序安装在 C 盘而数据在 D/E 盘、阻止 C 盘数据根、`GetDriveTypeW` 收到 `E:\` 等根路径、Windows 空目录直接作为数据根并生成有效 manifest、合法既有根复用、含无冲突普通文件的目录保留原文件并成功初始化、必需路径真实冲突时原样阻止、损坏 manifest 原样保留并阻止安装、旧固定探测残留不误判、不自动创建嵌套 `NetConsoleData`、安装失败不删除或修改用户所选目录、升级/修复保持旧根、更换根的 staging/SQLite 校验失败回滚，以及普通卸载保留数据和注册表指针。源码 `pnpm dev` 还必须读取同一指针；测试模式不得读取注册表或真实根。Backend 向 Electron 输出的监听、关闭和启动失败握手必须是代码页无关的 ASCII JSON；中文通过 JSON Unicode 转义逐字恢复。
 
 ## 依赖安装
 
@@ -20,7 +20,7 @@ python -m pip install -r requirements-dev.txt -c constraints.txt
 python -m pip check
 ```
 
-产品运行环境只执行第一条和 `python -m pip install . -c constraints.txt`；不得安装 `requirements-test.txt`、`requirements-build.txt` 或 `requirements-dev.txt`。`cryptography==49.0.0` 属于正式运行依赖，用于完整迁移包的 Scrypt 与 AES-256-GCM，不得只依赖 Paramiko 的传递安装。可用 `python -m scripts.build.check_runtime_deps --python-environment` 验证当前环境没有 Qt 包元数据或可导入 Qt 模块。干净环境的反向探针必须满足 `import PySide6` 抛出 `ModuleNotFoundError`。
+产品运行环境只执行第一条和 `python -m pip install . -c constraints.txt`；不得安装 `requirements-test.txt`、`requirements-build.txt` 或 `requirements-dev.txt`。`cryptography==49.0.0` 仍由 constraints 锁定为 Paramiko/SSH 依赖闭包的一部分，但 v4 完整迁移包不再直接使用 Scrypt/AES，也不得因此重新加入迁移密码或加密载荷。可用 `python -m scripts.build.check_runtime_deps --python-environment` 验证当前环境没有 Qt 包元数据或可导入 Qt 模块。干净环境的反向探针必须满足 `import PySide6` 抛出 `ModuleNotFoundError`。
 
 ## Backend 构建
 
@@ -82,7 +82,7 @@ node scripts/package-smoke.mjs
 
 正式 Windows 用户入口固定为 `dist/electron/win-unpacked/NetConsole.exe`。`build.win.executableName` 必须保持为 `NetConsole`，并由 `package-smoke.mjs` 直接读取该构建配置，禁止在 smoke 脚本重复硬编码名称。`resources/backend/NetConsoleBackend.exe` 仅由 Electron Main 使用 `--electron-backend` 作为受管子进程启动；直接运行它会记录运行日志、显示提示并以非零状态退出，不能尝试启动源码 Electron 开发链。
 
-正式安装包发布门还需要在 Windows 图形环境完成人工启动、签名、安装/卸载和升级验收；必须额外覆盖全新 Windows 用户、无 Python/Node/pnpm/Git/源码、普通用户、中文用户名或中文数据路径、跨电脑加密完整包恢复、脱敏包凭据重录、错误迁移密码零发布，以及真实/仿真 H3C SSH 中文任务日志。单元测试、PyInstaller smoke 或 unpacked Electron smoke 不能替代这些验收。卸载不得删除 `D:\NetConsoleData`，也不得创建 LocalAppData 数据回退。
+正式安装包发布门还需要在 Windows 图形环境完成人工启动、签名、安装/卸载和升级验收；必须额外覆盖全新 Windows 用户、无 Python/Node/pnpm/Git/源码、普通用户、中文用户名或中文数据路径、跨电脑 v4 普通 ZIP 完整包无需密码恢复全部凭据、导入/导出敏感警告、脱敏包凭据重录、本机 Electron 眼睛按钮显式读取与关闭清理，以及真实/仿真 H3C SSH 中文任务日志。单元测试、PyInstaller smoke 或 unpacked Electron smoke 不能替代这些验收。卸载不得删除 `D:\NetConsoleData`，也不得创建 LocalAppData 数据回退。
 
 ## 外部工具与许可证阻塞
 

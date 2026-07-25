@@ -17,7 +17,8 @@ from time import monotonic, sleep
 from types import SimpleNamespace
 from urllib.parse import unquote
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 import pytest
 
@@ -76,7 +77,10 @@ from netconsole.services.device_operation_service import (
 from netconsole.services.job_center.job_runner import JobRunner
 from netconsole.services.device_import_export import TEMPLATE_FIELDS
 from netconsole.services.job_center.job_context import JobContext
-from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.job_center.task_application_service import (
+    TaskApplicationService,
+)
+from netconsole.services.online_mr.errors import OnlineMrWebControlError
 
 
 class _CapturingProcessAdapter:
@@ -209,7 +213,13 @@ def _write_import_csv(
         csv.writer(handle).writerows((TEMPLATE_FIELDS, row))
 
 
-def _fixture(tmp_path: Path, *, app_root: Path | None = None):
+def _fixture(
+    tmp_path: Path,
+    *,
+    app_root: Path | None = None,
+    runtime_mode: RuntimeMode = RuntimeMode.DESKTOP,
+    desktop_authenticated: bool = True,
+):
     paths = PathResolver(
         app_root=app_root or tmp_path / "app", data_root=tmp_path / "local"
     )
@@ -234,7 +244,9 @@ def _fixture(tmp_path: Path, *, app_root: Path | None = None):
             snmp_ro_community="private-community",
         )
     )
-    sw = devices.create(Device(name="SW10", primary_address="192.0.2.20", device_type="SW"))
+    sw = devices.create(
+        Device(name="SW10", primary_address="192.0.2.20", device_type="SW")
+    )
     tasks = TaskApplicationService(paths=paths, site_name="demo")
     adapter = _CapturingProcessAdapter(tasks)
     desktop_actions, _desktop_adapter = _desktop_actions(
@@ -250,17 +262,31 @@ def _fixture(tmp_path: Path, *, app_root: Path | None = None):
         site_name="demo",
         process_adapter=adapter,  # type: ignore[arg-type]
         device_operation_service=DeviceOperationService(
-            PathResolver(
-                app_root=Path(__file__).parents[1], data_root=paths.data_root
-            ),
+            PathResolver(app_root=Path(__file__).parents[1], data_root=paths.data_root),
             DeviceDetailRepository(paths, site_name="demo"),
             tasks,
             adapter,
         ),
     )
     app = FastAPI()
+    app.state.runtime_mode = runtime_mode
     app.state.device_management_service = service
     app.state.feature_gate = FeatureGate(paths.app_root)
+
+    @app.middleware("http")
+    async def desktop_session(request: Request, call_next):
+        request.state.desktop_session_authenticated = desktop_authenticated
+        return await call_next(request)
+
+    @app.exception_handler(OnlineMrWebControlError)
+    async def desktop_session_error(
+        _request: Request, exc: OnlineMrWebControlError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": {"code": exc.code, "message": exc.message}},
+        )
+
     for feature_id in (
         "web.device_management_write",
         "web.device_management_collect",
@@ -277,7 +303,15 @@ def _fixture(tmp_path: Path, *, app_root: Path | None = None):
             "client_package": True,
         }
     app.include_router(router, prefix="/api")
-    return TestClient(app), service, adapter, devices, DeviceFactRepository(database), mr, sw
+    return (
+        TestClient(app, base_url="http://127.0.0.1"),
+        service,
+        adapter,
+        devices,
+        DeviceFactRepository(database),
+        mr,
+        sw,
+    )
 
 
 def _task(task_id: str, device_uuid: str, *, success: bool) -> TaskSnapshot:
@@ -294,13 +328,22 @@ def _task(task_id: str, device_uuid: str, *, success: bool) -> TaskSnapshot:
         site_name="demo",
         owner=WEB_TASK_OWNER,
         source="local",
-        result={"device_uuid": device_uuid, "protocol": "SSH", "success": success, "status": "ok" if success else "timeout"},
+        result={
+            "device_uuid": device_uuid,
+            "protocol": "SSH",
+            "success": success,
+            "status": "ok" if success else "timeout",
+        },
     )
 
 
-def test_list_supports_filter_sort_pagination_and_never_returns_credentials(tmp_path: Path) -> None:
+def test_list_supports_filter_sort_pagination_and_never_returns_credentials(
+    tmp_path: Path,
+) -> None:
     client, service, _adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
-    service.task_service.repository("demo").save(_task("device-test-ssh-complete", str(mr.device_uuid), success=True))
+    service.task_service.repository("demo").save(
+        _task("device-test-ssh-complete", str(mr.device_uuid), success=True)
+    )
 
     response = client.get(
         "/api/device-management/devices",
@@ -324,7 +367,9 @@ def test_list_supports_filter_sort_pagination_and_never_returns_credentials(tmp_
     assert "community" not in response.text.lower()
 
 
-def test_detail_returns_only_existing_fact_task_collection_and_sanitized_errors(tmp_path: Path) -> None:
+def test_detail_returns_only_existing_fact_task_collection_and_sanitized_errors(
+    tmp_path: Path,
+) -> None:
     client, service, _adapter, _devices, facts, mr, _sw = _fixture(tmp_path)
     collect = facts.create_collect_run(
         {
@@ -344,7 +389,13 @@ def test_detail_returns_only_existing_fact_task_collection_and_sanitized_errors(
     )
     failed = _task("device-test-ssh-failed", str(mr.device_uuid), success=False)
     service.task_service.repository("demo").save(
-        TaskSnapshot(**{**failed.__dict__, "status": TaskState.FAILED, "error_message": "auth telnet-secret failed"})
+        TaskSnapshot(
+            **{
+                **failed.__dict__,
+                "status": TaskState.FAILED,
+                "error_message": "auth telnet-secret failed",
+            }
+        )
     )
 
     response = client.get(f"/api/device-management/devices/{mr.device_uuid}")
@@ -461,7 +512,9 @@ def test_real_edit_is_validated_and_persisted(
         f"/api/device-management/devices/{mr.device_uuid}",
         json={**payload, "snmp_rw_community": "write-secret"},
     )
-    detail = client.get(f"/api/device-management/devices/{mr.device_uuid}").json()["device"]
+    detail = client.get(f"/api/device-management/devices/{mr.device_uuid}").json()[
+        "device"
+    ]
 
     assert response.status_code == 200
     assert response.json()["device"]["name"] == "MR-NEW"
@@ -481,18 +534,10 @@ def test_edit_profile_and_write_responses_do_not_build_legacy_full_detail(
     def fail_large_read(*_args, **_kwargs):
         raise AssertionError("编辑资料不得读取设备大快照表")
 
-    monkeypatch.setattr(
-        DeviceFactRepository, "list_device_interfaces", fail_large_read
-    )
-    monkeypatch.setattr(
-        DeviceFactRepository, "list_optical_modules", fail_large_read
-    )
-    monkeypatch.setattr(
-        DeviceFactRepository, "list_lldp_neighbors", fail_large_read
-    )
-    edit = client.get(
-        f"/api/device-management/devices/{mr.device_uuid}/edit-profile"
-    )
+    monkeypatch.setattr(DeviceFactRepository, "list_device_interfaces", fail_large_read)
+    monkeypatch.setattr(DeviceFactRepository, "list_optical_modules", fail_large_read)
+    monkeypatch.setattr(DeviceFactRepository, "list_lldp_neighbors", fail_large_read)
+    edit = client.get(f"/api/device-management/devices/{mr.device_uuid}/edit-profile")
     assert edit.status_code == 200
     assert edit.json()["device_uuid"] == str(mr.device_uuid)
     assert "secret-password" not in edit.text
@@ -543,12 +588,112 @@ def test_edit_profile_and_write_responses_do_not_build_legacy_full_detail(
     assert roundtrip["snmp_port"] == 1161
 
     schema = client.get("/openapi.json").json()
-    assert schema["paths"]["/api/device-management/devices/{device_uuid}"][
-        "get"
-    ]["deprecated"] is True
     assert (
-        "/api/device-management/devices/{device_uuid}/edit-profile"
-        in schema["paths"]
+        schema["paths"]["/api/device-management/devices/{device_uuid}"]["get"][
+            "deprecated"
+        ]
+        is True
+    )
+    assert (
+        "/api/device-management/devices/{device_uuid}/edit-profile" in schema["paths"]
+    )
+
+
+def test_legacy_ssh_credentials_can_be_revealed_replaced_and_saved_canonically(
+    tmp_path: Path,
+) -> None:
+    client, service, _adapter, devices, _facts, mr, _sw = _fixture(tmp_path)
+    with devices.database.connect() as connection:
+        connection.execute(
+            "UPDATE devices SET username = ?, password = ?, "
+            "ssh_username = NULL, ssh_password = NULL WHERE device_uuid = ?",
+            ("legacy-admin", "legacy-password", mr.device_uuid),
+        )
+        connection.execute(
+            "INSERT OR REPLACE INTO device_credential_states "
+            "(device_uuid, credential_field, status, source, error_code, updated_at) "
+            "VALUES (?, 'ssh_password', 'needs_reentry', 'legacy_import', "
+            "'CREDENTIAL_REENTRY_REQUIRED', datetime('now'))",
+            (mr.device_uuid,),
+        )
+        connection.commit()
+
+    profile = client.get(
+        f"/api/device-management/devices/{mr.device_uuid}/edit-profile"
+    )
+    revealed = client.get(
+        f"/api/device-management/devices/{mr.device_uuid}"
+        "/credentials/ssh_password/reveal"
+    )
+    service_revealed = service.reveal_device_credentials(
+        str(mr.device_uuid), "ssh_password"
+    )
+
+    assert profile.status_code == 200
+    assert profile.json()["ssh_username"] == "legacy-admin"
+    assert profile.json()["ssh_secret_configured"] is True
+    assert "legacy-password" not in profile.text
+    assert revealed.status_code == 200
+    assert revealed.json() == {
+        "device_uuid": mr.device_uuid,
+        "credential_field": "ssh_password",
+        "value": "legacy-password",
+    }
+    assert service_revealed.value == "legacy-password"
+
+    saved = client.put(
+        f"/api/device-management/devices/{mr.device_uuid}",
+        json={
+            "name": mr.name,
+            "primary_address": mr.primary_address,
+            "device_vendor": mr.device_vendor,
+            "device_type": mr.device_type,
+            "ssh_enabled": True,
+            "ssh_username": "legacy-admin",
+            "ssh_password": "replacement-password",
+            "telnet_enabled": False,
+        },
+    )
+    reread = devices.get_by_uuid(str(mr.device_uuid))
+
+    assert saved.status_code == 200
+    assert saved.json()["device"]["credential_status"] == "available"
+    assert reread is not None
+    assert reread.username == reread.ssh_username == "legacy-admin"
+    assert reread.password == reread.ssh_password == "replacement-password"
+    assert getattr(reread, "credential_status") == "available"
+
+
+def test_credential_reveal_requires_authenticated_local_desktop_session(
+    tmp_path: Path,
+) -> None:
+    server_client, _service, _adapter, _devices, _facts, server_mr, _sw = _fixture(
+        tmp_path / "server",
+        runtime_mode=RuntimeMode.SERVER,
+    )
+    unauthenticated_client, _service, _adapter, _devices, _facts, desktop_mr, _sw = (
+        _fixture(
+            tmp_path / "unauthenticated",
+            runtime_mode=RuntimeMode.DESKTOP,
+            desktop_authenticated=False,
+        )
+    )
+
+    server_response = server_client.get(
+        f"/api/device-management/devices/{server_mr.device_uuid}"
+        "/credentials/ssh_password/reveal"
+    )
+    unauthenticated_response = unauthenticated_client.get(
+        f"/api/device-management/devices/{desktop_mr.device_uuid}"
+        "/credentials/ssh_password/reveal"
+    )
+
+    assert server_response.status_code == 403
+    assert server_response.json()["error"]["code"] == "ONLINE_MR_WEB_LOCAL_ONLY"
+    assert unauthenticated_response.status_code == 401
+    assert (
+        unauthenticated_response.json()["error"]["code"]
+        == "ONLINE_MR_WEB_AUTH_REQUIRED"
     )
 
 
@@ -569,7 +714,9 @@ def test_router_redacts_file_not_found_paths(
     assert "C:\\private" not in response.text
 
 
-def test_connection_test_submits_safe_job_and_recovers_by_task_id(tmp_path: Path) -> None:
+def test_connection_test_submits_safe_job_and_recovers_by_task_id(
+    tmp_path: Path,
+) -> None:
     client, _service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
 
     response = client.post(
@@ -707,7 +854,9 @@ def test_connection_test_reuses_active_task(tmp_path: Path) -> None:
     assert len(adapter.jobs) == 1
 
 
-def test_connection_test_reuses_active_task_under_concurrent_requests(tmp_path: Path) -> None:
+def test_connection_test_reuses_active_task_under_concurrent_requests(
+    tmp_path: Path,
+) -> None:
     _client, service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
     adapter.block_start = True
     barrier = Barrier(3)
@@ -764,12 +913,8 @@ def test_device_task_views_and_dedupe_ignore_foreign_scope(
         item for item in listed["items"] if item["device_uuid"] == str(mr.device_uuid)
     )
     assert listed_mr["connection_status"] == "UNKNOWN"
-    detail = client.get(
-        f"/api/device-management/devices/{mr.device_uuid}"
-    ).json()
-    assert foreign_task_id not in {
-        task["task_id"] for task in detail["recent_tasks"]
-    }
+    detail = client.get(f"/api/device-management/devices/{mr.device_uuid}").json()
+    assert foreign_task_id not in {task["task_id"] for task in detail["recent_tasks"]}
 
     started = client.post(
         f"/api/device-management/devices/{mr.device_uuid}/connection-tests",
@@ -801,7 +946,9 @@ def test_production_service_follows_runtime_site_switch(tmp_path: Path) -> None:
     assert service.current_site_id() == "demo"
 
 
-def test_connection_worker_reuses_existing_ssh_and_snmp_services_without_real_network(tmp_path: Path, monkeypatch) -> None:
+def test_connection_worker_reuses_existing_ssh_and_snmp_services_without_real_network(
+    tmp_path: Path, monkeypatch
+) -> None:
     _client, service, _adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
     progress = []
     monkeypatch.setattr(
@@ -863,9 +1010,19 @@ def test_connection_worker_reuses_existing_ssh_and_snmp_services_without_real_ne
 @pytest.mark.parametrize(
     ("status", "error_type", "method", "expected_category"),
     [
-        ("auth_failed", "NetmikoAuthenticationException", "primary_direct", "authentication_failed"),
+        (
+            "auth_failed",
+            "NetmikoAuthenticationException",
+            "primary_direct",
+            "authentication_failed",
+        ),
         ("timeout", "TimeoutError", "primary_direct", "tcp_timeout"),
-        ("tcp_failed", "ConnectionRefusedError", "primary_direct", "connection_refused"),
+        (
+            "tcp_failed",
+            "ConnectionRefusedError",
+            "primary_direct",
+            "connection_refused",
+        ),
         ("tcp_failed", "gaierror", "primary_direct", "address_resolution_failed"),
         ("ssh_banner_failed", "SSHException", "primary_direct", "ssh_handshake_failed"),
         ("tcp_failed", "TimeoutError", "tunnel1", "jump_host_failed"),
@@ -883,7 +1040,12 @@ def test_connection_worker_maps_safe_failure_categories_and_phases(
     progress: list[tuple[object, ...]] = []
 
     def failed_connection(_device: Device, *, phase_callback):
-        for stage in ("connecting", "handshaking", "authenticating", "verifying_session"):
+        for stage in (
+            "connecting",
+            "handshaking",
+            "authenticating",
+            "verifying_session",
+        ):
             phase_callback(stage, stage)
         return SimpleNamespace(
             success=False,
@@ -983,7 +1145,12 @@ def test_connection_status_distinguishes_probe_result_from_task_failure(
             },
         )
     )
-    assert client.get("/api/device-management/devices").json()["items"][0]["connection_status"] == "UNREACHABLE"
+    assert (
+        client.get("/api/device-management/devices").json()["items"][0][
+            "connection_status"
+        ]
+        == "UNREACHABLE"
+    )
 
     repository.save(
         replace(
@@ -1010,7 +1177,12 @@ def test_connection_status_distinguishes_probe_result_from_task_failure(
         result={},
     )
     repository.save(failed)
-    assert client.get("/api/device-management/devices").json()["items"][0]["connection_status"] == "ERROR"
+    assert (
+        client.get("/api/device-management/devices").json()["items"][0][
+            "connection_status"
+        ]
+        == "ERROR"
+    )
 
 
 def test_orphaned_form_connection_test_fails_closed_after_ephemeral_credential_loss(
@@ -1114,7 +1286,9 @@ def test_unsaved_form_connection_tests_use_nonserialized_runtime_bootstrap(
         assert community not in serialized_params
         assert "token" not in serialized_params.lower()
         assert adapter.bootstrap_buffers[-1] == {}
-        job_file = service.paths.runtime_cache_dir / "background_jobs" / f"{job.job_id}.json"
+        job_file = (
+            service.paths.runtime_cache_dir / "background_jobs" / f"{job.job_id}.json"
+        )
         disk_job = job_file.read_text(encoding="utf-8")
         assert ssh_password not in disk_job
         assert telnet_password not in disk_job
@@ -1335,10 +1509,16 @@ def test_edit_form_connection_test_resolves_saved_or_ephemeral_secret_without_wr
     assert _devices.get_by_uuid(str(mr.device_uuid)).ssh_password == "secret-password"
 
 
-def test_router_exposes_device_management_parity_endpoints_without_arbitrary_terminal_or_secret_routes(tmp_path: Path) -> None:
+def test_router_exposes_device_management_parity_endpoints_without_arbitrary_terminal_or_secret_routes(
+    tmp_path: Path,
+) -> None:
     client, *_rest = _fixture(tmp_path)
     paths = client.app.openapi()["paths"]
-    device_paths = {path: methods for path, methods in paths.items() if path.startswith("/api/device-management")}
+    device_paths = {
+        path: methods
+        for path, methods in paths.items()
+        if path.startswith("/api/device-management")
+    }
 
     posts = {path for path, methods in device_paths.items() if "post" in methods}
     gets = {path for path, methods in device_paths.items() if "get" in methods}
@@ -1361,7 +1541,10 @@ def test_router_exposes_device_management_parity_endpoints_without_arbitrary_ter
         "/api/device-management/devices/{device_uuid}/external-terminal",
     }.issubset(posts)
     assert "/api/device-management/diagnostics/{task_id}/download" in gets
-    assert not any("password" in path or "secret" in path or path.endswith("/shell") for path in device_paths)
+    assert not any(
+        "password" in path or "secret" in path or path.endswith("/shell")
+        for path in device_paths
+    )
 
 
 def test_omnipeek_export_requires_real_background_preview_and_selection(
@@ -1376,9 +1559,7 @@ def test_omnipeek_export_requires_real_background_preview_and_selection(
     task_id = started.json()["task_id"]
     assert adapter.jobs[-1].task_type == DEVICE_OMNIPEEK_PREVIEW_TASK_TYPE
     assert adapter.jobs[-1].params["owner"] == WEB_TASK_OWNER
-    assert adapter.jobs[-1].params["selected_device_uuids"] == [
-        str(mr.device_uuid)
-    ]
+    assert adapter.jobs[-1].params["selected_device_uuids"] == [str(mr.device_uuid)]
 
     pending = service.task_service.repository("demo").get(task_id)
     assert pending is not None
@@ -1404,9 +1585,7 @@ def test_omnipeek_export_requires_real_background_preview_and_selection(
             },
         )
     )
-    preview = client.get(
-        f"/api/device-management/exports/omnipeek-preview/{task_id}"
-    )
+    preview = client.get(f"/api/device-management/exports/omnipeek-preview/{task_id}")
     assert preview.status_code == 200
     assert preview.json()["ready"] is True
     assert preview.json()["items"][0]["key"] == "device-mr2"
@@ -1465,7 +1644,9 @@ def test_all_qt_device_export_formats_complete_in_real_export_process(
     mr.mac_address = "74ad-cb9d-3320"
     devices.update(mr)
 
-    def complete(path: str, payload: dict[str, object]) -> tuple[dict[str, object], bytes]:
+    def complete(
+        path: str, payload: dict[str, object]
+    ) -> tuple[dict[str, object], bytes]:
         started = client.post(path, json=payload)
         assert started.status_code == 202, started.text
         task_id = started.json()["task_id"]
@@ -1531,11 +1712,18 @@ def test_all_qt_device_export_formats_complete_in_real_export_process(
         asyncio.run(service.stop_exports())
 
 
-def test_web_crud_group_assignment_and_token_delete_preserve_secret_boundary(tmp_path: Path) -> None:
+def test_web_crud_group_assignment_and_token_delete_preserve_secret_boundary(
+    tmp_path: Path,
+) -> None:
     client, _service, _adapter, devices, _facts, mr, sw = _fixture(tmp_path)
     created = client.post(
         "/api/device-management/devices",
-        json={"name": "Web-1", "primary_address": "192.0.2.30", "device_vendor": "H3C", "device_type": "SW"},
+        json={
+            "name": "Web-1",
+            "primary_address": "192.0.2.30",
+            "device_vendor": "H3C",
+            "device_type": "SW",
+        },
     )
     assert created.status_code == 201
     created_uuid = created.json()["device"]["device_uuid"]
@@ -1543,7 +1731,12 @@ def test_web_crud_group_assignment_and_token_delete_preserve_secret_boundary(tmp
 
     updated = client.put(
         f"/api/device-management/devices/{created_uuid}",
-        json={"name": "Web-1-updated", "primary_address": "192.0.2.31", "device_vendor": "H3C", "device_type": "SW"},
+        json={
+            "name": "Web-1-updated",
+            "primary_address": "192.0.2.31",
+            "device_vendor": "H3C",
+            "device_type": "SW",
+        },
     )
     assert updated.status_code == 200
     assert devices.get_by_uuid(created_uuid).name == "Web-1-updated"
@@ -1551,10 +1744,18 @@ def test_web_crud_group_assignment_and_token_delete_preserve_secret_boundary(tmp
     group = client.post("/api/device-management/groups", json={"name": "WebGroup"})
     assert group.status_code == 201
     group_id = group.json()["id"]
-    assigned = client.post("/api/device-management/groups/assign", json={"device_uuids": [created_uuid, str(sw.device_uuid)], "group_id": group_id})
+    assigned = client.post(
+        "/api/device-management/groups/assign",
+        json={
+            "device_uuids": [created_uuid, str(sw.device_uuid)],
+            "group_id": group_id,
+        },
+    )
     assert assigned.status_code == 200
     assert assigned.json()["success"] == 2
-    renamed = client.patch(f"/api/device-management/groups/{group_id}", json={"name": "WebGroupRenamed"})
+    renamed = client.patch(
+        f"/api/device-management/groups/{group_id}", json={"name": "WebGroupRenamed"}
+    )
     assert renamed.status_code == 200
     assert renamed.json()["name"] == "WebGroupRenamed"
     removed_group = client.delete(f"/api/device-management/groups/{group_id}")
@@ -1565,7 +1766,12 @@ def test_web_crud_group_assignment_and_token_delete_preserve_secret_boundary(tmp
     secret_value = "must-not-be-echoed"
     accepted_secret = client.post(
         "/api/device-management/devices",
-        json={"name": "Web-secret", "primary_address": "192.0.2.32", "ssh_username": "admin", "ssh_password": secret_value},
+        json={
+            "name": "Web-secret",
+            "primary_address": "192.0.2.32",
+            "ssh_username": "admin",
+            "ssh_password": secret_value,
+        },
     )
     assert accepted_secret.status_code == 201
     secret_uuid = accepted_secret.json()["device"]["device_uuid"]
@@ -1575,7 +1781,12 @@ def test_web_crud_group_assignment_and_token_delete_preserve_secret_boundary(tmp
 
     preserved_secret = client.put(
         f"/api/device-management/devices/{secret_uuid}",
-        json={"name": "Web-secret-updated", "primary_address": "192.0.2.33", "ssh_username": "admin", "ssh_password": ""},
+        json={
+            "name": "Web-secret-updated",
+            "primary_address": "192.0.2.33",
+            "ssh_username": "admin",
+            "ssh_password": "",
+        },
     )
     assert preserved_secret.status_code == 200
     assert secret_value not in preserved_secret.text
@@ -1638,29 +1849,40 @@ def test_web_crud_group_assignment_and_token_delete_preserve_secret_boundary(tmp
     assert devices.get_by_uuid(secret_uuid).ssh_password is None
     assert devices.get_by_uuid(secret_uuid).password is None
     assert (
-        client.get(f"/api/device-management/devices/{secret_uuid}").json()[
-            "device"
-        ]["ssh_secret_configured"]
+        client.get(f"/api/device-management/devices/{secret_uuid}").json()["device"][
+            "ssh_secret_configured"
+        ]
         is False
     )
 
-    token = client.post("/api/device-management/devices/delete-confirmation", json={"device_uuids": [created_uuid]})
+    token = client.post(
+        "/api/device-management/devices/delete-confirmation",
+        json={"device_uuids": [created_uuid]},
+    )
     assert token.status_code == 200
     deleted = client.post(
         "/api/device-management/devices/batch-delete",
-        json={"device_uuids": [created_uuid], "confirmation_token": token.json()["confirmation_token"]},
+        json={
+            "device_uuids": [created_uuid],
+            "confirmation_token": token.json()["confirmation_token"],
+        },
     )
     assert deleted.status_code == 200
     assert devices.get_by_uuid(created_uuid) is None
     assert devices.get_by_uuid(str(mr.device_uuid)).ssh_password == "secret-password"
 
 
-def test_import_preview_confirm_creates_backup_and_uses_task_center(tmp_path: Path) -> None:
+def test_import_preview_confirm_creates_backup_and_uses_task_center(
+    tmp_path: Path,
+) -> None:
     client, service, adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
     source = tmp_path / "devices.csv"
     _write_import_csv(source)
 
-    preview = client.post("/api/device-management/imports/preview", files={"file": ("devices.csv", source.read_bytes(), "text/csv")})
+    preview = client.post(
+        "/api/device-management/imports/preview",
+        files={"file": ("devices.csv", source.read_bytes(), "text/csv")},
+    )
     assert preview.status_code == 200
     body = preview.json()
     assert body["row_count"] == 1
@@ -1671,7 +1893,10 @@ def test_import_preview_confirm_creates_backup_and_uses_task_center(tmp_path: Pa
     assert str(tmp_path) not in preview.text
     assert "web_staging" not in preview.text
 
-    confirmed = client.post("/api/device-management/imports/confirm", json={"preview_token": body["preview_token"]})
+    confirmed = client.post(
+        "/api/device-management/imports/confirm",
+        json={"preview_token": body["preview_token"]},
+    )
     assert confirmed.status_code == 202
     assert confirmed.json()["action"] == "import_csv"
     assert "output_path" not in confirmed.text
@@ -1681,9 +1906,17 @@ def test_import_preview_confirm_creates_backup_and_uses_task_center(tmp_path: Pa
     assert adapter.jobs[-1].params["task_source"] == "local"
     assert adapter.jobs[-1].params["duplicate_strategy"] == "reject"
     assert adapter.completions[-1] is not None
-    adapter.completions[-1](SimpleNamespace(exit_code=0, cancelled=False, payload={"result": {"created": 1, "skipped": 0, "errors": []}}))
+    adapter.completions[-1](
+        SimpleNamespace(
+            exit_code=0,
+            cancelled=False,
+            payload={"result": {"created": 1, "skipped": 0, "errors": []}},
+        )
+    )
     assert not list(service._import_staging_root("demo").glob("*"))
-    backups = list(service.paths.site_backups_dir("demo").glob("device-import-*.sqlite"))
+    backups = list(
+        service.paths.site_backups_dir("demo").glob("device-import-*.sqlite")
+    )
     assert backups
 
 
@@ -1802,18 +2035,12 @@ def test_import_claim_publishes_complete_manifest_before_concurrent_cleanup(
     with source.open("rb") as handle:
         preview = service.preview_import(source.name, handle)
     staging_root = service._import_staging_root("demo")
-    preview_manifest = service._preview_manifest_path(
-        "demo", preview.preview_token
-    )
+    preview_manifest = service._preview_manifest_path("demo", preview.preview_token)
     preview_payload = json.loads(preview_manifest.read_text(encoding="utf-8"))
     preview_payload["expires"] = datetime.now(UTC).timestamp() + 300
     service._write_json_atomic(preview_manifest, preview_payload, staging_root)
     staged = staging_root / preview_payload["staged_name"]
-    old = (
-        datetime.now(UTC).timestamp()
-        - DEVICE_IMPORT_PREVIEW_TTL_SECONDS
-        - 30
-    )
+    old = datetime.now(UTC).timestamp() - DEVICE_IMPORT_PREVIEW_TTL_SECONDS - 30
     os.utime(staged, (old, old))
 
     publish_entered = Event()
@@ -2013,9 +2240,7 @@ def test_claim_cleanup_requires_exact_owned_import_task(
     assert not claimed.exists()
     assert not staged.exists()
     audit = json.loads(
-        service._import_audit_path("demo", operation_id).read_text(
-            encoding="utf-8"
-        )
+        service._import_audit_path("demo", operation_id).read_text(encoding="utf-8")
     )
     assert audit["status"] == "FAILED"
     assert audit["task_id"] == task_id
@@ -2026,9 +2251,19 @@ def test_device_upload_and_export_contracts_reject_browser_paths_and_oversize_fi
 ) -> None:
     client, service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
 
-    assert client.post("/api/device-management/imports/preview", json={"path": "C:\\outside\\devices.csv"}).status_code == 422
+    assert (
+        client.post(
+            "/api/device-management/imports/preview",
+            json={"path": "C:\\outside\\devices.csv"},
+        ).status_code
+        == 422
+    )
     csv_bytes = b"name,primary_address\nweb,192.0.2.50\n"
-    for filename in ("C:\\outside\\devices.csv", "..\\devices.csv", "\\\\server\\share\\devices.csv"):
+    for filename in (
+        "C:\\outside\\devices.csv",
+        "..\\devices.csv",
+        "\\\\server\\share\\devices.csv",
+    ):
         response = client.post(
             "/api/device-management/imports/preview",
             files={"file": (filename, csv_bytes, "text/csv")},
@@ -2037,22 +2272,38 @@ def test_device_upload_and_export_contracts_reject_browser_paths_and_oversize_fi
 
     oversized = client.post(
         "/api/device-management/imports/preview",
-        files={"file": ("devices.csv", b"x" * (MAX_DEVICE_IMPORT_BYTES + 1), "text/csv")},
+        files={
+            "file": ("devices.csv", b"x" * (MAX_DEVICE_IMPORT_BYTES + 1), "text/csv")
+        },
     )
     assert oversized.status_code == 422
     assert not list(service._import_staging_root("demo").glob("*"))
 
     rejected_payloads = (
-        ("/api/device-management/exports/csv", {"output_path": "C:\\outside\\devices.csv"}),
-        ("/api/device-management/exports/template", {"output_path": "C:\\outside\\template.csv"}),
-        ("/api/device-management/exports/securecrt", {"output_dir": "C:\\outside", "template_ini": "C:\\outside\\template.ini"}),
-        ("/api/device-management/exports/omnipeek", {"line_name": "NetConsole", "output_path": "C:\\outside\\devices.nam"}),
+        (
+            "/api/device-management/exports/csv",
+            {"output_path": "C:\\outside\\devices.csv"},
+        ),
+        (
+            "/api/device-management/exports/template",
+            {"output_path": "C:\\outside\\template.csv"},
+        ),
+        (
+            "/api/device-management/exports/securecrt",
+            {"output_dir": "C:\\outside", "template_ini": "C:\\outside\\template.ini"},
+        ),
+        (
+            "/api/device-management/exports/omnipeek",
+            {"line_name": "NetConsole", "output_path": "C:\\outside\\devices.nam"},
+        ),
     )
     for path, payload in rejected_payloads:
         assert client.post(path, json=payload).status_code == 422
 
 
-def test_device_export_download_requires_owned_completed_task_and_safe_artifact(tmp_path: Path) -> None:
+def test_device_export_download_requires_owned_completed_task_and_safe_artifact(
+    tmp_path: Path,
+) -> None:
     client, service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
     artifact_root = service._artifact_root("demo")
     artifact_id = f"device-{'a' * 32}"
@@ -2152,10 +2403,13 @@ def test_device_export_download_requires_owned_completed_task_and_safe_artifact(
             "size_bytes": artifact.stat().st_size,
         },
     )
-    assert client.get(
-        "/api/device-management/exports/device-export-deceptive-extension/download",
-        params={"artifact_id": artifact_id},
-    ).status_code == 422
+    assert (
+        client.get(
+            "/api/device-management/exports/device-export-deceptive-extension/download",
+            params={"artifact_id": artifact_id},
+        ).status_code
+        == 422
+    )
 
     artifact.write_text("tampered", encoding="utf-8")
     tampered = client.get(
@@ -2173,19 +2427,29 @@ def test_device_export_download_requires_owned_completed_task_and_safe_artifact(
         ("device-export-pending", {"status": TaskState.PENDING}),
     ):
         save_task(task_id, **overrides)
-        assert client.get(
-            f"/api/device-management/exports/{task_id}/download",
-            params={"artifact_id": artifact_id},
-        ).status_code != 200
+        assert (
+            client.get(
+                f"/api/device-management/exports/{task_id}/download",
+                params={"artifact_id": artifact_id},
+            ).status_code
+            != 200
+        )
 
     save_task(
         "device-export-traversal",
-        result={"artifact_id": "device-traversal", "artifact_name": "../outside.csv", "available": True},
+        result={
+            "artifact_id": "device-traversal",
+            "artifact_name": "../outside.csv",
+            "available": True,
+        },
     )
-    assert client.get(
-        "/api/device-management/exports/device-export-traversal/download",
-        params={"artifact_id": "device-traversal"},
-    ).status_code != 200
+    assert (
+        client.get(
+            "/api/device-management/exports/device-export-traversal/download",
+            params={"artifact_id": "device-traversal"},
+        ).status_code
+        != 200
+    )
 
     outside = tmp_path / "outside.csv"
     outside.write_text("outside", encoding="utf-8")
@@ -2196,12 +2460,19 @@ def test_device_export_download_requires_owned_completed_task_and_safe_artifact(
         pytest.skip("当前 Windows 测试环境不允许创建符号链接")
     save_task(
         "device-export-symlink",
-        result={"artifact_id": "device-symlink", "artifact_name": link.name, "available": True},
+        result={
+            "artifact_id": "device-symlink",
+            "artifact_name": link.name,
+            "available": True,
+        },
     )
-    assert client.get(
-        "/api/device-management/exports/device-export-symlink/download",
-        params={"artifact_id": "device-symlink"},
-    ).status_code != 200
+    assert (
+        client.get(
+            "/api/device-management/exports/device-export-symlink/download",
+            params={"artifact_id": "device-symlink"},
+        ).status_code
+        != 200
+    )
 
 
 def test_device_export_production_result_separates_physical_and_display_names(
@@ -2246,7 +2517,9 @@ def test_device_export_production_result_separates_physical_and_display_names(
     spec = service._export_artifacts[reference.task_id]
     target = Path(str(spec["target"]))
     target.write_text("name,primary_address\n设备,192.0.2.10\n", encoding="utf-8")
-    result = service._finalize_export_artifact(spec, {"path": str(target), "row_count": 1})
+    result = service._finalize_export_artifact(
+        spec, {"path": str(target), "row_count": 1}
+    )
     service.task_service.record_external_event(
         reference.task_id,
         "finished",
@@ -2264,20 +2537,32 @@ def test_device_export_production_result_separates_physical_and_display_names(
     assert str(result["display_name"]).endswith(".csv")
     assert result["artifact_id"] not in str(result["display_name"])
     assert downloaded.status_code == 200
-    assert str(result["display_name"]) in unquote(downloaded.headers["content-disposition"])
+    assert str(result["display_name"]) in unquote(
+        downloaded.headers["content-disposition"]
+    )
     assert int(downloaded.headers["content-length"]) == result["size_bytes"]
     assert downloaded.headers["content-type"] == "text/csv; charset=utf-8"
 
 
-def test_device_management_parent_feature_gate_blocks_write_actions(tmp_path: Path) -> None:
+def test_device_management_parent_feature_gate_blocks_write_actions(
+    tmp_path: Path,
+) -> None:
     client, _service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
     gate = client.app.state.feature_gate
     original = dict(gate.features["web.device_management"])
-    gate.features["web.device_management"] = {**original, "enabled": False, "client_package": False}
+    gate.features["web.device_management"] = {
+        **original,
+        "enabled": False,
+        "client_package": False,
+    }
     try:
         response = client.post(
             "/api/device-management/devices",
-            json={"name": "gate-test", "primary_address": "192.0.2.60", "device_type": "SW"},
+            json={
+                "name": "gate-test",
+                "primary_address": "192.0.2.60",
+                "device_type": "SW",
+            },
         )
     finally:
         gate.features["web.device_management"] = original
@@ -2345,7 +2630,9 @@ def test_device_management_action_gates_block_their_own_endpoints(
         (True, [sys.executable, "--export-worker"]),
     ),
 )
-def test_device_export_spawn_failure_uses_fixed_worker_and_cleans_job_files(tmp_path: Path, monkeypatch, frozen: bool, expected_prefix: list[str]) -> None:
+def test_device_export_spawn_failure_uses_fixed_worker_and_cleans_job_files(
+    tmp_path: Path, monkeypatch, frozen: bool, expected_prefix: list[str]
+) -> None:
     _client, service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
     captured: dict[str, object] = {}
 
@@ -2355,13 +2642,17 @@ def test_device_export_spawn_failure_uses_fixed_worker_and_cleans_job_files(tmp_
         raise OSError("worker unavailable")
 
     monkeypatch.setattr(sys, "frozen", frozen, raising=False)
-    monkeypatch.setattr("netconsole.services.device_management_web_service.subprocess.Popen", fail_popen)
+    monkeypatch.setattr(
+        "netconsole.services.device_management_web_service.subprocess.Popen", fail_popen
+    )
     reference = service.start_template_export()
     assert reference.task_status == TaskState.FAILED.value
     assert captured["shell"] is False
     command = captured["args"][0]  # type: ignore[index]
     assert command[: len(expected_prefix)] == expected_prefix
-    assert not list((service.paths.runtime_cache_dir / "export_jobs").glob(f"{reference.task_id}.*"))
+    assert not list(
+        (service.paths.runtime_cache_dir / "export_jobs").glob(f"{reference.task_id}.*")
+    )
     assert not list(service._artifact_root("demo").glob("*"))
     snapshot = service.task_service.repository("demo").get(reference.task_id)
     assert snapshot is not None
@@ -2400,7 +2691,9 @@ def test_securecrt_spawn_and_sensitive_cleanup_failure_still_marks_task_failed(
     assert snapshot.status is TaskState.FAILED
 
 
-def test_device_export_lifecycle_stop_uses_task_site_and_marks_cancelled(tmp_path: Path) -> None:
+def test_device_export_lifecycle_stop_uses_task_site_and_marks_cancelled(
+    tmp_path: Path,
+) -> None:
     _client, service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
     now = datetime.now(UTC).isoformat()
     task_id = "device-export-lifecycle"
@@ -2443,7 +2736,10 @@ def test_device_export_lifecycle_stop_uses_task_site_and_marks_cancelled(tmp_pat
 
     assert process.terminated is True
     assert cancel_path.read_text(encoding="utf-8") == "cancelled"
-    assert service.task_service.repository("demo").get(task_id).status is TaskState.CANCELLED  # type: ignore[union-attr]
+    assert (
+        service.task_service.repository("demo").get(task_id).status
+        is TaskState.CANCELLED
+    )  # type: ignore[union-attr]
 
 
 def test_securecrt_export_is_finalized_as_controlled_zip(tmp_path: Path) -> None:
@@ -2493,7 +2789,9 @@ def test_securecrt_export_is_finalized_as_controlled_zip(tmp_path: Path) -> None
     assert result["available"] is True
 
 
-def test_device_export_finalizer_rejects_another_artifact_in_controlled_root(tmp_path: Path) -> None:
+def test_device_export_finalizer_rejects_another_artifact_in_controlled_root(
+    tmp_path: Path,
+) -> None:
     _client, service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
     root = service._artifact_root("demo")
     target = root / "expected.csv"
@@ -2528,18 +2826,21 @@ def test_diagnostic_task_creates_downloadable_controlled_artifact(
             self.paths = paths
 
         def download(self, _device: Device) -> SimpleNamespace:
-            path = self.paths.config_center_raw_logs_dir(
-                self.site, "20260717", "diagnostic"
-            ) / "MR-02_diag_20260717_120000.txt"
+            path = (
+                self.paths.config_center_raw_logs_dir(
+                    self.site, "20260717", "diagnostic"
+                )
+                / "MR-02_diag_20260717_120000.txt"
+            )
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("display diagnostic-information\nOK\n", encoding="utf-8")
             return SimpleNamespace(
                 device_id=mr.id,
                 device_name=mr.name,
                 timestamp="20260717_120000",
-                file_path=path.resolve().relative_to(
-                    self.paths.site_dir(self.site).resolve()
-                ).as_posix(),
+                file_path=path.resolve()
+                .relative_to(self.paths.site_dir(self.site).resolve())
+                .as_posix(),
                 status="success",
                 error_message=None,
                 elapsed_ms=2,
@@ -2592,10 +2893,13 @@ def test_diagnostic_task_creates_downloadable_controlled_artifact(
     )
     assert downloaded.status_code == 200
     assert downloaded.content == artifact.read_bytes()
-    assert client.get(
-        f"/api/device-management/exports/{job.job_id}/download",
-        params={"artifact_id": result["artifact_id"]},
-    ).status_code != 200
+    assert (
+        client.get(
+            f"/api/device-management/exports/{job.job_id}/download",
+            params={"artifact_id": result["artifact_id"]},
+        ).status_code
+        != 200
+    )
 
 
 def test_restart_cleanup_preserves_active_diagnostic_temp_and_removes_terminal_orphan(
@@ -2700,10 +3004,15 @@ def test_import_completion_never_restores_whole_database_and_preserves_audit(
     assert '"status": "APPLIED"' in applied_audit.read_text(encoding="utf-8")
 
 
-def test_batch_refresh_and_external_terminal_are_controlled_contracts(tmp_path: Path) -> None:
+def test_batch_refresh_and_external_terminal_are_controlled_contracts(
+    tmp_path: Path,
+) -> None:
     client, service, adapter, _devices, _facts, mr, sw = _fixture(tmp_path)
     target_uuid = str(sw.device_uuid)
-    refreshed = client.post("/api/device-management/devices/batch-refresh-details", json={"device_uuids": [target_uuid]})
+    refreshed = client.post(
+        "/api/device-management/devices/batch-refresh-details",
+        json={"device_uuids": [target_uuid]},
+    )
     assert refreshed.status_code == 202, refreshed.text
     assert refreshed.json()["action"] == "batch_refresh_details"
     assert adapter.jobs[-1].task_type == "device_detail_collect"
@@ -2735,14 +3044,13 @@ def test_batch_refresh_and_external_terminal_are_controlled_contracts(tmp_path: 
         json={"device_uuids": [str(mr.device_uuid)]},
     )
     assert diagnostic.status_code == 202
-    detail = client.get(
-        f"/api/device-management/devices/{target_uuid}"
-    ).json()
-    assert {collect_task_id} <= {
-        task["task_id"] for task in detail["recent_tasks"]
-    }
+    detail = client.get(f"/api/device-management/devices/{target_uuid}").json()
+    assert {collect_task_id} <= {task["task_id"] for task in detail["recent_tasks"]}
 
-    terminal = client.post(f"/api/device-management/devices/{mr.device_uuid}/external-terminal", json={"terminal_type": "securecrt"})
+    terminal = client.post(
+        f"/api/device-management/devices/{mr.device_uuid}/external-terminal",
+        json={"terminal_type": "securecrt"},
+    )
     assert terminal.status_code == 200
     assert terminal.json() == {
         "native_action": "launchTerminal",
@@ -2799,7 +3107,9 @@ def test_batch_refresh_supports_h3c_mobile_router_profile(tmp_path: Path) -> Non
     assert response.status_code == 202, response.text
     params = adapter.jobs[-1].params
     assert params["operation_id"] == "device.inventory.collect"
-    assert params["profile_id"] == "h3c.comware.mobile_router.generic.device-inventory.v1"
+    assert (
+        params["profile_id"] == "h3c.comware.mobile_router.generic.device-inventory.v1"
+    )
     assert params["platform_role"] == "mobile_router"
     assert params["platform"] == "comware"
     assert "commands" not in params
@@ -2864,17 +3174,17 @@ def test_vehicle_mr_legacy_cloud_ap_migration_is_strict_and_backed_up(
     assert devices.get(int(real_ap.id or 0)).device_type == "Cloud-AP"
     assert devices.get(int(already_mr.id or 0)).device_type == "MR"
     backups = list(
-        (
-            service.paths.site_backups_dir("demo") / "device-type-migrations"
-        ).glob("vehicle-mr-device-type-*.sqlite")
+        (service.paths.site_backups_dir("demo") / "device-type-migrations").glob(
+            "vehicle-mr-device-type-*.sqlite"
+        )
     )
     assert len(backups) == 1
 
     assert client.get("/api/device-management/devices").status_code == 200
     backups_after_second_scan = list(
-        (
-            service.paths.site_backups_dir("demo") / "device-type-migrations"
-        ).glob("vehicle-mr-device-type-*.sqlite")
+        (service.paths.site_backups_dir("demo") / "device-type-migrations").glob(
+            "vehicle-mr-device-type-*.sqlite"
+        )
     )
     assert backups_after_second_scan == backups
 

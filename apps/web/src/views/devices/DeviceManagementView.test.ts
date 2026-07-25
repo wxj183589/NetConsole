@@ -19,7 +19,7 @@ describe('Device Management Web view', () => {
     expect(source).toContain("'empty' : 'success'")
   })
 
-  it('supports filters, shared full detail presentation and real write-only credential editing', () => {
+  it('supports filters, shared full detail presentation and desktop-only explicit credential reveal', () => {
     expect(source).toContain('connection_status')
     expect(source).toContain('group_id')
     expect(source).toContain('device_type')
@@ -48,9 +48,11 @@ describe('Device Management Web view', () => {
     expect(source).toContain('updateDevice(editedUuid, deviceWritePayload())')
     expect(source).toContain('device_uuid: editTargetUuid || undefined')
     expect(source).not.toContain('device_uuid: writeMode.value === \'edit\' ? detailDeviceUuid.value : undefined')
-    expect(source).toContain('type="password"')
+    expect(source).toContain(":type=\"secretVisible.ssh_password ? 'text' : 'password'\"")
+    expect(source).toContain('revealDeviceCredential(editingDeviceUuid.value, field)')
+    expect(source).toContain('仅本机桌面端可以读取已保存凭据')
     expect(source).toContain('autocomplete="new-password"')
-    expect(source).toContain('留空会保留原值')
+    expect(source).toContain('已配置；留空保留')
     expect(source).toContain('clear_secret_fields')
     expect(source).toContain('清除已保存值')
     expect(source).toContain('startDeviceFormConnectionTest')

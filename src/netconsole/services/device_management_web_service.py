@@ -31,6 +31,7 @@ from netconsole.models.api.device_management import (
     DeviceCollectionSummaryDTO,
     DeviceConnectionCommandDTO,
     DeviceConnectionTestDTO,
+    DeviceCredentialRevealDTO,
     DeviceDetailDTO,
     DeviceEditProfileDTO,
     DeviceDetailItemDTO,
@@ -92,7 +93,10 @@ from netconsole.services.device_connection_preflight import (
     validate_device_connection_preflight,
 )
 from netconsole.services.device_web_service import build_https_url, effective_https_port
-from netconsole.services.diagnostic_download_service import DiagnosticDownloadService, run_batch_diagnostic_download
+from netconsole.services.diagnostic_download_service import (
+    DiagnosticDownloadService,
+    run_batch_diagnostic_download,
+)
 from netconsole.services.export.export_job import ExportJob
 from netconsole.services.external_terminal import (
     TERMINAL_SETTING_KEYS,
@@ -102,7 +106,9 @@ from netconsole.services.external_terminal import (
 from netconsole.services.file_contract import attach_export_metadata
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
-from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.job_center.task_application_service import (
+    TaskApplicationService,
+)
 from netconsole.services.netmiko_connection import (
     connection_targets,
     extract_sysname_from_prompt,
@@ -114,7 +120,12 @@ from netconsole.utils.natural_sort import natural_text_key
 
 
 DEVICE_CONNECTION_TEST_TASK_TYPE = "device_connection_test"
-ACTIVE_TASK_STATES = {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING}
+ACTIVE_TASK_STATES = {
+    TaskState.PENDING,
+    TaskState.STARTING,
+    TaskState.RUNNING,
+    TaskState.STOPPING,
+}
 DEVICE_IMPORT_PREVIEW_TTL_SECONDS = 15 * 60
 DEVICE_IMPORT_CLAIM_GRACE_SECONDS = 60
 DEVICE_DELETE_TOKEN_TTL_SECONDS = 5 * 60
@@ -145,12 +156,16 @@ _DEVICE_EXPORT_DISPLAY_NAMES = {
     "device_export_omnipeek_name_table": ("OmniPeek名称表", ".nam"),
     "device_diagnostic_download": ("设备诊断", ".zip"),
 }
+
+
 def device_export_display_name(task_type: str, value: object = "") -> str:
     contract = _DEVICE_EXPORT_DISPLAY_NAMES.get(str(task_type or ""))
     if contract is None:
         return ""
     label, suffix = contract
     return safe_artifact_display_name(value, suffix, label)
+
+
 DEVICE_COLLECT_TASK_TYPE = "device_detail_collect"
 DEVICE_OPTICAL_REFRESH_TASK_TYPE = "device_optical_refresh"
 DEVICE_DIAGNOSTIC_TASK_TYPE = "device_diagnostic_download"
@@ -338,7 +353,9 @@ class DeviceManagementWebService:
         site = self.current_site_id()
         device_repository, group_repository, _ = self._repositories(site)
         groups = group_repository.list()
-        group_names = {int(group.id): group.name for group in groups if group.id is not None}
+        group_names = {
+            int(group.id): group.name for group in groups if group.id is not None
+        }
         tasks = self._owned_web_tasks(
             self.task_service.repository(site).list(limit=1000),
             site,
@@ -350,10 +367,15 @@ class DeviceManagementWebService:
             device_type=device_type.strip() or None,
             group_filter="__ungrouped__" if ungrouped else group_id,
         )
-        items = [self._list_item(device, group_names, self._latest_test(tasks, device)) for device in devices]
+        items = [
+            self._list_item(device, group_names, self._latest_test(tasks, device))
+            for device in devices
+        ]
         selected_status = connection_status.strip().upper()
         if selected_status:
-            items = [item for item in items if item.connection_status == selected_status]
+            items = [
+                item for item in items if item.connection_status == selected_status
+            ]
         try:
             sort_key = SORT_FIELDS[sort_by]
         except KeyError as exc:
@@ -365,7 +387,11 @@ class DeviceManagementWebService:
         start = (selected_page - 1) * page_size
         return DevicePageDTO(
             items=items[start : start + page_size],
-            groups=[DeviceGroupOptionDTO(id=int(group.id), name=group.name) for group in groups if group.id is not None],
+            groups=[
+                DeviceGroupOptionDTO(id=int(group.id), name=group.name)
+                for group in groups
+                if group.id is not None
+            ],
             total=total,
             page=selected_page,
             page_size=page_size,
@@ -377,7 +403,11 @@ class DeviceManagementWebService:
         site = self.current_site_id()
         device_repository, group_repository, fact_repository = self._repositories(site)
         device = self._require_device(device_repository, device_uuid)
-        groups = {int(group.id): group.name for group in group_repository.list() if group.id is not None}
+        groups = {
+            int(group.id): group.name
+            for group in group_repository.list()
+            if group.id is not None
+        }
         tasks = self._device_tasks(
             self._owned_web_tasks(
                 self.task_service.repository(site).list(limit=1000),
@@ -387,7 +417,11 @@ class DeviceManagementWebService:
         )
         list_item = self._list_item(device, groups, self._latest_test(tasks, device))
         fact = fact_repository.get_device_fact(device_uuid)
-        collection = fact_repository.get_collect_run(str(fact.get("collect_run_uuid") or "")) if fact else None
+        collection = (
+            fact_repository.get_collect_run(str(fact.get("collect_run_uuid") or ""))
+            if fact
+            else None
+        )
         task_summaries = [self._task_summary(task, device) for task in tasks[:10]]
         collection_summary = self._collection_summary(collection, device)
         errors = self._recent_errors(tasks, collection, device)
@@ -448,6 +482,22 @@ class DeviceManagementWebService:
             telnet_port=int(device.telnet_port or 23),
             snmp_enabled=bool(device.snmp_enabled),
             snmp_port=int(device.snmp_port or 161),
+        )
+
+    def reveal_device_credentials(
+        self, device_uuid: str, credential_field: str
+    ) -> DeviceCredentialRevealDTO:
+        if credential_field not in DEVICE_FORM_TEST_SECRET_FIELDS:
+            raise ValueError("设备凭据字段无效")
+        devices, _groups, _facts = self._repositories(self.current_site_id())
+        device = self._require_device(devices, device_uuid)
+        value = getattr(device, credential_field)
+        if credential_field == "ssh_password" and not value:
+            value = device.password
+        return DeviceCredentialRevealDTO(
+            device_uuid=str(device.device_uuid or ""),
+            credential_field=credential_field,
+            value=str(value or ""),
         )
 
     def get_device_history(
@@ -534,10 +584,16 @@ class DeviceManagementWebService:
         )
 
     def list_groups(self) -> list[DeviceGroupDTO]:
-        _device_repository, group_repository, _facts = self._repositories(self.current_site_id())
+        _device_repository, group_repository, _facts = self._repositories(
+            self.current_site_id()
+        )
         counts = group_repository.counts()
         return [
-            DeviceGroupDTO(id=int(group.id), name=group.name, device_count=counts.get(int(group.id), 0))
+            DeviceGroupDTO(
+                id=int(group.id),
+                name=group.name,
+                device_count=counts.get(int(group.id), 0),
+            )
             for group in group_repository.list()
             if group.id is not None
         ]
@@ -552,7 +608,9 @@ class DeviceManagementWebService:
             device=self._write_result_item(created, group_repository),
         )
 
-    def update_device(self, device_uuid: str, payload: DeviceWriteRequestDTO) -> DeviceWriteDTO:
+    def update_device(
+        self, device_uuid: str, payload: DeviceWriteRequestDTO
+    ) -> DeviceWriteDTO:
         site = self.current_site_id()
         device_repository, group_repository, _facts = self._repositories(site)
         existing = self._require_device(device_repository, device_uuid)
@@ -567,7 +625,9 @@ class DeviceManagementWebService:
         device_repository, group_repository, _facts = self._repositories(site)
         source = self._require_device(device_repository, device_uuid)
         record = source.to_record()
-        record.update({"id": None, "device_uuid": None, "created_at": None, "updated_at": None})
+        record.update(
+            {"id": None, "device_uuid": None, "created_at": None, "updated_at": None}
+        )
         if str(record.get("name") or "").strip():
             record["name"] = f"{str(record['name']).strip()}-副本"
         created = device_repository.create(Device.from_mapping(record))
@@ -576,7 +636,9 @@ class DeviceManagementWebService:
             device=self._write_result_item(created, group_repository),
         )
 
-    def issue_delete_token(self, payload: DeviceDeletionTokenRequestDTO) -> DeviceDeletionTokenDTO:
+    def issue_delete_token(
+        self, payload: DeviceDeletionTokenRequestDTO
+    ) -> DeviceDeletionTokenDTO:
         site = self.current_site_id()
         device_repository, _groups, _facts = self._repositories(site)
         uuids = self._unique_ids(payload.device_uuids)
@@ -585,8 +647,14 @@ class DeviceManagementWebService:
         token = secrets.token_urlsafe(32)
         expires = datetime.now(UTC) + timedelta(seconds=DEVICE_DELETE_TOKEN_TTL_SECONDS)
         with self._mutation_lock:
-            self._delete_tokens[token] = {"site": site, "device_uuids": tuple(uuids), "expires": expires.timestamp()}
-        return DeviceDeletionTokenDTO(confirmation_token=token, device_uuids=uuids, expires_at=expires.isoformat())
+            self._delete_tokens[token] = {
+                "site": site,
+                "device_uuids": tuple(uuids),
+                "expires": expires.timestamp(),
+            }
+        return DeviceDeletionTokenDTO(
+            confirmation_token=token, device_uuids=uuids, expires_at=expires.isoformat()
+        )
 
     def delete_devices(self, payload: DeviceDeleteRequestDTO) -> DeviceDeleteDTO:
         site = self.current_site_id()
@@ -594,7 +662,11 @@ class DeviceManagementWebService:
         uuids = self._unique_ids(payload.device_uuids)
         with self._mutation_lock:
             token = self._delete_tokens.pop(str(payload.confirmation_token), None)
-        if not token or token.get("site") != site or float(token.get("expires") or 0) < datetime.now(UTC).timestamp():
+        if (
+            not token
+            or token.get("site") != site
+            or float(token.get("expires") or 0) < datetime.now(UTC).timestamp()
+        ):
             raise ValueError("删除确认 token 无效或已过期")
         if tuple(uuids) != tuple(token.get("device_uuids") or ()):
             raise ValueError("删除确认 token 与设备范围不匹配")
@@ -607,11 +679,17 @@ class DeviceManagementWebService:
         group = groups.create(payload.name)
         return DeviceGroupDTO(id=int(group.id), name=group.name, device_count=0)
 
-    def rename_group(self, group_id: int, payload: DeviceGroupRequestDTO) -> DeviceGroupDTO:
+    def rename_group(
+        self, group_id: int, payload: DeviceGroupRequestDTO
+    ) -> DeviceGroupDTO:
         site = self.current_site_id()
         _devices, groups, _facts = self._repositories(site)
         group = groups.rename(group_id, payload.name)
-        return DeviceGroupDTO(id=int(group.id), name=group.name, device_count=groups.count_devices(group_id))
+        return DeviceGroupDTO(
+            id=int(group.id),
+            name=group.name,
+            device_count=groups.count_devices(group_id),
+        )
 
     def delete_group(self, group_id: int) -> DeviceGroupDeleteDTO:
         site = self.current_site_id()
@@ -619,16 +697,27 @@ class DeviceManagementWebService:
         groups.delete(group_id)
         return DeviceGroupDeleteDTO()
 
-    def assign_group(self, payload: DeviceGroupAssignmentRequestDTO) -> DeviceGroupAssignmentDTO:
+    def assign_group(
+        self, payload: DeviceGroupAssignmentRequestDTO
+    ) -> DeviceGroupAssignmentDTO:
         site = self.current_site_id()
         devices, groups, _facts = self._repositories(site)
         if payload.group_id is not None:
             groups.get(payload.group_id)
-        ids = [int(self._require_device(devices, device_uuid).id or 0) for device_uuid in self._unique_ids(payload.device_uuids)]
-        result = DeviceGroupService(devices, groups).assign_devices(ids, payload.group_id)
-        return DeviceGroupAssignmentDTO(success=result.success, failed=result.failed, group_id=payload.group_id)
+        ids = [
+            int(self._require_device(devices, device_uuid).id or 0)
+            for device_uuid in self._unique_ids(payload.device_uuids)
+        ]
+        result = DeviceGroupService(devices, groups).assign_devices(
+            ids, payload.group_id
+        )
+        return DeviceGroupAssignmentDTO(
+            success=result.success, failed=result.failed, group_id=payload.group_id
+        )
 
-    def start_batch_refresh(self, payload: DeviceBatchRefreshRequestDTO) -> DeviceTaskBatchDTO:
+    def start_batch_refresh(
+        self, payload: DeviceBatchRefreshRequestDTO
+    ) -> DeviceTaskBatchDTO:
         if self.device_operation_service is None:
             raise RuntimeError("DeviceOperationService 未接线")
         operation_id = "device.inventory.collect"
@@ -668,9 +757,7 @@ class DeviceManagementWebService:
                 else ""
             )
             if not protocol:
-                raise ValueError(
-                    f"设备 {device.name or device_uuid} 未启用连接协议"
-                )
+                raise ValueError(f"设备 {device.name or device_uuid} 未启用连接协议")
             self._validate_connection_preflight(device, protocol)
             planned.append((device_uuid, protocol))
         references: list[DeviceTaskReferenceDTO] = []
@@ -763,7 +850,9 @@ class DeviceManagementWebService:
             duplicate_rows=duplicate_rows,
         )
 
-    def confirm_import(self, payload: DeviceImportConfirmRequestDTO) -> DeviceTaskReferenceDTO:
+    def confirm_import(
+        self, payload: DeviceImportConfirmRequestDTO
+    ) -> DeviceTaskReferenceDTO:
         site = self.current_site_id()
         self._cleanup_expired_import_previews(site)
         operation_id = f"device-import-{uuid.uuid4().hex}"
@@ -850,7 +939,9 @@ class DeviceManagementWebService:
             )
             raise
 
-    def start_diagnostic_download(self, device_uuids: list[str]) -> DeviceTaskReferenceDTO:
+    def start_diagnostic_download(
+        self, device_uuids: list[str]
+    ) -> DeviceTaskReferenceDTO:
         site = self.current_site_id()
         devices, _groups, _facts = self._repositories(site)
         selected_uuids = self._unique_ids(device_uuids)
@@ -880,7 +971,9 @@ class DeviceManagementWebService:
             raise RuntimeError("设备诊断任务创建后未写入任务中心")
         return self._task_reference(snapshot)
 
-    def external_terminal_action(self, device_uuid: str, payload: DeviceExternalTerminalRequestDTO) -> DeviceExternalTerminalActionDTO:
+    def external_terminal_action(
+        self, device_uuid: str, payload: DeviceExternalTerminalRequestDTO
+    ) -> DeviceExternalTerminalActionDTO:
         devices, _groups, _facts = self._repositories(self.current_site_id())
         device = self._require_device(devices, device_uuid)
         result = self.desktop_action_service.launch_terminal(
@@ -1004,9 +1097,7 @@ class DeviceManagementWebService:
                 value,
             )
         settings.set_value("external_terminal/type", payload.terminal_type)
-        settings.set_value(
-            "external_terminal/pass_password", payload.pass_password
-        )
+        settings.set_value("external_terminal/pass_password", payload.pass_password)
         return self.get_external_terminal_settings()
 
     def _external_terminal_launch(
@@ -1025,9 +1116,7 @@ class DeviceManagementWebService:
             raise ValueError("未启用 SSH/Telnet")
         target = targets[0]
         if target.via_tunnel:
-            raise ValueError(
-                "外部终端暂不支持内部临时隧道，请使用直连地址或可访问地址"
-            )
+            raise ValueError("外部终端暂不支持内部临时隧道，请使用直连地址或可访问地址")
         args = build_external_terminal_command(
             device,
             target,
@@ -1049,7 +1138,9 @@ class DeviceManagementWebService:
             return ""
         return str(validate_settings_tool_path(terminal_type, raw_value))
 
-    def start_csv_export(self, payload: DeviceExportRequestDTO) -> DeviceTaskReferenceDTO:
+    def start_csv_export(
+        self, payload: DeviceExportRequestDTO
+    ) -> DeviceTaskReferenceDTO:
         site = self.current_site_id()
         filters = self._export_filters(payload)
         job_payload = {
@@ -1064,7 +1155,9 @@ class DeviceManagementWebService:
         return self._start_export(site, "device_csv", "csv", job_payload, "export_csv")
 
     def start_template_export(self) -> DeviceTaskReferenceDTO:
-        return self._start_export(self.current_site_id(), "device_template_csv", "csv", {}, "export_template")
+        return self._start_export(
+            self.current_site_id(), "device_template_csv", "csv", {}, "export_template"
+        )
 
     def start_securecrt_export(
         self,
@@ -1102,19 +1195,32 @@ class DeviceManagementWebService:
                 )
             raise
 
-    def start_omnipeek_export(self, payload: DeviceOmniPeekExportRequestDTO) -> DeviceTaskReferenceDTO:
+    def start_omnipeek_export(
+        self, payload: DeviceOmniPeekExportRequestDTO
+    ) -> DeviceTaskReferenceDTO:
         site = self.current_site_id()
         filters = self._export_filters(payload)
         job_payload = {
             "db_path": str(self.paths.site_db_path(site)),
             "site_name": site,
-            "source": {"device_filters": filters, "selected_device_uuids": list(payload.device_uuids), "ac_uuid": ""},
-            "config": {"line_name": payload.line_name, "include_ac_fit_ap": False, "include_ap_extensions": False, "include_device_mr": payload.include_device_mr},
+            "source": {
+                "device_filters": filters,
+                "selected_device_uuids": list(payload.device_uuids),
+                "ac_uuid": "",
+            },
+            "config": {
+                "line_name": payload.line_name,
+                "include_ac_fit_ap": False,
+                "include_ap_extensions": False,
+                "include_device_mr": payload.include_device_mr,
+            },
             "selected_item_keys": list(payload.selected_item_keys),
             "excluded_item_keys": list(payload.excluded_item_keys),
             "force_export_keys": list(payload.force_export_keys),
         }
-        return self._start_export(site, "omnipeek_name_table", "nam", job_payload, "omnipeek_name_table")
+        return self._start_export(
+            site, "omnipeek_name_table", "nam", job_payload, "omnipeek_name_table"
+        )
 
     def start_omnipeek_preview(
         self, payload: DeviceExportRequestDTO
@@ -1157,9 +1263,25 @@ class DeviceManagementWebService:
             task_id=snapshot.task_id,
             task_status=snapshot.status.value,
             ready=ready,
-            items=[dict(item) for item in result.get("items") or [] if isinstance(item, dict)] if ready else [],
-            source_counts={str(key): int(value) for key, value in dict(result.get("source_counts") or {}).items()} if ready else {},
-            stats={str(key): int(value) for key, value in dict(result.get("stats") or {}).items()} if ready else {},
+            items=[
+                dict(item)
+                for item in result.get("items") or []
+                if isinstance(item, dict)
+            ]
+            if ready
+            else [],
+            source_counts={
+                str(key): int(value)
+                for key, value in dict(result.get("source_counts") or {}).items()
+            }
+            if ready
+            else {},
+            stats={
+                str(key): int(value)
+                for key, value in dict(result.get("stats") or {}).items()
+            }
+            if ready
+            else {},
             message=sanitize_sensitive_text(snapshot.message or snapshot.error_message),
         )
 
@@ -1185,7 +1307,9 @@ class DeviceManagementWebService:
         if snapshot.status is not TaskState.COMPLETED:
             raise ValueError("文件任务尚未完成")
         result = dict(snapshot.result or {})
-        if str(result.get("artifact_id") or "") != artifact_id or not bool(result.get("available")):
+        if str(result.get("artifact_id") or "") != artifact_id or not bool(
+            result.get("available")
+        ):
             raise KeyError(artifact_id)
         name = self._validate_artifact_name(str(result.get("artifact_name") or ""))
         artifact_root = self._artifact_root(snapshot.site_name)
@@ -1198,7 +1322,9 @@ class DeviceManagementWebService:
             self._file_sha256(path), expected_sha256
         ):
             raise ValueError("导出文件完整性校验失败")
-        display_name = device_export_display_name(snapshot.task_type, result.get("display_name"))
+        display_name = device_export_display_name(
+            snapshot.task_type, result.get("display_name")
+        )
         if not display_name:
             raise ValueError("导出文件显示名无效")
         return path, display_name
@@ -1231,10 +1357,16 @@ class DeviceManagementWebService:
                 raise ValueError("导出任务已失去受管取消接收端")
             cancel_path = Path(str(spec.get("cancel_path") or "")).resolve()
             job_path = Path(str(spec.get("job_path") or "")).resolve()
-            if cancel_path != expected_cancel or job_path != expected_job or not job_path.is_file():
+            if (
+                cancel_path != expected_cancel
+                or job_path != expected_job
+                or not job_path.is_file()
+            ):
                 raise ValueError("导出任务取消路径不受控")
             try:
-                export_job = ExportJob.from_dict(json.loads(job_path.read_text(encoding="utf-8")))
+                export_job = ExportJob.from_dict(
+                    json.loads(job_path.read_text(encoding="utf-8"))
+                )
             except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
                 raise ValueError("导出任务取消接收端无效") from exc
             if (
@@ -1334,6 +1466,10 @@ class DeviceManagementWebService:
             "tunnel2_username",
         ):
             values[field] = str(values.get(field) or "").strip()
+        if not values.get("ssh_username") and existing is not None:
+            values["ssh_username"] = str(
+                existing.ssh_username or existing.username or ""
+            ).strip()
         required_usernames = {
             "ssh_password": "ssh_username",
             "telnet_password": "telnet_username",
@@ -1341,7 +1477,9 @@ class DeviceManagementWebService:
             "tunnel2_password": "tunnel2_username",
         }
         for secret_field, username_field in required_usernames.items():
-            if secret_field in replaced_secret_fields and not values.get(username_field):
+            if secret_field in replaced_secret_fields and not values.get(
+                username_field
+            ):
                 raise ValueError(f"{username_field} 不能为空，密码尚未保存")
         if not values["name"] or not values["primary_address"]:
             raise ValueError("设备名称和主用地址必填")
@@ -1361,6 +1499,13 @@ class DeviceManagementWebService:
         record = existing.to_record() if existing is not None else {}
         record.update(values)
         if record["ssh_enabled"]:
+            if "ssh_password" not in clear_secret_fields:
+                record["ssh_username"] = (
+                    record.get("ssh_username") or record.get("username") or None
+                )
+                record["ssh_password"] = (
+                    record.get("ssh_password") or record.get("password") or None
+                )
             record["protocol"] = "SSH"
             record["port"] = record.get("ssh_port") or 22
             record["username"] = record.get("ssh_username") or None
@@ -1386,7 +1531,9 @@ class DeviceManagementWebService:
     ) -> list[dict[str, object | None]]:
         from netconsole.core.sources.switch_source import build_switch_data_lookup
         from netconsole.repositories.ac_repository import AcRepository
-        from netconsole.services.trackside_ap_business import build_trackside_ap_business_rows
+        from netconsole.services.trackside_ap_business import (
+            build_trackside_ap_business_rows,
+        )
 
         site = self.current_site_id()
         database = Database(self.paths.site_db_path(site))
@@ -1465,21 +1612,38 @@ class DeviceManagementWebService:
     @staticmethod
     def _validate_upload_filename(filename: str) -> str:
         clean = str(filename or "").strip()
-        if not clean or "\x00" in clean or "/" in clean or "\\" in clean or ":" in clean:
+        if (
+            not clean
+            or "\x00" in clean
+            or "/" in clean
+            or "\\" in clean
+            or ":" in clean
+        ):
             raise ValueError("只允许上传本地 CSV 文件名")
-        if PureWindowsPath(clean).name != clean or not clean.casefold().endswith(".csv"):
+        if PureWindowsPath(clean).name != clean or not clean.casefold().endswith(
+            ".csv"
+        ):
             raise ValueError("只允许上传 .csv 文件")
         return clean
 
     @staticmethod
     def _validate_artifact_name(name: str) -> str:
         clean = str(name or "").strip()
-        if not clean or clean in {".", ".."} or PureWindowsPath(clean).name != clean or "/" in clean or "\\" in clean or "\x00" in clean:
+        if (
+            not clean
+            or clean in {".", ".."}
+            or PureWindowsPath(clean).name != clean
+            or "/" in clean
+            or "\\" in clean
+            or "\x00" in clean
+        ):
             raise ValueError("artifact 文件名无效")
         return clean
 
     @staticmethod
-    def _assert_controlled_path(path: Path, root: Path, *, require_exists: bool = True, directory: bool = False) -> Path:
+    def _assert_controlled_path(
+        path: Path, root: Path, *, require_exists: bool = True, directory: bool = False
+    ) -> Path:
         candidate = Path(path)
         controlled_root = Path(root).resolve()
         if candidate.is_symlink():
@@ -1505,7 +1669,9 @@ class DeviceManagementWebService:
         candidate = Path(path)
         try:
             controlled_root = Path(root).resolve()
-            parent = self._assert_controlled_path(candidate.parent, controlled_root, directory=True)
+            parent = self._assert_controlled_path(
+                candidate.parent, controlled_root, directory=True
+            )
             candidate = parent / candidate.name
             if candidate.is_symlink():
                 candidate.unlink()
@@ -1543,7 +1709,9 @@ class DeviceManagementWebService:
                     f"site={site}; file={candidate.name}; error={exc.__class__.__name__}",
                 )
 
-    def _stage_csv_upload(self, site: str, filename: str, stream: BinaryIO) -> tuple[Path, str]:
+    def _stage_csv_upload(
+        self, site: str, filename: str, stream: BinaryIO
+    ) -> tuple[Path, str]:
         staging_root = self._import_staging_root(site)
         path = staging_root / f"device-preview-{uuid.uuid4().hex}.csv"
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
@@ -1558,7 +1726,9 @@ class DeviceManagementWebService:
                         break
                     total += len(chunk)
                     if total > MAX_DEVICE_IMPORT_BYTES:
-                        raise ValueError(f"CSV 文件超过 {MAX_DEVICE_IMPORT_BYTES // (1024 * 1024)} MiB 限制")
+                        raise ValueError(
+                            f"CSV 文件超过 {MAX_DEVICE_IMPORT_BYTES // (1024 * 1024)} MiB 限制"
+                        )
                     digest.update(chunk)
                     handle.write(chunk)
                 handle.flush()
@@ -1653,10 +1823,9 @@ class DeviceManagementWebService:
         ready = root / f".claim-ready-{digest}-{claim_id}.preview.json"
         reservation = root / f".claim-source-{digest}-{claim_id}.preview.json"
         claimed = root / f".claimed-{claim_id}.preview.json"
-        if (
-            not self._valid_import_operation_id(operation_id)
-            or not self._valid_import_operation_id(task_id)
-        ):
+        if not self._valid_import_operation_id(
+            operation_id
+        ) or not self._valid_import_operation_id(task_id):
             raise ValueError("导入认领标识无效")
         try:
             payload = json.loads(manifest.read_text(encoding="utf-8"))
@@ -1679,10 +1848,7 @@ class DeviceManagementWebService:
             try:
                 fd = os.open(
                     lock,
-                    os.O_WRONLY
-                    | os.O_CREAT
-                    | os.O_EXCL
-                    | getattr(os, "O_BINARY", 0),
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
                     0o600,
                 )
             except FileExistsError as exc:
@@ -1794,10 +1960,9 @@ class DeviceManagementWebService:
                 task_id = str(payload.get("task_id") or "")
                 operation_id = str(payload.get("operation_id") or "")
                 claimed_at = float(payload["claimed_at"])
-                if (
-                    not self._valid_import_operation_id(task_id)
-                    or not self._valid_import_operation_id(operation_id)
-                ):
+                if not self._valid_import_operation_id(
+                    task_id
+                ) or not self._valid_import_operation_id(operation_id):
                     raise ValueError("导入认领标识无效")
                 snapshot = repository.get(task_id) if task_id else None
                 owned_task = snapshot is not None and self._is_owned_import_task(
@@ -1850,7 +2015,10 @@ class DeviceManagementWebService:
 
     def _backup_device_database(self, site: str) -> Path:
         source_path = self.paths.site_db_path(site).resolve()
-        target = self.paths.site_backups_dir(site) / f"device-import-{datetime.now().strftime('%Y%m%d_%H%M%S')}-{uuid.uuid4().hex[:8]}.sqlite"
+        target = (
+            self.paths.site_backups_dir(site)
+            / f"device-import-{datetime.now().strftime('%Y%m%d_%H%M%S')}-{uuid.uuid4().hex[:8]}.sqlite"
+        )
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
         try:
@@ -1906,11 +2074,7 @@ class DeviceManagementWebService:
         result = dict(payload.get("result") or {})
         exit_code = getattr(completion, "exit_code", None)
         cancelled = bool(getattr(completion, "cancelled", False))
-        failed = (
-            exit_code is None
-            or int(exit_code) != 0
-            or bool(result.get("errors"))
-        )
+        failed = exit_code is None or int(exit_code) != 0 or bool(result.get("errors"))
         audit: dict[str, object] = {
             "status": "CANCELLED" if cancelled else "FAILED" if failed else "APPLIED",
             "created_count": int(result.get("created") or 0),
@@ -2001,9 +2165,7 @@ class DeviceManagementWebService:
         allowed_types: frozenset[str] = DEVICE_TASK_TYPES,
     ) -> list[TaskSnapshot]:
         return [
-            task
-            for task in tasks
-            if cls._is_owned_web_task(task, site, allowed_types)
+            task for task in tasks if cls._is_owned_web_task(task, site, allowed_types)
         ]
 
     @staticmethod
@@ -2016,7 +2178,9 @@ class DeviceManagementWebService:
             and all(character in "0123456789abcdef" for character in suffix)
         )
 
-    def _export_filters(self, payload: DeviceExportRequestDTO) -> dict[str, object | None]:
+    def _export_filters(
+        self, payload: DeviceExportRequestDTO
+    ) -> dict[str, object | None]:
         return {
             "search": payload.search.strip() or None,
             "vendor": payload.vendor.strip() or None,
@@ -2077,7 +2241,9 @@ class DeviceManagementWebService:
         job_payload = dict(payload)
         if export_type == "securecrt_sessions":
             staging_dir = artifact_root / f".{artifact_id}-sessions"
-            self._assert_controlled_path(staging_dir.parent, artifact_root, directory=True)
+            self._assert_controlled_path(
+                staging_dir.parent, artifact_root, directory=True
+            )
             staging_dir.mkdir(parents=True, exist_ok=False)
             job_payload["output_dir"] = str(staging_dir)
         template_path: Path | None = None
@@ -2141,7 +2307,11 @@ class DeviceManagementWebService:
             )
             task_created = True
             environment = os.environ.copy()
-            environment["PYTHONPATH"] = str(self.paths.app_root) + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
+            environment["PYTHONPATH"] = str(self.paths.app_root) + (
+                os.pathsep + environment["PYTHONPATH"]
+                if environment.get("PYTHONPATH")
+                else ""
+            )
             process = subprocess.Popen(
                 self._export_worker_command(job_path),
                 cwd=str(self.paths.app_root),
@@ -2155,8 +2325,15 @@ class DeviceManagementWebService:
                 errors="replace",
             )
             self._export_processes[task_id] = process
-            self.task_service.record_external_event(task_id, "state", {"state": TaskState.RUNNING.value}, site_name=site)
-            threading.Thread(target=self._monitor_export, args=(task_id, site, process), name=f"device-export-{task_id}", daemon=True).start()
+            self.task_service.record_external_event(
+                task_id, "state", {"state": TaskState.RUNNING.value}, site_name=site
+            )
+            threading.Thread(
+                target=self._monitor_export,
+                args=(task_id, site, process),
+                name=f"device-export-{task_id}",
+                daemon=True,
+            ).start()
         except Exception as exc:
             message = sanitize_sensitive_text(str(exc))
             if process is not None:
@@ -2190,13 +2367,17 @@ class DeviceManagementWebService:
         snapshot = self.task_service.repository(site).get(task_id)
         return DeviceTaskReferenceDTO(
             task_id=task_id,
-            task_status=snapshot.status.value if snapshot is not None else TaskState.FAILED.value,
+            task_status=snapshot.status.value
+            if snapshot is not None
+            else TaskState.FAILED.value,
             action=action,
             artifact_id=artifact_id,
             available=False,
         )
 
-    def _finalize_export_artifact(self, spec: dict[str, object], raw_result: dict[str, object]) -> dict[str, object]:
+    def _finalize_export_artifact(
+        self, spec: dict[str, object], raw_result: dict[str, object]
+    ) -> dict[str, object]:
         root = Path(str(spec["artifact_root"]))
         target = Path(str(spec["target"]))
         export_type = str(spec["export_type"])
@@ -2212,7 +2393,9 @@ class DeviceManagementWebService:
             )
             if source != staging_dir and not source.is_relative_to(staging_dir):
                 raise ValueError("SecureCRT 输出目录未绑定到本任务 staging 目录")
-            zip_tmp = self._assert_controlled_path(Path(str(spec["zip_tmp"])), root, require_exists=False)
+            zip_tmp = self._assert_controlled_path(
+                Path(str(spec["zip_tmp"])), root, require_exists=False
+            )
             with zipfile.ZipFile(zip_tmp, "w", zipfile.ZIP_DEFLATED) as archive:
                 for entry in source.rglob("*"):
                     if entry.is_symlink():
@@ -2246,7 +2429,9 @@ class DeviceManagementWebService:
             if candidate != expected:
                 raise ValueError("导出输出文件未绑定到本任务 artifact")
             target = self._assert_controlled_path(expected, root)
-        display_name = device_export_display_name(f"device_export_{export_type}", spec.get("display_name"))
+        display_name = device_export_display_name(
+            f"device_export_{export_type}", spec.get("display_name")
+        )
         if not display_name:
             raise ValueError("导出文件显示名无效")
         return {
@@ -2263,9 +2448,17 @@ class DeviceManagementWebService:
     def _export_worker_command(job_path: Path) -> list[str]:
         if getattr(sys, "frozen", False):
             return [sys.executable, "--export-worker", "--job", str(job_path)]
-        return [sys.executable, "-m", "netconsole.export_worker", "--job", str(job_path)]
+        return [
+            sys.executable,
+            "-m",
+            "netconsole.export_worker",
+            "--job",
+            str(job_path),
+        ]
 
-    def _cleanup_export_files(self, spec: dict[str, object], *, remove_artifact: bool) -> None:
+    def _cleanup_export_files(
+        self, spec: dict[str, object], *, remove_artifact: bool
+    ) -> None:
         root = Path(str(spec["artifact_root"]))
         errors: list[str] = []
         for key in ("tmp_path", "zip_tmp"):
@@ -2362,15 +2555,28 @@ class DeviceManagementWebService:
                     if not event or str(event.get("job_id") or "") != task_id:
                         continue
                     event_type = str(event.get("type") or "")
-                    safe_payload = {key: event[key] for key in ("stage", "current", "total") if key in event}
+                    safe_payload = {
+                        key: event[key]
+                        for key in ("stage", "current", "total")
+                        if key in event
+                    }
                     if event_type in {"progress", "log"}:
-                        safe_payload["message"] = sanitize_sensitive_text(str(event.get("message") or ""))
+                        safe_payload["message"] = sanitize_sensitive_text(
+                            str(event.get("message") or "")
+                        )
                     if event_type == "finished":
                         try:
-                            safe_payload["result"] = self._finalize_export_artifact(spec, dict(event.get("result") or {}))
+                            safe_payload["result"] = self._finalize_export_artifact(
+                                spec, dict(event.get("result") or {})
+                            )
                         except Exception as exc:
                             message = sanitize_sensitive_text(str(exc))
-                            self.task_service.record_external_event(task_id, "error", {"message": message, "error": message}, site_name=site)
+                            self.task_service.record_external_event(
+                                task_id,
+                                "error",
+                                {"message": message, "error": message},
+                                site_name=site,
+                            )
                         else:
                             updated = self.task_service.record_external_event(
                                 task_id, "finished", safe_payload, site_name=site
@@ -2378,11 +2584,28 @@ class DeviceManagementWebService:
                             completed = updated.status is TaskState.COMPLETED
                         terminal = True
                     elif event_type in {"error", "cancelled"}:
-                        message = sanitize_sensitive_text(str(event.get("error") or event.get("message") or "导出任务失败"))
-                        self.task_service.record_external_event(task_id, event_type, {"message": message, "error": message, "cancelled": event_type == "cancelled"}, site_name=site)
+                        message = sanitize_sensitive_text(
+                            str(
+                                event.get("error")
+                                or event.get("message")
+                                or "导出任务失败"
+                            )
+                        )
+                        self.task_service.record_external_event(
+                            task_id,
+                            event_type,
+                            {
+                                "message": message,
+                                "error": message,
+                                "cancelled": event_type == "cancelled",
+                            },
+                            site_name=site,
+                        )
                         terminal = True
                     elif event_type in {"progress", "log"}:
-                        self.task_service.record_external_event(task_id, event_type, safe_payload, site_name=site)
+                        self.task_service.record_external_event(
+                            task_id, event_type, safe_payload, site_name=site
+                        )
             process.wait(timeout=10)
             if not terminal:
                 message = (
@@ -2395,7 +2618,12 @@ class DeviceManagementWebService:
             message = sanitize_sensitive_text(str(exc))
             try:
                 if not terminal:
-                    self.task_service.record_external_event(task_id, "error", {"message": message, "error": message}, site_name=site)
+                    self.task_service.record_external_event(
+                        task_id,
+                        "error",
+                        {"message": message, "error": message},
+                        site_name=site,
+                    )
             except Exception:
                 pass
         finally:
@@ -2501,7 +2729,9 @@ class DeviceManagementWebService:
         finally:
             _clear_secret_mapping(ephemeral_credentials)
 
-    def start_connection_test(self, device_uuid: str, protocol: str) -> DeviceConnectionTestDTO:
+    def start_connection_test(
+        self, device_uuid: str, protocol: str
+    ) -> DeviceConnectionTestDTO:
         site = self.current_site_id()
         device_repository, _, _ = self._repositories(site)
         device = self._require_device(device_repository, device_uuid)
@@ -2512,7 +2742,9 @@ class DeviceManagementWebService:
             active = next(
                 (
                     task
-                    for task in self.task_service.repository(site).list(statuses=ACTIVE_TASK_STATES, limit=1000)
+                    for task in self.task_service.repository(site).list(
+                        statuses=ACTIVE_TASK_STATES, limit=1000
+                    )
                     if self._is_owned_web_task(
                         task,
                         site,
@@ -2554,7 +2786,9 @@ class DeviceManagementWebService:
             task_id, frozenset({DEVICE_CONNECTION_TEST_TASK_TYPE})
         )
         device_repository, _, _ = self._repositories(site)
-        return self._connection_test_dto(snapshot, device_repository.get_by_uuid(snapshot.device))
+        return self._connection_test_dto(
+            snapshot, device_repository.get_by_uuid(snapshot.device)
+        )
 
     async def stop_exports(self) -> None:
         for task_id, process in tuple(self._export_processes.items()):
@@ -2567,7 +2801,11 @@ class DeviceManagementWebService:
                 except OSError:
                     pass
             await asyncio.to_thread(self._stop_export_process, process)
-            site = str(spec.get("site") or self.current_site_id()) if spec is not None else self.current_site_id()
+            site = (
+                str(spec.get("site") or self.current_site_id())
+                if spec is not None
+                else self.current_site_id()
+            )
             snapshot = self.task_service.repository(site).get(task_id)
             if snapshot is not None and snapshot.status not in {
                 TaskState.COMPLETED,
@@ -2592,9 +2830,15 @@ class DeviceManagementWebService:
         await self.stop_exports()
         await asyncio.to_thread(self.process_adapter.shutdown)
 
-    def _repositories(self, site: str) -> tuple[DeviceRepository, DeviceGroupRepository, DeviceFactRepository]:
+    def _repositories(
+        self, site: str
+    ) -> tuple[DeviceRepository, DeviceGroupRepository, DeviceFactRepository]:
         database = Database(self.paths.site_db_path(site))
-        return DeviceRepository(database), DeviceGroupRepository(database, site), DeviceFactRepository(database)
+        return (
+            DeviceRepository(database),
+            DeviceGroupRepository(database, site),
+            DeviceFactRepository(database),
+        )
 
     @staticmethod
     def _require_device(repository: DeviceRepository, device_uuid: str) -> Device:
@@ -2608,7 +2852,10 @@ class DeviceManagementWebService:
         enabled = {
             "SSH": bool(device.ssh_enabled),
             "TELNET": bool(device.telnet_enabled),
-            "SNMP": bool(device.snmp_enabled and (device.snmp_v1_enabled or device.snmp_v2c_enabled)),
+            "SNMP": bool(
+                device.snmp_enabled
+                and (device.snmp_v1_enabled or device.snmp_v2c_enabled)
+            ),
         }
         if protocol not in enabled:
             raise ValueError("不支持的连接测试协议")
@@ -2678,17 +2925,24 @@ class DeviceManagementWebService:
     def _capabilities(device: Device) -> DeviceCapabilityDTO:
         versions = [
             version
-            for version, enabled in (("v1", device.snmp_v1_enabled), ("v2c", device.snmp_v2c_enabled))
+            for version, enabled in (
+                ("v1", device.snmp_v1_enabled),
+                ("v2c", device.snmp_v2c_enabled),
+            )
             if enabled
         ]
         return DeviceCapabilityDTO(
             ssh=bool(device.ssh_enabled),
             ssh_port=int(device.ssh_port or 22) if device.ssh_enabled else None,
             telnet=bool(device.telnet_enabled),
-            telnet_port=int(device.telnet_port or 23) if device.telnet_enabled else None,
+            telnet_port=int(device.telnet_port or 23)
+            if device.telnet_enabled
+            else None,
             snmp=bool(device.snmp_enabled and versions),
             snmp_versions=versions,
-            snmp_port=int(device.snmp_port or 161) if device.snmp_enabled and versions else None,
+            snmp_port=int(device.snmp_port or 161)
+            if device.snmp_enabled and versions
+            else None,
         )
 
     def _list_item(
@@ -2704,7 +2958,9 @@ class DeviceManagementWebService:
             system_name=str(device.system_name or ""),
             station=str(device.station or ""),
             group_id=int(device.group_id) if device.group_id is not None else None,
-            group_name=group_names.get(int(device.group_id), "未分组") if device.group_id is not None else "未分组",
+            group_name=group_names.get(int(device.group_id), "未分组")
+            if device.group_id is not None
+            else "未分组",
             device_vendor=str(device.device_vendor or ""),
             device_type=str(device.device_type or ""),
             primary_address=str(device.primary_address or ""),
@@ -2750,7 +3006,7 @@ class DeviceManagementWebService:
             mac_address=str(device.mac_address or ""),
             https_port=int(device.https_port) if device.https_port else None,
             web_url=build_https_url(device.primary_address, https_port) or "",
-            ssh_username=str(device.ssh_username or ""),
+            ssh_username=str(device.ssh_username or device.username or ""),
             telnet_username=str(device.telnet_username or ""),
             tunnel_enabled=bool(device.tunnel_enabled),
             tunnel1_enabled=bool(device.tunnel1_enabled),
@@ -2765,11 +3021,9 @@ class DeviceManagementWebService:
             snmp_v2c_enabled=bool(device.snmp_v2c_enabled),
             snmp_timeout_ms=int(device.snmp_timeout_ms or 2000),
             snmp_retries=(
-                int(device.snmp_retries)
-                if device.snmp_retries is not None
-                else 1
+                int(device.snmp_retries) if device.snmp_retries is not None else 1
             ),
-            ssh_secret_configured=bool(device.ssh_password),
+            ssh_secret_configured=bool(device.ssh_password or device.password),
             telnet_secret_configured=bool(device.telnet_password),
             tunnel1_secret_configured=bool(device.tunnel1_password),
             tunnel2_secret_configured=bool(device.tunnel2_password),
@@ -2787,7 +3041,10 @@ class DeviceManagementWebService:
         if task.status is TaskState.COMPLETED:
             error_code = str(task.result.get("error_code") or "").upper()
             result_status = str(task.result.get("status") or "").casefold()
-            if error_code in {"AUTHENTICATION_FAILED", "TELNET_LOGIN_FAILED"} or result_status in {
+            if error_code in {
+                "AUTHENTICATION_FAILED",
+                "TELNET_LOGIN_FAILED",
+            } or result_status in {
                 "auth_failed",
                 "authentication_failed",
             }:
@@ -2802,7 +3059,8 @@ class DeviceManagementWebService:
             (
                 task
                 for task in tasks
-                if task.task_type == DEVICE_CONNECTION_TEST_TASK_TYPE and task.device == device_uuid
+                if task.task_type == DEVICE_CONNECTION_TEST_TASK_TYPE
+                and task.device == device_uuid
             ),
             None,
         )
@@ -2863,7 +3121,9 @@ class DeviceManagementWebService:
         )
 
     @staticmethod
-    def _collection_summary(collection: dict[str, object | None] | None, device: Device) -> DeviceCollectionSummaryDTO | None:
+    def _collection_summary(
+        collection: dict[str, object | None] | None, device: Device
+    ) -> DeviceCollectionSummaryDTO | None:
         if not collection:
             return None
         return DeviceCollectionSummaryDTO(
@@ -2872,7 +3132,9 @@ class DeviceManagementWebService:
             status=str(collection.get("status") or ""),
             started_at=str(collection.get("started_at") or ""),
             ended_at=str(collection.get("ended_at") or ""),
-            error_summary=sanitize_sensitive_text(str(collection.get("error_message") or ""), device),
+            error_summary=sanitize_sensitive_text(
+                str(collection.get("error_message") or ""), device
+            ),
         )
 
     @staticmethod
@@ -2894,8 +3156,12 @@ class DeviceManagementWebService:
             errors.append(
                 DeviceErrorSummaryDTO(
                     source="collection",
-                    time=str(collection.get("ended_at") or collection.get("started_at") or ""),
-                    message=sanitize_sensitive_text(str(collection.get("error_message") or ""), device),
+                    time=str(
+                        collection.get("ended_at") or collection.get("started_at") or ""
+                    ),
+                    message=sanitize_sensitive_text(
+                        str(collection.get("error_message") or ""), device
+                    ),
                 )
             )
         errors.sort(key=lambda item: item.time, reverse=True)
@@ -2908,21 +3174,37 @@ class DeviceManagementWebService:
             return []
         commands: list[DeviceConnectionCommandDTO] = []
         if device.ssh_enabled:
-            commands.append(DeviceConnectionCommandDTO(protocol="SSH", command=f"ssh -p {int(device.ssh_port or 22)} {host}"))
+            commands.append(
+                DeviceConnectionCommandDTO(
+                    protocol="SSH",
+                    command=f"ssh -p {int(device.ssh_port or 22)} {host}",
+                )
+            )
         if device.telnet_enabled:
-            commands.append(DeviceConnectionCommandDTO(protocol="TELNET", command=f"telnet {host} {int(device.telnet_port or 23)}"))
+            commands.append(
+                DeviceConnectionCommandDTO(
+                    protocol="TELNET",
+                    command=f"telnet {host} {int(device.telnet_port or 23)}",
+                )
+            )
         return commands
 
     @staticmethod
-    def _connection_test_dto(snapshot: TaskSnapshot, device: Device | None = None) -> DeviceConnectionTestDTO:
+    def _connection_test_dto(
+        snapshot: TaskSnapshot, device: Device | None = None
+    ) -> DeviceConnectionTestDTO:
         result = dict(snapshot.result or {})
-        protocol = str(result.get("protocol") or "").upper() or _protocol_from_task_id(snapshot.task_id)
+        protocol = str(result.get("protocol") or "").upper() or _protocol_from_task_id(
+            snapshot.task_id
+        )
         return DeviceConnectionTestDTO(
             task_id=snapshot.task_id,
             task_status=snapshot.status.value,
             device_uuid=str(result.get("device_uuid") or snapshot.device or ""),
             protocol=protocol or None,
-            success=result.get("success") if isinstance(result.get("success"), bool) else None,
+            success=result.get("success")
+            if isinstance(result.get("success"), bool)
+            else None,
             result_status=str(result.get("status") or ""),
             failure_category=str(result.get("failure_category") or ""),
             error_code=str(result.get("error_code") or ""),
@@ -2932,20 +3214,45 @@ class DeviceManagementWebService:
                 str(result.get("suggested_action") or result.get("suggestion") or ""),
                 device,
             ),
-            message=sanitize_sensitive_text(str(result.get("message") or snapshot.message or snapshot.error_message or ""), device),
-            safe_message=sanitize_sensitive_text(str(result.get("safe_message") or result.get("message") or snapshot.message or snapshot.error_message or ""), device),
+            message=sanitize_sensitive_text(
+                str(
+                    result.get("message")
+                    or snapshot.message
+                    or snapshot.error_message
+                    or ""
+                ),
+                device,
+            ),
+            safe_message=sanitize_sensitive_text(
+                str(
+                    result.get("safe_message")
+                    or result.get("message")
+                    or snapshot.message
+                    or snapshot.error_message
+                    or ""
+                ),
+                device,
+            ),
             method=str(result.get("method") or ""),
             host=str(result.get("host") or ""),
             port=int(result["port"]) if result.get("port") is not None else None,
-            latency_ms=int(result["latency_ms"]) if result.get("latency_ms") is not None else None,
-            elapsed_ms=int(result["elapsed_ms"]) if result.get("elapsed_ms") is not None else None,
+            latency_ms=int(result["latency_ms"])
+            if result.get("latency_ms") is not None
+            else None,
+            elapsed_ms=int(result["elapsed_ms"])
+            if result.get("elapsed_ms") is not None
+            else None,
             tested_at=str(result.get("tested_at") or ""),
             system_name=str(result.get("system_name") or ""),
             model=str(result.get("model") or ""),
             os_family=str(result.get("os_family") or ""),
-            interface_count=int(result["interface_count"]) if result.get("interface_count") is not None else None,
+            interface_count=int(result["interface_count"])
+            if result.get("interface_count") is not None
+            else None,
             error_type=str(result.get("error_type") or ""),
-            suggestion=sanitize_sensitive_text(str(result.get("suggestion") or ""), device),
+            suggestion=sanitize_sensitive_text(
+                str(result.get("suggestion") or ""), device
+            ),
             created_time=snapshot.created_time,
             updated_time=snapshot.updated_time,
         )
@@ -2955,7 +3262,9 @@ def run_device_connection_test(context: JobContext) -> dict[str, object]:
     from netconsole.services.device_snmp_detect_service import DeviceSnmpDetectService
     from netconsole.services.netmiko_connection import test_device_connection
 
-    site = SiteManager(context.paths).validate_site_name(str(context.params.get("site_name") or ""))
+    site = SiteManager(context.paths).validate_site_name(
+        str(context.params.get("site_name") or "")
+    )
     device_uuid = str(context.params.get("device_uuid") or "")
     protocol = str(context.params.get("protocol") or "").upper()
     form_input = context.params.get("input_source") == "form"
@@ -2990,7 +3299,15 @@ def run_device_connection_test(context: JobContext) -> dict[str, object]:
                 "protocol": protocol,
                 "success": result.status == "success",
                 "status": result.status,
-                "message": _sanitize_device_secret_text(result.error_message or ("SNMP 探测成功" if result.status == "success" else "SNMP 探测失败"), device),
+                "message": _sanitize_device_secret_text(
+                    result.error_message
+                    or (
+                        "SNMP 探测成功"
+                        if result.status == "success"
+                        else "SNMP 探测失败"
+                    ),
+                    device,
+                ),
                 "host": str(device.primary_address or ""),
                 "port": int(device.snmp_port or 161),
                 "latency_ms": int(result.latency_ms or 0),
@@ -3033,14 +3350,18 @@ def run_device_connection_test(context: JobContext) -> dict[str, object]:
                 "device_uuid": device_uuid,
                 "protocol": protocol,
                 "success": bool(result.success),
-                "status": str(result.status or ("success" if result.success else "failed")),
+                "status": str(
+                    result.status or ("success" if result.success else "failed")
+                ),
                 "message": _sanitize_device_secret_text(result.message, device),
                 "method": str(result.method or ""),
                 "host": str(result.host or ""),
                 "port": int(result.port or 0),
                 "latency_ms": int(result.elapsed_ms or 0),
                 "elapsed_ms": int(result.elapsed_ms or 0),
-                "system_name": str(extract_sysname_from_prompt(result.prompt or "") or ""),
+                "system_name": str(
+                    extract_sysname_from_prompt(result.prompt or "") or ""
+                ),
                 "error_type": str(result.error_type or ""),
                 "suggestion": _sanitize_device_secret_text(
                     str(result.suggestion or ""), device
@@ -3182,9 +3503,7 @@ def _form_test_job_payload(device: Device, protocol: str) -> dict[str, object | 
     return payload
 
 
-def _append_tunnel_bootstrap(
-    payload: dict[str, object | None], device: Device
-) -> None:
+def _append_tunnel_bootstrap(payload: dict[str, object | None], device: Device) -> None:
     payload["tunnel_enabled"] = device.tunnel_enabled
     for prefix in ("tunnel1", "tunnel2"):
         enabled = bool(getattr(device, f"{prefix}_enabled"))
@@ -3222,9 +3541,7 @@ def _form_test_credentials(
         elif (
             existing is not None
             and field not in cleared
-            and str(
-                getattr(existing, "credential_field_statuses", {}).get(field) or ""
-            )
+            and str(getattr(existing, "credential_field_statuses", {}).get(field) or "")
             == "needs_reentry"
         ):
             sources[field] = "needs_reentry"
@@ -3419,9 +3736,7 @@ def run_device_optical_refresh(context: JobContext) -> dict[str, object]:
         "collect_run_uuid": result.collect_run_uuid,
         "interfaces_updated": result.interfaces_updated,
         "optical_modules_updated": result.optical_modules_updated,
-        "error_message": sanitize_sensitive_text(
-            result.error_message or "", device
-        ),
+        "error_message": sanitize_sensitive_text(result.error_message or "", device),
     }
 
 
@@ -3562,7 +3877,13 @@ def _controlled_diagnostic_source(
 
 def _protocol_from_task_id(task_id: str) -> str:
     parts = str(task_id or "").split("-", 3)
-    return parts[2].upper() if len(parts) >= 4 and parts[:2] == ["device", "test"] and parts[2] in {"ssh", "telnet", "snmp"} else ""
+    return (
+        parts[2].upper()
+        if len(parts) >= 4
+        and parts[:2] == ["device", "test"]
+        and parts[2] in {"ssh", "telnet", "snmp"}
+        else ""
+    )
 
 
 __all__ = [

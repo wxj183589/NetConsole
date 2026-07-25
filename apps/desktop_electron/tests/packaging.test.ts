@@ -32,6 +32,7 @@ describe('Electron-only packaging', () => {
     expect(packageJson.build.nsis.deleteAppDataOnUninstall).toBe(false)
     expect(packageJson.build.nsis.perMachine).toBe(true)
     expect(packageJson.build.nsis.include).toBe('build/installer-data-root.nsh')
+    expect(packageJson.build.nsis.unicode).toBe(true)
     expect(packageJson.build.win.target[0]).toEqual({ target: 'nsis', arch: ['x64'] })
   })
 
@@ -60,11 +61,27 @@ describe('Electron-only packaging', () => {
     expect(script).not.toContain('是否在其中创建 NetConsoleData 子目录')
 
     const leaveFunction = script.slice(script.indexOf('Function NetConsoleDataRootPageLeave'))
+    const locationIndex = leaveFunction.indexOf('Call NetConsoleValidateDataRootLocation')
     const classifyIndex = leaveFunction.indexOf('Call NetConsoleDataRootCheckEntries')
     const probeIndex = leaveFunction.indexOf('Call NetConsoleRunDataRootProbe')
+    expect(locationIndex).toBeGreaterThan(-1)
     expect(classifyIndex).toBeGreaterThan(-1)
     expect(probeIndex).toBeGreaterThan(classifyIndex)
     expect(leaveFunction.slice(probeIndex)).not.toContain('Call NetConsoleDataRootCheckEntries')
+    const locationFunction = script.slice(
+      script.indexOf('Function NetConsoleValidateDataRootLocation'),
+      script.indexOf('Function NetConsoleDataRootCheckEntries'),
+    )
+    expect(locationFunction).toContain("System::Call 'kernel32::GetDriveTypeW(w r1)i.r2'")
+    expect(locationFunction).not.toContain("System::Call 'kernel32::GetDriveTypeW(w r0)i.r1'")
+    expect(script).toContain('GetDriveTypeW accepts a root path such as E:\\, never E:\\NetConsoleData')
+    expect(script).toContain('DataRoot selected path: $NetConsoleDataRoot')
+    expect(script).toContain('DataRoot normalized path: $NetConsoleDataRootNormalized')
+    expect(script).toContain('DataRoot drive root: $NetConsoleDataRootDriveRoot')
+    expect(script).toContain('DataRoot GetDriveTypeW: $NetConsoleDataRootDriveType')
+    expect(script).toContain('DataRoot existing entry: $NetConsoleDataRootFindName')
+    expect(script).toContain('目录包含现有普通文件')
+    expect(script).not.toContain('所选目录非空且不是已识别的 NetConsole 数据根')
     expect(script).toContain('WriteRegStr HKLM "Software\\NetConsole" "DataRoot"')
     expect(script).not.toContain('DeleteRegKey HKLM "Software\\NetConsole"')
   })

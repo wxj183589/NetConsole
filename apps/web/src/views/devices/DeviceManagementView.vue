@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
-import { Connection, CopyDocument, Delete, Download, Edit, FolderOpened, Plus, Refresh, Upload, View } from '@element-plus/icons-vue'
+import { Connection, CopyDocument, Delete, Download, Edit, FolderOpened, Hide, Plus, Refresh, Upload, View } from '@element-plus/icons-vue'
 
 import { isFeatureEnabled } from '../../features'
 import {
@@ -23,6 +23,7 @@ import {
   previewDeviceImport,
   launchExternalTerminals,
   renameDeviceGroup,
+  revealDeviceCredential,
   startBatchRefreshDetails,
   startBatchConnectionTests,
   startDeviceCsvExport,
@@ -182,6 +183,20 @@ const omniPeekColumns: NcTableColumn<DeviceOmniPeekPreviewItem>[] = [
 ]
 const writeForm = reactive<DeviceWriteRequest>({ name: '', primary_address: '', ssh_enabled: true, ssh_port: 22, telnet_enabled: false, telnet_port: 23, snmp_enabled: true, snmp_v2c_enabled: true, snmp_port: 161 })
 const secretClears = reactive<Record<DeviceSecretField, boolean>>({
+  ssh_password: false,
+  telnet_password: false,
+  tunnel1_password: false,
+  tunnel2_password: false,
+  snmp_ro_community: false,
+})
+const secretVisible = reactive<Record<DeviceSecretField, boolean>>({
+  ssh_password: false,
+  telnet_password: false,
+  tunnel1_password: false,
+  tunnel2_password: false,
+  snmp_ro_community: false,
+})
+const secretRevealLoading = reactive<Record<DeviceSecretField, boolean>>({
   ssh_password: false,
   telnet_password: false,
   tunnel1_password: false,
@@ -675,9 +690,59 @@ function resetSecretClears(): void {
   for (const field of Object.keys(secretClears) as DeviceSecretField[]) secretClears[field] = false
 }
 
+function resetSecretVisibility(): void {
+  for (const field of Object.keys(secretVisible) as DeviceSecretField[]) {
+    secretVisible[field] = false
+    secretRevealLoading[field] = false
+  }
+}
+
+function savedSecretConfigured(field: DeviceSecretField): boolean {
+  if (!detail.value) return false
+  return Boolean({
+    ssh_password: detail.value.ssh_secret_configured,
+    telnet_password: detail.value.telnet_secret_configured,
+    tunnel1_password: detail.value.tunnel1_secret_configured,
+    tunnel2_password: detail.value.tunnel2_secret_configured,
+    snmp_ro_community: detail.value.snmp_ro_secret_configured,
+  }[field])
+}
+
+async function toggleSecretVisibility(field: DeviceSecretField): Promise<void> {
+  if (secretVisible[field]) {
+    secretVisible[field] = false
+    return
+  }
+  if (
+    writeMode.value === 'edit'
+    && !String(writeForm[field] || '')
+    && savedSecretConfigured(field)
+  ) {
+    if (!editingDeviceUuid.value || !desktopHost.value) {
+      ElMessage.error('仅本机桌面端可以读取已保存凭据')
+      return
+    }
+    secretRevealLoading[field] = true
+    try {
+      const revealed = await revealDeviceCredential(editingDeviceUuid.value, field)
+      if (revealed.credential_field !== field) throw new Error('凭据字段校验失败')
+      writeForm[field] = revealed.value
+    } catch (cause) {
+      ElMessage.error(errorMessage(cause, '读取已保存凭据失败'))
+      return
+    } finally {
+      secretRevealLoading[field] = false
+    }
+  }
+  secretVisible[field] = true
+}
+
 function setSecretCleared(field: DeviceSecretField, cleared: boolean): void {
   secretClears[field] = cleared
-  if (cleared) writeForm[field] = ''
+  if (cleared) {
+    writeForm[field] = ''
+    secretVisible[field] = false
+  }
 }
 
 function clearWriteSecrets(): void {
@@ -689,6 +754,7 @@ function clearWriteSecrets(): void {
     snmp_ro_community: '',
   })
   resetSecretClears()
+  resetSecretVisibility()
 }
 
 function deviceWritePayload(): DeviceWriteRequest {
@@ -1445,7 +1511,7 @@ function errorMessage(cause: unknown, fallback: string): string {
     </el-dialog>
 
     <el-dialog v-model="writeVisible" :title="writeMode === 'create' ? '新建设备' : '编辑设备'" width="min(1120px, 96vw)" top="4vh" @closed="closeWriteDialog">
-      <el-alert :title="writeMode === 'edit' ? '秘密字段留空会保留原值；输入新值会替换；勾选清除会删除已保存值。' : '秘密字段只用于当前设备保存和后续连接，不会在 API 响应中回显。'" type="info" show-icon :closable="false" />
+      <el-alert :title="writeMode === 'edit' ? '秘密字段留空会保留原值；点击眼睛可在本机桌面端查看已保存值；输入新值会替换；勾选清除才会删除。' : '秘密字段只用于当前设备保存和后续连接。'" type="info" show-icon :closable="false" />
       <el-alert
         v-if="writeMode === 'edit' && detail?.credential_status === 'needs_reentry'"
         title="该设备凭据来自局点包，请在当前电脑重新录入用户名和密码后保存。"
@@ -1474,17 +1540,17 @@ function errorMessage(cause: unknown, fallback: string): string {
           </section>
           <section class="form-section"><h3>SSH 认证</h3>
             <el-form-item label="用户名"><el-input v-model="writeForm.ssh_username" data-testid="ssh-username" autocomplete="off" /></el-form-item>
-            <el-form-item label="密码"><el-input v-model="writeForm.ssh_password" data-testid="ssh-password" type="password" show-password autocomplete="new-password" :disabled="secretClears.ssh_password" :placeholder="writeMode === 'edit' && detail?.ssh_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.ssh_secret_configured" data-testid="ssh-clear" :model-value="secretClears.ssh_password" @change="setSecretCleared('ssh_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
+            <el-form-item label="密码"><el-input v-model="writeForm.ssh_password" data-testid="ssh-password" :type="secretVisible.ssh_password ? 'text' : 'password'" autocomplete="new-password" :disabled="secretClears.ssh_password" :placeholder="writeMode === 'edit' && detail?.ssh_secret_configured ? '已配置；留空保留' : ''"><template #suffix><el-button data-testid="ssh-reveal" link :icon="secretVisible.ssh_password ? Hide : View" :loading="secretRevealLoading.ssh_password" aria-label="查看或隐藏 SSH 密码" @click="toggleSecretVisibility('ssh_password')" /></template></el-input><el-checkbox v-if="writeMode === 'edit' && detail?.ssh_secret_configured" data-testid="ssh-clear" :model-value="secretClears.ssh_password" @change="setSecretCleared('ssh_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
           </section>
           <section class="form-section"><h3>Telnet 认证</h3>
             <el-form-item label="用户名"><el-input v-model="writeForm.telnet_username" autocomplete="off" /></el-form-item>
-            <el-form-item label="密码"><el-input v-model="writeForm.telnet_password" type="password" show-password autocomplete="new-password" :disabled="secretClears.telnet_password" :placeholder="writeMode === 'edit' && detail?.telnet_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.telnet_secret_configured" :model-value="secretClears.telnet_password" @change="setSecretCleared('telnet_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
+            <el-form-item label="密码"><el-input v-model="writeForm.telnet_password" :type="secretVisible.telnet_password ? 'text' : 'password'" autocomplete="new-password" :disabled="secretClears.telnet_password" :placeholder="writeMode === 'edit' && detail?.telnet_secret_configured ? '已配置；留空保留' : ''"><template #suffix><el-button link :icon="secretVisible.telnet_password ? Hide : View" :loading="secretRevealLoading.telnet_password" aria-label="查看或隐藏 Telnet 密码" @click="toggleSecretVisibility('telnet_password')" /></template></el-input><el-checkbox v-if="writeMode === 'edit' && detail?.telnet_secret_configured" :model-value="secretClears.telnet_password" @change="setSecretCleared('telnet_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
           </section>
         </div>
 
         <section class="form-section full-width"><h3>SSH 隧道</h3><div class="form-grid two-columns">
-          <div><h4>第一跳</h4><el-form-item label="主机"><el-input v-model="writeForm.tunnel1_host" /></el-form-item><el-form-item label="端口"><el-input-number v-model="writeForm.tunnel1_port" :min="1" :max="65535" /></el-form-item><el-form-item label="用户名"><el-input v-model="writeForm.tunnel1_username" /></el-form-item><el-form-item label="密码"><el-input v-model="writeForm.tunnel1_password" type="password" show-password autocomplete="new-password" :disabled="secretClears.tunnel1_password" :placeholder="writeMode === 'edit' && detail?.tunnel1_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.tunnel1_secret_configured" :model-value="secretClears.tunnel1_password" @change="setSecretCleared('tunnel1_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item></div>
-          <div><h4>第二跳</h4><el-form-item label="主机"><el-input v-model="writeForm.tunnel2_host" /></el-form-item><el-form-item label="端口"><el-input-number v-model="writeForm.tunnel2_port" :min="1" :max="65535" /></el-form-item><el-form-item label="用户名"><el-input v-model="writeForm.tunnel2_username" /></el-form-item><el-form-item label="密码"><el-input v-model="writeForm.tunnel2_password" type="password" show-password autocomplete="new-password" :disabled="secretClears.tunnel2_password" :placeholder="writeMode === 'edit' && detail?.tunnel2_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.tunnel2_secret_configured" :model-value="secretClears.tunnel2_password" @change="setSecretCleared('tunnel2_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item></div>
+          <div><h4>第一跳</h4><el-form-item label="主机"><el-input v-model="writeForm.tunnel1_host" /></el-form-item><el-form-item label="端口"><el-input-number v-model="writeForm.tunnel1_port" :min="1" :max="65535" /></el-form-item><el-form-item label="用户名"><el-input v-model="writeForm.tunnel1_username" /></el-form-item><el-form-item label="密码"><el-input v-model="writeForm.tunnel1_password" :type="secretVisible.tunnel1_password ? 'text' : 'password'" autocomplete="new-password" :disabled="secretClears.tunnel1_password" :placeholder="writeMode === 'edit' && detail?.tunnel1_secret_configured ? '已配置；留空保留' : ''"><template #suffix><el-button link :icon="secretVisible.tunnel1_password ? Hide : View" :loading="secretRevealLoading.tunnel1_password" aria-label="查看或隐藏第一跳密码" @click="toggleSecretVisibility('tunnel1_password')" /></template></el-input><el-checkbox v-if="writeMode === 'edit' && detail?.tunnel1_secret_configured" :model-value="secretClears.tunnel1_password" @change="setSecretCleared('tunnel1_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item></div>
+          <div><h4>第二跳</h4><el-form-item label="主机"><el-input v-model="writeForm.tunnel2_host" /></el-form-item><el-form-item label="端口"><el-input-number v-model="writeForm.tunnel2_port" :min="1" :max="65535" /></el-form-item><el-form-item label="用户名"><el-input v-model="writeForm.tunnel2_username" /></el-form-item><el-form-item label="密码"><el-input v-model="writeForm.tunnel2_password" :type="secretVisible.tunnel2_password ? 'text' : 'password'" autocomplete="new-password" :disabled="secretClears.tunnel2_password" :placeholder="writeMode === 'edit' && detail?.tunnel2_secret_configured ? '已配置；留空保留' : ''"><template #suffix><el-button link :icon="secretVisible.tunnel2_password ? Hide : View" :loading="secretRevealLoading.tunnel2_password" aria-label="查看或隐藏第二跳密码" @click="toggleSecretVisibility('tunnel2_password')" /></template></el-input><el-checkbox v-if="writeMode === 'edit' && detail?.tunnel2_secret_configured" :model-value="secretClears.tunnel2_password" @change="setSecretCleared('tunnel2_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item></div>
         </div></section>
 
         <section class="form-section full-width"><h3>SNMP</h3><div class="form-grid two-columns">
@@ -1493,7 +1559,7 @@ function errorMessage(cause: unknown, fallback: string): string {
             <el-form-item label="端口"><el-input-number v-model="writeForm.snmp_port" :min="1" :max="65535" /></el-form-item>
             <el-form-item label="超时(ms)"><el-input-number v-model="writeForm.snmp_timeout_ms" :min="100" :max="60000" /></el-form-item>
             <el-form-item label="重试"><el-input-number v-model="writeForm.snmp_retries" :min="0" :max="10" /></el-form-item>
-            <el-form-item label="只读团体字"><el-input v-model="writeForm.snmp_ro_community" type="password" show-password autocomplete="new-password" :disabled="secretClears.snmp_ro_community" :placeholder="writeMode === 'edit' && detail?.snmp_ro_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.snmp_ro_secret_configured" :model-value="secretClears.snmp_ro_community" @change="setSecretCleared('snmp_ro_community', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
+            <el-form-item label="只读团体字"><el-input v-model="writeForm.snmp_ro_community" :type="secretVisible.snmp_ro_community ? 'text' : 'password'" autocomplete="new-password" :disabled="secretClears.snmp_ro_community" :placeholder="writeMode === 'edit' && detail?.snmp_ro_secret_configured ? '已配置；留空保留' : ''"><template #suffix><el-button link :icon="secretVisible.snmp_ro_community ? Hide : View" :loading="secretRevealLoading.snmp_ro_community" aria-label="查看或隐藏 SNMP 团体字" @click="toggleSecretVisibility('snmp_ro_community')" /></template></el-input><el-checkbox v-if="writeMode === 'edit' && detail?.snmp_ro_secret_configured" :model-value="secretClears.snmp_ro_community" @change="setSecretCleared('snmp_ro_community', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
           </div>
         </div></section>
       </el-form>

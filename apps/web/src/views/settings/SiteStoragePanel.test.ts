@@ -125,42 +125,36 @@ describe('SiteStoragePanel', () => {
     expect(api.importSite).not.toHaveBeenCalled()
   })
 
-  it('requests a migration password only after an encrypted package asks for it', async () => {
-    const passwordPrompt = vi.spyOn(ElMessageBox, 'prompt').mockResolvedValueOnce({ value: 'migration-pass' } as never)
+  it('inspects a plain full package without requesting a migration password', async () => {
+    const passwordPrompt = vi.spyOn(ElMessageBox, 'prompt')
     adapter.selectSitePackage.mockResolvedValueOnce({ cancelled: false, path: 'C:\\packages\\full.ncsite' } as never)
-    vi.mocked(api.inspectSitePackage)
-      .mockRejectedValueOnce(new ApiRequestError('该完整迁移包已加密，请输入迁移密码', 422, 'SITE_IMPORT_PASSWORD_REQUIRED', {}))
-      .mockResolvedValueOnce({
-        site_id: 'demo',
-        site_uuid: 'site-1',
-        site_name: '演示局点',
-        package_type: 'full_migration',
-        package_id: 'package-1',
-        base_revision: 1,
-        file_count: 4,
-        conflict_count: 0,
-        conflicts: [],
-        invalid_count: 0,
-        estimated_additional_bytes: 4096,
-        can_import: true,
-        contains_credentials: true,
-        encrypted: true,
-        credential_reentry_count: 0,
-      })
+    vi.mocked(api.inspectSitePackage).mockResolvedValue({
+      site_id: 'demo',
+      site_uuid: 'site-1',
+      site_name: '演示局点',
+      package_type: 'full_migration',
+      package_id: 'package-1',
+      base_revision: 1,
+      file_count: 4,
+      conflict_count: 0,
+      conflicts: [],
+      invalid_count: 0,
+      estimated_additional_bytes: 4096,
+      can_import: true,
+      contains_credentials: true,
+      encrypted: false,
+      credential_reentry_count: 0,
+    })
     const wrapper = mount(SiteStoragePanel)
     await flushPromises()
 
     await wrapper.get('[data-testid="import-site"]').trigger('click')
     await flushPromises()
 
-    expect(passwordPrompt).toHaveBeenCalledWith(
-      '请输入迁移密码',
-      '完整迁移包',
-      expect.objectContaining({ inputType: 'password' }),
-    )
-    expect(api.inspectSitePackage).toHaveBeenNthCalledWith(1, 'C:\\packages\\full.ncsite')
-    expect(api.inspectSitePackage).toHaveBeenNthCalledWith(2, 'C:\\packages\\full.ncsite', '', 'migration-pass')
-    expect(wrapper.text()).toContain('完整迁移包已通过迁移密码认证')
+    expect(passwordPrompt).not.toHaveBeenCalled()
+    expect(api.inspectSitePackage).toHaveBeenCalledOnce()
+    expect(api.inspectSitePackage).toHaveBeenCalledWith('C:\\packages\\full.ncsite')
+    expect(wrapper.text()).toContain('完整迁移包包含设备用户名和密码，请妥善保管')
   })
 
   it('exposes one stable focus target and applies only a visual focus state', async () => {

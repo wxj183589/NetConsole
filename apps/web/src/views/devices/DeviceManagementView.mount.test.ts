@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   listDevices: vi.fn(),
   getDeviceEditProfile: vi.fn(),
+  revealDeviceCredential: vi.fn(),
   getDeviceConnectionTest: vi.fn(),
   updateDevice: vi.fn(),
   startBatchRefreshDetails: vi.fn(),
@@ -30,6 +31,7 @@ vi.mock('../../api/deviceManagement', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../api/deviceManagement')>(),
   listDevices: mocks.listDevices,
   getDeviceEditProfile: mocks.getDeviceEditProfile,
+  revealDeviceCredential: mocks.revealDeviceCredential,
   getDeviceConnectionTest: mocks.getDeviceConnectionTest,
   updateDevice: mocks.updateDevice,
   startBatchRefreshDetails: mocks.startBatchRefreshDetails,
@@ -213,12 +215,12 @@ const inputStub = defineComponent({
   inheritAttrs: false,
   props: { modelValue: { type: [String, Number], default: '' }, disabled: Boolean },
   emits: ['update:modelValue'],
-  setup(props, { attrs, emit }) {
+  setup(props, { attrs, emit, slots }) {
     return () => h('span', attrs, [h('input', {
       value: props.modelValue,
       disabled: props.disabled,
       onInput: (event: Event) => emit('update:modelValue', (event.target as HTMLInputElement).value),
-    })])
+    }), slots.suffix?.()])
   },
 })
 
@@ -301,6 +303,7 @@ beforeEach(() => {
   document.body.innerHTML = ''
   mocks.listDevices.mockResolvedValue({ items: [listItem], groups: [{ id: 1, name: '车载 MR' }], total: 1, page: 1, page_size: 50, total_pages: 1 })
   mocks.getDeviceEditProfile.mockResolvedValue(editProfile)
+  mocks.revealDeviceCredential.mockResolvedValue({ device_uuid: 'device-1', credential_field: 'ssh_password', value: 'stored-ssh-password' })
   mocks.updateDevice.mockResolvedValue({ action: 'updated', device: detail.device })
   mocks.startBatchRefreshDetails.mockResolvedValue({ action: 'batch_refresh_details', tasks: [] })
   mocks.startDeviceFormConnectionTest.mockResolvedValue({
@@ -412,6 +415,31 @@ describe('DeviceManagementView mounted interactions', () => {
     expect(payload.ssh_password).toBe(expected)
     expect(payload.clear_secret_fields || []).toEqual(clear ? ['ssh_password'] : [])
     expect(JSON.stringify(payload)).not.toContain('secret-password')
+    wrapper.unmount()
+  })
+
+  it('reveals one saved credential on explicit desktop action and clears it from memory on close', async () => {
+    const wrapper = await renderView()
+    await openEdit(wrapper)
+
+    expect((wrapper.get('[data-testid="ssh-password"] input').element as HTMLInputElement).value).toBe('')
+    await wrapper.get('[data-testid="ssh-reveal"]').trigger('click')
+    await flushPromises()
+
+    expect(mocks.revealDeviceCredential).toHaveBeenCalledWith('device-1', 'ssh_password')
+    expect((wrapper.get('[data-testid="ssh-password"] input').element as HTMLInputElement).value).toBe('stored-ssh-password')
+
+    await wrapper.get('[data-testid="device-form-cancel"]').trigger('click')
+    await flushPromises()
+    await openEdit(wrapper)
+    expect((wrapper.get('[data-testid="ssh-password"] input').element as HTMLInputElement).value).toBe('')
+
+    await wrapper.get('[data-testid="ssh-reveal"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="ssh-password"] input').setValue('replacement-password')
+    await wrapper.get('[data-testid="device-save"]').trigger('click')
+    await flushPromises()
+    expect(mocks.updateDevice).toHaveBeenCalledWith('device-1', expect.objectContaining({ ssh_password: 'replacement-password' }))
     wrapper.unmount()
   })
 

@@ -23,27 +23,42 @@ from netconsole.core import runtime_environment
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _allow_non_production_test_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def _allow_non_production_test_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     application = tmp_path / "application"
     application.mkdir()
-    monkeypatch.setattr(runtime_environment, "validate_data_root", lambda value, mode: Path(value).resolve())
+    monkeypatch.setattr(
+        runtime_environment,
+        "validate_data_root",
+        lambda value, mode=None: Path(value).resolve(),
+    )
     monkeypatch.setattr(runtime_environment, "app_root", lambda: application)
     monkeypatch.setattr(data_root_configuration.sys, "platform", "linux")
     usage = namedtuple("usage", "total used free")
-    monkeypatch.setattr(data_root_configuration.shutil, "disk_usage", lambda _path: usage(200 * 1024**3, 0, 120 * 1024**3))
+    monkeypatch.setattr(
+        data_root_configuration.shutil,
+        "disk_usage",
+        lambda _path: usage(200 * 1024**3, 0, 120 * 1024**3),
+    )
 
 
-def test_installation_validation_accepts_an_empty_writable_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_installation_validation_accepts_an_empty_writable_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _allow_non_production_test_root(monkeypatch, tmp_path)
     target = tmp_path / "NetConsoleData"
 
     assert validate_installation_data_root(target) == target.resolve()
-    assert validate_installation_data_root(Path(f"{target}{os.sep}")) == target.resolve()
+    assert (
+        validate_installation_data_root(Path(f"{target}{os.sep}")) == target.resolve()
+    )
     assert list(target.iterdir()) == []
 
 
 def test_installation_preparation_initializes_a_manifest_before_first_launch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _allow_non_production_test_root(monkeypatch, tmp_path)
     target = tmp_path / "NetConsoleData"
@@ -59,7 +74,8 @@ def test_installation_preparation_initializes_a_manifest_before_first_launch(
 
 
 def test_installation_preparation_does_not_replace_an_invalid_existing_manifest(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _allow_non_production_test_root(monkeypatch, tmp_path)
     target = tmp_path / "NetConsoleData"
@@ -75,13 +91,23 @@ def test_installation_preparation_does_not_replace_an_invalid_existing_manifest(
 
 
 def test_installation_validation_accepts_existing_netconsole_data_without_modifying_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _allow_non_production_test_root(monkeypatch, tmp_path)
     target = tmp_path / "现有 NetConsole 数据"
     manifest = target / "config" / "storage-manifest.json"
     database = target / "sites" / "site-a" / "db" / "devices.db"
-    capture = target / "sites" / "site-a" / "files" / "rail_transit" / "online_mr" / "MR-01" / "capture.log"
+    capture = (
+        target
+        / "sites"
+        / "site-a"
+        / "files"
+        / "rail_transit"
+        / "online_mr"
+        / "MR-01"
+        / "capture.log"
+    )
     manifest.parent.mkdir(parents=True)
     database.parent.mkdir(parents=True)
     capture.parent.mkdir(parents=True)
@@ -93,7 +119,9 @@ def test_installation_validation_accepts_existing_netconsole_data_without_modify
         for path in (manifest, database, capture)
     }
 
-    assert validate_installation_data_root(Path(f"{target}{os.sep}")) == target.resolve()
+    assert (
+        validate_installation_data_root(Path(f"{target}{os.sep}")) == target.resolve()
+    )
 
     after = {
         path: (path.read_bytes(), path.stat().st_size, path.stat().st_mtime_ns)
@@ -104,7 +132,8 @@ def test_installation_validation_accepts_existing_netconsole_data_without_modify
 
 
 def test_installation_validation_uses_unique_probe_names_and_ignores_legacy_probe_residue(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _allow_non_production_test_root(monkeypatch, tmp_path)
     target = tmp_path / "NetConsoleData"
@@ -129,7 +158,8 @@ def test_installation_validation_uses_unique_probe_names_and_ignores_legacy_prob
 
 
 def test_installation_validation_reports_probe_rename_error_and_cleans_source(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _allow_non_production_test_root(monkeypatch, tmp_path)
     target = tmp_path / "NetConsoleData"
@@ -151,7 +181,8 @@ def test_installation_validation_reports_probe_rename_error_and_cleans_source(
 
 
 def test_installation_probe_reports_an_unwritable_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target = tmp_path / "NetConsoleData"
     target.mkdir()
@@ -173,7 +204,8 @@ def test_installation_probe_reports_an_unwritable_directory(
 
 
 def test_installation_probe_does_not_overwrite_a_colliding_probe_name(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target = tmp_path / "NetConsoleData"
     target.mkdir()
@@ -190,11 +222,14 @@ def test_installation_probe_does_not_overwrite_a_colliding_probe_name(
     assert source.read_bytes() == b"existing-source"
     assert renamed.read_bytes() == b"existing-target"
     assert not (target / f".netconsole-install-probe-{unique_id.hex}.tmp").exists()
-    assert not (target / f".netconsole-install-probe-{unique_id.hex}.tmp.renamed").exists()
+    assert not (
+        target / f".netconsole-install-probe-{unique_id.hex}.tmp.renamed"
+    ).exists()
 
 
 def test_installation_probe_reports_cleanup_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target = tmp_path / "NetConsoleData"
     target.mkdir()
@@ -219,7 +254,8 @@ def test_installation_probe_reports_cleanup_failure(
 
 
 def test_installation_validation_reports_when_the_selected_path_cannot_be_created(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _allow_non_production_test_root(monkeypatch, tmp_path)
     target = tmp_path / "not-a-directory"
@@ -231,24 +267,52 @@ def test_installation_validation_reports_when_the_selected_path_cannot_be_create
     assert target.read_text(encoding="utf-8") == "keep"
 
 
-def test_installation_validation_rejects_a_non_netconsole_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_installation_preparation_preserves_unrelated_files_in_a_nonempty_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _allow_non_production_test_root(monkeypatch, tmp_path)
     target = tmp_path / "existing"
     target.mkdir()
-    (target / "unrelated.txt").write_text("keep", encoding="utf-8")
+    unrelated = target / "unrelated.txt"
+    unrelated.write_text("keep", encoding="utf-8")
+    before = (unrelated.read_bytes(), unrelated.stat().st_mtime_ns)
 
-    with pytest.raises(DataRootConfigurationError, match="非空"):
+    assert prepare_installation_data_root(target) == target.resolve()
+
+    assert (unrelated.read_bytes(), unrelated.stat().st_mtime_ns) == before
+    assert (target / "config" / "storage-manifest.json").is_file()
+    assert (target / "sites").is_dir()
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    ("config", "sites", "runtime", "agents", "migrations", "staging"),
+)
+def test_installation_validation_rejects_real_required_path_conflicts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, conflict: str
+) -> None:
+    _allow_non_production_test_root(monkeypatch, tmp_path)
+    target = tmp_path / "existing"
+    target.mkdir()
+    collision = target / conflict
+    collision.write_text("keep", encoding="utf-8")
+
+    with pytest.raises(DataRootConfigurationError, match=f"路径发生冲突：{conflict}"):
         validate_installation_data_root(target)
 
-    assert (target / "unrelated.txt").read_text(encoding="utf-8") == "keep"
+    assert collision.read_text(encoding="utf-8") == "keep"
 
 
-def test_installation_validation_rejects_the_program_installation_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_installation_validation_rejects_the_program_installation_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _allow_non_production_test_root(monkeypatch, tmp_path)
     installation = tmp_path / "program-files" / "NetConsole"
 
     with pytest.raises(DataRootConfigurationError, match="程序安装目录"):
-        validate_installation_data_root(installation / "data", installation_root=installation)
+        validate_installation_data_root(
+            installation / "data", installation_root=installation
+        )
 
 
 def test_installer_entrypoint_import_has_no_configured_data_root_side_effect() -> None:

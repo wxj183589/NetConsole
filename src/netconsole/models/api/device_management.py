@@ -158,6 +158,14 @@ class DeviceEditProfileDTO(DeviceDetailItemDTO):
     snmp_port: int = 161
 
 
+class DeviceCredentialRevealDTO(ApiModel):
+    """仅供受保护的本机桌面会话按用户动作读取。"""
+
+    device_uuid: str
+    credential_field: DeviceSecretField
+    value: str = ""
+
+
 class DeviceDetailDTO(ApiModel):
     device: DeviceDetailItemDTO
     fact: DeviceFactDTO | None = None
@@ -172,7 +180,7 @@ class DeviceDetailDTO(ApiModel):
 
 
 class DeviceWriteRequestDTO(ApiModel):
-    """Qt 对等写入字段；秘密字段只写不读，清除必须显式声明。"""
+    """设备写入字段；普通详情不读秘密，清除必须显式声明。"""
 
     name: str = Field(min_length=1, max_length=120)
     system_name: str = Field(default="", max_length=120)

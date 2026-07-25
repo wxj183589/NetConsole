@@ -58,6 +58,10 @@ def resolve_device_credentials(
     persisted_states: Mapping[str, CredentialFieldResolution] | None = None,
 ) -> tuple[dict[str, object], DeviceCredentialResolution]:
     values = dict(record)
+    if not values.get("ssh_username") and values.get("username"):
+        values["ssh_username"] = values["username"]
+    if not values.get("ssh_password") and values.get("password"):
+        values["ssh_password"] = values["password"]
     persisted = dict(persisted_states or {})
     fields: dict[str, CredentialFieldResolution] = {}
 
@@ -72,9 +76,7 @@ def resolve_device_credentials(
         if not credential_is_complete(values, field):
             fields[field] = persisted.get(
                 field,
-                CredentialFieldResolution(
-                    "missing", "none", "CREDENTIAL_INCOMPLETE"
-                ),
+                CredentialFieldResolution("missing", "none", "CREDENTIAL_INCOMPLETE"),
             )
             continue
         fields[field] = CredentialFieldResolution("available", "local_database")
@@ -235,7 +237,9 @@ def sanitize_device_credentials_for_package(
                     "CREDENTIAL_REENTRY_REQUIRED",
                 ),
             )
-    secret_columns = [field for field in DEVICE_SECRET_STORAGE_FIELDS if field in columns]
+    secret_columns = [
+        field for field in DEVICE_SECRET_STORAGE_FIELDS if field in columns
+    ]
     if secret_columns:
         connection.execute(
             "UPDATE devices SET "
@@ -344,7 +348,9 @@ def _field_was_configured(values: Mapping[str, object], field: str) -> bool:
     if field == "ssh_password":
         return bool(values.get("ssh_enabled")) and bool(values.get("ssh_username"))
     if field == "telnet_password":
-        return bool(values.get("telnet_enabled")) and bool(values.get("telnet_username"))
+        return bool(values.get("telnet_enabled")) and bool(
+            values.get("telnet_username")
+        )
     if field == "snmp_ro_community":
         return bool(values.get("snmp_enabled"))
     prefix = field.removesuffix("_password")
@@ -362,7 +368,9 @@ def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
 
 
 def _table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
-    return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({_quote(table)})")}
+    return {
+        str(row[1]) for row in connection.execute(f"PRAGMA table_info({_quote(table)})")
+    }
 
 
 def _row_mapping(

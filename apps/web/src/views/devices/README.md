@@ -30,6 +30,13 @@
 - 非敏感表单字段进入安全 Job 参数，临时密码只走共享 Job Runtime 的一次性敏感 bootstrap。任务结果在弹窗内显示安全消息、失败分类和耗时，成功不会自动保存，失败不会清空表单。
 - SSH 测试复用现有 Netmiko/隧道执行器，覆盖参数校验、凭据解析、连接、握手、认证、会话验证和终态阶段。自动测试已覆盖成功、认证失败、超时、拒绝、凭据不落盘与异常恢复；真实 H3C MR 仍需现场验收，因此模块状态保持 `IMPLEMENTED_UNVERIFIED / REAL_DEVICE_PENDING`。
 
+## 已保存凭据查看与保存
+
+- 普通列表、详情和 `edit-profile` 响应只返回用户名及 `*_secret_configured` 状态，不返回密码或 SNMP community。
+- Electron 本机用户点击对应眼睛按钮后，页面才通过隐藏的单字段 reveal API 读取已保存值；该接口同时要求 Desktop 运行模式、`127.0.0.1` 和有效短期桌面会话，Server、远端地址或未认证请求一律拒绝。
+- 关闭或取消编辑器会清除 Renderer 内存中的本次读取值。眼睛按钮只读取当前字段，不批量返回设备全部凭据。
+- 未查看且密码框留空时保留原值；输入新值时替换并复读确认；只有显式勾选“清除已保存值”才删除。旧数据库仅有 `username/password` 时兼容显示 SSH 用户名，保存后同步到正式 `ssh_username/ssh_password` 字段。
+
 ## 数据来源
 
 | 页面区域 | 当前事实来源 | 说明 |
@@ -59,7 +66,7 @@ LLDP 历史数据按公开 DTO 白名单消费，不进入任意原始对象透�
 
 设备详情 API、分页和错误契约见 [Web API 客户端](../../api/README.md)与 [FastAPI API](../../../../../src/netconsole/backend/api/README.md)；Pydantic DTO 见 [API DTO 模型](../../../../../src/netconsole/models/api/README.md)，前端映射见 [Web 类型契约](../../types/README.md)。
 
-响应不得包含设备密码、SNMP community、Token、服务端绝对路径或任意环境变量。Artifact 只通过既有受控下载契约交给 Electron Main。
+普通查询响应不得包含设备密码、SNMP community、Token、服务端绝对路径或任意环境变量。唯一例外是上述本机桌面显式 reveal 动作，它只返回用户刚刚选择的单个凭据字段，不进入 OpenAPI、任务参数或日志。Artifact 只通过既有受控下载契约交给 Electron Main。
 
 ## 修改与验证
 

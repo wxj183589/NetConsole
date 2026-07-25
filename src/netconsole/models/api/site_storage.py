@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field
 
 from netconsole.models.api.common import ApiModel
 
@@ -27,17 +27,11 @@ class SiteExportRequest(ApiModel):
     package_type: Literal[
         "full_migration", "sanitized_share", "field_collection", "collection_return"
     ] = "full_migration"
-    migration_password: SecretStr | None = Field(
-        default=None, min_length=8, max_length=1_024, repr=False
-    )
 
 
 class SiteImportInspectRequest(ApiModel):
     package_path: str = Field(min_length=1, max_length=32_767)
     target_site_id: str = Field(default="", max_length=63)
-    migration_password: SecretStr | None = Field(
-        default=None, min_length=8, max_length=1_024, repr=False
-    )
 
 
 class SiteConflictResolution(ApiModel):
@@ -53,10 +47,8 @@ class SiteImportRequest(ApiModel):
     replace_site_id: str = Field(default="", max_length=63)
     activate: bool = False
     raw_only: bool = False
-    conflict_resolutions: list[SiteConflictResolution] = Field(default_factory=list, max_length=2_000)
-    credential_policy: Literal["preserve_local", "use_package"] = "preserve_local"
-    migration_password: SecretStr | None = Field(
-        default=None, min_length=8, max_length=1_024, repr=False
+    conflict_resolutions: list[SiteConflictResolution] = Field(
+        default_factory=list, max_length=2_000
     )
 
 
@@ -126,7 +118,18 @@ class SiteCleanupPlanResponse(ApiModel):
 
 
 __all__ = [
-    "DataRootPathRequest", "SiteActivateRequest", "SiteCreateRequest", "SiteExportRequest",
-    "SiteConflictResolution", "SiteImportInspectRequest", "SiteImportRequest", "SiteMigrateRequest", "SiteTaskResponse",
-    "SiteCleanupApplyRequest", "SiteCleanupRestoreRequest", "SiteDemoRebuildRequest", "SiteAuditSummaryResponse", "SiteCleanupPlanResponse",
+    "DataRootPathRequest",
+    "SiteActivateRequest",
+    "SiteCreateRequest",
+    "SiteExportRequest",
+    "SiteConflictResolution",
+    "SiteImportInspectRequest",
+    "SiteImportRequest",
+    "SiteMigrateRequest",
+    "SiteTaskResponse",
+    "SiteCleanupApplyRequest",
+    "SiteCleanupRestoreRequest",
+    "SiteDemoRebuildRequest",
+    "SiteAuditSummaryResponse",
+    "SiteCleanupPlanResponse",
 ]

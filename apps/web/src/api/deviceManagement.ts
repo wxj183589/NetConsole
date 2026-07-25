@@ -2,6 +2,7 @@ import { apiRequest } from './client'
 import type {
   DeviceConnectionProtocol,
   DeviceConnectionTest,
+  DeviceCredentialReveal,
   DeviceDeleteToken,
   DeviceDetailResponse,
   DeviceDetailHistoryPage,
@@ -51,6 +52,12 @@ export function getDeviceEditProfile(deviceUuid: string, signal?: AbortSignal): 
   return apiRequest<DeviceEditProfileResponse>(
     `/api/device-management/devices/${encodeURIComponent(deviceUuid)}/edit-profile`,
     signal ? { signal } : undefined,
+  )
+}
+
+export function revealDeviceCredential(deviceUuid: string, credentialField: string): Promise<DeviceCredentialReveal> {
+  return apiRequest<DeviceCredentialReveal>(
+    `/api/device-management/devices/${encodeURIComponent(deviceUuid)}/credentials/${encodeURIComponent(credentialField)}/reveal`,
   )
 }
 

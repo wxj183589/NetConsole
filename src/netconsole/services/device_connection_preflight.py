@@ -91,7 +91,7 @@ def validate_device_connection_preflight(
 
 def credential_status_message(status: str, error_code: str = "") -> str:
     if status == "needs_reentry" or error_code == "CREDENTIAL_REENTRY_REQUIRED":
-        return "该设备凭据来自局点包，请在当前电脑重新录入后再测试连接。"
+        return "该设备来自脱敏包或旧无凭据包，请重新录入凭据后再测试连接。"
     if status == "missing":
         return "设备连接凭据尚未配置。"
     if status == "key_file_missing":
@@ -114,7 +114,7 @@ def _require_secret(
     if source == "needs_reentry" or status == "needs_reentry":
         _raise(
             "CREDENTIAL_REENTRY_REQUIRED",
-            "该设备凭据来自另一台电脑或局点包，无法在当前电脑使用。请重新录入后再测试连接。",
+            "该设备来自脱敏包或旧无凭据包，缺少可用凭据。请重新录入后再测试连接。",
             {
                 **details,
                 "field": field,
@@ -122,7 +122,9 @@ def _require_secret(
                 "suggested_action": "编辑设备并重新录入连接凭据",
             },
         )
-    has_secret = source in {"ephemeral", "saved_device"} or bool(getattr(device, field, None))
+    has_secret = source in {"ephemeral", "saved_device"} or bool(
+        getattr(device, field, None)
+    )
     if source == "none" or not has_secret:
         name = label or protocol
         if field == "snmp_ro_community":

@@ -44,7 +44,7 @@
 | `web.rail_trackside_ap_business` | 轨旁 AP 业务 | `ENABLED` | 是 | 是 | 否 | 是 | 光衰更新与导出可用 | `/api/rail-transit/trackside-ap-business/*` | `/rail-transit/trackside-ap-business` | `test_trackside_ap_business_export_web.py` | `PENDING` |
 | `web.system_settings` | 系统设置与环境自检 | `ENABLED` | 是 | 是 | 否 | 是 | 设置、局点管理和自检可用 | `/api/settings/*`、`/api/settings/self-check` | `/settings` | `test_system_settings_web_api.py`、`SystemSettingsView.test.ts` | `PENDING` |
 
-局点管理当前是 `web.system_settings` 内的正式面板，不建立第二个 Feature ID。其 API 位于 `/api/sites` 与局点包相关路由；加密完整包恢复、脱敏包清洗、凭据冲突策略、错误密码零发布和 `needs_reentry` 闭环由 `test_site_storage.py / test_site_storage_api.py` 验证。
+局点管理当前是 `web.system_settings` 内的正式面板，不建立第二个 Feature ID。其 API 位于 `/api/sites` 与局点包相关路由；v4 未加密完整包凭据恢复、无迁移密码/无 `payload.enc`、脱敏包清洗、checksum 篡改零发布和 `needs_reentry` 闭环由 `test_site_storage.py / test_site_storage_api.py` 验证。设备凭据显式查看和旧字段保存兼容由 `test_device_management_web_api.py / DeviceManagementView*.test.ts` 验证。
 
 ## 必须保持关闭的能力
 
@@ -67,7 +67,7 @@
 | 全新普通 Windows 用户、空 AppData | 环境自检逻辑与临时数据根 smoke | `PENDING` |
 | 无 Python/Node/pnpm/Git/源码 | PyInstaller/Electron 制品契约 | `PENDING` |
 | 中文用户名、中文安装/数据路径 | UTF-8/SQLite/REST/WebSocket 自动探针 | `PENDING` |
-| 跨电脑导入加密完整迁移包 | 明文不可搜索、正确/错误密码、篡改认证、凭据恢复与冲突策略 pytest | `PENDING` |
+| 跨电脑导入 v4 完整迁移包 | 无需密码、普通 ZIP、包内完整凭据、checksum/SQLite 校验、导入恢复与直接使用包内凭据 pytest | `PENDING` |
 | 导入脱敏分享包并重新录入凭据 | 包清洗、显式密码保存/清除与 `needs_reentry` pytest | `PENDING` |
 | 恢复或重录凭据后的真实/仿真 H3C SSH | Repository/连接任务自动闭环 | `PENDING` |
 | 中文任务 title/message/progress/log/finished | JSONL 逐字节分块、SQLite/API/WebSocket 测试 | `PENDING` |

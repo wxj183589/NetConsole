@@ -8,6 +8,12 @@ export type DeviceSecretField =
   | 'tunnel2_password'
   | 'snmp_ro_community'
 
+export interface DeviceCredentialReveal {
+  device_uuid: string
+  credential_field: DeviceSecretField
+  value: string
+}
+
 export interface DeviceCapability {
   ssh: boolean
   ssh_port: number | null
