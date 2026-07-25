@@ -2,6 +2,15 @@
 
 本矩阵用于 v1.4.3 跨电脑交付门禁。`release included=是` 表示功能代码、页面和 API 属于正式构建契约，不代表已经完成真实 Windows/真实设备人工验收。自动测试不能替代 NSIS 安装、跨电脑导入或现场 SSH。
 
+## 功能基线解析契约
+
+| 运行环境 | 功能基线来源 | 外部 runtime 配置 | 基线缺失或损坏 |
+| --- | --- | --- | --- |
+| 正式 Electron 包 | 包内只读 `customer/production` 基线 | 忽略外部 `build_info.json`、任意 schema 版本的 `feature_flags.json` 及 `feature_flags.local.json` | 回退 Feature Registry 的稳定生产默认，并记录 `PACKAGED_FEATURE_POLICY_FALLBACK` |
+| 源码开发态 | 开发构建信息、外部 runtime 配置与 Registry | 按现有开发配置语义读取；支持本地可见性/启用状态覆盖 | 回退开发态 Registry 默认 |
+
+因此，正式包不能通过外部 schema 禁用固定生产功能，也不能重新启用 `DEVELOPMENT`、`HIDDEN`、`DISABLED` 或 internal-only 能力。`client_package` 仍只表示构建/发布元数据，不是正式运行时的通用权限开关。
+
 ## 必要生产功能
 
 | 功能 ID | 中文名称 | Registry status | visible | enabled | internal_only | release included | 正式包预期 | API | 页面 | 定向自动证据 | 人工验收 |

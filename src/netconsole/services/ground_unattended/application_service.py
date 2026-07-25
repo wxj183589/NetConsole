@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import shutil
 from datetime import datetime
-from typing import Any
+from pathlib import Path
+from typing import Any, Protocol
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.ground_unattended import (
@@ -27,8 +28,22 @@ from netconsole.repositories.ground_unattended_repository import (
 )
 from netconsole.services.ground_unattended.schedule import schedule_window
 from netconsole.services.ground_unattended.supervisor import GroundUnattendedSupervisor
-from netconsole.application.desktop.actions import DesktopActionService
 from netconsole.models.api.system_maintenance import DesktopActionDTO
+
+
+class DesktopActionResultPort(Protocol):
+    success: bool
+    code: str
+    message: str
+
+
+class DesktopActionPort(Protocol):
+    def open_controlled_path(
+        self,
+        path: Path,
+        *,
+        expect_directory: bool,
+    ) -> DesktopActionResultPort: ...
 
 
 class GroundUnattendedError(ValueError):
@@ -47,7 +62,7 @@ class GroundUnattendedApplicationService:
         site_id: str,
         repository: GroundUnattendedRepository,
         supervisor: GroundUnattendedSupervisor,
-        desktop_action_service: DesktopActionService | None = None,
+        desktop_action_service: DesktopActionPort | None = None,
     ) -> None:
         self.paths = paths
         self.site_id = site_id

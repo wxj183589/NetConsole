@@ -49,6 +49,7 @@ from netconsole.services.agent.controller import AgentControllerError, AgentCont
 from netconsole.services.config_collection_web_service import ConfigCollectionApplicationService
 from netconsole.services.command_reference_application_service import CommandReferenceApplicationService
 from netconsole.services.device_management_web_service import DeviceManagementWebService
+from netconsole.services.device_compatibility.service import DeviceCompatibilityService
 from netconsole.services.device_detail_query_service import DeviceDetailQueryService
 from netconsole.services.device_operation_service import DeviceOperationService
 from netconsole.services.file_management_service import FileManagementApplicationService
@@ -243,6 +244,7 @@ def create_app(
     )
     ac_management_query_service = AcManagementQueryService(paths)
     online_mr_query_service = OnlineMrQueryService(paths)
+    device_compatibility_service = DeviceCompatibilityService(paths)
     device_detail_gateway = DeviceDetailRepository(paths)
     device_operation_service = DeviceOperationService(
         paths,
@@ -460,6 +462,7 @@ def create_app(
         agent_service,
     )
     app.state.network_tools_service = NetworkToolsApplicationService(traffic_service)
+    app.state.device_compatibility_service = device_compatibility_service
     app.state.device_management_service = device_management_service
     app.state.device_detail_application_service = device_detail_application_service
     app.state.config_collection_service = config_collection_service

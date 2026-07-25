@@ -13,10 +13,14 @@ from netconsole.services.device_compatibility.service import (
 router = APIRouter(prefix="/device-compatibility", tags=["device-compatibility"])
 
 
+def _service(request: Request) -> DeviceCompatibilityService:
+    return request.app.state.device_compatibility_service
+
+
 @router.get("/summary", response_model=DeviceCompatibilitySummaryDTO)
 def compatibility_summary(request: Request) -> DeviceCompatibilitySummaryDTO:
     try:
-        payload = DeviceCompatibilityService(request.app.state.paths).summary()
+        payload = _service(request).summary()
     except (DeviceCompatibilityError, OSError, UnicodeError) as exc:
         app_logger.log_error(
             "DEVICE_COMPATIBILITY_RESOURCE_FAILED",

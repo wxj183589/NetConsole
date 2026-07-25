@@ -6,7 +6,7 @@
 
 内部功能开关页面使用 `module.feature_switch`。该页面只在源码开发态注册；所有冻结/安装包运行态（包括 internal、customer、engineer）都强制隐藏并禁用，不能通过 profile 或本地覆盖重新开启。
 
-正式 Electron 包由 `PackagedRuntimeFeaturePolicy` 执行固定生产功能集：只读取包内 `customer/production` 基线，忽略环境变量、外部 runtime 配置和 `feature_flags.local.json`；功能配置读写、预览和恢复 API 固定拒绝。包内基线缺失或损坏时，Gate 记录 `PACKAGED_FEATURE_POLICY_FALLBACK` 并回退 Registry 稳定默认。`module.system_settings`、`web.system_settings`、`web.job_center`、`module.logs` 和 `web.logs` 受到核心保护；internal-only 以及 `DISABLED / HIDDEN / DEVELOPMENT` 状态仍强制关闭。
+正式 Electron 包由 `PackagedRuntimeFeaturePolicy` 执行固定生产功能集：只读取包内 `customer/production` 基线，忽略环境变量、外部 runtime 配置和 `feature_flags.local.json`；外部 `feature_flags.json` 的 schema 版本不改变这条边界。功能配置读写、预览和恢复 API 固定拒绝。包内基线缺失或损坏时，Gate 记录 `PACKAGED_FEATURE_POLICY_FALLBACK` 并回退 Registry 稳定默认。`module.system_settings`、`web.system_settings`、`web.job_center`、`module.logs` 和 `web.logs` 受到核心保护；internal-only 以及 `DISABLED / HIDDEN / DEVELOPMENT` 状态仍强制关闭。源码开发态继续按现有语义读取外部 runtime 配置和本地覆盖。
 
 ## 2. 一级模块
 
