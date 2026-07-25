@@ -62,8 +62,9 @@
 | Web production build、vue-tsc | 本分支执行 | 不适用 |
 | Electron tests、typecheck、build | 本分支执行 | 不适用 |
 | Backend PyInstaller、Electron unpacked package smoke | 必须从最终 clean commit 重建；包内 Backend/Web/self-check commit、UTC 时间和 dirty 状态由 smoke 与实际 HEAD 比较，结果见当次交付记录 | 不适用 |
-| NSIS 安装器构建 | 必须在最终提交后执行，installer 与 blockmap 生成结果见当次交付记录；自动构建成功不等同安装验收 | 不适用 |
+| NSIS 安装器构建 | 最终提交推送后生成带 Git short commit 的唯一文件名；直接从 setup.exe 复核 PE Installer 身份、内嵌数据根源码及新旧文案、Backend/Frontend commit、Unicode NSIS、双次 SHA-256，并输出 `.exe.release.json`；自动构建成功不等同安装验收 | 不适用 |
 | NSIS 安装、启动、卸载 | 无法由单元测试或 installer build 替代 | `PENDING` |
+| 数据根不存在、为空、含普通文件、合法旧根 | 自动 Gate 只能证明最终 EXE 与源码/提交一致，不能代替向导实际分支；需核对 `HKLM\Software\NetConsole\DataRoot` 和普通文件安装前后哈希 | `PENDING` |
 | 全新普通 Windows 用户、空 AppData | 环境自检逻辑与临时数据根 smoke | `PENDING` |
 | 无 Python/Node/pnpm/Git/源码 | PyInstaller/Electron 制品契约 | `PENDING` |
 | 中文用户名、中文安装/数据路径 | UTF-8/SQLite/REST/WebSocket 自动探针 | `PENDING` |

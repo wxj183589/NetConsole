@@ -11,6 +11,9 @@ v1.4.3
 - 修复全新电脑安装后首次启动可能因 storage manifest 初始化失败而退出：安装阶段在发布机器级指针前初始化或验证 manifest；Backend 启动失败协议改为代码页无关的 ASCII JSON Unicode 转义，其他 Windows 中文环境不再乱码。
 - 修复 Windows 空目录与含普通文件目录的矛盾判断：安装器在任何写入探测前先枚举，探测后不再按非空规则复检；打包 Backend 也取消“非空即拒绝”，保留普通文件，仅在 NetConsole 必需路径真实冲突时停止。
 - NSIS 安装器显式启用 Unicode，避免其他 Windows 区域设置下中文向导和错误提示乱码。
+- 修复尚不存在的 D/E 盘数据目录被 NSIS 内置路径规范化错误拒绝：改用不验证路径存在性的 Win32 `GetFullPathNameW`，规范化不创建目录；错误提示区分 Windows API、NSIS 参数和内部逻辑错误，并新增实际 Unicode NSIS 行为回归。
+- 正式安装器改用带 Git short commit 的唯一文件名，并在向导、PE 资源和最终 EXE 内嵌清单中记录外层 Installer 身份；打包前清理旧制品，防止同名旧安装包被误当作新包。
+- 新增最终 setup.exe Gate，直接核对 Unicode NSIS、数据根策略源码与新旧文案、Installer/Backend/Frontend commit、生成时间和双次 SHA-256，并输出 release manifest；全新 Windows 实际安装状态在人工验收前保持 `PENDING`。
 - 安装器只接受可写、支持原子重命名和 SQLite 写锁的非系统固定磁盘；升级更改数据根使用 staging 校验与原子发布，普通卸载保留业务数据。
 - 测试运行仅使用显式 `D:\NetConsoleTestData\<run-id>`；storage manifest、Backend 写锁和 health 诊断补齐统一数据根信息。
 - 局点导出拆分为完整迁移包与脱敏分享包：v4 完整包是不要求迁移密码的普通 ZIP，直接包含设备用户名、密码、SNMP community 和隧道凭据；脱敏包继续清除秘密并标记需要重新录入。

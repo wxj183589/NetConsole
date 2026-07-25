@@ -28,6 +28,9 @@
 - 修复全新电脑安装后首次启动可能因 `storage-manifest.json` 初始化失败而退出：安装器现在在写入机器级 `DataRoot` 前由打包 Backend 原子初始化新根并验证 manifest，已有损坏或不兼容 manifest 保持原样并阻止发布指针；Backend 启动失败消息改用代码页无关的 ASCII JSON Unicode 转义，避免其他 Windows 中文环境显示乱码。
 - 修复 Windows 空目录与含普通文件目录的互相矛盾判断：NSIS 在任何写入探测前逐项枚举，探测后不再按“目录非空”复检；打包 Backend 同步取消旧的“非空即拒绝”，只校验 `config/sites/runtime/agents/migrations/staging` 和 storage manifest 的真实路径冲突。所选路径直接使用，用户已有文件不删除、不改名、不覆盖。
 - NSIS 构建显式固定为 Unicode，避免其他 Windows 区域设置下安装向导、路径校验和错误提示中的中文被按本地代码页误解码。
+- 修复全新电脑选择尚不存在的 D/E 盘数据目录时被错误拒绝的问题：路径规范化改用不要求目录存在的 Win32 `GetFullPathNameW`，不会为校验提前创建目录；失败提示区分 Windows API、NSIS 参数和内部逻辑错误，不再把残留线程错误码误报为路径失败原因。新增实际编译运行的 Unicode NSIS 回归，覆盖不存在目录、中文路径、尾随反斜杠、非法字符和系统盘拒绝。
+- 修复同版本安装包反复使用固定文件名、外层 NSIS 无法独立核对源码身份的问题：正式打包改为提交并推送后清理旧中间产物，生成带 Git short commit 的唯一安装包；数据根页面与 PE 版本资源写入 Installer commit/build ID，最终 EXE 内嵌本轮策略源码和身份清单。
+- 新增最终 setup.exe 发布门：直接从 NSIS 制品复核 Unicode 类型、Installer/Backend/Frontend commit、策略源码哈希、新允许文案和旧阻止文案、生成时间及双次 SHA-256，并输出独立 release manifest。真实全新 Windows 的四种数据根安装、注册表和值守文件完整性仍须人工验收，自动门禁不宣称通过。
 - 更改既有数据根时，安装器调用受管 Backend 在目标同级 staging 中复制和校验 SQLite 后原子发布，再更新机器级指针；旧根保留，不自动删除。迁移后的 storage manifest 会重绑定新根，避免首次启动因旧路径被拒绝。
 - 自动测试必须显式使用 `D:\NetConsoleTestData\<run-id>`，不会读取机器级指针或真实业务根；隔离模式在设置页明确提示，不允许修改正式局点或数据根。
 

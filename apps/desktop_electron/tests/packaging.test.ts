@@ -11,7 +11,7 @@ describe('Electron-only packaging', () => {
   it('packages the managed backend and preserves user data on uninstall', () => {
     const packageJson = JSON.parse(readFileSync(resolve(appRoot, 'package.json'), 'utf8'))
 
-    expect(packageJson.scripts.package).toContain('electron-builder')
+    expect(packageJson.scripts.package).toContain('build-installer.mjs')
     expect(packageJson.scripts['smoke:package']).toContain('package-smoke.mjs')
     expect(packageJson.build.productName).toBe('NetConsole v1.4.3 by wxj')
     expect(packageJson.build.win.executableName).toBe('NetConsole')
@@ -36,6 +36,22 @@ describe('Electron-only packaging', () => {
     expect(packageJson.build.win.target[0]).toEqual({ target: 'nsis', arch: ['x64'] })
   })
 
+  it('builds a unique commit-named installer through the final EXE gate', () => {
+    const packageJson = JSON.parse(readFileSync(resolve(appRoot, 'package.json'), 'utf8'))
+    const launcher = readFileSync(resolve(appRoot, 'scripts', 'build-installer.mjs'), 'utf8')
+    const builder = readFileSync(resolve(appRoot, '..', '..', 'scripts', 'build', 'build_installer.py'), 'utf8')
+
+    expect(packageJson.scripts.package).toBe('node scripts/build-installer.mjs')
+    expect(launcher).toContain('scripts.build.build_installer')
+    expect(builder).toContain('NetConsole-{app_version}-{short}-x64-setup.exe')
+    expect(builder).toContain('electron-builder')
+    expect(builder).toContain('--config.win.artifactName=')
+    expect(builder).toContain('SubType = NSIS-3 Unicode')
+    expect(builder).toContain('InstallerGitCommit')
+    expect(builder).toContain('installer_policy_source_sha256')
+    expect(builder).toContain('real_windows_install_status')
+  })
+
   it('adds a separate, validated business-data-root page to the existing NSIS installer', () => {
     const script = readFileSync(resolve(appRoot, 'build', 'installer-data-root.nsh'), 'utf8')
 
@@ -49,7 +65,7 @@ describe('Electron-only packaging', () => {
     expect(script).toContain('--migrate-data-root')
     expect(script).toContain('--validate-data-root')
     expect(script).toContain('creates/checks the storage')
-    expect(script).toContain('数据目录初始化或兼容性校验失败')
+    expect(script).toContain('Backend 数据根初始化或兼容性校验失败')
     expect(script).toContain('Function NetConsoleDataRootCheckEntries')
     expect(script).toContain('FindFirst $NetConsoleDataRootFindHandle $NetConsoleDataRootFindName "$NetConsoleDataRoot\\*"')
     expect(script).toContain('FindNext $NetConsoleDataRootFindHandle $NetConsoleDataRootFindName')
@@ -74,6 +90,17 @@ describe('Electron-only packaging', () => {
     )
     expect(locationFunction).toContain("System::Call 'kernel32::GetDriveTypeW(w r1)i.r2'")
     expect(locationFunction).not.toContain("System::Call 'kernel32::GetDriveTypeW(w r0)i.r1'")
+    expect(locationFunction).toContain('Call NetConsoleNormalizeDataRootPath')
+    expect(locationFunction).not.toContain('GetFullPathName $NetConsoleDataRootNormalized')
+    const normalizer = script.slice(
+      script.indexOf('Function NetConsoleNormalizeDataRootPath'),
+      script.indexOf('Function NetConsoleDataRootCheckEntries'),
+    )
+    expect(normalizer).toContain("kernel32::GetFullPathNameW")
+    expect(normalizer).toContain('${NSIS_MAX_STRLEN}')
+    expect(normalizer).toContain('NC_PATH_NOT_ABSOLUTE')
+    expect(normalizer).toContain('NC_PATH_INVALID_CHARACTER')
+    expect(normalizer).not.toContain('GetFullPathName $NetConsoleDataRootNormalized')
     expect(script).toContain('GetDriveTypeW accepts a root path such as E:\\, never E:\\NetConsoleData')
     expect(script).toContain('DataRoot selected path: $NetConsoleDataRoot')
     expect(script).toContain('DataRoot normalized path: $NetConsoleDataRootNormalized')
@@ -82,12 +109,23 @@ describe('Electron-only packaging', () => {
     expect(script).toContain('DataRoot existing entry: $NetConsoleDataRootFindName')
     expect(script).toContain('目录包含现有普通文件')
     expect(script).not.toContain('所选目录非空且不是已识别的 NetConsole 数据根')
+    expect(script).toContain('!macro customHeader')
+    expect(script).toContain('VIAddVersionKey /LANG=1033 "InstallerGitCommit"')
+    expect(script).toContain('VIAddVersionKey /LANG=1033 "InstallerBuildId"')
+    expect(script).toContain('VIAddVersionKey /LANG=1033 "InstallerPolicySHA256"')
+    expect(script).toContain('netconsole-installer-build.json')
+    expect(script).toContain('netconsole-installer-data-root.nsh')
+    expect(script).toContain('安装器：v${NETCONSOLE_INSTALLER_APP_VERSION}')
     expect(script).toContain('WriteRegStr HKLM "Software\\NetConsole" "DataRoot"')
     expect(script).not.toContain('DeleteRegKey HKLM "Software\\NetConsole"')
   })
 
   it('probes rename support with a unique file inside the selected data root', () => {
     const script = readFileSync(resolve(appRoot, 'build', 'installer-data-root.nsh'), 'utf8')
+    const probeFunction = script.slice(
+      script.indexOf('Function NetConsoleRunDataRootProbe'),
+      script.indexOf('Function NetConsoleDataRootPageLeave'),
+    )
     const closeIndex = script.indexOf('FileClose $0')
     const renameIndex = script.indexOf('MoveFileExW(w "$NetConsoleDataRootProbeSource", w "$NetConsoleDataRootProbeTarget"')
 
@@ -100,7 +138,8 @@ describe('Electron-only packaging', () => {
     expect(renameIndex).toBeGreaterThan(closeIndex)
     expect(script).toContain('FileRead $0 $NetConsoleDataRootProbeActual')
     expect(script).toContain('Delete "$NetConsoleDataRootProbeTarget"')
-    expect(script).toContain('Windows 错误码：$NetConsoleDataRootProbeErrorCode')
+    expect(script).toContain('错误来源：$NetConsoleDataRootProbeErrorSource')
+    expect(script).toContain('错误码：$NetConsoleDataRootProbeErrorCode')
     expect(script).toContain('目录不可写（访问被拒绝）')
     expect(script).toContain('临时探测文件正在被其他程序占用')
     expect(script).toContain('文件系统不支持同目录文件重命名')
@@ -110,8 +149,8 @@ describe('Electron-only packaging', () => {
     expect(script).not.toContain('Delete "$NetConsoleDataRoot\\.netconsole-installer-rename-test.tmp"')
     expect(script).not.toContain('Rename "$NetConsoleDataRoot"')
     expect(script).not.toContain('MoveFileExW(w "$NetConsoleDataRoot"')
-    expect(script).not.toContain('$TEMP')
-    expect(script).not.toContain('$PLUGINSDIR')
+    expect(probeFunction).not.toContain('$TEMP')
+    expect(probeFunction).not.toContain('$PLUGINSDIR')
   })
 
   it('resolves the packaged executable from the Electron Builder contract', () => {
