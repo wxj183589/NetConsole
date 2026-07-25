@@ -191,6 +191,33 @@ def test_replace_lldp_neighbors_preserves_ports_missing_from_partial_collect(tmp
     assert len(repository.list_lldp_history("device-1", "GE1/0/1")) == 1
 
 
+def test_replace_lldp_neighbors_matches_spaced_interface_name(tmp_path):
+    repository = make_repository(tmp_path)
+    repository.replace_lldp_neighbors(
+        "device-1",
+        [
+            {
+                "local_interface": "GigabitEthernet2/0/16",
+                "neighbor_mac": "0000-0000-0001",
+            }
+        ],
+    )
+
+    repository.replace_lldp_neighbors(
+        "device-1",
+        [
+            {
+                "local_interface": "GigabitEthernet 2/0/16",
+                "neighbor_mac": "0000-0000-0016",
+            }
+        ],
+    )
+
+    neighbors = repository.list_lldp_neighbors("device-1")
+    assert len(neighbors) == 1
+    assert neighbors[0]["neighbor_mac"] == "0000-0000-0016"
+
+
 def test_lldp_neighbors_use_logical_local_interface_sort(tmp_path):
     repository = make_repository(tmp_path)
 

@@ -17,6 +17,24 @@ _DISPLAY_PREFIXES = (
     (re.compile(r"^GigabitEthernet\s*", re.IGNORECASE), "GE"),
 )
 
+_SPACED_INTERFACE_PATTERN = re.compile(
+    r"^(?P<prefix>[A-Za-z][A-Za-z-]*)\s+(?P<suffix>\d+(?:[/.:]\d+)*)$"
+)
+_SPACED_PREFIX_REPLACEMENTS = {
+    "ten-gigabitethernet": "Ten-GigabitEthernet",
+    "tengigabitethernet": "Ten-GigabitEthernet",
+    "xgigabitethernet": "Ten-GigabitEthernet",
+    "ten-ge": "Ten-GigabitEthernet",
+    "ten": "Ten-GigabitEthernet",
+    "xge": "Ten-GigabitEthernet",
+    "gigabitethernet": "GigabitEthernet",
+    "ge": "GigabitEthernet",
+    "bridge-aggregation": "Bridge-Aggregation",
+    "bagg": "Bridge-Aggregation",
+    "vlan-interface": "Vlan-interface",
+    "vlan": "Vlan-interface",
+}
+
 
 def normalize_interface_name(value: object) -> str:
     """Expand abbreviated interface names (GE, XGE, …) to their canonical form.
@@ -33,6 +51,13 @@ def normalize_interface_name(value: object) -> str:
     text = str(value or "").strip().rstrip(":")
     if not text:
         return ""
+    spaced_match = _SPACED_INTERFACE_PATTERN.fullmatch(text)
+    if spaced_match:
+        replacement = _SPACED_PREFIX_REPLACEMENTS.get(
+            spaced_match.group("prefix").casefold()
+        )
+        if replacement:
+            return replacement + spaced_match.group("suffix")
     lower = text.casefold()
     if lower == "null0":
         return "NULL0"
