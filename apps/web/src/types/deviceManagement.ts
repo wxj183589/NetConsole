@@ -1,4 +1,4 @@
-export type DeviceConnectionStatus = 'UNKNOWN' | 'TESTING' | 'REACHABLE' | 'UNREACHABLE' | 'ERROR'
+export type DeviceConnectionStatus = 'UNKNOWN' | 'TESTING' | 'REACHABLE' | 'UNREACHABLE' | 'AUTH_FAILED' | 'ERROR'
 export type DeviceConnectionProtocol = 'SSH' | 'TELNET' | 'SNMP'
 export type DeviceCredentialStatus = 'available' | 'missing' | 'needs_reentry' | 'key_file_missing'
 export type DeviceSecretField =

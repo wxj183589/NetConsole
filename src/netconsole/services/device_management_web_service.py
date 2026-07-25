@@ -2773,6 +2773,13 @@ class DeviceManagementWebService:
         if task.status in ACTIVE_TASK_STATES:
             return "TESTING"
         if task.status is TaskState.COMPLETED:
+            error_code = str(task.result.get("error_code") or "").upper()
+            result_status = str(task.result.get("status") or "").casefold()
+            if error_code in {"AUTHENTICATION_FAILED", "TELNET_LOGIN_FAILED"} or result_status in {
+                "auth_failed",
+                "authentication_failed",
+            }:
+                return "AUTH_FAILED"
             return "REACHABLE" if task.result.get("success") is True else "UNREACHABLE"
         return "ERROR"
 
@@ -3044,15 +3051,25 @@ def run_device_connection_test(context: JobContext) -> dict[str, object]:
             tested_at=datetime.now(UTC).isoformat(),
         )
         context.check_cancelled()
-        terminal_stage = "succeeded" if bool(payload["success"]) else "failed"
+        expected_failure = _is_expected_connection_failure(payload, failure_category)
+        terminal_stage = (
+            "succeeded"
+            if bool(payload["success"])
+            else "completed"
+            if expected_failure
+            else "failed"
+        )
         context.progress(terminal_stage, 7, 7, safe_message)
+        if expected_failure:
+            payload["terminal_state"] = TaskState.COMPLETED.value
+        elif not bool(payload["success"]):
+            payload["terminal_state"] = TaskState.FAILED.value
         if not bool(payload["success"]):
             if payload["error_code"] == "AUTHENTICATION_FAILED":
                 app_logger.log_warning(
                     "DEVICE_CONNECTION_AUTH_FAILED",
                     f"device_uuid={device_uuid}; protocol={protocol}",
                 )
-            payload["terminal_state"] = TaskState.FAILED.value
         app_logger.log_info(
             "DEVICE_CONNECTION_COMPLETED",
             f"device_uuid={device_uuid}; protocol={protocol}; success={bool(payload['success'])}",
@@ -3215,12 +3232,14 @@ def _protocol_secret_field(protocol: str) -> str:
 def _connection_failure_category(payload: dict[str, object]) -> str:
     if bool(payload.get("success")):
         return ""
-    method = str(payload.get("method") or "").casefold()
-    if method.startswith("tunnel"):
-        return "jump_host_failed"
     status = str(payload.get("status") or "").casefold()
     error_type = str(payload.get("error_type") or "").casefold()
     message = str(payload.get("message") or "").casefold()
+    if status == "auth_failed":
+        return "authentication_failed"
+    method = str(payload.get("method") or "").casefold()
+    if method.startswith("tunnel"):
+        return "jump_host_failed"
     if "gaierror" in error_type or "name or service not known" in message:
         return "address_resolution_failed"
     if "connectionrefused" in error_type or "connection refused" in message:
@@ -3234,6 +3253,29 @@ def _connection_failure_category(payload: dict[str, object]) -> str:
         "tcp_failed": "tcp_connection_failed",
         "unknown_error": "ssh_connection_failed",
     }.get(status, status or "connection_failed")
+
+
+_EXPECTED_CONNECTION_FAILURE_CATEGORIES = frozenset(
+    {
+        "address_resolution_failed",
+        "connection_refused",
+        "jump_host_failed",
+        "ssh_handshake_failed",
+        "tcp_connection_failed",
+        "tcp_timeout",
+        "authentication_failed",
+    }
+)
+
+
+def _is_expected_connection_failure(
+    payload: dict[str, object], failure_category: str
+) -> bool:
+    """Return whether a failed probe completed normally with a device result."""
+    return (
+        not bool(payload.get("success"))
+        and failure_category in _EXPECTED_CONNECTION_FAILURE_CATEGORIES
+    )
 
 
 def _connection_error_code(payload: dict[str, object]) -> str:

@@ -915,7 +915,7 @@ def test_connection_worker_maps_safe_failure_categories_and_phases(
 
     assert result["success"] is False
     assert result["failure_category"] == expected_category
-    assert result["terminal_state"] == "FAILED"
+    assert result["terminal_state"] == "COMPLETED"
     assert result["elapsed_ms"] == 9
     assert result["tested_at"]
     assert "secret-password" not in json.dumps(result, ensure_ascii=False)
@@ -926,8 +926,91 @@ def test_connection_worker_maps_safe_failure_categories_and_phases(
         "handshaking",
         "authenticating",
         "verifying_session",
-        "failed",
+        "completed",
     ]
+
+
+def test_connection_worker_keeps_unclassified_failures_as_task_errors(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _client, service, _adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+
+    monkeypatch.setattr(
+        "netconsole.services.netmiko_connection.test_device_connection",
+        lambda _device, **_kwargs: SimpleNamespace(
+            success=False,
+            status="unknown_error",
+            message="解析设备响应失败",
+            method="primary_direct",
+            host=mr.primary_address,
+            port=22,
+            elapsed_ms=9,
+            prompt="",
+            error_type="ValueError",
+            suggestion="检查设备响应格式",
+        ),
+    )
+    result = run_device_connection_test(
+        JobContext(
+            "job-parse-error",
+            DEVICE_CONNECTION_TEST_TASK_TYPE,
+            {"site_name": "demo", "device_uuid": mr.device_uuid, "protocol": "SSH"},
+            None,
+            lambda: False,
+            service.paths,
+        )
+    )
+
+    assert result["failure_category"] == "ssh_connection_failed"
+    assert result["terminal_state"] == "FAILED"
+
+
+def test_connection_status_distinguishes_probe_result_from_task_failure(
+    tmp_path: Path,
+) -> None:
+    client, service, _adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+    repository = service.task_service.repository("demo")
+
+    repository.save(
+        replace(
+            _task("device-test-timeout", str(mr.device_uuid), success=False),
+            result={
+                "device_uuid": str(mr.device_uuid),
+                "protocol": "SSH",
+                "success": False,
+                "status": "timeout",
+                "error_code": "CONNECTION_TIMEOUT",
+            },
+        )
+    )
+    assert client.get("/api/device-management/devices").json()["items"][0]["connection_status"] == "UNREACHABLE"
+
+    repository.save(
+        replace(
+            _task("device-test-auth", str(mr.device_uuid), success=False),
+            result={
+                "device_uuid": str(mr.device_uuid),
+                "protocol": "SSH",
+                "success": False,
+                "status": "auth_failed",
+                "error_code": "AUTHENTICATION_FAILED",
+            },
+        )
+    )
+    auth_response = client.get(
+        "/api/device-management/devices",
+        params={"connection_status": "AUTH_FAILED"},
+    )
+    assert auth_response.status_code == 200
+    assert auth_response.json()["items"][0]["connection_status"] == "AUTH_FAILED"
+
+    failed = replace(
+        _task("device-test-worker-failed", str(mr.device_uuid), success=False),
+        status=TaskState.FAILED,
+        result={},
+    )
+    repository.save(failed)
+    assert client.get("/api/device-management/devices").json()["items"][0]["connection_status"] == "ERROR"
 
 
 def test_orphaned_form_connection_test_fails_closed_after_ephemeral_credential_loss(

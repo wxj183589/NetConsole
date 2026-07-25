@@ -93,7 +93,7 @@ def list_devices(
     ungrouped: bool = False,
     device_type: str = Query(default="", max_length=40),
     vendor: str = Query(default="", max_length=40),
-    connection_status: str = Query(default="", pattern="^(|UNKNOWN|TESTING|REACHABLE|UNREACHABLE|ERROR)$"),
+    connection_status: str = Query(default="", pattern="^(|UNKNOWN|TESTING|REACHABLE|UNREACHABLE|AUTH_FAILED|ERROR)$"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     sort_by: str = Query(default="name", pattern="^(name|system_name|primary_address|station|device_type|updated_at|status)$"),

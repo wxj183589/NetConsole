@@ -728,6 +728,13 @@ class DeviceDetailQueryService:
         if test.status in _ACTIVE_STATES:
             return "TESTING"
         if test.status is TaskState.COMPLETED:
+            error_code = str(test.result.get("error_code") or "").upper()
+            result_status = str(test.result.get("status") or "").casefold()
+            if error_code in {"AUTHENTICATION_FAILED", "TELNET_LOGIN_FAILED"} or result_status in {
+                "auth_failed",
+                "authentication_failed",
+            }:
+                return "AUTH_FAILED"
             return "REACHABLE" if test.result.get("success") is True else "UNREACHABLE"
         return "ERROR"
 

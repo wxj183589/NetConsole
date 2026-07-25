@@ -1268,12 +1268,12 @@ async function copyText(value: string): Promise<void> {
 function statusType(status: DeviceConnectionStatus): 'success' | 'warning' | 'danger' | 'info' {
   if (status === 'REACHABLE') return 'success'
   if (status === 'TESTING') return 'warning'
-  if (['UNREACHABLE', 'ERROR'].includes(status)) return 'danger'
+  if (['UNREACHABLE', 'AUTH_FAILED', 'ERROR'].includes(status)) return 'danger'
   return 'info'
 }
 
 function statusLabel(status: DeviceConnectionStatus): string {
-  return { UNKNOWN: '未测试', TESTING: '测试中', REACHABLE: '可达', UNREACHABLE: '不可达', ERROR: '任务异常' }[status]
+  return { UNKNOWN: '未测试', TESTING: '测试中', REACHABLE: '可达', UNREACHABLE: '不可达', AUTH_FAILED: '认证失败', ERROR: '任务异常' }[status]
 }
 
 function errorMessage(cause: unknown, fallback: string): string {
@@ -1303,7 +1303,7 @@ function errorMessage(cause: unknown, fallback: string): string {
       <el-select v-model="filters.connection_status" clearable placeholder="全部状态" @change="loadDevices(true)">
         <el-option label="未测试" value="UNKNOWN" /><el-option label="测试中" value="TESTING" />
         <el-option label="可达" value="REACHABLE" /><el-option label="不可达" value="UNREACHABLE" />
-        <el-option label="任务异常" value="ERROR" />
+        <el-option label="认证失败" value="AUTH_FAILED" /><el-option label="任务异常" value="ERROR" />
       </el-select>
       <el-select v-model="filters.sort_by" @change="loadDevices(true)">
         <el-option label="按名称" value="name" /><el-option label="按地址" value="primary_address" />
@@ -1338,7 +1338,7 @@ function errorMessage(cause: unknown, fallback: string): string {
     </div>
 
     <el-alert
-      :title="`设备任务 · 运行中 ${activeDeviceTaskCount} 项 / 失败 ${failedDeviceTaskCount} 项`"
+      :title="`设备任务 · 运行中 ${activeDeviceTaskCount} 项 / 失败任务 ${failedDeviceTaskCount} 项`"
       :description="latestDeviceTask ? `${latestDeviceTask.name || latestDeviceTask.type} · ${latestDeviceTask.status} · ${latestDeviceTask.message || latestDeviceTask.id}` : '任务状态由统一任务中心恢复'"
       type="info"
       :closable="false"
@@ -1370,7 +1370,7 @@ function errorMessage(cause: unknown, fallback: string): string {
         >
           <template #cell-connection_status="{ row }"><el-tag :type="statusType(row.connection_status)">{{ statusLabel(row.connection_status) }}</el-tag></template>
           <template #cell-credential_status="{ row }">
-            <el-tooltip :content="row.credential_message || '凭据可用'">
+            <el-tooltip :content="row.credential_message || '凭据字段已配置，不代表已成功登录'">
               <el-tag :type="row.credential_status === 'available' ? 'success' : row.credential_status === 'needs_reentry' ? 'warning' : 'danger'">
                 {{ row.credential_status === 'available' ? '可用' : row.credential_status === 'needs_reentry' ? '需重新录入' : '缺失' }}
               </el-tag>

@@ -73,3 +73,16 @@ LLDP 历史数据按公开 DTO 白名单消费，不进入任意原始对象透�
 - [最终迁移矩阵](../../../../../docs/architecture/MIGRATION_MATRIX.md)
 - [历史设备管理兼容入口](../../../../../docs/03-device-management.md)
 - [版本化 Command Profile 清单](../../../../../docs/archive/migrations/electron-only/COMMAND-PROFILE-device-inventory-2026-07-18.md)
+
+## 连接状态语义
+
+设备连接测试的任务终态与设备探测结果分开表达：
+
+- `REACHABLE`：探测任务已完成且连接成功。
+- `UNREACHABLE`：探测任务已完成，但目标超时、无路由、拒绝连接或 SSH 握手无响应。
+- `AUTH_FAILED`：探测任务已完成，设备可达但 SSH/Telnet/SNMP 认证失败。
+- `ERROR`：任务未能正常完成，例如启动、参数校验、Worker、命令或结果解析异常。
+- `TESTING` / `UNKNOWN`：任务仍在执行 / 尚未执行。
+
+任务摘要中的失败数字表示失败任务数，不代表失败设备数；同一设备的重复任务会分别计数。
+凭据状态“可用”只表示所需字段已配置并通过本地校验，不代表设备登录已经成功；登录结果以连接测试状态为准。

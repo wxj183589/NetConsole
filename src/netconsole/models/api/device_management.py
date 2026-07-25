@@ -7,7 +7,14 @@ from pydantic import Field, SecretStr
 from netconsole.models.api.common import ApiModel
 
 
-DeviceConnectionStatus = Literal["UNKNOWN", "TESTING", "REACHABLE", "UNREACHABLE", "ERROR"]
+DeviceConnectionStatus = Literal[
+    "UNKNOWN",
+    "TESTING",
+    "REACHABLE",
+    "UNREACHABLE",
+    "AUTH_FAILED",
+    "ERROR",
+]
 DeviceConnectionProtocol = Literal["SSH", "TELNET", "SNMP"]
 DeviceSecretField = Literal[
     "ssh_password",
