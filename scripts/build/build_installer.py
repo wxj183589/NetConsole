@@ -22,7 +22,7 @@ INSTALLER_IDENTITY_PATH = INSTALLER_BUILD_ROOT / "installer-build-identity.nsh"
 INSTALLER_BUILD_MANIFEST_PATH = INSTALLER_BUILD_ROOT / "installer-build.json"
 INSTALLER_POLICY_SOURCE = DESKTOP_ROOT / "build" / "installer-data-root.nsh"
 
-POLICY_VERSION = "allow-nonconflicting-files-v2"
+POLICY_VERSION = "allow-nonconflicting-files-v3"
 REQUIRED_INSTALLER_TEXT = (
     "目录包含现有普通文件：安装器将保留这些文件；"
     "仅在 NetConsole 必需路径发生真实冲突时停止。"
@@ -295,6 +295,10 @@ def validate_embedded_policy_source(source: str) -> dict[str, Any]:
     found = [text for text in FORBIDDEN_INSTALLER_TEXTS if text in source]
     if found:
         raise InstallerBuildError(f"安装器数据根脚本仍包含旧阻止文案：{found[0]}")
+    if "kernel32::GetFullPathNameW" not in source:
+        raise InstallerBuildError("安装器数据根脚本未使用 Win32 GetFullPathNameW")
+    if "GetFullPathName $NetConsoleDataRootNormalized" in source:
+        raise InstallerBuildError("安装器数据根脚本仍使用 NSIS 内置 GetFullPathName")
     return {
         "required_policy_text_present": True,
         "forbidden_policy_texts_present": found,

@@ -4,7 +4,7 @@ NetConsole v1.4.3 的正式桌面产品只有 Electron + Vue + Python Backend。
 
 安装包升级和卸载不得删除 Electron `userData/bootstrap.json` 或用户选择的数据根。electron-builder 的既有 NSIS 安装器必须分别显示程序安装目录与数据存放目录；数据根在完成路径、磁盘、可写/重命名、SQLite 锁与空间校验后，由打包 Backend 在空根或含无冲突普通文件的目录中原子初始化标准结构与 `storage-manifest.json`，或验证已有 manifest 兼容性，最后才写入 `HKLM\Software\NetConsole\DataRoot`。初始化/兼容性校验失败不得发布指针，也不得覆盖已有 manifest 或普通文件。发布 smoke 在唯一 `D:\NetConsoleTestData\<run-id>` 中以 `RuntimeMode.TEST` 运行并自动清理，绝不读取机器级指针或真实数据根；同时确认仓库根没有生成 `data/` 或新的 `.local/` 运行数据。
 
-NSIS 必须显式启用 Unicode 安装器，并先在零写入状态下识别候选目录和实际条目，再执行可写/重命名预检；探测成功后禁止重新使用普通目录非空规则。NSIS 预检和安装后的 Backend 复验必须使用候选数据根内部的唯一临时文件，完成 flush/close、同目录文件重命名、内容回读和清理。禁止固定源/目标文件名、目录级 Rename、从安装器临时目录跨卷移动或使用现有业务文件作为探测对象。失败日志只记录步骤和 Win32 错误码，不写用户配置内容；测试修复包使用独立 artifact 名称，不能覆盖同版本既有正式安装包。
+NSIS 必须显式启用 Unicode 安装器，并先在零写入状态下识别候选目录和实际条目，再执行可写/重命名预检；探测成功后禁止重新使用普通目录非空规则。待创建路径的语法规范化必须调用 Win32 `GetFullPathNameW`，不得使用会要求路径存在的 NSIS 内置 `GetFullPathName`，且规范化阶段不得创建目录。NSIS 预检和安装后的 Backend 复验必须使用候选数据根内部的唯一临时文件，完成 flush/close、同目录文件重命名、内容回读和清理。禁止固定源/目标文件名、目录级 Rename、从安装器临时目录跨卷移动或使用现有业务文件作为探测对象。失败日志只记录步骤、错误来源和对应 Win32 或内部错误码，不写用户配置内容；测试修复包使用独立 artifact 名称，不能覆盖同版本既有正式安装包。
 
 正式 NSIS 构建只能从已提交、工作区 clean 且 `HEAD` 已推送到当前 upstream 的状态开始。`pnpm package` 会清理白名单内的 `dist/electron/`、`dist/_build/` 和 `apps/desktop_electron/dist/`，为 electron-builder 分配本轮独立临时目录，并生成 `NetConsole-<version>-<git-short>-x64-setup.exe`；固定名称 `NetConsole-<version>-x64-setup.exe` 或同名唯一制品在构建前存在时直接失败，避免覆盖旧包后仅按修改时间误判。
 

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -10,7 +13,9 @@ from scripts.build import build_installer
 
 def test_policy_source_requires_new_text_and_rejects_old_text() -> None:
     result = build_installer.validate_embedded_policy_source(
-        f"prefix {build_installer.REQUIRED_INSTALLER_TEXT} suffix"
+        "prefix "
+        f"{build_installer.REQUIRED_INSTALLER_TEXT} "
+        "kernel32::GetFullPathNameW suffix"
     )
 
     assert result == {
@@ -21,6 +26,7 @@ def test_policy_source_requires_new_text_and_rejects_old_text() -> None:
     with pytest.raises(build_installer.InstallerBuildError, match="旧阻止文案"):
         build_installer.validate_embedded_policy_source(
             build_installer.REQUIRED_INSTALLER_TEXT
+            + " kernel32::GetFullPathNameW "
             + build_installer.FORBIDDEN_INSTALLER_TEXTS[0]
         )
 
@@ -31,7 +37,10 @@ def test_prepare_identity_uses_unique_commit_artifact_and_source_hash(
     desktop = tmp_path / "apps" / "desktop_electron"
     policy = desktop / "build" / "installer-data-root.nsh"
     policy.parent.mkdir(parents=True)
-    policy.write_text(build_installer.REQUIRED_INSTALLER_TEXT, encoding="utf-8")
+    policy.write_text(
+        build_installer.REQUIRED_INSTALLER_TEXT + "\nkernel32::GetFullPathNameW\n",
+        encoding="utf-8",
+    )
     (desktop / "package.json").write_text(
         json.dumps({"version": "1.4.3"}), encoding="utf-8"
     )
@@ -72,3 +81,164 @@ def test_generated_tree_cleanup_rejects_paths_outside_whitelist(tmp_path: Path) 
 
     with pytest.raises(build_installer.InstallerBuildError, match="非白名单"):
         build_installer._remove_generated_tree(tmp_path / "other", allowed=allowed)
+
+
+def test_nsis_location_validation_accepts_missing_paths_without_creating_them(
+    tmp_path: Path,
+) -> None:
+    if os.name != "nt" or not Path("D:/").is_dir():
+        pytest.skip("需要 Windows D: 固定磁盘执行 NSIS 规范化行为测试")
+
+    makensis, plugin_dir = _find_nsis_runtime()
+    target_parent = Path("D:/NetConsoleTestData") / f"nsis-normalize-{uuid4().hex}"
+    missing = target_parent / "missing"
+    chinese_missing = target_parent / "网络设备采集数据"
+    trailing_missing = f"{missing}\\"
+    invalid = target_parent / "bad|name"
+    system_drive_missing = (
+        Path("C:/NetConsoleTestData") / f"nsis-normalize-{uuid4().hex}"
+    )
+    for target in (
+        missing,
+        chinese_missing,
+        Path(trailing_missing),
+        invalid,
+        system_drive_missing,
+    ):
+        assert not target.exists()
+
+    script = tmp_path / "normalization-test.nsi"
+    executable = tmp_path / "normalization-test.exe"
+    result_path = tmp_path / "normalization-results.txt"
+    normalizer = _extract_nsis_function("NetConsoleNormalizeDataRootPath")
+    validator = _extract_nsis_function("NetConsoleValidateDataRootLocation")
+    script.write_text(
+        rf'''Unicode true
+RequestExecutionLevel user
+OutFile "{executable}"
+SilentInstall silent
+!addplugindir "{plugin_dir}"
+!include "LogicLib.nsh"
+Var NetConsoleDataRoot
+Var NetConsoleDataRootProbeResult
+Var NetConsoleDataRootProbeErrorCode
+Var NetConsoleDataRootProbeErrorSource
+Var NetConsoleDataRootNormalized
+Var NetConsoleDataRootDriveRoot
+Var NetConsoleDataRootDriveType
+Var NetConsoleDataRootExists
+
+{normalizer}
+
+{validator}
+
+Function .onInit
+  FileOpen $9 "{result_path}" w
+  StrCpy $NetConsoleDataRoot "{missing}"
+  Call NetConsoleValidateDataRootLocation
+  FileWrite $9 "missing|$NetConsoleDataRootProbeResult|$NetConsoleDataRootProbeErrorCode|$NetConsoleDataRootProbeErrorSource|$NetConsoleDataRootNormalized|$NetConsoleDataRootExists$\r$\n"
+  StrCpy $NetConsoleDataRoot "{chinese_missing}"
+  Call NetConsoleValidateDataRootLocation
+  FileWrite $9 "chinese|$NetConsoleDataRootProbeResult|$NetConsoleDataRootProbeErrorCode|$NetConsoleDataRootProbeErrorSource|$NetConsoleDataRootNormalized|$NetConsoleDataRootExists$\r$\n"
+  StrCpy $NetConsoleDataRoot "{trailing_missing}"
+  Call NetConsoleValidateDataRootLocation
+  FileWrite $9 "trailing|$NetConsoleDataRootProbeResult|$NetConsoleDataRootProbeErrorCode|$NetConsoleDataRootProbeErrorSource|$NetConsoleDataRootNormalized|$NetConsoleDataRootExists$\r$\n"
+  StrCpy $NetConsoleDataRoot "{invalid}"
+  Call NetConsoleValidateDataRootLocation
+  FileWrite $9 "invalid|$NetConsoleDataRootProbeResult|$NetConsoleDataRootProbeErrorCode|$NetConsoleDataRootProbeErrorSource|$NetConsoleDataRootNormalized|$NetConsoleDataRootExists$\r$\n"
+  StrCpy $NetConsoleDataRoot "{system_drive_missing}"
+  Call NetConsoleValidateDataRootLocation
+  FileWrite $9 "system|$NetConsoleDataRootProbeResult|$NetConsoleDataRootProbeErrorCode|$NetConsoleDataRootProbeErrorSource|$NetConsoleDataRootNormalized|$NetConsoleDataRootExists$\r$\n"
+  FileClose $9
+  SetErrorLevel 0
+  Quit
+FunctionEnd
+
+Section
+SectionEnd
+''',
+        encoding="utf-8-sig",
+    )
+
+    compilation = subprocess.run(
+        [str(makensis), "/V2", str(script)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+    assert compilation.returncode == 0, compilation.stdout + compilation.stderr
+    execution = subprocess.run(
+        [str(executable), "/S"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+    assert execution.returncode == 0, execution.stdout + execution.stderr
+
+    records = {
+        values[0]: values[1:]
+        for values in (
+            line.split("|")
+            for line in result_path.read_text(encoding="gb18030").splitlines()
+        )
+    }
+    for label in ("missing", "chinese", "trailing"):
+        result, error, source, normalized, exists = records[label]
+        assert result == "ok"
+        assert error == "0"
+        assert source == "无"
+        assert normalized.rstrip("\\")
+        assert exists == "0"
+    assert records["missing"][3].rstrip("\\") == str(missing)
+    assert records["chinese"][3].rstrip("\\") == str(chinese_missing)
+    assert records["trailing"][3].rstrip("\\") == str(missing)
+    assert records["invalid"][:3] == [
+        "数据目录包含非法路径字符",
+        "NC_PATH_INVALID_CHARACTER",
+        "NSIS 参数",
+    ]
+    assert records["system"][:3] == [
+        "当前配置禁止将业务数据存放在系统盘",
+        "NC_PATH_SYSTEM_DRIVE",
+        "NSIS 参数",
+    ]
+    for target in (
+        missing,
+        chinese_missing,
+        Path(trailing_missing),
+        invalid,
+        system_drive_missing,
+    ):
+        assert not target.exists()
+
+
+def _find_nsis_runtime() -> tuple[Path, Path]:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        pytest.skip("未配置 LOCALAPPDATA，无法执行 NSIS 规范化行为测试")
+    cache_root = Path(local_app_data) / "electron-builder" / "Cache"
+    compilers = sorted(cache_root.glob("nsis-*/*/Bin/makensis.exe"))
+    plugins = sorted(
+        (
+            *cache_root.glob("nsis-*/*/Plugins/x86-unicode/System.dll"),
+            *cache_root.glob("nsis-resources-*/*/plugins/x86-unicode/System.dll"),
+        )
+    )
+    if not compilers or not plugins:
+        pytest.skip("缺少 electron-builder NSIS 编译器或 System Unicode 插件")
+    return compilers[-1], plugins[-1].parent
+
+
+def _extract_nsis_function(name: str) -> str:
+    source = (
+        build_installer.DESKTOP_ROOT / "build" / "installer-data-root.nsh"
+    ).read_text(encoding="utf-8")
+    start = source.index(f"Function {name}\n")
+    end = source.index("\nFunctionEnd", start) + len("\nFunctionEnd")
+    return source[start:end]

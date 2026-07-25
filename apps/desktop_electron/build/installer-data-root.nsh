@@ -26,6 +26,7 @@ Var NetConsoleDataRootProbeExpected
 Var NetConsoleDataRootProbeActual
 Var NetConsoleDataRootProbeResult
 Var NetConsoleDataRootProbeErrorCode
+Var NetConsoleDataRootProbeErrorSource
 Var NetConsoleDataRootProbePid
 Var NetConsoleDataRootProbeTick
 Var NetConsoleDataRootFindHandle
@@ -66,8 +67,8 @@ Var NetConsoleDataRootExists
 !macro customInstall
   Call NetConsoleValidateDataRootLocation
   ${If} $NetConsoleDataRootProbeResult != "ok"
-    DetailPrint "DataRoot location validation failed: step=$NetConsoleDataRootProbeResult win32_error=$NetConsoleDataRootProbeErrorCode"
-    Abort "数据目录位置校验失败：$NetConsoleDataRootProbeResult（Windows 错误码 $NetConsoleDataRootProbeErrorCode）。请选择非系统盘上的本地固定磁盘目录。"
+    DetailPrint "DataRoot location validation failed: step=$NetConsoleDataRootProbeResult error_source=$NetConsoleDataRootProbeErrorSource error_code=$NetConsoleDataRootProbeErrorCode"
+    Abort "数据目录位置校验失败：$NetConsoleDataRootProbeResult（错误来源：$NetConsoleDataRootProbeErrorSource；错误码：$NetConsoleDataRootProbeErrorCode）。请选择非系统盘上的本地固定磁盘目录。"
   ${EndIf}
   ; A relocation is never a pointer-only update.  The packaged helper stages,
   ; verifies SQLite files and publishes the new root before this registry value
@@ -83,15 +84,15 @@ Var NetConsoleDataRootExists
   ${EndIf}
   Call NetConsoleRunDataRootProbe
   ${If} $NetConsoleDataRootProbeResult != "ok"
-    DetailPrint "DataRoot probe failed: step=$NetConsoleDataRootProbeResult win32_error=$NetConsoleDataRootProbeErrorCode"
-    Abort "数据目录校验失败：$NetConsoleDataRootProbeResult（Windows 错误码 $NetConsoleDataRootProbeErrorCode）。请关闭 NetConsole、Agent 和 Backend 后重试；不要删除已有数据。"
+    DetailPrint "DataRoot probe failed: step=$NetConsoleDataRootProbeResult error_source=$NetConsoleDataRootProbeErrorSource error_code=$NetConsoleDataRootProbeErrorCode"
+    Abort "数据目录校验失败：$NetConsoleDataRootProbeResult（错误来源：$NetConsoleDataRootProbeErrorSource；错误码：$NetConsoleDataRootProbeErrorCode）。请关闭 NetConsole、Agent 和 Backend 后重试；不要删除已有数据。"
   ${EndIf}
   ; This command validates the selected root and creates/checks the storage
   ; manifest before the registry pointer is published. First launch therefore
   ; never owns data-root initialization.
   ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --installation-root "$INSTDIR"' $0
   ${If} $0 != 0
-    Abort "数据目录初始化或兼容性校验失败。请检查安装日志；不要删除已有数据。"
+    Abort "Backend 数据根初始化或兼容性校验失败（退出代码 $0）。请检查安装日志；不要删除已有数据。"
   ${EndIf}
   WriteRegStr HKLM "Software\NetConsole" "DataRoot" "$NetConsoleDataRoot"
 !macroend
@@ -142,7 +143,7 @@ Function NetConsoleRefreshDataRootStatus
   ${EndIf}
   Call NetConsoleValidateDataRootLocation
   ${If} $NetConsoleDataRootProbeResult != "ok"
-    ${NSD_SetText} $NetConsoleDataRootStatus "$NetConsoleDataRootProbeResult（Windows 错误码 $NetConsoleDataRootProbeErrorCode）"
+    ${NSD_SetText} $NetConsoleDataRootStatus "$NetConsoleDataRootProbeResult（$NetConsoleDataRootProbeErrorSource 错误码 $NetConsoleDataRootProbeErrorCode）"
     Return
   ${EndIf}
   IfFileExists "$NetConsoleDataRoot\config\storage-manifest.json" 0 +3
@@ -163,31 +164,42 @@ FunctionEnd
 Function NetConsoleValidateDataRootLocation
   StrCpy $NetConsoleDataRootProbeResult "ok"
   StrCpy $NetConsoleDataRootProbeErrorCode "0"
+  StrCpy $NetConsoleDataRootProbeErrorSource "NSIS 参数"
   StrCpy $NetConsoleDataRootNormalized ""
   StrCpy $NetConsoleDataRootDriveRoot ""
   StrCpy $NetConsoleDataRootDriveType "0"
   StrCpy $NetConsoleDataRootExists "0"
   DetailPrint "DataRoot selected path: $NetConsoleDataRoot"
-  StrCmp $NetConsoleDataRoot "" 0 +3
+  ${If} $NetConsoleDataRoot == ""
     StrCpy $NetConsoleDataRootProbeResult "尚未选择数据目录"
+    StrCpy $NetConsoleDataRootProbeErrorCode "NC_PATH_EMPTY"
     Return
-  ClearErrors
-  GetFullPathName $NetConsoleDataRootNormalized "$NetConsoleDataRoot"
-  IfErrors NetConsoleDataRootLocationNormalizeFailed
+  ${EndIf}
+  Call NetConsoleNormalizeDataRootPath
+  ${If} $NetConsoleDataRootProbeResult != "ok"
+    Return
+  ${EndIf}
   StrCpy $NetConsoleDataRoot "$NetConsoleDataRootNormalized"
   DetailPrint "DataRoot normalized path: $NetConsoleDataRootNormalized"
 
   StrCpy $0 "$NetConsoleDataRoot" 2
-  StrCmp $0 "\\\\" 0 +3
+  ${If} $0 == "\\\\"
     StrCpy $NetConsoleDataRootProbeResult "当前安装仅支持本地固定磁盘，不支持网络共享路径"
+    StrCpy $NetConsoleDataRootProbeErrorCode "NC_PATH_NETWORK_SHARE"
+    StrCpy $NetConsoleDataRootProbeErrorSource "NSIS 参数"
     Return
+  ${EndIf}
   ReadEnvStr $0 "SystemDrive"
-  StrCmp $0 "" 0 +2
+  ${If} $0 == ""
     StrCpy $0 "C:"
+  ${EndIf}
   StrCpy $1 "$NetConsoleDataRoot" 2
-  StrCmp $1 $0 0 +3
+  ${If} $1 == $0
     StrCpy $NetConsoleDataRootProbeResult "当前配置禁止将业务数据存放在系统盘"
+    StrCpy $NetConsoleDataRootProbeErrorCode "NC_PATH_SYSTEM_DRIVE"
+    StrCpy $NetConsoleDataRootProbeErrorSource "NSIS 参数"
     Return
+  ${EndIf}
 
   ; GetDriveTypeW accepts a root path such as E:\, never E:\NetConsoleData.
   StrCpy $1 "$NetConsoleDataRoot" 3
@@ -196,21 +208,80 @@ Function NetConsoleValidateDataRootLocation
   StrCpy $NetConsoleDataRootDriveType "$2"
   DetailPrint "DataRoot drive root: $NetConsoleDataRootDriveRoot"
   DetailPrint "DataRoot GetDriveTypeW: $NetConsoleDataRootDriveType"
-  StrCmp $NetConsoleDataRootDriveType 3 0 +2
-    Goto NetConsoleDataRootLocationExists
-  StrCpy $NetConsoleDataRootProbeResult "数据目录必须位于本地固定磁盘，不能使用 U 盘、光驱或临时映射盘"
-  Return
-
-  NetConsoleDataRootLocationExists:
+  ${If} $NetConsoleDataRootDriveType != 3
+    StrCpy $NetConsoleDataRootProbeResult "数据目录必须位于本地固定磁盘，不能使用 U 盘、光驱或临时映射盘"
+    StrCpy $NetConsoleDataRootProbeErrorCode "NC_PATH_NOT_FIXED_DRIVE"
+    StrCpy $NetConsoleDataRootProbeErrorSource "NSIS 参数"
+    Return
+  ${EndIf}
   IfFileExists "$NetConsoleDataRoot\." 0 +2
     StrCpy $NetConsoleDataRootExists "1"
   DetailPrint "DataRoot directory exists: $NetConsoleDataRootExists"
   Return
+FunctionEnd
 
-  NetConsoleDataRootLocationNormalizeFailed:
+Function NetConsoleNormalizeDataRootPath
+  StrCpy $NetConsoleDataRootProbeResult "ok"
+  StrCpy $NetConsoleDataRootProbeErrorCode "0"
+  StrCpy $NetConsoleDataRootProbeErrorSource "无"
+  StrCpy $NetConsoleDataRootNormalized ""
+
+  ; Only rooted local drive paths are accepted.  Do not resolve a relative path
+  ; against the installer working directory and accidentally publish that value.
+  StrCpy $0 "$NetConsoleDataRoot" 2 1
+  StrCmp $0 ":\" 0 NetConsoleDataRootPathNotAbsolute
+
+  ; GetFullPathNameW resolves syntax without requiring the target to exist.
+  ; Reject Win32-invalid characters locally because the target may not exist yet.
+  StrLen $0 "$NetConsoleDataRoot"
+  StrCpy $1 "2"
+  NetConsoleDataRootPathCharacterLoop:
+  IntCmp $1 $0 NetConsoleDataRootPathCharacterValid NetConsoleDataRootPathCharacterCheck NetConsoleDataRootPathCharacterValid
+  NetConsoleDataRootPathCharacterCheck:
+  StrCpy $2 "$NetConsoleDataRoot" 1 $1
+  StrCmp $2 "<" NetConsoleDataRootPathInvalidCharacter
+  StrCmp $2 ">" NetConsoleDataRootPathInvalidCharacter
+  StrCmp $2 "$\"" NetConsoleDataRootPathInvalidCharacter
+  StrCmp $2 "|" NetConsoleDataRootPathInvalidCharacter
+  StrCmp $2 "?" NetConsoleDataRootPathInvalidCharacter
+  StrCmp $2 "*" NetConsoleDataRootPathInvalidCharacter
+  StrCmp $2 ":" NetConsoleDataRootPathInvalidCharacter
+  IntOp $1 $1 + 1
+  Goto NetConsoleDataRootPathCharacterLoop
+
+  NetConsoleDataRootPathCharacterValid:
+  StrCpy $0 "$NetConsoleDataRoot"
+  System::Call 'kernel32::GetFullPathNameW(w r0, i ${NSIS_MAX_STRLEN}, w .r1, p 0)i.r2'
+  IntCmp $2 0 NetConsoleDataRootPathWinApiFailed 0 0
+  IntCmp $2 ${NSIS_MAX_STRLEN} NetConsoleDataRootPathTooLong NetConsoleDataRootPathNormalized NetConsoleDataRootPathTooLong
+
+  NetConsoleDataRootPathNormalized:
+  StrCpy $NetConsoleDataRootNormalized "$1"
+  Return
+
+  NetConsoleDataRootPathNotAbsolute:
+  StrCpy $NetConsoleDataRootProbeResult "数据目录必须是绝对本地路径"
+  StrCpy $NetConsoleDataRootProbeErrorCode "NC_PATH_NOT_ABSOLUTE"
+  StrCpy $NetConsoleDataRootProbeErrorSource "NSIS 参数"
+  Return
+
+  NetConsoleDataRootPathInvalidCharacter:
+  StrCpy $NetConsoleDataRootProbeResult "数据目录包含非法路径字符"
+  StrCpy $NetConsoleDataRootProbeErrorCode "NC_PATH_INVALID_CHARACTER"
+  StrCpy $NetConsoleDataRootProbeErrorSource "NSIS 参数"
+  Return
+
+  NetConsoleDataRootPathTooLong:
+  StrCpy $NetConsoleDataRootProbeResult "数据目录路径过长"
+  StrCpy $NetConsoleDataRootProbeErrorCode "NC_PATH_TOO_LONG"
+  StrCpy $NetConsoleDataRootProbeErrorSource "NSIS 参数"
+  Return
+
+  NetConsoleDataRootPathWinApiFailed:
   System::Call 'kernel32::GetLastError()i.r0'
-  StrCpy $NetConsoleDataRootProbeErrorCode "$0"
   StrCpy $NetConsoleDataRootProbeResult "数据目录路径无法规范化"
+  StrCpy $NetConsoleDataRootProbeErrorCode "$0"
+  StrCpy $NetConsoleDataRootProbeErrorSource "Windows API"
 FunctionEnd
 
 Function NetConsoleDataRootCheckEntries
@@ -245,6 +316,7 @@ FunctionEnd
 Function NetConsoleRunDataRootProbe
   StrCpy $NetConsoleDataRootProbeResult "ok"
   StrCpy $NetConsoleDataRootProbeErrorCode "0"
+  StrCpy $NetConsoleDataRootProbeErrorSource "Windows API"
   StrCpy $NetConsoleDataRootProbeExpected "NetConsole-install-probe-v1"
 
   ClearErrors
@@ -354,6 +426,7 @@ Function NetConsoleRunDataRootProbe
 
   NetConsoleDataRootProbeTargetMissing:
   StrCpy $NetConsoleDataRootProbeErrorCode "2"
+  StrCpy $NetConsoleDataRootProbeErrorSource "NSIS 逻辑"
   Delete "$NetConsoleDataRootProbeSource"
   Delete "$NetConsoleDataRootProbeTarget"
   StrCpy $NetConsoleDataRootProbeResult "重命名后的临时文件不存在"
@@ -377,6 +450,7 @@ Function NetConsoleRunDataRootProbe
   NetConsoleDataRootProbeContentMismatch:
   Delete "$NetConsoleDataRootProbeTarget"
   StrCpy $NetConsoleDataRootProbeErrorCode "0"
+  StrCpy $NetConsoleDataRootProbeErrorSource "NSIS 逻辑"
   StrCpy $NetConsoleDataRootProbeResult "重命名后的临时文件内容校验失败"
   Return
 
@@ -390,8 +464,8 @@ Function NetConsoleDataRootPageLeave
   ${NSD_GetText} $NetConsoleDataRootInput $NetConsoleDataRoot
   Call NetConsoleValidateDataRootLocation
   ${If} $NetConsoleDataRootProbeResult != "ok"
-    DetailPrint "DataRoot location validation failed: step=$NetConsoleDataRootProbeResult win32_error=$NetConsoleDataRootProbeErrorCode"
-    MessageBox MB_ICONSTOP "数据目录位置校验失败。$\r$\n失败步骤：$NetConsoleDataRootProbeResult$\r$\nWindows 错误码：$NetConsoleDataRootProbeErrorCode"
+    DetailPrint "DataRoot location validation failed: step=$NetConsoleDataRootProbeResult error_source=$NetConsoleDataRootProbeErrorSource error_code=$NetConsoleDataRootProbeErrorCode"
+    MessageBox MB_ICONSTOP "数据目录位置校验失败。$\r$\n失败步骤：$NetConsoleDataRootProbeResult$\r$\n错误来源：$NetConsoleDataRootProbeErrorSource$\r$\n错误码：$NetConsoleDataRootProbeErrorCode"
     Abort
   ${EndIf}
   ; Enumerate before the capability probe for diagnostics only. Ordinary files
@@ -400,8 +474,8 @@ Function NetConsoleDataRootPageLeave
   Call NetConsoleDataRootCheckEntries
   Call NetConsoleRunDataRootProbe
   ${If} $NetConsoleDataRootProbeResult != "ok"
-    DetailPrint "DataRoot probe failed: step=$NetConsoleDataRootProbeResult win32_error=$NetConsoleDataRootProbeErrorCode"
-    MessageBox MB_ICONSTOP "数据目录校验失败。$\r$\n失败步骤：$NetConsoleDataRootProbeResult$\r$\nWindows 错误码：$NetConsoleDataRootProbeErrorCode$\r$\n$\r$\n请关闭 NetConsole、Agent 和 Backend 后重试，并检查目录权限或文件系统。不要删除已有数据。"
+    DetailPrint "DataRoot probe failed: step=$NetConsoleDataRootProbeResult error_source=$NetConsoleDataRootProbeErrorSource error_code=$NetConsoleDataRootProbeErrorCode"
+    MessageBox MB_ICONSTOP "数据目录校验失败。$\r$\n失败步骤：$NetConsoleDataRootProbeResult$\r$\n错误来源：$NetConsoleDataRootProbeErrorSource$\r$\n错误码：$NetConsoleDataRootProbeErrorCode$\r$\n$\r$\n请关闭 NetConsole、Agent 和 Backend 后重试，并检查目录权限或文件系统。不要删除已有数据。"
     Abort
   ${EndIf}
   ${If} $NetConsoleExistingDataRoot != ""

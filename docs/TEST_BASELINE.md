@@ -44,7 +44,7 @@ Electron 改动还需在 `apps/desktop_electron` 运行 `pnpm test`、`pnpm run 
 
 Windows 图形人工验收必须单独记录在[正式包功能矩阵](PACKAGED_FEATURE_MATRIX.md)：NSIS 安装/卸载、程序目录与数据目录分离、系统盘拒绝、现有根复用、含无冲突普通文件目录复用、必需路径冲突拒绝、升级/修复/迁移和卸载保留数据、全新普通用户、空 AppData、无开发工具、中文路径、跨电脑完整包无需密码恢复凭据、脱敏包凭据重新录入、本机显式查看已保存密码、真实或仿真 H3C SSH、中文任务标题/消息/progress/log/finished。未执行的项目标为 `PENDING`，不得由单元测试或 package smoke 推断为通过。
 
-安装器数据根探测还必须覆盖：目录枚举早于任何写入探测且探测后不再按非空拒绝、Windows 空目录不会被 `*.*` 误判、空根直接使用所选路径且不追加 `NetConsoleData`、注册表发布前生成可解析且根一致的 manifest、损坏 manifest 不覆盖、含普通文件目录保留原文件并成功初始化、六个必需目录路径和 manifest 的真实类型冲突、含 manifest/SQLite/采集文件的既有根、D/E 盘目标、`GetDriveTypeW` 使用 `E:\` 根路径、C 盘安装器临时目录、不可写目录、旧固定探测残留、唯一名称冲突、失败清理、中文路径、尾随反斜杠、取消/失败回滚和重复安装。验证需比较所选目录及既有业务文件在探测和失败前后的存在状态、内容哈希、大小和修改时间，并扫描 `.netconsole-install-probe-*` 残留；禁止用删除、改名或迁移真实数据根换取通过。
+安装器数据根探测还必须覆盖：目录枚举早于任何写入探测且探测后不再按非空拒绝、Windows 空目录不会被 `*.*` 误判、尚不存在的 D/E 盘路径由 `GetFullPathNameW` 规范化但不创建、空根直接使用所选路径且不追加 `NetConsoleData`、注册表发布前生成可解析且根一致的 manifest、损坏 manifest 不覆盖、含普通文件目录保留原文件并成功初始化、六个必需目录路径和 manifest 的真实类型冲突、含 manifest/SQLite/采集文件的既有根、`GetDriveTypeW` 使用 `E:\` 根路径、C 盘安装器临时目录、不可写目录、旧固定探测残留、唯一名称冲突、失败清理、中文路径、尾随反斜杠、非法路径和系统盘拒绝、取消/失败回滚和重复安装。规范化测试必须实际编译并运行 Unicode NSIS，而非只做源码断言。验证需比较所选目录及既有业务文件在探测和失败前后的存在状态、内容哈希、大小和修改时间，并扫描 `.netconsole-install-probe-*` 残留；禁止用删除、改名或迁移真实数据根换取通过。
 
 最终安装器门禁必须直接针对本轮唯一名称的 `setup.exe`，不能只检查源码、`win-unpacked` 或 Backend/Web metadata。自动检查至少验证：构建前固定名和唯一名制品均不存在；最终文件名包含当前 Git short commit；PE Installer 身份与 `HEAD` 一致；外层为 `NSIS-3 Unicode`；从最终 EXE 提取的 installer manifest 与数据根 include 等于本轮输入；允许普通文件的新文案存在，旧“非空且不是已识别数据根 / 请选择空目录 / 不会创建嵌套目录”文案均不存在；Backend/Frontend commit 与 Installer commit 一致且非 dirty；最终 EXE 两次 SHA-256 一致。发布清单中的 `real_windows_install_status` 在真实隔离 Windows 验收前必须保持 `PENDING`。
 
