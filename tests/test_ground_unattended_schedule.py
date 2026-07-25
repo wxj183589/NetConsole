@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import socket
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -71,7 +72,11 @@ def test_supervisor_auto_starts_and_finishes_at_window_boundary(tmp_path) -> Non
     repo = GroundUnattendedRepository(
         paths.ground_unattended_db_path("site-a"), site_id="site-a"
     )
-    repo.save_profile(repo.get_profile().model_copy(update={"enabled": True}))
+    repo.save_profile(
+        repo.get_profile().model_copy(
+            update={"enabled": True, "udp_listen_port": _available_udp_port()}
+        )
+    )
     clock = [datetime.fromisoformat("2026-07-25T07:00:00+08:00")]
     supervisor = GroundUnattendedSupervisor(
         paths,
@@ -96,7 +101,11 @@ def test_manual_stop_does_not_auto_restart_inside_the_same_window(tmp_path) -> N
     repo = GroundUnattendedRepository(
         paths.ground_unattended_db_path("site-a"), site_id="site-a"
     )
-    repo.save_profile(repo.get_profile().model_copy(update={"enabled": True}))
+    repo.save_profile(
+        repo.get_profile().model_copy(
+            update={"enabled": True, "udp_listen_port": _available_udp_port()}
+        )
+    )
     clock = [datetime.fromisoformat("2026-07-25T08:00:00+08:00")]
     supervisor = GroundUnattendedSupervisor(
         paths,
@@ -158,6 +167,12 @@ def test_classification_updates_daily_coverage_without_overwriting_results() -> 
         )
         == "COVERED"
     )
+
+
+def _available_udp_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
 
 
 class _BaseQuery:
