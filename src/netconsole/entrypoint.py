@@ -7,9 +7,7 @@ import faulthandler
 import traceback
 from pathlib import Path
 
-from netconsole.core import app_logger
 from netconsole.core.runtime_environment import app_root, is_packaged_runtime
-from netconsole.core.paths import PathResolver
 
 
 BASE_DIR = app_root()
@@ -21,6 +19,8 @@ MANAGED_BACKEND_STANDALONE_MESSAGE = (
 
 
 def _runtime_log_dir() -> str:
+    from netconsole.core.paths import PathResolver
+
     log_dir = PathResolver().logs_dir
     log_dir.mkdir(parents=True, exist_ok=True)
     return str(log_dir)
@@ -51,6 +51,8 @@ def _write_runtime_smoke_log(context) -> None:
 
 def _reject_managed_backend_standalone_launch() -> int:
     try:
+        from netconsole.core import app_logger
+
         app_logger.log_error("MANAGED_BACKEND_STANDALONE_LAUNCH", MANAGED_BACKEND_STANDALONE_MESSAGE)
     except Exception:
         pass
@@ -142,6 +144,7 @@ def _migrate_data_root_from_installer(arguments: list[str]) -> int:
     values = parser.parse_args(arguments)
     from netconsole.core.backend_instance_lock import BackendInstanceLock
     from netconsole.core.data_root_configuration import validate_installation_data_root
+    from netconsole.core.paths import PathResolver
     from netconsole.services.site_storage import DataRootApplicationService
 
     # The installer owns the pointer update.  This helper only migrates a

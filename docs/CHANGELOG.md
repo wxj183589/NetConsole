@@ -14,6 +14,7 @@
 - Windows 安装器继续使用 electron-builder NSIS，并将“程序安装位置”与“数据存放位置”彻底分离。业务数据目录独立保存局点数据库、MESH/MR 原始日志、采集文件、报告、备份和运行时文件；普通卸载不删除该目录或机器级数据根指针。
 - 安装向导新增“选择 NetConsole 数据存放位置”页面。只允许非系统本地固定磁盘，检查目录可写、原子重命名、SQLite 写锁和至少 10 GB 可用空间；非空普通目录必须改选或创建 `NetConsoleData` 子目录，禁止静默写入 AppData、用户目录、源码目录、安装目录或系统临时目录。
 - 安装、升级、修复统一使用 `HKLM\Software\NetConsole\DataRoot` 指向唯一数据根。开发 Electron、源码 Backend、打包验证和正式安装包共享该根；未配置时停止启动，不再按运行方式创建 Development、仓库或 LocalAppData 数据树。
+- 修复全新安装的数据根校验顺序：安装器 Backend 在机器级指针写入前不再提前初始化运行日志或 `PathResolver`，可先完成候选根校验，再由安装器写入唯一 `DataRoot`；普通源码启动仍保持“未配置即失败”。
 - 更改既有数据根时，安装器调用受管 Backend 在目标同级 staging 中复制和校验 SQLite 后原子发布，再更新机器级指针；旧根保留，不自动删除。迁移后的 storage manifest 会重绑定新根，避免首次启动因旧路径被拒绝。
 - 自动测试必须显式使用 `D:\NetConsoleTestData\<run-id>`，不会读取机器级指针或真实业务根；隔离模式在设置页明确提示，不允许修改正式局点或数据根。
 
