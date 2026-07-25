@@ -106,6 +106,12 @@ Windows 源码开发态、打包态和正式包均使用安装器在 `HKLM\Softw
 
 正式报告写入用户选择的导出路径或业务 `outputs` 目录。原始日志、数据库、会话、备份和正式报告不得静默删除。仓库 `.local` 和根 `data` 若存在，只能作为历史迁移源；活动进程不得读写，迁移核验后应移出仓库归档或删除。迁移和测试残留清理必须使用 `scripts/maintenance/` 的 dry-run/manifest/白名单工具，不得直接递归删除未知内容。
 
+### 历史运行目录隔离
+
+`LocalAppData\NetConsole` 和 `LocalAppData\NetConsole\Development` 不是当前运行目录。它们只能在进程全部退出后作为只读迁移来源；若迁移报告已完成但这些目录仍出现新日志、数据库或 `-wal/-shm`，说明旧启动入口仍在写入，必须先停止并执行增量迁移。增量迁移只允许“缺失项复制 + 冲突保留”，禁止覆盖 `D:\NetConsoleData` 中已有文件或直接删除历史来源。
+
+所有迁移操作都必须留下 manifest，包含来源、目标、文件哈希、SQLite 完整性结果、冲突路径和删除数量；没有 manifest、哈希复核或 SQLite 校验的复制不得视为完成。
+
 ## 7. 测试目录规则
 
 - 单元测试和集成测试放在 `tests/`，测试样本放在 `tests/fixtures/`；不得把测试样本放入生产 `resources`。

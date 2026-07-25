@@ -126,6 +126,19 @@ SNMP 仅作为设备管理的只读连接测试与基础识别适配器存在，
 - schema 严重不匹配需要重建时，先创建可识别备份并由用户选择；会话 parsed 数据库可重建，但 raw 事实来源必须保留。
 - 路径统一通过 `PathResolver`；生产代码和文档不得写开发机绝对路径。自动清理只处理白名单日志、缓存和临时目录。
 
+## 文件与目录归位（强制）
+
+所有新增文件先分类，再落到唯一职责目录；不得因为启动方式、IDE 工作目录或临时排障而创建第二套运行目录。
+
+- 生产、源码开发和打包运行统一使用安装器登记的 `HKLM\Software\NetConsole\DataRoot`，由 `PathResolver` 派生 `sites/`、`runtime/`、`agents/`、`migrations/` 和 `staging/`。未配置数据根必须停止启动，禁止回退到 `LocalAppData`、用户目录、仓库、安装目录、当前工作目录或系统临时目录。
+- `LocalAppData\NetConsole`、`LocalAppData\NetConsole\Development`、仓库根 `data/` 和 `.local/` 只能作为受控迁移的只读来源；活动进程不得写入这些路径。发现它们在迁移完成后仍有新文件或 SQLite WAL/SHM，先停止旧进程并执行增量迁移，不能直接删除。
+- Agent 的真实 `config.json`、`targets.json`、任务、日志和采集包只允许位于 `<data_root>\agents\local\`；`apps/agent/resources/config/` 只保存脱敏模板。配置中的 Token、密码、community 和私钥不得进入仓库、普通日志或迁移报告。
+- 源码树只保存源码、版本化配置、资源、测试样本、文档和维护脚本；数据库、原始回显、抓包、采集会话、报告、缓存、安装包和构建产物不得写回源码目录。测试必须使用显式 `RuntimeMode.TEST` 与 `D:\NetConsoleTestData\<run-id>`。
+- 迁移必须在所有相关进程退出后执行 dry-run；发布前用 SHA-256 和 SQLite `quick_check/integrity_check` 复核，目标已有不同内容时写入 `migrations/conflicts/`，不得覆盖目标。每次 apply 都生成 manifest，源目录在核验和留存策略确定前不得删除。
+- 清理只能处理已白名单的缓存、临时文件和轮转日志，并先解析绝对路径确认位于允许子树；不得对未知目录递归删除，不得把“迁移报告中的可删除”当作单阶段删除授权。
+
+提交前必须检查 `git status`、目标目录是否符合本规则、是否产生未跟踪的运行文件，并在文档/脚本中说明受影响的数据根、迁移 manifest、冲突保留和回滚边界。
+
 ## UI、i18n 与日志规则
 
 - 1920×1080 下核心字段和终态操作不可遮挡；复杂页面使用 scroll area/splitter，收起后必须能恢复。
