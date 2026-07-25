@@ -58,6 +58,7 @@
 | [Electron-only E5 启动性能归档](archive/migrations/electron-only/E5-2026-07-18.md) | Electron/Python/Vue 单调时间线、首屏关键路径和实测对比 | Electron-only 迁移与性能维护 | Electron Main、Backend lifespan、延迟依赖和真实 smoke 日志 | 启动阶段、依赖加载时机或性能基线变化 |
 | [Electron-only E6 数据库调优归档](archive/migrations/electron-only/E6-2026-07-18.md) | SQLite 查询计划、历史索引、旧库兼容和回滚证据 | Repository/数据库与 Electron-only 迁移维护 | `Database` schema、Repository SQL、真实库 Backup 副本和测试 | 主库 schema、索引、迁移或性能证据变化 |
 | [Electron-only E10B 架构 Guard 与整改归档](archive/migrations/electron-only/2026-07-18-E10B-architecture-guards-and-remediation.md) | 九个架构门、精确分类、限时例外、整改与回滚证据 | 架构、迁移与发布负责人 | `scripts/architecture`、`config/architecture`、迁移矩阵与定向测试 | Guard、分类、例外或发布阻塞状态变化 |
+| [历史残留审计（2026-07-25）](archive/migrations/HISTORICAL_RESIDUE_AUDIT_2026-07-25.md) | stash、WIP、snapshot refs 的去重、主线替代关系和弃用结论 | 架构、迁移与安全维护人员 | Git refs、稳定 patch-id、当前代码路径和凭据状态 | 历史引用、凭据轮换或引用清理状态变化 |
 | [配置采集对等矩阵（历史兼容）](development/parity/config-collection.md) | 已冻结的采集、保存、比较和导出规格兼容指针 | 历史维护 | Git 历史与最终迁移矩阵 | 不再作为当前状态源 |
 | [Traffic Web 应用边界](development/api-boundary-wave-1/traffic-web-boundary.md) | Traffic 执行端、查询分页、取消/重试和 Router 展示映射边界 | Traffic Web/API 开发 | `TrafficWebApplicationService`、Traffic Router、组合根 | Traffic Web 用例或 REST/WebSocket 契约变化 |
 | [功能模块](FEATURE_MODULES.md) | 一级模块、子功能和 Feature key | UI/版本配置开发 | `core/feature_registry.py`、主窗口注册 | 页面、Tab、动作或 Feature key 变化 |
