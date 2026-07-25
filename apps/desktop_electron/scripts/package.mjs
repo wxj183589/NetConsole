@@ -20,6 +20,12 @@ env.PYTHONPATH = env.PYTHONPATH ? `${sourceRoot}${delimiter}${env.PYTHONPATH}` :
 
 execFileSync(
   python,
+  ['-m', 'scripts.build.build_installer', '--prepare-identity'],
+  { cwd: projectRoot, env, stdio: 'inherit' },
+)
+
+execFileSync(
+  python,
   [
     '-m',
     'scripts.build.check_runtime_deps',

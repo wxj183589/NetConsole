@@ -20,7 +20,7 @@
     "build:web": "pnpm --dir ../web build",
     "package:prepare": "pnpm run build:main && node scripts/package.mjs",
     "package:dir": "pnpm run package:prepare && electron-builder --dir --win --x64",
-    "package": "pnpm run package:prepare && electron-builder --win nsis --x64",
+    "package": "node scripts/build-installer.mjs",
     "smoke:package": "pnpm run package:dir && node scripts/package-smoke.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run"

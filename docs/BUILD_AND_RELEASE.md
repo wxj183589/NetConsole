@@ -6,6 +6,12 @@ NetConsole v1.4.3 的正式桌面产品只有 Electron + Vue + Python Backend。
 
 NSIS 必须显式启用 Unicode 安装器，并先在零写入状态下识别候选目录和实际条目，再执行可写/重命名预检；探测成功后禁止重新使用普通目录非空规则。NSIS 预检和安装后的 Backend 复验必须使用候选数据根内部的唯一临时文件，完成 flush/close、同目录文件重命名、内容回读和清理。禁止固定源/目标文件名、目录级 Rename、从安装器临时目录跨卷移动或使用现有业务文件作为探测对象。失败日志只记录步骤和 Win32 错误码，不写用户配置内容；测试修复包使用独立 artifact 名称，不能覆盖同版本既有正式安装包。
 
+正式 NSIS 构建只能从已提交、工作区 clean 且 `HEAD` 已推送到当前 upstream 的状态开始。`pnpm package` 会清理白名单内的 `dist/electron/`、`dist/_build/` 和 `apps/desktop_electron/dist/`，为 electron-builder 分配本轮独立临时目录，并生成 `NetConsole-<version>-<git-short>-x64-setup.exe`；固定名称 `NetConsole-<version>-x64-setup.exe` 或同名唯一制品在构建前存在时直接失败，避免覆盖旧包后仅按修改时间误判。
+
+外层 NSIS 必须把 app 版本、完整/短 Git commit、UTC 构建时间、build ID、数据根策略版本及策略源码 SHA-256 写入 PE 版本资源，并在数据根页面显示可核对的短身份。最终 EXE 还必须内嵌本轮 installer manifest 和实际参与编译的数据根 include 源码。post-build Gate 使用支持 NSIS handler 的完整 7-Zip 直接打开最终 `setup.exe`，复核 `NSIS-3 Unicode`、PE 身份、内嵌 manifest/源码哈希、新文案存在、三段旧阻止文案不存在、EXE 晚于策略源码和本轮构建开始时间、两次 SHA-256 一致，以及内层 Backend/Frontend commit 均等于 Installer commit 且 `dirty=false`。构建机可安装完整版 7-Zip，或通过 `NETCONSOLE_7Z` 指向支持 `Nsis` format handler 的 `7z.exe`；electron-builder 缓存中的精简 `7za.exe` 不满足此门禁。
+
+Gate 成功后在安装包旁生成同名 `.exe.release.json`，记录文件名、SHA-256、字节数、Installer/Backend/Frontend commit、build ID、策略源码哈希、新旧文案扫描结果和 `real_windows_install_status`。自动构建只能将真实安装状态写为 `PENDING`；只有在隔离的全新 Windows 机器或 VM 完成不存在目录、空目录、含普通文件目录和合法旧数据根四种 GUI 安装，并核对注册表指针及原文件哈希后，才能在交付记录中改为 `PASS`。
+
 安装包人工验收至少覆盖：程序安装在 C 盘而数据在 D/E 盘、阻止 C 盘数据根、`GetDriveTypeW` 收到 `E:\` 等根路径、Windows 空目录直接作为数据根并生成有效 manifest、合法既有根复用、含无冲突普通文件的目录保留原文件并成功初始化、必需路径真实冲突时原样阻止、损坏 manifest 原样保留并阻止安装、旧固定探测残留不误判、不自动创建嵌套 `NetConsoleData`、安装失败不删除或修改用户所选目录、升级/修复保持旧根、更换根的 staging/SQLite 校验失败回滚，以及普通卸载保留数据和注册表指针。源码 `pnpm dev` 还必须读取同一指针；测试模式不得读取注册表或真实根。Backend 向 Electron 输出的监听、关闭和启动失败握手必须是代码页无关的 ASCII JSON；中文通过 JSON Unicode 转义逐字恢复。
 
 ## 依赖安装
@@ -66,9 +72,10 @@ pnpm install --frozen-lockfile
 pnpm test
 pnpm run typecheck
 pnpm run build
-pnpm run package:dir
-node scripts/package-smoke.mjs
+pnpm package
 ```
+
+上述 `pnpm package` 必须在最终提交推送后执行；它会依次完成 Electron main/preload 与 Web、Backend 冻结、electron-builder NSIS、现有 package smoke 和最终 setup.exe Gate。只需检查 unpacked 目录时仍可使用 `pnpm run package:dir` 后运行 `node scripts/package-smoke.mjs`，但该路径不会生成或验证可发布的 NSIS 安装包，不能作为正式打包结果。
 
 `package.mjs` 只接受项目 `.venv` Python 来生成 Backend，安装包通过 `extraResources` 固定放在 `resources/backend/`，运行时不依赖客户机系统 Python。`package-smoke.mjs` 只按安装包相对路径和精确 basename/目录规则扫描 Qt 残留，阻断 PySide/PyQt、shiboken、QFluentWidgets、SIP、Qt5/6 库、Qt WebEngine 进程、Qt plugin DLL 和 `qt.conf`，不会因为构建机父目录名或普通 `plugins/imageformats` 目录误报。
 

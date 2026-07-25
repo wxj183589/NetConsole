@@ -3,6 +3,16 @@
 
 !include "LogicLib.nsh"
 !include "nsDialogs.nsh"
+!include "${__FILEDIR__}\..\dist\installer-build\installer-build-identity.nsh"
+
+!macro customHeader
+  VIAddVersionKey "InstallerGitCommit" "${NETCONSOLE_INSTALLER_GIT_COMMIT}"
+  VIAddVersionKey "InstallerGitShort" "${NETCONSOLE_INSTALLER_GIT_SHORT}"
+  VIAddVersionKey "InstallerBuildTime" "${NETCONSOLE_INSTALLER_BUILD_TIME}"
+  VIAddVersionKey "InstallerBuildId" "${NETCONSOLE_INSTALLER_BUILD_ID}"
+  VIAddVersionKey "InstallerPolicy" "${NETCONSOLE_INSTALLER_POLICY}"
+  VIAddVersionKey "InstallerPolicySHA256" "${NETCONSOLE_INSTALLER_POLICY_SHA256}"
+!macroend
 
 !ifndef BUILD_UNINSTALLER
 Var NetConsoleDataRoot
@@ -28,6 +38,10 @@ Var NetConsoleDataRootExists
 !endif
 
 !macro customInit
+  DetailPrint "Installer identity: app=${NETCONSOLE_INSTALLER_APP_VERSION} commit=${NETCONSOLE_INSTALLER_GIT_COMMIT} build_time=${NETCONSOLE_INSTALLER_BUILD_TIME} build_id=${NETCONSOLE_INSTALLER_BUILD_ID} policy=${NETCONSOLE_INSTALLER_POLICY}"
+  InitPluginsDir
+  File /oname=$PLUGINSDIR\netconsole-installer-build.json "${NETCONSOLE_INSTALLER_MANIFEST_PATH}"
+  File /oname=$PLUGINSDIR\netconsole-installer-data-root.nsh "${NETCONSOLE_INSTALLER_POLICY_SOURCE_PATH}"
   ReadRegStr $NetConsoleExistingDataRoot HKLM "Software\NetConsole" "DataRoot"
   ${If} $NetConsoleExistingDataRoot != ""
     StrCpy $NetConsoleDataRoot "$NetConsoleExistingDataRoot"
@@ -104,6 +118,8 @@ Function NetConsoleDataRootPageCreate
   ${NSD_OnClick} $0 NetConsoleBrowseDataRoot
   ${NSD_CreateLabel} 0 72u 100% 36u ""
   Pop $NetConsoleDataRootStatus
+  ${NSD_CreateLabel} 0 112u 100% 12u "安装器：v${NETCONSOLE_INSTALLER_APP_VERSION} · ${NETCONSOLE_INSTALLER_GIT_SHORT} · ${NETCONSOLE_INSTALLER_BUILD_TIME} · ${NETCONSOLE_INSTALLER_BUILD_ID}"
+  Pop $0
   Call NetConsoleRefreshDataRootStatus
   nsDialogs::Show
 FunctionEnd
