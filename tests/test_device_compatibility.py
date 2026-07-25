@@ -52,8 +52,8 @@ def _profile(
     )
 
 
-def test_profile_catalog_loads_and_references_safe_command_profiles() -> None:
-    service = DeviceCompatibilityService(PathResolver(app_root=ROOT, data_root=ROOT / ".local-test"))
+def test_profile_catalog_loads_and_references_safe_command_profiles(tmp_path: Path) -> None:
+    service = DeviceCompatibilityService(PathResolver(app_root=ROOT, data_root=tmp_path / "data-root"))
     summary = service.summary()
 
     assert "Comware V7" in summary["platforms"]
