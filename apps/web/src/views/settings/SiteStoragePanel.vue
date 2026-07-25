@@ -3,7 +3,7 @@ import { nextTick, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown } from '@element-plus/icons-vue'
 
-import { activateSite, applySiteCleanup, auditSite, createSite, exportSite, getDataRoot, getLatestSiteAudit, importSite, inspectSitePackage, listSites, migrateDataRoot, migrateSite, preflightSiteActivation, prepareSiteCleanup, rebuildDemoSite, validateDataRoot, type DataRootSnapshot, type SiteConflictChoice, type SiteConflictResolution, type SitePackageInspection, type SitePackageType, type SiteRecord } from '../../api/siteStorage'
+import { activateSite, applySiteCleanup, auditSite, createSite, exportSite, getDataRoot, getLatestSiteAudit, importSite, inspectSitePackage, listSites, migrateDataRoot, migrateSite, preflightSiteActivation, prepareSiteCleanup, rebuildDemoSite, validateDataRoot, type DataRootSnapshot, type SiteConflictChoice, type SiteConflictResolution, type SiteCredentialPolicy, type SitePackageInspection, type SitePackageType, type SiteRecord } from '../../api/siteStorage'
 import { ApiRequestError } from '../../api/client'
 import { getPlatformAdapter } from '../../platform/runtime'
 import { getTask } from '../../api/tasks'
@@ -33,6 +33,8 @@ const importSiteId = ref('')
 const importDisplayName = ref('')
 const importTargetSiteId = ref('')
 const importRawOnly = ref(false)
+const importMigrationPassword = ref('')
+const importCredentialPolicy = ref<SiteCredentialPolicy>('preserve_local')
 const conflictChoices = ref<Record<string, { choice: SiteConflictChoice; manualValue: string }>>({})
 const desktopOnly = getPlatformAdapter().hostType === 'electron'
 const { confirm: confirmAction } = useConfirm()
@@ -176,13 +178,16 @@ async function exportCurrent(packageType: SitePackageType): Promise<void> {
   const date = new Date().toISOString().slice(0, 10).replaceAll('-', '')
   const names: Record<SitePackageType, string> = {
     full_migration: `${current.display_name}_完整迁移包_${date}.ncsite`,
+    sanitized_share: `${current.display_name}_脱敏分享包_${date}.ncsite`,
     field_collection: `${current.display_name}_现场采集包_${date}.ncsite`,
     collection_return: `${current.display_name}_采集回传包_${date}.ncresult`,
   }
   const selected = await getPlatformAdapter().selectSiteExportDestination(names[packageType])
   if (selected.cancelled || !selected.path) return
+  const migrationPassword = packageType === 'full_migration' ? await promptMigrationPassword(true) : ''
+  if (packageType === 'full_migration' && !migrationPassword) return
   busy.value = true
-  try { const task = await exportSite(current.site_id, selected.path, packageType); await openTask(task.task_id); ElMessage.success(`${packageTypeLabel(packageType)}导出任务已提交`) }
+  try { const task = await exportSite(current.site_id, selected.path, packageType, migrationPassword); await openTask(task.task_id); ElMessage.success(`${packageTypeLabel(packageType)}导出任务已提交`) }
   catch (cause) { showError(cause, '数据包导出失败') }
   finally { busy.value = false }
 }
@@ -192,7 +197,16 @@ async function importPackage(): Promise<void> {
   if (selected.cancelled || !selected.path) return
   busy.value = true
   try {
-    const inspected = await inspectSitePackage(selected.path)
+    let migrationPassword = ''
+    let inspected: SitePackageInspection
+    try {
+      inspected = await inspectSitePackage(selected.path)
+    } catch (cause) {
+      if (!(cause instanceof ApiRequestError) || cause.code !== 'SITE_IMPORT_PASSWORD_REQUIRED') throw cause
+      migrationPassword = await promptMigrationPassword(false)
+      if (!migrationPassword) return
+      inspected = await inspectSitePackage(selected.path, '', migrationPassword)
+    }
     importInspection.value = inspected
     importPackagePath.value = selected.path
     importMode.value = inspected.package_type === 'collection_return' ? 'merge' : 'new'
@@ -200,6 +214,8 @@ async function importPackage(): Promise<void> {
     importDisplayName.value = inspected.site_name
     importTargetSiteId.value = inspected.target_site_id || sites.value.find((site) => site.active)?.site_id || ''
     importRawOnly.value = false
+    importMigrationPassword.value = migrationPassword
+    importCredentialPolicy.value = 'preserve_local'
     conflictChoices.value = Object.fromEntries(inspected.conflicts.map((item) => [item.conflict_id, { choice: 'local' as const, manualValue: '' }]))
     importDialogVisible.value = true
   } catch (cause) { showError(cause, '数据包预检失败') }
@@ -237,7 +253,10 @@ async function executeImport(): Promise<void> {
       ...(importMode.value === 'new' ? { site_id: importSiteId.value.trim(), display_name: importDisplayName.value.trim() } : {}),
       ...(importMode.value === 'replace' ? { replace_site_id: importTargetSiteId.value, display_name: importDisplayName.value.trim() } : {}),
       ...(importMode.value === 'merge' ? { site_id: inspected.target_site_id || importTargetSiteId.value, raw_only: importRawOnly.value, conflict_resolutions: resolutions } : {}),
+      ...(inspected.encrypted ? { migration_password: importMigrationPassword.value } : {}),
+      ...(inspected.encrypted && importMode.value === 'replace' ? { credential_policy: importCredentialPolicy.value } : {}),
     })
+    importMigrationPassword.value = ''
     importDialogVisible.value = false
     await openTask(task.task_id)
     ElMessage.success('数据包导入任务已提交')
@@ -316,13 +335,38 @@ async function prompt(message: string, title: string, inputValue = ''): Promise<
   try { const result = await ElMessageBox.prompt(message, title, { inputValue, inputPattern: /.+/, inputErrorMessage: '不能为空', confirmButtonText: '确定', cancelButtonText: '取消' }); return result.value.trim() }
   catch { return '' }
 }
+
+function closeImportDialog(): void {
+  importMigrationPassword.value = ''
+}
+async function promptMigrationPassword(confirmValue: boolean): Promise<string> {
+  const options = {
+    inputType: 'password' as const,
+    inputPattern: /^.{8,1024}$/s,
+    inputErrorMessage: '迁移密码至少需要 8 个字符',
+    confirmButtonText: '确定',
+    cancelButtonText: '取消',
+  }
+  try {
+    const first = await ElMessageBox.prompt('请输入迁移密码', '完整迁移包', options)
+    if (!confirmValue) return first.value
+    const second = await ElMessageBox.prompt('请再次输入迁移密码', '确认迁移密码', options)
+    if (first.value !== second.value) {
+      ElMessage.error('两次输入的迁移密码不一致')
+      return ''
+    }
+    return first.value
+  } catch {
+    return ''
+  }
+}
 function showError(cause: unknown, fallback: string): void { error.value = cause instanceof Error && cause.message ? cause.message : fallback; ElMessage.error(error.value) }
 function formatBytes(value: number): string { if (!Number.isFinite(value) || value <= 0) return '0 B'; const units = ['B', 'KB', 'MB', 'GB', 'TB']; const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}` }
 function classificationLabel(value: string): string { return ({ active_site: '当前正式局点', normal_site: '正式局点', managed_demo: '演示局点 · 可重建', legacy_demo: '旧版 Demo 待审计', legacy_valid: 'Legacy 待审计', legacy_alias: 'Legacy 别名', legacy_duplicate: 'Legacy 重复', orphan: '孤立目录', empty_shell: '疑似迁移残留', unknown: '未审计' } as Record<string, string>)[value] || value }
 function actionLabel(value: string): string { return ({ audit_required: '需要审计', safe_delete_to_recycle: '可安全移入回收区', backup_then_rebuild: '备份后重建 Demo', keep_and_review: '保留并复核' } as Record<string, string>)[value] || value }
 function integrityLabel(value: SiteRecord['data_integrity']): string { return ({ ok: '正常', failed: '异常', unknown: '待审计' } as const)[value] || '待审计' }
 function classificationTag(site: SiteRecord): 'success' | 'warning' | 'danger' | 'info' { const value = site.classification || 'unknown'; if (value === 'managed_demo') return 'success'; if (value === 'empty_shell') return 'danger'; if (value.startsWith('legacy')) return 'warning'; return 'info' }
-function packageTypeLabel(value: SitePackageType): string { return ({ full_migration: '完整迁移包', field_collection: '现场采集包', collection_return: '采集回传包' } as const)[value] }
+function packageTypeLabel(value: SitePackageType): string { return ({ full_migration: '完整迁移包', sanitized_share: '脱敏分享包', field_collection: '现场采集包', collection_return: '采集回传包' } as const)[value] }
 function displayValue(value: unknown): string { if (value === null || value === undefined || value === '') return '空'; if (typeof value === 'object') return JSON.stringify(value); return String(value) }
 </script>
 
@@ -349,6 +393,7 @@ function displayValue(value: unknown): string { if (value === null || value === 
           <template #dropdown>
             <el-dropdown-menu>
               <el-dropdown-item command="full_migration">导出完整迁移包</el-dropdown-item>
+              <el-dropdown-item command="sanitized_share">导出脱敏分享包</el-dropdown-item>
               <el-dropdown-item command="field_collection">导出现场采集包</el-dropdown-item>
               <el-dropdown-item command="collection_return">导出采集回传包</el-dropdown-item>
             </el-dropdown-menu>
@@ -376,7 +421,7 @@ function displayValue(value: unknown): string { if (value === null || value === 
         <div v-if="root?.persistent" class="site-actions"><el-button :data-testid="`audit-site-${site.site_id}`" size="small" :disabled="busy" @click="auditSelectedSite(site)">审计</el-button><el-button v-if="site.audited_at" :data-testid="`show-audit-${site.site_id}`" size="small" :disabled="busy" @click="showAudit(site)">查看清单</el-button><el-button v-if="site.classification === 'empty_shell'" :data-testid="`cleanup-site-${site.site_id}`" size="small" type="danger" plain :disabled="site.active || busy" @click="cleanupSite(site)">安全清理</el-button><el-button v-if="site.site_kind === 'demo'" :data-testid="`rebuild-demo-${site.site_id}`" size="small" :disabled="site.active || busy" @click="rebuildDemo(site)">重建 Demo</el-button><el-button :data-testid="`switch-site-${site.site_id}`" size="small" :disabled="site.active || busy" @click="switchSite(site)">{{ site.active ? '当前局点' : '切换' }}</el-button><el-button v-if="site.active" size="small" @click="openCurrentSite">打开目录</el-button><el-button v-if="site.active" size="small" :disabled="busy" @click="moveCurrentSite">迁移局点</el-button></div>
       </article>
     </div>
-    <el-dialog v-model="importDialogVisible" class="site-import-dialog" width="min(920px, 94vw)" :close-on-click-modal="false" title="数据包导入预检">
+    <el-dialog v-model="importDialogVisible" class="site-import-dialog" width="min(920px, 94vw)" :close-on-click-modal="false" title="数据包导入预检" @closed="closeImportDialog">
       <template v-if="importInspection">
         <el-descriptions :column="2" border>
           <el-descriptions-item label="目标局点">{{ importInspection.site_name }}</el-descriptions-item>
@@ -384,6 +429,8 @@ function displayValue(value: unknown): string { if (value === null || value === 
           <el-descriptions-item label="局点 UUID"><code>{{ importInspection.site_uuid || '旧版包未提供' }}</code></el-descriptions-item>
           <el-descriptions-item label="版本">基准 {{ importInspection.base_revision }}<template v-if="importInspection.local_revision !== undefined"> / 本地 {{ importInspection.local_revision }}</template></el-descriptions-item>
         </el-descriptions>
+        <el-alert v-if="importInspection.encrypted" title="完整迁移包已通过迁移密码认证，可恢复包内凭据。" type="success" :closable="false" show-icon />
+        <el-alert v-else-if="importInspection.credential_reentry_count > 0" title="该数据包不包含设备凭据，导入后需要重新录入。" type="warning" :closable="false" show-icon />
 
         <div v-if="importInspection.package_type === 'collection_return'" class="preflight-grid">
           <span><strong>{{ importInspection.new_files || 0 }}</strong> 新增文件</span>
@@ -413,6 +460,12 @@ function displayValue(value: unknown): string { if (value === null || value === 
                 </el-select>
               </el-form-item>
               <el-form-item label="导入后显示名称"><el-input v-model="importDisplayName" /></el-form-item>
+              <el-form-item v-if="importInspection.encrypted" label="相同设备的凭据">
+                <el-radio-group v-model="importCredentialPolicy">
+                  <el-radio value="preserve_local">保留本地凭据</el-radio>
+                  <el-radio value="use_package">使用包内凭据</el-radio>
+                </el-radio-group>
+              </el-form-item>
             </template>
           </el-form>
         </div>

@@ -20,13 +20,13 @@ python -m pip install -r requirements-dev.txt -c constraints.txt
 python -m pip check
 ```
 
-产品运行环境只执行第一条和 `python -m pip install . -c constraints.txt`；不得安装 `requirements-test.txt`、`requirements-build.txt` 或 `requirements-dev.txt`。可用 `python -m scripts.build.check_runtime_deps --python-environment` 验证当前环境没有 Qt 包元数据或可导入 Qt 模块。干净环境的反向探针必须满足 `import PySide6` 抛出 `ModuleNotFoundError`。
+产品运行环境只执行第一条和 `python -m pip install . -c constraints.txt`；不得安装 `requirements-test.txt`、`requirements-build.txt` 或 `requirements-dev.txt`。`cryptography==49.0.0` 属于正式运行依赖，用于完整迁移包的 Scrypt 与 AES-256-GCM，不得只依赖 Paramiko 的传递安装。可用 `python -m scripts.build.check_runtime_deps --python-environment` 验证当前环境没有 Qt 包元数据或可导入 Qt 模块。干净环境的反向探针必须满足 `import PySide6` 抛出 `ModuleNotFoundError`。
 
 ## Backend 构建
 
 正式发布的身份事实来自构建开始时的 Git，而不是 `src/netconsole/core/version.py` 中的手工提交号或时间。`scripts/build/build_metadata.py` 在一次发布调用中读取 `git rev-parse HEAD` 与 `git status --porcelain`，生成并复用 `app_version / git_commit_full / git_commit_short / build_time_utc / build_dirty / build_source / frontend_commit / backend_commit`；时间固定为 ISO 8601 UTC。Vite、PyInstaller、Backend 自检、Electron package smoke 共用这一快照，分阶段校验时还会重新确认快照对应当前 Git 来源。
 
-正式候选必须按“修改与验证完成 → 中文提交 → 确认工作区 clean → 读取最终 HEAD → 构建 Web/Backend/Electron/NSIS → package smoke 比较包内元数据与实际 HEAD → 推送”的顺序执行。`--release` 遇到 tracked 或 untracked 修改会直接失败；开发构建允许 `build_dirty=true`，但其 `build_source=git-development`，不能冒充正式包。最终包级输出必须包含 `SOURCE_GIT_HEAD / PACKAGED_BACKEND_COMMIT / PACKAGED_FRONTEND_COMMIT / SELF_CHECK_COMMIT / PACKAGED_BUILD_TIME / PACKAGED_DIRTY`，提交号不一致或 dirty 不为 false 都必须停止发布。
+正式候选必须按“修改与验证完成 → 中文提交 → 确认工作区 clean → 推送最终提交 → 读取最终 HEAD → 构建 Web/Backend/Electron/NSIS → package smoke 比较包内元数据与实际 HEAD”的顺序执行。`--release` 遇到 tracked 或 untracked 修改会直接失败；开发构建允许 `build_dirty=true`，但其 `build_source=git-development`，不能冒充正式包。最终包级输出必须包含 `SOURCE_GIT_HEAD / PACKAGED_BACKEND_COMMIT / PACKAGED_FRONTEND_COMMIT / SELF_CHECK_COMMIT / PACKAGED_BUILD_TIME / PACKAGED_DIRTY`，提交号不一致或 dirty 不为 false 都必须停止发布。
 
 先在仓库根目录执行：
 
@@ -82,7 +82,7 @@ node scripts/package-smoke.mjs
 
 正式 Windows 用户入口固定为 `dist/electron/win-unpacked/NetConsole.exe`。`build.win.executableName` 必须保持为 `NetConsole`，并由 `package-smoke.mjs` 直接读取该构建配置，禁止在 smoke 脚本重复硬编码名称。`resources/backend/NetConsoleBackend.exe` 仅由 Electron Main 使用 `--electron-backend` 作为受管子进程启动；直接运行它会记录运行日志、显示提示并以非零状态退出，不能尝试启动源码 Electron 开发链。
 
-正式安装包发布门还需要在 Windows 图形环境完成人工启动、签名、安装/卸载和升级验收；必须额外覆盖全新 Windows 用户、无 Python/Node/pnpm/Git/源码、普通用户、中文用户名或中文数据路径、跨电脑局点导入、凭据重录和真实/仿真 H3C SSH 中文任务日志。单元测试、PyInstaller smoke 或 unpacked Electron smoke 不能替代这些验收。卸载不得删除 `D:\NetConsoleData`，也不得创建 LocalAppData 数据回退。
+正式安装包发布门还需要在 Windows 图形环境完成人工启动、签名、安装/卸载和升级验收；必须额外覆盖全新 Windows 用户、无 Python/Node/pnpm/Git/源码、普通用户、中文用户名或中文数据路径、跨电脑加密完整包恢复、脱敏包凭据重录、错误迁移密码零发布，以及真实/仿真 H3C SSH 中文任务日志。单元测试、PyInstaller smoke 或 unpacked Electron smoke 不能替代这些验收。卸载不得删除 `D:\NetConsoleData`，也不得创建 LocalAppData 数据回退。
 
 ## 外部工具与许可证阻塞
 

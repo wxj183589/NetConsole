@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 
 from netconsole.models.api.common import ApiModel
 
@@ -24,12 +24,20 @@ class SiteMigrateRequest(ApiModel):
 
 class SiteExportRequest(ApiModel):
     destination_path: str = Field(default="", max_length=32_767)
-    package_type: Literal["full_migration", "field_collection", "collection_return"] = "full_migration"
+    package_type: Literal[
+        "full_migration", "sanitized_share", "field_collection", "collection_return"
+    ] = "full_migration"
+    migration_password: SecretStr | None = Field(
+        default=None, min_length=8, max_length=1_024, repr=False
+    )
 
 
 class SiteImportInspectRequest(ApiModel):
     package_path: str = Field(min_length=1, max_length=32_767)
     target_site_id: str = Field(default="", max_length=63)
+    migration_password: SecretStr | None = Field(
+        default=None, min_length=8, max_length=1_024, repr=False
+    )
 
 
 class SiteConflictResolution(ApiModel):
@@ -46,6 +54,10 @@ class SiteImportRequest(ApiModel):
     activate: bool = False
     raw_only: bool = False
     conflict_resolutions: list[SiteConflictResolution] = Field(default_factory=list, max_length=2_000)
+    credential_policy: Literal["preserve_local", "use_package"] = "preserve_local"
+    migration_password: SecretStr | None = Field(
+        default=None, min_length=8, max_length=1_024, repr=False
+    )
 
 
 class DataRootPathRequest(ApiModel):

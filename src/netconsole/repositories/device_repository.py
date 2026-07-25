@@ -10,6 +10,7 @@ from netconsole.core.device_credential_store import (
     CredentialFieldResolution,
     DEVICE_SECRET_FIELDS,
     DEVICE_SECRET_STORAGE_FIELDS,
+    credential_is_complete,
     ensure_device_credential_schema,
     read_device_credential_states,
     replace_device_credential_state,
@@ -116,7 +117,9 @@ class DeviceRepository:
                     continue
                 value = record.get(field)
                 if value:
-                    if field in DEVICE_SECRET_FIELDS:
+                    if field in DEVICE_SECRET_FIELDS and credential_is_complete(
+                        record, field
+                    ):
                         state_updates[field] = CredentialFieldResolution(
                             "available", "local_database"
                         )
@@ -140,6 +143,17 @@ class DeviceRepository:
             device_uuid = str(device.device_uuid or current_values.get("device_uuid") or "")
             for field, state in state_updates.items():
                 replace_device_credential_state(conn, device_uuid, field, state)
+            persisted = conn.execute(
+                "SELECT * FROM devices WHERE id = ?", (device_id,)
+            ).fetchone()
+            if persisted is None:
+                raise sqlite3.DatabaseError("设备凭据保存后复核失败")
+            for field in DEVICE_SECRET_STORAGE_FIELDS:
+                if field in record and record[field] and persisted[field] != record[field]:
+                    raise sqlite3.DatabaseError(f"{field} 保存后复核失败")
+            for field in clear_fields:
+                if field in persisted.keys() and persisted[field] not in {None, ""}:
+                    raise sqlite3.DatabaseError(f"{field} 清除后复核失败")
             conn.commit()
         return self.get(int(device_id))
 

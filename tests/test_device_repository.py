@@ -1,3 +1,5 @@
+import sqlite3
+
 from netconsole.core.database import Database
 from netconsole.models.device import Device
 from netconsole.repositories.device_group_repository import DeviceGroupRepository, DuplicateGroupName
@@ -169,6 +171,53 @@ def test_repository_allows_blank_ssh_username_and_password(tmp_path):
 
     assert created.ssh_username == ""
     assert created.ssh_password == ""
+
+
+def test_database_initialization_repairs_only_stale_reentry_markers_with_real_secrets(
+    tmp_path,
+):
+    database = Database(tmp_path / "devices.db")
+    database.initialize()
+    repository = DeviceRepository(database)
+    recoverable = repository.create(
+        Device(
+            name="Recoverable",
+            ip_address="10.0.0.7",
+            ssh_username="admin",
+            ssh_password="still-present",
+        )
+    )
+    missing = repository.create(
+        Device(name="Missing", ip_address="10.0.0.8", ssh_username="admin")
+    )
+    connection = sqlite3.connect(database.path)
+    try:
+        for device_uuid in (recoverable.device_uuid, missing.device_uuid):
+            connection.execute(
+                "INSERT OR REPLACE INTO device_credential_states "
+                "(device_uuid, credential_field, status, source, error_code, updated_at) "
+                "VALUES (?, 'ssh_password', 'needs_reentry', 'imported_reference', "
+                "'CREDENTIAL_REENTRY_REQUIRED', datetime('now'))",
+                (device_uuid,),
+            )
+        connection.commit()
+    finally:
+        connection.close()
+
+    database.initialize()
+
+    connection = sqlite3.connect(database.path)
+    try:
+        states = dict(
+            connection.execute(
+                "SELECT device_uuid, status FROM device_credential_states "
+                "WHERE credential_field = 'ssh_password'"
+            ).fetchall()
+        )
+    finally:
+        connection.close()
+    assert states[str(recoverable.device_uuid)] == "available"
+    assert states[str(missing.device_uuid)] == "needs_reentry"
 
 
 def test_device_groups_are_site_scoped_and_filter_devices(tmp_path):

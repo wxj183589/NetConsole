@@ -69,8 +69,9 @@ export interface DataRootSnapshot {
 
 export interface SiteTaskResponse { task_id: string; task_type: string }
 
-export type SitePackageType = 'full_migration' | 'field_collection' | 'collection_return'
+export type SitePackageType = 'full_migration' | 'sanitized_share' | 'field_collection' | 'collection_return'
 export type SiteConflictChoice = 'local' | 'returned' | 'manual'
+export type SiteCredentialPolicy = 'preserve_local' | 'use_package'
 
 export interface SitePackageConflict {
   conflict_id: string
@@ -108,6 +109,9 @@ export interface SitePackageInspection {
   estimated_additional_bytes: number
   create_snapshot?: boolean
   can_import: boolean
+  contains_credentials: boolean
+  encrypted: boolean
+  credential_reentry_count: number
 }
 
 export interface SiteConflictResolution {
@@ -122,9 +126,9 @@ export const getDataRoot = () => apiRequest<DataRootSnapshot>('/api/v1/storage/d
 export const createSite = (payload: { site_id: string; display_name: string; remark?: string; activate?: boolean }) => apiRequest<SiteRecord>('/api/v1/sites', { method: 'POST', body: JSON.stringify(payload) })
 export const preflightSiteActivation = (siteId: string) => apiRequest<{ ready: boolean; target_site_id: string; previous_site_id: string }>(`/api/v1/sites/${encodeURIComponent(siteId)}/activate/preflight`, { method: 'POST' })
 export const activateSite = (siteId: string) => apiRequest<{ restart_required: boolean }>(`/api/v1/sites/${encodeURIComponent(siteId)}/activate`, { method: 'POST', body: JSON.stringify({ confirmed: true }) })
-export const inspectSitePackage = (packagePath: string, targetSiteId = '') => apiRequest<SitePackageInspection>('/api/v1/sites/import/inspect', { method: 'POST', body: JSON.stringify({ package_path: packagePath, target_site_id: targetSiteId }) })
-export const exportSite = (siteId: string, destinationPath: string, packageType: SitePackageType = 'full_migration') => apiRequest<SiteTaskResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/export`, { method: 'POST', body: JSON.stringify({ destination_path: destinationPath, package_type: packageType }) })
-export const importSite = (payload: { package_path: string; site_id?: string; display_name?: string; replace_site_id?: string; activate?: boolean; raw_only?: boolean; conflict_resolutions?: SiteConflictResolution[] }) => apiRequest<SiteTaskResponse>('/api/v1/sites/import', { method: 'POST', body: JSON.stringify(payload) })
+export const inspectSitePackage = (packagePath: string, targetSiteId = '', migrationPassword = '') => apiRequest<SitePackageInspection>('/api/v1/sites/import/inspect', { method: 'POST', body: JSON.stringify({ package_path: packagePath, target_site_id: targetSiteId, ...(migrationPassword ? { migration_password: migrationPassword } : {}) }) })
+export const exportSite = (siteId: string, destinationPath: string, packageType: SitePackageType = 'full_migration', migrationPassword = '') => apiRequest<SiteTaskResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/export`, { method: 'POST', body: JSON.stringify({ destination_path: destinationPath, package_type: packageType, ...(migrationPassword ? { migration_password: migrationPassword } : {}) }) })
+export const importSite = (payload: { package_path: string; site_id?: string; display_name?: string; replace_site_id?: string; activate?: boolean; raw_only?: boolean; conflict_resolutions?: SiteConflictResolution[]; credential_policy?: SiteCredentialPolicy; migration_password?: string }) => apiRequest<SiteTaskResponse>('/api/v1/sites/import', { method: 'POST', body: JSON.stringify(payload) })
 export const validateDataRoot = (path: string) => apiRequest<{ valid: boolean; path: string; free_bytes: number }>('/api/v1/storage/data-root/validate', { method: 'POST', body: JSON.stringify({ path }) })
 export const migrateDataRoot = (path: string) => apiRequest<SiteTaskResponse>('/api/v1/storage/data-root/migrate', { method: 'POST', body: JSON.stringify({ path }) })
 export const migrateSite = (siteId: string, destinationRoot: string) => apiRequest<SiteTaskResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/migrate`, { method: 'POST', body: JSON.stringify({ destination_root: destinationRoot }) })

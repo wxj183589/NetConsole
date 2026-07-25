@@ -4,7 +4,7 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 
 当前版本：`v1.4.3`。版本唯一来源为 `src/netconsole/core/version.py`；本文只同步展示该事实源。
 
-局点、新建/切换、全局数据根迁移、备份恢复和数据包导入导出由 Python Core 统一管理。设置页支持完整迁移包、现场采集包和采集回传包；回传包按稳定局点 UUID、文件 SHA-256 和可识别记录 UUID 预检合并，绝不以局点名称或本地自增 ID 覆盖数据。Electron 只通过版本化 API 和白名单 Native Bridge 操作。完整约束见 [局点与数据存储](docs/storage/README.md)。
+局点、新建/切换、全局数据根迁移、备份恢复和数据包导入导出由 Python Core 统一管理。设置页支持带迁移密码的完整迁移包、脱敏分享包、现场采集包和采集回传包；完整包使用 Scrypt 与 AES-256-GCM 保护设备凭据，脱敏包才会清除凭据并要求重新录入。回传包按稳定局点 UUID、文件 SHA-256 和可识别记录 UUID 预检合并，绝不以局点名称或本地自增 ID 覆盖数据。Electron 只通过版本化 API 和白名单 Native Bridge 操作。完整约束见 [局点与数据存储](docs/storage/README.md)。
 
 ## 仓库地址
 

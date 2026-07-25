@@ -62,11 +62,19 @@ def resolve_device_credentials(
     fields: dict[str, CredentialFieldResolution] = {}
 
     for field in DEVICE_SECRET_FIELDS:
-        raw = values.get(field)
+        raw = _secret_value(values, field)
         if raw is None or raw == "":
             fields[field] = persisted.get(
                 field,
                 CredentialFieldResolution("missing", "none", "CREDENTIAL_MISSING"),
+            )
+            continue
+        if not credential_is_complete(values, field):
+            fields[field] = persisted.get(
+                field,
+                CredentialFieldResolution(
+                    "missing", "none", "CREDENTIAL_INCOMPLETE"
+                ),
             )
             continue
         fields[field] = CredentialFieldResolution("available", "local_database")
@@ -246,6 +254,78 @@ def credential_reentry_count(connection: sqlite3.Connection) -> int:
     return int(row[0] if row else 0)
 
 
+def credential_is_complete(values: Mapping[str, object], field: str) -> bool:
+    if not _secret_value(values, field):
+        return False
+    if field == "ssh_password":
+        return bool(values.get("ssh_username") or values.get("username"))
+    if field == "telnet_password":
+        return bool(values.get("telnet_username") or values.get("username"))
+    if field == "snmp_ro_community":
+        return True
+    prefix = field.removesuffix("_password")
+    return bool(values.get(f"{prefix}_username"))
+
+
+def repair_device_credential_states(connection: sqlite3.Connection) -> int:
+    """Clear stale re-entry markers only when the actual credential is complete."""
+
+    if not _table_exists(connection, "devices"):
+        return 0
+    ensure_device_credential_schema(connection)
+    columns = _table_columns(connection, "devices")
+    selected = [
+        name
+        for name in (
+            "device_uuid",
+            "username",
+            "password",
+            "ssh_username",
+            "ssh_password",
+            "telnet_username",
+            "telnet_password",
+            "tunnel1_username",
+            "tunnel1_password",
+            "tunnel2_username",
+            "tunnel2_password",
+            "snmp_ro_community",
+        )
+        if name in columns
+    ]
+    if "device_uuid" not in selected:
+        return 0
+    states = read_device_credential_states(connection)
+    repaired_devices: set[str] = set()
+    for row in connection.execute(
+        f"SELECT {', '.join(_quote(name) for name in selected)} FROM devices"
+    ):
+        values = _row_mapping(row, selected)
+        device_uuid = str(values.get("device_uuid") or "")
+        for field in DEVICE_SECRET_FIELDS:
+            state = states.get(device_uuid, {}).get(field)
+            if (
+                state is None
+                or state.status != "needs_reentry"
+                or not credential_is_complete(values, field)
+            ):
+                continue
+            replace_device_credential_state(
+                connection,
+                device_uuid,
+                field,
+                CredentialFieldResolution("available", "local_database"),
+            )
+            repaired_devices.add(device_uuid)
+    return len(repaired_devices)
+
+
+def _secret_value(values: Mapping[str, object], field: str) -> object:
+    value = values.get(field)
+    if field == "ssh_password" and not value:
+        return values.get("password")
+    return value
+
+
 def _relevant_fields(values: Mapping[str, object]) -> tuple[str, ...]:
     fields: list[str] = []
     if bool(values.get("ssh_enabled")):
@@ -315,8 +395,10 @@ __all__ = [
     "DEVICE_SECRET_STORAGE_FIELDS",
     "DeviceCredentialResolution",
     "credential_reentry_count",
+    "credential_is_complete",
     "ensure_device_credential_schema",
     "read_device_credential_states",
+    "repair_device_credential_states",
     "replace_device_credential_state",
     "resolve_device_credentials",
     "sanitize_device_credentials_for_package",

@@ -83,10 +83,16 @@ def site_export(context: JobContext) -> dict[str, object]:
         record = sites.registry.get(str(context.params.get("site_id") or ""))
         suffix = ".ncresult" if package_type == "collection_return" else ".ncsite"
         destination = str(record.root_path / "files" / "exports" / f"{record.site_id}{suffix}")
+    migration_password = None
+    if package_type == "full_migration":
+        migration_password = context.consume_sensitive_bootstrap().get(
+            "migration_password"
+        )
     result = SitePackageService(context.paths, sites).export_site(
         str(context.params.get("site_id") or ""),
         Path(destination),
         package_type=package_type,
+        migration_password=migration_password,
         check_cancel=context.check_cancelled,
     )
     context.progress("publish", 1, 1, "局点数据包导出完成")
@@ -107,6 +113,11 @@ def site_migration(context: JobContext) -> dict[str, object]:
 def site_import(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
     sites = SiteApplicationService(context.paths)
+    migration_password = None
+    if bool(context.params.get("encrypted_package")):
+        migration_password = context.consume_sensitive_bootstrap().get(
+            "migration_password"
+        )
     result = SitePackageService(context.paths, sites).import_site(
         Path(str(context.params.get("package_path") or "")),
         site_id=str(context.params.get("site_id") or "") or None,
@@ -118,6 +129,10 @@ def site_import(context: JobContext) -> dict[str, object]:
             for item in context.params.get("conflict_resolutions", [])
             if isinstance(item, dict)
         ],
+        migration_password=migration_password,
+        credential_policy=str(
+            context.params.get("credential_policy") or "preserve_local"
+        ),
     )
     if bool(context.params.get("activate")):
         result["activation"] = sites.switch_site(str(result["site_id"]))

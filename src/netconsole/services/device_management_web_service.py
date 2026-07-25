@@ -1302,6 +1302,7 @@ class DeviceManagementWebService:
             "tunnel2_password",
             "snmp_ro_community",
         )
+        replaced_secret_fields: set[str] = set()
         for field in secret_fields:
             secret = getattr(payload, field)
             raw = secret.get_secret_value() if secret is not None else ""
@@ -1313,6 +1314,8 @@ class DeviceManagementWebService:
                 values.pop(field, None)
             else:
                 values[field] = raw or None
+                if raw:
+                    replaced_secret_fields.add(field)
         for field in (
             "name",
             "system_name",
@@ -1331,6 +1334,15 @@ class DeviceManagementWebService:
             "tunnel2_username",
         ):
             values[field] = str(values.get(field) or "").strip()
+        required_usernames = {
+            "ssh_password": "ssh_username",
+            "telnet_password": "telnet_username",
+            "tunnel1_password": "tunnel1_username",
+            "tunnel2_password": "tunnel2_username",
+        }
+        for secret_field, username_field in required_usernames.items():
+            if secret_field in replaced_secret_fields and not values.get(username_field):
+                raise ValueError(f"{username_field} 不能为空，密码尚未保存")
         if not values["name"] or not values["primary_address"]:
             raise ValueError("设备名称和主用地址必填")
         if values["device_vendor"] not in DEVICE_VENDORS:

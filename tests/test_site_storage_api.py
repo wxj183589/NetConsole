@@ -11,7 +11,11 @@ from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.models.task_snapshot import TaskSnapshot, utc_now_iso
 from netconsole.models.task_state import TaskState
 from netconsole.services.site_lifecycle import SiteAuditService
-from netconsole.services.site_storage import SiteRecord, SiteRegistryRepository
+from netconsole.services.site_storage import (
+    SitePackageService,
+    SiteRecord,
+    SiteRegistryRepository,
+)
 
 
 TOKEN = "site-storage-session-token-123456"
@@ -216,6 +220,89 @@ def test_site_package_inspect_does_not_write_on_invalid_package(tmp_path: Path) 
 
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "SITE_IMPORT_INVALID_PACKAGE"
+
+
+def test_full_package_password_uses_one_shot_worker_bootstrap(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    password = "migration-api-secret"
+    captured: list[tuple[object, dict[str, object]]] = []
+
+    def capture(job: object, **kwargs: object) -> str:
+        captured.append((job, kwargs))
+        return str(getattr(job, "job_id"))
+
+    client.app.state.site_process_adapter.start_job = capture
+    response = client.post(
+        "/api/v1/sites/demo/export",
+        json={
+            "destination_path": str(tmp_path / "full.ncsite"),
+            "package_type": "full_migration",
+            "migration_password": password,
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    job, kwargs = captured[0]
+    serialized = str(getattr(job, "to_dict")())
+    assert password not in serialized
+    assert kwargs == {"sensitive_bootstrap": {"migration_password": password}}
+
+
+def test_full_package_inspect_and_import_require_password_without_persisting_it(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    package = tmp_path / "full.ncsite"
+    password = "migration-api-secret"
+    SitePackageService(
+        client.app.state.paths,
+        client.app.state.site_application_service,
+    ).export_site("demo", package, migration_password=password)
+
+    required = client.post(
+        "/api/v1/sites/import/inspect",
+        json={"package_path": str(package)},
+    )
+    wrong = client.post(
+        "/api/v1/sites/import/inspect",
+        json={"package_path": str(package), "migration_password": "wrong-password"},
+    )
+    inspected = client.post(
+        "/api/v1/sites/import/inspect",
+        json={"package_path": str(package), "migration_password": password},
+    )
+
+    assert required.status_code == 422
+    assert required.json()["detail"]["code"] == "SITE_IMPORT_PASSWORD_REQUIRED"
+    assert wrong.status_code == 422
+    assert wrong.json()["detail"]["code"] == "SITE_IMPORT_AUTHENTICATION_FAILED"
+    assert inspected.status_code == 200, inspected.text
+    assert inspected.json()["encrypted"] is True
+    assert password not in inspected.text
+
+    captured: list[tuple[object, dict[str, object]]] = []
+
+    def capture(job: object, **kwargs: object) -> str:
+        captured.append((job, kwargs))
+        return str(getattr(job, "job_id"))
+
+    client.app.state.site_process_adapter.start_job = capture
+    submitted = client.post(
+        "/api/v1/sites/import",
+        json={
+            "package_path": str(package),
+            "site_id": "restored-demo",
+            "display_name": "恢复演示局点",
+            "migration_password": password,
+        },
+    )
+
+    assert submitted.status_code == 202, submitted.text
+    job, kwargs = captured[0]
+    serialized = str(getattr(job, "to_dict")())
+    assert password not in serialized
+    assert "migration_password" not in serialized
+    assert kwargs == {"sensitive_bootstrap": {"migration_password": password}}
 
 
 def test_site_storage_contract_is_in_openapi(tmp_path: Path) -> None:

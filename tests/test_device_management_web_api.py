@@ -1565,7 +1565,7 @@ def test_web_crud_group_assignment_and_token_delete_preserve_secret_boundary(tmp
     secret_value = "must-not-be-echoed"
     accepted_secret = client.post(
         "/api/device-management/devices",
-        json={"name": "Web-secret", "primary_address": "192.0.2.32", "ssh_password": secret_value},
+        json={"name": "Web-secret", "primary_address": "192.0.2.32", "ssh_username": "admin", "ssh_password": secret_value},
     )
     assert accepted_secret.status_code == 201
     secret_uuid = accepted_secret.json()["device"]["device_uuid"]
@@ -1575,7 +1575,7 @@ def test_web_crud_group_assignment_and_token_delete_preserve_secret_boundary(tmp
 
     preserved_secret = client.put(
         f"/api/device-management/devices/{secret_uuid}",
-        json={"name": "Web-secret-updated", "primary_address": "192.0.2.33", "ssh_password": ""},
+        json={"name": "Web-secret-updated", "primary_address": "192.0.2.33", "ssh_username": "admin", "ssh_password": ""},
     )
     assert preserved_secret.status_code == 200
     assert secret_value not in preserved_secret.text
@@ -1594,6 +1594,7 @@ def test_web_crud_group_assignment_and_token_delete_preserve_secret_boundary(tmp
         json={
             "name": "Web-secret-updated",
             "primary_address": "192.0.2.33",
+            "ssh_username": "admin",
             "ssh_password": replacement,
         },
     )
@@ -1606,6 +1607,7 @@ def test_web_crud_group_assignment_and_token_delete_preserve_secret_boundary(tmp
         json={
             "name": "Web-secret-updated",
             "primary_address": "192.0.2.33",
+            "ssh_username": "admin",
             "ssh_password": "new-value",
             "clear_secret_fields": ["ssh_password"],
         },

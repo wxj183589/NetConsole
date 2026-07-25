@@ -239,12 +239,25 @@ def migrate_site(request: Request, site_id: str, payload: DataRootPathRequest) -
     response_model=SiteTaskResponse,
     status_code=status.HTTP_202_ACCEPTED,
     summary="导出局点包",
-    description="创建 Task Center Worker；包内不包含 Token、密码、bootstrap、锁、缓存和临时文件。",
+    description="完整迁移包使用认证加密保护凭据；脱敏包和现场包不含密码。",
     dependencies=[Depends(_desktop), Depends(_persistent_storage)],
 )
 def export_site(request: Request, site_id: str, payload: SiteExportRequest) -> SiteTaskResponse:
     _call(lambda: _sites(request).get_site(site_id))
     _call(lambda: _sites(request).ensure_no_active_tasks(site_id))
+    migration_password = (
+        payload.migration_password.get_secret_value()
+        if payload.migration_password is not None
+        else ""
+    )
+    if payload.package_type == "full_migration" and not migration_password:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "SITE_EXPORT_PASSWORD_REQUIRED",
+                "message": "完整迁移包必须设置至少 8 个字符的迁移密码",
+            },
+        )
     return _submit(
         request,
         "site_export",
@@ -253,6 +266,11 @@ def export_site(request: Request, site_id: str, payload: SiteExportRequest) -> S
             "destination_path": payload.destination_path,
             "package_type": payload.package_type,
         },
+        sensitive_bootstrap=(
+            {"migration_password": migration_password}
+            if migration_password
+            else None
+        ),
     )
 
 
@@ -263,10 +281,16 @@ def export_site(request: Request, site_id: str, payload: SiteExportRequest) -> S
     dependencies=[Depends(_desktop), Depends(_persistent_storage)],
 )
 def inspect_site_package(request: Request, payload: SiteImportInspectRequest) -> dict[str, object]:
+    migration_password = (
+        payload.migration_password.get_secret_value()
+        if payload.migration_password is not None
+        else None
+    )
     return _call(
         lambda: _packages(request).inspect_package(
             Path(payload.package_path),
             target_site_id=payload.target_site_id or None,
+            migration_password=migration_password,
         )
     )
 
@@ -280,14 +304,31 @@ def inspect_site_package(request: Request, payload: SiteImportInspectRequest) ->
     dependencies=[Depends(_desktop), Depends(_persistent_storage)],
 )
 def import_site(request: Request, payload: SiteImportRequest) -> SiteTaskResponse:
-    _call(
+    migration_password = (
+        payload.migration_password.get_secret_value()
+        if payload.migration_password is not None
+        else None
+    )
+    inspection = _call(
         lambda: _packages(request).inspect_package(
             Path(payload.package_path),
             target_site_id=payload.site_id or payload.replace_site_id or None,
+            migration_password=migration_password,
         )
     )
     _call(_sites(request).ensure_no_active_tasks_anywhere)
-    return _submit(request, "site_import", payload.model_dump())
+    params = payload.model_dump(exclude={"migration_password"})
+    params["encrypted_package"] = bool(inspection.get("encrypted"))
+    return _submit(
+        request,
+        "site_import",
+        params,
+        sensitive_bootstrap=(
+            {"migration_password": migration_password}
+            if migration_password
+            else None
+        ),
+    )
 
 
 @router.get("/storage/data-root", summary="读取当前数据根", dependencies=[Depends(_desktop)])
@@ -329,7 +370,13 @@ def migrate_data_root(request: Request, payload: DataRootPathRequest) -> SiteTas
     return _submit(request, "site_data_root_migration", {"destination_root": payload.path})
 
 
-def _submit(request: Request, task_type: str, params: dict[str, object]) -> SiteTaskResponse:
+def _submit(
+    request: Request,
+    task_type: str,
+    params: dict[str, object],
+    *,
+    sensitive_bootstrap: dict[str, str] | None = None,
+) -> SiteTaskResponse:
     task_id = uuid.uuid4().hex
     request.app.state.site_process_adapter.start_job(
         BackgroundJob(
@@ -350,7 +397,8 @@ def _submit(request: Request, task_type: str, params: dict[str, object]) -> Site
             }[task_type],
                 "owner": "site-storage",
             },
-        )
+        ),
+        sensitive_bootstrap=sensitive_bootstrap,
     )
     return SiteTaskResponse(task_id=task_id, task_type=task_type)
 

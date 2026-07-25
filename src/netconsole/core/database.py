@@ -3,7 +3,10 @@
 import sqlite3
 from pathlib import Path
 
-from netconsole.core.device_credential_store import DEVICE_CREDENTIAL_STATE_SCHEMA
+from netconsole.core.device_credential_store import (
+    DEVICE_CREDENTIAL_STATE_SCHEMA,
+    repair_device_credential_states,
+)
 from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal
 
 
@@ -997,6 +1000,7 @@ class Database:
                 )
             )
             self._apply_additive_schema_updates(conn)
+            repair_device_credential_states(conn)
             self._write_schema_version(conn)
             conn.commit()
         except Exception:

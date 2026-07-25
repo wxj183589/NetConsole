@@ -15,11 +15,17 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
-from typing import Callable, Iterator
+from typing import BinaryIO, Callable, Iterator
 
 from netconsole.core import app_logger
 from netconsole.core.database import Database
 from netconsole.core.device_credential_store import (
+    DEVICE_SECRET_FIELDS,
+    DEVICE_SECRET_STORAGE_FIELDS,
+    ensure_device_credential_schema,
+    read_device_credential_states,
+    replace_device_credential_state,
+    repair_device_credential_states,
     sanitize_device_credentials_for_package,
 )
 from netconsole.core.interprocess_lock import interprocess_file_lock
@@ -36,7 +42,14 @@ from netconsole.services.site_sync import (
     FULL_MIGRATION,
     PACKAGE_FORMAT_VERSION,
     PACKAGE_TYPES,
+    SANITIZED_SHARE,
     SiteSyncService,
+)
+from netconsole.services.site_package_crypto import (
+    SitePackageCryptoError,
+    decrypt_stream,
+    encrypt_file,
+    new_encryption_metadata,
 )
 
 
@@ -737,6 +750,7 @@ class SitePackageService:
         destination: Path,
         *,
         package_type: str = FULL_MIGRATION,
+        migration_password: str | None = None,
         check_cancel: Callable[[], None] | None = None,
     ) -> dict[str, object]:
         normalized_type = str(package_type or FULL_MIGRATION).strip().casefold()
@@ -747,6 +761,20 @@ class SitePackageService:
             return sync.export_field_package(site_id, destination, check_cancel=check_cancel)
         if normalized_type == COLLECTION_RETURN:
             return sync.export_return_package(site_id, destination, check_cancel=check_cancel)
+        if normalized_type == FULL_MIGRATION:
+            if not migration_password:
+                raise SiteStorageError(
+                    "SITE_EXPORT_PASSWORD_REQUIRED",
+                    "完整迁移包必须设置至少 8 个字符的迁移密码",
+                )
+            return self._export_encrypted_site(
+                site_id,
+                destination,
+                migration_password=migration_password,
+                check_cancel=check_cancel,
+            )
+        if normalized_type != SANITIZED_SHARE:
+            raise SiteStorageError("SITE_EXPORT_TYPE_INVALID", "不支持的局点数据包类型")
         site = self.sites.registry.get(site_id)
         identity = sync.ensure_sync_identity(site, require_legacy_audit=False)
         destination = Path(destination).expanduser().resolve()
@@ -757,7 +785,10 @@ class SitePackageService:
         try:
             manifest_files: dict[str, str] = {}
             reentry_count = 0
-            with tempfile.TemporaryDirectory(prefix="netconsole-site-export-") as temp:
+            self.paths.temp_dir.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(
+                prefix="netconsole-site-export-", dir=self.paths.temp_dir
+            ) as temp:
                 root = Path(temp) / "site"
                 for source in _safe_site_files(site.root_path):
                     if check_cancel:
@@ -777,7 +808,7 @@ class SitePackageService:
                     "format": "netconsole-site-package",
                     "format_version": PACKAGE_FORMAT_VERSION,
                     "package_id": str(uuid.uuid4()),
-                    "package_type": FULL_MIGRATION,
+                    "package_type": SANITIZED_SHARE,
                     "app_version": APP_VERSION.removeprefix("v"),
                     "site_id": site.site_id,
                     "site_uuid": identity["site_uuid"],
@@ -794,7 +825,10 @@ class SitePackageService:
                 }
                 (Path(temp) / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
                 (Path(temp) / "checksums.json").write_text(json.dumps(manifest_files, ensure_ascii=False, indent=2), encoding="utf-8")
-                (Path(temp) / "README.txt").write_text("NetConsole 局点包；导入后需要重新录入设备凭据。\n", encoding="utf-8")
+                (Path(temp) / "README.txt").write_text(
+                    "NetConsole 脱敏分享包；导入后需要重新录入设备凭据。\n",
+                    encoding="utf-8",
+                )
                 with zipfile.ZipFile(staging, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                     for item in Path(temp).rglob("*"):
                         if item.is_file():
@@ -803,7 +837,7 @@ class SitePackageService:
             os.replace(staging, destination)
             return {
                 "package_name": destination.name,
-                "package_type": FULL_MIGRATION,
+                "package_type": SANITIZED_SHARE,
                 "site_uuid": identity["site_uuid"],
                 "base_revision": identity["revision"],
                 "size_bytes": destination.stat().st_size,
@@ -813,11 +847,116 @@ class SitePackageService:
         finally:
             staging.unlink(missing_ok=True)
 
+    def _export_encrypted_site(
+        self,
+        site_id: str,
+        destination: Path,
+        *,
+        migration_password: str,
+        check_cancel: Callable[[], None] | None,
+    ) -> dict[str, object]:
+        site = self.sites.registry.get(site_id)
+        identity = SiteSyncService(self.paths, self.sites).ensure_sync_identity(
+            site, require_legacy_audit=False
+        )
+        destination = Path(destination).expanduser().resolve()
+        if destination.suffix.casefold() != ".ncsite":
+            destination = destination.with_suffix(".ncsite")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        staging = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+        package_id = str(uuid.uuid4())
+        try:
+            self.paths.temp_dir.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(
+                prefix="netconsole-site-export-", dir=self.paths.temp_dir
+            ) as temp:
+                temp_root = Path(temp)
+                payload_root = temp_root / "payload"
+                site_root = payload_root / "site"
+                manifest_files: dict[str, str] = {}
+                for source in _safe_site_files(site.root_path):
+                    if check_cancel:
+                        check_cancel()
+                    relative = source.relative_to(site.root_path).as_posix()
+                    target = site_root / relative
+                    if source.suffix.casefold() in {".db", ".sqlite", ".sqlite3"}:
+                        _copy_database_snapshot(source, target)
+                    else:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(source, target)
+                    manifest_files[f"site/{relative}"] = _sha256(target)
+                payload_manifest = {
+                    "format": "netconsole-site-package-payload",
+                    "format_version": 1,
+                    "package_id": package_id,
+                    "checksums": manifest_files,
+                }
+                _atomic_json(payload_root / "payload-manifest.json", payload_manifest)
+                _atomic_json(payload_root / "checksums.json", manifest_files)
+                (payload_root / "README.txt").write_text(
+                    "NetConsole 完整迁移包加密载荷。\n", encoding="utf-8"
+                )
+                payload_zip = temp_root / "payload.zip"
+                _write_zip_tree(payload_root, payload_zip)
+
+                encryption = new_encryption_metadata()
+                manifest: dict[str, object] = {
+                    "format": "netconsole-site-package",
+                    "format_version": PACKAGE_FORMAT_VERSION,
+                    "package_id": package_id,
+                    "package_type": FULL_MIGRATION,
+                    "app_version": APP_VERSION.removeprefix("v"),
+                    "site_id": site.site_id,
+                    "site_uuid": identity["site_uuid"],
+                    "site_name": site.display_name,
+                    "site_revision": identity["revision"],
+                    "base_revision": identity["revision"],
+                    "created_at": _now(),
+                    "source_platform": "windows" if os.name == "nt" else os.name,
+                    "contains_credentials": True,
+                    "credential_reentry_count": 0,
+                    "encrypted": True,
+                    "encryption": encryption,
+                }
+                encrypted_payload = temp_root / "payload.enc"
+                try:
+                    encrypt_file(
+                        payload_zip,
+                        encrypted_payload,
+                        password=migration_password,
+                        metadata=encryption,
+                        aad=_package_aad(manifest),
+                    )
+                except SitePackageCryptoError as exc:
+                    raise SiteStorageError("SITE_EXPORT_ENCRYPTION_FAILED", str(exc)) from exc
+                manifest["payload_ciphertext_sha256"] = _sha256(encrypted_payload)
+                manifest["payload_size_bytes"] = encrypted_payload.stat().st_size
+                _write_encrypted_package(staging, manifest, encrypted_payload)
+            self.inspect_package(
+                staging,
+                migration_password=migration_password,
+                validate_extension=False,
+            )
+            os.replace(staging, destination)
+            return {
+                "package_name": destination.name,
+                "package_type": FULL_MIGRATION,
+                "site_uuid": identity["site_uuid"],
+                "base_revision": identity["revision"],
+                "size_bytes": destination.stat().st_size,
+                "contains_credentials": True,
+                "credential_reentry_count": 0,
+                "encrypted": True,
+            }
+        finally:
+            staging.unlink(missing_ok=True)
+
     def inspect_package(
         self,
         package: Path,
         *,
         target_site_id: str | None = None,
+        migration_password: str | None = None,
         validate_extension: bool = True,
     ) -> dict[str, object]:
         package = Path(package).resolve()
@@ -831,7 +970,12 @@ class SitePackageService:
                     _validate_archive_name(info.filename)
                     if _is_symlink(info):
                         raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "局点包不允许符号链接")
-                    if info.file_size > _MAX_SINGLE_FILE_BYTES:
+                    single_limit = (
+                        _MAX_PACKAGE_BYTES
+                        if info.filename == "payload.enc"
+                        else _MAX_SINGLE_FILE_BYTES
+                    )
+                    if info.file_size > single_limit:
                         raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "局点包单文件过大")
                     total += info.file_size
                     if total > _MAX_PACKAGE_BYTES:
@@ -840,11 +984,16 @@ class SitePackageService:
                     manifest = json.loads(archive.read("manifest.json"))
                 except (KeyError, json.JSONDecodeError) as exc:
                     raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "局点包缺少有效 manifest") from exc
-                version = int(manifest.get("format_version") or 0)
-                if manifest.get("format") != "netconsole-site-package" or version not in {1, PACKAGE_FORMAT_VERSION}:
+                if not isinstance(manifest, dict):
+                    raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "局点包 manifest 格式无效")
+                try:
+                    version = int(manifest.get("format_version") or 0)
+                except (TypeError, ValueError) as exc:
+                    raise SiteStorageError(
+                        "SITE_IMPORT_INVALID_PACKAGE", "局点包版本格式无效"
+                    ) from exc
+                if manifest.get("format") != "netconsole-site-package" or version not in {1, 2, PACKAGE_FORMAT_VERSION}:
                     raise SiteStorageError("SITE_IMPORT_VERSION_UNSUPPORTED", "不支持的局点包版本")
-                if manifest.get("contains_credentials") is not False:
-                    raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "局点包不能包含凭据")
                 package_type = (
                     FULL_MIGRATION
                     if version == 1
@@ -855,7 +1004,43 @@ class SitePackageService:
                 expected_suffix = ".ncresult" if package_type == COLLECTION_RETURN else ".ncsite"
                 if validate_extension and package.suffix.casefold() != expected_suffix:
                     raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", f"{package_type} 数据包扩展名应为 {expected_suffix}")
-                checksums = manifest.get("checksums")
+                encrypted_full = (
+                    package_type == FULL_MIGRATION
+                    and version >= 3
+                    and manifest.get("encrypted") is True
+                    and manifest.get("contains_credentials") is True
+                )
+                if version >= 3 and package_type == FULL_MIGRATION and not encrypted_full:
+                    raise SiteStorageError(
+                        "SITE_IMPORT_INVALID_PACKAGE",
+                        "v3 完整迁移包必须使用认证加密",
+                    )
+                if encrypted_full:
+                    if not migration_password:
+                        raise SiteStorageError(
+                            "SITE_IMPORT_PASSWORD_REQUIRED",
+                            "该完整迁移包已加密，请输入迁移密码",
+                            details={
+                                "package_type": FULL_MIGRATION,
+                                "site_name": str(manifest.get("site_name") or ""),
+                                "encrypted": True,
+                            },
+                        )
+                    payload_summary = self._inspect_encrypted_payload(
+                        archive, manifest, migration_password
+                    )
+                    checksums: object = {"payload.enc": manifest.get("payload_ciphertext_sha256")}
+                else:
+                    if manifest.get("contains_credentials") is not False:
+                        raise SiteStorageError(
+                            "SITE_IMPORT_INVALID_PACKAGE",
+                            "未加密的局点包不能包含凭据",
+                        )
+                    payload_summary = {
+                        "file_count": len(infos),
+                        "total_bytes": total,
+                    }
+                    checksums = manifest.get("checksums")
                 if not isinstance(checksums, dict):
                     raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "局点包缺少 checksum")
                 for name, expected in checksums.items():
@@ -873,15 +1058,16 @@ class SitePackageService:
                     "package_type": package_type,
                     "package_id": str(manifest.get("package_id") or ""),
                     "base_revision": int(manifest.get("base_revision") or manifest.get("site_revision") or 1),
-                    "file_count": len(infos),
-                    "contains_credentials": False,
+                    "file_count": int(payload_summary["file_count"]),
+                    "contains_credentials": bool(encrypted_full),
+                    "encrypted": bool(encrypted_full),
                     "credential_reentry_count": max(
                         0, int(manifest.get("credential_reentry_count") or 0)
                     ),
                     "conflict_count": 0,
                     "conflicts": [],
                     "invalid_count": 0,
-                    "estimated_additional_bytes": total,
+                    "estimated_additional_bytes": int(payload_summary["total_bytes"]),
                     "can_import": True,
                 }
                 if package_type == COLLECTION_RETURN:
@@ -897,6 +1083,45 @@ class SitePackageService:
         except zipfile.BadZipFile as exc:
             raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "局点包不是有效 ZIP") from exc
 
+    def _inspect_encrypted_payload(
+        self,
+        archive: zipfile.ZipFile,
+        manifest: dict[str, object],
+        migration_password: str,
+    ) -> dict[str, int]:
+        encryption = manifest.get("encryption")
+        if not isinstance(encryption, dict):
+            raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "完整迁移包缺少加密参数")
+        try:
+            expected = str(manifest.get("payload_ciphertext_sha256") or "")
+            with archive.open("payload.enc") as encrypted:
+                if _sha256_stream(encrypted) != expected:
+                    raise SiteStorageError(
+                        "SITE_IMPORT_AUTHENTICATION_FAILED",
+                        "迁移密码错误、数据包已损坏或被修改",
+                    )
+            self.paths.temp_dir.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(
+                prefix="netconsole-site-inspect-", dir=self.paths.temp_dir
+            ) as temporary:
+                payload_zip = Path(temporary) / "payload.zip"
+                with archive.open("payload.enc") as encrypted:
+                    decrypt_stream(
+                        encrypted,
+                        payload_zip,
+                        password=migration_password,
+                        metadata=encryption,
+                        aad=_package_aad(manifest),
+                    )
+                return _inspect_payload_zip(payload_zip, str(manifest.get("package_id") or ""))
+        except KeyError as exc:
+            raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "完整迁移包缺少加密载荷") from exc
+        except SitePackageCryptoError as exc:
+            raise SiteStorageError(
+                "SITE_IMPORT_AUTHENTICATION_FAILED",
+                "迁移密码错误、数据包已损坏或被修改",
+            ) from exc
+
     def import_site(
         self,
         package: Path,
@@ -906,10 +1131,15 @@ class SitePackageService:
         replace_site_id: str | None = None,
         raw_only: bool = False,
         conflict_resolutions: list[dict[str, object]] | None = None,
+        migration_password: str | None = None,
+        credential_policy: str = "preserve_local",
     ) -> dict[str, object]:
+        if credential_policy not in {"preserve_local", "use_package"}:
+            raise SiteStorageError("SITE_IMPORT_CREDENTIAL_POLICY_INVALID", "凭据冲突策略无效")
         info = self.inspect_package(
             package,
             target_site_id=site_id or replace_site_id,
+            migration_password=migration_password,
         )
         manifest = self._read_manifest(package)
         package_type = str(info.get("package_type") or FULL_MIGRATION)
@@ -932,31 +1162,40 @@ class SitePackageService:
         with storage_lock(self.paths, "site-import"):
             try:
                 staging.mkdir(parents=True)
-                with zipfile.ZipFile(Path(package).resolve()) as archive:
-                    for info_item in archive.infolist():
-                        name_item = _validate_archive_name(info_item.filename)
-                        destination = (staging / name_item).resolve()
-                        if not _relative_inside(staging, destination):
-                            raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "局点包路径越界")
-                        if info_item.is_dir():
-                            destination.mkdir(parents=True, exist_ok=True)
-                        else:
-                            destination.parent.mkdir(parents=True, exist_ok=True)
-                            with archive.open(info_item) as source, destination.open("wb") as target_file:
-                                shutil.copyfileobj(source, target_file)
+                if bool(info.get("encrypted")):
+                    self._extract_encrypted_payload(
+                        Path(package).resolve(),
+                        staging,
+                        manifest,
+                        migration_password or "",
+                    )
+                else:
+                    _extract_outer_package(Path(package).resolve(), staging)
                 imported_root = staging / "site"
                 imported_database = imported_root / "db" / "devices.db"
                 reentry_count = 0
                 if imported_database.is_file():
                     with sqlite3.connect(imported_database) as connection:
-                        reentry_count = sanitize_device_credentials_for_package(
-                            connection,
-                            infer_missing=(
-                                "credential_reentry_count" not in manifest
-                                or int(manifest.get("credential_reentry_count") or 0) > 0
-                            ),
-                        )
+                        if bool(info.get("contains_credentials")):
+                            repair_device_credential_states(connection)
+                        else:
+                            reentry_count = sanitize_device_credentials_for_package(
+                                connection,
+                                infer_missing=(
+                                    "credential_reentry_count" not in manifest
+                                    or int(manifest.get("credential_reentry_count") or 0) > 0
+                                ),
+                            )
                         connection.commit()
+                if (
+                    replacement is not None
+                    and bool(info.get("contains_credentials"))
+                    and credential_policy == "preserve_local"
+                ):
+                    _preserve_local_device_credentials(
+                        replacement.root_path / "db" / "devices.db",
+                        imported_database,
+                    )
                 _quick_check_site(imported_root)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 if target.exists():
@@ -964,7 +1203,9 @@ class SitePackageService:
                         raise SiteStorageError("SITE_IMPORT_CONFLICT", "目标局点已存在")
                     backup = self.paths.archive_dir / f"site-import-{wanted_id}-{uuid.uuid4().hex}"
                     backup.parent.mkdir(parents=True, exist_ok=True)
+                    _finalize_site_databases(target)
                     _publish_directory(target, backup)
+                    _remove_directory_after_backup(target)
                 _publish_directory(imported_root, target)
                 published = True
                 self.sites.registry.register(SiteRecord(wanted_id, name, target, remark="imported"))
@@ -977,6 +1218,9 @@ class SitePackageService:
                     "backup_created": backup is not None,
                     "requires_credentials": reentry_count > 0,
                     "credential_reentry_count": reentry_count,
+                    "credential_policy": (
+                        credential_policy if bool(info.get("contains_credentials")) else "not_applicable"
+                    ),
                 }
             except SiteStorageError:
                 if published and backup and target.exists():
@@ -994,6 +1238,36 @@ class SitePackageService:
                 raise SiteStorageError("SITE_IMPORT_FAILED", "局点导入失败，已保留原数据") from exc
             finally:
                 shutil.rmtree(staging, ignore_errors=True)
+
+    def _extract_encrypted_payload(
+        self,
+        package: Path,
+        staging: Path,
+        manifest: dict[str, object],
+        migration_password: str,
+    ) -> None:
+        encryption = manifest.get("encryption")
+        if not isinstance(encryption, dict):
+            raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "完整迁移包缺少加密参数")
+        payload_zip = staging / ".decrypted-payload.zip"
+        try:
+            with zipfile.ZipFile(package) as archive, archive.open("payload.enc") as source:
+                decrypt_stream(
+                    source,
+                    payload_zip,
+                    password=migration_password,
+                    metadata=encryption,
+                    aad=_package_aad(manifest),
+                )
+            _inspect_payload_zip(payload_zip, str(manifest.get("package_id") or ""))
+            _extract_outer_package(payload_zip, staging)
+        except (SitePackageCryptoError, KeyError) as exc:
+            raise SiteStorageError(
+                "SITE_IMPORT_AUTHENTICATION_FAILED",
+                "迁移密码错误、数据包已损坏或被修改",
+            ) from exc
+        finally:
+            payload_zip.unlink(missing_ok=True)
 
     @staticmethod
     def _read_manifest(package: Path) -> dict[str, object]:
@@ -1043,6 +1317,20 @@ def _publish_directory(source: Path, destination: Path) -> None:
     # still happens only after the complete copy; the staging cleanup is best effort.
     shutil.copytree(source, destination, copy_function=shutil.copyfile)
     shutil.rmtree(source, ignore_errors=True)
+
+
+def _remove_directory_after_backup(path: Path) -> None:
+    for _attempt in range(20):
+        if not path.exists():
+            return
+        shutil.rmtree(path, ignore_errors=True)
+        if not path.exists():
+            return
+        time.sleep(0.05)
+    raise SiteStorageError(
+        "SITE_STORAGE_UNAVAILABLE",
+        "原局点已完成备份，但目录仍被占用，未发布导入数据",
+    )
 
 
 def _publish_data_root(source: Path, destination: Path) -> None:
@@ -1119,12 +1407,16 @@ def _quick_check_site_tree(root: Path) -> None:
 def _finalize_site_databases(root: Path) -> None:
     """Checkpoint WAL files before a Windows directory publish."""
     for db in root.rglob("*.db"):
+        connection: sqlite3.Connection | None = None
         try:
-            with sqlite3.connect(db, timeout=5) as connection:
-                connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                connection.execute("PRAGMA journal_mode=DELETE")
+            connection = sqlite3.connect(db, timeout=5)
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            connection.execute("PRAGMA journal_mode=DELETE")
         except sqlite3.DatabaseError:
             continue
+        finally:
+            if connection is not None:
+                connection.close()
         for suffix in ("-wal", "-shm"):
             try:
                 (db.parent / f"{db.name}{suffix}").unlink(missing_ok=True)
@@ -1155,6 +1447,240 @@ def _copy_sanitized_database(source: Path, target: Path) -> int:
     finally:
         target_connection.close()
         source_connection.close()
+
+
+def _copy_database_snapshot(source: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source_connection = sqlite3.connect(source)
+    target_connection = sqlite3.connect(target)
+    try:
+        source_connection.backup(target_connection)
+        target_connection.commit()
+    finally:
+        target_connection.close()
+        source_connection.close()
+
+
+def _preserve_local_device_credentials(source: Path, target: Path) -> None:
+    if not source.is_file() or not target.is_file():
+        return
+    source_connection = sqlite3.connect(source)
+    source_connection.row_factory = sqlite3.Row
+    target_connection = sqlite3.connect(target)
+    target_connection.row_factory = sqlite3.Row
+    try:
+        source_columns = _table_columns(source_connection, "devices")
+        target_columns = _table_columns(target_connection, "devices")
+        credential_columns = [
+            field
+            for field in (
+                "username",
+                "ssh_username",
+                "telnet_username",
+                "tunnel1_username",
+                "tunnel2_username",
+                *DEVICE_SECRET_STORAGE_FIELDS,
+            )
+            if field in source_columns and field in target_columns
+        ]
+        if "device_uuid" not in source_columns or "device_uuid" not in target_columns:
+            return
+        source_states = read_device_credential_states(source_connection)
+        ensure_device_credential_schema(target_connection)
+        selected = ", ".join(
+            ["device_uuid", *(f'"{field}"' for field in credential_columns)]
+        )
+        for row in source_connection.execute(f"SELECT {selected} FROM devices"):
+            device_uuid = str(row["device_uuid"] or "")
+            if not device_uuid:
+                continue
+            exists = target_connection.execute(
+                "SELECT 1 FROM devices WHERE device_uuid = ? LIMIT 1",
+                (device_uuid,),
+            ).fetchone()
+            if exists is None:
+                continue
+            if credential_columns:
+                assignments = ", ".join(f'"{field}" = ?' for field in credential_columns)
+                target_connection.execute(
+                    f"UPDATE devices SET {assignments} WHERE device_uuid = ?",
+                    [*(row[field] for field in credential_columns), device_uuid],
+                )
+            target_connection.execute(
+                "DELETE FROM device_credential_states WHERE device_uuid = ?",
+                (device_uuid,),
+            )
+            for field in DEVICE_SECRET_FIELDS:
+                replace_device_credential_state(
+                    target_connection,
+                    device_uuid,
+                    field,
+                    source_states.get(device_uuid, {}).get(field),
+                )
+        repair_device_credential_states(target_connection)
+        target_connection.commit()
+    finally:
+        target_connection.close()
+        source_connection.close()
+
+
+def _table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")')}
+
+
+def _package_aad(manifest: dict[str, object]) -> bytes:
+    encryption = manifest.get("encryption")
+    encryption_values = dict(encryption) if isinstance(encryption, dict) else {}
+    aad_value = {
+        "format": manifest.get("format"),
+        "format_version": manifest.get("format_version"),
+        "package_id": manifest.get("package_id"),
+        "package_type": manifest.get("package_type"),
+        "app_version": manifest.get("app_version"),
+        "site_id": manifest.get("site_id"),
+        "site_uuid": manifest.get("site_uuid"),
+        "site_name": manifest.get("site_name"),
+        "site_revision": manifest.get("site_revision"),
+        "base_revision": manifest.get("base_revision"),
+        "created_at": manifest.get("created_at"),
+        "source_platform": manifest.get("source_platform"),
+        "contains_credentials": manifest.get("contains_credentials"),
+        "encrypted": manifest.get("encrypted"),
+        "encryption": {
+            key: encryption_values.get(key)
+            for key in (
+                "algorithm",
+                "kdf",
+                "n",
+                "r",
+                "p",
+                "salt_b64",
+                "nonce_b64",
+                "aad_version",
+                "payload",
+            )
+        },
+    }
+    return json.dumps(
+        aad_value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _write_zip_tree(root: Path, destination: Path) -> None:
+    with zipfile.ZipFile(
+        destination,
+        "w",
+        compression=zipfile.ZIP_DEFLATED,
+        allowZip64=True,
+    ) as archive:
+        for item in root.rglob("*"):
+            if item.is_file():
+                archive.write(item, item.relative_to(root).as_posix())
+
+
+def _write_encrypted_package(
+    destination: Path,
+    manifest: dict[str, object],
+    encrypted_payload: Path,
+) -> None:
+    with zipfile.ZipFile(
+        destination,
+        "w",
+        compression=zipfile.ZIP_DEFLATED,
+        allowZip64=True,
+    ) as archive:
+        archive.writestr(
+            "manifest.json",
+            json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
+        )
+        archive.writestr(
+            "README.txt",
+            "NetConsole 完整迁移包；设备凭据位于认证加密载荷中。\n".encode(
+                "utf-8"
+            ),
+        )
+        archive.write(
+            encrypted_payload,
+            "payload.enc",
+            compress_type=zipfile.ZIP_STORED,
+        )
+
+
+def _inspect_payload_zip(payload: Path, package_id: str) -> dict[str, int]:
+    try:
+        with zipfile.ZipFile(payload) as archive:
+            infos = archive.infolist()
+            if len(infos) > _MAX_PACKAGE_FILES:
+                raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "局点包文件数量超限")
+            total = 0
+            for info in infos:
+                _validate_archive_name(info.filename)
+                if _is_symlink(info):
+                    raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "局点包不允许符号链接")
+                if info.file_size > _MAX_SINGLE_FILE_BYTES:
+                    raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "局点包单文件过大")
+                total += info.file_size
+                if total > _MAX_PACKAGE_BYTES:
+                    raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "局点包解压总大小超限")
+            try:
+                payload_manifest = json.loads(archive.read("payload-manifest.json"))
+            except (KeyError, json.JSONDecodeError) as exc:
+                raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "加密载荷缺少有效 manifest") from exc
+            if (
+                not isinstance(payload_manifest, dict)
+                or payload_manifest.get("format") != "netconsole-site-package-payload"
+            ):
+                raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "加密载荷与外层 manifest 不匹配")
+            try:
+                payload_version = int(payload_manifest.get("format_version") or 0)
+            except (TypeError, ValueError) as exc:
+                raise SiteStorageError(
+                    "SITE_IMPORT_INVALID_PACKAGE", "加密载荷版本格式无效"
+                ) from exc
+            if (
+                payload_version != 1
+                or str(payload_manifest.get("package_id") or "") != package_id
+            ):
+                raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "加密载荷与外层 manifest 不匹配")
+            checksums = payload_manifest.get("checksums")
+            if not isinstance(checksums, dict):
+                raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "加密载荷缺少 checksum")
+            for name, expected in checksums.items():
+                _validate_archive_name(str(name))
+                try:
+                    actual = hashlib.sha256(archive.read(str(name))).hexdigest()
+                except KeyError as exc:
+                    raise SiteStorageError("SITE_IMPORT_CHECKSUM_FAILED", "加密载荷文件缺失") from exc
+                if actual != str(expected):
+                    raise SiteStorageError("SITE_IMPORT_CHECKSUM_FAILED", "加密载荷完整性校验失败")
+            return {"file_count": len(infos), "total_bytes": total}
+    except zipfile.BadZipFile as exc:
+        raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "解密后的载荷不是有效 ZIP") from exc
+
+
+def _extract_outer_package(package: Path, target: Path) -> None:
+    with zipfile.ZipFile(package) as archive:
+        for info in archive.infolist():
+            name = _validate_archive_name(info.filename)
+            destination = (target / name).resolve()
+            if not _relative_inside(target, destination):
+                raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "局点包路径越界")
+            if info.is_dir():
+                destination.mkdir(parents=True, exist_ok=True)
+            else:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(info) as source, destination.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+
+
+def _sha256_stream(stream: BinaryIO) -> str:
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _copy_tree_snapshot(source: Path, destination: Path, *, check_cancel: Callable[[], None] | None = None) -> None:

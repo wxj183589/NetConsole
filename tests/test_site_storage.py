@@ -145,7 +145,9 @@ def test_site_package_sanitizes_credentials_and_has_checksums(tmp_path: Path) ->
         connection.commit()
     package_path = tmp_path / "exports" / "site.ncsite"
 
-    result = SitePackageService(paths, sites).export_site("site-one", package_path)
+    result = SitePackageService(paths, sites).export_site(
+        "site-one", package_path, package_type="sanitized_share"
+    )
 
     assert result["contains_credentials"] is False
     assert result["credential_reentry_count"] == 1
@@ -180,15 +182,262 @@ def test_site_package_sanitizes_credentials_and_has_checksums(tmp_path: Path) ->
     ]
 
 
+def test_full_migration_package_encrypts_and_restores_credentials(tmp_path: Path) -> None:
+    source_paths = _paths(tmp_path / "source")
+    source_sites = SiteApplicationService(source_paths)
+    source_sites.create_site("source-site", "完整迁移局点")
+    secret = "migration-ssh-secret-42"
+    community = "private-community-42"
+    with sqlite3.connect(source_paths.site_db_path("source-site")) as connection:
+        connection.execute(
+            "INSERT INTO devices (device_uuid, name, primary_address, ssh_username, "
+            "password, ssh_password, snmp_ro_community, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+            (
+                "device-full",
+                "完整设备",
+                "192.0.2.20",
+                "admin",
+                secret,
+                secret,
+                community,
+            ),
+        )
+        connection.commit()
+    package = tmp_path / "full.ncsite"
+    packages = SitePackageService(source_paths, source_sites)
+
+    exported = packages.export_site(
+        "source-site", package, migration_password="migration-pass"
+    )
+
+    assert exported["contains_credentials"] is True
+    assert secret.encode("utf-8") not in package.read_bytes()
+    assert community.encode("utf-8") not in package.read_bytes()
+    with zipfile.ZipFile(package) as archive:
+        assert set(archive.namelist()) == {"manifest.json", "README.txt", "payload.enc"}
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["encrypted"] is True
+        assert manifest["contains_credentials"] is True
+        assert "password" not in json.dumps(manifest, ensure_ascii=False).casefold()
+
+    with pytest.raises(SiteStorageError) as password_required:
+        packages.inspect_package(package)
+    assert password_required.value.code == "SITE_IMPORT_PASSWORD_REQUIRED"
+    inspected = packages.inspect_package(
+        package, migration_password="migration-pass"
+    )
+    assert inspected["encrypted"] is True
+    assert inspected["contains_credentials"] is True
+
+    target_paths = _paths(tmp_path / "target")
+    target_sites = SiteApplicationService(target_paths)
+    imported = SitePackageService(target_paths, target_sites).import_site(
+        package,
+        site_id="restored-site",
+        display_name="恢复局点",
+        migration_password="migration-pass",
+    )
+    restored = DeviceRepository(
+        Database(target_paths.site_db_path("restored-site"))
+    ).get_by_uuid("device-full")
+
+    assert imported["requires_credentials"] is False
+    assert imported["credential_reentry_count"] == 0
+    assert restored is not None
+    assert restored.ssh_password == secret
+    assert restored.snmp_ro_community == community
+    assert restored.credential_status == "available"
+
+
+def test_full_migration_wrong_password_or_tampering_publishes_nothing(
+    tmp_path: Path,
+) -> None:
+    source_paths = _paths(tmp_path / "source")
+    source_sites = SiteApplicationService(source_paths)
+    source_sites.create_site("source-site", "源局点")
+    package = tmp_path / "full.ncsite"
+    SitePackageService(source_paths, source_sites).export_site(
+        "source-site", package, migration_password="correct-pass"
+    )
+    target_paths = _paths(tmp_path / "target")
+    target_sites = SiteApplicationService(target_paths)
+    target_packages = SitePackageService(target_paths, target_sites)
+
+    with pytest.raises(SiteStorageError) as wrong_password:
+        target_packages.import_site(
+            package,
+            site_id="wrong-password-site",
+            migration_password="incorrect-pass",
+        )
+    assert wrong_password.value.code == "SITE_IMPORT_AUTHENTICATION_FAILED"
+    assert not (target_paths.sites_dir / "wrong-password-site").exists()
+    assert not list(target_paths.temp_dir.glob("netconsole-site-inspect-*"))
+    assert not list((target_paths.temp_dir / "site-import-staging").glob("*"))
+
+    tampered = tmp_path / "tampered.ncsite"
+    with zipfile.ZipFile(package) as source, zipfile.ZipFile(tampered, "w") as target:
+        for info in source.infolist():
+            value = source.read(info.filename)
+            if info.filename == "payload.enc":
+                value = bytes([value[0] ^ 1]) + value[1:]
+            target.writestr(info, value)
+    with pytest.raises(SiteStorageError) as changed:
+        target_packages.import_site(
+            tampered,
+            site_id="tampered-site",
+            migration_password="correct-pass",
+        )
+    assert changed.value.code == "SITE_IMPORT_AUTHENTICATION_FAILED"
+    assert not (target_paths.sites_dir / "tampered-site").exists()
+    assert not list(target_paths.temp_dir.glob("netconsole-site-inspect-*"))
+    assert not list((target_paths.temp_dir / "site-import-staging").glob("*"))
+
+    tampered_manifest = tmp_path / "tampered-manifest.ncsite"
+    with zipfile.ZipFile(package) as source, zipfile.ZipFile(
+        tampered_manifest, "w"
+    ) as target:
+        for info in source.infolist():
+            value = source.read(info.filename)
+            if info.filename == "manifest.json":
+                manifest = json.loads(value)
+                manifest["site_name"] = "被篡改的局点"
+                value = json.dumps(manifest, ensure_ascii=False).encode("utf-8")
+            target.writestr(info, value)
+    with pytest.raises(SiteStorageError) as changed_manifest:
+        target_packages.import_site(
+            tampered_manifest,
+            site_id="tampered-manifest-site",
+            migration_password="correct-pass",
+        )
+    assert changed_manifest.value.code == "SITE_IMPORT_AUTHENTICATION_FAILED"
+    assert not (target_paths.sites_dir / "tampered-manifest-site").exists()
+
+    invalid_kdf = tmp_path / "invalid-kdf.ncsite"
+    with zipfile.ZipFile(package) as source, zipfile.ZipFile(invalid_kdf, "w") as target:
+        for info in source.infolist():
+            value = source.read(info.filename)
+            if info.filename == "manifest.json":
+                manifest = json.loads(value)
+                manifest["encryption"]["n"] = "invalid"
+                value = json.dumps(manifest, ensure_ascii=False).encode("utf-8")
+            target.writestr(info, value)
+    with pytest.raises(SiteStorageError) as invalid_parameters:
+        target_packages.inspect_package(
+            invalid_kdf,
+            migration_password="correct-pass",
+        )
+    assert invalid_parameters.value.code == "SITE_IMPORT_AUTHENTICATION_FAILED"
+
+
+def test_v3_full_migration_cannot_be_declared_unencrypted(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    sites = SiteApplicationService(paths)
+    sites.create_site("site-one", "一号线")
+    sanitized = tmp_path / "sanitized.ncsite"
+    SitePackageService(paths, sites).export_site(
+        "site-one", sanitized, package_type="sanitized_share"
+    )
+    disguised = tmp_path / "disguised-full.ncsite"
+    with zipfile.ZipFile(sanitized) as source, zipfile.ZipFile(disguised, "w") as target:
+        for info in source.infolist():
+            value = source.read(info.filename)
+            if info.filename == "manifest.json":
+                manifest = json.loads(value)
+                manifest["package_type"] = "full_migration"
+                value = json.dumps(manifest, ensure_ascii=False).encode("utf-8")
+            target.writestr(info, value)
+
+    with pytest.raises(SiteStorageError) as invalid:
+        SitePackageService(paths, sites).inspect_package(disguised)
+
+    assert invalid.value.code == "SITE_IMPORT_INVALID_PACKAGE"
+
+
+@pytest.mark.parametrize(
+    ("credential_policy", "expected_secret"),
+    [("preserve_local", "local-secret"), ("use_package", "package-secret")],
+)
+def test_full_migration_replace_applies_credential_conflict_policy(
+    tmp_path: Path,
+    credential_policy: str,
+    expected_secret: str,
+) -> None:
+    source_paths = _paths(tmp_path / "source")
+    source_sites = SiteApplicationService(source_paths)
+    source_sites.create_site("source-site", "源局点")
+    with sqlite3.connect(source_paths.site_db_path("source-site")) as connection:
+        connection.execute(
+            "INSERT INTO devices (device_uuid, name, primary_address, ssh_username, "
+            "password, ssh_password, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+            (
+                "shared-device",
+                "包内设备",
+                "192.0.2.31",
+                "package-user",
+                "package-secret",
+                "package-secret",
+            ),
+        )
+        connection.commit()
+    package = tmp_path / f"{credential_policy}.ncsite"
+    SitePackageService(source_paths, source_sites).export_site(
+        "source-site", package, migration_password="migration-pass"
+    )
+
+    target_paths = _paths(tmp_path / credential_policy)
+    target_sites = SiteApplicationService(target_paths)
+    target_sites.create_site("target-site", "目标局点")
+    with sqlite3.connect(target_paths.site_db_path("target-site")) as connection:
+        connection.execute(
+            "INSERT INTO devices (device_uuid, name, primary_address, ssh_username, "
+            "password, ssh_password, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+            (
+                "shared-device",
+                "本地设备",
+                "192.0.2.32",
+                "local-user",
+                "local-secret",
+                "local-secret",
+            ),
+        )
+        connection.commit()
+    connection.close()
+
+    SitePackageService(target_paths, target_sites).import_site(
+        package,
+        replace_site_id="target-site",
+        migration_password="migration-pass",
+        credential_policy=credential_policy,
+    )
+    restored = DeviceRepository(
+        Database(target_paths.site_db_path("target-site"))
+    ).get_by_uuid("shared-device")
+
+    assert restored is not None
+    assert restored.ssh_password == expected_secret
+
+
 def test_site_package_detects_checksum_tampering(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     sites = SiteApplicationService(paths)
     sites.create_site("site-one", "一号线")
     package = tmp_path / "site.ncsite"
     packages = SitePackageService(paths, sites)
-    packages.export_site("site-one", package)
-    with zipfile.ZipFile(package, "a") as archive:
-        archive.writestr("site/site_meta.json", "tampered")
+    packages.export_site("site-one", package, package_type="sanitized_share")
+    tampered = tmp_path / "tampered.ncsite"
+    with zipfile.ZipFile(package) as source, zipfile.ZipFile(tampered, "w") as target:
+        for info in source.infolist():
+            value = (
+                b"tampered"
+                if info.filename == "site/site_meta.json"
+                else source.read(info.filename)
+            )
+            target.writestr(info, value)
+    package.unlink()
+    tampered.replace(package)
 
     with pytest.raises(SiteStorageError) as error:
         packages.inspect_package(package)
@@ -212,12 +461,17 @@ def test_import_as_new_site_is_staged_and_registered(tmp_path: Path) -> None:
     source_sites = SiteApplicationService(source_paths)
     source_sites.create_site("source-site", "源局点")
     package = tmp_path / "source.ncsite"
-    SitePackageService(source_paths, source_sites).export_site("source-site", package)
+    SitePackageService(source_paths, source_sites).export_site(
+        "source-site", package, migration_password="migration-pass"
+    )
     target_paths = _paths(tmp_path / "target")
     target_sites = SiteApplicationService(target_paths)
 
     result = SitePackageService(target_paths, target_sites).import_site(
-        package, site_id="imported-site", display_name="导入局点"
+        package,
+        site_id="imported-site",
+        display_name="导入局点",
+        migration_password="migration-pass",
     )
 
     assert result["requires_credentials"] is False
@@ -240,7 +494,9 @@ def test_imported_site_marks_credentials_for_reentry_and_new_secret_clears_marke
         )
         connection.commit()
     package = tmp_path / "source.ncsite"
-    SitePackageService(source_paths, source_sites).export_site("source-site", package)
+    SitePackageService(source_paths, source_sites).export_site(
+        "source-site", package, package_type="sanitized_share"
+    )
     target_paths = _paths(tmp_path / "target")
     target_sites = SiteApplicationService(target_paths)
 
@@ -273,7 +529,9 @@ def test_import_replace_uses_legacy_directory_path(tmp_path: Path) -> None:
     source_sites = SiteApplicationService(source_paths)
     source_sites.create_site("source-site", "源局点")
     package = tmp_path / "source.ncsite"
-    SitePackageService(source_paths, source_sites).export_site("source-site", package)
+    SitePackageService(source_paths, source_sites).export_site(
+        "source-site", package, migration_password="migration-pass"
+    )
 
     target_paths = _paths(tmp_path / "target")
     legacy_name = "宁波地铁12号线"
@@ -286,12 +544,48 @@ def test_import_replace_uses_legacy_directory_path(tmp_path: Path) -> None:
         package,
         replace_site_id=str(legacy["site_id"]),
         display_name="替换后的局点",
+        migration_password="migration-pass",
     )
 
     assert result["backup_created"] is True
     assert target_paths.site_db_path(legacy_name).is_file()
     assert not (target_paths.sites_dir / str(legacy["site_id"])).exists()
     assert target_sites.get_site(str(legacy["site_id"]))["display_name"] == "替换后的局点"
+
+
+def test_full_migration_replace_restores_original_site_when_publish_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_paths = _paths(tmp_path / "source")
+    source_sites = SiteApplicationService(source_paths)
+    source_sites.create_site("source-site", "源局点")
+    package = tmp_path / "source.ncsite"
+    SitePackageService(source_paths, source_sites).export_site(
+        "source-site", package, migration_password="migration-pass"
+    )
+
+    target_paths = _paths(tmp_path / "target")
+    target_sites = SiteApplicationService(target_paths)
+    target_sites.create_site("target-site", "原局点")
+    marker = target_paths.site_files_dir("target-site") / "original.txt"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("original-site-data", encoding="utf-8")
+
+    def fail_register(_record: object) -> None:
+        raise RuntimeError("simulated registry failure")
+
+    monkeypatch.setattr(target_sites.registry, "register", fail_register)
+    with pytest.raises(SiteStorageError) as failed:
+        SitePackageService(target_paths, target_sites).import_site(
+            package,
+            replace_site_id="target-site",
+            migration_password="migration-pass",
+        )
+
+    assert failed.value.code == "SITE_IMPORT_FAILED"
+    assert marker.read_text(encoding="utf-8") == "original-site-data"
+    with sqlite3.connect(target_paths.site_db_path("target-site")) as connection:
+        assert connection.execute("PRAGMA quick_check").fetchone() == ("ok",)
 
 
 def test_field_return_package_previews_and_applies_three_way_merge(tmp_path: Path) -> None:
