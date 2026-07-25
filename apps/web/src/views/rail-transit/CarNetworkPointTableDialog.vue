@@ -151,6 +151,35 @@ function normalizeTrainIdentity(...values: unknown[]): string {
 }
 function normalizeNodeName(value: string): string { return value === 'TC1-AP' ? 'TC1-MR' : value === 'TC2-AP' ? 'TC2-MR' : value }
 function rowMatchesTrain(row: CarNetworkPointRow, key: string): boolean { return normalizeTrainIdentity(row.train_id, row.train_no, row.display_name) === key }
+function generatedText(value: unknown, fallback = ''): string { return typeof value === 'string' ? value : fallback }
+function normalizeGeneratedRow(value: unknown): CarNetworkPointRow | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const row = value as Record<string, unknown>
+  const trainId = generatedText(row.train_id)
+  const nodeName = generatedText(row.node_name)
+  if (!trainId || !nodeName) return null
+  return {
+    train_id: trainId, train_no: generatedText(row.train_no), display_name: generatedText(row.display_name),
+    tc: generatedText(row.tc), end: generatedText(row.end), node_name: nodeName, node_type: generatedText(row.node_type),
+    device_id: generatedText(row.device_id), device_name: generatedText(row.device_name), device_group: generatedText(row.device_group), station: generatedText(row.station),
+    primary_address: generatedText(row.primary_address), backup_address: generatedText(row.backup_address), ip_vehicle: generatedText(row.ip_vehicle), ip_uplink: generatedText(row.ip_uplink),
+    ssh_host: generatedText(row.ssh_host), vrrp_ip: generatedText(row.vrrp_ip), address_mapping_mode: generatedText(row.address_mapping_mode, 'global'),
+    primary_address_role: generatedText(row.primary_address_role), backup_address_role: generatedText(row.backup_address_role), remark: generatedText(row.remark),
+  }
+}
+function applyGeneratedRows(previewRows: CarNetworkPointRow[]): boolean {
+  if (!props.train) { rows.value = previewRows; return true }
+  const currentRows = previewRows.filter((row) => rowMatchesTrain(row, currentTrainKey.value))
+  if (!currentRows.length) return false
+  const otherRows = rows.value.filter((row) => !rowMatchesTrain(row, currentTrainKey.value))
+  for (const generated of previewRows.filter((row) => !rowMatchesTrain(row, currentTrainKey.value))) {
+    const index = otherRows.findIndex((row) => rowMatchesTrain(row, normalizeTrainIdentity(generated.train_id, generated.train_no, generated.display_name)) && normalizeNodeName(row.node_name) === normalizeNodeName(generated.node_name))
+    if (index >= 0) otherRows[index] = generated
+    else otherRows.push(generated)
+  }
+  rows.value = [...otherRows, ...currentRows]
+  return true
+}
 function targetTrainPayload(): Record<string, unknown> {
   if (!props.train) return {}
   return {
@@ -197,11 +226,36 @@ async function transform(operation: 'apply_mapping' | 'apply_global' | 'apply_gl
 }
 async function handleTerminalTask(done: RailTransitTask): Promise<void> {
   if (done.status !== 'COMPLETED') return
-  if (done.action === 'car_network_generate_point_table' && Array.isArray(done.result_summary.nodes)) {
-    rows.value = done.result_summary.nodes as unknown as CarNetworkPointRow[]
+  if (done.action === 'car_network_generate_point_table') {
+    const rawNodes = done.result_summary.nodes
+    if (!Array.isArray(rawNodes)) {
+      error.value = String(done.result_summary.nodes_error || '点表生成任务已完成，但未返回生成结果，请查看任务日志或重新生成。')
+      return
+    }
+    if (!rawNodes.length) {
+      error.value = '未生成任何点表节点，请检查当前列车身份及设备映射。'
+      return
+    }
+    const previewRows = rawNodes.map(normalizeGeneratedRow)
+    if (previewRows.some((row) => row === null)) {
+      error.value = '点表生成任务已完成，但返回的节点数据无效，请查看任务日志或重新生成。'
+      return
+    }
+    const normalizedRows = previewRows as CarNetworkPointRow[]
+    const expectedCount = Number(done.result_summary.count)
+    if (Number.isFinite(expectedCount) && expectedCount !== normalizedRows.length) {
+      console.warn('点表生成任务节点计数不一致', { expectedCount, receivedCount: normalizedRows.length })
+    }
+    const generatedCount = props.train
+      ? normalizedRows.filter((row) => rowMatchesTrain(row, currentTrainKey.value)).length
+      : normalizedRows.length
+    if (!applyGeneratedRows(normalizedRows)) {
+      error.value = '未生成当前列车的点表节点，请检查当前列车身份及设备映射。'
+      return
+    }
     if (props.train) trainFilter.value = currentTrainKey.value
     dirty.value = true
-    info.value = '已生成点表预览，尚未保存'
+    info.value = `已生成 ${generatedCount} 行点表预览，尚未保存`
   } else if (done.action === 'car_network_save_point_table') {
     await loadPointTable(true)
     const savedRevision = String(done.result_summary.revision || revision.value || '')

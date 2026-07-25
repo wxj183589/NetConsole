@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.services.job_center.job_context import JobContext
-from netconsole.services.rail_transit.car_network_diagnostic import CarNetworkNode, CarNetworkTrain
+from netconsole.services.job_center.handlers import legacy_tasks
+from netconsole.services.rail_transit.car_network_diagnostic import (
+    CarNetworkNode,
+    CarNetworkPointTableStore,
+    CarNetworkTrain,
+)
 from netconsole.services.rail_transit import car_network_diagnostic_job
 
 
@@ -133,3 +139,43 @@ def test_car_network_diagnostic_job_uses_point_table_identity_without_registered
     assert result["status"] == "partial_fail"
     assert captured["nodes"] == [node]
     assert captured["train"] == CarNetworkTrain("train:01", "01", "01车")
+
+
+def test_generate_point_table_returns_six_node_preview_without_persisting(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.ensure_site_dirs("demo")
+    Database(paths.site_db_path("demo")).initialize()
+
+    result = legacy_tasks._car_network_generate_point_table(
+        {
+            "site_name": "demo",
+            "app_root": str(tmp_path),
+            "data_root": str(tmp_path),
+            "db_path": str(paths.site_db_path("demo")),
+            "nodes": [],
+            "global_config": {},
+            "save_result": False,
+            "target_train": {
+                "canonical_train_id": "train:01",
+                "train_no": "01",
+                "display_name": "列车01",
+                "ct_mr_id": "mr-ct",
+                "ct_mr_name": "列车01-MR-CT",
+                "tc_mr_id": "mr-tc",
+                "tc_mr_name": "列车01-MR-CW",
+            },
+        },
+        None,
+        None,
+    )
+
+    assert result["saved"] is False
+    assert result["count"] == result["nodes_count"] == result["generated_nodes_count"] == 6
+    assert result["target_train"] == "train:01"
+    assert result["preview_status"] == "PENDING_SAVE"
+    assert [node["node_name"] for node in result["nodes"]] == [
+        "TC1-MR", "TC1-SW", "TC1-SRV", "TC2-MR", "TC2-SW", "TC2-SRV",
+    ]
+    assert result["nodes"][0]["device_id"] == "mr-ct"
+    assert result["nodes"][3]["device_id"] == "mr-tc"
+    assert CarNetworkPointTableStore(paths, "demo").load() == []

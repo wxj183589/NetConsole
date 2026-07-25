@@ -2096,11 +2096,11 @@ class RailTransitWebApplicationService:
             size_bytes=int((metadata or {}).get("size_bytes") or 0),
             message=redact_web_task_text(snapshot.message),
             error_message=redact_web_task_text(snapshot.error_message),
-            result_summary=self._result_summary(snapshot.result),
+            result_summary=self._result_summary(snapshot.task_type, snapshot.result),
         )
 
     @staticmethod
-    def _result_summary(result: dict[str, object]) -> dict[str, object]:
+    def _result_summary(task_type: str, result: dict[str, object]) -> dict[str, object]:
         summary: dict[str, object] = {}
         for key in (
             "count", "row_count", "train_count", "success_count", "failed_count",
@@ -2134,6 +2134,36 @@ class RailTransitWebApplicationService:
             values = result.get(key)
             if isinstance(values, list) and all(isinstance(item, str) for item in values):
                 summary[key] = values[:20]
+        if task_type == "car_network_generate_point_table":
+            raw_nodes = result.get("nodes")
+            if not isinstance(raw_nodes, list):
+                summary["nodes_available"] = False
+                summary["nodes_error"] = "点表生成任务未返回有效的节点列表"
+                return summary
+            normalized_nodes: list[dict[str, object]] = []
+            for raw_node in raw_nodes:
+                if not isinstance(raw_node, dict):
+                    summary["nodes_available"] = False
+                    summary["nodes_error"] = "点表生成任务返回了无效节点数据"
+                    return summary
+                try:
+                    normalized_nodes.append(
+                        CarNetworkPointRowDTO.model_validate(raw_node).model_dump()
+                    )
+                except ValueError:
+                    summary["nodes_available"] = False
+                    summary["nodes_error"] = "点表生成任务返回了无效节点数据"
+                    return summary
+            summary["nodes"] = normalized_nodes
+            summary["nodes_count"] = len(normalized_nodes)
+            summary["nodes_available"] = True
+            generated_nodes_count = result.get("generated_nodes_count")
+            if isinstance(generated_nodes_count, int) and generated_nodes_count >= 0:
+                summary["generated_nodes_count"] = generated_nodes_count
+            for key in ("target_train", "target_train_display", "preview_status", "preview_message"):
+                value = result.get(key)
+                if isinstance(value, str):
+                    summary[key] = value
         return summary
 
     def _open_artifact(

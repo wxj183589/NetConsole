@@ -528,8 +528,31 @@ def _car_network_generate_point_table(params: dict[str, Any], progress: Progress
     if bool(params.get("save_result")):
         CarNetworkGlobalConfigStore(paths, site_name).save(global_config)
         CarNetworkPointTableStore(paths, site_name).save(nodes)
+    generated_nodes_count = (
+        sum(
+            train_identity_matches(
+                (node.train_id, node.train_no, node.display_name),
+                (target_identity.canonical_train_id, target_identity.train_no, target_identity.display_name),
+            )
+            for node in nodes
+        )
+        if target_identity.canonical_train_id
+        else len(nodes)
+    )
     _emit(progress, "car_network_generate_point_table", 1, 1, "车内通信点表生成完成")
-    return {"nodes": [asdict(node) for node in nodes], "count": len(nodes), "saved": bool(params.get("save_result"))}
+    return {
+        "nodes": [asdict(node) for node in nodes],
+        "count": len(nodes),
+        "nodes_count": len(nodes),
+        "generated_nodes_count": generated_nodes_count,
+        "target_train": target_identity.canonical_train_id,
+        "target_train_display": str(
+            target_train.get("display_name") or target_identity.display_name
+        ),
+        "preview_status": "PENDING_SAVE",
+        "preview_message": "已生成点表预览，等待用户保存",
+        "saved": bool(params.get("save_result")),
+    }
 
 
 def _car_network_save_point_table(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
