@@ -228,6 +228,7 @@ class FleetPingSupervisor:
         self._correlator: GroundUnattendedTimelineCorrelator | None = None
         self._sample_count = 0
         self._started_at: dict[str, str] = {}
+        self._transition_at: dict[str, str] = {}
         self._backend_warnings: list[str] = []
 
     def start(
@@ -257,6 +258,7 @@ class FleetPingSupervisor:
             self._dirty_buckets = set()
             self._sample_count = 0
             self._started_at = {}
+            self._transition_at = {}
             self._backend_warnings = []
             self._output_dir = Path(active_dir) / "fleet_ping"
             self._period_ms = int(period_ms)
@@ -281,14 +283,14 @@ class FleetPingSupervisor:
                 previous = self._targets.get(address)
                 if (
                     previous
+                    and previous.current_ap_identity
+                    and current.current_ap_identity
                     and previous.current_ap_identity != current.current_ap_identity
                 ):
                     transition_at = (
                         datetime.now().astimezone().isoformat(timespec="milliseconds")
                     )
-                    current = FleetPingTarget(
-                        **{**current.__dict__, "same_ap_since": current.same_ap_since}
-                    )
+                    self._transition_at[address] = transition_at
                     if self._correlator:
                         self._correlator.ap_transition(
                             target_ip=address,
@@ -300,6 +302,11 @@ class FleetPingSupervisor:
                         )
                     desired[address] = current
             self._targets = desired
+            self._transition_at = {
+                address: value
+                for address, value in self._transition_at.items()
+                if address in desired
+            }
             addresses = tuple(sorted(desired))
         self._reconcile_shards(addresses)
 
@@ -342,6 +349,7 @@ class FleetPingSupervisor:
                 self._correlator.close()
             self._correlator = None
             self._targets = {}
+            self._transition_at = {}
             self._run_id = ""
 
     def target_summaries(self) -> list[dict[str, Any]]:
@@ -628,7 +636,10 @@ class FleetPingSupervisor:
                 self._buckets.setdefault(key, _Stats()).add(sample)
                 self._dirty_buckets.add(key)
             if self._correlator:
-                context = {**target.__dict__, "ap_transition_at": target.same_ap_since}
+                context = {
+                    **target.__dict__,
+                    "ap_transition_at": self._transition_at.get(sample.target, ""),
+                }
                 self._correlator.correlate(payload, context)
 
     def _bucket_keys(self, ts: datetime, target: FleetPingTarget):

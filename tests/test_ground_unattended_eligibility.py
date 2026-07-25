@@ -69,6 +69,12 @@ NOW = datetime.fromisoformat("2026-07-25T12:00:00+08:00")
             "DEPOT_CONNECTION",
         ),
         (None, None, {"belong_type": "storage_track"}, "STORAGE_TRACK"),
+        (
+            None,
+            None,
+            {"track_facilities": ["turnback_line", "storage_track"]},
+            "STORAGE_TRACK",
+        ),
     ],
 )
 def test_structured_mainline_exclusions(station, section, metadata, expected) -> None:

@@ -499,6 +499,7 @@ class GroundUnattendedRepository:
             "train_id": values["train_id"],
             "train_no": values.get("train_no", ""),
             "train_name": values.get("train_name", ""),
+            "coverage_status": values.get("coverage_status", "NOT_SEEN"),
             "priority": int(bool(priority)),
             "ping_eligible": int(bool(values.get("ping_eligible"))),
             "deep_collection_eligible": int(
@@ -710,13 +711,18 @@ class GroundUnattendedRepository:
             )
 
     def list_ping_summaries(
-        self, run_id: str, *, bucket_kind: str = "daily"
+        self, run_id: str, *, bucket_kind: str | None = "daily"
     ) -> list[dict[str, Any]]:
+        where = "WHERE site_id=? AND run_id=?"
+        params: list[Any] = [self.site_id, run_id]
+        if bucket_kind:
+            where += " AND bucket_kind=?"
+            params.append(bucket_kind)
         with self._connection() as conn:
             rows = conn.execute(
                 "SELECT * FROM ground_unattended_ping_summaries "
-                "WHERE site_id=? AND run_id=? AND bucket_kind=? ORDER BY train_no, mr_position_code",
-                (self.site_id, run_id, bucket_kind),
+                f"{where} ORDER BY bucket_start, train_no, mr_position_code",
+                params,
             ).fetchall()
         return [_decode_row(row) for row in rows]
 
@@ -849,6 +855,19 @@ class GroundUnattendedRepository:
                 WHERE a.site_id=? AND a.archive_id=?
                 """,
                 (self.site_id, archive_id),
+            ).fetchone()
+        return _decode_row(row) if row else None
+
+    def get_archive_by_run(self, run_id: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT a.*, r.actual_started_at, r.actual_ended_at
+                FROM ground_unattended_archives a
+                LEFT JOIN ground_unattended_runs r ON r.run_id=a.run_id AND r.site_id=a.site_id
+                WHERE a.site_id=? AND a.run_id=?
+                """,
+                (self.site_id, run_id),
             ).fetchone()
         return _decode_row(row) if row else None
 

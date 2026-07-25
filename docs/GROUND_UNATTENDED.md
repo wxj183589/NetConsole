@@ -37,6 +37,9 @@ Ping 和深度采集继续；明确退出时 lifespan 先关闭 Supervisor，fpi
 配置不会重启当前 fping 或 SSH 任务，新配置从下一次调度周期生效；状态接口同时返回下一次开始和
 结束时间。
 
+首次运行前，“正线车辆”接口会从当前局点轨道交通基础资料聚合列车及 CT/CW 端点，因此无需先创建
+无人值守 run 即可设置置顶。基础资料候选只表示“等待 AC 状态”，不会提前伪造正线资格或在线状态。
+
 ## 正线分类
 
 `GroundUnattendedEligibilityClassifier` 组合当前局点：
@@ -68,8 +71,10 @@ Supervisor 每个轮询周期复用 `AcMeshLinkRefreshApplicationService` 创建
 显示降级警告。
 
 Ping 样本使用毫秒时间戳，按小时写入 `fleet_ping/*.jsonl`。索引库只保存分段元数据和 1 分钟、
-5 分钟、AC 轮询窗口、AP 停留段、每日 MR/列车汇总。`GroundUnattendedTimelineCorrelator` 以本机
-接收时间关联最近 AC 快照，并记录切换前后窗口、AC 位置未知、CT 单端、CW 单端和双端同时丢包。
+5 分钟、AC 轮询窗口、AP 停留段、每日 MR/列车汇总。首次获得 AP 只建立当前位置基线，不伪装成
+一次 AP 切换；后续真实 AP identity 变化才建立切换前后窗口。`GroundUnattendedTimelineCorrelator`
+以本机接收时间关联最近 AC 快照；即使样本携带快照 ID，只要接收时间超出配置容差，丢包仍明确标记为
+AC 位置未知，并继续识别 CT 单端、CW 单端和双端同时丢包。
 
 ## 深度采集与覆盖
 
@@ -84,7 +89,11 @@ Ping 样本使用毫秒时间戳，按小时写入 `fleet_ping/*.jsonl`。索引
 
 每日随机队列保存 seed、候选和稳定顺序。第一轮排序固定为：置顶未完成、从未采集、PARTIAL 补采、
 采集次数少、持久随机顺序。只要仍有可采集列车未完成第一轮，已完成列车不会因 Ping 异常进入第二轮；
-全部完成后才按置顶、次数、异常和随机顺序开始后续轮次。
+全部完成后才按置顶、次数、异常和随机顺序开始后续轮次。深度采集页直接复用同一排序函数展示每日
+队列位置、当前调度优先级和选择原因，查询接口不会重新随机或改写队列。
+
+资格刷新会把尚未产生结果的列车同步到 `WAITING/OFFLINE/EXCLUDED`；已经进入
+`COLLECTING/PARTIAL/COVERED/FAILED` 的业务结果不会被普通 AC 状态刷新覆盖。
 
 Session 只有满足最低时长、Mesh raw 存在且增长、最终化完成、正式包可用且完整性为 complete 时才
 计为 `COVERED`；单端失败、时长不足、静止/离线、软件中断或最终化不完整为 `PARTIAL`，后续重新
@@ -100,9 +109,16 @@ files/rail_transit/ground_unattended/
 ```
 
 每日结束先停止新调度，按配置限制深度任务最终化，停止/flush Ping，再生成 daily summary、覆盖 CSV、
-调度事件、错误、深度 Session 引用和 manifest。ZIP 先写隐藏临时文件，逐成员 CRC、manifest 和 SHA-256
-校验后原子发布；索引先标记 READY，之后才用白名单递归清理对应 `active/<run_date>`。任一步失败均
-显示“归档失败，原始数据仍保留”。深度 Session ZIP 只引用、不嵌入每日 ZIP。
+调度事件、错误、深度 Session 引用、完整 Ping 汇总 JSONL、每日 MR/列车汇总和 manifest。即使某类
+当天无数据，ZIP 也保留 `fleet_ping/`、`ac_snapshots/`、`timeline/`、`ping_summaries/` 目录契约。
+ZIP 先写隐藏临时文件，逐成员 CRC、manifest 和流式 SHA-256 校验后原子发布；索引先标记 READY，
+之后才用白名单递归清理对应 `active/<run_date>`。任一步失败均显示“归档失败，原始数据仍保留”。
+深度 Session ZIP 只引用、不嵌入每日 ZIP。
+
+同一运行日的 READY 归档视为已封账：重复归档只校验既有 ZIP 并补做待完成的 active 清理，不重写正式
+文件；已有活动 run 时“立即开始”幂等返回，已归档运行日则拒绝复用。若 READY 文件损坏且 active 已
+不存在，索引标记失败并保留现场文件，不用空目录覆盖证据。详细保留和汇总清理均按 profile
+`timezone` 的局点日期计算。
 
 启动恢复会核对 RUNNING/STOPPING/FINALIZING/ARCHIVING，收口上次 OPEN Ping 分段，调用现有
 Online MR mapping 恢复；窗口内恢复 Ping 与调度，窗口外继续最终化和归档。无法恢复的自动 operation

@@ -26,9 +26,16 @@ from netconsole.models.api.ground_unattended import (
 from netconsole.repositories.ground_unattended_repository import (
     GroundUnattendedRepository,
 )
+from netconsole.services.ground_unattended.deep_scheduler import (
+    DeepMrCollectionScheduler,
+)
 from netconsole.services.ground_unattended.schedule import schedule_window
 from netconsole.services.ground_unattended.supervisor import GroundUnattendedSupervisor
 from netconsole.models.api.system_maintenance import DesktopActionDTO
+from netconsole.services.rail_transit.base_data_query_service import (
+    RailTransitBaseDataQueryService,
+)
+from netconsole.services.rail_transit.train_identity import canonical_train_id_for
 
 
 class DesktopActionResultPort(Protocol):
@@ -62,12 +69,14 @@ class GroundUnattendedApplicationService:
         site_id: str,
         repository: GroundUnattendedRepository,
         supervisor: GroundUnattendedSupervisor,
+        base_query: RailTransitBaseDataQueryService | None = None,
         desktop_action_service: DesktopActionPort | None = None,
     ) -> None:
         self.paths = paths
         self.site_id = site_id
         self.repository = repository
         self.supervisor = supervisor
+        self.base_query = base_query
         self.desktop_action_service = desktop_action_service
 
     def get_profile(self, site_id: str) -> GroundUnattendedProfileDTO:
@@ -172,12 +181,35 @@ class GroundUnattendedApplicationService:
 
     def start_now(self, site_id: str) -> GroundActionResponseDTO:
         self._require_site(site_id)
-        if not self.repository.get_profile().enabled:
+        profile = self.repository.get_profile()
+        if not profile.enabled:
             raise GroundUnattendedError(
                 "PROFILE_DISABLED",
                 "请先启用当前局点的地面无人值守配置",
                 status_code=409,
             )
+        active = self.repository.get_active_run()
+        if active is not None:
+            return GroundActionResponseDTO(
+                state=str(active["state"]),
+                run_id=str(active["run_id"]),
+                message="当前无人值守运行已存在，无需重复启动",
+            )
+        window = schedule_window(
+            datetime.now().astimezone(),
+            profile.schedule_start_time,
+            profile.schedule_end_time,
+            profile.timezone,
+        )
+        latest = self.repository.latest_run()
+        if latest and str(latest.get("run_date") or "") == window.run_date:
+            archive = self.repository.get_archive_by_run(str(latest["run_id"]))
+            if archive and archive.get("archive_status") == "READY":
+                raise GroundUnattendedError(
+                    "DAILY_RUN_ARCHIVED",
+                    "当前运行日已完成正式归档，不能再次启动并覆盖当日归档",
+                    status_code=409,
+                )
         self.supervisor.request("start")
         return GroundActionResponseDTO(state="STARTING", message="立即开始请求已提交")
 
@@ -210,18 +242,25 @@ class GroundUnattendedApplicationService:
         run = self._latest_run(site_id)
         rows = self.repository.list_train_runs(str(run["run_id"])) if run else []
         items = [self._train_dto(row) for row in rows]
+        if not items:
+            items = self._base_train_candidates()
+        items = self._enrich_train_endpoints(items, run)
         return GroundUnattendedTrainPageDTO(items=items, total=len(items))
 
     def get_train(self, site_id: str, train_id: str) -> GroundUnattendedTrainDTO:
-        run = self._latest_run(site_id)
-        row = (
-            self.repository.get_train_run(str(run["run_id"]), train_id) if run else None
+        candidate = next(
+            (
+                item
+                for item in self.list_trains(site_id).items
+                if item.train_id == train_id
+            ),
+            None,
         )
-        if row is None:
+        if candidate is None:
             raise GroundUnattendedError(
                 "TRAIN_NOT_FOUND", "无人值守列车状态不存在", status_code=404
             )
-        return self._train_dto(row)
+        return candidate
 
     def set_priority(
         self, site_id: str, train_id: str, priority: bool
@@ -246,6 +285,30 @@ class GroundUnattendedApplicationService:
     def deep_collections(self, site_id: str) -> GroundDeepCollectionPageDTO:
         run = self._latest_run(site_id)
         rows = self.repository.list_train_runs(str(run["run_id"])) if run else []
+        queue_order: list[str] = []
+        scheduling: dict[str, tuple[int, str]] = {}
+        if run:
+            queue = self.repository.get_daily_queue(str(run["run_id"])) or {}
+            queue_order = [str(value) for value in queue.get("queue_order", [])]
+            ping_loss_by_train: dict[str, float] = {}
+            for summary in self.repository.list_ping_summaries(str(run["run_id"])):
+                train_id = str(summary.get("train_id") or "")
+                ping_loss_by_train[train_id] = max(
+                    ping_loss_by_train.get(train_id, 0.0),
+                    float(summary.get("loss_rate_percent") or 0.0),
+                )
+            candidates = DeepMrCollectionScheduler.ordered_candidates(
+                rows,
+                queue_order=queue_order,
+                ping_loss_by_train=ping_loss_by_train,
+            )
+            scheduling = {
+                candidate.train_id: (index, candidate.reason)
+                for index, candidate in enumerate(candidates, start=1)
+            }
+        queue_positions = {
+            train_id: index for index, train_id in enumerate(queue_order, start=1)
+        }
         latest_operations: dict[str, dict[str, dict[str, Any]]] = {}
         if run:
             for operation in self.repository.list_deep_operations(str(run["run_id"])):
@@ -254,15 +317,19 @@ class GroundUnattendedApplicationService:
                 ] = operation
         items = []
         for row in rows:
+            train_id = str(row["train_id"])
+            scheduling_priority, current_reason = scheduling.get(train_id, (0, ""))
             operations = row.get("operations") or {}
             sessions = row.get("sessions") or {}
-            latest = latest_operations.get(str(row["train_id"]), {})
+            latest = latest_operations.get(train_id, {})
             items.append(
                 GroundDeepCollectionDTO(
-                    train_id=row["train_id"],
+                    train_id=train_id,
                     train_no=row.get("train_no", ""),
                     status=row.get("coverage_status", "NOT_SEEN"),
-                    selection_reason=row.get("selection_reason", ""),
+                    queue_position=queue_positions.get(train_id),
+                    scheduling_priority=scheduling_priority,
+                    selection_reason=row.get("selection_reason") or current_reason,
                     started_at=row.get("collection_started_at", ""),
                     valid_duration_minutes=float(
                         row.get("valid_duration_minutes") or 0
@@ -417,6 +484,122 @@ class GroundUnattendedApplicationService:
             ],
             updated_at=row.get("updated_at", ""),
         )
+
+    def _base_train_candidates(self) -> list[GroundUnattendedTrainDTO]:
+        if self.base_query is None:
+            return []
+        page = self.base_query.list_mrs(self.site_id, page=1, page_size=200)
+        rows = list(page.items)
+        current_page = 2
+        while len(rows) < page.total:
+            batch = self.base_query.list_mrs(
+                self.site_id, page=current_page, page_size=200
+            )
+            if not batch.items:
+                break
+            rows.extend(batch.items)
+            current_page += 1
+        grouped: dict[str, list[Any]] = {}
+        for row in rows:
+            key = canonical_train_id_for(row.train_no or row.train_id)
+            if key:
+                grouped.setdefault(key, []).append(row)
+        priorities = self.repository.list_priority_train_ids()
+        result: list[GroundUnattendedTrainDTO] = []
+        for key, mrs in grouped.items():
+            first = mrs[0]
+            train_id = first.train_id or f"base:{key}"
+            endpoints = []
+            for position in ("CT", "CW"):
+                mr = next(
+                    (item for item in mrs if item.mr_position_code == position), None
+                )
+                endpoints.append(
+                    GroundUnattendedEndpointDTO(
+                        endpoint=position,  # type: ignore[arg-type]
+                        mr_id=mr.id if mr else "",
+                        mr_name=mr.name if mr else "",
+                        device_id=mr.device_id if mr else None,
+                        management_ip=mr.management_ip if mr else "",
+                        online_status="UNKNOWN",
+                    )
+                )
+            result.append(
+                GroundUnattendedTrainDTO(
+                    train_id=train_id,
+                    train_no=first.train_no,
+                    train_name=train_id,
+                    eligibility_status="AC_UNKNOWN",
+                    exclusion_reason="尚未开始无人值守运行，等待 AC 在线状态",
+                    coverage_status="NOT_SEEN",
+                    priority=train_id in priorities,
+                    endpoints=endpoints,
+                )
+            )
+        return sorted(result, key=lambda item: (item.train_no, item.train_id))
+
+    def _enrich_train_endpoints(
+        self,
+        trains: list[GroundUnattendedTrainDTO],
+        run: dict[str, Any] | None,
+    ) -> list[GroundUnattendedTrainDTO]:
+        if not run:
+            return trains
+        run_id = str(run["run_id"])
+        persisted = self.repository.list_ping_summaries(run_id)
+        live = self.supervisor.fleet_ping.target_summaries()
+        summaries: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in (*persisted, *live):
+            train_id = str(row.get("train_id") or "")
+            if row.get("mr_id"):
+                summaries[(train_id, f"mr:{row['mr_id']}")] = row
+            if row.get("mr_position_code"):
+                summaries[(train_id, f"end:{row['mr_position_code']}")] = row
+        live_keys = {
+            (str(row.get("train_id") or ""), f"mr:{row.get('mr_id') or ''}")
+            for row in live
+            if row.get("mr_id")
+        } | {
+            (
+                str(row.get("train_id") or ""),
+                f"end:{row.get('mr_position_code') or ''}",
+            )
+            for row in live
+            if row.get("mr_position_code")
+        }
+        operations: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in self.repository.list_deep_operations(run_id):
+            operations[(str(row["train_id"]), str(row["mr_position_code"]))] = row
+        result = []
+        for train in trains:
+            endpoints = []
+            for endpoint in train.endpoints:
+                mr_key = (train.train_id, f"mr:{endpoint.mr_id}")
+                end_key = (train.train_id, f"end:{endpoint.endpoint}")
+                summary = summaries.get(mr_key) or summaries.get(end_key) or {}
+                operation = operations.get((train.train_id, endpoint.endpoint)) or {}
+                endpoints.append(
+                    endpoint.model_copy(
+                        update={
+                            "ping_active": mr_key in live_keys or end_key in live_keys,
+                            "ping_sent_count": int(summary.get("sent_count") or 0),
+                            "ping_success_count": int(
+                                summary.get("success_count") or 0
+                            ),
+                            "ping_loss_rate_percent": summary.get("loss_rate_percent"),
+                            "ping_avg_rtt_ms": summary.get("avg_rtt_ms"),
+                            "active_operation_id": str(
+                                operation.get("operation_id") or ""
+                            )
+                            if operation.get("state")
+                            not in {"COMPLETED", "PARTIAL", "FAILED"}
+                            else "",
+                            "latest_session_id": str(operation.get("session_id") or ""),
+                        }
+                    )
+                )
+            result.append(train.model_copy(update={"endpoints": endpoints}))
+        return result
 
     @staticmethod
     def _archive_dto(row: dict[str, Any]) -> GroundArchiveDTO:

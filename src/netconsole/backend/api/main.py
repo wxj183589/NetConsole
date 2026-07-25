@@ -618,6 +618,7 @@ def create_app(
                     site_id=site_name,
                     repository=ground_unattended_repository,
                     supervisor=ground_unattended_supervisor,
+                    base_query=app.state.rail_transit_base_data_query_service,
                     desktop_action_service=desktop_action_service,
                 )
             )

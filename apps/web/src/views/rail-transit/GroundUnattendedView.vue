@@ -91,6 +91,8 @@ const pingColumns: NcTableColumn<GroundPingTarget>[] = [
 const deepColumns: NcTableColumn<GroundDeepCollection>[] = [
   { key: 'train_no', label: t('ground.train', '列车'), valueType: 'name', fixed: 'left' },
   { key: 'status', label: t('ground.status', '完成状态'), valueType: 'status' },
+  { key: 'queue_position', label: t('ground.queue_position', '队列位置'), valueType: 'number' },
+  { key: 'scheduling_priority', label: t('ground.scheduling_priority', '调度优先级'), valueType: 'number' },
   { key: 'selection_reason', label: t('ground.selection_reason', '选择原因'), valueType: 'description', minWidth: 220 },
   { key: 'attempt_count', label: t('ground.attempts', '采集次数'), valueType: 'number' },
   { key: 'covered_rounds', label: t('ground.covered_rounds', '完成轮次'), valueType: 'number' },

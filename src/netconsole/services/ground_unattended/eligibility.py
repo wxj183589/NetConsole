@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable
@@ -231,16 +232,16 @@ class GroundUnattendedEligibilityClassifier:
         explicit_type = (
             str(metadata.get("belong_type") or ap.record_kind or "").strip().casefold()
         )
-        facility = (
-            str(metadata.get("track_facility") or metadata.get("facility_type") or "")
-            .strip()
-            .casefold()
+        facilities = _metadata_tokens(
+            metadata.get("track_facilities"),
+            metadata.get("track_facility"),
+            metadata.get("facility_type"),
         )
         if explicit_type == "depot":
             return "DEPOT", "当前 AP 基础资料明确归属于车辆段", False, False
         if explicit_type == "parking_lot":
             return "PARKING_LOT", "当前 AP 基础资料明确归属于停车场", False, False
-        if explicit_type == "storage_track" or facility == "storage_track":
+        if explicit_type == "storage_track" or "storage_track" in facilities:
             return "STORAGE_TRACK", "当前 AP 基础资料明确归属于存车线", False, False
 
         station = (
@@ -343,6 +344,21 @@ def _unique_by_value(items: Iterable, key):
     for value in duplicates:
         result.pop(value, None)
     return result
+
+
+def _metadata_tokens(*values: object) -> set[str]:
+    tokens: set[str] = set()
+    pending = list(values)
+    while pending:
+        value = pending.pop()
+        if isinstance(value, (list, tuple, set)):
+            pending.extend(value)
+            continue
+        for token in re.split(r"[,;|/、，\s]+", str(value or "")):
+            normalized = token.strip("[](){}'\"").casefold()
+            if normalized:
+                tokens.add(normalized)
+    return tokens
 
 
 __all__ = [

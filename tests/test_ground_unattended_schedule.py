@@ -126,6 +126,40 @@ def test_manual_stop_does_not_auto_restart_inside_the_same_window(tmp_path) -> N
     supervisor._shutdown_active_run()
 
 
+def test_classification_updates_daily_coverage_without_overwriting_results() -> None:
+    waiting = SimpleNamespace(
+        deep_collection_eligible=True, eligibility_status="MAINLINE"
+    )
+    excluded = SimpleNamespace(
+        deep_collection_eligible=False, eligibility_status="DEPOT"
+    )
+    offline = SimpleNamespace(
+        deep_collection_eligible=False, eligibility_status="OFFLINE"
+    )
+    assert (
+        GroundUnattendedSupervisor._coverage_status_for_classification(None, waiting)
+        == "WAITING"
+    )
+    assert (
+        GroundUnattendedSupervisor._coverage_status_for_classification(
+            {"coverage_status": "WAITING"}, excluded
+        )
+        == "EXCLUDED"
+    )
+    assert (
+        GroundUnattendedSupervisor._coverage_status_for_classification(
+            {"coverage_status": "EXCLUDED"}, offline
+        )
+        == "OFFLINE"
+    )
+    assert (
+        GroundUnattendedSupervisor._coverage_status_for_classification(
+            {"coverage_status": "COVERED"}, offline
+        )
+        == "COVERED"
+    )
+
+
 class _BaseQuery:
     def get_summary(self, site_id):
         return RailTransitSummaryDTO(site_id=site_id, site_name=site_id)

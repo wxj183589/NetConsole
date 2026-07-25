@@ -40,6 +40,13 @@ describe('Ground unattended page', () => {
     expect(source).toContain("name: 'online-mr-analysis'")
   })
 
+  it('shows the auditable daily queue and current scheduling priority', () => {
+    expect(source).toContain("key: 'queue_position'")
+    expect(source).toContain('队列位置')
+    expect(source).toContain("key: 'scheduling_priority'")
+    expect(source).toContain('调度优先级')
+  })
+
   it('uses the shared data table with bounded responsive table frames', () => {
     expect(source).toContain('NcDataTable')
     expect(source).toContain('table-frame')

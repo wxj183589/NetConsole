@@ -509,6 +509,9 @@ class GroundUnattendedSupervisor:
         for result in results:
             train = result.train
             train.priority = train.train_id in priorities
+            train.coverage_status = self._coverage_status_for_classification(
+                previous_rows.get(train.train_id), train
+            )
             endpoint_ids = [item.mr_id for item in train.endpoints if item.mr_id]
             train.ac_snapshot_id = next(
                 (
@@ -647,6 +650,26 @@ class GroundUnattendedSupervisor:
             ac_freshness_status="FRESH" if fresh else "STALE" if ac_rows else "NO_DATA",
             ping_sample_count=self.fleet_ping.sample_count,
         )
+
+    @staticmethod
+    def _coverage_status_for_classification(previous, train) -> str:
+        previous_status = str((previous or {}).get("coverage_status") or "")
+        if previous_status in {"COLLECTING", "PARTIAL", "COVERED", "FAILED"}:
+            return previous_status
+        if train.deep_collection_eligible:
+            return "WAITING"
+        if train.eligibility_status == "OFFLINE":
+            return "OFFLINE"
+        if train.eligibility_status in {
+            "DEPOT",
+            "PARKING_LOT",
+            "STORAGE_TRACK",
+            "NON_MAIN_PATH",
+            "DEPOT_CONNECTION",
+            "MAINLINE_STATIONARY",
+        }:
+            return "EXCLUDED"
+        return "NOT_SEEN"
 
     def _request_ac_refreshes(self, run) -> None:
         if self.ac_refresh_service is None:
