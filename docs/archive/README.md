@@ -7,3 +7,4 @@
 ## 当前审计记录
 
 - [Git 恢复引用安全审计（2026-07-25）](GIT_RECOVERY_AUDIT-2026-07-25.md)：两个 stash、WIP 标签和 Codex snapshot refs 的脱敏分类与后续安全顺序。
+- [架构门禁债务审计（2026-07-25）](ARCHITECTURE_GUARD_DEBT_AUDIT-2026-07-25.md)：首批两处边界修复后的 Router、反向依赖、Direct SQL、UI 与例外逐文件清单。

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import Mock
 
 from fastapi.testclient import TestClient
 
@@ -29,10 +30,13 @@ def test_device_compatibility_summary_reads_code_baseline_without_tasks(tmp_path
         traffic_service=_NoopAsyncService(),  # type: ignore[arg-type]
         frontend_dist=tmp_path / "missing",
     )
+    summary = Mock(wraps=app.state.device_compatibility_service.summary)
+    app.state.device_compatibility_service.summary = summary
 
     with TestClient(app) as client:
         response = client.get("/api/device-compatibility/summary")
 
+    summary.assert_called_once_with()
     assert response.status_code == 200, response.text
     payload = response.json()
     assert "Comware V7" in payload["platforms"]
