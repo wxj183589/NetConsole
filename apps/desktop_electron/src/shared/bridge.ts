@@ -217,6 +217,10 @@ export interface CloseToTrayState {
   available: boolean
 }
 
+export interface TraySiteSwitchRequest {
+  siteId: string
+}
+
 export const UI_PREFERENCE_KEYS = Object.freeze([
   'desktop.close-to-tray',
   'mesh-analysis-rssi.layout-mode',
@@ -252,6 +256,10 @@ export interface NetConsoleDesktopBridge {
   getCloseToTrayState?(): Promise<CloseToTrayState>
   setCloseToTrayEnabled?(enabled: boolean): Promise<CloseToTrayState>
   onCloseToTrayChanged?(listener: (state: CloseToTrayState) => void): () => void
+  /** Electron Main re-reads the current site and Registry; Renderer supplies no site data. */
+  refreshSiteContext?(): Promise<void>
+  onTraySiteSwitchRequested?(listener: (request: TraySiteSwitchRequest) => void): () => void
+  reportSiteSwitchState?(switching: boolean): void
   selectFile(options?: SelectFileOptions): Promise<SelectFileResult>
   selectDirectory(): Promise<SelectDirectoryResult>
   selectSettingsTool(toolId: SettingsToolId): Promise<SettingsPathResult>
@@ -292,6 +300,9 @@ export const DESKTOP_IPC = Object.freeze({
   getCloseToTrayState: 'netconsole:desktop:get-close-to-tray-state',
   setCloseToTrayEnabled: 'netconsole:desktop:set-close-to-tray-enabled',
   closeToTrayChanged: 'netconsole:desktop:close-to-tray-changed',
+  refreshSiteContext: 'netconsole:desktop:refresh-site-context',
+  traySiteSwitchRequested: 'netconsole:desktop:tray-site-switch-requested',
+  siteSwitchState: 'netconsole:desktop:site-switch-state',
   selectFile: 'netconsole:desktop:select-file',
   selectDirectory: 'netconsole:desktop:select-directory',
   selectSettingsTool: 'netconsole:desktop:select-settings-tool',
@@ -330,6 +341,7 @@ export const DESKTOP_HANDLED_CHANNELS = Object.freeze([
   DESKTOP_IPC.saveWorkspaceWindowState,
   DESKTOP_IPC.getCloseToTrayState,
   DESKTOP_IPC.setCloseToTrayEnabled,
+  DESKTOP_IPC.refreshSiteContext,
   DESKTOP_IPC.selectFile,
   DESKTOP_IPC.selectDirectory,
   DESKTOP_IPC.selectSettingsTool,

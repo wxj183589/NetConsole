@@ -358,14 +358,16 @@ export function validateSiteStorageRestartRequest(value: unknown): SiteStorageRe
     if (!/^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(dataRoot)) throw new TypeError('dataRoot must be absolute')
     result.dataRoot = dataRoot
   }
-  if (record.activeSiteId !== undefined) {
-    if (typeof record.activeSiteId !== 'string' || !/^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/.test(record.activeSiteId)) {
-      throw new TypeError('activeSiteId is invalid')
-    }
-    result.activeSiteId = record.activeSiteId
-  }
+  if (record.activeSiteId !== undefined) result.activeSiteId = validateSiteId(record.activeSiteId, 'activeSiteId')
   if (!result.dataRoot && !result.activeSiteId) throw new TypeError('storage restart request is empty')
   return result
+}
+
+export function validateSiteId(value: unknown, fieldName = 'siteId'): string {
+  if (typeof value !== 'string' || !/^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/.test(value)) {
+    throw new TypeError(`${fieldName} is invalid`)
+  }
+  return value
 }
 
 export function validateChooseSavePathOptions(value: unknown): ChooseSavePathOptions {

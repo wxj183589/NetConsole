@@ -25,6 +25,7 @@ import DesktopRuntimeStatus from '../components/DesktopRuntimeStatus.vue'
 import CurrentSiteIndicator from '../components/CurrentSiteIndicator.vue'
 import WorkspaceTabBar from '../components/workspace/WorkspaceTabBar.vue'
 import { navigationTitle, t } from '../i18n/runtime'
+import { getPlatformAdapter } from '../platform/runtime'
 import { useWorkspaceStore } from '../stores/workspace'
 import AppRouteView from './AppRouteView.vue'
 
@@ -46,6 +47,7 @@ const viewportWidth = ref(window.innerWidth)
 const manualCollapsed = ref(sessionStorage.getItem(COLLAPSED_KEY) === '1')
 const drawerOpen = ref(false)
 const openGroups = ref<string[]>(loadOpenGroups())
+let removeTraySiteSwitchListener: (() => void) | undefined
 
 const iconComponents = {
   dashboard: DataBoard,
@@ -129,6 +131,20 @@ function updateViewport(): void {
   if (!mobile.value) drawerOpen.value = false
 }
 
+async function handleTraySiteSwitchRequested(siteId: string): Promise<void> {
+  const query = new URLSearchParams({
+    section: 'site-storage',
+    site_focus: `tray-site-switch-${Date.now()}`,
+    tray_site_switch: siteId,
+  })
+  try {
+    await workspace.openOrActivateRoute(`/settings?${query}`)
+  } catch {
+    getPlatformAdapter().reportSiteSwitchState(false)
+    ElMessage.error('无法打开局点切换页面')
+  }
+}
+
 watch(
   () => route.meta.navigationId,
   () => {
@@ -141,6 +157,9 @@ watch(
 
 onMounted(async () => {
   window.addEventListener('resize', updateViewport)
+  removeTraySiteSwitchListener = getPlatformAdapter().onTraySiteSwitchRequested((siteId) => {
+    void handleTraySiteSwitchRequested(siteId)
+  })
   try {
     await loadWebFeatures()
   } catch {
@@ -165,7 +184,10 @@ onMounted(async () => {
   }
 })
 
-onBeforeUnmount(() => window.removeEventListener('resize', updateViewport))
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', updateViewport)
+  removeTraySiteSwitchListener?.()
+})
 </script>
 
 <template>

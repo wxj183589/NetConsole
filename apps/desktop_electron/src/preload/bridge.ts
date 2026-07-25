@@ -19,6 +19,7 @@ import {
   validateUiPreferenceKey, validateUiPreferenceValue,
   validateSettingsActionId, validateSettingsDirectoryId, validateSettingsToolId,
   validateSiteStorageRestartRequest,
+  validateSiteId,
 } from '../shared/validation'
 
 export interface IpcRendererLike {
@@ -78,6 +79,22 @@ export function createDesktopBridge(ipcRenderer: IpcRendererLike): NetConsoleDes
       }
       ipcRenderer.on(DESKTOP_IPC.closeToTrayChanged, wrapped)
       return () => ipcRenderer.removeListener(DESKTOP_IPC.closeToTrayChanged, wrapped)
+    },
+    refreshSiteContext: () => ipcRenderer.invoke(DESKTOP_IPC.refreshSiteContext) as Promise<void>,
+    onTraySiteSwitchRequested: (listener) => {
+      const wrapped = (_event: IpcRendererEvent, value: unknown) => {
+        try {
+          listener({ siteId: validateSiteId(value) })
+        } catch {
+          // Electron Main must never expose an invalid tray menu payload.
+        }
+      }
+      ipcRenderer.on(DESKTOP_IPC.traySiteSwitchRequested, wrapped)
+      return () => ipcRenderer.removeListener(DESKTOP_IPC.traySiteSwitchRequested, wrapped)
+    },
+    reportSiteSwitchState: (switching) => {
+      if (typeof switching !== 'boolean') throw new TypeError('site switching state is invalid')
+      ipcRenderer.send(DESKTOP_IPC.siteSwitchState, switching)
     },
     selectFile: (options) => ipcRenderer.invoke(
       DESKTOP_IPC.selectFile,

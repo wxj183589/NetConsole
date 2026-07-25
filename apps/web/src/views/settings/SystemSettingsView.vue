@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { onBeforeRouteLeave, useRoute } from 'vue-router'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { CopyDocument } from '@element-plus/icons-vue'
 import {
@@ -32,6 +32,7 @@ const emptyValues: SystemSettingsValues = {
 }
 const { confirm } = useConfirm()
 const route = useRoute()
+const router = useRouter()
 const snapshot = ref<SystemSettingsSnapshot | null>(null)
 const baseline = ref<SystemSettingsValues | null>(null)
 const form = reactive<SystemSettingsValues>(cloneValues(emptyValues))
@@ -63,6 +64,7 @@ const selfCheckError = ref('')
 const desktopHost = Boolean(window.netconsoleDesktop)
 let siteStorageFocusTimer: ReturnType<typeof setTimeout> | undefined
 let removeCloseToTrayListener: (() => void) | undefined
+let traySiteSwitchInProgress = ''
 const runtimeToolErrors = reactive<Partial<Record<SettingsToolId, string>>>({})
 const dirty = computed(() => Boolean(baseline.value && JSON.stringify(form) !== JSON.stringify(baseline.value)))
 const featuresDirty = computed(() => featureSwitchAvailable.value && JSON.stringify(features.value) !== featureBaseline.value)
@@ -373,11 +375,37 @@ async function focusSiteStorage(): Promise<void> {
   siteStorageFocusTimer = setTimeout(() => { siteStorageFocused.value = false }, 1600)
 }
 
+async function processTraySiteSwitch(): Promise<void> {
+  const requestedSiteId = typeof route.query.tray_site_switch === 'string'
+    ? route.query.tray_site_switch
+    : ''
+  if (!/^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/.test(requestedSiteId)) return
+  if (traySiteSwitchInProgress === requestedSiteId) return
+  traySiteSwitchInProgress = requestedSiteId
+  try {
+    await nextTick()
+    await siteStoragePanel.value?.requestSwitch?.(requestedSiteId)
+  } finally {
+    if (route.query.tray_site_switch === requestedSiteId) {
+      const query = { ...route.query }
+      delete query.tray_site_switch
+      await router.replace({ query })
+    }
+    traySiteSwitchInProgress = ''
+  }
+}
+
 onActivated(() => { void focusSiteStorage() })
 
 watch(
   () => [route.query.section, route.query.site_focus],
   () => { void focusSiteStorage() },
+  { immediate: true },
+)
+
+watch(
+  () => route.query.tray_site_switch,
+  () => { void processTraySiteSwitch() },
   { immediate: true },
 )
 

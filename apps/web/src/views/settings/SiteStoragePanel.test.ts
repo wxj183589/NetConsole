@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { flushPromises, mount } from '@vue/test-utils'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as api from '../../api/siteStorage'
@@ -34,6 +34,9 @@ const adapter = {
   restartBackend: vi.fn(async (): Promise<{ success: boolean; error?: string }> => ({ success: true })),
   openTaskWindow: vi.fn(async () => ({ success: true })),
   executeSettingsAction: vi.fn(async () => ({ success: true })),
+  refreshSiteContext: vi.fn(async () => undefined),
+  onTraySiteSwitchRequested: vi.fn(() => () => undefined),
+  reportSiteSwitchState: vi.fn(),
 }
 vi.mock('../../platform/runtime', () => ({ getPlatformAdapter: () => adapter }))
 
@@ -390,5 +393,71 @@ describe('SiteStoragePanel', () => {
 
     expect(api.rebuildDemoSite).toHaveBeenCalledWith(false)
     expect(adapter.openTaskWindow).toHaveBeenCalledWith({ taskId: 'demo-1', module: 'logs' })
+  })
+
+  it('refreshes the list and tray context only after a submitted import completes', async () => {
+    adapter.selectSitePackage.mockResolvedValueOnce({ cancelled: false, path: 'C:\\packages\\line.ncsite' } as never)
+    vi.mocked(api.inspectSitePackage).mockResolvedValue({
+      site_id: 'line-6', site_uuid: 'site-6', site_name: '宁波地铁6号线',
+      package_type: 'full_migration', package_id: 'package-6', base_revision: 1,
+      file_count: 1, conflict_count: 0, conflicts: [], invalid_count: 0,
+      estimated_additional_bytes: 0, can_import: true, contains_credentials: true,
+      encrypted: false, credential_reentry_count: 0,
+    })
+    vi.mocked(api.importSite).mockResolvedValue({ task_id: 'import-6', task_type: 'site_import' })
+    vi.mocked(tasks.getTask).mockResolvedValueOnce({ status: 'RUNNING' } as never)
+      .mockResolvedValueOnce({ status: 'COMPLETED' } as never)
+    vi.mocked(api.listSites)
+      .mockResolvedValueOnce([site()])
+      .mockResolvedValueOnce([site(), site({ site_id: 'line-6', display_name: '宁波地铁6号线', active: false, site_kind: 'formal', classification: 'normal_site', managed_demo: false })])
+    vi.mocked(api.getDataRoot)
+      .mockResolvedValueOnce({ data_root: 'C:\\data', default_data_root: 'C:\\default', site_count: 1, active_site_id: 'demo', storage_mode: 'persistent', data_root_kind: 'persistent', persistent: true })
+      .mockResolvedValueOnce({ data_root: 'C:\\data', default_data_root: 'C:\\default', site_count: 2, active_site_id: 'demo', storage_mode: 'persistent', data_root_kind: 'persistent', persistent: true })
+    const success = vi.spyOn(ElMessage, 'success')
+    const wrapper = mount(SiteStoragePanel)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="import-site"]').trigger('click')
+    await flushPromises()
+    const importButton = wrapper.findAll('button').find((button) => button.text().includes('导入并合并'))
+    expect(importButton).toBeDefined()
+    await importButton!.trigger('click')
+    await new Promise((resolve) => setTimeout(resolve, 800))
+    await flushPromises()
+
+    expect(api.listSites).toHaveBeenCalledTimes(2)
+    expect(api.getDataRoot).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('宁波地铁6号线')
+    expect(wrapper.text()).toContain('2 个局点')
+    expect(adapter.refreshSiteContext).toHaveBeenCalledOnce()
+    expect(success).toHaveBeenCalledWith('数据包导入任务已提交')
+    expect(success).toHaveBeenCalledWith('局点数据包导入完成')
+  })
+
+  it('does not report import completion or refresh sites when the import task fails', async () => {
+    adapter.selectSitePackage.mockResolvedValueOnce({ cancelled: false, path: 'C:\\packages\\broken.ncsite' } as never)
+    vi.mocked(api.inspectSitePackage).mockResolvedValue({
+      site_id: 'line-6', site_uuid: 'site-6', site_name: '宁波地铁6号线',
+      package_type: 'full_migration', package_id: 'package-6', base_revision: 1,
+      file_count: 1, conflict_count: 0, conflicts: [], invalid_count: 0,
+      estimated_additional_bytes: 0, can_import: true, contains_credentials: true,
+      encrypted: false, credential_reentry_count: 0,
+    })
+    vi.mocked(api.importSite).mockResolvedValue({ task_id: 'import-6', task_type: 'site_import' })
+    vi.mocked(tasks.getTask).mockResolvedValue({ status: 'FAILED' } as never)
+    const success = vi.spyOn(ElMessage, 'success')
+    const wrapper = mount(SiteStoragePanel)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="import-site"]').trigger('click')
+    await flushPromises()
+    const importButton = wrapper.findAll('button').find((button) => button.text().includes('导入并合并'))
+    await importButton!.trigger('click')
+    await flushPromises()
+
+    expect(api.listSites).toHaveBeenCalledOnce()
+    expect(adapter.refreshSiteContext).not.toHaveBeenCalled()
+    expect(success).not.toHaveBeenCalledWith('局点数据包导入完成')
+    expect(wrapper.text()).toContain('局点导入任务状态：FAILED')
   })
 })

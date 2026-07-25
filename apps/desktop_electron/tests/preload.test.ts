@@ -31,13 +31,16 @@ describe('preload bridge', () => {
       'getWorkspaceWindowState',
       'onBackendStatusChanged',
       'onCloseToTrayChanged',
+      'onTraySiteSwitchRequested',
       'openExternalUrl',
       'openOnlineMrSessionLocation',
       'openPath',
       'openTaskWindow',
       'openWorkspaceWindow',
+      'refreshSiteContext',
       'reportRendererReady',
       'reportRendererWorkload',
+      'reportSiteSwitchState',
       'restartBackend',
       'saveWorkspaceWindowState',
       'selectDataRootDirectory',
@@ -83,6 +86,10 @@ describe('preload bridge', () => {
         returnedLinkPoints: 44_251,
       }),
     )
+    await bridge.refreshSiteContext?.()
+    expect(invocations).toContainEqual([DESKTOP_IPC.refreshSiteContext, undefined])
+    bridge.reportSiteSwitchState?.(true)
+    expect(ipcRenderer.send).toHaveBeenCalledWith(DESKTOP_IPC.siteSwitchState, true)
   })
 
   it('validates arguments before sending IPC', async () => {

@@ -30,6 +30,7 @@ export function createBrowserAdapter(apiBaseUrl = '', developmentToken = ''): Pl
     selectSitePackage: async () => ({ cancelled: true }),
     selectSiteExportDestination: async () => ({ cancelled: true }),
     restartBackend: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
+    refreshSiteContext: async () => undefined,
     chooseSavePath: async () => ({ cancelled: true }),
     downloadBackendResource: async (value) => startBrowserDownload(value, baseUrl),
     openTaskWindow: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
@@ -37,6 +38,8 @@ export function createBrowserAdapter(apiBaseUrl = '', developmentToken = ''): Pl
     showItemInFolder: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
     openExternalUrl: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
     onBackendStatusChanged: () => () => undefined,
+    onTraySiteSwitchRequested: () => () => undefined,
+    reportSiteSwitchState: () => undefined,
     reportRendererReady: () => undefined,
   }
 }

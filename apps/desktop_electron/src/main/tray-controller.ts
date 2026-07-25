@@ -2,17 +2,28 @@ import type { BackendState } from '../shared/bridge'
 
 export interface TrayRuntimeContext {
   backendState: BackendState
+  activeSiteId?: string
   activeSiteName?: string
+  sites: TraySiteSummary[]
+  siteSwitching: boolean
   closeToTrayEnabled: boolean
   visibleWindowCount: number
 }
 
+export interface TraySiteSummary {
+  siteId: string
+  displayName: string
+  active: boolean
+  selectable: boolean
+}
+
 export interface TrayMenuItem {
   label?: string
-  type?: 'normal' | 'separator' | 'checkbox'
+  type?: 'normal' | 'separator' | 'checkbox' | 'radio'
   enabled?: boolean
   checked?: boolean
   click?: () => void
+  submenu?: TrayMenuItem[]
 }
 
 export interface TrayLike {
@@ -30,6 +41,7 @@ export interface TrayControllerOptions {
   showMainWindow(): Promise<void> | void
   showTaskWindow(): Promise<void> | void
   createWorkspaceWindow(): Promise<void> | void
+  requestSiteSwitch(siteId: string): Promise<void> | void
   setCloseToTrayEnabled(enabled: boolean): Promise<void> | void
   explicitQuit(): void
   logger(event: string): void
@@ -37,6 +49,8 @@ export interface TrayControllerOptions {
 
 const INITIAL_CONTEXT: TrayRuntimeContext = {
   backendState: 'starting',
+  sites: [],
+  siteSwitching: false,
   closeToTrayEnabled: true,
   visibleWindowCount: 1,
 }
@@ -76,6 +90,10 @@ export class TrayController {
       ...this.context,
       ...context,
       activeSiteName: sanitizeSiteName(context.activeSiteName ?? this.context.activeSiteName),
+      sites: (context.sites ?? this.context.sites).flatMap((site) => {
+        const displayName = sanitizeSiteName(site.displayName)
+        return displayName ? [{ ...site, displayName }] : []
+      }),
     }
     if (this.updateTimer) clearTimeout(this.updateTimer)
     this.updateTimer = setTimeout(() => {
@@ -100,7 +118,7 @@ export class TrayController {
     const tray = this.tray
     if (!tray || tray.isDestroyed?.()) return
     try {
-      tray.setToolTip(resolveTooltip(this.context.backendState))
+      tray.setToolTip(resolveTooltip(this.context))
       tray.setContextMenu(this.options.buildMenu([
         { label: '打开 NetConsole', click: () => this.showMainWindow() },
         { label: '新建工作区窗口', click: () => this.createWorkspaceWindow() },
@@ -108,6 +126,11 @@ export class TrayController {
         { type: 'separator' },
         { label: `Backend：${backendStateLabel(this.context.backendState)}`, enabled: false },
         { label: `当前局点：${this.context.activeSiteName || '未选择'}`, enabled: false },
+        {
+          label: this.context.siteSwitching ? '正在切换局点…' : '快速切换局点',
+          enabled: this.context.backendState === 'ready' && !this.context.siteSwitching && this.context.sites.length > 0,
+          submenu: this.buildSiteSwitchMenu(),
+        },
         {
           label: '关闭主窗口后驻留通知区域',
           type: 'checkbox',
@@ -123,6 +146,30 @@ export class TrayController {
     } catch {
       this.options.logger('ELECTRON_TRAY_MENU_UPDATE_FAILED')
     }
+  }
+
+  private buildSiteSwitchMenu(): TrayMenuItem[] {
+    if (this.context.siteSwitching) return [{ label: '正在切换局点…', enabled: false }]
+    if (this.context.backendState !== 'ready') return [{ label: 'Backend 未就绪', enabled: false }]
+    if (!this.context.sites.length) return [{ label: '暂无可切换局点', enabled: false }]
+    const duplicateNames = new Set(
+      [...this.context.sites]
+        .map((site) => site.displayName)
+        .filter((name, index, names) => names.indexOf(name) !== index),
+    )
+    return this.context.sites.map((site) => {
+      const active = site.siteId === this.context.activeSiteId
+      const label = duplicateNames.has(site.displayName)
+        ? `${site.displayName} (${site.siteId})`
+        : site.displayName
+      return {
+        label,
+        type: 'radio',
+        checked: active,
+        enabled: !active && site.selectable,
+        click: () => { void this.options.requestSiteSwitch(site.siteId) },
+      }
+    })
   }
 
   displayBackgroundHint(): void {
@@ -154,10 +201,14 @@ function backendStateLabel(state: BackendState): string {
   return '离线'
 }
 
-function resolveTooltip(state: BackendState): string {
-  if (state === 'starting') return 'NetConsole · 正在启动'
-  if (state === 'ready') return 'NetConsole'
-  return 'NetConsole · Backend 离线'
+function resolveTooltip(context: TrayRuntimeContext): string {
+  if (context.backendState === 'starting') return 'NetConsole · 正在启动'
+  if (context.backendState === 'ready') {
+    return context.activeSiteName ? `NetConsole · ${context.activeSiteName}` : 'NetConsole · 未选择局点'
+  }
+  return context.activeSiteName
+    ? `NetConsole · ${context.activeSiteName} · Backend 离线`
+    : 'NetConsole · Backend 离线'
 }
 
 function sanitizeSiteName(value: string | undefined): string | undefined {

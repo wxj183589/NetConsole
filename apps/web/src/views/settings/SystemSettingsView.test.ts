@@ -90,9 +90,10 @@ class SelfCheckWebSocket {
 
 const siteStorageReload = vi.fn(async () => undefined)
 const siteStorageFocus = vi.fn()
+const siteStorageRequestSwitch = vi.fn(async () => undefined)
 const SiteStoragePanelStub = defineComponent({
   props: { focused: { type: Boolean, default: false } },
-  methods: { reload: siteStorageReload, focus: siteStorageFocus },
+  methods: { reload: siteStorageReload, focus: siteStorageFocus, requestSwitch: siteStorageRequestSwitch },
   template: '<section id="site-storage-management" :class="{ \'storage-panel--focused\': focused }" />',
 })
 
@@ -124,6 +125,7 @@ beforeEach(() => {
   vi.clearAllMocks(); vi.stubGlobal('WebSocket', SelfCheckWebSocket); document.documentElement.className = ''; document.documentElement.lang = 'zh-CN'; document.documentElement.style.cssText = ''
   siteStorageReload.mockClear()
   siteStorageFocus.mockClear()
+  siteStorageRequestSwitch.mockClear()
   confirmAction.mockResolvedValue(true)
   vi.mocked(api.getFeatureSettings).mockResolvedValue(featureSnapshot())
   settingsBridge.selectSettingsTool.mockResolvedValue({ cancelled: false, path: 'C:\\tools\\Xshell.exe' })
@@ -407,6 +409,17 @@ describe('SystemSettingsView mounted behavior', () => {
     expect(siteStorageReload.mock.calls.length).toBeGreaterThan(reloadCalls)
     expect(siteStorageFocus.mock.calls.length).toBeGreaterThan(focusCalls)
 
+    wrapper.unmount()
+  })
+
+  it('forwards a validated tray site switch request to the Site Storage safety flow', async () => {
+    const { wrapper, router } = await mounted()
+
+    await router.push({ path: '/settings', query: { tray_site_switch: 'line-12' } })
+    await flushPromises()
+
+    expect(siteStorageRequestSwitch).toHaveBeenCalledWith('line-12')
+    expect(router.currentRoute.value.query.tray_site_switch).toBeUndefined()
     wrapper.unmount()
   })
 })

@@ -2,7 +2,7 @@
 
 本目录展示系统设置、工具路径、局点和外观等用户配置。配置校验、文件写入和清理边界由 Python Service/PathResolver 管理，页面不直接操作磁盘。
 
-`SiteStoragePanel.vue` 提供局点 Registry、数据根、迁移及完整迁移包/现场采集包/采集回传包入口。回传包先调用 Backend 预检，再显示增量、重复、冲突、删除请求与空间预估；Renderer 只提交用户选择的冲突策略，不能访问文件系统、修改 Electron bootstrap 或在页面执行复制、压缩、数据库写入。
+`SiteStoragePanel.vue` 提供局点 Registry、数据根、迁移及完整迁移包/现场采集包/采集回传包入口。回传包先调用 Backend 预检，再显示增量、重复、冲突、删除请求与空间预估；Renderer 只提交用户选择的冲突策略，不能访问文件系统、修改 Electron bootstrap 或在页面执行复制、压缩、数据库写入。导入任务仅在 `COMPLETED` 后刷新局点列表、数量和 Electron 托盘事实源；提交、失败和刷新失败分别提示。托盘快速切换请求会回到此面板，和普通切换共用确认、预检、工作区快照、激活、受管 Backend 重启与失败恢复链路。
 
 主要入口为 `SystemSettingsView.vue`；修改设置项时更新 Feature/i18n、API DTO 与测试，确认敏感配置不回显。
 
