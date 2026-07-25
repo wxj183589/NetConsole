@@ -33,6 +33,7 @@ export interface PlatformAdapter {
   selectSitePackage(): Promise<SettingsPathResult>
   selectSiteExportDestination(suggestedName: string): Promise<SettingsPathResult>
   restartBackend(request: SiteStorageRestartRequest): Promise<NativeActionResult>
+  refreshSiteContext(): Promise<void>
   chooseSavePath(options: ChooseSavePathOptions): Promise<ChooseSavePathResult>
   downloadBackendResource(request: BackendDownloadRequest): Promise<BackendDownloadResult>
   openTaskWindow(context?: TaskWindowContext): Promise<NativeActionResult>
@@ -40,6 +41,8 @@ export interface PlatformAdapter {
   showItemInFolder(capabilityId: string): Promise<NativeActionResult>
   openExternalUrl(url: string): Promise<NativeActionResult>
   onBackendStatusChanged(listener: (status: BackendStatus) => void): () => void
+  onTraySiteSwitchRequested(listener: (siteId: string) => void): () => void
+  reportSiteSwitchState(switching: boolean): void
   reportRendererReady(
     healthOk: boolean,
     phase?: RendererReadyReport['phase'],

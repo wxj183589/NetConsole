@@ -24,6 +24,7 @@ export function createElectronAdapter(bridge: NetConsoleDesktopBridge): Platform
     selectSitePackage: () => bridge.selectSitePackage(),
     selectSiteExportDestination: (suggestedName) => bridge.selectSiteExportDestination(suggestedName),
     restartBackend: (request) => bridge.restartBackend(request),
+    refreshSiteContext: async () => { await bridge.refreshSiteContext?.() },
     chooseSavePath: (options) => bridge.chooseSavePath(options),
     downloadBackendResource: (request) => bridge.downloadBackendResource(request),
     openTaskWindow: (context) => bridge.openTaskWindow(context),
@@ -33,6 +34,10 @@ export function createElectronAdapter(bridge: NetConsoleDesktopBridge): Platform
     onBackendStatusChanged: (listener) => bridge.onBackendStatusChanged((status) => {
       listener(validateBackendStatus(status))
     }),
+    onTraySiteSwitchRequested: (listener) => bridge.onTraySiteSwitchRequested?.((request) => {
+      listener(request.siteId)
+    }) ?? (() => undefined),
+    reportSiteSwitchState: (switching) => bridge.reportSiteSwitchState?.(switching),
     reportRendererReady: (healthOk, phase = 'interactive', surface) => bridge.reportRendererReady({
       healthOk,
       phase,

@@ -99,6 +99,8 @@ export interface DesktopIpcDependencies {
   getCloseToTrayState?: () => CloseToTrayState
   setCloseToTrayEnabled?: (enabled: boolean) => Promise<CloseToTrayState> | CloseToTrayState
   restartBackend?: (value: SiteStorageRestartRequest) => Promise<void>
+  refreshSiteContext?: () => Promise<void>
+  setSiteSwitching?: (switching: boolean) => void
   appInfo: AppInfo
   backend: BackendLike
   pathRegistry?: GrantedPathRegistry
@@ -365,6 +367,10 @@ export function registerDesktopIpc(
     )),
   )
   dependencies.ipcMain.handle(
+    DESKTOP_IPC.refreshSiteContext,
+    trusted(async () => { await dependencies.refreshSiteContext?.() }),
+  )
+  dependencies.ipcMain.handle(
     DESKTOP_IPC.rendererRecoveryState,
     trusted((_value, event) => (
       dependencies.getRendererRecoveryState?.(
@@ -471,6 +477,13 @@ export function registerDesktopIpc(
     } catch {
       dependencies.logger?.('ELECTRON_RENDERER_WORKLOAD_REJECTED')
     }
+  })
+  dependencies.ipcMain.on(DESKTOP_IPC.siteSwitchState, (event, value) => {
+    if (!dependencies.isTrustedSender(event) || typeof value !== 'boolean') {
+      dependencies.logger?.('ELECTRON_SITE_SWITCH_STATE_REJECTED')
+      return
+    }
+    dependencies.setSiteSwitching?.(value)
   })
   return { shutdown: () => downloadManager.shutdown() }
 }

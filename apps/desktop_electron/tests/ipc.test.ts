@@ -43,6 +43,8 @@ function createHarness(overrides: {
   saveWorkspaceWindowState?: (window: unknown, value: WorkspaceWindowSnapshot) => void
   setWorkspaceWindowTitle?: (window: unknown, title: string) => void
   restartBackend?: (value: { activeSiteId?: string; dataRoot?: string }) => Promise<void>
+  refreshSiteContext?: () => Promise<void>
+  setSiteSwitching?: (switching: boolean) => void
   windowForEvent?: (event: { sender: unknown }) => unknown
   fetchImpl?: typeof fetch
 } = {}) {
@@ -87,6 +89,8 @@ function createHarness(overrides: {
     saveWorkspaceWindowState: overrides.saveWorkspaceWindowState,
     setWorkspaceWindowTitle: overrides.setWorkspaceWindowTitle,
     restartBackend: overrides.restartBackend,
+    refreshSiteContext: overrides.refreshSiteContext,
+    setSiteSwitching: overrides.setSiteSwitching,
     fetchImpl: overrides.fetchImpl,
   })
   return { ipcMain, sender, selectedFile, selectedDirectory, savedFile, shell, pathRegistry, dialog }
@@ -160,6 +164,22 @@ describe('desktop IPC', () => {
     await expect(sensitive.ipcMain.handlers.get(DESKTOP_IPC.restartBackend)!({ sender: sensitive.sender }, {
       activeSiteId: 'line-12',
     })).resolves.toEqual({ success: false, error: '本地 Backend 重启失败，请检查日志后重试。' })
+  })
+
+  it('refreshes tray site facts only for a trusted renderer and accepts boolean switch state', async () => {
+    const refreshSiteContext = vi.fn(async () => undefined)
+    const setSiteSwitching = vi.fn()
+    const { ipcMain, sender } = createHarness({ refreshSiteContext, setSiteSwitching })
+
+    await expect(ipcMain.handlers.get(DESKTOP_IPC.refreshSiteContext)!({ sender })).resolves.toBeUndefined()
+    expect(refreshSiteContext).toHaveBeenCalledOnce()
+    expect(() => ipcMain.handlers.get(DESKTOP_IPC.refreshSiteContext)!({ sender: {} })).toThrow('未知渲染进程')
+
+    ipcMain.listeners.get(DESKTOP_IPC.siteSwitchState)?.({ sender }, true)
+    ipcMain.listeners.get(DESKTOP_IPC.siteSwitchState)?.({ sender }, 'true')
+    ipcMain.listeners.get(DESKTOP_IPC.siteSwitchState)?.({ sender: {} }, false)
+    expect(setSiteSwitching).toHaveBeenCalledWith(true)
+    expect(setSiteSwitching).toHaveBeenCalledOnce()
   })
 
   it('accepts only validated one-way workload reports and returns in-memory recovery state', () => {

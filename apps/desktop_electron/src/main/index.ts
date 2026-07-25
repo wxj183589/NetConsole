@@ -31,7 +31,7 @@ import {
   RendererThemeDisplayGate,
 } from './renderer-theme-display-gate'
 import { TaskWindowController } from './task-window-controller'
-import { TrayController, type TrayMenuItem } from './tray-controller'
+import { TrayController, type TrayMenuItem, type TraySiteSummary } from './tray-controller'
 import { WorkspaceLayoutStore, type WorkspaceWindowBounds } from './workspace-layout-store'
 import { WorkspaceWindowController } from './workspace-window-controller'
 import {
@@ -89,6 +89,8 @@ let bootstrapStore: DesktopBootstrapStore | undefined
 let uiPreferenceStore: UiPreferenceStore | undefined
 let desktopDataRoot = ''
 let desktopActiveSiteId = ''
+let desktopActiveSiteName = ''
+let desktopSites: TraySiteSummary[] = []
 const windowDisplayGates = new WeakMap<BrowserWindow, RendererThemeDisplayGate>()
 const windowErrorCoordinators = new WeakMap<BrowserWindow, ManagedWindowErrorCoordinator>()
 const windowRetryNavigations = new WeakMap<BrowserWindow, ManagedRendererRetryNavigation>()
@@ -261,6 +263,7 @@ async function startDesktop(): Promise<void> {
     createWorkspaceWindow: async () => {
       await openWorkspaceWindow({ routeFullPath: '/', title: 'Dashboard' })
     },
+    requestSiteSwitch: requestTraySiteSwitch,
     setCloseToTrayEnabled: async (enabled) => {
       await updateCloseToTrayEnabled(enabled)
     },
@@ -270,7 +273,9 @@ async function startDesktop(): Promise<void> {
   trayAvailable = trayController.initialize()
   trayController.updateContext({
     backendState: 'starting',
-    activeSiteName: desktopActiveSiteId,
+    activeSiteId: desktopActiveSiteId,
+    activeSiteName: desktopActiveSiteName,
+    sites: desktopSites,
     closeToTrayEnabled,
     visibleWindowCount: 1,
   })
@@ -290,6 +295,8 @@ async function startDesktop(): Promise<void> {
     getCloseToTrayState,
     setCloseToTrayEnabled: updateCloseToTrayEnabled,
     restartBackend: restartManagedBackend,
+    refreshSiteContext: async () => { await refreshTraySiteContext() },
+    setSiteSwitching: (switching) => trayController?.updateContext({ siteSwitching: switching }),
     appInfo: {
       version: app.getVersion(),
       platform: process.platform,
@@ -328,7 +335,7 @@ async function startDesktop(): Promise<void> {
 
   try {
     const runtime = await backend.start()
-    desktopActiveSiteId = await readBackendActiveSiteId(runtime.baseUrl, runtime.apiToken, desktopActiveSiteId)
+    await refreshTraySiteContext(runtime, desktopActiveSiteId)
     const backendOrigin = new URL(runtime.baseUrl).origin
     rendererUrl = config.devServerUrl ?? runtime.baseUrl
     const rendererOrigin = new URL(rendererUrl).origin
@@ -351,7 +358,12 @@ async function startDesktop(): Promise<void> {
     if (desktopStorageContext.persistent && desktopActiveSiteId) {
       bootstrapStore.save({ schema_version: 1, data_root: desktopDataRoot, active_site_id: desktopActiveSiteId })
     }
-    trayController?.updateContext({ activeSiteName: desktopActiveSiteId })
+    trayController?.updateContext({
+      activeSiteId: desktopActiveSiteId,
+      activeSiteName: desktopActiveSiteName,
+      sites: desktopSites,
+      siteSwitching: false,
+    })
     const restoredMainState = workspaceWindowController.getWindowState(mainWindow)
     const restoredMainRoute = restoredMainState.snapshot?.tabs.find(
       (tab) => tab.id === restoredMainState.snapshot?.activeTabId,
@@ -496,8 +508,10 @@ async function restartManagedBackend(update: SiteStorageRestartRequest): Promise
     backend.configureStorage(nextRoot, nextSite)
     const runtime = await backend.start()
     await applyManagedBackendRuntime(runtime, nextRoot, nextSite)
-    const verifiedSite = await readBackendActiveSiteId(runtime.baseUrl, runtime.apiToken, '')
-    if (verifiedSite !== nextSite) throw new Error('Backend ready 后返回的当前局点与目标局点不一致')
+    const verified = await refreshTraySiteContext(runtime, '')
+    if (!verified || verified.activeSiteId !== nextSite) {
+      throw new Error('Backend ready 后返回的当前局点与目标局点不一致')
+    }
     if (nextSite !== previousSite) {
       rendererRecoveries.clear()
       latestRendererWorkloads.clear()
@@ -510,6 +524,7 @@ async function restartManagedBackend(update: SiteStorageRestartRequest): Promise
       backend.configureStorage(previousRoot, previousSite)
       const restoredRuntime = await backend.start()
       await applyManagedBackendRuntime(restoredRuntime, previousRoot, previousSite)
+      await refreshTraySiteContext(restoredRuntime, previousSite)
     } catch (restoreCause) {
       if (workspaceCheckpoint) workspaceWindowController?.restoreSiteSwitchSnapshots(workspaceCheckpoint)
       logger('SITE_SWITCH_FAILED', `stage=backend_restore restored=false type=${restoreCause instanceof Error ? restoreCause.name : 'unknown'}`)
@@ -544,7 +559,6 @@ async function applyManagedBackendRuntime(runtime: BackendRuntimeInfo, dataRoot:
     rendererOrigins.clear()
     rendererOrigins.add(backendOrigin)
   }
-  trayController?.updateContext({ activeSiteName: desktopActiveSiteId })
 }
 
 async function reloadManagedRenderersAfterBackendRestart(): Promise<void> {
@@ -567,18 +581,90 @@ async function reloadManagedRenderersAfterBackendRestart(): Promise<void> {
   logger('SITE_SWITCH_COMPLETED', `renderer_reloaded=${reloaded}`)
 }
 
-async function readBackendActiveSiteId(baseUrl: string, apiToken: string, fallback: string): Promise<string> {
+interface DesktopSiteContext {
+  activeSiteId: string
+  activeSiteName: string
+  sites: TraySiteSummary[]
+}
+
+async function requestTraySiteSwitch(siteId: string): Promise<void> {
+  if (!mainWindow || mainWindow.isDestroyed() || !trayController) return
+  trayController.updateContext({ siteSwitching: true })
   try {
-    const response = await fetch(`${baseUrl}/api/v1/sites/active`, {
-      cache: 'no-store',
-      headers: { [DESKTOP_SESSION_HEADER]: apiToken },
-    })
-    if (!response.ok) return fallback
-    const payload = await response.json() as { site_id?: unknown }
-    const siteId = typeof payload.site_id === 'string' ? payload.site_id.trim() : ''
-    return /^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/.test(siteId) ? siteId : fallback
+    await workspaceWindowController?.showMainWindow()
+    mainWindow.webContents.send(DESKTOP_IPC.traySiteSwitchRequested, siteId)
   } catch {
-    return fallback
+    trayController.updateContext({ siteSwitching: false })
+    logger('ELECTRON_TRAY_SITE_SWITCH_REQUEST_FAILED')
+  }
+}
+
+async function refreshTraySiteContext(
+  runtime?: BackendRuntimeInfo,
+  fallbackSiteId = desktopActiveSiteId,
+): Promise<DesktopSiteContext | null> {
+  const currentRuntime = runtime ?? backend?.getRuntimeInfo()
+  if (!currentRuntime) return null
+  try {
+    const context = await readBackendSiteContext(
+      currentRuntime.baseUrl,
+      currentRuntime.apiToken,
+    )
+    if (!context) return null
+    desktopActiveSiteId = context.activeSiteId || fallbackSiteId
+    desktopActiveSiteName = context.activeSiteName
+    desktopSites = context.sites
+    trayController?.updateContext({
+      activeSiteId: desktopActiveSiteId,
+      activeSiteName: desktopActiveSiteName,
+      sites: desktopSites,
+      siteSwitching: false,
+    })
+    return context
+  } catch {
+    logger('ELECTRON_TRAY_SITE_CONTEXT_REFRESH_FAILED')
+    return null
+  }
+}
+
+async function readBackendSiteContext(
+  baseUrl: string,
+  apiToken: string,
+): Promise<DesktopSiteContext | null> {
+  const headers = { [DESKTOP_SESSION_HEADER]: apiToken }
+  const [activeResponse, sitesResponse] = await Promise.all([
+    fetch(`${baseUrl}/api/v1/sites/active`, { cache: 'no-store', headers }),
+    fetch(`${baseUrl}/api/v1/sites`, { cache: 'no-store', headers }),
+  ])
+  if (!activeResponse.ok || !sitesResponse.ok) return null
+  const active = toTraySiteSummary(await activeResponse.json())
+  const payload = await sitesResponse.json()
+  if (!active || !Array.isArray(payload)) return null
+  const sites = payload.flatMap((item) => {
+    const site = toTraySiteSummary(item)
+    return site ? [site] : []
+  })
+  const selected = sites.find((site) => site.siteId === active.siteId) ?? active
+  return {
+    activeSiteId: selected.siteId,
+    activeSiteName: selected.displayName,
+    sites,
+  }
+}
+
+function toTraySiteSummary(value: unknown): TraySiteSummary | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Record<string, unknown>
+  const siteId = typeof record.site_id === 'string' ? record.site_id.trim() : ''
+  const displayName = typeof record.display_name === 'string' ? record.display_name : ''
+  if (!/^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/.test(siteId) || !displayName.trim()) {
+    return null
+  }
+  return {
+    siteId,
+    displayName,
+    active: record.active === true,
+    selectable: record.active !== true,
   }
 }
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown } from '@element-plus/icons-vue'
 
@@ -9,6 +9,7 @@ import { getPlatformAdapter } from '../../platform/runtime'
 import { getTask } from '../../api/tasks'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import { useWorkspaceStore } from '../../stores/workspace'
+import { coordinateSiteSwitch } from '../../workspace/site-switch'
 
 const props = defineProps<{ focused?: boolean; switchBlocked?: boolean }>()
 
@@ -38,21 +39,34 @@ const desktopOnly = getPlatformAdapter().hostType === 'electron'
 const { confirm: confirmAction } = useConfirm()
 const workspace = useWorkspaceStore()
 const panelRoot = ref<HTMLElement | null>(null)
-let reloadPromise: Promise<void> | null = null
+let panelMounted = false
+let reloadGeneration = 0
 
-onMounted(() => { if (desktopOnly) void reload() })
+onMounted(() => {
+  panelMounted = true
+  if (desktopOnly) void reload().catch(() => undefined)
+})
+onBeforeUnmount(() => { panelMounted = false })
 
-async function reload(): Promise<void> {
-  if (reloadPromise) return reloadPromise
-  reloadPromise = (async () => {
+async function reload(options: { reportError?: boolean } = {}): Promise<void> {
+  const generation = ++reloadGeneration
+  if (panelMounted) {
     loading.value = true
     error.value = ''
-    try {
-      ;[sites.value, root.value] = await Promise.all([listSites(), getDataRoot()])
-    } catch (cause) { showError(cause, '局点与数据路径加载失败') }
-    finally { loading.value = false }
-  })().finally(() => { reloadPromise = null })
-  return reloadPromise
+  }
+  try {
+    const [nextSites, nextRoot] = await Promise.all([listSites(), getDataRoot()])
+    if (!panelMounted || generation !== reloadGeneration) return
+    sites.value = nextSites
+    root.value = nextRoot
+  } catch (cause) {
+    if (panelMounted && generation === reloadGeneration && options.reportError !== false) {
+      showError(cause, '局点与数据路径加载失败')
+    }
+    throw cause
+  } finally {
+    if (panelMounted && generation === reloadGeneration) loading.value = false
+  }
 }
 
 async function focus(): Promise<void> {
@@ -67,45 +81,74 @@ async function newSite(): Promise<void> {
   const siteId = await prompt('请输入局点标识（小写字母、数字、-、_）', '新建局点')
   if (!siteId) return
   busy.value = true
-  try { await createSite({ site_id: siteId, display_name: displayName }); ElMessage.success('局点已创建'); await reload() }
+  try {
+    await createSite({ site_id: siteId, display_name: displayName })
+    await reload()
+    await getPlatformAdapter().refreshSiteContext()
+    ElMessage.success('局点已创建')
+  }
   catch (cause) { showError(cause, '局点创建失败') }
   finally { busy.value = false }
 }
 
 async function switchSite(site: SiteRecord): Promise<void> {
   if (busy.value || site.active) return
-  if (props.switchBlocked) {
-    ElMessage.warning('请先保存或撤销当前系统设置，再切换局点')
-    return
-  }
-  if (!(await confirmAction({ type: 'WARNING', title: '切换当前局点', message: `切换到“${site.display_name}”并重启本地 Backend？`, confirmText: '确认切换局点' }))) return
   busy.value = true
   error.value = ''
   blockingTasks.value = []
-  let checkpoint: ReturnType<typeof workspace.createSnapshot> | null = null
   try {
-    await preflightSiteActivation(site.site_id)
-    const focusQuery = new URLSearchParams({
-      section: 'site-storage',
-      site_focus: `site-switch-${Date.now()}`,
-    })
-    checkpoint = await workspace.prepareForSiteSwitch(site.site_id, `/settings?${focusQuery}`)
-    await activateSite(site.site_id)
-    const result = await getPlatformAdapter().restartBackend({ activeSiteId: site.site_id })
-    if (!result.success) throw new Error(result.error || 'Backend 重启失败')
-    ElMessage.success('局点已切换')
-  } catch (cause) {
-    if (checkpoint) {
-      try { await workspace.restoreAfterFailedSiteSwitch(checkpoint) }
-      catch { /* 保留原始局点切换错误。 */ }
+    const result = await coordinateSiteSwitch(
+      { siteId: site.site_id, displayName: site.display_name },
+      {
+        isBlocked: () => Boolean(props.switchBlocked),
+        confirm: (target) => confirmAction({
+          type: 'WARNING',
+          title: '切换当前局点',
+          message: `切换到“${target.displayName}”并重启本地 Backend？`,
+          confirmText: '确认切换局点',
+        }),
+        preflight: async (siteId) => { await preflightSiteActivation(siteId) },
+        prepareWorkspace: (siteId, route) => workspace.prepareForSiteSwitch(siteId, route),
+        activate: async (siteId) => { await activateSite(siteId) },
+        restart: async (siteId) => {
+          const restart = await getPlatformAdapter().restartBackend({ activeSiteId: siteId })
+          if (!restart.success) throw new Error(restart.error || 'Backend 重启失败')
+        },
+        restoreWorkspace: async (checkpoint) => {
+          await workspace.restoreAfterFailedSiteSwitch(
+            checkpoint as ReturnType<typeof workspace.createSnapshot>,
+          )
+        },
+        onSwitchingChanged: (switching) => getPlatformAdapter().reportSiteSwitchState(switching),
+      },
+    )
+    if (result === 'blocked') {
+      ElMessage.warning('请先保存或撤销当前系统设置，再切换局点')
+    } else if (result === 'completed') {
+      ElMessage.success('局点已切换')
     }
+  } catch (cause) {
     blockingTasks.value = blockingTasksFrom(cause)
     showError(cause, '局点切换失败')
   }
   finally { busy.value = false }
 }
 
-defineExpose({ reload, focus })
+async function requestSwitch(siteId: string): Promise<void> {
+  try {
+    await reload({ reportError: false })
+    const target = sites.value.find((site) => site.site_id === siteId)
+    if (!target) {
+      ElMessage.error('目标局点已不存在或当前不可用')
+      return
+    }
+    await switchSite(target)
+  } finally {
+    getPlatformAdapter().reportSiteSwitchState(false)
+  }
+}
+
+defineExpose({ reload, focus, requestSwitch })
 
 async function auditSelectedSite(site: SiteRecord): Promise<void> {
   busy.value = true
@@ -149,6 +192,7 @@ async function cleanupSite(site: SiteRecord): Promise<void> {
     const completed = await waitForTask(task.task_id)
     if (completed !== 'COMPLETED') throw new Error(`清理任务状态：${completed}`)
     await reload()
+    await getPlatformAdapter().refreshSiteContext()
     ElMessage.success('局点已移入可恢复回收区')
   } catch (cause) { showError(cause, '局点安全清理失败') }
   finally { busy.value = false }
@@ -165,6 +209,7 @@ async function rebuildDemo(site: SiteRecord): Promise<void> {
     const completed = await waitForTask(task.task_id)
     if (completed !== 'COMPLETED') throw new Error(`Demo 重建任务状态：${completed}`)
     await reload()
+    await getPlatformAdapter().refreshSiteContext()
     ElMessage.success('演示局点已重建')
   } catch (cause) { showError(cause, '演示局点重建失败') }
   finally { busy.value = false }
@@ -245,8 +290,19 @@ async function executeImport(): Promise<void> {
     importDialogVisible.value = false
     await openTask(task.task_id)
     ElMessage.success('数据包导入任务已提交')
+    const completed = await waitForTask(task.task_id)
+    if (completed !== 'COMPLETED') throw new Error(`局点导入任务状态：${completed}`)
+    try {
+      await reload({ reportError: false })
+    } catch {
+      ElMessage.warning('导入已完成，但局点列表刷新失败')
+      return
+    } finally {
+      await getPlatformAdapter().refreshSiteContext().catch(() => undefined)
+    }
+    ElMessage.success('局点数据包导入完成')
   } catch (cause) { showError(cause, '数据包导入失败') }
-  finally { busy.value = false }
+  finally { if (panelMounted) busy.value = false }
 }
 
 async function chooseRoot(): Promise<void> {
