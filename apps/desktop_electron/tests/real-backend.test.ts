@@ -1,7 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -39,12 +38,13 @@ afterEach(async () => {
 
 describe('real Python backend integration', () => {
   it('starts the existing FastAPI app, serves authenticated health, and exits through the control pipe', async () => {
-    const dataRoot = await mkdtemp(resolve(tmpdir(), 'netconsole-electron-test-'))
+    const configuredTestRoot = process.env.NETCONSOLE_DATA_ROOT?.trim()
+    if (!configuredTestRoot) throw new Error('NETCONSOLE_DATA_ROOT is required for the real backend test')
+    const dataRoot = await mkdtemp(resolve(dirname(configuredTestRoot), 'netconsole-electron-test-'))
     cleanupDirectories.push(dataRoot)
     const logs: string[] = []
     const sourcePath = resolve(
       dataRoot,
-      'data',
       'sites',
       'demo',
       'files',
@@ -64,11 +64,11 @@ describe('real Python backend integration', () => {
       projectRoot,
       dataRoot,
       runtimeMode: 'desktop-development',
+      storageMode: 'isolated_test',
       pythonPath: resolve(projectRoot, 'src'),
       startupTimeoutMs: 15_000,
       stopTimeoutMs: 8_000,
       environment: {
-        NETCONSOLE_STORAGE_MODE: 'isolated_test',
         ONLINE_MR_WEB_CONTROL_ENABLED: '0',
         ONLINE_MR_AGENT_EXECUTOR_ENABLED: '0',
       },
