@@ -42,6 +42,10 @@ CONFIG_FAILURE_MARKERS = (
     "error:",
     "permission denied",
 )
+SENSITIVE_EVIDENCE_LINE_RE = re.compile(
+    r"\b(?:password|passwd|secret|community|token|private[-_ ]?key|cipher)\b",
+    re.IGNORECASE,
+)
 
 
 class MrCommandConnection(Protocol):
@@ -511,7 +515,10 @@ class MrSyslogConfigService:
         path = root / "evidence" / _safe_component(device_uuid) / f"{audit_id}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         staging = path.with_suffix(".json.part")
-        staging.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        staging.write_text(
+            json.dumps(sanitize_syslog_evidence(payload), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
         staging.replace(path)
         return path.relative_to(self.repository.db_path.parent).as_posix()
 
@@ -677,6 +684,26 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def sanitize_syslog_evidence(payload: dict[str, Any]) -> dict[str, Any]:
+    """Redact credential-like lines before writing configuration audit evidence."""
+
+    def redact(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {str(key): redact(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [redact(item) for item in value]
+        if not isinstance(value, str):
+            return value
+        return "\n".join(
+            "[REDACTED sensitive configuration line]"
+            if SENSITIVE_EVIDENCE_LINE_RE.search(line)
+            else line
+            for line in value.splitlines()
+        )
+
+    return redact(payload)
+
+
 __all__ = [
     "MrBootSessionService",
     "MrConfigCheckResult",
@@ -685,5 +712,6 @@ __all__ = [
     "SyslogProfileVerification",
     "analyze_syslog_config",
     "build_syslog_config_commands",
+    "sanitize_syslog_evidence",
     "verify_syslog_profile",
 ]

@@ -20,6 +20,7 @@ from netconsole.services.ground_unattended.boot_config import (
     MrBootSessionService,
     MrSyslogConfigService,
     analyze_syslog_config,
+    sanitize_syslog_evidence,
     verify_syslog_profile,
 )
 from netconsole.services.ground_unattended.syslog_runtime import (
@@ -102,6 +103,25 @@ def test_runtime_target_and_source_rules_are_both_required() -> None:
     assert verification.config.missing_commands == (
         "info-center source wmesh loghost level notification",
     )
+
+
+def test_syslog_evidence_redacts_sensitive_configuration_lines() -> None:
+    evidence = sanitize_syslog_evidence(
+        {
+            "configuration_before": (
+                "info-center enable\n"
+                "local-user operator password cipher super-secret\n"
+                "snmp-agent community read example-community"
+            ),
+            "command_results": [{"command": "info-center enable", "output": ""}],
+        }
+    )
+
+    serialized = json.dumps(evidence, ensure_ascii=False)
+    assert "super-secret" not in serialized
+    assert "example-community" not in serialized
+    assert evidence["configuration_before"].splitlines()[0] == "info-center enable"
+    assert serialized.count("[REDACTED sensitive configuration line]") == 2
 
 
 def test_config_check_verifies_after_writes_and_records_evidence(tmp_path: Path) -> None:
