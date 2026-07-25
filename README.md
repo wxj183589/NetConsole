@@ -21,7 +21,7 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 
 ## 工作区与通知区域
 
-- 主窗口和附加工作区窗口都使用同一 Vue Renderer 与受管 Python Backend；标签支持切换、关闭、固定、复制及“在新窗口打开”，不会为标签或窗口再启动 Backend。
+- 主窗口和附加工作区窗口都使用同一 Vue Renderer 与受管 Python Backend；标签支持切换、关闭、固定，以及路由策略明确允许的复制和“在新窗口打开”，不会为标签或窗口再启动 Backend。标签清单与组件缓存相互独立，普通页面默认在离开时卸载，只有显式 `workspace.cache=true` 的页面进入 KeepAlive。
 - 默认关闭主窗口时仅隐藏到 Windows 右下角通知区域。后台任务和 Backend 继续运行；可双击托盘图标或在菜单中选择“打开 NetConsole”，也可从菜单新建工作区窗口或打开唯一任务中心窗口。
 - 托盘菜单中的“退出 NetConsole”是完整退出入口，会先保存工作区与界面偏好、关闭受管窗口和停止 Backend。关闭“关闭主窗口后驻留通知区域”设置后，最后一个普通业务窗口关闭时恢复受控退出。
 - 浏览器开发模式仍可使用多标签工作区，但没有 Electron 原生多窗口与托盘能力。托盘图标复用 `resources/branding/netconsole.ico`，打包时复制到 Electron `extraResources/branding`。

@@ -1,15 +1,16 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { nextTick, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown } from '@element-plus/icons-vue'
 
-import { activateSite, applySiteCleanup, auditSite, createSite, exportSite, getDataRoot, getLatestSiteAudit, importSite, inspectSitePackage, listSites, migrateDataRoot, migrateSite, prepareSiteCleanup, rebuildDemoSite, validateDataRoot, type DataRootSnapshot, type SiteConflictChoice, type SiteConflictResolution, type SitePackageInspection, type SitePackageType, type SiteRecord } from '../../api/siteStorage'
+import { activateSite, applySiteCleanup, auditSite, createSite, exportSite, getDataRoot, getLatestSiteAudit, importSite, inspectSitePackage, listSites, migrateDataRoot, migrateSite, preflightSiteActivation, prepareSiteCleanup, rebuildDemoSite, validateDataRoot, type DataRootSnapshot, type SiteConflictChoice, type SiteConflictResolution, type SitePackageInspection, type SitePackageType, type SiteRecord } from '../../api/siteStorage'
 import { ApiRequestError } from '../../api/client'
 import { getPlatformAdapter } from '../../platform/runtime'
 import { getTask } from '../../api/tasks'
 import { useConfirm } from '../../components/feedback/useConfirm'
+import { useWorkspaceStore } from '../../stores/workspace'
 
-defineProps<{ focused?: boolean }>()
+const props = defineProps<{ focused?: boolean; switchBlocked?: boolean }>()
 
 const sites = ref<SiteRecord[]>([])
 const root = ref<DataRootSnapshot | null>(null)
@@ -35,16 +36,29 @@ const importRawOnly = ref(false)
 const conflictChoices = ref<Record<string, { choice: SiteConflictChoice; manualValue: string }>>({})
 const desktopOnly = getPlatformAdapter().hostType === 'electron'
 const { confirm: confirmAction } = useConfirm()
+const workspace = useWorkspaceStore()
+const panelRoot = ref<HTMLElement | null>(null)
+let reloadPromise: Promise<void> | null = null
 
 onMounted(() => { if (desktopOnly) void reload() })
 
 async function reload(): Promise<void> {
-  loading.value = true
-  error.value = ''
-  try {
-    ;[sites.value, root.value] = await Promise.all([listSites(), getDataRoot()])
-  } catch (cause) { showError(cause, '局点与数据路径加载失败') }
-  finally { loading.value = false }
+  if (reloadPromise) return reloadPromise
+  reloadPromise = (async () => {
+    loading.value = true
+    error.value = ''
+    try {
+      ;[sites.value, root.value] = await Promise.all([listSites(), getDataRoot()])
+    } catch (cause) { showError(cause, '局点与数据路径加载失败') }
+    finally { loading.value = false }
+  })().finally(() => { reloadPromise = null })
+  return reloadPromise
+}
+
+async function focus(): Promise<void> {
+  await nextTick()
+  panelRoot.value?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+  panelRoot.value?.focus({ preventScroll: true })
 }
 
 async function newSite(): Promise<void> {
@@ -59,21 +73,39 @@ async function newSite(): Promise<void> {
 }
 
 async function switchSite(site: SiteRecord): Promise<void> {
-  if (site.active || !(await confirmAction({ type: 'WARNING', title: '切换当前局点', message: `切换到“${site.display_name}”并重启本地 Backend？`, confirmText: '确认切换局点' }))) return
+  if (busy.value || site.active) return
+  if (props.switchBlocked) {
+    ElMessage.warning('请先保存或撤销当前系统设置，再切换局点')
+    return
+  }
+  if (!(await confirmAction({ type: 'WARNING', title: '切换当前局点', message: `切换到“${site.display_name}”并重启本地 Backend？`, confirmText: '确认切换局点' }))) return
   busy.value = true
   error.value = ''
   blockingTasks.value = []
+  let checkpoint: ReturnType<typeof workspace.createSnapshot> | null = null
   try {
+    await preflightSiteActivation(site.site_id)
+    const focusQuery = new URLSearchParams({
+      section: 'site-storage',
+      site_focus: `site-switch-${Date.now()}`,
+    })
+    checkpoint = await workspace.prepareForSiteSwitch(site.site_id, `/settings?${focusQuery}`)
     await activateSite(site.site_id)
     const result = await getPlatformAdapter().restartBackend({ activeSiteId: site.site_id })
     if (!result.success) throw new Error(result.error || 'Backend 重启失败')
     ElMessage.success('局点已切换')
   } catch (cause) {
+    if (checkpoint) {
+      try { await workspace.restoreAfterFailedSiteSwitch(checkpoint) }
+      catch { /* 保留原始局点切换错误。 */ }
+    }
     blockingTasks.value = blockingTasksFrom(cause)
     showError(cause, '局点切换失败')
   }
   finally { busy.value = false }
 }
+
+defineExpose({ reload, focus })
 
 async function auditSelectedSite(site: SiteRecord): Promise<void> {
   busy.value = true
@@ -297,7 +329,9 @@ function displayValue(value: unknown): string { if (value === null || value === 
 <template>
   <section
     v-if="desktopOnly"
+    ref="panelRoot"
     id="site-storage-management"
+    tabindex="-1"
     class="storage-panel"
     :class="{ 'storage-panel--focused': focused }"
     v-loading="loading"

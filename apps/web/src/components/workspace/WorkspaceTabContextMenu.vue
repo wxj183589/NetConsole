@@ -15,6 +15,7 @@ defineProps<{
   x: number
   y: number
   tab: WorkspaceTab | null
+  allowDuplicate: boolean
 }>()
 
 const emit = defineEmits<{
@@ -31,7 +32,7 @@ const emit = defineEmits<{
     @click.stop
   >
     <button type="button" role="menuitem" @click="emit('command', 'popout')"><el-icon><Link /></el-icon>在新窗口打开</button>
-    <button type="button" role="menuitem" @click="emit('command', 'duplicate')"><el-icon><CopyDocument /></el-icon>复制标签</button>
+    <button type="button" role="menuitem" :disabled="!allowDuplicate" @click="emit('command', 'duplicate')"><el-icon><CopyDocument /></el-icon>复制标签</button>
     <button type="button" role="menuitem" @click="emit('command', 'toggle-pin')">
       <el-icon><component :is="tab.pinned ? Unlock : Lock" /></el-icon>{{ tab.pinned ? '取消固定' : '固定标签' }}
     </button>

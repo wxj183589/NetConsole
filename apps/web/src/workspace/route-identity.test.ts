@@ -57,4 +57,15 @@ describe('workspace route identity', () => {
     expect(sanitizeWorkspaceTitle('C:\\private\\raw.log')).toBe('NetConsole')
     expect(sanitizeWorkspaceTitle('x'.repeat(120))).toHaveLength(80)
   })
+
+  it('does not cache or duplicate routes unless their policy opts in', () => {
+    const router = createTestRouter()
+    const dashboard = canonicalizeWorkspaceRoute(router, '/')
+    const mesh = canonicalizeWorkspaceRoute(router, '/mesh?session_id=session-1')
+
+    expect(dashboard.policy.cache).toBe(false)
+    expect(dashboard.policy.allowDuplicate).toBe(false)
+    expect(mesh.policy.cache).toBe(false)
+    expect(mesh.policy.allowDuplicate).toBe(false)
+  })
 })

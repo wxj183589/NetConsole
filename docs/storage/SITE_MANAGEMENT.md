@@ -10,7 +10,9 @@ Electron 重启传递稳定 `site_id`，Backend 启动时先通过 Registry 解�
 
 `site_meta.json` 同时保存跨电脑同步使用的不可变 `site_uuid` 与 revision。局点显示名称可以修改，不能作为同步匹配键。历史 `legacy-*` 局点保持只读审计优先：未产生审计记录前不能导出现场采集包或采集回传包；审计后才补齐同步标识。完整迁移/备份不依赖该限制。
 
-切换前会扫描所有已登记局点的 `PENDING/STARTING/RUNNING/STOPPING` 快照，并先通过统一 Job Center reconcile 核对本地 PID 与当前 `TaskRuntime` 宿主。`COMPLETED/FAILED/CANCELLED` 历史任务不阻塞；死 PID 或重启后无内存宿主的零 PID 残留任务保留历史并转为 `FAILED` 后也不阻塞。reconcile 后仍可能继续执行的真实活动任务才阻止切换，API 返回任务 ID、类型、名称、状态和阻塞原因，设置页可直接打开对应任务中心。切换更新现有应用配置并返回 `restart_required=true`，Electron 等待新 Backend health ready、先收口 IPC，再刷新 Renderer 使所有 Service 和已打开页面使用同一 SiteContext；不会自动停止真实活动任务或连接设备。
+切换先调用只读 preflight，验证目标存在、不是当前局点，并扫描所有已登记局点的 `PENDING/STARTING/RUNNING/STOPPING` 快照；预检与正式激活都会通过统一 Job Center reconcile 核对本地 PID 与当前 `TaskRuntime` 宿主。`COMPLETED/FAILED/CANCELLED` 历史任务不阻塞；死 PID 或重启后无内存宿主的零 PID 残留任务保留历史并转为 `FAILED` 后也不阻塞。reconcile 后仍可能继续执行的真实活动任务才阻止切换，API 返回任务 ID、类型、名称、状态和阻塞原因，设置页可直接打开对应任务中心。
+
+预检通过后，当前 Renderer 发送 `before-site-switch`，保存可回滚工作区快照并移除 Dashboard、系统设置之外的局点业务标签；MESH 在该阶段中止详情/轨旁请求并释放 ECharts 与轨旁 series cache。激活接口更新现有应用配置并返回 `restart_required=true`；Electron 停止旧 Backend 后、启动新 Backend 前收敛所有工作区窗口的持久化快照。新 Backend 只有在 health ready 且 `/api/v1/sites/active` 与目标局点一致后才被接受，随后清除旧 Renderer 恢复状态并刷新所有 Renderer；新进程重新加载 Feature Gate、导航和当前局点。任一步失败时 Electron 恢复原 Backend 和其他窗口快照，发起窗口恢复本地快照并保持可操作。该流程只清理内存状态、标签和 query，不删除、移动或改写旧局点数据库、raw、报告与 Artifact。
 
 ## Legacy 与 Demo 审计
 

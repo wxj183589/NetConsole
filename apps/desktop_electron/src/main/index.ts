@@ -492,10 +492,18 @@ async function restartManagedBackend(update: SiteStorageRestartRequest): Promise
   const nextSite = update.activeSiteId ?? previousSite
   logger('SITE_SWITCH_STARTED', `site_changed=${nextSite !== previousSite} data_root_changed=${nextRoot !== previousRoot}`)
   await backend.stop()
-  backend.configureStorage(nextRoot, nextSite)
+  let workspaceCheckpoint: Map<string, WorkspaceWindowSnapshot | null> | undefined
   try {
+    workspaceCheckpoint = workspaceWindowController?.prepareSiteSwitchSnapshots()
+    backend.configureStorage(nextRoot, nextSite)
     const runtime = await backend.start()
     await applyManagedBackendRuntime(runtime, nextRoot, nextSite)
+    const verifiedSite = await readBackendActiveSiteId(runtime.baseUrl, runtime.apiToken, '')
+    if (verifiedSite !== nextSite) throw new Error('Backend ready 后返回的当前局点与目标局点不一致')
+    if (nextSite !== previousSite) {
+      rendererRecoveries.clear()
+      latestRendererWorkloads.clear()
+    }
     logger('SITE_SWITCH_BACKEND_RESTARTED', `site_changed=${nextSite !== previousSite} data_root_changed=${nextRoot !== previousRoot}`)
     setImmediate(() => { void reloadManagedRenderersAfterBackendRestart() })
   } catch (cause) {
@@ -505,9 +513,11 @@ async function restartManagedBackend(update: SiteStorageRestartRequest): Promise
       const restoredRuntime = await backend.start()
       await applyManagedBackendRuntime(restoredRuntime, previousRoot, previousSite)
     } catch (restoreCause) {
+      if (workspaceCheckpoint) workspaceWindowController?.restoreSiteSwitchSnapshots(workspaceCheckpoint)
       logger('SITE_SWITCH_FAILED', `stage=backend_restore restored=false type=${restoreCause instanceof Error ? restoreCause.name : 'unknown'}`)
       throw new Error('Backend 重启失败，原局点恢复失败，请重新启动应用。')
     }
+    if (workspaceCheckpoint) workspaceWindowController?.restoreSiteSwitchSnapshots(workspaceCheckpoint)
     logger('SITE_SWITCH_FAILED', `stage=backend_start restored=true type=${cause instanceof Error ? cause.name : 'unknown'}`)
     throw new Error('Backend 重启失败，已恢复原局点。')
   }

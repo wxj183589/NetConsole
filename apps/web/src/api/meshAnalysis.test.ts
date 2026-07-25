@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   applyMeshBundleImport, createMeshProfile, deleteMeshArtifact, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisParamsTemplate,
-  getMeshCounterDeltas, getMeshPeerSegmentChart, getMeshRateSeries, getMeshTracksideSignalChart, listMeshActiveBuildOrder, listMeshProfiles, listMeshSwitchEvents,
+  getMeshAnalysisSession, getMeshCounterDeltas, getMeshPeerSegmentChart, getMeshRateSeries, getMeshTracksideSignalChart, listMeshActiveBuildOrder, listMeshProfiles, listMeshSwitchEvents,
   previewMeshBundle, saveMeshAnalysisParams,
 } from './meshAnalysis'
 
@@ -108,6 +108,17 @@ describe('Mesh profile API', () => {
 
     expect(fetchMock.mock.calls[0][0]).toBe('/api/rail-transit/mesh-analysis/sessions/mr-id%3A1/link-details/export')
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ source_file_id: 7, analysis_params_override: params })
+  })
+
+  it('accepts and encodes the backend compound MESH session identifier', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await getMeshAnalysisSession('c4682b2a-ba83-44f2-8bc9-3d2b37c37237:1')
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      '/api/rail-transit/mesh-analysis/sessions/c4682b2a-ba83-44f2-8bc9-3d2b37c37237%3A1',
+    )
   })
 
   it('uses typed site parameter and derived artifact delete endpoints', async () => {

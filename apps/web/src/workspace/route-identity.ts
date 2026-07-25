@@ -24,9 +24,9 @@ const DEFAULT_POLICY: Required<WorkspaceRoutePolicy> = {
   identity: 'singleton',
   resourceParams: [],
   resourceQuery: [],
-  allowDuplicate: true,
+  allowDuplicate: false,
   allowNewWindow: true,
-  cache: true,
+  cache: false,
 }
 
 export function canonicalizeWorkspaceRoute(

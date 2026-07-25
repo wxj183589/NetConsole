@@ -22,6 +22,7 @@ import type {
   WorkspaceTab,
   WorkspaceWindowState,
 } from '../workspace/types'
+import { notifyBeforeSiteSwitch } from '../workspace/site-switch'
 
 const SAVE_DEBOUNCE_MS = 250
 
@@ -38,6 +39,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     tabs.value.find((tab) => tab.id === activeTabId.value) || null
   ))
   const activeCacheKey = computed(() => activeTab.value?.cacheKey || '')
+  const cachedTabs = computed(() => tabs.value.filter((tab) => routePolicy(tab.routeFullPath)?.cache))
 
   function routeCacheKey(routeFullPath: string): string {
     const current = activeTab.value
@@ -174,8 +176,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   async function duplicateTab(tabId = activeTabId.value): Promise<WorkspaceTab | null> {
     const source = tabs.value.find((tab) => tab.id === tabId)
-    if (!source) return null
+    if (!source || !canDuplicateTab(source.id)) return null
     return openRoute(source.routeFullPath, { duplicate: true })
+  }
+
+  function canDuplicateTab(tabId = activeTabId.value): boolean {
+    const source = tabs.value.find((tab) => tab.id === tabId)
+    return Boolean(source && routePolicy(source.routeFullPath)?.allowDuplicate)
   }
 
   function pinTab(tabId: string): void {
@@ -209,6 +216,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function popOutTab(tabId = activeTabId.value): Promise<{ success: boolean; error?: string }> {
     const tab = tabs.value.find((candidate) => candidate.id === tabId)
     if (!tab) return { success: false, error: '当前没有可打开的标签' }
+    if (!routePolicy(tab.routeFullPath)?.allowNewWindow) {
+      return { success: false, error: '该页面不允许在新窗口打开' }
+    }
     return openWorkspaceWindow(tab.routeFullPath, tab.title)
   }
 
@@ -232,6 +242,51 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         title: sanitizeWorkspaceTitle(tab.title),
       })),
     }
+  }
+
+  async function prepareForSiteSwitch(
+    targetSiteId: string,
+    settingsRouteFullPath: string,
+  ): Promise<WorkspaceWindowState> {
+    const checkpoint = createSnapshot()
+    try {
+      notifyBeforeSiteSwitch(targetSiteId)
+
+      const dashboardCanonical = safeCanonical(WORKSPACE_DEFAULT_ROUTE)
+      const settingsCanonical = safeCanonical(settingsRouteFullPath)
+      const dashboard = tabs.value.find((tab) => tab.routeName === dashboardCanonical.routeName)
+        || createTab(dashboardCanonical)
+      const settings = tabs.value.find((tab) => tab.routeName === settingsCanonical.routeName)
+        || createTab(settingsCanonical)
+      updateTabRouteIntent(settings, settingsCanonical)
+      tabs.value = dashboard.id === settings.id ? [settings] : [dashboard, settings]
+      activeTabId.value = settings.id
+      sortTabs()
+      syncTitle()
+      if (router?.currentRoute.value.fullPath !== settings.routeFullPath) {
+        await router?.replace(settings.routeFullPath)
+      }
+      await persistNow()
+      return checkpoint
+    } catch (cause) {
+      restoreSnapshot(checkpoint)
+      sortTabs()
+      syncTitle()
+      const target = activeTab.value?.routeFullPath || WORKSPACE_DEFAULT_ROUTE
+      if (router?.currentRoute.value.fullPath !== target) {
+        await router?.replace(target).catch(() => undefined)
+      }
+      throw cause
+    }
+  }
+
+  async function restoreAfterFailedSiteSwitch(checkpoint: WorkspaceWindowState): Promise<void> {
+    restoreSnapshot(checkpoint)
+    sortTabs()
+    syncTitle()
+    const target = activeTab.value?.routeFullPath || WORKSPACE_DEFAULT_ROUTE
+    if (router?.currentRoute.value.fullPath !== target) await router?.replace(target)
+    await persistNow()
   }
 
   function synchronizeRoute(routeFullPath: string): void {
@@ -272,6 +327,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       return canonicalizeWorkspaceRoute(router, routeFullPath)
     } catch {
       return canonicalizeWorkspaceRoute(router, WORKSPACE_DEFAULT_ROUTE)
+    }
+  }
+
+  function routePolicy(routeFullPath: string): CanonicalWorkspaceRoute['policy'] | null {
+    if (!router) return null
+    try {
+      return canonicalizeWorkspaceRoute(router, routeFullPath).policy
+    } catch {
+      return null
     }
   }
 
@@ -344,6 +408,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     void saveWorkspace(createSnapshot())
   }
 
+  async function persistNow(): Promise<void> {
+    if (!initialized.value) return
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = undefined
+    await saveWorkspace(createSnapshot())
+  }
+
   return {
     windowId,
     tabs,
@@ -351,6 +422,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     initialized,
     activeTab,
     activeCacheKey,
+    cachedTabs,
     routeCacheKey,
     initialize,
     dispose,
@@ -361,6 +433,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     closeOtherTabs,
     closeTabsToRight,
     duplicateTab,
+    canDuplicateTab,
     pinTab,
     unpinTab,
     updateActiveTabRoute,
@@ -369,6 +442,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     createWorkspaceWindow,
     restoreSnapshot,
     createSnapshot,
+    prepareForSiteSwitch,
+    restoreAfterFailedSiteSwitch,
     flushPersistence,
   }
 })

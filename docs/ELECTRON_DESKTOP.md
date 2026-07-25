@@ -14,7 +14,11 @@ Electron 复用同一 Vue Renderer、FastAPI 会话和 `TaskApplicationService -
 
 `WorkspaceWindowController` 统一管理一个主窗口和附加工作区窗口；所有窗口复用同一个 `PythonBackendManager`、动态回环 Origin 和内存桌面会话，不会为标签、窗口或 Vite 另建 Backend。Vue 工作区使用 Pinia 管理标签的路由、实例和缓存键，主进程只持久化受限的导航快照与窗口布局，不保存业务页面响应式状态、绝对路径、Token、密码、`confirm_token` 或设备凭据。
 
+工作区路由默认 `cache=false`、`allowDuplicate=false`。标签仍可保留在工作区，但普通页面离开时会卸载；`AppRouteView` 的 KeepAlive include 只包含标签仍存在且显式声明 `workspace.cache=true` 的路由。MESH 使用单一 `singleton` 标签和稳定 cache key，禁止同窗口复制；设备详情与 Online MR 分析等确有资源实例语义的页面单独声明复制策略。关闭标签或局点切换从 include 移除 cache key 后会触发真实卸载，不通过提高 KeepAlive 上限掩盖资源增长。
+
 工作区快照位于 Electron `userData/workspace-layout.json`。它使用严格 schema、内部路由/敏感 query 过滤、长度限制和原子替换；文件损坏、过期或多显示器越界时安全回退到主窗口默认布局。Renderer 只能通过白名单 IPC 打开受控内部路由、保存当前所属窗口的快照和更新已清理的窗口标题，不能提供 URL、`BrowserWindow` 参数或本机路径。
+
+局点重启前，Renderer 先持久化仅保留 Dashboard 与系统设置的快照；`WorkspaceWindowController` 再对所有受管窗口执行同一局点边界清理并保留回滚副本。`PythonBackendManager` ready 后，Main 读取新 Backend 的当前局点再次核对目标；不一致或启动失败会恢复原 Backend 和窗口快照。成功时才清除旧 MESH Renderer recovery/workload 并重新加载所有窗口，避免旧 `session_id`、KeepAlive 实例或多窗口业务标签跨局点恢复。
 
 Windows 下启动时会创建 `TrayController`，图标统一由 `resolveTrayIconPath()` 解析：源码态取仓库 `resources/branding/netconsole.ico`，安装包从 `extraResources/branding/netconsole.ico` 读取。菜单包含打开主窗口、新建工作区、打开任务中心、脱敏的 Backend/当前局点状态、关闭到通知区域开关和“退出 NetConsole”。图标不可用或创建失败时托盘设置运行时不可用，主窗口不会被隐藏，避免留下无法恢复的后台进程。
 
