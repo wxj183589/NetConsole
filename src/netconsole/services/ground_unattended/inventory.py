@@ -79,7 +79,8 @@ class TrainInventorySyncService:
                 "management_ip": str(mr.management_ip or ""),
                 "protocol": str(mr.protocol or ""),
                 "port": mr.port,
-                "source_hostname": str(mr.name or ""),
+                # Syslog hostname 以设备 sysname 为准，不能用本地化资产显示名替代。
+                "source_hostname": str((device.system_name if device else "") or mr.name or ""),
                 "connection_ready": connectable,
             }
 

@@ -91,8 +91,9 @@ MR。设备主体、地址和凭据仍只存在于设备管理；无人值守只
 `SyslogUdpReceiver` 的接收线程只负责 `recv -> 本机接收时间/全局与来源序号 -> 有界队列`。独立处理
 线程完成 MR 映射、WMESH/IFNET 关键事件解析、状态聚合、按小时追加和批量入库。原始 NDJSON 保留原始
 字节的安全编码、原文、设备时间、接收时间、两个接收序号、来源 IP/端口、主机名和 facility/severity。
-身份只有在来源 IP 与 hostname 同时指向同一 MR 时才是 `VERIFIED`；单项唯一匹配仅标记未确认，冲突绝不
-绑定，未知来源写入独立 `_unidentified` 流。设备时间与本机接收时间的差为 `CLOCK_OFFSET`，突变才是
+身份只有在来源 IP 与 hostname 同时指向同一 MR 时才是 `VERIFIED`；清单同步优先将设备 `system_name`
+登记为 Syslog hostname，缺失时才使用显示名。单项唯一匹配仅标记未确认，冲突绝不绑定，未知来源写入独立
+`_unidentified` 流。设备时间与本机接收时间的差为 `CLOCK_OFFSET`，突变才是
 `CLOCK_JUMP`，它们不表示网络传输延迟。队列溢出、重复和来源问题均作为数据质量事件，而不是把无人值守
 运行标成失败。
 

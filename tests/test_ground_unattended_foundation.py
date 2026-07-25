@@ -31,6 +31,7 @@ def test_inventory_incremental_sync_preserves_policy_and_marks_removed(tmp_path:
     ct = DeviceRepository(db).create(
         Device(
             name="T01-CT",
+            system_name="T01-MR-CT-SYSLOG",
             primary_address="192.0.2.10",
             ssh_enabled=1,
             ssh_username="admin",
@@ -77,6 +78,7 @@ def test_inventory_incremental_sync_preserves_policy_and_marks_removed(tmp_path:
     assert inventory[0]["priority"] is True
     assert inventory[0]["monitor_only"] is True
     assert inventory[0]["remark"] == "重点列车"
+    assert inventory[0]["endpoints"][0]["source_hostname"] == "T01-MR-CT-SYSLOG"
     assert any(item["binding_status"] == "REMOVED" for item in inventory[0]["endpoints"])
 
 
