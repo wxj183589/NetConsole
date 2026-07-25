@@ -51,6 +51,32 @@ describe('Electron-only packaging', () => {
     expect(script).not.toContain('DeleteRegKey HKLM "Software\\NetConsole"')
   })
 
+  it('probes rename support with a unique file inside the selected data root', () => {
+    const script = readFileSync(resolve(appRoot, 'build', 'installer-data-root.nsh'), 'utf8')
+    const closeIndex = script.indexOf('FileClose $0')
+    const renameIndex = script.indexOf('MoveFileExW(w "$NetConsoleDataRootProbeSource", w "$NetConsoleDataRootProbeTarget"')
+
+    expect(script).toContain('.netconsole-install-probe-$NetConsoleDataRootProbePid-$NetConsoleDataRootProbeTick.tmp')
+    expect(script).toContain('GetCurrentProcessId')
+    expect(script).toContain('GetTickCount')
+    expect(script).toContain('FlushFileBuffers')
+    expect(script).toContain('NetConsole-install-probe-v1')
+    expect(closeIndex).toBeGreaterThan(-1)
+    expect(renameIndex).toBeGreaterThan(closeIndex)
+    expect(script).toContain('FileRead $0 $NetConsoleDataRootProbeActual')
+    expect(script).toContain('Delete "$NetConsoleDataRootProbeTarget"')
+    expect(script).toContain('Windows 错误码：$NetConsoleDataRootProbeErrorCode')
+    expect(script).toContain('目录不可写（访问被拒绝）')
+    expect(script).toContain('临时探测文件正在被其他程序占用')
+    expect(script).toContain('文件系统不支持同目录文件重命名')
+    expect(script).not.toContain('.netconsole-installer-write-test.tmp')
+    expect(script).not.toContain('.netconsole-installer-rename-test.tmp')
+    expect(script).not.toContain('Rename "$NetConsoleDataRoot"')
+    expect(script).not.toContain('MoveFileExW(w "$NetConsoleDataRoot"')
+    expect(script).not.toContain('$TEMP')
+    expect(script).not.toContain('$PLUGINSDIR')
+  })
+
   it('resolves the packaged executable from the Electron Builder contract', () => {
     const script = resolve(appRoot, 'scripts', 'package-smoke.mjs')
     const packageJsonPath = resolve(appRoot, 'package.json')

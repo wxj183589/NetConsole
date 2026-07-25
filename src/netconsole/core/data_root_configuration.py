@@ -85,7 +85,10 @@ def validate_installation_data_root(candidate: Path, *, installation_root: Path 
         raise DataRootConfigurationError("数据根不得位于程序安装目录")
     if sys.platform == "win32":
         _require_windows_fixed_drive(root)
-    root.mkdir(parents=True, exist_ok=True)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise DataRootConfigurationError(_probe_failure("数据目录无法创建", exc)) from exc
     _require_recognized_or_empty_root(root)
     free_bytes = shutil.disk_usage(root).free
     if free_bytes < MINIMUM_DATA_ROOT_FREE_BYTES:
@@ -118,16 +121,64 @@ def _require_recognized_or_empty_root(root: Path) -> None:
 
 
 def _verify_writable_and_renamable(root: Path) -> None:
-    temporary = root / f".netconsole-install-write-{uuid.uuid4().hex}.tmp"
-    renamed = temporary.with_suffix(".renamed")
+    temporary: Path | None = None
+    renamed: Path | None = None
+    handle = None
     try:
-        temporary.write_text("NetConsole", encoding="ascii")
-        os.replace(temporary, renamed)
-    except OSError as exc:
-        raise DataRootConfigurationError("数据目录不可写或不支持安全重命名") from exc
+        for _attempt in range(32):
+            probe_id = uuid.uuid4().hex
+            candidate = root / f".netconsole-install-probe-{probe_id}.tmp"
+            candidate_renamed = Path(f"{candidate}.renamed")
+            if candidate_renamed.exists():
+                continue
+            try:
+                handle = candidate.open("x", encoding="ascii")
+            except FileExistsError:
+                continue
+            except OSError as exc:
+                raise DataRootConfigurationError(_probe_failure("临时探测文件创建失败", exc)) from exc
+            temporary = candidate
+            renamed = candidate_renamed
+            break
+        if temporary is None or renamed is None or handle is None:
+            raise DataRootConfigurationError("无法生成唯一的临时探测文件名")
+        try:
+            handle.write("NetConsole-install-probe-v1")
+            handle.flush()
+            os.fsync(handle.fileno())
+            handle.close()
+            handle = None
+        except OSError as exc:
+            raise DataRootConfigurationError(_probe_failure("临时探测文件写入或刷新失败", exc)) from exc
+        try:
+            os.rename(temporary, renamed)
+        except OSError as exc:
+            raise DataRootConfigurationError(_probe_failure("同目录临时文件重命名失败", exc)) from exc
+        try:
+            if renamed.read_text(encoding="ascii") != "NetConsole-install-probe-v1":
+                raise DataRootConfigurationError("重命名后的临时文件内容校验失败")
+        except OSError as exc:
+            raise DataRootConfigurationError(_probe_failure("重命名后的临时文件读取失败", exc)) from exc
     finally:
-        temporary.unlink(missing_ok=True)
-        renamed.unlink(missing_ok=True)
+        if handle is not None:
+            handle.close()
+        cleanup_errors: list[OSError] = []
+        for path in (temporary, renamed):
+            if path is None:
+                continue
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                cleanup_errors.append(exc)
+        if cleanup_errors and sys.exc_info()[0] is None:
+            raise DataRootConfigurationError(_probe_failure("临时探测文件清理失败", cleanup_errors[0]))
+
+
+def _probe_failure(step: str, error: OSError) -> str:
+    code = getattr(error, "winerror", None)
+    if code is None:
+        code = getattr(error, "errno", None)
+    return f"{step}（Windows 错误码：{code if code is not None else 'unknown'}）"
 
 
 def _verify_sqlite_locking(root: Path) -> None:

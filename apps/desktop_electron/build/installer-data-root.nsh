@@ -10,6 +10,14 @@ Var NetConsoleExistingDataRoot
 Var NetConsoleDataRootChanged
 Var NetConsoleDataRootInput
 Var NetConsoleDataRootStatus
+Var NetConsoleDataRootProbeSource
+Var NetConsoleDataRootProbeTarget
+Var NetConsoleDataRootProbeExpected
+Var NetConsoleDataRootProbeActual
+Var NetConsoleDataRootProbeResult
+Var NetConsoleDataRootProbeErrorCode
+Var NetConsoleDataRootProbePid
+Var NetConsoleDataRootProbeTick
 !endif
 
 !macro customInit
@@ -46,6 +54,11 @@ Var NetConsoleDataRootStatus
     ${If} $0 != 0
       Abort "NetConsole 数据迁移失败，旧数据目录未改变。安装器不会修改 DataRoot。"
     ${EndIf}
+  ${EndIf}
+  Call NetConsoleRunDataRootProbe
+  ${If} $NetConsoleDataRootProbeResult != "ok"
+    DetailPrint "DataRoot probe failed: step=$NetConsoleDataRootProbeResult win32_error=$NetConsoleDataRootProbeErrorCode"
+    Abort "数据目录校验失败：$NetConsoleDataRootProbeResult（Windows 错误码 $NetConsoleDataRootProbeErrorCode）。请关闭 NetConsole、Agent 和 Backend 后重试；不要删除已有数据。"
   ${EndIf}
   ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --installation-root "$INSTDIR"' $0
   ${If} $0 != 0
@@ -105,6 +118,150 @@ Function NetConsoleRefreshDataRootStatus
   ${NSD_SetText} $NetConsoleDataRootStatus "空目录：将在此创建新的 NetConsole 数据根。安装前会检查可写性、重命名和 SQLite 锁。"
 FunctionEnd
 
+Function NetConsoleRunDataRootProbe
+  StrCpy $NetConsoleDataRootProbeResult "ok"
+  StrCpy $NetConsoleDataRootProbeErrorCode "0"
+  StrCpy $NetConsoleDataRootProbeExpected "NetConsole-install-probe-v1"
+
+  ClearErrors
+  CreateDirectory "$NetConsoleDataRoot"
+  IfErrors NetConsoleDataRootProbeCreateDirectoryFailed
+
+  System::Call 'kernel32::GetCurrentProcessId()i.r0'
+  StrCpy $NetConsoleDataRootProbePid "$0"
+
+  NetConsoleDataRootProbeChooseName:
+  System::Call 'kernel32::GetTickCount()i.r0'
+  StrCpy $NetConsoleDataRootProbeTick "$0"
+  StrCpy $NetConsoleDataRootProbeSource "$NetConsoleDataRoot\.netconsole-install-probe-$NetConsoleDataRootProbePid-$NetConsoleDataRootProbeTick.tmp"
+  StrCpy $NetConsoleDataRootProbeTarget "$NetConsoleDataRootProbeSource.renamed"
+  IfFileExists "$NetConsoleDataRootProbeSource" NetConsoleDataRootProbeNameCollision 0
+  IfFileExists "$NetConsoleDataRootProbeTarget" NetConsoleDataRootProbeNameCollision NetConsoleDataRootProbeNameReady
+
+  NetConsoleDataRootProbeNameCollision:
+  Sleep 1
+  Goto NetConsoleDataRootProbeChooseName
+
+  NetConsoleDataRootProbeNameReady:
+  ClearErrors
+  FileOpen $0 "$NetConsoleDataRootProbeSource" w
+  IfErrors NetConsoleDataRootProbeCreateFileFailed
+  ClearErrors
+  FileWrite $0 "$NetConsoleDataRootProbeExpected"
+  IfErrors NetConsoleDataRootProbeWriteFailed
+  System::Call 'kernel32::FlushFileBuffers(p r0)i.r1'
+  StrCmp $1 0 NetConsoleDataRootProbeFlushFailed
+  ClearErrors
+  FileClose $0
+  IfErrors NetConsoleDataRootProbeCloseFailed
+
+  System::Call 'kernel32::MoveFileExW(w "$NetConsoleDataRootProbeSource", w "$NetConsoleDataRootProbeTarget", i 0)i.r1'
+  StrCmp $1 0 0 +3
+    System::Call 'kernel32::GetLastError()i.r0'
+    Goto NetConsoleDataRootProbeRenameFailed
+  IfFileExists "$NetConsoleDataRootProbeTarget" 0 NetConsoleDataRootProbeTargetMissing
+
+  ClearErrors
+  FileOpen $0 "$NetConsoleDataRootProbeTarget" r
+  IfErrors NetConsoleDataRootProbeReadFailed
+  ClearErrors
+  FileRead $0 $NetConsoleDataRootProbeActual
+  IfErrors NetConsoleDataRootProbeReadOpenFailed
+  FileClose $0
+  StrCmp $NetConsoleDataRootProbeActual $NetConsoleDataRootProbeExpected 0 NetConsoleDataRootProbeContentMismatch
+
+  ClearErrors
+  Delete "$NetConsoleDataRootProbeTarget"
+  IfErrors NetConsoleDataRootProbeCleanupFailed
+  Return
+
+  NetConsoleDataRootProbeCreateDirectoryFailed:
+  System::Call 'kernel32::GetLastError()i.r0'
+  StrCpy $NetConsoleDataRootProbeErrorCode "$0"
+  StrCpy $NetConsoleDataRootProbeResult "目录无法创建"
+  Return
+
+  NetConsoleDataRootProbeCreateFileFailed:
+  System::Call 'kernel32::GetLastError()i.r0'
+  StrCpy $NetConsoleDataRootProbeErrorCode "$0"
+  StrCmp $NetConsoleDataRootProbeErrorCode 5 0 +3
+    StrCpy $NetConsoleDataRootProbeResult "目录不可写（访问被拒绝）"
+    Return
+  StrCpy $NetConsoleDataRootProbeResult "临时探测文件创建失败"
+  Return
+
+  NetConsoleDataRootProbeWriteFailed:
+  System::Call 'kernel32::GetLastError()i.r1'
+  StrCpy $NetConsoleDataRootProbeErrorCode "$1"
+  FileClose $0
+  Delete "$NetConsoleDataRootProbeSource"
+  StrCpy $NetConsoleDataRootProbeResult "临时探测文件写入失败"
+  Return
+
+  NetConsoleDataRootProbeFlushFailed:
+  System::Call 'kernel32::GetLastError()i.r1'
+  StrCpy $NetConsoleDataRootProbeErrorCode "$1"
+  FileClose $0
+  Delete "$NetConsoleDataRootProbeSource"
+  StrCpy $NetConsoleDataRootProbeResult "临时探测文件刷新失败"
+  Return
+
+  NetConsoleDataRootProbeCloseFailed:
+  System::Call 'kernel32::GetLastError()i.r0'
+  StrCpy $NetConsoleDataRootProbeErrorCode "$0"
+  Delete "$NetConsoleDataRootProbeSource"
+  StrCpy $NetConsoleDataRootProbeResult "临时探测文件关闭失败"
+  Return
+
+  NetConsoleDataRootProbeRenameFailed:
+  StrCpy $NetConsoleDataRootProbeErrorCode "$0"
+  Delete "$NetConsoleDataRootProbeSource"
+  StrCmp $NetConsoleDataRootProbeErrorCode 5 0 +3
+    StrCpy $NetConsoleDataRootProbeResult "同目录重命名被权限阻止"
+    Return
+  StrCmp $NetConsoleDataRootProbeErrorCode 32 0 +3
+    StrCpy $NetConsoleDataRootProbeResult "临时探测文件正在被其他程序占用"
+    Return
+  StrCmp $NetConsoleDataRootProbeErrorCode 50 0 +3
+    StrCpy $NetConsoleDataRootProbeResult "文件系统不支持同目录文件重命名"
+    Return
+  StrCpy $NetConsoleDataRootProbeResult "同目录临时文件重命名失败"
+  Return
+
+  NetConsoleDataRootProbeTargetMissing:
+  StrCpy $NetConsoleDataRootProbeErrorCode "2"
+  Delete "$NetConsoleDataRootProbeSource"
+  Delete "$NetConsoleDataRootProbeTarget"
+  StrCpy $NetConsoleDataRootProbeResult "重命名后的临时文件不存在"
+  Return
+
+  NetConsoleDataRootProbeReadFailed:
+  System::Call 'kernel32::GetLastError()i.r0'
+  StrCpy $NetConsoleDataRootProbeErrorCode "$0"
+  Delete "$NetConsoleDataRootProbeTarget"
+  StrCpy $NetConsoleDataRootProbeResult "重命名后的临时文件无法读取"
+  Return
+
+  NetConsoleDataRootProbeReadOpenFailed:
+  System::Call 'kernel32::GetLastError()i.r1'
+  StrCpy $NetConsoleDataRootProbeErrorCode "$1"
+  FileClose $0
+  Delete "$NetConsoleDataRootProbeTarget"
+  StrCpy $NetConsoleDataRootProbeResult "重命名后的临时文件读取失败"
+  Return
+
+  NetConsoleDataRootProbeContentMismatch:
+  Delete "$NetConsoleDataRootProbeTarget"
+  StrCpy $NetConsoleDataRootProbeErrorCode "0"
+  StrCpy $NetConsoleDataRootProbeResult "重命名后的临时文件内容校验失败"
+  Return
+
+  NetConsoleDataRootProbeCleanupFailed:
+  System::Call 'kernel32::GetLastError()i.r0'
+  StrCpy $NetConsoleDataRootProbeErrorCode "$0"
+  StrCpy $NetConsoleDataRootProbeResult "临时探测文件清理失败"
+FunctionEnd
+
 Function NetConsoleDataRootPageLeave
   NetConsoleDataRootValidateAgain:
   ${NSD_GetText} $NetConsoleDataRootInput $NetConsoleDataRoot
@@ -128,20 +285,12 @@ Function NetConsoleDataRootPageLeave
   StrCmp $1 3 0 +3
     MessageBox MB_ICONSTOP "数据目录必须位于本地固定磁盘，不能使用 U 盘、光驱或临时映射盘。"
     Abort
-  CreateDirectory "$NetConsoleDataRoot"
-  ClearErrors
-  FileOpen $0 "$NetConsoleDataRoot\.netconsole-installer-write-test.tmp" w
-  IfErrors 0 +3
-    MessageBox MB_ICONSTOP "数据目录不可写。请选择其他目录。"
+  Call NetConsoleRunDataRootProbe
+  ${If} $NetConsoleDataRootProbeResult != "ok"
+    DetailPrint "DataRoot probe failed: step=$NetConsoleDataRootProbeResult win32_error=$NetConsoleDataRootProbeErrorCode"
+    MessageBox MB_ICONSTOP "数据目录校验失败。$\r$\n失败步骤：$NetConsoleDataRootProbeResult$\r$\nWindows 错误码：$NetConsoleDataRootProbeErrorCode$\r$\n$\r$\n请关闭 NetConsole、Agent 和 Backend 后重试，并检查目录权限或文件系统。不要删除已有数据。"
     Abort
-  FileWrite $0 "NetConsole"
-  FileClose $0
-  Rename "$NetConsoleDataRoot\.netconsole-installer-write-test.tmp" "$NetConsoleDataRoot\.netconsole-installer-rename-test.tmp"
-  IfErrors 0 +3
-    Delete "$NetConsoleDataRoot\.netconsole-installer-write-test.tmp"
-    MessageBox MB_ICONSTOP "数据目录不支持安全重命名。请选择其他目录。"
-    Abort
-  Delete "$NetConsoleDataRoot\.netconsole-installer-rename-test.tmp"
+  ${EndIf}
   IfFileExists "$NetConsoleDataRoot\config\storage-manifest.json" NetConsoleDataRootReady
   IfFileExists "$NetConsoleDataRoot\*.*" 0 NetConsoleDataRootReady
   MessageBox MB_ICONEXCLAMATION|MB_YESNO "所选目录非空且不是已识别的 NetConsole 数据根。是否在其中创建 NetConsoleData 子目录？" IDYES +2
