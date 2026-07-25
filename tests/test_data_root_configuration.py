@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import namedtuple
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -11,7 +12,11 @@ from uuid import UUID
 import pytest
 
 from netconsole.core import data_root_configuration
-from netconsole.core.data_root_configuration import DataRootConfigurationError, validate_installation_data_root
+from netconsole.core.data_root_configuration import (
+    DataRootConfigurationError,
+    prepare_installation_data_root,
+    validate_installation_data_root,
+)
 from netconsole.core import runtime_environment
 
 
@@ -35,6 +40,38 @@ def test_installation_validation_accepts_an_empty_writable_root(tmp_path: Path, 
     assert validate_installation_data_root(target) == target.resolve()
     assert validate_installation_data_root(Path(f"{target}{os.sep}")) == target.resolve()
     assert list(target.iterdir()) == []
+
+
+def test_installation_preparation_initializes_a_manifest_before_first_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_non_production_test_root(monkeypatch, tmp_path)
+    target = tmp_path / "NetConsoleData"
+
+    assert prepare_installation_data_root(target) == target.resolve()
+
+    manifest = target / "config" / "storage-manifest.json"
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert Path(payload["data_root"]).resolve() == target.resolve()
+    assert payload["schema_version"] == 1
+    assert (target / "sites").is_dir()
+    assert not list(target.glob(".netconsole-install-probe-*"))
+
+
+def test_installation_preparation_does_not_replace_an_invalid_existing_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_non_production_test_root(monkeypatch, tmp_path)
+    target = tmp_path / "NetConsoleData"
+    manifest = target / "config" / "storage-manifest.json"
+    (target / "sites").mkdir(parents=True)
+    manifest.parent.mkdir(parents=True)
+    manifest.write_bytes(b"not-json")
+
+    with pytest.raises(RuntimeError, match="storage-manifest.json"):
+        prepare_installation_data_root(target)
+
+    assert manifest.read_bytes() == b"not-json"
 
 
 def test_installation_validation_accepts_existing_netconsole_data_without_modifying_it(

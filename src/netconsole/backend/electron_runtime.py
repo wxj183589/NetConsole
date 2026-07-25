@@ -141,7 +141,7 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None) -> int:
                     "event": "netconsole.electron_backend.startup_failed",
                     "message": str(exc),
                 },
-                ensure_ascii=False,
+                ensure_ascii=True,
                 separators=(",", ":"),
             ),
             flush=True,

@@ -16,6 +16,7 @@
 - 安装、升级、修复统一使用 `HKLM\Software\NetConsole\DataRoot` 指向唯一数据根。开发 Electron、源码 Backend、打包验证和正式安装包共享该根；未配置时停止启动，不再按运行方式创建 Development、仓库或 LocalAppData 数据树。
 - 修复全新安装的数据根校验顺序：安装器 Backend 在机器级指针写入前不再提前初始化运行日志或 `PathResolver`，可先完成候选根校验，再由安装器写入唯一 `DataRoot`；普通源码启动仍保持“未配置即失败”。
 - 修复已有数据根因固定重命名目标残留而被误判“不支持安全重命名”：NSIS 与 Backend 均改用候选根内部的唯一探测文件，完成刷新、关闭、同目录重命名、回读和清理；失败按步骤和 Windows 错误码提示，不再要求删除或更换已有数据目录。
+- 修复全新电脑安装后首次启动可能因 `storage-manifest.json` 初始化失败而退出：安装器现在在写入机器级 `DataRoot` 前由打包 Backend 原子初始化新根并验证 manifest，已有损坏或不兼容 manifest 保持原样并阻止发布指针；Backend 启动失败消息改用代码页无关的 ASCII JSON Unicode 转义，避免其他 Windows 中文环境显示乱码。
 - 更改既有数据根时，安装器调用受管 Backend 在目标同级 staging 中复制和校验 SQLite 后原子发布，再更新机器级指针；旧根保留，不自动删除。迁移后的 storage manifest 会重绑定新根，避免首次启动因旧路径被拒绝。
 - 自动测试必须显式使用 `D:\NetConsoleTestData\<run-id>`，不会读取机器级指针或真实业务根；隔离模式在设置页明确提示，不允许修改正式局点或数据根。
 

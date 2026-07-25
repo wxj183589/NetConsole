@@ -47,6 +47,8 @@ describe('Electron-only packaging', () => {
     expect(script).toContain('NetConsoleDataRootChanged')
     expect(script).toContain('--migrate-data-root')
     expect(script).toContain('--validate-data-root')
+    expect(script).toContain('creates/checks the storage')
+    expect(script).toContain('数据目录初始化或兼容性校验失败')
     expect(script).toContain('WriteRegStr HKLM "Software\\NetConsole" "DataRoot"')
     expect(script).not.toContain('DeleteRegKey HKLM "Software\\NetConsole"')
   })

@@ -130,9 +130,9 @@ def _validate_data_root_from_installer(arguments: list[str]) -> int:
     parser.add_argument("data_root", type=Path)
     parser.add_argument("--installation-root", type=Path)
     values = parser.parse_args(arguments)
-    from netconsole.core.data_root_configuration import validate_installation_data_root
+    from netconsole.core.data_root_configuration import prepare_installation_data_root
 
-    validate_installation_data_root(values.data_root, installation_root=values.installation_root)
+    prepare_installation_data_root(values.data_root, installation_root=values.installation_root)
     return 0
 
 

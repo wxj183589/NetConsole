@@ -98,6 +98,23 @@ def validate_installation_data_root(candidate: Path, *, installation_root: Path 
     return root
 
 
+def prepare_installation_data_root(candidate: Path, *, installation_root: Path | None = None) -> Path:
+    """Validate and initialize the selected root before the installer publishes it.
+
+    Existing manifests are compatibility-checked by ``prepare_storage_manifest``
+    and are never replaced.  A new root receives its manifest while the
+    installer can still fail clearly, instead of deferring initialization to
+    the first Electron launch.
+    """
+
+    root = validate_installation_data_root(candidate, installation_root=installation_root)
+    from netconsole.core.paths import PathResolver
+    from netconsole.core.storage_manifest import prepare_storage_manifest
+
+    prepare_storage_manifest(PathResolver(data_root=root))
+    return root
+
+
 def _require_windows_fixed_drive(root: Path) -> None:
     try:
         import ctypes
@@ -213,6 +230,7 @@ __all__ = [
     "DataRootConfigurationError",
     "MINIMUM_DATA_ROOT_FREE_BYTES",
     "RECOMMENDED_DATA_ROOT_FREE_BYTES",
+    "prepare_installation_data_root",
     "read_machine_data_root",
     "resolve_persistent_data_root",
     "validate_installation_data_root",

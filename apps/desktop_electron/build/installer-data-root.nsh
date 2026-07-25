@@ -60,9 +60,12 @@ Var NetConsoleDataRootProbeTick
     DetailPrint "DataRoot probe failed: step=$NetConsoleDataRootProbeResult win32_error=$NetConsoleDataRootProbeErrorCode"
     Abort "数据目录校验失败：$NetConsoleDataRootProbeResult（Windows 错误码 $NetConsoleDataRootProbeErrorCode）。请关闭 NetConsole、Agent 和 Backend 后重试；不要删除已有数据。"
   ${EndIf}
+  ; This command validates the selected root and creates/checks the storage
+  ; manifest before the registry pointer is published. First launch therefore
+  ; never owns data-root initialization.
   ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --installation-root "$INSTDIR"' $0
   ${If} $0 != 0
-    Abort "数据目录校验失败。请返回选择容量充足的非系统固定磁盘目录。"
+    Abort "数据目录初始化或兼容性校验失败。请检查安装日志；不要删除已有数据。"
   ${EndIf}
   WriteRegStr HKLM "Software\NetConsole" "DataRoot" "$NetConsoleDataRoot"
 !macroend

@@ -6,6 +6,7 @@ v1.4.3
 - Windows 安装器将程序目录与业务数据根分离，安装、开发和正式运行统一读取机器级 `DataRoot`；未配置时不再回退 AppData、源码或临时目录。
 - 修复全新安装在写入机器级 `DataRoot` 前因日志和路径模块提前初始化而无法校验候选数据根的问题；普通运行仍保持未配置即失败。
 - 修复安装器固定探测目标残留导致已有数据根被误判不支持安全重命名；改为根内唯一文件探测、回读和清理，并显示失败步骤与 Windows 错误码。
+- 修复全新电脑安装后首次启动可能因 storage manifest 初始化失败而退出：安装阶段在发布机器级指针前初始化或验证 manifest；Backend 启动失败协议改为代码页无关的 ASCII JSON Unicode 转义，其他 Windows 中文环境不再乱码。
 - 安装器只接受可写、支持原子重命名和 SQLite 写锁的非系统固定磁盘；升级更改数据根使用 staging 校验与原子发布，普通卸载保留业务数据。
 - 测试运行仅使用显式 `D:\NetConsoleTestData\<run-id>`；storage manifest、Backend 写锁和 health 诊断补齐统一数据根信息。
 

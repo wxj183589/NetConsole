@@ -125,6 +125,39 @@ def test_shutdown_ack_is_emitted_as_bounded_json_event() -> None:
     }
 
 
+def test_startup_failure_protocol_is_ascii_and_preserves_chinese(monkeypatch, capsys) -> None:
+    from netconsole.backend import electron_runtime
+    from netconsole.core.storage_manifest import StorageCompatibilityError
+
+    class InstanceLock:
+        def __init__(self, _paths) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            pass
+
+    monkeypatch.setattr(electron_runtime, "PathResolver", lambda: object())
+    monkeypatch.setattr(electron_runtime, "BackendInstanceLock", InstanceLock)
+    monkeypatch.setattr(
+        electron_runtime,
+        "prepare_storage_manifest",
+        lambda _paths: (_ for _ in ()).throw(StorageCompatibilityError("数据目录初始化失败")),
+    )
+
+    result = electron_runtime.main(
+        ["--host", "127.0.0.1", "--port", "0"],
+        stdin=io.StringIO(f'{{"session_token":"{TOKEN}"}}\n'),
+    )
+    output = capsys.readouterr().out
+
+    assert result == 3
+    assert output.isascii()
+    assert json.loads(output)["message"] == "数据目录初始化失败"
+
+
 def test_exit_command_wait_ignores_unknown_messages_and_eof() -> None:
     wait_for_exit_command(io.StringIO('not-json\n{"command":"unknown"}\n{"command":"exit"}\n'))
     wait_for_exit_command(io.StringIO(""))

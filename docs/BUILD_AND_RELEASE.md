@@ -2,11 +2,11 @@
 
 NetConsole v1.4.3 的正式桌面产品只有 Electron + Vue + Python Backend。Python Backend 使用 PyInstaller 生成受 Electron 管理的 `NetConsoleBackend.exe`；PyInstaller、测试工具和许可证/SBOM 工具只属于构建环境，不属于产品运行时依赖。
 
-安装包升级和卸载不得删除 Electron `userData/bootstrap.json` 或用户选择的数据根。electron-builder 的既有 NSIS 安装器必须分别显示程序安装目录与数据存放目录；数据根在完成路径、磁盘、可写/重命名、SQLite 锁与空间校验后写入 `HKLM\Software\NetConsole\DataRoot`。发布 smoke 在唯一 `D:\NetConsoleTestData\<run-id>` 中以 `RuntimeMode.TEST` 运行并自动清理，绝不读取机器级指针或真实数据根；同时确认仓库根没有生成 `data/` 或新的 `.local/` 运行数据。
+安装包升级和卸载不得删除 Electron `userData/bootstrap.json` 或用户选择的数据根。electron-builder 的既有 NSIS 安装器必须分别显示程序安装目录与数据存放目录；数据根在完成路径、磁盘、可写/重命名、SQLite 锁与空间校验后，由打包 Backend 在空根中原子初始化标准结构与 `storage-manifest.json`，或验证已有 manifest 兼容性，最后才写入 `HKLM\Software\NetConsole\DataRoot`。初始化/兼容性校验失败不得发布指针，也不得覆盖已有 manifest。发布 smoke 在唯一 `D:\NetConsoleTestData\<run-id>` 中以 `RuntimeMode.TEST` 运行并自动清理，绝不读取机器级指针或真实数据根；同时确认仓库根没有生成 `data/` 或新的 `.local/` 运行数据。
 
 NSIS 可写/重命名预检和安装后的 Backend 复验必须使用候选数据根内部的唯一临时文件，完成 flush/close、同目录文件重命名、内容回读和清理。禁止固定源/目标文件名、目录级 Rename、从安装器临时目录跨卷移动或使用现有业务文件作为探测对象。失败日志只记录步骤和 Win32 错误码，不写用户配置内容；测试修复包使用独立 artifact 名称，不能覆盖同版本既有正式安装包。
 
-安装包人工验收至少覆盖：程序安装在 C 盘而数据在 D 盘、阻止 C 盘数据根、空目录创建、合法既有根复用、非空普通目录拒绝/创建子目录、升级/修复保持旧根、更换根的 staging/SQLite 校验失败回滚，以及普通卸载保留数据和注册表指针。源码 `pnpm dev` 还必须读取同一指针；测试模式不得读取注册表或真实根。
+安装包人工验收至少覆盖：程序安装在 C 盘而数据在 D 盘、阻止 C 盘数据根、空目录在安装阶段生成有效 manifest 并可首次启动、合法既有根复用、损坏 manifest 原样保留并阻止安装、非空普通目录拒绝/创建子目录、升级/修复保持旧根、更换根的 staging/SQLite 校验失败回滚，以及普通卸载保留数据和注册表指针。源码 `pnpm dev` 还必须读取同一指针；测试模式不得读取注册表或真实根。Backend 向 Electron 输出的监听、关闭和启动失败握手必须是代码页无关的 ASCII JSON；中文通过 JSON Unicode 转义逐字恢复。
 
 ## 依赖安装
 
