@@ -39,6 +39,7 @@ Electron 改动还需在 `apps/desktop_electron` 运行 `pnpm test`、`pnpm run 
 - 配置采集：两条勾选快照、跨设备左右选择、空/相同/不同文件、裁剪、差异导航和导出；
 - 轨道交通基础资料：设备来源只读预览必须只读取“车站”分组的 `devices.station`，覆盖空 station、不使用设备名/系统名、200 条以上不截断、停车场/车辆段特殊节点、MAIN 默认值且不覆盖明确结构、多轨道设施与中心里程往返、四工作表/旧模板兼容、真实 Electron XLSX 保存与 openpyxl 打开、导入预览不写库、双向及端点区间生成、稳定生成标识、人工区间保护、过期区间默认保留、AP 统计忽略模板值、`validate`/`changes` 统一保存和 revision 冲突；
 - MESH/Online MR/Agent：旧日志/缺 Peer Name、按来源独立报告、参数快照、正常/partial/failed 包、LOCAL/AGENT 停止与恢复、真实 fping 与 TCP connect probe 区分。
+- 地面无人值守：默认/修改/跨午夜窗口、结构化正线排除、AC stale 宽限、同 AP 静止恢复、多目标动态分片、小时轮转、每日首轮覆盖优先级、可复现随机队列、人工 MR 互斥、ZIP 成功后清理/失败保留和重启恢复；真实 AC/MR、长时 fping、托盘隐藏与进程残留仍为人工门禁。
 - 正式包跨电脑交付：生产 Feature 必要集合、`client_package=false` 不作为运行时拒绝、internal/development 仍关闭、普通局点包秘密清洗与 `needs_reentry`、空凭据创建 Job 前阻断、ASCII JSON bytes 不依赖 CP936/locale、strict UTF-8 汉字任意 chunk/1-byte 分块、非法协议不落库、Backend `text_integrity`、冻结 Worker、统一 Git HEAD/UTC/dirty 构建元数据、`win-unpacked/NetConsole.exe` 受管 Backend 的 REST/任务日志中文探针，以及 WebSocket 中文探针和环境自检。
 
 Windows 图形人工验收必须单独记录在[正式包功能矩阵](PACKAGED_FEATURE_MATRIX.md)：NSIS 安装/卸载、程序目录与数据目录分离、系统盘拒绝、现有根复用、升级/修复/迁移和卸载保留数据、全新普通用户、空 AppData、无开发工具、中文路径、跨电脑导入、凭据重新录入、真实或仿真 H3C SSH、中文任务标题/消息/progress/log/finished。未执行的项目标为 `PENDING`，不得由单元测试或 package smoke 推断为通过。

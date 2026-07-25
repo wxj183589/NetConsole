@@ -24,6 +24,7 @@
 | `web.rail_transit_base_data` | 轨道交通基础资料 | `ENABLED` | 是 | 是 | 否 | 是 | 查询、受控编辑与导出可用 | `/api/rail-transit/base-data/*` | `/rail-transit/base-data` | `test_rail_transit_web_parity.py` | `PENDING` |
 | `web.train_communication_monitoring` | 车内通信检测 | `ENABLED` | 是 | 是 | 否 | 是 | 固定拓扑与检测任务可用 | `/api/rail-transit/train-communication/*` | `/rail-transit/train-communication` | `test_train_communication_web_api.py` | `PENDING` |
 | `web.rail_train_online` | 列车在线 | `ENABLED` | 是 | 是 | 否 | 是 | 在线状态、刷新、映射和历史导出可用 | `/api/rail-transit/train-online/*` | `/rail-transit/train-online` | `test_web_parity_foundation.py`、轨交 parity 测试 | `PENDING` |
+| `web.ground_unattended` | 地面无人值守 | `ENABLED` | 是 | 是 | 否 | 是 | 时间窗口、正线分类、全车长 Ping、深度覆盖与安全归档已接线 | `/api/rail-transit/ground-unattended/*` | `/rail-transit/ground-unattended` | `test_ground_unattended_*.py`、GroundUnattended Vitest | `REAL_DEVICE_PENDING` |
 | `web.online_mr_realtime` | 车载 MR 实时收集 | `ENABLED` | 是 | 是 | 否 | 是 | 实时页面和受控收集入口可用 | `/api/online-mr/*` | `/rail-transit/online-mr` | Online MR 定向 pytest/Vitest | `PENDING` |
 | `web.online_mr_analysis` | 车载 MR 收集分析 | `ENABLED` | 是 | 是 | 否 | 是 | 分析页面可见 | `/api/online-mr/sessions/*` | `/rail-transit/online-mr-analysis` | `test_rail_transit_web_parity.py` | `PENDING` |
 | `web.online_mr_parse` | Online MR 解析 | `ENABLED` | 是 | 是 | 否 | 是 | 进入统一任务控制 | `/api/online-mr/sessions/{id}/parse` | Online MR 分析页 | `test_rail_transit_web_parity.py` | `PENDING` |

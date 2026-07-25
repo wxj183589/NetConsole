@@ -54,7 +54,18 @@ def build_fping_v5_args(
     period_ms: int,
     timeout_ms: int,
     packet_size: int = 64,
+    *,
+    targets: list[str] | tuple[str, ...] | None = None,
 ) -> list[str]:
+    normalized_targets = list(
+        dict.fromkeys(
+            value.strip()
+            for value in (targets or ([target] if target else []))
+            if value.strip()
+        )
+    )
+    if not normalized_targets:
+        raise ValueError("fping target list cannot be empty")
     return [
         str(fping_path),
         "-J",
@@ -65,12 +76,12 @@ def build_fping_v5_args(
         str(max(1, int(period_ms))),
         "-t",
         str(max(1, int(timeout_ms))),
-        target,
+        *normalized_targets,
     ]
 
 
 def run_fping_v5_json(
-    target: str,
+    target: str = "",
     period_ms: int = 100,
     timeout_ms: int = 100,
     packet_size: int = 64,
@@ -80,11 +91,19 @@ def run_fping_v5_json(
     stop_event: threading.Event | None = None,
     project_root: Path | None = None,
     fping_path: Path | None = None,
+    targets: list[str] | tuple[str, ...] | None = None,
 ) -> Iterator[FpingV5Sample]:
     if stop_event is not None and stop_event.is_set():
         return
     paths = resolve_fping_v5_paths(project_root, fping_path)
-    args = build_fping_v5_args(paths.fping_path, target, period_ms, timeout_ms, packet_size)
+    args = build_fping_v5_args(
+        paths.fping_path,
+        target,
+        period_ms,
+        timeout_ms,
+        packet_size,
+        targets=targets,
+    )
     creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     raw_file = _open_text(output_raw_log_path)
     jsonl_file = _open_text(output_jsonl_path)

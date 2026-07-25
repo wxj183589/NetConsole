@@ -27,6 +27,7 @@ from netconsole.backend.api.system_maintenance_router import router as system_ma
 from netconsole.backend.api.train_communication_router import router as train_communication_router
 from netconsole.backend.api.trackside_ap_business_router import router as trackside_ap_business_router
 from netconsole.backend.api.vehicle_mr_online_router import router as vehicle_mr_online_router
+from netconsole.backend.api.ground_unattended_router import router as ground_unattended_router
 from netconsole.backend.api.wireless_dashboard_router import router as wireless_dashboard_router
 from netconsole.backend.api.traffic_router import router as traffic_router
 from netconsole.backend.api.system_settings_router import router as system_settings_router
@@ -103,6 +104,7 @@ api_router.include_router(
     vehicle_mr_online_router,
     dependencies=[Depends(require_feature("web.rail_train_online"))],
 )
+api_router.include_router(ground_unattended_router)
 api_router.include_router(
     mesh_analysis_router,
     dependencies=[Depends(require_feature("web.mesh_analysis"))],

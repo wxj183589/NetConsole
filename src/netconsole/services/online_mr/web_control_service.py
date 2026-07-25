@@ -29,6 +29,10 @@ from netconsole.models.online_mr_models import (
 )
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.online_mr.application_service import OnlineMrApplicationService
+from netconsole.services.online_mr.concurrency_policy import (
+    OnlineMrConcurrencyBudget,
+    OnlineMrConcurrencyPolicy,
+)
 from netconsole.services.online_mr.errors import (
     OnlineMrApplicationError,
     OnlineMrQueryError,
@@ -72,6 +76,11 @@ class OnlineMrWebControlService:
         self.query_service = query_service
         self.enabled = bool(enabled)
         self.real_device_policy = real_device_policy or OnlineMrRealDeviceTestPolicy.from_environment()
+        self.concurrency_policy = (
+            OnlineMrConcurrencyPolicy(application_service.task_service)
+            if application_service is not None
+            else None
+        )
 
     def status(self, site_id: str) -> OnlineMrWebControlStatusDTO:
         operations = (
@@ -120,16 +129,25 @@ class OnlineMrWebControlService:
                 status_code=422,
             )
         with ONLINE_MR_WEB_START_LOCK:
-            existing = self._active_for_site(current_site_id)
+            existing = self._active_for_device(current_site_id, request.device_id)
             if existing is not None:
-                if (
-                    existing.executor_kind is OnlineMrExecutorKind.LOCAL
-                    and str(existing.device_id) == str(request.device_id)
-                ):
-                    return self._operation_dto(existing)
+                return self._operation_dto(existing)
+            operations = self.application_service.list_operations(
+                site_id=current_site_id,
+                states=ONLINE_MR_ACTIVE_MAPPING_STATES,
+                limit=100,
+            )
+            decision = self.concurrency_policy.can_start(
+                site_id=current_site_id,
+                device_id=request.device_id,
+                operations=operations,
+                budget=OnlineMrConcurrencyBudget(),
+                automated=False,
+            ) if self.concurrency_policy is not None else None
+            if decision is not None and not decision.allowed:
                 raise OnlineMrWebControlError(
-                    OnlineMrWebControlErrorCode.ALREADY_RUNNING,
-                    "当前局点已有实时采集任务，请先正常停止后再启动新任务",
+                    decision.code,
+                    decision.message,
                     status_code=409,
                 )
             start_request = self.build_start_request(request)
@@ -313,6 +331,25 @@ class OnlineMrWebControlService:
             (
                 item
                 for item in rows
+                if item.phase is not OnlineMrPhase.TERMINAL
+            ),
+            None,
+        )
+
+    def _active_for_device(
+        self,
+        site_id: str,
+        device_id: int | str,
+    ) -> OnlineMrOperationSnapshotDTO | None:
+        return next(
+            (
+                item
+                for item in self.application_service.list_operations(
+                    site_id=site_id,
+                    states=ONLINE_MR_ACTIVE_MAPPING_STATES,
+                    device_id=device_id,
+                    limit=20,
+                )
                 if item.phase is not OnlineMrPhase.TERMINAL
             ),
             None,

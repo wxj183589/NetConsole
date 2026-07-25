@@ -141,6 +141,7 @@ def test_stale_frontend_metadata_still_gets_server_side_warning(tmp_path: Path) 
     [
         ("web.ac_fit_ap_resources", "/api/ac-management/summary"),
         ("web.rail_train_online", "/api/rail-transit/train-online/trains"),
+        ("web.ground_unattended", "/api/rail-transit/ground-unattended/status"),
         ("web.job_center", "/api/job-center/summary"),
         ("web.agent_management", "/api/agents"),
         ("network_tools.traffic", "/api/traffic/runs"),

@@ -74,6 +74,7 @@
 | [统一流量测试架构](TRAFFIC_TEST_ARCHITECTURE.md) | 本地/Agent 执行、Task 映射、Traffic 事件、数据与恢复边界 | 流量测试与阶段 4C 开发 | `services/traffic`、`TrafficRunRepository`、Traffic handlers | 执行端、状态、事件、存储、恢复或 Web 接入变化 |
 | [AC 管理](AC_MANAGEMENT.md) | Electron AC/FIT-AP 查询、受控更新/写操作、光衰、配置和验收边界 | AC/FIT-AP 开发 | AC Application Service/Repository/API/Vue/Task | AC 命令、查询字段、光衰、配置、写操作或验收状态变化 |
 | [轨道交通无线业务模型](RAIL_TRANSIT_WIRELESS.md) | 轨旁 AP、AC Mesh-Link、Online MR 与离线分析的业务边界和匹配规则 | 轨道交通无线与 AC Mesh-Link 开发 | `src/netconsole/services/vehicle_mr_online.py`、Mesh-Link Query API/Vue | Mesh-Link 字段、匹配、时效性或采集/分析边界变化 |
+| [轨道交通地面无人值守](GROUND_UNATTENDED.md) | 独立运行窗口、正线分类、全车长 Ping、深度覆盖、归档和恢复 | 地面无人值守开发与验收 | `src/netconsole/services/ground_unattended/`、独立 API/Vue | 配置、分类、Ping、调度、归档、恢复或人工验收状态变化 |
 | [轨道交通无线综合看板](RAIL_TRANSIT_WIRELESS_DASHBOARD.md) | 基础设施、列车、任务、Agent 与 Mesh 分析只读聚合 | 轨道交通综合监控开发 | `src/netconsole/services/rail_transit/wireless_dashboard_query_service.py`、对应 API/Vue | 聚合来源、告警映射、刷新或只读边界变化 |
 | [车内通信检测](TRAIN_COMMUNICATION_MONITORING.md) | TC1/TC2 固定六节点拓扑、VRRP 虚拟 IP 静态配置、跨端状态和车内通信检测 Task | 轨道交通车内通信开发 | `src/netconsole/services/rail_transit/train_communication_query_service.py`、对应 API/Vue | 节点关联、状态、检测任务或刷新边界变化 |
 | [轨道交通基础资料](RAIL_TRANSIT_BASE_DATA.md) | 默认锁定维护、revision 事务、线路参数、设备 station 来源预览、站点模板、站点/区间、轨旁 AP/规划、列车/MR 与受控导入 | 轨道交通基础资料开发 | `src/netconsole/application/rail_transit/base_data_application_service.py`、Repository、API/Vue | 字段、校验、编辑会话、来源预览、模板、规划页签或写入边界变化 |

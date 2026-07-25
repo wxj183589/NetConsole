@@ -75,6 +75,43 @@ Online MR、MESH、配置采集和网络工具的 raw、parsed、view、logs、o
 
 数据根迁移、`.ncsite`、现场采集包和回传包遵守 [局点与数据存储](storage/README.md)。迁移使用 staging、逐文件 SHA-256、SQLite 完整性检查和冲突保留；来源目录在数据库、文件和哈希均核验完成前不得删除。
 
+```text
+files/rail_transit/
+├─ mr_raw_mesh/
+│  ├─ catalog.sqlite
+│  └─ <mr>/
+│     ├─ raw/
+│     ├─ parsed/
+│     ├─ outputs/
+│     └─ mesh.sqlite
+├─ online_mr/<mr>/sessions/<session>/
+├─ ground_unattended/
+│  ├─ active/<run_date>/
+│  │  ├─ fleet_ping/             # 按小时、按分片 JSONL
+│  │  ├─ ac_snapshots/           # 按小时 AC 快照 JSONL
+│  │  ├─ timeline/               # AC/Ping 关联 JSONL
+│  │  ├─ scheduler_events.jsonl
+│  │  ├─ coverage_summary.csv
+│  │  ├─ deep_collection_manifest.json
+│  │  ├─ daily_summary.json
+│  │  ├─ errors.jsonl
+│  │  └─ manifest.json
+│  ├─ archives/<run_date>_ground_unattended.zip
+│  └─ index.sqlite               # 配置、运行/覆盖/事件、分段索引和汇总
+├─ base_data_import/             # 仅显式授权的受控基础资料写入产生
+│  ├─ backups/<operation>.sqlite # SQLite Backup API 生成的写前备份
+│  └─ operations/<operation>.json# 脱敏审计与相对备份引用
+├─ trackside_ap/
+│  ├─ raw/
+│  ├─ parsed/
+│  ├─ outputs/
+│  └─ sessions/
+└─ car_network/
+   ├─ raw/
+   ├─ parsed/
+   └─ outputs/
+```
+
 ## 清理边界
 
 自动和手动清理只能处理已白名单的 `runtime/cache/`、`runtime/temp/` 与受认可的运行日志；不触及局点数据库、配置、raw、会话业务日志、正式 outputs、报告、备份、Agent 包或迁移材料。删除前必须重新确认规范化后的路径位于数据根的允许子树。

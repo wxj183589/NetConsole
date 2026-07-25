@@ -207,6 +207,17 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("web.rail_task_control", "轨交 Web 任务控制", "module.rail_transit", "action"),
     FeatureItem("web.rail_transit_wireless_dashboard", "轨道交通无线看板", "module.rail_transit", "page"),
     FeatureItem("web.rail_train_online", "列车在线情况（Web）", "module.rail_transit", "page"),
+    FeatureItem(
+        "web.ground_unattended",
+        "地面无人值守",
+        "module.rail_transit",
+        "page",
+        dependencies=(
+            "web.job_center",
+            "web.rail_transit_base_data",
+            "web.rail_train_online",
+        ),
+    ),
     FeatureItem("web.rail_train_online_refresh", "列车在线状态与 AP 映射刷新（Web）", "web.rail_train_online", "action"),
     FeatureItem("web.rail_train_online_collect", "列车在线连续采集（Web）", "web.rail_train_online", "action"),
     FeatureItem("web.rail_train_online_history_export", "列车经过历史导出（Web）", "web.rail_train_online", "action"),

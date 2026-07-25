@@ -14,6 +14,7 @@ NetConsole 的轨道交通无线能力不采用企业 WLAN 的“AP—客户端�
 - FIT-AP 资源负责 AP 上线、离线、未认证、Mesh Radio 1/2、LLDP、接入端口、光衰和站点/区间资料；
 - AC Mesh-Link 负责表达“车载 MR ↔ 轨旁 FIT-AP”的当前链路关系；
 - Online MR 和 Agent 负责采集、fping/iPerf 联动及现场预览；
+- 地面无人值守在独立页面复用 AC/基础资料与 Online MR 生命周期，维护自己的运行、全车长 Ping、每日覆盖和归档状态，不改变人工页面 Session Store；
 - 离线 Mesh 分析负责切换、RSSI、空口、短时建链、乒乓和正式报告。
 
 轨道交通 FIT-AP 和 Mesh-Link Web 契约不提供客户端数量、终端数量或基于客户端数的筛选、汇总与判断。
