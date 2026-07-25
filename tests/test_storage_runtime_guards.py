@@ -27,9 +27,10 @@ def test_backend_instance_lock_records_owner_and_reclaims_after_release(tmp_path
 
     first.acquire()
     owner = json.loads(first.path.read_text(encoding="utf-8"))
-    assert set(owner) == {"pid", "started_at", "version", "executable", "data_root"}
+    assert set(owner) == {"pid", "started_at", "version", "executable", "data_root", "instance_id"}
     assert owner["version"] == APP_VERSION
     assert owner["data_root"] == str(paths.data_root)
+    assert owner["instance_id"]
     with pytest.raises(BackendInstanceInUseError, match="另一个 NetConsole Backend"):
         second.acquire()
 
@@ -47,7 +48,11 @@ def test_storage_manifest_is_created_and_updated_without_schema_migration(tmp_pa
     assert created.schema_version == CURRENT_STORAGE_SCHEMA_VERSION
     assert opened.minimum_app_version == APP_VERSION
     assert opened.last_opened_app_version == APP_VERSION
-    assert json.loads(paths.storage_manifest_path.read_text(encoding="utf-8"))["migration_id"] == ""
+    persisted = json.loads(paths.storage_manifest_path.read_text(encoding="utf-8"))
+    assert persisted["migration_id"] == ""
+    assert persisted["format_version"] == 1
+    assert persisted["data_root"] == str(paths.data_root)
+    assert persisted["installation_id"]
 
 
 def test_storage_manifest_rejects_newer_schema_and_older_app(tmp_path: Path) -> None:

@@ -3,7 +3,6 @@ import { isAbsolute, relative, resolve } from 'node:path'
 
 import type { DesktopResolvedTheme } from '../shared/bridge'
 import type { DesktopStorageMode } from './development-data-root'
-import { DEFAULT_WINDOWS_DATA_ROOT } from './development-data-root'
 
 export const DESKTOP_SAFE_BACKGROUND_COLOR = '#f4f6f8'
 
@@ -36,7 +35,6 @@ export interface DesktopConfigInput {
   resourcesPath: string
   userDataPath?: string
   resolvedDataRoot?: string
-  bootstrapDataRoot?: string
   bootstrapActiveSiteId?: string
   storageMode?: DesktopStorageMode
   env?: NodeJS.ProcessEnv
@@ -88,15 +86,14 @@ function resolveDesktopDataRoot(
   platform: NodeJS.Platform,
 ): string {
   const override = env.NETCONSOLE_DATA_ROOT?.trim()
-    || input.bootstrapDataRoot?.trim()
     || input.resolvedDataRoot?.trim()
   let candidate: string
   if (override) {
     candidate = resolveDeveloperPath(override, '', 'NETCONSOLE_DATA_ROOT')
-  } else if (platform === 'win32') {
-    candidate = resolve(DEFAULT_WINDOWS_DATA_ROOT)
   } else {
-    throw new Error('NETCONSOLE_DATA_ROOT is required outside Windows')
+    throw new Error(platform === 'win32'
+      ? '尚未配置 NetConsole 数据目录。请通过安装程序选择非系统盘的数据存放位置。'
+      : 'NETCONSOLE_DATA_ROOT is required outside Windows')
   }
   const fromProject = relative(projectRoot, candidate)
   if (!fromProject || (!fromProject.startsWith('..') && !isAbsolute(fromProject))) {

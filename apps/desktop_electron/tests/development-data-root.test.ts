@@ -11,8 +11,19 @@ import {
 
 describe('Electron desktop storage context', () => {
   it('uses persistent storage without temporary markers', () => {
-    expect(resolveDesktopStorageContext({ NETCONSOLE_STORAGE_MODE: 'persistent' }, 'C:\\Temp'))
+    expect(resolveDesktopStorageContext({
+      NETCONSOLE_STORAGE_MODE: 'persistent',
+      NETCONSOLE_DATA_ROOT: 'D:\\NetConsoleData',
+    }, 'C:\\Temp'))
       .toMatchObject({ mode: 'persistent', persistent: true, dataRoot: 'D:\\NetConsoleData' })
+  })
+
+  it('rejects a persistent root located in a program installation tree', () => {
+    expect(() => resolveDesktopStorageContext({
+      NETCONSOLE_STORAGE_MODE: 'persistent',
+      NETCONSOLE_DATA_ROOT: 'D:\\Program Files\\NetConsole\\data',
+      ProgramFiles: 'D:\\Program Files',
+    }, 'C:\\Temp', 'win32')).toThrow('程序安装目录')
   })
 
   it('accepts and cleans only the exact isolated runtime layout', () => {

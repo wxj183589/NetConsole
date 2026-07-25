@@ -32,6 +32,13 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 - Python 模块和工具统一通过 `python -m ...` 语义运行，不直接假设 `pytest`、`pip`、`ruff` 等可执行文件在 `PATH` 中。
 - Vue 与 Electron 依赖和脚本以各自 `package.json`、`pnpm-lock.yaml` 为准，使用 `pnpm`，不擅自切换包管理器或重写锁文件。
 
+## 安装目录与业务数据根
+
+- Windows 安装包的程序目录只保存 EXE、DLL、Python/Electron 运行时、前端资源、内置工具和只读默认配置；SQLite、局点文件、MESH 日志、报告、缓存和用户配置必须位于独立业务数据根。
+- 业务数据根的唯一持久化指针是安装器写入的 `HKLM\Software\NetConsole\DataRoot`；源码、Electron 开发、Python Backend、打包验证与正式安装包都通过同一解析器读取。`NETCONSOLE_DATA_ROOT` 只可作为显式覆盖，未配置持久根时停止启动，绝不回退 LocalAppData、用户目录、仓库、安装目录或系统 Temp。
+- 安装器必须拒绝系统盘、网络/可移动盘、程序目录、用户 Profile 与非空普通目录；升级和修复默认沿用既有根。更改根必须先完成受控迁移，再更新指针；普通卸载保留业务数据和指针。
+- 自动化测试必须显式 `RuntimeMode.TEST` 和 `D:\NetConsoleTestData\<run-id>`，不得读取机器级指针或真实根。
+
 ## 全局开发规则
 
 - 先梳理目标、假设和验证标准；只改当前需求范围，优先复用现有组件、Service、Repository、Parser 和路径 helper。

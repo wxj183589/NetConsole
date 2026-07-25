@@ -82,6 +82,9 @@ def test_fastapi_app_exposes_registered_web_modules() -> None:
         "status": "ok",
         "version": APP_VERSION.removeprefix("v"),
         "build_id": build_id,
+        "data_root": "",
+        "active_site_id": "",
+        "storage_schema_version": 1,
     }
     assert app.state.runtime_mode is RuntimeMode.SERVER
     assert {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import argparse
 import faulthandler
 import traceback
 from pathlib import Path
@@ -85,7 +86,7 @@ def _verify_release_contract() -> None:
     from netconsole.core.resources import runtime_base_dir
     from netconsole.core.version import APP_TITLE_DISPLAY, REPOSITORY_WEB_URLS
 
-    if APP_TITLE_DISPLAY != "NetConsole v1.4.2 by WXJ":
+    if APP_TITLE_DISPLAY != "NetConsole v1.4.3 by WXJ":
         raise RuntimeError(f"发布标题不正确：{APP_TITLE_DISPLAY}")
     if not REPOSITORY_WEB_URLS or any(not url.startswith("https://") for url in REPOSITORY_WEB_URLS):
         raise RuntimeError(f"关于页仓库地址必须全部使用 HTTPS：{REPOSITORY_WEB_URLS}")
@@ -119,7 +120,39 @@ def _verify_release_contract() -> None:
         if path.name.casefold() == "ipop.exe" or "ipop" in {part.casefold() for part in path.relative_to(BASE_DIR).parts}
     ]
     if forbidden_ipop:
-        raise RuntimeError("发布包不得包含 IPOP.EXE 或 tools/windows-x64/ipop 目录")
+            raise RuntimeError("发布包不得包含 IPOP.EXE 或 tools/windows-x64/ipop 目录")
+
+
+def _validate_data_root_from_installer(arguments: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="NetConsoleBackend.exe --validate-data-root")
+    parser.add_argument("data_root", type=Path)
+    parser.add_argument("--installation-root", type=Path)
+    values = parser.parse_args(arguments)
+    from netconsole.core.data_root_configuration import validate_installation_data_root
+
+    validate_installation_data_root(values.data_root, installation_root=values.installation_root)
+    return 0
+
+
+def _migrate_data_root_from_installer(arguments: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="NetConsoleBackend.exe --migrate-data-root")
+    parser.add_argument("--source", required=True, type=Path)
+    parser.add_argument("--target", required=True, type=Path)
+    parser.add_argument("--installation-root", type=Path)
+    values = parser.parse_args(arguments)
+    from netconsole.core.backend_instance_lock import BackendInstanceLock
+    from netconsole.core.data_root_configuration import validate_installation_data_root
+    from netconsole.services.site_storage import DataRootApplicationService
+
+    # The installer owns the pointer update.  This helper only migrates a
+    # configured source after proving the selected target is safe.
+    os.environ["NETCONSOLE_DATA_ROOT"] = str(values.source)
+    os.environ["NETCONSOLE_RUNTIME_MODE"] = "desktop-packaged"
+    validate_installation_data_root(values.target, installation_root=values.installation_root)
+    paths = PathResolver()
+    with BackendInstanceLock(paths):
+        DataRootApplicationService(paths).migrate(values.target)
+    return 0
 
 
 def main() -> int:
@@ -131,6 +164,10 @@ def main() -> int:
             from netconsole.backend.electron_runtime import main as run_electron_backend
 
             return run_electron_backend(sys.argv[2:])
+        if len(sys.argv) >= 2 and sys.argv[1] == "--validate-data-root":
+            return _validate_data_root_from_installer(sys.argv[2:])
+        if len(sys.argv) >= 2 and sys.argv[1] == "--migrate-data-root":
+            return _migrate_data_root_from_installer(sys.argv[2:])
         if len(sys.argv) >= 2 and sys.argv[1] == "--export-worker":
             from netconsole.export_worker import main as run_export_worker
 

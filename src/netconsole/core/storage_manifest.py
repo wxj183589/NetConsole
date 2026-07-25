@@ -13,6 +13,7 @@ from netconsole.core.version import APP_VERSION
 
 
 CURRENT_STORAGE_SCHEMA_VERSION = 1
+STORAGE_MANIFEST_FORMAT_VERSION = 1
 
 
 class StorageCompatibilityError(RuntimeError):
@@ -25,6 +26,11 @@ class StorageMigrationConfirmationRequired(StorageCompatibilityError):
 
 @dataclass(frozen=True)
 class StorageManifest:
+    format_version: int
+    data_root: str
+    created_at: str
+    last_opened_at: str
+    installation_id: str
     schema_version: int
     minimum_app_version: str
     last_opened_app_version: str
@@ -33,6 +39,11 @@ class StorageManifest:
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "format_version": self.format_version,
+            "data_root": self.data_root,
+            "created_at": self.created_at,
+            "last_opened_at": self.last_opened_at,
+            "installation_id": self.installation_id,
             "schema_version": self.schema_version,
             "minimum_app_version": self.minimum_app_version,
             "last_opened_app_version": self.last_opened_app_version,
@@ -46,7 +57,13 @@ def prepare_storage_manifest(paths: PathResolver) -> StorageManifest:
     paths.ensure_project_dirs()
     path = paths.storage_manifest_path
     if not path.is_file():
+        now = _now()
         manifest = StorageManifest(
+            format_version=STORAGE_MANIFEST_FORMAT_VERSION,
+            data_root=str(paths.data_root),
+            created_at=now,
+            last_opened_at=now,
+            installation_id=uuid.uuid4().hex,
             schema_version=CURRENT_STORAGE_SCHEMA_VERSION,
             minimum_app_version=APP_VERSION,
             last_opened_app_version=APP_VERSION,
@@ -56,6 +73,12 @@ def prepare_storage_manifest(paths: PathResolver) -> StorageManifest:
         _atomic_json(path, manifest.to_dict())
         return manifest
     manifest = _load_manifest(path)
+    if manifest.format_version > STORAGE_MANIFEST_FORMAT_VERSION:
+        raise StorageCompatibilityError(
+            f"存储 manifest 格式 {manifest.format_version} 高于当前应用支持的 {STORAGE_MANIFEST_FORMAT_VERSION}"
+        )
+    if Path(manifest.data_root).resolve() != paths.data_root.resolve():
+        raise StorageCompatibilityError("storage-manifest.json 的数据根与当前配置不一致")
     if manifest.schema_version > CURRENT_STORAGE_SCHEMA_VERSION:
         raise StorageCompatibilityError(
             f"存储 schema {manifest.schema_version} 高于当前应用支持的 {CURRENT_STORAGE_SCHEMA_VERSION}"
@@ -69,6 +92,11 @@ def prepare_storage_manifest(paths: PathResolver) -> StorageManifest:
             f"当前应用版本 {APP_VERSION} 低于数据要求的最低版本 {manifest.minimum_app_version}"
         )
     opened = StorageManifest(
+        format_version=STORAGE_MANIFEST_FORMAT_VERSION,
+        data_root=str(paths.data_root),
+        created_at=manifest.created_at or _now(),
+        last_opened_at=_now(),
+        installation_id=manifest.installation_id or uuid.uuid4().hex,
         schema_version=manifest.schema_version,
         minimum_app_version=manifest.minimum_app_version,
         last_opened_app_version=APP_VERSION,
@@ -123,6 +151,11 @@ def record_storage_migration(
     minimum_app_version: str = APP_VERSION,
 ) -> StorageManifest:
     manifest = StorageManifest(
+        format_version=STORAGE_MANIFEST_FORMAT_VERSION,
+        data_root=str(paths.data_root),
+        created_at=_existing_created_at(paths.storage_manifest_path),
+        last_opened_at=_now(),
+        installation_id=_existing_installation_id(paths.storage_manifest_path),
         schema_version=CURRENT_STORAGE_SCHEMA_VERSION,
         minimum_app_version=minimum_app_version,
         last_opened_app_version=APP_VERSION,
@@ -147,6 +180,11 @@ def _load_manifest(path: Path) -> StorageManifest:
         if not isinstance(value, dict):
             raise ValueError
         return StorageManifest(
+            format_version=int(value.get("format_version") or STORAGE_MANIFEST_FORMAT_VERSION),
+            data_root=str(value.get("data_root") or path.parent.parent),
+            created_at=str(value.get("created_at") or ""),
+            last_opened_at=str(value.get("last_opened_at") or ""),
+            installation_id=str(value.get("installation_id") or ""),
             schema_version=int(value["schema_version"]),
             minimum_app_version=str(value["minimum_app_version"]),
             last_opened_app_version=str(value.get("last_opened_app_version") or ""),
@@ -183,8 +221,27 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _existing_created_at(path: Path) -> str:
+    if not path.is_file():
+        return _now()
+    try:
+        return str(json.loads(path.read_text(encoding="utf-8")).get("created_at") or _now())
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return _now()
+
+
+def _existing_installation_id(path: Path) -> str:
+    if not path.is_file():
+        return uuid.uuid4().hex
+    try:
+        return str(json.loads(path.read_text(encoding="utf-8")).get("installation_id") or uuid.uuid4().hex)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return uuid.uuid4().hex
+
+
 __all__ = [
     "CURRENT_STORAGE_SCHEMA_VERSION",
+    "STORAGE_MANIFEST_FORMAT_VERSION",
     "StorageCompatibilityError",
     "StorageManifest",
     "StorageMigrationConfirmationRequired",

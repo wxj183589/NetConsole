@@ -2,6 +2,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 from netconsole.core.bootstrap import create_demo_context
 from netconsole.core.paths import PathResolver
 from netconsole.core import runtime_environment
@@ -84,14 +86,42 @@ def test_path_resolver_does_not_derive_data_root_from_app_root(tmp_path):
     assert paths.data_root != paths.app_root
 
 
-def test_development_data_root_defaults_to_unified_d_drive_root(tmp_path, monkeypatch):
+def test_development_data_root_reads_the_machine_wide_installer_configuration(tmp_path, monkeypatch):
     source_root = tmp_path / "source"
     monkeypatch.delenv("NETCONSOLE_DATA_ROOT", raising=False)
     monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "desktop-development")
     monkeypatch.setattr(runtime_environment, "is_packaged_runtime", lambda: False)
     monkeypatch.setattr(runtime_environment, "_source_project_root", lambda: source_root)
+    monkeypatch.setattr(
+        "netconsole.core.data_root_configuration.read_machine_data_root",
+        lambda: Path(r"D:\\NetConsoleData"),
+    )
 
     assert runtime_environment.data_root() == Path(r"D:\NetConsoleData")
+
+
+def test_development_data_root_requires_machine_configuration_or_explicit_override(monkeypatch):
+    monkeypatch.delenv("NETCONSOLE_DATA_ROOT", raising=False)
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "desktop-development")
+    monkeypatch.setattr(
+        "netconsole.core.data_root_configuration.read_machine_data_root",
+        lambda: None,
+    )
+
+    try:
+        runtime_environment.data_root()
+    except RuntimeError as exc:
+        assert "尚未配置" in str(exc)
+    else:
+        raise AssertionError("expected missing persistent data-root configuration rejection")
+
+
+def test_data_root_rejects_a_relative_configuration(monkeypatch):
+    monkeypatch.setenv("NETCONSOLE_DATA_ROOT", "relative-data")
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "desktop-development")
+
+    with pytest.raises(RuntimeError, match="absolute"):
+        runtime_environment.data_root()
 
 
 def test_test_mode_requires_explicit_isolated_data_root(monkeypatch):

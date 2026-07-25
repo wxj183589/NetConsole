@@ -100,7 +100,7 @@ pnpm dev:codex
 
 普通 `pnpm dev` 继续使用动态 Backend 端口并只服务 Electron；`dev:codex` 的固定端口只用于本机自动化。两者都拒绝 `0.0.0.0` 和非回环 Origin。生产打包不接受 `--dev-mode`，不注册开发状态接口和 OpenAPI，也不读取开发固定端口或开发 Session 环境变量。
 
-`pnpm dev` 是持久开发模式，继续使用 `D:\NetConsoleData` 的正式 `userData` 与 bootstrap。`dev:codex`、`smoke:dev`、`smoke:task-window` 与 package smoke 是隔离测试模式：每次只在 `D:\NetConsoleTestData\<run-id>` 创建统一根布局，Electron 在申请单实例锁和 `app.whenReady()` 前切换 `userData`，退出时仅删除经过边界校验的本次 run-id。隔离模式不读取或写入正式 bootstrap，局点/数据根写 API 返回 403，设置页只显示脱敏的临时数据根和只读提示。
+`pnpm dev` 是持久开发模式：它先读取显式 `NETCONSOLE_DATA_ROOT`，否则读取安装器写入的 `HKLM\Software\NetConsole\DataRoot`（当前机器为 `D:\NetConsoleData`），然后在该根下保存正式 `userData` 与 bootstrap。没有这两种配置时 Electron 在创建业务数据前停止启动，不会猜测 AppData。`dev:codex`、`smoke:dev`、`smoke:task-window` 与 package smoke 是隔离测试模式：每次只在 `D:\NetConsoleTestData\<run-id>` 创建统一根布局，Electron 在申请单实例锁和 `app.whenReady()` 前切换 `userData`，退出时仅删除经过边界校验的本次 run-id。隔离模式不读取机器级指针或正式 bootstrap，局点/数据根写 API 返回 403，设置页只显示脱敏的临时数据根和只读提示。
 
 正常启动会拒绝 bootstrap 中位于 Temp、测试根、不存在或缺少 `sites/` 的数据根，先保存 `bootstrap.json.invalid-<timestamp>`，再回退到正常持久化根。Python 缺失或不可执行只会让启动明确失败，不创建 demo、不改数据根和 bootstrap。可用以下命令只读诊断；只有显式 `--repair` 才会备份并原子修复配置引用，不移动或删除任何局点数据：
 
@@ -109,7 +109,7 @@ pnpm dev:codex
 .\.venv\Scripts\python.exe -m scripts.maintenance.check_desktop_bootstrap --repair
 ```
 
-Electron/Vue 的产品标题统一为 `NetConsole v1.4.2 by wxj`，侧栏使用品牌图片与“本地网络运维控制台”；内部迁移阶段文案不进入正式界面。
+Electron/Vue 的产品标题统一为 `NetConsole v1.4.3 by wxj`，侧栏使用品牌图片与“本地网络运维控制台”；内部迁移阶段文案不进入正式界面。
 
 自动开发冒烟：
 
@@ -139,7 +139,7 @@ pnpm start
 
 `pnpm build` 构建单文件 main/preload 和 `apps/web/dist`；`pnpm start` 启动 Electron 与本机 Python，由 FastAPI 在同一动态回环 Origin 提供已构建的 Vue 静态资源。Electron 不使用第二套 Renderer，也不把临时令牌放入页面 URL。
 
-Electron Builder 目录包/NSIS 与 PyInstaller 受管 Backend 的构建链已经建立，并由依赖批准清单、NOTICE、SBOM 和 package smoke 约束；正式发布仍需在最终组合提交上完成制品验证。代码签名和自动升级尚未建立，不得把源码 `.venv` 当作交付依赖。
+Electron Builder 目录包/NSIS 与 PyInstaller 受管 Backend 的构建链已经建立。NSIS 保持现有安装器，只新增程序目录之后的数据根选择页；它以管理员权限写入 HKLM 指针，普通卸载不会删除业务根。升级时保持原根；选择新根时由受管 Backend 迁移成功后才更新指针。依赖批准清单、NOTICE、SBOM 和 package smoke 仍是构建门，完整 Windows 安装/升级/卸载人工验收仍待最终组合执行。代码签名和自动升级尚未建立，不得把源码 `.venv` 当作交付依赖。
 
 ## Python 后端生命周期
 

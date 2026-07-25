@@ -1,8 +1,10 @@
 # 构建与发布
 
-NetConsole v1.4.2 的正式桌面产品只有 Electron + Vue + Python Backend。Python Backend 使用 PyInstaller 生成受 Electron 管理的 `NetConsoleBackend.exe`；PyInstaller、测试工具和许可证/SBOM 工具只属于构建环境，不属于产品运行时依赖。
+NetConsole v1.4.3 的正式桌面产品只有 Electron + Vue + Python Backend。Python Backend 使用 PyInstaller 生成受 Electron 管理的 `NetConsoleBackend.exe`；PyInstaller、测试工具和许可证/SBOM 工具只属于构建环境，不属于产品运行时依赖。
 
-安装包升级和卸载不得删除 Electron `userData/bootstrap.json` 或用户选择的数据根。发布 smoke 必须确认 Backend 从 bootstrap 指定的数据根启动，且仓库根没有生成 `data/` 或新的 `.local/` 运行数据。
+安装包升级和卸载不得删除 Electron `userData/bootstrap.json` 或用户选择的数据根。electron-builder 的既有 NSIS 安装器必须分别显示程序安装目录与数据存放目录；数据根在完成路径、磁盘、可写/重命名、SQLite 锁与空间校验后写入 `HKLM\Software\NetConsole\DataRoot`。发布 smoke 在唯一 `D:\NetConsoleTestData\<run-id>` 中以 `RuntimeMode.TEST` 运行并自动清理，绝不读取机器级指针或真实数据根；同时确认仓库根没有生成 `data/` 或新的 `.local/` 运行数据。
+
+安装包人工验收至少覆盖：程序安装在 C 盘而数据在 D 盘、阻止 C 盘数据根、空目录创建、合法既有根复用、非空普通目录拒绝/创建子目录、升级/修复保持旧根、更换根的 staging/SQLite 校验失败回滚，以及普通卸载保留数据和注册表指针。源码 `pnpm dev` 还必须读取同一指针；测试模式不得读取注册表或真实根。
 
 ## 依赖安装
 
@@ -30,7 +32,7 @@ python -m pip check
 python -m scripts.build.build_release --backend pyinstaller --release
 ```
 
-该入口会重新构建 `apps/web`、生成干净 PyInstaller spec、只从入口 import graph 收集 Python 模块、复制白名单外部工具，并将临时 PyInstaller build/spec/dist 写入 `dist/_build/pyinstaller/`，正式 Backend 输出写入 `dist/v1.4.2/pyinstaller/NetConsoleBackend/`。`dist/build/` 不是当前构建目录，出现时属于旧残留。默认 `requirements.txt` 是构建兼容别名，实际指向 `requirements-build.txt`。
+该入口会重新构建 `apps/web`、生成干净 PyInstaller spec、只从入口 import graph 收集 Python 模块、复制白名单外部工具，并将临时 PyInstaller build/spec/dist 写入 `dist/_build/pyinstaller/`，正式 Backend 输出写入 `dist/v1.4.3/pyinstaller/NetConsoleBackend/`。`dist/build/` 不是当前构建目录，出现时属于旧残留。默认 `requirements.txt` 是构建兼容别名，实际指向 `requirements-build.txt`。
 
 完成 Backend、Electron 和安装包验收后，可以通过固定白名单清理临时构建区：
 
@@ -40,7 +42,7 @@ python -m scripts.maintenance.clean_generated_artifacts --target build-temporary
   --manifest "D:\NetConsoleData\migrations\generated-cleanup-build-temporary.json"
 ```
 
-该目标只允许删除 `dist/_build/`，不会处理 `dist/v1.4.2/`、`dist/electron/`、`dist/agent/`、仓库数据或用户数据根。`setuptools-residue` 只能存在于临时构建期间，构建验收完成后应随 `_build` 一并清理。
+该目标只允许删除 `dist/_build/`，不会处理 `dist/v1.4.3/`、`dist/electron/`、`dist/agent/`、仓库数据或用户数据根。`setuptools-residue` 只能存在于临时构建期间，构建验收完成后应随 `_build` 一并清理。
 
 默认安装会同时传入 `-c constraints.txt`。无论是否使用 `--skip-install`，构建 preflight 都会从 `requirements-build.txt` 遍历已安装 distribution 的完整依赖闭包，并逐项核对 constraints 的精确版本；缺包、版本漂移、传递依赖未锁定或无效 metadata 均直接失败。Electron `package.mjs` 在调用 `--skip-install` 前还会单独执行同一 Guard，不能把开发机 `.venv` 的偶然可用状态当成发布环境。
 
@@ -74,7 +76,7 @@ node scripts/package-smoke.mjs
 
 `build.electronDist` 固定为 `apps/desktop_electron/node_modules/electron/dist`。完成锁定依赖安装后，`electron-builder` 必须复用本机已安装的 Electron 43.1.1 分发目录，不再访问 GitHub 获取 Electron ZIP 或 `SHASUMS256.txt`；日志应出现 `using custom unpacked Electron distribution`。这项约束只消除重复下载，不绕过 `pnpm install --frozen-lockfile` 的依赖完整性，也不得通过关闭 `signAndEditExecutable` 丢弃 EXE 资源元数据。
 
-安装包 smoke 以 `ELECTRON_RUN_AS_NODE=1` 读取最终 `NetConsole.exe` 的 `process.versions`，逐项核对 Electron、Chromium 和 Node.js Notice/SBOM 版本；同时要求 electron-builder 输出中的 `LICENSE.electron.txt`、`LICENSES.chromium.html`、Backend 第三方说明、Notice 和 SBOM 都存在。包级门禁还会先在未设置 `PYTHONUTF8/PYTHONIOENCODING` 的环境启动最终冻结 `NetConsoleBackend.exe --background-worker`，断言 stdout 是纯 ASCII JSON bytes 且中文逐字恢复；随后由最终 `NetConsole.exe` 启动受管 Backend、提交真实开源组件扫描任务，并从 REST/任务日志断言 `text_integrity=ok`、中文 progress/finished 完整且不存在 U+FFFD。包内 `device_command_profiles.json` 还必须保持 schema `2026.07.device-command-profiles.v1`，且只包含 `device.inventory.collect` 的受控只读 Profile，不得包含 `device.sftp.enable` 等写入型 Profile。
+安装包 smoke 在唯一 `D:\NetConsoleTestData\<run-id>` 中以 `RuntimeMode.TEST` 启动，结束后自动清理；它以 `ELECTRON_RUN_AS_NODE=1` 读取最终 `NetConsole.exe` 的 `process.versions`，逐项核对 Electron、Chromium 和 Node.js Notice/SBOM 版本；同时要求 electron-builder 输出中的 `LICENSE.electron.txt`、`LICENSES.chromium.html`、Backend 第三方说明、Notice 和 SBOM 都存在。包级门禁还会先在未设置 `PYTHONUTF8/PYTHONIOENCODING` 的环境启动最终冻结 `NetConsoleBackend.exe --background-worker`，断言 stdout 是纯 ASCII JSON bytes 且中文逐字恢复；随后由最终 `NetConsole.exe` 启动受管 Backend、提交真实开源组件扫描任务，并从 REST/任务日志断言 `text_integrity=ok`、中文 progress/finished 完整且不存在 U+FFFD。包内 `device_command_profiles.json` 还必须保持 schema `2026.07.device-command-profiles.v1`，且只包含 `device.inventory.collect` 的受控只读 Profile，不得包含 `device.sftp.enable` 等写入型 Profile。
 
 正式 Windows 用户入口固定为 `dist/electron/win-unpacked/NetConsole.exe`。`build.win.executableName` 必须保持为 `NetConsole`，并由 `package-smoke.mjs` 直接读取该构建配置，禁止在 smoke 脚本重复硬编码名称。`resources/backend/NetConsoleBackend.exe` 仅由 Electron Main 使用 `--electron-backend` 作为受管子进程启动；直接运行它会记录运行日志、显示提示并以非零状态退出，不能尝试启动源码 Electron 开发链。
 

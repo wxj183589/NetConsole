@@ -20,7 +20,7 @@ vi.mock('../../features', () => ({
 
 const settingsBridge = {
   hostType: 'electron' as const,
-  getAppInfo: vi.fn(async () => ({ version: '1.4.2', platform: 'win32', isPackaged: false })),
+  getAppInfo: vi.fn(async () => ({ version: '1.4.3', platform: 'win32', isPackaged: false })),
   selectSettingsTool: vi.fn(async () => ({ cancelled: false, path: 'C:\\tools\\Xshell.exe' })),
   selectSettingsDirectory: vi.fn(async () => ({ cancelled: false, path: 'C:\\sessions' })),
   selectSettingsColor: vi.fn(async () => ({ cancelled: false, color: '#2563EB' as const })),
@@ -130,7 +130,7 @@ beforeEach(() => {
   settingsBridge.selectSettingsDirectory.mockResolvedValue({ cancelled: false, path: 'C:\\sessions' })
   settingsBridge.selectSettingsColor.mockResolvedValue({ cancelled: false, color: '#2563EB' })
   settingsBridge.executeSettingsAction.mockResolvedValue({ success: true })
-  settingsBridge.getAppInfo.mockResolvedValue({ version: '1.4.2', platform: 'win32', isPackaged: false })
+  settingsBridge.getAppInfo.mockResolvedValue({ version: '1.4.3', platform: 'win32', isPackaged: false })
 })
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -333,7 +333,7 @@ describe('SystemSettingsView mounted behavior', () => {
   })
 
   it('keeps site storage but never requests feature configuration in a packaged runtime', async () => {
-    settingsBridge.getAppInfo.mockResolvedValueOnce({ version: '1.4.2', platform: 'win32', isPackaged: true })
+    settingsBridge.getAppInfo.mockResolvedValueOnce({ version: '1.4.3', platform: 'win32', isPackaged: true })
 
     const { wrapper } = await mounted()
 

@@ -526,7 +526,7 @@ def test_known_current_agent_corruption_is_current(tmp_path: Path) -> None:
         task_name="Agent 当前任务",
         source="agent",
         agent="agent-1",
-        producer_version="v1.4.2",
+        producer_version="v1.4.3",
         producer_commit="1" * 40,
         text_schema_version=2,
     )

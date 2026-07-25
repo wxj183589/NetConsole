@@ -160,6 +160,9 @@ def test_electron_runtime_authenticates_http_with_ephemeral_header(tmp_path, mon
         )
 
     assert response.status_code == 200
+    assert response.json()["data_root"]
+    assert response.json()["active_site_id"]
+    assert response.json()["storage_schema_version"] == 1
     assert response.json()["status"] == "ok"
 
 

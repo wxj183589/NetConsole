@@ -13,7 +13,7 @@ describe('Electron-only packaging', () => {
 
     expect(packageJson.scripts.package).toContain('electron-builder')
     expect(packageJson.scripts['smoke:package']).toContain('package-smoke.mjs')
-    expect(packageJson.build.productName).toBe('NetConsole v1.4.2 by wxj')
+    expect(packageJson.build.productName).toBe('NetConsole v1.4.3 by wxj')
     expect(packageJson.build.win.executableName).toBe('NetConsole')
     expect(packageJson.build.electronDist).toBe('node_modules/electron/dist')
     expect(packageJson.build.extraResources).toContainEqual({
@@ -30,7 +30,25 @@ describe('Electron-only packaging', () => {
     expect(packageJson.build.nsis.uninstallerIcon).toBe('../../resources/branding/netconsole.ico')
     expect(packageJson.build.nsis.installerHeaderIcon).toBe('../../resources/branding/netconsole.ico')
     expect(packageJson.build.nsis.deleteAppDataOnUninstall).toBe(false)
+    expect(packageJson.build.nsis.perMachine).toBe(true)
+    expect(packageJson.build.nsis.include).toBe('build/installer-data-root.nsh')
     expect(packageJson.build.win.target[0]).toEqual({ target: 'nsis', arch: ['x64'] })
+  })
+
+  it('adds a separate, validated business-data-root page to the existing NSIS installer', () => {
+    const script = readFileSync(resolve(appRoot, 'build', 'installer-data-root.nsh'), 'utf8')
+
+    expect(script).toContain('Page custom NetConsoleDataRootPageCreate NetConsoleDataRootPageLeave')
+    expect(script).toContain('!ifndef BUILD_UNINSTALLER')
+    expect(script).toContain('选择 NetConsole 数据存放位置')
+    expect(script).toContain('GetDriveTypeW')
+    expect(script).toContain('禁止将业务数据存放在系统盘')
+    expect(script).toContain('storage-manifest.json')
+    expect(script).toContain('NetConsoleDataRootChanged')
+    expect(script).toContain('--migrate-data-root')
+    expect(script).toContain('--validate-data-root')
+    expect(script).toContain('WriteRegStr HKLM "Software\\NetConsole" "DataRoot"')
+    expect(script).not.toContain('DeleteRegKey HKLM "Software\\NetConsole"')
   })
 
   it('resolves the packaged executable from the Electron Builder contract', () => {
@@ -95,6 +113,16 @@ describe('Electron-only packaging', () => {
       expect(script).toContain(marker)
     }
     expect(script).toContain('netconsole_electron_smoke_test'.toLowerCase())
+  })
+
+  it('runs the packaged Electron smoke only in a unique D-drive test root', () => {
+    const script = readFileSync(resolve(appRoot, 'scripts', 'package-smoke.mjs'), 'utf8')
+
+    expect(script).toContain("const WINDOWS_TEST_DATA_ROOT = 'D:\\\\NetConsoleTestData'")
+    expect(script).toContain("mkdtempSync(join(WINDOWS_TEST_DATA_ROOT, 'NetConsole-package-smoke-'))")
+    expect(script).toContain("NETCONSOLE_RUNTIME_MODE: 'test'")
+    expect(script).toContain("NETCONSOLE_STORAGE_MODE: 'isolated_test'")
+    expect(script).not.toContain("mkdtempSync(join(tmpdir(), 'NetConsole-Codex-package-smoke-'))")
   })
 
   it('requires the packaged production feature baseline', () => {

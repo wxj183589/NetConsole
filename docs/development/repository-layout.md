@@ -96,7 +96,7 @@ apps/agent/
 
 ## 6. 运行数据规则
 
-Windows 源码开发态、打包态和正式包均使用 `D:\NetConsoleData`，通过 `PathResolver` 生成实际子目录：
+Windows 源码开发态、打包态和正式包均使用安装器在 `HKLM\Software\NetConsole\DataRoot` 中登记的唯一根（当前机器为 `D:\NetConsoleData`），通过 `PathResolver` 生成实际子目录。程序安装目录不能保存运行数据：
 
 - `<data_root>/sites`：SQLite、局点数据、原始采集、解析库和正式业务文件；
 - `<data_root>/runtime/logs`：应用日志；

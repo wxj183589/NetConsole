@@ -10,6 +10,7 @@ import { registerDesktopIpc, type DesktopIpcRegistration } from './ipc'
 import { createFileLogger, type DesktopLogger } from './logger'
 import { buildChildProcessGoneDiagnostic, logDevelopmentGpuFeatureStatus } from './gpu-diagnostics'
 import { ensureDesktopRuntimePaths, resolveDesktopStorageContext } from './development-data-root'
+import { resolveDesktopDataRootConfiguration } from './data-root-configuration'
 import { GrantedPathRegistry } from './path-access'
 import { UiPreferenceStore } from './ui-preferences'
 import { StartupTimeline } from './startup-timeline'
@@ -41,13 +42,11 @@ import {
   secureWebPreferences,
 } from './security'
 
-const initialStorageContext = resolveDesktopStorageContext()
-const persistedStorageRoot = initialStorageContext.persistent
-  ? new DesktopBootstrapStore(initialStorageContext.userDataRoot).load().data_root
-  : undefined
-const desktopStorageContext = persistedStorageRoot
-  ? resolveDesktopStorageContext({ ...process.env, NETCONSOLE_DATA_ROOT: persistedStorageRoot })
-  : initialStorageContext
+const desktopDataRootResolution = resolveDesktopDataRootConfiguration()
+const desktopStorageContext = resolveDesktopStorageContext({
+  ...process.env,
+  NETCONSOLE_DATA_ROOT: desktopDataRootResolution.dataRoot,
+})
 ensureDesktopRuntimePaths(desktopStorageContext)
 app.setPath('userData', desktopStorageContext.userDataRoot)
 app.setPath('sessionData', desktopStorageContext.sessionDataRoot)
@@ -137,7 +136,6 @@ async function startDesktop(): Promise<void> {
     resourcesPath: process.resourcesPath,
     userDataPath: app.getPath('userData'),
     resolvedDataRoot: desktopStorageContext.dataRoot,
-    bootstrapDataRoot: bootstrap.data_root,
     bootstrapActiveSiteId: bootstrap.active_site_id,
     storageMode: desktopStorageContext.mode,
   })
@@ -148,7 +146,7 @@ async function startDesktop(): Promise<void> {
   desktopActiveSiteId = config.activeSiteId ?? ''
   logger = createFileLogger(resolve(app.getPath('logs'), 'electron.log'))
   logger('ELECTRON_STORAGE_MODE', `mode=${desktopStorageContext.mode}`)
-  logger('NETCONSOLE_STORAGE_ROOT_SELECTED', `data_root=${config.dataRoot} source=${process.env.NETCONSOLE_DATA_ROOT ? 'environment' : 'persistent-config'} fallback_used=false`)
+  logger('NETCONSOLE_STORAGE_ROOT_SELECTED', `data_root=${config.dataRoot} source=${desktopDataRootResolution.source} fallback_used=false`)
   if (bootstrapResult.rejectedEphemeralRoot) logger('ELECTRON_BOOTSTRAP_EPHEMERAL_ROOT_REJECTED')
   startupTimeline = new StartupTimeline(logger, startupStartedAt)
   startupTimeline.mark('electron.app_ready')
