@@ -58,6 +58,13 @@ describe('Electron-only packaging', () => {
     expect(script).toContain('StrCmp $NetConsoleDataRootFindName ".netconsole-installer-rename-test.tmp"')
     expect(script).not.toContain('StrCpy $NetConsoleDataRoot "$NetConsoleDataRoot\\NetConsoleData"')
     expect(script).not.toContain('是否在其中创建 NetConsoleData 子目录')
+
+    const leaveFunction = script.slice(script.indexOf('Function NetConsoleDataRootPageLeave'))
+    const classifyIndex = leaveFunction.indexOf('Call NetConsoleDataRootCheckEntries')
+    const probeIndex = leaveFunction.indexOf('Call NetConsoleRunDataRootProbe')
+    expect(classifyIndex).toBeGreaterThan(-1)
+    expect(probeIndex).toBeGreaterThan(classifyIndex)
+    expect(leaveFunction.slice(probeIndex)).not.toContain('Call NetConsoleDataRootCheckEntries')
     expect(script).toContain('WriteRegStr HKLM "Software\\NetConsole" "DataRoot"')
     expect(script).not.toContain('DeleteRegKey HKLM "Software\\NetConsole"')
   })

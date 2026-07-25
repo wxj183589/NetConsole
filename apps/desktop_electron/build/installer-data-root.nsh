@@ -322,19 +322,20 @@ Function NetConsoleDataRootPageLeave
   StrCmp $1 3 0 +3
     MessageBox MB_ICONSTOP "数据目录必须位于本地固定磁盘，不能使用 U 盘、光驱或临时映射盘。"
     Abort
+  ; Classify the untouched path before any probe creates or writes in it.
+  IfFileExists "$NetConsoleDataRoot\config\storage-manifest.json" NetConsoleDataRootClassified
+  Call NetConsoleDataRootCheckEntries
+  ${If} $NetConsoleDataRootHasEntries == "1"
+    MessageBox MB_ICONSTOP "所选目录非空且不是已识别的 NetConsole 数据根。请选择空目录或已有 NetConsole 数据根。安装器不会创建嵌套目录，也不会删除或修改当前目录内容。"
+    Abort
+  ${EndIf}
+  NetConsoleDataRootClassified:
   Call NetConsoleRunDataRootProbe
   ${If} $NetConsoleDataRootProbeResult != "ok"
     DetailPrint "DataRoot probe failed: step=$NetConsoleDataRootProbeResult win32_error=$NetConsoleDataRootProbeErrorCode"
     MessageBox MB_ICONSTOP "数据目录校验失败。$\r$\n失败步骤：$NetConsoleDataRootProbeResult$\r$\nWindows 错误码：$NetConsoleDataRootProbeErrorCode$\r$\n$\r$\n请关闭 NetConsole、Agent 和 Backend 后重试，并检查目录权限或文件系统。不要删除已有数据。"
     Abort
   ${EndIf}
-  IfFileExists "$NetConsoleDataRoot\config\storage-manifest.json" NetConsoleDataRootReady
-  Call NetConsoleDataRootCheckEntries
-  ${If} $NetConsoleDataRootHasEntries == "1"
-    MessageBox MB_ICONSTOP "所选目录非空且不是已识别的 NetConsole 数据根。请选择空目录或已有 NetConsole 数据根。安装器不会创建嵌套目录，也不会删除或修改当前目录内容。"
-    Abort
-  ${EndIf}
-  NetConsoleDataRootReady:
   ${If} $NetConsoleExistingDataRoot != ""
   ${AndIf} $NetConsoleExistingDataRoot != $NetConsoleDataRoot
     MessageBox MB_ICONEXCLAMATION|MB_YESNO "当前数据目录：$NetConsoleExistingDataRoot$\r$\n新数据目录：$NetConsoleDataRoot$\r$\n$\r$\n继续将执行完整复制、SQLite 校验和原子发布；旧目录将保留，绝不自动删除。是否继续？" IDYES +2

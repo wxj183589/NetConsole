@@ -44,7 +44,7 @@ Electron 改动还需在 `apps/desktop_electron` 运行 `pnpm test`、`pnpm run 
 
 Windows 图形人工验收必须单独记录在[正式包功能矩阵](PACKAGED_FEATURE_MATRIX.md)：NSIS 安装/卸载、程序目录与数据目录分离、系统盘拒绝、现有根复用、升级/修复/迁移和卸载保留数据、全新普通用户、空 AppData、无开发工具、中文路径、跨电脑导入、凭据重新录入、真实或仿真 H3C SSH、中文任务标题/消息/progress/log/finished。未执行的项目标为 `PENDING`，不得由单元测试或 package smoke 推断为通过。
 
-安装器数据根探测还必须覆盖：Windows 空目录不会被 `*.*` 误判为非空、空根直接使用所选路径且不追加 `NetConsoleData`、注册表发布前生成可解析且根一致的 manifest、损坏 manifest 不覆盖、含普通文件目录只拒绝且不创建嵌套目录、含 manifest/SQLite/采集文件的既有根、D 盘目标、C 盘安装器临时目录、不可写目录、旧固定探测残留、唯一名称冲突、失败清理、中文路径、尾随反斜杠、取消/失败回滚和重复安装。验证需比较所选目录及既有业务文件在探测和失败前后的存在状态、内容哈希、大小和修改时间，并扫描 `.netconsole-install-probe-*` 残留；禁止用删除、改名或迁移真实数据根换取通过。
+安装器数据根探测还必须覆盖：目录分类调用严格早于任何写入探测且探测后不再分类、Windows 空目录不会被 `*.*` 误判为非空、空根直接使用所选路径且不追加 `NetConsoleData`、注册表发布前生成可解析且根一致的 manifest、损坏 manifest 不覆盖、含普通文件目录只拒绝且不创建嵌套目录、含 manifest/SQLite/采集文件的既有根、D 盘目标、C 盘安装器临时目录、不可写目录、旧固定探测残留、唯一名称冲突、失败清理、中文路径、尾随反斜杠、取消/失败回滚和重复安装。验证需比较所选目录及既有业务文件在探测和失败前后的存在状态、内容哈希、大小和修改时间，并扫描 `.netconsole-install-probe-*` 残留；禁止用删除、改名或迁移真实数据根换取通过。
 
 Netmiko 当前既有定向基线为 `20 passed, 2 failed`，失败位于 `tests/test_netmiko_connection.py:280` 与 `tests/test_netmiko_connection.py:301`。该两项不属于本轮发布生命周期修复范围，交付时必须如实列出，不能用其他测试结果覆盖。
 
