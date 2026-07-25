@@ -3,8 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from netconsole.core import feature_flags
-from netconsole.core.feature_flags import FeatureGate
+from netconsole.core.feature_flags import FeatureGate, install_runtime_feature_files
 from netconsole.core.feature_registry import FEATURE_BY_ID, FeatureStatus
 
 
@@ -16,26 +15,33 @@ FORMAL_AC_FEATURES = (
 )
 
 
-def _write_runtime(root: Path, *, schema_version: int, disabled: tuple[str, ...]) -> None:
+def _write_runtime(
+    root: Path,
+    *,
+    schema_version: int,
+    states: dict[str, bool],
+    edition: str = "dev",
+    profile: str = "full",
+) -> None:
     runtime = root / "runtime"
-    runtime.mkdir(parents=True)
+    runtime.mkdir(parents=True, exist_ok=True)
     (runtime / "build_info.json").write_text(
-        json.dumps({"edition": "customer", "feature_profile": "customer"}),
+        json.dumps({"edition": edition, "feature_profile": profile}),
         encoding="utf-8",
     )
     (runtime / "feature_flags.json").write_text(
         json.dumps(
             {
                 "schema_version": schema_version,
-                "profile": "customer",
+                "profile": profile,
                 "features": {
                     feature_id: {
-                        "visible": False,
-                        "enabled": False,
-                        "client_package": False,
+                        "visible": state,
+                        "enabled": state,
+                        "client_package": state,
                         "internal_only": False,
                     }
-                    for feature_id in disabled
+                    for feature_id, state in states.items()
                 },
             }
         ),
@@ -52,12 +58,17 @@ def test_ac_features_are_formal_customer_features() -> None:
         assert feature.default_client_package is True
 
 
-def test_schema_one_stale_ac_defaults_are_migrated_on_first_start(tmp_path: Path, monkeypatch) -> None:
+def test_schema_one_stale_ac_defaults_are_migrated_in_development(
+    tmp_path: Path,
+) -> None:
     migrated = ("web.ac_dangerous_actions", "web.ac_fit_ap_external_terminal")
-    _write_runtime(tmp_path, schema_version=1, disabled=migrated)
-    monkeypatch.setattr(feature_flags, "is_packaged_runtime", lambda: True)
+    _write_runtime(
+        tmp_path,
+        schema_version=1,
+        states={feature_id: False for feature_id in migrated},
+    )
 
-    gate = FeatureGate(tmp_path)
+    gate = FeatureGate(tmp_path, packaged_runtime=False)
 
     for feature_id in migrated:
         assert gate.is_visible(feature_id)
@@ -65,13 +76,55 @@ def test_schema_one_stale_ac_defaults_are_migrated_on_first_start(tmp_path: Path
         assert gate.is_in_client_package(feature_id)
 
 
-def test_schema_two_explicit_user_disable_is_preserved(tmp_path: Path, monkeypatch) -> None:
+def test_packaged_runtime_ignores_external_schema_two_disable(tmp_path: Path) -> None:
     feature_id = "web.ac_fit_ap_external_terminal"
-    _write_runtime(tmp_path, schema_version=2, disabled=(feature_id,))
-    monkeypatch.setattr(feature_flags, "is_packaged_runtime", lambda: True)
+    install_runtime_feature_files(tmp_path, edition="customer", profile="production")
+    _write_runtime(
+        tmp_path,
+        schema_version=2,
+        states={feature_id: False},
+        edition="internal",
+        profile="full",
+    )
 
-    gate = FeatureGate(tmp_path)
+    gate = FeatureGate(tmp_path, packaged_runtime=True)
 
+    assert gate.resolution.source == "embedded"
+    assert gate.is_visible(feature_id)
+    assert gate.is_enabled(feature_id)
+    assert gate.is_in_client_package(feature_id)
+
+
+def test_development_runtime_honors_external_schema_two_disable(
+    tmp_path: Path,
+) -> None:
+    feature_id = "web.ac_fit_ap_external_terminal"
+    _write_runtime(tmp_path, schema_version=2, states={feature_id: False})
+
+    gate = FeatureGate(tmp_path, packaged_runtime=False)
+
+    assert gate.resolution.source == "external_runtime"
+    assert gate.is_visible(feature_id) is False
+    assert gate.is_enabled(feature_id) is False
+    assert gate.is_in_client_package(feature_id) is False
+
+
+def test_external_schema_cannot_enable_development_feature_in_packaged_runtime(
+    tmp_path: Path,
+) -> None:
+    feature_id = "web.ac_extensions"
+    install_runtime_feature_files(tmp_path, edition="customer", profile="production")
+    _write_runtime(
+        tmp_path,
+        schema_version=2,
+        states={feature_id: True},
+        edition="internal",
+        profile="full",
+    )
+
+    gate = FeatureGate(tmp_path, packaged_runtime=True)
+
+    assert FEATURE_BY_ID[feature_id].status is FeatureStatus.DEVELOPMENT
     assert gate.is_visible(feature_id) is False
     assert gate.is_enabled(feature_id) is False
     assert gate.is_in_client_package(feature_id) is False
