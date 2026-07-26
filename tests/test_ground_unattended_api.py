@@ -71,6 +71,18 @@ def test_ground_unattended_profile_status_and_actions_are_site_scoped(tmp_path) 
         assert status.json()["site_id"] == "demo"
 
 
+def test_ground_unattended_rejects_invalid_bound_site(tmp_path) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    app.state.ground_unattended_application_service.site_id = "../invalid"
+
+    with TestClient(app) as client:
+        response = client.get("/api/rail-transit/ground-unattended/profile")
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "SITE_INVALID"
+
+
 def test_ground_unattended_rejects_invalid_profile_and_archive_delete_without_confirmation(
     tmp_path,
 ) -> None:

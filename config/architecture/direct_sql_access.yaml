@@ -42,6 +42,7 @@
   {"path":"tests/test_agent_controller.py","classification":"TEST_ONLY","owner":"test","reason":"Agent 测试 fixture。"},
   {"path":"tests/test_export_identity_diagnostics.py","classification":"TEST_ONLY","owner":"test","reason":"导出诊断测试 fixture。"},
   {"path":"tests/test_fping_v5.py","classification":"TEST_ONLY","owner":"test","reason":"fping 测试 fixture。"},
+  {"path":"tests/test_ground_unattended_syslog_field_validation.py","classification":"TEST_ONLY","owner":"test","reason":"地面无人值守旧 schema 迁移与健康事件测试 fixture。"},
   {"path":"tests/test_iperf_network_tools.py","classification":"TEST_ONLY","owner":"test","reason":"iPerf 测试 fixture。"},
   {"path":"tests/test_job_center_web_api.py","classification":"TEST_ONLY","owner":"test","reason":"Job Center 测试 fixture。"},
   {"path":"tests/test_legacy_runtime_data_tools.py","classification":"TEST_ONLY","owner":"test","reason":"历史数据迁移测试 fixture。"},

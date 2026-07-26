@@ -5,7 +5,6 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
 from netconsole.backend.api.feature_access import require_feature
-from netconsole.core.sites import SiteManager
 from netconsole.models.api.ground_unattended import (
     GroundActionResponseDTO,
     GroundArchiveDTO,
@@ -54,15 +53,7 @@ def _service(request: Request) -> GroundUnattendedApplicationService:
 
 
 def _site_id(request: Request) -> str:
-    try:
-        return SiteManager(request.app.state.paths).validate_site_name(
-            SiteManager(request.app.state.paths).get_current_site()
-        )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"code": "SITE_INVALID", "message": "当前局点标识无效"},
-        ) from exc
+    return _service(request).current_site_id()
 
 
 @router.get("/status", response_model=GroundUnattendedStatusDTO)

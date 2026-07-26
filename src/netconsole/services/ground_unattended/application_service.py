@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from netconsole.core.paths import PathResolver
+from netconsole.core.sites import SiteManager
 from netconsole.models.api.ground_unattended import (
     GroundActionResponseDTO,
     GroundArchiveDTO,
@@ -94,6 +95,16 @@ class GroundUnattendedApplicationService:
             if base_query is not None
             else None
         )
+
+    def current_site_id(self) -> str:
+        """返回组合根创建本服务时绑定且已校验的局点。"""
+
+        try:
+            return SiteManager(self.paths).validate_site_name(self.site_id)
+        except ValueError as exc:
+            raise GroundUnattendedError(
+                "SITE_INVALID", "当前局点标识无效", status_code=422
+            ) from exc
 
     def get_profile(self, site_id: str) -> GroundUnattendedProfileDTO:
         self._require_site(site_id)
