@@ -318,6 +318,21 @@ class GroundUnattendedSupervisor:
                 return
 
         if run is None and (window.active or self._manual_start):
+            latest = self.repository.latest_run()
+            if latest and str(latest.get("run_date") or "") == window.run_date:
+                archive = self.repository.get_archive_by_run(str(latest["run_id"]))
+                if archive and archive.get("archive_status") == "READY":
+                    manual_start = self._manual_start
+                    self._manual_start = False
+                    if manual_start:
+                        self.repository.add_event(
+                            run_id=str(latest["run_id"]),
+                            event_type="start_rejected",
+                            severity="warning",
+                            title="立即开始被拒绝",
+                            message="当前运行日已完成正式归档，不能再次启动并写入当日数据。",
+                        )
+                    return
             run = self._start_run(profile, now, window)
         elif (
             run is not None
