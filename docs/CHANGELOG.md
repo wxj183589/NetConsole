@@ -15,7 +15,7 @@
 
 - 无人值守新增第一阶段采集基础：从既有车载 MR 基础资料增量生成 CT/CW 列车清单，策略独立保存且设备变化不删除历史；全量 Ping 和 UDP WMESH 日志按 MR、按小时顺序写入数据根，关键事件、原始文件索引、boot session、Syslog 配置审计和健康事件批量入库。
 - 新增有界 UDP Syslog 接收、WMESH 关键事件解析和来源隔离；无法匹配的消息写入独立未识别流，不误绑其他 MR。MR Ping 稳定后通过 `display version` 识别上电周期，再受控检查和补齐固定 H3C `info-center` 运行配置，不执行 `save`，停止无人值守也不主动删除设备配置。
-- 修复无人值守 Syslog 配置的假成功风险：`display info-center` 校验实际运行态，配置过滤命令补充验证来源规则；写入逐条检查回显并执行配置前后复查，未通过时明确记录 `CONFIG_VERIFY_FAILED`，只有验证成功后才等待或激活首条日志。默认 UDP 514 端口兼容省略端口配置。
+- 修复无人值守 Syslog 配置的假成功和假失败风险：`display info-center` 作为 Information Center、loghost 和实际目标的权威来源，`current-configuration` 只验证两条 source 规则；Comware 省略默认 `info-center enable` 或 UDP 514 配置行时不再重复下发或误报 `CONFIG_VERIFY_FAILED`。写入仍逐条检查回显并执行配置前后复查，只有验证成功后才等待或激活首条日志。
 - UDP Syslog 支持现场 H3C `%%10WMESH`、无毫秒时间和 `IFNET/3/PHY_UPDOWN` 格式；原始流保存来源、主机名、facility/severity、接收序号和安全编码原始字节。设备时钟偏差与突变独立标识，Info Center 本地缓冲覆盖不会被误报为 UDP 丢包。
 - 页面新增设备清单同步、列车启用/置顶/优先级/深采策略、MR 配置检查、实时健康和原始文件入口；Syslog 服务器地址默认留空，必须显式配置后才会下发目标。
 - 首次运行前即可从轨道交通基础资料显示列车与 CT/CW 端点并设置置顶；运行中资格刷新同步 `WAITING/OFFLINE/EXCLUDED`，且不覆盖已产生的采集结果。正线车辆详情回填实时/持久 Ping 统计、活动任务和最近 Session。

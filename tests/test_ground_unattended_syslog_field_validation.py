@@ -38,6 +38,18 @@ FULL_CONFIG_514 = "\n".join(
         "info-center source WMESH loghost level notification",
     )
 )
+SOURCE_RULES_CONFIG = "\n".join(
+    (
+        "info-center source default loghost deny",
+        "info-center source WMESH loghost level notification",
+    )
+)
+DEFAULT_OMITTED_CONFIG_514 = "\n".join(
+    (
+        f"info-center loghost {TARGET_IP}",
+        SOURCE_RULES_CONFIG,
+    )
+)
 FULL_RUNTIME_514 = "\n".join(
     (
         "Information Center: Enabled",
@@ -79,8 +91,23 @@ def test_info_center_runtime_parser_and_default_port_normalization() -> None:
         "Current messages 512, dropped messages 0, overwritten messages 7837",
     )
     assert parse_info_center_runtime(inline_metrics).overwritten_messages == 7837
-    assert analyze_syslog_config(FULL_CONFIG_514, target_ip=TARGET_IP, target_port=514).complete
-    assert not analyze_syslog_config(FULL_CONFIG_514, target_ip=TARGET_IP, target_port=5514).target_present
+    config = analyze_syslog_config(
+        SOURCE_RULES_CONFIG,
+        target_ip=TARGET_IP,
+        target_port=514,
+    )
+    assert config.complete
+    assert config.source_rule_missing == ()
+    wrong_runtime_target = verify_syslog_profile(
+        FULL_RUNTIME_514,
+        SOURCE_RULES_CONFIG,
+        target_ip=TARGET_IP,
+        target_port=5514,
+    )
+    assert wrong_runtime_target.runtime_missing == ("loghost_target",)
+    assert wrong_runtime_target.repair_commands == (
+        f"info-center loghost {TARGET_IP} port 5514",
+    )
 
 
 def test_runtime_target_and_source_rules_are_both_required() -> None:
@@ -100,9 +127,75 @@ def test_runtime_target_and_source_rules_are_both_required() -> None:
 
     assert verification.complete is False
     assert verification.runtime_missing == ()
-    assert verification.config.missing_commands == (
+    assert verification.source_rule_missing == (
         "info-center source wmesh loghost level notification",
     )
+    assert verification.repair_commands == (
+        "info-center source wmesh loghost level notification",
+    )
+
+
+def test_runtime_disabled_repairs_enable_and_missing_target() -> None:
+    verification = verify_syslog_profile(
+        "Information Center: Disabled\nLog host: Disabled\n",
+        SOURCE_RULES_CONFIG,
+        target_ip=TARGET_IP,
+        target_port=514,
+    )
+
+    assert verification.runtime_missing == (
+        "information_center_enabled",
+        "loghost_enabled",
+        "loghost_target",
+    )
+    assert verification.source_rule_missing == ()
+    assert verification.repair_commands == (
+        "info-center enable",
+        f"info-center loghost {TARGET_IP} port 514",
+    )
+
+
+def test_runtime_without_target_repairs_only_loghost() -> None:
+    verification = verify_syslog_profile(
+        "Information Center: Enabled\nLog host: Enabled\n",
+        SOURCE_RULES_CONFIG,
+        target_ip=TARGET_IP,
+        target_port=514,
+    )
+
+    assert verification.runtime_missing == ("loghost_target",)
+    assert verification.repair_commands == (
+        f"info-center loghost {TARGET_IP} port 514",
+    )
+
+
+@pytest.mark.parametrize(
+    ("configuration", "expected_command"),
+    (
+        (
+            "info-center source WMESH loghost level notification",
+            "info-center source default loghost deny",
+        ),
+        (
+            "info-center source default loghost deny",
+            "info-center source wmesh loghost level notification",
+        ),
+    ),
+)
+def test_runtime_correct_repairs_only_missing_source_rule(
+    configuration: str,
+    expected_command: str,
+) -> None:
+    verification = verify_syslog_profile(
+        FULL_RUNTIME_514,
+        configuration,
+        target_ip=TARGET_IP,
+        target_port=514,
+    )
+
+    assert verification.runtime_missing == ()
+    assert verification.source_rule_missing == (expected_command,)
+    assert verification.repair_commands == (expected_command,)
 
 
 def test_syslog_evidence_redacts_sensitive_configuration_lines() -> None:
@@ -154,6 +247,7 @@ def test_config_check_verifies_after_writes_and_records_evidence(tmp_path: Path)
         "display_version",
         "display_info_center_before",
         "configuration_before",
+        "repair_commands",
         "applied_commands",
         "command_results",
         "display_info_center_after",
@@ -164,9 +258,36 @@ def test_config_check_verifies_after_writes_and_records_evidence(tmp_path: Path)
         "verified_at",
     } <= set(evidence)
     assert evidence["configuration_after"] == after_config
+    assert evidence["missing_before"] == {
+        "runtime": [
+            "information_center_enabled",
+            "loghost_enabled",
+            "loghost_target",
+        ],
+        "source_rules": [
+            "info-center source default loghost deny",
+            "info-center source wmesh loghost level notification",
+        ],
+    }
+    assert evidence["repair_commands"] == [
+        "info-center enable",
+        f"info-center loghost {TARGET_IP} port 514",
+        "info-center source default loghost deny",
+        "info-center source wmesh loghost level notification",
+    ]
+    assert evidence["applied_commands"] == [
+        "system-view",
+        *evidence["repair_commands"],
+        "return",
+    ]
+    assert evidence["missing_after"] == {"runtime": [], "source_rules": []}
     assert repository.latest_boot_session(device_uuid)["config_status"] == "WAITING_FIRST_LOG"
-    expected = hashlib.sha256(f"{TARGET_IP}:514\n{after_config}".encode("utf-8")).hexdigest()
-    assert repository.latest_boot_session(device_uuid)["config_fingerprint"] == expected
+    raw_config_fingerprint = hashlib.sha256(
+        f"{TARGET_IP}:514\n{after_config}".encode("utf-8")
+    ).hexdigest()
+    fingerprint = repository.latest_boot_session(device_uuid)["config_fingerprint"]
+    assert len(fingerprint) == 64
+    assert fingerprint != raw_config_fingerprint
 
 
 def test_config_check_repairs_partial_and_uses_full_config_fallback(tmp_path: Path) -> None:
@@ -216,18 +337,47 @@ def test_config_write_failure_and_post_read_failure_never_report_success(tmp_pat
         )
     assert repository.latest_syslog_config_audit(device_uuid)["status"] == "CONFIG_FAILED"
 
-    post_read_failure = _ConfigConnection(
+    runtime_verification_failure = _ConfigConnection(
         config_before="",
-        config_after="info-center enable",
+        config_after=SOURCE_RULES_CONFIG,
         info_before="Information Center: Disabled\nLog host: Disabled\n",
-        info_after="Information Center: Enabled\nLog host: Disabled\n",
+        info_after="Information Center: Disabled\nLog host: Disabled\n",
     )
-    result = _service(paths, repository, post_read_failure).check(
+    result = _service(paths, repository, runtime_verification_failure).check(
         run_id="run-1", run_date="2026-07-26", device_uuid=device_uuid,
         target_ip=TARGET_IP, target_port=514, boot_tolerance_seconds=120,
     )
     assert result.config_status == "CONFIG_VERIFY_FAILED"
     assert repository.latest_boot_session(device_uuid)["config_status"] == "CONFIG_VERIFY_FAILED"
+
+
+def test_source_rule_verification_failure_never_reports_success(tmp_path: Path) -> None:
+    paths, repository, device_uuid = _context(tmp_path)
+    connection = _ConfigConnection(
+        config_before="info-center source default loghost deny",
+        config_after="info-center source default loghost deny",
+        info_before=FULL_RUNTIME_514,
+        info_after=FULL_RUNTIME_514,
+    )
+
+    result = _service(paths, repository, connection).check(
+        run_id="run-1",
+        run_date="2026-07-26",
+        device_uuid=device_uuid,
+        target_ip=TARGET_IP,
+        target_port=514,
+        boot_tolerance_seconds=120,
+    )
+
+    assert result.config_status == "CONFIG_VERIFY_FAILED"
+    audit = repository.latest_syslog_config_audit(device_uuid)
+    evidence = json.loads(
+        (repository.db_path.parent / audit["evidence_path"]).read_text(encoding="utf-8")
+    )
+    assert evidence["missing_after"] == {
+        "runtime": [],
+        "source_rules": ["info-center source wmesh loghost level notification"],
+    }
     repository.touch_boot_syslog(
         device_uuid, datetime.now().astimezone().isoformat(timespec="milliseconds"),
         source_ip="192.0.2.10", hostname="TEST-MR-CT", identity_verified=True,
@@ -258,6 +408,52 @@ def test_complete_config_skips_write_and_verified_log_becomes_active(tmp_path: P
     assert boot is not None and boot["config_status"] == "LOG_ACTIVE"
     assert endpoint is not None and endpoint["last_syslog_source_ip"] == "192.0.2.10"
     assert endpoint["syslog_hostname"] == "TEST-MR-CT"
+
+
+def test_default_enable_and_port_omission_is_config_present_without_write(
+    tmp_path: Path,
+) -> None:
+    paths, repository, device_uuid = _context(tmp_path)
+    omitted_connection = _ConfigConnection(
+        config_before=DEFAULT_OMITTED_CONFIG_514,
+        config_after=DEFAULT_OMITTED_CONFIG_514,
+        info_before=FULL_RUNTIME_514,
+        info_after=FULL_RUNTIME_514,
+    )
+
+    omitted_result = _service(paths, repository, omitted_connection).check(
+        run_id="run-1",
+        run_date="2026-07-26",
+        device_uuid=device_uuid,
+        target_ip=TARGET_IP,
+        target_port=514,
+        boot_tolerance_seconds=120,
+    )
+
+    assert omitted_result.config_status == "CONFIG_PRESENT"
+    assert omitted_result.applied_commands == ()
+    assert "system-view" not in omitted_connection.commands
+    assert "info-center enable" not in omitted_connection.commands
+    first_fingerprint = repository.latest_boot_session(device_uuid)["config_fingerprint"]
+
+    explicit_connection = _ConfigConnection(
+        config_before=FULL_CONFIG_514,
+        config_after=FULL_CONFIG_514,
+        info_before=FULL_RUNTIME_514,
+        info_after=FULL_RUNTIME_514,
+    )
+    explicit_result = _service(paths, repository, explicit_connection).check(
+        run_id="run-1",
+        run_date="2026-07-26",
+        device_uuid=device_uuid,
+        target_ip=TARGET_IP,
+        target_port=514,
+        boot_tolerance_seconds=120,
+    )
+
+    assert explicit_result.config_status == "CONFIG_PRESENT"
+    assert repository.latest_boot_session(device_uuid)["config_fingerprint"] == first_fingerprint
+    assert "system-view" not in explicit_connection.commands
 
 
 def test_info_center_overwrite_is_not_reported_as_udp_loss(tmp_path: Path) -> None:

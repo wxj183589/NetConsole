@@ -106,12 +106,14 @@ WMESH 关键事件、原始文件索引和健康事件，不逐条保存秒级�
 Ping 稳定成功后，`MrSyslogConfigService` 通过既有设备凭据先执行 `display version`，以 uptime 和
 估算启动时间建立或更新 boot session；随后将 `display info-center` 作为运行态主检查，并以
 `display current-configuration | include info-center` 补充验证来源规则，过滤不支持时才回退完整运行配置。
-运行态必须确认 Information Center、loghost、目标 IP 和端口；配置规则必须包含 enable、目标 loghost、
-默认来源禁止和 WMESH notification。默认 UDP 端口 514 的省略端口配置与显式 `port 514` 等价，其他端口
-必须显式匹配。下发缺项后逐条检查命令回显，再执行两层复查：完整才为 `CONFIG_SENT` 或 `CONFIG_REPAIRED`，
+运行态必须确认 Information Center、loghost、实际目标 IP 和端口；`current-configuration` 只确认默认来源
+禁止和 WMESH notification 两条 source 规则。Comware 省略默认 `info-center enable` 或默认 UDP 514 的
+显式配置行时，以 `display info-center` 的实际运行态为准，不会重复下发或误报失败。下发缺项后逐条检查
+命令回显，再执行两层复查：完整才为 `CONFIG_SENT` 或 `CONFIG_REPAIRED`，
 复查缺项为 `CONFIG_VERIFY_FAILED`，异常为 `CONFIG_FAILED`。只有双层验证成功后才可进入
 `WAITING_FIRST_LOG`；仅已验证匹配的 UDP 才可进入 `LOG_ACTIVE`。审计证据保存配置前后输出、运行态前后
-输出、命令回显、缺项与校验时间；固定 H3C Profile 不会执行 `save`、`undo`、重启、删除或停止时回滚。
+输出、按运行态/source 规则拆分的缺项、修复命令与校验时间；配置指纹由规范化运行态目标和 source 规则
+生成，不依赖原始配置字符串。固定 H3C Profile 不会执行 `save`、`undo`、重启、删除或停止时回滚。
 `display info-center` 还解析 loghost 和其他输出目的地的时间格式，以及独占或同行展示的缓冲计数。dropped
 计数增长是日志数据质量告警；overwritten 增长仅表示设备本地环形缓冲覆盖，不等同于 UDP 网络丢包。旧目标的
 `undo` 清理仍需真实设备命令验证后单独实现。
@@ -203,6 +205,11 @@ DELETE   /archives/{archive_id}
 ZIP 失败保留、Repository 故障隔离、API 空态和前端七页签。第一阶段还覆盖清单增量同步/策略保留、
 多 MR UDP 分流与未知来源隔离、上电周期重启识别，以及不执行 `save` 的 Syslog Profile。`vue-tsc`、
 定向 Vitest 和 Web production build 作为提交门。
+
+已完成一台 H3C MR 的 10 分钟真实 UDP 单机验证：Comware 省略默认 enable/514 配置文本时只读复查为
+`CONFIG_PRESENT`，未进入配置视图；Receiver 实收 668 条并全部完成身份匹配和 WMESH 解析，队列无丢弃，
+Boot Session 进入 `LOG_ACTIVE`，停止后原始文件已关闭登记。该结果只确认当前单台设备和现场样本，不能
+外推为多列车压力、所有 Comware 版本或 IFNET 事件均已真实验证。
 
 以下仍是人工现场门禁，不得由 fake 或本机回环测试提升为已验证：主备 AC 真实切换与设备时钟偏差、
 十几小时持续多目标 fping、真实列车 AP 漫游、2 车/4 MR 并发 SSH、Session 现场 ZIP、低磁盘故障注入、

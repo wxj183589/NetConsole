@@ -42,6 +42,15 @@ CONFIG_FAILURE_MARKERS = (
     "error:",
     "permission denied",
 )
+SOURCE_RULE_COMMANDS = (
+    "info-center source default loghost deny",
+    "info-center source wmesh loghost level notification",
+)
+RUNTIME_REQUIREMENTS = (
+    "information_center_enabled",
+    "loghost_enabled",
+    "loghost_target",
+)
 SENSITIVE_EVIDENCE_LINE_RE = re.compile(
     r"\b(?:password|passwd|secret|community|token|private[-_ ]?key|cipher)\b",
     re.IGNORECASE,
@@ -57,8 +66,14 @@ class MrCommandConnection(Protocol):
 @dataclass(frozen=True)
 class SyslogConfigDiff:
     complete: bool
-    missing_commands: tuple[str, ...]
-    target_present: bool
+    source_rule_missing: tuple[str, ...]
+    source_rules: tuple[str, ...]
+
+    @property
+    def missing_commands(self) -> tuple[str, ...]:
+        """Compatibility alias for callers that inspect source-rule differences."""
+
+        return self.source_rule_missing
 
 
 @dataclass(frozen=True)
@@ -66,6 +81,8 @@ class SyslogProfileVerification:
     complete: bool
     config: SyslogConfigDiff
     runtime_missing: tuple[str, ...]
+    source_rule_missing: tuple[str, ...]
+    repair_commands: tuple[str, ...]
     runtime: InfoCenterRuntime
 
 
@@ -202,6 +219,7 @@ class MrSyslogConfigService:
             "configuration_before": "",
             "configuration_before_command": "",
             "configuration_before_fallback_used": False,
+            "repair_commands": [],
             "applied_commands": [],
             "command_results": [],
             "display_info_center_after": "",
@@ -267,6 +285,7 @@ class MrSyslogConfigService:
                 target_port=target_port,
             )
             evidence["missing_before"] = _verification_evidence(before)
+            evidence["repair_commands"] = list(before.repair_commands)
 
             info_after = info_before
             config_after = config_before
@@ -276,7 +295,8 @@ class MrSyslogConfigService:
             if before.complete:
                 status = "CONFIG_PRESENT"
             else:
-                applied = build_syslog_config_commands(before.config.missing_commands)
+                applied = build_syslog_config_commands(before.repair_commands)
+                evidence["applied_commands"] = list(applied)
                 if applied:
                     _validate_syslog_write_commands(applied, target_ip=target_ip, target_port=target_port)
                     for command in applied:
@@ -303,7 +323,7 @@ class MrSyslogConfigService:
                 )
                 verified = after.complete
                 if verified:
-                    status = "CONFIG_SENT" if len(before.config.missing_commands) == 4 else "CONFIG_REPAIRED"
+                    status = "CONFIG_SENT" if _profile_fully_missing(before) else "CONFIG_REPAIRED"
                 else:
                     status = "CONFIG_VERIFY_FAILED"
 
@@ -326,9 +346,11 @@ class MrSyslogConfigService:
                 audit_id,
                 evidence,
             )
-            fingerprint = hashlib.sha256(
-                f"{target_ip}:{target_port}\n{config_after}".encode("utf-8")
-            ).hexdigest()
+            fingerprint = _syslog_config_fingerprint(
+                after,
+                target_ip=target_ip,
+                target_port=target_port,
+            )
             metrics = after.runtime.as_dict()
             previous_metrics = dict(boot.get("info_center_metrics") or {})
             boot_status = _verified_boot_status(boot) if verified else status
@@ -360,7 +382,7 @@ class MrSyslogConfigService:
                     "target_ip": target_ip,
                     "target_port": target_port,
                     "status": status,
-                    "missing_commands": list(before.config.missing_commands),
+                    "missing_commands": list(before.repair_commands),
                     "applied_commands": list(applied),
                     "evidence_path": evidence_path,
                     "evidence_sha256": _sha256(self.repository.db_path.parent / evidence_path),
@@ -524,28 +546,24 @@ class MrSyslogConfigService:
 
 
 def analyze_syslog_config(output: str, *, target_ip: str, target_port: int) -> SyslogConfigDiff:
+    """Inspect only source rules whose authority is current-configuration.
+
+    Information Center enablement and the effective loghost target are runtime facts
+    reported by ``display info-center``. Comware may omit their default command forms
+    from current-configuration, so they must not participate in this diff.
+    """
+
     lines = {_normalize(line) for line in str(output or "").splitlines() if line.strip()}
-    target_ip = str(ipaddress.ip_address(str(target_ip).strip()))
-    target_port = int(target_port)
-    required = (
-        "info-center enable",
-        f"info-center loghost {target_ip} port {target_port}",
-        "info-center source default loghost deny",
-        "info-center source wmesh loghost level notification",
-    )
-    missing = tuple(
-        command
-        for command in required
-        if not (
-            command.startswith("info-center loghost ")
-            and _has_matching_loghost(lines, target_ip=target_ip, target_port=target_port)
-        )
-        and _normalize(command) not in lines
-    )
+    _ = str(ipaddress.ip_address(str(target_ip).strip()))
+    port = int(target_port)
+    if not 1 <= port <= 65_535:
+        raise ValueError("Syslog 目标端口必须在 1～65535 之间")
+    present = tuple(command for command in SOURCE_RULE_COMMANDS if command in lines)
+    missing = tuple(command for command in SOURCE_RULE_COMMANDS if command not in lines)
     return SyslogConfigDiff(
         complete=not missing,
-        missing_commands=missing,
-        target_present=required[1] not in missing,
+        source_rule_missing=missing,
+        source_rules=present,
     )
 
 
@@ -573,28 +591,69 @@ def verify_syslog_profile(
         target_ip=target_ip,
         target_port=target_port,
     )
+    runtime_missing = tuple(missing_runtime)
+    repair_commands: list[str] = []
+    if "information_center_enabled" in runtime_missing:
+        repair_commands.append("info-center enable")
+    if {"loghost_enabled", "loghost_target"}.intersection(runtime_missing):
+        repair_commands.append(f"info-center loghost {target_ip} port {target_port}")
+    repair_commands.extend(config.source_rule_missing)
     return SyslogProfileVerification(
-        complete=config.complete and not missing_runtime,
+        complete=config.complete and not runtime_missing,
         config=config,
-        runtime_missing=tuple(missing_runtime),
+        runtime_missing=runtime_missing,
+        source_rule_missing=config.source_rule_missing,
+        repair_commands=tuple(repair_commands),
         runtime=runtime,
     )
 
 
-def _has_matching_loghost(lines: set[str], *, target_ip: str, target_port: int) -> bool:
-    escaped_ip = re.escape(target_ip)
-    if target_port == 514:
-        pattern = re.compile(rf"^info-center loghost {escaped_ip}(?: port 514)?$")
-    else:
-        pattern = re.compile(rf"^info-center loghost {escaped_ip} port {target_port}$")
-    return any(pattern.fullmatch(line) is not None for line in lines)
-
-
 def _verification_evidence(verification: SyslogProfileVerification) -> dict[str, Any]:
     return {
-        "configuration": list(verification.config.missing_commands),
         "runtime": list(verification.runtime_missing),
+        "source_rules": list(verification.source_rule_missing),
     }
+
+
+def _profile_fully_missing(verification: SyslogProfileVerification) -> bool:
+    return (
+        set(verification.runtime_missing) == set(RUNTIME_REQUIREMENTS)
+        and set(verification.source_rule_missing) == set(SOURCE_RULE_COMMANDS)
+    )
+
+
+def _syslog_config_fingerprint(
+    verification: SyslogProfileVerification,
+    *,
+    target_ip: str,
+    target_port: int,
+) -> str:
+    runtime = verification.runtime
+    payload = {
+        "target": {"ip": target_ip, "port": target_port},
+        "runtime": {
+            "information_center_enabled": runtime.information_center_enabled,
+            "loghost_enabled": runtime.loghost_enabled,
+            "log_hosts": sorted(
+                (
+                    {
+                        "ip": host.ip,
+                        "port": host.port,
+                        "facility": host.facility.casefold(),
+                    }
+                    for host in runtime.log_hosts
+                ),
+                key=lambda item: (item["ip"], item["port"], item["facility"]),
+            ),
+            "loghost_timestamp_format": _normalize(runtime.loghost_timestamp_format),
+            "other_output_timestamp_format": _normalize(
+                runtime.other_output_timestamp_format
+            ),
+        },
+        "source_rules": list(verification.config.source_rules),
+    }
+    canonical = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _verified_boot_status(boot: dict[str, Any]) -> str:
@@ -608,10 +667,10 @@ def _int_or_none(value: Any) -> int | None:
         return None
 
 
-def build_syslog_config_commands(missing_commands: tuple[str, ...]) -> tuple[str, ...]:
-    if not missing_commands:
+def build_syslog_config_commands(repair_commands: tuple[str, ...]) -> tuple[str, ...]:
+    if not repair_commands:
         return ()
-    return ("system-view", *missing_commands, "return")
+    return ("system-view", *repair_commands, "return")
 
 
 def _validate_syslog_write_commands(
