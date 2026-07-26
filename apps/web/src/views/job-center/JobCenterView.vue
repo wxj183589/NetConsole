@@ -68,6 +68,11 @@ const showTracksideBusinessResult = computed(() => (
   && ['COMPLETED', 'FAILED', 'CANCELLED'].includes(store.selected.status)
   && ['SUCCESS', 'PARTIAL_SUCCESS', 'FAILED', 'NO_TARGET', 'CANCELLED'].includes(selectedBusinessStatus.value)
 ))
+const showPointTablePreviewResult = computed(() => (
+  store.selected?.type === 'car_network_generate_point_table'
+  && store.selected.status === 'COMPLETED'
+  && Number.isFinite(Number(selectedDetails.value.nodes_count))
+))
 const businessStatusLabel = computed(() => ({
   SUCCESS: t('job_center.business_result.success', '成功'),
   PARTIAL_SUCCESS: t('job_center.business_result.partial_success', '部分成功'),
@@ -484,6 +489,15 @@ const revealSaved = () => runSavedAction('reveal')
             <el-descriptions-item label="Parser">{{ store.selected.parser_version || '--' }}</el-descriptions-item>
           </template>
         </el-descriptions>
+
+        <section v-if="showPointTablePreviewResult" class="business-result">
+          <div class="current-heading"><h3>点表预览结果</h3><strong>等待用户保存</strong></div>
+          <div class="current-grid">
+            <article><span>生成节点数</span><strong>{{ numberDetail('generated_nodes_count', numberDetail('nodes_count')) }}</strong></article>
+            <article><span>当前列车</span><strong>{{ stringDetail('target_train_display', stringDetail('target_train')) }}</strong></article>
+            <article class="wide"><span>结果说明</span><strong>{{ stringDetail('preview_message', '已生成点表预览，等待用户保存') }}</strong></article>
+          </div>
+        </section>
 
         <section v-if="showTracksideBusinessResult" class="business-result">
           <div class="current-heading">

@@ -23,6 +23,13 @@ it('describes task logs as expanded by default and keeps the manual toggle', () 
   expect(source).toContain("store.logsExpanded ? '隐藏日志' : '显示日志'")
 })
 
+it('renders the controlled point-table preview summary instead of a generic empty record count', () => {
+  expect(source).toContain('showPointTablePreviewResult')
+  expect(source).toContain('生成节点数')
+  expect(source).toContain('等待用户保存')
+  expect(source).toContain("stringDetail('target_train_display', stringDetail('target_train'))")
+})
+
 const platformMocks = vi.hoisted(() => ({
   download: vi.fn(),
   open: vi.fn(),

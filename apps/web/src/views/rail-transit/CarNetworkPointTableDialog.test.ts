@@ -151,7 +151,7 @@ describe('在线列车车内通信点表 Dialog', () => {
       ct_mr_id: 'mr-ct',
       tc_mr_id: 'mr-tc',
     }))
-    expect(wrapper.text()).toContain('已生成点表预览，尚未保存')
+    expect(wrapper.text()).toContain('已生成 6 行点表预览，尚未保存')
     expect(wrapper.text()).toContain('TC1-MR')
     expect(wrapper.text()).toContain('TC2-SRV')
 
@@ -161,6 +161,64 @@ describe('在线列车车内通信点表 Dialog', () => {
     expect(api.saveCarNetworkPointTable).toHaveBeenCalledWith(nodes, expect.any(Object), false, 'rev-1')
     expect(wrapper.text()).toContain('当前列车点表保存成功')
     expect(wrapper.emitted('saved')?.[0]?.[0]).toEqual({ trainId: 'train:01', revision: 'rev-2', rowCount: 6 })
+    wrapper.unmount()
+  })
+
+  it('任务完成但未返回预览时保留编辑区并显示明确错误', async () => {
+    api.generateCarNetworkPointTable.mockResolvedValue(task('car_network_generate_point_table', {}))
+    const wrapper = mount(CarNetworkPointTableDialog, {
+      props: { modelValue: false, train },
+      global: { directives: { loading: () => undefined }, stubs },
+    })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+
+    await findButton(wrapper, '为当前列车生成六节点点表').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('点表生成任务已完成，但未返回生成结果')
+    expect(wrapper.text()).not.toContain('已生成 6 行点表预览，尚未保存')
+    wrapper.unmount()
+  })
+
+  it('空预览不会清空现有编辑区，并记录计数不一致警告', async () => {
+    api.getCarNetworkPointTable.mockReset()
+    api.getCarNetworkPointTable.mockResolvedValue({ rows: nodes, global_config: {}, locked: false, revision: 'rev-1' })
+    api.generateCarNetworkPointTable.mockResolvedValue(task('car_network_generate_point_table', { nodes: [], count: 6 }))
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const wrapper = mount(CarNetworkPointTableDialog, {
+      props: { modelValue: false, train },
+      global: { directives: { loading: () => undefined }, stubs },
+    })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+
+    await findButton(wrapper, '生成当前列车六节点').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('未生成任何点表节点，请检查当前列车身份及设备映射。')
+    expect(wrapper.text()).toContain('TC1-MR')
+    expect(warning).not.toHaveBeenCalled()
+    warning.mockRestore()
+    wrapper.unmount()
+  })
+
+  it('以实际预览行数为准并记录后端计数不一致', async () => {
+    api.generateCarNetworkPointTable.mockResolvedValue(task('car_network_generate_point_table', { nodes, count: 5 }))
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const wrapper = mount(CarNetworkPointTableDialog, {
+      props: { modelValue: false, train },
+      global: { directives: { loading: () => undefined }, stubs },
+    })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+
+    await findButton(wrapper, '为当前列车生成六节点点表').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('已生成 6 行点表预览，尚未保存')
+    expect(warning).toHaveBeenCalledWith('点表生成任务节点计数不一致', { expectedCount: 5, receivedCount: 6 })
+    warning.mockRestore()
     wrapper.unmount()
   })
 })

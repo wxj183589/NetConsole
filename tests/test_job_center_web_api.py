@@ -54,6 +54,31 @@ def _text_values(value: object) -> list[str]:
     return [value] if isinstance(value, str) else []
 
 
+def test_job_center_point_table_generate_details_are_whitelisted() -> None:
+    details = JobCenterQueryService._task_details(
+        "car_network_generate_point_table",
+        {},
+        {
+            "nodes": [{"node_name": "TC1-MR", "password": "must-not-leak"}],
+            "nodes_count": 6,
+            "generated_nodes_count": 6,
+            "target_train": "train:01",
+            "target_train_display": "列车01",
+            "preview_status": "PENDING_SAVE",
+            "preview_message": "已生成点表预览，等待用户保存",
+        },
+    )
+
+    assert details == {
+        "nodes_count": 6,
+        "generated_nodes_count": 6,
+        "target_train": "train:01",
+        "target_train_display": "列车01",
+        "preview_status": "PENDING_SAVE",
+        "preview_message": "已生成点表预览，等待用户保存",
+    }
+
+
 class _FakeExportProcess:
     stdout = None
 

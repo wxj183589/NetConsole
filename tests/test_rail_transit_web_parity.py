@@ -5,7 +5,7 @@ import inspect
 import json
 import csv
 import io
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,7 +28,7 @@ from netconsole.backend.api.task_router import task_dto
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
-from netconsole.models.api.rail_transit_web import OnlineMrReportRequestDTO
+from netconsole.models.api.rail_transit_web import CarNetworkPointRowDTO, OnlineMrReportRequestDTO
 from netconsole.models.mesh_analysis_params import MeshAnalysisParams
 from netconsole.models.task_snapshot import TaskEvent, utc_now_iso
 from netconsole.models.task_state import TaskState
@@ -498,6 +498,74 @@ def test_point_table_preview_transform_save_and_task_window_blocker(
     with pytest.raises(RailTransitWebError) as blocked:
         service.start_car_network_point_table_export("demo", file_format="xlsx")
     assert blocked.value.code == "BLOCKED_ON_TASK_WINDOW"
+
+
+def test_point_table_generate_task_returns_controlled_preview_nodes_only(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    service, normal, _export, _tasks = _service(paths)
+    names = ("TC1-MR", "TC1-SW", "TC1-SRV", "TC2-MR", "TC2-SW", "TC2-SRV")
+    generated_nodes = [
+        asdict(
+            CarNetworkNode(
+                train_id="train:01",
+                train_no="01",
+                display_name="列车01",
+                node_name=name,
+                node_type="MR" if name.endswith("MR") else "3SW" if name.endswith("SW") else "SRV",
+            )
+        )
+        for name in names
+    ]
+    started = service.start_car_network_point_table_generate(
+        "demo",
+        rows=[],
+        global_config={},
+        target_train={"canonical_train_id": "train:01", "display_name": "列车01"},
+    )
+
+    assert normal.jobs[started.task_id].params["save_result"] is False
+    normal.complete(
+        started.task_id,
+        {
+            "count": 6,
+            "nodes": generated_nodes,
+            "generated_nodes_count": 6,
+            "target_train": "train:01",
+            "target_train_display": "列车01",
+            "preview_status": "PENDING_SAVE",
+            "preview_message": "已生成点表预览，等待用户保存",
+        },
+    )
+    completed = service.get_task("demo", started.task_id)
+
+    assert completed.result_summary["count"] == 6
+    assert completed.result_summary["nodes_count"] == 6
+    assert completed.result_summary["generated_nodes_count"] == 6
+    assert completed.result_summary["nodes_available"] is True
+    assert len(completed.result_summary["nodes"]) == 6
+    assert all(
+        set(row) == set(CarNetworkPointRowDTO.model_fields)
+        for row in completed.result_summary["nodes"]
+    )
+    normalized = service._result_summary(
+        "car_network_generate_point_table",
+        {"count": 6, "nodes": [{**generated_nodes[0], "unexpected_field": "must-not-leak"}]},
+    )
+    assert "unexpected_field" not in str(normalized)
+
+    invalid_started = service.start_car_network_point_table_generate(
+        "demo", rows=[], global_config={}, target_train={"canonical_train_id": "train:01"}
+    )
+    normal.complete(invalid_started.task_id, {"count": 6, "nodes": "invalid"})
+    invalid_completed = service.get_task("demo", invalid_started.task_id)
+    assert invalid_completed.result_summary["nodes_available"] is False
+    assert "nodes" not in invalid_completed.result_summary
+
+    _save_complete_point_table(paths, "01")
+    diagnostic = service.start_car_network_diagnostic("demo", train_id="train:01")
+    normal.complete(diagnostic.task_id, {"nodes": generated_nodes, "count": 6})
+    other_task = service.get_car_network_diagnostic("demo", diagnostic.task_id)
+    assert "nodes" not in other_task.result_summary
 
 
 def test_point_table_and_trackside_plan_routes_reach_application_tasks(

@@ -67,6 +67,14 @@ TRACKSIDE_AP_RESULT_DETAIL_KEYS = (
     "skipped_reason_counts",
     "failure_reason_counts",
 )
+CAR_NETWORK_POINT_TABLE_GENERATE_RESULT_DETAIL_KEYS = (
+    "nodes_count",
+    "generated_nodes_count",
+    "target_train",
+    "target_train_display",
+    "preview_status",
+    "preview_message",
+)
 
 
 class JobCenterQueryService:
@@ -594,6 +602,17 @@ class JobCenterQueryService:
             details.update(
                 {key: result[key] for key in TRACKSIDE_AP_RESULT_DETAIL_KEYS if key in result}
             )
+        elif task_type == "car_network_generate_point_table":
+            details.update(
+                {
+                    key: result[key]
+                    for key in CAR_NETWORK_POINT_TABLE_GENERATE_RESULT_DETAIL_KEYS
+                    if key in result
+                    and isinstance(result[key], (str, int, float, bool))
+                }
+            )
+            if "nodes_count" not in details and isinstance(result.get("nodes"), list):
+                details["nodes_count"] = len(result["nodes"])
         return details
 
     @staticmethod
