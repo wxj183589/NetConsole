@@ -2477,70 +2477,37 @@ def test_device_export_download_requires_owned_completed_task_and_safe_artifact(
 
 def test_device_export_production_result_separates_physical_and_display_names(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
-
-    class FakeProcess:
-        stdout = None
-        returncode = None
-
-        def poll(self):
-            return self.returncode
-
-        def terminate(self) -> None:
-            self.returncode = -15
-
-        def kill(self) -> None:
-            self.returncode = -9
-
-        def wait(self, timeout=None):
-            _ = timeout
-            return self.returncode
-
-    class NoopThread:
-        def __init__(self, *args, **kwargs) -> None:
-            _ = (args, kwargs)
-
-        def start(self) -> None:
-            return None
-
-    monkeypatch.setattr(
-        "netconsole.services.device_management_web_service.subprocess.Popen",
-        lambda *_args, **_kwargs: FakeProcess(),
-    )
-    monkeypatch.setattr(
-        "netconsole.services.device_management_web_service.threading",
-        SimpleNamespace(Thread=NoopThread, Event=Event),
+    client, service, _adapter, _devices, _facts, _mr, _sw = _fixture(
+        tmp_path,
+        app_root=Path(__file__).parents[1],
     )
     reference = service.start_csv_export(DeviceExportRequestDTO())
-    spec = service._export_artifacts[reference.task_id]
-    target = Path(str(spec["target"]))
-    target.write_text("name,primary_address\n设备,192.0.2.10\n", encoding="utf-8")
-    result = service._finalize_export_artifact(
-        spec, {"path": str(target), "row_count": 1}
-    )
-    service.task_service.record_external_event(
-        reference.task_id,
-        "finished",
-        {"result": result},
-        site_name="demo",
-    )
+    deadline = monotonic() + 15
+    while monotonic() < deadline:
+        result = service.get_export_task(reference.task_id)
+        if result.task_status in {"COMPLETED", "FAILED", "CANCELLED"}:
+            break
+        sleep(0.05)
+    else:
+        pytest.fail("设备 CSV 导出未在 15 秒内进入终态")
 
     downloaded = client.get(
         f"/api/device-management/exports/{reference.task_id}/download",
-        params={"artifact_id": result["artifact_id"]},
+        params={"artifact_id": result.artifact_id},
     )
 
-    assert str(result["artifact_name"]) == f"{result['artifact_id']}.csv"
-    assert str(result["display_name"]).startswith("设备清单_")
-    assert str(result["display_name"]).endswith(".csv")
-    assert result["artifact_id"] not in str(result["display_name"])
+    assert result.task_status == "COMPLETED"
+    assert result.available is True
+    assert result.row_count == 2
+    assert result.sha256
+    assert result.size_bytes > 0
+    assert not service.export_adapter.is_running(reference.task_id)
     assert downloaded.status_code == 200
-    assert str(result["display_name"]) in unquote(
-        downloaded.headers["content-disposition"]
-    )
-    assert int(downloaded.headers["content-length"]) == result["size_bytes"]
+    assert "demo-%E8%AE%BE%E5%A4%87%E8%A1%A8-" in downloaded.headers[
+        "content-disposition"
+    ]
+    assert int(downloaded.headers["content-length"]) == result.size_bytes
     assert downloaded.headers["content-type"] == "text/csv; charset=utf-8"
 
 

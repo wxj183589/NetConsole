@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.resources import package_resource_path
-from netconsole.models.device import Device
+from netconsole.models.device import Device, validate_device_vendor_type
 from netconsole.models.device_detail import (
     DeviceCapability,
     DevicePlatformFacts,
@@ -90,6 +91,84 @@ _DEVICE_SFTP_STEP_CONTRACT = (
     ("sftp.mode.return", "return", "sftp.mode.return"),
     ("session.quit", "quit", "session.quit"),
 )
+_SAFE_INTERFACE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9./:_-]{0,79}$")
+
+
+@dataclass(frozen=True)
+class VendorCommandProfile:
+    vendor: str
+    device_type: str
+    capabilities: dict[str, tuple[str, ...]]
+    unsupported_capabilities: dict[str, str]
+    cli_error_patterns: tuple[re.Pattern[str], ...] = ()
+
+    def commands_for(self, capability: str) -> tuple[str, ...]:
+        selected = self.capabilities.get(str(capability or "").strip())
+        if selected:
+            return selected
+        reason = self.unsupported_capabilities.get(str(capability or "").strip())
+        if reason:
+            raise DeviceCommandProfileNotFound(reason)
+        raise DeviceCommandProfileNotFound(
+            f"当前设备未注册命令能力：{capability or '空值'}"
+        )
+
+
+_ZTE_CLI_ERROR_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE | re.MULTILINE)
+    for pattern in (
+        r"^\s*Invalid input(?:\s|$)",
+        r"^\s*Invalid command(?:\s|$)",
+        r"^\s*Unknown command(?:\s|$)",
+        r"^\s*Incomplete command(?:\s|$)",
+        r"^\s*Ambiguous command(?:\s|$)",
+        r"^\s*Error:\s+",
+    )
+)
+_VENDOR_COMMAND_PROFILES = {
+    ("H3C", "SW"): VendorCommandProfile(
+        vendor="H3C",
+        device_type="SW",
+        capabilities={
+            "session_prepare": ("screen-length disable",),
+            "session_verify": ("display clock",),
+            "version": ("display version",),
+            "running_config": ("display current-configuration",),
+            "diagnostic_bundle": (
+                "screen-length disable",
+                "display diagnostic-information",
+                "n",
+            ),
+        },
+        unsupported_capabilities={},
+    ),
+    ("ZTE", "SW"): VendorCommandProfile(
+        vendor="ZTE",
+        device_type="SW",
+        capabilities={
+            "session_prepare": ("terminal length 0",),
+            "session_verify": ("show version",),
+            "hostname": ("show running-config | include hostname",),
+            "version": ("show version",),
+            "hardware": ("show hardware",),
+            "serial_number": ("show serial-number", "show system-info"),
+            "boot": ("show version",),
+            "interfaces": ("show interface",),
+            "interface_brief": ("show interface brief",),
+            "optical_brief": ("show optical-inform brief",),
+            "optical_detail": ("show optical-inform detail",),
+            "lldp_brief": ("show lldp neighbor brief",),
+            "lldp_detail": ("show lldp entry",),
+            "running_config": ("show running-config",),
+            "startup_config": ("show startup-config",),
+            "flash_root": ("dir flash:/",),
+        },
+        unsupported_capabilities={
+            "diagnostic_bundle": "当前型号暂未适配诊断包采集",
+        },
+        cli_error_patterns=_ZTE_CLI_ERROR_PATTERNS,
+    ),
+}
 
 
 class DeviceCommandProfileError(ValueError):
@@ -98,6 +177,87 @@ class DeviceCommandProfileError(ValueError):
 
 class DeviceCommandProfileNotFound(DeviceCommandProfileError):
     pass
+
+
+def resolve_vendor_command_profile(device: Device) -> VendorCommandProfile:
+    vendor, device_type = validate_device_vendor_type(
+        device.device_vendor, device.device_type
+    )
+    if vendor == "H3C" and (vendor, device_type) not in _VENDOR_COMMAND_PROFILES:
+        return _VENDOR_COMMAND_PROFILES[("H3C", "SW")]
+    try:
+        return _VENDOR_COMMAND_PROFILES[(vendor, device_type)]
+    except KeyError as exc:
+        raise DeviceCommandProfileNotFound(
+            f"当前版本尚未适配 {vendor} {device_type} 命令能力"
+        ) from exc
+
+
+def resolve_device_capability_commands(
+    device: Device, capability: str
+) -> tuple[str, ...]:
+    return resolve_vendor_command_profile(device).commands_for(capability)
+
+
+def device_cli_output_is_unsupported(device: Device, output: object) -> bool:
+    text = str(output or "")
+    profile = resolve_vendor_command_profile(device)
+    return any(pattern.search(text) for pattern in profile.cli_error_patterns)
+
+
+def resolve_step_command_candidates(
+    device: Device, step: "DeviceCommandStep"
+) -> tuple[str, ...]:
+    if str(device.device_vendor or "").strip().casefold() != "zte":
+        return (step.command,)
+    capabilities = {
+        "session.pagination": "session_prepare",
+        "inventory.hostname": "hostname",
+        "inventory.version": "version",
+        "inventory.hardware": "hardware",
+        "inventory.serial_number": "serial_number",
+        "inventory.interfaces": "interfaces",
+        "inventory.interface_brief": "interface_brief",
+        "inventory.optical_brief": "optical_brief",
+        "inventory.optical_detail": "optical_detail",
+        "inventory.lldp_brief": "lldp_brief",
+        "inventory.lldp_detail": "lldp_detail",
+        "inventory.running_config": "running_config",
+        "inventory.startup_config": "startup_config",
+    }
+    capability = capabilities.get(step.selector)
+    return (
+        resolve_device_capability_commands(device, capability)
+        if capability
+        else (step.command,)
+    )
+
+
+def build_interface_transceiver_command(device: Device, interface: str) -> str:
+    profile = resolve_vendor_command_profile(device)
+    value = str(interface or "").strip()
+    if not _SAFE_INTERFACE_PATTERN.fullmatch(value):
+        raise DeviceCommandProfileError("接口名称包含不安全字符")
+    if profile.vendor != "ZTE":
+        raise DeviceCommandProfileNotFound("当前设备未注册单接口光模块命令")
+    return f"show interface {value} transceiver"
+
+
+def build_cli_ping_command(
+    device: Device, address: str, *, count: int | None = None
+) -> str:
+    profile = resolve_vendor_command_profile(device)
+    try:
+        normalized_address = str(ipaddress.ip_address(str(address or "").strip()))
+    except ValueError as exc:
+        raise DeviceCommandProfileError("Ping 地址必须是合法 IP 地址") from exc
+    if count is None:
+        return f"ping {normalized_address}"
+    if not 1 <= int(count) <= 100:
+        raise DeviceCommandProfileError("Ping 次数必须在 1 到 100 之间")
+    if profile.vendor != "ZTE":
+        raise DeviceCommandProfileNotFound("当前设备未注册带次数的 CLI Ping 命令")
+    return f"ping {normalized_address} repeat {int(count)}"
 
 
 @dataclass(frozen=True)
@@ -139,6 +299,54 @@ class DeviceCommandProfile:
     @property
     def commands(self) -> tuple[str, ...]:
         return tuple(step.command for step in self.steps)
+
+
+def _zte_switch_inventory_profile() -> DeviceCommandProfile:
+    steps: list[DeviceCommandStep] = []
+    contracts = (
+        ("session_prepare", "terminal.pagination.disable", "session.pagination"),
+        ("hostname", "device.hostname.collect", "inventory.hostname"),
+        ("version", "device.version.collect", "inventory.version"),
+        ("hardware", "device.hardware.collect", "inventory.hardware"),
+        ("serial_number", "device.serial.collect", "inventory.serial_number"),
+        ("interfaces", "device.interfaces.collect", "inventory.interfaces"),
+        ("interface_brief", "device.interface-brief.collect", "inventory.interface_brief"),
+        ("optical_brief", "device.optical-brief.collect", "inventory.optical_brief"),
+        ("optical_detail", "device.optical-detail.collect", "inventory.optical_detail"),
+        ("lldp_brief", "device.lldp-summary.collect", "inventory.lldp_brief"),
+        ("lldp_detail", "device.lldp-detail.collect", "inventory.lldp_detail"),
+        ("running_config", "device.running-config.collect", "inventory.running_config"),
+        ("startup_config", "device.startup-config.collect", "inventory.startup_config"),
+    )
+    profile = _VENDOR_COMMAND_PROFILES[("ZTE", "SW")]
+    for index, (capability, step_id, selector) in enumerate(contracts, start=1):
+        steps.append(
+            DeviceCommandStep(
+                order=index * 10,
+                step_id=step_id,
+                command=profile.capabilities[capability][0],
+                selector=selector,
+                parser_contract="netconsole.zte.device-inventory.raw.v1",
+                dto_contract="netconsole.device-detail.v1",
+                risk="read_only",
+                guard_context="device.inventory.collect",
+                verification_status="behavior_preservation_only",
+                verification_evidence="用户提供的 ZTE 交换机命令基线；待真实输出 fixture 验证",
+            )
+        )
+    return DeviceCommandProfile(
+        operation_id=DEVICE_INVENTORY_OPERATION_ID,
+        profile_id="zte.zxr10.switch.generic.device-inventory.v1",
+        profile_version=1,
+        selector=DeviceCommandSelector("ZTE", "switch", "zxr10", "*"),
+        compatibility="generic_read_only",
+        risk="read_only",
+        parser_contract="netconsole.zte.device-inventory.raw.v1",
+        dto_contract="netconsole.device-detail.v1",
+        fixture_versions=("command-baseline-only",),
+        real_device_status="pending",
+        steps=tuple(steps),
+    )
 
 
 def device_command_profile_path(paths: PathResolver | None = None) -> Path:
@@ -239,6 +447,12 @@ def resolve_device_inventory_profile(
     vendor = str(facts.vendor or "").strip()
     role = str(facts.role or "").strip().casefold()
     platform = str(facts.platform or "").strip().casefold()
+    if (
+        vendor.casefold() == "zte"
+        and role == "switch"
+        and platform == "zxr10"
+    ):
+        return _zte_switch_inventory_profile()
     if vendor.casefold() != "h3c":
         raise DeviceCommandProfileNotFound(
             f"设备详情采集仅支持 H3C: vendor={vendor or 'unknown'}"

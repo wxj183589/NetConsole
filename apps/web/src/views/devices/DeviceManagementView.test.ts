@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import source from './DeviceManagementView.vue?raw'
+import deviceTypesSource from '../../types/deviceManagement.ts?raw'
 
 describe('Device Management Web view', () => {
   it('fills the route width and gives the device table the remaining window height', () => {
@@ -26,6 +27,9 @@ describe('Device Management Web view', () => {
     expect(source).toContain('DEVICE_TYPE_OPTIONS')
     expect(source).toContain('MR')
     expect(source).toContain('filters.vendor')
+    expect(source).toContain('DEVICE_VENDOR_OPTIONS')
+    expect(deviceTypesSource).toContain("{ value: 'ZTE', label: '中兴 ZTE' }")
+    expect(source).toContain('formatDeviceVendor(row.device_vendor)')
     expect(source).toContain('openDetail(row)')
     expect(source).toContain('detailDeviceUuid.value = item.device_uuid')
     expect(source).not.toContain('getDevice(')
@@ -107,6 +111,11 @@ describe('Device Management Web view', () => {
   it('uses safe file upload and controlled server exports', () => {
     expect(source).toContain('type="file"')
     expect(source).toContain('previewDeviceImport(importFile.value)')
+    expect(source).toContain('importPreview.total_rows')
+    expect(source).toContain('importPreview.valid_rows')
+    expect(source).toContain('importPreview.vendor_summary.ZTE')
+    expect(source).toContain('table-id="device-import-errors"')
+    expect(source).not.toContain('Invalid device_vendor')
     expect(source).toContain('importDuplicateStrategy')
     expect(source).toContain("value=\"reject\"")
     expect(source).toContain("value=\"skip\"")
@@ -123,6 +132,7 @@ describe('Device Management Web view', () => {
     expect(source).toContain('startSecureCrtExportWithTemplate')
     expect(source).toContain('accept=".ini"')
     expect(source).toContain('stopOmniPeekPreview')
+    expect(source).toContain('设备表格导出完成，共 ${result.row_count ?? 0} 台设备')
     expect(source).toContain('Date.now() + 120_000')
     for (const featureId of [
       'web.device_management_write',

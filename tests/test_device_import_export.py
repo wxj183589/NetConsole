@@ -5,7 +5,7 @@ from datetime import datetime
 import pytest
 
 from netconsole.core.database import Database
-from netconsole.models.device import Device
+from netconsole.models.device import Device, normalize_device_vendor
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_import_export import (
@@ -51,6 +51,37 @@ def write_dict_rows(path, fieldnames, rows):
         writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def sanitized_mixed_vendor_rows():
+    rows = []
+    for index in range(34):
+        vendor = "H3C" if index < 18 else "ZTE"
+        device_type = "AC" if index < 3 else "SW"
+        address = (
+            f"198.51.100.{index + 1}"
+            if index < 18
+            else f"203.0.113.{index - 17}"
+        )
+        values = {field: "" for field in LEGACY_TEMPLATE_FIELDS}
+        values.update(
+            {
+                "设备名称": f"{vendor}-TEST-{index + 1:02d}",
+                "主用地址": address,
+                "协议": "SSH",
+                "端口": "22",
+                "用户名": "test-admin",
+                "密码": "TEST_PASSWORD",
+                "厂商": vendor,
+                "设备类型": device_type,
+                "分组": "车站",
+                "归属站点": "测试站",
+                "是否启用SSH隧道": "否",
+                "备注": "脱敏测试数据",
+            }
+        )
+        rows.append([values[field] for field in LEGACY_TEMPLATE_FIELDS])
+    return rows
 
 
 def template_row(**overrides):
@@ -454,7 +485,7 @@ def test_import_rejects_invalid_device_type_without_modifying_data(tmp_path):
         ],
     )
 
-    with pytest.raises(ValueError, match="Invalid device_type"):
+    with pytest.raises(ValueError, match="不支持的设备类型：BAD"):
         service.import_csv(csv_path)
 
     assert repository.list() == []
@@ -571,19 +602,94 @@ def test_web_device_csv_export_honors_selection_and_omits_credentials(tmp_path):
     assert row_count == 1
     assert len(rows) == 2
     assert rows[1][rows[0].index("设备名称")] == "Selected"
-    assert {"密码", "隧道主机1密码", "隧道主机2密码", "SNMP只读团体字"}.isdisjoint(rows[0])
+    assert rows[0] == EXPORT_FIELDS
+    assert all(
+        rows[1][rows[0].index(field)] == ""
+        for field in ("密码", "隧道主机1密码", "隧道主机2密码", "SNMP只读团体字")
+    )
     assert "secret" not in text
     assert "Not Selected" not in text
+    assert _service.preview_csv(export_path).total_rows == 1
 
 
 def test_make_device_export_filename_formats_site_name_and_local_time():
     now = datetime(2026, 6, 12, 18, 15)
 
-    assert make_device_export_filename("demo", now) == "demo_2026-06-12-1815.csv"
+    assert make_device_export_filename("demo", now) == "demo-设备表-20260612_181500.csv"
     assert (
-        make_device_export_filename("宁波6号线", now) == "宁波6号线_2026-06-12-1815.csv"
+        make_device_export_filename("宁波6号线", now)
+        == "宁波6号线-设备表-20260612_181500.csv"
     )
     assert (
         make_device_export_filename('bad<>:"/\\|?*name', now)
-        == "bad_________name_2026-06-12-1815.csv"
+        == "bad_________name-设备表-20260612_181500.csv"
     )
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    (
+        ("H3C", "H3C"),
+        ("h3c", "H3C"),
+        ("新华三", "H3C"),
+        ("ZTE", "ZTE"),
+        ("zte", "ZTE"),
+        ("中兴", "ZTE"),
+        ("中兴通讯", "ZTE"),
+    ),
+)
+def test_device_vendor_normalization(source, expected):
+    assert normalize_device_vendor(source) == expected
+
+
+def test_device_vendor_normalization_rejects_unknown():
+    with pytest.raises(ValueError, match="不支持的设备厂商：UNKNOWN"):
+        normalize_device_vendor("UNKNOWN")
+
+
+@pytest.mark.parametrize(
+    ("encoding", "expected_encoding"),
+    (("gb18030", "gb18030"), ("utf-8-sig", "utf-8-sig")),
+)
+def test_mixed_vendor_34_row_preview_and_atomic_import(
+    tmp_path, encoding, expected_encoding
+):
+    repository, groups, service = make_group_service(tmp_path)
+    source = tmp_path / f"mixed-{encoding}.csv"
+    write_rows(
+        source,
+        [LEGACY_TEMPLATE_FIELDS, *sanitized_mixed_vendor_rows()],
+        encoding=encoding,
+    )
+
+    preview = service.preview_csv(source)
+    result = service.import_csv_atomic(source)
+
+    assert preview.total_rows == 34
+    assert preview.valid_rows == 34
+    assert preview.invalid_rows == 0
+    assert preview.vendor_summary == {"H3C": 18, "ZTE": 16}
+    assert preview.device_type_summary == {"AC": 3, "SW": 31}
+    assert preview.detected_encoding == expected_encoding
+    assert result.created == 34
+    assert len(repository.list(vendor="ZTE")) == 16
+    assert groups.find_by_name("车站") is not None
+
+
+def test_zte_ac_is_a_structured_row_error(tmp_path):
+    _repository, _groups, service = make_group_service(tmp_path)
+    source = tmp_path / "zte-ac.csv"
+    rows = sanitized_mixed_vendor_rows()[:1]
+    rows[0][LEGACY_TEMPLATE_FIELDS.index("厂商")] = "中兴"
+    rows[0][LEGACY_TEMPLATE_FIELDS.index("设备类型")] = "AC"
+    write_rows(source, [LEGACY_TEMPLATE_FIELDS, *rows], encoding="gb18030")
+
+    preview = service.preview_csv(source)
+
+    assert preview.total_rows == 1
+    assert preview.valid_rows == 0
+    assert preview.invalid_rows == 1
+    assert preview.vendor_summary == {"ZTE": 1}
+    assert preview.errors[0].line == 2
+    assert preview.errors[0].field == "设备类型"
+    assert preview.errors[0].message == "当前版本尚未适配 ZTE 无线控制器"

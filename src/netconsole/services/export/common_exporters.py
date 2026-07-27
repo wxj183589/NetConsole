@@ -432,6 +432,8 @@ def export_device_csv(path: Path, payload: Mapping[str, Any], progress: Progress
     from netconsole.repositories.device_repository import DeviceRepository
     from netconsole.services.device_import_export import DeviceImportExportService
 
+    _emit(progress, "prepare_device_csv", 10, 100, "正在读取设备导出参数")
+    _check_cancel(should_cancel)
     path.parent.mkdir(parents=True, exist_ok=True)
     devices_payload = list(payload.get("devices") or [])
     site_name = str(payload.get("site_name") or "")
@@ -441,6 +443,8 @@ def export_device_csv(path: Path, payload: Mapping[str, Any], progress: Progress
         group_repository = DeviceGroupRepository(database, site_name) if site_name else None
         service = DeviceImportExportService(DeviceRepository(database), group_repository)
     else:
+        _emit(progress, "query_device_csv", 30, 100, "正在查询设备清单")
+        _check_cancel(should_cancel)
         source = payload.get("source") if isinstance(payload.get("source"), Mapping) else {}
         db_path = str(payload.get("db_path") or source.get("db_path") or "")
         database = Database(Path(db_path))
@@ -465,12 +469,15 @@ def export_device_csv(path: Path, payload: Mapping[str, Any], progress: Progress
             for device in devices
             if str(device.device_uuid or "").strip() in selected_uuids
         ]
-    _emit(progress, "write_device_csv", 0, len(devices), "正在导出设备 CSV")
+    _emit(progress, "generate_device_csv", 60, 100, "正在生成设备 CSV")
     _check_cancel(should_cancel)
     service.export_csv(
         path, devices, include_sensitive=not bool(payload.get("omit_credentials"))
     )
-    _emit(progress, "write_device_csv", len(devices), len(devices), "设备 CSV 导出完成")
+    _emit(progress, "verify_device_csv", 85, 100, "正在校验设备 CSV")
+    if not path.is_file() or path.stat().st_size <= 0:
+        raise RuntimeError("设备 CSV 写入后为空")
+    _emit(progress, "register_device_csv", 95, 100, "设备 CSV 已生成，正在注册 Artifact")
     return len(devices)
 
 

@@ -1,5 +1,17 @@
 export type DeviceConnectionStatus = 'UNKNOWN' | 'TESTING' | 'REACHABLE' | 'UNREACHABLE' | 'AUTH_FAILED' | 'ERROR'
 export type DeviceConnectionProtocol = 'SSH' | 'TELNET' | 'SNMP'
+export type DeviceVendor = 'H3C' | 'ZTE' | 'Huawei' | 'Ruijie' | 'Cisco' | 'Other'
+export const DEVICE_VENDOR_OPTIONS: ReadonlyArray<{ value: DeviceVendor; label: string }> = [
+  { value: 'H3C', label: '新华三 H3C' },
+  { value: 'ZTE', label: '中兴 ZTE' },
+  { value: 'Huawei', label: '华为 Huawei' },
+  { value: 'Ruijie', label: '锐捷 Ruijie' },
+  { value: 'Cisco', label: '思科 Cisco' },
+  { value: 'Other', label: '其他' },
+]
+export function formatDeviceVendor(value: string): string {
+  return DEVICE_VENDOR_OPTIONS.find((item) => item.value === value)?.label || value || '—'
+}
 export type DeviceCredentialStatus = 'available' | 'missing' | 'needs_reentry' | 'key_file_missing'
 export type DeviceSecretField =
   | 'ssh_password'
@@ -37,7 +49,7 @@ export interface DeviceListItem {
   station: string
   group_id: number | null
   group_name: string
-  device_vendor: string
+  device_vendor: DeviceVendor
   device_type: string
   primary_address: string
   backup_address: string
@@ -447,7 +459,7 @@ export interface DeviceWriteRequest {
   station?: string
   location?: string
   group_id?: number | null
-  device_vendor?: string
+  device_vendor?: DeviceVendor
   device_type?: string
   primary_address: string
   backup_address?: string
@@ -535,7 +547,7 @@ export interface DeviceListQuery {
   group_id?: number
   ungrouped?: boolean
   device_type?: string
-  vendor?: string
+  vendor?: DeviceVendor | ''
   group_filter?: number | '__ungrouped__'
   connection_status?: DeviceConnectionStatus | ''
   page?: number
@@ -563,6 +575,7 @@ export interface DeviceTaskReference {
   available: boolean
   sha256: string
   size_bytes: number
+  row_count?: number
   message: string
 }
 
@@ -586,8 +599,23 @@ export interface DeviceImportPreview {
   source_name: string
   source_sha256: string
   row_count: number
+  total_rows: number
+  valid_rows: number
+  invalid_rows: number
+  vendor_summary: Record<string, number>
+  device_type_summary: Record<string, number>
+  create_count: number
+  update_count: number
+  conflict_count: number
+  detected_encoding: string
   columns: string[]
-  errors: string[]
+  errors: Array<{
+    line: number
+    device_name: string
+    field: string
+    raw_value: string
+    message: string
+  }>
   warnings: string[]
   duplicate_rows: number[]
   persistence: 'preview_only'

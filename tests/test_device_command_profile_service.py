@@ -26,6 +26,8 @@ from netconsole.services.device_command_profile_service import (
     resolve_device_inventory_profile,
     resolve_device_operation_profile,
     resolve_device_sftp_enable_profile,
+    resolve_device_capability_commands,
+    resolve_step_command_candidates,
 )
 from scripts.maintenance.audit_commands import (
     load_device_profile_commands,
@@ -138,13 +140,18 @@ def test_device_types_keep_cloud_ap_and_mobile_router_roles_distinct() -> None:
     assert normalize_device_role("FAT-AP") == "access_point"
 
 
-def test_device_resolution_accepts_h3c_switch_and_mobile_router_only() -> None:
+def test_device_resolution_accepts_h3c_and_zte_supported_roles() -> None:
     h3c_switch = Device(name="SW", device_vendor="H3C", device_type="SW")
     assert resolve_device_inventory_profile(h3c_switch).selector.platform == "comware"
     h3c_mr = Device(name="MR", device_vendor="H3C", device_type="MR")
     mr_profile = resolve_device_inventory_profile(h3c_mr)
     assert mr_profile.selector.role == "mobile_router"
     assert mr_profile.profile_id == "h3c.comware.mobile_router.generic.device-inventory.v1"
+    zte_profile = resolve_device_inventory_profile(
+        Device(name="ZTE-SW", device_vendor="ZTE", device_type="SW")
+    )
+    assert zte_profile.selector.platform == "zxr10"
+    assert zte_profile.selector.role == "switch"
 
     with pytest.raises(DeviceCommandProfileNotFound, match="仅支持 H3C"):
         resolve_device_inventory_profile(
@@ -163,6 +170,40 @@ def test_device_resolution_accepts_h3c_switch_and_mobile_router_only() -> None:
         resolve_device_inventory_profile(
             h3c_switch, platform_facts=conflicting_facts
         )
+
+
+def test_zte_switch_command_profile_uses_show_commands_and_candidates() -> None:
+    device = Device(name="ZTE-SW", device_vendor="中兴", device_type="SW")
+    profile = resolve_device_inventory_profile(device)
+    commands = profile.commands
+
+    assert resolve_device_capability_commands(device, "session_prepare") == (
+        "terminal length 0",
+    )
+    assert resolve_device_capability_commands(device, "version") == ("show version",)
+    assert resolve_device_capability_commands(device, "hardware") == ("show hardware",)
+    assert resolve_device_capability_commands(device, "interface_brief") == (
+        "show interface brief",
+    )
+    assert resolve_device_capability_commands(device, "running_config") == (
+        "show running-config",
+    )
+    assert resolve_device_capability_commands(device, "startup_config") == (
+        "show startup-config",
+    )
+    assert resolve_device_capability_commands(device, "lldp_brief") == (
+        "show lldp neighbor brief",
+    )
+    serial_step = next(
+        step for step in profile.steps if step.selector == "inventory.serial_number"
+    )
+    assert resolve_step_command_candidates(device, serial_step) == (
+        "show serial-number",
+        "show system-info",
+    )
+    assert "screen-length disable" not in commands
+    assert "display version" not in commands
+    assert "display current-configuration" not in commands
 
 
 def test_mobile_router_inventory_profile_uses_core_read_only_contract() -> None:

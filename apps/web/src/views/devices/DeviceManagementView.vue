@@ -7,6 +7,7 @@ import { Connection, CopyDocument, Delete, Download, Edit, FolderOpened, Hide, P
 import { isFeatureEnabled } from '../../features'
 import {
   getDeviceEditProfile,
+  getDeviceExportTask,
   getDeviceConnectionTest,
   getExternalTerminalSettings,
   issueExternalTerminalConfirmation,
@@ -43,6 +44,10 @@ import DeviceDetailPanel from '../../components/device-detail/DeviceDetailPanel.
 import { useConfirm } from '../../components/feedback/useConfirm'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
+import {
+  DEVICE_VENDOR_OPTIONS,
+  formatDeviceVendor,
+} from '../../types/deviceManagement'
 import type {
   DeviceConnectionProtocol,
   DeviceConnectionStatus,
@@ -57,6 +62,7 @@ import type {
   DevicePage,
   DeviceSecretField,
   DeviceTaskReference,
+  DeviceVendor,
   DeviceWriteRequest,
 } from '../../types/deviceManagement'
 import type { TaskItem, TaskStatus } from '../../types/task'
@@ -143,7 +149,7 @@ const terminalSettings = reactive<DeviceExternalTerminalSettings>({
 const filters = reactive({
   search: '',
   group: '',
-  vendor: '',
+  vendor: '' as DeviceVendor | '',
   device_type: '',
   connection_status: '' as DeviceConnectionStatus | '',
   sort_by: 'name',
@@ -155,6 +161,7 @@ const deviceColumns: NcTableColumn<DeviceListItem>[] = [
   { key: 'selection', label: '', type: 'selection', valueType: 'selection', fixed: 'left', hideable: false, stretch: 'none' },
   { key: 'name', label: '名称', valueType: 'name', fixed: 'left', stretch: 'priority', stretchWeight: 4 },
   { key: 'group_name', label: '分组', valueType: 'text', stretch: 'normal' },
+  { key: 'device_vendor', label: '厂商', valueType: 'text', stretch: 'normal', displayValue: (row) => formatDeviceVendor(row.device_vendor) },
   { key: 'system_name', label: '系统名', valueType: 'name', stretch: 'normal' },
   { key: 'station', label: '站点', valueType: 'text', stretch: 'priority' },
   { key: 'primary_address', label: '主地址', valueType: 'ip', stretch: 'normal' },
@@ -180,6 +187,13 @@ const omniPeekColumns: NcTableColumn<DeviceOmniPeekPreviewItem>[] = [
   { key: 'location', label: '位置', valueType: 'text' },
   { key: 'status', label: '状态', valueType: 'status' },
   { key: 'force_export', label: '强制导出', valueType: 'actions', cellKind: 'plain', hideable: false },
+]
+const importErrorColumns: NcTableColumn<DeviceImportPreview['errors'][number]>[] = [
+  { key: 'line', label: 'CSV 行', valueType: 'number', stretch: 'none' },
+  { key: 'device_name', label: '设备名称', valueType: 'name', stretch: 'normal' },
+  { key: 'field', label: '字段', valueType: 'text', stretch: 'none' },
+  { key: 'raw_value', label: '原始值', valueType: 'text', stretch: 'normal' },
+  { key: 'message', label: '错误信息', valueType: 'text', stretch: 'priority' },
 ]
 const writeForm = reactive<DeviceWriteRequest>({ name: '', primary_address: '', ssh_enabled: true, ssh_port: 22, telnet_enabled: false, telnet_port: 23, snmp_enabled: true, snmp_v2c_enabled: true, snmp_port: 161 })
 const secretClears = reactive<Record<DeviceSecretField, boolean>>({
@@ -208,6 +222,7 @@ let omniPeekPollGeneration = 0
 let editLoadGeneration = 0
 let editProfileAbortController: AbortController | null = null
 let componentActive = true
+let notifiedExportTerminalKey = ''
 const pollingConsumer = 'device-management-view'
 let drawerDragStartX = 0
 let drawerDragStartWidth = 0
@@ -306,6 +321,35 @@ watch(
       else ElMessage.error(result.safe_message || result.message || 'SSH 连接失败')
     } catch (cause) {
       if (writeConnectionTest.value?.task_id === taskId) ElMessage.error(errorMessage(cause, '连接测试结果读取失败'))
+    }
+  },
+)
+watch(
+  () => {
+    const task = latestDeviceTask.value
+    const submitted = lastSubmittedTask.value
+    return task
+      && submitted?.action === 'export_csv'
+      && task.id === submitted.task_id
+      && ['COMPLETED', 'FAILED', 'CANCELLED'].includes(task.status)
+      ? `${task.id}:${task.status}:${task.updated_time}`
+      : ''
+  },
+  async (terminalKey) => {
+    if (!terminalKey || terminalKey === notifiedExportTerminalKey) return
+    notifiedExportTerminalKey = terminalKey
+    const taskId = terminalKey.split(':', 1)[0]
+    try {
+      const result = await getDeviceExportTask(taskId)
+      if (result.task_status === 'COMPLETED') {
+        ElMessage.success(`设备表格导出完成，共 ${result.row_count ?? 0} 台设备`)
+      } else if (result.task_status === 'CANCELLED') {
+        ElMessage.warning('设备表格导出已取消')
+      } else {
+        ElMessage.error(result.message || '设备表格导出失败')
+      }
+    } catch (cause) {
+      ElMessage.error(errorMessage(cause, '设备表格导出结果读取失败'))
     }
   },
 )
@@ -1364,7 +1408,7 @@ function errorMessage(cause: unknown, fallback: string): string {
         <el-option v-for="type in DEVICE_TYPE_OPTIONS" :key="type" :label="type" :value="type" />
       </el-select>
       <el-select v-model="filters.vendor" clearable placeholder="全部厂商" @change="loadDevices(true)">
-        <el-option v-for="vendor in ['H3C', 'Huawei', 'Ruijie', 'Cisco', 'Other']" :key="vendor" :label="vendor" :value="vendor" />
+        <el-option v-for="vendor in DEVICE_VENDOR_OPTIONS" :key="vendor.value" :label="vendor.label" :value="vendor.value" />
       </el-select>
       <el-select v-model="filters.connection_status" clearable placeholder="全部状态" @change="loadDevices(true)">
         <el-option label="未测试" value="UNKNOWN" /><el-option label="测试中" value="TESTING" />
@@ -1527,7 +1571,7 @@ function errorMessage(cause: unknown, fallback: string): string {
             <el-form-item label="设备名称 *"><el-input v-model="writeForm.name" data-testid="device-name" /></el-form-item>
             <el-form-item label="系统名"><el-input v-model="writeForm.system_name" /></el-form-item>
             <el-form-item label="分组"><el-select v-model="writeForm.group_id" clearable style="width:100%"><el-option v-for="group in pageData.groups" :key="group.id" :label="group.name" :value="group.id" /></el-select></el-form-item>
-            <el-form-item label="厂商"><el-select v-model="writeForm.device_vendor" style="width:100%"><el-option v-for="vendor in ['H3C', 'Huawei', 'Ruijie', 'Cisco', 'Other']" :key="vendor" :label="vendor" :value="vendor" /></el-select></el-form-item>
+            <el-form-item label="厂商"><el-select v-model="writeForm.device_vendor" style="width:100%"><el-option v-for="vendor in DEVICE_VENDOR_OPTIONS" :key="vendor.value" :label="vendor.label" :value="vendor.value" /></el-select></el-form-item>
             <el-form-item label="类型"><el-select v-model="writeForm.device_type" style="width:100%"><el-option v-for="type in DEVICE_TYPE_OPTIONS" :key="type" :label="type" :value="type" /></el-select></el-form-item>
             <el-form-item label="站点"><el-input v-model="writeForm.station" /></el-form-item>
             <el-form-item label="备注"><el-input v-model="writeForm.remark" type="textarea" :rows="3" /></el-form-item>
@@ -1590,7 +1634,29 @@ function errorMessage(cause: unknown, fallback: string): string {
       <el-alert title="先预览再确认；服务端校验 SHA-256 并以单事务提交。备份只供人工恢复，任务失败不会覆盖同期数据。" type="info" show-icon :closable="false" />
       <input ref="importFileInput" class="visually-hidden" type="file" accept=".csv,text/csv" @change="onImportFileChange" />
       <div class="import-file-picker"><el-button :disabled="!isFeatureEnabled('web.device_management_import')" @click="chooseImportFile">选择 CSV 文件</el-button><span>{{ importFile?.name || '尚未选择文件' }}</span></div>
-      <div v-if="importPreview" class="import-summary"><p>{{ importPreview.source_name }} · {{ importPreview.row_count }} 行 · {{ importPreview.source_sha256 }}</p><el-alert v-for="item in importPreview.errors" :key="item" :title="item" type="error" :closable="false" /><el-alert v-for="item in importPreview.warnings" :key="item" :title="item" type="warning" :closable="false" /><el-form-item v-if="importPreview.duplicate_rows.length" label="重复地址"><el-select v-model="importDuplicateStrategy" style="width:100%"><el-option label="拒绝导入（安全默认）" value="reject" /><el-option label="跳过重复行" value="skip" /><el-option label="仍新增为独立设备" value="create_new" /></el-select><span class="field-warning">涉及 CSV 行：{{ importPreview.duplicate_rows.join('、') }}</span></el-form-item></div>
+      <div v-if="importPreview" class="import-summary">
+        <p>{{ importPreview.source_name }} · 编码 {{ importPreview.detected_encoding }} · SHA-256 {{ importPreview.source_sha256 }}</p>
+        <el-descriptions :column="3" border size="small">
+          <el-descriptions-item label="总行数">{{ importPreview.total_rows }}</el-descriptions-item>
+          <el-descriptions-item label="有效">{{ importPreview.valid_rows }}</el-descriptions-item>
+          <el-descriptions-item label="无效">{{ importPreview.invalid_rows }}</el-descriptions-item>
+          <el-descriptions-item label="新华三 H3C">{{ importPreview.vendor_summary.H3C || 0 }}</el-descriptions-item>
+          <el-descriptions-item label="中兴 ZTE">{{ importPreview.vendor_summary.ZTE || 0 }}</el-descriptions-item>
+          <el-descriptions-item label="新增 / 更新">{{ importPreview.create_count }} / {{ importPreview.update_count }}</el-descriptions-item>
+        </el-descriptions>
+        <NcDataTable
+          v-if="importPreview.errors.length"
+          table-id="device-import-errors"
+          route-key="/devices/import-preview"
+          :data="importPreview.errors"
+          :columns="importErrorColumns"
+          row-key="line"
+          :max-height="240"
+          empty-text="没有导入错误"
+        />
+        <el-alert v-for="item in importPreview.warnings" :key="item" :title="item" type="warning" :closable="false" />
+        <el-form-item v-if="importPreview.duplicate_rows.length" label="重复地址"><el-select v-model="importDuplicateStrategy" style="width:100%"><el-option label="拒绝导入（安全默认）" value="reject" /><el-option label="跳过重复行" value="skip" /><el-option label="仍新增为独立设备" value="create_new" /></el-select><span class="field-warning">涉及 CSV 行：{{ importPreview.duplicate_rows.join('、') }}</span></el-form-item>
+      </div>
       <template #footer><el-button @click="closeImportDialog">关闭</el-button><el-button :loading="importLoading" :disabled="!importFile || !isFeatureEnabled('web.device_management_import')" @click="runImportPreview">预览</el-button><el-button type="primary" :disabled="!importPreview || !!importPreview.errors.length || !isFeatureEnabled('web.device_management_import')" @click="confirmImport">确认导入</el-button></template>
     </el-dialog>
 

@@ -12,6 +12,10 @@ from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.services import command_guard, netmiko_connection
+from netconsole.services.device_command_profile_service import (
+    DeviceCommandProfileNotFound,
+    resolve_device_capability_commands,
+)
 from netconsole.services.netmiko_connection import safe_send_command, sanitize_sensitive_text
 from netconsole.utils.text_encoding import clean_h3c_device_text
 
@@ -46,6 +50,23 @@ class DiagnosticDownloadService:
         started = monotonic()
         output_parts: list[str] = []
         file_path: Path | None = None
+        try:
+            resolve_device_capability_commands(device, "diagnostic_bundle")
+        except DeviceCommandProfileNotFound as exc:
+            message = str(exc)
+            app_logger.log_info(
+                "DIAGNOSTIC_DOWNLOAD_SKIPPED",
+                self._detail(device, timestamp, error=message),
+            )
+            return DiagnosticDownloadResult(
+                device.id,
+                str(device.name or ""),
+                timestamp,
+                None,
+                "unsupported",
+                message,
+                elapsed_ms(started),
+            )
         try:
             command_guard.validate_command_list(DIAGNOSTIC_COMMANDS, DIAGNOSTIC_CONTEXT)
             def operation(connection, _target):

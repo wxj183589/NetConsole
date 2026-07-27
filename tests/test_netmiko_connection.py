@@ -25,6 +25,11 @@ def test_extract_sysname_from_square_prompt():
     assert extract_sysname_from_prompt("[SW01-probe]") == "SW01-probe"
 
 
+def test_extract_sysname_from_zte_prompt():
+    assert extract_sysname_from_prompt("ZTE-Core-01#") == "ZTE-Core-01"
+    assert extract_sysname_from_prompt("ZTE-Access-01>") == "ZTE-Access-01"
+
+
 def test_extract_sysname_from_invalid_prompt_returns_none():
     assert extract_sysname_from_prompt("") is None
     assert extract_sysname_from_prompt("invalid") is None
@@ -259,6 +264,52 @@ def test_connect_handler_called_with_netmiko_params(monkeypatch):
     assert calls["disconnect"] is True
 
 
+def test_zte_connection_uses_zxros_and_never_sends_h3c_session_commands(
+    monkeypatch,
+):
+    calls: dict[str, object] = {}
+    commands: list[str] = []
+
+    class FakeConnection:
+        def find_prompt(self):
+            return "ZTE-Core-01#"
+
+        def send_command_timing(self, command, **_kwargs):
+            commands.append(command)
+            return "ZTE-Core-01#"
+
+        def send_command(self, command, **_kwargs):
+            commands.append(command)
+            return "ZXR10 software version test"
+
+        def disconnect(self):
+            return None
+
+    def fake_connect_handler(**kwargs):
+        calls.update(kwargs)
+        return FakeConnection()
+
+    monkeypatch.setattr(netmiko_connection, "ConnectHandler", fake_connect_handler)
+
+    result = test_device_connection(
+        Device(
+            name="ZTE-Core-01",
+            device_vendor="ZTE",
+            device_type="SW",
+            ip_address="203.0.113.10",
+            ssh_enabled=1,
+            ssh_username="test",
+            ssh_password="TEST_PASSWORD",
+        )
+    )
+
+    assert result.success is True
+    assert calls["device_type"] == "zte_zxros"
+    assert calls["encoding"] == "utf-8"
+    assert commands == ["terminal length 0", "show version"]
+    assert "screen-length disable" not in commands
+
+
 def test_connection_exception_returns_failure_without_password(monkeypatch):
     def fake_connect_handler(**_kwargs):
         raise RuntimeError("auth failed with Admin@123")
@@ -277,7 +328,7 @@ def test_connection_exception_returns_failure_without_password(monkeypatch):
 
     assert result.success is False
     assert "Admin@123" not in result.message
-    assert "***" in result.message
+    assert "认证失败" in result.message
 
 
 def test_disconnect_called_when_send_command_fails(monkeypatch):
@@ -298,7 +349,7 @@ def test_disconnect_called_when_send_command_fails(monkeypatch):
     result = test_device_connection(Device(ip_address="10.0.0.52", ssh_enabled=1))
 
     assert result.success is True
-    assert "display clock" in result.message
+    assert "会话校验命令未返回预期结果" in result.message
     assert calls["disconnect"] is True
 
 

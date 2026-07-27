@@ -257,6 +257,8 @@ def create_app(
         task_service,
         desktop_action_service=desktop_action_service,
         process_adapter=web_process_adapter,
+        export_adapter=web_export_adapter,
+        artifact_store=web_artifact_store,
         device_operation_service=device_operation_service,
     )
     config_collection_service = ConfigCollectionApplicationService(
