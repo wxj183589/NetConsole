@@ -112,6 +112,7 @@ export type BackendDownloadErrorCode =
   | 'PATH_NOT_WRITABLE'
   | 'DISK_FULL'
   | 'DOWNLOAD_IN_PROGRESS'
+  | 'SAVE_TARGET_CHANGED'
   | 'DESKTOP_SHUTTING_DOWN'
 
 export interface BackendDownloadResult {

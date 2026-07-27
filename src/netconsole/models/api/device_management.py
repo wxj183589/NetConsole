@@ -67,6 +67,7 @@ class DeviceListItemDTO(ApiModel):
 class DevicePageDTO(ApiModel):
     items: list[DeviceListItemDTO] = Field(default_factory=list)
     groups: list[DeviceGroupOptionDTO] = Field(default_factory=list)
+    site_name: str = ""
     total: int = 0
     page: int = 1
     page_size: int = 50
@@ -354,6 +355,7 @@ class DeviceImportConfirmRequestDTO(ApiModel):
 
 class DeviceExportRequestDTO(ApiModel):
     device_uuids: list[str] = Field(default_factory=list, max_length=500)
+    export_scope: Literal["selected", "filtered_all"] | None = None
     search: str = Field(default="", max_length=200)
     vendor: str = Field(default="", max_length=40)
     device_type: str = Field(default="", max_length=40)

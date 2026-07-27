@@ -58,9 +58,9 @@ LLDP 历史数据按公开 DTO 白名单消费，不进入任意原始对象透�
 - 正式模板和导出共用唯一的 28 列契约（在旧 21 列设备字段基础上增加 7 个 SNMP 字段）；模板只包含 UTF-8 BOM、元数据行和表头，不再写示例设备，导入预览允许零数据行。旧 21 列文件仍可导入，避免破坏现场存量模板。
 - 导入严格识别 UTF-8 BOM、UTF-8、GB18030、GBK，不使用 `errors="ignore"`。预览返回检测编码、SHA-256、总/有效/无效行数、厂商与类型统计、新增/更新/冲突数和结构化行级中文错误。
 - H3C 与 ZTE 可存在于同一个 CSV。存在无效行时仍展示全部已解析行，但确认导入保持单 SQLite 事务，不提供“忽略错误行”。
-- 设备表格导出遵守“有勾选导出勾选项；无勾选导出当前筛选结果”，继续使用 UTF-8 BOM 和既有凭据开关。设备数据和模板都进入公共 Export Worker、Task Center 和 `WebArtifactStore`；分别使用 `web_export_device_csv`、`web_export_device_template_csv`，结果记录实际行数并提供受控 Artifact 下载。
-- 用户在设备管理页面本次主动发起设备数据或模板导出时，页面等待 Artifact 首次就绪后自动调用统一桌面 Save As；Artifact、弹窗中、已取消、失败和已保存分别记录，短暂详情读取失败不会永久阻断重试。取消或保存失败不属于任务失败，页面始终保留“保存到本地”，最近历史 Artifact 和 Task Center 也可再次保存。
-- Electron 保存始终流式写入同目录随机 `.part`，核对 Artifact 大小和 SHA-256 后原子替换，并再次 `stat` 最终文件；只有 Main 返回 `saved` 才显示“已保存到本地”。保存后的绝对路径不返回 Renderer，只签发短期 capability 供“打开文件 / 打开所在目录”使用。普通浏览器的 `started` 只提示查看浏览器下载记录；Electron 宿主标记存在但 preload bridge 缺失时明确报错，禁止静默回退。
+- 设备表格导出先确认明确范围：有勾选时默认 `selected`，无勾选时固定 `filtered_all`；范围 DTO 决定 Worker 使用 UUID 集合还是完整筛选查询，不受当前页分页限制。CSV 继续使用 UTF-8 BOM 和既有凭据开关。设备数据和模板都进入公共 Export Worker、Task Center 和 `WebArtifactStore`；分别使用 `web_export_device_csv`、`web_export_device_template_csv`，结果记录实际行数并提供受控 Artifact 下载。
+- 设备数据和模板都先调用桌面 `chooseSavePath`；取消时不创建任务，确认后才提交任务并把 `task_id` 与本次另存为授权一对一绑定。页面只按该 `task_id` 等待 Artifact，完成后用 `destinationPath` 直接写入预选位置，不再弹第二次 Save As，也不自动打开任务中心。运行中绑定保存在 Renderer session store；授权失效时失败关闭，Artifact 继续留在 Task Center。
+- Electron 保存始终流式写入同目录随机 `.part`，核对 Artifact 大小和 SHA-256 后复验目标仍与 Save As 选择时一致，再安全替换并 `stat` 最终文件；只有 Main 返回 `saved` 才显示真实文件名和所选目录。保存失败可重新选择位置并直接下载现有 Artifact，不重建任务。保存后的打开/定位仍只使用 Main 签发的短期 capability；Task Center 的“另存 Artifact”保留为历史任务恢复入口。
 
 ## 厂商、角色和 Command Profile 边界
 

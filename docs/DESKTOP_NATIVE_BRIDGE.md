@@ -66,11 +66,11 @@ Renderer 不能把绝对路径提交给打开动作。`downloadBackendResource` 
 
 ## 文件导出边界
 
-`chooseSavePath` 只返回用户确认并登记为当前会话授权的目标路径；可选默认目录同样必须先由 `selectDirectory` 授权。报告生成及 Excel/ZIP/PDF/NAM 内容继续属于 Python Application Service 与 Export Process。`downloadBackendResource` 只搬运既有受控 HTTP 响应：Renderer 可以回传刚取得的另存为路径，但 main 必须在内存授权表中重新校验后才跳过第二次对话框；任意绝对路径仍会被拒绝。Renderer 只能提交设备、配置、文件、AC、MESH、Online MR 和网络工具现有正式 Artifact endpoint 模式及各端点允许的字符串 Query，main 使用当前 `PythonBackendManager` 的动态回环 Origin 与内存令牌请求，先流式写入目标同目录的随机 `.part`，同步计算实际大小和 SHA-256，并在期望元数据存在时完成校验后才原子替换。取消、HTTP 失败、路径不可写、空间不足或完整性不一致均不改变服务端任务终态，且不留下 `.part` 或伪成功文件。Electron Main/Preload 不读取数据库、不解释或生成报告。
+`chooseSavePath` 只返回用户确认并登记为当前会话授权的目标路径；可选默认目录同样必须先由 `selectDirectory` 授权。Main 同时记录目标当时是不存在还是普通文件，以及文件的大小、时间和文件标识。报告生成及 Excel/ZIP/PDF/NAM 内容继续属于 Python Application Service 与 Export Process。`downloadBackendResource` 只搬运既有受控 HTTP 响应：Renderer 可以回传刚取得的另存为路径，但 main 必须在内存授权表中重新校验后才跳过第二次对话框；任意绝对路径仍会被拒绝。Renderer 只能提交设备、配置、文件、AC、MESH、Online MR 和网络工具现有正式 Artifact endpoint 模式及各端点允许的字符串 Query，main 使用当前 `PythonBackendManager` 的动态回环 Origin 与内存令牌请求，先流式写入目标同目录的随机 `.part`，同步计算实际大小和 SHA-256，并在期望元数据存在时完成校验；提交前再次复验目标未被其他进程创建、替换或改变，再安全替换并校验最终文件。目标变化、HTTP 失败、路径不可写、空间不足或完整性不一致均不改变服务端任务终态，且不留下 `.part` 或伪成功文件。Electron Main/Preload 不读取数据库、不解释或生成报告。
 
 Electron Main 为所有受管 Renderer URL 注入 `netconsole_host=electron`。Renderer 看到该标记但未发现 preload bridge 时必须失败关闭，显示“Electron 文件保存组件未加载”，不得创建 `<a download>` 或回退 Browser Adapter。只有未携带 Electron 宿主标记的普通浏览器页面才允许启动浏览器下载，并且 `started` 只表示已交给浏览器，不能转换为“已保存到本地”。
 
-设备管理页面只为当前前端会话中用户主动提交的 `web_export_device_csv` 和 `web_export_device_template_csv` 自动打开一次 Save As；Artifact、弹窗中、已取消、失败和已保存分别记录本地状态。Artifact/API 短暂不同步不会永久标记已处理，取消或保存失败后继续显示“保存到本地”，历史 Artifact 也可从设备页面最近任务或 Task Center 人工保存。服务端 Artifact READY、任务 `COMPLETED` 与本地文件保存成功互不替代。只有 Main 完成 `.part` 流式写入、大小/SHA-256 校验、原子替换和最终文件 `stat` 复验并返回 `saved` 后，页面才显示“已保存到本地”。保存后的绝对路径不返回 Renderer；页面只持有短期 capability，并通过“打开文件 / 打开所在目录”动作使用它。
+设备管理页面在创建 `web_export_device_csv` 或 `web_export_device_template_csv` 前立即打开一次 Save As；用户取消时不创建任务。确认后页面按 `task_id` 保存另存为授权、范围和预计数量，任务完成时直接把 Artifact 写入该目标，不再弹第二次对话框，也不使用“最近任务”猜测绑定。保存失败后“重新保存”只重选位置并下载现有 Artifact，不重新查询设备或生成 CSV；历史 Artifact 仍可从 Task Center 的“另存 Artifact”人工保存。服务端 Artifact READY、任务 `COMPLETED` 与本地文件保存成功互不替代。只有 Main 完成 `.part` 流式写入、大小/SHA-256 校验、目标竞态复验、安全替换和最终文件 `stat` 复验并返回 `saved` 后，页面才显示文件名和用户选择的目录；后续打开/定位只使用短期 capability。
 
 Save As 以前台实际 IPC sender 窗口为父窗口；Main 在弹窗前恢复最小化窗口并执行 show/focus。诊断日志只记录受控路由类别、文件名、窗口 ID/可见状态、大小和错误码，不记录完整本机路径、URL、Token 或凭据。
 

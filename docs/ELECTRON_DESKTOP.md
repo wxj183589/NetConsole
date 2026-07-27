@@ -226,7 +226,7 @@ Renderer 当前只能调用：
 - 下载保存后的绝对路径只进入 Electron Main 的有界临时授权表；只有具备原生 open/reveal 权限的数据或报告文件才向 Renderer 返回 capability ID，`.bin/.conf/.exe` 等仅保存类型返回 `saved` 但不返回 capability。
 - `openPath`/`showItemInFolder` 分别校验 capability 的 purpose、action、规范化实际扩展、默认 15 分钟 TTL 和 FIFO 有界状态；程序、脚本和系统控制文件不能通过 reveal 绕过。
 - `chooseSavePath` 只选择目标；可选默认目录必须来自本会话 `selectDirectory` 授权。Excel、ZIP、PDF、NAM、报告和 Artifact 内容继续由 Python Application Service/Export Process 生成。
-- `downloadBackendResource` 在 Browser 中使用普通下载，在 Electron 中只把匹配设备、配置、文件、AC、MESH、Online MR 和网络工具既有 Artifact 路由的安全相对 API 描述交给 main；普通 `/api` 路由不在白名单。Renderer 可回传本会话 `chooseSavePath` 产生的目标路径以避免重复弹窗，main 必须重新验证内存授权，任意路径仍被拒绝。main 使用当前动态后端和请求头令牌流式写同目录临时文件，成功后原子替换，并拒绝用户把最终文件改成不同实际扩展。Renderer 不接收完整文件、任意 URL 或 Header，令牌不进入 URL、Storage 或日志。
+- `downloadBackendResource` 在 Browser 中使用普通下载，在 Electron 中只把匹配设备、配置、文件、AC、MESH、Online MR 和网络工具既有 Artifact 路由的安全相对 API 描述交给 main；普通 `/api` 路由不在白名单。Renderer 可回传本会话 `chooseSavePath` 产生的目标路径以避免重复弹窗，main 必须重新验证内存授权，任意路径仍被拒绝。Main 会保存选择时的目标快照，并在下载开始和提交最终文件前复验；目标被其他进程创建、替换、改成目录或改变时拒绝覆盖并要求重新选择位置。main 使用当前动态后端和请求头令牌流式写同目录临时文件，成功后安全替换，并拒绝用户把最终文件改成不同实际扩展。Renderer 不接收完整文件、任意 URL 或 Header，令牌不进入 URL、Storage 或日志。
 - Browser Adapter 启动原生下载后返回 `started`；Electron 只有保存完成才返回 `saved`，原生保存对话框取消返回 `cancelled`，HTTP、网络、文件或退出中止返回 `failed` 并清理 `.part`。
 - Electron 退出先关闭下载入口、取消并等待在途流完成清理；保存对话框仍打开时也不会在退出开始后创建新下载。随后 Main 请求 Python 停止，等待 Uvicorn 退出后的 `shutdown_ack`，再发送 `exit`；全部受管清理结束后才退出 Electron。
 - 后续 `openArtifact` 必须使用受控 `artifact_id` 解析，不得把当前临时路径授权扩大为任意业务路径接口。

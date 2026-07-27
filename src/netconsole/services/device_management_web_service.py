@@ -413,6 +413,7 @@ class DeviceManagementWebService:
                 for group in groups
                 if group.id is not None
             ],
+            site_name=site,
             total=total,
             page=selected_page,
             page_size=page_size,
@@ -1197,6 +1198,16 @@ class DeviceManagementWebService:
     ) -> DeviceTaskReferenceDTO:
         site = self.current_site_id()
         filters = self._export_filters(payload)
+        selected_device_uuids = (
+            self._unique_ids(payload.device_uuids) if payload.device_uuids else []
+        )
+        export_scope = payload.export_scope or (
+            "selected" if selected_device_uuids else "filtered_all"
+        )
+        if export_scope == "selected" and not selected_device_uuids:
+            raise ValueError("导出已选设备时至少需要一个设备 UUID")
+        if export_scope == "filtered_all":
+            selected_device_uuids = []
         return self._start_managed_device_csv_export(
             site=site,
             job_type="device_csv",
@@ -1207,9 +1218,8 @@ class DeviceManagementWebService:
                 "db_path": str(self.paths.site_db_path(site)),
                 "site_name": site,
                 "filters": filters,
-                "selected_device_uuids": self._unique_ids(payload.device_uuids)
-                if payload.device_uuids
-                else [],
+                "export_scope": export_scope,
+                "selected_device_uuids": selected_device_uuids,
                 "omit_credentials": not payload.include_credentials,
             },
             start_failure_message="设备表格导出任务启动失败",

@@ -80,6 +80,7 @@ from netconsole.services.job_center.task_application_service import (
     TaskApplicationService,
 )
 from netconsole.services.online_mr.errors import OnlineMrWebControlError
+from netconsole.services.export.common_exporters import export_device_csv
 
 
 class _CapturingProcessAdapter:
@@ -2511,6 +2512,81 @@ def test_device_export_production_result_separates_physical_and_display_names(
     ]
     assert int(downloaded.headers["content-length"]) == result.size_bytes
     assert downloaded.headers["content-type"] == "text/csv; charset=utf-8"
+
+
+def test_device_csv_explicit_scope_exports_100_filtered_and_exactly_4_selected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, service, _adapter, devices, _facts, mr, sw = _fixture(tmp_path)
+    created = [mr, sw]
+    for index in range(98):
+        created.append(
+            devices.create(
+                Device(
+                    name=f"设备-{index + 3:03d}",
+                    primary_address=f"198.18.{index // 250}.{index % 250 + 1}",
+                    device_vendor="H3C" if index % 2 == 0 else "ZTE",
+                    device_type="SW",
+                )
+            )
+        )
+
+    captured: list[dict[str, object]] = []
+
+    def capture_export(**values):
+        captured.append(dict(values["job_payload"]))
+        return DeviceTaskReferenceDTO(
+            task_id=f"captured-export-{len(captured)}",
+            task_status="PENDING",
+            action="export_csv",
+        )
+
+    monkeypatch.setattr(service, "_start_managed_device_csv_export", capture_export)
+
+    filtered = client.post(
+        "/api/device-management/exports/csv",
+        json={
+            "export_scope": "filtered_all",
+            "device_uuids": [str(created[0].device_uuid)],
+        },
+    )
+    assert filtered.status_code == 202, filtered.text
+    filtered_payload = captured[-1]
+    assert filtered_payload["export_scope"] == "filtered_all"
+    assert filtered_payload["selected_device_uuids"] == []
+
+    selected_uuids = [str(device.device_uuid) for device in created[10:14]]
+    selected = client.post(
+        "/api/device-management/exports/csv",
+        json={"export_scope": "selected", "device_uuids": selected_uuids},
+    )
+    assert selected.status_code == 202, selected.text
+    selected_payload = captured[-1]
+    assert selected_payload["export_scope"] == "selected"
+    assert selected_payload["selected_device_uuids"] == selected_uuids
+
+    all_path = tmp_path / "all-100.csv"
+    all_count = export_device_csv(all_path, filtered_payload)
+    assert all_count == 100
+    with all_path.open("r", newline="", encoding="utf-8-sig") as handle:
+        assert len(list(csv.reader(handle))) == 101
+
+    selected_path = tmp_path / "selected-4.csv"
+    selected_count = export_device_csv(selected_path, selected_payload)
+    assert selected_count == 4
+    with selected_path.open("r", newline="", encoding="utf-8-sig") as handle:
+        selected_rows = list(csv.reader(handle))
+    assert len(selected_rows) == 5
+    assert {row[0] for row in selected_rows[1:]} == {
+        device.name for device in created[10:14]
+    }
+
+    rejected = client.post(
+        "/api/device-management/exports/csv",
+        json={"export_scope": "selected", "device_uuids": []},
+    )
+    assert rejected.status_code == 422
 
 
 def test_device_template_export_uses_managed_worker_and_empty_import_contract(

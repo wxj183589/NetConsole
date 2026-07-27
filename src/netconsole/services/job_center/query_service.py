@@ -251,7 +251,24 @@ class JobCenterQueryService:
         return conn
 
     def _task_select(self, conn: sqlite3.Connection, *, detail: bool) -> str:
-        result_column = ", task.result_json" if detail else ""
+        result_column = (
+            ", task.result_json"
+            if detail
+            else """
+                , CASE
+                    WHEN task.status = 'COMPLETED'
+                         AND (
+                             task.task_type LIKE '%export%'
+                             OR task.task_type IN (
+                                 'device_diagnostic_download',
+                                 'file_management_download'
+                             )
+                         )
+                    THEN task.result_json
+                    ELSE NULL
+                  END AS artifact_result_json
+            """
+        )
         if self._column_exists(conn, "task_snapshots", "text_integrity"):
             integrity_columns = """
                 task.text_integrity, task.text_integrity_reason,
@@ -294,6 +311,11 @@ class JobCenterQueryService:
 
     def _task_from_row(self, row: dict[str, object], *, include_result: bool = False) -> JobCenterTaskDTO:
         result = self._json_object(row.get("result_json")) if include_result else {}
+        artifact_result = (
+            result
+            if include_result
+            else self._json_object(row.get("artifact_result_json"))
+        )
         status = str(row.get("status") or "UNKNOWN").upper()
         error_summary = redact_web_task_text(row.get("mapping_error_summary") or row.get("error_message") or "")
         error_code = str(row.get("mapping_error_code") or result.get("error_code") or "")
@@ -312,7 +334,14 @@ class JobCenterQueryService:
         cancellable, cancel_reason = self._cancel_capability(
             owner, task_type, status, source, site_name, task_id
         )
-        artifact_download = self._artifact_download(owner, task_type, task_id, site_name, status, result)
+        artifact_download = self._artifact_download(
+            owner,
+            task_type,
+            task_id,
+            site_name,
+            status,
+            artifact_result,
+        )
         text_integrity, text_integrity_reason = self._text_integrity(row)
         return JobCenterTaskDTO(
             id=task_id,
