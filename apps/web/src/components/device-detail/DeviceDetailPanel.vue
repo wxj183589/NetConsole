@@ -33,6 +33,7 @@ import type {
 } from '../../types/deviceManagement'
 import type { ConfigTaskReference } from '../../types/configCollection'
 import { displayInterfaceName } from '../../utils/interfaceName'
+import { formatDeviceVendor } from '../../types/deviceManagement'
 
 type DetailMode = 'drawer' | 'page'
 
@@ -977,7 +978,7 @@ function errorMessage(cause: unknown, fallback: string): string {
               <section class="detail-section">
                 <h3>平台事实</h3>
                 <el-descriptions :column="2" border>
-                  <el-descriptions-item label="厂商">{{ formatValue(overview.platform_facts.vendor) }}</el-descriptions-item>
+                  <el-descriptions-item label="厂商">{{ formatDeviceVendor(overview.platform_facts.vendor) }}</el-descriptions-item>
                   <el-descriptions-item label="角色">{{ formatValue(overview.platform_facts.role) }}</el-descriptions-item>
                   <el-descriptions-item label="平台">{{ formatValue(overview.platform_facts.platform) }}</el-descriptions-item>
                   <el-descriptions-item label="软件版本">{{ formatValue(overview.platform_facts.software_version) }}</el-descriptions-item>

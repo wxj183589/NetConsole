@@ -114,6 +114,14 @@ def identify_device_platform(
         platform = "comware"
         source = "verified_command_profile_selector"
         confidence = "medium"
+    if (
+        platform == "unknown"
+        and vendor_text.casefold() == "zte"
+        and role == "switch"
+    ):
+        platform = "zxr10"
+        source = "vendor_command_profile_selector"
+        confidence = "medium"
 
     return DevicePlatformFacts(
         vendor=vendor_text,

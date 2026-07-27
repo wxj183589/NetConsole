@@ -432,6 +432,8 @@ def export_device_csv(path: Path, payload: Mapping[str, Any], progress: Progress
     from netconsole.repositories.device_repository import DeviceRepository
     from netconsole.services.device_import_export import DeviceImportExportService
 
+    _emit(progress, "prepare_device_csv", 10, 100, "正在读取设备导出参数")
+    _check_cancel(should_cancel)
     path.parent.mkdir(parents=True, exist_ok=True)
     devices_payload = list(payload.get("devices") or [])
     site_name = str(payload.get("site_name") or "")
@@ -441,6 +443,8 @@ def export_device_csv(path: Path, payload: Mapping[str, Any], progress: Progress
         group_repository = DeviceGroupRepository(database, site_name) if site_name else None
         service = DeviceImportExportService(DeviceRepository(database), group_repository)
     else:
+        _emit(progress, "query_device_csv", 30, 100, "正在查询设备清单")
+        _check_cancel(should_cancel)
         source = payload.get("source") if isinstance(payload.get("source"), Mapping) else {}
         db_path = str(payload.get("db_path") or source.get("db_path") or "")
         database = Database(Path(db_path))
@@ -465,27 +469,39 @@ def export_device_csv(path: Path, payload: Mapping[str, Any], progress: Progress
             for device in devices
             if str(device.device_uuid or "").strip() in selected_uuids
         ]
-    _emit(progress, "write_device_csv", 0, len(devices), "正在导出设备 CSV")
+    _emit(progress, "generate_device_csv", 55, 100, "正在生成设备 CSV")
     _check_cancel(should_cancel)
     service.export_csv(
         path, devices, include_sensitive=not bool(payload.get("omit_credentials"))
     )
-    _emit(progress, "write_device_csv", len(devices), len(devices), "设备 CSV 导出完成")
+    _emit(progress, "verify_device_csv", 75, 100, "正在校验设备 CSV")
+    if not path.is_file() or path.stat().st_size <= 0:
+        raise RuntimeError("设备 CSV 写入后为空")
+    _emit(progress, "register_device_csv", 90, 100, "正在注册设备 CSV Artifact")
     return len(devices)
 
 
 def export_device_template_csv(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> int:
-    from netconsole.services.device_import_export import TEMPLATE_EXAMPLE_ROWS, TEMPLATE_FIELDS
+    from netconsole.services.device_import_export import DEVICE_CSV_COLUMNS
 
+    _emit(progress, "prepare_device_template", 10, 100, "正在读取设备模板定义")
+    _check_cancel(should_cancel)
     path.parent.mkdir(parents=True, exist_ok=True)
-    _emit(progress, "write_device_template", 0, len(TEMPLATE_EXAMPLE_ROWS), "正在导出设备模板")
+    _emit(progress, "generate_device_template", 35, 100, "正在生成设备导入模板")
     _check_cancel(should_cancel)
     with path.open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.writer(handle)
-        writer.writerow(TEMPLATE_FIELDS)
-        writer.writerows(TEMPLATE_EXAMPLE_ROWS)
-    _emit(progress, "write_device_template", len(TEMPLATE_EXAMPLE_ROWS), len(TEMPLATE_EXAMPLE_ROWS), "设备模板导出完成")
-    return len(TEMPLATE_EXAMPLE_ROWS)
+        writer.writerow(DEVICE_CSV_COLUMNS)
+    _emit(progress, "verify_device_template", 65, 100, "正在校验设备导入模板")
+    _check_cancel(should_cancel)
+    if not path.read_bytes().startswith(b"\xef\xbb\xbf"):
+        raise RuntimeError("设备导入模板缺少 UTF-8 BOM")
+    with path.open("r", newline="", encoding="utf-8-sig") as handle:
+        rows = list(csv.reader(handle))
+    if rows != [DEVICE_CSV_COLUMNS]:
+        raise RuntimeError("设备导入模板字段校验失败")
+    _emit(progress, "register_device_template", 85, 100, "正在注册模板 Artifact")
+    return 0
 
 
 def export_securecrt_sessions_task(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> dict[str, Any]:

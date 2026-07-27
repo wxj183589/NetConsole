@@ -45,9 +45,26 @@ DEVICE_INVENTORY_MOBILE_ROUTER_COMMAND_SEQUENCE = (
     "display boot-loader",
     "display interface",
 )
+DEVICE_INVENTORY_ZTE_SWITCH_COMMAND_SEQUENCE = (
+    "terminal length 0",
+    "show running-config | include hostname",
+    "show version",
+    "show hardware",
+    "show serial-number",
+    "show interface",
+    "show interface brief",
+    "show optical-inform brief",
+    "show optical-inform detail",
+    "show lldp neighbor brief",
+    "show lldp entry",
+    "show running-config",
+    "show startup-config",
+)
 SAFE_DEVICE_INVENTORY_COLLECT_COMMANDS = frozenset(
     DEVICE_INVENTORY_COLLECT_COMMAND_SEQUENCE
     + DEVICE_INVENTORY_MOBILE_ROUTER_COMMAND_SEQUENCE
+    + DEVICE_INVENTORY_ZTE_SWITCH_COMMAND_SEQUENCE
+    + ("show system-info",)
 )
 
 SAFE_AC_COMMANDS = SAFE_DEVICE_COMMANDS | {
@@ -204,6 +221,7 @@ PROFILE_OPERATION_COMMAND_SEQUENCES = {
     "device.inventory.collect": (
         DEVICE_INVENTORY_COLLECT_COMMAND_SEQUENCE,
         DEVICE_INVENTORY_MOBILE_ROUTER_COMMAND_SEQUENCE,
+        DEVICE_INVENTORY_ZTE_SWITCH_COMMAND_SEQUENCE,
     ),
 }
 
@@ -243,6 +261,7 @@ PIPE_ALLOWLIST = {
     "display ip https | include port",
     "display wlan ap all radio verbose filter bbssid",
     "display current-configuration | include info-center",
+    "show running-config | include hostname",
 }
 DANGEROUS_ALLOWLIST_EXCEPTIONS = {
     "display boot-loader",
@@ -252,6 +271,9 @@ DANGEROUS_ALLOWLIST_EXCEPTIONS = {
     "display transceiver manuinfo interface",
     "display transceiver diagnosis interface",
     "save force",
+    "show interface",
+    "show interface brief",
+    "show startup-config",
 }
 
 

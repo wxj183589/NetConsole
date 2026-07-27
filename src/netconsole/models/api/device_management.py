@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator, model_validator
 
 from netconsole.models.api.common import ApiModel
+from netconsole.models.device import normalize_device_vendor, validate_device_vendor_type
 
 
 DeviceConnectionStatus = Literal[
@@ -223,6 +224,18 @@ class DeviceWriteRequestDTO(ApiModel):
         default_factory=list, max_length=5
     )
 
+    @field_validator("device_vendor", mode="before")
+    @classmethod
+    def normalize_vendor(cls, value: object) -> str:
+        return normalize_device_vendor(value)
+
+    @model_validator(mode="after")
+    def validate_supported_vendor_type(self) -> "DeviceWriteRequestDTO":
+        self.device_vendor, self.device_type = validate_device_vendor_type(
+            self.device_vendor, self.device_type
+        )
+        return self
+
 
 class DeviceFormConnectionTestRequestDTO(DeviceWriteRequestDTO):
     protocol: DeviceConnectionProtocol
@@ -284,6 +297,7 @@ class DeviceTaskReferenceDTO(ApiModel):
     available: bool = False
     sha256: str = ""
     size_bytes: int = 0
+    row_count: int = 0
     message: str = ""
 
 
@@ -304,13 +318,30 @@ class DeviceImportPreviewRequestDTO(ApiModel):
     """CSV preview is multipart upload; browser paths are not accepted."""
 
 
+class DeviceImportErrorDTO(ApiModel):
+    line: int = 0
+    device_name: str = ""
+    field: str = ""
+    raw_value: str = ""
+    message: str
+
+
 class DeviceImportPreviewDTO(ApiModel):
     preview_token: str
     source_name: str
     source_sha256: str
     row_count: int
+    total_rows: int = 0
+    valid_rows: int = 0
+    invalid_rows: int = 0
+    vendor_summary: dict[str, int] = Field(default_factory=dict)
+    device_type_summary: dict[str, int] = Field(default_factory=dict)
+    create_count: int = 0
+    update_count: int = 0
+    conflict_count: int = 0
+    detected_encoding: str = ""
     columns: list[str] = Field(default_factory=list)
-    errors: list[str] = Field(default_factory=list)
+    errors: list[DeviceImportErrorDTO] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     duplicate_rows: list[int] = Field(default_factory=list)
     persistence: Literal["preview_only"] = "preview_only"

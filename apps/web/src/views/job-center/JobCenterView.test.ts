@@ -39,6 +39,7 @@ const platformMocks = vi.hoisted(() => ({
 const routeState = vi.hoisted(() => ({ query: {} as Record<string, string>, path: '', name: undefined as string | undefined }))
 const messageMocks = vi.hoisted(() => ({
   error: vi.fn(),
+  info: vi.fn(),
   success: vi.fn(),
   warning: vi.fn(),
 }))
@@ -239,6 +240,7 @@ function task(id: string): TaskItem {
       artifact_id: `artifact-${id}`,
       display_name: `设备-${id}.xlsx`,
       size_bytes: 42,
+      sha256: 'a'.repeat(64),
       media_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       api_path: `/api/device-management/exports/${id}/download`,
       query: {},
@@ -388,6 +390,10 @@ describe('Job Center saved artifact capability lifecycle', () => {
 
     platformMocks.download.mockResolvedValueOnce({ status: 'saved', capabilityId: 'cap-A' })
     await click(findButton(root, 'Artifact 下载')!)
+    expect(platformMocks.download).toHaveBeenCalledWith(expect.objectContaining({
+      expectedSizeBytes: 42,
+      expectedSha256: 'a'.repeat(64),
+    }))
     await click(findButton(root, '打开文件')!)
     await click(findButton(root, '打开所在目录')!)
     expect(platformMocks.open).toHaveBeenCalledWith('cap-A')
@@ -418,6 +424,12 @@ describe('Job Center saved artifact capability lifecycle', () => {
     platformMocks.download.mockResolvedValueOnce({ status: 'cancelled' })
     await click(findButton(root, 'Artifact 下载')!)
     expect(findButton(root, '打开文件')).toBeUndefined()
+    expect(messageMocks.warning).toHaveBeenCalledWith('Artifact 已生成，但尚未保存到本地。')
+
+    platformMocks.download.mockResolvedValueOnce({ status: 'started' })
+    await click(findButton(root, 'Artifact 下载')!)
+    expect(findButton(root, '打开文件')).toBeUndefined()
+    expect(messageMocks.info).toHaveBeenCalledWith('文件已交由浏览器下载，请在浏览器下载记录中查看。')
 
     platformMocks.download.mockResolvedValueOnce({ status: 'saved' })
     await click(findButton(root, 'Artifact 下载')!)

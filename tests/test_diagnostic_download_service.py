@@ -59,6 +59,37 @@ def test_diagnostic_download_sanitizes_device_name_and_avoids_overwrite(tmp_path
     assert second.read_text(encoding="utf-8") == "second"
 
 
+def test_zte_diagnostic_is_unsupported_without_opening_a_connection(
+    tmp_path, monkeypatch
+):
+    import netconsole.services.diagnostic_download_service as service_module
+
+    called = False
+
+    def unexpected_connection(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("ZTE diagnostic must not open a connection")
+
+    monkeypatch.setattr(
+        service_module.netmiko_connection,
+        "run_netmiko_with_retry",
+        unexpected_connection,
+    )
+    result = DiagnosticDownloadService("demo", PathResolver(tmp_path)).download(
+        Device(
+            name="ZTE-SW",
+            device_vendor="ZTE",
+            device_type="SW",
+            primary_address="203.0.113.20",
+        )
+    )
+
+    assert result.status == "unsupported"
+    assert result.error_message == "当前型号暂未适配诊断包采集"
+    assert called is False
+
+
 def test_batch_diagnostic_download_keeps_failures_isolated():
     devices = [
         Device(id=1, device_uuid=Device.new_uuid(), name="SW-A"),

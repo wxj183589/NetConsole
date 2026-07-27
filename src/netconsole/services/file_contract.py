@@ -11,6 +11,10 @@ from typing import Any, Iterable, Mapping
 
 from netconsole.core.version import APP_VERSION
 from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
+from netconsole.utils.text_encoding import (
+    TEXT_ENCODINGS,
+    decode_bytes_with_fallback,
+)
 
 
 META_SHEET = "_netconsole_meta"
@@ -18,7 +22,6 @@ ZIP_MANIFEST = "_netconsole_manifest.json"
 CSV_META_MARKER = "#NETCONSOLE_META"
 CONTRACT_SCHEMA_VERSION = 1
 SUPPORTED_SCHEMA_VERSIONS = {1}
-TEXT_ENCODINGS = ("utf-8-sig", "utf-8", "gb18030", "gbk")
 _ARTIFACT_MEDIA_TYPES = {
     ".cfg": "text/plain",
     ".conf": "text/plain",
@@ -124,6 +127,7 @@ def validate_csv_import(
     expected_module: str,
     required_headers: Iterable[str],
     allow_legacy: bool = True,
+    allow_header_only: bool = False,
 ) -> ImportValidationResult:
     target = _require_file(path, {".csv"})
     text, encoding = _read_text(target)
@@ -137,7 +141,7 @@ def validate_csv_import(
     if missing:
         raise ImportValidationError(f"缺少必要字段：{', '.join(missing)}")
     data_rows = [row for row in rows[1:] if any(str(value).strip() for value in row)]
-    if not data_rows:
+    if not data_rows and not allow_header_only:
         raise ImportValidationError("文件为空：没有可导入的数据")
     for line_number, row in enumerate(data_rows, start=2):
         if len(row) != len(headers):
@@ -445,12 +449,19 @@ def _require_file(path: str | Path, suffixes: set[str]) -> Path:
 
 def _read_text(path: Path) -> tuple[str, str]:
     data = path.read_bytes()
-    for encoding in TEXT_ENCODINGS:
-        try:
-            return data.decode(encoding), encoding
-        except UnicodeDecodeError:
-            continue
-    raise ImportValidationError("文件已损坏或无法读取：不支持的文本编码")
+    try:
+        decoded = decode_bytes_with_fallback(
+            data,
+            encodings=TEXT_ENCODINGS,
+            replace_on_failure=False,
+            source="csv_import",
+        )
+    except ValueError as exc:
+        attempted = "、".join(TEXT_ENCODINGS)
+        raise ImportValidationError(
+            f"文件编码无法识别；已尝试：{attempted}"
+        ) from exc
+    return decoded.text, decoded.encoding
 
 
 def _find_excel_header(sheet: Any, required: tuple[str, ...]) -> tuple[list[str], int]:

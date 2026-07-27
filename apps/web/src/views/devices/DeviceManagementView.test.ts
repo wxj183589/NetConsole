@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import source from './DeviceManagementView.vue?raw'
+import deviceTypesSource from '../../types/deviceManagement.ts?raw'
 
 describe('Device Management Web view', () => {
   it('fills the route width and gives the device table the remaining window height', () => {
@@ -26,6 +27,9 @@ describe('Device Management Web view', () => {
     expect(source).toContain('DEVICE_TYPE_OPTIONS')
     expect(source).toContain('MR')
     expect(source).toContain('filters.vendor')
+    expect(source).toContain('DEVICE_VENDOR_OPTIONS')
+    expect(deviceTypesSource).toContain("{ value: 'ZTE', label: '中兴 ZTE' }")
+    expect(source).toContain('formatDeviceVendor(row.device_vendor)')
     expect(source).toContain('openDetail(row)')
     expect(source).toContain('detailDeviceUuid.value = item.device_uuid')
     expect(source).not.toContain('getDevice(')
@@ -106,6 +110,11 @@ describe('Device Management Web view', () => {
   it('uses safe file upload and controlled server exports', () => {
     expect(source).toContain('type="file"')
     expect(source).toContain('previewDeviceImport(importFile.value)')
+    expect(source).toContain('importPreview.total_rows')
+    expect(source).toContain('importPreview.valid_rows')
+    expect(source).toContain('importPreview.vendor_summary.ZTE')
+    expect(source).toContain('table-id="device-import-errors"')
+    expect(source).not.toContain('Invalid device_vendor')
     expect(source).toContain('importDuplicateStrategy')
     expect(source).toContain("value=\"reject\"")
     expect(source).toContain("value=\"skip\"")
@@ -117,6 +126,17 @@ describe('Device Management Web view', () => {
     expect(source).not.toContain('file_path')
     expect(source).toContain('startSecureCrtExportWithTemplate')
     expect(source).toContain('accept=".ini"')
+    expect(source).toContain('设备表格导出完成，共 ${task.row_count ?? 0} 台设备')
+    expect(source).not.toContain('handledInteractiveExportTaskIds')
+    expect(source).toContain('localSaveStatuses')
+    expect(source).toContain("'local_save_prompting'")
+    expect(source).toContain("'local_save_cancelled'")
+    expect(source).toContain("'local_save_failed'")
+    expect(source).toContain('saveDeviceCsvArtifact')
+    expect(source).toContain('expectedSizeBytes: task.size_bytes')
+    expect(source).toContain('expectedSha256: task.sha256')
+    expect(source).toContain('设备表格已生成，但尚未保存到本地。')
+    expect(source).toContain('openWindow = true')
     for (const featureId of [
       'web.device_management_write',
       'web.device_management_collect',

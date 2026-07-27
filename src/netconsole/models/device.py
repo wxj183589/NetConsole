@@ -1,11 +1,64 @@
 from __future__ import annotations
 
 from dataclasses import MISSING, dataclass, fields
+from enum import StrEnum
 from uuid import UUID, uuid4
 
 
-DEVICE_VENDORS = ("H3C", "Huawei", "Ruijie", "Cisco", "Other")
+class DeviceVendor(StrEnum):
+    H3C = "H3C"
+    ZTE = "ZTE"
+    HUAWEI = "Huawei"
+    RUIJIE = "Ruijie"
+    CISCO = "Cisco"
+    OTHER = "Other"
+
+
+DEVICE_VENDORS = tuple(vendor.value for vendor in DeviceVendor)
+DEVICE_VENDOR_LABELS = {
+    DeviceVendor.H3C.value: "新华三 H3C",
+    DeviceVendor.ZTE.value: "中兴 ZTE",
+    DeviceVendor.HUAWEI.value: "华为 Huawei",
+    DeviceVendor.RUIJIE.value: "锐捷 Ruijie",
+    DeviceVendor.CISCO.value: "思科 Cisco",
+    DeviceVendor.OTHER.value: "其他",
+}
+_DEVICE_VENDOR_ALIASES = {
+    "h3c": DeviceVendor.H3C.value,
+    "新华三": DeviceVendor.H3C.value,
+    "zte": DeviceVendor.ZTE.value,
+    "中兴": DeviceVendor.ZTE.value,
+    "中兴通讯": DeviceVendor.ZTE.value,
+    "huawei": DeviceVendor.HUAWEI.value,
+    "华为": DeviceVendor.HUAWEI.value,
+    "ruijie": DeviceVendor.RUIJIE.value,
+    "锐捷": DeviceVendor.RUIJIE.value,
+    "cisco": DeviceVendor.CISCO.value,
+    "思科": DeviceVendor.CISCO.value,
+    "other": DeviceVendor.OTHER.value,
+    "其他": DeviceVendor.OTHER.value,
+}
 DEVICE_TYPES = ("AC", "SW", "FW", "Route", "Cloud-AP", "FAT-AP", "MR", "Other")
+
+
+def normalize_device_vendor(value: object) -> str:
+    text = str(value or "").strip()
+    normalized = _DEVICE_VENDOR_ALIASES.get(text.casefold())
+    if normalized is None:
+        raise ValueError(f"不支持的设备厂商：{text or '空值'}")
+    return normalized
+
+
+def validate_device_vendor_type(vendor: object, device_type: object) -> tuple[str, str]:
+    normalized_vendor = normalize_device_vendor(vendor)
+    normalized_type = str(device_type or "").strip()
+    if normalized_type not in DEVICE_TYPES:
+        raise ValueError(f"不支持的设备类型：{normalized_type or '空值'}")
+    if normalized_vendor == DeviceVendor.ZTE.value and normalized_type != "SW":
+        if normalized_type == "AC":
+            raise ValueError("当前版本尚未适配 ZTE 无线控制器")
+        raise ValueError("当前版本仅适配 ZTE 交换机")
+    return normalized_vendor, normalized_type
 
 
 @dataclass(init=False)
@@ -74,6 +127,8 @@ class Device:
             kwargs["port"] = kwargs.get("ssh_port") or kwargs.get("telnet_port") or 22
         if kwargs.get("device_type") == "FIT-AP":
             kwargs["device_type"] = "Cloud-AP"
+        if "device_vendor" in kwargs:
+            kwargs["device_vendor"] = normalize_device_vendor(kwargs["device_vendor"])
         field_names = set(self.field_names())
         unknown = set(kwargs) - field_names
         if unknown:

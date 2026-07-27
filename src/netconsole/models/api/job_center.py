@@ -9,6 +9,7 @@ class JobCenterArtifactDTO(ApiModel):
     artifact_id: str
     display_name: str
     size_bytes: int
+    sha256: str = ""
     media_type: str
     api_path: str
     query: dict[str, str] = Field(default_factory=dict)

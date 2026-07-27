@@ -628,6 +628,34 @@ def test_orphaned_local_task_is_reconciled_as_failed(tmp_path: Path) -> None:
     assert "非正常中断" in restored.error_message
 
 
+def test_orphaned_local_export_reports_worker_runtime_lost(tmp_path: Path) -> None:
+    repository = TaskRepository(PathResolver(tmp_path).site_tasks_db_path("demo"))
+    now = utc_now_iso()
+    repository.save(
+        TaskSnapshot(
+            task_id="orphan-template-export",
+            task_type="web_export_device_template_csv",
+            task_name="设备导入模板",
+            status=TaskState.RUNNING,
+            created_time=now,
+            updated_time=now,
+            source="local",
+            owner_pid=999999,
+        )
+    )
+
+    changed = repository.reconcile_orphaned_local_tasks(lambda _pid: False)
+
+    assert [item.task_id for item in changed] == ["orphan-template-export"]
+    restored = repository.get("orphan-template-export")
+    assert restored is not None
+    assert restored.status is TaskState.FAILED
+    assert restored.finished_time
+    assert restored.message == "导出任务执行进程已丢失，请重新导出"
+    assert restored.error_message == "导出任务执行进程已丢失，请重新导出"
+    assert restored.result["error_code"] == "WORKER_RUNTIME_LOST"
+
+
 def test_task_restores_while_owner_process_is_alive(tmp_path: Path) -> None:
     first = _service(tmp_path)
     first.prepare(BackgroundJob(job_id="running", task_type="demo_task", params={"task_name": "运行任务"}))

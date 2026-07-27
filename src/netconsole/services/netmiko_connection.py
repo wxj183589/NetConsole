@@ -12,6 +12,9 @@ from typing import Any, Callable, Iterator, TypeVar
 from netconsole.core import app_logger
 from netconsole.models.device import Device
 from netconsole.services.connection_manager import ConnectionManager
+from netconsole.services.device_command_profile_service import (
+    resolve_device_capability_commands,
+)
 from netconsole.services.ssh_tunnel import TunnelManager, TunnelSession
 from netconsole.utils.text_encoding import clean_h3c_device_text, safe_decode
 
@@ -22,10 +25,16 @@ logging.getLogger("paramiko.transport").setLevel(logging.CRITICAL)
 
 H3C_NETMIKO_DEVICE_TYPE = "hp_comware"
 H3C_TELNET_NETMIKO_DEVICE_TYPE = "hp_comware_telnet"
+ZTE_NETMIKO_DEVICE_TYPE = "zte_zxros"
+ZTE_TELNET_NETMIKO_DEVICE_TYPE = "zte_zxros_telnet"
 H3C_DEFAULT_ENCODING = "gb2312"
 H3C_FALLBACK_ENCODING = "utf-8"
-PROMPT_RE = re.compile(r"(?m)(<[^<>\r\n]+>|\[[^\[\]\r\n]+\])\s*$")
-PROMPT_SYSNAME_PATTERN = re.compile(r"^\s*[<\[]([^<>\[\]]+)[>\]]\s*$")
+PROMPT_RE = re.compile(
+    r"(?m)(<[^<>\r\n]+>|\[[^\[\]\r\n]+\]|[A-Za-z0-9_.:/()-]{1,128}[>#])\s*$"
+)
+PROMPT_SYSNAME_PATTERN = re.compile(
+    r"^\s*(?:[<\[]([^<>\[\]]+)[>\]]|([A-Za-z0-9_.:/()-]{1,128})[>#])\s*$"
+)
 PROMPT_TIMESTAMP_PREFIX_RE = re.compile(r"^\s*\[\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?\]\s*")
 INVALID_PROMPT_CANDIDATES = {
     "sc d",
@@ -33,6 +42,8 @@ INVALID_PROMPT_CANDIDATES = {
     "screen-length d",
     "display version",
     "display current-configuration | include sysname",
+    "terminal length 0",
+    "show version",
     "quit",
     "return",
     "password:",
@@ -194,10 +205,13 @@ def test_device_connection(
                 )
                 prompt = _safe_find_prompt(connection)
                 screen_output = ""
+                session_prepare = resolve_device_capability_commands(
+                    device, "session_prepare"
+                )[0]
                 try:
                     screen_output = safe_send_command(
                         connection,
-                        "screen-length disable",
+                        session_prepare,
                         read_timeout=10,
                         strip_prompt=False,
                         strip_command=False,
@@ -209,7 +223,15 @@ def test_device_connection(
                 prompt = _safe_find_prompt(connection) or extract_cli_prompt(screen_output) or prompt
                 message = f"{prepared.protocol.upper()} 连接成功"
                 try:
-                    safe_send_command(connection, "display clock", read_timeout=10, encoding=prepared.encoding)
+                    verification = resolve_device_capability_commands(
+                        device, "session_verify"
+                    )[0]
+                    safe_send_command(
+                        connection,
+                        verification,
+                        read_timeout=10,
+                        encoding=prepared.encoding,
+                    )
                 except Exception:
                     message = f"{prepared.protocol.upper()} 连接成功，但会话校验命令未返回预期结果"
                 result = ConnectionTestResult(
@@ -356,12 +378,21 @@ def choose_connection_target(device: Device) -> ConnectionTarget | None:
 
 def connection_targets(device: Device) -> list[ConnectionTarget]:
     targets: list[ConnectionTarget] = []
+    vendor = str(device.device_vendor or "H3C").strip().casefold()
+    ssh_device_type = (
+        ZTE_NETMIKO_DEVICE_TYPE if vendor == "zte" else H3C_NETMIKO_DEVICE_TYPE
+    )
+    telnet_device_type = (
+        ZTE_TELNET_NETMIKO_DEVICE_TYPE
+        if vendor == "zte"
+        else H3C_TELNET_NETMIKO_DEVICE_TYPE
+    )
     for attempt in ConnectionManager().iter_attempts(device):
         if attempt.protocol.casefold() == "ssh":
             targets.append(
                 ConnectionTarget(
                     protocol="SSH",
-                    device_type=H3C_NETMIKO_DEVICE_TYPE,
+                    device_type=ssh_device_type,
                     host=attempt.host,
                     port=attempt.port,
                     username=attempt.username,
@@ -376,7 +407,7 @@ def connection_targets(device: Device) -> list[ConnectionTarget]:
             targets.append(
                 ConnectionTarget(
                     protocol="Telnet",
-                    device_type=H3C_TELNET_NETMIKO_DEVICE_TYPE,
+                    device_type=telnet_device_type,
                     host=attempt.host,
                     port=attempt.port,
                     username=attempt.username,
@@ -529,7 +560,7 @@ def extract_sysname_from_prompt(prompt: str) -> str | None:
     match = PROMPT_SYSNAME_PATTERN.match(prompt)
     if not match:
         return None
-    sysname = match.group(1).strip()
+    sysname = (match.group(1) or match.group(2) or "").strip()
     return sysname or None
 
 

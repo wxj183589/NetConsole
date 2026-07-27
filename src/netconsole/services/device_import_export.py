@@ -6,7 +6,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
-from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS, Device
+from netconsole.models.device import (
+    Device,
+    normalize_device_vendor,
+    validate_device_vendor_type,
+)
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.utils.text_encoding import FILE_ENCODING_ERROR, TEXT_ENCODINGS
@@ -37,7 +41,7 @@ LEGACY_TEMPLATE_FIELDS = [
     "备注",
 ]
 
-TEMPLATE_FIELDS = [
+DEVICE_CSV_COLUMNS = [
     *LEGACY_TEMPLATE_FIELDS[:-1],
     "SNMP启用",
     "SNMPv1",
@@ -48,6 +52,7 @@ TEMPLATE_FIELDS = [
     "SNMP重试",
     LEGACY_TEMPLATE_FIELDS[-1],
 ]
+TEMPLATE_FIELDS = DEVICE_CSV_COLUMNS
 
 TEMPLATE_EXAMPLE_ROWS = [
     ["核心交换机-示例", "192.168.1.1", "", "SSH", "22", "admin", "Admin@123", "H3C", "SW", "COCC", "控制中心", "否", "", "", "", "", "", "", "", "", "是", "否", "是", "161", "public", "2000", "1", "SSH设备示例"],
@@ -94,7 +99,7 @@ TEMPLATE_FIELD_MAP = {
     "备注": "remark",
 }
 
-EXPORT_FIELDS = list(TEMPLATE_FIELDS)
+EXPORT_FIELDS = DEVICE_CSV_COLUMNS
 SENSITIVE_EXPORT_FIELDS = {
     "password",
     "ssh_password",
@@ -109,10 +114,21 @@ CSV_ENCODING_ERROR = FILE_ENCODING_ERROR
 
 
 def make_device_export_filename(site_name: str, now: datetime | None = None) -> str:
-    timestamp = (now or datetime.now()).strftime("%Y-%m-%d-%H%M")
-    safe_site_name = "".join("_" if char in '<>:"/\\|?*' or ord(char) < 32 else char for char in site_name)
-    safe_site_name = safe_site_name.strip().strip(".") or "site"
-    return f"{safe_site_name}_{timestamp}.csv"
+    timestamp = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    safe_site_name = _safe_site_filename_stem(site_name)
+    return f"{safe_site_name}-设备表-{timestamp}.csv"
+
+
+def make_device_template_filename(site_name: str) -> str:
+    return f"{_safe_site_filename_stem(site_name)}-设备导入模板.csv"
+
+
+def _safe_site_filename_stem(site_name: str) -> str:
+    safe_site_name = "".join(
+        "_" if char in '<>:"/\\|?*' or ord(char) < 32 else char
+        for char in str(site_name or "")
+    )
+    return safe_site_name.strip().strip(".") or "site"
 
 
 @dataclass(frozen=True)
@@ -121,6 +137,31 @@ class ImportResult:
     skipped: int
     errors: list[str]
     groups_created: int = 0
+
+
+@dataclass(frozen=True)
+class ImportPreviewError:
+    line: int
+    device_name: str
+    field: str
+    raw_value: str
+    message: str
+
+
+@dataclass(frozen=True)
+class ImportPreviewResult:
+    total_rows: int
+    valid_rows: int
+    invalid_rows: int
+    vendor_summary: dict[str, int]
+    device_type_summary: dict[str, int]
+    create_count: int
+    update_count: int
+    conflict_count: int
+    errors: tuple[ImportPreviewError, ...]
+    columns: tuple[str, ...]
+    duplicate_rows: tuple[int, ...]
+    detected_encoding: str
 
 
 class DeviceImportExportService:
@@ -135,6 +176,7 @@ class DeviceImportExportService:
                 expected_module="devices",
                 required_headers=LEGACY_TEMPLATE_FIELDS,
                 allow_legacy=True,
+                allow_header_only=True,
             )
         except ImportValidationError as exc:
             if "编码" in str(exc):
@@ -171,6 +213,7 @@ class DeviceImportExportService:
                 expected_module="devices",
                 required_headers=LEGACY_TEMPLATE_FIELDS,
                 allow_legacy=True,
+                allow_header_only=True,
             )
         except ImportValidationError as exc:
             if "编码" in str(exc):
@@ -268,6 +311,131 @@ class DeviceImportExportService:
             groups_created=groups_created,
         )
 
+    def preview_csv(self, path: Path) -> ImportPreviewResult:
+        rows, _metadata, detected_encoding = read_validated_csv_rows(Path(path))
+        if not rows:
+            raise ValueError("文件为空")
+        columns = tuple(str(value).strip() for value in rows[0])
+        mode = self._detect_mode(list(columns))
+        source_rows = [
+            (line, values)
+            for line, values in enumerate(rows[1:], start=2)
+            if any(str(value).strip() for value in values)
+        ]
+        existing_addresses = {
+            str(device.primary_address or "").strip().casefold()
+            for device in self.repository.list()
+            if str(device.primary_address or "").strip()
+        }
+        seen_addresses: set[str] = set()
+        errors: list[ImportPreviewError] = []
+        duplicate_rows: list[int] = []
+        vendor_summary: dict[str, int] = {}
+        device_type_summary: dict[str, int] = {}
+        valid_rows = 0
+
+        for line, values in source_rows:
+            mapped = self._map_row(list(columns), values, mode)
+            device_name = str(mapped.get("name") or "")
+            vendor_raw = str(mapped.get("device_vendor") or "H3C").strip()
+            try:
+                summarized_vendor = normalize_device_vendor(vendor_raw)
+            except ValueError:
+                summarized_vendor = ""
+            summarized_type = str(mapped.get("device_type") or "SW").strip()
+            if summarized_vendor:
+                vendor_summary[summarized_vendor] = (
+                    vendor_summary.get(summarized_vendor, 0) + 1
+                )
+            if summarized_type:
+                device_type_summary[summarized_type] = (
+                    device_type_summary.get(summarized_type, 0) + 1
+                )
+            if len(values) != len(columns):
+                errors.append(
+                    ImportPreviewError(
+                        line,
+                        device_name,
+                        "列数量",
+                        str(len(values)),
+                        f"本行共有 {len(values)} 列，表头共有 {len(columns)} 列",
+                    )
+                )
+                continue
+            error = self._preview_row_error(line, mapped, seen_addresses)
+            if error is not None:
+                errors.append(error)
+                continue
+            valid_rows += 1
+            address = str(mapped.get("primary_address") or "").strip().casefold()
+            if address in existing_addresses:
+                duplicate_rows.append(line)
+
+        conflict_count = len(duplicate_rows)
+        return ImportPreviewResult(
+            total_rows=len(source_rows),
+            valid_rows=valid_rows,
+            invalid_rows=len(errors),
+            vendor_summary=vendor_summary,
+            device_type_summary=device_type_summary,
+            create_count=max(0, valid_rows - conflict_count),
+            update_count=0,
+            conflict_count=conflict_count,
+            errors=tuple(errors),
+            columns=columns,
+            duplicate_rows=tuple(duplicate_rows),
+            detected_encoding=detected_encoding,
+        )
+
+    def _preview_row_error(
+        self,
+        line: int,
+        payload: dict[str, object | None],
+        seen_addresses: set[str],
+    ) -> ImportPreviewError | None:
+        device_name = str(payload.get("name") or "")
+        if not device_name:
+            return ImportPreviewError(line, "", "设备名称", "", "设备名称必填")
+        address = str(payload.get("primary_address") or "").strip()
+        if not address:
+            return ImportPreviewError(line, device_name, "主用地址", "", "主用地址必填")
+        address_key = address.casefold()
+        if address_key in seen_addresses:
+            return ImportPreviewError(
+                line, device_name, "主用地址", address, "主用地址在 CSV 中重复"
+            )
+        vendor_raw = str(payload.get("device_vendor") or "H3C").strip()
+        try:
+            vendor = normalize_device_vendor(vendor_raw)
+        except ValueError as exc:
+            return ImportPreviewError(
+                line, device_name, "厂商", vendor_raw, str(exc)
+            )
+        device_type = str(payload.get("device_type") or "SW").strip()
+        try:
+            vendor, device_type = validate_device_vendor_type(vendor, device_type)
+        except ValueError as exc:
+            return ImportPreviewError(
+                line, device_name, "设备类型", device_type, str(exc)
+            )
+        payload["device_vendor"] = vendor
+        payload["device_type"] = device_type
+        compact = {
+            key: value
+            for key, value in payload.items()
+            if value is not None and key != "group_name"
+        }
+        try:
+            self._apply_defaults(compact)
+            self._validate_payload(compact)
+        except (TypeError, ValueError) as exc:
+            return ImportPreviewError(
+                line, device_name, "", "", str(exc) or "设备字段校验失败"
+            )
+        payload.update(compact)
+        seen_addresses.add(address_key)
+        return None
+
     def _validate_all_rows(self, rows: list[tuple[int, dict[str, object | None]]]) -> None:
         seen_addresses: set[str] = set()
         for line_number, payload in rows:
@@ -295,25 +463,24 @@ class DeviceImportExportService:
     ) -> None:
         devices = list(devices if devices is not None else self.repository.list())
         group_names = self._group_names_by_id()
-        fields = [
-            field
-            for field in EXPORT_FIELDS
-            if include_sensitive
-            or TEMPLATE_FIELD_MAP[field] not in SENSITIVE_EXPORT_FIELDS
-        ]
         with Path(path).open("w", newline="", encoding="utf-8-sig") as file:
             writer = csv.writer(file)
-            writer.writerow(fields)
+            writer.writerow(DEVICE_CSV_COLUMNS)
             for device in devices:
                 writer.writerow(
-                    [self._export_value(device, field, group_names) for field in fields]
+                    [
+                        ""
+                        if not include_sensitive
+                        and TEMPLATE_FIELD_MAP[field] in SENSITIVE_EXPORT_FIELDS
+                        else self._export_value(device, field, group_names)
+                        for field in DEVICE_CSV_COLUMNS
+                    ]
                 )
 
     def export_template_csv(self, path: Path) -> None:
         with Path(path).open("w", newline="", encoding="utf-8-sig") as file:
             writer = csv.writer(file)
-            writer.writerow(TEMPLATE_FIELDS)
-            writer.writerows(TEMPLATE_EXAMPLE_ROWS)
+            writer.writerow(DEVICE_CSV_COLUMNS)
 
     def _group_names_by_id(self) -> dict[int, str]:
         if self.group_repository is None:
@@ -378,6 +545,9 @@ class DeviceImportExportService:
         payload.setdefault("device_type", "SW")
         if payload.get("device_type") == "FIT-AP":
             payload["device_type"] = "Cloud-AP"
+        payload["device_vendor"], payload["device_type"] = validate_device_vendor_type(
+            payload["device_vendor"], payload["device_type"]
+        )
         payload.setdefault("ssh_enabled", 1)
         payload.setdefault("ssh_port", 22)
         payload.setdefault("telnet_enabled", 0)
@@ -415,10 +585,9 @@ class DeviceImportExportService:
             raise ValueError(f"Invalid device_uuid: {device_uuid}")
         if device_uuid is not None and self.repository.exists_by_uuid(str(device_uuid)):
             raise ValueError(f"Duplicate device_uuid: {device_uuid}")
-        if payload["device_vendor"] not in DEVICE_VENDORS:
-            raise ValueError(f"Invalid device_vendor: {payload['device_vendor']}")
-        if payload["device_type"] not in DEVICE_TYPES:
-            raise ValueError(f"Invalid device_type: {payload['device_type']}")
+        payload["device_vendor"], payload["device_type"] = validate_device_vendor_type(
+            payload["device_vendor"], payload["device_type"]
+        )
         for field in ("ssh_enabled", "telnet_enabled", "snmp_enabled", "snmp_v1_enabled", "snmp_v2c_enabled", "tunnel_enabled", "tunnel1_enabled", "tunnel2_enabled"):
             if field not in payload:
                 continue

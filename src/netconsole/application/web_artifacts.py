@@ -201,6 +201,10 @@ class WebArtifactStore:
                 raise WebArtifactError("报告输出不存在或不是普通文件")
             digest, size = self._digest(path)
             manifest.update(completed=True, sha256=digest, size_bytes=size)
+            if isinstance(task.result, dict) and "row_count" in task.result:
+                manifest["row_count"] = max(
+                    0, int(task.result.get("row_count") or 0)
+                )
             self._write_manifest(reservation.site_id, reservation.artifact_id, manifest)
             result = self._safe_task_result(manifest)
             self.task_service.finalize_artifact_result(
@@ -210,6 +214,15 @@ class WebArtifactStore:
                 source=reservation.task_source,
                 task_type=reservation.task_type,
                 result=result,
+                message=(
+                    "设备导入模板生成完成"
+                    if reservation.task_type == "web_export_device_template_csv"
+                    else (
+                        "设备表格完整性校验完成"
+                        if reservation.source == "device_csv_export"
+                        else "报告完整性校验完成"
+                    )
+                ),
             )
             return manifest
         except WebArtifactError as exc:
@@ -432,7 +445,7 @@ class WebArtifactStore:
 
     @staticmethod
     def _safe_task_result(manifest: dict[str, object]) -> dict[str, object]:
-        return {
+        result = {
             "artifact_id": str(manifest.get("artifact_id") or ""),
             "artifact_source": str(manifest.get("source") or ""),
             "artifact_type": str(manifest.get("artifact_type") or ""),
@@ -442,6 +455,9 @@ class WebArtifactStore:
             "sha256": str(manifest.get("sha256") or ""),
             "size_bytes": int(manifest.get("size_bytes") or 0),
         }
+        if "row_count" in manifest:
+            result["row_count"] = max(0, int(manifest.get("row_count") or 0))
+        return result
 
     def _reject_task(self, reservation: ReservedWebArtifact, error_message: str) -> None:
         self.task_service.reject_artifact_result(
@@ -500,6 +516,7 @@ class WebArtifactStore:
             "ac_extension_export": self.paths.trackside_ap_outputs_dir(site_id),
             "ac_omnipeek_export": self.paths.trackside_ap_outputs_dir(site_id),
             "command_reference_export": self.paths.site_files_dir(site_id) / "command_reference",
+            "device_csv_export": self.paths.site_files_dir(site_id) / "web_artifacts",
             "online_mr_report": self.paths.online_mr_root(site_id),
             "mesh_analysis_report": self.paths.site_mesh_root(site_id),
             "mesh_link_detail_export": self.paths.site_mesh_root(site_id),

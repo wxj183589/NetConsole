@@ -19,6 +19,8 @@ import uuid
 from threading import RLock
 
 from netconsole.application.desktop import DesktopActionService, RegisteredLaunch
+from netconsole.application.web_artifacts import WebArtifactError, WebArtifactStore
+from netconsole.application.web_export_process_adapter import WebExportProcessAdapter
 from netconsole.core import app_logger
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
@@ -56,6 +58,7 @@ from netconsole.models.api.device_management import (
     DeviceGroupDTO,
     DeviceGroupRequestDTO,
     DeviceImportConfirmRequestDTO,
+    DeviceImportErrorDTO,
     DeviceImportPreviewDTO,
     DeviceSecureCrtExportRequestDTO,
     DeviceTaskBatchDTO,
@@ -74,7 +77,7 @@ from netconsole.models.api.device_detail import (
     DeviceHistoryPageDTO,
     DeviceHistoryRecordDTO,
 )
-from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS, Device
+from netconsole.models.device import Device, validate_device_vendor_type
 from netconsole.models.device_detail import DeviceOperationTask
 from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TaskState
@@ -84,7 +87,11 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.config_lifecycle_service import safe_artifact_display_name
 from netconsole.services.device_group_service import DeviceGroupService
-from netconsole.services.device_import_export import DeviceImportExportService
+from netconsole.services.device_import_export import (
+    DeviceImportExportService,
+    make_device_export_filename,
+    make_device_template_filename,
+)
 from netconsole.services.device_connection_preflight import (
     DeviceConnectionPreflightError,
     credential_status_message,
@@ -141,12 +148,22 @@ DEVICE_TERMINAL_ACTION_IDS = {
 }
 EXPORT_TASK_TYPES = frozenset(
     {
+        "web_export_device_csv",
+        "web_export_device_template_csv",
         "device_export_device_csv",
         "device_export_device_template_csv",
         "device_export_securecrt_sessions",
     }
 )
+MANAGED_DEVICE_CSV_TASK_TYPE = "web_export_device_csv"
+MANAGED_DEVICE_TEMPLATE_CSV_TASK_TYPE = "web_export_device_template_csv"
+MANAGED_DEVICE_CSV_TASK_TYPES = frozenset(
+    {MANAGED_DEVICE_CSV_TASK_TYPE, MANAGED_DEVICE_TEMPLATE_CSV_TASK_TYPE}
+)
+MANAGED_DEVICE_CSV_ARTIFACT_SOURCE = "device_csv_export"
 _DEVICE_EXPORT_DISPLAY_NAMES = {
+    "web_export_device_csv": ("设备清单", ".csv"),
+    "web_export_device_template_csv": ("设备导入模板", ".csv"),
     "device_export_device_csv": ("设备清单", ".csv"),
     "device_export_device_template_csv": ("设备导入模板", ".csv"),
     "device_export_securecrt_sessions": ("SecureCRT会话", ".zip"),
@@ -226,6 +243,8 @@ class DeviceManagementWebService:
         desktop_action_service: DesktopActionService,
         site_name: str | None = None,
         process_adapter: LocalProcessAdapter | None = None,
+        export_adapter: WebExportProcessAdapter | None = None,
+        artifact_store: WebArtifactStore | None = None,
         device_operation_service: DeviceInventoryOperationService | None = None,
     ) -> None:
         self.paths = paths
@@ -233,6 +252,8 @@ class DeviceManagementWebService:
         self.desktop_action_service = desktop_action_service
         self.site_name = site_name
         self.process_adapter = process_adapter or LocalProcessAdapter(task_service)
+        self.export_adapter = export_adapter or WebExportProcessAdapter(task_service)
+        self.artifact_store = artifact_store or WebArtifactStore(paths, task_service)
         self.device_operation_service = device_operation_service
         self._start_lock = RLock()
         self._mutation_lock = RLock()
@@ -779,42 +800,57 @@ class DeviceManagementWebService:
         self._cleanup_expired_import_previews(site)
         source_name = self._validate_upload_filename(filename)
         staged_path, source_sha256 = self._stage_csv_upload(site, source_name, stream)
-        errors: list[str] = []
+        errors: list[DeviceImportErrorDTO] = []
         warnings: list[str] = []
         columns: list[str] = []
         duplicate_rows: list[int] = []
         row_count = 0
-        mapped_rows: list[tuple[int, dict[str, object | None]]] = []
+        total_rows = 0
+        valid_rows = 0
+        invalid_rows = 0
+        vendor_summary: dict[str, int] = {}
+        device_type_summary: dict[str, int] = {}
+        create_count = 0
+        update_count = 0
+        conflict_count = 0
+        detected_encoding = ""
         try:
             repository, groups, _ = self._repositories(site)
             importer = DeviceImportExportService(repository, groups)
-            rows = importer._read_csv_rows(staged_path)
-            if rows:
-                columns = [str(value).strip() for value in rows[0]]
-                mode = importer._detect_mode(columns)
-                mapped_rows = [
-                    (line, importer._map_row(columns, values, mode))
-                    for line, values in enumerate(rows[1:], start=2)
-                ]
-                importer._validate_all_rows(mapped_rows)
-                row_count = len(mapped_rows)
-                existing_addresses = {
-                    str(device.primary_address or "").strip().casefold()
-                    for device in importer.repository.list()
-                    if str(device.primary_address or "").strip()
-                }
-                duplicate_rows = [
-                    line
-                    for line, row in mapped_rows
-                    if str(row.get("primary_address") or "").strip().casefold()
-                    in existing_addresses
-                ]
-                if duplicate_rows:
-                    warnings.append(
-                        f"有 {len(duplicate_rows)} 行主用地址已存在，请选择重复处理策略"
-                    )
+            preview = importer.preview_csv(staged_path)
+            columns = list(preview.columns)
+            row_count = preview.total_rows
+            total_rows = preview.total_rows
+            valid_rows = preview.valid_rows
+            invalid_rows = preview.invalid_rows
+            vendor_summary = dict(preview.vendor_summary)
+            device_type_summary = dict(preview.device_type_summary)
+            create_count = preview.create_count
+            update_count = preview.update_count
+            conflict_count = preview.conflict_count
+            detected_encoding = preview.detected_encoding
+            duplicate_rows = list(preview.duplicate_rows)
+            errors = [
+                DeviceImportErrorDTO(
+                    line=item.line,
+                    device_name=item.device_name,
+                    field=item.field,
+                    raw_value=item.raw_value,
+                    message=item.message,
+                )
+                for item in preview.errors
+            ]
+            if duplicate_rows:
+                warnings.append(
+                    f"有 {len(duplicate_rows)} 行主用地址已存在，请选择重复处理策略"
+                )
         except Exception as exc:
-            errors.append(str(exc) or exc.__class__.__name__)
+            errors.append(
+                DeviceImportErrorDTO(
+                    message=str(exc) or "CSV 文件解析失败",
+                )
+            )
+            invalid_rows = total_rows
         token = secrets.token_urlsafe(32)
         self._write_import_preview(
             site,
@@ -828,9 +864,18 @@ class DeviceManagementWebService:
                 + DEVICE_IMPORT_PREVIEW_TTL_SECONDS,
                 "row_count": row_count,
                 "columns": columns,
-                "errors": errors,
+                "errors": [item.model_dump(mode="json") for item in errors],
                 "warnings": warnings,
                 "duplicate_rows": duplicate_rows,
+                "total_rows": total_rows,
+                "valid_rows": valid_rows,
+                "invalid_rows": invalid_rows,
+                "vendor_summary": vendor_summary,
+                "device_type_summary": device_type_summary,
+                "create_count": create_count,
+                "update_count": update_count,
+                "conflict_count": conflict_count,
+                "detected_encoding": detected_encoding,
             },
         )
         return DeviceImportPreviewDTO(
@@ -838,6 +883,15 @@ class DeviceManagementWebService:
             source_name=source_name,
             source_sha256=source_sha256,
             row_count=row_count,
+            total_rows=total_rows,
+            valid_rows=valid_rows,
+            invalid_rows=invalid_rows,
+            vendor_summary=vendor_summary,
+            device_type_summary=device_type_summary,
+            create_count=create_count,
+            update_count=update_count,
+            conflict_count=conflict_count,
+            detected_encoding=detected_encoding,
             columns=columns,
             errors=errors,
             warnings=warnings,
@@ -1137,21 +1191,108 @@ class DeviceManagementWebService:
     ) -> DeviceTaskReferenceDTO:
         site = self.current_site_id()
         filters = self._export_filters(payload)
-        job_payload = {
-            "db_path": str(self.paths.site_db_path(site)),
-            "site_name": site,
-            "filters": filters,
-            "selected_device_uuids": self._unique_ids(payload.device_uuids)
-            if payload.device_uuids
-            else [],
-            "omit_credentials": not payload.include_credentials,
-        }
-        return self._start_export(site, "device_csv", "csv", job_payload, "export_csv")
+        return self._start_managed_device_csv_export(
+            site=site,
+            job_type="device_csv",
+            task_type=MANAGED_DEVICE_CSV_TASK_TYPE,
+            task_name=f"设备表格导出 · {site}",
+            preferred_name=make_device_export_filename(site),
+            job_payload={
+                "db_path": str(self.paths.site_db_path(site)),
+                "site_name": site,
+                "filters": filters,
+                "selected_device_uuids": self._unique_ids(payload.device_uuids)
+                if payload.device_uuids
+                else [],
+                "omit_credentials": not payload.include_credentials,
+            },
+            start_failure_message="设备表格导出任务启动失败",
+            worker_failure_message="设备表格导出 Worker 执行失败",
+            cancelled_message="设备表格导出已取消",
+        )
 
     def start_template_export(self) -> DeviceTaskReferenceDTO:
-        return self._start_export(
-            self.current_site_id(), "device_template_csv", "csv", {}, "export_template"
+        site = self.current_site_id()
+        return self._start_managed_device_csv_export(
+            site=site,
+            job_type="device_template_csv",
+            task_type=MANAGED_DEVICE_TEMPLATE_CSV_TASK_TYPE,
+            task_name=f"设备导入模板 · {site}",
+            preferred_name=make_device_template_filename(site),
+            job_payload={"mode": "template"},
+            start_failure_message="设备导入模板任务启动失败",
+            worker_failure_message="设备导入模板生成失败，请查看任务日志",
+            cancelled_message="设备导入模板导出已取消",
         )
+
+    def _start_managed_device_csv_export(
+        self,
+        *,
+        site: str,
+        job_type: str,
+        task_type: str,
+        task_name: str,
+        preferred_name: str,
+        job_payload: dict[str, object],
+        start_failure_message: str,
+        worker_failure_message: str,
+        cancelled_message: str,
+    ) -> DeviceTaskReferenceDTO:
+        task_id = f"{task_type.replace('_', '-')}-{uuid.uuid4().hex}"
+        reservation = self.artifact_store.reserve(
+            site_id=site,
+            owner=WEB_TASK_OWNER,
+            source=MANAGED_DEVICE_CSV_ARTIFACT_SOURCE,
+            artifact_type="csv",
+            task_id=task_id,
+            task_type=task_type,
+            output_root=self._artifact_root(site),
+            preferred_name=preferred_name,
+            use_display_name_as_file_name=True,
+        )
+        job = ExportJob(
+            job_id=task_id,
+            job_type=job_type,
+            site_name=site,
+            output_path=str(reservation.output_path),
+            db_path=str(self.paths.site_db_path(site)),
+            params={"payload": job_payload},
+        )
+
+        def completed(result) -> None:
+            if result.exit_code == 0 and not result.cancelled:
+                try:
+                    self.artifact_store.complete(reservation)
+                except WebArtifactError:
+                    return
+            else:
+                self.artifact_store.fail(
+                    reservation,
+                    cancelled_message if result.cancelled else worker_failure_message,
+                )
+
+        try:
+            self.export_adapter.start_export(
+                job,
+                task_name=task_name,
+                owner=WEB_TASK_OWNER,
+                task_type=task_type,
+                public_result={
+                    "artifact_id": reservation.artifact_id,
+                    "artifact_name": reservation.display_name,
+                    "artifact_source": MANAGED_DEVICE_CSV_ARTIFACT_SOURCE,
+                    "artifact_type": "csv",
+                },
+                on_complete=completed,
+            )
+        except Exception:
+            self.artifact_store.fail(reservation, start_failure_message)
+            raise
+        snapshot = self.task_service.repository(site).get(task_id)
+        if snapshot is None:
+            self.artifact_store.fail(reservation, f"{task_name}未写入任务中心")
+            raise RuntimeError(f"{task_name}创建后未写入任务中心")
+        return self._task_reference(snapshot)
 
     def start_securecrt_export(
         self,
@@ -1208,6 +1349,16 @@ class DeviceManagementWebService:
     def _open_task_artifact(
         self, snapshot: TaskSnapshot, artifact_id: str
     ) -> tuple[Path, str]:
+        if snapshot.task_type in MANAGED_DEVICE_CSV_TASK_TYPES:
+            path, display_name, _manifest = self.artifact_store.open(
+                site_id=snapshot.site_name,
+                artifact_id=artifact_id,
+                owner=WEB_TASK_OWNER,
+                source=MANAGED_DEVICE_CSV_ARTIFACT_SOURCE,
+                artifact_type="csv",
+                task_type=snapshot.task_type,
+            )
+            return path, display_name
         if snapshot.status is not TaskState.COMPLETED:
             raise ValueError("文件任务尚未完成")
         result = dict(snapshot.result or {})
@@ -1244,7 +1395,11 @@ class DeviceManagementWebService:
             TaskState.CANCELLED,
         }:
             return self._task_reference(snapshot)
-        if snapshot.task_type in EXPORT_TASK_TYPES:
+        if snapshot.task_type in MANAGED_DEVICE_CSV_TASK_TYPES:
+            cancel_job = getattr(self.export_adapter, "cancel_job", None)
+            if not callable(cancel_job) or not cancel_job(task_id):
+                self.task_service.cancel_task(task_id)
+        elif snapshot.task_type in EXPORT_TASK_TYPES:
             spec = self._export_artifacts.get(task_id)
             process = self._export_processes.get(task_id)
             job_dir = (self.paths.runtime_cache_dir / "export_jobs").resolve()
@@ -1387,10 +1542,9 @@ class DeviceManagementWebService:
                 raise ValueError(f"{username_field} 不能为空，密码尚未保存")
         if not values["name"] or not values["primary_address"]:
             raise ValueError("设备名称和主用地址必填")
-        if values["device_vendor"] not in DEVICE_VENDORS:
-            raise ValueError("设备厂商不在受支持白名单中")
-        if values["device_type"] not in DEVICE_TYPES:
-            raise ValueError("设备类型不在受支持白名单中")
+        values["device_vendor"], values["device_type"] = validate_device_vendor_type(
+            values["device_vendor"], values["device_type"]
+        )
         if not values["ssh_enabled"] and not values["telnet_enabled"]:
             raise ValueError("至少启用 SSH 或 Telnet 之一")
         if values["group_id"] is not None:
@@ -2115,18 +2269,37 @@ class DeviceManagementWebService:
             DEVICE_DIAGNOSTIC_TASK_TYPE: "diagnostic_download",
             DEVICE_IMPORT_TASK_TYPE: "import_csv",
             DEVICE_CONNECTION_TEST_TASK_TYPE: "connection_test",
+            MANAGED_DEVICE_CSV_TASK_TYPE: "export_csv",
+            MANAGED_DEVICE_TEMPLATE_CSV_TASK_TYPE: "export_template",
         }
+        artifact_id = str(result.get("artifact_id") or spec.get("artifact_id") or "")
+        sha256 = str(result.get("sha256") or "")
+        task_status = snapshot.status.value
+        message = sanitize_sensitive_text(
+            snapshot.message or snapshot.error_message
+        )
+        if (
+            snapshot.task_type in MANAGED_DEVICE_CSV_TASK_TYPES
+            and snapshot.status is TaskState.COMPLETED
+            and not sha256
+        ):
+            # Worker 退出后还需在 Controller 侧计算大小与摘要并固化 Artifact。
+            # 对设备导出 API 来说，只有 Artifact 可下载才算真正完成，避免前端
+            # 观察到短暂的“COMPLETED 但文件不可用”中间态。
+            task_status = TaskState.RUNNING.value
+            message = "正在校验导出文件"
         return DeviceTaskReferenceDTO(
             task_id=snapshot.task_id,
-            task_status=snapshot.status.value,
+            task_status=task_status,
             action=actions.get(
                 snapshot.task_type, snapshot.task_type.removeprefix("device_export_")
             ),
-            artifact_id=str(result.get("artifact_id") or spec.get("artifact_id") or ""),
-            available=bool(result.get("available")),
-            sha256=str(result.get("sha256") or ""),
+            artifact_id=artifact_id,
+            available=bool(result.get("available")) or bool(artifact_id and sha256),
+            sha256=sha256,
             size_bytes=int(result.get("size_bytes") or 0),
-            message=sanitize_sensitive_text(snapshot.message or snapshot.error_message),
+            row_count=int(result.get("row_count") or 0),
+            message=message,
         )
 
     def _start_export(

@@ -48,13 +48,13 @@
 | 字段 | 当前值 |
 | --- | --- |
 | Operation ID | `device.inventory.collect` |
-| Profile ID | `h3c.comware.switch.generic.device-inventory.v1` / `h3c.comware.mobile_router.generic.device-inventory.v1` |
-| Selector | H3C / switch / Comware / `*`；H3C / mobile_router / Comware / `*` |
+| Profile ID | `h3c.comware.switch.generic.device-inventory.v1` / `h3c.comware.mobile_router.generic.device-inventory.v1` / `zte.zxr10.switch.generic.device-inventory.v1` |
+| Selector | H3C / switch / Comware / `*`；H3C / mobile_router / Comware / `*`；ZTE / switch / ZXR10 / `*` |
 | 风险 | `read_only` |
 | 兼容等级 | `generic_read_only` |
-| Parser contract | `netconsole.h3c.device-inventory.v1` / `netconsole.h3c.mobile-router-device-inventory.v1` |
+| Parser contract | H3C 结构化 parser；ZTE `netconsole.zte.device-inventory.raw.v1` 保守基础解析 |
 | DTO contract | `netconsole.device-inventory.v1` |
-| 样例证据 | Comware `7.1.070` fixture；车载 MR 只读核心命令合同 |
+| 样例证据 | Comware `7.1.070` fixture；车载 MR 只读核心命令合同；用户提供的 ZTE 命令基线（尚无真实输出 fixture） |
 | 真实设备状态 | `REAL_DEVICE_PENDING` |
 
 `device.sftp.enable` 当前只登记 H3C Comware V7 的交换机、无线 AC 和车载 MR 三类精确 Profile，
@@ -72,7 +72,7 @@ quit
 `Application Service -> DeviceOperationService -> Task Center -> Command Profile` 提交。
 Huawei、ZTE、未知厂商、未知角色、未知平台和未知版本均失败关闭，不猜测命令、不提供兼容 fallback。
 
-每个 step 都包含稳定 `step_id`、顺序、输出 selector、parser/DTO contract、只读风险和验证证据。`src/netconsole/services/h3c_collect_service.py` 按 Profile 固定步骤执行，继续保持 `screen-length disable` 和原有 11 条采集命令的原文、顺序、单命令失败后继续语义；parser 改用稳定 selector 取回显，raw 输入和结构化行为不变。未知厂商、设备角色或平台失败关闭；Huawei/ZTE 不回退到 H3C。未知软件版本只可使用明确标记的只读 generic Profile，不能据此宣称 V5/V9 已验收。
+每个 step 都包含稳定 `step_id`、顺序、输出 selector、parser/DTO contract、只读风险和验证证据。`src/netconsole/services/h3c_collect_service.py` 按 Profile 固定步骤执行：H3C 继续保持原命令和解析行为；ZTE 使用独立 `terminal length 0` / `show` 命令，序列号首选失败或无有效内容时才尝试 `show system-info`。未知厂商、设备角色或平台失败关闭，任何厂商都不得回退到 H3C。未知软件版本只可使用明确标记的只读 generic Profile，不能据此宣称已完成真实设备验收。
 
 除 `device.sftp.enable` 外，AC、MR、配置、诊断和文件管理的其他命令尚未迁入统一 Profile，
 仍属于后续命令平台治理范围。不得用本切片状态替代逐域迁移和真实设备验收。
@@ -127,31 +127,26 @@ SNMP Center、通用 MIB/OID 字典、SNMPv3、RW community、SET、Trap 和通�
 
 ## Huawei / ZTE 扩展边界
 
-当前命令平台只接管 H3C/Comware 交换机设备详情。Huawei/ZTE 只有未来扩展边界，没有生产 Profile、命令、Parser 或真实 fixture；相关设备必须返回不支持，不能凭空猜测或回退到 H3C。
+Huawei 仍只有未来扩展边界，没有生产 Profile、命令、Parser 或真实 fixture；相关设备返回不支持，不能凭空猜测或回退到 H3C。
 
-第一批最小集合：
+ZTE 本期只登记交换机基础 Profile：
 
-1. 分页关闭能力：对应 `screen-length disable` / `screen-length d`。
-2. 接口概要：对应 `display interface brief`。
-3. 光诊断：对应 `display transceiver diagnosis interface`。
-4. LLDP：对应 `display lldp neighbor-information list`。
-5. 设备信息：对应 `display version`、`display device`、`display device manuinfo`。
+| 能力 | ZTE 命令 |
+| --- | --- |
+| 会话准备 | `terminal length 0` |
+| 系统名 | `show running-config \| include hostname` |
+| 版本 / 硬件 | `show version` / `show hardware` |
+| 序列号 | `show serial-number`，不支持或空输出时尝试 `show system-info` |
+| 接口 | `show interface` / `show interface brief` |
+| 光模块 | `show optical-inform brief` / `show optical-inform detail`；单接口命令由安全接口参数生成器产生 |
+| LLDP | `show lldp neighbor brief` / `show lldp entry` |
+| 配置读取 | `show running-config` / `show startup-config` |
+| Flash | `dir flash:/` |
+| CLI Ping | `ping <ip>` / `ping <ip> repeat <count>`，IP 和次数必须先通过类型/范围校验 |
 
-第二批：
+`write` 属于改变设备状态的命令，不进入采集、连接测试、详情刷新或诊断任务。本期没有新增“保存配置”人工动作。
 
-1. 配置采集：`display current-configuration`、`display saved-configuration`。
-2. 诊断信息：`display diagnostic-information` 和交互确认。
-3. 文件管理：`dir flash:/`、`dir flash:/diagfile/`、SFTP/SCP 路径和目录格式。
-4. 配置保存：`save force` 等价能力。
-5. CLI ping：`ping <ip>`、`ping -c <count> <ip>` 等价语法和输出解析。
-
-中兴适配必须同时确认：
-
-- 命令等价关系。
-- 原始回显样例。
-- 解析器字段映射。
-- 空输出、失败、无光模块、端口 down、LLDP 无邻居等边界。
-- 是否需要单独命令白名单上下文。
+ZTE 完整诊断包保持 unsupported：没有登记 H3C `display diagnostic-information` 的猜测等价命令、诊断目录或生成/下载交互。ZTE AC 同样不支持。当前真实输出 fixture 尚未取得，只有 hostname、版本原始摘要和接口 up/down 使用保守解析；型号、精确 SN、光功率和 LLDP 高级字段保持未解析并保留 raw。
 
 ## 维护方式
 

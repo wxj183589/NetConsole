@@ -22,7 +22,7 @@
       "source_locations": ["netconsole/services/command_guard.py", "netconsole/services/h3c_collect_service.py", "netconsole/services/rail_transit/trackside_optical_collection.py"],
       "zte_adaptation_status": "phase_1_reference",
       "comware_command": "screen-length disable",
-      "zte_command": "待确认 / 待适配",
+      "zte_command": "terminal length 0",
       "parser_status": "无需解析",
       "notes": "中兴适配第一批优先确认分页关闭能力。"
     },
@@ -70,7 +70,7 @@
       "source_locations": ["netconsole/services/h3c_collect_service.py", "netconsole/services/command_guard.py"],
       "zte_adaptation_status": "phase_1_reference",
       "comware_command": "display current-configuration | include sysname",
-      "zte_command": "待确认 / 待适配",
+      "zte_command": "show running-config | include hostname",
       "parser_status": "H3C 已实现",
       "notes": "管道命令在白名单中单独允许。"
     },
@@ -94,7 +94,7 @@
       "source_locations": ["netconsole/services/h3c_collect_service.py", "netconsole/services/h3c_ac_collect_service.py"],
       "zte_adaptation_status": "phase_1_reference",
       "comware_command": "display version",
-      "zte_command": "待确认 / 待适配",
+      "zte_command": "show version",
       "parser_status": "H3C 已实现",
       "notes": "中兴第一批设备信息适配项。"
     },
@@ -118,7 +118,7 @@
       "source_locations": ["netconsole/services/h3c_collect_service.py", "netconsole/services/h3c_ac_collect_service.py"],
       "zte_adaptation_status": "phase_1_reference",
       "comware_command": "display device",
-      "zte_command": "待确认 / 待适配",
+      "zte_command": "show hardware",
       "parser_status": "H3C 已实现",
       "notes": "中兴第一批设备信息适配项。"
     },
@@ -142,7 +142,7 @@
       "source_locations": ["netconsole/services/h3c_collect_service.py", "netconsole/services/h3c_ac_collect_service.py"],
       "zte_adaptation_status": "phase_1_reference",
       "comware_command": "display device manuinfo",
-      "zte_command": "待确认 / 待适配",
+      "zte_command": "show serial-number / show system-info",
       "parser_status": "H3C 已实现",
       "notes": "中兴第一批设备信息适配项。"
     },
@@ -190,7 +190,7 @@
       "source_locations": ["netconsole/services/h3c_collect_service.py", "netconsole/services/h3c_optical_refresh_service.py"],
       "zte_adaptation_status": "phase_1_reference",
       "comware_command": "display interface",
-      "zte_command": "待确认 / 待适配",
+      "zte_command": "show interface",
       "parser_status": "H3C 已实现",
       "notes": "中兴接口详情解析需单独样例确认。"
     },
@@ -214,7 +214,7 @@
       "source_locations": ["netconsole/services/rail_transit/trackside_optical_collection.py", "netconsole/services/command_guard.py"],
       "zte_adaptation_status": "phase_1_reference",
       "comware_command": "display interface brief",
-      "zte_command": "待确认 / 待适配",
+      "zte_command": "show interface brief",
       "parser_status": "H3C 已实现",
       "notes": "中兴车站交换机第一批适配核心命令。"
     },
@@ -238,7 +238,7 @@
       "source_locations": ["netconsole/services/h3c_collect_service.py"],
       "zte_adaptation_status": "phase_2_reference",
       "comware_command": "display transceiver interface",
-      "zte_command": "待确认 / 待适配",
+      "zte_command": "show optical-inform brief / show interface <interface> transceiver",
       "parser_status": "H3C 已实现",
       "notes": "光模块基础信息与诊断值分开记录。"
     },
@@ -286,7 +286,7 @@
       "source_locations": ["netconsole/services/rail_transit/trackside_optical_collection.py", "netconsole/services/h3c_collect_service.py", "netconsole/services/h3c_optical_refresh_service.py"],
       "zte_adaptation_status": "phase_1_reference",
       "comware_command": "display transceiver diagnosis interface",
-      "zte_command": "待确认 / 待适配",
+      "zte_command": "show optical-inform detail",
       "parser_status": "H3C 已实现，中兴未实现",
       "notes": "中兴车站交换机第一批适配核心命令。"
     },
@@ -310,7 +310,7 @@
       "source_locations": ["netconsole/services/rail_transit/trackside_optical_collection.py", "netconsole/services/h3c_collect_service.py"],
       "zte_adaptation_status": "phase_1_reference",
       "comware_command": "display lldp neighbor-information list",
-      "zte_command": "待确认 / 待适配",
+      "zte_command": "show lldp neighbor brief",
       "parser_status": "H3C 已实现，中兴未实现",
       "notes": "中兴车站交换机第一批适配核心命令。"
     },
@@ -334,7 +334,7 @@
       "source_locations": ["netconsole/services/h3c_collect_service.py", "netconsole/services/command_guard.py"],
       "zte_adaptation_status": "phase_2_reference",
       "comware_command": "display lldp neighbor-information verbose",
-      "zte_command": "待确认 / 待适配",
+      "zte_command": "show lldp entry",
       "parser_status": "H3C 已实现",
       "notes": "详细字段可能用于排障，不是第一批最小集合。"
     },
@@ -358,7 +358,7 @@
       "source_locations": ["netconsole/services/config_lifecycle_service.py"],
       "zte_adaptation_status": "phase_2_reference",
       "comware_command": "display current-configuration",
-      "zte_command": "待确认 / 待适配",
+      "zte_command": "show running-config",
       "parser_status": "H3C 配置主体截取已实现",
       "notes": "diff 只比较 #version 到 #return 区间。"
     },
@@ -430,7 +430,7 @@
       "source_locations": ["netconsole/services/config_lifecycle_service.py"],
       "zte_adaptation_status": "phase_2_reference",
       "comware_command": "display saved-configuration",
-      "zte_command": "待确认 / 待适配",
+      "zte_command": "show startup-config",
       "parser_status": "H3C 配置主体截取已实现",
       "notes": "用于运行配置与保存配置比较。"
     },
@@ -526,7 +526,7 @@
       "source_locations": ["netconsole/services/file_transfer_service.py", "netconsole/services/command_guard.py"],
       "zte_adaptation_status": "phase_2_reference",
       "comware_command": "dir flash:/",
-      "zte_command": "待确认 / 待适配",
+      "zte_command": "dir flash:/",
       "parser_status": "H3C 文件列表解析",
       "notes": "设备文件管理当前按只读模式处理。"
     },
@@ -574,7 +574,7 @@
       "source_locations": ["netconsole/services/rail_transit/car_network_diagnostic.py"],
       "zte_adaptation_status": "phase_2_reference",
       "comware_command": "ping <ip>",
-      "zte_command": "待确认 / 待适配",
+      "zte_command": "ping <ip>",
       "parser_status": "H3C ping 输出解析已实现",
       "notes": "当前主要用于 MR/核心侧 CLI 检测。"
     },
@@ -598,7 +598,7 @@
       "source_locations": ["netconsole/services/rail_transit/car_network_diagnostic.py"],
       "zte_adaptation_status": "phase_2_reference",
       "comware_command": "ping -c <count> <ip>",
-      "zte_command": "待确认 / 待适配",
+      "zte_command": "ping <ip> repeat <count>",
       "parser_status": "H3C ping 输出解析已实现",
       "notes": "快速检测使用 4 次，跨 TC 检测使用 50 次。"
     },

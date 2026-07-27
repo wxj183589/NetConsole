@@ -103,6 +103,13 @@ def test_csv_contract_checks_metadata_headers_columns_and_data(tmp_path: Path) -
     no_data.write_text("设备名称,主用地址\n", encoding="utf-8")
     with pytest.raises(ImportValidationError, match="文件为空"):
         validate_csv_import(no_data, expected_module="devices", required_headers=["设备名称", "主用地址"])
+    header_only = validate_csv_import(
+        no_data,
+        expected_module="devices",
+        required_headers=["设备名称", "主用地址"],
+        allow_header_only=True,
+    )
+    assert header_only.row_count == 0
 
     unrelated = tmp_path / "unrelated.csv"
     unrelated.write_text("姓名,电话\n张三,1\n", encoding="utf-8")

@@ -9,9 +9,12 @@ const mocks = vi.hoisted(() => ({
   getDeviceEditProfile: vi.fn(),
   revealDeviceCredential: vi.fn(),
   getDeviceConnectionTest: vi.fn(),
+  getDeviceExportTask: vi.fn(),
   updateDevice: vi.fn(),
   startBatchRefreshDetails: vi.fn(),
   startDeviceFormConnectionTest: vi.fn(),
+  startDeviceCsvExport: vi.fn(),
+  startDeviceTemplateExport: vi.fn(),
   downloadBackendResource: vi.fn(),
   openPath: vi.fn(),
   showItemInFolder: vi.fn(),
@@ -33,9 +36,12 @@ vi.mock('../../api/deviceManagement', async (importOriginal) => ({
   getDeviceEditProfile: mocks.getDeviceEditProfile,
   revealDeviceCredential: mocks.revealDeviceCredential,
   getDeviceConnectionTest: mocks.getDeviceConnectionTest,
+  getDeviceExportTask: mocks.getDeviceExportTask,
   updateDevice: mocks.updateDevice,
   startBatchRefreshDetails: mocks.startBatchRefreshDetails,
   startDeviceFormConnectionTest: mocks.startDeviceFormConnectionTest,
+  startDeviceCsvExport: mocks.startDeviceCsvExport,
+  startDeviceTemplateExport: mocks.startDeviceTemplateExport,
 }))
 
 vi.mock('../../features', () => ({ isFeatureEnabled: mocks.featureEnabled }))
@@ -198,6 +204,12 @@ const passthrough = defineComponent({
   },
 })
 
+const dropdownStub = defineComponent({
+  setup(_props, { slots }) {
+    return () => h('div', [slots.default?.(), slots.dropdown?.()])
+  },
+})
+
 const buttonStub = defineComponent({
   inheritAttrs: false,
   props: { disabled: Boolean, loading: Boolean },
@@ -279,7 +291,7 @@ const elementStubs: Record<string, Component | boolean> = {
   ElDescriptionsItem: passthrough,
   ElDialog: dialogStub,
   ElDrawer: dialogStub,
-  ElDropdown: passthrough,
+  ElDropdown: dropdownStub,
   ElDropdownItem: passthrough,
   ElDropdownMenu: passthrough,
   ElEmpty: passthrough,
@@ -310,6 +322,39 @@ beforeEach(() => {
     task_id: 'form-test-1', task_status: 'PENDING', device_uuid: 'device-1', protocol: 'SSH', success: null,
     result_status: '', failure_category: '', message: '等待执行', safe_message: '等待执行', method: '', host: '', port: null, latency_ms: null, elapsed_ms: null, tested_at: '', system_name: '',
     model: '', os_family: '', interface_count: null, error_type: '', suggestion: '', created_time: '', updated_time: '',
+  })
+  mocks.startDeviceCsvExport.mockResolvedValue({
+    task_id: 'device-csv-export-1',
+    task_status: 'PENDING',
+    action: 'export_csv',
+    artifact_id: '',
+    available: false,
+    sha256: '',
+    size_bytes: 0,
+    row_count: 0,
+    message: '等待导出',
+  })
+  mocks.startDeviceTemplateExport.mockResolvedValue({
+    task_id: 'device-template-export-1',
+    task_status: 'PENDING',
+    action: 'export_template',
+    artifact_id: '',
+    available: false,
+    sha256: '',
+    size_bytes: 0,
+    row_count: 0,
+    message: '等待生成模板',
+  })
+  mocks.getDeviceExportTask.mockResolvedValue({
+    task_id: 'device-csv-export-1',
+    task_status: 'COMPLETED',
+    action: 'export_csv',
+    artifact_id: 'artifact-csv-1',
+    available: true,
+    sha256: 'a'.repeat(64),
+    size_bytes: 128,
+    row_count: 34,
+    message: '设备表格完整性校验完成',
   })
   mocks.getDeviceConnectionTest.mockResolvedValue({
     task_id: 'form-test-1', task_status: 'COMPLETED', device_uuid: 'device-1', protocol: 'SSH', success: true,
@@ -570,7 +615,7 @@ describe('DeviceManagementView mounted interactions', () => {
       },
     })]
     const wrapper = await renderView()
-    const save = wrapper.findAll('button').find((button) => button.text() === '另存 Artifact')
+    const save = wrapper.findAll('button').find((button) => button.text() === '保存到本地')
     expect(save).toBeTruthy()
     await save!.trigger('click')
     await flushPromises()
@@ -584,6 +629,295 @@ describe('DeviceManagementView mounted interactions', () => {
     await wrapper.findAll('button').find((button) => button.text() === '所在目录')!.trigger('click')
     expect(mocks.openPath).toHaveBeenCalledWith('8a02d34f-ec8f-4c17-9a8a-b266bdf9e137')
     expect(mocks.showItemInFolder).toHaveBeenCalledWith('8a02d34f-ec8f-4c17-9a8a-b266bdf9e137')
+    wrapper.unmount()
+  })
+
+  it('automatically saves only the current interactive CSV export once', async () => {
+    mocks.taskStore!.tasks = [task({
+      id: 'historical-export',
+      type: 'web_export_device_csv',
+      status: 'COMPLETED',
+      artifact_download: {
+        artifact_id: 'historical-artifact',
+        api_path: '/api/device-management/exports/historical-export/download',
+        query: { artifact_id: 'historical-artifact' },
+        display_name: '历史设备表.csv',
+        size_bytes: 64,
+        sha256: 'b'.repeat(64),
+      },
+    })]
+    const wrapper = await renderView()
+    expect(mocks.downloadBackendResource).not.toHaveBeenCalled()
+
+    await wrapper.get('[data-testid="device-export-csv-no-credentials"]').trigger('click')
+    await flushPromises()
+    expect(mocks.startDeviceCsvExport).toHaveBeenCalledOnce()
+    expect(mocks.openTaskWindow).not.toHaveBeenCalled()
+
+    mocks.taskStore!.tasks = [task({
+      id: 'device-csv-export-1',
+      type: 'web_export_device_csv',
+      status: 'COMPLETED',
+      updated_time: '2026-07-27T12:00:00Z',
+      artifact_download: {
+        artifact_id: 'artifact-csv-1',
+        api_path: '/api/device-management/exports/device-csv-export-1/download',
+        query: { artifact_id: 'artifact-csv-1' },
+        display_name: '测试局点-设备表-20260727_200000.csv',
+        size_bytes: 128,
+        sha256: 'a'.repeat(64),
+      },
+    })]
+    await flushPromises()
+
+    expect(mocks.downloadBackendResource).toHaveBeenCalledOnce()
+    expect(mocks.downloadBackendResource).toHaveBeenCalledWith({
+      apiPath: '/api/device-management/exports/device-csv-export-1/download',
+      query: { artifact_id: 'artifact-csv-1' },
+      suggestedName: '测试局点-设备表-20260727_200000.csv',
+      expectedSizeBytes: 128,
+      expectedSha256: 'a'.repeat(64),
+    })
+    const savedNotice = wrapper.get('[title="设备表格导出完成"]')
+    expect(savedNotice.attributes('description')).toContain('共导出 34 台设备')
+    expect(savedNotice.attributes('description')).toContain('测试局点-设备表-20260727_200000.csv')
+
+    mocks.taskStore!.tasks[0].updated_time = '2026-07-27T12:00:01Z'
+    await flushPromises()
+    expect(mocks.downloadBackendResource).toHaveBeenCalledOnce()
+    wrapper.unmount()
+  })
+
+  it('runs and automatically saves the current template export once', async () => {
+    mocks.getDeviceExportTask.mockResolvedValueOnce({
+      task_id: 'device-template-export-1',
+      task_status: 'COMPLETED',
+      action: 'export_template',
+      artifact_id: 'artifact-template-1',
+      available: true,
+      sha256: 'c'.repeat(64),
+      size_bytes: 256,
+      row_count: 0,
+      message: '设备导入模板生成完成',
+    })
+    const wrapper = await renderView()
+    const templateButton = wrapper.get('[data-testid="device-export-template"]')
+    await templateButton.trigger('click')
+    await templateButton.trigger('click')
+    await flushPromises()
+
+    expect(mocks.startDeviceTemplateExport).toHaveBeenCalledOnce()
+    expect(mocks.openTaskWindow).not.toHaveBeenCalled()
+
+    mocks.taskStore!.tasks = [task({
+      id: 'device-template-export-1',
+      type: 'web_export_device_template_csv',
+      status: 'COMPLETED',
+      artifact_download: {
+        artifact_id: 'artifact-template-1',
+        api_path: '/api/device-management/exports/device-template-export-1/download',
+        query: { artifact_id: 'artifact-template-1' },
+        display_name: '测试局点-设备导入模板.csv',
+        size_bytes: 256,
+        sha256: 'c'.repeat(64),
+      },
+    })]
+    await flushPromises()
+
+    expect(mocks.downloadBackendResource).toHaveBeenCalledOnce()
+    expect(mocks.downloadBackendResource).toHaveBeenCalledWith({
+      apiPath: '/api/device-management/exports/device-template-export-1/download',
+      query: { artifact_id: 'artifact-template-1' },
+      suggestedName: '测试局点-设备导入模板.csv',
+      expectedSizeBytes: 256,
+      expectedSha256: 'c'.repeat(64),
+    })
+    const savedNotice = wrapper.get('[title="设备导入模板生成完成"]')
+    expect(savedNotice.attributes('description')).toContain('测试局点-设备导入模板.csv')
+
+    mocks.taskStore!.tasks[0].updated_time = '2026-07-27T12:00:01Z'
+    await flushPromises()
+    expect(mocks.downloadBackendResource).toHaveBeenCalledOnce()
+    wrapper.unmount()
+  })
+
+  it('keeps a completed CSV task available when the Save As dialog is cancelled', async () => {
+    mocks.downloadBackendResource.mockResolvedValueOnce({ status: 'cancelled' })
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="device-export-csv-no-credentials"]').trigger('click')
+    await flushPromises()
+
+    mocks.taskStore!.tasks = [task({
+      id: 'device-csv-export-1',
+      type: 'web_export_device_csv',
+      status: 'COMPLETED',
+      artifact_download: {
+        artifact_id: 'artifact-csv-1',
+        api_path: '/api/device-management/exports/device-csv-export-1/download',
+        query: { artifact_id: 'artifact-csv-1' },
+        display_name: '测试局点-设备表.csv',
+        size_bytes: 128,
+        sha256: 'a'.repeat(64),
+      },
+    })]
+    await flushPromises()
+
+    expect(mocks.messages.warning).toHaveBeenCalledWith('设备表格已生成，但尚未保存到本地。')
+    expect(mocks.taskStore!.tasks[0].status).toBe('COMPLETED')
+    expect(wrapper.text()).toContain('保存到本地')
+    await wrapper.findAll('button').find((button) => button.text() === '保存到本地')!.trigger('click')
+    await flushPromises()
+    expect(mocks.downloadBackendResource).toHaveBeenCalledTimes(2)
+    expect(wrapper.html()).toContain('已保存到本地')
+    wrapper.unmount()
+  })
+
+  it('keeps a completed template Artifact available when the Save As dialog is cancelled', async () => {
+    mocks.downloadBackendResource.mockResolvedValueOnce({ status: 'cancelled' })
+    mocks.getDeviceExportTask.mockResolvedValueOnce({
+      task_id: 'device-template-export-1',
+      task_status: 'COMPLETED',
+      action: 'export_template',
+      artifact_id: 'artifact-template-1',
+      available: true,
+      sha256: 'c'.repeat(64),
+      size_bytes: 256,
+      row_count: 0,
+      message: '设备导入模板生成完成',
+    })
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="device-export-template"]').trigger('click')
+    await flushPromises()
+
+    mocks.taskStore!.tasks = [task({
+      id: 'device-template-export-1',
+      type: 'web_export_device_template_csv',
+      status: 'COMPLETED',
+      artifact_download: {
+        artifact_id: 'artifact-template-1',
+        api_path: '/api/device-management/exports/device-template-export-1/download',
+        query: { artifact_id: 'artifact-template-1' },
+        display_name: '测试局点-设备导入模板.csv',
+        size_bytes: 256,
+        sha256: 'c'.repeat(64),
+      },
+    })]
+    await flushPromises()
+
+    expect(mocks.messages.warning).toHaveBeenCalledWith('设备导入模板已生成，但尚未保存到本地。')
+    expect(mocks.taskStore!.tasks[0].status).toBe('COMPLETED')
+    expect(wrapper.text()).toContain('保存到本地')
+    await wrapper.findAll('button').find((button) => button.text() === '保存到本地')!.trigger('click')
+    await flushPromises()
+    expect(mocks.downloadBackendResource).toHaveBeenCalledTimes(2)
+    expect(wrapper.html()).toContain('已保存到本地')
+    wrapper.unmount()
+  })
+
+  it('keeps manual save available after an IPC failure', async () => {
+    mocks.downloadBackendResource
+      .mockResolvedValueOnce({ status: 'failed', error: 'IPC unavailable' })
+      .mockResolvedValueOnce({
+        status: 'saved',
+        capabilityId: '8a02d34f-ec8f-4c17-9a8a-b266bdf9e137',
+      })
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="device-export-csv-no-credentials"]').trigger('click')
+    await flushPromises()
+
+    mocks.taskStore!.tasks = [task({
+      id: 'device-csv-export-1',
+      type: 'web_export_device_csv',
+      status: 'COMPLETED',
+      updated_time: '2026-07-27T12:00:00Z',
+      artifact_download: {
+        artifact_id: 'artifact-csv-1',
+        api_path: '/api/device-management/exports/device-csv-export-1/download',
+        query: { artifact_id: 'artifact-csv-1' },
+        display_name: '测试局点-设备表.csv',
+        size_bytes: 128,
+        sha256: 'a'.repeat(64),
+      },
+    })]
+    await flushPromises()
+
+    expect(mocks.messages.error).toHaveBeenCalledWith('IPC unavailable')
+    expect(wrapper.html()).toContain('本地保存失败，可重新保存')
+    await wrapper.findAll('button').find((button) => button.text() === '保存到本地')!.trigger('click')
+    await flushPromises()
+    expect(mocks.downloadBackendResource).toHaveBeenCalledTimes(2)
+    expect(wrapper.html()).toContain('已保存到本地')
+    expect(wrapper.text()).toContain('打开文件')
+    expect(wrapper.text()).toContain('所在目录')
+    wrapper.unmount()
+  })
+
+  it('does not report browser download started as a saved local file', async () => {
+    mocks.downloadBackendResource.mockResolvedValueOnce({ status: 'started' })
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="device-export-csv-no-credentials"]').trigger('click')
+    await flushPromises()
+    mocks.taskStore!.tasks = [task({
+      id: 'device-csv-export-1',
+      type: 'web_export_device_csv',
+      status: 'COMPLETED',
+      updated_time: '2026-07-27T12:00:00Z',
+      artifact_download: {
+        artifact_id: 'artifact-csv-1',
+        api_path: '/api/device-management/exports/device-csv-export-1/download',
+        query: { artifact_id: 'artifact-csv-1' },
+        display_name: '测试局点-设备表.csv',
+        size_bytes: 128,
+        sha256: 'a'.repeat(64),
+      },
+    })]
+    await flushPromises()
+
+    expect(mocks.messages.info).toHaveBeenCalledWith('文件已交由浏览器下载，请在浏览器下载记录中查看。')
+    expect(wrapper.html()).toContain('浏览器下载已开始，尚未确认本地文件')
+    expect(wrapper.find('[title="设备表格导出完成"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('保存到本地')
+    wrapper.unmount()
+  })
+
+  it('retries task details after a temporary read failure instead of marking it handled', async () => {
+    mocks.getDeviceExportTask
+      .mockRejectedValueOnce(new Error('temporary'))
+      .mockResolvedValueOnce({
+        task_id: 'device-csv-export-1',
+        task_status: 'COMPLETED',
+        action: 'export_csv',
+        artifact_id: 'artifact-csv-1',
+        available: true,
+        sha256: 'a'.repeat(64),
+        size_bytes: 128,
+        row_count: 34,
+        message: '设备表格完整性校验完成',
+      })
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="device-export-csv-no-credentials"]').trigger('click')
+    await flushPromises()
+    mocks.taskStore!.tasks = [task({
+      id: 'device-csv-export-1',
+      type: 'web_export_device_csv',
+      status: 'COMPLETED',
+      updated_time: '2026-07-27T12:00:00Z',
+      artifact_download: {
+        artifact_id: 'artifact-csv-1',
+        api_path: '/api/device-management/exports/device-csv-export-1/download',
+        query: { artifact_id: 'artifact-csv-1' },
+        display_name: '测试局点-设备表.csv',
+        size_bytes: 128,
+        sha256: 'a'.repeat(64),
+      },
+    })]
+    await flushPromises()
+    expect(mocks.downloadBackendResource).not.toHaveBeenCalled()
+
+    mocks.taskStore!.tasks[0].updated_time = '2026-07-27T12:00:01Z'
+    await flushPromises()
+    expect(mocks.getDeviceExportTask).toHaveBeenCalledTimes(2)
+    expect(mocks.downloadBackendResource).toHaveBeenCalledOnce()
     wrapper.unmount()
   })
 })

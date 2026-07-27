@@ -4,6 +4,9 @@ import source from './DeviceDetailPanel.vue?raw'
 import deviceManagementTypes from '../../types/deviceManagement.ts?raw'
 
 describe('DeviceDetailPanel', () => {
+  it('renders canonical vendor labels through the shared formatter', () => {
+    expect(source).toContain('formatDeviceVendor(overview.platform_facts.vendor)')
+  })
   it('uses backend section capabilities and shares one lazy detail presentation', () => {
     expect(source).toContain('visible_sections')
     expect(source).not.toContain('capabilities?.sections')

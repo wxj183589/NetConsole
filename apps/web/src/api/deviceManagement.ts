@@ -226,6 +226,10 @@ export function startDeviceCsvExport(payload: DeviceExportRequest): Promise<Devi
   return apiRequest<DeviceTaskReference>('/api/device-management/exports/csv', { method: 'POST', body: JSON.stringify(payload) })
 }
 
+export function getDeviceExportTask(taskId: string): Promise<DeviceTaskReference> {
+  return apiRequest<DeviceTaskReference>(`/api/device-management/exports/${encodeURIComponent(taskId)}`)
+}
+
 export function startDeviceTemplateExport(): Promise<DeviceTaskReference> {
   return apiRequest<DeviceTaskReference>('/api/device-management/exports/template', { method: 'POST', body: JSON.stringify({}) })
 }

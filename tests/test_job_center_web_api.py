@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -1106,6 +1107,15 @@ def test_job_center_dto_hides_paths_and_builds_owner_artifact_capabilities(
     )
     historical_device_result = dict(device_result)
     historical_device_result.pop("display_name")
+    template_result = {
+        "artifact_id": "device-template-abc",
+        "artifact_name": "demo-设备导入模板.csv",
+        "artifact_source": "device_csv_export",
+        "artifact_type": "csv",
+        "sha256": hashlib.sha256(b"template").hexdigest(),
+        "size_bytes": len(b"template"),
+        "row_count": 0,
+    }
     fixtures = [
         (
             "device-artifact",
@@ -1118,6 +1128,12 @@ def test_job_center_dto_hides_paths_and_builds_owner_artifact_capabilities(
             "device_export_device_csv",
             "web_device_management",
             historical_device_result,
+        ),
+        (
+            "device-template",
+            "web_export_device_template_csv",
+            "web_device_management",
+            template_result,
         ),
         (
             "device-diagnostic",
@@ -1179,6 +1195,7 @@ def test_job_center_dto_hides_paths_and_builds_owner_artifact_capabilities(
 
     device = payloads["device-artifact"]["artifact_download"]
     device_history = payloads["device-history"]["artifact_download"]
+    device_template = payloads["device-template"]["artifact_download"]
     device_diagnostic = payloads["device-diagnostic"]["artifact_download"]
     config = payloads["config-artifact"]["artifact_download"]
     file = payloads["file-artifact"]["artifact_download"]
@@ -1186,16 +1203,27 @@ def test_job_center_dto_hides_paths_and_builds_owner_artifact_capabilities(
         "artifact_id": "device-abc",
         "display_name": "设备_清单.csv",
         "size_bytes": len(b"device export"),
+        "sha256": device_result["sha256"],
         "media_type": "text/csv",
         "api_path": "/api/device-management/exports/device-artifact/download",
         "query": {"artifact_id": "device-abc"},
     }
     assert device_history["display_name"] == "设备清单.csv"
     assert device_history["display_name"] != historical_device_result["artifact_name"]
+    assert device_template == {
+        "artifact_id": "device-template-abc",
+        "display_name": "demo-设备导入模板.csv",
+        "size_bytes": len(b"template"),
+        "sha256": template_result["sha256"],
+        "media_type": "text/csv",
+        "api_path": "/api/device-management/exports/device-template/download",
+        "query": {"artifact_id": "device-template-abc"},
+    }
     assert device_diagnostic == {
         "artifact_id": "device-diagnostic-0123456789abcdef0123456789abcdef",
         "display_name": "设备诊断.zip",
         "size_bytes": 42,
+        "sha256": "",
         "media_type": "application/zip",
         "api_path": "/api/device-management/diagnostics/device-diagnostic/download",
         "query": {"artifact_id": "device-diagnostic-0123456789abcdef0123456789abcdef"},
