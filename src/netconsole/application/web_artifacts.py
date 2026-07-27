@@ -214,6 +214,11 @@ class WebArtifactStore:
                 source=reservation.task_source,
                 task_type=reservation.task_type,
                 result=result,
+                message=(
+                    "设备表格完整性校验完成"
+                    if reservation.source == "device_csv_export"
+                    else "报告完整性校验完成"
+                ),
             )
             return manifest
         except WebArtifactError as exc:

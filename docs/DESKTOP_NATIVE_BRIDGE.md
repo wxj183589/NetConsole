@@ -41,7 +41,7 @@ Electron-only E1 已删除无生产调用者的 `QtDesktopAdapter`。Python `Des
 | `selectFile` | 过滤器、是否多选 | 数量、名称、扩展名、未知字段白名单 | 原生选择器 |
 | `selectDirectory` | 无 | 原生目录选择器 | 原生选择器 |
 | `chooseSavePath` | 安全文件名、过滤器、可选的本会话已授权目录 | 目录必须来自 `selectDirectory`，不接受未授权路径或把路径/命令伪装为文件名 | 只选择目标位置 |
-| `downloadBackendResource` | 正式 Artifact endpoint 白名单、安全 Query、建议文件名、过滤器、可选的本会话已授权另存为路径 | main 重新校验路径确由 `chooseSavePath` 授权，只访问当前受管动态回环后端，自行注入内存令牌并流式保存；普通 `/api/health` 等路由拒绝 | 文件、配置快照与既有业务 Artifact 下载 |
+| `downloadBackendResource` | 正式 Artifact endpoint 白名单、安全 Query、建议文件名、过滤器、可选的本会话已授权另存为路径，以及成对出现的期望大小/SHA-256 | main 重新校验路径确由 `chooseSavePath` 授权，只访问当前受管动态回环后端，自行注入内存令牌并流式保存；有完整性元数据时同时核对 Content-Length、实际字节数和 SHA-256；普通 `/api/health` 等路由拒绝 | 文件、配置快照与既有业务 Artifact 下载 |
 | `openPath` | 下载完成返回的 capability ID | Main 按 purpose/action/type/TTL 解析当前进程临时授权；仅数据/报告扩展名白名单 | 打开已保存 Artifact |
 | `showItemInFolder` | 下载完成返回的 capability ID | 与 `openPath` 独立校验 reveal action；危险或仅保存类型不签发该能力 | 在资源管理器定位 |
 | `openOnlineMrSessionLocation` | 稳定 Online MR `session_id` | preload/main 双重字符白名单；main 只调用当前受管回环后端的固定 `desktop-location` 端点并注入内存令牌；后端只返回 `PathResolver` 管理根内的文件/目录，路径不返回 Renderer | 打开车载 MR 会话包、raw 或受管会话目录 |
@@ -66,7 +66,9 @@ Renderer 不能把绝对路径提交给打开动作。`downloadBackendResource` 
 
 ## 文件导出边界
 
-`chooseSavePath` 只返回用户确认并登记为当前会话授权的目标路径；可选默认目录同样必须先由 `selectDirectory` 授权。报告生成及 Excel/ZIP/PDF/NAM 内容继续属于 Python Application Service 与 Export Process。`downloadBackendResource` 只搬运既有受控 HTTP 响应：Renderer 可以回传刚取得的另存为路径，但 main 必须在内存授权表中重新校验后才跳过第二次对话框；任意绝对路径仍会被拒绝。Renderer 只能提交设备、配置、文件、AC、MESH、Online MR 和网络工具现有正式 Artifact endpoint 模式及各端点允许的字符串 Query，main 使用当前 `PythonBackendManager` 的动态回环 Origin 与内存令牌请求，先流式写入目标同目录的随机 `.part`，成功后原子替换，取消或失败时不留下临时/伪成功文件。Electron Main/Preload 不读取数据库、不解释或生成报告。
+`chooseSavePath` 只返回用户确认并登记为当前会话授权的目标路径；可选默认目录同样必须先由 `selectDirectory` 授权。报告生成及 Excel/ZIP/PDF/NAM 内容继续属于 Python Application Service 与 Export Process。`downloadBackendResource` 只搬运既有受控 HTTP 响应：Renderer 可以回传刚取得的另存为路径，但 main 必须在内存授权表中重新校验后才跳过第二次对话框；任意绝对路径仍会被拒绝。Renderer 只能提交设备、配置、文件、AC、MESH、Online MR 和网络工具现有正式 Artifact endpoint 模式及各端点允许的字符串 Query，main 使用当前 `PythonBackendManager` 的动态回环 Origin 与内存令牌请求，先流式写入目标同目录的随机 `.part`，同步计算实际大小和 SHA-256，并在期望元数据存在时完成校验后才原子替换。取消、HTTP 失败、路径不可写、空间不足或完整性不一致均不改变服务端任务终态，且不留下 `.part` 或伪成功文件。Electron Main/Preload 不读取数据库、不解释或生成报告。
+
+设备管理页面只为当前前端会话中用户主动提交的 `web_export_device_csv` 记录交互式 task ID；对应 Artifact 首次就绪后自动调用上述统一能力。历史任务和其他页面创建的任务不自动弹窗，Task Center 的“Artifact 下载”允许随时人工重新保存。用户取消 Save As 只表示 `local_save_status=NOT_SAVED`，服务端 Artifact 仍为 READY、任务仍为 `COMPLETED`。保存后的本机绝对路径继续不返回 Renderer；页面只持有短期 capability，并通过“打开文件 / 打开所在目录”动作使用它。
 
 Electron Session 拒绝所有 Chromium 原生 `will-download`，因此 `<a download>`、Blob 或页面导航不能绕过该桥接。退出时先关闭新下载入口，取消并等待在途流清理后再停止受管 Python；Browser Platform Adapter 不受该 Electron 专用策略影响。
 

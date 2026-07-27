@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
@@ -38,6 +39,8 @@ describe('backend download manager', () => {
       apiPath: '/api/file-management/downloads/task-1/file',
       query: { site_id: '宁波地铁10号线' },
       suggestedName: 'result.zip',
+      expectedSizeBytes: 12,
+      expectedSha256: createHash('sha256').update('first-second').digest('hex'),
     })
 
     expect(new URL(server.origin).port).not.toBe('8000')
@@ -45,6 +48,10 @@ describe('backend download manager', () => {
     expect(requestUrl).not.toContain(token)
     expect(requestToken).toBe(token)
     expect(result).toMatchObject({ status: 'saved', capabilityId: expect.stringMatching(/^[0-9a-f-]{36}$/) })
+    expect(result).toMatchObject({
+      sizeBytes: 12,
+      sha256: createHash('sha256').update('first-second').digest('hex'),
+    })
     expect(result).not.toHaveProperty('savedPath')
     if (!result.capabilityId) throw new Error('download capability missing')
     expect(pathRegistry.requireCapability(result.capabilityId, 'artifact-download', 'open')).toBe(target)
@@ -69,7 +76,7 @@ describe('backend download manager', () => {
       suggestedName: '设备固件.bin',
     })
 
-    expect(result).toEqual({ status: 'saved' })
+    expect(result).toMatchObject({ status: 'saved' })
     expect(result).not.toHaveProperty('capabilityId')
     await expect(readFile(target, 'utf8')).resolves.toBe('firmware')
   })
@@ -93,7 +100,11 @@ describe('backend download manager', () => {
     await expect(manager.download({
       apiPath: '/api/file-management/downloads/task-type/file',
       suggestedName,
-    })).resolves.toEqual({ status: 'failed', error: '保存文件类型与 Artifact 不一致。' })
+    })).resolves.toMatchObject({
+      status: 'failed',
+      errorCode: 'FILE_TYPE_MISMATCH',
+      error: '保存文件类型与 Artifact 不一致。',
+    })
     expect(fetchImpl).not.toHaveBeenCalled()
     expect(await readdir(directory)).toEqual([])
   })
@@ -231,7 +242,11 @@ describe('backend download manager', () => {
     await expect(manager.download({
       apiPath: '/api/file-management/downloads/task-second/file',
       suggestedName: 'same-target.zip',
-    })).resolves.toEqual({ status: 'failed', error: '该目标文件已有下载正在进行。' })
+    })).resolves.toMatchObject({
+      status: 'failed',
+      errorCode: 'DOWNLOAD_IN_PROGRESS',
+      error: '该目标文件已有下载正在进行。',
+    })
     finishResponse?.()
 
     await expect(first).resolves.toMatchObject({ status: 'saved' })
@@ -256,6 +271,33 @@ describe('backend download manager', () => {
 
     expect(result.status).toBe('failed')
     await expect(readFile(target)).rejects.toThrow()
+    expect((await readdir(directory)).some((name) => name.endsWith('.part'))).toBe(false)
+  })
+
+  it('deletes the partial file and preserves the target when SHA-256 does not match', async () => {
+    const server = await loopbackServer((_request, response) => {
+      response.writeHead(200, { 'Content-Length': '8' })
+      response.end('tampered')
+    })
+    const directory = await tempDirectory()
+    const target = resolve(directory, 'integrity.csv')
+    await writeFile(target, 'original', 'utf8')
+    const manager = downloadManager(server.origin, 'i'.repeat(48), target)
+
+    const result = await manager.download({
+      apiPath: '/api/device-management/exports/task-integrity/download',
+      query: { artifact_id: 'artifact-integrity' },
+      suggestedName: 'integrity.csv',
+      expectedSizeBytes: 8,
+      expectedSha256: createHash('sha256').update('expected').digest('hex'),
+    })
+
+    expect(result).toEqual({
+      status: 'failed',
+      errorCode: 'FILE_INTEGRITY_MISMATCH',
+      error: '文件完整性校验失败，请重新下载。',
+    })
+    await expect(readFile(target, 'utf8')).resolves.toBe('original')
     expect((await readdir(directory)).some((name) => name.endsWith('.part'))).toBe(false)
   })
 

@@ -100,11 +100,26 @@ export interface BackendDownloadRequest {
   suggestedName: string
   filters?: FileFilter[]
   destinationPath?: string
+  expectedSizeBytes?: number
+  expectedSha256?: string
 }
+
+export type BackendDownloadErrorCode =
+  | 'ARTIFACT_NOT_FOUND'
+  | 'BACKEND_DOWNLOAD_FAILED'
+  | 'FILE_INTEGRITY_MISMATCH'
+  | 'FILE_TYPE_MISMATCH'
+  | 'PATH_NOT_WRITABLE'
+  | 'DISK_FULL'
+  | 'DOWNLOAD_IN_PROGRESS'
+  | 'DESKTOP_SHUTTING_DOWN'
 
 export interface BackendDownloadResult {
   status: 'started' | 'saved' | 'cancelled' | 'failed'
   capabilityId?: string
+  sizeBytes?: number
+  sha256?: string
+  errorCode?: BackendDownloadErrorCode
   error?: string
 }
 

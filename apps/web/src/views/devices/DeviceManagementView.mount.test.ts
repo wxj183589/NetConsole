@@ -9,9 +9,11 @@ const mocks = vi.hoisted(() => ({
   getDeviceEditProfile: vi.fn(),
   revealDeviceCredential: vi.fn(),
   getDeviceConnectionTest: vi.fn(),
+  getDeviceExportTask: vi.fn(),
   updateDevice: vi.fn(),
   startBatchRefreshDetails: vi.fn(),
   startDeviceFormConnectionTest: vi.fn(),
+  startDeviceCsvExport: vi.fn(),
   downloadBackendResource: vi.fn(),
   openPath: vi.fn(),
   showItemInFolder: vi.fn(),
@@ -33,9 +35,11 @@ vi.mock('../../api/deviceManagement', async (importOriginal) => ({
   getDeviceEditProfile: mocks.getDeviceEditProfile,
   revealDeviceCredential: mocks.revealDeviceCredential,
   getDeviceConnectionTest: mocks.getDeviceConnectionTest,
+  getDeviceExportTask: mocks.getDeviceExportTask,
   updateDevice: mocks.updateDevice,
   startBatchRefreshDetails: mocks.startBatchRefreshDetails,
   startDeviceFormConnectionTest: mocks.startDeviceFormConnectionTest,
+  startDeviceCsvExport: mocks.startDeviceCsvExport,
 }))
 
 vi.mock('../../features', () => ({ isFeatureEnabled: mocks.featureEnabled }))
@@ -198,6 +202,12 @@ const passthrough = defineComponent({
   },
 })
 
+const dropdownStub = defineComponent({
+  setup(_props, { slots }) {
+    return () => h('div', [slots.default?.(), slots.dropdown?.()])
+  },
+})
+
 const buttonStub = defineComponent({
   inheritAttrs: false,
   props: { disabled: Boolean, loading: Boolean },
@@ -279,7 +289,7 @@ const elementStubs: Record<string, Component | boolean> = {
   ElDescriptionsItem: passthrough,
   ElDialog: dialogStub,
   ElDrawer: dialogStub,
-  ElDropdown: passthrough,
+  ElDropdown: dropdownStub,
   ElDropdownItem: passthrough,
   ElDropdownMenu: passthrough,
   ElEmpty: passthrough,
@@ -310,6 +320,28 @@ beforeEach(() => {
     task_id: 'form-test-1', task_status: 'PENDING', device_uuid: 'device-1', protocol: 'SSH', success: null,
     result_status: '', failure_category: '', message: '等待执行', safe_message: '等待执行', method: '', host: '', port: null, latency_ms: null, elapsed_ms: null, tested_at: '', system_name: '',
     model: '', os_family: '', interface_count: null, error_type: '', suggestion: '', created_time: '', updated_time: '',
+  })
+  mocks.startDeviceCsvExport.mockResolvedValue({
+    task_id: 'device-csv-export-1',
+    task_status: 'PENDING',
+    action: 'export_csv',
+    artifact_id: '',
+    available: false,
+    sha256: '',
+    size_bytes: 0,
+    row_count: 0,
+    message: '等待导出',
+  })
+  mocks.getDeviceExportTask.mockResolvedValue({
+    task_id: 'device-csv-export-1',
+    task_status: 'COMPLETED',
+    action: 'export_csv',
+    artifact_id: 'artifact-csv-1',
+    available: true,
+    sha256: 'a'.repeat(64),
+    size_bytes: 128,
+    row_count: 34,
+    message: '设备表格完整性校验完成',
   })
   mocks.getDeviceConnectionTest.mockResolvedValue({
     task_id: 'form-test-1', task_status: 'COMPLETED', device_uuid: 'device-1', protocol: 'SSH', success: true,
@@ -584,6 +616,89 @@ describe('DeviceManagementView mounted interactions', () => {
     await wrapper.findAll('button').find((button) => button.text() === '所在目录')!.trigger('click')
     expect(mocks.openPath).toHaveBeenCalledWith('8a02d34f-ec8f-4c17-9a8a-b266bdf9e137')
     expect(mocks.showItemInFolder).toHaveBeenCalledWith('8a02d34f-ec8f-4c17-9a8a-b266bdf9e137')
+    wrapper.unmount()
+  })
+
+  it('automatically saves only the current interactive CSV export once', async () => {
+    mocks.taskStore!.tasks = [task({
+      id: 'historical-export',
+      type: 'web_export_device_csv',
+      status: 'COMPLETED',
+      artifact_download: {
+        artifact_id: 'historical-artifact',
+        api_path: '/api/device-management/exports/historical-export/download',
+        query: { artifact_id: 'historical-artifact' },
+        display_name: '历史设备表.csv',
+        size_bytes: 64,
+        sha256: 'b'.repeat(64),
+      },
+    })]
+    const wrapper = await renderView()
+    expect(mocks.downloadBackendResource).not.toHaveBeenCalled()
+
+    await wrapper.get('[data-testid="device-export-csv-no-credentials"]').trigger('click')
+    await flushPromises()
+    expect(mocks.startDeviceCsvExport).toHaveBeenCalledOnce()
+    expect(mocks.openTaskWindow).not.toHaveBeenCalled()
+
+    mocks.taskStore!.tasks = [task({
+      id: 'device-csv-export-1',
+      type: 'web_export_device_csv',
+      status: 'COMPLETED',
+      updated_time: '2026-07-27T12:00:00Z',
+      artifact_download: {
+        artifact_id: 'artifact-csv-1',
+        api_path: '/api/device-management/exports/device-csv-export-1/download',
+        query: { artifact_id: 'artifact-csv-1' },
+        display_name: '测试局点-设备表-20260727_200000.csv',
+        size_bytes: 128,
+        sha256: 'a'.repeat(64),
+      },
+    })]
+    await flushPromises()
+
+    expect(mocks.downloadBackendResource).toHaveBeenCalledOnce()
+    expect(mocks.downloadBackendResource).toHaveBeenCalledWith({
+      apiPath: '/api/device-management/exports/device-csv-export-1/download',
+      query: { artifact_id: 'artifact-csv-1' },
+      suggestedName: '测试局点-设备表-20260727_200000.csv',
+      expectedSizeBytes: 128,
+      expectedSha256: 'a'.repeat(64),
+    })
+    const savedNotice = wrapper.get('[title="设备表格导出完成"]')
+    expect(savedNotice.attributes('description')).toContain('共导出 34 台设备')
+    expect(savedNotice.attributes('description')).toContain('测试局点-设备表-20260727_200000.csv')
+
+    mocks.taskStore!.tasks[0].updated_time = '2026-07-27T12:00:01Z'
+    await flushPromises()
+    expect(mocks.downloadBackendResource).toHaveBeenCalledOnce()
+    wrapper.unmount()
+  })
+
+  it('keeps a completed CSV task available when the Save As dialog is cancelled', async () => {
+    mocks.downloadBackendResource.mockResolvedValueOnce({ status: 'cancelled' })
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="device-export-csv-no-credentials"]').trigger('click')
+    await flushPromises()
+
+    mocks.taskStore!.tasks = [task({
+      id: 'device-csv-export-1',
+      type: 'web_export_device_csv',
+      status: 'COMPLETED',
+      artifact_download: {
+        artifact_id: 'artifact-csv-1',
+        api_path: '/api/device-management/exports/device-csv-export-1/download',
+        query: { artifact_id: 'artifact-csv-1' },
+        display_name: '测试局点-设备表.csv',
+        size_bytes: 128,
+        sha256: 'a'.repeat(64),
+      },
+    })]
+    await flushPromises()
+
+    expect(mocks.messages.warning).toHaveBeenCalledWith('设备表格已生成，但尚未保存到本地。')
+    expect(mocks.taskStore!.tasks[0].status).toBe('COMPLETED')
+    expect(wrapper.text()).toContain('另存 Artifact')
     wrapper.unmount()
   })
 })

@@ -395,13 +395,30 @@ export function validateChooseSavePathOptions(value: unknown): ChooseSavePathOpt
 
 export function validateBackendDownloadRequest(value: unknown): BackendDownloadRequest {
   const record = asRecord(value, 'backend download request')
-  rejectUnknownKeys(record, ['apiPath', 'query', 'suggestedName', 'filters', 'destinationPath'])
+  rejectUnknownKeys(record, [
+    'apiPath',
+    'query',
+    'suggestedName',
+    'filters',
+    'destinationPath',
+    'expectedSizeBytes',
+    'expectedSha256',
+  ])
   const saveOptions = validateChooseSavePathOptions({
     suggestedName: record.suggestedName,
     ...(record.filters === undefined ? {} : { filters: record.filters }),
   })
   const apiPath = validateBackendApiPath(record.apiPath)
   const query = record.query === undefined ? undefined : validateQuery(record.query)
+  const expectedSizeBytes = record.expectedSizeBytes === undefined
+    ? undefined
+    : validateExpectedSize(record.expectedSizeBytes)
+  const expectedSha256 = record.expectedSha256 === undefined
+    ? undefined
+    : validateExpectedSha256(record.expectedSha256)
+  if ((expectedSizeBytes === undefined) !== (expectedSha256 === undefined)) {
+    throw new TypeError('download integrity metadata must include size and SHA-256')
+  }
   validateArtifactEndpoint(apiPath, query ?? {})
   validateArtifactFileName(saveOptions.suggestedName)
   return {
@@ -409,7 +426,23 @@ export function validateBackendDownloadRequest(value: unknown): BackendDownloadR
     ...(query === undefined ? {} : { query }),
     ...saveOptions,
     ...(record.destinationPath === undefined ? {} : { destinationPath: validateBridgePath(record.destinationPath) }),
+    ...(expectedSizeBytes === undefined ? {} : { expectedSizeBytes }),
+    ...(expectedSha256 === undefined ? {} : { expectedSha256 }),
   }
+}
+
+function validateExpectedSize(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError('download expected size is invalid')
+  }
+  return value
+}
+
+function validateExpectedSha256(value: unknown): string {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/i.test(value)) {
+    throw new TypeError('download expected SHA-256 is invalid')
+  }
+  return value.toLowerCase()
 }
 
 export function buildBackendRequestPath(value: BackendDownloadRequest): string {

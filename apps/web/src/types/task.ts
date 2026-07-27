@@ -59,6 +59,7 @@ export interface TaskItem {
     artifact_id: string
     display_name: string
     size_bytes: number
+    sha256?: string
     media_type: string
     api_path: string
     query: Record<string, string>

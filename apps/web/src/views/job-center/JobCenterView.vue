@@ -256,11 +256,19 @@ async function downloadArtifact(): Promise<void> {
       apiPath: artifact.api_path,
       query: artifact.query,
       suggestedName: artifact.display_name,
+      ...(artifact.size_bytes >= 0 && /^[0-9a-f]{64}$/i.test(artifact.sha256 || '')
+        ? {
+            expectedSizeBytes: artifact.size_bytes,
+            expectedSha256: artifact.sha256,
+          }
+        : {}),
     })
   if (generation !== downloadGeneration || store.selected?.id !== taskId || !drawerVisible.value) return
   if (result.status === 'saved') {
     lastSavedCapability.value = result.capabilityId || ''
     if (!tracksideArtifact) ElMessage.success('Artifact 已保存')
+  } else if (result.status === 'cancelled' && !tracksideArtifact) {
+    ElMessage.warning('Artifact 已生成，但尚未保存到本地。')
   } else if (result.status === 'failed' && !tracksideArtifact) ElMessage.error(result.error || 'Artifact 下载失败')
 }
 

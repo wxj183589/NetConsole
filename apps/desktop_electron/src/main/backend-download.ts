@@ -1,9 +1,10 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { open, rename, rm } from 'node:fs/promises'
 import { basename, dirname, resolve } from 'node:path'
 
 import {
   DESKTOP_SESSION_HEADER,
+  type BackendDownloadErrorCode,
   type BackendDownloadRequest,
   type BackendDownloadResult,
 } from '../shared/bridge'
@@ -57,7 +58,9 @@ export class BackendDownloadManager {
   }
 
   async download(value: unknown, window = this.options.window): Promise<BackendDownloadResult> {
-    if (this.shuttingDown) return { status: 'failed', error: '桌面正在退出，无法开始下载。' }
+    if (this.shuttingDown) {
+      return failedResult('DESKTOP_SHUTTING_DOWN', '桌面正在退出，无法开始下载。')
+    }
     const request = validateBackendDownloadRequest(value)
     const selection = request.destinationPath
       ? { canceled: false, filePath: this.options.pathRegistry.requireSavePath(request.destinationPath) }
@@ -66,19 +69,21 @@ export class BackendDownloadManager {
           ...(request.filters ? { filters: request.filters } : {}),
         })
     if (selection.canceled || !selection.filePath) return { status: 'cancelled' }
-    if (this.shuttingDown) return { status: 'failed', error: '桌面正在退出，无法开始下载。' }
+    if (this.shuttingDown) {
+      return failedResult('DESKTOP_SHUTTING_DOWN', '桌面正在退出，无法开始下载。')
+    }
 
     const finalPath = normalizeAbsolutePath(selection.filePath)
     try {
       if (validateArtifactFileName(basename(finalPath)) !== validateArtifactFileName(request.suggestedName)) {
-        return { status: 'failed', error: '保存文件类型与 Artifact 不一致。' }
+        return failedResult('FILE_TYPE_MISMATCH', '保存文件类型与 Artifact 不一致。')
       }
     } catch {
-      return { status: 'failed', error: '保存文件类型与 Artifact 不一致。' }
+      return failedResult('FILE_TYPE_MISMATCH', '保存文件类型与 Artifact 不一致。')
     }
     const finalPathKey = targetPathKey(finalPath)
     if (this.activeFinalPaths.has(finalPathKey)) {
-      return { status: 'failed', error: '该目标文件已有下载正在进行。' }
+      return failedResult('DOWNLOAD_IN_PROGRESS', '该目标文件已有下载正在进行。')
     }
     this.activeFinalPaths.add(finalPathKey)
     const tempPath = resolve(
@@ -119,22 +124,39 @@ export class BackendDownloadManager {
         redirect: 'error',
         signal: controller.signal,
       })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      if (!response.body) throw new Error('empty response body')
-      await streamResponseToFile(response.body, tempPath)
+      if (response.status === 404) {
+        throw new DownloadFailure('ARTIFACT_NOT_FOUND', '导出文件已失效，请重新导出。')
+      }
+      if (!response.ok) {
+        throw new DownloadFailure(
+          'BACKEND_DOWNLOAD_FAILED',
+          `下载服务返回 HTTP ${response.status}，请稍后重试。`,
+        )
+      }
+      if (!response.body) {
+        throw new DownloadFailure('BACKEND_DOWNLOAD_FAILED', '下载服务未返回文件内容。')
+      }
+      validateContentLength(response, request.expectedSizeBytes)
+      const downloaded = await streamResponseToFile(response.body, tempPath)
+      validateDownloadedFile(downloaded, request)
       await rename(tempPath, finalPath)
       const capabilityId = isOpenableArtifactFileName(basename(finalPath))
         ? this.options.pathRegistry.grantCapability(finalPath)
         : undefined
       this.logger('ELECTRON_BACKEND_DOWNLOAD_SAVED', `route=${route}`)
-      return { status: 'saved', ...(capabilityId ? { capabilityId } : {}) }
+      return {
+        status: 'saved',
+        ...(capabilityId ? { capabilityId } : {}),
+        sizeBytes: downloaded.sizeBytes,
+        sha256: downloaded.sha256,
+      }
     } catch (cause) {
       await rm(tempPath, { force: true }).catch(() => undefined)
       this.logger(
         'ELECTRON_BACKEND_DOWNLOAD_FAILED',
         `route=${route} error=${downloadErrorCode(cause)}`,
       )
-      return { status: 'failed', error: '文件下载失败，请重试。' }
+      return downloadFailureResult(cause)
     }
   }
 }
@@ -175,19 +197,31 @@ function managedBackendUrl(
   return url.toString()
 }
 
+interface DownloadedFileIntegrity {
+  sizeBytes: number
+  sha256: string
+}
+
 async function streamResponseToFile(
   body: ReadableStream<Uint8Array>,
   tempPath: string,
-): Promise<void> {
+): Promise<DownloadedFileIntegrity> {
   const handle = await open(tempPath, 'wx')
   const reader = body.getReader()
+  const digest = createHash('sha256')
+  let sizeBytes = 0
   try {
     while (true) {
       const chunk = await reader.read()
       if (chunk.done) break
-      if (chunk.value.byteLength) await handle.writeFile(chunk.value)
+      if (chunk.value.byteLength) {
+        await handle.writeFile(chunk.value)
+        digest.update(chunk.value)
+        sizeBytes += chunk.value.byteLength
+      }
     }
     await handle.sync()
+    return { sizeBytes, sha256: digest.digest('hex') }
   } catch (cause) {
     await reader.cancel().catch(() => undefined)
     throw cause
@@ -197,7 +231,66 @@ async function streamResponseToFile(
   }
 }
 
+function validateContentLength(response: Response, expectedSizeBytes?: number): void {
+  if (expectedSizeBytes === undefined) return
+  const header = response.headers.get('content-length')
+  if (header === null) return
+  const contentLength = Number(header)
+  if (!Number.isSafeInteger(contentLength) || contentLength < 0 || contentLength !== expectedSizeBytes) {
+    throw new DownloadFailure('FILE_INTEGRITY_MISMATCH', '文件完整性校验失败，请重新下载。')
+  }
+}
+
+function validateDownloadedFile(
+  downloaded: DownloadedFileIntegrity,
+  request: BackendDownloadRequest,
+): void {
+  if (request.expectedSizeBytes === undefined || request.expectedSha256 === undefined) return
+  if (
+    downloaded.sizeBytes !== request.expectedSizeBytes
+    || downloaded.sha256 !== request.expectedSha256
+  ) {
+    throw new DownloadFailure('FILE_INTEGRITY_MISMATCH', '文件完整性校验失败，请重新下载。')
+  }
+}
+
+class DownloadFailure extends Error {
+  constructor(
+    readonly code: BackendDownloadErrorCode,
+    message: string,
+  ) {
+    super(message)
+    this.name = 'DownloadFailure'
+  }
+}
+
+function failedResult(
+  errorCode: BackendDownloadErrorCode,
+  error: string,
+): BackendDownloadResult {
+  return { status: 'failed', errorCode, error }
+}
+
+function downloadFailureResult(cause: unknown): BackendDownloadResult {
+  if (cause instanceof DownloadFailure) return failedResult(cause.code, cause.message)
+  const code = nodeErrorCode(cause)
+  if (code === 'ENOSPC') return failedResult('DISK_FULL', '磁盘空间不足，无法保存导出文件。')
+  if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') {
+    return failedResult('PATH_NOT_WRITABLE', '无法写入所选目录，请选择其他目录。')
+  }
+  return failedResult('BACKEND_DOWNLOAD_FAILED', '文件下载失败，请重试。')
+}
+
+function nodeErrorCode(cause: unknown): string {
+  return cause instanceof Error && 'code' in cause
+    ? String((cause as Error & { code?: unknown }).code || '')
+    : ''
+}
+
 function downloadErrorCode(cause: unknown): string {
+  if (cause instanceof DownloadFailure) return cause.code
+  const code = nodeErrorCode(cause)
+  if (code) return code
   if (cause instanceof Error) {
     if (cause.name === 'AbortError') return 'ABORTED'
     if (/^HTTP \d{3}$/.test(cause.message)) return cause.message.replace(' ', '_')

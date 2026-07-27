@@ -106,6 +106,27 @@ describe('preload bridge', () => {
       apiPath: 'https://example.com/report.zip',
       suggestedName: 'report.zip',
     })).toThrow()
+    expect(() => bridge.downloadBackendResource({
+      apiPath: '/api/device-management/exports/task-1/download',
+      query: { artifact_id: 'artifact-1' },
+      suggestedName: '设备表.csv',
+      expectedSizeBytes: 128,
+    })).toThrow('integrity metadata')
+    bridge.downloadBackendResource({
+      apiPath: '/api/device-management/exports/task-1/download',
+      query: { artifact_id: 'artifact-1' },
+      suggestedName: '设备表.csv',
+      expectedSizeBytes: 128,
+      expectedSha256: 'a'.repeat(64),
+    })
+    expect(ipcRenderer.invoke).toHaveBeenLastCalledWith(
+      DESKTOP_IPC.downloadBackendResource,
+      expect.objectContaining({
+        expectedSizeBytes: 128,
+        expectedSha256: 'a'.repeat(64),
+      }),
+    )
+    vi.mocked(ipcRenderer.invoke).mockClear()
     expect(() => bridge.openExternalUrl('http://192.0.2.10/')).toThrow()
     expect(() => bridge.openPath('C:\\private\\report.xlsx')).toThrow('capabilityId is invalid')
     expect(() => bridge.showItemInFolder('C:\\private')).toThrow('capabilityId is invalid')

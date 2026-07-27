@@ -297,6 +297,7 @@ class TaskApplicationService:
         source: str,
         task_type: str,
         result: dict[str, object],
+        message: str = "报告完整性校验完成",
     ) -> TaskSnapshot:
         """以安全标量替换导出 Worker 暂存的路径结果。"""
 
@@ -306,7 +307,7 @@ class TaskApplicationService:
         return self.record_external_event(
             task_id,
             "artifact_finalized",
-            {"result": dict(result), "message": "报告完整性校验完成"},
+            {"result": dict(result), "message": str(message or "报告完整性校验完成")},
             source="artifact_store",
             site_name=site_name,
         )

@@ -460,18 +460,32 @@ class JobCenterQueryService:
                 result.get("size_bytes"),
                 api_path,
                 {"artifact_id": artifact_id},
+                sha256=result.get("sha256"),
             )
         if owner == CONFIG_WEB_OWNER and task_type in CONFIG_WEB_EXPORT_TASKS and artifact_id:
             name = JobCenterQueryService._artifact_display_name(result.get("display_name"))
             if not name:
                 return None
-            return JobCenterQueryService._artifact_dto(artifact_id, name, result.get("size") or result.get("size_bytes"), f"/api/config-collection/artifacts/{artifact_id}")
+            return JobCenterQueryService._artifact_dto(
+                artifact_id,
+                name,
+                result.get("size") or result.get("size_bytes"),
+                f"/api/config-collection/artifacts/{artifact_id}",
+                sha256=result.get("sha256"),
+            )
         if owner == "web_file_management" and task_type == "file_management_download" and result.get("name"):
             name = JobCenterQueryService._artifact_display_name(result["name"])
             safe_id = str(result.get("artifact_id") or result.get("download_ref") or task_id)
             if not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", safe_id):
                 return None
-            return JobCenterQueryService._artifact_dto(safe_id, name, result.get("size_bytes"), f"/api/file-management/downloads/{task_id}/file", {"site_id": site_name})
+            return JobCenterQueryService._artifact_dto(
+                safe_id,
+                name,
+                result.get("size_bytes"),
+                f"/api/file-management/downloads/{task_id}/file",
+                {"site_id": site_name},
+                sha256=result.get("sha256"),
+            )
         if owner == NETWORK_TOOL_OWNER and task_type in NETWORK_EXPORT_TASK_TYPES:
             network_artifact_id = str(result.get("result_id") or "")
             if not re.fullmatch(r"[0-9a-f]{32}", network_artifact_id):
@@ -489,6 +503,7 @@ class JobCenterQueryService:
                 name,
                 result.get("size"),
                 api_path,
+                sha256=result.get("sha256"),
             )
         if task_type.startswith("web_export_") and artifact_id:
             try:
@@ -509,6 +524,7 @@ class JobCenterQueryService:
                 name,
                 result.get("size_bytes"),
                 f"/api/job-center/artifacts/{artifact_id}",
+                sha256=result.get("sha256"),
             )
         return None
 
@@ -521,11 +537,23 @@ class JobCenterQueryService:
         return safe_artifact_display_name(candidate, suffix)
 
     @staticmethod
-    def _artifact_dto(artifact_id: str, display_name: str, size: object, api_path: str, query: dict[str, str] | None = None) -> JobCenterArtifactDTO:
+    def _artifact_dto(
+        artifact_id: str,
+        display_name: str,
+        size: object,
+        api_path: str,
+        query: dict[str, str] | None = None,
+        *,
+        sha256: object = "",
+    ) -> JobCenterArtifactDTO:
+        safe_sha256 = str(sha256 or "").casefold()
+        if not re.fullmatch(r"[0-9a-f]{64}", safe_sha256):
+            safe_sha256 = ""
         return JobCenterArtifactDTO(
             artifact_id=artifact_id,
             display_name=display_name,
             size_bytes=max(0, JobCenterQueryService._optional_int(size) or 0),
+            sha256=safe_sha256,
             media_type=artifact_media_type(display_name),
             api_path=api_path,
             query=query or {},

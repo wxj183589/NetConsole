@@ -8,6 +8,7 @@
 - 设备 CSV 预览改为先严格识别 UTF-8 BOM、UTF-8、GB18030/GBK，再逐行校验并返回总/有效/无效行数、厂商/类型统计、重复冲突和结构化中文错误。正式 28 列模板保持，兼容既有 21 列现场文件。
 - ZTE 交换机接入统一能力命令 Profile：会话准备使用 `terminal length 0`，基础采集使用 `show` 命令并支持序列号候选回退；诊断包保持 unsupported，不向 ZTE 发送 H3C 命令。缺少真实输出样本的高级字段保留 raw，不做猜测解析。
 - 设备 CSV 导出迁入公共 Export Worker / Task Center / `WebArtifactStore` 链路，按 10/30/60/85/95/100 阶段更新进度，记录实际导出行数，Artifact 最终化失败会把任务收敛为失败，不再遗留长期 `RUNNING`、0% 且无 Artifact 的任务。
+- 设备管理页面本次主动发起的 CSV 导出在 Artifact 就绪后自动调用 Electron“另存为”，同一任务只触发一次；取消保存不改写已完成任务，仍可从页面或 Task Center 重新保存。Electron 下载按期望大小与 SHA-256 流式校验，失败清理 `.part` 并保留原目标文件。
 
 ### 工作区、局点与 MESH
 

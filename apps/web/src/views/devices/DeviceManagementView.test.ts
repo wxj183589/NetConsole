@@ -132,7 +132,13 @@ describe('Device Management Web view', () => {
     expect(source).toContain('startSecureCrtExportWithTemplate')
     expect(source).toContain('accept=".ini"')
     expect(source).toContain('stopOmniPeekPreview')
-    expect(source).toContain('设备表格导出完成，共 ${result.row_count ?? 0} 台设备')
+    expect(source).toContain('设备表格导出完成，共 ${task.row_count ?? 0} 台设备')
+    expect(source).toContain('handledInteractiveExportTaskIds')
+    expect(source).toContain('saveDeviceCsvArtifact')
+    expect(source).toContain('expectedSizeBytes: task.size_bytes')
+    expect(source).toContain('expectedSha256: task.sha256')
+    expect(source).toContain('设备表格已生成，但尚未保存到本地。')
+    expect(source).toContain('openWindow = true')
     expect(source).toContain('Date.now() + 120_000')
     for (const featureId of [
       'web.device_management_write',

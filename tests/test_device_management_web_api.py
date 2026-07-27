@@ -2502,6 +2502,7 @@ def test_device_export_production_result_separates_physical_and_display_names(
     assert result.row_count == 2
     assert result.sha256
     assert result.size_bytes > 0
+    assert result.message == "设备表格完整性校验完成"
     assert not service.export_adapter.is_running(reference.task_id)
     assert downloaded.status_code == 200
     assert "demo-%E8%AE%BE%E5%A4%87%E8%A1%A8-" in downloaded.headers[

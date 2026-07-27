@@ -68,9 +68,12 @@ import type {
 import type { TaskItem, TaskStatus } from '../../types/task'
 
 interface PublicTaskArtifact {
+  artifact_id: string
   api_path: string
   query: Record<string, string>
   display_name: string
+  size_bytes: number
+  sha256?: string
 }
 
 type DevicePublicTask = TaskItem & {
@@ -135,6 +138,7 @@ const omniPeekForceKeys = ref<string[]>([])
 const omniPeekTable = ref<TableSelectionController<DeviceOmniPeekPreviewItem>>()
 const lastSubmittedTask = ref<DeviceTaskReference | null>(null)
 const savedArtifactCapability = ref('')
+const savedDeviceArtifactNotice = ref<{ fileName: string; rowCount: number } | null>(null)
 const terminalSettingsVisible = ref(false)
 const terminalSettingsLoading = ref(false)
 const terminalLaunchVisible = ref(false)
@@ -222,7 +226,7 @@ let omniPeekPollGeneration = 0
 let editLoadGeneration = 0
 let editProfileAbortController: AbortController | null = null
 let componentActive = true
-let notifiedExportTerminalKey = ''
+const handledInteractiveExportTaskIds = new Set<string>()
 const pollingConsumer = 'device-management-view'
 let drawerDragStartX = 0
 let drawerDragStartWidth = 0
@@ -326,23 +330,28 @@ watch(
 )
 watch(
   () => {
-    const task = latestDeviceTask.value
     const submitted = lastSubmittedTask.value
-    return task
-      && submitted?.action === 'export_csv'
-      && task.id === submitted.task_id
-      && ['COMPLETED', 'FAILED', 'CANCELLED'].includes(task.status)
-      ? `${task.id}:${task.status}:${task.updated_time}`
-      : ''
+    if (submitted?.action !== 'export_csv') return ''
+    const task = publicDeviceTasks.value.find((item) => item.id === submitted.task_id)
+    if (!task || !['COMPLETED', 'FAILED', 'CANCELLED'].includes(task.status)) return ''
+    if (task.status === 'COMPLETED' && !task.artifact_download) return ''
+    return `${task.id}:${task.status}`
   },
   async (terminalKey) => {
-    if (!terminalKey || terminalKey === notifiedExportTerminalKey) return
-    notifiedExportTerminalKey = terminalKey
+    if (!terminalKey) return
     const taskId = terminalKey.split(':', 1)[0]
+    if (handledInteractiveExportTaskIds.has(taskId)) return
+    handledInteractiveExportTaskIds.add(taskId)
+    const task = publicDeviceTasks.value.find((item) => item.id === taskId)
     try {
       const result = await getDeviceExportTask(taskId)
       if (result.task_status === 'COMPLETED') {
-        ElMessage.success(`设备表格导出完成，共 ${result.row_count ?? 0} 台设备`)
+        const artifact = task?.artifact_download
+        if (!artifact || !result.available) {
+          ElMessage.error('导出任务已完成，但未找到可下载文件。')
+          return
+        }
+        await saveDeviceCsvArtifact(artifact, result)
       } else if (result.task_status === 'CANCELLED') {
         ElMessage.warning('设备表格导出已取消')
       } else {
@@ -366,6 +375,7 @@ onBeforeUnmount(() => {
   omniPeekPollGeneration += 1
   clearEditingProfileState()
   savedArtifactCapability.value = ''
+  savedDeviceArtifactNotice.value = null
   taskStore.releasePolling(pollingConsumer)
   document.removeEventListener('click', closeContextMenu)
   endDrawerResize()
@@ -501,11 +511,16 @@ async function openTaskWindow(
   return true
 }
 
-async function presentTasks(tasks: DeviceTaskReference[], message: string): Promise<void> {
+async function presentTasks(
+  tasks: DeviceTaskReference[],
+  message: string,
+  openWindow = true,
+): Promise<void> {
   const task = tasks[0]
   if (!task) return
   lastSubmittedTask.value = task
   savedArtifactCapability.value = ''
+  savedDeviceArtifactNotice.value = null
   let taskStoreRefreshed = true
   try {
     await taskStore.refresh()
@@ -514,10 +529,12 @@ async function presentTasks(tasks: DeviceTaskReference[], message: string): Prom
   }
   const publicTask = publicDeviceTasks.value.find((item) => item.id === task.task_id)
   let taskWindowOpened = true
-  try {
-    taskWindowOpened = await openTaskWindow(publicTask || null, task.task_id, false)
-  } catch {
-    taskWindowOpened = false
+  if (openWindow) {
+    try {
+      taskWindowOpened = await openTaskWindow(publicTask || null, task.task_id, false)
+    } catch {
+      taskWindowOpened = false
+    }
   }
   if (taskStoreRefreshed && taskWindowOpened) {
     ElMessage.success(message)
@@ -530,6 +547,45 @@ async function presentTasks(tasks: DeviceTaskReference[], message: string): Prom
   ElMessage.warning(`任务已提交，但${failedSteps}`)
 }
 
+async function saveDeviceCsvArtifact(
+  artifact: PublicTaskArtifact,
+  task: DeviceTaskReference,
+): Promise<void> {
+  if (
+    task.size_bytes < 0
+    || !/^[0-9a-f]{64}$/i.test(task.sha256)
+    || artifact.artifact_id !== task.artifact_id
+  ) {
+    ElMessage.error('导出任务已完成，但文件完整性信息缺失。')
+    return
+  }
+  const result = await downloadBackendResource({
+    apiPath: artifact.api_path,
+    query: artifact.query,
+    suggestedName: artifact.display_name,
+    expectedSizeBytes: task.size_bytes,
+    expectedSha256: task.sha256,
+  })
+  if (result.status === 'cancelled') {
+    ElMessage.warning('设备表格已生成，但尚未保存到本地。')
+    return
+  }
+  if (result.status === 'started') {
+    ElMessage.success(`设备表格导出完成，共 ${task.row_count ?? 0} 台设备；文件将保存至浏览器默认下载目录`)
+    return
+  }
+  if (result.status === 'failed') {
+    ElMessage.error(result.error || '设备表格保存失败，请在任务中心重新保存。')
+    return
+  }
+  savedArtifactCapability.value = result.capabilityId || ''
+  savedDeviceArtifactNotice.value = {
+    fileName: artifact.display_name,
+    rowCount: task.row_count ?? 0,
+  }
+  ElMessage.success(`设备表格导出完成，共 ${task.row_count ?? 0} 台设备`)
+}
+
 async function downloadLatestArtifact(): Promise<void> {
   const artifact = latestDeviceTask.value?.artifact_download
   if (!artifact) return
@@ -538,8 +594,16 @@ async function downloadLatestArtifact(): Promise<void> {
     apiPath: artifact.api_path,
     query: artifact.query,
     suggestedName: artifact.display_name,
+    ...(artifact.size_bytes >= 0 && /^[0-9a-f]{64}$/i.test(artifact.sha256 || '')
+      ? {
+          expectedSizeBytes: artifact.size_bytes,
+          expectedSha256: artifact.sha256,
+        }
+      : {}),
   })
   if (result.status === 'failed') ElMessage.error(result.error || 'Artifact 下载失败')
+  else if (result.status === 'cancelled') ElMessage.warning('设备表格已生成，但尚未保存到本地。')
+  else if (result.status === 'started') ElMessage.success('文件将保存至浏览器默认下载目录')
   const capabilityId = result.status === 'saved'
     && 'capabilityId' in result
     && typeof result.capabilityId === 'string'
@@ -1087,6 +1151,7 @@ async function exportCsv(includeCredentials = false): Promise<void> {
     await presentTasks(
       [await startDeviceCsvExport(currentExportFilters(includeCredentials))],
       'CSV 导出任务已提交',
+      false,
     )
   } catch (cause) {
     if (cause === 'cancel' || cause === 'close') return
@@ -1441,7 +1506,7 @@ function errorMessage(cause: unknown, fallback: string): string {
       <el-button :icon="Upload" :disabled="!isFeatureEnabled('web.device_management_import')" @click="importVisible = true">导入 CSV</el-button>
       <el-dropdown>
         <el-button :icon="Download" :disabled="!isFeatureEnabled('web.device_management_export')">导出</el-button>
-        <template #dropdown><el-dropdown-menu><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management_export')" @click="exportCsv(false)">CSV 导出（不含凭据）</el-dropdown-item><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management_export')" @click="exportCsv(true)">CSV 导出（含凭据）</el-dropdown-item><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management_export')" @click="exportTemplate">模板导出</el-dropdown-item><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management_export')" @click="openOmniPeekExport">OmniPeek 名称表</el-dropdown-item><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management_export')" @click="openSecureCrtExport">SecureCRT 会话</el-dropdown-item></el-dropdown-menu></template>
+        <template #dropdown><el-dropdown-menu><el-dropdown-item data-testid="device-export-csv-no-credentials" :disabled="!isFeatureEnabled('web.device_management_export')" @click="exportCsv(false)">CSV 导出（不含凭据）</el-dropdown-item><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management_export')" @click="exportCsv(true)">CSV 导出（含凭据）</el-dropdown-item><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management_export')" @click="exportTemplate">模板导出</el-dropdown-item><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management_export')" @click="openOmniPeekExport">OmniPeek 名称表</el-dropdown-item><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management_export')" @click="openSecureCrtExport">SecureCRT 会话</el-dropdown-item></el-dropdown-menu></template>
       </el-dropdown>
       <el-button :disabled="!selectedUuids.length" @click="clearSelection">清空选择</el-button>
       <el-button :disabled="!pageData.items.length" @click="invertSelection">反选当前页</el-button>
@@ -1460,6 +1525,15 @@ function errorMessage(cause: unknown, fallback: string): string {
       <el-button v-if="desktopHost && savedArtifactCapability" link type="primary" @click="useSavedArtifact(false)">打开文件</el-button>
       <el-button v-if="desktopHost && savedArtifactCapability" link type="primary" @click="useSavedArtifact(true)">所在目录</el-button>
     </el-alert>
+    <el-alert
+      v-if="savedDeviceArtifactNotice"
+      title="设备表格导出完成"
+      :description="`共导出 ${savedDeviceArtifactNotice.rowCount} 台设备；文件：${savedDeviceArtifactNotice.fileName}；已保存到 Windows“另存为”窗口中选择的位置。`"
+      type="success"
+      :closable="false"
+      show-icon
+      class="task-summary"
+    />
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" class="state-alert" />
     <div v-loading="loading" class="content-card table-card" :data-state="isEmpty ? 'empty' : 'success'">
       <div class="device-table-host">
