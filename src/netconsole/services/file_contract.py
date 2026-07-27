@@ -127,6 +127,7 @@ def validate_csv_import(
     expected_module: str,
     required_headers: Iterable[str],
     allow_legacy: bool = True,
+    allow_header_only: bool = False,
 ) -> ImportValidationResult:
     target = _require_file(path, {".csv"})
     text, encoding = _read_text(target)
@@ -140,7 +141,7 @@ def validate_csv_import(
     if missing:
         raise ImportValidationError(f"缺少必要字段：{', '.join(missing)}")
     data_rows = [row for row in rows[1:] if any(str(value).strip() for value in row)]
-    if not data_rows:
+    if not data_rows and not allow_header_only:
         raise ImportValidationError("文件为空：没有可导入的数据")
     for line_number, row in enumerate(data_rows, start=2):
         if len(row) != len(headers):

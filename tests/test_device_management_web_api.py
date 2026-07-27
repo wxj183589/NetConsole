@@ -7,7 +7,6 @@ import hashlib
 from io import BytesIO
 import json
 import os
-import sys
 import zipfile
 from datetime import UTC, datetime
 from dataclasses import replace
@@ -1656,7 +1655,9 @@ def test_all_qt_device_export_formats_complete_in_real_export_process(
             response = client.get(f"/api/device-management/exports/{task_id}")
             assert response.status_code == 200, response.text
             task = response.json()
-            if task["task_status"] in {"COMPLETED", "FAILED", "CANCELLED"}:
+            if task["task_status"] in {"FAILED", "CANCELLED"} or (
+                task["task_status"] == "COMPLETED" and task["available"] is True
+            ):
                 break
             sleep(0.05)
         assert task["task_status"] == "COMPLETED", task
@@ -2512,6 +2513,72 @@ def test_device_export_production_result_separates_physical_and_display_names(
     assert downloaded.headers["content-type"] == "text/csv; charset=utf-8"
 
 
+def test_device_template_export_uses_managed_worker_and_empty_import_contract(
+    tmp_path: Path,
+) -> None:
+    client, service, _adapter, _devices, _facts, _mr, _sw = _fixture(
+        tmp_path,
+        app_root=Path(__file__).parents[1],
+    )
+    started = monotonic()
+    reference = service.start_template_export()
+    deadline = started + 15
+    while monotonic() < deadline:
+        result = service.get_export_task(reference.task_id)
+        if result.task_status in {"COMPLETED", "FAILED", "CANCELLED"} and result.available:
+            break
+        sleep(0.05)
+    else:
+        pytest.fail("设备导入模板未在 15 秒内生成可下载 Artifact")
+
+    downloaded = client.get(
+        f"/api/device-management/exports/{reference.task_id}/download",
+        params={"artifact_id": result.artifact_id},
+    )
+    snapshot = service.task_service.repository("demo").get(reference.task_id)
+    assert snapshot is not None
+    events = service.task_service.repository("demo").list_events(
+        reference.task_id, limit=100
+    )
+    progress = {
+        int(event["payload"].get("current") or 0): str(
+            event["payload"].get("message") or ""
+        )
+        for event in events
+        if event["type"] == "progress"
+    }
+
+    assert monotonic() - started < 5
+    assert reference.action == "export_template"
+    assert snapshot.task_type == "web_export_device_template_csv"
+    assert snapshot.status is TaskState.COMPLETED
+    assert snapshot.progress == 100
+    assert snapshot.finished_time
+    assert result.task_status == "COMPLETED"
+    assert result.action == "export_template"
+    assert result.available is True
+    assert result.row_count == 0
+    assert len(result.sha256) == 64
+    assert result.size_bytes > 0
+    assert result.message == "设备导入模板生成完成"
+    assert not service.export_adapter.is_running(reference.task_id)
+    assert progress[10] == "正在读取设备模板定义"
+    assert progress[35] == "正在生成设备导入模板"
+    assert progress[65] == "正在校验设备导入模板"
+    assert progress[85] == "正在注册模板 Artifact"
+    assert downloaded.status_code == 200
+    assert downloaded.content.startswith(b"\xef\xbb\xbf")
+    downloaded_rows = list(
+        csv.reader(downloaded.content.decode("utf-8-sig").splitlines())
+    )
+    assert downloaded_rows[0][0] == "#NETCONSOLE_META"
+    assert downloaded_rows[1:] == [TEMPLATE_FIELDS]
+    assert "demo-%E8%AE%BE%E5%A4%87%E5%AF%BC%E5%85%A5%E6%A8%A1%E6%9D%BF.csv" in downloaded.headers[
+        "content-disposition"
+    ]
+    assert int(downloaded.headers["content-length"]) == result.size_bytes
+
+
 def test_device_management_parent_feature_gate_blocks_write_actions(
     tmp_path: Path,
 ) -> None:
@@ -2591,43 +2658,30 @@ def test_device_management_action_gates_block_their_own_endpoints(
         assert response.status_code == 404, feature_id
 
 
-@pytest.mark.parametrize(
-    ("frozen", "expected_prefix"),
-    (
-        (False, [sys.executable, "-m", "netconsole.export_worker"]),
-        (True, [sys.executable, "--export-worker"]),
-    ),
-)
-def test_device_export_spawn_failure_uses_fixed_worker_and_cleans_job_files(
-    tmp_path: Path, monkeypatch, frozen: bool, expected_prefix: list[str]
+def test_device_template_export_start_failure_reaches_failed_and_cleans_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _client, service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
-    captured: dict[str, object] = {}
 
-    def fail_popen(*args: object, **kwargs: object):
-        captured["args"] = args
-        captured.update(kwargs)
+    def fail_start(_launch):
         raise OSError("worker unavailable")
 
-    monkeypatch.setattr(sys, "frozen", frozen, raising=False)
-    monkeypatch.setattr(
-        "netconsole.services.device_management_web_service.subprocess.Popen", fail_popen
+    monkeypatch.setattr(service.export_adapter, "_start_process", fail_start)
+    with pytest.raises(OSError, match="worker unavailable"):
+        service.start_template_export()
+
+    snapshots = service.task_service.repository("demo").list(
+        statuses={TaskState.FAILED}, limit=10
     )
-    reference = service.start_template_export()
-    assert reference.task_status == TaskState.FAILED.value
-    assert captured["shell"] is False
-    command = captured["args"][0]  # type: ignore[index]
-    assert command[: len(expected_prefix)] == expected_prefix
-    assert not list(
-        (service.paths.runtime_cache_dir / "export_jobs").glob(f"{reference.task_id}.*")
-    )
-    assert not list(service._artifact_root("demo").glob("*"))
-    snapshot = service.task_service.repository("demo").get(reference.task_id)
-    assert snapshot is not None
+    assert len(snapshots) == 1
+    snapshot = snapshots[0]
     assert snapshot.owner == WEB_TASK_OWNER
     assert snapshot.source == "local"
-    assert snapshot.task_type in {"device_export_device_template_csv"}
-    assert "output_path" not in reference.model_dump()
+    assert snapshot.task_type == "web_export_device_template_csv"
+    assert not list(
+        (service.paths.runtime_cache_dir / "export_jobs").glob(f"{snapshot.task_id}.*")
+    )
+    assert not list(service._artifact_root("demo").glob("*"))
 
 
 def test_securecrt_spawn_and_sensitive_cleanup_failure_still_marks_task_failed(

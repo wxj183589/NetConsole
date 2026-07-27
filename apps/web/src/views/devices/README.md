@@ -55,11 +55,11 @@ LLDP 历史数据按公开 DTO 白名单消费，不进入任意原始对象透�
 
 ## CSV 导入导出
 
-- 正式模板和导出继续使用当前 28 列契约（在旧 21 列设备字段基础上增加 7 个 SNMP 字段）；旧 21 列文件仍可导入，避免破坏现场存量模板。
+- 正式模板和导出共用唯一的 28 列契约（在旧 21 列设备字段基础上增加 7 个 SNMP 字段）；模板只包含 UTF-8 BOM、元数据行和表头，不再写示例设备，导入预览允许零数据行。旧 21 列文件仍可导入，避免破坏现场存量模板。
 - 导入严格识别 UTF-8 BOM、UTF-8、GB18030、GBK，不使用 `errors="ignore"`。预览返回检测编码、SHA-256、总/有效/无效行数、厂商与类型统计、新增/更新/冲突数和结构化行级中文错误。
 - H3C 与 ZTE 可存在于同一个 CSV。存在无效行时仍展示全部已解析行，但确认导入保持单 SQLite 事务，不提供“忽略错误行”。
-- 设备表格导出遵守“有勾选导出勾选项；无勾选导出当前筛选结果”，继续使用 UTF-8 BOM 和既有凭据开关。任务统一进入 Export Worker、Task Center 和 `WebArtifactStore`，结果记录实际行数并提供受控 Artifact 下载。
-- 用户在设备管理页面本次主动发起 CSV 导出时，页面等待 Artifact 首次就绪后自动调用统一桌面 Save As；同一 task ID 在当前页面会话只自动处理一次，历史任务不会因轮询或重新打开而弹窗。取消 Save As 不属于任务失败，Artifact 保持可下载，可从设备页面或 Task Center 再次保存。
+- 设备表格导出遵守“有勾选导出勾选项；无勾选导出当前筛选结果”，继续使用 UTF-8 BOM 和既有凭据开关。设备数据和模板都进入公共 Export Worker、Task Center 和 `WebArtifactStore`；分别使用 `web_export_device_csv`、`web_export_device_template_csv`，结果记录实际行数并提供受控 Artifact 下载。
+- 用户在设备管理页面本次主动发起设备数据或模板导出时，页面等待 Artifact 首次就绪后自动调用统一桌面 Save As；同一 task ID 在当前页面会话只自动处理一次，历史任务不会因轮询或重新打开而弹窗。取消 Save As 不属于任务失败，Artifact 保持可下载，可从设备页面或 Task Center 再次保存。
 - Electron 保存始终流式写入同目录随机 `.part`，核对 Artifact 大小和 SHA-256 后才原子替换；保存后的绝对路径不返回 Renderer，只签发短期 capability 供“打开文件 / 打开所在目录”使用。普通浏览器模式继续通过受控下载地址进入浏览器默认下载目录。
 
 ## 厂商、角色和 Command Profile 边界

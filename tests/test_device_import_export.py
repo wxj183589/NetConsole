@@ -10,6 +10,7 @@ from netconsole.repositories.device_group_repository import DeviceGroupRepositor
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_import_export import (
     CSV_ENCODING_ERROR,
+    DEVICE_CSV_COLUMNS,
     EXPORT_FIELDS,
     LEGACY_TEMPLATE_FIELDS,
     TEMPLATE_EXAMPLE_ROWS,
@@ -102,16 +103,22 @@ def template_row(**overrides):
     return [row[field] for field in TEMPLATE_FIELDS]
 
 
-def test_template_csv_uses_new_device_model_fields_and_imports_examples(tmp_path):
+def test_template_csv_is_header_only_and_round_trips_as_empty_import(tmp_path):
     repository, service = make_service(tmp_path)
     path = tmp_path / "template.csv"
 
     service.export_template_csv(path)
     rows = read_csv(path)
+    preview = service.preview_csv(path)
     result = service.import_csv(path)
     devices = repository.list()
 
-    assert rows == [TEMPLATE_FIELDS, *TEMPLATE_EXAMPLE_ROWS]
+    assert path.read_bytes().startswith(b"\xef\xbb\xbf")
+    assert rows == [TEMPLATE_FIELDS]
+    assert preview.total_rows == 0
+    assert preview.valid_rows == 0
+    assert preview.invalid_rows == 0
+    assert preview.columns == tuple(TEMPLATE_FIELDS)
     assert "归属站点" in TEMPLATE_FIELDS
     assert {"SNMP启用", "SNMPv1", "SNMPv2c", "SNMP端口", "SNMP只读团体字", "SNMP超时毫秒", "SNMP重试"}.issubset(TEMPLATE_FIELDS)
     hidden = {
@@ -130,9 +137,8 @@ def test_template_csv_uses_new_device_model_fields_and_imports_examples(tmp_path
     }
     assert hidden.isdisjoint(TEMPLATE_FIELDS)
     assert len(TEMPLATE_FIELDS) == len(TEMPLATE_EXAMPLE_ROWS[0])
-    assert result.created == len(TEMPLATE_EXAMPLE_ROWS)
-    assert all(device.primary_address for device in devices)
-    assert all(device.system_name is None for device in devices)
+    assert result.created == 0
+    assert devices == []
 
 
 def test_template_import_maps_primary_backup_and_tunnel_fields(tmp_path):
@@ -674,6 +680,28 @@ def test_mixed_vendor_34_row_preview_and_atomic_import(
     assert result.created == 34
     assert len(repository.list(vendor="ZTE")) == 16
     assert groups.find_by_name("车站") is not None
+
+    exported = tmp_path / f"mixed-{encoding}-exported.csv"
+    service.export_csv(exported, include_sensitive=False)
+    exported_rows = read_csv(exported)
+    roundtrip = service.preview_csv(exported)
+
+    assert exported_rows[0] == DEVICE_CSV_COLUMNS
+    assert len(exported_rows[1:]) == 34
+    assert [row[TEMPLATE_FIELDS.index("厂商")] for row in exported_rows[1:]].count(
+        "H3C"
+    ) == 18
+    assert [row[TEMPLATE_FIELDS.index("厂商")] for row in exported_rows[1:]].count(
+        "ZTE"
+    ) == 16
+    assert all(
+        not row[TEMPLATE_FIELDS.index(field)]
+        for row in exported_rows[1:]
+        for field in ("密码", "隧道主机1密码", "隧道主机2密码", "SNMP只读团体字")
+    )
+    assert roundtrip.total_rows == 34
+    assert roundtrip.valid_rows == 34
+    assert roundtrip.vendor_summary == {"H3C": 18, "ZTE": 16}
 
 
 def test_zte_ac_is_a_structured_row_error(tmp_path):

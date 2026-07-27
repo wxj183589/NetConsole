@@ -444,9 +444,12 @@ class JobCenterQueryService:
             owner == WEB_TASK_OWNER
             and task_type in {*EXPORT_TASK_TYPES, DEVICE_DIAGNOSTIC_TASK_TYPE}
             and artifact_id
-            and result.get("available")
+            and (result.get("available") or result.get("sha256"))
         ):
-            name = device_export_display_name(task_type, result.get("display_name"))
+            display_value = result.get("display_name")
+            if task_type.startswith("web_export_"):
+                display_value = display_value or result.get("artifact_name")
+            name = device_export_display_name(task_type, display_value)
             if not name:
                 return None
             api_path = (

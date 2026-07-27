@@ -424,15 +424,26 @@ class TaskRepository:
                 continue
             now = utc_now_iso()
             form_connection_test = snapshot.task_id.startswith("device-form-test-")
+            export_runtime_lost = snapshot.task_type.startswith(
+                ("web_export_", "device_export_")
+            )
             message = (
                 "临时表单连接测试不可恢复"
                 if form_connection_test
-                else "任务宿主已退出"
+                else (
+                    "导出任务执行进程已丢失，请重新导出"
+                    if export_runtime_lost
+                    else "任务宿主已退出"
+                )
             )
             error_message = (
                 "上次运行非正常中断，一次性表单凭据已失效，请重新提交测试"
                 if form_connection_test
-                else "上次运行非正常中断，未发现仍存活的本地任务宿主"
+                else (
+                    "导出任务执行进程已丢失，请重新导出"
+                    if export_runtime_lost
+                    else "上次运行非正常中断，未发现仍存活的本地任务宿主"
+                )
             )
             updated = TaskSnapshot(
                 **{
@@ -442,6 +453,14 @@ class TaskRepository:
                     "updated_time": now,
                     "message": message,
                     "error_message": error_message,
+                    "result": {
+                        **dict(snapshot.result or {}),
+                        **(
+                            {"error_code": "WORKER_RUNTIME_LOST"}
+                            if export_runtime_lost
+                            else {}
+                        ),
+                    },
                 }
             )
             event = TaskEvent(

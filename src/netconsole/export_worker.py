@@ -277,7 +277,18 @@ def _run_job(job: ExportJob) -> int:
                 progress_callback=lambda stage, current, total, message: _emit_progress(job, current, total, stage, message),
                 should_cancel=lambda: _should_cancel(job),
             )
-            _emit(_finished(job, str(result.get("path") or job.output_path), row_count=int(result.get("row_count") or 0)))
+            completed_message = {
+                "device_csv": "设备表格导出完成",
+                "device_template_csv": "设备导入模板生成完成",
+            }.get(job.job_type, "导出完成")
+            _emit(
+                _finished(
+                    job,
+                    str(result.get("path") or job.output_path),
+                    message=completed_message,
+                    row_count=int(result.get("row_count") or 0),
+                )
+            )
             return 0
         if job.job_type == "trackside_ap_business":
             _run_trackside_ap_business(job)

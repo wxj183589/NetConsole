@@ -68,7 +68,7 @@ Renderer 不能把绝对路径提交给打开动作。`downloadBackendResource` 
 
 `chooseSavePath` 只返回用户确认并登记为当前会话授权的目标路径；可选默认目录同样必须先由 `selectDirectory` 授权。报告生成及 Excel/ZIP/PDF/NAM 内容继续属于 Python Application Service 与 Export Process。`downloadBackendResource` 只搬运既有受控 HTTP 响应：Renderer 可以回传刚取得的另存为路径，但 main 必须在内存授权表中重新校验后才跳过第二次对话框；任意绝对路径仍会被拒绝。Renderer 只能提交设备、配置、文件、AC、MESH、Online MR 和网络工具现有正式 Artifact endpoint 模式及各端点允许的字符串 Query，main 使用当前 `PythonBackendManager` 的动态回环 Origin 与内存令牌请求，先流式写入目标同目录的随机 `.part`，同步计算实际大小和 SHA-256，并在期望元数据存在时完成校验后才原子替换。取消、HTTP 失败、路径不可写、空间不足或完整性不一致均不改变服务端任务终态，且不留下 `.part` 或伪成功文件。Electron Main/Preload 不读取数据库、不解释或生成报告。
 
-设备管理页面只为当前前端会话中用户主动提交的 `web_export_device_csv` 记录交互式 task ID；对应 Artifact 首次就绪后自动调用上述统一能力。历史任务和其他页面创建的任务不自动弹窗，Task Center 的“Artifact 下载”允许随时人工重新保存。用户取消 Save As 只表示 `local_save_status=NOT_SAVED`，服务端 Artifact 仍为 READY、任务仍为 `COMPLETED`。保存后的本机绝对路径继续不返回 Renderer；页面只持有短期 capability，并通过“打开文件 / 打开所在目录”动作使用它。
+设备管理页面只为当前前端会话中用户主动提交的 `web_export_device_csv` 和 `web_export_device_template_csv` 记录交互式 task ID；对应 Artifact 首次就绪后自动调用上述统一能力。历史任务和其他页面创建的任务不自动弹窗，Task Center 的“Artifact 下载”允许随时人工重新保存。用户取消 Save As 只表示 `local_save_status=NOT_SAVED`，服务端 Artifact 仍为 READY、任务仍为 `COMPLETED`。保存后的本机绝对路径继续不返回 Renderer；页面只持有短期 capability，并通过“打开文件 / 打开所在目录”动作使用它。
 
 Electron Session 拒绝所有 Chromium 原生 `will-download`，因此 `<a download>`、Blob 或页面导航不能绕过该桥接。退出时先关闭新下载入口，取消并等待在途流清理后再停止受管 Python；Browser Platform Adapter 不受该 Electron 专用策略影响。
 

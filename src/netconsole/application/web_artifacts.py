@@ -215,9 +215,13 @@ class WebArtifactStore:
                 task_type=reservation.task_type,
                 result=result,
                 message=(
-                    "设备表格完整性校验完成"
-                    if reservation.source == "device_csv_export"
-                    else "报告完整性校验完成"
+                    "设备导入模板生成完成"
+                    if reservation.task_type == "web_export_device_template_csv"
+                    else (
+                        "设备表格完整性校验完成"
+                        if reservation.source == "device_csv_export"
+                        else "报告完整性校验完成"
+                    )
                 ),
             )
             return manifest

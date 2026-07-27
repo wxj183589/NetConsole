@@ -41,7 +41,7 @@ LEGACY_TEMPLATE_FIELDS = [
     "备注",
 ]
 
-TEMPLATE_FIELDS = [
+DEVICE_CSV_COLUMNS = [
     *LEGACY_TEMPLATE_FIELDS[:-1],
     "SNMP启用",
     "SNMPv1",
@@ -52,6 +52,7 @@ TEMPLATE_FIELDS = [
     "SNMP重试",
     LEGACY_TEMPLATE_FIELDS[-1],
 ]
+TEMPLATE_FIELDS = DEVICE_CSV_COLUMNS
 
 TEMPLATE_EXAMPLE_ROWS = [
     ["核心交换机-示例", "192.168.1.1", "", "SSH", "22", "admin", "Admin@123", "H3C", "SW", "COCC", "控制中心", "否", "", "", "", "", "", "", "", "", "是", "否", "是", "161", "public", "2000", "1", "SSH设备示例"],
@@ -98,7 +99,7 @@ TEMPLATE_FIELD_MAP = {
     "备注": "remark",
 }
 
-EXPORT_FIELDS = list(TEMPLATE_FIELDS)
+EXPORT_FIELDS = DEVICE_CSV_COLUMNS
 SENSITIVE_EXPORT_FIELDS = {
     "password",
     "ssh_password",
@@ -114,9 +115,20 @@ CSV_ENCODING_ERROR = FILE_ENCODING_ERROR
 
 def make_device_export_filename(site_name: str, now: datetime | None = None) -> str:
     timestamp = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
-    safe_site_name = "".join("_" if char in '<>:"/\\|?*' or ord(char) < 32 else char for char in site_name)
-    safe_site_name = safe_site_name.strip().strip(".") or "site"
+    safe_site_name = _safe_site_filename_stem(site_name)
     return f"{safe_site_name}-设备表-{timestamp}.csv"
+
+
+def make_device_template_filename(site_name: str) -> str:
+    return f"{_safe_site_filename_stem(site_name)}-设备导入模板.csv"
+
+
+def _safe_site_filename_stem(site_name: str) -> str:
+    safe_site_name = "".join(
+        "_" if char in '<>:"/\\|?*' or ord(char) < 32 else char
+        for char in str(site_name or "")
+    )
+    return safe_site_name.strip().strip(".") or "site"
 
 
 @dataclass(frozen=True)
@@ -164,6 +176,7 @@ class DeviceImportExportService:
                 expected_module="devices",
                 required_headers=LEGACY_TEMPLATE_FIELDS,
                 allow_legacy=True,
+                allow_header_only=True,
             )
         except ImportValidationError as exc:
             if "编码" in str(exc):
@@ -200,6 +213,7 @@ class DeviceImportExportService:
                 expected_module="devices",
                 required_headers=LEGACY_TEMPLATE_FIELDS,
                 allow_legacy=True,
+                allow_header_only=True,
             )
         except ImportValidationError as exc:
             if "编码" in str(exc):
@@ -308,9 +322,6 @@ class DeviceImportExportService:
             for line, values in enumerate(rows[1:], start=2)
             if any(str(value).strip() for value in values)
         ]
-        if not source_rows:
-            raise ValueError("文件为空：没有可导入的数据")
-
         existing_addresses = {
             str(device.primary_address or "").strip().casefold()
             for device in self.repository.list()
@@ -452,10 +463,9 @@ class DeviceImportExportService:
     ) -> None:
         devices = list(devices if devices is not None else self.repository.list())
         group_names = self._group_names_by_id()
-        fields = list(EXPORT_FIELDS)
         with Path(path).open("w", newline="", encoding="utf-8-sig") as file:
             writer = csv.writer(file)
-            writer.writerow(fields)
+            writer.writerow(DEVICE_CSV_COLUMNS)
             for device in devices:
                 writer.writerow(
                     [
@@ -463,15 +473,14 @@ class DeviceImportExportService:
                         if not include_sensitive
                         and TEMPLATE_FIELD_MAP[field] in SENSITIVE_EXPORT_FIELDS
                         else self._export_value(device, field, group_names)
-                        for field in fields
+                        for field in DEVICE_CSV_COLUMNS
                     ]
                 )
 
     def export_template_csv(self, path: Path) -> None:
         with Path(path).open("w", newline="", encoding="utf-8-sig") as file:
             writer = csv.writer(file)
-            writer.writerow(TEMPLATE_FIELDS)
-            writer.writerows(TEMPLATE_EXAMPLE_ROWS)
+            writer.writerow(DEVICE_CSV_COLUMNS)
 
     def _group_names_by_id(self) -> dict[int, str]:
         if self.group_repository is None:

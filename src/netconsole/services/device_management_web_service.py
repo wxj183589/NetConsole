@@ -92,6 +92,7 @@ from netconsole.services.device_group_service import DeviceGroupService
 from netconsole.services.device_import_export import (
     DeviceImportExportService,
     make_device_export_filename,
+    make_device_template_filename,
 )
 from netconsole.services.device_connection_preflight import (
     DeviceConnectionPreflightError,
@@ -150,6 +151,7 @@ DEVICE_TERMINAL_ACTION_IDS = {
 EXPORT_TASK_TYPES = frozenset(
     {
         "web_export_device_csv",
+        "web_export_device_template_csv",
         "device_export_device_csv",
         "device_export_device_template_csv",
         "device_export_securecrt_sessions",
@@ -157,9 +159,14 @@ EXPORT_TASK_TYPES = frozenset(
     }
 )
 MANAGED_DEVICE_CSV_TASK_TYPE = "web_export_device_csv"
+MANAGED_DEVICE_TEMPLATE_CSV_TASK_TYPE = "web_export_device_template_csv"
+MANAGED_DEVICE_CSV_TASK_TYPES = frozenset(
+    {MANAGED_DEVICE_CSV_TASK_TYPE, MANAGED_DEVICE_TEMPLATE_CSV_TASK_TYPE}
+)
 MANAGED_DEVICE_CSV_ARTIFACT_SOURCE = "device_csv_export"
 _DEVICE_EXPORT_DISPLAY_NAMES = {
     "web_export_device_csv": ("设备清单", ".csv"),
+    "web_export_device_template_csv": ("设备导入模板", ".csv"),
     "device_export_device_csv": ("设备清单", ".csv"),
     "device_export_device_template_csv": ("设备导入模板", ".csv"),
     "device_export_securecrt_sessions": ("SecureCRT会话", ".zip"),
@@ -1190,30 +1197,68 @@ class DeviceManagementWebService:
     ) -> DeviceTaskReferenceDTO:
         site = self.current_site_id()
         filters = self._export_filters(payload)
-        job_payload = {
-            "db_path": str(self.paths.site_db_path(site)),
-            "site_name": site,
-            "filters": filters,
-            "selected_device_uuids": self._unique_ids(payload.device_uuids)
-            if payload.device_uuids
-            else [],
-            "omit_credentials": not payload.include_credentials,
-        }
-        task_id = f"device-csv-export-{uuid.uuid4().hex}"
+        return self._start_managed_device_csv_export(
+            site=site,
+            job_type="device_csv",
+            task_type=MANAGED_DEVICE_CSV_TASK_TYPE,
+            task_name=f"设备表格导出 · {site}",
+            preferred_name=make_device_export_filename(site),
+            job_payload={
+                "db_path": str(self.paths.site_db_path(site)),
+                "site_name": site,
+                "filters": filters,
+                "selected_device_uuids": self._unique_ids(payload.device_uuids)
+                if payload.device_uuids
+                else [],
+                "omit_credentials": not payload.include_credentials,
+            },
+            start_failure_message="设备表格导出任务启动失败",
+            worker_failure_message="设备表格导出 Worker 执行失败",
+            cancelled_message="设备表格导出已取消",
+        )
+
+    def start_template_export(self) -> DeviceTaskReferenceDTO:
+        site = self.current_site_id()
+        return self._start_managed_device_csv_export(
+            site=site,
+            job_type="device_template_csv",
+            task_type=MANAGED_DEVICE_TEMPLATE_CSV_TASK_TYPE,
+            task_name=f"设备导入模板 · {site}",
+            preferred_name=make_device_template_filename(site),
+            job_payload={"mode": "template"},
+            start_failure_message="设备导入模板任务启动失败",
+            worker_failure_message="设备导入模板生成失败，请查看任务日志",
+            cancelled_message="设备导入模板导出已取消",
+        )
+
+    def _start_managed_device_csv_export(
+        self,
+        *,
+        site: str,
+        job_type: str,
+        task_type: str,
+        task_name: str,
+        preferred_name: str,
+        job_payload: dict[str, object],
+        start_failure_message: str,
+        worker_failure_message: str,
+        cancelled_message: str,
+    ) -> DeviceTaskReferenceDTO:
+        task_id = f"{task_type.replace('_', '-')}-{uuid.uuid4().hex}"
         reservation = self.artifact_store.reserve(
             site_id=site,
             owner=WEB_TASK_OWNER,
             source=MANAGED_DEVICE_CSV_ARTIFACT_SOURCE,
             artifact_type="csv",
             task_id=task_id,
-            task_type=MANAGED_DEVICE_CSV_TASK_TYPE,
+            task_type=task_type,
             output_root=self._artifact_root(site),
-            preferred_name=make_device_export_filename(site),
+            preferred_name=preferred_name,
             use_display_name_as_file_name=True,
         )
         job = ExportJob(
             job_id=task_id,
-            job_type="device_csv",
+            job_type=job_type,
             site_name=site,
             output_path=str(reservation.output_path),
             db_path=str(self.paths.site_db_path(site)),
@@ -1229,17 +1274,15 @@ class DeviceManagementWebService:
             else:
                 self.artifact_store.fail(
                     reservation,
-                    "设备表格导出已取消"
-                    if result.cancelled
-                    else "设备表格导出 Worker 执行失败",
+                    cancelled_message if result.cancelled else worker_failure_message,
                 )
 
         try:
             self.export_adapter.start_export(
                 job,
-                task_name=f"设备表格导出 · {site}",
+                task_name=task_name,
                 owner=WEB_TASK_OWNER,
-                task_type=MANAGED_DEVICE_CSV_TASK_TYPE,
+                task_type=task_type,
                 public_result={
                     "artifact_id": reservation.artifact_id,
                     "artifact_name": reservation.display_name,
@@ -1249,18 +1292,13 @@ class DeviceManagementWebService:
                 on_complete=completed,
             )
         except Exception:
-            self.artifact_store.fail(reservation, "设备表格导出任务启动失败")
+            self.artifact_store.fail(reservation, start_failure_message)
             raise
         snapshot = self.task_service.repository(site).get(task_id)
         if snapshot is None:
-            self.artifact_store.fail(reservation, "设备表格导出任务未写入任务中心")
-            raise RuntimeError("设备表格导出任务创建后未写入任务中心")
+            self.artifact_store.fail(reservation, f"{task_name}未写入任务中心")
+            raise RuntimeError(f"{task_name}创建后未写入任务中心")
         return self._task_reference(snapshot)
-
-    def start_template_export(self) -> DeviceTaskReferenceDTO:
-        return self._start_export(
-            self.current_site_id(), "device_template_csv", "csv", {}, "export_template"
-        )
 
     def start_securecrt_export(
         self,
@@ -1407,14 +1445,14 @@ class DeviceManagementWebService:
     def _open_task_artifact(
         self, snapshot: TaskSnapshot, artifact_id: str
     ) -> tuple[Path, str]:
-        if snapshot.task_type == MANAGED_DEVICE_CSV_TASK_TYPE:
+        if snapshot.task_type in MANAGED_DEVICE_CSV_TASK_TYPES:
             path, display_name, _manifest = self.artifact_store.open(
                 site_id=snapshot.site_name,
                 artifact_id=artifact_id,
                 owner=WEB_TASK_OWNER,
                 source=MANAGED_DEVICE_CSV_ARTIFACT_SOURCE,
                 artifact_type="csv",
-                task_type=MANAGED_DEVICE_CSV_TASK_TYPE,
+                task_type=snapshot.task_type,
             )
             return path, display_name
         if snapshot.status is not TaskState.COMPLETED:
@@ -1453,7 +1491,7 @@ class DeviceManagementWebService:
             TaskState.CANCELLED,
         }:
             return self._task_reference(snapshot)
-        if snapshot.task_type == MANAGED_DEVICE_CSV_TASK_TYPE:
+        if snapshot.task_type in MANAGED_DEVICE_CSV_TASK_TYPES:
             cancel_job = getattr(self.export_adapter, "cancel_job", None)
             if not callable(cancel_job) or not cancel_job(task_id):
                 self.task_service.cancel_task(task_id)
@@ -2329,12 +2367,27 @@ class DeviceManagementWebService:
             DEVICE_CONNECTION_TEST_TASK_TYPE: "connection_test",
             DEVICE_OMNIPEEK_PREVIEW_TASK_TYPE: "omnipeek_preview",
             MANAGED_DEVICE_CSV_TASK_TYPE: "export_csv",
+            MANAGED_DEVICE_TEMPLATE_CSV_TASK_TYPE: "export_template",
         }
         artifact_id = str(result.get("artifact_id") or spec.get("artifact_id") or "")
         sha256 = str(result.get("sha256") or "")
+        task_status = snapshot.status.value
+        message = sanitize_sensitive_text(
+            snapshot.message or snapshot.error_message
+        )
+        if (
+            snapshot.task_type in MANAGED_DEVICE_CSV_TASK_TYPES
+            and snapshot.status is TaskState.COMPLETED
+            and not sha256
+        ):
+            # Worker 退出后还需在 Controller 侧计算大小与摘要并固化 Artifact。
+            # 对设备导出 API 来说，只有 Artifact 可下载才算真正完成，避免前端
+            # 观察到短暂的“COMPLETED 但文件不可用”中间态。
+            task_status = TaskState.RUNNING.value
+            message = "正在校验导出文件"
         return DeviceTaskReferenceDTO(
             task_id=snapshot.task_id,
-            task_status=snapshot.status.value,
+            task_status=task_status,
             action=actions.get(
                 snapshot.task_type, snapshot.task_type.removeprefix("device_export_")
             ),
@@ -2343,7 +2396,7 @@ class DeviceManagementWebService:
             sha256=sha256,
             size_bytes=int(result.get("size_bytes") or 0),
             row_count=int(result.get("row_count") or 0),
-            message=sanitize_sensitive_text(snapshot.message or snapshot.error_message),
+            message=message,
         )
 
     def _start_export(
