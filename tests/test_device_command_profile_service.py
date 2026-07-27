@@ -18,6 +18,9 @@ from netconsole.services.device_command_profile_service import (
     DEVICE_SFTP_ENABLE_OPERATION_ID,
     DeviceCommandProfileError,
     DeviceCommandProfileNotFound,
+    build_cli_ping_command,
+    build_interface_transceiver_command,
+    device_cli_output_is_unsupported,
     device_command_profile_path,
     default_device_inventory_profile,
     load_device_command_profiles,
@@ -27,7 +30,6 @@ from netconsole.services.device_command_profile_service import (
     resolve_device_operation_profile,
     resolve_device_sftp_enable_profile,
     resolve_device_capability_commands,
-    resolve_step_command_candidates,
 )
 from scripts.maintenance.audit_commands import (
     load_device_profile_commands,
@@ -175,35 +177,53 @@ def test_device_resolution_accepts_h3c_and_zte_supported_roles() -> None:
 def test_zte_switch_command_profile_uses_show_commands_and_candidates() -> None:
     device = Device(name="ZTE-SW", device_vendor="中兴", device_type="SW")
     profile = resolve_device_inventory_profile(device)
-    commands = profile.commands
-
-    assert resolve_device_capability_commands(device, "session_prepare") == (
-        "terminal length 0",
+    assert profile.profile_id == "zte.zxr10.5960x-es.v2.device-inventory.v1"
+    assert profile.commands == (
+        "show version",
+        "show interface brief",
+        "show opticalinfo brief",
     )
     assert resolve_device_capability_commands(device, "version") == ("show version",)
-    assert resolve_device_capability_commands(device, "hardware") == ("show hardware",)
     assert resolve_device_capability_commands(device, "interface_brief") == (
         "show interface brief",
     )
-    assert resolve_device_capability_commands(device, "running_config") == (
-        "show running-config",
+    assert resolve_device_capability_commands(device, "optical_brief") == (
+        "show opticalinfo brief",
     )
-    assert resolve_device_capability_commands(device, "startup_config") == (
-        "show startup-config",
+    assert all(
+        step.verification_status == "fixture_verified" for step in profile.steps
     )
-    assert resolve_device_capability_commands(device, "lldp_brief") == (
-        "show lldp neighbor brief",
+    for capability in (
+        "session_prepare",
+        "hardware",
+        "serial_number",
+        "running_config",
+        "startup_config",
+        "flash_root",
+    ):
+        with pytest.raises(DeviceCommandProfileNotFound):
+            resolve_device_capability_commands(device, capability)
+
+    assert (
+        build_interface_transceiver_command(device, "xgei-0/1/1/2")
+        == "show opticalinfo xgei-0/1/1/2"
     )
-    serial_step = next(
-        step for step in profile.steps if step.selector == "inventory.serial_number"
-    )
-    assert resolve_step_command_candidates(device, serial_step) == (
-        "show serial-number",
-        "show system-info",
-    )
-    assert "screen-length disable" not in commands
-    assert "display version" not in commands
-    assert "display current-configuration" not in commands
+    with pytest.raises(DeviceCommandProfileNotFound, match="不接入通用 CLI Ping"):
+        build_cli_ping_command(device, "192.0.2.1")
+
+
+@pytest.mark.parametrize(
+    "output",
+    (
+        "Unrecognized command",
+        "% Invalid input detected at '^' marker.",
+        "Invalid command",
+    ),
+)
+def test_zte_cli_error_patterns_fail_closed(output: str) -> None:
+    device = Device(name="ZTE-SW", device_vendor="ZTE", device_type="SW")
+
+    assert device_cli_output_is_unsupported(device, output) is True
 
 
 def test_mobile_router_inventory_profile_uses_core_read_only_contract() -> None:

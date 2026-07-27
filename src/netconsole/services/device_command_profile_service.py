@@ -118,7 +118,9 @@ _ZTE_CLI_ERROR_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE | re.MULTILINE)
     for pattern in (
         r"^\s*Invalid input(?:\s|$)",
+        r"^\s*%\s*Invalid input(?:\s|$)",
         r"^\s*Invalid command(?:\s|$)",
+        r"^\s*Unrecognized command(?:\s|$)",
         r"^\s*Unknown command(?:\s|$)",
         r"^\s*Incomplete command(?:\s|$)",
         r"^\s*Ambiguous command(?:\s|$)",
@@ -146,25 +148,18 @@ _VENDOR_COMMAND_PROFILES = {
         vendor="ZTE",
         device_type="SW",
         capabilities={
-            "session_prepare": ("terminal length 0",),
             "session_verify": ("show version",),
-            "hostname": ("show running-config | include hostname",),
             "version": ("show version",),
-            "hardware": ("show hardware",),
-            "serial_number": ("show serial-number", "show system-info"),
-            "boot": ("show version",),
-            "interfaces": ("show interface",),
             "interface_brief": ("show interface brief",),
-            "optical_brief": ("show optical-inform brief",),
-            "optical_detail": ("show optical-inform detail",),
-            "lldp_brief": ("show lldp neighbor brief",),
-            "lldp_detail": ("show lldp entry",),
-            "running_config": ("show running-config",),
-            "startup_config": ("show startup-config",),
-            "flash_root": ("dir flash:/",),
+            "optical_brief": ("show opticalinfo brief",),
         },
         unsupported_capabilities={
             "diagnostic_bundle": "当前型号暂未适配诊断包采集",
+            "session_prepare": "ZTE 分页由交互执行器处理，不下发未确认的关闭分页命令",
+            "running_config": "ZTE 本阶段不接入配置采集",
+            "startup_config": "ZTE 本阶段不接入配置采集",
+            "flash_root": "ZTE 本阶段不接入设备文件管理",
+            "cli_ping": "ZTE 本阶段不接入通用 CLI Ping",
         },
         cli_error_patterns=_ZTE_CLI_ERROR_PATTERNS,
     ),
@@ -211,19 +206,9 @@ def resolve_step_command_candidates(
     if str(device.device_vendor or "").strip().casefold() != "zte":
         return (step.command,)
     capabilities = {
-        "session.pagination": "session_prepare",
-        "inventory.hostname": "hostname",
         "inventory.version": "version",
-        "inventory.hardware": "hardware",
-        "inventory.serial_number": "serial_number",
-        "inventory.interfaces": "interfaces",
         "inventory.interface_brief": "interface_brief",
         "inventory.optical_brief": "optical_brief",
-        "inventory.optical_detail": "optical_detail",
-        "inventory.lldp_brief": "lldp_brief",
-        "inventory.lldp_detail": "lldp_detail",
-        "inventory.running_config": "running_config",
-        "inventory.startup_config": "startup_config",
     }
     capability = capabilities.get(step.selector)
     return (
@@ -240,7 +225,7 @@ def build_interface_transceiver_command(device: Device, interface: str) -> str:
         raise DeviceCommandProfileError("接口名称包含不安全字符")
     if profile.vendor != "ZTE":
         raise DeviceCommandProfileNotFound("当前设备未注册单接口光模块命令")
-    return f"show interface {value} transceiver"
+    return f"show opticalinfo {value}"
 
 
 def build_cli_ping_command(
@@ -251,6 +236,8 @@ def build_cli_ping_command(
         normalized_address = str(ipaddress.ip_address(str(address or "").strip()))
     except ValueError as exc:
         raise DeviceCommandProfileError("Ping 地址必须是合法 IP 地址") from exc
+    if profile.vendor == "ZTE":
+        raise DeviceCommandProfileNotFound("ZTE 本阶段不接入通用 CLI Ping")
     if count is None:
         return f"ping {normalized_address}"
     if not 1 <= int(count) <= 100:
@@ -304,19 +291,9 @@ class DeviceCommandProfile:
 def _zte_switch_inventory_profile() -> DeviceCommandProfile:
     steps: list[DeviceCommandStep] = []
     contracts = (
-        ("session_prepare", "terminal.pagination.disable", "session.pagination"),
-        ("hostname", "device.hostname.collect", "inventory.hostname"),
         ("version", "device.version.collect", "inventory.version"),
-        ("hardware", "device.hardware.collect", "inventory.hardware"),
-        ("serial_number", "device.serial.collect", "inventory.serial_number"),
-        ("interfaces", "device.interfaces.collect", "inventory.interfaces"),
         ("interface_brief", "device.interface-brief.collect", "inventory.interface_brief"),
         ("optical_brief", "device.optical-brief.collect", "inventory.optical_brief"),
-        ("optical_detail", "device.optical-detail.collect", "inventory.optical_detail"),
-        ("lldp_brief", "device.lldp-summary.collect", "inventory.lldp_brief"),
-        ("lldp_detail", "device.lldp-detail.collect", "inventory.lldp_detail"),
-        ("running_config", "device.running-config.collect", "inventory.running_config"),
-        ("startup_config", "device.startup-config.collect", "inventory.startup_config"),
     )
     profile = _VENDOR_COMMAND_PROFILES[("ZTE", "SW")]
     for index, (capability, step_id, selector) in enumerate(contracts, start=1):
@@ -326,24 +303,24 @@ def _zte_switch_inventory_profile() -> DeviceCommandProfile:
                 step_id=step_id,
                 command=profile.capabilities[capability][0],
                 selector=selector,
-                parser_contract="netconsole.zte.device-inventory.raw.v1",
+                parser_contract="netconsole.zte.zxr10-5960x-es.v2",
                 dto_contract="netconsole.device-detail.v1",
                 risk="read_only",
                 guard_context="device.inventory.collect",
-                verification_status="behavior_preservation_only",
-                verification_evidence="用户提供的 ZTE 交换机命令基线；待真实输出 fixture 验证",
+                verification_status="fixture_verified",
+                verification_evidence="ZXR10 5960X-ES V2.00.20.03 手册 fixture",
             )
         )
     return DeviceCommandProfile(
         operation_id=DEVICE_INVENTORY_OPERATION_ID,
-        profile_id="zte.zxr10.switch.generic.device-inventory.v1",
-        profile_version=1,
+        profile_id="zte.zxr10.5960x-es.v2.device-inventory.v1",
+        profile_version=2,
         selector=DeviceCommandSelector("ZTE", "switch", "zxr10", "*"),
         compatibility="generic_read_only",
         risk="read_only",
-        parser_contract="netconsole.zte.device-inventory.raw.v1",
+        parser_contract="netconsole.zte.zxr10-5960x-es.v2",
         dto_contract="netconsole.device-detail.v1",
-        fixture_versions=("command-baseline-only",),
+        fixture_versions=("V2.00.20.03B07-manual-fixture",),
         real_device_status="pending",
         steps=tuple(steps),
     )

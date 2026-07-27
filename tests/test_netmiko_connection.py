@@ -306,7 +306,7 @@ def test_zte_connection_uses_zxros_and_never_sends_h3c_session_commands(
     assert result.success is True
     assert calls["device_type"] == "zte_zxros"
     assert calls["encoding"] == "utf-8"
-    assert commands == ["terminal length 0", "show version"]
+    assert commands == ["show version"]
     assert "screen-length disable" not in commands
 
 

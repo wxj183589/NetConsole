@@ -41,7 +41,9 @@ def test_command_reference_json_covers_switch_baseline():
     assert by_command["save force"].risk_level == "config_write"
     assert by_command["n"].interactive_input is True
     assert by_command["n"].risk_level == "interactive"
-    assert by_command["display transceiver diagnosis interface"].zte_adaptation_status == "phase_1_reference"
+    assert by_command["display transceiver diagnosis interface"].zte_adaptation_status == "manual_fixture_verified"
+    assert by_command["show opticalinfo brief"].parser_status.endswith("手册 fixture 已验证")
+    assert by_command["show lldp entry interface <interface>"].parser_status == "SAMPLE_REQUIRED"
 
 
 def test_command_reference_json_is_unique_and_has_non_cli_section():
@@ -49,7 +51,7 @@ def test_command_reference_json_is_unique_and_has_non_cli_section():
     items = data["items"]
     ids = [item["id"] for item in items]
 
-    assert len(items) == 72
+    assert len(items) == 81
     assert len(ids) == len(set(ids))
     assert {
         "ac_display_wlan_ap_all_connection_record",

@@ -20,7 +20,14 @@ import {
   saveTracksideApBusinessArtifact,
   TRACKSIDE_AP_BUSINESS_EXPORT_ACTION,
 } from './tracksideApBusinessArtifact'
-import { displayTracksideValue, tracksideOpticalPresentation } from './tracksideApBusinessDisplay'
+import {
+  displayBidirectionalLoss,
+  displayLldpStatus,
+  displayPowerThreshold,
+  displaySwitchVendor,
+  displayTracksideValue,
+  tracksideOpticalPresentation,
+} from './tracksideApBusinessDisplay'
 
 const storageKey = 'netconsole.trackside-ap.last-task'
 const autoSaveStorageKey = 'netconsole.trackside-ap-business.auto-saved-task-ids'
@@ -45,18 +52,25 @@ let loadGeneration = 0
 const businessColumns: NcTableColumn<TracksideApBusinessRow>[] = [
   { key: 'site', label: '站点', valueType: 'name', fixed: 'left' },
   { key: 'device_name', label: '车站交换机', valueType: 'name', fixed: 'left' },
+  { key: 'switch_vendor', label: '交换机厂商', valueType: 'name', displayValue: (row) => displaySwitchVendor(row.switch_vendor) },
   { key: 'interface_name', label: '接口', valueType: 'port', displayValue: (row) => displayTracksideValue(displayInterfaceName(row.interface_name)) },
+  { key: 'lldp_match_status', label: 'LLDP 状态', valueType: 'status', displayValue: (row) => displayLldpStatus(row.lldp_match_status) },
   { key: 'link_status', label: '链路', valueType: 'status' },
   { key: 'port_type', label: '端口类型', valueType: 'status', width: 100 },
   { key: 'description', label: '描述', valueType: 'description', width: 90, maxWidth: 120, align: 'center', headerAlign: 'center', stretch: 'none', showOverflowTooltip: true },
   { key: 'pvid', label: 'PVID', valueType: 'number', displayValue: (row) => displayTracksideValue(row.pvid) },
   { key: 'vlan', label: 'VLAN', displayValue: (row) => displayTracksideValue(row.vlan) },
-  { key: 'switch_rx_power', label: '交换机 Rx', valueType: 'number' },
-  { key: 'switch_optical_status', label: '交换机光衰', valueType: 'status', cellKind: 'tag' },
+  { key: 'switch_rx_power', label: '本端 Rx (dBm)', valueType: 'number' },
+  { key: 'switch_tx_power', label: '本端 Tx (dBm)', valueType: 'number' },
+  { key: 'switch_rx_low_alarm', label: 'Rx 门限', displayValue: (row) => displayPowerThreshold(row.switch_rx_low_alarm, row.switch_rx_high_alarm) },
+  { key: 'switch_tx_low_alarm', label: 'Tx 门限', displayValue: (row) => displayPowerThreshold(row.switch_tx_low_alarm, row.switch_tx_high_alarm) },
+  { key: 'switch_optical_status', label: '模块状态', valueType: 'status', cellKind: 'tag' },
   { key: 'ap_mac', label: 'AP MAC', valueType: 'mac', stretch: 'priority' },
   { key: 'ap_name', label: '当前轨旁 AP', valueType: 'name' },
-  { key: 'ap_rx_power', label: 'AP Rx', valueType: 'number' },
-  { key: 'ap_optical_status', label: 'AP 光衰', valueType: 'status', cellKind: 'tag' },
+  { key: 'ap_rx_power', label: '对端 Rx (dBm)', valueType: 'number' },
+  { key: 'ap_tx_power', label: '对端 Tx (dBm)', valueType: 'number' },
+  { key: 'ap_optical_status', label: 'AP 模块状态', valueType: 'status', cellKind: 'tag' },
+  { key: 'calculation_status', label: '双向光衰', width: 230, showOverflowTooltip: true, displayValue: (row) => displayBidirectionalLoss(row.calculation_status, row.forward_loss_db, row.reverse_loss_db) },
   { key: 'optical_severity', label: '综合', valueType: 'status', cellKind: 'tag' },
   { key: 'updated_at', label: '更新时间', valueType: 'datetime' },
   { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['更新站点', '更新 AP'] },
@@ -363,8 +377,10 @@ onBeforeUnmount(() => { stopPolling(); clearTaskNotice() })
         :empty-text="page?.empty_reason || '暂无轨旁 AP 业务数据'"
       >
         <template #cell-switch_rx_power="{ row }"><span :class="tracksideOpticalPresentation(row.switch_optical_status).className">{{ displayTracksideValue(row.switch_rx_power) }}</span></template>
+        <template #cell-switch_tx_power="{ row }"><span :class="tracksideOpticalPresentation(row.switch_optical_status).className">{{ displayTracksideValue(row.switch_tx_power) }}</span></template>
         <template #cell-switch_optical_status="{ row }"><el-tag :type="tracksideOpticalPresentation(row.switch_optical_status).tagType" :class="tracksideOpticalPresentation(row.switch_optical_status).className">{{ tracksideOpticalPresentation(row.switch_optical_status).label }}</el-tag></template>
         <template #cell-ap_rx_power="{ row }"><span :class="tracksideOpticalPresentation(row.ap_optical_status).className">{{ displayTracksideValue(row.ap_rx_power) }}</span></template>
+        <template #cell-ap_tx_power="{ row }"><span :class="tracksideOpticalPresentation(row.ap_optical_status).className">{{ displayTracksideValue(row.ap_tx_power) }}</span></template>
         <template #cell-ap_optical_status="{ row }"><el-tag :type="tracksideOpticalPresentation(row.ap_optical_status).tagType" :class="tracksideOpticalPresentation(row.ap_optical_status).className">{{ tracksideOpticalPresentation(row.ap_optical_status).label }}</el-tag></template>
         <template #cell-optical_severity="{ row }"><el-tag :type="tracksideOpticalPresentation(row.optical_severity).tagType" :class="tracksideOpticalPresentation(row.optical_severity).className">{{ tracksideOpticalPresentation(row.optical_severity).label }}</el-tag></template>
         <template #cell-actions="{ row }"><el-button link type="primary" :disabled="updateTaskRunning || !row.site || !updateFeatureEnabled" @click="updateStation(row)">更新站点</el-button><el-button link type="primary" :title="hasApIdentity(row) ? '' : '缺少 AP 身份，无法定向更新'" :disabled="updateTaskRunning || !hasApIdentity(row) || !updateFeatureEnabled" @click="updateAp(row)">更新 AP</el-button></template>

@@ -23,15 +23,17 @@ NetConsole 使用代码内登记的设备兼容性基线描述当前适配范围
 
 ## 当前状态
 
-当前基线登记 H3C Comware V7/V9 的无线控制器、交换机和车载 MR 方向，并增加 ZTE 交换机基础能力。登记状态不等于所有型号和 Release 已完成现场验证；V5 仅保留未来扩展空间，本次未登记为已适配，也未实现 V5 命令或解析器。
+当前基线登记 H3C Comware V7/V9 的无线控制器、交换机和车载 MR 方向，并增加 ZTE ZXR10 5960X-ES V2 轨旁 AP 接入交换机能力。登记状态不等于所有型号和 Release 已完成现场验证；V5 仅保留未来扩展空间，本次未登记为已适配，也未实现 V5 命令或解析器。
 
 | 厂商 / 类型 | 当前支持 | 当前边界 |
 | --- | --- | --- |
 | H3C | 保持既有 Comware 设备管理、采集和导入导出范围 | 具体型号、Release 与真实设备状态仍以版本化 Profile 和 fixture 为准 |
-| ZTE / SW | CSV 导入与筛选、SSH/Telnet 连接、系统名/版本/硬件/序列号候选命令、接口、光模块基础命令、LLDP、运行/启动配置读取、受控 CLI Ping | 命令基线已接入，真实设备状态为 `REAL_DEVICE_PENDING`；只有 hostname、版本原始摘要和接口 up/down 做保守解析，其余保留 raw |
+| ZTE ZXR10 5960X-ES V2 / SW | 只读 SSH、设备识别、接口状态、DOM/收发光功率、轨旁 AP 端口关联 | `show version` 先确认 59X/5960X-ES，其他 ZXR10 型号在后续命令前失败关闭；接口、DOM 和指定端口详情已有手册 fixture，LLDP 为 `SAMPLE_REQUIRED`，真实设备状态仍为 `REAL_DEVICE_PENDING` |
 | ZTE / AC | 不支持 | 导入和写入返回“当前版本尚未适配 ZTE 无线控制器” |
 | ZTE 诊断包 | 不支持 | 不猜测 `display diagnostic-information` 等价命令，不向 ZTE 发送 H3C 诊断命令 |
 
-ZTE 不代表“全系列完全适配”。完整诊断包、诊断文件生成/下载，以及缺少真实输出 fixture 的型号、序列号、光功率和 LLDP 高级结构化解析仍未适配。
+ZTE 不代表“全系列完全适配”。本阶段不支持 ZTE 配置下发、配置采集中心、文件管理、CLI Ping、完整诊断包或 ZTE AC。不得下发未经资料确认的分页关闭命令；`--More--` 由通用 SSH 分页执行器受控处理。
+
+`show opticalinfo` 采集到的是端口 Rx/Tx 光功率，不自动等于链路光衰。只有 LLDP 或人工资料给出可靠端口映射、两端模块在线且 DOM 完整、采样时间差不超过 30 分钟时，业务层才计算正向和反向光衰。否则返回单端、对端 DOM 不可用、样本过期、邻居不可靠或模块离线等明确状态。
 
 命令来源仍以 `resources/device_command_profiles.json`、命令说明和后端受控命令 Guard 为准。任何新增兼容配置不得引入删除网络设备、重启网络设备、恢复出厂、清空配置、格式化存储或任意 CLI 执行入口。

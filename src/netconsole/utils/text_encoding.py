@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import codecs
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -10,6 +11,13 @@ TEXT_ENCODINGS = ("utf-8-sig", "utf-8", "gb18030", "gbk")
 H3C_DEVICE_ENCODINGS = ("gb2312", "gbk", "gb18030", "utf-8", "utf-8-sig")
 FILE_ENCODING_ERROR = "文件编码无法识别"
 MOJIBAKE_MARKERS = ("锟", "�", "脙", "脗", "悴", "ハ")
+ANSI_CONTROL_RE = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))"
+)
+PAGER_PROMPT_RE = re.compile(
+    r"(?im)(?:\x08|\s)*(?:--+\s*More\s*--+|--More--|"
+    r"----\s*More\s*----|More)(?:\x08|\s)*"
+)
 
 
 @dataclass(frozen=True)
@@ -141,6 +149,23 @@ def clean_device_text(text: str) -> str:
 def clean_h3c_device_text(text: str) -> str:
     # 输入已是 Unicode 时不再猜测式 encode/decode，避免二次转码造成不可逆损坏。
     return clean_device_text(text)
+
+
+def clean_interactive_device_text(
+    text: object, *, remove_pager: bool = True
+) -> str:
+    value = ANSI_CONTROL_RE.sub("", str(text or "").replace("\ufeff", ""))
+    if remove_pager:
+        value = PAGER_PROMPT_RE.sub("\n", value)
+    chars: list[str] = []
+    for char in value:
+        if char == "\b":
+            if chars:
+                chars.pop()
+            continue
+        chars.append(char)
+    value = "".join(chars)
+    return clean_device_text(value)
 
 
 def fix_mojibake_text(text: str) -> str:

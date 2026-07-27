@@ -1,0 +1,39 @@
+ZXR10(config)#show opticalinfo xgei-0/1/1/2
+xgei-0/1/1/2
+The optical module is online
+Transceiver Type : SFP+
+Connector Type Code : LC
+Transceiver Mode : mmf
+Directionality : Normal
+SONET Compliance Codes : no compliance
+Ethernet Compliance Codes: 10GBase-SR
+Transfer Distance:9/125(Smf) um fiber 0 (m)
+                  50/125(Om2) um fiber 0 (m)
+                  50/125(Om3) um fiber 300 (m)
+                  62.5/125(Om1) um fiber 0 (m)
+                  50/125(Om4) um fiber 0 (m)
+Laser TX Wavelength: 850 nm
+Laser RX Wavelength: Unsupported
+Measured RX Input Power: -11.904 dBm
+Measured TX Output Power: -2.779 dBm
+Measured TX Bias Current: 6.074 mA
+Measured Transceiver Temperature: 20.117 degree(s) Celsius
+Supply Voltage 1: 3.270 V
+Supply Voltage 2: N/A
+Receiver Sensitivity : -9.900 dBm
+Receiver Overload : 0.500 dBm
+TX Power Range : N/A
+Default RX Power PreHighAlarm Thresholds: 0.500 dBm
+Default RX Power PreLowAlarm Thresholds: -11.101 dBm
+Default TX Power PreHighAlarm Thresholds: -1.000 dBm
+Default TX Power PreLowAlarm Thresholds: -7.300 dBm
+Vendor Name: HG GENUINE
+Vendor PN : MTRS-01X11-G
+Vendor Rev : 1.0
+Vendor SN : HA20140052592
+Authentication : ---
+AuthenticationCode : ---
+ProductSn : ---
+ProductDate : ---
+Speed : 10300 M
+ZXR10(config)#

@@ -17,6 +17,11 @@ from netconsole.models.device import Device
 from netconsole.parsers.h3c.boot_loader_parser import parse_boot_loader
 from netconsole.parsers.h3c.device_parser import parse_device
 from netconsole.parsers.h3c.sysname_parser import parse_sysname
+from netconsole.parsers.zte.zxr10 import (
+    parse_device_identity as parse_zte_device_identity,
+    parse_interfaces as parse_zte_interfaces,
+    parse_optical_summary as parse_zte_optical_summary,
+)
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services import command_guard
@@ -33,6 +38,7 @@ from netconsole.services.netmiko_connection import (
     build_netmiko_params,
     choose_connection_target,
     safe_send_command,
+    safe_send_command_with_paging,
     sanitize_sensitive_text,
 )
 from netconsole.utils.text_encoding import clean_h3c_device_text
@@ -62,6 +68,7 @@ class CommandResult:
     error_message: str | None = None
     started_at: str | None = None
     ended_at: str | None = None
+    raw_output: str = ""
 
 
 @dataclass(frozen=True)
@@ -192,19 +199,29 @@ def collect_h3c_device_details(
         _emit_progress(progress_callback, 5, "batch_collect.stage.connecting")
         connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
         _emit_progress(progress_callback, 10, "batch_collect.stage.login_success")
-        pagination_step = profile.steps[0]
-        _emit_progress(progress_callback, 15, "batch_collect.stage.init_terminal", pagination_step.command)
-        screen_result = _run_step_candidates(
-            connection,
-            pagination_step,
-            profile,
-            device,
-            collect_run_uuid,
-            target.encoding,
-        )
-        command_results.append(screen_result)
         outputs: dict[str, str] = {}
-        collect_steps = profile.steps[1:]
+        collect_steps = profile.steps
+        if (
+            profile.steps
+            and profile.steps[0].step_id == "terminal.pagination.disable"
+        ):
+            pagination_step = profile.steps[0]
+            _emit_progress(
+                progress_callback,
+                15,
+                "batch_collect.stage.init_terminal",
+                pagination_step.command,
+            )
+            screen_result = _run_step_candidates(
+                connection,
+                pagination_step,
+                profile,
+                device,
+                collect_run_uuid,
+                target.encoding,
+            )
+            command_results.append(screen_result)
+            collect_steps = profile.steps[1:]
         total_commands = len(collect_steps)
         for index, step in enumerate(collect_steps, start=1):
             command = step.command
@@ -221,6 +238,13 @@ def collect_h3c_device_details(
             command_results.append(result)
             if result.success:
                 outputs[step.selector] = result.output
+                if (
+                    str(device.device_vendor or "").strip().casefold() == "zte"
+                    and step.selector == "inventory.version"
+                    and parse_zte_device_identity(result.output).status
+                    == "NOT_RECOGNIZED"
+                ):
+                    raise ValueError("ZTE_DEVICE_NOT_RECOGNIZED")
         _write_raw_files(raw_log_file, commands_file, device, target.protocol, collect_run_uuid, command_results, target_protocol=target.protocol)
         write_result = _parse_and_write(repository, device, collect_run_uuid, relative_raw_log_path, outputs, progress_callback=progress_callback)
         command_failed = any(not result.success for result in command_results)
@@ -293,15 +317,29 @@ def _run_command(
         )
     app_logger.log_info("COMMAND_ALLOWED", _detail(device, collect_run_uuid, command=command))
     try:
-        output = safe_send_command(
-            connection,
-            command,
-            read_timeout=120,
-            strip_prompt=False,
-            strip_command=False,
-            use_timing=True,
-            encoding=encoding,
-        )
+        if str(device.device_vendor or "").strip().casefold() == "zte":
+            paged_output = safe_send_command_with_paging(
+                connection,
+                command,
+                max_pages=256,
+                max_output_bytes=4 * 1024 * 1024,
+                command_timeout=120,
+                idle_timeout=10,
+                encoding=encoding,
+            )
+            raw_output = paged_output.raw_output
+            output = paged_output.output
+        else:
+            output = safe_send_command(
+                connection,
+                command,
+                read_timeout=120,
+                strip_prompt=False,
+                strip_command=False,
+                use_timing=True,
+                encoding=encoding,
+            )
+            raw_output = output
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), device)
         app_logger.log_error("COLLECT_COMMAND_FAILED", _detail(device, collect_run_uuid, command=command, error=message))
@@ -328,6 +366,7 @@ def _run_command(
             command=command,
             success=False,
             output=output_text,
+            raw_output=raw_output,
             error_message=message,
             started_at=started_at,
             ended_at=_now(),
@@ -337,6 +376,7 @@ def _run_command(
         command=command,
         success=True,
         output=output_text,
+        raw_output=raw_output,
         started_at=started_at,
         ended_at=_now(),
     )
@@ -547,7 +587,7 @@ def _write_raw_files(
                 f"Started At: {result.started_at or ''}",
                 f"Ended At: {result.ended_at or ''}",
                 f"Error: {result.error_message or ''}",
-                result.output or "",
+                result.raw_output or result.output or "",
                 "",
             ]
         )
@@ -586,6 +626,11 @@ def _prompt_sysname(outputs: dict[str, str]) -> str | None:
         for line in output.splitlines():
             if line.startswith("<") and ">" in line:
                 return line[1 : line.index(">")].strip() or None
+            zte_prompt = re.fullmatch(
+                r"\s*([A-Za-z0-9_.:/()-]{1,128})[>#]\s*", line
+            )
+            if zte_prompt:
+                return zte_prompt.group(1)
     return None
 
 
@@ -597,37 +642,30 @@ def _parse_zte_and_write(
     metadata: dict[str, object | None],
     progress_callback: ProgressCallback | None,
 ) -> dict[str, object]:
-    parse_errors = [
-        "ZTE 光模块与 LLDP 高级结构化解析待真实输出样本验证；原始输出已保留"
-    ]
-    hostname_output = outputs.get("inventory.hostname", "")
-    hostname_match = re.search(
-        r"(?mi)^\s*hostname\s+([A-Za-z0-9_.:-]{1,128})\s*$",
-        hostname_output,
-    )
-    hostname = hostname_match.group(1) if hostname_match else _prompt_sysname(outputs)
     version_output = outputs.get("inventory.version", "")
-    version_summary = next(
-        (
-            line.strip()
-            for line in version_output.splitlines()
-            if line.strip()
-            and "show version" not in line.casefold()
-            and not line.strip().endswith(("#", ">"))
-        ),
-        "",
-    )[:240]
-    serial_output = outputs.get("inventory.serial_number", "")
-    serial_match = re.search(
-        r"(?mi)^\s*(?:serial(?:\s+number)?|s/n)\s*[:：]\s*(\S+)\s*$",
-        serial_output,
+    identity_result = parse_zte_device_identity(version_output)
+    interface_result = parse_zte_interfaces(
+        outputs.get("inventory.interface_brief", "")
     )
+    optical_result = parse_zte_optical_summary(
+        outputs.get("inventory.optical_brief", "")
+    )
+    parse_errors = [
+        *identity_result.warnings,
+        *interface_result.warnings,
+        *optical_result.warnings,
+    ]
+    if identity_result.status == "NOT_RECOGNIZED":
+        parse_errors.append("ZTE_DEVICE_NOT_RECOGNIZED")
+    identity = identity_result.value
+    hostname = _prompt_sysname(outputs)
     facts = {
         "device_uuid": device.device_uuid,
         "sysname": hostname,
-        "software_version": version_summary or None,
-        "serial_number": serial_match.group(1) if serial_match else None,
+        "model": identity.get("model"),
+        "software_version": identity.get("software_version"),
         "vendor": "ZTE",
+        "uptime": identity.get("uptime"),
         **metadata,
     }
     _emit_progress(progress_callback, 95, "batch_collect.stage.saving")
@@ -637,57 +675,33 @@ def _parse_zte_and_write(
         device_repository.update_system_name_by_uuid(
             str(device.device_uuid or ""), hostname
         )
-    interfaces = [
-        {**item, **metadata}
-        for item in _parse_zte_interface_brief(
-            outputs.get("inventory.interface_brief", "")
-        )
-    ]
+    interfaces = [{**item, **metadata} for item in interface_result.value]
     if interfaces:
         repository.replace_device_interfaces(str(device.device_uuid), interfaces)
+    optical_modules = [{**item, **metadata} for item in optical_result.value]
+    if optical_modules:
+        repository.replace_optical_modules(
+            str(device.device_uuid), optical_modules
+        )
     app_logger.log_info(
-        "COLLECT_ZTE_RAW_PARSE_BASELINE",
+        "COLLECT_ZTE_FIXTURE_PARSE",
         _detail(
             device,
             collect_run_uuid,
             metadata=(
                 f"facts_updated=True, interfaces_updated={len(interfaces)}, "
-                "advanced_fields=unparsed"
+                f"optical_modules_updated={len(optical_modules)}, "
+                "lldp_status=SAMPLE_REQUIRED"
             ),
         ),
     )
     return {
         "facts": True,
         "interfaces": len(interfaces),
-        "optical_modules": 0,
+        "optical_modules": len(optical_modules),
         "lldp_neighbors": 0,
         "parse_errors": parse_errors,
     }
-
-
-def _parse_zte_interface_brief(output: str) -> list[dict[str, object | None]]:
-    rows: list[dict[str, object | None]] = []
-    status_values = {"up", "down"}
-    for raw_line in str(output or "").splitlines():
-        parts = raw_line.split()
-        if len(parts) < 3 or "/" not in parts[0]:
-            continue
-        statuses = [
-            value.casefold()
-            for value in parts[1:5]
-            if value.casefold() in status_values
-        ]
-        if len(statuses) < 2:
-            continue
-        rows.append(
-            {
-                "interface_name": parts[0],
-                "link_status": statuses[0],
-                "protocol_status": statuses[1],
-                "port_status": statuses[0],
-            }
-        )
-    return rows
 
 
 def _finalize_failed(repository: DeviceFactRepository, collect_run_uuid: str, message: str) -> None:

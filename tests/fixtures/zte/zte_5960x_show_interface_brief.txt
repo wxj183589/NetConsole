@@ -1,0 +1,11 @@
+ZXR10#show interface brief
+Interface Attribute Mode BW Admin Phy Prot Description
+cgei-1/1/0/49:1 optical Duplex/full 25G down down down
+cgei-1/1/0/50 optical Duplex/full 100G down down down
+cgei-1/1/0/52 optical Duplex/full 100G up down down AP uplink
+xxvgei-1/1/0/1 optical Duplex/full 25G up up up Trackside AP 01
+--More--
+xlgei-0/1/0/1 optical Duplex/full 40G up up down
+xgei-0/1/1/2 optical Duplex/full 10G up up up
+mgmt_eth electric Duplex/full 100M up up up Management
+ZXR10#

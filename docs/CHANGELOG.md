@@ -6,7 +6,8 @@
 
 - 设备厂商增加统一 `DeviceVendor` 归一化入口，`H3C/h3c/新华三` 统一存为 `H3C`，`ZTE/zte/中兴/中兴通讯` 统一存为 `ZTE`；本期只声明 ZTE 交换机基础支持，ZTE AC 明确拒绝。
 - 设备 CSV 预览改为先严格识别 UTF-8 BOM、UTF-8、GB18030/GBK，再逐行校验并返回总/有效/无效行数、厂商/类型统计、重复冲突和结构化中文错误。正式 28 列模板保持，兼容既有 21 列现场文件。
-- ZTE 交换机接入统一能力命令 Profile：会话准备使用 `terminal length 0`，基础采集使用 `show` 命令并支持序列号候选回退；诊断包保持 unsupported，不向 ZTE 发送 H3C 命令。缺少真实输出样本的高级字段保留 raw，不做猜测解析。
+- ZTE ZXR10 5960X-ES V2 接入轨旁交换机 Adapter：手册 fixture 已验证 `show version`、`show interface brief`、`show opticalinfo brief` 和指定端口详情，通用 SSH 执行器受控处理 `--More--`，不再下发未经确认的 `terminal length 0`。LLDP 只保留受控采样命令并标记 `SAMPLE_REQUIRED`，真实设备整体状态仍为 `REAL_DEVICE_PENDING`。
+- 轨旁 AP 页面新增交换机厂商、两端 Rx/Tx 与门限、LLDP 匹配状态和双向光衰状态；ZTE `Unknown` 显示为“状态未知/第三方模块”，无 DOM 显示“不支持 DOM”。单端数据只称光功率，双向光衰仅在可靠映射、两端 DOM 和 30 分钟时窗同时满足时计算。
 - 设备数据和设备模板导出统一迁入公共 Export Worker / Task Center / `WebArtifactStore` 链路，模板不再走进程内存监控的旧分支；任务按真实阶段更新进度并记录实际行数，Worker 运行时丢失或 Artifact 最终化失败会收敛为失败，不再遗留长期 `RUNNING`、0% 且无 Artifact 的任务。模板与数据共用正式 28 列字段契约，模板只输出元数据和表头。
 - 设备管理页面本次主动发起的数据或模板导出在 Artifact 就绪后自动调用 Electron“另存为”；Artifact、弹窗中、取消、失败和本地保存成功不再混用同一个 handled 状态。取消、IPC 失败或任务详情短暂不同步后仍保留“保存到本地”，只有 Main 完成大小/SHA-256、原子替换和最终文件 `stat` 复验后才显示“已保存到本地”并提供打开/定位能力。
 - Electron Renderer URL 增加受控宿主标记；预期 Electron 但 preload bridge 缺失时明确停止并提示完全重启，不再静默回退隐藏的浏览器下载。Save As 使用真实发起窗口作为父窗口并在弹窗前恢复、显示和聚焦；诊断日志不记录完整路径、URL、Token 或凭据。

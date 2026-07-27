@@ -28,8 +28,33 @@ import TracksideApBusinessView from './TracksideApBusinessView.vue'
 
 const storageKey = 'netconsole.trackside-ap.last-task'
 
+const extendedRowDefaults = {
+  switch_vendor: 'H3C',
+  switch_tx_power: '',
+  switch_rx_low_alarm: '',
+  switch_rx_high_alarm: '',
+  switch_tx_low_alarm: '',
+  switch_tx_high_alarm: '',
+  ap_tx_power: '',
+  ap_match_source: '',
+  ap_match_confidence: 0,
+  lldp_match_status: '',
+  local_rx_power_dbm: null,
+  local_tx_power_dbm: null,
+  remote_rx_power_dbm: null,
+  remote_tx_power_dbm: null,
+  forward_loss_db: null,
+  reverse_loss_db: null,
+  calculation_status: '',
+  calculation_reason: '',
+  local_sample_time: '',
+  remote_sample_time: '',
+  sample_time_delta_seconds: null,
+}
+
 const rows: TracksideApBusinessRow[] = [
   {
+    ...extendedRowDefaults,
     site: '站点A',
     device_name: 'SW-A',
     interface_name: 'XGE1/0/1',
@@ -49,6 +74,7 @@ const rows: TracksideApBusinessRow[] = [
     optical_severity: 'normal',
   },
   {
+    ...extendedRowDefaults,
     site: '站点B',
     device_name: 'SW-B',
     interface_name: 'XGE1/0/2',
@@ -223,6 +249,48 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(wrapper.find('[data-table-id="trackside-ap-business-task-result"]').exists()).toBe(false)
     expect(wrapper.find('input[placeholder="站点"]').exists()).toBe(false)
     expect(wrapper.find('select').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('exposes vendor-neutral ZTE, LLDP and bidirectional optical columns', async () => {
+    const wrapper = await mountView()
+    const columns = wrapper.getComponent(NcDataTableStub).props('columns') as Array<{
+      key: string
+      label: string
+      displayValue?: (row: TracksideApBusinessRow) => unknown
+    }>
+    const byKey = new Map(columns.map((column) => [column.key, column]))
+    const zteRow = {
+      ...rows[0],
+      switch_vendor: 'ZTE',
+      lldp_match_status: 'SAMPLE_REQUIRED',
+      calculation_status: 'SINGLE_ENDED_ONLY',
+    }
+
+    expect(byKey.get('switch_vendor')?.displayValue?.(zteRow)).toBe('中兴 ZTE')
+    expect(byKey.get('lldp_match_status')?.displayValue?.(zteRow)).toBe(
+      '待真实样本验证',
+    )
+    expect(byKey.get('calculation_status')?.displayValue?.(zteRow)).toBe(
+      '无法计算（仅有单端光功率）',
+    )
+    expect(columns.map((column) => column.label)).toContain('模块状态')
+    expect(columns.map((column) => column.label)).toContain('双向光衰')
+    expect(columns.map((column) => column.label)).not.toContain('交换机光衰')
+    wrapper.unmount()
+  })
+
+  it('renders ZTE unknown and unavailable DOM module states without calling them faults', async () => {
+    api.listTracksideApBusiness.mockResolvedValueOnce(page([
+      { ...rows[0], switch_optical_status: 'unverified' },
+      { ...rows[1], switch_optical_status: 'dom_unavailable' },
+    ]))
+
+    const wrapper = await mountView()
+
+    expect(wrapper.text()).toContain('状态未知/第三方模块')
+    expect(wrapper.text()).toContain('不支持 DOM')
+    expect(wrapper.text()).not.toContain('光模块故障')
     wrapper.unmount()
   })
 

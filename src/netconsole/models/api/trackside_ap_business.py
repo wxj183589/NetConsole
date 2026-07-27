@@ -11,6 +11,7 @@ from netconsole.models.api.rail_transit_base_data import TracksideApDTO
 class TracksideApBusinessRowDTO(ApiModel):
     site: str = ""
     device_name: str = ""
+    switch_vendor: str = ""
     interface_name: str = ""
     link_status: str = ""
     port_type: str = ""
@@ -18,12 +19,32 @@ class TracksideApBusinessRowDTO(ApiModel):
     pvid: Any = None
     vlan: Any = None
     switch_rx_power: Any = None
+    switch_tx_power: Any = None
+    switch_rx_low_alarm: Any = None
+    switch_rx_high_alarm: Any = None
+    switch_tx_low_alarm: Any = None
+    switch_tx_high_alarm: Any = None
     switch_optical_status: str = ""
     ap_uuid: str = ""
     ap_mac: str = ""
     ap_name: str = ""
     ap_rx_power: Any = None
+    ap_tx_power: Any = None
     ap_optical_status: str = ""
+    ap_match_source: str = ""
+    ap_match_confidence: int = 0
+    lldp_match_status: str = ""
+    local_rx_power_dbm: Any = None
+    local_tx_power_dbm: Any = None
+    remote_rx_power_dbm: Any = None
+    remote_tx_power_dbm: Any = None
+    forward_loss_db: Any = None
+    reverse_loss_db: Any = None
+    calculation_status: str = ""
+    calculation_reason: str = ""
+    local_sample_time: str = ""
+    remote_sample_time: str = ""
+    sample_time_delta_seconds: int | None = None
     updated_at: str = ""
     optical_severity: str = "normal"
 

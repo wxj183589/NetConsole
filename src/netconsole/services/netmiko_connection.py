@@ -13,10 +13,17 @@ from netconsole.core import app_logger
 from netconsole.models.device import Device
 from netconsole.services.connection_manager import ConnectionManager
 from netconsole.services.device_command_profile_service import (
+    DeviceCommandProfileNotFound,
     resolve_device_capability_commands,
 )
 from netconsole.services.ssh_tunnel import TunnelManager, TunnelSession
-from netconsole.utils.text_encoding import clean_h3c_device_text, safe_decode
+from netconsole.utils.text_encoding import (
+    PAGER_PROMPT_RE,
+    clean_h3c_device_text,
+    clean_interactive_device_text,
+    decode_external_text,
+    safe_decode,
+)
 
 
 logging.getLogger("paramiko").setLevel(logging.WARNING)
@@ -164,6 +171,21 @@ class ConnectionErrorClassification:
     suggestion: str
 
 
+@dataclass(frozen=True)
+class PagedCommandResult:
+    raw_output: str
+    output: str
+    page_count: int
+
+
+class CommandOutputLimitExceeded(RuntimeError):
+    code = "OUTPUT_LIMIT_EXCEEDED"
+
+
+class CommandCancelled(RuntimeError):
+    code = "COMMAND_CANCELLED"
+
+
 def test_device_connection(
     device: Device,
     *,
@@ -205,21 +227,25 @@ def test_device_connection(
                 )
                 prompt = _safe_find_prompt(connection)
                 screen_output = ""
-                session_prepare = resolve_device_capability_commands(
-                    device, "session_prepare"
-                )[0]
                 try:
-                    screen_output = safe_send_command(
-                        connection,
-                        session_prepare,
-                        read_timeout=10,
-                        strip_prompt=False,
-                        strip_command=False,
-                        use_timing=True,
-                        encoding=prepared.encoding,
+                    session_prepare_commands = resolve_device_capability_commands(
+                        device, "session_prepare"
                     )
-                except Exception:
-                    screen_output = ""
+                except DeviceCommandProfileNotFound:
+                    session_prepare_commands = ()
+                if session_prepare_commands:
+                    try:
+                        screen_output = safe_send_command(
+                            connection,
+                            session_prepare_commands[0],
+                            read_timeout=10,
+                            strip_prompt=False,
+                            strip_command=False,
+                            use_timing=True,
+                            encoding=prepared.encoding,
+                        )
+                    except Exception:
+                        screen_output = ""
                 prompt = _safe_find_prompt(connection) or extract_cli_prompt(screen_output) or prompt
                 message = f"{prepared.protocol.upper()} 连接成功"
                 try:
@@ -527,6 +553,83 @@ def safe_send_command(
     return normalize_command_output(output, encoding)
 
 
+def safe_send_command_with_paging(
+    connection: Any,
+    command: str,
+    *,
+    max_pages: int = 256,
+    max_output_bytes: int = 4 * 1024 * 1024,
+    command_timeout: int = 120,
+    idle_timeout: int = 10,
+    encoding: str = "utf-8",
+    cancel_check: Callable[[], bool] | None = None,
+) -> PagedCommandResult:
+    if not hasattr(connection, "send_command_timing"):
+        output = safe_send_command(
+            connection,
+            command,
+            read_timeout=command_timeout,
+            strip_prompt=False,
+            strip_command=False,
+            use_timing=False,
+            encoding=encoding,
+        )
+        return PagedCommandResult(output, clean_interactive_device_text(output), 1)
+    if max_pages < 1 or max_output_bytes < 1:
+        raise ValueError("分页和输出上限必须为正整数")
+    started = monotonic()
+    raw_chunks: list[str] = []
+    page_count = 1
+
+    def cancelled() -> bool:
+        return bool(cancel_check and cancel_check())
+
+    def check_limits() -> None:
+        if cancelled():
+            _interrupt_device_command(connection, encoding)
+            raise CommandCancelled("设备命令已取消")
+        if monotonic() - started > command_timeout:
+            _interrupt_device_command(connection, encoding)
+            raise TimeoutError("设备命令执行超时")
+        raw_size = len("".join(raw_chunks).encode("utf-8", errors="replace"))
+        if raw_size > max_output_bytes:
+            _interrupt_device_command(connection, encoding)
+            raise CommandOutputLimitExceeded("设备命令输出超过受控上限")
+
+    kwargs: dict[str, object] = {
+        "read_timeout": idle_timeout,
+        "strip_prompt": False,
+        "strip_command": False,
+    }
+    chunk = _send_with_encoding(
+        connection.send_command_timing,
+        command,
+        kwargs,
+        encoding,
+    )
+    raw_chunks.append(_raw_command_output_text(chunk, encoding))
+    check_limits()
+    while PAGER_PROMPT_RE.search(raw_chunks[-1]):
+        if page_count >= max_pages:
+            _interrupt_device_command(connection, encoding)
+            raise CommandOutputLimitExceeded("设备命令分页超过受控上限")
+        page_count += 1
+        chunk = _send_with_encoding(
+            connection.send_command_timing,
+            " ",
+            kwargs,
+            encoding,
+        )
+        raw_chunks.append(_raw_command_output_text(chunk, encoding))
+        check_limits()
+    raw_output = "".join(raw_chunks)
+    return PagedCommandResult(
+        raw_output=raw_output,
+        output=clean_interactive_device_text(raw_output),
+        page_count=page_count,
+    )
+
+
 def normalize_command_output(output: object, encoding: str = H3C_DEFAULT_ENCODING) -> str:
     if isinstance(output, bytes):
         text = safe_decode(output)
@@ -535,6 +638,32 @@ def normalize_command_output(output: object, encoding: str = H3C_DEFAULT_ENCODIN
     if encoding == H3C_DEFAULT_ENCODING:
         return clean_h3c_device_text(text)
     return text
+
+
+def _raw_command_output_text(output: object, encoding: str) -> str:
+    if isinstance(output, bytes):
+        return decode_external_text(
+            output,
+            source="device_output",
+            encoding_hint=encoding,
+        ).text
+    return str(output or "")
+
+
+def _interrupt_device_command(connection: Any, encoding: str) -> None:
+    try:
+        if hasattr(connection, "write_channel"):
+            connection.write_channel("\x03")
+            return
+        if hasattr(connection, "send_command_timing"):
+            _send_with_encoding(
+                connection.send_command_timing,
+                "\x03",
+                {"read_timeout": 2, "strip_prompt": False, "strip_command": False},
+                encoding,
+            )
+    except Exception:
+        pass
 
 
 def extract_cli_prompt(output: str) -> str:
