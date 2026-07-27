@@ -19,6 +19,7 @@ from netconsole.models.api.ground_unattended import (
     GroundInventorySummaryDTO,
     GroundRawFileDTO,
     GroundRawFilePageDTO,
+    GroundSyslogHostDTO,
     GroundTrainPolicyUpdateDTO,
     GroundTimelineEventDTO,
     GroundTimelinePageDTO,
@@ -43,6 +44,10 @@ from netconsole.services.rail_transit.base_data_query_service import (
     RailTransitBaseDataQueryService,
 )
 from netconsole.services.rail_transit.train_identity import canonical_train_id_for
+from netconsole.services.system_network_application_service import (
+    SystemNetworkApplicationService,
+    SystemNetworkError,
+)
 
 
 class DesktopActionResultPort(Protocol):
@@ -78,6 +83,7 @@ class GroundUnattendedApplicationService:
         supervisor: GroundUnattendedSupervisor,
         base_query: RailTransitBaseDataQueryService | None = None,
         desktop_action_service: DesktopActionPort | None = None,
+        network_service: SystemNetworkApplicationService | None = None,
     ) -> None:
         self.paths = paths
         self.site_id = site_id
@@ -85,6 +91,7 @@ class GroundUnattendedApplicationService:
         self.supervisor = supervisor
         self.base_query = base_query
         self.desktop_action_service = desktop_action_service
+        self.network_service = network_service or SystemNetworkApplicationService()
         self.inventory_sync = (
             TrainInventorySyncService(
                 paths,
@@ -118,6 +125,19 @@ class GroundUnattendedApplicationService:
         self._require_site(site_id)
         if profile.site_id != site_id:
             raise GroundUnattendedError("SITE_MISMATCH", "配置局点必须与当前局点一致")
+        self._validate_network_profile(profile, require_syslog=profile.enabled)
+        if (
+            profile.syslog_server_ip
+            and not self.network_service.is_local_ipv4(profile.syslog_server_ip)
+            and profile.allow_external_syslog_address
+            and not profile.external_syslog_address_confirmation
+        ):
+            raise GroundUnattendedError(
+                "EXTERNAL_SYSLOG_CONFIRMATION_REQUIRED",
+                "外部 NAT 日志回传地址需要再次确认",
+                status_code=409,
+            )
+        previous = self.repository.get_profile()
         saved = self.repository.save_profile(
             GroundUnattendedProfileDTO.model_validate(profile.model_dump(mode="json"))
         )
@@ -127,6 +147,22 @@ class GroundUnattendedApplicationService:
             title="地面无人值守配置已保存",
             message="正在运行的任务在下一次调度周期读取新配置；当前采集任务不会被强制重启。",
         )
+        if (
+            saved.allow_external_syslog_address
+            and saved.syslog_server_ip
+            and not self.network_service.is_local_ipv4(saved.syslog_server_ip)
+            and (
+                not previous.allow_external_syslog_address
+                or previous.syslog_server_ip != saved.syslog_server_ip
+            )
+        ):
+            self.repository.add_event(
+                event_type="external_syslog_address_override_enabled",
+                severity="warning",
+                title="已启用外部日志回传地址",
+                message="用户已二次确认使用不属于本机的外部 NAT 地址。",
+                details={"address_scope": "external_nat"},
+            )
         return saved
 
     def status(self, site_id: str) -> GroundUnattendedStatusDTO:
@@ -157,7 +193,11 @@ class GroundUnattendedApplicationService:
                 audit = self.repository.latest_syslog_config_audit(
                     str(endpoint.get("device_uuid") or "")
                 )
-                if audit and audit.get("status") == "CONFIG_FAILED":
+                if audit and audit.get("status") in {
+                    "CONFIG_FAILED",
+                    "CONFIG_VERIFY_FAILED",
+                    "TARGET_PORT_CONFLICT",
+                }:
                     config_abnormal += 1
         disk = shutil.disk_usage(self.paths.ground_unattended_root(site_id).parent)
         state = str(
@@ -238,6 +278,7 @@ class GroundUnattendedApplicationService:
                 "请先启用当前局点的地面无人值守配置",
                 status_code=409,
             )
+        self._validate_network_profile(profile, require_syslog=True)
         active = self.repository.get_active_run()
         if active is not None:
             return GroundActionResponseDTO(
@@ -372,21 +413,42 @@ class GroundUnattendedApplicationService:
         return self.get_train(site_id, train_id)
 
     def request_config_check(
-        self, site_id: str, *, device_uuid: str = ""
+        self,
+        site_id: str,
+        *,
+        device_uuid: str = "",
+        allow_target_port_change: bool = False,
+        explicit_confirmation: bool = False,
     ) -> GroundActionResponseDTO:
         run = self._active(site_id)
         profile = self.repository.get_profile()
-        if not profile.syslog_server_ip:
-            raise GroundUnattendedError(
-                "SYSLOG_TARGET_REQUIRED",
-                "请先设置 Syslog 服务器 IP，再执行配置检查",
-                status_code=409,
-            )
+        self._validate_network_profile(profile, require_syslog=True)
         if device_uuid and self.repository.get_inventory_endpoint(device_uuid) is None:
             raise GroundUnattendedError(
                 "MR_NOT_FOUND", "MR 不在当前无人值守清单中", status_code=404
             )
-        self.supervisor.request_config_check(device_uuid)
+        if allow_target_port_change and (
+            not device_uuid or not explicit_confirmation
+        ):
+            raise GroundUnattendedError(
+                "TARGET_PORT_CHANGE_CONFIRMATION_REQUIRED",
+                "修改已有 MR 日志目标端口必须指定单台 MR 并明确确认",
+                status_code=409,
+            )
+        if allow_target_port_change:
+            self.repository.add_event(
+                run_id=str(run["run_id"]),
+                event_type="mr_loghost_port_change_authorized",
+                severity="warning",
+                mr_id=device_uuid,
+                title="用户已确认高风险日志端口修改",
+                message="已授权单台 MR 在检测到同 IP 端口冲突时修改 NetConsole 管理目标端口。",
+                details={"risk_level": "high"},
+            )
+        self.supervisor.request_config_check(
+            device_uuid,
+            allow_target_port_change=allow_target_port_change,
+        )
         return GroundActionResponseDTO(
             state=str(run["state"]),
             run_id=str(run["run_id"]),
@@ -645,6 +707,13 @@ class GroundUnattendedApplicationService:
             deep_collection_eligible=bool(row.get("deep_collection_eligible")),
             eligibility_status=row.get("eligibility_status", "AC_UNKNOWN"),
             exclusion_reason=row.get("exclusion_reason", ""),
+            location_match_level=row.get("location_match_level", "UNMATCHED"),
+            location_match_reason=row.get("location_match_reason", ""),
+            resolved_ap_id=row.get("resolved_ap_id", ""),
+            resolved_ap_name=row.get("resolved_ap_name", ""),
+            raw_peer_ap_name=row.get("raw_peer_ap_name", ""),
+            raw_peer_ap_mac=row.get("raw_peer_ap_mac", ""),
+            canonical_station_name=row.get("canonical_station_name", ""),
             current_ap_name=row.get("current_ap_name", ""),
             current_ap_mac=row.get("current_ap_mac", ""),
             station=row.get("station", ""),
@@ -666,6 +735,24 @@ class GroundUnattendedApplicationService:
             ],
             updated_at=row.get("updated_at", ""),
         )
+
+    def _validate_network_profile(
+        self,
+        profile: GroundUnattendedProfileDTO,
+        *,
+        require_syslog: bool,
+    ) -> None:
+        try:
+            self.network_service.validate_profile_addresses(
+                udp_listen_host=profile.udp_listen_host,
+                syslog_server_ip=profile.syslog_server_ip,
+                require_syslog=require_syslog,
+                allow_external=profile.allow_external_syslog_address,
+            )
+        except SystemNetworkError as exc:
+            raise GroundUnattendedError(
+                exc.code, exc.message, status_code=exc.status_code
+            ) from exc
 
     def _inventory_train_candidates(self) -> list[GroundUnattendedTrainDTO]:
         result: list[GroundUnattendedTrainDTO] = []
@@ -845,6 +932,7 @@ class GroundUnattendedApplicationService:
         operations: dict[tuple[str, str], dict[str, Any]] = {}
         for row in self.repository.list_deep_operations(run_id):
             operations[(str(row["train_id"]), str(row["mr_position_code"]))] = row
+        profile = self.repository.get_profile()
         result = []
         for train in trains:
             endpoints = []
@@ -855,6 +943,55 @@ class GroundUnattendedApplicationService:
                 operation = operations.get((train.train_id, endpoint.endpoint)) or {}
                 boot = self.repository.latest_boot_session(endpoint.mr_id) if endpoint.mr_id else None
                 wmesh = self.repository.latest_wmesh_event(endpoint.mr_id) if endpoint.mr_id else None
+                info_center = dict((boot or {}).get("info_center_metrics") or {})
+                managed_ip = str(profile.syslog_server_ip or "")
+                managed_port = int(profile.syslog_server_port)
+                configured_hosts = [
+                    GroundSyslogHostDTO(
+                        ip=str(host.get("ip") or ""),
+                        port=int(host.get("port") or 514),
+                        facility=str(host.get("facility") or ""),
+                        is_managed_target=(
+                            str(host.get("ip") or "") == managed_ip
+                            and int(host.get("port") or 514) == managed_port
+                        ),
+                        same_ip_different_port=(
+                            str(host.get("ip") or "") == managed_ip
+                            and int(host.get("port") or 514) != managed_port
+                        ),
+                        source=(
+                            "NETCONSOLE_MANAGED"
+                            if str(host.get("ip") or "") == managed_ip
+                            and int(host.get("port") or 514) == managed_port
+                            else "DEVICE_EXISTING"
+                        ),
+                    )
+                    for host in info_center.get("log_hosts") or []
+                    if isinstance(host, dict) and host.get("ip")
+                ]
+                managed_statuses: list[str] = []
+                if managed_ip:
+                    exact_target = any(
+                        host.ip == managed_ip
+                        and host.port == managed_port
+                        for host in configured_hosts
+                    )
+                    same_ip_other_port = any(
+                        host.ip == managed_ip
+                        and host.port != managed_port
+                        for host in configured_hosts
+                    )
+                    managed_statuses.append(
+                        "TARGET_PRESENT"
+                        if exact_target
+                        else "TARGET_PORT_CONFLICT"
+                        if same_ip_other_port
+                        else "TARGET_MISSING"
+                    )
+                    if any(
+                        host.ip != managed_ip for host in configured_hosts
+                    ):
+                        managed_statuses.append("OTHER_TARGETS_PRESENT")
                 endpoints.append(
                     endpoint.model_copy(
                         update={
@@ -896,12 +1033,34 @@ class GroundUnattendedApplicationService:
                             "uptime_seconds": (boot or {}).get(
                                 "last_uptime_seconds"
                             ),
+                            "boot_time_uncertainty_seconds": int(
+                                (boot or {}).get(
+                                    "boot_time_uncertainty_seconds"
+                                )
+                                or 0
+                            ),
+                            "reboot_reason": str(
+                                (boot or {}).get("reboot_reason") or ""
+                            ),
+                            "timezone_name": str(
+                                (boot or {}).get("timezone_name") or ""
+                            ),
+                            "utc_offset_seconds": (boot or {}).get(
+                                "utc_offset_seconds"
+                            ),
+                            "device_time_quality": str(
+                                (boot or {}).get("time_quality") or ""
+                            ),
                             "config_status": str(
                                 (boot or {}).get("config_status") or "NOT_CHECKED"
                             ),
                             "config_checked_at": str(
                                 (boot or {}).get("config_checked_at") or ""
                             ),
+                            "managed_target_ip": managed_ip,
+                            "managed_target_port": managed_port,
+                            "managed_target_statuses": managed_statuses,
+                            "configured_log_hosts": configured_hosts,
                         }
                     )
                 )

@@ -86,6 +86,9 @@ from netconsole.services.traffic.application_service import TrafficTestApplicati
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
 from netconsole.services.traffic.web_application_service import TrafficWebApplicationService
 from netconsole.services.settings_application_service import SettingsApplicationService
+from netconsole.services.system_network_application_service import (
+    SystemNetworkApplicationService,
+)
 from netconsole.services.site_lifecycle import DemoSiteSeedService
 from netconsole.services.site_storage import (
     DataRootApplicationService,
@@ -448,6 +451,7 @@ def create_app(
     app.state.desktop_action_service = desktop_action_service
     app.state.feature_gate = feature_gate
     app.state.settings_application_service = SettingsApplicationService(paths, feature_gate, site_name)
+    app.state.system_network_application_service = SystemNetworkApplicationService()
     app.state.ac_management_query_service = ac_management_query_service
     app.state.ac_mesh_link_query_service = AcMeshLinkQueryService(paths)
     app.state.ac_mesh_link_refresh_service = ac_mesh_link_refresh_service
@@ -609,6 +613,7 @@ def create_app(
                 ac_refresh_service=ac_mesh_link_refresh_service,
                 online_mr_application_service=online_mr_application_service,
                 online_mr_query_service=online_mr_query_service,
+                network_service=app.state.system_network_application_service,
             )
             app.state.ground_unattended_repository = ground_unattended_repository
             app.state.ground_unattended_supervisor = ground_unattended_supervisor
@@ -620,6 +625,7 @@ def create_app(
                     supervisor=ground_unattended_supervisor,
                     base_query=app.state.rail_transit_base_data_query_service,
                     desktop_action_service=desktop_action_service,
+                    network_service=app.state.system_network_application_service,
                 )
             )
         except Exception as exc:

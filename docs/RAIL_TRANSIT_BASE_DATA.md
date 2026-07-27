@@ -54,7 +54,17 @@ revision 校验 + SQLite BEGIN IMMEDIATE 单事务
 
 `StationSourceDiscoveryService` 使用 SQLite `mode=ro` 与 `PRAGMA query_only` 读取 `device_groups/devices`，一次读取全部匹配设备，不受前端分页限制。来源字符串按 NFKC、空白折叠、连字符统一和大小写无关生成匹配键；`32-五乡1/32-五乡2` 这类设备名不会生成站点，只有共同的 `station=32-五乡` 会合并为一个候选并统计 `source_device_count=2`。
 
-默认解析 `^\d+[-－—_].+` 形式的 station 值，保留节点编码前导零并把数字转为普通车站主线顺序；没有数字前缀时不丢弃候选，只提示需要人工确认顺序。以 `停车场`、`车辆段` 或非普通站名的 `车场` 结尾时识别为特殊节点，默认 `path_code=UNASSIGNED`、`sort_order=null`、`participates_in_direction=false`，不会因为编码较大被排入主线。
+显式编号分隔符支持 `-`、`_`、`.`、`、`、`:` 和空格，保留节点编码前导零并把数字转为普通车站主线顺序。
+无分隔符的两位编号只有在同批至少 3 个候选、覆盖绝大多数未解析值、编号唯一且基本连续时才推断，
+`3号航站楼`、`1号线换乘站`、`101大道站` 等歧义名称不会被截断；稀疏或重复批次保持
+`manual_review`。以 `停车场`、`车辆段` 或非普通站名的 `车场` 结尾时识别为特殊节点，默认
+`path_code=UNASSIGNED`、`sort_order=null`、`participates_in_direction=false`，不会因为编码较大被排入主线。
+
+候选身份使用“规范站名 + 节点类型 + 路径”稳定键，不把编号前缀写入正式站名。编号写法不同但规范身份和
+数值编号一致时合并来源设备数；同编号不同站名、同站名不同编号、同路径顺序重复或一个来源匹配多个正式
+站点时返回阻断冲突，不自动合并。匹配依据依次公开为 `exact_source_key`、`canonical_name_and_type`、
+`canonical_name`、`alias`；预览表同时显示原始值、规范站名、解析方式、可信度、正式站点、匹配依据和
+建议动作。匹配只更新来源证据，不覆盖人工维护的名称、编号、顺序、结构、站台或轨道设施。
 
 来源预览只给出候选、匹配和冲突，不提供直接写库接口。前端“从设备管理生成”和“导入模板”都只能应用到当前解锁草稿，最后仍通过全局 `validate` 与 `changes` 保存，继续保留 `base_revision`、明确确认、事务回滚和保存失败保留草稿。来源确认默认只补充 `source_station_value/source_station_key/source_kind` 以及响应中的设备数量状态；结构和站台仅在 MAIN 普通站仍为 `unknown` 时补齐默认值，顺序、路径、端点、轨道设施、启用、备注和已有明确结构/站台等人工字段不会被来源同步覆盖。设备管理中来源后来消失时只把正式站点标为 `stale`，不删除站点，也不修改 `devices` 或 `device_groups`。
 

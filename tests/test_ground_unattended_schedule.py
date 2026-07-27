@@ -74,7 +74,12 @@ def test_supervisor_auto_starts_and_finishes_at_window_boundary(tmp_path) -> Non
     )
     repo.save_profile(
         repo.get_profile().model_copy(
-            update={"enabled": True, "udp_listen_port": _available_udp_port()}
+            update={
+                "enabled": True,
+                "udp_listen_port": _available_udp_port(),
+                "syslog_server_ip": "192.0.2.100",
+                "allow_external_syslog_address": True,
+            }
         )
     )
     clock = [datetime.fromisoformat("2026-07-25T07:00:00+08:00")]
@@ -103,7 +108,12 @@ def test_manual_stop_does_not_auto_restart_inside_the_same_window(tmp_path) -> N
     )
     repo.save_profile(
         repo.get_profile().model_copy(
-            update={"enabled": True, "udp_listen_port": _available_udp_port()}
+            update={
+                "enabled": True,
+                "udp_listen_port": _available_udp_port(),
+                "syslog_server_ip": "192.0.2.100",
+                "allow_external_syslog_address": True,
+            }
         )
     )
     clock = [datetime.fromisoformat("2026-07-25T08:00:00+08:00")]
@@ -143,7 +153,12 @@ def test_supervisor_does_not_reopen_ready_archived_run_date(tmp_path) -> None:
     )
     repo.save_profile(
         repo.get_profile().model_copy(
-            update={"enabled": True, "udp_listen_port": _available_udp_port()}
+            update={
+                "enabled": True,
+                "udp_listen_port": _available_udp_port(),
+                "syslog_server_ip": "192.0.2.100",
+                "allow_external_syslog_address": True,
+            }
         )
     )
     run = repo.create_or_get_run(

@@ -285,12 +285,15 @@ const stationSourceColumns: NcTableColumn<StationSourceCandidate>[] = [
   { key: 'selected', label: '勾选', width: 72, hideable: false },
   { key: 'source_station_value', label: '来源站点值', minWidth: 160 },
   { key: 'code', label: '节点编码', width: 100, displayValue: (row) => display(row.code) },
-  { key: 'name', label: '节点名称', valueType: 'name', minWidth: 150 },
+  { key: 'canonical_name', label: '规范站名', valueType: 'name', minWidth: 150 },
   { key: 'node_type', label: '类型', valueType: 'status', width: 110, displayValue: (row) => stationNodeTypeLabel(row.node_type) },
-  { key: 'path_code', label: '建议路径', width: 110 },
+  { key: 'order_parse_method', label: '解析方式', width: 130 },
+  { key: 'parse_confidence', label: '可信度', valueType: 'status', width: 130 },
   { key: 'sort_order', label: '建议顺序', valueType: 'number', width: 105, displayValue: (row) => row.sort_order ?? '--' },
   { key: 'source_device_count', label: '来源设备数', valueType: 'number', width: 120 },
-  { key: 'match_status', label: '匹配结果', valueType: 'status', width: 110, displayValue: (row) => sourceMatchLabel(row.match_status) },
+  { key: 'matched_station_name', label: '现有站点', valueType: 'name', minWidth: 150, displayValue: (row) => display(row.matched_station_name) },
+  { key: 'match_status', label: '匹配依据', valueType: 'status', width: 150, displayValue: (row) => sourceMatchLabel(row.match_status) },
+  { key: 'suggested_action', label: '建议动作', width: 130 },
   { key: 'issues', label: '问题', valueType: 'description', minWidth: 240, alignmentReason: 'long-text', displayValue: (row) => row.issues.map((item) => item.message).join('；') || (row.node_type === 'station' ? '--' : '未加入主线路径') },
 ]
 const stationTemplateColumns: NcTableColumn<StationTemplatePreviewRow>[] = [
@@ -1024,7 +1027,7 @@ async function openStationSourcePreview(): Promise<void> {
   try {
     const preview = await store.refreshStationSourcePreview()
     selectedStationSourceIds.value = preview.candidates
-      .filter((candidate) => !candidate.issues.some((issue) => issue.blocking) && candidate.match_status !== 'conflict')
+      .filter((candidate) => !candidate.issues.some((issue) => issue.blocking) && !['conflict', 'manual_review'].includes(candidate.match_status))
       .map((candidate) => candidate.candidate_id)
     stationSourceDialogVisible.value = true
   } catch (cause) {
@@ -1045,7 +1048,7 @@ function applyStationSourceToDraft(): void {
     return
   }
   const selected = new Set(selectedStationSourceIds.value)
-  const candidates = stationSourceCandidates.value.filter((candidate) => selected.has(candidate.candidate_id) && candidate.match_status !== 'conflict')
+  const candidates = stationSourceCandidates.value.filter((candidate) => selected.has(candidate.candidate_id) && !['conflict', 'manual_review'].includes(candidate.match_status))
   if (!candidates.length) {
     ElMessage.warning('没有可应用的站点来源候选')
     return
@@ -1745,7 +1748,15 @@ function sourceSyncLabel(value: string): string {
   return ({ matched: '已匹配', stale: '来源失效', conflict: '来源冲突', manual: '人工创建', legacy: 'AP旧资料', unavailable: '不可用' } as Record<string, string>)[value] || value || '--'
 }
 function sourceMatchLabel(value: string): string {
-  return ({ create: '新增', matched: '匹配', conflict: '冲突', manual_review: '待确认' } as Record<string, string>)[value] || value || '--'
+  return ({
+    exact_source_key: '来源键精确',
+    canonical_name: '规范名称',
+    canonical_name_and_type: '规范名称与类型',
+    alias: '来源别名',
+    create: '新增',
+    conflict: '冲突',
+    manual_review: '待确认',
+  } as Record<string, string>)[value] || value || '--'
 }
 function terminalSummary(row: Station): string {
   const values = []
@@ -2292,7 +2303,9 @@ function sectionSourceLabel(row: Section): string {
           <article class="warning"><span>特殊节点</span><strong>{{ store.stationSourcePreview.special_node_count }}</strong></article>
           <article class="normal"><span>新增</span><strong>{{ store.stationSourcePreview.create_count }}</strong></article>
           <article><span>匹配</span><strong>{{ store.stationSourcePreview.match_count }}</strong></article>
+          <article class="normal"><span>规范名匹配</span><strong>{{ store.stationSourcePreview.canonical_match_count }}</strong></article>
           <article class="danger"><span>冲突</span><strong>{{ store.stationSourcePreview.conflict_count }}</strong></article>
+          <article class="warning"><span>待人工确认</span><strong>{{ store.stationSourcePreview.manual_review_count }}</strong></article>
         </div>
         <div class="source-meta">
           <el-tag type="info">来源分组：{{ store.stationSourcePreview.source_group_name }}</el-tag>
@@ -2321,7 +2334,7 @@ function sectionSourceLabel(row: Section): string {
             />
           </template>
           <template #cell-node_type="{ row }"><el-tag :type="stationNodeTypeTag(row.node_type)">{{ stationNodeTypeLabel(row.node_type) }}</el-tag></template>
-          <template #cell-match_status="{ row }"><el-tag :type="row.match_status === 'conflict' ? 'danger' : row.match_status === 'matched' ? 'success' : 'info'">{{ sourceMatchLabel(row.match_status) }}</el-tag></template>
+          <template #cell-match_status="{ row }"><el-tag :type="row.match_status === 'conflict' ? 'danger' : ['exact_source_key', 'canonical_name', 'canonical_name_and_type', 'alias'].includes(row.match_status) ? 'success' : 'info'">{{ sourceMatchLabel(row.match_status) }}</el-tag></template>
           <template #cell-issues="{ row }">
             <div class="row-issues">
               <el-tag v-if="row.node_type !== 'station'" type="warning">未加入主线路径</el-tag>

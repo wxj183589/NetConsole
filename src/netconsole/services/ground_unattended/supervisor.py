@@ -49,6 +49,10 @@ from netconsole.services.rail_transit.train_identity import canonical_train_id_f
 from netconsole.services.rail_transit.vehicle_mr_online_query_service import (
     VehicleMrOnlineQueryService,
 )
+from netconsole.services.system_network_application_service import (
+    SystemNetworkApplicationService,
+    SystemNetworkError,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -75,6 +79,7 @@ class GroundUnattendedSupervisor:
         ac_refresh_service: AcMeshLinkRefreshApplicationService | None = None,
         online_mr_application_service: OnlineMrApplicationService | None = None,
         online_mr_query_service: OnlineMrQueryService | None = None,
+        network_service: SystemNetworkApplicationService | None = None,
         now_provider: Callable[[], datetime] | None = None,
         tick_seconds: float = 1.0,
     ) -> None:
@@ -84,6 +89,7 @@ class GroundUnattendedSupervisor:
         self.base_query = base_query
         self.mesh_query = mesh_query
         self.vehicle_query = vehicle_query
+        self.network_service = network_service or SystemNetworkApplicationService()
         self.ac_refresh_service = ac_refresh_service
         self.now_provider = now_provider or (lambda: datetime.now().astimezone())
         self.tick_seconds = max(0.05, float(tick_seconds))
@@ -128,7 +134,7 @@ class GroundUnattendedSupervisor:
             thread_name_prefix="ground-syslog-config",
         )
         self._config_futures: dict[str, Future] = {}
-        self._manual_config_checks: set[str] = set()
+        self._manual_config_checks: dict[str, bool] = {}
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -140,6 +146,7 @@ class GroundUnattendedSupervisor:
         self._manual_start = False
         self._last_valid_ping_targets: dict[str, tuple[FleetPingTarget, datetime]] = {}
         self._archive_delete_requests: list[str] = []
+        self._last_profile_network_error = ""
 
     def start(self) -> None:
         with self._lock:
@@ -185,9 +192,15 @@ class GroundUnattendedSupervisor:
             self._archive_delete_requests.append(str(archive_id))
         self._wake_event.set()
 
-    def request_config_check(self, device_uuid: str = "") -> None:
+    def request_config_check(
+        self,
+        device_uuid: str = "",
+        *,
+        allow_target_port_change: bool = False,
+    ) -> None:
         with self._lock:
-            self._manual_config_checks.add(str(device_uuid or "*"))
+            key = str(device_uuid or "*")
+            self._manual_config_checks[key] = bool(allow_target_port_change)
         self._wake_event.set()
 
     @property
@@ -250,6 +263,23 @@ class GroundUnattendedSupervisor:
         if profile.enabled and (
             (window.active and run["run_date"] == window.run_date) or manual_run_active
         ):
+            error = self._network_profile_error(profile)
+            if error is not None:
+                self.repository.update_run(
+                    str(run["run_id"]),
+                    state="ERROR",
+                    requested_action="profile_invalid",
+                    error_code=error.code,
+                    error_message=error.message,
+                )
+                self.repository.add_event(
+                    run_id=str(run["run_id"]),
+                    event_type="run_recovery_rejected",
+                    severity="error",
+                    title="重启恢复被网络配置阻止",
+                    message=error.message,
+                )
+                return
             self._active_profile = profile
             self.inventory_sync.synchronize()
             self._start_fleet_ping(run, profile)
@@ -318,6 +348,20 @@ class GroundUnattendedSupervisor:
                 return
 
         if run is None and (window.active or self._manual_start):
+            error = self._network_profile_error(profile)
+            if error is not None:
+                self._manual_start = False
+                if self._last_profile_network_error != error.code:
+                    self.repository.add_event(
+                        event_type="start_rejected",
+                        severity="warning",
+                        title="无人值守启动被网络配置阻止",
+                        message=error.message,
+                        details={"code": error.code},
+                    )
+                    self._last_profile_network_error = error.code
+                return
+            self._last_profile_network_error = ""
             latest = self.repository.latest_run()
             if latest and str(latest.get("run_date") or "") == window.run_date:
                 archive = self.repository.get_archive_by_run(str(latest["run_id"]))
@@ -354,6 +398,20 @@ class GroundUnattendedSupervisor:
         self._poll_if_due(
             run, self._active_profile or profile, now, scheduling_paused=False
         )
+
+    def _network_profile_error(
+        self, profile: GroundUnattendedProfileDTO
+    ) -> SystemNetworkError | None:
+        try:
+            self.network_service.validate_profile_addresses(
+                udp_listen_host=profile.udp_listen_host,
+                syslog_server_ip=profile.syslog_server_ip,
+                require_syslog=True,
+                allow_external=profile.allow_external_syslog_address,
+            )
+        except SystemNetworkError as exc:
+            return exc
+        return None
 
     def _handle_commands(self) -> None:
         with self._lock:
@@ -927,7 +985,7 @@ class GroundUnattendedSupervisor:
             for row in self.fleet_ping.target_summaries()
         }
         with self._lock:
-            manual = set(self._manual_config_checks)
+            manual = dict(self._manual_config_checks)
             self._manual_config_checks.clear()
         policies = {
             str(row["train_id"]): row
@@ -937,7 +995,8 @@ class GroundUnattendedSupervisor:
             target.mr_id: target for target in targets.values() if target.mr_id
         }
         if "*" in manual:
-            manual.update(endpoints)
+            for device_uuid in endpoints:
+                manual.setdefault(device_uuid, False)
         now = self._now()
         ordered = sorted(
             endpoints.items(),
@@ -976,6 +1035,7 @@ class GroundUnattendedSupervisor:
                 target_ip=target_ip,
                 target_port=profile.syslog_server_port,
                 boot_tolerance_seconds=profile.boot_time_tolerance_seconds,
+                allow_target_port_change=bool(manual.get(device_uuid, False)),
             )
 
     def _collect_config_checks(self) -> None:

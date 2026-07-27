@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS ground_unattended_profiles (
     config_check_cooldown_seconds INTEGER NOT NULL DEFAULT 1800,
     syslog_server_ip TEXT NOT NULL DEFAULT '',
     syslog_server_port INTEGER NOT NULL DEFAULT 514,
+    allow_external_syslog_address INTEGER NOT NULL DEFAULT 0,
     ping_raw_retention_days INTEGER NOT NULL DEFAULT 30,
     syslog_raw_retention_days INTEGER NOT NULL DEFAULT 30,
     minimum_valid_collection_minutes INTEGER NOT NULL DEFAULT 10,
@@ -111,6 +112,13 @@ CREATE TABLE IF NOT EXISTS ground_unattended_train_runs (
     deep_collection_eligible INTEGER NOT NULL DEFAULT 0,
     eligibility_status TEXT NOT NULL DEFAULT 'AC_UNKNOWN',
     exclusion_reason TEXT NOT NULL DEFAULT '',
+    location_match_level TEXT NOT NULL DEFAULT 'UNMATCHED',
+    location_match_reason TEXT NOT NULL DEFAULT '',
+    resolved_ap_id TEXT NOT NULL DEFAULT '',
+    resolved_ap_name TEXT NOT NULL DEFAULT '',
+    raw_peer_ap_name TEXT NOT NULL DEFAULT '',
+    raw_peer_ap_mac TEXT NOT NULL DEFAULT '',
+    canonical_station_name TEXT NOT NULL DEFAULT '',
     current_ap_identity TEXT NOT NULL DEFAULT '',
     current_ap_name TEXT NOT NULL DEFAULT '',
     current_ap_mac TEXT NOT NULL DEFAULT '',
@@ -348,6 +356,14 @@ CREATE TABLE IF NOT EXISTS ground_unattended_boot_sessions (
     estimated_boot_time TEXT NOT NULL,
     first_uptime_seconds INTEGER NOT NULL,
     last_uptime_seconds INTEGER NOT NULL,
+    device_clock_before TEXT NOT NULL DEFAULT '',
+    device_clock_after TEXT NOT NULL DEFAULT '',
+    boot_time_uncertainty_seconds INTEGER NOT NULL DEFAULT 60,
+    reboot_reason TEXT NOT NULL DEFAULT '',
+    timezone_name TEXT NOT NULL DEFAULT '',
+    utc_offset_seconds INTEGER,
+    time_quality TEXT NOT NULL DEFAULT 'LOCAL_FALLBACK',
+    clock_jump_seconds REAL,
     version_evidence_path TEXT NOT NULL DEFAULT '',
     config_status TEXT NOT NULL DEFAULT 'NOT_CHECKED',
     config_checked_at TEXT NOT NULL DEFAULT '',
@@ -482,8 +498,19 @@ _PROFILE_MIGRATION_COLUMNS = {
     "config_check_cooldown_seconds": "INTEGER NOT NULL DEFAULT 1800",
     "syslog_server_ip": "TEXT NOT NULL DEFAULT ''",
     "syslog_server_port": "INTEGER NOT NULL DEFAULT 514",
+    "allow_external_syslog_address": "INTEGER NOT NULL DEFAULT 0",
     "ping_raw_retention_days": "INTEGER NOT NULL DEFAULT 30",
     "syslog_raw_retention_days": "INTEGER NOT NULL DEFAULT 30",
+}
+
+_TRAIN_RUN_MIGRATION_COLUMNS = {
+    "location_match_level": "TEXT NOT NULL DEFAULT 'UNMATCHED'",
+    "location_match_reason": "TEXT NOT NULL DEFAULT ''",
+    "resolved_ap_id": "TEXT NOT NULL DEFAULT ''",
+    "resolved_ap_name": "TEXT NOT NULL DEFAULT ''",
+    "raw_peer_ap_name": "TEXT NOT NULL DEFAULT ''",
+    "raw_peer_ap_mac": "TEXT NOT NULL DEFAULT ''",
+    "canonical_station_name": "TEXT NOT NULL DEFAULT ''",
 }
 
 _ENDPOINT_MIGRATION_COLUMNS = {
@@ -493,6 +520,14 @@ _ENDPOINT_MIGRATION_COLUMNS = {
 }
 
 _BOOT_SESSION_MIGRATION_COLUMNS = {
+    "device_clock_before": "TEXT NOT NULL DEFAULT ''",
+    "device_clock_after": "TEXT NOT NULL DEFAULT ''",
+    "boot_time_uncertainty_seconds": "INTEGER NOT NULL DEFAULT 60",
+    "reboot_reason": "TEXT NOT NULL DEFAULT ''",
+    "timezone_name": "TEXT NOT NULL DEFAULT ''",
+    "utc_offset_seconds": "INTEGER",
+    "time_quality": "TEXT NOT NULL DEFAULT 'LOCAL_FALLBACK'",
+    "clock_jump_seconds": "REAL",
     "info_center_metrics_json": "TEXT NOT NULL DEFAULT '{}'",
 }
 
@@ -523,13 +558,16 @@ class GroundUnattendedRepository:
         with self._connection() as conn:
             conn.executescript(SCHEMA)
             self._ensure_columns(conn, "ground_unattended_profiles", _PROFILE_MIGRATION_COLUMNS)
+            self._ensure_columns(
+                conn, "ground_unattended_train_runs", _TRAIN_RUN_MIGRATION_COLUMNS
+            )
             self._ensure_columns(conn, "ground_unattended_train_endpoints", _ENDPOINT_MIGRATION_COLUMNS)
             self._ensure_columns(conn, "ground_unattended_boot_sessions", _BOOT_SESSION_MIGRATION_COLUMNS)
             self._ensure_columns(conn, "ground_unattended_wmesh_events", _WMESH_EVENT_MIGRATION_COLUMNS)
             conn.execute(
                 """
                 INSERT INTO ground_unattended_schema(key, value, updated_at)
-                VALUES('schema_version', '3', ?)
+                VALUES('schema_version', '5', ?)
                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
                 """,
                 (_now(),),
@@ -1009,6 +1047,15 @@ class GroundUnattendedRepository:
             ),
             "eligibility_status": values.get("eligibility_status", "AC_UNKNOWN"),
             "exclusion_reason": values.get("exclusion_reason", ""),
+            "location_match_level": values.get(
+                "location_match_level", "UNMATCHED"
+            ),
+            "location_match_reason": values.get("location_match_reason", ""),
+            "resolved_ap_id": values.get("resolved_ap_id", ""),
+            "resolved_ap_name": values.get("resolved_ap_name", ""),
+            "raw_peer_ap_name": values.get("raw_peer_ap_name", ""),
+            "raw_peer_ap_mac": values.get("raw_peer_ap_mac", ""),
+            "canonical_station_name": values.get("canonical_station_name", ""),
             "current_ap_identity": ap_identity,
             "current_ap_name": values.get("current_ap_name", ""),
             "current_ap_mac": values.get("current_ap_mac", ""),
@@ -1589,6 +1636,14 @@ class GroundUnattendedRepository:
             "estimated_boot_time",
             "first_uptime_seconds",
             "last_uptime_seconds",
+            "device_clock_before",
+            "device_clock_after",
+            "boot_time_uncertainty_seconds",
+            "reboot_reason",
+            "timezone_name",
+            "utc_offset_seconds",
+            "time_quality",
+            "clock_jump_seconds",
             "version_evidence_path",
             "config_status",
             "config_checked_at",

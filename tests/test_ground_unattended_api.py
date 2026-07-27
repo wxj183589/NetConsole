@@ -59,6 +59,9 @@ def test_ground_unattended_profile_status_and_actions_are_site_scoped(tmp_path) 
                 "enabled": True,
                 "schedule_start_time": "08:00",
                 "schedule_end_time": "22:30",
+                "syslog_server_ip": "192.0.2.100",
+                "allow_external_syslog_address": True,
+                "external_syslog_address_confirmation": True,
             }
         )
         saved = client.put("/api/rail-transit/ground-unattended/profile", json=payload)
@@ -100,6 +103,65 @@ def test_ground_unattended_rejects_invalid_profile_and_archive_delete_without_co
             json={"explicit_confirmation": False},
         )
         assert missing.status_code in {404, 409}
+
+
+def test_ground_profile_requires_local_address_or_confirmed_external_nat(
+    tmp_path,
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    with TestClient(app) as client:
+        disabled = client.get(
+            "/api/rail-transit/ground-unattended/profile"
+        ).json()
+        disabled["syslog_server_ip"] = ""
+        assert client.put(
+            "/api/rail-transit/ground-unattended/profile",
+            json=disabled,
+        ).status_code == 200
+
+        unspecified = {
+            **disabled,
+            "enabled": True,
+            "syslog_server_ip": "0.0.0.0",
+        }
+        assert client.put(
+            "/api/rail-transit/ground-unattended/profile",
+            json=unspecified,
+        ).status_code == 422
+
+        external = {
+            **disabled,
+            "enabled": True,
+            "syslog_server_ip": "192.0.2.100",
+        }
+        blocked = client.put(
+            "/api/rail-transit/ground-unattended/profile",
+            json=external,
+        )
+        assert blocked.status_code == 409
+        assert blocked.json()["detail"]["code"] == "SYSLOG_TARGET_NOT_LOCAL"
+
+        needs_confirmation = client.put(
+            "/api/rail-transit/ground-unattended/profile",
+            json={**external, "allow_external_syslog_address": True},
+        )
+        assert needs_confirmation.status_code == 409
+        assert (
+            needs_confirmation.json()["detail"]["code"]
+            == "EXTERNAL_SYSLOG_CONFIRMATION_REQUIRED"
+        )
+
+        saved = client.put(
+            "/api/rail-transit/ground-unattended/profile",
+            json={
+                **external,
+                "allow_external_syslog_address": True,
+                "external_syslog_address_confirmation": True,
+            },
+        )
+        assert saved.status_code == 200
+        assert saved.json()["syslog_server_ip"] == "192.0.2.100"
 
 
 def test_ground_unattended_empty_pages_are_stable(tmp_path) -> None:
@@ -227,6 +289,36 @@ def test_priority_candidates_are_available_before_first_run(tmp_path) -> None:
         ap_identity="ap:1",
         same_ap_since="2026-07-25T08:00:00+08:00",
     )
+    repository.save_profile(
+        repository.get_profile().model_copy(
+            update={
+                "syslog_server_ip": "192.0.2.50",
+                "syslog_server_port": 514,
+            }
+        )
+    )
+    repository.upsert_boot_session(
+        {
+            "boot_session_id": "boot-current-profile",
+            "device_uuid": "mr-ct",
+            "device_id": 1,
+            "train_id": "train-01",
+            "mr_role": "CT",
+            "last_checked_at": "2026-07-25T08:10:00+08:00",
+            "estimated_boot_time": "2026-07-25T07:00:00+08:00",
+            "info_center_metrics": {
+                "log_hosts": [
+                    {"ip": "192.0.2.50", "port": 5514, "facility": "local7"},
+                    {"ip": "192.0.2.99", "port": 514, "facility": "local7"},
+                ],
+                "managed_target": {
+                    "ip": "192.0.2.50",
+                    "port": 5514,
+                    "statuses": ["TARGET_PRESENT"],
+                },
+            },
+        }
+    )
     service.supervisor.fleet_ping.target_summaries = lambda: [
         {
             "target_ip": "192.0.2.10",
@@ -245,6 +337,88 @@ def test_priority_candidates_are_available_before_first_run(tmp_path) -> None:
     ct = next(item for item in enriched.endpoints if item.endpoint == "CT")
     assert ct.ping_active is True
     assert ct.ping_sent_count == 12
+    assert ct.managed_target_ip == "192.0.2.50"
+    assert ct.managed_target_port == 514
+    assert ct.managed_target_statuses == [
+        "TARGET_PORT_CONFLICT",
+        "OTHER_TARGETS_PRESENT",
+    ]
+    assert ct.configured_log_hosts[0].same_ip_different_port is True
+
+
+def test_target_port_change_requires_single_mr_confirmation_and_is_audited(
+    tmp_path,
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    repository = GroundUnattendedRepository(
+        paths.ground_unattended_db_path("site-a"), site_id="site-a"
+    )
+    repository.save_profile(
+        repository.get_profile().model_copy(
+            update={
+                "syslog_server_ip": "192.0.2.50",
+                "allow_external_syslog_address": True,
+            }
+        )
+    )
+    repository.sync_inventory(
+        trains=[{"train_id": "train-01", "train_no": "01"}],
+        endpoints=[
+            {
+                "device_uuid": "mr-ct",
+                "device_id": 1,
+                "train_id": "train-01",
+                "mr_role": "CT",
+                "management_ip": "192.0.2.10",
+            }
+        ],
+    )
+    repository.create_or_get_run(
+        run_id="run-port-change",
+        run_date="2026-07-27",
+        scheduled_start_at="2026-07-27T07:00:00+08:00",
+        scheduled_end_at="2026-07-27T23:00:00+08:00",
+    )
+    supervisor = _Supervisor()
+    service = GroundUnattendedApplicationService(
+        paths,
+        site_id="site-a",
+        repository=repository,
+        supervisor=supervisor,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(GroundUnattendedError) as fleet_error:
+        service.request_config_check(
+            "site-a",
+            allow_target_port_change=True,
+            explicit_confirmation=True,
+        )
+    assert fleet_error.value.code == "TARGET_PORT_CHANGE_CONFIRMATION_REQUIRED"
+    with pytest.raises(GroundUnattendedError) as confirmation_error:
+        service.request_config_check(
+            "site-a",
+            device_uuid="mr-ct",
+            allow_target_port_change=True,
+        )
+    assert (
+        confirmation_error.value.code
+        == "TARGET_PORT_CHANGE_CONFIRMATION_REQUIRED"
+    )
+
+    service.request_config_check(
+        "site-a",
+        device_uuid="mr-ct",
+        allow_target_port_change=True,
+        explicit_confirmation=True,
+    )
+
+    assert supervisor.config_checks == [("mr-ct", True)]
+    events = repository.list_events(
+        "run-port-change",
+        event_type="mr_loghost_port_change_authorized",
+    )
+    assert len(events) == 1
+    assert events[0]["details"]["risk_level"] == "high"
 
 
 def test_start_is_idempotent_for_active_run_and_rejects_archived_day(tmp_path) -> None:
@@ -253,7 +427,13 @@ def test_start_is_idempotent_for_active_run_and_rejects_archived_day(tmp_path) -
         paths.ground_unattended_db_path("site-a"), site_id="site-a"
     )
     repository.save_profile(
-        repository.get_profile().model_copy(update={"enabled": True})
+        repository.get_profile().model_copy(
+            update={
+                "enabled": True,
+                "syslog_server_ip": "192.0.2.100",
+                "allow_external_syslog_address": True,
+            }
+        )
     )
     supervisor = _Supervisor()
     service = GroundUnattendedApplicationService(
@@ -358,6 +538,7 @@ def test_deep_collection_page_reuses_persisted_daily_queue_order(tmp_path) -> No
 class _Supervisor:
     def __init__(self) -> None:
         self.requests = []
+        self.config_checks = []
         self.fleet_ping = SimpleNamespace(target_count=0, target_summaries=lambda: [])
 
     def request(self, action, *, archive=False):
@@ -365,6 +546,11 @@ class _Supervisor:
 
     def profile_updated(self):
         return None
+
+    def request_config_check(
+        self, device_uuid="", *, allow_target_port_change=False
+    ):
+        self.config_checks.append((device_uuid, allow_target_port_change))
 
 
 class _BaseQuery:

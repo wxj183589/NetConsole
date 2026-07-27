@@ -100,7 +100,8 @@ Huawei、ZTE、未知厂商、未知角色、未知平台和未知版本均失�
 | LLDP | `display lldp neighbor-information list` | 无 | `screen-length disable` | LLDP 邻居列表 | `read_only` | 第一批待确认 |
 | LLDP | `display lldp neighbor-information verbose` | 无 | `screen-length disable` | LLDP 邻居详细信息 | `read_only` | 第二批参考 |
 | 配置采集 | `display current-configuration` | 无 | `screen-length disable` | 运行配置 | `read_only` | 第二批待确认 |
-| Syslog 运行态检查 | `display info-center` | 无 | `screen-length disable` | 验证车载 MR Information Center、UDP loghost 实际目标/端口和本地缓冲计数 | `read_only` | H3C 现场样本已支持；跨版本待确认 |
+| 设备时钟 | `display clock` | 无 | `screen-length disable` | 无人值守按前后两次设备时间中点减 uptime 估算上电时间，并记录时区/UTC offset | `read_only` | H3C 北京时区现场格式已适配；解析失败显式降级 |
+| Syslog 运行态检查 | `display info-center` | 无 | `screen-length disable` | 验证车载 MR Information Center、全部 UDP loghost 的 IP/实际端口/facility 和本地缓冲计数；省略端口归一化为 514 | `read_only` | 不同 IP 多目标已适配；同 IP 端口冲突默认只读 |
 | Syslog 配置检查 | `display current-configuration \| include info-center` | 无 | `screen-length disable` | 验证车载 MR 的固定 Syslog 来源规则；过滤失败才回退完整运行配置 | `read_only` | H3C v7/v9 现场验证待完成 |
 | 配置采集 | `display saved-configuration` | 无 | `screen-length disable` | 已保存配置 | `read_only` | 第二批待确认 |
 | 配置保存 | `save force` | 无 | 登录设备 | 保存配置 | `config_write` | 第二批待确认 |

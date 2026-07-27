@@ -16,6 +16,13 @@ def parse_version(version_output: str, device_output: str = "", manuinfo_output:
         "vendor": chassis.get("vendor") or "H3C",
         "uptime": _parse_uptime(version_output or ""),
         "uptime_seconds": parse_uptime_seconds(_parse_uptime(version_output or "")),
+        "uptime_precision_seconds": uptime_precision_seconds(
+            _parse_uptime(version_output or "")
+        ),
+        "last_reboot_reason": _first_match(
+            version_output or "",
+            r"(?im)^\s*Last\s+reboot\s+reason\s*[:：]\s*(.+?)\s*$",
+        ),
     }
 
 
@@ -39,6 +46,26 @@ def parse_uptime_seconds(value: object) -> int | None:
     if not matches:
         return None
     return sum(int(number) * units[unit.removesuffix("s")] for number, unit in matches)
+
+
+def uptime_precision_seconds(value: object) -> int | None:
+    text = str(value or "").strip().casefold()
+    if not text:
+        return None
+    units = [unit.removesuffix("s") for _number, unit in re.findall(
+        r"(\d+)\s*(years?|weeks?|days?|hours?|minutes?|seconds?)\b", text
+    )]
+    if not units:
+        return None
+    precision = {
+        "year": 365 * 24 * 3600,
+        "week": 7 * 24 * 3600,
+        "day": 24 * 3600,
+        "hour": 3600,
+        "minute": 60,
+        "second": 1,
+    }
+    return min(precision[unit] for unit in units)
 
 
 def _first_match(text: str, pattern: str, flags: int = 0) -> str | None:

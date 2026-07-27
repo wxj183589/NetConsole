@@ -9,11 +9,14 @@ _STATUS_RE = re.compile(
     r"(?P<value>enabled|disabled)\b",
     re.IGNORECASE | re.MULTILINE,
 )
-_HOST_RE = re.compile(
-    r"^\s*(?P<ip>\d{1,3}(?:\.\d{1,3}){3})\s*,?\s*$"
-    r"\s*^\s*port\s+number\s*:\s*(?P<port>\d+)\s*,?\s*"
-    r"host\s+facility\s*:\s*(?P<facility>[A-Za-z0-9_.-]+)\s*$",
-    re.IGNORECASE | re.MULTILINE,
+_HOST_START_RE = re.compile(
+    r"^\s*(?P<ip>\d{1,3}(?:\.\d{1,3}){3})(?:\s*,.*)?\s*$",
+    re.IGNORECASE,
+)
+_HOST_PORT_RE = re.compile(r"\bport\s+number\s*:\s*(?P<port>\d+)\b", re.IGNORECASE)
+_HOST_FACILITY_RE = re.compile(
+    r"\bhost\s+facility\s*:\s*(?P<facility>[A-Za-z0-9_.-]+)\b",
+    re.IGNORECASE,
 )
 _METRIC_PATTERNS = {
     "max_buffer_size": re.compile(r"\bmax\s+buffer\s+size\s+(?P<value>\d+)\b", re.IGNORECASE),
@@ -89,14 +92,7 @@ def parse_info_center_runtime(output: str) -> InfoCenterRuntime:
         key = label_map[" ".join(match.group("label").casefold().split())]
         states[key] = match.group("value").casefold() == "enabled"
 
-    hosts = tuple(
-        InfoCenterLogHost(
-            ip=match.group("ip"),
-            port=int(match.group("port")),
-            facility=match.group("facility").casefold(),
-        )
-        for match in _HOST_RE.finditer(text)
-    )
+    hosts = _parse_log_hosts(text)
     metrics: dict[str, int | None] = {}
     for key, pattern in _METRIC_PATTERNS.items():
         match = pattern.search(text)
@@ -116,6 +112,43 @@ def parse_info_center_runtime(output: str) -> InfoCenterRuntime:
         ),
         other_output_timestamp_format=timestamp_formats.get("other output destination", ""),
     )
+
+
+def _parse_log_hosts(text: str) -> tuple[InfoCenterLogHost, ...]:
+    """Parse every runtime log host without depending on localized CLI prose.
+
+    Comware releases may place the filter, DSCP, port, and facility fields on the
+    same line or on following lines.  ``display info-center`` represents an
+    omitted configuration port as the effective UDP port 514, so a host line
+    without an explicit runtime port is normalized to 514.
+    """
+
+    lines = str(text or "").splitlines()
+    result: list[InfoCenterLogHost] = []
+    for index, line in enumerate(lines):
+        host_match = _HOST_START_RE.match(line)
+        if host_match is None:
+            continue
+        block = [line]
+        for following in lines[index + 1 : index + 4]:
+            if _HOST_START_RE.match(following) or _STATUS_RE.match(following):
+                break
+            block.append(following)
+        details = " ".join(block)
+        port_match = _HOST_PORT_RE.search(details)
+        facility_match = _HOST_FACILITY_RE.search(details)
+        result.append(
+            InfoCenterLogHost(
+                ip=host_match.group("ip"),
+                port=int(port_match.group("port")) if port_match else 514,
+                facility=(
+                    facility_match.group("facility").casefold()
+                    if facility_match
+                    else ""
+                ),
+            )
+        )
+    return tuple(result)
 
 
 __all__ = ["InfoCenterLogHost", "InfoCenterRuntime", "parse_info_center_runtime"]

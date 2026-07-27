@@ -68,6 +68,17 @@ FULL_RUNTIME_514 = "\n".join(
         "    Other output destination: Date",
     )
 )
+MULTI_RUNTIME_5514 = "\n".join(
+    (
+        "Information Center: Enabled",
+        "Log host: Enabled",
+        "    192.0.2.99, log output filter: loghost1,",
+        "    port number: 4514, DSCP value:0, host facility: local7",
+        f"    {TARGET_IP},",
+        "    port number: 5514, host facility: local7",
+        "Log buffer: Enabled",
+    )
+)
 
 
 def test_info_center_runtime_parser_and_default_port_normalization() -> None:
@@ -105,8 +116,72 @@ def test_info_center_runtime_parser_and_default_port_normalization() -> None:
         target_port=5514,
     )
     assert wrong_runtime_target.runtime_missing == ("loghost_target",)
-    assert wrong_runtime_target.repair_commands == (
-        f"info-center loghost {TARGET_IP} port 5514",
+    assert wrong_runtime_target.target_statuses == ("TARGET_PORT_CONFLICT",)
+    assert wrong_runtime_target.repair_commands == ()
+
+
+def test_multiple_log_hosts_are_preserved_and_managed_target_uses_ip_and_port() -> None:
+    runtime = parse_info_center_runtime(MULTI_RUNTIME_5514)
+
+    assert [(host.ip, host.port, host.facility) for host in runtime.log_hosts] == [
+        ("192.0.2.99", 4514, "local7"),
+        (TARGET_IP, 5514, "local7"),
+    ]
+    present = verify_syslog_profile(
+        MULTI_RUNTIME_5514,
+        SOURCE_RULES_CONFIG,
+        target_ip=TARGET_IP,
+        target_port=5514,
+    )
+    assert present.complete
+    assert present.target_statuses == (
+        "TARGET_PRESENT",
+        "OTHER_TARGETS_PRESENT",
+    )
+    assert present.repair_commands == ()
+
+
+def test_same_ip_different_port_is_blocked_instead_of_treated_as_missing() -> None:
+    conflict = verify_syslog_profile(
+        MULTI_RUNTIME_5514,
+        SOURCE_RULES_CONFIG,
+        target_ip=TARGET_IP,
+        target_port=514,
+    )
+
+    assert not conflict.complete
+    assert conflict.target_statuses == (
+        "TARGET_PORT_CONFLICT",
+        "OTHER_TARGETS_PRESENT",
+    )
+    assert conflict.runtime_missing == ("loghost_target",)
+    assert conflict.repair_commands == ()
+    authorized = verify_syslog_profile(
+        MULTI_RUNTIME_5514,
+        SOURCE_RULES_CONFIG,
+        target_ip=TARGET_IP,
+        target_port=514,
+        allow_target_port_change=True,
+    )
+    assert authorized.repair_commands == (
+        f"info-center loghost {TARGET_IP} port 514",
+    )
+
+
+def test_missing_ip_can_be_added_without_removing_other_targets() -> None:
+    missing = verify_syslog_profile(
+        MULTI_RUNTIME_5514,
+        SOURCE_RULES_CONFIG,
+        target_ip="192.0.2.101",
+        target_port=514,
+    )
+
+    assert missing.target_statuses == (
+        "TARGET_MISSING",
+        "OTHER_TARGETS_PRESENT",
+    )
+    assert missing.repair_commands == (
+        "info-center loghost 192.0.2.101 port 514",
     )
 
 
@@ -268,6 +343,7 @@ def test_config_check_verifies_after_writes_and_records_evidence(tmp_path: Path)
             "info-center source default loghost deny",
             "info-center source wmesh loghost level notification",
         ],
+        "target_statuses": ["TARGET_MISSING"],
     }
     assert evidence["repair_commands"] == [
         "info-center enable",
@@ -280,7 +356,11 @@ def test_config_check_verifies_after_writes_and_records_evidence(tmp_path: Path)
         *evidence["repair_commands"],
         "return",
     ]
-    assert evidence["missing_after"] == {"runtime": [], "source_rules": []}
+    assert evidence["missing_after"] == {
+        "runtime": [],
+        "source_rules": [],
+        "target_statuses": ["TARGET_PRESENT"],
+    }
     assert repository.latest_boot_session(device_uuid)["config_status"] == "WAITING_FIRST_LOG"
     raw_config_fingerprint = hashlib.sha256(
         f"{TARGET_IP}:514\n{after_config}".encode("utf-8")
@@ -288,6 +368,47 @@ def test_config_check_verifies_after_writes_and_records_evidence(tmp_path: Path)
     fingerprint = repository.latest_boot_session(device_uuid)["config_fingerprint"]
     assert len(fingerprint) == 64
     assert fingerprint != raw_config_fingerprint
+
+
+def test_device_clock_parse_failure_is_an_explicit_local_time_fallback(
+    tmp_path: Path,
+) -> None:
+    paths, repository, device_uuid = _context(tmp_path)
+    result = _service(
+        paths,
+        repository,
+        _ConfigConnection(
+            config_before=FULL_CONFIG_514,
+            config_after=FULL_CONFIG_514,
+            info_before=FULL_RUNTIME_514,
+            info_after=FULL_RUNTIME_514,
+            clock_output="clock output unavailable",
+        ),
+    ).check(
+        run_id="run-1",
+        run_date="2026-07-26",
+        device_uuid=device_uuid,
+        target_ip=TARGET_IP,
+        target_port=514,
+        boot_tolerance_seconds=120,
+    )
+
+    boot = repository.latest_boot_session(device_uuid)
+    audit = repository.latest_syslog_config_audit(device_uuid)
+    assert result.config_status == "CONFIG_PRESENT"
+    assert boot is not None
+    assert boot["time_quality"] == "LOCAL_FALLBACK"
+    assert boot["device_clock_before"] == ""
+    assert boot["device_clock_after"] == ""
+    assert boot["boot_time_uncertainty_seconds"] == 120
+    assert audit is not None
+    evidence = json.loads(
+        (repository.db_path.parent / audit["evidence_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert evidence["device_time_quality"] == "LOCAL_FALLBACK"
+    assert evidence["device_time_error"]
 
 
 def test_config_check_repairs_partial_and_uses_full_config_fallback(tmp_path: Path) -> None:
@@ -377,6 +498,7 @@ def test_source_rule_verification_failure_never_reports_success(tmp_path: Path) 
     assert evidence["missing_after"] == {
         "runtime": [],
         "source_rules": ["info-center source wmesh loghost level notification"],
+        "target_statuses": ["TARGET_PRESENT"],
     }
     repository.touch_boot_syslog(
         device_uuid, datetime.now().astimezone().isoformat(timespec="milliseconds"),
@@ -456,6 +578,117 @@ def test_default_enable_and_port_omission_is_config_present_without_write(
     assert "system-view" not in explicit_connection.commands
 
 
+def test_target_port_conflict_stays_read_only_until_explicitly_authorized(
+    tmp_path: Path,
+) -> None:
+    paths, repository, device_uuid = _context(tmp_path)
+    read_only = _ConfigConnection(
+        config_before=SOURCE_RULES_CONFIG,
+        config_after=SOURCE_RULES_CONFIG,
+        info_before=MULTI_RUNTIME_5514,
+        info_after=MULTI_RUNTIME_5514,
+    )
+
+    blocked = _service(paths, repository, read_only).check(
+        run_id="run-1",
+        run_date="2026-07-27",
+        device_uuid=device_uuid,
+        target_ip=TARGET_IP,
+        target_port=514,
+        boot_tolerance_seconds=120,
+    )
+
+    assert blocked.config_status == "TARGET_PORT_CONFLICT"
+    assert blocked.applied_commands == ()
+    assert "system-view" not in read_only.commands
+    assert (
+        f"info-center loghost {TARGET_IP} port 514"
+        not in read_only.commands
+    )
+    audit = repository.latest_syslog_config_audit(device_uuid)
+    assert audit is not None
+    assert audit["status"] == "TARGET_PORT_CONFLICT"
+    metrics = repository.latest_boot_session(device_uuid)["info_center_metrics"]
+    assert metrics["managed_target"]["statuses"] == [
+        "TARGET_PORT_CONFLICT",
+        "OTHER_TARGETS_PRESENT",
+    ]
+
+    updated_runtime = MULTI_RUNTIME_5514.replace(
+        "port number: 5514", "port number: 514"
+    )
+    authorized_connection = _ConfigConnection(
+        config_before=SOURCE_RULES_CONFIG,
+        config_after=SOURCE_RULES_CONFIG,
+        info_before=MULTI_RUNTIME_5514,
+        info_after=updated_runtime,
+    )
+    authorized = _service(
+        paths, repository, authorized_connection
+    ).check(
+        run_id="run-1",
+        run_date="2026-07-27",
+        device_uuid=device_uuid,
+        target_ip=TARGET_IP,
+        target_port=514,
+        boot_tolerance_seconds=120,
+        allow_target_port_change=True,
+    )
+
+    assert authorized.config_status == "CONFIG_REPAIRED"
+    assert f"info-center loghost {TARGET_IP} port 514" in authorized.applied_commands
+    assert not any(
+        command.casefold().startswith("undo ")
+        for command in authorized_connection.commands
+    )
+    with sqlite3.connect(repository.db_path) as conn:
+        event_types = {
+            row[0]
+            for row in conn.execute(
+                "SELECT event_type FROM ground_unattended_events"
+            ).fetchall()
+        }
+    assert "mr_loghost_port_changed" in event_types
+
+
+def test_multi_target_order_does_not_change_configuration_fingerprint(
+    tmp_path: Path,
+) -> None:
+    paths, repository, device_uuid = _context(tmp_path)
+    reversed_runtime = "\n".join(
+        (
+            "Information Center: Enabled",
+            "Log host: Enabled",
+            f"    {TARGET_IP},",
+            "    port number: 5514, host facility: local7",
+            "    192.0.2.99, log output filter: loghost1,",
+            "    port number: 4514, DSCP value:0, host facility: local7",
+            "Log buffer: Enabled",
+        )
+    )
+    fingerprints = []
+    for runtime in (MULTI_RUNTIME_5514, reversed_runtime):
+        connection = _ConfigConnection(
+            config_before=SOURCE_RULES_CONFIG,
+            config_after=SOURCE_RULES_CONFIG,
+            info_before=runtime,
+            info_after=runtime,
+        )
+        result = _service(paths, repository, connection).check(
+            run_id="run-1",
+            run_date="2026-07-27",
+            device_uuid=device_uuid,
+            target_ip=TARGET_IP,
+            target_port=5514,
+            boot_tolerance_seconds=120,
+        )
+        assert result.config_status == "CONFIG_PRESENT"
+        fingerprints.append(
+            repository.latest_boot_session(device_uuid)["config_fingerprint"]
+        )
+    assert fingerprints[0] == fingerprints[1]
+
+
 def test_info_center_overwrite_is_not_reported_as_udp_loss(tmp_path: Path) -> None:
     paths, repository, device_uuid = _context(tmp_path)
     first_info = FULL_RUNTIME_514.replace("overwritten messages 7837", "overwritten messages 1")
@@ -491,10 +724,12 @@ def test_repository_additively_migrates_syslog_runtime_columns(tmp_path: Path) -
             ALTER TABLE ground_unattended_train_endpoints DROP COLUMN last_syslog_identity_verified_at;
             ALTER TABLE ground_unattended_boot_sessions DROP COLUMN info_center_metrics_json;
             ALTER TABLE ground_unattended_wmesh_events DROP COLUMN clock_offset_ms;
+            ALTER TABLE ground_unattended_profiles DROP COLUMN allow_external_syslog_address;
             """
         )
     repository.initialize()
     with sqlite3.connect(repository.db_path) as conn:
+        profile_columns = {row[1] for row in conn.execute("PRAGMA table_info(ground_unattended_profiles)")}
         endpoint_columns = {row[1] for row in conn.execute("PRAGMA table_info(ground_unattended_train_endpoints)")}
         boot_columns = {row[1] for row in conn.execute("PRAGMA table_info(ground_unattended_boot_sessions)")}
         event_columns = {row[1] for row in conn.execute("PRAGMA table_info(ground_unattended_wmesh_events)")}
@@ -502,9 +737,20 @@ def test_repository_additively_migrates_syslog_runtime_columns(tmp_path: Path) -
             "SELECT value FROM ground_unattended_schema WHERE key='schema_version'"
         ).fetchone()[0]
     assert {"last_syslog_source_ip", "syslog_hostname", "last_syslog_identity_verified_at"} <= endpoint_columns
-    assert "info_center_metrics_json" in boot_columns
+    assert "allow_external_syslog_address" in profile_columns
+    assert {
+        "info_center_metrics_json",
+        "device_clock_before",
+        "device_clock_after",
+        "boot_time_uncertainty_seconds",
+        "reboot_reason",
+        "timezone_name",
+        "utc_offset_seconds",
+        "time_quality",
+        "clock_jump_seconds",
+    } <= boot_columns
     assert "clock_offset_ms" in event_columns
-    assert schema_version == "3"
+    assert schema_version == "5"
 
 
 def test_real_syslog_shapes_keep_parser_fields_and_clock_semantics(tmp_path: Path) -> None:
@@ -609,6 +855,10 @@ class _ConfigConnection:
         info_after: str,
         filter_fails: bool = False,
         write_results: dict[str, str] | None = None,
+        clock_output: str = (
+            "11:26:48 BeiJing Mon 07/27/2026\n"
+            "Time Zone : BeiJing add 08:00:00\n"
+        ),
     ) -> None:
         self.config_before = config_before
         self.config_after = config_after
@@ -616,6 +866,7 @@ class _ConfigConnection:
         self.info_after = info_after
         self.filter_fails = filter_fails
         self.write_results = write_results or {}
+        self.clock_output = clock_output
         self.commands: list[str] = []
         self._write_started = False
 
@@ -623,8 +874,13 @@ class _ConfigConnection:
         self.commands.append(command)
         if command == "screen-length disable":
             return ""
+        if command == "display clock":
+            return self.clock_output
         if command == "display version":
-            return "H3C MR uptime is 1 day, 2 hours, 3 minutes\n"
+            return (
+                "H3C MR uptime is 1 day, 2 hours, 3 minutes\n"
+                "Last reboot reason : Power on\n"
+            )
         if command == "display info-center":
             return self.info_after if self._write_started else self.info_before
         if command == "display current-configuration | include info-center":

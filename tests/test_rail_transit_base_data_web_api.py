@@ -13,6 +13,12 @@ from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
 from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
 from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.application.rail_transit.base_data_application_service import (
+    RailTransitBaseDataApplicationService,
+)
+from netconsole.repositories.rail_transit_base_data_repository import (
+    RailTransitBaseDataRepository,
+)
 
 
 class _NoopAsyncService:
@@ -262,6 +268,114 @@ def test_station_source_preview_flags_code_and_name_conflicts(tmp_path: Path) ->
     assert payload["conflict_count"] == 4
     assert "station_source_code_conflict" in issue_codes
     assert "station_source_name_conflict" in issue_codes
+
+
+def test_station_source_preview_matches_real_style_numbered_batch_without_duplicates(
+    tmp_path: Path,
+) -> None:
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    repository = RailTransitBaseDataRepository(paths)
+    existing = RailTransitBaseDataApplicationService._station_values(
+        {
+            "name": "1.小洋江站",
+            "code": "01",
+            "sort_order": 1,
+            "node_type": "station",
+            "path_code": "MAIN",
+            "structure_type": "elevated",
+            "platform_layout": "side",
+            "center_mileage_text": "K1+234",
+            "remark": "人工维护字段必须保留",
+        },
+        "create",
+    )
+    repository.apply_base_data_changes(
+        "demo",
+        repository.base_data_revision("demo"),
+        [
+            {
+                "entity_type": "station",
+                "action": "create",
+                "entity_id": "new:station-numbered",
+                "values": existing,
+            }
+        ],
+    )
+    station_values = [
+        "01小洋江站",
+        "02云龙火车站",
+        "03甲站",
+        "04乙站",
+        "05丙站",
+        "06丁站",
+        "07戊站",
+        "08己站",
+        "09庚站",
+        "10辛站",
+        "11云龙车辆段",
+    ]
+    now = "2026-07-27T08:00:00"
+    with Database(db_path).connect() as conn:
+        group_id = conn.execute(
+            "INSERT INTO device_groups (site_id, name, sort_order, created_at, updated_at) "
+            "VALUES ('demo', '车站', 2, ?, ?)",
+            (now, now),
+        ).lastrowid
+        rows = []
+        sequence = 0
+        for index, station in enumerate(station_values):
+            count = 2 if index < 7 else 3
+            for _ in range(count):
+                sequence += 1
+                rows.append(
+                    (
+                        f"station-real-{sequence}",
+                        f"现场设备{sequence}",
+                        f"REAL-{sequence}",
+                        station,
+                        group_id,
+                        f"10.27.{sequence // 250}.{sequence % 250 + 1}",
+                        now,
+                        now,
+                    )
+                )
+        conn.executemany(
+            """
+            INSERT INTO devices (
+                device_uuid, name, system_name, station, group_id, primary_address,
+                device_vendor, device_type, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'H3C', 'SWITCH', ?, ?)
+            """,
+            rows,
+        )
+        conn.commit()
+
+    with TestClient(_app(paths, tmp_path)) as client:
+        before = _fingerprint(db_path)
+        payload = client.get(
+            "/api/rail-transit/base-data/station-source-preview"
+        ).json()
+
+    assert _fingerprint(db_path) == before
+    assert payload["scanned_device_count"] == 26
+    assert payload["unique_station_value_count"] == 11
+    assert payload["normal_station_count"] == 10
+    assert payload["special_node_count"] == 1
+    assert payload["manual_review_count"] == 0
+    by_name = {item["name"]: item for item in payload["candidates"]}
+    assert by_name["小洋江站"]["matched_station_name"] == "1.小洋江站"
+    assert by_name["小洋江站"]["match_status"] in {
+        "exact_source_key",
+        "canonical_name",
+        "canonical_name_and_type",
+    }
+    assert by_name["小洋江站"]["suggested_action"] == "更新来源信息"
+    assert by_name["云龙车辆段"]["node_type"] == "depot"
+    assert by_name["云龙车辆段"]["sort_order"] is None
+    assert {item["name"] for item in payload["candidates"]} == set(
+        station.removeprefix(f"{index:02d}")
+        for index, station in enumerate(station_values, start=1)
+    )
 
 
 def test_station_template_download_preview_and_export_are_structured_xlsx(tmp_path: Path) -> None:

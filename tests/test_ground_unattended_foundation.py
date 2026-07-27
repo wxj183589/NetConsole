@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import socket
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -80,6 +80,152 @@ def test_inventory_incremental_sync_preserves_policy_and_marks_removed(tmp_path:
     assert inventory[0]["remark"] == "重点列车"
     assert inventory[0]["endpoints"][0]["source_hostname"] == "T01-MR-CT-SYSLOG"
     assert any(item["binding_status"] == "REMOVED" for item in inventory[0]["endpoints"])
+
+
+def test_boot_session_uses_device_clock_midpoint_and_ignores_ntp_jump(
+    tmp_path: Path,
+) -> None:
+    repository = GroundUnattendedRepository(
+        tmp_path / "ground-unattended.sqlite",
+        site_id="site-a",
+    )
+    service = MrBootSessionService(repository=repository, tolerance_seconds=120)
+    device_zone = timezone(timedelta(hours=8))
+    checked = datetime(2026, 7, 27, 3, 26, 49, tzinfo=timezone.utc)
+
+    first, created = service.observe(
+        device_uuid="mr-clock",
+        device_id=1,
+        train_id="train-01",
+        mr_role="CT",
+        checked_at=checked,
+        uptime_seconds=1 * 3600 + 59 * 60,
+        evidence_path="evidence/clock-1.json",
+        device_clock_before=datetime(
+            2026, 7, 27, 11, 26, 47, tzinfo=device_zone
+        ),
+        device_clock_after=datetime(
+            2026, 7, 27, 11, 26, 49, tzinfo=device_zone
+        ),
+        boot_time_uncertainty_seconds=60,
+        reboot_reason="Power on",
+        timezone_name="BeiJing",
+        utc_offset_seconds=8 * 3600,
+        time_quality="DEVICE_CLOCK",
+    )
+    same, created_same = service.observe(
+        device_uuid="mr-clock",
+        device_id=1,
+        train_id="train-01",
+        mr_role="CT",
+        checked_at=checked + timedelta(minutes=1),
+        uptime_seconds=2 * 3600,
+        evidence_path="evidence/clock-2.json",
+        device_clock_before=datetime(
+            2026, 7, 27, 11, 32, 47, tzinfo=device_zone
+        ),
+        device_clock_after=datetime(
+            2026, 7, 27, 11, 32, 49, tzinfo=device_zone
+        ),
+        boot_time_uncertainty_seconds=60,
+        reboot_reason="Power on",
+        timezone_name="BeiJing",
+        utc_offset_seconds=8 * 3600,
+        time_quality="DEVICE_CLOCK",
+    )
+
+    assert created and not created_same
+    assert first["estimated_boot_time"] == "2026-07-27T09:27:48.000+08:00"
+    assert first["boot_time_uncertainty_seconds"] == 60
+    assert first["reboot_reason"] == "Power on"
+    assert first["utc_offset_seconds"] == 8 * 3600
+    assert same["boot_session_id"] == first["boot_session_id"]
+    assert same["time_quality"] == "CLOCK_JUMP"
+    assert same["clock_jump_seconds"] == 300
+
+    restarted, created_restart = service.observe(
+        device_uuid="mr-clock",
+        device_id=1,
+        train_id="train-01",
+        mr_role="CT",
+        checked_at=checked + timedelta(minutes=2),
+        uptime_seconds=60,
+        evidence_path="evidence/clock-3.json",
+        device_clock_before=datetime(
+            2026, 7, 27, 11, 33, 47, tzinfo=device_zone
+        ),
+        device_clock_after=datetime(
+            2026, 7, 27, 11, 33, 49, tzinfo=device_zone
+        ),
+        time_quality="DEVICE_CLOCK",
+    )
+    assert created_restart
+    assert restarted["boot_session_id"] != first["boot_session_id"]
+
+
+def test_device_clock_boot_estimate_crosses_year_boundary(tmp_path: Path) -> None:
+    repository = GroundUnattendedRepository(
+        tmp_path / "ground-unattended.sqlite",
+        site_id="site-a",
+    )
+    zone = timezone(timedelta(hours=-5))
+
+    row, _created = MrBootSessionService(repository=repository).observe(
+        device_uuid="mr-year",
+        device_id=2,
+        train_id="train-02",
+        mr_role="CW",
+        checked_at=datetime(2027, 1, 1, 7, 0, tzinfo=timezone.utc),
+        uptime_seconds=2 * 3600,
+        evidence_path="evidence/year.json",
+        device_clock_before=datetime(2027, 1, 1, 0, 59, 59, tzinfo=zone),
+        device_clock_after=datetime(2027, 1, 1, 1, 0, 1, tzinfo=zone),
+        timezone_name="EST",
+        utc_offset_seconds=-5 * 3600,
+        time_quality="DEVICE_CLOCK",
+    )
+
+    assert row["estimated_boot_time"] == "2026-12-31T23:00:00.000-05:00"
+
+
+def test_boot_session_detects_restart_during_gap_even_when_previous_uptime_is_low(
+    tmp_path: Path,
+) -> None:
+    repository = GroundUnattendedRepository(
+        tmp_path / "ground-unattended.sqlite",
+        site_id="site-a",
+    )
+    service = MrBootSessionService(repository=repository, tolerance_seconds=120)
+    zone = timezone(timedelta(hours=8))
+    checked = datetime(2026, 7, 27, 4, 0, tzinfo=timezone.utc)
+
+    first, _created = service.observe(
+        device_uuid="mr-fast-reboot",
+        device_id=3,
+        train_id="train-03",
+        mr_role="CT",
+        checked_at=checked,
+        uptime_seconds=60,
+        evidence_path="evidence/fast-1.json",
+        device_clock_before=datetime(2026, 7, 27, 12, 0, tzinfo=zone),
+        device_clock_after=datetime(2026, 7, 27, 12, 0, 2, tzinfo=zone),
+        time_quality="DEVICE_CLOCK",
+    )
+    restarted, created = service.observe(
+        device_uuid="mr-fast-reboot",
+        device_id=3,
+        train_id="train-03",
+        mr_role="CT",
+        checked_at=checked + timedelta(minutes=5),
+        uptime_seconds=60,
+        evidence_path="evidence/fast-2.json",
+        device_clock_before=datetime(2026, 7, 27, 12, 5, tzinfo=zone),
+        device_clock_after=datetime(2026, 7, 27, 12, 5, 2, tzinfo=zone),
+        time_quality="DEVICE_CLOCK",
+    )
+
+    assert created
+    assert restarted["boot_session_id"] != first["boot_session_id"]
 
 
 def test_udp_receiver_routes_multiple_mrs_and_keeps_unidentified_separate(tmp_path: Path) -> None:
@@ -295,6 +441,11 @@ class _Connection:
 
     def send_command(self, command: str, _timeout: int) -> str:
         self.commands.append(command)
+        if command == "display clock":
+            return (
+                "11:26:48 BeiJing Mon 07/27/2026\n"
+                "Time Zone : BeiJing add 08:00:00\n"
+            )
         if command == "display version":
             return self.version
         if command == "display info-center":

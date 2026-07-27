@@ -18,6 +18,7 @@ from netconsole.parsers.h3c.info_center_parser import (
     InfoCenterRuntime,
     parse_info_center_runtime,
 )
+from netconsole.parsers.h3c.device_clock_parser import parse_h3c_device_clock
 from netconsole.parsers.h3c.version_parser import parse_version
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.ground_unattended_repository import (
@@ -30,7 +31,9 @@ from netconsole.services.online_mr_collector import NetmikoShellConnection
 
 READ_COMMANDS = (
     "screen-length disable",
+    "display clock",
     "display version",
+    "display clock",
     "display info-center",
     "display current-configuration | include info-center",
 )
@@ -84,6 +87,7 @@ class SyslogProfileVerification:
     source_rule_missing: tuple[str, ...]
     repair_commands: tuple[str, ...]
     runtime: InfoCenterRuntime
+    target_statuses: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -118,19 +122,102 @@ class MrBootSessionService:
         checked_at: datetime,
         uptime_seconds: int,
         evidence_path: str,
+        device_clock_before: datetime | None = None,
+        device_clock_after: datetime | None = None,
+        boot_time_uncertainty_seconds: int = 60,
+        reboot_reason: str = "",
+        timezone_name: str = "",
+        utc_offset_seconds: int | None = None,
+        time_quality: str = "LOCAL_FALLBACK",
     ) -> tuple[dict[str, Any], bool]:
-        estimated = checked_at - timedelta(seconds=uptime_seconds)
+        if device_clock_before is not None and device_clock_after is not None:
+            midpoint = device_clock_before + (
+                device_clock_after - device_clock_before
+            ) / 2
+            estimated = midpoint - timedelta(seconds=uptime_seconds)
+        else:
+            estimated = checked_at - timedelta(seconds=uptime_seconds)
+            time_quality = "LOCAL_FALLBACK"
         current = self.repository.latest_boot_session(device_uuid)
         same_boot = False
+        clock_jump_seconds: float | None = None
         if current is not None:
             previous_estimated = _datetime_or_none(str(current.get("estimated_boot_time") or ""))
+            previous_checked = _datetime_or_none(
+                str(current.get("last_checked_at") or "")
+            )
             previous_uptime = int(current.get("last_uptime_seconds") or 0)
+            estimated_delta_seconds = (
+                (estimated - previous_estimated).total_seconds()
+                if previous_estimated is not None
+                else None
+            )
+            uptime_rolled_back = (
+                uptime_seconds + self.tolerance_seconds < previous_uptime
+            )
+            elapsed_seconds = (
+                max(0.0, (checked_at - previous_checked).total_seconds())
+                if previous_checked is not None
+                else 0.0
+            )
+            uptime_reset_during_gap = (
+                elapsed_seconds > self.tolerance_seconds
+                and uptime_seconds + self.tolerance_seconds
+                < previous_uptime + elapsed_seconds
+            )
+            boot_estimate_changed = (
+                estimated_delta_seconds is not None
+                and abs(estimated_delta_seconds) > self.tolerance_seconds
+            )
             same_boot = bool(
                 previous_estimated
-                and abs((estimated - previous_estimated).total_seconds()) <= self.tolerance_seconds
-                and uptime_seconds + self.tolerance_seconds >= previous_uptime
+                and not uptime_rolled_back
+                and not (uptime_reset_during_gap and boot_estimate_changed)
             )
+            if same_boot and previous_estimated is not None:
+                clock_jump_seconds = estimated_delta_seconds
+                if (
+                    time_quality == "DEVICE_CLOCK"
+                    and clock_jump_seconds is not None
+                    and abs(clock_jump_seconds) > self.tolerance_seconds
+                ):
+                    time_quality = "CLOCK_JUMP"
+                    self.repository.add_event(
+                        event_type="device_clock_jump",
+                        severity="warning",
+                        train_id=train_id,
+                        mr_id=device_uuid,
+                        title="检测到设备时钟跳变",
+                        message="uptime 连续增长，保持原 Boot Session，不将 NTP 校时误判为重启。",
+                        details={
+                            "clock_jump_seconds": round(clock_jump_seconds, 3),
+                            "previous_uptime_seconds": previous_uptime,
+                            "current_uptime_seconds": uptime_seconds,
+                        },
+                    )
         now_text = checked_at.isoformat(timespec="milliseconds")
+        clock_before_text = (
+            device_clock_before.isoformat(timespec="milliseconds")
+            if device_clock_before is not None
+            else ""
+        )
+        clock_after_text = (
+            device_clock_after.isoformat(timespec="milliseconds")
+            if device_clock_after is not None
+            else ""
+        )
+        time_values = {
+            "device_clock_before": clock_before_text,
+            "device_clock_after": clock_after_text,
+            "boot_time_uncertainty_seconds": max(
+                1, int(boot_time_uncertainty_seconds)
+            ),
+            "reboot_reason": str(reboot_reason or ""),
+            "timezone_name": str(timezone_name or ""),
+            "utc_offset_seconds": utc_offset_seconds,
+            "time_quality": time_quality,
+            "clock_jump_seconds": clock_jump_seconds,
+        }
         if same_boot and current is not None:
             row = dict(current)
             row.update(
@@ -139,6 +226,7 @@ class MrBootSessionService:
                     "estimated_boot_time": estimated.isoformat(timespec="milliseconds"),
                     "last_uptime_seconds": uptime_seconds,
                     "version_evidence_path": evidence_path,
+                    **time_values,
                 }
             )
             created = False
@@ -154,6 +242,7 @@ class MrBootSessionService:
                 "estimated_boot_time": estimated.isoformat(timespec="milliseconds"),
                 "first_uptime_seconds": uptime_seconds,
                 "last_uptime_seconds": uptime_seconds,
+                **time_values,
                 "version_evidence_path": evidence_path,
                 "config_status": "NOT_CHECKED",
                 "config_checked_at": "",
@@ -195,6 +284,7 @@ class MrSyslogConfigService:
         target_ip: str,
         target_port: int,
         boot_tolerance_seconds: int,
+        allow_target_port_change: bool = False,
     ) -> MrConfigCheckResult:
         target_ip = str(ipaddress.ip_address(str(target_ip).strip()))
         target_port = int(target_port)
@@ -214,7 +304,11 @@ class MrSyslogConfigService:
         audit_id = f"sysaudit_{uuid.uuid4().hex}"
         connection: MrCommandConnection | None = None
         evidence: dict[str, Any] = {
+            "display_clock_before": "",
             "display_version": "",
+            "display_clock_after": "",
+            "device_time_quality": "",
+            "device_time_error": "",
             "display_info_center_before": "",
             "configuration_before": "",
             "configuration_before_command": "",
@@ -230,6 +324,7 @@ class MrSyslogConfigService:
             "missing_after": {},
             "checked_at": checked_at.isoformat(timespec="milliseconds"),
             "verified_at": "",
+            "allow_target_port_change": bool(allow_target_port_change),
         }
         applied: tuple[str, ...] = ()
         boot: dict[str, Any] | None = None
@@ -241,14 +336,66 @@ class MrSyslogConfigService:
             screen_output = str(connection.send_command(READ_COMMANDS[0], config.command_timeout) or "")
             if _command_failed(screen_output):
                 raise RuntimeError("screen-length disable 执行失败")
-            version_output = str(connection.send_command(READ_COMMANDS[1], config.command_timeout) or "")
+            clock_before_output = str(
+                connection.send_command(READ_COMMANDS[1], config.command_timeout)
+                or ""
+            )
+            if _command_failed(clock_before_output):
+                raise RuntimeError("第一次 display clock 执行失败")
+            evidence["display_clock_before"] = clock_before_output
+            version_output = str(connection.send_command(READ_COMMANDS[2], config.command_timeout) or "")
             if _command_failed(version_output):
                 raise RuntimeError("display version 执行失败")
             evidence["display_version"] = version_output
+            clock_after_output = str(
+                connection.send_command(READ_COMMANDS[3], config.command_timeout)
+                or ""
+            )
+            if _command_failed(clock_after_output):
+                raise RuntimeError("第二次 display clock 执行失败")
+            evidence["display_clock_after"] = clock_after_output
             parsed_version = parse_version(version_output)
             uptime_seconds = parsed_version.get("uptime_seconds")
             if not isinstance(uptime_seconds, int):
                 raise ValueError("display version 未解析到有效 uptime")
+            uptime_precision = int(
+                parsed_version.get("uptime_precision_seconds") or 60
+            )
+            clock_before = None
+            clock_after = None
+            timezone_name = ""
+            utc_offset_seconds: int | None = None
+            time_quality = "DEVICE_CLOCK"
+            try:
+                parsed_clock_before = parse_h3c_device_clock(clock_before_output)
+                parsed_clock_after = parse_h3c_device_clock(clock_after_output)
+                if (
+                    parsed_clock_before.utc_offset_seconds
+                    != parsed_clock_after.utc_offset_seconds
+                ):
+                    raise ValueError("两次 display clock 的 UTC 偏移不一致")
+                clock_window_seconds = (
+                    parsed_clock_after.timestamp
+                    - parsed_clock_before.timestamp
+                ).total_seconds()
+                if clock_window_seconds < 0 or clock_window_seconds > 600:
+                    raise ValueError("两次 display clock 的设备时间窗口异常")
+                clock_before = parsed_clock_before.timestamp
+                clock_after = parsed_clock_after.timestamp
+                timezone_name = (
+                    parsed_clock_after.timezone_name
+                    or parsed_clock_before.timezone_name
+                )
+                utc_offset_seconds = parsed_clock_after.utc_offset_seconds
+                boot_uncertainty = max(
+                    uptime_precision,
+                    int(abs(clock_window_seconds) / 2 + 0.999),
+                )
+            except ValueError as exc:
+                time_quality = "LOCAL_FALLBACK"
+                boot_uncertainty = max(uptime_precision, boot_tolerance_seconds)
+                evidence["device_time_error"] = str(exc)
+            evidence["device_time_quality"] = time_quality
             evidence_path = self._write_evidence(
                 run_date,
                 device_uuid,
@@ -266,9 +413,16 @@ class MrSyslogConfigService:
                 checked_at=checked_at,
                 uptime_seconds=uptime_seconds,
                 evidence_path=evidence_path,
+                device_clock_before=clock_before,
+                device_clock_after=clock_after,
+                boot_time_uncertainty_seconds=boot_uncertainty,
+                reboot_reason=str(parsed_version.get("last_reboot_reason") or ""),
+                timezone_name=timezone_name,
+                utc_offset_seconds=utc_offset_seconds,
+                time_quality=time_quality,
             )
 
-            info_before = str(connection.send_command(READ_COMMANDS[2], config.command_timeout) or "")
+            info_before = str(connection.send_command(READ_COMMANDS[4], config.command_timeout) or "")
             if _command_failed(info_before):
                 raise RuntimeError("display info-center 执行失败")
             evidence["display_info_center_before"] = info_before
@@ -283,6 +437,7 @@ class MrSyslogConfigService:
                 config_before,
                 target_ip=target_ip,
                 target_port=target_port,
+                allow_target_port_change=allow_target_port_change,
             )
             evidence["missing_before"] = _verification_evidence(before)
             evidence["repair_commands"] = list(before.repair_commands)
@@ -294,6 +449,11 @@ class MrSyslogConfigService:
             verified = before.complete
             if before.complete:
                 status = "CONFIG_PRESENT"
+            elif (
+                "TARGET_PORT_CONFLICT" in before.target_statuses
+                and not allow_target_port_change
+            ):
+                status = "TARGET_PORT_CONFLICT"
             else:
                 applied = build_syslog_config_commands(before.repair_commands)
                 evidence["applied_commands"] = list(applied)
@@ -309,7 +469,7 @@ class MrSyslogConfigService:
                         evidence["command_results"].append(command_result)
                         if command_result["failed"]:
                             raise RuntimeError(f"Syslog 配置命令执行失败：{command}")
-                info_after = str(connection.send_command(READ_COMMANDS[2], config.command_timeout) or "")
+                info_after = str(connection.send_command(READ_COMMANDS[4], config.command_timeout) or "")
                 if _command_failed(info_after):
                     raise RuntimeError("display info-center 复查失败")
                 config_after, after_command, after_fallback = self._read_configuration(
@@ -320,6 +480,7 @@ class MrSyslogConfigService:
                     config_after,
                     target_ip=target_ip,
                     target_port=target_port,
+                    allow_target_port_change=allow_target_port_change,
                 )
                 verified = after.complete
                 if verified:
@@ -332,6 +493,7 @@ class MrSyslogConfigService:
                 config_after,
                 target_ip=target_ip,
                 target_port=target_port,
+                allow_target_port_change=allow_target_port_change,
             )
             evidence["display_info_center_after"] = info_after
             evidence["configuration_after"] = config_after
@@ -352,6 +514,11 @@ class MrSyslogConfigService:
                 target_port=target_port,
             )
             metrics = after.runtime.as_dict()
+            metrics["managed_target"] = {
+                "ip": target_ip,
+                "port": target_port,
+                "statuses": list(after.target_statuses),
+            }
             previous_metrics = dict(boot.get("info_center_metrics") or {})
             boot_status = _verified_boot_status(boot) if verified else status
             boot.update(
@@ -396,6 +563,38 @@ class MrSyslogConfigService:
                     code="CONFIG_VERIFY_FAILED",
                     message="MR Syslog 配置写入后未通过运行态和配置规则复查",
                     details={"device_uuid": device_uuid, "missing_after": evidence["missing_after"]},
+                )
+            if status == "TARGET_PORT_CONFLICT":
+                self.repository.add_health_event(
+                    run_id=run_id,
+                    component="mr_syslog_config",
+                    severity="warning",
+                    code="TARGET_PORT_CONFLICT",
+                    message="设备已存在同 IP 的其他 Syslog 端口，配置检查保持只读",
+                    details={
+                        "device_uuid": device_uuid,
+                        "target_statuses": list(before.target_statuses),
+                    },
+                )
+            if (
+                allow_target_port_change
+                and "TARGET_PORT_CONFLICT" in before.target_statuses
+                and applied
+            ):
+                self.repository.add_event(
+                    run_id=run_id,
+                    event_type="mr_loghost_port_changed",
+                    severity="warning",
+                    train_id=str(endpoint.get("train_id") or ""),
+                    mr_id=device_uuid,
+                    title="用户确认修改 MR 日志目标端口",
+                    message="已按明确确认修改 NetConsole 管理目标的端口；其他 IP 的日志目标保持不变。",
+                    details={
+                        "audit_id": audit_id,
+                        "target_ip": target_ip,
+                        "target_port": target_port,
+                        "risk_level": "high",
+                    },
                 )
             self.repository.add_event(
                 run_id=run_id,
@@ -573,6 +772,7 @@ def verify_syslog_profile(
     *,
     target_ip: str,
     target_port: int,
+    allow_target_port_change: bool = False,
 ) -> SyslogProfileVerification:
     """Require both runtime delivery state and the fixed source rules."""
 
@@ -584,7 +784,24 @@ def verify_syslog_profile(
         missing_runtime.append("information_center_enabled")
     if runtime.loghost_enabled is not True:
         missing_runtime.append("loghost_enabled")
-    if not any(host.ip == target_ip and host.port == target_port for host in runtime.log_hosts):
+    exact_target = any(
+        host.ip == target_ip and host.port == target_port
+        for host in runtime.log_hosts
+    )
+    same_ip_other_port = any(
+        host.ip == target_ip and host.port != target_port
+        for host in runtime.log_hosts
+    )
+    target_statuses = [
+        "TARGET_PRESENT"
+        if exact_target
+        else "TARGET_PORT_CONFLICT"
+        if same_ip_other_port
+        else "TARGET_MISSING"
+    ]
+    if any(host.ip != target_ip for host in runtime.log_hosts):
+        target_statuses.append("OTHER_TARGETS_PRESENT")
+    if not exact_target:
         missing_runtime.append("loghost_target")
     config = analyze_syslog_config(
         configuration_output,
@@ -593,11 +810,15 @@ def verify_syslog_profile(
     )
     runtime_missing = tuple(missing_runtime)
     repair_commands: list[str] = []
-    if "information_center_enabled" in runtime_missing:
-        repair_commands.append("info-center enable")
-    if {"loghost_enabled", "loghost_target"}.intersection(runtime_missing):
-        repair_commands.append(f"info-center loghost {target_ip} port {target_port}")
-    repair_commands.extend(config.source_rule_missing)
+    port_conflict_blocked = same_ip_other_port and not allow_target_port_change
+    if not port_conflict_blocked:
+        if "information_center_enabled" in runtime_missing:
+            repair_commands.append("info-center enable")
+        if {"loghost_enabled", "loghost_target"}.intersection(runtime_missing):
+            repair_commands.append(
+                f"info-center loghost {target_ip} port {target_port}"
+            )
+        repair_commands.extend(config.source_rule_missing)
     return SyslogProfileVerification(
         complete=config.complete and not runtime_missing,
         config=config,
@@ -605,6 +826,7 @@ def verify_syslog_profile(
         source_rule_missing=config.source_rule_missing,
         repair_commands=tuple(repair_commands),
         runtime=runtime,
+        target_statuses=tuple(target_statuses),
     )
 
 
@@ -612,6 +834,7 @@ def _verification_evidence(verification: SyslogProfileVerification) -> dict[str,
     return {
         "runtime": list(verification.runtime_missing),
         "source_rules": list(verification.source_rule_missing),
+        "target_statuses": list(verification.target_statuses),
     }
 
 

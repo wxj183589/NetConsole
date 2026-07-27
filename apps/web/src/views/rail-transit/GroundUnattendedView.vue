@@ -9,6 +9,7 @@ import {
   getGroundHealth, listGroundDeepCollections, listGroundPingTargets, listGroundTimeline, listGroundTrains, requestGroundConfigCheck,
   openGroundArchiveDirectory, pauseGroundRun, resumeGroundRun, saveGroundProfile, setGroundTrainPriority, startGroundRun,
   stopAndArchiveGroundRun, stopGroundRun, saveGroundTrainPolicy, syncGroundInventory,
+  checkGroundUdpPort, listLocalIpv4Addresses, recommendLocalSourceIp,
 } from '../../api/groundUnattended'
 import { NcDataTable, type NcTableColumn } from '../../components/table'
 import { t } from '../../i18n/runtime'
@@ -16,6 +17,7 @@ import { downloadBackendResource } from '../../platform/runtime'
 import type {
   GroundArchive, GroundDeepCollection, GroundPingTarget, GroundProfile, GroundStatus,
   GroundHealth, GroundTimelineEvent, GroundTrain,
+  LocalIpv4Address, SourceIpRecommendation, UdpPortCheck,
 } from '../../types/groundUnattended'
 
 const activeTab = ref('overview')
@@ -31,6 +33,11 @@ const deepCollections = ref<GroundDeepCollection[]>([])
 const timeline = ref<GroundTimelineEvent[]>([])
 const archives = ref<GroundArchive[]>([])
 const health = ref<GroundHealth | null>(null)
+const localIpv4Addresses = ref<LocalIpv4Address[]>([])
+const sourceRecommendation = ref<SourceIpRecommendation | null>(null)
+const udpPortCheck = ref<UdpPortCheck | null>(null)
+const networkLoading = ref(false)
+const showAllAddresses = ref(false)
 const selectedArchive = ref<GroundArchive | null>(null)
 const selectedTrain = ref<GroundTrain | null>(null)
 const archiveDialog = ref(false)
@@ -55,13 +62,25 @@ const filteredPing = computed(() => pingTargets.value.filter((row) => {
     && row.loss_rate_percent >= pingFilter.minLoss
 }))
 const selectedTrainCollection = computed(() => deepCollections.value.find((row) => row.train_id === selectedTrain.value?.train_id) ?? null)
+const visibleIpv4Addresses = computed(() => localIpv4Addresses.value.filter((row) => showAllAddresses.value || !row.is_virtual))
+const localIpv4Values = computed(() => new Set(localIpv4Addresses.value.map((row) => row.ipv4)))
+const returnAddressIsLocal = computed(() => Boolean(profile.value?.syslog_server_ip && localIpv4Values.value.has(profile.value.syslog_server_ip)))
+const listenAddressIsLocal = computed(() => Boolean(profile.value && (profile.value.udp_listen_host === '0.0.0.0' || localIpv4Values.value.has(profile.value.udp_listen_host))))
+const locationStats = computed(() => ({
+  ap: trains.value.filter((row) => String(row.location_match_level || '').startsWith('AP_')).length,
+  station: trains.value.filter((row) => String(row.location_match_level || '').startsWith('STATION_')).length,
+  unmatched: trains.value.filter((row) => row.location_match_level === 'UNMATCHED').length,
+  excluded: trains.value.filter((row) => ['DEPOT', 'PARKING_LOT', 'STORAGE_TRACK'].includes(row.eligibility_status)).length,
+}))
 
 const trainColumns: NcTableColumn<GroundTrain>[] = [
   { key: 'train_no', label: t('ground.train', '列车'), valueType: 'name', fixed: 'left' },
   { key: 'eligibility_status', label: t('ground.eligibility', '正线判断'), valueType: 'status' },
+  { key: 'location_match_level', label: '匹配等级', valueType: 'status', width: 130 },
   { key: 'exclusion_reason', label: t('ground.exclusion_reason', '排除原因'), valueType: 'description', minWidth: 220 },
-  { key: 'current_ap_name', label: t('ground.current_ap', '当前 AP'), valueType: 'name' },
-  { key: 'station', label: t('ground.station', '归属站点'), valueType: 'text' },
+  { key: 'raw_peer_ap_name', label: '原始 AP', valueType: 'name' },
+  { key: 'resolved_ap_name', label: '解析后 AP', valueType: 'name' },
+  { key: 'canonical_station_name', label: '规范站点', valueType: 'text' },
   { key: 'section', label: t('ground.section', '归属区间'), valueType: 'text' },
   { key: 'same_ap_duration_seconds', label: t('ground.same_ap_duration', '同 AP 停留'), valueType: 'duration', displayValue: (row) => duration(row.same_ap_duration_seconds) },
   { key: 'ct_status', label: 'CT 在线', valueType: 'status', displayValue: (row) => endpoint(row, 'CT')?.online_status },
@@ -164,11 +183,64 @@ async function saveProfile(message = t('ground.profile_saved', '无人值守配�
   if (!profile.value) return
   saving.value = true
   try {
-    profile.value = await saveGroundProfile(profile.value)
+    if (profile.value.enabled && !profile.value.syslog_server_ip.trim()) throw new Error('启用无人值守前必须选择具体的 MR 日志回传地址')
+    if (!listenAddressIsLocal.value) throw new Error('本机监听地址已失效，请刷新地址列表后重新选择')
+    const external = Boolean(profile.value.syslog_server_ip && !returnAddressIsLocal.value)
+    if (external && !profile.value.allow_external_syslog_address) throw new Error('MR 日志回传地址不属于本机；如确为外部 NAT 地址，请启用高级选项')
+    let confirmation = false
+    if (external) {
+      await ElMessageBox.confirm(
+        '该地址不属于本机。仅在现场已配置外部 NAT/映射时使用；保存不会自动下发到 MR。确认继续？',
+        '确认外部日志回传地址',
+        { type: 'warning', confirmButtonText: '确认使用', cancelButtonText: '取消' },
+      )
+      confirmation = true
+    }
+    profile.value = await saveGroundProfile({
+      ...profile.value,
+      external_syslog_address_confirmation: confirmation,
+    })
     ElMessage.success(message)
     await loadAll(true)
   } catch (reason) { ElMessage.error(errorText(reason, t('ground.profile_save_failed', '配置保存失败'))) }
   finally { saving.value = false }
+}
+async function loadLocalAddresses(): Promise<void> {
+  networkLoading.value = true
+  try {
+    localIpv4Addresses.value = (await listLocalIpv4Addresses()).items
+  } catch (reason) {
+    ElMessage.error(errorText(reason, '读取本机 IPv4 失败'))
+  } finally {
+    networkLoading.value = false
+  }
+}
+async function recommendSourceAddress(): Promise<void> {
+  networkLoading.value = true
+  try {
+    const targets = trains.value.flatMap((train) => train.endpoints.map((item) => item.management_ip)).filter(Boolean)
+    sourceRecommendation.value = await recommendLocalSourceIp(targets, profile.value?.syslog_server_ip || '')
+    localIpv4Addresses.value = sourceRecommendation.value.candidates
+    if (!sourceRecommendation.value.recommended_ip) ElMessage.warning(sourceRecommendation.value.recommendation_reason)
+  } catch (reason) {
+    ElMessage.error(errorText(reason, '系统路由推荐失败'))
+  } finally {
+    networkLoading.value = false
+  }
+}
+function applyRecommendedAddress(): void {
+  if (profile.value && sourceRecommendation.value?.recommended_ip) profile.value.syslog_server_ip = sourceRecommendation.value.recommended_ip
+}
+async function checkUdpPort(): Promise<void> {
+  if (!profile.value) return
+  networkLoading.value = true
+  try {
+    udpPortCheck.value = await checkGroundUdpPort(profile.value.udp_listen_host, profile.value.udp_listen_port)
+  } catch (reason) {
+    ElMessage.error(errorText(reason, 'UDP 端口检查失败'))
+  } finally {
+    networkLoading.value = false
+  }
 }
 async function runAction(key: string, callback: () => Promise<unknown>): Promise<void> {
   action.value = key
@@ -195,9 +267,18 @@ async function updatePolicy(row: GroundTrain, changes: Partial<GroundTrain>): Pr
     await loadAll(true)
   } catch (reason) { ElMessage.error(errorText(reason, '列车策略保存失败')) }
 }
-async function checkConfigs(deviceUuid = ''): Promise<void> {
-  try { await requestGroundConfigCheck(deviceUuid); ElMessage.success('配置检查请求已提交'); await loadAll(true) }
+async function checkConfigs(deviceUuid = '', allowTargetPortChange = false): Promise<void> {
+  try { await requestGroundConfigCheck(deviceUuid, allowTargetPortChange); ElMessage.success('配置检查请求已提交'); await loadAll(true) }
   catch (reason) { ElMessage.error(errorText(reason, '配置检查提交失败')) }
+}
+async function confirmTargetPortChange(deviceUuid: string): Promise<void> {
+  if (!deviceUuid || !profile.value) return
+  await ElMessageBox.confirm(
+    `设备已存在 ${profile.value.syslog_server_ip} 的其他端口。继续将修改该 IP 的日志目标为 ${profile.value.syslog_server_port}，原端口接收程序可能停止收到日志；其他 IP 的 loghost 会保留。确认修改？`,
+    '高风险：修改 MR 日志目标端口',
+    { type: 'warning', confirmButtonText: '确认修改此 MR', cancelButtonText: '保持只读' },
+  )
+  await checkConfigs(deviceUuid, true)
 }
 async function showTrain(row: GroundTrain): Promise<void> {
   try { selectedTrain.value = await getGroundTrain(row.train_id); trainDialog.value = true }
@@ -243,7 +324,7 @@ function bytes(value: number): string { if (!value) return '0 B'; const units = 
 function errorText(reason: unknown, fallback: string): string { return reason instanceof Error ? reason.message : fallback }
 function statusType(value: string): 'success' | 'warning' | 'danger' | 'info' | 'primary' { if (['RUNNING', 'COVERED', 'READY', 'FRESH', 'MAINLINE'].includes(value)) return 'success'; if (['PAUSED', 'PARTIAL', 'STALE', 'MAINLINE_STATIONARY', 'WARNING'].includes(value)) return 'warning'; if (['ERROR', 'FAILED', 'CRITICAL'].includes(value)) return 'danger'; return 'info' }
 
-onMounted(() => { void loadAll(); schedulePoll() })
+onMounted(() => { void loadAll(); void loadLocalAddresses(); schedulePoll() })
 onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.clearTimeout(pollTimer) })
 </script>
 
@@ -294,6 +375,12 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
 
       <el-tab-pane :label="t('ground.trains', '正线车辆')" name="trains">
         <div class="toolbar"><el-input v-model="trainFilter" clearable :placeholder="t('ground.train_filter', '筛选列车、AP、站点或区间')" /></div>
+        <div class="coverage-strip">
+          <span>轨旁 AP 匹配 <b>{{ locationStats.ap }}</b></span>
+          <span>站点级匹配 <b>{{ locationStats.station }}</b></span>
+          <span>未匹配 <b>{{ locationStats.unmatched }}</b></span>
+          <span>车辆段 / 停车场 / 存车线排除 <b>{{ locationStats.excluded }}</b></span>
+        </div>
         <div class="table-frame"><NcDataTable :data="filteredTrains" :columns="trainColumns" table-id="ground-trains" route-key="rail-ground-unattended" row-key="train_id" compact>
           <template #cell-eligibility_status="{ row }"><el-tag size="small" :type="statusType(row.eligibility_status)">{{ row.eligibility_status }}</el-tag></template>
           <template #cell-coverage_status="{ row }"><el-tag size="small" :type="statusType(row.coverage_status)">{{ row.coverage_status }}</el-tag></template>
@@ -376,16 +463,43 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
             <el-form-item :label="t('ground.warning_space', '空间预警阈值（GB）')"><el-input-number v-model="profile.storage_warning_free_gb" :min="0.1" :max="1024" /></el-form-item>
             <el-form-item :label="t('ground.critical_space', '严重空间阈值（GB）')"><el-input-number v-model="profile.storage_critical_free_gb" :min="0.1" :max="1024" /></el-form-item>
           </div><p class="muted">{{ t('ground.storage_path', '存储路径：当前局点 / files / rail_transit / ground_unattended。深度 Session ZIP 仍保存在既有 Online MR 目录，每日归档只保存引用。') }}</p></section>
-          <section><h2>UDP Syslog 与上电检查</h2><div class="form-grid">
-            <el-form-item label="UDP 监听地址"><el-input v-model="profile.udp_listen_host" /></el-form-item>
+          <section><h2>UDP Syslog 与上电检查</h2>
+            <el-alert title="本机监听地址只控制 NetConsole 在哪些网卡接收 UDP；MR 日志回传地址会用于 info-center loghost。监听 0.0.0.0 时仍必须明确选择一个具体回传地址。" type="info" :closable="false" show-icon />
+            <div class="network-actions">
+              <el-button :icon="Refresh" :loading="networkLoading" @click="loadLocalAddresses">刷新本机地址</el-button>
+              <el-button :loading="networkLoading" @click="recommendSourceAddress">检测到 MR 网络的推荐地址</el-button>
+              <el-button :loading="networkLoading" @click="checkUdpPort">检查 UDP 端口占用</el-button>
+              <el-checkbox v-model="showAllAddresses">显示虚拟与其他地址</el-checkbox>
+            </div>
+            <div class="form-grid">
+            <el-form-item label="本机监听地址">
+              <el-select v-model="profile.udp_listen_host" filterable allow-create>
+                <el-option label="0.0.0.0 · 监听全部本机网卡" value="0.0.0.0" />
+                <el-option v-for="row in visibleIpv4Addresses" :key="`listen:${row.adapter_id}:${row.ipv4}`" :value="row.ipv4" :label="`${row.ipv4} · ${row.adapter_name} · /${row.prefix_length}`" />
+              </el-select>
+              <span :class="listenAddressIsLocal ? 'network-ok' : 'network-error'">{{ listenAddressIsLocal ? '监听地址有效' : '监听地址已不属于本机' }}</span>
+            </el-form-item>
             <el-form-item label="UDP 监听端口"><el-input-number v-model="profile.udp_listen_port" :min="1" :max="65535" /></el-form-item>
-            <el-form-item label="Syslog 服务器 IP"><el-input v-model="profile.syslog_server_ip" placeholder="配置检查所使用的本机 IPv4" /></el-form-item>
+            <el-form-item label="MR 日志回传地址">
+              <el-select v-model="profile.syslog_server_ip" filterable allow-create clearable placeholder="选择或输入具体 IPv4">
+                <el-option v-for="row in visibleIpv4Addresses" :key="`${row.adapter_id}:${row.ipv4}`" :value="row.ipv4" :label="`${row.ipv4} · ${row.adapter_name} · /${row.prefix_length}${row.recommended ? ' · 推荐' : ''}`" />
+              </el-select>
+              <span v-if="profile.syslog_server_ip" :class="returnAddressIsLocal ? 'network-ok' : 'network-error'">{{ returnAddressIsLocal ? '当前地址属于本机' : '当前地址不属于本机' }}</span>
+            </el-form-item>
             <el-form-item label="Syslog 服务器端口"><el-input-number v-model="profile.syslog_server_port" :min="1" :max="65535" /></el-form-item>
             <el-form-item label="UDP 队列容量"><el-input-number v-model="profile.udp_queue_capacity" :min="100" :max="500000" /></el-form-item>
             <el-form-item label="批量事件数"><el-input-number v-model="profile.event_batch_size" :min="1" :max="5000" /></el-form-item>
             <el-form-item label="配置检查冷却（秒）"><el-input-number v-model="profile.config_check_cooldown_seconds" :min="30" :max="86400" /></el-form-item>
             <el-form-item label="上电时间误差（秒）"><el-input-number v-model="profile.boot_time_tolerance_seconds" :min="10" :max="900" /></el-form-item>
-          </div><p class="muted">仅检查并补齐临时 WMESH UDP 日志配置；不会保存设备配置，也不会在停止时删除运行配置。</p></section>
+          </div>
+          <div v-if="sourceRecommendation" class="network-status">
+            <span>系统路由推荐：<b>{{ sourceRecommendation.recommended_ip || '无可靠推荐' }}</b></span>
+            <span>{{ sourceRecommendation.recommendation_reason }}</span>
+            <el-button v-if="sourceRecommendation.recommended_ip" size="small" @click="applyRecommendedAddress">采用推荐</el-button>
+          </div>
+          <div v-if="udpPortCheck" class="network-status"><el-tag :type="udpPortCheck.available ? 'success' : 'danger'">{{ udpPortCheck.message }}</el-tag><span>{{ udpPortCheck.listen_host }}:{{ udpPortCheck.listen_port }}</span></div>
+          <el-checkbox v-model="profile.allow_external_syslog_address">高级：使用外部 NAT 日志回传地址（保存时需再次确认）</el-checkbox>
+          <p class="muted">保存 Profile 不会在当前请求中直接连接 MR；后台检查只补齐安全缺项。同 IP 端口冲突始终保持只读，必须在单台 MR 详情中再次确认后才允许修改；不会执行 save、undo、reboot、reset 或 delete。</p></section>
           <section><h2>{{ t('ground.priority_trains', '置顶列车') }}</h2><div class="priority-grid"><el-checkbox v-for="row in trains" :key="row.train_id" :model-value="row.priority" @change="togglePriority(row)">{{ row.train_no || row.train_name }}</el-checkbox><span v-if="!trains.length" class="muted">{{ t('ground.no_priority_candidates', '暂无列车基础资料或 AC 在线状态') }}</span></div></section>
           <div class="form-actions"><el-button type="primary" :loading="saving" @click="saveProfile()">{{ t('common.save', '保存设置') }}</el-button><span class="muted">{{ t('ground.profile_effective', '运行中修改默认从下一次调度周期生效') }}</span></div>
         </el-form>
@@ -411,6 +525,12 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
           <el-descriptions-item :label="t('ground.train', '列车')">{{ selectedTrain.train_no || selectedTrain.train_name }}</el-descriptions-item>
           <el-descriptions-item :label="t('ground.eligibility', '正线判断')"><el-tag :type="statusType(selectedTrain.eligibility_status)">{{ selectedTrain.eligibility_status }}</el-tag></el-descriptions-item>
           <el-descriptions-item :label="t('ground.current_ap', '当前 AP')">{{ selectedTrain.current_ap_name || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="位置匹配等级">{{ selectedTrain.location_match_level || 'UNMATCHED' }}</el-descriptions-item>
+          <el-descriptions-item label="原始 AP 名称">{{ selectedTrain.raw_peer_ap_name || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="原始 AP MAC">{{ selectedTrain.raw_peer_ap_mac || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="解析后 AP">{{ selectedTrain.resolved_ap_name || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="规范站点">{{ selectedTrain.canonical_station_name || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="匹配依据" :span="2">{{ selectedTrain.location_match_reason || '—' }}</el-descriptions-item>
           <el-descriptions-item :label="t('ground.same_ap_duration', '同 AP 停留')">{{ duration(selectedTrain.same_ap_duration_seconds) }}</el-descriptions-item>
           <el-descriptions-item :label="t('ground.exclusion_reason', '排除原因')" :span="2">{{ selectedTrain.exclusion_reason || '—' }}</el-descriptions-item>
           <el-descriptions-item label="CT Session">{{ selectedTrainCollection?.ct_session_id || '—' }}</el-descriptions-item>
@@ -418,6 +538,40 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
           <el-descriptions-item label="CT Syslog">{{ endpoint(selectedTrain, 'CT')?.syslog_status || '—' }}</el-descriptions-item>
           <el-descriptions-item label="CW Syslog">{{ endpoint(selectedTrain, 'CW')?.syslog_status || '—' }}</el-descriptions-item>
         </el-descriptions>
+        <section v-for="mrEndpoint in selectedTrain.endpoints" :key="`loghost:${mrEndpoint.mr_id || mrEndpoint.endpoint}`" class="loghost-section">
+          <div class="network-status">
+            <b>{{ mrEndpoint.endpoint }} · 设备现有日志主机</b>
+            <span>NetConsole 管理目标：{{ mrEndpoint.managed_target_ip || profile?.syslog_server_ip || '—' }}:{{ mrEndpoint.managed_target_port || profile?.syslog_server_port || '—' }}</span>
+            <el-tag v-for="item in mrEndpoint.managed_target_statuses" :key="item" :type="item === 'TARGET_PRESENT' ? 'success' : item === 'TARGET_PORT_CONFLICT' ? 'danger' : 'info'">{{ item }}</el-tag>
+          </div>
+          <el-table :data="mrEndpoint.configured_log_hosts" size="small" empty-text="尚未执行配置检查">
+            <el-table-column prop="ip" label="IP" min-width="130" />
+            <el-table-column prop="port" label="端口" width="90" />
+            <el-table-column prop="facility" label="Facility" width="100" />
+            <el-table-column label="归属" min-width="160"><template #default="{ row }">{{ row.is_managed_target ? 'NetConsole 管理目标' : '设备已有配置' }}</template></el-table-column>
+            <el-table-column label="判断" min-width="170"><template #default="{ row }">{{ row.same_ip_different_port ? '同 IP 端口冲突' : row.is_managed_target ? '目标一致' : '保留，不处理' }}</template></el-table-column>
+          </el-table>
+          <el-alert
+            v-if="mrEndpoint.managed_target_statuses.includes('TARGET_PORT_CONFLICT')"
+            :title="`设备已存在 ${mrEndpoint.managed_target_ip} 的其他端口；默认配置检查保持只读，不会进入 system-view。`"
+            type="error"
+            :closable="false"
+            show-icon
+          />
+          <div class="boot-evidence">
+            <span>估算上电时间：{{ mrEndpoint.estimated_boot_time || '—' }}</span>
+            <span>误差：±{{ mrEndpoint.boot_time_uncertainty_seconds || 0 }} 秒</span>
+            <span>原因：{{ mrEndpoint.reboot_reason || '—' }}</span>
+            <span>设备时区：{{ mrEndpoint.timezone_name || '—' }}</span>
+            <span>时间质量：{{ mrEndpoint.device_time_quality || '—' }}</span>
+          </div>
+          <el-button
+            v-if="mrEndpoint.managed_target_statuses.includes('TARGET_PORT_CONFLICT')"
+            type="danger"
+            plain
+            @click="confirmTargetPortChange(mrEndpoint.mr_id)"
+          >确认修改此 MR 的目标端口</el-button>
+        </section>
         <div class="dialog-actions">
           <el-button @click="showTrainPing(selectedTrain)">{{ t('ground.view_ping', '查看长 Ping') }}</el-button>
           <el-button @click="showTrainTimeline(selectedTrain)">{{ t('ground.view_timeline', '查看事件时间轴') }}</el-button>
@@ -431,5 +585,5 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
 </template>
 
 <style scoped>
-.ground-page{display:flex;flex-direction:column;gap:12px;min-width:0;min-height:0}.page-heading,.heading-actions,.status-line,.toolbar,.coverage-strip,.row-actions,.form-actions,.inline-numbers,.dialog-actions{display:flex;align-items:center;gap:10px}.page-heading{justify-content:space-between;flex-wrap:wrap}.page-heading h1{margin:2px 0 0;font-size:24px;letter-spacing:0}.eyebrow{margin:0;color:var(--el-color-primary);font-size:12px;font-weight:700;letter-spacing:0}.heading-actions,.toolbar,.dialog-actions{flex-wrap:wrap}.ground-tabs{min-width:0}.overview-band{padding:2px 0}.status-line{min-height:42px;flex-wrap:wrap;border-bottom:1px solid var(--el-border-color-lighter)}.metric-grid,.health-grid{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:1px;margin-top:12px;background:var(--el-border-color-lighter);border:1px solid var(--el-border-color-lighter)}.metric-grid article,.health-grid article{min-width:0;padding:12px;background:var(--el-bg-color)}.metric-grid span,.metric-grid small,.health-grid span,.health-grid small{display:block;color:var(--el-text-color-secondary);font-size:12px}.metric-grid strong,.health-grid strong{display:block;min-height:24px;margin:6px 0 3px;font-size:18px;letter-spacing:0;overflow-wrap:anywhere}.toolbar{min-height:42px}.toolbar .el-input{width:210px}.toolbar .el-select{width:130px}.toolbar .el-input-number{width:110px}.table-frame{height:clamp(360px,calc(100vh - 310px),680px);min-width:0;overflow:hidden;border-top:1px solid var(--el-border-color-lighter)}.coverage-strip{flex-wrap:wrap;margin-bottom:8px}.coverage-strip span{display:flex;align-items:center;gap:5px;padding:5px 8px;background:var(--el-fill-color-light);border-radius:4px;color:var(--el-text-color-secondary);font-size:12px}.coverage-strip b{color:var(--el-text-color-primary);font-size:16px}.settings-form{display:flex;flex-direction:column;gap:18px;max-width:1180px}.settings-form section{padding-bottom:16px;border-bottom:1px solid var(--el-border-color-lighter)}.settings-form h2{margin:0 0 12px;font-size:16px;letter-spacing:0}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:0 16px}.form-grid :deep(.el-input-number),.form-grid :deep(.el-select),.form-grid :deep(.el-input){width:100%}.inline-numbers{width:100%}.priority-grid{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:8px}.muted{color:var(--el-text-color-secondary);font-size:12px}.form-actions{position:sticky;bottom:0;padding:10px 0;background:var(--el-bg-color)}.dialog-actions{justify-content:flex-end;margin-top:14px}@media(max-width:1300px){.metric-grid,.health-grid{grid-template-columns:repeat(3,minmax(150px,1fr))}.form-grid{grid-template-columns:repeat(3,minmax(170px,1fr))}.priority-grid{grid-template-columns:repeat(4,minmax(110px,1fr))}}@media(max-width:900px){.page-heading{align-items:flex-start;flex-direction:column}.metric-grid,.health-grid{grid-template-columns:repeat(2,minmax(140px,1fr))}.form-grid{grid-template-columns:repeat(2,minmax(150px,1fr))}.priority-grid{grid-template-columns:repeat(3,minmax(100px,1fr))}.table-frame{height:clamp(340px,calc(100vh - 350px),620px)}}@media(max-width:620px){.metric-grid,.health-grid,.form-grid{grid-template-columns:1fr}.priority-grid{grid-template-columns:repeat(2,minmax(100px,1fr))}.heading-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}.heading-actions .el-button{margin:0}.toolbar .el-input,.toolbar .el-select{width:100%}}
+.ground-page{display:flex;flex-direction:column;gap:12px;min-width:0;min-height:0}.page-heading,.heading-actions,.status-line,.toolbar,.coverage-strip,.row-actions,.form-actions,.inline-numbers,.dialog-actions,.network-actions,.network-status,.boot-evidence{display:flex;align-items:center;gap:10px}.page-heading{justify-content:space-between;flex-wrap:wrap}.page-heading h1{margin:2px 0 0;font-size:24px;letter-spacing:0}.eyebrow{margin:0;color:var(--el-color-primary);font-size:12px;font-weight:700;letter-spacing:0}.heading-actions,.toolbar,.dialog-actions,.network-actions,.network-status,.boot-evidence{flex-wrap:wrap}.ground-tabs{min-width:0}.overview-band{padding:2px 0}.status-line{min-height:42px;flex-wrap:wrap;border-bottom:1px solid var(--el-border-color-lighter)}.metric-grid,.health-grid{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:1px;margin-top:12px;background:var(--el-border-color-lighter);border:1px solid var(--el-border-color-lighter)}.metric-grid article,.health-grid article{min-width:0;padding:12px;background:var(--el-bg-color)}.metric-grid span,.metric-grid small,.health-grid span,.health-grid small{display:block;color:var(--el-text-color-secondary);font-size:12px}.metric-grid strong,.health-grid strong{display:block;min-height:24px;margin:6px 0 3px;font-size:18px;letter-spacing:0;overflow-wrap:anywhere}.toolbar{min-height:42px}.toolbar .el-input{width:210px}.toolbar .el-select{width:130px}.toolbar .el-input-number{width:110px}.table-frame{height:clamp(360px,calc(100vh - 310px),680px);min-width:0;overflow:hidden;border-top:1px solid var(--el-border-color-lighter)}.coverage-strip{flex-wrap:wrap;margin-bottom:8px}.coverage-strip span{display:flex;align-items:center;gap:5px;padding:5px 8px;background:var(--el-fill-color-light);border-radius:4px;color:var(--el-text-color-secondary);font-size:12px}.coverage-strip b{color:var(--el-text-color-primary);font-size:16px}.settings-form{display:flex;flex-direction:column;gap:18px;max-width:1180px}.settings-form section{padding-bottom:16px;border-bottom:1px solid var(--el-border-color-lighter)}.settings-form h2{margin:0 0 12px;font-size:16px;letter-spacing:0}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:0 16px}.form-grid :deep(.el-input-number),.form-grid :deep(.el-select),.form-grid :deep(.el-input){width:100%}.inline-numbers{width:100%}.priority-grid{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:8px}.muted{color:var(--el-text-color-secondary);font-size:12px}.network-actions{margin:12px 0}.network-status{margin:10px 0;padding:8px;background:var(--el-fill-color-light)}.network-ok{color:var(--el-color-success);font-size:12px}.network-error{color:var(--el-color-danger);font-size:12px}.loghost-section{margin-top:14px;padding-top:8px;border-top:1px solid var(--el-border-color-lighter)}.boot-evidence{margin:8px 0;color:var(--el-text-color-secondary);font-size:12px}.form-actions{position:sticky;bottom:0;padding:10px 0;background:var(--el-bg-color)}.dialog-actions{justify-content:flex-end;margin-top:14px}@media(max-width:1300px){.metric-grid,.health-grid{grid-template-columns:repeat(3,minmax(150px,1fr))}.form-grid{grid-template-columns:repeat(3,minmax(170px,1fr))}.priority-grid{grid-template-columns:repeat(4,minmax(110px,1fr))}}@media(max-width:900px){.page-heading{align-items:flex-start;flex-direction:column}.metric-grid,.health-grid{grid-template-columns:repeat(2,minmax(140px,1fr))}.form-grid{grid-template-columns:repeat(2,minmax(150px,1fr))}.priority-grid{grid-template-columns:repeat(3,minmax(100px,1fr))}.table-frame{height:clamp(340px,calc(100vh - 350px),620px)}}@media(max-width:620px){.metric-grid,.health-grid,.form-grid{grid-template-columns:1fr}.priority-grid{grid-template-columns:repeat(2,minmax(100px,1fr))}.heading-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}.heading-actions .el-button{margin:0}.toolbar .el-input,.toolbar .el-select{width:100%}}
 </style>

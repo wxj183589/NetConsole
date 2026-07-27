@@ -100,7 +100,7 @@ files/rail_transit/
 │  │  ├─ errors.jsonl
 │  │  └─ manifest.json
 │  ├─ archives/<run_date>_ground_unattended.zip
-│  └─ index.sqlite               # 配置、运行/覆盖/事件、分段索引和汇总；Syslog 仅索引/事件/健康指标，不保存高频原始报文
+│  └─ index.sqlite               # 配置、运行/覆盖/事件、分段索引和汇总；Boot Session 保存设备前后时钟/uptime/时区/误差，Syslog 仅索引/事件/健康指标，不保存高频原始报文
 ├─ base_data_import/             # 仅显式授权的受控基础资料写入产生
 │  ├─ backups/<operation>.sqlite # SQLite Backup API 生成的写前备份
 │  └─ operations/<operation>.json# 脱敏审计与相对备份引用

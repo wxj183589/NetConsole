@@ -80,6 +80,7 @@ class GroundUnattendedProfileDTO(ApiModel):
     config_check_cooldown_seconds: int = Field(default=1800, ge=30, le=86_400)
     syslog_server_ip: str = Field(default="", max_length=255)
     syslog_server_port: int = Field(default=514, ge=1, le=65_535)
+    allow_external_syslog_address: bool = False
     ping_raw_retention_days: int = Field(default=30, ge=1, le=3650)
     syslog_raw_retention_days: int = Field(default=30, ge=1, le=3650)
     minimum_valid_collection_minutes: int = Field(default=10, ge=1, le=720)
@@ -103,10 +104,18 @@ class GroundUnattendedProfileDTO(ApiModel):
             raise ValueError("UDP 监听地址必须是 IPv4 地址") from None
         if self.syslog_server_ip:
             try:
-                if ipaddress.ip_address(self.syslog_server_ip).version != 4:
+                address = ipaddress.ip_address(self.syslog_server_ip)
+                if address.version != 4:
                     raise ValueError
             except ValueError:
-                raise ValueError("Syslog 服务器地址必须是 IPv4 地址") from None
+                raise ValueError("MR 日志回传地址必须是 IPv4 地址") from None
+            if (
+                address.is_unspecified
+                or address.is_loopback
+                or address.is_multicast
+                or str(address) == "255.255.255.255"
+            ):
+                raise ValueError("MR 日志回传地址必须是具体的单播 IPv4 地址")
         if self.schedule_start_time == self.schedule_end_time:
             raise ValueError("开始时间和结束时间不能相同")
         if not (
@@ -131,6 +140,7 @@ class GroundUnattendedProfileDTO(ApiModel):
 class GroundUnattendedProfileUpdateDTO(GroundUnattendedProfileDTO):
     created_at: str = Field(default="", exclude=True)
     updated_at: str = Field(default="", exclude=True)
+    external_syslog_address_confirmation: bool = Field(default=False, exclude=True)
 
 
 class GroundUnattendedStatusDTO(ApiModel):
@@ -168,6 +178,15 @@ class GroundUnattendedStatusDTO(ApiModel):
     updated_at: str = ""
 
 
+class GroundSyslogHostDTO(ApiModel):
+    ip: str
+    port: int = Field(ge=1, le=65_535)
+    facility: str = ""
+    is_managed_target: bool = False
+    same_ip_different_port: bool = False
+    source: Literal["DEVICE_EXISTING", "NETCONSOLE_MANAGED"] = "DEVICE_EXISTING"
+
+
 class GroundUnattendedEndpointDTO(ApiModel):
     endpoint: Literal["CT", "CW"]
     mr_id: str = ""
@@ -189,8 +208,17 @@ class GroundUnattendedEndpointDTO(ApiModel):
     boot_session_id: str = ""
     estimated_boot_time: str = ""
     uptime_seconds: int | None = None
+    boot_time_uncertainty_seconds: int = 0
+    reboot_reason: str = ""
+    timezone_name: str = ""
+    utc_offset_seconds: int | None = None
+    device_time_quality: str = ""
     config_status: str = "NOT_CHECKED"
     config_checked_at: str = ""
+    managed_target_ip: str = ""
+    managed_target_port: int | None = None
+    managed_target_statuses: list[str] = Field(default_factory=list)
+    configured_log_hosts: list[GroundSyslogHostDTO] = Field(default_factory=list)
 
 
 class GroundUnattendedTrainDTO(ApiModel):
@@ -201,6 +229,20 @@ class GroundUnattendedTrainDTO(ApiModel):
     deep_collection_eligible: bool = False
     eligibility_status: GroundEligibilityStatus = "AC_UNKNOWN"
     exclusion_reason: str = ""
+    location_match_level: Literal[
+        "AP_EXACT",
+        "AP_REGISTRY",
+        "AP_ALIAS",
+        "STATION_EXACT",
+        "STATION_ALIAS",
+        "UNMATCHED",
+    ] = "UNMATCHED"
+    location_match_reason: str = ""
+    resolved_ap_id: str = ""
+    resolved_ap_name: str = ""
+    raw_peer_ap_name: str = ""
+    raw_peer_ap_mac: str = ""
+    canonical_station_name: str = ""
     current_ap_name: str = ""
     current_ap_mac: str = ""
     station: str = ""
@@ -246,6 +288,8 @@ class GroundTrainPolicyUpdateDTO(ApiModel):
 
 class GroundConfigCheckRequestDTO(ApiModel):
     device_uuid: str = Field(default="", max_length=100)
+    allow_target_port_change: bool = False
+    explicit_confirmation: bool = False
 
 
 class GroundInventorySummaryDTO(ApiModel):

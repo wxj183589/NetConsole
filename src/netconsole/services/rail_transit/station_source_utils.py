@@ -76,7 +76,10 @@ LEGACY_TURNBACK_FACILITIES = {
 }
 
 _DASH_TRANSLATION = str.maketrans({char: "-" for char in "－—–‐‑‒﹣"})
-_CODE_RE = re.compile(r"^\s*(\d+)\s*[-_]\s*(.+?)\s*$")
+_EXPLICIT_CODE_RE = re.compile(
+    r"^\s*(\d{1,3})(?:\s*[-_.、:]\s*|\s+)(.+?)\s*$"
+)
+_BATCH_CODE_RE = re.compile(r"^(\d{2})(?![\d号])(.+)$")
 
 
 @dataclass(frozen=True)
@@ -85,10 +88,14 @@ class ParsedStationSource:
     source_station_key: str
     code: str
     name: str
+    canonical_name: str
+    source_order: int | None
     sort_order: int | None
     node_type: str
     path_code: str
     participates_in_direction: bool
+    order_parse_method: str = "none"
+    parse_confidence: str = "manual_review"
     parse_warning: str = ""
 
 
@@ -101,31 +108,157 @@ def normalize_station_source_value(value: Any) -> tuple[str, str]:
     return text, text.casefold()
 
 
-def parse_station_source_value(value: Any, *, main_path_code: str = DEFAULT_MAIN_PATH_CODE) -> ParsedStationSource:
-    source_value, source_key = normalize_station_source_value(value)
+def canonical_station_name(
+    value: Any,
+    *,
+    allow_inferred_two_digit_prefix: bool = True,
+) -> str:
+    text, _key = normalize_station_source_value(value)
+    explicit = _EXPLICIT_CODE_RE.match(text)
+    if explicit:
+        text = explicit.group(2).strip()
+    elif allow_inferred_two_digit_prefix:
+        inferred = _BATCH_CODE_RE.match(text)
+        if inferred and not inferred.group(2).startswith("号"):
+            text = inferred.group(2).strip()
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text)).strip()
+
+
+def station_identity_key(name: Any, node_type: Any, path_code: Any) -> str:
+    return "|".join(
+        (
+            "station",
+            canonical_station_name(name).casefold(),
+            str(node_type or "station").strip().casefold(),
+            str(path_code or DEFAULT_MAIN_PATH_CODE).strip().casefold(),
+        )
+    )
+
+
+def parse_station_source_value(
+    value: Any, *, main_path_code: str = DEFAULT_MAIN_PATH_CODE
+) -> ParsedStationSource:
+    source_value, _source_key = normalize_station_source_value(value)
     code = ""
     name = source_value
-    sort_order: int | None = None
+    source_order: int | None = None
     warning = ""
-    match = _CODE_RE.match(source_value)
+    method = "none"
+    confidence = "manual_review"
+    match = _EXPLICIT_CODE_RE.match(source_value)
     if match:
         code = match.group(1)
         name = match.group(2).strip()
-        sort_order = int(code)
+        source_order = int(code)
+        method = "explicit_separator"
+        confidence = "explicit"
     elif source_value:
         warning = "无法自动提取顺序"
-    node_type = infer_station_node_type(name)
-    special = node_type in {"parking_lot", "depot"}
-    return ParsedStationSource(
+    return _parsed_station_source(
         source_station_value=source_value,
-        source_station_key=source_key,
         code=code,
         name=name,
-        sort_order=None if special else sort_order,
-        node_type=node_type,
-        path_code=UNASSIGNED_PATH_CODE if special else (main_path_code or DEFAULT_MAIN_PATH_CODE),
-        participates_in_direction=not special,
+        source_order=source_order,
+        order_parse_method=method,
+        parse_confidence=confidence,
         parse_warning=warning,
+        main_path_code=main_path_code,
+    )
+
+
+def parse_station_source_values(
+    values: list[Any], *, main_path_code: str = DEFAULT_MAIN_PATH_CODE
+) -> dict[str, ParsedStationSource]:
+    normalized = [
+        normalize_station_source_value(value)
+        for value in values
+        if normalize_station_source_value(value)[1]
+    ]
+    parsed = {
+        key: parse_station_source_value(value, main_path_code=main_path_code)
+        for value, key in normalized
+    }
+    unresolved = {
+        key: _BATCH_CODE_RE.match(value)
+        for value, key in normalized
+        if parsed[key].order_parse_method == "none"
+    }
+    candidates = {
+        key: match
+        for key, match in unresolved.items()
+        if match is not None and match.group(2).strip()
+    }
+    numbers = [int(match.group(1)) for match in candidates.values()]
+    if (
+        len(candidates) >= 3
+        and len(candidates) >= max(3, int(len(unresolved) * 0.8 + 0.999))
+        and len(set(numbers)) == len(numbers)
+        and _mostly_continuous(set(numbers))
+    ):
+        for key, match in candidates.items():
+            code = match.group(1)
+            parsed[key] = _parsed_station_source(
+                source_station_value=parsed[key].source_station_value,
+                code=code,
+                name=match.group(2).strip(),
+                source_order=int(code),
+                order_parse_method="batch_inferred",
+                parse_confidence="batch_inferred",
+                parse_warning="",
+                main_path_code=main_path_code,
+            )
+    return parsed
+
+
+def _parsed_station_source(
+    *,
+    source_station_value: str,
+    code: str,
+    name: str,
+    source_order: int | None,
+    order_parse_method: str,
+    parse_confidence: str,
+    parse_warning: str,
+    main_path_code: str,
+) -> ParsedStationSource:
+    canonical_name = canonical_station_name(
+        name, allow_inferred_two_digit_prefix=False
+    )
+    node_type = infer_station_node_type(canonical_name)
+    special = node_type in {"parking_lot", "depot"}
+    path_code = (
+        UNASSIGNED_PATH_CODE
+        if special
+        else (main_path_code or DEFAULT_MAIN_PATH_CODE)
+    )
+    return ParsedStationSource(
+        source_station_value=source_station_value,
+        source_station_key=station_identity_key(
+            canonical_name, node_type, path_code
+        ),
+        code=code,
+        name=canonical_name,
+        canonical_name=canonical_name,
+        source_order=source_order,
+        sort_order=None if special else source_order,
+        node_type=node_type,
+        path_code=path_code,
+        participates_in_direction=not special,
+        order_parse_method=order_parse_method,
+        parse_confidence=parse_confidence,
+        parse_warning=parse_warning,
+    )
+
+
+def _mostly_continuous(numbers: set[int]) -> bool:
+    if not numbers:
+        return False
+    span = max(numbers) - min(numbers) + 1
+    allowed_missing = max(1, len(numbers) // 5)
+    return (
+        min(numbers) >= 1
+        and max(numbers) <= 99
+        and span - len(numbers) <= allowed_missing
     )
 
 

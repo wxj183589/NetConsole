@@ -28,7 +28,15 @@ StationTrackFacility = Literal[
 ]
 StationSourceKind = Literal["device_station_field", "template", "manual", "legacy_ap_derived"]
 StationSourceSyncStatus = Literal["matched", "stale", "conflict", "manual", "legacy", "unavailable"]
-StationSourceMatchStatus = Literal["create", "matched", "conflict", "manual_review"]
+StationSourceMatchStatus = Literal[
+    "exact_source_key",
+    "canonical_name",
+    "canonical_name_and_type",
+    "alias",
+    "create",
+    "conflict",
+    "manual_review",
+]
 SectionKind = Literal["between_stations", "terminal_extension", "depot_connection", "manual", "legacy"]
 SectionDirectionRole = Literal["increasing", "decreasing", "none", "unknown"]
 SectionNodeType = Literal["station", "terminal_endpoint", "legacy", "unknown"]
@@ -243,6 +251,11 @@ class StationSourceCandidateDTO(ApiModel):
     source_station_key: str
     code: str = ""
     name: str
+    canonical_name: str = ""
+    source_order: int | None = None
+    order_parse_method: str = "none"
+    parse_confidence: str = "manual_review"
+    parse_warning: str = ""
     node_type: StationNodeType = "station"
     path_code: str = "MAIN"
     sort_order: int | None = None
@@ -250,6 +263,10 @@ class StationSourceCandidateDTO(ApiModel):
     source_device_count: int = 0
     match_status: StationSourceMatchStatus = "create"
     matched_station_id: str = ""
+    matched_station_name: str = ""
+    match_basis: str = ""
+    suggested_action: str = ""
+    cleanup_name_prefix_recommended: bool = False
     proposed_station: StationDTO
     issues: list[StationSourceIssueDTO] = Field(default_factory=list)
 
@@ -267,6 +284,8 @@ class StationSourcePreviewDTO(ApiModel):
     create_count: int = 0
     match_count: int = 0
     conflict_count: int = 0
+    manual_review_count: int = 0
+    canonical_match_count: int = 0
     warning_count: int = 0
     candidates: list[StationSourceCandidateDTO] = Field(default_factory=list)
     issues: list[StationSourceIssueDTO] = Field(default_factory=list)

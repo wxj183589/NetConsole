@@ -198,13 +198,22 @@ export interface StationSourceCandidate {
   source_station_key: string
   code: string
   name: string
+  canonical_name: string
+  source_order: number | null
+  order_parse_method: string
+  parse_confidence: string
+  parse_warning: string
   node_type: StationNodeType
   path_code: string
   sort_order: number | null
   participates_in_direction: boolean
   source_device_count: number
-  match_status: 'create' | 'matched' | 'conflict' | 'manual_review'
+  match_status: 'exact_source_key' | 'canonical_name' | 'canonical_name_and_type' | 'alias' | 'create' | 'conflict' | 'manual_review'
   matched_station_id: string
+  matched_station_name: string
+  match_basis: string
+  suggested_action: string
+  cleanup_name_prefix_recommended: boolean
   proposed_station: Station
   issues: StationSourceIssue[]
 }
@@ -222,6 +231,8 @@ export interface StationSourcePreview {
   create_count: number
   match_count: number
   conflict_count: number
+  manual_review_count: number
+  canonical_match_count: number
   warning_count: number
   candidates: StationSourceCandidate[]
   issues: StationSourceIssue[]

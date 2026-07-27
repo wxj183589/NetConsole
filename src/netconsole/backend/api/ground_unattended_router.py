@@ -173,7 +173,10 @@ def config_check(
 ) -> GroundActionResponseDTO:
     return _call(
         lambda: _service(request).request_config_check(
-            _site_id(request), device_uuid=payload.device_uuid
+            _site_id(request),
+            device_uuid=payload.device_uuid,
+            allow_target_port_change=payload.allow_target_port_change,
+            explicit_confirmation=payload.explicit_confirmation,
         )
     )
 

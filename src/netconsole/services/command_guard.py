@@ -152,6 +152,7 @@ SAFE_SFTP_ENABLE_COMMANDS = {
 
 SAFE_GROUND_UNATTENDED_SYSLOG_READ_COMMANDS = {
     "screen-length disable",
+    "display clock",
     "display version",
     "display info-center",
     "display current-configuration | include info-center",

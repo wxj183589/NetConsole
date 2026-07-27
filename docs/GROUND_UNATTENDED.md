@@ -38,6 +38,13 @@ Ping 和深度采集继续；明确退出时 lifespan 先关闭 Supervisor，fpi
 条或 1 秒批量提交。`syslog_server_ip` 默认留空，避免将 `0.0.0.0` 或监听地址错误下发到 MR；
 只有配置为有效 IPv4 后，Supervisor 才会安排设备配置检查。
 
+设置页通过 `/api/system/network/ipv4-addresses` 读取 Windows IP Helper 的本机 IPv4、网卡状态、
+前缀、网关、路由 metric 和物理/虚拟属性，并分开配置“本机 UDP 监听地址”和“MR 日志回传地址”。
+`0.0.0.0` 只允许用于监听，不能作为 MR 回传目标；保存和启动都会重新校验所选地址仍属于本机。
+“检测到 MR 网络的推荐地址”只用 UDP `connect` 查询系统选路，不发送数据包；UDP 端口检查使用临时
+独占绑定。外部 NAT 地址必须启用 `allow_external_syslog_address` 并在本次保存中二次确认，后端同时
+记录高风险审计；普通无效、回环、组播和广播地址始终拒绝。
+
 开始和结束时间不能相同，支持 `22:00-06:00` 跨午夜窗口，运行日期取窗口开始日期。运行中保存
 配置不会重启当前 fping 或 SSH 任务，新配置从下一次调度周期生效；状态接口同时返回下一次开始和
 结束时间。
@@ -55,9 +62,13 @@ Ping 和深度采集继续；明确退出时 lifespan 先关闭 Supervisor，fpi
 - 轨旁 AP 的稳定 ID、规范化 MAC、唯一精确名称、站点、区间和结构化 metadata；
 - `AcMeshLinkQueryService` 的 fresh/online、当前 AP 和本机接收时间。
 
-AP 只按稳定 ID、规范化 MAC 或唯一精确名称匹配，不使用模糊名称。停车场、车辆段、存车线、出入
-段连接线、非主路径和不参与方向判断的站点分别返回明确状态。`UNKNOWN/STALE`、查询失败或 AP
-无法匹配不会伪装为入段；这些状态暂停新深采，已有深采保持运行，已有 Ping 在
+位置解析分别保存原始 AP、解析后 AP、规范站点、匹配依据和
+`AP_EXACT/AP_REGISTRY/AP_ALIAS/STATION_EXACT/STATION_ALIAS/UNMATCHED` 等级。AP 只按稳定 ID、
+规范化 MAC、Radio/BSSID Registry、唯一精确名称或基础资料中明确保存的 alias 匹配，不使用模糊名称。
+若 AP 未匹配但 AC 站点可与正式站点或来源别名匹配，先按站点判断车辆段、停车场、存车线、非主路径和
+方向参与状态，再决定正线资格，不能先误判为 `AP_UNMATCHED`。正式站点精确匹配可继续正线 Ping 和深采；
+来源别名匹配只继续 Ping，待 AP 或正式站点精确确认后才启动深采。`UNKNOWN/STALE`、查询失败或 AP/站点
+均无法匹配不会伪装为入段；这些状态暂停新深采，已有深采保持运行，已有 Ping 在
 `ac_stale_grace_seconds` 内继续。
 
 同一正线 AP 达到 `stationary_exclusion_minutes` 后返回 `MAINLINE_STATIONARY`：长 Ping 保持，
@@ -103,8 +114,14 @@ MR。设备主体、地址和凭据仍只存在于设备管理；无人值守只
 文件不会被压缩；停止、轮转或重启恢复后才登记为关闭/恢复文件。SQLite 只保存分钟汇总、连续丢包区间、
 WMESH 关键事件、原始文件索引和健康事件，不逐条保存秒级原始 Ping 或 Syslog。
 
-Ping 稳定成功后，`MrSyslogConfigService` 通过既有设备凭据先执行 `display version`，以 uptime 和
-估算启动时间建立或更新 boot session；随后将 `display info-center` 作为运行态主检查，并以
+Ping 稳定成功后，`MrSyslogConfigService` 通过既有设备凭据按
+`display clock -> display version -> display clock` 连续取证。Boot Session 的主时间轴为两次设备
+时钟中点减 uptime；同时保存设备时区、UTC offset、uptime 精度、估算误差、重启原因和本机
+`checked_at`。设备时钟无法解析时才明确降级为 `LOCAL_FALLBACK` 并保存失败原因，不会静默冒充设备
+时间。uptime 明显回退，或检查间隔内 uptime 已重置且估算上电时间越过容差时创建新 Session；只有设备
+时钟因 NTP 跳变而 uptime 连续增长时保持原 Session，并记录 `CLOCK_JUMP`。
+
+随后将 `display info-center` 作为运行态主检查，并以
 `display current-configuration | include info-center` 补充验证来源规则，过滤不支持时才回退完整运行配置。
 运行态必须确认 Information Center、loghost、实际目标 IP 和端口；`current-configuration` 只确认默认来源
 禁止和 WMESH notification 两条 source 规则。Comware 省略默认 `info-center enable` 或默认 UDP 514 的
@@ -118,9 +135,17 @@ Ping 稳定成功后，`MrSyslogConfigService` 通过既有设备凭据先执行
 计数增长是日志数据质量告警；overwritten 增长仅表示设备本地环形缓冲覆盖，不等同于 UDP 网络丢包。旧目标的
 `undo` 清理仍需真实设备命令验证后单独实现。
 
-`ground_unattended` 索引库的 additive schema v3 包含列车清单/端点绑定/策略、boot session、Syslog
-配置审计、WMESH 事件、原始文件索引、Ping 丢包区间和健康事件表；v3 额外保存已验证来源证据、最近
-Info Center 指标和规范化时钟偏差。启动迁移为幂等加列与 `CREATE TABLE IF NOT EXISTS`，不重建既有局点数据库。
+运行态可同时返回多个不同 IP 的 loghost，省略端口统一为 514。NetConsole 只管理当前 Profile 指定的
+IP/端口，保留其他 IP 的外部目标，不执行 `undo`。当前现场 H3C 版本以 IP 为 loghost 唯一键：同 IP
+端口一致为 `TARGET_PRESENT`，IP 不存在为可安全补齐的 `TARGET_MISSING`，同 IP 已存在其他端口则为
+`TARGET_PORT_CONFLICT`。冲突的自动检查不生成修复命令、不进入 `system-view`；只有用户在单台 MR
+详情中明确二次确认后才允许改端口，并写入高风险授权与执行审计。配置指纹包含排序后的全部 loghost 和
+当前 managed target，因此设备输出顺序变化不产生伪变更。
+
+`ground_unattended` 索引库的 additive schema v5 包含列车清单/端点绑定/策略、boot session、Syslog
+配置审计、WMESH 事件、原始文件索引、Ping 丢包区间和健康事件表；新增 Profile 外部地址确认字段，以及
+Boot Session 的前后设备时钟、估算误差、重启原因、设备时区、UTC offset、时间质量和时钟跳变证据。
+启动迁移为幂等加列与 `CREATE TABLE IF NOT EXISTS`，不重建既有局点数据库。
 
 ## 深度采集与覆盖
 
@@ -198,12 +223,21 @@ DELETE   /archives/{archive_id}
 写接口校验当前局点和 Pydantic 范围，返回结构化错误；停止、压缩、清理和归档由 Supervisor 执行，
 不会在 Router 请求线程运行。
 
+本机网络只读辅助接口使用 `/api/system/network`：
+
+```text
+GET  /ipv4-addresses
+POST /recommend-source-ip
+POST /check-udp-port
+```
+
 ## 验证边界
 
 自动测试覆盖时间窗口/跨午夜、同日手工停止抑制、配置持久化、结构化正线排除、静止恢复、多目标与
 动态分片、轮转/汇总、CT/CW 错峰补齐、覆盖轮次去重、首轮覆盖排序、可复现队列、ZIP 成功清理、
 ZIP 失败保留、Repository 故障隔离、API 空态和前端七页签。第一阶段还覆盖清单增量同步/策略保留、
-多 MR UDP 分流与未知来源隔离、上电周期重启识别，以及不执行 `save` 的 Syslog Profile。`vue-tsc`、
+多 MR UDP 分流与未知来源隔离、设备时钟中点减 uptime、NTP 跳变保持 Session、本机地址校验、多 loghost
+解析、同 IP 端口冲突只读保护，以及不执行 `save/undo` 的 Syslog Profile。`vue-tsc`、
 定向 Vitest 和 Web production build 作为提交门。
 
 已完成一台 H3C MR 的 10 分钟真实 UDP 单机验证：Comware 省略默认 enable/514 配置文本时只读复查为

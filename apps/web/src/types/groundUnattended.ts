@@ -10,6 +10,7 @@ export interface GroundProfile {
   udp_listen_host: string; udp_listen_port: number; udp_queue_capacity: number; raw_flush_interval_seconds: number; raw_flush_record_count: number
   event_batch_size: number; event_batch_interval_seconds: number; boot_time_tolerance_seconds: number; config_check_cooldown_seconds: number
   syslog_server_ip: string; syslog_server_port: number; ping_raw_retention_days: number; syslog_raw_retention_days: number
+  allow_external_syslog_address: boolean
   minimum_valid_collection_minutes: number; preferred_collection_minutes: number; maximum_collection_minutes: number
   start_jitter_seconds: number; start_batch_size: number; detail_retention_days: number; summary_retention_days: number
   storage_warning_free_gb: number; storage_critical_free_gb: number; created_at: string; updated_at: string
@@ -28,11 +29,20 @@ export interface GroundEndpoint {
   ping_active: boolean; ping_sent_count: number; ping_success_count: number; ping_loss_rate_percent: number | null
   ping_avg_rtt_ms: number | null; active_operation_id: string; latest_session_id: string
   syslog_status: string; last_syslog_received_at: string; current_active_peer: string; last_link_switch_at: string
-  boot_session_id: string; estimated_boot_time: string; uptime_seconds: number | null; config_status: string; config_checked_at: string
+  boot_session_id: string; estimated_boot_time: string; uptime_seconds: number | null; boot_time_uncertainty_seconds: number
+  reboot_reason: string; timezone_name: string; utc_offset_seconds: number | null; device_time_quality: string
+  config_status: string; config_checked_at: string; managed_target_ip: string; managed_target_port: number | null
+  managed_target_statuses: string[]; configured_log_hosts: GroundSyslogHost[]
+}
+export interface GroundSyslogHost {
+  ip: string; port: number; facility: string; is_managed_target: boolean; same_ip_different_port: boolean
+  source: 'DEVICE_EXISTING' | 'NETCONSOLE_MANAGED'
 }
 export interface GroundTrain {
   train_id: string; train_no: string; train_name: string; ping_eligible: boolean; deep_collection_eligible: boolean
   eligibility_status: string; exclusion_reason: string; current_ap_name: string; current_ap_mac: string
+  location_match_level: 'AP_EXACT' | 'AP_REGISTRY' | 'AP_ALIAS' | 'STATION_EXACT' | 'STATION_ALIAS' | 'UNMATCHED'
+  location_match_reason: string; resolved_ap_id: string; resolved_ap_name: string; raw_peer_ap_name: string; raw_peer_ap_mac: string; canonical_station_name: string
   station: string; section: string; mileage: string; rssi: number | null; same_ap_duration_seconds: number
   ac_snapshot_id: number | null; ac_received_at: string; coverage_status: GroundCoverageStatus; priority: boolean
   enabled: boolean; scheduling_priority: number; deep_collection_enabled: boolean; monitor_only: boolean; remark: string; inventory_status: string
@@ -73,3 +83,18 @@ export interface GroundHealth {
   ping_target_count: number; ping_process_count: number; deep_queue_length: number; archive_pending_count: number; disk_free_bytes: number; last_error: string; updated_at: string
 }
 export interface GroundRawFile { file_id: string; site_id: string; run_id: string; train_id: string; device_id: number | null; mr_role: string; data_type: string; relative_path: string; start_time: string; end_time: string; record_count: number; size_bytes: number; sha256: string; status: string; archive_status: string; parse_status: string; compressed_path: string; created_at: string; updated_at: string }
+
+export interface LocalIpv4Address {
+  adapter_id: string; adapter_name: string; description: string; interface_index: number; ipv4: string
+  prefix_length: number; netmask: string; gateway: string; is_up: boolean; is_loopback: boolean; is_virtual: boolean
+  is_apipa: boolean; has_default_route: boolean; route_metric: number | null; source: string
+  recommended: boolean; recommendation_reason: string
+}
+export interface SourceIpRoute { target_ip: string; source_ip: string; reachable: boolean; reason: string }
+export interface SourceIpRecommendation {
+  recommended_ip: string; recommendation_reason: string; routes: SourceIpRoute[]
+  candidates: LocalIpv4Address[]; generated_at: string
+}
+export interface UdpPortCheck {
+  listen_host: string; listen_port: number; available: boolean; status: string; message: string; checked_at: string
+}
