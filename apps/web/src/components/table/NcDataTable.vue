@@ -66,6 +66,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   'header-dragend': [newWidth: number, oldWidth: number, column: unknown, event: MouseEvent]
   'row-contextmenu': [row: Row, column: { property?: string; columnKey?: string; label?: string }, event: MouseEvent]
+  'selection-change': [rows: Row[]]
 }>()
 
 const tableRef = ref()
@@ -436,6 +437,10 @@ function toggleRowSelection(row: Row, selected?: boolean): void {
   tableRef.value?.toggleRowSelection?.(row, selected)
 }
 
+function handleSelectionChange(rows: Row[]): void {
+  emit('selection-change', rows)
+}
+
 function refreshFonts(): void {
   const element = containerRef.value
   if (!element || typeof getComputedStyle === 'undefined') return
@@ -533,6 +538,7 @@ defineExpose({ tableRef, availableWidth, resolvedTableWidth, recalculate, resetL
         scrollbar-always-on
         @header-dragend="handleHeaderDragEnd"
         @row-contextmenu="handleRowContextMenu"
+        @selection-change="handleSelectionChange"
       >
         <template
           v-for="(column, columnIndex) in renderColumns"

@@ -61,12 +61,26 @@ revision 校验 + SQLite BEGIN IMMEDIATE 单事务
 `path_code=UNASSIGNED`、`sort_order=null`、`participates_in_direction=false`，不会因为编码较大被排入主线。
 
 候选身份使用“规范站名 + 节点类型 + 路径”稳定键，不把编号前缀写入正式站名。编号写法不同但规范身份和
-数值编号一致时合并来源设备数；同编号不同站名、同站名不同编号、同路径顺序重复或一个来源匹配多个正式
-站点时返回阻断冲突，不自动合并。匹配依据依次公开为 `exact_source_key`、`canonical_name_and_type`、
+数值编号一致时合并来源设备数；同编号不同站名、同站名不同编号或同路径顺序重复时返回阻断冲突。一个来源
+匹配多个同类型、同路径、同规范站名的正式站点时，预览改为建议 `merge_duplicates`，但仍须由用户选择保留
+目标并确认差异，不会自动合并；其他多目标匹配保持人工处理。匹配依据依次公开为 `exact_source_key`、`canonical_name_and_type`、
 `canonical_name`、`alias`；预览表同时显示原始值、规范站名、解析方式、可信度、正式站点、匹配依据和
-建议动作。匹配只更新来源证据，不覆盖人工维护的名称、编号、顺序、结构、站台或轨道设施。
+建议动作。“自动匹配现有”只更新来源证据；只有用户明确选择下述“覆盖现有”时才更新允许的来源字段，人工
+维护字段仍默认受保护。
 
-来源预览只给出候选、匹配和冲突，不提供直接写库接口。前端“从设备管理生成”和“导入模板”都只能应用到当前解锁草稿，最后仍通过全局 `validate` 与 `changes` 保存，继续保留 `base_revision`、明确确认、事务回滚和保存失败保留草稿。来源确认默认只补充 `source_station_value/source_station_key/source_kind` 以及响应中的设备数量状态；结构和站台仅在 MAIN 普通站仍为 `unknown` 时补齐默认值，顺序、路径、端点、轨道设施、启用、备注和已有明确结构/站台等人工字段不会被来源同步覆盖。设备管理中来源后来消失时只把正式站点标为 `stale`，不删除站点，也不修改 `devices` 或 `device_groups`。
+来源预览只给出候选、匹配和冲突，不提供直接写库接口。每个候选明确选择“自动匹配现有 / 覆盖现有 / 新增 / 忽略 / 人工选择目标 / 合并重复项”，底部批量按钮也只应用已勾选候选。前端“从设备管理生成”和“导入模板”都只能应用到当前解锁草稿，最后仍通过全局 `validate` 与 `changes` 保存，继续保留 `base_revision`、明确确认、事务回滚和保存失败保留草稿。来源确认默认只补充 `source_station_value/source_station_key/source_kind` 以及响应中的设备数量状态；结构和站台仅在 MAIN 普通站仍为 `unknown` 时补齐默认值。设备管理中来源后来消失时只把正式站点标为 `stale`，不删除站点，也不修改 `devices` 或 `device_groups`。
+
+## 站点选择与冲突处理
+
+站点表的选择能力只在解锁编辑时启用，支持单选、多选、当前页全选、选择全部顺序冲突项、清空选择，以及在草稿变化后保留仍有效的稳定站点 ID。删除、覆盖和合并都只生成前端草稿变更，不会在点击操作按钮时写库；撤销选中变更从当前页面基线恢复，不会重新读取或覆盖数据库。
+
+批量删除先调用只读 `stations/delete-preflight`，并携带当前 `base_revision`。预检统计区间起终点、轨旁 AP、规划及关系引用，并区分 `SAFE_DELETE`、`REQUIRES_MERGE` 和 `BLOCKED`；线路端点始终阻断。有引用的站点不能静默跳过或直接删除，页面逐项显示原因并要求先合并/重新指向，用户可取消阻断项后只继续安全项。保存时后端再次检查 revision 与引用。
+
+“覆盖现有”保留正式目标的 `id`、`node_uid` 及全部引用，只允许来源默认覆盖 `code/name/sort_order/node_type/path_code/participates_in_direction` 与来源证据字段。中心里程、结构、站台、线路/服务端点、折返能力、轨道设施、端点延伸和人工备注默认保留；只有用户逐项明确勾选时才采用来源人工字段。若草稿中已存在多余来源记录，则同一个 `replace` 变更完成目标更新与来源记录清理。
+
+“合并重复项”要求选择一个既有正式站点作为目标，并在一个 `replace` 草稿计划内迁移来源站点的区间名称引用、区间节点 UID、轨旁 AP、轨旁 AP 规划和关系引用，随后删除重复的正式站点辅助行。节点类型、路径、线路端点属性、主线顺序或中心里程差异超过 250 米时必须人工选择；任何区间在迁移后形成同名端点或相同节点 UID 自环时阻断。后端在单一 SQLite 事务中执行迁移、完整性校验和删除，失败完整回滚。
+
+主线顺序错误按 `path_code + sort_order` 聚合为冲突组，不再重复展示同一通用文案。冲突抽屉列出具体站点，并提供保留指定项、来源覆盖、合并、修改顺序、取消某项参与方向和暂不处理；处理结果仍进入同一草稿和保存状态机。
 
 站点模板为 XLSX，包含 `01_线路参数`、`02_线路节点`、`03_区间配置` 和 `字段说明` 四个工作表。线路参数包含线路名称、项目类型、网络类型、主线路径编码、站序递增/递减方向及对应线路侧、设备来源分组、固定来源字段 `station` 和备注；线路节点包含中心里程、多轨道设施与端点延伸字段；区间配置包含稳定生成标识、正式起终节点和只读 AP 数量/里程范围。旧三工作表模板仍可导入，缺少区间页时只提示“模板未包含区间配置”，不删除现有区间。导入预览会映射中文枚举、设施分隔符和 `是/否、true/false、1/0` 布尔值，模板文件路径和原文件内容不写入正式数据库。
 
@@ -141,6 +155,7 @@ GET /api/rail-transit/base-data/import-policies
 GET /api/rail-transit/base-data/relations
 GET /api/rail-transit/base-data/revision
 GET /api/rail-transit/base-data/station-source-preview
+GET /api/rail-transit/base-data/stations/conflicts
 GET /api/rail-transit/base-data/station-template
 GET /api/rail-transit/base-data/station-template-export
 ```
@@ -150,6 +165,7 @@ GET /api/rail-transit/base-data/station-template-export
 ```text
 POST /api/rail-transit/base-data/validate
 POST /api/rail-transit/base-data/changes
+POST /api/rail-transit/base-data/stations/delete-preflight
 ```
 
 `changes` 只接受强类型实体动作、`base_revision`、局点和明确确认；凭据、Token、Community、数据库路径、表名和 SQL 均被拒绝。局点元数据（线路名称、项目类型、网络类型、备注）、站点、区间、轨旁 AP、车载 MR 和统一规划在同一请求内写入；SQLite 事务与 metadata 原子替换失败时执行补偿恢复，任何一步失败都不得留下半完成状态。

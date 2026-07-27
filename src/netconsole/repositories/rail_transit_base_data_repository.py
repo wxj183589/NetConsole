@@ -103,6 +103,14 @@ class RailTransitBaseDataRepository:
             sql = ", ".join(f'"{field}"' for field in selected)
             return [dict(row) for row in connection.execute(f"SELECT {sql} FROM ap_extension_points")]
 
+    def station_reference_summary(self, site_id: str, station_name: str) -> dict[str, int]:
+        """Return a read-only, explainable station dependency summary."""
+        name = str(station_name or "").strip()
+        path = self._database_path(site_id)
+        with self._read_connection(path) as connection:
+            self._require_table(connection)
+            return self._station_reference_summary(connection, name)
+
     def backup_database(self, site_id: str, target: Path) -> None:
         source_path = self._database_path(site_id)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -187,6 +195,14 @@ class RailTransitBaseDataRepository:
                 key = {"create": "created_count", "update": "updated_count", "delete": "deleted_count", "replace": "updated_count"}.get(action)
                 if key:
                     counts[key] += 1
+                if entity_type == "station" and action == "replace":
+                    counts["deleted_count"] += len(
+                        {
+                            str(value).strip()
+                            for value in values.get("merge_source_names") or []
+                            if str(value).strip()
+                        }
+                    )
             self._assert_integrity(connection)
             if metadata_changes:
                 metadata = dict(current_metadata)
@@ -295,25 +311,143 @@ class RailTransitBaseDataRepository:
         name = str(values.get("name") or "").strip()
         if action == "delete":
             if self._station_reference_count(connection, old_name):
-                raise RailTransitBaseDataConstraintError("站点仍被轨旁 AP 或区间引用")
+                raise RailTransitBaseDataConstraintError("站点仍被区间、轨旁 AP、关系或规划引用")
             connection.execute(
                 "DELETE FROM ap_extension_points WHERE belong_type = '__base_station__' AND station_name = ?",
                 (old_name,),
             )
             return
-        if action == "update" and old_name != name:
-            now = self._now()
-            connection.execute(
-                """
-                UPDATE ap_extension_points SET station_name = ?, updated_at = ?
-                WHERE station_name = ? AND belong_type != '__base_station__'
-                """,
-                (name, now, old_name),
-            )
-            connection.execute("UPDATE ap_extension_points SET section_start_station = ?, updated_at = ? WHERE section_start_station = ?", (name, now, old_name))
-            connection.execute("UPDATE ap_extension_points SET section_end_station = ?, updated_at = ? WHERE section_end_station = ?", (name, now, old_name))
-            connection.execute("UPDATE ac_trackside_ap_plan SET station_name = ?, updated_at = ? WHERE station_name = ?", (name, now, old_name))
+        if action in {"update", "replace"} and old_name != name:
+            self._migrate_station_name_references(connection, old_name, name)
+        if action == "replace":
+            source_names = [
+                str(value).strip()
+                for value in values.get("merge_source_names") or []
+                if str(value).strip() and str(value).strip() != old_name
+            ]
+            target_uid = str(values.get("node_uid") or "").strip()
+            source_uids = [
+                str(value).strip()
+                for value in values.get("merge_source_node_uids") or []
+                if str(value).strip() and str(value).strip() != target_uid
+            ]
+            for source_name in dict.fromkeys(source_names):
+                self._migrate_station_name_references(connection, source_name, name)
+            if source_uids:
+                self._migrate_section_node_uids(
+                    connection,
+                    source_uids=source_uids,
+                    target_uid=target_uid,
+                )
+            self._assert_no_section_self_loops(connection)
+            if source_names:
+                placeholders = ", ".join("?" for _ in source_names)
+                connection.execute(
+                    f"""
+                    DELETE FROM ap_extension_points
+                    WHERE belong_type = '__base_station__'
+                      AND station_name IN ({placeholders})
+                    """,
+                    list(dict.fromkeys(source_names)),
+                )
         self._replace_metadata_row(connection, site_id, "station", old_name, values)
+
+    def _migrate_station_name_references(
+        self,
+        connection: sqlite3.Connection,
+        old_name: str,
+        new_name: str,
+    ) -> None:
+        if not old_name or old_name == new_name:
+            return
+        now = self._now()
+        connection.execute(
+            """
+            UPDATE ap_extension_points SET station_name = ?, updated_at = ?
+            WHERE station_name = ? AND belong_type != '__base_station__'
+            """,
+            (new_name, now, old_name),
+        )
+        connection.execute(
+            "UPDATE ap_extension_points SET section_start_station = ?, updated_at = ? WHERE section_start_station = ?",
+            (new_name, now, old_name),
+        )
+        connection.execute(
+            "UPDATE ap_extension_points SET section_end_station = ?, updated_at = ? WHERE section_end_station = ?",
+            (new_name, now, old_name),
+        )
+        connection.execute(
+            "UPDATE ac_trackside_ap_plan SET station_name = ?, updated_at = ? WHERE station_name = ?",
+            (new_name, now, old_name),
+        )
+
+    def _migrate_section_node_uids(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        source_uids: Iterable[str],
+        target_uid: str,
+    ) -> None:
+        if not target_uid:
+            raise RailTransitBaseDataConstraintError("合并目标缺少稳定节点标识")
+        source_uid_set = {str(value).strip() for value in source_uids if str(value).strip()}
+        rows = connection.execute(
+            """
+            SELECT id, raw_payload_json FROM ap_extension_points
+            WHERE belong_type = '__base_section__'
+            """
+        ).fetchall()
+        now = self._now()
+        for row in rows:
+            try:
+                metadata = json.loads(str(row["raw_payload_json"] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                metadata = {}
+            changed = False
+            for key in ("start_node_uid", "end_node_uid"):
+                if str(metadata.get(key) or "") in source_uid_set:
+                    metadata[key] = target_uid
+                    changed = True
+            if changed:
+                connection.execute(
+                    """
+                    UPDATE ap_extension_points
+                    SET raw_payload_json = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        json.dumps(metadata, ensure_ascii=False),
+                        now,
+                        int(row["id"]),
+                    ),
+                )
+
+    @staticmethod
+    def _assert_no_section_self_loops(connection: sqlite3.Connection) -> None:
+        rows = connection.execute(
+            """
+            SELECT section_name, section_start_station, section_end_station, raw_payload_json
+            FROM ap_extension_points
+            WHERE COALESCE(section_name, '') != ''
+              AND COALESCE(section_start_station, '') != ''
+              AND COALESCE(section_end_station, '') != ''
+            """
+        ).fetchall()
+        for row in rows:
+            start_name = str(row["section_start_station"] or "").strip()
+            end_name = str(row["section_end_station"] or "").strip()
+            try:
+                metadata = json.loads(str(row["raw_payload_json"] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                metadata = {}
+            start_uid = str(metadata.get("start_node_uid") or "").strip()
+            end_uid = str(metadata.get("end_node_uid") or "").strip()
+            if (start_name and start_name == end_name) or (
+                start_uid and start_uid == end_uid
+            ):
+                raise RailTransitBaseDataConstraintError(
+                    f"合并后区间“{row['section_name']}”将形成自环"
+                )
 
     def _apply_section_change(
         self,
@@ -584,15 +718,105 @@ class RailTransitBaseDataRepository:
 
     @staticmethod
     def _station_reference_count(connection: sqlite3.Connection, name: str) -> int:
-        row = connection.execute(
+        return RailTransitBaseDataRepository._station_reference_summary(
+            connection, name
+        )["total_count"]
+
+    @staticmethod
+    def _station_reference_summary(
+        connection: sqlite3.Connection,
+        name: str,
+    ) -> dict[str, int]:
+        rows = connection.execute(
             """
-            SELECT COUNT(*) FROM ap_extension_points
+            SELECT belong_type, station_name, section_name, section_start_station,
+                   section_end_station, line_side, raw_payload_json
+            FROM ap_extension_points
             WHERE COALESCE(belong_type, '') != '__base_station__'
-              AND (station_name = ? OR section_start_station = ? OR section_end_station = ?)
+              AND (
+                station_name = ?
+                OR section_start_station = ?
+                OR section_end_station = ?
+              )
             """,
             (name, name, name),
+        ).fetchall()
+        section_start_refs = {
+            (
+                str(row["section_name"] or "").strip(),
+                str(row["section_start_station"] or "").strip(),
+                str(row["section_end_station"] or "").strip(),
+                str(row["line_side"] or "").strip(),
+            )
+            for row in rows
+            if str(row["section_name"] or "").strip()
+            and str(row["section_start_station"] or "") == name
+        }
+        section_end_refs = {
+            (
+                str(row["section_name"] or "").strip(),
+                str(row["section_start_station"] or "").strip(),
+                str(row["section_end_station"] or "").strip(),
+                str(row["line_side"] or "").strip(),
+            )
+            for row in rows
+            if str(row["section_name"] or "").strip()
+            and str(row["section_end_station"] or "") == name
+        }
+        section_start_count = len(section_start_refs)
+        section_end_count = len(section_end_refs)
+        ap_count = sum(
+            row["belong_type"] not in {"__base_station__", "__base_section__"}
+            and str(row["station_name"] or "") == name
+            for row in rows
+        )
+        endpoint_extension_refs: set[tuple[str, str, str, str]] = set()
+        for row in rows:
+            if row["belong_type"] != "__base_section__":
+                continue
+            try:
+                metadata = json.loads(str(row["raw_payload_json"] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                metadata = {}
+            if (
+                str(metadata.get("section_kind") or "") == "terminal_extension"
+                and name
+                in {
+                    str(row["section_start_station"] or ""),
+                    str(row["section_end_station"] or ""),
+                }
+            ):
+                endpoint_extension_refs.add(
+                    (
+                        str(row["section_name"] or "").strip(),
+                        str(row["section_start_station"] or "").strip(),
+                        str(row["section_end_station"] or "").strip(),
+                        str(row["line_side"] or "").strip(),
+                    )
+                )
+        endpoint_extension_count = len(endpoint_extension_refs)
+        plan_row = connection.execute(
+            "SELECT COUNT(*) FROM ac_trackside_ap_plan WHERE station_name = ?",
+            (name,),
         ).fetchone()
-        return int(row[0] if row else 0)
+        plan_count = int(plan_row[0] if plan_row else 0)
+        relation_count = 0
+        total_count = (
+            section_start_count
+            + section_end_count
+            + ap_count
+            + relation_count
+            + plan_count
+        )
+        return {
+            "section_start_count": section_start_count,
+            "section_end_count": section_end_count,
+            "ap_count": ap_count,
+            "relation_count": relation_count,
+            "endpoint_extension_count": endpoint_extension_count,
+            "plan_count": plan_count,
+            "total_count": total_count,
+        }
 
     @staticmethod
     def _section_reference_count(

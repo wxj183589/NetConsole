@@ -122,6 +122,22 @@ class StationSourceDiscoveryService:
                 in {"canonical_name", "canonical_name_and_type", "alias"}
                 for candidate in candidates
             ),
+            recommended_overwrite_count=sum(
+                candidate.processing_strategy == "overwrite_existing"
+                for candidate in candidates
+            ),
+            recommended_create_count=sum(
+                candidate.processing_strategy == "create"
+                for candidate in candidates
+            ),
+            recommended_merge_count=sum(
+                candidate.processing_strategy == "merge_duplicates"
+                for candidate in candidates
+            ),
+            remaining_manual_count=sum(
+                candidate.processing_strategy == "manual_target"
+                for candidate in candidates
+            ),
             warning_count=warning_count,
             candidates=candidates,
             issues=issues,
@@ -283,6 +299,62 @@ class StationSourceDiscoveryService:
                 existing_code_name,
             )
             row_issues.extend(match_issues)
+            possible_matches = self._candidate_matches(
+                parsed,
+                match_basis=match_basis,
+                matched_station_id=matched_station_id,
+                existing_by_id=existing_by_id,
+                existing_source_key=existing_source_key,
+                existing_canonical_name=existing_canonical_name,
+                existing_canonical_name_type=existing_canonical_name_type,
+                existing_alias=existing_alias,
+            )
+            candidate_code = parsed.code
+            candidate_name = parsed.name
+            candidate_source_order = parsed.source_order
+            candidate_sort_order = parsed.sort_order
+            candidate_order_method = parsed.order_parse_method
+            candidate_confidence = parsed.parse_confidence
+            candidate_warning = parsed.parse_warning
+            normalized_source_name = canonical_station_name(
+                parsed.source_station_value
+            )
+            inferred_prefix = (
+                parsed.source_station_value[: -len(normalized_source_name)]
+                if normalized_source_name
+                and parsed.source_station_value.endswith(normalized_source_name)
+                else ""
+            ).strip()
+            matched_identity_confirms_prefix = (
+                not parsed.code
+                and len(inferred_prefix) == 2
+                and inferred_prefix.isdigit()
+                and bool(possible_matches)
+                and all(
+                    station.node_type == parsed.node_type
+                    and station.path_code.casefold() == parsed.path_code.casefold()
+                    and canonical_station_name(station.name).casefold()
+                    == normalized_source_name.casefold()
+                    for station in possible_matches
+                )
+            )
+            if matched_identity_confirms_prefix:
+                candidate_code = inferred_prefix
+                candidate_name = normalized_source_name
+                candidate_source_order = int(inferred_prefix)
+                candidate_sort_order = (
+                    None
+                    if parsed.node_type in {"parking_lot", "depot"}
+                    else candidate_source_order
+                )
+                candidate_order_method = "existing_match_inferred"
+                candidate_confidence = "matched_existing"
+                candidate_warning = ""
+                row_issues = [
+                    issue
+                    for issue in row_issues
+                    if issue.code != "station_source_parse_failed"
+                ]
             if any(issue.blocking for issue in row_issues):
                 match_status = "conflict"
             elif (
@@ -297,6 +369,11 @@ class StationSourceDiscoveryService:
                 main_path_code,
             )
             matched_station = existing_by_id.get(matched_station_id)
+            processing_strategy, processing_options = self._processing_strategy(
+                match_status=match_status,
+                matches=possible_matches,
+                parsed=parsed,
+            )
             proposed = StationDTO(
                 id=matched_station_id or f"new:{self._candidate_digest(key)}",
                 node_uid=(
@@ -304,10 +381,10 @@ class StationSourceDiscoveryService:
                     if matched_station
                     else str(uuid5(NAMESPACE_URL, f"netconsole:{site_id}:station-source:{key}"))
                 ),
-                name=parsed.name,
-                code=parsed.code,
+                name=candidate_name,
+                code=candidate_code,
                 line_name="",
-                sort_order=parsed.sort_order,
+                sort_order=candidate_sort_order,
                 remark="",
                 source_station_value=parsed.source_station_value,
                 source_station_key=parsed.source_station_key,
@@ -326,16 +403,16 @@ class StationSourceDiscoveryService:
                     candidate_id=f"station-source:{self._candidate_digest(key)}",
                     source_station_value=parsed.source_station_value,
                     source_station_key=parsed.source_station_key,
-                    code=parsed.code,
-                    name=parsed.name,
-                    canonical_name=parsed.canonical_name,
-                    source_order=parsed.source_order,
-                    order_parse_method=parsed.order_parse_method,
-                    parse_confidence=parsed.parse_confidence,
-                    parse_warning=parsed.parse_warning,
+                    code=candidate_code,
+                    name=candidate_name,
+                    canonical_name=normalized_source_name,
+                    source_order=candidate_source_order,
+                    order_parse_method=candidate_order_method,
+                    parse_confidence=candidate_confidence,
+                    parse_warning=candidate_warning,
                     node_type=parsed.node_type,  # type: ignore[arg-type]
                     path_code=parsed.path_code,
-                    sort_order=parsed.sort_order,
+                    sort_order=candidate_sort_order,
                     participates_in_direction=parsed.participates_in_direction,
                     source_device_count=len(rows),
                     match_status=match_status,  # type: ignore[arg-type]
@@ -345,16 +422,22 @@ class StationSourceDiscoveryService:
                         if matched_station_id in existing_by_id
                         else ""
                     ),
+                    matched_station_ids=[station.id for station in possible_matches],
+                    matched_station_names=[station.name for station in possible_matches],
                     match_basis=match_basis,
                     suggested_action=(
-                        "更新来源信息"
-                        if matched_station_id
+                        "覆盖现有"
+                        if processing_strategy == "overwrite_existing"
+                        else "合并重复项"
+                        if processing_strategy == "merge_duplicates"
                         else "处理来源冲突"
                         if match_status == "conflict"
                         else "人工确认"
                         if match_status == "manual_review"
                         else "新建规范站点"
                     ),
+                    processing_strategy=processing_strategy,
+                    processing_options=processing_options,
                     cleanup_name_prefix_recommended=bool(
                         matched_station
                         and canonical_station_name(matched_station.name)
@@ -366,6 +449,70 @@ class StationSourceDiscoveryService:
             )
         candidates.sort(key=lambda item: (item.sort_order is None, item.sort_order or 0, item.code, item.name))
         return candidates, top_level_issues
+
+    @staticmethod
+    def _candidate_matches(
+        parsed: Any,
+        *,
+        match_basis: str,
+        matched_station_id: str,
+        existing_by_id: Mapping[str, StationDTO],
+        existing_source_key: Mapping[str, list[StationDTO]],
+        existing_canonical_name: Mapping[str, list[StationDTO]],
+        existing_canonical_name_type: Mapping[tuple[str, str], list[StationDTO]],
+        existing_alias: Mapping[str, list[StationDTO]],
+    ) -> list[StationDTO]:
+        if matched_station_id and matched_station_id in existing_by_id:
+            return [existing_by_id[matched_station_id]]
+        matches_by_basis = {
+            "exact_source_key": existing_source_key.get(
+                parsed.source_station_key, []
+            ),
+            "canonical_name_and_type": existing_canonical_name_type.get(
+                (parsed.canonical_name.casefold(), parsed.node_type), []
+            ),
+            "canonical_name": existing_canonical_name.get(
+                parsed.canonical_name.casefold(), []
+            ),
+            "alias": existing_alias.get(parsed.canonical_name.casefold(), []),
+        }
+        return list(matches_by_basis.get(match_basis, []))
+
+    @staticmethod
+    def _processing_strategy(
+        *,
+        match_status: str,
+        matches: list[StationDTO],
+        parsed: Any,
+    ) -> tuple[str, list[str]]:
+        if len(matches) == 1 and match_status != "conflict":
+            return "overwrite_existing", [
+                "auto_match",
+                "overwrite_existing",
+                "ignore",
+                "manual_target",
+            ]
+        if len(matches) > 1:
+            normalized_source_name = canonical_station_name(
+                parsed.source_station_value
+            ).casefold()
+            compatible = all(
+                station.node_type == matches[0].node_type
+                and station.path_code.casefold() == matches[0].path_code.casefold()
+                and canonical_station_name(station.name).casefold()
+                == normalized_source_name
+                for station in matches
+            )
+            if compatible:
+                return "merge_duplicates", [
+                    "merge_duplicates",
+                    "overwrite_existing",
+                    "ignore",
+                    "manual_target",
+                ]
+        if match_status == "create":
+            return "create", ["create", "ignore", "manual_target"]
+        return "manual_target", ["manual_target", "ignore"]
 
     def _match_existing(
         self,

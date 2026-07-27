@@ -35,6 +35,9 @@ from netconsole.models.api.rail_transit_base_data import (
     SectionGenerationPreviewRequestDTO,
     SectionPageDTO,
     StationPageDTO,
+    StationConflictPreviewDTO,
+    StationDeletePreflightDTO,
+    StationDeletePreflightRequestDTO,
     StationSourcePreviewDTO,
     StationTemplatePreviewDTO,
     TracksideApDetailDTO,
@@ -157,6 +160,44 @@ def station_source_preview(
     site_id: str = Query(default="", max_length=100),
 ) -> StationSourcePreviewDTO:
     return _query(lambda: _station_source_service(request).preview(_site_id(request, site_id)))
+
+
+@router.post(
+    "/stations/delete-preflight",
+    response_model=StationDeletePreflightDTO,
+    summary="只读预检站点批量删除依赖",
+)
+def station_delete_preflight(
+    request: Request,
+    payload: StationDeletePreflightRequestDTO,
+) -> StationDeletePreflightDTO:
+    try:
+        return _application_service(request).station_delete_preflight(
+            _site_id(request, payload.site_id),
+            payload.base_revision,
+            payload.station_ids,
+        )
+    except RailTransitBaseDataApplicationError as exc:
+        _raise_application_error(exc)
+
+
+@router.get(
+    "/stations/conflicts",
+    response_model=StationConflictPreviewDTO,
+    summary="只读预览站点主线顺序冲突组",
+)
+def station_conflicts(
+    request: Request,
+    site_id: str = Query(default="", max_length=100),
+    base_revision: str = Query(min_length=1, max_length=128),
+) -> StationConflictPreviewDTO:
+    try:
+        return _application_service(request).station_conflict_preview(
+            _site_id(request, site_id),
+            base_revision,
+        )
+    except RailTransitBaseDataApplicationError as exc:
+        _raise_application_error(exc)
 
 
 @router.get("/station-template")

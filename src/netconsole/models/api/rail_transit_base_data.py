@@ -37,6 +37,15 @@ StationSourceMatchStatus = Literal[
     "conflict",
     "manual_review",
 ]
+StationSourceProcessingStrategy = Literal[
+    "auto_match",
+    "overwrite_existing",
+    "create",
+    "ignore",
+    "manual_target",
+    "merge_duplicates",
+]
+StationDeletePreflightStatus = Literal["SAFE_DELETE", "REQUIRES_MERGE", "BLOCKED"]
 SectionKind = Literal["between_stations", "terminal_extension", "depot_connection", "manual", "legacy"]
 SectionDirectionRole = Literal["increasing", "decreasing", "none", "unknown"]
 SectionNodeType = Literal["station", "terminal_endpoint", "legacy", "unknown"]
@@ -264,8 +273,12 @@ class StationSourceCandidateDTO(ApiModel):
     match_status: StationSourceMatchStatus = "create"
     matched_station_id: str = ""
     matched_station_name: str = ""
+    matched_station_ids: list[str] = Field(default_factory=list)
+    matched_station_names: list[str] = Field(default_factory=list)
     match_basis: str = ""
     suggested_action: str = ""
+    processing_strategy: StationSourceProcessingStrategy = "create"
+    processing_options: list[StationSourceProcessingStrategy] = Field(default_factory=list)
     cleanup_name_prefix_recommended: bool = False
     proposed_station: StationDTO
     issues: list[StationSourceIssueDTO] = Field(default_factory=list)
@@ -286,9 +299,82 @@ class StationSourcePreviewDTO(ApiModel):
     conflict_count: int = 0
     manual_review_count: int = 0
     canonical_match_count: int = 0
+    recommended_overwrite_count: int = 0
+    recommended_create_count: int = 0
+    recommended_merge_count: int = 0
+    remaining_manual_count: int = 0
     warning_count: int = 0
     candidates: list[StationSourceCandidateDTO] = Field(default_factory=list)
     issues: list[StationSourceIssueDTO] = Field(default_factory=list)
+
+
+class StationReferenceSummaryDTO(ApiModel):
+    section_start_count: int = 0
+    section_end_count: int = 0
+    ap_count: int = 0
+    relation_count: int = 0
+    endpoint_extension_count: int = 0
+    plan_count: int = 0
+    total_count: int = 0
+
+
+class StationDeletePreflightRequestDTO(ApiModel):
+    site_id: str
+    base_revision: str
+    station_ids: list[str] = Field(default_factory=list, min_length=1, max_length=200)
+
+
+class StationDeletePreflightItemDTO(ApiModel):
+    station_id: str
+    station_name: str
+    code: str = ""
+    sort_order: int | None = None
+    source_kind: StationSourceKind = "legacy_ap_derived"
+    status: StationDeletePreflightStatus
+    reason: str = ""
+    is_manual: bool = False
+    is_line_terminal: bool = False
+    references: StationReferenceSummaryDTO = Field(default_factory=StationReferenceSummaryDTO)
+
+
+class StationDeletePreflightDTO(ApiModel):
+    site_id: str
+    base_revision: str
+    items: list[StationDeletePreflightItemDTO] = Field(default_factory=list)
+    safe_delete_count: int = 0
+    requires_merge_count: int = 0
+    blocked_count: int = 0
+
+
+class StationConflictMemberDTO(ApiModel):
+    station_id: str
+    station_name: str
+    code: str = ""
+    node_uid: str = ""
+    node_type: StationNodeType = "station"
+    path_code: str = "MAIN"
+    sort_order: int | None = None
+    source_kind: StationSourceKind = "legacy_ap_derived"
+
+
+class StationConflictGroupDTO(ApiModel):
+    group_id: str
+    path_code: str
+    sort_order: int
+    stations: list[StationConflictMemberDTO] = Field(default_factory=list)
+    suggested_action: Literal["OVERWRITE", "MERGE", "MANUAL"] = "MANUAL"
+    reason: str = ""
+
+
+class StationConflictPreviewDTO(ApiModel):
+    site_id: str
+    base_revision: str
+    groups: list[StationConflictGroupDTO] = Field(default_factory=list)
+    conflict_group_count: int = 0
+    conflict_station_count: int = 0
+    recommended_overwrite_count: int = 0
+    recommended_merge_count: int = 0
+    remaining_manual_count: int = 0
 
 
 class StationTemplatePreviewRowDTO(ApiModel):

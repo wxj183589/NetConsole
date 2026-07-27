@@ -174,6 +174,7 @@ def test_base_data_api_defaults_to_locked_and_redacts_credentials(tmp_path: Path
         "/api/rail-transit/base-data/import-preview",
         "/api/rail-transit/base-data/station-template-preview",
         "/api/rail-transit/base-data/section-generation-preview",
+        "/api/rail-transit/base-data/stations/delete-preflight",
         "/api/rail-transit/base-data/import-apply",
         "/api/rail-transit/base-data/import-operations/{operation_id}/rollback",
         "/api/rail-transit/base-data/validate",
@@ -369,7 +370,9 @@ def test_station_source_preview_matches_real_style_numbered_batch_without_duplic
         "canonical_name",
         "canonical_name_and_type",
     }
-    assert by_name["小洋江站"]["suggested_action"] == "更新来源信息"
+    assert by_name["小洋江站"]["suggested_action"] == "覆盖现有"
+    assert by_name["小洋江站"]["processing_strategy"] == "overwrite_existing"
+    assert by_name["小洋江站"]["matched_station_ids"]
     assert by_name["云龙车辆段"]["node_type"] == "depot"
     assert by_name["云龙车辆段"]["sort_order"] is None
     assert {item["name"] for item in payload["candidates"]} == set(

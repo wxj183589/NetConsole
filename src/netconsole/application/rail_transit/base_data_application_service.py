@@ -16,6 +16,12 @@ from netconsole.models.api.rail_transit_base_data import (
     BaseDataSaveResultDTO,
     BaseDataValidationIssueDTO,
     BaseDataValidationResultDTO,
+    StationConflictGroupDTO,
+    StationConflictMemberDTO,
+    StationConflictPreviewDTO,
+    StationDeletePreflightDTO,
+    StationDeletePreflightItemDTO,
+    StationReferenceSummaryDTO,
     SectionGenerationPreviewDTO,
     SectionGenerationPreviewRequestDTO,
     SectionDTO,
@@ -38,6 +44,7 @@ from netconsole.services.rail_transit.station_source_utils import (
     DEFAULT_MAIN_PATH_CODE,
     DEFAULT_STATION_SOURCE_GROUP,
     STATION_SOURCE_FIELD,
+    canonical_station_name,
     legacy_turnback_type_for_facilities,
     normalize_track_facilities,
     station_structure_defaults,
@@ -63,6 +70,7 @@ _SECTION_DIRECTIONS = {"increasing", "decreasing", "none", "unknown"}
 _SECTION_NODE_TYPES = {"station", "terminal_endpoint", "legacy", "unknown"}
 _SECTION_SOURCE_KINDS = {"generated", "manual", "template", "legacy_ap_derived"}
 _SECTION_MILEAGE_SOURCES = {"generated", "manual", "unavailable"}
+_STATION_MERGE_MILEAGE_TOLERANCE_M = 250.0
 
 
 class RailTransitBaseDataApplicationError(RuntimeError):
@@ -109,6 +117,160 @@ class RailTransitBaseDataApplicationService:
             write_denial_code=denial_code,
             write_denial_reason=denial_reason,
         )
+
+    def station_delete_preflight(
+        self,
+        site_id: str,
+        base_revision: str,
+        station_ids: Iterable[str],
+    ) -> StationDeletePreflightDTO:
+        site_id = SiteManager(self.paths).validate_site_name(site_id)
+        self._require_revision(site_id, base_revision)
+        by_id = {station.id: station for station in self._all_stations(site_id)}
+        items: list[StationDeletePreflightItemDTO] = []
+        for station_id in dict.fromkeys(str(value) for value in station_ids):
+            station = by_id.get(station_id)
+            if station is None:
+                items.append(
+                    StationDeletePreflightItemDTO(
+                        station_id=station_id,
+                        station_name="",
+                        status="BLOCKED",
+                        reason="站点不存在或已被其他操作修改",
+                    )
+                )
+                continue
+            references = StationReferenceSummaryDTO(
+                **self.repository.station_reference_summary(site_id, station.name)
+            )
+            if station.is_line_terminal:
+                preflight_status = "BLOCKED"
+                reason = "线路端点不能直接批量删除；请先调整端点与延伸区间"
+            elif references.total_count:
+                preflight_status = "REQUIRES_MERGE"
+                reason = "站点仍有正式引用，必须先合并到目标站点或重新指向"
+            else:
+                preflight_status = "SAFE_DELETE"
+                reason = (
+                    "人工维护站点无引用，保存时将再次校验"
+                    if station.source_kind == "manual"
+                    else "无正式引用，可标记为待删除"
+                )
+            items.append(
+                StationDeletePreflightItemDTO(
+                    station_id=station.id,
+                    station_name=station.name,
+                    code=station.code,
+                    sort_order=station.sort_order,
+                    source_kind=station.source_kind,
+                    status=preflight_status,  # type: ignore[arg-type]
+                    reason=reason,
+                    is_manual=station.source_kind == "manual",
+                    is_line_terminal=station.is_line_terminal,
+                    references=references,
+                )
+            )
+        return StationDeletePreflightDTO(
+            site_id=site_id,
+            base_revision=base_revision,
+            items=items,
+            safe_delete_count=sum(item.status == "SAFE_DELETE" for item in items),
+            requires_merge_count=sum(
+                item.status == "REQUIRES_MERGE" for item in items
+            ),
+            blocked_count=sum(item.status == "BLOCKED" for item in items),
+        )
+
+    def station_conflict_preview(
+        self,
+        site_id: str,
+        base_revision: str,
+    ) -> StationConflictPreviewDTO:
+        site_id = SiteManager(self.paths).validate_site_name(site_id)
+        self._require_revision(site_id, base_revision)
+        grouped: dict[tuple[str, int], list[Any]] = {}
+        for station in self._all_stations(site_id):
+            if (
+                not station.participates_in_direction
+                or station.sort_order is None
+            ):
+                continue
+            grouped.setdefault(
+                (station.path_code.casefold(), station.sort_order), []
+            ).append(station)
+        groups: list[StationConflictGroupDTO] = []
+        for (path_key, sort_order), rows in grouped.items():
+            if len(rows) < 2:
+                continue
+            canonical_names = {
+                canonical_station_name(row.name).casefold() for row in rows
+            }
+            compatible = (
+                len(canonical_names) == 1
+                and len({row.node_type for row in rows}) == 1
+                and len({row.path_code.casefold() for row in rows}) == 1
+            )
+            has_formal_target = any(
+                row.source_kind in {"manual", "template"} for row in rows
+            )
+            has_device_source = any(
+                row.source_kind == "device_station_field" for row in rows
+            )
+            if compatible and has_formal_target and has_device_source:
+                suggested_action = "OVERWRITE"
+                reason = "规范名称一致，建议用设备来源覆盖正式目标并保留人工字段"
+            elif compatible:
+                suggested_action = "MERGE"
+                reason = "规范名称及节点类型一致，建议合并重复项"
+            else:
+                suggested_action = "MANUAL"
+                reason = "站点身份或类型不一致，需要人工处理顺序或参与方向"
+            groups.append(
+                StationConflictGroupDTO(
+                    group_id=f"{path_key}:{sort_order}",
+                    path_code=rows[0].path_code,
+                    sort_order=sort_order,
+                    stations=[
+                        StationConflictMemberDTO(
+                            station_id=row.id,
+                            station_name=row.name,
+                            code=row.code,
+                            node_uid=row.node_uid,
+                            node_type=row.node_type,
+                            path_code=row.path_code,
+                            sort_order=row.sort_order,
+                            source_kind=row.source_kind,
+                        )
+                        for row in rows
+                    ],
+                    suggested_action=suggested_action,  # type: ignore[arg-type]
+                    reason=reason,
+                )
+            )
+        groups.sort(key=lambda item: (item.path_code.casefold(), item.sort_order))
+        return StationConflictPreviewDTO(
+            site_id=site_id,
+            base_revision=base_revision,
+            groups=groups,
+            conflict_group_count=len(groups),
+            conflict_station_count=sum(len(group.stations) for group in groups),
+            recommended_overwrite_count=sum(
+                group.suggested_action == "OVERWRITE" for group in groups
+            ),
+            recommended_merge_count=sum(
+                group.suggested_action == "MERGE" for group in groups
+            ),
+            remaining_manual_count=sum(
+                group.suggested_action == "MANUAL" for group in groups
+            ),
+        )
+
+    def _require_revision(self, site_id: str, expected_revision: str) -> None:
+        if self.repository.base_data_revision(site_id) != expected_revision:
+            raise RailTransitBaseDataApplicationError(
+                "BASE_DATA_REVISION_CONFLICT",
+                "基础资料已被其他操作更新，请重新加载",
+            )
 
     def preview_section_generation(
         self,
@@ -235,7 +397,7 @@ class RailTransitBaseDataApplicationService:
         action = change.action
         allowed_actions = {
             "site_metadata": {"update"},
-            "station": {"create", "update", "delete"},
+            "station": {"create", "update", "delete", "replace"},
             "section": {"create", "update", "delete"},
             "trackside_ap": {"create", "update", "delete"},
             "vehicle_mr": {"create", "update", "delete"},
@@ -362,6 +524,12 @@ class RailTransitBaseDataApplicationService:
                 "terminal_extension_distance_m",
             )
         terminal_mileage_text = str(raw.get("terminal_endpoint_mileage_text") or "").strip()
+        merge_source_names = raw.get("merge_source_names") or []
+        merge_source_node_uids = raw.get("merge_source_node_uids") or []
+        if action == "replace" and not isinstance(merge_source_names, list):
+            raise ValueError("合并来源站点格式无效")
+        if action == "replace" and not isinstance(merge_source_node_uids, list):
+            raise ValueError("合并来源节点格式无效")
         return {
             "node_uid": str(raw.get("node_uid") or (uuid4() if action == "create" else "")).strip(),
             "name": name,
@@ -391,6 +559,20 @@ class RailTransitBaseDataApplicationService:
             "enabled": _bool(raw.get("enabled"), default=True),
             "source_kind": _enum(raw.get("source_kind"), _SOURCE_KINDS, "manual", "站点来源类型无效"),
             "remark": str(raw.get("remark") or "").strip(),
+            "merge_source_names": [
+                str(value).strip()
+                for value in merge_source_names
+                if str(value).strip()
+            ]
+            if action == "replace"
+            else [],
+            "merge_source_node_uids": [
+                str(value).strip()
+                for value in merge_source_node_uids
+                if str(value).strip()
+            ]
+            if action == "replace"
+            else [],
         }
 
     @staticmethod
@@ -631,21 +813,28 @@ class RailTransitBaseDataApplicationService:
         station_names = {item.name for item in existing_stations}
         station_by_name = {item.name: item.node_uid for item in existing_stations}
         station_uids = {item.node_uid: item.id for item in existing_stations if item.node_uid}
-        station_codes = {
-            item.code.casefold(): item.id
-            for item in existing_stations
-            if item.code
-        }
-        station_source_keys = {
-            item.source_station_key.casefold(): item.id
-            for item in existing_stations
-            if item.source_station_key
-        }
-        station_orders = {
-            (item.path_code.casefold(), item.sort_order): item.id
-            for item in existing_stations
-            if item.participates_in_direction and item.sort_order is not None
-        }
+        station_codes: dict[str, set[str]] = {}
+        station_source_keys: dict[str, set[str]] = {}
+        station_orders: dict[tuple[str, int], set[str]] = {}
+        for item in existing_stations:
+            if item.code:
+                station_codes.setdefault(item.code.casefold(), set()).add(item.id)
+            if item.source_station_key:
+                station_source_keys.setdefault(
+                    item.source_station_key.casefold(), set()
+                ).add(item.id)
+            if item.participates_in_direction and item.sort_order is not None:
+                station_orders.setdefault(
+                    (item.path_code.casefold(), item.sort_order), set()
+                ).add(item.id)
+
+        def discard_owner(mapping: dict[Any, set[str]], key: Any, owner: str) -> None:
+            owners = mapping.get(key)
+            if not owners:
+                return
+            owners.discard(owner)
+            if not owners:
+                mapping.pop(key, None)
         existing_sections = self._all_sections(site_id)
         section_names = {item.name.casefold(): item.id for item in existing_sections if item.name}
         generation_keys = {
@@ -665,18 +854,211 @@ class RailTransitBaseDataApplicationService:
             if change["entity_type"] == "station":
                 old_name = values.get("old_name")
                 old_station = next((item for item in existing_stations if item.name == old_name), None)
+                merge_source_names = {
+                    str(value).strip()
+                    for value in values.get("merge_source_names") or []
+                    if str(value).strip() and str(value).strip() != old_name
+                }
+                merge_sources = [
+                    item
+                    for item in existing_stations
+                    if item.name in merge_source_names
+                ]
+                if change["action"] == "replace":
+                    if old_station is None:
+                        issues.append(
+                            self._issue(
+                                index,
+                                "STATION_MERGE_TARGET_MISSING",
+                                "合并目标站点不存在",
+                                "old_name",
+                            )
+                        )
+                    if len(merge_sources) != len(merge_source_names):
+                        issues.append(
+                            self._issue(
+                                index,
+                                "STATION_MERGE_SOURCE_MISSING",
+                                "一个或多个合并来源站点不存在",
+                                "merge_source_names",
+                            )
+                        )
+                    for source in merge_sources:
+                        if old_station and source.node_type != old_station.node_type:
+                            issues.append(
+                                self._issue(
+                                    index,
+                                    "STATION_MERGE_NODE_TYPE_CONFLICT",
+                                    f"“{source.name}”与目标节点类型不同",
+                                    "node_type",
+                                )
+                            )
+                        if (
+                            old_station
+                            and source.path_code.casefold()
+                            != old_station.path_code.casefold()
+                        ):
+                            issues.append(
+                                self._issue(
+                                    index,
+                                    "STATION_MERGE_PATH_CONFLICT",
+                                    f"“{source.name}”与目标所属路径不同",
+                                    "path_code",
+                                )
+                            )
+                        if (
+                            old_station
+                            and source.is_line_terminal
+                            != old_station.is_line_terminal
+                        ):
+                            issues.append(
+                                self._issue(
+                                    index,
+                                    "STATION_MERGE_TERMINAL_CONFLICT",
+                                    f"“{source.name}”与目标线路端点属性不同",
+                                    "is_line_terminal",
+                                )
+                            )
+                        if (
+                            old_station
+                            and source.center_mileage_m is not None
+                            and old_station.center_mileage_m is not None
+                            and abs(
+                                source.center_mileage_m
+                                - old_station.center_mileage_m
+                            )
+                            > _STATION_MERGE_MILEAGE_TOLERANCE_M
+                        ):
+                            issues.append(
+                                self._issue(
+                                    index,
+                                    "STATION_MERGE_MILEAGE_CONFLICT",
+                                    f"“{source.name}”与目标中心里程差异超过 {_STATION_MERGE_MILEAGE_TOLERANCE_M:g} 米",
+                                    "center_mileage_text",
+                                )
+                            )
+                    source_uids = {
+                        source.node_uid for source in merge_sources if source.node_uid
+                    }
+                    source_names = {source.name for source in merge_sources}
+                    target_uid = old_station.node_uid if old_station else ""
+                    target_name = old_station.name if old_station else ""
+                    for section in existing_sections:
+                        start_uid = (
+                            target_uid
+                            if section.start_node_uid in source_uids
+                            else section.start_node_uid
+                        )
+                        end_uid = (
+                            target_uid
+                            if section.end_node_uid in source_uids
+                            else section.end_node_uid
+                        )
+                        start_name = (
+                            target_name
+                            if section.start_station in source_names
+                            else section.start_station
+                        )
+                        end_name = (
+                            target_name
+                            if section.end_station in source_names
+                            else section.end_station
+                        )
+                        if (
+                            (start_uid and start_uid == end_uid)
+                            or (start_name and start_name == end_name)
+                        ):
+                            issues.append(
+                                self._issue(
+                                    index,
+                                    "STATION_MERGE_SECTION_SELF_LOOP",
+                                    f"合并后区间“{section.name}”将形成自环",
+                                    "merge_source_names",
+                                )
+                            )
+                    values["merge_source_node_uids"] = [
+                        source.node_uid
+                        for source in merge_sources
+                        if source.node_uid
+                    ]
+                    for source in merge_sources:
+                        station_names.discard(source.name)
+                        station_by_name.pop(source.name, None)
+                        if source.node_uid:
+                            station_uids.pop(source.node_uid, None)
+                        if source.code:
+                            discard_owner(
+                                station_codes,
+                                source.code.casefold(),
+                                source.id,
+                            )
+                        if source.source_station_key:
+                            discard_owner(
+                                station_source_keys,
+                                source.source_station_key.casefold(),
+                                source.id,
+                            )
+                        if (
+                            source.participates_in_direction
+                            and source.sort_order is not None
+                        ):
+                            discard_owner(
+                                station_orders,
+                                (
+                                    source.path_code.casefold(),
+                                    source.sort_order,
+                                ),
+                                source.id,
+                            )
                 if change["action"] == "delete":
+                    if old_station:
+                        references = self.repository.station_reference_summary(
+                            site_id, old_station.name
+                        )
+                        if int(references.get("total_count") or 0):
+                            issues.append(
+                                self._issue(
+                                    index,
+                                    "BASE_DATA_REFERENCE_CONFLICT",
+                                    "站点仍有区间、轨旁 AP、关系或规划引用，必须先合并或重新指向",
+                                    "name",
+                                )
+                            )
+                        if old_station.is_line_terminal:
+                            issues.append(
+                                self._issue(
+                                    index,
+                                    "STATION_DELETE_TERMINAL_BLOCKED",
+                                    "线路端点不能直接删除",
+                                    "is_line_terminal",
+                                )
+                            )
                     station_names.discard(old_name)
                     if old_station:
                         station_by_name.pop(old_station.name, None)
                         if old_station.node_uid:
                             station_uids.pop(old_station.node_uid, None)
                         if old_station.code:
-                            station_codes.pop(old_station.code.casefold(), None)
+                            discard_owner(
+                                station_codes,
+                                old_station.code.casefold(),
+                                old_station.id,
+                            )
                         if old_station.source_station_key:
-                            station_source_keys.pop(old_station.source_station_key.casefold(), None)
+                            discard_owner(
+                                station_source_keys,
+                                old_station.source_station_key.casefold(),
+                                old_station.id,
+                            )
                         if old_station.participates_in_direction and old_station.sort_order is not None:
-                            station_orders.pop((old_station.path_code.casefold(), old_station.sort_order), None)
+                            discard_owner(
+                                station_orders,
+                                (
+                                    old_station.path_code.casefold(),
+                                    old_station.sort_order,
+                                ),
+                                old_station.id,
+                            )
                     continue
                 name = values["name"]
                 if old_station:
@@ -686,11 +1068,26 @@ class RailTransitBaseDataApplicationService:
                     if old_station.node_uid:
                         station_uids.pop(old_station.node_uid, None)
                     if old_station.code:
-                        station_codes.pop(old_station.code.casefold(), None)
+                        discard_owner(
+                            station_codes,
+                            old_station.code.casefold(),
+                            old_station.id,
+                        )
                     if old_station.source_station_key:
-                        station_source_keys.pop(old_station.source_station_key.casefold(), None)
+                        discard_owner(
+                            station_source_keys,
+                            old_station.source_station_key.casefold(),
+                            old_station.id,
+                        )
                     if old_station.participates_in_direction and old_station.sort_order is not None:
-                        station_orders.pop((old_station.path_code.casefold(), old_station.sort_order), None)
+                        discard_owner(
+                            station_orders,
+                            (
+                                old_station.path_code.casefold(),
+                                old_station.sort_order,
+                            ),
+                            old_station.id,
+                        )
                 if name in station_names and (change["action"] == "create" or name != old_name):
                     issues.append(self._issue(index, "STATION_DUPLICATE", "站点名称已存在", "name"))
                 station_names.discard(old_name)
@@ -704,15 +1101,21 @@ class RailTransitBaseDataApplicationService:
                     station_uids[node_uid] = str(change.get("entity_id") or f"new:{index}")
                     station_by_name[name] = node_uid
                 code = str(values.get("code") or "").casefold()
-                if code and code in station_codes and station_codes[code] != change.get("entity_id"):
+                entity_id = str(change.get("entity_id") or f"new:{index}")
+                if code and any(
+                    owner != entity_id for owner in station_codes.get(code, set())
+                ):
                     issues.append(self._issue(index, "STATION_CODE_DUPLICATE", "站点编码已存在", "code"))
                 if code:
-                    station_codes[code] = str(change.get("entity_id") or f"new:{index}")
+                    station_codes.setdefault(code, set()).add(entity_id)
                 source_key = str(values.get("source_station_key") or "").casefold()
-                if source_key and source_key in station_source_keys and station_source_keys[source_key] != change.get("entity_id"):
+                if source_key and any(
+                    owner != entity_id
+                    for owner in station_source_keys.get(source_key, set())
+                ):
                     issues.append(self._issue(index, "station_source_ambiguous_match", "来源键不能指向多个正式站点", "source_station_key"))
                 if source_key:
-                    station_source_keys[source_key] = str(change.get("entity_id") or f"new:{index}")
+                    station_source_keys.setdefault(source_key, set()).add(entity_id)
                 participates = bool(values.get("participates_in_direction"))
                 path_code = str(values.get("path_code") or "").strip()
                 sort_order = values.get("sort_order")
@@ -722,9 +1125,12 @@ class RailTransitBaseDataApplicationService:
                     issues.append(self._issue(index, "station_order_missing", "参与方向判断的节点必须填写主线顺序", "sort_order"))
                 if participates and sort_order is not None:
                     order_key = (path_code.casefold(), int(sort_order))
-                    if order_key in station_orders and station_orders[order_key] != change.get("entity_id"):
+                    if any(
+                        owner != entity_id
+                        for owner in station_orders.get(order_key, set())
+                    ):
                         issues.append(self._issue(index, "station_order_duplicate", "同一路径内参与方向判断的主线顺序重复", "sort_order"))
-                    station_orders[order_key] = str(change.get("entity_id") or f"new:{index}")
+                    station_orders.setdefault(order_key, set()).add(entity_id)
                 facilities = set(values.get("track_facilities") or [])
                 turnback_facilities = {"turnback_track", "crossover", "storage_track", "tail_track", "loop"}
                 if not values.get("turnback_capable") and facilities & turnback_facilities:

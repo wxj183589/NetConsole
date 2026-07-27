@@ -1,11 +1,16 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Connection, Download, Plus, Refresh, UploadFilled } from '@element-plus/icons-vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import { downloadBackendResource } from '../../platform/runtime'
-import { stationTemplateDownloadRequest, stationTemplateExportDownloadRequest } from '../../api/railTransitBaseData'
+import {
+  getStationConflictPreview,
+  preflightStationDeletion,
+  stationTemplateDownloadRequest,
+  stationTemplateExportDownloadRequest,
+} from '../../api/railTransitBaseData'
 import {
   exportTracksideApBase,
   exportTracksideApRenameCommands,
@@ -35,7 +40,10 @@ import type {
   Section,
   SectionGenerationPreviewItem,
   Station,
+  StationConflictGroup,
+  StationDeletePreflightItem,
   StationSourceCandidate,
+  StationSourceProcessingStrategy,
   StationTemplateSectionPreviewRow,
   StationTemplatePreviewRow,
   TracksideAp,
@@ -43,6 +51,16 @@ import type {
   VehicleMr,
 } from '../../types/railTransitBaseData'
 import type { TracksideApPlanRow, TracksideApTask } from '../../types/tracksideApBusiness'
+import {
+  groupStationOrderConflicts,
+  MANUAL_STATION_FIELDS,
+  overwriteStationFromSource,
+  overwriteStationFromStation,
+  stationOverwriteDiffs,
+  stationOverwriteDiffsFromStation,
+  stationCombinationErrors,
+  type StationFieldDiff,
+} from './stationConflictDraft'
 
 const store = useRailTransitBaseDataStore()
 const route = useRoute()
@@ -69,9 +87,22 @@ interface BaseDataDraft {
   aps: TracksideAp[]
   mrs: VehicleMr[]
 }
+interface StationReferencePatch {
+  entityType: 'section' | 'trackside_ap'
+  entityId: string
+  field: string
+  before: unknown
+  after: unknown
+}
+interface StationCombinationDiff {
+  field: string
+  current: unknown
+  proposed: unknown
+}
 const editState = ref<BaseDataEditState>('LOCKED')
 const pendingChanges = ref<Record<string, BaseDataChange>>({})
 const baselines = new Map<string, Record<string, unknown>>()
+const stationReferencePatches = new Map<string, StationReferencePatch[]>()
 const serverSnapshot = ref<BaseDataDraft | null>(null)
 const editingDraft = ref<BaseDataDraft | null>(null)
 const planningRows = ref<TracksideApPlanRow[]>([])
@@ -107,6 +138,30 @@ const apBaseTaskStorageKey = 'netconsole.trackside-ap-base.last-task'
 const apTaskTerminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 let apBasePollTimer: number | undefined
 const selectedStationSourceIds = ref<string[]>([])
+const stationSourceStrategies = ref<Record<string, StationSourceProcessingStrategy>>({})
+const stationSourceTargets = ref<Record<string, string>>({})
+const stationTable = ref<{ clearSelection: () => void; toggleRowSelection: (row: Station, selected?: boolean) => void } | null>(null)
+const selectedStationIds = ref<string[]>([])
+const stationDeletePreflightVisible = ref(false)
+const stationDeletePreflightItems = ref<StationDeletePreflightItem[]>([])
+const stationDeletePreflightLoading = ref(false)
+const stationConflictDrawerVisible = ref(false)
+const stationConflictLoading = ref(false)
+const backendStationConflictGroups = ref<StationConflictGroup[]>([])
+const stationMergeDialogVisible = ref(false)
+const stationMergeTargetId = ref('')
+const stationMergeMemberIds = ref<string[]>([])
+const stationMergeNameSourceId = ref('')
+const stationMergeCodeSourceId = ref('')
+const stationMergeOrderSourceId = ref('')
+const stationMergeOrderConfirmed = ref(false)
+const stationMergeRemarks = ref(false)
+const stationMergeSourceInfo = ref(true)
+const stationOverwriteDialogVisible = ref(false)
+const stationOverwriteCandidateId = ref('')
+const stationOverwriteSourceStationId = ref('')
+const stationOverwriteTargetId = ref('')
+const stationOverwriteManualFields = ref<string[]>([])
 const selectedTemplateRows = ref<number[]>([])
 const selectedTemplateSectionRows = ref<number[]>([])
 const selectedSectionGenerationIds = ref<string[]>([])
@@ -121,6 +176,54 @@ const previewBlocked = computed(() => {
   return Boolean(summary && (summary.blocking_count > 0 || summary.conflict_count > 0))
 })
 const stationSourceCandidates = computed(() => store.stationSourcePreview?.candidates || [])
+const localStationConflictGroups = computed(() => groupStationOrderConflicts(stationRows.value))
+const stationConflictGroups = computed(() => editingDraft.value
+  ? localStationConflictGroups.value
+  : backendStationConflictGroups.value.length
+    ? backendStationConflictGroups.value
+    : localStationConflictGroups.value)
+const nonOrderSaveIssues = computed(() => saveIssues.value.filter((issue) => issue.code !== 'station_order_duplicate'))
+const selectedStations = computed(() => stationRows.value.filter((station) => selectedStationIds.value.includes(station.id)))
+const stationMergeMembers = computed(() => stationRows.value.filter((station) => stationMergeMemberIds.value.includes(station.id)))
+const stationMergeTarget = computed(() => stationMergeMembers.value.find((station) => station.id === stationMergeTargetId.value) || null)
+const stationMergeSources = computed(() => stationMergeMembers.value.filter((station) => station.id !== stationMergeTargetId.value))
+const stationMergeOrderConflict = computed(() => new Set(stationMergeMembers.value.map((station) => station.sort_order)).size > 1)
+const stationCombinationDiffRows = computed<StationCombinationDiff[]>(() => {
+  const target = stationMergeTarget.value
+  if (!target) return []
+  const nameSource = stationMergeMembers.value.find((row) => row.id === stationMergeNameSourceId.value) || target
+  const codeSource = stationMergeMembers.value.find((row) => row.id === stationMergeCodeSourceId.value) || target
+  const orderSource = stationMergeMembers.value.find((row) => row.id === stationMergeOrderSourceId.value) || target
+  const proposedRemark = stationMergeRemarks.value
+    ? [...new Set(stationMergeMembers.value.map((row) => row.remark.trim()).filter(Boolean))].join('；')
+    : target.remark
+  return [
+    { field: '名称', current: target.name, proposed: nameSource.name },
+    { field: '节点编码', current: target.code, proposed: codeSource.code },
+    { field: '主线顺序', current: target.sort_order, proposed: orderSource.sort_order },
+    { field: '人工备注', current: target.remark, proposed: proposedRemark },
+    { field: '保留身份', current: `${target.id} / ${target.node_uid}`, proposed: `${target.id} / ${target.node_uid}` },
+  ]
+})
+const stationMergeErrors = computed(() => {
+  if (!stationMergeTarget.value) return ['请选择保留目标站点']
+  const errors = stationCombinationErrors(stationMergeTarget.value, stationMergeSources.value)
+  const selfLoop = stationCombinationSelfLoopError(stationMergeTarget.value, stationMergeSources.value)
+  if (selfLoop) errors.push(selfLoop)
+  if (stationMergeOrderConflict.value && !stationMergeOrderConfirmed.value) {
+    errors.push('来源站点主线顺序不同，请明确选择保留的主线顺序')
+  }
+  return errors
+})
+const stationOverwriteCandidate = computed(() => stationSourceCandidates.value.find((candidate) => candidate.candidate_id === stationOverwriteCandidateId.value) || null)
+const stationOverwriteSourceStation = computed(() => stationRows.value.find((station) => station.id === stationOverwriteSourceStationId.value) || null)
+const stationOverwriteTarget = computed(() => stationRows.value.find((station) => station.id === stationOverwriteTargetId.value) || null)
+const stationOverwriteDiffRows = computed<StationFieldDiff[]>(() => {
+  if (!stationOverwriteTarget.value) return []
+  if (stationOverwriteCandidate.value) return stationOverwriteDiffs(stationOverwriteTarget.value, stationOverwriteCandidate.value)
+  if (stationOverwriteSourceStation.value) return stationOverwriteDiffsFromStation(stationOverwriteTarget.value, stationOverwriteSourceStation.value)
+  return []
+})
 const stationTemplateRows = computed(() => store.stationTemplatePreview?.rows || [])
 const stationTemplateSectionRows = computed(() => store.stationTemplatePreview?.section_rows || [])
 const sectionGenerationRows = computed(() => store.sectionGenerationPreview?.generated_sections || [])
@@ -293,6 +396,7 @@ const stationSourceColumns: NcTableColumn<StationSourceCandidate>[] = [
   { key: 'source_device_count', label: '来源设备数', valueType: 'number', width: 120 },
   { key: 'matched_station_name', label: '现有站点', valueType: 'name', minWidth: 150, displayValue: (row) => display(row.matched_station_name) },
   { key: 'match_status', label: '匹配依据', valueType: 'status', width: 150, displayValue: (row) => sourceMatchLabel(row.match_status) },
+  { key: 'processing_strategy', label: '处理方式', valueType: 'actions', minWidth: 170, hideable: false },
   { key: 'suggested_action', label: '建议动作', width: 130 },
   { key: 'issues', label: '问题', valueType: 'description', minWidth: 240, alignmentReason: 'long-text', displayValue: (row) => row.issues.map((item) => item.message).join('；') || (row.node_type === 'station' ? '--' : '未加入主线路径') },
 ]
@@ -359,10 +463,11 @@ const relationColumns: NcTableColumn<Relation>[] = [
   { key: 'updated_at', label: '最近更新', valueType: 'datetime', minWidth: 180 },
 ]
 
-const stationEditColumns: NcTableColumn<Station>[] = [
+const stationEditColumns = computed<NcTableColumn<Station>[]>(() => [
+  ...(locked.value ? [] : [{ key: 'selection', label: '选择', type: 'selection', width: 48, hideable: false } as NcTableColumn<Station>]),
   ...stationColumns,
   { key: 'edit_actions', label: '操作', valueType: 'actions', width: 90, fixed: 'right', hideable: false },
-]
+])
 const sectionEditColumns: NcTableColumn<Section>[] = [
   ...sectionColumns,
   { key: 'edit_actions', label: '操作', valueType: 'actions', width: 160, fixed: 'right', hideable: false },
@@ -371,6 +476,21 @@ const mrEditColumns: NcTableColumn<VehicleMr>[] = [
   ...mrColumns,
   { key: 'edit_actions', label: '维护', valueType: 'actions', width: 90, fixed: 'right', hideable: false },
 ]
+
+watch(stationRows, async (rows) => {
+  const valid = new Set(rows.map((row) => row.id))
+  selectedStationIds.value = selectedStationIds.value.filter((id) => valid.has(id))
+  await nextTick()
+  for (const row of rows) {
+    if (selectedStationIds.value.includes(row.id)) {
+      stationTable.value?.toggleRowSelection?.(row, true)
+    }
+  }
+})
+
+watch(locked, (value) => {
+  if (value) clearStationSelection()
+})
 
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibility)
@@ -436,9 +556,11 @@ async function loadConsistentEditSnapshot() {
 function lockClean(): void {
   editState.value = 'LOCKED'
   baselines.clear()
+  stationReferencePatches.clear()
   fieldErrors.value = {}
   serverSnapshot.value = null
   editingDraft.value = null
+  clearStationSelection()
   store.startPolling()
 }
 
@@ -464,8 +586,10 @@ async function discardChanges(): Promise<void> {
   fieldErrors.value = {}
   editState.value = 'LOCKED'
   baselines.clear()
+  stationReferencePatches.clear()
   serverSnapshot.value = null
   editingDraft.value = null
+  clearStationSelection()
   await Promise.all([
     store.manualRefresh(),
     store.refreshEditSession(),
@@ -519,6 +643,7 @@ async function saveAllChanges(): Promise<boolean> {
     saveIssues.value = []
     fieldErrors.value = {}
     baselines.clear()
+    stationReferencePatches.clear()
     await Promise.all([store.manualRefresh(), planningTab.value?.reload(true)])
     editState.value = 'LOCKED'
     serverSnapshot.value = null
@@ -549,6 +674,7 @@ async function cancelEditing(): Promise<void> {
 
 function captureBaselines(): void {
   baselines.clear()
+  stationReferencePatches.clear()
   const snapshot: BaseDataDraft = {
     metadata: {
       line_name: store.summary?.line_name || '',
@@ -576,6 +702,7 @@ function captureBaselines(): void {
   for (const row of serverSnapshot.value.sections) baselines.set(changeKey('section', row.id), sectionValues(row))
   for (const row of serverSnapshot.value.aps) baselines.set(changeKey('trackside_ap', row.id), apValues(row))
   for (const row of serverSnapshot.value.mrs) baselines.set(changeKey('vehicle_mr', row.id), mrValues(row))
+  clearStationSelection()
 }
 
 function handlePlanningChange(rows: TracksideApPlanRow[], changed: boolean): void {
@@ -686,12 +813,439 @@ async function deleteEntity(entityType: BaseDataChange['entity_type'], row: Stat
     updateEditState()
     return
   }
+  if (entityType === 'station') {
+    await openStationDeletePreflight([row.id])
+    return
+  }
   const accepted = await confirm({ type: 'DANGER', title: '标记删除', message: '该数据将在点击“保存”后删除；存在业务引用时后端会拒绝。是否继续？', confirmText: '标记删除' })
   if (!accepted) return
   const baseline = baselines.get(key) || valuesFor(entityType, row)
   pendingChanges.value[key] = { entity_type: entityType, action: 'delete', entity_id: row.id, values: withOriginalIdentity(entityType, baseline, baseline) }
   pendingChanges.value = { ...pendingChanges.value }
   updateEditState()
+}
+
+function handleStationSelection(rows: Station[]): void {
+  if (locked.value) {
+    selectedStationIds.value = []
+    return
+  }
+  selectedStationIds.value = rows.map((row) => row.id)
+}
+
+function clearStationSelection(): void {
+  selectedStationIds.value = []
+  stationTable.value?.clearSelection?.()
+}
+
+async function selectConflictStations(): Promise<void> {
+  if (locked.value) return
+  const ids = new Set(localStationConflictGroups.value.flatMap((group) => group.stations.map((station) => station.station_id)))
+  selectedStationIds.value = [...ids]
+  await nextTick()
+  stationTable.value?.clearSelection?.()
+  for (const row of stationRows.value) {
+    if (ids.has(row.id)) stationTable.value?.toggleRowSelection?.(row, true)
+  }
+}
+
+async function deleteSelectedStations(): Promise<void> {
+  if (locked.value || !selectedStationIds.value.length) return
+  await openStationDeletePreflight(selectedStationIds.value)
+}
+
+async function openStationDeletePreflight(stationIds: string[]): Promise<void> {
+  if (locked.value || !editingDraft.value || !store.editSession) return
+  const selected = stationRows.value.filter((row) => stationIds.includes(row.id))
+  const newRows = selected.filter((row) => row.id.startsWith('new:'))
+  const localItems: StationDeletePreflightItem[] = newRows.map((row) => {
+    const sectionStartCount = editingDraft.value?.sections.filter((item) => item.start_station === row.name).length || 0
+    const sectionEndCount = editingDraft.value?.sections.filter((item) => item.end_station === row.name).length || 0
+    const apCount = editingDraft.value?.aps.filter((item) => item.station === row.name).length || 0
+    const planCount = planningRows.value.filter((item) => item.station_name === row.name).length
+    const totalCount = sectionStartCount + sectionEndCount + apCount + planCount
+    const status: StationDeletePreflightItem['status'] = row.is_line_terminal ? 'BLOCKED' : totalCount ? 'REQUIRES_MERGE' : 'SAFE_DELETE'
+    return {
+      station_id: row.id,
+      station_name: row.name,
+      code: row.code,
+      sort_order: row.sort_order,
+      source_kind: row.source_kind,
+      status,
+      reason: row.is_line_terminal
+        ? '线路端点不能直接删除'
+        : totalCount
+          ? '该未保存站点已被当前草稿引用，必须先合并或重新指向'
+          : '该站点尚未保存，确认后只从当前草稿移除',
+      is_manual: row.source_kind === 'manual',
+      is_line_terminal: row.is_line_terminal,
+      references: {
+        section_start_count: sectionStartCount,
+        section_end_count: sectionEndCount,
+        ap_count: apCount,
+        relation_count: 0,
+        endpoint_extension_count: editingDraft.value?.sections.filter((item) => item.section_kind === 'terminal_extension' && [item.start_station, item.end_station].includes(row.name)).length || 0,
+        plan_count: planCount,
+        total_count: totalCount,
+      },
+    }
+  })
+  const persistedIds = selected.filter((row) => !row.id.startsWith('new:')).map((row) => row.id)
+  if (!persistedIds.length) {
+    stationDeletePreflightItems.value = localItems
+    stationDeletePreflightVisible.value = true
+    return
+  }
+  stationDeletePreflightLoading.value = true
+  try {
+    const result = await preflightStationDeletion({
+      site_id: store.editSession.site_id,
+      base_revision: store.editSession.base_revision,
+      station_ids: persistedIds,
+    })
+    stationDeletePreflightItems.value = [...localItems, ...result.items]
+    stationDeletePreflightVisible.value = true
+  } catch (cause) {
+    ElMessage.error(message(cause, '站点删除依赖预检失败'))
+  } finally {
+    stationDeletePreflightLoading.value = false
+  }
+}
+
+function markStationDelete(row: Station): void {
+  const key = changeKey('station', row.id)
+  const baseline = baselines.get(key) || stationValues(row)
+  pendingChanges.value[key] = {
+    entity_type: 'station',
+    action: 'delete',
+    entity_id: row.id,
+    values: withOriginalIdentity('station', baseline, baseline),
+  }
+}
+
+function applySafeStationDeletes(): void {
+  if (!editingDraft.value) return
+  const safeIds = new Set(stationDeletePreflightItems.value.filter((item) => item.status === 'SAFE_DELETE').map((item) => item.station_id))
+  if (!safeIds.size) {
+    ElMessage.warning('没有可安全直接删除的站点；请先合并或重新指向')
+    return
+  }
+  for (const row of editingDraft.value.stations) {
+    if (!safeIds.has(row.id)) continue
+    if (row.id.startsWith('new:')) {
+      delete pendingChanges.value[changeKey('station', row.id)]
+      baselines.delete(changeKey('station', row.id))
+      removeDraftRow('station', row.id)
+    } else {
+      markStationDelete(row)
+    }
+  }
+  pendingChanges.value = { ...pendingChanges.value }
+  stationDeletePreflightVisible.value = false
+  updateEditState()
+  ElMessage.success(`已将 ${safeIds.size} 个无引用站点标记为待删除；尚未写入数据库`)
+}
+
+function undoSelectedStationChanges(): void {
+  if (!editingDraft.value || locked.value) return
+  const ids = new Set(selectedStationIds.value)
+  for (const id of ids) {
+    const key = changeKey('station', id)
+    const change = pendingChanges.value[key]
+    if (!change) continue
+    if (id.startsWith('new:')) {
+      removeDraftRow('station', id)
+      baselines.delete(key)
+      delete pendingChanges.value[key]
+      continue
+    }
+    const baseline = baselines.get(key)
+    const current = editingDraft.value.stations.find((row) => row.id === id)
+    if (baseline && current) Object.assign(current, baseline)
+    if (change.action === 'replace') {
+      const sourceIds = (change.values.merge_source_ids as string[] | undefined) || []
+      for (const sourceId of sourceIds) {
+        if (editingDraft.value.stations.some((row) => row.id === sourceId)) continue
+        const original = serverSnapshot.value?.stations.find((row) => row.id === sourceId)
+        if (original) editingDraft.value.stations.push(cloneDto(original))
+      }
+      restoreStationReferencePatches(id)
+    }
+    delete pendingChanges.value[key]
+  }
+  pendingChanges.value = { ...pendingChanges.value }
+  updateEditState()
+}
+
+function recordStationReferencePatch(
+  stationId: string,
+  entityType: StationReferencePatch['entityType'],
+  entityId: string,
+  row: Record<string, unknown>,
+  field: string,
+  nextValue: unknown,
+): void {
+  const before = row[field]
+  if (JSON.stringify(before) === JSON.stringify(nextValue)) return
+  const patches = stationReferencePatches.get(stationId) || []
+  const existing = patches.find((patch) => patch.entityType === entityType && patch.entityId === entityId && patch.field === field)
+  if (existing) {
+    existing.after = cloneDto(nextValue)
+  } else {
+    patches.push({
+      entityType,
+      entityId,
+      field,
+      before: cloneDto(before),
+      after: cloneDto(nextValue),
+    })
+  }
+  stationReferencePatches.set(stationId, patches)
+  row[field] = nextValue
+}
+
+function restoreStationReferencePatches(stationId: string): void {
+  if (!editingDraft.value) return
+  for (const patch of stationReferencePatches.get(stationId) || []) {
+    const rows = patch.entityType === 'section' ? editingDraft.value.sections : editingDraft.value.aps
+    const row = rows.find((item) => item.id === patch.entityId) as unknown as Record<string, unknown> | undefined
+    if (!row || JSON.stringify(row[patch.field]) !== JSON.stringify(patch.after)) continue
+    row[patch.field] = cloneDto(patch.before)
+    const key = changeKey(patch.entityType, patch.entityId)
+    if (pendingChanges.value[key]) {
+      if (patch.entityType === 'section') markSection(row as unknown as Section)
+      else markAp(row as unknown as TracksideAp)
+    }
+  }
+  stationReferencePatches.delete(stationId)
+}
+
+function openStationCombination(memberIds = selectedStationIds.value): void {
+  if (locked.value) return
+  const members = stationRows.value.filter((station) => memberIds.includes(station.id))
+  if (members.length < 2) {
+    ElMessage.warning('至少选择两个站点才能合并')
+    return
+  }
+  const target = members.find((station) => !station.id.startsWith('new:') && ['manual', 'template'].includes(station.source_kind))
+    || members.find((station) => !station.id.startsWith('new:'))
+  if (!target) {
+    ElMessage.warning('合并必须保留一个已有正式站点的 id 和 node_uid')
+    return
+  }
+  stationMergeMemberIds.value = members.map((station) => station.id)
+  stationMergeTargetId.value = target.id
+  stationMergeNameSourceId.value = target.id
+  stationMergeCodeSourceId.value = target.id
+  stationMergeOrderSourceId.value = target.id
+  stationMergeOrderConfirmed.value = false
+  stationMergeRemarks.value = false
+  stationMergeSourceInfo.value = true
+  stationMergeDialogVisible.value = true
+}
+
+function handleStationCombinationTargetChange(): void {
+  stationMergeOrderSourceId.value = stationMergeTargetId.value
+  stationMergeOrderConfirmed.value = false
+}
+
+function handleStationCombinationOrderSourceChange(): void {
+  stationMergeOrderConfirmed.value = true
+}
+
+function stationCombinationSelfLoopError(target: Station, sources: Station[]): string {
+  if (!editingDraft.value) return ''
+  const sourceNames = new Set(sources.map((source) => source.name))
+  const sourceUids = new Set(sources.map((source) => source.node_uid).filter(Boolean))
+  const section = editingDraft.value.sections.find((row) => {
+    const startName = sourceNames.has(row.start_station) ? target.name : row.start_station
+    const endName = sourceNames.has(row.end_station) ? target.name : row.end_station
+    const startUid = sourceUids.has(row.start_node_uid) ? target.node_uid : row.start_node_uid
+    const endUid = sourceUids.has(row.end_node_uid) ? target.node_uid : row.end_node_uid
+    return (startUid && startUid === endUid) || (startName && startName === endName)
+  })
+  return section ? `合并后区间“${section.name}”将形成自环` : ''
+}
+
+function applyStationCombination(): void {
+  if (!editingDraft.value || !stationMergeTarget.value) return
+  const target = stationMergeTarget.value
+  const sources = stationMergeSources.value
+  const errors = [...stationMergeErrors.value]
+  if (errors.length) {
+    ElMessage.error(errors[0])
+    return
+  }
+  const nameSource = stationMergeMembers.value.find((row) => row.id === stationMergeNameSourceId.value) || target
+  const codeSource = stationMergeMembers.value.find((row) => row.id === stationMergeCodeSourceId.value) || target
+  const orderSource = stationMergeMembers.value.find((row) => row.id === stationMergeOrderSourceId.value) || target
+  const merged = cloneDto(target)
+  merged.name = nameSource.name
+  merged.code = codeSource.code
+  merged.sort_order = orderSource.sort_order
+  if (stationMergeSourceInfo.value) {
+    const source = [target, ...sources].find((row) => row.source_kind === 'device_station_field' && row.source_station_key)
+    if (source) {
+      merged.source_station_value = source.source_station_value
+      merged.source_station_key = source.source_station_key
+      merged.source_kind = 'device_station_field'
+      merged.source_device_count = source.source_device_count
+      merged.source_sync_status = 'matched'
+      merged.source_last_seen_at = source.source_last_seen_at
+    }
+  }
+  if (stationMergeRemarks.value) {
+    merged.remark = [...new Set([target, ...sources].map((row) => row.remark.trim()).filter(Boolean))].join('；')
+  }
+  applyStationCombinationDraft(target, sources, merged)
+  stationMergeDialogVisible.value = false
+  ElMessage.success(`已在草稿中合并 ${sources.length} 个重复站点；保存前仍会再次校验`)
+}
+
+function applyStationCombinationDraft(target: Station, sources: Station[], merged: Station): void {
+  if (!editingDraft.value) return
+  const sourceNames = new Set(sources.map((source) => source.name))
+  if (target.name !== merged.name) sourceNames.add(target.name)
+  const sourceUids = new Set(sources.map((source) => source.node_uid).filter(Boolean))
+  for (const section of editingDraft.value.sections) {
+    const row = section as unknown as Record<string, unknown>
+    if (sourceNames.has(section.start_station)) recordStationReferencePatch(target.id, 'section', section.id, row, 'start_station', merged.name)
+    if (sourceNames.has(section.end_station)) recordStationReferencePatch(target.id, 'section', section.id, row, 'end_station', merged.name)
+    if (sourceUids.has(section.start_node_uid)) recordStationReferencePatch(target.id, 'section', section.id, row, 'start_node_uid', target.node_uid)
+    if (sourceUids.has(section.end_node_uid)) recordStationReferencePatch(target.id, 'section', section.id, row, 'end_node_uid', target.node_uid)
+    if (pendingChanges.value[changeKey('section', section.id)]) markSection(section)
+  }
+  for (const ap of editingDraft.value.aps) {
+    const row = ap as unknown as Record<string, unknown>
+    if (sourceNames.has(ap.station)) recordStationReferencePatch(target.id, 'trackside_ap', ap.id, row, 'station', merged.name)
+    if (sourceNames.has(ap.section_start_station)) recordStationReferencePatch(target.id, 'trackside_ap', ap.id, row, 'section_start_station', merged.name)
+    if (sourceNames.has(ap.section_end_station)) recordStationReferencePatch(target.id, 'trackside_ap', ap.id, row, 'section_end_station', merged.name)
+    if (pendingChanges.value[changeKey('trackside_ap', ap.id)]) markAp(ap)
+  }
+  const targetIndex = editingDraft.value.stations.findIndex((row) => row.id === target.id)
+  editingDraft.value.stations.splice(targetIndex, 1, merged)
+  editingDraft.value.stations = editingDraft.value.stations.filter((row) => !sources.some((source) => source.id === row.id))
+  for (const source of sources) delete pendingChanges.value[changeKey('station', source.id)]
+  const persistedSources = sources.filter((source) => !source.id.startsWith('new:'))
+  const targetBaseline = baselines.get(changeKey('station', target.id)) || stationValues(target)
+  const existingChange = pendingChanges.value[changeKey('station', target.id)]
+  const existingSourceNames = (existingChange?.values.merge_source_names as string[] | undefined) || []
+  const existingSourceUids = (existingChange?.values.merge_source_node_uids as string[] | undefined) || []
+  const existingSourceIds = (existingChange?.values.merge_source_ids as string[] | undefined) || []
+  const values = {
+    ...stationValues(merged),
+    old_name: targetBaseline.name,
+    merge_source_names: [...new Set([
+      ...existingSourceNames,
+      ...persistedSources.map((source) => (baselines.get(changeKey('station', source.id))?.name as string) || source.name),
+    ])],
+    merge_source_node_uids: [...new Set([
+      ...existingSourceUids,
+      ...persistedSources.map((source) => source.node_uid).filter(Boolean),
+    ])],
+    merge_source_ids: [...new Set([
+      ...existingSourceIds,
+      ...persistedSources.map((source) => source.id),
+    ])],
+  }
+  pendingChanges.value[changeKey('station', target.id)] = {
+    entity_type: 'station',
+    action: persistedSources.length ? 'replace' : 'update',
+    entity_id: target.id,
+    values,
+  }
+  pendingChanges.value = { ...pendingChanges.value }
+  selectedStationIds.value = [target.id]
+  updateEditState()
+}
+
+function openStationTableOverwrite(): void {
+  if (locked.value || selectedStations.value.length !== 2) {
+    ElMessage.warning('覆盖更新需要选择一个设备来源站点和一个正式目标站点')
+    return
+  }
+  const source = selectedStations.value.find((station) => station.source_kind === 'device_station_field')
+  const target = selectedStations.value.find((station) => station.id !== source?.id && !station.id.startsWith('new:'))
+  if (!source || !target) {
+    ElMessage.warning('请选择一个设备来源站点和一个已有正式目标站点')
+    return
+  }
+  openStationOverwrite('', target.id, source.id)
+}
+
+function openStationOverwrite(candidateId: string, targetId: string, sourceStationId = ''): void {
+  stationOverwriteCandidateId.value = candidateId
+  stationOverwriteSourceStationId.value = sourceStationId
+  stationOverwriteTargetId.value = targetId
+  stationOverwriteManualFields.value = []
+  stationOverwriteDialogVisible.value = true
+}
+
+function applyStationOverwrite(): void {
+  if (!editingDraft.value || !stationOverwriteTarget.value) return
+  const target = stationOverwriteTarget.value
+  const manualFields = stationOverwriteManualFields.value as (keyof Station)[]
+  const sourceStation = stationOverwriteSourceStation.value
+  const overwritten = stationOverwriteCandidate.value
+    ? overwriteStationFromSource(target, stationOverwriteCandidate.value, manualFields)
+    : sourceStation
+    ? overwriteStationFromStation(target, sourceStation, manualFields)
+    : null
+  if (!overwritten) return
+  const sources = sourceStation && sourceStation.id !== target.id ? [sourceStation] : []
+  const selfLoop = stationCombinationSelfLoopError(target, sources)
+  if (selfLoop) {
+    ElMessage.error(selfLoop)
+    return
+  }
+  applyStationCombinationDraft(target, sources, overwritten)
+  stationOverwriteDialogVisible.value = false
+  ElMessage.success('来源字段已覆盖到正式目标草稿，目标 id、node_uid 与人工字段保持不变')
+}
+
+async function openStationConflictDrawer(): Promise<void> {
+  stationConflictDrawerVisible.value = true
+  backendStationConflictGroups.value = []
+  if (!store.editSession) return
+  stationConflictLoading.value = true
+  try {
+    const preview = await getStationConflictPreview(store.editSession.base_revision)
+    backendStationConflictGroups.value = preview.groups
+  } catch (cause) {
+    ElMessage.warning(message(cause, '已使用当前草稿生成冲突组'))
+  } finally {
+    stationConflictLoading.value = false
+  }
+}
+
+function keepConflictStation(group: StationConflictGroup, keepId: string): void {
+  if (!editingDraft.value) return
+  for (const member of group.stations) {
+    if (member.station_id === keepId) continue
+    const row = editingDraft.value.stations.find((station) => station.id === member.station_id)
+    if (row) {
+      row.participates_in_direction = false
+      markStation(row)
+    }
+  }
+}
+
+function combineConflictGroup(group: StationConflictGroup): void {
+  stationConflictDrawerVisible.value = false
+  openStationCombination(group.stations.map((station) => station.station_id))
+}
+
+function overwriteConflictGroup(group: StationConflictGroup): void {
+  const members = stationRows.value.filter((station) => group.stations.some((member) => member.station_id === station.id))
+  const source = members.find((station) => station.source_kind === 'device_station_field')
+  const target = members.find((station) => station.id !== source?.id && !station.id.startsWith('new:') && ['manual', 'template'].includes(station.source_kind))
+    || members.find((station) => station.id !== source?.id && !station.id.startsWith('new:'))
+  if (!source || !target) {
+    ElMessage.warning('该冲突组无法识别唯一的设备来源与正式目标，请使用“合并”或手动处理')
+    return
+  }
+  stationConflictDrawerVisible.value = false
+  openStationOverwrite('', target.id, source.id)
 }
 
 function removeDraftRow(entityType: BaseDataChange['entity_type'], entityId: string): void {
@@ -892,7 +1446,14 @@ function isStationSourceCandidateSelected(candidate: StationSourceCandidate): bo
 }
 
 function isStationSourceCandidateDisabled(candidate: StationSourceCandidate): boolean {
-  return candidate.match_status === 'conflict' || candidate.issues.some((issue) => issue.blocking)
+  const strategy = stationSourceStrategies.value[candidate.candidate_id] || candidate.processing_strategy
+  if (strategy === 'merge_duplicates' && (candidate.matched_station_ids?.length || 0) > 1) {
+    return candidate.issues.some((issue) => issue.blocking && issue.code !== 'station_source_ambiguous_match')
+  }
+  if (strategy === 'manual_target') {
+    return !stationSourceTargets.value[candidate.candidate_id]
+  }
+  return candidate.issues.some((issue) => issue.blocking)
 }
 
 function isStationTemplateRowSelected(row: StationTemplatePreviewRow): boolean {
@@ -1026,13 +1587,60 @@ function handleApSectionChange(row: TracksideAp): void {
 async function openStationSourcePreview(): Promise<void> {
   try {
     const preview = await store.refreshStationSourcePreview()
+    stationSourceStrategies.value = Object.fromEntries(
+      preview.candidates.map((candidate) => [candidate.candidate_id, candidate.processing_strategy || (candidate.matched_station_id ? 'overwrite_existing' : candidate.match_status === 'create' ? 'create' : 'manual_target')]),
+    )
+    stationSourceTargets.value = Object.fromEntries(
+      preview.candidates.map((candidate) => [candidate.candidate_id, candidate.matched_station_id || candidate.matched_station_ids?.[0] || '']),
+    )
     selectedStationSourceIds.value = preview.candidates
-      .filter((candidate) => !candidate.issues.some((issue) => issue.blocking) && !['conflict', 'manual_review'].includes(candidate.match_status))
+      .filter((candidate) => !isStationSourceCandidateDisabled(candidate) && stationSourceStrategies.value[candidate.candidate_id] !== 'ignore')
       .map((candidate) => candidate.candidate_id)
     stationSourceDialogVisible.value = true
   } catch (cause) {
     ElMessage.error(message(cause, '设备管理站点来源预览失败'))
   }
+}
+
+function stationSourceStrategy(candidate: StationSourceCandidate): StationSourceProcessingStrategy {
+  return stationSourceStrategies.value[candidate.candidate_id] || candidate.processing_strategy || 'manual_target'
+}
+
+function updateStationSourceStrategy(candidate: StationSourceCandidate, strategy: StationSourceProcessingStrategy): void {
+  stationSourceStrategies.value = { ...stationSourceStrategies.value, [candidate.candidate_id]: strategy }
+  if (strategy === 'ignore') {
+    selectedStationSourceIds.value = selectedStationSourceIds.value.filter((id) => id !== candidate.candidate_id)
+  }
+}
+
+function stationSourceStrategyLabel(strategy: StationSourceProcessingStrategy): string {
+  return {
+    auto_match: '自动匹配现有',
+    overwrite_existing: '覆盖现有',
+    create: '新增',
+    ignore: '忽略',
+    manual_target: '人工选择目标',
+    merge_duplicates: '合并重复项',
+  }[strategy]
+}
+
+function stationSourceTargetOptions(candidate: StationSourceCandidate): Station[] {
+  const persisted = stationRows.value.filter((station) => !station.id.startsWith('new:'))
+  if (stationSourceStrategy(candidate) !== 'merge_duplicates') return persisted
+  const matchedIds = new Set(candidate.matched_station_ids || [])
+  return persisted.filter((station) => matchedIds.has(station.id))
+}
+
+function selectSuggestedStationSources(): void {
+  selectedStationSourceIds.value = stationSourceCandidates.value
+    .filter((candidate) => !isStationSourceCandidateDisabled(candidate) && stationSourceStrategy(candidate) !== 'ignore')
+    .map((candidate) => candidate.candidate_id)
+}
+
+function selectStationSourcesByStrategy(strategy: 'overwrite_existing' | 'create'): void {
+  selectedStationSourceIds.value = stationSourceCandidates.value
+    .filter((candidate) => stationSourceStrategy(candidate) === strategy && !isStationSourceCandidateDisabled(candidate))
+    .map((candidate) => candidate.candidate_id)
 }
 
 function toggleStationSourceCandidate(candidate: StationSourceCandidate, checked: boolean): void {
@@ -1048,32 +1656,46 @@ function applyStationSourceToDraft(): void {
     return
   }
   const selected = new Set(selectedStationSourceIds.value)
-  const candidates = stationSourceCandidates.value.filter((candidate) => selected.has(candidate.candidate_id) && !['conflict', 'manual_review'].includes(candidate.match_status))
+  const candidates = stationSourceCandidates.value.filter((candidate) => selected.has(candidate.candidate_id) && !isStationSourceCandidateDisabled(candidate))
   if (!candidates.length) {
     ElMessage.warning('没有可应用的站点来源候选')
     return
   }
   let applied = 0
   for (const candidate of candidates) {
+    const strategy = stationSourceStrategy(candidate)
+    if (strategy === 'ignore') continue
     const proposed = defaultStation(candidate.proposed_station)
     proposed.line_name = proposed.line_name || editingDraft.value.metadata.line_name || store.summary?.line_name || ''
-    const matched = candidate.matched_station_id
-      ? editingDraft.value.stations.find((station) => station.id === candidate.matched_station_id)
+    const targetId = stationSourceTargets.value[candidate.candidate_id] || candidate.matched_station_id
+    const matched = targetId
+      ? editingDraft.value.stations.find((station) => station.id === targetId)
       : editingDraft.value.stations.find((station) => station.source_station_key && station.source_station_key === candidate.source_station_key)
-    if (matched) {
-      matched.source_station_value = candidate.source_station_value
-      matched.source_station_key = candidate.source_station_key
-      matched.source_kind = 'device_station_field'
-      matched.source_device_count = candidate.source_device_count
-      matched.source_sync_status = 'matched'
-      if (matched.node_type === 'station' && matched.path_code === editingDraft.value.metadata.main_path_code) {
-        if (matched.structure_type === 'unknown') matched.structure_type = 'underground'
-        if (matched.platform_layout === 'unknown') matched.platform_layout = 'island'
-      }
-      markStation(matched)
+    if (strategy === 'merge_duplicates') {
+      const memberIds = candidate.matched_station_ids || []
+      const members = editingDraft.value.stations.filter((station) => memberIds.includes(station.id))
+      const target = members.find((station) => station.id === targetId)
+        || members.find((station) => ['manual', 'template'].includes(station.source_kind))
+        || members[0]
+      if (!target || members.length < 2) continue
+      const sources = members.filter((station) => station.id !== target.id)
+      if (stationCombinationErrors(target, sources).length || stationCombinationSelfLoopError(target, sources)) continue
+      const overwritten = overwriteStationFromSource(target, candidate)
+      applyStationCombinationDraft(target, sources, overwritten)
       applied += 1
       continue
     }
+    if (matched && ['overwrite_existing', 'auto_match', 'manual_target'].includes(strategy)) {
+      const overwritten = overwriteStationFromSource(matched, candidate)
+      applyStationCombinationDraft(matched, [], overwritten)
+      if (overwritten.node_type === 'station' && overwritten.path_code === editingDraft.value.metadata.main_path_code) {
+        if (overwritten.structure_type === 'unknown') overwritten.structure_type = 'underground'
+        if (overwritten.platform_layout === 'unknown') overwritten.platform_layout = 'island'
+      }
+      applied += 1
+      continue
+    }
+    if (strategy !== 'create') continue
     proposed.id = proposed.id || temporaryId()
     proposed.node_uid = proposed.node_uid || newNodeUid()
     proposed.source_device_count = candidate.source_device_count
@@ -1081,6 +1703,10 @@ function applyStationSourceToDraft(): void {
     editingDraft.value.stations.push(proposed)
     markStation(proposed)
     applied += 1
+  }
+  if (!applied) {
+    ElMessage.warning('所选候选没有可应用的安全目标，请调整处理方式或目标站点')
+    return
   }
   stationSourceDialogVisible.value = false
   ElMessage.success(`已应用 ${applied} 个候选到当前草稿，保存后才会写入数据库`)
@@ -1818,8 +2444,17 @@ function sectionSourceLabel(row: Section): string {
     </div>
     <el-alert v-if="store.error" :title="store.error" type="error" :closable="false" show-icon class="page-error" />
     <el-alert v-if="locked && writeDeniedReason" :title="writeDeniedReason" type="warning" :closable="false" show-icon class="page-error" />
-    <el-alert v-if="saveIssues.length" title="基础资料校验失败" type="error" :closable="false" show-icon class="page-error">
-      <ul class="validation-list"><li v-for="issue in saveIssues" :key="`${issue.change_index}:${issue.code}:${issue.field_name}`">{{ issue.message }}</li></ul>
+    <el-alert v-if="saveIssues.length || localStationConflictGroups.length" title="基础资料校验失败" type="error" :closable="false" show-icon class="page-error">
+      <div v-if="localStationConflictGroups.length" class="conflict-summary">
+        <strong>{{ localStationConflictGroups[0].path_code }} 路径存在 {{ localStationConflictGroups.length }} 组主线顺序冲突</strong>
+        <ul>
+          <li v-for="group in localStationConflictGroups.slice(0, 8)" :key="group.group_id">
+            顺序 {{ group.sort_order }}：{{ group.stations.map((station) => station.station_name).join(' / ') }}
+          </li>
+        </ul>
+        <el-button type="danger" plain @click="openStationConflictDrawer">立即处理冲突</el-button>
+      </div>
+      <ul v-if="nonOrderSaveIssues.length" class="validation-list"><li v-for="issue in nonOrderSaveIssues" :key="`${issue.change_index}:${issue.code}:${issue.field_name}`">{{ issue.message }}</li></ul>
     </el-alert>
 
     <div class="content-card">
@@ -1979,8 +2614,15 @@ function sectionSourceLabel(row: Section): string {
                 </label>
                 <el-button :icon="Download" @click="exportCurrentStations">导出当前</el-button>
                 <el-button :icon="Plus" :disabled="locked || saving" @click="addStation">新增节点</el-button>
+                <span class="selection-count">已选择 {{ selectedStationIds.length }} 项</span>
+                <el-button :disabled="locked || saving || !selectedStationIds.length" @click="deleteSelectedStations">删除选中</el-button>
+                <el-button :disabled="locked || saving || selectedStationIds.length < 2" @click="openStationCombination()">合并重复项</el-button>
+                <el-button :disabled="locked || saving || selectedStationIds.length !== 2" @click="openStationTableOverwrite">覆盖更新</el-button>
+                <el-button :disabled="locked || saving || !selectedStationIds.length" @click="undoSelectedStationChanges">撤销选中变更</el-button>
+                <el-button :disabled="locked || saving || !localStationConflictGroups.length" @click="selectConflictStations">选择全部冲突项</el-button>
+                <el-button :disabled="locked || !selectedStationIds.length" @click="clearStationSelection">清空选择</el-button>
               </div>
-              <NcDataTable table-id="rail-base-stations" route-key="/rail-transit/base-data" :data="stationRows" :columns="stationEditColumns" height="calc(100vh - 410px)" empty-text="暂无站点资料">
+              <NcDataTable ref="stationTable" table-id="rail-base-stations" route-key="/rail-transit/base-data" :data="stationRows" :columns="stationEditColumns" row-key="id" height="calc(100vh - 410px)" empty-text="暂无站点资料" @selection-change="handleStationSelection">
                 <template #cell-sort_order="{ row }"><el-input-number v-if="canEditRow('station', row.id) && row.participates_in_direction" v-model="row.sort_order" :min="0" controls-position="right" @change="markStation(row)" /><span v-else>{{ row.sort_order ?? '--' }}</span></template>
                 <template #cell-name="{ row }"><el-input v-if="canEditRow('station', row.id)" v-model="row.name" :class="{ 'field-error': fieldError('station', row.id, 'name') }" @input="markStation(row)" /><span v-else>{{ display(row.name) }}</span></template>
                 <template #cell-code="{ row }"><el-input v-if="canEditRow('station', row.id)" v-model="row.code" :class="{ 'field-error': fieldError('station', row.id, 'code') }" @input="markStation(row)" /><span v-else>{{ display(row.code) }}</span></template>
@@ -2304,6 +2946,8 @@ function sectionSourceLabel(row: Section): string {
           <article class="normal"><span>新增</span><strong>{{ store.stationSourcePreview.create_count }}</strong></article>
           <article><span>匹配</span><strong>{{ store.stationSourcePreview.match_count }}</strong></article>
           <article class="normal"><span>规范名匹配</span><strong>{{ store.stationSourcePreview.canonical_match_count }}</strong></article>
+          <article class="normal"><span>建议覆盖</span><strong>{{ store.stationSourcePreview.recommended_overwrite_count || 0 }}</strong></article>
+          <article class="warning"><span>建议合并</span><strong>{{ store.stationSourcePreview.recommended_merge_count || 0 }}</strong></article>
           <article class="danger"><span>冲突</span><strong>{{ store.stationSourcePreview.conflict_count }}</strong></article>
           <article class="warning"><span>待人工确认</span><strong>{{ store.stationSourcePreview.manual_review_count }}</strong></article>
         </div>
@@ -2335,6 +2979,35 @@ function sectionSourceLabel(row: Section): string {
           </template>
           <template #cell-node_type="{ row }"><el-tag :type="stationNodeTypeTag(row.node_type)">{{ stationNodeTypeLabel(row.node_type) }}</el-tag></template>
           <template #cell-match_status="{ row }"><el-tag :type="row.match_status === 'conflict' ? 'danger' : ['exact_source_key', 'canonical_name', 'canonical_name_and_type', 'alias'].includes(row.match_status) ? 'success' : 'info'">{{ sourceMatchLabel(row.match_status) }}</el-tag></template>
+          <template #cell-processing_strategy="{ row }">
+            <div class="source-strategy">
+              <el-select
+                :model-value="stationSourceStrategy(row)"
+                :disabled="locked"
+                @change="(value: StationSourceProcessingStrategy) => updateStationSourceStrategy(row, value)"
+              >
+                <el-option
+                  v-for="strategy in (row.processing_options?.length ? row.processing_options : ['manual_target', 'ignore'])"
+                  :key="strategy"
+                  :label="stationSourceStrategyLabel(strategy)"
+                  :value="strategy"
+                />
+              </el-select>
+              <el-select
+                v-if="['overwrite_existing', 'manual_target', 'merge_duplicates'].includes(stationSourceStrategy(row))"
+                v-model="stationSourceTargets[row.candidate_id]"
+                placeholder="选择正式目标"
+                :disabled="locked"
+              >
+                <el-option
+                  v-for="station in stationSourceTargetOptions(row)"
+                  :key="station.id"
+                  :label="`${station.code || '--'} · ${station.name}`"
+                  :value="station.id"
+                />
+              </el-select>
+            </div>
+          </template>
           <template #cell-issues="{ row }">
             <div class="row-issues">
               <el-tag v-if="row.node_type !== 'station'" type="warning">未加入主线路径</el-tag>
@@ -2346,6 +3019,9 @@ function sectionSourceLabel(row: Section): string {
       </div>
       <template #footer>
         <el-button @click="stationSourceDialogVisible = false">关闭</el-button>
+        <el-button :disabled="locked" @click="selectSuggestedStationSources">全选建议项</el-button>
+        <el-button :disabled="locked" @click="selectStationSourcesByStrategy('overwrite_existing')">全部覆盖匹配项</el-button>
+        <el-button :disabled="locked" @click="selectStationSourcesByStrategy('create')">仅新增未匹配项</el-button>
         <el-button
           type="primary"
           :disabled="locked || saving || selectedStationSourceIds.length === 0"
@@ -2353,6 +3029,126 @@ function sectionSourceLabel(row: Section): string {
         >应用到当前草稿</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="stationDeletePreflightVisible" title="站点删除依赖预检" width="min(1040px, 94vw)" append-to-body destroy-on-close>
+      <el-alert
+        v-if="stationDeletePreflightItems.some((item) => item.status !== 'SAFE_DELETE')"
+        title="存在不能直接删除的站点"
+        description="REQUIRES_MERGE 与 BLOCKED 项不会被静默跳过或加入删除草稿；请取消这些项并先完成合并或引用调整。"
+        type="warning"
+        :closable="false"
+        show-icon
+      />
+      <div v-loading="stationDeletePreflightLoading" class="preflight-list">
+        <article v-for="item in stationDeletePreflightItems" :key="item.station_id" :class="`preflight-${item.status.toLowerCase()}`">
+          <header>
+            <strong>{{ item.code || '--' }} · {{ item.station_name }}</strong>
+            <el-tag :type="item.status === 'SAFE_DELETE' ? 'success' : item.status === 'REQUIRES_MERGE' ? 'warning' : 'danger'">{{ item.status }}</el-tag>
+          </header>
+          <p>主线顺序：{{ item.sort_order ?? '--' }}；来源：{{ item.source_kind }}；{{ item.reason }}</p>
+          <p>
+            引用区间 {{ item.references.section_start_count + item.references.section_end_count }}；
+            轨旁 AP {{ item.references.ap_count }}；
+            其他关系 {{ item.references.relation_count }}；
+            端点延伸 {{ item.references.endpoint_extension_count }}；
+            AP 规划 {{ item.references.plan_count }}
+          </p>
+        </article>
+      </div>
+      <template #footer>
+        <el-button @click="stationDeletePreflightVisible = false">取消</el-button>
+        <el-button
+          type="danger"
+          :disabled="!stationDeletePreflightItems.some((item) => item.status === 'SAFE_DELETE')"
+          @click="applySafeStationDeletes"
+        >仅标记安全项</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="stationMergeDialogVisible" title="合并重复站点" width="min(980px, 94vw)" append-to-body destroy-on-close>
+      <el-alert title="合并只生成一个原子草稿计划；最终保存仍执行 revision 校验、完整引用校验和单事务回滚。" type="info" :closable="false" show-icon />
+      <el-form label-width="130px" class="station-resolution-form">
+        <el-form-item label="保留目标">
+          <el-select v-model="stationMergeTargetId" @change="handleStationCombinationTargetChange">
+            <el-option v-for="station in stationMergeMembers.filter((item) => !item.id.startsWith('new:'))" :key="station.id" :label="`${station.code || '--'} · ${station.name}`" :value="station.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="名称取值">
+          <el-select v-model="stationMergeNameSourceId"><el-option v-for="station in stationMergeMembers" :key="station.id" :label="station.name" :value="station.id" /></el-select>
+        </el-form-item>
+        <el-form-item label="编号取值">
+          <el-select v-model="stationMergeCodeSourceId"><el-option v-for="station in stationMergeMembers" :key="station.id" :label="`${station.code || '--'} · ${station.name}`" :value="station.id" /></el-select>
+        </el-form-item>
+        <el-form-item label="主线顺序取值">
+          <el-select v-model="stationMergeOrderSourceId" @change="handleStationCombinationOrderSourceChange"><el-option v-for="station in stationMergeMembers" :key="station.id" :label="`${station.sort_order ?? '--'} · ${station.name}`" :value="station.id" /></el-select>
+        </el-form-item>
+        <el-form-item label="合并选项">
+          <el-checkbox v-model="stationMergeSourceInfo">合并设备来源信息</el-checkbox>
+          <el-checkbox v-model="stationMergeRemarks">合并备注</el-checkbox>
+        </el-form-item>
+      </el-form>
+      <div class="resolution-members">
+        <strong>将被合并删除：</strong>
+        {{ stationMergeSources.map((station) => station.name).join('、') || '--' }}
+      </div>
+      <div class="overwrite-diffs">
+        <article v-for="diff in stationCombinationDiffRows" :key="diff.field">
+          <strong>{{ diff.field }}</strong>
+          <span>{{ display(diff.current) }}</span>
+          <span>→</span>
+          <span>{{ display(diff.proposed) }}</span>
+        </article>
+      </div>
+      <el-alert v-for="error in stationMergeErrors" :key="error" :title="error" type="error" :closable="false" show-icon />
+      <template #footer>
+        <el-button @click="stationMergeDialogVisible = false">取消</el-button>
+        <el-button type="primary" :disabled="stationMergeErrors.length > 0" @click="applyStationCombination">应用合并到草稿</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="stationOverwriteDialogVisible" title="来源覆盖现有站点" width="min(1040px, 94vw)" append-to-body destroy-on-close>
+      <el-alert title="目标 id、node_uid、区间/AP/关系引用和人工字段默认保持不变。只有下方明确勾选的人工字段才会覆盖。" type="warning" :closable="false" show-icon />
+      <div class="resolution-target">
+        正式目标：<strong>{{ stationOverwriteTarget?.name || '--' }}</strong>
+        <span>来源：{{ stationOverwriteCandidate?.source_station_value || stationOverwriteSourceStation?.name || '--' }}</span>
+      </div>
+      <div class="overwrite-diffs">
+        <article v-for="diff in stationOverwriteDiffRows" :key="String(diff.field)">
+          <el-checkbox
+            v-if="diff.protectedManualField"
+            :model-value="stationOverwriteManualFields.includes(String(diff.field))"
+            @change="(checked: boolean) => stationOverwriteManualFields = checked ? [...stationOverwriteManualFields, String(diff.field)] : stationOverwriteManualFields.filter((field) => field !== diff.field)"
+          >允许覆盖人工字段</el-checkbox>
+          <el-tag v-else type="success">来源覆盖</el-tag>
+          <strong>{{ diff.field }}</strong>
+          <span>{{ display(diff.current) }}</span>
+          <span>→</span>
+          <span>{{ display(diff.proposed) }}</span>
+        </article>
+      </div>
+      <template #footer>
+        <el-button @click="stationOverwriteDialogVisible = false">取消</el-button>
+        <el-button type="primary" :disabled="!stationOverwriteTarget || (!stationOverwriteCandidate && !stationOverwriteSourceStation)" @click="applyStationOverwrite">应用覆盖到草稿</el-button>
+      </template>
+    </el-dialog>
+
+    <el-drawer v-model="stationConflictDrawerVisible" title="主线顺序冲突处理" size="min(760px, 96vw)" append-to-body>
+      <el-alert title="每组操作只修改当前前端草稿，不会立即写入数据库。" type="info" :closable="false" show-icon />
+      <div v-loading="stationConflictLoading" class="conflict-groups">
+        <article v-for="group in stationConflictGroups" :key="group.group_id">
+          <header><strong>{{ group.path_code }} · 顺序 {{ group.sort_order }}</strong><el-tag type="danger">{{ group.stations.length }} 项</el-tag></header>
+          <p>{{ group.stations.map((station) => `${station.code || '--'} ${station.station_name}`).join(' / ') }}</p>
+          <p>{{ group.reason }}</p>
+          <div class="conflict-actions">
+            <el-button v-for="station in group.stations" :key="station.station_id" size="small" @click="keepConflictStation(group, station.station_id)">仅保留 {{ station.station_name }} 参与方向</el-button>
+            <el-button size="small" type="primary" @click="combineConflictGroup(group)">合并</el-button>
+            <el-button size="small" @click="overwriteConflictGroup(group)">来源覆盖现有</el-button>
+            <el-button size="small" @click="stationConflictDrawerVisible = false">手动修改顺序</el-button>
+            <el-button size="small" @click="stationConflictDrawerVisible = false">暂不处理</el-button>
+          </div>
+        </article>
+      </div>
+    </el-drawer>
 
     <el-dialog v-model="stationTemplateDialogVisible" title="基础资料模板导入预览" width="min(1280px, 96vw)" append-to-body destroy-on-close>
       <div v-if="store.stationTemplatePreview" class="preview-dialog">
@@ -2538,13 +3334,15 @@ function sectionSourceLabel(row: Section): string {
 .page-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 18px 0; }
 .toolbar-actions, .edit-toolbar, .connection-editor { display: flex; align-items: center; gap: 10px; }
 .toolbar-actions { flex-wrap: wrap; justify-content: flex-end; }
-.edit-toolbar { justify-content: flex-end; margin: 8px 0 12px; }
+.edit-toolbar { flex-wrap: wrap; justify-content: flex-end; margin: 8px 0 12px; }
+.selection-count { color: var(--nc-text-secondary); font-size: 12px; white-space: nowrap; }
 .connection-editor .el-select { width: 92px; }
 .connection-editor .el-input-number { width: 120px; }
 .page-toolbar h2 { margin: 0; color: var(--nc-text-primary); }
 .page-toolbar p { margin: 5px 0 0; color: var(--nc-text-secondary); font-size: 12px; }
 .page-error { margin-bottom: 14px; }
 .validation-list { margin: 6px 0 0; padding-left: 20px; }
+.conflict-summary ul { margin: 6px 0 10px; padding-left: 20px; }
 .content-card { display: flex; min-width: 0; min-height: 0; flex: 1; padding: 0 18px 18px; overflow: hidden; background: var(--nc-bg-panel); border: 1px solid var(--nc-border); border-radius: 10px; }
 .content-card > :deep(.el-tabs) { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; }
 .content-card > :deep(.el-tabs > .el-tabs__header) { flex: none; }
@@ -2574,6 +3372,19 @@ function sectionSourceLabel(row: Section): string {
 .row-issues { display: flex; flex-wrap: wrap; gap: 5px; }
 .preview-dialog { display: grid; gap: 12px; }
 .source-meta { display: flex; flex-wrap: wrap; gap: 8px; }
+.source-strategy { display: grid; gap: 6px; min-width: 160px; }
+.preflight-list, .conflict-groups { display: grid; gap: 10px; max-height: 58vh; margin-top: 12px; overflow: auto; }
+.preflight-list article, .conflict-groups article { padding: 12px; border: 1px solid var(--nc-border); border-radius: 8px; background: var(--nc-bg-muted); }
+.preflight-list header, .conflict-groups header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.preflight-list p, .conflict-groups p { margin: 7px 0 0; color: var(--nc-text-secondary); font-size: 12px; }
+.preflight-blocked { border-color: var(--nc-danger) !important; }
+.preflight-requires_merge { border-color: var(--nc-warning) !important; }
+.station-resolution-form { margin-top: 14px; }
+.station-resolution-form :deep(.el-select) { width: min(520px, 100%); }
+.resolution-members, .resolution-target { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; color: var(--nc-text-secondary); }
+.overwrite-diffs { display: grid; gap: 7px; max-height: 52vh; overflow: auto; }
+.overwrite-diffs article { display: grid; grid-template-columns: 150px 180px minmax(120px, 1fr) 30px minmax(120px, 1fr); gap: 8px; align-items: center; padding: 8px; border-bottom: 1px solid var(--nc-divider); }
+.conflict-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .inline-file-button { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; color: var(--nc-text-primary); background: var(--nc-bg-panel); border: 1px solid var(--nc-border); border-radius: 6px; cursor: pointer; }
 .inline-file-button input { display: none; }
 .compact-pair { display: grid; grid-template-columns: minmax(58px, 0.7fr) minmax(115px, 1.3fr); gap: 8px; align-items: center; min-width: 190px; }
