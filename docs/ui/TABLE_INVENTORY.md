@@ -29,7 +29,6 @@
 | `/config-collection` | `apps/web/src/views/config-collection/ConfigCollectionView.vue:585` | `config-devices` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
 | `/config-collection` | `apps/web/src/views/config-collection/ConfigCollectionView.vue:611` | `config-snapshots` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
 | `/devices` | `apps/web/src/views/devices/DeviceManagementView.vue:1251` | `device-list` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
-| `/devices` | `apps/web/src/views/devices/DeviceManagementView.vue:1412` | `device-omnipeek-export` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
 | `/file-management` | `apps/web/src/views/file-management/FileManagementView.vue:545` | `file-local-entries` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
 | `/file-management` | `apps/web/src/views/file-management/FileManagementView.vue:576` | `file-remote-entries` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
 | `/file-management` | `apps/web/src/views/file-management/FileManagementView.vue:608` | `file-download-queue` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |

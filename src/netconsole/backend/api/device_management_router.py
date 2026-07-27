@@ -47,8 +47,6 @@ from netconsole.models.api.device_management import (
     DeviceGroupRequestDTO,
     DeviceImportConfirmRequestDTO,
     DeviceImportPreviewDTO,
-    DeviceOmniPeekExportRequestDTO,
-    DeviceOmniPeekPreviewDTO,
     DevicePageDTO,
     DeviceSecureCrtExportRequestDTO,
     DeviceTaskBatchDTO,
@@ -570,42 +568,6 @@ def export_securecrt_with_template(
             template_name=file.filename or "",
             template_stream=file.file,
         )
-    )
-
-
-@router.post(
-    "/exports/omnipeek",
-    response_model=DeviceTaskReferenceDTO,
-    status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.device_management_export"))],
-)
-def export_omnipeek(
-    request: Request, payload: DeviceOmniPeekExportRequestDTO
-) -> DeviceTaskReferenceDTO:
-    return _query(lambda: _service(request).start_omnipeek_export(payload))
-
-
-@router.post(
-    "/exports/omnipeek-preview",
-    response_model=DeviceTaskReferenceDTO,
-    status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.device_management_export"))],
-)
-def preview_omnipeek(
-    request: Request, payload: DeviceExportRequestDTO
-) -> DeviceTaskReferenceDTO:
-    return _query(lambda: _service(request).start_omnipeek_preview(payload))
-
-
-@router.get(
-    "/exports/omnipeek-preview/{task_id}",
-    response_model=DeviceOmniPeekPreviewDTO,
-    dependencies=[Depends(require_feature("web.device_management_export"))],
-)
-def omnipeek_preview(request: Request, task_id: str) -> DeviceOmniPeekPreviewDTO:
-    return _not_found(
-        lambda: _service(request).get_omnipeek_preview(task_id),
-        "OmniPeek 预览任务不存在",
     )
 
 

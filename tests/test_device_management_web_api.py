@@ -53,7 +53,6 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_management_web_service import (
     DEVICE_CONNECTION_TEST_TASK_TYPE,
     DEVICE_OPTICAL_REFRESH_TASK_TYPE,
-    DEVICE_OMNIPEEK_PREVIEW_TASK_TYPE,
     DEVICE_IMPORT_CLAIM_GRACE_SECONDS,
     DEVICE_IMPORT_PREVIEW_TTL_SECONDS,
     DEVICE_IMPORT_TASK_TYPE,
@@ -1535,62 +1534,20 @@ def test_router_exposes_device_management_parity_endpoints_without_arbitrary_ter
         "/api/device-management/exports/template",
         "/api/device-management/exports/securecrt",
         "/api/device-management/exports/securecrt-with-template",
-        "/api/device-management/exports/omnipeek",
-        "/api/device-management/exports/omnipeek-preview",
         "/api/device-management/diagnostic-download",
         "/api/device-management/devices/{device_uuid}/external-terminal",
     }.issubset(posts)
     assert "/api/device-management/diagnostics/{task_id}/download" in gets
+    assert "/api/device-management/exports/omnipeek" not in device_paths
+    assert "/api/device-management/exports/omnipeek-preview" not in device_paths
+    assert (
+        "/api/device-management/exports/omnipeek-preview/{task_id}"
+        not in device_paths
+    )
     assert not any(
         "password" in path or "secret" in path or path.endswith("/shell")
         for path in device_paths
     )
-
-
-def test_omnipeek_export_requires_real_background_preview_and_selection(
-    tmp_path: Path,
-) -> None:
-    client, service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
-    started = client.post(
-        "/api/device-management/exports/omnipeek-preview",
-        json={"device_uuids": [str(mr.device_uuid)]},
-    )
-    assert started.status_code == 202
-    task_id = started.json()["task_id"]
-    assert adapter.jobs[-1].task_type == DEVICE_OMNIPEEK_PREVIEW_TASK_TYPE
-    assert adapter.jobs[-1].params["owner"] == WEB_TASK_OWNER
-    assert adapter.jobs[-1].params["selected_device_uuids"] == [str(mr.device_uuid)]
-
-    pending = service.task_service.repository("demo").get(task_id)
-    assert pending is not None
-    service.task_service.repository("demo").save(
-        replace(
-            pending,
-            status=TaskState.COMPLETED,
-            result={
-                "items": [
-                    {
-                        "key": "device-mr2",
-                        "role": "onboard_mr",
-                        "name": "MR2",
-                        "physical_mac": "0011-2233-4455",
-                        "selected": True,
-                        "force_export": False,
-                        "status": "正常",
-                        "warnings": [],
-                    }
-                ],
-                "source_counts": {"设备管理": 1},
-                "stats": {"total": 1, "selected": 1, "abnormal": 0},
-            },
-        )
-    )
-    preview = client.get(f"/api/device-management/exports/omnipeek-preview/{task_id}")
-    assert preview.status_code == 200
-    assert preview.json()["ready"] is True
-    assert preview.json()["items"][0]["key"] == "device-mr2"
-    assert "secret-password" not in preview.text
-
 
 def test_securecrt_optional_template_is_uploaded_to_controlled_staging(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1634,7 +1591,7 @@ def test_securecrt_optional_template_is_uploaded_to_controlled_staging(
     assert not list(service._artifact_root("demo").glob(".securecrt-template-*.ini"))
 
 
-def test_all_qt_device_export_formats_complete_in_real_export_process(
+def test_supported_device_export_formats_complete_in_real_export_process(
     tmp_path: Path,
 ) -> None:
     client, service, _adapter, devices, _facts, mr, _sw = _fixture(
@@ -1697,17 +1654,6 @@ def test_all_qt_device_export_formats_complete_in_real_export_process(
             assert "_netconsole_manifest.json" in archive.namelist()
             assert any(name.endswith(".ini") for name in archive.namelist())
 
-        _omnipeek_task, omnipeek = complete(
-            "/api/device-management/exports/omnipeek",
-            {
-                "device_uuids": [str(mr.device_uuid)],
-                "line_name": "测试线路",
-                "include_device_mr": True,
-            },
-        )
-        omnipeek_text = omnipeek.decode("utf-8")
-        assert '<NameTable Version="3.0">' in omnipeek_text
-        assert "74:AD:CB:9D:33:20" in omnipeek_text
     finally:
         asyncio.run(service.stop_exports())
 
@@ -2291,10 +2237,6 @@ def test_device_upload_and_export_contracts_reject_browser_paths_and_oversize_fi
         (
             "/api/device-management/exports/securecrt",
             {"output_dir": "C:\\outside", "template_ini": "C:\\outside\\template.ini"},
-        ),
-        (
-            "/api/device-management/exports/omnipeek",
-            {"line_name": "NetConsole", "output_path": "C:\\outside\\devices.nam"},
         ),
     )
     for path, payload in rejected_payloads:

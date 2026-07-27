@@ -90,11 +90,10 @@ describe('Device Management Web view', () => {
     expect(source).toContain('copyDeviceInfo')
   })
 
-  it('uses the unified table contract for the device and OmniPeek tables', () => {
+  it('uses the unified table contract for the device table', () => {
     expect(source).toContain('table-id="device-list"')
-    expect(source).toContain('table-id="device-omnipeek-export"')
     expect(source).toContain(':columns="deviceColumns"')
-    expect(source).toContain(':columns="omniPeekColumns"')
+    expect(source).not.toContain('table-id="device-omnipeek-export"')
     expect(source).not.toContain('<el-table')
     expect(source).not.toContain('<el-table-column')
     expect(source).toContain("key: 'name', label: '名称', valueType: 'name', fixed: 'left', stretch: 'priority'")
@@ -116,14 +115,8 @@ describe('Device Management Web view', () => {
     expect(source).not.toContain('output_dir')
     expect(source).not.toContain('template_ini')
     expect(source).not.toContain('file_path')
-    expect(source).toContain('startOmniPeekPreview')
-    expect(source).toContain('getOmniPeekPreview')
-    expect(source).toContain('selected_item_keys')
-    expect(source).toContain('force_export_keys')
     expect(source).toContain('startSecureCrtExportWithTemplate')
     expect(source).toContain('accept=".ini"')
-    expect(source).toContain('stopOmniPeekPreview')
-    expect(source).toContain('Date.now() + 120_000')
     for (const featureId of [
       'web.device_management_write',
       'web.device_management_collect',
@@ -133,6 +126,14 @@ describe('Device Management Web view', () => {
     ]) {
       expect(source).toContain(`isFeatureEnabled('${featureId}')`)
     }
+  })
+
+  it('removes only the OmniPeek entry from the device export menu', () => {
+    expect(source).toContain('@click="exportCsv(false)">CSV 导出（不含凭据）')
+    expect(source).toContain('@click="exportCsv(true)">CSV 导出（含凭据）')
+    expect(source).toContain('@click="openSecureCrtExport">SecureCRT 会话')
+    expect(source).not.toContain('OmniPeek 名称表')
+    expect(source).not.toContain('openOmniPeekExport')
   })
 
   it('statically guards against a page-private task system and path capabilities', () => {
