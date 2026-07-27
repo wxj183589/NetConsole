@@ -283,14 +283,14 @@ const mergeFieldColumns: NcTableColumn<MergeFieldDiff>[] = [
 ]
 const stationSourceColumns: NcTableColumn<StationSourceCandidate>[] = [
   { key: 'selected', label: '勾选', width: 72, hideable: false },
-  { key: 'source_station_value', label: '来源站点值', minWidth: 160 },
-  { key: 'code', label: '节点编码', width: 100, displayValue: (row) => display(row.code) },
-  { key: 'name', label: '节点名称', valueType: 'name', minWidth: 150 },
+  { key: 'source_station_value', label: '原始站点字段', minWidth: 160 },
+  { key: 'source_order', label: '解析编号', valueType: 'number', width: 100, displayValue: (row) => row.source_order ?? '--' },
+  { key: 'name', label: '正式站名', valueType: 'name', minWidth: 150 },
   { key: 'node_type', label: '类型', valueType: 'status', width: 110, displayValue: (row) => stationNodeTypeLabel(row.node_type) },
-  { key: 'path_code', label: '建议路径', width: 110 },
-  { key: 'sort_order', label: '建议顺序', valueType: 'number', width: 105, displayValue: (row) => row.sort_order ?? '--' },
+  { key: 'participates_in_direction', label: '参与主线', valueType: 'status', width: 100, displayValue: (row) => row.participates_in_direction ? '是' : '否' },
   { key: 'source_device_count', label: '来源设备数', valueType: 'number', width: 120 },
-  { key: 'match_status', label: '匹配结果', valueType: 'status', width: 110, displayValue: (row) => sourceMatchLabel(row.match_status) },
+  { key: 'matched_station_name', label: '既有站点', minWidth: 140, displayValue: (row) => display(row.matched_station_name) },
+  { key: 'suggested_action', label: '建议操作', valueType: 'status', width: 110 },
   { key: 'issues', label: '问题', valueType: 'description', minWidth: 240, alignmentReason: 'long-text', displayValue: (row) => row.issues.map((item) => item.message).join('；') || (row.node_type === 'station' ? '--' : '未加入主线路径') },
 ]
 const stationTemplateColumns: NcTableColumn<StationTemplatePreviewRow>[] = [
@@ -782,6 +782,9 @@ function stationValues(row: Station): Record<string, unknown> {
     remark: row.remark,
     source_station_value: row.source_station_value,
     source_station_key: row.source_station_key,
+    source_order_text: row.source_order_text,
+    source_order: row.source_order,
+    canonical_station_name: row.canonical_station_name,
     node_type: row.node_type,
     path_code: row.path_code,
     participates_in_direction: row.participates_in_direction,
@@ -1058,8 +1061,17 @@ function applyStationSourceToDraft(): void {
       ? editingDraft.value.stations.find((station) => station.id === candidate.matched_station_id)
       : editingDraft.value.stations.find((station) => station.source_station_key && station.source_station_key === candidate.source_station_key)
     if (matched) {
+      matched.name = proposed.name
+      matched.code = proposed.code
+      matched.sort_order = proposed.sort_order
+      matched.canonical_station_name = proposed.canonical_station_name
       matched.source_station_value = candidate.source_station_value
       matched.source_station_key = candidate.source_station_key
+      matched.source_order_text = candidate.source_order_text
+      matched.source_order = candidate.source_order
+      matched.node_type = proposed.node_type
+      matched.path_code = proposed.path_code
+      matched.participates_in_direction = proposed.participates_in_direction
       matched.source_kind = 'device_station_field'
       matched.source_device_count = candidate.source_device_count
       matched.source_sync_status = 'matched'
@@ -1650,6 +1662,9 @@ function defaultStation(values: Partial<Station> = {}): Station {
     remark: '',
     source_station_value: '',
     source_station_key: '',
+    source_order_text: '',
+    source_order: null,
+    canonical_station_name: '',
     node_type: 'station',
     path_code: 'MAIN',
     participates_in_direction: true,

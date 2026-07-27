@@ -625,7 +625,7 @@ def test_station_source_confirmation_preserves_manual_fields_and_marks_stale_wit
             **manual_values,
             "old_name": "五乡",
             "source_station_value": "32-五乡",
-            "source_station_key": "32-五乡",
+            "source_station_key": "五乡",
             "source_kind": "device_station_field",
         }
         next_session = client.get("/api/rail-transit/base-data/revision").json()
@@ -647,6 +647,10 @@ def test_station_source_confirmation_preserves_manual_fields_and_marks_stale_wit
     assert confirmed.status_code == 200
     saved = next(item for item in stations if item["name"] == "五乡")
     assert saved["source_station_value"] == "32-五乡"
+    assert saved["source_station_key"] == "五乡"
+    assert saved["source_order_text"] == "32"
+    assert saved["source_order"] == 32
+    assert saved["canonical_station_name"] == "五乡"
     assert saved["source_kind"] == "device_station_field"
     assert saved["source_sync_status"] == "stale"
     assert saved["source_device_count"] == 0

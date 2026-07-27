@@ -204,6 +204,9 @@ class StationDTO(ApiModel):
     remark: str = ""
     source_station_value: str = ""
     source_station_key: str = ""
+    source_order_text: str = ""
+    source_order: int | None = None
+    canonical_station_name: str = ""
     node_type: StationNodeType = "station"
     path_code: str = "MAIN"
     participates_in_direction: bool = True
@@ -241,8 +244,11 @@ class StationSourceCandidateDTO(ApiModel):
     candidate_id: str
     source_station_value: str
     source_station_key: str
+    source_order_text: str = ""
+    source_order: int | None = None
     code: str = ""
     name: str
+    canonical_station_name: str = ""
     node_type: StationNodeType = "station"
     path_code: str = "MAIN"
     sort_order: int | None = None
@@ -250,6 +256,8 @@ class StationSourceCandidateDTO(ApiModel):
     source_device_count: int = 0
     match_status: StationSourceMatchStatus = "create"
     matched_station_id: str = ""
+    matched_station_name: str = ""
+    suggested_action: str = "新增"
     proposed_station: StationDTO
     issues: list[StationSourceIssueDTO] = Field(default_factory=list)
 

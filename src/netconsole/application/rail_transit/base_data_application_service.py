@@ -40,6 +40,7 @@ from netconsole.services.rail_transit.station_source_utils import (
     STATION_SOURCE_FIELD,
     legacy_turnback_type_for_facilities,
     normalize_track_facilities,
+    parse_station_source_value,
     station_structure_defaults,
 )
 from netconsole.services.trackside_ap_plan_io import normalize_trackside_plan_rows
@@ -362,6 +363,12 @@ class RailTransitBaseDataApplicationService:
                 "terminal_extension_distance_m",
             )
         terminal_mileage_text = str(raw.get("terminal_endpoint_mileage_text") or "").strip()
+        source_station_value = str(raw.get("source_station_value") or "")
+        parsed_source = parse_station_source_value(source_station_value)
+        parsed_name = parse_station_source_value(name)
+        source_order = _int_or_none(raw.get("source_order"))
+        if source_order is None:
+            source_order = parsed_source.source_order
         return {
             "node_uid": str(raw.get("node_uid") or (uuid4() if action == "create" else "")).strip(),
             "name": name,
@@ -369,8 +376,11 @@ class RailTransitBaseDataApplicationService:
             "code": str(raw.get("code") or "").strip(),
             "line_name": str(raw.get("line_name") or "").strip(),
             "sort_order": sort_order,
-            "source_station_value": str(raw.get("source_station_value") or "").strip(),
-            "source_station_key": str(raw.get("source_station_key") or "").strip(),
+            "source_station_value": source_station_value,
+            "source_station_key": parsed_source.source_station_key or parsed_name.source_station_key,
+            "source_order_text": str(raw.get("source_order_text") or parsed_source.source_order_text).strip(),
+            "source_order": source_order,
+            "canonical_station_name": parsed_name.canonical_station_name,
             "node_type": node_type,
             "path_code": path_code,
             "participates_in_direction": participates,

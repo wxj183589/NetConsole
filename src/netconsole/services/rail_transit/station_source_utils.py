@@ -76,20 +76,28 @@ LEGACY_TURNBACK_FACILITIES = {
 }
 
 _DASH_TRANSLATION = str.maketrans({char: "-" for char in "－—–‐‑‒﹣"})
-_CODE_RE = re.compile(r"^\s*(\d+)\s*[-_]\s*(.+?)\s*$")
+_CODE_RE = re.compile(
+    r"^\s*(?P<code>\d{1,3})(?!\d)[\s.\-_/、,，:：]*(?P<name>\S.*?)\s*$"
+)
+_DIGIT_PREFIX_RE = re.compile(r"^\s*\d")
+_DIGITS_ONLY_RE = re.compile(r"^\s*\d+\s*$")
 
 
 @dataclass(frozen=True)
 class ParsedStationSource:
     source_station_value: str
     source_station_key: str
+    source_order_text: str
+    source_order: int | None
     code: str
     name: str
+    canonical_station_name: str
     sort_order: int | None
     node_type: str
     path_code: str
     participates_in_direction: bool
     parse_warning: str = ""
+    parse_error: str = ""
 
 
 def normalize_station_source_value(value: Any) -> tuple[str, str]:
@@ -101,31 +109,48 @@ def normalize_station_source_value(value: Any) -> tuple[str, str]:
     return text, text.casefold()
 
 
+def normalize_canonical_station_name(value: Any) -> tuple[str, str]:
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    text = text.translate(_DASH_TRANSLATION)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text, text.casefold()
+
+
 def parse_station_source_value(value: Any, *, main_path_code: str = DEFAULT_MAIN_PATH_CODE) -> ParsedStationSource:
-    source_value, source_key = normalize_station_source_value(value)
+    source_value = str(value or "")
+    normalized_value, _raw_source_key = normalize_station_source_value(source_value)
     code = ""
-    name = source_value
+    name = normalized_value
     sort_order: int | None = None
     warning = ""
-    match = _CODE_RE.match(source_value)
+    error = ""
+    match = _CODE_RE.match(normalized_value)
     if match:
-        code = match.group(1)
-        name = match.group(2).strip()
+        code = match.group("code")
+        name = match.group("name").strip()
         sort_order = int(code)
-    elif source_value:
-        warning = "无法自动提取顺序"
+    elif _DIGITS_ONLY_RE.match(normalized_value):
+        name = ""
+        error = "站点字段只有数字，缺少正式站名"
+    elif _DIGIT_PREFIX_RE.match(normalized_value):
+        error = "站点编号仅支持 1～3 位数字"
+    canonical_name, canonical_key = normalize_canonical_station_name(name)
     node_type = infer_station_node_type(name)
     special = node_type in {"parking_lot", "depot"}
     return ParsedStationSource(
         source_station_value=source_value,
-        source_station_key=source_key,
+        source_station_key=canonical_key,
+        source_order_text=code,
+        source_order=sort_order,
         code=code,
-        name=name,
+        name=canonical_name,
+        canonical_station_name=canonical_name,
         sort_order=None if special else sort_order,
         node_type=node_type,
         path_code=UNASSIGNED_PATH_CODE if special else (main_path_code or DEFAULT_MAIN_PATH_CODE),
         participates_in_direction=not special,
         parse_warning=warning,
+        parse_error=error,
     )
 
 
@@ -153,6 +178,9 @@ def default_station_metadata(raw: Mapping[str, Any], *, line_name: str = "", mai
     return {
         "source_station_value": str(raw.get("source_station_value") or ""),
         "source_station_key": str(raw.get("source_station_key") or ""),
+        "source_order_text": str(raw.get("source_order_text") or ""),
+        "source_order": raw.get("source_order"),
+        "canonical_station_name": str(raw.get("canonical_station_name") or raw.get("name") or ""),
         "node_type": node_type,
         "path_code": path_code,
         "sort_order": raw.get("sort_order"),

@@ -126,7 +126,8 @@ class StationSourceDiscoveryService:
         counts: dict[str, tuple[int, str]] = {}
         grouped: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
         for row in rows:
-            value, key = normalize_station_source_value(row.get("station"))
+            parsed = parse_station_source_value(row.get("station"))
+            value, key = parsed.source_station_value, parsed.source_station_key
             if key:
                 grouped[key].append({**row, "source_station_value": value})
         for key, items in grouped.items():
@@ -155,63 +156,93 @@ class StationSourceDiscoveryService:
             )
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in devices:
-            source_value, source_key = normalize_station_source_value(row.get("station"))
-            if not source_key:
+            source_value = str(row.get("station") or "")
+            if not source_value.strip():
                 continue
-            grouped[source_key].append({**row, "source_station_value": source_value, "source_station_key": source_key})
+            parsed = parse_station_source_value(source_value, main_path_code=main_path_code)
+            identity_key = (
+                f"{parsed.node_type}\0{parsed.source_station_key}"
+                if parsed.source_station_key
+                else f"invalid\0{normalize_station_source_value(source_value)[1]}"
+            )
+            grouped[identity_key].append(
+                {
+                    **row,
+                    "source_station_value": source_value,
+                    "parsed_station_source": parsed,
+                }
+            )
 
-        parsed_rows = {key: parse_station_source_value(rows[0]["source_station_value"], main_path_code=main_path_code) for key, rows in grouped.items()}
-        code_names: dict[str, set[str]] = defaultdict(set)
-        name_codes: dict[str, set[str]] = defaultdict(set)
-        order_keys: dict[tuple[str, int], list[str]] = defaultdict(list)
-        for key, parsed in parsed_rows.items():
-            if parsed.code:
-                code_names[parsed.code.casefold()].add(parsed.name.casefold())
-                name_codes[parsed.name.casefold()].add(parsed.code.casefold())
-            if parsed.participates_in_direction and parsed.sort_order is not None:
-                order_keys[(parsed.path_code.casefold(), parsed.sort_order)].append(key)
+        parsed_rows = {
+            key: sorted(
+                (row["parsed_station_source"] for row in rows),
+                key=lambda item: (item.source_order is None, item.source_order or 0, item.source_station_value),
+            )[0]
+            for key, rows in grouped.items()
+        }
+        order_names: dict[tuple[str, int], set[str]] = defaultdict(set)
+        name_orders: dict[str, set[int]] = defaultdict(set)
+        for key, rows in grouped.items():
+            for parsed in (row["parsed_station_source"] for row in rows):
+                if parsed.participates_in_direction and parsed.sort_order is not None:
+                    order_names[(parsed.path_code.casefold(), parsed.sort_order)].add(parsed.source_station_key)
+                    name_orders[key].add(parsed.sort_order)
 
         existing = self._list_existing_stations(site_id)
         existing_by_id = {station.id: station for station in existing}
-        existing_source_key = self._map_existing(existing, "source_station_key")
-        existing_source_value = self._map_existing_by_source_value(existing)
-        existing_code_name = self._map_existing_code_name(existing)
-        existing_name_empty_code = self._map_existing_name_without_code(existing)
+        existing_by_identity, existing_by_canonical_name = self._map_existing_canonical(existing)
+        existing_by_order = {
+            (station.path_code.casefold(), station.sort_order): station
+            for station in existing
+            if (
+                station.source_kind != "legacy_ap_derived"
+                and station.participates_in_direction
+                and station.sort_order is not None
+            )
+        }
         candidates: list[StationSourceCandidateDTO] = []
         for key, rows in grouped.items():
             parsed = parsed_rows[key]
             row_issues: list[StationSourceIssueDTO] = []
-            raw_values = sorted({str(row.get("station") or "") for row in rows if str(row.get("station") or "").strip()})
-            if len(raw_values) > 1:
+            if parsed.parse_error:
                 row_issues.append(
                     self._issue(
-                        "warning",
-                        "station_source_ambiguous_match",
-                        "多个原始 station 值归一化为同一来源键，已按标准化值合并，请人工核对",
-                        field_name="source_station_value",
-                    )
-                )
-            if parsed.parse_warning:
-                row_issues.append(
-                    self._issue(
-                        "warning",
+                        "error",
                         "station_source_parse_failed",
-                        "station 字段无法解析数字前缀，需要人工确认顺序",
+                        parsed.parse_error,
                         field_name="source_station_value",
+                        blocking=True,
                     )
                 )
-            if parsed.code and len(code_names[parsed.code.casefold()]) > 1:
-                row_issues.append(self._issue("error", "station_source_code_conflict", "相同节点编码对应不同站名", "code", blocking=True))
-            if parsed.code and len(name_codes[parsed.name.casefold()]) > 1:
-                row_issues.append(self._issue("error", "station_source_name_conflict", "相同站名对应不同节点编码", "name", blocking=True))
-            if parsed.participates_in_direction and parsed.sort_order is not None and len(order_keys[(parsed.path_code.casefold(), parsed.sort_order)]) > 1:
-                row_issues.append(self._issue("error", "station_order_duplicate", "同一路径内候选主线顺序重复", "sort_order", blocking=True))
+            if len(name_orders[key]) > 1:
+                row_issues.append(
+                    self._issue(
+                        "error",
+                        "station_source_name_conflict",
+                        "同一规范站名对应多个不同主线顺序",
+                        "sort_order",
+                        blocking=True,
+                    )
+                )
+            if (
+                parsed.participates_in_direction
+                and parsed.sort_order is not None
+                and len(order_names[(parsed.path_code.casefold(), parsed.sort_order)]) > 1
+            ):
+                row_issues.append(
+                    self._issue(
+                        "error",
+                        "station_order_duplicate",
+                        "同一主线顺序对应多个不同规范站名",
+                        "sort_order",
+                        blocking=True,
+                    )
+                )
             match_status, matched_station_id, match_issues = self._match_existing(
                 parsed,
-                existing_source_key,
-                existing_source_value,
-                existing_code_name,
-                existing_name_empty_code,
+                existing_by_identity,
+                existing_by_canonical_name,
+                existing_by_order,
             )
             row_issues.extend(match_issues)
             if any(issue.blocking for issue in row_issues):
@@ -237,6 +268,9 @@ class StationSourceDiscoveryService:
                 remark="",
                 source_station_value=parsed.source_station_value,
                 source_station_key=parsed.source_station_key,
+                source_order_text=parsed.source_order_text,
+                source_order=parsed.source_order,
+                canonical_station_name=parsed.canonical_station_name,
                 node_type=parsed.node_type,  # type: ignore[arg-type]
                 path_code=parsed.path_code,
                 participates_in_direction=parsed.participates_in_direction,
@@ -252,8 +286,11 @@ class StationSourceDiscoveryService:
                     candidate_id=f"station-source:{self._candidate_digest(key)}",
                     source_station_value=parsed.source_station_value,
                     source_station_key=parsed.source_station_key,
+                    source_order_text=parsed.source_order_text,
+                    source_order=parsed.source_order,
                     code=parsed.code,
                     name=parsed.name,
+                    canonical_station_name=parsed.canonical_station_name,
                     node_type=parsed.node_type,  # type: ignore[arg-type]
                     path_code=parsed.path_code,
                     sort_order=parsed.sort_order,
@@ -261,6 +298,12 @@ class StationSourceDiscoveryService:
                     source_device_count=len(rows),
                     match_status=match_status,  # type: ignore[arg-type]
                     matched_station_id=matched_station_id,
+                    matched_station_name=matched_station.name if matched_station else "",
+                    suggested_action=(
+                        "人工确认"
+                        if match_status == "conflict"
+                        else ("覆盖现有" if matched_station else "新增")
+                    ),
                     proposed_station=proposed,
                     issues=row_issues,
                 )
@@ -271,49 +314,81 @@ class StationSourceDiscoveryService:
     def _match_existing(
         self,
         parsed: Any,
-        by_source_key: Mapping[str, list[StationDTO]],
-        by_source_value: Mapping[str, list[StationDTO]],
-        by_code_name: Mapping[tuple[str, str], list[StationDTO]],
-        by_name_empty_code: Mapping[str, list[StationDTO]],
+        by_identity: Mapping[tuple[str, str], list[StationDTO]],
+        by_canonical_name: Mapping[str, list[StationDTO]],
+        by_order: Mapping[tuple[str, int], StationDTO],
     ) -> tuple[str, str, list[StationSourceIssueDTO]]:
         issues: list[StationSourceIssueDTO] = []
-        selectors: Iterable[tuple[str, list[StationDTO]]] = (
-            ("source_station_key", by_source_key.get(parsed.source_station_key, [])),
-            ("source_station_value", by_source_value.get(parsed.source_station_key, [])),
-            ("code_name", by_code_name.get((parsed.code.casefold(), parsed.name.casefold()), []) if parsed.code else []),
-            ("name_without_code", by_name_empty_code.get(parsed.name.casefold(), []) if not parsed.code else []),
-        )
-        for method, matches in selectors:
-            if len(matches) == 1:
-                return "matched", matches[0].id, issues
-            if len(matches) > 1:
+        matches = by_identity.get((parsed.source_station_key, parsed.node_type), [])
+        if len(matches) > 1:
+            issues.append(
+                self._issue(
+                    "error",
+                    "station_source_ambiguous_match",
+                    "同一规范站名和节点类型匹配到多个正式站点，需要人工合并",
+                    blocking=True,
+                )
+            )
+            return "conflict", "", issues
+        same_name = by_canonical_name.get(parsed.source_station_key, [])
+        if same_name and not matches:
+            issues.append(
+                self._issue(
+                    "error",
+                    "station_source_node_type_conflict",
+                    "同一规范站名存在不同节点类型，需要人工确认",
+                    "node_type",
+                    blocking=True,
+                )
+            )
+            return "conflict", "", issues
+        if matches:
+            matched = matches[0]
+            if (
+                parsed.participates_in_direction
+                and parsed.sort_order is not None
+                and matched.participates_in_direction
+                and matched.sort_order is not None
+                and matched.source_kind != "legacy_ap_derived"
+                and parsed.sort_order != matched.sort_order
+            ):
                 issues.append(
                     self._issue(
                         "error",
-                        "station_source_ambiguous_match",
-                        f"来源候选通过 {method} 匹配到多个正式站点，需要人工确认",
+                        "station_source_name_conflict",
+                        "同一规范站名对应多个不同主线顺序",
+                        "sort_order",
+                        blocking=True,
+                    )
+                )
+                return "conflict", matched.id, issues
+            if parsed.participates_in_direction and parsed.sort_order is not None:
+                occupied = by_order.get((parsed.path_code.casefold(), parsed.sort_order))
+                if occupied is not None and occupied.id != matched.id:
+                    issues.append(
+                        self._issue(
+                            "error",
+                            "station_order_duplicate",
+                            f"主线顺序 {parsed.sort_order} 已由“{occupied.name}”使用",
+                            "sort_order",
+                            blocking=True,
+                        )
+                    )
+                    return "conflict", matched.id, issues
+            return "matched", matched.id, issues
+        if parsed.participates_in_direction and parsed.sort_order is not None:
+            occupied = by_order.get((parsed.path_code.casefold(), parsed.sort_order))
+            if occupied is not None:
+                issues.append(
+                    self._issue(
+                        "error",
+                        "station_order_duplicate",
+                        f"主线顺序 {parsed.sort_order} 已由“{occupied.name}”使用",
+                        "sort_order",
                         blocking=True,
                     )
                 )
                 return "conflict", "", issues
-        code_conflicts = [
-            station
-            for (code, _name), rows in by_code_name.items()
-            for station in rows
-            if parsed.code and code == parsed.code.casefold() and station.name.casefold() != parsed.name.casefold()
-        ]
-        if code_conflicts:
-            issues.append(self._issue("error", "station_source_code_conflict", "候选节点编码已被其他正式站点使用", "code", blocking=True))
-            return "conflict", "", issues
-        name_conflicts = [
-            station
-            for (_code, name), rows in by_code_name.items()
-            for station in rows
-            if parsed.code and name == parsed.name.casefold() and station.code.casefold() != parsed.code.casefold()
-        ]
-        if name_conflicts:
-            issues.append(self._issue("error", "station_source_name_conflict", "候选站名已被其他正式编码使用", "name", blocking=True))
-            return "conflict", "", issues
         return "create", "", issues
 
     def _list_existing_stations(self, site_id: str) -> list[StationDTO]:
@@ -327,38 +402,23 @@ class StationSourceDiscoveryService:
             page += 1
 
     @staticmethod
-    def _map_existing(rows: Iterable[StationDTO], field_name: str) -> dict[str, list[StationDTO]]:
-        result: dict[str, list[StationDTO]] = defaultdict(list)
+    def _map_existing_canonical(
+        rows: Iterable[StationDTO],
+    ) -> tuple[dict[tuple[str, str], list[StationDTO]], dict[str, list[StationDTO]]]:
+        by_identity: dict[tuple[str, str], list[StationDTO]] = defaultdict(list)
+        by_name: dict[str, list[StationDTO]] = defaultdict(list)
         for row in rows:
-            key = str(getattr(row, field_name) or "").casefold()
-            if key:
-                result[key].append(row)
-        return result
-
-    @staticmethod
-    def _map_existing_by_source_value(rows: Iterable[StationDTO]) -> dict[str, list[StationDTO]]:
-        result: dict[str, list[StationDTO]] = defaultdict(list)
-        for row in rows:
-            _value, key = normalize_station_source_value(row.source_station_value)
-            if key:
-                result[key].append(row)
-        return result
-
-    @staticmethod
-    def _map_existing_code_name(rows: Iterable[StationDTO]) -> dict[tuple[str, str], list[StationDTO]]:
-        result: dict[tuple[str, str], list[StationDTO]] = defaultdict(list)
-        for row in rows:
-            if row.code:
-                result[(row.code.casefold(), row.name.casefold())].append(row)
-        return result
-
-    @staticmethod
-    def _map_existing_name_without_code(rows: Iterable[StationDTO]) -> dict[str, list[StationDTO]]:
-        result: dict[str, list[StationDTO]] = defaultdict(list)
-        for row in rows:
-            if not row.code:
-                result[row.name.casefold()].append(row)
-        return result
+            parsed = parse_station_source_value(row.name)
+            canonical_key = parsed.source_station_key
+            if not canonical_key and row.canonical_station_name:
+                canonical_key = normalize_station_source_value(row.canonical_station_name)[1]
+            if not canonical_key and row.source_station_value:
+                canonical_key = parse_station_source_value(row.source_station_value).source_station_key
+            if not canonical_key:
+                continue
+            by_identity[(canonical_key, row.node_type)].append(row)
+            by_name[canonical_key].append(row)
+        return by_identity, by_name
 
     @staticmethod
     def _station_group_devices(conn: sqlite3.Connection, group_ids: Iterable[int]) -> list[dict[str, Any]]:

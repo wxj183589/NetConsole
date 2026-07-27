@@ -150,6 +150,9 @@ export interface Station {
   remark: string
   source_station_value: string
   source_station_key: string
+  source_order_text: string
+  source_order: number | null
+  canonical_station_name: string
   node_type: StationNodeType
   path_code: string
   participates_in_direction: boolean
@@ -196,8 +199,11 @@ export interface StationSourceCandidate {
   candidate_id: string
   source_station_value: string
   source_station_key: string
+  source_order_text: string
+  source_order: number | null
   code: string
   name: string
+  canonical_station_name: string
   node_type: StationNodeType
   path_code: string
   sort_order: number | null
@@ -205,6 +211,8 @@ export interface StationSourceCandidate {
   source_device_count: number
   match_status: 'create' | 'matched' | 'conflict' | 'manual_review'
   matched_station_id: string
+  matched_station_name: string
+  suggested_action: string
   proposed_station: Station
   issues: StationSourceIssue[]
 }
