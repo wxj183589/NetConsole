@@ -269,6 +269,8 @@ async function downloadArtifact(): Promise<void> {
     if (!tracksideArtifact) ElMessage.success('Artifact 已保存')
   } else if (result.status === 'cancelled' && !tracksideArtifact) {
     ElMessage.warning('Artifact 已生成，但尚未保存到本地。')
+  } else if (result.status === 'started' && !tracksideArtifact) {
+    ElMessage.info('文件已交由浏览器下载，请在浏览器下载记录中查看。')
   } else if (result.status === 'failed' && !tracksideArtifact) ElMessage.error(result.error || 'Artifact 下载失败')
 }
 

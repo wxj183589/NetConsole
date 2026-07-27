@@ -39,6 +39,7 @@ const platformMocks = vi.hoisted(() => ({
 const routeState = vi.hoisted(() => ({ query: {} as Record<string, string>, path: '', name: undefined as string | undefined }))
 const messageMocks = vi.hoisted(() => ({
   error: vi.fn(),
+  info: vi.fn(),
   success: vi.fn(),
   warning: vi.fn(),
 }))
@@ -424,6 +425,11 @@ describe('Job Center saved artifact capability lifecycle', () => {
     await click(findButton(root, 'Artifact 下载')!)
     expect(findButton(root, '打开文件')).toBeUndefined()
     expect(messageMocks.warning).toHaveBeenCalledWith('Artifact 已生成，但尚未保存到本地。')
+
+    platformMocks.download.mockResolvedValueOnce({ status: 'started' })
+    await click(findButton(root, 'Artifact 下载')!)
+    expect(findButton(root, '打开文件')).toBeUndefined()
+    expect(messageMocks.info).toHaveBeenCalledWith('文件已交由浏览器下载，请在浏览器下载记录中查看。')
 
     platformMocks.download.mockResolvedValueOnce({ status: 'saved' })
     await click(findButton(root, 'Artifact 下载')!)

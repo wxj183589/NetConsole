@@ -22,6 +22,11 @@ let initializationState: 'uninitialized' | 'initializing' | 'ready' | 'failed' =
 export async function initializePlatformRuntime(): Promise<ActiveRuntimeConfig> {
   initializationState = 'initializing'
   try {
+    const expectedElectronHost = isElectronHostExpected()
+    if (expectedElectronHost && !window.netconsoleDesktop) {
+      logPlatformDiagnostic('PLATFORM_RUNTIME_INITIALIZED host=electron bridge=false')
+      throw new Error('Electron 文件保存组件未加载，请完全退出 NetConsole 后重新启动。')
+    }
     adapter = window.netconsoleDesktop
       ? createElectronAdapter(window.netconsoleDesktop)
       : createBrowserAdapter(browserApiBase, browserDevelopmentToken)
@@ -31,6 +36,9 @@ export async function initializePlatformRuntime(): Promise<ActiveRuntimeConfig> 
       apiBaseUrl: normalizeApiBase(runtime.apiBaseUrl),
       hostType: adapter.hostType,
     }
+    logPlatformDiagnostic(
+      `PLATFORM_RUNTIME_INITIALIZED host=${adapter.hostType} bridge=${Boolean(window.netconsoleDesktop)}`,
+    )
     initializationState = 'ready'
     return { ...config }
   } catch (cause) {
@@ -90,9 +98,21 @@ export function resetPlatformRuntimeForTests(apiBaseUrl = '', initialized = true
 
 function assertElectronRuntimeReady(): void {
   if (initializationState === 'ready') return
+  if (isElectronHostExpected()) {
+    throw new Error('Electron 文件保存组件未加载，请完全退出 NetConsole 后重新启动。')
+  }
   if (typeof window !== 'undefined' && window.netconsoleDesktop) {
     throw new Error('Electron 运行时尚未就绪，拒绝回退到相对 API 地址')
   }
+}
+
+function isElectronHostExpected(): boolean {
+  if (typeof window === 'undefined') return false
+  return new URLSearchParams(window.location.search || '').get('netconsole_host') === 'electron'
+}
+
+function logPlatformDiagnostic(message: string): void {
+  console.info(message)
 }
 
 function normalizeApiBase(value: string): string {

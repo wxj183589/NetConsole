@@ -766,6 +766,7 @@ function buildWorkspaceRendererTarget(
 ): string {
   if (!rendererUrl) throw new Error('工作区窗口尚未就绪')
   const target = new URL(routeFullPath, rendererUrl)
+  target.searchParams.set('netconsole_host', 'electron')
   if (role === 'workspace') target.searchParams.set('workspace_window', '1')
   target.searchParams.set('workspace_window_id', windowId)
   return target.toString()
@@ -774,6 +775,7 @@ function buildWorkspaceRendererTarget(
 function buildTaskRendererTarget(context: TaskWindowContext): string {
   if (!rendererUrl) throw new Error('任务窗口尚未就绪')
   const url = new URL('/desktop/tasks', rendererUrl)
+  url.searchParams.set('netconsole_host', 'electron')
   url.searchParams.set('task_window', '1')
   if (context.taskId) url.searchParams.set('task_id', context.taskId)
   if (context.module) url.searchParams.set('module', context.module)

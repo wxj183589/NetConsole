@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { open, rename, rm } from 'node:fs/promises'
+import { open, rename, rm, stat } from 'node:fs/promises'
 import { basename, dirname, resolve } from 'node:path'
 
 import {
@@ -39,6 +39,7 @@ export interface BackendDownloadManagerOptions {
   pathRegistry: GrantedPathRegistry
   fetchImpl?: typeof fetch
   createTempId?: () => string
+  statImpl?: (path: string) => Promise<{ isFile(): boolean; size: number }>
   logger?: DesktopLogger
 }
 
@@ -62,13 +63,18 @@ export class BackendDownloadManager {
       return failedResult('DESKTOP_SHUTTING_DOWN', '桌面正在退出，无法开始下载。')
     }
     const request = validateBackendDownloadRequest(value)
+    const route = downloadRouteCategory(request.apiPath)
     const selection = request.destinationPath
       ? { canceled: false, filePath: this.options.pathRegistry.requireSavePath(request.destinationPath) }
-      : await this.options.dialog.showSaveDialog(window, {
-          defaultPath: request.suggestedName,
-          ...(request.filters ? { filters: request.filters } : {}),
-        })
-    if (selection.canceled || !selection.filePath) return { status: 'cancelled' }
+      : await this.showSaveDialog(request, window, route)
+    if (selection.canceled || !selection.filePath) {
+      this.logger('ARTIFACT_SAVE_DIALOG_CANCELLED', `route=${route}`)
+      return { status: 'cancelled' }
+    }
+    this.logger(
+      'ARTIFACT_SAVE_TARGET_SELECTED',
+      `route=${route} file=${basename(selection.filePath)}`,
+    )
     if (this.shuttingDown) {
       return failedResult('DESKTOP_SHUTTING_DOWN', '桌面正在退出，无法开始下载。')
     }
@@ -103,6 +109,21 @@ export class BackendDownloadManager {
     }
   }
 
+  private async showSaveDialog(
+    request: BackendDownloadRequest,
+    requestedWindow: unknown,
+    route: string,
+  ): Promise<{ canceled: boolean; filePath?: string }> {
+    const window = prepareDialogWindow(requestedWindow, this.options.window)
+    const state = windowStateLabel(window)
+    this.logger('ARTIFACT_SAVE_DIALOG_PARENT', `route=${route} ${state}`)
+    this.logger('ARTIFACT_SAVE_DIALOG_OPENED', `route=${route} file=${request.suggestedName}`)
+    return this.options.dialog.showSaveDialog(window, {
+      defaultPath: request.suggestedName,
+      ...(request.filters ? { filters: request.filters } : {}),
+    })
+  }
+
   async shutdown(): Promise<void> {
     this.shuttingDown = true
     for (const controller of this.activeControllers) controller.abort()
@@ -116,6 +137,7 @@ export class BackendDownloadManager {
     controller: AbortController,
   ): Promise<BackendDownloadResult> {
     const route = downloadRouteCategory(request.apiPath)
+    let finalPathCommitted = false
     try {
       const runtime = this.options.backend.getRuntimeInfo()
       const url = managedBackendUrl(runtime, request)
@@ -137,21 +159,33 @@ export class BackendDownloadManager {
         throw new DownloadFailure('BACKEND_DOWNLOAD_FAILED', '下载服务未返回文件内容。')
       }
       validateContentLength(response, request.expectedSizeBytes)
+      this.logger('ARTIFACT_DOWNLOAD_STARTED', `route=${route} file=${basename(finalPath)}`)
       const downloaded = await streamResponseToFile(response.body, tempPath)
       validateDownloadedFile(downloaded, request)
+      this.logger('ARTIFACT_DOWNLOAD_VERIFIED', `route=${route} file=${basename(finalPath)} size=${downloaded.sizeBytes}`)
       await rename(tempPath, finalPath)
+      finalPathCommitted = true
+      await verifyCommittedFile(finalPath, downloaded, this.options.statImpl ?? stat)
       const capabilityId = isOpenableArtifactFileName(basename(finalPath))
         ? this.options.pathRegistry.grantCapability(finalPath)
         : undefined
+      this.logger('ARTIFACT_LOCAL_FILE_COMMITTED', `route=${route} file=${basename(finalPath)} size=${downloaded.sizeBytes}`)
       this.logger('ELECTRON_BACKEND_DOWNLOAD_SAVED', `route=${route}`)
       return {
         status: 'saved',
         ...(capabilityId ? { capabilityId } : {}),
+        fileName: basename(finalPath),
+        directoryLabel: '用户选择的目录',
         sizeBytes: downloaded.sizeBytes,
         sha256: downloaded.sha256,
       }
     } catch (cause) {
       await rm(tempPath, { force: true }).catch(() => undefined)
+      if (finalPathCommitted) await rm(finalPath, { force: true }).catch(() => undefined)
+      this.logger(
+        'ARTIFACT_SAVE_FAILED',
+        `route=${route} file=${basename(finalPath)} error_code=${downloadErrorCode(cause)}`,
+      )
       this.logger(
         'ELECTRON_BACKEND_DOWNLOAD_FAILED',
         `route=${route} error=${downloadErrorCode(cause)}`,
@@ -202,6 +236,48 @@ interface DownloadedFileIntegrity {
   sha256: string
 }
 
+interface DialogParentWindow {
+  id?: unknown
+  isDestroyed?: () => boolean
+  isMinimized?: () => boolean
+  isVisible?: () => boolean
+  isFocused?: () => boolean
+  restore?: () => void
+  show?: () => void
+  focus?: () => void
+}
+
+function prepareDialogWindow(requestedWindow: unknown, fallbackWindow: unknown): unknown {
+  const candidate = isUsableDialogWindow(requestedWindow)
+    ? requestedWindow as DialogParentWindow
+    : isUsableDialogWindow(fallbackWindow)
+      ? fallbackWindow as DialogParentWindow
+      : requestedWindow
+  if (!isUsableDialogWindow(candidate)) return candidate
+  if (candidate.isMinimized?.()) candidate.restore?.()
+  if (!candidate.isVisible?.()) candidate.show?.()
+  candidate.focus?.()
+  return candidate
+}
+
+function isUsableDialogWindow(value: unknown): value is DialogParentWindow {
+  return Boolean(value)
+    && typeof value === 'object'
+    && !(value as DialogParentWindow).isDestroyed?.()
+}
+
+function windowStateLabel(value: unknown): string {
+  if (!isUsableDialogWindow(value)) return 'window_id=unknown visible=unknown focused=unknown minimized=unknown'
+  const window = value as DialogParentWindow
+  const id = typeof window.id === 'number' || typeof window.id === 'string' ? window.id : 'unknown'
+  return [
+    `window_id=${id}`,
+    `visible=${Boolean(window.isVisible?.())}`,
+    `focused=${Boolean(window.isFocused?.())}`,
+    `minimized=${Boolean(window.isMinimized?.())}`,
+  ].join(' ')
+}
+
 async function streamResponseToFile(
   body: ReadableStream<Uint8Array>,
   tempPath: string,
@@ -228,6 +304,17 @@ async function streamResponseToFile(
   } finally {
     reader.releaseLock()
     await handle.close()
+  }
+}
+
+async function verifyCommittedFile(
+  finalPath: string,
+  downloaded: DownloadedFileIntegrity,
+  statImpl: (path: string) => Promise<{ isFile(): boolean; size: number }>,
+): Promise<void> {
+  const committed = await statImpl(finalPath)
+  if (!committed.isFile() || committed.size !== downloaded.sizeBytes) {
+    throw new DownloadFailure('FILE_INTEGRITY_MISMATCH', '文件完整性校验失败，请重新下载。')
   }
 }
 
@@ -300,6 +387,7 @@ function downloadErrorCode(cause: unknown): string {
 }
 
 function downloadRouteCategory(apiPath: string): string {
+  if (apiPath.startsWith('/api/device-management/')) return 'device_management'
   if (apiPath.startsWith('/api/file-management/')) return 'file_management'
   if (apiPath.startsWith('/api/config-collection/')) return 'config_collection'
   if (apiPath.startsWith('/api/rail-transit/mesh-analysis/')) return 'mesh_analysis'

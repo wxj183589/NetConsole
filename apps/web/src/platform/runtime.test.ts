@@ -79,6 +79,31 @@ describe('platform runtime', () => {
     expect(resolveFrontendAssetUrl('/web-build-meta.json')).toBe('/web-build-meta.json')
   })
 
+  it('fails closed when Electron is expected but the preload bridge is missing', async () => {
+    const click = vi.fn()
+    vi.stubGlobal('window', {
+      location: {
+        origin: 'http://127.0.0.1:5173',
+        protocol: 'http:',
+        host: '127.0.0.1:5173',
+        search: '?netconsole_host=electron',
+      },
+    })
+    vi.stubGlobal('document', {
+      body: { append: vi.fn() },
+      createElement: vi.fn(() => ({ click })),
+    })
+
+    await expect(initializePlatformRuntime()).rejects.toThrow(
+      'Electron 文件保存组件未加载，请完全退出 NetConsole 后重新启动。',
+    )
+    expect(click).not.toHaveBeenCalled()
+    expect(() => downloadBackendResource({
+      apiPath: '/api/device-management/exports/task-1/download',
+      suggestedName: '设备表.csv',
+    })).toThrow('Electron 文件保存组件未加载')
+  })
+
   it('normalizes a trailing slash in the Electron runtime base URL', async () => {
     const bridge = nativeBridge()
     vi.mocked(bridge.getRuntimeConfig).mockResolvedValue({

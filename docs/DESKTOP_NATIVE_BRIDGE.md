@@ -68,7 +68,11 @@ Renderer 不能把绝对路径提交给打开动作。`downloadBackendResource` 
 
 `chooseSavePath` 只返回用户确认并登记为当前会话授权的目标路径；可选默认目录同样必须先由 `selectDirectory` 授权。报告生成及 Excel/ZIP/PDF/NAM 内容继续属于 Python Application Service 与 Export Process。`downloadBackendResource` 只搬运既有受控 HTTP 响应：Renderer 可以回传刚取得的另存为路径，但 main 必须在内存授权表中重新校验后才跳过第二次对话框；任意绝对路径仍会被拒绝。Renderer 只能提交设备、配置、文件、AC、MESH、Online MR 和网络工具现有正式 Artifact endpoint 模式及各端点允许的字符串 Query，main 使用当前 `PythonBackendManager` 的动态回环 Origin 与内存令牌请求，先流式写入目标同目录的随机 `.part`，同步计算实际大小和 SHA-256，并在期望元数据存在时完成校验后才原子替换。取消、HTTP 失败、路径不可写、空间不足或完整性不一致均不改变服务端任务终态，且不留下 `.part` 或伪成功文件。Electron Main/Preload 不读取数据库、不解释或生成报告。
 
-设备管理页面只为当前前端会话中用户主动提交的 `web_export_device_csv` 和 `web_export_device_template_csv` 记录交互式 task ID；对应 Artifact 首次就绪后自动调用上述统一能力。历史任务和其他页面创建的任务不自动弹窗，Task Center 的“Artifact 下载”允许随时人工重新保存。用户取消 Save As 只表示 `local_save_status=NOT_SAVED`，服务端 Artifact 仍为 READY、任务仍为 `COMPLETED`。保存后的本机绝对路径继续不返回 Renderer；页面只持有短期 capability，并通过“打开文件 / 打开所在目录”动作使用它。
+Electron Main 为所有受管 Renderer URL 注入 `netconsole_host=electron`。Renderer 看到该标记但未发现 preload bridge 时必须失败关闭，显示“Electron 文件保存组件未加载”，不得创建 `<a download>` 或回退 Browser Adapter。只有未携带 Electron 宿主标记的普通浏览器页面才允许启动浏览器下载，并且 `started` 只表示已交给浏览器，不能转换为“已保存到本地”。
+
+设备管理页面只为当前前端会话中用户主动提交的 `web_export_device_csv` 和 `web_export_device_template_csv` 自动打开一次 Save As；Artifact、弹窗中、已取消、失败和已保存分别记录本地状态。Artifact/API 短暂不同步不会永久标记已处理，取消或保存失败后继续显示“保存到本地”，历史 Artifact 也可从设备页面最近任务或 Task Center 人工保存。服务端 Artifact READY、任务 `COMPLETED` 与本地文件保存成功互不替代。只有 Main 完成 `.part` 流式写入、大小/SHA-256 校验、原子替换和最终文件 `stat` 复验并返回 `saved` 后，页面才显示“已保存到本地”。保存后的绝对路径不返回 Renderer；页面只持有短期 capability，并通过“打开文件 / 打开所在目录”动作使用它。
+
+Save As 以前台实际 IPC sender 窗口为父窗口；Main 在弹窗前恢复最小化窗口并执行 show/focus。诊断日志只记录受控路由类别、文件名、窗口 ID/可见状态、大小和错误码，不记录完整本机路径、URL、Token 或凭据。
 
 Electron Session 拒绝所有 Chromium 原生 `will-download`，因此 `<a download>`、Blob 或页面导航不能绕过该桥接。退出时先关闭新下载入口，取消并等待在途流清理后再停止受管 Python；Browser Platform Adapter 不受该 Electron 专用策略影响。
 

@@ -124,10 +124,13 @@ export function createDesktopBridge(ipcRenderer: IpcRendererLike): NetConsoleDes
       DESKTOP_IPC.chooseSavePath,
       validateChooseSavePathOptions(options),
     ) as ReturnType<NetConsoleDesktopBridge['chooseSavePath']>,
-    downloadBackendResource: (request) => ipcRenderer.invoke(
-      DESKTOP_IPC.downloadBackendResource,
-      validateBackendDownloadRequest(request),
-    ) as ReturnType<NetConsoleDesktopBridge['downloadBackendResource']>,
+    downloadBackendResource: (request) => {
+      console.info('ARTIFACT_SAVE_IPC_INVOKED')
+      return ipcRenderer.invoke(
+        DESKTOP_IPC.downloadBackendResource,
+        validateBackendDownloadRequest(request),
+      ) as ReturnType<NetConsoleDesktopBridge['downloadBackendResource']>
+    },
     executeFileDesktopAction: (actionRef) => ipcRenderer.invoke(
       DESKTOP_IPC.executeFileDesktopAction,
       validateFileDesktopActionRef(actionRef),

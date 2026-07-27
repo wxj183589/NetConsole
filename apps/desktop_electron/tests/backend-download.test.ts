@@ -49,6 +49,8 @@ describe('backend download manager', () => {
     expect(requestToken).toBe(token)
     expect(result).toMatchObject({ status: 'saved', capabilityId: expect.stringMatching(/^[0-9a-f-]{36}$/) })
     expect(result).toMatchObject({
+      fileName: 'result.zip',
+      directoryLabel: '用户选择的目录',
       sizeBytes: 12,
       sha256: createHash('sha256').update('first-second').digest('hex'),
     })
@@ -127,6 +129,79 @@ describe('backend download manager', () => {
     }, taskWindow)).resolves.toEqual({ status: 'cancelled' })
     expect(showSaveDialog).toHaveBeenCalledWith(taskWindow, expect.objectContaining({ defaultPath: 'devices.xlsx' }))
     expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('restores and focuses the calling window before opening Save As', async () => {
+    let minimized = true
+    let visible = false
+    const window = {
+      id: 17,
+      isDestroyed: vi.fn(() => false),
+      isMinimized: vi.fn(() => minimized),
+      isVisible: vi.fn(() => visible),
+      isFocused: vi.fn(() => true),
+      restore: vi.fn(() => { minimized = false }),
+      show: vi.fn(() => { visible = true }),
+      focus: vi.fn(),
+    }
+    const showSaveDialog = vi.fn(async () => ({ canceled: true }))
+    const logger = vi.fn()
+    const manager = new BackendDownloadManager({
+      backend: { getRuntimeInfo: () => ({ baseUrl: 'http://127.0.0.1:43123', apiToken: 'x'.repeat(48) }) },
+      dialog: { showSaveDialog },
+      window: {},
+      pathRegistry: new GrantedPathRegistry(),
+      fetchImpl: vi.fn<typeof fetch>(),
+      logger,
+    })
+
+    await expect(manager.download({
+      apiPath: '/api/device-management/exports/task-parent/download',
+      query: { artifact_id: 'artifact-parent' },
+      suggestedName: '设备表.csv',
+    }, window)).resolves.toEqual({ status: 'cancelled' })
+
+    expect(window.restore).toHaveBeenCalledOnce()
+    expect(window.show).toHaveBeenCalledOnce()
+    expect(window.focus).toHaveBeenCalledOnce()
+    expect(showSaveDialog).toHaveBeenCalledWith(window, expect.any(Object))
+    expect(logger).toHaveBeenCalledWith(
+      'ARTIFACT_SAVE_DIALOG_PARENT',
+      'route=device_management window_id=17 visible=true focused=true minimized=false',
+    )
+    expect(logger).toHaveBeenCalledWith('ARTIFACT_SAVE_DIALOG_CANCELLED', 'route=device_management')
+  })
+
+  it('fails closed and removes the committed file when final stat does not match', async () => {
+    const server = await loopbackServer((_request, response) => {
+      response.writeHead(200)
+      response.end('verified-content')
+    })
+    const directory = await tempDirectory()
+    const target = resolve(directory, '设备表.csv')
+    const logger = vi.fn()
+    const manager = new BackendDownloadManager({
+      backend: { getRuntimeInfo: () => ({ baseUrl: server.origin, apiToken: 'v'.repeat(48) }) },
+      dialog: { showSaveDialog: vi.fn(async () => ({ canceled: false, filePath: target })) },
+      window: {},
+      pathRegistry: new GrantedPathRegistry(),
+      statImpl: vi.fn(async () => ({ isFile: () => true, size: 1 })),
+      logger,
+    })
+
+    await expect(manager.download({
+      apiPath: '/api/device-management/exports/task-verify/download',
+      query: { artifact_id: 'artifact-verify' },
+      suggestedName: '设备表.csv',
+    })).resolves.toMatchObject({
+      status: 'failed',
+      errorCode: 'FILE_INTEGRITY_MISMATCH',
+    })
+    expect(await readdir(directory)).toEqual([])
+    expect(logger).toHaveBeenCalledWith(
+      'ARTIFACT_SAVE_FAILED',
+      expect.stringContaining('error_code=FILE_INTEGRITY_MISMATCH'),
+    )
   })
 
   it('saves to an explicitly granted save path without opening a second dialog', async () => {

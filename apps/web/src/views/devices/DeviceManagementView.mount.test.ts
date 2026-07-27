@@ -615,7 +615,7 @@ describe('DeviceManagementView mounted interactions', () => {
       },
     })]
     const wrapper = await renderView()
-    const save = wrapper.findAll('button').find((button) => button.text() === '另存 Artifact')
+    const save = wrapper.findAll('button').find((button) => button.text() === '保存到本地')
     expect(save).toBeTruthy()
     await save!.trigger('click')
     await flushPromises()
@@ -764,7 +764,11 @@ describe('DeviceManagementView mounted interactions', () => {
 
     expect(mocks.messages.warning).toHaveBeenCalledWith('设备表格已生成，但尚未保存到本地。')
     expect(mocks.taskStore!.tasks[0].status).toBe('COMPLETED')
-    expect(wrapper.text()).toContain('另存 Artifact')
+    expect(wrapper.text()).toContain('保存到本地')
+    await wrapper.findAll('button').find((button) => button.text() === '保存到本地')!.trigger('click')
+    await flushPromises()
+    expect(mocks.downloadBackendResource).toHaveBeenCalledTimes(2)
+    expect(wrapper.html()).toContain('已保存到本地')
     wrapper.unmount()
   })
 
@@ -802,7 +806,118 @@ describe('DeviceManagementView mounted interactions', () => {
 
     expect(mocks.messages.warning).toHaveBeenCalledWith('设备导入模板已生成，但尚未保存到本地。')
     expect(mocks.taskStore!.tasks[0].status).toBe('COMPLETED')
-    expect(wrapper.text()).toContain('另存 Artifact')
+    expect(wrapper.text()).toContain('保存到本地')
+    await wrapper.findAll('button').find((button) => button.text() === '保存到本地')!.trigger('click')
+    await flushPromises()
+    expect(mocks.downloadBackendResource).toHaveBeenCalledTimes(2)
+    expect(wrapper.html()).toContain('已保存到本地')
+    wrapper.unmount()
+  })
+
+  it('keeps manual save available after an IPC failure', async () => {
+    mocks.downloadBackendResource
+      .mockResolvedValueOnce({ status: 'failed', error: 'IPC unavailable' })
+      .mockResolvedValueOnce({
+        status: 'saved',
+        capabilityId: '8a02d34f-ec8f-4c17-9a8a-b266bdf9e137',
+      })
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="device-export-csv-no-credentials"]').trigger('click')
+    await flushPromises()
+
+    mocks.taskStore!.tasks = [task({
+      id: 'device-csv-export-1',
+      type: 'web_export_device_csv',
+      status: 'COMPLETED',
+      updated_time: '2026-07-27T12:00:00Z',
+      artifact_download: {
+        artifact_id: 'artifact-csv-1',
+        api_path: '/api/device-management/exports/device-csv-export-1/download',
+        query: { artifact_id: 'artifact-csv-1' },
+        display_name: '测试局点-设备表.csv',
+        size_bytes: 128,
+        sha256: 'a'.repeat(64),
+      },
+    })]
+    await flushPromises()
+
+    expect(mocks.messages.error).toHaveBeenCalledWith('IPC unavailable')
+    expect(wrapper.html()).toContain('本地保存失败，可重新保存')
+    await wrapper.findAll('button').find((button) => button.text() === '保存到本地')!.trigger('click')
+    await flushPromises()
+    expect(mocks.downloadBackendResource).toHaveBeenCalledTimes(2)
+    expect(wrapper.html()).toContain('已保存到本地')
+    expect(wrapper.text()).toContain('打开文件')
+    expect(wrapper.text()).toContain('所在目录')
+    wrapper.unmount()
+  })
+
+  it('does not report browser download started as a saved local file', async () => {
+    mocks.downloadBackendResource.mockResolvedValueOnce({ status: 'started' })
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="device-export-csv-no-credentials"]').trigger('click')
+    await flushPromises()
+    mocks.taskStore!.tasks = [task({
+      id: 'device-csv-export-1',
+      type: 'web_export_device_csv',
+      status: 'COMPLETED',
+      updated_time: '2026-07-27T12:00:00Z',
+      artifact_download: {
+        artifact_id: 'artifact-csv-1',
+        api_path: '/api/device-management/exports/device-csv-export-1/download',
+        query: { artifact_id: 'artifact-csv-1' },
+        display_name: '测试局点-设备表.csv',
+        size_bytes: 128,
+        sha256: 'a'.repeat(64),
+      },
+    })]
+    await flushPromises()
+
+    expect(mocks.messages.info).toHaveBeenCalledWith('文件已交由浏览器下载，请在浏览器下载记录中查看。')
+    expect(wrapper.html()).toContain('浏览器下载已开始，尚未确认本地文件')
+    expect(wrapper.find('[title="设备表格导出完成"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('保存到本地')
+    wrapper.unmount()
+  })
+
+  it('retries task details after a temporary read failure instead of marking it handled', async () => {
+    mocks.getDeviceExportTask
+      .mockRejectedValueOnce(new Error('temporary'))
+      .mockResolvedValueOnce({
+        task_id: 'device-csv-export-1',
+        task_status: 'COMPLETED',
+        action: 'export_csv',
+        artifact_id: 'artifact-csv-1',
+        available: true,
+        sha256: 'a'.repeat(64),
+        size_bytes: 128,
+        row_count: 34,
+        message: '设备表格完整性校验完成',
+      })
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="device-export-csv-no-credentials"]').trigger('click')
+    await flushPromises()
+    mocks.taskStore!.tasks = [task({
+      id: 'device-csv-export-1',
+      type: 'web_export_device_csv',
+      status: 'COMPLETED',
+      updated_time: '2026-07-27T12:00:00Z',
+      artifact_download: {
+        artifact_id: 'artifact-csv-1',
+        api_path: '/api/device-management/exports/device-csv-export-1/download',
+        query: { artifact_id: 'artifact-csv-1' },
+        display_name: '测试局点-设备表.csv',
+        size_bytes: 128,
+        sha256: 'a'.repeat(64),
+      },
+    })]
+    await flushPromises()
+    expect(mocks.downloadBackendResource).not.toHaveBeenCalled()
+
+    mocks.taskStore!.tasks[0].updated_time = '2026-07-27T12:00:01Z'
+    await flushPromises()
+    expect(mocks.getDeviceExportTask).toHaveBeenCalledTimes(2)
+    expect(mocks.downloadBackendResource).toHaveBeenCalledOnce()
     wrapper.unmount()
   })
 })

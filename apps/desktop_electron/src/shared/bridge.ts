@@ -117,6 +117,8 @@ export type BackendDownloadErrorCode =
 export interface BackendDownloadResult {
   status: 'started' | 'saved' | 'cancelled' | 'failed'
   capabilityId?: string
+  fileName?: string
+  directoryLabel?: string
   sizeBytes?: number
   sha256?: string
   errorCode?: BackendDownloadErrorCode

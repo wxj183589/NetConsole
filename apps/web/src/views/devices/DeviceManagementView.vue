@@ -82,6 +82,13 @@ type DevicePublicTask = TaskItem & {
 }
 
 type DeviceExportAction = 'export_csv' | 'export_template'
+type LocalSaveStatus =
+  | 'artifact_ready'
+  | 'local_save_pending'
+  | 'local_save_prompting'
+  | 'local_save_saved'
+  | 'local_save_cancelled'
+  | 'local_save_failed'
 
 type DeviceTaskWindowBridge = {
   openTaskWindow(context: { taskId?: string; module: 'devices'; status?: TaskStatus }): Promise<{ success: boolean; error?: string }>
@@ -142,6 +149,7 @@ const lastSubmittedTask = ref<DeviceTaskReference | null>(null)
 const savedArtifactCapability = ref('')
 const savedDeviceArtifactNotice = ref<{ title: string; description: string } | null>(null)
 const interactiveExportTasks = ref<Record<string, DeviceTaskReference>>({})
+const localSaveStatuses = reactive<Record<string, LocalSaveStatus>>({})
 const csvExportSubmitting = ref(false)
 const templateExportSubmitting = ref(false)
 const terminalSettingsVisible = ref(false)
@@ -231,7 +239,6 @@ let omniPeekPollGeneration = 0
 let editLoadGeneration = 0
 let editProfileAbortController: AbortController | null = null
 let componentActive = true
-const handledInteractiveExportTaskIds = new Set<string>()
 const pollingConsumer = 'device-management-view'
 let drawerDragStartX = 0
 let drawerDragStartWidth = 0
@@ -254,6 +261,11 @@ const latestDeviceTask = computed(() => {
   return (submittedId && publicDeviceTasks.value.find((task) => task.id === submittedId))
     || publicDeviceTasks.value[0]
     || null
+})
+const latestArtifactSaveStatus = computed<LocalSaveStatus | ''>(() => {
+  const task = latestDeviceTask.value
+  if (!task?.artifact_download) return ''
+  return localSaveStatuses[task.id] || 'artifact_ready'
 })
 const testActive = computed(() => {
   const taskId = connectionTest.value?.task_id
@@ -342,8 +354,8 @@ watch(
         if (!isDeviceExportAction(submitted.action)) return ''
         const task = publicDeviceTasks.value.find((item) => item.id === submitted.task_id)
         if (!task || !['COMPLETED', 'FAILED', 'CANCELLED'].includes(task.status)) return ''
-        if (task.status === 'COMPLETED' && !task.artifact_download) return ''
-        return `${task.id}:${task.status}:${submitted.action}`
+        const artifact = task.artifact_download
+        return `${task.id}:${task.status}:${submitted.action}:${artifact?.artifact_id || ''}:${task.updated_time}`
       })
       .filter(Boolean)
       .sort()
@@ -353,19 +365,29 @@ watch(
     if (!terminalKeys) return
     for (const terminalKey of terminalKeys.split('|')) {
       const [taskId, , actionValue] = terminalKey.split(':')
-      if (!taskId || !isDeviceExportAction(actionValue) || handledInteractiveExportTaskIds.has(taskId)) continue
-      handledInteractiveExportTaskIds.add(taskId)
+      if (!taskId || !isDeviceExportAction(actionValue)) continue
+      const saveStatus = localSaveStatuses[taskId]
+      if (
+        saveStatus === 'local_save_prompting'
+        || saveStatus === 'local_save_saved'
+        || saveStatus === 'local_save_cancelled'
+        || saveStatus === 'local_save_failed'
+        || saveStatus === 'local_save_pending'
+      ) continue
       const task = publicDeviceTasks.value.find((item) => item.id === taskId)
       try {
         const result = await getDeviceExportTask(taskId)
         if (result.task_status === 'COMPLETED') {
           const artifact = task?.artifact_download
           if (!artifact || !result.available) {
+            localSaveStatuses[taskId] = 'artifact_ready'
             ElMessage.error(actionValue === 'export_template'
               ? '模板任务已完成，但未生成可下载文件，请重新导出。'
               : '导出任务已完成，但未找到可下载文件。')
             continue
           }
+          localSaveStatuses[taskId] = 'artifact_ready'
+          console.info(`EXPORT_ARTIFACT_READY task_id=${taskId}`)
           await saveDeviceCsvArtifact(artifact, result, actionValue)
         } else if (result.task_status === 'CANCELLED') {
           ElMessage.warning(actionValue === 'export_template' ? '设备导入模板导出已取消' : '设备表格导出已取消')
@@ -584,34 +606,52 @@ async function saveDeviceCsvArtifact(
     || !/^[0-9a-f]{64}$/i.test(task.sha256)
     || artifact.artifact_id !== task.artifact_id
   ) {
+    localSaveStatuses[task.task_id] = 'local_save_failed'
     ElMessage.error('导出任务已完成，但文件完整性信息缺失。')
     return
   }
-  const result = await downloadBackendResource({
-    apiPath: artifact.api_path,
-    query: artifact.query,
-    suggestedName: artifact.display_name,
-    expectedSizeBytes: task.size_bytes,
-    expectedSha256: task.sha256,
-  })
+  if (localSaveStatuses[task.task_id] === 'local_save_prompting') return
+  localSaveStatuses[task.task_id] = 'local_save_prompting'
+  console.info(`EXPORT_LOCAL_SAVE_REQUESTED task_id=${task.task_id}`)
+  let result
+  try {
+    result = await downloadBackendResource({
+      apiPath: artifact.api_path,
+      query: artifact.query,
+      suggestedName: artifact.display_name,
+      expectedSizeBytes: task.size_bytes,
+      expectedSha256: task.sha256,
+    })
+  } catch (cause) {
+    localSaveStatuses[task.task_id] = 'local_save_failed'
+    console.info(`EXPORT_LOCAL_SAVE_RESULT failed task_id=${task.task_id}`)
+    ElMessage.error(errorMessage(cause, '本地保存组件不可用，请重新检测后重试。'))
+    return
+  }
   if (result.status === 'cancelled') {
+    localSaveStatuses[task.task_id] = 'local_save_cancelled'
+    console.info(`EXPORT_LOCAL_SAVE_RESULT cancelled task_id=${task.task_id}`)
     ElMessage.warning(action === 'export_template'
       ? '设备导入模板已生成，但尚未保存到本地。'
       : '设备表格已生成，但尚未保存到本地。')
     return
   }
   if (result.status === 'started') {
-    ElMessage.success(action === 'export_template'
-      ? '设备导入模板生成完成；文件将保存至浏览器默认下载目录'
-      : `设备表格导出完成，共 ${task.row_count ?? 0} 台设备；文件将保存至浏览器默认下载目录`)
+    localSaveStatuses[task.task_id] = 'local_save_pending'
+    console.info(`EXPORT_LOCAL_SAVE_RESULT started task_id=${task.task_id}`)
+    ElMessage.info('文件已交由浏览器下载，请在浏览器下载记录中查看。')
     return
   }
   if (result.status === 'failed') {
+    localSaveStatuses[task.task_id] = 'local_save_failed'
+    console.info(`EXPORT_LOCAL_SAVE_RESULT failed task_id=${task.task_id}`)
     ElMessage.error(result.error || (action === 'export_template'
       ? '设备导入模板保存失败，请在任务中心重新保存。'
       : '设备表格保存失败，请在任务中心重新保存。'))
     return
   }
+  localSaveStatuses[task.task_id] = 'local_save_saved'
+  console.info(`EXPORT_LOCAL_SAVE_RESULT saved task_id=${task.task_id}`)
   savedArtifactCapability.value = result.capabilityId || ''
   savedDeviceArtifactNotice.value = {
     title: action === 'export_template' ? '设备导入模板生成完成' : '设备表格导出完成',
@@ -642,6 +682,21 @@ async function downloadLatestArtifact(): Promise<void> {
   const latestTask = latestDeviceTask.value
   const artifact = latestTask?.artifact_download
   if (!artifact) return
+  const action = deviceExportActionForTask(latestTask)
+  if (action) {
+    await saveDeviceCsvArtifact(artifact, {
+      task_id: latestTask.id,
+      task_status: latestTask.status,
+      action,
+      artifact_id: artifact.artifact_id,
+      available: true,
+      sha256: artifact.sha256 || '',
+      size_bytes: artifact.size_bytes,
+      ...(latestTask.records_count === null ? {} : { row_count: latestTask.records_count }),
+      message: latestTask.message,
+    }, action)
+    return
+  }
   const templateArtifact = latestTask.type.includes('template_csv')
   savedArtifactCapability.value = ''
   const result = await downloadBackendResource({
@@ -661,7 +716,7 @@ async function downloadLatestArtifact(): Promise<void> {
       ? '设备导入模板已生成，但尚未保存到本地。'
       : '设备表格已生成，但尚未保存到本地。',
   )
-  else if (result.status === 'started') ElMessage.success('文件将保存至浏览器默认下载目录')
+  else if (result.status === 'started') ElMessage.info('文件已交由浏览器下载，请在浏览器下载记录中查看。')
   const capabilityId = result.status === 'saved'
     && 'capabilityId' in result
     && typeof result.capabilityId === 'string'
@@ -671,6 +726,22 @@ async function downloadLatestArtifact(): Promise<void> {
     savedArtifactCapability.value = capabilityId
     ElMessage.success('Artifact 已保存')
   }
+}
+
+function deviceExportActionForTask(task: DevicePublicTask): DeviceExportAction | null {
+  if (task.type === 'web_export_device_csv') return 'export_csv'
+  if (task.type === 'web_export_device_template_csv') return 'export_template'
+  return null
+}
+
+function localSaveStatusLabel(status: LocalSaveStatus | ''): string {
+  if (status === 'local_save_saved') return '已保存到本地'
+  if (status === 'local_save_prompting') return '正在打开另存为'
+  if (status === 'local_save_cancelled') return '尚未保存到本地'
+  if (status === 'local_save_failed') return '本地保存失败，可重新保存'
+  if (status === 'local_save_pending') return '浏览器下载已开始，尚未确认本地文件'
+  if (status === 'artifact_ready') return 'Artifact 已生成，尚未保存到本地'
+  return ''
 }
 
 async function useSavedArtifact(reveal: boolean): Promise<void> {
@@ -1587,14 +1658,20 @@ function errorMessage(cause: unknown, fallback: string): string {
 
     <el-alert
       :title="`设备任务 · 运行中 ${activeDeviceTaskCount} 项 / 失败任务 ${failedDeviceTaskCount} 项`"
-      :description="latestDeviceTask ? `${latestDeviceTask.name || latestDeviceTask.type} · ${latestDeviceTask.status} · ${latestDeviceTask.message || latestDeviceTask.id}` : '任务状态由统一任务中心恢复'"
+      :description="latestDeviceTask ? `${latestDeviceTask.name || latestDeviceTask.type} · ${latestDeviceTask.status} · ${latestArtifactSaveStatus ? localSaveStatusLabel(latestArtifactSaveStatus) : (latestDeviceTask.message || latestDeviceTask.id)}` : '任务状态由统一任务中心恢复'"
       type="info"
       :closable="false"
       show-icon
       class="task-summary"
     >
       <el-button link type="primary" @click="openTaskWindow()">打开任务窗口</el-button>
-      <el-button v-if="latestDeviceTask?.artifact_download" link type="primary" @click="downloadLatestArtifact">另存 Artifact</el-button>
+      <el-button
+        v-if="latestDeviceTask?.artifact_download"
+        link
+        type="primary"
+        :disabled="latestArtifactSaveStatus === 'local_save_prompting'"
+        @click="downloadLatestArtifact"
+      >{{ latestArtifactSaveStatus === 'local_save_saved' ? '再次另存为' : '保存到本地' }}</el-button>
       <el-button v-if="desktopHost && savedArtifactCapability" link type="primary" @click="useSavedArtifact(false)">打开文件</el-button>
       <el-button v-if="desktopHost && savedArtifactCapability" link type="primary" @click="useSavedArtifact(true)">所在目录</el-button>
     </el-alert>
