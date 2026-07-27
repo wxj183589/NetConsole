@@ -18,6 +18,17 @@ def _switch() -> Device:
     )
 
 
+def _h3c_switch() -> Device:
+    return Device(
+        name="H3C-TRACKSIDE-01",
+        system_name="H3C-TRACKSIDE-01",
+        station="Station A",
+        device_uuid="sw-zte-1",
+        device_vendor="H3C",
+        device_type="SW",
+    )
+
+
 def _interfaces() -> dict[str, list[dict[str, object | None]]]:
     return {
         "sw-zte-1": [
@@ -144,7 +155,8 @@ def test_trackside_lldp_name_requires_one_exact_candidate() -> None:
     assert rows[0]["lldp_match_status"] == "AMBIGUOUS"
     assert rows[0]["ap_match_source"] == "LLDP_SYSTEM_NAME"
     assert rows[0]["ap_uuid"] is None
-    assert rows[0]["calculation_status"] == "SINGLE_ENDED_ONLY"
+    assert rows[0]["calculation_status"] == "NOT_VERIFIED"
+    assert rows[0]["calculation_reason"] == "REAL_DEVICE_SAMPLE_REQUIRED"
 
 
 def test_ambiguous_current_lldp_does_not_rebind_through_legacy_interface_fallback() -> None:
@@ -192,10 +204,11 @@ def test_ambiguous_current_lldp_does_not_rebind_through_legacy_interface_fallbac
     assert row["ap_name"] is None
     assert row["ap_mac"] == ""
     assert row["has_fit_ap_resource"] is False
-    assert row["calculation_status"] == "SINGLE_ENDED_ONLY"
+    assert row["calculation_status"] == "NOT_VERIFIED"
+    assert row["calculation_reason"] == "REAL_DEVICE_SAMPLE_REQUIRED"
 
 
-def test_trackside_calculates_bidirectional_loss_for_reliable_fresh_samples() -> None:
+def test_zte_trackside_keeps_bidirectional_loss_not_verified() -> None:
     resource = _resource("ap-1", "AP-01", "0011-2233-4455", "10.10.1.10")
 
     rows = build_trackside_ap_business_rows(
@@ -217,13 +230,14 @@ def test_trackside_calculates_bidirectional_loss_for_reliable_fresh_samples() ->
     row = rows[0]
     assert row["switch_vendor"] == "ZTE"
     assert row["switch_optical_status"] == "unverified"
-    assert row["calculation_status"] == "CALCULATED"
-    assert row["forward_loss_db"] == 5.6
-    assert row["reverse_loss_db"] == 8.8
-    assert row["sample_time_delta_seconds"] == 300
+    assert row["calculation_status"] == "NOT_VERIFIED"
+    assert row["calculation_reason"] == "REAL_DEVICE_SAMPLE_REQUIRED"
+    assert row["forward_loss_db"] is None
+    assert row["reverse_loss_db"] is None
+    assert row["sample_time_delta_seconds"] is None
 
 
-def test_trackside_does_not_calculate_with_stale_or_single_ended_samples() -> None:
+def test_zte_trackside_never_calculates_from_stale_or_single_ended_samples() -> None:
     resource = _resource("ap-1", "AP-01", "0011-2233-4455", "10.10.1.10")
     lldp = {
         "sw-zte-1": [
@@ -258,10 +272,37 @@ def test_trackside_does_not_calculate_with_stale_or_single_ended_samples() -> No
         [resource],
     )[0]
 
-    assert stale["calculation_status"] == "STALE_SAMPLE"
+    assert stale["calculation_status"] == "NOT_VERIFIED"
+    assert stale["calculation_reason"] == "REAL_DEVICE_SAMPLE_REQUIRED"
     assert stale["forward_loss_db"] is None
-    assert single_ended["calculation_status"] == "REMOTE_DOM_UNAVAILABLE"
+    assert single_ended["calculation_status"] == "NOT_VERIFIED"
+    assert single_ended["calculation_reason"] == "REAL_DEVICE_SAMPLE_REQUIRED"
     assert single_ended["forward_loss_db"] is None
+
+
+def test_h3c_trackside_keeps_existing_bidirectional_loss_calculation() -> None:
+    resource = _resource("ap-1", "AP-01", "0011-2233-4455", "10.10.1.10")
+    row = build_trackside_ap_business_rows(
+        [_h3c_switch()],
+        _interfaces(),
+        _optical(status="normal"),
+        [_remote_dom("ap-1", "AP-01", "0011-2233-4455")],
+        {
+            "sw-zte-1": [
+                {
+                    "local_interface": "xgei-0/1/1/2",
+                    "neighbor_mac": "00:11:22:33:44:55",
+                }
+            ]
+        },
+        [resource],
+    )[0]
+
+    assert row["switch_vendor"] == "H3C"
+    assert row["calculation_status"] == "CALCULATED"
+    assert row["forward_loss_db"] == 5.6
+    assert row["reverse_loss_db"] == 8.8
+    assert row["sample_time_delta_seconds"] == 300
 
 
 def test_trackside_preserves_zte_abnormal_and_dom_unavailable_statuses() -> None:

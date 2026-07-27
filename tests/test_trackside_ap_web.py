@@ -322,6 +322,153 @@ def test_trackside_application_starts_scoped_update(tmp_path: Path) -> None:
     assert update_job.params["station"] == "站点A"
 
 
+def test_trackside_application_lists_zte_adapter_and_finalizes_sample_artifact(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.ensure_site_dirs("demo")
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    device = DeviceRepository(database).create(
+        Device(
+            device_uuid="11111111-1111-4111-8111-111111111111",
+            name="ZTE-SW-01",
+            station="站点A",
+            device_vendor="ZTE",
+            device_type="SW",
+            primary_address="192.0.2.10",
+        )
+    )
+    catalog = (
+        trackside_ap_business_query_service.TracksideApBusinessQueryService(
+            paths
+        ).list_switch_adapters("demo")
+    )
+    assert catalog.total == 1
+    assert catalog.items[0].device_uuid == device.device_uuid
+    assert catalog.items[0].adapter.adaptation_status == "已接入，待实机验证"
+    assert catalog.items[0].adapter.profile.profile_id == (
+        "zte_zxr10_5960x_es_v2"
+    )
+    assert {
+        item.key: item.status for item in catalog.items[0].adapter.capabilities
+    }["lldp"] == "SAMPLE_REQUIRED"
+
+    tasks = TaskApplicationService(paths=paths, site_name="demo")
+    process = FakeLocalProcessAdapter(tasks)
+    service = RailTransitWebApplicationService(
+        paths,
+        tasks,
+        process_adapter=process,  # type: ignore[arg-type]
+        export_adapter=FakeExportProcessAdapter(tasks),  # type: ignore[arg-type]
+    )
+    started = service.start_switch_vendor_sample(
+        "demo",
+        device_uuid=str(device.device_uuid),
+        vendor="ZTE",
+        command_profile="zte_zxr10_5960x_es_v2",
+        selected_interface="xgei-0/1/1/2",
+        requested_commands=["device_version", "lldp_global"],
+    )
+    job = process.jobs[started.task_id]
+    assert job.task_type == "switch_vendor_sample_collect"
+    assert job.params["requested_commands"] == [
+        "device_version",
+        "lldp_global",
+    ]
+    assert job.params["selected_interface"] == "xgei-0/1/1/2"
+    output_path = Path(str(job.params["artifact_output_path"]))
+    assert output_path.name.startswith("zte-adapter-sample-ZTE-SW-01-")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(b"fixture-zip")
+
+    process.complete(started.task_id, {"status": "PARTIAL_SUCCESS"})
+
+    completed = service.get_task("demo", started.task_id)
+    assert completed.action == "switch_vendor_sample_collect"
+    assert completed.available is True
+    assert completed.artifact_name == output_path.name
+    opened_path, opened_name = service.open_switch_vendor_sample(
+        "demo",
+        completed.artifact_id,
+    )
+    assert opened_path == output_path
+    assert opened_name == output_path.name
+    assert "switch_vendor_sample_collect" in registered_task_types()
+
+
+def test_trackside_application_rejects_mismatched_sample_profile(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.ensure_site_dirs("demo")
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    device = DeviceRepository(database).create(
+        Device(
+            device_uuid="22222222-2222-4222-8222-222222222222",
+            name="ZTE-SW-02",
+            device_vendor="ZTE",
+            device_type="SW",
+        )
+    )
+    tasks = TaskApplicationService(paths=paths, site_name="demo")
+    process = FakeLocalProcessAdapter(tasks)
+    service = RailTransitWebApplicationService(
+        paths,
+        tasks,
+        process_adapter=process,  # type: ignore[arg-type]
+        export_adapter=FakeExportProcessAdapter(tasks),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RailTransitWebError) as exc_info:
+        service.start_switch_vendor_sample(
+            "demo",
+            device_uuid=str(device.device_uuid),
+            vendor="ZTE",
+            command_profile="h3c_comware_trackside_v1",
+        )
+
+    assert exc_info.value.code == "SWITCH_PROFILE_MISMATCH"
+    assert process.jobs == {}
+
+
+def test_trackside_application_rejects_h3c_vendor_sample(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.ensure_site_dirs("demo")
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    device = DeviceRepository(database).create(
+        Device(
+            device_uuid="33333333-3333-4333-8333-333333333333",
+            name="H3C-SW-01",
+            device_vendor="H3C",
+            device_type="SW",
+        )
+    )
+    tasks = TaskApplicationService(paths=paths, site_name="demo")
+    process = FakeLocalProcessAdapter(tasks)
+    service = RailTransitWebApplicationService(
+        paths,
+        tasks,
+        process_adapter=process,  # type: ignore[arg-type]
+        export_adapter=FakeExportProcessAdapter(tasks),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RailTransitWebError) as exc_info:
+        service.start_switch_vendor_sample(
+            "demo",
+            device_uuid=str(device.device_uuid),
+            vendor="H3C",
+            command_profile="h3c_comware_trackside_v1",
+        )
+
+    assert exc_info.value.code == "SWITCH_SAMPLE_VENDOR_UNSUPPORTED"
+    assert process.jobs == {}
+
+
 def test_trackside_application_validates_update_scope_and_ap_identity(tmp_path: Path) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     paths.ensure_site_dirs("demo")

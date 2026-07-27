@@ -42,6 +42,9 @@ describe('trackside AP business display', () => {
     expect(displayBidirectionalLoss('SINGLE_ENDED_ONLY', null, null)).toBe(
       '无法计算（仅有单端光功率）',
     )
+    expect(displayBidirectionalLoss('NOT_VERIFIED', null, null)).toBe(
+      '尚未接入真实节点，无法计算光衰',
+    )
     expect(displayBidirectionalLoss('CALCULATED', 5.6, 8.8)).toBe(
       '正向 5.6 dB / 反向 8.8 dB',
     )

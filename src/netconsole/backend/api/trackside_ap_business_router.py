@@ -18,6 +18,8 @@ from netconsole.models.api.trackside_ap_business import (
     TracksideApPlanWriteRequestDTO,
     TracksideApRenameCommandExportRequestDTO,
     TracksideApUpdateRequestDTO,
+    TracksideSwitchAdapterCatalogDTO,
+    TracksideSwitchSampleRequestDTO,
 )
 from netconsole.services.rail_transit.trackside_ap_business_query_service import TracksideApBusinessQueryService
 
@@ -30,6 +32,7 @@ _ACTIONS = {
     "trackside_ap_plan_export",
     "trackside_ap_base_export",
     "trackside_ap_rename_command_export",
+    "switch_vendor_sample_collect",
 }
 
 
@@ -68,6 +71,64 @@ def rows(
         page=page,
         page_size=page_size,
     )
+
+
+@router.get(
+    "/switch-adapters",
+    response_model=TracksideSwitchAdapterCatalogDTO,
+    dependencies=[
+        Depends(require_feature("rail.zte_trackside_switch_adapter")),
+    ],
+)
+def switch_adapters(request: Request) -> TracksideSwitchAdapterCatalogDTO:
+    return _query_service(request).list_switch_adapters(_site_id(request))
+
+
+@router.post(
+    "/switch-adapters/sample",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[
+        Depends(require_feature("rail.zte_trackside_switch_adapter")),
+        Depends(require_feature("web.rail_task_control")),
+    ],
+)
+def start_switch_adapter_sample(
+    request: Request,
+    payload: TracksideSwitchSampleRequestDTO,
+) -> RailTransitTaskDTO:
+    try:
+        return _application_service(request).start_switch_vendor_sample(
+            _site_id(request),
+            device_uuid=payload.device_uuid,
+            vendor=payload.vendor,
+            command_profile=payload.command_profile,
+            selected_interface=payload.selected_interface,
+            requested_commands=payload.requested_commands,
+        )
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
+@router.get(
+    "/switch-adapters/artifacts/{artifact_id}/download",
+    response_class=FileResponse,
+    dependencies=[
+        Depends(require_feature("rail.zte_trackside_switch_adapter")),
+    ],
+)
+def download_switch_adapter_sample(
+    request: Request,
+    artifact_id: str,
+) -> FileResponse:
+    try:
+        path, name = _application_service(request).open_switch_vendor_sample(
+            _site_id(request),
+            artifact_id,
+        )
+        return FileResponse(path, filename=name, media_type="application/zip")
+    except RailTransitWebError as exc:
+        _raise_error(exc)
 
 
 @router.post(
@@ -345,6 +406,7 @@ def _raise_error(exc: RailTransitWebError) -> None:
     status_code = {
         "TASK_NOT_FOUND": status.HTTP_404_NOT_FOUND,
         "ARTIFACT_INVALID": status.HTTP_404_NOT_FOUND,
+        "SWITCH_DEVICE_NOT_FOUND": status.HTTP_404_NOT_FOUND,
         "BLOCKED_ON_TASK_WINDOW": status.HTTP_503_SERVICE_UNAVAILABLE,
     }.get(exc.code, status.HTTP_422_UNPROCESSABLE_ENTITY)
     raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc

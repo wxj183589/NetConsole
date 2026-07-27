@@ -36,6 +36,11 @@ def test_parse_zte_5960x_identity_from_manual_fixture() -> None:
     assert parsed.value["image_file"] == "sysdisk0: verset/59X-ES-V2.00.20.03B07.set"
     assert parsed.value["uptime_seconds"] == 6600
     assert parsed.value["board_name"] == "5960X-32U-ES"
+    assert parsed.value["verification_status"] == "DOCUMENT_SAMPLE_ONLY"
+    assert parsed.value["parser_version"]
+    assert parsed.value["parse_status"] == "PARSED"
+    assert parsed.value["warnings"] == []
+    assert parsed.value["raw_output_ref"] == ""
 
 
 @pytest.mark.parametrize(
@@ -169,6 +174,7 @@ def test_lldp_parser_remains_sample_required_without_real_fixture() -> None:
     assert parsed.status == "SAMPLE_REQUIRED"
     assert parsed.value == []
     assert parsed.warnings
+    assert parsed.verification_status == "SAMPLE_REQUIRED"
     assert parse_lldp("No neighbor").status == "NO_NEIGHBOR"
     assert (
         parse_lldp("LLDP is disabled\nNo neighbor").status

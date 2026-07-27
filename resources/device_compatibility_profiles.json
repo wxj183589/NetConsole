@@ -157,20 +157,20 @@
       "command_profile_id": "legacy.trackside_switch_collect",
       "parser_profile_id": "zte_zxr10_5960x_es_v2",
       "capabilities": {
-        "device_overview": "supported",
-        "interface_status": "supported",
-        "optical_module": "supported",
-        "lldp": "unverified",
+        "device_overview": "document_sample_only",
+        "interface_status": "document_sample_only",
+        "optical_module": "document_sample_only",
+        "lldp": "sample_required",
         "configuration_collect": "unsupported",
         "device_file_download": "unsupported",
         "fit_ap_collect": "not_applicable",
         "vehicle_mr_collect": "not_applicable",
         "trackside_ap": "partially_supported",
-        "single_ended_optical_power": "supported",
-        "bidirectional_attenuation": "partially_supported"
+        "single_ended_optical_power": "document_sample_only",
+        "bidirectional_attenuation": "not_verified"
       },
-      "validation_level": "registered_pending_field_validation",
-      "notes": "ZXR10 5960X-ES V2.00.20.03 手册 fixture 已验证 show version、show interface brief 和 show opticalinfo；LLDP 仍需真实设备输出，整机状态保持 REAL_DEVICE_PENDING。"
+      "validation_level": "document_sample_only",
+      "notes": "ZXR10 5960X-ES V2.00.20.03 仅完成文档样例 Parser 与第一阶段框架；LLDP 为 SAMPLE_REQUIRED，AP 关联和双向光衰均需真实设备 Artifact。"
     }
   ]
 }

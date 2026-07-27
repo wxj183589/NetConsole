@@ -126,7 +126,7 @@ SNMP Center、通用 MIB/OID 字典、SNMPv3、RW community、SET、Trap 和通�
 
 Huawei 仍只有未来扩展边界，没有生产 Profile、命令、Parser 或真实 fixture；相关设备返回不支持，不能凭空猜测或回退到 H3C。
 
-ZTE 本期只登记 ZXR10 5960X-ES V2 的轨旁 AP 接入交换机只读能力：
+ZTE 本期只登记 ZXR10 5960X-ES V2 的轨旁 AP 接入交换机第一阶段只读框架：
 
 | 能力 | ZTE 命令 |
 | --- | --- |
@@ -134,13 +134,15 @@ ZTE 本期只登记 ZXR10 5960X-ES V2 的轨旁 AP 接入交换机只读能力�
 | 版本 / 型号 | `show version` |
 | 接口 | `show interface brief` / `show interface <safe-interface>` |
 | 光模块 | `show opticalinfo brief` / `show opticalinfo <safe-interface>` |
-| LLDP 状态与样本 | `show lldp config` / `show lldp config interface <safe-interface>` / `show lldp entry interface <safe-interface>` / `show lldp statistic interface <safe-interface>` |
+| LLDP 全局候选 | `show lldp entry` / `show lldp neighbor` / `show lldp neighbors` |
+| LLDP 接口候选 | `show lldp entry interface <safe-interface>` / `show lldp neighbor interface <safe-interface>` |
+| LLDP 配置候选 | `show lldp config` / `show lldp config interface <safe-interface>` |
 
-LLDP 命令已进入严格的轨旁采集 Guard，但缺少真实设备输出 fixture，parser 固定返回 `SAMPLE_REQUIRED`，不会伪造邻居结构。设备详情 Profile 不执行逐端口 LLDP；轨旁 Adapter 在后台 Job 中按安全接口参数采样并保留 raw。
+LLDP 候选命令配置在 `zte_zxr10_5960x_es_v2` Profile 中，只允许由 `switch_vendor_sample_collect` 独立 Job 在严格 Guard 下执行，不进入普通轨旁默认采集链。由于缺少真实设备输出，parser 固定返回 `SAMPLE_REQUIRED`，不会伪造邻居结构。
 
-ZTE 配置采集、配置下发、文件管理、CLI Ping、完整诊断包和 AC 保持 unsupported，不登记 H3C 猜测等价命令。手册 fixture 已验证版本/型号、接口状态、DOM 摘要与端口详情解析；真实设备整体状态仍为 `REAL_DEVICE_PENDING`。
+ZTE 配置采集、配置下发、文件管理、CLI Ping、完整诊断包和 AC 保持 unsupported，不登记 H3C 猜测等价命令。版本/型号、接口状态、DOM 摘要与端口详情 Parser 只基于 V2.00.20.03 文档样例，统一标记 `DOCUMENT_SAMPLE_ONLY`。
 
-单端 `RxPower/TxPower` 是光功率，不是链路光衰。双向光衰只在对端关系可靠、两端 DOM 都有效、模块在线且两端采样时间差不超过 30 分钟时计算；否则保留明确的 `SINGLE_ENDED_ONLY`、`REMOTE_DOM_UNAVAILABLE`、`STALE_SAMPLE`、`NEIGHBOR_UNCERTAIN` 或 `MODULE_OFFLINE` 状态。
+文档中的 `RxPower/TxPower` 不是现场数据。第一阶段 ZTE 业务行固定为 `NOT_VERIFIED / REAL_DEVICE_SAMPLE_REQUIRED`，不参与双向光衰计算；H3C 继续使用既有计算和状态规则。
 
 ## 维护方式
 

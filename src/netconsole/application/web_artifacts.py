@@ -220,7 +220,11 @@ class WebArtifactStore:
                     else (
                         "设备表格完整性校验完成"
                         if reservation.source == "device_csv_export"
-                        else "报告完整性校验完成"
+                        else (
+                            "厂商采样 Artifact 完整性校验完成"
+                            if reservation.source == "switch_vendor_sample"
+                            else "报告完整性校验完成"
+                        )
                     )
                 ),
             )
@@ -520,6 +524,8 @@ class WebArtifactStore:
             "online_mr_report": self.paths.online_mr_root(site_id),
             "mesh_analysis_report": self.paths.site_mesh_root(site_id),
             "mesh_link_detail_export": self.paths.site_mesh_root(site_id),
+            "switch_vendor_sample": self.paths.trackside_ap_outputs_dir(site_id)
+            / "vendor_samples",
             "trackside_ap_business": self.paths.trackside_ap_outputs_dir(site_id),
             "trackside_ap_base": self.paths.trackside_ap_outputs_dir(site_id),
             "trackside_ap_rename_commands": self.paths.trackside_ap_outputs_dir(site_id),

@@ -92,11 +92,11 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["netconsole/services/h3c_collect_service.py", "netconsole/services/h3c_ac_collect_service.py"],
-      "zte_adaptation_status": "manual_fixture_verified",
+      "zte_adaptation_status": "document_sample_only",
       "comware_command": "display version",
       "zte_command": "show version",
-      "parser_status": "H3C 已实现；ZTE ZXR10 5960X-ES V2 手册 fixture 已验证",
-      "notes": "ZTE 真实设备整体状态仍为 REAL_DEVICE_PENDING。"
+      "parser_status": "H3C 已实现；ZTE 基于 V2.00.20.03 文档样例实现",
+      "notes": "ZTE 标记 DOCUMENT_SAMPLE_ONLY，尚未连接真实设备。"
     },
     {
       "id": "switch_display_device",
@@ -188,10 +188,10 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["netconsole/services/h3c_collect_service.py", "netconsole/services/h3c_optical_refresh_service.py"],
-      "zte_adaptation_status": "manual_fixture_verified",
+      "zte_adaptation_status": "document_sample_only",
       "comware_command": "display interface",
       "zte_command": "show interface <safe-interface>",
-      "parser_status": "H3C 已实现；ZTE 手册 fixture 已验证",
+      "parser_status": "H3C 已实现；ZTE 基于文档样例实现，DOCUMENT_SAMPLE_ONLY",
       "notes": "ZTE 接口参数必须通过严格接口名校验。"
     },
     {
@@ -212,10 +212,10 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["netconsole/services/rail_transit/trackside_optical_collection.py", "netconsole/services/command_guard.py"],
-      "zte_adaptation_status": "manual_fixture_verified",
+      "zte_adaptation_status": "document_sample_only",
       "comware_command": "display interface brief",
       "zte_command": "show interface brief",
-      "parser_status": "H3C 已实现；ZTE 手册 fixture 已验证",
+      "parser_status": "H3C 已实现；ZTE 基于文档样例实现，DOCUMENT_SAMPLE_ONLY",
       "notes": "ZTE 由交互执行器处理分页并保留 raw。"
     },
     {
@@ -236,10 +236,10 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["netconsole/services/h3c_collect_service.py"],
-      "zte_adaptation_status": "manual_fixture_verified",
+      "zte_adaptation_status": "document_sample_only",
       "comware_command": "display transceiver interface",
       "zte_command": "show opticalinfo brief",
-      "parser_status": "H3C 已实现；ZTE DOM 摘要手册 fixture 已验证",
+      "parser_status": "H3C 已实现；ZTE DOM 摘要基于文档样例，DOCUMENT_SAMPLE_ONLY",
       "notes": "ZTE 单端 Rx/Tx 是光功率，不自动称为链路光衰。"
     },
     {
@@ -260,10 +260,10 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["netconsole/services/h3c_collect_service.py"],
-      "zte_adaptation_status": "manual_fixture_verified",
+      "zte_adaptation_status": "document_sample_only",
       "comware_command": "display transceiver manuinfo interface",
       "zte_command": "show opticalinfo <safe-interface>",
-      "parser_status": "H3C 已实现；ZTE 端口 DOM 手册 fixture 已验证",
+      "parser_status": "H3C 已实现；ZTE 端口 DOM 基于文档样例，DOCUMENT_SAMPLE_ONLY",
       "notes": "ZTE 端口详情同时提供模块厂商、PN、SN、温度、电压和门限。"
     },
     {
@@ -284,10 +284,10 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["netconsole/services/rail_transit/trackside_optical_collection.py", "netconsole/services/h3c_collect_service.py", "netconsole/services/h3c_optical_refresh_service.py"],
-      "zte_adaptation_status": "manual_fixture_verified",
+      "zte_adaptation_status": "document_sample_only",
       "comware_command": "display transceiver diagnosis interface",
       "zte_command": "show opticalinfo brief / show opticalinfo <safe-interface>",
-      "parser_status": "H3C 已实现；ZTE DOM 手册 fixture 已验证",
+      "parser_status": "H3C 已实现；ZTE DOM 基于文档样例，DOCUMENT_SAMPLE_ONLY",
       "notes": "ZTE Unknown 保留为 UNVERIFIED 或 DOM_UNAVAILABLE，不直接判模块故障。"
     },
     {
@@ -310,7 +310,7 @@
       "source_locations": ["netconsole/services/rail_transit/trackside_optical_collection.py", "netconsole/services/h3c_collect_service.py"],
       "zte_adaptation_status": "sample_required",
       "comware_command": "display lldp neighbor-information list",
-      "zte_command": "show lldp config / show lldp entry interface <safe-interface>",
+      "zte_command": "七条候选命令仅由 switch_vendor_sample_collect 执行",
       "parser_status": "H3C 已实现；ZTE 固定 SAMPLE_REQUIRED",
       "notes": "ZTE 缺少真实 LLDP 输出 fixture，不伪造全量邻居命令或结构化结果。"
     },
@@ -334,7 +334,7 @@
       "source_locations": ["netconsole/services/h3c_collect_service.py", "netconsole/services/command_guard.py"],
       "zte_adaptation_status": "sample_required",
       "comware_command": "display lldp neighbor-information verbose",
-      "zte_command": "show lldp config interface <safe-interface> / show lldp statistic interface <safe-interface>",
+      "zte_command": "show lldp config / show lldp config interface <safe-interface>",
       "parser_status": "H3C 已实现；ZTE 固定 SAMPLE_REQUIRED",
       "notes": "ZTE 命令只用于受控真实样本采集，取得 fixture 后再固化 parser。"
     },
@@ -692,11 +692,11 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["src/netconsole/adapters/trackside_switch.py", "src/netconsole/services/h3c_collect_service.py"],
-      "zte_adaptation_status": "manual_fixture_verified",
+      "zte_adaptation_status": "document_sample_only",
       "comware_command": "",
       "zte_command": "show version",
-      "parser_status": "V2.00.20.03 手册 fixture 已验证",
-      "notes": "真实设备整体状态仍为 REAL_DEVICE_PENDING。"
+      "parser_status": "基于 V2.00.20.03 文档样例，DOCUMENT_SAMPLE_ONLY",
+      "notes": "尚未连接真实设备，不构成 FIELD_VERIFIED。"
     },
     {
       "id": "zte_zxr10_show_interface_brief",
@@ -716,10 +716,10 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["src/netconsole/adapters/trackside_switch.py", "src/netconsole/services/h3c_collect_service.py"],
-      "zte_adaptation_status": "manual_fixture_verified",
+      "zte_adaptation_status": "document_sample_only",
       "comware_command": "",
       "zte_command": "show interface brief",
-      "parser_status": "V2.00.20.03 手册 fixture 已验证",
+      "parser_status": "基于 V2.00.20.03 文档样例，DOCUMENT_SAMPLE_ONLY",
       "notes": "分页由交互执行器受控处理。"
     },
     {
@@ -740,10 +740,10 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["src/netconsole/adapters/trackside_switch.py", "src/netconsole/services/command_guard.py"],
-      "zte_adaptation_status": "manual_fixture_verified",
+      "zte_adaptation_status": "document_sample_only",
       "comware_command": "",
       "zte_command": "show interface <safe-interface>",
-      "parser_status": "V2.00.20.03 手册 fixture 已验证",
+      "parser_status": "基于 V2.00.20.03 文档样例，DOCUMENT_SAMPLE_ONLY",
       "notes": "单端口失败只形成端口级 warning，不阻断其他端口。"
     },
     {
@@ -764,10 +764,10 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["src/netconsole/adapters/trackside_switch.py", "src/netconsole/services/h3c_collect_service.py"],
-      "zte_adaptation_status": "manual_fixture_verified",
+      "zte_adaptation_status": "document_sample_only",
       "comware_command": "",
       "zte_command": "show opticalinfo brief",
-      "parser_status": "V2.00.20.03 手册 fixture 已验证",
+      "parser_status": "基于 V2.00.20.03 文档样例，DOCUMENT_SAMPLE_ONLY",
       "notes": "单端 Rx/Tx 是光功率，不自动称为链路光衰。"
     },
     {
@@ -788,10 +788,10 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["src/netconsole/adapters/trackside_switch.py", "src/netconsole/services/command_guard.py"],
-      "zte_adaptation_status": "manual_fixture_verified",
+      "zte_adaptation_status": "document_sample_only",
       "comware_command": "",
       "zte_command": "show opticalinfo <safe-interface>",
-      "parser_status": "V2.00.20.03 手册 fixture 已验证",
+      "parser_status": "基于 V2.00.20.03 文档样例，DOCUMENT_SAMPLE_ONLY",
       "notes": "N/A、Unsupported、offline 或单字段缺失不会丢弃整条记录。"
     },
     {
@@ -805,9 +805,9 @@
       "parameters": [],
       "pre_commands": [],
       "purpose": "采集全局 LLDP 配置状态。",
-      "output_log": "轨旁 AP 采集会话的 lldp-config.txt",
+      "output_log": "厂商采样 ZIP 的 lldp-global.txt",
       "parser": "src/netconsole/parsers/zte/zxr10.py::parse_lldp",
-      "consumer": "ZTE 轨旁交换机 Adapter",
+      "consumer": "ZTE 厂商适配采样",
       "risk_level": "read_only",
       "interactive_input": false,
       "is_cli": true,
@@ -829,7 +829,7 @@
       "parameters": [{"name": "interface", "description": "通过严格白名单校验的 ZXR10 接口名。"}],
       "pre_commands": [],
       "purpose": "采集指定端口 LLDP 配置状态。",
-      "output_log": "轨旁 AP 采集会话的 LLDP 原始样本",
+      "output_log": "厂商采样 ZIP 的 lldp-interface.txt",
       "parser": "src/netconsole/parsers/zte/zxr10.py::parse_lldp",
       "consumer": "ZTE 厂商适配采样",
       "risk_level": "read_only",
@@ -853,9 +853,9 @@
       "parameters": [{"name": "interface", "description": "通过严格白名单校验的 ZXR10 接口名。"}],
       "pre_commands": [],
       "purpose": "采集指定端口 LLDP 邻居原始输出。",
-      "output_log": "轨旁 AP 采集会话的 lldp-entry-<interface>.txt",
+      "output_log": "厂商采样 ZIP 的 lldp-interface.txt",
       "parser": "src/netconsole/parsers/zte/zxr10.py::parse_lldp",
-      "consumer": "ZTE 轨旁交换机 Adapter",
+      "consumer": "ZTE 厂商适配采样",
       "risk_level": "read_only",
       "interactive_input": false,
       "is_cli": true,
@@ -867,17 +867,17 @@
       "notes": "无邻居、LLDP 禁用、命令不支持和解析待样本需分别表达。"
     },
     {
-      "id": "zte_zxr10_show_lldp_statistic_interface",
+      "id": "zte_zxr10_show_lldp_candidates",
       "module": "轨旁 AP 接入交换机",
       "device_scope": "ZTE ZXR10 5960X-ES V2",
       "vendor": "ZTE",
       "protocol": "CLI",
       "category": "LLDP 样本",
-      "command_template": "show lldp statistic interface <interface>",
-      "parameters": [{"name": "interface", "description": "通过严格白名单校验的 ZXR10 接口名。"}],
+      "command_template": "show lldp <candidate>",
+      "parameters": [{"name": "candidate", "description": "仅限 zte_zxr10_5960x_es_v2 Profile 登记的七条候选命令；接口参数必须通过严格白名单校验。"}],
       "pre_commands": [],
-      "purpose": "采集指定端口 LLDP 收发统计原始输出。",
-      "output_log": "轨旁 AP 采集会话的 LLDP 原始样本",
+      "purpose": "在独立厂商适配采样任务中探测 LLDP 全局、接口和配置候选命令。",
+      "output_log": "厂商采样 ZIP 的 lldp-global.txt / lldp-interface.txt",
       "parser": "src/netconsole/parsers/zte/zxr10.py::parse_lldp",
       "consumer": "ZTE 厂商适配采样",
       "risk_level": "read_only",
@@ -886,9 +886,9 @@
       "source_locations": ["src/netconsole/adapters/trackside_switch.py", "src/netconsole/services/command_guard.py"],
       "zte_adaptation_status": "sample_required",
       "comware_command": "",
-      "zte_command": "show lldp statistic interface <safe-interface>",
+      "zte_command": "show lldp entry | show lldp neighbor | show lldp neighbors | show lldp entry interface <safe-interface> | show lldp neighbor interface <safe-interface> | show lldp config | show lldp config interface <safe-interface>",
       "parser_status": "SAMPLE_REQUIRED",
-      "notes": "当前仅用于受控样本采集，不形成生产邻居记录。"
+      "notes": "候选命令不进入普通轨旁默认采集；真实节点确认正式命令前不形成生产邻居记录。"
     },
     {
       "id": "ac_display_wlan_ap_all",

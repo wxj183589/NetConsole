@@ -4,16 +4,28 @@ import { useRouter } from 'vue-router'
 
 import {
   getTracksideApTask,
+  listTracksideSwitchAdapters,
   listTracksideApBusiness,
   recoverTracksideApTasks,
   startTracksideApBusinessExport,
   startTracksideApUpdate,
+  startTracksideSwitchSample,
+  tracksideSwitchSampleDownloadRequest,
 } from '../../api/tracksideApBusiness'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { isFeatureEnabled } from '../../features'
 import { t } from '../../i18n/runtime'
-import type { TracksideApBusinessPage, TracksideApBusinessRow, TracksideApTask, TracksideApUpdateRequest } from '../../types/tracksideApBusiness'
+import { downloadBackendResource } from '../../platform/runtime'
+import type {
+  TracksideApBusinessPage,
+  TracksideApBusinessRow,
+  TracksideApTask,
+  TracksideApUpdateRequest,
+  TracksideSwitchAdapterCatalog,
+  TracksideSwitchCapabilityStatus,
+  TracksideSwitchDevice,
+} from '../../types/tracksideApBusiness'
 import { displayInterfaceName } from '../../utils/interfaceName'
 import {
   isTracksideApBusinessArtifactTask,
@@ -33,7 +45,8 @@ const storageKey = 'netconsole.trackside-ap.last-task'
 const autoSaveStorageKey = 'netconsole.trackside-ap-business.auto-saved-task-ids'
 const router = useRouter()
 const activeStates = new Set(['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'QUEUED', 'CANCELLING'])
-const businessTaskActions = new Set(['trackside_ap_optical_update', TRACKSIDE_AP_BUSINESS_EXPORT_ACTION])
+const sampleTaskAction = 'switch_vendor_sample_collect'
+const businessTaskActions = new Set(['trackside_ap_optical_update', TRACKSIDE_AP_BUSINESS_EXPORT_ACTION, sampleTaskAction])
 const autoSaveInFlight = new Set<string>()
 const initialLoading = ref(false)
 const refreshing = ref(false)
@@ -44,6 +57,13 @@ const taskNotice = ref('')
 const taskNoticeType = ref<'success' | 'info' | 'warning' | 'error'>('info')
 const page = ref<TracksideApBusinessPage | null>(null)
 const task = ref<TracksideApTask | null>(null)
+const adapterCatalog = ref<TracksideSwitchAdapterCatalog | null>(null)
+const selectedSwitchUuid = ref('')
+const selectedInterface = ref('')
+const adapterLoading = ref(false)
+const adapterError = ref('')
+const adapterDetailsVisible = ref(false)
+const sampleDownloading = ref(false)
 const filters = reactive({ station: '', query: '', optical_anomaly_only: false, page: 1, page_size: 50 })
 let pollTimer: number | undefined
 let taskNoticeTimer: number | undefined
@@ -77,6 +97,21 @@ const businessColumns: NcTableColumn<TracksideApBusinessRow>[] = [
 ]
 const updateTaskRunning = computed(() => isActiveTask(task.value) && task.value?.action === 'trackside_ap_optical_update')
 const exportTaskRunning = computed(() => isActiveTask(task.value) && task.value?.action === TRACKSIDE_AP_BUSINESS_EXPORT_ACTION)
+const sampleTaskRunning = computed(() => isActiveTask(task.value) && task.value?.action === sampleTaskAction)
+const sampleArtifactAvailable = computed(() => (
+  task.value?.action === sampleTaskAction
+  && task.value.status === 'COMPLETED'
+  && task.value.available
+  && Boolean(task.value.artifact_id && task.value.artifact_name)
+))
+const selectedSwitch = computed<TracksideSwitchDevice | null>(() => (
+  adapterCatalog.value?.items.find((item) => item.device_uuid === selectedSwitchUuid.value) || null
+))
+const sampleVendorSupported = computed(() => selectedSwitch.value?.adapter.vendor === 'ZTE')
+const adapterFeatureEnabled = computed(() => (
+  isFeatureEnabled('rail.zte_trackside_switch_adapter')
+  && isFeatureEnabled('web.rail_task_control')
+))
 const updateFeatureEnabled = computed(() => isFeatureEnabled('web.rail_trackside_ap_business_update') && isFeatureEnabled('web.rail_task_control'))
 
 function failure(reason: unknown, fallback: string): string { return reason instanceof Error ? reason.message : fallback }
@@ -194,6 +229,16 @@ async function maybeAutoSaveExport(value: TracksideApTask | null): Promise<void>
 
 function handleTerminalTask(value: TracksideApTask | null): void {
   if (!value) return
+  if (value.action === sampleTaskAction) {
+    if (value.status === 'COMPLETED') {
+      setTaskNotice('厂商适配采样完成，原始输出 ZIP 可下载', 'success', 4000)
+    } else if (value.status === 'FAILED') {
+      setTaskNotice('厂商适配采样失败，请在任务窗口查看原因', 'error')
+    } else if (value.status === 'CANCELLED') {
+      setTaskNotice('厂商适配采样已取消', 'warning')
+    }
+    return
+  }
   if (value.action === 'trackside_ap_optical_update') {
     const notice = updateFinishedNotice(value)
     if (value.status === 'COMPLETED') {
@@ -260,6 +305,27 @@ async function loadRows(reset = false): Promise<boolean> {
   return succeeded
 }
 
+async function loadSwitchAdapters(): Promise<void> {
+  if (!isFeatureEnabled('rail.zte_trackside_switch_adapter')) return
+  adapterLoading.value = true
+  adapterError.value = ''
+  try {
+    const catalog = await listTracksideSwitchAdapters()
+    adapterCatalog.value = catalog
+    if (!catalog.items.some((item) => item.device_uuid === selectedSwitchUuid.value)) {
+      selectedSwitchUuid.value = (
+        catalog.items.find(
+          (item) => item.adapter.verification_status === 'DOCUMENT_SAMPLE_ONLY',
+        ) || catalog.items[0]
+      )?.device_uuid || ''
+    }
+  } catch (reason) {
+    adapterError.value = failure(reason, '交换机厂商适配信息加载失败')
+  } finally {
+    adapterLoading.value = false
+  }
+}
+
 async function startTask(factory: () => Promise<TracksideApTask>, fallback: string, scopeKey: string, notice = '任务已提交，详细进度请查看任务窗口'): Promise<void> {
   if (pendingScopeKey.value === scopeKey) return
   pendingScopeKey.value = scopeKey
@@ -289,6 +355,71 @@ function updateAp(row: TracksideApBusinessRow): void {
   )
 }
 function exportBusiness(): void { void startTask(() => startTracksideApBusinessExport(), '轨旁 AP 业务导出启动失败', 'export:business', '轨旁 AP 业务表格正在生成，详细进度请查看任务窗口') }
+function startVendorSample(): void {
+  const selected = selectedSwitch.value
+  if (!selected) {
+    adapterError.value = '请选择要采样的交换机'
+    return
+  }
+  if (!sampleVendorSupported.value) {
+    adapterError.value = '第一阶段仅支持 ZTE 交换机厂商适配采样'
+    return
+  }
+  void startTask(
+    () => startTracksideSwitchSample({
+      device_uuid: selected.device_uuid,
+      vendor: selected.adapter.vendor,
+      command_profile: selected.adapter.profile.profile_id,
+      selected_interface: selectedInterface.value.trim(),
+      requested_commands: [],
+    }),
+    '厂商适配采样启动失败',
+    `sample:${selected.device_uuid}`,
+    '厂商适配采样已提交，详细进度请查看任务窗口',
+  )
+}
+async function downloadVendorSample(): Promise<void> {
+  const current = task.value
+  if (!sampleArtifactAvailable.value || !current) return
+  sampleDownloading.value = true
+  try {
+    const result = await downloadBackendResource(
+      tracksideSwitchSampleDownloadRequest(
+        current.artifact_id,
+        current.artifact_name,
+      ),
+    )
+    if (result.status === 'saved') setTaskNotice('厂商适配采样 ZIP 已保存', 'success', 4000)
+    else if (result.status === 'started') setTaskNotice('浏览器已开始下载采样 ZIP', 'success', 4000)
+    else if (result.status === 'failed') throw new Error(result.error || '采样 ZIP 保存失败')
+  } catch (reason) {
+    adapterError.value = failure(reason, '采样 ZIP 保存失败')
+  } finally {
+    sampleDownloading.value = false
+  }
+}
+function capabilityStatusLabel(status: TracksideSwitchCapabilityStatus): string {
+  return {
+    DOCUMENTED: '已登记',
+    IMPLEMENTED: '已实现，待验证',
+    SAMPLE_REQUIRED: '待采集真实样本',
+    VERIFIED: '已验证',
+    UNSUPPORTED: '当前不支持',
+  }[status]
+}
+function profileCommands(selected: TracksideSwitchDevice): Array<{ label: string; commands: string[] }> {
+  const profile = selected.adapter.profile
+  return [
+    { label: '设备版本', commands: profile.device_version },
+    { label: '接口摘要', commands: profile.interface_brief },
+    { label: '接口详情', commands: profile.interface_detail },
+    { label: '光模块摘要', commands: profile.optical_brief },
+    { label: '光模块详情', commands: profile.optical_detail },
+    { label: 'LLDP 全局候选', commands: profile.lldp_global_candidates },
+    { label: 'LLDP 接口候选', commands: profile.lldp_interface_candidates },
+    { label: 'LLDP 配置候选', commands: profile.lldp_config_candidates },
+  ]
+}
 function openTaskWindow(): void {
   const taskId = task.value?.task_id || ''
   if (window.netconsoleDesktop) {
@@ -314,7 +445,7 @@ async function recoverTasks(): Promise<void> {
   } catch (reason) { error.value = failure(reason, '轨旁 AP 任务恢复失败') }
 }
 
-onMounted(() => { void Promise.all([loadRows(), recoverTasks()]) })
+onMounted(() => { void Promise.all([loadRows(), loadSwitchAdapters(), recoverTasks()]) })
 onBeforeUnmount(() => { stopPolling(); clearTaskNotice() })
 </script>
 
@@ -340,6 +471,99 @@ onBeforeUnmount(() => { stopPolling(); clearTaskNotice() })
     </header>
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="true" @close="error = ''"><el-button link @click="recoverTasks">恢复任务</el-button></el-alert>
     <el-alert v-if="taskNotice" :title="taskNotice" :type="taskNoticeType" show-icon :closable="taskNoticeType === 'error'" @close="clearTaskNotice" />
+    <section
+      v-if="isFeatureEnabled('rail.zte_trackside_switch_adapter')"
+      class="adapter-section"
+      aria-label="轨旁交换机厂商适配"
+    >
+      <div class="adapter-toolbar">
+        <div class="adapter-status">
+          <span class="adapter-kicker">{{ selectedSwitch?.adapter.vendor_label || '中兴 ZTE' }}</span>
+          <strong>{{ selectedSwitch?.adapter.adaptation_status || '已接入，待实机验证' }}</strong>
+          <span>{{ selectedSwitch ? `${selectedSwitch.adapter.platform} ${selectedSwitch.adapter.product_family}` : '暂无已接入交换机' }}</span>
+        </div>
+        <el-select
+          v-model="selectedSwitchUuid"
+          class="adapter-device-select"
+          filterable
+          :loading="adapterLoading"
+          placeholder="选择交换机"
+        >
+          <el-option
+            v-for="item in adapterCatalog?.items || []"
+            :key="item.device_uuid"
+            :label="`${item.device_name} · ${item.adapter.vendor_label}`"
+            :value="item.device_uuid"
+          />
+        </el-select>
+        <el-input
+          v-model="selectedInterface"
+          class="adapter-interface-input"
+          clearable
+          placeholder="接口（可选）"
+        />
+        <el-button
+          type="primary"
+          :loading="taskSubmitting && sampleTaskRunning"
+          :disabled="!selectedSwitch || !sampleVendorSupported || sampleTaskRunning || !adapterFeatureEnabled"
+          :title="sampleVendorSupported ? '' : '第一阶段仅支持 ZTE 交换机厂商适配采样'"
+          @click="startVendorSample"
+        >启动厂商采样</el-button>
+        <el-button
+          :disabled="!selectedSwitch"
+          @click="adapterDetailsVisible = !adapterDetailsVisible"
+        >{{ adapterDetailsVisible ? '收起 Profile' : '查看 Profile' }}</el-button>
+        <el-button
+          v-if="sampleArtifactAvailable"
+          :loading="sampleDownloading"
+          @click="downloadVendorSample"
+        >下载原始输出 ZIP</el-button>
+      </div>
+      <p v-if="adapterError" class="adapter-error">{{ adapterError }}</p>
+      <div v-if="adapterDetailsVisible && selectedSwitch" class="adapter-details">
+        <div class="adapter-meta">
+          <span>Profile</span>
+          <strong>{{ selectedSwitch.adapter.profile.profile_id }}</strong>
+          <span>参考版本</span>
+          <strong>{{ selectedSwitch.adapter.profile.reference_version }}</strong>
+          <span>验证状态</span>
+          <strong>{{ selectedSwitch.adapter.verification_status }}</strong>
+          <span>特权模式</span>
+          <strong>{{ selectedSwitch.adapter.profile.privilege_required ? '按配置启用' : '当前不要求' }}</strong>
+        </div>
+        <div class="adapter-detail-columns">
+          <div>
+            <h2>能力状态</h2>
+            <ul class="capability-list">
+              <li v-for="capability in selectedSwitch.adapter.capabilities" :key="capability.key">
+                <span>{{ capability.label }}</span>
+                <el-tag :class="`capability-${capability.status.toLowerCase()}`">{{ capabilityStatusLabel(capability.status) }}</el-tag>
+                <small>{{ capability.message }}</small>
+              </li>
+            </ul>
+          </div>
+          <div>
+            <h2>只读命令 Profile</h2>
+            <dl class="profile-command-list">
+              <template v-for="group in profileCommands(selectedSwitch)" :key="group.label">
+                <dt>{{ group.label }}</dt>
+                <dd>
+                  <code v-for="command in group.commands" :key="command">{{ command }}</code>
+                  <span v-if="!group.commands.length">—</span>
+                </dd>
+              </template>
+            </dl>
+          </div>
+          <div>
+            <h2>待实机验证</h2>
+            <ul class="pending-list">
+              <li v-for="item in selectedSwitch.adapter.pending_items" :key="item">{{ item }}</li>
+            </ul>
+            <p class="attenuation-note">尚未接入真实节点，无法计算光衰</p>
+          </div>
+        </div>
+      </div>
+    </section>
     <div v-if="page" class="summary-grid">
       <article><span>站点交换机</span><strong>{{ page.device_count }}</strong></article><article><span>候选 AP 端口</span><strong>{{ page.candidate_interface_count }}</strong></article><article><span>光衰异常</span><strong>{{ page.optical_abnormal_count }}</strong></article><article><span>FIT-AP 资源</span><strong>{{ page.fit_ap_resource_count }}</strong></article><article><span>查询 / 构建</span><strong>{{ page.query_ms }} / {{ page.build_ms }} ms</strong></article>
     </div>
@@ -391,5 +615,5 @@ onBeforeUnmount(() => { stopPolling(); clearTaskNotice() })
 </template>
 
 <style scoped>
-.trackside-page{display:flex;flex-direction:column;gap:16px;min-width:0}.page-heading,.actions,.toolbar,.pagination{display:flex;align-items:center;gap:12px}.page-heading,.pagination{justify-content:space-between}.page-heading h1{margin:2px 0 6px}.page-heading p{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.actions,.toolbar{flex-wrap:wrap}.summary-grid{display:grid;grid-template-columns:repeat(5,minmax(130px,1fr));gap:10px}.summary-grid article,.content-card{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:12px}.summary-grid article{padding:13px}.summary-grid span{color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;margin-top:6px;font-size:22px}.content-card{padding:14px 16px;overflow:hidden}.toolbar{margin-bottom:12px}.toolbar .el-input{width:230px}.station-select{width:260px}.refresh-indicator{color:var(--el-color-primary);font-size:13px}.pagination{padding-top:12px}.optical-normal{color:var(--el-color-success)}.optical-notice,.optical-warning{color:var(--el-color-warning)}.optical-alarm,.optical-link-abnormal,.optical-link-down,.optical-no-light,.optical-offline{color:var(--el-color-danger);font-weight:600}.optical-no-module,.optical-missing,.optical-skipped,.optical-not-collected,.optical-unknown{color:var(--el-text-color-secondary)}@media(max-width:1000px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}}
+.trackside-page{display:flex;flex-direction:column;gap:16px;min-width:0}.page-heading,.actions,.toolbar,.pagination,.adapter-toolbar{display:flex;align-items:center;gap:12px}.page-heading,.pagination{justify-content:space-between}.page-heading h1{margin:2px 0 6px}.page-heading p{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:0}.actions,.toolbar,.adapter-toolbar{flex-wrap:wrap}.adapter-section{padding:12px 0;border-block:1px solid var(--el-border-color-lighter)}.adapter-status{display:grid;grid-template-columns:auto auto;align-items:baseline;gap:2px 10px;min-width:240px}.adapter-status>span:last-child{grid-column:1/-1;color:var(--el-text-color-secondary);font-size:12px}.adapter-kicker{color:var(--el-color-primary);font-size:12px;font-weight:700}.adapter-device-select{width:260px}.adapter-interface-input{width:180px}.adapter-error{margin:8px 0 0;color:var(--el-color-danger);font-size:13px}.adapter-details{margin-top:14px;padding-top:14px;border-top:1px solid var(--el-border-color-lighter)}.adapter-meta{display:grid;grid-template-columns:auto minmax(130px,1fr) auto minmax(130px,1fr);gap:6px 12px;font-size:13px}.adapter-meta span{color:var(--el-text-color-secondary)}.adapter-detail-columns{display:grid;grid-template-columns:minmax(240px,1fr) minmax(300px,1.2fr) minmax(240px,1fr);gap:24px;margin-top:16px}.adapter-detail-columns h2{margin:0 0 10px;font-size:14px}.capability-list,.pending-list{margin:0;padding:0;list-style:none}.capability-list li{display:grid;grid-template-columns:minmax(92px,auto) auto;gap:4px 8px;padding:7px 0;border-bottom:1px solid var(--el-border-color-extra-light)}.capability-list small{grid-column:1/-1;color:var(--el-text-color-secondary)}.pending-list li{padding:4px 0;color:var(--el-text-color-regular);font-size:13px}.pending-list li::before{content:"·";margin-right:8px;color:var(--el-color-warning)}.profile-command-list{display:grid;grid-template-columns:110px minmax(0,1fr);gap:7px 10px;margin:0;font-size:13px}.profile-command-list dt{color:var(--el-text-color-secondary)}.profile-command-list dd{display:flex;flex-direction:column;gap:3px;margin:0;min-width:0}.profile-command-list code{overflow-wrap:anywhere;color:var(--el-text-color-primary)}.attenuation-note{margin:12px 0 0;padding:9px 10px;border-left:3px solid var(--el-color-warning);background:var(--el-fill-color-light);font-size:13px}.summary-grid{display:grid;grid-template-columns:repeat(5,minmax(130px,1fr));gap:10px}.summary-grid article,.content-card{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:12px}.summary-grid article{padding:13px}.summary-grid span{color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;margin-top:6px;font-size:22px}.content-card{padding:14px 16px;overflow:hidden}.toolbar{margin-bottom:12px}.toolbar .el-input{width:230px}.station-select{width:260px}.refresh-indicator{color:var(--el-color-primary);font-size:13px}.pagination{padding-top:12px}.optical-normal{color:var(--el-color-success)}.optical-notice,.optical-warning{color:var(--el-color-warning)}.optical-alarm,.optical-link-abnormal,.optical-link-down,.optical-no-light,.optical-offline{color:var(--el-color-danger);font-weight:600}.optical-no-module,.optical-missing,.optical-skipped,.optical-not-collected,.optical-unknown{color:var(--el-text-color-secondary)}@media(max-width:1100px){.adapter-detail-columns{grid-template-columns:1fr 1fr}.adapter-detail-columns>div:last-child{grid-column:1/-1}}@media(max-width:1000px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}.adapter-detail-columns{grid-template-columns:1fr}.adapter-detail-columns>div:last-child{grid-column:auto}.adapter-meta{grid-template-columns:auto minmax(0,1fr)}}@media(max-width:640px){.adapter-device-select,.adapter-interface-input{width:100%}.adapter-status{min-width:0;width:100%}.adapter-meta{grid-template-columns:1fr}}
 </style>

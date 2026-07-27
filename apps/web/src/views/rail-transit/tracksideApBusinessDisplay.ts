@@ -88,5 +88,6 @@ export function displayBidirectionalLoss(
     STALE_SAMPLE: '无法计算（两端样本不同步）',
     NEIGHBOR_UNCERTAIN: '无法计算（对端关系不可靠）',
     MODULE_OFFLINE: '无法计算（模块离线或无 DOM）',
+    NOT_VERIFIED: '尚未接入真实节点，无法计算光衰',
   }[status] || '—'
 }

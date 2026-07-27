@@ -21,13 +21,13 @@ NetConsole 的轨道交通无线能力不采用企业 WLAN 的“AP—客户端�
 
 ## 轨旁 AP 接入交换机
 
-轨旁 AP 业务通过 `TracksideSwitchAdapter` 复用统一后台 Job，H3C 保留原有采集路径，ZTE ZXR10 5960X-ES V2 使用独立只读 Adapter。ZTE 当前只执行版本、接口、DOM 和 LLDP 采样命令；不进入配置模式，不提供配置采集、配置下发、文件管理、CLI Ping 或 ZTE AC 能力。原始回显按设备和命令保存到局点会话目录，单端或单端口解析失败不会阻断其他端口。
+轨旁 AP 业务通过 `TracksideSwitchAdapter` 隔离厂商差异，H3C 保留原有采集路径，ZTE ZXR10 5960X-ES V2 使用独立只读 Adapter。ZTE 普通轨旁采集只规划版本、接口和 DOM 命令，LLDP 候选只允许进入 `switch_vendor_sample_collect`；不进入配置模式，不提供配置采集、配置下发、文件管理、CLI Ping 或 ZTE AC 能力。
 
-ZTE `show version`、`show interface brief`、`show opticalinfo brief` 和指定端口详情已有 V2.00.20.03 手册 fixture。LLDP 只有受控命令链，尚无真实输出 fixture，状态固定为 `SAMPLE_REQUIRED`；整机仍为 `REAL_DEVICE_PENDING`，不能描述为已完成实机兼容。
+ZTE `show version`、`show interface brief`、`show opticalinfo brief` 和指定端口详情只基于 V2.00.20.03 文档样例实现，Parser 标记 `DOCUMENT_SAMPLE_ONLY`。LLDP 尚无真实输出，状态固定为 `SAMPLE_REQUIRED`；页面显示“已接入，待实机验证”，不能描述为已完成实机兼容。
 
-当前 LLDP 关联优先使用 AP 管理 IP、AP MAC、唯一精确名称；多候选返回 `AMBIGUOUS`，不选择第一条，也不允许历史接口或光功率 fallback 覆盖歧义。名称不做模糊包含匹配。
+厂商采样任务生成 `zte-adapter-sample-<device>-<timestamp>.zip`，固定包含 manifest、逐命令状态、版本/接口/DOM/LLDP raw 和会话元数据。Artifact 进入 `WebArtifactStore` 完整性校验，不保存 SSH 密码、enable 密码、Token、私钥或其他明文凭据。
 
-轨旁列表分别展示本端和 AP 端 Rx/Tx 光功率。单端数据不称为链路光衰；只有映射可靠、两端 DOM 完整且在线、采样时间差不超过 30 分钟时才计算正向/反向光衰。页面对无法计算的原因使用稳定状态，不把 ZTE `Unknown` 直接显示为模块故障。
+第一阶段不会根据文档样例生成 AP 绑定。即使输入模拟的两端数据，ZTE 行也固定返回 `NOT_VERIFIED / REAL_DEVICE_SAMPLE_REQUIRED`，页面显示“尚未接入真实节点，无法计算光衰”；H3C 既有 LLDP/AP 关联和双向光衰规则不变。完整边界和阶段二清单见 [ZTE 轨旁交换机 Adapter](ZTE_TRACKSIDE_SWITCH_ADAPTER.md)。
 
 ## 5C-9 无线综合看板
 

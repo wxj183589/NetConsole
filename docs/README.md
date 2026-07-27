@@ -95,6 +95,7 @@
 | [AP Identity Job 宿主评估（冻结历史）](AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md) | 旧 Qt 宿主评估与否决边界，只作历史证据 | 历史维护 | Git 历史、当前统一任务窗口与诊断模型 | 不再作为新增 Qt 宿主授权 |
 | [设备版本兼容性基线](DEVICE_COMPATIBILITY.md) | 代码内置兼容基线、确定性解析、开发期脱敏候选扫描和 Dashboard 适配范围来源 | 设备兼容/命令/parser 开发 | `resources/device_compatibility_profiles.json`、`src/netconsole/services/device_compatibility/`、定向测试 | 新增型号、平台大版本、Release、命令 Profile 或 parser Profile 映射 |
 | [命令参考规范](COMMAND_REFERENCE.md) | 命令资源字段、风险和消费者 | 命令/parser 开发 | `resources/command_reference.json`、解析器 | 命令、参数、风险或消费者变化 |
+| [ZTE 轨旁交换机 Adapter](ZTE_TRACKSIDE_SWITCH_ADAPTER.md) | ZXR10 5960X-ES 第一阶段范围、采样 Artifact 与阶段二实机清单 | ZTE 轨旁交换机适配 | Adapter、Parser、采样 Job、轨旁 AP API/Vue | ZTE 命令、能力状态、Artifact 或验证等级变化 |
 
 ## 规则与兼容资料
 

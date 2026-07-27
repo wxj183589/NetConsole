@@ -73,6 +73,66 @@ class TracksideApUpdateRequestDTO(ApiModel):
     ap_name: str = ""
 
 
+class TracksideSwitchCommandProfileDTO(ApiModel):
+    profile_id: str
+    vendor: str
+    platform: str
+    product_family: str
+    reference_version: str
+    privilege_required: bool = False
+    enable_command: str = ""
+    enable_level: int = 0
+    enable_secret_configured: bool = False
+    device_version: list[str] = Field(default_factory=list)
+    interface_brief: list[str] = Field(default_factory=list)
+    interface_detail: list[str] = Field(default_factory=list)
+    optical_brief: list[str] = Field(default_factory=list)
+    optical_detail: list[str] = Field(default_factory=list)
+    lldp_global_candidates: list[str] = Field(default_factory=list)
+    lldp_interface_candidates: list[str] = Field(default_factory=list)
+    lldp_config_candidates: list[str] = Field(default_factory=list)
+
+
+class TracksideSwitchCapabilityDTO(ApiModel):
+    key: str
+    label: str
+    status: str
+    message: str
+
+
+class TracksideSwitchAdapterDTO(ApiModel):
+    vendor: str
+    vendor_label: str
+    platform: str
+    product_family: str
+    adaptation_status: str
+    verification_status: str
+    profile: TracksideSwitchCommandProfileDTO
+    capabilities: list[TracksideSwitchCapabilityDTO] = Field(default_factory=list)
+    pending_items: list[str] = Field(default_factory=list)
+
+
+class TracksideSwitchDeviceDTO(ApiModel):
+    device_uuid: str
+    device_name: str
+    station: str = ""
+    primary_address: str = ""
+    adapter: TracksideSwitchAdapterDTO
+
+
+class TracksideSwitchAdapterCatalogDTO(ApiModel):
+    items: list[TracksideSwitchDeviceDTO] = Field(default_factory=list)
+    total: int = 0
+
+
+class TracksideSwitchSampleRequestDTO(ApiModel):
+    device_uuid: str = Field(min_length=1, max_length=80)
+    vendor: str = Field(min_length=1, max_length=40)
+    command_profile: str = Field(min_length=1, max_length=100)
+    selected_interface: str = Field(default="", max_length=80)
+    requested_commands: list[str] = Field(default_factory=list, max_length=20)
+
+
 class TracksideApPlanRowDTO(ApiModel):
     station_name: str = ""
     ap_count: int = 0

@@ -7,9 +7,12 @@ import pytest
 
 from netconsole.adapters.trackside_switch import (
     H3CTracksideSwitchAdapter,
+    ZTE_PROFILE_ID,
     ZteZxr10TracksideSwitchAdapter,
     resolve_trackside_switch_adapter,
+    trackside_switch_command_profile,
 )
+from netconsole.models.trackside_switch import CommandCapabilityState
 from netconsole.models.device import Device
 
 
@@ -43,25 +46,28 @@ def test_adapter_registry_keeps_vendor_selection_out_of_application_service() ->
 
     assert isinstance(h3c, H3CTracksideSwitchAdapter)
     assert isinstance(zte, ZteZxr10TracksideSwitchAdapter)
-    assert zte.capability_manifest() == {
-        "vendor": "ZTE",
-        "platform_family": "ZXR10",
-        "model_family": "5960X-ES",
-        "command_profile_version": "zte_zxr10_5960x_es_v2",
-        "capabilities": {
-            "ssh_readonly": True,
-            "device_identity": True,
-            "interface_inventory": True,
-            "interface_status": True,
-            "interface_detail": True,
-            "lldp_neighbors": True,
-            "lldp_interface_neighbor": True,
-            "optical_dom_summary": True,
-            "optical_dom_detail": True,
-            "bidirectional_attenuation": False,
-            "configuration_write": False,
-        },
+    manifest = zte.capability_manifest()
+    assert manifest["vendor"] == "ZTE"
+    assert manifest["platform_family"] == "ZXR10"
+    assert manifest["model_family"] == "5960X-ES"
+    assert manifest["command_profile_version"] == ZTE_PROFILE_ID
+    assert manifest["adaptation_status"] == "已接入，待实机验证"
+    assert manifest["verification_status"] == "DOCUMENT_SAMPLE_ONLY"
+    assert manifest["capabilities"]["lldp_neighbors"] is False
+    assert manifest["capabilities"]["lldp_interface_neighbor"] is False
+    assert manifest["capabilities"]["bidirectional_attenuation"] is False
+    assert manifest["capabilities"]["configuration_write"] is False
+    statuses = {
+        item["key"]: item["status"]
+        for item in manifest["capability_statuses"]
     }
+    assert statuses["lldp"] == CommandCapabilityState.SAMPLE_REQUIRED.value
+    assert statuses["bidirectional_attenuation"] == (
+        CommandCapabilityState.SAMPLE_REQUIRED.value
+    )
+    profile = trackside_switch_command_profile(ZTE_PROFILE_ID)
+    assert profile.product_family == "5960X-ES"
+    assert profile.reference_version == "V2.00.20.03"
 
     with pytest.raises(ValueError, match="vendor_not_supported"):
         resolve_trackside_switch_adapter(
@@ -132,8 +138,6 @@ def test_zte_adapter_uses_confirmed_commands_and_writes_raw_artifacts(
         "show opticalinfo brief",
         "show interface xgei-0/1/1/2",
         "show opticalinfo xgei-0/1/1/2",
-        "show lldp config",
-        "show lldp entry interface xgei-0/1/1/2",
     ]
     assert "terminal length 0" not in connection.commands
     assert result.identity["software_version"] == "V2.00.20.03B07"
@@ -161,10 +165,31 @@ def test_zte_lldp_sampling_chain_is_fixed_and_interface_is_validated() -> None:
     )
 
     assert adapter.lldp_sampling_commands("xgei-0/1/1/2") == (
+        "show lldp entry",
+        "show lldp neighbor",
+        "show lldp neighbors",
+        "show lldp entry interface xgei-0/1/1/2",
+        "show lldp neighbor interface xgei-0/1/1/2",
         "show lldp config",
         "show lldp config interface xgei-0/1/1/2",
+    )
+    plan = adapter.build_command_plan(
+        selected_interface="xgei-0/1/1/2",
+        requested_commands=("lldp_global", "lldp_interface"),
+    )
+    assert [item.command for item in plan.items] == [
+        "show lldp entry",
+        "show lldp neighbor",
+        "show lldp neighbors",
+        "show lldp config",
         "show lldp entry interface xgei-0/1/1/2",
-        "show lldp statistic interface xgei-0/1/1/2",
+        "show lldp neighbor interface xgei-0/1/1/2",
+        "show lldp config interface xgei-0/1/1/2",
+    ]
+    assert all(
+        item.status is CommandCapabilityState.SAMPLE_REQUIRED
+        and item.candidate
+        for item in plan.items
     )
     with pytest.raises(ValueError, match="不安全"):
         adapter.lldp_sampling_commands("xgei-0/1/1/2; reload")

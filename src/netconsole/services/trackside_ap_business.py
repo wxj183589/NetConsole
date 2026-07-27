@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 from time import perf_counter
 
+from netconsole.adapters.trackside_switch import resolve_trackside_switch_adapter
 from netconsole.core import app_logger
 from netconsole.core.optical_severity_engine import (
     classify_optical_freshness,
@@ -16,6 +17,7 @@ from netconsole.core.optical_severity_engine import (
 )
 from netconsole.core.sources.switch_source import build_switch_data_lookup
 from netconsole.models.device import Device
+from netconsole.models.trackside_switch import CommandCapabilityState
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.services.ap_online_overview import AP_ONLINE_OVERVIEW_COLUMNS, write_ap_online_overview_sheet
 from netconsole.services.offline_ap_ledger import (
@@ -404,6 +406,19 @@ def build_trackside_ap_business_rows(
     result: list[dict[str, object | None]] = []
     for device in devices:
         device_uuid = str(device.device_uuid or "")
+        try:
+            adapter = resolve_trackside_switch_adapter(device)
+            adapter_description = adapter.describe_capabilities()
+            capability_statuses = {
+                item.key: item.status.value
+                for item in adapter_description.capabilities
+            }
+            bidirectional_attenuation_enabled = (
+                adapter.capabilities.bidirectional_attenuation
+            )
+        except ValueError:
+            capability_statuses = {}
+            bidirectional_attenuation_enabled = True
         device_names = {_normalize_name(device.name), _normalize_name(device.system_name)}
         device_names.discard("")
         optical_index = optical_indexes.get(device_uuid, {})
@@ -557,11 +572,15 @@ def build_trackside_ap_business_rows(
                 remote_identity_known=ap_identity_known,
                 local_sample_time=local_sample_time,
                 remote_sample_time=remote_sample_time,
+                calculation_enabled=bidirectional_attenuation_enabled,
             )
             if not lldp_match_status:
                 if lldp:
                     lldp_match_status = "UNRESOLVED"
-                elif str(device.device_vendor or "").strip().casefold() == "zte":
+                elif (
+                    capability_statuses.get("lldp")
+                    == CommandCapabilityState.SAMPLE_REQUIRED.value
+                ):
                     lldp_match_status = "SAMPLE_REQUIRED"
                 else:
                     lldp_match_status = "NO_NEIGHBOR"
@@ -1838,6 +1857,7 @@ def _build_bidirectional_attenuation(
     remote_identity_known: bool,
     local_sample_time: object,
     remote_sample_time: object,
+    calculation_enabled: bool = True,
 ) -> dict[str, object | None]:
     local_rx = _reasonable_power(local_rx_power)
     local_tx = _reasonable_power(local_tx_power)
@@ -1856,6 +1876,12 @@ def _build_bidirectional_attenuation(
         "remote_sample_time": str(remote_sample_time or ""),
         "sample_time_delta_seconds": None,
     }
+    if not calculation_enabled:
+        result.update(
+            calculation_status="NOT_VERIFIED",
+            calculation_reason="REAL_DEVICE_SAMPLE_REQUIRED",
+        )
+        return result
     unavailable_statuses = {
         "offline",
         "no_module",

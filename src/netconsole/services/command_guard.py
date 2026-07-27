@@ -137,6 +137,15 @@ SAFE_TRACKSIDE_SWITCH_COLLECT_COMMANDS = {
     "show version",
     "show interface brief",
     "show opticalinfo brief",
+}
+
+SAFE_SWITCH_VENDOR_SAMPLE_COMMANDS = {
+    "show version",
+    "show interface brief",
+    "show opticalinfo brief",
+    "show lldp entry",
+    "show lldp neighbor",
+    "show lldp neighbors",
     "show lldp config",
 }
 
@@ -195,6 +204,7 @@ CONTEXT_COMMANDS = {
     "fit_ap_optical_collect": SAFE_FIT_AP_OPTICAL_COMMANDS,
     "optical_refresh": SAFE_OPTICAL_REFRESH_COMMANDS,
     "trackside_switch_collect": SAFE_TRACKSIDE_SWITCH_COLLECT_COMMANDS,
+    "switch_vendor_sample_collect": SAFE_SWITCH_VENDOR_SAMPLE_COMMANDS,
     "config_lifecycle": SAFE_CONFIG_LIFECYCLE_COMMANDS,
     "diagnostic_download": SAFE_DIAGNOSTIC_DOWNLOAD_COMMANDS,
     "file_management": SAFE_FILE_MANAGEMENT_COMMANDS,
@@ -269,9 +279,16 @@ READ_ONLY_DYNAMIC_PATTERNS = {
         for pattern in (
             r"show interface [a-z][a-z0-9./:_-]{0,79}",
             r"show opticalinfo [a-z][a-z0-9./:_-]{0,79}",
+        )
+    ),
+    "switch_vendor_sample_collect": tuple(
+        re.compile(pattern)
+        for pattern in (
+            r"show interface [a-z][a-z0-9./:_-]{0,79}",
+            r"show opticalinfo [a-z][a-z0-9./:_-]{0,79}",
             r"show lldp config interface [a-z][a-z0-9./:_-]{0,79}",
             r"show lldp entry interface [a-z][a-z0-9./:_-]{0,79}",
-            r"show lldp statistic interface [a-z][a-z0-9./:_-]{0,79}",
+            r"show lldp neighbor interface [a-z][a-z0-9./:_-]{0,79}",
         )
     ),
 }

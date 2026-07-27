@@ -4,6 +4,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Generic, TypeVar
 
+from netconsole.models.trackside_switch import (
+    ParseStatus,
+    ParserVerificationStatus,
+)
 from netconsole.utils.text_encoding import (
     PAGER_PROMPT_RE,
     clean_interactive_device_text,
@@ -31,6 +35,8 @@ UNSUPPORTED_MARKERS = (
     "incomplete command",
     "ambiguous command",
 )
+ZTE_PARSER_VERSION = "zte-zxr10-5960x-es-v2.document-sample.v1"
+ZTE_VERIFICATION_STATUS = ParserVerificationStatus.DOCUMENT_SAMPLE_ONLY.value
 
 
 @dataclass(frozen=True)
@@ -38,6 +44,16 @@ class ZteParseResult(Generic[T]):
     value: T
     warnings: tuple[str, ...] = field(default_factory=tuple)
     status: str = "OK"
+
+    @property
+    def parser_version(self) -> str:
+        return ZTE_PARSER_VERSION
+
+    @property
+    def verification_status(self) -> str:
+        if self.status == ParseStatus.SAMPLE_REQUIRED.value:
+            return ParserVerificationStatus.SAMPLE_REQUIRED.value
+        return ZTE_VERIFICATION_STATUS
 
 
 def normalize_zte_cli_text(raw: object, *, remove_pager: bool = True) -> str:
@@ -103,12 +119,15 @@ def parse_device_identity(raw: str) -> ZteParseResult[dict[str, object | None]]:
             "product_family": "5960X-ES",
             "model": model,
             "software_version": software_version,
+            "build_version": software_version,
             "base_version": base_match.group(1).upper() if base_match else None,
             "build_time": build_match.group(1).strip() if build_match else None,
             "image_file": image_match.group(1).strip() if image_match else None,
             "uptime_seconds": uptime_seconds,
             "uptime": str(uptime_seconds) if uptime_seconds is not None else None,
             "board_name": board_name,
+            "raw_command": "show version",
+            **_parser_metadata(ParseStatus.PARSED, warnings=warnings),
         },
         tuple(warnings),
     )
@@ -143,7 +162,9 @@ def parse_interfaces(raw: str) -> ZteParseResult[list[dict[str, object | None]]]
         rows.append(
             {
                 "interface_name": name,
+                "normalized_name": name.casefold(),
                 "media_attribute": media,
+                "media_type": media,
                 "duplex_mode": parts[2],
                 "duplex": parts[2],
                 "bandwidth": parts[3],
@@ -166,6 +187,8 @@ def parse_interfaces(raw: str) -> ZteParseResult[list[dict[str, object | None]]]
                 "trackside_candidate": name.casefold().startswith(
                     TRACKSIDE_PHYSICAL_PREFIXES
                 ),
+                "raw_line": raw_line,
+                **_parser_metadata(ParseStatus.PARSED),
             }
         )
     if not header_seen:
@@ -186,9 +209,12 @@ def parse_interface_detail(raw: str) -> ZteParseResult[dict[str, object | None]]
         return ZteParseResult({}, ("未找到接口详情起始行",), "PARSE_FAILED")
     item: dict[str, object | None] = {
         "interface_name": header.group("name"),
+        "normalized_name": header.group("name").casefold(),
         "ifindex": int(header.group("ifindex")),
         "physical_status": header.group("state").casefold(),
         "link_status": header.group("state").upper(),
+        "raw_line": header.group(0),
+        **_parser_metadata(ParseStatus.PARSED),
     }
     line_protocol = re.search(
         r"(?mi)^\s*Line protocol is\s+(up|down),"
@@ -237,6 +263,8 @@ def parse_interface_detail(raw: str) -> ZteParseResult[dict[str, object | None]]
     for field_name, label in counter_fields.items():
         match = re.search(rf"\b{re.escape(label)}\s+(\S+)", text, re.IGNORECASE)
         item[field_name] = _optional_number(match.group(1)) if match else None
+    item["media_type"] = item.get("port_media")
+    item["warnings"] = list(warnings)
     return ZteParseResult(item, tuple(warnings))
 
 
@@ -271,6 +299,8 @@ def parse_optical_summary(raw: str) -> ZteParseResult[list[dict[str, object | No
                     "vendor_status": "offline",
                     "normalized_status": "OFFLINE",
                     "status": "offline",
+                    "raw_output": "",
+                    **_parser_metadata(ParseStatus.PARSED),
                 }
             )
             continue
@@ -310,6 +340,8 @@ def parse_optical_summary(raw: str) -> ZteParseResult[list[dict[str, object | No
                 "vendor_status": vendor_status,
                 "normalized_status": normalized_status,
                 "status": normalized_status.casefold(),
+                "raw_output": "",
+                **_parser_metadata(ParseStatus.PARSED),
             }
         )
     if not header_seen:
@@ -418,6 +450,8 @@ def parse_optical_detail(
         "speed": _text_field(fields, "speed"),
         "normalized_status": status.upper(),
         "status": status,
+        "raw_output": "",
+        **_parser_metadata(ParseStatus.PARSED, warnings=warnings),
     }
     return ZteParseResult(item, tuple(warnings))
 
@@ -523,8 +557,24 @@ def _normalize_mac(value: str) -> str:
     return ":".join(compact[index : index + 2] for index in range(0, 12, 2))
 
 
+def _parser_metadata(
+    parse_status: ParseStatus,
+    *,
+    warnings: list[str] | tuple[str, ...] = (),
+) -> dict[str, object]:
+    return {
+        "warnings": list(warnings),
+        "raw_output_ref": "",
+        "parser_version": ZTE_PARSER_VERSION,
+        "verification_status": ZTE_VERIFICATION_STATUS,
+        "parse_status": parse_status.value,
+    }
+
+
 __all__ = [
     "TRACKSIDE_PHYSICAL_PREFIXES",
+    "ZTE_PARSER_VERSION",
+    "ZTE_VERIFICATION_STATUS",
     "ZteParseResult",
     "normalize_zte_cli_text",
     "parse_device_identity",

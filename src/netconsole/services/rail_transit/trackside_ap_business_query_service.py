@@ -5,8 +5,11 @@ from netconsole.core.paths import PathResolver
 from netconsole.models.api.trackside_ap_business import (
     TracksideApBusinessPageDTO,
     TracksideApBusinessRowDTO,
+    TracksideSwitchAdapterCatalogDTO,
+    TracksideSwitchDeviceDTO,
 )
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.adapters.trackside_switch import resolve_trackside_switch_adapter
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.trackside_ap_business import (
     count_current_optical_abnormal_aps,
@@ -27,6 +30,29 @@ class TracksideApBusinessQueryService:
 
     def current_site_id(self) -> str:
         return self.base_query.current_site_id()
+
+    def list_switch_adapters(
+        self, site_id: str
+    ) -> TracksideSwitchAdapterCatalogDTO:
+        repository = DeviceRepository(Database(self.paths.site_db_path(site_id)))
+        items: list[TracksideSwitchDeviceDTO] = []
+        for device in repository.list(device_type="SW"):
+            try:
+                description = resolve_trackside_switch_adapter(
+                    device
+                ).describe_capabilities()
+            except ValueError:
+                continue
+            items.append(
+                TracksideSwitchDeviceDTO(
+                    device_uuid=str(device.device_uuid or ""),
+                    device_name=str(device.name or device.system_name or ""),
+                    station=str(device.station or ""),
+                    primary_address=str(device.primary_address or ""),
+                    adapter=description.to_dict(),
+                )
+            )
+        return TracksideSwitchAdapterCatalogDTO(items=items, total=len(items))
 
     def list_rows(
         self,

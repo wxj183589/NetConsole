@@ -5,16 +5,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 
 import { resetWebFeaturesForTest, setWebFeaturesForTest } from '../../features'
-import type { TracksideApBusinessPage, TracksideApBusinessRow, TracksideApTask } from '../../types/tracksideApBusiness'
+import type {
+  TracksideApBusinessPage,
+  TracksideApBusinessRow,
+  TracksideApTask,
+  TracksideSwitchAdapterCatalog,
+} from '../../types/tracksideApBusiness'
 
 const routerPush = vi.fn()
 const api = vi.hoisted(() => ({
   getTracksideApTask: vi.fn(),
+  listTracksideSwitchAdapters: vi.fn(),
   listTracksideApBusiness: vi.fn(),
   recoverTracksideApTasks: vi.fn(),
   startTracksideApBusinessExport: vi.fn(),
   startTracksideApUpdate: vi.fn(),
+  startTracksideSwitchSample: vi.fn(),
   tracksideApBusinessDownloadRequest: vi.fn(),
+  tracksideSwitchSampleDownloadRequest: vi.fn(),
 }))
 const platformMocks = vi.hoisted(() => ({
   downloadBackendResource: vi.fn(),
@@ -94,6 +102,50 @@ const rows: TracksideApBusinessRow[] = [
     optical_severity: 'warning',
   },
 ]
+
+const adapterCatalog: TracksideSwitchAdapterCatalog = {
+  total: 1,
+  items: [{
+    device_uuid: 'zte-switch-1',
+    device_name: 'ZTE-SW-01',
+    station: '站点A',
+    primary_address: '192.0.2.10',
+    adapter: {
+      vendor: 'ZTE',
+      vendor_label: '中兴 ZTE',
+      platform: 'ZXR10',
+      product_family: '5960X-ES',
+      adaptation_status: '已接入，待实机验证',
+      verification_status: 'DOCUMENT_SAMPLE_ONLY',
+      profile: {
+        profile_id: 'zte_zxr10_5960x_es_v2',
+        vendor: 'ZTE',
+        platform: 'ZXR10',
+        product_family: '5960X-ES',
+        reference_version: 'V2.00.20.03',
+        privilege_required: false,
+        enable_command: 'enable 15',
+        enable_level: 15,
+        enable_secret_configured: false,
+        device_version: ['show version'],
+        interface_brief: ['show interface brief'],
+        interface_detail: ['show interface <interface_name>'],
+        optical_brief: ['show opticalinfo brief'],
+        optical_detail: ['show opticalinfo <interface_name>'],
+        lldp_global_candidates: ['show lldp entry', 'show lldp neighbor', 'show lldp neighbors'],
+        lldp_interface_candidates: ['show lldp entry interface <interface_name>', 'show lldp neighbor interface <interface_name>'],
+        lldp_config_candidates: ['show lldp config', 'show lldp config interface <interface_name>'],
+      },
+      capabilities: [
+        { key: 'ssh', label: 'SSH', status: 'SAMPLE_REQUIRED', message: '会话框架已实现，待实机验证' },
+        { key: 'interface_status', label: '接口状态', status: 'IMPLEMENTED', message: '基于文档样例实现' },
+        { key: 'lldp', label: 'LLDP', status: 'SAMPLE_REQUIRED', message: '仅登记候选命令' },
+        { key: 'bidirectional_attenuation', label: '双向光衰', status: 'SAMPLE_REQUIRED', message: '第一阶段暂不可用' },
+      ],
+      pending_items: ['SSH 登录与提示符验证', 'LLDP 命令探测与 Parser 实现'],
+    },
+  }],
+}
 
 function stationOptionsFor(items: TracksideApBusinessRow[]): string[] {
   return [...new Set(items.map((item) => item.site.trim()).filter(Boolean))]
@@ -205,14 +257,21 @@ describe('TracksideApBusinessView mounted behavior', () => {
       'web.rail_trackside_ap_business_update': { visible: true, enabled: true },
       'web.rail_trackside_ap_business_export': { visible: true, enabled: true },
       'web.rail_task_control': { visible: true, enabled: true },
+      'rail.zte_trackside_switch_adapter': { visible: true, enabled: true },
     })
+    api.listTracksideSwitchAdapters.mockResolvedValue(adapterCatalog)
     api.listTracksideApBusiness.mockResolvedValue(page())
     api.recoverTracksideApTasks.mockResolvedValue([])
     api.getTracksideApTask.mockResolvedValue(task('task-complete', 'COMPLETED', 'trackside_ap_optical_update', { status: 'DONE', target_count: 1, success_count: 1 }))
     api.startTracksideApBusinessExport.mockResolvedValue(task('export-task', 'RUNNING', 'trackside_ap_business_export'))
     api.startTracksideApUpdate.mockResolvedValue(task('update-task', 'COMPLETED', 'trackside_ap_optical_update', { status: 'DONE', target_count: 1, success_count: 1 }))
+    api.startTracksideSwitchSample.mockResolvedValue(task('sample-task', 'RUNNING', 'switch_vendor_sample_collect'))
     api.tracksideApBusinessDownloadRequest.mockImplementation((artifactId: string, artifactName: string) => ({
       apiPath: `/api/rail-transit/trackside-ap-business/artifacts/${encodeURIComponent(artifactId)}/download`,
+      suggestedName: artifactName,
+    }))
+    api.tracksideSwitchSampleDownloadRequest.mockImplementation((artifactId: string, artifactName: string) => ({
+      apiPath: `/api/rail-transit/trackside-ap-business/switch-adapters/artifacts/${encodeURIComponent(artifactId)}/download`,
       suggestedName: artifactName,
     }))
     platformMocks.downloadBackendResource.mockResolvedValue({ status: 'saved', capabilityId: 'cap-1' })
@@ -280,6 +339,76 @@ describe('TracksideApBusinessView mounted behavior', () => {
     wrapper.unmount()
   })
 
+  it('shows the ZTE phase-one adapter, profile and owned sample artifact', async () => {
+    api.startTracksideSwitchSample.mockResolvedValueOnce({
+      ...task('sample-complete', 'COMPLETED', 'switch_vendor_sample_collect'),
+      artifact_id: 'sample-artifact-1',
+      artifact_name: 'zte-adapter-sample-ZTE-SW-01-20260728_101500.zip',
+      available: true,
+    })
+    const wrapper = await mountView()
+
+    expect(wrapper.text()).toContain('中兴 ZTE')
+    expect(wrapper.text()).toContain('已接入，待实机验证')
+    expect(wrapper.text()).not.toContain('完全支持')
+    await button(wrapper, '查看 Profile').trigger('click')
+    expect(wrapper.text()).toContain('zte_zxr10_5960x_es_v2')
+    expect(wrapper.text()).toContain('待采集真实样本')
+    expect(wrapper.text()).toContain('尚未接入真实节点，无法计算光衰')
+
+    await wrapper.find('.adapter-interface-input').setValue('xgei-0/1/1/2')
+    await button(wrapper, '启动厂商采样').trigger('click')
+    await flushPromises()
+
+    expect(api.startTracksideSwitchSample).toHaveBeenCalledWith({
+      device_uuid: 'zte-switch-1',
+      vendor: 'ZTE',
+      command_profile: 'zte_zxr10_5960x_es_v2',
+      selected_interface: 'xgei-0/1/1/2',
+      requested_commands: [],
+    })
+    expect(wrapper.text()).toContain('下载原始输出 ZIP')
+    await button(wrapper, '下载原始输出 ZIP').trigger('click')
+    await flushPromises()
+    expect(platformMocks.downloadBackendResource).toHaveBeenCalledWith({
+      apiPath: '/api/rail-transit/trackside-ap-business/switch-adapters/artifacts/sample-artifact-1/download',
+      suggestedName: 'zte-adapter-sample-ZTE-SW-01-20260728_101500.zip',
+    })
+    wrapper.unmount()
+  })
+
+  it('does not start the ZTE sample task for an H3C adapter', async () => {
+    api.startTracksideSwitchSample.mockClear()
+    api.listTracksideSwitchAdapters.mockResolvedValueOnce({
+      total: 1,
+      items: [{
+        ...adapterCatalog.items[0],
+        device_uuid: 'h3c-switch-1',
+        device_name: 'H3C-SW-01',
+        adapter: {
+          ...adapterCatalog.items[0].adapter,
+          vendor: 'H3C',
+          vendor_label: '新华三 H3C',
+          verification_status: 'REAL_DEVICE_PENDING',
+          profile: {
+            ...adapterCatalog.items[0].adapter.profile,
+            profile_id: 'h3c_comware_trackside_v1',
+            vendor: 'H3C',
+            platform: 'Comware',
+            product_family: '*',
+          },
+        },
+      }],
+    })
+    const wrapper = await mountView()
+
+    expect(button(wrapper, '启动厂商采样').attributes('disabled')).toBeDefined()
+    await button(wrapper, '启动厂商采样').trigger('click')
+    await flushPromises()
+    expect(api.startTracksideSwitchSample).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('renders ZTE unknown and unavailable DOM module states without calling them faults', async () => {
     api.listTracksideApBusiness.mockResolvedValueOnce(page([
       { ...rows[0], switch_optical_status: 'unverified' },
@@ -297,7 +426,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
   it('shows station options from the backend page and queries immediately when changed', async () => {
     api.listTracksideApBusiness.mockResolvedValueOnce(page(rows.slice(0, 1), 1, ['01-小洋江站', '02-云龙火车站']))
     const wrapper = await mountView()
-    const stationSelect = wrapper.find('select')
+    const stationSelect = wrapper.find('.station-select')
     expect(stationSelect.attributes('allow-create')).toBeUndefined()
 
     expect(wrapper.findAll('option').map((item) => item.text())).toEqual(expect.arrayContaining([
@@ -319,7 +448,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
       page: 1,
       page_size: 50,
     })
-    expect((wrapper.find('select').element as HTMLSelectElement).value).toBe('02-云龙火车站')
+    expect((wrapper.find('.station-select').element as HTMLSelectElement).value).toBe('02-云龙火车站')
 
     api.listTracksideApBusiness.mockClear()
     await stationSelect.setValue('')
@@ -337,7 +466,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
   it('clears a station that disappears after reload and retries from the full dataset', async () => {
     api.listTracksideApBusiness.mockResolvedValueOnce(page(rows, 1, ['01-小洋江站', '02-云龙火车站']))
     const wrapper = await mountView()
-    const stationSelect = wrapper.find('select')
+    const stationSelect = wrapper.find('.station-select')
 
     api.listTracksideApBusiness.mockResolvedValue(page(rows, 1, ['01-小洋江站', '02-云龙火车站']))
     await stationSelect.setValue('02-云龙火车站')
@@ -365,7 +494,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
       page: 1,
       page_size: 50,
     })
-    expect((wrapper.find('select').element as HTMLSelectElement).value).toBe('')
+    expect((wrapper.find('.station-select').element as HTMLSelectElement).value).toBe('')
     wrapper.unmount()
   })
 
@@ -466,7 +595,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     }))
     const wrapper = await mountView()
     api.listTracksideApBusiness.mockResolvedValue(page(rows, 1, ['01-小洋江站', '02-云龙火车站']))
-    await wrapper.find('select').setValue('02-云龙火车站')
+    await wrapper.find('.station-select').setValue('02-云龙火车站')
     await flushPromises()
     ;(wrapper.vm as unknown as { filters: { query: string; page: number } }).filters.query = 'AP-A'
     ;(wrapper.vm as unknown as { filters: { page: number } }).filters.page = 2
@@ -488,7 +617,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(wrapper.text()).toContain('轨旁 AP 光衰数据已刷新')
     expect(wrapper.text()).not.toContain('结果项')
     expect(wrapper.text()).not.toContain('target_count')
-    expect((wrapper.find('select').element as HTMLSelectElement).value).toBe('02-云龙火车站')
+    expect((wrapper.find('.station-select').element as HTMLSelectElement).value).toBe('02-云龙火车站')
     wrapper.unmount()
   })
 

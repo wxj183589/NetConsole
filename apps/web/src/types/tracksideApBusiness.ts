@@ -25,6 +25,51 @@ export interface TracksideApBusinessPage {
 export interface TracksideApUpdateRequest { station?: string; ap_uuid?: string; ap_mac?: string; ap_name?: string }
 export type TracksideApTask = RailTransitTask
 
+export type TracksideSwitchCapabilityStatus =
+  | 'DOCUMENTED'
+  | 'IMPLEMENTED'
+  | 'SAMPLE_REQUIRED'
+  | 'VERIFIED'
+  | 'UNSUPPORTED'
+
+export interface TracksideSwitchCommandProfile {
+  profile_id: string; vendor: string; platform: string; product_family: string; reference_version: string
+  privilege_required: boolean; enable_command: string; enable_level: number; enable_secret_configured: boolean
+  device_version: string[]; interface_brief: string[]; interface_detail: string[]
+  optical_brief: string[]; optical_detail: string[]
+  lldp_global_candidates: string[]; lldp_interface_candidates: string[]; lldp_config_candidates: string[]
+}
+
+export interface TracksideSwitchCapability {
+  key: string; label: string; status: TracksideSwitchCapabilityStatus; message: string
+}
+
+export interface TracksideSwitchAdapter {
+  vendor: string; vendor_label: string; platform: string; product_family: string
+  adaptation_status: string; verification_status: string
+  profile: TracksideSwitchCommandProfile
+  capabilities: TracksideSwitchCapability[]
+  pending_items: string[]
+}
+
+export interface TracksideSwitchDevice {
+  device_uuid: string; device_name: string; station: string; primary_address: string
+  adapter: TracksideSwitchAdapter
+}
+
+export interface TracksideSwitchAdapterCatalog {
+  items: TracksideSwitchDevice[]
+  total: number
+}
+
+export interface TracksideSwitchSampleRequest {
+  device_uuid: string
+  vendor: string
+  command_profile: string
+  selected_interface: string
+  requested_commands: string[]
+}
+
 export interface TracksideApPlanRow {
   station_name: string; ap_count: number; ap_start_address: string; mask_length: number | null
   ap_gateway: string; ap_management_vlans: string; remark: string; sort_order: number

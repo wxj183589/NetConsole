@@ -20,6 +20,8 @@ from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.models.device import Device
+from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.ap_online_overview import AP_ONLINE_OVERVIEW_COLUMNS
 from netconsole.services.export.export_job import ExportJob
 from netconsole.services.file_contract import attach_export_metadata
@@ -75,7 +77,18 @@ def test_trackside_business_export_api_uses_owned_artifact_and_supports_cancel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
-    Database(paths.site_db_path("demo")).initialize()
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    zte_device = DeviceRepository(database).create(
+        Device(
+            device_uuid="11111111-1111-4111-8111-111111111111",
+            name="ZTE-SW-01",
+            station="站点A",
+            device_vendor="ZTE",
+            device_type="SW",
+            primary_address="192.0.2.10",
+        )
+    )
     SiteManager(paths).save_site_metadata("demo", {"display_name": "宁波地铁12号线"})
     paths.config_dir.mkdir(parents=True, exist_ok=True)
     paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
@@ -105,6 +118,7 @@ def test_trackside_business_export_api_uses_owned_artifact_and_supports_cancel(
     _enable_feature(app, "web.rail_trackside_ap_base_io")
     _enable_feature(app, "web.rail_trackside_ap_plan_export")
     _enable_feature(app, "web.rail_task_control")
+    _enable_feature(app, "rail.zte_trackside_switch_adapter")
 
     with TestClient(app) as client:
         started = client.post("/api/rail-transit/trackside-ap-business/export")
@@ -206,6 +220,50 @@ def test_trackside_business_export_api_uses_owned_artifact_and_supports_cancel(
         assert rename_download.content == b"rename-fixture"
         assert expected_rename_name in unquote(rename_download.headers["content-disposition"])
 
+        adapters = client.get(
+            "/api/rail-transit/trackside-ap-business/switch-adapters"
+        )
+        assert adapters.status_code == 200
+        assert adapters.json()["items"][0]["device_uuid"] == zte_device.device_uuid
+        assert (
+            adapters.json()["items"][0]["adapter"]["adaptation_status"]
+            == "已接入，待实机验证"
+        )
+
+        sample = client.post(
+            "/api/rail-transit/trackside-ap-business/switch-adapters/sample",
+            json={
+                "device_uuid": zte_device.device_uuid,
+                "vendor": "ZTE",
+                "command_profile": "zte_zxr10_5960x_es_v2",
+                "selected_interface": "xgei-0/1/1/2",
+                "requested_commands": ["device_version", "lldp_global"],
+            },
+        )
+        assert sample.status_code == 202
+        sample_payload = sample.json()
+        assert sample_payload["action"] == "switch_vendor_sample_collect"
+        sample_job = process.jobs[sample_payload["task_id"]]
+        sample_output = Path(str(sample_job.params["artifact_output_path"]))
+        sample_output.parent.mkdir(parents=True, exist_ok=True)
+        sample_output.write_bytes(b"zip-fixture")
+        process.complete(sample_payload["task_id"], {"status": "PARTIAL_SUCCESS"})
+
+        sample_detail = client.get(
+            f"/api/rail-transit/trackside-ap-business/tasks/{sample_payload['task_id']}"
+        )
+        assert sample_detail.status_code == 200
+        assert sample_detail.json()["available"] is True
+        assert sample_detail.json()["artifact_name"].startswith(
+            "zte-adapter-sample-ZTE-SW-01-20260721_"
+        )
+        sample_download = client.get(
+            "/api/rail-transit/trackside-ap-business/switch-adapters/artifacts/"
+            f"{sample_payload['artifact_id']}/download"
+        )
+        assert sample_download.status_code == 200
+        assert sample_download.content == b"zip-fixture"
+
     schema = app.openapi()
     assert "/api/rail-transit/trackside-ap-business/export" in schema["paths"]
     assert (
@@ -216,6 +274,11 @@ def test_trackside_business_export_api_uses_owned_artifact_and_supports_cancel(
     assert "/api/rail-transit/trackside-ap-business/base/export" in schema["paths"]
     assert "/api/rail-transit/trackside-ap-business/base/rename-commands/export" in schema["paths"]
     assert "/api/rail-transit/trackside-ap-business/base/rename-commands/artifacts/{artifact_id}/download" in schema["paths"]
+    assert "/api/rail-transit/trackside-ap-business/switch-adapters" in schema["paths"]
+    assert (
+        "/api/rail-transit/trackside-ap-business/switch-adapters/sample"
+        in schema["paths"]
+    )
 
 
 def test_trackside_business_workbook_preserves_sheets_and_export_style(

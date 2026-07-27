@@ -101,14 +101,17 @@ def test_trackside_switch_context_allows_only_fixed_read_only_vendor_commands():
         "show interface xgei-0/1/1/2",
         "show opticalinfo brief",
         "show opticalinfo xgei-0/1/1/2",
-        "show lldp config",
-        "show lldp config interface xgei-0/1/1/2",
-        "show lldp entry interface xgei-0/1/1/2",
-        "show lldp statistic interface xgei-0/1/1/2",
     ):
         assert is_command_allowed(command, "trackside_switch_collect")
 
     for command in (
+        "show lldp entry",
+        "show lldp neighbor",
+        "show lldp neighbors",
+        "show lldp entry interface xgei-0/1/1/2",
+        "show lldp neighbor interface xgei-0/1/1/2",
+        "show lldp config",
+        "show lldp config interface xgei-0/1/1/2",
         "terminal length 0",
         "configure terminal",
         "optical-inform monitor enable",
@@ -123,7 +126,35 @@ def test_trackside_switch_context_allows_only_fixed_read_only_vendor_commands():
         assert not is_command_allowed(command, "trackside_switch_collect")
 
 
-def test_zte_inventory_context_only_allows_fixture_verified_subset():
+def test_switch_vendor_sample_context_allows_only_profile_lldp_candidates():
+    for command in (
+        "show version",
+        "show interface brief",
+        "show interface xgei-0/1/1/2",
+        "show opticalinfo brief",
+        "show opticalinfo xgei-0/1/1/2",
+        "show lldp entry",
+        "show lldp neighbor",
+        "show lldp neighbors",
+        "show lldp entry interface xgei-0/1/1/2",
+        "show lldp neighbor interface xgei-0/1/1/2",
+        "show lldp config",
+        "show lldp config interface xgei-0/1/1/2",
+    ):
+        assert is_command_allowed(command, "switch_vendor_sample_collect")
+
+    for command in (
+        "show lldp statistic interface xgei-0/1/1/2",
+        "show lldp entry interface xgei-0/1/1/2; reload",
+        "configure terminal",
+        "shutdown",
+        "write",
+        "reload",
+    ):
+        assert not is_command_allowed(command, "switch_vendor_sample_collect")
+
+
+def test_zte_inventory_context_only_allows_document_sample_subset():
     for command in (
         "show version",
         "show interface brief",

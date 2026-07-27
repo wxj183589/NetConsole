@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import BinaryIO, Callable, NoReturn
 from uuid import uuid4
 
+from netconsole.adapters.trackside_switch import resolve_trackside_switch_adapter
 from netconsole.application.web_artifacts import ReservedWebArtifact, WebArtifactError, WebArtifactStore
 from netconsole.application.web_export_process_adapter import WebExportProcessAdapter
 from netconsole.core.database import Database
@@ -138,6 +139,7 @@ class RailTransitWebApplicationService:
         "car_network_generate_point_table": "从设备管理生成车内通信点表",
         "car_network_save_point_table": "保存车内通信点表",
         "trackside_ap_optical_update": "轨旁 AP 光衰更新",
+        "switch_vendor_sample_collect": "交换机厂商适配采样",
         "trackside_ap_plan_save": "保存轨旁 AP 规划",
         "vehicle_mr_online_refresh_all": "列车在线状态刷新",
         "vehicle_mr_ap_mapping_refresh": "轨旁 AP 映射刷新",
@@ -174,6 +176,7 @@ class RailTransitWebApplicationService:
         "trackside_ap_plan": "web_export_multi_sheet_xlsx",
         "vehicle_mr_history": "web_export_vehicle_mr_history_xlsx",
         "vehicle_mr_mapping_template": "web_export_table_xlsx",
+        "switch_vendor_sample": "switch_vendor_sample_collect",
     }
     _ACTIONS = {
         "web_export_online_mr_report_xlsx": "online_mr_report",
@@ -186,6 +189,7 @@ class RailTransitWebApplicationService:
         "web_export_multi_sheet_xlsx": "trackside_ap_plan_export",
         "web_export_table_xlsx": "trackside_ap_plan_export",
         "web_export_vehicle_mr_history_xlsx": "vehicle_mr_history_export",
+        "switch_vendor_sample_collect": "switch_vendor_sample_collect",
     }
     _ARTIFACT_ACTIONS = {
         "online_mr_report": "online_mr_report",
@@ -198,6 +202,7 @@ class RailTransitWebApplicationService:
         "trackside_ap_plan": "trackside_ap_plan_export",
         "vehicle_mr_history": "vehicle_mr_history_export",
         "vehicle_mr_mapping_template": "vehicle_mr_mapping_template_export",
+        "switch_vendor_sample": "switch_vendor_sample_collect",
     }
     _NOTE_LOCK = threading.RLock()
 
@@ -600,6 +605,132 @@ class RailTransitWebApplicationService:
         artifact_id: str,
     ) -> tuple[Path, str]:
         return self._open_artifact(site_id, artifact_id, "trackside_ap_business")
+
+    def start_switch_vendor_sample(
+        self,
+        site_id: str,
+        *,
+        device_uuid: str,
+        vendor: str,
+        command_profile: str,
+        selected_interface: str = "",
+        requested_commands: list[str] | None = None,
+    ) -> RailTransitTaskDTO:
+        site_id = self._site(site_id)
+        selected_device_uuid = str(device_uuid or "").strip()
+        device = DeviceRepository(
+            Database(self.paths.site_db_path(site_id))
+        ).get_by_uuid(selected_device_uuid)
+        if device is None or str(device.device_type or "") != "SW":
+            raise RailTransitWebError(
+                "SWITCH_DEVICE_NOT_FOUND",
+                "厂商适配采样设备不存在或不是交换机",
+            )
+        try:
+            adapter = resolve_trackside_switch_adapter(device)
+        except ValueError as exc:
+            raise RailTransitWebError(
+                "SWITCH_VENDOR_NOT_SUPPORTED",
+                "当前交换机厂商没有轨旁 AP Adapter",
+            ) from exc
+        if adapter.vendor.casefold() != "zte":
+            raise RailTransitWebError(
+                "SWITCH_SAMPLE_VENDOR_UNSUPPORTED",
+                "第一阶段仅支持 ZTE 交换机厂商适配采样",
+            )
+        if str(vendor or "").strip().casefold() != adapter.vendor.casefold():
+            raise RailTransitWebError(
+                "SWITCH_VENDOR_MISMATCH",
+                "采样厂商与所选设备 Adapter 不一致",
+            )
+        if str(command_profile or "").strip() != adapter.profile_id:
+            raise RailTransitWebError(
+                "SWITCH_PROFILE_MISMATCH",
+                "采样命令 Profile 与所选设备 Adapter 不一致",
+            )
+        commands = list(
+            dict.fromkeys(
+                str(value or "").strip()
+                for value in (requested_commands or [])
+                if str(value or "").strip()
+            )
+        )
+        try:
+            plan = adapter.build_command_plan(
+                selected_interface=selected_interface,
+                requested_commands=commands,
+            )
+        except ValueError as exc:
+            raise RailTransitWebError(
+                "SWITCH_SAMPLE_COMMAND_INVALID",
+                str(exc),
+            ) from exc
+        if not plan.items:
+            raise RailTransitWebError(
+                "SWITCH_SAMPLE_COMMAND_REQUIRED",
+                "当前采样范围没有可执行的只读命令",
+            )
+        task_id = f"rail-web-{uuid4().hex}"
+        safe_device_name = (
+            self._SAFE_NAME.sub("-", str(device.name or "")).strip(".-_")
+            or selected_device_uuid[:8]
+            or "device"
+        )
+        preferred_name = (
+            f"{adapter.vendor.casefold()}-adapter-sample-{safe_device_name}-"
+            f"{datetime.now():%Y%m%d_%H%M%S}.zip"
+        )
+        try:
+            reservation = self.artifact_store.reserve(
+                site_id=site_id,
+                owner=self._OWNER,
+                source="switch_vendor_sample",
+                artifact_type="zip",
+                task_id=task_id,
+                task_type=self._ARTIFACT_TASK_TYPES["switch_vendor_sample"],
+                output_root=self.paths.trackside_ap_outputs_dir(site_id)
+                / "vendor_samples",
+                preferred_name=preferred_name,
+                use_display_name_as_file_name=True,
+                context={
+                    "kind": "switch_vendor_sample",
+                    "device_uuid": selected_device_uuid,
+                    "vendor": adapter.vendor,
+                    "command_profile": adapter.profile_id,
+                },
+            )
+        except WebArtifactError as exc:
+            self._task_window_blocked("交换机厂商适配采样", exc)
+        return self._start_artifact_task(
+            site_id,
+            "switch_vendor_sample_collect",
+            {
+                "device_uuid": selected_device_uuid,
+                "vendor": adapter.vendor,
+                "command_profile": adapter.profile_id,
+                "selected_interface": plan.selected_interface,
+                "requested_commands": commands,
+                "artifact_output_path": str(reservation.output_path),
+                "resource_keys": [
+                    f"site:{site_id}|device:{selected_device_uuid}|switch_vendor_sample"
+                ],
+                "resource_conflict_message": "该交换机已有厂商适配采样任务正在执行。",
+            },
+            reservation,
+            task_id=task_id,
+        )
+
+    def open_switch_vendor_sample(
+        self,
+        site_id: str,
+        artifact_id: str,
+    ) -> tuple[Path, str]:
+        return self._open_artifact(
+            site_id,
+            artifact_id,
+            "switch_vendor_sample",
+            "zip",
+        )
 
     def start_trackside_ap_base_export(
         self,
@@ -1882,7 +2013,7 @@ class RailTransitWebApplicationService:
             if item.site_name != site_id or not self._authorized(item):
                 continue
             self._cleanup_recovered_task(site_id, item)
-            if item.task_type.startswith("web_export_"):
+            if item.task_type in self._ARTIFACT_TASK_TYPES.values():
                 self.artifact_store.recover_task(
                     site_id,
                     item.task_id,
@@ -1994,10 +2125,11 @@ class RailTransitWebApplicationService:
         params: dict[str, object],
         *,
         on_complete=None,
+        task_id: str = "",
     ) -> RailTransitTaskDTO:
         if task_type not in self._TASK_NAMES:
             raise RailTransitWebError("TASK_NOT_ALLOWED", "不支持的轨交 Web 任务")
-        task_id = f"rail-web-{uuid4().hex}"
+        task_id = str(task_id or f"rail-web-{uuid4().hex}")
         job_params = {
             "site_name": site_id,
             "db_path": str(self.paths.site_db_path(site_id)),
@@ -2017,6 +2149,36 @@ class RailTransitWebApplicationService:
             code = "TRACKSIDE_AP_OPTICAL_UPDATE_RUNNING" if task_type == "trackside_ap_optical_update" else "TASK_RESOURCE_BUSY"
             raise RailTransitWebError(code, str(exc)) from exc
         return self.get_task(site_id, task_id)
+
+    def _start_artifact_task(
+        self,
+        site_id: str,
+        task_type: str,
+        params: dict[str, object],
+        reservation: ReservedWebArtifact,
+        *,
+        task_id: str,
+    ) -> RailTransitTaskDTO:
+        def completed(value: LocalProcessCompletion) -> None:
+            if value.exit_code == 0 and not value.cancelled:
+                try:
+                    self.artifact_store.complete(reservation)
+                except WebArtifactError:
+                    self.artifact_store.fail(reservation)
+            else:
+                self.artifact_store.fail(reservation)
+
+        try:
+            return self._start_task(
+                site_id,
+                task_type,
+                params,
+                on_complete=completed,
+                task_id=task_id,
+            )
+        except Exception:
+            self.artifact_store.fail(reservation)
+            raise
 
     def _start_export(
         self,

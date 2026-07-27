@@ -28,12 +28,12 @@ NetConsole 使用代码内登记的设备兼容性基线描述当前适配范围
 | 厂商 / 类型 | 当前支持 | 当前边界 |
 | --- | --- | --- |
 | H3C | 保持既有 Comware 设备管理、采集和导入导出范围 | 具体型号、Release 与真实设备状态仍以版本化 Profile 和 fixture 为准 |
-| ZTE ZXR10 5960X-ES V2 / SW | 只读 SSH、设备识别、接口状态、DOM/收发光功率、轨旁 AP 端口关联 | `show version` 先确认 59X/5960X-ES，其他 ZXR10 型号在后续命令前失败关闭；接口、DOM 和指定端口详情已有手册 fixture，LLDP 为 `SAMPLE_REQUIRED`，真实设备状态仍为 `REAL_DEVICE_PENDING` |
+| ZTE ZXR10 5960X-ES V2 / SW | 设备模型、只读 SSH 框架、命令 Profile、接口/DOM 文档样例 Parser、厂商采样 Job 和轨旁 AP 页面入口 | `show version`、接口和 DOM 仅为 `DOCUMENT_SAMPLE_ONLY`；LLDP 候选只进入独立采样任务并保持 `SAMPLE_REQUIRED`；AP 关联和双向光衰均待真实节点验证 |
 | ZTE / AC | 不支持 | 导入和写入返回“当前版本尚未适配 ZTE 无线控制器” |
 | ZTE 诊断包 | 不支持 | 不猜测 `display diagnostic-information` 等价命令，不向 ZTE 发送 H3C 诊断命令 |
 
-ZTE 不代表“全系列完全适配”。本阶段不支持 ZTE 配置下发、配置采集中心、文件管理、CLI Ping、完整诊断包或 ZTE AC。不得下发未经资料确认的分页关闭命令；`--More--` 由通用 SSH 分页执行器受控处理。
+ZTE 不代表“全系列完全适配”。本阶段没有连接真实节点，不支持 ZTE 配置下发、配置采集中心、文件管理、CLI Ping、完整诊断包或 ZTE AC。不得下发未经资料确认的分页关闭命令；`--More--` 仅由通用 SSH 分页执行器在模拟测试中验证受控处理框架。
 
-`show opticalinfo` 采集到的是端口 Rx/Tx 光功率，不自动等于链路光衰。只有 LLDP 或人工资料给出可靠端口映射、两端模块在线且 DOM 完整、采样时间差不超过 30 分钟时，业务层才计算正向和反向光衰。否则返回单端、对端 DOM 不可用、样本过期、邻居不可靠或模块离线等明确状态。
+`show opticalinfo` 文档样例中的 Rx/Tx 只用于 Parser 测试，不保存为现场业务数据。ZTE 行第一阶段固定返回 `NOT_VERIFIED / REAL_DEVICE_SAMPLE_REQUIRED`，不计算正向或反向光衰；H3C 保持既有两端 DOM 计算规则。
 
 命令来源仍以 `resources/device_command_profiles.json`、命令说明和后端受控命令 Guard 为准。任何新增兼容配置不得引入删除网络设备、重启网络设备、恢复出厂、清空配置、格式化存储或任意 CLI 执行入口。
