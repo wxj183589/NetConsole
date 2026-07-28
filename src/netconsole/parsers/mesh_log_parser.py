@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import io
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import BinaryIO, Callable, Iterable
 
 from netconsole.models.mesh_log_models import (
     LINK_STATE_ACTIVE,
@@ -20,13 +22,34 @@ from netconsole.utils.text_encoding import decode_bytes_with_fallback
 
 TIMESTAMP_RE = re.compile(
     r"^\[(?P<radio>\d+)\]\s+"
-    r"(?P<date>\d{4}/\d{2}/\d{2})\s+"
-    r"(?P<time>\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)"
-    r"(?:\s+\((?P<tag>\d+)\))?\s*$"
+    r"(?P<date>\d{4}[/-]\d{2}[/-]\d{2})\s+"
+    r"(?P<time>\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?)"
+    r"(?:\s+\((?P<tag>\d+)\))?(?:\s+.*)?$"
+)
+LOG_TIMESTAMP_RE = re.compile(
+    r"(?:^|[^\d])(?:\[(?:\d+)\]\s*)?"
+    r"(?P<date>\d{4}[/-]\d{2}[/-]\d{2})\s+"
+    r"(?P<time>\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?)"
 )
 SOURCE_RE = re.compile(r"^(?P<source>.+?)-\d{4}_\d{2}_\d{2}(?:_\d+)?-?meshlog\.log(?:\.gz)?$", re.IGNORECASE)
 VALID_STATES = {"Active": LINK_STATE_ACTIVE, "Standy": LINK_STATE_STANDBY, "Standby": LINK_STATE_STANDBY}
 MIN_RECORD_FIELDS = 23
+TIMESTAMP_SCAN_MAX_BYTES = 4 * 1024 * 1024
+TIMESTAMP_SCAN_MAX_LINES = 50_000
+
+
+@dataclass(frozen=True)
+class MeshLogContentMetadata:
+    raw_sha256: str
+    content_sha256: str
+    size_bytes: int
+    expanded_size_bytes: int
+    first_log_timestamp: datetime | None
+    last_log_timestamp: datetime | None
+
+    @property
+    def log_date(self):
+        return self.first_log_timestamp.date() if self.first_log_timestamp else None
 
 
 class MeshLogParser:
@@ -398,6 +421,104 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def inspect_mesh_log_path(path: Path, *, max_expanded_size: int | None = None) -> MeshLogContentMetadata:
+    """流式计算来源指纹和首尾日志时间，不把整个日志读入内存。"""
+
+    raw_sha = sha256_file(path)
+    try:
+        with path.open("rb") as raw:
+            stream: BinaryIO = gzip.GzipFile(fileobj=raw, mode="rb") if path.suffix.casefold() == ".gz" else raw
+            try:
+                return _inspect_mesh_log_stream(
+                    stream,
+                    raw_sha256=raw_sha,
+                    size_bytes=path.stat().st_size,
+                    max_expanded_size=max_expanded_size,
+                )
+            finally:
+                if stream is not raw:
+                    stream.close()
+    except gzip.BadGzipFile:
+        raise
+
+
+def inspect_mesh_log_bytes(content: bytes, name: str, *, max_expanded_size: int | None = None) -> MeshLogContentMetadata:
+    raw_sha = hashlib.sha256(content).hexdigest()
+    raw = io.BytesIO(content)
+    stream: BinaryIO = gzip.GzipFile(fileobj=raw, mode="rb") if name.casefold().endswith(".gz") else raw
+    try:
+        return _inspect_mesh_log_stream(
+            stream,
+            raw_sha256=raw_sha,
+            size_bytes=len(content),
+            max_expanded_size=max_expanded_size,
+        )
+    finally:
+        if stream is not raw:
+            stream.close()
+
+
+def inspect_mesh_log_stream(
+    stream: BinaryIO,
+    *,
+    raw_sha256: str,
+    size_bytes: int,
+    max_expanded_size: int | None = None,
+) -> MeshLogContentMetadata:
+    return _inspect_mesh_log_stream(
+        stream,
+        raw_sha256=raw_sha256,
+        size_bytes=size_bytes,
+        max_expanded_size=max_expanded_size,
+    )
+
+
+def _inspect_mesh_log_stream(
+    stream: BinaryIO,
+    *,
+    raw_sha256: str,
+    size_bytes: int,
+    max_expanded_size: int | None,
+) -> MeshLogContentMetadata:
+    content_digest = hashlib.sha256()
+    expanded_size = 0
+    first_timestamp: datetime | None = None
+    last_timestamp: datetime | None = None
+    scan_bytes = 0
+    scan_lines = 0
+    first_line = True
+    for raw_line in stream:
+        payload = bytes(raw_line)
+        expanded_size += len(payload)
+        if max_expanded_size is not None and expanded_size > max_expanded_size:
+            raise ValueError("日志解压后超过允许大小")
+        if first_line:
+            first_line = False
+            if payload.startswith(b"\xef\xbb\xbf"):
+                payload = payload[3:]
+        content_digest.update(payload)
+        if scan_lines < TIMESTAMP_SCAN_MAX_LINES and scan_bytes < TIMESTAMP_SCAN_MAX_BYTES:
+            scan_lines += 1
+            scan_bytes += len(payload)
+            timestamp = parse_log_timestamp_line(decode_bytes_with_fallback(payload).text)
+            if timestamp is not None:
+                if first_timestamp is None:
+                    first_timestamp = timestamp
+                last_timestamp = timestamp
+        elif first_timestamp is not None:
+            timestamp = parse_log_timestamp_line(decode_bytes_with_fallback(payload).text)
+            if timestamp is not None:
+                last_timestamp = timestamp
+    return MeshLogContentMetadata(
+        raw_sha256=raw_sha256,
+        content_sha256=content_digest.hexdigest(),
+        size_bytes=size_bytes,
+        expanded_size_bytes=expanded_size,
+        first_log_timestamp=first_timestamp,
+        last_log_timestamp=last_timestamp,
+    )
+
+
 def _iter_decoded_lines(path: Path) -> Iterable[tuple[int, int, int, str]]:
     opener = gzip.open if path.suffix.lower() == ".gz" else open
     offset = 0
@@ -417,13 +538,23 @@ def _parse_sample_time(date_text: str, time_text: str) -> datetime:
 
 
 def _parse_datetime(date_text: str, time_text: str) -> datetime | None:
-    text = f"{date_text} {time_text}"
+    text = f"{date_text.replace('-', '/')} {time_text}"
     for fmt in ("%Y/%m/%d %H:%M:%S.%f", "%Y/%m/%d %H:%M:%S"):
         try:
             return datetime.strptime(text, fmt)
         except ValueError:
             continue
     return None
+
+
+def parse_log_timestamp_line(line: str) -> datetime | None:
+    text = str(line or "").lstrip("\ufeff").strip()
+    if re.match(r"^\[\d+\]\s+\S+\s+\S+\s+", text) and not TIMESTAMP_RE.match(text):
+        return None
+    match = LOG_TIMESTAMP_RE.search(text)
+    if not match:
+        return None
+    return _parse_datetime(match.group("date"), match.group("time"))
 
 
 def _parse_int(value: str) -> int | None:

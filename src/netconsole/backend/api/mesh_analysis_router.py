@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+import logging
 from typing import TypeVar
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
@@ -14,6 +15,7 @@ from netconsole.application.rail_transit.mesh_bundle_application_service import 
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
 from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.backend.api.feature_access import require_feature
+from netconsole.core import app_logger
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.mesh_analysis import (
     MeshAnalysisSessionDetailDTO,
@@ -56,6 +58,7 @@ from netconsole.services.rail_transit.mesh_analysis_query_service import (
 
 
 router = APIRouter(prefix="/rail-transit/mesh-analysis", tags=["rail-transit-mesh-analysis"])
+logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
@@ -108,13 +111,13 @@ def _raise_bundle_error(exc: MeshBundleApplicationError) -> None:
         status_code = status.HTTP_410_GONE
     elif exc.code in {"IMPORT_BUSY", "ARCHIVE_CONFLICT", "PREVIEW_CACHE_FULL"}:
         status_code = status.HTTP_409_CONFLICT
-    elif exc.code == "JOB_START_FAILED":
+    elif exc.code in {"JOB_START_FAILED", "MESH_IMPORT_CONTEXT_PREPARE_FAILED"}:
         status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     else:
         status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
     raise HTTPException(
         status_code=status_code,
-        detail={"code": exc.code, "message": str(exc)},
+        detail={"code": exc.code, "message": str(exc), "details": exc.details},
     ) from exc
 
 
@@ -134,12 +137,36 @@ def profiles(request: Request) -> list[MeshProfileDTO]:
     summary="根据当前局点正式车载 MR 准备 MESH 导入上下文",
 )
 def prepare_import_context(request: Request) -> MeshImportContextPrepareDTO:
+    service = getattr(request.app.state, "mesh_bundle_application_service", None)
+    if service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "MESH_IMPORT_CONTEXT_SERVICE_UNAVAILABLE",
+                "message": "MESH 导入上下文服务未就绪",
+                "details": {"stage": "application_state"},
+            },
+        )
     try:
         return MeshImportContextPrepareDTO.model_validate(
-            _bundle_service(request).prepare_import_context(_current_site_id(request))
+            service.prepare_import_context(_current_site_id(request))
         )
     except MeshBundleApplicationError as exc:
         _raise_bundle_error(exc)
+    except Exception as exc:
+        logger.exception("MESH 导入上下文请求处理失败")
+        app_logger.log_error(
+            "MESH_IMPORT_CONTEXT_PREPARE_FAILED",
+            f"stage=request_context error_type={type(exc).__name__}",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "MESH_IMPORT_CONTEXT_PREPARE_FAILED",
+                "message": "MESH 导入上下文准备失败",
+                "details": {"stage": "request_context"},
+            },
+        ) from exc
 
 
 @router.post(
@@ -158,8 +185,12 @@ def create_profile(request: Request, payload: MeshProfileCreateRequestDTO) -> Me
         )
     except RailTransitWebError as exc:
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT if exc.code == "PROFILE_CONFLICT" else status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"code": exc.code, "message": str(exc)},
+            status_code=(
+                status.HTTP_409_CONFLICT
+                if exc.code in {"PROFILE_CONFLICT", "PROFILE_ALREADY_LINKED"}
+                else status.HTTP_422_UNPROCESSABLE_ENTITY
+            ),
+            detail={"code": exc.code, "message": str(exc), "details": exc.details},
         ) from exc
     return MeshProfileDTO.model_validate(profile, from_attributes=True)
 

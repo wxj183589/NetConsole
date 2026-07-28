@@ -240,6 +240,24 @@ describe('Electron-only packaging', () => {
     expect(script).toContain('ground unattended status HTTP 200')
   })
 
+  it('prepares MESH context and verifies duplicate-safe archive imports through the frozen Backend', () => {
+    const script = readFileSync(resolve(appRoot, 'scripts', 'package-smoke.mjs'), 'utf8')
+
+    expect(script).toContain('/api/device-management/groups')
+    expect(script).toContain('/api/device-management/devices')
+    expect(script).toContain('列车34-MR-CT')
+    expect(script).toContain('列车34-MR-CW')
+    expect(script).toContain('/api/rail-transit/mesh-analysis/profiles')
+    expect(script).toContain('/api/rail-transit/mesh-analysis/import-context/prepare')
+    expect(script).toContain('firstPrepare.created_count !== 2')
+    expect(script).toContain('secondPrepare.created_count !== 0')
+    expect(script).toContain('/api/rail-transit/mesh-analysis/import-preview')
+    expect(script).toContain('2026_07_28_1meshlog.log')
+    expect(script).toContain("duplicateItem?.duplicate_status !== 'duplicate_same_mr'")
+    expect(script).toContain('sessionsAfterDuplicate.total !== 1')
+    expect(script).toContain('MESH import context idempotency and duplicate-safe archive naming')
+  })
+
   it('requires the packaged production feature baseline', () => {
     const script = readFileSync(resolve(appRoot, 'scripts', 'package-smoke.mjs'), 'utf8')
 

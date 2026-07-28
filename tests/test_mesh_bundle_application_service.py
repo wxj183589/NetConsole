@@ -64,6 +64,8 @@ def test_prepare_import_context_is_paged_idempotent_and_keeps_safe_folder_on_ren
         "profile_count": 2,
         "created_count": 2,
         "updated_count": 0,
+        "skipped_count": 0,
+        "warnings": [],
     }
     assert base_query.calls == [(1, 200), (2, 200)]
     assert original.display_name == "列车06-MR-CW"
@@ -79,6 +81,58 @@ def test_prepare_import_context_is_paged_idempotent_and_keeps_safe_folder_on_ren
     assert renamed is not None
     assert renamed.display_name == "列车06-MR-CW-正式名"
     assert renamed.safe_folder_name == original.safe_folder_name
+
+
+def test_prepare_import_context_skips_one_invalid_mr_and_keeps_other_profiles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    tasks = TaskApplicationService(paths=paths, site_name="demo")
+    base_query = _VehicleMrPages()
+    application = MeshBundleApplicationService(
+        paths,
+        tasks,
+        FakeLocalProcessAdapter(tasks),  # type: ignore[arg-type]
+        base_query,  # type: ignore[arg-type]
+    )
+    original = MeshStorageService.ensure_mr_profile_for_asset
+
+    def fail_one_profile(self, *, device_id: int, device_uuid: str, display_name: str):
+        if device_id == 6:
+            raise ValueError("invalid fixture MR")
+        return original(
+            self,
+            device_id=device_id,
+            device_uuid=device_uuid,
+            display_name=display_name,
+        )
+
+    monkeypatch.setattr(MeshStorageService, "ensure_mr_profile_for_asset", fail_one_profile)
+
+    result = application.prepare_import_context("demo")
+    profiles = MeshStorageService("demo", paths).catalog.list_profiles()
+
+    assert result["created_count"] == 1
+    assert result["skipped_count"] == 1
+    assert result["warnings"] == ["一条基础资料 MR 同步失败，已跳过该记录。"]
+    assert [profile.display_name for profile in profiles] == ["列车34-MR-CT"]
+
+
+def test_manual_profile_creation_rejects_duplicate_linked_mr(tmp_path: Path) -> None:
+    storage = MeshStorageService("demo", PathResolver(app_root=tmp_path, data_root=tmp_path))
+    storage.create_mr_profile(
+        "列车34-MR-CT",
+        linked_device_id=34,
+        linked_device_uuid="vehicle-34-ct",
+    )
+
+    with pytest.raises(ValueError, match="MR already linked"):
+        storage.create_mr_profile(
+            "列车34-MR-CT-重复",
+            linked_device_id=34,
+            linked_device_uuid="vehicle-34-ct",
+        )
 
 
 def test_application_preview_confirmation_and_serializable_job_params(tmp_path: Path) -> None:

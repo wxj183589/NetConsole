@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { apiRequest } from './client'
+import { ApiRequestError, apiRequest } from './client'
 import type { NetConsoleDesktopBridge } from '../../../desktop_electron/src/shared/bridge'
 import { initializePlatformRuntime, resetPlatformRuntimeForTests } from '../platform/runtime'
 
@@ -42,6 +42,24 @@ describe('API client errors', () => {
       json: async () => ({ detail: { code: 'BASE_DATA_WRITE_DISABLED', message: '基础资料写入未启用' } }),
     }))
     await expect(apiRequest('/api/rail-transit/base-data/import-apply')).rejects.toThrow('基础资料写入未启用')
+  })
+
+  it('turns fetch failures into a stable Backend connection error', async () => {
+    const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+
+    await expect(apiRequest('/api/rail-transit/mesh-analysis/import-context/prepare')).rejects.toEqual(
+      expect.objectContaining({
+        message: '无法连接本机 Backend，请重试或查看 Backend 日志。',
+        status: 0,
+        code: 'BACKEND_UNREACHABLE',
+      }),
+    )
+    expect(diagnostic).toHaveBeenCalledWith('API_REQUEST_NETWORK_FAILED', {
+      path: '/api/rail-transit/mesh-analysis/import-context/prepare',
+      error: 'Failed to fetch',
+    })
+    diagnostic.mockRestore()
   })
 
   it('uses the ephemeral Electron URL and header without changing browser call sites', async () => {

@@ -168,7 +168,12 @@ class MeshMrRepository:
                     db_schema_version TEXT DEFAULT '',
                     original_filename TEXT NOT NULL,
                     archived_filename TEXT NOT NULL,
+                    stored_filename TEXT DEFAULT '',
                     sha256 TEXT NOT NULL UNIQUE,
+                    raw_sha256 TEXT DEFAULT '',
+                    content_sha256 TEXT DEFAULT '',
+                    profile_id TEXT DEFAULT '',
+                    linked_mr_id TEXT DEFAULT '',
                     file_size INTEGER NOT NULL,
                     file_mtime TEXT NULL,
                     imported_at TEXT NOT NULL,
@@ -178,6 +183,13 @@ class MeshMrRepository:
                     is_gzip INTEGER DEFAULT 0,
                     first_sample_time TEXT NULL,
                     last_sample_time TEXT NULL,
+                    first_log_timestamp TEXT NULL,
+                    last_log_timestamp TEXT NULL,
+                    log_date TEXT NULL,
+                    daily_sequence INTEGER NULL,
+                    rename_status TEXT DEFAULT '',
+                    rename_warning TEXT DEFAULT '',
+                    source_status TEXT DEFAULT 'imported',
                     lines_read INTEGER DEFAULT 0,
                     records_parsed INTEGER DEFAULT 0,
                     records_skipped INTEGER DEFAULT 0,
@@ -452,8 +464,27 @@ class MeshMrRepository:
                 "archive_sha256",
                 "bundle_member_id",
                 "bundle_member_sha256",
+                "stored_filename",
+                "raw_sha256",
+                "content_sha256",
+                "profile_id",
+                "linked_mr_id",
+                "first_log_timestamp",
+                "last_log_timestamp",
+                "log_date",
+                "rename_status",
+                "rename_warning",
+                "source_status",
             ):
                 self._ensure_column(conn, "source_files", column, "TEXT DEFAULT ''")
+            self._ensure_column(conn, "source_files", "daily_sequence", "INTEGER NULL")
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_source_content_sha_unique
+                ON source_files(content_sha256)
+                WHERE COALESCE(content_sha256, '') != ''
+                """
+            )
             self._ensure_column(conn, "mesh_links", "peer_ap_name", "TEXT DEFAULT ''")
             self._ensure_column(conn, "mesh_links", "peer_ap_mac", "TEXT DEFAULT ''")
             self._ensure_column(conn, "mesh_links", "peer_site", "TEXT DEFAULT ''")
@@ -552,6 +583,59 @@ class MeshMrRepository:
         with self._connect() as conn:
             return conn.execute("SELECT 1 FROM source_files WHERE sha256 = ?", (sha256,)).fetchone() is not None
 
+    def find_by_content_sha256(self, content_sha256: str, *, raw_sha256: str = "") -> dict[str, object] | None:
+        content_value = str(content_sha256 or "").strip().casefold()
+        raw_value = str(raw_sha256 or "").strip().casefold()
+        with self._connect() as conn:
+            row = None
+            if content_value:
+                row = conn.execute(
+                    "SELECT * FROM source_files WHERE content_sha256 = ? LIMIT 1",
+                    (content_value,),
+                ).fetchone()
+            if row is None and raw_value:
+                row = conn.execute(
+                    """
+                    SELECT * FROM source_files
+                    WHERE sha256 = ? OR raw_sha256 = ?
+                    LIMIT 1
+                    """,
+                    (raw_value, raw_value),
+                ).fetchone()
+        return dict(row) if row else None
+
+    def has_content_sha256(self, content_sha256: str, *, raw_sha256: str = "") -> bool:
+        return self.find_by_content_sha256(content_sha256, raw_sha256=raw_sha256) is not None
+
+    def update_source_fingerprints(
+        self,
+        source_file_id: int,
+        *,
+        raw_sha256: str,
+        content_sha256: str,
+        first_log_timestamp: datetime | None,
+        last_log_timestamp: datetime | None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE source_files
+                SET raw_sha256 = ?, content_sha256 = ?,
+                    first_log_timestamp = COALESCE(NULLIF(first_log_timestamp, ''), ?),
+                    last_log_timestamp = COALESCE(NULLIF(last_log_timestamp, ''), ?),
+                    log_date = COALESCE(NULLIF(log_date, ''), ?)
+                WHERE id = ?
+                """,
+                (
+                    raw_sha256,
+                    content_sha256,
+                    dt_text(first_log_timestamp),
+                    dt_text(last_log_timestamp),
+                    first_log_timestamp.date().isoformat() if first_log_timestamp else None,
+                    int(source_file_id),
+                ),
+            )
+
     def insert_file_result(
         self,
         mr_id: str,
@@ -574,6 +658,18 @@ class MeshMrRepository:
         events: list[MeshSwitchEvent],
         issues: list[ParseIssue],
         analysis_params_json: str = "",
+        *,
+        raw_sha256: str = "",
+        content_sha256: str = "",
+        profile_id: str = "",
+        linked_mr_id: str = "",
+        first_log_timestamp: datetime | None = None,
+        last_log_timestamp: datetime | None = None,
+        log_date: str = "",
+        daily_sequence: int | None = None,
+        rename_status: str = "",
+        rename_warning: str = "",
+        source_status: str = "imported",
     ) -> int:
         if not self._is_index_database():
             return self._insert_file_result_current_db(
@@ -597,6 +693,17 @@ class MeshMrRepository:
                 events,
                 issues,
                 analysis_params_json,
+                raw_sha256=raw_sha256,
+                content_sha256=content_sha256,
+                profile_id=profile_id,
+                linked_mr_id=linked_mr_id,
+                first_log_timestamp=first_log_timestamp,
+                last_log_timestamp=last_log_timestamp,
+                log_date=log_date,
+                daily_sequence=daily_sequence,
+                rename_status=rename_status,
+                rename_warning=rename_warning,
+                source_status=source_status,
             )
 
         detail_path = self._single_log_db_path(archived_path, sha256)
@@ -612,10 +719,13 @@ class MeshMrRepository:
                 INSERT INTO source_files (
                     mr_id, original_path, archived_path, parsed_db_path, parsed_db_size, db_schema_version,
                     original_filename, archived_filename, sha256, file_size, file_mtime, imported_at,
+                    stored_filename, raw_sha256, content_sha256, profile_id, linked_mr_id,
                     parser_version, parse_status, encoding, is_gzip, first_sample_time, last_sample_time,
+                    first_log_timestamp, last_log_timestamp, log_date, daily_sequence,
+                    rename_status, rename_warning, source_status,
                     lines_read, records_parsed, records_skipped, duplicate_records, issue_count, error_message,
                     analysis_params_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     mr_id,
@@ -630,12 +740,24 @@ class MeshMrRepository:
                     file_size,
                     dt_text(file_mtime),
                     dt_text(datetime.now()),
+                    archived_path.name,
+                    raw_sha256 or sha256,
+                    content_sha256 or sha256,
+                    profile_id or mr_id,
+                    linked_mr_id,
                     parser_version,
                     parse_status,
                     "",
                     1 if archived_path.name.lower().endswith(".gz") else 0,
                     dt_text(first_sample_time),
                     dt_text(last_sample_time),
+                    dt_text(first_log_timestamp or first_sample_time),
+                    dt_text(last_log_timestamp or last_sample_time),
+                    log_date or ((first_log_timestamp or first_sample_time).date().isoformat() if first_log_timestamp or first_sample_time else None),
+                    daily_sequence,
+                    rename_status,
+                    rename_warning,
+                    source_status,
                     lines_read,
                     records_parsed,
                     records_skipped,
@@ -672,6 +794,17 @@ class MeshMrRepository:
             events,
             issues,
             analysis_params_json,
+            raw_sha256=raw_sha256,
+            content_sha256=content_sha256,
+            profile_id=profile_id,
+            linked_mr_id=linked_mr_id,
+            first_log_timestamp=first_log_timestamp,
+            last_log_timestamp=last_log_timestamp,
+            log_date=log_date,
+            daily_sequence=daily_sequence,
+            rename_status=rename_status,
+            rename_warning=rename_warning,
+            source_status=source_status,
         )
         detail_repo.rebuild_derived_analysis()
         parsed_size = detail_path.stat().st_size if detail_path.exists() else 0
@@ -705,6 +838,18 @@ class MeshMrRepository:
         events: list[MeshSwitchEvent],
         issues: list[ParseIssue],
         analysis_params_json: str = "",
+        *,
+        raw_sha256: str = "",
+        content_sha256: str = "",
+        profile_id: str = "",
+        linked_mr_id: str = "",
+        first_log_timestamp: datetime | None = None,
+        last_log_timestamp: datetime | None = None,
+        log_date: str = "",
+        daily_sequence: int | None = None,
+        rename_status: str = "",
+        rename_warning: str = "",
+        source_status: str = "imported",
     ) -> int:
         with self._connect() as conn:
             cursor = conn.execute(
@@ -712,10 +857,13 @@ class MeshMrRepository:
                 INSERT INTO source_files (
                     mr_id, original_path, archived_path, parsed_db_path, parsed_db_size, db_schema_version,
                     original_filename, archived_filename, sha256,
+                    stored_filename, raw_sha256, content_sha256, profile_id, linked_mr_id,
                     file_size, file_mtime, imported_at, parser_version, parse_status, encoding, is_gzip,
                     first_sample_time, last_sample_time, lines_read, records_parsed, records_skipped,
+                    first_log_timestamp, last_log_timestamp, log_date, daily_sequence,
+                    rename_status, rename_warning, source_status,
                     duplicate_records, issue_count, error_message, analysis_params_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     mr_id,
@@ -727,6 +875,11 @@ class MeshMrRepository:
                     original_path.name,
                     archived_path.name,
                     sha256,
+                    archived_path.name,
+                    raw_sha256 or sha256,
+                    content_sha256 or sha256,
+                    profile_id or mr_id,
+                    linked_mr_id,
                     file_size,
                     dt_text(file_mtime),
                     dt_text(datetime.now()),
@@ -739,6 +892,13 @@ class MeshMrRepository:
                     lines_read,
                     records_parsed,
                     records_skipped,
+                    dt_text(first_log_timestamp or first_sample_time),
+                    dt_text(last_log_timestamp or last_sample_time),
+                    log_date or ((first_log_timestamp or first_sample_time).date().isoformat() if first_log_timestamp or first_sample_time else None),
+                    daily_sequence,
+                    rename_status,
+                    rename_warning,
+                    source_status,
                     duplicate_records,
                     issue_count,
                     error_message,

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from dataclasses import dataclass
+from datetime import date
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -16,6 +18,29 @@ from netconsole.utils.natural_sort import natural_text_key
 
 
 INVALID_FOLDER_CHARS = re.compile(r'[\\/:*?"<>|]')
+GENERIC_MESHLOG_NAMES = frozenset(
+    {"meshlog.log", "meshlog.txt", "meshlog.log.gz", "meshlog.txt.gz"}
+)
+NORMALIZED_MESHLOG_RE = re.compile(
+    r"^(?P<date>\d{4}_\d{2}_\d{2})_(?P<sequence>[1-9]\d*)meshlog\.(?:log|txt)(?:\.gz)?$",
+    re.IGNORECASE,
+)
+UNKNOWN_MESHLOG_RE = re.compile(
+    r"^unknown_date_(?P<sequence>[1-9]\d*)meshlog\.(?:log|txt)(?:\.gz)?$",
+    re.IGNORECASE,
+)
+TIMESTAMP_NOT_FOUND_WARNING = "未识别到首个有效日志时间，无法生成日期归档名称。"
+
+
+@dataclass(frozen=True)
+class MeshRawArchiveResult:
+    path: Path
+    original_filename: str
+    stored_filename: str
+    log_date: date | None
+    daily_sequence: int | None
+    rename_status: str
+    rename_warning: str = ""
 
 
 def safe_mr_folder_name(display_name: str) -> str:
@@ -38,11 +63,20 @@ class MeshStorageService:
         linked_device_id: int | None = None,
         linked_device_uuid: str | None = None,
     ) -> MeshMrProfile:
+        if linked_device_id is not None:
+            existing = self.catalog.get_by_linked_device_id(int(linked_device_id))
+            if existing is not None:
+                raise ValueError(f"MR already linked: {existing.display_name}")
+        normalized_uuid = str(linked_device_uuid or "").strip()
+        if normalized_uuid:
+            existing = self.catalog.get_by_linked_device_uuid(normalized_uuid)
+            if existing is not None:
+                raise ValueError(f"MR already linked: {existing.display_name}")
         profile = self._create_mr_profile_identity(
             display_name,
             notes=notes,
             linked_device_id=linked_device_id,
-            linked_device_uuid=linked_device_uuid,
+            linked_device_uuid=normalized_uuid or None,
         )
         MeshMrRepository(self.paths.mesh_mr_db_path(self.site_name, profile.safe_folder_name))
         return profile
@@ -163,22 +197,78 @@ class MeshStorageService:
         return MeshMrRepository(self.paths.mesh_mr_db_path(self.site_name, profile.safe_folder_name))
 
     def archive_raw_file(self, profile: MeshMrProfile, source_path: Path, sample_time: datetime | None) -> Path:
+        return self.archive_raw_file_with_metadata(profile, source_path, sample_time).path
+
+    def archive_raw_file_with_metadata(
+        self,
+        profile: MeshMrProfile,
+        source_path: Path,
+        sample_time: datetime | None,
+    ) -> MeshRawArchiveResult:
         raw_root = self.paths.mesh_mr_raw_dir(self.site_name, profile.safe_folder_name).resolve()
         resolved_source = source_path.resolve()
         try:
             if resolved_source.is_relative_to(raw_root):
-                return resolved_source
+                return self._existing_archive_result(resolved_source, sample_time)
         except AttributeError:
             if str(resolved_source).startswith(str(raw_root)):
-                return resolved_source
-        archive_time = sample_time or datetime.fromtimestamp(source_path.stat().st_mtime)
-        target_dir = raw_root / f"{archive_time.year:04d}" / f"{archive_time.month:02d}"
+                return self._existing_archive_result(resolved_source, sample_time)
+        log_date = sample_time.date() if sample_time else None
+        target_dir = (
+            raw_root / f"{log_date.year:04d}" / f"{log_date.month:02d}"
+            if log_date
+            else raw_root / "unknown_date"
+        )
         target_dir.mkdir(parents=True, exist_ok=True)
-        target = _unique_path(target_dir / source_path.name)
-        temp = target.with_name(target.name + ".tmp")
-        shutil.copy2(source_path, temp)
-        temp.replace(target)
-        return target
+        normalized = NORMALIZED_MESHLOG_RE.fullmatch(source_path.name)
+        generic_name = source_path.name.casefold() in GENERIC_MESHLOG_NAMES
+        stored_name, daily_sequence, rename_status, rename_warning = suggest_mesh_archive_filename(
+            raw_root,
+            source_path.name,
+            sample_time,
+        )
+        while True:
+            target = target_dir / stored_name
+            try:
+                with source_path.open("rb") as source, target.open("xb") as output:
+                    shutil.copyfileobj(source, output, length=1024 * 1024)
+                shutil.copystat(source_path, target)
+                break
+            except FileExistsError:
+                if generic_name and not normalized:
+                    daily_sequence = _next_daily_sequence(raw_root, log_date)
+                    prefix = log_date.strftime("%Y_%m_%d") if log_date else "unknown_date"
+                    stored_name = f"{prefix}_{daily_sequence}meshlog{_meshlog_compound_suffix(source_path.name)}"
+                    continue
+                target = _unique_path(target_dir / stored_name)
+                stored_name = target.name
+                rename_status = "rename_conflict_suffixed"
+                continue
+            except Exception:
+                target.unlink(missing_ok=True)
+                raise
+        return MeshRawArchiveResult(
+            path=target,
+            original_filename=source_path.name,
+            stored_filename=stored_name,
+            log_date=log_date,
+            daily_sequence=daily_sequence,
+            rename_status=rename_status,
+            rename_warning=rename_warning,
+        )
+
+    @staticmethod
+    def _existing_archive_result(path: Path, sample_time: datetime | None) -> MeshRawArchiveResult:
+        normalized = NORMALIZED_MESHLOG_RE.fullmatch(path.name)
+        unknown = UNKNOWN_MESHLOG_RE.fullmatch(path.name)
+        return MeshRawArchiveResult(
+            path=path,
+            original_filename=path.name,
+            stored_filename=path.name,
+            log_date=sample_time.date() if sample_time else None,
+            daily_sequence=int((normalized or unknown).group("sequence")) if normalized or unknown else None,
+            rename_status="already_normalized" if normalized or unknown else "original_name_retained",
+        )
 
     def refresh_catalog_summary(self, profile: MeshMrProfile) -> None:
         repo = self.mr_repository(profile)
@@ -202,6 +292,51 @@ def _unique_path(path: Path) -> Path:
         if not candidate.exists():
             return candidate
         counter += 1
+
+
+def _next_daily_sequence(raw_root: Path, log_date: date | None) -> int:
+    if log_date:
+        prefix = re.escape(log_date.strftime("%Y_%m_%d"))
+        pattern = re.compile(
+            rf"^{prefix}_(?P<sequence>[1-9]\d*)meshlog\.(?:log|txt)(?:\.gz)?$",
+            re.IGNORECASE,
+        )
+    else:
+        pattern = UNKNOWN_MESHLOG_RE
+    maximum = 0
+    for path in raw_root.rglob("*"):
+        if not path.is_file():
+            continue
+        match = pattern.fullmatch(path.name)
+        if match:
+            maximum = max(maximum, int(match.group("sequence")))
+    return maximum + 1
+
+
+def suggest_mesh_archive_filename(
+    raw_root: Path,
+    original_filename: str,
+    sample_time: datetime | None,
+) -> tuple[str, int | None, str, str]:
+    normalized = NORMALIZED_MESHLOG_RE.fullmatch(original_filename)
+    if normalized:
+        return original_filename, int(normalized.group("sequence")), "already_normalized", ""
+    if original_filename.casefold() not in GENERIC_MESHLOG_NAMES:
+        return original_filename, None, "original_name_retained", ""
+    log_date = sample_time.date() if sample_time else None
+    sequence = _next_daily_sequence(raw_root, log_date)
+    prefix = log_date.strftime("%Y_%m_%d") if log_date else "unknown_date"
+    warning = "" if log_date else TIMESTAMP_NOT_FOUND_WARNING
+    status = "renamed_by_log_date_sequence" if log_date else "timestamp_not_found"
+    return f"{prefix}_{sequence}meshlog{_meshlog_compound_suffix(original_filename)}", sequence, status, warning
+
+
+def _meshlog_compound_suffix(name: str) -> str:
+    value = name.casefold()
+    for suffix in (".log.gz", ".txt.gz", ".log", ".txt"):
+        if value.endswith(suffix):
+            return suffix
+    raise ValueError(f"unsupported MESH log suffix: {name}")
 
 
 def _device_display_name(device: Device) -> str:

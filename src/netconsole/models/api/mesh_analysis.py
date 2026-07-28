@@ -39,11 +39,29 @@ class MeshImportContextPrepareDTO(ApiModel):
     profile_count: int = 0
     created_count: int = 0
     updated_count: int = 0
+    skipped_count: int = 0
+    warnings: list[str] = Field(default_factory=list)
 
 
 class MeshBundleProfileCandidateDTO(ApiModel):
     profile_id: str
     display_name: str
+
+
+class MeshBundleProfileImportStateDTO(ApiModel):
+    profile_id: str
+    profile_name: str = ""
+    stored_filename: str = ""
+    daily_sequence: int | None = None
+    rename_status: str = ""
+    rename_warning: str = ""
+    duplicate_status: str = "new"
+    import_allowed: bool = True
+    existing_source_id: int | None = None
+    existing_stored_filename: str = ""
+    existing_session_id: str = ""
+    existing_profile_id: str = ""
+    existing_profile_name: str = ""
 
 
 class MeshBundleMemberPreviewDTO(ApiModel):
@@ -52,11 +70,29 @@ class MeshBundleMemberPreviewDTO(ApiModel):
     safe_name: str
     size_bytes: int
     sha256: str
+    raw_sha256: str
+    content_sha256: str
+    first_log_timestamp: str | None = None
+    last_log_timestamp: str | None = None
+    log_date: str | None = None
+    stored_filename: str = ""
+    daily_sequence: int | None = None
+    rename_status: str = ""
+    rename_warning: str = ""
+    duplicate_status: str = "new"
+    batch_duplicate_of: str = ""
+    import_allowed: bool = True
+    existing_source_id: int | None = None
+    existing_stored_filename: str = ""
+    existing_session_id: str = ""
+    existing_profile_id: str = ""
+    existing_profile_name: str = ""
     train_number: str = ""
     role: str = ""
     match_status: Literal["matched", "unmatched", "ambiguous"]
     selected_profile_id: str = ""
     selected_profile_name: str = ""
+    profile_import_states: list[MeshBundleProfileImportStateDTO] = Field(default_factory=list)
     candidates: list[MeshBundleProfileCandidateDTO] = Field(default_factory=list)
 
 
@@ -185,6 +221,16 @@ class MeshDataSourceDTO(ApiModel):
     source_id: str = Field(default="", description="兼容别名，等同 source_action_id；新客户端不得用于导出")
     source_type: str
     name: str
+    original_filename: str = ""
+    stored_filename: str = ""
+    raw_sha256: str = ""
+    content_sha256: str = ""
+    first_log_timestamp: str | None = None
+    last_log_timestamp: str | None = None
+    log_date: str | None = None
+    daily_sequence: int | None = None
+    rename_status: str = ""
+    rename_warning: str = ""
     exists: bool = False
     size_bytes: int = 0
     modified_at: str | None = None

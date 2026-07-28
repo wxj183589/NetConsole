@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import sqlite3
 import zipfile
 from pathlib import Path
 from urllib.parse import quote
@@ -10,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from netconsole.backend.api.main import create_app
 from netconsole.backend.api.mesh_analysis_router import router as mesh_analysis_router
+from netconsole.models.api.rail_transit_base_data import VehicleMrDTO, VehicleMrPageDTO
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
 from tests.mesh_analysis_test_support import EmptyBaseQuery, create_mesh_analysis_fixture
 
@@ -158,6 +160,86 @@ def test_mesh_profile_api_lists_persisted_profiles_and_creates_real_profile(tmp_
     assert created.json()["display_name"] == "列车02-MR-TC"
     assert created.json()["safe_folder_name"] == "列车02-MR-TC"
     assert {item["display_name"] for item in after.json()} == {"列车01-MR-CT", "列车02-MR-TC"}
+
+
+class _VehicleMrPages:
+    def list_mrs(self, _site_id: str, *, page: int, page_size: int) -> VehicleMrPageDTO:
+        rows = [
+            VehicleMrDTO(id="vehicle-34-ct", device_id=34, name="列车34-MR-CT", train_no="34", role="CT"),
+            VehicleMrDTO(id="vehicle-34-cw", device_id=35, name="列车34-MR-CW", train_no="34", role="CW"),
+        ]
+        start = (page - 1) * page_size
+        return VehicleMrPageDTO(items=rows[start:start + page_size], total=len(rows), page=page, page_size=page_size)
+
+
+def test_prepare_import_context_api_is_json_idempotent_and_keeps_backend_available(tmp_path: Path) -> None:
+    paths, _session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
+    app.state.mesh_bundle_application_service.base_data_query_service = _VehicleMrPages()
+
+    with TestClient(app) as client:
+        first = client.post("/api/rail-transit/mesh-analysis/import-context/prepare")
+        profiles = client.get("/api/rail-transit/mesh-analysis/profiles")
+        second = client.post("/api/rail-transit/mesh-analysis/import-context/prepare")
+        health = client.get("/api/health")
+
+    assert first.status_code == 200
+    assert first.headers["content-type"].startswith("application/json")
+    assert first.json()["created_count"] == 2
+    assert first.json()["skipped_count"] == 0
+    assert second.status_code == 200
+    assert second.json()["created_count"] == 0
+    assert {item["linked_device_uuid"] for item in profiles.json()} >= {"vehicle-34-ct", "vehicle-34-cw"}
+    assert health.status_code == 200
+
+
+def test_prepare_import_context_api_returns_structured_json_for_missing_or_failed_service(tmp_path: Path) -> None:
+    paths, _session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
+    app.state.mesh_bundle_application_service = None
+
+    with TestClient(app) as client:
+        missing = client.post("/api/rail-transit/mesh-analysis/import-context/prepare")
+        profiles = client.get("/api/rail-transit/mesh-analysis/profiles")
+
+    assert missing.status_code == 503
+    assert missing.headers["content-type"].startswith("application/json")
+    assert missing.json()["detail"] == {
+        "code": "MESH_IMPORT_CONTEXT_SERVICE_UNAVAILABLE",
+        "message": "MESH 导入上下文服务未就绪",
+        "details": {"stage": "application_state"},
+    }
+    assert profiles.status_code == 200
+
+
+def test_prepare_import_context_api_maps_sqlite_failure_to_structured_json(tmp_path: Path) -> None:
+    paths, _session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
+
+    class _BrokenBaseQuery:
+        def list_mrs(self, _site_id: str, *, page: int, page_size: int):
+            raise sqlite3.OperationalError("database is locked")
+
+    app.state.mesh_bundle_application_service.base_data_query_service = _BrokenBaseQuery()
+
+    with TestClient(app) as client:
+        response = client.post("/api/rail-transit/mesh-analysis/import-context/prepare")
+        health = client.get("/api/health")
+
+    assert response.status_code == 503
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["detail"] == {
+        "code": "MESH_IMPORT_CONTEXT_PREPARE_FAILED",
+        "message": "MESH 导入上下文准备失败",
+        "details": {"stage": "sync_vehicle_mr_profiles"},
+    }
+    assert health.status_code == 200
 
 
 def test_mesh_bundle_preview_returns_safe_token_without_server_path(tmp_path: Path) -> None:
