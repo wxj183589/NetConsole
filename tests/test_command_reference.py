@@ -37,6 +37,8 @@ def test_command_reference_json_covers_switch_baseline():
         "dir flash:/diagfile/",
         "ping <ip>",
         "ping -c <count> <ip>",
+        "show running-config switchvlan",
+        "show vlan",
     }
 
     assert baseline <= set(by_command)
@@ -44,10 +46,25 @@ def test_command_reference_json_covers_switch_baseline():
     assert by_command["n"].interactive_input is True
     assert by_command["n"].risk_level == "interactive"
     assert by_command["display transceiver diagnosis interface"].zte_adaptation_status == "document_sample_only"
-    assert by_command["show opticalinfo brief"].parser_status.endswith("DOCUMENT_SAMPLE_ONLY")
-    assert by_command["show lldp entry interface <interface>"].parser_status == "SAMPLE_REQUIRED"
+    assert (
+        by_command["show opticalinfo brief"].zte_adaptation_status
+        == "field_verified_partial"
+    )
+    assert "C89E-4 V1.9.0 已实机验证" in by_command[
+        "show opticalinfo brief"
+    ].parser_status
+    assert "C89E-4 V1.9.0 已完成 Entry 实机解析" in by_command[
+        "display lldp neighbor-information verbose"
+    ].parser_status
     assert "show lldp statistic" not in by_command
-    assert by_command["show lldp <candidate>"].zte_adaptation_status == "sample_required"
+    assert (
+        by_command["show running-config switchvlan"].zte_adaptation_status
+        == "field_verified"
+    )
+    assert by_command["show vlan"].zte_adaptation_status == "field_verified"
+    assert by_command[
+        "display lldp neighbor-information list"
+    ].zte_adaptation_status == "field_verified"
 
 
 def test_command_reference_json_is_unique_and_has_non_cli_section():
@@ -55,7 +72,7 @@ def test_command_reference_json_is_unique_and_has_non_cli_section():
     items = data["items"]
     ids = [item["id"] for item in items]
 
-    assert len(items) == 83
+    assert len(items) == 85
     assert len(ids) == len(set(ids))
     assert {
         "ac_display_wlan_ap_all_connection_record",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from uuid import uuid4
 
@@ -28,12 +29,26 @@ INTERFACE_FIELDS = (
     "device_uuid",
     "interface_name",
     "link_status",
+    "admin_status",
+    "physical_status",
     "protocol_status",
+    "media_attribute",
+    "media_type",
+    "category",
     "speed",
     "duplex",
     "interface_type",
     "port_status",
+    "port_mode",
     "pvid",
+    "native_vlan",
+    "tagged_vlans",
+    "untagged_vlans",
+    "pvid_source",
+    "pvid_verified",
+    "vlan_config_status",
+    "vlan_config_collected_at",
+    "vlan_warnings",
     "description",
     "ip_address",
     "mac_address",
@@ -77,10 +92,22 @@ OPTICAL_MODULE_FIELDS = (
 LLDP_FIELDS = (
     "device_uuid",
     "local_interface",
+    "scope",
+    "chassis_type",
+    "chassis_id",
     "neighbor_sysname",
     "neighbor_mac",
+    "port_id_type",
     "neighbor_interface",
     "neighbor_ip",
+    "holdtime",
+    "ttl",
+    "port_description",
+    "system_description",
+    "system_capabilities",
+    "pvid",
+    "operational_mau",
+    "max_frame_size",
     "neighbor_device_uuid",
     "collected_at",
     "collect_run_uuid",
@@ -164,11 +191,25 @@ class DeviceFactRepository:
             conn.commit()
 
     def replace_device_interfaces(self, device_uuid: str, interfaces: list[dict[str, object | None]]) -> None:
+        if not interfaces:
+            raise ValueError("接口快照为空，保留上一份有效数据")
+        if any(not str(item.get("interface_name") or "").strip() for item in interfaces):
+            raise ValueError("接口快照包含空接口名，保留上一份有效数据")
         now = self._now()
         with self.database.connect() as conn:
             conn.execute("DELETE FROM device_interfaces WHERE device_uuid = ?", (device_uuid,))
             for item in interfaces:
                 payload = self._payload(INTERFACE_FIELDS, {**item, "device_uuid": device_uuid})
+                for field in ("tagged_vlans", "untagged_vlans", "vlan_warnings"):
+                    value = payload.get(field)
+                    if isinstance(value, (list, tuple)):
+                        payload[field] = json.dumps(
+                            list(value),
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                if payload.get("pvid_verified") is not None:
+                    payload["pvid_verified"] = int(bool(payload["pvid_verified"]))
                 payload["collected_at"] = payload.get("collected_at") or now
                 payload["updated_at"] = payload.get("updated_at") or now
                 self._insert(conn, "device_interfaces", INTERFACE_FIELDS, payload)
@@ -191,6 +232,10 @@ class DeviceFactRepository:
         search: str = "",
         status: str = "",
         interface_type: str = "",
+        admin_status: str = "",
+        physical_status: str = "",
+        protocol_status: str = "",
+        media_type: str = "",
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[dict[str, object | None]], int]:
@@ -199,16 +244,22 @@ class DeviceFactRepository:
         _append_search_clause(clauses, params, search, _INTERFACE_SEARCH_FIELDS)
         selected_status = str(status or "").strip().casefold()
         if selected_status:
-            clauses.append(
-                "(LOWER(TRIM(COALESCE(link_status, ''))) = ? "
-                "OR LOWER(TRIM(COALESCE(protocol_status, ''))) = ? "
-                "OR LOWER(TRIM(COALESCE(port_status, ''))) = ?)"
-            )
-            params.extend([selected_status] * 3)
+            clauses.append("LOWER(TRIM(COALESCE(link_status, ''))) = ?")
+            params.append(selected_status)
         selected_type = str(interface_type or "").strip().casefold()
         if selected_type:
             clauses.append("LOWER(TRIM(COALESCE(interface_type, ''))) = ?")
             params.append(selected_type)
+        for field, selected in (
+            ("admin_status", admin_status),
+            ("physical_status", physical_status),
+            ("protocol_status", protocol_status),
+            ("media_type", media_type),
+        ):
+            normalized = str(selected or "").strip().casefold()
+            if normalized:
+                clauses.append(f"LOWER(TRIM(COALESCE({field}, ''))) = ?")
+                params.append(normalized)
         return self._current_page(
             "device_interfaces",
             "interface_name",
@@ -233,6 +284,10 @@ class DeviceFactRepository:
             conn.commit()
 
     def replace_optical_modules(self, device_uuid: str, modules: list[dict[str, object | None]]) -> None:
+        if not modules:
+            raise ValueError("光模块快照为空，保留上一份有效数据")
+        if any(not str(item.get("interface_name") or "").strip() for item in modules):
+            raise ValueError("光模块快照包含空接口名，保留上一份有效数据")
         now = self._now()
         with self.database.connect() as conn:
             conn.execute("DELETE FROM device_optical_modules WHERE device_uuid = ?", (device_uuid,))
@@ -313,18 +368,31 @@ class DeviceFactRepository:
             self._insert(conn, "device_optical_modules_history", OPTICAL_MODULE_HISTORY_FIELDS, payload)
             conn.commit()
 
-    def replace_lldp_neighbors(self, device_uuid: str, neighbors: list[dict[str, object | None]]) -> None:
+    def replace_lldp_neighbors(
+        self,
+        device_uuid: str,
+        neighbors: list[dict[str, object | None]],
+        *,
+        preserve_existing: bool = True,
+    ) -> None:
         now = self._now()
         with self.database.connect() as conn:
-            existing_rows = conn.execute(
-                "SELECT * FROM device_lldp_neighbors WHERE device_uuid = ?",
-                (device_uuid,),
-            ).fetchall()
+            existing_rows = (
+                conn.execute(
+                    "SELECT * FROM device_lldp_neighbors WHERE device_uuid = ?",
+                    (device_uuid,),
+                ).fetchall()
+                if preserve_existing
+                else ()
+            )
             merged: dict[str, dict[str, object | None]] = {}
             passthrough: list[dict[str, object | None]] = []
             for row in existing_rows:
                 item = dict(row)
-                key = normalize_interface_name(item.get("local_interface")).casefold()
+                key = _lldp_neighbor_key(
+                    item,
+                    include_neighbor=not preserve_existing,
+                )
                 if key:
                     merged[key] = item
                 else:
@@ -334,7 +402,10 @@ class DeviceFactRepository:
                 payload = self._payload(LLDP_FIELDS, {**item, "device_uuid": device_uuid})
                 payload["collected_at"] = payload.get("collected_at") or now
                 payload["updated_at"] = payload.get("updated_at") or now
-                key = normalize_interface_name(payload.get("local_interface")).casefold()
+                key = _lldp_neighbor_key(
+                    payload,
+                    include_neighbor=not preserve_existing,
+                )
                 if key:
                     merged[key] = payload
                 else:
@@ -353,8 +424,14 @@ class DeviceFactRepository:
                 "SELECT * FROM device_lldp_neighbors WHERE device_uuid = ?",
                 (device_uuid,),
             ).fetchall()
-        latest = _latest_rows_by_interface([dict(row) for row in rows], "local_interface")
-        return sorted(latest, key=lambda row: (interface_sort_key(row.get("local_interface")), str(row.get("neighbor_sysname") or "")))
+        return sorted(
+            (dict(row) for row in rows),
+            key=lambda row: (
+                interface_sort_key(row.get("local_interface")),
+                str(row.get("neighbor_sysname") or ""),
+                str(row.get("neighbor_interface") or ""),
+            ),
+        )
 
     def list_lldp_neighbors_page(
         self,
@@ -739,6 +816,8 @@ def _int_value(value: object) -> int:
 _INTERFACE_SEARCH_FIELDS = (
     "interface_name",
     "description",
+    "media_type",
+    "category",
     "ip_address",
     "mac_address",
     "vlan",
@@ -756,6 +835,9 @@ _LLDP_SEARCH_FIELDS = (
     "neighbor_mac",
     "neighbor_interface",
     "neighbor_ip",
+    "chassis_id",
+    "port_description",
+    "system_description",
     "neighbor_device_uuid",
 )
 
@@ -798,3 +880,21 @@ def _interface_name_aliases(value: object) -> list[str]:
             aliases.update(f"{short}{suffix}".casefold() for short in short_names)
             break
     return sorted(alias for alias in aliases if alias)
+
+
+def _lldp_neighbor_key(
+    item: dict[str, object | None],
+    *,
+    include_neighbor: bool,
+) -> str:
+    local = normalize_interface_name(item.get("local_interface")).casefold()
+    if not include_neighbor:
+        return local
+    values = (
+        local,
+        str(item.get("chassis_id") or item.get("neighbor_mac") or "")
+        .strip()
+        .casefold(),
+        str(item.get("neighbor_interface") or "").strip().casefold(),
+    )
+    return "\x1f".join(values) if values[0] else ""

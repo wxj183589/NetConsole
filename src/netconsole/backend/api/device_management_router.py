@@ -115,7 +115,7 @@ def list_devices(
     page_size: int = Query(default=50, ge=1, le=200),
     sort_by: str = Query(
         default="name",
-        pattern="^(name|system_name|primary_address|station|device_type|updated_at|status)$",
+        pattern="^(name|system_name|primary_address|station|device_type|updated_at|metadata_updated_at|last_collected_at|last_collect_status|status)$",
     ),
     sort_order: str = Query(default="asc", pattern="^(asc|desc)$"),
 ) -> DevicePageDTO:
@@ -252,6 +252,18 @@ def batch_refresh_details(
     return _query(lambda: _service(request).start_batch_refresh(payload))
 
 
+@router.get(
+    "/batch-refreshes/{batch_id}",
+    response_model=DeviceTaskBatchDTO,
+    dependencies=[Depends(require_feature("web.device_management_collect"))],
+)
+def get_batch_refresh(request: Request, batch_id: str) -> DeviceTaskBatchDTO:
+    return _not_found(
+        lambda: _service(request).get_batch_refresh(batch_id),
+        "批量更新记录不存在",
+    )
+
+
 @router.post(
     "/devices/batch-connection-tests",
     response_model=DeviceTaskBatchDTO,
@@ -301,6 +313,10 @@ def device_interfaces(
     search: str = Query(default="", max_length=200),
     status_filter: str = Query(default="", alias="status", max_length=40),
     interface_type: str = Query(default="", max_length=40),
+    admin_status: str = Query(default="", max_length=40),
+    physical_status: str = Query(default="", max_length=40),
+    protocol_status: str = Query(default="", max_length=40),
+    media_type: str = Query(default="", max_length=40),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
 ) -> DeviceInterfacePageDTO:
@@ -310,6 +326,10 @@ def device_interfaces(
             search=search,
             status=status_filter,
             interface_type=interface_type,
+            admin_status=admin_status,
+            physical_status=physical_status,
+            protocol_status=protocol_status,
+            media_type=media_type,
             page=page,
             page_size=page_size,
         ),

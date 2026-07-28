@@ -1,0 +1,7 @@
+DEVICE-REDACTED#show interface brief
+Interface Attribute Mode BW Admin Phy Prot Description
+sci-0/1/0/1 optical Duplex/full 1G up up up
+sci-0/1/0/2 optical Duplex/full 1G up up up
+gei-0/3/0/1 optical Duplex/full 1G up down down
+xgeis-0/4/0/5 optical Duplex/full 10G up up up DESCRIPTION-REDACTED
+DEVICE-REDACTED#

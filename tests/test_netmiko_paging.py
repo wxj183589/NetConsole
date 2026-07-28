@@ -14,9 +14,11 @@ class _PagedConnection:
         self.outputs = list(outputs)
         self.commands: list[str] = []
         self.interrupts: list[str] = []
+        self.kwargs: list[dict[str, object]] = []
 
-    def send_command_timing(self, command: str, **_kwargs) -> str:
+    def send_command_timing(self, command: str, **kwargs) -> str:
         self.commands.append(command)
+        self.kwargs.append(kwargs)
         return self.outputs.pop(0) if self.outputs else ""
 
     def write_channel(self, value: str) -> None:
@@ -35,6 +37,8 @@ def test_paged_command_sends_space_and_preserves_raw_output() -> None:
     result = safe_send_command_with_paging(connection, "show opticalinfo brief")
 
     assert connection.commands == ["show opticalinfo brief", " ", " "]
+    assert all(item["read_timeout"] == 120 for item in connection.kwargs)
+    assert all(item["last_read"] == 10 for item in connection.kwargs)
     assert result.page_count == 3
     assert "--More--" in result.raw_output
     assert "More" not in result.output

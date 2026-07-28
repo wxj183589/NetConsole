@@ -406,6 +406,7 @@ def build_trackside_ap_business_rows(
     result: list[dict[str, object | None]] = []
     for device in devices:
         device_uuid = str(device.device_uuid or "")
+        lldp_snapshot_present = device_uuid in (lldp_by_device or {})
         try:
             adapter = resolve_trackside_switch_adapter(device)
             adapter_description = adapter.describe_capabilities()
@@ -580,6 +581,11 @@ def build_trackside_ap_business_rows(
                 elif (
                     capability_statuses.get("lldp")
                     == CommandCapabilityState.SAMPLE_REQUIRED.value
+                    or (
+                        str(device.device_vendor or "").strip().casefold()
+                        == "zte"
+                        and not lldp_snapshot_present
+                    )
                 ):
                     lldp_match_status = "SAMPLE_REQUIRED"
                 else:

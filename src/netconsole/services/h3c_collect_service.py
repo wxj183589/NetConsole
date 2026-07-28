@@ -17,10 +17,20 @@ from netconsole.models.device import Device
 from netconsole.parsers.h3c.boot_loader_parser import parse_boot_loader
 from netconsole.parsers.h3c.device_parser import parse_device
 from netconsole.parsers.h3c.sysname_parser import parse_sysname
+from netconsole.parsers.zte.vlan import (
+    ZTE_VLAN_PARSER_VERSION,
+    ZteVlanParseResult,
+    merge_interface_vlan_facts,
+    parse_switchvlan_running_config,
+    parse_vlan_table,
+)
 from netconsole.parsers.zte.zxr10 import (
     parse_device_identity as parse_zte_device_identity,
     parse_interfaces as parse_zte_interfaces,
+    parse_lldp_brief as parse_zte_lldp_brief,
+    parse_lldp_entries as parse_zte_lldp_entries,
     parse_optical_summary as parse_zte_optical_summary,
+    merge_lldp_neighbors as merge_zte_lldp_neighbors,
 )
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
@@ -45,6 +55,7 @@ from netconsole.utils.text_encoding import clean_h3c_device_text
 
 
 ProgressCallback = Callable[[int, str, str, str], None]
+CancelCheck = Callable[[], bool]
 CLI_FAILURE_MARKERS = (
     "% unrecognized command",
     "% incomplete command",
@@ -64,11 +75,14 @@ CLI_FAILURE_MARKERS = (
 class CommandResult:
     command: str
     success: bool
+    selector: str = ""
     output: str = ""
     error_message: str | None = None
     started_at: str | None = None
     ended_at: str | None = None
     raw_output: str = ""
+    page_count: int = 0
+    output_size: int = 0
 
 
 @dataclass(frozen=True)
@@ -91,6 +105,7 @@ def collect_h3c_device_details(
     repository: DeviceFactRepository | None = None,
     paths: PathResolver | None = None,
     progress_callback: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> CollectDeviceResult:
     paths = paths or PathResolver()
     repository = repository or DeviceFactRepository(Database(paths.site_db_path(site_name)))
@@ -219,6 +234,7 @@ def collect_h3c_device_details(
                 device,
                 collect_run_uuid,
                 target.encoding,
+                cancel_check=cancel_check,
             )
             command_results.append(screen_result)
             collect_steps = profile.steps[1:]
@@ -234,19 +250,36 @@ def collect_h3c_device_details(
                 device,
                 collect_run_uuid,
                 target.encoding,
+                cancel_check=cancel_check,
             )
             command_results.append(result)
+            if (
+                str(device.device_vendor or "").strip().casefold() == "zte"
+                and not result.success
+                and step.selector
+                in {
+                    "inventory.version",
+                    "inventory.interface_brief",
+                    "inventory.optical_brief",
+                }
+            ):
+                raise ValueError(result.error_message or "ZTE_COMMAND_FAILED")
             if result.success:
                 outputs[step.selector] = result.output
                 if (
                     str(device.device_vendor or "").strip().casefold() == "zte"
                     and step.selector == "inventory.version"
-                    and parse_zte_device_identity(result.output).status
-                    == "NOT_RECOGNIZED"
+                    and parse_zte_device_identity(result.output).status != "OK"
                 ):
                     raise ValueError("ZTE_DEVICE_NOT_RECOGNIZED")
         _write_raw_files(raw_log_file, commands_file, device, target.protocol, collect_run_uuid, command_results, target_protocol=target.protocol)
         write_result = _parse_and_write(repository, device, collect_run_uuid, relative_raw_log_path, outputs, progress_callback=progress_callback)
+        if str(device.device_vendor or "").strip().casefold() == "zte":
+            _write_zte_vlan_artifacts(
+                run_dir,
+                command_results,
+                write_result.get("zte_vlan_manifest"),
+            )
         command_failed = any(not result.success for result in command_results)
         status = "partial_success" if command_failed or write_result["parse_errors"] else "success"
         if not any((write_result["facts"], write_result["interfaces"], write_result["optical_modules"], write_result["lldp_neighbors"])):
@@ -302,6 +335,7 @@ def _run_command(
     *,
     command_override: str = "",
     encoding: str = "gb2312",
+    cancel_check: CancelCheck | None = None,
 ) -> CommandResult:
     command = command_override or step.command
     started_at = _now()
@@ -311,6 +345,7 @@ def _run_command(
         return CommandResult(
             command=command,
             success=False,
+            selector=step.selector,
             error_message=reason,
             started_at=started_at,
             ended_at=_now(),
@@ -326,6 +361,7 @@ def _run_command(
                 command_timeout=120,
                 idle_timeout=10,
                 encoding=encoding,
+                cancel_check=cancel_check,
             )
             raw_output = paged_output.raw_output
             output = paged_output.output
@@ -346,6 +382,7 @@ def _run_command(
         return CommandResult(
             command=command,
             success=False,
+            selector=step.selector,
             error_message=message,
             started_at=started_at,
             ended_at=_now(),
@@ -365,20 +402,34 @@ def _run_command(
         return CommandResult(
             command=command,
             success=False,
+            selector=step.selector,
             output=output_text,
             raw_output=raw_output,
             error_message=message,
             started_at=started_at,
             ended_at=_now(),
+            page_count=(
+                paged_output.page_count
+                if str(device.device_vendor or "").strip().casefold() == "zte"
+                else 1
+            ),
+            output_size=len(raw_output.encode("utf-8", errors="replace")),
         )
     app_logger.log_info("COLLECT_COMMAND_SUCCESS", _detail(device, collect_run_uuid, command=command))
     return CommandResult(
         command=command,
         success=True,
+        selector=step.selector,
         output=output_text,
         raw_output=raw_output,
         started_at=started_at,
         ended_at=_now(),
+        page_count=(
+            paged_output.page_count
+            if str(device.device_vendor or "").strip().casefold() == "zte"
+            else 1
+        ),
+        output_size=len(raw_output.encode("utf-8", errors="replace")),
     )
 
 
@@ -389,6 +440,8 @@ def _run_step_candidates(
     device: Device,
     collect_run_uuid: str,
     encoding: str,
+    *,
+    cancel_check: CancelCheck | None = None,
 ) -> CommandResult:
     last_result: CommandResult | None = None
     for command in resolve_step_command_candidates(device, step):
@@ -400,6 +453,7 @@ def _run_step_candidates(
             collect_run_uuid,
             command_override=command,
             encoding=encoding,
+            cancel_check=cancel_check,
         )
         last_result = result
         if result.success and result.output.strip():
@@ -407,6 +461,7 @@ def _run_step_candidates(
     return last_result or CommandResult(
         command=step.command,
         success=False,
+        selector=step.selector,
         error_message="命令没有返回有效内容",
         started_at=_now(),
         ended_at=_now(),
@@ -597,7 +652,22 @@ def _write_raw_files(
     raw_log_file.write_text("\n".join(lines), encoding="utf-8")
     with commands_file.open("w", encoding="utf-8") as file:
         for result in command_results:
-            file.write(json.dumps({"command": result.command, "success": result.success, "error_message": result.error_message, "started_at": result.started_at, "ended_at": result.ended_at}, ensure_ascii=False) + "\n")
+            file.write(
+                json.dumps(
+                    {
+                        "command": result.command,
+                        "selector": result.selector,
+                        "success": result.success,
+                        "error_message": result.error_message,
+                        "started_at": result.started_at,
+                        "ended_at": result.ended_at,
+                        "page_count": result.page_count,
+                        "output_size": result.output_size,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
 
 
 def _persist_raw_logs() -> bool:
@@ -644,19 +714,37 @@ def _parse_zte_and_write(
 ) -> dict[str, object]:
     version_output = outputs.get("inventory.version", "")
     identity_result = parse_zte_device_identity(version_output)
-    interface_result = parse_zte_interfaces(
-        outputs.get("inventory.interface_brief", "")
-    )
-    optical_result = parse_zte_optical_summary(
-        outputs.get("inventory.optical_brief", "")
-    )
-    parse_errors = [
-        *identity_result.warnings,
-        *interface_result.warnings,
-        *optical_result.warnings,
-    ]
+    interface_result = parse_zte_interfaces(outputs.get("inventory.interface_brief", ""))
+    optical_result = parse_zte_optical_summary(outputs.get("inventory.optical_brief", ""))
+    parse_errors = [*identity_result.warnings]
     if identity_result.status == "NOT_RECOGNIZED":
         parse_errors.append("ZTE_DEVICE_NOT_RECOGNIZED")
+    for label, result in (
+        ("ZTE_INTERFACE", interface_result),
+        ("ZTE_OPTICAL", optical_result),
+    ):
+        parse_errors.extend(result.warnings)
+        if result.status != "OK":
+            parse_errors.append(f"{label}_{result.status}")
+    switchvlan_result = (
+        parse_switchvlan_running_config(outputs["inventory.switchvlan_config"])
+        if "inventory.switchvlan_config" in outputs
+        else None
+    )
+    vlan_table_result = (
+        parse_vlan_table(outputs["inventory.vlan_table"])
+        if "inventory.vlan_table" in outputs
+        else None
+    )
+    for label, result in (
+        ("ZTE_SWITCHVLAN", switchvlan_result),
+        ("ZTE_VLAN_TABLE", vlan_table_result),
+    ):
+        if result is None:
+            continue
+        parse_errors.extend(result.warnings)
+        if result.status not in {"OK", "EMPTY"}:
+            parse_errors.append(f"{label}_{result.status}")
     identity = identity_result.value
     hostname = _prompt_sysname(outputs)
     facts = {
@@ -676,32 +764,224 @@ def _parse_zte_and_write(
             str(device.device_uuid or ""), hostname
         )
     interfaces = [{**item, **metadata} for item in interface_result.value]
-    if interfaces:
+    previous_interfaces = repository.list_device_interfaces(
+        str(device.device_uuid)
+    )
+    vlan_merge = merge_interface_vlan_facts(
+        interfaces,
+        switchvlan_result,
+        vlan_table_result,
+        previous_interfaces,
+    )
+    interfaces = vlan_merge.interfaces
+    for warning in vlan_merge.warnings:
+        parse_errors.append(
+            json.dumps(warning, ensure_ascii=False, separators=(",", ":"))
+        )
+    interfaces_updated = 0
+    if interface_result.status == "OK" and interfaces:
         repository.replace_device_interfaces(str(device.device_uuid), interfaces)
+        interfaces_updated = len(interfaces)
     optical_modules = [{**item, **metadata} for item in optical_result.value]
-    if optical_modules:
+    optical_modules_updated = 0
+    if optical_result.status == "OK" and optical_modules:
         repository.replace_optical_modules(
             str(device.device_uuid), optical_modules
         )
+        optical_modules_updated = len(optical_modules)
+
+    lldp_neighbors_updated = 0
+    brief_result = (
+        parse_zte_lldp_brief(outputs["inventory.lldp_list"])
+        if "inventory.lldp_list" in outputs
+        else None
+    )
+    detail_result = (
+        parse_zte_lldp_entries(outputs["inventory.lldp_verbose"])
+        if "inventory.lldp_verbose" in outputs
+        else None
+    )
+    for label, result in (
+        ("ZTE_LLDP_BRIEF", brief_result),
+        ("ZTE_LLDP_ENTRY", detail_result),
+    ):
+        if result is None:
+            continue
+        parse_errors.extend(result.warnings)
+        if result.status not in {"OK", "NO_NEIGHBOR"}:
+            parse_errors.append(f"{label}_{result.status}")
+
+    lldp_snapshot: list[dict[str, object | None]] | None = None
+    if brief_result is not None and brief_result.status == "OK":
+        detail_rows = (
+            detail_result.value
+            if detail_result is not None and detail_result.status == "OK"
+            else []
+        )
+        lldp_snapshot = merge_zte_lldp_neighbors(
+            brief_result.value,
+            detail_rows,
+        )
+    elif detail_result is not None and detail_result.status == "OK":
+        lldp_snapshot = detail_result.value
+    elif any(
+        result is not None and result.status == "NO_NEIGHBOR"
+        for result in (brief_result, detail_result)
+    ):
+        lldp_snapshot = []
+
+    if lldp_snapshot is not None:
+        lldp_rows = [{**item, **metadata} for item in lldp_snapshot]
+        repository.replace_lldp_neighbors(
+            str(device.device_uuid),
+            lldp_rows,
+            preserve_existing=False,
+        )
+        lldp_neighbors_updated = len(lldp_rows)
     app_logger.log_info(
         "COLLECT_ZTE_FIXTURE_PARSE",
         _detail(
             device,
             collect_run_uuid,
             metadata=(
-                f"facts_updated=True, interfaces_updated={len(interfaces)}, "
-                f"optical_modules_updated={len(optical_modules)}, "
-                "lldp_status=SAMPLE_REQUIRED"
+                f"facts_updated=True, interfaces_updated={interfaces_updated}, "
+                f"optical_modules_updated={optical_modules_updated}, "
+                f"lldp_neighbors_updated={lldp_neighbors_updated}, "
+                f"vlan_conflicts={vlan_merge.stats['conflict_count']}, "
+                f"vlan_inherited={vlan_merge.stats['inherited_count']}, "
+                f"lldp_snapshot={'replaced' if lldp_snapshot is not None else 'preserved'}"
             ),
         ),
     )
     return {
         "facts": True,
-        "interfaces": len(interfaces),
-        "optical_modules": len(optical_modules),
-        "lldp_neighbors": 0,
+        "interfaces": interfaces_updated,
+        "optical_modules": optical_modules_updated,
+        "lldp_neighbors": lldp_neighbors_updated,
         "parse_errors": parse_errors,
+        "zte_vlan_manifest": {
+            "parser_version": ZTE_VLAN_PARSER_VERSION,
+            "collected_at": str(metadata.get("collected_at") or ""),
+            "switchvlan": _zte_vlan_parse_manifest(
+                switchvlan_result,
+                pvid_field="pvid",
+            ),
+            "vlan_table": _zte_vlan_parse_manifest(
+                vlan_table_result,
+                pvid_field="pvid_ports",
+            ),
+            "parsed_interface_count": interfaces_updated,
+            "pvid_count": sum(
+                1 for item in interfaces if item.get("pvid") not in (None, "")
+            ),
+            "warning_count": len(vlan_merge.warnings),
+            "conflict_count": vlan_merge.stats["conflict_count"],
+            "merge_stats": vlan_merge.stats,
+        },
     }
+
+
+def _zte_vlan_parse_manifest(
+    result: ZteVlanParseResult[list[dict[str, object | None]]] | None,
+    *,
+    pvid_field: str,
+) -> dict[str, object]:
+    if result is None:
+        return {
+            "parse_status": "MISSING",
+            "parsed_record_count": 0,
+            "pvid_count": 0,
+            "warning_count": 0,
+        }
+    if pvid_field == "pvid_ports":
+        pvid_count = sum(
+            len(item.get("pvid_ports") or [])
+            for item in result.value
+            if isinstance(item.get("pvid_ports"), list)
+        )
+    else:
+        pvid_count = sum(
+            1 for item in result.value if item.get(pvid_field) not in (None, "")
+        )
+    return {
+        "parse_status": result.status,
+        "parsed_record_count": len(result.value),
+        "pvid_count": pvid_count,
+        "warning_count": len(result.warnings),
+    }
+
+
+def _write_zte_vlan_artifacts(
+    run_dir: Path,
+    command_results: list[CommandResult],
+    parse_manifest: object,
+) -> None:
+    command_map = {
+        "inventory.switchvlan_config": (
+            "switchvlan-config.txt",
+            "switchvlan",
+        ),
+        "inventory.vlan_table": ("vlan-table.txt", "vlan_table"),
+    }
+    result_by_selector = {
+        result.selector: result
+        for result in command_results
+        if result.selector in command_map
+    }
+    if not result_by_selector:
+        return
+    run_dir.mkdir(parents=True, exist_ok=True)
+    parsed = dict(parse_manifest) if isinstance(parse_manifest, dict) else {}
+    commands: list[dict[str, object]] = []
+    for selector, (filename, parse_key) in command_map.items():
+        result = result_by_selector.get(selector)
+        if result is None:
+            continue
+        (run_dir / filename).write_text(
+            result.raw_output or result.output or "",
+            encoding="utf-8",
+        )
+        parse_details = parsed.get(parse_key)
+        commands.append(
+            {
+                "command": result.command,
+                "selector": selector,
+                "artifact": filename,
+                "success": result.success,
+                "parser_version": parsed.get(
+                    "parser_version", ZTE_VLAN_PARSER_VERSION
+                ),
+                "parse_status": (
+                    parse_details.get("parse_status")
+                    if isinstance(parse_details, dict)
+                    else "MISSING"
+                ),
+                "page_count": result.page_count,
+                "output_size": result.output_size,
+                "parsed_interface_count": (
+                    parse_details.get("parsed_record_count", 0)
+                    if isinstance(parse_details, dict)
+                    else 0
+                ),
+                "pvid_count": (
+                    parse_details.get("pvid_count", 0)
+                    if isinstance(parse_details, dict)
+                    else 0
+                ),
+                "warning_count": (
+                    parse_details.get("warning_count", 0)
+                    if isinstance(parse_details, dict)
+                    else 0
+                ),
+                "conflict_count": int(parsed.get("conflict_count") or 0),
+                "collected_at": parsed.get("collected_at") or "",
+            }
+        )
+    manifest = {**parsed, "commands": commands}
+    (run_dir / "zte-vlan-manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def _finalize_failed(repository: DeviceFactRepository, collect_run_uuid: str, message: str) -> None:

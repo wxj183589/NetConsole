@@ -146,6 +146,34 @@
       "notes": "当前仅登记 V9 无线控制器适配方向，不代表所有 V9 Release 已完成现场验证。"
     },
     {
+      "profile_id": "zte-zxr10-c89e-v1-core-switch.v1",
+      "vendor": "ZTE",
+      "device_role": "switch",
+      "display_role": "核心/汇聚交换机",
+      "model_matchers": ["C89E", "C89E-4"],
+      "platform_family": "zxr10",
+      "platform_major_version": 1,
+      "software_version_matchers": ["V1.9.0"],
+      "command_profile_id": "zte.zxr10.switch.generic.device-inventory.v3",
+      "parser_profile_id": "zte_zxr10_switch_v3",
+      "capabilities": {
+        "device_overview": "supported",
+        "interface_status": "supported",
+        "optical_module": "supported",
+        "lldp": "supported",
+        "interface_vlan": "supported",
+        "configuration_collect": "unsupported",
+        "device_file_download": "unsupported",
+        "fit_ap_collect": "not_applicable",
+        "vehicle_mr_collect": "not_applicable",
+        "trackside_ap": "partially_supported",
+        "single_ended_optical_power": "supported",
+        "bidirectional_attenuation": "not_verified"
+      },
+      "validation_level": "validated",
+      "notes": "2026-07-28 已完成既有五命令验证，并在两台车站 C89E-4 V1.9.0 上追加 show running-config switchvlan 与 show vlan 只读验证；中心设备不纳入轨旁 AP 业务结论。完整配置采集、文件管理和 CLI Ping 仍未接入。"
+    },
+    {
       "profile_id": "zte-zxr10-5960x-es-v2-trackside-switch.v1",
       "vendor": "ZTE",
       "device_role": "switch",
@@ -170,7 +198,7 @@
         "bidirectional_attenuation": "not_verified"
       },
       "validation_level": "document_sample_only",
-      "notes": "ZXR10 5960X-ES V2.00.20.03 仅完成文档样例 Parser 与第一阶段框架；LLDP 为 SAMPLE_REQUIRED，AP 关联和双向光衰均需真实设备 Artifact。"
+      "notes": "ZXR10 5960X-ES V2.00.20.03 的版本、接口与 DOM 仅完成文档样例 Parser；共享 LLDP Parser 已由 C89E 实机验证，但 V2 输出、AP 关联和双向光衰仍需真实设备 Artifact。"
     }
   ]
 }

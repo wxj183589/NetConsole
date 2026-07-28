@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   getDeviceExportTask: vi.fn(),
   updateDevice: vi.fn(),
   startBatchRefreshDetails: vi.fn(),
+  getBatchRefresh: vi.fn(),
   startDeviceFormConnectionTest: vi.fn(),
   startDeviceCsvExport: vi.fn(),
   startDeviceTemplateExport: vi.fn(),
@@ -40,6 +41,7 @@ vi.mock('../../api/deviceManagement', async (importOriginal) => ({
   getDeviceExportTask: mocks.getDeviceExportTask,
   updateDevice: mocks.updateDevice,
   startBatchRefreshDetails: mocks.startBatchRefreshDetails,
+  getBatchRefresh: mocks.getBatchRefresh,
   startDeviceFormConnectionTest: mocks.startDeviceFormConnectionTest,
   startDeviceCsvExport: mocks.startDeviceCsvExport,
   startDeviceTemplateExport: mocks.startDeviceTemplateExport,
@@ -80,6 +82,10 @@ const listItem = {
   primary_address: '192.0.2.12',
   backup_address: '',
   updated_at: '2026-07-17T00:00:00+00:00',
+  metadata_updated_at: '2026-07-17T00:00:00+00:00',
+  last_collected_at: '',
+  last_collect_status: '',
+  last_collect_task_id: '',
   capabilities: { ssh: true, ssh_port: 22, telnet: false, telnet_port: 23, snmp: true, snmp_versions: ['v2c'], snmp_port: 161 },
   connection_status: 'UNKNOWN',
   last_test_task_id: '',
@@ -322,7 +328,17 @@ beforeEach(() => {
   mocks.getDeviceEditProfile.mockResolvedValue(editProfile)
   mocks.revealDeviceCredential.mockResolvedValue({ device_uuid: 'device-1', credential_field: 'ssh_password', value: 'stored-ssh-password' })
   mocks.updateDevice.mockResolvedValue({ action: 'updated', device: detail.device })
-  mocks.startBatchRefreshDetails.mockResolvedValue({ action: 'batch_refresh_details', tasks: [] })
+  mocks.startBatchRefreshDetails.mockResolvedValue({
+    action: 'batch_refresh_details',
+    tasks: [],
+    batch_id: 'batch-default',
+    created_at: '',
+    finished_at: '',
+    terminal: true,
+    summary: { total: 0, accepted: 0, reused: 0, rejected: 0, running: 0, completed: 0, partial_success: 0, failed: 0, cancelled: 0 },
+    items: [],
+  })
+  mocks.getBatchRefresh.mockReset()
   mocks.startDeviceFormConnectionTest.mockResolvedValue({
     task_id: 'form-test-1', task_status: 'PENDING', device_uuid: 'device-1', protocol: 'SSH', success: null,
     result_status: '', failure_category: '', message: '等待执行', safe_message: '等待执行', method: '', host: '', port: null, latency_ms: null, elapsed_ms: null, tested_at: '', system_name: '',
@@ -579,11 +595,22 @@ describe('DeviceManagementView mounted interactions', () => {
   })
 
   it('confirms batch refresh, locks the button and uses the selected snapshot', async () => {
-    let resolveBatch!: (value: { action: string; tasks: Array<{ task_id: string; task_status: string; action: string; message: string }> }) => void
-    const batchPromise = new Promise<{ action: string; tasks: Array<{ task_id: string; task_status: string; action: string; message: string }> }>((resolve) => {
+    vi.useFakeTimers()
+    let resolveBatch!: (value: Record<string, unknown>) => void
+    const batchPromise = new Promise<Record<string, unknown>>((resolve) => {
       resolveBatch = resolve
     })
     mocks.startBatchRefreshDetails.mockReturnValue(batchPromise)
+    mocks.getBatchRefresh.mockResolvedValue({
+      action: 'batch_refresh_details',
+      tasks: [{ task_id: 'task-batch-1', task_status: 'COMPLETED', action: 'device.inventory.collect', message: '' }],
+      batch_id: 'batch-1',
+      created_at: '2026-07-28T00:00:00Z',
+      finished_at: '2026-07-28T00:00:01Z',
+      terminal: true,
+      summary: { total: 1, accepted: 1, reused: 0, rejected: 0, running: 0, completed: 1, partial_success: 0, failed: 0, cancelled: 0 },
+      items: [{ device_uuid: 'device-1', device_name: 'MR2', primary_address: '192.0.2.12', vendor: 'H3C', device_type: 'AC', profile_id: 'h3c', profile_version: 1, submission_status: 'ACCEPTED', status: 'COMPLETED', task_id: 'task-batch-1', task_status: 'COMPLETED', collect_run_uuid: 'run-1', facts_updated: true, interfaces_updated: 2, optical_modules_updated: 1, lldp_neighbors_updated: 0, started_at: '', finished_at: '', last_collected_at: '2026-07-28T00:00:01Z', error_message: '' }],
+    })
     const secondRow = { ...listItem, device_uuid: 'device-2', name: 'MR3' }
     mocks.listDevices.mockResolvedValue({ items: [listItem, secondRow], groups: [{ id: 1, name: '车载 MR' }], total: 2, page: 1, page_size: 50, total_pages: 1 })
     const wrapper = await renderView()
@@ -597,18 +624,65 @@ describe('DeviceManagementView mounted interactions', () => {
     expect(mocks.startBatchRefreshDetails).toHaveBeenCalledWith(['device-1'])
     expect((batchButton.element as HTMLButtonElement).disabled).toBe(true)
 
-    await wrapper.get('[data-testid="select-second-device"]').trigger('click')
+    wrapper.findComponent(tableStub).vm.$emit('selection-change', [listItem, secondRow])
+    await flushPromises()
     resolveBatch({
       action: 'batch_refresh_details',
       tasks: [{ task_id: 'task-batch-1', task_status: 'PENDING', action: 'device.inventory.collect', message: '' }],
+      batch_id: 'batch-1',
+      created_at: '2026-07-28T00:00:00Z',
+      finished_at: '',
+      terminal: false,
+      summary: { total: 1, accepted: 1, reused: 0, rejected: 0, running: 1, completed: 0, partial_success: 0, failed: 0, cancelled: 0 },
+      items: [{ device_uuid: 'device-1', device_name: 'MR2', primary_address: '192.0.2.12', vendor: 'H3C', device_type: 'AC', profile_id: 'h3c', profile_version: 1, submission_status: 'ACCEPTED', status: 'ACCEPTED', task_id: 'task-batch-1', task_status: 'PENDING', collect_run_uuid: '', facts_updated: false, interfaces_updated: 0, optical_modules_updated: 0, lldp_neighbors_updated: 0, started_at: '', finished_at: '', last_collected_at: '', error_message: '' }],
     })
     await flushPromises()
 
     expect(mocks.startBatchRefreshDetails).toHaveBeenCalledTimes(1)
-    expect(mocks.openTaskWindow).toHaveBeenCalledWith(expect.objectContaining({ taskId: 'task-batch-1', module: 'devices' }))
-    expect(mocks.messages.info).toHaveBeenCalledWith('正在提交 1 台设备详情更新任务...')
-    expect(mocks.messages.success).toHaveBeenCalledWith('已提交 1 台设备详情刷新任务')
+    expect(mocks.openTaskWindow).not.toHaveBeenCalled()
+    expect(mocks.messages.info).toHaveBeenCalledWith('正在更新 0/1 台设备')
+    expect((batchButton.element as HTMLButtonElement).disabled).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(1000)
+    await flushPromises()
+
+    expect(mocks.getBatchRefresh).toHaveBeenCalledWith('batch-1')
+    expect(mocks.messages.success).toHaveBeenCalledWith('批量更新完成：成功 1，部分成功 0，失败 0，取消 0，拒绝 0')
+    expect(mocks.messages.success).toHaveBeenCalledTimes(1)
+    expect(mocks.listDevices).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushPromises()
+    expect(mocks.getBatchRefresh).toHaveBeenCalledTimes(1)
+    expect(mocks.messages.success).toHaveBeenCalledTimes(1)
+    expect((batchButton.element as HTMLButtonElement).disabled).toBe(false)
+    expect(wrapper.text()).toContain('已选 2 台')
     wrapper.unmount()
+  })
+
+  it('stops batch refresh polling after the view is unmounted', async () => {
+    vi.useFakeTimers()
+    mocks.startBatchRefreshDetails.mockResolvedValue({
+      action: 'batch_refresh_details',
+      tasks: [{ task_id: 'task-batch-1', task_status: 'PENDING', action: 'device.inventory.collect', message: '' }],
+      batch_id: 'batch-1',
+      created_at: '2026-07-28T00:00:00Z',
+      finished_at: '',
+      terminal: false,
+      summary: { total: 1, accepted: 1, reused: 0, rejected: 0, running: 1, completed: 0, partial_success: 0, failed: 0, cancelled: 0 },
+      items: [{ device_uuid: 'device-1', device_name: 'MR2', primary_address: '192.0.2.12', vendor: 'H3C', device_type: 'AC', profile_id: 'h3c', profile_version: 1, submission_status: 'ACCEPTED', status: 'ACCEPTED', task_id: 'task-batch-1', task_status: 'PENDING', collect_run_uuid: '', facts_updated: false, interfaces_updated: 0, optical_modules_updated: 0, lldp_neighbors_updated: 0, started_at: '', finished_at: '', last_collected_at: '', error_message: '' }],
+    })
+    const wrapper = await renderView()
+
+    await wrapper.get('[data-testid="select-first-device"]').trigger('click')
+    await wrapper.get('[data-testid="batch-refresh-details"]').trigger('click')
+    await flushPromises()
+    expect(mocks.startBatchRefreshDetails).toHaveBeenCalledOnce()
+
+    wrapper.unmount()
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushPromises()
+
+    expect(mocks.getBatchRefresh).not.toHaveBeenCalled()
   })
 
   it('consumes the public diagnostic artifact capability for save, open and reveal', async () => {

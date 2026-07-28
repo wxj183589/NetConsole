@@ -27,6 +27,9 @@ from netconsole.parsers.zte.zxr10 import (
     parse_interface_detail,
     parse_interfaces,
     parse_lldp,
+    parse_lldp_brief,
+    parse_lldp_entries,
+    merge_lldp_neighbors,
     parse_optical_detail,
     parse_optical_summary,
 )
@@ -76,17 +79,8 @@ ZTE_TRACKSIDE_COMMAND_PROFILE = TracksideCommandProfile(
     optical_brief=("show opticalinfo brief",),
     optical_detail=("show opticalinfo <interface_name>",),
     lldp_global_candidates=(
+        "show lldp neighbor brief",
         "show lldp entry",
-        "show lldp neighbor",
-        "show lldp neighbors",
-    ),
-    lldp_interface_candidates=(
-        "show lldp entry interface <interface_name>",
-        "show lldp neighbor interface <interface_name>",
-    ),
-    lldp_config_candidates=(
-        "show lldp config",
-        "show lldp config interface <interface_name>",
     ),
 )
 
@@ -242,19 +236,14 @@ class TracksideSwitchAdapter(ABC):
         commands = self._sampling_commands_by_selector(interface)
         items: list[TracksideCommandPlanItem] = []
         for selector in selectors:
-            is_lldp = selector.startswith("lldp_")
             for command in commands.get(selector, ()):
                 items.append(
                     TracksideCommandPlanItem(
                         selector=selector,
                         command=command,
                         output_file=_SAMPLE_OUTPUT_FILES[selector],
-                        status=(
-                            CommandCapabilityState.SAMPLE_REQUIRED
-                            if is_lldp
-                            else CommandCapabilityState.IMPLEMENTED
-                        ),
-                        candidate=is_lldp,
+                        status=CommandCapabilityState.IMPLEMENTED,
+                        candidate=False,
                     )
                 )
         return TracksideCommandPlan(self.profile_id, interface, tuple(items))
@@ -615,7 +604,7 @@ class ZteZxr10TracksideSwitchAdapter(TracksideSwitchAdapter):
     profile_id = ZTE_PROFILE_ID
     command_profile = ZTE_TRACKSIDE_COMMAND_PROFILE
     capabilities = TracksideSwitchCapabilities(
-        lldp_neighbors=False,
+        lldp_neighbors=True,
         lldp_interface_neighbor=False,
     )
 
@@ -754,10 +743,59 @@ class ZteZxr10TracksideSwitchAdapter(TracksideSwitchAdapter):
                     )
                 )
 
-        result.lldp_neighbors = []
-        result.lldp_status = CommandCapabilityState.SAMPLE_REQUIRED.value
-        result.warnings.append(
-            "ZTE LLDP 候选命令未进入默认采集链，请使用厂商适配采样任务取得真实输出"
+        brief_parse: ZteParseResult[list[dict[str, object | None]]] | None = None
+        entry_parse: ZteParseResult[list[dict[str, object | None]]] | None = None
+        for selector, command, parser in (
+            (
+                "lldp-brief",
+                "show lldp neighbor brief",
+                parse_lldp_brief,
+            ),
+            ("lldp-entry", "show lldp entry", parse_lldp_entries),
+        ):
+            try:
+                output = self.collect_raw_output(
+                    connection,
+                    command,
+                    cancel_check=cancel_check,
+                )
+                commands[selector] = command
+                result.raw_outputs[selector] = output.raw_output
+                result.command_pages[selector] = output.page_count
+                parsed = parser(output.output)
+                result.warnings.extend(parsed.warnings)
+                if selector == "lldp-brief":
+                    brief_parse = parsed
+                else:
+                    entry_parse = parsed
+            except (CommandOutputLimitExceeded, CommandCancelled):
+                raise
+            except Exception:
+                result.warnings.append(f"{selector} 只读采集失败")
+
+        lldp_snapshot: list[dict[str, object | None]] | None = None
+        if brief_parse is not None and brief_parse.status == "OK":
+            lldp_snapshot = merge_lldp_neighbors(
+                brief_parse.value,
+                (
+                    entry_parse.value
+                    if entry_parse is not None and entry_parse.status == "OK"
+                    else []
+                ),
+            )
+        elif entry_parse is not None and entry_parse.status == "OK":
+            lldp_snapshot = entry_parse.value
+        elif any(
+            parsed is not None and parsed.status == "NO_NEIGHBOR"
+            for parsed in (brief_parse, entry_parse)
+        ):
+            lldp_snapshot = []
+        result.lldp_neighbors = lldp_snapshot or []
+        _annotate_raw_output_refs(result.lldp_neighbors, "lldp-entry.txt")
+        result.lldp_status = (
+            CommandCapabilityState.VERIFIED.value
+            if lldp_snapshot is not None
+            else CommandCapabilityState.SAMPLE_REQUIRED.value
         )
         result.interfaces = list(interface_index.values())
         result.optical_modules = list(optical_index.values())
@@ -770,7 +808,7 @@ class ZteZxr10TracksideSwitchAdapter(TracksideSwitchAdapter):
             vendor_label="中兴 ZTE",
             platform=self.platform_family,
             product_family=self.model_family,
-            adaptation_status="已接入，待实机验证",
+            adaptation_status="C89E 已验证，5960X-ES 待复核",
             verification_status=ParserVerificationStatus.DOCUMENT_SAMPLE_ONLY,
             profile=self.command_profile,
             capabilities=(
@@ -801,8 +839,8 @@ class ZteZxr10TracksideSwitchAdapter(TracksideSwitchAdapter):
                 TracksideCapabilityDescriptor(
                     "lldp",
                     "LLDP",
-                    CommandCapabilityState.SAMPLE_REQUIRED,
-                    "仅登记候选命令，未进入默认采集链",
+                    CommandCapabilityState.IMPLEMENTED,
+                    "C89E-4 V1.9.0 已实机验证；5960X-ES V2 仍待现场复核",
                 ),
                 TracksideCapabilityDescriptor(
                     "ap_auto_match",
@@ -828,7 +866,7 @@ class ZteZxr10TracksideSwitchAdapter(TracksideSwitchAdapter):
                 "enable 15 与权限边界验证",
                 "分页提示和长输出终止行为验证",
                 "接口与 opticalinfo 实机样本校准",
-                "LLDP 命令探测与 Parser 实现",
+                "5960X-ES V2 LLDP 输出现场复核",
                 "AP 关联和双向光衰验证",
                 "其他 ZXR10 型号与版本兼容验证",
             ),
@@ -877,22 +915,11 @@ class ZteZxr10TracksideSwitchAdapter(TracksideSwitchAdapter):
         return self.command_profile.lldp_global_candidates[0]
 
     def lldp_interface_command(self, interface_name: str) -> str:
-        return (
-            "show lldp entry interface "
-            f"{self.normalize_interface_name(interface_name)}"
-        )
+        raise NotImplementedError("ZTE 轨旁采集仅使用已确认的全量 LLDP 命令")
 
     def lldp_sampling_commands(self, interface_name: str) -> tuple[str, ...]:
-        interface = self.normalize_interface_name(interface_name)
-        return (
-            "show lldp entry",
-            "show lldp neighbor",
-            "show lldp neighbors",
-            f"show lldp entry interface {interface}",
-            f"show lldp neighbor interface {interface}",
-            "show lldp config",
-            f"show lldp config interface {interface}",
-        )
+        self.normalize_interface_name(interface_name)
+        return self.command_profile.lldp_global_candidates
 
     def optical_summary_command(self) -> str:
         return "show opticalinfo brief"

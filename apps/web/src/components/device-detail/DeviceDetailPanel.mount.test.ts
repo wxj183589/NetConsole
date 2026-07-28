@@ -203,7 +203,16 @@ describe('DeviceDetailPanel mounted interactions', () => {
       if (section === 'lldp') {
         return Promise.resolve({
           items: [
-            { local_interface: 'GE1/0/1', association_status: 'matched' },
+            {
+              local_interface: 'gei-0/3/0/2',
+              neighbor_system_name: 'HZDT-TEST-AP',
+              neighbor_interface: 'Ten-GigabitEthernet1/0/1',
+              neighbor_ip: '192.0.2.26',
+              pvid: 71,
+              ttl: 228,
+              port_description: 'Test AP uplink',
+              association_status: 'matched',
+            },
             { local_interface: 'GE1/0/2', association_status: 'unresolved' },
           ],
           total: 2, page: 1, page_size: 50, total_pages: 1,
@@ -211,7 +220,25 @@ describe('DeviceDetailPanel mounted interactions', () => {
         })
       }
       return Promise.resolve({
-        items: [{ name: 'GE1/0/1', link_status: 'UP', protocol_status: 'DOWN' }],
+        items: [{
+          name: 'gei-0/3/0/41',
+          link_status: 'PHYSICAL_DOWN',
+          admin_status: 'up',
+          physical_status: 'down',
+          protocol_status: 'down',
+          media_type: 'optical',
+          category: 'physical',
+          port_status: 'hybrid',
+          port_mode: 'hybrid',
+          pvid: '71',
+          native_vlan: '71',
+          tagged_vlans: ['201'],
+          untagged_vlans: [],
+          vlan: 'Native/PVID 71；Tagged 201',
+          pvid_source: 'show_running_config_switchvlan',
+          pvid_verified: true,
+          vlan_config_status: 'current',
+        }],
         total: 1, page: 1, page_size: 50, total_pages: 1,
         source: { available: true, source: 'snapshot', collected_at: '', reason: null },
       })
@@ -220,8 +247,16 @@ describe('DeviceDetailPanel mounted interactions', () => {
 
     await wrapper.get('[data-testid="tab-interfaces"]').trigger('click')
     await flushPromises()
-    expect(wrapper.text()).toContain('已连接')
-    expect(wrapper.text()).toContain('未启用')
+    expect(wrapper.text()).toContain('gei-0/3/0/41')
+    expect(wrapper.text()).toContain('物理 Down')
+    expect(wrapper.text()).toContain('Up')
+    expect(wrapper.text()).toContain('Down')
+    expect(wrapper.text()).toContain('光口')
+    expect(wrapper.text()).toContain('物理接口')
+    expect(wrapper.text()).toContain('Hybrid')
+    expect(wrapper.text()).toContain('71')
+    expect(wrapper.text()).toContain('Native/PVID 71；Tagged 201')
+    expect(wrapper.text()).not.toContain('未启用')
 
     await wrapper.get('[data-testid="tab-optical"]').trigger('click')
     await flushPromises()
@@ -244,6 +279,13 @@ describe('DeviceDetailPanel mounted interactions', () => {
     expect(rxPowerCells[3].classes()).toContain('optical-tone-danger')
     expect(rxPowerCells[4].classes()).toContain('optical-tone-normal')
     expect(rxPowerCells[5].classes()).toContain('optical-tone-neutral')
+
+    await wrapper.get('[data-testid="tab-lldp"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('HZDT-TEST-AP')
+    expect(wrapper.text()).toContain('Ten-GigabitEthernet1/0/1')
+    expect(wrapper.text()).toContain('192.0.2.26')
+    expect(wrapper.text()).toContain('Test AP uplink')
     expect(rxPowerCells[5].classes()).not.toContain('optical-tone-danger')
 
     wrapper.unmount()

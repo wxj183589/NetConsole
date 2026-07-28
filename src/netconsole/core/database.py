@@ -10,7 +10,7 @@ from netconsole.core.device_credential_store import (
 from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal
 
 
-CURRENT_SCHEMA_VERSION = "2026.07.24.device_credential_state"
+CURRENT_SCHEMA_VERSION = "2026.07.28.zte_interface_vlan_lldp"
 
 
 class DatabaseSchemaMismatchError(RuntimeError):
@@ -120,12 +120,26 @@ CREATE TABLE IF NOT EXISTS device_interfaces (
     device_uuid TEXT NOT NULL,
     interface_name TEXT NOT NULL,
     link_status TEXT,
+    admin_status TEXT,
+    physical_status TEXT,
     protocol_status TEXT,
+    media_attribute TEXT,
+    media_type TEXT,
+    category TEXT,
     speed TEXT,
     duplex TEXT,
     interface_type TEXT,
     port_status TEXT,
+    port_mode TEXT,
     pvid TEXT,
+    native_vlan TEXT,
+    tagged_vlans TEXT,
+    untagged_vlans TEXT,
+    pvid_source TEXT,
+    pvid_verified INTEGER,
+    vlan_config_status TEXT,
+    vlan_config_collected_at TEXT,
+    vlan_warnings TEXT,
     description TEXT,
     ip_address TEXT,
     mac_address TEXT,
@@ -176,10 +190,22 @@ CREATE TABLE IF NOT EXISTS device_lldp_neighbors (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     device_uuid TEXT NOT NULL,
     local_interface TEXT NOT NULL,
+    scope TEXT,
+    chassis_type TEXT,
+    chassis_id TEXT,
     neighbor_sysname TEXT,
     neighbor_mac TEXT,
+    port_id_type TEXT,
     neighbor_interface TEXT,
     neighbor_ip TEXT,
+    holdtime INTEGER,
+    ttl INTEGER,
+    port_description TEXT,
+    system_description TEXT,
+    system_capabilities TEXT,
+    pvid INTEGER,
+    operational_mau TEXT,
+    max_frame_size INTEGER,
     neighbor_device_uuid TEXT,
     collected_at TEXT NOT NULL,
     collect_run_uuid TEXT,
@@ -214,12 +240,26 @@ CREATE TABLE IF NOT EXISTS device_interfaces_history (
     device_uuid TEXT NOT NULL,
     interface_name TEXT NOT NULL,
     link_status TEXT,
+    admin_status TEXT,
+    physical_status TEXT,
     protocol_status TEXT,
+    media_attribute TEXT,
+    media_type TEXT,
+    category TEXT,
     speed TEXT,
     duplex TEXT,
     interface_type TEXT,
     port_status TEXT,
+    port_mode TEXT,
     pvid TEXT,
+    native_vlan TEXT,
+    tagged_vlans TEXT,
+    untagged_vlans TEXT,
+    pvid_source TEXT,
+    pvid_verified INTEGER,
+    vlan_config_status TEXT,
+    vlan_config_collected_at TEXT,
+    vlan_warnings TEXT,
     description TEXT,
     ip_address TEXT,
     mac_address TEXT,
@@ -275,10 +315,22 @@ CREATE TABLE IF NOT EXISTS device_lldp_neighbors_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     device_uuid TEXT NOT NULL,
     local_interface TEXT NOT NULL,
+    scope TEXT,
+    chassis_type TEXT,
+    chassis_id TEXT,
     neighbor_sysname TEXT,
     neighbor_mac TEXT,
+    port_id_type TEXT,
     neighbor_interface TEXT,
     neighbor_ip TEXT,
+    holdtime INTEGER,
+    ttl INTEGER,
+    port_description TEXT,
+    system_description TEXT,
+    system_capabilities TEXT,
+    pvid INTEGER,
+    operational_mau TEXT,
+    max_frame_size INTEGER,
     neighbor_device_uuid TEXT,
     collected_at TEXT NOT NULL,
     collect_run_uuid TEXT,
@@ -1036,6 +1088,52 @@ class Database:
             raise DatabaseSchemaMismatchError(self._schema_mismatch_message())
 
     def _apply_additive_schema_updates(self, conn: sqlite3.Connection) -> None:
+        interface_columns = {
+            "admin_status": "TEXT",
+            "physical_status": "TEXT",
+            "media_attribute": "TEXT",
+            "media_type": "TEXT",
+            "category": "TEXT",
+            "port_mode": "TEXT",
+            "native_vlan": "TEXT",
+            "tagged_vlans": "TEXT",
+            "untagged_vlans": "TEXT",
+            "pvid_source": "TEXT",
+            "pvid_verified": "INTEGER",
+            "vlan_config_status": "TEXT",
+            "vlan_config_collected_at": "TEXT",
+            "vlan_warnings": "TEXT",
+        }
+        for table in ("device_interfaces", "device_interfaces_history"):
+            for column, column_type in interface_columns.items():
+                if self._table_exists(conn, table) and not self._column_exists(
+                    conn, table, column
+                ):
+                    conn.execute(
+                        f"ALTER {'TABLE'} {table} ADD COLUMN {column} {column_type}"
+                    )
+        lldp_columns = {
+            "scope": "TEXT",
+            "chassis_type": "TEXT",
+            "chassis_id": "TEXT",
+            "port_id_type": "TEXT",
+            "holdtime": "INTEGER",
+            "ttl": "INTEGER",
+            "port_description": "TEXT",
+            "system_description": "TEXT",
+            "system_capabilities": "TEXT",
+            "pvid": "INTEGER",
+            "operational_mau": "TEXT",
+            "max_frame_size": "INTEGER",
+        }
+        for table in ("device_lldp_neighbors", "device_lldp_neighbors_history"):
+            for column, column_type in lldp_columns.items():
+                if self._table_exists(conn, table) and not self._column_exists(
+                    conn, table, column
+                ):
+                    conn.execute(
+                        f"ALTER {'TABLE'} {table} ADD COLUMN {column} {column_type}"
+                    )
         if self._table_exists(conn, "ac_trackside_ap_plan") and not self._column_exists(conn, "ac_trackside_ap_plan", "remark"):
             conn.execute("ALTER TABLE ac_trackside_ap_plan ADD COLUMN remark TEXT")
         fit_ap_resource_columns = {

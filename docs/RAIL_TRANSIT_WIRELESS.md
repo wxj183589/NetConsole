@@ -21,9 +21,9 @@ NetConsole 的轨道交通无线能力不采用企业 WLAN 的“AP—客户端�
 
 ## 轨旁 AP 接入交换机
 
-轨旁 AP 业务通过 `TracksideSwitchAdapter` 隔离厂商差异，H3C 保留原有采集路径，ZTE ZXR10 5960X-ES V2 使用独立只读 Adapter。ZTE 普通轨旁采集只规划版本、接口和 DOM 命令，LLDP 候选只允许进入 `switch_vendor_sample_collect`；不进入配置模式，不提供配置采集、配置下发、文件管理、CLI Ping 或 ZTE AC 能力。
+轨旁 AP 业务通过 `TracksideSwitchAdapter` 隔离厂商差异，H3C 保留原有采集路径，ZTE ZXR10 使用独立只读 Adapter。ZTE 普通详情采集固定使用版本、接口、DOM、LLDP Brief 和 LLDP Entry 五条命令；不进入配置模式，不提供配置采集、配置下发、文件管理、CLI Ping 或 ZTE AC 能力。
 
-ZTE `show version`、`show interface brief`、`show opticalinfo brief` 和指定端口详情只基于 V2.00.20.03 文档样例实现，Parser 标记 `DOCUMENT_SAMPLE_ONLY`。LLDP 尚无真实输出，状态固定为 `SAMPLE_REQUIRED`；页面显示“已接入，待实机验证”，不能描述为已完成实机兼容。
+ZTE C89E-4 V1.9.0 的固定五条命令已在 11 台现场设备上完成只读验证，证据状态为 `REAL_DEVICE_VERIFIED`；接口综合状态、介质语义和 LLDP Brief/Entry 均已按脱敏 fixture 回归。5960X-ES V2 及指定端口详情仍只基于 V2.00.20.03 文档样例，保持 `DOCUMENT_SAMPLE_ONLY`，不能描述为已完成全系列实机兼容。
 
 厂商采样任务生成 `zte-adapter-sample-<device>-<timestamp>.zip`，固定包含 manifest、逐命令状态、版本/接口/DOM/LLDP raw 和会话元数据。Artifact 进入 `WebArtifactStore` 完整性校验，不保存 SSH 密码、enable 密码、Token、私钥或其他明文凭据。
 

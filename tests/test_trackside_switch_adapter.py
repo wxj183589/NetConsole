@@ -51,9 +51,9 @@ def test_adapter_registry_keeps_vendor_selection_out_of_application_service() ->
     assert manifest["platform_family"] == "ZXR10"
     assert manifest["model_family"] == "5960X-ES"
     assert manifest["command_profile_version"] == ZTE_PROFILE_ID
-    assert manifest["adaptation_status"] == "已接入，待实机验证"
+    assert manifest["adaptation_status"] == "C89E 已验证，5960X-ES 待复核"
     assert manifest["verification_status"] == "DOCUMENT_SAMPLE_ONLY"
-    assert manifest["capabilities"]["lldp_neighbors"] is False
+    assert manifest["capabilities"]["lldp_neighbors"] is True
     assert manifest["capabilities"]["lldp_interface_neighbor"] is False
     assert manifest["capabilities"]["bidirectional_attenuation"] is False
     assert manifest["capabilities"]["configuration_write"] is False
@@ -61,7 +61,7 @@ def test_adapter_registry_keeps_vendor_selection_out_of_application_service() ->
         item["key"]: item["status"]
         for item in manifest["capability_statuses"]
     }
-    assert statuses["lldp"] == CommandCapabilityState.SAMPLE_REQUIRED.value
+    assert statuses["lldp"] == CommandCapabilityState.IMPLEMENTED.value
     assert statuses["bidirectional_attenuation"] == (
         CommandCapabilityState.SAMPLE_REQUIRED.value
     )
@@ -122,10 +122,10 @@ def test_zte_adapter_uses_confirmed_commands_and_writes_raw_artifacts(
         "show opticalinfo xgei-0/1/1/2": _fixture(
             "zte_5960x_show_opticalinfo_detail.txt"
         ),
-        "show lldp config": "LLDP is enabled",
-        "show lldp entry interface xgei-0/1/1/2": (
-            "Local Interface: xgei-0/1/1/2\nRemote System Name: AP-01"
+        "show lldp neighbor brief": _fixture(
+            "hzdt10_show_lldp_neighbor_brief.txt"
         ),
+        "show lldp entry": _fixture("hzdt10_show_lldp_entry.txt"),
     }
     connection = _FakeConnection(outputs)
     artifact_dir = tmp_path / "raw" / "zte-switch"
@@ -138,6 +138,8 @@ def test_zte_adapter_uses_confirmed_commands_and_writes_raw_artifacts(
         "show opticalinfo brief",
         "show interface xgei-0/1/1/2",
         "show opticalinfo xgei-0/1/1/2",
+        "show lldp neighbor brief",
+        "show lldp entry",
     ]
     assert "terminal length 0" not in connection.commands
     assert result.identity["software_version"] == "V2.00.20.03B07"
@@ -145,8 +147,8 @@ def test_zte_adapter_uses_confirmed_commands_and_writes_raw_artifacts(
     assert result.interfaces[0]["ifindex"] == 101
     assert result.optical_modules[0]["rx_power"] == -11.904
     assert result.optical_modules[0]["status"] == "unverified"
-    assert result.lldp_status == "SAMPLE_REQUIRED"
-    assert result.lldp_neighbors == []
+    assert result.lldp_status == "VERIFIED"
+    assert len(result.lldp_neighbors) == 36
     assert (artifact_dir / "version.txt").read_text(encoding="utf-8").startswith(
         "ZXR10#show version"
     )
@@ -154,7 +156,7 @@ def test_zte_adapter_uses_confirmed_commands_and_writes_raw_artifacts(
         (artifact_dir / "manifest.json").read_text(encoding="utf-8")
     )
     assert manifest["device_uuid"] == device.device_uuid
-    assert manifest["lldp_status"] == "SAMPLE_REQUIRED"
+    assert manifest["lldp_status"] == "VERIFIED"
     assert manifest["capabilities"]["configuration_write"] is False
     assert "password" not in json.dumps(manifest, ensure_ascii=False).casefold()
 
@@ -165,30 +167,20 @@ def test_zte_lldp_sampling_chain_is_fixed_and_interface_is_validated() -> None:
     )
 
     assert adapter.lldp_sampling_commands("xgei-0/1/1/2") == (
+        "show lldp neighbor brief",
         "show lldp entry",
-        "show lldp neighbor",
-        "show lldp neighbors",
-        "show lldp entry interface xgei-0/1/1/2",
-        "show lldp neighbor interface xgei-0/1/1/2",
-        "show lldp config",
-        "show lldp config interface xgei-0/1/1/2",
     )
     plan = adapter.build_command_plan(
         selected_interface="xgei-0/1/1/2",
         requested_commands=("lldp_global", "lldp_interface"),
     )
     assert [item.command for item in plan.items] == [
+        "show lldp neighbor brief",
         "show lldp entry",
-        "show lldp neighbor",
-        "show lldp neighbors",
-        "show lldp config",
-        "show lldp entry interface xgei-0/1/1/2",
-        "show lldp neighbor interface xgei-0/1/1/2",
-        "show lldp config interface xgei-0/1/1/2",
     ]
     assert all(
-        item.status is CommandCapabilityState.SAMPLE_REQUIRED
-        and item.candidate
+        item.status is CommandCapabilityState.IMPLEMENTED
+        and not item.candidate
         for item in plan.items
     )
     with pytest.raises(ValueError, match="不安全"):

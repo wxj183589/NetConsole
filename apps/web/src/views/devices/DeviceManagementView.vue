@@ -9,6 +9,7 @@ import {
   getDeviceEditProfile,
   getDeviceExportTask,
   getDeviceConnectionTest,
+  getBatchRefresh,
   getExternalTerminalSettings,
   issueExternalTerminalConfirmation,
   listDevices,
@@ -49,6 +50,7 @@ import type {
   DeviceConnectionProtocol,
   DeviceConnectionStatus,
   DeviceConnectionTest,
+  DeviceBatchRefreshItem,
   DeviceExportRequest,
   DeviceEditProfileResponse,
   DeviceExternalTerminalSettings,
@@ -57,6 +59,7 @@ import type {
   DevicePage,
   DeviceSecretField,
   DeviceTaskReference,
+  DeviceTaskBatch,
   DeviceVendor,
   DeviceWriteRequest,
 } from '../../types/deviceManagement'
@@ -136,6 +139,8 @@ const writeTestProtocol = ref<DeviceConnectionProtocol>('SSH')
 const selectedUuids = ref<string[]>([])
 const batchRefreshSubmitting = ref(false)
 const batchRefreshTargetCount = ref(0)
+const batchRefresh = ref<DeviceTaskBatch | null>(null)
+const batchRefreshDetailsVisible = ref(false)
 const deviceTable = ref<TableSelectionController<DeviceListItem>>()
 const groupVisible = ref(false)
 const groupName = ref('')
@@ -156,6 +161,9 @@ const savedDeviceArtifactNotice = ref<{ title: string; description: string } | n
 const pendingDeviceExports = reactive<Record<string, PendingDeviceExport>>({})
 const pendingDeviceExportRetryTick = ref(0)
 let pendingDeviceExportRetryTimer: ReturnType<typeof setTimeout> | null = null
+let batchRefreshPollTimer: ReturnType<typeof setTimeout> | null = null
+let batchRefreshGeneration = 0
+let activeBatchRefreshId = ''
 const csvExportSubmitting = ref(false)
 const templateExportSubmitting = ref(false)
 const csvExportScopeVisible = ref(false)
@@ -199,7 +207,9 @@ const deviceColumns: NcTableColumn<DeviceListItem>[] = [
     stretch: 'none',
     displayValue: (row) => [row.capabilities.ssh && 'SSH', row.capabilities.telnet && 'Telnet'].filter(Boolean).join('/') || '—',
   },
-  { key: 'updated_at', label: '更新时间', valueType: 'datetime', stretch: 'none' },
+  { key: 'metadata_updated_at', label: '资料更新时间', valueType: 'datetime', stretch: 'none' },
+  { key: 'last_collected_at', label: '最后采集时间', valueType: 'datetime', stretch: 'none' },
+  { key: 'last_collect_status', label: '采集状态', valueType: 'status', cellKind: 'tag', stretch: 'none' },
   { key: 'credential_status', label: '凭据状态', valueType: 'status', cellKind: 'tag', stretch: 'none' },
   { key: 'connection_status', label: '连接状态', valueType: 'status', cellKind: 'tag', stretch: 'none' },
   { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['详情', '编辑', '删除'], stretch: 'none' },
@@ -210,6 +220,16 @@ const importErrorColumns: NcTableColumn<DeviceImportPreview['errors'][number]>[]
   { key: 'field', label: '字段', valueType: 'text', stretch: 'none' },
   { key: 'raw_value', label: '原始值', valueType: 'text', stretch: 'normal' },
   { key: 'message', label: '错误信息', valueType: 'text', stretch: 'priority' },
+]
+const batchRefreshColumns: NcTableColumn<DeviceBatchRefreshItem>[] = [
+  { key: 'device_name', label: '设备', valueType: 'name', stretch: 'priority' },
+  { key: 'primary_address', label: '地址', valueType: 'ip', stretch: 'normal' },
+  { key: 'vendor', label: '厂商', valueType: 'text', stretch: 'none' },
+  { key: 'status', label: '结果', valueType: 'status', cellKind: 'tag', stretch: 'none' },
+  { key: 'interfaces_updated', label: '接口', valueType: 'number', stretch: 'none' },
+  { key: 'optical_modules_updated', label: '光模块', valueType: 'number', stretch: 'none' },
+  { key: 'last_collected_at', label: '采集时间', valueType: 'datetime', stretch: 'none' },
+  { key: 'error_message', label: '错误信息', valueType: 'text', stretch: 'priority' },
 ]
 const writeForm = reactive<DeviceWriteRequest>({ name: '', primary_address: '', ssh_enabled: true, ssh_port: 22, telnet_enabled: false, telnet_port: 23, snmp_enabled: true, snmp_v2c_enabled: true, snmp_port: 161 })
 const secretClears = reactive<Record<DeviceSecretField, boolean>>({
@@ -413,6 +433,16 @@ function schedulePendingDeviceExportRetry(): void {
 }
 
 const desktopHost = computed(() => getRuntimeConfig().hostType === 'electron')
+const batchRefreshProgressText = computed(() => {
+  const current = batchRefresh.value
+  if (!current) return ''
+  const summary = current.summary
+  const finished = summary.completed + summary.partial_success + summary.failed + summary.cancelled + summary.rejected
+  if (!current.terminal) {
+    return `正在更新 ${finished}/${summary.total} 台设备（运行中 ${summary.running}，成功 ${summary.completed}，部分成功 ${summary.partial_success}，失败 ${summary.failed}，拒绝 ${summary.rejected}）`
+  }
+  return `批量更新完成：成功 ${summary.completed}，部分成功 ${summary.partial_success}，失败 ${summary.failed}，取消 ${summary.cancelled}，拒绝 ${summary.rejected}`
+})
 onMounted(async () => {
   document.addEventListener('click', closeContextMenu)
   window.addEventListener('resize', resizeDetailDrawer)
@@ -423,6 +453,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   componentActive = false
+  stopBatchRefreshPolling(true)
   clearEditingProfileState()
   savedArtifactCapability.value = ''
   savedDeviceArtifactNotice.value = null
@@ -436,8 +467,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', resizeDetailDrawer)
 })
 
-async function loadDevices(resetPage = false): Promise<void> {
+async function loadDevices(resetPage = false, preserveSelection = false): Promise<void> {
   if (resetPage) filters.page = 1
+  const preservedUuids = preserveSelection ? new Set(selectedUuids.value) : new Set<string>()
   loading.value = true
   error.value = ''
   try {
@@ -455,9 +487,15 @@ async function loadDevices(resetPage = false): Promise<void> {
       sort_order: filters.sort_order,
     })
     filters.page = pageData.value.page
-    selectedUuids.value = []
     await nextTick()
     deviceTable.value?.clearSelection()
+    if (preserveSelection) {
+      const rows = pageData.value.items.filter((item) => preservedUuids.has(item.device_uuid))
+      rows.forEach((row) => deviceTable.value?.toggleRowSelection(row, true))
+      selectedUuids.value = rows.map((row) => row.device_uuid)
+    } else {
+      selectedUuids.value = []
+    }
   } catch (cause) {
     error.value = errorMessage(cause, '设备列表加载失败')
     pageData.value = emptyPage()
@@ -1505,19 +1543,78 @@ async function refreshSelectedDetails(): Promise<void> {
   if (!accepted) return
   batchRefreshSubmitting.value = true
   batchRefreshTargetCount.value = targets.length
-  ElMessage.info(`正在提交 ${targets.length} 台设备详情更新任务...`)
+  batchRefresh.value = null
+  stopBatchRefreshPolling(true)
+  const generation = batchRefreshGeneration
+  ElMessage.info(`正在更新 0/${targets.length} 台设备`)
   try {
     const result = await startBatchRefreshDetails(targets)
     if (!componentActive) return
-    await presentTasks(result.tasks, `已提交 ${result.tasks.length} 台设备详情刷新任务`)
+    batchRefresh.value = result
+    activeBatchRefreshId = result.batch_id
+    if (result.terminal) {
+      await finishBatchRefresh(result, generation)
+    } else {
+      scheduleBatchRefreshPoll(result.batch_id, generation)
+    }
   } catch (cause) {
     if (componentActive) ElMessage.error(errorMessage(cause, '批量刷新失败'))
-  } finally {
     if (componentActive) {
       batchRefreshSubmitting.value = false
       batchRefreshTargetCount.value = 0
     }
   }
+}
+
+function stopBatchRefreshPolling(invalidate = false): void {
+  if (batchRefreshPollTimer !== null) {
+    clearTimeout(batchRefreshPollTimer)
+    batchRefreshPollTimer = null
+  }
+  activeBatchRefreshId = ''
+  if (invalidate) batchRefreshGeneration += 1
+}
+
+function scheduleBatchRefreshPoll(batchId: string, generation: number): void {
+  if (!componentActive || generation !== batchRefreshGeneration || activeBatchRefreshId !== batchId) return
+  batchRefreshPollTimer = setTimeout(() => {
+    batchRefreshPollTimer = null
+    void pollBatchRefresh(batchId, generation)
+  }, 1000)
+}
+
+async function pollBatchRefresh(batchId: string, generation: number): Promise<void> {
+  if (!componentActive || generation !== batchRefreshGeneration || activeBatchRefreshId !== batchId) return
+  try {
+    const result = await getBatchRefresh(batchId)
+    if (!componentActive || generation !== batchRefreshGeneration || activeBatchRefreshId !== batchId) return
+    batchRefresh.value = result
+    if (result.terminal) {
+      await finishBatchRefresh(result, generation)
+    } else {
+      scheduleBatchRefreshPoll(batchId, generation)
+    }
+  } catch (cause) {
+    if (!componentActive || generation !== batchRefreshGeneration) return
+    stopBatchRefreshPolling()
+    batchRefreshSubmitting.value = false
+    batchRefreshTargetCount.value = 0
+    ElMessage.error(errorMessage(cause, '批量刷新状态查询失败'))
+  }
+}
+
+async function finishBatchRefresh(result: DeviceTaskBatch, generation: number): Promise<void> {
+  if (!componentActive || generation !== batchRefreshGeneration || activeBatchRefreshId !== result.batch_id) return
+  stopBatchRefreshPolling()
+  batchRefreshSubmitting.value = false
+  batchRefreshTargetCount.value = 0
+  await loadDevices(false, true)
+  if (!componentActive || generation !== batchRefreshGeneration) return
+  const summary = result.summary
+  const problemCount = summary.partial_success + summary.failed + summary.cancelled + summary.rejected
+  const message = `批量更新完成：成功 ${summary.completed}，部分成功 ${summary.partial_success}，失败 ${summary.failed}，取消 ${summary.cancelled}，拒绝 ${summary.rejected}`
+  if (problemCount) ElMessage.warning(message)
+  else ElMessage.success(message)
 }
 
 async function downloadDiagnostics(): Promise<void> {
@@ -1668,6 +1765,29 @@ function statusLabel(status: DeviceConnectionStatus): string {
   return { UNKNOWN: '未测试', TESTING: '测试中', REACHABLE: '可达', UNREACHABLE: '不可达', AUTH_FAILED: '认证失败', ERROR: '任务异常' }[status]
 }
 
+function collectStatusType(status: string): 'success' | 'warning' | 'danger' | 'info' {
+  const normalized = String(status || '').toUpperCase()
+  if (normalized === 'COMPLETED' || normalized === 'SUCCESS') return 'success'
+  if (['ACCEPTED', 'REUSED', 'RUNNING', 'PARTIAL_SUCCESS'].includes(normalized)) return 'warning'
+  if (['FAILED', 'REJECTED', 'CANCELLED'].includes(normalized)) return 'danger'
+  return 'info'
+}
+
+function collectStatusLabel(status: string): string {
+  const normalized = String(status || '').toUpperCase()
+  return {
+    ACCEPTED: '已受理',
+    REUSED: '复用任务',
+    REJECTED: '已拒绝',
+    RUNNING: '运行中',
+    COMPLETED: '成功',
+    SUCCESS: '成功',
+    PARTIAL_SUCCESS: '部分成功',
+    FAILED: '失败',
+    CANCELLED: '已取消',
+  }[normalized] || '未采集'
+}
+
 function errorMessage(cause: unknown, fallback: string): string {
   return cause instanceof Error ? cause.message : fallback
 }
@@ -1699,8 +1819,9 @@ function errorMessage(cause: unknown, fallback: string): string {
       </el-select>
       <el-select v-model="filters.sort_by" @change="loadDevices(true)">
         <el-option label="按名称" value="name" /><el-option label="按地址" value="primary_address" />
-        <el-option label="按站点" value="station" /><el-option label="按更新时间" value="updated_at" />
-        <el-option label="按状态" value="status" />
+        <el-option label="按站点" value="station" /><el-option label="按资料更新时间" value="metadata_updated_at" />
+        <el-option label="按最后采集时间" value="last_collected_at" />
+        <el-option label="按采集状态" value="last_collect_status" /><el-option label="按连接状态" value="status" />
       </el-select>
       <el-select v-model="filters.sort_order" @change="loadDevices(true)">
         <el-option label="升序" value="asc" /><el-option label="降序" value="desc" />
@@ -1718,7 +1839,7 @@ function errorMessage(cause: unknown, fallback: string): string {
       <el-button :icon="Connection" :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_connection_test')" @click="startSelectedConnectionTests">测试连接</el-button>
       <el-button :icon="FolderOpened" :disabled="!desktopHost || !selectedUuids.length || !isFeatureEnabled('web.device_management_desktop')" @click="requestTerminal()">外部终端</el-button>
       <el-button data-testid="batch-refresh-details" :icon="Refresh" :loading="batchRefreshSubmitting" :disabled="!selectedUuids.length || batchRefreshSubmitting || !isFeatureEnabled('web.device_management_collect')" @click="refreshSelectedDetails">批量更新详情</el-button>
-      <span v-if="batchRefreshSubmitting">正在提交 {{ batchRefreshTargetCount }} 台设备详情更新任务...</span>
+      <span v-if="batchRefreshSubmitting">{{ batchRefreshProgressText || `正在更新 0/${batchRefreshTargetCount} 台设备` }}</span>
       <el-button :icon="Download" :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management_collect')" @click="downloadDiagnostics">下载诊断</el-button>
       <el-button :icon="Upload" :disabled="!isFeatureEnabled('web.device_management_import')" @click="importVisible = true">导入 CSV</el-button>
       <el-button
@@ -1768,6 +1889,17 @@ function errorMessage(cause: unknown, fallback: string): string {
       show-icon
       class="task-summary"
     />
+    <el-alert
+      v-if="batchRefresh"
+      :title="batchRefresh.terminal ? '批量更新详情已结束' : '批量更新详情运行中'"
+      :description="batchRefreshProgressText"
+      :type="batchRefresh.terminal && (batchRefresh.summary.failed || batchRefresh.summary.rejected) ? 'warning' : batchRefresh.terminal ? 'success' : 'info'"
+      :closable="false"
+      show-icon
+      class="task-summary"
+    >
+      <el-button link type="primary" @click="batchRefreshDetailsVisible = true">查看结果明细</el-button>
+    </el-alert>
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" class="state-alert" />
     <div v-loading="loading" class="content-card table-card" :data-state="isEmpty ? 'empty' : 'success'">
       <div class="device-table-host">
@@ -1787,6 +1919,7 @@ function errorMessage(cause: unknown, fallback: string): string {
           @row-contextmenu="showContextMenu"
         >
           <template #cell-connection_status="{ row }"><el-tag :type="statusType(row.connection_status)">{{ statusLabel(row.connection_status) }}</el-tag></template>
+          <template #cell-last_collect_status="{ row }"><el-tag :type="collectStatusType(row.last_collect_status)">{{ collectStatusLabel(row.last_collect_status) }}</el-tag></template>
           <template #cell-credential_status="{ row }">
             <el-tooltip :content="row.credential_message || '凭据字段已配置，不代表已成功登录'">
               <el-tag :type="row.credential_status === 'available' ? 'success' : row.credential_status === 'needs_reentry' ? 'warning' : 'danger'">
@@ -1808,6 +1941,22 @@ function errorMessage(cause: unknown, fallback: string): string {
         @size-change="loadDevices(true)"
       />
     </div>
+
+    <el-dialog v-model="batchRefreshDetailsVisible" title="批量更新详情结果" width="min(1080px, 94vw)">
+      <p v-if="batchRefresh" class="batch-refresh-summary">{{ batchRefreshProgressText }}</p>
+      <NcDataTable
+        v-if="batchRefresh"
+        table-id="device-batch-refresh-results"
+        route-key="/devices/batch-refresh-results"
+        :data="batchRefresh.items"
+        :columns="batchRefreshColumns"
+        row-key="device_uuid"
+        height="420px"
+        empty-text="暂无批次结果"
+      >
+        <template #cell-status="{ row }"><el-tag :type="collectStatusType(row.status)">{{ collectStatusLabel(row.status) }}</el-tag></template>
+      </NcDataTable>
+    </el-dialog>
 
     <el-dialog v-model="csvExportScopeVisible" title="确认设备导出范围" width="min(560px, 94vw)">
       <div class="export-scope-summary">

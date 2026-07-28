@@ -20,11 +20,11 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["netconsole/services/command_guard.py", "netconsole/services/h3c_collect_service.py", "netconsole/services/rail_transit/trackside_optical_collection.py"],
-      "zte_adaptation_status": "not_used",
+      "zte_adaptation_status": "field_command_confirmed",
       "comware_command": "screen-length disable",
-      "zte_command": "不下发；由交互分页执行器处理 --More--",
+      "zte_command": "terminal length 0",
       "parser_status": "无需解析",
-      "notes": "ZTE 不猜测关闭分页命令；分页受 max_pages、max_output_bytes、命令/空闲超时和取消保护。"
+      "notes": "现场已补充命令文本，但普通详情 Profile 暂不下发；分页仍受 max_pages、max_output_bytes、命令/空闲超时和取消保护。"
     },
     {
       "id": "switch_screen_length_short",
@@ -68,11 +68,11 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["netconsole/services/h3c_collect_service.py", "netconsole/services/command_guard.py"],
-      "zte_adaptation_status": "not_supported",
+      "zte_adaptation_status": "field_command_confirmed",
       "comware_command": "display current-configuration | include sysname",
-      "zte_command": "本阶段不支持",
-      "parser_status": "H3C 已实现",
-      "notes": "ZTE 本阶段不读取运行配置；系统名只从受控提示符取得。"
+      "zte_command": "show running-config | include hostname",
+      "parser_status": "H3C 已实现；ZTE 命令已确认、未进入普通详情 Profile",
+      "notes": "普通详情仍优先从受控提示符取得系统名，不为此扩大读取运行配置。"
     },
     {
       "id": "switch_display_version",
@@ -92,11 +92,11 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["netconsole/services/h3c_collect_service.py", "netconsole/services/h3c_ac_collect_service.py"],
-      "zte_adaptation_status": "document_sample_only",
+      "zte_adaptation_status": "field_verified_partial",
       "comware_command": "display version",
       "zte_command": "show version",
-      "parser_status": "H3C 已实现；ZTE 基于 V2.00.20.03 文档样例实现",
-      "notes": "ZTE 标记 DOCUMENT_SAMPLE_ONLY，尚未连接真实设备。"
+      "parser_status": "H3C 已实现；ZTE C89E-4 V1.9.0 已实机验证，5960X-ES 仍为文档 fixture",
+      "notes": "2026-07-28 以只读命令验证截图中的 11 台 C89E-4；未扩展为 ZXR10 全系列承诺。"
     },
     {
       "id": "switch_display_device",
@@ -116,11 +116,11 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["netconsole/services/h3c_collect_service.py", "netconsole/services/h3c_ac_collect_service.py"],
-      "zte_adaptation_status": "not_used",
+      "zte_adaptation_status": "field_command_confirmed",
       "comware_command": "display device",
-      "zte_command": "show version（板卡字段随版本输出解析）",
-      "parser_status": "H3C 已实现",
-      "notes": "ZTE 不单独下发未经资料确认的 show hardware。"
+      "zte_command": "show hardware",
+      "parser_status": "H3C 已实现；ZTE 命令已确认、Parser 待样本",
+      "notes": "未进入本次三命令详情 Profile，尚未在真实设备执行。"
     },
     {
       "id": "switch_display_device_manuinfo",
@@ -140,11 +140,11 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["netconsole/services/h3c_collect_service.py", "netconsole/services/h3c_ac_collect_service.py"],
-      "zte_adaptation_status": "not_supported",
+      "zte_adaptation_status": "field_command_confirmed",
       "comware_command": "display device manuinfo",
-      "zte_command": "本阶段不支持",
-      "parser_status": "H3C 已实现",
-      "notes": "ZTE 不下发未经资料确认的序列号候选命令。"
+      "zte_command": "show serial-number / show system-info",
+      "parser_status": "H3C 已实现；ZTE 命令已确认、Parser 待样本",
+      "notes": "未进入本次三命令详情 Profile，尚未在真实设备执行。"
     },
     {
       "id": "switch_display_boot_loader",
@@ -164,11 +164,11 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["netconsole/services/h3c_collect_service.py", "netconsole/services/command_guard.py"],
-      "zte_adaptation_status": "phase_2_reference",
+      "zte_adaptation_status": "field_verified_partial",
       "comware_command": "display boot-loader",
-      "zte_command": "待确认 / 待适配",
-      "parser_status": "H3C 已实现",
-      "notes": "白名单允许 display boot-loader，但禁止配置类 boot-loader 命令。"
+      "zte_command": "show version",
+      "parser_status": "H3C 已实现；ZTE 启动/版本信息随 show version 解析",
+      "notes": "ZTE C89E-4 V1.9.0 的 show version 已只读实机验证。"
     },
     {
       "id": "switch_display_interface",
@@ -188,11 +188,11 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["netconsole/services/h3c_collect_service.py", "netconsole/services/h3c_optical_refresh_service.py"],
-      "zte_adaptation_status": "document_sample_only",
+      "zte_adaptation_status": "field_command_confirmed",
       "comware_command": "display interface",
-      "zte_command": "show interface <safe-interface>",
-      "parser_status": "H3C 已实现；ZTE 基于文档样例实现，DOCUMENT_SAMPLE_ONLY",
-      "notes": "ZTE 接口参数必须通过严格接口名校验。"
+      "zte_command": "show interface / show interface <safe-interface>",
+      "parser_status": "H3C 已实现；ZTE 指定接口 Parser 有文档 fixture，全量命令待样本",
+      "notes": "现场已确认命令文本；带接口参数时必须通过严格接口名校验。"
     },
     {
       "id": "switch_display_interface_brief",
@@ -212,11 +212,11 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["netconsole/services/rail_transit/trackside_optical_collection.py", "netconsole/services/command_guard.py"],
-      "zte_adaptation_status": "document_sample_only",
+      "zte_adaptation_status": "field_verified_partial",
       "comware_command": "display interface brief",
       "zte_command": "show interface brief",
-      "parser_status": "H3C 已实现；ZTE 基于文档样例实现，DOCUMENT_SAMPLE_ONLY",
-      "notes": "ZTE 由交互执行器处理分页并保留 raw。"
+      "parser_status": "H3C 已实现；ZTE C89E-4 V1.9.0 已实机验证",
+      "notes": "截图中的 10 台车站 C89E-4 各解析 100 条接口记录，核心 C89E-4 解析 150 条；分页由交互执行器处理并保留 raw。"
     },
     {
       "id": "switch_display_transceiver_interface",
@@ -236,11 +236,11 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["netconsole/services/h3c_collect_service.py"],
-      "zte_adaptation_status": "document_sample_only",
+      "zte_adaptation_status": "field_verified_partial",
       "comware_command": "display transceiver interface",
       "zte_command": "show opticalinfo brief",
-      "parser_status": "H3C 已实现；ZTE DOM 摘要基于文档样例，DOCUMENT_SAMPLE_ONLY",
-      "notes": "ZTE 单端 Rx/Tx 是光功率，不自动称为链路光衰。"
+      "parser_status": "H3C 已实现；ZTE C89E-4 V1.9.0 已实机验证",
+      "notes": "截图中的 10 台车站 C89E-4 各解析 100 条光模块记录，核心 C89E-4 解析 150 条；单端 Rx/Tx 是光功率，不自动称为链路光衰。"
     },
     {
       "id": "switch_display_transceiver_manuinfo_interface",
@@ -308,11 +308,11 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["netconsole/services/rail_transit/trackside_optical_collection.py", "netconsole/services/h3c_collect_service.py"],
-      "zte_adaptation_status": "sample_required",
+      "zte_adaptation_status": "field_verified",
       "comware_command": "display lldp neighbor-information list",
-      "zte_command": "七条候选命令仅由 switch_vendor_sample_collect 执行",
-      "parser_status": "H3C 已实现；ZTE 固定 SAMPLE_REQUIRED",
-      "notes": "ZTE 缺少真实 LLDP 输出 fixture，不伪造全量邻居命令或结构化结果。"
+      "zte_command": "show lldp neighbor brief",
+      "parser_status": "H3C 已实现；ZTE C89E-4 V1.9.0 已完成 Brief 实机解析",
+      "notes": "ZTE 生产 Profile 固定使用 show lldp neighbor brief；脱敏 fixture 保留 Port ID 续行和 36 条样本结构。"
     },
     {
       "id": "switch_display_lldp_verbose",
@@ -332,11 +332,11 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["netconsole/services/h3c_collect_service.py", "netconsole/services/command_guard.py"],
-      "zte_adaptation_status": "sample_required",
+      "zte_adaptation_status": "field_verified",
       "comware_command": "display lldp neighbor-information verbose",
-      "zte_command": "show lldp config / show lldp config interface <safe-interface>",
-      "parser_status": "H3C 已实现；ZTE 固定 SAMPLE_REQUIRED",
-      "notes": "ZTE 命令只用于受控真实样本采集，取得 fixture 后再固化 parser。"
+      "zte_command": "show lldp entry",
+      "parser_status": "H3C 已实现；ZTE C89E-4 V1.9.0 已完成 Entry 实机解析",
+      "notes": "ZTE 生产 Profile 固定使用 show lldp entry；支持跨行描述、管理 IPv4、PVID、TTL 和 MAC Chassis 规范化。"
     },
     {
       "id": "switch_display_current_configuration",
@@ -356,11 +356,11 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["netconsole/services/config_lifecycle_service.py"],
-      "zte_adaptation_status": "not_supported",
+      "zte_adaptation_status": "field_command_confirmed",
       "comware_command": "display current-configuration",
-      "zte_command": "本阶段不支持",
-      "parser_status": "H3C 配置主体截取已实现",
-      "notes": "diff 只比较 #version 到 #return 区间。"
+      "zte_command": "show running-config",
+      "parser_status": "H3C 配置主体截取已实现；ZTE 接口二层配置支持脱敏 fixture 解析",
+      "notes": "ZTE 命令已确认但未进入普通详情采集；接口 VLAN 只从回显动态读取，不硬编码局点管理 VLAN。"
     },
     {
       "id": "ground_unattended_display_info_center",
@@ -428,11 +428,11 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["netconsole/services/config_lifecycle_service.py"],
-      "zte_adaptation_status": "not_supported",
+      "zte_adaptation_status": "field_command_confirmed",
       "comware_command": "display saved-configuration",
-      "zte_command": "本阶段不支持",
+      "zte_command": "show startup-config",
       "parser_status": "H3C 配置主体截取已实现",
-      "notes": "用于运行配置与保存配置比较。"
+      "notes": "ZTE 命令已确认，但配置采集中心尚未接入和实机验证。"
     },
     {
       "id": "switch_save_force",
@@ -452,11 +452,11 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["netconsole/services/config_lifecycle_service.py", "netconsole/services/h3c_ac_collect_service.py", "netconsole/services/command_guard.py"],
-      "zte_adaptation_status": "phase_2_reference",
+      "zte_adaptation_status": "controlled_write_confirmed",
       "comware_command": "save force",
-      "zte_command": "待确认 / 待适配",
+      "zte_command": "write",
       "parser_status": "无需解析",
-      "notes": "会修改设备保存配置，必须保持 config_write 风险级别。"
+      "notes": "会修改设备保存配置，必须保持 config_write 风险级别；本次真实设备验证明确禁止执行。"
     },
     {
       "id": "switch_display_diagnostic_information",
@@ -480,7 +480,7 @@
       "comware_command": "display diagnostic-information",
       "zte_command": "待确认 / 待适配",
       "parser_status": "文本保存",
-      "notes": "后续输入 n 属于交互确认，不作为普通 CLI 命令。"
+      "notes": "ZTE 诊断命令尚未提供；后续输入 n 属于 H3C 交互确认，不作为普通 CLI 命令。"
     },
     {
       "id": "switch_diagnostic_input_n",
@@ -524,11 +524,11 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["netconsole/services/file_transfer_service.py", "netconsole/services/command_guard.py"],
-      "zte_adaptation_status": "not_supported",
+      "zte_adaptation_status": "field_command_confirmed",
       "comware_command": "dir flash:/",
-      "zte_command": "本阶段不支持",
-      "parser_status": "H3C 文件列表解析",
-      "notes": "设备文件管理当前按只读模式处理。"
+      "zte_command": "dir flash:/",
+      "parser_status": "H3C 文件列表解析；ZTE Parser 待样本",
+      "notes": "ZTE 命令已确认但未在本次真实设备验证中执行；设备文件管理当前按只读模式处理。"
     },
     {
       "id": "switch_dir_diagfile",
@@ -572,11 +572,11 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["netconsole/services/rail_transit/car_network_diagnostic.py"],
-      "zte_adaptation_status": "not_supported",
+      "zte_adaptation_status": "field_command_confirmed",
       "comware_command": "ping <ip>",
-      "zte_command": "本阶段不支持",
-      "parser_status": "H3C ping 输出解析已实现",
-      "notes": "当前主要用于 MR/核心侧 CLI 检测。"
+      "zte_command": "ping <ip>",
+      "parser_status": "H3C ping 输出解析已实现；ZTE Parser 待样本",
+      "notes": "ZTE 命令已确认但未进入本次设备详情 Profile；目标地址必须严格校验。"
     },
     {
       "id": "switch_cli_ping_count",
@@ -596,11 +596,11 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["netconsole/services/rail_transit/car_network_diagnostic.py"],
-      "zte_adaptation_status": "not_supported",
+      "zte_adaptation_status": "field_command_confirmed",
       "comware_command": "ping -c <count> <ip>",
-      "zte_command": "本阶段不支持",
-      "parser_status": "H3C ping 输出解析已实现",
-      "notes": "快速检测使用 4 次，跨 TC 检测使用 50 次。"
+      "zte_command": "ping <ip> repeat <count>",
+      "parser_status": "H3C ping 输出解析已实现；ZTE 参数顺序和 Parser 待样本",
+      "notes": "现场提供语义为指定次数 Ping；正式 Profile 接入前仍需确认精确语法和回显。"
     },
     {
       "id": "switch_system_view",
@@ -725,14 +725,14 @@
     {
       "id": "zte_zxr10_show_version",
       "module": "轨旁 AP 接入交换机",
-      "device_scope": "ZTE ZXR10 5960X-ES V2",
+      "device_scope": "ZTE ZXR10 交换机（C89E-4 / 5960X-ES）",
       "vendor": "ZTE",
       "protocol": "CLI",
       "category": "设备识别",
       "command_template": "show version",
       "parameters": [],
       "pre_commands": [],
-      "purpose": "识别 ZTE、ZXR10、5960X-ES、软件版本、Build、镜像、运行时长和板卡。",
+      "purpose": "识别 ZTE、ZXR10、C89E/5960X-ES、软件版本、Build、镜像、运行时长和板卡。",
       "output_log": "轨旁 AP 采集会话的 version.txt",
       "parser": "src/netconsole/parsers/zte/zxr10.py::parse_device_identity",
       "consumer": "设备详情采集、ZTE 轨旁交换机 Adapter",
@@ -740,23 +740,23 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["src/netconsole/adapters/trackside_switch.py", "src/netconsole/services/h3c_collect_service.py"],
-      "zte_adaptation_status": "document_sample_only",
+      "zte_adaptation_status": "field_verified_partial",
       "comware_command": "",
       "zte_command": "show version",
-      "parser_status": "基于 V2.00.20.03 文档样例，DOCUMENT_SAMPLE_ONLY",
-      "notes": "尚未连接真实设备，不构成 FIELD_VERIFIED。"
+      "parser_status": "C89E-4 V1.9.0 已实机验证；5960X-ES V2 为文档 fixture",
+      "notes": "2026-07-28 截图中的 11 台 C89E-4 只读实机验证通过，不外推至 ZXR10 全系列。"
     },
     {
       "id": "zte_zxr10_show_interface_brief",
       "module": "轨旁 AP 接入交换机",
-      "device_scope": "ZTE ZXR10 5960X-ES V2",
+      "device_scope": "ZTE ZXR10 交换机（C89E-4 / 5960X-ES）",
       "vendor": "ZTE",
       "protocol": "CLI",
       "category": "接口状态",
       "command_template": "show interface brief",
       "parameters": [],
       "pre_commands": [],
-      "purpose": "采集接口介质、双工、带宽、管理/物理/协议状态和描述。",
+      "purpose": "采集接口介质、双工、带宽和管理/物理/协议状态；C89E 描述可后续从运行配置脱敏解析。",
       "output_log": "轨旁 AP 采集会话的 interface-brief.txt",
       "parser": "src/netconsole/parsers/zte/zxr10.py::parse_interfaces",
       "consumer": "设备详情采集、ZTE 轨旁交换机 Adapter",
@@ -764,16 +764,64 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["src/netconsole/adapters/trackside_switch.py", "src/netconsole/services/h3c_collect_service.py"],
-      "zte_adaptation_status": "document_sample_only",
+      "zte_adaptation_status": "field_verified_partial",
       "comware_command": "",
       "zte_command": "show interface brief",
-      "parser_status": "基于 V2.00.20.03 文档样例，DOCUMENT_SAMPLE_ONLY",
-      "notes": "分页由交互执行器受控处理。"
+      "parser_status": "C89E-4 V1.9.0 已实机验证；5960X-ES V2 为文档 fixture",
+      "notes": "不发送尚未补充的 show interface description；分页由交互执行器受控处理。"
+    },
+    {
+      "id": "zte_zxr10_show_running_config_switchvlan",
+      "module": "设备详情采集",
+      "device_scope": "ZTE ZXR10 中心交换机",
+      "vendor": "ZTE",
+      "protocol": "CLI",
+      "category": "接口 VLAN 配置",
+      "command_template": "show running-config switchvlan",
+      "parameters": [],
+      "pre_commands": [],
+      "purpose": "按接口采集交换模式、Native VLAN、Tagged/Untagged VLAN，并作为 PVID 第一优先来源。",
+      "output_log": "设备详情采集会话的 switchvlan-config.txt",
+      "parser": "src/netconsole/parsers/zte/vlan.py::parse_switchvlan_running_config",
+      "consumer": "ZTE 设备详情采集",
+      "risk_level": "read_only",
+      "interactive_input": false,
+      "is_cli": true,
+      "source_locations": ["resources/device_command_profiles.json", "src/netconsole/services/command_guard.py", "src/netconsole/services/h3c_collect_service.py"],
+      "zte_adaptation_status": "field_verified",
+      "comware_command": "",
+      "zte_command": "show running-config switchvlan",
+      "parser_status": "杭州 10 号线两台车站 C89E-4 V1.9.0 已完成只读实机验证",
+      "notes": "Guard 只放行该精确命令，不放行 show running-config 或通配形式；全局执行一次，不按接口循环。"
+    },
+    {
+      "id": "zte_zxr10_show_vlan",
+      "module": "设备详情采集",
+      "device_scope": "ZTE ZXR10 中心交换机",
+      "vendor": "ZTE",
+      "protocol": "CLI",
+      "category": "全局 VLAN 成员关系",
+      "command_template": "show vlan",
+      "parameters": [],
+      "pre_commands": [],
+      "purpose": "按表头列采集 PvidPorts、UntagPorts、TagPorts，作为 PVID 交叉验证与缺失回退来源。",
+      "output_log": "设备详情采集会话的 vlan-table.txt",
+      "parser": "src/netconsole/parsers/zte/vlan.py::parse_vlan_table",
+      "consumer": "ZTE 设备详情采集",
+      "risk_level": "read_only",
+      "interactive_input": false,
+      "is_cli": true,
+      "source_locations": ["resources/device_command_profiles.json", "src/netconsole/services/command_guard.py", "src/netconsole/services/h3c_collect_service.py"],
+      "zte_adaptation_status": "field_verified",
+      "comware_command": "",
+      "zte_command": "show vlan",
+      "parser_status": "杭州 10 号线两台车站 C89E-4 V1.9.0 已完成只读实机验证",
+      "notes": "只有 PvidPorts 可生成 PVID；TagPorts 与 UntagPorts 仅记录成员关系。全局执行一次，不按接口循环。"
     },
     {
       "id": "zte_zxr10_show_interface_detail",
       "module": "轨旁 AP 接入交换机",
-      "device_scope": "ZTE ZXR10 5960X-ES V2",
+      "device_scope": "ZTE ZXR10 交换机（C89E-4 / 5960X-ES）",
       "vendor": "ZTE",
       "protocol": "CLI",
       "category": "接口详情",
@@ -797,7 +845,7 @@
     {
       "id": "zte_zxr10_show_opticalinfo_brief",
       "module": "轨旁 AP 接入交换机",
-      "device_scope": "ZTE ZXR10 5960X-ES V2",
+      "device_scope": "ZTE ZXR10 交换机（C89E-4 / 5960X-ES）",
       "vendor": "ZTE",
       "protocol": "CLI",
       "category": "光模块 DOM",
@@ -812,16 +860,16 @@
       "interactive_input": false,
       "is_cli": true,
       "source_locations": ["src/netconsole/adapters/trackside_switch.py", "src/netconsole/services/h3c_collect_service.py"],
-      "zte_adaptation_status": "document_sample_only",
+      "zte_adaptation_status": "field_verified_partial",
       "comware_command": "",
       "zte_command": "show opticalinfo brief",
-      "parser_status": "基于 V2.00.20.03 文档样例，DOCUMENT_SAMPLE_ONLY",
-      "notes": "单端 Rx/Tx 是光功率，不自动称为链路光衰。"
+      "parser_status": "C89E-4 V1.9.0 已实机验证；5960X-ES V2 为文档 fixture",
+      "notes": "兼容 C89E 额外 Mode 列；单端 Rx/Tx 是光功率，不自动称为链路光衰。"
     },
     {
       "id": "zte_zxr10_show_opticalinfo_detail",
       "module": "轨旁 AP 接入交换机",
-      "device_scope": "ZTE ZXR10 5960X-ES V2",
+      "device_scope": "ZTE ZXR10 交换机（C89E-4 / 5960X-ES）",
       "vendor": "ZTE",
       "protocol": "CLI",
       "category": "光模块 DOM",
@@ -855,16 +903,16 @@
       "purpose": "采集全局 LLDP 配置状态。",
       "output_log": "厂商采样 ZIP 的 lldp-global.txt",
       "parser": "src/netconsole/parsers/zte/zxr10.py::parse_lldp",
-      "consumer": "ZTE 厂商适配采样",
+      "consumer": "历史命令记录，不可执行",
       "risk_level": "read_only",
       "interactive_input": false,
       "is_cli": true,
-      "source_locations": ["src/netconsole/adapters/trackside_switch.py", "src/netconsole/services/command_guard.py"],
-      "zte_adaptation_status": "sample_required",
+      "source_locations": ["resources/command_reference.json"],
+      "zte_adaptation_status": "not_registered",
       "comware_command": "",
       "zte_command": "show lldp config",
-      "parser_status": "SAMPLE_REQUIRED",
-      "notes": "缺少真实输出 fixture，不据命令名猜测结构。"
+      "parser_status": "NOT_REGISTERED",
+      "notes": "未经当前实机确认，已从 Profile 和 Guard 移除，不得在杭州 10 号线设备执行。"
     },
     {
       "id": "zte_zxr10_show_lldp_config_interface",
@@ -879,16 +927,16 @@
       "purpose": "采集指定端口 LLDP 配置状态。",
       "output_log": "厂商采样 ZIP 的 lldp-interface.txt",
       "parser": "src/netconsole/parsers/zte/zxr10.py::parse_lldp",
-      "consumer": "ZTE 厂商适配采样",
+      "consumer": "历史命令记录，不可执行",
       "risk_level": "read_only",
       "interactive_input": false,
       "is_cli": true,
-      "source_locations": ["src/netconsole/adapters/trackside_switch.py", "src/netconsole/services/command_guard.py"],
-      "zte_adaptation_status": "sample_required",
+      "source_locations": ["resources/command_reference.json"],
+      "zte_adaptation_status": "not_registered",
       "comware_command": "",
       "zte_command": "show lldp config interface <safe-interface>",
-      "parser_status": "SAMPLE_REQUIRED",
-      "notes": "只允许安全接口参数。"
+      "parser_status": "NOT_REGISTERED",
+      "notes": "未经当前实机确认，已从 Profile 和 Guard 移除，不得在杭州 10 号线设备执行。"
     },
     {
       "id": "zte_zxr10_show_lldp_entry_interface",
@@ -903,16 +951,16 @@
       "purpose": "采集指定端口 LLDP 邻居原始输出。",
       "output_log": "厂商采样 ZIP 的 lldp-interface.txt",
       "parser": "src/netconsole/parsers/zte/zxr10.py::parse_lldp",
-      "consumer": "ZTE 厂商适配采样",
+      "consumer": "历史命令记录，不可执行",
       "risk_level": "read_only",
       "interactive_input": false,
       "is_cli": true,
-      "source_locations": ["src/netconsole/adapters/trackside_switch.py", "src/netconsole/services/command_guard.py"],
-      "zte_adaptation_status": "sample_required",
+      "source_locations": ["resources/command_reference.json"],
+      "zte_adaptation_status": "not_registered",
       "comware_command": "",
       "zte_command": "show lldp entry interface <safe-interface>",
-      "parser_status": "SAMPLE_REQUIRED",
-      "notes": "无邻居、LLDP 禁用、命令不支持和解析待样本需分别表达。"
+      "parser_status": "NOT_REGISTERED",
+      "notes": "未经当前实机确认，已从 Profile 和 Guard 移除，不得在杭州 10 号线设备执行。"
     },
     {
       "id": "zte_zxr10_show_lldp_candidates",
@@ -922,21 +970,21 @@
       "protocol": "CLI",
       "category": "LLDP 样本",
       "command_template": "show lldp <candidate>",
-      "parameters": [{"name": "candidate", "description": "仅限 zte_zxr10_5960x_es_v2 Profile 登记的七条候选命令；接口参数必须通过严格白名单校验。"}],
+      "parameters": [{"name": "candidate", "description": "历史候选集合；当前 Profile 与 Guard 均不登记。"}],
       "pre_commands": [],
       "purpose": "在独立厂商适配采样任务中探测 LLDP 全局、接口和配置候选命令。",
       "output_log": "厂商采样 ZIP 的 lldp-global.txt / lldp-interface.txt",
       "parser": "src/netconsole/parsers/zte/zxr10.py::parse_lldp",
-      "consumer": "ZTE 厂商适配采样",
+      "consumer": "历史命令记录，不可执行",
       "risk_level": "read_only",
       "interactive_input": false,
       "is_cli": true,
-      "source_locations": ["src/netconsole/adapters/trackside_switch.py", "src/netconsole/services/command_guard.py"],
-      "zte_adaptation_status": "sample_required",
+      "source_locations": ["resources/command_reference.json"],
+      "zte_adaptation_status": "not_registered",
       "comware_command": "",
       "zte_command": "show lldp entry | show lldp neighbor | show lldp neighbors | show lldp entry interface <safe-interface> | show lldp neighbor interface <safe-interface> | show lldp config | show lldp config interface <safe-interface>",
-      "parser_status": "SAMPLE_REQUIRED",
-      "notes": "候选命令不进入普通轨旁默认采集；真实节点确认正式命令前不形成生产邻居记录。"
+      "parser_status": "NOT_REGISTERED",
+      "notes": "杭州 10 号线只允许 show lldp neighbor brief 与 show lldp entry；历史候选不得试跑。"
     },
     {
       "id": "ac_display_wlan_ap_all",

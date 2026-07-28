@@ -346,13 +346,16 @@ def test_trackside_application_lists_zte_adapter_and_finalizes_sample_artifact(
     )
     assert catalog.total == 1
     assert catalog.items[0].device_uuid == device.device_uuid
-    assert catalog.items[0].adapter.adaptation_status == "已接入，待实机验证"
+    assert (
+        catalog.items[0].adapter.adaptation_status
+        == "C89E 已验证，5960X-ES 待复核"
+    )
     assert catalog.items[0].adapter.profile.profile_id == (
         "zte_zxr10_5960x_es_v2"
     )
     assert {
         item.key: item.status for item in catalog.items[0].adapter.capabilities
-    }["lldp"] == "SAMPLE_REQUIRED"
+    }["lldp"] == "IMPLEMENTED"
 
     tasks = TaskApplicationService(paths=paths, site_name="demo")
     process = FakeLocalProcessAdapter(tasks)

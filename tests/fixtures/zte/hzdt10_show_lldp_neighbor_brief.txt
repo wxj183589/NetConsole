@@ -1,0 +1,42 @@
+HZDT-TEST#show lldp neighbor brief
+Local Interface   Scope  Chassis ID      Port ID           Holdtime  System Name
+-------------------------------------------------------------------------------
+gei-0/3/0/1       NB     02aa.bbcc.0001  Ten-GigabitEthern 228       HZDT-TEST-01
+                                      et1/0/1
+gei-0/3/0/2       NB     02aa.bbcc.0002  GigabitEthernet1/0/2 120     HZDT-TEST-02
+gei-0/3/0/3       NB     02aa.bbcc.0003  GigabitEthernet1/0/3 120     HZDT-TEST-03
+gei-0/3/0/4       NB     02aa.bbcc.0004  GigabitEthernet1/0/4 120     HZDT-TEST-04
+gei-0/3/0/5       NB     02aa.bbcc.0005  GigabitEthernet1/0/5 120     HZDT-TEST-05
+gei-0/3/0/6       NB     02aa.bbcc.0006  GigabitEthernet1/0/6 120     HZDT-TEST-06
+gei-0/3/0/7       NB     02aa.bbcc.0007  GigabitEthernet1/0/7 120     HZDT-TEST-07
+gei-0/3/0/8       NB     02aa.bbcc.0008  GigabitEthernet1/0/8 120     HZDT-TEST-08
+gei-0/3/0/9       NB     02aa.bbcc.0009  GigabitEthernet1/0/9 120     HZDT-TEST-09
+gei-0/3/0/10      NB     02aa.bbcc.0010  GigabitEthernet1/0/10 120    HZDT-TEST-10
+gei-0/3/0/11      NB     02aa.bbcc.0011  GigabitEthernet1/0/11 120    HZDT-TEST-11
+gei-0/3/0/12      NB     02aa.bbcc.0012  GigabitEthernet1/0/12 120    HZDT-TEST-12
+gei-0/3/0/13      NB     02aa.bbcc.0013  GigabitEthernet1/0/13 120    HZDT-TEST-13
+gei-0/3/0/14      NB     02aa.bbcc.0014  GigabitEthernet1/0/14 120    HZDT-TEST-14
+gei-0/3/0/15      NB     02aa.bbcc.0015  GigabitEthernet1/0/15 120    HZDT-TEST-15
+gei-0/3/0/16      NB     02aa.bbcc.0016  GigabitEthernet1/0/16 120    HZDT-TEST-16
+gei-0/3/0/17      NB     02aa.bbcc.0017  GigabitEthernet1/0/17 120    HZDT-TEST-17
+gei-0/3/0/18      NB     02aa.bbcc.0018  GigabitEthernet1/0/18 120    HZDT-TEST-18
+gei-0/3/0/19      NB     02aa.bbcc.0019  GigabitEthernet1/0/19 120    HZDT-TEST-19
+gei-0/3/0/20      NB     02aa.bbcc.0020  GigabitEthernet1/0/20 120    HZDT-TEST-20
+gei-0/3/0/21      NB     02aa.bbcc.0021  GigabitEthernet1/0/21 120    HZDT-TEST-21
+gei-0/3/0/22      NB     02aa.bbcc.0022  GigabitEthernet1/0/22 120    HZDT-TEST-22
+gei-0/3/0/23      NB     02aa.bbcc.0023  GigabitEthernet1/0/23 120    HZDT-TEST-23
+gei-0/3/0/24      NB     02aa.bbcc.0024  GigabitEthernet1/0/24 120    HZDT-TEST-24
+gei-0/3/0/25      NB     02aa.bbcc.0025  GigabitEthernet1/0/25 120    HZDT-TEST-25
+gei-0/3/0/26      NB     02aa.bbcc.0026  GigabitEthernet1/0/26 120    HZDT-TEST-26
+gei-0/3/0/27      NB     02aa.bbcc.0027  GigabitEthernet1/0/27 120    HZDT-TEST-27
+gei-0/3/0/28      NB     02aa.bbcc.0028  GigabitEthernet1/0/28 120    HZDT-TEST-28
+gei-0/3/0/29      NB     02aa.bbcc.0029  GigabitEthernet1/0/29 120    HZDT-TEST-29
+gei-0/3/0/30      NB     02aa.bbcc.0030  GigabitEthernet1/0/30 120    HZDT-TEST-30
+gei-0/3/0/31      NB     02aa.bbcc.0031  GigabitEthernet1/0/31 120    HZDT-TEST-31
+gei-0/3/0/32      NB     02aa.bbcc.0032  GigabitEthernet1/0/32 120    HZDT-TEST-32
+gei-0/3/0/33      NB     02aa.bbcc.0033  GigabitEthernet1/0/33 120    HZDT-TEST-33
+gei-0/3/0/34      NB     02aa.bbcc.0034  GigabitEthernet1/0/34 120    HZDT-TEST-34
+gei-0/3/0/35      NB     02aa.bbcc.0035  GigabitEthernet1/0/35 120    HZDT-TEST-35
+gei-0/3/0/36      NB     02aa.bbcc.0036  GigabitEthernet1/0/36 120    HZDT-TEST-36
+Total neighbors: 36
+HZDT-TEST#

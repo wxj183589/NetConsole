@@ -226,6 +226,22 @@ def _fixture(tmp_path: Path):
             {
                 "interface_name": "GE1/0/1",
                 "link_status": "UP",
+                "admin_status": "up",
+                "physical_status": "up",
+                "protocol_status": "up",
+                "media_attribute": "optical",
+                "media_type": "optical",
+                "category": "physical",
+                "port_status": "hybrid",
+                "port_mode": "hybrid",
+                "pvid": "71",
+                "native_vlan": "71",
+                "tagged_vlans": ["201"],
+                "untagged_vlans": [],
+                "pvid_source": "show_running_config_switchvlan",
+                "pvid_verified": True,
+                "vlan_config_status": "current",
+                "vlan_warnings": [],
                 "description": "AP uplink",
                 "collected_at": "2026-07-18T10:00:00",
             },
@@ -272,6 +288,11 @@ def _fixture(tmp_path: Path):
             {
                 "local_interface": "GE1/0/1",
                 "neighbor_sysname": "AP-01",
+                "chassis_type": "MAC address",
+                "chassis_id": "02aa.bbcc.0001",
+                "ttl": 120,
+                "pvid": 71,
+                "system_description": "HZDT test neighbor",
                 "neighbor_device_uuid": str(ac.device_uuid),
             },
             {
@@ -438,6 +459,30 @@ def test_interface_filter_and_multivendor_name_normalization(
     assert page.items[0].normalized_name == "Ten-GigabitEthernet1/0/2"
     assert page.items[0].category == "physical"
 
+    semantic_page = query.interfaces(
+        str(h3c.device_uuid),
+        status="UP",
+        admin_status="up",
+        physical_status="up",
+        protocol_status="up",
+        media_type="optical",
+        page=1,
+        page_size=10,
+    )
+    assert semantic_page.total == 1
+    interface = semantic_page.items[0]
+    assert interface.admin_status == "up"
+    assert interface.physical_status == "up"
+    assert interface.protocol_status == "up"
+    assert interface.media_type == "optical"
+    assert interface.port_mode == "hybrid"
+    assert interface.port_status == "hybrid"
+    assert interface.pvid == "71"
+    assert interface.native_vlan == "71"
+    assert interface.tagged_vlans == ["201"]
+    assert interface.pvid_source == "show_running_config_switchvlan"
+    assert interface.pvid_verified is True
+
 def test_optical_alarm_and_lldp_association_are_derived_in_python(
     tmp_path: Path,
 ) -> None:
@@ -456,6 +501,10 @@ def test_optical_alarm_and_lldp_association_are_derived_in_python(
         "matched",
         "unresolved",
     ]
+    assert lldp.items[0].chassis_id == "02aa.bbcc.0001"
+    assert lldp.items[0].ttl == 120
+    assert lldp.items[0].pvid == 71
+    assert lldp.items[0].system_description == "HZDT test neighbor"
     assert query.lldp(
         str(h3c.device_uuid), linked_only=True, page=1, page_size=10
     ).total == 1

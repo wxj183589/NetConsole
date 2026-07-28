@@ -190,7 +190,9 @@ class DeviceOperationService:
                 existing = repository.get(requested_id)
                 if existing is not None:
                     self._assert_owned(existing, site, device_uuid, operation_id)
-                    return self._task(existing, operation_id, reused=True)
+                    return self._task(
+                        existing, operation_id, reused=True, profile=profile
+                    )
 
             active = next(
                 iter(
@@ -207,7 +209,7 @@ class DeviceOperationService:
                 None,
             )
             if active is not None:
-                return self._task(active, operation_id, reused=True)
+                return self._task(active, operation_id, reused=True, profile=profile)
 
             task_id = requested_id or f"device-operation-{uuid.uuid4().hex}"
             job = BackgroundJob(
@@ -240,7 +242,7 @@ class DeviceOperationService:
             snapshot = repository.get(task_id)
             if snapshot is None:
                 raise RuntimeError("设备操作任务创建后未写入任务中心")
-            return self._task(snapshot, operation_id, reused=False)
+            return self._task(snapshot, operation_id, reused=False, profile=profile)
 
     def cancel(self, task_id: str, *, site: str | None = None) -> bool:
         selected_site = str(site or self.gateway.current_site_id() or "demo")
@@ -305,7 +307,11 @@ class DeviceOperationService:
 
     @staticmethod
     def _task(
-        snapshot: TaskSnapshot, operation_id: str, *, reused: bool
+        snapshot: TaskSnapshot,
+        operation_id: str,
+        *,
+        reused: bool,
+        profile: DeviceCommandProfile,
     ) -> DeviceOperationTask:
         return DeviceOperationTask(
             task_id=snapshot.task_id,
@@ -316,6 +322,8 @@ class DeviceOperationService:
                 snapshot.message or snapshot.error_message
             )
             or None,
+            profile_id=profile.profile_id,
+            profile_version=profile.profile_version,
         )
 
 
@@ -368,7 +376,11 @@ def run_device_inventory_refresh(context: JobContext) -> dict[str, object]:
             raise ValueError("提交时命令 Profile 与 Worker 校验结果不一致")
         bind_submitted_device_inventory_profile(device, profile, submitted_facts)
         return collect_h3c_device_details(
-            device, site, repository=facts, paths=context.paths
+            device,
+            site,
+            repository=facts,
+            paths=context.paths,
+            cancel_check=context.should_cancel,
         )
 
     worker_count = max(1, min(20, len(selected)))
@@ -381,6 +393,14 @@ def run_device_inventory_refresh(context: JobContext) -> dict[str, object]:
                 result = future.result()
                 item = {
                     "device_uuid": str(device.device_uuid or ""),
+                    "device_name": str(device.name or ""),
+                    "primary_address": str(device.primary_address or ""),
+                    "vendor": str(device.device_vendor or ""),
+                    "device_type": str(device.device_type or ""),
+                    "profile_id": str(context.params.get("profile_id") or ""),
+                    "profile_version": int(
+                        context.params.get("profile_version") or 0
+                    ),
                     "success": bool(result.success),
                     "collect_run_uuid": result.collect_run_uuid,
                     "facts_updated": bool(result.facts_updated),
@@ -391,6 +411,17 @@ def run_device_inventory_refresh(context: JobContext) -> dict[str, object]:
                         result.error_message or "", device
                     ),
                 }
+                collect_run = facts.get_collect_run(result.collect_run_uuid)
+                item["collect_status"] = str(
+                    (collect_run or {}).get("status")
+                    or ("success" if result.success else "failed")
+                )
+                item["started_at"] = str((collect_run or {}).get("started_at") or "")
+                item["finished_at"] = str((collect_run or {}).get("ended_at") or "")
+                fact = facts.get_device_fact(str(device.device_uuid or ""))
+                item["last_collected_at"] = str(
+                    (fact or {}).get("collected_at") or ""
+                )
                 item["error_message"] = redact_web_task_text(
                     item["error_message"]
                 )
@@ -422,7 +453,7 @@ def run_device_inventory_refresh(context: JobContext) -> dict[str, object]:
             len(results),
             str(DeviceInventoryRefreshFailed(summary)),
         )
-        raise DeviceInventoryRefreshFailed(summary)
+        summary["terminal_state"] = "FAILED"
     return summary
 
 

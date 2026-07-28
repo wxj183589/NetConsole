@@ -89,10 +89,9 @@ def test_device_inventory_profile_preserves_verified_command_order() -> None:
 
 @pytest.mark.parametrize(
     ("vendor", "role", "platform"),
-    (
-        ("Huawei", "switch", "vrp"),
-        ("ZTE", "switch", "zxr10"),
-        ("H3C", "router", "comware"),
+        (
+            ("Huawei", "switch", "vrp"),
+            ("H3C", "router", "comware"),
         ("H3C", "switch", "unknown"),
         ("", "switch", "comware"),
     ),
@@ -177,22 +176,47 @@ def test_device_resolution_accepts_h3c_and_zte_supported_roles() -> None:
 def test_zte_switch_command_profile_uses_show_commands_and_candidates() -> None:
     device = Device(name="ZTE-SW", device_vendor="中兴", device_type="SW")
     profile = resolve_device_inventory_profile(device)
-    assert profile.profile_id == "zte.zxr10.5960x-es.v2.device-inventory.v1"
+    assert profile.profile_id == "zte.zxr10.switch.generic.device-inventory.v3"
     assert profile.commands == (
         "show version",
         "show interface brief",
+        "show running-config switchvlan",
+        "show vlan",
         "show opticalinfo brief",
+        "show lldp neighbor brief",
+        "show lldp entry",
     )
     assert resolve_device_capability_commands(device, "version") == ("show version",)
     assert resolve_device_capability_commands(device, "interface_brief") == (
         "show interface brief",
     )
+    assert resolve_device_capability_commands(device, "switchvlan_config") == (
+        "show running-config switchvlan",
+    )
+    assert resolve_device_capability_commands(device, "vlan_table") == (
+        "show vlan",
+    )
     assert resolve_device_capability_commands(device, "optical_brief") == (
         "show opticalinfo brief",
     )
-    assert all(
-        step.verification_status == "fixture_verified" for step in profile.steps
+    assert resolve_device_capability_commands(device, "lldp_summary") == (
+        "show lldp neighbor brief",
     )
+    assert resolve_device_capability_commands(device, "lldp_detail") == (
+        "show lldp entry",
+    )
+    assert profile.real_device_status == "real_device_verified"
+    assert {
+        step.step_id: step.verification_status for step in profile.steps
+    } == {
+        "device.version.collect": "field_verified",
+        "device.interface-brief.collect": "field_verified",
+        "device.switchvlan-config.collect": "field_verified",
+        "device.vlan-table.collect": "field_verified",
+        "device.optical-brief.collect": "field_verified",
+        "device.lldp-summary.collect": "field_verified",
+        "device.lldp-detail.collect": "field_verified",
+    }
     for capability in (
         "session_prepare",
         "hardware",

@@ -1,3 +1,5 @@
+import pytest
+
 from netconsole.core.database import Database
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 
@@ -70,6 +72,81 @@ def test_replace_device_interfaces_replaces_only_target_device(tmp_path):
     assert device_1_interfaces[0]["port_status"] == "route"
     assert device_1_interfaces[0]["pvid"] == "1"
     assert [item["interface_name"] for item in repository.list_device_interfaces("device-2")] == ["GE1/0/9"]
+
+
+def test_zte_interface_semantics_are_persisted_to_current_and_history(tmp_path):
+    repository = make_repository(tmp_path)
+    repository.replace_device_interfaces(
+        "device-1",
+        [
+            {
+                "interface_name": "gei-0/3/0/6",
+                "link_status": "PHYSICAL_DOWN",
+                "admin_status": "up",
+                "physical_status": "down",
+                "protocol_status": "down",
+                "media_attribute": "optical",
+                "media_type": "optical",
+                "category": "physical",
+                "interface_type": None,
+                "port_status": "hybrid",
+                "port_mode": "hybrid",
+                "pvid": "71",
+                "native_vlan": "71",
+                "tagged_vlans": ["201"],
+                "untagged_vlans": [],
+                "pvid_source": "show_running_config_switchvlan",
+                "pvid_verified": True,
+                "vlan_config_status": "current",
+                "vlan_config_collected_at": "2026-07-28T00:00:00Z",
+                "vlan_warnings": [],
+            }
+        ],
+    )
+
+    current = repository.list_device_interfaces("device-1")[0]
+    history = repository.list_interface_history("device-1", "gei-0/3/0/6")[0]
+    for row in (current, history):
+        assert row["admin_status"] == "up"
+        assert row["physical_status"] == "down"
+        assert row["protocol_status"] == "down"
+        assert row["media_attribute"] == "optical"
+        assert row["media_type"] == "optical"
+        assert row["category"] == "physical"
+        assert row["port_status"] == "hybrid"
+        assert row["port_mode"] == "hybrid"
+        assert row["pvid"] == "71"
+        assert row["native_vlan"] == "71"
+        assert row["tagged_vlans"] == '["201"]'
+        assert row["untagged_vlans"] == "[]"
+        assert row["pvid_source"] == "show_running_config_switchvlan"
+        assert row["pvid_verified"] == 1
+
+
+def test_empty_or_failed_interface_snapshot_preserves_previous_rows(
+    tmp_path,
+    monkeypatch,
+):
+    repository = make_repository(tmp_path)
+    repository.replace_device_interfaces(
+        "device-1",
+        [{"interface_name": "gei-0/3/0/2", "link_status": "UP"}],
+    )
+
+    with pytest.raises(ValueError, match="接口快照为空"):
+        repository.replace_device_interfaces("device-1", [])
+    assert repository.list_device_interfaces("device-1")[0]["link_status"] == "UP"
+
+    def fail_insert(*_args, **_kwargs):
+        raise RuntimeError("simulated insert failure")
+
+    monkeypatch.setattr(repository, "_insert", fail_insert)
+    with pytest.raises(RuntimeError, match="simulated insert failure"):
+        repository.replace_device_interfaces(
+            "device-1",
+            [{"interface_name": "gei-0/3/0/6", "link_status": "PHYSICAL_DOWN"}],
+        )
+    assert repository.list_device_interfaces("device-1")[0]["interface_name"] == "gei-0/3/0/2"
 
 
 def test_device_interfaces_use_logical_interface_sort(tmp_path):

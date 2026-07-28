@@ -181,6 +181,10 @@ export function startBatchRefreshDetails(deviceUuids: string[]): Promise<DeviceT
   return apiRequest<DeviceTaskBatch>('/api/device-management/devices/batch-refresh-details', { method: 'POST', body: JSON.stringify({ device_uuids: deviceUuids }) })
 }
 
+export function getBatchRefresh(batchId: string): Promise<DeviceTaskBatch> {
+  return apiRequest<DeviceTaskBatch>(`/api/device-management/batch-refreshes/${encodeURIComponent(batchId)}`)
+}
+
 export function startBatchConnectionTests(deviceUuids: string[]): Promise<DeviceTaskBatch> {
   return apiRequest<DeviceTaskBatch>('/api/device-management/devices/batch-connection-tests', { method: 'POST', body: JSON.stringify({ device_uuids: deviceUuids }) })
 }
