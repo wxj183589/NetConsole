@@ -11,8 +11,12 @@ from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.ac.ac_models import AcOpticalRefreshRequest, AcOpticalRefreshResult, AcOpticalSnapshot
 from netconsole.services.h3c_ac_collect_service import FitApOpticalCollectResult, collect_h3c_fit_ap_optical
+from netconsole.services.ac.fit_ap_optical_partial_success import install_fit_ap_optical_partial_success
 from netconsole.services.offline_ap_ledger import OFFLINE_AP_STATUS_TEXT, is_fit_ap_offline
 from netconsole.utils.interface_sort import interface_sort_key
+
+
+install_fit_ap_optical_partial_success()
 
 
 ProgressMessage = str | Mapping[str, object]
