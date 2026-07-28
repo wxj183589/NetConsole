@@ -26,10 +26,12 @@ Ping 和深度采集继续；明确退出时 lifespan 先关闭 Supervisor，fpi
 
 配置按局点保存在 `ground_unattended_profiles`。默认值为：
 
-- `schedule_start_time=07:00`、`schedule_end_time=23:00`、`timezone=system`；
+- `schedule_start_time=07:00`、`schedule_end_time=23:00`、`timezone=Asia/Shanghai`；
 - AC 轮询 10 秒，同 AP 静止阈值 10 分钟，AC 异常 Ping 宽限 120 秒；
-- Ping 间隔 1000 ms、超时 4000 ms、包大小 64、每分片 12 个目标；
+- Ping 间隔 1000 ms、超时 4000 ms、包大小 64、每分片 12 个目标，每个目标激活后预热 10 秒；
 - 最多 2 辆活动列车、4 台活动 MR、2 台启动中 MR、2 台最终化 MR；
+- `deep_collection_master_enabled=true`；关闭后进入轻量监测模式，只保留 AC、Fleet Ping、
+  UDP Syslog、WMESH 解析、位置判断和时间关联，不再启动新的 SSH 深度 MR 采集，已运行任务安全收尾；
 - 深度采集最低/建议/最大时长为 10/20/30 分钟；
 - 详细归档保留 30 天，轻量汇总保留 180 天。
 
@@ -92,6 +94,19 @@ Ping 样本使用毫秒时间戳，按小时写入 `fleet_ping/*.jsonl`。索引
 以本机接收时间关联最近 AC 快照；即使样本携带快照 ID，只要接收时间超出配置容差，丢包仍明确标记为
 AC 位置未知，并继续识别 CT 单端、CW 单端和双端同时丢包。
 
+每个 Ping 目标的激活时间按 `site_id/run_id/target_ip` 持久化。激活后的
+`fleet_ping_warmup_seconds`（默认 10 秒）仍真实发包并写入 NDJSON，但记录
+`warmup_ignored=true`，不计入有效发送、成功/丢失、RTT、连续丢包、告警、时间关联和汇总。
+分片重建或 Backend 恢复同一 run 不重置激活时间；目标真正移除后重新加入才重新预热。原始样本同时
+保存采样时的 AP identity/名称/MAC、站点、区间、里程、RSSI、AC 快照及接收时间、位置质量和
+AP 切换上下文，历史查询不会把当前 AP 回填到旧样本。
+
+页面“长 Ping”保留汇总表，并通过受控的 `/ping-series` 和 `/ping-samples` 查询逐包 RTT、成功/丢包、
+预热、位置未知、AP 切换和连续丢包区段。页面支持最近 5 分钟、30 分钟、1 小时、自定义时间和可关闭的
+自动刷新；默认只读最近 30 分钟，单次最多 7 天，图表点数默认 3000、最多 10000。后端只选择与时间范围
+相交的已登记文件，逐行读取并优先保留丢包点；逐包和 Syslog 分页仅保留当前请求页所需的有界最新记录，
+不把全天原始流一次加载到前端、进程内存或 SQLite。
+
 ## 第一阶段实时采集基础
 
 `TrainInventorySyncService` 从现有 `RailTransitBaseDataQueryService` 增量聚合当前局点的车载
@@ -113,6 +128,11 @@ MR。设备主体、地址和凭据仍只存在于设备管理；无人值守只
 为 `active/<run_date>/realtime/syslog/<train>/<CT|CW>/<date>/<hour>_<generation>.ndjson`。当前打开
 文件不会被压缩；停止、轮转或重启恢复后才登记为关闭/恢复文件。SQLite 只保存分钟汇总、连续丢包区间、
 WMESH 关键事件、原始文件索引和健康事件，不逐条保存秒级原始 Ping 或 Syslog。
+
+页面新增独立“Syslog 日志”标签，通过 `/syslog-records` 分页查看当前 OPEN 和历史 CLOSED/RECOVERED
+文件中的真实接收内容。默认最近 30 分钟、每页 100、每页最多 500，支持列车、MR 名称、来源 IP、
+设备系统名、级别和原文关键字过滤，分别展示设备时间、本机接收时间和时钟差。查询仅解析 Repository
+已登记且位于当前无人值守数据根内的普通文件，拒绝路径逃逸、符号链接和目录联接。
 
 Ping 稳定成功后，`MrSyslogConfigService` 通过既有设备凭据按
 `display clock -> display version -> display clock` 连续取证。Boot Session 的主时间轴为两次设备
@@ -142,10 +162,12 @@ IP/端口，保留其他 IP 的外部目标，不执行 `undo`。当前现场 H3
 详情中明确二次确认后才允许改端口，并写入高风险授权与执行审计。配置指纹包含排序后的全部 loghost 和
 当前 managed target，因此设备输出顺序变化不产生伪变更。
 
-`ground_unattended` 索引库的 additive schema v5 包含列车清单/端点绑定/策略、boot session、Syslog
+`ground_unattended` 索引库的 additive schema v6 包含列车清单/端点绑定/策略、boot session、Syslog
 配置审计、WMESH 事件、原始文件索引、Ping 丢包区间和健康事件表；新增 Profile 外部地址确认字段，以及
 Boot Session 的前后设备时钟、估算误差、重启原因、设备时区、UTC offset、时间质量和时钟跳变证据。
-启动迁移为幂等加列与 `CREATE TABLE IF NOT EXISTS`，不重建既有局点数据库。
+本轮新增深采总开关、Ping 预热字段、目标激活表和运行控制操作表；旧 `system` 或空时区迁移为
+`Asia/Shanghai`，其他显式 IANA 时区保持不变。启动迁移为幂等加列与
+`CREATE TABLE IF NOT EXISTS`，不重建既有局点数据库。
 
 ## 深度采集与覆盖
 
@@ -157,6 +179,10 @@ Boot Session 的前后设备时钟、估算误差、重启原因、设备时区�
 `OnlineMrConcurrencyPolicy` 统一设备互斥和活动/启动/最终化预算。人工任务不再受“整个局点只能有
 一个任务”限制；同一 MR 仍只允许一个任务。自动调度先读取全部人工和自动 allocation，只使用剩余
 资源，不停止人工任务。
+
+局点级深采总开关位于单车 `deep_collection_enabled` 之上。总开关关闭时 Scheduler 仍同步和安全收尾
+既有自动任务，但以 `paused` 方式跳过 `_fill_slots`，因此不会新增 Online MR 会话；单车开关只在总开关
+开启时生效。轻量模式下深采数量为 0 是正常结果，归档汇总记录运行模式和未执行原因。
 
 每日随机队列保存 seed、候选和稳定顺序。第一轮排序固定为：置顶未完成、从未采集、PARTIAL 补采、
 采集次数少、持久随机顺序。只要仍有可采集列车未完成第一轮，已完成列车不会因 Ping 异常进入第二轮；
@@ -199,6 +225,13 @@ Online MR mapping 恢复；窗口内恢复 Ping 与调度，窗口外继续最�
 `summary_retention_days`。手工删除同样走 Supervisor 队列、明确确认和受管路径校验，正在使用的当日
 数据拒绝删除。
 
+普通停止和停止并归档均先创建持久化 `operation_id`，重复请求返回同一活动操作。操作记录保存阶段、
+进度、消息、失败码、结果摘要和完成时间；页面刷新或 Backend 重启后从 `/operations/latest` 恢复。
+停止流程只有在深采安全收尾、全部 fping worker 退出、UDP 接收线程退出、原监听地址和端口可重新绑定、
+队列清空、writer flush 且没有 OPEN 原始文件后才把 run 标记为 `COMPLETED`。worker、UDP、队列或文件任一项失败时操作与 run
+明确进入失败状态，不伪装完成。停止并归档继续显示准备、写入、校验、登记和 active 清理阶段；ZIP
+失败时 run 已正常停止，但操作和 archive 为失败，active 原始数据保留。
+
 ## API
 
 前缀为 `/api/rail-transit/ground-unattended`：
@@ -208,12 +241,13 @@ GET/PUT  /profile
 GET      /status
 POST     /start | /pause | /resume | /stop | /stop-and-archive
 POST     /inventory/sync | /config-check
-GET      /health | /raw-files
+GET      /health | /raw-files | /syslog-records
 GET      /trains | /trains/{train_id}
 PUT      /trains/{train_id}/priority
 PUT      /trains/{train_id}/policy
-GET      /ping-targets | /ping-summary | /timeline
+GET      /ping-targets | /ping-summary | /ping-series | /ping-samples | /timeline
 GET      /deep-collections | /coverage
+GET      /operations/latest | /operations/{operation_id}
 GET      /archives | /archives/{archive_id}
 GET      /archives/{archive_id}/summary-download
 POST     /archives/open-directory
@@ -234,10 +268,12 @@ POST /check-udp-port
 ## 验证边界
 
 自动测试覆盖时间窗口/跨午夜、同日手工停止抑制、配置持久化、结构化正线排除、静止恢复、多目标与
-动态分片、轮转/汇总、CT/CW 错峰补齐、覆盖轮次去重、首轮覆盖排序、可复现队列、ZIP 成功清理、
+动态分片、逐目标 10 秒预热及恢复、逐包有界查询、轮转/汇总、CT/CW 错峰补齐、覆盖轮次去重、
+首轮覆盖排序、可复现队列、ZIP 成功清理、
 ZIP 失败保留、Repository 故障隔离、API 空态和前端七页签。第一阶段还覆盖清单增量同步/策略保留、
 多 MR UDP 分流与未知来源隔离、设备时钟中点减 uptime、NTP 跳变保持 Session、本机地址校验、多 loghost
-解析、同 IP 端口冲突只读保护，以及不执行 `save/undo` 的 Syslog Profile。`vue-tsc`、
+解析、Syslog 分页、时间轴 MR 名称解析、持久化停止操作、同 IP 端口冲突只读保护，以及不执行
+`save/undo` 的 Syslog Profile。`vue-tsc`、
 定向 Vitest 和 Web production build 作为提交门。
 
 已完成一台 H3C MR 的 10 分钟真实 UDP 单机验证：Comware 省略默认 enable/514 配置文本时只读复查为

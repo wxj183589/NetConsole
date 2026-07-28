@@ -17,8 +17,16 @@
 - `supervisor.py`：时间窗状态机、恢复、调度和停止归档。
 - `boot_config.py`、`syslog_runtime.py`：Information Center 只读核验、受控修复与 WMESH UDP 接收。
 - `fleet_ping.py`、`timeline.py`：分片 Ping 生命周期、汇总和 AC/Ping 时间关联。
+- `raw_query.py`：只读扫描与查询时间范围相交的已登记 Ping/Syslog NDJSON，执行有界内存分页、降采样和路径/链接安全校验。
 - `deep_scheduler.py`：每日覆盖队列、置顶和并发预算。
 - `archive_service.py`：manifest、ZIP 校验、原子发布和保留清理。
+
+Profile 的 `deep_collection_master_enabled=false` 表示轻量监测模式：Supervisor 继续 AC、Fleet Ping、
+Syslog 和位置关联，Deep Scheduler 只同步/收尾已有任务，不再填充新槽位。每个 Ping 目标的激活时间
+持久化；默认前 10 秒仅写原始样本，不进入有效统计。
+
+普通停止和停止并归档使用 `ground_unattended_operations` 持久化操作状态。Supervisor 必须核对 fping
+worker、UDP 线程、监听端口可重新绑定、接收队列和 OPEN 文件后才能完成；归档通过回调更新准备、写入、校验、登记和清理阶段。
 
 ## 数据安全
 

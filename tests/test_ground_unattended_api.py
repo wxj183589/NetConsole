@@ -173,6 +173,8 @@ def test_ground_unattended_empty_pages_are_stable(tmp_path) -> None:
         assert trains.json()["items"][0]["eligibility_status"] == "AC_UNKNOWN"
         for path in (
             "ping-targets",
+            "ping-samples",
+            "syslog-records",
             "deep-collections",
             "coverage",
             "timeline",
@@ -181,6 +183,14 @@ def test_ground_unattended_empty_pages_are_stable(tmp_path) -> None:
             response = client.get(f"/api/rail-transit/ground-unattended/{path}")
             assert response.status_code == 200, path
             assert response.json()["items"] == []
+        series = client.get("/api/rail-transit/ground-unattended/ping-series")
+        assert series.status_code == 200
+        assert series.json()["points"] == []
+        operation = client.get(
+            "/api/rail-transit/ground-unattended/operations/latest"
+        )
+        assert operation.status_code == 200
+        assert operation.json() is None
 
 
 def test_ground_unattended_repository_failure_is_feature_scoped(

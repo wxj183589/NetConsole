@@ -285,7 +285,11 @@ def test_udp_receiver_routes_multiple_mrs_and_keeps_unidentified_separate(tmp_pa
         sender.bind(("127.0.0.2", 0))
         sender.sendto(unknown, ("127.0.0.1", int(port_text)))
     _wait_until(lambda: len(repository.list_wmesh_events(run_id="run-1")) == 3)
-    receiver.stop()
+    stop_result = receiver.stop()
+    assert stop_result["success"] is True
+    assert stop_result["udp_port_released"] is True
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.bind(("127.0.0.1", int(port_text)))
 
     events = repository.list_wmesh_events(run_id="run-1")
     assert any(event["train_id"] == "train-01" for event in events)

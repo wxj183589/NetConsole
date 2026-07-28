@@ -157,10 +157,12 @@ class RawStreamWriter:
         self.last_write_duration_ms = (time.perf_counter() - started) * 1000
         return current.file_id, current.record_count
 
-    def close(self) -> None:
+    def close(self) -> int:
+        closed = len(self._files)
         ended_at = datetime.now().astimezone().isoformat(timespec="milliseconds")
         for key in tuple(self._files):
             self._close_one(key, ended_at)
+        return closed
 
     def _open(
         self,
@@ -349,6 +351,8 @@ class SyslogUdpReceiver:
         self._writer: RawStreamWriter | None = None
         self._run_id = ""
         self._listen_address = ""
+        self._listen_host = ""
+        self._listen_port = 0
         self._endpoint_by_ip: dict[str, list[dict[str, Any]]] = {}
         self._endpoint_by_hostname: dict[str, list[dict[str, Any]]] = {}
         self._received_count = 0
@@ -384,7 +388,12 @@ class SyslogUdpReceiver:
     ) -> None:
         if self.running and self._run_id == run_id:
             return
-        self.stop()
+        stop_result = self.stop()
+        if not stop_result["success"]:
+            raise RuntimeError(
+                "previous Syslog receiver did not stop: "
+                + ", ".join(stop_result["alive_thread_names"])
+            )
         self._queue = queue.Queue(maxsize=max(100, int(queue_capacity)))
         self._run_id = run_id
         self._stop.clear()
@@ -422,6 +431,8 @@ class SyslogUdpReceiver:
             raise
         self._socket = sock
         actual = sock.getsockname()
+        self._listen_host = str(actual[0])
+        self._listen_port = int(actual[1])
         self._listen_address = f"{actual[0]}:{actual[1]}"
         self._started_monotonic = time.monotonic()
         self._recv_thread = threading.Thread(
@@ -441,7 +452,7 @@ class SyslogUdpReceiver:
     def running(self) -> bool:
         return bool(self._recv_thread and self._recv_thread.is_alive())
 
-    def stop(self) -> None:
+    def stop(self) -> dict[str, Any]:
         self._stop.set()
         sock = self._socket
         self._socket = None
@@ -450,13 +461,47 @@ class SyslogUdpReceiver:
         for thread in (self._recv_thread, self._process_thread):
             if thread is not None:
                 thread.join(timeout=5)
+        udp_port_released = _udp_port_is_available(
+            self._listen_host, self._listen_port
+        )
+        threads = [
+            thread
+            for thread in (self._recv_thread, self._process_thread)
+            if thread is not None
+        ]
+        alive = [thread.name for thread in threads if thread.is_alive()]
+        if alive:
+            return {
+                "success": False,
+                "udp_port_released": udp_port_released,
+                "alive_thread_names": alive,
+                "queue_empty": self._queue.empty(),
+                "queue_length": self._queue.qsize(),
+                "closed_file_count": 0,
+                "received_count": self._received_count,
+                "dropped_count": self._dropped_count,
+            }
         self._recv_thread = self._process_thread = None
         self._drain_remaining()
         self._flush_events()
+        closed_file_count = 0
         if self._writer is not None:
-            self._writer.close()
+            closed_file_count = self._writer.close()
         self._writer = None
         self._run_id = ""
+        self._listen_address = ""
+        self._listen_host = ""
+        self._listen_port = 0
+        return {
+            "success": self._queue.empty() and udp_port_released,
+            "udp_port_released": udp_port_released,
+            "alive_thread_names": [],
+            "queue_empty": self._queue.empty(),
+            "queue_length": self._queue.qsize(),
+            "closed_file_count": closed_file_count,
+            "received_count": self._received_count,
+            "dropped_count": self._dropped_count,
+        }
 
     def refresh_inventory(self) -> None:
         active = self.repository.list_inventory(include_removed=False)
@@ -607,6 +652,7 @@ class SyslogUdpReceiver:
             "source_ip": envelope.source_ip,
             "source_port": envelope.source_port,
             "hostname": hostname,
+            "system_name": hostname,
             "facility": facility,
             "severity": severity,
             "raw_bytes_base64": base64.b64encode(envelope.payload).decode("ascii"),
@@ -617,7 +663,9 @@ class SyslogUdpReceiver:
             "device_time": str((parsed or {}).get("device_time") or ""),
             "device_id": (endpoint or {}).get("device_id"),
             "device_uuid": str((endpoint or {}).get("device_uuid") or ""),
+            "mr_name": str((endpoint or {}).get("device_name") or ""),
             "train_id": str((endpoint or {}).get("train_id") or ""),
+            "train_no": str((endpoint or {}).get("train_no") or ""),
             "mr_role": str((endpoint or {}).get("mr_role") or ""),
             "site_id": self.site_id,
             "parse_status": "PARSED" if parsed else "IGNORED",
@@ -673,6 +721,9 @@ class SyslogUdpReceiver:
                 "details": {
                     "data_quality": quality,
                     "identity_status": identity_status,
+                    "train_no": record["train_no"],
+                    "mr_name": record["mr_name"],
+                    "mr_position_code": record["mr_role"],
                     "raw_file_id": file_id,
                     "global_receive_sequence": envelope.global_receive_sequence,
                     "source_receive_sequence": envelope.source_receive_sequence,
@@ -907,6 +958,19 @@ def _event_title(event_type: str) -> str:
     }.get(event_type, event_type)
 
 
+def _udp_port_is_available(host: str, port: int) -> bool:
+    if not host or port <= 0:
+        return True
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.bind((host, port))
+    except OSError:
+        return False
+    finally:
+        probe.close()
+    return True
+
+
 def recover_raw_files(
     *,
     active_dir: Path,
@@ -920,22 +984,22 @@ def recover_raw_files(
     active.relative_to(root)
     known = {
         str(row.get("relative_path") or ""): row
-        for row in repository.list_raw_files(limit=1000)
+        for row in repository.list_raw_files_for_run(run_id)
     }
     recovered = 0
     now = datetime.now().astimezone().isoformat(timespec="milliseconds")
     for relative, row in known.items():
         if row.get("run_id") != run_id or row.get("status") != "OPEN":
             continue
-        path = (root / relative).resolve()
-        valid = path.is_file() and not path.is_symlink()
+        path = _managed_regular_file(root, relative)
+        valid = path is not None
         repository.upsert_raw_file(
             {
                 **row,
                 "end_time": now,
-                "record_count": _line_count(path) if valid else int(row.get("record_count") or 0),
-                "size_bytes": path.stat().st_size if valid else 0,
-                "sha256": _sha256(path) if valid else "",
+                "record_count": _line_count(path) if path else int(row.get("record_count") or 0),
+                "size_bytes": path.stat().st_size if path else 0,
+                "sha256": _sha256(path) if path else "",
                 "status": "RECOVERED" if valid else "MISSING",
                 "parse_status": "PENDING_RECOVERY" if valid else "MISSING",
             }
@@ -985,6 +1049,28 @@ def _first_json_line(path: Path) -> dict[str, Any]:
         return value if isinstance(value, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def _managed_regular_file(root: Path, relative_path: str) -> Path | None:
+    relative = Path(relative_path)
+    if relative.is_absolute() or any(part == ".." for part in relative.parts):
+        return None
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink() or _is_junction(current):
+            return None
+    resolved = current.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return None
+    return resolved if resolved.is_file() else None
+
+
+def _is_junction(path: Path) -> bool:
+    checker = getattr(path, "is_junction", None)
+    return bool(checker and checker())
 
 
 __all__ = [

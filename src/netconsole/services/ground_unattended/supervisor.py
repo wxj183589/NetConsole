@@ -41,7 +41,10 @@ from netconsole.services.ground_unattended.schedule import (
 )
 from netconsole.services.ground_unattended.boot_config import MrSyslogConfigService
 from netconsole.services.ground_unattended.inventory import TrainInventorySyncService
-from netconsole.services.ground_unattended.syslog_runtime import SyslogUdpReceiver
+from netconsole.services.ground_unattended.syslog_runtime import (
+    SyslogUdpReceiver,
+    recover_raw_files,
+)
 from netconsole.services.rail_transit.base_data_query_service import (
     RailTransitBaseDataQueryService,
 )
@@ -62,6 +65,7 @@ LOGGER = logging.getLogger(__name__)
 class SupervisorCommand:
     action: str
     archive: bool = False
+    operation_id: str = ""
 
 
 class GroundUnattendedSupervisor:
@@ -177,11 +181,19 @@ class GroundUnattendedSupervisor:
             self.deep_scheduler.close()
         self._config_executor.shutdown(wait=True, cancel_futures=True)
 
-    def request(self, action: str, *, archive: bool = False) -> None:
+    def request(
+        self,
+        action: str,
+        *,
+        archive: bool = False,
+        operation_id: str = "",
+    ) -> None:
         if action not in {"start", "pause", "resume", "stop"}:
             raise ValueError("unsupported ground unattended action")
         with self._lock:
-            self._commands.append(SupervisorCommand(action, archive))
+            self._commands.append(
+                SupervisorCommand(action, archive, operation_id)
+            )
         self._wake_event.set()
 
     def profile_updated(self) -> None:
@@ -253,6 +265,29 @@ class GroundUnattendedSupervisor:
                     )
             return
         profile = self.repository.get_profile()
+        if str(run.get("state") or "") in {
+            "STOPPING",
+            "FINALIZING",
+            "ARCHIVING",
+            "ERROR",
+        }:
+            self._active_profile = profile
+            operation = self.repository.latest_operation(
+                run_id=str(run["run_id"]), active_only=True
+            )
+            if operation is not None:
+                self.repository.add_event(
+                    run_id=str(run["run_id"]),
+                    event_type="operation_recovered",
+                    title="已恢复停止或归档操作",
+                    details={
+                        "operation_id": str(operation["operation_id"]),
+                        "operation_stage": str(
+                            operation.get("operation_stage") or ""
+                        ),
+                    },
+                )
+            return
         window = schedule_window(
             self._now(),
             profile.schedule_start_time,
@@ -450,6 +485,14 @@ class GroundUnattendedSupervisor:
                 )
             elif command.action == "stop" and run is not None:
                 self._manual_start = False
+                if command.operation_id:
+                    self.repository.update_operation(
+                        command.operation_id,
+                        operation_state="RUNNING",
+                        operation_stage="STOP_REQUESTED",
+                        progress_percent=5,
+                        message="已提交停止请求",
+                    )
                 self.repository.update_run(
                     str(run["run_id"]),
                     state="STOPPING",
@@ -691,6 +734,7 @@ class GroundUnattendedSupervisor:
                         train_id=train.train_id,
                         train_no=train.train_no,
                         mr_id=endpoint.mr_id,
+                        mr_name=endpoint.mr_name,
                         mr_position_code=endpoint.endpoint,
                         device_id=endpoint.device_id,
                         ac_snapshot_id=train.ac_snapshot_id,
@@ -784,7 +828,11 @@ class GroundUnattendedSupervisor:
                 str(run["run_id"]),
                 profile,
                 current_trains,
-                paused=scheduling_paused or disk_warning,
+                paused=(
+                    scheduling_paused
+                    or disk_warning
+                    or not profile.deep_collection_master_enabled
+                ),
             )
         self.repository.update_run(
             str(run["run_id"]),
@@ -847,6 +895,41 @@ class GroundUnattendedSupervisor:
 
     def _finalize_run(self, run, *, archive: bool) -> None:
         run_id = str(run["run_id"])
+        operation = self.repository.latest_operation(
+            run_id=run_id, active_only=True
+        )
+        latest_operation = self.repository.latest_operation(run_id=run_id)
+        if (
+            operation is None
+            and latest_operation is not None
+            and latest_operation.get("operation_state") == "FAILED"
+            and str(run.get("requested_action") or "")
+            in {"stop", "stop_and_archive"}
+        ):
+            return
+        if operation is None:
+            now = self._now().isoformat(timespec="milliseconds")
+            operation = self.repository.save_operation(
+                {
+                    "operation_id": f"groundop_{uuid.uuid4().hex}",
+                    "site_id": self.site_id,
+                    "run_id": run_id,
+                    "operation_type": "STOP_AND_ARCHIVE" if archive else "STOP",
+                    "operation_state": "RUNNING",
+                    "operation_stage": "STOP_REQUESTED",
+                    "progress_percent": 5,
+                    "message": "正在执行无人值守运行收尾",
+                    "started_at": now,
+                    "updated_at": now,
+                }
+            )
+        operation_id = str(operation["operation_id"])
+        self._operation_progress(
+            operation_id,
+            stage="FINALIZING",
+            percent=15,
+            message="正在安全结束深度采集任务",
+        )
         self.repository.update_run(run_id, state="FINALIZING")
         if self.deep_scheduler is not None:
             active_profile = self._active_profile or self.repository.get_profile()
@@ -874,20 +957,127 @@ class GroundUnattendedSupervisor:
                     or "运行停止时本轮深度采集未覆盖全部可用 MR",
                     operations_json={},
                 )
-        self.fleet_ping.stop()
-        self.syslog_receiver.stop()
+        self._operation_progress(
+            operation_id,
+            stage="STOPPING_PING",
+            percent=25,
+            message="正在停止长 Ping",
+        )
+        ping_result = self.fleet_ping.stop()
+        if not bool(ping_result.get("success")):
+            self._fail_operation(
+                operation_id,
+                run_id,
+                code="FPING_STOP_TIMEOUT",
+                message="长 Ping worker 未在停止预算内退出",
+                result={"ping": ping_result},
+            )
+            return
+        self._operation_progress(
+            operation_id,
+            stage="STOPPING_SYSLOG",
+            percent=40,
+            message="正在停止 Syslog UDP 接收",
+            result={"ping": ping_result},
+        )
+        syslog_result = self.syslog_receiver.stop()
+        if not bool(syslog_result.get("success")):
+            self._fail_operation(
+                operation_id,
+                run_id,
+                code="SYSLOG_STOP_TIMEOUT",
+                message="Syslog 接收线程或队列未能安全停止",
+                result={"ping": ping_result, "syslog": syslog_result},
+            )
+            return
+        self._operation_progress(
+            operation_id,
+            stage="FLUSHING_QUEUE",
+            percent=50,
+            message="Syslog 接收队列已清空",
+            result={"ping": ping_result, "syslog": syslog_result},
+        )
+        self._operation_progress(
+            operation_id,
+            stage="CLOSING_FILES",
+            percent=55,
+            message="正在核对原始文件关闭状态",
+        )
+        recovered_file_count = recover_raw_files(
+            active_dir=self.paths.ground_unattended_active_dir(
+                self.site_id, str(run["run_date"])
+            ),
+            repository=self.repository,
+            run_id=run_id,
+        )
+        open_files = self.repository.list_open_raw_files(run_id)
+        if open_files:
+            self._fail_operation(
+                operation_id,
+                run_id,
+                code="RAW_FILES_STILL_OPEN",
+                message="仍有原始文件处于 OPEN 状态，停止流程未完成",
+                result={
+                    "ping": ping_result,
+                    "syslog": syslog_result,
+                    "open_file_ids": [
+                        str(row.get("file_id") or "") for row in open_files
+                    ],
+                },
+            )
+            return
         ended_at = self._now().isoformat(timespec="milliseconds")
+        result_summary: dict[str, Any] = {
+            "run_id": run_id,
+            "ping_sample_count": int(ping_result.get("sample_count") or 0),
+            "syslog_record_count": int(
+                syslog_result.get("received_count") or 0
+            ),
+            "closed_file_count": int(
+                syslog_result.get("closed_file_count") or 0
+            )
+            + int(ping_result.get("closed_file_count") or 0)
+            + recovered_file_count,
+            "queue_dropped_count": int(
+                syslog_result.get("dropped_count") or 0
+            ),
+            "unarchived_file_count": self.repository.count_unarchived_raw_files(
+                run_id
+            ),
+            "udp_port_released": bool(
+                syslog_result.get("udp_port_released")
+            ),
+            "fping_processes_exited": bool(
+                ping_result.get("fping_processes_exited")
+            ),
+        }
+        self._operation_progress(
+            operation_id,
+            stage="FINALIZING",
+            percent=60,
+            message="正在保存运行汇总",
+            result=result_summary,
+        )
         self.repository.update_run(
             run_id,
             state="ARCHIVING" if archive else "COMPLETED",
             actual_ended_at=ended_at,
-            ping_sample_count=self.fleet_ping.sample_count,
+            ping_sample_count=int(ping_result.get("sample_count") or 0),
         )
         archive_result = None
         if archive:
             archive_result = self.archive_service.archive_run(
                 run_id,
                 self._active_profile or self.repository.get_profile(),
+                progress_callback=lambda stage, percent, message, details: (
+                    self._operation_progress(
+                        operation_id,
+                        stage=stage,
+                        percent=percent,
+                        message=message,
+                        result=details,
+                    )
+                ),
             )
             self.repository.update_run(
                 run_id,
@@ -897,15 +1087,135 @@ class GroundUnattendedSupervisor:
                 else "GROUND_UNATTENDED_ARCHIVE_FAILED",
                 error_message="" if archive_result.success else archive_result.message,
             )
+            archive_row = self.repository.get_archive(archive_result.archive_id) or {}
+            result_summary.update(
+                {
+                    "archive_id": archive_result.archive_id,
+                    "archive_status": str(
+                        archive_row.get("archive_status") or ""
+                    ),
+                    "archive_relative_path": str(
+                        archive_row.get("relative_path") or ""
+                    ),
+                    "archive_size_bytes": int(
+                        archive_row.get("archive_size_bytes") or 0
+                    ),
+                    "archive_sha256": str(archive_row.get("sha256") or ""),
+                    "active_cleanup_pending": bool(
+                        archive_result.active_cleanup_pending
+                    ),
+                }
+            )
+            operation_completed_at = self._now().isoformat(
+                timespec="milliseconds"
+            )
+            if not archive_result.success:
+                self.repository.update_operation(
+                    operation_id,
+                    operation_state="FAILED",
+                    operation_stage="FAILED",
+                    progress_percent=100,
+                    message=archive_result.message,
+                    completed_at=operation_completed_at,
+                    failure_code="GROUND_UNATTENDED_ARCHIVE_FAILED",
+                    failure_reason=archive_result.message,
+                    result_summary=result_summary,
+                )
+            else:
+                self.repository.update_operation(
+                    operation_id,
+                    operation_state="COMPLETED",
+                    operation_stage="COMPLETED",
+                    progress_percent=100,
+                    message="停止并归档完成",
+                    completed_at=operation_completed_at,
+                    failure_code="",
+                    failure_reason="",
+                    result_summary=result_summary,
+                )
+        else:
+            self.repository.update_operation(
+                operation_id,
+                operation_state="COMPLETED",
+                operation_stage="COMPLETED",
+                progress_percent=100,
+                message="正常停止完成。本次运行未执行归档。",
+                completed_at=ended_at,
+                failure_code="",
+                failure_reason="",
+                result_summary=result_summary,
+            )
         self.repository.add_event(
             run_id=run_id,
             event_type="run_completed",
-            title="地面无人值守运行已正常停止",
+            severity=(
+                "warning"
+                if archive_result is not None and not archive_result.success
+                else "info"
+            ),
+            title="地面无人值守运行已停止",
             message=archive_result.message if archive_result else "",
         )
         self._active_profile = None
         self._manual_start = False
         self._last_valid_ping_targets = {}
+
+    def _operation_progress(
+        self,
+        operation_id: str,
+        *,
+        stage: str,
+        percent: int,
+        message: str,
+        result: dict[str, Any] | None = None,
+    ) -> None:
+        current = self.repository.get_operation(operation_id) or {}
+        summary = dict(current.get("result_summary") or {})
+        summary.update(result or {})
+        self.repository.update_operation(
+            operation_id,
+            operation_state="RUNNING",
+            operation_stage=stage,
+            progress_percent=percent,
+            message=message,
+            result_summary=summary,
+        )
+
+    def _fail_operation(
+        self,
+        operation_id: str,
+        run_id: str,
+        *,
+        code: str,
+        message: str,
+        result: dict[str, Any],
+    ) -> None:
+        completed_at = self._now().isoformat(timespec="milliseconds")
+        self.repository.update_operation(
+            operation_id,
+            operation_state="FAILED",
+            operation_stage="FAILED",
+            progress_percent=100,
+            message=message,
+            completed_at=completed_at,
+            failure_code=code,
+            failure_reason=message,
+            result_summary=result,
+        )
+        self.repository.update_run(
+            run_id,
+            state="ERROR",
+            error_code=code,
+            error_message=message,
+        )
+        self.repository.add_event(
+            run_id=run_id,
+            event_type="stop_failed",
+            severity="error",
+            title="无人值守停止流程失败",
+            message=message,
+            details={"operation_id": operation_id, "code": code, **result},
+        )
 
     def _shutdown_active_run(self) -> None:
         run = self.repository.get_active_run()
@@ -931,6 +1241,7 @@ class GroundUnattendedSupervisor:
             timeout_ms=profile.fleet_ping_timeout_ms,
             packet_size=profile.fleet_ping_packet_size,
             shard_size=profile.fleet_ping_shard_size,
+            warmup_seconds=profile.fleet_ping_warmup_seconds,
             correlation_tolerance_seconds=profile.ac_ping_correlation_tolerance_seconds,
             switch_before_seconds=profile.ap_switch_before_seconds,
             switch_after_seconds=profile.ap_switch_after_seconds,

@@ -54,7 +54,7 @@ class GroundUnattendedProfileDTO(ApiModel):
     schedule_end_time: str = Field(
         default="23:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$"
     )
-    timezone: str = Field(default="system", min_length=1, max_length=100)
+    timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=100)
     ac_poll_interval_seconds: int = Field(default=10, ge=3, le=300)
     stationary_exclusion_minutes: int = Field(default=10, ge=1, le=180)
     ac_stale_grace_seconds: int = Field(default=120, ge=0, le=3600)
@@ -65,10 +65,12 @@ class GroundUnattendedProfileDTO(ApiModel):
     max_active_mrs: int = Field(default=4, ge=1, le=16)
     max_starting_mrs: int = Field(default=2, ge=1, le=8)
     max_finalizing_mrs: int = Field(default=2, ge=1, le=8)
+    deep_collection_master_enabled: bool = True
     fleet_ping_interval_ms: int = Field(default=1000, ge=100, le=60_000)
     fleet_ping_timeout_ms: int = Field(default=4000, ge=100, le=60_000)
     fleet_ping_packet_size: int = Field(default=64, ge=1, le=65_507)
     fleet_ping_shard_size: int = Field(default=12, ge=2, le=32)
+    fleet_ping_warmup_seconds: int = Field(default=10, ge=0, le=300)
     udp_listen_host: str = Field(default="0.0.0.0", min_length=1, max_length=255)
     udp_listen_port: int = Field(default=514, ge=1, le=65_535)
     udp_queue_capacity: int = Field(default=20_000, ge=100, le=500_000)
@@ -154,7 +156,8 @@ class GroundUnattendedStatusDTO(ApiModel):
     actual_ended_at: str = ""
     schedule_start_time: str = "07:00"
     schedule_end_time: str = "23:00"
-    timezone: str = "system"
+    timezone: str = "Asia/Shanghai"
+    running_mode: Literal["STANDARD", "LIGHTWEIGHT"] = "STANDARD"
     next_start_at: str = ""
     next_end_at: str = ""
     profile_effective_at: str = "下一次调度周期"
@@ -365,10 +368,14 @@ class GroundPingTargetDTO(ApiModel):
     train_id: str = ""
     train_no: str = ""
     mr_id: str = ""
+    mr_name: str = ""
     mr_position_code: str = ""
     started_at: str = ""
     updated_at: str = ""
     shard_id: str = ""
+    raw_sample_count: int = 0
+    effective_sample_count: int = 0
+    warmup_ignored_count: int = 0
     sent_count: int = 0
     success_count: int = 0
     loss_count: int = 0
@@ -418,7 +425,11 @@ class GroundTimelineEventDTO(ApiModel):
     event_type: str
     severity: str = "info"
     train_id: str = ""
+    train_no: str = ""
+    train_name: str = ""
     mr_id: str = ""
+    mr_name: str = ""
+    mr_position_code: str = ""
     title: str = ""
     message: str = ""
     details: dict[str, object] = Field(default_factory=dict)
@@ -460,7 +471,106 @@ class GroundActionResponseDTO(ApiModel):
     accepted: bool = True
     state: GroundRunState
     run_id: str = ""
+    operation_id: str = ""
     message: str = ""
+
+
+class GroundOperationDTO(ApiModel):
+    operation_id: str
+    site_id: str
+    run_id: str
+    operation_type: Literal["STOP", "STOP_AND_ARCHIVE"]
+    operation_state: Literal["PENDING", "RUNNING", "COMPLETED", "FAILED"]
+    operation_stage: str
+    progress_percent: int = Field(default=0, ge=0, le=100)
+    message: str = ""
+    started_at: str
+    updated_at: str
+    completed_at: str = ""
+    failure_code: str = ""
+    failure_reason: str = ""
+    result_summary: dict[str, object] = Field(default_factory=dict)
+
+
+class GroundPingSampleDTO(ApiModel):
+    sample_id: str = ""
+    ts: str
+    target_ip: str
+    train_id: str = ""
+    train_no: str = ""
+    mr_id: str = ""
+    mr_name: str = ""
+    mr_position_code: str = ""
+    seq: int | None = None
+    ok: bool
+    rtt_ms: float | None = None
+    timeout_ms: int | None = None
+    packet_size: int | None = None
+    current_ap_identity: str = ""
+    current_ap_name: str = ""
+    current_ap_mac: str = ""
+    station: str = ""
+    section: str = ""
+    mileage: str = ""
+    rssi: int | None = None
+    ac_snapshot_id: int | None = None
+    ac_received_at: str = ""
+    position_quality: str = ""
+    ap_transition_context: str = ""
+    warmup_ignored: bool = False
+    target_activation_started_at: str = ""
+
+
+class GroundPingSamplePageDTO(ApiModel):
+    items: list[GroundPingSampleDTO] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 100
+    raw_sample_count: int = 0
+    effective_sample_count: int = 0
+    ignored_sample_count: int = 0
+
+
+class GroundPingSeriesDTO(ApiModel):
+    raw_sample_count: int = 0
+    effective_sample_count: int = 0
+    ignored_sample_count: int = 0
+    points: list[GroundPingSampleDTO] = Field(default_factory=list)
+    loss_windows: list[dict[str, object]] = Field(default_factory=list)
+    ap_transitions: list[dict[str, object]] = Field(default_factory=list)
+    position_segments: list[dict[str, object]] = Field(default_factory=list)
+
+
+class GroundSyslogRecordDTO(ApiModel):
+    receive_time: str
+    device_time: str = ""
+    source_ip: str = ""
+    source_port: int | None = None
+    hostname: str = ""
+    system_name: str = ""
+    facility: str = ""
+    severity: str = ""
+    train_id: str = ""
+    train_no: str = ""
+    device_uuid: str = ""
+    mr_name: str = ""
+    mr_role: str = ""
+    identity_status: str = ""
+    parse_status: str = ""
+    data_quality: str = ""
+    clock_offset_ms: float | None = None
+    raw_text: str = ""
+    global_receive_sequence: int | None = None
+    source_receive_sequence: int | None = None
+    raw_file_id: str = ""
+    raw_file_status: str = ""
+
+
+class GroundSyslogRecordPageDTO(ApiModel):
+    items: list[GroundSyslogRecordDTO] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 100
 
 
 class GroundArchiveDeleteRequestDTO(ApiModel):

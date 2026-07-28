@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Box, Delete, Download, FolderOpened, Refresh, SwitchButton, VideoPause, VideoPlay } from '@element-plus/icons-vue'
@@ -10,15 +10,21 @@ import {
   openGroundArchiveDirectory, pauseGroundRun, resumeGroundRun, saveGroundProfile, setGroundTrainPriority, startGroundRun,
   stopAndArchiveGroundRun, stopGroundRun, saveGroundTrainPolicy, syncGroundInventory,
   checkGroundUdpPort, listLocalIpv4Addresses, recommendLocalSourceIp,
+  getGroundPingSeries, getLatestGroundOperation, listGroundSyslogRecords,
 } from '../../api/groundUnattended'
+import GroundPingChart from '../../components/ground-unattended/GroundPingChart.vue'
 import { NcDataTable, type NcTableColumn } from '../../components/table'
 import { t } from '../../i18n/runtime'
 import { downloadBackendResource } from '../../platform/runtime'
 import type {
-  GroundArchive, GroundDeepCollection, GroundPingTarget, GroundProfile, GroundStatus,
-  GroundHealth, GroundTimelineEvent, GroundTrain,
+  GroundActionResponse, GroundArchive, GroundDeepCollection, GroundPingSeries, GroundPingTarget, GroundProfile, GroundStatus,
+  GroundHealth, GroundOperation, GroundSyslogRecord, GroundTimelineEvent, GroundTrain,
   LocalIpv4Address, SourceIpRecommendation, UdpPortCheck,
 } from '../../types/groundUnattended'
+import {
+  groundEventLabel, groundOperationStageLabel, groundRunModeLabel, groundSeverityLabel,
+  groundSourceLabel, groundStatusLabel, groundTransitionContextLabel,
+} from './groundUnattendedLabels'
 
 const activeTab = ref('overview')
 const router = useRouter()
@@ -33,6 +39,18 @@ const deepCollections = ref<GroundDeepCollection[]>([])
 const timeline = ref<GroundTimelineEvent[]>([])
 const archives = ref<GroundArchive[]>([])
 const health = ref<GroundHealth | null>(null)
+const currentOperation = ref<GroundOperation | null>(null)
+const pingSeries = ref<GroundPingSeries | null>(null)
+const selectedPingTarget = ref<GroundPingTarget | null>(null)
+const pingSeriesLoading = ref(false)
+const includeWarmup = ref(false)
+const pingRange = ref<'5m' | '30m' | '1h' | 'custom'>('30m')
+const pingCustomRange = ref<[Date, Date] | null>(null)
+const pingAutoRefresh = ref(true)
+const syslogRecords = ref<GroundSyslogRecord[]>([])
+const syslogTotal = ref(0)
+const syslogLoading = ref(false)
+const syslogFilter = reactive({ trainId: '', mrName: '', sourceIp: '', severity: '', keyword: '', page: 1, pageSize: 100 })
 const localIpv4Addresses = ref<LocalIpv4Address[]>([])
 const sourceRecommendation = ref<SourceIpRecommendation | null>(null)
 const udpPortCheck = ref<UdpPortCheck | null>(null)
@@ -44,11 +62,12 @@ const archiveDialog = ref(false)
 const trainDialog = ref(false)
 const trainFilter = ref('')
 const pingFilter = reactive({ query: '', endpoint: '', station: '', section: '', minLoss: 0 })
-const timelineFilter = reactive({ trainId: '', eventType: '' })
+const timelineFilter = reactive({ query: '', eventType: '' })
 let pollTimer: number | undefined
 let disposed = false
 
 const running = computed(() => Boolean(status.value && ['STARTING', 'RUNNING', 'PAUSED', 'STOPPING', 'FINALIZING', 'ARCHIVING'].includes(status.value.state)))
+const operationActive = computed(() => Boolean(currentOperation.value && ['PENDING', 'RUNNING'].includes(currentOperation.value.operation_state)))
 const filteredTrains = computed(() => {
   const needle = trainFilter.value.trim().toLocaleLowerCase()
   return needle ? trains.value.filter((row) => `${row.train_no} ${row.train_name} ${row.current_ap_name} ${row.station} ${row.section}`.toLocaleLowerCase().includes(needle)) : trains.value
@@ -62,6 +81,15 @@ const filteredPing = computed(() => pingTargets.value.filter((row) => {
     && row.loss_rate_percent >= pingFilter.minLoss
 }))
 const selectedTrainCollection = computed(() => deepCollections.value.find((row) => row.train_id === selectedTrain.value?.train_id) ?? null)
+const filteredTimeline = computed(() => {
+  const needle = timelineFilter.query.trim().toLocaleLowerCase()
+  if (!needle) return timeline.value
+  return timeline.value.filter((row) => (
+    `${row.train_no} ${row.train_name} ${row.mr_name} ${row.mr_position_code} ${row.title} ${row.message}`
+      .toLocaleLowerCase()
+      .includes(needle)
+  ))
+})
 const visibleIpv4Addresses = computed(() => localIpv4Addresses.value.filter((row) => showAllAddresses.value || !row.is_virtual))
 const localIpv4Values = computed(() => new Set(localIpv4Addresses.value.map((row) => row.ipv4)))
 const returnAddressIsLocal = computed(() => Boolean(profile.value?.syslog_server_ip && localIpv4Values.value.has(profile.value.syslog_server_ip)))
@@ -75,21 +103,21 @@ const locationStats = computed(() => ({
 
 const trainColumns: NcTableColumn<GroundTrain>[] = [
   { key: 'train_no', label: t('ground.train', '列车'), valueType: 'name', fixed: 'left' },
-  { key: 'eligibility_status', label: t('ground.eligibility', '正线判断'), valueType: 'status' },
-  { key: 'location_match_level', label: '匹配等级', valueType: 'status', width: 130 },
+  { key: 'eligibility_status', label: t('ground.eligibility', '正线判断'), valueType: 'status', displayValue: (row) => groundStatusLabel(row.eligibility_status) },
+  { key: 'location_match_level', label: '匹配等级', valueType: 'status', width: 130, displayValue: (row) => groundStatusLabel(row.location_match_level) },
   { key: 'exclusion_reason', label: t('ground.exclusion_reason', '排除原因'), valueType: 'description', minWidth: 220 },
   { key: 'raw_peer_ap_name', label: '原始 AP', valueType: 'name' },
   { key: 'resolved_ap_name', label: '解析后 AP', valueType: 'name' },
   { key: 'canonical_station_name', label: '规范站点', valueType: 'text' },
   { key: 'section', label: t('ground.section', '归属区间'), valueType: 'text' },
   { key: 'same_ap_duration_seconds', label: t('ground.same_ap_duration', '同 AP 停留'), valueType: 'duration', displayValue: (row) => duration(row.same_ap_duration_seconds) },
-  { key: 'ct_status', label: 'CT 在线', valueType: 'status', displayValue: (row) => endpoint(row, 'CT')?.online_status },
-  { key: 'cw_status', label: 'CW 在线', valueType: 'status', displayValue: (row) => endpoint(row, 'CW')?.online_status },
-  { key: 'ct_ping', label: 'CT Ping', valueType: 'status', displayValue: (row) => endpoint(row, 'CT')?.ping_active ? 'PINGING' : 'STOPPED' },
-  { key: 'cw_ping', label: 'CW Ping', valueType: 'status', displayValue: (row) => endpoint(row, 'CW')?.ping_active ? 'PINGING' : 'STOPPED' },
-  { key: 'coverage_status', label: t('ground.coverage', '今日深度采集'), valueType: 'status' },
-  { key: 'enabled', label: t('ground.enabled', '启用'), valueType: 'status', displayValue: (row) => row.enabled ? 'ENABLED' : 'DISABLED' },
-  { key: 'syslog', label: 'WMESH Syslog', valueType: 'status', displayValue: (row) => `${endpoint(row, 'CT')?.syslog_status || 'WAITING'} / ${endpoint(row, 'CW')?.syslog_status || 'WAITING'}` },
+  { key: 'ct_status', label: 'CT 在线', valueType: 'status', displayValue: (row) => groundStatusLabel(endpoint(row, 'CT')?.online_status) },
+  { key: 'cw_status', label: 'CW 在线', valueType: 'status', displayValue: (row) => groundStatusLabel(endpoint(row, 'CW')?.online_status) },
+  { key: 'ct_ping', label: 'CT Ping', valueType: 'status', displayValue: (row) => groundStatusLabel(endpoint(row, 'CT')?.ping_active ? 'PINGING' : 'STOPPED') },
+  { key: 'cw_ping', label: 'CW Ping', valueType: 'status', displayValue: (row) => groundStatusLabel(endpoint(row, 'CW')?.ping_active ? 'PINGING' : 'STOPPED') },
+  { key: 'coverage_status', label: t('ground.coverage', '今日深度采集'), valueType: 'status', displayValue: (row) => groundStatusLabel(row.coverage_status) },
+  { key: 'enabled', label: t('ground.enabled', '启用'), valueType: 'status', displayValue: (row) => groundStatusLabel(row.enabled ? 'ENABLED' : 'DISABLED') },
+  { key: 'syslog', label: 'WMESH Syslog', valueType: 'status', displayValue: (row) => `${groundStatusLabel(endpoint(row, 'CT')?.syslog_status || 'WAITING')} / ${groundStatusLabel(endpoint(row, 'CW')?.syslog_status || 'WAITING')}` },
   { key: 'updated_at', label: t('ground.updated_at', '最近更新时间'), valueType: 'datetime' },
   { key: 'actions', label: t('ground.actions', '操作'), valueType: 'actions', fixed: 'right', width: 154, hideable: false },
 ]
@@ -98,7 +126,8 @@ const pingColumns: NcTableColumn<GroundPingTarget>[] = [
   { key: 'mr_position_code', label: t('ground.mr_endpoint', 'MR 端点'), valueType: 'status' },
   { key: 'target_ip', label: t('ground.management_ip', '管理 IP'), valueType: 'ip' },
   { key: 'started_at', label: t('ground.started_at', '开始时间'), valueType: 'datetime' },
-  { key: 'sent_count', label: t('ground.sent', '发送'), valueType: 'number' },
+  { key: 'raw_sample_count', label: '原始发送', valueType: 'number' },
+  { key: 'effective_sample_count', label: '有效发送', valueType: 'number' },
   { key: 'success_count', label: t('ground.success', '成功'), valueType: 'number' },
   { key: 'loss_count', label: t('ground.loss', '丢失'), valueType: 'number' },
   { key: 'loss_rate_percent', label: t('ground.loss_rate', '丢包率'), valueType: 'percentage', displayValue: (row) => `${row.loss_rate_percent.toFixed(2)}%` },
@@ -109,30 +138,31 @@ const pingColumns: NcTableColumn<GroundPingTarget>[] = [
   { key: 'station', label: t('ground.station', '站点'), valueType: 'text' },
   { key: 'section', label: t('ground.section', '区间'), valueType: 'text' },
   { key: 'updated_at', label: t('ground.updated_at', '更新时间'), valueType: 'datetime' },
+  { key: 'actions', label: '操作', valueType: 'actions', fixed: 'right', width: 110, hideable: false },
 ]
 const deepColumns: NcTableColumn<GroundDeepCollection>[] = [
   { key: 'train_no', label: t('ground.train', '列车'), valueType: 'name', fixed: 'left' },
-  { key: 'status', label: t('ground.status', '完成状态'), valueType: 'status' },
+  { key: 'status', label: t('ground.status', '完成状态'), valueType: 'status', displayValue: (row) => groundStatusLabel(row.status) },
   { key: 'queue_position', label: t('ground.queue_position', '队列位置'), valueType: 'number' },
   { key: 'scheduling_priority', label: t('ground.scheduling_priority', '调度优先级'), valueType: 'number' },
   { key: 'selection_reason', label: t('ground.selection_reason', '选择原因'), valueType: 'description', minWidth: 220 },
   { key: 'attempt_count', label: t('ground.attempts', '采集次数'), valueType: 'number' },
   { key: 'covered_rounds', label: t('ground.covered_rounds', '完成轮次'), valueType: 'number' },
   { key: 'started_at', label: t('ground.started_at', '采集开始'), valueType: 'datetime' },
-  { key: 'valid_duration_minutes', label: t('ground.valid_duration', '有效时长'), valueType: 'duration', displayValue: (row) => `${row.valid_duration_minutes.toFixed(1)} min` },
-  { key: 'ct_session_id', label: 'CT Session', valueType: 'text' },
-  { key: 'cw_session_id', label: 'CW Session', valueType: 'text' },
+  { key: 'valid_duration_minutes', label: t('ground.valid_duration', '有效时长'), valueType: 'duration', displayValue: (row) => `${row.valid_duration_minutes.toFixed(1)} 分钟` },
+  { key: 'ct_session_id', label: 'CT 会话', valueType: 'text' },
+  { key: 'cw_session_id', label: 'CW 会话', valueType: 'text' },
   { key: 'failure_reason', label: t('ground.failure_reason', '失败原因'), valueType: 'error', minWidth: 220 },
   { key: 'updated_at', label: t('ground.updated_at', '更新时间'), valueType: 'datetime' },
 ]
 const timelineColumns: NcTableColumn<GroundTimelineEvent>[] = [
   { key: 'ts', label: t('ground.time', '时间'), valueType: 'datetime', fixed: 'left' },
-  { key: 'event_type', label: t('ground.event_type', '事件类型'), valueType: 'status' },
-  { key: 'train_id', label: t('ground.train', '列车'), valueType: 'name' },
-  { key: 'mr_id', label: t('ground.mr', 'MR'), valueType: 'text' },
+  { key: 'event_type', label: t('ground.event_type', '事件类型'), valueType: 'status', displayValue: (row) => groundEventLabel(row.event_type) },
+  { key: 'train_no', label: t('ground.train', '列车'), valueType: 'name', displayValue: (row) => row.train_no ? `列车 ${row.train_no}` : row.train_name || '未知列车' },
+  { key: 'mr_name', label: t('ground.mr', 'MR 设备'), valueType: 'text' },
   { key: 'title', label: t('ground.event', '事件'), valueType: 'name' },
   { key: 'message', label: t('ground.message', '说明'), valueType: 'description', minWidth: 260 },
-  { key: 'severity', label: t('ground.severity', '级别'), valueType: 'status' },
+  { key: 'severity', label: t('ground.severity', '级别'), valueType: 'status', displayValue: (row) => groundSeverityLabel(row.severity) },
 ]
 const archiveColumns: NcTableColumn<GroundArchive>[] = [
   { key: 'run_date', label: t('ground.run_date', '运行日期'), valueType: 'datetime', fixed: 'left' },
@@ -142,20 +172,34 @@ const archiveColumns: NcTableColumn<GroundArchive>[] = [
   { key: 'ping_target_count', label: t('ground.ping_targets', 'Ping 目标'), valueType: 'number' },
   { key: 'ping_sample_count', label: t('ground.ping_samples', 'Ping 样本'), valueType: 'number' },
   { key: 'covered_train_count', label: t('ground.covered_trains', '深度覆盖'), valueType: 'number' },
-  { key: 'complete_session_count', label: t('ground.complete_sessions', '完整 Session'), valueType: 'number' },
-  { key: 'partial_session_count', label: t('ground.partial_sessions', '部分 Session'), valueType: 'number' },
+  { key: 'complete_session_count', label: t('ground.complete_sessions', '完整会话'), valueType: 'number' },
+  { key: 'partial_session_count', label: t('ground.partial_sessions', '部分会话'), valueType: 'number' },
   { key: 'archive_size_bytes', label: t('ground.archive_size', '归档大小'), valueType: 'number', displayValue: (row) => bytes(row.archive_size_bytes) },
-  { key: 'archive_status', label: t('ground.archive_status', '归档状态'), valueType: 'status' },
+  { key: 'archive_status', label: t('ground.archive_status', '归档状态'), valueType: 'status', displayValue: (row) => groundStatusLabel(row.archive_status) },
   { key: 'retention_until', label: t('ground.retention_until', '保留截止'), valueType: 'datetime' },
   { key: 'actions', label: t('ground.actions', '操作'), valueType: 'actions', fixed: 'right', width: 190, hideable: false },
+]
+const syslogColumns: NcTableColumn<GroundSyslogRecord>[] = [
+  { key: 'receive_time', label: '接收时间', valueType: 'datetime', fixed: 'left', width: 180 },
+  { key: 'device_time', label: '设备时间', valueType: 'datetime', width: 180 },
+  { key: 'train_no', label: '列车', valueType: 'name', displayValue: (row) => row.train_no || '未识别' },
+  { key: 'mr_name', label: 'MR 设备', valueType: 'text', displayValue: (row) => row.mr_name || '未知 MR' },
+  { key: 'mr_role', label: '端点', valueType: 'status' },
+  { key: 'source_ip', label: '来源 IP', valueType: 'ip' },
+  { key: 'system_name', label: '设备系统名', valueType: 'text' },
+  { key: 'severity', label: '级别', valueType: 'status', displayValue: (row) => groundSeverityLabel(row.severity) },
+  { key: 'identity_status', label: '身份状态', valueType: 'status', displayValue: (row) => groundStatusLabel(row.identity_status) },
+  { key: 'clock_offset_ms', label: '时间差', valueType: 'number', displayValue: (row) => metric(row.clock_offset_ms, 'ms') },
+  { key: 'raw_file_status', label: '文件状态', valueType: 'status', displayValue: (row) => groundStatusLabel(row.raw_file_status) },
+  { key: 'raw_text', label: '原始内容', valueType: 'description', minWidth: 420 },
 ]
 
 async function loadAll(silent = false): Promise<void> {
   if (!silent) loading.value = true
   try {
-    const [nextStatus, nextProfile, nextTrains, nextPing, nextDeep, nextTimeline, nextArchives, nextHealth] = await Promise.all([
+    const [nextStatus, nextProfile, nextTrains, nextPing, nextDeep, nextTimeline, nextArchives, nextHealth, nextOperation] = await Promise.all([
       getGroundStatus(), getGroundProfile(), listGroundTrains(), listGroundPingTargets(),
-      listGroundDeepCollections(), listGroundTimeline(timelineFilter.trainId, timelineFilter.eventType), listGroundArchives(), getGroundHealth(),
+      listGroundDeepCollections(), listGroundTimeline('', timelineFilter.eventType), listGroundArchives(), getGroundHealth(), getLatestGroundOperation(),
     ])
     if (disposed) return
     status.value = nextStatus
@@ -166,6 +210,7 @@ async function loadAll(silent = false): Promise<void> {
     timeline.value = nextTimeline.items
     archives.value = nextArchives.items
     health.value = nextHealth
+    currentOperation.value = nextOperation
   } catch (reason) {
     if (!silent) ElMessage.error(errorText(reason, t('ground.load_failed', '地面无人值守数据加载失败')))
   } finally {
@@ -176,6 +221,16 @@ function schedulePoll(): void {
   if (pollTimer !== undefined) window.clearTimeout(pollTimer)
   pollTimer = window.setTimeout(async () => {
     if (!document.hidden) await loadAll(true)
+    if (!document.hidden && activeTab.value === 'syslog') await loadSyslog()
+    if (
+      !document.hidden
+      && activeTab.value === 'ping'
+      && selectedPingTarget.value
+      && pingAutoRefresh.value
+      && !pingSeriesLoading.value
+    ) {
+      await showPingSeries(selectedPingTarget.value, true)
+    }
     if (!disposed) schedulePoll()
   }, 5000)
 }
@@ -244,9 +299,70 @@ async function checkUdpPort(): Promise<void> {
 }
 async function runAction(key: string, callback: () => Promise<unknown>): Promise<void> {
   action.value = key
-  try { await callback(); await loadAll(true) }
+  try {
+    const result = await callback()
+    if (isActionResponse(result)) {
+      ElMessage.success(result.message)
+      if (result.operation_id) currentOperation.value = await getLatestGroundOperation()
+    }
+    await loadAll(true)
+  }
   catch (reason) { ElMessage.error(errorText(reason, t('ground.action_failed', '无人值守操作失败'))) }
   finally { action.value = '' }
+}
+async function submitStop(archive: boolean): Promise<void> {
+  const message = archive
+    ? '将先正常停止并关闭全部活动文件，再创建正式归档。仅在 ZIP 生成和完整性校验成功后清理已归档 active 数据；归档失败时保留原始数据。'
+    : '将停止新的调度、长 Ping 和 UDP 接收，清空内存队列并关闭原始文件，保存汇总但不执行归档。'
+  await ElMessageBox.confirm(message, archive ? '确认停止并归档' : '确认正常停止', {
+    type: 'warning',
+    confirmButtonText: archive ? '停止并归档' : '正常停止',
+    cancelButtonText: '取消',
+  })
+  await runAction(archive ? 'archive' : 'stop', archive ? stopAndArchiveGroundRun : stopGroundRun)
+}
+async function showPingSeries(row: GroundPingTarget, silent = false): Promise<void> {
+  const range = pingTimeRange()
+  if (pingRange.value === 'custom' && !range.start_time) {
+    if (!silent) ElMessage.warning('请选择自定义开始和结束时间')
+    return
+  }
+  selectedPingTarget.value = row
+  if (!silent) pingSeriesLoading.value = true
+  try {
+    pingSeries.value = await getGroundPingSeries({
+      run_id: status.value?.run_id || undefined,
+      target_ip: row.target_ip,
+      include_warmup: includeWarmup.value,
+      max_points: 3000,
+      ...range,
+    })
+  } catch (reason) {
+    if (!silent) ElMessage.error(errorText(reason, '长 Ping 逐包数据读取失败'))
+  } finally {
+    if (!silent) pingSeriesLoading.value = false
+  }
+}
+async function loadSyslog(): Promise<void> {
+  syslogLoading.value = true
+  try {
+    const result = await listGroundSyslogRecords({
+      run_id: status.value?.run_id || undefined,
+      train_id: syslogFilter.trainId,
+      mr_name: syslogFilter.mrName,
+      source_ip: syslogFilter.sourceIp,
+      severity: syslogFilter.severity,
+      keyword: syslogFilter.keyword,
+      page: syslogFilter.page,
+      page_size: syslogFilter.pageSize,
+    })
+    syslogRecords.value = result.items
+    syslogTotal.value = result.total
+  } catch (reason) {
+    ElMessage.error(errorText(reason, 'Syslog 日志读取失败'))
+  } finally {
+    syslogLoading.value = false
+  }
 }
 async function togglePriority(row: GroundTrain): Promise<void> {
   try { await setGroundTrainPriority(row.train_id, !row.priority); await loadAll(true) }
@@ -288,9 +404,11 @@ function showTrainPing(row: GroundTrain): void {
   pingFilter.query = row.train_no || row.train_id
   activeTab.value = 'ping'
   trainDialog.value = false
+  const target = pingTargets.value.find((item) => item.train_id === row.train_id)
+  if (target) void showPingSeries(target)
 }
 async function showTrainTimeline(row: GroundTrain): Promise<void> {
-  timelineFilter.trainId = row.train_id
+  timelineFilter.query = row.train_no || row.train_name
   activeTab.value = 'timeline'
   trainDialog.value = false
   await loadAll(true)
@@ -318,13 +436,31 @@ async function openArchiveDirectory(): Promise<void> {
   catch (reason) { ElMessage.error(errorText(reason, t('ground.archive_open_failed', '归档目录打开失败'))) }
 }
 function endpoint(row: GroundTrain, code: 'CT' | 'CW') { return row.endpoints.find((item) => item.endpoint === code) }
-function duration(seconds: number): string { const minutes = Math.floor(seconds / 60); return `${minutes}m ${seconds % 60}s` }
+function pingTimeRange(): { start_time?: string; end_time?: string } {
+  const end = new Date()
+  if (pingRange.value === 'custom') {
+    const [startValue, endValue] = pingCustomRange.value || []
+    return startValue && endValue
+      ? { start_time: startValue.toISOString(), end_time: endValue.toISOString() }
+      : {}
+  }
+  const durationMs = pingRange.value === '5m' ? 5 * 60_000 : pingRange.value === '1h' ? 60 * 60_000 : 30 * 60_000
+  return {
+    start_time: new Date(end.getTime() - durationMs).toISOString(),
+    end_time: end.toISOString(),
+  }
+}
+function duration(seconds: number): string { const minutes = Math.floor(seconds / 60); return `${minutes} 分 ${seconds % 60} 秒` }
 function metric(value: number | null, unit: string): string { return value == null ? '—' : `${value.toFixed(2)} ${unit}` }
 function bytes(value: number): string { if (!value) return '0 B'; const units = ['B', 'KB', 'MB', 'GB', 'TB']; const index = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024))); return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}` }
 function errorText(reason: unknown, fallback: string): string { return reason instanceof Error ? reason.message : fallback }
+function isActionResponse(value: unknown): value is GroundActionResponse {
+  return Boolean(value && typeof value === 'object' && 'accepted' in value && 'message' in value)
+}
 function statusType(value: string): 'success' | 'warning' | 'danger' | 'info' | 'primary' { if (['RUNNING', 'COVERED', 'READY', 'FRESH', 'MAINLINE'].includes(value)) return 'success'; if (['PAUSED', 'PARTIAL', 'STALE', 'MAINLINE_STATIONARY', 'WARNING'].includes(value)) return 'warning'; if (['ERROR', 'FAILED', 'CRITICAL'].includes(value)) return 'danger'; return 'info' }
 
 onMounted(() => { void loadAll(); void loadLocalAddresses(); schedulePoll() })
+watch(activeTab, (value) => { if (value === 'syslog' && !syslogRecords.value.length) void loadSyslog() })
 onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.clearTimeout(pollTimer) })
 </script>
 
@@ -342,21 +478,37 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
         <el-button :icon="VideoPlay" type="primary" :loading="action === 'start'" :disabled="running || !profile?.enabled" @click="runAction('start', startGroundRun)">{{ t('ground.start_now', '立即开始') }}</el-button>
         <el-button :icon="VideoPause" :loading="action === 'pause'" :disabled="status?.state !== 'RUNNING'" @click="runAction('pause', pauseGroundRun)">{{ t('ground.pause', '暂停调度') }}</el-button>
         <el-button :icon="VideoPlay" :loading="action === 'resume'" :disabled="status?.state !== 'PAUSED'" @click="runAction('resume', resumeGroundRun)">{{ t('ground.resume', '继续调度') }}</el-button>
-        <el-button :icon="SwitchButton" :loading="action === 'stop'" :disabled="!running" @click="runAction('stop', stopGroundRun)">{{ t('ground.stop', '正常停止') }}</el-button>
-        <el-button :icon="Box" type="danger" plain :loading="action === 'archive'" :disabled="!running" @click="runAction('archive', stopAndArchiveGroundRun)">{{ t('ground.stop_archive', '停止并归档') }}</el-button>
+        <el-button :icon="SwitchButton" :loading="action === 'stop'" :disabled="!running || operationActive" @click="submitStop(false)">{{ t('ground.stop', '正常停止') }}</el-button>
+        <el-button :icon="Box" type="danger" plain :loading="action === 'archive'" :disabled="!running || operationActive" @click="submitStop(true)">{{ t('ground.stop_archive', '停止并归档') }}</el-button>
       </div>
     </header>
+
+    <section v-if="currentOperation" class="operation-band" :class="`operation-${currentOperation.operation_state.toLocaleLowerCase()}`">
+      <div class="operation-heading">
+        <div>
+          <b>{{ currentOperation.operation_type === 'STOP_AND_ARCHIVE' ? '停止并归档' : '正常停止' }}</b>
+          <span>{{ groundOperationStageLabel(currentOperation.operation_stage) }}</span>
+        </div>
+        <el-tag :type="currentOperation.operation_state === 'FAILED' ? 'danger' : currentOperation.operation_state === 'COMPLETED' ? 'success' : 'warning'">
+          {{ groundStatusLabel(currentOperation.operation_state) }}
+        </el-tag>
+      </div>
+      <el-progress :percentage="currentOperation.progress_percent" :status="currentOperation.operation_state === 'FAILED' ? 'exception' : currentOperation.operation_state === 'COMPLETED' ? 'success' : undefined" />
+      <p>{{ currentOperation.message }}<span v-if="currentOperation.failure_reason">：{{ currentOperation.failure_reason }}</span></p>
+      <small>操作编号 {{ currentOperation.operation_id }} · 最后更新 {{ currentOperation.updated_at }}</small>
+    </section>
 
     <el-tabs v-model="activeTab" class="ground-tabs">
       <el-tab-pane :label="t('ground.overview', '运行概览')" name="overview">
         <section class="overview-band">
           <div class="status-line">
             <span>{{ t('ground.current_site', '当前局点') }} <b>{{ status?.site_id || '—' }}</b></span>
-            <el-tag :type="statusType(status?.state || '')">{{ status?.state || 'DISABLED' }}</el-tag>
+            <el-tag :type="statusType(status?.state || '')">{{ groundStatusLabel(status?.state || 'DISABLED') }}</el-tag>
             <el-switch v-if="profile" v-model="profile.enabled" :active-text="t('ground.enabled', '启用无人值守')" @change="saveProfile()" />
             <span class="muted">{{ t('ground.pause_note', '暂停调度时 AC 轮询与长 Ping 继续') }}</span>
           </div>
           <div class="metric-grid">
+            <article><span>当前运行模式</span><strong>{{ groundRunModeLabel(status?.running_mode) }}</strong><small>{{ status?.running_mode === 'LIGHTWEIGHT' ? '不启动 SSH 深度 MR 采集' : '包含深度 MR 采集' }}</small></article>
             <article><span>{{ t('ground.window', '配置运行时间') }}</span><strong>{{ status?.schedule_start_time }} - {{ status?.schedule_end_time }}</strong></article>
             <article><span>{{ t('ground.next_start', '下一次启动') }}</span><strong>{{ status?.next_start_at || '—' }}</strong></article>
             <article><span>{{ t('ground.next_end', '下一次结束') }}</span><strong>{{ status?.next_end_at || '—' }}</strong></article>
@@ -365,8 +517,8 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
             <article><span>{{ t('ground.ping_mrs', 'Ping 中 MR') }}</span><strong>{{ status?.ping_target_count ?? 0 }}</strong></article>
             <article><span>{{ t('ground.active_deep', '当前深度采集车辆') }}</span><strong>{{ status?.active_deep_train_count ?? 0 }}</strong></article>
             <article><span>{{ t('ground.covered_today', '今日已完成 / 未完成') }}</span><strong>{{ status?.covered_train_count ?? 0 }} / {{ status?.incomplete_train_count ?? 0 }}</strong></article>
-            <article><span>{{ t('ground.disk_usage', '当前占用 / 磁盘剩余') }}</span><strong>{{ bytes(status?.disk_used_bytes ?? 0) }} / {{ bytes(status?.disk_free_bytes ?? 0) }}</strong><el-tag size="small" :type="statusType(status?.disk_status || '')">{{ status?.disk_status }}</el-tag></article>
-            <article><span>{{ t('ground.latest_archive', '最近归档') }}</span><strong>{{ status?.latest_archive_status || '—' }}</strong><small>{{ status?.latest_archive_message }}</small></article>
+            <article><span>{{ t('ground.disk_usage', '当前占用 / 磁盘剩余') }}</span><strong>{{ bytes(status?.disk_used_bytes ?? 0) }} / {{ bytes(status?.disk_free_bytes ?? 0) }}</strong><el-tag size="small" :type="statusType(status?.disk_status || '')">{{ groundStatusLabel(status?.disk_status) }}</el-tag></article>
+            <article><span>{{ t('ground.latest_archive', '最近归档') }}</span><strong>{{ status?.latest_archive_status ? groundStatusLabel(status.latest_archive_status) : '—' }}</strong><small>{{ status?.latest_archive_message }}</small></article>
             <article><span>Syslog 活跃 / 配置异常</span><strong>{{ status?.syslog_active_mr_count ?? 0 }} / {{ status?.config_abnormal_count ?? 0 }}</strong></article>
             <article><span>UDP 队列 / 丢弃</span><strong>{{ health?.udp_queue_length ?? 0 }} / {{ health?.udp_dropped_count ?? 0 }}</strong><small>{{ health?.udp_listen_address || '未监听' }}</small></article>
           </div>
@@ -382,8 +534,8 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
           <span>车辆段 / 停车场 / 存车线排除 <b>{{ locationStats.excluded }}</b></span>
         </div>
         <div class="table-frame"><NcDataTable :data="filteredTrains" :columns="trainColumns" table-id="ground-trains" route-key="rail-ground-unattended" row-key="train_id" compact>
-          <template #cell-eligibility_status="{ row }"><el-tag size="small" :type="statusType(row.eligibility_status)">{{ row.eligibility_status }}</el-tag></template>
-          <template #cell-coverage_status="{ row }"><el-tag size="small" :type="statusType(row.coverage_status)">{{ row.coverage_status }}</el-tag></template>
+          <template #cell-eligibility_status="{ row }"><el-tag size="small" :type="statusType(row.eligibility_status)">{{ groundStatusLabel(row.eligibility_status) }}</el-tag></template>
+          <template #cell-coverage_status="{ row }"><el-tag size="small" :type="statusType(row.coverage_status)">{{ groundStatusLabel(row.coverage_status) }}</el-tag></template>
           <template #cell-actions="{ row }"><div class="row-actions"><el-button size="small" text type="primary" @click="showTrain(row)">{{ t('common.view', '查看') }}</el-button><el-button size="small" text type="primary" @click="togglePriority(row)">{{ row.priority ? t('ground.unpin', '取消置顶') : t('ground.pin', '置顶') }}</el-button><el-button size="small" text @click="updatePolicy(row, { enabled: !row.enabled })">{{ row.enabled ? '停用' : '启用' }}</el-button></div></template>
         </NcDataTable></div>
       </el-tab-pane>
@@ -396,19 +548,95 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
           <el-input v-model="pingFilter.section" clearable :placeholder="t('ground.section', '区间')" />
           <span>{{ t('ground.min_loss', '最低丢包率') }}</span><el-input-number v-model="pingFilter.minLoss" :min="0" :max="100" :controls="false" />
         </div>
-        <div class="table-frame"><NcDataTable :data="filteredPing" :columns="pingColumns" table-id="ground-ping" route-key="rail-ground-unattended" row-key="target_ip" compact /></div>
+        <div class="table-frame ping-table"><NcDataTable :data="filteredPing" :columns="pingColumns" table-id="ground-ping" route-key="rail-ground-unattended" row-key="target_ip" compact>
+          <template #cell-actions="{ row }"><el-button size="small" text type="primary" @click="showPingSeries(row)">查看曲线</el-button></template>
+        </NcDataTable></div>
+        <section v-if="selectedPingTarget" v-loading="pingSeriesLoading" class="ping-detail">
+          <div class="detail-heading">
+            <div><h2>{{ selectedPingTarget.train_no }} · {{ selectedPingTarget.mr_name || selectedPingTarget.mr_position_code }} · {{ selectedPingTarget.target_ip }}</h2><p>逐包位置使用采样时快照，丢包点在降采样时优先保留。</p></div>
+          </div>
+          <div class="toolbar">
+            <el-select v-model="pingRange" aria-label="长 Ping 时间范围" @change="showPingSeries(selectedPingTarget)">
+              <el-option label="最近 5 分钟" value="5m" />
+              <el-option label="最近 30 分钟" value="30m" />
+              <el-option label="最近 1 小时" value="1h" />
+              <el-option label="自定义时间" value="custom" />
+            </el-select>
+            <el-date-picker
+              v-if="pingRange === 'custom'"
+              v-model="pingCustomRange"
+              type="datetimerange"
+              start-placeholder="开始时间"
+              end-placeholder="结束时间"
+              @change="showPingSeries(selectedPingTarget)"
+            />
+            <el-checkbox v-model="includeWarmup" @change="showPingSeries(selectedPingTarget)">显示预热样本</el-checkbox>
+            <el-checkbox v-model="pingAutoRefresh">自动刷新</el-checkbox>
+            <el-button :icon="Refresh" @click="showPingSeries(selectedPingTarget)">刷新曲线</el-button>
+          </div>
+          <div class="coverage-strip">
+            <span>原始样本 <b>{{ pingSeries?.raw_sample_count ?? 0 }}</b></span>
+            <span>有效样本 <b>{{ pingSeries?.effective_sample_count ?? 0 }}</b></span>
+            <span>预热忽略 <b>{{ pingSeries?.ignored_sample_count ?? 0 }}</b></span>
+            <span>丢包区段 <b>{{ pingSeries?.loss_windows.length ?? 0 }}</b></span>
+          </div>
+          <GroundPingChart :series="pingSeries" />
+          <h3>丢包区段</h3>
+          <el-table :data="pingSeries?.loss_windows || []" size="small" max-height="260" empty-text="暂无丢包区段">
+            <el-table-column prop="started_at" label="开始时间" min-width="180" />
+            <el-table-column prop="ended_at" label="结束时间" min-width="180" />
+            <el-table-column prop="duration_seconds" label="持续时间（秒）" width="130" />
+            <el-table-column prop="loss_count" label="丢包数" width="90" />
+            <el-table-column prop="mr_name" label="MR" min-width="150" />
+            <el-table-column prop="current_ap_name" label="AP" min-width="150" />
+            <el-table-column prop="station" label="站点" min-width="130" />
+            <el-table-column prop="section" label="区间" min-width="130" />
+            <el-table-column prop="ap_transition_context" label="AP 切换前后" min-width="140"><template #default="{ row }">{{ groundTransitionContextLabel(row.ap_transition_context) }}</template></el-table-column>
+            <el-table-column prop="position_quality" label="位置质量" min-width="110"><template #default="{ row }">{{ groundStatusLabel(row.position_quality) }}</template></el-table-column>
+          </el-table>
+        </section>
       </el-tab-pane>
 
       <el-tab-pane :label="t('ground.deep_collection', '深度采集')" name="deep">
-        <div class="coverage-strip"><span v-for="value in ['COLLECTING','WAITING','NOT_SEEN','PARTIAL','COVERED','EXCLUDED']" :key="value"><b>{{ deepCollections.filter((row) => row.status === value).length }}</b>{{ value }}</span></div>
+        <el-alert v-if="profile && !profile.deep_collection_master_enabled" title="当前为轻量模式：深度采集已关闭，历史记录仍可查看。" type="info" :closable="false" show-icon />
+        <div class="coverage-strip"><span v-for="value in ['COLLECTING','WAITING','NOT_SEEN','PARTIAL','COVERED','EXCLUDED']" :key="value"><b>{{ deepCollections.filter((row) => row.status === value).length }}</b>{{ groundStatusLabel(value) }}</span></div>
         <div class="table-frame"><NcDataTable :data="deepCollections" :columns="deepColumns" table-id="ground-deep" route-key="rail-ground-unattended" row-key="train_id" compact>
-          <template #cell-status="{ row }"><el-tag size="small" :type="statusType(row.status)">{{ row.status }}</el-tag></template>
+          <template #cell-status="{ row }"><el-tag size="small" :type="statusType(row.status)">{{ groundStatusLabel(row.status) }}</el-tag></template>
         </NcDataTable></div>
       </el-tab-pane>
 
       <el-tab-pane :label="t('ground.timeline', '时间轴')" name="timeline">
-        <div class="toolbar"><el-input v-model="timelineFilter.trainId" clearable :placeholder="t('ground.train_id', '列车 ID')" /><el-input v-model="timelineFilter.eventType" clearable :placeholder="t('ground.event_type', '事件类型')" /><el-button :icon="Refresh" @click="loadAll()">{{ t('common.query', '查询') }}</el-button></div>
-        <div class="table-frame"><NcDataTable :data="timeline" :columns="timelineColumns" table-id="ground-timeline" route-key="rail-ground-unattended" row-key="event_id" compact /></div>
+        <div class="toolbar">
+          <el-input v-model="timelineFilter.query" clearable placeholder="设备名称、列车号或 CT/CW" />
+          <el-select v-model="timelineFilter.eventType" clearable placeholder="事件类型">
+            <el-option v-for="value in ['ap_transition', 'mesh_linkup', 'mesh_linkdown', 'mesh_activelink_switch', 'ifnet_phy_updown', 'ping_loss_pattern', 'run_started', 'run_completed', 'stop_failed']" :key="value" :label="groundEventLabel(value)" :value="value" />
+          </el-select>
+          <el-button :icon="Refresh" @click="loadAll()">{{ t('common.query', '查询') }}</el-button>
+        </div>
+        <div class="table-frame"><NcDataTable :data="filteredTimeline" :columns="timelineColumns" table-id="ground-timeline" route-key="rail-ground-unattended" row-key="event_id" compact /></div>
+      </el-tab-pane>
+
+      <el-tab-pane label="Syslog 日志" name="syslog">
+        <div class="toolbar">
+          <el-input v-model="syslogFilter.trainId" clearable placeholder="列车 ID" />
+          <el-input v-model="syslogFilter.mrName" clearable placeholder="MR 设备名称" />
+          <el-input v-model="syslogFilter.sourceIp" clearable placeholder="来源 IP" />
+          <el-select v-model="syslogFilter.severity" clearable placeholder="严重级别">
+            <el-option label="提示" value="info" /><el-option label="警告" value="warning" /><el-option label="错误" value="error" />
+          </el-select>
+          <el-input v-model="syslogFilter.keyword" clearable placeholder="原始内容关键字" />
+          <el-button :icon="Refresh" :loading="syslogLoading" @click="syslogFilter.page = 1; loadSyslog()">查询</el-button>
+        </div>
+        <div class="table-frame"><NcDataTable :data="syslogRecords" :columns="syslogColumns" table-id="ground-syslog" route-key="rail-ground-unattended" row-key="global_receive_sequence" compact /></div>
+        <el-pagination
+          v-model:current-page="syslogFilter.page"
+          v-model:page-size="syslogFilter.pageSize"
+          :total="syslogTotal"
+          :page-sizes="[50, 100, 200, 500]"
+          layout="total, sizes, prev, pager, next"
+          @current-change="loadSyslog"
+          @size-change="syslogFilter.page = 1; loadSyslog()"
+        />
       </el-tab-pane>
 
       <el-tab-pane label="系统健康" name="health">
@@ -425,7 +653,7 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
       <el-tab-pane :label="t('ground.archives', '历史归档')" name="archives">
         <div class="toolbar"><el-button :icon="FolderOpened" @click="openArchiveDirectory">{{ t('ground.open_archive_directory', '打开归档目录') }}</el-button></div>
         <div class="table-frame"><NcDataTable :data="archives" :columns="archiveColumns" table-id="ground-archives" route-key="rail-ground-unattended" row-key="archive_id" compact>
-          <template #cell-archive_status="{ row }"><el-tag size="small" :type="statusType(row.archive_status)">{{ row.archive_status }}</el-tag></template>
+          <template #cell-archive_status="{ row }"><el-tag size="small" :type="statusType(row.archive_status)">{{ groundStatusLabel(row.archive_status) }}</el-tag></template>
           <template #cell-actions="{ row }"><div class="row-actions"><el-button size="small" text type="primary" @click="showArchive(row)">{{ t('common.view', '查看') }}</el-button><el-button :icon="Download" size="small" text circle :title="t('common.download', '下载汇总')" @click="downloadArchiveSummary(row)" /><el-button :icon="Delete" size="small" text type="danger" circle :title="t('common.delete', '删除')" @click="removeArchive(row)" /></div></template>
         </NcDataTable></div>
       </el-tab-pane>
@@ -435,34 +663,45 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
           <section><h2>{{ t('ground.schedule', '运行时间与 AC') }}</h2><div class="form-grid">
             <el-form-item :label="t('ground.start_time', '开始时间')"><el-time-select v-model="profile.schedule_start_time" start="00:00" step="00:05" end="23:55" /></el-form-item>
             <el-form-item :label="t('ground.end_time', '结束时间')"><el-time-select v-model="profile.schedule_end_time" start="00:00" step="00:05" end="23:55" /></el-form-item>
-            <el-form-item :label="t('ground.timezone', '时区')"><el-input v-model="profile.timezone" /></el-form-item>
+            <el-form-item :label="t('ground.timezone', '时区')">
+              <el-select v-model="profile.timezone" filterable allow-create>
+                <el-option label="北京时间（Asia/Shanghai）" value="Asia/Shanghai" />
+                <el-option label="协调世界时（UTC）" value="UTC" />
+              </el-select>
+            </el-form-item>
             <el-form-item :label="t('ground.ac_poll', 'AC 轮询间隔（秒）')"><el-input-number v-model="profile.ac_poll_interval_seconds" :min="3" :max="300" /></el-form-item>
             <el-form-item :label="t('ground.stationary', '同 AP 静止阈值（分钟）')"><el-input-number v-model="profile.stationary_exclusion_minutes" :min="1" :max="180" /></el-form-item>
             <el-form-item :label="t('ground.ac_grace', 'AC 异常 Ping 宽限（秒）')"><el-input-number v-model="profile.ac_stale_grace_seconds" :min="0" :max="3600" /></el-form-item>
             <el-form-item :label="t('ground.correlation_tolerance', 'AC/Ping 关联偏差（秒）')"><el-input-number v-model="profile.ac_ping_correlation_tolerance_seconds" :min="1" :max="300" /></el-form-item>
             <el-form-item :label="t('ground.switch_window', 'AP 切换前 / 后窗口（秒）')"><div class="inline-numbers"><el-input-number v-model="profile.ap_switch_before_seconds" :min="0" :max="60" /><el-input-number v-model="profile.ap_switch_after_seconds" :min="0" :max="60" /></div></el-form-item>
           </div></section>
-          <section><h2>{{ t('ground.deep_budget', '深度采集预算') }}</h2><div class="form-grid">
-            <el-form-item :label="t('ground.max_trains', '最大活动列车')"><el-input-number v-model="profile.max_active_trains" :min="1" :max="8" /></el-form-item>
-            <el-form-item :label="t('ground.max_mrs', '最大活动 MR')"><el-input-number v-model="profile.max_active_mrs" :min="1" :max="16" /></el-form-item>
-            <el-form-item :label="t('ground.max_starting', '最大启动中 MR')"><el-input-number v-model="profile.max_starting_mrs" :min="1" :max="8" /></el-form-item>
-            <el-form-item :label="t('ground.max_finalizing', '最大最终化 MR')"><el-input-number v-model="profile.max_finalizing_mrs" :min="1" :max="8" /></el-form-item>
-            <el-form-item :label="t('ground.minimum_duration', '最低有效时长（分钟）')"><el-input-number v-model="profile.minimum_valid_collection_minutes" :min="1" :max="720" /></el-form-item>
-            <el-form-item :label="t('ground.preferred_duration', '建议采集时长（分钟）')"><el-input-number v-model="profile.preferred_collection_minutes" :min="1" :max="720" /></el-form-item>
-            <el-form-item :label="t('ground.maximum_duration', '最大采集时长（分钟）')"><el-input-number v-model="profile.maximum_collection_minutes" :min="1" :max="1440" /></el-form-item>
-            <el-form-item :label="t('ground.start_jitter', '启动错峰（秒）')"><el-input-number v-model="profile.start_jitter_seconds" :min="0" :max="60" /></el-form-item>
-            <el-form-item :label="t('ground.start_batch', '每批启动 MR 数')"><el-input-number v-model="profile.start_batch_size" :min="1" :max="4" /></el-form-item>
+          <section><h2>{{ t('ground.deep_budget', '深度采集预算') }}</h2>
+            <div class="mode-switch">
+              <el-switch v-model="profile.deep_collection_master_enabled" active-text="启用深度采集" />
+              <span>{{ profile.deep_collection_master_enabled ? '标准模式：运行 AC 轮询、长 Ping、Syslog 和深度 MR 采集。' : '轻量模式：仅运行 AC 轮询、长 Ping、Syslog 和位置关联，不启动 SSH 深度 MR 采集。' }}</span>
+            </div>
+            <div class="form-grid" :class="{ 'budget-disabled': !profile.deep_collection_master_enabled }">
+            <el-form-item :label="t('ground.max_trains', '最大活动列车')"><el-input-number v-model="profile.max_active_trains" :disabled="!profile.deep_collection_master_enabled" :min="1" :max="8" /></el-form-item>
+            <el-form-item :label="t('ground.max_mrs', '最大活动 MR')"><el-input-number v-model="profile.max_active_mrs" :disabled="!profile.deep_collection_master_enabled" :min="1" :max="16" /></el-form-item>
+            <el-form-item :label="t('ground.max_starting', '最大启动中 MR')"><el-input-number v-model="profile.max_starting_mrs" :disabled="!profile.deep_collection_master_enabled" :min="1" :max="8" /></el-form-item>
+            <el-form-item :label="t('ground.max_finalizing', '最大最终化 MR')"><el-input-number v-model="profile.max_finalizing_mrs" :disabled="!profile.deep_collection_master_enabled" :min="1" :max="8" /></el-form-item>
+            <el-form-item :label="t('ground.minimum_duration', '最低有效时长（分钟）')"><el-input-number v-model="profile.minimum_valid_collection_minutes" :disabled="!profile.deep_collection_master_enabled" :min="1" :max="720" /></el-form-item>
+            <el-form-item :label="t('ground.preferred_duration', '建议采集时长（分钟）')"><el-input-number v-model="profile.preferred_collection_minutes" :disabled="!profile.deep_collection_master_enabled" :min="1" :max="720" /></el-form-item>
+            <el-form-item :label="t('ground.maximum_duration', '最大采集时长（分钟）')"><el-input-number v-model="profile.maximum_collection_minutes" :disabled="!profile.deep_collection_master_enabled" :min="1" :max="1440" /></el-form-item>
+            <el-form-item :label="t('ground.start_jitter', '启动错峰（秒）')"><el-input-number v-model="profile.start_jitter_seconds" :disabled="!profile.deep_collection_master_enabled" :min="0" :max="60" /></el-form-item>
+            <el-form-item :label="t('ground.start_batch', '每批启动 MR 数')"><el-input-number v-model="profile.start_batch_size" :disabled="!profile.deep_collection_master_enabled" :min="1" :max="4" /></el-form-item>
           </div></section>
           <section><h2>{{ t('ground.ping_and_storage', '长 Ping 与存储') }}</h2><div class="form-grid">
             <el-form-item :label="t('ground.ping_interval', 'Ping 间隔（ms）')"><el-input-number v-model="profile.fleet_ping_interval_ms" :min="100" :max="60000" /></el-form-item>
             <el-form-item :label="t('ground.ping_timeout', 'Ping 超时（ms）')"><el-input-number v-model="profile.fleet_ping_timeout_ms" :min="100" :max="60000" /></el-form-item>
             <el-form-item :label="t('ground.packet_size', '包大小（字节）')"><el-input-number v-model="profile.fleet_ping_packet_size" :min="1" :max="65507" /></el-form-item>
             <el-form-item :label="t('ground.shard_size', '每个 fping 分片目标数')"><el-input-number v-model="profile.fleet_ping_shard_size" :min="2" :max="32" /></el-form-item>
+            <el-form-item label="启动预热忽略时间（秒）"><el-input-number v-model="profile.fleet_ping_warmup_seconds" :min="0" :max="300" /></el-form-item>
             <el-form-item :label="t('ground.detail_retention', '详细数据保留天数')"><el-select v-model="profile.detail_retention_days"><el-option v-for="day in [7,15,30,60,90,180]" :key="day" :label="`${day} 天`" :value="day" /></el-select></el-form-item>
             <el-form-item :label="t('ground.summary_retention', '汇总保留天数')"><el-input-number v-model="profile.summary_retention_days" :min="profile.detail_retention_days" :max="3650" /></el-form-item>
             <el-form-item :label="t('ground.warning_space', '空间预警阈值（GB）')"><el-input-number v-model="profile.storage_warning_free_gb" :min="0.1" :max="1024" /></el-form-item>
             <el-form-item :label="t('ground.critical_space', '严重空间阈值（GB）')"><el-input-number v-model="profile.storage_critical_free_gb" :min="0.1" :max="1024" /></el-form-item>
-          </div><p class="muted">{{ t('ground.storage_path', '存储路径：当前局点 / files / rail_transit / ground_unattended。深度 Session ZIP 仍保存在既有 Online MR 目录，每日归档只保存引用。') }}</p></section>
+          </div><p class="muted">{{ t('ground.storage_path', '存储路径：当前局点 / files / rail_transit / ground_unattended。深度会话 ZIP 仍保存在既有 Online MR 目录，每日归档只保存引用。') }}</p></section>
           <section><h2>UDP Syslog 与上电检查</h2>
             <el-alert title="本机监听地址只控制 NetConsole 在哪些网卡接收 UDP；MR 日志回传地址会用于 info-center loghost。监听 0.0.0.0 时仍必须明确选择一个具体回传地址。" type="info" :closable="false" show-icon />
             <div class="network-actions">
@@ -509,11 +748,11 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
     <el-dialog v-model="archiveDialog" :title="t('ground.archive_summary', '无人值守归档汇总')" width="min(720px, 92vw)">
       <el-descriptions v-if="selectedArchive" :column="2" border>
         <el-descriptions-item :label="t('ground.run_date', '运行日期')">{{ selectedArchive.run_date }}</el-descriptions-item>
-        <el-descriptions-item :label="t('ground.archive_status', '归档状态')">{{ selectedArchive.archive_status }}</el-descriptions-item>
+        <el-descriptions-item :label="t('ground.archive_status', '归档状态')">{{ groundStatusLabel(selectedArchive.archive_status) }}</el-descriptions-item>
         <el-descriptions-item :label="t('ground.ping_samples', 'Ping 样本')">{{ selectedArchive.ping_sample_count }}</el-descriptions-item>
         <el-descriptions-item :label="t('ground.covered_trains', '覆盖列车')">{{ selectedArchive.covered_train_count }}</el-descriptions-item>
-        <el-descriptions-item :label="t('ground.complete_sessions', '完整 Session')">{{ selectedArchive.complete_session_count }}</el-descriptions-item>
-        <el-descriptions-item :label="t('ground.partial_sessions', '部分 Session')">{{ selectedArchive.partial_session_count }}</el-descriptions-item>
+        <el-descriptions-item :label="t('ground.complete_sessions', '完整会话')">{{ selectedArchive.complete_session_count }}</el-descriptions-item>
+        <el-descriptions-item :label="t('ground.partial_sessions', '部分会话')">{{ selectedArchive.partial_session_count }}</el-descriptions-item>
         <el-descriptions-item :label="t('ground.archive_size', '归档大小')">{{ bytes(selectedArchive.archive_size_bytes) }}</el-descriptions-item>
         <el-descriptions-item :label="t('ground.retention_until', '保留截止')">{{ selectedArchive.retention_until }}</el-descriptions-item>
       </el-descriptions>
@@ -523,9 +762,9 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
       <template v-if="selectedTrain">
         <el-descriptions :column="2" border>
           <el-descriptions-item :label="t('ground.train', '列车')">{{ selectedTrain.train_no || selectedTrain.train_name }}</el-descriptions-item>
-          <el-descriptions-item :label="t('ground.eligibility', '正线判断')"><el-tag :type="statusType(selectedTrain.eligibility_status)">{{ selectedTrain.eligibility_status }}</el-tag></el-descriptions-item>
+          <el-descriptions-item :label="t('ground.eligibility', '正线判断')"><el-tag :type="statusType(selectedTrain.eligibility_status)">{{ groundStatusLabel(selectedTrain.eligibility_status) }}</el-tag></el-descriptions-item>
           <el-descriptions-item :label="t('ground.current_ap', '当前 AP')">{{ selectedTrain.current_ap_name || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="位置匹配等级">{{ selectedTrain.location_match_level || 'UNMATCHED' }}</el-descriptions-item>
+          <el-descriptions-item label="位置匹配等级">{{ groundStatusLabel(selectedTrain.location_match_level) }}</el-descriptions-item>
           <el-descriptions-item label="原始 AP 名称">{{ selectedTrain.raw_peer_ap_name || '—' }}</el-descriptions-item>
           <el-descriptions-item label="原始 AP MAC">{{ selectedTrain.raw_peer_ap_mac || '—' }}</el-descriptions-item>
           <el-descriptions-item label="解析后 AP">{{ selectedTrain.resolved_ap_name || '—' }}</el-descriptions-item>
@@ -533,22 +772,22 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
           <el-descriptions-item label="匹配依据" :span="2">{{ selectedTrain.location_match_reason || '—' }}</el-descriptions-item>
           <el-descriptions-item :label="t('ground.same_ap_duration', '同 AP 停留')">{{ duration(selectedTrain.same_ap_duration_seconds) }}</el-descriptions-item>
           <el-descriptions-item :label="t('ground.exclusion_reason', '排除原因')" :span="2">{{ selectedTrain.exclusion_reason || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="CT Session">{{ selectedTrainCollection?.ct_session_id || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="CW Session">{{ selectedTrainCollection?.cw_session_id || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="CT Syslog">{{ endpoint(selectedTrain, 'CT')?.syslog_status || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="CW Syslog">{{ endpoint(selectedTrain, 'CW')?.syslog_status || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="CT 会话">{{ selectedTrainCollection?.ct_session_id || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="CW 会话">{{ selectedTrainCollection?.cw_session_id || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="CT Syslog">{{ groundStatusLabel(endpoint(selectedTrain, 'CT')?.syslog_status) }}</el-descriptions-item>
+          <el-descriptions-item label="CW Syslog">{{ groundStatusLabel(endpoint(selectedTrain, 'CW')?.syslog_status) }}</el-descriptions-item>
         </el-descriptions>
         <section v-for="mrEndpoint in selectedTrain.endpoints" :key="`loghost:${mrEndpoint.mr_id || mrEndpoint.endpoint}`" class="loghost-section">
           <div class="network-status">
             <b>{{ mrEndpoint.endpoint }} · 设备现有日志主机</b>
             <span>NetConsole 管理目标：{{ mrEndpoint.managed_target_ip || profile?.syslog_server_ip || '—' }}:{{ mrEndpoint.managed_target_port || profile?.syslog_server_port || '—' }}</span>
-            <el-tag v-for="item in mrEndpoint.managed_target_statuses" :key="item" :type="item === 'TARGET_PRESENT' ? 'success' : item === 'TARGET_PORT_CONFLICT' ? 'danger' : 'info'">{{ item }}</el-tag>
+            <el-tag v-for="item in mrEndpoint.managed_target_statuses" :key="item" :type="item === 'TARGET_PRESENT' ? 'success' : item === 'TARGET_PORT_CONFLICT' ? 'danger' : 'info'">{{ groundStatusLabel(item) }}</el-tag>
           </div>
           <el-table :data="mrEndpoint.configured_log_hosts" size="small" empty-text="尚未执行配置检查">
             <el-table-column prop="ip" label="IP" min-width="130" />
             <el-table-column prop="port" label="端口" width="90" />
             <el-table-column prop="facility" label="Facility" width="100" />
-            <el-table-column label="归属" min-width="160"><template #default="{ row }">{{ row.is_managed_target ? 'NetConsole 管理目标' : '设备已有配置' }}</template></el-table-column>
+            <el-table-column label="归属" min-width="160"><template #default="{ row }">{{ groundSourceLabel(row.source) }}</template></el-table-column>
             <el-table-column label="判断" min-width="170"><template #default="{ row }">{{ row.same_ip_different_port ? '同 IP 端口冲突' : row.is_managed_target ? '目标一致' : '保留，不处理' }}</template></el-table-column>
           </el-table>
           <el-alert
@@ -576,8 +815,8 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
           <el-button @click="showTrainPing(selectedTrain)">{{ t('ground.view_ping', '查看长 Ping') }}</el-button>
           <el-button @click="showTrainTimeline(selectedTrain)">{{ t('ground.view_timeline', '查看事件时间轴') }}</el-button>
           <el-button :disabled="!running" @click="checkConfigs(endpoint(selectedTrain, 'CT')?.mr_id || '')">检查 CT 配置</el-button>
-          <el-button :disabled="!selectedTrainCollection?.ct_session_id" @click="openDeepSession(selectedTrainCollection?.ct_session_id || '')">{{ t('ground.open_ct_session', '打开 CT Session') }}</el-button>
-          <el-button :disabled="!selectedTrainCollection?.cw_session_id" @click="openDeepSession(selectedTrainCollection?.cw_session_id || '')">{{ t('ground.open_cw_session', '打开 CW Session') }}</el-button>
+          <el-button :disabled="!selectedTrainCollection?.ct_session_id" @click="openDeepSession(selectedTrainCollection?.ct_session_id || '')">{{ t('ground.open_ct_session', '打开 CT 会话') }}</el-button>
+          <el-button :disabled="!selectedTrainCollection?.cw_session_id" @click="openDeepSession(selectedTrainCollection?.cw_session_id || '')">{{ t('ground.open_cw_session', '打开 CW 会话') }}</el-button>
         </div>
       </template>
     </el-dialog>
@@ -585,5 +824,5 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
 </template>
 
 <style scoped>
-.ground-page{display:flex;flex-direction:column;gap:12px;min-width:0;min-height:0}.page-heading,.heading-actions,.status-line,.toolbar,.coverage-strip,.row-actions,.form-actions,.inline-numbers,.dialog-actions,.network-actions,.network-status,.boot-evidence{display:flex;align-items:center;gap:10px}.page-heading{justify-content:space-between;flex-wrap:wrap}.page-heading h1{margin:2px 0 0;font-size:24px;letter-spacing:0}.eyebrow{margin:0;color:var(--el-color-primary);font-size:12px;font-weight:700;letter-spacing:0}.heading-actions,.toolbar,.dialog-actions,.network-actions,.network-status,.boot-evidence{flex-wrap:wrap}.ground-tabs{min-width:0}.overview-band{padding:2px 0}.status-line{min-height:42px;flex-wrap:wrap;border-bottom:1px solid var(--el-border-color-lighter)}.metric-grid,.health-grid{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:1px;margin-top:12px;background:var(--el-border-color-lighter);border:1px solid var(--el-border-color-lighter)}.metric-grid article,.health-grid article{min-width:0;padding:12px;background:var(--el-bg-color)}.metric-grid span,.metric-grid small,.health-grid span,.health-grid small{display:block;color:var(--el-text-color-secondary);font-size:12px}.metric-grid strong,.health-grid strong{display:block;min-height:24px;margin:6px 0 3px;font-size:18px;letter-spacing:0;overflow-wrap:anywhere}.toolbar{min-height:42px}.toolbar .el-input{width:210px}.toolbar .el-select{width:130px}.toolbar .el-input-number{width:110px}.table-frame{height:clamp(360px,calc(100vh - 310px),680px);min-width:0;overflow:hidden;border-top:1px solid var(--el-border-color-lighter)}.coverage-strip{flex-wrap:wrap;margin-bottom:8px}.coverage-strip span{display:flex;align-items:center;gap:5px;padding:5px 8px;background:var(--el-fill-color-light);border-radius:4px;color:var(--el-text-color-secondary);font-size:12px}.coverage-strip b{color:var(--el-text-color-primary);font-size:16px}.settings-form{display:flex;flex-direction:column;gap:18px;max-width:1180px}.settings-form section{padding-bottom:16px;border-bottom:1px solid var(--el-border-color-lighter)}.settings-form h2{margin:0 0 12px;font-size:16px;letter-spacing:0}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:0 16px}.form-grid :deep(.el-input-number),.form-grid :deep(.el-select),.form-grid :deep(.el-input){width:100%}.inline-numbers{width:100%}.priority-grid{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:8px}.muted{color:var(--el-text-color-secondary);font-size:12px}.network-actions{margin:12px 0}.network-status{margin:10px 0;padding:8px;background:var(--el-fill-color-light)}.network-ok{color:var(--el-color-success);font-size:12px}.network-error{color:var(--el-color-danger);font-size:12px}.loghost-section{margin-top:14px;padding-top:8px;border-top:1px solid var(--el-border-color-lighter)}.boot-evidence{margin:8px 0;color:var(--el-text-color-secondary);font-size:12px}.form-actions{position:sticky;bottom:0;padding:10px 0;background:var(--el-bg-color)}.dialog-actions{justify-content:flex-end;margin-top:14px}@media(max-width:1300px){.metric-grid,.health-grid{grid-template-columns:repeat(3,minmax(150px,1fr))}.form-grid{grid-template-columns:repeat(3,minmax(170px,1fr))}.priority-grid{grid-template-columns:repeat(4,minmax(110px,1fr))}}@media(max-width:900px){.page-heading{align-items:flex-start;flex-direction:column}.metric-grid,.health-grid{grid-template-columns:repeat(2,minmax(140px,1fr))}.form-grid{grid-template-columns:repeat(2,minmax(150px,1fr))}.priority-grid{grid-template-columns:repeat(3,minmax(100px,1fr))}.table-frame{height:clamp(340px,calc(100vh - 350px),620px)}}@media(max-width:620px){.metric-grid,.health-grid,.form-grid{grid-template-columns:1fr}.priority-grid{grid-template-columns:repeat(2,minmax(100px,1fr))}.heading-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}.heading-actions .el-button{margin:0}.toolbar .el-input,.toolbar .el-select{width:100%}}
+.ground-page{display:flex;flex-direction:column;gap:12px;min-width:0;min-height:0}.page-heading,.heading-actions,.status-line,.toolbar,.coverage-strip,.row-actions,.form-actions,.inline-numbers,.dialog-actions,.network-actions,.network-status,.boot-evidence,.operation-heading,.detail-heading,.mode-switch{display:flex;align-items:center;gap:10px}.page-heading,.operation-heading,.detail-heading{justify-content:space-between;flex-wrap:wrap}.page-heading h1{margin:2px 0 0;font-size:24px;letter-spacing:0}.eyebrow{margin:0;color:var(--el-color-primary);font-size:12px;font-weight:700;letter-spacing:0}.heading-actions,.toolbar,.dialog-actions,.network-actions,.network-status,.boot-evidence{flex-wrap:wrap}.operation-band{padding:12px 14px;border:1px solid var(--el-border-color);border-left:4px solid var(--el-color-warning);background:var(--el-fill-color-light)}.operation-band.operation-completed{border-left-color:var(--el-color-success)}.operation-band.operation-failed{border-left-color:var(--el-color-danger)}.operation-heading>div{display:flex;gap:12px;align-items:center}.operation-band p{margin:8px 0;color:var(--el-text-color-primary)}.operation-band small{color:var(--el-text-color-secondary)}.ground-tabs{min-width:0}.overview-band{padding:2px 0}.status-line{min-height:42px;flex-wrap:wrap;border-bottom:1px solid var(--el-border-color-lighter)}.metric-grid,.health-grid{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:1px;margin-top:12px;background:var(--el-border-color-lighter);border:1px solid var(--el-border-color-lighter)}.metric-grid article,.health-grid article{min-width:0;padding:12px;background:var(--el-bg-color)}.metric-grid span,.metric-grid small,.health-grid span,.health-grid small{display:block;color:var(--el-text-color-secondary);font-size:12px}.metric-grid strong,.health-grid strong{display:block;min-height:24px;margin:6px 0 3px;font-size:18px;letter-spacing:0;overflow-wrap:anywhere}.toolbar{min-height:42px}.toolbar .el-input{width:210px}.toolbar .el-select{width:130px}.toolbar .el-input-number{width:110px}.table-frame{height:clamp(360px,calc(100vh - 310px),680px);min-width:0;overflow:hidden;border-top:1px solid var(--el-border-color-lighter)}.ping-table{height:360px}.ping-detail{margin-top:16px;padding-top:14px;border-top:1px solid var(--el-border-color-lighter)}.ping-detail h2,.ping-detail h3{margin:0 0 8px}.ping-detail p{margin:0;color:var(--el-text-color-secondary);font-size:12px}.coverage-strip{flex-wrap:wrap;margin-bottom:8px}.coverage-strip span{display:flex;align-items:center;gap:5px;padding:5px 8px;background:var(--el-fill-color-light);border-radius:4px;color:var(--el-text-color-secondary);font-size:12px}.coverage-strip b{color:var(--el-text-color-primary);font-size:16px}.settings-form{display:flex;flex-direction:column;gap:18px;max-width:1180px}.settings-form section{padding-bottom:16px;border-bottom:1px solid var(--el-border-color-lighter)}.settings-form h2{margin:0 0 12px;font-size:16px;letter-spacing:0}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:0 16px}.form-grid :deep(.el-input-number),.form-grid :deep(.el-select),.form-grid :deep(.el-input){width:100%}.mode-switch{align-items:flex-start;margin-bottom:12px}.mode-switch span{color:var(--el-text-color-secondary);font-size:12px}.budget-disabled{opacity:.66}.inline-numbers{width:100%}.priority-grid{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:8px}.muted{color:var(--el-text-color-secondary);font-size:12px}.network-actions{margin:12px 0}.network-status{margin:10px 0;padding:8px;background:var(--el-fill-color-light)}.network-ok{color:var(--el-color-success);font-size:12px}.network-error{color:var(--el-color-danger);font-size:12px}.loghost-section{margin-top:14px;padding-top:8px;border-top:1px solid var(--el-border-color-lighter)}.boot-evidence{margin:8px 0;color:var(--el-text-color-secondary);font-size:12px}.form-actions{position:sticky;bottom:0;padding:10px 0;background:var(--el-bg-color)}.dialog-actions{justify-content:flex-end;margin-top:14px}@media(max-width:1300px){.metric-grid,.health-grid{grid-template-columns:repeat(3,minmax(150px,1fr))}.form-grid{grid-template-columns:repeat(3,minmax(170px,1fr))}.priority-grid{grid-template-columns:repeat(4,minmax(110px,1fr))}}@media(max-width:900px){.page-heading{align-items:flex-start;flex-direction:column}.metric-grid,.health-grid{grid-template-columns:repeat(2,minmax(140px,1fr))}.form-grid{grid-template-columns:repeat(2,minmax(150px,1fr))}.priority-grid{grid-template-columns:repeat(3,minmax(100px,1fr))}.table-frame{height:clamp(340px,calc(100vh - 350px),620px)}.ping-table{height:340px}}@media(max-width:620px){.metric-grid,.health-grid,.form-grid{grid-template-columns:1fr}.priority-grid{grid-template-columns:repeat(2,minmax(100px,1fr))}.heading-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}.heading-actions .el-button{margin:0}.toolbar .el-input,.toolbar .el-select{width:100%}}
 </style>

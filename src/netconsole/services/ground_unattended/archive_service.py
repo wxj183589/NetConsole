@@ -8,7 +8,7 @@ import zipfile
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.ground_unattended import GroundUnattendedProfileDTO
@@ -42,6 +42,9 @@ class GroundUnattendedArchiveService:
         self,
         run_id: str,
         profile: GroundUnattendedProfileDTO,
+        progress_callback: (
+            Callable[[str, int, str, dict[str, Any]], None] | None
+        ) = None,
     ) -> ArchiveResult:
         run = self.repository.get_run(run_id)
         if run is None:
@@ -55,6 +58,13 @@ class GroundUnattendedArchiveService:
         temp_path = final_path.with_name(f".{final_path.name}.{archive_id}.tmp")
         existing = self.repository.get_archive_by_run(run_id)
         if existing and existing.get("archive_status") == "READY":
+            _progress(
+                progress_callback,
+                "ARCHIVE_VERIFYING",
+                80,
+                "正在校验已有正式归档",
+                {"archive_id": str(existing["archive_id"])},
+            )
             existing_path = self._archive_path(existing)
             try:
                 self._validate_archive_path(existing_path)
@@ -142,6 +152,13 @@ class GroundUnattendedArchiveService:
                         }
                     )
                 self.apply_retention(profile)
+                _progress(
+                    progress_callback,
+                    "ARCHIVE_READY",
+                    98,
+                    "已有正式归档校验完成",
+                    {"archive_id": str(existing["archive_id"])},
+                )
                 return ArchiveResult(
                     str(existing["archive_id"]),
                     True,
@@ -152,7 +169,14 @@ class GroundUnattendedArchiveService:
         retention_until = (
             date.fromisoformat(run_date) + timedelta(days=profile.detail_retention_days)
         ).isoformat()
-        summary = self._build_summary(run_id, run)
+        summary = self._build_summary(run_id, run, profile)
+        _progress(
+            progress_callback,
+            "ARCHIVE_PREPARING",
+            60,
+            "正在准备每日汇总和清单",
+            {"archive_id": archive_id},
+        )
         self.repository.upsert_archive(
             {
                 "archive_id": archive_id,
@@ -180,11 +204,39 @@ class GroundUnattendedArchiveService:
             manifest = self._build_manifest(active_dir, run, summary)
             self._atomic_json(active_dir / "manifest.json", manifest)
             temp_path.unlink(missing_ok=True)
+            _progress(
+                progress_callback,
+                "ARCHIVE_WRITING",
+                70,
+                "正在写入临时 ZIP",
+                {"archive_id": archive_id, "archive_name": final_path.name},
+            )
             self._write_zip(active_dir, temp_path)
+            _progress(
+                progress_callback,
+                "ARCHIVE_VERIFYING",
+                82,
+                "正在校验 ZIP 完整性",
+                {
+                    "archive_id": archive_id,
+                    "written_bytes": temp_path.stat().st_size,
+                },
+            )
             self._verify_zip(temp_path)
             os.replace(temp_path, final_path)
             archive_sha = _sha256(final_path)
             manifest_sha = _sha256(active_dir / "manifest.json")
+            _progress(
+                progress_callback,
+                "ARCHIVE_REGISTERING",
+                90,
+                "正在登记正式归档",
+                {
+                    "archive_id": archive_id,
+                    "archive_name": final_path.name,
+                    "written_bytes": final_path.stat().st_size,
+                },
+            )
             self.repository.upsert_archive(
                 {
                     "archive_id": archive_id,
@@ -213,6 +265,13 @@ class GroundUnattendedArchiveService:
                 ).as_posix(),
             )
             cleanup_pending = False
+            _progress(
+                progress_callback,
+                "CLEANING_ARCHIVED_ACTIVE",
+                95,
+                "正在按安全策略清理已归档 active 数据",
+                {"archive_id": archive_id},
+            )
             try:
                 self._safe_remove_active_dir(active_dir)
             except OSError:
@@ -241,6 +300,18 @@ class GroundUnattendedArchiveService:
                 }
             )
             self.apply_retention(profile)
+            _progress(
+                progress_callback,
+                "ARCHIVE_READY",
+                98,
+                "正式归档已生成并通过校验",
+                {
+                    "archive_id": archive_id,
+                    "archive_name": final_path.name,
+                    "archive_size_bytes": final_path.stat().st_size,
+                    "sha256": archive_sha,
+                },
+            )
             return ArchiveResult(archive_id, True, "归档完成", cleanup_pending)
         except Exception as exc:
             temp_path.unlink(missing_ok=True)
@@ -308,7 +379,12 @@ class GroundUnattendedArchiveService:
         ).isoformat()
         self.repository.delete_summaries_before(summary_cutoff)
 
-    def _build_summary(self, run_id: str, run: dict[str, Any]) -> dict[str, Any]:
+    def _build_summary(
+        self,
+        run_id: str,
+        run: dict[str, Any],
+        profile: GroundUnattendedProfileDTO,
+    ) -> dict[str, Any]:
         trains = self.repository.list_train_runs(run_id)
         deep = self.repository.list_deep_operations(run_id)
         ping = self.repository.list_ping_summaries(run_id)
@@ -337,6 +413,19 @@ class GroundUnattendedArchiveService:
             ),
             "partial_session_count": sum(
                 row.get("state") in {"PARTIAL", "FAILED"} for row in deep
+            ),
+            "running_mode": (
+                "STANDARD"
+                if profile.deep_collection_master_enabled
+                else "LIGHTWEIGHT"
+            ),
+            "deep_collection_master_enabled": (
+                profile.deep_collection_master_enabled
+            ),
+            "deep_collection_skipped_reason": (
+                ""
+                if profile.deep_collection_master_enabled
+                else "局点配置为轻量监测模式"
             ),
             "generated_at": _now(),
         }
@@ -570,6 +659,17 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _progress(
+    callback: Callable[[str, int, str, dict[str, Any]], None] | None,
+    stage: str,
+    percent: int,
+    message: str,
+    details: dict[str, Any],
+) -> None:
+    if callback is not None:
+        callback(stage, percent, message, details)
+
+
 def _zip_member_sha256(archive: zipfile.ZipFile, name: str) -> str:
     digest = hashlib.sha256()
     with archive.open(name, "r") as handle:
@@ -592,6 +692,8 @@ def _aggregate_daily_ping_by_train(
                 "train_id": train_id,
                 "train_no": str(row.get("train_no") or ""),
                 "sent_count": 0,
+                "raw_sample_count": 0,
+                "warmup_ignored_count": 0,
                 "success_count": 0,
                 "loss_count": 0,
                 "rtt_weighted_sum": 0.0,
@@ -603,9 +705,13 @@ def _aggregate_daily_ping_by_train(
             },
         )
         sent = int(row.get("sent_count") or 0)
+        raw = int(row.get("raw_sample_count") or sent)
+        ignored = int(row.get("warmup_ignored_count") or 0)
         success = int(row.get("success_count") or 0)
         loss = int(row.get("loss_count") or 0)
         current["sent_count"] += sent
+        current["raw_sample_count"] += raw
+        current["warmup_ignored_count"] += ignored
         current["success_count"] += success
         current["loss_count"] += loss
         if row.get("avg_rtt_ms") is not None:

@@ -3,6 +3,7 @@ import type { BackendDownloadRequest } from '../../../desktop_electron/src/share
 import type {
   GroundActionResponse, GroundArchive, GroundDeepCollection, GroundPage, GroundPingTarget,
   GroundProfile, GroundStatus, GroundTimelineEvent, GroundTrain, GroundHealth, GroundInventorySummary, GroundRawFile, GroundTrainPolicy,
+  GroundOperation, GroundPingSeries, GroundPingSample, GroundSyslogRecord, GroundPagedResult,
   LocalIpv4Address, SourceIpRecommendation, UdpPortCheck,
 } from '../types/groundUnattended'
 
@@ -32,6 +33,32 @@ export const requestGroundConfigCheck = (deviceUuid = '', allowTargetPortChange 
 export const getGroundHealth = (): Promise<GroundHealth> => apiRequest(`${root}/health`)
 export const listGroundRawFiles = (): Promise<GroundPage<GroundRawFile>> => apiRequest(`${root}/raw-files?limit=100`)
 export const listGroundPingTargets = (): Promise<GroundPage<GroundPingTarget>> => apiRequest(`${root}/ping-targets`)
+export function getGroundPingSeries(params: {
+  run_id?: string; train_id?: string; mr_id?: string; target_ip?: string; start_time?: string; end_time?: string
+  include_warmup?: boolean; max_points?: number
+}): Promise<GroundPingSeries> {
+  const query = new URLSearchParams()
+  Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
+  return apiRequest(`${root}/ping-series?${query}`)
+}
+export function listGroundPingSamples(params: {
+  run_id?: string; train_id?: string; mr_id?: string; target_ip?: string; start_time?: string; end_time?: string
+  include_warmup?: boolean; page?: number; page_size?: number
+}): Promise<GroundPagedResult<GroundPingSample> & { raw_sample_count: number; effective_sample_count: number; ignored_sample_count: number }> {
+  const query = new URLSearchParams()
+  Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
+  return apiRequest(`${root}/ping-samples?${query}`)
+}
+export function listGroundSyslogRecords(params: {
+  run_id?: string; train_id?: string; mr_id?: string; mr_name?: string; source_ip?: string; system_name?: string
+  severity?: string; keyword?: string; start_time?: string; end_time?: string; page?: number; page_size?: number
+}): Promise<GroundPagedResult<GroundSyslogRecord>> {
+  const query = new URLSearchParams()
+  Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
+  return apiRequest(`${root}/syslog-records?${query}`)
+}
+export const getLatestGroundOperation = (): Promise<GroundOperation | null> => apiRequest(`${root}/operations/latest`)
+export const getGroundOperation = (operationId: string): Promise<GroundOperation> => apiRequest(`${root}/operations/${encodeURIComponent(operationId)}`)
 export const listGroundDeepCollections = (): Promise<GroundPage<GroundDeepCollection>> => apiRequest(`${root}/deep-collections`)
 export function listGroundTimeline(trainId = '', eventType = ''): Promise<GroundPage<GroundTimelineEvent>> {
   const params = new URLSearchParams()

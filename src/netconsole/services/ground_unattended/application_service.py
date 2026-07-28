@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -14,15 +15,19 @@ from netconsole.models.api.ground_unattended import (
     GroundDeepCollectionDTO,
     GroundDeepCollectionPageDTO,
     GroundPingSummaryPageDTO,
+    GroundPingSamplePageDTO,
+    GroundPingSeriesDTO,
     GroundPingTargetDTO,
     GroundHealthDTO,
     GroundInventorySummaryDTO,
     GroundRawFileDTO,
     GroundRawFilePageDTO,
     GroundSyslogHostDTO,
+    GroundSyslogRecordPageDTO,
     GroundTrainPolicyUpdateDTO,
     GroundTimelineEventDTO,
     GroundTimelinePageDTO,
+    GroundOperationDTO,
     GroundUnattendedEndpointDTO,
     GroundUnattendedProfileDTO,
     GroundUnattendedProfileUpdateDTO,
@@ -37,6 +42,10 @@ from netconsole.services.ground_unattended.deep_scheduler import (
     DeepMrCollectionScheduler,
 )
 from netconsole.services.ground_unattended.inventory import TrainInventorySyncService
+from netconsole.services.ground_unattended.raw_query import (
+    GroundRawQueryError,
+    GroundRawStreamQueryService,
+)
 from netconsole.services.ground_unattended.schedule import schedule_window
 from netconsole.services.ground_unattended.supervisor import GroundUnattendedSupervisor
 from netconsole.models.api.system_maintenance import DesktopActionDTO
@@ -92,6 +101,7 @@ class GroundUnattendedApplicationService:
         self.base_query = base_query
         self.desktop_action_service = desktop_action_service
         self.network_service = network_service or SystemNetworkApplicationService()
+        self.raw_query = GroundRawStreamQueryService(repository)
         self.inventory_sync = (
             TrainInventorySyncService(
                 paths,
@@ -217,6 +227,11 @@ class GroundUnattendedApplicationService:
             schedule_start_time=profile.schedule_start_time,
             schedule_end_time=profile.schedule_end_time,
             timezone=profile.timezone,
+            running_mode=(
+                "STANDARD"
+                if profile.deep_collection_master_enabled
+                else "LIGHTWEIGHT"
+            ),
             next_start_at=window.next_start.isoformat(timespec="seconds"),
             next_end_at=window.next_end.isoformat(timespec="seconds"),
             ac_last_updated_at=str(run.get("ac_last_updated_at") or ""),
@@ -322,10 +337,44 @@ class GroundUnattendedApplicationService:
 
     def stop(self, site_id: str, *, archive: bool) -> GroundActionResponseDTO:
         run = self._active(site_id)
-        self.supervisor.request("stop", archive=archive)
+        run_id = str(run["run_id"])
+        existing = self.repository.latest_operation(
+            run_id=run_id, active_only=True
+        )
+        if existing is not None:
+            return GroundActionResponseDTO(
+                state="STOPPING",
+                run_id=run_id,
+                operation_id=str(existing["operation_id"]),
+                message=str(existing.get("message") or "停止请求正在处理"),
+            )
+        now = datetime.now().astimezone().isoformat(timespec="milliseconds")
+        operation_id = f"groundop_{uuid.uuid4().hex}"
+        self.repository.save_operation(
+            {
+                "operation_id": operation_id,
+                "site_id": self.site_id,
+                "run_id": run_id,
+                "operation_type": "STOP_AND_ARCHIVE" if archive else "STOP",
+                "operation_state": "PENDING",
+                "operation_stage": "STOP_REQUESTED",
+                "progress_percent": 0,
+                "message": (
+                    "停止并归档请求已提交"
+                    if archive
+                    else "正常停止请求已提交"
+                ),
+                "started_at": now,
+                "updated_at": now,
+            }
+        )
+        self.supervisor.request(
+            "stop", archive=archive, operation_id=operation_id
+        )
         return GroundActionResponseDTO(
             state="STOPPING",
-            run_id=str(run["run_id"]),
+            run_id=run_id,
+            operation_id=operation_id,
             message="停止并归档请求已提交" if archive else "正常停止请求已提交",
         )
 
@@ -506,8 +555,79 @@ class GroundUnattendedApplicationService:
         rows = self.supervisor.fleet_ping.target_summaries()
         if not rows and run:
             rows = self.repository.list_ping_summaries(str(run["run_id"]))
+        endpoint_names = {
+            str(endpoint.get("device_uuid") or ""): str(
+                endpoint.get("device_name") or ""
+            )
+            for train in self.repository.list_inventory(include_removed=True)
+            for endpoint in train.get("endpoints", [])
+        }
+        for row in rows:
+            row.setdefault(
+                "effective_sample_count", int(row.get("sent_count") or 0)
+            )
+            row.setdefault(
+                "raw_sample_count",
+                int(row.get("sent_count") or 0)
+                + int(row.get("warmup_ignored_count") or 0),
+            )
+            if (
+                int(row.get("raw_sample_count") or 0) == 0
+                and int(row.get("sent_count") or 0) > 0
+            ):
+                row["raw_sample_count"] = int(row["sent_count"]) + int(
+                    row.get("warmup_ignored_count") or 0
+                )
+            row.setdefault(
+                "mr_name", endpoint_names.get(str(row.get("mr_id") or ""), "")
+            )
         items = [GroundPingTargetDTO.model_validate(row) for row in rows]
         return GroundPingSummaryPageDTO(items=items, total=len(items))
+
+    def ping_series(
+        self,
+        site_id: str,
+        **filters: Any,
+    ) -> GroundPingSeriesDTO:
+        self._require_site(site_id)
+        try:
+            return GroundPingSeriesDTO.model_validate(
+                self.raw_query.ping_series(**filters)
+            )
+        except GroundRawQueryError as exc:
+            raise GroundUnattendedError(
+                "RAW_QUERY_REJECTED", str(exc), status_code=422
+            ) from exc
+
+    def ping_samples(
+        self,
+        site_id: str,
+        **filters: Any,
+    ) -> GroundPingSamplePageDTO:
+        self._require_site(site_id)
+        try:
+            return GroundPingSamplePageDTO.model_validate(
+                self.raw_query.ping_samples(**filters)
+            )
+        except GroundRawQueryError as exc:
+            raise GroundUnattendedError(
+                "RAW_QUERY_REJECTED", str(exc), status_code=422
+            ) from exc
+
+    def syslog_records(
+        self,
+        site_id: str,
+        **filters: Any,
+    ) -> GroundSyslogRecordPageDTO:
+        self._require_site(site_id)
+        try:
+            return GroundSyslogRecordPageDTO.model_validate(
+                self.raw_query.syslog_records(**filters)
+            )
+        except GroundRawQueryError as exc:
+            raise GroundUnattendedError(
+                "RAW_QUERY_REJECTED", str(exc), status_code=422
+            ) from exc
 
     def deep_collections(self, site_id: str) -> GroundDeepCollectionPageDTO:
         run = self._latest_run(site_id)
@@ -610,20 +730,48 @@ class GroundUnattendedApplicationService:
             if run
             else []
         )
-        items = [
-            GroundTimelineEventDTO(
-                event_id=row["id"],
-                ts=row["ts"],
-                event_type=row["event_type"],
-                severity=row["severity"],
-                train_id=row["train_id"],
-                mr_id=row["mr_id"],
-                title=row["title"],
-                message=row["message"],
-                details=row.get("details") or {},
+        inventory = self.repository.list_inventory(include_removed=True)
+        train_by_id = {str(row.get("train_id") or ""): row for row in inventory}
+        endpoint_by_id = {
+            str(endpoint.get("device_uuid") or ""): endpoint
+            for train in inventory
+            for endpoint in train.get("endpoints", [])
+        }
+        items = []
+        for row in rows:
+            details = dict(row.get("details") or {})
+            mr_id = str(row.get("mr_id") or "")
+            train_id_value = str(row.get("train_id") or "")
+            train = train_by_id.get(train_id_value) or {}
+            endpoint = endpoint_by_id.get(mr_id) or {}
+            suffix = mr_id[-8:] if mr_id else ""
+            items.append(
+                GroundTimelineEventDTO(
+                    event_id=row["id"],
+                    ts=row["ts"],
+                    event_type=row["event_type"],
+                    severity=row["severity"],
+                    train_id=train_id_value,
+                    train_no=str(
+                        details.get("train_no") or train.get("train_no") or ""
+                    ),
+                    train_name=str(train.get("train_name") or ""),
+                    mr_id=mr_id,
+                    mr_name=str(
+                        details.get("mr_name")
+                        or endpoint.get("device_name")
+                        or (f"未知 MR（{suffix}）" if suffix else "")
+                    ),
+                    mr_position_code=str(
+                        details.get("mr_position_code")
+                        or endpoint.get("mr_role")
+                        or ""
+                    ),
+                    title=row["title"],
+                    message=row["message"],
+                    details=details,
+                )
             )
-            for row in rows
-        ]
         return GroundTimelinePageDTO(
             items=items,
             total=self.repository.count_events(
@@ -632,6 +780,25 @@ class GroundUnattendedApplicationService:
             if run
             else 0,
         )
+
+    def operation(
+        self, site_id: str, operation_id: str
+    ) -> GroundOperationDTO:
+        self._require_site(site_id)
+        row = self.repository.get_operation(operation_id)
+        if row is None:
+            raise GroundUnattendedError(
+                "OPERATION_NOT_FOUND", "运行控制操作不存在", status_code=404
+            )
+        return GroundOperationDTO.model_validate(row)
+
+    def latest_operation(self, site_id: str) -> GroundOperationDTO | None:
+        self._require_site(site_id)
+        active_run = self.repository.get_active_run()
+        row = self.repository.latest_operation(
+            run_id=str(active_run["run_id"]) if active_run else ""
+        )
+        return GroundOperationDTO.model_validate(row) if row else None
 
     def archives(self, site_id: str) -> GroundArchivePageDTO:
         self._require_site(site_id)

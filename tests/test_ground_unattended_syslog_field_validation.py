@@ -730,14 +730,28 @@ def test_repository_additively_migrates_syslog_runtime_columns(tmp_path: Path) -
     repository.initialize()
     with sqlite3.connect(repository.db_path) as conn:
         profile_columns = {row[1] for row in conn.execute("PRAGMA table_info(ground_unattended_profiles)")}
+        ping_summary_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(ground_unattended_ping_summaries)")
+        }
         endpoint_columns = {row[1] for row in conn.execute("PRAGMA table_info(ground_unattended_train_endpoints)")}
         boot_columns = {row[1] for row in conn.execute("PRAGMA table_info(ground_unattended_boot_sessions)")}
         event_columns = {row[1] for row in conn.execute("PRAGMA table_info(ground_unattended_wmesh_events)")}
+        table_names = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
         schema_version = conn.execute(
             "SELECT value FROM ground_unattended_schema WHERE key='schema_version'"
         ).fetchone()[0]
     assert {"last_syslog_source_ip", "syslog_hostname", "last_syslog_identity_verified_at"} <= endpoint_columns
-    assert "allow_external_syslog_address" in profile_columns
+    assert {
+        "allow_external_syslog_address",
+        "deep_collection_master_enabled",
+        "fleet_ping_warmup_seconds",
+    } <= profile_columns
+    assert {"raw_sample_count", "warmup_ignored_count"} <= ping_summary_columns
     assert {
         "info_center_metrics_json",
         "device_clock_before",
@@ -750,7 +764,11 @@ def test_repository_additively_migrates_syslog_runtime_columns(tmp_path: Path) -
         "clock_jump_seconds",
     } <= boot_columns
     assert "clock_offset_ms" in event_columns
-    assert schema_version == "5"
+    assert {
+        "ground_unattended_ping_target_activations",
+        "ground_unattended_operations",
+    } <= table_names
+    assert schema_version == "6"
 
 
 def test_real_syslog_shapes_keep_parser_fields_and_clock_semantics(tmp_path: Path) -> None:

@@ -22,6 +22,11 @@
 
 ### 轨道交通地面无人值守
 
+- 完成无人值守可用性收口：主页面状态、事件、严重级别、位置匹配、深采覆盖和归档状态统一映射为中文；时间轴以设备清单中的 MR 名称和 CT/CW 为主显示，UUID 仅保留内部关联。
+- Profile 新增局点级深采总开关和轻量监测模式，关闭后继续 AC、Fleet Ping、UDP Syslog、WMESH 解析和位置关联，不再新增 SSH 深度采集；默认时区改为 `Asia/Shanghai`，旧 `system` 自动兼容迁移。
+- Fleet Ping 改为每目标激活后预热 10 秒，预热包仍写入 NDJSON 但不进入有效统计、丢包告警和时间关联；目标激活时间跨分片重建和 Backend 恢复持久化，真正移除后重加才重新预热。
+- 长 Ping 页面新增逐包 RTT、成功/丢包、预热、位置未知、AP 切换和连续丢包区段可视化，支持 5 分钟、30 分钟、1 小时、自定义范围和自动刷新；Syslog 新增最近 30 分钟默认窗口、最大 500 条分页和多条件过滤。两类查询仅流式读取受管数据根内与时间范围相交的已登记文件，以有界内存保留当前页，并限制时间范围和点数。
+- 正常停止与停止并归档新增持久化 `operation_id`、阶段、进度和结果摘要。只有 fping、UDP 线程、监听端口可重新绑定、队列和 OPEN 文件全部安全收尾后才完成；页面刷新和 Backend 重启可恢复进度，归档失败继续保留 active 原始数据。
 - 无人值守新增第一阶段采集基础：从既有车载 MR 基础资料增量生成 CT/CW 列车清单，策略独立保存且设备变化不删除历史；全量 Ping 和 UDP WMESH 日志按 MR、按小时顺序写入数据根，关键事件、原始文件索引、boot session、Syslog 配置审计和健康事件批量入库。
 - 新增有界 UDP Syslog 接收、WMESH 关键事件解析和来源隔离；无法匹配的消息写入独立未识别流，不误绑其他 MR。MR Ping 稳定后通过 `display version` 识别上电周期，再受控检查和补齐固定 H3C `info-center` 运行配置，不执行 `save`，停止无人值守也不主动删除设备配置。
 - 修复无人值守 Syslog 配置的假成功和假失败风险：`display info-center` 作为 Information Center、loghost 和实际目标的权威来源，`current-configuration` 只验证两条 source 规则；Comware 省略默认 `info-center enable` 或 UDP 514 配置行时不再重复下发或误报 `CONFIG_VERIFY_FAILED`。写入仍逐条检查回显并执行配置前后复查，只有验证成功后才等待或激活首条日志。
