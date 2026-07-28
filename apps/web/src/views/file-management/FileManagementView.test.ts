@@ -60,6 +60,7 @@ describe('file management API contract', () => {
   })
 
   it('asks once only after detecting disabled SFTP and continues the same connection flow', () => {
+    expect(source).toContain("connectionStatus.value = '正在连接 SFTP（单条路径最多等待 5 秒，失败后自动尝试下一路径）'")
     expect(source).toContain('DEVICE_FILE_SFTP_UNAVAILABLE')
     expect(source).toContain('设备未启用 SFTP，NetConsole 将通过受控命令启用 SFTP并重新连接。')
     expect(source).toContain('confirmDeviceSftpSetup(confirmationId, siteId.value)')

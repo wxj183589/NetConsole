@@ -1,6 +1,9 @@
 # SFTP 连接
 
-连接参数由设备管理记录和后端 Credential Vault 组装。主地址、备用地址、SSH/SFTP 端口和连接超时沿用设备连接 Profile；页面不读取密码，也不拼接设备命令。
+连接参数由设备管理记录和后端 Credential Vault 组装。主地址、备用地址和 SSH/SFTP 端口沿用设备
+连接 Profile；设备文件 SFTP 的每条候选路径将 TCP、SSH banner 和认证等待上限固定为 5 秒，
+失败后自动尝试下一路径。该限制不改变设备采集、Online MR 等其他连接场景的默认超时。页面不读取
+密码，也不拼接设备命令。
 
 连接状态机为 `INITIAL_CONNECT -> HOST_KEY_CONFIRM -> SFTP_UNAVAILABLE -> SFTP_ENABLE_CONFIRM ->
 SFTP_ENABLING -> SFTP_RECONNECTING -> CONNECTED|FAILED`。未知主机密钥由 API 返回稳定错误码和指纹

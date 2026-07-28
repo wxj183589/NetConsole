@@ -37,3 +37,23 @@ Paramiko 集成测试为 `3 passed`。Vue TypeScript 与 Vite 生产构建、修
 
 结论：代码回归和本地真实协议拓扑通过；真实 MR 的“隧道 -> 目标设备 -> SFTP -> 文件落盘”仍被现场
 网络可达性阻塞，状态必须保持 `REAL_DEVICE_PENDING`，不得标记为 `COMPLETE`。
+
+## 单路径 5 秒超时优化复验
+
+在保留上述约 20 秒历史记录的基础上，将设备文件 SFTP 每条候选路径的 TCP、SSH banner 和认证
+等待上限调整为 5 秒。复验继续使用 SQLite `mode=ro` 读取同一设备，进程内构造仅备用地址场景；
+禁用本次测试进程的日志写入，未修改设备、`known_hosts`、配置或下载目录。
+
+| 路径 | 阶段 | 脱敏结果 |
+| --- | --- | --- |
+| 备用地址直连 | `target_connect` | 约 5.136 秒超时 |
+| 第一跳到备用地址 | `jump_connect` | 约 5.013 秒超时 |
+| 第二跳到备用地址 | `jump_connect` | 约 5.014 秒超时 |
+
+三条路径总计约 15.165 秒后返回 `DEVICE_FILE_JUMP_HOST_UNREACHABLE`，确认失败后会自动继续下一路径。
+现场网络仍未到达 SSH 握手，未进入主机密钥确认、目标 SFTP 或文件下载，真实设备状态继续保持
+`REAL_DEVICE_PENDING`。
+
+本次优化自动验证：设备文件相关 Python `70 passed`，真实 Paramiko 隧道集成 `3 passed`，
+Web 全量 Vitest `121 files / 631 tests passed`；Vue TypeScript 与 Vite 生产构建、修改范围 Ruff
+及 `py_compile` 均通过。

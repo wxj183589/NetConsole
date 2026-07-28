@@ -1,6 +1,7 @@
 import paramiko
 import pytest
 
+import netconsole.services.file_transfer_service as service_module
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.services import command_guard
@@ -75,6 +76,58 @@ def test_ambiguous_open_sftp_failure_has_dedicated_negotiation_error():
     assert str(classified) == "SSH 登录成功，但建立 SFTP 子系统失败。"
 
 
+def test_device_file_ssh_connect_uses_five_second_timeouts(tmp_path, monkeypatch):
+    connect_kwargs: list[dict[str, object]] = []
+    socket_calls: list[tuple[tuple[str, int], float]] = []
+
+    class FakeSocket:
+        def close(self):
+            pass
+
+    class FakeClient:
+        def connect(self, **kwargs):
+            connect_kwargs.append(kwargs)
+
+        def close(self):
+            pass
+
+    def fake_create_connection(address, *, timeout):
+        socket_calls.append((address, timeout))
+        return FakeSocket()
+
+    monkeypatch.setattr(paramiko, "SSHClient", FakeClient)
+    monkeypatch.setattr(service_module, "install_managed_host_key_policy", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service_module.socket, "create_connection", fake_create_connection)
+    service = FileTransferService(
+        "demo",
+        PathResolver(tmp_path),
+        strict_host_keys=True,
+    )
+    target = ConnectionTarget(
+        protocol="ssh",
+        device_type="hp_comware",
+        host="127.0.0.1",
+        port=10022,
+        username="admin",
+        password="secret",
+        method="tunnel1_backup",
+        via_tunnel=True,
+        target_role="backup",
+        tunnel_label="tunnel1",
+    )
+
+    service._connect_ssh_client(
+        target,
+        key_host="backup.internal",
+        key_port=22,
+    )
+
+    assert socket_calls == [(("127.0.0.1", 10022), 5.0)]
+    assert connect_kwargs[0]["timeout"] == 5.0
+    assert connect_kwargs[0]["banner_timeout"] == 5.0
+    assert connect_kwargs[0]["auth_timeout"] == 5.0
+
+
 @pytest.mark.parametrize(
     ("successful_method", "expected_methods"),
     (
@@ -132,6 +185,16 @@ def test_file_transfer_falls_back_across_target_and_tunnel_combinations(
         def close(self):
             pass
 
+    tunnel_timeouts: list[float] = []
+
+    class FakeTunnelManager:
+        def __init__(self, **kwargs):
+            tunnel_timeouts.append(kwargs["connect_timeout_seconds"])
+
+        @staticmethod
+        def open_tunnel(*_args, **_kwargs):
+            return FakeTunnelSession()
+
     service = FileTransferService(
         "demo",
         PathResolver(tmp_path),
@@ -145,10 +208,7 @@ def test_file_transfer_falls_back_across_target_and_tunnel_combinations(
         return FakeClient()
 
     monkeypatch.setattr(service, "_connect_ssh_client", fake_connect)
-    monkeypatch.setattr(
-        "netconsole.services.file_transfer_service.TunnelManager.open_tunnel",
-        lambda *_args, **_kwargs: FakeTunnelSession(),
-    )
+    monkeypatch.setattr(service_module, "TunnelManager", FakeTunnelManager)
     device = Device(
         name="MR",
         primary_address="primary.internal",
@@ -168,6 +228,8 @@ def test_file_transfer_falls_back_across_target_and_tunnel_combinations(
     assert attempts == expected_methods
     assert service.successful_target is not None
     assert service.successful_target.method == successful_method
+    assert tunnel_timeouts
+    assert set(tunnel_timeouts) == {5.0}
 
 
 def test_file_transfer_reports_all_failed_connection_paths_without_secrets(

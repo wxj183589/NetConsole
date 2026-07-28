@@ -16,6 +16,8 @@ from netconsole.services.host_key_trust_service import (
     install_managed_host_key_policy,
 )
 
+DEFAULT_TUNNEL_CONNECT_TIMEOUT_SECONDS = 20.0
+
 
 class TunnelConnectionError(RuntimeError):
     def __init__(self, code: str, message: str, *, stage: str) -> None:
@@ -96,10 +98,12 @@ class TunnelManager:
         host_key_grant: HostKeyTrustGrant
         | tuple[HostKeyTrustGrant, ...]
         | None = None,
+        connect_timeout_seconds: float = DEFAULT_TUNNEL_CONNECT_TIMEOUT_SECONDS,
     ) -> None:
         self.strict_host_keys = bool(strict_host_keys)
         self.host_key_trust = host_key_trust
         self.host_key_grant = host_key_grant
+        self.connect_timeout_seconds = float(connect_timeout_seconds)
 
     def open_tunnel(self, tunnel: TunnelProfile, remote_host: str, remote_port: int) -> TunnelSession:
         import paramiko
@@ -125,9 +129,9 @@ class TunnelManager:
                 port=int(tunnel.port or 22),
                 username=tunnel.username,
                 password=tunnel.password,
-                timeout=20,
-                banner_timeout=20,
-                auth_timeout=20,
+                timeout=self.connect_timeout_seconds,
+                banner_timeout=self.connect_timeout_seconds,
+                auth_timeout=self.connect_timeout_seconds,
                 look_for_keys=False,
                 allow_agent=False,
             )

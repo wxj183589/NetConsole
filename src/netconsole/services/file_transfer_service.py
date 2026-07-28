@@ -35,6 +35,7 @@ FILE_TRANSFER_CONCURRENCY = 50
 FILE_TRANSFER_MAX_CONCURRENCY = 1
 DOWNLOAD_STABLE_WAIT_SECONDS = 2.0
 DOWNLOAD_VERIFY_RETRIES = 3
+DEVICE_FILE_CONNECT_TIMEOUT_SECONDS = 5.0
 DEVICE_FILE_MANAGER_READ_ONLY = True
 DEVICE_FILE_MANAGER_READ_ONLY_MESSAGE = "设备文件管理为只读模式，不允许执行该操作。"
 SftpProgressCallback = Callable[[str], None]
@@ -168,6 +169,7 @@ class FileTransferService:
                         strict_host_keys=self.strict_host_keys,
                         host_key_trust=self.host_key_trust,
                         host_key_grant=self.host_key_grant,
+                        connect_timeout_seconds=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
                     ).open_tunnel(  # type: ignore[arg-type]
                         target.tunnel,
                         target.host,
@@ -372,7 +374,10 @@ class FileTransferService:
             hostname = target.host
             port = target.port
             if self.strict_host_keys and target.via_tunnel:
-                sock = socket.create_connection((target.host, target.port), timeout=20)
+                sock = socket.create_connection(
+                    (target.host, target.port),
+                    timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
+                )
                 hostname = str(key_host or target.host)
                 port = int(key_port or target.port)
             client.connect(
@@ -380,9 +385,9 @@ class FileTransferService:
                 port=port,
                 username=target.username,
                 password=target.password,
-                timeout=20,
-                banner_timeout=20,
-                auth_timeout=20,
+                timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
+                banner_timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
+                auth_timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
                 look_for_keys=False,
                 allow_agent=False,
                 sock=sock,
@@ -417,9 +422,9 @@ class FileTransferService:
             port=target.port,
             username=target.username,
             password=target.password,
-            timeout=20,
-            banner_timeout=20,
-            auth_timeout=20,
+            timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
+            banner_timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
+            auth_timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
             look_for_keys=False,
             allow_agent=False,
             sock=sock,
@@ -887,9 +892,9 @@ class FileTransferService:
                     port=prepared.port,
                     username=prepared.username,
                     password=prepared.password,
-                    timeout=20,
-                    banner_timeout=20,
-                    auth_timeout=20,
+                    timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
+                    banner_timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
+                    auth_timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
                     look_for_keys=False,
                     allow_agent=False,
                 )

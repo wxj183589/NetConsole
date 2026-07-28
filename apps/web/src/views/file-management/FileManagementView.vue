@@ -284,7 +284,7 @@ async function connectDevice(): Promise<void> {
   sftpSetupTaskId.value = ''
   try {
     await disconnectDevice()
-    connectionStatus.value = '正在连接 SSH'
+    connectionStatus.value = '正在连接 SFTP（单条路径最多等待 5 秒，失败后自动尝试下一路径）'
     await completeConnection(() => connectDeviceFiles(selectedDeviceId.value, siteId.value))
   } finally {
     remoteLoading.value = false

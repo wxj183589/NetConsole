@@ -291,13 +291,14 @@ def test_tunnel_target_prepares_local_netmiko_endpoint(monkeypatch):
 def test_tunnel_manager_binds_auto_local_port_and_closes(monkeypatch):
     bound: list[tuple[str, int]] = []
     closed: list[str] = []
+    connect_kwargs: list[dict[str, object]] = []
 
     class FakeClient:
         def set_missing_host_key_policy(self, _policy):
             pass
 
-        def connect(self, **_kwargs):
-            pass
+        def connect(self, **kwargs):
+            connect_kwargs.append(kwargs)
 
         def get_transport(self):
             return object()
@@ -337,7 +338,10 @@ def test_tunnel_manager_binds_auto_local_port_and_closes(monkeypatch):
         )
     )[-1].tunnel
 
-    session = TunnelManager(strict_host_keys=False).open_tunnel(
+    session = TunnelManager(
+        strict_host_keys=False,
+        connect_timeout_seconds=5,
+    ).open_tunnel(
         profile,
         "10.0.0.1",
         22,
@@ -346,6 +350,10 @@ def test_tunnel_manager_binds_auto_local_port_and_closes(monkeypatch):
 
     assert bound == [("127.0.0.1", 0)]
     assert session.local_port == 34567
+    assert connect_kwargs[0]["timeout"] == 5
+    assert connect_kwargs[0]["banner_timeout"] == 5
+    assert connect_kwargs[0]["auth_timeout"] == 5
+    assert TunnelManager(strict_host_keys=False).connect_timeout_seconds == 20.0
     assert {"shutdown", "server", "client"}.issubset(set(closed))
 
 
