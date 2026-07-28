@@ -196,7 +196,7 @@ describe('TracksideApPlanningTab download behavior', () => {
     await flushPromises()
     expect(downloadBackendResource).toHaveBeenCalledTimes(2)
 
-    await button(wrapper, '打开任务窗口').trigger('click')
+    await button(wrapper, '打开任务中心').trigger('click')
     expect(routerPush).toHaveBeenCalledWith({ name: 'tasks', query: { module: 'rail', task_id: 'retry-task' } })
     wrapper.unmount()
   })

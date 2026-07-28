@@ -297,7 +297,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(wrapper.text()).not.toContain('停止、日志和恢复统一在任务窗口处理')
     expect(wrapper.text()).not.toContain('保存导出表格')
     expect(wrapper.text()).not.toContain('结果项')
-    expect(buttons(wrapper, '打开任务窗口')).toHaveLength(1)
+    expect(buttons(wrapper, '打开任务中心')).toHaveLength(1)
     expect(wrapper.find('[data-table-id="trackside-ap-business"]').attributes('data-height')).toBe('calc(100vh - 330px)')
     const tableColumns = wrapper.getComponent(NcDataTableStub).props('columns') as Array<Record<string, unknown>>
     expect(tableColumns.find((column) => column.key === 'description')).toMatchObject({
@@ -515,7 +515,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(wrapper.text()).toContain('任务已提交，详细进度请查看任务窗口')
     expect(wrapper.text()).not.toContain('轨旁 AP 任务')
     expect(wrapper.text()).not.toContain('停止、日志和恢复统一在任务窗口处理')
-    expect(buttons(wrapper, '打开任务窗口')).toHaveLength(1)
+    expect(buttons(wrapper, '打开任务中心')).toHaveLength(1)
     wrapper.unmount()
   })
 
@@ -561,8 +561,8 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(button(activeWrapper, '更新全部光衰').attributes('disabled')).toBeDefined()
     expect(activeWrapper.text()).toContain('检测到正在运行的轨旁 AP 任务，详细进度请查看任务窗口')
     expect(activeWrapper.text()).not.toContain('停止、日志和恢复统一在任务窗口处理')
-    expect(buttons(activeWrapper, '打开任务窗口')).toHaveLength(1)
-    await button(activeWrapper, '打开任务窗口').trigger('click')
+    expect(buttons(activeWrapper, '打开任务中心')).toHaveLength(1)
+    await button(activeWrapper, '打开任务中心').trigger('click')
     expect(routerPush).toHaveBeenLastCalledWith({ name: 'tasks', query: { module: 'rail', task_id: 'update-running' } })
     activeWrapper.unmount()
   })
@@ -573,7 +573,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     const exportWrapper = await mountView()
 
     expect(button(exportWrapper, '更新全部光衰').attributes('disabled')).toBeUndefined()
-    expect(buttons(exportWrapper, '打开任务窗口')).toHaveLength(1)
+    expect(buttons(exportWrapper, '打开任务中心')).toHaveLength(1)
     expect(exportWrapper.text()).not.toContain('停止、日志和恢复统一在任务窗口处理')
     exportWrapper.unmount()
 
@@ -645,7 +645,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
         status: 'PARTIAL_SUCCESS', success_count: 745, failed_count: 1,
         actionable_skipped_count: 0, ignored_skipped_count: 0,
       },
-      expected: '轨旁 AP 光衰数据已刷新：成功 745，失败 1，请在任务窗口查看详情',
+      expected: '轨旁 AP 光衰数据已刷新：成功 745，失败 1，请在任务中心查看详情',
       type: 'warning',
     },
     {
@@ -656,7 +656,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
         actionable_skipped_count: 1, ignored_skipped_count: 0,
         skipped_reason_counts: { connection_incomplete: 1 },
       },
-      expected: '轨旁 AP 光衰数据已刷新：成功 745，1 个目标未执行，请在任务窗口查看详情',
+      expected: '轨旁 AP 光衰数据已刷新：成功 745，1 个目标未执行，请在任务中心查看详情',
       type: 'warning',
     },
     {
@@ -667,7 +667,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
         actionable_skipped_count: 0, ignored_skipped_count: 0,
         failure_reason_counts: { fit_ap_collection_failed: 746 },
       },
-      expected: '轨旁 AP 光衰更新失败：成功 0，失败 746；主要原因：AP 光衰采集失败，请在任务窗口查看详情',
+      expected: '轨旁 AP 光衰更新失败：成功 0，失败 746；主要原因：AP 光衰采集失败，请在任务中心查看详情',
       type: 'error',
     },
   ])('$name', async ({ taskStatus, summary, expected, type }) => {
@@ -711,7 +711,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(wrapper.text()).toContain('轨旁 AP 业务表格已生成')
     expect(wrapper.text()).not.toContain('保存导出表格')
     expect(wrapper.text()).not.toContain('轨旁 AP 任务')
-    expect(buttons(wrapper, '打开任务窗口')).toHaveLength(1)
+    expect(buttons(wrapper, '打开任务中心')).toHaveLength(1)
     wrapper.unmount()
   })
 })

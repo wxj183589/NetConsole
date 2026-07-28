@@ -273,4 +273,4 @@ AP identity 阶段 2～6.1 已在 AC 扩展信息、AC 光衰、轨旁 AP、MR/M
 单独立项、重新评审、用户明确批准
 ```
 
-阶段 8 已完成观察结果只读展示方案评估，见 [AP_IDENTITY_DISPLAY_ASSESSMENT.md](AP_IDENTITY_DISPLAY_ASSESSMENT.md)。脱敏结构已收敛到永久 Python 模型，但尚未执行真实局点采样，也未接入统一任务窗口或具名 Vue 页面。后续可见展示仍须通过本方案准入；不得修改生产数据、导出字段、报告 SQL、resolver、mapping 或业务判断。
+阶段 8 已完成观察结果只读展示方案评估，见 [AP_IDENTITY_DISPLAY_ASSESSMENT.md](AP_IDENTITY_DISPLAY_ASSESSMENT.md)。脱敏结构已收敛到永久 Python 模型，但尚未执行真实局点采样，也未接入全局任务中心或具名 Vue 页面。后续可见展示仍须通过本方案准入；不得修改生产数据、导出字段、报告 SQL、resolver、mapping 或业务判断。

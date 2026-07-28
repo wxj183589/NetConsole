@@ -19,6 +19,8 @@ function nativeBridge(): NetConsoleDesktopBridge {
     getBackendStatus: vi.fn(async () => ({ state: 'ready' as const, baseUrl: 'http://127.0.0.1:43123' })),
     getRuntimeConfig: vi.fn(async () => ({ apiBaseUrl: 'http://127.0.0.1:43123', apiToken: TOKEN })),
     openTaskWindow: vi.fn(async () => ({ success: true })),
+    showTaskNotification: vi.fn(async () => ({ success: true })),
+    setTaskTrayStatus: vi.fn(),
     selectFile: vi.fn(async () => ({ cancelled: true, paths: [] })),
     selectDirectory: vi.fn(async () => ({ cancelled: true })),
     selectSettingsTool: vi.fn(async () => ({ cancelled: true })),

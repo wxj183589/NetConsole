@@ -27,7 +27,7 @@
 | `web.network_tools` | 网络工具 | `ENABLED` | 是 | 是 | 否 | 是 | toolbox/Traffic 可用 | `/api/network-tools/*`、`/api/traffic/*` | `/network-tools` | `test_network_tools_api.py`、`test_network_tools_web_parity.py` | `PENDING` |
 | `web.command_reference` | 命令说明 | `ENABLED` | 是 | 是 | 否 | 是 | 可查询与受控导出 | `/api/command-reference/*` | `/command-reference` | 命令说明 API/Vitest | `PENDING` |
 | `web.logs` | 日志中心 | `ENABLED` | 是 | 是 | 否 | 是 | 可查询与受控导出 | `/api/logs/*` | `/logs` | 日志 API/Vitest | `PENDING` |
-| `web.job_center` | 任务中心 | `ENABLED` | 是 | 是 | 否 | 是 | 主窗口和独立任务窗口可用 | `/api/job-center/*`、`/ws/tasks` | `/tasks`、`/desktop/tasks` | `test_job_center.py`、`test_task_center.py`、`JobCenterView.test.ts` | `PENDING` |
+| `web.job_center` | 任务中心 | `ENABLED` | 是 | 是 | 否 | 是 | 全局入口、抽屉、浮层和完整页面可用 | `/api/job-center/*`、`/ws/tasks` | `/tasks` | `test_job_center.py`、`test_task_center.py`、`GlobalTaskCenter.test.ts`、`JobCenterView.test.ts` | `PENDING` |
 | `web.ac_management` | AC 管理 | `ENABLED` | 是 | 是 | 否 | 是 | 正式 AC 页面可用 | `/api/ac-management/*` | `/ac-management` | `test_ac_management.py` | `PENDING` |
 | `web.ac_fit_ap_resources` | FIT-AP 资源 | `ENABLED` | 是 | 是 | 否 | 是 | 资源查询与受控动作可用 | `/api/ac-management/*` | `/ac-management` | `test_ac_management.py`、AC 动作定向测试 | `PENDING` |
 | `web.rail_transit_base_data` | 轨道交通基础资料 | `ENABLED` | 是 | 是 | 否 | 是 | 查询、受控编辑与导出可用 | `/api/rail-transit/base-data/*` | `/rail-transit/base-data` | `test_rail_transit_web_parity.py` | `PENDING` |

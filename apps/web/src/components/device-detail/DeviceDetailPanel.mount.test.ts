@@ -363,7 +363,7 @@ describe('DeviceDetailPanel mounted interactions', () => {
     await refresh!.trigger('click')
     await flushPromises()
     expect(mocks.refreshDeviceDetails).toHaveBeenCalledWith('device-1')
-    expect(mocks.messages.warning).toHaveBeenCalledWith('任务已提交，但任务状态刷新失败；任务窗口打开失败')
+    expect(mocks.messages.warning).toHaveBeenCalledWith('任务已提交，但任务状态刷新失败；任务中心打开失败')
     expect(mocks.messages.success).not.toHaveBeenCalled()
     wrapper.unmount()
   })

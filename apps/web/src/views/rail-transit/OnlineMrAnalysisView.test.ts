@@ -198,7 +198,7 @@ describe('Online MR analysis view behavior', () => {
 
     expect(mocks.exportOnlineMrReport).toHaveBeenCalledOnce()
     expect(mocks.exportOnlineMrReport).toHaveBeenCalledWith('session-1', '')
-    expect(mocks.messageSuccess).toHaveBeenCalledWith('分析报告任务已提交，请在任务窗口查看进度。')
+    expect(mocks.messageSuccess).toHaveBeenCalledWith('分析报告任务已提交，请在任务中心查看进度。')
     expect(mocks.routerPush).not.toHaveBeenCalled()
     wrapper.unmount()
   })

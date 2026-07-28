@@ -1045,7 +1045,7 @@ describe('Mesh analysis detail behavior', () => {
     await flushPromises()
     await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
     await flushPromises()
-    await wrapper.findAll('button').find((button) => button.text() === '打开任务窗口')!.trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === '打开任务中心')!.trigger('click')
     await flushPromises()
 
     expect(mocks.routerPush).toHaveBeenCalledWith({ name: 'tasks', query: { module: 'rail' } })

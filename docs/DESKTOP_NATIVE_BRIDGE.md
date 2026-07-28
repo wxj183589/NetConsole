@@ -1,8 +1,10 @@
 # Desktop Native Bridge 契约
 
-## 任务与工作区窗口 DTO
+## 任务中心与工作区窗口 DTO
 
-`openTaskWindow` 只接受可选的 `taskId`、`module`、`status`。`taskId` 仅允许受控 ID 字符，`module` 固定为 `devices/config/files`，`status` 固定为任务状态枚举；未知字段和任意 URL、路径、程序或 argv 均拒绝。主窗口和任务窗口可作为 IPC sender，文件对话框以实际调用窗口为父窗口。
+`openTaskWindow` 是保留给既有业务调用方的兼容方法，只接受可选的 `taskId`、`module`、`status`。`taskId` 仅允许受控 ID 字符，`module` 和 `status` 固定为任务契约枚举；未知字段和任意 URL、路径、程序或 argv 均拒绝。Main 不再创建任务专用窗口，只恢复主窗口并通过 `taskCenterOpenRequested` 通知 Vue 根布局打开任务中心抽屉。文件对话框以实际调用的受管窗口为父窗口。
+
+`showTaskNotification` 只接受有界 `eventId/taskId/title/body/kind` DTO；Main 负责终态事件去重、Windows 原生通知和点击后恢复主窗口。`setTaskTrayStatus` 只接受 `0..999` 的 `active/failed/warning` 聚合计数，Electron 不读取任务数据库或维护第二套任务列表。普通 Browser Adapter 使用同一 Vue 抽屉，但上述原生通知和托盘动作安全降级为无操作。
 
 受控 Artifact 保存对话框同样以 IPC 调用窗口为父窗口。任务 DTO 只返回 owner 授权的下载 endpoint、opaque Artifact ID、显示名、大小和类型；保存完成后 Renderer 不接收本机路径，只有安全可打开/定位的文件才得到临时 capability ID，仅保存类型返回 `saved` 但不返回 capability。本机路径只存在于 Electron Main 的有界内存授权表。
 
@@ -22,7 +24,7 @@ Electron-only E1 已删除无生产调用者的 `QtDesktopAdapter`。Python `Des
 
 - Electron BrowserWindow 使用 `nodeIntegration: false`、`contextIsolation: true`、`sandbox: true`；
 - 方法由 contextBridge 逐项暴露，Renderer 不能取得完整 `ipcRenderer`；
-- main 检查 IPC sender 必须是当前主窗口 `webContents`；
+- main 检查 IPC sender 必须属于当前受管窗口；
 - preload 与 main 对 DTO 分别做运行时校验；
 - `desktop.native_bridge` 在 Feature Registry 登记，Vue 状态区按 Feature 状态展示/禁用；Feature 只控制产品可见性，不替代 main 的安全校验；
 - 任何本机业务对象仍须经过 FastAPI/Application Service 权限和审计。
@@ -34,6 +36,9 @@ Electron-only E1 已删除无生产调用者的 `QtDesktopAdapter`。Python `Des
 | `getAppInfo` | 无 | 只返回版本、平台、是否打包 | 状态展示 |
 | `getBackendStatus` | 无 | 不返回令牌 | 生命周期展示 |
 | `getRuntimeConfig` | 无 | 仅后端 `ready` 且受信 sender 可取 | Vue 内存 API 配置 |
+| `openTaskWindow` / `onTaskCenterOpenRequested` | 可选的受控 `taskId/module/status` / 固定回调 | 兼容入口只恢复主窗口并请求 Vue 打开抽屉，不创建 BrowserWindow | 业务页、托盘和通知点击定位任务 |
+| `showTaskNotification` | 有界终态通知 DTO | sender、字段、长度和事件 ID 白名单；Main 内存去重 | 应用在后台时显示 Windows 通知 |
+| `setTaskTrayStatus` | 运行/失败/告警聚合计数 | 只接受 `0..999` 整数，不接收任务明细 | 托盘任务数量与提示 |
 | `openWorkspaceWindow` | 受控内部路由、已清理标题 | preload/main 校验路由和标题；Main 创建受管窗口，复用唯一 Backend | 当前标签或 Dashboard 在独立工作区打开 |
 | `getWorkspaceWindowState` / `saveWorkspaceWindowState` | 无 / 当前窗口的强类型快照 | sender 必须属于 `WorkspaceWindowController`；严禁跨窗口写入、绝对路径和敏感字段 | 恢复标签与窗口布局 |
 | `setWorkspaceWindowTitle` | 已清理标题 | 仅更新 sender 所属受管窗口标题，不接受路径、控制字符或敏感字段 | 动态标签标题 |

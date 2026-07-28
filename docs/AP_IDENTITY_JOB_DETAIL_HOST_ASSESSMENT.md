@@ -6,11 +6,11 @@
 
 ## 当前事实
 
-- Electron 提供独立统一任务窗口，任务事实源仍是 `TaskApplicationService`、Task/Export Repository 和 owner capability。
+- Electron 提供根布局任务抽屉和主工作区完整任务中心，任务事实源仍是 `TaskApplicationService`、Task/Export Repository 和 owner capability；该宿主不再创建任务专用 BrowserWindow。
 - AP Identity 脱敏结构位于 `src/netconsole/models/diagnostics_summary.py`。
 - 导出诊断适配位于 `src/netconsole/services/export_identity_diagnostics.py`。
-- 当前尚未把 AP Identity 摘要接入统一任务窗口或具名 Vue 诊断页；缺少真实局点采样和脱敏复核时必须保持隐藏。
-- 统一任务窗口不得持久化 raw result、samples、evidence、明文身份、绝对路径或跨局点引用。
+- 当前尚未把 AP Identity 摘要接入全局任务中心或具名 Vue 诊断页；缺少真实局点采样和脱敏复核时必须保持隐藏。
+- 全局任务中心不得持久化 raw result、samples、evidence、明文身份、绝对路径或跨局点引用。
 
 ## 若后续接入
 

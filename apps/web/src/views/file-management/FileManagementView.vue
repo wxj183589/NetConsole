@@ -658,7 +658,7 @@ function connectionRouteText(value: FileConnection): string {
       <div class="section-heading">
         <div><h2>{{ t('queue') }}</h2><span>状态由现有 TaskRepository 恢复；设备文件与 Artifact 分离。</span></div>
         <div class="toolbar compact">
-          <el-button type="primary" plain @click="openTaskWindow">打开任务窗口</el-button>
+          <el-button type="primary" plain @click="openTaskWindow">打开任务中心</el-button>
           <el-button @click="refreshTasks">{{ t('refresh') }}</el-button>
           <el-button @click="clearTasks('COMPLETED')">{{ t('clearCompleted') }}</el-button>
           <el-button @click="clearTasks('FAILED')">{{ t('clearFailed') }}</el-button>

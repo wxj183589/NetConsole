@@ -386,10 +386,15 @@ def test_trackside_business_result_is_exposed_in_task_detail_without_raw_result_
     service.feed_stdout(task_id, encode_event(finished_event(task_id, result)).encode("utf-8"))
     service.complete(task_id, 0)
 
-    detail = JobCenterQueryService(service.paths).get_task("demo", task_id)
+    query = JobCenterQueryService(service.paths)
+    detail = query.get_task("demo", task_id)
+    listing = {item.id: item for item in query.list_tasks("demo")}
 
     assert detail is not None
     assert detail.status == "COMPLETED"
+    assert detail.has_warning is True
+    assert listing[task_id].has_warning is True
+    assert [item.id for item in query.list_tasks("demo", warning_only=True)] == [task_id]
     assert detail.details == {
         "status": "PARTIAL_SUCCESS",
         "success_count": 745,

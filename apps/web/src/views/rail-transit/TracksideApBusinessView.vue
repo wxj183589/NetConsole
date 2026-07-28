@@ -199,13 +199,13 @@ function updateFinishedNotice(value: TracksideApTask): { message: string; type: 
     const reasonText = reason
       ? resultMessage('trackside.result.notice.reason_suffix', '；主要原因：{reason}', { reason })
       : ''
-    return { message: resultMessage('trackside.result.notice.failed', '轨旁 AP 光衰更新失败：成功 {success}，失败 {failed}{not_executed}{reason}，请在任务窗口查看详情', { success: successCount, failed: failedCount, not_executed: notExecuted, reason: reasonText }), type: 'error', autoHideMs: 0 }
+    return { message: resultMessage('trackside.result.notice.failed', '轨旁 AP 光衰更新失败：成功 {success}，失败 {failed}{not_executed}{reason}，请在任务中心查看详情', { success: successCount, failed: failedCount, not_executed: notExecuted, reason: reasonText }), type: 'error', autoHideMs: 0 }
   }
-  if (value.status === 'CANCELLED' || status === 'CANCELLED') return { message: t('trackside.result.notice.cancelled', '轨旁 AP 光衰更新已取消，请在任务窗口查看详情'), type: 'warning', autoHideMs: 0 }
-  if (status === 'NO_TARGET') return { message: t('trackside.result.notice.no_target', '轨旁 AP 光衰更新未找到目标，请在任务窗口查看详情'), type: 'info', autoHideMs: 4000 }
-  if (failedCount > 0) return { message: resultMessage('trackside.result.notice.partial_failed', '轨旁 AP 光衰数据已刷新：成功 {success}，失败 {failed}，请在任务窗口查看详情', { success: successCount, failed: failedCount }), type: 'warning', autoHideMs: 0 }
-  if (actionableSkippedCount > 0) return { message: resultMessage('trackside.result.notice.not_executed', '轨旁 AP 光衰数据已刷新：成功 {success}，{not_executed} 个目标未执行，请在任务窗口查看详情', { success: successCount, not_executed: actionableSkippedCount }), type: 'warning', autoHideMs: 0 }
-  if (status === 'PARTIAL_SUCCESS') return { message: resultMessage('trackside.result.notice.partial', '轨旁 AP 光衰数据已刷新：成功 {success}，业务结果为部分成功，请在任务窗口查看详情', { success: successCount }), type: 'warning', autoHideMs: 0 }
+  if (value.status === 'CANCELLED' || status === 'CANCELLED') return { message: t('trackside.result.notice.cancelled', '轨旁 AP 光衰更新已取消，请在任务中心查看详情'), type: 'warning', autoHideMs: 0 }
+  if (status === 'NO_TARGET') return { message: t('trackside.result.notice.no_target', '轨旁 AP 光衰更新未找到目标，请在任务中心查看详情'), type: 'info', autoHideMs: 4000 }
+  if (failedCount > 0) return { message: resultMessage('trackside.result.notice.partial_failed', '轨旁 AP 光衰数据已刷新：成功 {success}，失败 {failed}，请在任务中心查看详情', { success: successCount, failed: failedCount }), type: 'warning', autoHideMs: 0 }
+  if (actionableSkippedCount > 0) return { message: resultMessage('trackside.result.notice.not_executed', '轨旁 AP 光衰数据已刷新：成功 {success}，{not_executed} 个目标未执行，请在任务中心查看详情', { success: successCount, not_executed: actionableSkippedCount }), type: 'warning', autoHideMs: 0 }
+  if (status === 'PARTIAL_SUCCESS') return { message: resultMessage('trackside.result.notice.partial', '轨旁 AP 光衰数据已刷新：成功 {success}，业务结果为部分成功，请在任务中心查看详情', { success: successCount }), type: 'warning', autoHideMs: 0 }
   const ignored = ignoredSkippedCount
     ? resultMessage('trackside.result.notice.ignored_suffix', '；另有 {count} 项不适用或已忽略', { count: ignoredSkippedCount })
     : ''
@@ -233,7 +233,7 @@ function handleTerminalTask(value: TracksideApTask | null): void {
     if (value.status === 'COMPLETED') {
       setTaskNotice('厂商适配采样完成，原始输出 ZIP 可下载', 'success', 4000)
     } else if (value.status === 'FAILED') {
-      setTaskNotice('厂商适配采样失败，请在任务窗口查看原因', 'error')
+      setTaskNotice('厂商适配采样失败，请在任务中心查看原因', 'error')
     } else if (value.status === 'CANCELLED') {
       setTaskNotice('厂商适配采样已取消', 'warning')
     }
@@ -257,8 +257,8 @@ function handleTerminalTask(value: TracksideApTask | null): void {
       else done()
       return
     }
-    if (value.status === 'FAILED') setTaskNotice('轨旁 AP 业务导出失败，请在任务窗口查看原因', 'error')
-    else if (value.status === 'CANCELLED') setTaskNotice('轨旁 AP 业务导出已取消，请在任务窗口查看详情', 'warning')
+    if (value.status === 'FAILED') setTaskNotice('轨旁 AP 业务导出失败，请在任务中心查看原因', 'error')
+    else if (value.status === 'CANCELLED') setTaskNotice('轨旁 AP 业务导出已取消，请在任务中心查看详情', 'warning')
   }
 }
 
@@ -466,7 +466,7 @@ onBeforeUnmount(() => { stopPolling(); clearTaskNotice() })
           :disabled="exportTaskRunning || !isFeatureEnabled('web.rail_trackside_ap_business_export') || !isFeatureEnabled('web.rail_task_control')"
           @click="exportBusiness"
         >导出表格</el-button>
-        <el-button @click="openTaskWindow">打开任务窗口</el-button>
+        <el-button @click="openTaskWindow">打开任务中心</el-button>
       </div>
     </header>
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="true" @close="error = ''"><el-button link @click="recoverTasks">恢复任务</el-button></el-alert>

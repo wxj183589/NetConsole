@@ -95,7 +95,7 @@
 ## 本周新增高置信沉淀（2026-07-13 至 2026-07-20）
 
 - Electron-only 收口已从“并行迁移”进入活动产品边界：Qt 只保留历史追溯，不再作为测试、依赖、运行时或 fallback。
-- 统一任务窗口、受控 Artifact 下载和 Native Bridge capability 成为跨模块默认交互；本机路径和凭据不回传 Renderer。
+- 全局任务中心（抽屉与完整页面）、受控 Artifact 下载和 Native Bridge capability 成为跨模块默认交互；本机路径和凭据不回传 Renderer。
 - 77 张标准 Web 表格已迁移到公共表格组件，后续新增表格必须同提交补清单和测试。
 - 数据根、局点 Registry、`.ncsite`、备份恢复和迁移由 Python Application Service 管理；安装/卸载/升级不得删除用户数据根或 Electron bootstrap。
 - 轨交基础资料真实编辑闭环、固定通信拓扑和设备文件 SFTP 受控启用均已形成明确边界，但真实设备、真实局点和 Electron 视觉验收仍需单独记录，不能由 Fake 或单元测试替代。

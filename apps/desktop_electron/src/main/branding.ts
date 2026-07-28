@@ -1,7 +1,6 @@
 import { resolve } from 'node:path'
 
 export const NETCONSOLE_WINDOW_TITLE = 'NetConsole'
-export const NETCONSOLE_TASK_WINDOW_TITLE = 'NetConsole 任务中心'
 
 export interface DesktopIconPathContext {
   isPackaged: boolean

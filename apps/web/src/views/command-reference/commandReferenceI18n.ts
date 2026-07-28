@@ -15,8 +15,8 @@ const zh = {
   loadFailed: '命令说明加载失败', exportFailed: '导出启动失败', restoreFailed: '导出状态恢复失败', cancelFailed: '取消导出失败',
   taskRefreshFailed: '任务状态刷新暂时失败，正在重试',
   downloadSaved: 'Markdown 已保存', downloadFailed: 'Artifact 下载失败', taskSubmitted: 'Markdown 导出任务已提交',
-  task: '任务', status: '状态', artifact: 'Artifact', openTaskWindow: '打开统一任务窗口', cancel: '取消', download: '下载 Artifact',
-  taskWindowFailed: '统一任务窗口打开失败', zte: 'ZTE',
+  task: '任务', status: '状态', artifact: 'Artifact', openTaskWindow: '打开任务中心', cancel: '取消', download: '下载 Artifact',
+  taskWindowFailed: '任务中心打开失败', zte: 'ZTE',
   riskReadOnly: '只读', riskConfigWrite: '修改配置', riskInteractive: '交互操作', riskExternalTool: '外部工具', riskUnknown: '未知',
   zteNotApplicable: '不适用', ztePhase1: '第一阶段参考', ztePhase2: '第二阶段参考',
 } as const
@@ -38,8 +38,8 @@ const en: Record<CommandReferenceTextKey, string> = {
   loadFailed: 'Failed to load command references', exportFailed: 'Failed to start export', restoreFailed: 'Failed to restore export status', cancelFailed: 'Failed to cancel export',
   taskRefreshFailed: 'Task status refresh failed temporarily; retrying',
   downloadSaved: 'Markdown saved', downloadFailed: 'Artifact download failed', taskSubmitted: 'Markdown export task submitted',
-  task: 'Task', status: 'Status', artifact: 'Artifact', openTaskWindow: 'Open task window', cancel: 'Cancel', download: 'Download Artifact',
-  taskWindowFailed: 'Failed to open task window', zte: 'ZTE',
+  task: 'Task', status: 'Status', artifact: 'Artifact', openTaskWindow: 'Open task center', cancel: 'Cancel', download: 'Download Artifact',
+  taskWindowFailed: 'Failed to open task center', zte: 'ZTE',
   riskReadOnly: 'Read only', riskConfigWrite: 'Configuration write', riskInteractive: 'Interactive', riskExternalTool: 'External tool', riskUnknown: 'Unknown',
   zteNotApplicable: 'Not applicable', ztePhase1: 'Phase 1 reference', ztePhase2: 'Phase 2 reference',
 }

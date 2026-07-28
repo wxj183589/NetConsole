@@ -19,7 +19,7 @@ const devPort = Number.parseInt(process.env.NETCONSOLE_DEV_PORT || '5173', 10)
 if (!Number.isInteger(devPort) || devPort < 1 || devPort > 65_535) throw new Error('NETCONSOLE_DEV_PORT must be a valid TCP port')
 const devUrl = `http://127.0.0.1:${devPort}`
 const smoke = process.argv.includes('--smoke') || process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1'
-const taskWindowSmoke = process.argv.includes('--task-window')
+const taskCenterSmoke = process.argv.includes('--task-center') || process.argv.includes('--task-window')
 const workspaceTraySmoke = process.argv.includes('--workspace-tray')
 const codex = process.argv.includes('--codex')
 const isolatedDataArgument = process.argv.indexOf('--isolated-test-data')
@@ -29,7 +29,7 @@ const explicitIsolatedDataRoot = isolatedDataArgument >= 0
 if (isolatedDataArgument >= 0 && !explicitIsolatedDataRoot) {
   throw new Error('--isolated-test-data requires an absolute D:\\NetConsoleTestData\\<run-id> path')
 }
-const isolated = smoke || taskWindowSmoke || workspaceTraySmoke || Boolean(explicitIsolatedDataRoot)
+const isolated = smoke || taskCenterSmoke || workspaceTraySmoke || Boolean(explicitIsolatedDataRoot)
 const codexBackendPort = 8000
 const codexBackendUrl = `http://127.0.0.1:${codexBackendPort}`
 const codexSessionToken = codex ? randomBytes(32).toString('base64url') : ''
@@ -89,10 +89,10 @@ async function waitForVite(vite, timeoutMs = 20_000) {
   throw new Error(`Vite did not become ready at ${devUrl}`)
 }
 
-async function warmTaskWindowModules() {
+async function warmTaskCenterModules() {
   const modules = [
     '/src/App.vue',
-    '/src/layouts/TaskWindowLayout.vue',
+    '/src/task-center/components/GlobalTaskCenter.vue',
     '/src/views/job-center/JobCenterView.vue',
     '/src/components/NcStatusTag.vue',
     '/src/components/feedback/NcConfirmDialog.vue',
@@ -246,7 +246,7 @@ try {
     },
   })
   await waitForVite(vite)
-  if (taskWindowSmoke) await warmTaskWindowModules()
+  if (taskCenterSmoke) await warmTaskCenterModules()
   const electronExecutable = require('electron')
   const electronEnv = { ...process.env }
   delete electronEnv.ELECTRON_RUN_AS_NODE
@@ -268,14 +268,14 @@ try {
       ...(isolated ? {
         NETCONSOLE_DATA_ROOT: isolatedRuntime.dataRoot,
         NETCONSOLE_DEV_TEMP_DATA_ROOT: '1',
-        ...(taskWindowSmoke || workspaceTraySmoke ? { NETCONSOLE_ISOLATED_SMOKE: '1' } : {}),
+        ...(taskCenterSmoke || workspaceTraySmoke ? { NETCONSOLE_ISOLATED_SMOKE: '1' } : {}),
         ...(codex ? {
         NETCONSOLE_DEV_BACKEND_PORT: String(codexBackendPort),
         NETCONSOLE_DEV_SESSION_TOKEN: codexSessionToken,
         } : {}),
       } : {}),
       ...(smoke ? { NETCONSOLE_ELECTRON_SMOKE_TEST: '1' } : {}),
-      ...(taskWindowSmoke ? { NETCONSOLE_ELECTRON_TASK_WINDOW_SMOKE: '1' } : {}),
+      ...(taskCenterSmoke ? { NETCONSOLE_ELECTRON_TASK_CENTER_SMOKE: '1' } : {}),
       ...(workspaceTraySmoke ? { NETCONSOLE_ELECTRON_WORKSPACE_TRAY_SMOKE: '1' } : {}),
     },
   })

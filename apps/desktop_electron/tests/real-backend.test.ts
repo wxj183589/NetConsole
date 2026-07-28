@@ -152,6 +152,8 @@ function runtimeBridge(apiBaseUrl: string, apiToken: string): NetConsoleDesktopB
     getBackendStatus: vi.fn(async () => ({ state: 'ready' as const, baseUrl: apiBaseUrl })),
     getRuntimeConfig: vi.fn(async () => ({ apiBaseUrl, apiToken })),
     openTaskWindow: vi.fn(async () => ({ success: true })),
+    showTaskNotification: vi.fn(async () => ({ success: true })),
+    setTaskTrayStatus: vi.fn(),
     selectFile: vi.fn(async () => ({ cancelled: true, paths: [] })),
     selectDirectory: vi.fn(async () => ({ cancelled: true })),
     selectSettingsTool: vi.fn(async () => ({ cancelled: true })),

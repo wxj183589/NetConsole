@@ -35,7 +35,7 @@ Main 依赖 `../shared/` 的强类型 DTO，与 Vue 仅通过 preload bridge 通
 
 ## 修改规则
 
-BrowserWindow 创建时保持隐藏，随后显示跟随 `nativeTheme` 的受控启动页，保证 Python Core 较慢或失败时仍可观察。业务 Renderer 导航受主题显示门约束：真实系统设置解析后只可报告 `light`/`dark`，Main 先更新发信窗口背景，再结束显示门；超时和失败先加载受控错误页。错误页重试不携带 Renderer URL，也不经过 preload/Renderer IPC；Main 只接受来自当前受管错误页的一次固定动作，再从按窗口保存的 Main-owned 目标中恢复主窗口或带筛选上下文的任务窗口，重新校验 loopback 地址、重置错误协调器并布防显示门。Main 拒绝 `auto`、强调色、任意颜色或附加窗口参数，不读取或持久化第二份主题。Web 颜色事实源始终位于 `apps/web/src/theme/`。
+BrowserWindow 创建时保持隐藏，随后显示跟随 `nativeTheme` 的受控启动页，保证 Python Core 较慢或失败时仍可观察。业务 Renderer 导航受主题显示门约束：真实系统设置解析后只可报告 `light`/`dark`，Main 先更新发信窗口背景，再结束显示门；超时和失败先加载受控错误页。错误页重试不携带 Renderer URL，也不经过 preload/Renderer IPC；Main 只接受来自当前受管错误页的一次固定动作，再从按窗口保存的 Main-owned 目标中恢复主窗口或附加工作区窗口，重新校验 loopback 地址、重置错误协调器并布防显示门。任务中心只存在于 Vue 根布局和主工作区，不创建专用 BrowserWindow。Main 拒绝 `auto`、强调色、任意颜色或附加窗口参数，不读取或持久化第二份主题。Web 颜色事实源始终位于 `apps/web/src/theme/`。
 
 ## 生成与清理
 

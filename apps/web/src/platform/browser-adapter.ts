@@ -1,5 +1,6 @@
 import type { PlatformAdapter } from './types'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
+import { requestTaskCenterOpen } from '../task-center/events'
 
 const DESKTOP_ONLY_MESSAGE = '当前能力仅在 NetConsole Electron Desktop 中可用'
 const INVALID_FILE_NAME_RE = /[\u0000-\u001f<>:"/\\|?*]/
@@ -33,7 +34,13 @@ export function createBrowserAdapter(apiBaseUrl = '', developmentToken = ''): Pl
     refreshSiteContext: async () => undefined,
     chooseSavePath: async () => ({ cancelled: true }),
     downloadBackendResource: async (value) => startBrowserDownload(value, baseUrl),
-    openTaskWindow: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
+    openTaskWindow: async (context) => {
+      requestTaskCenterOpen(context)
+      return { success: true }
+    },
+    showTaskNotification: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
+    setTaskTrayStatus: () => undefined,
+    onTaskCenterOpenRequested: () => () => undefined,
     openPath: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
     showItemInFolder: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
     openExternalUrl: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),

@@ -48,11 +48,10 @@ describe('Web route ownership', () => {
     expect(route?.meta?.hiddenRoute).toBe(true)
   })
 
-  it('registers the independent task-window route outside the main application shell', () => {
-    const taskWindow = appRoutes.find((route) => route.path === '/desktop/tasks')
-    expect(taskWindow).toBeDefined()
-    expect(taskWindow?.children?.[0]?.name).toBe('desktop-tasks')
-    expect(taskWindow?.children?.[0]?.meta?.hiddenRoute).toBe(true)
+  it('keeps the complete task center inside the main application shell', () => {
+    const taskCenter = routes.find((route) => route.name === 'tasks')
+    expect(taskCenter?.path).toBe('tasks')
+    expect(appRoutes.some((route) => route.path === '/desktop/tasks')).toBe(false)
   })
 
   it('does not register excluded or unfinished routes', () => {

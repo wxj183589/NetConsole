@@ -8,6 +8,9 @@ export interface TrayRuntimeContext {
   siteSwitching: boolean
   closeToTrayEnabled: boolean
   visibleWindowCount: number
+  activeTaskCount: number
+  failedTaskCount: number
+  warningTaskCount: number
 }
 
 export interface TraySiteSummary {
@@ -39,7 +42,7 @@ export interface TrayControllerOptions {
   createTray(): TrayLike
   buildMenu(template: TrayMenuItem[]): unknown
   showMainWindow(): Promise<void> | void
-  showTaskWindow(): Promise<void> | void
+  showTaskCenter(): Promise<void> | void
   createWorkspaceWindow(): Promise<void> | void
   requestSiteSwitch(siteId: string): Promise<void> | void
   setCloseToTrayEnabled(enabled: boolean): Promise<void> | void
@@ -53,6 +56,9 @@ const INITIAL_CONTEXT: TrayRuntimeContext = {
   siteSwitching: false,
   closeToTrayEnabled: true,
   visibleWindowCount: 1,
+  activeTaskCount: 0,
+  failedTaskCount: 0,
+  warningTaskCount: 0,
 }
 
 export class TrayController {
@@ -94,6 +100,9 @@ export class TrayController {
         const displayName = sanitizeSiteName(site.displayName)
         return displayName ? [{ ...site, displayName }] : []
       }),
+      activeTaskCount: sanitizeCount(context.activeTaskCount ?? this.context.activeTaskCount),
+      failedTaskCount: sanitizeCount(context.failedTaskCount ?? this.context.failedTaskCount),
+      warningTaskCount: sanitizeCount(context.warningTaskCount ?? this.context.warningTaskCount),
     }
     if (this.updateTimer) clearTimeout(this.updateTimer)
     this.updateTimer = setTimeout(() => {
@@ -106,8 +115,8 @@ export class TrayController {
     void this.options.showMainWindow()
   }
 
-  showTaskWindow(): void {
-    void this.options.showTaskWindow()
+  showTaskCenter(): void {
+    void this.options.showTaskCenter()
   }
 
   createWorkspaceWindow(): void {
@@ -122,7 +131,7 @@ export class TrayController {
       tray.setContextMenu(this.options.buildMenu([
         { label: '打开 NetConsole', click: () => this.showMainWindow() },
         { label: '新建工作区窗口', click: () => this.createWorkspaceWindow() },
-        { label: '打开任务中心', click: () => this.showTaskWindow() },
+        { label: taskCenterMenuLabel(this.context), click: () => this.showTaskCenter() },
         { type: 'separator' },
         { label: `Backend：${backendStateLabel(this.context.backendState)}`, enabled: false },
         { label: `当前局点：${this.context.activeSiteName || '未选择'}`, enabled: false },
@@ -202,13 +211,31 @@ function backendStateLabel(state: BackendState): string {
 }
 
 function resolveTooltip(context: TrayRuntimeContext): string {
+  const taskStatus = context.failedTaskCount
+    ? ` · 失败任务 ${context.failedTaskCount}`
+    : context.activeTaskCount
+      ? ` · 运行任务 ${context.activeTaskCount}`
+      : ''
   if (context.backendState === 'starting') return 'NetConsole · 正在启动'
   if (context.backendState === 'ready') {
-    return context.activeSiteName ? `NetConsole · ${context.activeSiteName}` : 'NetConsole · 未选择局点'
+    return context.activeSiteName ? `NetConsole · ${context.activeSiteName}${taskStatus}` : `NetConsole · 未选择局点${taskStatus}`
   }
   return context.activeSiteName
     ? `NetConsole · ${context.activeSiteName} · Backend 离线`
     : 'NetConsole · Backend 离线'
+}
+
+function taskCenterMenuLabel(context: TrayRuntimeContext): string {
+  const states = [
+    context.activeTaskCount ? `运行 ${context.activeTaskCount}` : '',
+    context.failedTaskCount ? `失败 ${context.failedTaskCount}` : '',
+    context.warningTaskCount ? `告警 ${context.warningTaskCount}` : '',
+  ].filter(Boolean)
+  return states.length ? `打开任务中心（${states.join(' / ')}）` : '打开任务中心'
+}
+
+function sanitizeCount(value: number): number {
+  return Number.isSafeInteger(value) ? Math.max(0, Math.min(value, 999)) : 0
 }
 
 function sanitizeSiteName(value: string | undefined): string | undefined {

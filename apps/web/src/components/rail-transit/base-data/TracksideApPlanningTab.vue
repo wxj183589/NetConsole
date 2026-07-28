@@ -649,7 +649,7 @@ onBeforeUnmount(stopPolling)
       </el-tab-pane>
     </el-tabs>
     <el-alert v-if="plan?.issues.length" :title="plan.issues.map((item) => item.message).join('；')" :type="plan.valid ? 'warning' : 'error'" :closable="false" />
-    <el-alert v-if="task" :title="`${task.status} · ${task.message || task.task_id}`" :type="task.error_message ? 'error' : 'info'" :closable="false"><el-button v-if="task.available && task.artifact_id" link type="primary" :loading="downloadingArtifact" @click="downloadArtifact">下载文件</el-button><el-button link @click="openTaskWindow">打开任务窗口</el-button></el-alert>
+    <el-alert v-if="task" :title="`${task.status} · ${task.message || task.task_id}`" :type="task.error_message ? 'error' : 'info'" :closable="false"><el-button v-if="task.available && task.artifact_id" link type="primary" :loading="downloadingArtifact" @click="downloadArtifact">下载文件</el-button><el-button link @click="openTaskWindow">打开任务中心</el-button></el-alert>
     <el-dialog v-model="importPreviewVisible" title="导入预览" width="960px" destroy-on-close>
       <div v-if="importPreview" class="preview">
         <el-descriptions :column="5" border><el-descriptions-item label="总行数">{{ importPreview.total_count }}</el-descriptions-item><el-descriptions-item label="有效">{{ importPreview.valid_count }}</el-descriptions-item><el-descriptions-item label="重复">{{ importPreview.duplicate_count }}</el-descriptions-item><el-descriptions-item label="错误">{{ importPreview.error_count }}</el-descriptions-item><el-descriptions-item label="SHA-256">{{ importPreview.file_sha256.slice(0, 12) }}…</el-descriptions-item></el-descriptions>

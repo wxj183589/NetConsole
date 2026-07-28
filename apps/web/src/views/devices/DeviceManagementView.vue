@@ -270,8 +270,6 @@ const publicDeviceTasks = computed(() => (taskStore.tasks as DevicePublicTask[])
   || task.owner === 'web_device_management'
   || task.type.startsWith('device_')
 )))
-const activeDeviceTaskCount = computed(() => publicDeviceTasks.value.filter((task) => activeTaskStatuses.has(task.status)).length)
-const failedDeviceTaskCount = computed(() => publicDeviceTasks.value.filter((task) => task.status === 'FAILED').length)
 const csvExportActive = computed(() => csvExportSubmitting.value || isPendingExportActive('export_csv'))
 const templateExportActive = computed(() => templateExportSubmitting.value || isPendingExportActive('export_template'))
 const latestDeviceTask = computed(() => {
@@ -596,7 +594,7 @@ async function openTaskWindow(
   const bridge = window.netconsoleDesktop as (typeof window.netconsoleDesktop & Partial<DeviceTaskWindowBridge>) | undefined
   if (bridge?.openTaskWindow) {
     const result = await bridge.openTaskWindow(context)
-    if (!result.success && notifyFailure) ElMessage.error(result.error || '统一任务窗口打开失败')
+    if (!result.success && notifyFailure) ElMessage.error(result.error || '任务中心打开失败')
     return result.success
   }
   await router.push({ name: 'tasks', query: { module: 'devices', ...(taskId ? { task_id: taskId } : {}) } })
@@ -634,7 +632,7 @@ async function presentTasks(
   }
   const failedSteps = [
     !taskStoreRefreshed ? '任务状态刷新失败' : '',
-    !taskWindowOpened ? '任务窗口打开失败' : '',
+    !taskWindowOpened ? '任务中心打开失败' : '',
   ].filter(Boolean).join('；')
   ElMessage.warning(`任务已提交，但${failedSteps}`)
 }
@@ -1141,7 +1139,7 @@ async function testWriteConnection(): Promise<void> {
       await taskStore.refresh()
       ElMessage.success(`${writeTestProtocol.value} 表单连接测试任务已提交`)
     } catch {
-      ElMessage.warning('连接测试任务已提交，但任务状态刷新失败；可使用“打开任务窗口”继续查看')
+      ElMessage.warning('连接测试任务已提交，但任务状态刷新失败；可使用“打开任务中心”继续查看')
     }
   } catch (cause) {
     ElMessage.error(errorMessage(cause, '表单连接测试任务提交失败'))
@@ -1858,20 +1856,17 @@ function errorMessage(cause: unknown, fallback: string): string {
     </div>
 
     <el-alert
-      :title="`设备任务 · 运行中 ${activeDeviceTaskCount} 项 / 失败任务 ${failedDeviceTaskCount} 项`"
+      v-if="latestDeviceTask?.artifact_download"
+      title="设备任务文件已生成"
       :description="latestPendingExport
         ? `${deviceExportScopeLabel(latestPendingExport)} · 目标：${latestPendingExport.fileName} · ${localSaveStatusLabel(latestPendingExport.state)}`
-        : latestDeviceTask
-          ? `${latestDeviceTask.name || latestDeviceTask.type} · ${latestDeviceTask.status} · ${latestArtifactSaveStatus ? localSaveStatusLabel(latestArtifactSaveStatus) : (latestDeviceTask.message || latestDeviceTask.id)}`
-          : '任务状态由统一任务中心恢复'"
-      type="info"
+        : `${latestDeviceTask.name || latestDeviceTask.type} · ${latestDeviceTask.message || latestDeviceTask.id}`"
+      :type="latestPendingExport?.state === 'save_failed' ? 'warning' : 'success'"
       :closable="false"
       show-icon
       class="task-summary"
     >
-      <el-button link type="primary" @click="openTaskWindow()">打开任务窗口</el-button>
       <el-button
-        v-if="latestDeviceTask?.artifact_download"
         link
         type="primary"
         :disabled="latestArtifactSaveStatus === 'saving'"
@@ -2101,7 +2096,7 @@ function errorMessage(cause: unknown, fallback: string): string {
           </div>
         </div></section>
       </el-form>
-      <template #footer><div class="write-footer"><div class="write-test-actions"><el-select v-model="writeTestProtocol" style="width:120px"><el-option v-for="protocol in availableWriteTestProtocols" :key="protocol" :label="protocol" :value="protocol" /></el-select><el-tooltip :content="writeConnectionDisabledReason" :disabled="!writeConnectionDisabledReason"><span><el-button data-testid="form-connection-test" :icon="Connection" :loading="writeConnectionBusy" :disabled="!!writeConnectionDisabledReason" @click="testWriteConnection">测试表单连接</el-button></span></el-tooltip><span v-if="writeConnectionDisabledReason && !writeConnectionBusy" data-testid="form-connection-disabled-reason" class="field-warning">{{ writeConnectionDisabledReason }}</span><el-button v-if="writeConnectionTest" data-testid="form-connection-task" plain @click="openWriteConnectionTestTask">打开任务窗口</el-button></div><div><el-button data-testid="device-form-cancel" @click="cancelWriteDialog">取消</el-button><el-button data-testid="device-save" type="primary" :loading="writeLoading" :disabled="editingProfileLoading || !isFeatureEnabled('web.device_management_write')" @click="saveWrite">保存</el-button></div></div></template>
+      <template #footer><div class="write-footer"><div class="write-test-actions"><el-select v-model="writeTestProtocol" style="width:120px"><el-option v-for="protocol in availableWriteTestProtocols" :key="protocol" :label="protocol" :value="protocol" /></el-select><el-tooltip :content="writeConnectionDisabledReason" :disabled="!writeConnectionDisabledReason"><span><el-button data-testid="form-connection-test" :icon="Connection" :loading="writeConnectionBusy" :disabled="!!writeConnectionDisabledReason" @click="testWriteConnection">测试表单连接</el-button></span></el-tooltip><span v-if="writeConnectionDisabledReason && !writeConnectionBusy" data-testid="form-connection-disabled-reason" class="field-warning">{{ writeConnectionDisabledReason }}</span><el-button v-if="writeConnectionTest" data-testid="form-connection-task" plain @click="openWriteConnectionTestTask">打开任务中心</el-button></div><div><el-button data-testid="device-form-cancel" @click="cancelWriteDialog">取消</el-button><el-button data-testid="device-save" type="primary" :loading="writeLoading" :disabled="editingProfileLoading || !isFeatureEnabled('web.device_management_write')" @click="saveWrite">保存</el-button></div></div></template>
     </el-dialog>
 
     <el-dialog v-model="groupVisible" title="分组管理" width="420px">

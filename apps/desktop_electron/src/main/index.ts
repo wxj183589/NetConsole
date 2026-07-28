@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, screen, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, Notification as ElectronNotification, screen, shell, Tray } from 'electron'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 
@@ -20,7 +20,7 @@ import {
   type RendererFailureActions,
   type RendererProcessFailure,
 } from './renderer-diagnostics'
-import { NETCONSOLE_TASK_WINDOW_TITLE, NETCONSOLE_WINDOW_TITLE, resolveDesktopIconPath, resolveTrayIconPath } from './branding'
+import { NETCONSOLE_WINDOW_TITLE, resolveDesktopIconPath, resolveTrayIconPath } from './branding'
 import {
   MANAGED_RENDERER_OPEN_LOGS_ACTION,
   MANAGED_RENDERER_OPEN_MAIN_TASKS_ACTION,
@@ -30,7 +30,7 @@ import {
   ManagedWindowErrorCoordinator,
   RendererThemeDisplayGate,
 } from './renderer-theme-display-gate'
-import { TaskWindowController } from './task-window-controller'
+import { TaskNotificationController } from './task-notification'
 import { TrayController, type TrayMenuItem, type TraySiteSummary } from './tray-controller'
 import { WorkspaceLayoutStore, type WorkspaceWindowBounds } from './workspace-layout-store'
 import { WorkspaceWindowController } from './workspace-window-controller'
@@ -58,11 +58,10 @@ assertElectronStoragePaths()
 app.enableSandbox()
 
 let mainWindow: BrowserWindow | undefined
-let taskWindow: BrowserWindow | undefined
-let taskWindowController: TaskWindowController | undefined
 let workspaceWindowController: WorkspaceWindowController | undefined
 let workspaceLayoutStore: WorkspaceLayoutStore | undefined
 let trayController: TrayController | undefined
+let taskNotificationController: TaskNotificationController | undefined
 let trayAvailable = false
 let closeToTrayEnabled = true
 let explicitQuitRequested = false
@@ -74,7 +73,7 @@ let smokeWatchdogTimer: NodeJS.Timeout | undefined
 let smokeStableTimer: NodeJS.Timeout | undefined
 let smokeRendererHealthy = false
 let smokeRendererLoading = true
-let taskWindowSmokeStarted = false
+let taskCenterSmokeStarted = false
 let workspaceTraySmokeStarted = false
 const rendererOrigins = new Set<string>()
 const connectionOrigins = new Set<string>()
@@ -222,25 +221,22 @@ async function startDesktop(): Promise<void> {
   })
   mainWindow = workspaceWindowController.ensureMainWindow(false) as BrowserWindow
   startupTimeline.mark('electron.window_created')
-  taskWindowController = new TaskWindowController({
-    createWindow: () => {
-      const window = createMainWindow(rendererDevelopment, false, NETCONSOLE_TASK_WINDOW_TITLE)
-      taskWindow = window
-      window.on('close', (event) => {
-        if (allowQuit) return
-        event.preventDefault()
-        window.hide()
-        handleVisibleBusinessWindowCount(workspaceWindowController?.countVisibleBusinessWindows() ?? 0)
+  taskNotificationController = new TaskNotificationController({
+    createNotification: (payload) => {
+      if (!ElectronNotification.isSupported()) throw new Error('native notification unsupported')
+      return new ElectronNotification({
+        title: payload.title,
+        body: payload.body,
+        silent: payload.kind === 'success',
       })
-      window.on('closed', () => { if (taskWindow === window) taskWindow = undefined })
-      return window
     },
-    buildTarget: buildTaskRendererTarget,
-    loadLoadingPage: (window) => loadStatusPage(window as BrowserWindow, '正在加载任务中心…', '正在加载任务列表与当前上下文。'),
-    loadFailurePage: (window, title, detail) => loadStatusPage(window as BrowserWindow, title, detail, true, true),
-    prepareNavigation: (window, target) => rememberManagedRendererTarget(window as BrowserWindow, target),
+    activateTask: async (taskId) => {
+      await openTaskWindow({ taskId })
+    },
+    isApplicationFocused: () => getAllDesktopWindows().some(
+      (window) => !window.isDestroyed() && window.isFocused(),
+    ),
     logger: (event) => logger(event),
-    timeoutMs: RENDERER_THEME_READY_TIMEOUT_MS,
   })
   trayController = new TrayController({
     createTray: () => {
@@ -259,7 +255,7 @@ async function startDesktop(): Promise<void> {
       template as Parameters<typeof Menu.buildFromTemplate>[0],
     ),
     showMainWindow: () => workspaceWindowController?.showMainWindow(),
-    showTaskWindow: async () => { await openTaskWindow({}) },
+    showTaskCenter: async () => { await openTaskWindow({}) },
     createWorkspaceWindow: async () => {
       await openWorkspaceWindow({ routeFullPath: '/', title: 'Dashboard' })
     },
@@ -288,6 +284,14 @@ async function startDesktop(): Promise<void> {
       ?? workspaceWindowController?.getMainWindow()
       ?? mainWindow,
     openTaskWindow,
+    showTaskNotification: (payload) => (
+      taskNotificationController?.show(payload) ?? { success: false, error: '系统通知不可用' }
+    ),
+    setTaskTrayStatus: (status) => trayController?.updateContext({
+      activeTaskCount: status.active,
+      failedTaskCount: status.failed,
+      warningTaskCount: status.warning,
+    }),
     openWorkspaceWindow,
     getWorkspaceWindowState: (window) => getWorkspaceWindowState(window),
     saveWorkspaceWindowState: (window, snapshot) => saveWorkspaceWindowState(window, snapshot),
@@ -719,11 +723,7 @@ function installManagedWindowDiagnostics(window: BrowserWindow, smoke = false): 
   installRendererDiagnostics(window, {
     logger,
     canRetry: () => Boolean(windowRendererTargets.get(window)),
-    surface: window === mainWindow
-      ? 'main'
-      : window === taskWindow
-        ? 'task-window'
-        : 'workspace-window',
+    surface: window === mainWindow ? 'main' : 'workspace-window',
     getLatestWorkload: () => latestRendererWorkloads.get(window.webContents.id),
     hasRecentGpuFailure: () => (
       recentGpuProcessFailureAt > 0
@@ -738,8 +738,15 @@ function installManagedWindowDiagnostics(window: BrowserWindow, smoke = false): 
 }
 
 async function openTaskWindow(context: TaskWindowContext): Promise<NativeActionResult> {
-  if (!rendererUrl || !taskWindowController || explicitQuitRequested) return { success: false, error: '任务窗口尚未就绪' }
-  return taskWindowController.open(context)
+  if (!rendererUrl || !workspaceWindowController || explicitQuitRequested) {
+    return { success: false, error: '任务中心尚未就绪' }
+  }
+  await restoreApplicationWindow()
+  const target = workspaceWindowController.getMainWindow() as BrowserWindow | undefined
+  if (!target || target.isDestroyed()) return { success: false, error: '任务中心尚未就绪' }
+  target.webContents.send(DESKTOP_IPC.taskCenterOpenRequested, context)
+  logger('ELECTRON_TASK_CENTER_DRAWER_REQUESTED')
+  return { success: true }
 }
 
 async function openWorkspaceWindow(request: WorkspaceWindowOpenRequest): Promise<NativeActionResult> {
@@ -770,17 +777,6 @@ function buildWorkspaceRendererTarget(
   if (role === 'workspace') target.searchParams.set('workspace_window', '1')
   target.searchParams.set('workspace_window_id', windowId)
   return target.toString()
-}
-
-function buildTaskRendererTarget(context: TaskWindowContext): string {
-  if (!rendererUrl) throw new Error('任务窗口尚未就绪')
-  const url = new URL('/desktop/tasks', rendererUrl)
-  url.searchParams.set('netconsole_host', 'electron')
-  url.searchParams.set('task_window', '1')
-  if (context.taskId) url.searchParams.set('task_id', context.taskId)
-  if (context.module) url.searchParams.set('module', context.module)
-  if (context.status) url.searchParams.set('status', context.status)
-  return url.toString()
 }
 
 async function loadStatusPage(
@@ -826,13 +822,6 @@ async function loadStatusPage(
 function handleRendererReady(report: RendererHostReport, sourceWindow: unknown): void {
   const window = resolveManagedDesktopWindow(sourceWindow)
   workspaceWindowController?.acceptRendererReport(report, window)
-  if (window === taskWindow) {
-    logger(
-      'ELECTRON_TASK_WINDOW_READY_REPORT',
-      'resolvedTheme' in report ? 'phase=theme' : `phase=${report.phase} surface=${report.surface || 'none'}`,
-    )
-  }
-  if (window === taskWindow) taskWindowController?.acceptRendererReport(report, taskWindowController.currentWindow)
   if ('resolvedTheme' in report) {
     if (window) windowDisplayGates.get(window)?.acceptResolvedTheme()
     return
@@ -857,14 +846,14 @@ function handleRendererReady(report: RendererHostReport, sourceWindow: unknown):
     return
   }
   smokeRendererHealthy = true
-  if (process.env.NETCONSOLE_ELECTRON_TASK_WINDOW_SMOKE === '1') {
+  if (process.env.NETCONSOLE_ELECTRON_TASK_CENTER_SMOKE === '1') {
     if (smokeStableTimer) {
       clearTimeout(smokeStableTimer)
       smokeStableTimer = undefined
     }
-    if (!taskWindowSmokeStarted) {
-      taskWindowSmokeStarted = true
-      void runTaskWindowSmoke()
+    if (!taskCenterSmokeStarted) {
+      taskCenterSmokeStarted = true
+      void runTaskCenterSmoke()
     }
     return
   }
@@ -887,7 +876,7 @@ function handleRendererWorkload(report: RendererWorkloadReport, sourceWindow: un
     'ELECTRON_RENDERER_WORKLOAD',
     [
       `web_contents_id=${webContentsId}`,
-      `surface=${window === mainWindow ? 'main' : window === taskWindow ? 'task-window' : 'workspace-window'}`,
+      `surface=${window === mainWindow ? 'main' : 'workspace-window'}`,
       `module=${report.module}`,
       `phase=${report.phase}`,
       `session_id=${report.sessionId ?? 'none'}`,
@@ -962,18 +951,13 @@ function getRendererRecoveryState(sourceWindow: unknown): RendererRecoveryState 
   return rendererRecoveries.get(window.webContents.id) ?? null
 }
 
-async function runTaskWindowSmoke(): Promise<void> {
+async function runTaskCenterSmoke(): Promise<void> {
   try {
-    let result = await openTaskWindow({ module: 'rail' })
-    if (!result.success && taskWindowController) {
-      logger('ELECTRON_TASK_WINDOW_SMOKE_RETRY')
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 500))
-      result = await taskWindowController.retry()
-    }
-    logger(result.success ? 'ELECTRON_TASK_WINDOW_SMOKE_PASSED' : 'ELECTRON_TASK_WINDOW_SMOKE_FAILED')
+    const result = await openTaskWindow({ module: 'rail' })
+    logger(result.success ? 'ELECTRON_TASK_CENTER_SMOKE_PASSED' : 'ELECTRON_TASK_CENTER_SMOKE_FAILED')
     requestExit(result.success ? 0 : 2)
   } catch {
-    logger('ELECTRON_TASK_WINDOW_SMOKE_FAILED')
+    logger('ELECTRON_TASK_CENTER_SMOKE_FAILED')
     requestExit(2)
   }
 }
@@ -1006,7 +990,7 @@ async function runWorkspaceTraySmoke(): Promise<void> {
 
 function scheduleSmokeStableExit(): void {
   if (
-    process.env.NETCONSOLE_ELECTRON_TASK_WINDOW_SMOKE === '1'
+    process.env.NETCONSOLE_ELECTRON_TASK_CENTER_SMOKE === '1'
     || process.env.NETCONSOLE_ELECTRON_WORKSPACE_TRAY_SMOKE === '1'
   ) return
   if (!smokeRendererHealthy || smokeRendererLoading || smokeStableTimer) return
@@ -1036,7 +1020,7 @@ function startSmokeWatchdog(): void {
   if (smokeWatchdogTimer) clearTimeout(smokeWatchdogTimer)
   smokeRendererHealthy = false
   smokeRendererLoading = true
-  taskWindowSmokeStarted = false
+  taskCenterSmokeStarted = false
   workspaceTraySmokeStarted = false
   logger('ELECTRON_SMOKE_WATCHDOG_STARTED')
   smokeWatchdogTimer = setTimeout(() => {
@@ -1048,7 +1032,6 @@ function startSmokeWatchdog(): void {
 function getAllDesktopWindows(): BrowserWindow[] {
   const windows = [
     ...(workspaceWindowController?.getAllManagedWindows() ?? []),
-    ...(taskWindow && !taskWindow.isDestroyed() ? [taskWindow] : []),
   ] as BrowserWindow[]
   return [...new Set(windows)]
 }
@@ -1111,7 +1094,6 @@ function beginShutdownAndExit(): void {
   allowQuit = true
   workspaceWindowController?.flush()
   workspaceWindowController?.closeAllForQuit()
-  if (taskWindow && !taskWindow.isDestroyed()) taskWindow.close()
   trayController?.dispose()
   shutdownPromise = shutdown().finally(() => {
     traceSmoke('EXIT_REQUESTED')
@@ -1131,8 +1113,7 @@ async function shutdown(): Promise<void> {
   logger('ELECTRON_SHUTDOWN_STARTED')
   traceSmoke('SHUTDOWN_STARTED')
   try {
-    taskWindowController?.dispose()
-    taskWindowController = undefined
+    taskNotificationController = undefined
     workspaceWindowController?.flush()
   } catch {
     requestedExitCode = Math.max(requestedExitCode, 1)
@@ -1206,11 +1187,6 @@ async function retryManagedRenderer(
   window: BrowserWindow,
   recoveryMode: RendererRecoveryState['mode'] = 'normal',
 ): Promise<void> {
-  if (window === taskWindow && taskWindowController) {
-    logger('ELECTRON_RENDERER_RETRY_STARTED')
-    await taskWindowController.retry()
-    return
-  }
   const failure = rendererProcessFailures.get(window.webContents.id)
   const workload = failure?.workload
   let target = windowRendererTargets.get(window)

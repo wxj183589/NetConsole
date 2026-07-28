@@ -302,7 +302,7 @@ describe('ConfigCollectionView mounted workflow', () => {
     expect(api.configArtifactDownloadRequest).toHaveBeenCalledWith('export-artifact', 'SW-A_to_SW-B.diff')
     expect(downloadBackendResource).toHaveBeenCalledTimes(1)
 
-    await buttonContaining(wrapper, '任务窗口（').trigger('click')
+    await buttonContaining(wrapper, '任务中心').trigger('click')
     await flushPromises()
     expect(openTaskWindow).toHaveBeenCalledWith({ module: 'config' })
     expect(routerPush).not.toHaveBeenCalled()

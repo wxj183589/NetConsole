@@ -128,7 +128,6 @@ onMounted(() => {
   const module = typeof route.query.module === 'string' ? route.query.module : ''
   if (status) filter.value = ['PENDING', 'STARTING', 'RUNNING', 'STOPPING'].includes(status) ? 'active' : status.toLowerCase()
   if (['devices', 'ac', 'rail', 'config', 'files', 'network', 'command-reference', 'logs'].includes(module)) moduleFilter.value = module
-  reportTaskWindowInteractive()
   startPolling()
   const taskId = typeof route.query.task_id === 'string' ? route.query.task_id : typeof route.query.task === 'string' ? route.query.task : ''
   if (taskId) void selectContextTask(taskId)
@@ -141,11 +140,6 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', handleVisibility)
   stopPolling()
 })
-
-function reportTaskWindowInteractive(): void {
-  if (route.path !== '/desktop/tasks' || route.query.task_window !== '1') return
-  getPlatformAdapter().reportRendererReady(true, 'interactive', 'task-window')
-}
 
 function startPolling(): void {
   if (pollingAcquired) return

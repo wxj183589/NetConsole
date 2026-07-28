@@ -604,7 +604,7 @@ async function presentTasks(tasks: DeviceTaskReference[], message: string): Prom
   }
   const failedSteps = [
     !taskStoreRefreshed ? '任务状态刷新失败' : '',
-    !taskWindowOpened ? '任务窗口打开失败' : '',
+    !taskWindowOpened ? '任务中心打开失败' : '',
   ].filter(Boolean).join('；')
   ElMessage.warning(`任务已提交，但${failedSteps}`)
 }
@@ -633,7 +633,7 @@ async function openTaskWindow(taskId = '', status?: TaskStatus): Promise<boolean
   const bridge = window.netconsoleDesktop as (typeof window.netconsoleDesktop & Partial<DeviceTaskWindowBridge>) | undefined
   if (bridge?.openTaskWindow) {
     const result = await bridge.openTaskWindow(context)
-    if (!result.success) ElMessage.error(result.error || '统一任务窗口打开失败')
+    if (!result.success) ElMessage.error(result.error || '任务中心打开失败')
     return result.success
   }
   await router.push({ name: 'tasks', query: { module: 'devices', ...(taskId ? { task_id: taskId } : {}) } })
@@ -1162,7 +1162,7 @@ function errorMessage(cause: unknown, fallback: string): string {
 
               <section v-if="connectionTest" class="detail-section">
                 <h3>连接测试</h3>
-                <div class="section-actions"><el-button link @click="openTaskWindow(connectionTest?.task_id || '')">打开任务窗口</el-button></div>
+                <div class="section-actions"><el-button link @click="openTaskWindow(connectionTest?.task_id || '')">打开任务中心</el-button></div>
                 <el-alert v-if="connectionTest" :title="`${formatValue(connectionTest.protocol)} · ${formatValue(connectionTest.task_status)} · ${formatValue(connectionTest.message)}`" :type="statusType(connectionTest.success)" :description="`Task ID: ${formatValue(connectionTest.task_id)}${connectionTest.suggestion ? `；建议：${connectionTest.suggestion}` : ''}`" show-icon :closable="false" />
               </section>
             </template>

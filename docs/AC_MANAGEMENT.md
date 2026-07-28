@@ -17,7 +17,7 @@ Vue AC 管理 -> POST /api/ac-management/refresh/fit-ap
   -> AcWebApplicationService -> ac_fit_ap_resources_refresh Job
   -> AcResourceService -> H3C CLI collector/parser -> AcRepository
   -> 当前局点 devices.db + raw/commands JSONL
-  -> web-tasks 恢复模块结果 + 统一任务窗口停止/日志/Artifact
+  -> web-tasks 恢复模块结果 + 全局任务中心抽屉/页面停止、日志与 Artifact
   -> Vue 刷新结构化结果
 ```
 

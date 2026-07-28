@@ -2,6 +2,13 @@
 
 ## v1.4.4 - 2026-07-28
 
+### 全局任务中心
+
+- 删除设备管理常驻任务状态条和 Electron 独立任务 BrowserWindow，任务状态入口收敛到根布局顶栏图标、右侧任务中心抽屉与右下角合并进度浮层；完整历史、日志和 Artifact 继续使用主工作区 `/tasks`。
+- 全局 Task Store 复用 REST 快照与唯一 `/ws/tasks` 连接，WebSocket 高频事件以 300ms 合并刷新；前台终态只显示 Vue 通知，后台终态使用去重的 Windows 原生通知，点击后恢复主窗口、打开抽屉并定位任务。
+- Electron Native Bridge 新增严格任务通知与托盘聚合计数 DTO，托盘显示运行、失败与部分成功数量；Main 不读取任务数据库，也不持有第二套任务列表。历史 `openTaskWindow` 调用保留为打开主窗口任务抽屉的兼容入口。
+- Job Center 列表和详情统一识别业务结果中的部分成功、失败数与告警数，避免底层任务状态为 `COMPLETED` 时漏掉橙色告警。
+
 ### ZTE VLAN/PVID
 
 - ZTE 设备详情 Profile v3 增加精确只读命令 `show running-config switchvlan` 与 `show vlan`，实现端口模式、PVID、Native/Tagged/Untagged VLAN、来源校验、冲突告警和失败继承；两台车站 C89E-4 七命令实机验证均为 success，中心设备不纳入轨旁 AP 业务结论。

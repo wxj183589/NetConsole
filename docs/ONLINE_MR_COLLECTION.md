@@ -150,7 +150,7 @@ python -m scripts.maintenance.check_online_mr_session_state --task-id "<controll
 
 当前解析库 schema version 为 `online_mr_business_tables_v9_no_source_fields`。公开业务表 key 固定为 `main_link`、`link_detail`、`channel_busy`、`switch_history`、`switch_realtime`、`interface_rate`、`fping_1s`、`iperf`、`diagnostics`；旧 `mesh_link`/`mesh_detail` 只作为 API 入参短期兼容别名并规范化返回新 key，`radio_statistics` 不再作为独立业务表公开。新生成的业务记录表不保存 `raw_file`、`source_file`、`raw_line_start`、`raw_line_end`、`raw_line` 等来源文件或行号字段；解析问题和诊断事件仍可保留定位信息。原始日志文件继续完整保存在会话 `raw/` 目录，原始日志页和打包功能不得删除或绕过这些事实文件。
 
-`/rail-transit/online-mr-analysis` 的会话动作统一位于页面顶部：刷新、解析/强制解析、打开会话位置、生成 XLSX、打开任务窗口和删除会话。报告按钮只提交一次 Export Process 任务，进度、错误和 Artifact 继续在任务窗口查看；会话记录表与顶部选择器共享 `session_id`，切换任一入口都同步当前行高亮。底部不再保留第二套报告卡片。
+`/rail-transit/online-mr-analysis` 的会话动作统一位于页面顶部：刷新、解析/强制解析、打开会话位置、生成 XLSX、打开任务中心和删除会话。报告按钮只提交一次 Export Process 任务，进度、错误和 Artifact 继续在全局任务中心查看；会话记录表与顶部选择器共享 `session_id`，切换任一入口都同步当前行高亮。底部不再保留第二套报告卡片。
 
 “打开会话位置”是 Electron 专用语义动作。Renderer 只向白名单 IPC 提交稳定 `session_id`，Electron Main 用受管回环 Origin 和内存会话令牌调用固定 FastAPI 端点；Application Service 在 `PathResolver` 管理根内按正式包、MESH/终端 raw、raw 目录、会话目录、parsed、关联报告的顺序解析目标。绝对路径不返回 Renderer，Browser/Server Mode 显式禁用该动作。
 

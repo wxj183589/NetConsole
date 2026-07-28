@@ -218,7 +218,7 @@ describe('Command Reference mounted behavior', () => {
     await button(wrapper, '复制命令模板').trigger('click')
     await button(wrapper, '导出 Markdown').trigger('click')
     await flushPromises()
-    await button(wrapper, '打开统一任务窗口').trigger('click')
+    await button(wrapper, '打开任务中心').trigger('click')
     await flushPromises()
 
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('display version')
@@ -226,7 +226,7 @@ describe('Command Reference mounted behavior', () => {
     expect(mocks.routerPush).not.toHaveBeenCalled()
 
     mocks.hostType = 'browser'
-    await button(wrapper, '打开统一任务窗口').trigger('click')
+    await button(wrapper, '打开任务中心').trigger('click')
     expect(mocks.routerPush).toHaveBeenCalledWith({
       name: 'tasks', query: { task_id: taskId, module: 'command-reference', status: 'RUNNING' },
     })
@@ -418,10 +418,10 @@ describe('Command Reference mounted behavior', () => {
 
     expect(wrapper.text()).toContain('Command Reference')
     expect(wrapper.text()).toContain('Prerequisites')
-    expect(wrapper.findAll('button').some((item) => item.text() === 'Open task window')).toBe(false)
+    expect(wrapper.findAll('button').some((item) => item.text() === 'Open task center')).toBe(false)
 
     await button(wrapper, 'Export Markdown').trigger('click')
     await flushPromises()
-    expect(button(wrapper, 'Open task window').exists()).toBe(true)
+    expect(button(wrapper, 'Open task center').exists()).toBe(true)
   })
 })

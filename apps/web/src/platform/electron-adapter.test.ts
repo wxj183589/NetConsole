@@ -12,6 +12,8 @@ function bridge(runtime = {
     getBackendStatus: vi.fn(async () => ({ state: 'ready' as const, baseUrl: runtime.apiBaseUrl })),
     getRuntimeConfig: vi.fn(async () => runtime),
     openTaskWindow: vi.fn(async () => ({ success: true })),
+    showTaskNotification: vi.fn(async () => ({ success: true })),
+    setTaskTrayStatus: vi.fn(),
     selectFile: vi.fn(async () => ({ cancelled: true, paths: [] })),
     selectDirectory: vi.fn(async () => ({ cancelled: true })),
     selectSettingsTool: vi.fn(async () => ({ cancelled: true })),
@@ -53,7 +55,7 @@ describe('Electron platform adapter', () => {
       suggestedName: 'report.zip',
     })
     await adapter.openTaskWindow({ taskId: 'task-1', status: 'RUNNING' })
-    expect(nativeBridge.openTaskWindow).toHaveBeenCalledWith({ taskId: 'task-1', status: 'RUNNING' })
+    expect(nativeBridge.openTaskWindow).not.toHaveBeenCalled()
     await adapter.openExternalUrl('https://192.0.2.10/')
     expect(nativeBridge.openExternalUrl).toHaveBeenCalledWith('https://192.0.2.10/')
   })

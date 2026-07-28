@@ -4,7 +4,6 @@ import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import {
-  NETCONSOLE_TASK_WINDOW_TITLE,
   NETCONSOLE_WINDOW_TITLE,
   resolveDesktopIconPath,
 } from '../src/main/branding'
@@ -15,7 +14,6 @@ const repoRoot = resolve(appRoot, '..', '..')
 describe('desktop branding resources', () => {
   it('uses the requested window titles', () => {
     expect(NETCONSOLE_WINDOW_TITLE).toBe('NetConsole')
-    expect(NETCONSOLE_TASK_WINDOW_TITLE).toBe('NetConsole 任务中心')
   })
 
   it('resolves development and packaged icon paths without absolute project literals', () => {

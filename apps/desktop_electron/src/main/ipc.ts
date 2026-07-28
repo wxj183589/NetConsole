@@ -1,6 +1,6 @@
 import { isAbsolute, resolve } from 'node:path'
 
-import type { AppInfo, BackendStatus, CloseToTrayState, DesktopResolvedTheme, DesktopRuntimeConfig, NativeActionResult, RendererHostReport, RendererRecoveryState, RendererWorkloadReport, SettingsThemeColor, SiteStorageRestartRequest, TaskWindowContext, WorkspaceWindowOpenRequest, WorkspaceWindowSnapshot, WorkspaceWindowStateResult } from '../shared/bridge'
+import type { AppInfo, BackendStatus, CloseToTrayState, DesktopResolvedTheme, DesktopRuntimeConfig, NativeActionResult, RendererHostReport, RendererRecoveryState, RendererWorkloadReport, SettingsThemeColor, SiteStorageRestartRequest, TaskNotificationPayload, TaskTrayStatus, TaskWindowContext, WorkspaceWindowOpenRequest, WorkspaceWindowSnapshot, WorkspaceWindowStateResult } from '../shared/bridge'
 import {
   DESKTOP_HANDLED_CHANNELS,
   DESKTOP_IPC,
@@ -17,6 +17,8 @@ import {
   validateRendererWorkloadReport,
   validateSelectFileOptions,
   validateTaskWindowContext,
+  validateTaskNotificationPayload,
+  validateTaskTrayStatus,
   validateWorkspaceTitle,
   validateWorkspaceWindowOpenRequest,
   validateWorkspaceWindowSnapshot,
@@ -92,6 +94,8 @@ export interface DesktopIpcDependencies {
   window: unknown
   windowForEvent?: (event: IpcEventLike) => unknown
   openTaskWindow?: (value: TaskWindowContext) => Promise<NativeActionResult> | NativeActionResult
+  showTaskNotification?: (value: TaskNotificationPayload) => Promise<NativeActionResult> | NativeActionResult
+  setTaskTrayStatus?: (value: TaskTrayStatus) => void
   openWorkspaceWindow?: (value: WorkspaceWindowOpenRequest) => Promise<NativeActionResult> | NativeActionResult
   getWorkspaceWindowState?: (window: unknown) => WorkspaceWindowStateResult
   saveWorkspaceWindowState?: (window: unknown, value: WorkspaceWindowSnapshot) => void
@@ -141,7 +145,7 @@ export function registerDesktopIpc(
   dependencies.ipcMain.handle(
     DESKTOP_IPC.openTaskWindow,
     trusted(async (value) => {
-      if (!dependencies.openTaskWindow) return { success: false, error: '任务窗口尚未就绪' }
+      if (!dependencies.openTaskWindow) return { success: false, error: '任务中心尚未就绪' }
       return dependencies.openTaskWindow(validateTaskWindowContext(value))
     }),
   )
@@ -352,6 +356,13 @@ export function registerDesktopIpc(
     }),
   )
   dependencies.ipcMain.handle(
+    DESKTOP_IPC.showTaskNotification,
+    trusted(async (value) => {
+      if (!dependencies.showTaskNotification) return { success: false, error: '系统通知不可用' }
+      return dependencies.showTaskNotification(validateTaskNotificationPayload(value))
+    }),
+  )
+  dependencies.ipcMain.handle(
     DESKTOP_IPC.downloadBackendResource,
     trusted((value, event) => downloadManager.download(value, dependencies.windowForEvent?.(event) ?? dependencies.window)),
   )
@@ -484,6 +495,17 @@ export function registerDesktopIpc(
       return
     }
     dependencies.setSiteSwitching?.(value)
+  })
+  dependencies.ipcMain.on(DESKTOP_IPC.setTaskTrayStatus, (event, value) => {
+    if (!dependencies.isTrustedSender(event)) {
+      dependencies.logger?.('ELECTRON_TASK_TRAY_STATUS_UNTRUSTED')
+      return
+    }
+    try {
+      dependencies.setTaskTrayStatus?.(validateTaskTrayStatus(value))
+    } catch {
+      dependencies.logger?.('ELECTRON_TASK_TRAY_STATUS_REJECTED')
+    }
   })
   return { shutdown: () => downloadManager.shutdown() }
 }
