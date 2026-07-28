@@ -186,12 +186,12 @@ class ApManagementVlanGroupDTO(ApiModel):
     sequence: int = 0
     management_vlan: int | None = Field(default=None, ge=1, le=4094)
     legacy_management_vlans: str = ""
-    network_address: str = ""
-    prefix_length: int | None = Field(default=None, ge=0, le=32)
-    subnet_mask: str = ""
-    default_gateway: str = ""
-    ap_start_ip: str = ""
-    ap_end_ip: str = ""
+    network_address: str | None = None
+    prefix_length: int | str | None = None
+    subnet_mask: str | None = None
+    default_gateway: str | None = None
+    ap_start_ip: str | None = None
+    ap_end_ip: str | None = None
     address_allocation_strategy: str = "station_then_point"
     notes: str = ""
     created_at: str = ""

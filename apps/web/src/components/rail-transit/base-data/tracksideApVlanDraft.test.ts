@@ -28,10 +28,17 @@ const draft = (sizes: number[], mode: TracksideApPlanDraft['planning']['planning
 describe('trackside AP VLAN group draft operations', () => {
   it('splits one group at a station boundary without mutating the source', () => {
     const source = draft([4])
+    source.allocations.push({
+      ap_id: 'ap:1', ap_name: 'AP-1', point_code: 'P01', station_id: 's1', station_name: '站1',
+      section_name: '', group_id: 'g1', planned_ip: 'existing-reference', allocation_order: 0,
+      is_manual: false, is_locked: false, source: 'existing_ap', group_source: 'station_inherited', updated_at: '',
+    })
     const result = splitVlanGroup(source, 'g1', 3, 'g2')
     expect(result.groups.map((group) => group.members.length)).toEqual([3, 1])
     expect(source.groups).toHaveLength(1)
     expect(result.groups[1].management_vlan).toBeNull()
+    expect(result.groups[1].ap_start_ip).toBe(source.groups[0].ap_start_ip)
+    expect(result.allocations[0].planned_ip).toBe('existing-reference')
   })
 
   it('rejects an invalid split boundary', () => {
@@ -41,9 +48,15 @@ describe('trackside AP VLAN group draft operations', () => {
   it('merges adjacent groups and remaps overrides', () => {
     const source = draft([1, 3])
     source.assignments.push({ assignment_id: 'a1', assignment_type: 'ap_override', target_id: 'ap:1', group_id: 'g2', source: 'ap_override', updated_at: '' })
+    source.allocations.push({
+      ap_id: 'ap:1', ap_name: 'AP-1', point_code: 'P01', station_id: 's2', station_name: '站1',
+      section_name: '', group_id: 'g2', planned_ip: 'existing-reference', allocation_order: 0,
+      is_manual: false, is_locked: false, source: 'existing_ap', group_source: 'station_inherited', updated_at: '',
+    })
     const result = mergeAdjacentVlanGroups(source, 'g1', 'g2')
     expect(result.groups.map((group) => group.members.length)).toEqual([4])
     expect(result.assignments[0].group_id).toBe('g1')
+    expect(result.allocations[0].planned_ip).toBe('existing-reference')
   })
 
   it('rejects non-adjacent merges', () => {

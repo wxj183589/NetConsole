@@ -14,7 +14,7 @@ from netconsole.core.device_credential_store import (
 from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal
 
 
-CURRENT_SCHEMA_VERSION = "2026.07.28.ap_management_vlan_groups"
+CURRENT_SCHEMA_VERSION = "2026.07.29.ap_management_vlan_reference_ips"
 
 
 class DatabaseSchemaMismatchError(RuntimeError):
@@ -841,7 +841,6 @@ CREATE TABLE IF NOT EXISTS rail_ap_vlan_allocations (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY (group_id) REFERENCES rail_ap_vlan_groups(group_id) ON DELETE CASCADE,
-    UNIQUE (planned_ip),
     CHECK (is_manual IN (0, 1)),
     CHECK (is_locked IN (0, 1))
 );
@@ -1160,7 +1159,9 @@ class Database:
                     self._schema_scripts_for_existing_database(conn) if existed else self._all_schema_scripts()
                 )
             )
+            conn.execute("BEGIN IMMEDIATE")
             self._apply_additive_schema_updates(conn)
+            self._migrate_trackside_ap_vlan_allocation_references(conn)
             self._migrate_trackside_ap_vlan_groups(conn)
             repair_device_credential_states(conn)
             self._write_schema_version(conn)
@@ -1535,6 +1536,77 @@ class Database:
                     updated_at,
                 ),
             )
+
+    def _migrate_trackside_ap_vlan_allocation_references(
+        self,
+        conn: sqlite3.Connection,
+    ) -> None:
+        """移除参考 IP 唯一约束；事务由 initialize 统一提交或回滚。"""
+        if not self._table_exists(conn, "rail_ap_vlan_allocations"):
+            return
+        row = conn.execute(
+            """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'rail_ap_vlan_allocations'
+            """
+        ).fetchone()
+        if row is None:
+            return
+        definition = "".join(str(row["sql"] or "").upper().split())
+        if "UNIQUE(PLANNED_IP)" not in definition:
+            return
+        conn.execute(
+            """
+            CREATE TABLE rail_ap_vlan_allocations_reference_migration (
+                ap_id TEXT PRIMARY KEY,
+                ap_name TEXT NOT NULL DEFAULT '',
+                point_code TEXT NOT NULL DEFAULT '',
+                station_id TEXT NOT NULL DEFAULT '',
+                station_name TEXT NOT NULL DEFAULT '',
+                section_name TEXT NOT NULL DEFAULT '',
+                group_id TEXT NOT NULL,
+                planned_ip TEXT NOT NULL,
+                allocation_order INTEGER NOT NULL,
+                is_manual INTEGER NOT NULL DEFAULT 0,
+                is_locked INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL,
+                group_source TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (group_id) REFERENCES rail_ap_vlan_groups(group_id) ON DELETE CASCADE,
+                CHECK (is_manual IN (0, 1)),
+                CHECK (is_locked IN (0, 1))
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO rail_ap_vlan_allocations_reference_migration (
+                ap_id, ap_name, point_code, station_id, station_name,
+                section_name, group_id, planned_ip, allocation_order,
+                is_manual, is_locked, source, group_source, created_at, updated_at
+            )
+            SELECT
+                ap_id, ap_name, point_code, station_id, station_name,
+                section_name, group_id, planned_ip, allocation_order,
+                is_manual, is_locked, source, group_source, created_at, updated_at
+            FROM rail_ap_vlan_allocations
+            """
+        )
+        conn.execute("DROP TABLE rail_ap_vlan_allocations")
+        conn.execute(
+            """
+            ALTER TABLE rail_ap_vlan_allocations_reference_migration
+            RENAME TO rail_ap_vlan_allocations
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX idx_rail_ap_vlan_allocations_group_order
+            ON rail_ap_vlan_allocations(group_id, allocation_order)
+            """
+        )
 
     @staticmethod
     def _migration_station_id(

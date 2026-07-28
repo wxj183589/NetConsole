@@ -103,13 +103,13 @@ TRACKSIDE_PLAN_FIELD_NOTES = (
     },
     {
         "field": "组网络参数",
-        "requirement": "必填",
-        "description": "管理 VLAN、网络/掩码、网关和组 AP 起始地址属于 VLAN 组；相邻组参数相同仅提示，不自动合并。",
+        "requirement": "管理 VLAN 必填，其余可选",
+        "description": "仅管理 VLAN 参与规划校验；网络、掩码、网关和组 AP 起止地址只作参考展示。",
     },
     {
         "field": "分配顺序/锁定",
-        "requirement": "可选",
-        "description": "记录组内地址分配顺序和手工锁定状态；重新生成默认只处理未锁定地址。",
+        "requirement": "兼容可选",
+        "description": "保留旧模板字段用于兼容；VLAN 规划不生成、重算或修改 AP IP。",
     },
     {
         "field": "站点",
@@ -123,18 +123,18 @@ TRACKSIDE_PLAN_FIELD_NOTES = (
     },
     {
         "field": "AP 起始地址",
-        "requirement": "条件必填",
-        "description": "AP 数大于 0 时必须填写；支持完整 IPv4 或项目现有带 X 地址格式。",
+        "requirement": "可选参考",
+        "description": "允许为空或保留既有文本，不参与 VLAN 规划校验。",
     },
     {
         "field": "掩码",
-        "requirement": "可选",
-        "description": "支持 0-32 或合法连续 IPv4 掩码。",
+        "requirement": "可选参考",
+        "description": "可填写前缀或掩码；无法解析时不阻止 VLAN 规划导入。",
     },
     {
         "field": "AP 网关",
-        "requirement": "可选",
-        "description": "填写时必须为有效 IPv4。",
+        "requirement": "可选参考",
+        "description": "允许为空或保留既有文本，不参与 VLAN 规划校验。",
     },
     {
         "field": "管理 VLAN",
@@ -143,9 +143,6 @@ TRACKSIDE_PLAN_FIELD_NOTES = (
     },
     {"field": "备注", "requirement": "可选", "description": "规划备注。"},
 )
-MASK_ERROR_TEXT = "必须是0-32或合法连续IPv4掩码"
-
-
 def read_trackside_plan_file(path: Path) -> list[dict[str, object | None]]:
     if path.suffix.casefold() == ".csv":
         validate_csv_import(path, expected_module="ac.trackside_ap_plan", required_headers=TRACKSIDE_PLAN_REQUIRED_HEADERS, allow_legacy=True)
@@ -209,31 +206,6 @@ def _dedupe_station_rows(rows: list[dict[str, object | None]]) -> list[dict[str,
     return result
 
 
-def _valid_ipv4(value: str) -> bool:
-    parts = value.split(".")
-    if len(parts) != 4:
-        return False
-    try:
-        return all(0 <= int(part) <= 255 for part in parts)
-    except ValueError:
-        return False
-
-
-def _valid_ipv4_or_placeholder(value: str) -> bool:
-    parts = value.split(".")
-    if len(parts) != 4:
-        return False
-    for part in parts:
-        if part.upper() == "X":
-            continue
-        try:
-            if int(part) < 0 or int(part) > 255:
-                return False
-        except ValueError:
-            return False
-    return True
-
-
 def _parse_mask_length(value: object) -> int | None:
     text = "" if value is None else str(value).strip()
     if not text:
@@ -283,17 +255,11 @@ def normalize_trackside_plan_row(
         raise ValueError(f"第{row_number}行 AP数量：必须是非负整数")
     raw_mask = value.get("mask_length")
     mask_length = _parse_mask_length(raw_mask)
-    if mask_length is None and str(raw_mask or "").strip():
-        raise ValueError(f"第{row_number}行 掩码：{MASK_ERROR_TEXT}")
     vlans = parse_vlan_set(value.get("ap_management_vlans"))
     if not vlans:
         raise ValueError(f"第{row_number}行 AP管理VLAN：必填")
     start = str(value.get("ap_start_address") or "").strip()
     gateway = str(value.get("ap_gateway") or "").strip()
-    if start and not _valid_ipv4_or_placeholder(start):
-        raise ValueError(f"第{row_number}行 AP起始地址：格式无效")
-    if gateway and not _valid_ipv4(gateway):
-        raise ValueError(f"第{row_number}行 AP网关：必须是IPv4")
     return {
         "station_name": station,
         "ap_count": ap_count,

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 import re
 from collections import Counter
 from dataclasses import asdict, dataclass
@@ -156,6 +155,8 @@ def normalize_plan_draft(
             if group_raw.get("prefix_length") not in (None, "")
             else group_raw.get("mask_length")
         )
+        if prefix is not None and not 0 <= prefix <= 32:
+            prefix = None
         management_vlan = _optional_int(
             group_raw.get("management_vlan")
             if group_raw.get("management_vlan") not in (None, "")
@@ -167,15 +168,7 @@ def normalize_plan_draft(
         ap_start_ip = str(
             group_raw.get("ap_start_ip") or group_raw.get("ap_start_address") or ""
         ).strip()
-        network = _network(network_address, prefix, ap_start_ip)
-        if network is not None:
-            network_address = str(network.network_address)
-            prefix = network.prefixlen
-        subnet_mask = (
-            str(network.netmask)
-            if network is not None
-            else str(group_raw.get("subnet_mask") or "").strip()
-        )
+        subnet_mask = str(group_raw.get("subnet_mask") or "").strip()
         normalized_groups.append(
             {
                 "group_id": group_id,
@@ -392,7 +385,7 @@ def validate_plan(
                     group_id=group_id,
                 )
             )
-        issues.extend(_validate_group_network(group))
+        issues.extend(_validate_group_vlan(group))
 
     counts = Counter(station_id for station_id, _group_id in memberships)
     for station in station_rows:
@@ -424,23 +417,6 @@ def validate_plan(
         )
 
     issues.extend(_cross_group_warnings(groups))
-    allocations, allocation_issues, _derived_assignments = allocate_addresses(
-        normalized,
-        stations=station_rows,
-        aps=aps,
-        reallocation_policy=REALLOCATION_ONLY_UNLOCKED,
-    )
-    issues.extend(PlanningIssue(**issue) for issue in allocation_issues)
-    planned_ips = [
-        str(row.get("planned_ip") or "")
-        for row in allocations
-        if str(row.get("planned_ip") or "")
-    ]
-    duplicates = {ip for ip, count in Counter(planned_ips).items() if count > 1}
-    for duplicate in sorted(duplicates):
-        issues.append(
-            _error("AP_IP_DUPLICATE", f"AP 规划地址 {duplicate} 重复", "planned_ip")
-        )
     return [issue.to_dict() for issue in _dedupe_issues(issues)]
 
 
@@ -451,6 +427,7 @@ def allocate_addresses(
     aps: Iterable[Mapping[str, Any]],
     reallocation_policy: str = REALLOCATION_ONLY_UNLOCKED,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
+    """兼容旧调用名：只解析 VLAN 归属并读取既有 IP，不生成或校验地址。"""
     if reallocation_policy not in {REALLOCATION_ONLY_UNLOCKED, REALLOCATION_ALL}:
         raise ValueError("地址重算策略无效")
     station_rows = station_inputs(stations)
@@ -469,7 +446,6 @@ def allocate_addresses(
     ap_rows = [dict(row) for row in aps]
     resolved: list[tuple[dict[str, Any], Mapping[str, Any], str, str]] = []
     derived_assignments: list[dict[str, object]] = []
-    issues: list[PlanningIssue] = []
     for ap in ap_rows:
         ap_id = str(ap.get("id") or ap.get("ap_id") or "").strip()
         group, source, station_id = _effective_group_for_ap(
@@ -480,14 +456,6 @@ def allocate_addresses(
             assignment_by_target=assignment_by_target,
         )
         if group is None:
-            issues.append(
-                _error(
-                    "AP_VLAN_GROUP_UNRESOLVED",
-                    f"AP“{ap.get('name') or ap.get('ap_name') or ap_id}”无法获得有效 VLAN 组",
-                    "group_id",
-                    ap_id=ap_id,
-                )
-            )
             continue
         if source == "interval_start_default" and ap_id not in assignment_by_target:
             derived_assignments.append(
@@ -501,17 +469,6 @@ def allocate_addresses(
                 }
             )
         resolved.append((ap, group, source, station_id))
-
-    reserved_ips: set[str] = set()
-    for ap, _group, _source, _station_id in resolved:
-        existing = existing_by_ap.get(str(ap.get("id") or ap.get("ap_id") or ""))
-        if (
-            existing
-            and reallocation_policy == REALLOCATION_ONLY_UNLOCKED
-            and bool(existing.get("is_locked") or existing.get("is_manual"))
-            and str(existing.get("planned_ip") or "")
-        ):
-            reserved_ips.add(str(existing["planned_ip"]))
 
     by_group: dict[str, list[tuple[dict[str, Any], Mapping[str, Any], str, str]]] = {}
     station_sequence = {
@@ -539,33 +496,6 @@ def allocate_addresses(
         by_group.setdefault(str(item[1]["group_id"]), []).append(item)
     allocations: list[dict[str, object]] = []
     for group_id, group_items in by_group.items():
-        group = groups[group_id]
-        network = _network(
-            group.get("network_address"),
-            _optional_int(group.get("prefix_length")),
-            group.get("ap_start_ip"),
-        )
-        start_ip = _address(group.get("ap_start_ip"))
-        if network is None or start_ip is None:
-            for ap, _group, _source, _station_id in group_items:
-                issues.append(
-                    _error(
-                        "GROUP_ADDRESS_CONFIG_INCOMPLETE",
-                        f"{group['group_name']} 缺少可用的网段、掩码或 AP 起始地址",
-                        "ap_start_ip",
-                        group_id=group_id,
-                        ap_id=str(ap.get("id") or ""),
-                    )
-                )
-            continue
-        gateway = _address(group.get("default_gateway"))
-        blocked = {
-            str(network.network_address),
-            str(network.broadcast_address),
-            *(str(value) for value in (gateway,) if value is not None),
-            *reserved_ips,
-        }
-        candidates = _candidate_addresses(network, start_ip, blocked)
         group_items.sort(
             key=lambda item: (
                 allocation_station_sequence(item),
@@ -579,35 +509,15 @@ def allocate_addresses(
         ):
             ap_id = str(ap.get("id") or ap.get("ap_id") or "")
             existing = existing_by_ap.get(ap_id)
-            keep_existing = bool(
-                existing
-                and reallocation_policy == REALLOCATION_ONLY_UNLOCKED
-                and bool(existing.get("is_locked") or existing.get("is_manual"))
-                and str(existing.get("planned_ip") or "")
+            ap_reference_ip = str(
+                ap.get("management_ip")
+                or ap.get("ap_ip")
+                or ap.get("ip")
+                or ""
             )
-            if keep_existing:
-                planned_ip = str(existing["planned_ip"])
-                is_manual = bool(existing.get("is_manual"))
-                is_locked = bool(existing.get("is_locked"))
-                allocation_source = str(existing.get("source") or "manual")
-            else:
-                try:
-                    planned_ip = next(candidates)
-                except StopIteration:
-                    issues.append(
-                        _error(
-                            "ADDRESS_CAPACITY_INSUFFICIENT",
-                            f"{group['group_name']} 的可用地址容量不足",
-                            "ap_start_ip",
-                            group_id=group_id,
-                            ap_id=ap_id,
-                        )
-                    )
-                    break
-                reserved_ips.add(planned_ip)
-                is_manual = False
-                is_locked = False
-                allocation_source = "generated"
+            reference_ip = ap_reference_ip or str(
+                (existing or {}).get("planned_ip") or ""
+            )
             allocations.append(
                 {
                     "ap_id": ap_id,
@@ -623,21 +533,21 @@ def allocate_addresses(
                         ap.get("section") or ap.get("section_name") or ""
                     ),
                     "group_id": group_id,
-                    "planned_ip": planned_ip,
+                    "planned_ip": reference_ip,
                     "allocation_order": allocation_order,
-                    "is_manual": is_manual,
-                    "is_locked": is_locked,
-                    "source": allocation_source,
+                    "is_manual": bool((existing or {}).get("is_manual")),
+                    "is_locked": bool((existing or {}).get("is_locked")),
+                    "source": str(
+                        "existing_ap"
+                        if ap_reference_ip
+                        else (existing or {}).get("source")
+                        or "reference_only"
+                    ),
                     "group_source": source,
                     "updated_at": str((existing or {}).get("updated_at") or ""),
                 }
             )
-    issues.extend(_validate_allocations(allocations, groups))
-    return (
-        allocations,
-        [issue.to_dict() for issue in _dedupe_issues(issues)],
-        derived_assignments,
-    )
+    return allocations, [], derived_assignments
 
 
 def enrich_plan(
@@ -649,7 +559,7 @@ def enrich_plan(
 ) -> dict[str, object]:
     station_rows = station_inputs(stations)
     normalized = normalize_plan_draft(draft, station_rows)
-    allocations, allocation_issues, derived_assignments = allocate_addresses(
+    allocations, _allocation_issues, derived_assignments = allocate_addresses(
         normalized,
         stations=station_rows,
         aps=aps,
@@ -670,18 +580,6 @@ def enrich_plan(
         "allocations": allocations,
     }
     issues = validate_plan(prepared, stations=station_rows, aps=aps)
-    known_issue_keys = {
-        (str(row["code"]), str(row.get("group_id") or ""), str(row.get("ap_id") or ""))
-        for row in issues
-    }
-    for issue in allocation_issues:
-        key = (
-            str(issue["code"]),
-            str(issue.get("group_id") or ""),
-            str(issue.get("ap_id") or ""),
-        )
-        if key not in known_issue_keys:
-            issues.append(issue)
     groups = _group_statistics(
         list(prepared["groups"]),
         station_rows=station_rows,
@@ -724,46 +622,30 @@ def plan_impact(
     }
     affected_stations = 0
     vlan_changes = 0
-    gateway_changes = 0
     for station_id in set(current_stations) | set(proposed_stations):
         before = current_stations.get(station_id, {})
         after = proposed_stations.get(station_id, {})
-        keys = (
-            "group_id",
-            "management_vlan",
-            "network_address",
-            "prefix_length",
-            "default_gateway",
-        )
+        keys = ("group_id", "management_vlan")
         if any(before.get(key) != after.get(key) for key in keys):
             affected_stations += 1
         if before.get("management_vlan") != after.get("management_vlan"):
             vlan_changes += 1
-        if before.get("default_gateway") != after.get("default_gateway"):
-            gateway_changes += 1
     affected_aps = 0
-    ip_changes = 0
     for ap_id in set(current_allocations) | set(proposed_allocations):
         before = current_allocations.get(ap_id, {})
         after = proposed_allocations.get(ap_id, {})
-        if before.get("group_id") != after.get("group_id") or before.get(
-            "planned_ip"
-        ) != after.get("planned_ip"):
+        if before.get("group_id") != after.get("group_id"):
             affected_aps += 1
-        if before.get("planned_ip") != after.get("planned_ip"):
-            ip_changes += 1
     return {
         "old_group_count": len(current_view["groups"]),
         "new_group_count": len(proposed_view["groups"]),
         "affected_station_count": affected_stations,
         "affected_ap_count": affected_aps,
         "vlan_change_count": vlan_changes,
-        "ip_change_count": ip_changes,
-        "gateway_change_count": gateway_changes,
-        "manual_address_override_count": sum(
-            bool(row.get("is_manual") or row.get("is_locked"))
-            for row in current_view["allocations"]
-        ),
+        # 兼容旧 DTO；VLAN 规划不再计算或修改 IP、网关。
+        "ip_change_count": 0,
+        "gateway_change_count": 0,
+        "manual_address_override_count": 0,
         "conflict_count": sum(
             bool(row.get("blocking")) for row in proposed_view["issues"]
         ),
@@ -798,11 +680,21 @@ def effective_network(
             (row for row in normalized["allocations"] if str(row["ap_id"]) == ap_id),
             None,
         )
-        effective = allocation or assignment or {}
-        group_id = str(effective.get("group_id") or "")
-        source = str(
-            effective.get("group_source") or effective.get("source") or ""
-        )
+        if (
+            assignment is not None
+            and str(assignment.get("assignment_type") or "") == "ap_override"
+            and str(assignment.get("group_id") or "") in groups
+        ):
+            group_id = str(assignment["group_id"])
+            source = str(assignment.get("source") or assignment.get("assignment_type") or "")
+        elif allocation is not None and str(allocation.get("group_id") or "") in groups:
+            group_id = str(allocation["group_id"])
+            source = str(
+                allocation.get("group_source") or allocation.get("source") or ""
+            )
+        elif assignment is not None and str(assignment.get("group_id") or "") in groups:
+            group_id = str(assignment["group_id"])
+            source = str(assignment.get("source") or assignment.get("assignment_type") or "")
     if not group_id and station_id:
         group = next(
             (
@@ -830,12 +722,15 @@ def build_point_table_rows(
     stations: Iterable[Mapping[str, Any]],
     aps: Iterable[Mapping[str, Any]],
 ) -> list[dict[str, object]]:
-    view = enrich_plan(draft, stations=stations, aps=aps)
+    ap_rows = [dict(row) for row in aps]
+    view = enrich_plan(draft, stations=stations, aps=ap_rows)
     if not view["valid"]:
         first = next(issue for issue in view["issues"] if bool(issue.get("blocking")))
         raise ValueError(str(first["message"]))
     groups = {str(group["group_id"]): group for group in view["groups"]}
-    ap_by_id = {str(row.get("id") or row.get("ap_id") or ""): row for row in aps}
+    ap_by_id = {
+        str(row.get("id") or row.get("ap_id") or ""): row for row in ap_rows
+    }
     result: list[dict[str, object]] = []
     for allocation in view["allocations"]:
         ap = ap_by_id.get(str(allocation["ap_id"]), {})
@@ -853,7 +748,13 @@ def build_point_table_rows(
                 "point_code": str(
                     ap.get("point_code") or allocation.get("point_code") or ""
                 ),
-                "ap_ip": allocation["planned_ip"],
+                "ap_ip": str(
+                    ap.get("management_ip")
+                    or ap.get("ap_ip")
+                    or ap.get("ip")
+                    or allocation.get("planned_ip")
+                    or ""
+                ),
                 "management_vlan": group["management_vlan"],
                 "subnet_mask": group["subnet_mask"],
                 "prefix_length": group["prefix_length"],
@@ -864,6 +765,19 @@ def build_point_table_rows(
                 "allocation_source": allocation["source"],
                 "is_locked": allocation["is_locked"],
             }
+        )
+    allocated_ids = {str(item["ap_id"]) for item in view["allocations"]}
+    unresolved = [
+        row
+        for row in ap_rows
+        if str(row.get("id") or row.get("ap_id") or "")
+        not in allocated_ids
+    ]
+    if unresolved:
+        first = unresolved[0]
+        raise ValueError(
+            f"AP“{first.get('name') or first.get('ap_name') or first.get('id') or first.get('ap_id')}”"
+            "无法确定有效管理 VLAN 组"
         )
     return result
 
@@ -1022,7 +936,7 @@ def export_rows(draft: Mapping[str, Any]) -> list[dict[str, object]]:
     return rows
 
 
-def _validate_group_network(group: Mapping[str, Any]) -> list[PlanningIssue]:
+def _validate_group_vlan(group: Mapping[str, Any]) -> list[PlanningIssue]:
     group_id = str(group["group_id"])
     name = str(group["group_name"])
     issues: list[PlanningIssue] = []
@@ -1036,129 +950,6 @@ def _validate_group_network(group: Mapping[str, Any]) -> list[PlanningIssue]:
                 group_id=group_id,
             )
         )
-    network = _network(
-        group.get("network_address"),
-        _optional_int(group.get("prefix_length")),
-        group.get("ap_start_ip"),
-    )
-    start = _address(group.get("ap_start_ip"))
-    gateway = _address(group.get("default_gateway"))
-    if "X" in str(group.get("ap_start_ip") or "").upper():
-        issues.append(
-            _warning(
-                "LEGACY_AP_START_PLACEHOLDER",
-                f"{name} 保留了旧模板占位地址，正式点表生成前必须替换为完整 IPv4 地址",
-                "ap_start_ip",
-                group_id=group_id,
-            )
-        )
-        return issues
-    if (
-        any(
-            str(group.get(field) or "").strip()
-            for field in ("network_address", "ap_start_ip", "default_gateway")
-        )
-        and network is None
-    ):
-        issues.append(
-            _error(
-                "GROUP_SUBNET_INVALID",
-                f"{name} 的子网或掩码无效",
-                "network_address",
-                group_id=group_id,
-            )
-        )
-        return issues
-    if network is None:
-        return issues
-    for field_name, address, label in (
-        ("default_gateway", gateway, "网关"),
-        ("ap_start_ip", start, "AP 起始地址"),
-    ):
-        if address is None:
-            issues.append(
-                _error(
-                    f"{field_name.upper()}_INVALID",
-                    f"{name} 的{label}无效",
-                    field_name,
-                    group_id=group_id,
-                )
-            )
-            continue
-        if address not in network:
-            issues.append(
-                _error(
-                    f"{field_name.upper()}_OUTSIDE_SUBNET",
-                    f"{name} 的{label}不在组内子网",
-                    field_name,
-                    group_id=group_id,
-                )
-            )
-        elif address in {network.network_address, network.broadcast_address}:
-            issues.append(
-                _error(
-                    f"{field_name.upper()}_RESERVED",
-                    f"{name} 的{label}不能使用网络地址或广播地址",
-                    field_name,
-                    group_id=group_id,
-                )
-            )
-    if start is not None and gateway is not None and start == gateway:
-        issues.append(
-            _error(
-                "AP_START_EQUALS_GATEWAY",
-                f"{name} 的 AP 起始地址不能使用网关地址",
-                "ap_start_ip",
-                group_id=group_id,
-            )
-        )
-    required_count = sum(
-        int(member.get("ap_count") or 0) for member in group.get("members") or []
-    )
-    if start is not None:
-        available = _available_address_count(
-            network,
-            start,
-            {
-                str(network.network_address),
-                str(network.broadcast_address),
-                *(str(item) for item in (gateway,) if item is not None),
-            },
-        )
-        if required_count > available:
-            issues.append(
-                _error(
-                    "ADDRESS_CAPACITY_INSUFFICIENT",
-                    f"{name} 地址容量不足：需要 {required_count} 个地址，但从起始地址起只有 {available} 个可用地址",
-                    "ap_start_ip",
-                    group_id=group_id,
-                )
-            )
-        elif available and required_count / available >= 0.8:
-            issues.append(
-                _warning(
-                    "ADDRESS_UTILIZATION_HIGH",
-                    f"{name} 从起始地址起的地址利用率已达到 {required_count / available:.0%}",
-                    "ap_start_ip",
-                    group_id=group_id,
-                )
-            )
-        usable_hosts = max(0, network.num_addresses - 2)
-        first_host = int(network.network_address) + 1
-        reserved_before_start = max(0, int(start) - first_host)
-        if (
-            usable_hosts
-            and reserved_before_start >= max(16, required_count * 2)
-            and reserved_before_start / usable_hosts >= 0.25
-        ):
-            issues.append(
-                _warning(
-                    "ADDRESS_RESERVATION_HIGH",
-                    f"{name} 在 AP 起始地址前预留了 {reserved_before_start} 个主机地址",
-                    "ap_start_ip",
-                    group_id=group_id,
-                )
-            )
     return issues
 
 
@@ -1169,13 +960,6 @@ def _cross_group_warnings(groups: list[Mapping[str, Any]]) -> list[PlanningIssue
             same_vlan = group.get("management_vlan") is not None and group.get(
                 "management_vlan"
             ) == other.get("management_vlan")
-            same_gateway = bool(group.get("default_gateway")) and (
-                group.get("default_gateway") == other.get("default_gateway")
-            )
-            same_subnet = bool(group.get("network_address")) and (
-                group.get("network_address") == other.get("network_address")
-                and group.get("prefix_length") == other.get("prefix_length")
-            )
             if same_vlan:
                 issues.append(
                     _warning(
@@ -1185,99 +969,18 @@ def _cross_group_warnings(groups: list[Mapping[str, Any]]) -> list[PlanningIssue
                         group_id=str(group["group_id"]),
                     )
                 )
-            if same_gateway:
-                issues.append(
-                    _warning(
-                        "GATEWAY_REUSED",
-                        f"{group['group_name']} 与 {other['group_name']} 使用相同网关",
-                        "default_gateway",
-                        group_id=str(group["group_id"]),
-                    )
-                )
-            if same_subnet:
-                issues.append(
-                    _warning(
-                        "SUBNET_REUSED",
-                        f"{group['group_name']} 与 {other['group_name']} 使用相同子网",
-                        "network_address",
-                        group_id=str(group["group_id"]),
-                    )
-                )
             if (
                 int(other.get("sequence") or 0) == int(group.get("sequence") or 0) + 1
                 and same_vlan
-                and same_gateway
-                and same_subnet
             ):
                 issues.append(
                     _warning(
-                        "ADJACENT_GROUPS_NETWORK_EQUAL",
-                        f"{group['group_name']} 与 {other['group_name']} 网络参数一致，可以考虑合并",
+                        "ADJACENT_GROUPS_VLAN_EQUAL",
+                        f"{group['group_name']} 与 {other['group_name']} 使用相同管理 VLAN，如实际属于同一管理域，可考虑合并",
+                        "management_vlan",
                         group_id=str(group["group_id"]),
                     )
                 )
-    return issues
-
-
-def _validate_allocations(
-    allocations: list[Mapping[str, Any]],
-    groups: Mapping[str, Mapping[str, Any]],
-) -> list[PlanningIssue]:
-    issues: list[PlanningIssue] = []
-    for row in allocations:
-        group = groups.get(str(row.get("group_id") or ""))
-        if group is None:
-            continue
-        address = _address(row.get("planned_ip"))
-        network = _network(
-            group.get("network_address"),
-            _optional_int(group.get("prefix_length")),
-            group.get("ap_start_ip"),
-        )
-        gateway = _address(group.get("default_gateway"))
-        if address is None:
-            issues.append(
-                _error(
-                    "AP_IP_INVALID",
-                    f"AP“{row.get('ap_name') or row.get('ap_id')}”的规划地址无效",
-                    "planned_ip",
-                    group_id=str(group["group_id"]),
-                    ap_id=str(row.get("ap_id") or ""),
-                )
-            )
-        elif network is not None and address not in network:
-            issues.append(
-                _error(
-                    "AP_IP_OUTSIDE_SUBNET",
-                    f"AP“{row.get('ap_name') or row.get('ap_id')}”的规划地址不在组内子网",
-                    "planned_ip",
-                    group_id=str(group["group_id"]),
-                    ap_id=str(row.get("ap_id") or ""),
-                )
-            )
-        elif network is not None and address in {
-            network.network_address,
-            network.broadcast_address,
-        }:
-            issues.append(
-                _error(
-                    "AP_IP_RESERVED",
-                    f"AP“{row.get('ap_name') or row.get('ap_id')}”使用了网络地址或广播地址",
-                    "planned_ip",
-                    group_id=str(group["group_id"]),
-                    ap_id=str(row.get("ap_id") or ""),
-                )
-            )
-        elif gateway is not None and address == gateway:
-            issues.append(
-                _error(
-                    "AP_IP_EQUALS_GATEWAY",
-                    f"AP“{row.get('ap_name') or row.get('ap_id')}”使用了网关地址",
-                    "planned_ip",
-                    group_id=str(group["group_id"]),
-                    ap_id=str(row.get("ap_id") or ""),
-                )
-            )
     return issues
 
 
@@ -1371,28 +1074,6 @@ def _group_statistics(
             station_by_id.get(str(member["station_id"]), member) for member in members
         ]
         group_allocations = allocations_by_group.get(str(group["group_id"]), [])
-        network = _network(
-            group.get("network_address"),
-            _optional_int(group.get("prefix_length")),
-            group.get("ap_start_ip"),
-        )
-        gateway = _address(group.get("default_gateway"))
-        address_capacity = 0
-        if network is not None and _address(group.get("ap_start_ip")) is not None:
-            address_capacity = _available_address_count(
-                network,
-                _address(group.get("ap_start_ip")),
-                {
-                    str(network.network_address),
-                    str(network.broadcast_address),
-                    *(str(item) for item in (gateway,) if item is not None),
-                },
-            )
-        used_addresses = [
-            str(row["planned_ip"])
-            for row in group_allocations
-            if _address(row.get("planned_ip")) is not None
-        ]
         group_issues = [
             issue
             for issue in issues_by_group.get(str(group["group_id"]), [])
@@ -1412,13 +1093,10 @@ def _group_statistics(
                     len(group_allocations),
                     sum(int(row.get("ap_count") or 0) for row in member_rows),
                 ),
-                "ap_end_ip": max(
-                    used_addresses,
-                    key=lambda value: int(ipaddress.ip_address(value)),
-                    default=str(group.get("ap_end_ip") or ""),
-                ),
-                "address_capacity": address_capacity,
-                "used_address_count": len(used_addresses),
+                # 兼容旧 DTO；IP 仅为原样参考，不在 VLAN 规划中推导容量或结束地址。
+                "ap_end_ip": str(group.get("ap_end_ip") or ""),
+                "address_capacity": 0,
+                "used_address_count": 0,
                 "validation_status": (
                     "error"
                     if any(bool(issue.get("blocking")) for issue in group_issues)
@@ -1461,16 +1139,9 @@ def _station_details(
                 "group_id": str((group or {}).get("group_id") or ""),
                 "group_code": str((group or {}).get("group_code") or ""),
                 "group_name": str((group or {}).get("group_name") or "未分配"),
-                "ap_start_ip": min(
-                    addresses,
-                    key=lambda value: int(ipaddress.ip_address(value)),
-                    default="",
-                ),
-                "ap_end_ip": max(
-                    addresses,
-                    key=lambda value: int(ipaddress.ip_address(value)),
-                    default="",
-                ),
+                # 兼容旧 DTO；按既有 AP 顺序展示参考值，非法 IP 也不得导致查询失败。
+                "ap_start_ip": addresses[0] if addresses else "",
+                "ap_end_ip": addresses[-1] if addresses else "",
                 "management_vlan": (group or {}).get("management_vlan"),
                 "network_address": str((group or {}).get("network_address") or ""),
                 "prefix_length": (group or {}).get("prefix_length"),
@@ -1522,7 +1193,6 @@ def _normalize_allocations(
     value: object,
     groups: list[Mapping[str, Any]],
 ) -> list[dict[str, object]]:
-    group_ids = {str(group["group_id"]) for group in groups}
     result: list[dict[str, object]] = []
     if not isinstance(value, list):
         return result
@@ -1531,7 +1201,7 @@ def _normalize_allocations(
             continue
         ap_id = str(row.get("ap_id") or "").strip()
         group_id = str(row.get("group_id") or "").strip()
-        if not ap_id or group_id not in group_ids:
+        if not ap_id:
             continue
         result.append(
             {
@@ -1592,67 +1262,6 @@ def _default_group_name(chunk: list[dict[str, object]], sequence: int) -> str:
     first = str(chunk[0]["station_name"])
     last = str(chunk[-1]["station_name"])
     return first if first == last else f"{first}～{last}"
-
-
-def _network(
-    network_address: object,
-    prefix_length: int | None,
-    ap_start_ip: object = "",
-) -> ipaddress.IPv4Network | None:
-    text = str(network_address or "").strip()
-    try:
-        if "/" in text:
-            network = ipaddress.ip_network(text, strict=False)
-        elif text and prefix_length is not None:
-            network = ipaddress.ip_network(f"{text}/{prefix_length}", strict=False)
-        elif str(ap_start_ip or "").strip() and prefix_length is not None:
-            network = ipaddress.ip_network(
-                f"{str(ap_start_ip).strip()}/{prefix_length}",
-                strict=False,
-            )
-        else:
-            return None
-    except ValueError:
-        return None
-    return network if isinstance(network, ipaddress.IPv4Network) else None
-
-
-def _address(value: object) -> ipaddress.IPv4Address | None:
-    try:
-        address = ipaddress.ip_address(str(value or "").strip())
-    except ValueError:
-        return None
-    return address if isinstance(address, ipaddress.IPv4Address) else None
-
-
-def _candidate_addresses(
-    network: ipaddress.IPv4Network,
-    start: ipaddress.IPv4Address,
-    blocked: set[str],
-):
-    first = max(int(start), int(network.network_address) + 1)
-    last = int(network.broadcast_address) - 1
-    for raw in range(first, last + 1):
-        value = str(ipaddress.IPv4Address(raw))
-        if value not in blocked:
-            yield value
-
-
-def _available_address_count(
-    network: ipaddress.IPv4Network,
-    start: ipaddress.IPv4Address,
-    blocked: set[str],
-) -> int:
-    first = max(int(start), int(network.network_address) + 1)
-    last = int(network.broadcast_address) - 1
-    if first > last:
-        return 0
-    blocked_in_range = 0
-    for value in blocked:
-        address = _address(value)
-        if address is not None and first <= int(address) <= last:
-            blocked_in_range += 1
-    return max(0, last - first + 1 - blocked_in_range)
 
 
 def _network_payload(group: Mapping[str, Any], *, source: str) -> dict[str, object]:

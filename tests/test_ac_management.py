@@ -5453,9 +5453,14 @@ def test_database_runtime_has_no_legacy_migration_chain():
         Path(__file__).parents[1] / "src" / "netconsole" / "core" / "database.py"
     ).read_text(encoding="utf-8")
 
-    assert text.count("ALTER TABLE") == 1
+    assert text.count("ALTER TABLE") == 2
     assert "ALTER TABLE ac_trackside_ap_plan ADD COLUMN remark TEXT" in text
-    assert "DROP TABLE" not in text
+    assert (
+        "ALTER TABLE rail_ap_vlan_allocations_reference_migration\n"
+        "            RENAME TO rail_ap_vlan_allocations"
+    ) in text
+    assert text.count("DROP TABLE") == 1
+    assert 'conn.execute("DROP TABLE rail_ap_vlan_allocations")' in text
     assert "migrate_old_" not in text
     assert "legacy_table_adapter" not in text
 
