@@ -26,7 +26,7 @@ python -m pip check
 
 ## 产品运行时组件
 
-Python 直接运行时组件及用途见 `src/netconsole/assets/open_source_notices.json`。Backend 构建会从 `requirements-runtime.txt` 出发遍历当前环境的传递依赖，逐项核对 `constraints.txt` 的精确版本，再生成 CycloneDX `sbom.cdx.json`；SBOM 校验会重新要求这份完整锁定闭包，删除 FastAPI 等任一直接或传递组件都会失败。许可证缺失或被标记为 `UNKNOWN` 时同样停止构建。
+Python 直接运行时组件及用途见 `src/netconsole/assets/open_source_notices.json`。`tzdata` 是 Windows 冻结 Backend 的直接运行依赖，由 PyInstaller 标准 hook 收集完整 IANA 时区资源，确保 `Asia/Shanghai` 等 Profile 时区不依赖系统 TZPATH。Backend 构建会从 `requirements-runtime.txt` 出发遍历当前环境的传递依赖，逐项核对 `constraints.txt` 的精确版本，再生成 CycloneDX `sbom.cdx.json`；SBOM 校验会重新要求这份完整锁定闭包，删除 FastAPI 等任一直接或传递组件都会失败。许可证缺失或被标记为 `UNKNOWN` 时同样停止构建。
 
 Electron 版本固定为 `43.1.1`，许可证为 MIT；内嵌 Chromium `150.0.7871.114` 与 Node.js `24.18.0` 分别登记。安装包 smoke 直接读取最终 Electron executable 的 `process.versions`，并要求 Electron/Chromium 实际许可证文本存在，不能只相信手工版本字符串或把 Electron 运行时统称为“桌面框架”。
 

@@ -227,6 +227,19 @@ describe('Electron-only packaging', () => {
     expect(script).not.toContain("mkdtempSync(join(tmpdir(), 'NetConsole-Codex-package-smoke-'))")
   })
 
+  it('requests the frozen Backend ground unattended status with packaged tzdata', () => {
+    const script = readFileSync(resolve(appRoot, 'scripts', 'package-smoke.mjs'), 'utf8')
+
+    expect(script).toContain('validateFrozenTimezoneResources')
+    expect(script).toContain('validateFrozenGroundUnattendedStatus')
+    expect(script).toContain("PYTHONTZPATH: ''")
+    expect(script).toContain('/api/rail-transit/ground-unattended/status')
+    expect(script).toContain("payload?.timezone !== 'Asia/Shanghai'")
+    expect(script).toContain('for (let attempt = 1; attempt <= 2; attempt += 1)')
+    expect(script).toContain('assertLoopbackPortReleased')
+    expect(script).toContain('ground unattended status HTTP 200')
+  })
+
   it('requires the packaged production feature baseline', () => {
     const script = readFileSync(resolve(appRoot, 'scripts', 'package-smoke.mjs'), 'utf8')
 
@@ -274,6 +287,14 @@ describe('Electron-only packaging', () => {
     expect(script).toContain('pyinstaller_copying.txt')
     expect(script).toContain('pyinstaller_hooks_contrib_license.txt')
     expect(script).toContain('netconsolebackend.exe')
+    expect(script).toContain("'tzdata'")
+    expect(script).toContain('zoneinfofiles.length !== 604')
+    expect(script).toContain('tzdata/zoneinfo/asia/shanghai')
+    expect(script).toContain('tzdata/zoneinfo/utc')
+    expect(script).toContain('tzdata/zoneinfo/europe/bucharest')
+    expect(script).toContain('tzdata/zoneinfo/america/new_york')
+    expect(script).toContain('tzdata/zoneinfo/tzdata.zi')
+    expect(script).toContain('tzdata/zoneinfo/zone1970.tab')
   })
 
   it('pins the approved iPerf3 3.21 dynamic-auth asset and licenses', () => {

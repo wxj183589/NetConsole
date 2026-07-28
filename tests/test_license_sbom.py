@@ -303,12 +303,23 @@ def test_product_notice_does_not_list_test_or_build_tools() -> None:
         "electron",
         "chromium",
         "node.js",
+        "tzdata",
         "pyinstaller",
         "pyinstaller-hooks-contrib",
     } <= names
     scopes = {str(item["name"]).casefold(): item["scope"] for item in entries}
     assert scopes["pyinstaller"] == "packaged-build-runtime"
     assert scopes["pyinstaller-hooks-contrib"] == "packaged-build-runtime"
+    tzdata = next(item for item in entries if item["name"] == "tzdata")
+    assert tzdata == {
+        "name": "tzdata",
+        "version": "2026.3",
+        "scope": "runtime",
+        "purpose": "Windows 冻结 Backend 的完整 IANA 时区数据库",
+        "license": "Apache-2.0",
+        "homepage": "https://github.com/python/tzdata",
+        "purl": "pkg:pypi/tzdata@2026.3",
+    }
     assert {
         "iperf3 windows x64 cygwin dynamic-auth",
         "cjson (embedded in iperf3)",

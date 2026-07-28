@@ -20,6 +20,7 @@ dependencies = [
     "XlsxWriter>=3.2.9",
     "matplotlib>=3.11.0",
     "numpy>=2.5.1",
+    "tzdata>=2026.3",
 ]
 
 [tool.setuptools.dynamic]

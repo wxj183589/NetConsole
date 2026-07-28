@@ -462,6 +462,7 @@ def test_clean_build_spec_keeps_direct_runtime_distributions_reachable():
         "paramiko",
         "pydantic",
         "python_multipart",
+        "tzdata",
         "uvicorn",
         "websockets",
         "xlsxwriter",
@@ -579,6 +580,7 @@ def test_clean_build_spec_generated_spec_is_clean(tmp_path, monkeypatch):
 
     assert "CLEAN_BUILD = True" in text
     assert "RUNTIME_IMPORTS =" in text
+    assert "'tzdata'" in text
     assert "RUNTIME_DATAS =" in text
     assert "RUNTIME_EXCLUDES =" in text
     assert "VC_RUNTIME_BINARIES =" in text

@@ -71,6 +71,7 @@ def test_runtime_layer_excludes_test_build_and_dev_tools() -> None:
         "xlsxwriter",
         "matplotlib",
         "numpy",
+        "tzdata",
     } <= runtime
 
 
@@ -116,6 +117,7 @@ def test_pyproject_declares_runtime_only() -> None:
         "xlsxwriter",
         "matplotlib",
         "numpy",
+        "tzdata",
     } <= names
     assert not names & {
         "pytest",
