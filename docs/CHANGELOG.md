@@ -1,8 +1,14 @@
 # NetConsole 更新日志
 
-## 2026-07-28 ZTE VLAN/PVID
+## v1.4.4 - 2026-07-28
+
+### ZTE VLAN/PVID
 
 - ZTE 设备详情 Profile v3 增加精确只读命令 `show running-config switchvlan` 与 `show vlan`，实现端口模式、PVID、Native/Tagged/Untagged VLAN、来源校验、冲突告警和失败继承；两台车站 C89E-4 七命令实机验证均为 success，中心设备不纳入轨旁 AP 业务结论。
+
+### 开发版本识别
+
+- 正式产品版本升级到 `v1.4.4`；源码开发态在页面顶栏追加当前 Git 短提交号，例如 `v1.4.4-<99bba059>`，工作区有修改时再追加 `-dirty`。正式安装包继续以构建元数据和安装包文件名记录完整提交身份，不把示例提交号写入正式版本源。
 
 ## v1.4.3 - 2026-07-25
 

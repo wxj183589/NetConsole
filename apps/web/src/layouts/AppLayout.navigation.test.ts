@@ -11,7 +11,11 @@ import { useWorkspaceStore } from '../stores/workspace'
 import AppLayout from './AppLayout.vue'
 
 vi.mock('../api/client', () => ({
-  getHealth: vi.fn(async () => ({ status: 'ok', version: '1.3.9', build_id: 'test' })),
+  getHealth: vi.fn(async () => ({
+    status: 'ok',
+    version: '1.4.4',
+    build_id: 'v1.4.4+99bba059c3359d409673286a9093503fe9d09255',
+  })),
   getWebBuildMeta: vi.fn(async () => ({ build_id: 'test' })),
 }))
 
@@ -67,6 +71,7 @@ describe('AppLayout 轨道交通导航', () => {
     await flushPromises()
 
     expect(wrapper.find('[data-test="mesh-page"]').exists()).toBe(true)
+    expect(wrapper.find('.header-status').text()).toContain('v1.4.4-<99bba059>')
     const baseDataMenu = wrapper.findAll('.el-menu-item').find((item) => item.text().trim() === '基础资料')
     expect(baseDataMenu).toBeDefined()
     await baseDataMenu!.trigger('click')

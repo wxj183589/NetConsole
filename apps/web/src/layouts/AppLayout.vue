@@ -167,7 +167,10 @@ onMounted(async () => {
   }
   try {
     const health = await getHealth()
-    version.value = health.version
+    const developmentIdentity = health.build_id.match(/^[^+]+\+([0-9a-f]{8})[0-9a-f]*(?:-(dirty))?$/i)
+    version.value = import.meta.env.DEV && developmentIdentity
+      ? `${health.version}-<${developmentIdentity[1]}${developmentIdentity[2] ? '-dirty' : ''}>`
+      : health.version
     backendBuildId.value = health.build_id
     backendOnline.value = health.status === 'ok'
   } catch {

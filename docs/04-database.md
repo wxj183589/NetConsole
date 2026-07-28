@@ -14,14 +14,16 @@ The built-in demonstration site is `demo`. If `sites/demo/db/devices.db` does no
 
 If the database already exists, `Database.initialize()` applies only additive, idempotent schema updates and records `schema_metadata`; it does not backfill demo facts or delete existing rows. The current migration adds the non-secret device credential state table without rewriting existing device credentials. Never delete a user database to apply an upgrade. Development fixtures must use a temporary data root.
 
-Current schema version: `2026.07.28.zte_interface_lldp`. The prior query-plan evidence and rollback boundaries remain recorded in [the E6 database archive](archive/migrations/electron-only/E6-2026-07-18.md).
+Current schema version: `2026.07.28.zte_interface_vlan_lldp`. The prior query-plan evidence and rollback boundaries remain recorded in [the E6 database archive](archive/migrations/electron-only/E6-2026-07-18.md).
 
 The 2026-07-28 additive migration adds `admin_status`, `physical_status`,
 `media_attribute`, `media_type`, and `category` to both current and historical
-interface tables. It also adds the ZTE LLDP brief/detail fields (scope, chassis
-and port identifiers, holdtime/TTL, descriptions, capabilities, PVID, MAU, and
-maximum frame size) to both LLDP tables. Initialization is idempotent and keeps
-all existing interface, optical, LLDP, and history rows.
+interface tables, together with port mode, Native/Tagged/Untagged VLAN,
+PVID source/verification, collection status/time, and warning fields. It also
+adds the ZTE LLDP brief/detail fields (scope, chassis and port identifiers,
+holdtime/TTL, descriptions, capabilities, PVID, MAU, and maximum frame size) to
+both LLDP tables. Initialization is idempotent and keeps all existing interface,
+optical, LLDP, and history rows.
 
 Current local tables:
 

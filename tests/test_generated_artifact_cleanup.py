@@ -38,7 +38,7 @@ def test_cleanup_defaults_to_dry_run(tmp_path: Path) -> None:
 def test_cleanup_removes_only_allowlisted_legacy_release(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     target = root / "dist" / "v1.3.8"
-    current = root / "dist" / "v1.4.3"
+    current = root / "dist" / "v1.4.4"
     data = root / "data"
     for directory in (target, current, data):
         directory.mkdir(parents=True)
@@ -57,7 +57,7 @@ def test_cleanup_removes_only_build_temporary_directory(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     temporary = root / "dist" / "_build"
     retained = [
-        root / "dist" / "v1.4.3",
+        root / "dist" / "v1.4.4",
         root / "dist" / "electron",
         root / "dist" / "agent",
         root / "data",
