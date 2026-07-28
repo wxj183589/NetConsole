@@ -99,6 +99,17 @@ LOCAL 入口通过 Worker 内纯 Python `OnlineMrTrafficCoordinator` 管理 fpin
 - `POST /api/tasks/{id}/cancel`：只对本地 Runtime-backed 任务写协作取消并进入 `STOPPING`；Agent Traffic 必须由后续 Traffic API 调用 `TrafficTestApplicationService.cancel()`，通用任务 API 不会伪造远端停止成功；
 - `/ws/tasks`：初始快照与 Event Hub/SQLite 增量事件。
 
+面向 Vue 全局任务中心的 `/api/job-center` 还提供受控历史管理：
+
+- `POST /api/job-center/cleanup`：按 `completed / cancelled / expired / completed_and_expired / resolved_alerts / all_history` 预览或软清理当前局点任务；`dry_run=true` 返回相同策略下的匹配和跳过数量；
+- `POST /api/job-center/acknowledge`、`POST /api/job-center/tasks/{id}/acknowledge`：将失败或业务告警标记为已处理，停止顶部提醒但仍保留在历史列表；
+- `POST /api/job-center/tasks/{id}/dismiss`：从任务中心移除单条终态记录；失败或告警必须先标记为已处理；
+- `delete_artifacts=true` 固定拒绝。任务中心历史管理不删除事件、日志、采集文件、raw、导出结果或 Artifact。
+
+`tasks.db` schema v3 继续复用既有 `finished_time`，不建立重复的 `finished_at`，并为快照增加 `expires_at / acknowledged_at / dismissed_at / dismissed_by / dismiss_reason`。成功与取消默认保留 7 天，失败及业务告警默认保留 30 天；`expires_at` 由 Backend 在写入终态和旧库幂等升级时计算，Vue 不根据本机时间推断。默认任务列表只查询 `dismissed_at = ''`，软清理后的快照、事件和关联结果仍可供审计或领域关系使用。
+
+清理策略在 SQLite `BEGIN IMMEDIATE` 事务内再次校验状态。`PENDING / STARTING / RUNNING / STOPPING` 永远不会更新 `dismissed_at`；未确认的 `FAILED` 或 `COMPLETED + WARNING/PARTIAL_SUCCESS` 不进入普通完成、过期或全部历史清理。清理后 Event Hub 发送 `tasks.dismissed`，确认后发送 `tasks.acknowledged`，Vue Store 按任务 ID 增量更新；这两类 UI 管理事件不写入 Worker 的五类执行事件流。
+
 本地 Worker 由宿主进程持有。正常关闭宿主会走既有取消/清理；崩溃后重启会将失去 PID 宿主的活动快照核对为 `FAILED`。任务中心不得仅依据旧数据库状态显示伪 `RUNNING`。
 
 Worker 内为只读映射恢复临时创建的 `TaskApplicationService` 必须关闭启动期孤儿回收；只有宿主进程可以核对并回收宿主所有的活动任务，避免子进程把仍存活的父任务误判为遗留任务。

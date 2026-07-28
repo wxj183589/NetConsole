@@ -35,6 +35,9 @@ export interface TaskItem {
   created_time: string
   started_time: string
   finished_time: string
+  expires_at?: string
+  acknowledged_at?: string
+  dismissed_at?: string
   updated_time: string
   duration_seconds: number
   error_code: string
@@ -90,4 +93,37 @@ export interface TaskSummary {
   completed: number
   failed: number
   warning: number
+  unacknowledged_failed: number
+  unacknowledged_warning: number
+}
+
+export type TaskCleanupType =
+  | 'completed'
+  | 'cancelled'
+  | 'expired'
+  | 'completed_and_expired'
+  | 'resolved_alerts'
+  | 'all_history'
+
+export interface TaskCleanupCounts {
+  completed: number
+  cancelled: number
+  expired: number
+  alerts: number
+}
+
+export interface TaskCleanupResult {
+  matched: number
+  dismissed: number
+  skipped_active: number
+  skipped_unacknowledged: number
+  artifacts_deleted: number
+  task_ids: string[]
+  counts: TaskCleanupCounts
+}
+
+export interface TaskAcknowledgeResult {
+  acknowledged: number
+  task_ids: string[]
+  acknowledged_at: string
 }

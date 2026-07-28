@@ -384,8 +384,111 @@ class TaskApplicationService:
     def last_event_sequence(self) -> int:
         return self.repository().last_event_sequence()
 
+    def acknowledge_history_tasks(
+        self,
+        *,
+        site_name: str,
+        task_ids: list[str] | None = None,
+        all_alerts: bool = False,
+    ) -> dict[str, object]:
+        repository = self.repository(site_name)
+        result = repository.acknowledge_attention_tasks(
+            task_ids=task_ids,
+            acknowledge_all=all_alerts,
+        )
+        ids = list(result.get("task_ids") or [])
+        if ids:
+            self._publish_history_event(
+                "tasks.acknowledged",
+                task_ids=ids,
+                site_name=site_name,
+                payload={
+                    "acknowledged_at": str(result.get("acknowledged_at") or ""),
+                    "summary": repository.visible_attention_summary(),
+                },
+            )
+        return result
+
+    def dismiss_history_task(
+        self,
+        task_id: str,
+        *,
+        site_name: str,
+        dismissed_by: str = "local-user",
+    ) -> dict[str, object]:
+        repository = self.repository(site_name)
+        result = repository.dismiss_task(
+            task_id,
+            dismissed_by=dismissed_by,
+        )
+        ids = list(result.get("task_ids") or [])
+        if ids:
+            self._publish_history_event(
+                "tasks.dismissed",
+                task_ids=ids,
+                site_name=site_name,
+                payload={"summary": repository.visible_attention_summary()},
+            )
+        return result
+
+    def cleanup_history_tasks(
+        self,
+        cleanup_type: str,
+        *,
+        site_name: str,
+        include_states: list[str] | None = None,
+        exclude_states: list[str] | None = None,
+        dismissed_by: str = "local-user",
+        dry_run: bool = False,
+        delete_artifacts: bool = False,
+    ) -> dict[str, object]:
+        if delete_artifacts:
+            raise ValueError("任务中心清理不允许删除日志、采集文件或导出结果")
+        repository = self.repository(site_name)
+        result = repository.cleanup_history(
+            cleanup_type,
+            include_states=include_states,
+            exclude_states=exclude_states,
+            dismissed_by=dismissed_by,
+            dry_run=dry_run,
+        )
+        ids = list(result.get("task_ids") or [])
+        if ids:
+            self._publish_history_event(
+                "tasks.dismissed",
+                task_ids=ids,
+                site_name=site_name,
+                payload={"summary": repository.visible_attention_summary()},
+            )
+        return result
+
     def reconcile_orphaned_local_tasks(self) -> list[TaskSnapshot]:
         return self.repository().reconcile_orphaned_local_tasks(self._is_process_alive)
+
+    def _publish_history_event(
+        self,
+        event_type: str,
+        *,
+        task_ids: list[str],
+        site_name: str,
+        payload: dict[str, object],
+    ) -> None:
+        now = utc_now_iso()
+        self.events.publish_persisted(
+            {
+                "id": uuid.uuid4().hex,
+                "task_id": "",
+                "type": event_type,
+                "event_type": event_type,
+                "time": now,
+                "source": "job_center",
+                "payload": {
+                    "task_ids": list(task_ids),
+                    "site_id": site_name,
+                    **payload,
+                },
+            }
+        )
 
     def list_site_blocking_tasks(
         self,
