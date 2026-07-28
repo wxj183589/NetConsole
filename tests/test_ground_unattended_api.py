@@ -193,6 +193,92 @@ def test_ground_unattended_empty_pages_are_stable(tmp_path) -> None:
         assert operation.json() is None
 
 
+def test_ground_unattended_legacy_run_and_persisted_ping_summary_are_api_compatible(
+    tmp_path,
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    repository = app.state.ground_unattended_repository
+    run = repository.create_or_get_run(
+        run_id="legacy-run",
+        run_date="2026-07-27",
+        scheduled_start_at="2026-07-27T07:00:00+08:00",
+        scheduled_end_at="2026-07-27T23:00:00+08:00",
+    )
+    repository.update_run(
+        str(run["run_id"]),
+        state="running",
+        summary_json=json.dumps("legacy-summary"),
+    )
+    repository.upsert_ping_summary(
+        {
+            "site_id": "demo",
+            "run_id": str(run["run_id"]),
+            "bucket_kind": "daily",
+            "bucket_start": "2026-07-27T00:00:00+08:00",
+            "bucket_end": "2026-07-28T00:00:00+08:00",
+            "target_ip": "10.8.0.6",
+            "train_id": "train-06",
+            "train_no": "06",
+            "mr_id": "mr-06-ct",
+            "mr_position_code": "CT",
+            "ac_snapshot_id": None,
+            "ap_identity": "",
+            "raw_sample_count": 10,
+            "warmup_ignored_count": 0,
+            "sent_count": 10,
+            "success_count": 9,
+            "loss_count": 1,
+            "loss_rate_percent": 10.0,
+            "min_rtt_ms": 1.0,
+            "avg_rtt_ms": 2.0,
+            "max_rtt_ms": 3.0,
+            "continuous_loss_max_count": 1,
+            "continuous_loss_max_seconds": 1.0,
+            "created_at": "2026-07-27T23:00:00+08:00",
+        }
+    )
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        status = client.get("/api/rail-transit/ground-unattended/status")
+        ping_targets = client.get(
+            "/api/rail-transit/ground-unattended/ping-targets"
+        )
+
+    assert status.status_code == 200
+    assert status.json()["state"] == "RUNNING"
+    assert status.json()["disk_used_bytes"] == 0
+    assert ping_targets.status_code == 200
+    assert ping_targets.json()["items"] == [
+        {
+            "target_ip": "10.8.0.6",
+            "train_id": "train-06",
+            "train_no": "06",
+            "mr_id": "mr-06-ct",
+            "mr_name": "",
+            "mr_position_code": "CT",
+            "started_at": "",
+            "updated_at": "",
+            "shard_id": "",
+            "raw_sample_count": 10,
+            "effective_sample_count": 10,
+            "warmup_ignored_count": 0,
+            "sent_count": 10,
+            "success_count": 9,
+            "loss_count": 1,
+            "loss_rate_percent": 10.0,
+            "min_rtt_ms": 1.0,
+            "avg_rtt_ms": 2.0,
+            "max_rtt_ms": 3.0,
+            "continuous_loss_max_count": 1,
+            "continuous_loss_max_seconds": 1.0,
+            "current_ap_name": "",
+            "station": "",
+            "section": "",
+        }
+    ]
+
+
 def test_ground_unattended_repository_failure_is_feature_scoped(
     tmp_path, monkeypatch
 ) -> None:
