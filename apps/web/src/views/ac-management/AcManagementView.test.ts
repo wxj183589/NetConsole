@@ -29,6 +29,8 @@ describe('AC Management resource view', () => {
     expect(source).toContain('反选本页')
     expect(source).toContain('useConfirm')
     expect(source).toContain('confirm({')
+    expect(source).toContain('打开任务中心')
+    expect(source).toContain("openTaskWindow({ module: 'ac'")
     expect(source).toContain('FIT-AP 资源')
     expect(source).toContain('AC 连接记录')
     expect(source).toContain('Mesh Radio 1 / 2')
@@ -53,16 +55,6 @@ describe('AC Management resource view', () => {
     expect(source).toContain('getAcActionPlan')
     expect(source).toContain('getAcActionAudit')
     expect(source).not.toContain('save force')
-  })
-
-  it('removes the page-level AC task banner without leaving its legacy task-window entry', () => {
-    expect(source).not.toContain('AC 任务 · 运行中')
-    expect(source).not.toContain('打开任务中心')
-    expect(source).not.toContain('task-summary')
-    expect(source).not.toContain('function openTaskWindow')
-    expect(source).not.toContain("openTaskWindow({ module: 'ac'")
-    expect(source).toContain('class="ac-info-strip"')
-    expect(source).toContain('class="content-card"')
   })
 
   it('removes the obsolete page alert and wires bounded AC additions', () => {
