@@ -5,6 +5,7 @@ from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 
 
@@ -23,6 +24,7 @@ class EmptyOnlineQuery:
 def create_mesh_analysis_fixture(tmp_path: Path) -> tuple[PathResolver, str, Path, Path, Path]:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     site = "demo"
+    Database(paths.site_db_path(site)).initialize()
     mr_id = "12345678-1234-1234-1234-123456789abc"
     mr_name = "列车01-MR-CT"
     raw_dir = paths.mesh_mr_raw_dir(site, mr_name)
