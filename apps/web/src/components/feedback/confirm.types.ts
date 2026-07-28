@@ -4,11 +4,16 @@ export interface ConfirmOptions {
   type?: ConfirmType
   title: string
   message: string
+  highlight?: string
   detail?: string
+  notice?: string
+  width?: string
   confirmText?: string
+  confirmLoadingText?: string
   secondaryText?: string
   cancelText?: string
   acknowledgementText?: string
   requireAcknowledgement?: boolean
   closeOnEscape?: boolean
+  onConfirm?: () => void | Promise<void>
 }

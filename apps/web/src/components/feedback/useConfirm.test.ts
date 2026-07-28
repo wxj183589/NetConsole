@@ -49,14 +49,17 @@ describe('useConfirm', () => {
   })
 
   it('keeps a development/test fallback inside the service boundary', async () => {
+    const onConfirm = vi.fn()
     messageBoxConfirm.mockResolvedValueOnce(undefined)
-    await expect(useConfirm().confirm({ title: '确认', message: '继续？' })).resolves.toBe(true)
+    await expect(useConfirm().confirm({ title: '确认', message: '继续？', onConfirm })).resolves.toBe(true)
     expect(messageBoxConfirm).toHaveBeenCalledWith('继续？', '确认', expect.objectContaining({
       confirmButtonText: '确认操作',
       cancelButtonText: '取消',
     }))
+    expect(onConfirm).toHaveBeenCalledOnce()
 
     messageBoxConfirm.mockRejectedValueOnce(new Error('cancel'))
-    await expect(useConfirm().confirm({ title: '确认', message: '继续？' })).resolves.toBe(false)
+    await expect(useConfirm().confirm({ title: '确认', message: '继续？', onConfirm })).resolves.toBe(false)
+    expect(onConfirm).toHaveBeenCalledOnce()
   })
 })

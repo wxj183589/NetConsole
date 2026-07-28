@@ -18,7 +18,12 @@ export function useConfirm() {
         type: options.type === 'DANGER' || options.type === 'DESTRUCTIVE' ? 'error' : 'warning',
         confirmButtonText: options.confirmText || '确认操作',
         cancelButtonText: options.cancelText || '取消',
-      }).then(() => true).catch(() => false)
+        confirmButtonType: options.type === 'DANGER' || options.type === 'DESTRUCTIVE' ? 'danger' : 'primary',
+        customStyle: options.width ? { width: options.width, maxWidth: 'calc(100vw - 32px)' } : undefined,
+      }).then(async () => {
+        await options.onConfirm?.()
+        return true
+      }).catch(() => false)
     }
     if (confirmState.request) confirmState.request.resolve('cancel')
     return new Promise<boolean>((resolve) => {

@@ -421,7 +421,12 @@ def test_task_repository_initialization_preserves_existing_tables(tmp_path: Path
 
     with sqlite3.connect(db_path) as conn:
         assert conn.execute("SELECT value FROM legacy_marker").fetchone()[0] == "keep"
-        assert conn.execute("SELECT value FROM task_schema_meta WHERE key = 'schema_version'").fetchone()[0] == "2"
+        assert (
+            conn.execute(
+                "SELECT value FROM task_schema_meta WHERE key = 'schema_version'"
+            ).fetchone()[0]
+            == "3"
+        )
 
 
 def test_task_repository_migrates_legacy_text_integrity_once(tmp_path: Path) -> None:

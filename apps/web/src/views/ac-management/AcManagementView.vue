@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { Refresh, View } from '@element-plus/icons-vue'
+import { Download, Refresh, View } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -13,9 +13,13 @@ import {
   getAcActionPlan,
   getAcExternalTerminalOptions,
   openAcFitApExternalTerminal,
+  acFitApResourceArtifactDownloadRequest,
+  getAcWebTask,
+  startAcFitApResourceExport,
 } from '../../api/acWebParity'
+import type { AcFitApResourceExportScope } from '../../api/acWebParity'
 import { isFeatureEnabled } from '../../features'
-import { getPlatformAdapter, getRuntimeConfig } from '../../platform/runtime'
+import { downloadBackendResource, getPlatformAdapter, getRuntimeConfig } from '../../platform/runtime'
 import { useAcManagementStore } from '../../stores/acManagement'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import { useTaskStore } from '../../stores/tasks'
@@ -25,7 +29,12 @@ import type { NcDataTableContextMenuItem } from '../../components/table/NcDataTa
 import type { NcColumnValueType, NcTableColumn } from '../../components/table/NcTableColumn'
 import AcOmniPeekExportDialog from './AcOmniPeekExportDialog.vue'
 import type { AcAp, AcApHistoryPage, AcConfigSnapshot, AcOptical, AcRadio } from '../../types/acManagement'
-import type { AcActionAudit, AcActionPlan, AcTerminalType } from '../../types/acWebParity'
+import type {
+  AcActionAudit,
+  AcActionPlan,
+  AcTerminalType,
+  AcWebTask,
+} from '../../types/acWebParity'
 import { displayInterfaceName } from '../../utils/interfaceName'
 import { formatOpticalPower, opticalStatusPresentation, opticalValuePresentation } from '../../utils/opticalPresentation'
 
@@ -55,6 +64,10 @@ const actionDialogVisible = ref(false)
 const actionLoading = reactive<Record<'persist_auto_ap' | 'enable_ap_remote_login', boolean>>({ persist_auto_ap: false, enable_ap_remote_login: false })
 const omniPeekVisible = ref(false)
 const omniPeekScopeIds = ref<string[]>([])
+const resourceExportBusy = ref(false)
+const resourceExportSaving = ref(false)
+const lastResourceExportTask = ref<AcWebTask | null>(null)
+let resourceExportPolling = true
 const terminalVisible = ref(false)
 const terminalLoading = ref(false)
 const terminalTarget = ref<AcAp | null>(null)
@@ -119,10 +132,6 @@ const configLines = computed(() => (store.configContent?.content || '').split('\
 const diffLines = computed(() => (store.configDiff?.raw_diff || '').split('\n'))
 const taskActive = computed(() => !!store.refreshTask && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(store.refreshTask.status))
 const actionTaskActive = computed(() => !!store.actionTask && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(store.actionTask.status))
-const publicAcTasks = computed(() => taskStore.tasks.filter((task) => task.module === 'ac' || task.owner === 'web_ac'))
-const activeAcTaskCount = computed(() => publicAcTasks.value.filter((task) => ['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'CREATED', 'QUEUED'].includes(task.status)).length)
-const failedAcTaskCount = computed(() => publicAcTasks.value.filter((task) => task.status === 'FAILED').length)
-const latestAcTask = computed(() => publicAcTasks.value.find((task) => task.id === store.refreshTask?.task_id) || publicAcTasks.value[0] || null)
 const acActionConflict = computed(() => actionTaskActive.value && store.actionTask?.target_id === store.filters.ac_id)
 const currentActionLoading = computed(() => {
   const actionId = actionPlan.value?.action_id
@@ -200,6 +209,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  resourceExportPolling = false
   document.removeEventListener('visibilitychange', handleVisibility)
   store.stopPolling()
   taskStore.releasePolling(pollingConsumer)
@@ -213,15 +223,6 @@ function handleVisibility(): void {
     store.startPolling()
     taskStore.acquirePolling(pollingConsumer)
   }
-}
-
-function openTaskWindow(requestedTaskId = ''): void {
-  const taskId = requestedTaskId || latestAcTask.value?.id || store.actionTask?.task_id || store.refreshTask?.task_id || ''
-  if (window.netconsoleDesktop) {
-    void window.netconsoleDesktop.openTaskWindow({ module: 'ac', ...(taskId ? { taskId } : {}) })
-    return
-  }
-  void router.push({ name: 'tasks', query: { module: 'ac', ...(taskId ? { task_id: taskId } : {}) } })
 }
 
 function clearFilters(): void {
@@ -259,6 +260,113 @@ function invertCurrentPage(): void {
     else next.add(ap.id)
   }
   selectedApIds.value = next
+}
+
+async function exportFitApResources(command: string): Promise<void> {
+  if (!['filtered', 'selected', 'all'].includes(command)) return
+  const scope = command as AcFitApResourceExportScope
+  if (!store.filters.ac_id) {
+    ElMessage.warning(t('ac.fit_ap_resource.select_ac', '请先选择 AC'))
+    return
+  }
+  if (scope === 'selected' && !selectedApIds.value.size) {
+    ElMessage.warning(t('ac.fit_ap_resource.select_ap', '请先选择要导出的 FIT-AP'))
+    return
+  }
+  if (resourceExportBusy.value) return
+  resourceExportBusy.value = true
+  try {
+    const task = await startAcFitApResourceExport(
+      store.filters.ac_id,
+      scope,
+      scope === 'selected' ? [...selectedApIds.value] : [],
+      scope === 'filtered'
+        ? {
+            query: store.filters.query,
+            status: store.filters.status,
+            optical_status: store.filters.optical_status,
+            station: store.filters.station,
+            section: store.filters.section,
+            model: store.filters.model,
+            switch: store.filters.switch,
+          }
+        : {},
+    )
+    lastResourceExportTask.value = task
+    ElMessage.success(t('ac.fit_ap_resource.task_created', 'FIT-AP 资源导出任务已创建，可在任务中心查看'))
+    await taskStore.refresh()
+    const completed = await waitForResourceExport(task.task_id)
+    lastResourceExportTask.value = completed
+    const apCount = Number(completed.result_summary.ap_count || completed.result_summary.row_count || 0)
+    const radioCount = Number(completed.result_summary.radio_count || 0)
+    const warningCount = Number(completed.result_summary.warning_count || 0)
+    ElMessage.success(
+      warningCount > 0
+        ? resourceExportText(
+            'ac.fit_ap_resource.completed_with_warnings',
+            'FIT-AP 资源导出完成，共 {apCount} 台 AP，其中 {warningCount} 台存在数据缺失，详见“数据完整性”字段。',
+            { apCount, warningCount },
+          )
+        : resourceExportText(
+            'ac.fit_ap_resource.completed',
+            'FIT-AP 资源导出完成，共 {apCount} 台 AP、{radioCount} 个 Radio。',
+            { apCount, radioCount },
+          ),
+    )
+    await saveResourceExportArtifact()
+  } catch (cause) {
+    ElMessage.error(safeError(cause, t('ac.fit_ap_resource.failed', 'FIT-AP 资源导出失败')))
+  } finally {
+    resourceExportBusy.value = false
+    void taskStore.refresh()
+  }
+}
+
+async function waitForResourceExport(taskId: string): Promise<AcWebTask> {
+  const deadline = Date.now() + 180_000
+  while (resourceExportPolling && Date.now() < deadline) {
+    const task = await getAcWebTask(taskId)
+    lastResourceExportTask.value = task
+    if (task.status === 'COMPLETED' && task.available && task.artifact_id) return task
+    if (['FAILED', 'CANCELLED'].includes(task.status)) {
+      throw new Error(task.error_message || task.message || t('ac.fit_ap_resource.task_failed', 'FIT-AP 资源导出任务失败'))
+    }
+    await new Promise<void>((resolvePromise) => window.setTimeout(resolvePromise, 500))
+  }
+  throw new Error(t('ac.fit_ap_resource.timeout', 'FIT-AP 资源导出超过 180 秒，请在任务中心查看'))
+}
+
+async function saveResourceExportArtifact(): Promise<void> {
+  const task = lastResourceExportTask.value
+  if (!task?.available || !task.artifact_id || resourceExportSaving.value) return
+  resourceExportSaving.value = true
+  try {
+    const result = await downloadBackendResource(acFitApResourceArtifactDownloadRequest(task))
+    if (result.status === 'saved') {
+      ElMessage.success(resourceExportText(
+        'ac.fit_ap_resource.saved',
+        'FIT-AP 资源已保存：{fileName}',
+        { fileName: result.fileName || task.artifact_name || '' },
+      ))
+    } else if (result.status === 'started') {
+      ElMessage.success(t('ac.fit_ap_resource.browser_started', 'FIT-AP 资源已交给浏览器下载'))
+    } else if (result.status === 'cancelled') {
+      ElMessage.info(t('ac.fit_ap_resource.save_cancelled', '已取消保存，导出文件仍保留在任务中心'))
+    } else {
+      ElMessage.error(result.error || t(
+        'ac.fit_ap_resource.save_failed_retry',
+        '本地保存失败，导出文件仍保留在任务中心，可再次保存',
+      ))
+    }
+  } catch (cause) {
+    ElMessage.error(resourceExportText(
+      'ac.fit_ap_resource.save_failed_detail',
+      '{error}；导出文件仍保留在任务中心，可再次保存',
+      { error: safeError(cause, t('ac.fit_ap_resource.save_failed', '本地保存失败')) },
+    ))
+  } finally {
+    resourceExportSaving.value = false
+  }
 }
 
 async function deleteSelectedAps(): Promise<void> {
@@ -487,6 +595,17 @@ function safeError(cause: unknown, fallback: string): string {
     .replace(/[A-Za-z]:\\[^\r\n]+/g, '<本机路径>')
 }
 
+function resourceExportText(
+  key: string,
+  fallback: string,
+  values: Record<string, string | number>,
+): string {
+  return Object.entries(values).reduce(
+    (message, [name, value]) => message.replaceAll(`{${name}}`, String(value)),
+    t(key, fallback),
+  )
+}
+
 const interfaceValueKeys = new Set(['switch_interface', 'interface_name', 'local_interface', 'neighbor_interface'])
 
 function displayColumnValue(key: string, value: unknown): string {
@@ -590,14 +709,6 @@ function diffLineClass(line: string): string {
     </div>
 
     <el-alert v-if="store.error" :title="store.error" type="error" :closable="false" show-icon class="page-error" />
-    <el-alert
-      :title="`AC 任务 · 运行中 ${activeAcTaskCount} 项 / 失败 ${failedAcTaskCount} 项`"
-      :description="latestAcTask ? `${latestAcTask.name} · ${latestAcTask.status} · ${latestAcTask.message || latestAcTask.id}` : '任务状态由统一任务中心恢复'"
-      type="info"
-      :closable="false"
-      show-icon
-      class="task-summary"
-    ><el-button link type="primary" @click="openTaskWindow">打开任务中心</el-button></el-alert>
     <el-empty v-if="store.summary?.message && !store.summary.acs.length" :description="store.summary.message" />
 
     <el-descriptions v-else-if="store.activeAc" :column="4" border class="ac-info-strip">
@@ -644,6 +755,31 @@ function diffLineClass(line: string): string {
               :disabled="!store.filters.ac_id"
               @click="openOmniPeekPreview"
             >{{ t('ac.omnipeek.export', '导出 OmniPeek 名称表') }}</el-button>
+            <el-dropdown
+              v-if="isFeatureEnabled('web.ac_fit_ap_resource_export')"
+              trigger="click"
+              :disabled="!store.filters.ac_id || resourceExportBusy"
+              @command="exportFitApResources"
+            >
+              <el-button
+                :icon="Download"
+                :loading="resourceExportBusy"
+                :disabled="!store.filters.ac_id"
+              >{{ t('ac.fit_ap_resource.export', '导出 AP 资源') }}</el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="filtered">{{ resourceExportText('ac.fit_ap_resource.scope_filtered', '导出当前筛选结果（{count}）', { count: store.total }) }}</el-dropdown-item>
+                  <el-dropdown-item command="selected" :disabled="!selectedApIds.size">{{ resourceExportText('ac.fit_ap_resource.scope_selected', '导出已选择 AP（{count}）', { count: selectedApIds.size }) }}</el-dropdown-item>
+                  <el-dropdown-item command="all">{{ resourceExportText('ac.fit_ap_resource.scope_all', '导出当前 AC 全部 AP（{count}）', { count: store.activeAc?.ap_total || 0 }) }}</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+            <el-button
+              v-if="lastResourceExportTask?.available"
+              :icon="Download"
+              :loading="resourceExportSaving"
+              @click="saveResourceExportArtifact"
+            >{{ t('ac.fit_ap_resource.save_again', '再次保存') }}</el-button>
             <el-button
               v-if="isFeatureEnabled('web.ac_fit_ap_delete')"
               type="danger"
@@ -894,7 +1030,6 @@ function diffLineClass(line: string): string {
 <style scoped>
 .ac-management { width: 100%; max-width: none; margin: 0; }
 .page-error { margin-bottom: 16px; }
-.task-summary { margin-bottom: 16px; }
 .page-toolbar, .config-toolbar, .detail-heading, .config-searchbar, .pagination-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .page-toolbar { margin-bottom: 16px; }
 .page-toolbar h2, .config-toolbar h3, .detail-heading h2 { margin: 0; }

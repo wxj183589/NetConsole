@@ -205,6 +205,10 @@ class WebArtifactStore:
                 manifest["row_count"] = max(
                     0, int(task.result.get("row_count") or 0)
                 )
+            if isinstance(task.result, dict):
+                for key in ("ap_count", "radio_count", "warning_count"):
+                    if isinstance(task.result.get(key), int):
+                        manifest[key] = max(0, int(task.result[key]))
             self._write_manifest(reservation.site_id, reservation.artifact_id, manifest)
             result = self._safe_task_result(manifest)
             self.task_service.finalize_artifact_result(
@@ -461,6 +465,9 @@ class WebArtifactStore:
         }
         if "row_count" in manifest:
             result["row_count"] = max(0, int(manifest.get("row_count") or 0))
+        for key in ("ap_count", "radio_count", "warning_count"):
+            if key in manifest:
+                result[key] = max(0, int(manifest.get(key) or 0))
         return result
 
     def _reject_task(self, reservation: ReservedWebArtifact, error_message: str) -> None:
@@ -519,6 +526,7 @@ class WebArtifactStore:
         roots = {
             "ac_extension_export": self.paths.trackside_ap_outputs_dir(site_id),
             "ac_omnipeek_export": self.paths.trackside_ap_outputs_dir(site_id),
+            "ac_fit_ap_resource_export": self.paths.trackside_ap_outputs_dir(site_id),
             "command_reference_export": self.paths.site_files_dir(site_id) / "command_reference",
             "device_csv_export": self.paths.site_files_dir(site_id) / "web_artifacts",
             "online_mr_report": self.paths.online_mr_root(site_id),

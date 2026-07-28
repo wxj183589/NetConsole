@@ -32,6 +32,7 @@ from netconsole.services.export.common_exporters import (
 )
 from netconsole.services.export.export_job import ExportJob
 from netconsole.services.file_contract import attach_export_metadata
+from netconsole.services.ac.fit_ap_resource_export import export_fit_ap_resource_xlsx
 from netconsole.services.trackside_ap_base_export import export_trackside_ap_base_xlsx_task
 from netconsole.services.trackside_ap_rename_export import export_trackside_ap_rename_commands_task
 
@@ -55,6 +56,7 @@ GENERIC_EXPORT_TASK_TYPES = {
     "securecrt_sessions",
     "config_snapshots_zip",
     "fit_ap_csv",
+    "fit_ap_resource_xlsx",
     "fit_ap_optical_xlsx",
     "fit_ap_extension_xlsx",
     "fit_ap_extension_template_xlsx",
@@ -105,6 +107,9 @@ def run_generic_export_handler(job: ExportJob, progress_callback: ProgressCallba
         row_count = export_config_snapshots_zip(tmp_path, payload, progress_callback, should_cancel)
     elif job.job_type == "fit_ap_csv":
         row_count = export_fit_ap_csv_task(tmp_path, payload, progress_callback, should_cancel)
+    elif job.job_type == "fit_ap_resource_xlsx":
+        result = export_fit_ap_resource_xlsx(tmp_path, payload, progress_callback, should_cancel)
+        row_count = int(result.get("row_count") or 0)
     elif job.job_type == "fit_ap_optical_xlsx":
         row_count = export_fit_ap_optical_xlsx_task(tmp_path, payload, progress_callback, should_cancel)
     elif job.job_type == "fit_ap_extension_xlsx":
@@ -142,4 +147,5 @@ def run_generic_export_handler(job: ExportJob, progress_callback: ProgressCallba
     replace_output(tmp_path, output_path)
     if job.job_type == "securecrt_sessions":
         return {"path": str(result.get("path") or output_path), "row_count": row_count}
-    return {"path": str(output_path), "row_count": row_count, **(result if job.job_type == "trackside_ap_rename_commands" else {})}
+    detail = result if job.job_type in {"trackside_ap_rename_commands", "fit_ap_resource_xlsx"} else {}
+    return {"path": str(output_path), "row_count": row_count, **detail}

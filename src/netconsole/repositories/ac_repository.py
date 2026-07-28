@@ -2421,6 +2421,7 @@ class AcRepository:
                 match_status = "matched_by_name" if extension else ""
             if extension:
                 for field in (
+                    "ap_name",
                     "belong_type",
                     "station_name",
                     "section_name",

@@ -48,6 +48,7 @@ AC_FEATURE_IDS = (
     "web.ac_fit_ap_metadata_import",
     "web.ac_fit_ap_metadata_write",
     "web.ac_fit_ap_history",
+    "web.ac_fit_ap_resource_export",
     "web.ac_dangerous_actions",
     "ac.omnipeek_name_table_export",
     "web.ac_fit_ap_external_terminal",
@@ -145,6 +146,57 @@ def test_real_repository_rows_map_to_strict_extension_dtos_without_duplicate_pla
     assert extensions.json()["items"][0]["ap_name"] == "AP-Real"
     assert "source_file" not in extensions.json()["items"][0]
     assert trackside.status_code == 404
+
+
+def test_fit_ap_resource_export_service_uses_scoped_snapshot_inputs(tmp_path: Path) -> None:
+    paths, _db_path, _files = build_ac_management_fixture(tmp_path)
+    service, _normal, export, _tasks = _service(paths)
+
+    filtered = service.start_fit_ap_resource_export(
+        "demo",
+        ac_id="ac-1",
+        scope="filtered",
+        selected_ap_ids=[],
+        filters={"status": "offline", "query": "", "unknown": "ignored"},
+    )
+    payload = export.jobs[filtered.task_id].params["payload"]
+    assert payload["scope"] == "filtered"
+    assert payload["filters"] == {"status": "offline"}
+    assert payload["selected_ap_ids"] == []
+
+    selected = service.start_fit_ap_resource_export(
+        "demo",
+        ac_id="ac-1",
+        scope="selected",
+        selected_ap_ids=["ap-online", "ap-offline"],
+        filters={"status": "offline"},
+    )
+    selected_payload = export.jobs[selected.task_id].params["payload"]
+    assert selected_payload["filters"] == {}
+    assert selected_payload["selected_ap_ids"] == ["ap-online", "ap-offline"]
+
+    with pytest.raises(AcWebActionError, match="请先选择"):
+        service.start_fit_ap_resource_export(
+            "demo",
+            ac_id="ac-1",
+            scope="selected",
+            selected_ap_ids=[],
+        )
+    with pytest.raises(AcWebActionError, match="不属于当前 AC"):
+        service.start_fit_ap_resource_export(
+            "demo",
+            ac_id="ac-1",
+            scope="selected",
+            selected_ap_ids=["foreign-ap"],
+        )
+    with pytest.raises(AcWebActionError, match="没有可导出"):
+        service.start_fit_ap_resource_export(
+            "demo",
+            ac_id="ac-1",
+            scope="filtered",
+            selected_ap_ids=[],
+            filters={"query": "missing-ap"},
+        )
 
 
 def test_extension_import_is_durable_idempotent_atomic_and_conflict_aware(tmp_path: Path) -> None:

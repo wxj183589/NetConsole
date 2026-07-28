@@ -2,7 +2,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 import { useTaskStore } from './tasks'
-import { cancelTask, getTask, getTaskLogs, listTasks } from '../api/tasks'
+import {
+  acknowledgeAllTaskAlerts,
+  acknowledgeTask,
+  cancelTask,
+  cleanupTasks,
+  dismissTask,
+  getTask,
+  getTaskLogs,
+  listTasks,
+} from '../api/tasks'
 import type { TaskItem } from '../types/task'
 
 class FakeWebSocket {
@@ -32,6 +41,10 @@ vi.mock('../api/tasks', () => ({
   getTask: vi.fn(),
   getTaskLogs: vi.fn(),
   cancelTask: vi.fn(),
+  cleanupTasks: vi.fn(),
+  dismissTask: vi.fn(),
+  acknowledgeTask: vi.fn(),
+  acknowledgeAllTaskAlerts: vi.fn(),
 }))
 
 const task: TaskItem = {
@@ -54,6 +67,34 @@ describe('Job Center polling store', () => {
       message: '',
     })
     vi.mocked(cancelTask).mockReset().mockResolvedValue({ ...task, status: 'STOPPING' })
+    vi.mocked(cleanupTasks).mockReset().mockResolvedValue({
+      matched: 1,
+      dismissed: 1,
+      skipped_active: 0,
+      skipped_unacknowledged: 0,
+      artifacts_deleted: 0,
+      task_ids: [task.id],
+      counts: { completed: 1, cancelled: 0, expired: 0, alerts: 0 },
+    })
+    vi.mocked(dismissTask).mockReset().mockResolvedValue({
+      matched: 1,
+      dismissed: 1,
+      skipped_active: 0,
+      skipped_unacknowledged: 0,
+      artifacts_deleted: 0,
+      task_ids: [task.id],
+      counts: { completed: 0, cancelled: 0, expired: 0, alerts: 0 },
+    })
+    vi.mocked(acknowledgeTask).mockReset().mockResolvedValue({
+      acknowledged: 1,
+      task_ids: [task.id],
+      acknowledged_at: '2026-07-29T08:00:00Z',
+    })
+    vi.mocked(acknowledgeAllTaskAlerts).mockReset().mockResolvedValue({
+      acknowledged: 1,
+      task_ids: [task.id],
+      acknowledged_at: '2026-07-29T08:00:00Z',
+    })
     vi.stubGlobal('window', { setTimeout, clearTimeout, setInterval, clearInterval })
     vi.stubGlobal('WebSocket', undefined)
     FakeWebSocket.instances = []
@@ -148,6 +189,38 @@ describe('Job Center polling store', () => {
     expect(getTaskLogs).toHaveBeenCalledTimes(logCalls)
     expect('requestCancel' in store).toBe(true)
     vi.useRealTimers()
+  })
+
+  it('applies dismiss and acknowledge WebSocket events without a list refresh', async () => {
+    vi.stubGlobal('window', {
+      setTimeout,
+      clearTimeout,
+      setInterval,
+      clearInterval,
+      location: { origin: 'http://127.0.0.1:5173', protocol: 'http:', host: '127.0.0.1:5173' },
+    })
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const store = useTaskStore()
+    const failed = { ...task, id: 'failed-1', status: 'FAILED' as const }
+    vi.mocked(listTasks).mockResolvedValue([failed, { ...task, id: 'done-1', status: 'COMPLETED' }])
+    store.acquirePolling('task-center-events')
+    await vi.waitFor(() => expect(store.tasks).toHaveLength(2))
+    const refreshCalls = vi.mocked(listTasks).mock.calls.length
+
+    FakeWebSocket.instances[0].receive({
+      type: 'tasks.acknowledged',
+      payload: { task_ids: ['failed-1'], acknowledged_at: '2026-07-29T08:00:00Z' },
+    })
+    expect(store.tasks.find((item) => item.id === 'failed-1')?.acknowledged_at)
+      .toBe('2026-07-29T08:00:00Z')
+
+    FakeWebSocket.instances[0].receive({
+      type: 'tasks.dismissed',
+      payload: { task_ids: ['done-1'] },
+    })
+    expect(store.tasks.map((item) => item.id)).toEqual(['failed-1'])
+    expect(listTasks).toHaveBeenCalledTimes(refreshCalls)
+    store.releasePolling('task-center-events')
   })
 
   it('does not overlap log requests or apply a previous task response after switching', async () => {

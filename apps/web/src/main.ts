@@ -10,6 +10,7 @@ import {
   initializePlatformRuntime,
 } from './platform/runtime'
 import 'element-plus/theme-chalk/dark/css-vars.css'
+import 'element-plus/theme-chalk/el-message-box.css'
 import './theme/tokens.css'
 import './theme/light.css'
 import './theme/dark.css'

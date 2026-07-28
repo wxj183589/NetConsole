@@ -29,6 +29,7 @@ from netconsole.models.api.ac_management import (
     AcExtensionRollbackResultDTO,
     AcFitApDeleteRequestDTO,
     AcFitApMetadataSaveRequestDTO,
+    AcFitApResourceExportRequestDTO,
     AcLocalRebuildRequestDTO,
     AcOmniPeekPreviewDTO,
     AcOmniPeekPreferencesDTO,
@@ -499,6 +500,25 @@ def export_fit_ap_omnipeek(request: Request, payload: AcOmniPeekRequestDTO) -> A
         _raise_web_error(exc)
 
 
+@router.post(
+    "/fit-aps/export",
+    response_model=AcWebTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("web.ac_fit_ap_resource_export"))],
+)
+def export_fit_ap_resources(request: Request, payload: AcFitApResourceExportRequestDTO) -> AcWebTaskDTO:
+    try:
+        return _web_service(request).start_fit_ap_resource_export(
+            _web_site_id(request),
+            ac_id=payload.ac_id,
+            scope=payload.scope,
+            selected_ap_ids=payload.selected_ap_ids,
+            filters=payload.filters.model_dump(),
+        )
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+
+
 @router.get(
     "/fit-aps/omnipeek/preferences",
     response_model=AcOmniPeekPreferencesDTO,
@@ -717,6 +737,22 @@ def fit_ap_omnipeek_download(request: Request, artifact_id: str) -> FileResponse
     except AcWebActionError as exc:
         _raise_web_error(exc)
     return FileResponse(path, filename=name)
+
+
+@router.get(
+    "/fit-aps/artifacts/{artifact_id}/download",
+    dependencies=[Depends(require_feature("web.ac_fit_ap_resource_export"))],
+)
+def fit_ap_resource_download(request: Request, artifact_id: str) -> FileResponse:
+    try:
+        path, name = _web_service(request).open_fit_ap_resource_export(_web_site_id(request), artifact_id)
+        return FileResponse(
+            path,
+            filename=name,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
 
 
 def _required(value, message: str):

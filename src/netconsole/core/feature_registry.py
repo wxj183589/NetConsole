@@ -136,6 +136,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("web.ac_fit_ap_metadata_import", "导入 FIT-AP 元数据（Web）", "web.ac_fit_ap_resources", "action"),
     FeatureItem("web.ac_fit_ap_metadata_write", "保存 FIT-AP 元数据（Web）", "web.ac_fit_ap_resources", "action"),
     FeatureItem("web.ac_fit_ap_history", "查看 FIT-AP 历史（Web）", "web.ac_fit_ap_resources", "action"),
+    FeatureItem("web.ac_fit_ap_resource_export", "导出 FIT-AP 资源（Web）", "web.ac_fit_ap_resources", "action"),
     FeatureItem(
         "web.ac_fit_ap_external_terminal",
         "打开 FIT-AP 外部终端（Electron）",

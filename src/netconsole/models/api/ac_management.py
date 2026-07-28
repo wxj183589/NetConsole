@@ -125,6 +125,9 @@ class AcApDTO(ApiModel):
     mileage: str = ""
     direction: str = ""
     location_note: str = ""
+    point_code: str = ""
+    trackside_ap_name: str = ""
+    remark: str = ""
     switch_name: str = ""
     switch_interface: str = ""
     lldp_status: str = ""
@@ -232,6 +235,7 @@ class AcWebTaskDTO(ApiModel):
     action: str
     target_id: str = ""
     artifact_id: str = ""
+    artifact_name: str = ""
     available: bool = False
     progress: int = 0
     stage: str = ""
@@ -326,6 +330,24 @@ class AcFitApMetadataSaveRequestDTO(ApiModel):
     mileage: str = Field(default="", max_length=100)
     location_note: str = Field(default="", max_length=500)
     direction: str = Field(default="", max_length=30)
+
+
+class AcFitApResourceExportFiltersDTO(ApiModel):
+    query: str = Field(default="", max_length=200)
+    status: str = Field(default="", max_length=30)
+    optical_status: str = Field(default="", max_length=30)
+    station: str = Field(default="", max_length=100)
+    section: str = Field(default="", max_length=100)
+    model: str = Field(default="", max_length=100)
+    switch: str = Field(default="", max_length=200)
+
+
+class AcFitApResourceExportRequestDTO(ApiModel):
+    ac_id: str = Field(min_length=1, max_length=100)
+    scope: Literal["filtered", "selected", "all"]
+    selected_ap_ids: list[str] = Field(default_factory=list, max_length=2000)
+    filters: AcFitApResourceExportFiltersDTO = Field(default_factory=AcFitApResourceExportFiltersDTO)
+    format: Literal["xlsx"] = "xlsx"
 
 
 class AcOmniPeekRequestDTO(ApiModel):

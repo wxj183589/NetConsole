@@ -163,6 +163,47 @@ export const acOmniPeekArtifactDownloadRequest = (artifactId: string, suggestedN
   ...(destinationPath ? { destinationPath } : {}),
 })
 
+export type AcFitApResourceExportScope = 'filtered' | 'selected' | 'all'
+
+export interface AcFitApResourceExportFilters {
+  query?: string
+  status?: string
+  optical_status?: string
+  station?: string
+  section?: string
+  model?: string
+  switch?: string
+}
+
+export function startAcFitApResourceExport(
+  acId: string,
+  scope: AcFitApResourceExportScope,
+  selectedApIds: string[],
+  filters: AcFitApResourceExportFilters,
+): Promise<AcWebTask> {
+  return apiRequest<AcWebTask>(`${root}/fit-aps/export`, {
+    method: 'POST',
+    body: JSON.stringify({
+      ac_id: acId,
+      scope,
+      selected_ap_ids: selectedApIds,
+      filters,
+      format: 'xlsx',
+    }),
+  })
+}
+
+export const acFitApResourceArtifactDownloadRequest = (
+  task: Pick<AcWebTask, 'artifact_id' | 'artifact_name' | 'size_bytes' | 'sha256'>,
+): BackendDownloadRequest => ({
+  apiPath: `${root}/fit-aps/artifacts/${encodeURIComponent(task.artifact_id)}/download`,
+  suggestedName: task.artifact_name || 'FIT-AP资源.xlsx',
+  filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }],
+  ...(task.size_bytes > 0 && task.sha256
+    ? { expectedSizeBytes: task.size_bytes, expectedSha256: task.sha256 }
+    : {}),
+})
+
 export function getAcExternalTerminalOptions(): Promise<AcExternalTerminalOptions> {
   return apiRequest<AcExternalTerminalOptions>(`${root}/fit-aps/external-terminal/options`)
 }

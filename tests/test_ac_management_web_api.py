@@ -117,6 +117,7 @@ def test_ac_management_router_exposes_only_fixed_controlled_posts(tmp_path: Path
         "/api/ac-management/fit-aps/metadata/import",
         "/api/ac-management/fit-aps/omnipeek/preview",
         "/api/ac-management/fit-aps/omnipeek/export",
+        "/api/ac-management/fit-aps/export",
         "/api/ac-management/fit-aps/{ap_id}/external-terminal",
         "/api/ac-management/aps/{ap_id}/metadata",
         "/api/ac-management/local-rebuild/{rebuild_kind}",

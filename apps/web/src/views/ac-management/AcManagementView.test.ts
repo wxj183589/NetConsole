@@ -29,8 +29,6 @@ describe('AC Management resource view', () => {
     expect(source).toContain('反选本页')
     expect(source).toContain('useConfirm')
     expect(source).toContain('confirm({')
-    expect(source).toContain('打开任务中心')
-    expect(source).toContain("openTaskWindow({ module: 'ac'")
     expect(source).toContain('FIT-AP 资源')
     expect(source).toContain('AC 连接记录')
     expect(source).toContain('Mesh Radio 1 / 2')
@@ -57,6 +55,16 @@ describe('AC Management resource view', () => {
     expect(source).not.toContain('save force')
   })
 
+  it('removes the page-level AC task banner without leaving its legacy task-window entry', () => {
+    expect(source).not.toContain('AC 任务 · 运行中')
+    expect(source).not.toContain('打开任务中心')
+    expect(source).not.toContain('task-summary')
+    expect(source).not.toContain('function openTaskWindow')
+    expect(source).not.toContain("openTaskWindow({ module: 'ac'")
+    expect(source).toContain('class="ac-info-strip"')
+    expect(source).toContain('class="content-card"')
+  })
+
   it('removes the obsolete page alert and wires bounded AC additions', () => {
     expect(source).not.toContain('title="AC / FIT-AP 资源"')
     expect(source).not.toContain('“更新 FIT-AP 资源”通过后台任务连接所选 H3C AC')
@@ -78,6 +86,19 @@ describe('AC Management resource view', () => {
     expect(omniPeekSource).toContain('selected_item_keys')
     expect(omniPeekSource).toContain('force_export_keys')
     expect(omniPeekSource).toContain('downloadBackendResource')
+  })
+
+  it('offers three FIT-AP export scopes and preserves Artifact retry', () => {
+    expect(source).toContain("isFeatureEnabled('web.ac_fit_ap_resource_export')")
+    expect(source).toContain('导出当前筛选结果')
+    expect(source).toContain('导出已选择 AP')
+    expect(source).toContain('导出当前 AC 全部 AP')
+    expect(source).toContain(":disabled=\"!selectedApIds.size\"")
+    expect(source).toContain('scope === \'filtered\'')
+    expect(source).toContain('scope === \'selected\'')
+    expect(source).toContain('waitForResourceExport')
+    expect(source).toContain('saveResourceExportArtifact')
+    expect(source).toContain('导出文件仍保留在任务中心')
   })
 
   it('adds a bounded row context menu while retaining detail and copy actions', () => {

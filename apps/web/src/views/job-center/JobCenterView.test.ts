@@ -88,7 +88,9 @@ vi.mock('element-plus', async () => {
 })
 
 vi.mock('@element-plus/icons-vue', () => ({
+  Check: {},
   CopyDocument: {},
+  Delete: {},
   Refresh: {},
   View: {},
 }))

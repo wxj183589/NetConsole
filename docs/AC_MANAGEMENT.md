@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-Electron AC/FIT-AP 处于 `PARTIAL / IMPLEMENTED_UNVERIFIED`。`/ac-management/fit-aps` 已不再是数据库只读页：Feature `web.ac_refresh` 的“更新 AC 信息”“更新 FIT-AP 资源”和 AP 详情“深度更新”都会创建持久化后台任务，经共享 Python Application Service 连接所选 H3C AC、保存 raw/命令记录并更新当前局点数据库。页面也已接入两项受控 AC 写动作、当前 AC 范围的 OmniPeek 名称表导出和桌面版单 AP 外部终端；这些闭环仍待 Electron 人工和真实 AC/AP 验收，全部缺口完成前不得标记 `COMPLETE`。
+Electron AC/FIT-AP 处于 `PARTIAL / IMPLEMENTED_UNVERIFIED`。`/ac-management/fit-aps` 已不再是数据库只读页：Feature `web.ac_refresh` 的“更新 AC 信息”“更新 FIT-AP 资源”和 AP 详情“深度更新”都会创建持久化后台任务，经共享 Python Application Service 连接所选 H3C AC、保存 raw/命令记录并更新当前局点数据库。页面也已接入两项受控 AC 写动作、FIT-AP 资源 XLSX、当前 AC 范围的 OmniPeek 名称表导出和桌面版单 AP 外部终端；这些闭环仍待 Electron 人工和真实 AC/AP 验收，全部缺口完成前不得标记 `COMPLETE`。
 
 `web.ac_dangerous_actions` 与 `web.ac_fit_ap_external_terminal` 已从开发隐藏项转为正式客户版默认功能。Feature Profile schema v2 会在升级首次加载时把 schema v1 中这两项的旧默认关闭状态迁移为正式默认值；用户在 v2 及以后主动关闭的选择保持不变，不要求删除 AppData。
 
@@ -27,6 +27,7 @@ Vue AC 管理 -> POST /api/ac-management/refresh/fit-ap
 
 - AC 总览：管理 IP、型号、软件版本、AP 总数、在线/离线/未认证、Radio 数量、关联光衰异常和数据更新时间；
 - FIT-AP：后端搜索、筛选、排序和分页，默认按连接交换机自然升序、其次按归一化端口自然升序，缺失项后置；前端通过统一 `NcDataTable` 保存列显隐、顺序、手工列宽和固定位置，物理接口统一显示 `GE/XGE/25GE/40GE/100GE` 简称；FIT-AP、配置、Radio、历史、Mesh-Link、AP 扩展和规划页面不再各自维护列宽算法；
+- FIT-AP 资源导出：Feature `web.ac_fit_ap_resource_export` 提供“当前筛选结果 / 已选择 AP / 当前 AC 全部 AP”三种范围，筛选复用页面 Query Service 且不携带分页。Export Process 从当前局点只读 SQLite 重新查询，按规范化 MAC 去重；MAC 缺失时使用 `AC ID + AP 名称`，保证“AP资源清单”一台 AP 一行，“Radio明细”一条 Radio 一行，并附“导出说明”。缺失的光衰、LLDP、站点、区间、MAC 或 Radio 保持空白并写入“数据完整性”，单台缺失不阻断整份文件。该导出用于资产核对，不替代设备管理清单或 OmniPeek `.nam` 名称表，也不会在导出时连接 AC、AP 或交换机；
 - AP 详情：基本信息、connection-record、Radio 1/2 状态/模式/频段/信道/带宽/利用率/功率/客户端/BSSID、LLDP/端口、交换机光模块和 AP 侧光衰；
 - 真实更新：AC CPU/内存/型号/版本/HTTPS 端口、FIT-AP 普通资源、所选 AP 深度 BSSID 和 FIT-AP 光衰；FIT-AP 光衰默认共享并发 64，运行时按平台上限和目标 AP 数裁剪，并通过 `tasks.db` resource key 阻止同一 AC 与轨旁更新重复执行；任务进度、取消、失败、部分命令失败、页面重启恢复和完成后结果刷新；业务页只保留紧凑摘要，停止、日志和 Artifact 统一在 Electron 任务窗口处理；
 - 单 AP 定向更新接受 H3C 常见 `xxxx-xxxx-xxxx` MAC，后端统一规范化为标准格式；前端提交时优先使用 `ap_uuid`，其次 `ap_mac`，最后 `ap_name`，避免展示格式差异误拦稳定目标。
@@ -84,9 +85,11 @@ GET  /api/ac-management/actions/plans/{plan_id}/audit
 POST /api/ac-management/fit-aps/omnipeek/preview
 GET  /api/ac-management/fit-aps/omnipeek/preview/{task_id}
 POST /api/ac-management/fit-aps/omnipeek/export
+POST /api/ac-management/fit-aps/export
 GET  /api/ac-management/fit-aps/omnipeek/preferences
 PUT  /api/ac-management/fit-aps/omnipeek/preferences
 GET  /api/ac-management/fit-aps/omnipeek/artifacts/{artifact_id}/download
+GET  /api/ac-management/fit-aps/artifacts/{artifact_id}/download
 GET  /api/ac-management/fit-aps/external-terminal/options
 POST /api/ac-management/fit-aps/{ap_id}/external-terminal
 
@@ -125,7 +128,7 @@ display wlan mesh-link switch-history  # 仅布尔开关启用
 ## 尚未完成或验收的 Electron 能力
 
 - 动作页只把 `plan_id` 写入 `localStorage`，UI 和日志不展示 `confirm_token`；但当前 `AcActionPlanDTO` 仍把 Token 返回 Renderer，前端确认请求从内存 plan 回传。该实现尚未满足“Renderer 永不接收确认 Token”的严格边界，需后续改为服务端短期绑定或等价方案；修复前不得描述为 Token 完全未暴露给前端；
-- AP 信息导出以及详情页 Radio/LLDP/光衰历史 XLSX 导出仍需按当前代码和 Feature 状态复核；批量删除、详情元数据保存及历史查看已进入永久链。AP 点表导入已归并到“轨道交通 / 基础资料”的统一预览、合并和审计链，AC 页不再显示独立导入入口；
+- FIT-AP 资源 XLSX 已接入 Export Process、`WebArtifactStore`、任务中心和受控下载：Electron 通过 Preload Bridge 打开系统保存对话框并校验大小与 SHA-256，浏览器通过 Artifact 响应下载；取消或失败不会删除 Artifact，可在页面或任务中心再次保存。固定样例已通过 openpyxl 结构校验，但真实局点 145 AP/290 Radio、WPS/Excel/LibreOffice 打开和 Electron 系统保存对话框仍待人工验收；详情页 Radio/LLDP/光衰历史独立 XLSX 仍未实现。批量删除、详情元数据保存及历史查看已进入永久链。AP 点表导入已归并到“轨道交通 / 基础资料”的统一预览、合并和审计链，AC 页不再显示独立导入入口；
 - AC OmniPeek NAM 已接入共享 Export Process、`WebArtifactStore` 当前局点 `trackside_ap_outputs` 受控根、统一任务中心和 Electron 受控另存为；仍需用现场 OmniPeek 验证实际导入结果；
 - 旧版 FIT-AP 登录凭据保存实现已废弃；当前 FIT-AP 外部终端固定生成 SecureCRT `/TELNET <AP_IP> 23`、Xshell `-url telnet://<AP_IP>:23` 或 PuTTY `-telnet <AP_IP> -P 23`，即使系统设置启用“启动外部终端时传递密码”也不会传递 FIT-AP 用户名或密码，也不会查询设备管理中的同 IP 记录。真实 AP 可达性和三类终端版本兼容仍需人工验收；
 - AP 扩展信息导入和重命名命令导出由轨道交通基础资料统一承载；AC 侧不提供第二套入口。基础资料联动详情使用规范化 MAC 唯一匹配得到的 FIT-AP/AC ID，重复 MAC 不自动择一；
@@ -138,6 +141,7 @@ display wlan mesh-link switch-history  # 仅布尔开关启用
 
 ```powershell
 .venv\Scripts\python.exe -m pytest tests/test_ac_management.py tests/test_ac_domain_job.py tests/test_ac_web_parity.py tests/test_ac_management_web_api.py -q
+.venv\Scripts\python.exe -m pytest tests/test_fit_ap_resource_export.py -q
 .venv\Scripts\python.exe -m pytest tests/test_ac_mesh_link_refresh_service.py tests/test_ac_mesh_link_refresh_job.py tests/test_ac_mesh_link_refresh_api.py -q
 .venv\Scripts\python.exe -m pytest tests/test_ac_mesh_link_query_service.py tests/test_ac_mesh_link_web_api.py -q
 cd apps/web

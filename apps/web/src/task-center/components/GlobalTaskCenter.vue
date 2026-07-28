@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ElMessage, ElNotification } from 'element-plus'
-import { Close, Loading, Tickets, View } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
+import { Check, Close, Delete, Loading, MoreFilled, Tickets, View } from '@element-plus/icons-vue'
 
+import { t } from '../../i18n/runtime'
+import { useConfirm } from '../../components/feedback/useConfirm'
 import { getPlatformAdapter } from '../../platform/runtime'
 import { useTaskStore } from '../../stores/tasks'
 import { useWorkspaceStore } from '../../stores/workspace'
-import type { TaskItem } from '../../types/task'
+import type { TaskCleanupResult, TaskCleanupType, TaskItem } from '../../types/task'
 import { activeTaskStatuses, taskStatusLabel, taskStatusType } from '../../utils/taskStatus'
 import {
   onTaskCenterOpenRequested,
@@ -20,7 +22,9 @@ const RUNNING_STATUSES = new Set(['STARTING', 'RUNNING', 'STOPPING'])
 
 const store = useTaskStore()
 const workspace = useWorkspaceStore()
+const { confirm } = useConfirm()
 const drawerVisible = ref(false)
+const drawerFilter = ref<'all' | 'active' | 'attention' | 'completed' | 'running' | 'queued'>('all')
 const focusedTaskId = ref('')
 const floatingMinimized = ref(false)
 const floatingDismissedSignature = ref('')
@@ -35,20 +39,22 @@ const runningTasks = computed(() => (
 const queuedTasks = computed(() => (
   store.tasks.filter((task) => QUEUED_STATUSES.has(task.status))
 ))
-const failedTasks = computed(() => (
-  store.tasks.filter((task) => task.status === 'FAILED' || task.status === 'ABORTED')
-))
-const warningTasks = computed(() => (
-  store.tasks.filter((task) => task.has_warning)
-))
+const failedTasks = computed(() => store.unacknowledgedFailedTasks)
+const warningTasks = computed(() => store.unacknowledgedWarningTasks)
+const attentionTasks = computed(() => {
+  const ids = new Set<string>()
+  return [...failedTasks.value, ...warningTasks.value].filter((task) => {
+    if (ids.has(task.id)) return false
+    ids.add(task.id)
+    return true
+  })
+})
 const activeTasks = computed(() => (
   store.tasks
     .filter((task) => activeTaskStatuses.includes(task.status))
     .sort(sortNewest)
 ))
-const badgeCount = computed(() => (
-  failedTasks.value.length || activeTasks.value.length || warningTasks.value.length
-))
+const badgeCount = computed(() => activeTasks.value.length + attentionTasks.value.length)
 const indicatorState = computed(() => (
   failedTasks.value.length
     ? 'failed'
@@ -59,18 +65,17 @@ const indicatorState = computed(() => (
         : 'idle'
 ))
 const drawerTasks = computed(() => {
-  const priority = store.tasks
-    .filter((task) => (
-      activeTaskStatuses.includes(task.status)
-      || task.status === 'FAILED'
-      || task.status === 'ABORTED'
-      || task.has_warning
-      || task.id === focusedTaskId.value
-    ))
-    .sort(sortNewest)
-  const fallback = store.tasks.filter((task) => !priority.includes(task)).sort(sortNewest)
-  return [...priority, ...fallback].slice(0, 12)
+  return [...store.tasks]
+    .sort(sortDrawerTasks)
+    .filter(matchesDrawerFilter)
+    .slice(0, 12)
 })
+const drawerFilterOptions = computed(() => [
+  { label: t('job_center.filter.all', '全部'), value: 'all' },
+  { label: t('job_center.filter.active', '进行中'), value: 'active' },
+  { label: t('job_center.filter.attention', '失败/告警'), value: 'attention' },
+  { label: t('job_center.filter.completed', '已完成'), value: 'completed' },
+])
 const activeSignature = computed(() => activeTasks.value.map((task) => task.id).sort().join('|'))
 const showFloatingCard = computed(() => (
   Boolean(activeSignature.value)
@@ -137,12 +142,36 @@ function sortNewest(left: TaskItem, right: TaskItem): number {
   )
 }
 
+function sortDrawerTasks(left: TaskItem, right: TaskItem): number {
+  const priority = (task: TaskItem): number => {
+    if (task.id === focusedTaskId.value) return -1
+    if (RUNNING_STATUSES.has(task.status)) return 0
+    if (QUEUED_STATUSES.has(task.status)) return 1
+    if (!task.acknowledged_at && (task.status === 'FAILED' || task.status === 'ABORTED')) return 2
+    if (!task.acknowledged_at && task.has_warning) return 3
+    return 4
+  }
+  return priority(left) - priority(right) || sortNewest(left, right)
+}
+
 function openDrawer(context: TaskCenterOpenContext = {}): void {
   focusedTaskId.value = context.taskId || ''
   drawerVisible.value = true
   if (context.taskId && !store.tasks.some((task) => task.id === context.taskId)) {
     void store.refresh()
   }
+}
+
+function matchesDrawerFilter(task: TaskItem): boolean {
+  if (drawerFilter.value === 'all') return true
+  if (drawerFilter.value === 'active') return activeTaskStatuses.includes(task.status)
+  if (drawerFilter.value === 'attention') {
+    return !task.acknowledged_at && (task.status === 'FAILED' || task.status === 'ABORTED' || task.has_warning)
+  }
+  if (drawerFilter.value === 'completed') return TERMINAL_STATUSES.has(task.status)
+  if (drawerFilter.value === 'running') return RUNNING_STATUSES.has(task.status)
+  if (drawerFilter.value === 'queued') return QUEUED_STATUSES.has(task.status)
+  return true
 }
 
 function dismissFloating(): void {
@@ -165,6 +194,122 @@ async function cancelTask(task: TaskItem): Promise<void> {
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '停止任务失败')
   }
+}
+
+async function cleanupHistory(cleanupType: TaskCleanupType): Promise<void> {
+  try {
+    const preview = await store.previewCleanup(cleanupType)
+    if (!preview.matched) {
+      ElMessage.info(t('job_center.cleanup.empty', '没有符合条件的历史任务'))
+      return
+    }
+    await confirm({
+      type: 'DANGER',
+      title: t('job_center.cleanup.dialog_title', '清理任务记录'),
+      message: cleanupMessage(cleanupType, preview.matched),
+      highlight: `${preview.matched} 个`,
+      notice: cleanupNotice(preview),
+      width: 'min(468px, calc(100vw - 32px))',
+      confirmText: t('job_center.cleanup.confirm', '确认清理'),
+      confirmLoadingText: t('job_center.cleanup.loading', '正在清理…'),
+      cancelText: t('job_center.cleanup.cancel', '取消'),
+      onConfirm: async () => {
+        try {
+          const result = await store.cleanupHistory(cleanupType)
+          ElMessage.success(t(
+            'job_center.cleanup.done',
+            '已清理 {count} 个任务记录',
+          ).replace('{count}', String(result.dismissed)))
+        } catch (cause) {
+          ElMessage.error(cause instanceof Error ? cause.message : t('job_center.cleanup.failed', '任务清理失败'))
+          throw cause
+        }
+      },
+    })
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : t('job_center.cleanup.failed', '任务清理失败'))
+  }
+}
+
+function cleanupMessage(cleanupType: TaskCleanupType, count: number): string {
+  const labels: Record<TaskCleanupType, string> = {
+    completed: t('job_center.cleanup.message_completed', '将从任务中心移除 {count} 个已完成任务。'),
+    cancelled: t('job_center.cleanup.message_cancelled', '将从任务中心移除 {count} 个已取消任务。'),
+    expired: t('job_center.cleanup.message_expired', '将从任务中心移除 {count} 个已过期任务。'),
+    completed_and_expired: t('job_center.cleanup.message_completed_expired', '将从任务中心移除 {count} 个已完成或已过期任务。'),
+    resolved_alerts: t('job_center.cleanup.message_resolved_alerts', '将从任务中心移除 {count} 个已处理的失败或警告任务。'),
+    all_history: t('job_center.cleanup.message_all_history', '将从任务中心移除 {count} 个历史任务。'),
+  }
+  return labels[cleanupType].replace('{count}', String(count))
+}
+
+function cleanupNotice(preview: TaskCleanupResult): string {
+  const retained = preview.skipped_unacknowledged
+    ? t(
+        'job_center.cleanup.retained_alerts',
+        '{count} 个未处理的失败或警告任务将保留。',
+      ).replace('{count}', String(preview.skipped_unacknowledged))
+    : ''
+  const safety = t(
+    'job_center.cleanup.no_files',
+    '不会影响运行中或等待中的任务，也不会删除日志、采集文件或导出结果。',
+  )
+  return [retained, safety].filter(Boolean).join(' ')
+}
+
+async function acknowledgeAllAlerts(): Promise<void> {
+  try {
+    const count = await store.acknowledgeAllAlerts()
+    ElMessage.success(count ? `已将 ${count} 个失败或告警任务标记为已读` : '没有未读失败或告警任务')
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : t('job_center.acknowledge.failed', '标记失败'))
+  }
+}
+
+async function acknowledgeTask(task: TaskItem): Promise<void> {
+  try {
+    await store.acknowledgeHistoryTask(task.id)
+    ElMessage.success(t('job_center.acknowledge.done', '任务已标记为已处理'))
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : t('job_center.acknowledge.failed', '标记失败'))
+  }
+}
+
+async function dismissTask(task: TaskItem): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      t('job_center.cleanup.dismiss_single', '仅从任务中心移除此记录，不会删除日志、采集文件或导出结果。'),
+      t('job_center.cleanup.dismiss', '从列表移除'),
+      {
+        confirmButtonText: t('job_center.cleanup.dismiss_confirm', '移除'),
+        cancelButtonText: t('job_center.cleanup.cancel', '取消'),
+        type: 'warning',
+      },
+    )
+    await store.dismissHistoryTask(task.id)
+    ElMessage.success(t('job_center.cleanup.dismissed', '任务记录已从列表移除'))
+  } catch (cause) {
+    if (cause === 'cancel' || cause === 'close') return
+    ElMessage.error(cause instanceof Error ? cause.message : '移除失败')
+  }
+}
+
+function taskNeedsAcknowledgement(task: TaskItem): boolean {
+  return !task.acknowledged_at && (
+    task.status === 'FAILED'
+    || task.status === 'ABORTED'
+    || task.has_warning
+  )
+}
+
+function taskCanDismiss(task: TaskItem): boolean {
+  return TERMINAL_STATUSES.has(task.status) && !taskNeedsAcknowledgement(task)
+}
+
+function handleTaskMenu(command: string, task: TaskItem): void {
+  if (command === 'detail') void openFullTaskCenter(task)
+  else if (command === 'acknowledge') void acknowledgeTask(task)
+  else if (command === 'dismiss') void dismissTask(task)
 }
 
 function seedNotificationStates(): void {
@@ -260,16 +405,45 @@ function terminalTitle(task: TaskItem, kind: 'success' | 'warning' | 'failure'):
 
     <el-drawer
       v-model="drawerVisible"
-      title="任务中心"
       size="min(520px, 96vw)"
       class="task-center-drawer"
       data-testid="task-center-drawer"
     >
+      <template #header>
+        <div class="task-drawer-header">
+          <strong>{{ t('job_center.title', '任务中心') }}</strong>
+          <el-dropdown trigger="click" @command="cleanupHistory">
+            <el-button :icon="Delete">
+              {{ t('job_center.cleanup.label', '清理') }}
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="completed_and_expired">{{ t('job_center.cleanup.completed_and_expired', '清理已完成和已过期任务') }}</el-dropdown-item>
+                <el-dropdown-item command="completed">{{ t('job_center.cleanup.completed', '清理已完成任务') }}</el-dropdown-item>
+                <el-dropdown-item command="cancelled">{{ t('job_center.cleanup.cancelled', '清理已取消任务') }}</el-dropdown-item>
+                <el-dropdown-item command="expired">{{ t('job_center.cleanup.expired', '清理已过期任务') }}</el-dropdown-item>
+                <el-dropdown-item command="resolved_alerts" divided>{{ t('job_center.cleanup.resolved_alerts', '清理已处理的失败和告警') }}</el-dropdown-item>
+                <el-dropdown-item command="all_history">{{ t('job_center.cleanup.all_history', '清理全部历史任务') }}</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </div>
+      </template>
       <div class="task-drawer-summary">
-        <span><strong>{{ runningTasks.length }}</strong> 正在运行</span>
-        <span><strong>{{ queuedTasks.length }}</strong> 等待</span>
-        <span class="danger"><strong>{{ failedTasks.length }}</strong> 失败</span>
-        <span class="warning"><strong>{{ warningTasks.length }}</strong> 告警</span>
+        <button type="button" :class="{ selected: drawerFilter === 'running' }" @click="drawerFilter = 'running'"><strong>{{ runningTasks.length }}</strong> 正在运行</button>
+        <button type="button" :class="{ selected: drawerFilter === 'queued' }" @click="drawerFilter = 'queued'"><strong>{{ queuedTasks.length }}</strong> 等待</button>
+        <button type="button" :class="['danger', { selected: drawerFilter === 'attention' }]" @click="drawerFilter = 'attention'"><strong>{{ failedTasks.length }}</strong> 失败</button>
+        <button type="button" :class="['warning', { selected: drawerFilter === 'attention' }]" @click="drawerFilter = 'attention'"><strong>{{ warningTasks.length }}</strong> 告警</button>
+      </div>
+      <div class="task-drawer-controls">
+        <el-segmented v-model="drawerFilter" :options="drawerFilterOptions" />
+        <el-button
+          v-if="attentionTasks.length"
+          link
+          type="primary"
+          :icon="Check"
+          @click="acknowledgeAllAlerts"
+        >{{ t('job_center.acknowledge.all', '全部标为已读') }}</el-button>
       </div>
 
       <el-alert
@@ -295,6 +469,27 @@ function terminalTitle(task: TaskItem, kind: 'success' | 'warning' | 'failure'):
             <el-tag :type="task.has_warning ? 'warning' : taskStatusType(task.status)" size="small">
               {{ task.has_warning ? '部分完成' : taskStatusLabel(task.status) }}
             </el-tag>
+            <el-dropdown trigger="click" @command="(command: string) => handleTaskMenu(command, task)">
+              <el-tooltip :content="t('job_center.action.menu', '任务操作')" placement="top">
+                <el-button text circle :icon="MoreFilled" :aria-label="t('job_center.action.menu', '任务操作')" />
+              </el-tooltip>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="detail" :icon="View">{{ t('job_center.action.details', '查看详情') }}</el-dropdown-item>
+                  <el-dropdown-item
+                    v-if="taskNeedsAcknowledgement(task)"
+                    command="acknowledge"
+                    :icon="Check"
+                  >{{ t('job_center.acknowledge.one', '标记为已处理') }}</el-dropdown-item>
+                  <el-dropdown-item
+                    command="dismiss"
+                    :icon="Delete"
+                    :disabled="!taskCanDismiss(task)"
+                    divided
+                  >{{ t('job_center.cleanup.dismiss', '从列表移除') }}</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </div>
           <el-progress
             v-if="activeTaskStatuses.includes(task.status)"
@@ -372,14 +567,19 @@ function terminalTitle(task: TaskItem, kind: 'success' | 'warning' | 'failure'):
 .global-task-indicator .el-icon { font-size: 18px; }
 .spinning { animation: task-spin 1.2s linear infinite; }
 .task-drawer-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 16px; }
-.task-drawer-summary span { display: grid; gap: 3px; padding: 10px; border: 1px solid var(--nc-border-light); border-radius: 9px; color: var(--nc-text-secondary); font-size: 12px; text-align: center; }
+.task-drawer-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; }
+.task-drawer-header strong { font-size: 16px; }
+.task-drawer-summary button { display: grid; gap: 3px; padding: 10px; border: 1px solid var(--nc-border-light); border-radius: 8px; color: var(--nc-text-secondary); background: var(--nc-bg-card); font: inherit; font-size: 12px; text-align: center; cursor: pointer; }
+.task-drawer-summary button:hover, .task-drawer-summary button.selected { border-color: var(--nc-primary); color: var(--nc-primary); }
 .task-drawer-summary strong { color: var(--nc-text-primary); font-size: 18px; }
 .task-drawer-summary .danger strong { color: var(--nc-danger); }
 .task-drawer-summary .warning strong { color: var(--nc-warning); }
+.task-drawer-controls { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
+.task-drawer-controls :deep(.el-segmented) { min-width: 0; }
 .task-drawer-list { display: grid; gap: 10px; margin-top: 14px; }
-.task-drawer-item { padding: 12px; border: 1px solid var(--nc-border-light); border-radius: 10px; background: var(--nc-bg-card); }
+.task-drawer-item { padding: 12px; border: 1px solid var(--nc-border-light); border-radius: 8px; background: var(--nc-bg-card); }
 .task-drawer-item.focused { border-color: var(--nc-primary); box-shadow: inset 3px 0 0 var(--nc-primary); }
-.task-item-heading { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 9px; }
+.task-item-heading { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 9px; }
 .task-item-heading div { min-width: 0; }
 .task-item-heading strong, .task-item-heading small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-item-heading small { margin-top: 3px; color: var(--nc-text-tertiary); font-size: 11px; }
@@ -405,6 +605,7 @@ function terminalTitle(task: TaskItem, kind: 'success' | 'warning' | 'failure'):
 @keyframes task-spin { to { transform: rotate(360deg); } }
 @media (max-width: 720px) {
   .task-drawer-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .task-drawer-controls { align-items: flex-start; flex-direction: column; }
   .active-task-floating { right: 16px; bottom: 16px; }
 }
 </style>

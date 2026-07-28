@@ -53,6 +53,7 @@ from netconsole.services.job_center.handlers.site_jobs import (
     SITE_STORAGE_OWNER,
     SITE_STORAGE_TASK_TYPES,
 )
+from netconsole.services.job_center.task_history_policy import business_result_has_warning
 
 AC_WEB_OWNER = "web_ac"
 RAIL_WEB_OWNER = "web_rail_transit"
@@ -116,6 +117,11 @@ class JobCenterQueryService:
                 return []
             rows = conn.execute(
                 self._task_select(conn, detail=False)
+                + (
+                    " WHERE task.dismissed_at = ''"
+                    if self._column_exists(conn, "task_snapshots", "dismissed_at")
+                    else ""
+                )
                 + " ORDER BY task.updated_time DESC, task.task_id DESC LIMIT ?",
                 (max(1, min(int(limit), 1000)),),
             ).fetchall()
@@ -207,6 +213,13 @@ class JobCenterQueryService:
             completed=sum(task.status.upper() == "COMPLETED" for task in tasks),
             failed=sum(task.status.upper() == "FAILED" for task in tasks),
             warning=sum(task.has_warning for task in tasks),
+            unacknowledged_failed=sum(
+                task.status.upper() == "FAILED" and not task.acknowledged_at
+                for task in tasks
+            ),
+            unacknowledged_warning=sum(
+                task.has_warning and not task.acknowledged_at for task in tasks
+            ),
         )
 
     def get_logs(self, site_id: str, task_id: str, *, tail: int = 300) -> JobCenterLogTailDTO | None:
@@ -272,6 +285,14 @@ class JobCenterQueryService:
                 'legacy' AS producer_kind, 'unknown' AS producer_version,
                 'unknown' AS producer_commit,
             """
+        if self._column_exists(conn, "task_snapshots", "expires_at"):
+            history_columns = """
+                task.expires_at, task.acknowledged_at, task.dismissed_at,
+            """
+        else:
+            history_columns = """
+                '' AS expires_at, '' AS acknowledged_at, '' AS dismissed_at,
+            """
         if self._table_exists(conn, "online_mr_task_sessions"):
             mapping_columns = """
                 mapping.session_id, mapping.device_id, mapping.device_name,
@@ -294,7 +315,7 @@ class JobCenterQueryService:
                    task.owner, task.source, task.device, task.agent,
                    task.created_time, task.started_time, task.finished_time,
                    task.updated_time, task.result_path, task.error_message,
-                   {integrity_columns}{mapping_columns}{result_column}
+                   {integrity_columns}{history_columns}{mapping_columns}{result_column}
             FROM task_snapshots task
             {join}
         """
@@ -355,13 +376,16 @@ class JobCenterQueryService:
             created_time=str(row.get("created_time") or ""),
             started_time=started,
             finished_time=finished,
+            expires_at=str(row.get("expires_at") or ""),
+            acknowledged_at=str(row.get("acknowledged_at") or ""),
+            dismissed_at=str(row.get("dismissed_at") or ""),
             updated_time=str(row.get("updated_time") or ""),
             duration_seconds=self._duration_seconds(started, finished),
             error_code=redact_web_task_text(error_code),
             error_summary=error_summary,
             has_warning=bool(
                 (error_summary and status != "FAILED")
-                or self._business_result_has_warning(artifact_result)
+                or business_result_has_warning(artifact_result)
             ),
             text_integrity=text_integrity,
             text_integrity_reason=text_integrity_reason,
@@ -387,27 +411,7 @@ class JobCenterQueryService:
 
     @classmethod
     def _business_result_has_warning(cls, result: dict[str, Any]) -> bool:
-        if not result:
-            return False
-        outcome = str(
-            result.get("business_outcome")
-            or result.get("status")
-            or result.get("outcome")
-            or ""
-        ).upper()
-        if outcome in {"PARTIAL_SUCCESS", "WARNING"}:
-            return True
-        if result.get("partial_success") is True:
-            return True
-        for key in ("failed_count", "warning_count", "actionable_skipped_count"):
-            if (cls._optional_int(result.get(key)) or 0) > 0:
-                return True
-        summary = result.get("summary")
-        if isinstance(summary, dict):
-            for key in ("failed", "failed_count", "warning", "warning_count", "rejected"):
-                if (cls._optional_int(summary.get(key)) or 0) > 0:
-                    return True
-        return False
+        return business_result_has_warning(result)
 
     @staticmethod
     def _module(owner: str, task_type: str) -> str:
