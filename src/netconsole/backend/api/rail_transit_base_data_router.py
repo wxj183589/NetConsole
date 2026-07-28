@@ -15,6 +15,9 @@ from netconsole.core.sites import SiteManager
 from netconsole.models.api.rail_transit_base_data import (
     DataQualityEntityGroupPageDTO,
     DataQualityIssuePageDTO,
+    BaseDataClearPreviewDTO,
+    BaseDataClearRequestDTO,
+    BaseDataClearResultDTO,
     BaseDataEditSessionDTO,
     BaseDataSaveRequestDTO,
     BaseDataSaveResultDTO,
@@ -99,6 +102,29 @@ def summary(request: Request, site_id: str = Query(default="", max_length=100)) 
 @router.get("/revision", response_model=BaseDataEditSessionDTO, summary="获取基础资料编辑会话")
 def revision(request: Request, site_id: str = Query(default="", max_length=100)) -> BaseDataEditSessionDTO:
     return _query(lambda: _application_service(request).get_edit_session(_site_id(request, site_id)))
+
+
+@router.get("/clear-preview", response_model=BaseDataClearPreviewDTO, summary="预览清空站点与区间的影响")
+def clear_preview(
+    request: Request, site_id: str = Query(default="", max_length=100)
+ ) -> BaseDataClearPreviewDTO:
+    return _query(lambda: _application_service(request).preview_clear_all(_site_id(request, site_id)))
+
+
+@router.post(
+    "/clear-all",
+    response_model=BaseDataClearResultDTO,
+    summary="事务清空当前局点的站点与区间基础资料",
+ )
+def clear_all(request: Request, payload: BaseDataClearRequestDTO) -> BaseDataClearResultDTO:
+    try:
+        return _application_service(request).clear_all(
+            _site_id(request, payload.site_id),
+            payload.base_revision,
+            explicit_confirmation=payload.explicit_confirmation,
+        )
+    except RailTransitBaseDataApplicationError as exc:
+        _raise_application_error(exc)
 
 
 @router.post(

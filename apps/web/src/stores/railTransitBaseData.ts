@@ -3,6 +3,8 @@ import { defineStore } from 'pinia'
 
 import {
   applyRailTransitImport,
+  clearRailTransitBaseData,
+  getRailTransitBaseDataClearPreview,
   getRailTransitBaseDataEditSession,
   getRailTransitSummary,
   getRailTransitImportPolicies,
@@ -25,6 +27,8 @@ import {
 } from '../api/railTransitBaseData'
 import type {
   BaseDataChange,
+  BaseDataClearPreview,
+  BaseDataClearResult,
   BaseDataEditSession,
   BaseDataSaveResult,
   BaseDataValidationResult,
@@ -234,6 +238,22 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
     return editSession.value
   }
 
+  async function previewClearAll(): Promise<BaseDataClearPreview> {
+    return getRailTransitBaseDataClearPreview()
+  }
+
+  async function clearAll(preview: BaseDataClearPreview): Promise<BaseDataClearResult> {
+    const result = await clearRailTransitBaseData({
+      site_id: preview.site_id,
+      base_revision: preview.base_revision,
+      explicit_confirmation: true,
+    })
+    editSession.value = editSession.value
+      ? { ...editSession.value, base_revision: result.revision, loaded_at: new Date().toISOString() }
+      : null
+    return result
+  }
+
   async function validateChanges(changes: BaseDataChange[]): Promise<BaseDataValidationResult> {
     if (!editSession.value) await refreshEditSession()
     return validateRailTransitBaseDataChanges({
@@ -336,7 +356,7 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
     importOperations, importChanges, selectedOperationId, selectedFileName,
     loading, previewLoading, stationSourceLoading, sectionGenerationLoading, applyLoading, failures, error, apFilters, mrFilters, issueFilters,
     refreshSummary, refreshRuntime, refreshStatic, manualRefresh, previewImport, refreshStationSourcePreview, previewStationTemplateFile, previewSectionsFromDraft,
-    refreshImportGovernance, refreshEditSession, validateChanges, saveChanges, canApplyImport, applyImport, selectImportOperation, rollbackImport,
+    refreshImportGovernance, refreshEditSession, previewClearAll, clearAll, validateChanges, saveChanges, canApplyImport, applyImport, selectImportOperation, rollbackImport,
     applyApFilters, setApPage, applyMrFilters, setMrPage, applyIssueFilters, setIssuePage,
     startPolling, stopPolling,
   }

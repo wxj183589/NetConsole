@@ -171,6 +171,7 @@ def test_base_data_api_defaults_to_locked_and_redacts_credentials(tmp_path: Path
         "/api/rail-transit/base-data/import-preview",
         "/api/rail-transit/base-data/station-template-preview",
         "/api/rail-transit/base-data/section-generation-preview",
+        "/api/rail-transit/base-data/clear-all",
         "/api/rail-transit/base-data/import-apply",
         "/api/rail-transit/base-data/import-operations/{operation_id}/rollback",
         "/api/rail-transit/base-data/validate",

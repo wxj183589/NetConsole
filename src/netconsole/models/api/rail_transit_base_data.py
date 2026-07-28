@@ -91,6 +91,28 @@ class BaseDataSaveResultDTO(ApiModel):
     validation_issues: list[BaseDataValidationIssueDTO] = Field(default_factory=list)
 
 
+class BaseDataClearPreviewDTO(ApiModel):
+    site_id: str
+    base_revision: str
+    station_count: int = 0
+    section_count: int = 0
+    affected_trackside_ap_count: int = 0
+
+
+class BaseDataClearRequestDTO(ApiModel):
+    site_id: str
+    base_revision: str
+    explicit_confirmation: bool = False
+
+
+class BaseDataClearResultDTO(ApiModel):
+    revision: str
+    deleted_station_count: int = 0
+    deleted_section_count: int = 0
+    unlinked_trackside_ap_count: int = 0
+    deleted_trackside_ap_plan_count: int = 0
+
+
 class MileageDTO(ApiModel):
     raw: str = ""
     normalized: str = ""

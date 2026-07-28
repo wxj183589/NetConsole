@@ -64,6 +64,22 @@ export interface BaseDataSaveResult {
   validation_issues: BaseDataValidationIssue[]
 }
 
+export interface BaseDataClearPreview {
+  site_id: string
+  base_revision: string
+  station_count: number
+  section_count: number
+  affected_trackside_ap_count: number
+}
+
+export interface BaseDataClearResult {
+  revision: string
+  deleted_station_count: number
+  deleted_section_count: number
+  unlinked_trackside_ap_count: number
+  deleted_trackside_ap_plan_count: number
+}
+
 export interface DataQualityIssue {
   severity: 'error' | 'warning' | 'info'
   code: string

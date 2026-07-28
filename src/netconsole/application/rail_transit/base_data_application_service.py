@@ -12,6 +12,8 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.rail_transit_base_data import (
     BaseDataChangeDTO,
+    BaseDataClearPreviewDTO,
+    BaseDataClearResultDTO,
     BaseDataEditSessionDTO,
     BaseDataSaveResultDTO,
     BaseDataValidationIssueDTO,
@@ -123,6 +125,48 @@ class RailTransitBaseDataApplicationService:
             stations=payload.stations,
             current_sections=payload.current_sections,
         )
+
+    def preview_clear_all(self, site_id: str) -> BaseDataClearPreviewDTO:
+        site_id = SiteManager(self.paths).validate_site_name(site_id)
+        impact = self.repository.preview_clear_station_section_base_data(site_id)
+        impact["station_count"] = self.query_service.list_stations(
+            site_id, page=1, page_size=1
+        ).total
+        impact["section_count"] = self.query_service.list_sections(
+            site_id, page=1, page_size=1
+        ).total
+        return BaseDataClearPreviewDTO.model_validate(impact)
+
+    def clear_all(
+        self,
+        site_id: str,
+        base_revision: str,
+        *,
+        explicit_confirmation: bool,
+    ) -> BaseDataClearResultDTO:
+        site_id = SiteManager(self.paths).validate_site_name(site_id)
+        try:
+            self.guard.authorize_apply(site_id, explicit_confirmation=explicit_confirmation)
+        except BaseDataWriteGuardError as exc:
+            raise RailTransitBaseDataApplicationError(exc.code, str(exc)) from exc
+        try:
+            preview = self.preview_clear_all(site_id)
+            if preview.base_revision != base_revision:
+                raise RailTransitBaseDataRevisionConflict("base data revision changed")
+            result = self.repository.clear_station_section_base_data(site_id, base_revision)
+        except RailTransitBaseDataRevisionConflict as exc:
+            raise RailTransitBaseDataApplicationError(
+                "BASE_DATA_REVISION_CONFLICT",
+                "基础资料已被其他操作更新，请重新加载后确认影响数量",
+            ) from exc
+        except (sqlite3.Error, OSError) as exc:
+            raise RailTransitBaseDataApplicationError(
+                "BASE_DATA_TRANSACTION_FAILED",
+                "基础资料清空失败，数据库事务已回滚",
+            ) from exc
+        result["deleted_station_count"] = preview.station_count
+        result["deleted_section_count"] = preview.section_count
+        return BaseDataClearResultDTO.model_validate(result)
 
     def validate_changes(
         self,
