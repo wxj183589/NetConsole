@@ -46,11 +46,23 @@ router = APIRouter(
 def _service(request: Request) -> GroundUnattendedApplicationService:
     service = getattr(request.app.state, "ground_unattended_application_service", None)
     if service is None:
+        startup_error = str(
+            getattr(request.app.state, "ground_unattended_startup_error", "") or ""
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
-                "code": "GROUND_UNATTENDED_UNAVAILABLE",
-                "message": "地面无人值守后台服务未接线",
+                "code": (
+                    "GROUND_UNATTENDED_STARTUP_FAILED"
+                    if startup_error
+                    else "GROUND_UNATTENDED_UNAVAILABLE"
+                ),
+                "message": (
+                    f"地面无人值守后台初始化失败（{startup_error}），请查看运行日志"
+                    if startup_error
+                    else "地面无人值守后台服务未接线"
+                ),
+                "details": {"startup_error": startup_error},
             },
         )
     return service
