@@ -70,10 +70,11 @@ LLDP 历史数据按公开 DTO 白名单消费，不进入任意原始对象透�
 ## 厂商、角色和 Command Profile 边界
 
 - 当前设备详情能够展示已入库的多厂商快照，并由 Python 对 H3C/Comware、Huawei/VRP、ZTE/ZXR10 等平台事实和接口名称做归一化。
-- 通用设备详情刷新允许 H3C `switch` / `mobile_router` + Comware，以及 ZTE `switch` + ZXR10 且命中可执行 Command Profile 的组合。
-- 当前唯一稳定 Operation ID 是 `device.inventory.collect`；对应资源为 `resources/device_command_profiles.json`，已登记的通用只读 Profile 包括 `h3c.comware.switch.generic.device-inventory.v1` 和 `h3c.comware.mobile_router.generic.device-inventory.v1`。
+- 通用设备详情刷新允许 H3C `switch` / `wireless_controller` / `mobile_router` + Comware，以及 ZTE `switch` + ZXR10 且命中可执行 Command Profile 的组合。
+- 当前唯一稳定 Operation ID 是 `device.inventory.collect`；对应资源为 `resources/device_command_profiles.json`，已登记的 H3C 通用只读 Profile 包括 `h3c.comware.switch.generic.device-inventory.v1`、`h3c.comware.wireless_controller.generic.device-inventory.v1` 和 `h3c.comware.mobile_router.generic.device-inventory.v1`。无线控制器 Profile 复用已验证的 Comware 命令、parser/DTO contract 和逐命令失败继续语义，设备角色与 `device_uuid` 均保持不变。
 - 未知或未验证厂商、角色、平台、Profile 必须失败关闭，不能回退执行 H3C 命令。软件版本未知时，也只有厂商、角色、平台精确匹配且资源明确允许的只读通用 Profile 才能执行。
-- H3C AC 的关联信息只读复用 AC Query Service，暂不开放通用设备详情刷新；H3C MR 的关联信息只读复用 Online MR Query Service，基础设备详情刷新使用独立 `mobile_router` Profile，不会把 MR 当作通用交换机执行命令。
+- H3C AC 可执行通用设备详情刷新；FIT-AP 资源、AP/Radio、未认证 AP 和受控动作仍只属于 AC 管理。两类业务可复用同一设备记录，但通用刷新不会调用或复制 AC 专用采集链。H3C MR 的关联信息只读复用 Online MR Query Service，基础设备详情刷新使用独立 `mobile_router` Profile，不会把 MR 当作通用交换机执行命令。
+- 通用 `device.inventory.collect` 保存概览事实、接口、光模块和 LLDP；命令不支持或单项解析失败时保留其他成功结果，并在采集记录中标记 `partial_success`。配置页继续读取 Config Collection 的既有快照，通用详情刷新不擅自增加完整运行配置命令。
 - ZTE ZXR10 设备详情 Profile 固定执行 `show version`、`show interface brief`、`show opticalinfo brief`、`show lldp neighbor brief` 和 `show lldp entry`，不下发未经确认的关闭分页命令，也不回退执行 H3C `screen-length` / `display` 命令。采集先用 `show version` 确认 C89E 或 59X/5960X-ES，其他 ZXR10 型号在后续命令前失败关闭。C89E-4 V1.9.0 的五命令链已完成现场只读验证；5960X-ES V2 的版本、接口和 DOM 仍以文档 fixture 为证据，LLDP 输出仍待该型号现场复核。任一 LLDP 命令失败只形成部分成功，有效接口/光模块/另一条 LLDP 结果仍可保存；空白或未识别输出不会清空旧快照。
 - ZTE AC 和 ZTE 完整诊断包当前不支持；诊断任务返回“当前型号暂未适配诊断包采集”并记录跳过原因，不影响其他基础采集。Huawei 和其他未知厂商仍失败关闭。
 

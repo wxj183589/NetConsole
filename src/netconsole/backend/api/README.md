@@ -8,7 +8,7 @@
 
 `device_management_router.py` 在 `/api/device-management/devices/{device_uuid}` 下登记 overview、interfaces、interface detail、transceivers、LLDP、config snapshots、tasks、business associations 和 refresh 路由。设备详情不注册独立 Health API，CPU/内存只由 overview 返回基础摘要。路由提供 tag、summary、Pydantic DTO 和错误响应，并把分页、筛选和刷新请求交给 `DeviceDetailApplicationService`；Router 不直接执行 SQLite、SSH、设备命令或业务关联。
 
-读取接口只返回最近快照、overview 基础摘要和现有业务 Query Service 结果。打开页面不会连接设备。`POST /refresh` 只提交现有 Task Center 操作 `device.inventory.collect`，由 `DeviceOperationService` 和版本化 Command Profile 再次校验执行边界；未知或未验证厂商、角色、平台、Profile 失败关闭。
+读取接口只返回最近快照、overview 基础摘要和现有业务 Query Service 结果。打开页面不会连接设备。`POST /refresh` 只提交现有 Task Center 操作 `device.inventory.collect`，由 `DeviceOperationService` 和版本化 Command Profile 再次校验执行边界；H3C `switch`、`wireless_controller`、`mobile_router` 分别匹配明确登记的 Comware 只读 Profile，未知或未验证厂商、角色、平台、Profile 失败关闭。无线控制器刷新仍使用原设备 `device_uuid`，不会调用 AC/FIT-AP 专用采集 Router。
 
 LLDP Router 响应使用显式 DTO 白名单，只公开本地接口、归一化本地接口、邻居系统名/MAC/接口/IP、关联设备 UUID、关联状态和采集时间；历史 Repository 中可能存在的邻居 `capabilities`、`model` 不进入 API。Router 不得通过任意字典回传这两个字段。
 

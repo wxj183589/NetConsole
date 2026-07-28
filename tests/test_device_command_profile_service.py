@@ -144,6 +144,24 @@ def test_device_types_keep_cloud_ap_and_mobile_router_roles_distinct() -> None:
 def test_device_resolution_accepts_h3c_and_zte_supported_roles() -> None:
     h3c_switch = Device(name="SW", device_vendor="H3C", device_type="SW")
     assert resolve_device_inventory_profile(h3c_switch).selector.platform == "comware"
+    h3c_ac = Device(
+        name="251-无线控制器-主",
+        device_vendor="H3C",
+        device_type="AC",
+    )
+    ac_profile = resolve_device_inventory_profile(h3c_ac)
+    ac_facts = identify_device_platform(
+        vendor=h3c_ac.device_vendor,
+        device_type=h3c_ac.device_type,
+    )
+    assert ac_facts.platform == "comware"
+    assert ac_facts.source == "verified_command_profile_selector"
+    assert ac_profile.selector.role == "wireless_controller"
+    assert (
+        ac_profile.profile_id
+        == "h3c.comware.wireless_controller.generic.device-inventory.v1"
+    )
+    assert ac_profile.commands == EXPECTED_COMMANDS
     h3c_mr = Device(name="MR", device_vendor="H3C", device_type="MR")
     mr_profile = resolve_device_inventory_profile(h3c_mr)
     assert mr_profile.selector.role == "mobile_router"

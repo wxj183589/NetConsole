@@ -19,7 +19,11 @@ from netconsole.services.device_command_profile_service import (
     DeviceCommandProfileNotFound,
 )
 from netconsole.services.device_detail_query_service import DeviceDetailQueryService
-from netconsole.services.device_operation_service import DeviceOperationService
+from netconsole.services.device_operation_service import (
+    DeviceOperationService,
+    run_device_inventory_refresh,
+)
+from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 
 
@@ -415,7 +419,11 @@ def test_overview_resolves_role_platform_capability_and_null_snapshot_counts(
     assert ac_overview.platform_facts.role == "wireless_controller"
     assert ac_overview.counts.interfaces is None
     assert "business" in ac_overview.visible_sections
-    assert ac_overview.command_profile.executable is False
+    assert ac_overview.command_profile.executable is True
+    assert (
+        ac_overview.command_profile.profile_id
+        == "h3c.comware.wireless_controller.generic.device-inventory.v1"
+    )
     project_root = Path(__file__).parents[1]
     paths = PathResolver(app_root=project_root, data_root=tmp_path / "runtime")
     mr = DeviceRepository(Database(paths.site_db_path("demo"))).create(
@@ -928,3 +936,108 @@ def test_device_operation_is_idempotent_and_profile_fails_closed(tmp_path: Path)
 
     with pytest.raises(DeviceCommandProfileNotFound, match="仅支持 H3C"):
         operation.start(str(huawei.device_uuid), DEVICE_INVENTORY_OPERATION_ID)
+
+
+def test_wireless_controller_operation_keeps_identity_and_submits_profile(
+    tmp_path: Path,
+) -> None:
+    _query, operation, adapter, _h3c, _huawei, ac = _fixture(tmp_path)
+    original_uuid = str(ac.device_uuid)
+
+    submitted = operation.start(original_uuid, DEVICE_INVENTORY_OPERATION_ID)
+
+    assert submitted.reused is False
+    assert submitted.profile_id == (
+        "h3c.comware.wireless_controller.generic.device-inventory.v1"
+    )
+    assert len(adapter.jobs) == 1
+    assert adapter.jobs[0].params["device_uuids"] == [original_uuid]
+    assert adapter.jobs[0].params["platform_role"] == "wireless_controller"
+    stored = operation.gateway.get_device(original_uuid)
+    assert stored is not None
+    assert str(stored.device_uuid) == original_uuid
+    assert stored.device_type == "AC"
+
+
+def test_wireless_controller_worker_keeps_partial_results(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    query, operation, adapter, _h3c, _huawei, ac = _fixture(tmp_path)
+    original_uuid = str(ac.device_uuid)
+    operation.start(original_uuid, DEVICE_INVENTORY_OPERATION_ID)
+    params = dict(adapter.jobs[0].params)
+
+    def fake_collect(device, site, *, repository, paths, cancel_check=None):
+        assert str(device.device_uuid) == original_uuid
+        assert device.device_type == "AC"
+        assert site == "demo"
+        assert cancel_check is not None
+        run_uuid = "wireless-controller-partial-run"
+        repository.create_collect_run(
+            {
+                "collect_run_uuid": run_uuid,
+                "collect_type": "device_details",
+                "status": "running",
+                "started_at": "2026-07-29T10:00:00+00:00",
+                "created_at": "2026-07-29T10:00:00+00:00",
+            }
+        )
+        repository.upsert_device_fact(
+            {
+                "device_uuid": original_uuid,
+                "sysname": "AC-CORE",
+                "vendor": "H3C",
+                "collect_run_uuid": run_uuid,
+                "collected_at": "2026-07-29T10:00:00+00:00",
+                "updated_at": "2026-07-29T10:00:00+00:00",
+            }
+        )
+        repository.replace_device_interfaces(
+            original_uuid,
+            [{"interface_name": "GE1/0/1", "link_status": "UP"}],
+        )
+        repository.replace_lldp_neighbors(
+            original_uuid,
+            [{"local_interface": "GE1/0/1", "neighbor_sysname": "SW-CORE"}],
+        )
+        repository.update_collect_run_status(
+            run_uuid,
+            "partial_success",
+            error_message="光模块命令不支持",
+        )
+        return SimpleNamespace(
+            success=True,
+            collect_run_uuid=run_uuid,
+            facts_updated=True,
+            interfaces_updated=1,
+            optical_modules_updated=0,
+            lldp_neighbors_updated=1,
+            error_message="光模块命令不支持",
+        )
+
+    monkeypatch.setattr(
+        "netconsole.services.h3c_collect_service.collect_h3c_device_details",
+        fake_collect,
+    )
+    result = run_device_inventory_refresh(
+        JobContext(
+            "wireless-controller-refresh",
+            "device_detail_collect",
+            params,
+            None,
+            lambda: False,
+            operation.paths,
+        )
+    )
+
+    assert result["success"] == 1
+    assert result["failed"] == 0
+    assert result["results"][0]["collect_status"] == "partial_success"
+    assert result["results"][0]["optical_modules_updated"] == 0
+    assert query.overview(original_uuid).system_name == "AC-CORE"
+    assert query.interfaces(original_uuid, page=1, page_size=10).total == 1
+    assert query.lldp(original_uuid, page=1, page_size=10).total == 1
+    stored = operation.gateway.get_device(original_uuid)
+    assert stored is not None
+    assert stored.device_type == "AC"

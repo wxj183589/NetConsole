@@ -2,6 +2,11 @@
 
 ## v1.4.4 - 2026-07-28
 
+### 无线控制器设备详情
+
+- 修复 H3C `wireless_controller` 被通用设备详情 Profile 角色白名单错误拒绝的问题；无线控制器保持原角色和 `device_uuid`，通过独立 selector 的 Comware 通用只读 Profile 提交 `device.inventory.collect`。
+- 概览、接口、光模块和 LLDP 继续复用现有逐命令采集与独立持久化语义，单项失败保留其他成功结果并记录 `partial_success`。FIT-AP、Radio、未认证 AP 和受控 AC 动作仍由 AC 管理负责；配置页继续读取 Config Collection 快照。
+
 ### 设备管理主地址与批量更新
 
 - 设备主地址统一使用标准库规范化，并在每个局点独立 `devices.db` 内增加部分唯一索引；设备 `id/device_uuid` 保持稳定，不同局点仍允许相同地址。旧库升级先备份、再事务回填和检查，非法或重复历史地址会列出局点、地址、设备 ID/名称并保持原库不变。

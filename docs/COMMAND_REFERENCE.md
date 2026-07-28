@@ -48,14 +48,14 @@
 | 字段 | 当前值 |
 | --- | --- |
 | Operation ID | `device.inventory.collect` |
-| Profile ID | `h3c.comware.switch.generic.device-inventory.v1` / `h3c.comware.mobile_router.generic.device-inventory.v1` / `zte.zxr10.switch.generic.device-inventory.v2` |
-| Selector | H3C / switch / Comware / `*`；H3C / mobile_router / Comware / `*`；ZTE / switch / ZXR10 / `*` |
+| Profile ID | `h3c.comware.switch.generic.device-inventory.v1` / `h3c.comware.wireless_controller.generic.device-inventory.v1` / `h3c.comware.mobile_router.generic.device-inventory.v1` / `zte.zxr10.switch.generic.device-inventory.v3` |
+| Selector | H3C / switch / Comware / `*`；H3C / wireless_controller / Comware / `*`；H3C / mobile_router / Comware / `*`；ZTE / switch / ZXR10 / `*` |
 | 风险 | `read_only` |
 | 兼容等级 | `generic_read_only` |
-| Parser contract | H3C 结构化 parser；ZTE `netconsole.zte.zxr10-switch.v2` |
+| Parser contract | H3C 结构化 parser；ZTE `netconsole.zte.zxr10-switch.v3` |
 | DTO contract | `netconsole.device-inventory.v1` / ZTE `netconsole.device-detail.v1` |
 | 样例证据 | Comware `7.1.070` fixture；车载 MR 只读核心命令合同；ZXR10 5960X-ES V2.00.20.03 手册 fixture；C89E-4 V1.9.0 脱敏实机 fixture |
-| 真实设备状态 | H3C/MR `REAL_DEVICE_PENDING`；ZTE `REAL_DEVICE_VERIFIED`（仅 C89E-4 V1.9.0 五命令） |
+| 真实设备状态 | H3C switch/无线控制器/MR `REAL_DEVICE_PENDING`；ZTE `REAL_DEVICE_VERIFIED`（仅已验证的 C89E-4 V1.9.0 组合） |
 
 `device.sftp.enable` 当前只登记 H3C Comware V7 的交换机、无线 AC 和车载 MR 三类精确 Profile，
 风险为 `controlled_write`，真实设备状态均为 `REAL_DEVICE_PENDING`。命令顺序固定为：
@@ -72,7 +72,7 @@ quit
 `Application Service -> DeviceOperationService -> Task Center -> Command Profile` 提交。
 Huawei、ZTE、未知厂商、未知角色、未知平台和未知版本均失败关闭，不猜测命令、不提供兼容 fallback。
 
-每个 step 都包含稳定 `step_id`、顺序、输出 selector、parser/DTO contract、只读风险和验证证据。`src/netconsole/services/h3c_collect_service.py` 按 Profile 固定步骤执行：H3C 继续保持原命令和解析行为；ZTE 先执行 `show version` 并确认 C89E 或 59X/5960X-ES，通过型号门后继续执行接口、光模块和两条 LLDP 命令。前三条失败会停止该设备；单条 LLDP 失败只形成 `partial_success`，不清空接口、光模块或另一条 LLDP 的有效结果。2026-07-28 已在截图中的 11 台 C89E-4 V1.9.0 上完成五条只读命令验证：10 台车站交换机各解析 100 条接口/光模块记录，核心交换机解析 150/150 条，合计 1,150/1,150 条，并保存 167 条当前 LLDP 邻居；该结论不外推到其他 ZXR10 型号或 Release。分页由通用 SSH 交互执行器处理，raw 保留分页提示而 parser 使用清理副本。未知厂商、设备角色或平台失败关闭，任何厂商都不得回退到 H3C。
+每个 step 都包含稳定 `step_id`、顺序、输出 selector、parser/DTO contract、只读风险和验证证据。`src/netconsole/services/h3c_collect_service.py` 按 Profile 固定步骤执行：H3C switch 与无线控制器继续保持同一组通用只读命令和解析行为，单项失败保留其他成功结果；AC/FIT-AP 专用命令仍由独立业务服务管理。ZTE 先执行 `show version` 并确认 C89E 或 59X/5960X-ES，通过型号门后继续执行接口、VLAN、光模块和两条 LLDP 命令。核心命令失败会停止该设备；非核心单项失败形成 `partial_success`，不清空其他有效结果。现场结论不外推到其他 ZXR10 型号或 Release。分页由通用 SSH 交互执行器处理，raw 保留分页提示而 parser 使用清理副本。未知厂商、设备角色或平台失败关闭，任何厂商都不得回退到 H3C。
 
 除 `device.sftp.enable` 外，AC、MR、配置、诊断和文件管理的其他命令尚未迁入统一 Profile，
 仍属于后续命令平台治理范围。不得用本切片状态替代逐域迁移和真实设备验收。
