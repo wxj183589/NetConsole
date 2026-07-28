@@ -69,6 +69,14 @@ html[data-theme="dark"] {
   box-shadow: var(--nc-shadow-floating);
 }
 
+.el-dialog.nc-confirm-dialog {
+  margin: auto;
+  max-width: calc(100vw - 32px);
+  overflow: hidden;
+  border: 1px solid var(--nc-border);
+  border-radius: 10px;
+}
+
 .el-table {
   --el-table-bg-color: var(--nc-bg-panel);
   --el-table-tr-bg-color: var(--nc-bg-panel);

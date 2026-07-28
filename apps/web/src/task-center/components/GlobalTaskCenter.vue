@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { computed, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import { Check, Close, Delete, Loading, MoreFilled, Tickets, View } from '@element-plus/icons-vue'
 
 import { t } from '../../i18n/runtime'
+import { useConfirm } from '../../components/feedback/useConfirm'
 import { getPlatformAdapter } from '../../platform/runtime'
 import { useTaskStore } from '../../stores/tasks'
 import { useWorkspaceStore } from '../../stores/workspace'
-import type { TaskCleanupType, TaskItem } from '../../types/task'
+import type { TaskCleanupResult, TaskCleanupType, TaskItem } from '../../types/task'
 import { activeTaskStatuses, taskStatusLabel, taskStatusType } from '../../utils/taskStatus'
 import {
   onTaskCenterOpenRequested,
@@ -21,6 +22,7 @@ const RUNNING_STATUSES = new Set(['STARTING', 'RUNNING', 'STOPPING'])
 
 const store = useTaskStore()
 const workspace = useWorkspaceStore()
+const { confirm } = useConfirm()
 const drawerVisible = ref(false)
 const drawerFilter = ref<'all' | 'active' | 'attention' | 'completed' | 'running' | 'queued'>('all')
 const focusedTaskId = ref('')
@@ -201,46 +203,58 @@ async function cleanupHistory(cleanupType: TaskCleanupType): Promise<void> {
       ElMessage.info(t('job_center.cleanup.empty', '没有符合条件的历史任务'))
       return
     }
-    const counts = preview.counts
-    const summary = [
-      counts.completed ? `${counts.completed} 个成功任务` : '',
-      counts.cancelled ? `${counts.cancelled} 个已取消任务` : '',
-      counts.expired ? `${counts.expired} 个已过期任务` : '',
-      counts.alerts ? `${counts.alerts} 个已处理失败或告警任务` : '',
-    ].filter(Boolean).join('、')
-    await ElMessageBox.confirm(
-      h('div', { class: 'task-cleanup-confirm' }, [
-        h('p', `将从任务中心移除${summary}。`),
-        preview.skipped_unacknowledged
-          ? h('p', `${preview.skipped_unacknowledged} 个未处理失败或告警任务将保留。`)
-          : null,
-        h('p', t('job_center.cleanup.no_files', '此操作不会影响运行中或等待中任务，也不会删除日志、采集文件或导出结果。')),
-      ]),
-      cleanupTitle(cleanupType),
-      {
-        confirmButtonText: t('job_center.cleanup.confirm', '确认清理'),
-        cancelButtonText: t('job_center.cleanup.cancel', '取消'),
-        type: cleanupType === 'all_history' ? 'warning' : 'info',
+    await confirm({
+      type: 'DANGER',
+      title: t('job_center.cleanup.dialog_title', '清理任务记录'),
+      message: cleanupMessage(cleanupType, preview.matched),
+      highlight: `${preview.matched} 个`,
+      notice: cleanupNotice(preview),
+      width: 'min(468px, calc(100vw - 32px))',
+      confirmText: t('job_center.cleanup.confirm', '确认清理'),
+      confirmLoadingText: t('job_center.cleanup.loading', '正在清理…'),
+      cancelText: t('job_center.cleanup.cancel', '取消'),
+      onConfirm: async () => {
+        try {
+          const result = await store.cleanupHistory(cleanupType)
+          ElMessage.success(t(
+            'job_center.cleanup.done',
+            '已清理 {count} 个任务记录',
+          ).replace('{count}', String(result.dismissed)))
+        } catch (cause) {
+          ElMessage.error(cause instanceof Error ? cause.message : t('job_center.cleanup.failed', '任务清理失败'))
+          throw cause
+        }
       },
-    )
-    const result = await store.cleanupHistory(cleanupType)
-    ElMessage.success(`已从任务中心移除 ${result.dismissed} 条任务记录`)
+    })
   } catch (cause) {
-    if (cause === 'cancel' || cause === 'close') return
     ElMessage.error(cause instanceof Error ? cause.message : t('job_center.cleanup.failed', '任务清理失败'))
   }
 }
 
-function cleanupTitle(cleanupType: TaskCleanupType): string {
+function cleanupMessage(cleanupType: TaskCleanupType, count: number): string {
   const labels: Record<TaskCleanupType, string> = {
-    completed: t('job_center.cleanup.completed', '清理已完成任务'),
-    cancelled: t('job_center.cleanup.cancelled', '清理已取消任务'),
-    expired: t('job_center.cleanup.expired', '清理已过期任务'),
-    completed_and_expired: t('job_center.cleanup.completed_and_expired', '清理已完成和已过期任务'),
-    resolved_alerts: t('job_center.cleanup.resolved_alerts', '清理已处理的失败和告警'),
-    all_history: t('job_center.cleanup.all_history', '清理全部历史任务'),
+    completed: t('job_center.cleanup.message_completed', '将从任务中心移除 {count} 个已完成任务。'),
+    cancelled: t('job_center.cleanup.message_cancelled', '将从任务中心移除 {count} 个已取消任务。'),
+    expired: t('job_center.cleanup.message_expired', '将从任务中心移除 {count} 个已过期任务。'),
+    completed_and_expired: t('job_center.cleanup.message_completed_expired', '将从任务中心移除 {count} 个已完成或已过期任务。'),
+    resolved_alerts: t('job_center.cleanup.message_resolved_alerts', '将从任务中心移除 {count} 个已处理的失败或警告任务。'),
+    all_history: t('job_center.cleanup.message_all_history', '将从任务中心移除 {count} 个历史任务。'),
   }
-  return labels[cleanupType]
+  return labels[cleanupType].replace('{count}', String(count))
+}
+
+function cleanupNotice(preview: TaskCleanupResult): string {
+  const retained = preview.skipped_unacknowledged
+    ? t(
+        'job_center.cleanup.retained_alerts',
+        '{count} 个未处理的失败或警告任务将保留。',
+      ).replace('{count}', String(preview.skipped_unacknowledged))
+    : ''
+  const safety = t(
+    'job_center.cleanup.no_files',
+    '不会影响运行中或等待中的任务，也不会删除日志、采集文件或导出结果。',
+  )
+  return [retained, safety].filter(Boolean).join(' ')
 }
 
 async function acknowledgeAllAlerts(): Promise<void> {
