@@ -1293,7 +1293,11 @@ class RailTransitWebApplicationService:
         try:
             return [
                 str(device.device_uuid or "")
-                for device in DeviceRepository(database).list(vendor="H3C", device_type="AC")
+                for device in DeviceRepository(database).list(
+                    vendor="H3C",
+                    device_type="AC",
+                    operation_status="in_service",
+                )
                 if str(device.device_uuid or "").strip()
             ]
         except sqlite3.OperationalError as exc:

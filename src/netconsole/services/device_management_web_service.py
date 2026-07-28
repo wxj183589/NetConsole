@@ -72,6 +72,8 @@ from netconsole.models.api.device_management import (
     DeviceFactDTO,
     DeviceGroupOptionDTO,
     DeviceListItemDTO,
+    DeviceLifecycleUpdateDTO,
+    DeviceLifecycleUpdateRequestDTO,
     DevicePageDTO,
     DeviceTaskSummaryDTO,
 )
@@ -80,7 +82,11 @@ from netconsole.models.api.device_detail import (
     DeviceHistoryPageDTO,
     DeviceHistoryRecordDTO,
 )
-from netconsole.models.device import Device, validate_device_vendor_type
+from netconsole.models.device import (
+    Device,
+    is_device_available_for_manual_debug,
+    validate_device_vendor_type,
+)
 from netconsole.models.device_detail import DeviceOperationTask
 from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TaskState
@@ -367,6 +373,8 @@ class DeviceManagementWebService:
         device_type: str = "",
         vendor: str = "",
         connection_status: str = "",
+        project_phase: str = "all",
+        operation_status: str = "in_service",
         page: int = 1,
         page_size: int = 50,
         sort_by: str = "name",
@@ -392,6 +400,8 @@ class DeviceManagementWebService:
             vendor=vendor.strip() or None,
             device_type=device_type.strip() or None,
             group_filter="__ungrouped__" if ungrouped else group_id,
+            project_phase=project_phase,
+            operation_status=operation_status,
         )
         items = [
             self._list_item(
@@ -786,6 +796,19 @@ class DeviceManagementWebService:
         return DeviceGroupAssignmentDTO(
             success=result.success, failed=result.failed, group_id=payload.group_id
         )
+
+    def update_lifecycle(
+        self, payload: DeviceLifecycleUpdateRequestDTO
+    ) -> DeviceLifecycleUpdateDTO:
+        devices, _groups, _facts = self._repositories(self.current_site_id())
+        updated = devices.update_lifecycle_many(
+            self._unique_ids(payload.device_uuids),
+            project_phase=payload.project_phase,
+            operation_status=payload.operation_status,
+            reason=payload.reason,
+            updated_by="local_user",
+        )
+        return DeviceLifecycleUpdateDTO(updated=updated)
 
     def start_batch_refresh(
         self, payload: DeviceBatchRefreshRequestDTO
@@ -1486,6 +1509,8 @@ class DeviceManagementWebService:
     def _external_terminal_launch(
         self, device: Device, terminal_type: str
     ) -> RegisteredLaunch:
+        if not is_device_available_for_manual_debug(device):
+            raise ValueError("设备已退役；如需连接，请先将投运状态改为调试中或在用")
         self._require_desktop_runtime()
         configs = {
             config.terminal_type: config
@@ -1829,6 +1854,14 @@ class DeviceManagementWebService:
         groups: DeviceGroupRepository,
     ) -> Device:
         values = payload.model_dump()
+        if existing is not None:
+            for field in (
+                "project_phase",
+                "operation_status",
+                "operation_status_reason",
+            ):
+                if field not in payload.model_fields_set:
+                    values.pop(field, None)
         clear_secret_fields = set(values.pop("clear_secret_fields", ()))
         secret_fields = (
             "ssh_password",
@@ -1858,6 +1891,9 @@ class DeviceManagementWebService:
             "location",
             "device_vendor",
             "device_type",
+            "project_phase",
+            "operation_status",
+            "operation_status_reason",
             "primary_address",
             "backup_address",
             "remark",
@@ -1868,7 +1904,8 @@ class DeviceManagementWebService:
             "tunnel2_host",
             "tunnel2_username",
         ):
-            values[field] = str(values.get(field) or "").strip()
+            if field in values:
+                values[field] = str(values.get(field) or "").strip()
         if not values.get("ssh_username") and existing is not None:
             values["ssh_username"] = str(
                 existing.ssh_username or existing.username or ""
@@ -1901,7 +1938,16 @@ class DeviceManagementWebService:
         values["tunnel2_enabled"] = tunnel2_enabled
         values["tunnel_enabled"] = tunnel1_enabled or tunnel2_enabled
         record = existing.to_record() if existing is not None else {}
+        previous_status = str(record.get("operation_status") or "")
         record.update(values)
+        if (
+            "operation_status" in values
+            and values["operation_status"] != previous_status
+        ):
+            record["operation_status_updated_at"] = datetime.now().isoformat(
+                timespec="seconds"
+            )
+            record["operation_status_updated_by"] = "local_user"
         if record["ssh_enabled"]:
             if "ssh_password" not in clear_secret_fields:
                 record["ssh_username"] = (
@@ -2590,6 +2636,8 @@ class DeviceManagementWebService:
             "vendor": payload.vendor.strip() or None,
             "device_type": payload.device_type.strip() or None,
             "group_filter": payload.group_filter,
+            "project_phase": payload.project_phase,
+            "operation_status": payload.operation_status,
         }
 
     def _require_web_task(
@@ -3157,6 +3205,8 @@ class DeviceManagementWebService:
         site = self.current_site_id()
         device_repository, _, _ = self._repositories(site)
         device = self._require_device(device_repository, device_uuid)
+        if not is_device_available_for_manual_debug(device):
+            raise ValueError("设备已退役；如需测试连接，请先将投运状态改为调试中或在用")
         selected_protocol = protocol.strip().upper()
         self._validate_protocol_enabled(device, selected_protocol)
         self._validate_connection_preflight(device, selected_protocol)
@@ -3389,6 +3439,12 @@ class DeviceManagementWebService:
             else "未分组",
             device_vendor=str(device.device_vendor or ""),
             device_type=str(device.device_type or ""),
+            project_phase=str(device.project_phase or "unspecified"),
+            operation_status=str(device.operation_status or "in_service"),
+            operation_status_reason=str(device.operation_status_reason or ""),
+            operation_status_updated_at=str(
+                device.operation_status_updated_at or ""
+            ),
             primary_address=str(device.primary_address or ""),
             backup_address=str(device.backup_address or ""),
             updated_at=str(device.updated_at or ""),

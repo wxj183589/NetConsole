@@ -41,6 +41,68 @@ _DEVICE_VENDOR_ALIASES = {
 DEVICE_TYPES = ("AC", "SW", "FW", "Route", "Cloud-AP", "FAT-AP", "MR", "Other")
 
 
+class ProjectPhase(StrEnum):
+    PHASE_1 = "phase_1"
+    PHASE_2 = "phase_2"
+    PHASE_3 = "phase_3"
+    OTHER = "other"
+    UNSPECIFIED = "unspecified"
+
+
+class OperationStatus(StrEnum):
+    IN_SERVICE = "in_service"
+    NOT_INTEGRATED = "not_integrated"
+    COMMISSIONING = "commissioning"
+    SUSPENDED = "suspended"
+    RETIRED = "retired"
+
+
+PROJECT_PHASE_LABELS = {
+    ProjectPhase.PHASE_1.value: "一期",
+    ProjectPhase.PHASE_2.value: "二期",
+    ProjectPhase.PHASE_3.value: "三期",
+    ProjectPhase.OTHER.value: "其他",
+    ProjectPhase.UNSPECIFIED.value: "未指定",
+}
+OPERATION_STATUS_LABELS = {
+    OperationStatus.IN_SERVICE.value: "在用",
+    OperationStatus.NOT_INTEGRATED.value: "未并网",
+    OperationStatus.COMMISSIONING.value: "调试中",
+    OperationStatus.SUSPENDED.value: "暂停使用",
+    OperationStatus.RETIRED.value: "已退役",
+}
+
+
+def _normalize_enum_value(
+    value: object, enum_type: type[StrEnum], labels: dict[str, str], field_label: str
+) -> str:
+    text = str(value or "").strip()
+    aliases = {member.value.casefold(): member.value for member in enum_type}
+    aliases.update({label: value for value, label in labels.items()})
+    normalized = aliases.get(text.casefold())
+    if normalized is None:
+        raise ValueError(f"不支持的{field_label}：{text or '空值'}")
+    return normalized
+
+
+def normalize_project_phase(value: object) -> str:
+    return _normalize_enum_value(value, ProjectPhase, PROJECT_PHASE_LABELS, "建设阶段")
+
+
+def normalize_operation_status(value: object) -> str:
+    return _normalize_enum_value(
+        value, OperationStatus, OPERATION_STATUS_LABELS, "投运状态"
+    )
+
+
+def is_device_eligible_for_automatic_collection(device: "Device") -> bool:
+    return device.operation_status == OperationStatus.IN_SERVICE.value
+
+
+def is_device_available_for_manual_debug(device: "Device") -> bool:
+    return device.operation_status != OperationStatus.RETIRED.value
+
+
 def normalize_device_vendor(value: object) -> str:
     text = str(value or "").strip()
     normalized = _DEVICE_VENDOR_ALIASES.get(text.casefold())
@@ -73,6 +135,11 @@ class Device:
     group_id: int | None = None
     device_vendor: str = "H3C"
     device_type: str | None = "SW"
+    project_phase: str = ProjectPhase.UNSPECIFIED.value
+    operation_status: str = OperationStatus.IN_SERVICE.value
+    operation_status_reason: str | None = None
+    operation_status_updated_at: str | None = None
+    operation_status_updated_by: str | None = None
     primary_address: str = ""
     normalized_primary_address: str | None = None
     backup_address: str | None = None
@@ -130,6 +197,12 @@ class Device:
             kwargs["device_type"] = "Cloud-AP"
         if "device_vendor" in kwargs:
             kwargs["device_vendor"] = normalize_device_vendor(kwargs["device_vendor"])
+        if "project_phase" in kwargs:
+            kwargs["project_phase"] = normalize_project_phase(kwargs["project_phase"])
+        if "operation_status" in kwargs:
+            kwargs["operation_status"] = normalize_operation_status(
+                kwargs["operation_status"]
+            )
         field_names = set(self.field_names())
         unknown = set(kwargs) - field_names
         if unknown:

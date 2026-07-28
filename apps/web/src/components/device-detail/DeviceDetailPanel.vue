@@ -875,6 +875,20 @@ function formatValue(value: unknown): string {
 }
 
 const displayEnumLabels: Record<string, Record<string, string>> = {
+  project_phase: {
+    phase_1: '一期',
+    phase_2: '二期',
+    phase_3: '三期',
+    other: '其他',
+    unspecified: '未指定',
+  },
+  operation_status: {
+    in_service: '在用',
+    not_integrated: '未并网',
+    commissioning: '调试中',
+    suspended: '暂停使用',
+    retired: '已退役',
+  },
   severity: {
     normal: '正常',
     notice: '注意',
@@ -1087,6 +1101,10 @@ function errorMessage(cause: unknown, fallback: string): string {
                 <el-descriptions-item label="备用地址">{{ formatValue(overview.backup_address) }}</el-descriptions-item>
                 <el-descriptions-item label="MAC">{{ formatValue(overview.mac_address) }}</el-descriptions-item>
                 <el-descriptions-item label="类型">{{ formatValue(overview.device_type) }}</el-descriptions-item>
+                <el-descriptions-item label="建设阶段">{{ formatEnumeratedValue('project_phase', overview.project_phase) }}</el-descriptions-item>
+                <el-descriptions-item label="投运状态">{{ formatEnumeratedValue('operation_status', overview.operation_status) }}</el-descriptions-item>
+                <el-descriptions-item label="状态说明">{{ formatValue(overview.operation_status_reason) }}</el-descriptions-item>
+                <el-descriptions-item label="状态更新时间">{{ formatTime(overview.operation_status_updated_at) }}</el-descriptions-item>
                 <el-descriptions-item label="站点">{{ formatValue(overview.station) }}</el-descriptions-item>
                 <el-descriptions-item label="位置">{{ formatValue(overview.location) }}</el-descriptions-item>
                 <el-descriptions-item label="连接状态">{{ formatValue(overview.connection_status) }}</el-descriptions-item>

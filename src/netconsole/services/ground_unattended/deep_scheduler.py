@@ -11,6 +11,7 @@ from typing import Any
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
+from netconsole.models.device import is_device_eligible_for_automatic_collection
 from netconsole.models.online_mr_application import (
     OnlineMrExecutorKind,
     OnlineMrMappingState,
@@ -705,6 +706,8 @@ class DeepMrCollectionScheduler:
         device = DeviceRepository(Database(self.paths.site_db_path(self.site_id))).get(
             detail.mr.device_id
         )
+        if not is_device_eligible_for_automatic_collection(device):
+            raise ValueError("MR 当前不是在用状态，已退出无人值守自动任务")
         if device.ssh_enabled:
             protocol = "SSH"
             port = int(device.ssh_port or device.port or 22)

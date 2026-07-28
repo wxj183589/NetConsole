@@ -71,6 +71,10 @@ class DeviceOverviewDTO(ApiModel):
     name: str
     system_name: str | None = None
     device_type: str | None = None
+    project_phase: str = "unspecified"
+    operation_status: str = "in_service"
+    operation_status_reason: str | None = None
+    operation_status_updated_at: str | None = None
     station: str | None = None
     location: str | None = None
     primary_address: str | None = None

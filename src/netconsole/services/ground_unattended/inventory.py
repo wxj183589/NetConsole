@@ -7,6 +7,7 @@ from typing import Any
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.ground_unattended import GroundInventorySummaryDTO
+from netconsole.models.device import is_device_eligible_for_automatic_collection
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.ground_unattended_repository import (
     GroundUnattendedRepository,
@@ -65,6 +66,10 @@ class TrainInventorySyncService:
                 device = device_repository.get_by_uuid(str(mr.id))
             except (OSError, sqlite3.Error):
                 device = None
+            if device is None or not is_device_eligible_for_automatic_collection(
+                device
+            ):
+                continue
             connectable = bool(device and connection_targets(device))
             if not str(mr.management_ip or "").strip():
                 missing_ip += 1

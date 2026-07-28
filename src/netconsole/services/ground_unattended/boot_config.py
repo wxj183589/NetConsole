@@ -12,7 +12,10 @@ from typing import Any, Callable, Protocol
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
-from netconsole.models.device import Device
+from netconsole.models.device import (
+    Device,
+    is_device_eligible_for_automatic_collection,
+)
 from netconsole.models.online_mr_models import OnlineMrConnectionConfig
 from netconsole.parsers.h3c.info_center_parser import (
     InfoCenterRuntime,
@@ -296,6 +299,8 @@ class MrSyslogConfigService:
         device = DeviceRepository(Database(self.paths.site_db_path(self.site_id))).get_by_uuid(device_uuid)
         if device is None:
             raise ValueError("设备管理中已找不到 MR")
+        if not is_device_eligible_for_automatic_collection(device):
+            raise ValueError("MR 当前不是在用状态，已退出无人值守自动任务")
         if str(device.device_vendor or "H3C").casefold() != "h3c":
             raise ValueError("当前 Syslog Profile 仅适配 H3C MR")
         config = _connection_config(self.site_id, device)

@@ -54,17 +54,23 @@ PREVIOUS_TEMPLATE_FIELDS = [
     "SNMP重试",
     LEGACY_TEMPLATE_FIELDS[-1],
 ]
-DEVICE_CSV_COLUMNS = [
+IDENTITY_TEMPLATE_FIELDS = [
     *PREVIOUS_TEMPLATE_FIELDS,
     "设备ID",
     "原主用地址",
 ]
+DEVICE_CSV_COLUMNS = [
+    *IDENTITY_TEMPLATE_FIELDS,
+    "建设阶段",
+    "投运状态",
+    "投运状态说明",
+]
 TEMPLATE_FIELDS = DEVICE_CSV_COLUMNS
 
 TEMPLATE_EXAMPLE_ROWS = [
-    ["核心交换机-示例", "192.168.1.1", "", "SSH", "22", "admin", "Admin@123", "H3C", "SW", "COCC", "控制中心", "否", "", "", "", "", "", "", "", "", "是", "否", "是", "161", "public", "2000", "1", "SSH设备示例", "", ""],
-    ["无线控制器-示例", "192.168.1.10", "192.168.2.10", "SSH", "22", "admin", "Admin@123", "H3C", "AC", "COCC", "控制中心", "是", "10.0.0.10", "22", "jump", "Jump@123", "", "", "", "", "是", "是", "是", "161", "public", "2000", "1", "主备地址+隧道示例", "", ""],
-    ["列车01-MR-CT", "10.122.1.249", "10.122.89.101", "SSH", "22", "admin", "Admin@123", "H3C", "MR", "车载-MR", "01车车头", "否", "", "", "", "", "", "", "", "", "是", "否", "是", "161", "public", "2000", "1", "车载 MR 示例", "", ""],
+    ["核心交换机-示例", "192.168.1.1", "", "SSH", "22", "admin", "Admin@123", "H3C", "SW", "COCC", "控制中心", "否", "", "", "", "", "", "", "", "", "是", "否", "是", "161", "public", "2000", "1", "SSH设备示例", "", "", "未指定", "在用", ""],
+    ["无线控制器-示例", "192.168.1.10", "192.168.2.10", "SSH", "22", "admin", "Admin@123", "H3C", "AC", "COCC", "控制中心", "是", "10.0.0.10", "22", "jump", "Jump@123", "", "", "", "", "是", "是", "是", "161", "public", "2000", "1", "主备地址+隧道示例", "", "", "二期", "未并网", "示例：未并网设备仍可手动调试"],
+    ["列车01-MR-CT", "10.122.1.249", "10.122.89.101", "SSH", "22", "admin", "Admin@123", "H3C", "MR", "车载-MR", "01车车头", "否", "", "", "", "", "", "", "", "", "是", "否", "是", "161", "public", "2000", "1", "车载 MR 示例", "", "", "未指定", "在用", ""],
 ]
 
 TEMPLATE_FIELD_MAP = {
@@ -106,6 +112,9 @@ TEMPLATE_FIELD_MAP = {
     "备注": "remark",
     "设备ID": "device_id",
     "原主用地址": "original_primary_address",
+    "建设阶段": "project_phase",
+    "投运状态": "operation_status",
+    "投运状态说明": "operation_status_reason",
 }
 
 EXPORT_FIELDS = DEVICE_CSV_COLUMNS
@@ -691,6 +700,8 @@ class DeviceImportExportService:
     def _detect_mode(headers: list[str]) -> str:
         if headers == TEMPLATE_FIELDS:
             return "template"
+        if headers == IDENTITY_TEMPLATE_FIELDS:
+            return "identity_template"
         if headers == PREVIOUS_TEMPLATE_FIELDS:
             return "previous_template"
         if headers == LEGACY_TEMPLATE_FIELDS:

@@ -424,6 +424,8 @@ describe('DeviceManagementView mounted interactions', () => {
 
     expect(items.map((item) => item.label)).toEqual([
       '详情',
+      '设置建设阶段',
+      '设置投运状态',
       '编辑',
       '复制设备',
       '复制当前单元格',
