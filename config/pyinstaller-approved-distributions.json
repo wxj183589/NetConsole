@@ -192,6 +192,10 @@
       "version": "0.4.2"
     },
     {
+      "name": "tzdata",
+      "version": "2026.3"
+    },
+    {
       "name": "uvicorn",
       "version": "0.51.0"
     },

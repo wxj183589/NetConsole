@@ -26,7 +26,7 @@ python -m pip install -r requirements-dev.txt -c constraints.txt
 python -m pip check
 ```
 
-产品运行环境只执行第一条和 `python -m pip install . -c constraints.txt`；不得安装 `requirements-test.txt`、`requirements-build.txt` 或 `requirements-dev.txt`。`cryptography==49.0.0` 仍由 constraints 锁定为 Paramiko/SSH 依赖闭包的一部分，但 v4 完整迁移包不再直接使用 Scrypt/AES，也不得因此重新加入迁移密码或加密载荷。可用 `python -m scripts.build.check_runtime_deps --python-environment` 验证当前环境没有 Qt 包元数据或可导入 Qt 模块。干净环境的反向探针必须满足 `import PySide6` 抛出 `ModuleNotFoundError`。
+产品运行环境只执行第一条和 `python -m pip install . -c constraints.txt`；不得安装 `requirements-test.txt`、`requirements-build.txt` 或 `requirements-dev.txt`。`tzdata==2026.3` 是 Windows 冻结 Backend 的正式直接运行依赖，PyInstaller 通过标准 `hook-tzdata.py` 收集完整 IANA 时区数据库，不能改用系统时区、固定 UTC 偏移或手工复制单个时区文件。`cryptography==49.0.0` 仍由 constraints 锁定为 Paramiko/SSH 依赖闭包的一部分，但 v4 完整迁移包不再直接使用 Scrypt/AES，也不得因此重新加入迁移密码或加密载荷。可用 `python -m scripts.build.check_runtime_deps --python-environment` 验证当前环境没有 Qt 包元数据或可导入 Qt 模块。干净环境的反向探针必须满足 `import PySide6` 抛出 `ModuleNotFoundError`。
 
 ## Backend 构建
 
@@ -85,7 +85,7 @@ pnpm package
 
 `build.electronDist` 固定为 `apps/desktop_electron/node_modules/electron/dist`。完成锁定依赖安装后，`electron-builder` 必须复用本机已安装的 Electron 43.1.1 分发目录，不再访问 GitHub 获取 Electron ZIP 或 `SHASUMS256.txt`；日志应出现 `using custom unpacked Electron distribution`。这项约束只消除重复下载，不绕过 `pnpm install --frozen-lockfile` 的依赖完整性，也不得通过关闭 `signAndEditExecutable` 丢弃 EXE 资源元数据。
 
-安装包 smoke 在唯一 `D:\NetConsoleTestData\<run-id>` 中以 `RuntimeMode.TEST` 启动，结束后自动清理；它以 `ELECTRON_RUN_AS_NODE=1` 读取最终 `NetConsole.exe` 的 `process.versions`，逐项核对 Electron、Chromium 和 Node.js Notice/SBOM 版本；同时要求 electron-builder 输出中的 `LICENSE.electron.txt`、`LICENSES.chromium.html`、Backend 第三方说明、Notice 和 SBOM 都存在。包级门禁还会先在未设置 `PYTHONUTF8/PYTHONIOENCODING` 的环境启动最终冻结 `NetConsoleBackend.exe --background-worker`，断言 stdout 是纯 ASCII JSON bytes 且中文逐字恢复；随后由最终 `NetConsole.exe` 启动受管 Backend、提交真实开源组件扫描任务，并从 REST/任务日志断言 `text_integrity=ok`、中文 progress/finished 完整且不存在 U+FFFD。包内 `device_command_profiles.json` 还必须保持 schema `2026.07.device-command-profiles.v1`，且只包含 `device.inventory.collect` 的受控只读 Profile，不得包含 `device.sftp.enable` 等写入型 Profile。
+安装包 smoke 在唯一 `D:\NetConsoleTestData\<run-id>` 中以 `RuntimeMode.TEST` 启动，结束后自动清理；它以 `ELECTRON_RUN_AS_NODE=1` 读取最终 `NetConsole.exe` 的 `process.versions`，逐项核对 Electron、Chromium 和 Node.js Notice/SBOM 版本；同时要求 electron-builder 输出中的 `LICENSE.electron.txt`、`LICENSES.chromium.html`、Backend 第三方说明、Notice 和 SBOM 都存在。包级门禁还会在 `PYTHONTZPATH=""` 下启动最终冻结 `NetConsoleBackend.exe`，连续两次请求真实 `/api/rail-transit/ground-unattended/status` 并要求 HTTP 200、`Asia/Shanghai` 与有效的下一次起止时间，随后正常停止并复验端口释放；同时在未设置 `PYTHONUTF8/PYTHONIOENCODING` 的环境启动冻结 Worker，断言 stdout 是纯 ASCII JSON bytes 且中文逐字恢复。最后由最终 `NetConsole.exe` 启动受管 Backend、提交真实开源组件扫描任务，并从 REST/任务日志断言 `text_integrity=ok`、中文 progress/finished 完整且不存在 U+FFFD。包内 `device_command_profiles.json` 还必须保持 schema `2026.07.device-command-profiles.v1`，且只包含 `device.inventory.collect` 的受控只读 Profile，不得包含 `device.sftp.enable` 等写入型 Profile。
 
 正式 Windows 用户入口固定为 `dist/electron/win-unpacked/NetConsole.exe`。`build.win.executableName` 必须保持为 `NetConsole`，并由 `package-smoke.mjs` 直接读取该构建配置，禁止在 smoke 脚本重复硬编码名称。`resources/backend/NetConsoleBackend.exe` 仅由 Electron Main 使用 `--electron-backend` 作为受管子进程启动；直接运行它会记录运行日志、显示提示并以非零状态退出，不能尝试启动源码 Electron 开发链。
 

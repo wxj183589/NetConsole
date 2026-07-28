@@ -1,6 +1,7 @@
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:net'
 import { join, relative, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 
@@ -68,6 +69,7 @@ const requiredComponentNames = [
   'openssl runtime (iperf3 bundle)',
   'zlib runtime (iperf3 bundle)',
   'websockets',
+  'tzdata',
   'pyinstaller',
   'pyinstaller-hooks-contrib',
 ]
@@ -328,6 +330,7 @@ validateIperfDistribution()
 validateFpingDistribution()
 const runtimeVersions = readElectronRuntimeVersions()
 validateComplianceArtifacts(runtimeVersions)
+validateFrozenTimezoneResources()
 
 mkdirSync(WINDOWS_TEST_DATA_ROOT, { recursive: true })
 const smokeRoot = mkdtempSync(join(WINDOWS_TEST_DATA_ROOT, 'NetConsole-package-smoke-'))
@@ -336,6 +339,7 @@ const smokeUserDataRoot = resolve(smokeDataRoot, 'runtime', 'electron', 'user-da
 mkdirSync(smokeUserDataRoot, { recursive: true })
 try {
   validateFrozenWorkerTextProtocol(smokeRoot)
+  await validateFrozenGroundUnattendedStatus(resolve(smokeRoot, 'frozen-ground-status'))
   const result = spawnSync(
     executable,
     [`--user-data-dir=${smokeUserDataRoot}`],
@@ -361,7 +365,7 @@ try {
   rmSync(smokeRoot, { recursive: true, force: true })
 }
 
-console.log('Electron packaged smoke passed with frozen Worker Chinese protocol, no Qt residue, and NOTICE/SBOM metadata.')
+console.log('Electron packaged smoke passed with frozen timezone data, ground unattended status HTTP 200, frozen Worker Chinese protocol, no Qt residue, and NOTICE/SBOM metadata.')
 
 function validateFrozenWorkerTextProtocol(dataRoot) {
   const backend = resolve(unpackedRoot, 'resources', 'backend', 'NetConsoleBackend.exe')
@@ -416,6 +420,218 @@ function validateFrozenWorkerTextProtocol(dataRoot) {
   ) {
     throw new Error('冻结 Worker 中文事件未逐字恢复或包含替换字符。')
   }
+}
+
+function validateFrozenTimezoneResources() {
+  const backendRoot = resolve(unpackedRoot, 'resources', 'backend')
+  const packagedFiles = walk(backendRoot)
+    .filter((path) => statSync(path).isFile())
+    .map((path) => relative(backendRoot, path).replaceAll('\\', '/'))
+  const zoneinfoFiles = packagedFiles.filter((path) =>
+    path.includes('/tzdata/zoneinfo/'),
+  )
+  if (zoneinfoFiles.length !== 604) {
+    throw new Error(
+      `冻结 Backend 的 tzdata 时区资源不完整：仅发现 ${zoneinfoFiles.length} 个 zoneinfo 文件。`,
+    )
+  }
+  for (const required of [
+    'tzdata/zoneinfo/Asia/Shanghai',
+    'tzdata/zoneinfo/UTC',
+    'tzdata/zoneinfo/Europe/Bucharest',
+    'tzdata/zoneinfo/America/New_York',
+    'tzdata/zoneinfo/iso3166.tab',
+    'tzdata/zoneinfo/tzdata.zi',
+    'tzdata/zoneinfo/zone.tab',
+    'tzdata/zoneinfo/zone1970.tab',
+  ]) {
+    if (!packagedFiles.some((path) => path.endsWith(required))) {
+      throw new Error(`冻结 Backend 缺少代表性时区资源：${required}`)
+    }
+  }
+}
+
+async function validateFrozenGroundUnattendedStatus(dataRoot) {
+  const backend = resolve(unpackedRoot, 'resources', 'backend', 'NetConsoleBackend.exe')
+  const token = 'netconsole-packaged-timezone-smoke-session-token'
+  mkdirSync(dataRoot, { recursive: true })
+  const environment = {
+    ...process.env,
+    NETCONSOLE_DATA_ROOT: dataRoot,
+    NETCONSOLE_RUNTIME_MODE: 'test',
+    NETCONSOLE_STORAGE_MODE: 'isolated_test',
+    PYTHONTZPATH: '',
+  }
+  const child = spawn(
+    backend,
+    ['--electron-backend', '--port', '0'],
+    {
+      cwd: resolve(unpackedRoot, 'resources', 'backend'),
+      env: environment,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    },
+  )
+  let stdout = ''
+  let stderr = ''
+  let pendingStdout = ''
+  let port = 0
+  let exitCode = null
+  let responseBody = ''
+  let resolveListening
+  let rejectListening
+  let resolveShutdownAck
+  const listening = new Promise((resolvePromise, rejectPromise) => {
+    resolveListening = resolvePromise
+    rejectListening = rejectPromise
+  })
+  const shutdownAck = new Promise((resolvePromise) => {
+    resolveShutdownAck = resolvePromise
+  })
+  const exited = new Promise((resolvePromise) => {
+    child.once('exit', (code) => {
+      exitCode = code
+      if (!port) rejectListening(new Error(`冻结 Backend 在监听前退出：exit=${code}`))
+      resolvePromise(code)
+    })
+  })
+  child.once('error', (error) => rejectListening(error))
+  child.stdin.on('error', () => {})
+  child.stdout.on('data', (chunk) => {
+    const text = chunk.toString('utf8')
+    stdout += text
+    pendingStdout += text
+    const lines = pendingStdout.split(/\r?\n/u)
+    pendingStdout = lines.pop() ?? ''
+    for (const line of lines) {
+      let payload
+      try {
+        payload = JSON.parse(line)
+      } catch {
+        continue
+      }
+      if (
+        payload?.event === 'netconsole.electron_backend.listening'
+        && Number.isInteger(payload.port)
+        && payload.port > 0
+      ) {
+        port = payload.port
+        resolveListening(port)
+      } else if (payload?.event === 'netconsole.electron_backend.shutdown_ack') {
+        resolveShutdownAck()
+      }
+    }
+  })
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString('utf8')
+  })
+  child.stdin.write(`${JSON.stringify({ session_token: token })}\n`)
+
+  let failure = null
+  try {
+    port = await withTimeout(listening, 20_000, '冻结 Backend 监听超时')
+    const url =
+      `http://127.0.0.1:${port}/api/rail-transit/ground-unattended/status`
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const response = await fetch(url, {
+        headers: { 'X-NetConsole-Session': token },
+        signal: AbortSignal.timeout(10_000),
+      })
+      responseBody = await response.text()
+      const contentType = response.headers.get('content-type') ?? ''
+      if (response.status !== 200 || !contentType.includes('application/json')) {
+        throw new Error(
+          `第 ${attempt} 次无人值守状态请求失败：HTTP ${response.status}, `
+          + `Content-Type=${contentType}, body=${responseBody}`,
+        )
+      }
+      let payload
+      try {
+        payload = JSON.parse(responseBody)
+      } catch (cause) {
+        throw new Error(`第 ${attempt} 次无人值守状态响应不是 JSON。`, {
+          cause,
+        })
+      }
+      if (
+        payload?.timezone !== 'Asia/Shanghai'
+        || typeof payload?.site_id !== 'string'
+        || typeof payload?.state !== 'string'
+        || typeof payload?.enabled !== 'boolean'
+        || !String(payload?.next_start_at ?? '')
+        || !String(payload?.next_end_at ?? '')
+      ) {
+        throw new Error(
+          `第 ${attempt} 次无人值守状态响应不符合冻结运行契约：${responseBody}`,
+        )
+      }
+    }
+    child.stdin.write(`${JSON.stringify({ command: 'shutdown' })}\n`)
+    await withTimeout(shutdownAck, 10_000, '冻结 Backend 正常停止确认超时')
+    child.stdin.write(`${JSON.stringify({ command: 'exit' })}\n`)
+    const code = await withTimeout(exited, 10_000, '冻结 Backend 退出超时')
+    if (code !== 0) throw new Error(`冻结 Backend 非正常退出：exit=${code}`)
+    await assertLoopbackPortReleased(port)
+    if (
+      stdout.includes('ModuleNotFoundError')
+      || stderr.includes('ModuleNotFoundError')
+      || stdout.includes('ZoneInfoNotFoundError')
+      || stderr.includes('ZoneInfoNotFoundError')
+    ) {
+      throw new Error('冻结 Backend 输出包含时区模块或资源缺失异常。')
+    }
+  } catch (cause) {
+    failure = cause
+  } finally {
+    if (exitCode === null) {
+      child.kill()
+      try {
+        await withTimeout(exited, 5_000, '冻结 Backend 强制回收超时')
+      } catch {
+        // The diagnostic below reports the residual process failure.
+      }
+    }
+  }
+  if (exitCode === null) {
+    failure ??= new Error('冻结 Backend 进程未完成回收。')
+  }
+  if (failure) {
+    throw new Error(
+      [
+        `冻结 Backend 无人值守 /status HTTP smoke 失败：${failure.message}`,
+        `data_root=${dataRoot}`,
+        `port=${port || 'unknown'}`,
+        `exit=${exitCode ?? 'running'}`,
+        `response=${responseBody || '<empty>'}`,
+        `stdout=${stdout || '<empty>'}`,
+        `stderr=${stderr || '<empty>'}`,
+      ].join('\n'),
+      { cause: failure },
+    )
+  }
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  let timer
+  return Promise.race([
+    promise,
+    new Promise((_, rejectPromise) => {
+      timer = setTimeout(() => rejectPromise(new Error(message)), timeoutMs)
+    }),
+  ]).finally(() => clearTimeout(timer))
+}
+
+function assertLoopbackPortReleased(port) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const server = createServer()
+    server.once('error', rejectPromise)
+    server.listen(port, '127.0.0.1', () => {
+      server.close((error) => {
+        if (error) rejectPromise(error)
+        else resolvePromise()
+      })
+    })
+  })
 }
 
 function resolveWindowsExecutableName(packageJsonPath) {
