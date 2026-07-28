@@ -593,10 +593,15 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
       }
       return JSON.parse(body)
     }
-    const group = await requestJson('/api/device-management/groups', {
-      method: 'POST',
-      body: JSON.stringify({ name: '车载-MR' }),
-    }, 201)
+    const existingGroups = await requestJson('/api/device-management/groups')
+    const group = existingGroups.find((item) => item.name === '车载-MR') ?? await requestJson(
+      '/api/device-management/groups',
+      {
+        method: 'POST',
+        body: JSON.stringify({ name: '车载-MR' }),
+      },
+      201,
+    )
     const groupId = Number(group?.id)
     if (!Number.isInteger(groupId) || groupId <= 0) throw new Error('MESH smoke 未取得车载-MR 分组标识。')
     for (const [name, address] of [['列车34-MR-CT', '192.0.2.34'], ['列车34-MR-CW', '192.0.2.35']]) {
@@ -609,7 +614,7 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
           device_vendor: 'H3C',
           group_id: groupId,
           primary_address: address,
-          ssh_enabled: false,
+          ssh_enabled: true,
           telnet_enabled: false,
           snmp_enabled: false,
         }),
@@ -624,8 +629,10 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
     const firstPrepare = await requestJson('/api/rail-transit/mesh-analysis/import-context/prepare', { method: 'POST' })
     const profilesAfter = await requestJson('/api/rail-transit/mesh-analysis/profiles')
     const secondPrepare = await requestJson('/api/rail-transit/mesh-analysis/import-context/prepare', { method: 'POST' })
+    const createdProfileCount = profilesAfter.length - profilesBefore.length
     if (
-      firstPrepare.created_count !== 2
+      firstPrepare.created_count !== createdProfileCount
+      || createdProfileCount < 2
       || secondPrepare.created_count !== 0
       || !Array.isArray(profilesBefore)
       || profilesAfter.length < 2
@@ -657,7 +664,7 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
     }
     const waitForMeshTask = async (taskId) => {
       for (let attempt = 0; attempt < 200; attempt += 1) {
-        const snapshot = await requestJson(`/api/rail-transit/online-mr/tasks/${encodeURIComponent(taskId)}`)
+        const snapshot = await requestJson(`/api/online-mr/tasks/${encodeURIComponent(taskId)}`)
         if (snapshot.status === 'COMPLETED') return snapshot
         if (['FAILED', 'CANCELLED'].includes(snapshot.status)) {
           throw new Error(`MESH smoke 导入任务失败：${JSON.stringify(snapshot)}`)
@@ -697,7 +704,7 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
         mappings: [mapping],
         explicit_confirmation: true,
       }),
-    })
+    }, 202)
     const firstImportTask = await waitForMeshTask(firstImport.task_id)
     const firstImportResult = await readMeshTaskResult(firstImport.task_id)
     if (
@@ -723,7 +730,7 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
         mappings: [{ ...mapping, member_id: duplicateItem.member_id }],
         explicit_confirmation: true,
       }),
-    })
+    }, 202)
     const duplicateImportTask = await waitForMeshTask(duplicateImport.task_id)
     const duplicateImportResult = await readMeshTaskResult(duplicateImport.task_id)
     const sessionsAfterDuplicate = await requestJson('/api/rail-transit/mesh-analysis/sessions?page=1&page_size=50')

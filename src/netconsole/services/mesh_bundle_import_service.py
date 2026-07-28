@@ -50,6 +50,17 @@ _SUBMITTED_PREVIEW_TTL_SECONDS = 60 * 60
 _MAX_PREVIEW_COUNT = 16
 _MAX_PREVIEW_BYTES = 256 * 1024 * 1024
 _MANIFEST_SCHEMA_VERSION = 2
+_CATALOG_SUMMARY_FIELDS = (
+    "earliest_sample_time",
+    "latest_sample_time",
+    "source_file_count",
+    "sample_count",
+    "link_record_count",
+    "session_count",
+    "event_count",
+    "last_import_at",
+    "updated_at",
+)
 
 
 @dataclass(frozen=True)
@@ -1182,8 +1193,15 @@ class MeshBundleImportService:
         moved: list[tuple[Path, Path, Path]] = []
         production_catalog = self.paths.mesh_catalog_path(self.site_name)
         staging_catalog = staging_paths.mesh_catalog_path(self.site_name)
-        backup_catalog = rollback / "catalog.sqlite"
-        catalog_replaced = False
+        previous_catalog_summaries = _read_catalog_summaries(
+            production_catalog,
+            profiles,
+        )
+        staged_catalog_summaries = _read_catalog_summaries(
+            staging_catalog,
+            profiles,
+        )
+        catalog_updated = False
         try:
             for profile in sorted(profiles.values(), key=lambda item: item.safe_folder_name.casefold()):
                 production = self.paths.mesh_mr_root(self.site_name, profile.safe_folder_name).resolve()
@@ -1192,33 +1210,35 @@ class MeshBundleImportService:
                 production.replace(backup)
                 staging.replace(production)
                 moved.append((production, backup, staging))
-            _checkpoint_database(production_catalog)
-            production_catalog.replace(backup_catalog)
-            for suffix in ("-wal", "-shm"):
-                sidecar = production_catalog.with_name(production_catalog.name + suffix)
-                if sidecar.exists():
-                    sidecar.replace(backup_catalog.with_name(backup_catalog.name + suffix))
-            staging_catalog.replace(production_catalog)
-            catalog_replaced = True
             self._verify_final_paths(profiles)
+            _write_catalog_summaries(production_catalog, staged_catalog_summaries)
+            catalog_updated = True
             self._finalize_archive(archive, manifest, success_manifest)
         except Exception:
-            if catalog_replaced and production_catalog.exists():
-                production_catalog.replace(staging_catalog)
-            for suffix in ("-wal", "-shm"):
-                production_catalog.with_name(production_catalog.name + suffix).unlink(missing_ok=True)
-            if backup_catalog.exists():
-                backup_catalog.replace(production_catalog)
-            for suffix in ("-wal", "-shm"):
-                backup_sidecar = backup_catalog.with_name(backup_catalog.name + suffix)
-                if backup_sidecar.exists():
-                    backup_sidecar.replace(production_catalog.with_name(production_catalog.name + suffix))
-            for production, backup, staging in reversed(moved):
-                if production.exists():
-                    staging.parent.mkdir(parents=True, exist_ok=True)
-                    production.replace(staging)
-                if backup.exists():
-                    backup.replace(production)
+            rollback_error: Exception | None = None
+            try:
+                if catalog_updated:
+                    _write_catalog_summaries(
+                        production_catalog,
+                        previous_catalog_summaries,
+                    )
+            except Exception as exc:
+                rollback_error = exc
+            finally:
+                for production, backup, staging in reversed(moved):
+                    try:
+                        if production.exists():
+                            staging.parent.mkdir(parents=True, exist_ok=True)
+                            production.replace(staging)
+                        if backup.exists():
+                            backup.replace(production)
+                    except Exception as exc:
+                        rollback_error = rollback_error or exc
+            if rollback_error is not None:
+                raise MeshBundleImportError(
+                    "ROLLBACK_FAILED",
+                    "MESH ZIP 导入回滚失败，请保留现场数据并检查 Backend 日志",
+                ) from rollback_error
             raise
 
     def _verify_final_paths(self, profiles: Mapping[str, MeshMrProfile]) -> None:
@@ -1520,6 +1540,60 @@ def _sqlite_backup(source: Path, target: Path) -> None:
     ) as target_connection:
         source_connection.backup(target_connection)
         target_connection.commit()
+
+
+def _read_catalog_summaries(
+    path: Path,
+    profiles: Mapping[str, MeshMrProfile],
+) -> dict[str, tuple[object, ...]]:
+    profile_ids = tuple(profiles)
+    if not profile_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in profile_ids)
+    fields = ", ".join(_CATALOG_SUMMARY_FIELDS)
+    with closing(sqlite3.connect(path, timeout=30)) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            f"SELECT mr_id, {fields} FROM mr_profiles WHERE mr_id IN ({placeholders})",
+            profile_ids,
+        ).fetchall()
+    summaries = {
+        str(row["mr_id"]): tuple(row[field] for field in _CATALOG_SUMMARY_FIELDS)
+        for row in rows
+    }
+    if summaries.keys() != profiles.keys():
+        raise MeshBundleImportError(
+            "CATALOG_PROFILE_MISSING",
+            "MESH Profile 目录库与导入映射不一致",
+        )
+    return summaries
+
+
+def _write_catalog_summaries(
+    path: Path,
+    summaries: Mapping[str, tuple[object, ...]],
+) -> None:
+    if not summaries:
+        return
+    assignments = ", ".join(f"{field} = ?" for field in _CATALOG_SUMMARY_FIELDS)
+    with closing(sqlite3.connect(path, timeout=30)) as connection:
+        connection.execute("PRAGMA busy_timeout = 30000")
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            for profile_id, values in summaries.items():
+                cursor = connection.execute(
+                    f"UPDATE mr_profiles SET {assignments} WHERE mr_id = ?",
+                    (*values, profile_id),
+                )
+                if cursor.rowcount != 1:
+                    raise MeshBundleImportError(
+                        "CATALOG_PROFILE_MISSING",
+                        "MESH Profile 目录库与导入映射不一致",
+                    )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
 
 
 def _checkpoint_database(path: Path) -> None:

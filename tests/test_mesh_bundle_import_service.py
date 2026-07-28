@@ -227,6 +227,47 @@ def test_successful_worker_commit_rewrites_staging_paths_and_finalizes_manifest(
     assert repository.summary()["source_file_count"] == 1
 
 
+def test_worker_commit_keeps_catalog_file_when_another_process_has_open_reader(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    storage = MeshStorageService("demo", paths)
+    profile = storage.create_mr_profile("01-MR-CT")
+    archive = tmp_path / "bundle.zip"
+    _zip(archive, {"01CTmeshlog.log": VALID_LOG})
+    service = MeshBundleImportService("demo", paths)
+    with archive.open("rb") as source:
+        preview = service.create_preview(archive.name, source, [profile])
+    mappings = [
+        {
+            "member_id": "01CTmeshlog.log",
+            "train_number": "01",
+            "role": "CT",
+            "profile_id": profile.mr_id,
+        }
+    ]
+    service.approve_preview(str(preview["preview_id"]), mappings, [profile.mr_id])
+
+    catalog_path = paths.mesh_catalog_path("demo")
+    with closing(sqlite3.connect(catalog_path)) as reader:
+        reader.execute("PRAGMA journal_mode = WAL")
+        reader.execute("BEGIN")
+        assert reader.execute(
+            "SELECT source_file_count FROM mr_profiles WHERE mr_id = ?",
+            (profile.mr_id,),
+        ).fetchone() == (0,)
+        result = service.import_approved_preview(
+            str(preview["preview_id"]),
+            mappings,
+            job_id="mesh-bundle-open-catalog-reader",
+        )
+
+    assert result["imported_count"] == 1
+    refreshed = MeshStorageService("demo", paths).catalog.get_profile(profile.mr_id)
+    assert refreshed is not None
+    assert refreshed.source_file_count == 1
+
+
 def test_failed_worker_does_not_change_production_or_publish_success_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
