@@ -961,7 +961,7 @@ def test_validation_rejects_sensitive_fields(tmp_path: Path, monkeypatch) -> Non
     assert response.json()["issues"][0]["code"] == "BASE_DATA_VALIDATION_FAILED"
 
 
-def test_plan_validation_rejects_capacity_and_network_conflicts(
+def test_plan_validation_and_save_ignore_ip_reference_conflicts(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -970,31 +970,67 @@ def test_plan_validation_rejects_capacity_and_network_conflicts(
     mark_base_data_copy(paths)
     with TestClient(_app(paths, tmp_path)) as client:
         session = client.get("/api/rail-transit/base-data/revision").json()
+        stations = client.get(
+            "/api/rail-transit/base-data/stations?page_size=200"
+        ).json()["items"]
+        changes = [
+            {
+                "entity_type": "trackside_ap_plan",
+                "action": "replace",
+                "values": {
+                    "planning": {
+                        "line_id": "current",
+                        "planning_mode": "line_single",
+                        "auto_group_station_count": 1,
+                        "revision": 0,
+                    },
+                    "groups": [
+                        {
+                            "group_id": "all-stations",
+                            "group_code": "G001",
+                            "group_name": "全线统一 VLAN",
+                            "sequence": 0,
+                            "management_vlan": 71,
+                            "network_address": "10.92.68.0",
+                            "prefix_length": 99,
+                            "subnet_mask": "invalid-mask-reference",
+                            "default_gateway": "10.92.71.254",
+                            "ap_start_ip": "192.0.2.9",
+                            "ap_end_ip": "invalid-end-reference",
+                            "members": [
+                                {
+                                    "station_id": station["id"],
+                                    "station_name": station["name"],
+                                    "station_sequence": station["sort_order"],
+                                    "ap_count": station["ap_count"],
+                                }
+                                for station in stations
+                            ],
+                        }
+                    ],
+                    "assignments": [],
+                    "allocations": [],
+                },
+            }
+        ]
         response = client.post(
             "/api/rail-transit/base-data/validate",
             json={
                 "site_id": "demo",
                 "base_revision": session["base_revision"],
-                "changes": [
-                    {
-                        "entity_type": "trackside_ap_plan",
-                        "action": "replace",
-                        "values": {
-                            "rows": [
-                                {
-                                    "station_name": "车站A",
-                                    "ap_count": 10,
-                                    "ap_start_address": "10.0.0.1",
-                                    "mask_length": 30,
-                                    "ap_gateway": "10.0.0.2",
-                                    "ap_management_vlans": "101",
-                                }
-                            ]
-                        },
-                    }
-                ],
+                "changes": changes,
+            },
+        )
+        saved = client.post(
+            "/api/rail-transit/base-data/changes",
+            json={
+                "site_id": "demo",
+                "base_revision": session["base_revision"],
+                "changes": changes,
+                "explicit_confirmation": True,
             },
         )
     assert response.status_code == 200
-    assert response.json()["valid"] is False
-    assert any("容量不足" in issue["message"] for issue in response.json()["issues"])
+    assert response.json()["valid"] is True
+    assert not response.json()["issues"]
+    assert saved.status_code == 200

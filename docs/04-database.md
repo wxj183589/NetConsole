@@ -48,6 +48,13 @@ exists, every saved `ac_trackside_ap_plan(mode='unified')` station row migrates
 to one `station_independent` VLAN group in the same initialization transaction.
 The migration is idempotent; existing AP, location, device, MAC, and runtime IP
 rows are not rewritten. See [AP Management VLAN Groups](AP_MANAGEMENT_VLAN_GROUPS.md).
+The group IP/network columns remain nullable or empty-compatible reference data
+and do not participate in VLAN planning validation. For existing databases,
+initialization transactionally rebuilds only `rail_ap_vlan_allocations` to remove
+the legacy unique constraint on `planned_ip`, copies every existing row unchanged,
+and recreates its group/order index. A failure rolls back the schema and data
+together. The table is a compatibility reference cache, not the source of truth
+for AP IP or VLAN assignment.
 
 Current local tables:
 
