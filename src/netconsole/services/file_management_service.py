@@ -62,6 +62,7 @@ from netconsole.services.file_transfer_service import (
 )
 from netconsole.services.host_key_trust_service import (
     HostKeyDetails,
+    HostKeyTrustGrant,
     HostKeyTrustError,
     HostKeyTrustService,
 )
@@ -188,6 +189,7 @@ class _PendingHostKey:
     port: int
     key: object
     details: HostKeyDetails
+    grants: tuple[HostKeyTrustGrant, ...]
     sftp_enable_task_id: str
     expires_at: datetime
 
@@ -196,7 +198,7 @@ class _PendingHostKey:
 class _PendingSftpSetup:
     site_id: str
     device_id: str
-    trust_host_key_once: bool
+    trust_host_key_once: tuple[HostKeyTrustGrant, ...]
     expires_at: datetime
 
 
@@ -456,15 +458,22 @@ class FileManagementApplicationService:
         return [
             FileRemoteDeviceDTO(
                 device_id=str(device.device_uuid or device.id or ""),
-                name=str(device.name or device.system_name or device.primary_address),
-                address=str(device.primary_address or ""),
+                name=str(
+                    device.name
+                    or device.system_name
+                    or device.primary_address
+                    or device.backup_address
+                ),
+                address=str(device.primary_address or device.backup_address or ""),
                 group_id=device.group_id,
                 group_name=groups.get(int(device.group_id), "") if device.group_id is not None else "",
                 device_type=str(device.device_type or ""),
                 station=str(device.station or ""),
             )
             for device in devices
-            if (device.device_uuid or device.id) and device.primary_address and bool(device.ssh_enabled)
+            if (device.device_uuid or device.id)
+            and (device.primary_address or device.backup_address)
+            and bool(device.ssh_enabled)
         ]
 
     def connect_device(
@@ -472,7 +481,7 @@ class FileManagementApplicationService:
         site_id: str,
         device_id: str,
         *,
-        trust_host_key_once: bool = False,
+        trust_host_key_once: tuple[HostKeyTrustGrant, ...] = (),
     ) -> FileConnectionDTO:
         site = self._site_id(site_id)
         device = self._resolve_device(site, device_id)
@@ -493,6 +502,7 @@ class FileManagementApplicationService:
                 site,
                 device,
                 trust_host_key_once=trust_host_key_once,
+                attempts=list(exc.details.get("attempts") or []),
             )
             raise AssertionError("SFTP setup confirmation must interrupt the connection flow") from exc
         except HostKeyTrustError as exc:
@@ -500,25 +510,34 @@ class FileManagementApplicationService:
                 transfer.disconnect()
             except Exception:
                 pass
-            self._raise_host_key_challenge(site, device, exc)
+            self._raise_host_key_challenge(
+                site,
+                device,
+                exc,
+                grants=trust_host_key_once,
+            )
         except FileTransferConnectionError as exc:
             try:
                 transfer.disconnect()
             except Exception:
                 pass
-            raise DeviceFileSftpError(exc.code, str(exc)) from exc
+            raise DeviceFileSftpError(
+                exc.code,
+                str(exc),
+                details=exc.details,
+            ) from exc
         except Exception as exc:
             try:
                 transfer.disconnect()
             except Exception:
                 pass
             app_logger.log_error(
-                "DEVICE_FILE_NETWORK_UNREACHABLE",
+                "DEVICE_FILE_SFTP_NEGOTIATION_FAILED",
                 f"device={device.name or device.primary_address}, error={sanitize_sensitive_text(str(exc), device)}",
             )
             raise DeviceFileSftpError(
-                "DEVICE_FILE_NETWORK_UNREACHABLE",
-                "设备网络不可达或 SSH 端口不可用。",
+                "DEVICE_FILE_SFTP_NEGOTIATION_FAILED",
+                "建立受控 SFTP 连接失败。",
             ) from exc
         return self._register_connected_transfer(site, device_key, device, transfer, root_path, message="SFTP 连接成功")
 
@@ -527,7 +546,8 @@ class FileManagementApplicationService:
         site: str,
         device: Device,
         *,
-        trust_host_key_once: bool,
+        trust_host_key_once: tuple[HostKeyTrustGrant, ...],
+        attempts: list[object] | None = None,
     ) -> None:
         confirmation_id = f"sf1_{uuid4().hex}"
         device_id = str(device.device_uuid or device.id or "")
@@ -541,13 +561,16 @@ class FileManagementApplicationService:
             self._pending_sftp_setups[confirmation_id] = _PendingSftpSetup(
                 site_id=site,
                 device_id=device_id,
-                trust_host_key_once=bool(trust_host_key_once),
+                trust_host_key_once=trust_host_key_once,
                 expires_at=now + timedelta(minutes=5),
             )
         raise DeviceFileSftpError(
             "DEVICE_FILE_SFTP_UNAVAILABLE",
             "检测到设备未启用 SFTP，需要确认后通过受控命令启用并重新连接。",
-            details={"confirmation_id": confirmation_id},
+            details={
+                "confirmation_id": confirmation_id,
+                "attempts": list(attempts or []),
+            },
         )
 
     def confirm_sftp_setup(self, site_id: str, confirmation_id: str) -> FileConnectionDTO:
@@ -573,7 +596,13 @@ class FileManagementApplicationService:
                 trust_host_key_once=pending.trust_host_key_once,
             )
         except HostKeyTrustError as exc:
-            self._raise_host_key_challenge(site, device, exc, sftp_enable_task_id=task_id)
+            self._raise_host_key_challenge(
+                site,
+                device,
+                exc,
+                grants=pending.trust_host_key_once,
+                sftp_enable_task_id=task_id,
+            )
         return self._register_connected_transfer(
             site,
             device_key,
@@ -612,7 +641,12 @@ class FileManagementApplicationService:
         self._register_session(session)
         return self._connection_dto(session, message)
 
-    def _new_transfer(self, site: str, *, trust_host_key_once: bool = False) -> FileTransferService:
+    def _new_transfer(
+        self,
+        site: str,
+        *,
+        trust_host_key_once: tuple[HostKeyTrustGrant, ...] = (),
+    ) -> FileTransferService:
         """创建只读 SFTP Transport；自动配置不属于 Transport 构造契约。"""
 
         return self._transfer_factory(
@@ -685,7 +719,7 @@ class FileManagementApplicationService:
         transfer: FileTransferService,
         *,
         task_id: str,
-        trust_host_key_once: bool,
+        trust_host_key_once: tuple[HostKeyTrustGrant, ...],
     ) -> tuple[FileTransferService, str]:
         last_error: Exception | None = None
         for attempt in range(4):
@@ -754,22 +788,33 @@ class FileManagementApplicationService:
             raise FileReferenceNotFound("主机密钥确认已失效，请重新连接设备")
         if persist:
             HostKeyTrustService(self.paths).trust(pending.host, pending.port, pending.key)
+            grants = pending.grants
+        else:
+            grants = (
+                *pending.grants,
+                HostKeyTrustGrant.from_key(
+                    pending.host,
+                    pending.port,
+                    pending.key,
+                ),
+            )
         if pending.sftp_enable_task_id:
             device = self._resolve_device(site, pending.device_id)
-            transfer = self._new_transfer(site, trust_host_key_once=True)
+            transfer = self._new_transfer(site, trust_host_key_once=grants)
             try:
                 transfer, root_path = self._reconnect_after_sftp_enable(
                     site,
                     device,
                     transfer,
                     task_id=pending.sftp_enable_task_id,
-                    trust_host_key_once=True,
+                    trust_host_key_once=grants,
                 )
             except HostKeyTrustError as exc:
                 self._raise_host_key_challenge(
                     site,
                     device,
                     exc,
+                    grants=grants,
                     sftp_enable_task_id=pending.sftp_enable_task_id,
                 )
             return self._register_connected_transfer(
@@ -783,7 +828,7 @@ class FileManagementApplicationService:
         return self.connect_device(
             site,
             pending.device_id,
-            trust_host_key_once=True,
+            trust_host_key_once=grants,
         )
 
     def _raise_host_key_challenge(
@@ -792,9 +837,14 @@ class FileManagementApplicationService:
         device: Device,
         exc: HostKeyTrustError,
         *,
+        grants: tuple[HostKeyTrustGrant, ...] = (),
         sftp_enable_task_id: str = "",
     ) -> None:
-        if exc.code != "DEVICE_FILE_HOST_KEY_UNKNOWN":
+        if exc.code not in {
+            "DEVICE_FILE_HOST_KEY_UNKNOWN",
+            "DEVICE_FILE_TARGET_HOST_KEY_UNKNOWN",
+            "DEVICE_FILE_JUMP_HOST_KEY_UNKNOWN",
+        }:
             raise exc
         device_key = str(device.device_uuid or device.id or "")
         challenge_id = f"hk1_{uuid4().hex}"
@@ -803,6 +853,7 @@ class FileManagementApplicationService:
             port=int(exc.details.get("port") or device.ssh_port or 22),
             algorithm=str(exc.details.get("algorithm") or ""),
             fingerprint_sha256=str(exc.details.get("fingerprint_sha256") or ""),
+            role=str(exc.details.get("host_key_role") or "target"),
         )
         key = getattr(exc, "key", None)
         if key is None:
@@ -815,6 +866,7 @@ class FileManagementApplicationService:
                 port=details.port,
                 key=key,
                 details=details,
+                grants=grants,
                 sftp_enable_task_id=str(sftp_enable_task_id or ""),
                 expires_at=datetime.now(UTC) + timedelta(minutes=5),
             )
@@ -826,6 +878,7 @@ class FileManagementApplicationService:
                 "device_id": device_key,
                 "device_name": str(device.name or ""),
             },
+            code=exc.code,
         ) from exc
 
     def disconnect_device(self, site_id: str, connection_id: str) -> FileConnectionDTO:
@@ -1746,6 +1799,8 @@ class FileManagementApplicationService:
     @staticmethod
     def _connection_dto(session: _RemoteSession, message: str, *, status: str = "CONNECTED") -> FileConnectionDTO:
         current = session.entries.get(session.current_entry_id)
+        target = getattr(session.transfer, "successful_target", None)
+        tunnel = getattr(target, "tunnel", None)
         return FileConnectionDTO(
             connection_id=session.connection_id,
             device_id=session.device_id,
@@ -1755,6 +1810,17 @@ class FileManagementApplicationService:
             current_entry_id=session.current_entry_id,
             current_label="根目录" if current is None or session.current_entry_id == session.root_entry_id else current.remote_file.name,
             message=message,
+            connection_method=str(getattr(target, "method", "") or ""),
+            target_role=str(getattr(target, "target_role", "") or ""),
+            target_host=str(getattr(target, "host", "") or ""),
+            target_port=int(getattr(target, "port", 0) or 0),
+            via_tunnel=bool(getattr(target, "via_tunnel", False)),
+            tunnel_label=str(getattr(target, "tunnel_label", "") or ""),
+            jump_host=str(getattr(tunnel, "host", "") or ""),
+            jump_port=int(getattr(tunnel, "port", 0) or 0),
+            attempts=list(
+                getattr(session.transfer, "attempt_summaries", ()) or ()
+            ),
         )
 
     @staticmethod

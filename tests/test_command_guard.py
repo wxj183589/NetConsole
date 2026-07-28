@@ -1,6 +1,11 @@
 from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
-from netconsole.services.command_guard import CommandRejected, is_command_allowed, validate_command_list
+from netconsole.services.command_guard import (
+    CommandRejected,
+    command_reject_reason,
+    is_command_allowed,
+    validate_command_list,
+)
 
 
 def test_command_guard_allows_whitelist_commands():
@@ -69,6 +74,16 @@ def test_command_guard_rejects_dangerous_commands():
 def test_command_guard_rejects_semicolon_and_non_whitelist_pipe():
     assert not is_command_allowed("display version ; reboot", "device_collect")
     assert not is_command_allowed("display version | include H3C", "device_collect")
+    assert (
+        command_reject_reason(
+            "show running-config | include hostname",
+            "device.inventory.collect",
+        )
+        == "pipe is not allowed for this command"
+    )
+    assert "dangerous command keyword matched" in str(
+        command_reject_reason("show startup-config", "device.inventory.collect")
+    )
     assert is_command_allowed("display ip https | include port", "ac_collect")
     assert is_command_allowed("display ip https", "ac_collect")
     assert not is_command_allowed("display ip https | include port", "device_collect")
@@ -88,6 +103,95 @@ def test_optical_refresh_context_only_allows_optical_refresh_commands():
     assert not is_command_allowed("display version", "optical_refresh")
     for command in ("system-view", "undo lldp global enable", "shutdown", "reboot"):
         assert not is_command_allowed(command, "optical_refresh")
+
+
+def test_trackside_switch_context_allows_only_fixed_read_only_vendor_commands():
+    for command in (
+        "screen-length disable",
+        "display interface brief",
+        "display transceiver diagnosis interface",
+        "display lldp neighbor-information list",
+        "show version",
+        "show interface brief",
+        "show interface xgei-0/1/1/2",
+        "show opticalinfo brief",
+        "show opticalinfo xgei-0/1/1/2",
+    ):
+        assert is_command_allowed(command, "trackside_switch_collect")
+
+    for command in (
+        "show lldp entry",
+        "show lldp neighbor",
+        "show lldp neighbors",
+        "show lldp entry interface xgei-0/1/1/2",
+        "show lldp neighbor interface xgei-0/1/1/2",
+        "show lldp config",
+        "show lldp config interface xgei-0/1/1/2",
+        "terminal length 0",
+        "configure terminal",
+        "optical-inform monitor enable",
+        "show running-config",
+        "show interface xgei-0/1/1/2; reload",
+        "show interface ../../etc/passwd",
+        "shutdown",
+        "write",
+        "copy running-config startup-config",
+        "reload",
+    ):
+        assert not is_command_allowed(command, "trackside_switch_collect")
+
+
+def test_switch_vendor_sample_context_allows_only_profile_lldp_candidates():
+    for command in (
+        "show version",
+        "show interface brief",
+        "show interface xgei-0/1/1/2",
+        "show opticalinfo brief",
+        "show opticalinfo xgei-0/1/1/2",
+        "show lldp entry",
+        "show lldp neighbor",
+        "show lldp neighbors",
+        "show lldp entry interface xgei-0/1/1/2",
+        "show lldp neighbor interface xgei-0/1/1/2",
+        "show lldp config",
+        "show lldp config interface xgei-0/1/1/2",
+    ):
+        assert is_command_allowed(command, "switch_vendor_sample_collect")
+
+    for command in (
+        "show lldp statistic interface xgei-0/1/1/2",
+        "show lldp entry interface xgei-0/1/1/2; reload",
+        "configure terminal",
+        "shutdown",
+        "write",
+        "reload",
+    ):
+        assert not is_command_allowed(command, "switch_vendor_sample_collect")
+
+
+def test_zte_inventory_context_only_allows_document_sample_subset():
+    for command in (
+        "show version",
+        "show interface brief",
+        "show opticalinfo brief",
+    ):
+        assert is_command_allowed(command, "device.inventory.collect")
+
+    for command in (
+        "terminal length 0",
+        "show running-config | include hostname",
+        "show hardware",
+        "show serial-number",
+        "show interface",
+        "show optical-inform brief",
+        "show optical-inform detail",
+        "show lldp neighbor brief",
+        "show lldp entry",
+        "show running-config",
+        "show startup-config",
+        "show system-info",
+    ):
+        assert not is_command_allowed(command, "device.inventory.collect")
 
 
 def test_fit_ap_optical_collect_context_only_allows_ap_link_commands():

@@ -175,6 +175,7 @@ def test_base_data_api_defaults_to_locked_and_redacts_credentials(tmp_path: Path
         "/api/rail-transit/base-data/station-template-preview",
         "/api/rail-transit/base-data/section-generation-preview",
         "/api/rail-transit/base-data/stations/delete-preflight",
+        "/api/rail-transit/base-data/clear-all",
         "/api/rail-transit/base-data/import-apply",
         "/api/rail-transit/base-data/import-operations/{operation_id}/rollback",
         "/api/rail-transit/base-data/validate",
@@ -224,6 +225,69 @@ def test_station_source_preview_uses_station_field_only_and_is_read_only(tmp_pat
     assert any(issue["code"] == "station_source_value_empty" for issue in payload["issues"])
 
 
+def test_station_source_preview_normalizes_prefix_variants_and_matches_existing_name(
+    tmp_path: Path,
+) -> None:
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    now = "2026-07-28T08:00:00"
+    database = Database(db_path)
+    with database.connect() as conn:
+        conn.execute(
+            "UPDATE ap_extension_points SET section_end_station = '3.车站C' WHERE section_end_station = '车站C'"
+        )
+        group_id = conn.execute(
+            "INSERT INTO device_groups (site_id, name, sort_order, created_at, updated_at) VALUES ('demo', '车站', 2, ?, ?)",
+            (now, now),
+        ).lastrowid
+        conn.executemany(
+            """
+            INSERT INTO devices (
+                device_uuid, name, system_name, station, group_id, primary_address,
+                device_vendor, device_type, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'H3C', 'SWITCH', ?, ?)
+            """,
+            [
+                ("station-prefix-a", "设备A", "SYS-A", "01车站A", group_id, "10.23.0.1", now, now),
+                ("station-prefix-b", "设备B", "SYS-B", "1.车站A", group_id, "10.23.0.2", now, now),
+                ("station-no-prefix", "设备C", "SYS-C", "车站B", group_id, "10.23.0.3", now, now),
+                ("station-depot", "设备D", "SYS-D", "11云龙车辆段", group_id, "10.23.0.4", now, now),
+                ("station-existing-numbered", "设备E", "SYS-E", "车站C", group_id, "10.23.0.5", now, now),
+            ],
+        )
+        conn.commit()
+
+    with TestClient(_app(paths, tmp_path)) as client:
+        payload = client.get("/api/rail-transit/base-data/station-source-preview").json()
+
+    by_name = {item["name"]: item for item in payload["candidates"]}
+    assert len(payload["candidates"]) == 4
+    assert by_name["车站A"]["source_device_count"] == 2
+    assert by_name["车站A"]["source_order"] == 1
+    assert by_name["车站A"]["match_status"] == "exact_source_key"
+    assert by_name["车站A"]["matched_station_name"] == "车站A"
+    assert by_name["车站A"]["suggested_action"] == "覆盖现有"
+    assert by_name["车站B"]["sort_order"] is None
+    assert by_name["车站B"]["match_status"] in {
+        "exact_source_key",
+        "canonical_name",
+        "canonical_name_and_type",
+    }
+    assert by_name["车站C"]["match_status"] in {
+        "exact_source_key",
+        "canonical_name",
+        "canonical_name_and_type",
+    }
+    assert by_name["车站C"]["matched_station_name"] == "3.车站C"
+    assert by_name["云龙车辆段"]["source_order"] == 11
+    assert by_name["云龙车辆段"]["sort_order"] is None
+    assert by_name["云龙车辆段"]["participates_in_direction"] is False
+    assert not any(
+        issue["code"] == "station_source_parse_failed"
+        for candidate in payload["candidates"]
+        for issue in candidate["issues"]
+    )
+
+
 def test_station_source_preview_reports_missing_group_without_writes(tmp_path: Path) -> None:
     paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
     with TestClient(_app(paths, tmp_path)) as client:
@@ -233,6 +297,56 @@ def test_station_source_preview_reports_missing_group_without_writes(tmp_path: P
     assert payload["group_found"] is False
     assert payload["candidates"] == []
     assert payload["issues"][0]["code"] == "station_source_group_missing"
+
+
+def test_station_source_preview_blocks_same_name_with_different_node_type(
+    tmp_path: Path,
+) -> None:
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    repository = RailTransitBaseDataRepository(paths)
+    repository.apply_base_data_changes(
+        "demo",
+        repository.base_data_revision("demo"),
+        [{
+            "entity_type": "station",
+            "action": "create",
+            "values": {
+                "name": "云龙车辆段",
+                "node_uid": "existing-yunlong",
+                "node_type": "station",
+                "path_code": "MAIN",
+                "sort_order": 11,
+                "participates_in_direction": True,
+            },
+        }],
+    )
+    now = "2026-07-28T08:00:00"
+    with Database(db_path).connect() as conn:
+        group_id = conn.execute(
+            "INSERT INTO device_groups (site_id, name, sort_order, created_at, updated_at) VALUES ('demo', '车站', 2, ?, ?)",
+            (now, now),
+        ).lastrowid
+        conn.execute(
+            """
+            INSERT INTO devices (
+                device_uuid, name, system_name, station, group_id, primary_address,
+                device_vendor, device_type, created_at, updated_at
+            ) VALUES ('station-node-type', '设备A', 'SYS-A', '11云龙车辆段', ?, '10.24.0.1', 'H3C', 'SWITCH', ?, ?)
+            """,
+            (group_id, now, now),
+        )
+        conn.commit()
+
+    with TestClient(_app(paths, tmp_path)) as client:
+        payload = client.get("/api/rail-transit/base-data/station-source-preview").json()
+
+    candidate = payload["candidates"][0]
+    assert candidate["match_status"] == "conflict"
+    assert candidate["suggested_action"] == "处理来源冲突"
+    assert any(
+        issue["code"] == "station_source_node_type_conflict"
+        for issue in candidate["issues"]
+    )
 
 
 def test_station_source_preview_flags_code_and_name_conflicts(tmp_path: Path) -> None:
@@ -394,7 +508,7 @@ def test_station_template_download_preview_and_export_are_structured_xlsx(tmp_pa
     assert "线路站点与区间基础资料.xlsx" in unquote(exported.headers["content-disposition"])
     workbook = load_workbook(BytesIO(template.content))
     assert workbook.sheetnames == ["01_线路参数", "02_线路节点", "03_区间配置", "字段说明"]
-    assert workbook["01_线路参数"]["H2"].value == "station"
+    assert workbook["01_线路参数"]["J2"].value == "station"
     exported_wb = load_workbook(BytesIO(exported.content))
     assert exported_wb["02_线路节点"].max_row >= 2
     assert "03_区间配置" in exported_wb.sheetnames

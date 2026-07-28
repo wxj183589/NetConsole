@@ -59,6 +59,141 @@ def _enable_copy_write(monkeypatch) -> None:
     monkeypatch.delenv("NETCONSOLE_ALLOW_REAL_BASE_DATA_WRITE", raising=False)
 
 
+def test_clear_all_removes_formal_and_legacy_locations_but_preserves_assets(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _enable_copy_write(monkeypatch)
+    paths, database = build_rail_transit_base_data_fixture(tmp_path)
+    mark_base_data_copy(paths)
+    with Database(database).connect() as connection:
+        connection.execute("UPDATE ap_extension_points SET site_id = NULL")
+        connection.execute(
+            """
+            INSERT INTO ap_extension_points (
+                site_id, belong_type, station_name, ap_point_code, raw_payload_json,
+                created_at, updated_at
+            ) VALUES (NULL, '__base_station__', '正式站', '-', ?, '2026-07-28', '2026-07-28')
+            """,
+            (json.dumps({"sort_order": 99, "source_kind": "manual"}, ensure_ascii=False),),
+        )
+        connection.execute(
+            """
+            INSERT INTO ac_trackside_ap_plan (
+                mode, station_name, ap_count, ap_management_vlans, created_at, updated_at
+            ) VALUES ('unified', '正式站', 1, '101', '2026-07-28', '2026-07-28')
+            """
+        )
+        connection.commit()
+    with TestClient(_app(paths, tmp_path)) as client:
+        preview = client.get("/api/rail-transit/base-data/clear-preview")
+        first = client.post(
+            "/api/rail-transit/base-data/clear-all",
+            json={
+                "site_id": "demo",
+                "base_revision": preview.json()["base_revision"],
+                "explicit_confirmation": True,
+            },
+        )
+        stations = client.get("/api/rail-transit/base-data/stations?page_size=200")
+        sections = client.get("/api/rail-transit/base-data/sections?page_size=200")
+        aps = client.get("/api/rail-transit/base-data/aps?page_size=200")
+        second_preview = client.get("/api/rail-transit/base-data/clear-preview")
+        second = client.post(
+            "/api/rail-transit/base-data/clear-all",
+            json={
+                "site_id": "demo",
+                "base_revision": second_preview.json()["base_revision"],
+                "explicit_confirmation": True,
+            },
+        )
+        stale = client.post(
+            "/api/rail-transit/base-data/clear-all",
+            json={
+                "site_id": "demo",
+                "base_revision": preview.json()["base_revision"],
+                "explicit_confirmation": True,
+            },
+        )
+
+    assert preview.status_code == 200
+    assert preview.json()["station_count"] == 4
+    assert preview.json()["section_count"] == 3
+    assert preview.json()["affected_trackside_ap_count"] == 3
+    assert first.status_code == 200
+    assert first.json()["deleted_station_count"] == 4
+    assert first.json()["deleted_section_count"] == 3
+    assert first.json()["unlinked_trackside_ap_count"] == 3
+    assert stations.json()["total"] == 0
+    assert sections.json()["total"] == 0
+    assert aps.json()["total"] == 3
+    assert second.status_code == 200
+    assert second.json()["deleted_station_count"] == 0
+    assert second.json()["deleted_section_count"] == 0
+    assert second.json()["unlinked_trackside_ap_count"] == 0
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "BASE_DATA_REVISION_CONFLICT"
+    with Database(database).connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM devices").fetchone()[0] >= 3
+        assert connection.execute("SELECT COUNT(*) FROM ac_trackside_ap_plan").fetchone()[0] == 0
+        rows = connection.execute(
+            """
+            SELECT station_name, section_name, section_start_station, section_end_station,
+                   line_side, direction, raw_payload_json
+            FROM ap_extension_points
+            """
+        ).fetchall()
+    assert len(rows) == 3
+    assert all(tuple(row[:6]) == ("", "", "", "", "", "") for row in rows)
+    assert all(json.loads(row[6]) == {} for row in rows)
+
+
+def test_delete_legacy_derived_station_unlinks_ap_and_related_section(
+    tmp_path: Path, monkeypatch
+ ) -> None:
+    _enable_copy_write(monkeypatch)
+    paths, database = build_rail_transit_base_data_fixture(tmp_path)
+    mark_base_data_copy(paths)
+    with TestClient(_app(paths, tmp_path)) as client:
+        revision = client.get("/api/rail-transit/base-data/revision").json()["base_revision"]
+        station = next(
+            item
+            for item in client.get("/api/rail-transit/base-data/stations?page_size=200").json()["items"]
+            if item["name"] == "车站A"
+        )
+        response = client.post(
+            "/api/rail-transit/base-data/changes",
+            json={
+                "site_id": "demo",
+                "base_revision": revision,
+                "changes": [{
+                    "entity_type": "station",
+                    "action": "delete",
+                    "entity_id": station["id"],
+                    "values": {"name": "车站A", "old_name": "车站A"},
+                }],
+                "explicit_confirmation": True,
+            },
+        )
+        stations = client.get("/api/rail-transit/base-data/stations?page_size=200").json()
+        sections = client.get("/api/rail-transit/base-data/sections?page_size=200").json()
+        aps = client.get("/api/rail-transit/base-data/aps?page_size=200").json()
+
+    assert response.status_code == 200
+    assert response.json()["deleted_count"] == 1
+    assert "车站A" not in {item["name"] for item in stations["items"]}
+    assert "A-B 区间" not in {item["name"] for item in sections["items"]}
+    assert aps["total"] == 3
+    with Database(database).connect() as connection:
+        ap = connection.execute(
+            """
+            SELECT station_name, section_name, section_start_station, section_end_station,
+                   line_side, direction
+            FROM ap_extension_points WHERE ap_name = 'AP-Online'
+            """
+        ).fetchone()
+    assert tuple(ap) == ("", "", "", "", "", "")
+
+
 def test_edit_session_defaults_to_locked_and_rejects_unapproved_write(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("RAIL_TRANSIT_BASE_DATA_WRITE_ENABLED", raising=False)
     paths, _database = build_rail_transit_base_data_fixture(tmp_path)
@@ -625,7 +760,7 @@ def test_station_source_confirmation_preserves_manual_fields_and_marks_stale_wit
             **manual_values,
             "old_name": "五乡",
             "source_station_value": "32-五乡",
-            "source_station_key": "32-五乡",
+            "source_station_key": "五乡",
             "source_kind": "device_station_field",
         }
         next_session = client.get("/api/rail-transit/base-data/revision").json()
@@ -647,6 +782,10 @@ def test_station_source_confirmation_preserves_manual_fields_and_marks_stale_wit
     assert confirmed.status_code == 200
     saved = next(item for item in stations if item["name"] == "五乡")
     assert saved["source_station_value"] == "32-五乡"
+    assert saved["source_station_key"] == "五乡"
+    assert saved["source_order_text"] == "32"
+    assert saved["source_order"] == 32
+    assert saved["canonical_station_name"] == "五乡"
     assert saved["source_kind"] == "device_station_field"
     assert saved["source_sync_status"] == "stale"
     assert saved["source_device_count"] == 0

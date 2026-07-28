@@ -100,7 +100,13 @@ class OnlineMrApplicationService:
                 self._site_ids,
                 self._device_identity_matches,
             )
-        self._unsubscribe = self.task_service.events.subscribe(self.reconcile_task_event)
+        task_events = getattr(self.task_service, "events", None)
+        subscribe = getattr(task_events, "subscribe", None)
+        self._unsubscribe = (
+            subscribe(self.reconcile_task_event)
+            if callable(subscribe)
+            else lambda: None
+        )
 
     def prepare_start(self, request: OnlineMrStartRequest) -> OnlineMrStartRequest:
         site_id = self._safe_component(request.site_id)

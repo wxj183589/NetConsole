@@ -82,6 +82,13 @@ def run_trackside_ap_optical_update(context: JobContext) -> dict[str, object]:
         }.items()
         if value > 0
     }
+    warning_count = int(getattr(result, "warning_count", 0) or 0)
+    warnings = [str(value) for value in (getattr(result, "warnings", []) or [])]
+    port_errors = [
+        dict(value)
+        for value in (getattr(result, "port_errors", []) or [])
+        if isinstance(value, Mapping)
+    ]
     return {
         "session_id": result.session_id,
         "status": result.status,
@@ -104,6 +111,10 @@ def run_trackside_ap_optical_update(context: JobContext) -> dict[str, object]:
         "fit_ap_failed_count": result.fit_ap_optical_failed_count,
         "fit_ap_skipped_count": fit_ap_skipped_count,
         "failure_reason_counts": failure_reason_counts,
+        "warning_count": warning_count,
+        "has_warning": warning_count > 0,
+        "warnings": warnings,
+        "port_errors": port_errors,
         "concurrency": result.concurrency,
         "requested_concurrency": result.requested_concurrency,
         "effective_concurrency": result.effective_concurrency,

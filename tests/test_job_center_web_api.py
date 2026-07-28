@@ -1192,6 +1192,9 @@ def test_job_center_dto_hides_paths_and_builds_owner_artifact_capabilities(
             task_id: client.get(f"/api/job-center/tasks/{task_id}").json()
             for task_id, *_rest in fixtures
         }
+        list_payloads = {
+            item["id"]: item for item in client.get("/api/job-center/tasks").json()
+        }
 
     device = payloads["device-artifact"]["artifact_download"]
     device_history = payloads["device-history"]["artifact_download"]
@@ -1219,6 +1222,8 @@ def test_job_center_dto_hides_paths_and_builds_owner_artifact_capabilities(
         "api_path": "/api/device-management/exports/device-template/download",
         "query": {"artifact_id": "device-template-abc"},
     }
+    assert list_payloads["device-artifact"]["artifact_download"] == device
+    assert list_payloads["device-template"]["artifact_download"] == device_template
     assert device_diagnostic == {
         "artifact_id": "device-diagnostic-0123456789abcdef0123456789abcdef",
         "display_name": "设备诊断.zip",

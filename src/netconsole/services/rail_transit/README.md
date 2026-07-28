@@ -12,6 +12,8 @@
 
 `base_data_*` 管理基础资料，`vehicle_mr_*`/`car_network_*` 管理车载与通信，`trackside_*` 管理轨旁 AP 快照、光衰和多 Sheet 业务导出，`mesh_analysis_query_service.py` 提供 MESH 只读聚合。MESH 导入、恢复和重建由 ApplicationService/Job 调用 `mesh_bundle_import_service.py`、`mesh_source_rebuild_service.py`；来源级操作只替换当前 detail SQLite，Profile 全量重建是独立高级任务。正式轨旁工作簿仍由独立 Export Process 从局点数据库重建，使用临时文件与原子替换，不以 Vue 当前页数据为事实源。
 
+轨旁交换机采集通过 `src/netconsole/adapters/trackside_switch.py` 选择 H3C 或 ZTE Adapter，Application Service 不拼接厂商命令。ZTE ZXR10 5960X-ES V2 当前只支持只读 SSH、版本/接口/DOM 解析和受控 LLDP 样本采集；LLDP 仍为 `SAMPLE_REQUIRED`，整机实测状态为 `REAL_DEVICE_PENDING`。单端 Rx/Tx 只作为光功率展示，双向光衰必须满足可靠端口映射、两端 DOM 和 30 分钟采样时窗。
+
 ## 依赖关系
 
 服务依赖 Repository、Parser、Online MR/Mesh Service、Job Center、Application Service 和 PathResolver，由 FastAPI/API/页面调用；不把 SQL 或设备连接放进 Router。

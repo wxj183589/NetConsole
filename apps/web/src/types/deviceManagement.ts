@@ -67,6 +67,7 @@ export interface DeviceListItem {
 export interface DevicePage {
   items: DeviceListItem[]
   groups: DeviceGroupOption[]
+  site_name: string
   total: number
   page: number
   page_size: number
@@ -660,5 +661,6 @@ export interface DeviceExternalTerminalSettings {
 
 export interface DeviceExportRequest extends DeviceListQuery {
   device_uuids?: string[]
+  export_scope?: 'selected' | 'filtered_all'
   include_credentials?: boolean
 }

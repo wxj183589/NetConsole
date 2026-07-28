@@ -67,6 +67,7 @@ class DeviceListItemDTO(ApiModel):
 class DevicePageDTO(ApiModel):
     items: list[DeviceListItemDTO] = Field(default_factory=list)
     groups: list[DeviceGroupOptionDTO] = Field(default_factory=list)
+    site_name: str = ""
     total: int = 0
     page: int = 1
     page_size: int = 50
@@ -190,7 +191,7 @@ class DeviceWriteRequestDTO(ApiModel):
     group_id: int | None = Field(default=None, ge=1)
     device_vendor: str = Field(default="H3C", max_length=40)
     device_type: str = Field(default="SW", max_length=40)
-    primary_address: str = Field(min_length=1, max_length=255)
+    primary_address: str = Field(default="", max_length=255)
     backup_address: str = Field(default="", max_length=255)
     ssh_enabled: bool = True
     ssh_port: int = Field(default=22, ge=1, le=65535)
@@ -354,6 +355,7 @@ class DeviceImportConfirmRequestDTO(ApiModel):
 
 class DeviceExportRequestDTO(ApiModel):
     device_uuids: list[str] = Field(default_factory=list, max_length=500)
+    export_scope: Literal["selected", "filtered_all"] | None = None
     search: str = Field(default="", max_length=200)
     vendor: str = Field(default="", max_length=40)
     device_type: str = Field(default="", max_length=40)

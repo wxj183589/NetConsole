@@ -28,6 +28,7 @@ import { useRailTransitBaseDataStore } from '../../stores/railTransitBaseData'
 import type {
   DataQualityEntityGroup,
   DataQualityIssue,
+  BaseDataClearPreview,
   BaseDataChange,
   BaseDataValidationIssue,
   ImportChange,
@@ -129,6 +130,9 @@ const locationTab = ref('stations')
 const vehicleTab = ref('trains')
 const previewFilter = ref('all')
 const stationSourceDialogVisible = ref(false)
+const clearAllDialogVisible = ref(false)
+const clearAllPreview = ref<BaseDataClearPreview | null>(null)
+const clearAllLoading = ref(false)
 const stationTemplateDialogVisible = ref(false)
 const sectionGenerationDialogVisible = ref(false)
 const apImportDialogVisible = ref(false)
@@ -387,9 +391,11 @@ const mergeFieldColumns: NcTableColumn<MergeFieldDiff>[] = [
 const stationSourceColumns: NcTableColumn<StationSourceCandidate>[] = [
   { key: 'selected', label: '勾选', width: 72, hideable: false },
   { key: 'source_station_value', label: '来源站点值', minWidth: 160 },
+  { key: 'source_order', label: '解析编号', valueType: 'number', width: 100, displayValue: (row) => row.source_order ?? '--' },
   { key: 'code', label: '节点编码', width: 100, displayValue: (row) => display(row.code) },
-  { key: 'canonical_name', label: '规范站名', valueType: 'name', minWidth: 150 },
+  { key: 'canonical_name', label: '规范站名', valueType: 'name', minWidth: 150, displayValue: (row) => display(row.canonical_name || row.canonical_station_name || row.name) },
   { key: 'node_type', label: '类型', valueType: 'status', width: 110, displayValue: (row) => stationNodeTypeLabel(row.node_type) },
+  { key: 'participates_in_direction', label: '参与主线', valueType: 'status', width: 100, displayValue: (row) => row.participates_in_direction ? '是' : '否' },
   { key: 'order_parse_method', label: '解析方式', width: 130 },
   { key: 'parse_confidence', label: '可信度', valueType: 'status', width: 130 },
   { key: 'sort_order', label: '建议顺序', valueType: 'number', width: 105, displayValue: (row) => row.sort_order ?? '--' },
@@ -608,6 +614,55 @@ async function refreshPage(): Promise<void> {
     ])
     if (!locked.value) captureBaselines()
   } catch (cause) { ElMessage.error(message(cause, '基础资料刷新失败')) }
+}
+
+async function openClearAllDialog(): Promise<void> {
+  if (locked.value) {
+    ElMessage.warning('请先解锁基础资料，再执行清空全部')
+    return
+  }
+  if (dirty.value) {
+    ElMessage.warning('请先保存或放弃当前未保存修改，再执行清空全部')
+    return
+  }
+  clearAllLoading.value = true
+  try {
+    clearAllPreview.value = await store.previewClearAll()
+    clearAllDialogVisible.value = true
+  } catch (cause) {
+    ElMessage.error(message(cause, '清空影响数量加载失败'))
+  } finally {
+    clearAllLoading.value = false
+  }
+}
+
+async function executeClearAll(): Promise<void> {
+  if (!clearAllPreview.value || locked.value || dirty.value || saving.value) return
+  clearAllLoading.value = true
+  try {
+    const result = await store.clearAll(clearAllPreview.value)
+    pendingChanges.value = {}
+    planningDirty.value = false
+    planningRows.value = []
+    saveIssues.value = []
+    fieldErrors.value = {}
+    baselines.clear()
+    serverSnapshot.value = null
+    editingDraft.value = null
+    clearAllDialogVisible.value = false
+    editState.value = 'LOCKED'
+    await Promise.all([
+      store.manualRefresh(),
+      store.refreshEditSession(),
+      planningTab.value?.reload(true),
+    ])
+    store.startPolling()
+    ElMessage.success(`已清空 ${result.deleted_station_count} 个站点、${result.deleted_section_count} 个区间，并解除 ${result.unlinked_trackside_ap_count} 条轨旁 AP 关联`)
+  } catch (cause) {
+    ElMessage.error(message(cause, '清空失败，数据库事务已回滚'))
+  } finally {
+    clearAllLoading.value = false
+  }
 }
 
 async function beforeTabLeave(next: string, current: string): Promise<boolean> {
@@ -1339,6 +1394,9 @@ function stationValues(row: Station): Record<string, unknown> {
     remark: row.remark,
     source_station_value: row.source_station_value,
     source_station_key: row.source_station_key,
+    source_order_text: row.source_order_text,
+    source_order: row.source_order,
+    canonical_station_name: row.canonical_station_name,
     node_type: row.node_type,
     path_code: row.path_code,
     participates_in_direction: row.participates_in_direction,
@@ -2279,6 +2337,9 @@ function defaultStation(values: Partial<Station> = {}): Station {
     remark: '',
     source_station_value: '',
     source_station_key: '',
+    source_order_text: '',
+    source_order: null,
+    canonical_station_name: '',
     node_type: 'station',
     path_code: 'MAIN',
     participates_in_direction: true,
@@ -2621,8 +2682,10 @@ function sectionSourceLabel(row: Section): string {
                 <el-button :disabled="locked || saving || !selectedStationIds.length" @click="undoSelectedStationChanges">撤销选中变更</el-button>
                 <el-button :disabled="locked || saving || !localStationConflictGroups.length" @click="selectConflictStations">选择全部冲突项</el-button>
                 <el-button :disabled="locked || !selectedStationIds.length" @click="clearStationSelection">清空选择</el-button>
+                <el-button type="danger" plain :loading="clearAllLoading" :disabled="locked || dirty || saving" @click="openClearAllDialog">清空全部</el-button>
               </div>
-              <NcDataTable ref="stationTable" table-id="rail-base-stations" route-key="/rail-transit/base-data" :data="stationRows" :columns="stationEditColumns" row-key="id" height="calc(100vh - 410px)" empty-text="暂无站点资料" @selection-change="handleStationSelection">
+              <el-alert v-if="stationRows.length === 0 && sectionRows.length === 0" title="当前局点尚未配置站点与区间，可从设备管理重新生成或手动新增。" type="info" :closable="false" show-icon />
+              <NcDataTable ref="stationTable" table-id="rail-base-stations" route-key="/rail-transit/base-data" :data="stationRows" :columns="stationEditColumns" row-key="id" height="calc(100vh - 410px)" empty-text="当前局点尚未配置站点与区间，可从设备管理重新生成或手动新增。" @selection-change="handleStationSelection">
                 <template #cell-sort_order="{ row }"><el-input-number v-if="canEditRow('station', row.id) && row.participates_in_direction" v-model="row.sort_order" :min="0" controls-position="right" @change="markStation(row)" /><span v-else>{{ row.sort_order ?? '--' }}</span></template>
                 <template #cell-name="{ row }"><el-input v-if="canEditRow('station', row.id)" v-model="row.name" :class="{ 'field-error': fieldError('station', row.id, 'name') }" @input="markStation(row)" /><span v-else>{{ display(row.name) }}</span></template>
                 <template #cell-code="{ row }"><el-input v-if="canEditRow('station', row.id)" v-model="row.code" :class="{ 'field-error': fieldError('station', row.id, 'code') }" @input="markStation(row)" /><span v-else>{{ display(row.code) }}</span></template>
@@ -2715,7 +2778,7 @@ function sectionSourceLabel(row: Section): string {
                 <el-button :icon="Download" @click="exportCurrentStations">导出当前</el-button>
                 <el-button :icon="Plus" :disabled="locked || saving" @click="addSection">新增区间</el-button>
               </div>
-              <NcDataTable table-id="rail-base-sections" route-key="/rail-transit/base-data" :data="sectionRows" :columns="sectionEditColumns" height="calc(100vh - 410px)" empty-text="暂无区间资料">
+              <NcDataTable table-id="rail-base-sections" route-key="/rail-transit/base-data" :data="sectionRows" :columns="sectionEditColumns" height="calc(100vh - 410px)" empty-text="当前局点尚未配置站点与区间，可从设备管理重新生成或手动新增。">
                 <template #cell-name="{ row }"><el-input v-if="canEditRow('section', row.id)" v-model="row.name" data-field="section-name" :class="{ 'field-error': fieldError('section', row.id, 'name') }" @input="markSectionField(row, 'name')" /><span v-else>{{ display(row.name) }}</span></template>
                 <template #cell-section_kind="{ row }">
                   <el-select v-if="canEditRow('section', row.id)" v-model="row.section_kind" @change="handleSectionKindChange(row)"><el-option label="站间区间" value="between_stations" /><el-option label="端点延伸" value="terminal_extension" /><el-option label="人工区间" value="manual" /><el-option label="出入段连接" value="depot_connection" /></el-select>
@@ -2919,6 +2982,28 @@ function sectionSourceLabel(row: Section): string {
         </el-tab-pane>
       </el-tabs>
     </div>
+
+    <el-dialog v-model="clearAllDialogVisible" title="清空当前局点全部站点与区间" width="min(620px, 92vw)" append-to-body :close-on-click-modal="false">
+      <div v-if="clearAllPreview" class="preview-dialog">
+        <el-alert
+          title="此操作不可撤销"
+          description="将删除当前局点的全部站点、区间及其排序配置。轨旁 AP、列车、设备管理中的原始设备不会被删除。此操作不可撤销。"
+          type="error"
+          :closable="false"
+          show-icon
+        />
+        <div class="preview-summary clear-summary">
+          <article class="danger"><span>站点数量</span><strong>{{ clearAllPreview.station_count }}</strong></article>
+          <article class="danger"><span>上下行区间数量</span><strong>{{ clearAllPreview.section_count }}</strong></article>
+          <article class="warning"><span>受影响的轨旁 AP 关联</span><strong>{{ clearAllPreview.affected_trackside_ap_count }}</strong></article>
+        </div>
+        <p class="clear-note">清空后轨旁 AP 将显示为“未关联”，不会保留已失效的站点或区间 ID。</p>
+      </div>
+      <template #footer>
+        <el-button :disabled="clearAllLoading" @click="clearAllDialogVisible = false">取消</el-button>
+        <el-button type="danger" :loading="clearAllLoading" @click="executeClearAll">确认清空全部</el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog v-model="stationSourceDialogVisible" title="设备管理站点来源预览" width="min(1280px, 96vw)" append-to-body destroy-on-close>
       <div v-if="store.stationSourcePreview" class="preview-dialog">
@@ -3363,6 +3448,8 @@ function sectionSourceLabel(row: Section): string {
 .file-picker input { display: none; }
 .preview-summary { grid-template-columns: repeat(4, minmax(140px, 1fr)); }
 .source-summary { grid-template-columns: repeat(4, minmax(130px, 1fr)); }
+ .clear-summary { grid-template-columns: repeat(3, minmax(140px, 1fr)); }
+ .clear-note { margin: 0; color: var(--nc-text-secondary); line-height: 1.7; }
 .template-summary { grid-template-columns: repeat(5, minmax(120px, 1fr)); }
 .preview-filter { margin-bottom: 12px; }
 .preview-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; }

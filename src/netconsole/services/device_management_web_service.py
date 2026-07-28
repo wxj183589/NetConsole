@@ -407,6 +407,7 @@ class DeviceManagementWebService:
                 for group in groups
                 if group.id is not None
             ],
+            site_name=site,
             total=total,
             page=selected_page,
             page_size=page_size,
@@ -1191,6 +1192,16 @@ class DeviceManagementWebService:
     ) -> DeviceTaskReferenceDTO:
         site = self.current_site_id()
         filters = self._export_filters(payload)
+        selected_device_uuids = (
+            self._unique_ids(payload.device_uuids) if payload.device_uuids else []
+        )
+        export_scope = payload.export_scope or (
+            "selected" if selected_device_uuids else "filtered_all"
+        )
+        if export_scope == "selected" and not selected_device_uuids:
+            raise ValueError("导出已选设备时至少需要一个设备 UUID")
+        if export_scope == "filtered_all":
+            selected_device_uuids = []
         return self._start_managed_device_csv_export(
             site=site,
             job_type="device_csv",
@@ -1201,9 +1212,8 @@ class DeviceManagementWebService:
                 "db_path": str(self.paths.site_db_path(site)),
                 "site_name": site,
                 "filters": filters,
-                "selected_device_uuids": self._unique_ids(payload.device_uuids)
-                if payload.device_uuids
-                else [],
+                "export_scope": export_scope,
+                "selected_device_uuids": selected_device_uuids,
                 "omit_credentials": not payload.include_credentials,
             },
             start_failure_message="设备表格导出任务启动失败",
@@ -1540,8 +1550,10 @@ class DeviceManagementWebService:
                 username_field
             ):
                 raise ValueError(f"{username_field} 不能为空，密码尚未保存")
-        if not values["name"] or not values["primary_address"]:
-            raise ValueError("设备名称和主用地址必填")
+        if not values["name"] or not (
+            values["primary_address"] or values["backup_address"]
+        ):
+            raise ValueError("设备名称以及主用地址或备用地址必填")
         values["device_vendor"], values["device_type"] = validate_device_vendor_type(
             values["device_vendor"], values["device_type"]
         )
@@ -2944,8 +2956,8 @@ class DeviceManagementWebService:
         protocol: str,
         credential_sources: dict[str, str],
     ) -> None:
-        if not str(device.primary_address or "").strip():
-            raise ValueError("请输入设备地址")
+        if not str(device.primary_address or device.backup_address or "").strip():
+            raise ValueError("请输入主用地址或备用地址")
         if protocol == "SSH":
             if not str(device.ssh_username or "").strip():
                 raise ValueError("请输入 SSH 用户名")
@@ -3336,6 +3348,7 @@ class DeviceManagementWebService:
 
 def run_device_connection_test(context: JobContext) -> dict[str, object]:
     from netconsole.services.device_snmp_detect_service import DeviceSnmpDetectService
+    from netconsole.services.host_key_trust_service import HostKeyTrustService
     from netconsole.services.netmiko_connection import test_device_connection
 
     site = SiteManager(context.paths).validate_site_name(
@@ -3416,6 +3429,7 @@ def run_device_connection_test(context: JobContext) -> dict[str, object]:
                 result = test_device_connection(
                     selected,
                     phase_callback=report_phase,
+                    host_key_trust=HostKeyTrustService(context.paths),
                 )
             except Exception as exc:
                 raise RuntimeError(

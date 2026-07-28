@@ -275,7 +275,10 @@ const sourceStationWuxiang = {
   mileage_max: null,
   remark: '',
   source_station_value: '32-五乡',
-  source_station_key: '32-五乡',
+  source_station_key: '五乡',
+  source_order_text: '32',
+  source_order: 32,
+  canonical_station_name: '五乡',
   node_type: 'station',
   path_code: 'MAIN',
   participates_in_direction: true,
@@ -306,7 +309,10 @@ const sourceParkingLot = {
   code: '50',
   sort_order: null,
   source_station_value: '50-高桥西停车场',
-  source_station_key: '50-高桥西停车场',
+  source_station_key: '高桥西停车场',
+  source_order_text: '50',
+  source_order: 50,
+  canonical_station_name: '高桥西停车场',
   node_type: 'parking_lot',
   path_code: 'UNASSIGNED',
   participates_in_direction: false,
@@ -320,7 +326,8 @@ const sourceConflict = {
   name: '冲突站',
   code: '32',
   source_station_value: '32-冲突站',
-  source_station_key: '32-冲突站',
+  source_station_key: '冲突站',
+  canonical_station_name: '冲突站',
   source_device_count: 1,
   source_sync_status: 'conflict',
 }
@@ -350,9 +357,12 @@ const stationSourcePreviewPayload = {
     {
       candidate_id: 'station-source:wuxiang',
       source_station_value: '32-五乡',
-      source_station_key: '32-五乡',
+      source_station_key: '五乡',
+      source_order_text: '32',
+      source_order: 32,
       code: '32',
       name: '五乡',
+      canonical_station_name: '五乡',
       node_type: 'station',
       path_code: 'MAIN',
       sort_order: 32,
@@ -360,15 +370,20 @@ const stationSourcePreviewPayload = {
       source_device_count: 2,
       match_status: 'create',
       matched_station_id: '',
+      matched_station_name: '',
+      suggested_action: '新增',
       proposed_station: sourceStationWuxiang,
       issues: [],
     },
     {
       candidate_id: 'station-source:parking',
       source_station_value: '50-高桥西停车场',
-      source_station_key: '50-高桥西停车场',
+      source_station_key: '高桥西停车场',
+      source_order_text: '50',
+      source_order: 50,
       code: '50',
       name: '高桥西停车场',
+      canonical_station_name: '高桥西停车场',
       node_type: 'parking_lot',
       path_code: 'UNASSIGNED',
       sort_order: null,
@@ -376,15 +391,20 @@ const stationSourcePreviewPayload = {
       source_device_count: 1,
       match_status: 'create',
       matched_station_id: '',
+      matched_station_name: '',
+      suggested_action: '新增',
       proposed_station: sourceParkingLot,
       issues: [],
     },
     {
       candidate_id: 'station-source:conflict',
       source_station_value: '32-冲突站',
-      source_station_key: '32-冲突站',
+      source_station_key: '冲突站',
+      source_order_text: '32',
+      source_order: 32,
       code: '32',
       name: '冲突站',
+      canonical_station_name: '冲突站',
       node_type: 'station',
       path_code: 'MAIN',
       sort_order: 32,
@@ -392,6 +412,8 @@ const stationSourcePreviewPayload = {
       source_device_count: 1,
       match_status: 'conflict',
       matched_station_id: '',
+      matched_station_name: '',
+      suggested_action: '人工确认',
       proposed_station: sourceConflict,
       issues: [{
         severity: 'error',
@@ -411,7 +433,10 @@ const templateStation = {
   code: '33',
   sort_order: 33,
   source_station_value: '33-宝幢',
-  source_station_key: '33-宝幢',
+  source_station_key: '宝幢',
+  source_order_text: '33',
+  source_order: 33,
+  canonical_station_name: '宝幢',
   structure_type: 'underground',
   platform_layout: 'island',
   source_kind: 'template',
@@ -740,6 +765,111 @@ describe('轨道交通基础资料编辑闭环', () => {
     const parking = stationChanges.find((change: { values: { name: string } }) => change.values.name === '高桥西停车场')
     expect(parking.values).not.toHaveProperty('source_device_count')
     expect(mocks.save).toHaveBeenCalledOnce()
+    wrapper.unmount()
+  })
+
+  it('规范站名覆盖既有编号名称并保留节点身份和人工字段', async () => {
+    const existing = {
+      ...sourceStationWuxiang,
+      id: 'station:existing',
+      node_uid: 'node-existing',
+      name: '1.五乡',
+      code: '1',
+      sort_order: 1,
+      source_station_value: '',
+      source_station_key: '',
+      source_order_text: '',
+      source_order: null,
+      canonical_station_name: '五乡',
+      center_mileage_text: 'K12+345',
+      center_mileage_m: 12345,
+      platform_layout: 'side' as const,
+      remark: '人工备注',
+    }
+    const proposed = {
+      ...sourceStationWuxiang,
+      id: existing.id,
+      node_uid: existing.node_uid,
+      name: '五乡',
+      code: '01',
+      sort_order: 1,
+      source_station_value: '01五乡',
+      source_station_key: '五乡',
+      source_order_text: '01',
+      source_order: 1,
+      canonical_station_name: '五乡',
+    }
+    mocks.stationsPage.mockResolvedValue({ items: [existing], total: 1, page: 1, page_size: 50 })
+    mocks.stationSourcePreview.mockResolvedValue({
+      ...stationSourcePreviewPayload,
+      scanned_device_count: 1,
+      empty_station_device_count: 0,
+      unique_station_value_count: 1,
+      normal_station_count: 1,
+      special_node_count: 0,
+      create_count: 0,
+      match_count: 1,
+      conflict_count: 0,
+      warning_count: 0,
+      issues: [],
+      candidates: [{
+        candidate_id: 'station-source:wuxiang-matched',
+        source_station_value: '01五乡',
+        source_station_key: '五乡',
+        source_order_text: '01',
+        source_order: 1,
+        code: '01',
+        name: '五乡',
+        canonical_station_name: '五乡',
+        node_type: 'station',
+        path_code: 'MAIN',
+        sort_order: 1,
+        participates_in_direction: true,
+        source_device_count: 1,
+        match_status: 'matched',
+        matched_station_id: existing.id,
+        matched_station_name: existing.name,
+        suggested_action: '覆盖现有',
+        proposed_station: proposed,
+        issues: [],
+      }],
+    })
+
+    const wrapper = await mountView()
+    await button(wrapper, '解锁').trigger('click')
+    await flushPromises()
+    await button(wrapper, '从设备管理生成').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('覆盖现有')
+    expect(wrapper.text()).toContain('1.五乡')
+    await button(wrapper, '应用到当前草稿').trigger('click')
+    await nextTick()
+    await button(wrapper, '保存').trigger('click')
+    await flushPromises()
+
+    const change = mocks.validate.mock.calls.at(-1)?.[0].changes.find(
+      (item: { entity_type: string }) => item.entity_type === 'station',
+    )
+    expect(change).toMatchObject({
+      action: 'update',
+      entity_id: existing.id,
+      values: {
+        old_name: '1.五乡',
+        node_uid: existing.node_uid,
+        name: '五乡',
+        code: '01',
+        sort_order: 1,
+        source_station_value: '01五乡',
+        source_order_text: '01',
+        source_order: 1,
+        canonical_station_name: '五乡',
+        center_mileage_text: 'K12+345',
+        center_mileage_m: 12345,
+        platform_layout: 'side',
+        remark: '人工备注',
+      },
+    })
     wrapper.unmount()
   })
 

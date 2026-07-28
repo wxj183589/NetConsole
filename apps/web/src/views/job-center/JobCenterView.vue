@@ -44,7 +44,7 @@ const visibleTasks = computed(() => {
   return store.tasks.filter((task) => matchesFilter(task) && (moduleFilter.value === 'all' || task.module === moduleFilter.value) && (!search || taskSearchText(task).includes(search)))
 })
 const artifactDownloadLabel = computed(() => (
-  isTracksideApBusinessArtifactTask(store.selected) ? '保存导出表格' : 'Artifact 下载'
+  isTracksideApBusinessArtifactTask(store.selected) ? '保存导出表格' : '另存 Artifact'
 ))
 const selectedDetails = computed<Record<string, unknown>>(() => store.selected?.details || {})
 const historicalTextDamaged = computed(() => store.selected?.text_integrity === 'historical_corrupted')

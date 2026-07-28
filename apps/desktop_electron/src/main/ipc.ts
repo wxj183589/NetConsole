@@ -347,7 +347,7 @@ export function registerDesktopIpc(
       })
       return {
         cancelled: result.canceled || !result.filePath,
-        ...(!result.canceled && result.filePath ? { path: registry.grant(result.filePath, 'save') } : {}),
+        ...(!result.canceled && result.filePath ? { path: await registry.grantSavePath(result.filePath) } : {}),
       }
     }),
   )

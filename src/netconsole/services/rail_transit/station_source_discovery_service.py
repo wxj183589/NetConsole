@@ -23,6 +23,7 @@ from netconsole.services.rail_transit.station_source_utils import (
     STATION_SOURCE_FIELD,
     canonical_station_name,
     normalize_station_source_value,
+    parse_station_source_value,
     parse_station_source_values,
     station_identity_key,
     station_structure_defaults,
@@ -166,7 +167,8 @@ class StationSourceDiscoveryService:
         counts: dict[str, tuple[int, str]] = {}
         grouped: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
         for row in rows:
-            value, key = normalize_station_source_value(row.get("station"))
+            parsed = parse_station_source_value(row.get("station"))
+            value, key = parsed.source_station_value, parsed.source_station_key
             if key:
                 grouped[key].append({**row, "source_station_value": value})
         parsed = parse_station_source_values(
@@ -215,7 +217,13 @@ class StationSourceDiscoveryService:
             source_value, source_key = normalize_station_source_value(row.get("station"))
             if not source_key:
                 continue
-            grouped[source_key].append({**row, "source_station_value": source_value, "source_station_key": source_key})
+            grouped[source_key].append(
+                {
+                    **row,
+                    "source_station_value": source_value,
+                    "source_station_key": source_key,
+                }
+            )
 
         parsed_by_raw_key = parse_station_source_values(
             [rows[0]["source_station_value"] for rows in grouped.values()],
@@ -257,7 +265,13 @@ class StationSourceDiscoveryService:
         for key, rows in grouped.items():
             parsed = parsed_rows[key]
             row_issues: list[StationSourceIssueDTO] = []
-            raw_values = sorted({str(row.get("station") or "") for row in rows if str(row.get("station") or "").strip()})
+            raw_values = sorted(
+                {
+                    str(row.get("station") or "")
+                    for row in rows
+                    if str(row.get("station") or "").strip()
+                }
+            )
             if len(raw_values) > 1:
                 row_issues.append(
                     self._issue(
@@ -265,6 +279,16 @@ class StationSourceDiscoveryService:
                         "station_source_ambiguous_match",
                         "多个原始 station 值归一化为同一来源键，已按标准化值合并，请人工核对",
                         field_name="source_station_value",
+                    )
+                )
+            if parsed.parse_error:
+                row_issues.append(
+                    self._issue(
+                        "error",
+                        "station_source_parse_failed",
+                        parsed.parse_error,
+                        field_name="source_station_value",
+                        blocking=True,
                     )
                 )
             if parsed.parse_warning:
@@ -388,6 +412,9 @@ class StationSourceDiscoveryService:
                 remark="",
                 source_station_value=parsed.source_station_value,
                 source_station_key=parsed.source_station_key,
+                source_order_text=parsed.source_order_text,
+                source_order=parsed.source_order,
+                canonical_station_name=parsed.canonical_station_name,
                 node_type=parsed.node_type,  # type: ignore[arg-type]
                 path_code=parsed.path_code,
                 participates_in_direction=parsed.participates_in_direction,
@@ -403,10 +430,12 @@ class StationSourceDiscoveryService:
                     candidate_id=f"station-source:{self._candidate_digest(key)}",
                     source_station_value=parsed.source_station_value,
                     source_station_key=parsed.source_station_key,
+                    source_order_text=candidate_code,
+                    source_order=candidate_source_order,
                     code=candidate_code,
                     name=candidate_name,
-                    canonical_name=normalized_source_name,
-                    source_order=candidate_source_order,
+                    canonical_name=candidate_name,
+                    canonical_station_name=candidate_name,
                     order_parse_method=candidate_order_method,
                     parse_confidence=candidate_confidence,
                     parse_warning=candidate_warning,
@@ -548,6 +577,21 @@ class StationSourceDiscoveryService:
         if name_conflicts:
             issues.append(self._issue("error", "station_source_name_conflict", "候选站名已被其他正式编码使用", "name", blocking=True))
             return "conflict", "", "name_conflict", issues
+        same_name = by_canonical_name.get(name_key, [])
+        same_name_type = by_canonical_name_type.get(
+            (name_key, parsed.node_type), []
+        )
+        if same_name and not same_name_type:
+            issues.append(
+                self._issue(
+                    "error",
+                    "station_source_node_type_conflict",
+                    "同一规范站名存在不同节点类型，需要人工确认",
+                    "node_type",
+                    blocking=True,
+                )
+            )
+            return "conflict", "", "node_type_conflict", issues
         selectors: Iterable[tuple[str, list[StationDTO]]] = (
             (
                 "exact_source_key",

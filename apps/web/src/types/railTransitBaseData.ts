@@ -64,6 +64,22 @@ export interface BaseDataSaveResult {
   validation_issues: BaseDataValidationIssue[]
 }
 
+export interface BaseDataClearPreview {
+  site_id: string
+  base_revision: string
+  station_count: number
+  section_count: number
+  affected_trackside_ap_count: number
+}
+
+export interface BaseDataClearResult {
+  revision: string
+  deleted_station_count: number
+  deleted_section_count: number
+  unlinked_trackside_ap_count: number
+  deleted_trackside_ap_plan_count: number
+}
+
 export interface DataQualityIssue {
   severity: 'error' | 'warning' | 'info'
   code: string
@@ -150,6 +166,9 @@ export interface Station {
   remark: string
   source_station_value: string
   source_station_key: string
+  source_order_text: string
+  source_order: number | null
+  canonical_station_name: string
   node_type: StationNodeType
   path_code: string
   participates_in_direction: boolean
@@ -196,13 +215,15 @@ export interface StationSourceCandidate {
   candidate_id: string
   source_station_value: string
   source_station_key: string
+  source_order_text: string
+  source_order: number | null
   code: string
   name: string
   canonical_name: string
-  source_order: number | null
   order_parse_method: string
   parse_confidence: string
   parse_warning: string
+  canonical_station_name: string
   node_type: StationNodeType
   path_code: string
   sort_order: number | null

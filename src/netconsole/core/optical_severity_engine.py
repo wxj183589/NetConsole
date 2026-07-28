@@ -23,14 +23,28 @@ SEVERITY_RANK = {
     "notice": 2,
     "warning": 3,
     "alarm": 4,
+    "abnormal": 4,
     "link_abnormal": 5,
     "link_down": 5,
     "no_light": 6,
+    "unverified": 0,
+    "dom_unavailable": 0,
 }
 
-OPTICAL_HEALTH_WARNING_STATUSES = frozenset({"notice", "warning", "alarm"})
+OPTICAL_HEALTH_WARNING_STATUSES = frozenset({"notice", "warning", "alarm", "abnormal"})
 OPTICAL_HEALTH_CRITICAL_STATUSES = frozenset({"critical", "link_abnormal", "link_down", "no_light"})
-OPTICAL_HEALTH_NO_DATA_STATUSES = frozenset({"", "unknown", "not_collected", "skipped", "offline", "no_module"})
+OPTICAL_HEALTH_NO_DATA_STATUSES = frozenset(
+    {
+        "",
+        "unknown",
+        "not_collected",
+        "skipped",
+        "offline",
+        "no_module",
+        "unverified",
+        "dom_unavailable",
+    }
+)
 OPTICAL_DATA_STALE_AFTER = timedelta(hours=24)
 
 STATUS_COLORS = {
@@ -38,6 +52,7 @@ STATUS_COLORS = {
     "notice": "FEF9C3",
     "warning": "FEF9C3",
     "alarm": "FEE2E2",
+    "abnormal": "FEE2E2",
     "link_abnormal": "FFE4E6",
     "link_down": "FFE4E6",
     "no_light": "E5E7EB",
@@ -46,6 +61,8 @@ STATUS_COLORS = {
     "offline": "E5E7EB",
     "not_collected": "F3F4F6",
     "unknown": "F3F4F6",
+    "unverified": "FEF9C3",
+    "dom_unavailable": "F3F4F6",
 }
 
 OPTICAL_STATUS_LABELS: dict[str, dict[str, str]] = {
@@ -54,6 +71,7 @@ OPTICAL_STATUS_LABELS: dict[str, dict[str, str]] = {
         "notice": "偏低关注",
         "warning": "提示告警",
         "alarm": "一般告警",
+        "abnormal": "功率异常",
         "link_abnormal": "链路异常",
         "link_down": "链路断开",
         "no_light": "无光",
@@ -61,12 +79,15 @@ OPTICAL_STATUS_LABELS: dict[str, dict[str, str]] = {
         "skipped": "未检查",
         "not_collected": "未采集",
         "unknown": "未知",
+        "unverified": "状态未知/第三方模块",
+        "dom_unavailable": "不支持 DOM",
     },
     "en": {
         "normal": "Normal",
         "notice": "Notice",
         "warning": "Warning",
         "alarm": "Alarm",
+        "abnormal": "Power Abnormal",
         "link_abnormal": "Link Abnormal",
         "link_down": "Link Down",
         "no_light": "No Light",
@@ -74,6 +95,8 @@ OPTICAL_STATUS_LABELS: dict[str, dict[str, str]] = {
         "skipped": "Skipped",
         "not_collected": "Not Collected",
         "unknown": "Unknown",
+        "unverified": "Unverified / Third-party Module",
+        "dom_unavailable": "DOM Unavailable",
     },
 }
 

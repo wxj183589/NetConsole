@@ -1,9 +1,12 @@
 ﻿from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+from ipaddress import ip_address
 from pathlib import Path
 import re
 from time import perf_counter
 
+from netconsole.adapters.trackside_switch import resolve_trackside_switch_adapter
 from netconsole.core import app_logger
 from netconsole.core.optical_severity_engine import (
     classify_optical_freshness,
@@ -14,6 +17,7 @@ from netconsole.core.optical_severity_engine import (
 )
 from netconsole.core.sources.switch_source import build_switch_data_lookup
 from netconsole.models.device import Device
+from netconsole.models.trackside_switch import CommandCapabilityState
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.services.ap_online_overview import AP_ONLINE_OVERVIEW_COLUMNS, write_ap_online_overview_sheet
 from netconsole.services.offline_ap_ledger import (
@@ -27,6 +31,16 @@ from netconsole.utils.interface_normalize import display_interface_name, normali
 from netconsole.utils.interface_sort import interface_sort_key
 from netconsole.utils.natural_sort import natural_text_key
 from netconsole.utils.station_normalize import normalize_station_value
+
+
+TRACKSIDE_ATTENUATION_SAMPLE_WINDOW = timedelta(minutes=30)
+_PRESERVED_SWITCH_MODULE_STATUSES = {
+    "abnormal",
+    "unverified",
+    "dom_unavailable",
+    "offline",
+    "no_module",
+}
 
 
 TRACKSIDE_AP_BUSINESS_INTERNAL_FIELDS = {
@@ -357,6 +371,9 @@ def build_trackside_ap_business_rows(
     fit_ap_optical_by_name_mac: dict[str, dict[str, object | None]] = {}
     fit_ap_resource_by_mac: dict[str, dict[str, object | None]] = {}
     fit_ap_resource_by_identity: dict[tuple[str, str], dict[str, object | None]] = {}
+    fit_ap_resources_by_ip: dict[str, list[dict[str, object | None]]] = {}
+    fit_ap_resources_by_mac: dict[str, list[dict[str, object | None]]] = {}
+    fit_ap_resources_by_name: dict[str, list[dict[str, object | None]]] = {}
     for row in fit_ap_optical_rows:
         key = (_normalize_name(row.get("neighbor_device_name")), normalize_interface_name(row.get("neighbor_interface")).casefold())
         if key[0] and key[1]:
@@ -374,6 +391,13 @@ def build_trackside_ap_business_rows(
         mac = normalize_mac(row.get("ap_mac"))
         if mac:
             fit_ap_resource_by_mac[mac] = row
+            fit_ap_resources_by_mac.setdefault(mac, []).append(row)
+        ap_ip = _normalize_ip(row.get("ap_ip") or row.get("management_ip"))
+        if ap_ip:
+            fit_ap_resources_by_ip.setdefault(ap_ip, []).append(row)
+        ap_name = _normalize_name(row.get("ap_name"))
+        if ap_name:
+            fit_ap_resources_by_name.setdefault(ap_name, []).append(row)
         identity = ap_identity_key(row)
         if identity:
             fit_ap_resource_by_identity[identity] = row
@@ -382,6 +406,19 @@ def build_trackside_ap_business_rows(
     result: list[dict[str, object | None]] = []
     for device in devices:
         device_uuid = str(device.device_uuid or "")
+        try:
+            adapter = resolve_trackside_switch_adapter(device)
+            adapter_description = adapter.describe_capabilities()
+            capability_statuses = {
+                item.key: item.status.value
+                for item in adapter_description.capabilities
+            }
+            bidirectional_attenuation_enabled = (
+                adapter.capabilities.bidirectional_attenuation
+            )
+        except ValueError:
+            capability_statuses = {}
+            bidirectional_attenuation_enabled = True
         device_names = {_normalize_name(device.name), _normalize_name(device.system_name)}
         device_names.discard("")
         optical_index = optical_indexes.get(device_uuid, {})
@@ -397,23 +434,58 @@ def build_trackside_ap_business_rows(
             lldp = lldp_index.get(normalized_interface, {})
             historical_lldp = _find_historical_lldp_row(historical_lldp_index, device_names, interface_name)
             neighbor_mac = normalize_mac(lldp.get("neighbor_mac"))
+            (
+                resource_from_current_lldp,
+                ap_match_source,
+                ap_match_confidence,
+                lldp_match_status,
+            ) = _match_fit_ap_resource_from_lldp(
+                lldp,
+                fit_ap_resources_by_ip,
+                fit_ap_resources_by_mac,
+                fit_ap_resources_by_name,
+            )
             historical_lldp_used = False
             if not neighbor_mac and historical_lldp:
                 neighbor_mac = normalize_mac(historical_lldp.get("ap_mac") or historical_lldp.get("neighbor_mac"))
                 historical_lldp_used = bool(neighbor_mac or historical_lldp.get("ap_name") or historical_lldp.get("ap_uuid"))
-            resource_from_neighbor = fit_ap_resource_by_mac.get(neighbor_mac)
+            resource_from_neighbor = (
+                None
+                if lldp_match_status == "AMBIGUOUS"
+                else resource_from_current_lldp or fit_ap_resource_by_mac.get(neighbor_mac)
+            )
+            if not ap_match_source and resource_from_neighbor and lldp:
+                ap_match_source = "LLDP_MAC"
+                ap_match_confidence = 92
+                lldp_match_status = "MATCHED"
             identity_from_neighbor = ap_identity_key(resource_from_neighbor or historical_lldp or {})
             fit_ap_from_identity = fit_ap_optical_by_identity.get(identity_from_neighbor) if identity_from_neighbor else None
             resource_from_identity = fit_ap_resource_by_identity.get(identity_from_neighbor) if identity_from_neighbor else None
-            fit_ap = (
-                fit_ap_optical_by_mac.get(neighbor_mac)
-                or fit_ap_from_identity
-            ) or (
-                _merge_resource_with_optical(resource_from_neighbor, fit_ap_optical_by_mac)
-                or resource_from_identity
-                or fit_ap_optical_by_name_mac.get(neighbor_mac)
-                or _find_fit_ap_row(fit_ap_index, device_names, interface_name)
-            )
+            if lldp_match_status == "AMBIGUOUS":
+                fit_ap = {}
+                historical_lldp = {}
+                historical_lldp_used = False
+                neighbor_mac = ""
+                fit_ap_from_identity = None
+                resource_from_identity = None
+            elif resource_from_current_lldp:
+                fit_ap = (
+                    fit_ap_from_identity
+                    or _merge_resource_with_optical(resource_from_neighbor, fit_ap_optical_by_mac)
+                    or resource_from_identity
+                    or resource_from_neighbor
+                    or {}
+                )
+            else:
+                fit_ap = (
+                    fit_ap_optical_by_mac.get(neighbor_mac)
+                    or fit_ap_from_identity
+                ) or (
+                    _merge_resource_with_optical(resource_from_neighbor, fit_ap_optical_by_mac)
+                    or resource_from_identity
+                    or fit_ap_optical_by_name_mac.get(neighbor_mac)
+                    or _find_fit_ap_row(fit_ap_index, device_names, interface_name)
+                )
             switch_collection_status = _switch_collection_status(device, interface, optical)
             switch_result = compute_optical_severity(
                 {
@@ -427,7 +499,12 @@ def build_trackside_ap_business_rows(
                     "device_type": "switch",
                 }
             )
-            switch_status = switch_result.severity
+            collected_module_status = str(optical.get("status") or "").strip().casefold()
+            switch_status = (
+                collected_module_status
+                if collected_module_status in _PRESERVED_SWITCH_MODULE_STATUSES
+                else switch_result.severity
+            )
             switch_offline = _is_switch_collection_offline(switch_collection_status)
             if _should_mark_switch_link_abnormal(link_state, switch_result, optical, switch_collection_status):
                 switch_status = "link_abnormal"
@@ -471,6 +548,42 @@ def build_trackside_ap_business_rows(
                     }
                 )
                 ap_status = ap_result.severity
+            local_sample_time = (
+                optical.get("updated_at")
+                or optical.get("collected_at")
+                or interface.get("updated_at")
+                or interface.get("collected_at")
+            )
+            remote_sample_time = fit_ap.get("updated_at") or fit_ap.get("collected_at")
+            attenuation = _build_bidirectional_attenuation(
+                local_rx_power=optical.get("rx_power"),
+                local_tx_power=optical.get("tx_power"),
+                remote_rx_power=ap_candidate["ap_rx_power"] if ap_side_has_data and not switch_offline else None,
+                remote_tx_power=ap_candidate["ap_tx_power"] if ap_side_has_data and not switch_offline else None,
+                local_status=switch_status,
+                remote_status=ap_status,
+                association_reliable=ap_match_source in {
+                    "LLDP_IP",
+                    "LLDP_MAC",
+                    "LLDP_SYSTEM_NAME",
+                    "MANUAL",
+                    "IMPORTED",
+                },
+                remote_identity_known=ap_identity_known,
+                local_sample_time=local_sample_time,
+                remote_sample_time=remote_sample_time,
+                calculation_enabled=bidirectional_attenuation_enabled,
+            )
+            if not lldp_match_status:
+                if lldp:
+                    lldp_match_status = "UNRESOLVED"
+                elif (
+                    capability_statuses.get("lldp")
+                    == CommandCapabilityState.SAMPLE_REQUIRED.value
+                ):
+                    lldp_match_status = "SAMPLE_REQUIRED"
+                else:
+                    lldp_match_status = "NO_NEIGHBOR"
             row = {
                     "site": device.station or normalize_station_value(fit_ap) or "",
                     "ac_device_uuid": fit_ap.get("ac_device_uuid"),
@@ -478,6 +591,7 @@ def build_trackside_ap_business_rows(
                     "serial_number": fit_ap.get("serial_number") or fit_ap_resource_by_identity.get(ap_identity_key(fit_ap) or ("", ""), {}).get("serial_number"),
                     "device_uuid": device_uuid,
                     "device_name": device.name,
+                    "switch_vendor": device.device_vendor,
                     "switch_system_name": device.system_name,
                     "switch_primary_address": device.primary_address,
                     "switch_backup_address": device.backup_address,
@@ -493,6 +607,10 @@ def build_trackside_ap_business_rows(
                     "vlan": interface.get("vlan"),
                     "switch_rx_power": optical.get("rx_power"),
                     "switch_tx_power": optical.get("tx_power"),
+                    "switch_rx_low_alarm": optical.get("rx_low_alarm"),
+                    "switch_rx_high_alarm": optical.get("rx_high_alarm"),
+                    "switch_tx_low_alarm": optical.get("tx_low_alarm"),
+                    "switch_tx_high_alarm": optical.get("tx_high_alarm"),
                     "switch_optical_status": switch_status,
                     "ap_mac": ap_candidate["ap_mac"],
                     "ap_name": ap_candidate["ap_name"],
@@ -512,10 +630,14 @@ def build_trackside_ap_business_rows(
                     "offline_reason": offline_reason,
                     "status_reason": status_reason,
                     "data_source": data_source,
+                    "ap_match_source": ap_match_source,
+                    "ap_match_confidence": ap_match_confidence,
+                    "lldp_match_status": lldp_match_status,
                     "has_current_lldp": bool(lldp),
                     "has_historical_lldp": bool(historical_lldp),
                     "has_fit_ap_resource": bool(resource_from_neighbor or resource_from_identity),
                     "is_ap_offline": bool(offline_reason),
+                    **attenuation,
                 }
             _ensure_ap_optical_status(row)
             result.append(row)
@@ -1674,6 +1796,177 @@ def _merge_resource_with_optical(resource: dict[str, object | None] | None, opti
         return {}
     optical = optical_by_mac.get(normalize_mac(resource.get("ap_mac")), {})
     return {**resource, **optical}
+
+
+def _match_fit_ap_resource_from_lldp(
+    lldp: dict[str, object | None],
+    resources_by_ip: dict[str, list[dict[str, object | None]]],
+    resources_by_mac: dict[str, list[dict[str, object | None]]],
+    resources_by_name: dict[str, list[dict[str, object | None]]],
+) -> tuple[dict[str, object | None] | None, str, int, str]:
+    if not lldp:
+        return None, "", 0, ""
+    candidates = (
+        (
+            "LLDP_IP",
+            96,
+            _normalize_ip(
+                lldp.get("neighbor_ip")
+                or lldp.get("management_address")
+                or lldp.get("remote_management_address")
+            ),
+            resources_by_ip,
+        ),
+        (
+            "LLDP_MAC",
+            92,
+            normalize_mac(lldp.get("neighbor_mac") or lldp.get("chassis_id")),
+            resources_by_mac,
+        ),
+        (
+            "LLDP_SYSTEM_NAME",
+            75,
+            _normalize_name(
+                lldp.get("neighbor_sysname")
+                or lldp.get("remote_system_name")
+                or lldp.get("neighbor_device_name")
+            ),
+            resources_by_name,
+        ),
+    )
+    for source, confidence, key, index in candidates:
+        if not key:
+            continue
+        matches = index.get(key, [])
+        if len(matches) == 1:
+            return matches[0], source, confidence, "MATCHED"
+        if len(matches) > 1:
+            return None, source, 0, "AMBIGUOUS"
+    return None, "", 0, "UNRESOLVED"
+
+
+def _build_bidirectional_attenuation(
+    *,
+    local_rx_power: object,
+    local_tx_power: object,
+    remote_rx_power: object,
+    remote_tx_power: object,
+    local_status: object,
+    remote_status: object,
+    association_reliable: bool,
+    remote_identity_known: bool,
+    local_sample_time: object,
+    remote_sample_time: object,
+    calculation_enabled: bool = True,
+) -> dict[str, object | None]:
+    local_rx = _reasonable_power(local_rx_power)
+    local_tx = _reasonable_power(local_tx_power)
+    remote_rx = _reasonable_power(remote_rx_power)
+    remote_tx = _reasonable_power(remote_tx_power)
+    result: dict[str, object | None] = {
+        "local_rx_power_dbm": local_rx,
+        "local_tx_power_dbm": local_tx,
+        "remote_rx_power_dbm": remote_rx,
+        "remote_tx_power_dbm": remote_tx,
+        "forward_loss_db": None,
+        "reverse_loss_db": None,
+        "calculation_status": "",
+        "calculation_reason": "",
+        "local_sample_time": str(local_sample_time or ""),
+        "remote_sample_time": str(remote_sample_time or ""),
+        "sample_time_delta_seconds": None,
+    }
+    if not calculation_enabled:
+        result.update(
+            calculation_status="NOT_VERIFIED",
+            calculation_reason="REAL_DEVICE_SAMPLE_REQUIRED",
+        )
+        return result
+    unavailable_statuses = {
+        "offline",
+        "no_module",
+        "dom_unavailable",
+        "no_light",
+        "link_down",
+    }
+    if str(local_status or "").strip().casefold() in unavailable_statuses or str(
+        remote_status or ""
+    ).strip().casefold() in unavailable_statuses:
+        result.update(
+            calculation_status="MODULE_OFFLINE",
+            calculation_reason="至少一端光模块离线或无有效 DOM",
+        )
+        return result
+    if remote_rx is None or remote_tx is None:
+        status = "REMOTE_DOM_UNAVAILABLE" if remote_identity_known else "SINGLE_ENDED_ONLY"
+        reason = (
+            "已识别对端，但对端 DOM 数据不完整"
+            if remote_identity_known
+            else "仅有本端光功率，无法计算双向光衰"
+        )
+        result.update(calculation_status=status, calculation_reason=reason)
+        return result
+    if local_rx is None or local_tx is None:
+        result.update(
+            calculation_status="SINGLE_ENDED_ONLY",
+            calculation_reason="本端 DOM 数据不完整，无法计算双向光衰",
+        )
+        return result
+    if not association_reliable:
+        result.update(
+            calculation_status="NEIGHBOR_UNCERTAIN",
+            calculation_reason="对端关系缺少可靠 LLDP 或人工绑定证据",
+        )
+        return result
+    local_time = _parse_sample_time(local_sample_time)
+    remote_time = _parse_sample_time(remote_sample_time)
+    if local_time is None or remote_time is None:
+        result.update(
+            calculation_status="STALE_SAMPLE",
+            calculation_reason="两端采集时间不完整",
+        )
+        return result
+    delta = int(abs((local_time - remote_time).total_seconds()))
+    result["sample_time_delta_seconds"] = delta
+    if delta > int(TRACKSIDE_ATTENUATION_SAMPLE_WINDOW.total_seconds()):
+        result.update(
+            calculation_status="STALE_SAMPLE",
+            calculation_reason="两端采集时间超出 30 分钟允许窗口",
+        )
+        return result
+    result.update(
+        calculation_status="CALCULATED",
+        calculation_reason="两端 DOM、端口映射和采集时间均有效",
+        forward_loss_db=round(local_tx - remote_rx, 2),
+        reverse_loss_db=round(remote_tx - local_rx, 2),
+    )
+    return result
+
+
+def _reasonable_power(value: object) -> float | None:
+    parsed = _float_value(value)
+    return parsed if parsed is not None and -50.0 <= parsed <= 20.0 else None
+
+
+def _parse_sample_time(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def _normalize_ip(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return str(ip_address(text))
+    except ValueError:
+        return ""
 
 
 def _offline_ledger_to_trackside_rows(

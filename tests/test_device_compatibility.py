@@ -58,9 +58,19 @@ def test_profile_catalog_loads_and_references_safe_command_profiles(tmp_path: Pa
 
     assert "Comware V7" in summary["platforms"]
     assert "Comware V9" in summary["platforms"]
+    assert "ZXR10 V2" in summary["platforms"]
     assert "交换机" in summary["roles"]
     assert "无线控制器" in summary["roles"]
     assert "车载 MR（Cloud AP）" in summary["roles"]
+    zte = next(
+        item
+        for item in summary["profiles"]
+        if item["profile_id"]
+        == "zte-zxr10-5960x-es-v2-trackside-switch.v1"
+    )
+    assert zte["validation_level"] == "document_sample_only"
+    assert zte["capabilities"]["lldp"] == "sample_required"
+    assert zte["capabilities"]["bidirectional_attenuation"] == "not_verified"
 
 
 def test_exact_model_release_beats_platform_generic_and_v7_generations_split() -> None:

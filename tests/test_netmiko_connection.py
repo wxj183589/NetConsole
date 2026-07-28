@@ -147,7 +147,10 @@ def test_tunnel_hosts_enable_specific_tunnels_without_global_switch():
     targets = connection_targets(device)
 
     tunnel_targets = [target for target in targets if target.via_tunnel]
-    assert [target.method for target in tunnel_targets] == ["tunnel1", "tunnel2"]
+    assert [target.method for target in tunnel_targets] == [
+        "tunnel1_primary",
+        "tunnel2_primary",
+    ]
     assert [target.tunnel.host for target in tunnel_targets if target.tunnel is not None] == ["198.51.100.10", "198.51.100.11"]
 
 
@@ -169,7 +172,11 @@ def test_empty_tunnel_host_disables_specific_tunnel():
         tunnel2_password="jump-secret",
     )
 
-    assert [target.method for target in connection_targets(device) if target.via_tunnel] == ["tunnel2"]
+    assert [
+        target.method
+        for target in connection_targets(device)
+        if target.via_tunnel
+    ] == ["tunnel2_primary"]
 
 
 def test_no_protocol_enabled_returns_failure():
@@ -306,7 +313,7 @@ def test_zte_connection_uses_zxros_and_never_sends_h3c_session_commands(
     assert result.success is True
     assert calls["device_type"] == "zte_zxros"
     assert calls["encoding"] == "utf-8"
-    assert commands == ["terminal length 0", "show version"]
+    assert commands == ["show version"]
     assert "screen-length disable" not in commands
 
 

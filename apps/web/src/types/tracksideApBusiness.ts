@@ -1,9 +1,16 @@
 import type { RailTransitTask } from './railTransitWeb'
 
 export interface TracksideApBusinessRow {
-  site: string; device_name: string; interface_name: string; link_status: string; port_type: string
-  description: string; pvid: unknown; vlan: unknown; switch_rx_power: unknown; switch_optical_status: string
-  ap_uuid: string; ap_mac: string; ap_name: string; ap_rx_power: unknown; ap_optical_status: string; updated_at: string
+  site: string; device_name: string; switch_vendor: string; interface_name: string; link_status: string; port_type: string
+  description: string; pvid: unknown; vlan: unknown
+  switch_rx_power: unknown; switch_tx_power: unknown
+  switch_rx_low_alarm: unknown; switch_rx_high_alarm: unknown; switch_tx_low_alarm: unknown; switch_tx_high_alarm: unknown
+  switch_optical_status: string
+  ap_uuid: string; ap_mac: string; ap_name: string; ap_rx_power: unknown; ap_tx_power: unknown; ap_optical_status: string
+  ap_match_source: string; ap_match_confidence: number; lldp_match_status: string
+  local_rx_power_dbm: unknown; local_tx_power_dbm: unknown; remote_rx_power_dbm: unknown; remote_tx_power_dbm: unknown
+  forward_loss_db: unknown; reverse_loss_db: unknown; calculation_status: string; calculation_reason: string
+  local_sample_time: string; remote_sample_time: string; sample_time_delta_seconds: number | null; updated_at: string
   optical_severity: string
 }
 
@@ -17,6 +24,51 @@ export interface TracksideApBusinessPage {
 
 export interface TracksideApUpdateRequest { station?: string; ap_uuid?: string; ap_mac?: string; ap_name?: string }
 export type TracksideApTask = RailTransitTask
+
+export type TracksideSwitchCapabilityStatus =
+  | 'DOCUMENTED'
+  | 'IMPLEMENTED'
+  | 'SAMPLE_REQUIRED'
+  | 'VERIFIED'
+  | 'UNSUPPORTED'
+
+export interface TracksideSwitchCommandProfile {
+  profile_id: string; vendor: string; platform: string; product_family: string; reference_version: string
+  privilege_required: boolean; enable_command: string; enable_level: number; enable_secret_configured: boolean
+  device_version: string[]; interface_brief: string[]; interface_detail: string[]
+  optical_brief: string[]; optical_detail: string[]
+  lldp_global_candidates: string[]; lldp_interface_candidates: string[]; lldp_config_candidates: string[]
+}
+
+export interface TracksideSwitchCapability {
+  key: string; label: string; status: TracksideSwitchCapabilityStatus; message: string
+}
+
+export interface TracksideSwitchAdapter {
+  vendor: string; vendor_label: string; platform: string; product_family: string
+  adaptation_status: string; verification_status: string
+  profile: TracksideSwitchCommandProfile
+  capabilities: TracksideSwitchCapability[]
+  pending_items: string[]
+}
+
+export interface TracksideSwitchDevice {
+  device_uuid: string; device_name: string; station: string; primary_address: string
+  adapter: TracksideSwitchAdapter
+}
+
+export interface TracksideSwitchAdapterCatalog {
+  items: TracksideSwitchDevice[]
+  total: number
+}
+
+export interface TracksideSwitchSampleRequest {
+  device_uuid: string
+  vendor: string
+  command_profile: string
+  selected_interface: string
+  requested_commands: string[]
+}
 
 export interface TracksideApPlanRow {
   station_name: string; ap_count: number; ap_start_address: string; mask_length: number | null

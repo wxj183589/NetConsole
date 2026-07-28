@@ -13,6 +13,7 @@ from netconsole.services.h3c_optical_refresh_service import OPTICAL_REFRESH_COMM
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "h3c"
+ZTE_FIXTURES = Path(__file__).parent / "fixtures" / "zte"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 COLLECT_COMMANDS = default_device_inventory_profile().commands[1:]
 
@@ -23,6 +24,10 @@ def make_paths(tmp_path: Path) -> PathResolver:
 
 def fixture(name: str) -> str:
     return (FIXTURES / name).read_text(encoding="utf-8")
+
+
+def zte_fixture(name: str) -> str:
+    return (ZTE_FIXTURES / name).read_text(encoding="utf-8")
 
 
 OUTPUTS = {
@@ -57,6 +62,41 @@ class FakeConnection:
         if command in self.fail_commands:
             raise RuntimeError(f"{command} failed")
         return OUTPUTS[command]
+
+    def disconnect(self):
+        self.disconnected = True
+
+
+class ZteFakeConnection:
+    def __init__(self):
+        self.commands = []
+        self.disconnected = False
+        self.pending_page = ""
+        self.outputs = {
+            "show version": zte_fixture("zte_5960x_show_version.txt"),
+            "show interface brief": zte_fixture(
+                "zte_5960x_show_interface_brief.txt"
+            ),
+            "show opticalinfo brief": zte_fixture(
+                "zte_5960x_show_opticalinfo_brief.txt"
+            ),
+        }
+
+    def send_command(self, command, read_timeout=None):
+        self.commands.append(command)
+        return self.outputs[command]
+
+    def send_command_timing(self, command, **_kwargs):
+        self.commands.append(command)
+        if command == " ":
+            output, self.pending_page = self.pending_page, ""
+            return output
+        output = self.outputs[command]
+        head, pager, tail = output.partition("--More--")
+        if pager:
+            self.pending_page = tail
+            return f"{head}{pager}"
+        return output
 
     def disconnect(self):
         self.disconnected = True
@@ -112,6 +152,98 @@ def test_collect_service_skips_raw_log_by_default_and_writes_repository_data(mon
     assert len(repository.list_interface_history("11111111-1111-4111-8111-111111111111", "GigabitEthernet1/0/1")) == 1
     assert len(repository.list_optical_history("11111111-1111-4111-8111-111111111111", "GigabitEthernet1/0/1")) == 1
     assert len(repository.list_lldp_history("11111111-1111-4111-8111-111111111111", "GigabitEthernet1/0/1")) == 1
+
+
+def test_zte_collect_uses_fixture_verified_commands_and_persists_dom(
+    monkeypatch, tmp_path
+):
+    connection = ZteFakeConnection()
+    monkeypatch.setattr(
+        h3c_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
+    repository = make_repository(tmp_path)
+    device = Device(
+        device_uuid="22222222-2222-4222-8222-222222222222",
+        name="ZTE-TRACKSIDE",
+        device_vendor="ZTE",
+        device_type="SW",
+        ip_address="192.0.2.20",
+        ssh_enabled=1,
+        ssh_username="readonly",
+        ssh_password="test-only",
+    )
+
+    result = collect_h3c_device_details(
+        device,
+        "demo",
+        repository=repository,
+        paths=make_paths(tmp_path),
+    )
+
+    assert result.success is True
+    assert result.interfaces_updated > 0
+    assert result.optical_modules_updated > 0
+    assert result.lldp_neighbors_updated == 0
+    assert connection.commands == [
+        "show version",
+        "show interface brief",
+        " ",
+        "show opticalinfo brief",
+        " ",
+    ]
+    assert connection.disconnected is True
+    assert Path(result.raw_log_path).is_file()
+    fact = repository.get_device_fact(str(device.device_uuid))
+    assert fact["sysname"] == "ZXR10"
+    assert fact["model"] == "5960X-32U-ES"
+    assert fact["software_version"] == "V2.00.20.03B07"
+    interfaces = repository.list_device_interfaces(str(device.device_uuid))
+    assert any(item["interface_name"] == "xgei-0/1/1/2" for item in interfaces)
+    optical = {
+        item["interface_name"]: item
+        for item in repository.list_optical_modules(str(device.device_uuid))
+    }
+    assert optical["xgei-0/1/1/2"]["rx_power"] == "-11.9"
+    assert optical["xgei-0/1/1/2"]["status"] == "unverified"
+    assert "--More--" in Path(result.raw_log_path).read_text(encoding="utf-8")
+
+
+def test_zte_collect_stops_after_version_for_unsupported_zxr10_model(
+    monkeypatch, tmp_path
+):
+    connection = ZteFakeConnection()
+    connection.outputs["show version"] = (
+        "ZTE ZXR10 Software, Version: ZXR10 5950 V2.00.20.03B07, Release software"
+    )
+    monkeypatch.setattr(
+        h3c_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
+    repository = make_repository(tmp_path)
+    device = Device(
+        device_uuid="33333333-3333-4333-8333-333333333333",
+        name="ZTE-UNSUPPORTED",
+        device_vendor="ZTE",
+        device_type="SW",
+        ip_address="192.0.2.30",
+        ssh_enabled=1,
+        ssh_username="readonly",
+        ssh_password="test-only",
+    )
+
+    result = collect_h3c_device_details(
+        device,
+        "demo",
+        repository=repository,
+        paths=make_paths(tmp_path),
+    )
+
+    assert result.success is False
+    assert result.error_message == "ZTE_DEVICE_NOT_RECOGNIZED"
+    assert connection.commands == ["show version"]
 
 
 def test_collect_service_persists_explicitly_absent_transceiver(monkeypatch, tmp_path):

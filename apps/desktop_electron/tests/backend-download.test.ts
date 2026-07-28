@@ -230,6 +230,71 @@ describe('backend download manager', () => {
     await expect(readFile(target, 'utf8')).resolves.toContain('NameTable')
   })
 
+  it('rejects an ungranted destination path without opening a dialog or contacting the backend', async () => {
+    const directory = await tempDirectory()
+    const target = resolve(directory, '未授权.csv')
+    const dialog = { showSaveDialog: vi.fn() }
+    const fetchImpl = vi.fn<typeof fetch>()
+    const manager = new BackendDownloadManager({
+      backend: { getRuntimeInfo: () => ({ baseUrl: 'http://127.0.0.1:43123', apiToken: 'u'.repeat(48) }) },
+      dialog,
+      window: {},
+      pathRegistry: new GrantedPathRegistry(),
+      fetchImpl,
+    })
+
+    await expect(manager.download({
+      apiPath: '/api/device-management/exports/task-ungranted/download',
+      query: { artifact_id: 'artifact-ungranted' },
+      suggestedName: '未授权.csv',
+      destinationPath: target,
+    })).resolves.toMatchObject({ status: 'failed' })
+    expect(dialog.showSaveDialog).not.toHaveBeenCalled()
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('preserves a file created after Save As while the Artifact is downloading', async () => {
+    let finishResponse: (() => void) | undefined
+    let markStarted: (() => void) | undefined
+    const started = new Promise<void>((resolvePromise) => { markStarted = resolvePromise })
+    const server = await loopbackServer((_request, response) => {
+      response.writeHead(200)
+      response.write('artifact-')
+      finishResponse = () => response.end('content')
+      markStarted?.()
+    })
+    const directory = await tempDirectory()
+    const target = resolve(directory, '竞态设备表.csv')
+    const pathRegistry = new GrantedPathRegistry()
+    await pathRegistry.grantSavePath(target)
+    const dialog = { showSaveDialog: vi.fn() }
+    const manager = new BackendDownloadManager({
+      backend: { getRuntimeInfo: () => ({ baseUrl: server.origin, apiToken: 'r'.repeat(48) }) },
+      dialog,
+      window: {},
+      pathRegistry,
+    })
+
+    const download = manager.download({
+      apiPath: '/api/device-management/exports/task-race/download',
+      query: { artifact_id: 'artifact-race' },
+      suggestedName: '竞态设备表.csv',
+      destinationPath: target,
+    })
+    await started
+    await writeFile(target, 'other-program', 'utf8')
+    finishResponse?.()
+
+    await expect(download).resolves.toMatchObject({
+      status: 'failed',
+      errorCode: 'SAVE_TARGET_CHANGED',
+      error: '目标文件在导出期间发生变化，请重新选择保存位置。',
+    })
+    await expect(readFile(target, 'utf8')).resolves.toBe('other-program')
+    expect(dialog.showSaveDialog).not.toHaveBeenCalled()
+    expect((await readdir(directory)).some((name) => name.endsWith('.part'))).toBe(false)
+  })
+
   it('uses the trackside AP artifact name as the save dialog default', async () => {
     const fetchImpl = vi.fn<typeof fetch>()
     const showSaveDialog = vi.fn(async () => ({ canceled: true }))

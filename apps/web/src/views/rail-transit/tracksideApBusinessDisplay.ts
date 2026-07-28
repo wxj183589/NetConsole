@@ -18,6 +18,9 @@ const classByStatus: Record<string, string> = {
   link_down: 'optical-link-down',
   no_light: 'optical-no-light',
   no_module: 'optical-no-module',
+  abnormal: 'optical-alarm',
+  unverified: 'optical-warning',
+  dom_unavailable: 'optical-not-collected',
   skipped: 'optical-skipped',
   not_collected: 'optical-not-collected',
   unknown: 'optical-unknown',
@@ -43,4 +46,48 @@ export function tracksideOpticalPresentation(value: unknown): TracksideOpticalPr
 
 export function displayTracksideValue(value: unknown): string {
   return value === null || value === undefined || value === '' ? '—' : String(value)
+}
+
+export function displaySwitchVendor(value: unknown): string {
+  const vendor = String(value || '').trim().toUpperCase()
+  if (vendor === 'ZTE') return '中兴 ZTE'
+  if (vendor === 'H3C') return '新华三 H3C'
+  return vendor || '—'
+}
+
+export function displayPowerThreshold(low: unknown, high: unknown): string {
+  const lowText = displayTracksideValue(low)
+  const highText = displayTracksideValue(high)
+  if (lowText === '—' && highText === '—') return '—'
+  return `${lowText} ~ ${highText} dBm`
+}
+
+export function displayLldpStatus(value: unknown): string {
+  const status = String(value || '').trim().toUpperCase()
+  return {
+    MATCHED: '已匹配',
+    AMBIGUOUS: '候选不唯一',
+    UNRESOLVED: '未匹配',
+    NO_NEIGHBOR: '无邻居',
+    SAMPLE_REQUIRED: '待真实样本验证',
+  }[status] || status || '—'
+}
+
+export function displayBidirectionalLoss(
+  statusValue: unknown,
+  forward: unknown,
+  reverse: unknown,
+): string {
+  const status = String(statusValue || '').trim().toUpperCase()
+  if (status === 'CALCULATED') {
+    return `正向 ${displayTracksideValue(forward)} dB / 反向 ${displayTracksideValue(reverse)} dB`
+  }
+  return {
+    SINGLE_ENDED_ONLY: '无法计算（仅有单端光功率）',
+    REMOTE_DOM_UNAVAILABLE: '无法计算（对端 DOM 不可用）',
+    STALE_SAMPLE: '无法计算（两端样本不同步）',
+    NEIGHBOR_UNCERTAIN: '无法计算（对端关系不可靠）',
+    MODULE_OFFLINE: '无法计算（模块离线或无 DOM）',
+    NOT_VERIFIED: '尚未接入真实节点，无法计算光衰',
+  }[status] || '—'
 }

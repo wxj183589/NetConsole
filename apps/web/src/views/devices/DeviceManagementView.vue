@@ -69,6 +69,7 @@ interface PublicTaskArtifact {
   display_name: string
   size_bytes: number
   sha256?: string
+  media_type: string
 }
 
 type DevicePublicTask = TaskItem & {
@@ -77,13 +78,28 @@ type DevicePublicTask = TaskItem & {
 }
 
 type DeviceExportAction = 'export_csv' | 'export_template'
-type LocalSaveStatus =
+type DeviceExportScope = 'selected' | 'filtered_all' | 'template'
+type PendingDeviceExportState =
+  | 'task_running'
   | 'artifact_ready'
-  | 'local_save_pending'
-  | 'local_save_prompting'
-  | 'local_save_saved'
-  | 'local_save_cancelled'
-  | 'local_save_failed'
+  | 'saving'
+  | 'saved'
+  | 'save_failed'
+
+interface PendingDeviceExport {
+  taskId: string
+  action: DeviceExportAction
+  destinationPath: string
+  suggestedName: string
+  fileName: string
+  directoryLabel: string
+  requestedRowCount: number
+  scope: DeviceExportScope
+  state: PendingDeviceExportState
+  artifact?: PublicTaskArtifact
+  actualRowCount?: number
+  error?: string
+}
 
 type DeviceTaskWindowBridge = {
   openTaskWindow(context: { taskId?: string; module: 'devices'; status?: TaskStatus }): Promise<{ success: boolean; error?: string }>
@@ -94,7 +110,8 @@ interface TableSelectionController<Row> {
   toggleRowSelection(row: Row, selected?: boolean): void
 }
 
-const emptyPage = (): DevicePage => ({ items: [], groups: [], total: 0, page: 1, page_size: 50, total_pages: 1 })
+const emptyPage = (): DevicePage => ({ items: [], groups: [], site_name: '', total: 0, page: 1, page_size: 50, total_pages: 1 })
+const PENDING_DEVICE_EXPORTS_KEY = 'netconsole.devices.pending-exports.v1'
 const DEVICE_TYPE_OPTIONS = ['AC', 'SW', 'FW', 'Route', 'Cloud-AP', 'FAT-AP', 'MR', 'Other'] as const
 const router = useRouter()
 const { confirm } = useConfirm()
@@ -136,10 +153,14 @@ const secureCrtTemplateInput = ref<HTMLInputElement | null>(null)
 const lastSubmittedTask = ref<DeviceTaskReference | null>(null)
 const savedArtifactCapability = ref('')
 const savedDeviceArtifactNotice = ref<{ title: string; description: string } | null>(null)
-const interactiveExportTasks = ref<Record<string, DeviceTaskReference>>({})
-const localSaveStatuses = reactive<Record<string, LocalSaveStatus>>({})
+const pendingDeviceExports = reactive<Record<string, PendingDeviceExport>>({})
+const pendingDeviceExportRetryTick = ref(0)
+let pendingDeviceExportRetryTimer: ReturnType<typeof setTimeout> | null = null
 const csvExportSubmitting = ref(false)
 const templateExportSubmitting = ref(false)
+const csvExportScopeVisible = ref(false)
+const csvExportScope = ref<Exclude<DeviceExportScope, 'template'>>('filtered_all')
+const csvExportIncludeCredentials = ref(false)
 const terminalSettingsVisible = ref(false)
 const terminalSettingsLoading = ref(false)
 const terminalLaunchVisible = ref(false)
@@ -231,18 +252,22 @@ const publicDeviceTasks = computed(() => (taskStore.tasks as DevicePublicTask[])
 )))
 const activeDeviceTaskCount = computed(() => publicDeviceTasks.value.filter((task) => activeTaskStatuses.has(task.status)).length)
 const failedDeviceTaskCount = computed(() => publicDeviceTasks.value.filter((task) => task.status === 'FAILED').length)
-const csvExportActive = computed(() => csvExportSubmitting.value || isInteractiveExportActive('export_csv'))
-const templateExportActive = computed(() => templateExportSubmitting.value || isInteractiveExportActive('export_template'))
+const csvExportActive = computed(() => csvExportSubmitting.value || isPendingExportActive('export_csv'))
+const templateExportActive = computed(() => templateExportSubmitting.value || isPendingExportActive('export_template'))
 const latestDeviceTask = computed(() => {
   const submittedId = lastSubmittedTask.value?.task_id
   return (submittedId && publicDeviceTasks.value.find((task) => task.id === submittedId))
     || publicDeviceTasks.value[0]
     || null
 })
-const latestArtifactSaveStatus = computed<LocalSaveStatus | ''>(() => {
+const latestPendingExport = computed(() => {
+  const taskId = latestDeviceTask.value?.id
+  return taskId ? pendingDeviceExports[taskId] || null : null
+})
+const latestArtifactSaveStatus = computed<PendingDeviceExportState | 'manual_ready' | ''>(() => {
   const task = latestDeviceTask.value
   if (!task?.artifact_download) return ''
-  return localSaveStatuses[task.id] || 'artifact_ready'
+  return pendingDeviceExports[task.id]?.state || 'manual_ready'
 })
 const testActive = computed(() => {
   const taskId = connectionTest.value?.task_id
@@ -280,7 +305,7 @@ const writeConnectionDisabledReason = computed(() => {
   if (writeConnectionBusy.value) return '连接测试正在执行'
   const protocol = writeTestProtocol.value
   if (!availableWriteTestProtocols.value.includes(protocol)) return `请先启用 ${protocol}`
-  if (!writeForm.primary_address.trim()) return '请输入设备地址'
+  if (!writeForm.primary_address.trim() && !String(writeForm.backup_address || '').trim()) return '请输入主用地址或备用地址'
   const port = protocol === 'SSH' ? writeForm.ssh_port : protocol === 'TELNET' ? writeForm.telnet_port : writeForm.snmp_port
   if (!Number.isInteger(Number(port)) || Number(port) < 1 || Number(port) > 65535) return `请输入有效的 ${protocol} 端口`
   if (protocol === 'SSH') {
@@ -326,66 +351,72 @@ watch(
 )
 watch(
   () => {
-    return Object.values(interactiveExportTasks.value)
-      .map((submitted) => {
-        if (!isDeviceExportAction(submitted.action)) return ''
-        const task = publicDeviceTasks.value.find((item) => item.id === submitted.task_id)
+    const terminalKeys = Object.values(pendingDeviceExports)
+      .map((pending) => {
+        const task = publicDeviceTasks.value.find((item) => item.id === pending.taskId)
         if (!task || !['COMPLETED', 'FAILED', 'CANCELLED'].includes(task.status)) return ''
         const artifact = task.artifact_download
-        return `${task.id}:${task.status}:${submitted.action}:${artifact?.artifact_id || ''}:${task.updated_time}`
+        return `${task.id}:${task.status}:${artifact?.artifact_id || ''}:${artifact?.media_type || ''}:${task.updated_time}`
       })
       .filter(Boolean)
       .sort()
       .join('|')
+    return terminalKeys ? `${pendingDeviceExportRetryTick.value}#${terminalKeys}` : ''
   },
-  async (terminalKeys) => {
-    if (!terminalKeys) return
+  async (terminalState) => {
+    if (!terminalState) return
+    const terminalKeys = terminalState.slice(terminalState.indexOf('#') + 1)
     for (const terminalKey of terminalKeys.split('|')) {
-      const [taskId, , actionValue] = terminalKey.split(':')
-      if (!taskId || !isDeviceExportAction(actionValue)) continue
-      const saveStatus = localSaveStatuses[taskId]
-      if (
-        saveStatus === 'local_save_prompting'
-        || saveStatus === 'local_save_saved'
-        || saveStatus === 'local_save_cancelled'
-        || saveStatus === 'local_save_failed'
-        || saveStatus === 'local_save_pending'
-      ) continue
+      const [taskId] = terminalKey.split(':')
+      const pending = pendingDeviceExports[taskId]
+      if (!pending || ['saving', 'saved', 'save_failed'].includes(pending.state)) continue
       const task = publicDeviceTasks.value.find((item) => item.id === taskId)
       try {
         const result = await getDeviceExportTask(taskId)
         if (result.task_status === 'COMPLETED') {
           const artifact = task?.artifact_download
           if (!artifact || !result.available) {
-            localSaveStatuses[taskId] = 'artifact_ready'
-            ElMessage.error(actionValue === 'export_template'
-              ? '模板任务已完成，但未生成可下载文件，请重新导出。'
-              : '导出任务已完成，但未找到可下载文件。')
+            schedulePendingDeviceExportRetry()
             continue
           }
-          localSaveStatuses[taskId] = 'artifact_ready'
-          console.info(`EXPORT_ARTIFACT_READY task_id=${taskId}`)
-          await saveDeviceCsvArtifact(artifact, result, actionValue)
+          pending.artifact = artifact
+          pending.actualRowCount = result.row_count
+          pending.state = 'artifact_ready'
+          persistPendingDeviceExports()
+          await savePendingDeviceExport(pending, result)
         } else if (result.task_status === 'CANCELLED') {
-          ElMessage.warning(actionValue === 'export_template' ? '设备导入模板导出已取消' : '设备表格导出已取消')
+          delete pendingDeviceExports[taskId]
+          persistPendingDeviceExports()
+          ElMessage.warning(pending.action === 'export_template' ? '设备导入模板导出已取消' : '设备表格导出已取消')
         } else {
-          ElMessage.error(result.message || (actionValue === 'export_template'
+          pending.state = 'save_failed'
+          pending.error = result.message || '导出任务失败'
+          persistPendingDeviceExports()
+          ElMessage.error(result.message || (pending.action === 'export_template'
             ? '设备导入模板生成失败，请查看任务日志。'
             : '设备表格导出失败'))
         }
       } catch (cause) {
-        ElMessage.error(errorMessage(
-          cause,
-          actionValue === 'export_template' ? '设备导入模板结果读取失败' : '设备表格导出结果读取失败',
-        ))
+        console.warn(`EXPORT_ARTIFACT_RECONCILE_RETRY task_id=${taskId}`)
+        schedulePendingDeviceExportRetry()
       }
     }
   },
 )
+
+function schedulePendingDeviceExportRetry(): void {
+  if (!componentActive || pendingDeviceExportRetryTimer !== null) return
+  pendingDeviceExportRetryTimer = setTimeout(() => {
+    pendingDeviceExportRetryTimer = null
+    if (componentActive) pendingDeviceExportRetryTick.value += 1
+  }, 1000)
+}
+
 const desktopHost = computed(() => getRuntimeConfig().hostType === 'electron')
 onMounted(async () => {
   document.addEventListener('click', closeContextMenu)
   window.addEventListener('resize', resizeDetailDrawer)
+  restorePendingDeviceExports()
   taskStore.acquirePolling(pollingConsumer)
   await loadDevices()
 })
@@ -395,6 +426,10 @@ onBeforeUnmount(() => {
   clearEditingProfileState()
   savedArtifactCapability.value = ''
   savedDeviceArtifactNotice.value = null
+  if (pendingDeviceExportRetryTimer !== null) {
+    clearTimeout(pendingDeviceExportRetryTimer)
+    pendingDeviceExportRetryTimer = null
+  }
   taskStore.releasePolling(pollingConsumer)
   document.removeEventListener('click', closeContextMenu)
   endDrawerResize()
@@ -538,12 +573,6 @@ async function presentTasks(
   const task = tasks[0]
   if (!task) return
   lastSubmittedTask.value = task
-  if (isDeviceExportAction(task.action)) {
-    interactiveExportTasks.value = {
-      ...interactiveExportTasks.value,
-      [task.task_id]: task,
-    }
-  }
   savedArtifactCapability.value = ''
   savedDeviceArtifactNotice.value = null
   let taskStoreRefreshed = true
@@ -572,85 +601,85 @@ async function presentTasks(
   ElMessage.warning(`任务已提交，但${failedSteps}`)
 }
 
-async function saveDeviceCsvArtifact(
-  artifact: PublicTaskArtifact,
+async function savePendingDeviceExport(
+  pending: PendingDeviceExport,
   task: DeviceTaskReference,
-  action: DeviceExportAction,
 ): Promise<void> {
+  const artifact = pending.artifact
   if (
+    !artifact
+    ||
     task.size_bytes < 0
     || !/^[0-9a-f]{64}$/i.test(task.sha256)
     || artifact.artifact_id !== task.artifact_id
+    || artifact.size_bytes !== task.size_bytes
+    || artifact.sha256?.toLowerCase() !== task.sha256.toLowerCase()
+    || !['text/csv', 'application/csv'].includes(artifact.media_type.toLowerCase())
   ) {
-    localSaveStatuses[task.task_id] = 'local_save_failed'
+    pending.state = 'save_failed'
+    pending.error = '导出任务已完成，但文件完整性信息缺失。'
+    persistPendingDeviceExports()
     ElMessage.error('导出任务已完成，但文件完整性信息缺失。')
     return
   }
-  if (localSaveStatuses[task.task_id] === 'local_save_prompting') return
-  localSaveStatuses[task.task_id] = 'local_save_prompting'
-  console.info(`EXPORT_LOCAL_SAVE_REQUESTED task_id=${task.task_id}`)
+  if (pending.state === 'saving') return
+  pending.state = 'saving'
+  pending.error = ''
+  persistPendingDeviceExports()
+  console.info(`EXPORT_LOCAL_SAVE_REQUESTED task_id=${pending.taskId}`)
   let result
   try {
     result = await downloadBackendResource({
       apiPath: artifact.api_path,
-      query: artifact.query,
-      suggestedName: artifact.display_name,
+      query: { ...artifact.query },
+      suggestedName: pending.suggestedName,
+      destinationPath: pending.destinationPath,
       expectedSizeBytes: task.size_bytes,
       expectedSha256: task.sha256,
     })
   } catch (cause) {
-    localSaveStatuses[task.task_id] = 'local_save_failed'
-    console.info(`EXPORT_LOCAL_SAVE_RESULT failed task_id=${task.task_id}`)
-    ElMessage.error(errorMessage(cause, '本地保存组件不可用，请重新检测后重试。'))
+    markPendingExportSaveFailed(pending, errorMessage(cause, '本地保存组件不可用，请重新检测后重试。'))
     return
   }
-  if (result.status === 'cancelled') {
-    localSaveStatuses[task.task_id] = 'local_save_cancelled'
-    console.info(`EXPORT_LOCAL_SAVE_RESULT cancelled task_id=${task.task_id}`)
-    ElMessage.warning(action === 'export_template'
-      ? '设备导入模板已生成，但尚未保存到本地。'
-      : '设备表格已生成，但尚未保存到本地。')
+  if (result.status !== 'saved') {
+    markPendingExportSaveFailed(
+      pending,
+      result.status === 'failed'
+        ? result.error || '无法写入所选目录。'
+        : '桌面保存未返回已落盘结果，请重新选择保存位置。',
+    )
     return
   }
-  if (result.status === 'started') {
-    localSaveStatuses[task.task_id] = 'local_save_pending'
-    console.info(`EXPORT_LOCAL_SAVE_RESULT started task_id=${task.task_id}`)
-    ElMessage.info('文件已交由浏览器下载，请在浏览器下载记录中查看。')
-    return
-  }
-  if (result.status === 'failed') {
-    localSaveStatuses[task.task_id] = 'local_save_failed'
-    console.info(`EXPORT_LOCAL_SAVE_RESULT failed task_id=${task.task_id}`)
-    ElMessage.error(result.error || (action === 'export_template'
-      ? '设备导入模板保存失败，请在任务中心重新保存。'
-      : '设备表格保存失败，请在任务中心重新保存。'))
-    return
-  }
-  localSaveStatuses[task.task_id] = 'local_save_saved'
-  console.info(`EXPORT_LOCAL_SAVE_RESULT saved task_id=${task.task_id}`)
+  pending.state = 'saved'
+  pending.actualRowCount = task.row_count ?? 0
+  pending.fileName = result.fileName || pending.fileName
+  pending.directoryLabel = pending.directoryLabel || result.directoryLabel || '用户选择的目录'
+  pending.error = ''
+  persistPendingDeviceExports()
+  console.info(`EXPORT_LOCAL_SAVE_RESULT saved task_id=${pending.taskId}`)
   savedArtifactCapability.value = result.capabilityId || ''
   savedDeviceArtifactNotice.value = {
-    title: action === 'export_template' ? '设备导入模板生成完成' : '设备表格导出完成',
-    description: action === 'export_template'
-      ? `文件：${artifact.display_name}；已保存到 Windows“另存为”窗口中选择的位置。`
-      : `共导出 ${task.row_count ?? 0} 台设备；文件：${artifact.display_name}；已保存到 Windows“另存为”窗口中选择的位置。`,
+    title: pending.action === 'export_template' ? '设备导入模板已保存' : '设备表格导出完成',
+    description: pending.action === 'export_template'
+      ? `文件：${pending.fileName}；位置：${pending.directoryLabel}`
+      : `范围：${deviceExportScopeLabel(pending)}；实际导出 ${task.row_count ?? 0} 台；文件：${pending.fileName}；位置：${pending.directoryLabel}`,
   }
-  ElMessage.success(action === 'export_template'
-    ? '设备导入模板生成完成'
+  ElMessage.success(pending.action === 'export_template'
+    ? '设备导入模板已保存'
     : `设备表格导出完成，共 ${task.row_count ?? 0} 台设备`)
 }
 
-function isDeviceExportAction(value: string): value is DeviceExportAction {
-  return value === 'export_csv' || value === 'export_template'
+function markPendingExportSaveFailed(pending: PendingDeviceExport, message: string): void {
+  pending.state = 'save_failed'
+  pending.error = message
+  persistPendingDeviceExports()
+  console.info(`EXPORT_LOCAL_SAVE_RESULT failed task_id=${pending.taskId}`)
+  ElMessage.error(message)
 }
 
-function isInteractiveExportActive(action: DeviceExportAction): boolean {
-  return Object.values(interactiveExportTasks.value).some((submitted) => {
-    if (submitted.action !== action) return false
-    const task = publicDeviceTasks.value.find((item) => item.id === submitted.task_id)
-    return task
-      ? activeTaskStatuses.has(task.status)
-      : activeTaskStatuses.has(submitted.task_status as TaskStatus)
+function isPendingExportActive(action: DeviceExportAction): boolean {
+  return Object.values(pendingDeviceExports).some((pending) => {
+    return pending.action === action && ['task_running', 'artifact_ready', 'saving'].includes(pending.state)
   })
 }
 
@@ -658,26 +687,17 @@ async function downloadLatestArtifact(): Promise<void> {
   const latestTask = latestDeviceTask.value
   const artifact = latestTask?.artifact_download
   if (!artifact) return
-  const action = deviceExportActionForTask(latestTask)
-  if (action) {
-    await saveDeviceCsvArtifact(artifact, {
-      task_id: latestTask.id,
-      task_status: latestTask.status,
-      action,
-      artifact_id: artifact.artifact_id,
-      available: true,
-      sha256: artifact.sha256 || '',
-      size_bytes: artifact.size_bytes,
-      ...(latestTask.records_count === null ? {} : { row_count: latestTask.records_count }),
-      message: latestTask.message,
-    }, action)
+  const pending = pendingDeviceExports[latestTask.id]
+  if (pending) {
+    pending.artifact = artifact
+    await retryPendingDeviceExport(pending)
     return
   }
   const templateArtifact = latestTask.type.includes('template_csv')
   savedArtifactCapability.value = ''
   const result = await downloadBackendResource({
     apiPath: artifact.api_path,
-    query: artifact.query,
+    query: { ...artifact.query },
     suggestedName: artifact.display_name,
     ...(artifact.size_bytes >= 0 && /^[0-9a-f]{64}$/i.test(artifact.sha256 || '')
       ? {
@@ -704,20 +724,82 @@ async function downloadLatestArtifact(): Promise<void> {
   }
 }
 
-function deviceExportActionForTask(task: DevicePublicTask): DeviceExportAction | null {
-  if (task.type === 'web_export_device_csv') return 'export_csv'
-  if (task.type === 'web_export_device_template_csv') return 'export_template'
-  return null
+async function retryPendingDeviceExport(pending: PendingDeviceExport): Promise<void> {
+  if (!pending.artifact) {
+    ElMessage.error('Artifact 尚未就绪，请在任务中心查看。')
+    return
+  }
+  const destination = await chooseDeviceExportDestination(pending.fileName || pending.suggestedName)
+  if (!destination) return
+  pending.destinationPath = destination.path
+  pending.fileName = destination.fileName
+  pending.directoryLabel = destination.directoryLabel
+  pending.suggestedName = destination.fileName
+  pending.state = 'artifact_ready'
+  pending.error = ''
+  persistPendingDeviceExports()
+  const result = await getDeviceExportTask(pending.taskId)
+  await savePendingDeviceExport(pending, result)
 }
 
-function localSaveStatusLabel(status: LocalSaveStatus | ''): string {
-  if (status === 'local_save_saved') return '已保存到本地'
-  if (status === 'local_save_prompting') return '正在打开另存为'
-  if (status === 'local_save_cancelled') return '尚未保存到本地'
-  if (status === 'local_save_failed') return '本地保存失败，可重新保存'
-  if (status === 'local_save_pending') return '浏览器下载已开始，尚未确认本地文件'
-  if (status === 'artifact_ready') return 'Artifact 已生成，尚未保存到本地'
+function localSaveStatusLabel(status: PendingDeviceExportState | 'manual_ready' | ''): string {
+  if (status === 'task_running') return '正在生成 Artifact'
+  if (status === 'artifact_ready') return 'Artifact 已生成，等待写入所选位置'
+  if (status === 'saving') return '正在写入并校验本地文件'
+  if (status === 'saved') return '已保存到本地'
+  if (status === 'save_failed') return '本地保存失败，可重新选择位置'
+  if (status === 'manual_ready') return 'Artifact 可另存'
   return ''
+}
+
+function deviceExportScopeLabel(pending: PendingDeviceExport): string {
+  if (pending.scope === 'selected') return `已选择 ${pending.requestedRowCount} 台`
+  if (pending.scope === 'filtered_all') return `当前筛选结果全部 ${pending.requestedRowCount} 台`
+  return '设备导入模板'
+}
+
+function persistPendingDeviceExports(): void {
+  if (typeof window === 'undefined') return
+  const entries = Object.values(pendingDeviceExports)
+    .filter((pending) => pending.state !== 'saved')
+  if (entries.length) window.sessionStorage.setItem(PENDING_DEVICE_EXPORTS_KEY, JSON.stringify(entries))
+  else window.sessionStorage.removeItem(PENDING_DEVICE_EXPORTS_KEY)
+}
+
+function restorePendingDeviceExports(): void {
+  if (typeof window === 'undefined') return
+  const raw = window.sessionStorage.getItem(PENDING_DEVICE_EXPORTS_KEY)
+  if (!raw) return
+  try {
+    const values = JSON.parse(raw)
+    if (!Array.isArray(values)) throw new Error('invalid pending export state')
+    for (const value of values) {
+      if (!isRestorablePendingDeviceExport(value)) continue
+      pendingDeviceExports[value.taskId] = {
+        ...value,
+        state: value.state === 'saving' ? 'task_running' : value.state,
+      }
+    }
+  } catch {
+    window.sessionStorage.removeItem(PENDING_DEVICE_EXPORTS_KEY)
+  }
+}
+
+function isRestorablePendingDeviceExport(value: unknown): value is PendingDeviceExport {
+  if (!value || typeof value !== 'object') return false
+  const record = value as Record<string, unknown>
+  return typeof record.taskId === 'string'
+    && /^[A-Za-z0-9_-]{1,200}$/.test(record.taskId)
+    && ['export_csv', 'export_template'].includes(String(record.action))
+    && typeof record.destinationPath === 'string'
+    && record.destinationPath.length > 0
+    && typeof record.suggestedName === 'string'
+    && typeof record.fileName === 'string'
+    && typeof record.directoryLabel === 'string'
+    && Number.isSafeInteger(record.requestedRowCount)
+    && Number(record.requestedRowCount) >= 0
+    && ['selected', 'filtered_all', 'template'].includes(String(record.scope))
+    && ['task_running', 'artifact_ready', 'saving', 'save_failed'].includes(String(record.state))
 }
 
 async function useSavedArtifact(reveal: boolean): Promise<void> {
@@ -1237,9 +1319,13 @@ function closeImportDialog(): void {
   if (importFileInput.value) importFileInput.value.value = ''
 }
 
-function currentExportFilters(includeCredentials = false): DeviceExportRequest {
+function currentExportFilters(
+  scope: Exclude<DeviceExportScope, 'template'> = selectedUuids.value.length ? 'selected' : 'filtered_all',
+  includeCredentials = false,
+): DeviceExportRequest {
   return {
-    device_uuids: selectedUuids.value,
+    device_uuids: scope === 'selected' ? [...selectedUuids.value] : [],
+    export_scope: scope,
     search: filters.search,
     vendor: filters.vendor,
     device_type: filters.device_type,
@@ -1250,18 +1336,40 @@ function currentExportFilters(includeCredentials = false): DeviceExportRequest {
 
 async function exportCsv(includeCredentials = false): Promise<void> {
   if (csvExportActive.value) return
-  csvExportSubmitting.value = true
   try {
     if (includeCredentials) {
       if (!await confirm({ type: 'SECURITY', title: '导出含凭据的 CSV', message: '导出文件将包含设备登录凭据。请仅保存到受控目录并妥善保管，是否继续？', confirmText: '确认导出', acknowledgementText: '我已确认导出目录受控并会妥善保管文件', requireAcknowledgement: true })) return
     }
-    await presentTasks(
-      [await startDeviceCsvExport(currentExportFilters(includeCredentials))],
-      'CSV 导出任务已提交',
-      false,
-    )
+    csvExportIncludeCredentials.value = includeCredentials
+    csvExportScope.value = selectedUuids.value.length ? 'selected' : 'filtered_all'
+    csvExportScopeVisible.value = true
   } catch (cause) {
     if (cause === 'cancel' || cause === 'close') return
+    ElMessage.error(errorMessage(cause, 'CSV 导出失败'))
+  }
+}
+
+async function confirmCsvExportScope(): Promise<void> {
+  if (csvExportScope.value === 'selected' && !selectedUuids.value.length) {
+    ElMessage.warning('请先选择要导出的设备')
+    return
+  }
+  const scope = csvExportScope.value
+  const requestedRowCount = scope === 'selected' ? selectedUuids.value.length : pageData.value.total
+  csvExportScopeVisible.value = false
+  const destination = await chooseDeviceExportDestination(deviceCsvSuggestedName())
+  if (!destination) return
+  csvExportSubmitting.value = true
+  try {
+    const task = await startDeviceCsvExport(currentExportFilters(scope, csvExportIncludeCredentials.value))
+    registerPendingDeviceExport(task, {
+      action: 'export_csv',
+      destination,
+      requestedRowCount,
+      scope,
+    })
+    await presentTasks([task], 'CSV 导出任务已提交，完成后将写入所选位置', false)
+  } catch (cause) {
     ElMessage.error(errorMessage(cause, 'CSV 导出失败'))
   } finally {
     csvExportSubmitting.value = false
@@ -1270,14 +1378,88 @@ async function exportCsv(includeCredentials = false): Promise<void> {
 
 async function exportTemplate(): Promise<void> {
   if (templateExportActive.value) return
+  const destination = await chooseDeviceExportDestination(deviceTemplateSuggestedName())
+  if (!destination) return
   templateExportSubmitting.value = true
   try {
-    await presentTasks([await startDeviceTemplateExport()], '模板导出任务已提交', false)
+    const task = await startDeviceTemplateExport()
+    registerPendingDeviceExport(task, {
+      action: 'export_template',
+      destination,
+      requestedRowCount: 0,
+      scope: 'template',
+    })
+    await presentTasks([task], '模板导出任务已提交，完成后将写入所选位置', false)
   } catch (cause) {
     ElMessage.error(errorMessage(cause, '模板导出失败'))
   } finally {
     templateExportSubmitting.value = false
   }
+}
+
+function registerPendingDeviceExport(
+  task: DeviceTaskReference,
+  values: {
+    action: DeviceExportAction
+    destination: { path: string; fileName: string; directoryLabel: string }
+    requestedRowCount: number
+    scope: DeviceExportScope
+  },
+): void {
+  pendingDeviceExports[task.task_id] = {
+    taskId: task.task_id,
+    action: values.action,
+    destinationPath: values.destination.path,
+    suggestedName: values.destination.fileName,
+    fileName: values.destination.fileName,
+    directoryLabel: values.destination.directoryLabel,
+    requestedRowCount: values.requestedRowCount,
+    scope: values.scope,
+    state: 'task_running',
+  }
+  persistPendingDeviceExports()
+}
+
+async function chooseDeviceExportDestination(
+  suggestedName: string,
+): Promise<{ path: string; fileName: string; directoryLabel: string } | null> {
+  const result = await getPlatformAdapter().chooseSavePath({
+    suggestedName,
+    filters: [{ name: 'CSV 文件', extensions: ['csv'] }],
+  })
+  if (result.cancelled || !result.path) return null
+  return {
+    path: result.path,
+    fileName: selectedFileName(result.path) || suggestedName,
+    directoryLabel: selectedDirectoryLabel(result.path),
+  }
+}
+
+function deviceCsvSuggestedName(): string {
+  return `${safeExportFilePart(pageData.value.site_name || '当前局点')}-设备表-${localTimestamp()}.csv`
+}
+
+function deviceTemplateSuggestedName(): string {
+  return `${safeExportFilePart(pageData.value.site_name || '当前局点')}-设备导入模板.csv`
+}
+
+function safeExportFilePart(value: string): string {
+  return value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim() || '当前局点'
+}
+
+function localTimestamp(now = new Date()): string {
+  const value = (number: number) => String(number).padStart(2, '0')
+  return `${now.getFullYear()}${value(now.getMonth() + 1)}${value(now.getDate())}_${value(now.getHours())}${value(now.getMinutes())}${value(now.getSeconds())}`
+}
+
+function selectedFileName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() || ''
+}
+
+function selectedDirectoryLabel(path: string): string {
+  const normalized = path.replace(/[\\/]+$/, '')
+  const separator = Math.max(normalized.lastIndexOf('\\'), normalized.lastIndexOf('/'))
+  return separator > 0 ? normalized.slice(0, separator) : '用户选择的目录'
 }
 
 function openSecureCrtExport(): void {
@@ -1556,7 +1738,11 @@ function errorMessage(cause: unknown, fallback: string): string {
 
     <el-alert
       :title="`设备任务 · 运行中 ${activeDeviceTaskCount} 项 / 失败任务 ${failedDeviceTaskCount} 项`"
-      :description="latestDeviceTask ? `${latestDeviceTask.name || latestDeviceTask.type} · ${latestDeviceTask.status} · ${latestArtifactSaveStatus ? localSaveStatusLabel(latestArtifactSaveStatus) : (latestDeviceTask.message || latestDeviceTask.id)}` : '任务状态由统一任务中心恢复'"
+      :description="latestPendingExport
+        ? `${deviceExportScopeLabel(latestPendingExport)} · 目标：${latestPendingExport.fileName} · ${localSaveStatusLabel(latestPendingExport.state)}`
+        : latestDeviceTask
+          ? `${latestDeviceTask.name || latestDeviceTask.type} · ${latestDeviceTask.status} · ${latestArtifactSaveStatus ? localSaveStatusLabel(latestArtifactSaveStatus) : (latestDeviceTask.message || latestDeviceTask.id)}`
+          : '任务状态由统一任务中心恢复'"
       type="info"
       :closable="false"
       show-icon
@@ -1567,9 +1753,9 @@ function errorMessage(cause: unknown, fallback: string): string {
         v-if="latestDeviceTask?.artifact_download"
         link
         type="primary"
-        :disabled="latestArtifactSaveStatus === 'local_save_prompting'"
+        :disabled="latestArtifactSaveStatus === 'saving'"
         @click="downloadLatestArtifact"
-      >{{ latestArtifactSaveStatus === 'local_save_saved' ? '再次另存为' : '保存到本地' }}</el-button>
+      >{{ latestPendingExport?.state === 'save_failed' ? '重新保存' : latestPendingExport?.state === 'saved' ? '再次另存为' : '另存 Artifact' }}</el-button>
       <el-button v-if="desktopHost && savedArtifactCapability" link type="primary" @click="useSavedArtifact(false)">打开文件</el-button>
       <el-button v-if="desktopHost && savedArtifactCapability" link type="primary" @click="useSavedArtifact(true)">所在目录</el-button>
     </el-alert>
@@ -1622,6 +1808,43 @@ function errorMessage(cause: unknown, fallback: string): string {
         @size-change="loadDevices(true)"
       />
     </div>
+
+    <el-dialog v-model="csvExportScopeVisible" title="确认设备导出范围" width="min(560px, 94vw)">
+      <div class="export-scope-summary">
+        <span>当前局点<strong>{{ pageData.site_name || '当前局点' }}</strong></span>
+        <span>当前筛选结果<strong>{{ pageData.total }} 台</strong></span>
+        <span>当前已选择<strong>{{ selectedUuids.length }} 台</strong></span>
+      </div>
+      <div class="export-scope-options" role="radiogroup" aria-label="导出范围">
+        <button
+          v-if="selectedUuids.length"
+          data-testid="device-export-scope-selected"
+          type="button"
+          role="radio"
+          :aria-checked="csvExportScope === 'selected'"
+          :class="{ active: csvExportScope === 'selected' }"
+          @click="csvExportScope = 'selected'"
+        >
+          <strong>已选择的 {{ selectedUuids.length }} 台</strong>
+          <span>仅导出当前明确勾选的设备</span>
+        </button>
+        <button
+          data-testid="device-export-scope-filtered-all"
+          type="button"
+          role="radio"
+          :aria-checked="csvExportScope === 'filtered_all'"
+          :class="{ active: csvExportScope === 'filtered_all' }"
+          @click="csvExportScope = 'filtered_all'"
+        >
+          <strong>当前筛选结果全部 {{ pageData.total }} 台</strong>
+          <span>跨页导出，不受当前页分页限制</span>
+        </button>
+      </div>
+      <template #footer>
+        <el-button @click="csvExportScopeVisible = false">取消</el-button>
+        <el-button data-testid="confirm-device-export-scope" type="primary" :loading="csvExportSubmitting" @click="confirmCsvExportScope">选择保存位置</el-button>
+      </template>
+    </el-dialog>
 
     <div v-if="contextMenu.visible && contextMenu.row" class="device-context-menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @click.stop>
       <button type="button" @click="openDetail(contextMenu.row); closeContextMenu()">详情</button>
@@ -1804,6 +2027,13 @@ function errorMessage(cause: unknown, fallback: string): string {
 .action-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 14px; margin-bottom: 14px; }
 .action-bar > span { margin-right: 4px; color: var(--nc-text-secondary); font-size: 13px; }
 .task-summary { margin-bottom: 14px; }
+.export-scope-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
+.export-scope-summary span { display: grid; gap: 4px; color: var(--nc-text-secondary); font-size: 13px; }
+.export-scope-summary strong { color: var(--nc-text-primary); font-size: 15px; }
+.export-scope-options { display: grid; gap: 8px; }
+.export-scope-options button { display: grid; gap: 4px; width: 100%; min-height: 62px; padding: 10px 12px; border: 1px solid var(--nc-border); border-radius: 6px; background: var(--nc-surface); color: var(--nc-text-primary); text-align: left; cursor: pointer; }
+.export-scope-options button.active { border-color: var(--el-color-primary); background: var(--el-color-primary-light-9); box-shadow: inset 3px 0 0 var(--el-color-primary); }
+.export-scope-options button span { color: var(--nc-text-secondary); font-size: 13px; }
 .table-card { display: flex; min-height: 0; flex: 1; flex-direction: column; padding: 0 0 12px; overflow: hidden; }
 .device-table-host { display: flex; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }
 .device-table-host > .el-empty { flex: 1; }
@@ -1839,5 +2069,5 @@ function errorMessage(cause: unknown, fallback: string): string {
 .import-file-picker { display: flex; align-items: center; gap: 12px; margin-top: 18px; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (max-width: 1280px) { .filters { grid-template-columns: repeat(3, minmax(150px, 1fr)); } }
-@media (max-width: 760px) { .device-management { height: auto; min-height: 100%; overflow: visible; } .table-card { min-height: 55dvh; flex: none; } .filters, .form-grid, .form-grid.two-columns { grid-template-columns: 1fr; } .page-heading { align-items: flex-start; } }
+@media (max-width: 760px) { .device-management { height: auto; min-height: 100%; overflow: visible; } .table-card { min-height: 55dvh; flex: none; } .filters, .form-grid, .form-grid.two-columns, .export-scope-summary { grid-template-columns: 1fr; } .page-heading { align-items: flex-start; } }
 </style>

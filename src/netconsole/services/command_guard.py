@@ -46,25 +46,14 @@ DEVICE_INVENTORY_MOBILE_ROUTER_COMMAND_SEQUENCE = (
     "display interface",
 )
 DEVICE_INVENTORY_ZTE_SWITCH_COMMAND_SEQUENCE = (
-    "terminal length 0",
-    "show running-config | include hostname",
     "show version",
-    "show hardware",
-    "show serial-number",
-    "show interface",
     "show interface brief",
-    "show optical-inform brief",
-    "show optical-inform detail",
-    "show lldp neighbor brief",
-    "show lldp entry",
-    "show running-config",
-    "show startup-config",
+    "show opticalinfo brief",
 )
 SAFE_DEVICE_INVENTORY_COLLECT_COMMANDS = frozenset(
     DEVICE_INVENTORY_COLLECT_COMMAND_SEQUENCE
     + DEVICE_INVENTORY_MOBILE_ROUTER_COMMAND_SEQUENCE
     + DEVICE_INVENTORY_ZTE_SWITCH_COMMAND_SEQUENCE
-    + ("show system-info",)
 )
 
 SAFE_AC_COMMANDS = SAFE_DEVICE_COMMANDS | {
@@ -140,6 +129,26 @@ SAFE_OPTICAL_REFRESH_COMMANDS = {
     "display interface brief",
 }
 
+SAFE_TRACKSIDE_SWITCH_COLLECT_COMMANDS = {
+    "screen-length disable",
+    "display lldp neighbor-information list",
+    "display transceiver diagnosis interface",
+    "display interface brief",
+    "show version",
+    "show interface brief",
+    "show opticalinfo brief",
+}
+
+SAFE_SWITCH_VENDOR_SAMPLE_COMMANDS = {
+    "show version",
+    "show interface brief",
+    "show opticalinfo brief",
+    "show lldp entry",
+    "show lldp neighbor",
+    "show lldp neighbors",
+    "show lldp config",
+}
+
 SAFE_CONFIG_LIFECYCLE_COMMANDS = {
     "screen-length d",
     "screen-length disable",
@@ -203,6 +212,8 @@ CONTEXT_COMMANDS = {
     "fit_ap_collect": SAFE_FIT_AP_COMMANDS,
     "fit_ap_optical_collect": SAFE_FIT_AP_OPTICAL_COMMANDS,
     "optical_refresh": SAFE_OPTICAL_REFRESH_COMMANDS,
+    "trackside_switch_collect": SAFE_TRACKSIDE_SWITCH_COLLECT_COMMANDS,
+    "switch_vendor_sample_collect": SAFE_SWITCH_VENDOR_SAMPLE_COMMANDS,
     "config_lifecycle": SAFE_CONFIG_LIFECYCLE_COMMANDS,
     "diagnostic_download": SAFE_DIAGNOSTIC_DOWNLOAD_COMMANDS,
     "file_management": SAFE_FILE_MANAGEMENT_COMMANDS,
@@ -261,7 +272,6 @@ PIPE_ALLOWLIST = {
     "display ip https | include port",
     "display wlan ap all radio verbose filter bbssid",
     "display current-configuration | include info-center",
-    "show running-config | include hostname",
 }
 DANGEROUS_ALLOWLIST_EXCEPTIONS = {
     "display boot-loader",
@@ -273,7 +283,25 @@ DANGEROUS_ALLOWLIST_EXCEPTIONS = {
     "save force",
     "show interface",
     "show interface brief",
-    "show startup-config",
+}
+READ_ONLY_DYNAMIC_PATTERNS = {
+    "trackside_switch_collect": tuple(
+        re.compile(pattern)
+        for pattern in (
+            r"show interface [a-z][a-z0-9./:_-]{0,79}",
+            r"show opticalinfo [a-z][a-z0-9./:_-]{0,79}",
+        )
+    ),
+    "switch_vendor_sample_collect": tuple(
+        re.compile(pattern)
+        for pattern in (
+            r"show interface [a-z][a-z0-9./:_-]{0,79}",
+            r"show opticalinfo [a-z][a-z0-9./:_-]{0,79}",
+            r"show lldp config interface [a-z][a-z0-9./:_-]{0,79}",
+            r"show lldp entry interface [a-z][a-z0-9./:_-]{0,79}",
+            r"show lldp neighbor interface [a-z][a-z0-9./:_-]{0,79}",
+        )
+    ),
 }
 
 
@@ -293,7 +321,11 @@ def command_reject_reason(command: str, context: str) -> str | None:
         return "semicolon is not allowed"
     if "|" in normalized and normalized not in PIPE_ALLOWLIST:
         return "pipe is not allowed for this command"
-    if normalized not in DANGEROUS_ALLOWLIST_EXCEPTIONS:
+    dynamic_allowed = any(
+        pattern.fullmatch(normalized)
+        for pattern in READ_ONLY_DYNAMIC_PATTERNS.get(context, ())
+    )
+    if normalized not in DANGEROUS_ALLOWLIST_EXCEPTIONS and not dynamic_allowed:
         for pattern in DANGEROUS_PATTERNS:
             if re.search(pattern, normalized):
                 return f"dangerous command keyword matched: {pattern}"
@@ -302,7 +334,7 @@ def command_reject_reason(command: str, context: str) -> str | None:
         return f"unknown command context: {context}"
     if context == "device.sftp.enable" and normalized.startswith("ssh user "):
         return None
-    if normalized not in allowed:
+    if normalized not in allowed and not dynamic_allowed:
         return f"command is not in whitelist for context: {context}"
     return None
 

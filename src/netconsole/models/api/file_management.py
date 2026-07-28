@@ -99,6 +99,21 @@ class FileRemoteDeviceDTO(ApiModel):
     station: str = ""
 
 
+class FileConnectionAttemptDTO(ApiModel):
+    connection_method: str
+    target_role: str = ""
+    target_host: str = ""
+    target_port: int = Field(default=0, ge=0, le=65535)
+    tunnel_label: str = ""
+    jump_host: str = ""
+    jump_port: int = Field(default=0, ge=0, le=65535)
+    success: bool = False
+    failure_stage: str = ""
+    error_code: str = ""
+    message: str = ""
+    elapsed_ms: int = Field(default=0, ge=0)
+
+
 class FileConnectionDTO(ApiModel):
     connection_id: str = Field(pattern=r"^fc1_[0-9a-f]{32}$")
     device_id: str
@@ -108,6 +123,15 @@ class FileConnectionDTO(ApiModel):
     current_entry_id: str = Field(pattern=r"^fe1_[0-9a-f]{32}$")
     current_label: str = ""
     message: str = ""
+    connection_method: str = ""
+    target_role: str = ""
+    target_host: str = ""
+    target_port: int = Field(default=0, ge=0, le=65535)
+    via_tunnel: bool = False
+    tunnel_label: str = ""
+    jump_host: str = ""
+    jump_port: int = Field(default=0, ge=0, le=65535)
+    attempts: list[FileConnectionAttemptDTO] = Field(default_factory=list)
 
 
 class RemoteFileEntryDTO(ApiModel):
@@ -214,6 +238,7 @@ class FileDownloadClearDTO(ApiModel):
 
 __all__ = [
     "DeviceFileConnectionRequestDTO",
+    "FileConnectionAttemptDTO",
     "FileConnectionDTO",
     "FileDesktopActionDTO",
     "FileDesktopActionResultDTO",

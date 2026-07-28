@@ -54,6 +54,20 @@ AP_MERGE_FIELDS = (
     "raw_payload_json",
 )
 
+_BASE_DATA_REFERENCE_METADATA_KEYS = {
+    "line_side_source",
+    "line_side_derivation_issue_code",
+    "line_side_derivation_issue_message",
+    "station_id",
+    "station_node_uid",
+    "section_id",
+    "section_name",
+    "section_code",
+    "section_generation_key",
+    "section_start_node_uid",
+    "section_end_node_uid",
+}
+
 
 class RailTransitBaseDataRollbackConflict(RuntimeError):
     pass
@@ -110,6 +124,88 @@ class RailTransitBaseDataRepository:
         with self._read_connection(path) as connection:
             self._require_table(connection)
             return self._station_reference_summary(connection, name)
+
+    def preview_clear_station_section_base_data(self, site_id: str) -> dict[str, int | str]:
+        site_id = SiteManager(self.paths).validate_site_name(site_id)
+        with self._read_connection(self._database_path(site_id)) as connection:
+            self._require_table(connection)
+            counts = self._clear_impact_counts(connection)
+        return {"site_id": site_id, "base_revision": self.base_data_revision(site_id), **counts}
+
+    def clear_station_section_base_data(
+        self, site_id: str, expected_revision: str
+    ) -> dict[str, int | str]:
+        site_id = SiteManager(self.paths).validate_site_name(site_id)
+        connection = sqlite3.connect(self._database_path(site_id), timeout=30.0)
+        connection.row_factory = sqlite3.Row
+        configure_sqlite_connection(connection, foreign_keys=True)
+        plan_deleted_count = 0
+        try:
+            self._require_table(connection)
+            connection.execute("BEGIN IMMEDIATE")
+            if self.base_data_revision(site_id) != expected_revision:
+                raise RailTransitBaseDataRevisionConflict("base data revision changed")
+            counts = self._clear_impact_counts(connection)
+            now = self._now()
+            rows = connection.execute(
+                """
+                SELECT id, raw_payload_json FROM ap_extension_points
+                WHERE COALESCE(belong_type, '') NOT IN ('__base_station__', '__base_section__')
+                  AND (
+                    COALESCE(station_name, '') != '' OR COALESCE(section_name, '') != '' OR
+                    COALESCE(section_start_station, '') != '' OR COALESCE(section_end_station, '') != '' OR
+                    COALESCE(line_side, '') != '' OR COALESCE(direction, '') != ''
+                  )
+                """
+            ).fetchall()
+            for row in rows:
+                connection.execute(
+                    """
+                    UPDATE ap_extension_points
+                    SET station_name = '', section_name = '', section_start_station = '',
+                        section_end_station = '', line_side = '', direction = '',
+                        raw_payload_json = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        self._reference_free_metadata(row["raw_payload_json"]),
+                        now,
+                        int(row["id"]),
+                    ),
+                )
+            connection.execute("DELETE FROM ap_extension_points WHERE belong_type = '__base_section__'")
+            connection.execute("DELETE FROM ap_extension_points WHERE belong_type = '__base_station__'")
+            plan_cursor = connection.execute("DELETE FROM ac_trackside_ap_plan")
+            plan_deleted_count = max(0, int(plan_cursor.rowcount))
+            remaining = connection.execute(
+                """
+                SELECT COUNT(*) FROM ap_extension_points
+                WHERE (
+                  belong_type IN ('__base_station__', '__base_section__') OR
+                  (COALESCE(belong_type, '') NOT IN ('__base_station__', '__base_section__') AND (
+                    COALESCE(station_name, '') != '' OR COALESCE(section_name, '') != '' OR
+                    COALESCE(section_start_station, '') != '' OR COALESCE(section_end_station, '') != '' OR
+                    COALESCE(line_side, '') != '' OR COALESCE(direction, '') != ''
+                  ))
+                )
+                """
+            ).fetchone()
+            if remaining is None or int(remaining[0]) != 0:
+                raise sqlite3.DatabaseError("base data clear verification failed")
+            self._assert_integrity(connection)
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return {
+            "revision": self.base_data_revision(site_id),
+            "deleted_station_count": int(counts["station_count"]),
+            "deleted_section_count": int(counts["section_count"]),
+            "unlinked_trackside_ap_count": int(counts["affected_trackside_ap_count"]),
+            "deleted_trackside_ap_plan_count": plan_deleted_count,
+        }
 
     def backup_database(self, site_id: str, target: Path) -> None:
         source_path = self._database_path(site_id)
@@ -310,6 +406,17 @@ class RailTransitBaseDataRepository:
         old_name = str(values.get("old_name") or values.get("name") or "").strip()
         name = str(values.get("name") or "").strip()
         if action == "delete":
+            formal_station = connection.execute(
+                """
+                SELECT 1 FROM ap_extension_points
+                WHERE belong_type = '__base_station__' AND station_name = ?
+                LIMIT 1
+                """,
+                (old_name,),
+            ).fetchone()
+            if formal_station is None:
+                self._delete_station_and_unlink_references(connection, old_name)
+                return
             if self._station_reference_count(connection, old_name):
                 raise RailTransitBaseDataConstraintError("站点仍被区间、轨旁 AP、关系或规划引用")
             connection.execute(
@@ -461,15 +568,8 @@ class RailTransitBaseDataRepository:
         old_end = str(values.get("old_end_station") or values.get("end_station") or "").strip()
         old_side = str(values.get("old_line_side") or values.get("line_side") or "").strip()
         if action == "delete":
-            if self._section_reference_count(connection, old_name, old_start, old_end, old_side):
-                raise RailTransitBaseDataConstraintError("区间仍被轨旁 AP 引用")
-            connection.execute(
-                """
-                DELETE FROM ap_extension_points
-                WHERE belong_type = '__base_section__' AND section_name = ?
-                  AND section_start_station = ? AND section_end_station = ? AND line_side = ?
-                """,
-                (old_name, old_start, old_end, old_side),
+            self._delete_section_and_unlink_references(
+                connection, old_name, old_start, old_end, old_side
             )
             return
         if action == "update":
@@ -504,6 +604,127 @@ class RailTransitBaseDataRepository:
                 )
         self._replace_metadata_row(connection, site_id, "section", old_name, values)
 
+    def _delete_station_and_unlink_references(
+        self, connection: sqlite3.Connection, station_name: str
+    ) -> None:
+        if not station_name:
+            raise RailTransitBaseDataConstraintError("站点名称为空，无法删除")
+        now = self._now()
+        affected_sections = {
+            str(row[0])
+            for row in connection.execute(
+                """
+                SELECT DISTINCT section_name FROM ap_extension_points
+                WHERE (section_start_station = ? OR section_end_station = ?)
+                  AND COALESCE(section_name, '') != ''
+                """,
+                (station_name, station_name),
+            ).fetchall()
+        }
+        rows = connection.execute(
+            """
+            SELECT id, station_name, section_name, section_start_station,
+                   section_end_station, line_side, direction, raw_payload_json
+            FROM ap_extension_points
+            WHERE COALESCE(belong_type, '') NOT IN ('__base_station__', '__base_section__')
+              AND (
+                station_name = ? OR section_start_station = ? OR section_end_station = ?
+                OR section_name IN (
+                  SELECT section_name FROM ap_extension_points
+                  WHERE (section_start_station = ? OR section_end_station = ?)
+                    AND COALESCE(section_name, '') != ''
+                )
+              )
+            """,
+            (station_name, station_name, station_name, station_name, station_name),
+        ).fetchall()
+        for row in rows:
+            clear_section = (
+                str(row["section_start_station"] or "") == station_name
+                or str(row["section_end_station"] or "") == station_name
+                or str(row["section_name"] or "") in affected_sections
+            )
+            connection.execute(
+                """
+                UPDATE ap_extension_points
+                SET station_name = ?, section_name = ?, section_start_station = ?,
+                    section_end_station = ?, line_side = ?, direction = ?,
+                    raw_payload_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    "" if str(row["station_name"] or "") == station_name else str(row["station_name"] or ""),
+                    "" if clear_section else str(row["section_name"] or ""),
+                    "" if clear_section else str(row["section_start_station"] or ""),
+                    "" if clear_section else str(row["section_end_station"] or ""),
+                    "" if clear_section else str(row["line_side"] or ""),
+                    "" if clear_section else str(row["direction"] or ""),
+                    self._reference_free_metadata(
+                        row["raw_payload_json"], clear_section=clear_section
+                    ),
+                    now,
+                    int(row["id"]),
+                ),
+            )
+        connection.execute(
+            """
+            DELETE FROM ap_extension_points
+            WHERE belong_type = '__base_section__'
+              AND (section_start_station = ? OR section_end_station = ?)
+            """,
+            (station_name, station_name),
+        )
+        connection.execute(
+            "DELETE FROM ap_extension_points WHERE belong_type = '__base_station__' AND station_name = ?",
+            (station_name,),
+        )
+        connection.execute(
+            "DELETE FROM ac_trackside_ap_plan WHERE station_name = ?",
+            (station_name,),
+        )
+
+    def _delete_section_and_unlink_references(
+        self,
+        connection: sqlite3.Connection,
+        section_name: str,
+        start_station: str,
+        end_station: str,
+        line_side: str,
+    ) -> None:
+        if not section_name:
+            raise RailTransitBaseDataConstraintError("区间名称为空，无法删除")
+        now = self._now()
+        rows = connection.execute(
+            """
+            SELECT id, raw_payload_json FROM ap_extension_points
+            WHERE COALESCE(belong_type, '') NOT IN ('__base_station__', '__base_section__')
+              AND section_name = ?
+            """,
+            (section_name,),
+        ).fetchall()
+        for row in rows:
+            connection.execute(
+                """
+                UPDATE ap_extension_points
+                SET section_name = '', section_start_station = '', section_end_station = '',
+                    line_side = '', direction = '', raw_payload_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    self._reference_free_metadata(row["raw_payload_json"]),
+                    now,
+                    int(row["id"]),
+                ),
+            )
+        connection.execute(
+            """
+            DELETE FROM ap_extension_points
+            WHERE belong_type = '__base_section__' AND section_name = ?
+              AND section_start_station = ? AND section_end_station = ? AND line_side = ?
+            """,
+            (section_name, start_station, end_station, line_side),
+        )
+
     def _replace_metadata_row(
         self,
         connection: sqlite3.Connection,
@@ -524,6 +745,9 @@ class RailTransitBaseDataRepository:
                 "remark",
                 "source_station_value",
                 "source_station_key",
+                "source_order_text",
+                "source_order",
+                "canonical_station_name",
                 "node_type",
                 "path_code",
                 "participates_in_direction",
@@ -817,6 +1041,45 @@ class RailTransitBaseDataRepository:
             "plan_count": plan_count,
             "total_count": total_count,
         }
+
+    @staticmethod
+    def _clear_impact_counts(connection: sqlite3.Connection) -> dict[str, int]:
+        row = connection.execute(
+            """
+            SELECT
+              SUM(CASE WHEN belong_type = '__base_station__' THEN 1 ELSE 0 END),
+              SUM(CASE WHEN belong_type = '__base_section__' THEN 1 ELSE 0 END),
+              SUM(CASE WHEN COALESCE(belong_type, '') NOT IN ('__base_station__', '__base_section__')
+                AND (
+                  COALESCE(station_name, '') != '' OR COALESCE(section_name, '') != '' OR
+                  COALESCE(section_start_station, '') != '' OR COALESCE(section_end_station, '') != '' OR
+                  COALESCE(line_side, '') != '' OR COALESCE(direction, '') != ''
+                ) THEN 1 ELSE 0 END)
+            FROM ap_extension_points
+            """
+        ).fetchone()
+        return {
+            "station_count": int(row[0] or 0),
+            "section_count": int(row[1] or 0),
+            "affected_trackside_ap_count": int(row[2] or 0),
+        }
+
+    @staticmethod
+    def _reference_free_metadata(raw: Any, *, clear_section: bool = True) -> str:
+        if raw in (None, ""):
+            return "{}"
+        try:
+            metadata = json.loads(str(raw))
+        except (TypeError, ValueError) as exc:
+            raise sqlite3.DatabaseError("轨旁 AP 派生元数据格式无效，无法安全清空") from exc
+        if not isinstance(metadata, dict):
+            raise sqlite3.DatabaseError("轨旁 AP 派生元数据格式无效，无法安全清空")
+        keys = _BASE_DATA_REFERENCE_METADATA_KEYS
+        if not clear_section:
+            keys = {"station_id", "station_node_uid"}
+        for key in keys:
+            metadata.pop(key, None)
+        return json.dumps(metadata, ensure_ascii=False, sort_keys=True)
 
     @staticmethod
     def _section_reference_count(

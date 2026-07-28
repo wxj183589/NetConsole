@@ -41,12 +41,16 @@ _ALLOWED_CAPABILITY_STATES = {
     "unsupported",
     "not_applicable",
     "unverified",
+    "document_sample_only",
+    "sample_required",
+    "not_verified",
 }
 _ALLOWED_VALIDATION_LEVELS = {
     "validated",
     "locally_observed",
     "registered_pending_field_validation",
     "experimental",
+    "document_sample_only",
 }
 _CATALOG_KEYS = {"schema_version", "profiles"}
 _PROFILE_KEYS = {
@@ -180,7 +184,7 @@ class DeviceCompatibilityService:
 
     def summary(self) -> dict[str, object]:
         profiles = self.profiles()
-        platforms = sorted({f"Comware V{profile.platform_major_version}" for profile in profiles})
+        platforms = sorted({_profile_platform_label(profile) for profile in profiles})
         roles = sorted({_ROLE_DISPLAY.get(profile.device_role, profile.display_role) for profile in profiles})
         levels = sorted({profile.validation_level for profile in profiles})
         return {
@@ -189,14 +193,14 @@ class DeviceCompatibilityService:
             "platforms": platforms,
             "roles": roles,
             "validation_levels": levels,
-            "statement": "当前代码内置兼容基线主要面向 H3C Comware V7 / V9、H3C 无线控制器、H3C 交换机和车载 MR（Cloud AP）。",
+            "statement": "当前代码内置兼容基线面向 H3C Comware V7/V9，并登记 ZTE ZXR10 5960X-ES V2 第一阶段轨旁交换机框架。",
             "disclaimer": "本地扫描候选不会显示到普通用户首页；已登记基线也不等于所有型号和 Release 均已完成现场验证。",
             "profiles": [
                 {
                     "profile_id": profile.profile_id,
                     "vendor": profile.vendor,
                     "device_role": profile.display_role,
-                    "platform": f"Comware V{profile.platform_major_version}",
+                    "platform": _profile_platform_label(profile),
                     "validation_level": profile.validation_level,
                     "capabilities": profile.capabilities,
                 }
@@ -392,6 +396,12 @@ def _parse_profile(row: object) -> DeviceCompatibilityProfile:
     if profile.device_role == "unknown" or profile.platform_family == "unknown":
         raise DeviceCompatibilityError(f"{profile.profile_id}: role/platform 不明确")
     return profile
+
+
+def _profile_platform_label(profile: DeviceCompatibilityProfile) -> str:
+    family = str(profile.platform_family or "").strip()
+    label = "Comware" if family.casefold() == "comware" else family.upper()
+    return f"{label} V{profile.platform_major_version}"
 
 
 def _validate_profiles(profiles: tuple[DeviceCompatibilityProfile, ...]) -> None:

@@ -1,0 +1,9 @@
+ZXR10#show opticalinfo brief
+Interface Type Wavelength RxPower(dBm) TxPower(dBm) Status
+xgei-0/1/1/1 offline
+xgei-0/1/1/2 10G-300m-SFP+ 850nm -11.9/[-11.1,0.5] -2.8/[-7.3,-1.0] Unknown
+xgei-0/1/1/3 10G-10km-SFP+ 1310nm -8.2/[-14.4,0.5] -2.1/[-8.2,0.5] Normal
+xgei-0/1/1/4 10G-10km-SFP+ 1310nm -18.2/[-14.4,0.5] -2.1/[-8.2,0.5] Abnormal
+--More--
+xgei-0/1/1/5 10G-10km-SFP+ 1310nm N/A/[-14.4,0.5] N/A/[-8.2,0.5] Unknown
+ZXR10#

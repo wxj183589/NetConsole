@@ -79,6 +79,7 @@ from netconsole.services.job_center.task_application_service import (
     TaskApplicationService,
 )
 from netconsole.services.online_mr.errors import OnlineMrWebControlError
+from netconsole.services.export.common_exporters import export_device_csv
 
 
 class _CapturingProcessAdapter:
@@ -597,6 +598,32 @@ def test_edit_profile_and_write_responses_do_not_build_legacy_full_detail(
     )
 
 
+def test_device_can_be_saved_with_backup_address_only(tmp_path: Path) -> None:
+    client, _service, _adapter, devices, _facts, _mr, _sw = _fixture(tmp_path)
+
+    created = client.post(
+        "/api/device-management/devices",
+        json={
+            "name": "MR-backup-only",
+            "primary_address": "",
+            "backup_address": "10.62.89.105",
+            "device_vendor": "H3C",
+            "device_type": "MR",
+            "ssh_enabled": True,
+            "ssh_username": "admin",
+            "ssh_password": "device-password",
+            "snmp_enabled": False,
+        },
+    )
+
+    assert created.status_code == 201
+    device_uuid = created.json()["device"]["device_uuid"]
+    saved = devices.get_by_uuid(device_uuid)
+    assert saved is not None
+    assert saved.primary_address == ""
+    assert saved.backup_address == "10.62.89.105"
+
+
 def test_legacy_ssh_credentials_can_be_revealed_replaced_and_saved_canonically(
     tmp_path: Path,
 ) -> None:
@@ -1037,7 +1064,7 @@ def test_connection_worker_maps_safe_failure_categories_and_phases(
     _client, service, _adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
     progress: list[tuple[object, ...]] = []
 
-    def failed_connection(_device: Device, *, phase_callback):
+    def failed_connection(_device: Device, *, phase_callback, **_kwargs):
         for stage in (
             "connecting",
             "handshaking",
@@ -1441,10 +1468,25 @@ def test_edit_form_connection_test_resolves_saved_or_ephemeral_secret_without_wr
     tmp_path: Path, monkeypatch
 ) -> None:
     client, service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
-    observed: list[str | None] = []
+    mr.tunnel1_enabled = 1
+    mr.tunnel1_host = "198.51.100.10"
+    mr.tunnel1_username = "jump-one"
+    mr.tunnel1_password = "saved-jump-one"
+    mr.tunnel2_enabled = 1
+    mr.tunnel2_host = "198.51.100.11"
+    mr.tunnel2_username = "jump-two"
+    mr.tunnel2_password = "saved-jump-two"
+    mr = _devices.update(mr)
+    observed: list[tuple[str | None, str | None, str | None]] = []
 
     def fake_connection(device: Device, **_kwargs):
-        observed.append(device.ssh_password)
+        observed.append(
+            (
+                device.ssh_password,
+                device.tunnel1_password,
+                device.tunnel2_password,
+            )
+        )
         return SimpleNamespace(
             success=True,
             status="ok",
@@ -1470,6 +1512,12 @@ def test_edit_form_connection_test_resolves_saved_or_ephemeral_secret_without_wr
         "ssh_enabled": True,
         "ssh_username": "admin",
         "telnet_enabled": False,
+        "tunnel1_enabled": False,
+        "tunnel1_host": "198.51.100.10",
+        "tunnel1_username": "jump-one",
+        "tunnel2_enabled": False,
+        "tunnel2_host": "198.51.100.11",
+        "tunnel2_username": "jump-two",
     }
 
     for request_payload, bootstrap in (
@@ -1489,6 +1537,11 @@ def test_edit_form_connection_test_resolves_saved_or_ephemeral_secret_without_wr
             assert job.job_id not in adapter.pending_bootstraps
         else:
             assert job.params["credential_sources"]["ssh_password"] == "ephemeral"
+        assert job.params["credential_sources"]["tunnel1_password"] == "saved_device"
+        assert job.params["credential_sources"]["tunnel2_password"] == "saved_device"
+        assert job.params["form_device"]["tunnel_enabled"] == 1
+        assert job.params["form_device"]["tunnel1_enabled"] == 1
+        assert job.params["form_device"]["tunnel2_enabled"] == 1
         context = _RuntimeBootstrapContext(
             job,
             service.paths,
@@ -1503,8 +1556,15 @@ def test_edit_form_connection_test_resolves_saved_or_ephemeral_secret_without_wr
 
     assert cleared.status_code == 422
     assert "请输入 SSH 密码" in cleared.text
-    assert observed == ["secret-password", "temporary-password"]
-    assert _devices.get_by_uuid(str(mr.device_uuid)).ssh_password == "secret-password"
+    assert observed == [
+        ("secret-password", "saved-jump-one", "saved-jump-two"),
+        ("temporary-password", "saved-jump-one", "saved-jump-two"),
+    ]
+    saved = _devices.get_by_uuid(str(mr.device_uuid))
+    assert saved is not None
+    assert saved.ssh_password == "secret-password"
+    assert saved.tunnel1_password == "saved-jump-one"
+    assert saved.tunnel2_password == "saved-jump-two"
 
 
 def test_router_exposes_device_management_parity_endpoints_without_arbitrary_terminal_or_secret_routes(
@@ -2453,6 +2513,81 @@ def test_device_export_production_result_separates_physical_and_display_names(
     ]
     assert int(downloaded.headers["content-length"]) == result.size_bytes
     assert downloaded.headers["content-type"] == "text/csv; charset=utf-8"
+
+
+def test_device_csv_explicit_scope_exports_100_filtered_and_exactly_4_selected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, service, _adapter, devices, _facts, mr, sw = _fixture(tmp_path)
+    created = [mr, sw]
+    for index in range(98):
+        created.append(
+            devices.create(
+                Device(
+                    name=f"设备-{index + 3:03d}",
+                    primary_address=f"198.18.{index // 250}.{index % 250 + 1}",
+                    device_vendor="H3C" if index % 2 == 0 else "ZTE",
+                    device_type="SW",
+                )
+            )
+        )
+
+    captured: list[dict[str, object]] = []
+
+    def capture_export(**values):
+        captured.append(dict(values["job_payload"]))
+        return DeviceTaskReferenceDTO(
+            task_id=f"captured-export-{len(captured)}",
+            task_status="PENDING",
+            action="export_csv",
+        )
+
+    monkeypatch.setattr(service, "_start_managed_device_csv_export", capture_export)
+
+    filtered = client.post(
+        "/api/device-management/exports/csv",
+        json={
+            "export_scope": "filtered_all",
+            "device_uuids": [str(created[0].device_uuid)],
+        },
+    )
+    assert filtered.status_code == 202, filtered.text
+    filtered_payload = captured[-1]
+    assert filtered_payload["export_scope"] == "filtered_all"
+    assert filtered_payload["selected_device_uuids"] == []
+
+    selected_uuids = [str(device.device_uuid) for device in created[10:14]]
+    selected = client.post(
+        "/api/device-management/exports/csv",
+        json={"export_scope": "selected", "device_uuids": selected_uuids},
+    )
+    assert selected.status_code == 202, selected.text
+    selected_payload = captured[-1]
+    assert selected_payload["export_scope"] == "selected"
+    assert selected_payload["selected_device_uuids"] == selected_uuids
+
+    all_path = tmp_path / "all-100.csv"
+    all_count = export_device_csv(all_path, filtered_payload)
+    assert all_count == 100
+    with all_path.open("r", newline="", encoding="utf-8-sig") as handle:
+        assert len(list(csv.reader(handle))) == 101
+
+    selected_path = tmp_path / "selected-4.csv"
+    selected_count = export_device_csv(selected_path, selected_payload)
+    assert selected_count == 4
+    with selected_path.open("r", newline="", encoding="utf-8-sig") as handle:
+        selected_rows = list(csv.reader(handle))
+    assert len(selected_rows) == 5
+    assert {row[0] for row in selected_rows[1:]} == {
+        device.name for device in created[10:14]
+    }
+
+    rejected = client.post(
+        "/api/device-management/exports/csv",
+        json={"export_scope": "selected", "device_uuids": []},
+    )
+    assert rejected.status_code == 422
 
 
 def test_device_template_export_uses_managed_worker_and_empty_import_contract(

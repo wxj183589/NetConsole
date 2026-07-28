@@ -17,7 +17,16 @@ class HostKeyTrustError(RuntimeError):
 
     code = "DEVICE_FILE_HOST_KEY_UNKNOWN"
 
-    def __init__(self, message: str, details: dict[str, Any], *, key: Any | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        details: dict[str, Any],
+        *,
+        key: Any | None = None,
+        code: str | None = None,
+    ) -> None:
+        if code:
+            self.code = str(code)
         super().__init__(message)
         self.details = details
         self.key = key
@@ -37,6 +46,7 @@ class HostKeyDetails:
     port: int
     algorithm: str
     fingerprint_sha256: str
+    role: str = "target"
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -44,7 +54,33 @@ class HostKeyDetails:
             "port": self.port,
             "algorithm": self.algorithm,
             "fingerprint_sha256": self.fingerprint_sha256,
+            "host_key_role": self.role,
         }
+
+
+@dataclass(frozen=True)
+class HostKeyTrustGrant:
+    host: str
+    port: int
+    algorithm: str
+    key_bytes: bytes
+
+    @classmethod
+    def from_key(cls, host: str, port: int, key: Any) -> HostKeyTrustGrant:
+        return cls(
+            host=str(host or "").strip(),
+            port=int(port or 22),
+            algorithm=str(key.get_name()),
+            key_bytes=bytes(key.asbytes()),
+        )
+
+    def matches(self, host: str, port: int, key: Any) -> bool:
+        return (
+            self.host.casefold() == str(host or "").strip().casefold()
+            and self.port == int(port or 22)
+            and self.algorithm == str(key.get_name())
+            and self.key_bytes == bytes(key.asbytes())
+        )
 
 
 def host_key_name(host: str, port: int) -> str:
@@ -82,29 +118,54 @@ class HostKeyTrustService:
                 return found
         return None
 
-    def inspect(self, host: str, port: int, key: Any) -> HostKeyDetails:
+    def inspect(
+        self,
+        host: str,
+        port: int,
+        key: Any,
+        *,
+        role: str = "target",
+    ) -> HostKeyDetails:
         return HostKeyDetails(
             host=str(host),
             port=int(port or 22),
             algorithm=str(key.get_name()),
             fingerprint_sha256=key_fingerprint_sha256(key),
+            role=_normalize_role(role),
         )
 
-    def verify(self, host: str, port: int, key: Any) -> None:
-        details = self.inspect(host, port, key)
+    def verify(
+        self,
+        host: str,
+        port: int,
+        key: Any,
+        *,
+        role: str = "target",
+    ) -> None:
+        details = self.inspect(host, port, key, role=role)
         known = self._lookup(self._load(), details.host, details.port)
         if known is None:
             raise HostKeyChallengeError(
-                "首次连接需要确认设备主机密钥。",
+                _unknown_key_message(details.role),
                 details.as_dict(),
                 key=key,
+                code=(
+                    "DEVICE_FILE_JUMP_HOST_KEY_UNKNOWN"
+                    if details.role == "jump"
+                    else "DEVICE_FILE_TARGET_HOST_KEY_UNKNOWN"
+                ),
             )
         expected = known.get(details.algorithm)
         if expected is None or expected.asbytes() != key.asbytes():
             raise HostKeyMismatchError(
-                "设备主机密钥已变更，连接已阻止。",
+                _mismatch_key_message(details.role),
                 details.as_dict(),
                 key=key,
+                code=(
+                    "DEVICE_FILE_JUMP_HOST_KEY_MISMATCH"
+                    if details.role == "jump"
+                    else "DEVICE_FILE_TARGET_HOST_KEY_MISMATCH"
+                ),
             )
 
     def trust(self, host: str, port: int, key: Any) -> HostKeyDetails:
@@ -135,12 +196,106 @@ class HostKeyTrustService:
         return details
 
 
+def install_managed_host_key_policy(
+    client: Any,
+    trust: HostKeyTrustService,
+    host: str,
+    port: int,
+    *,
+    role: str = "target",
+    grant: HostKeyTrustGrant | tuple[HostKeyTrustGrant, ...] | None = None,
+) -> None:
+    import paramiko
+
+    checked_host = str(host or "").strip()
+    checked_port = int(port or 22)
+    if trust.path.is_file():
+        client.load_host_keys(str(trust.path))
+
+    service = trust
+
+    class _ManagedHostKeyPolicy(paramiko.MissingHostKeyPolicy):
+        def missing_host_key(self, host_client, _hostname, key):
+            grants = (
+                grant
+                if isinstance(grant, tuple)
+                else (() if grant is None else (grant,))
+            )
+            if any(
+                item.matches(checked_host, checked_port, key)
+                for item in grants
+            ):
+                host_client._host_keys.add(
+                    host_key_name(checked_host, checked_port),
+                    key.get_name(),
+                    key,
+                )
+                return
+            service.verify(
+                checked_host,
+                checked_port,
+                key,
+                role=role,
+            )
+
+    client.set_missing_host_key_policy(_ManagedHostKeyPolicy())
+
+
+def host_key_mismatch_error(
+    trust: HostKeyTrustService,
+    host: str,
+    port: int,
+    key: Any | None,
+    *,
+    role: str = "target",
+) -> HostKeyMismatchError:
+    normalized_role = _normalize_role(role)
+    details = (
+        trust.inspect(host, port, key, role=normalized_role).as_dict()
+        if key is not None
+        else {
+            "host": str(host or ""),
+            "port": int(port or 22),
+            "host_key_role": normalized_role,
+        }
+    )
+    return HostKeyMismatchError(
+        _mismatch_key_message(normalized_role),
+        details,
+        key=key,
+        code=(
+            "DEVICE_FILE_JUMP_HOST_KEY_MISMATCH"
+            if normalized_role == "jump"
+            else "DEVICE_FILE_TARGET_HOST_KEY_MISMATCH"
+        ),
+    )
+
+
+def _normalize_role(role: str) -> str:
+    return "jump" if str(role or "").casefold() == "jump" else "target"
+
+
+def _unknown_key_message(role: str) -> str:
+    if _normalize_role(role) == "jump":
+        return "首次连接需要确认跳板机主机密钥。"
+    return "首次连接需要确认目标设备主机密钥。"
+
+
+def _mismatch_key_message(role: str) -> str:
+    if _normalize_role(role) == "jump":
+        return "跳板机主机密钥已变更，连接已阻止。"
+    return "目标设备主机密钥已变更，连接已阻止。"
+
+
 __all__ = [
     "HostKeyChallengeError",
     "HostKeyDetails",
     "HostKeyMismatchError",
+    "HostKeyTrustGrant",
     "HostKeyTrustError",
     "HostKeyTrustService",
+    "host_key_mismatch_error",
     "host_key_name",
+    "install_managed_host_key_policy",
     "key_fingerprint_sha256",
 ]

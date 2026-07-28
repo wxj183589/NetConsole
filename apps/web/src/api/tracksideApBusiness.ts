@@ -2,13 +2,15 @@ import { apiRequest } from './client'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 import type {
   TracksideApBusinessPage, TracksideApPlan, TracksideApPlanPreview, TracksideApPlanRow,
-  TracksideApTask, TracksideApUpdateRequest,
+  TracksideApTask, TracksideApUpdateRequest, TracksideSwitchAdapterCatalog,
+  TracksideSwitchSampleRequest,
 } from '../types/tracksideApBusiness'
 import type { TracksideAp } from '../types/railTransitBaseData'
 
 const root = '/api/rail-transit/trackside-ap-business'
 const invalidArtifactNamePattern = /[\u0000-\u001f\u007f<>:"/\\|?*]/
 const tracksideBusinessArtifactNamePattern = /^.+_轨旁AP业务_\d{8}_\d{6}\.xlsx$/
+const switchSampleArtifactNamePattern = /^[a-z0-9._-]+-adapter-sample-[a-z0-9._-]+-\d{8}_\d{6}\.zip$/i
 
 export function listTracksideApBusiness(params: {
   station?: string; query?: string; optical_anomaly_only?: boolean; page?: number; page_size?: number
@@ -24,6 +26,17 @@ export function startTracksideApUpdate(payload: TracksideApUpdateRequest = {}): 
 
 export function startTracksideApBusinessExport(): Promise<TracksideApTask> {
   return apiRequest(`${root}/export`, { method: 'POST' })
+}
+
+export function listTracksideSwitchAdapters(): Promise<TracksideSwitchAdapterCatalog> {
+  return apiRequest(`${root}/switch-adapters`)
+}
+
+export function startTracksideSwitchSample(payload: TracksideSwitchSampleRequest): Promise<TracksideApTask> {
+  return apiRequest(`${root}/switch-adapters/sample`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
 }
 
 export function getTracksideApTask(taskId: string): Promise<TracksideApTask> {
@@ -102,3 +115,22 @@ export const tracksideApBusinessDownloadRequest = (artifactId: string, artifactN
   apiPath: `${root}/artifacts/${encodeURIComponent(artifactId)}/download`,
   suggestedName: normalizeTracksideApBusinessArtifactName(artifactName),
 })
+
+export const tracksideSwitchSampleDownloadRequest = (
+  artifactId: string,
+  artifactName: string,
+): BackendDownloadRequest => {
+  const suggestedName = artifactName.trim()
+  if (
+    !suggestedName
+    || suggestedName.length > 180
+    || invalidArtifactNamePattern.test(suggestedName)
+    || !switchSampleArtifactNamePattern.test(suggestedName)
+  ) {
+    throw new TypeError('artifactName must be a safe switch sample file name')
+  }
+  return {
+    apiPath: `${root}/switch-adapters/artifacts/${encodeURIComponent(artifactId)}/download`,
+    suggestedName,
+  }
+}

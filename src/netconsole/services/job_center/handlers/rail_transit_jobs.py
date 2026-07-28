@@ -3,6 +3,9 @@ from __future__ import annotations
 from netconsole.services.job_center.handlers import legacy_tasks
 from netconsole.services.job_center.handlers.common import legacy_handler
 from netconsole.services.rail_transit.car_network_diagnostic_job import run_car_network_diagnostic
+from netconsole.services.rail_transit.switch_vendor_sample_job import (
+    run_switch_vendor_sample_collect,
+)
 from netconsole.services.rail_transit.trackside_ap_update_job import run_trackside_ap_optical_update
 from netconsole.services.rail_transit.vehicle_mr_online_collection_job import run_vehicle_mr_online_collection
 
@@ -37,6 +40,7 @@ HANDLERS = {
 HANDLERS.update(
     {
         "car_network_diagnostic": run_car_network_diagnostic,
+        "switch_vendor_sample_collect": run_switch_vendor_sample_collect,
         "trackside_ap_optical_update": run_trackside_ap_optical_update,
         "vehicle_mr_online_collection_start": run_vehicle_mr_online_collection,
     }

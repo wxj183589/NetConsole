@@ -19,10 +19,13 @@ from netconsole.services.netmiko_connection import ConnectionTarget, build_netmi
 from netconsole.services.ssh_tunnel import TunnelManager, TunnelSession
 from netconsole.services.file_service import file_sha256
 from netconsole.services.host_key_trust_service import (
-    HostKeyMismatchError,
+    HostKeyTrustGrant,
     HostKeyTrustService,
     HostKeyTrustError,
+    host_key_mismatch_error,
+    install_managed_host_key_policy,
 )
+from netconsole.services.ssh_tunnel import TunnelConnectionError
 from netconsole.utils.text_encoding import clean_h3c_device_text
 
 
@@ -32,6 +35,7 @@ FILE_TRANSFER_CONCURRENCY = 50
 FILE_TRANSFER_MAX_CONCURRENCY = 1
 DOWNLOAD_STABLE_WAIT_SECONDS = 2.0
 DOWNLOAD_VERIFY_RETRIES = 3
+DEVICE_FILE_CONNECT_TIMEOUT_SECONDS = 5.0
 DEVICE_FILE_MANAGER_READ_ONLY = True
 DEVICE_FILE_MANAGER_READ_ONLY_MESSAGE = "设备文件管理为只读模式，不允许执行该操作。"
 SftpProgressCallback = Callable[[str], None]
@@ -42,15 +46,28 @@ class SftpUnavailableError(RuntimeError):
 
     code = "DEVICE_FILE_SFTP_UNAVAILABLE"
 
-    def __init__(self, message: str = "设备当前未启用 SFTP") -> None:
+    def __init__(
+        self,
+        message: str = "设备当前未启用 SFTP",
+        *,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        self.details = dict(details or {})
         super().__init__(message)
 
 
 class FileTransferConnectionError(RuntimeError):
     """SSH/SFTP 连接阶段的稳定、可安全返回错误。"""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        details: dict[str, object] | None = None,
+    ) -> None:
         self.code = code
+        self.details = dict(details or {})
         super().__init__(message)
 
 
@@ -96,13 +113,28 @@ class FileTransferService:
         *,
         strict_host_keys: bool = False,
         host_key_trust: HostKeyTrustService | None = None,
-        trust_host_key_once: bool = False,
+        trust_host_key_once: HostKeyTrustGrant
+        | tuple[HostKeyTrustGrant, ...]
+        | bool
+        | None = None,
     ) -> None:
         self.site_name = site_name
         self.paths = paths or PathResolver()
         self.strict_host_keys = bool(strict_host_keys)
         self.host_key_trust = host_key_trust or HostKeyTrustService(self.paths)
-        self.trust_host_key_once = bool(trust_host_key_once)
+        self.trust_host_key_once = trust_host_key_once
+        if isinstance(trust_host_key_once, HostKeyTrustGrant):
+            self.host_key_grant: tuple[HostKeyTrustGrant, ...] = (
+                trust_host_key_once,
+            )
+        elif isinstance(trust_host_key_once, tuple):
+            self.host_key_grant = tuple(
+                item
+                for item in trust_host_key_once
+                if isinstance(item, HostKeyTrustGrant)
+            )
+        else:
+            self.host_key_grant = ()
         self._client = None
         self._sftp = None
         self._device: Device | None = None
@@ -110,19 +142,22 @@ class FileTransferService:
         self._root_path = ""
         self._current_path = ""
         self._successful_target: ConnectionTarget | None = None
+        self._attempt_summaries: list[dict[str, object]] = []
 
     def connect(self, device: Device, progress_callback: SftpProgressCallback | None = None) -> str:
         self.disconnect()
+        self._attempt_summaries = []
         targets = [target for target in connection_targets(device) if target.protocol.casefold() == "ssh"]
         if not targets:
             raise RuntimeError("SFTP requires SSH connection settings.")
         last_error = ""
         unavailable_error: SftpUnavailableError | None = None
         connection_error: FileTransferConnectionError | None = None
+        attempt_summaries: list[dict[str, object]] = []
 
-        for target_index, target in enumerate(targets):
+        for target in targets:
             started = monotonic()
-            failure_stage = "connect_ssh"
+            failure_stage = "jump_connect" if target.via_tunnel else "target_connect"
             ssh_authenticated = False
             tunnel_session: TunnelSession | None = None
             try:
@@ -130,11 +165,17 @@ class FileTransferService:
                 if target.via_tunnel:
                     if target.tunnel is None:
                         raise RuntimeError("Tunnel target is missing tunnel profile")
-                    tunnel_session = TunnelManager(strict_host_keys=self.strict_host_keys).open_tunnel(  # type: ignore[arg-type]
+                    tunnel_session = TunnelManager(
+                        strict_host_keys=self.strict_host_keys,
+                        host_key_trust=self.host_key_trust,
+                        host_key_grant=self.host_key_grant,
+                        connect_timeout_seconds=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
+                    ).open_tunnel(  # type: ignore[arg-type]
                         target.tunnel,
                         target.host,
                         target.port,
                     )
+                    failure_stage = "target_connect"
                     prepared = type(target)(
                         protocol=target.protocol,
                         device_type=target.device_type,
@@ -146,6 +187,8 @@ class FileTransferService:
                         method=target.method,
                         via_tunnel=True,
                         tunnel=target.tunnel,
+                        target_role=target.target_role,
+                        tunnel_label=target.tunnel_label,
                     )
                 self._emit_progress(progress_callback, "file_management.status.sftp_trying")
                 client = self._connect_ssh_client(prepared, key_host=target.host, key_port=target.port)
@@ -164,7 +207,7 @@ class FileTransferService:
                         transport_active=transport_active,
                         ssh_authenticated=True,
                     )
-                    target_role = "backup" if target_index else "primary"
+                    target_role = target.target_role
                     elapsed_ms = int((monotonic() - started) * 1000)
                     if classification_reason:
                         app_logger.log_error(
@@ -199,42 +242,115 @@ class FileTransferService:
                 self._root_path = self.detect_remote_root()
                 self._current_path = self._root_path
                 self._successful_target = target
-                app_logger.log_info("SFTP_CONNECTED", f"device={device.name}, method={prepared.method}, target={prepared.host}:{prepared.port}, root={self._root_path}")
+                attempt_summaries.append(
+                    self._attempt_summary(
+                        target,
+                        success=True,
+                        failure_stage="connected",
+                        elapsed_ms=int((monotonic() - started) * 1000),
+                    )
+                )
+                self._attempt_summaries = attempt_summaries
+                app_logger.log_info(
+                    "SFTP_CONNECTED",
+                    (
+                        f"device_uuid={device.device_uuid or device.id or ''}, "
+                        f"connection_method={target.method}, target_role={target.target_role}, "
+                        f"tunnel_label={target.tunnel_label}, "
+                        f"target={target.host}:{target.port}, root={self._root_path}, "
+                        f"elapsed_ms={int((monotonic() - started) * 1000)}"
+                    ),
+                )
                 return self._root_path
             except SftpUnavailableError as exc:
                 self.disconnect()
                 if tunnel_session is not None:
                     tunnel_session.close()
-                unavailable_error = exc
+                attempt_summaries.append(
+                    self._attempt_summary(
+                        target,
+                        success=False,
+                        failure_stage="open_sftp",
+                        code=exc.code,
+                        message=str(exc),
+                        elapsed_ms=int((monotonic() - started) * 1000),
+                    )
+                )
+                unavailable_error = SftpUnavailableError(
+                    str(exc),
+                    details={"attempts": list(attempt_summaries)},
+                )
                 last_error = str(exc)
             except Exception as exc:
                 self.disconnect()
                 if tunnel_session is not None:
                     tunnel_session.close()
                 if isinstance(exc, HostKeyTrustError):
+                    exc.details["attempts"] = [
+                        *attempt_summaries,
+                        self._attempt_summary(
+                            target,
+                            success=False,
+                            failure_stage=(
+                                "jump_host_key"
+                                if exc.details.get("host_key_role") == "jump"
+                                else "target_host_key"
+                            ),
+                            code=exc.code,
+                            message=str(exc),
+                            elapsed_ms=int((monotonic() - started) * 1000),
+                        ),
+                    ]
                     raise
-                classified = self._classify_connection_error(exc, failure_stage=failure_stage)
+                classified = self._classify_connection_error(
+                    exc,
+                    failure_stage=failure_stage,
+                    target=target,
+                    tunnel_session=tunnel_session,
+                )
                 connection_error = classified
                 last_error = str(classified)
+                attempt_summaries.append(
+                    self._attempt_summary(
+                        target,
+                        success=False,
+                        failure_stage=str(
+                            classified.details.get("failure_stage")
+                            or failure_stage
+                        ),
+                        code=classified.code,
+                        message=str(classified),
+                        elapsed_ms=int((monotonic() - started) * 1000),
+                    )
+                )
                 app_logger.log_error(
                     "SFTP_CONNECT_ATTEMPT_FAILED",
                     (
                         f"device_id={device.device_uuid or device.id or ''}, device_name={device.name}, "
-                        f"method={target.method}, target_role={'backup' if target_index else 'primary'}, "
-                        f"via_tunnel={target.via_tunnel}, target={target.host}:{target.port}, "
+                        f"connection_method={target.method}, target_role={target.target_role}, "
+                        f"tunnel_label={target.tunnel_label}, target={target.host}:{target.port}, "
                         f"failure_stage={failure_stage}, exception_type={exc.__class__.__name__}, "
                         f"transport_active={self._transport_is_active(self._client) if self._client is not None else False}, "
                         f"ssh_authenticated={ssh_authenticated}, elapsed_ms={int((monotonic() - started) * 1000)}, "
                         f"error={sanitize_sensitive_text(str(exc), device)}"
                     ),
                 )
-                if classified.code in {"DEVICE_FILE_AUTH_FAILED", "DEVICE_FILE_REMOTE_ROOT_NOT_FOUND"}:
+                if classified.code == "DEVICE_FILE_REMOTE_ROOT_NOT_FOUND":
                     raise classified from exc
+        self._attempt_summaries = attempt_summaries
         if unavailable_error is not None:
             raise unavailable_error
         if connection_error is not None:
-            raise connection_error
-        raise FileTransferConnectionError("DEVICE_FILE_NETWORK_UNREACHABLE", last_error or "设备网络不可达。")
+            raise FileTransferConnectionError(
+                connection_error.code,
+                str(connection_error),
+                details={"attempts": attempt_summaries},
+            )
+        raise FileTransferConnectionError(
+            "DEVICE_FILE_DIRECT_UNREACHABLE",
+            last_error or "设备网络不可达。",
+            details={"attempts": attempt_summaries},
+        )
 
     def _connect_ssh_client(self, target, *, key_host: str = "", key_port: int = 0):
         import paramiko
@@ -243,27 +359,14 @@ class FileTransferService:
         checked_host = str(key_host or target.host)
         checked_port = int(key_port or target.port or 22)
         if self.strict_host_keys:
-            if not hasattr(paramiko, "MissingHostKeyPolicy"):
-                # 仅兼容旧测试替身；真实 Paramiko 走下方 NetConsole 管理的 known_hosts。
-                client.load_system_host_keys()
-                client.set_missing_host_key_policy(paramiko.RejectPolicy())
-                return self._connect_client(client, target, sock=None)
-            if self.host_key_trust.path.is_file():
-                client.load_host_keys(str(self.host_key_trust.path))
-
-            trust = self.host_key_trust
-            class _ManagedHostKeyPolicy(getattr(paramiko, "MissingHostKeyPolicy", object)):
-                def missing_host_key(self, host_client, _hostname, key):
-                    if self_outer.trust_host_key_once:
-                        host_client._host_keys.add(host_key_name(checked_host, checked_port), key.get_name(), key)
-                        return
-                    trust.verify(checked_host, checked_port, key)
-
-            # Keep the policy instance alive through connect and avoid accepting unknown keys silently.
-            self_outer = self
-            from netconsole.services.host_key_trust_service import host_key_name
-
-            client.set_missing_host_key_policy(_ManagedHostKeyPolicy())
+            install_managed_host_key_policy(
+                client,
+                self.host_key_trust,
+                checked_host,
+                checked_port,
+                role="target",
+                grant=self.host_key_grant,
+            )
         else:
             client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         sock = None
@@ -271,7 +374,10 @@ class FileTransferService:
             hostname = target.host
             port = target.port
             if self.strict_host_keys and target.via_tunnel:
-                sock = socket.create_connection((target.host, target.port), timeout=20)
+                sock = socket.create_connection(
+                    (target.host, target.port),
+                    timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
+                )
                 hostname = str(key_host or target.host)
                 port = int(key_port or target.port)
             client.connect(
@@ -279,9 +385,9 @@ class FileTransferService:
                 port=port,
                 username=target.username,
                 password=target.password,
-                timeout=20,
-                banner_timeout=20,
-                auth_timeout=20,
+                timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
+                banner_timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
+                auth_timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
                 look_for_keys=False,
                 allow_agent=False,
                 sock=sock,
@@ -290,13 +396,13 @@ class FileTransferService:
             if sock is not None:
                 sock.close()
             client.close()
-            current_key = getattr(exc, "got_key", None)
-            details = (
-                self.host_key_trust.inspect(checked_host, checked_port, current_key).as_dict()
-                if current_key is not None
-                else {"host": checked_host, "port": checked_port}
-            )
-            raise HostKeyMismatchError("设备主机密钥已变更，连接已阻止。", details) from exc
+            raise host_key_mismatch_error(
+                self.host_key_trust,
+                checked_host,
+                checked_port,
+                getattr(exc, "got_key", None),
+                role="target",
+            ) from exc
         except HostKeyTrustError:
             if sock is not None:
                 sock.close()
@@ -316,9 +422,9 @@ class FileTransferService:
             port=target.port,
             username=target.username,
             password=target.password,
-            timeout=20,
-            banner_timeout=20,
-            auth_timeout=20,
+            timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
+            banner_timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
+            auth_timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
             look_for_keys=False,
             allow_agent=False,
             sock=sock,
@@ -338,26 +444,105 @@ class FileTransferService:
         return message
 
     @staticmethod
-    def _classify_connection_error(exc: BaseException, *, failure_stage: str) -> FileTransferConnectionError:
+    def _classify_connection_error(
+        exc: BaseException,
+        *,
+        failure_stage: str,
+        target: ConnectionTarget | None = None,
+        tunnel_session: TunnelSession | None = None,
+    ) -> FileTransferConnectionError:
         name = exc.__class__.__name__.casefold()
         text = str(exc or "").casefold()
+        if isinstance(exc, TunnelConnectionError):
+            return FileTransferConnectionError(
+                exc.code,
+                str(exc),
+                details={"failure_stage": exc.stage},
+            )
+        if (
+            target is not None
+            and target.via_tunnel
+            and tunnel_session is not None
+            and getattr(tunnel_session, "forward_error", None) is not None
+        ):
+            return FileTransferConnectionError(
+                "DEVICE_FILE_FORWARD_OPEN_FAILED",
+                "跳板机已认证，但无法建立到目标设备的 SSH 转发通道。",
+                details={"failure_stage": "forward_open"},
+            )
         if failure_stage == "detect_remote_root":
             return FileTransferConnectionError(
                 "DEVICE_FILE_REMOTE_ROOT_NOT_FOUND",
                 "已建立 SFTP 会话，但未找到可读取的远程根目录。",
+                details={"failure_stage": failure_stage},
             )
         if failure_stage == "open_sftp":
             return FileTransferConnectionError(
                 "DEVICE_FILE_SFTP_NEGOTIATION_FAILED",
                 "SSH 登录成功，但建立 SFTP 子系统失败。",
+                details={"failure_stage": failure_stage},
             )
         if isinstance(exc, (TimeoutError, socket.timeout)) or "timed out" in text or "timeout" in text:
-            return FileTransferConnectionError("DEVICE_FILE_CONNECTION_TIMEOUT", "连接设备超时，请检查网络和 SSH 端口。")
+            return FileTransferConnectionError(
+                (
+                    "DEVICE_FILE_TARGET_UNREACHABLE_VIA_TUNNEL"
+                    if target is not None and target.via_tunnel
+                    else "DEVICE_FILE_DIRECT_UNREACHABLE"
+                ),
+                (
+                    "已连接跳板机，但经隧道连接目标设备超时。"
+                    if target is not None and target.via_tunnel
+                    else "设备直连超时，请检查网络和 SSH 端口。"
+                ),
+                details={"failure_stage": failure_stage},
+            )
         if name in {"authenticationexception", "badauthenticationtype", "passwordrequiredexception"} or any(
             marker in text for marker in ("authentication failed", "auth failed", "invalid password", "permission denied")
         ):
-            return FileTransferConnectionError("DEVICE_FILE_AUTH_FAILED", "设备 SSH 认证失败，请检查用户名和密码。")
-        return FileTransferConnectionError("DEVICE_FILE_NETWORK_UNREACHABLE", "设备网络不可达或 SSH 端口不可用。")
+            return FileTransferConnectionError(
+                "DEVICE_FILE_TARGET_AUTH_FAILED",
+                "目标设备 SSH 认证失败，请检查用户名和密码。",
+                details={"failure_stage": "target_auth"},
+            )
+        return FileTransferConnectionError(
+            (
+                "DEVICE_FILE_TARGET_UNREACHABLE_VIA_TUNNEL"
+                if target is not None and target.via_tunnel
+                else "DEVICE_FILE_DIRECT_UNREACHABLE"
+            ),
+            (
+                "跳板机已连接，但经隧道无法连接目标设备。"
+                if target is not None and target.via_tunnel
+                else "设备直连网络不可达或 SSH 端口不可用。"
+            ),
+            details={"failure_stage": failure_stage},
+        )
+
+    @staticmethod
+    def _attempt_summary(
+        target: ConnectionTarget,
+        *,
+        success: bool,
+        failure_stage: str,
+        elapsed_ms: int,
+        code: str = "",
+        message: str = "",
+    ) -> dict[str, object]:
+        tunnel = target.tunnel
+        return {
+            "connection_method": target.method,
+            "target_role": target.target_role,
+            "target_host": target.host,
+            "target_port": int(target.port),
+            "tunnel_label": target.tunnel_label,
+            "jump_host": str(getattr(tunnel, "host", "") or ""),
+            "jump_port": int(getattr(tunnel, "port", 0) or 0),
+            "success": bool(success),
+            "failure_stage": str(failure_stage or ""),
+            "error_code": str(code or ""),
+            "message": str(message or ""),
+            "elapsed_ms": max(0, int(elapsed_ms)),
+        }
 
     @staticmethod
     def _is_sftp_unavailable_error(exc: BaseException) -> bool:
@@ -493,6 +678,10 @@ class FileTransferService:
     def successful_target(self) -> ConnectionTarget | None:
         return self._successful_target
 
+    @property
+    def attempt_summaries(self) -> list[dict[str, object]]:
+        return [dict(item) for item in self._attempt_summaries]
+
     def detect_remote_root(self) -> str:
         sftp = self._require_sftp()
         for candidate in ("flash:/", "/flash/", "/", "."):
@@ -532,6 +721,7 @@ class FileTransferService:
         return self._require_sftp().stat(normalize_remote_path(remote_path, current_path=self._current_path, root_path=self._root_path))
 
     def download(self, remote_path: str, local_path: Path, progress_callback=None, cancel_token=None, chunk_size: int = 1024 * 1024) -> Path:
+        started = monotonic()
         sftp = self._require_sftp()
         source = normalize_remote_path(remote_path, current_path=self._current_path, root_path=self._root_path)
         target = Path(local_path)
@@ -566,7 +756,24 @@ class FileTransferService:
                 if part_path.exists():
                     part_path.unlink(missing_ok=True)
                 sleep(min(1.0, DOWNLOAD_STABLE_WAIT_SECONDS))
-        raise TransferVerificationFailed(f"Download verification failed after retries: {last_error}") from last_error
+        device = self._device
+        target_info = self._successful_target
+        app_logger.log_error(
+            "DEVICE_FILE_DOWNLOAD_FAILED",
+            (
+                f"device_uuid={getattr(device, 'device_uuid', '') or getattr(device, 'id', '') or ''}, "
+                f"connection_method={getattr(target_info, 'method', '') or ''}, "
+                f"target_role={getattr(target_info, 'target_role', '') or ''}, "
+                f"tunnel_label={getattr(target_info, 'tunnel_label', '') or ''}, "
+                f"failure_stage=download, elapsed_ms={int((monotonic() - started) * 1000)}, "
+                f"error={sanitize_sensitive_text(str(last_error or ''), device)}"
+            ),
+        )
+        raise FileTransferConnectionError(
+            "DEVICE_FILE_DOWNLOAD_FAILED",
+            "设备文件下载失败，未完成的临时文件已清理。",
+            details={"failure_stage": "download"},
+        ) from last_error
 
     def mkdir(self, remote_path: str) -> str:
         self._ensure_device_write_allowed()
@@ -685,9 +892,9 @@ class FileTransferService:
                     port=prepared.port,
                     username=prepared.username,
                     password=prepared.password,
-                    timeout=20,
-                    banner_timeout=20,
-                    auth_timeout=20,
+                    timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
+                    banner_timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
+                    auth_timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
                     look_for_keys=False,
                     allow_agent=False,
                 )

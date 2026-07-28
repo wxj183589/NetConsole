@@ -12,6 +12,8 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.rail_transit_base_data import (
     BaseDataChangeDTO,
+    BaseDataClearPreviewDTO,
+    BaseDataClearResultDTO,
     BaseDataEditSessionDTO,
     BaseDataSaveResultDTO,
     BaseDataValidationIssueDTO,
@@ -47,6 +49,7 @@ from netconsole.services.rail_transit.station_source_utils import (
     canonical_station_name,
     legacy_turnback_type_for_facilities,
     normalize_track_facilities,
+    parse_station_source_value,
     station_structure_defaults,
 )
 from netconsole.services.trackside_ap_plan_io import normalize_trackside_plan_rows
@@ -284,6 +287,48 @@ class RailTransitBaseDataApplicationService:
             stations=payload.stations,
             current_sections=payload.current_sections,
         )
+
+    def preview_clear_all(self, site_id: str) -> BaseDataClearPreviewDTO:
+        site_id = SiteManager(self.paths).validate_site_name(site_id)
+        impact = self.repository.preview_clear_station_section_base_data(site_id)
+        impact["station_count"] = self.query_service.list_stations(
+            site_id, page=1, page_size=1
+        ).total
+        impact["section_count"] = self.query_service.list_sections(
+            site_id, page=1, page_size=1
+        ).total
+        return BaseDataClearPreviewDTO.model_validate(impact)
+
+    def clear_all(
+        self,
+        site_id: str,
+        base_revision: str,
+        *,
+        explicit_confirmation: bool,
+    ) -> BaseDataClearResultDTO:
+        site_id = SiteManager(self.paths).validate_site_name(site_id)
+        try:
+            self.guard.authorize_apply(site_id, explicit_confirmation=explicit_confirmation)
+        except BaseDataWriteGuardError as exc:
+            raise RailTransitBaseDataApplicationError(exc.code, str(exc)) from exc
+        try:
+            preview = self.preview_clear_all(site_id)
+            if preview.base_revision != base_revision:
+                raise RailTransitBaseDataRevisionConflict("base data revision changed")
+            result = self.repository.clear_station_section_base_data(site_id, base_revision)
+        except RailTransitBaseDataRevisionConflict as exc:
+            raise RailTransitBaseDataApplicationError(
+                "BASE_DATA_REVISION_CONFLICT",
+                "基础资料已被其他操作更新，请重新加载后确认影响数量",
+            ) from exc
+        except (sqlite3.Error, OSError) as exc:
+            raise RailTransitBaseDataApplicationError(
+                "BASE_DATA_TRANSACTION_FAILED",
+                "基础资料清空失败，数据库事务已回滚",
+            ) from exc
+        result["deleted_station_count"] = preview.station_count
+        result["deleted_section_count"] = preview.section_count
+        return BaseDataClearResultDTO.model_validate(result)
 
     def validate_changes(
         self,
@@ -530,6 +575,12 @@ class RailTransitBaseDataApplicationService:
             raise ValueError("合并来源站点格式无效")
         if action == "replace" and not isinstance(merge_source_node_uids, list):
             raise ValueError("合并来源节点格式无效")
+        source_station_value = str(raw.get("source_station_value") or "")
+        parsed_source = parse_station_source_value(source_station_value)
+        parsed_name = parse_station_source_value(name)
+        source_order = _int_or_none(raw.get("source_order"))
+        if source_order is None:
+            source_order = parsed_source.source_order
         return {
             "node_uid": str(raw.get("node_uid") or (uuid4() if action == "create" else "")).strip(),
             "name": name,
@@ -537,8 +588,15 @@ class RailTransitBaseDataApplicationService:
             "code": str(raw.get("code") or "").strip(),
             "line_name": str(raw.get("line_name") or "").strip(),
             "sort_order": sort_order,
-            "source_station_value": str(raw.get("source_station_value") or "").strip(),
-            "source_station_key": str(raw.get("source_station_key") or "").strip(),
+            "source_station_value": source_station_value,
+            "source_station_key": (
+                str(raw.get("source_station_key") or "").strip()
+                or parsed_source.source_station_key
+                or parsed_name.source_station_key
+            ),
+            "source_order_text": str(raw.get("source_order_text") or parsed_source.source_order_text).strip(),
+            "source_order": source_order,
+            "canonical_station_name": parsed_name.canonical_station_name,
             "node_type": node_type,
             "path_code": path_code,
             "participates_in_direction": participates,
@@ -1015,7 +1073,10 @@ class RailTransitBaseDataApplicationService:
                         references = self.repository.station_reference_summary(
                             site_id, old_station.name
                         )
-                        if int(references.get("total_count") or 0):
+                        if (
+                            old_station.source_kind != "legacy_ap_derived"
+                            and int(references.get("total_count") or 0)
+                        ):
                             issues.append(
                                 self._issue(
                                     index,

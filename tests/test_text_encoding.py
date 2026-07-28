@@ -5,6 +5,7 @@ import pytest
 from netconsole.utils.text_encoding import (
     FILE_ENCODING_ERROR,
     Utf8IncrementalTextDecoder,
+    clean_interactive_device_text,
     decode_bytes_with_fallback,
     decode_external_text,
     decode_text_auto,
@@ -80,3 +81,11 @@ def test_decode_external_text_does_not_reencode_unicode_string() -> None:
 
     assert result.text == text
     assert result.encoding == "unicode"
+
+
+def test_clean_interactive_device_text_removes_control_sequences_and_pager() -> None:
+    value = clean_interactive_device_text(
+        "\x1b[31m轨旁AP\x1b[0m\r\n--More--\x08\x08        \r\nabcX\b"
+    )
+
+    assert value == "轨旁AP\nabc"

@@ -127,15 +127,18 @@ describe('Device Management Web view', () => {
     expect(source).toContain('startSecureCrtExportWithTemplate')
     expect(source).toContain('accept=".ini"')
     expect(source).toContain('设备表格导出完成，共 ${task.row_count ?? 0} 台设备')
-    expect(source).not.toContain('handledInteractiveExportTaskIds')
-    expect(source).toContain('localSaveStatuses')
-    expect(source).toContain("'local_save_prompting'")
-    expect(source).toContain("'local_save_cancelled'")
-    expect(source).toContain("'local_save_failed'")
-    expect(source).toContain('saveDeviceCsvArtifact')
+    expect(source).toContain('pendingDeviceExports')
+    expect(source).toContain("'task_running'")
+    expect(source).toContain("'artifact_ready'")
+    expect(source).toContain("'save_failed'")
+    expect(source).toContain('savePendingDeviceExport')
+    expect(source).toContain('getPlatformAdapter().chooseSavePath')
+    expect(source).toContain('destinationPath: pending.destinationPath')
+    expect(source).toContain("export_scope: scope")
+    expect(source).toContain("scope === 'selected' ? [...selectedUuids.value] : []")
     expect(source).toContain('expectedSizeBytes: task.size_bytes')
     expect(source).toContain('expectedSha256: task.sha256')
-    expect(source).toContain('设备表格已生成，但尚未保存到本地。')
+    expect(source).toContain('重新选择保存位置')
     expect(source).toContain('openWindow = true')
     for (const featureId of [
       'web.device_management_write',
@@ -156,8 +159,12 @@ describe('Device Management Web view', () => {
     expect(source).not.toContain('openOmniPeekExport')
   })
 
+  it('uses the shared task store and persists only task-to-save authorization bindings', () => {
+    expect(source).toContain('window.sessionStorage.setItem(PENDING_DEVICE_EXPORTS_KEY')
+    expect(source).toContain('restorePendingDeviceExports')
+  })
+
   it('statically guards against a page-private task system and path capabilities', () => {
-    expect(source).not.toContain('sessionStorage')
     expect(source).not.toContain('taskStorageKey')
     expect(source).not.toContain('trackedTasks')
     expect(source).not.toContain('refreshTrackedTasks')

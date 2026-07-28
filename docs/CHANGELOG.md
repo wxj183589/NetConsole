@@ -2,11 +2,20 @@
 
 ## v1.4.3 - 2026-07-25
 
+### 设备文件 SSH 隧道
+
+- 修复 Electron/Web 设备文件只为隧道生成主用地址目标的问题：统一连接策略现在按主用/备用地址与两个可替代跳板入口生成最多六条候选，空地址跳过、相同主备去重；仅配置备用地址的设备可保存、测试、出现在设备文件列表，并能继续尝试隧道。
+- 连接测试、设备操作和只读 SFTP 统一使用 NetConsole 管理的严格主机密钥策略。跳板机与目标设备分别确认和阻止密钥变化，“仅本次信任”精确绑定主机、端口、算法和密钥，并可在同一流程累积两端授权。
+- 设备文件页面显示原始目标角色、地址、跳板入口和逐路径失败摘要，不暴露本地随机端口；下载期间保持完整隧道资源存活，失败清理 `.part` 并返回稳定错误码。真实 Paramiko 本地拓扑已完成跳板认证、`direct-tcpip`、SFTP 目录读取、大文件哈希及资源释放验证；真实 MR 现场网络仍不可达，状态保持 `REAL_DEVICE_PENDING`。
+- 设备文件 SFTP 将每条候选路径的 TCP、SSH banner 和认证等待上限从 20 秒缩短为 5 秒，失败后继续自动换路；连接状态同步显示单路径等待上限，其他设备连接场景的默认超时保持不变。
+
 ### ZTE 交换机与设备导入导出
 
 - 设备厂商增加统一 `DeviceVendor` 归一化入口，`H3C/h3c/新华三` 统一存为 `H3C`，`ZTE/zte/中兴/中兴通讯` 统一存为 `ZTE`；本期只声明 ZTE 交换机基础支持，ZTE AC 明确拒绝。
 - 设备 CSV 预览改为先严格识别 UTF-8 BOM、UTF-8、GB18030/GBK，再逐行校验并返回总/有效/无效行数、厂商/类型统计、重复冲突和结构化中文错误。正式 28 列模板保持，兼容既有 21 列现场文件。
-- ZTE 交换机接入统一能力命令 Profile：会话准备使用 `terminal length 0`，基础采集使用 `show` 命令并支持序列号候选回退；诊断包保持 unsupported，不向 ZTE 发送 H3C 命令。缺少真实输出样本的高级字段保留 raw，不做猜测解析。
+- ZTE ZXR10 5960X-ES V2 建立第一阶段轨旁交换机 Adapter、厂商无关 DTO、只读 Command Profile 和文档样例 Parser；`show version`、接口和 DOM 均标记 `DOCUMENT_SAMPLE_ONLY`，LLDP 候选保持 `SAMPLE_REQUIRED` 且不进入普通轨旁默认采集链。
+- 新增 `switch_vendor_sample_collect` Job 和受控 ZIP Artifact，固定保留 manifest、逐命令状态、版本/接口/DOM/LLDP raw 与会话元数据，并通过任务取消、分页、输出上限和凭据脱敏边界。
+- 轨旁 AP 页面增加交换机选择、试验性能力状态、Profile、待实机验证项、采样启动和 Artifact 下载。ZTE 双向光衰固定为 `NOT_VERIFIED / REAL_DEVICE_SAMPLE_REQUIRED`，不使用文档样例或模拟数据生成现场 AP 关系；H3C 既有计算逻辑保持。
 - 设备数据和设备模板导出统一迁入公共 Export Worker / Task Center / `WebArtifactStore` 链路，模板不再走进程内存监控的旧分支；任务按真实阶段更新进度并记录实际行数，Worker 运行时丢失或 Artifact 最终化失败会收敛为失败，不再遗留长期 `RUNNING`、0% 且无 Artifact 的任务。模板与数据共用正式 28 列字段契约，模板只输出元数据和表头。
 - 设备管理页面本次主动发起的数据或模板导出在 Artifact 就绪后自动调用 Electron“另存为”；Artifact、弹窗中、取消、失败和本地保存成功不再混用同一个 handled 状态。取消、IPC 失败或任务详情短暂不同步后仍保留“保存到本地”，只有 Main 完成大小/SHA-256、原子替换和最终文件 `stat` 复验后才显示“已保存到本地”并提供打开/定位能力。
 - Electron Renderer URL 增加受控宿主标记；预期 Electron 但 preload bridge 缺失时明确停止并提示完全重启，不再静默回退隐藏的浏览器下载。Save As 使用真实发起窗口作为父窗口并在弹窗前恢复、显示和聚焦；诊断日志不记录完整路径、URL、Token 或凭据。

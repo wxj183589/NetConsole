@@ -58,9 +58,9 @@ LLDP 历史数据按公开 DTO 白名单消费，不进入任意原始对象透�
 - 正式模板和导出共用唯一的 28 列契约（在旧 21 列设备字段基础上增加 7 个 SNMP 字段）；模板只包含 UTF-8 BOM、元数据行和表头，不再写示例设备，导入预览允许零数据行。旧 21 列文件仍可导入，避免破坏现场存量模板。
 - 导入严格识别 UTF-8 BOM、UTF-8、GB18030、GBK，不使用 `errors="ignore"`。预览返回检测编码、SHA-256、总/有效/无效行数、厂商与类型统计、新增/更新/冲突数和结构化行级中文错误。
 - H3C 与 ZTE 可存在于同一个 CSV。存在无效行时仍展示全部已解析行，但确认导入保持单 SQLite 事务，不提供“忽略错误行”。
-- 设备表格导出遵守“有勾选导出勾选项；无勾选导出当前筛选结果”，继续使用 UTF-8 BOM 和既有凭据开关。设备数据和模板都进入公共 Export Worker、Task Center 和 `WebArtifactStore`；分别使用 `web_export_device_csv`、`web_export_device_template_csv`，结果记录实际行数并提供受控 Artifact 下载。
-- 用户在设备管理页面本次主动发起设备数据或模板导出时，页面等待 Artifact 首次就绪后自动调用统一桌面 Save As；Artifact、弹窗中、已取消、失败和已保存分别记录，短暂详情读取失败不会永久阻断重试。取消或保存失败不属于任务失败，页面始终保留“保存到本地”，最近历史 Artifact 和 Task Center 也可再次保存。
-- Electron 保存始终流式写入同目录随机 `.part`，核对 Artifact 大小和 SHA-256 后原子替换，并再次 `stat` 最终文件；只有 Main 返回 `saved` 才显示“已保存到本地”。保存后的绝对路径不返回 Renderer，只签发短期 capability 供“打开文件 / 打开所在目录”使用。普通浏览器的 `started` 只提示查看浏览器下载记录；Electron 宿主标记存在但 preload bridge 缺失时明确报错，禁止静默回退。
+- 设备表格导出先确认明确范围：有勾选时默认 `selected`，无勾选时固定 `filtered_all`；范围 DTO 决定 Worker 使用 UUID 集合还是完整筛选查询，不受当前页分页限制。CSV 继续使用 UTF-8 BOM 和既有凭据开关。设备数据和模板都进入公共 Export Worker、Task Center 和 `WebArtifactStore`；分别使用 `web_export_device_csv`、`web_export_device_template_csv`，结果记录实际行数并提供受控 Artifact 下载。
+- 设备数据和模板都先调用桌面 `chooseSavePath`；取消时不创建任务，确认后才提交任务并把 `task_id` 与本次另存为授权一对一绑定。页面只按该 `task_id` 等待 Artifact，完成后用 `destinationPath` 直接写入预选位置，不再弹第二次 Save As，也不自动打开任务中心。运行中绑定保存在 Renderer session store；授权失效时失败关闭，Artifact 继续留在 Task Center。
+- Electron 保存始终流式写入同目录随机 `.part`，核对 Artifact 大小和 SHA-256 后复验目标仍与 Save As 选择时一致，再安全替换并 `stat` 最终文件；只有 Main 返回 `saved` 才显示真实文件名和所选目录。保存失败可重新选择位置并直接下载现有 Artifact，不重建任务。保存后的打开/定位仍只使用 Main 签发的短期 capability；Task Center 的“另存 Artifact”保留为历史任务恢复入口。
 
 ## 厂商、角色和 Command Profile 边界
 
@@ -69,7 +69,7 @@ LLDP 历史数据按公开 DTO 白名单消费，不进入任意原始对象透�
 - 当前唯一稳定 Operation ID 是 `device.inventory.collect`；对应资源为 `resources/device_command_profiles.json`，已登记的通用只读 Profile 包括 `h3c.comware.switch.generic.device-inventory.v1` 和 `h3c.comware.mobile_router.generic.device-inventory.v1`。
 - 未知或未验证厂商、角色、平台、Profile 必须失败关闭，不能回退执行 H3C 命令。软件版本未知时，也只有厂商、角色、平台精确匹配且资源明确允许的只读通用 Profile 才能执行。
 - H3C AC 的关联信息只读复用 AC Query Service，暂不开放通用设备详情刷新；H3C MR 的关联信息只读复用 Online MR Query Service，基础设备详情刷新使用独立 `mobile_router` Profile，不会把 MR 当作通用交换机执行命令。
-- ZTE 交换机使用 `terminal length 0` 和 `show` 系列基础命令，绝不回退执行 H3C `screen-length` / `display` 命令；序列号支持 `show serial-number` 到 `show system-info` 的受控候选回退。真实输出 fixture 尚未取得，因此高级字段保持“未解析”并保留 raw，不能标记为现场已验证。
+- ZTE ZXR10 5960X-ES V2 交换机的设备详情 Profile 仅执行手册已确认的 `show version`、`show interface brief` 和 `show opticalinfo brief`，不下发未经确认的关闭分页命令，也不回退执行 H3C `screen-length` / `display` 命令。采集先用 `show version` 确认 59X/5960X-ES，其他 ZXR10 型号在执行接口和 DOM 命令前失败关闭。设备身份、接口和光模块摘要使用对应 ZTE parser，带分页提示的完整 raw 仍保留；LLDP 只在轨旁采集 Job 中按受控命令链采样，缺少真实输出 fixture 时固定为 `SAMPLE_REQUIRED`，整机状态保持 `REAL_DEVICE_PENDING`。
 - ZTE AC 和 ZTE 完整诊断包当前不支持；诊断任务返回“当前型号暂未适配诊断包采集”并记录跳过原因，不影响其他基础采集。Huawei 和其他未知厂商仍失败关闭。
 
 ## API 与 DTO

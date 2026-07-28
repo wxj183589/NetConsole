@@ -10,30 +10,36 @@ from pathlib import Path
 from threading import Event, Lock
 from uuid import uuid4
 
+from netconsole.adapters.trackside_switch import (
+    TracksidePortError,
+    resolve_trackside_switch_adapter,
+)
 from netconsole.core.optical_severity_engine import compute_optical_severity
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
 from netconsole.models.device import Device
-from netconsole.parsers.h3c.interface_parser import parse_interfaces
-from netconsole.parsers.h3c.lldp_parser import parse_lldp_neighbors
-from netconsole.parsers.h3c.transceiver_parser import parse_transceiver_diagnosis
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.trackside_optical_result_repository import TracksideOpticalResultRepository
-from netconsole.services import command_guard, netmiko_connection
+from netconsole.services import netmiko_connection
 from netconsole.services.ac.fit_ap_optical_concurrency import (
     DEFAULT_FIT_AP_OPTICAL_CONCURRENCY,
     fit_ap_optical_platform_concurrency_limit,
 )
 from netconsole.services.h3c_ac_collect_service import collect_h3c_ac_resources, collect_h3c_fit_ap_optical
 from netconsole.services.h3c_optical_refresh_service import merge_existing_optical_modules
-from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, safe_send_command, sanitize_sensitive_text
+from netconsole.services.netmiko_connection import (
+    CommandCancelled,
+    CommandOutputLimitExceeded,
+    build_netmiko_params,
+    choose_connection_target,
+    sanitize_sensitive_text,
+)
 from netconsole.services.offline_ap_ledger import is_fit_ap_offline
 from netconsole.services.trackside_ap_business import build_trackside_ap_business_rows, is_trackside_ap_interface
 from netconsole.utils.interface_normalize import normalize_interface_name
-from netconsole.utils.text_encoding import clean_h3c_device_text
 
 
 TRACKSIDE_OPTICAL_COMMANDS = (
@@ -97,6 +103,13 @@ class OpticalCommandAdapter:
         normalized = cls.normalize_vendor(vendor)
         if normalized == "H3C":
             return TRACKSIDE_OPTICAL_COMMANDS
+        if normalized == "ZTE":
+            return (
+                "show version",
+                "show interface brief",
+                "show opticalinfo brief",
+                "show lldp config",
+            )
         raise UnsupportedVendor(UNSUPPORTED_VENDOR_REASON)
 
 
@@ -141,6 +154,12 @@ class TracksideDeviceCollectionResult:
     rows: list[dict[str, object | None]] = field(default_factory=list)
     interfaces: list[dict[str, object | None]] = field(default_factory=list)
     lldp_rows: list[dict[str, object | None]] = field(default_factory=list)
+    identity: dict[str, object | None] = field(default_factory=dict)
+    vendor: str = ""
+    profile_id: str = ""
+    warnings: list[str] = field(default_factory=list)
+    port_errors: list[TracksidePortError] = field(default_factory=list)
+    lldp_status: str = ""
 
 
 @dataclass
@@ -180,6 +199,9 @@ class TracksideOpticalSessionResult:
     platform_concurrency_limit: int = 0
     fit_ap_effective_concurrency: int = 0
     fit_ap_round_summaries: list[dict[str, object]] = field(default_factory=list)
+    warning_count: int = 0
+    warnings: list[str] = field(default_factory=list)
+    port_errors: list[dict[str, str]] = field(default_factory=list)
 
 
 ProgressCallback = Callable[..., None]
@@ -571,7 +593,6 @@ def collect_trackside_optical(
         directory.mkdir(parents=True, exist_ok=True)
     started_at = _now()
     cancel_event = cancel_event or Event()
-    command_guard.validate_command_list(TRACKSIDE_OPTICAL_COMMANDS, "optical_refresh")
     platform_concurrency_limit = fit_ap_optical_platform_concurrency_limit()
     concurrency_settings = _trackside_concurrency_settings(paths)
     requested_concurrency = _positive_int_setting(
@@ -630,7 +651,22 @@ def collect_trackside_optical(
                 if cancel_event.is_set():
                     skipped.append(TracksideSkippedTarget(target.name, target.target_type, "cancelled", target.host))
                     continue
-                futures.append(executor.submit(_collect_one_target, target))
+                device_artifact_dir = (
+                    session_dir
+                    / re.sub(
+                        r"[^A-Za-z0-9._-]+",
+                        "-",
+                        str(target.device_uuid or target.name or "switch"),
+                    ).strip(".-")
+                )
+                futures.append(
+                    executor.submit(
+                        _collect_one_target,
+                        target,
+                        device_artifact_dir,
+                        cancel_event,
+                    )
+                )
             for future in as_completed(futures):
                 result = future.result()
                 results.append(result)
@@ -663,12 +699,31 @@ def collect_trackside_optical(
     progress_tracker.mark_persisting()
     success_count = fit_success + sum(1 for result in results if result.success)
     failed_count = fit_failed + fit_failures + sum(1 for result in results if not result.success)
+    switch_warnings = [
+        warning
+        for result in results
+        for warning in result.warnings
+    ]
+    switch_port_errors = [
+        {
+            "device_uuid": str(result.target.device_uuid or ""),
+            "device_name": result.target.name,
+            "interface_name": item.interface_name,
+            "capability": item.capability,
+            "error_code": item.error_code,
+            "message": item.message,
+        }
+        for result in results
+        for item in result.port_errors
+    ]
+    warning_count = len(switch_warnings) + len(switch_port_errors)
     actionable_skipped_count, ignored_skipped_count, skipped_reason_counts = classify_trackside_skipped(skipped)
     status = _trackside_update_status(
         success_count=success_count,
         failed_count=failed_count,
         actionable_skipped_count=actionable_skipped_count,
         cancelled=cancel_event.is_set(),
+        warning_count=warning_count,
     )
     coverage = _trackside_update_coverage(
         repository,
@@ -696,6 +751,9 @@ def collect_trackside_optical(
             **coverage,
             "success_count": success_count,
             "failed_count": failed_count,
+            "warning_count": warning_count,
+            "warnings": switch_warnings,
+            "port_errors": switch_port_errors,
             "skipped_count": len(skipped),
             "actionable_skipped_count": actionable_skipped_count,
             "ignored_skipped_count": ignored_skipped_count,
@@ -756,6 +814,9 @@ def collect_trackside_optical(
         platform_concurrency_limit=platform_concurrency_limit,
         fit_ap_effective_concurrency=fit_ap_effective_concurrency,
         fit_ap_round_summaries=fit_ap_round_summaries,
+        warning_count=warning_count,
+        warnings=switch_warnings,
+        port_errors=switch_port_errors,
     )
 
 
@@ -849,13 +910,14 @@ def _trackside_update_status(
     failed_count: int,
     actionable_skipped_count: int,
     cancelled: bool,
+    warning_count: int = 0,
 ) -> str:
     if cancelled:
         return "CANCELLED"
     if success_count <= 0 and failed_count <= 0 and actionable_skipped_count <= 0:
         return "NO_TARGET"
     if success_count > 0:
-        if failed_count > 0 or actionable_skipped_count > 0:
+        if failed_count > 0 or actionable_skipped_count > 0 or warning_count > 0:
             return "PARTIAL_SUCCESS"
         return "SUCCESS"
     return "FAILED"
@@ -1219,22 +1281,59 @@ def _int_value(value: object) -> int:
         return 0
 
 
-def _collect_one_target(target: TracksideOpticalTarget) -> TracksideDeviceCollectionResult:
+def _collect_one_target(
+    target: TracksideOpticalTarget,
+    artifact_dir: Path | None = None,
+    cancel_event: Event | None = None,
+) -> TracksideDeviceCollectionResult:
     connection = None
-    command_outputs: dict[str, str] = {}
     try:
         connection = netmiko_connection.ConnectHandler(**build_netmiko_params(choose_connection_target(target.device)))  # type: ignore[arg-type]
-        for command in target.commands:
-            output = clean_h3c_device_text(safe_send_command(connection, command, read_timeout=120, strip_prompt=False, strip_command=False, use_timing=True))
-            command_outputs[command] = output
-        interfaces = parse_interfaces(command_outputs.get("display interface brief", "") or command_outputs.get("display interface", ""))
-        parsed = parse_transceiver_diagnosis(command_outputs.get("display transceiver diagnosis interface", ""))
-        lldp_rows = parse_lldp_neighbors(command_outputs.get("display lldp neighbor-information list", ""))
-        rows = [_result_row(target, row) for row in parsed]
-        return TracksideDeviceCollectionResult(target, True, "", len(rows), rows=rows, interfaces=interfaces, lldp_rows=lldp_rows)
+        adapter = resolve_trackside_switch_adapter(target.device)
+        collected = adapter.collect(
+            connection,
+            artifact_dir=artifact_dir,
+            cancel_check=(cancel_event.is_set if cancel_event is not None else None),
+        )
+        raw_log_path = str(artifact_dir or "")
+        rows = [
+            _result_row(target, row, raw_log_path=raw_log_path)
+            for row in collected.optical_modules
+        ]
+        return TracksideDeviceCollectionResult(
+            target=target,
+            success=True,
+            raw_log_path=raw_log_path,
+            parsed_count=len(rows),
+            rows=rows,
+            interfaces=collected.interfaces,
+            lldp_rows=collected.lldp_neighbors,
+            identity=collected.identity,
+            vendor=collected.vendor,
+            profile_id=collected.profile_id,
+            warnings=collected.warnings,
+            port_errors=collected.port_errors,
+            lldp_status=collected.lldp_status,
+        )
+    except CommandCancelled:
+        if cancel_event is not None:
+            cancel_event.set()
+        return TracksideDeviceCollectionResult(
+            target, False, str(artifact_dir or ""), 0, "采集已取消"
+        )
+    except CommandOutputLimitExceeded:
+        return TracksideDeviceCollectionResult(
+            target,
+            False,
+            str(artifact_dir or ""),
+            0,
+            "ZTE_OUTPUT_LIMIT_EXCEEDED",
+        )
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), target.device)
-        return TracksideDeviceCollectionResult(target, False, "", 0, message)
+        return TracksideDeviceCollectionResult(
+            target, False, str(artifact_dir or ""), 0, message
+        )
     finally:
         if connection is not None:
             try:
@@ -1255,12 +1354,34 @@ def _persist_result(repository: DeviceRepository, ac_repository: AcRepository, r
             "collect_run_uuid": "",
             "raw_log_path": result.raw_log_path,
         }
+        if result.identity:
+            fact_repository.upsert_device_fact(
+                {
+                    "device_uuid": str(result.target.device_uuid or ""),
+                    "model": result.identity.get("model"),
+                    "software_version": result.identity.get("software_version"),
+                    "vendor": result.identity.get("vendor") or result.vendor,
+                    "uptime": result.identity.get("uptime"),
+                    **metadata,
+                }
+            )
         if result.interfaces:
             fact_repository.replace_device_interfaces(str(result.target.device_uuid or ""), [{**row, **metadata} for row in result.interfaces])
         existing = fact_repository.list_optical_modules(str(result.target.device_uuid or ""))
+        diagnostics = result.rows
+        if result.vendor == "ZTE":
+            diagnostics = [
+                {
+                    **row,
+                    "status": row.get("module_status")
+                    or row.get("optical_alarm_status")
+                    or row.get("status"),
+                }
+                for row in result.rows
+            ]
         modules = merge_existing_optical_modules(
             existing,
-            result.rows,
+            diagnostics,
             [],
             metadata,
         )
@@ -1292,13 +1413,24 @@ def _write_sqlite_rows(db_path: Path, result: TracksideDeviceCollectionResult) -
     TracksideOpticalResultRepository(db_path).append_rows(rows)
 
 
-def _result_row(target: TracksideOpticalTarget, parsed: dict[str, object | None]) -> dict[str, object | None]:
+def _result_row(
+    target: TracksideOpticalTarget,
+    parsed: dict[str, object | None],
+    *,
+    raw_log_path: str = "",
+) -> dict[str, object | None]:
     collected_at = _now()
     collector_status = str(parsed.get("status") or "").strip().casefold()
-    severity = (
-        "no_module"
-        if collector_status == "no_module"
-        else compute_optical_severity(
+    if collector_status in {
+        "no_module",
+        "abnormal",
+        "unverified",
+        "dom_unavailable",
+        "offline",
+    }:
+        severity = collector_status
+    else:
+        severity = compute_optical_severity(
             {
                 "switch_rx_power" if target.target_type == "SWITCH" else "ap_rx_power": parsed.get("rx_power"),
                 "alarm_low": parsed.get("rx_low_alarm"),
@@ -1307,7 +1439,6 @@ def _result_row(target: TracksideOpticalTarget, parsed: dict[str, object | None]
                 "device_type": "switch" if target.target_type == "SWITCH" else "ap",
             }
         ).severity
-    )
     return {
         **parsed,
         "device_name": target.name,
@@ -1320,10 +1451,12 @@ def _result_row(target: TracksideOpticalTarget, parsed: dict[str, object | None]
         "ap_ip": target.host if target.target_type == "AP" else None,
         "optical_alarm_status": severity,
         "status": "success",
+        "module_status": collector_status,
+        "collection_status": "success",
         "tx_status": "unknown",
         "collected_at": collected_at,
         "updated_at": collected_at,
-        "raw_log_path": "",
+        "raw_log_path": raw_log_path,
     }
 
 

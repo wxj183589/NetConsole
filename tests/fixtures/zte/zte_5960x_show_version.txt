@@ -1,0 +1,19 @@
+ZXR10#show version
+ZTE ZXR10 Software, Version: 59X-ES V2.00.20.03B07, Release software
+Copyright (c) 2024 by ZTE Corporation
+Built on 2024/08/06 01:38:11
+System image file is <sysdisk0: verset/59X-ES-V2.00.20.03B07.set>,
+file size is 627,640,488 Bytes
+System image is loaded from local
+System uptime is 0 day(s), 1 hour(s), 50 minute(s)
+[MPU(M), shelf 0, panel 1]:
+Board Name : 5960X-32U-ES
+Board Type : MPU
+MPU-0/1/0, MSC:
+Main Processor : ZX222081
+Bootrom Version : V3.05
+Creation Date : 2024/06/14 10:18:00
+System Nvram : 8,192 bytes
+System Memory : 16,384 Mbytes
+Uptime is 0 day(s), 1 hour(s), 50 minute(s)
+ZXR10#

@@ -60,6 +60,7 @@ describe('file management API contract', () => {
   })
 
   it('asks once only after detecting disabled SFTP and continues the same connection flow', () => {
+    expect(source).toContain("connectionStatus.value = '正在连接 SFTP（单条路径最多等待 5 秒，失败后自动尝试下一路径）'")
     expect(source).toContain('DEVICE_FILE_SFTP_UNAVAILABLE')
     expect(source).toContain('设备未启用 SFTP，NetConsole 将通过受控命令启用 SFTP并重新连接。')
     expect(source).toContain('confirmDeviceSftpSetup(confirmationId, siteId.value)')
@@ -83,9 +84,16 @@ describe('file management API contract', () => {
 
   it('maps stable SFTP/session errors and exposes an existing task id', () => {
     for (const code of [
-      'DEVICE_FILE_NETWORK_UNREACHABLE',
-      'DEVICE_FILE_CONNECTION_TIMEOUT',
-      'DEVICE_FILE_AUTH_FAILED',
+      'DEVICE_FILE_DIRECT_UNREACHABLE',
+      'DEVICE_FILE_JUMP_HOST_UNREACHABLE',
+      'DEVICE_FILE_JUMP_HOST_AUTH_FAILED',
+      'DEVICE_FILE_JUMP_HOST_KEY_UNKNOWN',
+      'DEVICE_FILE_JUMP_HOST_KEY_MISMATCH',
+      'DEVICE_FILE_FORWARD_OPEN_FAILED',
+      'DEVICE_FILE_TARGET_UNREACHABLE_VIA_TUNNEL',
+      'DEVICE_FILE_TARGET_AUTH_FAILED',
+      'DEVICE_FILE_TARGET_HOST_KEY_UNKNOWN',
+      'DEVICE_FILE_TARGET_HOST_KEY_MISMATCH',
       'DEVICE_FILE_SFTP_NEGOTIATION_FAILED',
       'DEVICE_FILE_SFTP_ENABLE_UNSUPPORTED',
       'DEVICE_FILE_SFTP_ENABLE_PROFILE_UNRESOLVED',
@@ -98,6 +106,9 @@ describe('file management API contract', () => {
     expect(source).toContain('openTaskWindow(sftpSetupTaskId)')
     expect(source).toContain('const SFTP_SETUP_SUCCESS_MESSAGE = \'已在设备侧启用 SFTP，并完成重新连接。\'')
     expect(source).toContain('ElMessage.success(connection.value.message)')
+    expect(source).toContain('connectionRouteText(connection)')
+    expect(source).toContain('reason.details.attempts')
+    expect(source).not.toContain('127.0.0.1')
     expect(source).not.toMatch(/Channel closed|SSHException|ChannelException/)
   })
 

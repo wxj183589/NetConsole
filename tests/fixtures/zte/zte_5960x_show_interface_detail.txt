@@ -1,0 +1,32 @@
+ZXR10#show interface mgmt_eth
+Current mgmt port position:shelf 1, slot 1
+Holdtime is 0 sec(s)
+The port is electric
+The MDIMode of the port is auto
+Loopback none
+Duplex full
+Negotiation auto
+mgmt_eth is up, ifindex: 262146
+Line protocol is up, IPv4 protocol is up, IPv6 protocol is down,
+detected status is RX-OK/TX-OK
+Last line protocol up time : 2024-06-25 10:54:06
+Hardware is Management Ethernet, address is 2233.4455.6678
+Internet address is 10.233.6.158/28
+BW 100 Mbit/s
+IP MTU 1500 bytes
+MTU 9216 bytes
+ARP type ARP
+ARP Timeout 04:00:00
+Last Clear Time : 2024-06-25 10:54:01 Last Refresh Time: 2024-06-25 11:16:10
+Rate period : 120 s
+Input : 720 bit/s 1 packet/s
+Output : 216 bit/s 0 packet/s
+HardwareCounters:
+In_Bytes 654787514 In_Packets 441030
+In_Unicasts N/A In_Broadcasts N/A
+In_Multicasts 0 In_Undersize N/A
+In_CRC_ERROR N/A In_DropEvents 168
+In_Fragments N/A In_Jabbers N/A
+In_AlignError 0 In_SymbolError N/A
+In_MacRxError N/A In_64B N/A
+ZXR10#

@@ -26,8 +26,8 @@ def validate_device_connection_preflight(
     details = _base_details(device, selected)
     if selected not in {"SSH", "TELNET", "SNMP"}:
         _raise("DEVICE_TYPE_MISMATCH", "不支持的连接测试协议。", details)
-    if not str(device.primary_address or "").strip():
-        _raise("CREDENTIAL_MISSING", "请先填写设备地址。", details)
+    if not str(device.primary_address or device.backup_address or "").strip():
+        _raise("CREDENTIAL_MISSING", "请先填写主用地址或备用地址。", details)
     if not str(device.device_type or "").strip():
         _raise(
             "DEVICE_TYPE_MISMATCH",

@@ -2,6 +2,8 @@ import { apiRequest } from './client'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 import type {
   BaseDataChange,
+  BaseDataClearPreview,
+  BaseDataClearResult,
   BaseDataEditSession,
   BaseDataSaveResult,
   BaseDataValidationResult,
@@ -42,6 +44,8 @@ function queryString(values: PageQuery = {}): string {
 
 export const getRailTransitSummary = (): Promise<RailTransitSummary> => apiRequest(`${root}/summary`)
 export const getRailTransitBaseDataEditSession = (): Promise<BaseDataEditSession> => apiRequest(`${root}/revision`)
+export const getRailTransitBaseDataClearPreview = (): Promise<BaseDataClearPreview> => apiRequest(`${root}/clear-preview`)
+export const clearRailTransitBaseData = (payload: { site_id: string; base_revision: string; explicit_confirmation: boolean }): Promise<BaseDataClearResult> => apiRequest(`${root}/clear-all`, { method: 'POST', body: JSON.stringify(payload) })
 export const validateRailTransitBaseDataChanges = (payload: { site_id: string; base_revision: string; changes: BaseDataChange[] }): Promise<BaseDataValidationResult> => apiRequest(`${root}/validate`, { method: 'POST', body: JSON.stringify(payload) })
 export const saveRailTransitBaseDataChanges = (payload: { site_id: string; base_revision: string; changes: BaseDataChange[]; explicit_confirmation: boolean }): Promise<BaseDataSaveResult> => apiRequest(`${root}/changes`, { method: 'POST', body: JSON.stringify(payload) })
 export const listStations = (values: PageQuery = {}): Promise<Page<Station>> => apiRequest(`${root}/stations${queryString(values)}`)

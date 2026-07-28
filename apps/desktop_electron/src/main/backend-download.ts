@@ -16,7 +16,14 @@ import {
 } from '../shared/validation'
 import type { BackendRuntimeInfo } from './backend-manager'
 import type { DesktopLogger } from './logger'
-import { GrantedPathRegistry, normalizeAbsolutePath } from './path-access'
+import {
+  assertSaveTargetUnchanged,
+  GrantedPathRegistry,
+  inspectSaveTarget,
+  normalizeAbsolutePath,
+  SaveTargetChangedError,
+  type SaveTargetSnapshot,
+} from './path-access'
 
 interface DownloadDialog {
   showSaveDialog(
@@ -64,9 +71,27 @@ export class BackendDownloadManager {
     }
     const request = validateBackendDownloadRequest(value)
     const route = downloadRouteCategory(request.apiPath)
-    const selection = request.destinationPath
-      ? { canceled: false, filePath: this.options.pathRegistry.requireSavePath(request.destinationPath) }
-      : await this.showSaveDialog(request, window, route)
+    let selection: { canceled: boolean; filePath?: string; saveTarget?: SaveTargetSnapshot }
+    try {
+      if (request.destinationPath) {
+        const authorization = this.options.pathRegistry.requireSavePathAuthorization(request.destinationPath)
+        selection = {
+          canceled: false,
+          filePath: authorization.path,
+          saveTarget: authorization.saveTarget ?? await inspectSaveTarget(authorization.path),
+        }
+      } else {
+        const selected = await this.showSaveDialog(request, window, route)
+        selection = {
+          ...selected,
+          ...(!selected.canceled && selected.filePath
+            ? { saveTarget: await inspectSaveTarget(selected.filePath) }
+            : {}),
+        }
+      }
+    } catch (cause) {
+      return downloadFailureResult(cause)
+    }
     if (selection.canceled || !selection.filePath) {
       this.logger('ARTIFACT_SAVE_DIALOG_CANCELLED', `route=${route}`)
       return { status: 'cancelled' }
@@ -97,7 +122,13 @@ export class BackendDownloadManager {
       `.${basename(finalPath)}.${this.createTempId()}.part`,
     )
     const controller = new AbortController()
-    const operation = this.performDownload(request, finalPath, tempPath, controller)
+    const operation = this.performDownload(
+      request,
+      finalPath,
+      tempPath,
+      selection.saveTarget ?? { kind: 'missing' },
+      controller,
+    )
     this.activeControllers.add(controller)
     this.activeDownloads.add(operation)
     try {
@@ -134,11 +165,18 @@ export class BackendDownloadManager {
     request: BackendDownloadRequest,
     finalPath: string,
     tempPath: string,
+    expectedTarget: SaveTargetSnapshot,
     controller: AbortController,
   ): Promise<BackendDownloadResult> {
     const route = downloadRouteCategory(request.apiPath)
     let finalPathCommitted = false
+    let backupCreated = false
+    const backupPath = resolve(
+      dirname(finalPath),
+      `.${basename(finalPath)}.${this.createTempId()}.backup`,
+    )
     try {
+      await assertSaveTargetUnchanged(finalPath, expectedTarget)
       const runtime = this.options.backend.getRuntimeInfo()
       const url = managedBackendUrl(runtime, request)
       const response = await this.fetchImpl(url, {
@@ -163,9 +201,18 @@ export class BackendDownloadManager {
       const downloaded = await streamResponseToFile(response.body, tempPath)
       validateDownloadedFile(downloaded, request)
       this.logger('ARTIFACT_DOWNLOAD_VERIFIED', `route=${route} file=${basename(finalPath)} size=${downloaded.sizeBytes}`)
+      await assertSaveTargetUnchanged(finalPath, expectedTarget)
+      if (expectedTarget.kind === 'file') {
+        await rename(finalPath, backupPath)
+        backupCreated = true
+      }
       await rename(tempPath, finalPath)
       finalPathCommitted = true
       await verifyCommittedFile(finalPath, downloaded, this.options.statImpl ?? stat)
+      if (backupCreated) {
+        await rm(backupPath, { force: true })
+        backupCreated = false
+      }
       const capabilityId = isOpenableArtifactFileName(basename(finalPath))
         ? this.options.pathRegistry.grantCapability(finalPath)
         : undefined
@@ -182,6 +229,9 @@ export class BackendDownloadManager {
     } catch (cause) {
       await rm(tempPath, { force: true }).catch(() => undefined)
       if (finalPathCommitted) await rm(finalPath, { force: true }).catch(() => undefined)
+      if (backupCreated) {
+        await rename(backupPath, finalPath).catch(() => undefined)
+      }
       this.logger(
         'ARTIFACT_SAVE_FAILED',
         `route=${route} file=${basename(finalPath)} error_code=${downloadErrorCode(cause)}`,
@@ -360,6 +410,7 @@ function failedResult(
 
 function downloadFailureResult(cause: unknown): BackendDownloadResult {
   if (cause instanceof DownloadFailure) return failedResult(cause.code, cause.message)
+  if (cause instanceof SaveTargetChangedError) return failedResult(cause.code, cause.message)
   const code = nodeErrorCode(cause)
   if (code === 'ENOSPC') return failedResult('DISK_FULL', '磁盘空间不足，无法保存导出文件。')
   if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') {

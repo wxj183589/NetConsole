@@ -54,11 +54,17 @@ revision 校验 + SQLite BEGIN IMMEDIATE 单事务
 
 `StationSourceDiscoveryService` 使用 SQLite `mode=ro` 与 `PRAGMA query_only` 读取 `device_groups/devices`，一次读取全部匹配设备，不受前端分页限制。来源字符串按 NFKC、空白折叠、连字符统一和大小写无关生成匹配键；`32-五乡1/32-五乡2` 这类设备名不会生成站点，只有共同的 `station=32-五乡` 会合并为一个候选并统计 `source_device_count=2`。
 
-显式编号分隔符支持 `-`、`_`、`.`、`、`、`:` 和空格，保留节点编码前导零并把数字转为普通车站主线顺序。
-无分隔符的两位编号只有在同批至少 3 个候选、覆盖绝大多数未解析值、编号唯一且基本连续时才推断，
-`3号航站楼`、`1号线换乘站`、`101大道站` 等歧义名称不会被截断；稀疏或重复批次保持
-`manual_review`。以 `停车场`、`车辆段` 或非普通站名的 `车场` 结尾时识别为特殊节点，默认
-`path_code=UNASSIGNED`、`sort_order=null`、`participates_in_direction=false`，不会因为编码较大被排入主线。
+显式编号分隔符支持 `-`、`_`、`.`、`/`、`、`、逗号、`:` 和空格，保留节点编码前导零，并把数字记录到
+`source_order_text/source_order`；普通车站再由 `source_order` 得到 `sort_order`。无分隔符且以零开头的
+两位编号可直接识别；其他无分隔符两位编号只有在同批至少 3 个候选、覆盖绝大多数未解析值、编号唯一且基本
+连续时才推断。`3号航站楼`、`1号线换乘站`、`101大道站` 等歧义名称不会被截断；稀疏或重复批次保持
+`manual_review`。只有数字、超过 3 位数字前缀或去除明确前缀后名称为空时进入阻断错误。无数字前缀仍是合法
+来源，保留完整正式站名且 `sort_order=null`。
+
+`source_station_value` 保留原始设备字段，`source_station_key` 保存“规范站名 + 节点类型 + 路径”的稳定身份，
+`canonical_station_name` 保存不含编号前缀的规范站名。以 `停车场`、`车辆段` 或非普通站名的 `车场` 结尾时
+识别为特殊节点，保留 `source_order`，但默认 `path_code=UNASSIGNED`、`sort_order=null`、
+`participates_in_direction=false`，不会因为编码较大被排入主线。
 
 候选身份使用“规范站名 + 节点类型 + 路径”稳定键，不把编号前缀写入正式站名。编号写法不同但规范身份和
 数值编号一致时合并来源设备数；同编号不同站名、同站名不同编号或同路径顺序重复时返回阻断冲突。一个来源

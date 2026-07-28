@@ -286,6 +286,7 @@ def normalize_candidate(value: str) -> str:
     text = re.sub(r"ping -c <[^>]+> <[^>]+>", "ping -c <count> <ip>", text, flags=re.IGNORECASE)
     text = re.sub(r"ping -n <[^>]+> -l <[^>]+> -w <[^>]+> <[^>]+>", "ping -n <count> -l <size> -w <timeout_ms> <target>", text, flags=re.IGNORECASE)
     text = re.sub(r"repeat (?:\d+|<[^>]+>) delay (?:\d+|<[^>]+>)", "repeat <count> delay <seconds>", text, flags=re.IGNORECASE)
+    text = re.sub(r"display interface <[^>]+>", "display interface", text, flags=re.IGNORECASE)
     text = re.sub(r"display ar5drv (?:\d+|<[^>]+>) channelbusy", "display ar5drv <radio_id> channelbusy", text, flags=re.IGNORECASE)
     text = re.sub(r"display ar5drv (?:\d+|<[^>]+>) statistics", "display ar5drv <radio_id> statistics", text, flags=re.IGNORECASE)
     text = re.sub(r"display ar5drv (?:\d+|<[^>]+>) client all rssi", "display ar5drv <radio_id> client all rssi", text, flags=re.IGNORECASE)

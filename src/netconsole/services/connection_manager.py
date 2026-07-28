@@ -43,8 +43,10 @@ class ConnectionAttemptResult:
     protocol: str
     username: str
     password: str
+    target_role: str
     via_tunnel: bool = False
     tunnel: TunnelProfile | None = None
+    tunnel_label: str = ""
 
 
 class ConnectionManager:
@@ -91,31 +93,58 @@ class ConnectionManager:
     def iter_attempts(self, device: Device) -> list[ConnectionAttemptResult]:
         profile = self.build_profile(device)
         attempts: list[ConnectionAttemptResult] = []
+        addresses = _connection_addresses(profile)
         for protocol, port, username, password in _device_protocol_attempts(device):
             suffix = "" if protocol == profile.protocol else f"_{protocol.casefold()}"
-            if profile.primary_address:
+            for target_role, address in addresses:
                 attempts.append(
-                    ConnectionAttemptResult(f"primary_direct{suffix}", profile.primary_address, port, protocol, username, password)
-                )
-            if profile.backup_address:
-                attempts.append(
-                    ConnectionAttemptResult(f"backup_direct{suffix}", profile.backup_address, port, protocol, username, password)
+                    ConnectionAttemptResult(
+                        f"{target_role}_direct{suffix}",
+                        address,
+                        port,
+                        protocol,
+                        username,
+                        password,
+                        target_role,
+                    )
                 )
             for tunnel in profile.tunnels:
-                if tunnel.is_complete and profile.primary_address:
+                if not tunnel.is_complete:
+                    continue
+                for target_role, address in addresses:
                     attempts.append(
                         ConnectionAttemptResult(
-                            f"{tunnel.label}{suffix}",
-                            profile.primary_address,
+                            f"{tunnel.label}_{target_role}{suffix}",
+                            address,
                             port,
                             protocol,
                             username,
                             password,
+                            target_role,
                             via_tunnel=True,
                             tunnel=tunnel,
+                            tunnel_label=tunnel.label,
                         )
                     )
         return attempts
+
+
+def _connection_addresses(
+    profile: DeviceConnectionProfile,
+) -> list[tuple[str, str]]:
+    addresses: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for target_role, raw_address in (
+        ("primary", profile.primary_address),
+        ("backup", profile.backup_address),
+    ):
+        address = str(raw_address or "").strip()
+        identity = address.casefold()
+        if not address or identity in seen:
+            continue
+        seen.add(identity)
+        addresses.append((target_role, address))
+    return addresses
 
 
 def _device_protocol(device: Device) -> str:

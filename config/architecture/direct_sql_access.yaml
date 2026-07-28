@@ -35,6 +35,7 @@
   {"path":"src/netconsole/services/network_tools/iperf_runner.py","classification":"ANALYSIS_DB_OWNER","owner":"traffic","reason":"iPerf 结果分析库所有者。"},
   {"path":"src/netconsole/services/online_mr/query_service.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"online-mr","reason":"Online MR 会话只读数据网关。"},
   {"path":"src/netconsole/services/rail_transit/base_data_query_service.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"rail-transit","reason":"基础资料只读数据网关。"},
+  {"path":"src/netconsole/services/rail_transit/station_source_discovery_service.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"rail-transit","reason":"设备管理站点来源只读发现网关。"},
   {"path":"src/netconsole/services/rail_transit/mesh_analysis_query_service.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"mesh","reason":"MESH 分析只读数据网关。"},
   {"path":"src/netconsole/services/online_mr/db/event_db_writer.py","classification":"ANALYSIS_DB_OWNER","owner":"online-mr","reason":"Online MR 事件分析库所有者。"},
   {"path":"tests/mesh_analysis_test_support.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 测试 fixture。"},

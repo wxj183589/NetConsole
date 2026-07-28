@@ -54,6 +54,7 @@ from netconsole.services.rail_transit.station_source_utils import (
     STATION_SOURCE_FIELD,
     normalize_track_facilities,
     normalize_station_source_value,
+    parse_station_source_value,
 )
 from netconsole.utils.mileage import parse_track_mileage
 
@@ -869,7 +870,7 @@ class RailTransitBaseDataQueryService:
             ]
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in rows:
-            _value, key = normalize_station_source_value(row.get("station"))
+            key = parse_station_source_value(row.get("station")).source_station_key
             if key:
                 grouped[key].append(row)
         return {
@@ -1052,7 +1053,18 @@ class RailTransitBaseDataQueryService:
                 identity = metadata_row.id if metadata_row else f"legacy:{name}"
                 node_uid = str(uuid5(NAMESPACE_URL, f"netconsole:{site_id}:station:{identity}"))
             source_value = str(metadata.get("source_station_value") or "")
-            source_key = str(metadata.get("source_station_key") or normalize_station_source_value(source_value)[1])
+            parsed_source = parse_station_source_value(source_value)
+            parsed_name = parse_station_source_value(name)
+            source_key = str(
+                metadata.get("source_station_key")
+                or parsed_source.source_station_key
+                or parsed_name.source_station_key
+                or ""
+            )
+            canonical_station_name = str(
+                metadata.get("canonical_station_name")
+                or parsed_name.canonical_station_name
+            )
             node_type = str(metadata.get("node_type") or "station")
             source_kind = str(metadata.get("source_kind") or ("manual" if metadata_row else "legacy_ap_derived"))
             special = node_type in {"parking_lot", "depot"}
@@ -1070,7 +1082,7 @@ class RailTransitBaseDataQueryService:
                 track_facilities = normalize_track_facilities(None, legacy_turnback_type=turnback_type)
             center_mileage_text = str(metadata.get("center_mileage_text") or "")
             center_mileage = parse_track_mileage(center_mileage_text)
-            if source_key and source_key in source_counts:
+            if source_value and source_key and source_key in source_counts:
                 source_device_count, source_last_seen_at = source_counts[source_key]
                 sync_status = "matched"
             else:
@@ -1105,6 +1117,13 @@ class RailTransitBaseDataQueryService:
                     remark=str(metadata.get("remark") or (metadata_row.remark if metadata_row else "")),
                     source_station_value=source_value,
                     source_station_key=source_key,
+                    source_order_text=str(metadata.get("source_order_text") or parsed_source.source_order_text),
+                    source_order=self._int_or_none(
+                        metadata.get("source_order")
+                        if metadata.get("source_order") not in (None, "")
+                        else parsed_source.source_order
+                    ),
+                    canonical_station_name=canonical_station_name,
                     node_type=node_type,  # type: ignore[arg-type]
                     path_code=path_code or main_path_code,
                     participates_in_direction=participates,

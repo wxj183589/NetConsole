@@ -389,7 +389,7 @@ describe('Job Center saved artifact capability lifecycle', () => {
     expect(findButton(root, '打开所在目录')).toBeUndefined()
 
     platformMocks.download.mockResolvedValueOnce({ status: 'saved', capabilityId: 'cap-A' })
-    await click(findButton(root, 'Artifact 下载')!)
+    await click(findButton(root, '另存 Artifact')!)
     expect(platformMocks.download).toHaveBeenCalledWith(expect.objectContaining({
       expectedSizeBytes: 42,
       expectedSha256: 'a'.repeat(64),
@@ -413,7 +413,7 @@ describe('Job Center saved artifact capability lifecycle', () => {
 
     let finishDownload: (result: { status: 'failed'; error: string }) => void = () => undefined
     platformMocks.download.mockReturnValueOnce(new Promise((resolve) => { finishDownload = resolve }))
-    const failedDownload = (findButton(root, 'Artifact 下载')!.props.onClick as () => Promise<void>)()
+    const failedDownload = (findButton(root, '另存 Artifact')!.props.onClick as () => Promise<void>)()
     await nextTick()
     expect(findButton(root, '打开文件')).toBeUndefined()
     finishDownload({ status: 'failed', error: '取消保存' })
@@ -422,21 +422,21 @@ describe('Job Center saved artifact capability lifecycle', () => {
     expect(findButton(root, '打开文件')).toBeUndefined()
 
     platformMocks.download.mockResolvedValueOnce({ status: 'cancelled' })
-    await click(findButton(root, 'Artifact 下载')!)
+    await click(findButton(root, '另存 Artifact')!)
     expect(findButton(root, '打开文件')).toBeUndefined()
     expect(messageMocks.warning).toHaveBeenCalledWith('Artifact 已生成，但尚未保存到本地。')
 
     platformMocks.download.mockResolvedValueOnce({ status: 'started' })
-    await click(findButton(root, 'Artifact 下载')!)
+    await click(findButton(root, '另存 Artifact')!)
     expect(findButton(root, '打开文件')).toBeUndefined()
     expect(messageMocks.info).toHaveBeenCalledWith('文件已交由浏览器下载，请在浏览器下载记录中查看。')
 
     platformMocks.download.mockResolvedValueOnce({ status: 'saved' })
-    await click(findButton(root, 'Artifact 下载')!)
+    await click(findButton(root, '另存 Artifact')!)
     expect(findButton(root, '打开文件')).toBeUndefined()
 
     platformMocks.download.mockResolvedValueOnce({ status: 'saved', capabilityId: 'cap-A2' })
-    await click(findButton(root, 'Artifact 下载')!)
+    await click(findButton(root, '另存 Artifact')!)
     store.selected = task('B')
     await nextTick()
     expect(findButton(root, '打开文件')).toBeUndefined()
@@ -445,7 +445,7 @@ describe('Job Center saved artifact capability lifecycle', () => {
     store.selected = task('A')
     await nextTick()
     platformMocks.download.mockReturnValueOnce(new Promise((resolve) => { finishStaleDownload = resolve }))
-    const staleDownload = (findButton(root, 'Artifact 下载')!.props.onClick as () => Promise<void>)()
+    const staleDownload = (findButton(root, '另存 Artifact')!.props.onClick as () => Promise<void>)()
     store.selected = task('B')
     await nextTick()
     finishStaleDownload({ status: 'saved', capabilityId: 'stale-cap-A' })
@@ -454,7 +454,7 @@ describe('Job Center saved artifact capability lifecycle', () => {
     expect(findButton(root, '打开文件')).toBeUndefined()
 
     platformMocks.download.mockResolvedValueOnce({ status: 'saved', capabilityId: 'cap-B' })
-    await click(findButton(root, 'Artifact 下载')!)
+    await click(findButton(root, '另存 Artifact')!)
     platformMocks.open.mockResolvedValueOnce({ success: false, error: '系统未能打开所选路径 C:\\private\\secret.xlsx' })
     await click(findButton(root, '打开文件')!)
     expect(alertTitles(root)).toContain('系统未能打开文件，请检查文件关联后重试')
@@ -467,7 +467,7 @@ describe('Job Center saved artifact capability lifecycle', () => {
     showDrawer?.(true)
     await nextTick()
     platformMocks.download.mockResolvedValueOnce({ status: 'saved', capabilityId: 'cap-B2' })
-    await click(findButton(root, 'Artifact 下载')!)
+    await click(findButton(root, '另存 Artifact')!)
     await click(findButton(root, '停止 / 取消')!)
     expect(findButton(root, '打开文件')).toBeUndefined()
 
@@ -491,7 +491,7 @@ describe('Job Center saved artifact capability lifecycle', () => {
     showDrawer?.(true)
     await nextTick()
 
-    expect(findButton(root, 'Artifact 下载')).toBeUndefined()
+    expect(findButton(root, '另存 Artifact')).toBeUndefined()
     platformMocks.download.mockResolvedValueOnce({ status: 'saved', capabilityId: 'cap-trackside' })
     await click(findButton(root, '保存导出表格')!)
 
