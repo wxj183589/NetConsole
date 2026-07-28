@@ -19,6 +19,9 @@ from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryServic
 from netconsole.services.ac.mesh_link_refresh_service import (
     AcMeshLinkRefreshApplicationService,
 )
+from netconsole.services.ac.mesh_link_resident_polling_service import (
+    AcMeshLinkResidentPollingApplicationService,
+)
 from netconsole.services.ground_unattended.eligibility import (
     GroundUnattendedEligibilityClassifier,
     StationaryTracker,
@@ -81,6 +84,8 @@ class GroundUnattendedSupervisor:
         mesh_query: AcMeshLinkQueryService,
         vehicle_query: VehicleMrOnlineQueryService,
         ac_refresh_service: AcMeshLinkRefreshApplicationService | None = None,
+        ac_resident_service: AcMeshLinkResidentPollingApplicationService
+        | None = None,
         online_mr_application_service: OnlineMrApplicationService | None = None,
         online_mr_query_service: OnlineMrQueryService | None = None,
         network_service: SystemNetworkApplicationService | None = None,
@@ -95,6 +100,7 @@ class GroundUnattendedSupervisor:
         self.vehicle_query = vehicle_query
         self.network_service = network_service or SystemNetworkApplicationService()
         self.ac_refresh_service = ac_refresh_service
+        self.ac_resident_service = ac_resident_service
         self.now_provider = now_provider or (lambda: datetime.now().astimezone())
         self.tick_seconds = max(0.05, float(tick_seconds))
         self.classifier = GroundUnattendedEligibilityClassifier()
@@ -151,6 +157,7 @@ class GroundUnattendedSupervisor:
         self._last_valid_ping_targets: dict[str, tuple[FleetPingTarget, datetime]] = {}
         self._archive_delete_requests: list[str] = []
         self._last_profile_network_error = ""
+        self._last_processed_snapshot_id_by_controller: dict[str, int] = {}
 
     def start(self) -> None:
         with self._lock:
@@ -316,9 +323,11 @@ class GroundUnattendedSupervisor:
                 )
                 return
             self._active_profile = profile
+            self._restore_processed_snapshot_ids(run)
             self.inventory_sync.synchronize()
             self._start_fleet_ping(run, profile)
             self._start_syslog(run, profile)
+            self._ensure_ac_resident_pollers(run, profile)
             self.repository.update_run(
                 str(run["run_id"]), state="RUNNING", error_code="", error_message=""
             )
@@ -525,9 +534,11 @@ class GroundUnattendedSupervisor:
         run = self.repository.get_run(str(run["run_id"])) or run
         self._manual_start = False
         self._active_profile = profile
+        self._last_processed_snapshot_id_by_controller = {}
         inventory_summary = self.inventory_sync.synchronize()
         self._start_fleet_ping(run, profile)
         self._start_syslog(run, profile)
+        self._ensure_ac_resident_pollers(run, profile)
         self._last_ac_poll_monotonic = 0.0
         self.repository.update_run(str(run["run_id"]), state="RUNNING")
         self.repository.add_event(
@@ -554,38 +565,66 @@ class GroundUnattendedSupervisor:
     def _poll_if_due(self, run, profile, now, *, scheduling_paused: bool) -> None:
         import time
 
+        self._ensure_ac_resident_pollers(run, profile)
         current = time.monotonic()
-        if current - self._last_ac_poll_monotonic < profile.ac_poll_interval_seconds:
+        if current - self._last_ac_poll_monotonic < min(
+            1.0, max(0.1, self.tick_seconds)
+        ):
             return
         self._last_ac_poll_monotonic = current
         self._poll_ac_and_classify(
             run, profile, now, scheduling_paused=scheduling_paused
         )
-        self.repository.update_run(
-            str(run["run_id"]),
-            state="PAUSED" if scheduling_paused else "RUNNING",
-            ac_last_updated_at=now.isoformat(timespec="milliseconds"),
-        )
 
     def _poll_ac_and_classify(
         self, run, profile, now, *, scheduling_paused: bool
     ) -> None:
-        self._request_ac_refreshes(run)
-        ac_rows = self._all_mesh_mrs()
-        latest_snapshot_page = self.mesh_query.list_recent_snapshots(
-            self.site_id,
-            page=1,
-            page_size=30,
+        snapshots = self._latest_controller_snapshots()
+        if not snapshots:
+            self.repository.update_run(
+                str(run["run_id"]),
+                state="PAUSED" if scheduling_paused else "RUNNING",
+                ac_freshness_status="NO_DATA",
+            )
+            return
+        new_snapshots = [
+            snapshot
+            for snapshot in snapshots
+            if int(snapshot.id)
+            > int(
+                self._last_processed_snapshot_id_by_controller.get(
+                    str(snapshot.controller_id), 0
+                )
+            )
+        ]
+        received_at = max(
+            (
+                str(snapshot.collected_at)
+                for snapshot in snapshots
+                if snapshot.collected_at
+            ),
+            default=now.isoformat(timespec="milliseconds"),
         )
-        latest_snapshot = (
-            latest_snapshot_page.items[0] if latest_snapshot_page.items else None
-        )
+        if not new_snapshots:
+            fresh = any(
+                str(snapshot.data_status) == "fresh"
+                for snapshot in snapshots
+            )
+            self.repository.update_run(
+                str(run["run_id"]),
+                state="PAUSED" if scheduling_paused else "RUNNING",
+                ac_last_updated_at=received_at,
+                ac_freshness_status="FRESH" if fresh else "STALE",
+            )
+            return
+
+        mesh_rows = self._mesh_rows_for_snapshots(snapshots)
+        ac_rows = [item for item, _snapshot in mesh_rows]
         snapshot_batch_id = f"ac_{uuid.uuid4().hex}"
-        received_at = (
-            str(latest_snapshot.collected_at)
-            if latest_snapshot and latest_snapshot.collected_at
-            else now.isoformat(timespec="milliseconds")
-        )
+        new_snapshot_keys = {
+            (str(snapshot.controller_id), int(snapshot.id))
+            for snapshot in new_snapshots
+        }
         base_mrs = self._all_base_mrs()
         base_by_train = {
             canonical_train_id_for(item.train_no or item.train_id): item.train_id
@@ -593,7 +632,7 @@ class GroundUnattendedSupervisor:
             if canonical_train_id_for(item.train_no or item.train_id)
         }
         persisted_rows = []
-        for item in ac_rows:
+        for item, source_snapshot in mesh_rows:
             key = canonical_train_id_for(item.train_no)
             train_id = base_by_train.get(key, f"mesh:{key}" if key else "")
             persisted_rows.append(
@@ -601,14 +640,12 @@ class GroundUnattendedSupervisor:
                     "snapshot_id": snapshot_batch_id,
                     "site_id": self.site_id,
                     "run_id": str(run["run_id"]),
-                    "ac_device_id": latest_snapshot.controller_id
-                    if latest_snapshot
-                    else "",
-                    "source_snapshot_id": latest_snapshot.id
-                    if latest_snapshot
-                    else None,
-                    "device_time": latest_snapshot.ac_time if latest_snapshot else "",
-                    "received_at": received_at,
+                    "ac_device_id": source_snapshot.controller_id,
+                    "source_snapshot_id": source_snapshot.id,
+                    "device_time": source_snapshot.ac_time,
+                    "received_at": str(
+                        source_snapshot.collected_at or received_at
+                    ),
                     "train_id": train_id,
                     "train_no": item.train_no,
                     "mr_id": item.mr_device_id or item.mr_id,
@@ -625,16 +662,27 @@ class GroundUnattendedSupervisor:
                     "mileage": item.mileage,
                     "rssi": item.rssi,
                     "freshness_status": item.data_status,
-                    "raw_source_reference": latest_snapshot.source_reference
-                    if latest_snapshot
-                    else "",
+                    "raw_source_reference": source_snapshot.source_reference,
                 }
             )
+        new_persisted_rows = [
+            row
+            for row in persisted_rows
+            if (
+                str(row["ac_device_id"]),
+                int(row["source_snapshot_id"]),
+            )
+            in new_snapshot_keys
+        ]
         ac_ids = (
-            self.repository.insert_ac_rows(persisted_rows) if persisted_rows else {}
+            self.repository.insert_ac_rows(new_persisted_rows)
+            if new_persisted_rows
+            else {}
         )
-        if persisted_rows:
-            self._append_ac_snapshot_file(str(run["run_date"]), persisted_rows, now)
+        if new_persisted_rows:
+            self._append_ac_snapshot_file(
+                str(run["run_date"]), new_persisted_rows, now
+            )
         policies = {
             str(row["train_id"]): row
             for row in self.repository.list_inventory(include_removed=False)
@@ -698,7 +746,10 @@ class GroundUnattendedSupervisor:
                     for mr_id in endpoint_ids
                     if (train.train_id, mr_id) in ac_ids
                 ),
-                None,
+                (previous_rows.get(train.train_id) or {}).get(
+                    "ac_snapshot_id"
+                )
+                or None,
             )
             previous = previous_rows.get(train.train_id)
             if (
@@ -836,9 +887,22 @@ class GroundUnattendedSupervisor:
             )
         self.repository.update_run(
             str(run["run_id"]),
+            state="PAUSED" if scheduling_paused else "RUNNING",
             ac_last_updated_at=received_at,
             ac_freshness_status="FRESH" if fresh else "STALE" if ac_rows else "NO_DATA",
             ping_sample_count=self.fleet_ping.sample_count,
+        )
+        for snapshot in new_snapshots:
+            self._last_processed_snapshot_id_by_controller[
+                str(snapshot.controller_id)
+            ] = int(snapshot.id)
+        current_run = self.repository.get_run(str(run["run_id"])) or run
+        summary = dict(current_run.get("summary") or {})
+        summary["ac_last_processed_snapshot_ids"] = dict(
+            self._last_processed_snapshot_id_by_controller
+        )
+        self.repository.update_run(
+            str(run["run_id"]), summary_json=summary
         )
 
     @staticmethod
@@ -861,37 +925,106 @@ class GroundUnattendedSupervisor:
             return "EXCLUDED"
         return "NOT_SEEN"
 
-    def _request_ac_refreshes(self, run) -> None:
-        if self.ac_refresh_service is None:
+    def _ensure_ac_resident_pollers(self, run, profile) -> None:
+        if self.ac_resident_service is None:
             return
         for controller in self.vehicle_query.list_controllers(self.site_id):
             if not controller.connection_ready:
                 continue
             try:
-                result = self.ac_refresh_service.start_refresh(
+                result = self.ac_resident_service.ensure_poller(
                     site_name=self.site_id,
+                    run_id=str(run["run_id"]),
                     controller_id=controller.controller_id,
+                    controller_name=controller.name,
+                    poll_interval_seconds=profile.ac_poll_interval_seconds,
                     include_switch_history=False,
                 )
-                if not result.already_running:
-                    self.repository.add_event(
-                        run_id=str(run["run_id"]),
-                        event_type="ac_poll_started",
-                        title="AC Mesh-Link 轮询任务已创建",
-                        details={
-                            "task_id": result.task.task_id,
-                            "controller_id": controller.controller_id,
-                        },
-                    )
+                if result.already_running:
+                    continue
+                self.repository.add_event(
+                    run_id=str(run["run_id"]),
+                    event_type=(
+                        "ac_poller_recovered"
+                        if result.recovered
+                        else "ac_poller_started"
+                    ),
+                    title=(
+                        "已恢复 AC Mesh-Link 常驻轮询"
+                        if result.recovered
+                        else "AC Mesh-Link 常驻轮询已启动"
+                    ),
+                    details={
+                        "task_id": result.task.task_id,
+                        "controller_id": controller.controller_id,
+                        "poll_session_id": result.poll_session_id,
+                    },
+                )
             except Exception as exc:
                 self.repository.add_event(
                     run_id=str(run["run_id"]),
-                    event_type="ac_poll_failed",
+                    event_type="ac_poller_start_failed",
                     severity="warning",
-                    title="AC 轮询启动失败",
+                    title="AC 常驻轮询启动失败",
                     message=f"{exc.__class__.__name__}: {exc}",
                     details={"controller_id": controller.controller_id},
                 )
+
+    def _latest_controller_snapshots(self) -> list[object]:
+        provider = getattr(
+            self.mesh_query, "list_latest_snapshots_by_controller", None
+        )
+        if callable(provider):
+            return list(provider(self.site_id))
+        page = self.mesh_query.list_recent_snapshots(
+            self.site_id, page=1, page_size=100
+        )
+        latest: dict[str, object] = {}
+        for snapshot in page.items:
+            controller_id = str(snapshot.controller_id or "")
+            latest.setdefault(controller_id, snapshot)
+        return list(latest.values())
+
+    def _mesh_rows_for_snapshots(
+        self, snapshots: list[object]
+    ) -> list[tuple[object, object]]:
+        provider = getattr(self.mesh_query, "list_mrs_for_snapshot", None)
+        selected: dict[str, tuple[object, object]] = {}
+        for index, snapshot in enumerate(snapshots):
+            rows = (
+                list(provider(self.site_id, int(snapshot.id)))
+                if callable(provider)
+                else self._all_mesh_mrs()
+                if index == 0
+                else []
+            )
+            for item in rows:
+                key = (
+                    str(item.mr_device_id or item.mr_id or "")
+                    or f"{item.train_no}:{item.car_end}"
+                )
+                previous = selected.get(key)
+                if previous is None or (
+                    not str(previous[0].peer_ap_name or "")
+                    and str(item.peer_ap_name or "")
+                ):
+                    selected[key] = (item, snapshot)
+        return list(selected.values())
+
+    def _restore_processed_snapshot_ids(self, run) -> None:
+        values = dict(run.get("summary") or {}).get(
+            "ac_last_processed_snapshot_ids"
+        )
+        self._last_processed_snapshot_id_by_controller = {}
+        if not isinstance(values, dict):
+            return
+        for controller_id, snapshot_id in values.items():
+            try:
+                self._last_processed_snapshot_id_by_controller[
+                    str(controller_id)
+                ] = int(snapshot_id)
+            except (TypeError, ValueError):
+                continue
 
     def _finalize_run(self, run, *, archive: bool) -> None:
         run_id = str(run["run_id"])
@@ -944,6 +1077,28 @@ class GroundUnattendedSupervisor:
                 self.repository.list_train_runs(run_id),
                 paused=True,
             )
+        self._operation_progress(
+            operation_id,
+            stage="STOPPING_AC_POLLER",
+            percent=22,
+            message="正在停止 AC 常驻轮询",
+        )
+        if self.ac_resident_service is not None:
+            ac_stop = self.ac_resident_service.request_stop_run(
+                site_name=self.site_id,
+                run_id=run_id,
+                timeout_seconds=25.0,
+            )
+            if not ac_stop.success:
+                self._fail_operation(
+                    operation_id,
+                    run_id,
+                    code="AC_POLLER_STOP_TIMEOUT",
+                    message="AC 常驻轮询未在停止预算内退出",
+                    result={"ac_pollers": list(ac_stop.pollers)},
+                )
+                return
+        if self.deep_scheduler is not None:
             if self.deep_scheduler.has_active_automated():
                 return
             for train in self.repository.list_train_runs(run_id):
@@ -1159,6 +1314,7 @@ class GroundUnattendedSupervisor:
         self._active_profile = None
         self._manual_start = False
         self._last_valid_ping_targets = {}
+        self._last_processed_snapshot_id_by_controller = {}
 
     def _operation_progress(
         self,

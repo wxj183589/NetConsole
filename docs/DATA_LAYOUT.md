@@ -85,6 +85,12 @@ files/rail_transit/
 │     ├─ outputs/
 │     └─ mesh.sqlite
 ├─ online_mr/<mr>/sessions/<session>/
+├─ ac_mesh_link/
+│  ├─ snapshots/<session_id>/raw/ # 一次性与常驻采集共用的原始回显和快照目录
+│  ├─ failures/<task_id>/         # 快照提交失败时保留的受控现场
+│  └─ resident/<run-hash>/<controller-hash>/
+│     ├─ control.json             # 间隔、立即轮询和正常停止请求；不含凭据或命令文本
+│     └─ status.json              # Task、连接、心跳、计数和最近快照健康状态
 ├─ ground_unattended/
 │  ├─ active/<run_date>/
 │  │  ├─ fleet_ping/<train>/<mr>/<date>/<hour>_<generation>.ndjson

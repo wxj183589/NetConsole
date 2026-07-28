@@ -84,6 +84,10 @@ class AcMeshLinkRefreshError(RuntimeError):
         return f"{self.code}: {self.message}"
 
 
+class AcMeshLinkConnectionError(AcMeshLinkRefreshError):
+    """仅表示当前 SSH/Telnet 会话已经不可继续使用。"""
+
+
 class MeshLinkConnection(Protocol):
     def send_command(self, command: str, timeout: int) -> str: ...
 
@@ -97,6 +101,22 @@ ConnectionFactory = Callable[[OnlineMrConnectionConfig], MeshLinkConnection]
 class AcMeshLinkRefreshStart:
     task: TaskSnapshot
     already_running: bool = False
+    resident: bool = False
+    request_id: str = ""
+
+
+class ResidentRefreshRequest(Protocol):
+    task: TaskSnapshot
+    request_id: str
+
+
+class ResidentRefreshCoordinator(Protocol):
+    def request_immediate_if_active(
+        self,
+        *,
+        site_name: str,
+        controller_id: str,
+    ) -> ResidentRefreshRequest | None: ...
 
 
 class AcMeshLinkRefreshApplicationService:
@@ -114,6 +134,12 @@ class AcMeshLinkRefreshApplicationService:
         self.process_adapter = process_adapter or LocalProcessAdapter(task_service)
         self._lock = RLock()
         self._active_by_controller: dict[tuple[str, str], str] = {}
+        self._resident_service: ResidentRefreshCoordinator | None = None
+
+    def bind_resident_service(
+        self, service: ResidentRefreshCoordinator | None
+    ) -> None:
+        self._resident_service = service
 
     def start_refresh(
         self,
@@ -123,6 +149,18 @@ class AcMeshLinkRefreshApplicationService:
         include_switch_history: bool = False,
     ) -> AcMeshLinkRefreshStart:
         site = SiteManager(self.paths).validate_site_name(site_name)
+        if self._resident_service is not None:
+            resident = self._resident_service.request_immediate_if_active(
+                site_name=site,
+                controller_id=controller_id,
+            )
+            if resident is not None:
+                return AcMeshLinkRefreshStart(
+                    task=resident.task,
+                    already_running=True,
+                    resident=True,
+                    request_id=str(resident.request_id),
+                )
         controller = load_mesh_link_controller(self.paths, site, controller_id, require_credentials=False)
         key = (site, str(controller.device_uuid or controller_id))
         with self._lock:
@@ -205,15 +243,7 @@ class AcMeshLinkRefreshWorkerService:
         controller_id = str(params.get("controller_id") or "")
         include_history = bool(params.get("include_switch_history"))
         controller = load_mesh_link_controller(self.paths, site, controller_id, require_credentials=True)
-        repository = DeviceRepository(Database(self.paths.site_db_path(site)))
-        store = VehicleMrOnlineStore(self.paths, site)
-        session_id = store.create_session(controller, 0)
-        staging = self.paths.ac_mesh_link_staging_root(site) / context.job_id
-        target = self.paths.ac_mesh_link_snapshot_dir(site, session_id)
-        failure = self.paths.ac_mesh_link_failures_root(site) / context.job_id
-        started = time.monotonic()
         connection: MeshLinkConnection | None = None
-        moved_to_target = False
         try:
             context.progress("profile", 1, 7, "已加载 AC 连接配置")
             context.check_cancelled()
@@ -221,44 +251,37 @@ class AcMeshLinkRefreshWorkerService:
             try:
                 connection = self.connection_factory(config)
             except Exception:
-                raise AcMeshLinkRefreshError(
+                raise AcMeshLinkConnectionError(
                     AcMeshLinkRefreshErrorCode.CONNECT_FAILED,
                     "连接 AC 失败，请检查设备地址、服务状态和受控凭据。",
                 ) from None
             context.progress("connected", 2, 7, "AC 连接成功")
-            outputs: dict[str, str] = {}
-            for command in MESH_LINK_REFRESH_COMMANDS:
-                context.check_cancelled()
-                try:
-                    outputs[command] = str(connection.send_command(command, config.command_timeout) or "")
-                except Exception:
-                    raise AcMeshLinkRefreshError(
-                        AcMeshLinkRefreshErrorCode.COMMAND_FAILED,
-                        "Mesh-Link 白名单命令执行失败。",
-                    ) from None
-            history_output = ""
-            if include_history:
-                command = MESH_LINK_SWITCH_HISTORY_COMMANDS[0]
-                context.check_cancelled()
-                try:
-                    history_output = str(connection.send_command(command, config.command_timeout) or "")
-                except Exception:
-                    raise AcMeshLinkRefreshError(
-                        AcMeshLinkRefreshErrorCode.COMMAND_FAILED,
-                        "Mesh-Link 切换历史白名单命令执行失败。",
-                    ) from None
-            context.progress("collected", 3, 7, "白名单命令采集完成")
+            context.check_cancelled()
+            try:
+                connection.send_command(MESH_LINK_REFRESH_COMMANDS[0], config.command_timeout)
+            except Exception:
+                raise AcMeshLinkConnectionError(
+                    AcMeshLinkRefreshErrorCode.COMMAND_FAILED,
+                    "Mesh-Link 会话初始化命令执行失败。",
+                ) from None
+            return AcMeshLinkSnapshotCollector(
+                self.paths,
+                now_provider=self.now_provider,
+            ).collect(
+                context,
+                site=site,
+                controller=controller,
+                connection=connection,
+                command_timeout=config.command_timeout,
+                include_switch_history=include_history,
+                artifact_key=context.job_id,
+                source_type="ac_live_refresh",
+            )
         except BackgroundTaskCancelled:
-            store.update_session(session_id, "已取消", error="用户取消", stopped=True)
-            self._preserve_failure(staging, failure)
             raise
         except AcMeshLinkRefreshError as exc:
-            store.update_session(session_id, "失败", error=exc.message, stopped=True)
-            self._preserve_failure(staging, failure)
             raise RuntimeError(str(exc)) from None
         except Exception:
-            store.update_session(session_id, "失败", error="内部错误", stopped=True)
-            self._preserve_failure(staging, failure)
             raise RuntimeError(
                 f"{AcMeshLinkRefreshErrorCode.INTERNAL_ERROR}: Mesh-Link 刷新发生内部错误，旧快照已保留。"
             ) from None
@@ -268,109 +291,6 @@ class AcMeshLinkRefreshWorkerService:
                     connection.close()
                 except Exception:
                     pass
-
-        try:
-            mesh_output = outputs[MESH_LINK_REFRESH_COMMANDS[-1]]
-            clock_output = outputs[MESH_LINK_REFRESH_COMMANDS[1]]
-            warnings: list[str] = []
-            if not self._has_device_clock(clock_output):
-                warnings.append("display clock 未返回可解析日期，快照使用本地采集时间。")
-            self._write_staging(
-                staging,
-                context=context,
-                site=site,
-                controller=controller,
-                session_id=session_id,
-                outputs=outputs,
-                history_output=history_output,
-                warnings=warnings,
-            )
-            self._validate_mesh_output(mesh_output)
-            raw_for_parse = f"{clock_output}\n{mesh_output}"
-            parse_result = H3CComwareV9VehicleMrMeshLinkParser().parse(raw_for_parse)
-            if parse_result.parse_status.casefold() not in {"ok", "success"}:
-                raise AcMeshLinkRefreshError(
-                    AcMeshLinkRefreshErrorCode.PARSE_FAILED,
-                    "Mesh-Link 回显无法按现有 H3C 格式解析。",
-                )
-            if not parse_result.links and not self._is_valid_empty(mesh_output):
-                raise AcMeshLinkRefreshError(
-                    AcMeshLinkRefreshErrorCode.PARSE_FAILED,
-                    "Mesh-Link 回显没有可识别记录，也未明确返回零条链路。",
-                )
-            context.progress("parsed", 4, 7, f"解析完成，共 {len(parse_result.links)} 条链路")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(staging, target)
-            moved_to_target = True
-            context.progress("raw_saved", 5, 7, "原始回显已原子落盘")
-
-            mappings = store.list_mappings()
-            registered = build_registered_trains(repository.list(), load_group_names(repository, site))
-            registered.update(load_vehicle_mr_mapping_trains(repository))
-            registered.update(build_mapping_trains(mappings))
-            ap_lookup = self._read_only_ap_lookup(site)
-            trains = build_train_states(
-                registered,
-                parse_result,
-                ap_lookup,
-                store.load_current_states(),
-                build_mapping_lookup(mappings),
-            )
-            try:
-                snapshot_id = store.persist_snapshot(
-                    session_id,
-                    1,
-                    parse_result,
-                    trains,
-                    ap_lookup,
-                    round((time.monotonic() - started) * 1000),
-                )
-            except Exception:
-                self._move_target_to_failure(target, failure)
-                moved_to_target = False
-                raise AcMeshLinkRefreshError(
-                    AcMeshLinkRefreshErrorCode.SNAPSHOT_WRITE_FAILED,
-                    "Mesh-Link 快照写入失败，旧快照已保留。",
-                ) from None
-            self._finish_meta(target, snapshot_id)
-            store.update_session(session_id, "已完成", ac_time=parse_result.ac_time, stopped=True)
-            context.progress("completed", 7, 7, "Mesh-Link 快照已更新")
-            raw_reference = (target / "raw" / "mesh_link_raw.log").relative_to(self.paths.site_dir(site)).as_posix()
-            return {
-                "site_id": site,
-                "controller_id": str(controller.device_uuid or controller_id),
-                "controller_name": str(controller.name or controller.system_name or controller_id),
-                "session_id": session_id,
-                "snapshot_id": snapshot_id,
-                "raw_output_reference": raw_reference,
-                "parser_version": MESH_LINK_PARSER_VERSION,
-                "records_count": len(parse_result.links),
-                "warning_count": len(warnings),
-                "warnings": warnings,
-            }
-        except BackgroundTaskCancelled:
-            store.update_session(session_id, "已取消", error="用户取消", stopped=True)
-            if moved_to_target:
-                self._move_target_to_failure(target, failure)
-            else:
-                self._preserve_failure(staging, failure)
-            raise
-        except AcMeshLinkRefreshError as exc:
-            store.update_session(session_id, "失败", error=exc.message, stopped=True)
-            if moved_to_target:
-                self._move_target_to_failure(target, failure)
-            else:
-                self._preserve_failure(staging, failure)
-            raise RuntimeError(str(exc)) from None
-        except Exception:
-            store.update_session(session_id, "失败", error="内部错误", stopped=True)
-            if moved_to_target:
-                self._move_target_to_failure(target, failure)
-            else:
-                self._preserve_failure(staging, failure)
-            raise RuntimeError(
-                f"{AcMeshLinkRefreshErrorCode.INTERNAL_ERROR}: Mesh-Link 刷新发生内部错误，旧快照已保留。"
-            ) from None
 
     @staticmethod
     def _connection_config(site: str, controller: Device) -> OnlineMrConnectionConfig:
@@ -434,6 +354,7 @@ class AcMeshLinkRefreshWorkerService:
         outputs: dict[str, str],
         history_output: str,
         warnings: list[str],
+        source_type: str = "ac_live_refresh",
     ) -> None:
         raw_dir = staging / "raw"
         raw_dir.mkdir(parents=True, exist_ok=False)
@@ -453,7 +374,7 @@ class AcMeshLinkRefreshWorkerService:
                 "controller_id": str(controller.device_uuid or ""),
                 "controller_name": str(controller.name or controller.system_name or ""),
                 "collected_at": self.now_provider().isoformat(sep=" ", timespec="seconds"),
-                "source_type": "ac_live_refresh",
+                "source_type": source_type,
                 "parser_version": MESH_LINK_PARSER_VERSION,
                 "raw_reference": "raw/mesh_link_raw.log",
             },
@@ -517,6 +438,219 @@ class AcMeshLinkRefreshWorkerService:
             return
         failure.parent.mkdir(parents=True, exist_ok=True)
         os.replace(target, failure)
+
+
+class AcMeshLinkSnapshotCollector(AcMeshLinkRefreshWorkerService):
+    """在调用方持有的既有连接上完成一轮只读采集、解析和原子快照提交。"""
+
+    def collect(
+        self,
+        context: JobContext,
+        *,
+        site: str,
+        controller: Device,
+        connection: MeshLinkConnection,
+        command_timeout: int,
+        include_switch_history: bool,
+        artifact_key: str,
+        source_type: str,
+    ) -> dict[str, object]:
+        repository = DeviceRepository(Database(self.paths.site_db_path(site)))
+        store = VehicleMrOnlineStore(self.paths, site)
+        session_id = store.create_session(controller, 0)
+        staging = self.paths.ac_mesh_link_staging_root(site) / artifact_key
+        target = self.paths.ac_mesh_link_snapshot_dir(site, session_id)
+        failure = self.paths.ac_mesh_link_failures_root(site) / artifact_key
+        started = time.monotonic()
+        moved_to_target = False
+        outputs: dict[str, str] = {}
+        history_output = ""
+        resident = source_type == "ac_resident_poll"
+        try:
+            for command in MESH_LINK_REFRESH_COMMANDS[1:]:
+                context.check_cancelled()
+                try:
+                    outputs[command] = str(
+                        connection.send_command(command, command_timeout) or ""
+                    )
+                except Exception:
+                    raise AcMeshLinkConnectionError(
+                        AcMeshLinkRefreshErrorCode.COMMAND_FAILED,
+                        "Mesh-Link 白名单命令执行失败，当前会话需要重连。",
+                    ) from None
+            if include_switch_history:
+                command = MESH_LINK_SWITCH_HISTORY_COMMANDS[0]
+                context.check_cancelled()
+                try:
+                    history_output = str(
+                        connection.send_command(command, command_timeout) or ""
+                    )
+                except Exception:
+                    raise AcMeshLinkConnectionError(
+                        AcMeshLinkRefreshErrorCode.COMMAND_FAILED,
+                        "Mesh-Link 切换历史命令执行失败，当前会话需要重连。",
+                    ) from None
+            self._emit_progress(
+                context,
+                resident=resident,
+                stage="collected",
+                current=3,
+                message="白名单命令采集完成",
+            )
+
+            mesh_output = outputs[MESH_LINK_REFRESH_COMMANDS[-1]]
+            clock_output = outputs[MESH_LINK_REFRESH_COMMANDS[1]]
+            warnings: list[str] = []
+            if not self._has_device_clock(clock_output):
+                warnings.append("display clock 未返回可解析日期，快照使用本地采集时间。")
+            self._write_staging(
+                staging,
+                context=context,
+                site=site,
+                controller=controller,
+                session_id=session_id,
+                outputs=outputs,
+                history_output=history_output,
+                warnings=warnings,
+                source_type=source_type,
+            )
+            self._validate_mesh_output(mesh_output)
+            parse_result = H3CComwareV9VehicleMrMeshLinkParser().parse(
+                f"{clock_output}\n{mesh_output}"
+            )
+            if parse_result.parse_status.casefold() not in {"ok", "success"}:
+                raise AcMeshLinkRefreshError(
+                    AcMeshLinkRefreshErrorCode.PARSE_FAILED,
+                    "Mesh-Link 回显无法按现有 H3C 格式解析。",
+                )
+            if not parse_result.links and not self._is_valid_empty(mesh_output):
+                raise AcMeshLinkRefreshError(
+                    AcMeshLinkRefreshErrorCode.PARSE_FAILED,
+                    "Mesh-Link 回显没有可识别记录，也未明确返回零条链路。",
+                )
+            self._emit_progress(
+                context,
+                resident=resident,
+                stage="parsed",
+                current=4,
+                message=f"解析完成，共 {len(parse_result.links)} 条链路",
+            )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(staging, target)
+            moved_to_target = True
+            self._emit_progress(
+                context,
+                resident=resident,
+                stage="raw_saved",
+                current=5,
+                message="原始回显已原子落盘",
+            )
+
+            mappings = store.list_mappings()
+            registered = build_registered_trains(
+                repository.list(), load_group_names(repository, site)
+            )
+            registered.update(load_vehicle_mr_mapping_trains(repository))
+            registered.update(build_mapping_trains(mappings))
+            ap_lookup = self._read_only_ap_lookup(site)
+            trains = build_train_states(
+                registered,
+                parse_result,
+                ap_lookup,
+                store.load_current_states(),
+                build_mapping_lookup(mappings),
+            )
+            try:
+                snapshot_id = store.persist_snapshot(
+                    session_id,
+                    1,
+                    parse_result,
+                    trains,
+                    ap_lookup,
+                    round((time.monotonic() - started) * 1000),
+                )
+            except Exception:
+                self._move_target_to_failure(target, failure)
+                moved_to_target = False
+                raise AcMeshLinkRefreshError(
+                    AcMeshLinkRefreshErrorCode.SNAPSHOT_WRITE_FAILED,
+                    "Mesh-Link 快照写入失败，旧快照已保留。",
+                ) from None
+            self._finish_meta(target, snapshot_id)
+            store.update_session(
+                session_id, "已完成", ac_time=parse_result.ac_time, stopped=True
+            )
+            self._emit_progress(
+                context,
+                resident=resident,
+                stage="completed",
+                current=7,
+                message="Mesh-Link 快照已更新",
+            )
+            raw_reference = (
+                target / "raw" / "mesh_link_raw.log"
+            ).relative_to(self.paths.site_dir(site)).as_posix()
+            return {
+                "site_id": site,
+                "controller_id": str(controller.device_uuid or ""),
+                "controller_name": str(
+                    controller.name or controller.system_name or ""
+                ),
+                "session_id": session_id,
+                "snapshot_id": snapshot_id,
+                "raw_output_reference": raw_reference,
+                "parser_version": MESH_LINK_PARSER_VERSION,
+                "records_count": len(parse_result.links),
+                "warning_count": len(warnings),
+                "warnings": warnings,
+            }
+        except BackgroundTaskCancelled:
+            store.update_session(
+                session_id, "已取消", error="用户取消", stopped=True
+            )
+            if moved_to_target:
+                self._move_target_to_failure(target, failure)
+            else:
+                self._preserve_failure(staging, failure)
+            raise
+        except AcMeshLinkRefreshError as exc:
+            store.update_session(session_id, "失败", error=exc.message, stopped=True)
+            if moved_to_target:
+                self._move_target_to_failure(target, failure)
+            else:
+                self._preserve_failure(staging, failure)
+            raise
+        except Exception:
+            store.update_session(session_id, "失败", error="内部错误", stopped=True)
+            if moved_to_target:
+                self._move_target_to_failure(target, failure)
+            else:
+                self._preserve_failure(staging, failure)
+            raise AcMeshLinkRefreshError(
+                AcMeshLinkRefreshErrorCode.INTERNAL_ERROR,
+                "Mesh-Link 刷新发生内部错误，旧快照已保留。",
+            ) from None
+
+    @staticmethod
+    def _emit_progress(
+        context: JobContext,
+        *,
+        resident: bool,
+        stage: str,
+        current: int,
+        message: str,
+    ) -> None:
+        if resident:
+            context.structured_progress(
+                stage,
+                0,
+                0,
+                message,
+                task_mode="resident",
+                progress_mode="indeterminate",
+            )
+            return
+        context.progress(stage, current, 7, message)
 
 
 def load_mesh_link_controller(
@@ -585,11 +719,13 @@ def run_ac_mesh_link_refresh(context: JobContext) -> dict[str, object]:
 
 
 __all__ = [
+    "AcMeshLinkConnectionError",
     "AcMeshLinkRefreshApplicationService",
     "AcMeshLinkRefreshError",
     "AcMeshLinkRefreshErrorCode",
     "AcMeshLinkRefreshStart",
     "AcMeshLinkRefreshWorkerService",
+    "AcMeshLinkSnapshotCollector",
     "MESH_LINK_PARSER_VERSION",
     "MESH_LINK_REFRESH_COMMANDS",
     "MESH_LINK_REFRESH_TASK_TYPE",

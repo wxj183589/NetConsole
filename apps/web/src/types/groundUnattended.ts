@@ -104,11 +104,18 @@ export interface GroundInventorySummary {
   missing_management_ip_count: number; missing_credential_count: number; added_endpoint_count: number; updated_endpoint_count: number; removed_endpoint_count: number; removed_train_count: number; synchronized_at: string
 }
 export interface GroundTrainPolicy { enabled: boolean; priority: boolean; scheduling_priority: number; deep_collection_enabled: boolean; monitor_only: boolean; remark: string }
+export interface GroundAcPollerHealth {
+  controller_id: string; controller_name: string; task_id: string; run_id: string; status: string; connection_state: string
+  last_success_at: string; latest_snapshot_id: number | null; next_poll_at: string; poll_interval_seconds: number
+  poll_count: number; success_count: number; failure_count: number; reconnect_count: number; consecutive_failures: number
+  heartbeat_at: string; heartbeat_age_seconds: number | null; last_error: string
+}
 export interface GroundHealth {
   site_id: string; status: string; udp_running: boolean; udp_listen_address: string; udp_receive_rate_per_second: number; udp_received_count: number
   udp_unidentified_count: number; udp_queue_length: number; udp_queue_capacity: number; udp_dropped_count: number; raw_records_written: number; raw_bytes_written: number
   raw_last_write_duration_ms: number; database_pending_count: number; database_last_batch_duration_ms: number; open_file_count: number
-  ping_target_count: number; ping_process_count: number; deep_queue_length: number; archive_pending_count: number; disk_free_bytes: number; last_error: string; updated_at: string
+  ping_target_count: number; ping_process_count: number; deep_queue_length: number; archive_pending_count: number; ac_pollers: GroundAcPollerHealth[]
+  disk_free_bytes: number; last_error: string; updated_at: string
 }
 export interface GroundRawFile { file_id: string; site_id: string; run_id: string; train_id: string; device_id: number | null; mr_role: string; data_type: string; relative_path: string; start_time: string; end_time: string; record_count: number; size_bytes: number; sha256: string; status: string; archive_status: string; parse_status: string; compressed_path: string; created_at: string; updated_at: string }
 

@@ -165,7 +165,19 @@ class JobCenterQueryService:
                     payload = self._json_object(row_item["payload_json"])
                     details = self._payload_details(payload)
                     event = str(details.get("event") or "").casefold()
-                    if details and (details.get("ap_name") or details.get("ap_ip") or event in {"ap_started", "ap_completed", "ap_retry_started", "plan_ready"}):
+                    if details and (
+                        str(values.get("task_type") or "")
+                        == "ac_mesh_link_resident_poll"
+                        or details.get("ap_name")
+                        or details.get("ap_ip")
+                        or event
+                        in {
+                            "ap_started",
+                            "ap_completed",
+                            "ap_retry_started",
+                            "plan_ready",
+                        }
+                    ):
                         values["latest_progress_json"] = row_item["payload_json"]
                         break
         return self._task_from_row(values, include_result=True)
@@ -311,7 +323,8 @@ class JobCenterQueryService:
             join = ""
         return f"""
             SELECT task.task_id, task.task_type, task.task_name, task.status,
-                   task.progress, task.stage, task.message, task.site_name,
+                   task.progress, task.current, task.total, task.stage,
+                   task.message, task.site_name,
                    task.owner, task.source, task.device, task.agent,
                    task.created_time, task.started_time, task.finished_time,
                    task.updated_time, task.result_path, task.error_message,
@@ -360,6 +373,18 @@ class JobCenterQueryService:
             name=redact_web_task_text(row.get("task_name") or row.get("task_type") or ""),
             status=status,
             progress=max(0, min(int(row.get("progress") or 0), 100)),
+            current=max(0, int(row.get("current") or 0)),
+            total=max(0, int(row.get("total") or 0)),
+            task_mode=(
+                "resident"
+                if task_type == "ac_mesh_link_resident_poll"
+                else "once"
+            ),
+            progress_mode=(
+                "indeterminate"
+                if task_type == "ac_mesh_link_resident_poll"
+                else "percentage"
+            ),
             phase=redact_web_task_text(row.get("phase") or row.get("stage") or ""),
             stage=redact_web_task_text(row.get("stage") or ""),
             message=redact_web_task_text(row.get("message") or ""),
@@ -425,6 +450,11 @@ class JobCenterQueryService:
             return "ac"
         if owner == RAIL_WEB_OWNER:
             return "rail"
+        if (
+            owner == "ground_unattended_ac_mesh_link"
+            and task_type == "ac_mesh_link_resident_poll"
+        ):
+            return "rail"
         if owner == NETWORK_TOOL_OWNER:
             return "network"
         if owner == "controller" and task_type in TRAFFIC_CONTROLLER_TASK_TYPES:
@@ -470,6 +500,11 @@ class JobCenterQueryService:
         if owner == RAIL_WEB_OWNER and task_type == "online_mr_session_delete":
             return False, "会话删除进入受控提交后不可停止，请等待任务完成"
         if owner == RAIL_WEB_OWNER:
+            return True, ""
+        if (
+            owner == "ground_unattended_ac_mesh_link"
+            and task_type == "ac_mesh_link_resident_poll"
+        ):
             return True, ""
         if owner == NETWORK_TOOL_OWNER:
             return True, ""

@@ -164,6 +164,8 @@ class AcMeshLinkRefreshResponseDTO(ApiModel):
     task_id: str
     status: str
     already_running: bool = False
+    task_mode: str = "once"
+    request_id: str = ""
     message: str
 
 

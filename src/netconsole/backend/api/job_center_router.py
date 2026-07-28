@@ -255,6 +255,16 @@ async def cancel(request: Request, task_id: str) -> JobCenterTaskDTO:
             request.app.state.rail_transit_web_application_service.cancel_task(
                 task.site_name, task_id
             )
+        elif (
+            task.owner == "ground_unattended_ac_mesh_link"
+            and task.type == "ac_mesh_link_resident_poll"
+        ):
+            resident = request.app.state.ac_mesh_link_resident_service
+            if resident is None or not resident.cancel_task(task_id):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="AC 常驻轮询已结束或不在当前进程",
+                )
         elif task.owner == NETWORK_TOOL_OWNER:
             if task.type in NETWORK_TOOLBOX_TASK_TYPES:
                 request.app.state.network_tools_service.cancel_network_task(task_id)

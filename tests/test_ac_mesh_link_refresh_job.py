@@ -75,6 +75,7 @@ def test_job_handler_is_registered_in_existing_ac_partition(monkeypatch) -> None
     context = JobContext("task-1", "ac_mesh_link_refresh", {}, None, None, PathResolver())
 
     assert "ac_mesh_link_refresh" in ac_jobs.HANDLERS
+    assert "ac_mesh_link_resident_poll" in ac_jobs.HANDLERS
     assert ac_jobs.ac_mesh_link_refresh(context) == expected
 
 

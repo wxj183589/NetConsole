@@ -19,6 +19,10 @@ export interface TaskItem {
   name: string
   status: TaskStatus
   progress: number
+  current?: number
+  total?: number
+  task_mode?: 'once' | 'resident'
+  progress_mode?: 'percentage' | 'indeterminate'
   phase: string
   stage: string
   message: string

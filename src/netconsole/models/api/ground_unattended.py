@@ -310,6 +310,27 @@ class GroundInventorySummaryDTO(ApiModel):
     synchronized_at: str = ""
 
 
+class GroundAcPollerHealthDTO(ApiModel):
+    controller_id: str
+    controller_name: str = ""
+    task_id: str = ""
+    run_id: str = ""
+    status: str = "UNKNOWN"
+    connection_state: str = "UNKNOWN"
+    last_success_at: str = ""
+    latest_snapshot_id: int | None = None
+    next_poll_at: str = ""
+    poll_interval_seconds: float = 0.0
+    poll_count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    reconnect_count: int = 0
+    consecutive_failures: int = 0
+    heartbeat_at: str = ""
+    heartbeat_age_seconds: float | None = None
+    last_error: str = ""
+
+
 class GroundHealthDTO(ApiModel):
     site_id: str
     status: str = "UNKNOWN"
@@ -331,6 +352,7 @@ class GroundHealthDTO(ApiModel):
     ping_process_count: int = 0
     deep_queue_length: int = 0
     archive_pending_count: int = 0
+    ac_pollers: list[GroundAcPollerHealthDTO] = Field(default_factory=list)
     disk_free_bytes: int = 0
     last_error: str = ""
     updated_at: str = ""

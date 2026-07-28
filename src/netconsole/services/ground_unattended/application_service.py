@@ -18,6 +18,7 @@ from netconsole.models.api.ground_unattended import (
     GroundPingSamplePageDTO,
     GroundPingSeriesDTO,
     GroundPingTargetDTO,
+    GroundAcPollerHealthDTO,
     GroundHealthDTO,
     GroundInventorySummaryDTO,
     GroundRawFileDTO,
@@ -532,7 +533,21 @@ class GroundUnattendedApplicationService:
         )
         archives = self.repository.list_archives()
         last_error = str(values.pop("last_error", "") or latest.get("message") or "")
-        status = "ERROR" if last_error else "WARNING" if values.get("udp_dropped_count") else "OK"
+        run = self.repository.get_active_run()
+        ac_pollers = self._ac_poller_health(
+            site_id, str((run or {}).get("run_id") or "")
+        )
+        ac_unhealthy = any(
+            item.status in {"DEGRADED", "STALE", "FAILED"}
+            for item in ac_pollers
+        )
+        status = (
+            "ERROR"
+            if last_error or any(item.status == "FAILED" for item in ac_pollers)
+            else "WARNING"
+            if values.get("udp_dropped_count") or ac_unhealthy
+            else "OK"
+        )
         return GroundHealthDTO(
             site_id=site_id,
             status=status,
@@ -544,10 +559,95 @@ class GroundUnattendedApplicationService:
                 row.get("archive_status") in {"PENDING", "BUILDING", "FAILED"}
                 for row in archives
             ),
+            ac_pollers=ac_pollers,
             disk_free_bytes=disk.free,
             last_error=last_error,
             updated_at=datetime.now().astimezone().isoformat(timespec="milliseconds"),
         )
+
+    def _ac_poller_health(
+        self, site_id: str, run_id: str
+    ) -> list[GroundAcPollerHealthDTO]:
+        service = getattr(self.supervisor, "ac_resident_service", None)
+        if service is None or not run_id:
+            return []
+        now = datetime.now().astimezone()
+        profile = self.repository.get_profile()
+        result: list[GroundAcPollerHealthDTO] = []
+        for row in service.list_statuses(
+            site_name=site_id, run_id=run_id
+        ):
+            heartbeat_age = self._age_seconds(row.get("heartbeat_at"), now)
+            success_age = self._age_seconds(row.get("last_success_at"), now)
+            connection_state = str(
+                row.get("connection_state") or "UNKNOWN"
+            ).upper()
+            if connection_state == "FAILED":
+                status = "FAILED"
+            elif (
+                success_age is not None
+                and success_age > profile.ac_stale_grace_seconds
+            ):
+                status = "STALE"
+            elif connection_state in {"RECONNECTING", "BACKOFF", "CONNECTING"}:
+                status = "DEGRADED"
+            elif heartbeat_age is None or heartbeat_age > max(
+                5.0,
+                float(row.get("poll_interval_seconds") or 0) + 2.0,
+            ):
+                status = "STALE"
+            elif connection_state in {"CONNECTED", "POLLING", "WAITING"}:
+                status = "HEALTHY"
+            else:
+                status = "DEGRADED"
+            result.append(
+                GroundAcPollerHealthDTO(
+                    controller_id=str(row.get("controller_id") or ""),
+                    controller_name=str(row.get("controller_name") or ""),
+                    task_id=str(row.get("task_id") or ""),
+                    run_id=str(row.get("run_id") or ""),
+                    status=status,
+                    connection_state=connection_state,
+                    last_success_at=str(row.get("last_success_at") or ""),
+                    latest_snapshot_id=self._optional_int(
+                        row.get("latest_snapshot_id")
+                    ),
+                    next_poll_at=str(row.get("next_poll_at") or ""),
+                    poll_interval_seconds=float(
+                        row.get("poll_interval_seconds") or 0
+                    ),
+                    poll_count=int(row.get("poll_count") or 0),
+                    success_count=int(row.get("success_count") or 0),
+                    failure_count=int(row.get("failure_count") or 0),
+                    reconnect_count=int(row.get("reconnect_count") or 0),
+                    consecutive_failures=int(
+                        row.get("consecutive_failures") or 0
+                    ),
+                    heartbeat_at=str(row.get("heartbeat_at") or ""),
+                    heartbeat_age_seconds=heartbeat_age,
+                    last_error=str(row.get("last_error_message") or ""),
+                )
+            )
+        return result
+
+    @staticmethod
+    def _age_seconds(value: object, now: datetime) -> float | None:
+        try:
+            parsed = datetime.fromisoformat(
+                str(value or "").replace("Z", "+00:00")
+            )
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=now.tzinfo)
+            return max(0.0, (now - parsed).total_seconds())
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _optional_int(value: object) -> int | None:
+        try:
+            return int(value) if value not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
 
     def raw_files(
         self,

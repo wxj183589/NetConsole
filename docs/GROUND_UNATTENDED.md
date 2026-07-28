@@ -16,9 +16,10 @@ Vue 独立页面
   -> AC/基础资料/Online MR/fping/Repository
 ```
 
-页面卸载只停止 5 秒 REST 轮询。Electron 主窗口隐藏到通知区域时 Backend、AC 轮询、全车长
-Ping 和深度采集继续；明确退出时 lifespan 先关闭 Supervisor，fping 进程仍由统一
-`ShutdownManager` 登记和回收，Online MR Worker 继续使用既有 `LocalProcessAdapter` 进程树收口。
+页面卸载只停止 5 秒 REST 轮询。Electron 主窗口隐藏到通知区域时 Backend、AC 常驻轮询、全车长
+Ping 和深度采集继续；明确退出时 lifespan 先关闭 Supervisor，Supervisor 请求 AC Poller 正常停止，
+fping 进程仍由统一 `ShutdownManager` 登记和回收，Online MR Worker 继续使用既有
+`LocalProcessAdapter` 进程树收口。
 功能关闭时不创建无人值守 Repository 或 Supervisor；索引库初始化失败也只让本功能 API 返回结构化
 `GROUND_UNATTENDED_UNAVAILABLE`，不会阻断人工 Online MR 或整个 Backend 启动。
 
@@ -48,7 +49,8 @@ Ping 和深度采集继续；明确退出时 lifespan 先关闭 Supervisor，fpi
 记录高风险审计；普通无效、回环、组播和广播地址始终拒绝。
 
 开始和结束时间不能相同，支持 `22:00-06:00` 跨午夜窗口，运行日期取窗口开始日期。运行中保存
-配置不会重启当前 fping 或 SSH 任务，新配置从下一次调度周期生效；状态接口同时返回下一次开始和
+配置不会重启当前 fping 或 SSH 任务；`ac_poll_interval_seconds` 通过 Poller 控制文件热更新，
+下一轮即使用新间隔且不重新登录 AC，其他配置从下一次调度周期生效。状态接口同时返回下一次开始和
 结束时间。
 
 首次运行前，“正线车辆”接口会从当前局点轨道交通基础资料聚合列车及 CT/CW 端点，因此无需先创建
@@ -78,10 +80,27 @@ Ping 和深度采集继续；明确退出时 lifespan 先关闭 Supervisor，fpi
 
 ## AC 轮询与长 Ping
 
-Supervisor 每个轮询周期复用 `AcMeshLinkRefreshApplicationService` 创建或复用 AC Mesh-Link 只读
-任务，并从 `AcMeshLinkQueryService` 读取现有解析结果。无人值守索引保存 AC 设备时间、本机接收
-时间、来源快照 ID、列车/MR、端位、AP、站点、区间、里程、RSSI、freshness 和受控 raw 引用；
-同一批记录另追加到当日按小时 AC JSONL。
+无人值守 run 启动时，Supervisor 通过
+`AcMeshLinkResidentPollingApplicationService` 为每台可连接控制器确保一个
+`ac_mesh_link_resident_poll` Task。唯一键为 `site_id + run_id + controller_id`；每个 Task 在自己的
+受控 Worker 进程内维持一个 SSH 会话，连接建立后执行一次 `screen-length disable`，随后立即采集并按
+`ac_poll_interval_seconds` 在同一会话串行执行 `display clock` 和
+`display wlan mesh-link ap`。单轮采集仍各自产生独立 snapshot/raw，Task 则覆盖整个无人值守 run，
+不再每个周期新增任务或重新登录。
+
+连接中断时 Poller 在同一 `task_id` 内进入 `RECONNECTING/BACKOFF`，按有界退避重新读取受控设备和
+凭据后重连；每次新连接才重新执行一次 `screen-length disable`。解析或快照写入失败记录为单轮失败，
+连接仍可用时不强制重连。Task 参数、控制文件、状态文件和任务中心均不保存用户名、密码或命令文本。
+
+Supervisor 每秒以内读取各控制器最新快照，按 controller 独立维护
+`last_processed_snapshot_id`，只在出现新 source snapshot 时追加无人值守索引和当日 AC JSONL；
+联合分类仍使用每台 AC 的各自最新快照，不以全局最新一条覆盖其他控制器。没有新快照时只更新
+freshness，不重复持久化同一来源。无人值守索引保存 AC 设备时间、本机接收时间、来源快照 ID、
+列车/MR、端位、AP、站点、区间、里程、RSSI、freshness 和受控 raw 引用。
+
+暂停或关闭深度采集总开关只阻止新的 Online MR 深采，AC Poller、长 Ping 和 Syslog 继续。已有常驻
+Poller 时，AC 管理或列车在线的“立即刷新”只写入立即轮询请求，返回同一 resident `task_id` 和本次
+`request_id` 并复用 SSH；没有常驻 Poller 时仍使用原 `ac_mesh_link_refresh` 一次性任务。
 
 `fping_v5_runner` 保持 `target: str` 向后兼容，并增加 `targets`。`FleetPingSupervisor` 默认每进程
 12 个目标，目标变化时保留不受影响的分片，先启动替换分片再停止旧分片。多目标 JSON 在实际二进制
@@ -205,8 +224,9 @@ files/rail_transit/ground_unattended/
 └─ index.sqlite
 ```
 
-每日结束先停止新调度，按配置限制深度任务最终化，停止/flush Ping，再生成 daily summary、覆盖 CSV、
-调度事件、错误、深度 Session 引用、完整 Ping 汇总 JSONL、每日 MR/列车汇总和 manifest。即使某类
+每日结束先停止新调度，请求 AC Poller 正常停止并等待当前命令有界收口，再按配置限制深度任务最终化、
+停止/flush Ping，最后生成 daily summary、覆盖 CSV、调度事件、错误、深度 Session 引用、完整 Ping
+汇总 JSONL、每日 MR/列车汇总和 manifest。即使某类
 当天无数据，ZIP 也保留 `fleet_ping/`、`ac_snapshots/`、`timeline/`、`ping_summaries/` 目录契约。
 ZIP 先写隐藏临时文件，逐成员 CRC、manifest 和流式 SHA-256 校验后原子发布；索引先标记 READY，
 之后才用白名单递归清理对应 `active/<run_date>`。任一步失败均显示“归档失败，原始数据仍保留”。
@@ -218,8 +238,11 @@ ZIP 先写隐藏临时文件，逐成员 CRC、manifest 和流式 SHA-256 校验
 `timezone` 的局点日期计算。
 
 启动恢复会核对 RUNNING/STOPPING/FINALIZING/ARCHIVING，收口上次 OPEN Ping 分段，调用现有
-Online MR mapping 恢复；窗口内恢复 Ping 与调度，窗口外继续最终化和归档。无法恢复的自动 operation
-标记为 PARTIAL。BUILDING/FAILED 且 active 仍存在的归档会在下一次 Backend 启动重试。
+Online MR mapping 恢复；窗口内恢复 Ping 与调度，并为每台控制器创建新的 resident Worker。旧
+RUNNING Task 先按本地 Worker orphan 规则收敛，新 Task 延用按 run/controller 稳定生成的
+`poll_session_id` 并记录 `ac_poller_recovered`，不会把陈旧任务当作活动 Poller。窗口外继续最终化和
+归档。无法恢复的自动 operation 标记为 PARTIAL。BUILDING/FAILED 且 active 仍存在的归档会在下一次
+Backend 启动重试。
 
 详细保留到期只删除已校验正式归档及对应 AC/Ping 分段/事件/深采索引；每日汇总保留至
 `summary_retention_days`。手工删除同样走 Supervisor 队列、明确确认和受管路径校验，正在使用的当日
@@ -227,10 +250,12 @@ Online MR mapping 恢复；窗口内恢复 Ping 与调度，窗口外继续最�
 
 普通停止和停止并归档均先创建持久化 `operation_id`，重复请求返回同一活动操作。操作记录保存阶段、
 进度、消息、失败码、结果摘要和完成时间；页面刷新或 Backend 重启后从 `/operations/latest` 恢复。
-停止流程只有在深采安全收尾、全部 fping worker 退出、UDP 接收线程退出、原监听地址和端口可重新绑定、
-队列清空、writer flush 且没有 OPEN 原始文件后才把 run 标记为 `COMPLETED`。worker、UDP、队列或文件任一项失败时操作与 run
-明确进入失败状态，不伪装完成。停止并归档继续显示准备、写入、校验、登记和 active 清理阶段；ZIP
-失败时 run 已正常停止，但操作和 archive 为失败，active 原始数据保留。
+停止流程包含 `STOPPING_AC_POLLER / 正在停止 AC 常驻轮询` 阶段。只有 AC Poller 已关闭 SSH 并退出、
+深采安全收尾、全部 fping worker 退出、UDP 接收线程退出、原监听地址和端口可重新绑定、队列清空、
+writer flush 且没有 OPEN 原始文件后才把 run 标记为 `COMPLETED`。Poller 超时会保存具体 controller、
+task 和连接状态并执行有界进程树收口，操作以 `AC_POLLER_STOP_TIMEOUT` 失败，不伪装完成。停止并归档
+继续显示准备、写入、校验、登记和 active 清理阶段；ZIP 失败时 run 已正常停止，但操作和 archive 为
+失败，active 原始数据保留。
 
 ## API
 

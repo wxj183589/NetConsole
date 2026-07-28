@@ -23,6 +23,10 @@ class JobCenterTaskDTO(ApiModel):
     name: str
     status: str
     progress: int = 0
+    current: int = 0
+    total: int = 0
+    task_mode: str = "once"
+    progress_mode: str = "percentage"
     phase: str = ""
     stage: str = ""
     message: str = ""

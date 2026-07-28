@@ -40,6 +40,16 @@ class _RefreshService(_NoopAsyncService):
         )
 
 
+class _ResidentRefreshService(_RefreshService):
+    def start_refresh(self, **values) -> AcMeshLinkRefreshStart:
+        result = super().start_refresh(**values)
+        return AcMeshLinkRefreshStart(
+            task=result.task,
+            resident=True,
+            request_id="acpollreq-1",
+        )
+
+
 def _client(tmp_path: Path, refresh: _RefreshService) -> TestClient:
     paths, _devices, _mesh = build_ac_mesh_link_fixture(tmp_path)
     app = create_app(
@@ -79,6 +89,26 @@ def test_refresh_api_accepts_only_controller_and_history_flag(tmp_path: Path) ->
         {"site_name": "demo", "controller_id": "ac-1", "include_switch_history": False},
     ]
     assert rejected.status_code == 422
+
+
+def test_refresh_api_reports_resident_immediate_request(tmp_path: Path) -> None:
+    refresh = _ResidentRefreshService()
+    with _client(tmp_path, refresh) as client:
+        response = client.post(
+            "/api/ac-management/mesh-links/refresh",
+            json={"controller_id": "ac-1"},
+        )
+
+    assert response.status_code == 202
+    assert response.json() == {
+        "success": True,
+        "task_id": "refresh-1",
+        "status": "RUNNING",
+        "already_running": False,
+        "task_mode": "resident",
+        "request_id": "acpollreq-1",
+        "message": "已请求常驻 AC 会话立即刷新",
+    }
 
 
 def test_mesh_link_routes_have_one_controlled_post_only(tmp_path: Path) -> None:

@@ -220,7 +220,15 @@ def refresh(request: Request, payload: AcMeshLinkRefreshRequestDTO) -> AcMeshLin
         task_id=result.task.task_id,
         status=result.task.status.value,
         already_running=result.already_running,
-        message="Mesh-Link 刷新任务正在运行" if result.already_running else "Mesh-Link 刷新任务已创建",
+        task_mode="resident" if result.resident else "once",
+        request_id=result.request_id,
+        message=(
+            "已请求常驻 AC 会话立即刷新"
+            if result.resident
+            else "Mesh-Link 刷新任务正在运行"
+            if result.already_running
+            else "Mesh-Link 刷新任务已创建"
+        ),
     )
 
 
