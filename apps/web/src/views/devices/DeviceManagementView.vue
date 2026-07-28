@@ -41,6 +41,10 @@ import { useTaskStore } from '../../stores/tasks'
 import DeviceDetailPanel from '../../components/device-detail/DeviceDetailPanel.vue'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import NcDataTable from '../../components/table/NcDataTable.vue'
+import type {
+  NcDataTableContext,
+  NcDataTableContextMenuItem,
+} from '../../components/table/NcDataTableContextMenu'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import {
   DEVICE_VENDOR_OPTIONS,
@@ -275,7 +279,6 @@ const secretRevealLoading = reactive<Record<DeviceSecretField, boolean>>({
   tunnel2_password: false,
   snmp_ro_community: false,
 })
-const contextMenu = reactive<{ visible: boolean; x: number; y: number; row: DeviceListItem | null; cellValue: string }>({ visible: false, x: 0, y: 0, row: null, cellValue: '' })
 let editLoadGeneration = 0
 let editProfileAbortController: AbortController | null = null
 let componentActive = true
@@ -464,7 +467,6 @@ const batchRefreshProgressText = computed(() => {
   return `批量更新完成：成功 ${summary.completed}，部分成功 ${summary.partial_success}，失败 ${summary.failed}，取消 ${summary.cancelled}，拒绝 ${summary.rejected}`
 })
 onMounted(async () => {
-  document.addEventListener('click', closeContextMenu)
   window.addEventListener('resize', resizeDetailDrawer)
   restorePendingDeviceExports()
   taskStore.acquirePolling(pollingConsumer)
@@ -482,7 +484,6 @@ onBeforeUnmount(() => {
     pendingDeviceExportRetryTimer = null
   }
   taskStore.releasePolling(pollingConsumer)
-  document.removeEventListener('click', closeContextMenu)
   endDrawerResize()
   window.removeEventListener('resize', resizeDetailDrawer)
 })
@@ -929,28 +930,18 @@ function invertSelection(): void {
   }
 }
 
-function showContextMenu(row: DeviceListItem, column: { property?: string; label?: string }, event: MouseEvent): void {
-  event.preventDefault()
-  contextMenu.visible = true
-  contextMenu.x = event.clientX
-  contextMenu.y = event.clientY
-  contextMenu.row = row
-  const value = column.property ? row[column.property as keyof DeviceListItem] : null
-  contextMenu.cellValue = value == null
-    ? column.label === '登录协议'
-      ? [row.capabilities.ssh && 'SSH', row.capabilities.telnet && 'Telnet'].filter(Boolean).join('/')
-      : column.label === '连接状态' ? statusLabel(row.connection_status) : ''
-    : String(value)
+function contextCellText(context: NcDataTableContext<DeviceListItem>): string {
+  const { row, columnKey } = context
+  if (columnKey === 'login_protocol') {
+    return [row.capabilities.ssh && 'SSH', row.capabilities.telnet && 'Telnet'].filter(Boolean).join('/')
+  }
+  if (columnKey === 'connection_status') return statusLabel(row.connection_status)
+  const value = (row as unknown as Record<string, unknown>)[columnKey]
+  return value == null ? '' : String(value)
 }
 
-function closeContextMenu(): void {
-  contextMenu.visible = false
-  contextMenu.row = null
-  contextMenu.cellValue = ''
-}
-
-async function copyCurrentCell(): Promise<void> {
-  await copyText(contextMenu.cellValue)
+async function copyCurrentCell(context: NcDataTableContext<DeviceListItem>): Promise<void> {
+  await copyText(contextCellText(context))
 }
 
 async function copyRow(row: DeviceListItem): Promise<void> {
@@ -977,6 +968,43 @@ async function copyDeviceInfo(row: DeviceListItem): Promise<void> {
     `备用地址: ${row.backup_address}`,
   ].join('\n'))
 }
+
+const deviceContextMenuItems = computed<NcDataTableContextMenuItem<DeviceListItem>[]>(() => [
+  { key: 'detail', label: '详情', action: ({ row }) => openDetail(row) },
+  {
+    key: 'edit',
+    label: '编辑',
+    action: ({ row }) => editRow(row),
+    disabled: !isFeatureEnabled('web.device_management_write'),
+  },
+  {
+    key: 'duplicate',
+    label: '复制设备',
+    action: ({ row }) => duplicateRow(row),
+    disabled: !isFeatureEnabled('web.device_management_write'),
+  },
+  { key: 'copy-current-cell', label: '复制当前单元格', action: copyCurrentCell },
+  { key: 'copy-name', label: '复制名称', action: ({ row }) => copyText(row.name) },
+  { key: 'copy-primary-address', label: '复制主地址', action: ({ row }) => copyText(row.primary_address) },
+  { key: 'copy-backup-address', label: '复制备用地址', action: ({ row }) => copyText(row.backup_address) },
+  { key: 'copy-system-name', label: '复制系统名', action: ({ row }) => copyText(row.system_name) },
+  { key: 'copy-station', label: '复制站点', action: ({ row }) => copyText(row.station) },
+  { key: 'copy-row', label: '复制整行', action: ({ row }) => copyRow(row) },
+  { key: 'copy-device-info', label: '复制设备信息', action: ({ row }) => copyDeviceInfo(row) },
+  {
+    key: 'external-terminal',
+    label: '外部终端',
+    action: ({ row }) => requestTerminal(row.device_uuid),
+    disabled: !desktopHost || !isFeatureEnabled('web.device_management_desktop'),
+  },
+  {
+    key: 'delete',
+    label: '删除',
+    action: ({ row }) => deleteRows([row.device_uuid]),
+    disabled: !isFeatureEnabled('web.device_management_write'),
+    danger: true,
+  },
+])
 
 async function editSelected(): Promise<void> {
   const row = pageData.value.items.find((item) => item.device_uuid === selectedUuids.value[0])
@@ -1948,12 +1976,12 @@ function errorMessage(cause: unknown, fallback: string): string {
           route-key="/devices"
           :data="pageData.items"
           :columns="deviceColumns"
+          :context-menu-items="deviceContextMenuItems"
           row-key="device_uuid"
           height="100%"
           empty-text="暂无设备"
           @selection-change="onSelectionChange"
           @row-dblclick="openDetail"
-          @row-contextmenu="showContextMenu"
         >
           <template #cell-connection_status="{ row }"><el-tag :type="statusType(row.connection_status)">{{ statusLabel(row.connection_status) }}</el-tag></template>
           <template #cell-last_collect_status="{ row }"><el-tag :type="collectStatusType(row.last_collect_status)">{{ collectStatusLabel(row.last_collect_status) }}</el-tag></template>
@@ -2031,22 +2059,6 @@ function errorMessage(cause: unknown, fallback: string): string {
         <el-button data-testid="confirm-device-export-scope" type="primary" :loading="csvExportSubmitting" @click="confirmCsvExportScope">选择保存位置</el-button>
       </template>
     </el-dialog>
-
-    <div v-if="contextMenu.visible && contextMenu.row" class="device-context-menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @click.stop>
-      <button type="button" @click="openDetail(contextMenu.row); closeContextMenu()">详情</button>
-      <button type="button" :disabled="!isFeatureEnabled('web.device_management_write')" @click="editRow(contextMenu.row); closeContextMenu()">编辑</button>
-      <button type="button" :disabled="!isFeatureEnabled('web.device_management_write')" @click="duplicateRow(contextMenu.row); closeContextMenu()">复制设备</button>
-      <button type="button" @click="copyCurrentCell(); closeContextMenu()">复制当前单元格</button>
-      <button type="button" @click="copyText(contextMenu.row.name); closeContextMenu()">复制名称</button>
-      <button type="button" @click="copyText(contextMenu.row.primary_address); closeContextMenu()">复制主地址</button>
-      <button type="button" @click="copyText(contextMenu.row.backup_address); closeContextMenu()">复制备用地址</button>
-      <button type="button" @click="copyText(contextMenu.row.system_name); closeContextMenu()">复制系统名</button>
-      <button type="button" @click="copyText(contextMenu.row.station); closeContextMenu()">复制站点</button>
-      <button type="button" @click="copyRow(contextMenu.row); closeContextMenu()">复制整行</button>
-      <button type="button" @click="copyDeviceInfo(contextMenu.row); closeContextMenu()">复制设备信息</button>
-      <button type="button" :disabled="!desktopHost || !isFeatureEnabled('web.device_management_desktop')" @click="requestTerminal(contextMenu.row.device_uuid); closeContextMenu()">外部终端</button>
-      <button type="button" class="danger" :disabled="!isFeatureEnabled('web.device_management_write')" @click="deleteRows([contextMenu.row.device_uuid]); closeContextMenu()">删除</button>
-    </div>
 
     <el-drawer v-model="detailVisible" title="设备详情" :size="detailDrawerWidth" :class="{ 'is-detail-drawer-dragging': detailDrawerDragging }" @closed="endDrawerResize">
       <div class="detail-drawer-resizer" role="separator" tabindex="0" aria-orientation="vertical" aria-label="调整设备详情宽度" :aria-valuenow="detailDrawerWidthPx || defaultDrawerWidth()" :aria-valuemin="drawerMinWidth()" :aria-valuemax="drawerMaxWidth()" @pointerdown="beginDrawerResize" @keydown="handleDrawerResizeKeydown" />
@@ -2286,11 +2298,6 @@ function errorMessage(cause: unknown, fallback: string): string {
 .form-section h3, .form-section h4 { margin: 0 0 14px; }
 .terminal-settings-form { margin-top: 18px; }
 .field-warning { margin-left: 10px; color: var(--el-color-warning); font-size: 12px; }
-.device-context-menu { position: fixed; z-index: 5000; display: flex; min-width: 170px; padding: 6px; flex-direction: column; background: var(--el-bg-color-overlay); border: 1px solid var(--el-border-color); border-radius: 7px; box-shadow: var(--el-box-shadow-light); }
-.device-context-menu button { padding: 8px 12px; color: var(--el-text-color-primary); text-align: left; background: transparent; border: 0; border-radius: 4px; cursor: pointer; }
-.device-context-menu button:hover:not(:disabled) { background: var(--el-fill-color-light); }
-.device-context-menu button.danger { color: var(--el-color-danger); }
-.device-context-menu button:disabled { color: var(--el-text-color-disabled); cursor: not-allowed; }
 .import-summary { margin-top: 16px; overflow-wrap: anywhere; }
 .import-file-picker { display: flex; align-items: center; gap: 12px; margin-top: 18px; }
 .import-options { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(260px, 1fr); gap: 16px; margin-top: 16px; }

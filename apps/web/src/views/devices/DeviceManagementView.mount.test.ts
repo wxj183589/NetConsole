@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   showItemInFolder: vi.fn(),
   routerPush: vi.fn(),
   openTaskWindow: vi.fn(),
+  clipboardWrite: vi.fn(),
   featureEnabled: vi.fn(() => true),
   messages: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },
   taskStore: null as null | {
@@ -68,6 +69,7 @@ vi.mock('element-plus', async (importOriginal) => ({
 }))
 
 import DeviceManagementView from './DeviceManagementView.vue'
+import NcDataTable from '../../components/table/NcDataTable.vue'
 
 const listItem = {
   id: 1,
@@ -324,6 +326,10 @@ beforeEach(() => {
   mocks.downloadBackendResource.mockReset()
   document.body.innerHTML = ''
   window.sessionStorage.clear()
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: mocks.clipboardWrite },
+  })
   mocks.listDevices.mockResolvedValue({ items: [listItem], groups: [{ id: 1, name: '车载 MR' }], site_name: '测试局点', total: 1, page: 1, page_size: 50, total_pages: 1 })
   mocks.getDeviceEditProfile.mockResolvedValue(editProfile)
   mocks.revealDeviceCredential.mockResolvedValue({ device_uuid: 'device-1', credential_field: 'ssh_password', value: 'stored-ssh-password' })
@@ -405,6 +411,45 @@ afterEach(() => {
 })
 
 describe('DeviceManagementView mounted interactions', () => {
+  it('provides all device actions through the shared typed context menu and preserves copied cell text', async () => {
+    const wrapper = await renderView()
+    const deviceTable = wrapper.findComponent(NcDataTable) as unknown as VueWrapper
+    const items = (deviceTable.vm.$props as unknown as { contextMenuItems: Array<{
+      key: string
+      label: string
+      action: (context: { row: typeof listItem; rowIndex: number; columnKey: string; cellValue: unknown }) => void | Promise<void>
+      disabled?: boolean
+      danger?: boolean
+    }> }).contextMenuItems
+
+    expect(items.map((item) => item.label)).toEqual([
+      '详情',
+      '编辑',
+      '复制设备',
+      '复制当前单元格',
+      '复制名称',
+      '复制主地址',
+      '复制备用地址',
+      '复制系统名',
+      '复制站点',
+      '复制整行',
+      '复制设备信息',
+      '外部终端',
+      '删除',
+    ])
+    expect(items.find((item) => item.key === 'edit')?.disabled).toBe(false)
+    expect(items.find((item) => item.key === 'external-terminal')?.disabled).toBe(false)
+    expect(items.find((item) => item.key === 'delete')?.danger).toBe(true)
+
+    const copyCell = items.find((item) => item.key === 'copy-current-cell')!
+    await copyCell.action({ row: listItem, rowIndex: 0, columnKey: 'login_protocol', cellValue: '—' })
+    await copyCell.action({ row: listItem, rowIndex: 0, columnKey: 'connection_status', cellValue: 'UNKNOWN' })
+    expect(mocks.clipboardWrite).toHaveBeenNthCalledWith(1, 'SSH')
+    expect(mocks.clipboardWrite).toHaveBeenNthCalledWith(2, '未测试')
+    expect(mocks.messages.success).toHaveBeenCalledWith('已复制')
+    wrapper.unmount()
+  })
+
   it('ignores stale edit profile responses and keeps save/test bound to the editing UUID', async () => {
     let resolveFirst!: (value: typeof editProfile) => void
     let resolveSecond!: (value: typeof editProfile) => void

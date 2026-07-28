@@ -93,8 +93,16 @@ describe('Device Management Web view', () => {
     expect(source).toContain('function invertSelection()')
     expect(source).toContain('toggleRowSelection')
     expect(source).toContain('@row-dblclick="openDetail"')
-    expect(source).toContain('复制设备')
-    expect(source).toContain('copyDeviceInfo')
+    expect(source).toContain('computed<NcDataTableContextMenuItem<DeviceListItem>[]>')
+    expect(source).toContain(':context-menu-items="deviceContextMenuItems"')
+    expect(source).toContain("{ key: 'detail', label: '详情', action: ({ row }) => openDetail(row) }")
+    expect(source).toContain("key: 'duplicate'")
+    expect(source).toContain("key: 'copy-current-cell'")
+    expect(source).toContain("key: 'copy-device-info'")
+    expect(source).toContain("key: 'external-terminal'")
+    expect(source).toContain("key: 'delete'")
+    expect(source).not.toContain('class="device-context-menu"')
+    expect(source).not.toContain('function showContextMenu(')
   })
 
   it('uses the unified table contract for the device table', () => {
