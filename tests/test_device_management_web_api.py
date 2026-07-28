@@ -7,6 +7,7 @@ import hashlib
 from io import BytesIO
 import json
 import os
+import sqlite3
 import zipfile
 from datetime import UTC, datetime
 from dataclasses import replace
@@ -268,6 +269,7 @@ def _fixture(
     )
     app = FastAPI()
     app.state.runtime_mode = runtime_mode
+    app.state.paths = paths
     app.state.device_management_service = service
     app.state.feature_gate = FeatureGate(paths.app_root)
 
@@ -3832,6 +3834,61 @@ def test_device_list_defaults_to_in_service_and_supports_lifecycle_filters(
     reread = devices.get_by_uuid(str(sw.device_uuid))
     assert reread is not None
     assert reread.primary_address == sw.primary_address
+
+
+def test_device_list_reports_schema_not_ready_with_safe_diagnostics(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client, service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
+    database = Database(service.paths.site_db_path("demo"))
+    with database.connect() as connection:
+        connection.execute("DROP INDEX idx_devices_operation_status")
+        connection.execute(
+            "ALTER TABLE devices DROP COLUMN operation_status"
+        )
+        connection.commit()
+    log_rows: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "netconsole.core.app_logger.log_error",
+        lambda event, detail="", **_kwargs: log_rows.append((event, detail)),
+    )
+
+    response = client.get("/api/device-management/devices")
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["code"] == "DEVICE_DATABASE_SCHEMA_NOT_READY"
+    assert "升级未完成" in detail["message"]
+    assert detail["details"]["operation"] == "list_devices"
+    assert detail["details"]["site"] == "demo"
+    assert "database_path" not in detail["details"]
+    assert any(
+        event == "DEVICE_DATABASE_QUERY_FAILED"
+        and "sqlite_errorcode=1" in message
+        and "sqlite_errorname=SQLITE_ERROR" in message
+        and "missing_columns=operation_status" in message
+        and "traceback=" in message
+        for event, message in log_rows
+    )
+
+
+def test_device_list_reports_busy_without_claiming_database_damage(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client, service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
+
+    def locked(**_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(service, "list_devices", locked)
+
+    response = client.get("/api/device-management/devices")
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["code"] == "DEVICE_DATABASE_BUSY"
+    assert detail["message"] == "设备数据库正在被占用，请稍后重试。"
+    assert "完整性" not in detail["message"]
 
 
 def test_not_integrated_device_can_still_submit_manual_connection_test(

@@ -144,7 +144,9 @@ def list_devices(
             page_size=page_size,
             sort_by=sort_by,
             sort_order=sort_order,
-        )
+        ),
+        request=request,
+        operation="list_devices",
     )
 
 
@@ -941,8 +943,25 @@ def _not_found(callback, message: str):
         ) from exc
 
 
-def _query(callback):
-    with map_api_errors("设备数据库暂时不可读"):
+def _query(
+    callback,
+    *,
+    request: Request | None = None,
+    operation: str = "device_management",
+):
+    def context() -> dict[str, object]:
+        if request is None:
+            return {"operation": operation}
+        return _service(request).database_error_context(
+            operation=operation,
+            route=request.url.path,
+        )
+
+    with map_api_errors(
+        "设备数据库暂时不可读",
+        structured_database_errors=True,
+        database_context=context,
+    ):
         try:
             return callback()
         except DeviceConnectionPreflightError as exc:

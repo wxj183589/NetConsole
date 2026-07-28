@@ -8,10 +8,12 @@ import os
 import re
 import secrets
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
 import zipfile
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import BinaryIO, Protocol
@@ -3311,6 +3313,73 @@ class DeviceManagementWebService:
             DeviceGroupRepository(database, site),
             DeviceFactRepository(database),
         )
+
+    def database_error_context(
+        self, *, operation: str, route: str
+    ) -> dict[str, object]:
+        configured_site = str(self.site_name or "").strip()
+        site = configured_site or SiteManager(self.paths).get_current_site()
+        database_path = self.paths.site_db_path(site)
+        context: dict[str, object] = {
+            "operation": operation,
+            "route": route,
+            "site": site,
+            "database_path": database_path,
+            "migration_stage": "repository_query",
+        }
+        if not database_path.is_file():
+            context["diagnostic_error"] = "DatabaseFileMissing"
+            return context
+        try:
+            uri = f"{database_path.resolve().as_uri()}?mode=ro"
+            with closing(
+                sqlite3.connect(uri, uri=True, timeout=0.25)
+            ) as connection:
+                connection.row_factory = sqlite3.Row
+                metadata_exists = connection.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'schema_metadata'"
+                ).fetchone()
+                if metadata_exists:
+                    row = connection.execute(
+                        "SELECT value FROM schema_metadata "
+                        "WHERE key = 'schema_version'"
+                    ).fetchone()
+                    context["schema_version"] = str(row["value"]) if row else ""
+                columns = {
+                    str(row["name"])
+                    for row in connection.execute(
+                        "PRAGMA table_info(devices)"
+                    ).fetchall()
+                }
+                indexes = {
+                    str(row["name"])
+                    for row in connection.execute(
+                        "PRAGMA index_list(devices)"
+                    ).fetchall()
+                }
+            context["missing_columns"] = sorted(
+                {
+                    "project_phase",
+                    "operation_status",
+                    "operation_status_reason",
+                    "operation_status_updated_at",
+                    "operation_status_updated_by",
+                }
+                - columns
+            )
+            context["missing_indexes"] = sorted(
+                {
+                    "idx_devices_operation_status",
+                    "idx_devices_project_phase",
+                }
+                - indexes
+            )
+        except sqlite3.Error as exc:
+            context["diagnostic_error"] = (
+                f"{exc.__class__.__name__}: {exc}"
+            )
+        return context
 
     @staticmethod
     def _require_device(repository: DeviceRepository, device_uuid: str) -> Device:

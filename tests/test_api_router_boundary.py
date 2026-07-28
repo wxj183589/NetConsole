@@ -6,7 +6,10 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from netconsole.backend.api.error_mapping import map_api_errors
+from netconsole.backend.api.error_mapping import (
+    classify_sqlite_error,
+    map_api_errors,
+)
 from scripts.architecture.checks import (
     ROUTER_ROOT,
     SQLITE_DEPENDENCY,
@@ -95,3 +98,46 @@ def test_shared_api_error_mapping_keeps_database_and_io_contracts() -> None:
         404,
         "文件暂时不可读",
     )
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    (
+        ("no such column: d.operation_status", "DEVICE_DATABASE_SCHEMA_NOT_READY"),
+        ("database is locked", "DEVICE_DATABASE_BUSY"),
+        ("attempt to write a readonly database", "DEVICE_DATABASE_ACCESS_DENIED"),
+        ("database disk image is malformed", "DEVICE_DATABASE_INTEGRITY_ERROR"),
+        ("disk I/O error", "DEVICE_DATABASE_IO_ERROR"),
+        ("unknown sqlite failure", "DEVICE_DATABASE_UNAVAILABLE"),
+    ),
+)
+def test_sqlite_error_classification_is_specific(
+    message: str, expected: str
+) -> None:
+    assert classify_sqlite_error(sqlite3.OperationalError(message)) == expected
+
+
+def test_structured_database_error_hides_private_diagnostics() -> None:
+    with pytest.raises(HTTPException) as captured:
+        with map_api_errors(
+            "设备数据库暂时不可读",
+            structured_database_errors=True,
+            database_context={
+                "operation": "list_devices",
+                "site": "line-one",
+                "database_path": r"D:\private\devices.db",
+                "schema_version": "old",
+                "missing_columns": ["operation_status"],
+            },
+        ):
+            raise sqlite3.OperationalError(
+                "no such column: d.operation_status"
+            )
+
+    assert captured.value.status_code == 503
+    detail = captured.value.detail
+    assert detail["code"] == "DEVICE_DATABASE_SCHEMA_NOT_READY"
+    assert detail["details"]["operation"] == "list_devices"
+    assert detail["details"]["site"] == "line-one"
+    assert "database_path" not in detail["details"]
+    assert "missing_columns" not in detail["details"]

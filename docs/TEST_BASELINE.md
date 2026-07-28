@@ -72,6 +72,23 @@ Netmiko 当前既有定向基线为 `20 passed, 2 failed`，失败位于 `tests/
 .\.venv\Scripts\python.exe scripts\architecture\run_all.py
 ```
 
+设备数据库兼容性改动的定向门至少覆盖：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest `
+  tests\test_database.py `
+  tests\test_device_repository.py `
+  tests\test_device_management_web_api.py `
+  tests\test_device_operation_status.py `
+  tests\test_site_storage.py `
+  tests\test_sites.py `
+  tests\test_electron_runtime.py -q
+```
+
+最终 Electron 打包还必须执行 `pnpm run smoke:package`。其中的冻结 Backend
+设备数据库 smoke 会验证旧局点迁移、设备列表 HTTP 200、默认生命周期值和重启后的
+备份幂等性。
+
 九个门也可按改动范围定向运行：
 
 ```text

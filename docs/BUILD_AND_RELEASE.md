@@ -79,6 +79,13 @@ pnpm package
 
 `package.mjs` 只接受项目 `.venv` Python 来生成 Backend，安装包通过 `extraResources` 固定放在 `resources/backend/`，运行时不依赖客户机系统 Python。`package-smoke.mjs` 只按安装包相对路径和精确 basename/目录规则扫描 Qt 残留，阻断 PySide/PyQt、shiboken、QFluentWidgets、SIP、Qt5/6 库、Qt WebEngine 进程、Qt plugin DLL 和 `qt.conf`，不会因为构建机父目录名或普通 `plugins/imageformats` 目录误报。
 
+Package smoke 还会在最终冻结的 `resources/backend/NetConsoleBackend.exe`
+上运行 `scripts/build/smoke_frozen_device_database.py`：脚本在独立测试数据根创建旧
+`devices` schema，启动冻结 Backend 请求 `/api/device-management/devices`，确认旧设备
+仍可读取且默认生命周期为 `unspecified / in_service`，正常停止后再次启动并确认没有
+重复迁移备份。该 smoke 不读取机器级数据根，也不修改真实局点数据库。若构建机没有可用
+的最终冻结 Backend，只能报告 Python/应用层定向测试，不能声称正式 Backend smoke 已通过。
+
 干净 PyInstaller 构建会在临时 build 目录生成并嵌入 `_internal/netconsole/assets/runtime/{build_info.json,feature_flags.json,build-metadata.json}`：edition 固定为 `customer`，profile 固定为 `production`，构建身份来自本次 Git 快照，不从源码硬编码或客户机外部配置取值。Backend dist 校验与 Electron package smoke 都会解析这些 JSON，校验设备管理/采集/导入导出、文件下载、网络工具、AC、列车在线、Online MR 和 MESH 等必要生产能力，并拒绝任何 `feature_flags.local.json`。冻结运行时即使缺少或损坏 `feature_flags.json`，也必须通过 Registry fallback 保留必要生产能力，同时继续隐藏 internal/development 功能。`client_package` 仅是构建/发布元数据，不能作为正式运行时通用拒绝条件。
 
 系统设置的“正式包环境自检”验证 Backend、前后端构建标识、只读生产 Feature policy、当前局点、数据根、`tasks.db`、`devices.db`、非秘密凭据状态表、fping/iPerf3、Electron Bridge，以及 REST/WebSocket 中文探针。自检不返回本机绝对路径或凭据。完整功能与人工验收状态见[正式包功能矩阵](PACKAGED_FEATURE_MATRIX.md)。

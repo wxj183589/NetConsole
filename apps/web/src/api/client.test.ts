@@ -44,6 +44,26 @@ describe('API client errors', () => {
     await expect(apiRequest('/api/rail-transit/base-data/import-apply')).rejects.toThrow('基础资料写入未启用')
   })
 
+  it('preserves structured device database error codes and messages', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => ({
+        detail: {
+          code: 'DEVICE_DATABASE_SCHEMA_NOT_READY',
+          message: '设备数据库升级未完成，请重启后端或查看数据库迁移日志。',
+          details: { operation: 'list_devices', site: 'line-one' },
+        },
+      }),
+    }))
+    await expect(apiRequest('/api/device-management/devices')).rejects.toMatchObject({
+      message: '设备数据库升级未完成，请重启后端或查看数据库迁移日志。',
+      status: 503,
+      code: 'DEVICE_DATABASE_SCHEMA_NOT_READY',
+      details: { operation: 'list_devices', site: 'line-one' },
+    })
+  })
+
   it('uses the ephemeral Electron URL and header without changing browser call sites', async () => {
     const token = 'electron-test-token-abcdefghijklmnopqrstuvwxyz'
     const bridge = {

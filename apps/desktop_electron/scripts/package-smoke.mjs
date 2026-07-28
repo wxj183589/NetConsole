@@ -351,6 +351,7 @@ mkdirSync(smokeUserDataRoot, { recursive: true })
 try {
   validateFrozenWorkerTextProtocol(smokeRoot)
   await validateFrozenGroundUnattendedStatus(resolve(smokeRoot, 'frozen-ground-status'))
+  validateFrozenDeviceDatabaseMigration(resolve(smokeRoot, 'frozen-device-database'))
   const result = spawnSync(
     executable,
     [`--user-data-dir=${smokeUserDataRoot}`],
@@ -376,7 +377,7 @@ try {
   rmSync(smokeRoot, { recursive: true, force: true })
 }
 
-console.log('Electron packaged smoke passed with frozen timezone data, ground unattended status HTTP 200, frozen Worker Chinese protocol, no Qt residue, and NOTICE/SBOM metadata.')
+console.log('Electron packaged smoke passed with frozen timezone data, device database migration/list HTTP 200, ground unattended status HTTP 200, frozen Worker Chinese protocol, no Qt residue, and NOTICE/SBOM metadata.')
 
 function validateFrozenWorkerTextProtocol(dataRoot) {
   const backend = resolve(unpackedRoot, 'resources', 'backend', 'NetConsoleBackend.exe')
@@ -618,6 +619,38 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
         `stderr=${stderr || '<empty>'}`,
       ].join('\n'),
       { cause: failure },
+    )
+  }
+}
+
+function validateFrozenDeviceDatabaseMigration(dataRoot) {
+  const backend = resolve(unpackedRoot, 'resources', 'backend', 'NetConsoleBackend.exe')
+  const python = process.env.NETCONSOLE_BUILD_PYTHON
+    || resolve(projectRoot, '.venv', 'Scripts', 'python.exe')
+  const script = resolve(projectRoot, 'scripts', 'build', 'smoke_frozen_device_database.py')
+  const result = spawnSync(
+    python,
+    [script, '--backend', backend, '--data-root', dataRoot],
+    {
+      cwd: projectRoot,
+      env: {
+        ...process.env,
+        NETCONSOLE_RUNTIME_MODE: 'test',
+        NETCONSOLE_STORAGE_MODE: 'isolated_test',
+      },
+      encoding: 'utf8',
+      timeout: 90_000,
+      windowsHide: true,
+    },
+  )
+  if (result.error) throw result.error
+  if (result.status !== 0) {
+    throw new Error(
+      [
+        `冻结 Backend 设备数据库 smoke 失败，exit=${result.status}`,
+        `stdout=${result.stdout || '<empty>'}`,
+        `stderr=${result.stderr || '<empty>'}`,
+      ].join('\n'),
     )
   }
 }

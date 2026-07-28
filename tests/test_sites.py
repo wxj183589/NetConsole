@@ -144,6 +144,54 @@ def test_switch_site_updates_app_json_current_site(tmp_path):
     assert config["recent_sites"][0] == "demo"
 
 
+def test_switch_site_migrates_legacy_database_before_repository_query(tmp_path):
+    paths = PathResolver(tmp_path)
+    manager = SiteManager(paths)
+    site_a = manager.create_site("A")
+    site_b = manager.create_site("B")
+    DeviceRepository(Database(site_a.database_path)).create(
+        Device(name="A-SW", primary_address="192.0.2.11")
+    )
+    DeviceRepository(Database(site_b.database_path)).create(
+        Device(name="B-SW", primary_address="192.0.2.12")
+    )
+    with Database(site_b.database_path).connect() as connection:
+        connection.execute("DROP INDEX idx_devices_operation_status")
+        connection.execute("DROP INDEX idx_devices_project_phase")
+        for column in (
+            "operation_status_updated_by",
+            "operation_status_updated_at",
+            "operation_status_reason",
+            "operation_status",
+            "project_phase",
+        ):
+            connection.execute(f"ALTER TABLE devices DROP COLUMN {column}")
+        connection.execute(
+            "UPDATE schema_metadata SET value = ? WHERE key = 'schema_version'",
+            ("2026.07.29.device_primary_address_identity",),
+        )
+        connection.commit()
+
+    manager.switch_site("A")
+    switched = manager.switch_site("B")
+    devices = DeviceRepository(Database(switched.database_path)).list(
+        operation_status="in_service"
+    )
+
+    assert [device.name for device in devices] == ["B-SW"]
+    assert devices[0].project_phase == "unspecified"
+    assert devices[0].operation_status == "in_service"
+    assert len(
+        list(
+            (
+                paths.site_files_dir("B")
+                / "backups"
+                / "database-migrations"
+            ).glob("devices-site-*-before-operation-status-*.sqlite")
+        )
+    ) == 1
+
+
 def test_new_site_repository_reads_its_own_database(tmp_path):
     paths = PathResolver(tmp_path)
     manager = SiteManager(paths)

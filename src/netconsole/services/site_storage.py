@@ -1374,6 +1374,7 @@ class SitePackageService:
                                 ),
                             )
                         connection.commit()
+                    Database(imported_database).initialize()
                 _quick_check_site(imported_root)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 if target.exists():

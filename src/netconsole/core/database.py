@@ -5,6 +5,8 @@ import ipaddress
 import json
 import re
 import sqlite3
+import threading
+import traceback
 import uuid
 from contextlib import closing
 from datetime import datetime
@@ -21,6 +23,21 @@ from netconsole.models.device_address import InvalidDeviceAddressError, normaliz
 CURRENT_SCHEMA_VERSION = (
     "2026.07.29.zte_optical_ap_vlan_device_address_and_operation_status"
 )
+
+DEVICE_LIFECYCLE_COLUMNS = (
+    "project_phase",
+    "operation_status",
+    "operation_status_reason",
+    "operation_status_updated_at",
+    "operation_status_updated_by",
+)
+DEVICE_LIFECYCLE_INDEXES = (
+    "idx_devices_operation_status",
+    "idx_devices_project_phase",
+)
+
+_DATABASE_INITIALIZE_LOCKS: dict[str, threading.RLock] = {}
+_DATABASE_INITIALIZE_LOCKS_GUARD = threading.Lock()
 
 
 class DatabaseSchemaMismatchError(RuntimeError):
@@ -1189,44 +1206,82 @@ class Database:
         return connect_sqlite(self.path, foreign_keys=True)
 
     def initialize(self) -> None:
-        existed = self.exists()
-        conn = self.connect()
-        try:
-            initialize_sqlite_wal(conn)
-            if existed:
-                address_migration = self._requires_device_address_migration(conn)
-                lifecycle_migration = self._requires_device_lifecycle_migration(conn)
-                if address_migration or lifecycle_migration:
-                    self._backup_before_device_migration(
-                        conn,
-                        "primary-address"
-                        if address_migration
-                        else "operation-status",
-                    )
-            conn.executescript(
-                "\n".join(
-                    self._schema_scripts_for_existing_database(conn) if existed else self._all_schema_scripts()
-                )
-            )
-            if not conn.in_transaction:
-                conn.execute("BEGIN IMMEDIATE")
-            self._apply_additive_schema_updates(conn)
-            self._migrate_trackside_ap_vlan_allocation_references(conn)
-            self._migrate_trackside_ap_vlan_groups(conn)
-            repair_device_credential_states(conn)
-            self._write_schema_version(conn)
-            conn.commit()
-        except Exception:
-            conn.rollback()
+        with _database_initialize_lock(self.path):
+            existed = self.exists()
+            conn: sqlite3.Connection | None = None
+            stage = "connect"
+            backup_path: Path | None = None
+            schema_version_before = ""
+            address_migration = False
+            lifecycle_migration = False
             try:
-                from netconsole.core import app_logger
-
-                app_logger.log_error("DATABASE_INITIALIZE_FAILED", f"path={self.path}")
-            except Exception:
-                pass
-            raise
-        finally:
-            conn.close()
+                conn = self.connect()
+                stage = "configure"
+                initialize_sqlite_wal(conn)
+                if existed:
+                    stage = "inspect"
+                    schema_version_before = self._safe_schema_version(conn)
+                    address_migration = self._requires_device_address_migration(conn)
+                    lifecycle_migration = self._requires_device_lifecycle_migration(
+                        conn
+                    )
+                    if address_migration or lifecycle_migration:
+                        stage = "backup"
+                        backup_path = self._backup_before_device_migration(
+                            conn,
+                            "primary-address"
+                            if address_migration
+                            else "operation-status",
+                        )
+                stage = "schema"
+                schema_scripts = (
+                    self._schema_scripts_for_existing_database(conn)
+                    if existed
+                    else self._all_schema_scripts()
+                )
+                conn.executescript(
+                    "BEGIN IMMEDIATE;\n" + "\n".join(schema_scripts)
+                )
+                stage = "additive_updates"
+                self._apply_additive_schema_updates(conn)
+                stage = "lifecycle_validation"
+                self._validate_device_lifecycle_migration(conn)
+                stage = "ap_vlan_reference_migration"
+                self._migrate_trackside_ap_vlan_allocation_references(conn)
+                stage = "ap_vlan_group_migration"
+                self._migrate_trackside_ap_vlan_groups(conn)
+                stage = "credential_state_repair"
+                repair_device_credential_states(conn)
+                stage = "integrity_check"
+                self._assert_integrity(conn, "设备数据库迁移后完整性校验失败")
+                stage = "schema_version"
+                self._write_schema_version(conn)
+                stage = "commit"
+                conn.commit()
+                if existed and (address_migration or lifecycle_migration):
+                    self._log_migration_completed(
+                        schema_version_before=schema_version_before,
+                        backup_path=backup_path,
+                        address_migration=address_migration,
+                        lifecycle_migration=lifecycle_migration,
+                    )
+            except Exception as exc:
+                if conn is not None:
+                    try:
+                        conn.rollback()
+                    except sqlite3.Error:
+                        pass
+                self._log_initialize_failure(
+                    exc,
+                    conn=conn,
+                    stage=stage,
+                    backup_path=backup_path,
+                    schema_version_before=schema_version_before,
+                )
+                raise
+            finally:
+                if conn is not None:
+                    conn.close()
 
     def _schema_scripts_for_existing_database(self, conn: sqlite3.Connection) -> tuple[str, ...]:
         if not self._table_exists(conn, "schema_metadata"):
@@ -1294,6 +1349,14 @@ class Database:
         for column, definition in device_lifecycle_columns.items():
             if not self._column_exists(conn, "devices", column):
                 conn.execute(f"ALTER TABLE devices ADD COLUMN {column} {definition}")
+        conn.execute(
+            "UPDATE devices SET project_phase = 'unspecified' "
+            "WHERE project_phase IS NULL OR TRIM(project_phase) = ''"
+        )
+        conn.execute(
+            "UPDATE devices SET operation_status = 'in_service' "
+            "WHERE operation_status IS NULL OR TRIM(operation_status) = ''"
+        )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_devices_operation_status "
             "ON devices(operation_status)"
@@ -1586,16 +1649,70 @@ class Database:
     ) -> bool:
         if not self._table_exists(conn, "devices"):
             return False
-        return any(
-            not self._column_exists(conn, "devices", column)
-            for column in (
-                "project_phase",
-                "operation_status",
-                "operation_status_reason",
-                "operation_status_updated_at",
-                "operation_status_updated_by",
-            )
+        missing_columns = self._missing_device_lifecycle_columns(conn)
+        if missing_columns:
+            return True
+        indexes = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA index_list(devices)").fetchall()
+        }
+        if any(index not in indexes for index in DEVICE_LIFECYCLE_INDEXES):
+            return True
+        return (
+            conn.execute(
+                """
+                SELECT 1
+                FROM devices
+                WHERE project_phase IS NULL
+                   OR TRIM(project_phase) = ''
+                   OR operation_status IS NULL
+                   OR TRIM(operation_status) = ''
+                LIMIT 1
+                """
+            ).fetchone()
+            is not None
         )
+
+    def _validate_device_lifecycle_migration(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        missing_columns = self._missing_device_lifecycle_columns(conn)
+        if missing_columns:
+            raise sqlite3.DatabaseError(
+                "设备生命周期字段迁移不完整: " + ",".join(missing_columns)
+            )
+        indexes = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA index_list(devices)").fetchall()
+        }
+        missing_indexes = [
+            index for index in DEVICE_LIFECYCLE_INDEXES if index not in indexes
+        ]
+        if missing_indexes:
+            raise sqlite3.DatabaseError(
+                "设备生命周期索引迁移不完整: " + ",".join(missing_indexes)
+            )
+        invalid_defaults = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM devices
+            WHERE project_phase IS NULL
+               OR TRIM(project_phase) = ''
+               OR operation_status IS NULL
+               OR TRIM(operation_status) = ''
+            """
+        ).fetchone()
+        if invalid_defaults and int(invalid_defaults[0]) > 0:
+            raise sqlite3.DatabaseError("设备生命周期默认值迁移不完整")
+
+    def _missing_device_lifecycle_columns(
+        self, conn: sqlite3.Connection
+    ) -> list[str]:
+        return [
+            column
+            for column in DEVICE_LIFECYCLE_COLUMNS
+            if not self._column_exists(conn, "devices", column)
+        ]
 
     def _backup_before_device_migration(
         self, source: sqlite3.Connection, migration_name: str
@@ -1610,22 +1727,111 @@ class Database:
         else:
             backup_dir = self.path.parent / "backups" / "database-migrations"
         backup_dir.mkdir(parents=True, exist_ok=True)
+        site_key = hashlib.sha256(
+            self._site_name().encode("utf-8")
+        ).hexdigest()[:10]
+        fingerprint = self._device_migration_fingerprint(source)
+        reusable = sorted(
+            backup_dir.glob(
+                f"devices-site-{site_key}-before-{migration_name}-*-{fingerprint}.sqlite"
+            ),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for candidate in reusable:
+            if self._backup_integrity_ok(candidate):
+                self._log_backup_event(
+                    "DATABASE_MIGRATION_BACKUP_REUSED",
+                    candidate,
+                    migration_name,
+                    fingerprint,
+                )
+                return candidate
         target = backup_dir / (
-            f"devices-before-{migration_name}-"
+            f"devices-site-{site_key}-before-{migration_name}-"
             f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-"
-            f"{uuid.uuid4().hex[:8]}.sqlite"
+            f"{uuid.uuid4().hex[:8]}-{fingerprint}.sqlite"
         )
         try:
             with closing(connect_sqlite(target, foreign_keys=True)) as destination:
                 source.backup(destination)
-                integrity = destination.execute("PRAGMA integrity_check").fetchone()
-                if not integrity or str(integrity[0]).casefold() != "ok":
-                    raise sqlite3.DatabaseError("设备数据库迁移备份完整性校验失败")
+                self._assert_integrity(
+                    destination, "设备数据库迁移备份完整性校验失败"
+                )
                 destination.commit()
         except Exception:
             target.unlink(missing_ok=True)
             raise
+        self._log_backup_event(
+            "DATABASE_MIGRATION_BACKUP_CREATED",
+            target,
+            migration_name,
+            fingerprint,
+        )
         return target
+
+    def _device_migration_fingerprint(
+        self, source: sqlite3.Connection
+    ) -> str:
+        columns = [
+            str(row["name"])
+            for row in source.execute("PRAGMA table_info(devices)").fetchall()
+        ]
+        indexes = sorted(
+            str(row["name"])
+            for row in source.execute("PRAGMA index_list(devices)").fetchall()
+        )
+        summary = source.execute(
+            """
+            SELECT COUNT(*) AS device_count,
+                   COALESCE(MAX(updated_at), '') AS latest_update
+            FROM devices
+            """
+        ).fetchone()
+        payload = {
+            "schema_version": self._safe_schema_version(source),
+            "columns": columns,
+            "indexes": indexes,
+            "device_count": int(summary["device_count"]) if summary else 0,
+            "latest_update": str(summary["latest_update"]) if summary else "",
+        }
+        serialized = json.dumps(
+            payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        )
+        return hashlib.sha256(serialized.encode("ascii")).hexdigest()[:16]
+
+    @staticmethod
+    def _backup_integrity_ok(path: Path) -> bool:
+        try:
+            uri = f"{path.resolve().as_uri()}?mode=ro"
+            with closing(sqlite3.connect(uri, uri=True, timeout=1.0)) as conn:
+                integrity = conn.execute("PRAGMA integrity_check").fetchone()
+            return bool(
+                integrity and str(integrity[0]).casefold() == "ok"
+            )
+        except sqlite3.Error:
+            return False
+
+    def _log_backup_event(
+        self,
+        event: str,
+        path: Path,
+        migration_name: str,
+        fingerprint: str,
+    ) -> None:
+        try:
+            from netconsole.core import app_logger
+
+            app_logger.log_info(
+                event,
+                (
+                    f"site={self._site_name()} database_path={self.path} "
+                    f"migration={migration_name} backup_path={path} "
+                    f"fingerprint={fingerprint}"
+                ),
+            )
+        except Exception:
+            pass
 
     def _site_name(self) -> str:
         try:
@@ -1926,6 +2132,99 @@ class Database:
         row = conn.execute("SELECT value FROM schema_metadata WHERE key = 'schema_version'").fetchone()
         return str(row["value"]) if row is not None else ""
 
+    def _safe_schema_version(self, conn: sqlite3.Connection) -> str:
+        try:
+            if not self._table_exists(conn, "schema_metadata"):
+                return ""
+            return self._schema_version(conn)
+        except sqlite3.Error:
+            return ""
+
+    @staticmethod
+    def _assert_integrity(conn: sqlite3.Connection, message: str) -> None:
+        integrity = conn.execute("PRAGMA integrity_check").fetchone()
+        if not integrity or str(integrity[0]).casefold() != "ok":
+            raise sqlite3.DatabaseError(message)
+
+    def _log_migration_completed(
+        self,
+        *,
+        schema_version_before: str,
+        backup_path: Path | None,
+        address_migration: bool,
+        lifecycle_migration: bool,
+    ) -> None:
+        try:
+            from netconsole.core import app_logger
+
+            app_logger.log_info(
+                "DATABASE_MIGRATION_COMPLETED",
+                (
+                    f"site={self._site_name()} database_path={self.path} "
+                    f"schema_version_before={schema_version_before or '<missing>'} "
+                    f"schema_version_after={CURRENT_SCHEMA_VERSION} "
+                    f"address_migration={address_migration} "
+                    f"lifecycle_migration={lifecycle_migration} "
+                    f"backup_path={backup_path or '<none>'}"
+                ),
+            )
+        except Exception:
+            pass
+
+    def _log_initialize_failure(
+        self,
+        exc: Exception,
+        *,
+        conn: sqlite3.Connection | None,
+        stage: str,
+        backup_path: Path | None,
+        schema_version_before: str,
+    ) -> None:
+        missing_columns: list[str] = []
+        missing_indexes: list[str] = []
+        schema_version = schema_version_before
+        diagnostic_error = ""
+        try:
+            if conn is not None:
+                schema_version = self._safe_schema_version(conn) or schema_version
+                if self._table_exists(conn, "devices"):
+                    missing_columns = self._missing_device_lifecycle_columns(conn)
+                    indexes = {
+                        str(row["name"])
+                        for row in conn.execute(
+                            "PRAGMA index_list(devices)"
+                        ).fetchall()
+                    }
+                    missing_indexes = [
+                        index
+                        for index in DEVICE_LIFECYCLE_INDEXES
+                        if index not in indexes
+                    ]
+        except Exception as diagnostic_exc:
+            diagnostic_error = (
+                f"{diagnostic_exc.__class__.__name__}: {diagnostic_exc}"
+            )
+        try:
+            from netconsole.core import app_logger
+
+            app_logger.log_error(
+                "DATABASE_INITIALIZE_FAILED",
+                (
+                    f"site={self._site_name()} database_path={self.path} "
+                    f"stage={stage} backup_path={backup_path or '<none>'} "
+                    f"exception_class={exc.__class__.__name__} "
+                    f"sqlite_errorcode={getattr(exc, 'sqlite_errorcode', '')} "
+                    f"sqlite_errorname={getattr(exc, 'sqlite_errorname', '')} "
+                    f"error={exc} schema_version={schema_version or '<missing>'} "
+                    f"missing_columns={','.join(missing_columns) or '<none>'} "
+                    f"missing_indexes={','.join(missing_indexes) or '<none>'} "
+                    f"diagnostic_error={diagnostic_error} "
+                    f"traceback={''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))}"
+                ),
+            )
+        except Exception:
+            pass
+
     @staticmethod
     def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
         row = conn.execute(
@@ -1942,6 +2241,12 @@ class Database:
     def _schema_mismatch_message() -> str:
         return (
             "当前数据库结构缺少基础元数据，无法自动升级。"
-            "请先备份旧 data 目录，然后使用数据库重建工具或清空旧数据后重新初始化。"
+            "原数据库未被自动修改，请使用已验证备份或受控迁移工具恢复。"
         )
+
+
+def _database_initialize_lock(path: Path) -> threading.RLock:
+    key = str(Path(path).resolve()).casefold()
+    with _DATABASE_INITIALIZE_LOCKS_GUARD:
+        return _DATABASE_INITIALIZE_LOCKS.setdefault(key, threading.RLock())
 
