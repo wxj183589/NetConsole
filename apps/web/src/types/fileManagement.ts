@@ -113,10 +113,39 @@ export interface FileConnection {
   current_entry_id: string
   current_label: string
   message: string
+  connection_method: string
+  target_role: 'primary' | 'backup' | string
+  target_host: string
+  target_port: number
+  via_tunnel: boolean
+  tunnel_label: 'tunnel1' | 'tunnel2' | string
+  jump_host: string
+  jump_port: number
+  attempts: FileConnectionAttempt[]
+}
+
+export interface FileConnectionAttempt {
+  connection_method: string
+  target_role: string
+  target_host: string
+  target_port: number
+  tunnel_label: string
+  jump_host: string
+  jump_port: number
+  success: boolean
+  failure_stage: string
+  error_code: string
+  message: string
+  elapsed_ms: number
 }
 
 export interface HostKeyChallenge {
-  code: 'DEVICE_FILE_HOST_KEY_UNKNOWN' | 'DEVICE_FILE_HOST_KEY_MISMATCH' | string
+  code:
+    | 'DEVICE_FILE_TARGET_HOST_KEY_UNKNOWN'
+    | 'DEVICE_FILE_TARGET_HOST_KEY_MISMATCH'
+    | 'DEVICE_FILE_JUMP_HOST_KEY_UNKNOWN'
+    | 'DEVICE_FILE_JUMP_HOST_KEY_MISMATCH'
+    | string
   message: string
   details: {
     challenge_id?: string
@@ -126,6 +155,7 @@ export interface HostKeyChallenge {
     port?: number
     algorithm?: string
     fingerprint_sha256?: string
+    host_key_role?: 'jump' | 'target' | string
   }
 }
 

@@ -328,7 +328,7 @@ const writeConnectionDisabledReason = computed(() => {
   if (writeConnectionBusy.value) return '连接测试正在执行'
   const protocol = writeTestProtocol.value
   if (!availableWriteTestProtocols.value.includes(protocol)) return `请先启用 ${protocol}`
-  if (!writeForm.primary_address.trim()) return '请输入设备地址'
+  if (!writeForm.primary_address.trim() && !String(writeForm.backup_address || '').trim()) return '请输入主用地址或备用地址'
   const port = protocol === 'SSH' ? writeForm.ssh_port : protocol === 'TELNET' ? writeForm.telnet_port : writeForm.snmp_port
   if (!Number.isInteger(Number(port)) || Number(port) < 1 || Number(port) > 65535) return `请输入有效的 ${protocol} 端口`
   if (protocol === 'SSH') {

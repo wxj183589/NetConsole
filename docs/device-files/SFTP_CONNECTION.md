@@ -7,13 +7,17 @@ SFTP_ENABLING -> SFTP_RECONNECTING -> CONNECTED|FAILED`。未知主机密钥由 
 挑战；前端可选择仅本次信任或信任并保存。即使挑战发生在用户已经确认启用 SFTP 之后，确认主机
 密钥也只继续重连，不会丢失原意图或再次提交启用命令。
 
-连接错误固定分类为 `DEVICE_FILE_NETWORK_UNREACHABLE`、`DEVICE_FILE_CONNECTION_TIMEOUT`、
-`DEVICE_FILE_AUTH_FAILED`、`DEVICE_FILE_HOST_KEY_UNKNOWN`、`DEVICE_FILE_HOST_KEY_MISMATCH`、
+连接错误固定分类为 `DEVICE_FILE_DIRECT_UNREACHABLE`、`DEVICE_FILE_JUMP_HOST_UNREACHABLE`、
+`DEVICE_FILE_JUMP_HOST_AUTH_FAILED`、`DEVICE_FILE_JUMP_HOST_KEY_UNKNOWN`、
+`DEVICE_FILE_JUMP_HOST_KEY_MISMATCH`、`DEVICE_FILE_FORWARD_OPEN_FAILED`、
+`DEVICE_FILE_TARGET_UNREACHABLE_VIA_TUNNEL`、`DEVICE_FILE_TARGET_AUTH_FAILED`、
+`DEVICE_FILE_TARGET_HOST_KEY_UNKNOWN`、`DEVICE_FILE_TARGET_HOST_KEY_MISMATCH`、
 `DEVICE_FILE_SFTP_UNAVAILABLE`、`DEVICE_FILE_SFTP_NEGOTIATION_FAILED`、
 `DEVICE_FILE_SFTP_ENABLE_UNSUPPORTED`、`DEVICE_FILE_SFTP_ENABLE_PROFILE_UNRESOLVED`、
 `DEVICE_FILE_SFTP_ENABLE_PENDING`、`DEVICE_FILE_SFTP_ENABLE_FAILED`、
-`DEVICE_FILE_SFTP_RECONNECT_FAILED` 和 `DEVICE_FILE_REMOTE_ROOT_NOT_FOUND`。远程会话中途失效使用
-`DEVICE_FILE_SESSION_DISCONNECTED`。页面不显示 Paramiko、socket 或通道原始异常。
+`DEVICE_FILE_SFTP_RECONNECT_FAILED`、`DEVICE_FILE_REMOTE_ROOT_NOT_FOUND` 和
+`DEVICE_FILE_DOWNLOAD_FAILED`。远程会话中途失效使用 `DEVICE_FILE_SESSION_DISCONNECTED`。
+页面不显示 Paramiko、socket 或通道原始异常。
 
 ## 自动启用边界
 
@@ -50,8 +54,18 @@ Profile 风险为 `controlled_write`，真实设备状态均为 `REAL_DEVICE_PEN
 命令完成后关闭原 SSH 会话并重新建立 SFTP 会话，再允许目录浏览和下载。Profile 不匹配、
 任务取消、命令失败或重新连接失败时保持失败/未连接，不得伪造成功。
 
-每次连接按设备统一目标策略依次尝试主用、备用和受控隧道，成功后在进程内会话记录实际目标。
-该目标不含在 Web DTO 中，但供同设备的 WinSCP 动作复用，避免内置 SFTP 与 WinSCP 选择不同地址。
+每次连接按统一目标策略依次尝试 `primary_direct`、`backup_direct`、`tunnel1_primary`、
+`tunnel1_backup`、`tunnel2_primary`、`tunnel2_backup`。空地址不生成目标，主备地址相同时去重；
+第一跳和第二跳是可替代入口，不构成级联二跳。表单和导入保存均以隧道主机存在作为启用事实，
+不依赖页面中不存在的启用开关。
+
+连接成功 DTO 返回原始目标地址、主备角色、隧道入口和已尝试路径，不返回本地
+`127.0.0.1` 随机转发端口。页面据此显示实际链路；连接失败时展示逐路径的稳定、脱敏摘要。
+同设备的 WinSCP 动作继续复用实际成功目标，避免内置 SFTP 与 WinSCP 选择不同地址。
+
+隧道 SFTP 会话在目录读取和下载期间持有跳板 SSH Client、`direct-tcpip` Channel、转发 Server、
+目标 SSH Client 与 SFTP Client。断开时先关闭 SFTP，再关闭目标 SSH，最后释放转发和跳板连接；
+取消、失败和重复关闭均保持幂等。下载失败清理 `.part` 并返回 `DEVICE_FILE_DOWNLOAD_FAILED`。
 
 目录刷新、进入目录或下载提交前会再次检查会话。会话失效后服务端销毁 `connection_id`，页面清空
 远程列表和选择，并只显示“设备文件会话已断开，请重新连接”。

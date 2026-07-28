@@ -191,7 +191,7 @@ class DeviceWriteRequestDTO(ApiModel):
     group_id: int | None = Field(default=None, ge=1)
     device_vendor: str = Field(default="H3C", max_length=40)
     device_type: str = Field(default="SW", max_length=40)
-    primary_address: str = Field(min_length=1, max_length=255)
+    primary_address: str = Field(default="", max_length=255)
     backup_address: str = Field(default="", max_length=255)
     ssh_enabled: bool = True
     ssh_port: int = Field(default=22, ge=1, le=65535)

@@ -76,7 +76,12 @@ def test_connection_manager_orders_primary_backup_then_complete_tunnels():
 
     attempts = ConnectionManager().iter_attempts(device)
 
-    assert [attempt.label for attempt in attempts] == ["primary_direct", "backup_direct", "tunnel1"]
+    assert [attempt.label for attempt in attempts] == [
+        "primary_direct",
+        "backup_direct",
+        "tunnel1_primary",
+        "tunnel1_backup",
+    ]
     assert attempts[0].host == "10.0.0.1"
     assert attempts[1].host == "10.0.1.1"
     assert attempts[0].username == "admin"
@@ -99,8 +104,18 @@ def test_connection_manager_uses_tunnel_host_when_global_tunnel_disabled():
 
     attempts = ConnectionManager().iter_attempts(device)
 
-    assert [attempt.label for attempt in attempts] == ["primary_direct", "backup_direct", "tunnel1"]
-    assert [attempt.via_tunnel for attempt in attempts] == [False, False, True]
+    assert [attempt.label for attempt in attempts] == [
+        "primary_direct",
+        "backup_direct",
+        "tunnel1_primary",
+        "tunnel1_backup",
+    ]
+    assert [attempt.via_tunnel for attempt in attempts] == [
+        False,
+        False,
+        True,
+        True,
+    ]
 
 
 def test_connection_manager_includes_two_complete_tunnels_when_enabled():
@@ -120,8 +135,22 @@ def test_connection_manager_includes_two_complete_tunnels_when_enabled():
 
     attempts = ConnectionManager().iter_attempts(device)
 
-    assert [attempt.label for attempt in attempts] == ["primary_direct", "backup_direct", "tunnel1", "tunnel2"]
-    assert [attempt.via_tunnel for attempt in attempts] == [False, False, True, True]
+    assert [attempt.label for attempt in attempts] == [
+        "primary_direct",
+        "backup_direct",
+        "tunnel1_primary",
+        "tunnel1_backup",
+        "tunnel2_primary",
+        "tunnel2_backup",
+    ]
+    assert [attempt.via_tunnel for attempt in attempts] == [
+        False,
+        False,
+        True,
+        True,
+        True,
+        True,
+    ]
 
 
 def test_connection_manager_ignores_persisted_tunnel_local_ports():
@@ -175,6 +204,53 @@ def test_connection_manager_prefers_ui_ssh_telnet_fields_over_compat_protocol_po
     assert ssh_attempt.username == "ssh"
     assert telnet_attempt.protocol == "Telnet"
     assert telnet_attempt.port == 2323
+
+
+def test_connection_manager_builds_backup_only_direct_and_tunnel_targets():
+    device = Device(
+        primary_address="",
+        backup_address="10.0.1.1",
+        ssh_enabled=1,
+        ssh_username="admin",
+        tunnel1_host="jump1",
+        tunnel1_username="jump",
+        tunnel1_password="jump-password",
+        tunnel2_host="jump2",
+        tunnel2_username="jump",
+        tunnel2_password="jump-password",
+    )
+
+    attempts = ConnectionManager().iter_attempts(device)
+
+    assert [attempt.label for attempt in attempts] == [
+        "backup_direct",
+        "tunnel1_backup",
+        "tunnel2_backup",
+    ]
+    assert [attempt.target_role for attempt in attempts] == [
+        "backup",
+        "backup",
+        "backup",
+    ]
+
+
+def test_connection_manager_deduplicates_equal_primary_and_backup_addresses():
+    device = Device(
+        primary_address="10.0.0.1",
+        backup_address=" 10.0.0.1 ",
+        ssh_enabled=1,
+        ssh_username="admin",
+        tunnel1_host="jump1",
+        tunnel1_username="jump",
+        tunnel1_password="jump-password",
+    )
+
+    attempts = ConnectionManager().iter_attempts(device)
+
+    assert [attempt.label for attempt in attempts] == [
+        "primary_direct",
+        "tunnel1_primary",
+    ]
 
 
 def test_tunnel_target_prepares_local_netmiko_endpoint(monkeypatch):
@@ -261,7 +337,11 @@ def test_tunnel_manager_binds_auto_local_port_and_closes(monkeypatch):
         )
     )[-1].tunnel
 
-    session = TunnelManager().open_tunnel(profile, "10.0.0.1", 22)
+    session = TunnelManager(strict_host_keys=False).open_tunnel(
+        profile,
+        "10.0.0.1",
+        22,
+    )
     session.close()
 
     assert bound == [("127.0.0.1", 0)]
@@ -353,6 +433,6 @@ def test_test_device_connection_uses_tunnel_after_direct_failures(monkeypatch):
     result = test_device_connection(device)
 
     assert result.success is True
-    assert result.method == "tunnel1"
+    assert result.method == "tunnel1_primary"
     assert calls == ["10.0.0.1", "10.0.1.1", "127.0.0.1"]
     assert closed == [True]

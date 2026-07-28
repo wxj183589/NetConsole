@@ -20,7 +20,8 @@ def test_unknown_key_can_be_trusted_and_persists_in_managed_data_root(tmp_path):
     with pytest.raises(HostKeyChallengeError) as excinfo:
         service.verify("192.0.2.1", 22, key)
 
-    assert excinfo.value.code == "DEVICE_FILE_HOST_KEY_UNKNOWN"
+    assert excinfo.value.code == "DEVICE_FILE_TARGET_HOST_KEY_UNKNOWN"
+    assert excinfo.value.details["host_key_role"] == "target"
     assert excinfo.value.details["fingerprint_sha256"] == key_fingerprint_sha256(key)
     assert str(tmp_path) not in str(excinfo.value.details)
 
@@ -36,4 +37,4 @@ def test_changed_key_is_blocked(tmp_path):
     with pytest.raises(HostKeyMismatchError) as excinfo:
         service.verify("192.0.2.2", 2222, paramiko.RSAKey.generate(1024))
 
-    assert excinfo.value.code == "DEVICE_FILE_HOST_KEY_MISMATCH"
+    assert excinfo.value.code == "DEVICE_FILE_TARGET_HOST_KEY_MISMATCH"

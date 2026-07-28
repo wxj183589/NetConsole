@@ -124,10 +124,14 @@ const downloadTaskColumns: NcTableColumn<FileDownloadTask>[] = [
 ]
 const SFTP_SETUP_SUCCESS_MESSAGE = '已在设备侧启用 SFTP，并完成重新连接。'
 const SFTP_CONNECTION_ERROR_MESSAGES: Record<string, string> = {
-  DEVICE_FILE_NETWORK_UNREACHABLE: '设备网络不可达或 SSH 端口不可用。',
-  DEVICE_FILE_CONNECTION_TIMEOUT: '连接设备超时，请检查网络和 SSH 端口。',
-  DEVICE_FILE_AUTH_FAILED: '设备 SSH 认证失败，请检查用户名和密码。',
-  DEVICE_FILE_HOST_KEY_MISMATCH: '设备主机密钥与已保存记录不一致，连接已阻止。',
+  DEVICE_FILE_DIRECT_UNREACHABLE: '设备地址直连不可达或 SSH 端口不可用。',
+  DEVICE_FILE_JUMP_HOST_UNREACHABLE: '跳板机网络不可达或 SSH 端口不可用。',
+  DEVICE_FILE_JUMP_HOST_AUTH_FAILED: '跳板机 SSH 认证失败，请检查隧道凭据。',
+  DEVICE_FILE_JUMP_HOST_KEY_MISMATCH: '跳板机主机密钥与已保存记录不一致，连接已阻止。',
+  DEVICE_FILE_FORWARD_OPEN_FAILED: '跳板机已认证，但无法建立到目标设备的转发通道。',
+  DEVICE_FILE_TARGET_UNREACHABLE_VIA_TUNNEL: '跳板机已连接，但经隧道无法访问目标设备。',
+  DEVICE_FILE_TARGET_AUTH_FAILED: '目标设备 SSH 认证失败，请检查用户名和密码。',
+  DEVICE_FILE_TARGET_HOST_KEY_MISMATCH: '目标设备主机密钥与已保存记录不一致，连接已阻止。',
   DEVICE_FILE_SFTP_UNAVAILABLE: '设备 SSH 已登录，但 SFTP 子系统不可用。',
   DEVICE_FILE_SFTP_NEGOTIATION_FAILED: 'SSH 登录成功，但建立 SFTP 子系统失败。',
   DEVICE_FILE_SFTP_ENABLE_UNSUPPORTED: '当前设备厂商或版本不支持自动启用 SFTP，未执行设备配置。',
@@ -259,7 +263,17 @@ async function prepareLocalOpen(): Promise<void> {
 function applySftpConnectionError(reason: ApiRequestError, fallback: string): void {
   const taskId = reason.details.task_id
   sftpSetupTaskId.value = typeof taskId === 'string' ? taskId : ''
-  remoteError.value = SFTP_CONNECTION_ERROR_MESSAGES[reason.code] || messageOf(reason, fallback)
+  const base = SFTP_CONNECTION_ERROR_MESSAGES[reason.code] || messageOf(reason, fallback)
+  const attempts = Array.isArray(reason.details.attempts) ? reason.details.attempts : []
+  const summaries = attempts
+    .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+    .map((item) => {
+      const role = item.target_role === 'backup' ? '备用地址' : '主用地址'
+      const tunnel = item.tunnel_label === 'tunnel1' ? '第一跳' : item.tunnel_label === 'tunnel2' ? '第二跳' : ''
+      const path = tunnel ? `${tunnel} → ${role}` : `${role}直连`
+      return `${path}：${String(item.message || (item.success ? '成功' : '失败'))}`
+    })
+  remoteError.value = summaries.length ? `${base} ${summaries.join('；')}` : base
   connectionStatus.value = reason.code === 'DEVICE_FILE_SESSION_DISCONNECTED' ? '未连接' : '连接失败'
 }
 
@@ -280,19 +294,24 @@ async function connectDevice(): Promise<void> {
 async function completeConnection(request: () => Promise<FileConnection>): Promise<boolean> {
   try {
     connection.value = await request()
-    connectionStatus.value = 'SFTP 连接成功'
+    connectionStatus.value = connection.value.via_tunnel ? '通过 SSH 隧道连接' : 'SFTP 直连成功'
     await loadRemote(connection.value.root_entry_id, 1)
     if (connection.value.message === SFTP_SETUP_SUCCESS_MESSAGE) ElMessage.success(connection.value.message)
     return true
   } catch (reason) {
-    if (reason instanceof ApiRequestError && reason.code === 'DEVICE_FILE_HOST_KEY_UNKNOWN') {
+    if (
+      reason instanceof ApiRequestError
+      && ['DEVICE_FILE_HOST_KEY_UNKNOWN', 'DEVICE_FILE_TARGET_HOST_KEY_UNKNOWN', 'DEVICE_FILE_JUMP_HOST_KEY_UNKNOWN'].includes(reason.code)
+    ) {
       const details = reason.details
       const challengeId = String(details.challenge_id || '')
+      const jumpHost = details.host_key_role === 'jump'
+      const identityLabel = jumpHost ? '跳板机' : '目标设备'
       const choice = await confirmChoice({
         type: 'SECURITY',
-        title: '首次连接：确认设备主机密钥',
-        message: `设备：${String(details.device_name || selectedDevice.value?.name || '当前设备')}\n地址：${String(details.host || selectedDevice.value?.address || '')}:${String(details.port || 22)}\n密钥算法：${String(details.algorithm || '未知')}\nSHA256 指纹：${String(details.fingerprint_sha256 || '未知')}`,
-        detail: '首次连接时请确认该指纹确实属于目标设备。信任错误的主机密钥可能导致连接到错误设备。',
+        title: `首次连接：确认${identityLabel}主机密钥`,
+        message: `设备：${String(details.device_name || selectedDevice.value?.name || '当前设备')}\n${identityLabel}地址：${String(details.host || selectedDevice.value?.address || '')}:${String(details.port || 22)}\n密钥算法：${String(details.algorithm || '未知')}\nSHA256 指纹：${String(details.fingerprint_sha256 || '未知')}`,
+        detail: `首次连接时请确认该指纹确实属于${identityLabel}。信任错误的主机密钥可能导致连接到错误设备。`,
         confirmText: '仅本次信任',
         secondaryText: '信任并保存',
         acknowledgementText: '我已核对该设备指纹',
@@ -532,6 +551,14 @@ function taskType(status: FileDownloadTask['status']): 'success' | 'danger' | 'w
 function messageOf(reason: unknown, fallback: string): string {
   return reason instanceof Error ? reason.message : fallback
 }
+
+function connectionRouteText(value: FileConnection): string {
+  const role = value.target_role === 'backup' ? '备用地址' : '主用地址'
+  const target = `${role} ${value.target_host}:${value.target_port}`
+  if (!value.via_tunnel) return `实际链路：${target} 直连`
+  const tunnel = value.tunnel_label === 'tunnel1' ? '第一跳' : value.tunnel_label === 'tunnel2' ? '第二跳' : 'SSH 隧道'
+  return `实际链路：${tunnel} ${value.jump_host}:${value.jump_port} → ${target}`
+}
 </script>
 
 <template>
@@ -563,6 +590,7 @@ function messageOf(reason: unknown, fallback: string): string {
         <el-button :disabled="!connection" @click="disconnectDevice">{{ t('disconnect') }}</el-button>
         <el-button v-if="isFeatureEnabled('web.file_management_desktop_actions') && desktopAvailable" :title="winscpMessage" :disabled="!selectedDeviceId || !winscpAvailable" @click="prepareWinscp">{{ t('winscp') }}</el-button>
       </template>
+      <span v-if="connection" class="connection-route">{{ connectionRouteText(connection) }}</span>
     </div>
 
     <div class="panes">
@@ -660,5 +688,5 @@ function messageOf(reason: unknown, fallback: string): string {
 </template>
 
 <style scoped>
-.file-management-page{display:flex;flex-direction:column;gap:16px;min-width:0}.page-heading,.section-heading,.device-toolbar,.toolbar{display:flex;align-items:center;gap:10px}.page-heading,.section-heading{justify-content:space-between}.page-heading h1,.section-heading h2{margin:2px 0 6px}.page-heading p,.section-heading span,.hint{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.content-card{padding:14px 16px;background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:12px;overflow:hidden}.device-toolbar{flex-wrap:wrap}.device-toolbar .el-input{width:250px}.device-toolbar .el-select{width:210px}.panes{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}.pane{min-width:0}.toolbar{flex-wrap:wrap;margin-bottom:10px}.toolbar.compact{margin:0}.hint{padding-top:10px;font-size:12px}.batch-summaries{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}.el-pagination{justify-content:flex-end;padding-top:10px}strong,small{display:block}small{margin-top:4px;color:var(--el-text-color-secondary)}@media(max-width:1200px){.panes{grid-template-columns:1fr}}@media(max-width:760px){.page-heading,.section-heading{align-items:flex-start;flex-direction:column}.device-toolbar .el-input,.device-toolbar .el-select{width:100%}}
+.file-management-page{display:flex;flex-direction:column;gap:16px;min-width:0}.page-heading,.section-heading,.device-toolbar,.toolbar{display:flex;align-items:center;gap:10px}.page-heading,.section-heading{justify-content:space-between}.page-heading h1,.section-heading h2{margin:2px 0 6px}.page-heading p,.section-heading span,.hint{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.content-card{padding:14px 16px;background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:12px;overflow:hidden}.device-toolbar{flex-wrap:wrap}.device-toolbar .el-input{width:250px}.device-toolbar .el-select{width:210px}.connection-route{flex:1 0 100%;font-size:13px}.panes{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}.pane{min-width:0}.toolbar{flex-wrap:wrap;margin-bottom:10px}.toolbar.compact{margin:0}.hint{padding-top:10px;font-size:12px}.batch-summaries{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}.el-pagination{justify-content:flex-end;padding-top:10px}strong,small{display:block}small{margin-top:4px;color:var(--el-text-color-secondary)}@media(max-width:1200px){.panes{grid-template-columns:1fr}}@media(max-width:760px){.page-heading,.section-heading{align-items:flex-start;flex-direction:column}.device-toolbar .el-input,.device-toolbar .el-select{width:100%}}
 </style>

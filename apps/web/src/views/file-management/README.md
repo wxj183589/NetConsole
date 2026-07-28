@@ -10,3 +10,6 @@
 
 首屏能力状态完成后即移除页面级 loading；本地目录、设备列表、下载队列和远程目录分别使用
 `localLoading`、`deviceLoading`、`queueLoading`、`remoteLoading`。首次队列只取 20 条且不阻塞设备选择。
+
+SFTP 连接成功后显示 Backend 返回的原始目标角色、地址和跳板入口，不展示本地随机转发端口。
+失败时按候选路径展示脱敏摘要；Renderer 不自行推断主备或隧道选择。

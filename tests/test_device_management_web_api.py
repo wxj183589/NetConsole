@@ -599,6 +599,32 @@ def test_edit_profile_and_write_responses_do_not_build_legacy_full_detail(
     )
 
 
+def test_device_can_be_saved_with_backup_address_only(tmp_path: Path) -> None:
+    client, _service, _adapter, devices, _facts, _mr, _sw = _fixture(tmp_path)
+
+    created = client.post(
+        "/api/device-management/devices",
+        json={
+            "name": "MR-backup-only",
+            "primary_address": "",
+            "backup_address": "10.62.89.105",
+            "device_vendor": "H3C",
+            "device_type": "MR",
+            "ssh_enabled": True,
+            "ssh_username": "admin",
+            "ssh_password": "device-password",
+            "snmp_enabled": False,
+        },
+    )
+
+    assert created.status_code == 201
+    device_uuid = created.json()["device"]["device_uuid"]
+    saved = devices.get_by_uuid(device_uuid)
+    assert saved is not None
+    assert saved.primary_address == ""
+    assert saved.backup_address == "10.62.89.105"
+
+
 def test_legacy_ssh_credentials_can_be_revealed_replaced_and_saved_canonically(
     tmp_path: Path,
 ) -> None:
@@ -1039,7 +1065,7 @@ def test_connection_worker_maps_safe_failure_categories_and_phases(
     _client, service, _adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
     progress: list[tuple[object, ...]] = []
 
-    def failed_connection(_device: Device, *, phase_callback):
+    def failed_connection(_device: Device, *, phase_callback, **_kwargs):
         for stage in (
             "connecting",
             "handshaking",
@@ -1443,10 +1469,25 @@ def test_edit_form_connection_test_resolves_saved_or_ephemeral_secret_without_wr
     tmp_path: Path, monkeypatch
 ) -> None:
     client, service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
-    observed: list[str | None] = []
+    mr.tunnel1_enabled = 1
+    mr.tunnel1_host = "198.51.100.10"
+    mr.tunnel1_username = "jump-one"
+    mr.tunnel1_password = "saved-jump-one"
+    mr.tunnel2_enabled = 1
+    mr.tunnel2_host = "198.51.100.11"
+    mr.tunnel2_username = "jump-two"
+    mr.tunnel2_password = "saved-jump-two"
+    mr = _devices.update(mr)
+    observed: list[tuple[str | None, str | None, str | None]] = []
 
     def fake_connection(device: Device, **_kwargs):
-        observed.append(device.ssh_password)
+        observed.append(
+            (
+                device.ssh_password,
+                device.tunnel1_password,
+                device.tunnel2_password,
+            )
+        )
         return SimpleNamespace(
             success=True,
             status="ok",
@@ -1472,6 +1513,12 @@ def test_edit_form_connection_test_resolves_saved_or_ephemeral_secret_without_wr
         "ssh_enabled": True,
         "ssh_username": "admin",
         "telnet_enabled": False,
+        "tunnel1_enabled": False,
+        "tunnel1_host": "198.51.100.10",
+        "tunnel1_username": "jump-one",
+        "tunnel2_enabled": False,
+        "tunnel2_host": "198.51.100.11",
+        "tunnel2_username": "jump-two",
     }
 
     for request_payload, bootstrap in (
@@ -1491,6 +1538,11 @@ def test_edit_form_connection_test_resolves_saved_or_ephemeral_secret_without_wr
             assert job.job_id not in adapter.pending_bootstraps
         else:
             assert job.params["credential_sources"]["ssh_password"] == "ephemeral"
+        assert job.params["credential_sources"]["tunnel1_password"] == "saved_device"
+        assert job.params["credential_sources"]["tunnel2_password"] == "saved_device"
+        assert job.params["form_device"]["tunnel_enabled"] == 1
+        assert job.params["form_device"]["tunnel1_enabled"] == 1
+        assert job.params["form_device"]["tunnel2_enabled"] == 1
         context = _RuntimeBootstrapContext(
             job,
             service.paths,
@@ -1505,8 +1557,15 @@ def test_edit_form_connection_test_resolves_saved_or_ephemeral_secret_without_wr
 
     assert cleared.status_code == 422
     assert "请输入 SSH 密码" in cleared.text
-    assert observed == ["secret-password", "temporary-password"]
-    assert _devices.get_by_uuid(str(mr.device_uuid)).ssh_password == "secret-password"
+    assert observed == [
+        ("secret-password", "saved-jump-one", "saved-jump-two"),
+        ("temporary-password", "saved-jump-one", "saved-jump-two"),
+    ]
+    saved = _devices.get_by_uuid(str(mr.device_uuid))
+    assert saved is not None
+    assert saved.ssh_password == "secret-password"
+    assert saved.tunnel1_password == "saved-jump-one"
+    assert saved.tunnel2_password == "saved-jump-two"
 
 
 def test_router_exposes_device_management_parity_endpoints_without_arbitrary_terminal_or_secret_routes(

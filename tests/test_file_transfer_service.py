@@ -5,6 +5,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.services import command_guard
 from netconsole.services.file_transfer_service import (
+    FileTransferConnectionError,
     FileTransferService,
     RemoteDeviceFile,
     auto_rename_path,
@@ -57,7 +58,7 @@ def test_connect_stage_eof_never_triggers_sftp_auto_enable():
         transport_active=False,
     )
     classified = FileTransferService._classify_connection_error(error, failure_stage="connect_ssh")
-    assert classified.code == "DEVICE_FILE_NETWORK_UNREACHABLE"
+    assert classified.code == "DEVICE_FILE_DIRECT_UNREACHABLE"
 
 
 def test_ambiguous_open_sftp_failure_has_dedicated_negotiation_error():
@@ -72,6 +73,218 @@ def test_ambiguous_open_sftp_failure_has_dedicated_negotiation_error():
     classified = FileTransferService._classify_connection_error(error, failure_stage="open_sftp")
     assert classified.code == "DEVICE_FILE_SFTP_NEGOTIATION_FAILED"
     assert str(classified) == "SSH 登录成功，但建立 SFTP 子系统失败。"
+
+
+@pytest.mark.parametrize(
+    ("successful_method", "expected_methods"),
+    (
+        (
+            "tunnel1_backup",
+            [
+                "primary_direct",
+                "backup_direct",
+                "tunnel1_primary",
+                "tunnel1_backup",
+            ],
+        ),
+        (
+            "tunnel2_backup",
+            [
+                "primary_direct",
+                "backup_direct",
+                "tunnel1_primary",
+                "tunnel1_backup",
+                "tunnel2_primary",
+                "tunnel2_backup",
+            ],
+        ),
+    ),
+)
+def test_file_transfer_falls_back_across_target_and_tunnel_combinations(
+    tmp_path,
+    monkeypatch,
+    successful_method,
+    expected_methods,
+):
+    attempts: list[str] = []
+
+    class FakeSftp:
+        def listdir_attr(self, path):
+            if path == "flash:/":
+                return []
+            raise RuntimeError("missing root")
+
+        def close(self):
+            pass
+
+    class FakeClient:
+        def open_sftp(self):
+            return FakeSftp()
+
+        def close(self):
+            pass
+
+    class FakeTunnelSession:
+        local_host = "127.0.0.1"
+        local_port = 10022
+        forward_error = None
+
+        def close(self):
+            pass
+
+    service = FileTransferService(
+        "demo",
+        PathResolver(tmp_path),
+        strict_host_keys=True,
+    )
+
+    def fake_connect(target, **_kwargs):
+        attempts.append(target.method)
+        if target.method != successful_method:
+            raise OSError("unreachable")
+        return FakeClient()
+
+    monkeypatch.setattr(service, "_connect_ssh_client", fake_connect)
+    monkeypatch.setattr(
+        "netconsole.services.file_transfer_service.TunnelManager.open_tunnel",
+        lambda *_args, **_kwargs: FakeTunnelSession(),
+    )
+    device = Device(
+        name="MR",
+        primary_address="primary.internal",
+        backup_address="backup.internal",
+        ssh_enabled=1,
+        ssh_username="admin",
+        ssh_password="device-password",
+        tunnel1_host="jump1",
+        tunnel1_username="jump",
+        tunnel1_password="jump-password",
+        tunnel2_host="jump2",
+        tunnel2_username="jump",
+        tunnel2_password="jump-password",
+    )
+
+    assert service.connect(device) == "flash:/"
+    assert attempts == expected_methods
+    assert service.successful_target is not None
+    assert service.successful_target.method == successful_method
+
+
+def test_file_transfer_reports_all_failed_connection_paths_without_secrets(
+    tmp_path,
+    monkeypatch,
+):
+    class FakeTunnelSession:
+        local_host = "127.0.0.1"
+        local_port = 10022
+        forward_error = None
+
+        def close(self):
+            pass
+
+    service = FileTransferService(
+        "demo",
+        PathResolver(tmp_path),
+        strict_host_keys=True,
+    )
+    monkeypatch.setattr(
+        service,
+        "_connect_ssh_client",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("unreachable")),
+    )
+    monkeypatch.setattr(
+        "netconsole.services.file_transfer_service.TunnelManager.open_tunnel",
+        lambda *_args, **_kwargs: FakeTunnelSession(),
+    )
+    device = Device(
+        name="MR",
+        primary_address="primary.internal",
+        backup_address="backup.internal",
+        ssh_enabled=1,
+        ssh_username="admin",
+        ssh_password="device-password",
+        tunnel1_host="jump1",
+        tunnel1_username="jump",
+        tunnel1_password="jump-password",
+        tunnel2_host="jump2",
+        tunnel2_username="jump",
+        tunnel2_password="jump-password",
+    )
+
+    with pytest.raises(FileTransferConnectionError) as excinfo:
+        service.connect(device)
+
+    attempts = excinfo.value.details["attempts"]
+    assert [item["connection_method"] for item in attempts] == [
+        "primary_direct",
+        "backup_direct",
+        "tunnel1_primary",
+        "tunnel1_backup",
+        "tunnel2_primary",
+        "tunnel2_backup",
+    ]
+    assert all(item["success"] is False for item in attempts)
+    assert "device-password" not in str(attempts)
+    assert "jump-password" not in str(attempts)
+    public_attempts = service.attempt_summaries
+    public_attempts[0]["message"] = "changed"
+    assert service.attempt_summaries[0]["message"] != "changed"
+
+
+def test_download_failure_has_stable_code_and_cleans_partial_file(
+    tmp_path,
+    monkeypatch,
+):
+    class FakeSftp:
+        @staticmethod
+        def stat(_path):
+            raise RuntimeError("read failed device-password")
+
+    events: list[tuple[str, str]] = []
+    service = FileTransferService("demo", PathResolver(tmp_path))
+    service._sftp = FakeSftp()
+    service._root_path = "flash:/"
+    service._current_path = "flash:/"
+    service._device = Device(
+        id=1,
+        device_uuid=Device.new_uuid(),
+        name="MR",
+        ssh_password="device-password",
+    )
+    service._successful_target = ConnectionTarget(
+        protocol="ssh",
+        device_type="hp_comware",
+        host="backup.internal",
+        port=22,
+        username="admin",
+        password="device-password",
+        method="tunnel1_backup",
+        via_tunnel=True,
+        target_role="backup",
+        tunnel_label="tunnel1",
+    )
+    monkeypatch.setattr(
+        "netconsole.services.file_transfer_service.DOWNLOAD_STABLE_WAIT_SECONDS",
+        0,
+    )
+    monkeypatch.setattr(
+        "netconsole.services.file_transfer_service.app_logger.log_error",
+        lambda event, message: events.append((event, message)),
+    )
+    destination = tmp_path / "download.bin"
+
+    with pytest.raises(FileTransferConnectionError) as excinfo:
+        service.download("flash:/download.bin", destination)
+
+    assert excinfo.value.code == "DEVICE_FILE_DOWNLOAD_FAILED"
+    assert excinfo.value.details["failure_stage"] == "download"
+    assert not destination.exists()
+    assert not destination.with_name("download.bin.part").exists()
+    assert events[0][0] == "DEVICE_FILE_DOWNLOAD_FAILED"
+    assert "connection_method=tunnel1_backup" in events[0][1]
+    assert "target_role=backup" in events[0][1]
+    assert "failure_stage=download" in events[0][1]
+    assert "device-password" not in events[0][1]
 
 
 def test_file_management_command_context_allows_only_dir_commands():

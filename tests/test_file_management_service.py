@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import paramiko
 import sys
 import threading
 from dataclasses import replace
@@ -33,6 +34,7 @@ from netconsole.services.file_transfer_service import (
     file_sha256,
     normalize_remote_path,
 )
+from netconsole.services.host_key_trust_service import HostKeyTrustGrant
 from netconsole.services.host_key_trust_service import HostKeyChallengeError
 from netconsole.services.file_management_service import (
     FileManagementApplicationService,
@@ -464,6 +466,29 @@ def test_download_queue_close_waits_for_inflight_repository_work_before_process_
     assert shutdown_called.is_set() is True
 
 
+def test_remote_device_list_includes_backup_only_ssh_device(
+    tmp_path: Path,
+) -> None:
+    paths, _source = _fixture(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    device = DeviceRepository(database).create(
+        Device(
+            name="MR-backup-only",
+            primary_address="",
+            backup_address="10.62.89.105",
+            ssh_enabled=1,
+        )
+    )
+    service = FileManagementApplicationService(paths)
+
+    items = service.list_remote_devices("demo")
+
+    assert len(items) == 1
+    assert items[0].device_id == device.device_uuid
+    assert items[0].address == "10.62.89.105"
+
+
 def test_remote_file_web_flow_uses_session_entries_persistent_device_file_results_and_rejects_cross_device_reuse(tmp_path: Path, monkeypatch) -> None:
     paths, _source = _fixture(tmp_path)
     database = Database(paths.site_db_path("demo"))
@@ -496,10 +521,46 @@ def test_remote_file_web_flow_uses_session_entries_persistent_device_file_result
             self.connected = False
             self.disconnect_calls = 0
             self.root_path = "flash:/"
+            self.successful_target = None
+            self.attempt_summaries: list[dict[str, object]] = []
             self.instances.append(self)
 
-        def connect(self, _device):
+        def connect(self, device):
             self.connected = True
+            self.successful_target = SimpleNamespace(
+                method="tunnel1_primary",
+                target_role="primary",
+                host=device.primary_address,
+                port=22,
+                via_tunnel=True,
+                tunnel_label="tunnel1",
+                tunnel=SimpleNamespace(host="198.51.100.10", port=22),
+            )
+            self.attempt_summaries = [
+                {
+                    "connection_method": "primary_direct",
+                    "target_role": "primary",
+                    "target_host": device.primary_address,
+                    "target_port": 22,
+                    "success": False,
+                    "failure_stage": "target_connect",
+                    "error_code": "DEVICE_FILE_DIRECT_UNREACHABLE",
+                    "message": "设备直连网络不可达或 SSH 端口不可用。",
+                    "elapsed_ms": 20,
+                },
+                {
+                    "connection_method": "tunnel1_primary",
+                    "target_role": "primary",
+                    "target_host": device.primary_address,
+                    "target_port": 22,
+                    "tunnel_label": "tunnel1",
+                    "jump_host": "198.51.100.10",
+                    "jump_port": 22,
+                    "success": True,
+                    "failure_stage": "connected",
+                    "elapsed_ms": 35,
+                },
+            ]
             return self.root_path
 
         def disconnect(self):
@@ -580,6 +641,18 @@ def test_remote_file_web_flow_uses_session_entries_persistent_device_file_result
         connection_id = connected.json()["connection_id"]
         assert "flash:/" not in connected.text
         assert FakeTransfer.instances[-1].strict_host_keys is True
+        assert connected.json()["connection_method"] == "tunnel1_primary"
+        assert connected.json()["target_role"] == "primary"
+        assert connected.json()["target_host"] == "192.0.2.10"
+        assert connected.json()["target_port"] == 22
+        assert connected.json()["via_tunnel"] is True
+        assert connected.json()["tunnel_label"] == "tunnel1"
+        assert connected.json()["jump_host"] == "198.51.100.10"
+        assert connected.json()["jump_port"] == 22
+        assert [item["connection_method"] for item in connected.json()["attempts"]] == [
+            "primary_direct",
+            "tunnel1_primary",
+        ]
 
         reconnected = client.post("/api/file-management/connections", params={"site_id": "demo"}, json={"device_id": device_a.device_uuid})
         assert reconnected.status_code == 201
@@ -787,11 +860,8 @@ def test_web_connect_is_strict_read_only_when_sftp_is_disabled(tmp_path: Path, m
             self.connect_called = False
             self.instances.append(self)
 
-        def load_system_host_keys(self):
-            host_key_events.append("loaded")
-
         def set_missing_host_key_policy(self, policy):
-            host_key_events.append(str(policy))
+            host_key_events.append(policy.__class__.__name__)
 
         def connect(self, **_kwargs):
             self.connect_called = True
@@ -814,7 +884,11 @@ def test_web_connect_is_strict_read_only_when_sftp_is_disabled(tmp_path: Path, m
     monkeypatch.setitem(
         sys.modules,
         "paramiko",
-        SimpleNamespace(SSHClient=FakeSshClient, AutoAddPolicy=lambda: "auto", RejectPolicy=lambda: "reject"),
+        SimpleNamespace(
+            SSHClient=FakeSshClient,
+            MissingHostKeyPolicy=object,
+            BadHostKeyException=RuntimeError,
+        ),
     )
     monkeypatch.setattr(transfer_module.app_logger, "log_error", lambda event, message: log_events.append((event, message)))
     device = Device(
@@ -840,7 +914,7 @@ def test_web_connect_is_strict_read_only_when_sftp_is_disabled(tmp_path: Path, m
     assert FakeSshClient.instances[0].connect_called is True
     assert FakeSshClient.instances[0].transport.active is False
     assert commands == []
-    assert host_key_events[:2] == ["loaded", "reject"]
+    assert host_key_events == ["_ManagedHostKeyPolicy"]
     rejected = next(message for event, message in log_events if event == "SFTP_SUBSYSTEM_REJECTED")
     for field in (
         "site_id=demo",
@@ -870,7 +944,7 @@ def test_web_connect_authorized_sftp_setup_runs_device_operation_then_reconnects
     )
     task_service = TaskApplicationService(paths=paths, site_name="demo")
     operation_calls: list[tuple[str, str]] = []
-    host_key = object()
+    host_key = paramiko.RSAKey.generate(1024)
 
     class FakeDeviceOperationService:
         def start(self, device_uuid: str, operation_id: str, **_kwargs):
@@ -1023,7 +1097,7 @@ def test_host_key_trust_once_continues_the_original_connection_flow(tmp_path: Pa
         primary_address="192.0.2.32",
         ssh_enabled=1,
     )
-    key = object()
+    key = paramiko.RSAKey.generate(1024)
 
     class FakeTransfer:
         instances: list["FakeTransfer"] = []
@@ -1074,6 +1148,7 @@ def test_host_key_trust_once_continues_the_original_connection_flow(tmp_path: Pa
         "port": 22,
         "algorithm": "ssh-ed25519",
         "fingerprint_sha256": "SHA256:test",
+        "host_key_role": "target",
         "challenge_id": challenged.json()["detail"]["details"]["challenge_id"],
         "device_id": device.device_uuid,
         "device_name": "AC-host-key",
@@ -1081,7 +1156,116 @@ def test_host_key_trust_once_continues_the_original_connection_flow(tmp_path: Pa
     assert trusted.status_code == 201
     assert trusted.json()["message"] == "SFTP 连接成功"
     assert FakeTransfer.instances[-1].strict_host_keys is True
-    assert FakeTransfer.instances[-1].trust_host_key_once is True
+    assert len(FakeTransfer.instances[-1].trust_host_key_once) == 1
+    assert isinstance(
+        FakeTransfer.instances[-1].trust_host_key_once[0],
+        HostKeyTrustGrant,
+    )
+
+
+def test_jump_and_target_trust_once_challenges_preserve_both_exact_grants(
+    tmp_path: Path,
+) -> None:
+    paths, _source = _fixture(tmp_path)
+    device = Device(
+        id=1,
+        device_uuid=Device.new_uuid(),
+        name="MR-two-host-keys",
+        primary_address="192.0.2.40",
+        ssh_enabled=1,
+    )
+    jump_key = paramiko.RSAKey.generate(1024)
+    target_key = paramiko.RSAKey.generate(1024)
+
+    class FakeTransfer:
+        instances: list["FakeTransfer"] = []
+
+        def __init__(
+            self,
+            *_args,
+            trust_host_key_once=(),
+            **_kwargs,
+        ):
+            self.index = len(self.instances)
+            self.grants = tuple(trust_host_key_once)
+            self.instances.append(self)
+
+        def connect(self, _device):
+            if self.index == 0:
+                raise HostKeyChallengeError(
+                    "首次连接需要确认跳板机主机密钥。",
+                    {
+                        "host": "198.51.100.10",
+                        "port": 22,
+                        "algorithm": jump_key.get_name(),
+                        "fingerprint_sha256": "SHA256:jump",
+                        "host_key_role": "jump",
+                    },
+                    key=jump_key,
+                    code="DEVICE_FILE_JUMP_HOST_KEY_UNKNOWN",
+                )
+            if self.index == 1:
+                raise HostKeyChallengeError(
+                    "首次连接需要确认目标设备主机密钥。",
+                    {
+                        "host": "192.0.2.40",
+                        "port": 22,
+                        "algorithm": target_key.get_name(),
+                        "fingerprint_sha256": "SHA256:target",
+                        "host_key_role": "target",
+                    },
+                    key=target_key,
+                    code="DEVICE_FILE_TARGET_HOST_KEY_UNKNOWN",
+                )
+            return "flash:/"
+
+        def disconnect(self):
+            pass
+
+    service = FileManagementApplicationService(
+        paths,
+        device_resolver=lambda _site, _device_id: device,
+        transfer_factory=FakeTransfer,
+    )
+    with TestClient(_app(service, remote_enabled=True)) as client:
+        jump_challenge = client.post(
+            "/api/file-management/connections",
+            params={"site_id": "demo"},
+            json={"device_id": device.device_uuid},
+        )
+        target_challenge = client.post(
+            "/api/file-management/host-keys/trust-once",
+            params={"site_id": "demo"},
+            json={
+                "challenge_id": jump_challenge.json()["detail"]["details"][
+                    "challenge_id"
+                ]
+            },
+        )
+        connected = client.post(
+            "/api/file-management/host-keys/trust-once",
+            params={"site_id": "demo"},
+            json={
+                "challenge_id": target_challenge.json()["detail"]["details"][
+                    "challenge_id"
+                ]
+            },
+        )
+
+    assert jump_challenge.json()["detail"]["code"] == (
+        "DEVICE_FILE_JUMP_HOST_KEY_UNKNOWN"
+    )
+    assert target_challenge.json()["detail"]["code"] == (
+        "DEVICE_FILE_TARGET_HOST_KEY_UNKNOWN"
+    )
+    assert connected.status_code == 201
+    assert [len(instance.grants) for instance in FakeTransfer.instances] == [
+        0,
+        1,
+        2,
+    ]
+    assert FakeTransfer.instances[-1].grants[0].host == "198.51.100.10"
+    assert FakeTransfer.instances[-1].grants[1].host == "192.0.2.40"
 
 
 def test_expired_remote_session_is_removed_and_returns_a_stable_message(tmp_path: Path) -> None:

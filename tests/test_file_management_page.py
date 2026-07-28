@@ -54,9 +54,7 @@ def test_file_transfer_reports_sftp_unavailable_without_running_device_write_com
 
         def open_sftp(self):
             FakeSSHClient.open_count += 1
-            if FakeSSHClient.open_count == 1:
-                raise RuntimeError("sftp disabled")
-            return FakeSftp()
+            raise RuntimeError("sftp disabled")
 
         def invoke_shell(self):
             return FakeShell()

@@ -16,7 +16,12 @@ from netconsole.services.device_command_profile_service import (
     DeviceCommandProfileNotFound,
     resolve_device_capability_commands,
 )
-from netconsole.services.ssh_tunnel import TunnelManager, TunnelSession
+from netconsole.services.host_key_trust_service import HostKeyTrustService
+from netconsole.services.ssh_tunnel import (
+    TunnelConnectionError,
+    TunnelManager,
+    TunnelSession,
+)
 from netconsole.utils.text_encoding import (
     PAGER_PROMPT_RE,
     clean_h3c_device_text,
@@ -151,6 +156,8 @@ class ConnectionTarget:
     method: str = "primary_direct"
     via_tunnel: bool = False
     tunnel: object | None = None
+    target_role: str = "primary"
+    tunnel_label: str = ""
 
 
 @dataclass(frozen=True)
@@ -190,6 +197,7 @@ def test_device_connection(
     device: Device,
     *,
     phase_callback: ConnectionPhaseCallback | None = None,
+    host_key_trust: HostKeyTrustService | None = None,
 ) -> ConnectionTestResult:
     targets = connection_targets(device)
     if not targets:
@@ -208,7 +216,10 @@ def test_device_connection(
         app_logger.log_debug("TEST_CONNECTION_STARTED", _detail(device, target.protocol, target.port, method=target.method))
         connection: Any | None = None
         try:
-            with prepared_connection_target(target) as prepared:
+            with prepared_connection_target(
+                target,
+                host_key_trust=host_key_trust,
+            ) as prepared:
                 _report_connection_phase(
                     phase_callback,
                     "handshaking",
@@ -263,8 +274,8 @@ def test_device_connection(
                 result = ConnectionTestResult(
                     True,
                     prepared.protocol,
-                    prepared.host,
-                    prepared.port,
+                    target.host,
+                    target.port,
                     message,
                     prompt,
                     _elapsed_ms(started),
@@ -371,13 +382,20 @@ def check_device_login_with_netmiko(device: Device) -> ConnectionCheckResult:
 
 
 @contextmanager
-def prepared_connection_target(target: ConnectionTarget) -> Iterator[ConnectionTarget]:
+def prepared_connection_target(
+    target: ConnectionTarget,
+    *,
+    host_key_trust: HostKeyTrustService | None = None,
+) -> Iterator[ConnectionTarget]:
     session: TunnelSession | None = None
     prepared = target
     if target.via_tunnel:
         if target.tunnel is None:
             raise RuntimeError("Tunnel target is missing tunnel profile")
-        session = TunnelManager().open_tunnel(target.tunnel, target.host, target.port)  # type: ignore[arg-type]
+        session = TunnelManager(
+            strict_host_keys=True,
+            host_key_trust=host_key_trust,
+        ).open_tunnel(target.tunnel, target.host, target.port)  # type: ignore[arg-type]
         prepared = ConnectionTarget(
             protocol=target.protocol,
             device_type=target.device_type,
@@ -389,6 +407,8 @@ def prepared_connection_target(target: ConnectionTarget) -> Iterator[ConnectionT
             method=target.method,
             via_tunnel=True,
             tunnel=target.tunnel,
+            target_role=target.target_role,
+            tunnel_label=target.tunnel_label,
         )
     try:
         yield prepared
@@ -427,6 +447,8 @@ def connection_targets(device: Device) -> list[ConnectionTarget]:
                     method=attempt.label,
                     via_tunnel=attempt.via_tunnel,
                     tunnel=attempt.tunnel,
+                    target_role=attempt.target_role,
+                    tunnel_label=attempt.tunnel_label,
                 )
             )
         elif attempt.protocol.casefold() == "telnet":
@@ -442,6 +464,8 @@ def connection_targets(device: Device) -> list[ConnectionTarget]:
                     method=attempt.label,
                     via_tunnel=attempt.via_tunnel,
                     tunnel=attempt.tunnel,
+                    target_role=attempt.target_role,
+                    tunnel_label=attempt.tunnel_label,
                 )
             )
     return targets
@@ -455,6 +479,36 @@ def classify_connection_exception(exc: BaseException, protocol: str = "SSH") -> 
     text = str(exc or "")
     lowered = text.casefold()
     proto = "Telnet" if str(protocol or "").casefold() == "telnet" else "SSH"
+    code = str(getattr(exc, "code", "") or "")
+    if code in {
+        "DEVICE_FILE_JUMP_HOST_KEY_UNKNOWN",
+        "DEVICE_FILE_JUMP_HOST_KEY_MISMATCH",
+        "DEVICE_FILE_JUMP_HOST_UNREACHABLE",
+        "DEVICE_FILE_JUMP_HOST_AUTH_FAILED",
+        "DEVICE_FILE_FORWARD_OPEN_FAILED",
+    }:
+        status_by_code = {
+            "DEVICE_FILE_JUMP_HOST_KEY_UNKNOWN": "jump_host_key_unknown",
+            "DEVICE_FILE_JUMP_HOST_KEY_MISMATCH": "jump_host_key_mismatch",
+            "DEVICE_FILE_JUMP_HOST_UNREACHABLE": "jump_host_unreachable",
+            "DEVICE_FILE_JUMP_HOST_AUTH_FAILED": "jump_host_auth_failed",
+            "DEVICE_FILE_FORWARD_OPEN_FAILED": "forward_open_failed",
+        }
+        return ConnectionErrorClassification(
+            status_by_code[code],
+            text,
+            text,
+            code,
+            "请核验跳板机地址、认证信息和主机密钥信任状态。",
+        )
+    if isinstance(exc, TunnelConnectionError):
+        return ConnectionErrorClassification(
+            "jump_host_failed",
+            text,
+            text,
+            exc.code,
+            "请核验跳板机地址、认证信息和 SSH 转发权限。",
+        )
     if isinstance(exc, socket.gaierror) or any(
         part in lowered
         for part in (

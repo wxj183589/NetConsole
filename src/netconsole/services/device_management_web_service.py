@@ -1646,8 +1646,10 @@ class DeviceManagementWebService:
                 username_field
             ):
                 raise ValueError(f"{username_field} 不能为空，密码尚未保存")
-        if not values["name"] or not values["primary_address"]:
-            raise ValueError("设备名称和主用地址必填")
+        if not values["name"] or not (
+            values["primary_address"] or values["backup_address"]
+        ):
+            raise ValueError("设备名称以及主用地址或备用地址必填")
         values["device_vendor"], values["device_type"] = validate_device_vendor_type(
             values["device_vendor"], values["device_type"]
         )
@@ -3051,8 +3053,8 @@ class DeviceManagementWebService:
         protocol: str,
         credential_sources: dict[str, str],
     ) -> None:
-        if not str(device.primary_address or "").strip():
-            raise ValueError("请输入设备地址")
+        if not str(device.primary_address or device.backup_address or "").strip():
+            raise ValueError("请输入主用地址或备用地址")
         if protocol == "SSH":
             if not str(device.ssh_username or "").strip():
                 raise ValueError("请输入 SSH 用户名")
@@ -3443,6 +3445,7 @@ class DeviceManagementWebService:
 
 def run_device_connection_test(context: JobContext) -> dict[str, object]:
     from netconsole.services.device_snmp_detect_service import DeviceSnmpDetectService
+    from netconsole.services.host_key_trust_service import HostKeyTrustService
     from netconsole.services.netmiko_connection import test_device_connection
 
     site = SiteManager(context.paths).validate_site_name(
@@ -3523,6 +3526,7 @@ def run_device_connection_test(context: JobContext) -> dict[str, object]:
                 result = test_device_connection(
                     selected,
                     phase_callback=report_phase,
+                    host_key_trust=HostKeyTrustService(context.paths),
                 )
             except Exception as exc:
                 raise RuntimeError(
