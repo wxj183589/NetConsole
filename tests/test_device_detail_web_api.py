@@ -26,17 +26,22 @@ class _CapturingAdapter:
         return self.tasks.prepare(job).job.job_id
 
 
-def _client(tmp_path: Path):
+def _client(
+    tmp_path: Path,
+    *,
+    device_type: str = "SW",
+    device_name: str = "SW-API",
+):
     project_root = Path(__file__).parents[1]
     paths = PathResolver(app_root=project_root, data_root=tmp_path / "runtime")
     database = Database(paths.site_db_path("demo"))
     database.initialize()
     device = DeviceRepository(database).create(
         Device(
-            name="SW-API",
+            name=device_name,
             primary_address="192.0.2.50",
             device_vendor="H3C",
-            device_type="SW",
+            device_type=device_type,
             ssh_password="api-secret",
         )
     )
@@ -245,6 +250,35 @@ def test_device_detail_lazy_api_contract_and_refresh(tmp_path: Path) -> None:
     )
     assert "api-secret" not in combined
     assert "C:\\private" not in combined
+
+
+def test_wireless_controller_overview_and_refresh_api_use_comware_profile(
+    tmp_path: Path,
+) -> None:
+    client, _app, adapter, device = _client(
+        tmp_path,
+        device_type="AC",
+        device_name="251-无线控制器-主",
+    )
+    prefix = f"/api/device-management/devices/{device.device_uuid}"
+
+    overview = client.get(f"{prefix}/overview")
+    refreshed = client.post(
+        f"{prefix}/refresh",
+        json={"operation_id": "device.inventory.collect"},
+    )
+
+    assert overview.status_code == 200
+    assert overview.json()["platform_facts"]["role"] == "wireless_controller"
+    assert overview.json()["command_profile"]["executable"] is True
+    assert overview.json()["command_profile"]["profile_id"] == (
+        "h3c.comware.wireless_controller.generic.device-inventory.v1"
+    )
+    assert refreshed.status_code == 202, refreshed.text
+    assert len(adapter.jobs) == 1
+    assert adapter.jobs[0].params["device_uuids"] == [str(device.device_uuid)]
+    assert adapter.jobs[0].params["platform_role"] == "wireless_controller"
+    assert device.device_type == "AC"
 
 
 def test_device_detail_routes_declare_contract_metadata_and_router_boundary(

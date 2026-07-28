@@ -14,7 +14,23 @@ The built-in demonstration site is `demo`. If `sites/demo/db/devices.db` does no
 
 If the database already exists, `Database.initialize()` applies only additive, idempotent schema updates and records `schema_metadata`; it does not backfill demo facts or delete existing rows. The current migration adds the non-secret device credential state table without rewriting existing device credentials. Never delete a user database to apply an upgrade. Development fixtures must use a temporary data root.
 
-Current schema version: `2026.07.28.ap_management_vlan_groups`. The prior query-plan evidence and rollback boundaries remain recorded in [the E6 database archive](archive/migrations/electron-only/E6-2026-07-18.md).
+Current schema version: `2026.07.29.zte_optical_ap_vlan_and_device_primary_address`. The prior query-plan evidence and rollback boundaries remain recorded in [the E6 database archive](archive/migrations/electron-only/E6-2026-07-18.md).
+
+The 2026-07-29 additive migration adds `devices.normalized_primary_address`.
+Because every site has its own `devices.db`, the partial unique index on that
+column enforces the business key "current site + normalized primary address";
+the same address remains valid in another site database. Empty addresses are
+excluded from the index. The stable database identity remains `id` together
+with `device_uuid`; changing an address never rebuilds a device row.
+
+Initialization normalizes existing non-empty primary addresses with Python's
+standard IP parser, backfills the derived column, checks the complete final
+set, and creates the index in one transaction. Before an existing site is
+upgraded, SQLite Backup API writes a verified copy below
+`files/backups/database-migrations/`. Invalid or duplicate historical
+addresses stop the migration with the site, address, device IDs and names;
+the original rows, schema version and indexes remain unchanged. The migration
+never deletes, merges or selects one conflicting device.
 
 The 2026-07-28 additive migration adds `admin_status`, `physical_status`,
 `media_attribute`, `media_type`, and `category` to both current and historical
@@ -51,6 +67,7 @@ Current local tables:
 
 - `id`: local auto-increment primary key inside `devices.db`
 - `device_uuid`: stable UUID string for future cross-database references
+- `normalized_primary_address`: normalized IPv4/IPv6 business match key, unique only inside the current site's database
 
 Future task, config, and metrics data should reference devices by `device_uuid`, not by the local `id`.
 
@@ -88,11 +105,26 @@ Older databases may still contain retired SNMPv3 and read-write columns. Additiv
 
 ## CSV
 
-CSV import and export use one versioned current template with a Chinese header row. Export omits secret columns unless the explicitly authorized caller requests a credential-bearing local export. The current fields are:
+CSV import and export use one versioned current template with a Chinese header row. Export omits secret columns unless the explicitly authorized caller requests a credential-bearing local export. The current 30 fields are:
 
 ```text
-设备名称, 主用地址, 备用地址, 协议, 端口, 用户名, 密码, 厂商, 设备类型, 分组, 归属站点, 是否启用SSH隧道, 隧道主机1地址, 隧道主机1端口, 隧道主机1用户名, 隧道主机1密码, 隧道主机2地址, 隧道主机2端口, 隧道主机2用户名, 隧道主机2密码, SNMP启用, SNMPv1, SNMPv2c, SNMP端口, SNMP只读团体字, SNMP超时毫秒, SNMP重试, 备注
+设备名称, 主用地址, 备用地址, 协议, 端口, 用户名, 密码, 厂商, 设备类型, 分组, 归属站点, 是否启用SSH隧道, 隧道主机1地址, 隧道主机1端口, 隧道主机1用户名, 隧道主机1密码, 隧道主机2地址, 隧道主机2端口, 隧道主机2用户名, 隧道主机2密码, SNMP启用, SNMPv1, SNMPv2c, SNMP端口, SNMP只读团体字, SNMP超时毫秒, SNMP重试, 备注, 设备ID, 原主用地址
 ```
+
+The 28-field predecessor and the earlier 21-field template remain importable.
+`设备ID` is the preferred stable match when changing an address;
+`原主用地址` allows matching the existing row before applying `主用地址`.
+Without either field, `SITE_PRIMARY_IP` matches the normalized current address
+inside the selected site. Explicit `DEVICE_NAME` matching remains available
+but never participates implicitly in address matching.
+
+Import exposes `UPDATE_ONLY` and `UPSERT`. An unmatched `UPDATE_ONLY` row is a
+hard error and creates nothing; `UPSERT` may create it. Preview reports every
+row as `CREATE / UPDATE / UNCHANGED / NOT_FOUND / CONFLICT / INVALID`, and any
+hard error prevents all writes. Confirmation re-runs preview under one
+`BEGIN IMMEDIATE` transaction. Empty cells preserve stored values, especially
+credentials; `__CLEAR__` is the explicit clear marker. Stored credentials are
+never included in ordinary exports.
 
 `协议` 与 `端口` 映射为 SSH 或 Telnet。v1.3.8/早期 v1.3.9 的上一版合法模板仍可导入，缺少的设备 SNMP 字段按 v2c、161、2000 ms、1 次重试默认值补齐；其他未知或错列旧表头不会被猜测兼容。SNMPv3、RW community 和 SET 字段不接受导入，也不进入导出。
 

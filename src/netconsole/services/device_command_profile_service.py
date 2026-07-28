@@ -98,6 +98,11 @@ _DEVICE_INVENTORY_STEP_CONTRACTS = {
     ("h3c", "switch", "comware"): _SWITCH_DEVICE_INVENTORY_STEP_CONTRACT,
     (
         "h3c",
+        "wireless_controller",
+        "comware",
+    ): _SWITCH_DEVICE_INVENTORY_STEP_CONTRACT,
+    (
+        "h3c",
         "mobile_router",
         "comware",
     ): _MOBILE_ROUTER_DEVICE_INVENTORY_STEP_CONTRACT,
@@ -418,7 +423,9 @@ def resolve_device_inventory_profile(
             f"设备详情采集仅支持 H3C/ZTE: vendor={vendor or 'unknown'}"
         )
     supported_roles = (
-        {"switch", "mobile_router"} if vendor.casefold() == "h3c" else {"switch"}
+        {"switch", "wireless_controller", "mobile_router"}
+        if vendor.casefold() == "h3c"
+        else {"switch"}
     )
     if role not in supported_roles:
         raise DeviceCommandProfileNotFound(

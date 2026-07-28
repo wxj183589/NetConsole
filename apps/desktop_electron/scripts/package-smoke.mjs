@@ -294,9 +294,20 @@ const expectedMobileRouterDeviceInventoryCommands = [
   'display boot-loader',
   'display interface',
 ]
+const expectedZteDeviceInventoryCommands = [
+  'show version',
+  'show interface brief',
+  'show running-config switchvlan',
+  'show vlan',
+  'show opticalinfo brief',
+  'show lldp neighbor brief',
+  'show lldp entry',
+]
 const expectedDeviceInventoryProfiles = new Map([
   ['h3c.comware.switch.generic.device-inventory.v1', expectedDeviceInventoryCommands],
+  ['h3c.comware.wireless_controller.generic.device-inventory.v1', expectedDeviceInventoryCommands],
   ['h3c.comware.mobile_router.generic.device-inventory.v1', expectedMobileRouterDeviceInventoryCommands],
+  ['zte.zxr10.switch.generic.device-inventory.v3', expectedZteDeviceInventoryCommands],
 ])
 
 const executableNameArgument = process.argv.indexOf('--resolve-windows-executable')

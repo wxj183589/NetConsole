@@ -58,3 +58,97 @@ test('MESH 归属区间保持 190px 且不被固定列遮挡', async ({ page }, 
   const screenshot = await fixture.screenshot({ path: testInfo.outputPath('mesh-link-section.png') })
   expect(screenshot.byteLength).toBeGreaterThan(1_000)
 })
+
+async function openBottomRightContextMenu(page: import('@playwright/test').Page) {
+  const fixture = page.locator('[data-context-menu-table]')
+  const bodyWrap = fixture.locator('.el-scrollbar__wrap').first()
+  await bodyWrap.evaluate((element) => { element.scrollTop = element.scrollHeight })
+  const lastCell = fixture.locator('.el-table__body tr').last().locator('td.el-table__cell').last()
+  await lastCell.scrollIntoViewIfNeeded()
+  await fixture.evaluate((element) => {
+    const bottom = element.getBoundingClientRect().bottom
+    window.scrollBy(0, bottom - window.innerHeight + 4)
+  })
+  const cellBox = await lastCell.boundingBox()
+  expect(cellBox).not.toBeNull()
+  const anchor = {
+    x: cellBox!.x + cellBox!.width / 2,
+    y: cellBox!.y + cellBox!.height / 2,
+  }
+  await page.mouse.click(anchor.x, anchor.y, { button: 'right' })
+  const menu = page.locator('body > .nc-data-table__context-menu')
+  await expect(menu).toBeVisible()
+  return { fixture, bodyWrap, menu, anchor }
+}
+
+test('右下角菜单挂载到 body、向左上翻转并在滚动和缩放时关闭', async ({ page }) => {
+  await page.goto('/tests/visual/', { waitUntil: 'networkidle' })
+  const { fixture, bodyWrap, menu, anchor } = await openBottomRightContextMenu(page)
+  const viewport = page.viewportSize()!
+  const facts = await menu.evaluate((element) => {
+    const rect = element.getBoundingClientRect()
+    const table = document.querySelector<HTMLElement>('[data-context-menu-table] .nc-data-table')
+    const header = document.querySelector<HTMLElement>('[data-context-menu-table] th.el-table__cell')
+    return {
+      directBodyChild: element.parentElement === document.body,
+      rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+      tableOverflow: table ? getComputedStyle(table).overflow : '',
+      menuZIndex: Number.parseInt(getComputedStyle(element).zIndex || '0', 10),
+      headerZIndex: Number.parseInt(header ? getComputedStyle(header).zIndex || '0' : '0', 10),
+    }
+  })
+
+  expect(facts.directBodyChild).toBe(true)
+  expect(facts.tableOverflow).toBe('hidden')
+  expect(facts.rect.left).toBeGreaterThanOrEqual(7.5)
+  expect(facts.rect.top).toBeGreaterThanOrEqual(7.5)
+  expect(facts.rect.right).toBeLessThanOrEqual(viewport.width - 7.5)
+  expect(facts.rect.bottom).toBeLessThanOrEqual(viewport.height - 7.5)
+  expect(facts.rect.left).toBeLessThan(anchor.x)
+  expect(facts.rect.top).toBeLessThan(anchor.y)
+  expect(facts.menuZIndex).toBeGreaterThan(facts.headerZIndex)
+
+  await bodyWrap.evaluate((element) => element.dispatchEvent(new Event('scroll')))
+  await expect(menu).toBeHidden()
+
+  const reopened = await openBottomRightContextMenu(page)
+  await page.setViewportSize({ width: viewport.width - 1, height: viewport.height - 1 })
+  await expect(reopened.menu).toBeHidden()
+  await expect(fixture).toBeVisible()
+})
+
+test('短窗口菜单内部滚动且末尾删除动作可访问', async ({ page }) => {
+  await page.setViewportSize({ width: 420, height: 260 })
+  await page.goto('/tests/visual/', { waitUntil: 'networkidle' })
+  const { menu } = await openBottomRightContextMenu(page)
+  const facts = await menu.evaluate((element) => {
+    const rect = element.getBoundingClientRect()
+    const style = getComputedStyle(element)
+    return {
+      rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      overflowY: style.overflowY,
+      overscrollBehavior: style.overscrollBehavior,
+    }
+  })
+  expect(facts.rect.left).toBeGreaterThanOrEqual(7.5)
+  expect(facts.rect.top).toBeGreaterThanOrEqual(7.5)
+  expect(facts.rect.right).toBeLessThanOrEqual(412.5)
+  expect(facts.rect.bottom).toBeLessThanOrEqual(252.5)
+  expect(facts.scrollHeight).toBeGreaterThan(facts.clientHeight)
+  expect(facts.overflowY).toBe('auto')
+  expect(facts.overscrollBehavior).toBe('contain')
+
+  await menu.evaluate((element) => {
+    element.scrollTop = element.scrollHeight
+    element.dispatchEvent(new Event('scroll'))
+  })
+  await expect(menu).toBeVisible()
+  const deleteAction = menu.getByRole('menuitem', { name: '删除' })
+  await deleteAction.scrollIntoViewIfNeeded()
+  await expect(deleteAction).toBeVisible()
+  await deleteAction.click()
+  await expect(page.locator('[data-last-context-action]')).toHaveText('delete')
+  await expect(menu).toBeHidden()
+})

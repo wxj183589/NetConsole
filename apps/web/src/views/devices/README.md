@@ -55,20 +55,26 @@ LLDP 历史数据按公开 DTO 白名单消费，不进入任意原始对象透�
 
 ## CSV 导入导出
 
-- 正式模板和导出共用唯一的 28 列契约（在旧 21 列设备字段基础上增加 7 个 SNMP 字段）；模板只包含 UTF-8 BOM、元数据行和表头，不再写示例设备，导入预览允许零数据行。旧 21 列文件仍可导入，避免破坏现场存量模板。
-- 导入严格识别 UTF-8 BOM、UTF-8、GB18030、GBK，不使用 `errors="ignore"`。预览返回检测编码、SHA-256、总/有效/无效行数、厂商与类型统计、新增/更新/冲突数和结构化行级中文错误。
+- 正式模板和导出共用 30 列契约，在既有 28 列末尾增加“设备ID”和“原主用地址”；旧 28 列和 21 列文件仍可导入。设备数据库身份仍是稳定 `id/device_uuid`，主地址只是当前局点内唯一的业务匹配键，不同局点可使用相同地址。
+- 页面提供“批量更新设备”（仅更新）和“导入 CSV”（更新或新增）两个入口，均复用同一预检与任务链。匹配方式支持设备 ID、当前局点主地址和显式设备名称；按主地址模式优先使用行内设备 ID，其次原主用地址，最后当前主用地址，不会用名称猜测地址变更。
+- 导入严格识别 UTF-8 BOM、UTF-8、GB18030、GBK，不使用 `errors="ignore"`。预览返回检测编码、SHA-256、新增/更新/无变化/未匹配/冲突/失败汇总，以及逐行匹配依据、原/新主地址、动作、错误码和中文说明。
+- 空单元格保留数据库原值，用户名、密码、SNMP community 和隧道凭据不会被空值清除；只有统一明确标记 `__CLEAR__` 才执行清除。普通导出不包含明文秘密。
+- 有非法 IP、文件内最终主地址重复、同一设备多行命中、未匹配更新或现有设备冲突时，确认按钮禁用。确认阶段在 `BEGIN IMMEDIATE` 事务内重新预检并整体提交；失败全部回滚。两台设备互换地址通过事务内安全两阶段更新完成，不关闭唯一索引。
 - H3C 与 ZTE 可存在于同一个 CSV。存在无效行时仍展示全部已解析行，但确认导入保持单 SQLite 事务，不提供“忽略错误行”。
 - 设备表格导出先确认明确范围：有勾选时默认 `selected`，无勾选时固定 `filtered_all`；范围 DTO 决定 Worker 使用 UUID 集合还是完整筛选查询，不受当前页分页限制。CSV 继续使用 UTF-8 BOM 和既有凭据开关。设备数据和模板都进入公共 Export Worker、Task Center 和 `WebArtifactStore`；分别使用 `web_export_device_csv`、`web_export_device_template_csv`，结果记录实际行数并提供受控 Artifact 下载。
 - 设备数据和模板都先调用桌面 `chooseSavePath`；取消时不创建任务，确认后才提交任务并把 `task_id` 与本次另存为授权一对一绑定。页面只按该 `task_id` 等待 Artifact，完成后用 `destinationPath` 直接写入预选位置，不再弹第二次 Save As，也不自动打开任务中心。运行中绑定保存在 Renderer session store；授权失效时失败关闭，Artifact 继续留在 Task Center。
 - Electron 保存始终流式写入同目录随机 `.part`，核对 Artifact 大小和 SHA-256 后复验目标仍与 Save As 选择时一致，再安全替换并 `stat` 最终文件；只有 Main 返回 `saved` 才显示真实文件名和所选目录。保存失败可重新选择位置并直接下载现有 Artifact，不重建任务。保存后的打开/定位仍只使用 Main 签发的短期 capability；Task Center 的“另存 Artifact”保留为历史任务恢复入口。
 
+设备复制会保留稳定资料与凭据但清空副本主地址，随后打开编辑器要求填写当前局点内唯一的新地址；复制不能绕过数据库唯一约束。
+
 ## 厂商、角色和 Command Profile 边界
 
 - 当前设备详情能够展示已入库的多厂商快照，并由 Python 对 H3C/Comware、Huawei/VRP、ZTE/ZXR10 等平台事实和接口名称做归一化。
-- 通用设备详情刷新允许 H3C `switch` / `mobile_router` + Comware，以及 ZTE `switch` + ZXR10 且命中可执行 Command Profile 的组合。
-- 当前唯一稳定 Operation ID 是 `device.inventory.collect`；对应资源为 `resources/device_command_profiles.json`，已登记的通用只读 Profile 包括 `h3c.comware.switch.generic.device-inventory.v1` 和 `h3c.comware.mobile_router.generic.device-inventory.v1`。
+- 通用设备详情刷新允许 H3C `switch` / `wireless_controller` / `mobile_router` + Comware，以及 ZTE `switch` + ZXR10 且命中可执行 Command Profile 的组合。
+- 当前唯一稳定 Operation ID 是 `device.inventory.collect`；对应资源为 `resources/device_command_profiles.json`，已登记的 H3C 通用只读 Profile 包括 `h3c.comware.switch.generic.device-inventory.v1`、`h3c.comware.wireless_controller.generic.device-inventory.v1` 和 `h3c.comware.mobile_router.generic.device-inventory.v1`。无线控制器 Profile 复用已验证的 Comware 命令、parser/DTO contract 和逐命令失败继续语义，设备角色与 `device_uuid` 均保持不变。
 - 未知或未验证厂商、角色、平台、Profile 必须失败关闭，不能回退执行 H3C 命令。软件版本未知时，也只有厂商、角色、平台精确匹配且资源明确允许的只读通用 Profile 才能执行。
-- H3C AC 的关联信息只读复用 AC Query Service，暂不开放通用设备详情刷新；H3C MR 的关联信息只读复用 Online MR Query Service，基础设备详情刷新使用独立 `mobile_router` Profile，不会把 MR 当作通用交换机执行命令。
+- H3C AC 可执行通用设备详情刷新；FIT-AP 资源、AP/Radio、未认证 AP 和受控动作仍只属于 AC 管理。两类业务可复用同一设备记录，但通用刷新不会调用或复制 AC 专用采集链。H3C MR 的关联信息只读复用 Online MR Query Service，基础设备详情刷新使用独立 `mobile_router` Profile，不会把 MR 当作通用交换机执行命令。
+- 通用 `device.inventory.collect` 保存概览事实、接口、光模块和 LLDP；命令不支持或单项解析失败时保留其他成功结果，并在采集记录中标记 `partial_success`。配置页继续读取 Config Collection 的既有快照，通用详情刷新不擅自增加完整运行配置命令。
 - ZTE ZXR10 设备详情 Profile v3 固定执行版本、接口、VLAN、`show opticalinfo brief` 和两条 LLDP 只读命令，不下发未经确认的关闭分页命令，也不回退执行 H3C `screen-length` / `display` 命令。brief 成功后，仅对其明确为在线的光模块串行追加受 Guard 约束的 `show opticalinfo <safe-interface>`；离线模块跳过，单接口失败保留 brief 并形成 `partial_success`。采集先用 `show version` 确认 C89E 或 59X/5960X-ES，其他 ZXR10 型号在后续命令前失败关闭。
 - ZTE 光模块状态只使用模块返回的 RX/TX 低高阈值和设备原始状态：`N/A`、模块离线、低/高越界分别处理，低阈值采用严格小于；ZTE 不进入通用 `-35 dBm` 无光兜底。detail 有效值按接口覆盖 brief，空值不覆盖；Vendor Name、PN、Rev、SN、模式和阈值来源进入快照及详情弹窗。该 detail 链目前由用户提供的 C89E 现场输出 fixture 和自动测试验证，未在本次开发环境重新连接设备，状态保持 `IMPLEMENTED_UNVERIFIED / REAL_DEVICE_PENDING`；H3C 命令和状态规则不变。
 - ZTE AC 和 ZTE 完整诊断包当前不支持；诊断任务返回“当前型号暂未适配诊断包采集”并记录跳过原因，不影响其他基础采集。Huawei 和其他未知厂商仍失败关闭。

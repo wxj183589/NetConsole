@@ -348,6 +348,33 @@ describe('DeviceDetailPanel mounted interactions', () => {
     expect(mocks.taskStore?.releasePolling).toHaveBeenCalledWith('device-detail-panel')
   })
 
+  it('enables overview and full refresh for a wireless controller with an executable profile', async () => {
+    const wirelessControllerOverview = {
+      ...overview,
+      name: '251-无线控制器-主',
+      device_type: 'AC',
+      platform_facts: { ...overview.platform_facts, role: 'wireless_controller' },
+      command_profile: {
+        ...overview.command_profile,
+        profile_id: 'h3c.comware.wireless_controller.generic.device-inventory.v1',
+      },
+    }
+    const wrapper = mount(DeviceDetailPanel, {
+      props: { deviceUuid: 'wireless-controller-1', mode: 'page', overview: wirelessControllerOverview },
+      global: { directives: { loading: () => undefined }, stubs: elementStubs },
+    })
+    await flushPromises()
+
+    const refreshAll = wrapper.findAll('button').find((button) => button.text() === '刷新全部')
+    const refreshOverview = wrapper.findAll('button').find((button) => button.text() === '刷新概览')
+    expect(refreshAll?.attributes('disabled')).toBeUndefined()
+    expect(refreshOverview?.attributes('disabled')).toBeUndefined()
+    await refreshAll!.trigger('click')
+    await flushPromises()
+    expect(mocks.refreshDeviceDetails).toHaveBeenCalledWith('wireless-controller-1')
+    wrapper.unmount()
+  })
+
   it('fails closed when the backend command profile is not executable', async () => {
     const unsupportedOverview = {
       ...overview,

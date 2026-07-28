@@ -705,7 +705,11 @@ export interface DeviceImportPreview {
   create_count: number
   update_count: number
   conflict_count: number
+  unchanged_count: number
+  not_found_count: number
   detected_encoding: string
+  match_strategy: DeviceImportMatchStrategy
+  write_mode: DeviceImportWriteMode
   columns: string[]
   errors: Array<{
     line: number
@@ -713,10 +717,31 @@ export interface DeviceImportPreview {
     field: string
     raw_value: string
     message: string
+    code: string
   }>
+  rows: DeviceImportRowResult[]
   warnings: string[]
   duplicate_rows: number[]
+  has_hard_errors: boolean
   persistence: 'preview_only'
+}
+
+export type DeviceImportMatchStrategy = 'DEVICE_ID' | 'SITE_PRIMARY_IP' | 'DEVICE_NAME'
+export type DeviceImportWriteMode = 'UPDATE_ONLY' | 'UPSERT'
+export type DeviceImportRowAction = 'CREATE' | 'UPDATE' | 'UNCHANGED' | 'NOT_FOUND' | 'CONFLICT' | 'INVALID'
+
+export interface DeviceImportRowResult {
+  line: number
+  action: DeviceImportRowAction
+  match_strategy: DeviceImportMatchStrategy
+  match_basis: string
+  device_id: number | null
+  device_name: string
+  original_primary_address: string
+  new_primary_address: string
+  message: string
+  error_code: string
+  warnings: string[]
 }
 
 export interface DeviceDeleteToken {

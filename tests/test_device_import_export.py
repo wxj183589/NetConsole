@@ -13,6 +13,7 @@ from netconsole.services.device_import_export import (
     DEVICE_CSV_COLUMNS,
     EXPORT_FIELDS,
     LEGACY_TEMPLATE_FIELDS,
+    PREVIOUS_TEMPLATE_FIELDS,
     TEMPLATE_EXAMPLE_ROWS,
     TEMPLATE_FIELDS,
     DeviceImportExportService,
@@ -566,10 +567,42 @@ def test_atomic_import_applies_explicit_duplicate_address_strategy(tmp_path):
     assert skipped.skipped == 1
     assert len(repository.list()) == 1
 
-    created = service.import_csv_atomic(csv_path, duplicate_strategy="create_new")
-    assert created.created == 1
-    assert created.skipped == 0
-    assert len(repository.list()) == 2
+    with pytest.raises(ValueError, match="第 2 行主用地址已存在"):
+        service.import_csv_atomic(csv_path, duplicate_strategy="create_new")
+    assert len(repository.list()) == 1
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [LEGACY_TEMPLATE_FIELDS, PREVIOUS_TEMPLATE_FIELDS],
+    ids=["legacy-21-columns", "previous-28-columns"],
+)
+def test_legacy_import_templates_cannot_bypass_normalized_address_uniqueness(
+    tmp_path,
+    headers,
+):
+    repository, _groups, service = make_group_service(tmp_path)
+    repository.create(Device(name="Existing", primary_address="2001:db8::1"))
+    source = tmp_path / f"duplicate-{len(headers)}.csv"
+    values = {field: "" for field in headers}
+    values.update(
+        {
+            "设备名称": "Duplicate",
+            "主用地址": "2001:0db8:0:0:0:0:0:1",
+            "协议": "SSH",
+            "端口": "22",
+            "厂商": "H3C",
+            "设备类型": "SW",
+        }
+    )
+    write_rows(source, [headers, [values[field] for field in headers]])
+
+    preview = service.preview_csv(source)
+    assert preview.conflict_count == 1
+    assert preview.duplicate_rows == (2,)
+    with pytest.raises(ValueError, match="第 2 行主用地址已存在：2001:db8::1"):
+        service.import_csv_atomic(source, duplicate_strategy="create_new")
+    assert len(repository.list()) == 1
 
 
 def test_web_device_csv_export_honors_selection_and_omits_credentials(tmp_path):
