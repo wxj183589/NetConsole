@@ -27,6 +27,10 @@ DeviceBatchRefreshStatus = Literal[
     "FAILED",
     "CANCELLED",
 ]
+DeviceImportMatchStrategy = Literal[
+    "LEGACY_APPEND", "DEVICE_ID", "SITE_PRIMARY_IP", "DEVICE_NAME"
+]
+DeviceImportWriteMode = Literal["CREATE_ONLY", "UPDATE_ONLY", "UPSERT"]
 DeviceSecretField = Literal[
     "ssh_password",
     "telnet_password",
@@ -382,6 +386,23 @@ class DeviceImportErrorDTO(ApiModel):
     field: str = ""
     raw_value: str = ""
     message: str
+    code: str = ""
+
+
+class DeviceImportRowResultDTO(ApiModel):
+    line: int
+    action: Literal[
+        "CREATE", "UPDATE", "UNCHANGED", "NOT_FOUND", "CONFLICT", "INVALID"
+    ]
+    match_strategy: DeviceImportMatchStrategy
+    match_basis: str = ""
+    device_id: int | None = None
+    device_name: str = ""
+    original_primary_address: str = ""
+    new_primary_address: str = ""
+    message: str = ""
+    error_code: str = ""
+    warnings: list[str] = Field(default_factory=list)
 
 
 class DeviceImportPreviewDTO(ApiModel):
@@ -397,11 +418,17 @@ class DeviceImportPreviewDTO(ApiModel):
     create_count: int = 0
     update_count: int = 0
     conflict_count: int = 0
+    unchanged_count: int = 0
+    not_found_count: int = 0
     detected_encoding: str = ""
+    match_strategy: DeviceImportMatchStrategy = "LEGACY_APPEND"
+    write_mode: DeviceImportWriteMode = "CREATE_ONLY"
     columns: list[str] = Field(default_factory=list)
     errors: list[DeviceImportErrorDTO] = Field(default_factory=list)
+    rows: list[DeviceImportRowResultDTO] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     duplicate_rows: list[int] = Field(default_factory=list)
+    has_hard_errors: bool = False
     persistence: Literal["preview_only"] = "preview_only"
 
 

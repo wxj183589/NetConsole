@@ -1,6 +1,9 @@
 ﻿from __future__ import annotations
 
 import sqlite3
+import uuid
+from contextlib import closing
+from datetime import datetime
 from pathlib import Path
 
 from netconsole.core.device_credential_store import (
@@ -8,13 +11,18 @@ from netconsole.core.device_credential_store import (
     repair_device_credential_states,
 )
 from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal
+from netconsole.models.device_address import InvalidDeviceAddressError, normalize_ip_address
 
 
-CURRENT_SCHEMA_VERSION = "2026.07.28.zte_interface_vlan_lldp"
+CURRENT_SCHEMA_VERSION = "2026.07.29.device_primary_address_identity"
 
 
 class DatabaseSchemaMismatchError(RuntimeError):
     """Raised when an existing database is not safe for additive schema updates."""
+
+
+class DeviceAddressMigrationError(RuntimeError):
+    """Raised when historical device addresses prevent a safe additive migration."""
 
 
 SCHEMA_METADATA_SCHEMA = """
@@ -39,6 +47,7 @@ CREATE TABLE IF NOT EXISTS devices (
     device_vendor TEXT NOT NULL DEFAULT 'H3C',
     device_type TEXT,
     primary_address TEXT NOT NULL,
+    normalized_primary_address TEXT,
     backup_address TEXT,
     protocol TEXT DEFAULT 'SSH',
     port INTEGER DEFAULT 22,
@@ -79,6 +88,13 @@ CREATE TABLE IF NOT EXISTS devices (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+"""
+
+DEVICE_PRIMARY_ADDRESS_INDEX_SCHEMA = """
+CREATE UNIQUE INDEX IF NOT EXISTS uq_devices_normalized_primary_address
+    ON devices(normalized_primary_address)
+    WHERE normalized_primary_address IS NOT NULL
+      AND normalized_primary_address <> '';
 """
 
 COLLECT_RUNS_SCHEMA = """
@@ -1046,11 +1062,15 @@ class Database:
         conn = self.connect()
         try:
             initialize_sqlite_wal(conn)
+            if existed and self._requires_device_address_migration(conn):
+                self._backup_before_device_address_migration(conn)
             conn.executescript(
                 "\n".join(
                     self._schema_scripts_for_existing_database(conn) if existed else self._all_schema_scripts()
                 )
             )
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
             self._apply_additive_schema_updates(conn)
             repair_device_credential_states(conn)
             self._write_schema_version(conn)
@@ -1070,10 +1090,17 @@ class Database:
     def _schema_scripts_for_existing_database(self, conn: sqlite3.Connection) -> tuple[str, ...]:
         if not self._table_exists(conn, "schema_metadata"):
             raise DatabaseSchemaMismatchError(self._schema_mismatch_message())
-        if self._schema_version(conn) == CURRENT_SCHEMA_VERSION:
+        if (
+            self._schema_version(conn) == CURRENT_SCHEMA_VERSION
+            and not self._requires_device_address_migration(conn)
+        ):
             return self._all_schema_scripts()
         self._assert_additive_update_safe(conn)
-        return self._all_schema_scripts()
+        return self._all_schema_scripts(
+            include_device_address_index=not self._requires_device_address_migration(
+                conn
+            )
+        )
 
     def _assert_additive_update_safe(self, conn: sqlite3.Connection) -> None:
         required_tables = {
@@ -1088,6 +1115,8 @@ class Database:
             raise DatabaseSchemaMismatchError(self._schema_mismatch_message())
 
     def _apply_additive_schema_updates(self, conn: sqlite3.Connection) -> None:
+        if self._requires_device_address_migration(conn):
+            self._apply_device_address_migration(conn)
         interface_columns = {
             "admin_status": "TEXT",
             "physical_status": "TEXT",
@@ -1268,9 +1297,146 @@ class Database:
             if self._table_exists(conn, "devices") and not self._column_exists(conn, "devices", column):
                 conn.execute(f"ALTER {'TABLE'} devices ADD COLUMN {column} {column_type}")
 
+    def _apply_device_address_migration(self, conn: sqlite3.Connection) -> None:
+        if not self._table_exists(conn, "devices"):
+            return
+        if not self._column_exists(conn, "devices", "normalized_primary_address"):
+            conn.execute(
+                "ALTER TABLE devices ADD COLUMN normalized_primary_address TEXT"
+            )
+        rows = conn.execute(
+            """
+            SELECT id, name, primary_address
+            FROM devices
+            ORDER BY id
+            """
+        ).fetchall()
+        normalized_rows: list[tuple[str | None, str, int]] = []
+        by_address: dict[str, list[sqlite3.Row]] = {}
+        invalid: list[sqlite3.Row] = []
+        for row in rows:
+            raw_address = str(row["primary_address"] or "")
+            try:
+                normalized = normalize_ip_address(raw_address)
+            except InvalidDeviceAddressError:
+                invalid.append(row)
+                continue
+            if normalized:
+                by_address.setdefault(normalized, []).append(row)
+            normalized_rows.append((normalized, normalized or "", int(row["id"])))
+        conflicts = {
+            address: values
+            for address, values in by_address.items()
+            if len(values) > 1
+        }
+        if invalid or conflicts:
+            parts: list[str] = []
+            site_name = self._site_name()
+            for row in invalid:
+                parts.append(
+                    f"局点={site_name} 主地址={row['primary_address']} "
+                    f"设备ID={row['id']} 设备名称={row['name']}（非法地址）"
+                )
+            for address, values in conflicts.items():
+                devices = "；".join(
+                    f"设备ID={row['id']} 设备名称={row['name']}" for row in values
+                )
+                parts.append(f"局点={site_name} 主地址={address} {devices}")
+            raise DeviceAddressMigrationError(
+                "设备主地址迁移被历史数据阻止，原数据库未修改："
+                + " | ".join(parts)
+            )
+        conn.executemany(
+            """
+            UPDATE devices
+            SET normalized_primary_address = ?,
+                primary_address = ?
+            WHERE id = ?
+            """,
+            normalized_rows,
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_devices_normalized_primary_address
+            ON devices(normalized_primary_address)
+            WHERE normalized_primary_address IS NOT NULL
+              AND normalized_primary_address <> ''
+            """
+        )
+        integrity = conn.execute("PRAGMA integrity_check").fetchone()
+        if not integrity or str(integrity[0]).casefold() != "ok":
+            raise sqlite3.DatabaseError("设备数据库迁移后完整性校验失败")
+
+    def _requires_device_address_migration(self, conn: sqlite3.Connection) -> bool:
+        if not self._table_exists(conn, "devices"):
+            return False
+        if not self._column_exists(conn, "devices", "normalized_primary_address"):
+            return True
+        index = conn.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'index'
+              AND name = 'uq_devices_normalized_primary_address'
+            LIMIT 1
+            """
+        ).fetchone()
+        if index is None:
+            return True
+        return conn.execute(
+            """
+            SELECT 1
+            FROM devices
+            WHERE COALESCE(normalized_primary_address, '') <>
+                  CASE
+                      WHEN TRIM(COALESCE(primary_address, '')) = '' THEN ''
+                      ELSE TRIM(primary_address)
+                  END
+            LIMIT 1
+            """
+        ).fetchone() is not None
+
+    def _backup_before_device_address_migration(
+        self, source: sqlite3.Connection
+    ) -> Path:
+        if self.path.parent.name.casefold() == "db":
+            backup_dir = (
+                self.path.parent.parent
+                / "files"
+                / "backups"
+                / "database-migrations"
+            )
+        else:
+            backup_dir = self.path.parent / "backups" / "database-migrations"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        target = backup_dir / (
+            "devices-before-primary-address-"
+            f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-"
+            f"{uuid.uuid4().hex[:8]}.sqlite"
+        )
+        try:
+            with closing(connect_sqlite(target, foreign_keys=True)) as destination:
+                source.backup(destination)
+                integrity = destination.execute("PRAGMA integrity_check").fetchone()
+                if not integrity or str(integrity[0]).casefold() != "ok":
+                    raise sqlite3.DatabaseError("设备数据库迁移备份完整性校验失败")
+                destination.commit()
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+        return target
+
+    def _site_name(self) -> str:
+        try:
+            return self.path.parent.parent.name or "unknown"
+        except IndexError:
+            return "unknown"
+
     @staticmethod
-    def _all_schema_scripts() -> tuple[str, ...]:
-        return (
+    def _all_schema_scripts(
+        *, include_device_address_index: bool = True
+    ) -> tuple[str, ...]:
+        scripts = [
             SCHEMA_METADATA_SCHEMA,
             DEVICES_SCHEMA,
             DEVICE_CREDENTIAL_STATE_SCHEMA,
@@ -1307,7 +1473,10 @@ class Database:
             AC_FIT_AP_LLDP_HISTORY_SCHEMA,
             AC_FIT_AP_RADIO_HISTORY_SCHEMA,
             CONFIG_SNAPSHOTS_SCHEMA,
-        )
+        ]
+        if include_device_address_index:
+            scripts.insert(2, DEVICE_PRIMARY_ADDRESS_INDEX_SCHEMA)
+        return tuple(scripts)
 
     def _write_schema_version(self, conn: sqlite3.Connection) -> None:
         now = __import__("datetime").datetime.now().isoformat(timespec="seconds")

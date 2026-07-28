@@ -55,6 +55,10 @@ import type {
   DeviceEditProfileResponse,
   DeviceExternalTerminalSettings,
   DeviceImportPreview,
+  DeviceImportMatchStrategy,
+  DeviceImportRowAction,
+  DeviceImportRowResult,
+  DeviceImportWriteMode,
   DeviceListItem,
   DevicePage,
   DeviceSecretField,
@@ -151,7 +155,9 @@ const importFile = ref<File | null>(null)
 const importFileInput = ref<HTMLInputElement | null>(null)
 const importLoading = ref(false)
 const importPreview = ref<DeviceImportPreview | null>(null)
-const importDuplicateStrategy = ref<'reject' | 'skip' | 'create_new'>('reject')
+const importMatchStrategy = ref<DeviceImportMatchStrategy>('SITE_PRIMARY_IP')
+const importWriteMode = ref<DeviceImportWriteMode>('UPSERT')
+const importActionFilter = ref<'ALL' | DeviceImportRowAction>('ALL')
 const secureCrtVisible = ref(false)
 const secureCrtTemplateFile = ref<File | null>(null)
 const secureCrtTemplateInput = ref<HTMLInputElement | null>(null)
@@ -221,6 +227,16 @@ const importErrorColumns: NcTableColumn<DeviceImportPreview['errors'][number]>[]
   { key: 'raw_value', label: '原始值', valueType: 'text', stretch: 'normal' },
   { key: 'message', label: '错误信息', valueType: 'text', stretch: 'priority' },
 ]
+const importRowColumns: NcTableColumn<DeviceImportRowResult>[] = [
+  { key: 'line', label: 'CSV 行', valueType: 'number', stretch: 'none' },
+  { key: 'action', label: '动作', valueType: 'status', cellKind: 'tag', stretch: 'none' },
+  { key: 'match_basis', label: '匹配依据', valueType: 'text', stretch: 'priority' },
+  { key: 'device_id', label: '设备 ID', valueType: 'number', stretch: 'none' },
+  { key: 'device_name', label: '设备名称', valueType: 'name', stretch: 'normal' },
+  { key: 'original_primary_address', label: '原主地址', valueType: 'ip', stretch: 'normal' },
+  { key: 'new_primary_address', label: '新主地址', valueType: 'ip', stretch: 'normal' },
+  { key: 'message', label: '结果', valueType: 'text', stretch: 'priority' },
+]
 const batchRefreshColumns: NcTableColumn<DeviceBatchRefreshItem>[] = [
   { key: 'device_name', label: '设备', valueType: 'name', stretch: 'priority' },
   { key: 'primary_address', label: '地址', valueType: 'ip', stretch: 'normal' },
@@ -232,6 +248,12 @@ const batchRefreshColumns: NcTableColumn<DeviceBatchRefreshItem>[] = [
   { key: 'error_message', label: '错误信息', valueType: 'text', stretch: 'priority' },
 ]
 const writeForm = reactive<DeviceWriteRequest>({ name: '', primary_address: '', ssh_enabled: true, ssh_port: 22, telnet_enabled: false, telnet_port: 23, snmp_enabled: true, snmp_v2c_enabled: true, snmp_port: 161 })
+const filteredImportRows = computed(() => {
+  const rows = importPreview.value?.rows || []
+  return importActionFilter.value === 'ALL'
+    ? rows
+    : rows.filter((row) => row.action === importActionFilter.value)
+})
 const secretClears = reactive<Record<DeviceSecretField, boolean>>({
   ssh_password: false,
   telnet_password: false,
@@ -1220,10 +1242,11 @@ async function duplicateRow(row: DeviceListItem): Promise<void> {
 
 async function duplicateByUuid(deviceUuid: string): Promise<void> {
   try {
-    if (!await confirm({ type: 'WARNING', title: '复制设备', message: '将复制当前设备及其已配置凭据，并生成新的设备 UUID。是否继续？', confirmText: '确认复制' })) return
-    await duplicateDevice(deviceUuid)
-    ElMessage.success('设备已复制')
+    if (!await confirm({ type: 'WARNING', title: '复制设备', message: '将复制当前设备及其已配置凭据，并清空主地址。复制后请编辑副本填写当前局点内唯一的主地址。', confirmText: '确认复制' })) return
+    const result = await duplicateDevice(deviceUuid)
+    ElMessage.success('设备已复制，副本主地址已清空')
     await loadDevices(true)
+    await openEdit(result.device.device_uuid)
   } catch (cause) {
     if (cause === 'cancel' || cause === 'close') return
     ElMessage.error(errorMessage(cause, '复制设备失败'))
@@ -1315,7 +1338,11 @@ async function runImportPreview(): Promise<void> {
   if (!importFile.value) return
   importLoading.value = true
   try {
-    importPreview.value = await previewDeviceImport(importFile.value)
+    importPreview.value = await previewDeviceImport(
+      importFile.value,
+      importMatchStrategy.value,
+      importWriteMode.value,
+    )
   } catch (cause) {
     ElMessage.error(errorMessage(cause, 'CSV 预览失败'))
   } finally {
@@ -1324,11 +1351,11 @@ async function runImportPreview(): Promise<void> {
 }
 
 async function confirmImport(): Promise<void> {
-  if (!importPreview.value || importPreview.value.errors.length) return
+  if (!importPreview.value || importPreview.value.has_hard_errors) return
   try {
     await presentTasks(
-      [await confirmDeviceImport(importPreview.value.preview_token, importDuplicateStrategy.value)],
-      'CSV 导入任务已提交',
+      [await confirmDeviceImport(importPreview.value.preview_token, 'reject')],
+      importWriteMode.value === 'UPDATE_ONLY' ? '设备批量更新任务已提交' : 'CSV 导入任务已提交',
     )
     closeImportDialog()
   } catch (cause) {
@@ -1338,6 +1365,18 @@ async function confirmImport(): Promise<void> {
 
 function chooseImportFile(): void {
   importFileInput.value?.click()
+}
+
+function openImportDialog(writeMode: DeviceImportWriteMode): void {
+  importWriteMode.value = writeMode
+  importMatchStrategy.value = 'SITE_PRIMARY_IP'
+  importActionFilter.value = 'ALL'
+  importPreview.value = null
+  importVisible.value = true
+}
+
+function invalidateImportPreview(): void {
+  importPreview.value = null
 }
 
 function onImportFileChange(event: Event): void {
@@ -1351,7 +1390,9 @@ function closeImportDialog(): void {
   importVisible.value = false
   importFile.value = null
   importPreview.value = null
-  importDuplicateStrategy.value = 'reject'
+  importMatchStrategy.value = 'SITE_PRIMARY_IP'
+  importWriteMode.value = 'UPSERT'
+  importActionFilter.value = 'ALL'
   if (importFileInput.value) importFileInput.value.value = ''
 }
 
@@ -1839,7 +1880,8 @@ function errorMessage(cause: unknown, fallback: string): string {
       <el-button data-testid="batch-refresh-details" :icon="Refresh" :loading="batchRefreshSubmitting" :disabled="!selectedUuids.length || batchRefreshSubmitting || !isFeatureEnabled('web.device_management_collect')" @click="refreshSelectedDetails">批量更新详情</el-button>
       <span v-if="batchRefreshSubmitting">{{ batchRefreshProgressText || `正在更新 0/${batchRefreshTargetCount} 台设备` }}</span>
       <el-button :icon="Download" :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management_collect')" @click="downloadDiagnostics">下载诊断</el-button>
-      <el-button :icon="Upload" :disabled="!isFeatureEnabled('web.device_management_import')" @click="importVisible = true">导入 CSV</el-button>
+      <el-button :icon="Upload" :disabled="!isFeatureEnabled('web.device_management_import')" @click="openImportDialog('UPDATE_ONLY')">批量更新设备</el-button>
+      <el-button :icon="Upload" :disabled="!isFeatureEnabled('web.device_management_import')" @click="openImportDialog('UPSERT')">导入 CSV</el-button>
       <el-button
         data-testid="device-export-template"
         :icon="Download"
@@ -2119,8 +2161,23 @@ function errorMessage(cause: unknown, fallback: string): string {
       <template #footer><el-button @click="groupAssignVisible = false">取消</el-button><el-button type="primary" :disabled="!isFeatureEnabled('web.device_management_write')" @click="saveGroupAssignment">确认</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="importVisible" title="CSV 导入预览 / 确认" width="min(680px, 94vw)" @close="closeImportDialog">
-      <el-alert title="先预览再确认；服务端校验 SHA-256 并以单事务提交。备份只供人工恢复，任务失败不会覆盖同期数据。" type="info" show-icon :closable="false" />
+    <el-dialog v-model="importVisible" :title="importWriteMode === 'UPDATE_ONLY' ? '批量更新设备预检' : 'CSV 导入预检'" width="min(1180px, 96vw)" @close="closeImportDialog">
+      <el-alert title="主地址在当前局点内必须唯一，不同局点可以使用相同地址。确认前会重新预检并以单事务提交。" type="info" show-icon :closable="false" />
+      <el-form label-position="top" class="import-options">
+        <el-form-item label="匹配方式">
+          <el-select v-model="importMatchStrategy" style="width: 100%" @change="invalidateImportPreview">
+            <el-option label="按主 IP 更新（当前局点内唯一）" value="SITE_PRIMARY_IP" />
+            <el-option label="按设备 ID 更新" value="DEVICE_ID" />
+            <el-option label="按设备名称更新" value="DEVICE_NAME" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="写入模式">
+          <el-radio-group v-model="importWriteMode" @change="invalidateImportPreview">
+            <el-radio-button value="UPDATE_ONLY">仅更新</el-radio-button>
+            <el-radio-button value="UPSERT">更新或新增</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+      </el-form>
       <input ref="importFileInput" class="visually-hidden" type="file" accept=".csv,text/csv" @change="onImportFileChange" />
       <div class="import-file-picker"><el-button :disabled="!isFeatureEnabled('web.device_management_import')" @click="chooseImportFile">选择 CSV 文件</el-button><span>{{ importFile?.name || '尚未选择文件' }}</span></div>
       <div v-if="importPreview" class="import-summary">
@@ -2131,7 +2188,12 @@ function errorMessage(cause: unknown, fallback: string): string {
           <el-descriptions-item label="无效">{{ importPreview.invalid_rows }}</el-descriptions-item>
           <el-descriptions-item label="新华三 H3C">{{ importPreview.vendor_summary.H3C || 0 }}</el-descriptions-item>
           <el-descriptions-item label="中兴 ZTE">{{ importPreview.vendor_summary.ZTE || 0 }}</el-descriptions-item>
-          <el-descriptions-item label="新增 / 更新">{{ importPreview.create_count }} / {{ importPreview.update_count }}</el-descriptions-item>
+          <el-descriptions-item label="新增">{{ importPreview.create_count }}</el-descriptions-item>
+          <el-descriptions-item label="更新">{{ importPreview.update_count }}</el-descriptions-item>
+          <el-descriptions-item label="无变化">{{ importPreview.unchanged_count }}</el-descriptions-item>
+          <el-descriptions-item label="未匹配">{{ importPreview.not_found_count }}</el-descriptions-item>
+          <el-descriptions-item label="冲突">{{ importPreview.conflict_count }}</el-descriptions-item>
+          <el-descriptions-item label="失败">{{ importPreview.invalid_rows }}</el-descriptions-item>
         </el-descriptions>
         <NcDataTable
           v-if="importPreview.errors.length"
@@ -2144,9 +2206,29 @@ function errorMessage(cause: unknown, fallback: string): string {
           empty-text="没有导入错误"
         />
         <el-alert v-for="item in importPreview.warnings" :key="item" :title="item" type="warning" :closable="false" />
-        <el-form-item v-if="importPreview.duplicate_rows.length" label="重复地址"><el-select v-model="importDuplicateStrategy" style="width:100%"><el-option label="拒绝导入（安全默认）" value="reject" /><el-option label="跳过重复行" value="skip" /><el-option label="仍新增为独立设备" value="create_new" /></el-select><span class="field-warning">涉及 CSV 行：{{ importPreview.duplicate_rows.join('、') }}</span></el-form-item>
+        <div class="import-result-toolbar">
+          <span>逐行结果</span>
+          <el-select v-model="importActionFilter" style="width: 180px">
+            <el-option label="全部" value="ALL" />
+            <el-option label="新增" value="CREATE" />
+            <el-option label="更新" value="UPDATE" />
+            <el-option label="无变化" value="UNCHANGED" />
+            <el-option label="未匹配" value="NOT_FOUND" />
+            <el-option label="冲突" value="CONFLICT" />
+            <el-option label="失败" value="INVALID" />
+          </el-select>
+        </div>
+        <NcDataTable
+          table-id="device-import-row-results"
+          route-key="/devices/import-row-results"
+          :data="filteredImportRows"
+          :columns="importRowColumns"
+          row-key="line"
+          :max-height="360"
+          empty-text="没有逐行结果"
+        />
       </div>
-      <template #footer><el-button @click="closeImportDialog">关闭</el-button><el-button :loading="importLoading" :disabled="!importFile || !isFeatureEnabled('web.device_management_import')" @click="runImportPreview">预览</el-button><el-button type="primary" :disabled="!importPreview || !!importPreview.errors.length || !isFeatureEnabled('web.device_management_import')" @click="confirmImport">确认导入</el-button></template>
+      <template #footer><el-button @click="closeImportDialog">关闭</el-button><el-button :loading="importLoading" :disabled="!importFile || !isFeatureEnabled('web.device_management_import')" @click="runImportPreview">预览</el-button><el-button type="primary" :disabled="!importPreview || importPreview.has_hard_errors || !isFeatureEnabled('web.device_management_import')" @click="confirmImport">{{ importWriteMode === 'UPDATE_ONLY' ? '确认更新' : '确认导入' }}</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="secureCrtVisible" title="生成 SecureCRT 会话" width="min(560px, 94vw)">
@@ -2211,6 +2293,9 @@ function errorMessage(cause: unknown, fallback: string): string {
 .device-context-menu button:disabled { color: var(--el-text-color-disabled); cursor: not-allowed; }
 .import-summary { margin-top: 16px; overflow-wrap: anywhere; }
 .import-file-picker { display: flex; align-items: center; gap: 12px; margin-top: 18px; }
+.import-options { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(260px, 1fr); gap: 16px; margin-top: 16px; }
+.import-result-toolbar { display: flex; align-items: center; justify-content: space-between; margin: 12px 0 8px; }
+@media (max-width: 760px) { .import-options { grid-template-columns: 1fr; } }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (max-width: 1280px) { .filters { grid-template-columns: repeat(3, minmax(150px, 1fr)); } }
 @media (max-width: 760px) { .device-management { height: auto; min-height: 100%; overflow: visible; } .table-card { min-height: 55dvh; flex: none; } .filters, .form-grid, .form-grid.two-columns, .export-scope-summary { grid-template-columns: 1fr; } .page-heading { align-items: flex-start; } }

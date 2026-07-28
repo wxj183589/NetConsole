@@ -20,6 +20,8 @@ import type {
   DeviceFormConnectionTestRequest,
   DeviceGroup,
   DeviceImportPreview,
+  DeviceImportMatchStrategy,
+  DeviceImportWriteMode,
   DeviceHistoryPage,
   DeviceOverviewResponse,
   DeviceListQuery,
@@ -209,9 +211,15 @@ export function getDeviceHistory(
   return apiRequest<DeviceHistoryPage>(`/api/device-management/devices/${encodeURIComponent(deviceUuid)}/history?${params}`)
 }
 
-export function previewDeviceImport(file: File): Promise<DeviceImportPreview> {
+export function previewDeviceImport(
+  file: File,
+  matchStrategy: DeviceImportMatchStrategy,
+  writeMode: DeviceImportWriteMode,
+): Promise<DeviceImportPreview> {
   const form = new FormData()
   form.append('file', file)
+  form.append('match_strategy', matchStrategy)
+  form.append('write_mode', writeMode)
   return apiRequest<DeviceImportPreview>('/api/device-management/imports/preview', { method: 'POST', body: form })
 }
 

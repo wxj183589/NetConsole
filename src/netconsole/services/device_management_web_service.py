@@ -62,6 +62,7 @@ from netconsole.models.api.device_management import (
     DeviceImportConfirmRequestDTO,
     DeviceImportErrorDTO,
     DeviceImportPreviewDTO,
+    DeviceImportRowResultDTO,
     DeviceSecureCrtExportRequestDTO,
     DeviceTaskBatchDTO,
     DeviceTaskReferenceDTO,
@@ -690,7 +691,14 @@ class DeviceManagementWebService:
         source = self._require_device(device_repository, device_uuid)
         record = source.to_record()
         record.update(
-            {"id": None, "device_uuid": None, "created_at": None, "updated_at": None}
+            {
+                "id": None,
+                "device_uuid": None,
+                "primary_address": "",
+                "normalized_primary_address": None,
+                "created_at": None,
+                "updated_at": None,
+            }
         )
         if str(record.get("name") or "").strip():
             record["name"] = f"{str(record['name']).strip()}-副本"
@@ -1056,8 +1064,25 @@ class DeviceManagementWebService:
             "未注册独立光模块刷新 Operation；请使用 device.inventory.collect"
         )
 
-    def preview_import(self, filename: str, stream: BinaryIO) -> DeviceImportPreviewDTO:
+    def preview_import(
+        self,
+        filename: str,
+        stream: BinaryIO,
+        *,
+        match_strategy: str | None = None,
+        write_mode: str | None = None,
+    ) -> DeviceImportPreviewDTO:
         site = self.current_site_id()
+        actual_match_strategy = (
+            str(match_strategy).strip().upper()
+            if match_strategy is not None
+            else "LEGACY_APPEND"
+        )
+        actual_write_mode = (
+            str(write_mode).strip().upper()
+            if write_mode is not None
+            else "CREATE_ONLY"
+        )
         self._cleanup_expired_import_previews(site)
         source_name = self._validate_upload_filename(filename)
         staged_path, source_sha256 = self._stage_csv_upload(site, source_name, stream)
@@ -1074,11 +1099,19 @@ class DeviceManagementWebService:
         create_count = 0
         update_count = 0
         conflict_count = 0
+        unchanged_count = 0
+        not_found_count = 0
+        row_results: list[DeviceImportRowResultDTO] = []
+        has_hard_errors = False
         detected_encoding = ""
         try:
             repository, groups, _ = self._repositories(site)
             importer = DeviceImportExportService(repository, groups)
-            preview = importer.preview_csv(staged_path)
+            preview = importer.preview_csv(
+                staged_path,
+                match_strategy=actual_match_strategy,
+                write_mode=actual_write_mode,
+            )
             columns = list(preview.columns)
             row_count = preview.total_rows
             total_rows = preview.total_rows
@@ -1089,6 +1122,9 @@ class DeviceManagementWebService:
             create_count = preview.create_count
             update_count = preview.update_count
             conflict_count = preview.conflict_count
+            unchanged_count = preview.unchanged_count
+            not_found_count = preview.not_found_count
+            has_hard_errors = preview.has_hard_errors
             detected_encoding = preview.detected_encoding
             duplicate_rows = list(preview.duplicate_rows)
             errors = [
@@ -1098,12 +1134,33 @@ class DeviceManagementWebService:
                     field=item.field,
                     raw_value=item.raw_value,
                     message=item.message,
+                    code=item.code,
                 )
                 for item in preview.errors
             ]
+            row_results = [
+                DeviceImportRowResultDTO(
+                    line=item.line,
+                    action=item.action,
+                    match_strategy=item.match_strategy,
+                    match_basis=item.match_basis,
+                    device_id=item.device_id,
+                    device_name=item.device_name,
+                    original_primary_address=item.original_primary_address,
+                    new_primary_address=item.new_primary_address,
+                    message=item.message,
+                    error_code=item.error_code,
+                    warnings=list(item.warnings),
+                )
+                for item in preview.row_results
+            ]
             if duplicate_rows:
                 warnings.append(
-                    f"有 {len(duplicate_rows)} 行主用地址已存在，请选择重复处理策略"
+                    (
+                        f"有 {len(duplicate_rows)} 行主用地址已存在，可拒绝或跳过重复行"
+                        if actual_match_strategy == "LEGACY_APPEND"
+                        else f"有 {len(duplicate_rows)} 行主用地址冲突，请修正后重新预检"
+                    )
                 )
         except Exception as exc:
             errors.append(
@@ -1112,6 +1169,7 @@ class DeviceManagementWebService:
                 )
             )
             invalid_rows = total_rows
+            has_hard_errors = True
         token = secrets.token_urlsafe(32)
         self._write_import_preview(
             site,
@@ -1136,7 +1194,13 @@ class DeviceManagementWebService:
                 "create_count": create_count,
                 "update_count": update_count,
                 "conflict_count": conflict_count,
+                "unchanged_count": unchanged_count,
+                "not_found_count": not_found_count,
+                "rows": [item.model_dump(mode="json") for item in row_results],
+                "has_hard_errors": has_hard_errors,
                 "detected_encoding": detected_encoding,
+                "match_strategy": actual_match_strategy,
+                "write_mode": actual_write_mode,
             },
         )
         return DeviceImportPreviewDTO(
@@ -1152,11 +1216,17 @@ class DeviceManagementWebService:
             create_count=create_count,
             update_count=update_count,
             conflict_count=conflict_count,
+            unchanged_count=unchanged_count,
+            not_found_count=not_found_count,
             detected_encoding=detected_encoding,
+            match_strategy=actual_match_strategy,
+            write_mode=actual_write_mode,
             columns=columns,
             errors=errors,
+            rows=row_results,
             warnings=warnings,
             duplicate_rows=duplicate_rows,
+            has_hard_errors=has_hard_errors,
         )
 
     def confirm_import(
@@ -1198,6 +1268,8 @@ class DeviceManagementWebService:
                     "source_sha256": preview.get("sha256"),
                     "backup_reference": str(backup_path),
                     "duplicate_strategy": payload.duplicate_strategy,
+                    "match_strategy": preview.get("match_strategy", "LEGACY_APPEND"),
+                    "write_mode": preview.get("write_mode", "CREATE_ONLY"),
                 },
             )
             job = BackgroundJob(
@@ -1213,6 +1285,8 @@ class DeviceManagementWebService:
                     "app_root": str(self.paths.app_root),
                     "data_root": str(self.paths.data_root),
                     "duplicate_strategy": payload.duplicate_strategy,
+                    "match_strategy": preview.get("match_strategy", "LEGACY_APPEND"),
+                    "write_mode": preview.get("write_mode", "CREATE_ONLY"),
                     "_cancel_grace_ms": 1000,
                 },
             )
@@ -4084,10 +4158,16 @@ def run_device_csv_import(context: JobContext) -> dict[str, object]:
         duplicate_strategy=str(
             context.params.get("duplicate_strategy") or "create_new"
         ),
+        match_strategy=str(
+            context.params.get("match_strategy") or "LEGACY_APPEND"
+        ),
+        write_mode=str(context.params.get("write_mode") or "CREATE_ONLY"),
     )
     context.progress("device_csv_import", 1, 1, "设备 CSV 导入完成")
     return {
         "created": result.created,
+        "updated": result.updated,
+        "unchanged": result.unchanged,
         "skipped": result.skipped,
         "groups_created": result.groups_created,
         "errors": list(result.errors),

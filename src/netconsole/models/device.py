@@ -74,6 +74,7 @@ class Device:
     device_vendor: str = "H3C"
     device_type: str | None = "SW"
     primary_address: str = ""
+    normalized_primary_address: str | None = None
     backup_address: str | None = None
     protocol: str | None = None
     port: int | None = 22

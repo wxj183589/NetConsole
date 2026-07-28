@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from netconsole.models.device import (
     normalize_device_vendor,
     validate_device_vendor_type,
 )
+from netconsole.models.device_address import normalize_ip_address
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.utils.text_encoding import FILE_ENCODING_ERROR, TEXT_ENCODINGS
@@ -41,7 +43,7 @@ LEGACY_TEMPLATE_FIELDS = [
     "备注",
 ]
 
-DEVICE_CSV_COLUMNS = [
+PREVIOUS_TEMPLATE_FIELDS = [
     *LEGACY_TEMPLATE_FIELDS[:-1],
     "SNMP启用",
     "SNMPv1",
@@ -52,12 +54,17 @@ DEVICE_CSV_COLUMNS = [
     "SNMP重试",
     LEGACY_TEMPLATE_FIELDS[-1],
 ]
+DEVICE_CSV_COLUMNS = [
+    *PREVIOUS_TEMPLATE_FIELDS,
+    "设备ID",
+    "原主用地址",
+]
 TEMPLATE_FIELDS = DEVICE_CSV_COLUMNS
 
 TEMPLATE_EXAMPLE_ROWS = [
-    ["核心交换机-示例", "192.168.1.1", "", "SSH", "22", "admin", "Admin@123", "H3C", "SW", "COCC", "控制中心", "否", "", "", "", "", "", "", "", "", "是", "否", "是", "161", "public", "2000", "1", "SSH设备示例"],
-    ["无线控制器-示例", "192.168.1.10", "192.168.2.10", "SSH", "22", "admin", "Admin@123", "H3C", "AC", "COCC", "控制中心", "是", "10.0.0.10", "22", "jump", "Jump@123", "", "", "", "", "是", "是", "是", "161", "public", "2000", "1", "主备地址+隧道示例"],
-    ["列车01-MR-CT", "10.122.1.249", "10.122.89.101", "SSH", "22", "admin", "Admin@123", "H3C", "MR", "车载-MR", "01车车头", "否", "", "", "", "", "", "", "", "", "是", "否", "是", "161", "public", "2000", "1", "车载 MR 示例"],
+    ["核心交换机-示例", "192.168.1.1", "", "SSH", "22", "admin", "Admin@123", "H3C", "SW", "COCC", "控制中心", "否", "", "", "", "", "", "", "", "", "是", "否", "是", "161", "public", "2000", "1", "SSH设备示例", "", ""],
+    ["无线控制器-示例", "192.168.1.10", "192.168.2.10", "SSH", "22", "admin", "Admin@123", "H3C", "AC", "COCC", "控制中心", "是", "10.0.0.10", "22", "jump", "Jump@123", "", "", "", "", "是", "是", "是", "161", "public", "2000", "1", "主备地址+隧道示例", "", ""],
+    ["列车01-MR-CT", "10.122.1.249", "10.122.89.101", "SSH", "22", "admin", "Admin@123", "H3C", "MR", "车载-MR", "01车车头", "否", "", "", "", "", "", "", "", "", "是", "否", "是", "161", "public", "2000", "1", "车载 MR 示例", "", ""],
 ]
 
 TEMPLATE_FIELD_MAP = {
@@ -97,6 +104,8 @@ TEMPLATE_FIELD_MAP = {
     "SNMP超时毫秒": "snmp_timeout_ms",
     "SNMP重试": "snmp_retries",
     "备注": "remark",
+    "设备ID": "device_id",
+    "原主用地址": "original_primary_address",
 }
 
 EXPORT_FIELDS = DEVICE_CSV_COLUMNS
@@ -137,6 +146,8 @@ class ImportResult:
     skipped: int
     errors: list[str]
     groups_created: int = 0
+    updated: int = 0
+    unchanged: int = 0
 
 
 @dataclass(frozen=True)
@@ -146,6 +157,22 @@ class ImportPreviewError:
     field: str
     raw_value: str
     message: str
+    code: str = ""
+
+
+@dataclass(frozen=True)
+class ImportPreviewRowResult:
+    line: int
+    action: str
+    match_strategy: str
+    match_basis: str
+    device_id: int | None
+    device_name: str
+    original_primary_address: str
+    new_primary_address: str
+    message: str = ""
+    error_code: str = ""
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -162,6 +189,10 @@ class ImportPreviewResult:
     columns: tuple[str, ...]
     duplicate_rows: tuple[int, ...]
     detected_encoding: str
+    unchanged_count: int = 0
+    not_found_count: int = 0
+    row_results: tuple[ImportPreviewRowResult, ...] = ()
+    has_hard_errors: bool = False
 
 
 class DeviceImportExportService:
@@ -170,30 +201,7 @@ class DeviceImportExportService:
         self.group_repository = group_repository
 
     def import_csv(self, path: Path) -> ImportResult:
-        try:
-            validate_csv_import(
-                path,
-                expected_module="devices",
-                required_headers=LEGACY_TEMPLATE_FIELDS,
-                allow_legacy=True,
-                allow_header_only=True,
-            )
-        except ImportValidationError as exc:
-            if "编码" in str(exc):
-                raise ValueError(CSV_ENCODING_ERROR) from exc
-            raise
-        rows = self._read_csv_rows(Path(path))
-        if not rows:
-            return ImportResult(created=0, skipped=0, errors=[])
-
-        headers = [header.strip() for header in rows[0]]
-        mode = self._detect_mode(headers)
-        mapped_rows = [
-            (line_number, self._map_row(headers, values, mode))
-            for line_number, values in enumerate(rows[1:], start=2)
-        ]
-        self._validate_all_rows(mapped_rows)
-        return self._import_rows(mapped_rows)
+        return self.import_csv_atomic(path, duplicate_strategy="reject")
 
     def import_csv_atomic(
         self,
@@ -201,9 +209,20 @@ class DeviceImportExportService:
         *,
         check_cancelled: Callable[[], None] | None = None,
         duplicate_strategy: str = "create_new",
+        match_strategy: str = "LEGACY_APPEND",
+        write_mode: str = "CREATE_ONLY",
     ) -> ImportResult:
         """全量校验后，在一个 SQLite 事务中写入分组和设备。"""
 
+        if match_strategy != "LEGACY_APPEND":
+            from netconsole.services.device_bulk_import import DeviceBulkImportService
+
+            return DeviceBulkImportService(self).apply_csv_atomic(
+                path,
+                match_strategy=match_strategy,
+                write_mode=write_mode,
+                check_cancelled=check_cancelled,
+            )
         if duplicate_strategy not in {"reject", "skip", "create_new"}:
             raise ValueError("不支持的设备重复处理策略")
 
@@ -241,11 +260,15 @@ class DeviceImportExportService:
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 existing_addresses = {
-                    str(row["primary_address"] or "").strip().casefold()
+                    str(row["normalized_primary_address"] or "")
                     for row in conn.execute(
-                        "SELECT primary_address FROM devices WHERE primary_address IS NOT NULL"
+                        """
+                        SELECT normalized_primary_address
+                        FROM devices
+                        WHERE normalized_primary_address IS NOT NULL
+                          AND normalized_primary_address <> ''
+                        """
                     ).fetchall()
-                    if str(row["primary_address"] or "").strip()
                 }
                 for line_number, source_payload in mapped_rows:
                     if check_cancelled is not None:
@@ -255,15 +278,14 @@ class DeviceImportExportService:
                         for key, value in source_payload.items()
                         if value is not None
                     }
-                    address = str(payload.get("primary_address") or "").strip().casefold()
+                    address = str(payload["normalized_primary_address"])
                     if address in existing_addresses:
-                        if duplicate_strategy == "reject":
-                            raise ValueError(
-                                f"第 {line_number} 行主用地址已存在：{address}"
-                            )
                         if duplicate_strategy == "skip":
                             skipped += 1
                             continue
+                        raise ValueError(
+                            f"第 {line_number} 行主用地址已存在：{address}"
+                        )
                     group_name = str(payload.pop("group_name", "") or "").strip()
                     if group_name and self.group_repository is not None:
                         row = conn.execute(
@@ -288,16 +310,24 @@ class DeviceImportExportService:
                     else:
                         payload.pop("group_id", None)
                     self._apply_defaults(payload)
+                    self._validate_payload(payload)
                     device = Device.from_mapping(payload)
                     device.ensure_device_uuid()
                     record = device.to_record()
                     record.update({"created_at": now, "updated_at": now})
                     record.pop("id", None)
                     columns = list(record)
-                    conn.execute(
-                        f"INSERT INTO devices ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
-                        [record[column] for column in columns],
-                    )
+                    try:
+                        conn.execute(
+                            f"INSERT INTO devices ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                            [record[column] for column in columns],
+                        )
+                    except sqlite3.IntegrityError as exc:
+                        if "normalized_primary_address" in str(exc):
+                            raise ValueError(
+                                f"第 {line_number} 行主用地址已存在：{address}"
+                            ) from exc
+                        raise
                     created += 1
                     existing_addresses.add(address)
                 conn.commit()
@@ -311,7 +341,21 @@ class DeviceImportExportService:
             groups_created=groups_created,
         )
 
-    def preview_csv(self, path: Path) -> ImportPreviewResult:
+    def preview_csv(
+        self,
+        path: Path,
+        *,
+        match_strategy: str = "LEGACY_APPEND",
+        write_mode: str = "CREATE_ONLY",
+    ) -> ImportPreviewResult:
+        if match_strategy != "LEGACY_APPEND":
+            from netconsole.services.device_bulk_import import DeviceBulkImportService
+
+            return DeviceBulkImportService(self).preview_csv(
+                path,
+                match_strategy=match_strategy,
+                write_mode=write_mode,
+            )
         rows, _metadata, detected_encoding = read_validated_csv_rows(Path(path))
         if not rows:
             raise ValueError("文件为空")
@@ -323,9 +367,9 @@ class DeviceImportExportService:
             if any(str(value).strip() for value in values)
         ]
         existing_addresses = {
-            str(device.primary_address or "").strip().casefold()
+            str(device.normalized_primary_address or "")
             for device in self.repository.list()
-            if str(device.primary_address or "").strip()
+            if device.normalized_primary_address
         }
         seen_addresses: set[str] = set()
         errors: list[ImportPreviewError] = []
@@ -367,7 +411,7 @@ class DeviceImportExportService:
                 errors.append(error)
                 continue
             valid_rows += 1
-            address = str(mapped.get("primary_address") or "").strip().casefold()
+            address = str(mapped.get("normalized_primary_address") or "")
             if address in existing_addresses:
                 duplicate_rows.append(line)
 
@@ -396,10 +440,24 @@ class DeviceImportExportService:
         device_name = str(payload.get("name") or "")
         if not device_name:
             return ImportPreviewError(line, "", "设备名称", "", "设备名称必填")
-        address = str(payload.get("primary_address") or "").strip()
-        if not address:
+        raw_address = str(payload.get("primary_address") or "").strip()
+        if not raw_address:
             return ImportPreviewError(line, device_name, "主用地址", "", "主用地址必填")
-        address_key = address.casefold()
+        try:
+            address = normalize_ip_address(raw_address, allow_empty=False)
+        except ValueError as exc:
+            return ImportPreviewError(
+                line,
+                device_name,
+                "主用地址",
+                raw_address,
+                str(exc),
+                code=getattr(exc, "code", "INVALID_PRIMARY_IP"),
+            )
+        assert address is not None
+        payload["primary_address"] = address
+        payload["normalized_primary_address"] = address
+        address_key = address
         if address_key in seen_addresses:
             return ImportPreviewError(
                 line, device_name, "主用地址", address, "主用地址在 CSV 中重复"
@@ -441,7 +499,13 @@ class DeviceImportExportService:
         for line_number, payload in rows:
             if not payload.get("name") or not payload.get("primary_address"):
                 raise ValueError(f"缺少必要字段：第 {line_number} 行设备名称和主用地址必填")
-            address = str(payload.get("primary_address") or "").strip().casefold()
+            address = normalize_ip_address(
+                payload.get("primary_address"),
+                allow_empty=False,
+            )
+            assert address is not None
+            payload["primary_address"] = address
+            payload["normalized_primary_address"] = address
             if address in seen_addresses:
                 raise ValueError(f"第 {line_number} 行主用地址重复：{address}")
             seen_addresses.add(address)
@@ -492,6 +556,10 @@ class DeviceImportExportService:
         mapped = TEMPLATE_FIELD_MAP[field]
         if mapped == "group_name":
             return group_names.get(int(device.group_id or 0), "")
+        if mapped == "device_id":
+            return device.id or ""
+        if mapped == "original_primary_address":
+            return device.primary_address or ""
         if mapped in {
             "tunnel_enabled",
             "snmp_enabled",
@@ -623,6 +691,8 @@ class DeviceImportExportService:
     def _detect_mode(headers: list[str]) -> str:
         if headers == TEMPLATE_FIELDS:
             return "template"
+        if headers == PREVIOUS_TEMPLATE_FIELDS:
+            return "previous_template"
         if headers == LEGACY_TEMPLATE_FIELDS:
             return "legacy_template"
         raise ValueError("当前版本使用全新设备模板，请下载最新模板后重新填写。")

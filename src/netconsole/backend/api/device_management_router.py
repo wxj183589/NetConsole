@@ -67,6 +67,7 @@ from netconsole.models.api.device_detail import (
     DeviceRefreshTaskDTO,
     DeviceTransceiverPageDTO,
 )
+from netconsole.models.device_address import DeviceAddressError
 from netconsole.services.device_management_web_service import DeviceManagementWebService
 from netconsole.services.device_connection_preflight import (
     DeviceConnectionPreflightError,
@@ -510,7 +511,10 @@ def refresh_device_detail(
     dependencies=[Depends(require_feature("web.device_management_import"))],
 )
 def preview_import(
-    request: Request, file: UploadFile = File(...)
+    request: Request,
+    file: UploadFile = File(...),
+    match_strategy: str | None = Form(default=None),
+    write_mode: str | None = Form(default=None),
 ) -> DeviceImportPreviewDTO:
     disposition = file.headers.get("content-disposition", "")
     if any(marker in disposition for marker in ("\\", "/", ":", "\x00")):
@@ -519,7 +523,12 @@ def preview_import(
             detail="上传文件名不得包含本机路径",
         )
     return _query(
-        lambda: _service(request).preview_import(file.filename or "", file.file)
+        lambda: _service(request).preview_import(
+            file.filename or "",
+            file.file,
+            match_strategy=match_strategy,
+            write_mode=write_mode,
+        )
     )
 
 
@@ -918,6 +927,15 @@ def _query(callback):
         except FileNotFoundError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="资源不存在"
+            ) from exc
+        except DeviceAddressError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": exc.details,
+                },
             ) from exc
         except ValueError as exc:
             raise HTTPException(
