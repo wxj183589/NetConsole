@@ -8,7 +8,7 @@ from typing import Callable
 from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.models.mesh_log_models import ImportedLogFile, MeshMrProfile, MeshSwitchEvent, ParseIssue
-from netconsole.parsers.mesh_log_parser import MeshLogParser, make_imported_file, sha256_file
+from netconsole.parsers.mesh_log_parser import MeshLogParser, inspect_mesh_log_path, make_imported_file
 from netconsole.models.mesh_analysis_params import mesh_analysis_params_to_json
 from netconsole.services.mesh_log_analysis_service import (
     PARSER_VERSION,
@@ -27,6 +27,7 @@ class MeshImportResult:
     imported_count: int = 0
     duplicate_count: int = 0
     parsed_record_count: int = 0
+    source_results: list[dict[str, object]] = field(default_factory=list)
 
 
 class MeshImportService:
@@ -54,12 +55,33 @@ class MeshImportService:
         for index, path in enumerate(files, start=1):
             if should_cancel and should_cancel():
                 break
-            digest = sha256_file(path)
-            if repo.has_sha256(digest):
-                info = make_imported_file(path, source_label=profile.display_name, precomputed_hash=digest)
+            metadata = inspect_mesh_log_path(path)
+            duplicate = repo.find_by_content_sha256(
+                metadata.content_sha256,
+                raw_sha256=metadata.raw_sha256,
+            )
+            if duplicate is not None:
+                info = make_imported_file(path, source_label=profile.display_name, precomputed_hash=metadata.raw_sha256)
                 info.status = "duplicate"
                 result.files.append(info)
                 result.duplicate_count += 1
+                result.source_results.append(
+                    {
+                        "result": "duplicate_skipped",
+                        "duplicate_status": "duplicate_same_mr",
+                        "original_filename": path.name,
+                        "raw_sha256": metadata.raw_sha256,
+                        "content_sha256": metadata.content_sha256,
+                        "existing_source_id": int(duplicate["id"]),
+                        "existing_stored_filename": str(
+                            duplicate.get("stored_filename")
+                            or duplicate.get("archived_filename")
+                            or ""
+                        ),
+                        "existing_session_id": f"{profile.mr_id}:{int(duplicate['id'])}",
+                        "existing_profile_id": profile.mr_id,
+                    }
+                )
                 app_logger.log_info("MESH_FILE_DUPLICATE", path.name)
                 continue
 
@@ -67,12 +89,36 @@ class MeshImportService:
                 if progress:
                     progress(file_index, total, lines, parsed, skipped)
 
-            info, records, issues = self.parser.parse_file(path, source_label=profile.display_name, precomputed_hash=digest, should_cancel=should_cancel, progress=on_file_progress)
-            if not records:
+            info, records, issues = self.parser.parse_file(
+                path,
+                source_label=profile.display_name,
+                precomputed_hash=metadata.raw_sha256,
+                should_cancel=should_cancel,
+                progress=on_file_progress,
+            )
+            timestamp_missing = metadata.first_log_timestamp is None
+            if not records and not timestamp_missing:
                 raise ImportValidationError(f"不是 NetConsole 支持的导入文件：{path.name} 未识别到 MESH 记录")
-            info.file_hash = digest
+            if not records:
+                info.status = "timestamp_not_found"
+                info.error_message = "未识别到首个有效日志时间，无法生成日期归档名称。"
+                issues.append(
+                    ParseIssue(
+                        str(path),
+                        0,
+                        "未识别日志时间",
+                        info.error_message,
+                        "",
+                    )
+                )
+            info.file_hash = metadata.raw_sha256
             first_sample = min((record.sample_time for record in records), default=None)
-            archived_path = self.storage.archive_raw_file(profile, path, first_sample)
+            archive = self.storage.archive_raw_file_with_metadata(
+                profile,
+                path,
+                metadata.first_log_timestamp or first_sample,
+            )
+            archived_path = archive.path
             info.archived_path = archived_path
             info.imported_at = datetime.now()
             for record in records:
@@ -88,7 +134,7 @@ class MeshImportService:
             app_logger.log_info("MESH_FILE_IMPORTED", archived_path.name)
             if should_cancel and should_cancel():
                 info.status = "cancelled"
-            repo.insert_file_result(
+            source_file_id = repo.insert_file_result(
                 profile.mr_id,
                 path,
                 archived_path,
@@ -109,19 +155,50 @@ class MeshImportService:
                 [],
                 issues,
                 analysis_params_json=analysis_params_json,
+                raw_sha256=metadata.raw_sha256,
+                content_sha256=metadata.content_sha256,
+                profile_id=profile.mr_id,
+                linked_mr_id=profile.linked_device_uuid or str(profile.linked_device_id or ""),
+                first_log_timestamp=metadata.first_log_timestamp,
+                last_log_timestamp=metadata.last_log_timestamp,
+                log_date=archive.log_date.isoformat() if archive.log_date else "",
+                daily_sequence=archive.daily_sequence,
+                rename_status=archive.rename_status,
+                rename_warning=archive.rename_warning,
+                source_status="imported" if records else "timestamp_not_found",
+            )
+            result.source_results.append(
+                {
+                    "result": "imported" if records else "archived_without_analysis",
+                    "duplicate_status": "new",
+                    "source_id": source_file_id,
+                    "session_id": f"{profile.mr_id}:{source_file_id}",
+                    "profile_id": profile.mr_id,
+                    "original_filename": path.name,
+                    "stored_filename": archive.stored_filename,
+                    "raw_sha256": metadata.raw_sha256,
+                    "content_sha256": metadata.content_sha256,
+                    "first_log_timestamp": metadata.first_log_timestamp.isoformat() if metadata.first_log_timestamp else None,
+                    "last_log_timestamp": metadata.last_log_timestamp.isoformat() if metadata.last_log_timestamp else None,
+                    "log_date": archive.log_date.isoformat() if archive.log_date else None,
+                    "daily_sequence": archive.daily_sequence,
+                    "rename_status": archive.rename_status,
+                    "rename_warning": archive.rename_warning,
+                }
             )
             result.imported_count += 1
             result.parsed_record_count += len(records)
             if progress:
                 progress(index, total, info.lines_read, result.parsed_record_count, info.skipped_count)
-        try:
-            mapped_count = MeshPeerMappingService(self.site_name, self.paths).refresh_repository(repo)
-            if mapped_count:
-                app_logger.log_info("MESH_PEER_MAPPING_REFRESHED", f"{profile.display_name}:{mapped_count}")
-        except Exception as exc:
-            app_logger.log_error("MESH_PEER_MAPPING_REFRESH_FAILED", str(exc))
-        repo.rebuild_derived_analysis(should_cancel=should_cancel)
-        self.storage.refresh_catalog_summary(profile)
+        if result.imported_count:
+            try:
+                mapped_count = MeshPeerMappingService(self.site_name, self.paths).refresh_repository(repo)
+                if mapped_count:
+                    app_logger.log_info("MESH_PEER_MAPPING_REFRESHED", f"{profile.display_name}:{mapped_count}")
+            except Exception as exc:
+                app_logger.log_error("MESH_PEER_MAPPING_REFRESH_FAILED", str(exc))
+            repo.rebuild_derived_analysis(should_cancel=should_cancel)
+            self.storage.refresh_catalog_summary(profile)
         return result
 
     def _validate_files(self, files: list[Path]) -> None:
@@ -135,8 +212,6 @@ class MeshImportService:
                 raise ImportValidationError(f"文件不存在或无法读取：{path}")
             if path.stat().st_size <= 0:
                 raise ImportValidationError(f"文件为空：{path.name}")
-            if not self.parser.is_supported_file(path):
-                raise ImportValidationError(f"不是 NetConsole 支持的导入文件：{path.name} 未识别到 MESH 记录")
 
     def discover_mesh_logs(self, folder: Path, include_txt: bool = False) -> list[Path]:
         if not folder.exists():

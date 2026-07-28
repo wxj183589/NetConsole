@@ -377,7 +377,7 @@ try {
   rmSync(smokeRoot, { recursive: true, force: true })
 }
 
-console.log('Electron packaged smoke passed with frozen timezone data, device database migration/list HTTP 200, ground unattended status HTTP 200, frozen Worker Chinese protocol, no Qt residue, and NOTICE/SBOM metadata.')
+console.log('Electron packaged smoke passed with frozen timezone data, device database migration/list HTTP 200, ground unattended status HTTP 200, MESH import context idempotency and duplicate-safe archive naming, frozen Worker Chinese protocol, no Qt residue, and NOTICE/SBOM metadata.')
 
 function validateFrozenWorkerTextProtocol(dataRoot) {
   const backend = resolve(unpackedRoot, 'resources', 'backend', 'NetConsoleBackend.exe')
@@ -577,6 +577,175 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
           `第 ${attempt} 次无人值守状态响应不符合冻结运行契约：${responseBody}`,
         )
       }
+    }
+    const requestJson = async (path, init = {}, expectedStatus = 200) => {
+      const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+        ...init,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-NetConsole-Session': token,
+          ...(init.headers ?? {}),
+        },
+        signal: AbortSignal.timeout(10_000),
+      })
+      const body = await response.text()
+      if (response.status !== expectedStatus || !(response.headers.get('content-type') ?? '').includes('application/json')) {
+        throw new Error(`MESH smoke 请求失败：${path}, HTTP ${response.status}, body=${body}`)
+      }
+      return JSON.parse(body)
+    }
+    const existingGroups = await requestJson('/api/device-management/groups')
+    const group = existingGroups.find((item) => item.name === '车载-MR') ?? await requestJson(
+      '/api/device-management/groups',
+      {
+        method: 'POST',
+        body: JSON.stringify({ name: '车载-MR' }),
+      },
+      201,
+    )
+    const groupId = Number(group?.id)
+    if (!Number.isInteger(groupId) || groupId <= 0) throw new Error('MESH smoke 未取得车载-MR 分组标识。')
+    for (const [name, address] of [['列车34-MR-CT', '192.0.2.34'], ['列车34-MR-CW', '192.0.2.35']]) {
+      await requestJson('/api/device-management/devices', {
+        method: 'POST',
+        body: JSON.stringify({
+          name,
+          system_name: name,
+          device_type: 'MR',
+          device_vendor: 'H3C',
+          group_id: groupId,
+          primary_address: address,
+          ssh_enabled: true,
+          telnet_enabled: false,
+          snmp_enabled: false,
+        }),
+      }, 201)
+    }
+    const mrs = await requestJson('/api/rail-transit/base-data/mrs?page=1&page_size=200')
+    const mrNames = new Set((mrs.items ?? []).map((item) => String(item.name ?? '')))
+    if (!mrNames.has('列车34-MR-CT') || !mrNames.has('列车34-MR-CW')) {
+      throw new Error(`MESH smoke 基础资料 MR 不完整：${JSON.stringify(mrs)}`)
+    }
+    const profilesBefore = await requestJson('/api/rail-transit/mesh-analysis/profiles')
+    const firstPrepare = await requestJson('/api/rail-transit/mesh-analysis/import-context/prepare', { method: 'POST' })
+    const profilesAfter = await requestJson('/api/rail-transit/mesh-analysis/profiles')
+    const secondPrepare = await requestJson('/api/rail-transit/mesh-analysis/import-context/prepare', { method: 'POST' })
+    const createdProfileCount = profilesAfter.length - profilesBefore.length
+    if (
+      firstPrepare.created_count !== createdProfileCount
+      || createdProfileCount < 2
+      || secondPrepare.created_count !== 0
+      || !Array.isArray(profilesBefore)
+      || profilesAfter.length < 2
+      || !profilesAfter.some((item) => item.display_name === '列车34-MR-CT')
+      || !profilesAfter.some((item) => item.display_name === '列车34-MR-CW')
+    ) {
+      throw new Error(`MESH smoke 导入上下文幂等性失败：${JSON.stringify({ firstPrepare, secondPrepare, profilesAfter })}`)
+    }
+    const ctProfile = profilesAfter.find((item) => item.display_name === '列车34-MR-CT')
+    const meshLog = [
+      '[1] 2026/07/28 00:18:56.311',
+      '[1] Active 30f5-277a-5a2f 2026/07/28 00:18:50 0d 00h 00m 03s 1 36/43 2%/4% 45%/47% 3/1 15/27 60/72060 88/105 0/5000 2/297 314/0 0/93 0/0 0/0 0/0',
+      '',
+    ].join('\n')
+    const previewMeshLog = async () => {
+      const form = new FormData()
+      form.append('files', new Blob([meshLog], { type: 'text/plain' }), 'meshlog.log')
+      const response = await fetch(`http://127.0.0.1:${port}/api/rail-transit/mesh-analysis/import-preview`, {
+        method: 'POST',
+        body: form,
+        headers: { 'X-NetConsole-Session': token },
+        signal: AbortSignal.timeout(10_000),
+      })
+      const body = await response.text()
+      if (response.status !== 200 || !(response.headers.get('content-type') ?? '').includes('application/json')) {
+        throw new Error(`MESH smoke 日志预览失败：HTTP ${response.status}, body=${body}`)
+      }
+      return JSON.parse(body)
+    }
+    const waitForMeshTask = async (taskId) => {
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const snapshot = await requestJson(`/api/online-mr/tasks/${encodeURIComponent(taskId)}`)
+        if (snapshot.status === 'COMPLETED') return snapshot
+        if (['FAILED', 'CANCELLED'].includes(snapshot.status)) {
+          throw new Error(`MESH smoke 导入任务失败：${JSON.stringify(snapshot)}`)
+        }
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 100))
+      }
+      throw new Error('MESH smoke 导入任务等待超时')
+    }
+    const readMeshTaskResult = async (taskId) => {
+      const task = await requestJson(`/api/tasks/${encodeURIComponent(taskId)}`)
+      if (task.status !== 'COMPLETED') {
+        throw new Error(`MESH smoke 通用任务结果状态异常：${JSON.stringify(task)}`)
+      }
+      return task.result ?? {}
+    }
+    const importPreview = await previewMeshLog()
+    const importItem = importPreview.items?.[0]
+    if (
+      !ctProfile?.mr_id
+      || importItem?.stored_filename !== '2026_07_28_1meshlog.log'
+      || importItem?.log_date !== '2026-07-28'
+      || importItem?.duplicate_status !== 'new'
+      || String(importItem?.content_sha256 ?? '').length !== 64
+    ) {
+      throw new Error(`MESH smoke 归档预览不符合契约：${JSON.stringify(importPreview)}`)
+    }
+    const mapping = {
+      member_id: importItem.member_id,
+      train_number: '34',
+      role: 'CT',
+      profile_id: ctProfile.mr_id,
+    }
+    const firstImport = await requestJson('/api/rail-transit/mesh-analysis/bundles/import', {
+      method: 'POST',
+      body: JSON.stringify({
+        preview_id: importPreview.preview_id,
+        mappings: [mapping],
+        explicit_confirmation: true,
+      }),
+    }, 202)
+    const firstImportTask = await waitForMeshTask(firstImport.task_id)
+    const firstImportResult = await readMeshTaskResult(firstImport.task_id)
+    if (
+      firstImportTask.result_summary?.imported_count !== 1
+      || firstImportResult.imported_count !== 1
+      || firstImportResult.source_results?.[0]?.stored_filename !== '2026_07_28_1meshlog.log'
+    ) {
+      throw new Error(`MESH smoke 首次导入结果不符合契约：${JSON.stringify({ firstImportTask, firstImportResult })}`)
+    }
+    const duplicatePreview = await previewMeshLog()
+    const duplicateItem = duplicatePreview.items?.[0]
+    const duplicateProfileState = duplicateItem?.profile_import_states?.find(
+      (state) => state.profile_id === ctProfile.mr_id,
+    )
+    if (
+      duplicateProfileState?.duplicate_status !== 'duplicate_same_mr'
+      || duplicateProfileState?.existing_stored_filename !== '2026_07_28_1meshlog.log'
+      || !duplicateProfileState?.existing_session_id
+    ) {
+      throw new Error(`MESH smoke 重复预览未命中已有来源：${JSON.stringify(duplicatePreview)}`)
+    }
+    const duplicateImport = await requestJson('/api/rail-transit/mesh-analysis/bundles/import', {
+      method: 'POST',
+      body: JSON.stringify({
+        preview_id: duplicatePreview.preview_id,
+        mappings: [{ ...mapping, member_id: duplicateItem.member_id }],
+        explicit_confirmation: true,
+      }),
+    }, 202)
+    const duplicateImportTask = await waitForMeshTask(duplicateImport.task_id)
+    const duplicateImportResult = await readMeshTaskResult(duplicateImport.task_id)
+    const sessionsAfterDuplicate = await requestJson('/api/rail-transit/mesh-analysis/sessions?page=1&page_size=50')
+    if (
+      duplicateImportTask.result_summary?.imported_count !== 0
+      || duplicateImportTask.result_summary?.duplicate_count !== 1
+      || duplicateImportResult.imported_count !== 0
+      || duplicateImportResult.duplicate_count !== 1
+      || sessionsAfterDuplicate.total !== 1
+    ) {
+      throw new Error(`MESH smoke 重复导入防护失败：${JSON.stringify({ duplicateImportTask, duplicateImportResult, sessionsAfterDuplicate })}`)
     }
     child.stdin.write(`${JSON.stringify({ command: 'shutdown' })}\n`)
     await withTimeout(shutdownAck, 10_000, '冻结 Backend 正常停止确认超时')

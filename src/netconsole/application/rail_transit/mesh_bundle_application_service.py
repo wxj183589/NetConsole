@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import ExitStack
-import sqlite3
+import logging
 from tempfile import SpooledTemporaryFile
 from typing import BinaryIO
 import zipfile
 from uuid import uuid4
 
+from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
@@ -23,10 +24,20 @@ from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 
 
+logger = logging.getLogger(__name__)
+
+
 class MeshBundleApplicationError(ValueError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        details: dict[str, object] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.details = details or {}
 
 
 class MeshBundleApplicationService:
@@ -49,9 +60,11 @@ class MeshBundleApplicationService:
 
     def prepare_import_context(self, site_id: str) -> dict[str, object]:
         site_id = self._site(site_id)
+        stage = "open_mesh_catalog"
         try:
             storage = MeshStorageService(site_id, self.paths)
             before = {item.mr_id: item for item in storage.catalog.list_profiles()}
+            stage = "sync_vehicle_mr_profiles"
             vehicle_mrs = []
             page = 1
             while True:
@@ -60,19 +73,57 @@ class MeshBundleApplicationService:
                 if len(vehicle_mrs) >= result.total or not result.items:
                     break
                 page += 1
-            for mr in vehicle_mrs:
-                if mr.device_id is None:
-                    continue
-                storage.ensure_mr_profile_for_asset(
-                    device_id=mr.device_id,
-                    device_uuid=mr.id,
-                    display_name=mr.name,
-                )
-            profiles = storage.catalog.list_profiles()
-        except (OSError, sqlite3.Error, ValueError) as exc:
+        except Exception as exc:
+            logger.exception("MESH 导入上下文准备失败 stage=%s", stage)
+            app_logger.log_error(
+                "MESH_IMPORT_CONTEXT_PREPARE_FAILED",
+                f"stage={stage} error_type={type(exc).__name__}",
+            )
             raise MeshBundleApplicationError(
                 "MESH_IMPORT_CONTEXT_PREPARE_FAILED",
                 "MESH 导入上下文准备失败",
+                details={"stage": stage},
+            ) from exc
+
+        warnings: list[str] = []
+        skipped_count = 0
+        for mr in vehicle_mrs:
+            try:
+                device_id = mr.device_id
+                if device_id is None:
+                    skipped_count += 1
+                    warnings.append("存在未绑定设备的基础资料 MR，已跳过同步。")
+                    continue
+                storage.ensure_mr_profile_for_asset(
+                    device_id=int(device_id),
+                    device_uuid=str(mr.id or "").strip(),
+                    display_name=str(mr.name or "").strip(),
+                )
+            except Exception as exc:
+                skipped_count += 1
+                logger.exception(
+                    "MESH 导入上下文单条 MR 同步失败 mr_id=%s",
+                    str(getattr(mr, "id", "") or "")[:80],
+                )
+                app_logger.log_warning(
+                    "MESH_IMPORT_CONTEXT_PROFILE_SYNC_SKIPPED",
+                    f"error_type={type(exc).__name__}",
+                )
+                warnings.append("一条基础资料 MR 同步失败，已跳过该记录。")
+
+        stage = "list_mesh_profiles"
+        try:
+            profiles = storage.catalog.list_profiles()
+        except Exception as exc:
+            logger.exception("MESH 导入上下文准备失败 stage=%s", stage)
+            app_logger.log_error(
+                "MESH_IMPORT_CONTEXT_PREPARE_FAILED",
+                f"stage={stage} error_type={type(exc).__name__}",
+            )
+            raise MeshBundleApplicationError(
+                "MESH_IMPORT_CONTEXT_PREPARE_FAILED",
+                "MESH 导入上下文准备失败",
+                details={"stage": stage},
             ) from exc
         created = sum(1 for item in profiles if item.mr_id not in before)
         updated = sum(
@@ -91,6 +142,8 @@ class MeshBundleApplicationService:
             "profile_count": len(profiles),
             "created_count": created,
             "updated_count": updated,
+            "skipped_count": skipped_count,
+            "warnings": list(dict.fromkeys(warnings)),
         }
 
     def preview_bundle(
@@ -117,11 +170,29 @@ class MeshBundleApplicationService:
                         "safe_name",
                         "size_bytes",
                         "sha256",
+                        "raw_sha256",
+                        "content_sha256",
+                        "first_log_timestamp",
+                        "last_log_timestamp",
+                        "log_date",
+                        "stored_filename",
+                        "daily_sequence",
+                        "rename_status",
+                        "rename_warning",
+                        "duplicate_status",
+                        "batch_duplicate_of",
+                        "import_allowed",
+                        "existing_source_id",
+                        "existing_stored_filename",
+                        "existing_session_id",
+                        "existing_profile_id",
+                        "existing_profile_name",
                         "train_number",
                         "role",
                         "match_status",
                         "selected_profile_id",
                         "selected_profile_name",
+                        "profile_import_states",
                         "candidates",
                     )
                 }

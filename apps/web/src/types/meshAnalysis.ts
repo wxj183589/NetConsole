@@ -23,13 +23,28 @@ export interface MeshProfile {
 
 export interface MeshImportContextPrepare {
   site_id: string; vehicle_mr_count: number; profile_count: number; created_count: number; updated_count: number
+  skipped_count: number; warnings: string[]
 }
 
 export interface MeshBundleProfileCandidate { profile_id: string; display_name: string }
+export interface MeshBundleProfileImportState {
+  profile_id: string; profile_name: string; stored_filename: string; daily_sequence: number | null
+  rename_status: string; rename_warning: string; duplicate_status: string; import_allowed: boolean
+  existing_source_id: number | null; existing_stored_filename: string; existing_session_id: string
+  existing_profile_id: string; existing_profile_name: string
+}
 export interface MeshBundleMemberPreview {
   member_id: string; original_name: string; safe_name: string; size_bytes: number; sha256: string
+  raw_sha256: string; content_sha256: string
+  first_log_timestamp: string | null; last_log_timestamp: string | null; log_date: string | null
+  stored_filename: string; daily_sequence: number | null; rename_status: string; rename_warning: string
+  duplicate_status: string; batch_duplicate_of: string; import_allowed: boolean
+  existing_source_id: number | null; existing_stored_filename: string; existing_session_id: string
+  existing_profile_id: string; existing_profile_name: string
   train_number: string; role: string; match_status: 'matched' | 'unmatched' | 'ambiguous'
-  selected_profile_id: string; selected_profile_name: string; candidates: MeshBundleProfileCandidate[]
+  selected_profile_id: string; selected_profile_name: string
+  profile_import_states: MeshBundleProfileImportState[]
+  candidates: MeshBundleProfileCandidate[]
 }
 export interface MeshBundlePreview {
   preview_id: string; file_name: string; archive_sha256: string; archive_size_bytes: number
@@ -73,6 +88,9 @@ export interface Page<T> { items: T[]; total: number; page: number; page_size: n
 export interface MeshWarning { code: string; message: string; severity: string }
 export interface MeshRawSource {
   source_file_id: number; source_action_id: string; source_id?: string; source_type: string; name: string; exists: boolean; size_bytes: number; modified_at: string | null
+  original_filename: string; stored_filename: string; raw_sha256: string; content_sha256: string
+  first_log_timestamp: string | null; last_log_timestamp: string | null; log_date: string | null; daily_sequence: number | null
+  rename_status: string; rename_warning: string
   compressed: boolean; tail_available: boolean; recoverable: boolean; recovery_source: string; missing_reason: string
   rebuild_capability: 'ready' | 'recoverable_from_bundle' | 'raw_missing' | 'task_running' | 'unsupported'
   package_name: string; package_sha256: string; bundle_member_id: string

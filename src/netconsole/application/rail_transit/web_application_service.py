@@ -148,9 +148,16 @@ from netconsole.services.rail_transit.vehicle_mr_mapping_io import (
 
 
 class RailTransitWebError(ValueError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        details: dict[str, object] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.details = details or {}
 
 
 class RailTransitWebApplicationService:
@@ -355,17 +362,34 @@ class RailTransitWebApplicationService:
         if not name:
             raise RailTransitWebError("PROFILE_REQUIRED", "请输入 MESH MR 名称")
         linked_device_id = None
+        linked_device_uuid = None
         selected_mr_id = str(linked_mr_id or "").strip()
+        storage = MeshStorageService(site_id, self.paths)
         if selected_mr_id:
             detail = RailTransitBaseDataQueryService(self.paths).get_mr(site_id, selected_mr_id)
             if detail is None or detail.mr.device_id is None:
                 raise RailTransitWebError("PROFILE_DEVICE_NOT_FOUND", "所选基础资料 MR 不存在或未绑定设备")
             linked_device_id = int(detail.mr.device_id)
+            linked_device_uuid = detail.mr.id
+            existing = (
+                storage.catalog.get_by_linked_device_uuid(linked_device_uuid)
+                or storage.catalog.get_by_linked_device_id(linked_device_id)
+            )
+            if existing is not None:
+                raise RailTransitWebError(
+                    "PROFILE_ALREADY_LINKED",
+                    "所选基础资料 MR 已存在内部 MESH 归属",
+                    details={
+                        "profile_id": existing.mr_id,
+                        "display_name": existing.display_name,
+                    },
+                )
         try:
-            return MeshStorageService(site_id, self.paths).create_mr_profile(
+            return storage.create_mr_profile(
                 name,
                 notes=str(notes or "").strip(),
                 linked_device_id=linked_device_id,
+                linked_device_uuid=linked_device_uuid,
             )
         except ValueError as exc:
             raise RailTransitWebError("PROFILE_CONFLICT", str(exc)) from exc

@@ -64,6 +64,24 @@ describe('API client errors', () => {
     })
   })
 
+  it('turns fetch failures into a stable Backend connection error', async () => {
+    const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+
+    await expect(apiRequest('/api/rail-transit/mesh-analysis/import-context/prepare')).rejects.toEqual(
+      expect.objectContaining({
+        message: '无法连接本机 Backend，请重试或查看 Backend 日志。',
+        status: 0,
+        code: 'BACKEND_UNREACHABLE',
+      }),
+    )
+    expect(diagnostic).toHaveBeenCalledWith('API_REQUEST_NETWORK_FAILED', {
+      path: '/api/rail-transit/mesh-analysis/import-context/prepare',
+      error: 'Failed to fetch',
+    })
+    diagnostic.mockRestore()
+  })
+
   it('uses the ephemeral Electron URL and header without changing browser call sites', async () => {
     const token = 'electron-test-token-abcdefghijklmnopqrstuvwxyz'
     const bridge = {

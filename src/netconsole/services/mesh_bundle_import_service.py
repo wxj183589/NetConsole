@@ -3,7 +3,6 @@ from __future__ import annotations
 import gzip
 import gc
 import hashlib
-import io
 import json
 import os
 import re
@@ -21,12 +20,18 @@ from uuid import uuid4
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.mesh_log_models import MeshMrProfile
+from netconsole.parsers.mesh_log_parser import (
+    MeshLogContentMetadata,
+    inspect_mesh_log_path,
+    inspect_mesh_log_stream,
+)
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 from netconsole.repositories.mesh_mr_repository import SCHEMA_VERSION, MeshMrRepository, MeshSchemaRebuildRequired
 from netconsole.repositories.mesh_source_index_repository import MeshSourceIndexRepository
 from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.mesh_parsed_rebuild_service import MeshParsedRebuildService
 from netconsole.services.mesh_log_analysis_service import PARSER_VERSION
+from netconsole.services.mesh_storage_service import suggest_mesh_archive_filename
 
 
 _MESH_MEMBER_RE = re.compile(
@@ -44,7 +49,18 @@ _PREVIEW_TTL_SECONDS = 15 * 60
 _SUBMITTED_PREVIEW_TTL_SECONDS = 60 * 60
 _MAX_PREVIEW_COUNT = 16
 _MAX_PREVIEW_BYTES = 256 * 1024 * 1024
-_MANIFEST_SCHEMA_VERSION = 1
+_MANIFEST_SCHEMA_VERSION = 2
+_CATALOG_SUMMARY_FIELDS = (
+    "earliest_sample_time",
+    "latest_sample_time",
+    "source_file_count",
+    "sample_count",
+    "link_record_count",
+    "session_count",
+    "event_count",
+    "last_import_at",
+    "updated_at",
+)
 
 
 @dataclass(frozen=True)
@@ -55,6 +71,10 @@ class MeshBundleMember:
     expanded_size_bytes: int
     compressed_size_bytes: int
     sha256: str
+    raw_sha256: str
+    content_sha256: str
+    first_log_timestamp: datetime | None
+    last_log_timestamp: datetime | None
     file_order: int
     train_number: str | None
     role: str | None
@@ -62,7 +82,7 @@ class MeshBundleMember:
 
     @property
     def member_id(self) -> str:
-        return self.safe_name
+        return self.original_name
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -73,6 +93,39 @@ class MeshBundleMember:
             "expanded_size_bytes": self.expanded_size_bytes,
             "compressed_size_bytes": self.compressed_size_bytes,
             "sha256": self.sha256,
+            "raw_sha256": self.raw_sha256,
+            "content_sha256": self.content_sha256,
+            "first_log_timestamp": (
+                self.first_log_timestamp.isoformat(timespec="microseconds")
+                if self.first_log_timestamp
+                else None
+            ),
+            "last_log_timestamp": (
+                self.last_log_timestamp.isoformat(timespec="microseconds")
+                if self.last_log_timestamp
+                else None
+            ),
+            "log_date": self.first_log_timestamp.date().isoformat() if self.first_log_timestamp else None,
+            "rename_status": (
+                "renamed_by_log_date_sequence"
+                if Path(self.safe_name).name.casefold() in {"meshlog.log", "meshlog.txt", "meshlog.log.gz", "meshlog.txt.gz"}
+                and self.first_log_timestamp
+                else "timestamp_not_found"
+                if Path(self.safe_name).name.casefold() in {"meshlog.log", "meshlog.txt", "meshlog.log.gz", "meshlog.txt.gz"}
+                else "already_normalized"
+                if re.fullmatch(
+                    r"\d{4}_\d{2}_\d{2}_[1-9]\d*meshlog\.(?:log|txt)(?:\.gz)?",
+                    Path(self.safe_name).name,
+                    re.IGNORECASE,
+                )
+                else "original_name_retained"
+            ),
+            "rename_warning": (
+                "未识别到首个有效日志时间，无法生成日期归档名称。"
+                if Path(self.safe_name).name.casefold() in {"meshlog.log", "meshlog.txt", "meshlog.log.gz", "meshlog.txt.gz"}
+                and self.first_log_timestamp is None
+                else ""
+            ),
             "file_order": self.file_order,
             "train_number": self.train_number,
             "role": self.role,
@@ -88,6 +141,10 @@ class MeshBundleMember:
             expanded_size_bytes=int(value.get("expanded_size_bytes") or value.get("size_bytes") or 0),
             compressed_size_bytes=int(value.get("compressed_size_bytes") or 0),
             sha256=str(value.get("sha256") or ""),
+            raw_sha256=str(value.get("raw_sha256") or value.get("sha256") or ""),
+            content_sha256=str(value.get("content_sha256") or value.get("sha256") or ""),
+            first_log_timestamp=_parse_manifest_datetime(value.get("first_log_timestamp")),
+            last_log_timestamp=_parse_manifest_datetime(value.get("last_log_timestamp")),
             file_order=int(value.get("file_order") or 0),
             train_number=str(value.get("train_number") or "") or None,
             role=str(value.get("role") or "") or None,
@@ -136,6 +193,15 @@ class MeshBundleProfileMatch:
     candidate_profile_ids: tuple[str, ...] = ()
 
 
+@dataclass
+class _ProfilePublishState:
+    production_root: Path
+    rollback_root: Path
+    created_files: list[Path]
+    overwritten_files: list[tuple[Path, Path]]
+    created_directories: list[Path]
+
+
 class MeshBundleImportError(ValueError):
     def __init__(self, code: str, message: str | None = None) -> None:
         super().__init__(message or code)
@@ -146,6 +212,7 @@ class MeshBundleImportService:
     def __init__(self, site_name: str, paths: PathResolver) -> None:
         self.site_name = site_name
         self.paths = paths
+        self._fingerprints_backfilled: set[str] = set()
 
     def inspect(self, archive: Path) -> MeshBundleManifest:
         archive = archive.resolve()
@@ -159,7 +226,6 @@ class MeshBundleImportService:
         archive_sha256 = _sha256_file(archive)
         members: list[MeshBundleMember] = []
         seen_paths: set[str] = set()
-        seen_member_ids: set[str] = set()
         expanded_total = 0
         try:
             with zipfile.ZipFile(archive) as source:
@@ -177,33 +243,32 @@ class MeshBundleImportService:
                     if entry.is_dir():
                         continue
                     normalized_key = normalized.casefold()
-                    safe_name = Path(normalized).name
-                    member_key = safe_name.casefold()
-                    if normalized_key in seen_paths or member_key in seen_member_ids:
-                        raise MeshBundleImportError("DUPLICATE_MEMBER", f"ZIP 成员显示名重复：{entry.filename}")
+                    safe_name = normalized
+                    if normalized_key in seen_paths:
+                        raise MeshBundleImportError("DUPLICATE_MEMBER", f"ZIP 成员路径重复：{entry.filename}")
                     seen_paths.add(normalized_key)
-                    seen_member_ids.add(member_key)
                     if not normalized_key.endswith(_ALLOWED_SUFFIXES):
                         raise MeshBundleImportError("FILE_TYPE_INVALID", f"ZIP 包含不支持的文件：{entry.filename}")
                     if entry.file_size > _MAX_FILE_SIZE:
                         raise MeshBundleImportError("MEMBER_TOO_LARGE", f"单个 MESH 日志超过 20 MiB：{entry.filename}")
                     _validate_ratio(entry.file_size, entry.compress_size, entry.filename)
-                    content = source.read(entry)
-                    if len(content) != entry.file_size:
-                        raise MeshBundleImportError("MEMBER_SIZE_MISMATCH", f"ZIP 成员大小校验失败：{entry.filename}")
-                    expanded_size = _expanded_member_size(safe_name, content, entry.filename)
-                    expanded_total += expanded_size
+                    metadata = _inspect_zip_member(source, entry, safe_name)
+                    expanded_total += metadata.expanded_size_bytes
                     if expanded_total > _MAX_BUNDLE_SIZE:
                         raise MeshBundleImportError("EXPANDED_SIZE_EXCEEDED", "MESH ZIP 解压总大小超过 100 MiB")
-                    train, role, aliases = _infer_mapping(safe_name)
+                    train, role, aliases = _infer_mapping(Path(safe_name).name)
                     members.append(
                         MeshBundleMember(
                             original_name=normalized,
                             safe_name=safe_name,
                             size_bytes=entry.file_size,
-                            expanded_size_bytes=expanded_size,
+                            expanded_size_bytes=metadata.expanded_size_bytes,
                             compressed_size_bytes=entry.compress_size,
-                            sha256=hashlib.sha256(content).hexdigest(),
+                            sha256=metadata.raw_sha256,
+                            raw_sha256=metadata.raw_sha256,
+                            content_sha256=metadata.content_sha256,
+                            first_log_timestamp=metadata.first_log_timestamp,
+                            last_log_timestamp=metadata.last_log_timestamp,
                             file_order=len(members) + 1,
                             train_number=train,
                             role=role,
@@ -260,6 +325,7 @@ class MeshBundleImportService:
             self._enforce_preview_capacity(preview_id)
             match_by_member = {match.member.member_id: match for match in matches}
             items: list[dict[str, object]] = []
+            first_member_by_content: dict[str, str] = {}
             for member in manifest.members:
                 match = match_by_member[member.member_id]
                 candidate_ids = match.candidate_profile_ids
@@ -267,6 +333,36 @@ class MeshBundleImportService:
                     candidate_ids = (match.profile_id,)
                 if not candidate_ids:
                     candidate_ids = tuple(candidates)
+                profile_states = [
+                    self._preview_profile_state(
+                        member,
+                        profile_id,
+                        candidates.get(profile_id, ""),
+                    )
+                    for profile_id in candidate_ids
+                    if profile_id in candidates
+                ]
+                selected_state = next(
+                    (
+                        state
+                        for state in profile_states
+                        if state["profile_id"] == (match.profile_id or "")
+                    ),
+                    None,
+                )
+                if selected_state is None:
+                    selected_state = next(
+                        (
+                            state
+                            for state in profile_states
+                            if state.get("duplicate_status") != "new"
+                        ),
+                        None,
+                    )
+                if selected_state is None and profile_states:
+                    selected_state = profile_states[0]
+                batch_duplicate_of = first_member_by_content.get(member.content_sha256, "")
+                first_member_by_content.setdefault(member.content_sha256, member.member_id)
                 items.append(
                     {
                         **member.to_dict(),
@@ -275,6 +371,31 @@ class MeshBundleImportService:
                         "match_status": "matched" if match.status == "matched" else match.status,
                         "selected_profile_id": match.profile_id or "",
                         "selected_profile_name": match.profile_name or "",
+                        "stored_filename": str((selected_state or {}).get("stored_filename") or ""),
+                        "daily_sequence": (selected_state or {}).get("daily_sequence"),
+                        "duplicate_status": (
+                            str((selected_state or {}).get("duplicate_status") or "new")
+                            if not batch_duplicate_of
+                            else "duplicate_in_current_batch"
+                        ),
+                        "batch_duplicate_of": batch_duplicate_of,
+                        "import_allowed": bool(
+                            (selected_state or {}).get("import_allowed", not match.profile_id)
+                        ) and not batch_duplicate_of,
+                        "existing_source_id": (selected_state or {}).get("existing_source_id"),
+                        "existing_stored_filename": str(
+                            (selected_state or {}).get("existing_stored_filename") or ""
+                        ),
+                        "existing_session_id": str(
+                            (selected_state or {}).get("existing_session_id") or ""
+                        ),
+                        "existing_profile_id": str(
+                            (selected_state or {}).get("existing_profile_id") or ""
+                        ),
+                        "existing_profile_name": str(
+                            (selected_state or {}).get("existing_profile_name") or ""
+                        ),
+                        "profile_import_states": profile_states,
                         "candidates": [
                             {"profile_id": profile_id, "display_name": candidates[profile_id]}
                             for profile_id in candidate_ids
@@ -295,6 +416,46 @@ class MeshBundleImportService:
         except Exception:
             shutil.rmtree(preview_dir, ignore_errors=True)
             raise
+
+    def _preview_profile_state(
+        self,
+        member: MeshBundleMember,
+        profile_id: str,
+        profile_name: str,
+    ) -> dict[str, object]:
+        catalog = MeshCatalogRepository(self.paths.mesh_catalog_path(self.site_name))
+        profile = catalog.get_profile(profile_id)
+        if profile is None:
+            return {
+                "profile_id": profile_id,
+                "duplicate_status": "hash_failed",
+                "import_allowed": False,
+            }
+        matches = self._find_content_sources(member, backfill=True)
+        same = next((item for item in matches if item["profile_id"] == profile_id), None)
+        other = next((item for item in matches if item["profile_id"] != profile_id), None)
+        stored_filename, sequence, rename_status, rename_warning = suggest_mesh_archive_filename(
+            self.paths.mesh_mr_raw_dir(self.site_name, profile.safe_folder_name),
+            Path(member.safe_name).name,
+            member.first_log_timestamp,
+        )
+        existing = same or other
+        duplicate_status = "duplicate_same_mr" if same else "duplicate_other_mr" if other else "new"
+        return {
+            "profile_id": profile_id,
+            "profile_name": profile_name,
+            "stored_filename": stored_filename,
+            "daily_sequence": sequence,
+            "rename_status": rename_status,
+            "rename_warning": rename_warning,
+            "duplicate_status": duplicate_status,
+            "import_allowed": existing is None,
+            "existing_source_id": (existing or {}).get("source_id"),
+            "existing_stored_filename": str((existing or {}).get("stored_filename") or ""),
+            "existing_session_id": str((existing or {}).get("session_id") or ""),
+            "existing_profile_id": str((existing or {}).get("profile_id") or ""),
+            "existing_profile_name": str((existing or {}).get("profile_name") or ""),
+        }
 
     def approve_preview(
         self,
@@ -332,11 +493,44 @@ class MeshBundleImportService:
         current = self.inspect(archive)
         if current != manifest:
             raise MeshBundleImportError("PREVIEW_CHANGED", "MESH ZIP 预览内容已变化，请重新预览")
+        member_by_id = {member.member_id: member for member in manifest.members}
+        profile_by_content: dict[str, str] = {}
+        filtered: list[dict[str, str]] = []
+        batch_duplicates: list[dict[str, str]] = []
+        for mapping in approved:
+            member = member_by_id[mapping["member_id"]]
+            previous_profile = profile_by_content.get(member.content_sha256)
+            if previous_profile and previous_profile != mapping["profile_id"]:
+                raise MeshBundleImportError(
+                    "DUPLICATE_CONTENT_CROSS_PROFILE",
+                    "同一批次存在相同日志正文但映射到不同 MR，请检查 CT/CW、列车号和 MR 归属",
+                )
+            matches = self._find_content_sources(member, backfill=True)
+            same = next(
+                (item for item in matches if item["profile_id"] == mapping["profile_id"]),
+                None,
+            )
+            other = next(
+                (item for item in matches if item["profile_id"] != mapping["profile_id"]),
+                None,
+            )
+            if same is None and other is not None:
+                raise MeshBundleImportError(
+                    "DUPLICATE_CONTENT_OTHER_MR",
+                    f"日志正文已归属于其他 MR：{other['profile_name']}，请检查映射",
+                )
+            if previous_profile:
+                batch_duplicates.append(mapping)
+                continue
+            profile_by_content[member.content_sha256] = mapping["profile_id"]
+            filtered.append(mapping)
         meta["status"] = "submitted"
         meta["expires_at"] = datetime.now(timezone.utc).timestamp() + _SUBMITTED_PREVIEW_TTL_SECONDS
-        meta["approved_mappings"] = approved
+        meta["submitted_mappings"] = approved
+        meta["approved_mappings"] = filtered
+        meta["batch_duplicate_mappings"] = batch_duplicates
         _write_json_atomic(preview_dir / "preview.json", meta)
-        return manifest, tuple(approved)
+        return manifest, tuple(filtered)
 
     def load_preview(
         self,
@@ -430,6 +624,7 @@ class MeshBundleImportService:
                     if entry is None:
                         raise MeshBundleImportError("PREVIEW_CHANGED", "MESH ZIP 成员已变化")
                     compressed_target = directory / member.safe_name
+                    compressed_target.parent.mkdir(parents=True, exist_ok=True)
                     copied = _copy_limited(source.open(entry), compressed_target, _MAX_FILE_SIZE)
                     if copied != member.size_bytes or _sha256_file(compressed_target) != member.sha256:
                         raise MeshBundleImportError("MEMBER_HASH_MISMATCH", f"ZIP 成员校验失败：{member.original_name}")
@@ -482,6 +677,23 @@ class MeshBundleImportService:
             current = self.inspect(archive)
             if current != manifest:
                 raise MeshBundleImportError("PREVIEW_CHANGED", "MESH ZIP 预览内容已变化，请重新预览")
+            members_by_id = {member.member_id: member for member in manifest.members}
+            for mapping in approved:
+                member = members_by_id[str(mapping["member_id"])]
+                matches = self._find_content_sources(member, backfill=True)
+                same = next(
+                    (item for item in matches if item["profile_id"] == mapping["profile_id"]),
+                    None,
+                )
+                other = next(
+                    (item for item in matches if item["profile_id"] != mapping["profile_id"]),
+                    None,
+                )
+                if same is None and other is not None:
+                    raise MeshBundleImportError(
+                        "DUPLICATE_CONTENT_OTHER_MR",
+                        f"日志正文已归属于其他 MR：{other['profile_name']}，请检查映射",
+                    )
             profiles = self._profiles_for_mappings(approved)
             self._prepare_transaction(transaction, profiles)
             staging_paths = PathResolver(
@@ -504,12 +716,28 @@ class MeshBundleImportService:
                     should_cancel=should_cancel,
                     progress=progress,
                 )
+            batch_duplicates = tuple(
+                dict(item)
+                for item in meta.get("batch_duplicate_mappings") or ()
+                if isinstance(item, Mapping)
+            )
+            counts["duplicate_count"] += len(batch_duplicates)
             _raise_if_cancelled(should_cancel)
             self._rewrite_staging_paths(staging_paths, profiles, manifest, import_hashes)
             self._checkpoint_tree(staging_paths.site_mesh_root(self.site_name))
             member_paths.clear()
             import_hashes.clear()
             gc.collect()
+            source_results = (
+                counts["source_results"]
+                if isinstance(counts.get("source_results"), list)
+                else []
+            )
+            source_result_by_content = {
+                str(item.get("content_sha256") or ""): item
+                for item in source_results
+                if isinstance(item, Mapping)
+            }
             success_manifest = {
                 **manifest.to_dict(),
                 "status": "success",
@@ -520,23 +748,25 @@ class MeshBundleImportService:
                 "file_mappings": [
                     {
                         **mapping,
-                        "original_name": next(
-                            member.original_name
-                            for member in manifest.members
-                            if member.member_id == mapping["member_id"]
-                        ),
-                        "sha256": next(
-                            member.sha256
-                            for member in manifest.members
-                            if member.member_id == mapping["member_id"]
+                        **members_by_id[str(mapping["member_id"])].to_dict(),
+                        **source_result_by_content.get(
+                            members_by_id[str(mapping["member_id"])].content_sha256,
+                            {},
                         ),
                         "status": statuses[mapping["member_id"]],
                     }
                     for mapping in approved
+                ]
+                + [
+                    {
+                        **mapping,
+                        **members_by_id[str(mapping["member_id"])].to_dict(),
+                        "status": "duplicate_in_current_batch",
+                    }
+                    for mapping in batch_duplicates
                 ],
             }
             self._commit_transaction(
-                transaction,
                 rollback,
                 staging_paths,
                 profiles,
@@ -555,6 +785,7 @@ class MeshBundleImportService:
                 "raw_archived_count": counts["imported_count"],
                 "parsed_source_count": counts["imported_count"],
                 "created_session_ids": created_session_ids,
+                "source_results": counts["source_results"],
                 "failed_files": [],
                 "idempotent": False,
             }
@@ -571,6 +802,93 @@ class MeshBundleImportService:
             return False
         return isinstance(value, dict) and value.get("status") == "success" and value.get("archive_sha256") == archive_sha256
 
+    def _find_content_sources(
+        self,
+        member: MeshBundleMember,
+        *,
+        backfill: bool,
+    ) -> list[dict[str, object]]:
+        profiles = MeshCatalogRepository(
+            self.paths.mesh_catalog_path(self.site_name)
+        ).list_profiles()
+        matches: list[dict[str, object]] = []
+        for profile in profiles:
+            database = self.paths.mesh_mr_db_path(self.site_name, profile.safe_folder_name)
+            try:
+                repository = MeshMrRepository(database)
+                if backfill:
+                    self._backfill_profile_fingerprints(profile, repository)
+                source = repository.find_by_content_sha256(
+                    member.content_sha256,
+                    raw_sha256=member.raw_sha256,
+                )
+            except MeshSchemaRebuildRequired:
+                source = self._find_legacy_content_source(database, member)
+            if source is None:
+                continue
+            source_id = int(source["id"])
+            matches.append(
+                {
+                    "source_id": source_id,
+                    "stored_filename": str(
+                        source.get("stored_filename")
+                        or source.get("archived_filename")
+                        or ""
+                    ),
+                    "profile_id": profile.mr_id,
+                    "profile_name": profile.display_name,
+                    "session_id": f"{profile.mr_id}:{source_id}",
+                }
+            )
+        return matches
+
+    @staticmethod
+    def _find_legacy_content_source(
+        database: Path,
+        member: MeshBundleMember,
+    ) -> dict[str, object] | None:
+        for row in MeshSourceIndexRepository(database).list_source_files():
+            raw_sha256 = str(row.get("raw_sha256") or row.get("sha256") or "")
+            content_sha256 = str(row.get("content_sha256") or "")
+            if raw_sha256 == member.raw_sha256 or content_sha256 == member.content_sha256:
+                return row
+            archived = Path(str(row.get("archived_path") or ""))
+            if not archived.is_file():
+                continue
+            try:
+                metadata = inspect_mesh_log_path(archived, max_expanded_size=_MAX_FILE_SIZE)
+            except (OSError, ValueError, gzip.BadGzipFile):
+                continue
+            if metadata.content_sha256 == member.content_sha256:
+                return row
+        return None
+
+    def _backfill_profile_fingerprints(
+        self,
+        profile: MeshMrProfile,
+        repository: MeshMrRepository,
+    ) -> None:
+        if profile.mr_id in self._fingerprints_backfilled:
+            return
+        self._fingerprints_backfilled.add(profile.mr_id)
+        for row in repository.list_source_files():
+            if str(row.get("content_sha256") or "").strip():
+                continue
+            archived = Path(str(row.get("archived_path") or ""))
+            if not archived.is_file():
+                continue
+            try:
+                metadata = inspect_mesh_log_path(archived, max_expanded_size=_MAX_FILE_SIZE)
+                repository.update_source_fingerprints(
+                    int(row["id"]),
+                    raw_sha256=metadata.raw_sha256,
+                    content_sha256=metadata.content_sha256,
+                    first_log_timestamp=metadata.first_log_timestamp,
+                    last_log_timestamp=metadata.last_log_timestamp,
+                )
+            except (OSError, ValueError, gzip.BadGzipFile, sqlite3.IntegrityError):
+                continue
+
     def _created_session_ids(
         self,
         profiles: Mapping[str, MeshMrProfile],
@@ -583,7 +901,10 @@ class MeshBundleImportService:
             profile = profiles[str(mapping["profile_id"])]
             member = members[str(mapping["member_id"])]
             repository = MeshMrRepository(self.paths.mesh_mr_db_path(self.site_name, profile.safe_folder_name))
-            source = next((row for row in repository.list_source_files() if str(row.get("sha256") or "") == member.sha256), None)
+            source = repository.find_by_content_sha256(
+                member.content_sha256,
+                raw_sha256=member.raw_sha256,
+            )
             if source is not None:
                 result.append(f"{profile.mr_id}:{int(source['id'])}")
         return result
@@ -679,7 +1000,7 @@ class MeshBundleImportService:
         *,
         should_cancel: Callable[[], bool] | None,
         progress: Callable[[str, int, int, str], None] | None,
-    ) -> tuple[dict[str, str], dict[str, int]]:
+    ) -> tuple[dict[str, str], dict[str, object]]:
         grouped: dict[str, list[dict[str, object]]] = {}
         for mapping in mappings:
             grouped.setdefault(str(mapping["profile_id"]), []).append(mapping)
@@ -689,6 +1010,7 @@ class MeshBundleImportService:
             "duplicate_count": 0,
             "parsed_record_count": 0,
             "issue_count": 0,
+            "source_results": [],
         }
         completed = 0
         total = len(mappings)
@@ -716,8 +1038,15 @@ class MeshBundleImportService:
             for row in rows:
                 member_id = str(row["member_id"])
                 source = member_paths[member_id]
-                digest = _sha256_file(source)
-                statuses[member_id] = "duplicate" if repository.has_sha256(digest) else "imported"
+                metadata = inspect_mesh_log_path(source, max_expanded_size=_MAX_FILE_SIZE)
+                statuses[member_id] = (
+                    "duplicate_same_mr"
+                    if repository.has_content_sha256(
+                        metadata.content_sha256,
+                        raw_sha256=metadata.raw_sha256,
+                    )
+                    else "imported"
+                )
                 files.append(source)
 
             def on_progress(file_index: int, _total: int, lines: int, parsed: int, skipped: int) -> None:
@@ -741,6 +1070,9 @@ class MeshBundleImportService:
             counts["duplicate_count"] += result.duplicate_count
             counts["parsed_record_count"] += result.parsed_record_count
             counts["issue_count"] += len(result.issues)
+            source_results = counts["source_results"]
+            if isinstance(source_results, list):
+                source_results.extend(result.source_results)
             if progress:
                 progress("mesh_bundle_import", completed, total, "MESH ZIP Profile 导入完成")
         return statuses, counts
@@ -857,7 +1189,6 @@ class MeshBundleImportService:
 
     def _commit_transaction(
         self,
-        transaction: Path,
         rollback: Path,
         staging_paths: PathResolver,
         profiles: Mapping[str, MeshMrProfile],
@@ -866,46 +1197,56 @@ class MeshBundleImportService:
         success_manifest: Mapping[str, object],
     ) -> None:
         rollback.mkdir(parents=True, exist_ok=False)
-        moved: list[tuple[Path, Path, Path]] = []
+        published: list[_ProfilePublishState] = []
         production_catalog = self.paths.mesh_catalog_path(self.site_name)
         staging_catalog = staging_paths.mesh_catalog_path(self.site_name)
-        backup_catalog = rollback / "catalog.sqlite"
-        catalog_replaced = False
+        previous_catalog_summaries = _read_catalog_summaries(
+            production_catalog,
+            profiles,
+        )
+        staged_catalog_summaries = _read_catalog_summaries(
+            staging_catalog,
+            profiles,
+        )
+        catalog_updated = False
         try:
             for profile in sorted(profiles.values(), key=lambda item: item.safe_folder_name.casefold()):
                 production = self.paths.mesh_mr_root(self.site_name, profile.safe_folder_name).resolve()
                 staging = staging_paths.mesh_mr_root(self.site_name, profile.safe_folder_name).resolve()
-                backup = rollback / profile.safe_folder_name
-                production.replace(backup)
-                staging.replace(production)
-                moved.append((production, backup, staging))
-            _checkpoint_database(production_catalog)
-            production_catalog.replace(backup_catalog)
-            for suffix in ("-wal", "-shm"):
-                sidecar = production_catalog.with_name(production_catalog.name + suffix)
-                if sidecar.exists():
-                    sidecar.replace(backup_catalog.with_name(backup_catalog.name + suffix))
-            staging_catalog.replace(production_catalog)
-            catalog_replaced = True
+                state = _ProfilePublishState(
+                    production_root=production,
+                    rollback_root=rollback / profile.safe_folder_name,
+                    created_files=[],
+                    overwritten_files=[],
+                    created_directories=[],
+                )
+                published.append(state)
+                _publish_profile_snapshot(staging, state)
             self._verify_final_paths(profiles)
+            _write_catalog_summaries(production_catalog, staged_catalog_summaries)
+            catalog_updated = True
             self._finalize_archive(archive, manifest, success_manifest)
         except Exception:
-            if catalog_replaced and production_catalog.exists():
-                production_catalog.replace(staging_catalog)
-            for suffix in ("-wal", "-shm"):
-                production_catalog.with_name(production_catalog.name + suffix).unlink(missing_ok=True)
-            if backup_catalog.exists():
-                backup_catalog.replace(production_catalog)
-            for suffix in ("-wal", "-shm"):
-                backup_sidecar = backup_catalog.with_name(backup_catalog.name + suffix)
-                if backup_sidecar.exists():
-                    backup_sidecar.replace(production_catalog.with_name(production_catalog.name + suffix))
-            for production, backup, staging in reversed(moved):
-                if production.exists():
-                    staging.parent.mkdir(parents=True, exist_ok=True)
-                    production.replace(staging)
-                if backup.exists():
-                    backup.replace(production)
+            rollback_error: Exception | None = None
+            try:
+                if catalog_updated:
+                    _write_catalog_summaries(
+                        production_catalog,
+                        previous_catalog_summaries,
+                    )
+            except Exception as exc:
+                rollback_error = exc
+            finally:
+                for state in reversed(published):
+                    try:
+                        _rollback_profile_snapshot(state)
+                    except Exception as exc:
+                        rollback_error = rollback_error or exc
+            if rollback_error is not None:
+                raise MeshBundleImportError(
+                    "ROLLBACK_FAILED",
+                    "MESH ZIP 导入回滚失败，请保留现场数据并检查 Backend 日志",
+                ) from rollback_error
             raise
 
     def _verify_final_paths(self, profiles: Mapping[str, MeshMrProfile]) -> None:
@@ -1095,20 +1436,52 @@ def _validate_ratio(expanded: int, compressed: int, name: str) -> None:
         raise MeshBundleImportError("COMPRESSION_RATIO_EXCEEDED", f"ZIP/GZIP 压缩比异常：{name}")
 
 
-def _expanded_member_size(safe_name: str, content: bytes, original_name: str) -> int:
-    if not safe_name.casefold().endswith(".gz"):
-        return len(content)
-    total = 0
+def _inspect_zip_member(
+    archive: zipfile.ZipFile,
+    entry: zipfile.ZipInfo,
+    safe_name: str,
+) -> MeshLogContentMetadata:
     try:
-        with gzip.GzipFile(fileobj=io.BytesIO(content), mode="rb") as stream:
-            while chunk := stream.read(1024 * 1024):
-                total += len(chunk)
-                if total > _MAX_FILE_SIZE:
-                    raise MeshBundleImportError("MEMBER_TOO_LARGE", f"GZIP 日志解压后超过 20 MiB：{original_name}")
-    except (gzip.BadGzipFile, EOFError, OSError) as exc:
-        raise MeshBundleImportError("GZIP_INVALID", f"GZIP 日志损坏：{original_name}") from exc
-    _validate_ratio(total, len(content), original_name)
-    return total
+        with archive.open(entry) as raw_stream:
+            raw_sha256 = _sha256_stream(raw_stream)
+        with archive.open(entry) as raw_stream:
+            if safe_name.casefold().endswith(".gz"):
+                with gzip.GzipFile(fileobj=raw_stream, mode="rb") as content_stream:
+                    metadata = inspect_mesh_log_stream(
+                        content_stream,
+                        raw_sha256=raw_sha256,
+                        size_bytes=entry.file_size,
+                        max_expanded_size=_MAX_FILE_SIZE,
+                    )
+            else:
+                metadata = inspect_mesh_log_stream(
+                    raw_stream,
+                    raw_sha256=raw_sha256,
+                    size_bytes=entry.file_size,
+                    max_expanded_size=_MAX_FILE_SIZE,
+                )
+    except (gzip.BadGzipFile, EOFError, OSError, ValueError) as exc:
+        code = "GZIP_INVALID" if safe_name.casefold().endswith(".gz") else "MEMBER_SIZE_MISMATCH"
+        message = (
+            f"GZIP 日志损坏或解压后超过 20 MiB：{entry.filename}"
+            if safe_name.casefold().endswith(".gz")
+            else f"ZIP 成员大小校验失败：{entry.filename}"
+        )
+        raise MeshBundleImportError(code, message) from exc
+    if metadata.size_bytes != entry.file_size:
+        raise MeshBundleImportError("MEMBER_SIZE_MISMATCH", f"ZIP 成员大小校验失败：{entry.filename}")
+    _validate_ratio(metadata.expanded_size_bytes, entry.file_size, entry.filename)
+    return metadata
+
+
+def _parse_manifest_datetime(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
 
 
 def _infer_mapping(name: str) -> tuple[str | None, str | None, tuple[str, ...]]:
@@ -1168,13 +1541,151 @@ def _copy_tree_snapshot(source: Path, target: Path) -> None:
         _sqlite_backup(source_db, target_db)
 
 
+def _publish_profile_snapshot(staging: Path, state: _ProfilePublishState) -> None:
+    production = state.production_root
+    if not staging.is_dir() or not production.is_dir():
+        raise MeshBundleImportError("PROFILE_STORAGE_NOT_FOUND", "MESH Profile 数据目录不存在")
+    entries = list(staging.rglob("*"))
+    if any(path.is_symlink() for path in entries):
+        raise MeshBundleImportError("PROFILE_STORAGE_INVALID", "MESH Profile 目录包含符号链接")
+    files = [path for path in entries if path.is_file() and not path.name.endswith(("-wal", "-shm"))]
+    files.sort(
+        key=lambda path: (
+            path.relative_to(staging).as_posix().casefold() == "mesh.sqlite",
+            path.relative_to(staging).as_posix().casefold(),
+        )
+    )
+    state.rollback_root.mkdir(parents=True, exist_ok=False)
+    for source in files:
+        relative = source.relative_to(staging)
+        target = production / relative
+        backup = state.rollback_root / relative
+        _require_child(target.resolve(), production)
+        if target.is_symlink():
+            raise MeshBundleImportError("PROFILE_STORAGE_INVALID", "MESH Profile 目录包含符号链接")
+        _create_publish_parent(target.parent, production, state.created_directories)
+        is_database = source.suffix.casefold() == ".sqlite"
+        if target.exists():
+            if not target.is_file():
+                raise MeshBundleImportError("PROFILE_STORAGE_INVALID", "MESH Profile 文件路径发生冲突")
+            if not is_database and _sha256_file(source) == _sha256_file(target):
+                continue
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            if is_database:
+                _sqlite_backup(target, backup)
+            else:
+                shutil.copy2(target, backup)
+            state.overwritten_files.append((target, backup))
+        else:
+            state.created_files.append(target)
+        if is_database:
+            _sqlite_backup(source, target)
+        else:
+            _copy_file_atomic(source, target)
+
+
+def _rollback_profile_snapshot(state: _ProfilePublishState) -> None:
+    for target, backup in reversed(state.overwritten_files):
+        if backup.suffix.casefold() == ".sqlite":
+            _sqlite_backup(backup, target)
+        else:
+            _copy_file_atomic(backup, target)
+    for target in reversed(state.created_files):
+        target.unlink(missing_ok=True)
+        if target.suffix.casefold() == ".sqlite":
+            for suffix in ("-wal", "-shm"):
+                target.with_name(target.name + suffix).unlink(missing_ok=True)
+    for directory in reversed(state.created_directories):
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+
+
+def _create_publish_parent(parent: Path, root: Path, created: list[Path]) -> None:
+    missing: list[Path] = []
+    current = parent
+    while current != root and not current.exists():
+        _require_child(current.resolve(), root)
+        missing.append(current)
+        current = current.parent
+    for directory in reversed(missing):
+        directory.mkdir(exist_ok=False)
+        created.append(directory)
+
+
+def _copy_file_atomic(source: Path, target: Path) -> None:
+    temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
+    try:
+        shutil.copy2(source, temporary)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _sqlite_backup(source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(source)) as source_connection, closing(
-        sqlite3.connect(target)
+    with closing(sqlite3.connect(source, timeout=30)) as source_connection, closing(
+        sqlite3.connect(target, timeout=30)
     ) as target_connection:
+        source_connection.execute("PRAGMA busy_timeout = 30000")
+        target_connection.execute("PRAGMA busy_timeout = 30000")
         source_connection.backup(target_connection)
         target_connection.commit()
+
+
+def _read_catalog_summaries(
+    path: Path,
+    profiles: Mapping[str, MeshMrProfile],
+) -> dict[str, tuple[object, ...]]:
+    profile_ids = tuple(profiles)
+    if not profile_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in profile_ids)
+    fields = ", ".join(_CATALOG_SUMMARY_FIELDS)
+    with closing(sqlite3.connect(path, timeout=30)) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            f"SELECT mr_id, {fields} FROM mr_profiles WHERE mr_id IN ({placeholders})",
+            profile_ids,
+        ).fetchall()
+    summaries = {
+        str(row["mr_id"]): tuple(row[field] for field in _CATALOG_SUMMARY_FIELDS)
+        for row in rows
+    }
+    if summaries.keys() != profiles.keys():
+        raise MeshBundleImportError(
+            "CATALOG_PROFILE_MISSING",
+            "MESH Profile 目录库与导入映射不一致",
+        )
+    return summaries
+
+
+def _write_catalog_summaries(
+    path: Path,
+    summaries: Mapping[str, tuple[object, ...]],
+) -> None:
+    if not summaries:
+        return
+    assignments = ", ".join(f"{field} = ?" for field in _CATALOG_SUMMARY_FIELDS)
+    with closing(sqlite3.connect(path, timeout=30)) as connection:
+        connection.execute("PRAGMA busy_timeout = 30000")
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            for profile_id, values in summaries.items():
+                cursor = connection.execute(
+                    f"UPDATE mr_profiles SET {assignments} WHERE mr_id = ?",
+                    (*values, profile_id),
+                )
+                if cursor.rowcount != 1:
+                    raise MeshBundleImportError(
+                        "CATALOG_PROFILE_MISSING",
+                        "MESH Profile 目录库与导入映射不一致",
+                    )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
 
 
 def _checkpoint_database(path: Path) -> None:

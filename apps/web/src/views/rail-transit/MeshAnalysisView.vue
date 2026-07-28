@@ -51,6 +51,7 @@ import NcDataTable from '../../components/table/NcDataTable.vue'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { useAvailablePanelHeight } from '../../composables/useAvailablePanelHeight'
+import { ApiRequestError } from '../../api/client'
 import {
   applyMeshBundleImport, createMeshProfile, deleteMeshArtifact, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisParamsTemplate, getMeshAnalysisSession, getMeshAnalysisSummary, getMeshPeerSegmentChart, getMeshRawTail, getMeshTracksideSignalChart,
   listMeshActiveBuildOrder, listMeshAnalysisSessions,
@@ -148,11 +149,13 @@ const reportParams = reactive<MeshAnalysisParamsOverride>({
 const linkExportParams = reactive<MeshAnalysisParams>({ ...reportParams })
 const importContextLoading = ref(false)
 const importContextError = ref('')
+const importContextWarnings = ref<string[]>([])
 const profileLoadError = ref('')
 const vehicleMrLoadError = ref('')
 const selectedFiles = ref<File[]>([])
 const newProfileName = ref('')
 const linkedMrId = ref('')
+const lastAutoFilledProfileName = ref('')
 const profileNotes = ref('')
 const task = ref<RailTransitTask | null>(null)
 const taskLoading = ref(false)
@@ -245,6 +248,12 @@ let scrollRestoreFrame: number | null = null
 let preserveCachedViewOnTaskCompletion = false
 let rendererRecoveryRestored = false
 let rendererRecoveryPromise: Promise<void> | null = null
+let importContextPromise: Promise<void> | null = null
+let importProfilesReadyPromise: Promise<void> | null = null
+let importContextGeneration = 0
+let profileLoadGeneration = 0
+let importPreviewGeneration = 0
+let profileNameManuallyEdited = false
 const reportedWorkloadPhases = new Set<string>()
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const restorableTaskStates = new Set(['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'FAILED'])
@@ -274,15 +283,20 @@ const bundleCanApply = computed(() => Boolean(
   bundlePreview.value
   && bundlePreview.value.items.length > 0
   && Object.values(bundleMappings).length === bundlePreview.value.items.length
-  && Object.values(bundleMappings).every((mapping) => mapping.confirmed && mapping.member_id && mapping.train_number.trim() && mapping.role && mapping.profile_id),
+  && bundlePreview.value.items.some((item) => previewImportState(item)?.duplicate_status === 'new')
+  && bundlePreview.value.items.every((item) => bundleItemReady(item)),
 ))
 const bundleValidationMessage = computed(() => {
   if (!bundlePreview.value) return 'ZIP 尚未预览。'
-  const unresolved = bundlePreview.value.items.filter((item) => {
-    const mapping = bundleMappings[item.safe_name]
-    return !mapping?.confirmed || !mapping.train_number.trim() || !mapping.role || !mapping.profile_id
+  const blocked = bundlePreview.value.items.filter((item) => {
+    const status = previewImportState(item)?.duplicate_status
+    return status === 'duplicate_other_mr' || !batchDuplicateMappingMatches(item)
   })
-  return unresolved.length ? `还有 ${unresolved.length} 个文件未完成列车号、端位、对应车载 MR 和人工确认。` : '所有文件已确认，可导入并分析。'
+  if (blocked.length) return `有 ${blocked.length} 个文件内容已归属其他 MR 或批次内映射冲突，请检查 MR 映射。`
+  const unresolved = bundlePreview.value.items.filter((item) => !bundleItemReady(item))
+  if (unresolved.length) return `还有 ${unresolved.length} 个文件未完成列车号、端位、对应车载 MR 和人工确认。`
+  const newCount = bundlePreview.value.items.filter((item) => previewImportState(item)?.duplicate_status === 'new').length
+  return newCount ? `可导入 ${newCount} 个新日志；重复内容将自动跳过且不占用序号。` : '所选日志均已导入，本次不会重复保存或分析。'
 })
 const linkTimeGroups = computed(() => buildMeshTimeGroupClasses(links.value, (row) => `${row.timestamp}::${row.timestamp_tag || ''}`))
 const switchTimeGroups = computed(() => buildMeshTimeGroupClasses(switches.value, (row) => row.timestamp))
@@ -868,6 +882,7 @@ watch(tracksideChartVisible, (visible) => {
   if (visible) resizeVisibleRssiCharts()
 })
 watch(sessionExpanded, refreshDetailPanels)
+watch([linkedMrId, baseMrs], applyLinkedMrProfileName)
 
 function scheduleRefresh(): void {
   stopOverviewRefresh()
@@ -1653,55 +1668,181 @@ async function downloadArtifact(artifact: MeshArtifact): Promise<void> {
 }
 
 async function loadProfiles(): Promise<void> {
+  const generation = ++profileLoadGeneration
   profileLoadError.value = ''
   vehicleMrLoadError.value = ''
-  const loadMeshProfiles = async (): Promise<void> => {
-    try {
-      profiles.value = await listMeshProfiles()
-    } catch (reason) {
-      profileLoadError.value = reason instanceof Error ? reason.message : 'MESH Profile 加载失败'
+  const vehicleMrsPromise = (async (): Promise<VehicleMr[]> => {
+    const rows: VehicleMr[] = []
+    let page = 1
+    while (true) {
+      const result = await listVehicleMrs({ page, page_size: 200 })
+      rows.push(...result.items)
+      if (rows.length >= result.total || result.items.length === 0) break
+      page += 1
     }
-  }
-  const loadVehicleMrs = async (): Promise<void> => {
-    try {
-      const rows: VehicleMr[] = []
-      let page = 1
-      while (true) {
-        const result = await listVehicleMrs({ page, page_size: 200 })
-        rows.push(...result.items)
-        if (rows.length >= result.total || result.items.length === 0) break
-        page += 1
-      }
-      baseMrs.value = rows
-    } catch (reason) {
-      vehicleMrLoadError.value = reason instanceof Error ? reason.message : '当前局点车载 MR 加载失败'
-    }
-  }
-  await Promise.allSettled([loadMeshProfiles(), loadVehicleMrs()])
+    return rows
+  })()
+  const [profileResult, vehicleMrResult] = await Promise.allSettled([
+    listMeshProfiles(),
+    vehicleMrsPromise,
+  ])
+  if (generation !== profileLoadGeneration) return
+  if (profileResult.status === 'fulfilled') profiles.value = profileResult.value
+  else profileLoadError.value = profileResult.reason instanceof Error
+    ? profileResult.reason.message
+    : 'MESH Profile 加载失败'
+  if (vehicleMrResult.status === 'fulfilled') baseMrs.value = vehicleMrResult.value
+  else vehicleMrLoadError.value = vehicleMrResult.reason instanceof Error
+    ? vehicleMrResult.reason.message
+    : '当前局点车载 MR 加载失败'
+  applyLinkedMrProfileName()
 }
+
 async function openImportDialog(): Promise<void> {
   importVisible.value = true
-  importContextLoading.value = true
+  await prepareImportContext()
+}
+
+async function prepareImportContext(): Promise<void> {
+  if (importContextPromise) {
+    await importContextPromise
+    return
+  }
+  const generation = ++importContextGeneration
   importContextError.value = ''
+  importContextWarnings.value = []
   profileLoadError.value = ''
   vehicleMrLoadError.value = ''
+  importContextLoading.value = true
+  const promise = (async () => {
+    try {
+      const result = await prepareMeshImportContext()
+      if (generation === importContextGeneration) {
+        importContextWarnings.value = result.warnings || []
+      }
+    } catch (reason) {
+      if (generation === importContextGeneration) {
+        importContextError.value = meshImportContextErrorMessage(reason)
+      }
+    } finally {
+      await loadProfiles()
+      if (generation === importContextGeneration) importContextLoading.value = false
+    }
+  })()
+  importContextPromise = promise
+  importProfilesReadyPromise = promise
   try {
-    await prepareMeshImportContext()
-  } catch (reason) {
-    importContextError.value = reason instanceof Error ? reason.message : '车载 MR 与内部 MESH 归属同步失败'
+    await promise
   } finally {
-    await loadProfiles()
-    importContextLoading.value = false
+    if (importContextPromise === promise) importContextPromise = null
   }
 }
+
+function meshImportContextErrorMessage(reason: unknown): string {
+  if (
+    (reason instanceof ApiRequestError && reason.code === 'BACKEND_UNREACHABLE')
+    || (reason instanceof TypeError && /failed to fetch/i.test(reason.message))
+  ) {
+    return '无法连接本机 Backend，导入上下文未完成。现有内部归属仍可继续使用，请重试或查看 Backend 日志。'
+  }
+  if (reason instanceof ApiRequestError && reason.code) return `${reason.message}（${reason.code}）`
+  return reason instanceof Error ? reason.message : '车载 MR 与内部 MESH 归属同步失败'
+}
+
+function normalizeVehicleMrRole(mr: VehicleMr): 'CT' | 'CW' | '' {
+  for (const value of [mr.mr_position_code, mr.role, mr.name]) {
+    const normalized = String(value || '').trim().toUpperCase().replaceAll('_', '-')
+    const matched = normalized.match(/(?:^|-)(?:MR-)*(CT|CW)(?:$|-)/)
+    if (matched?.[1] === 'CT' || matched?.[1] === 'CW') return matched[1]
+  }
+  return ''
+}
+
+function autoProfileNameForMr(mr: VehicleMr): string {
+  const explicit = String(mr.name || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/^(?:列车\s*){2,}/, '列车')
+    .replace(/(?:MR[\s_-]*){2,}(CT|CW)\b/gi, 'MR-$1')
+  if (explicit) return explicit
+  const trainNo = String(mr.train_no || '').trim().replace(/^列车\s*/i, '').replace(/\s+/g, '')
+  const role = normalizeVehicleMrRole(mr)
+  return trainNo && role ? `列车${trainNo}-MR-${role}` : ''
+}
+
+function vehicleMrOptionLabel(mr: VehicleMr): string {
+  return [
+    String(mr.train_no || '').trim(),
+    normalizeVehicleMrRole(mr),
+    autoProfileNameForMr(mr),
+  ].filter(Boolean).join(' · ')
+}
+
+function applyLinkedMrProfileName(): void {
+  const previousAutoName = lastAutoFilledProfileName.value
+  const selectedMr = baseMrs.value.find((mr) => mr.id === linkedMrId.value)
+  if (!selectedMr) {
+    if (newProfileName.value.trim() === previousAutoName) newProfileName.value = ''
+    lastAutoFilledProfileName.value = ''
+    profileNameManuallyEdited = false
+    return
+  }
+  const autoName = autoProfileNameForMr(selectedMr)
+  if (!autoName) return
+  const currentName = newProfileName.value.trim()
+  if (!currentName || currentName === previousAutoName || !profileNameManuallyEdited) {
+    newProfileName.value = autoName
+    lastAutoFilledProfileName.value = autoName
+    profileNameManuallyEdited = false
+  }
+}
+
+function markProfileNameEdited(value: string): void {
+  profileNameManuallyEdited = String(value || '').trim() !== lastAutoFilledProfileName.value
+}
+
+function linkedMeshProfile(): MeshProfile | undefined {
+  const selectedMr = baseMrs.value.find((mr) => mr.id === linkedMrId.value)
+  if (!selectedMr) return undefined
+  return profiles.value.find((profile) => (
+    profile.linked_device_uuid === selectedMr.id
+    || (
+      selectedMr.device_id !== null
+      && profile.linked_device_id === selectedMr.device_id
+    )
+  ))
+}
+
 async function createProfile(): Promise<void> {
   if (!newProfileName.value.trim()) return
+  const existing = linkedMeshProfile()
+  if (existing) {
+    newProfileName.value = existing.display_name
+    lastAutoFilledProfileName.value = existing.display_name
+    profileNameManuallyEdited = false
+    ElMessage.info(`已选用现有内部归属：${existing.display_name}`)
+    return
+  }
   taskLoading.value = true; error.value = ''
   try {
-    const profile = await createMeshProfile({ display_name: newProfileName.value.trim(), linked_mr_id: linkedMrId.value, notes: profileNotes.value.trim() })
-    await loadProfiles(); newProfileName.value = ''; linkedMrId.value = ''; profileNotes.value = ''
+    await createMeshProfile({ display_name: newProfileName.value.trim(), linked_mr_id: linkedMrId.value, notes: profileNotes.value.trim() })
+    await loadProfiles()
+    newProfileName.value = ''
+    linkedMrId.value = ''
+    lastAutoFilledProfileName.value = ''
+    profileNameManuallyEdited = false
+    profileNotes.value = ''
     ElMessage.success('内部 MESH 归属已创建')
-  } catch (reason) { error.value = reason instanceof Error ? reason.message : '内部 MESH 归属创建失败' }
+  } catch (reason) {
+    if (reason instanceof ApiRequestError && reason.code === 'PROFILE_ALREADY_LINKED') {
+      await loadProfiles()
+      const displayName = String(reason.details.display_name || linkedMeshProfile()?.display_name || '')
+      if (displayName) newProfileName.value = displayName
+      ElMessage.info(displayName ? `已选用现有内部归属：${displayName}` : reason.message)
+    } else {
+      error.value = reason instanceof Error ? reason.message : '内部 MESH 归属创建失败'
+    }
+  }
   finally { taskLoading.value = false }
 }
 function isSafeRelativePath(value: string): boolean {
@@ -1715,15 +1856,21 @@ function chooseFiles(event: Event): void {
     const relative = (file as File & { webkitRelativePath?: string }).webkitRelativePath || name
     return ['.zip', '.log', '.txt', '.gz'].some((suffix) => name.endsWith(suffix)) && isSafeRelativePath(relative)
   })
+  importPreviewGeneration += 1
   bundlePreview.value = null
   for (const key of Object.keys(bundleMappings)) delete bundleMappings[key]
   if (selectedFiles.value.length) void previewImportFiles()
 }
 async function previewImportFiles(): Promise<void> {
+  const generation = ++importPreviewGeneration
+  const files = [...selectedFiles.value]
   bundlePreviewLoading.value = true
   error.value = ''
   try {
-    const preview = await previewMeshImport(selectedFiles.value)
+    await importProfilesReadyPromise
+    if (generation !== importPreviewGeneration) return
+    const preview = await previewMeshImport(files)
+    if (generation !== importPreviewGeneration) return
     bundlePreview.value = preview
     for (const item of preview.items) {
       const firstCandidate = item.selected_profile_id || item.candidates[0]?.profile_id || ''
@@ -1736,12 +1883,62 @@ async function previewImportFiles(): Promise<void> {
       }
     }
   } catch (reason) {
+    if (generation !== importPreviewGeneration) return
     bundlePreview.value = null
     error.value = reason instanceof Error ? reason.message : 'MESH ZIP 预览失败'
-  } finally { bundlePreviewLoading.value = false }
+  } finally {
+    if (generation === importPreviewGeneration) bundlePreviewLoading.value = false
+  }
 }
 function profileCandidates(item: MeshBundlePreview['items'][number]): Array<{ profile_id: string; display_name: string }> {
   return item.candidates.length ? item.candidates : profiles.value.map((profile) => ({ profile_id: profile.mr_id, display_name: profile.display_name }))
+}
+function previewImportState(item: MeshBundlePreview['items'][number]) {
+  const profileId = bundleMappings[item.safe_name]?.profile_id || item.selected_profile_id
+  return (item.profile_import_states || []).find((state) => state.profile_id === profileId) || {
+    profile_id: profileId,
+    profile_name: item.selected_profile_name,
+    stored_filename: item.stored_filename || item.safe_name,
+    daily_sequence: item.daily_sequence,
+    rename_status: item.rename_status || '',
+    rename_warning: item.rename_warning || '',
+    duplicate_status: item.duplicate_status || 'new',
+    import_allowed: item.import_allowed !== false,
+    existing_source_id: item.existing_source_id,
+    existing_stored_filename: item.existing_stored_filename || '',
+    existing_session_id: item.existing_session_id || '',
+    existing_profile_id: item.existing_profile_id || '',
+    existing_profile_name: item.existing_profile_name || '',
+  }
+}
+function batchDuplicateMappingMatches(item: MeshBundlePreview['items'][number]): boolean {
+  if (!item.batch_duplicate_of || !bundlePreview.value) return true
+  const original = bundlePreview.value.items.find((candidate) => candidate.member_id === item.batch_duplicate_of)
+  if (!original) return false
+  return Boolean(
+    bundleMappings[item.safe_name]?.profile_id
+    && bundleMappings[item.safe_name]?.profile_id === bundleMappings[original.safe_name]?.profile_id,
+  )
+}
+function bundleItemReady(item: MeshBundlePreview['items'][number]): boolean {
+  const mapping = bundleMappings[item.safe_name]
+  if (!mapping?.member_id || !mapping.train_number.trim() || !mapping.role || !mapping.profile_id) return false
+  if (!batchDuplicateMappingMatches(item)) return false
+  if (item.batch_duplicate_of) return true
+  const state = previewImportState(item)
+  if (state?.duplicate_status === 'duplicate_other_mr') return false
+  if (state?.duplicate_status === 'duplicate_same_mr') return true
+  return mapping.confirmed
+}
+function previewDuplicateLabel(item: MeshBundlePreview['items'][number]): string {
+  if (item.batch_duplicate_of) return '批次内重复'
+  const status = previewImportState(item)?.duplicate_status || item.duplicate_status
+  if (status === 'duplicate_same_mr') return '已导入，自动跳过'
+  if (status === 'duplicate_other_mr') return '内容属于其他 MR'
+  return '新日志'
+}
+function previewStoredFilename(item: MeshBundlePreview['items'][number]): string {
+  return previewImportState(item)?.stored_filename || item.stored_filename || item.safe_name
 }
 function rememberTask(value: RailTransitTask | null): void {
   task.value = value
@@ -1989,7 +2186,11 @@ function buildResultLabel(value: string): string {
 
     <el-dialog v-model="importVisible" title="MESH 原始日志导入" width="min(1180px, 96vw)">
       <el-form label-position="top">
-        <el-alert v-if="importContextError" :title="`导入上下文准备失败：${importContextError}`" type="error" :closable="false" show-icon />
+        <div v-if="importContextError" class="jump-actions import-context-retry">
+          <el-alert :title="`导入上下文准备失败：${importContextError}`" type="error" :closable="false" show-icon />
+          <el-button :loading="importContextLoading" @click="prepareImportContext">重新准备导入上下文</el-button>
+        </div>
+        <el-alert v-for="warning in importContextWarnings" :key="warning" :title="warning" type="warning" :closable="false" show-icon />
         <el-alert v-if="profileLoadError" :title="`内部 MESH 归属加载失败：${profileLoadError}`" type="error" :closable="false" show-icon />
         <el-alert v-if="vehicleMrLoadError" :title="`车载 MR 加载失败：${vehicleMrLoadError}`" type="error" :closable="false" show-icon />
         <el-alert v-if="!importContextLoading && !vehicleMrLoadError && baseMrs.length === 0" title="当前局点没有可识别的车载 MR，请先在设备管理的“车载-MR”分组登记设备。" type="warning" :closable="false" show-icon />
@@ -2002,19 +2203,22 @@ function buildResultLabel(value: string): string {
           <el-divider content-position="left">日志自动映射</el-divider>
           <el-alert :title="bundleValidationMessage" :type="bundleCanApply ? 'success' : 'warning'" :closable="false" show-icon />
           <div class="bundle-table-wrap">
-            <table class="bundle-table"><thead><tr><th>日志文件</th><th>列车号</th><th>端位</th><th>对应车载 MR</th><th>状态</th><th>确认</th></tr></thead><tbody>
+            <table class="bundle-table"><thead><tr><th>原始文件 / 内容指纹</th><th>首条日志时间</th><th>预计归档文件名</th><th>列车号</th><th>端位</th><th>对应车载 MR</th><th>重复状态</th><th>确认</th></tr></thead><tbody>
               <tr v-for="item in bundlePreview.items" :key="item.safe_name">
-                <td><strong>{{ item.safe_name }}</strong><small>{{ item.size_bytes }} B · {{ item.sha256.slice(0, 12) }}…</small></td>
+                <td><strong>{{ item.original_name }}</strong><small>{{ item.size_bytes }} B · {{ (item.content_sha256 || item.sha256).slice(0, 12) }}…</small></td>
+                <td>{{ item.first_log_timestamp || '未识别' }}<small>{{ item.log_date || 'unknown_date' }}</small></td>
+                <td><strong>{{ previewStoredFilename(item) }}</strong><small v-if="previewImportState(item)?.rename_warning || item.rename_warning">{{ previewImportState(item)?.rename_warning || item.rename_warning }}</small></td>
                 <td><el-input v-model="bundleMappings[item.safe_name].train_number" size="small" @input="bundleMappings[item.safe_name].confirmed = false" /></td>
                 <td><el-select v-model="bundleMappings[item.safe_name].role" size="small" @change="bundleMappings[item.safe_name].confirmed = false"><el-option label="CT" value="CT" /><el-option label="CW" value="CW" /></el-select></td>
                 <td><el-select v-model="bundleMappings[item.safe_name].profile_id" filterable size="small" @change="bundleMappings[item.safe_name].confirmed = false"><el-option v-for="candidate in profileCandidates(item)" :key="candidate.profile_id" :label="candidate.display_name" :value="candidate.profile_id" /></el-select></td>
-                <td><el-tag :type="item.match_status === 'matched' ? 'success' : 'warning'">{{ item.match_status }}</el-tag></td>
-                <td><el-checkbox v-model="bundleMappings[item.safe_name].confirmed" :disabled="!bundleMappings[item.safe_name].train_number.trim() || !bundleMappings[item.safe_name].role || !bundleMappings[item.safe_name].profile_id">人工确认</el-checkbox></td>
+                <td><el-tag :type="previewDuplicateLabel(item) === '新日志' ? 'success' : previewDuplicateLabel(item) === '内容属于其他 MR' ? 'danger' : 'warning'">{{ previewDuplicateLabel(item) }}</el-tag><small v-if="previewImportState(item)?.existing_stored_filename">已有：{{ previewImportState(item)?.existing_stored_filename }} · {{ previewImportState(item)?.existing_profile_name }}</small></td>
+                <td><el-checkbox v-model="bundleMappings[item.safe_name].confirmed" :disabled="Boolean(item.batch_duplicate_of) || previewImportState(item)?.duplicate_status === 'duplicate_same_mr' || !bundleMappings[item.safe_name].train_number.trim() || !bundleMappings[item.safe_name].role || !bundleMappings[item.safe_name].profile_id">人工确认</el-checkbox></td>
               </tr>
             </tbody></table>
+            <p class="hint">预计归档文件名可能因并发导入在正式保存时自动顺延。</p>
           </div>
         </template>
-        <el-collapse><el-collapse-item title="高级：无法匹配时创建内部归属" name="advanced-profile"><div class="profile-grid"><el-form-item label="显示名称"><el-input v-model="newProfileName" placeholder="例如：列车01-MR-CT" /></el-form-item><el-form-item label="关联基础资料 MR（可选）"><el-select v-model="linkedMrId" clearable filterable><el-option v-for="mr in baseMrs" :key="mr.id" :label="`${mr.train_no} · ${mr.role} · ${mr.name}`" :value="mr.id" /></el-select></el-form-item><el-form-item label="备注"><el-input v-model="profileNotes" /></el-form-item></div><el-button :loading="taskLoading" :disabled="!newProfileName.trim()" @click="createProfile">创建内部归属</el-button></el-collapse-item></el-collapse>
+        <el-collapse><el-collapse-item title="高级：无法匹配时创建内部归属" name="advanced-profile"><div class="profile-grid"><el-form-item label="显示名称"><el-input v-model="newProfileName" placeholder="例如：列车01-MR-CT" @input="markProfileNameEdited" /></el-form-item><el-form-item label="关联基础资料 MR（可选）"><el-select v-model="linkedMrId" clearable filterable><el-option v-for="mr in baseMrs" :key="mr.id" :label="vehicleMrOptionLabel(mr)" :value="mr.id" /></el-select></el-form-item><el-form-item label="备注"><el-input v-model="profileNotes" /></el-form-item></div><el-button :loading="taskLoading" :disabled="!newProfileName.trim()" @click="createProfile">创建内部归属</el-button></el-collapse-item></el-collapse>
       </el-form>
       <template #footer><el-button @click="importVisible = false">取消</el-button><el-button type="primary" :loading="taskLoading" :disabled="!bundleCanApply" @click="startBundleImport">确认导入并分析</el-button></template>
     </el-dialog>

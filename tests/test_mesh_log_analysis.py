@@ -12,11 +12,11 @@ from matplotlib.dates import date2num
 
 from netconsole.core.database import Database
 from netconsole.models.mesh_log_models import EVENT_ACTIVE_SWITCH, EVENT_MULTI_ACTIVE, EVENT_NO_ACTIVE
-from netconsole.parsers import mesh_log_parser
 from netconsole.parsers.mesh_log_parser import MeshLogParser, calculate_signal
 from netconsole.core.paths import PathResolver
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository, MeshSchemaRebuildRequired
 from netconsole.models.mesh_analysis_params import mesh_analysis_params_to_json, normalize_mesh_analysis_params
+from netconsole.services import mesh_import_service
 from netconsole.services.mesh_log_analysis_service import MeshLogAnalysisService
 from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.mesh_peer_mapping_service import MeshPeerMappingService
@@ -183,9 +183,12 @@ def test_dynamic_same_filename_archives_without_overwrite(tmp_path):
     MeshImportService("demo", paths).import_files(profile, [source])
     source.write_text("[1] 2025/12/03 10:12:34.579\n" + LINE_B + "\n", encoding="utf-8")
     MeshImportService("demo", paths).import_files(profile, [source])
-    archived = list(paths.mesh_mr_raw_dir("demo", profile.safe_folder_name).rglob("meshlog*.log"))
+    archived = list(paths.mesh_mr_raw_dir("demo", profile.safe_folder_name).rglob("*meshlog.log"))
     assert len(archived) == 2
-    assert len({item.name for item in archived}) == 2
+    assert [item.name for item in sorted(archived)] == [
+        "2025_12_03_1meshlog.log",
+        "2025_12_03_2meshlog.log",
+    ]
 
 
 
@@ -568,13 +571,13 @@ def test_import_hash_once_and_duplicate_does_not_parse(tmp_path, monkeypatch):
     source = tmp_path / "meshlog.log"
     source.write_text("[1] 2025/12/03 10:12:33.579\n" + LINE_A + "\n", encoding="utf-8")
     hash_calls = 0
-    original_hash = mesh_log_parser.sha256_file
+    original_inspect = mesh_import_service.inspect_mesh_log_path
     original_parse = MeshLogParser.parse_file
 
-    def counting_hash(path):
+    def counting_inspect(path):
         nonlocal hash_calls
         hash_calls += 1
-        return original_hash(path)
+        return original_inspect(path)
 
     parse_calls = 0
 
@@ -583,7 +586,7 @@ def test_import_hash_once_and_duplicate_does_not_parse(tmp_path, monkeypatch):
         parse_calls += 1
         return original_parse(self, *args, **kwargs)
 
-    monkeypatch.setattr("netconsole.services.mesh_import_service.sha256_file", counting_hash)
+    monkeypatch.setattr("netconsole.services.mesh_import_service.inspect_mesh_log_path", counting_inspect)
     monkeypatch.setattr(MeshLogParser, "parse_file", counting_parse)
     service = MeshImportService("demo", paths)
     service.import_files(profile, [source])

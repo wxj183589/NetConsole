@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   listProfiles: vi.fn(),
   listVehicleMrs: vi.fn(),
   prepareContext: vi.fn(),
+  createProfile: vi.fn(),
+  previewImport: vi.fn(),
   recoverTasks: vi.fn(),
   getTask: vi.fn(),
   getSession: vi.fn(),
@@ -41,7 +43,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../api/meshAnalysis', () => ({
   applyMeshBundleImport: vi.fn(),
-  createMeshProfile: vi.fn(),
+  createMeshProfile: mocks.createProfile,
   exportMeshLinkDetails: mocks.exportDetails,
   getMeshActivePathChart: mocks.getActivePath,
   getMeshAnalysisSession: mocks.getSession,
@@ -59,7 +61,7 @@ vi.mock('../../api/meshAnalysis', () => ({
   listMeshProfiles: mocks.listProfiles,
   listMeshSwitchEvents: vi.fn(),
   meshArtifactDownloadRequest: vi.fn(),
-  previewMeshImport: vi.fn(),
+  previewMeshImport: mocks.previewImport,
   rebuildMeshAnalysis: vi.fn(),
   prepareMeshImportContext: mocks.prepareContext,
 }))
@@ -97,6 +99,26 @@ const alertStub = defineComponent({
 const optionStub = defineComponent({
   props: { label: { type: String, default: '' }, value: { type: [String, Number, Boolean], default: '' } },
   setup(props) { return () => h('option', { value: props.value, 'data-option-label': props.label }, props.label) },
+})
+const inputStub = defineComponent({
+  inheritAttrs: false,
+  props: {
+    modelValue: { type: [String, Number], default: '' },
+    placeholder: { type: String, default: '' },
+  },
+  emits: ['input', 'update:modelValue'],
+  setup(props, { attrs, emit }) {
+    return () => h('input', {
+      ...attrs,
+      value: props.modelValue,
+      placeholder: props.placeholder,
+      onInput: (event: Event) => {
+        const value = (event.target as HTMLInputElement).value
+        emit('update:modelValue', value)
+        emit('input', value)
+      },
+    })
+  },
 })
 const selectStub = defineComponent({
   inheritAttrs: false,
@@ -178,7 +200,7 @@ const stubs: Record<string, Component | boolean> = {
   ElDivider: passthrough,
   ElForm: passthrough,
   ElFormItem: passthrough,
-  ElInput: passthrough,
+  ElInput: inputStub,
   ElInputNumber: passthrough,
   ElIcon: passthrough,
   ElOption: optionStub,
@@ -220,7 +242,26 @@ beforeEach(() => {
   })
   mocks.listProfiles.mockResolvedValue([])
   mocks.listVehicleMrs.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 200 })
-  mocks.prepareContext.mockResolvedValue({ site_id: 'demo', vehicle_mr_count: 0, profile_count: 0, created_count: 0, updated_count: 0 })
+  mocks.prepareContext.mockResolvedValue({
+    site_id: 'demo',
+    vehicle_mr_count: 0,
+    profile_count: 0,
+    created_count: 0,
+    updated_count: 0,
+    skipped_count: 0,
+    warnings: [],
+  })
+  mocks.createProfile.mockResolvedValue({
+    mr_id: 'profile-new',
+    display_name: '列车34-MR-CT',
+    safe_folder_name: '列车34-MR-CT',
+    linked_device_id: 34,
+    linked_device_uuid: 'uuid-34-ct',
+  })
+  mocks.previewImport.mockResolvedValue({
+    preview_id: 'preview-1',
+    items: [],
+  })
   mocks.recoverTasks.mockResolvedValue([])
   mocks.getTask.mockResolvedValue(null)
   mocks.listSessions.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50 })
@@ -288,6 +329,171 @@ describe('Mesh analysis import context behavior', () => {
     expect(wrapper.text()).toContain('内部 MESH 归属加载失败：profile unavailable')
     expect(wrapper.text()).not.toContain('车载 MR 加载失败')
     expect(wrapper.text()).not.toContain('当前局点没有可识别的车载 MR')
+    wrapper.unmount()
+  })
+
+  it('keeps selected files usable after prepare fails and waits for profile loading before preview', async () => {
+    let rejectPrepare!: (reason: unknown) => void
+    mocks.prepareContext.mockReturnValueOnce(new Promise((_resolve, reject) => {
+      rejectPrepare = reject
+    }))
+    mocks.listProfiles.mockResolvedValueOnce([{
+      mr_id: 'profile-1',
+      display_name: '列车34-MR-CT',
+      safe_folder_name: '列车34-MR-CT',
+      linked_device_id: 34,
+      linked_device_uuid: 'uuid-34-ct',
+    }])
+    mocks.previewImport.mockResolvedValueOnce({
+      preview_id: 'preview-1',
+      items: [{
+        member_id: '34CT.log',
+        original_name: '34CT.log',
+        safe_name: '34CT.log',
+        size_bytes: 4,
+        sha256: 'a'.repeat(64),
+        raw_sha256: 'a'.repeat(64),
+        content_sha256: 'b'.repeat(64),
+        first_log_timestamp: '2026-07-28T00:18:56.311000',
+        last_log_timestamp: '2026-07-28T00:19:56.311000',
+        log_date: '2026-07-28',
+        stored_filename: '2026_07_28_1meshlog.log',
+        daily_sequence: 1,
+        rename_status: 'renamed_by_log_date_sequence',
+        rename_warning: '',
+        duplicate_status: 'new',
+        batch_duplicate_of: '',
+        import_allowed: true,
+        existing_source_id: null,
+        existing_stored_filename: '',
+        existing_session_id: '',
+        existing_profile_id: '',
+        existing_profile_name: '',
+        train_number: '34',
+        role: 'CT',
+        match_status: 'matched',
+        selected_profile_id: 'profile-1',
+        selected_profile_name: '列车34-MR-CT',
+        profile_import_states: [{
+          profile_id: 'profile-1',
+          profile_name: '列车34-MR-CT',
+          stored_filename: '2026_07_28_1meshlog.log',
+          daily_sequence: 1,
+          rename_status: 'renamed_by_log_date_sequence',
+          rename_warning: '',
+          duplicate_status: 'new',
+          import_allowed: true,
+          existing_source_id: null,
+          existing_stored_filename: '',
+          existing_session_id: '',
+          existing_profile_id: '',
+          existing_profile_name: '',
+        }],
+        candidates: [{ profile_id: 'profile-1', display_name: '列车34-MR-CT' }],
+      }],
+    })
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    const importButton = wrapper.findAll('button').find((button) => button.text().includes('导入原始 MESH 日志'))!
+    void importButton.trigger('click')
+    await flushPromises()
+
+    const file = new File(['mesh'], '34CT.log', { type: 'text/plain' })
+    const fileInput = wrapper.findAll('input[type="file"]')[0]
+    Object.defineProperty(fileInput.element, 'files', { configurable: true, value: [file] })
+    await fileInput.trigger('change')
+    await flushPromises()
+    expect(mocks.previewImport).not.toHaveBeenCalled()
+
+    rejectPrepare(new TypeError('Failed to fetch'))
+    await flushPromises()
+
+    expect(mocks.listProfiles).toHaveBeenCalled()
+    expect(mocks.previewImport).toHaveBeenCalledWith([file])
+    expect(wrapper.text()).toContain('已选择 1 个文件')
+    expect(wrapper.text()).toContain('2026_07_28_1meshlog.log')
+    expect(wrapper.text()).toContain('2026-07-28T00:18:56.311000')
+    expect(wrapper.text()).toContain('bbbbbbbbbbbb')
+    expect(wrapper.text()).toContain('现有内部归属仍可继续使用')
+    expect(wrapper.text()).not.toContain('导入上下文准备失败：Failed to fetch')
+    wrapper.unmount()
+  })
+
+  it('auto-fills linked MR names, updates untouched values, and preserves manual edits', async () => {
+    const vehicleMrs = [
+      {
+        id: 'uuid-34-ct',
+        device_id: 34,
+        name: '列车34-MR-CT',
+        train_no: '34',
+        role: 'CT',
+        mr_position_code: 'CT',
+      },
+      {
+        id: 'uuid-34-cw',
+        device_id: 35,
+        name: '',
+        train_no: '34',
+        role: 'cw',
+        mr_position_code: 'CW',
+      },
+    ]
+    mocks.listVehicleMrs.mockResolvedValue({ items: vehicleMrs, total: 2, page: 1, page_size: 200 })
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text().includes('导入原始 MESH 日志'))!.trigger('click')
+    await flushPromises()
+
+    const linkedSelect = wrapper.findAllComponents(selectStub).find((select) => (
+      select.findAll('[data-option-label]').some((option) => option.text().includes('列车34-MR-CT'))
+    ))!
+    const nameInput = wrapper.get('input[placeholder="例如：列车01-MR-CT"]')
+    await linkedSelect.vm.$emit('update:modelValue', 'uuid-34-ct')
+    await flushPromises()
+    expect((nameInput.element as HTMLInputElement).value).toBe('列车34-MR-CT')
+
+    await linkedSelect.vm.$emit('update:modelValue', 'uuid-34-cw')
+    await flushPromises()
+    expect((nameInput.element as HTMLInputElement).value).toBe('列车34-MR-CW')
+
+    await nameInput.setValue('34车尾端测试日志')
+    await linkedSelect.vm.$emit('update:modelValue', 'uuid-34-ct')
+    await flushPromises()
+    expect((nameInput.element as HTMLInputElement).value).toBe('34车尾端测试日志')
+
+    await wrapper.findAll('button').find((button) => button.text() === '创建内部归属')!.trigger('click')
+    await flushPromises()
+    expect(mocks.createProfile).toHaveBeenCalledWith({
+      display_name: '34车尾端测试日志',
+      linked_mr_id: 'uuid-34-ct',
+      notes: '',
+    })
+    wrapper.unmount()
+  })
+
+  it('shares one in-flight prepare request across rapid repeated opens', async () => {
+    let resolvePrepare!: (value: unknown) => void
+    mocks.prepareContext.mockReturnValueOnce(new Promise((resolve) => {
+      resolvePrepare = resolve
+    }))
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    const importButton = wrapper.findAll('button').find((button) => button.text().includes('导入原始 MESH 日志'))!
+    void importButton.trigger('click')
+    void importButton.trigger('click')
+    await flushPromises()
+    expect(mocks.prepareContext).toHaveBeenCalledTimes(1)
+
+    resolvePrepare({
+      site_id: 'demo',
+      vehicle_mr_count: 0,
+      profile_count: 0,
+      created_count: 0,
+      updated_count: 0,
+      skipped_count: 0,
+      warnings: [],
+    })
+    await flushPromises()
     wrapper.unmount()
   })
 })

@@ -33,11 +33,27 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
   const formData = typeof FormData !== 'undefined' && options.body instanceof FormData
   if (!formData && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
   if (runtime.apiToken) headers.set(DESKTOP_SESSION_HEADER, runtime.apiToken)
-  const response = await fetch(resolveApiUrl(path), {
-    ...options,
-    headers,
-    credentials: options.credentials ?? (runtime.hostType === 'electron' ? 'include' : 'same-origin'),
-  })
+  const url = resolveApiUrl(path)
+  let response: Response
+  try {
+    response = await fetch(url, {
+      ...options,
+      headers,
+      credentials: options.credentials ?? (runtime.hostType === 'electron' ? 'include' : 'same-origin'),
+    })
+  } catch (cause) {
+    if (cause instanceof Error && cause.name === 'AbortError') throw cause
+    console.error('API_REQUEST_NETWORK_FAILED', {
+      path,
+      error: cause instanceof Error ? cause.message : String(cause),
+    })
+    throw new ApiRequestError(
+      '无法连接本机 Backend，请重试或查看 Backend 日志。',
+      0,
+      'BACKEND_UNREACHABLE',
+      { path },
+    )
+  }
   if (!response.ok) {
     let message = `请求失败 (${response.status})`
     let code = ''
