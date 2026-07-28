@@ -1759,22 +1759,99 @@ class AcRepository:
         }
 
     def get_active_trackside_pvid_plan(self) -> dict[str, object]:
+        from netconsole.repositories.ap_management_vlan_repository import (
+            ApManagementVlanRepository,
+        )
+
         mode = TRACKSIDE_AP_PLAN_MODE
-        rows = self.list_trackside_ap_plan(mode)
+        draft = ApManagementVlanRepository(self.database).get_draft()
+        groups = {
+            str(group.get("group_id") or ""): group
+            for group in draft.get("groups") or []
+        }
         station_vlans: dict[str, set[int]] = {}
         station_totals: dict[str, int] = {}
         all_vlans: set[int] = set()
-        for row in rows:
-            station = str(row.get("station_name") or "").strip()
-            if not station:
+        group_networks: dict[str, dict[str, object]] = {}
+        for group_id, group in groups.items():
+            vlan = group.get("management_vlan")
+            if vlan in (None, ""):
                 continue
-            vlans = parse_vlan_set(row.get("ap_management_vlans"))
-            if not vlans:
-                continue
-            station_vlans[station] = vlans
-            all_vlans.update(vlans)
-            station_totals[station] = int(row.get("ap_count") or 0)
-        return {"mode": mode, "station_vlans": station_vlans, "all_vlans": all_vlans, "station_totals": station_totals}
+            vlan_value = int(vlan)
+            all_vlans.add(vlan_value)
+            group_networks[group_id] = {
+                "vlan_group_id": group_id,
+                "vlan_group_code": str(group.get("group_code") or ""),
+                "vlan_group_name": str(group.get("group_name") or ""),
+                "management_vlan": vlan_value,
+            }
+            for member in group.get("members") or []:
+                station = str(member.get("station_name") or "").strip()
+                if not station:
+                    continue
+                station_vlans.setdefault(station, set()).add(vlan_value)
+                station_totals[station] = int(member.get("ap_count") or 0)
+        if not groups:
+            for row in self.list_trackside_ap_plan(mode):
+                station = str(row.get("station_name") or "").strip()
+                vlans = parse_vlan_set(row.get("ap_management_vlans"))
+                if not station or not vlans:
+                    continue
+                station_vlans[station] = vlans
+                all_vlans.update(vlans)
+                station_totals[station] = int(row.get("ap_count") or 0)
+        group_by_ap_id = {
+            str(row.get("ap_id") or ""): str(row.get("group_id") or "")
+            for row in draft.get("allocations") or []
+        }
+        group_by_ap_id.update(
+            {
+                str(row.get("target_id") or ""): str(row.get("group_id") or "")
+                for row in draft.get("assignments") or []
+                if str(row.get("assignment_type") or "") == "ap_override"
+            }
+        )
+        ap_networks_by_mac: dict[str, dict[str, object]] = {}
+        ap_networks_by_name: dict[str, dict[str, object]] = {}
+        duplicate_names: set[str] = set()
+        if group_by_ap_id:
+            with self.database.connect() as conn:
+                point_rows = conn.execute(
+                    """
+                    SELECT id, ap_name, ap_mac_norm
+                    FROM ap_extension_points
+                    """
+                ).fetchall()
+            for point in point_rows:
+                group_id = group_by_ap_id.get(f"ap:{point['id']}")
+                network = group_networks.get(str(group_id or ""))
+                if network is None:
+                    continue
+                mac = normalize_ap_mac(point["ap_mac_norm"]).normalized
+                if mac:
+                    ap_networks_by_mac[mac] = network
+                name = str(point["ap_name"] or "").strip().casefold()
+                if name:
+                    if name in ap_networks_by_name:
+                        duplicate_names.add(name)
+                    else:
+                        ap_networks_by_name[name] = network
+        for name in duplicate_names:
+            ap_networks_by_name.pop(name, None)
+        return {
+            "mode": mode,
+            "planning_mode": str(
+                (draft.get("planning") or {}).get("planning_mode")
+                if isinstance(draft.get("planning"), dict)
+                else ""
+            ),
+            "station_vlans": station_vlans,
+            "all_vlans": all_vlans,
+            "station_totals": station_totals,
+            "group_networks": group_networks,
+            "ap_networks_by_mac": ap_networks_by_mac,
+            "ap_networks_by_name": ap_networks_by_name,
+        }
 
     def save_station_online_summary_history(self, rows: list[dict[str, object | None]], collected_at: str | None = None) -> int:
         now = self._now()

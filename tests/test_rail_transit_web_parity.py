@@ -628,6 +628,26 @@ def test_point_table_and_trackside_plan_routes_reach_application_tasks(
             json={"rows": [], "global_config": {}, "explicit_confirmation": True, "revision": "stale-revision"},
         )
         plan = client.get("/api/rail-transit/trackside-ap-business/plan")
+        plan_draft = {
+            key: plan.json()[key]
+            for key in ("planning", "groups", "assignments", "allocations")
+        }
+        auto_group_preview = client.post(
+            "/api/rail-transit/trackside-ap-business/plan/auto-group-preview",
+            json={
+                "planning_mode": "line_single",
+                "auto_group_station_count": 1,
+                "current": plan_draft,
+            },
+        )
+        adjustment_preview = client.post(
+            "/api/rail-transit/trackside-ap-business/plan/adjustment-preview",
+            json={"proposed": plan_draft},
+        )
+        point_table_preview = client.post(
+            "/api/rail-transit/trackside-ap-business/plan/point-table-preview",
+            json={"proposed": plan_draft},
+        )
         plan_save = client.post(
             "/api/rail-transit/trackside-ap-business/plan/save",
             json={"rows": [], "explicit_confirmation": True},
@@ -650,7 +670,7 @@ def test_point_table_and_trackside_plan_routes_reach_application_tasks(
             "/api/rail-transit/trackside-ap-business/update",
             json={"station": "站点A", "ap_uuid": "ap-1"},
         )
-        blocked_export = client.post(
+        plan_export = client.post(
             "/api/rail-transit/trackside-ap-business/plan/export",
             json={"template": True},
         )
@@ -664,6 +684,10 @@ def test_point_table_and_trackside_plan_routes_reach_application_tasks(
         == "car_network_save_point_table"
     )
     assert plan.status_code == 200
+    assert auto_group_preview.status_code == 200
+    assert adjustment_preview.status_code == 200
+    assert point_table_preview.status_code == 200
+    assert point_table_preview.json()["items"] == []
     assert plan_save.status_code == 202
     assert (
         normal.jobs[plan_save.json()["task_id"]].task_type == "trackside_ap_plan_save"
@@ -678,8 +702,7 @@ def test_point_table_and_trackside_plan_routes_reach_application_tasks(
     assert update_ap.json()["action"] == "trackside_ap_optical_update"
     assert scope_conflict.status_code == 422
     assert scope_conflict.json()["detail"]["message"] == "站点范围和 AP 身份不能同时提交"
-    assert blocked_export.status_code == 503
-    assert blocked_export.json()["detail"]["code"] == "BLOCKED_ON_TASK_WINDOW"
+    assert plan_export.status_code == 202
 
 
 def test_mesh_upload_uses_controlled_staging_derived_profile_and_cancel_cleanup(

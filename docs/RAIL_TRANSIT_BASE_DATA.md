@@ -4,7 +4,7 @@
 
 `/rail-transit/base-data` 是站点、区间、轨旁 AP、轨旁 AP 规划、列车和车载 MR 的统一维护入口，Feature key 为 `web.rail_transit_base_data`。页面默认锁定；正常 `persistent` Electron 受管会话可解锁并维护当前局点，`isolated_test` 始终只读并显示明确原因。普通 Server、未认证浏览器和未授权副本仍保持锁定。页面复用现有 Python Core 和当前局点 `devices.db`，不建立第二套基础资料数据库。
 
-原独立 `/rail-transit/trackside-ap-plan` 页面和导航已删除；旧路由只重定向到 `/rail-transit/base-data?tab=trackside-ap-planning`。规划查询、导入预览、导出和 Task Center 继续复用现有能力，规划编辑由基础资料统一保存事务提交。
+原独立 `/rail-transit/trackside-ap-plan` 页面和导航已删除；旧路由只重定向到 `/rail-transit/base-data?tab=trackside-ap-planning`。规划查询、导入预览、导出和 Task Center 继续复用现有能力，规划编辑由基础资料统一保存事务提交。轨旁 AP 管理网络已由站点行重构为统一 VLAN 组模型，三种模式、地址、点表、迁移和 PVID 规则见 [轨旁 AP 管理 VLAN 分组规划](AP_MANAGEMENT_VLAN_GROUPS.md)。
 
 ```text
 devices.db
@@ -104,7 +104,7 @@ revision 校验 + SQLite BEGIN IMMEDIATE 单事务
 
 “导出重命名命令”只读取当前局点的结构化轨旁 AP 资料或用户明确选择的未保存草稿，通过 Export Process 生成 UTF-8 BOM、Windows CRLF 的 TXT Artifact。每条命令使用唯一 MAC 和 `point_code` 生成 `wlan rename-ap <AP_MAC> <点位编号>`，空值、无效 MAC、名称已一致和不安全目标名称记录为跳过；同一 MAC 多目标或同一目标多 MAC 直接阻断。该功能只导出命令，不连接 AC、不执行命令，也不附加保存、重启、删除等高风险命令。FIT-AP 详情联动只接受按规范化 MAC 唯一匹配出的 `fit_ap_id`；未匹配或重复匹配不会打开错误详情。
 
-“轨旁 AP 规划”标签页复用同一任务与下载体验，按钮为“下载模板 / 导入并预览 / 导出当前 / 新增 / 删除”。规划预览不受基础资料锁定影响，但应用仍要求解锁；未保存规划修改导出当前草稿。规划模板通过 `source=trackside_ap_plan` 生成 `轨旁AP规划` 与 `字段说明`，不再依赖任意服务端路径。
+“轨旁 AP 规划”标签页复用同一任务与下载体验，提供三种规划方式、自动分组影响预览、VLAN 组视图、站点继承视图、拆分和相邻合并。规划预览不受基础资料锁定影响，但应用仍要求解锁；未保存规划修改导出当前草稿。规划模板通过 `source=trackside_ap_plan` 生成 `轨旁AP规划` 与 `字段说明`，同时保留旧站点列和新增 VLAN 组列，不依赖任意服务端路径。
 
 ## 区间生成与统计
 

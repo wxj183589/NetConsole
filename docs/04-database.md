@@ -14,7 +14,7 @@ The built-in demonstration site is `demo`. If `sites/demo/db/devices.db` does no
 
 If the database already exists, `Database.initialize()` applies only additive, idempotent schema updates and records `schema_metadata`; it does not backfill demo facts or delete existing rows. The current migration adds the non-secret device credential state table without rewriting existing device credentials. Never delete a user database to apply an upgrade. Development fixtures must use a temporary data root.
 
-Current schema version: `2026.07.28.zte_interface_vlan_lldp`. The prior query-plan evidence and rollback boundaries remain recorded in [the E6 database archive](archive/migrations/electron-only/E6-2026-07-18.md).
+Current schema version: `2026.07.28.ap_management_vlan_groups`. The prior query-plan evidence and rollback boundaries remain recorded in [the E6 database archive](archive/migrations/electron-only/E6-2026-07-18.md).
 
 The 2026-07-28 additive migration adds `admin_status`, `physical_status`,
 `media_attribute`, `media_type`, and `category` to both current and historical
@@ -25,6 +25,14 @@ holdtime/TTL, descriptions, capabilities, PVID, MAU, and maximum frame size) to
 both LLDP tables. Initialization is idempotent and keeps all existing interface,
 optical, LLDP, and history rows.
 
+The same additive initialization introduces `rail_ap_vlan_plans`,
+`rail_ap_vlan_groups`, `rail_ap_vlan_group_members`,
+`rail_ap_vlan_assignments`, and `rail_ap_vlan_allocations`. When no new plan
+exists, every saved `ac_trackside_ap_plan(mode='unified')` station row migrates
+to one `station_independent` VLAN group in the same initialization transaction.
+The migration is idempotent; existing AP, location, device, MAC, and runtime IP
+rows are not rewritten. See [AP Management VLAN Groups](AP_MANAGEMENT_VLAN_GROUPS.md).
+
 Current local tables:
 
 - `devices`
@@ -33,6 +41,11 @@ Current local tables:
 - `device_interfaces`
 - `device_lldp_neighbors`
 - `device_credential_states`
+- `rail_ap_vlan_plans`
+- `rail_ap_vlan_groups`
+- `rail_ap_vlan_group_members`
+- `rail_ap_vlan_assignments`
+- `rail_ap_vlan_allocations`
 
 ## Device Identity
 

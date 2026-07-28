@@ -745,8 +745,9 @@ def test_trackside_plan_preview_save_export_and_artifact_download(tmp_path: Path
     current_path, _name = service.open_trackside_ap_plan_export("demo", completed.artifact_id)
     current_workbook = load_workbook(current_path)
     assert current_workbook.sheetnames[:2] == ["轨旁AP规划", "字段说明"]
-    assert current_workbook["轨旁AP规划"]["A3"].value == "站点A"
-    assert current_workbook["字段说明"]["A2"].value == "站点"
+    assert current_workbook["轨旁AP规划"]["A3"].value == "station_independent"
+    assert current_workbook["轨旁AP规划"]["P3"].value == "站点A"
+    assert current_workbook["字段说明"]["A2"].value == "规划方式"
     current_workbook.close()
     snapshot = tasks.repository("demo").get(current.task_id)
     assert snapshot is not None
@@ -764,6 +765,70 @@ def test_trackside_plan_preview_save_export_and_artifact_download(tmp_path: Path
     assert template_workbook.sheetnames[:2] == ["轨旁AP规划", "字段说明"]
     assert template_workbook["轨旁AP规划"].max_row == 2
     template_workbook.close()
+
+
+def test_grouped_trackside_plan_import_rejects_conflicting_group_networks(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.ensure_site_dirs("demo")
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    AcRepository(database).replace_trackside_ap_plan_rows(
+        TRACKSIDE_AP_PLAN_MODE,
+        [
+            {
+                "station_name": "站点A",
+                "ap_count": 1,
+                "ap_start_address": "10.1.0.10",
+                "mask_length": 24,
+                "ap_gateway": "10.1.0.1",
+                "ap_management_vlans": "71",
+                "remark": "",
+            },
+            {
+                "station_name": "站点B",
+                "ap_count": 1,
+                "ap_start_address": "10.1.0.11",
+                "mask_length": 24,
+                "ap_gateway": "10.1.0.1",
+                "ap_management_vlans": "71",
+                "remark": "",
+            },
+        ],
+    )
+    tasks = TaskApplicationService(paths=paths, site_name="demo")
+    service = RailTransitWebApplicationService(
+        paths,
+        tasks,
+        process_adapter=FakeLocalProcessAdapter(tasks),  # type: ignore[arg-type]
+        export_adapter=FakeExportProcessAdapter(tasks),  # type: ignore[arg-type]
+    )
+    content = (
+        "AP管理VLAN规划方式,VLAN组编号,VLAN组名称,管理VLAN,网络地址,"
+        "子网掩码,默认网关,组AP起始地址,组成员站点ID,组成员站点,"
+        "车站名称,AP数量,AP起始地址,"
+        "掩码,AP网关,AP管理VLAN,备注\r\n"
+        "station_grouped,G001,一号组,71,10.1.0.0,255.255.255.0,"
+        "10.1.0.1,10.1.0.10,\"stable-a,stable-b\",站点A、站点B,"
+        "站点A,1,10.1.0.10,24,10.1.0.1,71,\r\n"
+        "station_grouped,G001,一号组,72,10.2.0.0,255.255.255.0,"
+        "10.2.0.1,10.2.0.10,\"stable-a,stable-b\",站点A、站点B,"
+        "站点B,1,10.2.0.10,24,10.2.0.1,72,\r\n"
+    ).encode("utf-8-sig")
+
+    preview = service.preview_trackside_ap_plan(
+        "demo",
+        file_name="grouped.csv",
+        content=content,
+        duplicate_strategy="replace",
+    )
+
+    assert preview.can_apply is False
+    assert preview.error_count >= 1
+    assert any("网络参数与组内前序行不一致" in row.message for row in preview.rows)
+    assert preview.result_plan is not None
+    assert preview.result_plan.groups[0].members[0].station_id == "stable-a"
 
 
 def test_trackside_ap_base_template_and_draft_export_use_controlled_artifacts(tmp_path: Path) -> None:

@@ -1049,6 +1049,13 @@ def _resolve_repository_rows(source: Mapping[str, Any]) -> list[dict[str, Any]]:
 
         mode = str(filters.get("mode") or TRACKSIDE_AP_PLAN_MODE)
         return AcRepository(Database(db_path)).list_trackside_ap_plan(mode)
+    if repository == "ap_management_vlan_repository" and method == "list_export_rows":
+        from netconsole.core.database import Database
+        from netconsole.repositories.ap_management_vlan_repository import (
+            ApManagementVlanRepository,
+        )
+
+        return ApManagementVlanRepository(Database(db_path)).list_export_rows()
     if repository == "ac_repository" and method == "list_station_online_summary_history":
         from netconsole.core.database import Database
         from netconsole.repositories.ac_repository import AcRepository
