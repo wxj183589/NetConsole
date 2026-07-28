@@ -112,7 +112,8 @@ POST /api/ac-management/web-tasks/{task_id}/cancel
 POST /api/ac-management/web-tasks/recover
 ```
 
-Mesh-Link `refresh` 只接受 `controller_id` 和 `include_switch_history`。请求不能携带命令、用户名或密码；同一 AC 的活动任务重复提交时返回已有 Task。Vue 不连接设备，Worker 从当前局点设备库读取受控凭据，固定执行：
+Mesh-Link `refresh` 只接受 `controller_id` 和 `include_switch_history`。请求不能携带命令、用户名或
+密码；Vue 不连接设备，Worker 从当前局点设备库读取受控凭据，固定执行：
 
 ```text
 screen-length disable
@@ -121,7 +122,16 @@ display wlan mesh-link ap
 display wlan mesh-link switch-history  # 仅布尔开关启用
 ```
 
-上述 Mesh-Link 契约不存在固化 AP、`save force`、远程登录、任意命令、SNMP SET、删除或配置下发接口，也不提供自动周期刷新；AC/FIT-AP 页面写动作只允许 `ACTION_DEFINITIONS` 中两项固定计划，不复用 Mesh-Link 接口。
+没有地面无人值守常驻 Poller 时，接口继续创建或复用原 `ac_mesh_link_refresh` 一次性 Task：单次建立
+连接、采集快照并关闭，供人工刷新、单次诊断和非无人值守场景使用。已有相同控制器的
+`ac_mesh_link_resident_poll` 时，接口不创建第二个 Task 或 SSH 会话，只向现有 Worker 写入立即轮询
+请求，响应返回 resident `task_id`、本次 `request_id`、`task_mode=resident` 和“已请求常驻 AC 会话
+立即刷新”。两种模式共用 `AcMeshLinkSnapshotCollector`，生成相同的 raw、parser 版本和快照结构。
+
+常驻 Poller 仅由地面无人值守 Supervisor 管理，每台 AC 一个受控 Worker 和一个活动 SSH 会话；同一
+连接内周期采集，连接失效时在同一 Task 内重连。上述 Mesh-Link 契约不存在固化 AP、`save force`、
+远程登录、任意命令、SNMP SET、删除或配置下发接口；AC/FIT-AP 页面写动作只允许
+`ACTION_DEFINITIONS` 中两项固定计划，不复用 Mesh-Link 接口。
 
 原始回显位于当前局点 `files/rail_transit/ac_mesh_link/snapshots/<session_id>/raw/`。Worker 先在 `.staging` 完整写入 UTF-8 raw 和无绝对路径的 metadata，再原子移动到正式目录并在单个 SQLite 事务中写入结构化快照。数据库提交失败时 raw 转入受控 `failures/<task_id>`，最新成功快照保持不变。命令明确返回零条链路时生成有效空快照；空回显、命令错误或格式无法识别时任务失败，不把全部 MR 改成离线。
 

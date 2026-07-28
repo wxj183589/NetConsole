@@ -47,6 +47,7 @@ const artifactDownloadLabel = computed(() => (
   isTracksideApBusinessArtifactTask(store.selected) ? '保存导出表格' : '另存 Artifact'
 ))
 const selectedDetails = computed<Record<string, unknown>>(() => store.selected?.details || {})
+const selectedResident = computed(() => isResidentTask(store.selected))
 const historicalTextDamaged = computed(() => store.selected?.text_integrity === 'historical_corrupted')
 const currentTextDamaged = computed(() => store.selected?.text_integrity === 'current_corrupted')
 const unknownTextDamaged = computed(() => store.selected?.text_integrity === 'unknown_corrupted')
@@ -122,6 +123,17 @@ const columns: NcTableColumn<TaskItem>[] = [
   { key: 'error_summary', label: '错误 / 告警', valueType: 'error', align: 'left', alignmentReason: 'long-text' },
   { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['详情'] },
 ]
+
+function isResidentTask(task: TaskItem | null | undefined): boolean {
+  return task?.task_mode === 'resident' || task?.type === 'ac_mesh_link_resident_poll'
+}
+
+function residentProgressLabel(task: TaskItem): string {
+  const count = Number(task.current || task.details?.poll_count || 0)
+  if (['COMPLETED', 'STOPPED'].includes(task.status)) return `已正常停止 · 共完成 ${count} 次轮询`
+  if (task.status === 'STOPPING') return `正在停止 · 已完成 ${count} 次轮询`
+  return `常驻运行 · 已完成 ${count} 次轮询`
+}
 
 watch(drawerVisible, (visible) => {
   store.setDetailVisible(visible)
@@ -483,7 +495,10 @@ const revealSaved = () => runSavedAction('reveal')
             <small class="cell-subtitle">{{ row.type }} · {{ row.id }}</small>
         </template>
         <template #cell-status="{ row }"><NcStatusTag :status="row.status" /></template>
-        <template #cell-progress="{ row }"><el-progress :percentage="row.progress" :stroke-width="7" /></template>
+        <template #cell-progress="{ row }">
+          <span v-if="isResidentTask(row)" class="resident-progress">{{ residentProgressLabel(row) }}</span>
+          <el-progress v-else :percentage="row.progress" :stroke-width="7" />
+        </template>
         <template #cell-actions="{ row }"><el-button link type="primary" :icon="View" @click="openDetail(row)">详情</el-button></template>
       </NcDataTable>
     </div>
@@ -528,7 +543,9 @@ const revealSaved = () => runSavedAction('reveal')
         <el-descriptions :column="2" border>
           <el-descriptions-item label="任务类型">{{ store.selected.type }}</el-descriptions-item>
           <el-descriptions-item label="状态 / 阶段">{{ store.selected.status }} / {{ store.selected.phase || '--' }}</el-descriptions-item>
-          <el-descriptions-item label="进度">{{ store.selected.progress }}%</el-descriptions-item>
+          <el-descriptions-item label="进度">
+            {{ selectedResident ? residentProgressLabel(store.selected) : `${store.selected.progress}%` }}
+          </el-descriptions-item>
           <el-descriptions-item label="Owner / 执行端">{{ store.selected.owner || '--' }} / {{ store.selected.executor }}</el-descriptions-item>
           <el-descriptions-item label="局点">{{ store.selected.site_name || '--' }}</el-descriptions-item>
           <el-descriptions-item label="设备">{{ store.selected.device_name || '--' }}（{{ store.selected.device_id || '--' }}）</el-descriptions-item>
@@ -545,6 +562,25 @@ const revealSaved = () => runSavedAction('reveal')
             <el-descriptions-item label="Mesh-Link 快照 ID">{{ store.selected.snapshot_id ?? '--' }}</el-descriptions-item>
             <el-descriptions-item label="链路记录数">{{ store.selected.records_count ?? '--' }}</el-descriptions-item>
             <el-descriptions-item label="Parser">{{ store.selected.parser_version || '--' }}</el-descriptions-item>
+          </template>
+          <template v-if="selectedResident">
+            <el-descriptions-item label="连接状态">{{ stringDetail('connection_state') }}</el-descriptions-item>
+            <el-descriptions-item label="轮询间隔">{{ numberDetail('poll_interval_seconds') }} 秒</el-descriptions-item>
+            <el-descriptions-item label="轮询 / 成功 / 失败">
+              {{ numberDetail('poll_count') }} / {{ numberDetail('success_count') }} / {{ numberDetail('failure_count') }}
+            </el-descriptions-item>
+            <el-descriptions-item label="重连 / 连续失败">
+              {{ numberDetail('reconnect_count') }} / {{ numberDetail('consecutive_failures') }}
+            </el-descriptions-item>
+            <el-descriptions-item label="最近成功">{{ formatTime(stringDetail('last_success_at', '')) }}</el-descriptions-item>
+            <el-descriptions-item label="下次轮询">{{ formatTime(stringDetail('next_poll_at', '')) }}</el-descriptions-item>
+            <el-descriptions-item label="最近快照">
+              {{ stringDetail('latest_snapshot_id') }} · {{ numberDetail('latest_snapshot_record_count') }} 条
+            </el-descriptions-item>
+            <el-descriptions-item label="心跳">{{ formatTime(stringDetail('heartbeat_at', '')) }}</el-descriptions-item>
+            <el-descriptions-item v-if="selectedDetails.last_error_message" label="最近异常" :span="2">
+              {{ stringDetail('last_error_message') }}
+            </el-descriptions-item>
           </template>
         </el-descriptions>
 

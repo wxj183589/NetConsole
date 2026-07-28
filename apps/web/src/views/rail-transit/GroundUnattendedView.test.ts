@@ -28,6 +28,14 @@ describe('Ground unattended page', () => {
     expect(source).toContain('暂停调度时 AC 轮询与长 Ping 继续')
   })
 
+  it('shows per-controller resident AC polling health', () => {
+    expect(source).toContain('AC 常驻轮询')
+    expect(source).toContain('health.ac_pollers')
+    expect(source).toContain('poller.connection_state')
+    expect(source).toContain('poller.reconnect_count')
+    expect(source).toContain('每台控制器一个常驻 Task 和一个活动 SSH 会话')
+  })
+
   it('uses the dedicated API including stop-and-archive and confirmed deletion', () => {
     expect(apiSource).toContain('/api/rail-transit/ground-unattended')
     expect(apiSource).toContain('/stop-and-archive')

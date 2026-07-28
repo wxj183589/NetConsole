@@ -270,6 +270,27 @@ class AcMeshLinkQueryService:
             page_size=size,
         )
 
+    def list_latest_snapshots_by_controller(
+        self, site_id: str
+    ) -> list[AcMeshSnapshotDTO]:
+        page = self.list_recent_snapshots(
+            site_id,
+            page=1,
+            page_size=100,
+        )
+        latest: dict[str, AcMeshSnapshotDTO] = {}
+        for snapshot in page.items:
+            latest.setdefault(str(snapshot.controller_id or ""), snapshot)
+        return list(latest.values())
+
+    def list_mrs_for_snapshot(
+        self,
+        site_id: str,
+        snapshot_id: int,
+    ) -> list[AcMeshMrStatusDTO]:
+        snapshot = self._snapshot(site_id, int(snapshot_id))
+        return self._mr_rows(site_id, snapshot=snapshot) if snapshot else []
+
     def get_snapshot(self, site_id: str, snapshot_id: int) -> AcMeshSnapshotDetailDTO | None:
         snapshot = self._snapshot(site_id, snapshot_id)
         if snapshot is None:

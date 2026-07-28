@@ -27,6 +27,8 @@ export interface AcMeshLinkRefreshResponse {
   task_id: string
   status: string
   already_running: boolean
+  task_mode: 'once' | 'resident'
+  request_id: string
   message: string
 }
 

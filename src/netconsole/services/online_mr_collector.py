@@ -113,6 +113,17 @@ class NetmikoShellConnection(OnlineMrConnection):
         )
         return normalize_command_output(output)
 
+    def is_alive(self) -> bool:
+        if self.connection is None:
+            return False
+        checker = getattr(self.connection, "is_alive", None)
+        if not callable(checker):
+            return True
+        value = checker()
+        if isinstance(value, dict):
+            return bool(value.get("is_alive"))
+        return bool(value)
+
     def run_repeat_stream(
         self,
         commands: tuple[str, ...],

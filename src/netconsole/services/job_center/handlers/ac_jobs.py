@@ -27,6 +27,9 @@ from netconsole.services.job_center.handlers.common import legacy_handler
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
 from netconsole.services.fit_ap_import_export import FitApImportExportService
 from netconsole.services.ac.mesh_link_refresh_service import run_ac_mesh_link_refresh
+from netconsole.services.ac.mesh_link_resident_polling_service import (
+    run_ac_mesh_link_resident_poll,
+)
 
 
 def _string_list(value: object, fallback: object = None) -> list[str]:
@@ -355,6 +358,11 @@ def ac_command_action_execute(context: JobContext) -> dict[str, object]:
 def ac_mesh_link_refresh(context: JobContext) -> dict[str, object]:
     return run_ac_mesh_link_refresh(context)
 
+
+def ac_mesh_link_resident_poll(context: JobContext) -> dict[str, object]:
+    return run_ac_mesh_link_resident_poll(context)
+
+
 HANDLERS = {
     name: globals()[name]
     for name in (
@@ -368,6 +376,7 @@ HANDLERS = {
         "ac_fit_ap_optical_refresh",
         "ac_command_action_execute",
         "ac_mesh_link_refresh",
+        "ac_mesh_link_resident_poll",
         "ac_ap_extensions_refresh",
         "omnipeek_name_table_preview",
         "ac_overview_history_snapshot",

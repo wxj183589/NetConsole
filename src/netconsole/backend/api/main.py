@@ -44,6 +44,9 @@ from netconsole.models.api.common import ErrorDetail, ErrorResponse
 from netconsole.repositories.device_detail_repository import DeviceDetailRepository
 from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryService
 from netconsole.services.ac.mesh_link_refresh_service import AcMeshLinkRefreshApplicationService
+from netconsole.services.ac.mesh_link_resident_polling_service import (
+    AcMeshLinkResidentPollingApplicationService,
+)
 from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.agent.controller import AgentControllerError, AgentControllerService
 from netconsole.services.config_collection_web_service import ConfigCollectionApplicationService
@@ -162,6 +165,8 @@ def create_app(
     agent_service: AgentControllerService | None = None,
     traffic_service: TrafficTestApplicationService | None = None,
     ac_mesh_link_refresh_service: AcMeshLinkRefreshApplicationService | None = None,
+    ac_mesh_link_resident_service: AcMeshLinkResidentPollingApplicationService
+    | None = None,
     frontend_dist: Path | None = None,
     desktop_session_token: str | None = None,
     rail_base_data_write_feature_enabled: bool | None = None,
@@ -231,6 +236,18 @@ def create_app(
         )
     feature_gate = FeatureGate(paths.app_root, runtime_path=paths.runtime_dir)
     ground_unattended_feature_enabled = feature_gate.is_enabled("web.ground_unattended")
+    if (
+        ground_unattended_feature_enabled
+        and ac_mesh_link_resident_service is None
+    ):
+        ac_mesh_link_resident_service = (
+            AcMeshLinkResidentPollingApplicationService(paths, task_service)
+        )
+    resident_binder = getattr(
+        ac_mesh_link_refresh_service, "bind_resident_service", None
+    )
+    if callable(resident_binder):
+        resident_binder(ac_mesh_link_resident_service)
     web_process_adapter = LocalProcessAdapter(task_service)
     site_application_service = SiteApplicationService(paths, task_service)
     data_root_application_service = DataRootApplicationService(paths, site_application_service)
@@ -393,11 +410,23 @@ def create_app(
                 asyncio.to_thread(web_export_adapter.shutdown),
                 asyncio.to_thread(web_process_adapter.shutdown),
                 ac_mesh_link_refresh_service.stop(),
+                (
+                    ac_mesh_link_resident_service.stop()
+                    if ac_mesh_link_resident_service is not None
+                    else asyncio.sleep(0)
+                ),
                 traffic_service.stop(),
                 return_exceptions=True,
             )
             for component, result in zip(
-                ("device_exports", "web_exports", "local_process", "ac_mesh_link", "traffic"),
+                (
+                    "device_exports",
+                    "web_exports",
+                    "local_process",
+                    "ac_mesh_link",
+                    "ac_mesh_link_resident",
+                    "traffic",
+                ),
                 cleanup,
                 strict=True,
             ):
@@ -598,6 +627,7 @@ def create_app(
     app.state.ground_unattended_repository = None
     app.state.ground_unattended_supervisor = None
     app.state.ground_unattended_application_service = None
+    app.state.ac_mesh_link_resident_service = ac_mesh_link_resident_service
     app.state.ground_unattended_startup_error = ""
     if ground_unattended_feature_enabled:
         try:
@@ -613,6 +643,7 @@ def create_app(
                 mesh_query=app.state.ac_mesh_link_query_service,
                 vehicle_query=app.state.vehicle_mr_online_query_service,
                 ac_refresh_service=ac_mesh_link_refresh_service,
+                ac_resident_service=ac_mesh_link_resident_service,
                 online_mr_application_service=online_mr_application_service,
                 online_mr_query_service=online_mr_query_service,
                 network_service=app.state.system_network_application_service,

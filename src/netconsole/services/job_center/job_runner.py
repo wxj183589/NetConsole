@@ -25,11 +25,14 @@ class JobRunner:
             result = dispatch_job(job, progress_callback, should_cancel, sensitive_bootstrap)
             safe_result = redact_sensitive_values(dict(result or {}), secret_values)
             terminal_state = str(safe_result.pop("terminal_state", "") or "").strip().upper()
+            completion_message = str(
+                safe_result.pop("completion_message", "") or ""
+            ).strip()
             return JobResult(
                 job.job_id,
                 True,
                 safe_result,
-                message=_terminal_message(terminal_state),
+                message=completion_message or _terminal_message(terminal_state),
                 terminal_state=terminal_state,
             )
         except BackgroundTaskCancelled as exc:

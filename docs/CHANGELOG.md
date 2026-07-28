@@ -72,6 +72,12 @@
 
 ### 轨道交通地面无人值守
 
+- AC Mesh-Link 轮询改为每台控制器一个 `ac_mesh_link_resident_poll` 常驻 Worker Task 和一个复用的
+  SSH 会话；首次连接立即采集，间隔热更新不重连，连接异常在同一 Task 内有界退避重连，任务中心不再
+  每约 10 秒新增一次性刷新记录，并展示轮询、失败、重连、心跳和最近快照健康状态。
+- 保留原 `ac_mesh_link_refresh` 人工一次性刷新；已有无人值守 Poller 时“立即刷新”改为复用常驻
+  会话并返回同一 Task。多 AC 快照按控制器独立去重，暂停深采时 Poller 继续；正常停止新增
+  `STOPPING_AC_POLLER` 阶段，Backend 重启恢复使用新 Worker/Task 但延用逻辑 `poll_session_id`。
 - 修复 Windows 正式安装包的冻结 Backend 未收集 `tzdata`，导致 `Asia/Shanghai` 无法加载并使无人值守 `/status` 返回 HTTP 500 的问题；`tzdata` 现作为正式运行依赖进入批准分发包、NOTICE、SBOM 和 PyInstaller 标准 hook，包级 smoke 会在 `PYTHONTZPATH=""` 的隔离数据根中连续两次请求真实冻结 `/status` 并要求 HTTP 200。
 - 修复已有运行产生 daily Ping 汇总后，数据库索引字段被直接送入严格 API DTO，导致“长 Ping”请求失败的问题；持久化汇总现在按页面契约投影。同时兼容旧运行记录中的小写状态和非对象摘要，避免“运行状态”请求失败，且不修改或删除历史数据。
 - 修复打包环境中任一无人值守接口失败会导致整页数据被丢弃、设置标签完全空白的问题：状态、配置、列车、Ping、时间轴、归档和健康数据改为独立加载，保留成功结果并显示失败项与重试入口；运行状态未加载时不再误显示为“未启用”，后台初始化失败会返回明确错误类型。

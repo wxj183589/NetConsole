@@ -114,6 +114,25 @@ LOCAL 入口通过 Worker 内纯 Python `OnlineMrTrafficCoordinator` 管理 fpin
 
 Worker 内为只读映射恢复临时创建的 `TaskApplicationService` 必须关闭启动期孤儿回收；只有宿主进程可以核对并回收宿主所有的活动任务，避免子进程把仍存活的父任务误判为遗留任务。
 
+### AC Mesh-Link 常驻轮询
+
+`ac_mesh_link_resident_poll` 是地面无人值守专用的长期本地 Worker Task，owner 为
+`ground_unattended_ac_mesh_link`。每个 `site_id + run_id + controller_id` 同时最多一个活动 Task；
+Task 参数只保存局点、run、控制器标识、稳定 `poll_session_id`、轮询间隔和数据根等非敏感信息，凭据由
+Worker 每次连接或重连时从受控设备库读取。
+
+该类型使用 `task_mode=resident` 和 `progress_mode=indeterminate`。列表显示“常驻运行 · 已完成 N 次
+轮询”，不渲染 0～100% 百分比；详情公开连接状态、间隔、轮询/成功/失败/重连次数、最近成功、下次
+轮询、最近快照、心跳和脱敏异常。`BACKOFF/RECONNECTING` 不能显示为连接成功。
+
+无人值守的正常停止通过控制文件请求 Worker 关闭 SSH 并返回，Task 终态为 `COMPLETED`，完成消息为
+“无人值守运行结束，AC 常驻轮询已正常停止”；任务中心用户主动点击停止仍使用标准取消语义。协作停止
+超时后 Application Service 才调用 `LocalProcessAdapter.force_stop_job()` 有界回收进程树。
+
+Backend 崩溃后旧 Worker 不作为孤儿继续运行。启动时 Job Center 先把失去实际进程的旧活动 Task 按
+现有 orphan reconciliation 收敛；若无人值守 run 仍有效，Supervisor 为该控制器创建新 Task，但延用
+相同逻辑 `poll_session_id`。因此重启最多增加一条可解释的恢复 Task，不会按轮询周期新增历史记录。
+
 ## 事件协议
 
 每个事件至少包含：

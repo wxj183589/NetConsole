@@ -581,6 +581,56 @@ describe('Job Center saved artifact capability lifecycle', () => {
     app.unmount()
   })
 
+  it('renders resident AC polling as indeterminate lifecycle progress', async () => {
+    const root = node('root')
+    const pinia = createPinia()
+    const store = useTaskStore(pinia)
+    vi.spyOn(store, 'acquirePolling').mockImplementation(() => undefined)
+    vi.spyOn(store, 'releasePolling').mockImplementation(() => undefined)
+    store.selected = {
+      ...task('resident-ac'),
+      type: 'ac_mesh_link_resident_poll',
+      name: 'AC Mesh-Link 常驻轮询 · 无线控制器',
+      status: 'RUNNING',
+      progress: 29,
+      current: 63,
+      total: 0,
+      task_mode: 'resident',
+      progress_mode: 'indeterminate',
+      owner: 'ground_unattended_ac_mesh_link',
+      details: {
+        connection_state: 'WAITING',
+        poll_interval_seconds: 10,
+        poll_count: 63,
+        success_count: 62,
+        failure_count: 1,
+        reconnect_count: 1,
+        consecutive_failures: 0,
+        last_success_at: '2026-07-29T08:00:00+08:00',
+        next_poll_at: '2026-07-29T08:00:10+08:00',
+        latest_snapshot_id: 88,
+        latest_snapshot_record_count: 24,
+        heartbeat_at: '2026-07-29T08:00:02+08:00',
+      },
+    }
+
+    const app = renderer.createApp(JobCenterView)
+    app.use(pinia)
+    app.mount(root)
+    await nextTick()
+    const drawer = descendants(root).find((target) => target.type === 'drawer')
+    const showDrawer = drawer?.props['onUpdate:modelValue'] as ((value: boolean) => void) | undefined
+    showDrawer?.(true)
+    await nextTick()
+
+    const text = textContent(root)
+    expect(text).toContain('常驻运行 · 已完成 63 次轮询')
+    expect(text).toContain('WAITING')
+    expect(text).toContain('63 / 62 / 1')
+    expect(text).not.toContain('29%')
+    app.unmount()
+  })
+
   it('shows completed task state and the independent partial business result with skip reasons', async () => {
     const root = node('root')
     const pinia = createPinia()
