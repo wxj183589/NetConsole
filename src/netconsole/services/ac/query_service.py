@@ -299,6 +299,63 @@ class AcManagementQueryService:
             for item, raw, optical, lldp in self._ap_records(site_id)
         ]
 
+    def list_ap_details_for_export(
+        self,
+        site_id: str,
+        *,
+        ac_id: str,
+        filters: dict[str, object] | None = None,
+        selected_ap_ids: list[str] | None = None,
+    ) -> list[AcApDetailDTO]:
+        values = dict(filters or {})
+        records = self._ap_records(site_id, ac_id=ac_id)
+        items = self._filter_ap_items(
+            [record[0] for record in records],
+            query=str(values.get("query") or ""),
+            status=str(values.get("status") or ""),
+            station=str(values.get("station") or ""),
+            section=str(values.get("section") or ""),
+            model=str(values.get("model") or ""),
+            switch=str(values.get("switch") or ""),
+            optical_statuses={str(values.get("optical_status") or "")} if values.get("optical_status") else set(),
+            sort_by="topology",
+            sort_order="asc",
+        )
+        selected = {str(value) for value in selected_ap_ids or [] if str(value)}
+        if selected:
+            items = [item for item in items if item.id in selected]
+        by_id = {record[0].id: record for record in records}
+        return [
+            AcApDetailDTO(
+                ap=item,
+                radios=self._radios(by_id[item.id][1]),
+                lldp=by_id[item.id][3],
+                optical=by_id[item.id][2],
+                connection=self._connection(by_id[item.id][1]),
+            )
+            for item in items
+        ]
+
+    def get_ac_export_identity(self, site_id: str, ac_id: str) -> AcOverviewDTO | None:
+        db_path = self._db_path(site_id)
+        if not db_path.is_file():
+            return None
+        with closing(self._connect(db_path)) as conn:
+            row = next((item for item in self._ac_rows(conn) if str(item["device_uuid"]) == ac_id), None)
+        if row is None:
+            return None
+        summary = dict(row.get("summary") or {})
+        management_ip = str(row.get("primary_address") or "")
+        return AcOverviewDTO(
+            id=ac_id,
+            name=str(row.get("name") or ac_id),
+            management_ip=management_ip,
+            web_url=build_https_url(management_ip, effective_https_port(row.get("https_port"))[0]) or "",
+            model=str(summary.get("model") or row.get("model") or ""),
+            software_version=str(summary.get("software_version") or row.get("software_version") or ""),
+            updated_at=self._latest_text(summary.get("updated_at"), summary.get("collected_at")),
+        )
+
     def get_ap_radios(self, site_id: str, ap_id: str) -> list[AcRadioDTO] | None:
         detail = self.get_ap_detail(site_id, ap_id)
         return detail.radios if detail else None
@@ -432,7 +489,36 @@ class AcManagementQueryService:
         sort_order: str = "asc",
     ) -> list[AcApDTO]:
         records = self._ap_records(site_id, ac_id=ac_id)
-        items = [record[0] for record in records]
+        return self._filter_ap_items(
+            [record[0] for record in records],
+            query=query,
+            status=status,
+            station=station,
+            section=section,
+            model=model,
+            switch=switch,
+            optical_statuses=optical_statuses,
+            current_optical_only=current_optical_only,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+
+    def _filter_ap_items(
+        self,
+        items: list[AcApDTO],
+        *,
+        query: str = "",
+        status: str = "",
+        station: str = "",
+        section: str = "",
+        model: str = "",
+        switch: str = "",
+        optical_statuses: set[str] | None = None,
+        current_optical_only: bool = False,
+        sort_by: str = "topology",
+        sort_order: str = "asc",
+    ) -> list[AcApDTO]:
+        items = list(items)
         keyword = str(query or "").strip().casefold()
         if keyword:
             items = [item for item in items if keyword in " ".join((item.name, item.ip, item.mac)).casefold()]
@@ -528,6 +614,9 @@ class AcManagementQueryService:
             mileage=mileage if mileage != "-" else "",
             direction=str(row.get("direction") or row.get("extension_line_side") or ""),
             location_note=str(row.get("location_note") or row.get("extension_location_desc") or ""),
+            point_code=str(row.get("extension_ap_point_code") or ""),
+            trackside_ap_name=str(row.get("extension_ap_name") or ""),
+            remark=str(row.get("extension_remark") or ""),
             switch_name=lldp.switch_name,
             switch_interface=lldp.interface_name,
             lldp_status=lldp.match_status,
@@ -541,22 +630,30 @@ class AcManagementQueryService:
 
     @staticmethod
     def _radios(row: dict[str, object | None]) -> list[AcRadioDTO]:
-        return [
-            AcRadioDTO(
+        radios: list[AcRadioDTO] = []
+        for rid in (1, 2, 3):
+            values = {
+                "status": str(row.get(f"rid{rid}_status") or ""),
+                "mode": str(row.get(f"rid{rid}_mode") or ""),
+                "band": str(row.get(f"rid{rid}_band") or ""),
+                "channel": str(row.get(f"rid{rid}_channel") or ""),
+                "bandwidth": str(row.get(f"rid{rid}_bandwidth") or ""),
+                "usage": str(row.get(f"rid{rid}_usage") or ""),
+                "tx_power": str(row.get(f"rid{rid}_tx_power") or ""),
+                "bssid": str(row.get(f"rid{rid}_bbssid") or ""),
+            }
+            clients = int(row.get(f"rid{rid}_clients") or 0)
+            if not any(values.values()) and clients == 0:
+                continue
+            radios.append(
+                AcRadioDTO(
                 radio_id=rid,
-                status=str(row.get(f"rid{rid}_status") or ""),
-                mode=str(row.get(f"rid{rid}_mode") or ""),
-                band=str(row.get(f"rid{rid}_band") or ""),
-                channel=str(row.get(f"rid{rid}_channel") or ""),
-                bandwidth=str(row.get(f"rid{rid}_bandwidth") or ""),
-                usage=str(row.get(f"rid{rid}_usage") or ""),
-                tx_power=str(row.get(f"rid{rid}_tx_power") or ""),
-                clients=int(row.get(f"rid{rid}_clients") or 0),
-                bssid=str(row.get(f"rid{rid}_bbssid") or ""),
+                clients=clients,
                 updated_at=str(row.get("updated_at") or row.get("collected_at") or ""),
+                **values,
+                )
             )
-            for rid in (1, 2)
-        ]
+        return radios
 
     @staticmethod
     def _connection(row: dict[str, object | None]) -> AcConnectionRecordDTO:

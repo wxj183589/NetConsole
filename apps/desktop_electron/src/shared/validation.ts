@@ -73,6 +73,7 @@ const DOWNLOAD_ENDPOINTS = [
   { pattern: new RegExp(`^/api/file-management/downloads/${DOWNLOAD_SEGMENT}/file$`), query: new Set(['site_id']), required: new Set<string>() },
   { pattern: new RegExp(`^/api/ac-management/extensions/artifacts/${DOWNLOAD_SEGMENT}/download$`), query: new Set<string>(), required: new Set<string>() },
   { pattern: new RegExp(`^/api/ac-management/fit-aps/omnipeek/artifacts/${DOWNLOAD_SEGMENT}/download$`), query: new Set<string>(), required: new Set<string>() },
+  { pattern: new RegExp(`^/api/ac-management/fit-aps/artifacts/${DOWNLOAD_SEGMENT}/download$`), query: new Set<string>(), required: new Set<string>() },
   { pattern: new RegExp(`^/api/rail-transit/mesh-analysis/sessions/${DOWNLOAD_SEGMENT}/artifacts/${DOWNLOAD_SEGMENT}/download$`), query: new Set<string>(), required: new Set<string>() },
   { pattern: new RegExp(`^/api/rail-transit/trackside-ap-business/artifacts/${DOWNLOAD_SEGMENT}/download$`), query: new Set<string>(), required: new Set<string>() },
   { pattern: /^\/api\/rail-transit\/base-data\/station-template$/, query: new Set(['site_id']), required: new Set<string>() },

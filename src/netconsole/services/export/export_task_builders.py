@@ -420,6 +420,40 @@ def fit_ap_csv_spec(
     )
 
 
+def fit_ap_resource_xlsx_spec(
+    output_path: str | Path,
+    *,
+    db_path: str | Path,
+    site_name: str,
+    ac_uuid: str,
+    scope: str,
+    selected_ap_ids: Iterable[str] | None = None,
+    filters: Mapping[str, Any] | None = None,
+    requested_at: str = "",
+    app_root: str | Path | None = None,
+    data_root: str | Path | None = None,
+    title: str = "",
+    open_dir_on_success: bool = True,
+) -> ExportTaskSpec:
+    return ExportTaskSpec(
+        task_type="fit_ap_resource_xlsx",
+        output_path=str(output_path),
+        title=title,
+        open_dir_on_success=open_dir_on_success,
+        payload={
+            "db_path": str(db_path),
+            "site_name": site_name,
+            "ac_uuid": ac_uuid,
+            "scope": scope,
+            "selected_ap_ids": [str(value) for value in selected_ap_ids or [] if str(value)],
+            "filters": dict(filters or {}),
+            "requested_at": requested_at,
+            "app_root": str(app_root) if app_root is not None else "",
+            "data_root": str(data_root) if data_root is not None else "",
+        },
+    )
+
+
 def fit_ap_extension_xlsx_spec(
     output_path: str | Path,
     *,
