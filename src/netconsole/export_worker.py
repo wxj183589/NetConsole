@@ -47,7 +47,12 @@ def _should_cancel(job: ExportJob) -> bool:
     return bool(job.cancel_path and Path(job.cancel_path).exists())
 
 
-def _web_public_result(job: ExportJob, *, row_count: int) -> dict[str, object] | None:
+def _web_public_result(
+    job: ExportJob,
+    *,
+    row_count: int,
+    details: dict[str, object] | None = None,
+) -> dict[str, object] | None:
     value = job.params.get("_web_public_result")
     if not isinstance(value, dict):
         return None
@@ -56,12 +61,23 @@ def _web_public_result(job: ExportJob, *, row_count: int) -> dict[str, object] |
         raise ValueError("Web 导出公开结果无效")
     result = dict(sanitized)
     result["row_count"] = int(row_count or 0)
+    for key in ("ap_count", "radio_count", "warning_count"):
+        value = (details or {}).get(key)
+        if isinstance(value, int) and value >= 0:
+            result[key] = value
     result["artifact_pending"] = True
     return result
 
 
-def _finished(job: ExportJob, output_path: str, *, message: str = "导出完成", row_count: int = 0) -> dict[str, Any]:
-    public_result = _web_public_result(job, row_count=row_count)
+def _finished(
+    job: ExportJob,
+    output_path: str,
+    *,
+    message: str = "导出完成",
+    row_count: int = 0,
+    details: dict[str, object] | None = None,
+) -> dict[str, Any]:
+    public_result = _web_public_result(job, row_count=row_count, details=details)
     if public_result is not None:
         return task_finished_event(job.job_id, public_result, message)
     return finished_event(job.job_id, output_path, message=message, row_count=row_count)
@@ -287,6 +303,7 @@ def _run_job(job: ExportJob) -> int:
                     str(result.get("path") or job.output_path),
                     message=completed_message,
                     row_count=int(result.get("row_count") or 0),
+                    details=result,
                 )
             )
             return 0

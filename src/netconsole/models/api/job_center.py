@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 
 from netconsole.models.api.common import ApiModel
@@ -37,6 +39,9 @@ class JobCenterTaskDTO(ApiModel):
     created_time: str = ""
     started_time: str = ""
     finished_time: str = ""
+    expires_at: str = ""
+    acknowledged_at: str = ""
+    dismissed_at: str = ""
     updated_time: str = ""
     duration_seconds: float = 0.0
     error_code: str = ""
@@ -68,6 +73,55 @@ class JobCenterSummaryDTO(ApiModel):
     completed: int = 0
     failed: int = 0
     warning: int = 0
+    unacknowledged_failed: int = 0
+    unacknowledged_warning: int = 0
+
+
+JobCenterCleanupType = Literal[
+    "completed",
+    "cancelled",
+    "expired",
+    "completed_and_expired",
+    "resolved_alerts",
+    "all_history",
+]
+
+
+class JobCenterCleanupRequest(ApiModel):
+    cleanup_type: JobCenterCleanupType
+    site_id: str = ""
+    include_states: list[str] = Field(default_factory=list)
+    exclude_states: list[str] = Field(default_factory=list)
+    delete_artifacts: bool = False
+    dry_run: bool = False
+
+
+class JobCenterCleanupCountsDTO(ApiModel):
+    completed: int = 0
+    cancelled: int = 0
+    expired: int = 0
+    alerts: int = 0
+
+
+class JobCenterCleanupResultDTO(ApiModel):
+    matched: int = 0
+    dismissed: int = 0
+    skipped_active: int = 0
+    skipped_unacknowledged: int = 0
+    artifacts_deleted: int = 0
+    task_ids: list[str] = Field(default_factory=list)
+    counts: JobCenterCleanupCountsDTO = Field(default_factory=JobCenterCleanupCountsDTO)
+
+
+class JobCenterAcknowledgeRequest(ApiModel):
+    task_ids: list[str] = Field(default_factory=list)
+    all_alerts: bool = False
+
+
+class JobCenterAcknowledgeResultDTO(ApiModel):
+    acknowledged: int = 0
+    task_ids: list[str] = Field(default_factory=list)
+    acknowledged_at: str = ""
 
 
 class JobCenterLogLineDTO(ApiModel):
@@ -90,6 +144,11 @@ __all__ = [
     "JobCenterLogLineDTO",
     "JobCenterArtifactDTO",
     "JobCenterLogTailDTO",
+    "JobCenterCleanupCountsDTO",
+    "JobCenterCleanupRequest",
+    "JobCenterCleanupResultDTO",
+    "JobCenterAcknowledgeRequest",
+    "JobCenterAcknowledgeResultDTO",
     "JobCenterSummaryDTO",
     "JobCenterTaskDTO",
 ]

@@ -1,9 +1,23 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
-import { cancelTask, getTask, getTaskLogs, listTasks } from '../api/tasks'
+import {
+  acknowledgeAllTaskAlerts,
+  acknowledgeTask,
+  cancelTask,
+  cleanupTasks,
+  dismissTask,
+  getTask,
+  getTaskLogs,
+  listTasks,
+} from '../api/tasks'
 import { resolveWebSocketUrl } from '../platform/runtime'
-import type { TaskItem, TaskLogLine } from '../types/task'
+import type {
+  TaskCleanupResult,
+  TaskCleanupType,
+  TaskItem,
+  TaskLogLine,
+} from '../types/task'
 import { activeTaskStatuses } from '../utils/taskStatus'
 
 export const useTaskStore = defineStore('tasks', () => {
@@ -36,6 +50,12 @@ export const useTaskStore = defineStore('tasks', () => {
   const failedCount = computed(() => tasks.value.filter((task) => task.status === 'FAILED').length)
   const completedCount = computed(() => tasks.value.filter((task) => task.status === 'COMPLETED').length)
   const warningCount = computed(() => tasks.value.filter((task) => task.has_warning).length)
+  const unacknowledgedFailedTasks = computed(() => (
+    tasks.value.filter((task) => task.status === 'FAILED' && !task.acknowledged_at)
+  ))
+  const unacknowledgedWarningTasks = computed(() => (
+    tasks.value.filter((task) => task.has_warning && !task.acknowledged_at)
+  ))
 
   async function refresh(): Promise<void> {
     if (listBusy) return
@@ -138,6 +158,33 @@ export const useTaskStore = defineStore('tasks', () => {
     }
   }
 
+  async function previewCleanup(cleanupType: TaskCleanupType): Promise<TaskCleanupResult> {
+    return cleanupTasks(cleanupType, { dryRun: true })
+  }
+
+  async function cleanupHistory(cleanupType: TaskCleanupType): Promise<TaskCleanupResult> {
+    const result = await cleanupTasks(cleanupType)
+    applyDismissed(result.task_ids)
+    return result
+  }
+
+  async function dismissHistoryTask(id: string): Promise<TaskCleanupResult> {
+    const result = await dismissTask(id)
+    applyDismissed(result.task_ids)
+    return result
+  }
+
+  async function acknowledgeHistoryTask(id: string): Promise<void> {
+    const result = await acknowledgeTask(id)
+    applyAcknowledged(result.task_ids, result.acknowledged_at)
+  }
+
+  async function acknowledgeAllAlerts(): Promise<number> {
+    const result = await acknowledgeAllTaskAlerts()
+    applyAcknowledged(result.task_ids, result.acknowledged_at)
+    return result.acknowledged
+  }
+
   function setDetailVisible(value: boolean): void {
     detailVisible = value
     if (!value) {
@@ -191,10 +238,25 @@ export const useTaskStore = defineStore('tasks', () => {
       try {
         const event = JSON.parse(String(message.data)) as {
           type?: string
-          payload?: { tasks?: TaskItem[] }
+          payload?: {
+            tasks?: TaskItem[]
+            task_ids?: string[]
+            acknowledged_at?: string
+          }
         }
         if (event.type === 'snapshot') {
           scheduleSocketRefresh(true)
+          return
+        }
+        if (event.type === 'tasks.dismissed') {
+          applyDismissed(event.payload?.task_ids || [])
+          return
+        }
+        if (event.type === 'tasks.acknowledged') {
+          applyAcknowledged(
+            event.payload?.task_ids || [],
+            event.payload?.acknowledged_at || '',
+          )
           return
         }
         if (event.type !== 'heartbeat') scheduleSocketRefresh()
@@ -238,6 +300,35 @@ export const useTaskStore = defineStore('tasks', () => {
     }, delay)
   }
 
+  function applyDismissed(taskIds: string[]): void {
+    const dismissed = new Set(taskIds)
+    if (!dismissed.size) return
+    tasks.value = tasks.value.filter((task) => !dismissed.has(task.id))
+    if (selected.value && dismissed.has(selected.value.id)) {
+      selected.value = null
+      logs.value = []
+      detailVisible = false
+      logContextGeneration += 1
+      activeLogRequest = null
+    }
+  }
+
+  function applyAcknowledged(taskIds: string[], acknowledgedAt: string): void {
+    const acknowledged = new Set(taskIds)
+    if (!acknowledged.size) return
+    tasks.value = tasks.value.map((task) => (
+      acknowledged.has(task.id)
+        ? { ...task, acknowledged_at: acknowledgedAt || task.acknowledged_at || '' }
+        : task
+    ))
+    if (selected.value && acknowledged.has(selected.value.id)) {
+      selected.value = {
+        ...selected.value,
+        acknowledged_at: acknowledgedAt || selected.value.acknowledged_at || '',
+      }
+    }
+  }
+
   return {
     tasks,
     selected,
@@ -253,6 +344,8 @@ export const useTaskStore = defineStore('tasks', () => {
     failedCount,
     completedCount,
     warningCount,
+    unacknowledgedFailedTasks,
+    unacknowledgedWarningTasks,
     activeTasks,
     refresh,
     selectTask,
@@ -261,6 +354,11 @@ export const useTaskStore = defineStore('tasks', () => {
     manualRefresh,
     requestCancel,
     requestCancelTask,
+    previewCleanup,
+    cleanupHistory,
+    dismissHistoryTask,
+    acknowledgeHistoryTask,
+    acknowledgeAllAlerts,
     setDetailVisible,
     setLogsExpanded,
     acquirePolling,

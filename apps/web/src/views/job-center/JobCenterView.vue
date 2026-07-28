@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { CopyDocument, Refresh, View } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Check, CopyDocument, Delete, Refresh, View } from '@element-plus/icons-vue'
 
 import NcStatusTag from '../../components/NcStatusTag.vue'
 import NcDataTable from '../../components/table/NcDataTable.vue'
@@ -50,6 +50,20 @@ const selectedDetails = computed<Record<string, unknown>>(() => store.selected?.
 const historicalTextDamaged = computed(() => store.selected?.text_integrity === 'historical_corrupted')
 const currentTextDamaged = computed(() => store.selected?.text_integrity === 'current_corrupted')
 const unknownTextDamaged = computed(() => store.selected?.text_integrity === 'unknown_corrupted')
+const selectedNeedsAcknowledgement = computed(() => Boolean(
+  store.selected
+  && !store.selected.acknowledged_at
+  && (
+    store.selected.status === 'FAILED'
+    || store.selected.status === 'ABORTED'
+    || store.selected.has_warning
+  )
+))
+const selectedCanDismiss = computed(() => Boolean(
+  store.selected
+  && ['COMPLETED', 'FAILED', 'CANCELLED', 'ABORTED', 'STOPPED'].includes(store.selected.status)
+  && !selectedNeedsAcknowledgement.value
+))
 const showCurrentProcessing = computed(() => {
   const details = selectedDetails.value
   const phase = String(details.phase || '')
@@ -190,6 +204,13 @@ function matchesFilter(task: TaskItem): boolean {
   if (filter.value === 'stopped') return ['CANCELLED', 'STOPPED'].includes(task.status)
   if (filter.value === 'aborted') return task.status === 'ABORTED' || ['TASK_ONLY_FAILED', 'STALE'].includes(task.mapping_state)
   if (filter.value === 'warning') return task.has_warning
+  if (filter.value === 'attention') {
+    return !task.acknowledged_at && (
+      task.status === 'FAILED'
+      || task.status === 'ABORTED'
+      || task.has_warning
+    )
+  }
   return true
 }
 
@@ -266,6 +287,38 @@ async function downloadArtifact(): Promise<void> {
   } else if (result.status === 'started' && !tracksideArtifact) {
     ElMessage.info('文件已交由浏览器下载，请在浏览器下载记录中查看。')
   } else if (result.status === 'failed' && !tracksideArtifact) ElMessage.error(result.error || 'Artifact 下载失败')
+}
+
+async function acknowledgeSelected(): Promise<void> {
+  if (!store.selected || !selectedNeedsAcknowledgement.value) return
+  try {
+    await store.acknowledgeHistoryTask(store.selected.id)
+    ElMessage.success(t('job_center.acknowledge.done', '任务已标记为已处理'))
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : t('job_center.acknowledge.failed', '标记失败'))
+  }
+}
+
+async function dismissSelected(): Promise<void> {
+  if (!store.selected || !selectedCanDismiss.value) return
+  const taskId = store.selected.id
+  try {
+    await ElMessageBox.confirm(
+      t('job_center.cleanup.dismiss_single', '仅从任务中心移除此记录，不会删除日志、采集文件或导出结果。'),
+      t('job_center.cleanup.dismiss', '从列表移除'),
+      {
+        confirmButtonText: t('job_center.cleanup.dismiss_confirm', '移除'),
+        cancelButtonText: t('job_center.cleanup.cancel', '取消'),
+        type: 'warning',
+      },
+    )
+    await store.dismissHistoryTask(taskId)
+    drawerVisible.value = false
+    ElMessage.success(t('job_center.cleanup.dismissed', '任务记录已从列表移除'))
+  } catch (cause) {
+    if (cause === 'cancel' || cause === 'close') return
+    ElMessage.error(cause instanceof Error ? cause.message : '移除失败')
+  }
 }
 
 function stringDetail(key: string, fallback = '--'): string {
@@ -416,6 +469,7 @@ const revealSaved = () => runSavedAction('reveal')
             <el-option label="已停止" value="stopped" />
             <el-option label="已中断" value="aborted" />
             <el-option label="有告警" value="warning" />
+            <el-option label="未处理失败/告警" value="attention" />
           </el-select>
           <el-select v-model="moduleFilter" style="width: 150px"><el-option label="全部模块" value="all" /><el-option label="设备管理" value="devices" /><el-option label="AC 管理" value="ac" /><el-option label="轨道交通" value="rail" /><el-option label="配置采集" value="config" /><el-option label="文件管理" value="files" /><el-option label="网络工具" value="network" /><el-option label="命令说明" value="command-reference" /><el-option label="日志维护" value="logs" /></el-select>
           <el-button :icon="Refresh" :loading="store.loading" @click="store.manualRefresh">刷新</el-button>
@@ -551,6 +605,23 @@ const revealSaved = () => runSavedAction('reveal')
           <el-tooltip :content="store.selected.cancel_reason" :disabled="store.selected.cancellable"><span><el-button type="danger" :disabled="!store.selected.cancellable" @click="cancelSelected">停止 / 取消</el-button></span></el-tooltip>
           <el-tooltip :content="store.selected.retry_reason" :disabled="store.selected.retryable"><span><el-button :disabled="!store.selected.retryable">重试</el-button></span></el-tooltip>
           <el-tooltip :content="store.selected.artifact_reason" :disabled="Boolean(store.selected.artifact_download)"><span><el-button :disabled="!store.selected.artifact_download" @click="downloadArtifact">{{ artifactDownloadLabel }}</el-button></span></el-tooltip>
+          <el-button
+            v-if="selectedNeedsAcknowledgement"
+            :icon="Check"
+            @click="acknowledgeSelected"
+          >{{ t('job_center.acknowledge.one', '标记为已处理') }}</el-button>
+          <el-tooltip
+            content="失败或告警任务需先标记为已处理；活动任务不能移除"
+            :disabled="selectedCanDismiss"
+          >
+            <span>
+              <el-button
+                :icon="Delete"
+                :disabled="!selectedCanDismiss"
+                @click="dismissSelected"
+              >{{ t('job_center.cleanup.dismiss', '从列表移除') }}</el-button>
+            </span>
+          </el-tooltip>
           <template v-if="lastSavedCapability">
             <el-button @click="openSaved">打开文件</el-button>
             <el-button @click="revealSaved">打开所在目录</el-button>

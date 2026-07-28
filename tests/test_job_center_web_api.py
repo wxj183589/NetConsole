@@ -335,6 +335,8 @@ def test_job_center_get_api_is_read_only_and_returns_associations(
         "completed": 1,
         "failed": 1,
         "warning": 1,
+        "unacknowledged_failed": 1,
+        "unacknowledged_warning": 1,
     }
     assert after == before
 
@@ -1258,7 +1260,7 @@ def test_job_center_dto_hides_paths_and_builds_owner_artifact_capabilities(
         assert "C:\\secret" not in str(payload)
 
 
-def test_job_center_router_exposes_only_owner_checked_cancel_mutation(
+def test_job_center_router_exposes_only_owner_checked_task_mutations(
     tmp_path: Path,
 ) -> None:
     app, _db_path = _app_with_tasks(tmp_path)
@@ -1272,7 +1274,11 @@ def test_job_center_router_exposes_only_owner_checked_cancel_mutation(
     assert routes
     assert {method for _path, method in routes} == {"GET", "POST"}
     assert {(path, method) for path, method in routes if method == "POST"} == {
-        ("/api/job-center/tasks/{task_id}/cancel", "POST")
+        ("/api/job-center/acknowledge", "POST"),
+        ("/api/job-center/cleanup", "POST"),
+        ("/api/job-center/tasks/{task_id}/acknowledge", "POST"),
+        ("/api/job-center/tasks/{task_id}/cancel", "POST"),
+        ("/api/job-center/tasks/{task_id}/dismiss", "POST"),
     }
     assert all(
         not path.endswith(("/stop", "/force-stop", "/retry"))

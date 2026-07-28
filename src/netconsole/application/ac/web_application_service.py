@@ -9,6 +9,7 @@ import secrets
 import threading
 import time
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -39,9 +40,14 @@ from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.ac.fit_ap_optical_task_guard import fit_ap_optical_resource_key
+from netconsole.services.ac.fit_ap_resource_export import make_fit_ap_resource_filename
 from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.export.export_task_builders import fit_ap_extension_xlsx_spec, omnipeek_name_table_spec
+from netconsole.services.export.export_task_builders import (
+    fit_ap_extension_xlsx_spec,
+    fit_ap_resource_xlsx_spec,
+    omnipeek_name_table_spec,
+)
 from netconsole.services.external_terminal import (
     TERMINAL_LABELS,
     available_external_terminal_configs,
@@ -84,6 +90,7 @@ class AcWebApplicationService:
     _ARTIFACT_TASK_TYPES = {
         "ac_extension_export": "web_export_fit_ap_extension_xlsx",
         "ac_omnipeek_export": "web_export_omnipeek_name_table",
+        "ac_fit_ap_resource_export": "web_export_fit_ap_resource_xlsx",
     }
     _LOCAL_REBUILD_TASKS = {
         "ac_overview_refresh": "AC 在线概览本地重算",
@@ -108,6 +115,7 @@ class AcWebApplicationService:
         "omnipeek_name_table_preview": "ac_omnipeek_preview",
         "web_export_omnipeek_name_table": "ac_omnipeek_export",
         "web_export_fit_ap_extension_xlsx": "ac_extension_export",
+        "web_export_fit_ap_resource_xlsx": "ac_fit_ap_resource_export",
     }
     _locks_guard = threading.Lock()
     _locks: dict[str, threading.RLock] = {}
@@ -539,6 +547,114 @@ class AcWebApplicationService:
             raise
         return self._task_dto(site_id, task_id)
 
+    def start_fit_ap_resource_export(
+        self,
+        site_id: str,
+        *,
+        ac_id: str,
+        scope: str,
+        selected_ap_ids: list[str],
+        filters: dict[str, object] | None = None,
+    ) -> AcWebTaskDTO:
+        site_id = self._site(site_id)
+        if self.export_adapter is None:
+            raise AcWebActionError("EXPORT_NOT_WIRED", "FIT-AP 资源导出进程未接线")
+        device_uuid = str(self._target(site_id, ac_id).device_uuid)
+        scope = str(scope or "").casefold()
+        if scope not in {"filtered", "selected", "all"}:
+            raise AcWebActionError("EXPORT_SCOPE_INVALID", "FIT-AP 资源导出范围无效")
+        selected = list(dict.fromkeys(str(value or "").strip() for value in selected_ap_ids if str(value or "").strip()))
+        if scope == "selected" and not selected:
+            raise AcWebActionError("AP_SELECTION_REQUIRED", "请先选择要导出的 FIT-AP")
+        allowed_filters = {"query", "status", "optical_status", "station", "section", "model", "switch"}
+        values = {
+            key: str(value or "").strip()
+            for key, value in dict(filters or {}).items()
+            if key in allowed_filters and str(value or "").strip()
+        }
+        effective_filters = values if scope == "filtered" else {}
+        effective_selected = selected if scope == "selected" else []
+        details = AcManagementQueryService(self.paths).list_ap_details_for_export(
+            site_id,
+            ac_id=device_uuid,
+            filters=effective_filters,
+            selected_ap_ids=effective_selected,
+        )
+        if effective_selected and {item.ap.id for item in details} != set(effective_selected):
+            raise AcWebActionError("AP_TARGET_NOT_AUTHORIZED", "已选择 AP 不属于当前 AC")
+        if not details:
+            raise AcWebActionError("EXPORT_SCOPE_EMPTY", "当前范围内没有可导出的 FIT AP")
+
+        ac = AcManagementQueryService(self.paths).get_ac_export_identity(site_id, device_uuid)
+        if ac is None:
+            raise AcWebActionError("TARGET_NOT_AUTHORIZED", "当前 AC 不存在")
+        requested_at = datetime.now(timezone.utc).isoformat()
+        task_id = f"ac-fit-ap-export-{uuid4().hex}"
+        reservation = self.artifact_store.reserve(
+            site_id=site_id,
+            owner=self._OWNER,
+            source="ac_fit_ap_resource_export",
+            artifact_type="xlsx",
+            task_id=task_id,
+            task_type=self._ARTIFACT_TASK_TYPES["ac_fit_ap_resource_export"],
+            output_root=self.paths.trackside_ap_outputs_dir(site_id) / "web_fit_ap_resources",
+            preferred_name=make_fit_ap_resource_filename(site_id, ac.name),
+            use_display_name_as_file_name=True,
+        )
+        job = fit_ap_resource_xlsx_spec(
+            reservation.output_path,
+            db_path=self.paths.site_db_path(site_id),
+            site_name=site_id,
+            ac_uuid=device_uuid,
+            scope=scope,
+            selected_ap_ids=effective_selected,
+            filters=effective_filters,
+            requested_at=requested_at,
+            app_root=self.paths.app_root,
+            data_root=self.paths.data_root,
+            title="导出 FIT-AP 资源",
+            open_dir_on_success=False,
+        ).to_job(task_id)
+        job = replace(job, site_name=site_id)
+        scope_fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "ac_id": device_uuid,
+                    "scope": scope,
+                    "selected_ap_ids": sorted(effective_selected),
+                    "filters": effective_filters,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()[:20]
+
+        def completed(value: LocalProcessCompletion) -> None:
+            try:
+                if value.exit_code == 0 and not value.cancelled:
+                    self.artifact_store.complete(reservation)
+                else:
+                    self.artifact_store.fail(reservation)
+            except WebArtifactError:
+                self.artifact_store.fail(reservation)
+
+        try:
+            self.export_adapter.start_export(
+                job,
+                task_name="导出 FIT-AP 资源",
+                owner=self._OWNER,
+                public_result=self._public_artifact_result(reservation),
+                resource_keys=[f"ac-fit-ap-export:{site_id}:{device_uuid}:{scope_fingerprint}"],
+                on_complete=completed,
+            )
+        except TaskResourceConflictError as exc:
+            self.artifact_store.fail(reservation)
+            raise AcWebActionError("EXPORT_ALREADY_RUNNING", "相同范围的 FIT-AP 资源导出正在运行") from exc
+        except Exception:
+            self.artifact_store.fail(reservation)
+            raise
+        return self._task_dto(site_id, task_id)
+
     def omnipeek_preferences(self, site_id: str) -> AcOmniPeekPreferencesDTO:
         site_id = self._site(site_id)
         return AcOmniPeekPreferencesDTO(
@@ -962,6 +1078,20 @@ class AcWebApplicationService:
             raise AcWebActionError("ARTIFACT_INVALID", str(exc)) from exc
         return path, name
 
+    def open_fit_ap_resource_export(self, site_id: str, artifact_id: str) -> tuple[Path, str]:
+        try:
+            path, name, _manifest = self.artifact_store.open(
+                site_id=self._site(site_id),
+                artifact_id=artifact_id,
+                owner=self._OWNER,
+                source="ac_fit_ap_resource_export",
+                artifact_type="xlsx",
+                task_type=self._ARTIFACT_TASK_TYPES["ac_fit_ap_resource_export"],
+            )
+        except WebArtifactError as exc:
+            raise AcWebActionError("ARTIFACT_INVALID", str(exc)) from exc
+        return path, name
+
     def _task_dto(self, site_id: str, task_id: str) -> AcWebTaskDTO:
         snapshot = sanitize_web_export_snapshot(self._task_snapshot(site_id, task_id))
         metadata = (
@@ -980,6 +1110,7 @@ class AcWebApplicationService:
             action=self._TASK_ACTIONS[snapshot.task_type],
             target_id=str(snapshot.device if snapshot.task_type == "ac_command_action_execute" else ""),
             artifact_id=str((metadata or {}).get("artifact_id") or ""),
+            artifact_name=str((metadata or {}).get("display_name") or (metadata or {}).get("file_name") or ""),
             available=bool(metadata and metadata.get("completed") is True),
             progress=snapshot.progress,
             stage=snapshot.stage,
@@ -1059,6 +1190,9 @@ class AcWebApplicationService:
             "plan_digest",
             "updated",
             "skipped",
+            "ap_count",
+            "radio_count",
+            "warning_count",
         ):
             value = result.get(key)
             if isinstance(value, (bool, int, float, str, dict)):

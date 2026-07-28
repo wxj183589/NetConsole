@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { deleteAcFitAps, exportAcExtensions, getAcExternalTerminalOptions, getAcOmniPeekPreview, getAcWebTask, importAcFitApMetadata, openAcFitApExternalTerminal, recoverAcWebTasks, saveAcFitApMetadata, startAcLocalRebuild, startAcOmniPeekExport, startAcOmniPeekPreview, startAcResourceRefresh } from './acWebParity'
+import { acFitApResourceArtifactDownloadRequest, deleteAcFitAps, exportAcExtensions, getAcExternalTerminalOptions, getAcOmniPeekPreview, getAcWebTask, importAcFitApMetadata, openAcFitApExternalTerminal, recoverAcWebTasks, saveAcFitApMetadata, startAcFitApResourceExport, startAcLocalRebuild, startAcOmniPeekExport, startAcOmniPeekPreview, startAcResourceRefresh } from './acWebParity'
 
 describe('AC Web parity API client', () => {
   it('submits only the local rebuild target and exposes task recovery', async () => {
@@ -60,5 +60,50 @@ describe('AC Web parity API client', () => {
     expect(fetchMock.mock.calls[4][1].body).not.toContain('port')
     expect(fetchMock.mock.calls[4][1].body).not.toContain('username')
     expect(fetchMock.mock.calls[4][1].body).not.toContain('password')
+  })
+
+  it('submits FIT-AP export filters without pagination and binds artifact integrity', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ task_id: 'export-1' }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await startAcFitApResourceExport('ac-1', 'filtered', [], {
+      query: '74ad',
+      status: 'online',
+      optical_status: 'warning',
+      station: '高桥西站',
+      section: '高桥西站-梁祝站',
+      model: 'WA6528X-E',
+      switch: '16-双塔站',
+    })
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/ac-management/fit-aps/export')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      ac_id: 'ac-1',
+      scope: 'filtered',
+      selected_ap_ids: [],
+      filters: {
+        query: '74ad',
+        status: 'online',
+        optical_status: 'warning',
+        station: '高桥西站',
+        section: '高桥西站-梁祝站',
+        model: 'WA6528X-E',
+        switch: '16-双塔站',
+      },
+      format: 'xlsx',
+    })
+    expect(fetchMock.mock.calls[0][1].body).not.toContain('page_size')
+    expect(acFitApResourceArtifactDownloadRequest({
+      artifact_id: 'artifact-1',
+      artifact_name: 'FIT-AP资源_测试.xlsx',
+      size_bytes: 42,
+      sha256: 'a'.repeat(64),
+    })).toEqual({
+      apiPath: '/api/ac-management/fit-aps/artifacts/artifact-1/download',
+      suggestedName: 'FIT-AP资源_测试.xlsx',
+      filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }],
+      expectedSizeBytes: 42,
+      expectedSha256: 'a'.repeat(64),
+    })
   })
 })
