@@ -11,6 +11,9 @@ from uuid import uuid4
 from netconsole.core.paths import PathResolver
 from netconsole.core.sqlite_utils import configure_sqlite_connection
 from netconsole.core.sites import SiteManager
+from netconsole.repositories.ap_management_vlan_repository import (
+    ApManagementVlanRepository,
+)
 from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.utils.mileage import parse_track_mileage
 
@@ -176,6 +179,7 @@ class RailTransitBaseDataRepository:
             connection.execute("DELETE FROM ap_extension_points WHERE belong_type = '__base_section__'")
             connection.execute("DELETE FROM ap_extension_points WHERE belong_type = '__base_station__'")
             plan_cursor = connection.execute("DELETE FROM ac_trackside_ap_plan")
+            connection.execute("DELETE FROM rail_ap_vlan_plans")
             plan_deleted_count = max(0, int(plan_cursor.rowcount))
             remaining = connection.execute(
                 """
@@ -285,7 +289,7 @@ class RailTransitBaseDataRepository:
                 elif entity_type == "vehicle_mr":
                     self._apply_mr_change(connection, action, change.get("entity_id"), values)
                 elif entity_type == "trackside_ap_plan":
-                    self._replace_trackside_ap_plan(connection, values.get("rows") or [])
+                    self._replace_trackside_ap_plan(connection, values)
                 else:
                     raise ValueError("unsupported base data entity")
                 key = {"create": "created_count", "update": "updated_count", "delete": "deleted_count", "replace": "updated_count"}.get(action)
@@ -299,6 +303,21 @@ class RailTransitBaseDataRepository:
                             if str(value).strip()
                         }
                     )
+            has_station_change = any(
+                str(change.get("entity_type") or "") == "station" for change in changes
+            )
+            has_plan_change = any(
+                str(change.get("entity_type") or "") == "trackside_ap_plan"
+                for change in changes
+            )
+            if has_station_change and not has_plan_change:
+                connection.execute(
+                    """
+                    UPDATE rail_ap_vlan_plans
+                    SET revision = revision + 1, updated_at = ?
+                    """,
+                    (self._now(),),
+                )
             self._assert_integrity(connection)
             if metadata_changes:
                 metadata = dict(current_metadata)
@@ -420,6 +439,14 @@ class RailTransitBaseDataRepository:
             if self._station_reference_count(connection, old_name):
                 raise RailTransitBaseDataConstraintError("站点仍被区间、轨旁 AP、关系或规划引用")
             connection.execute(
+                "DELETE FROM rail_ap_vlan_group_members WHERE station_name = ?",
+                (old_name,),
+            )
+            connection.execute(
+                "DELETE FROM ac_trackside_ap_plan WHERE station_name = ?",
+                (old_name,),
+            )
+            connection.execute(
                 "DELETE FROM ap_extension_points WHERE belong_type = '__base_station__' AND station_name = ?",
                 (old_name,),
             )
@@ -440,6 +467,11 @@ class RailTransitBaseDataRepository:
             ]
             for source_name in dict.fromkeys(source_names):
                 self._migrate_station_name_references(connection, source_name, name)
+            self._coalesce_station_vlan_members(
+                connection,
+                station_name=name,
+                target_node_uid=target_uid,
+            )
             if source_uids:
                 self._migrate_section_node_uids(
                     connection,
@@ -458,6 +490,53 @@ class RailTransitBaseDataRepository:
                     list(dict.fromkeys(source_names)),
                 )
         self._replace_metadata_row(connection, site_id, "station", old_name, values)
+
+    @staticmethod
+    def _coalesce_station_vlan_members(
+        connection: sqlite3.Connection,
+        *,
+        station_name: str,
+        target_node_uid: str,
+    ) -> None:
+        rows = connection.execute(
+            """
+            SELECT group_id, station_id
+            FROM rail_ap_vlan_group_members
+            WHERE station_name = ?
+            ORDER BY station_sequence, group_id, station_id
+            """,
+            (station_name,),
+        ).fetchall()
+        if not rows:
+            return
+        keep = rows[0]
+        for row in rows[1:]:
+            connection.execute(
+                """
+                DELETE FROM rail_ap_vlan_group_members
+                WHERE group_id = ? AND station_id = ?
+                """,
+                (str(row["group_id"]), str(row["station_id"])),
+            )
+        identity_source = target_node_uid or station_name.casefold()
+        prefix = "station" if target_node_uid else "legacy-station"
+        target_station_id = (
+            f"{prefix}:{hashlib.sha1(identity_source.encode('utf-8')).hexdigest()[:12]}"
+        )
+        connection.execute(
+            """
+            UPDATE rail_ap_vlan_group_members
+            SET station_id = ?, station_name = ?, updated_at = ?
+            WHERE group_id = ? AND station_id = ?
+            """,
+            (
+                target_station_id,
+                station_name,
+                RailTransitBaseDataRepository._now(),
+                str(keep["group_id"]),
+                str(keep["station_id"]),
+            ),
+        )
 
     def _migrate_station_name_references(
         self,
@@ -485,6 +564,14 @@ class RailTransitBaseDataRepository:
         )
         connection.execute(
             "UPDATE ac_trackside_ap_plan SET station_name = ?, updated_at = ? WHERE station_name = ?",
+            (new_name, now, old_name),
+        )
+        connection.execute(
+            """
+            UPDATE rail_ap_vlan_group_members
+            SET station_name = ?, updated_at = ?
+            WHERE station_name = ?
+            """,
             (new_name, now, old_name),
         )
 
@@ -680,6 +767,10 @@ class RailTransitBaseDataRepository:
         )
         connection.execute(
             "DELETE FROM ac_trackside_ap_plan WHERE station_name = ?",
+            (station_name,),
+        )
+        connection.execute(
+            "DELETE FROM rail_ap_vlan_group_members WHERE station_name = ?",
             (station_name,),
         )
 
@@ -906,31 +997,22 @@ class RailTransitBaseDataRepository:
         if cursor.rowcount != 1:
             raise RailTransitBaseDataConstraintError("车载 MR 不存在")
 
-    def _replace_trackside_ap_plan(self, connection: sqlite3.Connection, rows: Iterable[Mapping[str, Any]]) -> None:
-        now = self._now()
-        connection.execute("DELETE FROM ac_trackside_ap_plan WHERE mode = 'unified'")
-        fields = (
-            "mode", "station_name", "ap_count", "ap_start_address", "mask_length",
-            "ap_gateway", "ap_management_vlans", "remark", "sort_order", "created_at", "updated_at",
-        )
-        for index, row in enumerate(rows):
-            payload = {
-                "mode": "unified",
-                "station_name": str(row.get("station_name") or "").strip(),
-                "ap_count": int(row.get("ap_count") or 0),
-                "ap_start_address": str(row.get("ap_start_address") or "").strip(),
-                "mask_length": row.get("mask_length"),
-                "ap_gateway": str(row.get("ap_gateway") or "").strip(),
-                "ap_management_vlans": str(row.get("ap_management_vlans") or "").strip(),
-                "remark": str(row.get("remark") or "").strip(),
-                "sort_order": index,
-                "created_at": now,
-                "updated_at": now,
-            }
-            connection.execute(
-                f"INSERT INTO ac_trackside_ap_plan ({', '.join(fields)}) VALUES ({', '.join('?' for _ in fields)})",
-                [payload[field] for field in fields],
+    def _replace_trackside_ap_plan(
+        self,
+        connection: sqlite3.Connection,
+        values: Mapping[str, Any],
+    ) -> None:
+        planning = values.get("planning")
+        if not isinstance(planning, Mapping):
+            raise RailTransitBaseDataConstraintError(
+                "轨旁 AP 管理 VLAN 规划缺少线路级设置"
             )
+        expected_revision = int(planning.get("revision") or 0)
+        ApManagementVlanRepository.replace_with_connection(
+            connection,
+            values,
+            expected_revision=expected_revision,
+        )
 
     @classmethod
     def _manual_ap_values(cls, raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -1020,17 +1102,13 @@ class RailTransitBaseDataRepository:
                 )
         endpoint_extension_count = len(endpoint_extension_refs)
         plan_row = connection.execute(
-            "SELECT COUNT(*) FROM ac_trackside_ap_plan WHERE station_name = ?",
+            "SELECT COUNT(*) FROM rail_ap_vlan_group_members WHERE station_name = ?",
             (name,),
         ).fetchone()
         plan_count = int(plan_row[0] if plan_row else 0)
         relation_count = 0
         total_count = (
-            section_start_count
-            + section_end_count
-            + ap_count
-            + relation_count
-            + plan_count
+            section_start_count + section_end_count + ap_count + relation_count
         )
         return {
             "section_start_count": section_start_count,

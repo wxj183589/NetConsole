@@ -1,5 +1,9 @@
 ﻿from __future__ import annotations
 
+import hashlib
+import ipaddress
+import json
+import re
 import sqlite3
 from pathlib import Path
 
@@ -10,7 +14,7 @@ from netconsole.core.device_credential_store import (
 from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal
 
 
-CURRENT_SCHEMA_VERSION = "2026.07.29.zte_optical_thresholds"
+CURRENT_SCHEMA_VERSION = "2026.07.29.zte_optical_thresholds_and_ap_vlan_groups"
 
 
 class DatabaseSchemaMismatchError(RuntimeError):
@@ -754,6 +758,111 @@ CREATE TABLE IF NOT EXISTS ac_trackside_ap_plan_settings (
 );
 """
 
+AP_MANAGEMENT_VLAN_PLANNING_SCHEMA = """
+CREATE TABLE IF NOT EXISTS rail_ap_vlan_plans (
+    line_id TEXT PRIMARY KEY,
+    planning_mode TEXT NOT NULL,
+    auto_group_station_count INTEGER NOT NULL DEFAULT 1,
+    address_allocation_strategy TEXT NOT NULL DEFAULT 'station_then_point',
+    revision INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK (planning_mode IN ('line_single', 'station_independent', 'station_grouped')),
+    CHECK (auto_group_station_count BETWEEN 1 AND 4),
+    CHECK (revision >= 1)
+);
+"""
+
+AP_MANAGEMENT_VLAN_GROUP_SCHEMA = """
+CREATE TABLE IF NOT EXISTS rail_ap_vlan_groups (
+    group_id TEXT PRIMARY KEY,
+    line_id TEXT NOT NULL,
+    group_code TEXT NOT NULL,
+    group_name TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    management_vlan INTEGER,
+    legacy_management_vlans TEXT NOT NULL DEFAULT '',
+    network_address TEXT NOT NULL DEFAULT '',
+    prefix_length INTEGER,
+    subnet_mask TEXT NOT NULL DEFAULT '',
+    default_gateway TEXT NOT NULL DEFAULT '',
+    ap_start_ip TEXT NOT NULL DEFAULT '',
+    ap_end_ip TEXT NOT NULL DEFAULT '',
+    address_allocation_strategy TEXT NOT NULL DEFAULT 'station_then_point',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (line_id) REFERENCES rail_ap_vlan_plans(line_id) ON DELETE CASCADE,
+    UNIQUE (line_id, group_code),
+    UNIQUE (line_id, sequence),
+    CHECK (management_vlan IS NULL OR management_vlan BETWEEN 1 AND 4094),
+    CHECK (prefix_length IS NULL OR prefix_length BETWEEN 0 AND 32)
+);
+CREATE INDEX IF NOT EXISTS idx_rail_ap_vlan_groups_line_sequence
+    ON rail_ap_vlan_groups(line_id, sequence);
+"""
+
+AP_MANAGEMENT_VLAN_GROUP_MEMBER_SCHEMA = """
+CREATE TABLE IF NOT EXISTS rail_ap_vlan_group_members (
+    group_id TEXT NOT NULL,
+    station_id TEXT NOT NULL,
+    station_name TEXT NOT NULL,
+    station_sequence INTEGER NOT NULL,
+    ap_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (group_id, station_id),
+    FOREIGN KEY (group_id) REFERENCES rail_ap_vlan_groups(group_id) ON DELETE CASCADE,
+    UNIQUE (station_id),
+    CHECK (ap_count >= 0)
+);
+CREATE INDEX IF NOT EXISTS idx_rail_ap_vlan_members_station_name
+    ON rail_ap_vlan_group_members(station_name);
+"""
+
+AP_MANAGEMENT_VLAN_ASSIGNMENT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS rail_ap_vlan_assignments (
+    assignment_id TEXT PRIMARY KEY,
+    assignment_type TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    group_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (group_id) REFERENCES rail_ap_vlan_groups(group_id) ON DELETE CASCADE,
+    UNIQUE (assignment_type, target_id),
+    CHECK (assignment_type IN ('section_default', 'interval_default', 'ap_override'))
+);
+CREATE INDEX IF NOT EXISTS idx_rail_ap_vlan_assignments_target
+    ON rail_ap_vlan_assignments(target_id);
+"""
+
+AP_MANAGEMENT_VLAN_ALLOCATION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS rail_ap_vlan_allocations (
+    ap_id TEXT PRIMARY KEY,
+    ap_name TEXT NOT NULL DEFAULT '',
+    point_code TEXT NOT NULL DEFAULT '',
+    station_id TEXT NOT NULL DEFAULT '',
+    station_name TEXT NOT NULL DEFAULT '',
+    section_name TEXT NOT NULL DEFAULT '',
+    group_id TEXT NOT NULL,
+    planned_ip TEXT NOT NULL,
+    allocation_order INTEGER NOT NULL,
+    is_manual INTEGER NOT NULL DEFAULT 0,
+    is_locked INTEGER NOT NULL DEFAULT 0,
+    source TEXT NOT NULL,
+    group_source TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (group_id) REFERENCES rail_ap_vlan_groups(group_id) ON DELETE CASCADE,
+    UNIQUE (planned_ip),
+    CHECK (is_manual IN (0, 1)),
+    CHECK (is_locked IN (0, 1))
+);
+CREATE INDEX IF NOT EXISTS idx_rail_ap_vlan_allocations_group_order
+    ON rail_ap_vlan_allocations(group_id, allocation_order);
+"""
+
 AC_STATION_ONLINE_SUMMARY_HISTORY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS ac_station_online_summary_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1066,6 +1175,7 @@ class Database:
                 )
             )
             self._apply_additive_schema_updates(conn)
+            self._migrate_trackside_ap_vlan_groups(conn)
             repair_device_credential_states(conn)
             self._write_schema_version(conn)
             conn.commit()
@@ -1333,12 +1443,170 @@ class Database:
             AC_STATION_AP_CAPACITY_SCHEMA,
             AC_TRACKSIDE_AP_PLAN_SCHEMA,
             AC_TRACKSIDE_AP_PLAN_SETTINGS_SCHEMA,
+            AP_MANAGEMENT_VLAN_PLANNING_SCHEMA,
+            AP_MANAGEMENT_VLAN_GROUP_SCHEMA,
+            AP_MANAGEMENT_VLAN_GROUP_MEMBER_SCHEMA,
+            AP_MANAGEMENT_VLAN_ASSIGNMENT_SCHEMA,
+            AP_MANAGEMENT_VLAN_ALLOCATION_SCHEMA,
             AC_STATION_ONLINE_SUMMARY_HISTORY_SCHEMA,
             AC_FIT_AP_OPTICAL_HISTORY_SCHEMA,
             AC_FIT_AP_LLDP_HISTORY_SCHEMA,
             AC_FIT_AP_RADIO_HISTORY_SCHEMA,
             CONFIG_SNAPSHOTS_SCHEMA,
         )
+
+    def _migrate_trackside_ap_vlan_groups(self, conn: sqlite3.Connection) -> None:
+        if not self._table_exists(conn, "ac_trackside_ap_plan"):
+            return
+        existing_plan = conn.execute(
+            "SELECT 1 FROM rail_ap_vlan_plans LIMIT 1"
+        ).fetchone()
+        if existing_plan is not None:
+            return
+        legacy_rows = conn.execute(
+            """
+            SELECT id, station_name, ap_count, ap_start_address, mask_length,
+                   ap_gateway, ap_management_vlans, remark, sort_order,
+                   created_at, updated_at
+            FROM ac_trackside_ap_plan
+            WHERE mode = 'unified'
+            ORDER BY sort_order, station_name, id
+            """
+        ).fetchall()
+        if not legacy_rows:
+            return
+        now = (
+            __import__("datetime")
+            .datetime.now(__import__("datetime").timezone.utc)
+            .isoformat()
+        )
+        conn.execute(
+            """
+            INSERT INTO rail_ap_vlan_plans (
+                line_id, planning_mode, auto_group_station_count,
+                address_allocation_strategy, revision, created_at, updated_at
+            )
+            VALUES ('current', 'station_independent', 1, 'station_then_point', 1, ?, ?)
+            """,
+            (now, now),
+        )
+        for sequence, row in enumerate(legacy_rows):
+            station_name = str(row["station_name"] or "").strip()
+            vlan_text = self._normalized_vlan_text(row["ap_management_vlans"])
+            vlan_values = [
+                int(token) for token in vlan_text.split(",") if token.isdigit()
+            ]
+            primary_vlan = vlan_values[0] if vlan_values else None
+            start_ip = str(row["ap_start_address"] or "").strip()
+            prefix_length = (
+                int(row["mask_length"])
+                if row["mask_length"] not in (None, "")
+                else None
+            )
+            network_address = ""
+            subnet_mask = ""
+            if start_ip and "X" not in start_ip.upper() and prefix_length is not None:
+                try:
+                    network = ipaddress.ip_network(
+                        f"{start_ip}/{prefix_length}",
+                        strict=False,
+                    )
+                except ValueError:
+                    network = None
+                if isinstance(network, ipaddress.IPv4Network):
+                    network_address = str(network.network_address)
+                    subnet_mask = str(network.netmask)
+            group_id = f"legacy-plan-{int(row['id'])}"
+            created_at = str(row["created_at"] or now)
+            updated_at = str(row["updated_at"] or now)
+            conn.execute(
+                """
+                INSERT INTO rail_ap_vlan_groups (
+                    group_id, line_id, group_code, group_name, sequence,
+                    management_vlan, legacy_management_vlans, network_address,
+                    prefix_length, subnet_mask, default_gateway, ap_start_ip,
+                    ap_end_ip, address_allocation_strategy, notes,
+                    created_at, updated_at
+                )
+                VALUES (?, 'current', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '',
+                        'station_then_point', ?, ?, ?)
+                """,
+                (
+                    group_id,
+                    f"G{sequence + 1:03d}",
+                    station_name or f"VLAN 组 {sequence + 1}",
+                    sequence,
+                    primary_vlan,
+                    vlan_text if len(vlan_values) > 1 else "",
+                    network_address,
+                    prefix_length,
+                    subnet_mask,
+                    str(row["ap_gateway"] or "").strip(),
+                    start_ip,
+                    str(row["remark"] or "").strip(),
+                    created_at,
+                    updated_at,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO rail_ap_vlan_group_members (
+                    group_id, station_id, station_name, station_sequence,
+                    ap_count, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    group_id,
+                    self._migration_station_id(conn, station_name),
+                    station_name,
+                    sequence,
+                    max(0, int(row["ap_count"] or 0)),
+                    created_at,
+                    updated_at,
+                ),
+            )
+
+    @staticmethod
+    def _migration_station_id(
+        conn: sqlite3.Connection,
+        station_name: str,
+    ) -> str:
+        row = conn.execute(
+            """
+            SELECT raw_payload_json
+            FROM ap_extension_points
+            WHERE belong_type = '__base_station__' AND station_name = ?
+            ORDER BY id
+            LIMIT 1
+            """,
+            (station_name,),
+        ).fetchone()
+        if row is not None:
+            try:
+                metadata = json.loads(str(row[0] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                metadata = {}
+            node_uid = str(metadata.get("node_uid") or "").strip()
+            if node_uid:
+                digest = hashlib.sha1(node_uid.encode("utf-8")).hexdigest()[:12]
+                return f"station:{digest}"
+        digest = hashlib.sha1(station_name.casefold().encode("utf-8")).hexdigest()[:12]
+        return f"legacy-station:{digest}"
+
+    @staticmethod
+    def _normalized_vlan_text(value: object) -> str:
+        vlans: set[int] = set()
+        for token in re.split(r"[,，;；\s]+", str(value or "").strip()):
+            if not token:
+                continue
+            if "-" in token:
+                left, right = token.split("-", 1)
+                if left.isdigit() and right.isdigit():
+                    vlans.update(range(int(left), int(right) + 1))
+            elif token.isdigit():
+                vlans.add(int(token))
+        return ",".join(str(vlan) for vlan in sorted(vlans) if 1 <= vlan <= 4094)
 
     def _write_schema_version(self, conn: sqlite3.Connection) -> None:
         now = __import__("datetime").datetime.now().isoformat(timespec="seconds")

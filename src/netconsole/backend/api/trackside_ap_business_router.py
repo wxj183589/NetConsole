@@ -10,12 +10,17 @@ from netconsole.backend.api.feature_access import require_feature
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 from netconsole.models.api.trackside_ap_business import (
+    ApManagementVlanAutoGroupRequestDTO,
+    ApManagementVlanPreviewDTO,
+    ApManagementVlanPreviewRequestDTO,
+    EffectiveManagementNetworkDTO,
     TracksideApBaseExportRequestDTO,
     TracksideApBusinessPageDTO,
     TracksideApPlanDTO,
     TracksideApPlanExportRequestDTO,
     TracksideApPlanPreviewDTO,
     TracksideApPlanWriteRequestDTO,
+    TracksideApPointTablePreviewDTO,
     TracksideApRenameCommandExportRequestDTO,
     TracksideApUpdateRequestDTO,
     TracksideSwitchAdapterCatalogDTO,
@@ -260,6 +265,134 @@ def plan(request: Request) -> TracksideApPlanDTO:
 
 
 @router.post(
+    "/plan/auto-group-preview",
+    response_model=ApManagementVlanPreviewDTO,
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan"))],
+)
+def preview_auto_group(
+    request: Request,
+    payload: ApManagementVlanAutoGroupRequestDTO,
+) -> ApManagementVlanPreviewDTO:
+    try:
+        return _application_service(request).preview_trackside_ap_vlan_auto_group(
+            _site_id(request),
+            planning_mode=payload.planning_mode,
+            auto_group_station_count=payload.auto_group_station_count,
+            current=None if payload.current is None else payload.current.model_dump(),
+            reallocation_policy=payload.reallocation_policy,
+        )
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
+def _preview_plan_change(
+    request: Request,
+    payload: ApManagementVlanPreviewRequestDTO,
+) -> ApManagementVlanPreviewDTO:
+    try:
+        return _application_service(request).preview_trackside_ap_vlan_change(
+            _site_id(request),
+            proposed=payload.proposed.model_dump(),
+            reallocation_policy=payload.reallocation_policy,
+        )
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
+@router.post(
+    "/plan/adjustment-preview",
+    response_model=ApManagementVlanPreviewDTO,
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan"))],
+)
+def preview_adjustment(
+    request: Request,
+    payload: ApManagementVlanPreviewRequestDTO,
+) -> ApManagementVlanPreviewDTO:
+    return _preview_plan_change(request, payload)
+
+
+@router.post(
+    "/plan/mode-impact-preview",
+    response_model=ApManagementVlanPreviewDTO,
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan"))],
+)
+def preview_mode_impact(
+    request: Request,
+    payload: ApManagementVlanPreviewRequestDTO,
+) -> ApManagementVlanPreviewDTO:
+    return _preview_plan_change(request, payload)
+
+
+@router.post(
+    "/plan/validate",
+    response_model=ApManagementVlanPreviewDTO,
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan"))],
+)
+def validate_plan(
+    request: Request,
+    payload: ApManagementVlanPreviewRequestDTO,
+) -> ApManagementVlanPreviewDTO:
+    return _preview_plan_change(request, payload)
+
+
+@router.post(
+    "/plan/address-preview",
+    response_model=ApManagementVlanPreviewDTO,
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan"))],
+)
+def preview_addresses(
+    request: Request,
+    payload: ApManagementVlanPreviewRequestDTO,
+) -> ApManagementVlanPreviewDTO:
+    return _preview_plan_change(request, payload)
+
+
+@router.get(
+    "/plan/effective-network",
+    response_model=EffectiveManagementNetworkDTO,
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan"))],
+)
+def effective_network(
+    request: Request,
+    station_id: str = Query(default="", max_length=100),
+    ap_id: str = Query(default="", max_length=100),
+) -> EffectiveManagementNetworkDTO:
+    if not station_id and not ap_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="station_id 与 ap_id 至少填写一个",
+        )
+    try:
+        return _application_service(
+            request
+        ).get_effective_trackside_ap_management_network(
+            _site_id(request),
+            station_id=station_id,
+            ap_id=ap_id,
+        )
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
+@router.post(
+    "/plan/point-table-preview",
+    response_model=TracksideApPointTablePreviewDTO,
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan"))],
+)
+def preview_point_table(
+    request: Request,
+    payload: ApManagementVlanPreviewRequestDTO,
+) -> TracksideApPointTablePreviewDTO:
+    try:
+        return _application_service(request).preview_trackside_ap_point_table(
+            _site_id(request),
+            proposed=payload.proposed.model_dump(),
+        )
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
+@router.post(
     "/plan/import/preview",
     response_model=TracksideApPlanPreviewDTO,
     dependencies=[Depends(require_feature("web.rail_trackside_ap_plan_write"))],
@@ -296,6 +429,9 @@ def save_plan(request: Request, payload: TracksideApPlanWriteRequestDTO) -> Rail
         return _application_service(request).start_trackside_ap_plan_save(
             _site_id(request),
             rows=[row.model_dump() for row in payload.rows],
+            draft=None if payload.draft is None else payload.draft.model_dump(),
+            expected_revision=payload.expected_revision,
+            reallocation_policy=payload.reallocation_policy,
             explicit_confirmation=payload.explicit_confirmation,
             audit=payload.audit,
         )
@@ -314,7 +450,10 @@ def export_plan(request: Request, payload: TracksideApPlanExportRequestDTO) -> R
         return _application_service(request).start_trackside_ap_plan_export(
             _site_id(request),
             template=payload.template,
-            rows=None if payload.rows is None else [row.model_dump() for row in payload.rows],
+            rows=None
+            if payload.rows is None
+            else [row.model_dump() for row in payload.rows],
+            draft=None if payload.draft is None else payload.draft.model_dump(),
         )
     except RailTransitWebError as exc:
         _raise_error(exc)

@@ -36,5 +36,7 @@
   {"path":"apps/web/src/views/rail-transit/OnlineMrAnalysisView.vue","symbol":"clearDerivedData","classification":"DISPLAY_ONLY","reason":"在会话和筛选边界清空 Renderer 展示缓存，不计算或修改业务事实。","test":"apps/web/src/views/rail-transit/OnlineMrAnalysisView.test.ts"},
   {"path":"apps/web/src/views/rail-transit/OnlineMrAnalysisView.vue","symbol":"startParse","classification":"FALSE_POSITIVE","reason":"仅确认并发起 Backend Job Center 解析任务。","test":"apps/web/src/views/rail-transit/OnlineMrAnalysisView.test.ts"},
   {"path":"apps/web/src/views/rail-transit/RailTransitBaseDataView.vue","symbol":"mergeType","classification":"DISPLAY_ONLY","reason":"将导入合并类型映射为展示文本。","test":"tests/architecture/test_architecture_guards.py"},
-  {"path":"apps/web/src/components/feedback/useConfirm.ts","symbol":"resolveConfirm","classification":"DISPLAY_ONLY","reason":"解析统一确认服务的用户选择并完成 Promise 收敛，不执行业务操作。","test":"tests/architecture/test_architecture_guards.py"}
+  {"path":"apps/web/src/components/feedback/useConfirm.ts","symbol":"resolveConfirm","classification":"DISPLAY_ONLY","reason":"解析统一确认服务的用户选择并完成 Promise 收敛，不执行业务操作。","test":"tests/architecture/test_architecture_guards.py"},
+  {"path":"apps/web/src/components/rail-transit/base-data/TracksideApPlanningTab.vue","symbol":"mergeGroups","classification":"DISPLAY_ONLY","reason":"编排用户选择的相邻组草稿并提交 Backend 影响预览，最终规则和保存校验仍由 Application Service 执行。","test":"apps/web/src/components/rail-transit/base-data/TracksideApPlanningTab.behavior.test.ts"},
+  {"path":"apps/web/src/components/rail-transit/base-data/tracksideApVlanDraft.ts","symbol":"mergeAdjacentVlanGroups","classification":"DISPLAY_ONLY","reason":"只维护页面未保存的分组草稿并做 1 至 4 站轻量交互校验，Backend 会重新执行完整分组与地址规则。","test":"apps/web/src/components/rail-transit/base-data/tracksideApVlanDraft.test.ts"}
 ]

@@ -10,6 +10,8 @@ const api = vi.hoisted(() => ({
   getTracksideApTask: vi.fn(),
   recoverTracksideApTasks: vi.fn(),
   previewTracksideApPlan: vi.fn(),
+  previewTracksideApVlanAutoGroup: vi.fn(),
+  previewTracksideApVlanChange: vi.fn(),
   tracksideApPlanDownloadRequest: vi.fn(),
 }))
 const downloadBackendResource = vi.hoisted(() => vi.fn())
@@ -38,6 +40,9 @@ vi.mock('element-plus', async () => {
     ElLoadingDirective: {},
     ElOption: defineComponent({ template: '<option><slot /></option>' }),
     ElSelect: defineComponent({ template: '<select><slot /></select>' }),
+    ElTabPane: Container,
+    ElTabs: Container,
+    ElTag: Container,
   }
 })
 vi.mock('@element-plus/icons-vue', () => ({ Delete: {}, Download: {}, Plus: {}, UploadFilled: {} }))
@@ -69,7 +74,30 @@ const stubs = {
   ElInputNumber: defineComponent({ template: '<input />' }),
   ElDescriptions: defineComponent({ template: '<div><slot /></div>' }),
   ElDescriptionsItem: defineComponent({ template: '<span><slot /></span>' }),
+  ElTabPane: defineComponent({ template: '<div><slot /></div>' }),
+  ElTabs: defineComponent({ template: '<div><slot /></div>' }),
+  ElTag: defineComponent({ template: '<span><slot /></span>' }),
 }
+
+const emptyPlan = () => ({
+  items: [],
+  total: 0,
+  planning: {
+    line_id: 'current',
+    planning_mode: 'station_independent',
+    auto_group_station_count: 1,
+    address_allocation_strategy: 'station_then_point',
+    revision: 0,
+    updated_at: '',
+  },
+  groups: [],
+  assignments: [],
+  allocations: [],
+  station_details: [],
+  issues: [],
+  valid: true,
+  unassigned_station_count: 0,
+})
 
 function button(wrapper: VueWrapper, label: string) {
   const match = wrapper.findAll('button').find((item) => item.text().includes(label))
@@ -89,7 +117,7 @@ describe('TracksideApPlanningTab download behavior', () => {
     api.getTracksideApTask.mockReset()
     api.recoverTracksideApTasks.mockReset()
     api.tracksideApPlanDownloadRequest.mockReset()
-    api.getTracksideApPlan.mockResolvedValue({ items: [] })
+    api.getTracksideApPlan.mockResolvedValue(emptyPlan())
     api.recoverTracksideApTasks.mockResolvedValue([])
     api.tracksideApPlanDownloadRequest.mockImplementation((artifactId: string, suggestedName: string) => ({ apiPath: `/api/artifacts/${artifactId}`, suggestedName }))
     downloadBackendResource.mockReset().mockResolvedValue({ status: 'saved' })

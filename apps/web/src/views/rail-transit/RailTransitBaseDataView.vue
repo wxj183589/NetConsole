@@ -51,7 +51,7 @@ import type {
   Train,
   VehicleMr,
 } from '../../types/railTransitBaseData'
-import type { TracksideApPlanRow, TracksideApTask } from '../../types/tracksideApBusiness'
+import type { TracksideApPlanDraft, TracksideApTask } from '../../types/tracksideApBusiness'
 import {
   groupStationOrderConflicts,
   MANUAL_STATION_FIELDS,
@@ -106,7 +106,7 @@ const baselines = new Map<string, Record<string, unknown>>()
 const stationReferencePatches = new Map<string, StationReferencePatch[]>()
 const serverSnapshot = ref<BaseDataDraft | null>(null)
 const editingDraft = ref<BaseDataDraft | null>(null)
-const planningRows = ref<TracksideApPlanRow[]>([])
+const planningDraft = ref<TracksideApPlanDraft | null>(null)
 const planningDirty = ref(false)
 const saveIssues = ref<BaseDataValidationIssue[]>([])
 const fieldErrors = ref<Record<string, string>>({})
@@ -643,7 +643,7 @@ async function executeClearAll(): Promise<void> {
     const result = await store.clearAll(clearAllPreview.value)
     pendingChanges.value = {}
     planningDirty.value = false
-    planningRows.value = []
+    planningDraft.value = null
     saveIssues.value = []
     fieldErrors.value = {}
     baselines.clear()
@@ -674,8 +674,8 @@ async function beforeTabLeave(next: string, current: string): Promise<boolean> {
 async function saveAllChanges(): Promise<boolean> {
   if (!store.editSession || saving.value || !dirty.value) return !dirty.value
   const changes = Object.values(pendingChanges.value)
-  if (planningDirty.value) {
-    changes.push({ entity_type: 'trackside_ap_plan', action: 'replace', values: { rows: planningRows.value } })
+  if (planningDirty.value && planningDraft.value) {
+    changes.push({ entity_type: 'trackside_ap_plan', action: 'replace', values: planningDraft.value })
   }
   editState.value = 'VALIDATING'
   saveIssues.value = []
@@ -760,8 +760,8 @@ function captureBaselines(): void {
   clearStationSelection()
 }
 
-function handlePlanningChange(rows: TracksideApPlanRow[], changed: boolean): void {
-  planningRows.value = rows
+function handlePlanningChange(draft: TracksideApPlanDraft, changed: boolean): void {
+  planningDraft.value = draft
   planningDirty.value = changed
   updateEditState()
 }
@@ -917,7 +917,10 @@ async function openStationDeletePreflight(stationIds: string[]): Promise<void> {
     const sectionStartCount = editingDraft.value?.sections.filter((item) => item.start_station === row.name).length || 0
     const sectionEndCount = editingDraft.value?.sections.filter((item) => item.end_station === row.name).length || 0
     const apCount = editingDraft.value?.aps.filter((item) => item.station === row.name).length || 0
-    const planCount = planningRows.value.filter((item) => item.station_name === row.name).length
+    const planCount = planningDraft.value?.groups.reduce(
+      (count, group) => count + group.members.filter((item) => item.station_name === row.name).length,
+      0,
+    ) || 0
     const totalCount = sectionStartCount + sectionEndCount + apCount + planCount
     const status: StationDeletePreflightItem['status'] = row.is_line_terminal ? 'BLOCKED' : totalCount ? 'REQUIRES_MERGE' : 'SAFE_DELETE'
     return {
@@ -2869,7 +2872,13 @@ function sectionSourceLabel(row: Section): string {
         </el-tab-pane>
 
         <el-tab-pane label="轨旁 AP 规划" name="trackside-ap-planning">
-          <TracksideApPlanningTab ref="planningTab" :locked="locked" :saving="saving" @change="handlePlanningChange" />
+          <TracksideApPlanningTab
+            ref="planningTab"
+            :locked="locked"
+            :saving="saving"
+            :stations="stationRows.map((row) => ({ id: row.id, name: row.name, sort_order: row.sort_order, ap_count: row.ap_count }))"
+            @change="handlePlanningChange"
+          />
         </el-tab-pane>
 
         <el-tab-pane label="列车与车载 MR" name="trains">

@@ -70,6 +70,9 @@ TRACKSIDE_AP_BUSINESS_VISIBLE_COLUMNS = (
     ("details.port_type", "port_type"),
     ("details.port_description", "description"),
     ("details.pvid", "pvid"),
+    ("trackside.planned_management_vlan", "planned_management_vlan"),
+    ("trackside.pvid_plan_status", "pvid_plan_status"),
+    ("trackside.vlan_group", "vlan_group_name"),
     ("details.vlan", "vlan"),
     ("ac.indoor_switch_rx_power", "switch_rx_power"),
     ("trackside.switch_optical_status", "switch_optical_status"),
@@ -270,18 +273,41 @@ def pvid_matches_trackside_plan(device_station: object, pvid: object, active_pla
         return False
     if vlan <= 0:
         return False
-    station_name = str(device_station or "").strip()
-    station_vlans = active_plan.get("station_vlans") if isinstance(active_plan, dict) else {}
-    if isinstance(station_vlans, dict) and station_name and station_name in station_vlans:
-        return vlan in set(station_vlans.get(station_name) or set())
-    if isinstance(station_vlans, dict) and station_name and station_vlans and station_name not in station_vlans:
-        try:
-            from netconsole.core import app_logger
+    # 这里只用于发现可能的轨旁 AP 端口，不能用交换机所属站点把
+    # 候选 VLAN 收窄；最终核验必须在 AP 身份解析后执行。
+    return (
+        vlan in set(active_plan.get("all_vlans") or set())
+        if isinstance(active_plan, dict)
+        else False
+    )
 
-            app_logger.log_warning("TRACKSIDE_AP_PLAN_STATION_FALLBACK", f"station={station_name}, pvid={vlan}")
-        except Exception:
-            pass
-    return vlan in set(active_plan.get("all_vlans") or set()) if isinstance(active_plan, dict) else False
+
+def effective_pvid_plan(
+    *,
+    ap_mac: object,
+    ap_name: object,
+    pvid: object,
+    active_plan: dict | None,
+) -> dict[str, object]:
+    if not isinstance(active_plan, dict):
+        return {"pvid_plan_status": "unresolved"}
+    mac = re.sub(r"[^0-9a-f]", "", normalize_mac(ap_mac))
+    network = (active_plan.get("ap_networks_by_mac") or {}).get(mac) if mac else None
+    if network is None:
+        name = _normalize_name(ap_name)
+        network = (active_plan.get("ap_networks_by_name") or {}).get(name)
+    if not isinstance(network, dict):
+        return {"pvid_plan_status": "unresolved"}
+    try:
+        actual = int(str(pvid or "").strip())
+        planned = int(network.get("management_vlan") or 0)
+    except ValueError:
+        return {**network, "pvid_plan_status": "unresolved"}
+    return {
+        **network,
+        "planned_management_vlan": planned,
+        "pvid_plan_status": "matched" if actual == planned else "mismatched",
+    }
 
 
 def is_switch_device_type(device_type: object) -> bool:
@@ -644,6 +670,12 @@ def build_trackside_ap_business_rows(
                     "has_fit_ap_resource": bool(resource_from_neighbor or resource_from_identity),
                     "is_ap_offline": bool(offline_reason),
                     **attenuation,
+                    **effective_pvid_plan(
+                        ap_mac=ap_candidate["ap_mac"],
+                        ap_name=ap_candidate["ap_name"],
+                        pvid=interface.get("pvid"),
+                        active_plan=trackside_ap_plan,
+                    ),
                 }
             _ensure_ap_optical_status(row)
             result.append(row)

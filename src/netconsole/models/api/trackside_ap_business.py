@@ -18,6 +18,11 @@ class TracksideApBusinessRowDTO(ApiModel):
     description: str = ""
     pvid: Any = None
     vlan: Any = None
+    planned_management_vlan: int | None = None
+    vlan_group_id: str = ""
+    vlan_group_code: str = ""
+    vlan_group_name: str = ""
+    pvid_plan_status: Literal["matched", "mismatched", "unresolved"] = "unresolved"
     switch_rx_power: Any = None
     switch_tx_power: Any = None
     switch_rx_low_alarm: Any = None
@@ -144,13 +149,165 @@ class TracksideApPlanRowDTO(ApiModel):
     sort_order: int = 0
 
 
+class ApManagementVlanPlanningDTO(ApiModel):
+    line_id: str = "current"
+    planning_mode: Literal["line_single", "station_independent", "station_grouped"] = (
+        "station_independent"
+    )
+    auto_group_station_count: int = Field(default=1, ge=1, le=4)
+    address_allocation_strategy: str = "station_then_point"
+    revision: int = Field(default=0, ge=0)
+    updated_at: str = ""
+
+
+class ApManagementVlanGroupMemberDTO(ApiModel):
+    station_id: str
+    station_name: str
+    station_sequence: int = 0
+    ap_count: int = Field(default=0, ge=0)
+
+
+class ApManagementVlanIssueDTO(ApiModel):
+    code: str
+    severity: Literal["error", "warning", "info"] = "error"
+    message: str
+    blocking: bool = True
+    field_name: str = ""
+    group_id: str = ""
+    station_id: str = ""
+    ap_id: str = ""
+
+
+class ApManagementVlanGroupDTO(ApiModel):
+    group_id: str
+    line_id: str = "current"
+    group_code: str
+    group_name: str
+    sequence: int = 0
+    management_vlan: int | None = Field(default=None, ge=1, le=4094)
+    legacy_management_vlans: str = ""
+    network_address: str = ""
+    prefix_length: int | None = Field(default=None, ge=0, le=32)
+    subnet_mask: str = ""
+    default_gateway: str = ""
+    ap_start_ip: str = ""
+    ap_end_ip: str = ""
+    address_allocation_strategy: str = "station_then_point"
+    notes: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+    members: list[ApManagementVlanGroupMemberDTO] = Field(default_factory=list)
+    start_station_name: str = ""
+    end_station_name: str = ""
+    station_count: int = 0
+    ap_count: int = 0
+    address_capacity: int = 0
+    used_address_count: int = 0
+    validation_status: Literal["valid", "warning", "error"] = "valid"
+    issues: list[ApManagementVlanIssueDTO] = Field(default_factory=list)
+
+
+class ApManagementVlanAssignmentDTO(ApiModel):
+    assignment_id: str
+    assignment_type: Literal["section_default", "interval_default", "ap_override"] = (
+        "ap_override"
+    )
+    target_id: str
+    group_id: str
+    source: str = "ap_override"
+    updated_at: str = ""
+
+
+class ApManagementVlanAllocationDTO(ApiModel):
+    ap_id: str
+    ap_name: str = ""
+    point_code: str = ""
+    station_id: str = ""
+    station_name: str = ""
+    section_name: str = ""
+    group_id: str
+    planned_ip: str = ""
+    allocation_order: int = 0
+    is_manual: bool = False
+    is_locked: bool = False
+    source: str = "generated"
+    group_source: str = ""
+    updated_at: str = ""
+
+
+class ApManagementVlanStationDetailDTO(ApiModel):
+    station_id: str
+    station_name: str
+    station_sequence: int = 0
+    ap_count: int = 0
+    group_id: str = ""
+    group_code: str = ""
+    group_name: str = ""
+    ap_start_ip: str = ""
+    ap_end_ip: str = ""
+    management_vlan: int | None = None
+    network_address: str = ""
+    prefix_length: int | None = None
+    subnet_mask: str = ""
+    default_gateway: str = ""
+    source: str = "unassigned"
+    notes: str = ""
+
+
+class TracksideApPlanDraftDTO(ApiModel):
+    planning: ApManagementVlanPlanningDTO = Field(
+        default_factory=ApManagementVlanPlanningDTO
+    )
+    groups: list[ApManagementVlanGroupDTO] = Field(
+        default_factory=list,
+        max_length=2000,
+    )
+    assignments: list[ApManagementVlanAssignmentDTO] = Field(
+        default_factory=list,
+        max_length=10000,
+    )
+    allocations: list[ApManagementVlanAllocationDTO] = Field(
+        default_factory=list,
+        max_length=10000,
+    )
+
+
+class ApManagementVlanImpactDTO(ApiModel):
+    old_group_count: int = 0
+    new_group_count: int = 0
+    affected_station_count: int = 0
+    affected_ap_count: int = 0
+    vlan_change_count: int = 0
+    ip_change_count: int = 0
+    gateway_change_count: int = 0
+    manual_address_override_count: int = 0
+    conflict_count: int = 0
+    warning_count: int = 0
+    issues: list[ApManagementVlanIssueDTO] = Field(default_factory=list)
+
+
 class TracksideApPlanDTO(ApiModel):
     items: list[TracksideApPlanRowDTO] = Field(default_factory=list)
     total: int = 0
+    planning: ApManagementVlanPlanningDTO = Field(
+        default_factory=ApManagementVlanPlanningDTO
+    )
+    groups: list[ApManagementVlanGroupDTO] = Field(default_factory=list)
+    assignments: list[ApManagementVlanAssignmentDTO] = Field(default_factory=list)
+    allocations: list[ApManagementVlanAllocationDTO] = Field(default_factory=list)
+    station_details: list[ApManagementVlanStationDetailDTO] = Field(
+        default_factory=list
+    )
+    issues: list[ApManagementVlanIssueDTO] = Field(default_factory=list)
+    valid: bool = True
+    unassigned_station_count: int = 0
 
 
 class TracksideApPlanWriteRequestDTO(ApiModel):
     rows: list[TracksideApPlanRowDTO] = Field(default_factory=list)
+    draft: TracksideApPlanDraftDTO | None = None
+    expected_revision: int = Field(default=0, ge=0)
+    reallocation_policy: Literal["only_unlocked", "all"] = "only_unlocked"
     explicit_confirmation: bool = False
     audit: dict[str, str] = Field(default_factory=dict)
 
@@ -174,11 +331,69 @@ class TracksideApPlanPreviewDTO(ApiModel):
     error_count: int
     rows: list[TracksideApPlanPreviewRowDTO] = Field(default_factory=list)
     result_rows: list[TracksideApPlanRowDTO] = Field(default_factory=list)
+    result_plan: TracksideApPlanDTO | None = None
 
 
 class TracksideApPlanExportRequestDTO(ApiModel):
     template: bool = False
     rows: list[TracksideApPlanRowDTO] | None = Field(default=None, max_length=2000)
+    draft: TracksideApPlanDraftDTO | None = None
+
+
+class ApManagementVlanAutoGroupRequestDTO(ApiModel):
+    planning_mode: Literal["line_single", "station_independent", "station_grouped"]
+    auto_group_station_count: int = Field(default=1, ge=1, le=4)
+    current: TracksideApPlanDraftDTO | None = None
+    reallocation_policy: Literal["only_unlocked", "all"] = "only_unlocked"
+
+
+class ApManagementVlanPreviewRequestDTO(ApiModel):
+    proposed: TracksideApPlanDraftDTO
+    reallocation_policy: Literal["only_unlocked", "all"] = "only_unlocked"
+
+
+class ApManagementVlanPreviewDTO(ApiModel):
+    plan: TracksideApPlanDTO
+    impact: ApManagementVlanImpactDTO
+
+
+class EffectiveManagementNetworkDTO(ApiModel):
+    vlan_group_id: str
+    vlan_group_code: str = ""
+    vlan_group_name: str = ""
+    management_vlan: int | None = None
+    network_address: str = ""
+    prefix_length: int | None = None
+    subnet_mask: str = ""
+    default_gateway: str = ""
+    ap_start_ip: str = ""
+    ap_end_ip: str = ""
+    address_allocation_strategy: str = "station_then_point"
+    source: str = ""
+
+
+class TracksideApPointTableRowDTO(ApiModel):
+    ap_id: str
+    station: str = ""
+    section: str = ""
+    ap_name: str = ""
+    point_code: str = ""
+    ap_ip: str = ""
+    management_vlan: int | None = None
+    subnet_mask: str = ""
+    prefix_length: int | None = None
+    default_gateway: str = ""
+    vlan_group_id: str = ""
+    vlan_group_code: str = ""
+    vlan_group_name: str = ""
+    allocation_source: str = ""
+    is_locked: bool = False
+
+
+class TracksideApPointTablePreviewDTO(ApiModel):
+    items: list[TracksideApPointTableRowDTO] = Field(default_factory=list)
+    total: int = 0
+    impact: ApManagementVlanImpactDTO = Field(default_factory=ApManagementVlanImpactDTO)
 
 
 class TracksideApBaseExportRequestDTO(ApiModel):
