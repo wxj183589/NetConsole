@@ -1926,32 +1926,31 @@ def test_import_preview_confirm_creates_backup_and_uses_task_center(
     assert backups
 
 
-def test_import_worker_without_web_strategy_preserves_qt_append_behavior(
+def test_import_worker_without_web_strategy_rejects_duplicate_primary_address(
     tmp_path: Path,
 ) -> None:
     _client, service, _adapter, devices, _facts, mr, _sw = _fixture(tmp_path)
-    source = tmp_path / "qt-import.csv"
-    _write_import_csv(source, name="Qt 重复设备", address=str(mr.primary_address))
+    source = tmp_path / "legacy-import.csv"
+    _write_import_csv(source, name="重复设备", address=str(mr.primary_address))
     before = len(devices.list())
 
-    result = run_device_csv_import(
-        JobContext(
-            "qt-device-import",
-            DEVICE_IMPORT_TASK_TYPE,
-            {
-                "site_name": "demo",
-                "path": str(source),
-                "db_path": str(service.paths.site_db_path("demo")),
-            },
-            None,
-            lambda: False,
-            service.paths,
+    with pytest.raises(ValueError, match="第 2 行主用地址已存在"):
+        run_device_csv_import(
+            JobContext(
+                "legacy-device-import",
+                DEVICE_IMPORT_TASK_TYPE,
+                {
+                    "site_name": "demo",
+                    "path": str(source),
+                    "db_path": str(service.paths.site_db_path("demo")),
+                },
+                None,
+                lambda: False,
+                service.paths,
+            )
         )
-    )
 
-    assert result["created"] == 1
-    assert result["skipped"] == 0
-    assert len(devices.list()) == before + 1
+    assert len(devices.list()) == before
 
 
 def test_import_preview_reports_duplicate_rows_and_passes_selected_strategy(
@@ -3741,3 +3740,116 @@ def test_device_optical_refresh_handler_uses_formal_service(
     assert calls == [str(mr.device_uuid)]
     assert result["success"] is True
     assert result["optical_modules_updated"] == 2
+
+
+def test_device_write_api_returns_structured_primary_address_conflict(
+    tmp_path: Path,
+) -> None:
+    client, _service, _adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+
+    response = client.post(
+        "/api/device-management/devices",
+        json={"name": "重复主地址", "primary_address": f" {mr.primary_address} "},
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["code"] == "DEVICE_PRIMARY_IP_CONFLICT"
+    assert detail["details"]["conflict_device_id"] == mr.id
+    assert detail["details"]["site_name"] == "demo"
+
+
+def test_device_import_api_previews_site_ip_update_and_persists_strategy(
+    tmp_path: Path,
+) -> None:
+    client, _service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+    source = tmp_path / "site-ip-update.csv"
+    _write_import_csv(
+        source,
+        name="MR2-批量更新",
+        address=str(mr.primary_address),
+    )
+
+    with source.open("rb") as handle:
+        preview = client.post(
+            "/api/device-management/imports/preview",
+            files={"file": (source.name, handle, "text/csv")},
+            data={
+                "match_strategy": "SITE_PRIMARY_IP",
+                "write_mode": "UPDATE_ONLY",
+            },
+        )
+
+    assert preview.status_code == 200
+    body = preview.json()
+    assert body["match_strategy"] == "SITE_PRIMARY_IP"
+    assert body["write_mode"] == "UPDATE_ONLY"
+    assert body["update_count"] == 1
+    assert body["has_hard_errors"] is False
+    assert body["rows"][0]["action"] == "UPDATE"
+    assert body["rows"][0]["device_id"] == mr.id
+
+    confirmed = client.post(
+        "/api/device-management/imports/confirm",
+        json={"preview_token": body["preview_token"]},
+    )
+
+    assert confirmed.status_code == 202
+    assert adapter.jobs[-1].params["match_strategy"] == "SITE_PRIMARY_IP"
+    assert adapter.jobs[-1].params["write_mode"] == "UPDATE_ONLY"
+def test_device_list_defaults_to_in_service_and_supports_lifecycle_filters(
+    tmp_path: Path,
+) -> None:
+    client, _service, _adapter, devices, _facts, mr, sw = _fixture(tmp_path)
+    response = client.patch(
+        "/api/device-management/devices/lifecycle",
+        json={
+            "device_uuids": [sw.device_uuid],
+            "project_phase": "phase_2",
+            "operation_status": "not_integrated",
+            "reason": "二期暂未并网",
+        },
+    )
+
+    default_items = client.get("/api/device-management/devices").json()["items"]
+    all_items = client.get(
+        "/api/device-management/devices?operation_status=all"
+    ).json()["items"]
+    phase_items = client.get(
+        "/api/device-management/devices"
+        "?project_phase=phase_2&operation_status=not_integrated"
+    ).json()["items"]
+
+    assert response.status_code == 200
+    assert response.json() == {"updated": 1}
+    assert {item["device_uuid"] for item in default_items} == {mr.device_uuid}
+    assert {item["device_uuid"] for item in all_items} == {
+        mr.device_uuid,
+        sw.device_uuid,
+    }
+    assert [item["device_uuid"] for item in phase_items] == [sw.device_uuid]
+    assert phase_items[0]["operation_status_reason"] == "二期暂未并网"
+    reread = devices.get_by_uuid(str(sw.device_uuid))
+    assert reread is not None
+    assert reread.primary_address == sw.primary_address
+
+
+def test_not_integrated_device_can_still_submit_manual_connection_test(
+    tmp_path: Path,
+) -> None:
+    client, _service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+    changed = client.patch(
+        "/api/device-management/devices/lifecycle",
+        json={
+            "device_uuids": [mr.device_uuid],
+            "operation_status": "not_integrated",
+        },
+    )
+    started = client.post(
+        f"/api/device-management/devices/{mr.device_uuid}/connection-tests",
+        json={"protocol": "SSH"},
+    )
+
+    assert changed.status_code == 200
+    assert started.status_code == 202
+    assert len(adapter.jobs) == 1

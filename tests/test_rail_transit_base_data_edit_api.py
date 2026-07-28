@@ -449,7 +449,15 @@ def test_transactional_save_updates_ap_station_and_plan_with_revision(tmp_path: 
             ).fetchone()[0]
             == 1
         )
-        assert tuple(connection.execute("SELECT primary_address, remark FROM devices WHERE device_uuid = 'mr-01-ct'").fetchone()) == ("10.10.0.11", "统一维护")
+        assert tuple(
+            connection.execute(
+                """
+                SELECT primary_address, normalized_primary_address, remark
+                FROM devices
+                WHERE device_uuid = 'mr-01-ct'
+                """
+            ).fetchone()
+        ) == ("10.10.0.11", "10.10.0.11", "统一维护")
 
 
 def test_ap_section_change_recalculates_auto_side_and_mapping_change_preserves_manual_value(
@@ -866,6 +874,65 @@ def test_repository_rolls_back_all_changes_when_later_entity_fails(tmp_path: Pat
         )
     with Database(database).connect() as connection:
         assert connection.execute("SELECT remark FROM ap_extension_points WHERE id = 1").fetchone()[0] == ""
+
+
+def test_repository_vehicle_mr_write_uses_normalized_unique_address(
+    tmp_path: Path,
+) -> None:
+    paths, database = build_rail_transit_base_data_fixture(tmp_path)
+    repository = RailTransitBaseDataRepository(paths)
+    first_revision = repository.database_hash("demo")
+    repository.apply_base_data_changes(
+        "demo",
+        first_revision,
+        [
+            {
+                "entity_type": "vehicle_mr",
+                "action": "update",
+                "entity_id": "mr-01-ct",
+                "values": {
+                    "name": "列车01-MR-CT",
+                    "station": "列车01车头",
+                    "primary_address": "2001:0db8:0:0:0:0:0:1",
+                },
+            }
+        ],
+    )
+
+    with pytest.raises(
+        RailTransitBaseDataConstraintError,
+        match="车载 MR 管理地址 2001:db8::1 在当前局点内已被其他设备使用",
+    ):
+        repository.apply_base_data_changes(
+            "demo",
+            repository.database_hash("demo"),
+            [
+                {
+                    "entity_type": "vehicle_mr",
+                    "action": "update",
+                    "entity_id": "mr-01-cw",
+                    "values": {
+                        "name": "列车01-MR-CW",
+                        "station": "列车01车尾",
+                        "primary_address": "2001:db8::1",
+                    },
+                }
+            ],
+        )
+
+    with Database(database).connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT device_uuid, primary_address, normalized_primary_address
+            FROM devices
+            WHERE device_uuid IN ('mr-01-ct', 'mr-01-cw')
+            ORDER BY device_uuid
+            """
+        ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        ("mr-01-ct", "2001:db8::1", "2001:db8::1"),
+        ("mr-01-cw", "10.10.0.1", None),
+    ]
 
 
 def test_validation_rejects_sensitive_fields(tmp_path: Path, monkeypatch) -> None:

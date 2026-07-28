@@ -48,6 +48,7 @@ describe('DeviceDetailPanel', () => {
     expect(source).toContain("normal: '正常'")
     expect(source).toContain("notice: '注意'")
     expect(source).toContain("critical: '严重告警'")
+    expect(source).toContain("offline: '模块离线'")
     expect(source).toContain("matched: '已关联'")
     expect(source).toContain("unresolved: '未关联'")
     expect(source).toContain("pending: '等待中'")
@@ -55,7 +56,15 @@ describe('DeviceDetailPanel', () => {
     expect(source).toContain("succeeded: '已成功'")
     expect(source).toContain("cancelled: '已取消'")
     expect(source).toContain("aborted: '已中止'")
-    expect(source).not.toContain('threshold_source')
+    expect(source).toContain("['接收低告警阈值', 'rx_low_alarm']")
+    expect(source).toContain("['发送高告警阈值', 'tx_high_alarm']")
+    expect(source).toContain("['厂商 PN', 'vendor_part_number']")
+    expect(source).toContain("['厂商版本', 'vendor_revision']")
+    expect(source).toContain("['厂商 SN', 'vendor_serial_number']")
+    expect(source).toContain("['设备原始状态', 'device_reported_status']")
+    expect(source).toContain("['阈值来源', 'threshold_source']")
+    expect(source).toContain("rx_low_alarm: 'dBm'")
+    expect(source).toContain("temperature: '°C'")
     expect(source).toContain("'optical module is not present': '未检测到光模块'")
     expect(source).toContain("'rx power is missing or <= -35 dbm': '接收功率缺失或不高于 -35 dBm'")
     expect(source).toContain("'port is down': '端口已断开'")
@@ -110,12 +119,15 @@ describe('DeviceDetailPanel', () => {
     expect(source).not.toMatch(/background:\s*#[0-9a-f]{3,8}/i)
   })
 
-  it('不再向前端暴露光模块状态字段', () => {
+  it('不暴露内部采集状态，但允许展示 ZTE 阈值来源', () => {
     const transceiverContract = deviceManagementTypes
       .split('export interface DeviceTransceiverRecord')[1]
       .split('export interface DeviceLldpRecord')[0]
-    expect(transceiverContract).not.toContain('status')
-    expect(transceiverContract).not.toContain('threshold_source')
+    expect(transceiverContract).not.toMatch(/^\s+status[?:]/m)
+    expect(transceiverContract).toContain('threshold_source?')
+    expect(transceiverContract).toContain('vendor_part_number?')
+    expect(transceiverContract).toContain('vendor_revision?')
+    expect(transceiverContract).toContain('vendor_serial_number?')
     expect(source).not.toContain("{ label: '状态', key: 'status', width: 100 }")
   })
 

@@ -186,6 +186,109 @@ def compute_optical_severity(record: dict) -> OpticalSeverityResult:
     )
 
 
+def compute_zte_optical_severity(record: dict) -> OpticalSeverityResult:
+    """Use only ZTE device-reported module state and native RX/TX thresholds."""
+
+    reported_status = str(
+        _first_value(
+            record,
+            "device_reported_status",
+            "vendor_status",
+            "module_status",
+            "status",
+        )
+        or ""
+    ).strip().casefold()
+    if _is_false(_first_value(record, "module_online")) or reported_status == "offline":
+        return OpticalSeverityResult(
+            "offline",
+            "Device reported optical module offline",
+            warning_source="zte_device",
+            source_label="ZTE device reported",
+        )
+
+    rx_power = _first_float(record, "rx_power", "rx_power_dbm")
+    if rx_power is None:
+        return OpticalSeverityResult(
+            "no_light",
+            "Device did not report RX power; raw value is N/A",
+            warning_source="zte_device",
+            source_label="ZTE device reported",
+        )
+
+    rx_low = _first_float(record, "rx_low_alarm", "rx_low_alarm_dbm")
+    rx_high = _first_float(record, "rx_high_alarm", "rx_high_alarm_dbm")
+    tx_power = _first_float(record, "tx_power", "tx_power_dbm")
+    tx_low = _first_float(record, "tx_low_alarm", "tx_low_alarm_dbm")
+    tx_high = _first_float(record, "tx_high_alarm", "tx_high_alarm_dbm")
+    comparisons = (
+        ("rx_low", rx_power, rx_low, rx_power < rx_low if rx_low is not None else False),
+        ("rx_high", rx_power, rx_high, rx_power > rx_high if rx_high is not None else False),
+        (
+            "tx_low",
+            tx_power,
+            tx_low,
+            tx_power < tx_low if tx_power is not None and tx_low is not None else False,
+        ),
+        (
+            "tx_high",
+            tx_power,
+            tx_high,
+            tx_power > tx_high if tx_power is not None and tx_high is not None else False,
+        ),
+    )
+    reason_by_kind = {
+        "rx_low": "RX power {value:.1f} dBm is below module low alarm threshold {threshold:.1f} dBm",
+        "rx_high": "RX power {value:.1f} dBm is above module high alarm threshold {threshold:.1f} dBm",
+        "tx_low": "TX power {value:.1f} dBm is below module low alarm threshold {threshold:.1f} dBm",
+        "tx_high": "TX power {value:.1f} dBm is above module high alarm threshold {threshold:.1f} dBm",
+    }
+    for kind, value, threshold, matched in comparisons:
+        if matched and value is not None and threshold is not None:
+            return OpticalSeverityResult(
+                "alarm",
+                reason_by_kind[kind].format(value=value, threshold=threshold),
+                rx_power=rx_power,
+                alarm_low=rx_low,
+                warning_source="zte_native",
+                source_label="ZTE native threshold",
+            )
+
+    thresholds_complete = rx_low is not None and rx_high is not None
+    if tx_power is not None:
+        thresholds_complete = (
+            thresholds_complete and tx_low is not None and tx_high is not None
+        )
+    if thresholds_complete or reported_status == "normal":
+        return OpticalSeverityResult(
+            "normal",
+            "ZTE optical power is within module alarm thresholds",
+            rx_power=rx_power,
+            alarm_low=rx_low,
+            warning_source="zte_native" if thresholds_complete else "zte_device",
+            source_label=(
+                "ZTE native threshold"
+                if thresholds_complete
+                else "ZTE device reported"
+            ),
+        )
+    if reported_status in {"abnormal", "alarm"}:
+        return OpticalSeverityResult(
+            "alarm",
+            f"ZTE device reported optical status {reported_status}",
+            rx_power=rx_power,
+            warning_source="zte_device",
+            source_label="ZTE device reported",
+        )
+    return OpticalSeverityResult(
+        "unknown",
+        "Device did not report optical power thresholds; threshold evaluation is unavailable",
+        rx_power=rx_power,
+        warning_source="missing",
+        source_label="ZTE threshold missing",
+    )
+
+
 def worse_optical_severity(left: str, right: str) -> str:
     return left if SEVERITY_RANK.get(left, 0) >= SEVERITY_RANK.get(right, 0) else right
 

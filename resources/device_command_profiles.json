@@ -144,6 +144,147 @@
     },
     {
       "operation_id": "device.inventory.collect",
+      "profile_id": "h3c.comware.wireless_controller.generic.device-inventory.v1",
+      "profile_version": 1,
+      "selector": {
+        "vendor": "H3C",
+        "role": "wireless_controller",
+        "platform": "comware",
+        "software_version": "*"
+      },
+      "compatibility": "generic_read_only",
+      "risk": "read_only",
+      "parser_contract": "netconsole.h3c.device-inventory.v1",
+      "dto_contract": "netconsole.device-inventory.v1",
+      "verification": {
+        "fixture_versions": ["7.1.070"],
+        "real_device_status": "REAL_DEVICE_PENDING"
+      },
+      "steps": [
+        {
+          "order": 10,
+          "step_id": "terminal.pagination.disable",
+          "command": "screen-length disable",
+          "selector": "session.pagination",
+          "parser_contract": "raw.passthrough.v1",
+          "dto_contract": "none.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "behavior_preservation_only", "evidence": "src/netconsole/services/h3c_collect_service.py@ec59b5b"}
+        },
+        {
+          "order": 20,
+          "step_id": "device.sysname.collect",
+          "command": "display current-configuration | include sysname",
+          "selector": "inventory.sysname",
+          "parser_contract": "netconsole.h3c.sysname.v1",
+          "dto_contract": "netconsole.device-fact.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "fixture_verified", "evidence": "tests/fixtures/h3c/display_current_configuration_sysname.txt"}
+        },
+        {
+          "order": 30,
+          "step_id": "device.version.collect",
+          "command": "display version",
+          "selector": "inventory.version",
+          "parser_contract": "netconsole.h3c.device.v1",
+          "dto_contract": "netconsole.device-fact.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "fixture_verified", "evidence": "tests/fixtures/h3c/display_version.txt"}
+        },
+        {
+          "order": 40,
+          "step_id": "device.slot.collect",
+          "command": "display device",
+          "selector": "inventory.device",
+          "parser_contract": "netconsole.h3c.device.v1",
+          "dto_contract": "netconsole.device-fact.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "fixture_verified", "evidence": "tests/fixtures/h3c/display_device.txt"}
+        },
+        {
+          "order": 50,
+          "step_id": "device.manufacturing.collect",
+          "command": "display device manuinfo",
+          "selector": "inventory.manuinfo",
+          "parser_contract": "netconsole.h3c.device.v1",
+          "dto_contract": "netconsole.device-fact.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "fixture_verified", "evidence": "tests/fixtures/h3c/display_device_manuinfo.txt"}
+        },
+        {
+          "order": 60,
+          "step_id": "device.boot-loader.collect",
+          "command": "display boot-loader",
+          "selector": "inventory.boot_loader",
+          "parser_contract": "netconsole.h3c.boot-loader.v1",
+          "dto_contract": "netconsole.device-fact.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "fixture_verified", "evidence": "tests/fixtures/h3c/display_boot_loader_sw.txt"}
+        },
+        {
+          "order": 70,
+          "step_id": "device.interfaces.collect",
+          "command": "display interface",
+          "selector": "inventory.interfaces",
+          "parser_contract": "netconsole.h3c.interfaces.v1",
+          "dto_contract": "netconsole.device-interface.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "fixture_verified", "evidence": "tests/fixtures/h3c/display_interface.txt"}
+        },
+        {
+          "order": 80,
+          "step_id": "device.transceivers.collect",
+          "command": "display transceiver interface",
+          "selector": "inventory.transceivers",
+          "parser_contract": "netconsole.h3c.optical.v1",
+          "dto_contract": "netconsole.device-optical-module.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "fixture_verified", "evidence": "tests/fixtures/h3c/display_transceiver_interface.txt"}
+        },
+        {
+          "order": 90,
+          "step_id": "device.transceiver-manufacturing.collect",
+          "command": "display transceiver manuinfo interface",
+          "selector": "inventory.transceiver_manuinfo",
+          "parser_contract": "netconsole.h3c.optical.v1",
+          "dto_contract": "netconsole.device-optical-module.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "fixture_verified", "evidence": "tests/test_h3c_collect_service.py"}
+        },
+        {
+          "order": 100,
+          "step_id": "device.transceiver-diagnostics.collect",
+          "command": "display transceiver diagnosis interface",
+          "selector": "inventory.transceiver_diagnosis",
+          "parser_contract": "netconsole.h3c.optical.v1",
+          "dto_contract": "netconsole.device-optical-module.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "fixture_verified", "evidence": "tests/fixtures/h3c/display_transceiver_diagnosis_interface.txt"}
+        },
+        {
+          "order": 110,
+          "step_id": "device.lldp-summary.collect",
+          "command": "display lldp neighbor-information list",
+          "selector": "inventory.lldp_list",
+          "parser_contract": "netconsole.h3c.lldp.v1",
+          "dto_contract": "netconsole.device-lldp-neighbor.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "fixture_verified", "evidence": "tests/fixtures/h3c/display_lldp_neighbor_information_list.txt"}
+        },
+        {
+          "order": 120,
+          "step_id": "device.lldp-detail.collect",
+          "command": "display lldp neighbor-information verbose",
+          "selector": "inventory.lldp_verbose",
+          "parser_contract": "netconsole.h3c.lldp.v1",
+          "dto_contract": "netconsole.device-lldp-neighbor.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "fixture_verified", "evidence": "tests/fixtures/h3c/display_lldp_neighbor_information_verbose.txt"}
+        }
+      ]
+    },
+    {
+      "operation_id": "device.inventory.collect",
       "profile_id": "zte.zxr10.switch.generic.device-inventory.v3",
       "profile_version": 3,
       "selector": {

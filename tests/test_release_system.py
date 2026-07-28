@@ -521,6 +521,7 @@ def test_clean_build_runtime_subset_copies_only_imported_modules_and_assets(
     }
     assert {profile["profile_id"] for profile in profile_payload["profiles"]} == {
         "h3c.comware.switch.generic.device-inventory.v1",
+        "h3c.comware.wireless_controller.generic.device-inventory.v1",
         "h3c.comware.mobile_router.generic.device-inventory.v1",
         "zte.zxr10.switch.generic.device-inventory.v3",
     }

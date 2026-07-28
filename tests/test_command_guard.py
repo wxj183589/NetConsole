@@ -117,6 +117,7 @@ def test_trackside_switch_context_allows_only_fixed_read_only_vendor_commands():
         "show vlan",
         "show interface xgei-0/1/1/2",
         "show opticalinfo brief",
+        "show opticalinfo gei-0/3/0/6",
         "show opticalinfo xgei-0/1/1/2",
         "show lldp neighbor brief",
         "show lldp entry",
@@ -182,6 +183,7 @@ def test_zte_inventory_context_only_allows_exact_production_subset():
         "show running-config switchvlan",
         "show vlan",
         "show opticalinfo brief",
+        "show opticalinfo gei-0/3/0/6",
         "show lldp neighbor brief",
         "show lldp entry",
     ):
@@ -195,6 +197,7 @@ def test_zte_inventory_context_only_allows_exact_production_subset():
         "show interface",
         "show optical-inform brief",
         "show optical-inform detail",
+        "show opticalinfo ../../etc/passwd",
         "show running-config",
         "show running-config interface gei-0/3/0/1",
         "show vlan 71",

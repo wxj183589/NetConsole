@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from netconsole.parsers.zte.zxr10 import (
+    merge_optical_modules,
     normalize_zte_cli_text,
     parse_device_identity,
     parse_interface_detail,
@@ -245,6 +246,95 @@ def test_parse_zte_optical_detail_from_manual_fixture() -> None:
     assert item["module_vendor"] == "HG GENUINE"
     assert item["module_model"] == "MTRS-01X11-G"
     assert item["module_serial_number"] == "HA20140052592"
+
+
+def test_parse_c89e_optical_summary_preserves_native_thresholds_and_status() -> None:
+    parsed = parse_optical_summary(
+        _fixture("zte_c89e_show_opticalinfo_brief_thresholds.txt")
+    )
+    by_name = {str(row["interface_name"]): row for row in parsed.value}
+
+    assert parsed.status == "OK"
+    assert by_name["sci-0/1/0/1"]["module_online"] is False
+    assert by_name["sci-0/1/0/1"]["device_reported_status"] == "offline"
+    missing_rx = by_name["gei-0/3/0/1"]
+    assert missing_rx["rx_power_dbm"] is None
+    assert missing_rx["rx_low_alarm_dbm"] == -28.2
+    assert missing_rx["rx_high_alarm_dbm"] == 0
+    assert missing_rx["tx_power_dbm"] == -5.4
+    assert missing_rx["tx_low_alarm_dbm"] == -10
+    assert missing_rx["tx_high_alarm_dbm"] == -0.5
+    assert missing_rx["device_reported_status"] == "Unknown"
+    assert missing_rx["transceiver_mode"] == "SingleMode"
+    assert by_name["gei-0/3/0/4"]["rx_power_dbm"] == -28.2
+    assert by_name["gei-0/3/0/5"]["rx_power_dbm"] == -25.4
+    assert by_name["gei-0/3/0/6"]["rx_power_dbm"] == -15.1
+
+
+def test_parse_c89e_optical_detail_maps_vendor_and_dom_fields() -> None:
+    parsed = parse_optical_detail(
+        _fixture("zte_c89e_show_opticalinfo_gei_0_3_0_6.txt")
+    )
+    item = parsed.value
+
+    assert item["interface_name"] == "gei-0/3/0/6"
+    assert item["transceiver_type"] == "SFP"
+    assert item["connector_type"] == "LC"
+    assert item["transceiver_mode"] == "smf"
+    assert item["ethernet_compliance"] == "1000BASE-LX"
+    assert item["transfer_distance_smf_m"] == 10000
+    assert item["tx_wavelength_nm"] == 1310
+    assert item["rx_wavelength_nm"] == 1310
+    assert item["rx_power_dbm"] == -15.2
+    assert item["tx_power_dbm"] == -5.5
+    assert item["tx_bias_current_ma"] == 17.2
+    assert item["temperature_celsius"] == 31
+    assert item["supply_voltage_1_v"] == 3.3
+    assert item["supply_voltage_2_v"] is None
+    assert item["rx_low_alarm_dbm"] == -28.2
+    assert item["rx_high_alarm_dbm"] == 0
+    assert item["tx_low_alarm_dbm"] == -10
+    assert item["tx_high_alarm_dbm"] == -0.5
+    assert item["module_vendor"] == "ZTRS"
+    assert item["vendor_part_number"] == "SFP-GE"
+    assert item["vendor_revision"] == "A"
+    assert item["vendor_serial_number"] == "UHD507000163"
+    assert item["authentication"] is None
+    assert item["authentication_code"] is None
+    assert item["product_serial_number"] is None
+
+
+def test_merge_zte_optical_detail_by_interface_skips_empty_values() -> None:
+    brief = [
+        {
+            "interface_name": "gei-0/3/0/6",
+            "rx_power": -15.1,
+            "rx_low_alarm": -28.2,
+            "status": "normal",
+            "device_reported_status": "Normal",
+        },
+        {"interface_name": "gei-0/3/0/5", "rx_power": -25.4},
+    ]
+    details = [
+        {
+            "interface_name": "GEI-0/3/0/6",
+            "rx_power": -15.2,
+            "rx_low_alarm": None,
+            "vendor_serial_number": "UHD507000163",
+            "status": "unverified",
+        }
+    ]
+
+    merged = merge_optical_modules(brief, details)
+
+    assert merged[0]["interface_name"] == "gei-0/3/0/6"
+    assert merged[0]["rx_power"] == -15.2
+    assert merged[0]["rx_low_alarm"] == -28.2
+    assert merged[0]["status"] == "normal"
+    assert merged[0]["device_reported_status"] == "Normal"
+    assert merged[0]["vendor_serial_number"] == "UHD507000163"
+    assert merged[1]["interface_name"] == "gei-0/3/0/5"
+    assert "vendor_serial_number" not in merged[1]
 
 
 def test_normalize_zte_cli_text_removes_ansi_pager_and_backspace_overwrite() -> None:

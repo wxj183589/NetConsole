@@ -94,6 +94,18 @@ VLAN     Name     PvidPorts           UntagPorts          TagPorts
             "show opticalinfo brief": zte_fixture(
                 "zte_5960x_show_opticalinfo_brief.txt"
             ),
+            "show opticalinfo xgei-0/1/1/2": zte_fixture(
+                "zte_5960x_show_opticalinfo_detail.txt"
+            ),
+            "show opticalinfo xgei-0/1/1/3": (
+                "xgei-0/1/1/3\nThe optical module is online\n"
+            ),
+            "show opticalinfo xgei-0/1/1/4": (
+                "xgei-0/1/1/4\nThe optical module is online\n"
+            ),
+            "show opticalinfo xgei-0/1/1/5": (
+                "xgei-0/1/1/5\nThe optical module is online\n"
+            ),
             "show lldp neighbor brief": """
 Local Interface   Scope  Chassis ID      Port ID           Holdtime  System Name
 -------------------------------------------------------------------------------
@@ -226,6 +238,10 @@ def test_zte_collect_uses_fixture_verified_commands_and_persists_dom(
         " ",
         "show lldp neighbor brief",
         "show lldp entry",
+        "show opticalinfo xgei-0/1/1/2",
+        "show opticalinfo xgei-0/1/1/3",
+        "show opticalinfo xgei-0/1/1/4",
+        "show opticalinfo xgei-0/1/1/5",
     ]
     assert connection.disconnected is True
     assert Path(result.raw_log_path).is_file()
@@ -248,8 +264,14 @@ def test_zte_collect_uses_fixture_verified_commands_and_persists_dom(
         item["interface_name"]: item
         for item in repository.list_optical_modules(str(device.device_uuid))
     }
-    assert optical["xgei-0/1/1/2"]["rx_power"] == "-11.9"
+    assert optical["xgei-0/1/1/2"]["rx_power"] == "-11.904"
     assert optical["xgei-0/1/1/2"]["status"] == "unverified"
+    assert optical["xgei-0/1/1/2"]["device_vendor"] == "ZTE"
+    assert optical["xgei-0/1/1/2"]["module_vendor"] == "HG GENUINE"
+    assert optical["xgei-0/1/1/2"]["vendor_part_number"] == "MTRS-01X11-G"
+    assert optical["xgei-0/1/1/2"]["vendor_revision"] == "1.0"
+    assert optical["xgei-0/1/1/2"]["vendor_serial_number"] == "HA20140052592"
+    assert optical["xgei-0/1/1/2"]["threshold_source"] == "zte_detail"
     neighbor = repository.list_lldp_neighbors(str(device.device_uuid))[0]
     assert neighbor["neighbor_sysname"] == "HZDT-TEST"
     assert neighbor["neighbor_ip"] == "192.0.2.26"
@@ -613,6 +635,51 @@ def test_collect_service_continues_when_one_command_fails(monkeypatch, tmp_path)
     assert "display lldp neighbor-information verbose" in connection.commands
     assert repository.get_collect_run(result.collect_run_uuid)["status"] == "partial_success"
     assert any(item.command == "display transceiver interface" and not item.success for item in result.command_results)
+
+
+def test_zte_optical_detail_failure_keeps_brief_snapshot(
+    monkeypatch,
+    tmp_path,
+):
+    connection = ZteFakeConnection()
+    connection.outputs["show opticalinfo xgei-0/1/1/3"] = "Invalid command"
+    monkeypatch.setattr(
+        h3c_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
+    repository = make_repository(tmp_path)
+    device = Device(
+        device_uuid="25252525-2525-4252-8252-252525252525",
+        name="ZTE-TRACKSIDE",
+        device_vendor="ZTE",
+        device_type="SW",
+        ip_address="192.0.2.20",
+        ssh_enabled=1,
+        ssh_username="readonly",
+        ssh_password="test-only",
+    )
+
+    result = collect_h3c_device_details(
+        device,
+        "demo",
+        repository=repository,
+        paths=make_paths(tmp_path),
+    )
+    optical = {
+        item["interface_name"]: item
+        for item in repository.list_optical_modules(str(device.device_uuid))
+    }
+
+    assert result.success is True
+    assert repository.get_collect_run(result.collect_run_uuid)["status"] == "partial_success"
+    assert optical["xgei-0/1/1/3"]["rx_power"] == "-8.2"
+    assert optical["xgei-0/1/1/3"]["rx_low_alarm"] == "-14.4"
+    assert optical["xgei-0/1/1/3"]["device_reported_status"] == "Normal"
+    assert any(
+        item.command == "show opticalinfo xgei-0/1/1/3" and not item.success
+        for item in result.command_results
+    )
 
 
 def test_collect_service_marks_h3c_cli_error_output_as_partial(monkeypatch, tmp_path):

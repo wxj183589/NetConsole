@@ -23,6 +23,7 @@ function queryString(values: Record<string, string | number | undefined>): strin
 export function listConfigDevices(values: {
   search?: string
   group_filter?: string
+  operation_status?: string
   page?: number
   page_size?: number
 } = {}): Promise<ConfigDevicePage> {

@@ -28,6 +28,7 @@ from netconsole.models.api.config_collection import (
     ConfigTaskStatusDTO,
 )
 from netconsole.models.device import Device
+from netconsole.models.device import is_device_available_for_manual_debug
 from netconsole.models.task_snapshot import TaskEvent, TaskSnapshot, utc_now_iso
 from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.repositories.config_snapshot_repository import ConfigSnapshot, ConfigSnapshotRepository
@@ -130,6 +131,7 @@ class ConfigCollectionApplicationService:
         *,
         search: str = "",
         group_filter: str = "",
+        operation_status: str = "in_service",
         page: int = 1,
         page_size: int = 50,
     ) -> ConfigDevicePageDTO:
@@ -140,6 +142,7 @@ class ConfigCollectionApplicationService:
             search=str(search or "").strip() or None,
             vendor="H3C",
             group_filter=self._group_filter(group_filter),
+            operation_status=operation_status,
         )
         current_page = max(1, int(page))
         size = max(1, min(int(page_size), 200))
@@ -816,6 +819,8 @@ class ConfigCollectionApplicationService:
             raise FileNotFoundError("设备不存在") from exc
         if str(device.device_vendor or "").upper() != "H3C":
             raise ValueError("配置中心仅支持 H3C 设备")
+        if not is_device_available_for_manual_debug(device):
+            raise ValueError("设备已退役；如需采集配置，请先将投运状态改为调试中或在用")
         return device
 
     @staticmethod

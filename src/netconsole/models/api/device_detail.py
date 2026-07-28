@@ -71,6 +71,10 @@ class DeviceOverviewDTO(ApiModel):
     name: str
     system_name: str | None = None
     device_type: str | None = None
+    project_phase: str = "unspecified"
+    operation_status: str = "in_service"
+    operation_status_reason: str | None = None
+    operation_status_updated_at: str | None = None
     station: str | None = None
     location: str | None = None
     primary_address: str | None = None
@@ -162,6 +166,25 @@ class DeviceTransceiverDTO(ApiModel):
     wavelength: str | None = None
     transmission_distance: str | None = None
     connector_type: str | None = None
+    device_vendor: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    device_reported_status: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    threshold_source: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    transceiver_mode: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    vendor_part_number: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    vendor_revision: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    vendor_serial_number: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     rx_low_alarm: float | None = None
     rx_high_alarm: float | None = None
     rx_low_warning: float | None = None

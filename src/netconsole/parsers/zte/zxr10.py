@@ -364,6 +364,8 @@ def parse_optical_summary(raw: str) -> ZteParseResult[list[dict[str, object | No
                     "module_online": False,
                     "module_present": False,
                     "dom_supported": False,
+                    "device_reported_status": "offline",
+                    "threshold_source": "zte_brief",
                     "vendor_status": "offline",
                     "normalized_status": "OFFLINE",
                     "status": "offline",
@@ -398,17 +400,23 @@ def parse_optical_summary(raw: str) -> ZteParseResult[list[dict[str, object | No
                 "wavelength": _optional_number(data_parts[-4]),
                 "rx_power_dbm": rx_value,
                 "rx_power": rx_value,
+                "rx_low_alarm_dbm": rx_low,
+                "rx_high_alarm_dbm": rx_high,
                 "rx_low_threshold_dbm": rx_low,
                 "rx_high_threshold_dbm": rx_high,
                 "rx_low_alarm": rx_low,
                 "rx_high_alarm": rx_high,
                 "tx_power_dbm": tx_value,
                 "tx_power": tx_value,
+                "tx_low_alarm_dbm": tx_low,
+                "tx_high_alarm_dbm": tx_high,
                 "tx_low_threshold_dbm": tx_low,
                 "tx_high_threshold_dbm": tx_high,
                 "tx_low_alarm": tx_low,
                 "tx_high_alarm": tx_high,
                 "vendor_status": vendor_status,
+                "device_reported_status": vendor_status,
+                "threshold_source": "zte_brief",
                 "normalized_status": normalized_status,
                 "status": normalized_status.casefold(),
                 "raw_output": "",
@@ -524,75 +532,148 @@ def parse_optical_detail(
     status = "normal" if online else "offline" if offline else (
         "unverified" if dom_supported else "dom_unavailable"
     )
+    tx_wavelength = _number_field(fields, "laser_tx_wavelength")
+    rx_wavelength = _number_field(fields, "laser_rx_wavelength")
+    rx_high_alarm = _number_field(
+        fields, "default_rx_power_prehighalarm_thresholds"
+    )
+    rx_low_alarm = _number_field(
+        fields, "default_rx_power_prelowalarm_thresholds"
+    )
+    tx_high_alarm = _number_field(
+        fields, "default_tx_power_prehighalarm_thresholds"
+    )
+    tx_low_alarm = _number_field(
+        fields, "default_tx_power_prelowalarm_thresholds"
+    )
+    vendor_serial_number = _text_field(fields, "vendor_sn")
+    transceiver_type = _text_field(fields, "transceiver_type")
+    vendor_part_number = _text_field(fields, "vendor_pn")
+    transfer_distance_match = re.search(
+        r"(?mi)^\s*Transfer\s+Distance\s*:\s*"
+        r"9/125\(Smf\)\s+um\s+fiber\s+(\d+)\s+\(m\)",
+        text,
+    )
     item: dict[str, object | None] = {
         "interface_name": selected_interface,
         "module_present": not offline,
         "module_online": online,
         "dom_supported": dom_supported,
-        "module_type": _text_field(fields, "transceiver_type"),
-        "module_model": _text_field(fields, "vendor_pn")
-        or _text_field(fields, "transceiver_type"),
+        "transceiver_type": transceiver_type,
+        "module_type": transceiver_type,
+        "module_model": vendor_part_number or transceiver_type,
         "connector": _text_field(fields, "connector_type_code"),
         "connector_type": _text_field(fields, "connector_type_code"),
         "transceiver_mode": _text_field(fields, "transceiver_mode"),
         "directionality": _text_field(fields, "directionality"),
         "ethernet_compliance": _text_field(fields, "ethernet_compliance_codes"),
-        "wavelength_nm": _number_field(fields, "laser_tx_wavelength")
-        or _number_field(fields, "laser_rx_wavelength"),
-        "wavelength": _number_field(fields, "laser_tx_wavelength")
-        or _number_field(fields, "laser_rx_wavelength"),
+        "transfer_distance_smf_m": (
+            int(transfer_distance_match.group(1))
+            if transfer_distance_match
+            else None
+        ),
+        "transmission_distance": (
+            f"{transfer_distance_match.group(1)} m"
+            if transfer_distance_match
+            else None
+        ),
+        "tx_wavelength_nm": tx_wavelength,
+        "rx_wavelength_nm": rx_wavelength,
+        "wavelength_nm": tx_wavelength if tx_wavelength is not None else rx_wavelength,
+        "wavelength": tx_wavelength if tx_wavelength is not None else rx_wavelength,
         "rx_power_dbm": rx_power,
         "rx_power": rx_power,
         "tx_power_dbm": tx_power,
         "tx_power": tx_power,
         "tx_bias_ma": _number_field(fields, "measured_tx_bias_current"),
+        "tx_bias_current_ma": _number_field(fields, "measured_tx_bias_current"),
         "bias_current": _number_field(fields, "measured_tx_bias_current"),
         "temperature_c": temperature,
+        "temperature_celsius": temperature,
         "temperature": temperature,
+        "supply_voltage_1_v": voltage_1,
+        "supply_voltage_2_v": voltage_2,
         "voltage_v": voltage_1 if voltage_1 is not None else voltage_2,
         "voltage": voltage_1 if voltage_1 is not None else voltage_2,
         "receiver_sensitivity_dbm": _number_field(fields, "receiver_sensitivity"),
         "receiver_overload_dbm": _number_field(fields, "receiver_overload"),
-        "rx_alarm_high_dbm": _number_field(
-            fields, "default_rx_power_prehighalarm_thresholds"
-        ),
-        "rx_high_alarm": _number_field(
-            fields, "default_rx_power_prehighalarm_thresholds"
-        ),
-        "rx_alarm_low_dbm": _number_field(
-            fields, "default_rx_power_prelowalarm_thresholds"
-        ),
-        "rx_low_alarm": _number_field(
-            fields, "default_rx_power_prelowalarm_thresholds"
-        ),
-        "tx_alarm_high_dbm": _number_field(
-            fields, "default_tx_power_prehighalarm_thresholds"
-        ),
-        "tx_high_alarm": _number_field(
-            fields, "default_tx_power_prehighalarm_thresholds"
-        ),
-        "tx_alarm_low_dbm": _number_field(
-            fields, "default_tx_power_prelowalarm_thresholds"
-        ),
-        "tx_low_alarm": _number_field(
-            fields, "default_tx_power_prelowalarm_thresholds"
-        ),
+        "rx_alarm_high_dbm": rx_high_alarm,
+        "rx_high_alarm_dbm": rx_high_alarm,
+        "rx_high_alarm": rx_high_alarm,
+        "rx_alarm_low_dbm": rx_low_alarm,
+        "rx_low_alarm_dbm": rx_low_alarm,
+        "rx_low_alarm": rx_low_alarm,
+        "tx_alarm_high_dbm": tx_high_alarm,
+        "tx_high_alarm_dbm": tx_high_alarm,
+        "tx_high_alarm": tx_high_alarm,
+        "tx_alarm_low_dbm": tx_low_alarm,
+        "tx_low_alarm_dbm": tx_low_alarm,
+        "tx_low_alarm": tx_low_alarm,
         "vendor_name": _text_field(fields, "vendor_name"),
         "module_vendor": _text_field(fields, "vendor_name"),
-        "vendor_part_number": _text_field(fields, "vendor_pn"),
+        "vendor_part_number": vendor_part_number,
         "vendor_revision": _text_field(fields, "vendor_rev"),
-        "vendor_serial_number": _text_field(fields, "vendor_sn"),
-        "module_serial_number": _text_field(fields, "vendor_sn"),
+        "vendor_serial_number": vendor_serial_number,
+        "module_serial_number": vendor_serial_number,
         "authentication": _text_field(fields, "authentication"),
+        "authentication_code": _text_field(fields, "authenticationcode"),
+        "product_serial_number": _text_field(fields, "productsn"),
         "product_sn": _text_field(fields, "productsn"),
         "product_date": _text_field(fields, "productdate"),
         "speed": _text_field(fields, "speed"),
+        "threshold_source": (
+            "zte_detail"
+            if any(
+                value is not None
+                for value in (
+                    rx_low_alarm,
+                    rx_high_alarm,
+                    tx_low_alarm,
+                    tx_high_alarm,
+                )
+            )
+            else None
+        ),
         "normalized_status": status.upper(),
         "status": status,
         "raw_output": "",
         **_parser_metadata(ParseStatus.PARSED, warnings=warnings),
     }
     return ZteParseResult(item, tuple(warnings))
+
+
+def merge_optical_modules(
+    brief_rows: list[dict[str, object | None]],
+    detail_rows: list[dict[str, object | None]],
+) -> list[dict[str, object | None]]:
+    """按接口合并 ZTE 光模块摘要与详情，详情空值不覆盖摘要有效值。"""
+
+    merged_by_interface = {
+        _optical_interface_key(item.get("interface_name")): dict(item)
+        for item in brief_rows
+        if _optical_interface_key(item.get("interface_name"))
+    }
+    order = list(merged_by_interface)
+    for detail in detail_rows:
+        key = _optical_interface_key(detail.get("interface_name"))
+        if not key:
+            continue
+        if key not in merged_by_interface:
+            merged_by_interface[key] = {}
+            order.append(key)
+        target = merged_by_interface[key]
+        for field_name, value in detail.items():
+            if _is_missing_optical_value(value):
+                continue
+            if field_name == "interface_name" and target.get("interface_name"):
+                continue
+            if (
+                field_name in {"status", "normalized_status", "device_reported_status"}
+                and target.get(field_name)
+            ):
+                continue
+            target[field_name] = value
+    return [merged_by_interface[key] for key in order]
 
 
 def parse_lldp_brief(
@@ -915,6 +996,18 @@ def _text_field(fields: dict[str, str], name: str) -> str | None:
     return None if value.casefold() in MISSING_VALUES else value
 
 
+def _optical_interface_key(value: object) -> str:
+    return re.sub(r"\s+", "", str(value or "")).strip().casefold()
+
+
+def _is_missing_optical_value(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip().casefold() in MISSING_VALUES
+    return False
+
+
 def _normalize_mac(value: str) -> str:
     compact = re.sub(r"[^0-9a-fA-F]", "", value)
     if len(compact) != 12:
@@ -953,4 +1046,5 @@ __all__ = [
     "merge_lldp_neighbors",
     "parse_optical_detail",
     "parse_optical_summary",
+    "merge_optical_modules",
 ]

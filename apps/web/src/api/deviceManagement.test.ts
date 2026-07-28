@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getBatchRefresh, getDeviceDetailSection, getDeviceEditProfile, getDeviceInterfaceDetail, getDeviceOverview } from './deviceManagement'
+import { getBatchRefresh, getDeviceDetailSection, getDeviceEditProfile, getDeviceInterfaceDetail, getDeviceOverview, previewDeviceImport } from './deviceManagement'
 
 describe('device detail API client', () => {
   afterEach(() => vi.unstubAllGlobals())
@@ -76,5 +76,20 @@ describe('device detail API client', () => {
       '/api/device-management/batch-refreshes/batch%2F1',
       expect.objectContaining({ credentials: 'same-origin' }),
     )
+  })
+
+  it('sends the explicit site-IP match strategy and update mode with import preview', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+    const file = new File(['设备名称,主用地址\nA,192.0.2.1'], 'devices.csv', { type: 'text/csv' })
+
+    await previewDeviceImport(file, 'SITE_PRIMARY_IP', 'UPDATE_ONLY')
+
+    const options = fetchMock.mock.calls[0][1] as RequestInit
+    const body = options.body as FormData
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/device-management/imports/preview')
+    expect(body.get('file')).toBe(file)
+    expect(body.get('match_strategy')).toBe('SITE_PRIMARY_IP')
+    expect(body.get('write_mode')).toBe('UPDATE_ONLY')
   })
 })

@@ -5,7 +5,14 @@ from typing import Literal
 from pydantic import Field, SecretStr, field_validator, model_validator
 
 from netconsole.models.api.common import ApiModel
-from netconsole.models.device import normalize_device_vendor, validate_device_vendor_type
+from netconsole.models.device import (
+    OperationStatus,
+    ProjectPhase,
+    normalize_device_vendor,
+    normalize_operation_status,
+    normalize_project_phase,
+    validate_device_vendor_type,
+)
 
 
 DeviceConnectionStatus = Literal[
@@ -27,12 +34,22 @@ DeviceBatchRefreshStatus = Literal[
     "FAILED",
     "CANCELLED",
 ]
+DeviceImportMatchStrategy = Literal[
+    "LEGACY_APPEND", "DEVICE_ID", "SITE_PRIMARY_IP", "DEVICE_NAME"
+]
+DeviceImportWriteMode = Literal["CREATE_ONLY", "UPDATE_ONLY", "UPSERT"]
 DeviceSecretField = Literal[
     "ssh_password",
     "telnet_password",
     "tunnel1_password",
     "tunnel2_password",
     "snmp_ro_community",
+]
+ProjectPhaseValue = Literal[
+    "phase_1", "phase_2", "phase_3", "other", "unspecified"
+]
+OperationStatusValue = Literal[
+    "in_service", "not_integrated", "commissioning", "suspended", "retired"
 ]
 
 
@@ -61,6 +78,10 @@ class DeviceListItemDTO(ApiModel):
     group_name: str = "未分组"
     device_vendor: str = ""
     device_type: str = ""
+    project_phase: ProjectPhaseValue = "unspecified"
+    operation_status: OperationStatusValue = "in_service"
+    operation_status_reason: str = ""
+    operation_status_updated_at: str = ""
     primary_address: str = ""
     backup_address: str = ""
     updated_at: str = ""
@@ -205,6 +226,9 @@ class DeviceWriteRequestDTO(ApiModel):
     group_id: int | None = Field(default=None, ge=1)
     device_vendor: str = Field(default="H3C", max_length=40)
     device_type: str = Field(default="SW", max_length=40)
+    project_phase: ProjectPhaseValue = ProjectPhase.UNSPECIFIED.value
+    operation_status: OperationStatusValue = OperationStatus.IN_SERVICE.value
+    operation_status_reason: str = Field(default="", max_length=1000)
     primary_address: str = Field(default="", max_length=255)
     backup_address: str = Field(default="", max_length=255)
     ssh_enabled: bool = True
@@ -244,6 +268,16 @@ class DeviceWriteRequestDTO(ApiModel):
     def normalize_vendor(cls, value: object) -> str:
         return normalize_device_vendor(value)
 
+    @field_validator("project_phase", mode="before")
+    @classmethod
+    def normalize_phase(cls, value: object) -> str:
+        return normalize_project_phase(value)
+
+    @field_validator("operation_status", mode="before")
+    @classmethod
+    def normalize_status(cls, value: object) -> str:
+        return normalize_operation_status(value)
+
     @model_validator(mode="after")
     def validate_supported_vendor_type(self) -> "DeviceWriteRequestDTO":
         self.device_vendor, self.device_type = validate_device_vendor_type(
@@ -279,6 +313,33 @@ class DeviceGroupAssignmentDTO(ApiModel):
     success: int
     failed: int
     group_id: int | None = None
+
+
+class DeviceLifecycleUpdateRequestDTO(ApiModel):
+    device_uuids: list[str] = Field(min_length=1, max_length=500)
+    project_phase: ProjectPhaseValue | None = None
+    operation_status: OperationStatusValue | None = None
+    reason: str = Field(default="", max_length=1000)
+
+    @field_validator("project_phase", mode="before")
+    @classmethod
+    def normalize_phase(cls, value: object) -> str | None:
+        return None if value is None else normalize_project_phase(value)
+
+    @field_validator("operation_status", mode="before")
+    @classmethod
+    def normalize_status(cls, value: object) -> str | None:
+        return None if value is None else normalize_operation_status(value)
+
+    @model_validator(mode="after")
+    def validate_change(self) -> "DeviceLifecycleUpdateRequestDTO":
+        if self.project_phase is None and self.operation_status is None:
+            raise ValueError("至少提供建设阶段或投运状态")
+        return self
+
+
+class DeviceLifecycleUpdateDTO(ApiModel):
+    updated: int
 
 
 class DeviceGroupDeleteDTO(ApiModel):
@@ -382,6 +443,23 @@ class DeviceImportErrorDTO(ApiModel):
     field: str = ""
     raw_value: str = ""
     message: str
+    code: str = ""
+
+
+class DeviceImportRowResultDTO(ApiModel):
+    line: int
+    action: Literal[
+        "CREATE", "UPDATE", "UNCHANGED", "NOT_FOUND", "CONFLICT", "INVALID"
+    ]
+    match_strategy: DeviceImportMatchStrategy
+    match_basis: str = ""
+    device_id: int | None = None
+    device_name: str = ""
+    original_primary_address: str = ""
+    new_primary_address: str = ""
+    message: str = ""
+    error_code: str = ""
+    warnings: list[str] = Field(default_factory=list)
 
 
 class DeviceImportPreviewDTO(ApiModel):
@@ -397,11 +475,17 @@ class DeviceImportPreviewDTO(ApiModel):
     create_count: int = 0
     update_count: int = 0
     conflict_count: int = 0
+    unchanged_count: int = 0
+    not_found_count: int = 0
     detected_encoding: str = ""
+    match_strategy: DeviceImportMatchStrategy = "LEGACY_APPEND"
+    write_mode: DeviceImportWriteMode = "CREATE_ONLY"
     columns: list[str] = Field(default_factory=list)
     errors: list[DeviceImportErrorDTO] = Field(default_factory=list)
+    rows: list[DeviceImportRowResultDTO] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     duplicate_rows: list[int] = Field(default_factory=list)
+    has_hard_errors: bool = False
     persistence: Literal["preview_only"] = "preview_only"
 
 
@@ -417,6 +501,17 @@ class DeviceExportRequestDTO(ApiModel):
     vendor: str = Field(default="", max_length=40)
     device_type: str = Field(default="", max_length=40)
     group_filter: int | Literal["__ungrouped__"] | None = None
+    project_phase: Literal[
+        "all", "phase_1", "phase_2", "phase_3", "other", "unspecified"
+    ] = "all"
+    operation_status: Literal[
+        "all",
+        "in_service",
+        "not_integrated",
+        "commissioning",
+        "suspended",
+        "retired",
+    ] = "in_service"
     include_credentials: bool = False
 
 

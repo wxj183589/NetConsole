@@ -18,7 +18,7 @@
 
 LLDP 用例必须把历史 Repository 行映射为公开 DTO，主动丢弃邻居 `capabilities`、`model`；不能把原始数据库字典直接交给 Router。该映射不删除或改写历史数据库字段。
 
-刷新使用稳定 Operation ID `device.inventory.collect`，应用层不拼命令、不识别设备版本，也不直接访问 SQLite。未知或未验证厂商、角色、平台、Command Profile 必须由下层服务失败关闭。H3C AC 的业务关联只读复用 AC Query Service；H3C MR 关联信息只读复用 Online MR Query Service，基础设备详情刷新走独立 `mobile_router` Profile，不能被通用交换机刷新接管。
+刷新使用稳定 Operation ID `device.inventory.collect`，应用层不拼命令、不识别设备版本，也不直接访问 SQLite。未知或未验证厂商、角色、平台、Command Profile 必须由下层服务失败关闭。H3C `wireless_controller` 通过明确登记的 Comware 通用只读 Profile 刷新设备事实、接口、光模块和 LLDP；AC 业务关联继续只读复用 AC Query Service，FIT-AP/Radio/受控动作不进入设备详情用例。H3C MR 关联信息只读复用 Online MR Query Service，基础设备详情刷新走独立 `mobile_router` Profile，不能被通用交换机刷新接管。
 
 ## 依赖关系
 

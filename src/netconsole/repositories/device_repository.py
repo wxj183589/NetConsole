@@ -16,7 +16,15 @@ from netconsole.core.device_credential_store import (
     replace_device_credential_state,
     resolve_device_credentials,
 )
-from netconsole.models.device import Device
+from netconsole.models.device import (
+    Device,
+    normalize_operation_status,
+    normalize_project_phase,
+)
+from netconsole.models.device_address import (
+    DevicePrimaryAddressConflictError,
+    normalize_ip_address,
+)
 from netconsole.utils.natural_sort import natural_text_key
 
 
@@ -45,6 +53,10 @@ class DeviceRepository:
     def create(self, device: Device) -> Device:
         now = datetime.now().isoformat(timespec="seconds")
         device.ensure_device_uuid()
+        self._normalize_primary_address(device)
+        conflict = self.find_by_primary_address(device.primary_address)
+        if conflict is not None:
+            raise self._primary_address_conflict(device.primary_address, conflict)
         record = device.to_record()
         record["created_at"] = now
         record["updated_at"] = now
@@ -61,7 +73,15 @@ class DeviceRepository:
         sql = f"INSERT INTO devices ({', '.join(columns)}) VALUES ({placeholders})"
         with self.database.connect() as conn:
             ensure_device_credential_schema(conn)
-            cursor = conn.execute(sql, [record[column] for column in columns])
+            try:
+                cursor = conn.execute(sql, [record[column] for column in columns])
+            except sqlite3.IntegrityError as exc:
+                if self._is_primary_address_integrity_error(exc):
+                    conflict = self.find_by_primary_address(device.primary_address)
+                    raise self._primary_address_conflict(
+                        device.primary_address, conflict
+                    ) from exc
+                raise
             for field, state in credential_states.items():
                 replace_device_credential_state(
                     conn, str(device.device_uuid), field, state
@@ -86,6 +106,12 @@ class DeviceRepository:
     def update(self, device: Device) -> Device:
         if device.id is None:
             raise ValueError("Device id is required for update")
+        self._normalize_primary_address(device)
+        conflict = self.find_by_primary_address(
+            device.primary_address, exclude_device_id=device.id
+        )
+        if conflict is not None:
+            raise self._primary_address_conflict(device.primary_address, conflict)
         record = device.to_record()
         record["updated_at"] = datetime.now().isoformat(timespec="seconds")
         record.pop("created_at", None)
@@ -136,10 +162,20 @@ class DeviceRepository:
                 if field in DEVICE_SECRET_FIELDS:
                     state_updates[field] = None
             assignments = ", ".join(f"{column} = ?" for column in record)
-            conn.execute(
-                f"UPDATE devices SET {assignments} WHERE id = ?",
-                [record[column] for column in record] + [device_id],
-            )
+            try:
+                conn.execute(
+                    f"UPDATE devices SET {assignments} WHERE id = ?",
+                    [record[column] for column in record] + [device_id],
+                )
+            except sqlite3.IntegrityError as exc:
+                if self._is_primary_address_integrity_error(exc):
+                    conflict = self.find_by_primary_address(
+                        device.primary_address, exclude_device_id=int(device_id)
+                    )
+                    raise self._primary_address_conflict(
+                        device.primary_address, conflict
+                    ) from exc
+                raise
             device_uuid = str(device.device_uuid or current_values.get("device_uuid") or "")
             for field, state in state_updates.items():
                 replace_device_credential_state(conn, device_uuid, field, state)
@@ -210,12 +246,52 @@ class DeviceRepository:
             row = conn.execute("SELECT 1 FROM devices WHERE device_uuid = ? LIMIT 1", (device_uuid,)).fetchone()
         return row is not None
 
+    def find_by_primary_address(
+        self,
+        primary_address: object,
+        *,
+        exclude_device_id: int | None = None,
+    ) -> Device | None:
+        normalized = normalize_ip_address(primary_address)
+        if normalized is None:
+            return None
+        clauses = ["normalized_primary_address = ?"]
+        params: list[object] = [normalized]
+        if exclude_device_id is not None:
+            clauses.append("id <> ?")
+            params.append(int(exclude_device_id))
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM devices
+                WHERE {' AND '.join(clauses)}
+                ORDER BY id
+                LIMIT 2
+                """,
+                params,
+            ).fetchall()
+            states = read_device_credential_states(
+                conn, [str(row["device_uuid"]) for row in rows]
+            )
+        if len(rows) > 1:
+            first = rows[0]
+            raise DevicePrimaryAddressConflictError(
+                normalized,
+                device_id=int(first["id"]),
+                device_name=str(first["name"] or ""),
+                site_name=self._site_name(),
+            )
+        return self._device_from_row(rows[0], states) if rows else None
+
     def list(
         self,
         search: str | None = None,
         vendor: str | None = None,
         device_type: str | None = None,
         group_filter: int | str | None = None,
+        project_phase: str | None = None,
+        operation_status: str | None = None,
     ) -> list[Device]:
         clauses: list[str] = []
         params: list[object] = []
@@ -229,6 +305,12 @@ class DeviceRepository:
         if device_type:
             clauses.append("d.device_type = ?")
             params.append(device_type)
+        if project_phase and project_phase != "all":
+            clauses.append("d.project_phase = ?")
+            params.append(normalize_project_phase(project_phase))
+        if operation_status and operation_status != "all":
+            clauses.append("d.operation_status = ?")
+            params.append(normalize_operation_status(operation_status))
         if group_filter == "__ungrouped__":
             clauses.append("d.group_id IS NULL")
         elif group_filter is not None:
@@ -251,6 +333,67 @@ class DeviceRepository:
             )
         devices = [self._device_from_row(row, states) for row in rows]
         return sorted(devices, key=_device_natural_sort_key)
+
+    def update_lifecycle_many(
+        self,
+        device_uuids: list[str],
+        *,
+        project_phase: str | None = None,
+        operation_status: str | None = None,
+        reason: str | None = None,
+        updated_by: str | None = None,
+    ) -> int:
+        unique_uuids = list(dict.fromkeys(str(value).strip() for value in device_uuids))
+        if not unique_uuids:
+            raise ValueError("至少选择一台设备")
+        assignments: list[str] = []
+        params: list[object] = []
+        now = datetime.now().isoformat(timespec="seconds")
+        if project_phase is not None:
+            assignments.append("project_phase = ?")
+            params.append(normalize_project_phase(project_phase))
+        if operation_status is not None:
+            assignments.extend(
+                (
+                    "operation_status = ?",
+                    "operation_status_reason = ?",
+                    "operation_status_updated_at = ?",
+                    "operation_status_updated_by = ?",
+                )
+            )
+            params.extend(
+                (
+                    normalize_operation_status(operation_status),
+                    str(reason or "").strip() or None,
+                    now,
+                    str(updated_by or "").strip() or None,
+                )
+            )
+        if not assignments:
+            raise ValueError("未提供要修改的建设阶段或投运状态")
+        assignments.append("updated_at = ?")
+        params.append(now)
+        placeholders = ", ".join("?" for _ in unique_uuids)
+        with self.database.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            count = int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM devices WHERE device_uuid IN ({placeholders})",
+                    unique_uuids,
+                ).fetchone()[0]
+            )
+            if count != len(unique_uuids):
+                raise KeyError("部分设备不存在，未修改任何设备")
+            cursor = conn.execute(
+                f"""
+                UPDATE devices
+                SET {', '.join(assignments)}
+                WHERE device_uuid IN ({placeholders})
+                """,
+                [*params, *unique_uuids],
+            )
+            conn.commit()
+        return int(cursor.rowcount or 0)
 
     def update_group(self, device_id: int, group_id: int | None) -> Device:
         with self.database.connect() as conn:
@@ -304,6 +447,34 @@ class DeviceRepository:
         if field != "password":
             return field
         return "telnet_password" if bool(device.telnet_enabled) and not bool(device.ssh_enabled) else "ssh_password"
+
+    @staticmethod
+    def _normalize_primary_address(device: Device) -> None:
+        normalized = normalize_ip_address(device.primary_address)
+        device.primary_address = normalized or ""
+        device.normalized_primary_address = normalized
+
+    def _primary_address_conflict(
+        self, primary_address: object, conflict: Device | None
+    ) -> DevicePrimaryAddressConflictError:
+        normalized = normalize_ip_address(primary_address) or ""
+        return DevicePrimaryAddressConflictError(
+            normalized,
+            device_id=int(conflict.id) if conflict and conflict.id is not None else None,
+            device_name=str(conflict.name or "") if conflict else "",
+            site_name=self._site_name(),
+        )
+
+    def _site_name(self) -> str:
+        return self.database.path.parent.parent.name
+
+    @staticmethod
+    def _is_primary_address_integrity_error(exc: sqlite3.IntegrityError) -> bool:
+        message = str(exc).casefold()
+        return (
+            "uq_devices_normalized_primary_address" in message
+            or "devices.normalized_primary_address" in message
+        )
 
     @staticmethod
     def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:

@@ -456,6 +456,8 @@ def export_device_csv(path: Path, payload: Mapping[str, Any], progress: Progress
             vendor=filters.get("vendor") or None,
             device_type=filters.get("device_type") or None,
             group_filter=filters.get("group_filter"),
+            project_phase=filters.get("project_phase"),
+            operation_status=filters.get("operation_status"),
         )
         service = DeviceImportExportService(repository, group_repository)
     selected_uuids = {
@@ -520,6 +522,8 @@ def export_securecrt_sessions_task(path: Path, payload: Mapping[str, Any], progr
         vendor=filters.get("vendor") or None,
         device_type=filters.get("device_type") or None,
         group_filter=filters.get("group_filter"),
+        project_phase=filters.get("project_phase"),
+        operation_status=filters.get("operation_status"),
     )
     if selected_uuids:
         devices = [device for device in devices if str(device.device_uuid or "").strip() in selected_uuids]

@@ -747,9 +747,13 @@ const detailFieldsBySection: Partial<Record<DeviceDetailSection, Array<[string, 
   ],
   optical: [
     ['接口', 'interface_name'], ['严重性', 'severity'], ['严重性原因', 'severity_reason'],
-    ['接收功率', 'rx_power'], ['发送功率', 'tx_power'], ['温度', 'temperature'], ['电压', 'voltage'], ['偏置电流', 'bias_current'],
-    ['模块型号', 'module_model'], ['序列号', 'module_serial_number'], ['厂商', 'module_vendor'], ['波长', 'wavelength'],
-    ['传输距离', 'transmission_distance'], ['连接器', 'connector_type'], ['采集时间', 'collected_at'],
+    ['接收功率', 'rx_power'], ['接收低告警阈值', 'rx_low_alarm'], ['接收高告警阈值', 'rx_high_alarm'],
+    ['发送功率', 'tx_power'], ['发送低告警阈值', 'tx_low_alarm'], ['发送高告警阈值', 'tx_high_alarm'],
+    ['温度', 'temperature'], ['电压', 'voltage'], ['偏置电流', 'bias_current'],
+    ['模块型号', 'module_model'], ['模块厂商', 'module_vendor'], ['厂商 PN', 'vendor_part_number'],
+    ['厂商版本', 'vendor_revision'], ['厂商 SN', 'vendor_serial_number'], ['波长', 'wavelength'],
+    ['模式', 'transceiver_mode'], ['连接器', 'connector_type'], ['传输距离', 'transmission_distance'],
+    ['设备原始状态', 'device_reported_status'], ['阈值来源', 'threshold_source'], ['采集时间', 'collected_at'],
   ],
   lldp: [
     ['本地接口', 'local_interface'], ['邻居系统名', 'neighbor_system_name'], ['邻居 MAC', 'neighbor_mac'], ['邻居接口', 'neighbor_interface'],
@@ -799,7 +803,24 @@ function formatDetailValue(key: string, value: unknown, context: DeviceDetailRec
   if (selectedRecordSection.value === 'interfaces' && ['name', 'normalized_name'].includes(key)) {
     return formatValue(displayInterfaceName(value))
   }
+  if (selectedRecordSection.value === 'optical') {
+    const unit = opticalMeasurementUnits[key]
+    if (unit && value !== null && value !== undefined && value !== '') return `${formatValue(value)} ${unit}`
+  }
   return formatEnumeratedValue(key, value, context)
+}
+
+const opticalMeasurementUnits: Record<string, string> = {
+  rx_power: 'dBm',
+  rx_low_alarm: 'dBm',
+  rx_high_alarm: 'dBm',
+  tx_power: 'dBm',
+  tx_low_alarm: 'dBm',
+  tx_high_alarm: 'dBm',
+  temperature: '°C',
+  voltage: 'V',
+  bias_current: 'mA',
+  wavelength: 'nm',
 }
 
 function toggleConfigurationSelection(snapshotId: number, checked: boolean): void {
@@ -875,6 +896,20 @@ function formatValue(value: unknown): string {
 }
 
 const displayEnumLabels: Record<string, Record<string, string>> = {
+  project_phase: {
+    phase_1: '一期',
+    phase_2: '二期',
+    phase_3: '三期',
+    other: '其他',
+    unspecified: '未指定',
+  },
+  operation_status: {
+    in_service: '在用',
+    not_integrated: '未并网',
+    commissioning: '调试中',
+    suspended: '暂停使用',
+    retired: '已退役',
+  },
   severity: {
     normal: '正常',
     notice: '注意',
@@ -886,7 +921,7 @@ const displayEnumLabels: Record<string, Record<string, string>> = {
     no_module: '无光模块',
     link_abnormal: '链路异常',
     link_down: '链路中断',
-    offline: '离线',
+    offline: '模块离线',
     not_collected: '未采集',
     skipped: '已跳过',
   },
@@ -1087,6 +1122,10 @@ function errorMessage(cause: unknown, fallback: string): string {
                 <el-descriptions-item label="备用地址">{{ formatValue(overview.backup_address) }}</el-descriptions-item>
                 <el-descriptions-item label="MAC">{{ formatValue(overview.mac_address) }}</el-descriptions-item>
                 <el-descriptions-item label="类型">{{ formatValue(overview.device_type) }}</el-descriptions-item>
+                <el-descriptions-item label="建设阶段">{{ formatEnumeratedValue('project_phase', overview.project_phase) }}</el-descriptions-item>
+                <el-descriptions-item label="投运状态">{{ formatEnumeratedValue('operation_status', overview.operation_status) }}</el-descriptions-item>
+                <el-descriptions-item label="状态说明">{{ formatValue(overview.operation_status_reason) }}</el-descriptions-item>
+                <el-descriptions-item label="状态更新时间">{{ formatTime(overview.operation_status_updated_at) }}</el-descriptions-item>
                 <el-descriptions-item label="站点">{{ formatValue(overview.station) }}</el-descriptions-item>
                 <el-descriptions-item label="位置">{{ formatValue(overview.location) }}</el-descriptions-item>
                 <el-descriptions-item label="连接状态">{{ formatValue(overview.connection_status) }}</el-descriptions-item>

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -25,10 +25,12 @@ from netconsole.parsers.zte.vlan import (
     parse_vlan_table,
 )
 from netconsole.parsers.zte.zxr10 import (
+    merge_optical_modules as merge_zte_optical_modules,
     parse_device_identity as parse_zte_device_identity,
     parse_interfaces as parse_zte_interfaces,
     parse_lldp_brief as parse_zte_lldp_brief,
     parse_lldp_entries as parse_zte_lldp_entries,
+    parse_optical_detail as parse_zte_optical_detail,
     parse_optical_summary as parse_zte_optical_summary,
     merge_lldp_neighbors as merge_zte_lldp_neighbors,
 )
@@ -40,6 +42,7 @@ from netconsole.services.device_command_profile_service import (
     DeviceCommandProfile,
     DeviceCommandProfileError,
     DeviceCommandStep,
+    build_interface_transceiver_command,
     device_cli_output_is_unsupported,
     resolve_device_inventory_profile,
     resolve_step_command_candidates,
@@ -272,6 +275,57 @@ def collect_h3c_device_details(
                     and parse_zte_device_identity(result.output).status != "OK"
                 ):
                     raise ValueError("ZTE_DEVICE_NOT_RECOGNIZED")
+        if (
+            str(device.device_vendor or "").strip().casefold() == "zte"
+            and outputs.get("inventory.optical_brief")
+        ):
+            optical_step = next(
+                (
+                    item
+                    for item in collect_steps
+                    if item.selector == "inventory.optical_brief"
+                ),
+                None,
+            )
+            optical_summary = parse_zte_optical_summary(
+                outputs["inventory.optical_brief"]
+            )
+            if optical_step is not None and optical_summary.status == "OK":
+                online_rows = [
+                    item
+                    for item in optical_summary.value
+                    if item.get("module_online")
+                    and str(item.get("interface_name") or "").strip()
+                ]
+                for detail_index, item in enumerate(online_rows, start=1):
+                    interface_name = str(item["interface_name"])
+                    detail_selector = f"inventory.optical_detail::{interface_name}"
+                    detail_command = build_interface_transceiver_command(
+                        device, interface_name
+                    )
+                    _emit_progress(
+                        progress_callback,
+                        80 + int(detail_index / max(1, len(online_rows)) * 4),
+                        "batch_collect.stage.collecting_command",
+                        detail_command,
+                    )
+                    detail_result = _run_command(
+                        connection,
+                        replace(
+                            optical_step,
+                            step_id="device.optical-detail.collect",
+                            command=detail_command,
+                            selector=detail_selector,
+                        ),
+                        profile,
+                        device,
+                        collect_run_uuid,
+                        encoding=target.encoding,
+                        cancel_check=cancel_check,
+                    )
+                    command_results.append(detail_result)
+                    if detail_result.success:
+                        outputs[detail_selector] = detail_result.output
         _write_raw_files(raw_log_file, commands_file, device, target.protocol, collect_run_uuid, command_results, target_protocol=target.protocol)
         write_result = _parse_and_write(repository, device, collect_run_uuid, relative_raw_log_path, outputs, progress_callback=progress_callback)
         if str(device.device_vendor or "").strip().casefold() == "zte":
@@ -782,7 +836,30 @@ def _parse_zte_and_write(
     if interface_result.status == "OK" and interfaces:
         repository.replace_device_interfaces(str(device.device_uuid), interfaces)
         interfaces_updated = len(interfaces)
-    optical_modules = [{**item, **metadata} for item in optical_result.value]
+    optical_detail_rows: list[dict[str, object | None]] = []
+    for selector, output in outputs.items():
+        if not selector.startswith("inventory.optical_detail::"):
+            continue
+        interface_name = selector.split("::", 1)[1]
+        detail_result = parse_zte_optical_detail(output, interface_name)
+        parse_errors.extend(detail_result.warnings)
+        if detail_result.status == "OK" and detail_result.value:
+            optical_detail_rows.append(detail_result.value)
+        else:
+            parse_errors.append(
+                f"ZTE_TRANSCEIVER_DETAIL_{interface_name}_{detail_result.status}"
+            )
+    optical_modules = [
+        {
+            **item,
+            "device_vendor": "ZTE",
+            **metadata,
+        }
+        for item in merge_zte_optical_modules(
+            optical_result.value,
+            optical_detail_rows,
+        )
+    ]
     optical_modules_updated = 0
     if optical_result.status == "OK" and optical_modules:
         repository.replace_optical_modules(

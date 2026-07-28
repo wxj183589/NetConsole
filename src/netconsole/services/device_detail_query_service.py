@@ -5,7 +5,11 @@ import math
 import re
 from typing import Protocol
 
-from netconsole.core.optical_severity_engine import SEVERITY_RANK, compute_optical_severity
+from netconsole.core.optical_severity_engine import (
+    SEVERITY_RANK,
+    compute_optical_severity,
+    compute_zte_optical_severity,
+)
 from netconsole.models.api.device_detail import (
     DeviceBusinessAssociationDTO,
     DeviceBusinessAssociationPageDTO,
@@ -208,6 +212,10 @@ class DeviceDetailQueryService:
             name=str(device.name or ""),
             system_name=_text((fact or {}).get("sysname") or device.system_name),
             device_type=_text(device.device_type),
+            project_phase=str(device.project_phase or "unspecified"),
+            operation_status=str(device.operation_status or "in_service"),
+            operation_status_reason=_text(device.operation_status_reason),
+            operation_status_updated_at=_text(device.operation_status_updated_at),
             station=_text(device.station),
             location=_text(device.location),
             primary_address=_text(device.primary_address),
@@ -295,7 +303,7 @@ class DeviceDetailQueryService:
     def interface_detail(
         self, device_uuid: str, interface_name: str
     ) -> DeviceInterfaceDetailDTO:
-        self._device(device_uuid)
+        device = self._device(device_uuid)
         row = self.gateway.get_interface(device_uuid, interface_name)
         if row is None:
             raise KeyError(interface_name)
@@ -325,7 +333,11 @@ class DeviceDetailQueryService:
                     or None
                 ),
             ),
-            transceiver=self._transceiver(optical) if optical else None,
+            transceiver=(
+                self._transceiver(optical, device_vendor=device.device_vendor)
+                if optical
+                else None
+            ),
             lldp_neighbors=neighbors,
             lldp_truncated=lldp_truncated,
             source=self._combined_dataset_source(
@@ -342,7 +354,7 @@ class DeviceDetailQueryService:
         page: int = 1,
         page_size: int = 50,
     ) -> DeviceTransceiverPageDTO:
-        self._device(device_uuid)
+        device = self._device(device_uuid)
         current_page, size, offset = _pagination(page, page_size)
         selected_severity = str(severity or "").strip().casefold()
         truncated = False
@@ -351,7 +363,7 @@ class DeviceDetailQueryService:
                 device_uuid, search=search, limit=_TRANSCEIVER_SCAN_LIMIT
             )
             mapped = [
-                self._transceiver(row)
+                self._transceiver(row, device_vendor=device.device_vendor)
                 for row in rows
             ]
             selected = [item for item in mapped if item.severity == selected_severity]
@@ -361,7 +373,10 @@ class DeviceDetailQueryService:
             rows, total = self.gateway.list_transceivers(
                 device_uuid, search=search, limit=size, offset=offset
             )
-            items = [self._transceiver(row) for row in rows]
+            items = [
+                self._transceiver(row, device_vendor=device.device_vendor)
+                for row in rows
+            ]
         return DeviceTransceiverPageDTO(
             items=items,
             total=total,
@@ -923,8 +938,22 @@ class DeviceDetailQueryService:
         )
 
     @staticmethod
-    def _transceiver(row: dict[str, object | None]) -> DeviceTransceiverDTO:
-        severity, severity_reason, _threshold_source = _optical_severity(row)
+    def _transceiver(
+        row: dict[str, object | None],
+        *,
+        device_vendor: object = None,
+    ) -> DeviceTransceiverDTO:
+        normalized_device_vendor = (
+            _text(row.get("device_vendor")) or _text(device_vendor)
+        )
+        severity_row = (
+            {**row, "device_vendor": normalized_device_vendor}
+            if normalized_device_vendor
+            else row
+        )
+        severity, severity_reason, _threshold_source = _optical_severity(
+            severity_row
+        )
         interface_name = str(row.get("interface_name") or "")
         module_missing = severity == "no_module"
         public_reason = (
@@ -951,6 +980,23 @@ class DeviceDetailQueryService:
             ),
             connector_type=(
                 None if module_missing else _text(row.get("connector_type"))
+            ),
+            device_vendor=(
+                normalized_device_vendor
+                if str(normalized_device_vendor or "").casefold() == "zte"
+                else None
+            ),
+            device_reported_status=_text(row.get("device_reported_status")),
+            threshold_source=_text(row.get("threshold_source")),
+            transceiver_mode=_text(row.get("transceiver_mode")),
+            vendor_part_number=(
+                None if module_missing else _text(row.get("vendor_part_number"))
+            ),
+            vendor_revision=(
+                None if module_missing else _text(row.get("vendor_revision"))
+            ),
+            vendor_serial_number=(
+                None if module_missing else _text(row.get("vendor_serial_number"))
             ),
             rx_low_alarm=_number(row.get("rx_low_alarm")),
             rx_high_alarm=_number(row.get("rx_high_alarm")),
@@ -1258,6 +1304,16 @@ _OPTICAL_REASON_TRANSLATIONS = {
         "接收光功率介于告警低阈值与警告低阈值之间"
     ),
     "RX power below alarm low threshold": "接收光功率低于告警低阈值",
+    "Device reported optical module offline": "设备返回 optical module offline",
+    "Device did not report RX power; raw value is N/A": (
+        "设备未返回接收光功率，原始值为 N/A"
+    ),
+    "ZTE optical power is within module alarm thresholds": (
+        "光功率位于模块告警阈值范围内"
+    ),
+    "Device did not report optical power thresholds; threshold evaluation is unavailable": (
+        "设备未返回光功率阈值，无法进行阈值判定"
+    ),
 }
 
 _OPTICAL_MODULE_IDENTITY_FIELDS = (
@@ -1332,7 +1388,28 @@ def _json_warning_list(value: object) -> list[dict[str, object]]:
 def _translate_optical_reason(reason: str | None) -> str | None:
     if reason is None:
         return None
-    return _OPTICAL_REASON_TRANSLATIONS.get(reason, reason)
+    translated = _OPTICAL_REASON_TRANSLATIONS.get(reason)
+    if translated:
+        return translated
+    threshold_match = re.fullmatch(
+        r"(RX|TX) power ([-+]?\d+(?:\.\d+)?) dBm is "
+        r"(below|above) module (low|high) alarm threshold "
+        r"([-+]?\d+(?:\.\d+)?) dBm",
+        reason,
+    )
+    if threshold_match:
+        direction, value, comparison, boundary, threshold = threshold_match.groups()
+        power_label = "接收" if direction == "RX" else "发送"
+        comparison_label = "低于" if comparison == "below" else "高于"
+        boundary_label = "低" if boundary == "low" else "高"
+        return (
+            f"{power_label}光功率 {value} dBm，{comparison_label}模块"
+            f"{boundary_label}告警阈值 {threshold} dBm"
+        )
+    status_match = re.fullmatch(r"ZTE device reported optical status (.+)", reason)
+    if status_match:
+        return f"设备返回光模块状态 {status_match.group(1)}"
+    return reason
 
 
 def _number(value: object) -> float | None:
@@ -1361,6 +1438,10 @@ def _has_optical_module_evidence(row: dict[str, object | None]) -> bool:
 def _optical_severity(
     row: dict[str, object | None],
 ) -> tuple[str, str | None, str]:
+    if str(row.get("device_vendor") or "").strip().casefold() == "zte":
+        result = compute_zte_optical_severity(row)
+        return result.severity, result.reason, result.warning_source
+
     status = str(row.get("status") or "").strip().casefold()
     if status == "no_module":
         return status, "Optical module is not present", "collector_status"

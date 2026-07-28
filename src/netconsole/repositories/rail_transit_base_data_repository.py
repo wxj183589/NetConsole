@@ -11,6 +11,7 @@ from uuid import uuid4
 from netconsole.core.paths import PathResolver
 from netconsole.core.sqlite_utils import configure_sqlite_connection
 from netconsole.core.sites import SiteManager
+from netconsole.models.device_address import normalize_ip_address
 from netconsole.repositories.ap_management_vlan_repository import (
     ApManagementVlanRepository,
 )
@@ -951,11 +952,29 @@ class RailTransitBaseDataRepository:
         entity_id: Any,
         values: Mapping[str, Any],
     ) -> None:
+        if action == "delete":
+            cursor = connection.execute(
+                "DELETE FROM devices WHERE device_uuid = ?",
+                (str(entity_id or ""),),
+            )
+            if cursor.rowcount != 1:
+                raise RailTransitBaseDataConstraintError("车载 MR 不存在")
+            return
+        try:
+            primary_address = normalize_ip_address(
+                values.get("primary_address"),
+                field="车载 MR 管理地址",
+                allow_empty=False,
+            )
+        except ValueError as exc:
+            raise RailTransitBaseDataConstraintError(str(exc)) from exc
+        assert primary_address is not None
         safe = {
             "name": str(values.get("name") or "").strip(),
             "station": str(values.get("station") or "").strip(),
             "mac_address": str(values.get("mac_address") or "").strip(),
-            "primary_address": str(values.get("primary_address") or "").strip(),
+            "primary_address": primary_address,
+            "normalized_primary_address": primary_address,
             "protocol": str(values.get("protocol") or "SSH").upper(),
             "port": int(values.get("port") or 22),
             "remark": str(values.get("remark") or "").strip(),
@@ -965,11 +984,6 @@ class RailTransitBaseDataRepository:
             safe.update(ssh_enabled=1, ssh_port=safe["port"])
         else:
             safe.update(telnet_enabled=1, telnet_port=safe["port"])
-        if action == "delete":
-            cursor = connection.execute("DELETE FROM devices WHERE device_uuid = ?", (str(entity_id or ""),))
-            if cursor.rowcount != 1:
-                raise RailTransitBaseDataConstraintError("车载 MR 不存在")
-            return
         if action == "create":
             group = connection.execute(
                 "SELECT id FROM device_groups WHERE name LIKE '%车载-MR%' ORDER BY id LIMIT 1"
@@ -984,16 +998,30 @@ class RailTransitBaseDataRepository:
                 created_at=safe["updated_at"],
             )
             columns = list(safe)
-            connection.execute(
-                f"INSERT INTO devices ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
-                [safe[column] for column in columns],
-            )
+            try:
+                connection.execute(
+                    f"INSERT INTO devices ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                    [safe[column] for column in columns],
+                )
+            except sqlite3.IntegrityError as exc:
+                if "normalized_primary_address" in str(exc):
+                    raise RailTransitBaseDataConstraintError(
+                        f"车载 MR 管理地址 {primary_address} 在当前局点内已被其他设备使用"
+                    ) from exc
+                raise
             return
         assignments = ", ".join(f'"{field}" = ?' for field in safe)
-        cursor = connection.execute(
-            f"UPDATE devices SET {assignments} WHERE device_uuid = ?",
-            [*safe.values(), str(entity_id or "")],
-        )
+        try:
+            cursor = connection.execute(
+                f"UPDATE devices SET {assignments} WHERE device_uuid = ?",
+                [*safe.values(), str(entity_id or "")],
+            )
+        except sqlite3.IntegrityError as exc:
+            if "normalized_primary_address" in str(exc):
+                raise RailTransitBaseDataConstraintError(
+                    f"车载 MR 管理地址 {primary_address} 在当前局点内已被其他设备使用"
+                ) from exc
+            raise
         if cursor.rowcount != 1:
             raise RailTransitBaseDataConstraintError("车载 MR 不存在")
 
