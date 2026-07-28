@@ -716,10 +716,13 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
     }
     const duplicatePreview = await previewMeshLog()
     const duplicateItem = duplicatePreview.items?.[0]
+    const duplicateProfileState = duplicateItem?.profile_import_states?.find(
+      (state) => state.profile_id === ctProfile.mr_id,
+    )
     if (
-      duplicateItem?.duplicate_status !== 'duplicate_same_mr'
-      || duplicateItem?.existing_stored_filename !== '2026_07_28_1meshlog.log'
-      || !duplicateItem?.existing_session_id
+      duplicateProfileState?.duplicate_status !== 'duplicate_same_mr'
+      || duplicateProfileState?.existing_stored_filename !== '2026_07_28_1meshlog.log'
+      || !duplicateProfileState?.existing_session_id
     ) {
       throw new Error(`MESH smoke 重复预览未命中已有来源：${JSON.stringify(duplicatePreview)}`)
     }

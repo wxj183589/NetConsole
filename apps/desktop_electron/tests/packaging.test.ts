@@ -256,7 +256,7 @@ describe('Electron-only packaging', () => {
     expect(script).toContain('/api/online-mr/tasks/')
     expect(script).toContain('/api/tasks/')
     expect(script).toContain('2026_07_28_1meshlog.log')
-    expect(script).toContain("duplicateItem?.duplicate_status !== 'duplicate_same_mr'")
+    expect(script).toContain("duplicateProfileState?.duplicate_status !== 'duplicate_same_mr'")
     expect(script).toContain('sessionsAfterDuplicate.total !== 1')
     expect(script).toContain('MESH import context idempotency and duplicate-safe archive naming')
   })
