@@ -75,7 +75,20 @@ const sectionLoading = reactive<Record<string, boolean>>({})
 const sectionErrors = reactive<Record<string, string>>({})
 const sectionPages = ref<Partial<Record<Exclude<DeviceDetailSection, 'overview'>, DeviceDetailSectionPage>>>({})
 const sectionCache = new Map<string, DeviceDetailSectionPage>()
-const sectionQuery = reactive({ search: '', status: '', severity: '', interface_type: '', linked_only: false, snapshot_type: '', page: 1, page_size: 50 })
+const sectionQuery = reactive({
+  search: '',
+  status: '',
+  severity: '',
+  interface_type: '',
+  admin_status: '',
+  physical_status: '',
+  protocol_status: '',
+  media_type: '',
+  linked_only: false,
+  snapshot_type: '',
+  page: 1,
+  page_size: 50,
+})
 const selectedRecord = ref<DeviceDetailRecord | null>(null)
 const selectedRecordSection = ref<DeviceDetailSection>('overview')
 const recordDetailVisible = ref(false)
@@ -138,18 +151,21 @@ const capabilityColumns: NcTableColumn<DeviceDetailCapabilityInfo>[] = [
 
 const columnsBySection: Record<Exclude<DeviceDetailSection, 'overview'>, NcTableColumn<DeviceDetailRecord>[]> = {
   interfaces: [
-    detailColumn('接口', 'interface_name', 'port', { fixed: 'left' }),
-    detailColumn('链路', 'link_status', 'status'),
-    detailColumn('协议', 'protocol_status', 'status'),
+    detailColumn('接口', 'interface_name', 'port', { fixed: 'left', minWidth: 180 }),
+    detailColumn('综合状态', 'link_status', 'status'),
+    detailColumn('管理状态', 'admin_status', 'status'),
+    detailColumn('物理状态', 'physical_status', 'status'),
+    detailColumn('协议状态', 'protocol_status', 'status'),
     detailColumn('速率', 'speed', 'rate'),
     detailColumn('双工', 'duplex', 'status'),
-    detailColumn('接口类型', 'interface_type'),
-    detailColumn('端口状态', 'port_status', 'status'),
+    detailColumn('介质', 'media_type', 'status'),
+    detailColumn('接口类别', 'category', 'status'),
+    detailColumn('端口模式', 'port_mode', 'status', {
+      displayValue: (row) => formatEnumeratedValue('port_mode', row.port_mode || row.port_status, row),
+    }),
     detailColumn('PVID', 'pvid', 'number'),
+    detailColumn('VLAN', 'vlan', 'description'),
     detailColumn('描述', 'description', 'description'),
-    detailColumn('接口 IP', 'ip_address', 'ip'),
-    detailColumn('MAC', 'mac_address', 'mac'),
-    detailColumn('VLAN', 'vlan', 'text'),
     detailColumn('采集时间', 'collected_at', 'datetime'),
   ],
   optical: [
@@ -175,6 +191,9 @@ const columnsBySection: Record<Exclude<DeviceDetailSection, 'overview'>, NcTable
     detailColumn('邻居 MAC', 'neighbor_mac', 'mac'),
     detailColumn('邻居接口', 'neighbor_interface', 'port'),
     detailColumn('邻居 IP', 'neighbor_ip', 'ip'),
+    detailColumn('PVID', 'pvid', 'number'),
+    detailColumn('TTL', 'ttl', 'number'),
+    detailColumn('邻居描述', 'port_description', 'description'),
     detailColumn('采集时间', 'collected_at', 'datetime'),
   ],
   configuration: [
@@ -242,11 +261,15 @@ const historyColumns = computed<NcTableColumn<DeviceDetailRecord>[]>(() => {
   const kind = historyPage.value?.kind
   if (kind === 'interface') return [
     detailColumn('采集时间', 'collected_at', 'datetime'), detailColumn('接口', 'interface_name', 'port'),
-    detailColumn('链路', 'link_status', 'status'), detailColumn('协议', 'protocol_status', 'status'),
+    detailColumn('综合状态', 'link_status', 'status'), detailColumn('管理状态', 'admin_status', 'status'),
+    detailColumn('物理状态', 'physical_status', 'status'), detailColumn('协议状态', 'protocol_status', 'status'),
     detailColumn('速率', 'speed', 'rate'), detailColumn('双工', 'duplex', 'status'),
-    detailColumn('类型', 'interface_type'), detailColumn('端口状态', 'port_status', 'status'),
-    detailColumn('PVID', 'pvid', 'number'), detailColumn('描述', 'description', 'description'),
-    detailColumn('接口 IP', 'ip_address', 'ip'), detailColumn('MAC', 'mac_address', 'mac'), detailColumn('VLAN', 'vlan'),
+    detailColumn('介质', 'media_type', 'status'), detailColumn('接口类别', 'category', 'status'),
+    detailColumn('端口模式', 'port_mode', 'status', {
+      displayValue: (row) => formatEnumeratedValue('port_mode', row.port_mode || row.port_status, row),
+    }),
+    detailColumn('PVID', 'pvid', 'number'), detailColumn('VLAN', 'vlan', 'description'),
+    detailColumn('描述', 'description', 'description'),
   ]
   if (kind === 'optical') return [
     detailColumn('采集时间', 'collected_at', 'datetime'), detailColumn('接口', 'interface_name', 'port'),
@@ -262,6 +285,8 @@ const historyColumns = computed<NcTableColumn<DeviceDetailRecord>[]>(() => {
     detailColumn('采集时间', 'collected_at', 'datetime'), detailColumn('本地接口', 'local_interface', 'port'),
     detailColumn('邻居系统名', 'neighbor_sysname', 'name'), detailColumn('邻居 MAC', 'neighbor_mac', 'mac'),
     detailColumn('邻居接口', 'neighbor_interface', 'port'), detailColumn('邻居 IP', 'neighbor_ip', 'ip'),
+    detailColumn('PVID', 'pvid', 'number'), detailColumn('TTL', 'ttl', 'number'),
+    detailColumn('邻居描述', 'port_description', 'description'),
     detailColumn('关联状态', 'association_status', 'status'),
   ]
 })
@@ -269,7 +294,10 @@ const publicDeviceTasks = computed(() => taskStore.tasks.filter((task) => task.m
 const sectionFilterOptions: Partial<Record<DeviceDetailSection, Array<{ label: string; value: string }>>> = {
   interfaces: [
     { label: '链路 UP', value: 'UP' },
-    { label: '链路 DOWN', value: 'DOWN' },
+    { label: '管理关闭', value: 'ADMIN_DOWN' },
+    { label: '物理 Down', value: 'PHYSICAL_DOWN' },
+    { label: '协议 Down', value: 'PROTOCOL_DOWN' },
+    { label: '未知', value: 'UNKNOWN' },
   ],
   optical: [
     { label: '正常', value: 'normal' },
@@ -300,6 +328,15 @@ const sectionFilterOptions: Partial<Record<DeviceDetailSection, Array<{ label: s
 function getSectionFilterOptions(section: DeviceDetailSection): Array<{ label: string; value: string }> {
   return sectionFilterOptions[section] ?? []
 }
+
+const binaryInterfaceStatusOptions = [
+  { label: 'Up', value: 'up' },
+  { label: 'Down', value: 'down' },
+]
+const interfaceMediaOptions = [
+  { label: '光口', value: 'optical' },
+  { label: '电口', value: 'electric' },
+]
 
 const terminalRefreshStatuses = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 watch(
@@ -379,6 +416,10 @@ async function activateSection(name: string | number): Promise<void> {
   sectionQuery.status = ''
   sectionQuery.severity = ''
   sectionQuery.interface_type = ''
+  sectionQuery.admin_status = ''
+  sectionQuery.physical_status = ''
+  sectionQuery.protocol_status = ''
+  sectionQuery.media_type = ''
   sectionQuery.linked_only = false
   sectionQuery.snapshot_type = ''
   sectionQuery.page = 1
@@ -396,10 +437,28 @@ async function loadSection(section = selectedSection.value as Exclude<DeviceDeta
     status: ['interfaces', 'tasks'].includes(section) ? sectionQuery.status : undefined,
     severity: section === 'optical' ? sectionQuery.severity : undefined,
     interface_type: section === 'interfaces' ? sectionQuery.interface_type : undefined,
+    admin_status: section === 'interfaces' ? sectionQuery.admin_status : undefined,
+    physical_status: section === 'interfaces' ? sectionQuery.physical_status : undefined,
+    protocol_status: section === 'interfaces' ? sectionQuery.protocol_status : undefined,
+    media_type: section === 'interfaces' ? sectionQuery.media_type : undefined,
     linked_only: section === 'lldp' ? sectionQuery.linked_only : undefined,
     snapshot_type: section === 'configuration' ? sectionQuery.snapshot_type : undefined,
   }
-  const cacheKey = [section, query.page, query.page_size, query.search, query.status || '', query.severity || '', query.interface_type || '', query.linked_only ? '1' : '0', query.snapshot_type || ''].join('|')
+  const cacheKey = [
+    section,
+    query.page,
+    query.page_size,
+    query.search,
+    query.status || '',
+    query.severity || '',
+    query.interface_type || '',
+    query.admin_status || '',
+    query.physical_status || '',
+    query.protocol_status || '',
+    query.media_type || '',
+    query.linked_only ? '1' : '0',
+    query.snapshot_type || '',
+  ].join('|')
   const cached = sectionCache.get(cacheKey)
   if (cached) {
     sectionPages.value[section] = cached
@@ -677,9 +736,14 @@ interface DetailField {
 
 const detailFieldsBySection: Partial<Record<DeviceDetailSection, Array<[string, string]>>> = {
   interfaces: [
-    ['接口', 'name'], ['归一化接口', 'normalized_name'], ['类别', 'category'], ['链路', 'link_status'], ['协议', 'protocol_status'],
-    ['速率', 'speed'], ['双工', 'duplex'], ['接口类型', 'interface_type'], ['端口状态', 'port_status'], ['PVID', 'pvid'],
-    ['描述', 'description'], ['接口 IP', 'ip_address'], ['MAC', 'mac_address'], ['VLAN', 'vlan'], ['采集时间', 'collected_at'],
+    ['接口', 'name'], ['归一化接口', 'normalized_name'], ['接口类别', 'category'], ['综合状态', 'link_status'],
+    ['管理状态', 'admin_status'], ['物理状态', 'physical_status'], ['协议状态', 'protocol_status'],
+    ['速率', 'speed'], ['双工', 'duplex'], ['介质属性', 'media_attribute'], ['介质', 'media_type'],
+    ['接口类型', 'interface_type'], ['端口模式', 'port_mode'], ['PVID', 'pvid'], ['Native VLAN', 'native_vlan'],
+    ['Tagged VLAN', 'tagged_vlans'], ['Untagged VLAN', 'untagged_vlans'], ['VLAN', 'vlan'],
+    ['PVID 来源', 'pvid_source'], ['PVID 已交叉验证', 'pvid_verified'], ['VLAN 配置状态', 'vlan_config_status'],
+    ['VLAN 配置采集时间', 'vlan_config_collected_at'], ['VLAN 解析告警', 'vlan_warnings'],
+    ['描述', 'description'], ['接口 IP', 'ip_address'], ['MAC', 'mac_address'], ['采集时间', 'collected_at'],
   ],
   optical: [
     ['接口', 'interface_name'], ['严重性', 'severity'], ['严重性原因', 'severity_reason'],
@@ -689,7 +753,9 @@ const detailFieldsBySection: Partial<Record<DeviceDetailSection, Array<[string, 
   ],
   lldp: [
     ['本地接口', 'local_interface'], ['邻居系统名', 'neighbor_system_name'], ['邻居 MAC', 'neighbor_mac'], ['邻居接口', 'neighbor_interface'],
-    ['邻居 IP', 'neighbor_ip'], ['关联状态', 'association_status'], ['采集时间', 'collected_at'],
+    ['邻居 IP', 'neighbor_ip'], ['PVID', 'pvid'], ['TTL', 'ttl'], ['邻居描述', 'port_description'],
+    ['系统描述', 'system_description'], ['系统能力', 'system_capabilities'], ['Chassis ID', 'chassis_id'],
+    ['关联状态', 'association_status'], ['关联设备', 'neighbor_device_uuid'], ['采集时间', 'collected_at'],
   ],
   configuration: [
     ['快照 ID', 'snapshot_id'], ['配置类型', 'snapshot_type'], ['时间', 'timestamp'], ['大小', 'size_bytes'], ['文件名', 'filename'],
@@ -796,6 +862,14 @@ async function openSavedArtifact(reveal: boolean): Promise<void> {
 function formatValue(value: unknown): string {
   if (value === null || value === undefined || value === '') return '—'
   if (typeof value === 'boolean') return value ? '是' : '否'
+  if (Array.isArray(value)) {
+    if (!value.length) return '—'
+    return value.map((item) => {
+      if (typeof item !== 'object' || item === null) return String(item)
+      const warning = item as Record<string, unknown>
+      return String(warning.code || warning.reason || '解析告警')
+    }).join('、')
+  }
   if (typeof value === 'object') return '—'
   return String(value)
 }
@@ -823,10 +897,57 @@ const displayEnumLabels: Record<string, Record<string, string>> = {
   link_status: {
     up: '已连接',
     down: '已断开',
+    admin_down: '管理关闭',
+    physical_down: '物理 Down',
+    protocol_down: '协议 Down',
+    unknown: '未知',
+  },
+  admin_status: {
+    up: 'Up',
+    down: 'Down',
+  },
+  physical_status: {
+    up: 'Up',
+    down: 'Down',
   },
   protocol_status: {
-    up: '已启用',
-    down: '未启用',
+    up: 'Up',
+    down: 'Down',
+  },
+  media_type: {
+    optical: '光口',
+    electric: '电口',
+  },
+  media_attribute: {
+    optical: '光口',
+    electric: '电口',
+  },
+  port_mode: {
+    access: 'Access',
+    trunk: 'Trunk',
+    hybrid: 'Hybrid',
+  },
+  port_status: {
+    access: 'Access',
+    trunk: 'Trunk',
+    hybrid: 'Hybrid',
+  },
+  pvid_source: {
+    show_running_config_switchvlan: 'show running-config switchvlan',
+    show_vlan_pvid_ports: 'show vlan / PvidPorts',
+    previous_snapshot: '上一次有效快照',
+  },
+  vlan_config_status: {
+    current: '本次已采集',
+    current_with_inherited_fields: '本次部分采集，缺失字段沿用上次快照',
+    inherited: '沿用上一次有效快照，本次 VLAN 命令未成功',
+    unavailable: '暂无有效 VLAN 配置',
+  },
+  category: {
+    physical: '物理接口',
+    logical: '逻辑接口',
+    management: '管理接口',
+    unknown: '未知',
   },
   status: {
     pending: '等待中',
@@ -860,7 +981,7 @@ const exactDisplayValueLabels: Record<string, Record<string, string>> = {
 function formatEnumeratedValue(key: string, value: unknown, context?: DeviceDetailRecord): string {
   if (key === 'severity_reason' && isNormalSeverity(context?.severity)) return '—'
   if (typeof value !== 'string') return formatValue(value)
-  if (['interface_name', 'local_interface', 'neighbor_interface', 'switch_interface'].includes(key)) {
+  if (['interface_name', 'local_interface', 'switch_interface'].includes(key)) {
     return formatValue(displayInterfaceName(value))
   }
   const normalizedValue = value.trim().toLowerCase()
@@ -1051,6 +1172,10 @@ function errorMessage(cause: unknown, fallback: string): string {
                 <el-input v-if="['interfaces', 'optical', 'lldp'].includes(section)" v-model="sectionQuery.search" clearable placeholder="搜索当前分区" @keyup.enter="loadSection(section, true)" />
                 <el-select v-if="section === 'optical'" v-model="sectionQuery.severity" clearable placeholder="全部严重性" @change="loadSection(section, true)"><el-option v-for="option in getSectionFilterOptions(section)" :key="option.value" :label="option.label" :value="option.value" /></el-select>
                 <el-select v-else-if="['interfaces', 'tasks'].includes(section) && getSectionFilterOptions(section).length" v-model="sectionQuery.status" clearable placeholder="全部状态" @change="loadSection(section, true)"><el-option v-for="option in getSectionFilterOptions(section)" :key="option.value" :label="option.label" :value="option.value" /></el-select>
+                <el-select v-if="section === 'interfaces'" v-model="sectionQuery.admin_status" clearable placeholder="全部管理状态" @change="loadSection(section, true)"><el-option v-for="option in binaryInterfaceStatusOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select>
+                <el-select v-if="section === 'interfaces'" v-model="sectionQuery.physical_status" clearable placeholder="全部物理状态" @change="loadSection(section, true)"><el-option v-for="option in binaryInterfaceStatusOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select>
+                <el-select v-if="section === 'interfaces'" v-model="sectionQuery.protocol_status" clearable placeholder="全部协议状态" @change="loadSection(section, true)"><el-option v-for="option in binaryInterfaceStatusOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select>
+                <el-select v-if="section === 'interfaces'" v-model="sectionQuery.media_type" clearable placeholder="全部介质类型" @change="loadSection(section, true)"><el-option v-for="option in interfaceMediaOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select>
                 <el-checkbox v-if="section === 'lldp'" v-model="sectionQuery.linked_only" @change="loadSection(section, true)">仅已关联</el-checkbox>
                 <el-select v-if="section === 'configuration'" v-model="sectionQuery.snapshot_type" clearable placeholder="全部快照" @change="loadSection(section, true)"><el-option v-for="option in getSectionFilterOptions(section)" :key="option.value" :label="option.label" :value="option.value" /></el-select>
                 <el-button v-if="section === 'configuration'" :disabled="configurationSelection.length !== 2" @click="compareConfigurationSnapshots">比较选中</el-button>

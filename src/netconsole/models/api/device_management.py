@@ -17,6 +17,16 @@ DeviceConnectionStatus = Literal[
     "ERROR",
 ]
 DeviceConnectionProtocol = Literal["SSH", "TELNET", "SNMP"]
+DeviceBatchRefreshStatus = Literal[
+    "ACCEPTED",
+    "REUSED",
+    "REJECTED",
+    "RUNNING",
+    "COMPLETED",
+    "PARTIAL_SUCCESS",
+    "FAILED",
+    "CANCELLED",
+]
 DeviceSecretField = Literal[
     "ssh_password",
     "telnet_password",
@@ -54,6 +64,10 @@ class DeviceListItemDTO(ApiModel):
     primary_address: str = ""
     backup_address: str = ""
     updated_at: str = ""
+    metadata_updated_at: str = ""
+    last_collected_at: str = ""
+    last_collect_status: str = ""
+    last_collect_task_id: str = ""
     capabilities: DeviceCapabilityDTO
     connection_status: DeviceConnectionStatus = "UNKNOWN"
     last_test_task_id: str = ""
@@ -302,9 +316,52 @@ class DeviceTaskReferenceDTO(ApiModel):
     message: str = ""
 
 
+class DeviceBatchRefreshItemDTO(ApiModel):
+    device_uuid: str
+    device_name: str = ""
+    primary_address: str = ""
+    vendor: str = ""
+    device_type: str = ""
+    profile_id: str = ""
+    profile_version: int | None = None
+    submission_status: Literal["ACCEPTED", "REUSED", "REJECTED"]
+    status: DeviceBatchRefreshStatus
+    task_id: str = ""
+    task_status: str = ""
+    collect_run_uuid: str = ""
+    facts_updated: bool = False
+    interfaces_updated: int = 0
+    optical_modules_updated: int = 0
+    lldp_neighbors_updated: int = 0
+    started_at: str = ""
+    finished_at: str = ""
+    last_collected_at: str = ""
+    error_message: str = ""
+
+
+class DeviceBatchRefreshSummaryDTO(ApiModel):
+    total: int = 0
+    accepted: int = 0
+    reused: int = 0
+    rejected: int = 0
+    running: int = 0
+    completed: int = 0
+    partial_success: int = 0
+    failed: int = 0
+    cancelled: int = 0
+
+
 class DeviceTaskBatchDTO(ApiModel):
     action: str
     tasks: list[DeviceTaskReferenceDTO] = Field(default_factory=list)
+    batch_id: str = ""
+    created_at: str = ""
+    finished_at: str = ""
+    terminal: bool = False
+    summary: DeviceBatchRefreshSummaryDTO = Field(
+        default_factory=DeviceBatchRefreshSummaryDTO
+    )
+    items: list[DeviceBatchRefreshItemDTO] = Field(default_factory=list)
 
 
 class DeviceBatchRefreshRequestDTO(ApiModel):

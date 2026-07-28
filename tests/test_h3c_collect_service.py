@@ -77,9 +77,39 @@ class ZteFakeConnection:
             "show interface brief": zte_fixture(
                 "zte_5960x_show_interface_brief.txt"
             ),
+            "show running-config switchvlan": """
+ZXR10#show running-config switchvlan
+switchvlan-configuration
+ interface xgei-0/1/1/2
+  switchport mode hybrid
+  switchport hybrid vlan 201 tag
+  switchport hybrid native vlan 71
+ $
+""",
+            "show vlan": """
+VLAN     Name     PvidPorts           UntagPorts          TagPorts
+71       vlan0071 xgei-0/1/1/2
+201      vlan0201                                         xgei-0/1/1/2
+""",
             "show opticalinfo brief": zte_fixture(
                 "zte_5960x_show_opticalinfo_brief.txt"
             ),
+            "show lldp neighbor brief": """
+Local Interface   Scope  Chassis ID      Port ID           Holdtime  System Name
+-------------------------------------------------------------------------------
+xgei-0/1/1/2      NB     02aa.bbcc.0001  XGigabitEthernet1/0/1 120    HZDT-TEST
+""",
+            "show lldp entry": """
+Local port :xgei-0/1/1/2
+Chassis type :MAC address
+Chassis ID :02aa.bbcc.0001
+Port ID type :Interface name
+Port ID :XGigabitEthernet1/0/1
+Time to live :120
+System name :HZDT-TEST
+Management address :IPv4-192.0.2.26, IfIndex-10, OID-0
+Port VLAN ID(PVID) :71
+""",
         }
 
     def send_command(self, command, read_timeout=None):
@@ -185,13 +215,17 @@ def test_zte_collect_uses_fixture_verified_commands_and_persists_dom(
     assert result.success is True
     assert result.interfaces_updated > 0
     assert result.optical_modules_updated > 0
-    assert result.lldp_neighbors_updated == 0
+    assert result.lldp_neighbors_updated == 1
     assert connection.commands == [
         "show version",
         "show interface brief",
         " ",
+        "show running-config switchvlan",
+        "show vlan",
         "show opticalinfo brief",
         " ",
+        "show lldp neighbor brief",
+        "show lldp entry",
     ]
     assert connection.disconnected is True
     assert Path(result.raw_log_path).is_file()
@@ -200,14 +234,275 @@ def test_zte_collect_uses_fixture_verified_commands_and_persists_dom(
     assert fact["model"] == "5960X-32U-ES"
     assert fact["software_version"] == "V2.00.20.03B07"
     interfaces = repository.list_device_interfaces(str(device.device_uuid))
-    assert any(item["interface_name"] == "xgei-0/1/1/2" for item in interfaces)
+    interface = next(
+        item for item in interfaces if item["interface_name"] == "xgei-0/1/1/2"
+    )
+    assert interface["port_status"] == "hybrid"
+    assert interface["media_type"] == "optical"
+    assert interface["pvid"] == "71"
+    assert interface["native_vlan"] == "71"
+    assert interface["tagged_vlans"] == '["201"]'
+    assert interface["pvid_source"] == "show_running_config_switchvlan"
+    assert interface["pvid_verified"] == 1
     optical = {
         item["interface_name"]: item
         for item in repository.list_optical_modules(str(device.device_uuid))
     }
     assert optical["xgei-0/1/1/2"]["rx_power"] == "-11.9"
     assert optical["xgei-0/1/1/2"]["status"] == "unverified"
+    neighbor = repository.list_lldp_neighbors(str(device.device_uuid))[0]
+    assert neighbor["neighbor_sysname"] == "HZDT-TEST"
+    assert neighbor["neighbor_ip"] == "192.0.2.26"
+    assert neighbor["pvid"] == 71
     assert "--More--" in Path(result.raw_log_path).read_text(encoding="utf-8")
+    artifact_dir = Path(result.raw_log_path).parent
+    assert (artifact_dir / "switchvlan-config.txt").is_file()
+    assert (artifact_dir / "vlan-table.txt").is_file()
+    assert (artifact_dir / "zte-vlan-manifest.json").is_file()
+
+
+def test_zte_lldp_entry_failure_keeps_brief_and_returns_partial_success(
+    monkeypatch,
+    tmp_path,
+):
+    connection = ZteFakeConnection()
+    connection.outputs["show lldp entry"] = "Invalid command"
+    monkeypatch.setattr(
+        h3c_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
+    repository = make_repository(tmp_path)
+    device = Device(
+        device_uuid="24242424-2424-4242-8242-242424242424",
+        name="ZTE-TRACKSIDE",
+        device_vendor="ZTE",
+        device_type="SW",
+        ip_address="192.0.2.24",
+        ssh_enabled=1,
+        ssh_username="readonly",
+        ssh_password="test-only",
+    )
+
+    result = collect_h3c_device_details(
+        device,
+        "demo",
+        repository=repository,
+        paths=make_paths(tmp_path),
+    )
+
+    assert result.success is True
+    assert result.interfaces_updated > 0
+    assert result.optical_modules_updated > 0
+    assert result.lldp_neighbors_updated == 1
+    neighbor = repository.list_lldp_neighbors(str(device.device_uuid))[0]
+    assert neighbor["neighbor_sysname"] == "HZDT-TEST"
+    assert neighbor["neighbor_ip"] is None
+    run = repository.get_collect_run(result.collect_run_uuid)
+    assert run["status"] == "partial_success"
+
+
+def test_zte_switchvlan_failure_uses_show_vlan_pvid_and_keeps_other_facts(
+    monkeypatch,
+    tmp_path,
+):
+    connection = ZteFakeConnection()
+    connection.outputs["show running-config switchvlan"] = "Invalid command"
+    monkeypatch.setattr(
+        h3c_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
+    repository = make_repository(tmp_path)
+    device = Device(
+        device_uuid="26262626-2626-4262-8262-262626262626",
+        name="ZTE-VLAN-FALLBACK",
+        device_vendor="ZTE",
+        device_type="SW",
+        ip_address="192.0.2.26",
+        ssh_enabled=1,
+        ssh_username="readonly",
+        ssh_password="test-only",
+    )
+
+    result = collect_h3c_device_details(
+        device, "demo", repository=repository, paths=make_paths(tmp_path)
+    )
+
+    assert result.success is True
+    interface = next(
+        item
+        for item in repository.list_device_interfaces(str(device.device_uuid))
+        if item["interface_name"] == "xgei-0/1/1/2"
+    )
+    assert interface["pvid"] == "71"
+    assert interface["pvid_source"] == "show_vlan_pvid_ports"
+    assert interface["port_status"] is None
+    assert result.optical_modules_updated > 0
+    assert result.lldp_neighbors_updated == 1
+    assert repository.get_collect_run(result.collect_run_uuid)["status"] == (
+        "partial_success"
+    )
+
+
+def test_zte_show_vlan_failure_keeps_switchvlan_mode_and_pvid(
+    monkeypatch,
+    tmp_path,
+):
+    connection = ZteFakeConnection()
+    connection.outputs["show vlan"] = "Invalid command"
+    monkeypatch.setattr(
+        h3c_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
+    repository = make_repository(tmp_path)
+    device = Device(
+        device_uuid="27272727-2727-4272-8272-272727272727",
+        name="ZTE-SWITCHVLAN",
+        device_vendor="ZTE",
+        device_type="SW",
+        ip_address="192.0.2.27",
+        ssh_enabled=1,
+        ssh_username="readonly",
+        ssh_password="test-only",
+    )
+
+    result = collect_h3c_device_details(
+        device, "demo", repository=repository, paths=make_paths(tmp_path)
+    )
+
+    assert result.success is True
+    interface = next(
+        item
+        for item in repository.list_device_interfaces(str(device.device_uuid))
+        if item["interface_name"] == "xgei-0/1/1/2"
+    )
+    assert interface["port_status"] == "hybrid"
+    assert interface["pvid"] == "71"
+    assert interface["pvid_source"] == "show_running_config_switchvlan"
+    assert interface["pvid_verified"] == 0
+    assert repository.get_collect_run(result.collect_run_uuid)["status"] == (
+        "partial_success"
+    )
+
+
+def test_zte_both_vlan_failures_update_dynamic_fields_and_preserve_stable_fields(
+    monkeypatch,
+    tmp_path,
+):
+    connection = ZteFakeConnection()
+    connection.outputs["show running-config switchvlan"] = "Invalid command"
+    connection.outputs["show vlan"] = "Invalid command"
+    monkeypatch.setattr(
+        h3c_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
+    repository = make_repository(tmp_path)
+    device_uuid = "28282828-2828-4282-8282-282828282828"
+    repository.replace_device_interfaces(
+        device_uuid,
+        [
+            {
+                "interface_name": "xgei-0/1/1/2",
+                "link_status": "PHYSICAL_DOWN",
+                "port_mode": "hybrid",
+                "port_status": "hybrid",
+                "pvid": "71",
+                "native_vlan": "71",
+                "tagged_vlans": ["201"],
+                "untagged_vlans": [],
+                "vlan_config_status": "current",
+                "vlan_config_collected_at": "2026-07-27T00:00:00Z",
+            }
+        ],
+    )
+    device = Device(
+        device_uuid=device_uuid,
+        name="ZTE-VLAN-PRESERVE",
+        device_vendor="ZTE",
+        device_type="SW",
+        ip_address="192.0.2.28",
+        ssh_enabled=1,
+        ssh_username="readonly",
+        ssh_password="test-only",
+    )
+
+    result = collect_h3c_device_details(
+        device, "demo", repository=repository, paths=make_paths(tmp_path)
+    )
+
+    assert result.success is True
+    interface = next(
+        item
+        for item in repository.list_device_interfaces(device_uuid)
+        if item["interface_name"] == "xgei-0/1/1/2"
+    )
+    assert interface["link_status"] == "UP"
+    assert interface["port_status"] == "hybrid"
+    assert interface["pvid"] == "71"
+    assert interface["tagged_vlans"] == '["201"]'
+    assert interface["pvid_source"] == "previous_snapshot"
+    assert interface["vlan_config_status"] == "inherited"
+    assert interface["vlan_config_collected_at"] == "2026-07-27T00:00:00Z"
+    assert repository.get_collect_run(result.collect_run_uuid)["status"] == (
+        "partial_success"
+    )
+
+
+def test_zte_unrecognized_lldp_outputs_preserve_previous_snapshot(
+    monkeypatch,
+    tmp_path,
+):
+    connection = ZteFakeConnection()
+    connection.outputs["show lldp neighbor brief"] = "unexpected LLDP text"
+    connection.outputs["show lldp entry"] = "unexpected LLDP detail"
+    monkeypatch.setattr(
+        h3c_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
+    repository = make_repository(tmp_path)
+    device_uuid = "25252525-2525-4252-8252-252525252525"
+    repository.replace_lldp_neighbors(
+        device_uuid,
+        [
+            {
+                "local_interface": "gei-0/3/0/2",
+                "neighbor_sysname": "PREVIOUS-VALID",
+            }
+        ],
+        preserve_existing=False,
+    )
+    device = Device(
+        device_uuid=device_uuid,
+        name="ZTE-TRACKSIDE",
+        device_vendor="ZTE",
+        device_type="SW",
+        ip_address="192.0.2.25",
+        ssh_enabled=1,
+        ssh_username="readonly",
+        ssh_password="test-only",
+    )
+
+    result = collect_h3c_device_details(
+        device,
+        "demo",
+        repository=repository,
+        paths=make_paths(tmp_path),
+    )
+
+    assert result.success is True
+    assert result.interfaces_updated > 0
+    assert result.optical_modules_updated > 0
+    assert result.lldp_neighbors_updated == 0
+    neighbors = repository.list_lldp_neighbors(device_uuid)
+    assert len(neighbors) == 1
+    assert neighbors[0]["neighbor_sysname"] == "PREVIOUS-VALID"
+    assert repository.get_collect_run(result.collect_run_uuid)["status"] == (
+        "partial_success"
+    )
 
 
 def test_zte_collect_stops_after_version_for_unsupported_zxr10_model(

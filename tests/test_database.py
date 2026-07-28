@@ -20,6 +20,9 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
         fact_history_columns = [row["name"] for row in conn.execute("PRAGMA table_info(device_facts_history)").fetchall()]
         config_snapshot_columns = [row["name"] for row in conn.execute("PRAGMA table_info(config_snapshots)").fetchall()]
         interface_columns = [row["name"] for row in conn.execute("PRAGMA table_info(device_interfaces)").fetchall()]
+        interface_history_columns = [row["name"] for row in conn.execute("PRAGMA table_info(device_interfaces_history)").fetchall()]
+        lldp_columns = [row["name"] for row in conn.execute("PRAGMA table_info(device_lldp_neighbors)").fetchall()]
+        lldp_history_columns = [row["name"] for row in conn.execute("PRAGMA table_info(device_lldp_neighbors_history)").fetchall()]
         optical_columns = [row["name"] for row in conn.execute("PRAGMA table_info(device_optical_modules)").fetchall()]
         optical_history_columns = [row["name"] for row in conn.execute("PRAGMA table_info(device_optical_modules_history)").fetchall()]
         schema_version = conn.execute("SELECT value FROM schema_metadata WHERE key = 'schema_version'").fetchone()["value"]
@@ -110,6 +113,40 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
     assert "base" + "line" not in config_snapshot_columns
     for column in ("interface_type", "port_status", "pvid"):
         assert column in interface_columns
+    for column in (
+        "admin_status",
+        "physical_status",
+        "media_attribute",
+        "media_type",
+        "category",
+        "port_mode",
+        "native_vlan",
+        "tagged_vlans",
+        "untagged_vlans",
+        "pvid_source",
+        "pvid_verified",
+        "vlan_config_status",
+        "vlan_config_collected_at",
+        "vlan_warnings",
+    ):
+        assert column in interface_columns
+        assert column in interface_history_columns
+    for column in (
+        "scope",
+        "chassis_type",
+        "chassis_id",
+        "port_id_type",
+        "holdtime",
+        "ttl",
+        "port_description",
+        "system_description",
+        "system_capabilities",
+        "pvid",
+        "operational_mau",
+        "max_frame_size",
+    ):
+        assert column in lldp_columns
+        assert column in lldp_history_columns
     for column in ("rx_low_warning", "rx_high_warning", "tx_low_warning", "tx_high_warning"):
         assert column in optical_columns
         assert column in optical_history_columns
@@ -205,6 +242,129 @@ def test_database_initialize_auto_updates_additive_schema(tmp_path):
     assert "ap_extension_points" in table_names
     assert "ap_extension_import_batches" in table_names
     assert "idx_fit_ap_radio_history_ap_time" in radio_history_indexes
+
+
+def test_zte_interface_lldp_additive_migration_is_repeatable_and_preserves_rows(
+    tmp_path,
+):
+    db = Database(tmp_path / "devices.db")
+    db.initialize()
+    with db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO device_interfaces (
+                device_uuid, interface_name, link_status, collected_at, updated_at
+            ) VALUES ('device-1', 'gei-0/3/0/2', 'UP', '2026-07-01', '2026-07-01')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO device_interfaces_history (
+                device_uuid, interface_name, link_status, collected_at, created_at
+            ) VALUES ('device-1', 'gei-0/3/0/2', 'UP', '2026-07-01', '2026-07-01')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO device_lldp_neighbors (
+                device_uuid, local_interface, neighbor_sysname, collected_at, updated_at
+            ) VALUES ('device-1', 'gei-0/3/0/2', 'OLD-NEIGHBOR', '2026-07-01', '2026-07-01')
+            """
+        )
+        for table, columns in (
+            (
+                "device_interfaces",
+                (
+                    "admin_status",
+                    "physical_status",
+                    "media_attribute",
+                    "media_type",
+                    "category",
+                    "port_mode",
+                    "native_vlan",
+                    "tagged_vlans",
+                    "untagged_vlans",
+                    "pvid_source",
+                    "pvid_verified",
+                    "vlan_config_status",
+                    "vlan_config_collected_at",
+                    "vlan_warnings",
+                ),
+            ),
+            (
+                "device_interfaces_history",
+                (
+                    "admin_status",
+                    "physical_status",
+                    "media_attribute",
+                    "media_type",
+                    "category",
+                    "port_mode",
+                    "native_vlan",
+                    "tagged_vlans",
+                    "untagged_vlans",
+                    "pvid_source",
+                    "pvid_verified",
+                    "vlan_config_status",
+                    "vlan_config_collected_at",
+                    "vlan_warnings",
+                ),
+            ),
+            (
+                "device_lldp_neighbors",
+                ("scope", "chassis_type", "chassis_id", "ttl", "pvid"),
+            ),
+            (
+                "device_lldp_neighbors_history",
+                ("scope", "chassis_type", "chassis_id", "ttl", "pvid"),
+            ),
+        ):
+            for column in columns:
+                conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+        conn.execute(
+            "UPDATE schema_metadata SET value = ? WHERE key = 'schema_version'",
+            ("2026.07.24.device_credential_state",),
+        )
+        conn.commit()
+
+    db.initialize()
+    db.initialize()
+
+    with db.connect() as conn:
+        interface = conn.execute(
+            "SELECT interface_name, link_status, admin_status, media_type "
+            "FROM device_interfaces WHERE device_uuid = 'device-1'"
+        ).fetchone()
+        interface_history = conn.execute(
+            "SELECT interface_name, link_status, physical_status "
+            "FROM device_interfaces_history WHERE device_uuid = 'device-1'"
+        ).fetchone()
+        neighbor = conn.execute(
+            "SELECT neighbor_sysname, chassis_id, ttl, pvid "
+            "FROM device_lldp_neighbors WHERE device_uuid = 'device-1'"
+        ).fetchone()
+        version = conn.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
+        ).fetchone()["value"]
+
+    assert dict(interface) == {
+        "interface_name": "gei-0/3/0/2",
+        "link_status": "UP",
+        "admin_status": None,
+        "media_type": None,
+    }
+    assert dict(interface_history) == {
+        "interface_name": "gei-0/3/0/2",
+        "link_status": "UP",
+        "physical_status": None,
+    }
+    assert dict(neighbor) == {
+        "neighbor_sysname": "OLD-NEIGHBOR",
+        "chassis_id": None,
+        "ttl": None,
+        "pvid": None,
+    }
+    assert version == CURRENT_SCHEMA_VERSION
 
 
 def test_legacy_snmpv3_columns_are_ignored_and_preserved(tmp_path):

@@ -21,11 +21,18 @@ PROMPT_OR_COMMAND_RE = re.compile(
     re.IGNORECASE,
 )
 INTERFACE_NAME_RE = re.compile(
-    r"^(?:xgei|xxvgei|xlgei|cgei)-\d+(?:/\d+){3}(?::\d+)?$|"
+    r"^(?:gei|xgei|xgeis|xxvgei|xlgei|cgei)-\d+(?:/\d+){3}(?::\d+)?$|"
     r"^sci-[A-Za-z0-9/.:_-]+$|^mgmt_eth$",
     re.IGNORECASE,
 )
-TRACKSIDE_PHYSICAL_PREFIXES = ("xgei-", "xxvgei-", "xlgei-", "cgei-")
+TRACKSIDE_PHYSICAL_PREFIXES = (
+    "gei-",
+    "xgei-",
+    "xgeis-",
+    "xxvgei-",
+    "xlgei-",
+    "cgei-",
+)
 MISSING_VALUES = {"", "n/a", "na", "---", "unsupported", "offline"}
 UNSUPPORTED_MARKERS = (
     "invalid command",
@@ -35,7 +42,7 @@ UNSUPPORTED_MARKERS = (
     "incomplete command",
     "ambiguous command",
 )
-ZTE_PARSER_VERSION = "zte-zxr10-5960x-es-v2.document-sample.v1"
+ZTE_PARSER_VERSION = "zte-zxr10-switch.mixed-evidence.v2"
 ZTE_VERIFICATION_STATUS = ParserVerificationStatus.DOCUMENT_SAMPLE_ONLY.value
 
 
@@ -67,22 +74,73 @@ def parse_device_identity(raw: str) -> ZteParseResult[dict[str, object | None]]:
         r"\bZXR10\b", text, re.IGNORECASE
     ):
         return ZteParseResult({}, ("输出未识别为 ZTE ZXR10 show version",), "NOT_RECOGNIZED")
-    if not (
-        re.search(r"\b(?:59X|5960X)-ES\b", text, re.IGNORECASE)
-        or re.search(r"\b5960X-[A-Za-z0-9-]+-ES\b", text, re.IGNORECASE)
-    ):
-        return ZteParseResult(
-            {},
-            ("ZTE ZXR10 型号不属于当前支持的 5960X-ES V2 范围",),
-            "NOT_RECOGNIZED",
-        )
-
-    version_match = re.search(
-        r"Version\s*:\s*(?:(?:ZXR10\s+)?(?:59X|5960X)-ES\s+)?"
-        r"(?P<version>V\d+(?:\.\d+){3}(?:B\d+)?)",
+    prompt_match = re.search(
+        r"(?mi)^\s*(?P<name>[A-Za-z0-9_.:/()-]{1,128})[>#]\s*$", text
+    )
+    generic_model_match = re.search(
+        r"(?mi)^\s*(?:ZTE\s+)?ZXR10\s+"
+        r"(?P<model>(?!Software\b)[A-Za-z0-9][A-Za-z0-9-]*)\s*$",
+        text,
+    )
+    generic_version_match = re.search(
+        r"Version\s*:\s*(?:[A-Za-z0-9-]+\s+)*?"
+        r"(?P<version>V\d+(?:\.\d+){1,3}(?:B\d+)?)",
         text,
         re.IGNORECASE,
     )
+    generic_uptime_match = re.search(
+        r"(?:System uptime|Uptime)\s+is\s+"
+        r"(?:(\d+)\s+day\(s\),?\s*)?"
+        r"(?:(\d+)\s+hour\(s\),?\s*)?"
+        r"(?:(\d+)\s+minute\(s\),?\s*)?"
+        r"(?:(\d+)\s+second\(s\))?",
+        text,
+        re.IGNORECASE,
+    )
+    generic_uptime_seconds = _uptime_seconds(generic_uptime_match)
+    supported_5960 = bool(
+        re.search(r"\b(?:59X|5960X)-ES\b", text, re.IGNORECASE)
+        or re.search(r"\b5960X-[A-Za-z0-9-]+-ES\b", text, re.IGNORECASE)
+    )
+    supported_c89e = bool(re.search(r"\bC89E(?:-\d+)?\b", text, re.IGNORECASE))
+    if not (supported_5960 or supported_c89e):
+        model = (
+            generic_model_match.group("model").upper()
+            if generic_model_match
+            else "UNKNOWN"
+        )
+        unsupported_warnings = [
+            "ZTE ZXR10 型号不属于当前支持的 C89E 或 5960X-ES 范围"
+        ]
+        return ZteParseResult(
+            {
+                "vendor": "ZTE",
+                "platform": "ZXR10",
+                "platform_family": "ZXR10",
+                "product_family": model.split("-", 1)[0],
+                "model": model,
+                "software_version": (
+                    generic_version_match.group("version").upper()
+                    if generic_version_match
+                    else None
+                ),
+                "uptime_seconds": generic_uptime_seconds,
+                "uptime": (
+                    str(generic_uptime_seconds)
+                    if generic_uptime_seconds is not None
+                    else None
+                ),
+                "system_name": prompt_match.group("name") if prompt_match else None,
+                "raw_command": "show version",
+                **_parser_metadata(
+                    ParseStatus.UNSUPPORTED, warnings=unsupported_warnings
+                ),
+            },
+            tuple(unsupported_warnings),
+            "UNSUPPORTED_MODEL",
+        )
+
+    version_match = generic_version_match
     build_match = re.search(r"(?mi)^\s*Built on\s+(.+?)\s*$", text)
     image_match = re.search(r"(?mi)^\s*System image file is\s*<([^>]+)>", text)
     board_match = re.search(r"(?mi)^\s*Board Name\s*:\s*(.+?)\s*$", text)
@@ -99,24 +157,26 @@ def parse_device_identity(raw: str) -> ZteParseResult[dict[str, object | None]]:
     if not software_version:
         warnings.append("未解析到软件版本")
     base_match = re.match(r"(V\d+(?:\.\d+){3})", software_version or "", re.IGNORECASE)
-    uptime_seconds = None
-    if uptime_match:
-        days, hours, minutes, seconds = (
-            int(value or 0) for value in uptime_match.groups()
-        )
-        uptime_seconds = days * 86400 + hours * 3600 + minutes * 60 + seconds
-    else:
+    uptime_seconds = _uptime_seconds(uptime_match)
+    if uptime_seconds is None:
         warnings.append("未解析到运行时长")
     board_name = board_match.group(1).strip() if board_match else None
-    model = "5960X-ES"
-    if board_name and re.search(r"5960X-[A-Za-z0-9-]+-ES", board_name, re.IGNORECASE):
+    model = (
+        generic_model_match.group("model").upper()
+        if supported_c89e and generic_model_match
+        else "5960X-ES"
+    )
+    if supported_5960 and board_name and re.search(
+        r"5960X-[A-Za-z0-9-]+-ES", board_name, re.IGNORECASE
+    ):
         model = board_name
+    product_family = "C89E" if supported_c89e else "5960X-ES"
     return ZteParseResult(
         {
             "vendor": "ZTE",
             "platform": "ZXR10",
             "platform_family": "ZXR10",
-            "product_family": "5960X-ES",
+            "product_family": product_family,
             "model": model,
             "software_version": software_version,
             "build_version": software_version,
@@ -126,11 +186,19 @@ def parse_device_identity(raw: str) -> ZteParseResult[dict[str, object | None]]:
             "uptime_seconds": uptime_seconds,
             "uptime": str(uptime_seconds) if uptime_seconds is not None else None,
             "board_name": board_name,
+            "system_name": prompt_match.group("name") if prompt_match else None,
             "raw_command": "show version",
             **_parser_metadata(ParseStatus.PARSED, warnings=warnings),
         },
         tuple(warnings),
     )
+
+
+def _uptime_seconds(match: re.Match[str] | None) -> int | None:
+    if match is None:
+        return None
+    days, hours, minutes, seconds = (int(value or 0) for value in match.groups())
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
 
 
 def parse_interfaces(raw: str) -> ZteParseResult[list[dict[str, object | None]]]:
@@ -163,8 +231,8 @@ def parse_interfaces(raw: str) -> ZteParseResult[list[dict[str, object | None]]]
             {
                 "interface_name": name,
                 "normalized_name": name.casefold(),
-                "media_attribute": media,
-                "media_type": media,
+                "media_attribute": media.casefold(),
+                "media_type": media.casefold(),
                 "duplex_mode": parts[2],
                 "duplex": parts[2],
                 "bandwidth": parts[3],
@@ -178,12 +246,9 @@ def parse_interfaces(raw: str) -> ZteParseResult[list[dict[str, object | None]]]
                 "oper_status": oper_status,
                 "link_status": oper_status,
                 "description": parts[7].strip() if len(parts) == 8 else "",
-                "interface_type": (
-                    "二层"
-                    if name.casefold().startswith(TRACKSIDE_PHYSICAL_PREFIXES)
-                    else "逻辑/管理"
-                ),
-                "port_status": media.casefold(),
+                "category": _interface_category(name),
+                "interface_type": None,
+                "port_status": None,
                 "trackside_candidate": name.casefold().startswith(
                     TRACKSIDE_PHYSICAL_PREFIXES
                 ),
@@ -273,15 +338,18 @@ def parse_optical_summary(raw: str) -> ZteParseResult[list[dict[str, object | No
     rows: list[dict[str, object | None]] = []
     warnings: list[str] = []
     header_seen = False
+    header_has_mode = False
     for line_number, raw_line in enumerate(text.splitlines(), start=1):
         line = raw_line.strip()
-        if re.match(
+        header_match = re.match(
             r"^Interface\s+Type\s+Wavelength\s+RxPower\(dBm\)\s+"
-            r"TxPower\(dBm\)\s+Status$",
+            r"TxPower\(dBm\)\s+Status(?:\s+Mode)?$",
             line,
             re.IGNORECASE,
-        ):
+        )
+        if header_match:
             header_seen = True
+            header_has_mode = line.casefold().endswith(" mode")
             continue
         if not line or PROMPT_OR_COMMAND_RE.match(line):
             continue
@@ -304,12 +372,14 @@ def parse_optical_summary(raw: str) -> ZteParseResult[list[dict[str, object | No
                 }
             )
             continue
-        if len(parts) < 6:
+        data_parts = parts[:-1] if header_has_mode and len(parts) >= 7 else parts
+        transceiver_mode = parts[-1] if header_has_mode and len(parts) >= 7 else None
+        if len(data_parts) < 6:
             warnings.append(f"第 {line_number} 行光模块摘要字段不足")
             continue
-        rx_value, rx_low, rx_high = _parse_power_threshold(parts[-3])
-        tx_value, tx_low, tx_high = _parse_power_threshold(parts[-2])
-        vendor_status = parts[-1]
+        rx_value, rx_low, rx_high = _parse_power_threshold(data_parts[-3])
+        tx_value, tx_low, tx_high = _parse_power_threshold(data_parts[-2])
+        vendor_status = data_parts[-1]
         normalized_status = _normalize_optical_status(
             vendor_status, rx_value, tx_value
         )
@@ -321,10 +391,11 @@ def parse_optical_summary(raw: str) -> ZteParseResult[list[dict[str, object | No
                 "dom_supported": any(
                     value is not None for value in (rx_value, tx_value)
                 ),
-                "module_type": " ".join(parts[1:-4]),
-                "module_model": " ".join(parts[1:-4]),
-                "wavelength_nm": _optional_number(parts[-4]),
-                "wavelength": _optional_number(parts[-4]),
+                "module_type": " ".join(data_parts[1:-4]),
+                "module_model": " ".join(data_parts[1:-4]),
+                "transceiver_mode": transceiver_mode,
+                "wavelength_nm": _optional_number(data_parts[-4]),
+                "wavelength": _optional_number(data_parts[-4]),
                 "rx_power_dbm": rx_value,
                 "rx_power": rx_value,
                 "rx_low_threshold_dbm": rx_low,
@@ -347,6 +418,74 @@ def parse_optical_summary(raw: str) -> ZteParseResult[list[dict[str, object | No
     if not header_seen:
         warnings.append("未找到 show opticalinfo brief 表头")
     return ZteParseResult(rows, tuple(warnings), "OK" if rows else "EMPTY")
+
+
+def parse_interface_switchport_config(
+    raw: str,
+) -> ZteParseResult[list[dict[str, object | None]]]:
+    """从脱敏 running-config 中提取接口二层配置，不推断局点管理 VLAN。"""
+
+    text = normalize_zte_cli_text(raw)
+    rows: list[dict[str, object | None]] = []
+    current: dict[str, object | None] | None = None
+
+    def finish() -> None:
+        nonlocal current
+        if current is not None:
+            rows.append(current)
+        current = None
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        interface_match = re.fullmatch(
+            r"interface\s+([A-Za-z][A-Za-z0-9/.:_-]+)", line, re.IGNORECASE
+        )
+        if interface_match:
+            finish()
+            interface_name = interface_match.group(1)
+            current = {
+                "interface_name": interface_name,
+                "normalized_name": interface_name.casefold(),
+                "description": None,
+                "switchport_mode": None,
+                "tagged_vlans": [],
+                "untagged_vlans": [],
+                "native_vlan": None,
+                **_parser_metadata(ParseStatus.PARSED),
+            }
+            continue
+        if current is None:
+            continue
+        description_match = re.fullmatch(r"description\s+(.+)", line, re.IGNORECASE)
+        if description_match:
+            current["description"] = description_match.group(1).strip()
+            continue
+        mode_match = re.fullmatch(r"switchport\s+mode\s+(\S+)", line, re.IGNORECASE)
+        if mode_match:
+            current["switchport_mode"] = mode_match.group(1).casefold()
+            continue
+        native_match = re.fullmatch(
+            r"switchport\s+hybrid\s+native\s+vlan\s+(\d+)",
+            line,
+            re.IGNORECASE,
+        )
+        if native_match:
+            current["native_vlan"] = int(native_match.group(1))
+            continue
+        vlan_match = re.fullmatch(
+            r"switchport\s+hybrid\s+vlan\s+(.+?)\s+(tag|untag)",
+            line,
+            re.IGNORECASE,
+        )
+        if vlan_match:
+            field_name = (
+                "tagged_vlans"
+                if vlan_match.group(2).casefold() == "tag"
+                else "untagged_vlans"
+            )
+            current[field_name] = _parse_vlan_values(vlan_match.group(1))
+    finish()
+    return ZteParseResult(rows, (), "OK" if rows else "EMPTY")
 
 
 def parse_optical_detail(
@@ -456,7 +595,9 @@ def parse_optical_detail(
     return ZteParseResult(item, tuple(warnings))
 
 
-def parse_lldp(raw: str) -> ZteParseResult[list[dict[str, object | None]]]:
+def parse_lldp_brief(
+    raw: str,
+) -> ZteParseResult[list[dict[str, object | None]]]:
     text = normalize_zte_cli_text(raw)
     lowered = text.casefold()
     if any(marker in lowered for marker in UNSUPPORTED_MARKERS):
@@ -472,11 +613,195 @@ def parse_lldp(raw: str) -> ZteParseResult[list[dict[str, object | None]]]:
         for marker in ("no neighbor", "no lldp entry", "neighbor number: 0")
     ):
         return ZteParseResult([], (), "NO_NEIGHBOR")
-    return ZteParseResult(
-        [],
-        ("ZTE LLDP 输出缺少真实 fixture，已保留原始回显，未执行结构化解析",),
-        "SAMPLE_REQUIRED",
-    )
+    rows: list[dict[str, object | None]] = []
+    warnings: list[str] = []
+    header_seen = False
+    current: dict[str, object | None] | None = None
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if re.match(
+            r"^Local\s+Interface\s+Scope\s+Chassis\s+ID\s+Port\s+ID\s+"
+            r"Holdtime\s+System\s+Name$",
+            stripped,
+            re.IGNORECASE,
+        ):
+            header_seen = True
+            continue
+        if (
+            not stripped
+            or PROMPT_OR_COMMAND_RE.match(stripped)
+            or re.fullmatch(r"[-=]+", stripped)
+        ):
+            continue
+        parts = stripped.split()
+        if parts and INTERFACE_NAME_RE.fullmatch(parts[0]):
+            if len(parts) < 6:
+                warnings.append(f"第 {line_number} 行 LLDP Brief 字段不足")
+                current = None
+                continue
+            holdtime = _optional_int(parts[-2])
+            chassis_id = parts[2]
+            current = {
+                "local_interface": parts[0],
+                "scope": parts[1],
+                "chassis_id": chassis_id,
+                "neighbor_mac": _normalize_mac_if_valid(chassis_id),
+                "neighbor_interface": " ".join(parts[3:-2]),
+                "holdtime": holdtime,
+                "ttl": holdtime,
+                "neighbor_sysname": parts[-1],
+                **_parser_metadata(ParseStatus.PARSED),
+            }
+            rows.append(current)
+            continue
+        if current is not None and raw_line[:1].isspace():
+            continuation = stripped
+            if continuation:
+                current["neighbor_interface"] = (
+                    f"{current.get('neighbor_interface') or ''}{continuation}"
+                )
+    if not header_seen:
+        return ZteParseResult(
+            [],
+            tuple(warnings or ["未找到 show lldp neighbor brief 表头"]),
+            "PARSE_FAILED",
+        )
+    return ZteParseResult(rows, tuple(warnings), "OK" if rows else "NO_NEIGHBOR")
+
+
+def parse_lldp_entries(
+    raw: str,
+) -> ZteParseResult[list[dict[str, object | None]]]:
+    text = normalize_zte_cli_text(raw)
+    lowered = text.casefold()
+    if any(marker in lowered for marker in UNSUPPORTED_MARKERS):
+        return ZteParseResult([], (), "COMMAND_UNSUPPORTED")
+    if not text.strip():
+        return ZteParseResult([], (), "NO_NEIGHBOR")
+    if any(
+        marker in lowered
+        for marker in ("no neighbor", "no lldp entry", "neighbor number: 0")
+    ):
+        return ZteParseResult([], (), "NO_NEIGHBOR")
+    blocks: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    last_key = ""
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if (
+            not stripped
+            or PROMPT_OR_COMMAND_RE.match(stripped)
+            or re.fullmatch(r"[-=]+", stripped)
+        ):
+            continue
+        field_match = re.match(r"^\s*([^:]+?)\s*:\s*(.*)$", raw_line)
+        if field_match:
+            key = _normalize_key(field_match.group(1))
+            value = field_match.group(2).strip()
+            if key == "local_port":
+                if current:
+                    blocks.append(current)
+                current = {}
+            if current is None:
+                continue
+            if key in current and value:
+                current[key] = f"{current[key]} {value}".strip()
+            else:
+                current[key] = value
+            last_key = key
+            continue
+        if current is not None and last_key and raw_line[:1].isspace():
+            current[last_key] = f"{current.get(last_key, '')}{stripped}".strip()
+    if current:
+        blocks.append(current)
+
+    rows: list[dict[str, object | None]] = []
+    warnings: list[str] = []
+    for index, block in enumerate(blocks, start=1):
+        local_interface = block.get("local_port", "").strip()
+        if not local_interface:
+            warnings.append(f"第 {index} 个 LLDP Entry 缺少 Local port")
+            continue
+        chassis_id = block.get("chassis_id", "").strip()
+        chassis_type = block.get("chassis_type", "").strip()
+        ttl = _optional_int(block.get("time_to_live"))
+        management_address = block.get("management_address", "")
+        ip_match = re.search(
+            r"\bIPv4-((?:\d{1,3}\.){3}\d{1,3})\b",
+            management_address,
+            re.IGNORECASE,
+        )
+        rows.append(
+            {
+                "local_interface": local_interface,
+                "scope": None,
+                "chassis_type": chassis_type or None,
+                "chassis_id": chassis_id or None,
+                "neighbor_mac": (
+                    _normalize_mac_if_valid(chassis_id)
+                    if "mac" in chassis_type.casefold()
+                    else None
+                ),
+                "port_id_type": block.get("port_id_type") or None,
+                "neighbor_interface": block.get("port_id") or None,
+                "holdtime": ttl,
+                "ttl": ttl,
+                "port_description": block.get("port_description") or None,
+                "neighbor_sysname": block.get("system_name") or None,
+                "system_description": block.get("system_description") or None,
+                "system_capabilities": block.get("system_capabilities") or None,
+                "neighbor_ip": ip_match.group(1) if ip_match else None,
+                "pvid": _optional_int(block.get("port_vlan_id_pvid")),
+                "operational_mau": block.get("operational_mau") or None,
+                "max_frame_size": _optional_int(block.get("maximum_frame_size")),
+                **_parser_metadata(ParseStatus.PARSED),
+            }
+        )
+    if not blocks:
+        return ZteParseResult(
+            [],
+            ("未找到 show lldp entry 邻居块",),
+            "PARSE_FAILED",
+        )
+    return ZteParseResult(rows, tuple(warnings), "OK" if rows else "PARSE_FAILED")
+
+
+def merge_lldp_neighbors(
+    brief_rows: list[dict[str, object | None]],
+    entry_rows: list[dict[str, object | None]],
+) -> list[dict[str, object | None]]:
+    """以 Brief 的邻居集合为准，用 Entry 的详细字段补全同一邻居。"""
+
+    details: dict[tuple[str, str], dict[str, object | None]] = {}
+    details_by_interface: dict[str, list[dict[str, object | None]]] = {}
+    for item in entry_rows:
+        local_key = _lldp_key(item.get("local_interface"))
+        chassis_key = _lldp_key(item.get("chassis_id"))
+        details[(local_key, chassis_key)] = item
+        details_by_interface.setdefault(local_key, []).append(item)
+    merged: list[dict[str, object | None]] = []
+    matched_detail_ids: set[int] = set()
+    for item in brief_rows:
+        local_key = _lldp_key(item.get("local_interface"))
+        chassis_key = _lldp_key(item.get("chassis_id"))
+        detail = details.get((local_key, chassis_key))
+        if detail is None and len(details_by_interface.get(local_key, ())) == 1:
+            detail = details_by_interface[local_key][0]
+        if detail is not None:
+            matched_detail_ids.add(id(detail))
+            merged.append({**item, **{key: value for key, value in detail.items() if value not in (None, "")}})
+        else:
+            merged.append(item)
+    merged.extend(item for item in entry_rows if id(item) not in matched_detail_ids)
+    return merged
+
+
+def parse_lldp(raw: str) -> ZteParseResult[list[dict[str, object | None]]]:
+    text = normalize_zte_cli_text(raw)
+    if re.search(r"(?mi)^\s*Local\s+port\s*:", text):
+        return parse_lldp_entries(text)
+    return parse_lldp_brief(text)
 
 
 def _oper_status(admin: str, physical: str, protocol: str) -> str:
@@ -486,9 +811,33 @@ def _oper_status(admin: str, physical: str, protocol: str) -> str:
         return "ADMIN_DOWN"
     if admin == "up" and physical == "down":
         return "PHYSICAL_DOWN"
-    if physical == "up" and protocol == "down":
+    if admin == "up" and physical == "up" and protocol == "down":
         return "PROTOCOL_DOWN"
     return "UNKNOWN"
+
+
+def _interface_category(interface_name: str) -> str:
+    name = str(interface_name or "").strip().casefold()
+    if name == "mgmt_eth":
+        return "management"
+    if INTERFACE_NAME_RE.fullmatch(name):
+        return "physical"
+    return "unknown"
+
+
+def _optional_int(value: object) -> int | None:
+    number = _optional_number(value)
+    return int(number) if isinstance(number, (int, float)) else None
+
+
+def _normalize_mac_if_valid(value: object) -> str | None:
+    raw = str(value or "").strip()
+    compact = re.sub(r"[^0-9a-fA-F]", "", raw)
+    return _normalize_mac(raw) if len(compact) == 12 else None
+
+
+def _lldp_key(value: object) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").casefold())
 
 
 def _optional_number(value: object) -> float | int | None:
@@ -500,6 +849,23 @@ def _optional_number(value: object) -> float | int | None:
         return None
     number = float(match.group(0))
     return int(number) if number.is_integer() else number
+
+
+def _parse_vlan_values(value: str) -> list[int]:
+    vlans: set[int] = set()
+    normalized = re.sub(r"\bto\b", "-", value, flags=re.IGNORECASE)
+    for token in re.split(r"[\s,]+", normalized.strip()):
+        if not token:
+            continue
+        range_match = re.fullmatch(r"(\d+)-(\d+)", token)
+        if range_match:
+            start, end = (int(part) for part in range_match.groups())
+            if start <= end:
+                vlans.update(range(start, end + 1))
+            continue
+        if token.isdigit():
+            vlans.add(int(token))
+    return sorted(vlans)
 
 
 def _parse_power_threshold(
@@ -579,8 +945,12 @@ __all__ = [
     "normalize_zte_cli_text",
     "parse_device_identity",
     "parse_interface_detail",
+    "parse_interface_switchport_config",
     "parse_interfaces",
     "parse_lldp",
+    "parse_lldp_brief",
+    "parse_lldp_entries",
+    "merge_lldp_neighbors",
     "parse_optical_detail",
     "parse_optical_summary",
 ]

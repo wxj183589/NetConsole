@@ -1,0 +1,9 @@
+DEVICE-REDACTED#show running-config
+interface gei-0/3/0/16
+ description Synthetic AP uplink
+ switchport mode hybrid
+ switchport hybrid vlan 1201 tag
+ switchport hybrid vlan 1701,1703-1704 untag
+ switchport hybrid native vlan 1701
+!
+DEVICE-REDACTED#

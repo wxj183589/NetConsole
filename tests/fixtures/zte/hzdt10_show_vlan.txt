@@ -1,0 +1,7 @@
+HZDT-TEST#show vlan
+VLAN     Name     PvidPorts                    UntagPorts                   TagPorts
+30       vlan0030 gei-0/4/0/25-48                                           xgei-0/4/0/1-8
+71       vlan0071 gei-0/3/0/1-48                                            xgei-0/4/0/1-8
+                  gei-0/4/0/9-24
+201      vlan0201                                                             gei-0/3/0/1-48
+HZDT-TEST#

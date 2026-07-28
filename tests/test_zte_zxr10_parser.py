@@ -8,8 +8,11 @@ from netconsole.parsers.zte.zxr10 import (
     normalize_zte_cli_text,
     parse_device_identity,
     parse_interface_detail,
+    parse_interface_switchport_config,
     parse_interfaces,
     parse_lldp,
+    parse_lldp_brief,
+    parse_lldp_entries,
     parse_optical_detail,
     parse_optical_summary,
 )
@@ -71,8 +74,24 @@ def test_other_zxr10_model_is_not_misidentified_as_5960x_es() -> None:
         "ZTE ZXR10 Software, Version: ZXR10 5950 V2.00.20.03B07, Release software"
     )
 
-    assert parsed.status == "NOT_RECOGNIZED"
-    assert parsed.value == {}
+    assert parsed.status == "UNSUPPORTED_MODEL"
+    assert parsed.value["model"] == "UNKNOWN"
+
+
+def test_real_c89e_version_fixture_is_parsed_as_supported_central_switch() -> None:
+    parsed = parse_device_identity(
+        _fixture("real_c89e4_show_version_redacted.txt")
+    )
+
+    assert parsed.status == "OK"
+    assert parsed.value["vendor"] == "ZTE"
+    assert parsed.value["platform"] == "ZXR10"
+    assert parsed.value["product_family"] == "C89E"
+    assert parsed.value["model"] == "C89E-4"
+    assert parsed.value["software_version"] == "V1.9.0"
+    assert parsed.value["uptime_seconds"] == 1_038_420
+    assert parsed.value["system_name"] == "DEVICE-REDACTED"
+    assert parsed.value["parse_status"] == "PARSED"
 
 
 def test_parse_zte_interface_brief_handles_types_descriptions_and_pager() -> None:
@@ -94,6 +113,46 @@ def test_parse_zte_interface_brief_handles_types_descriptions_and_pager() -> Non
     assert by_name["cgei-1/1/0/50"]["oper_status"] == "ADMIN_DOWN"
     assert by_name["xxvgei-1/1/0/1"]["description"] == "Trackside AP 01"
     assert by_name["mgmt_eth"]["trackside_candidate"] is False
+
+
+def test_parse_real_c89e_interface_brief_redacts_description_but_keeps_shape() -> None:
+    parsed = parse_interfaces(
+        _fixture("real_c89e4_show_interface_brief_redacted.txt")
+    )
+    by_name = {str(row["interface_name"]): row for row in parsed.value}
+
+    assert parsed.status == "OK"
+    assert parsed.warnings == ()
+    assert by_name["sci-0/1/0/1"]["oper_status"] == "UP"
+    assert by_name["gei-0/3/0/1"]["oper_status"] == "PHYSICAL_DOWN"
+    assert by_name["gei-0/3/0/1"]["admin_status"] == "up"
+    assert by_name["gei-0/3/0/1"]["physical_status"] == "down"
+    assert by_name["gei-0/3/0/1"]["protocol_status"] == "down"
+    assert by_name["gei-0/3/0/1"]["media_attribute"] == "optical"
+    assert by_name["gei-0/3/0/1"]["media_type"] == "optical"
+    assert by_name["gei-0/3/0/1"]["category"] == "physical"
+    assert by_name["gei-0/3/0/1"]["interface_type"] is None
+    assert by_name["gei-0/3/0/1"]["port_status"] is None
+    assert by_name["xgeis-0/4/0/5"]["description"] == "DESCRIPTION-REDACTED"
+
+
+def test_parse_hzdt10_interface_fixture_preserves_complete_names_and_semantics() -> None:
+    parsed = parse_interfaces(_fixture("hzdt10_show_interface_brief.txt"))
+    by_name = {str(row["interface_name"]): row for row in parsed.value}
+
+    assert parsed.status == "OK"
+    assert set(by_name) == {
+        "gei-0/3/0/2",
+        "gei-0/3/0/6",
+        "sci-0/1/0/1",
+        "xgei-0/4/0/1",
+    }
+    assert by_name["gei-0/3/0/2"]["link_status"] == "UP"
+    assert by_name["gei-0/3/0/6"]["link_status"] == "PHYSICAL_DOWN"
+    assert by_name["sci-0/1/0/1"]["link_status"] == "PHYSICAL_DOWN"
+    assert by_name["xgei-0/4/0/1"]["link_status"] == "PROTOCOL_DOWN"
+    assert by_name["xgei-0/4/0/1"]["media_type"] == "electric"
+    assert all(row["port_status"] is None for row in by_name.values())
 
 
 def test_parse_zte_interface_detail_from_manual_fixture() -> None:
@@ -128,6 +187,37 @@ def test_parse_zte_optical_summary_keeps_unknown_and_na_rows() -> None:
     assert by_name["xgei-0/1/1/4"]["status"] == "abnormal"
     assert by_name["xgei-0/1/1/5"]["status"] == "dom_unavailable"
     assert by_name["xgei-0/1/1/5"]["rx_power"] is None
+
+
+def test_parse_real_c89e_optical_summary_with_mode_column() -> None:
+    parsed = parse_optical_summary(
+        _fixture("real_c89e4_show_opticalinfo_brief_redacted.txt")
+    )
+    by_name = {str(row["interface_name"]): row for row in parsed.value}
+
+    assert parsed.status == "OK"
+    assert parsed.warnings == ()
+    assert by_name["sci-0/1/0/1"]["rx_power"] == -7.2
+    assert by_name["sci-0/1/0/1"]["tx_power"] == -5.1
+    assert by_name["sci-0/1/0/1"]["transceiver_mode"] == "SingleMode"
+    assert by_name["gei-0/3/0/1"]["status"] == "offline"
+    assert by_name["xgeis-0/4/0/5"]["tx_power"] is None
+    assert by_name["xgeis-0/4/0/5"]["status"] == "unverified"
+
+
+def test_parse_switchport_config_uses_observed_vlan_values_without_site_defaults() -> None:
+    parsed = parse_interface_switchport_config(
+        _fixture("zte_running_config_interface_redacted.txt")
+    )
+    item = parsed.value[0]
+
+    assert parsed.status == "OK"
+    assert item["interface_name"] == "gei-0/3/0/16"
+    assert item["description"] == "Synthetic AP uplink"
+    assert item["switchport_mode"] == "hybrid"
+    assert item["tagged_vlans"] == [1201]
+    assert item["untagged_vlans"] == [1701, 1703, 1704]
+    assert item["native_vlan"] == 1701
 
 
 def test_parse_zte_optical_detail_from_manual_fixture() -> None:
@@ -168,16 +258,49 @@ def test_normalize_zte_cli_text_removes_ansi_pager_and_backspace_overwrite() -> 
     assert "abc" in normalized
 
 
-def test_lldp_parser_remains_sample_required_without_real_fixture() -> None:
+def test_lldp_parser_rejects_unrecognized_text_without_fabricating_rows() -> None:
     parsed = parse_lldp("LLDP local interface xgei-0/1/1/2\nRemote System Name: AP-01")
 
-    assert parsed.status == "SAMPLE_REQUIRED"
+    assert parsed.status == "PARSE_FAILED"
     assert parsed.value == []
     assert parsed.warnings
-    assert parsed.verification_status == "SAMPLE_REQUIRED"
     assert parse_lldp("No neighbor").status == "NO_NEIGHBOR"
     assert (
         parse_lldp("LLDP is disabled\nNo neighbor").status
         == "LLDP_DISABLED"
     )
     assert parse_lldp("Invalid command").status == "COMMAND_UNSUPPORTED"
+
+
+def test_parse_lldp_brief_merges_wrapped_port_id() -> None:
+    parsed = parse_lldp_brief(_fixture("hzdt10_show_lldp_neighbor_brief.txt"))
+
+    assert parsed.status == "OK"
+    assert len(parsed.value) == 36
+    neighbor = parsed.value[0]
+    assert neighbor["local_interface"] == "gei-0/3/0/1"
+    assert neighbor["scope"] == "NB"
+    assert neighbor["neighbor_mac"] == "02:aa:bb:cc:00:01"
+    assert neighbor["neighbor_interface"] == "Ten-GigabitEthernet1/0/1"
+    assert neighbor["holdtime"] == 228
+    assert neighbor["neighbor_sysname"] == "HZDT-TEST-01"
+
+
+def test_parse_lldp_entry_unfolds_description_and_extracts_details() -> None:
+    parsed = parse_lldp_entries(_fixture("hzdt10_show_lldp_entry.txt"))
+
+    assert parsed.status == "OK"
+    assert len(parsed.value) == 2
+    neighbor = parsed.value[0]
+    assert neighbor["neighbor_mac"] == "02:aa:bb:cc:00:02"
+    assert neighbor["neighbor_ip"] == "192.0.2.26"
+    assert neighbor["pvid"] == 71
+    assert neighbor["ttl"] == 228
+    assert neighbor["system_description"] == (
+        "H3C Comware Platform Software, Software Version 7.1.064, "
+        "Release 2493P01 HZDT-TEST-AP"
+    )
+    assert neighbor["operational_mau"] == "1000BaseLXFD"
+    assert neighbor["max_frame_size"] == 9216
+    assert parsed.value[1]["chassis_id"] == "192.0.2.27"
+    assert parsed.value[1]["neighbor_mac"] is None

@@ -25,15 +25,15 @@
 
 空值、`null` 和空字符串统一展示为“—”；数量 `0` 必须保留。接口表、详情和历史不展示入/出速率、入/出错误、CRC 错误、错误总数或最后变化；光模块不展示采集状态或内部阈值来源，严重性为正常时不展示原因，只有注意、告警、无光等异常状态显示原因。详情弹窗只展示白名单字段，不序列化任意 DTO。
 
-接口、任务、LLDP 和光模块的稳定机器枚举在展示层集中翻译为中文，API 与筛选值保持原值。历史快照中八种固定英文光功率原因使用精确映射，未知设备文本原样保留。接收功率告警色只依据后端 `severity`，使用 `--nc-warning`/`--nc-danger` 语义 Token；组件不得按接收功率数值推断阈值。
+接口、任务、LLDP 和光模块的稳定机器枚举在展示层集中翻译为中文，API 与筛选值保持原值。接口综合状态、管理/物理/协议状态、介质、类别和端口模式保持独立语义；`protocol_status=down` 展示为 `Down`，不得翻译为“未启用”，`optical` 只展示为“光口”。历史快照中八种固定英文光功率原因使用精确映射，未知设备文本原样保留。接收功率告警色只依据后端 `severity`，使用 `--nc-warning`/`--nc-danger` 语义 Token；组件不得按接收功率数值推断阈值。
 
-配置快照比较、Artifact 下载、受控打开和任务窗口跳转复用现有 config-collection API、统一下载桥接和 Task Center，不复制配置采集业务规则。概览、接口、光模块和 LLDP 的数据来源分别标记为 `devices.db.latest_snapshot`、`devices.db.interfaces.latest_snapshot`、`devices.db.transceivers.latest_snapshot` 和 `devices.db.lldp.latest_snapshot`；LLDP 只展示本地接口、邻居系统名/MAC/接口/IP、关联状态和采集时间等白名单字段。关联业务公开契约不返回重复的 AC ID/名称/IP、AP 型号/状态、交换机/接口、光模块严重性及 MR 会话/阶段/耗时/任务字段；历史 Repository 数据不因此删除。CPU/内存只展示 overview 返回的基础摘要。
+配置快照比较、Artifact 下载、受控打开和任务窗口跳转复用现有 config-collection API、统一下载桥接和 Task Center，不复制配置采集业务规则。概览、接口、光模块和 LLDP 的数据来源分别标记为 `devices.db.latest_snapshot`、`devices.db.interfaces.latest_snapshot`、`devices.db.transceivers.latest_snapshot` 和 `devices.db.lldp.latest_snapshot`；LLDP 只展示本地接口、邻居系统名/MAC/接口/IP、PVID、TTL、描述、关联状态和采集时间等白名单字段。关联业务公开契约不返回重复的 AC ID/名称/IP、AP 型号/状态、交换机/接口、光模块严重性及 MR 会话/阶段/耗时/任务字段；历史 Repository 数据不因此删除。CPU/内存只展示 overview 返回的基础摘要。
 
 光模块和轨旁 AP 关联业务只消费 Python 返回的严重性，不在 Vue 计算阈值。`alarm/critical/no_light/link_abnormal/link_down` 使用危险色，`warning/notice` 使用警告色，`normal` 使用正常色；`no_module` 表示端口未安装光模块，属于中性状态，不计作光衰异常，也不得把缺失功率占位符显示为红色。
 
 历史 Repository 行也必须经过后端 DTO 白名单映射，组件不得从任意原始对象透传到表格、历史详情或导出。
 
-命令执行状态只消费后端返回的 `command_profile.executable`。当前通用刷新仅允许已验证边界内的 H3C/Comware `switch` 与 `mobile_router` Profile；H3C AC 只读关联 AC Query Service，H3C MR 关联信息只读复用 Online MR Query Service，基础详情刷新走独立 `mobile_router` Profile。Huawei、ZTE、未知或未验证 Profile 不得由组件回退执行 H3C 命令。
+命令执行状态只消费后端返回的 `command_profile.executable`。当前通用刷新允许已验证边界内的 H3C/Comware `switch`、`mobile_router` 与 ZTE/ZXR10 `switch` Profile；H3C AC 只读关联 AC Query Service，H3C MR 关联信息只读复用 Online MR Query Service，基础详情刷新走独立 `mobile_router` Profile。Huawei、未知或未验证 Profile 不得由组件回退执行 H3C 命令。
 
 ## 测试
 

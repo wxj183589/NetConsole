@@ -48,7 +48,11 @@ DEVICE_INVENTORY_MOBILE_ROUTER_COMMAND_SEQUENCE = (
 DEVICE_INVENTORY_ZTE_SWITCH_COMMAND_SEQUENCE = (
     "show version",
     "show interface brief",
+    "show running-config switchvlan",
+    "show vlan",
     "show opticalinfo brief",
+    "show lldp neighbor brief",
+    "show lldp entry",
 )
 SAFE_DEVICE_INVENTORY_COLLECT_COMMANDS = frozenset(
     DEVICE_INVENTORY_COLLECT_COMMAND_SEQUENCE
@@ -136,17 +140,21 @@ SAFE_TRACKSIDE_SWITCH_COLLECT_COMMANDS = {
     "display interface brief",
     "show version",
     "show interface brief",
+    "show running-config switchvlan",
+    "show vlan",
     "show opticalinfo brief",
+    "show lldp neighbor brief",
+    "show lldp entry",
 }
 
 SAFE_SWITCH_VENDOR_SAMPLE_COMMANDS = {
     "show version",
     "show interface brief",
+    "show running-config switchvlan",
+    "show vlan",
     "show opticalinfo brief",
+    "show lldp neighbor brief",
     "show lldp entry",
-    "show lldp neighbor",
-    "show lldp neighbors",
-    "show lldp config",
 }
 
 SAFE_CONFIG_LIFECYCLE_COMMANDS = {
@@ -283,6 +291,8 @@ DANGEROUS_ALLOWLIST_EXCEPTIONS = {
     "save force",
     "show interface",
     "show interface brief",
+    "show running-config switchvlan",
+    "show vlan",
 }
 READ_ONLY_DYNAMIC_PATTERNS = {
     "trackside_switch_collect": tuple(
@@ -297,9 +307,6 @@ READ_ONLY_DYNAMIC_PATTERNS = {
         for pattern in (
             r"show interface [a-z][a-z0-9./:_-]{0,79}",
             r"show opticalinfo [a-z][a-z0-9./:_-]{0,79}",
-            r"show lldp config interface [a-z][a-z0-9./:_-]{0,79}",
-            r"show lldp entry interface [a-z][a-z0-9./:_-]{0,79}",
-            r"show lldp neighbor interface [a-z][a-z0-9./:_-]{0,79}",
         )
     ),
 }

@@ -70,9 +70,7 @@ def test_switch_vendor_sample_writes_fixed_archive_and_redacts_credentials(
         {
             "show version": f"{version}\nfixture-secret",
             "show lldp entry": "Invalid command",
-            "show lldp neighbor": "No neighbor",
-            "show lldp neighbors": "No neighbor",
-            "show lldp config": "LLDP is enabled",
+            "show lldp neighbor brief": "No neighbor",
         }
     )
 

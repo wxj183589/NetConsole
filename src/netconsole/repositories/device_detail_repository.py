@@ -34,6 +34,10 @@ class DeviceDetailDataGateway(Protocol):
         search: str,
         status: str,
         interface_type: str,
+        admin_status: str,
+        physical_status: str,
+        protocol_status: str,
+        media_type: str,
         limit: int,
         offset: int,
     ) -> tuple[list[dict[str, object | None]], int]: ...
@@ -144,6 +148,10 @@ class DeviceDetailRepository:
         search: str = "",
         status: str = "",
         interface_type: str = "",
+        admin_status: str = "",
+        physical_status: str = "",
+        protocol_status: str = "",
+        media_type: str = "",
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[dict[str, object | None]], int]:
@@ -153,6 +161,10 @@ class DeviceDetailRepository:
             search=search,
             status=status,
             interface_type=interface_type,
+            admin_status=admin_status,
+            physical_status=physical_status,
+            protocol_status=protocol_status,
+            media_type=media_type,
             limit=limit,
             offset=offset,
         )

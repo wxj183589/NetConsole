@@ -50,6 +50,8 @@ class DeviceOperationTask:
     status: str
     reused: bool
     message: str | None = None
+    profile_id: str | None = None
+    profile_version: int | None = None
 
 
 def normalize_device_role(device_type: object) -> DeviceRole:

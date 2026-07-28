@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import re
 from typing import Protocol
@@ -261,6 +262,10 @@ class DeviceDetailQueryService:
         search: str = "",
         status: str = "",
         interface_type: str = "",
+        admin_status: str = "",
+        physical_status: str = "",
+        protocol_status: str = "",
+        media_type: str = "",
         page: int = 1,
         page_size: int = 50,
     ) -> DeviceInterfacePageDTO:
@@ -271,6 +276,10 @@ class DeviceDetailQueryService:
             search=search,
             status=status,
             interface_type=interface_type,
+            admin_status=admin_status,
+            physical_status=physical_status,
+            protocol_status=protocol_status,
+            media_type=media_type,
             limit=size,
             offset=offset,
         )
@@ -874,14 +883,36 @@ class DeviceDetailQueryService:
         return DeviceInterfaceDTO(
             name=name,
             normalized_name=normalize_interface_name(name),
-            category=_interface_category(name, row.get("interface_type")),
+            category=(
+                _text(row.get("category"))
+                or _interface_category(name, row.get("interface_type"))
+            ),
             link_status=_text(row.get("link_status")),
+            admin_status=_text(row.get("admin_status")),
+            physical_status=_text(row.get("physical_status")),
             protocol_status=_text(row.get("protocol_status")),
+            media_attribute=_text(row.get("media_attribute")),
+            media_type=_text(row.get("media_type")),
             speed=_text(row.get("speed")),
             duplex=_text(row.get("duplex")),
             interface_type=_text(row.get("interface_type")),
             port_status=_text(row.get("port_status")),
+            port_mode=_text(row.get("port_mode")),
             pvid=_text(row.get("pvid")),
+            native_vlan=_text(row.get("native_vlan")),
+            tagged_vlans=_json_string_list(row.get("tagged_vlans")),
+            untagged_vlans=_json_string_list(row.get("untagged_vlans")),
+            pvid_source=_text(row.get("pvid_source")),
+            pvid_verified=(
+                bool(row.get("pvid_verified"))
+                if row.get("pvid_verified") is not None
+                else None
+            ),
+            vlan_config_status=_text(row.get("vlan_config_status")),
+            vlan_config_collected_at=_text(
+                row.get("vlan_config_collected_at")
+            ),
+            vlan_warnings=_json_warning_list(row.get("vlan_warnings")),
             description=_text(row.get("description")),
             ip_address=_text(row.get("ip_address")),
             mac_address=_text(row.get("mac_address")),
@@ -941,10 +972,22 @@ class DeviceDetailQueryService:
         return DeviceLldpNeighborDTO(
             local_interface=local,
             normalized_local_interface=normalize_interface_name(local),
+            scope=_text(row.get("scope")),
+            chassis_type=_text(row.get("chassis_type")),
+            chassis_id=_text(row.get("chassis_id")),
             neighbor_system_name=_text(row.get("neighbor_sysname")),
             neighbor_mac=_text(row.get("neighbor_mac")),
+            port_id_type=_text(row.get("port_id_type")),
             neighbor_interface=_text(row.get("neighbor_interface")),
             neighbor_ip=_text(row.get("neighbor_ip")),
+            holdtime=_integer(row.get("holdtime")),
+            ttl=_integer(row.get("ttl")),
+            port_description=_text(row.get("port_description")),
+            system_description=_text(row.get("system_description")),
+            system_capabilities=_text(row.get("system_capabilities")),
+            pvid=_integer(row.get("pvid")),
+            operational_mau=_text(row.get("operational_mau")),
+            max_frame_size=_integer(row.get("max_frame_size")),
             neighbor_device_uuid=linked,
             association_status="matched" if linked else "unresolved",
             collected_at=_text(row.get("collected_at")),
@@ -1258,6 +1301,34 @@ def _text(value: object) -> str | None:
     return text or None
 
 
+def _json_string_list(value: object) -> list[str]:
+    parsed: object = value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            parsed = []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item) for item in parsed if str(item or "").strip()]
+
+
+def _json_warning_list(value: object) -> list[dict[str, object]]:
+    parsed: object = value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            parsed = []
+    if not isinstance(parsed, list):
+        return []
+    return [
+        dict(item)
+        for item in parsed
+        if isinstance(item, dict)
+    ]
+
+
 def _translate_optical_reason(reason: str | None) -> str | None:
     if reason is None:
         return None
@@ -1272,6 +1343,11 @@ def _number(value: object) -> float | None:
         return float(match.group(0))
     except ValueError:
         return None
+
+
+def _integer(value: object) -> int | None:
+    number = _number(value)
+    return int(number) if number is not None else None
 
 
 def _has_optical_module_evidence(row: dict[str, object | None]) -> bool:

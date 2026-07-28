@@ -193,7 +193,7 @@ class DeviceCompatibilityService:
             "platforms": platforms,
             "roles": roles,
             "validation_levels": levels,
-            "statement": "当前代码内置兼容基线面向 H3C Comware V7/V9，并登记 ZTE ZXR10 5960X-ES V2 第一阶段轨旁交换机框架。",
+            "statement": "当前代码内置兼容基线面向 H3C Comware V7/V9，并登记 ZTE ZXR10 C89E-4 V1.9.0 只读现场验证与 5960X-ES V2 文档样例框架。",
             "disclaimer": "本地扫描候选不会显示到普通用户首页；已登记基线也不等于所有型号和 Release 均已完成现场验证。",
             "profiles": [
                 {

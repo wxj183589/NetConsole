@@ -58,6 +58,21 @@ def _client(tmp_path: Path):
             {
                 "interface_name": "GE1/0/1",
                 "link_status": "UP",
+                "admin_status": "up",
+                "physical_status": "up",
+                "protocol_status": "up",
+                "media_type": "optical",
+                "category": "physical",
+                "port_status": "hybrid",
+                "port_mode": "hybrid",
+                "pvid": "71",
+                "native_vlan": "71",
+                "tagged_vlans": ["201"],
+                "untagged_vlans": [],
+                "pvid_source": "show_running_config_switchvlan",
+                "pvid_verified": True,
+                "vlan_config_status": "current",
+                "vlan_warnings": [],
                 "last_change": "2026-07-19T09:59:00",
                 "input_rate": 100.0,
                 "output_rate": 200.0,
@@ -74,6 +89,10 @@ def _client(tmp_path: Path):
             {
                 "local_interface": "GE1/0/1",
                 "neighbor_sysname": "AP-API",
+                "chassis_id": "02aa.bbcc.0001",
+                "ttl": 120,
+                "pvid": 71,
+                "port_description": "Test AP uplink",
                 "capabilities": "bridge router",
                 "model": "legacy-private-model",
             }
@@ -111,6 +130,16 @@ def test_device_detail_lazy_api_contract_and_refresh(tmp_path: Path) -> None:
     overview = client.get(f"{prefix}/overview")
     interfaces = client.get(
         f"{prefix}/interfaces", params={"page": 1, "page_size": 1}
+    )
+    filtered_interfaces = client.get(
+        f"{prefix}/interfaces",
+        params={
+            "status": "UP",
+            "admin_status": "up",
+            "physical_status": "up",
+            "protocol_status": "up",
+            "media_type": "optical",
+        },
     )
     detail = client.get(
         f"{prefix}/interfaces/GE1%2F0%2F1"
@@ -155,6 +184,22 @@ def test_device_detail_lazy_api_contract_and_refresh(tmp_path: Path) -> None:
     assert interfaces.status_code == 200
     assert interfaces.json()["total"] == 2
     assert interfaces.json()["total_pages"] == 2
+    assert interfaces.json()["items"][0]["admin_status"] == "up"
+    assert interfaces.json()["items"][0]["physical_status"] == "up"
+    assert interfaces.json()["items"][0]["protocol_status"] == "up"
+    assert interfaces.json()["items"][0]["media_type"] == "optical"
+    assert interfaces.json()["items"][0]["port_mode"] == "hybrid"
+    assert interfaces.json()["items"][0]["port_status"] == "hybrid"
+    assert interfaces.json()["items"][0]["pvid"] == "71"
+    assert interfaces.json()["items"][0]["native_vlan"] == "71"
+    assert interfaces.json()["items"][0]["tagged_vlans"] == ["201"]
+    assert (
+        interfaces.json()["items"][0]["pvid_source"]
+        == "show_running_config_switchvlan"
+    )
+    assert interfaces.json()["items"][0]["pvid_verified"] is True
+    assert filtered_interfaces.status_code == 200
+    assert filtered_interfaces.json()["total"] == 1
     for removed_field in (
         "input_rate",
         "output_rate",
@@ -171,12 +216,15 @@ def test_device_detail_lazy_api_contract_and_refresh(tmp_path: Path) -> None:
     assert transceivers.json()["items"][0]["severity"] == "no_module"
     assert transceivers.json()["items"][0]["severity_reason"] == "未检测到光模块"
     assert lldp.status_code == 200
+    assert lldp.json()["items"][0]["ttl"] == 120
+    assert lldp.json()["items"][0]["pvid"] == 71
+    assert lldp.json()["items"][0]["port_description"] == "Test AP uplink"
     assert "capabilities" not in lldp.json()["items"][0]
     assert "model" not in lldp.json()["items"][0]
     assert tasks.status_code == 200
     assert config.status_code == 200
     assert business.status_code == 200
-    assert refreshed.status_code == 202
+    assert refreshed.status_code == 202, refreshed.text
     assert repeated.status_code == 202
     assert repeated.json()["task_id"] == refreshed.json()["task_id"]
     assert repeated.json()["reused"] is True
@@ -186,6 +234,7 @@ def test_device_detail_lazy_api_contract_and_refresh(tmp_path: Path) -> None:
         for response in (
             overview,
             interfaces,
+            filtered_interfaces,
             detail,
             transceivers,
             lldp,

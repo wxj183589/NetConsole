@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getDeviceDetailSection, getDeviceEditProfile, getDeviceInterfaceDetail, getDeviceOverview } from './deviceManagement'
+import { getBatchRefresh, getDeviceDetailSection, getDeviceEditProfile, getDeviceInterfaceDetail, getDeviceOverview } from './deviceManagement'
 
 describe('device detail API client', () => {
   afterEach(() => vi.unstubAllGlobals())
@@ -14,12 +14,16 @@ describe('device detail API client', () => {
       page: 2,
       page_size: 20,
       search: 'Gigabit',
-      status: 'up',
+      status: 'PHYSICAL_DOWN',
+      admin_status: 'up',
+      physical_status: 'down',
+      protocol_status: 'down',
+      media_type: 'optical',
     })
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       '/api/device-management/devices/device%2F1/overview',
-      '/api/device-management/devices/device%2F1/interfaces?page=2&page_size=20&search=Gigabit&status=up',
+      '/api/device-management/devices/device%2F1/interfaces?page=2&page_size=20&search=Gigabit&status=PHYSICAL_DOWN&admin_status=up&physical_status=down&protocol_status=down&media_type=optical',
     ])
   })
 
@@ -60,5 +64,17 @@ describe('device detail API client', () => {
       '/api/device-management/devices/device-1/transceivers?page=1&page_size=20&severity=warning',
       '/api/device-management/devices/device-1/tasks?page=1&page_size=20&status=RUNNING',
     ])
+  })
+
+  it('queries a batch refresh by its opaque encoded id', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await getBatchRefresh('batch/1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/device-management/batch-refreshes/batch%2F1',
+      expect.objectContaining({ credentials: 'same-origin' }),
+    )
   })
 })

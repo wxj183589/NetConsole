@@ -111,12 +111,25 @@ class DeviceInterfaceDTO(ApiModel):
     normalized_name: str
     category: str
     link_status: str | None = None
+    admin_status: str | None = None
+    physical_status: str | None = None
     protocol_status: str | None = None
+    media_attribute: str | None = None
+    media_type: str | None = None
     speed: str | None = None
     duplex: str | None = None
     interface_type: str | None = None
     port_status: str | None = None
+    port_mode: str | None = None
     pvid: str | None = None
+    native_vlan: str | None = None
+    tagged_vlans: list[str] = Field(default_factory=list)
+    untagged_vlans: list[str] = Field(default_factory=list)
+    pvid_source: str | None = None
+    pvid_verified: bool | None = None
+    vlan_config_status: str | None = None
+    vlan_config_collected_at: str | None = None
+    vlan_warnings: list[dict[str, object]] = Field(default_factory=list)
     description: str | None = None
     ip_address: str | None = None
     mac_address: str | None = None
@@ -175,10 +188,22 @@ class DeviceTransceiverPageDTO(ApiModel):
 class DeviceLldpNeighborDTO(ApiModel):
     local_interface: str
     normalized_local_interface: str
+    scope: str | None = None
+    chassis_type: str | None = None
+    chassis_id: str | None = None
     neighbor_system_name: str | None = None
     neighbor_mac: str | None = None
+    port_id_type: str | None = None
     neighbor_interface: str | None = None
     neighbor_ip: str | None = None
+    holdtime: int | None = None
+    ttl: int | None = None
+    port_description: str | None = None
+    system_description: str | None = None
+    system_capabilities: str | None = None
+    pvid: int | None = None
+    operational_mau: str | None = None
+    max_frame_size: int | None = None
     neighbor_device_uuid: str | None = None
     association_status: Literal["matched", "unresolved"] = "unresolved"
     collected_at: str | None = None
@@ -330,6 +355,8 @@ class DeviceRefreshTaskDTO(ApiModel):
     status: str
     reused: bool = False
     message: str | None = None
+    profile_id: str | None = None
+    profile_version: int | None = None
 
 
 __all__ = [name for name in globals() if name.endswith("DTO")]

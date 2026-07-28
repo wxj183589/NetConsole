@@ -244,7 +244,7 @@ FEATURES: tuple[FeatureItem, ...] = (
         "ZTE 轨旁交换机适配（试验性）",
         "web.rail_trackside_ap_business",
         "action",
-        description_key="ZXR10 5960X-ES 已接入，待实机验证",
+        description_key="ZXR10 C89E 已完成只读实机验证，5960X-ES 仍待复核",
         status=FeatureStatus.DEVELOPMENT,
         dependencies=("web.rail_task_control",),
     ),

@@ -144,6 +144,97 @@
     },
     {
       "operation_id": "device.inventory.collect",
+      "profile_id": "zte.zxr10.switch.generic.device-inventory.v3",
+      "profile_version": 3,
+      "selector": {
+        "vendor": "ZTE",
+        "role": "switch",
+        "platform": "zxr10",
+        "software_version": "*"
+      },
+      "compatibility": "generic_read_only",
+      "risk": "read_only",
+      "parser_contract": "netconsole.zte.zxr10-switch.v3",
+      "dto_contract": "netconsole.device-detail.v1",
+      "verification": {
+        "fixture_versions": ["V2.00.20.03B07-manual-fixture", "V1.9.0-real-c89e-redacted"],
+        "real_device_status": "REAL_DEVICE_VERIFIED"
+      },
+      "steps": [
+        {
+          "order": 10,
+          "step_id": "device.version.collect",
+          "command": "show version",
+          "selector": "inventory.version",
+          "parser_contract": "netconsole.zte.zxr10-switch.v3",
+          "dto_contract": "netconsole.device-fact.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "field_verified", "evidence": "C89E-4 V1.9.0 field run 2026-07-28; tests/fixtures/zte/real_c89e4_show_version_redacted.txt"}
+        },
+        {
+          "order": 20,
+          "step_id": "device.interface-brief.collect",
+          "command": "show interface brief",
+          "selector": "inventory.interface_brief",
+          "parser_contract": "netconsole.zte.zxr10-switch.v3",
+          "dto_contract": "netconsole.device-interface.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "field_verified", "evidence": "C89E-4 V1.9.0 field run 2026-07-28; tests/fixtures/zte/real_c89e4_show_interface_brief_redacted.txt"}
+        },
+        {
+          "order": 30,
+          "step_id": "device.switchvlan-config.collect",
+          "command": "show running-config switchvlan",
+          "selector": "inventory.switchvlan_config",
+          "parser_contract": "netconsole.zte.zxr10-vlan.v1",
+          "dto_contract": "netconsole.device-interface.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "field_verified", "evidence": "Two HZDT10 station C89E-4 V1.9.0 read-only field runs 2026-07-28; tests/fixtures/zte/hzdt10_show_running_config_switchvlan.txt"}
+        },
+        {
+          "order": 40,
+          "step_id": "device.vlan-table.collect",
+          "command": "show vlan",
+          "selector": "inventory.vlan_table",
+          "parser_contract": "netconsole.zte.zxr10-vlan.v1",
+          "dto_contract": "netconsole.device-interface.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "field_verified", "evidence": "Two HZDT10 station C89E-4 V1.9.0 read-only field runs 2026-07-28; tests/fixtures/zte/hzdt10_show_vlan.txt"}
+        },
+        {
+          "order": 50,
+          "step_id": "device.optical-brief.collect",
+          "command": "show opticalinfo brief",
+          "selector": "inventory.optical_brief",
+          "parser_contract": "netconsole.zte.zxr10-switch.v3",
+          "dto_contract": "netconsole.device-optical-module.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "field_verified", "evidence": "C89E-4 V1.9.0 field run 2026-07-28; tests/fixtures/zte/real_c89e4_show_opticalinfo_brief_redacted.txt"}
+        },
+        {
+          "order": 60,
+          "step_id": "device.lldp-summary.collect",
+          "command": "show lldp neighbor brief",
+          "selector": "inventory.lldp_list",
+          "parser_contract": "netconsole.zte.zxr10-switch.v3",
+          "dto_contract": "netconsole.device-lldp-neighbor.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "field_verified", "evidence": "C89E-4 V1.9.0 read-only field run 2026-07-28; tests/fixtures/zte/hzdt10_show_lldp_neighbor_brief.txt"}
+        },
+        {
+          "order": 70,
+          "step_id": "device.lldp-detail.collect",
+          "command": "show lldp entry",
+          "selector": "inventory.lldp_verbose",
+          "parser_contract": "netconsole.zte.zxr10-switch.v3",
+          "dto_contract": "netconsole.device-lldp-neighbor.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "field_verified", "evidence": "C89E-4 V1.9.0 read-only field run 2026-07-28; tests/fixtures/zte/hzdt10_show_lldp_entry.txt"}
+        }
+      ]
+    },
+    {
+      "operation_id": "device.inventory.collect",
       "profile_id": "h3c.comware.mobile_router.generic.device-inventory.v1",
       "profile_version": 1,
       "selector": {

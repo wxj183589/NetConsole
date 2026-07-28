@@ -69,7 +69,7 @@ LLDP 历史数据按公开 DTO 白名单消费，不进入任意原始对象透�
 - 当前唯一稳定 Operation ID 是 `device.inventory.collect`；对应资源为 `resources/device_command_profiles.json`，已登记的通用只读 Profile 包括 `h3c.comware.switch.generic.device-inventory.v1` 和 `h3c.comware.mobile_router.generic.device-inventory.v1`。
 - 未知或未验证厂商、角色、平台、Profile 必须失败关闭，不能回退执行 H3C 命令。软件版本未知时，也只有厂商、角色、平台精确匹配且资源明确允许的只读通用 Profile 才能执行。
 - H3C AC 的关联信息只读复用 AC Query Service，暂不开放通用设备详情刷新；H3C MR 的关联信息只读复用 Online MR Query Service，基础设备详情刷新使用独立 `mobile_router` Profile，不会把 MR 当作通用交换机执行命令。
-- ZTE ZXR10 5960X-ES V2 交换机的设备详情 Profile 仅执行手册已确认的 `show version`、`show interface brief` 和 `show opticalinfo brief`，不下发未经确认的关闭分页命令，也不回退执行 H3C `screen-length` / `display` 命令。采集先用 `show version` 确认 59X/5960X-ES，其他 ZXR10 型号在执行接口和 DOM 命令前失败关闭。设备身份、接口和光模块摘要使用对应 ZTE parser，带分页提示的完整 raw 仍保留；LLDP 只在轨旁采集 Job 中按受控命令链采样，缺少真实输出 fixture 时固定为 `SAMPLE_REQUIRED`，整机状态保持 `REAL_DEVICE_PENDING`。
+- ZTE ZXR10 设备详情 Profile 固定执行 `show version`、`show interface brief`、`show opticalinfo brief`、`show lldp neighbor brief` 和 `show lldp entry`，不下发未经确认的关闭分页命令，也不回退执行 H3C `screen-length` / `display` 命令。采集先用 `show version` 确认 C89E 或 59X/5960X-ES，其他 ZXR10 型号在后续命令前失败关闭。C89E-4 V1.9.0 的五命令链已完成现场只读验证；5960X-ES V2 的版本、接口和 DOM 仍以文档 fixture 为证据，LLDP 输出仍待该型号现场复核。任一 LLDP 命令失败只形成部分成功，有效接口/光模块/另一条 LLDP 结果仍可保存；空白或未识别输出不会清空旧快照。
 - ZTE AC 和 ZTE 完整诊断包当前不支持；诊断任务返回“当前型号暂未适配诊断包采集”并记录跳过原因，不影响其他基础采集。Huawei 和其他未知厂商仍失败关闭。
 
 ## API 与 DTO

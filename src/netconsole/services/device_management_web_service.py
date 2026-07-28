@@ -29,7 +29,9 @@ from netconsole.core.settings import SettingsStore, normalize_external_terminal_
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.device_management import (
     DeviceCapabilityDTO,
+    DeviceBatchRefreshItemDTO,
     DeviceBatchConnectionRequestDTO,
+    DeviceBatchRefreshSummaryDTO,
     DeviceCollectionSummaryDTO,
     DeviceConnectionCommandDTO,
     DeviceConnectionTestDTO,
@@ -220,18 +222,21 @@ SORT_FIELDS = {
     "station": lambda item: natural_text_key(item.station),
     "device_type": lambda item: natural_text_key(item.device_type),
     "updated_at": lambda item: natural_text_key(item.updated_at),
+    "metadata_updated_at": lambda item: natural_text_key(item.metadata_updated_at),
+    "last_collected_at": lambda item: natural_text_key(item.last_collected_at),
+    "last_collect_status": lambda item: natural_text_key(item.last_collect_status),
     "status": lambda item: natural_text_key(item.connection_status),
 }
 
 
 class DeviceInventoryOperationService(Protocol):
-    def start_many(
+    def start(
         self,
-        device_uuids: list[str],
+        device_uuid: str,
         operation_id: str,
         *,
-        idempotency_key: str,
-    ) -> list[DeviceOperationTask]: ...
+        idempotency_key: str | None = None,
+    ) -> DeviceOperationTask: ...
 
 
 class DeviceManagementWebService:
@@ -261,6 +266,7 @@ class DeviceManagementWebService:
         self._terminal_tokens: dict[str, dict[str, object]] = {}
         self._export_processes: dict[str, subprocess.Popen[str]] = {}
         self._export_artifacts: dict[str, dict[str, object]] = {}
+        self._batch_refreshes: dict[str, dict[str, object]] = {}
         self._reconciled_import_sites: set[str] = set()
         self._reconciled_vehicle_mr_sites: set[str] = set()
 
@@ -366,7 +372,7 @@ class DeviceManagementWebService:
         sort_order: str = "asc",
     ) -> DevicePageDTO:
         site = self.current_site_id()
-        device_repository, group_repository, _ = self._repositories(site)
+        device_repository, group_repository, fact_repository = self._repositories(site)
         groups = group_repository.list()
         group_names = {
             int(group.id): group.name for group in groups if group.id is not None
@@ -374,8 +380,12 @@ class DeviceManagementWebService:
         tasks = self._owned_web_tasks(
             self.task_service.repository(site).list(limit=1000),
             site,
-            frozenset({DEVICE_CONNECTION_TEST_TASK_TYPE}),
+            frozenset({DEVICE_CONNECTION_TEST_TASK_TYPE, DEVICE_COLLECT_TASK_TYPE}),
         )
+        facts = {
+            str(row.get("device_uuid") or ""): row
+            for row in fact_repository.list_device_facts()
+        }
         devices = device_repository.list(
             search=search.strip() or None,
             vendor=vendor.strip() or None,
@@ -383,7 +393,13 @@ class DeviceManagementWebService:
             group_filter="__ungrouped__" if ungrouped else group_id,
         )
         items = [
-            self._list_item(device, group_names, self._latest_test(tasks, device))
+            self._list_item(
+                device,
+                group_names,
+                self._latest_test(tasks, device),
+                latest_collect=self._latest_collect(tasks, device),
+                fact=facts.get(str(device.device_uuid or "")),
+            )
             for device in devices
         ]
         selected_status = connection_status.strip().upper()
@@ -431,8 +447,14 @@ class DeviceManagementWebService:
             ),
             device,
         )
-        list_item = self._list_item(device, groups, self._latest_test(tasks, device))
         fact = fact_repository.get_device_fact(device_uuid)
+        list_item = self._list_item(
+            device,
+            groups,
+            self._latest_test(tasks, device),
+            latest_collect=self._latest_collect(tasks, device),
+            fact=fact,
+        )
         collection = (
             fact_repository.get_collect_run(str(fact.get("collect_run_uuid") or ""))
             if fact
@@ -545,12 +567,26 @@ class DeviceManagementWebService:
         fields = {
             "interface": (
                 "link_status",
+                "admin_status",
+                "physical_status",
                 "protocol_status",
+                "media_attribute",
+                "media_type",
+                "category",
                 "speed",
                 "duplex",
                 "interface_type",
                 "port_status",
+                "port_mode",
                 "pvid",
+                "native_vlan",
+                "tagged_vlans",
+                "untagged_vlans",
+                "pvid_source",
+                "pvid_verified",
+                "vlan_config_status",
+                "vlan_config_collected_at",
+                "vlan_warnings",
                 "description",
                 "ip_address",
                 "mac_address",
@@ -571,10 +607,22 @@ class DeviceManagementWebService:
                 "rx_high_warning",
             ),
             "lldp": (
+                "scope",
+                "chassis_type",
+                "chassis_id",
                 "neighbor_sysname",
                 "neighbor_mac",
+                "port_id_type",
                 "neighbor_interface",
                 "neighbor_ip",
+                "holdtime",
+                "ttl",
+                "port_description",
+                "system_description",
+                "system_capabilities",
+                "pvid",
+                "operational_mau",
+                "max_frame_size",
                 "neighbor_device_uuid",
             ),
         }[normalized_kind]
@@ -736,23 +784,123 @@ class DeviceManagementWebService:
     ) -> DeviceTaskBatchDTO:
         if self.device_operation_service is None:
             raise RuntimeError("DeviceOperationService 未接线")
+        site = self.current_site_id()
+        devices, _groups, _facts = self._repositories(site)
         operation_id = "device.inventory.collect"
-        batch_key = f"legacy-batch-{uuid.uuid4().hex}"
-        tasks = self.device_operation_service.start_many(
-            self._unique_ids(payload.device_uuids),
-            operation_id,
-            idempotency_key=batch_key,
+        batch_id = f"device-refresh-batch-{uuid.uuid4().hex}"
+        created_at = datetime.now(UTC).isoformat()
+        batch_items: list[dict[str, object]] = []
+        for index, device_uuid in enumerate(
+            self._unique_ids(payload.device_uuids), start=1
+        ):
+            device = devices.get_by_uuid(device_uuid)
+            base: dict[str, object] = {
+                "device_uuid": device_uuid,
+                "device_name": str(device.name or "") if device else "",
+                "primary_address": str(device.primary_address or "") if device else "",
+                "vendor": str(device.device_vendor or "") if device else "",
+                "device_type": str(device.device_type or "") if device else "",
+                "profile_id": "",
+                "profile_version": None,
+                "submission_status": "REJECTED",
+                "task_id": "",
+                "task_status": "",
+                "message": "",
+            }
+            try:
+                task = self.device_operation_service.start(
+                    device_uuid,
+                    operation_id,
+                    idempotency_key=f"{batch_id}:{index}",
+                )
+                base.update(
+                    {
+                        "profile_id": task.profile_id or "",
+                        "profile_version": task.profile_version,
+                        "submission_status": "REUSED"
+                        if task.reused
+                        else "ACCEPTED",
+                        "task_id": task.task_id,
+                        "task_status": task.status,
+                        "message": task.message or "",
+                    }
+                )
+            except Exception as exc:
+                base["message"] = sanitize_sensitive_text(str(exc), device)
+            batch_items.append(base)
+        with self._mutation_lock:
+            self._batch_refreshes[batch_id] = {
+                "site": site,
+                "created_at": created_at,
+                "items": batch_items,
+            }
+            if len(self._batch_refreshes) > 200:
+                oldest = min(
+                    self._batch_refreshes,
+                    key=lambda value: str(
+                        self._batch_refreshes[value].get("created_at") or ""
+                    ),
+                )
+                self._batch_refreshes.pop(oldest, None)
+        return self.get_batch_refresh(batch_id)
+
+    def get_batch_refresh(self, batch_id: str) -> DeviceTaskBatchDTO:
+        site = self.current_site_id()
+        with self._mutation_lock:
+            batch = self._batch_refreshes.get(str(batch_id or ""))
+            if batch is None or batch.get("site") != site:
+                raise KeyError(batch_id)
+            created_at = str(batch.get("created_at") or "")
+            stored_items = [dict(item) for item in list(batch.get("items") or [])]
+        task_repository = self.task_service.repository(site)
+        _devices, _groups, facts = self._repositories(site)
+        items = [
+            self._batch_refresh_item(item, task_repository, facts)
+            for item in stored_items
+        ]
+        summary = DeviceBatchRefreshSummaryDTO(
+            total=len(items),
+            accepted=sum(
+                1 for item in items if item.submission_status == "ACCEPTED"
+            ),
+            reused=sum(1 for item in items if item.submission_status == "REUSED"),
+            rejected=sum(1 for item in items if item.status == "REJECTED"),
+            running=sum(
+                1 for item in items if item.status in {"ACCEPTED", "REUSED", "RUNNING"}
+            ),
+            completed=sum(1 for item in items if item.status == "COMPLETED"),
+            partial_success=sum(
+                1 for item in items if item.status == "PARTIAL_SUCCESS"
+            ),
+            failed=sum(1 for item in items if item.status == "FAILED"),
+            cancelled=sum(1 for item in items if item.status == "CANCELLED"),
+        )
+        terminal = summary.running == 0
+        finished_at = (
+            max((item.finished_at for item in items if item.finished_at), default="")
+            if terminal
+            else ""
         )
         references = [
             DeviceTaskReferenceDTO(
-                task_id=task.task_id,
-                task_status=task.status,
-                action=task.operation_id,
-                message=task.message or "",
+                task_id=item.task_id,
+                task_status=item.task_status,
+                action="device.inventory.collect",
+                message=item.error_message,
             )
-            for task in tasks
+            for item in items
+            if item.task_id
         ]
-        return DeviceTaskBatchDTO(action="batch_refresh_details", tasks=references)
+        return DeviceTaskBatchDTO(
+            action="batch_refresh_details",
+            batch_id=batch_id,
+            created_at=created_at,
+            finished_at=finished_at,
+            terminal=terminal,
+            summary=summary,
+            items=items,
+            tasks=references,
+        )
 
     def start_batch_connection_tests(
         self,
@@ -788,6 +936,118 @@ class DeviceManagementWebService:
                 )
             )
         return DeviceTaskBatchDTO(action="batch_connection_test", tasks=references)
+
+    @staticmethod
+    def _batch_refresh_item(
+        stored: dict[str, object],
+        task_repository,
+        facts: DeviceFactRepository,
+    ) -> DeviceBatchRefreshItemDTO:
+        submission_status = str(stored.get("submission_status") or "REJECTED")
+        task_id = str(stored.get("task_id") or "")
+        error_message = sanitize_sensitive_text(str(stored.get("message") or ""))
+        if submission_status == "REJECTED" or not task_id:
+            return DeviceBatchRefreshItemDTO(
+                device_uuid=str(stored.get("device_uuid") or ""),
+                device_name=str(stored.get("device_name") or ""),
+                primary_address=str(stored.get("primary_address") or ""),
+                vendor=str(stored.get("vendor") or ""),
+                device_type=str(stored.get("device_type") or ""),
+                submission_status="REJECTED",
+                status="REJECTED",
+                error_message=error_message,
+            )
+        snapshot = task_repository.get(task_id)
+        if snapshot is None:
+            return DeviceBatchRefreshItemDTO(
+                device_uuid=str(stored.get("device_uuid") or ""),
+                device_name=str(stored.get("device_name") or ""),
+                primary_address=str(stored.get("primary_address") or ""),
+                vendor=str(stored.get("vendor") or ""),
+                device_type=str(stored.get("device_type") or ""),
+                profile_id=str(stored.get("profile_id") or ""),
+                profile_version=(
+                    int(stored["profile_version"])
+                    if stored.get("profile_version")
+                    else None
+                ),
+                submission_status=submission_status,
+                status="FAILED",
+                task_status="FAILED",
+                error_message="任务状态不存在",
+            )
+        summary_results = list(snapshot.result.get("results") or [])
+        result = next(
+            (dict(value) for value in summary_results if isinstance(value, dict)),
+            {},
+        )
+        collect_run_uuid = str(result.get("collect_run_uuid") or "")
+        collect_run = (
+            facts.get_collect_run(collect_run_uuid) if collect_run_uuid else None
+        )
+        fact = facts.get_device_fact(str(stored.get("device_uuid") or ""))
+        collect_status = str(
+            result.get("collect_status") or (collect_run or {}).get("status") or ""
+        ).casefold()
+        if snapshot.status in {TaskState.PENDING, TaskState.STARTING}:
+            current_status = submission_status
+        elif snapshot.status in {TaskState.RUNNING, TaskState.STOPPING}:
+            current_status = "RUNNING"
+        elif snapshot.status is TaskState.CANCELLED:
+            current_status = "CANCELLED"
+        elif snapshot.status is TaskState.FAILED:
+            current_status = "FAILED"
+        elif collect_status == "partial_success":
+            current_status = "PARTIAL_SUCCESS"
+        elif collect_status == "failed" or result.get("success") is False:
+            current_status = "FAILED"
+        else:
+            current_status = "COMPLETED"
+        safe_error = sanitize_sensitive_text(
+            str(result.get("error_message") or snapshot.error_message or error_message)
+        )
+        return DeviceBatchRefreshItemDTO(
+            device_uuid=str(stored.get("device_uuid") or ""),
+            device_name=str(stored.get("device_name") or ""),
+            primary_address=str(stored.get("primary_address") or ""),
+            vendor=str(stored.get("vendor") or ""),
+            device_type=str(stored.get("device_type") or ""),
+            profile_id=str(
+                result.get("profile_id") or stored.get("profile_id") or ""
+            ),
+            profile_version=(
+                int(result.get("profile_version") or stored.get("profile_version"))
+                if result.get("profile_version") or stored.get("profile_version")
+                else None
+            ),
+            submission_status=submission_status,
+            status=current_status,
+            task_id=task_id,
+            task_status=snapshot.status.value,
+            collect_run_uuid=collect_run_uuid,
+            facts_updated=bool(result.get("facts_updated")),
+            interfaces_updated=int(result.get("interfaces_updated") or 0),
+            optical_modules_updated=int(result.get("optical_modules_updated") or 0),
+            lldp_neighbors_updated=int(result.get("lldp_neighbors_updated") or 0),
+            started_at=str(
+                result.get("started_at")
+                or (collect_run or {}).get("started_at")
+                or snapshot.started_time
+                or ""
+            ),
+            finished_at=str(
+                result.get("finished_at")
+                or (collect_run or {}).get("ended_at")
+                or snapshot.finished_time
+                or ""
+            ),
+            last_collected_at=str(
+                result.get("last_collected_at")
+                or (fact or {}).get("collected_at")
+                or ""
+            ),
+            error_message=safe_error,
+        )
 
     def start_optical_refresh(self, device_uuid: str) -> DeviceTaskReferenceDTO:
         devices, _groups, _facts = self._repositories(self.current_site_id())
@@ -3038,7 +3298,11 @@ class DeviceManagementWebService:
         device: Device,
         group_names: dict[int, str],
         latest_test: TaskSnapshot | None,
+        *,
+        latest_collect: TaskSnapshot | None = None,
+        fact: dict[str, object | None] | None = None,
     ) -> DeviceListItemDTO:
+        collect_status = self._last_collect_status(latest_collect, fact)
         return DeviceListItemDTO(
             id=int(device.id or 0),
             device_uuid=str(device.device_uuid or ""),
@@ -3054,6 +3318,10 @@ class DeviceManagementWebService:
             primary_address=str(device.primary_address or ""),
             backup_address=str(device.backup_address or ""),
             updated_at=str(device.updated_at or ""),
+            metadata_updated_at=str(device.updated_at or ""),
+            last_collected_at=str((fact or {}).get("collected_at") or ""),
+            last_collect_status=collect_status,
+            last_collect_task_id=latest_collect.task_id if latest_collect else "",
             capabilities=self._capabilities(device),
             connection_status=self._connection_status(latest_test),
             last_test_task_id=latest_test.task_id if latest_test else "",
@@ -3152,6 +3420,43 @@ class DeviceManagementWebService:
             ),
             None,
         )
+
+    @staticmethod
+    def _latest_collect(
+        tasks: list[TaskSnapshot], device: Device
+    ) -> TaskSnapshot | None:
+        device_uuid = str(device.device_uuid or "")
+        return next(
+            (
+                task
+                for task in tasks
+                if task.task_type == DEVICE_COLLECT_TASK_TYPE
+                and task.device == device_uuid
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _last_collect_status(
+        task: TaskSnapshot | None, fact: dict[str, object | None] | None
+    ) -> str:
+        if task is None:
+            return "SUCCESS" if fact and fact.get("collected_at") else ""
+        if task.status in ACTIVE_TASK_STATES:
+            return "RUNNING"
+        if task.status is TaskState.CANCELLED:
+            return "CANCELLED"
+        if task.status is TaskState.FAILED:
+            return "FAILED"
+        results = list(task.result.get("results") or [])
+        result = next(
+            (value for value in results if isinstance(value, dict)),
+            {},
+        )
+        collect_status = str(result.get("collect_status") or "").upper()
+        if collect_status:
+            return collect_status
+        return "SUCCESS" if result.get("success") is not False else "FAILED"
 
     @staticmethod
     def _device_tasks(tasks: list[TaskSnapshot], device: Device) -> list[TaskSnapshot]:

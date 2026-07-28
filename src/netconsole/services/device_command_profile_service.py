@@ -56,7 +56,12 @@ _STEP_KEYS = frozenset(
 )
 _COMPATIBILITY_LEVELS = frozenset({"fixture_verified", "generic_read_only"})
 _PROFILE_RISK_LEVELS = frozenset({"read_only", "controlled_write"})
-_VERIFICATION_STATUSES = frozenset({"fixture_verified", "behavior_preservation_only"})
+_VERIFICATION_STATUSES = frozenset(
+    {"fixture_verified", "behavior_preservation_only", "field_verified"}
+)
+_REAL_DEVICE_STATUSES = frozenset(
+    {"real_device_pending", "real_device_partial", "real_device_verified"}
+)
 _SWITCH_DEVICE_INVENTORY_STEP_CONTRACT = (
     ("terminal.pagination.disable", "session.pagination"),
     ("device.sysname.collect", "inventory.sysname"),
@@ -80,9 +85,23 @@ _MOBILE_ROUTER_DEVICE_INVENTORY_STEP_CONTRACT = (
     ("device.boot-loader.collect", "inventory.boot_loader"),
     ("device.interfaces.collect", "inventory.interfaces"),
 )
+_ZTE_SWITCH_DEVICE_INVENTORY_STEP_CONTRACT = (
+    ("device.version.collect", "inventory.version"),
+    ("device.interface-brief.collect", "inventory.interface_brief"),
+    ("device.switchvlan-config.collect", "inventory.switchvlan_config"),
+    ("device.vlan-table.collect", "inventory.vlan_table"),
+    ("device.optical-brief.collect", "inventory.optical_brief"),
+    ("device.lldp-summary.collect", "inventory.lldp_list"),
+    ("device.lldp-detail.collect", "inventory.lldp_verbose"),
+)
 _DEVICE_INVENTORY_STEP_CONTRACTS = {
-    "switch": _SWITCH_DEVICE_INVENTORY_STEP_CONTRACT,
-    "mobile_router": _MOBILE_ROUTER_DEVICE_INVENTORY_STEP_CONTRACT,
+    ("h3c", "switch", "comware"): _SWITCH_DEVICE_INVENTORY_STEP_CONTRACT,
+    (
+        "h3c",
+        "mobile_router",
+        "comware",
+    ): _MOBILE_ROUTER_DEVICE_INVENTORY_STEP_CONTRACT,
+    ("zte", "switch", "zxr10"): _ZTE_SWITCH_DEVICE_INVENTORY_STEP_CONTRACT,
 }
 _DEVICE_SFTP_STEP_CONTRACT = (
     ("sftp.mode.enter", "system-view", "sftp.mode.enter"),
@@ -151,7 +170,11 @@ _VENDOR_COMMAND_PROFILES = {
             "session_verify": ("show version",),
             "version": ("show version",),
             "interface_brief": ("show interface brief",),
+            "switchvlan_config": ("show running-config switchvlan",),
+            "vlan_table": ("show vlan",),
             "optical_brief": ("show opticalinfo brief",),
+            "lldp_summary": ("show lldp neighbor brief",),
+            "lldp_detail": ("show lldp entry",),
         },
         unsupported_capabilities={
             "diagnostic_bundle": "当前型号暂未适配诊断包采集",
@@ -208,7 +231,11 @@ def resolve_step_command_candidates(
     capabilities = {
         "inventory.version": "version",
         "inventory.interface_brief": "interface_brief",
+        "inventory.switchvlan_config": "switchvlan_config",
+        "inventory.vlan_table": "vlan_table",
         "inventory.optical_brief": "optical_brief",
+        "inventory.lldp_list": "lldp_summary",
+        "inventory.lldp_verbose": "lldp_detail",
     }
     capability = capabilities.get(step.selector)
     return (
@@ -286,44 +313,6 @@ class DeviceCommandProfile:
     @property
     def commands(self) -> tuple[str, ...]:
         return tuple(step.command for step in self.steps)
-
-
-def _zte_switch_inventory_profile() -> DeviceCommandProfile:
-    steps: list[DeviceCommandStep] = []
-    contracts = (
-        ("version", "device.version.collect", "inventory.version"),
-        ("interface_brief", "device.interface-brief.collect", "inventory.interface_brief"),
-        ("optical_brief", "device.optical-brief.collect", "inventory.optical_brief"),
-    )
-    profile = _VENDOR_COMMAND_PROFILES[("ZTE", "SW")]
-    for index, (capability, step_id, selector) in enumerate(contracts, start=1):
-        steps.append(
-            DeviceCommandStep(
-                order=index * 10,
-                step_id=step_id,
-                command=profile.capabilities[capability][0],
-                selector=selector,
-                parser_contract="netconsole.zte.zxr10-5960x-es.v2",
-                dto_contract="netconsole.device-detail.v1",
-                risk="read_only",
-                guard_context="device.inventory.collect",
-                verification_status="fixture_verified",
-                verification_evidence="ZXR10 5960X-ES V2.00.20.03 手册 fixture",
-            )
-        )
-    return DeviceCommandProfile(
-        operation_id=DEVICE_INVENTORY_OPERATION_ID,
-        profile_id="zte.zxr10.5960x-es.v2.device-inventory.v1",
-        profile_version=2,
-        selector=DeviceCommandSelector("ZTE", "switch", "zxr10", "*"),
-        compatibility="generic_read_only",
-        risk="read_only",
-        parser_contract="netconsole.zte.zxr10-5960x-es.v2",
-        dto_contract="netconsole.device-detail.v1",
-        fixture_versions=("V2.00.20.03B07-manual-fixture",),
-        real_device_status="pending",
-        steps=tuple(steps),
-    )
 
 
 def device_command_profile_path(paths: PathResolver | None = None) -> Path:
@@ -424,24 +413,22 @@ def resolve_device_inventory_profile(
     vendor = str(facts.vendor or "").strip()
     role = str(facts.role or "").strip().casefold()
     platform = str(facts.platform or "").strip().casefold()
-    if (
-        vendor.casefold() == "zte"
-        and role == "switch"
-        and platform == "zxr10"
-    ):
-        return _zte_switch_inventory_profile()
-    if vendor.casefold() != "h3c":
+    if vendor.casefold() not in {"h3c", "zte"}:
         raise DeviceCommandProfileNotFound(
-            f"设备详情采集仅支持 H3C: vendor={vendor or 'unknown'}"
+            f"设备详情采集仅支持 H3C/ZTE: vendor={vendor or 'unknown'}"
         )
-    supported_roles = {"switch", "mobile_router"}
+    supported_roles = (
+        {"switch", "mobile_router"} if vendor.casefold() == "h3c" else {"switch"}
+    )
     if role not in supported_roles:
         raise DeviceCommandProfileNotFound(
             f"设备详情采集不支持当前设备角色: role={role or 'unknown'}"
         )
-    if platform != "comware":
+    expected_platform = "comware" if vendor.casefold() == "h3c" else "zxr10"
+    expected_platform_label = "Comware" if expected_platform == "comware" else "ZXR10"
+    if platform != expected_platform:
         raise DeviceCommandProfileNotFound(
-            "设备详情采集仅支持已识别的 Comware 平台: "
+            f"设备详情采集仅支持已识别的 {expected_platform_label} 平台: "
             f"platform={platform or 'unknown'}"
         )
     profile = resolve_device_command_profile(
@@ -682,8 +669,8 @@ def _parse_profile(row: object) -> DeviceCommandProfile:
     real_device_status = _normalize_identifier(
         verification.get("real_device_status"), "real_device_status"
     )
-    if real_device_status != "real_device_pending":
-        raise DeviceCommandProfileError(f"{profile_id}: 首切片必须保持 REAL_DEVICE_PENDING")
+    if real_device_status not in _REAL_DEVICE_STATUSES:
+        raise DeviceCommandProfileError(f"{profile_id}: real_device_status 非法")
     step_rows = row.get("steps")
     if not isinstance(step_rows, list) or not step_rows:
         raise DeviceCommandProfileError(f"{profile_id}: steps 必须是非空数组")
@@ -808,7 +795,11 @@ def _validate_catalog(profiles: tuple[DeviceCommandProfile, ...]) -> None:
                 (step.step_id, step.selector) for step in profile.steps
             )
             expected_contract = _DEVICE_INVENTORY_STEP_CONTRACTS.get(
-                profile.selector.role
+                (
+                    profile.selector.vendor.casefold(),
+                    profile.selector.role,
+                    profile.selector.platform,
+                )
             )
             if expected_contract is None or actual_contract != expected_contract:
                 raise DeviceCommandProfileError(

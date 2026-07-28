@@ -1,0 +1,8 @@
+DEVICE-REDACTED#show version
+ZXR10 C89E-4
+ZTE ZXR10 Software, Version: V1.9.0, Release software
+Copyright (c) ZTE Corporation.
+System uptime is 12 day(s), 0 hour(s), 27 minute(s)
+Board Name : <REDACTED_BOARD>
+Serial Number : <REDACTED_SERIAL>
+DEVICE-REDACTED#

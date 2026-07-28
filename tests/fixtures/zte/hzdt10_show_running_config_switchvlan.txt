@@ -1,0 +1,24 @@
+HZDT-TEST#show running-config switchvlan
+!<switchvlan>
+switchvlan-configuration
+  interface gei-0/3/0/1
+    switchport mode hybrid
+    switchport hybrid vlan 201 tag
+    switchport hybrid native vlan 71
+  $
+  interface gei-0/3/0/2
+    switchport mode hybrid
+    switchport hybrid vlan 201 tag
+    switchport hybrid native vlan 71
+    switchport future syntax keep-warning
+  $
+  interface gei-0/4/0/25
+    switchport mode access
+    switchport access vlan 30
+  $
+  interface xgei-0/4/0/1
+    switchport mode trunk
+    switchport trunk vlan 2-4094
+    switchport trunk native vlan 71
+  $
+HZDT-TEST#

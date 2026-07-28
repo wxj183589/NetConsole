@@ -54,6 +54,10 @@ export interface DeviceListItem {
   primary_address: string
   backup_address: string
   updated_at: string
+  metadata_updated_at: string
+  last_collected_at: string
+  last_collect_status: string
+  last_collect_task_id: string
   capabilities: DeviceCapability
   connection_status: DeviceConnectionStatus
   last_test_task_id: string
@@ -239,12 +243,25 @@ export interface DeviceInterfaceRecord {
   normalized_name: string
   category: string
   link_status: string | null
+  admin_status: string | null
+  physical_status: string | null
   protocol_status: string | null
+  media_attribute: string | null
+  media_type: string | null
   speed: string | null
   duplex: string | null
   interface_type: string | null
   port_status: string | null
+  port_mode: string | null
   pvid: string | null
+  native_vlan: string | null
+  tagged_vlans: string[]
+  untagged_vlans: string[]
+  pvid_source: string | null
+  pvid_verified: boolean | null
+  vlan_config_status: string | null
+  vlan_config_collected_at: string | null
+  vlan_warnings: Array<Record<string, unknown>>
   description: string | null
   ip_address: string | null
   mac_address: string | null
@@ -278,10 +295,22 @@ export interface DeviceTransceiverRecord {
 export interface DeviceLldpRecord {
   local_interface: string
   normalized_local_interface: string
+  scope: string | null
+  chassis_type: string | null
+  chassis_id: string | null
   neighbor_system_name: string | null
   neighbor_mac: string | null
+  port_id_type: string | null
   neighbor_interface: string | null
   neighbor_ip: string | null
+  holdtime: number | null
+  ttl: number | null
+  port_description: string | null
+  system_description: string | null
+  system_capabilities: string | null
+  pvid: number | null
+  operational_mau: string | null
+  max_frame_size: number | null
   neighbor_device_uuid: string | null
   association_status: 'matched' | 'unresolved'
   collected_at: string | null
@@ -394,6 +423,8 @@ export interface DeviceDetailRefreshTask {
   status: string
   reused: boolean
   message: string | null
+  profile_id?: string | null
+  profile_version?: number | null
 }
 
 export interface DeviceDetailHistoryRecord {
@@ -449,6 +480,10 @@ export interface DeviceDetailSectionQuery {
   search?: string
   status?: string
   interface_type?: string
+  admin_status?: string
+  physical_status?: string
+  protocol_status?: string
+  media_type?: string
   severity?: string
   linked_only?: boolean
   snapshot_type?: string
@@ -583,6 +618,57 @@ export interface DeviceTaskReference {
 export interface DeviceTaskBatch {
   action: string
   tasks: DeviceTaskReference[]
+  batch_id: string
+  created_at: string
+  finished_at: string
+  terminal: boolean
+  summary: DeviceBatchRefreshSummary
+  items: DeviceBatchRefreshItem[]
+}
+
+export type DeviceBatchRefreshStatus =
+  | 'ACCEPTED'
+  | 'REUSED'
+  | 'REJECTED'
+  | 'RUNNING'
+  | 'COMPLETED'
+  | 'PARTIAL_SUCCESS'
+  | 'FAILED'
+  | 'CANCELLED'
+
+export interface DeviceBatchRefreshItem {
+  device_uuid: string
+  device_name: string
+  primary_address: string
+  vendor: string
+  device_type: string
+  profile_id: string
+  profile_version: number | null
+  submission_status: 'ACCEPTED' | 'REUSED' | 'REJECTED'
+  status: DeviceBatchRefreshStatus
+  task_id: string
+  task_status: string
+  collect_run_uuid: string
+  facts_updated: boolean
+  interfaces_updated: number
+  optical_modules_updated: number
+  lldp_neighbors_updated: number
+  started_at: string
+  finished_at: string
+  last_collected_at: string
+  error_message: string
+}
+
+export interface DeviceBatchRefreshSummary {
+  total: number
+  accepted: number
+  reused: number
+  rejected: number
+  running: number
+  completed: number
+  partial_success: number
+  failed: number
+  cancelled: number
 }
 
 export interface DeviceHistoryPage {

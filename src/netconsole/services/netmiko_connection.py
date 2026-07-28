@@ -651,7 +651,8 @@ def safe_send_command_with_paging(
             raise CommandOutputLimitExceeded("设备命令输出超过受控上限")
 
     kwargs: dict[str, object] = {
-        "read_timeout": idle_timeout,
+        "read_timeout": command_timeout,
+        "last_read": idle_timeout,
         "strip_prompt": False,
         "strip_command": False,
     }

@@ -113,14 +113,17 @@ def test_trackside_switch_context_allows_only_fixed_read_only_vendor_commands():
         "display lldp neighbor-information list",
         "show version",
         "show interface brief",
+        "show running-config switchvlan",
+        "show vlan",
         "show interface xgei-0/1/1/2",
         "show opticalinfo brief",
         "show opticalinfo xgei-0/1/1/2",
+        "show lldp neighbor brief",
+        "show lldp entry",
     ):
         assert is_command_allowed(command, "trackside_switch_collect")
 
     for command in (
-        "show lldp entry",
         "show lldp neighbor",
         "show lldp neighbors",
         "show lldp entry interface xgei-0/1/1/2",
@@ -145,21 +148,24 @@ def test_switch_vendor_sample_context_allows_only_profile_lldp_candidates():
     for command in (
         "show version",
         "show interface brief",
+        "show running-config switchvlan",
+        "show vlan",
         "show interface xgei-0/1/1/2",
         "show opticalinfo brief",
         "show opticalinfo xgei-0/1/1/2",
+        "show lldp neighbor brief",
         "show lldp entry",
+    ):
+        assert is_command_allowed(command, "switch_vendor_sample_collect")
+
+    for command in (
+        "show lldp statistic interface xgei-0/1/1/2",
         "show lldp neighbor",
         "show lldp neighbors",
         "show lldp entry interface xgei-0/1/1/2",
         "show lldp neighbor interface xgei-0/1/1/2",
         "show lldp config",
         "show lldp config interface xgei-0/1/1/2",
-    ):
-        assert is_command_allowed(command, "switch_vendor_sample_collect")
-
-    for command in (
-        "show lldp statistic interface xgei-0/1/1/2",
         "show lldp entry interface xgei-0/1/1/2; reload",
         "configure terminal",
         "shutdown",
@@ -169,11 +175,15 @@ def test_switch_vendor_sample_context_allows_only_profile_lldp_candidates():
         assert not is_command_allowed(command, "switch_vendor_sample_collect")
 
 
-def test_zte_inventory_context_only_allows_document_sample_subset():
+def test_zte_inventory_context_only_allows_exact_production_subset():
     for command in (
         "show version",
         "show interface brief",
+        "show running-config switchvlan",
+        "show vlan",
         "show opticalinfo brief",
+        "show lldp neighbor brief",
+        "show lldp entry",
     ):
         assert is_command_allowed(command, "device.inventory.collect")
 
@@ -185,9 +195,9 @@ def test_zte_inventory_context_only_allows_document_sample_subset():
         "show interface",
         "show optical-inform brief",
         "show optical-inform detail",
-        "show lldp neighbor brief",
-        "show lldp entry",
         "show running-config",
+        "show running-config interface gei-0/3/0/1",
+        "show vlan 71",
         "show startup-config",
         "show system-info",
     ):

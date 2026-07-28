@@ -1,5 +1,9 @@
 # NetConsole 更新日志
 
+## 2026-07-28 ZTE VLAN/PVID
+
+- ZTE 设备详情 Profile v3 增加精确只读命令 `show running-config switchvlan` 与 `show vlan`，实现端口模式、PVID、Native/Tagged/Untagged VLAN、来源校验、冲突告警和失败继承；两台车站 C89E-4 七命令实机验证均为 success，中心设备不纳入轨旁 AP 业务结论。
+
 ## v1.4.3 - 2026-07-25
 
 ### 设备文件 SSH 隧道
@@ -11,6 +15,8 @@
 
 ### ZTE 交换机与设备导入导出
 
+- 修复 ZTE `show interface brief` 字段契约：`Attribute` 仅保存为介质属性，管理/物理/协议/综合状态分别持久化并进入当前表、历史表、DTO、筛选和 Vue；新增幂等 SQLite 迁移，空或未识别快照保留上一份有效数据。
+- ZTE `device.inventory.collect` v2 固定接入 `show lldp neighbor brief` 与 `show lldp entry`，支持 Brief 续行、Entry 跨行描述、管理 IPv4、PVID、TTL 和 MAC Chassis；截图中 11 台 C89E-4 已按一台、两台、其余设备完成五命令只读验证，未经确认的 LLDP 候选退出 Guard。
 - 设备厂商增加统一 `DeviceVendor` 归一化入口，`H3C/h3c/新华三` 统一存为 `H3C`，`ZTE/zte/中兴/中兴通讯` 统一存为 `ZTE`；本期只声明 ZTE 交换机基础支持，ZTE AC 明确拒绝。
 - 设备 CSV 预览改为先严格识别 UTF-8 BOM、UTF-8、GB18030/GBK，再逐行校验并返回总/有效/无效行数、厂商/类型统计、重复冲突和结构化中文错误。正式 28 列模板保持，兼容既有 21 列现场文件。
 - ZTE ZXR10 5960X-ES V2 建立第一阶段轨旁交换机 Adapter、厂商无关 DTO、只读 Command Profile 和文档样例 Parser；`show version`、接口和 DOM 均标记 `DOCUMENT_SAMPLE_ONLY`，LLDP 候选保持 `SAMPLE_REQUIRED` 且不进入普通轨旁默认采集链。

@@ -69,7 +69,6 @@ from netconsole.services.device_command_profile_service import (
     resolve_device_inventory_profile,
 )
 from netconsole.services.device_operation_service import (
-    DeviceInventoryRefreshFailed,
     DeviceOperationService,
 )
 from netconsole.services.job_center.job_runner import JobRunner
@@ -3113,7 +3112,12 @@ def test_batch_refresh_and_external_terminal_are_controlled_contracts(
         json={"device_uuids": [target_uuid]},
     )
     assert refreshed.status_code == 202, refreshed.text
-    assert refreshed.json()["action"] == "batch_refresh_details"
+    refresh_payload = refreshed.json()
+    assert refresh_payload["action"] == "batch_refresh_details"
+    assert refresh_payload["batch_id"].startswith("device-refresh-batch-")
+    assert refresh_payload["terminal"] is False
+    assert refresh_payload["summary"]["running"] == 1
+    assert refresh_payload["items"][0]["status"] == "ACCEPTED"
     assert adapter.jobs[-1].task_type == "device_detail_collect"
     assert adapter.jobs[-1].params["owner"] == WEB_TASK_OWNER
     assert adapter.jobs[-1].params["task_source"] == "local"
@@ -3127,6 +3131,7 @@ def test_batch_refresh_and_external_terminal_are_controlled_contracts(
     )
     assert duplicate_refresh.status_code == 202
     assert duplicate_refresh.json()["tasks"][0]["task_id"] == collect_task_id
+    assert duplicate_refresh.json()["items"][0]["submission_status"] == "REUSED"
     blocked_optical = client.post(
         f"/api/device-management/devices/{target_uuid}/refresh-optical"
     )
@@ -3138,6 +3143,13 @@ def test_batch_refresh_and_external_terminal_are_controlled_contracts(
         {"message": "测试结束详情采集", "cancelled": True},
         site_name="demo",
     )
+    batch_status = client.get(
+        f"/api/device-management/batch-refreshes/{refresh_payload['batch_id']}"
+    )
+    assert batch_status.status_code == 200
+    assert batch_status.json()["terminal"] is True
+    assert batch_status.json()["summary"]["cancelled"] == 1
+    assert batch_status.json()["items"][0]["status"] == "CANCELLED"
     diagnostic = client.post(
         "/api/device-management/diagnostic-download",
         json={"device_uuids": [str(mr.device_uuid)]},
@@ -3185,6 +3197,98 @@ def test_batch_refresh_and_external_terminal_are_controlled_contracts(
     assert batch_terminal.json()["success"] == 2
     assert batch_terminal.json()["failed"] == 0
     assert len(desktop_adapter.terminal_calls) == 3
+
+
+def test_batch_refresh_accepts_supported_devices_independently_and_rejects_others(
+    tmp_path: Path,
+) -> None:
+    client, _service, adapter, devices, _facts, _mr, sw = _fixture(tmp_path)
+    zte = devices.create(
+        Device(
+            name="ZTE-交换机",
+            primary_address="192.0.2.88",
+            device_vendor="ZTE",
+            device_type="SW",
+        )
+    )
+    unsupported = devices.create(
+        Device(
+            name="其他厂商设备",
+            primary_address="192.0.2.89",
+            device_vendor="Other",
+            device_type="SW",
+        )
+    )
+
+    response = client.post(
+        "/api/device-management/devices/batch-refresh-details",
+        json={
+            "device_uuids": [
+                str(sw.device_uuid),
+                str(zte.device_uuid),
+                str(unsupported.device_uuid),
+                "00000000-0000-0000-0000-000000000001",
+            ]
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    payload = response.json()
+    assert payload["summary"] == {
+        "total": 4,
+        "accepted": 2,
+        "reused": 0,
+        "rejected": 2,
+        "running": 2,
+        "completed": 0,
+        "partial_success": 0,
+        "failed": 0,
+        "cancelled": 0,
+    }
+    by_uuid = {item["device_uuid"]: item for item in payload["items"]}
+    assert by_uuid[str(sw.device_uuid)]["profile_id"].startswith("h3c.comware.switch")
+    assert (
+        by_uuid[str(zte.device_uuid)]["profile_id"]
+        == "zte.zxr10.switch.generic.device-inventory.v3"
+    )
+    assert by_uuid[str(unsupported.device_uuid)]["status"] == "REJECTED"
+    assert by_uuid["00000000-0000-0000-0000-000000000001"]["status"] == "REJECTED"
+    assert len(adapter.jobs) == 2
+
+
+def test_device_list_separates_metadata_update_from_last_collection_time(
+    tmp_path: Path,
+) -> None:
+    client, _service, _adapter, _devices, facts, _mr, sw = _fixture(tmp_path)
+    collected_at = "2026-07-28T12:34:56+00:00"
+    facts.upsert_device_fact(
+        {
+            "device_uuid": str(sw.device_uuid),
+            "sysname": "SW-SYNTHETIC",
+            "vendor": "H3C",
+            "collected_at": collected_at,
+            "collect_run_uuid": "run-synthetic",
+            "raw_log_path": "",
+            "updated_at": collected_at,
+        }
+    )
+
+    response = client.get(
+        "/api/device-management/devices",
+        params={"sort_by": "last_collected_at", "sort_order": "desc"},
+    )
+
+    assert response.status_code == 200, response.text
+    item = next(
+        value
+        for value in response.json()["items"]
+        if value["device_uuid"] == str(sw.device_uuid)
+    )
+    assert item["metadata_updated_at"] == item["updated_at"]
+    assert item["last_collected_at"] == collected_at
+    assert item["last_collect_status"] == "SUCCESS"
+    detail = client.get(f"/api/device-management/devices/{sw.device_uuid}").json()
+    assert detail["device"]["last_collected_at"] == collected_at
 
 
 def test_batch_refresh_supports_h3c_mobile_router_profile(tmp_path: Path) -> None:
@@ -3521,11 +3625,12 @@ def test_device_detail_collect_handler_fails_closed_before_formal_collector(
     params = dict(adapter.jobs[-1].params)
     collected: list[str] = []
 
-    def fake_collect(device: Device, site: str, *, repository, paths):
+    def fake_collect(device: Device, site: str, *, repository, paths, cancel_check=None):
         collected.append(str(device.device_uuid))
         assert site == "demo"
         assert paths is service.paths
         assert repository is not None
+        assert cancel_check is not None
         profile = resolve_device_inventory_profile(device, paths=paths)
         assert profile.profile_id == params["profile_id"]
         assert profile.profile_version == params["profile_version"]
@@ -3559,22 +3664,22 @@ def test_device_detail_collect_handler_fails_closed_before_formal_collector(
     assert result["success"] == 1
     assert result["failed"] == 0
 
-    with pytest.raises(DeviceInventoryRefreshFailed) as mismatch:
-        run_device_detail_collect(
-            JobContext(
-                "device-detail-profile-mismatch",
-                "device_detail_collect",
-                {**params, "profile_id": "h3c.comware.switch.unexpected.v99"},
-                None,
-                lambda: False,
-                service.paths,
-            )
+    mismatch = run_device_detail_collect(
+        JobContext(
+            "device-detail-profile-mismatch",
+            "device_detail_collect",
+            {**params, "profile_id": "h3c.comware.switch.unexpected.v99"},
+            None,
+            lambda: False,
+            service.paths,
         )
-    assert mismatch.value.summary["success"] == 0
-    assert mismatch.value.summary["failed"] == 1
-    assert "Profile" in str(mismatch.value)
+    )
+    assert mismatch["success"] == 0
+    assert mismatch["failed"] == 1
+    assert mismatch["terminal_state"] == "FAILED"
+    assert "Profile" in mismatch["results"][0]["error_message"]
 
-    def failed_collect(device: Device, site: str, *, repository, paths):
+    def failed_collect(device: Device, site: str, *, repository, paths, cancel_check=None):
         return SimpleNamespace(
             success=False,
             collect_run_uuid=f"run-{device.name}",
@@ -3590,11 +3695,12 @@ def test_device_detail_collect_handler_fails_closed_before_formal_collector(
         failed_collect,
     )
     job_result = JobRunner().run(adapter.jobs[-1])
-    assert job_result.ok is False
-    assert job_result.to_event()["type"] == "error"
-    assert "failed=1" in job_result.error
-    assert "C:\\private" not in job_result.error
-    assert "password=hidden" not in job_result.error
+    assert job_result.ok is True
+    assert job_result.terminal_state == "FAILED"
+    assert job_result.to_event()["type"] == "finished"
+    safe_error = str(job_result.result["results"][0]["error_message"])
+    assert "C:\\private" not in safe_error
+    assert "password=hidden" not in safe_error
 
 
 def test_device_optical_refresh_handler_uses_formal_service(

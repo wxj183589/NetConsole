@@ -80,9 +80,12 @@ describe('Device Management Web view', () => {
     expect(source).toContain('batchRefreshSubmitting')
     expect(source).toContain('batchRefreshTargetCount')
     expect(source).toContain(':loading="batchRefreshSubmitting"')
-    expect(source).toContain('正在提交 {{ batchRefreshTargetCount }} 台设备详情更新任务...')
+    expect(source).toContain('正在更新 0/${batchRefreshTargetCount} 台设备')
     expect(source).toContain('确定更新选中的')
     expect(source).toContain('startBatchRefreshDetails(targets)')
+    expect(source).toContain('getBatchRefresh(batchId)')
+    expect(source).toContain('await loadDevices(false, true)')
+    expect(source).toContain('查看结果明细')
   })
 
   it('matches current-page selection and row operations', () => {
@@ -102,7 +105,8 @@ describe('Device Management Web view', () => {
     expect(source).not.toContain('<el-table-column')
     expect(source).toContain("key: 'name', label: '名称', valueType: 'name', fixed: 'left', stretch: 'priority'")
     expect(source).toContain("key: 'station', label: '站点', valueType: 'text', stretch: 'priority'")
-    expect(source).toContain("key: 'updated_at', label: '更新时间', valueType: 'datetime', stretch: 'none'")
+    expect(source).toContain("key: 'metadata_updated_at', label: '资料更新时间', valueType: 'datetime', stretch: 'none'")
+    expect(source).toContain("key: 'last_collected_at', label: '最后采集时间', valueType: 'datetime', stretch: 'none'")
     expect(source).toContain("key: 'actions', label: '操作', valueType: 'actions'")
     expect(source).toContain("stretch: 'none'")
   })
