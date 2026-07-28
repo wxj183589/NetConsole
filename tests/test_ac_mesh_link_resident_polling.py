@@ -221,7 +221,7 @@ def _run_until(
     while time.monotonic() < deadline:
         try:
             status = json.loads(status_path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError):
             status = {}
         if predicate(status):
             return thread, result, errors
