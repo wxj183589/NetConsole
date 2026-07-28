@@ -12,6 +12,8 @@ import type {
   SelectFileResult,
   SettingsActionId, SettingsColorResult, SettingsDirectoryId, SettingsPathResult, SettingsToolId,
   SiteStorageRestartRequest,
+  TaskNotificationPayload,
+  TaskTrayStatus,
   TaskWindowContext,
   RendererReadyReport,
 } from '../../../desktop_electron/src/shared/bridge'
@@ -37,6 +39,9 @@ export interface PlatformAdapter {
   chooseSavePath(options: ChooseSavePathOptions): Promise<ChooseSavePathResult>
   downloadBackendResource(request: BackendDownloadRequest): Promise<BackendDownloadResult>
   openTaskWindow(context?: TaskWindowContext): Promise<NativeActionResult>
+  showTaskNotification(payload: TaskNotificationPayload): Promise<NativeActionResult>
+  setTaskTrayStatus(status: TaskTrayStatus): void
+  onTaskCenterOpenRequested(listener: (context: TaskWindowContext) => void): () => void
   openPath(capabilityId: string): Promise<NativeActionResult>
   showItemInFolder(capabilityId: string): Promise<NativeActionResult>
   openExternalUrl(url: string): Promise<NativeActionResult>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import {
   Connection,
   DataBoard,
@@ -24,6 +24,7 @@ import {
 import DesktopRuntimeStatus from '../components/DesktopRuntimeStatus.vue'
 import CurrentSiteIndicator from '../components/CurrentSiteIndicator.vue'
 import WorkspaceTabBar from '../components/workspace/WorkspaceTabBar.vue'
+import GlobalTaskCenter from '../task-center/components/GlobalTaskCenter.vue'
 import { navigationTitle, t } from '../i18n/runtime'
 import { getPlatformAdapter } from '../platform/runtime'
 import { useWorkspaceStore } from '../stores/workspace'
@@ -35,7 +36,6 @@ const BUILD_MISMATCH_MESSAGE = '当前 Web 前端资源与后端版本不一致�
 const BRAND_LOGO_URL = '/branding/netconsole.png'
 
 const route = useRoute()
-const router = useRouter()
 const workspace = useWorkspaceStore()
 const version = ref('')
 const backendBuildId = ref('')
@@ -101,17 +101,6 @@ function toggleSidebar(): void {
 }
 
 async function selectNavigation(path: string): Promise<void> {
-  if (path === '/tasks' && window.netconsoleDesktop && route.query.task_window !== '1') {
-    try {
-      const result = await window.netconsoleDesktop.openTaskWindow({})
-      if (result.success) return
-      ElMessage.error(result.error || '任务中心加载失败')
-    } catch {
-      ElMessage.error('任务中心加载失败')
-    }
-    await workspace.openOrActivateRoute(path)
-    return
-  }
   await workspace.openOrActivateRoute(path)
   if (mobile.value) drawerOpen.value = false
 }
@@ -260,6 +249,7 @@ onBeforeUnmount(() => {
           <CurrentSiteIndicator />
         </div>
         <div class="header-status">
+          <GlobalTaskCenter />
           <DesktopRuntimeStatus />
           <span :class="['status-dot', backendOnline ? 'online' : 'offline']"></span>
           <span>{{ backendOnline ? t('shell.backend_online', 'Backend Online') : t('shell.backend_offline', 'Backend Offline') }}</span>

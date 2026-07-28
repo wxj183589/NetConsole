@@ -31,6 +31,7 @@ describe('preload bridge', () => {
       'getWorkspaceWindowState',
       'onBackendStatusChanged',
       'onCloseToTrayChanged',
+      'onTaskCenterOpenRequested',
       'onTraySiteSwitchRequested',
       'openExternalUrl',
       'openOnlineMrSessionLocation',
@@ -52,9 +53,11 @@ describe('preload bridge', () => {
       'selectSiteExportDestination',
       'selectSitePackage',
       'setCloseToTrayEnabled',
+      'setTaskTrayStatus',
       'setUiPreference',
       'setWorkspaceWindowTitle',
       'showItemInFolder',
+      'showTaskNotification',
     ])
     expect('ipcRenderer' in bridge).toBe(false)
     expect('process' in bridge).toBe(false)

@@ -75,11 +75,13 @@ describe('Job Center polling store', () => {
     expect(FakeWebSocket.instances[0].url).toBe('ws://127.0.0.1:5173/ws/tasks')
 
     const completed = { ...task, status: 'COMPLETED' as const, progress: 100 }
+    await vi.waitFor(() => expect(store.tasks).toEqual([task]))
+    vi.mocked(listTasks).mockResolvedValue([completed])
     FakeWebSocket.instances[0].receive({
       type: 'snapshot',
       payload: { tasks: [completed] },
     })
-    expect(store.tasks).toEqual([completed])
+    await vi.waitFor(() => expect(store.tasks).toEqual([completed]))
 
     store.releasePolling('device-detail-panel')
     expect(FakeWebSocket.instances[0].readyState).toBe(3)

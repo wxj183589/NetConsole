@@ -104,7 +104,7 @@ describe('DeviceDetailPanel', () => {
     expect(source).toContain('controller.signal')
     expect(source).toContain('overview.command_profile?.executable')
     expect(source).toContain('任务状态刷新失败')
-    expect(source).toContain('任务窗口打开失败')
+    expect(source).toContain('任务中心打开失败')
     expect(source).not.toContain('JSON.stringify(selectedRecord')
     expect(source).not.toContain('JSON.stringify')
     expect(source).not.toMatch(/background:\s*#[0-9a-f]{3,8}/i)

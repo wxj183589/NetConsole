@@ -3,7 +3,7 @@ import type { BrowserWindow } from 'electron'
 import type { RendererWorkloadReport } from '../shared/bridge'
 import type { DesktopLogger } from './logger'
 
-export type RendererSurface = 'main' | 'task-window' | 'workspace-window'
+export type RendererSurface = 'main' | 'workspace-window'
 
 export interface RendererFailureActions {
   safeRecovery: boolean

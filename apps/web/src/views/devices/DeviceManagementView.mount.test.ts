@@ -587,7 +587,7 @@ describe('DeviceManagementView mounted interactions', () => {
     await flushPromises()
 
     expect(mocks.startDeviceFormConnectionTest).toHaveBeenCalled()
-    expect(mocks.messages.warning).toHaveBeenCalledWith('连接测试任务已提交，但任务状态刷新失败；可使用“打开任务窗口”继续查看')
+    expect(mocks.messages.warning).toHaveBeenCalledWith('连接测试任务已提交，但任务状态刷新失败；可使用“打开任务中心”继续查看')
     expect(mocks.messages.error).not.toHaveBeenCalledWith('表单连接测试任务提交失败')
     expect(mocks.messages.success).not.toHaveBeenCalledWith('SSH 表单连接测试任务已提交')
     expect(mocks.openTaskWindow).not.toHaveBeenCalled()

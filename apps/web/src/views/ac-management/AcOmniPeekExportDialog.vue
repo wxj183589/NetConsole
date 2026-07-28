@@ -185,7 +185,7 @@ async function refreshPreview(): Promise<void> {
       if (['FAILED', 'CANCELLED'].includes(current.task_status)) throw new Error(current.message || 'OmniPeek 预览失败')
       await new Promise<void>((resolvePromise) => window.setTimeout(resolvePromise, 450))
     }
-    if (generation === previewGeneration) throw new Error('OmniPeek 预览超时，请在任务窗口查看')
+    if (generation === previewGeneration) throw new Error('OmniPeek 预览超时，请在任务中心查看')
   } catch (cause) {
     if (generation === previewGeneration) ElMessage.error(errorMessage(cause, 'OmniPeek 名称表预览失败'))
   } finally {
@@ -325,7 +325,7 @@ async function waitForExport(taskId: string) {
     if (['FAILED', 'CANCELLED'].includes(task.status)) throw new Error(task.error_message || task.message || 'OmniPeek 导出任务失败')
     await new Promise<void>((resolvePromise) => window.setTimeout(resolvePromise, 500))
   }
-  throw new Error('OmniPeek 导出超过 180 秒，请在任务窗口查看')
+  throw new Error('OmniPeek 导出超过 180 秒，请在任务中心查看')
 }
 
 async function openSavedDirectory(): Promise<void> {

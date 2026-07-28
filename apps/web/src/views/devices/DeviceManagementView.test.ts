@@ -64,7 +64,7 @@ describe('Device Management Web view', () => {
     expect(source).toContain("isFeatureEnabled('web.device_form_connection_test')")
     expect(source).toContain('writeConnectionDisabledReason')
     expect(source).toContain('getDeviceConnectionTest')
-    expect(source).toContain('打开任务窗口')
+    expect(source).toContain('打开任务中心')
     expect(source).not.toContain('等待共享 Job Runtime 非序列化 bootstrap 接入')
   })
 
@@ -72,7 +72,7 @@ describe('Device Management Web view', () => {
     expect(source).toContain('startBatchConnectionTests')
     expect(source).toContain('任务已提交，但')
     expect(source).toContain('任务状态刷新失败')
-    expect(source).toContain('任务窗口打开失败')
+    expect(source).toContain('任务中心打开失败')
     expect(source).toContain('openTaskWindow(publicTask || null, task.task_id, false)')
   })
 

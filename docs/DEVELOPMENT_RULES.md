@@ -203,7 +203,7 @@ SNMP 仅作为设备管理的只读连接测试与基础识别适配器存在，
 - 阶段7阈值只用于决定是否有资格评估只读展示，不是生产强制规则。identity changed非零、作用域/歧义超阈值或RSSI/备链缺失相对基线增加时，继续使用旧生产路径；不得自动修复、删除字段或调整resolver。
 - 后续只读展示必须使用独立feature flag、默认关闭、可整体禁用，只展示脱敏聚合和不可用状态，不展示shadow items、samples、evidence或warning明文。
 - 阶段8只读展示评估以 [AP_IDENTITY_DISPLAY_ASSESSMENT.md](AP_IDENTITY_DISPLAY_ASSESSMENT.md) 为准。展示层必须先经过严格字段允许列表，未知字段丢弃，`items/samples/evidence/warnings/error`和明文身份/路径不得进入ViewModel、UI、日志或默认报告。
-- 阶段 8 的历史 Qt 宿主方案已终止；任何可见展示必须等待真实局点试运行、脱敏复核，并接入当前统一任务窗口或具名 Vue 页面。所有 flag 默认关闭且 internal-only，不得增加第二套任务持久化或直接绑定原始 result。
+- 阶段 8 的历史 Qt 宿主方案已终止；任何可见展示必须等待真实局点试运行、脱敏复核，并接入当前全局任务中心或具名 Vue 页面。所有 flag 默认关闭且 internal-only，不得增加第二套任务持久化或直接绑定原始 result。
 - diagnostics disabled/unavailable/failed只影响诊断区域，不得改变原Job/Export终态、成功提示或旧业务结果；全局kill switch关闭展示时不得停止生产任务或删除业务数据。
 - 脱敏结构以 `src/netconsole/models/diagnostics_summary.py` 为永久模型，导出适配位于 `src/netconsole/services/export_identity_diagnostics.py`；两者不得依赖 Renderer、Electron、网络或数据库连接，也不得保留原始 result 引用。
 - 全局/UI 逻辑开关缺失时视为关闭；samples 开关即使为真也不得暴露明细。历史宿主评审文档仅作设计证据，不构成恢复 Qt Dialog/Manager 的授权。

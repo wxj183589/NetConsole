@@ -5,6 +5,7 @@ import type {
 } from '../../../desktop_electron/src/shared/bridge'
 
 import type { PlatformAdapter } from './types'
+import { requestTaskCenterOpen } from '../task-center/events'
 
 const TOKEN_RE = /^[A-Za-z0-9_-]{32,256}$/
 
@@ -27,7 +28,13 @@ export function createElectronAdapter(bridge: NetConsoleDesktopBridge): Platform
     refreshSiteContext: async () => { await bridge.refreshSiteContext?.() },
     chooseSavePath: (options) => bridge.chooseSavePath(options),
     downloadBackendResource: (request) => bridge.downloadBackendResource(request),
-    openTaskWindow: (context) => bridge.openTaskWindow(context),
+    openTaskWindow: async (context) => {
+      requestTaskCenterOpen(context)
+      return { success: true }
+    },
+    showTaskNotification: (payload) => bridge.showTaskNotification(payload),
+    setTaskTrayStatus: (status) => bridge.setTaskTrayStatus(status),
+    onTaskCenterOpenRequested: (listener) => bridge.onTaskCenterOpenRequested?.(listener) ?? (() => undefined),
     openPath: (capabilityId) => bridge.openPath(capabilityId),
     showItemInFolder: (capabilityId) => bridge.showItemInFolder(capabilityId),
     openExternalUrl: (url) => bridge.openExternalUrl(url),

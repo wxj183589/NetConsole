@@ -29,7 +29,7 @@ describe('AC Management resource view', () => {
     expect(source).toContain('反选本页')
     expect(source).toContain('useConfirm')
     expect(source).toContain('confirm({')
-    expect(source).toContain('打开任务窗口')
+    expect(source).toContain('打开任务中心')
     expect(source).toContain("openTaskWindow({ module: 'ac'")
     expect(source).toContain('FIT-AP 资源')
     expect(source).toContain('AC 连接记录')

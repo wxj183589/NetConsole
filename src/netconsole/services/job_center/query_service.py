@@ -255,18 +255,8 @@ class JobCenterQueryService:
             ", task.result_json"
             if detail
             else """
-                , CASE
-                    WHEN task.status = 'COMPLETED'
-                         AND (
-                             task.task_type LIKE '%export%'
-                             OR task.task_type IN (
-                                 'device_diagnostic_download',
-                                 'file_management_download'
-                             )
-                         )
-                    THEN task.result_json
-                    ELSE NULL
-                  END AS artifact_result_json
+                , CASE WHEN task.status = 'COMPLETED' THEN task.result_json ELSE NULL END
+                  AS artifact_result_json
             """
         )
         if self._column_exists(conn, "task_snapshots", "text_integrity"):
@@ -369,7 +359,10 @@ class JobCenterQueryService:
             duration_seconds=self._duration_seconds(started, finished),
             error_code=redact_web_task_text(error_code),
             error_summary=error_summary,
-            has_warning=bool(error_summary and status != "FAILED"),
+            has_warning=bool(
+                (error_summary and status != "FAILED")
+                or self._business_result_has_warning(artifact_result)
+            ),
             text_integrity=text_integrity,
             text_integrity_reason=text_integrity_reason,
             text_integrity_updated_at=str(row.get("text_integrity_updated_at") or ""),
@@ -391,6 +384,30 @@ class JobCenterQueryService:
             artifact_reason="" if artifact_download else "当前任务 owner 未提供可下载 Artifact",
             details=self._task_details(task_type, row, result) if include_result else {},
         )
+
+    @classmethod
+    def _business_result_has_warning(cls, result: dict[str, Any]) -> bool:
+        if not result:
+            return False
+        outcome = str(
+            result.get("business_outcome")
+            or result.get("status")
+            or result.get("outcome")
+            or ""
+        ).upper()
+        if outcome in {"PARTIAL_SUCCESS", "WARNING"}:
+            return True
+        if result.get("partial_success") is True:
+            return True
+        for key in ("failed_count", "warning_count", "actionable_skipped_count"):
+            if (cls._optional_int(result.get(key)) or 0) > 0:
+                return True
+        summary = result.get("summary")
+        if isinstance(summary, dict):
+            for key in ("failed", "failed_count", "warning", "warning_count", "rejected"):
+                if (cls._optional_int(summary.get(key)) or 0) > 0:
+                    return True
+        return False
 
     @staticmethod
     def _module(owner: str, task_type: str) -> str:

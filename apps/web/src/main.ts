@@ -33,21 +33,17 @@ async function bootstrap(): Promise<void> {
   const application = createApp(App).use(pinia).use(router)
   await router.isReady()
   const currentUrl = new URL(window.location.href)
-  const surface = currentUrl.pathname === '/desktop/tasks' && currentUrl.searchParams.get('task_window') === '1'
-    ? 'task-window'
-    : currentUrl.searchParams.get('workspace_window') === '1'
-      ? 'workspace-window'
-      : 'main'
-  if (surface !== 'task-window') {
-    await useWorkspaceStore(pinia).initialize(router)
-  }
+  const surface = currentUrl.searchParams.get('workspace_window') === '1'
+    ? 'workspace-window'
+    : 'main'
+  await useWorkspaceStore(pinia).initialize(router)
   application.mount('#app')
   const runtime = getPlatformAdapter()
   if (runtime.hostType === 'electron') {
     runtime.reportRendererReady(true, 'mounted', surface)
     try {
       const health = await getHealth()
-      if (surface !== 'task-window') runtime.reportRendererReady(health.status === 'ok', 'interactive', surface)
+      runtime.reportRendererReady(health.status === 'ok', 'interactive', surface)
     } catch {
       runtime.reportRendererReady(false, 'failed', surface)
     }

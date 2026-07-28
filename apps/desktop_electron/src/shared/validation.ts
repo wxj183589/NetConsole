@@ -8,6 +8,8 @@ import type {
   RendererReadyReport,
   SelectFileOptions,
   TaskWindowContext,
+  TaskNotificationPayload,
+  TaskTrayStatus,
   WorkspaceWindowOpenRequest,
   WorkspaceWindowSnapshot,
   WorkspaceTabSnapshot,
@@ -102,6 +104,51 @@ export function validateTaskWindowContext(value: unknown): TaskWindowContext {
     result.status = record.status as TaskWindowContext['status']
   }
   return result
+}
+
+export function validateTaskNotificationPayload(value: unknown): TaskNotificationPayload {
+  const record = asRecord(value, 'task notification payload')
+  rejectUnknownKeys(record, ['eventId', 'taskId', 'title', 'body', 'kind'])
+  if (typeof record.eventId !== 'string' || !/^[A-Za-z0-9_.:-]{1,180}$/.test(record.eventId)) {
+    throw new TypeError('task notification eventId is invalid')
+  }
+  if (typeof record.taskId !== 'string' || !/^[A-Za-z0-9_-]{1,160}$/.test(record.taskId)) {
+    throw new TypeError('task notification taskId is invalid')
+  }
+  const title = validateTaskNotificationText(record.title, 120, 'title')
+  const body = validateTaskNotificationText(record.body, 360, 'body')
+  if (!['success', 'warning', 'failure'].includes(String(record.kind))) {
+    throw new TypeError('task notification kind is invalid')
+  }
+  return {
+    eventId: record.eventId,
+    taskId: record.taskId,
+    title,
+    body,
+    kind: record.kind as TaskNotificationPayload['kind'],
+  }
+}
+
+export function validateTaskTrayStatus(value: unknown): TaskTrayStatus {
+  const record = asRecord(value, 'task tray status')
+  rejectUnknownKeys(record, ['active', 'failed', 'warning'])
+  const count = (name: keyof TaskTrayStatus): number => {
+    const candidate = record[name]
+    if (typeof candidate !== 'number' || !Number.isSafeInteger(candidate) || candidate < 0 || candidate > 999) {
+      throw new TypeError(`task tray ${name} is invalid`)
+    }
+    return candidate
+  }
+  return { active: count('active'), failed: count('failed'), warning: count('warning') }
+}
+
+function validateTaskNotificationText(value: unknown, maxLength: number, field: string): string {
+  if (typeof value !== 'string') throw new TypeError(`task notification ${field} is invalid`)
+  const text = value.replace(/\s+/g, ' ').trim()
+  if (!text || text.length > maxLength || /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/.test(text)) {
+    throw new TypeError(`task notification ${field} is invalid`)
+  }
+  return text
 }
 
 export function validateWorkspaceRoute(value: unknown): string {
@@ -530,7 +577,7 @@ export function validateRendererReadyReport(value: unknown): RendererHostReport 
   if (!['mounted', 'interactive', 'failed'].includes(String(record.phase))) {
     throw new TypeError('renderer phase is invalid')
   }
-  if (record.surface !== undefined && !['main', 'task-window', 'workspace-window'].includes(String(record.surface))) {
+  if (record.surface !== undefined && !['main', 'workspace-window'].includes(String(record.surface))) {
     throw new TypeError('renderer surface is invalid')
   }
   return {

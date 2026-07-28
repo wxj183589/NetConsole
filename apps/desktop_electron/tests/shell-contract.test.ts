@@ -24,7 +24,7 @@ const devSource = readFileSync(
 describe('Electron shell product contract', () => {
   it('uses the branded product title, icon, and hides the default menu unless development opts in', () => {
     expect(brandingSource).toContain("NETCONSOLE_WINDOW_TITLE = 'NetConsole'")
-    expect(brandingSource).toContain('NETCONSOLE_TASK_WINDOW_TITLE')
+    expect(brandingSource).not.toContain('NETCONSOLE_TASK_WINDOW_TITLE')
     expect(brandingSource).toContain("resolve(context.resourcesPath, 'branding', 'netconsole.ico')")
     expect(brandingSource).toContain("resolve(context.appPath, '..', '..', 'resources', 'branding', 'netconsole.ico')")
     expect(source).toContain('title = NETCONSOLE_WINDOW_TITLE')
@@ -33,7 +33,7 @@ describe('Electron shell product contract', () => {
     expect(source).toContain("window.on('page-title-updated'")
     expect(source).toContain('event.preventDefault()')
     expect(source).toContain('window.setTitle(title)')
-    expect(source).toContain('NETCONSOLE_TASK_WINDOW_TITLE')
+    expect(source).not.toContain('NETCONSOLE_TASK_WINDOW_TITLE')
     expect(source).not.toContain("title: 'NetConsole'")
     expect(source).not.toContain("window.setTitle('NetConsole 任务中心')")
     expect(source).toContain('autoHideMenuBar: !developmentMenu')
@@ -81,12 +81,10 @@ describe('Electron shell product contract', () => {
     expect(source).not.toContain('href="${escapeHtml(retryUrl)}"')
     expect(source).toContain('rememberManagedRendererTarget(mainWindow, mainRendererTarget)')
     expect(source).toContain('prepareNavigation: (window, target) => {')
-    expect(source).toContain("new URL('/desktop/tasks', rendererUrl)")
     expect(source).toContain('const windowRendererTargets = new WeakMap<BrowserWindow, string>()')
     expect(source.indexOf('rememberManagedRendererTarget(mainWindow, mainRendererTarget)')).toBeLessThan(
       source.indexOf('void rendererWindow.loadURL(mainRendererTarget)'),
     )
-    expect(source).toContain('return taskWindowController.open(context)')
     expect(retrySource).toContain('let target = windowRendererTargets.get(window)')
     expect(retrySource).toContain('isAllowedNavigation(target, [...rendererOrigins])')
     expect(retrySource.indexOf('armRendererThemeDisplay(window)')).toBeLessThan(
@@ -108,14 +106,17 @@ describe('Electron shell product contract', () => {
     expect(devSource).toContain("process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1'")
   })
 
-  it('keeps one hide-on-close task window without stopping the backend', () => {
-    expect(source).toContain('let taskWindow: BrowserWindow | undefined')
-    expect(source).toContain("url.searchParams.set('task_window', '1')")
-    expect(source).toContain('window.hide()')
-    expect(source).toContain('if (allowQuit) return')
-    expect(source.indexOf('window.hide()')).toBeLessThan(source.indexOf('await backend?.stop()'))
-    expect(source).toContain('taskWindow.close()')
-    expect(source).toContain('new TaskWindowController')
+  it('opens the task center in the main renderer without creating a dedicated BrowserWindow', () => {
+    const taskCenterSource = source.slice(
+      source.indexOf('async function openTaskWindow'),
+      source.indexOf('async function openWorkspaceWindow'),
+    )
+    expect(source).not.toContain('let taskWindow: BrowserWindow | undefined')
+    expect(source).not.toContain("url.searchParams.set('task_window', '1')")
+    expect(source).not.toContain('new TaskWindowController')
+    expect(taskCenterSource).toContain('await restoreApplicationWindow()')
+    expect(taskCenterSource).toContain('workspaceWindowController.getMainWindow()')
+    expect(taskCenterSource).toContain('target.webContents.send(DESKTOP_IPC.taskCenterOpenRequested, context)')
     expect(source).toContain('for (const window of getAllDesktopWindows())')
     expect(source).toContain("error: '本地后端不可用'")
   })

@@ -19,7 +19,7 @@ function createHarness(options: { fail?: boolean } = {}) {
   }
   const callbacks = {
     showMainWindow: vi.fn(),
-    showTaskWindow: vi.fn(),
+    showTaskCenter: vi.fn(),
     createWorkspaceWindow: vi.fn(),
     requestSiteSwitch: vi.fn(),
     setCloseToTrayEnabled: vi.fn(),
@@ -62,7 +62,7 @@ describe('TrayController', () => {
     harness.getMenu().find((item) => item.label === '退出 NetConsole')?.click?.()
     expect(harness.callbacks.showMainWindow).toHaveBeenCalledOnce()
     expect(harness.callbacks.createWorkspaceWindow).toHaveBeenCalledOnce()
-    expect(harness.callbacks.showTaskWindow).toHaveBeenCalledOnce()
+    expect(harness.callbacks.showTaskCenter).toHaveBeenCalledOnce()
     expect(harness.callbacks.explicitQuit).toHaveBeenCalledOnce()
   })
 
@@ -70,10 +70,17 @@ describe('TrayController', () => {
     vi.useFakeTimers()
     const harness = createHarness()
     harness.controller.initialize()
-    harness.controller.updateContext({ backendState: 'ready', activeSiteName: '宁波地铁12号线' })
+    harness.controller.updateContext({
+      backendState: 'ready',
+      activeSiteName: '宁波地铁12号线',
+      activeTaskCount: 2,
+      failedTaskCount: 1,
+    })
     await vi.advanceTimersByTimeAsync(80)
     expect(harness.getMenu().map((item) => item.label)).toContain('Backend：在线')
     expect(harness.getMenu().map((item) => item.label)).toContain('当前局点：宁波地铁12号线')
+    expect(harness.getMenu().map((item) => item.label)).toContain('打开任务中心（运行 2 / 失败 1）')
+    expect(harness.tray.setToolTip).toHaveBeenLastCalledWith('NetConsole · 宁波地铁12号线 · 失败任务 1')
     harness.controller.displayBackgroundHint()
     harness.controller.displayBackgroundHint()
     expect(harness.tray.displayBalloon).toHaveBeenCalledOnce()

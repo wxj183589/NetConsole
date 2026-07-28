@@ -687,7 +687,7 @@ async function startReport(): Promise<void> {
   try {
     rememberTask(await exportOnlineMrReport(detail.value.session_id, ''))
     poll()
-    ElMessage.success('分析报告任务已提交，请在任务窗口查看进度。')
+    ElMessage.success('分析报告任务已提交，请在任务中心查看进度。')
   } catch (cause) {
     error.value = message(cause, 'Online MR 报告生成启动失败')
   } finally {
@@ -720,7 +720,7 @@ async function finishDeleteTask(updated: RailTransitTask): Promise<void> {
   if (updated.status === 'COMPLETED' && issues.length === 0) {
     ElMessage.success('会话及其受管本地数据已删除。')
   } else {
-    ElMessage.warning(`会话主体已删除，部分关联项处理失败：${issues.join('；') || updated.message || '请在任务窗口查看详情。'}`)
+    ElMessage.warning(`会话主体已删除，部分关联项处理失败：${issues.join('；') || updated.message || '请在任务中心查看详情。'}`)
   }
 }
 async function deleteCurrentSession(): Promise<void> {
@@ -854,7 +854,7 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
         <el-button data-testid="force-reparse-session" :disabled="!canParse || parsedStatus === 'parsing' || sessionActionsDisabled || reportBusy || parseBusy" :loading="parseBusy" @click="startParse(true)">强制重新解析</el-button>
         <el-button data-testid="open-session-location" :icon="FolderOpened" :loading="openingLocation" :disabled="sessionActionsDisabled || openingLocation || !desktopLocationAvailable" :title="openLocationTitle" @click="openSessionLocation">打开本地目录</el-button>
         <el-button data-testid="generate-report" type="primary" :icon="Download" :loading="reportBusy" :disabled="reportDisabled || sessionActionsDisabled || sessionResourceBusy" :title="reportDisabled ? parsedMessage : ''" @click="startReport">生成 XLSX 报告</el-button>
-        <el-button :icon="Tickets" @click="openTaskWindow">打开任务窗口</el-button>
+        <el-button :icon="Tickets" @click="openTaskWindow">打开任务中心</el-button>
         <el-button data-testid="delete-session" type="danger" plain :icon="Delete" :loading="deleteBusy" :disabled="sessionActionsDisabled || sessionResourceBusy || !isFeatureEnabled('web.online_mr_session_delete')" @click="deleteCurrentSession">删除</el-button>
       </div>
     </header>

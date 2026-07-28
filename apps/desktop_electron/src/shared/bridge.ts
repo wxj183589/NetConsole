@@ -129,7 +129,7 @@ export interface BackendDownloadResult {
 export interface RendererReadyReport {
   healthOk: boolean
   phase: 'mounted' | 'interactive' | 'failed'
-  surface?: 'main' | 'task-window' | 'workspace-window'
+  surface?: 'main' | 'workspace-window'
 }
 
 export type DesktopResolvedTheme = 'light' | 'dark'
@@ -200,6 +200,20 @@ export interface TaskWindowContext {
   status?: 'PENDING' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
 }
 
+export interface TaskNotificationPayload {
+  eventId: string
+  taskId: string
+  title: string
+  body: string
+  kind: 'success' | 'warning' | 'failure'
+}
+
+export interface TaskTrayStatus {
+  active: number
+  failed: number
+  warning: number
+}
+
 export interface WorkspaceWindowOpenRequest {
   routeFullPath: string
   title: string
@@ -267,6 +281,9 @@ export interface NetConsoleDesktopBridge {
   getUiPreference?(key: UiPreferenceKey): Promise<unknown | null>
   setUiPreference?(key: UiPreferenceKey, value: unknown | null): Promise<void>
   openTaskWindow(context?: TaskWindowContext): Promise<NativeActionResult>
+  showTaskNotification(payload: TaskNotificationPayload): Promise<NativeActionResult>
+  setTaskTrayStatus(status: TaskTrayStatus): void
+  onTaskCenterOpenRequested?(listener: (context: TaskWindowContext) => void): () => void
   openWorkspaceWindow?(request: WorkspaceWindowOpenRequest): Promise<NativeActionResult>
   getWorkspaceWindowState?(): Promise<WorkspaceWindowStateResult>
   saveWorkspaceWindowState?(snapshot: WorkspaceWindowSnapshot): Promise<void>
@@ -311,6 +328,9 @@ export const DESKTOP_IPC = Object.freeze({
   getUiPreference: 'netconsole:desktop:get-ui-preference',
   setUiPreference: 'netconsole:desktop:set-ui-preference',
   openTaskWindow: 'netconsole:desktop:open-task-window',
+  showTaskNotification: 'netconsole:desktop:show-task-notification',
+  setTaskTrayStatus: 'netconsole:desktop:set-task-tray-status',
+  taskCenterOpenRequested: 'netconsole:desktop:task-center-open-requested',
   openWorkspaceWindow: 'netconsole:desktop:open-workspace-window',
   getWorkspaceWindowState: 'netconsole:desktop:get-workspace-window-state',
   saveWorkspaceWindowState: 'netconsole:desktop:save-workspace-window-state',
@@ -354,6 +374,7 @@ export const DESKTOP_HANDLED_CHANNELS = Object.freeze([
   DESKTOP_IPC.getUiPreference,
   DESKTOP_IPC.setUiPreference,
   DESKTOP_IPC.openTaskWindow,
+  DESKTOP_IPC.showTaskNotification,
   DESKTOP_IPC.openWorkspaceWindow,
   DESKTOP_IPC.getWorkspaceWindowState,
   DESKTOP_IPC.saveWorkspaceWindowState,

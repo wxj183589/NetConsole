@@ -1,12 +1,12 @@
 # Electron Desktop 基础架构
 
-## 统一任务窗口
+## 全局任务中心
 
-Electron 复用同一 Vue Renderer、FastAPI 会话和 `TaskApplicationService -> TaskRepository -> tasks.db`，提供单实例任务窗口。主窗口只通过严格的 `taskId/module/status` DTO 打开或恢复该窗口；关闭窗口仅隐藏，不取消后台任务，应用退出时再与主窗口、受管后端一并有序关闭。
+Electron 复用同一 Vue Renderer、FastAPI 会话和 `TaskApplicationService -> TaskRepository -> tasks.db`。全局任务入口、右侧抽屉和合并进度浮层均位于 Vue 根布局，完整任务中心位于主工作区 `/tasks`；不再创建任务专用 `BrowserWindow`。严格的 `taskId/module/status` DTO 仅用于恢复主窗口、打开抽屉和定位任务；关闭抽屉或业务标签不取消后台任务。
 
 任务动作以后端 owner capability 为准。当前统一停止入口只显式路由到设备管理、配置采集和文件管理既有 Application Service；其他 owner 保持禁用，不回退到通用 cancel 文件。设备 Export 只有在当前服务仍持有匹配的 Export spec、持久化 Job cancel 路径和活跃进程时才能确认 `STOPPING`。Artifact 使用强类型 DTO 携带不透明标识、正式显示名、大小、类型和受控 API 请求，经既有 Electron 流式下载、临时文件及原子替换保存；统一 DTO 和日志均不向 Renderer 返回服务端绝对路径。
 
-主窗口和任务窗口都安装同一 Renderer diagnostics，覆盖 preload、主 frame 加载失败、崩溃和无响应；`render-process-gone` 记录真实 reason、exitCode、webContents、窗口类型、安全路由和最新严格 workload 快照，GPU/Utility/Network Service 等 `child-process-gone` 使用独立事件。脱敏后的后端状态广播到所有受管窗口。关闭任务窗口仍只隐藏窗口，不改变后台任务状态。
+主窗口和附加工作区窗口都安装同一 Renderer diagnostics，覆盖 preload、主 frame 加载失败、崩溃和无响应；`render-process-gone` 记录真实 reason、exitCode、webContents、窗口类型、安全路由和最新严格 workload 快照，GPU/Utility/Network Service 等 `child-process-gone` 使用独立事件。脱敏后的后端状态广播到所有受管窗口。任务抽屉和浮层随根布局存在，不建立第二套窗口生命周期。
 
 文件管理桌面动作使用独立 `executeFileDesktopAction(fda1_*)` 白名单。Renderer 只能提交 60 秒一次性引用；Electron main 只访问当前受管 Python 的固定回环端点，Service 只允许打开受控根内目录或启动固定 WinSCP。路径、程序、参数和凭据不进入 Renderer，Electron WinSCP 启动参数不含密码。
 
@@ -20,9 +20,9 @@ Electron 复用同一 Vue Renderer、FastAPI 会话和 `TaskApplicationService -
 
 局点重启前，Renderer 先持久化仅保留 Dashboard 与系统设置的快照；`WorkspaceWindowController` 再对所有受管窗口执行同一局点边界清理并保留回滚副本。`PythonBackendManager` ready 后，Main 读取新 Backend 的当前局点再次核对目标；不一致或启动失败会恢复原 Backend 和窗口快照。成功时才清除旧 MESH Renderer recovery/workload 并重新加载所有窗口，避免旧 `session_id`、KeepAlive 实例或多窗口业务标签跨局点恢复。
 
-Windows 下启动时会创建 `TrayController`，图标统一由 `resolveTrayIconPath()` 解析：源码态取仓库 `resources/branding/netconsole.ico`，安装包从 `extraResources/branding/netconsole.ico` 读取。菜单包含打开主窗口、新建工作区、打开任务中心、脱敏的 Backend/当前局点状态、关闭到通知区域开关和“退出 NetConsole”。图标不可用或创建失败时托盘设置运行时不可用，主窗口不会被隐藏，避免留下无法恢复的后台进程。
+Windows 下启动时会创建 `TrayController`，图标统一由 `resolveTrayIconPath()` 解析：源码态取仓库 `resources/branding/netconsole.ico`，安装包从 `extraResources/branding/netconsole.ico` 读取。菜单包含打开主窗口、新建工作区、打开任务中心、运行/失败任务数量、脱敏的 Backend/当前局点状态、关闭到通知区域开关和“退出 NetConsole”。Vue 只向 Main 推送聚合计数；Main 不查询任务数据库。前台终态使用 Vue 通知，后台终态使用有界 Windows 原生通知；通知点击后恢复主窗口并定位任务。图标不可用或创建失败时托盘设置运行时不可用，主窗口不会被隐藏，避免留下无法恢复的后台进程。
 
-默认启用“关闭主窗口后驻留通知区域”。主窗口关闭会隐藏而不停止 Backend 或后台任务；附加工作区窗口正常销毁，任务窗口仍按既有语义隐藏。所有普通窗口不可见时，托盘、Backend 和后台业务任务继续存在。只有托盘“退出 NetConsole”（以及显式系统关闭信号）进入单次受控退出：先 flush 工作区/偏好、拒绝新窗口、关闭受管窗口和 Tray，再停止下载、Backend 与会话授权。关闭该设置后，最后一个可见普通业务窗口触发相同的受控退出。
+默认启用“关闭主窗口后驻留通知区域”。主窗口关闭会隐藏而不停止 Backend 或后台任务，附加工作区窗口正常销毁；所有普通窗口不可见时，托盘、Backend 和后台业务任务继续存在。只有托盘“退出 NetConsole”（以及显式系统关闭信号）进入单次受控退出：先 flush 工作区/偏好、拒绝新窗口、关闭受管窗口和 Tray，再停止下载、Backend 与会话授权。关闭该设置后，最后一个可见普通业务窗口触发相同的受控退出。
 
 ## 当前状态
 
@@ -100,7 +100,7 @@ pnpm dev:codex
 
 普通 `pnpm dev` 继续使用动态 Backend 端口并只服务 Electron；`dev:codex` 的固定端口只用于本机自动化。两者都拒绝 `0.0.0.0` 和非回环 Origin。生产打包不接受 `--dev-mode`，不注册开发状态接口和 OpenAPI，也不读取开发固定端口或开发 Session 环境变量。
 
-`pnpm dev` 是持久开发模式：它先读取显式 `NETCONSOLE_DATA_ROOT`，否则读取安装器写入的 `HKLM\Software\NetConsole\DataRoot`（当前机器为 `D:\NetConsoleData`），然后在该根下保存正式 `userData` 与 bootstrap。没有这两种配置时 Electron 在创建业务数据前停止启动，不会猜测 AppData。`dev:codex`、`smoke:dev`、`smoke:task-window` 与 package smoke 是隔离测试模式：每次只在 `D:\NetConsoleTestData\<run-id>` 创建统一根布局，Electron 在申请单实例锁和 `app.whenReady()` 前切换 `userData`，退出时仅删除经过边界校验的本次 run-id。隔离模式不读取机器级指针或正式 bootstrap，局点/数据根写 API 返回 403，设置页只显示脱敏的临时数据根和只读提示。
+`pnpm dev` 是持久开发模式：它先读取显式 `NETCONSOLE_DATA_ROOT`，否则读取安装器写入的 `HKLM\Software\NetConsole\DataRoot`（当前机器为 `D:\NetConsoleData`），然后在该根下保存正式 `userData` 与 bootstrap。没有这两种配置时 Electron 在创建业务数据前停止启动，不会猜测 AppData。`dev:codex`、`smoke:dev`、`smoke:task-center` 与 package smoke 是隔离测试模式：每次只在 `D:\NetConsoleTestData\<run-id>` 创建统一根布局，Electron 在申请单实例锁和 `app.whenReady()` 前切换 `userData`，退出时仅删除经过边界校验的本次 run-id。`smoke:task-window` 仅作为旧命令别名保留，也执行主窗口任务中心 smoke。隔离模式不读取机器级指针或正式 bootstrap，局点/数据根写 API 返回 403，设置页只显示脱敏的临时数据根和只读提示。
 
 正常启动会拒绝 bootstrap 中位于 Temp、测试根、不存在或缺少 `sites/` 的数据根，先保存 `bootstrap.json.invalid-<timestamp>`，再回退到正常持久化根。Python 缺失或不可执行只会让启动明确失败，不创建 demo、不改数据根和 bootstrap。可用以下命令只读诊断；只有显式 `--repair` 才会备份并原子修复配置引用，不移动或删除任何局点数据：
 

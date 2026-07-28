@@ -255,7 +255,7 @@ onBeforeUnmount(stopPolling)
       <template #cell-ap_management_vlans="{ row }"><el-input v-if="canWrite" v-model="row.ap_management_vlans" @input="publishDirty" /><span v-else>{{ row.ap_management_vlans || '--' }}</span></template>
       <template #cell-remark="{ row }"><el-input v-if="canWrite" v-model="row.remark" @input="publishDirty" /><span v-else>{{ row.remark || '--' }}</span></template>
     </NcDataTable>
-    <el-alert v-if="task" :title="`${task.status} · ${task.message || task.task_id}`" :type="task.error_message ? 'error' : 'info'" :closable="false"><el-button v-if="task.available && task.artifact_id" link type="primary" :loading="downloadingArtifact" @click="downloadArtifact">下载文件</el-button><el-button link @click="openTaskWindow">打开任务窗口</el-button></el-alert>
+    <el-alert v-if="task" :title="`${task.status} · ${task.message || task.task_id}`" :type="task.error_message ? 'error' : 'info'" :closable="false"><el-button v-if="task.available && task.artifact_id" link type="primary" :loading="downloadingArtifact" @click="downloadArtifact">下载文件</el-button><el-button link @click="openTaskWindow">打开任务中心</el-button></el-alert>
     <el-dialog v-model="previewVisible" title="导入预览" width="900px" destroy-on-close>
       <div v-if="preview" class="preview">
         <el-descriptions :column="5" border><el-descriptions-item label="总行数">{{ preview.total_count }}</el-descriptions-item><el-descriptions-item label="有效">{{ preview.valid_count }}</el-descriptions-item><el-descriptions-item label="重复">{{ preview.duplicate_count }}</el-descriptions-item><el-descriptions-item label="错误">{{ preview.error_count }}</el-descriptions-item><el-descriptions-item label="SHA-256">{{ preview.file_sha256.slice(0, 12) }}…</el-descriptions-item></el-descriptions>

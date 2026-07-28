@@ -255,7 +255,7 @@ onBeforeUnmount(stopPolling)
       type="info"
       show-icon
       :closable="false"
-    ><el-button link type="primary" @click="openTaskWindow">打开任务窗口</el-button></el-alert>
+    ><el-button link type="primary" @click="openTaskWindow">打开任务中心</el-button></el-alert>
     <el-card v-if="actionPlan" shadow="never" class="plan"><template #header>AC 动作计划 {{ actionPlan.plan_id }} · {{ actionPlan.status }}</template><p>审计摘要：{{ actionPlan.plan_digest }}</p><pre>{{ actionPlan.command_summary.join('\n') }}</pre></el-card>
     <el-card v-if="actionAudit" shadow="never" class="plan"><template #header>AC 动作审计 · {{ actionAudit.status }}</template><el-descriptions :column="3" border><el-descriptions-item label="目标">{{ actionAudit.target_id }}</el-descriptions-item><el-descriptions-item label="动作">{{ actionAudit.action_id }}</el-descriptions-item><el-descriptions-item label="任务状态">{{ actionAudit.task_status || '—' }}</el-descriptions-item><el-descriptions-item label="执行器">{{ actionAudit.executor }}</el-descriptions-item><el-descriptions-item label="Task">{{ actionAudit.task_id || '—' }}</el-descriptions-item><el-descriptions-item label="摘要">{{ actionAudit.plan_digest }}</el-descriptions-item></el-descriptions></el-card>
     <div class="grid">

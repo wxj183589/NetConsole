@@ -476,12 +476,12 @@ async function openTaskWindow(): Promise<void> {
   try {
     if (bridge?.openTaskWindow) {
       const result = await bridge.openTaskWindow({ module: 'config' })
-      if (!result.success) ElMessage.error(result.error || '任务窗口打开失败')
+      if (!result.success) ElMessage.error(result.error || '任务中心打开失败')
       return
     }
     await router.push({ name: 'tasks', query: { module: 'config' } })
   } catch (cause) {
-    ElMessage.error(cause instanceof Error ? cause.message : '任务窗口打开失败')
+    ElMessage.error(cause instanceof Error ? cause.message : '任务中心打开失败')
   }
 }
 
@@ -623,7 +623,7 @@ function formatBytes(value: number | null): string {
         <el-button :icon="Search" :disabled="loading" @click="loadDevices">应用筛选</el-button>
         <el-button :disabled="!isFeatureEnabled('web.config_collection_open_directory')" @click="openResultDirectory('config_snapshots')">快照目录</el-button>
         <el-button :disabled="!isFeatureEnabled('web.config_collection_open_directory')" @click="openResultDirectory('config_exports')">导出目录</el-button>
-        <el-button :disabled="!isFeatureEnabled('web.job_center')" @click="openTaskWindow">任务窗口（运行 {{ activeTaskIds.size }} / 异常 {{ failedTaskCount }}）</el-button>
+        <el-button :disabled="!isFeatureEnabled('web.job_center')" @click="openTaskWindow">任务中心</el-button>
       </div>
     </div>
 

@@ -13,6 +13,8 @@ import {
   validateOnlineMrSessionId,
   validateSelectFileOptions,
   validateTaskWindowContext,
+  validateTaskNotificationPayload,
+  validateTaskTrayStatus,
   validateWorkspaceTitle,
   validateWorkspaceWindowOpenRequest,
   validateWorkspaceWindowSnapshot,
@@ -45,6 +47,25 @@ export function createDesktopBridge(ipcRenderer: IpcRendererLike): NetConsoleDes
       DESKTOP_IPC.openTaskWindow,
       validateTaskWindowContext(context),
     ) as ReturnType<NetConsoleDesktopBridge['openTaskWindow']>,
+    showTaskNotification: (payload) => ipcRenderer.invoke(
+      DESKTOP_IPC.showTaskNotification,
+      validateTaskNotificationPayload(payload),
+    ) as ReturnType<NetConsoleDesktopBridge['showTaskNotification']>,
+    setTaskTrayStatus: (status) => ipcRenderer.send(
+      DESKTOP_IPC.setTaskTrayStatus,
+      validateTaskTrayStatus(status),
+    ),
+    onTaskCenterOpenRequested: (listener) => {
+      const wrapped = (_event: IpcRendererEvent, value: unknown) => {
+        try {
+          listener(validateTaskWindowContext(value))
+        } catch {
+          // Electron Main must never expose an invalid task context.
+        }
+      }
+      ipcRenderer.on(DESKTOP_IPC.taskCenterOpenRequested, wrapped)
+      return () => ipcRenderer.removeListener(DESKTOP_IPC.taskCenterOpenRequested, wrapped)
+    },
     openWorkspaceWindow: (request) => ipcRenderer.invoke(
       DESKTOP_IPC.openWorkspaceWindow,
       validateWorkspaceWindowOpenRequest(request),

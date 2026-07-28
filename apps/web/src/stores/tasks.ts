@@ -28,9 +28,11 @@ export const useTaskStore = defineStore('tasks', () => {
   let logTimer: number | null = null
   let socket: WebSocket | null = null
   let socketReconnectTimer: number | null = null
+  let socketRefreshTimer: number | null = null
   let socketReconnectEnabled = false
 
   const runningCount = computed(() => tasks.value.filter((task) => activeTaskStatuses.includes(task.status)).length)
+  const activeTasks = computed(() => tasks.value.filter((task) => activeTaskStatuses.includes(task.status)))
   const failedCount = computed(() => tasks.value.filter((task) => task.status === 'FAILED').length)
   const completedCount = computed(() => tasks.value.filter((task) => task.status === 'COMPLETED').length)
   const warningCount = computed(() => tasks.value.filter((task) => task.has_warning).length)
@@ -120,6 +122,22 @@ export const useTaskStore = defineStore('tasks', () => {
     }
   }
 
+  async function requestCancelTask(id: string): Promise<void> {
+    const task = tasks.value.find((item) => item.id === id)
+    if (!task?.cancellable) return
+    try {
+      const updated = await cancelTask(id)
+      const index = tasks.value.findIndex((item) => item.id === id)
+      if (index >= 0) tasks.value[index] = updated
+      if (selected.value?.id === id) selected.value = updated
+      detailError.value = ''
+      await refresh()
+    } catch (cause) {
+      detailError.value = cause instanceof Error ? cause.message : '停止任务失败'
+      throw cause
+    }
+  }
+
   function setDetailVisible(value: boolean): void {
     detailVisible = value
     if (!value) {
@@ -175,13 +193,11 @@ export const useTaskStore = defineStore('tasks', () => {
           type?: string
           payload?: { tasks?: TaskItem[] }
         }
-        if (event.type === 'snapshot' && Array.isArray(event.payload?.tasks)) {
-          tasks.value = event.payload.tasks
-          failures.value = 0
-          error.value = ''
+        if (event.type === 'snapshot') {
+          scheduleSocketRefresh(true)
           return
         }
-        if (event.type !== 'heartbeat') void refresh()
+        if (event.type !== 'heartbeat') scheduleSocketRefresh()
       } catch {
         // REST 仍是事实来源；损坏事件由下一个正常事件或轮询恢复。
       }
@@ -199,8 +215,18 @@ export const useTaskStore = defineStore('tasks', () => {
     socketReconnectEnabled = false
     if (socketReconnectTimer !== null) window.clearTimeout(socketReconnectTimer)
     socketReconnectTimer = null
+    if (socketRefreshTimer !== null) window.clearTimeout(socketRefreshTimer)
+    socketRefreshTimer = null
     socket?.close()
     socket = null
+  }
+
+  function scheduleSocketRefresh(immediate = false): void {
+    if (socketRefreshTimer !== null) return
+    socketRefreshTimer = window.setTimeout(() => {
+      socketRefreshTimer = null
+      void refresh()
+    }, immediate ? 0 : 300)
   }
 
   function scheduleListRefresh(): void {
@@ -227,12 +253,14 @@ export const useTaskStore = defineStore('tasks', () => {
     failedCount,
     completedCount,
     warningCount,
+    activeTasks,
     refresh,
     selectTask,
     refreshSelected,
     refreshLogs,
     manualRefresh,
     requestCancel,
+    requestCancelTask,
     setDetailVisible,
     setLogsExpanded,
     acquirePolling,

@@ -270,7 +270,7 @@ async function openTaskWindow(): Promise<void> {
   if (!currentTask.value) return
   try {
     const result = await getPlatformAdapter().openTaskWindow({ taskId: currentTask.value.task_id, module: 'logs' })
-    if (!result.success) ElMessage.error(result.error || '任务窗口打开失败')
+    if (!result.success) ElMessage.error(result.error || '任务中心打开失败')
   } catch (cause) {
     ElMessage.error(errorMessage(cause))
   }

@@ -176,7 +176,7 @@ body { overflow: hidden; color: var(--nc-text-primary); background: var(--nc-bg-
 .header-title { color: var(--nc-text-primary); font-size: var(--nc-font-size-title); font-weight: 700; }
 .header-subtitle { margin-top: var(--nc-space-1); color: var(--nc-text-tertiary); font-size: var(--nc-font-size-xs); }
 .current-site-slot { flex: 0 1 280px; min-width: 150px; }
-.header-status { display: flex; flex: 0 0 auto; align-items: center; color: var(--nc-text-secondary); font-size: var(--nc-font-size-sm); white-space: nowrap; }
+.header-status { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; color: var(--nc-text-secondary); font-size: var(--nc-font-size-sm); white-space: nowrap; }
 .desktop-runtime-tag { margin-right: 14px; cursor: pointer; }
 .desktop-runtime-panel strong { color: var(--nc-text-primary); }
 .desktop-runtime-panel p { margin: 8px 0 12px; color: var(--nc-text-secondary); font-size: var(--nc-font-size-xs); line-height: 1.55; }

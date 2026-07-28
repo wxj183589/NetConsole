@@ -621,10 +621,10 @@ describe('Job Center saved artifact capability lifecycle', () => {
     app.unmount()
   })
 
-  it('reports the independent task window as interactive and keeps the list when a task id is missing', async () => {
-    routeState.query = { module: 'rail', task_id: 'missing-task', task_window: '1' }
-    routeState.path = '/desktop/tasks'
-    routeState.name = 'desktop-tasks'
+  it('keeps the task list when a requested task id is missing', async () => {
+    routeState.query = { module: 'rail', task_id: 'missing-task' }
+    routeState.path = '/tasks'
+    routeState.name = 'tasks'
     const root = node('root')
     const pinia = createPinia()
     const store = useTaskStore(pinia)
@@ -636,7 +636,6 @@ describe('Job Center saved artifact capability lifecycle', () => {
     app.use(pinia)
     app.mount(root)
 
-    await vi.waitFor(() => expect(platformMocks.reportReady).toHaveBeenCalledWith(true, 'interactive', 'task-window'))
     expect(store.selectTask).toHaveBeenCalledWith('missing-task')
     await vi.waitFor(() => expect(messageMocks.warning).toHaveBeenCalledWith('未找到任务 missing-task，已保留当前任务列表。'))
     await nextTick()
@@ -644,10 +643,10 @@ describe('Job Center saved artifact capability lifecycle', () => {
     app.unmount()
   })
 
-  it('reports the task window as interactive even when polling cannot start', async () => {
-    routeState.query = { module: 'rail', task_window: '1' }
-    routeState.path = '/desktop/tasks'
-    routeState.name = 'desktop-tasks'
+  it('keeps the task center usable when polling cannot start', async () => {
+    routeState.query = { module: 'rail' }
+    routeState.path = '/tasks'
+    routeState.name = 'tasks'
     const root = node('root')
     const pinia = createPinia()
     const store = useTaskStore(pinia)
@@ -659,7 +658,6 @@ describe('Job Center saved artifact capability lifecycle', () => {
     app.mount(root)
     await nextTick()
 
-    expect(platformMocks.reportReady).toHaveBeenCalledWith(true, 'interactive', 'task-window')
     expect(messageMocks.error).toHaveBeenCalledWith('任务列表自动刷新启动失败，可手动刷新后重试。')
     expect(alertTitles(root)).toContain('任务列表自动刷新启动失败，可手动刷新后重试。')
     app.unmount()

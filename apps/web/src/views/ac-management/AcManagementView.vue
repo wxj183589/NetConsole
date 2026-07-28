@@ -597,7 +597,7 @@ function diffLineClass(line: string): string {
       :closable="false"
       show-icon
       class="task-summary"
-    ><el-button link type="primary" @click="openTaskWindow">打开任务窗口</el-button></el-alert>
+    ><el-button link type="primary" @click="openTaskWindow">打开任务中心</el-button></el-alert>
     <el-empty v-if="store.summary?.message && !store.summary.acs.length" :description="store.summary.message" />
 
     <el-descriptions v-else-if="store.activeAc" :column="4" border class="ac-info-strip">

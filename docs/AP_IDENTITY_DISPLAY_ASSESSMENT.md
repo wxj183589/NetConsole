@@ -8,7 +8,7 @@ AP Identity 阶段 2～6.1 已在 AC 扩展、AC 光衰、轨旁 AP、MR/Mesh �
 
 阶段 8 只评估维护人员或高级诊断用户将来如何查看脱敏聚合。本文不授权实现 UI、启用 feature flag、保存诊断结果、修改 workbook 或让 resolver 接管生产路径。所有展示结论均为“待真实局点观测验证”。
 
-当前已有 Electron 统一任务窗口，但 AP Identity 摘要尚未接线。“任务详情”仍是优先候选，不能为了展示新增第二套任务持久化或在多个业务页面同时接入。
+当前已有 Vue 全局任务中心抽屉和完整页面，但 AP Identity 摘要尚未接线。“任务详情”仍是优先候选，不能为了展示新增第二套任务持久化或在多个业务页面同时接入。
 
 ## 2. 非目标
 
@@ -423,13 +423,13 @@ tests/test_ap_identity_diagnostics_display.py
 - 风险等级仅生成只读建议和 `blocks_takeover` 提示，不修改输入 mapping，不改变 Job/Export 终态，也不触发 resolver、Repository、文件或网络操作。
 - 异常、字段不足、schema 不支持和诊断不可用均降级为安全状态，不向调用方抛出诊断异常。
 
-当前 Electron 已有统一任务窗口，但 AP Identity 摘要仍未接线，也未新增具名页面或第二套任务持久化。可见 UI 接线继续受真实局点准入、单宿主批准和默认关闭约束。
+当前已有全局任务中心，但 AP Identity 摘要仍未接线，也未新增具名页面或第二套任务持久化。可见 UI 接线继续受真实局点准入、单宿主批准和默认关闭约束。
 
 ## 16. 阶段 8.2 Job 详情宿主评审结论
 
 阶段 8.2 已完成当前 Job/Export UI 宿主、七类任务结果流和六类候选入口的只读评审，详见 [AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md](AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md)。
 
-当前统一任务窗口已经提供详情启动点，但 AP Identity owner capability 与安全摘要接线尚未批准，因此阶段 8.3 可见 UI 实现状态仍为 `hold`；不得改多个业务页面或保存完整 result 绕过该缺口。
+当前全局任务中心已经提供详情启动点，但 AP Identity owner capability 与安全摘要接线尚未批准，因此阶段 8.3 可见 UI 实现状态仍为 `hold`；不得改多个业务页面或保存完整 result 绕过该缺口。
 
 ## 17. 2026-07-11 同步复核
 
