@@ -1,5 +1,8 @@
 <script setup lang="ts">
+import { ref } from 'vue'
+
 import NcDataTable from '../../src/components/table/NcDataTable.vue'
+import type { NcDataTableContextMenuItem } from '../../src/components/table/NcDataTableContextMenu'
 import type { NcTableColumn } from '../../src/components/table/NcTableColumn'
 
 interface FixtureRow {
@@ -15,6 +18,14 @@ const rows: FixtureRow[] = [
   { name: '轨旁 AP 一号', address: '192.168.10.11', status: '在线', description: '短文本', updatedAt: '2026-07-19 08:30:00', actions: '查看' },
   { name: '设备名称包含较长中文字段用于表头和内容测量', address: '2001:db8::20', status: '连接失败', description: '这是一个超过普通列宽的长说明，用于确认表格区域保持横向滚动、单元格不挤压表头并提供省略显示。', updatedAt: '2026-07-19 08:31:00', actions: '查看 / 重试' },
   { name: 'Switch-GE-2/0/1', address: '10.0.0.1', status: '在线', description: '—', updatedAt: '—', actions: '更多' },
+  ...Array.from({ length: 18 }, (_, index): FixtureRow => ({
+    name: `边缘菜单测试设备 ${String(index + 1).padStart(2, '0')}`,
+    address: `192.0.2.${index + 20}`,
+    status: index % 4 === 0 ? '连接失败' : '在线',
+    description: `用于产生纵向滚动并验证第 ${index + 1} 行右键菜单`,
+    updatedAt: `2026-07-19 09:${String(index).padStart(2, '0')}:00`,
+    actions: '查看 / 更多',
+  })),
 ]
 
 const columns: NcTableColumn<FixtureRow>[] = [
@@ -24,6 +35,22 @@ const columns: NcTableColumn<FixtureRow>[] = [
   { key: 'description', label: '错误与说明摘要', valueType: 'description', align: 'left', alignmentReason: 'long-text' },
   { key: 'updatedAt', label: '最近更新时间', valueType: 'datetime' },
   { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['查看', '重试', '更多'] },
+]
+const lastContextAction = ref('')
+const contextMenuItems: NcDataTableContextMenuItem<FixtureRow>[] = [
+  { key: 'detail', label: '详情', action: () => { lastContextAction.value = 'detail' } },
+  { key: 'edit', label: '编辑', action: () => { lastContextAction.value = 'edit' } },
+  { key: 'duplicate', label: '复制设备', action: () => { lastContextAction.value = 'duplicate' } },
+  { key: 'copy-cell', label: '复制当前单元格', action: () => { lastContextAction.value = 'copy-cell' } },
+  { key: 'copy-name', label: '复制名称', action: () => { lastContextAction.value = 'copy-name' } },
+  { key: 'copy-primary', label: '复制主地址', action: () => { lastContextAction.value = 'copy-primary' } },
+  { key: 'copy-backup', label: '复制备用地址', action: () => { lastContextAction.value = 'copy-backup' } },
+  { key: 'copy-system', label: '复制系统名', action: () => { lastContextAction.value = 'copy-system' } },
+  { key: 'copy-station', label: '复制站点', action: () => { lastContextAction.value = 'copy-station' } },
+  { key: 'copy-row', label: '复制整行', action: () => { lastContextAction.value = 'copy-row' } },
+  { key: 'copy-device', label: '复制设备信息', action: () => { lastContextAction.value = 'copy-device' } },
+  { key: 'terminal', label: '外部终端', action: () => { lastContextAction.value = 'terminal' } },
+  { key: 'delete', label: '删除', danger: true, action: () => { lastContextAction.value = 'delete' } },
 ]
 
 interface MeshLinkFixture {
@@ -128,10 +155,13 @@ const meshColumns: NcTableColumn<MeshLinkFixture>[] = [
   <main class="fixture-page">
     <h1>统一表格视觉夹具</h1>
     <p>用于验证表头下限、内容抽样、中文缺失值、状态标签、长文本和横向滚动。</p>
-    <NcDataTable :data="rows" :columns="columns" table-id="visual-table-fixture" route-key="/__visual/table" max-height="520" :show-column-settings="false">
-      <template #cell-status="{ row }"><el-tag :type="row.status === '在线' ? 'success' : 'danger'">{{ row.status }}</el-tag></template>
-      <template #cell-actions="{ row }"><el-button link type="primary">{{ row.actions }}</el-button></template>
-    </NcDataTable>
+    <section class="context-menu-fixture" data-context-menu-table>
+      <NcDataTable :data="rows" :columns="columns" :context-menu-items="contextMenuItems" table-id="visual-table-fixture" route-key="/__visual/table" height="520" :show-column-settings="false">
+        <template #cell-status="{ row }"><el-tag :type="row.status === '在线' ? 'success' : 'danger'">{{ row.status }}</el-tag></template>
+        <template #cell-actions="{ row }"><el-button link type="primary">{{ row.actions }}</el-button></template>
+      </NcDataTable>
+      <output data-last-context-action>{{ lastContextAction }}</output>
+    </section>
     <section class="mesh-link-fixture" data-mesh-link-table>
       <h2>MESH 链路明细</h2>
       <NcDataTable :data="meshRows" :columns="meshColumns" table-id="visual-mesh-link-fixture" route-key="/__visual/mesh-link" height="340" border :show-column-settings="false" />
@@ -147,6 +177,8 @@ body { margin: 0; min-width: 0; }
 .fixture-page h1 { margin: 0 0 8px; font-size: 24px; }
 .fixture-page p { margin: 0 0 16px; color: #526174; }
 .fixture-page .nc-data-table { background: #fff; padding: 12px; border: 1px solid #d9e2ef; border-radius: 8px; }
+.context-menu-fixture { width: min(1500px, 100%); min-width: 0; margin-left: auto; }
+.context-menu-fixture output { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .mesh-link-fixture { margin-top: 24px; min-width: 0; }
 .mesh-link-fixture h2 { margin: 0 0 12px; font-size: 18px; }
 .mesh-link-fixture .nc-data-table { height: 340px; }

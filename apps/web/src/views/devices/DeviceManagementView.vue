@@ -34,6 +34,7 @@ import {
   startSecureCrtExport,
   startSecureCrtExportWithTemplate,
   updateDevice,
+  updateDeviceLifecycle,
   updateExternalTerminalSettings,
 } from '../../api/deviceManagement'
 import { downloadBackendResource, getPlatformAdapter, getRuntimeConfig } from '../../platform/runtime'
@@ -41,6 +42,10 @@ import { useTaskStore } from '../../stores/tasks'
 import DeviceDetailPanel from '../../components/device-detail/DeviceDetailPanel.vue'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import NcDataTable from '../../components/table/NcDataTable.vue'
+import type {
+  NcDataTableContext,
+  NcDataTableContextMenuItem,
+} from '../../components/table/NcDataTableContextMenu'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import {
   DEVICE_VENDOR_OPTIONS,
@@ -55,7 +60,13 @@ import type {
   DeviceEditProfileResponse,
   DeviceExternalTerminalSettings,
   DeviceImportPreview,
+  DeviceImportMatchStrategy,
+  DeviceImportRowAction,
+  DeviceImportRowResult,
+  DeviceImportWriteMode,
   DeviceListItem,
+  OperationStatus,
+  ProjectPhase,
   DevicePage,
   DeviceSecretField,
   DeviceTaskReference,
@@ -146,12 +157,20 @@ const groupVisible = ref(false)
 const groupName = ref('')
 const groupAssignVisible = ref(false)
 const groupAssignId = ref<number | null>(null)
+const lifecycleVisible = ref(false)
+const lifecycleMode = ref<'phase' | 'status'>('phase')
+const lifecycleValue = ref<ProjectPhase | OperationStatus>('unspecified')
+const lifecycleReason = ref('')
+const lifecycleTargetUuids = ref<string[]>([])
+const lifecycleLoading = ref(false)
 const importVisible = ref(false)
 const importFile = ref<File | null>(null)
 const importFileInput = ref<HTMLInputElement | null>(null)
 const importLoading = ref(false)
 const importPreview = ref<DeviceImportPreview | null>(null)
-const importDuplicateStrategy = ref<'reject' | 'skip' | 'create_new'>('reject')
+const importMatchStrategy = ref<DeviceImportMatchStrategy>('SITE_PRIMARY_IP')
+const importWriteMode = ref<DeviceImportWriteMode>('UPSERT')
+const importActionFilter = ref<'ALL' | DeviceImportRowAction>('ALL')
 const secureCrtVisible = ref(false)
 const secureCrtTemplateFile = ref<File | null>(null)
 const secureCrtTemplateInput = ref<HTMLInputElement | null>(null)
@@ -186,6 +205,8 @@ const filters = reactive({
   vendor: '' as DeviceVendor | '',
   device_type: '',
   connection_status: '' as DeviceConnectionStatus | '',
+  project_phase: 'all' as ProjectPhase | 'all',
+  operation_status: 'in_service' as OperationStatus | 'all',
   sort_by: 'name',
   sort_order: 'asc' as 'asc' | 'desc',
   page: 1,
@@ -196,6 +217,8 @@ const deviceColumns: NcTableColumn<DeviceListItem>[] = [
   { key: 'name', label: '名称', valueType: 'name', fixed: 'left', stretch: 'priority', stretchWeight: 4 },
   { key: 'group_name', label: '分组', valueType: 'text', stretch: 'normal' },
   { key: 'device_vendor', label: '厂商', valueType: 'text', stretch: 'normal', displayValue: (row) => formatDeviceVendor(row.device_vendor) },
+  { key: 'project_phase', label: '建设阶段', valueType: 'status', cellKind: 'tag', stretch: 'none' },
+  { key: 'operation_status', label: '投运状态', valueType: 'status', cellKind: 'tag', stretch: 'none' },
   { key: 'system_name', label: '系统名', valueType: 'name', stretch: 'normal' },
   { key: 'station', label: '站点', valueType: 'text', stretch: 'priority' },
   { key: 'primary_address', label: '主地址', valueType: 'ip', stretch: 'normal' },
@@ -221,6 +244,16 @@ const importErrorColumns: NcTableColumn<DeviceImportPreview['errors'][number]>[]
   { key: 'raw_value', label: '原始值', valueType: 'text', stretch: 'normal' },
   { key: 'message', label: '错误信息', valueType: 'text', stretch: 'priority' },
 ]
+const importRowColumns: NcTableColumn<DeviceImportRowResult>[] = [
+  { key: 'line', label: 'CSV 行', valueType: 'number', stretch: 'none' },
+  { key: 'action', label: '动作', valueType: 'status', cellKind: 'tag', stretch: 'none' },
+  { key: 'match_basis', label: '匹配依据', valueType: 'text', stretch: 'priority' },
+  { key: 'device_id', label: '设备 ID', valueType: 'number', stretch: 'none' },
+  { key: 'device_name', label: '设备名称', valueType: 'name', stretch: 'normal' },
+  { key: 'original_primary_address', label: '原主地址', valueType: 'ip', stretch: 'normal' },
+  { key: 'new_primary_address', label: '新主地址', valueType: 'ip', stretch: 'normal' },
+  { key: 'message', label: '结果', valueType: 'text', stretch: 'priority' },
+]
 const batchRefreshColumns: NcTableColumn<DeviceBatchRefreshItem>[] = [
   { key: 'device_name', label: '设备', valueType: 'name', stretch: 'priority' },
   { key: 'primary_address', label: '地址', valueType: 'ip', stretch: 'normal' },
@@ -231,7 +264,13 @@ const batchRefreshColumns: NcTableColumn<DeviceBatchRefreshItem>[] = [
   { key: 'last_collected_at', label: '采集时间', valueType: 'datetime', stretch: 'none' },
   { key: 'error_message', label: '错误信息', valueType: 'text', stretch: 'priority' },
 ]
-const writeForm = reactive<DeviceWriteRequest>({ name: '', primary_address: '', ssh_enabled: true, ssh_port: 22, telnet_enabled: false, telnet_port: 23, snmp_enabled: true, snmp_v2c_enabled: true, snmp_port: 161 })
+const writeForm = reactive<DeviceWriteRequest>({ name: '', primary_address: '', project_phase: 'unspecified', operation_status: 'in_service', operation_status_reason: '', ssh_enabled: true, ssh_port: 22, telnet_enabled: false, telnet_port: 23, snmp_enabled: true, snmp_v2c_enabled: true, snmp_port: 161 })
+const filteredImportRows = computed(() => {
+  const rows = importPreview.value?.rows || []
+  return importActionFilter.value === 'ALL'
+    ? rows
+    : rows.filter((row) => row.action === importActionFilter.value)
+})
 const secretClears = reactive<Record<DeviceSecretField, boolean>>({
   ssh_password: false,
   telnet_password: false,
@@ -253,7 +292,6 @@ const secretRevealLoading = reactive<Record<DeviceSecretField, boolean>>({
   tunnel2_password: false,
   snmp_ro_community: false,
 })
-const contextMenu = reactive<{ visible: boolean; x: number; y: number; row: DeviceListItem | null; cellValue: string }>({ visible: false, x: 0, y: 0, row: null, cellValue: '' })
 let editLoadGeneration = 0
 let editProfileAbortController: AbortController | null = null
 let componentActive = true
@@ -442,7 +480,6 @@ const batchRefreshProgressText = computed(() => {
   return `批量更新完成：成功 ${summary.completed}，部分成功 ${summary.partial_success}，失败 ${summary.failed}，取消 ${summary.cancelled}，拒绝 ${summary.rejected}`
 })
 onMounted(async () => {
-  document.addEventListener('click', closeContextMenu)
   window.addEventListener('resize', resizeDetailDrawer)
   restorePendingDeviceExports()
   taskStore.acquirePolling(pollingConsumer)
@@ -460,7 +497,6 @@ onBeforeUnmount(() => {
     pendingDeviceExportRetryTimer = null
   }
   taskStore.releasePolling(pollingConsumer)
-  document.removeEventListener('click', closeContextMenu)
   endDrawerResize()
   window.removeEventListener('resize', resizeDetailDrawer)
 })
@@ -479,6 +515,8 @@ async function loadDevices(resetPage = false, preserveSelection = false): Promis
       device_type: filters.device_type,
       vendor: filters.vendor,
       connection_status: filters.connection_status,
+      project_phase: filters.project_phase,
+      operation_status: filters.operation_status,
       page: filters.page,
       page_size: filters.page_size,
       sort_by: filters.sort_by,
@@ -859,6 +897,9 @@ function currentDeviceWriteValues(): DeviceWriteRequest | null {
     group_id: profile.group_id,
     device_vendor: profile.device_vendor,
     device_type: profile.device_type,
+    project_phase: profile.project_phase,
+    operation_status: profile.operation_status,
+    operation_status_reason: profile.operation_status_reason,
     primary_address: profile.primary_address,
     backup_address: profile.backup_address,
     ssh_enabled: profile.ssh_enabled ?? false,
@@ -907,28 +948,18 @@ function invertSelection(): void {
   }
 }
 
-function showContextMenu(row: DeviceListItem, column: { property?: string; label?: string }, event: MouseEvent): void {
-  event.preventDefault()
-  contextMenu.visible = true
-  contextMenu.x = event.clientX
-  contextMenu.y = event.clientY
-  contextMenu.row = row
-  const value = column.property ? row[column.property as keyof DeviceListItem] : null
-  contextMenu.cellValue = value == null
-    ? column.label === '登录协议'
-      ? [row.capabilities.ssh && 'SSH', row.capabilities.telnet && 'Telnet'].filter(Boolean).join('/')
-      : column.label === '连接状态' ? statusLabel(row.connection_status) : ''
-    : String(value)
+function contextCellText(context: NcDataTableContext<DeviceListItem>): string {
+  const { row, columnKey } = context
+  if (columnKey === 'login_protocol') {
+    return [row.capabilities.ssh && 'SSH', row.capabilities.telnet && 'Telnet'].filter(Boolean).join('/')
+  }
+  if (columnKey === 'connection_status') return statusLabel(row.connection_status)
+  const value = (row as unknown as Record<string, unknown>)[columnKey]
+  return value == null ? '' : String(value)
 }
 
-function closeContextMenu(): void {
-  contextMenu.visible = false
-  contextMenu.row = null
-  contextMenu.cellValue = ''
-}
-
-async function copyCurrentCell(): Promise<void> {
-  await copyText(contextMenu.cellValue)
+async function copyCurrentCell(context: NcDataTableContext<DeviceListItem>): Promise<void> {
+  await copyText(contextCellText(context))
 }
 
 async function copyRow(row: DeviceListItem): Promise<void> {
@@ -956,6 +987,55 @@ async function copyDeviceInfo(row: DeviceListItem): Promise<void> {
   ].join('\n'))
 }
 
+const deviceContextMenuItems = computed<NcDataTableContextMenuItem<DeviceListItem>[]>(() => [
+  { key: 'detail', label: '详情', action: ({ row }) => openDetail(row) },
+  {
+    key: 'set-project-phase',
+    label: '设置建设阶段',
+    action: ({ row }) => openLifecycleDialog('phase', [row.device_uuid]),
+    disabled: !isFeatureEnabled('web.device_management_write'),
+  },
+  {
+    key: 'set-operation-status',
+    label: '设置投运状态',
+    action: ({ row }) => openLifecycleDialog('status', [row.device_uuid]),
+    disabled: !isFeatureEnabled('web.device_management_write'),
+  },
+  {
+    key: 'edit',
+    label: '编辑',
+    action: ({ row }) => editRow(row),
+    disabled: !isFeatureEnabled('web.device_management_write'),
+  },
+  {
+    key: 'duplicate',
+    label: '复制设备',
+    action: ({ row }) => duplicateRow(row),
+    disabled: !isFeatureEnabled('web.device_management_write'),
+  },
+  { key: 'copy-current-cell', label: '复制当前单元格', action: copyCurrentCell },
+  { key: 'copy-name', label: '复制名称', action: ({ row }) => copyText(row.name) },
+  { key: 'copy-primary-address', label: '复制主地址', action: ({ row }) => copyText(row.primary_address) },
+  { key: 'copy-backup-address', label: '复制备用地址', action: ({ row }) => copyText(row.backup_address) },
+  { key: 'copy-system-name', label: '复制系统名', action: ({ row }) => copyText(row.system_name) },
+  { key: 'copy-station', label: '复制站点', action: ({ row }) => copyText(row.station) },
+  { key: 'copy-row', label: '复制整行', action: ({ row }) => copyRow(row) },
+  { key: 'copy-device-info', label: '复制设备信息', action: ({ row }) => copyDeviceInfo(row) },
+  {
+    key: 'external-terminal',
+    label: '外部终端',
+    action: ({ row }) => requestTerminal(row.device_uuid),
+    disabled: !desktopHost || !isFeatureEnabled('web.device_management_desktop'),
+  },
+  {
+    key: 'delete',
+    label: '删除',
+    action: ({ row }) => deleteRows([row.device_uuid]),
+    disabled: !isFeatureEnabled('web.device_management_write'),
+    danger: true,
+  },
+])
+
 async function editSelected(): Promise<void> {
   const row = pageData.value.items.find((item) => item.device_uuid === selectedUuids.value[0])
   if (row) await editRow(row)
@@ -966,7 +1046,7 @@ function openCreate(): void {
   writeMode.value = 'create'
   resetSecretClears()
   Object.assign(writeForm, {
-    name: '', system_name: '', station: '', location: '', group_id: null, device_vendor: 'H3C', device_type: 'SW', primary_address: '', backup_address: '',
+    name: '', system_name: '', station: '', location: '', group_id: null, device_vendor: 'H3C', device_type: 'SW', project_phase: 'unspecified', operation_status: 'in_service', operation_status_reason: '', primary_address: '', backup_address: '',
     ssh_enabled: true, ssh_port: 22, ssh_username: '', ssh_password: '', telnet_enabled: false, telnet_port: 23, telnet_username: '', telnet_password: '',
     tunnel_enabled: false, tunnel1_enabled: false, tunnel1_host: '', tunnel1_port: 22, tunnel1_username: '', tunnel1_password: '', tunnel2_enabled: false, tunnel2_host: '', tunnel2_port: 22, tunnel2_username: '', tunnel2_password: '',
     snmp_enabled: true, snmp_v1_enabled: false, snmp_v2c_enabled: true, snmp_port: 161, snmp_ro_community: '', snmp_timeout_ms: 2000, snmp_retries: 1,
@@ -1220,10 +1300,11 @@ async function duplicateRow(row: DeviceListItem): Promise<void> {
 
 async function duplicateByUuid(deviceUuid: string): Promise<void> {
   try {
-    if (!await confirm({ type: 'WARNING', title: '复制设备', message: '将复制当前设备及其已配置凭据，并生成新的设备 UUID。是否继续？', confirmText: '确认复制' })) return
-    await duplicateDevice(deviceUuid)
-    ElMessage.success('设备已复制')
+    if (!await confirm({ type: 'WARNING', title: '复制设备', message: '将复制当前设备及其已配置凭据，并清空主地址。复制后请编辑副本填写当前局点内唯一的主地址。', confirmText: '确认复制' })) return
+    const result = await duplicateDevice(deviceUuid)
+    ElMessage.success('设备已复制，副本主地址已清空')
     await loadDevices(true)
+    await openEdit(result.device.device_uuid)
   } catch (cause) {
     if (cause === 'cancel' || cause === 'close') return
     ElMessage.error(errorMessage(cause, '复制设备失败'))
@@ -1311,11 +1392,54 @@ async function saveGroupAssignment(): Promise<void> {
   }
 }
 
+function openLifecycleDialog(
+  mode: 'phase' | 'status',
+  targets = selectedUuids.value,
+): void {
+  if (!targets.length) return
+  lifecycleMode.value = mode
+  lifecycleTargetUuids.value = [...targets]
+  lifecycleValue.value = mode === 'phase' ? 'unspecified' : 'in_service'
+  lifecycleReason.value = ''
+  lifecycleVisible.value = true
+}
+
+async function saveLifecycle(): Promise<void> {
+  if (!lifecycleTargetUuids.value.length) return
+  if (lifecycleMode.value === 'status' && lifecycleValue.value === 'retired') {
+    const accepted = await confirm({
+      type: 'DANGER',
+      title: '确认设置为已退役',
+      message: '已退役设备默认禁止新采集，但设备、凭据和历史数据不会删除。',
+      confirmText: '确认退役',
+    })
+    if (!accepted) return
+  }
+  lifecycleLoading.value = true
+  try {
+    const payload = lifecycleMode.value === 'phase'
+      ? { device_uuids: lifecycleTargetUuids.value, project_phase: lifecycleValue.value as ProjectPhase }
+      : { device_uuids: lifecycleTargetUuids.value, operation_status: lifecycleValue.value as OperationStatus, reason: lifecycleReason.value }
+    const result = await updateDeviceLifecycle(payload)
+    lifecycleVisible.value = false
+    ElMessage.success(`已更新 ${result.updated} 台设备`)
+    await loadDevices(true)
+  } catch (cause) {
+    ElMessage.error(errorMessage(cause, '设备状态设置失败'))
+  } finally {
+    lifecycleLoading.value = false
+  }
+}
+
 async function runImportPreview(): Promise<void> {
   if (!importFile.value) return
   importLoading.value = true
   try {
-    importPreview.value = await previewDeviceImport(importFile.value)
+    importPreview.value = await previewDeviceImport(
+      importFile.value,
+      importMatchStrategy.value,
+      importWriteMode.value,
+    )
   } catch (cause) {
     ElMessage.error(errorMessage(cause, 'CSV 预览失败'))
   } finally {
@@ -1324,11 +1448,11 @@ async function runImportPreview(): Promise<void> {
 }
 
 async function confirmImport(): Promise<void> {
-  if (!importPreview.value || importPreview.value.errors.length) return
+  if (!importPreview.value || importPreview.value.has_hard_errors) return
   try {
     await presentTasks(
-      [await confirmDeviceImport(importPreview.value.preview_token, importDuplicateStrategy.value)],
-      'CSV 导入任务已提交',
+      [await confirmDeviceImport(importPreview.value.preview_token, 'reject')],
+      importWriteMode.value === 'UPDATE_ONLY' ? '设备批量更新任务已提交' : 'CSV 导入任务已提交',
     )
     closeImportDialog()
   } catch (cause) {
@@ -1338,6 +1462,18 @@ async function confirmImport(): Promise<void> {
 
 function chooseImportFile(): void {
   importFileInput.value?.click()
+}
+
+function openImportDialog(writeMode: DeviceImportWriteMode): void {
+  importWriteMode.value = writeMode
+  importMatchStrategy.value = 'SITE_PRIMARY_IP'
+  importActionFilter.value = 'ALL'
+  importPreview.value = null
+  importVisible.value = true
+}
+
+function invalidateImportPreview(): void {
+  importPreview.value = null
 }
 
 function onImportFileChange(event: Event): void {
@@ -1351,7 +1487,9 @@ function closeImportDialog(): void {
   importVisible.value = false
   importFile.value = null
   importPreview.value = null
-  importDuplicateStrategy.value = 'reject'
+  importMatchStrategy.value = 'SITE_PRIMARY_IP'
+  importWriteMode.value = 'UPSERT'
+  importActionFilter.value = 'ALL'
   if (importFileInput.value) importFileInput.value.value = ''
 }
 
@@ -1366,6 +1504,8 @@ function currentExportFilters(
     vendor: filters.vendor,
     device_type: filters.device_type,
     group_filter: filters.group === 'ungrouped' ? '__ungrouped__' : filters.group ? Number(filters.group) : undefined,
+    project_phase: filters.project_phase,
+    operation_status: filters.operation_status,
     include_credentials: includeCredentials,
   }
 }
@@ -1786,6 +1926,26 @@ function collectStatusLabel(status: string): string {
   }[normalized] || '未采集'
 }
 
+function projectPhaseLabel(value: ProjectPhase): string {
+  return {
+    phase_1: '一期',
+    phase_2: '二期',
+    phase_3: '三期',
+    other: '其他',
+    unspecified: '未指定',
+  }[value] || value
+}
+
+function operationStatusLabel(value: OperationStatus): string {
+  return {
+    in_service: '在用',
+    not_integrated: '未并网',
+    commissioning: '调试中',
+    suspended: '暂停使用',
+    retired: '已退役',
+  }[value] || value
+}
+
 function errorMessage(cause: unknown, fallback: string): string {
   return cause instanceof Error ? cause.message : fallback
 }
@@ -1810,6 +1970,16 @@ function errorMessage(cause: unknown, fallback: string): string {
       <el-select v-model="filters.vendor" clearable placeholder="全部厂商" @change="loadDevices(true)">
         <el-option v-for="vendor in DEVICE_VENDOR_OPTIONS" :key="vendor.value" :label="vendor.label" :value="vendor.value" />
       </el-select>
+      <el-select v-model="filters.project_phase" placeholder="建设阶段" @change="loadDevices(true)">
+        <el-option label="建设阶段：全部" value="all" /><el-option label="一期" value="phase_1" />
+        <el-option label="二期" value="phase_2" /><el-option label="三期" value="phase_3" />
+        <el-option label="其他" value="other" /><el-option label="未指定" value="unspecified" />
+      </el-select>
+      <el-select v-model="filters.operation_status" placeholder="投运状态" @change="loadDevices(true)">
+        <el-option label="投运状态：全部" value="all" /><el-option label="在用" value="in_service" />
+        <el-option label="未并网" value="not_integrated" /><el-option label="调试中" value="commissioning" />
+        <el-option label="暂停使用" value="suspended" /><el-option label="已退役" value="retired" />
+      </el-select>
       <el-select v-model="filters.connection_status" clearable placeholder="全部状态" @change="loadDevices(true)">
         <el-option label="未测试" value="UNKNOWN" /><el-option label="测试中" value="TESTING" />
         <el-option label="可达" value="REACHABLE" /><el-option label="不可达" value="UNREACHABLE" />
@@ -1833,13 +2003,16 @@ function errorMessage(cause: unknown, fallback: string): string {
       <el-button :icon="CopyDocument" :disabled="selectedUuids.length !== 1 || !isFeatureEnabled('web.device_management_write')" @click="duplicateSelected">复制</el-button>
       <el-button :icon="Delete" type="danger" plain :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management_write')" @click="deleteSelected">批量删除</el-button>
       <el-button :icon="FolderOpened" :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management_write')" @click="groupAssignVisible = true">设置分组</el-button>
+      <el-button :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management_write')" @click="openLifecycleDialog('phase')">设置建设阶段</el-button>
+      <el-button :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management_write')" @click="openLifecycleDialog('status')">设置投运状态</el-button>
       <el-button :icon="Plus" :disabled="!isFeatureEnabled('web.device_management_write')" @click="groupVisible = true">分组管理</el-button>
       <el-button :icon="Connection" :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_connection_test')" @click="startSelectedConnectionTests">测试连接</el-button>
       <el-button :icon="FolderOpened" :disabled="!desktopHost || !selectedUuids.length || !isFeatureEnabled('web.device_management_desktop')" @click="requestTerminal()">外部终端</el-button>
       <el-button data-testid="batch-refresh-details" :icon="Refresh" :loading="batchRefreshSubmitting" :disabled="!selectedUuids.length || batchRefreshSubmitting || !isFeatureEnabled('web.device_management_collect')" @click="refreshSelectedDetails">批量更新详情</el-button>
       <span v-if="batchRefreshSubmitting">{{ batchRefreshProgressText || `正在更新 0/${batchRefreshTargetCount} 台设备` }}</span>
       <el-button :icon="Download" :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management_collect')" @click="downloadDiagnostics">下载诊断</el-button>
-      <el-button :icon="Upload" :disabled="!isFeatureEnabled('web.device_management_import')" @click="importVisible = true">导入 CSV</el-button>
+      <el-button :icon="Upload" :disabled="!isFeatureEnabled('web.device_management_import')" @click="openImportDialog('UPDATE_ONLY')">批量更新设备</el-button>
+      <el-button :icon="Upload" :disabled="!isFeatureEnabled('web.device_management_import')" @click="openImportDialog('UPSERT')">导入 CSV</el-button>
       <el-button
         data-testid="device-export-template"
         :icon="Download"
@@ -1854,6 +2027,14 @@ function errorMessage(cause: unknown, fallback: string): string {
       <el-button :disabled="!selectedUuids.length" @click="clearSelection">清空选择</el-button>
       <el-button :disabled="!pageData.items.length" @click="invertSelection">反选当前页</el-button>
     </div>
+    <el-alert
+      v-if="filters.operation_status !== 'in_service'"
+      title="当前正在查看包含非正式投运设备的范围；这些设备默认不参与自动任务，但未并网、调试中和暂停使用设备仍可手动调试。"
+      type="info"
+      :closable="false"
+      show-icon
+      class="task-summary"
+    />
 
     <el-alert
       v-if="latestDeviceTask?.artifact_download"
@@ -1906,13 +2087,21 @@ function errorMessage(cause: unknown, fallback: string): string {
           route-key="/devices"
           :data="pageData.items"
           :columns="deviceColumns"
+          :context-menu-items="deviceContextMenuItems"
           row-key="device_uuid"
           height="100%"
           empty-text="暂无设备"
           @selection-change="onSelectionChange"
           @row-dblclick="openDetail"
-          @row-contextmenu="showContextMenu"
         >
+          <template #cell-project_phase="{ row }"><el-tag effect="plain">{{ projectPhaseLabel(row.project_phase) }}</el-tag></template>
+          <template #cell-operation_status="{ row }">
+            <el-tooltip :content="row.operation_status === 'not_integrated' ? '未并网设备保留用于手动调试，默认不参与自动采集。' : row.operation_status_reason || ''" :disabled="row.operation_status !== 'not_integrated' && !row.operation_status_reason">
+              <el-tag :type="row.operation_status === 'in_service' ? 'success' : row.operation_status === 'commissioning' ? 'primary' : row.operation_status === 'suspended' ? 'warning' : row.operation_status === 'retired' ? 'danger' : 'info'">
+                {{ operationStatusLabel(row.operation_status) }}
+              </el-tag>
+            </el-tooltip>
+          </template>
           <template #cell-connection_status="{ row }"><el-tag :type="statusType(row.connection_status)">{{ statusLabel(row.connection_status) }}</el-tag></template>
           <template #cell-last_collect_status="{ row }"><el-tag :type="collectStatusType(row.last_collect_status)">{{ collectStatusLabel(row.last_collect_status) }}</el-tag></template>
           <template #cell-credential_status="{ row }">
@@ -1990,22 +2179,6 @@ function errorMessage(cause: unknown, fallback: string): string {
       </template>
     </el-dialog>
 
-    <div v-if="contextMenu.visible && contextMenu.row" class="device-context-menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @click.stop>
-      <button type="button" @click="openDetail(contextMenu.row); closeContextMenu()">详情</button>
-      <button type="button" :disabled="!isFeatureEnabled('web.device_management_write')" @click="editRow(contextMenu.row); closeContextMenu()">编辑</button>
-      <button type="button" :disabled="!isFeatureEnabled('web.device_management_write')" @click="duplicateRow(contextMenu.row); closeContextMenu()">复制设备</button>
-      <button type="button" @click="copyCurrentCell(); closeContextMenu()">复制当前单元格</button>
-      <button type="button" @click="copyText(contextMenu.row.name); closeContextMenu()">复制名称</button>
-      <button type="button" @click="copyText(contextMenu.row.primary_address); closeContextMenu()">复制主地址</button>
-      <button type="button" @click="copyText(contextMenu.row.backup_address); closeContextMenu()">复制备用地址</button>
-      <button type="button" @click="copyText(contextMenu.row.system_name); closeContextMenu()">复制系统名</button>
-      <button type="button" @click="copyText(contextMenu.row.station); closeContextMenu()">复制站点</button>
-      <button type="button" @click="copyRow(contextMenu.row); closeContextMenu()">复制整行</button>
-      <button type="button" @click="copyDeviceInfo(contextMenu.row); closeContextMenu()">复制设备信息</button>
-      <button type="button" :disabled="!desktopHost || !isFeatureEnabled('web.device_management_desktop')" @click="requestTerminal(contextMenu.row.device_uuid); closeContextMenu()">外部终端</button>
-      <button type="button" class="danger" :disabled="!isFeatureEnabled('web.device_management_write')" @click="deleteRows([contextMenu.row.device_uuid]); closeContextMenu()">删除</button>
-    </div>
-
     <el-drawer v-model="detailVisible" title="设备详情" :size="detailDrawerWidth" :class="{ 'is-detail-drawer-dragging': detailDrawerDragging }" @closed="endDrawerResize">
       <div class="detail-drawer-resizer" role="separator" tabindex="0" aria-orientation="vertical" aria-label="调整设备详情宽度" :aria-valuenow="detailDrawerWidthPx || defaultDrawerWidth()" :aria-valuemin="drawerMinWidth()" :aria-valuemax="drawerMaxWidth()" @pointerdown="beginDrawerResize" @keydown="handleDrawerResizeKeydown" />
       <DeviceDetailPanel
@@ -2062,6 +2235,9 @@ function errorMessage(cause: unknown, fallback: string): string {
             <el-form-item label="分组"><el-select v-model="writeForm.group_id" clearable style="width:100%"><el-option v-for="group in pageData.groups" :key="group.id" :label="group.name" :value="group.id" /></el-select></el-form-item>
             <el-form-item label="厂商"><el-select v-model="writeForm.device_vendor" style="width:100%"><el-option v-for="vendor in DEVICE_VENDOR_OPTIONS" :key="vendor.value" :label="vendor.label" :value="vendor.value" /></el-select></el-form-item>
             <el-form-item label="类型"><el-select v-model="writeForm.device_type" style="width:100%"><el-option v-for="type in DEVICE_TYPE_OPTIONS" :key="type" :label="type" :value="type" /></el-select></el-form-item>
+            <el-form-item label="建设阶段"><el-select v-model="writeForm.project_phase" style="width:100%"><el-option label="一期" value="phase_1" /><el-option label="二期" value="phase_2" /><el-option label="三期" value="phase_3" /><el-option label="其他" value="other" /><el-option label="未指定" value="unspecified" /></el-select></el-form-item>
+            <el-form-item label="投运状态"><el-select v-model="writeForm.operation_status" style="width:100%"><el-option label="在用" value="in_service" /><el-option label="未并网" value="not_integrated" /><el-option label="调试中" value="commissioning" /><el-option label="暂停使用" value="suspended" /><el-option label="已退役" value="retired" /></el-select></el-form-item>
+            <el-form-item label="状态说明"><el-input v-model="writeForm.operation_status_reason" type="textarea" :rows="2" /></el-form-item>
             <el-form-item label="站点"><el-input v-model="writeForm.station" /></el-form-item>
             <el-form-item label="备注"><el-input v-model="writeForm.remark" type="textarea" :rows="3" /></el-form-item>
           </section>
@@ -2119,8 +2295,42 @@ function errorMessage(cause: unknown, fallback: string): string {
       <template #footer><el-button @click="groupAssignVisible = false">取消</el-button><el-button type="primary" :disabled="!isFeatureEnabled('web.device_management_write')" @click="saveGroupAssignment">确认</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="importVisible" title="CSV 导入预览 / 确认" width="min(680px, 94vw)" @close="closeImportDialog">
-      <el-alert title="先预览再确认；服务端校验 SHA-256 并以单事务提交。备份只供人工恢复，任务失败不会覆盖同期数据。" type="info" show-icon :closable="false" />
+    <el-dialog v-model="lifecycleVisible" :title="lifecycleMode === 'phase' ? '设置建设阶段' : '设置投运状态'" width="480px">
+      <p>已选择 {{ lifecycleTargetUuids.length }} 台设备</p>
+      <el-select v-if="lifecycleMode === 'phase'" v-model="lifecycleValue" style="width:100%">
+        <el-option label="一期" value="phase_1" /><el-option label="二期" value="phase_2" />
+        <el-option label="三期" value="phase_3" /><el-option label="其他" value="other" />
+        <el-option label="未指定" value="unspecified" />
+      </el-select>
+      <template v-else>
+        <el-select v-model="lifecycleValue" style="width:100%">
+          <el-option label="在用" value="in_service" /><el-option label="未并网" value="not_integrated" />
+          <el-option label="调试中" value="commissioning" /><el-option label="暂停使用" value="suspended" />
+          <el-option label="已退役" value="retired" />
+        </el-select>
+        <el-input v-model="lifecycleReason" type="textarea" :rows="3" maxlength="1000" show-word-limit placeholder="调整原因（可选）" class="lifecycle-reason" />
+        <el-alert :title="lifecycleValue === 'in_service' ? '改为在用后，设备将恢复默认显示，并可能进入自动采集候选。' : '非在用设备会退出默认列表和自动任务候选，但不会被删除。'" type="info" :closable="false" show-icon />
+      </template>
+      <template #footer><el-button @click="lifecycleVisible = false">取消</el-button><el-button type="primary" :loading="lifecycleLoading" @click="saveLifecycle">确认设置</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="importVisible" :title="importWriteMode === 'UPDATE_ONLY' ? '批量更新设备预检' : 'CSV 导入预检'" width="min(1180px, 96vw)" @close="closeImportDialog">
+      <el-alert title="主地址在当前局点内必须唯一，不同局点可以使用相同地址。确认前会重新预检并以单事务提交。" type="info" show-icon :closable="false" />
+      <el-form label-position="top" class="import-options">
+        <el-form-item label="匹配方式">
+          <el-select v-model="importMatchStrategy" style="width: 100%" @change="invalidateImportPreview">
+            <el-option label="按主 IP 更新（当前局点内唯一）" value="SITE_PRIMARY_IP" />
+            <el-option label="按设备 ID 更新" value="DEVICE_ID" />
+            <el-option label="按设备名称更新" value="DEVICE_NAME" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="写入模式">
+          <el-radio-group v-model="importWriteMode" @change="invalidateImportPreview">
+            <el-radio-button value="UPDATE_ONLY">仅更新</el-radio-button>
+            <el-radio-button value="UPSERT">更新或新增</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+      </el-form>
       <input ref="importFileInput" class="visually-hidden" type="file" accept=".csv,text/csv" @change="onImportFileChange" />
       <div class="import-file-picker"><el-button :disabled="!isFeatureEnabled('web.device_management_import')" @click="chooseImportFile">选择 CSV 文件</el-button><span>{{ importFile?.name || '尚未选择文件' }}</span></div>
       <div v-if="importPreview" class="import-summary">
@@ -2131,7 +2341,12 @@ function errorMessage(cause: unknown, fallback: string): string {
           <el-descriptions-item label="无效">{{ importPreview.invalid_rows }}</el-descriptions-item>
           <el-descriptions-item label="新华三 H3C">{{ importPreview.vendor_summary.H3C || 0 }}</el-descriptions-item>
           <el-descriptions-item label="中兴 ZTE">{{ importPreview.vendor_summary.ZTE || 0 }}</el-descriptions-item>
-          <el-descriptions-item label="新增 / 更新">{{ importPreview.create_count }} / {{ importPreview.update_count }}</el-descriptions-item>
+          <el-descriptions-item label="新增">{{ importPreview.create_count }}</el-descriptions-item>
+          <el-descriptions-item label="更新">{{ importPreview.update_count }}</el-descriptions-item>
+          <el-descriptions-item label="无变化">{{ importPreview.unchanged_count }}</el-descriptions-item>
+          <el-descriptions-item label="未匹配">{{ importPreview.not_found_count }}</el-descriptions-item>
+          <el-descriptions-item label="冲突">{{ importPreview.conflict_count }}</el-descriptions-item>
+          <el-descriptions-item label="失败">{{ importPreview.invalid_rows }}</el-descriptions-item>
         </el-descriptions>
         <NcDataTable
           v-if="importPreview.errors.length"
@@ -2144,9 +2359,29 @@ function errorMessage(cause: unknown, fallback: string): string {
           empty-text="没有导入错误"
         />
         <el-alert v-for="item in importPreview.warnings" :key="item" :title="item" type="warning" :closable="false" />
-        <el-form-item v-if="importPreview.duplicate_rows.length" label="重复地址"><el-select v-model="importDuplicateStrategy" style="width:100%"><el-option label="拒绝导入（安全默认）" value="reject" /><el-option label="跳过重复行" value="skip" /><el-option label="仍新增为独立设备" value="create_new" /></el-select><span class="field-warning">涉及 CSV 行：{{ importPreview.duplicate_rows.join('、') }}</span></el-form-item>
+        <div class="import-result-toolbar">
+          <span>逐行结果</span>
+          <el-select v-model="importActionFilter" style="width: 180px">
+            <el-option label="全部" value="ALL" />
+            <el-option label="新增" value="CREATE" />
+            <el-option label="更新" value="UPDATE" />
+            <el-option label="无变化" value="UNCHANGED" />
+            <el-option label="未匹配" value="NOT_FOUND" />
+            <el-option label="冲突" value="CONFLICT" />
+            <el-option label="失败" value="INVALID" />
+          </el-select>
+        </div>
+        <NcDataTable
+          table-id="device-import-row-results"
+          route-key="/devices/import-row-results"
+          :data="filteredImportRows"
+          :columns="importRowColumns"
+          row-key="line"
+          :max-height="360"
+          empty-text="没有逐行结果"
+        />
       </div>
-      <template #footer><el-button @click="closeImportDialog">关闭</el-button><el-button :loading="importLoading" :disabled="!importFile || !isFeatureEnabled('web.device_management_import')" @click="runImportPreview">预览</el-button><el-button type="primary" :disabled="!importPreview || !!importPreview.errors.length || !isFeatureEnabled('web.device_management_import')" @click="confirmImport">确认导入</el-button></template>
+      <template #footer><el-button @click="closeImportDialog">关闭</el-button><el-button :loading="importLoading" :disabled="!importFile || !isFeatureEnabled('web.device_management_import')" @click="runImportPreview">预览</el-button><el-button type="primary" :disabled="!importPreview || importPreview.has_hard_errors || !isFeatureEnabled('web.device_management_import')" @click="confirmImport">{{ importWriteMode === 'UPDATE_ONLY' ? '确认更新' : '确认导入' }}</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="secureCrtVisible" title="生成 SecureCRT 会话" width="min(560px, 94vw)">
@@ -2166,11 +2401,12 @@ function errorMessage(cause: unknown, fallback: string): string {
 .group-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--el-border-color-lighter); }
 .page-heading h1, .detail-heading h2, .detail-section h3 { margin: 0; }
 .page-heading p, .detail-heading p { margin: 5px 0 0; color: var(--nc-text-secondary); font-size: 13px; }
-.filters { display: grid; grid-template-columns: minmax(240px, 2fr) repeat(6, minmax(120px, 1fr)) auto; gap: 10px; padding: 14px; margin-bottom: 14px; }
+.filters { display: grid; grid-template-columns: minmax(240px, 2fr) repeat(8, minmax(120px, 1fr)) auto; gap: 10px; padding: 14px; margin-bottom: 14px; }
 .state-alert { margin-bottom: 14px; }
 .action-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 14px; margin-bottom: 14px; }
 .action-bar > span { margin-right: 4px; color: var(--nc-text-secondary); font-size: 13px; }
 .task-summary { margin-bottom: 14px; }
+.lifecycle-reason { margin: 14px 0; }
 .export-scope-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
 .export-scope-summary span { display: grid; gap: 4px; color: var(--nc-text-secondary); font-size: 13px; }
 .export-scope-summary strong { color: var(--nc-text-primary); font-size: 15px; }
@@ -2204,13 +2440,11 @@ function errorMessage(cause: unknown, fallback: string): string {
 .form-section h3, .form-section h4 { margin: 0 0 14px; }
 .terminal-settings-form { margin-top: 18px; }
 .field-warning { margin-left: 10px; color: var(--el-color-warning); font-size: 12px; }
-.device-context-menu { position: fixed; z-index: 5000; display: flex; min-width: 170px; padding: 6px; flex-direction: column; background: var(--el-bg-color-overlay); border: 1px solid var(--el-border-color); border-radius: 7px; box-shadow: var(--el-box-shadow-light); }
-.device-context-menu button { padding: 8px 12px; color: var(--el-text-color-primary); text-align: left; background: transparent; border: 0; border-radius: 4px; cursor: pointer; }
-.device-context-menu button:hover:not(:disabled) { background: var(--el-fill-color-light); }
-.device-context-menu button.danger { color: var(--el-color-danger); }
-.device-context-menu button:disabled { color: var(--el-text-color-disabled); cursor: not-allowed; }
 .import-summary { margin-top: 16px; overflow-wrap: anywhere; }
 .import-file-picker { display: flex; align-items: center; gap: 12px; margin-top: 18px; }
+.import-options { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(260px, 1fr); gap: 16px; margin-top: 16px; }
+.import-result-toolbar { display: flex; align-items: center; justify-content: space-between; margin: 12px 0 8px; }
+@media (max-width: 760px) { .import-options { grid-template-columns: 1fr; } }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (max-width: 1280px) { .filters { grid-template-columns: repeat(3, minmax(150px, 1fr)); } }
 @media (max-width: 760px) { .device-management { height: auto; min-height: 100%; overflow: visible; } .table-card { min-height: 55dvh; flex: none; } .filters, .form-grid, .form-grid.two-columns, .export-scope-summary { grid-template-columns: 1fr; } .page-heading { align-items: flex-start; } }

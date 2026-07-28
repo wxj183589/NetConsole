@@ -67,25 +67,23 @@ export function previewTracksideApVlanAutoGroup(payload: {
   planning_mode: ApManagementVlanPlanningMode
   auto_group_station_count: number
   current: TracksideApPlanDraft
-  reallocation_policy?: 'only_unlocked' | 'all'
 }): Promise<ApManagementVlanPreview> {
   return apiRequest(`${root}/plan/auto-group-preview`, { method: 'POST', body: JSON.stringify(payload) })
 }
 
 export function previewTracksideApVlanChange(
   proposed: TracksideApPlanDraft,
-  reallocationPolicy: 'only_unlocked' | 'all' = 'only_unlocked',
 ): Promise<ApManagementVlanPreview> {
   return apiRequest(`${root}/plan/adjustment-preview`, {
     method: 'POST',
-    body: JSON.stringify({ proposed, reallocation_policy: reallocationPolicy }),
+    body: JSON.stringify({ proposed }),
   })
 }
 
 export function saveTracksideApPlan(draft: TracksideApPlanDraft | TracksideApPlanRow[]): Promise<TracksideApTask> {
   const payload = Array.isArray(draft)
     ? { rows: draft }
-    : { draft, expected_revision: draft.planning.revision, reallocation_policy: 'only_unlocked' }
+    : { draft, expected_revision: draft.planning.revision }
   return apiRequest(`${root}/plan/save`, {
     method: 'POST',
     body: JSON.stringify({

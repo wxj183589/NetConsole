@@ -20,9 +20,12 @@ import type {
   DeviceFormConnectionTestRequest,
   DeviceGroup,
   DeviceImportPreview,
+  DeviceImportMatchStrategy,
+  DeviceImportWriteMode,
   DeviceHistoryPage,
   DeviceOverviewResponse,
   DeviceListQuery,
+  DeviceLifecycleUpdateRequest,
   DevicePage,
   DeviceTaskBatch,
   DeviceTaskReference,
@@ -169,6 +172,13 @@ export function assignDeviceGroup(deviceUuids: string[], groupId: number | null)
   return apiRequest<{ success: number; failed: number; group_id: number | null }>('/api/device-management/groups/assign', { method: 'POST', body: JSON.stringify({ device_uuids: deviceUuids, group_id: groupId }) })
 }
 
+export function updateDeviceLifecycle(payload: DeviceLifecycleUpdateRequest): Promise<{ updated: number }> {
+  return apiRequest<{ updated: number }>('/api/device-management/devices/lifecycle', {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
 export function issueDeviceDeleteToken(deviceUuids: string[]): Promise<DeviceDeleteToken> {
   return apiRequest<DeviceDeleteToken>('/api/device-management/devices/delete-confirmation', { method: 'POST', body: JSON.stringify({ device_uuids: deviceUuids }) })
 }
@@ -209,9 +219,15 @@ export function getDeviceHistory(
   return apiRequest<DeviceHistoryPage>(`/api/device-management/devices/${encodeURIComponent(deviceUuid)}/history?${params}`)
 }
 
-export function previewDeviceImport(file: File): Promise<DeviceImportPreview> {
+export function previewDeviceImport(
+  file: File,
+  matchStrategy: DeviceImportMatchStrategy,
+  writeMode: DeviceImportWriteMode,
+): Promise<DeviceImportPreview> {
   const form = new FormData()
   form.append('file', file)
+  form.append('match_strategy', matchStrategy)
+  form.append('write_mode', writeMode)
   return apiRequest<DeviceImportPreview>('/api/device-management/imports/preview', { method: 'POST', body: form })
 }
 

@@ -41,6 +41,9 @@ export interface DeviceGroupOption {
   name: string
 }
 
+export type ProjectPhase = 'phase_1' | 'phase_2' | 'phase_3' | 'other' | 'unspecified'
+export type OperationStatus = 'in_service' | 'not_integrated' | 'commissioning' | 'suspended' | 'retired'
+
 export interface DeviceListItem {
   id: number
   device_uuid: string
@@ -51,6 +54,10 @@ export interface DeviceListItem {
   group_name: string
   device_vendor: DeviceVendor
   device_type: string
+  project_phase: ProjectPhase
+  operation_status: OperationStatus
+  operation_status_reason: string
+  operation_status_updated_at: string
   primary_address: string
   backup_address: string
   updated_at: string
@@ -219,6 +226,10 @@ export interface DeviceOverviewResponse {
   name: string
   system_name: string | null
   device_type: string | null
+  project_phase?: ProjectPhase
+  operation_status?: OperationStatus
+  operation_status_reason?: string | null
+  operation_status_updated_at?: string | null
   station: string | null
   location: string | null
   primary_address: string | null
@@ -508,6 +519,9 @@ export interface DeviceWriteRequest {
   group_id?: number | null
   device_vendor?: DeviceVendor
   device_type?: string
+  project_phase?: ProjectPhase
+  operation_status?: OperationStatus
+  operation_status_reason?: string
   primary_address: string
   backup_address?: string
   ssh_enabled?: boolean
@@ -597,10 +611,19 @@ export interface DeviceListQuery {
   vendor?: DeviceVendor | ''
   group_filter?: number | '__ungrouped__'
   connection_status?: DeviceConnectionStatus | ''
+  project_phase?: ProjectPhase | 'all'
+  operation_status?: OperationStatus | 'all'
   page?: number
   page_size?: number
   sort_by?: string
   sort_order?: 'asc' | 'desc'
+}
+
+export interface DeviceLifecycleUpdateRequest {
+  device_uuids: string[]
+  project_phase?: ProjectPhase
+  operation_status?: OperationStatus
+  reason?: string
 }
 
 export interface DeviceWriteResponse {
@@ -705,7 +728,11 @@ export interface DeviceImportPreview {
   create_count: number
   update_count: number
   conflict_count: number
+  unchanged_count: number
+  not_found_count: number
   detected_encoding: string
+  match_strategy: DeviceImportMatchStrategy
+  write_mode: DeviceImportWriteMode
   columns: string[]
   errors: Array<{
     line: number
@@ -713,10 +740,31 @@ export interface DeviceImportPreview {
     field: string
     raw_value: string
     message: string
+    code: string
   }>
+  rows: DeviceImportRowResult[]
   warnings: string[]
   duplicate_rows: number[]
+  has_hard_errors: boolean
   persistence: 'preview_only'
+}
+
+export type DeviceImportMatchStrategy = 'DEVICE_ID' | 'SITE_PRIMARY_IP' | 'DEVICE_NAME'
+export type DeviceImportWriteMode = 'UPDATE_ONLY' | 'UPSERT'
+export type DeviceImportRowAction = 'CREATE' | 'UPDATE' | 'UNCHANGED' | 'NOT_FOUND' | 'CONFLICT' | 'INVALID'
+
+export interface DeviceImportRowResult {
+  line: number
+  action: DeviceImportRowAction
+  match_strategy: DeviceImportMatchStrategy
+  match_basis: string
+  device_id: number | null
+  device_name: string
+  original_primary_address: string
+  new_primary_address: string
+  message: string
+  error_code: string
+  warnings: string[]
 }
 
 export interface DeviceDeleteToken {

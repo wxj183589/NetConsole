@@ -4,6 +4,8 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 
+import type { TracksideApPlan } from '../../../types/tracksideApBusiness'
+
 const api = vi.hoisted(() => ({
   exportTracksideApPlan: vi.fn(),
   getTracksideApPlan: vi.fn(),
@@ -64,7 +66,10 @@ const task = (taskId: string, status: string, available = false, artifactId = ''
 })
 
 const stubs = {
-  NcDataTable: defineComponent({ template: '<div />' }),
+  NcDataTable: defineComponent({
+    props: { data: { type: Array, default: () => [] } },
+    template: '<div><template v-for="row in data"><slot name="cell-source" :row="row" /><slot name="cell-group_source" :row="row" /></template></div>',
+  }),
   ElAlert: defineComponent({ template: '<div><slot /></div>' }),
   ElButton: defineComponent({ emits: ['click'], template: '<button @click="$emit(\'click\')"><slot /></button>' }),
   ElSelect: defineComponent({ template: '<select><slot /></select>' }),
@@ -79,7 +84,7 @@ const stubs = {
   ElTag: defineComponent({ template: '<span><slot /></span>' }),
 }
 
-const emptyPlan = () => ({
+const emptyPlan = (): TracksideApPlan => ({
   items: [],
   total: 0,
   planning: {
@@ -149,6 +154,38 @@ describe('TracksideApPlanningTab download behavior', () => {
     const wrapper = mount(TracksideApPlanningTab, { props: { locked: false, saving: false }, global: { stubs } })
     await flushPromises()
     expect(downloadBackendResource).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('shows readable VLAN sources while invalid IP references remain non-blocking', async () => {
+    const plan = emptyPlan()
+    plan.station_details = [{
+      station_id: 's1',
+      station_name: '站点A',
+      station_sequence: 0,
+      ap_count: 1,
+      group_id: 'g1',
+      group_code: 'G001',
+      group_name: '全线组',
+      ap_start_ip: 'invalid-ip',
+      ap_end_ip: 'another-invalid-ip',
+      management_vlan: 71,
+      network_address: 'invalid-network',
+      prefix_length: 22,
+      subnet_mask: 'invalid-mask',
+      default_gateway: 'invalid-gateway',
+      source: 'vlan_group_inherited',
+      notes: '',
+    }]
+    api.getTracksideApPlan.mockResolvedValue(plan)
+
+    const wrapper = mount(TracksideApPlanningTab, { props: { locked: false, saving: false }, global: { stubs } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('VLAN 组继承')
+    expect(wrapper.text()).not.toContain('vlan_group_inherited')
+    expect(wrapper.text()).not.toContain('基础资料校验失败')
+    expect(wrapper.text()).not.toContain('网关不在组内子网')
     wrapper.unmount()
   })
 

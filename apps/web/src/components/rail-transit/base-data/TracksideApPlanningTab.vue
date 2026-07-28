@@ -52,7 +52,6 @@ const dirty = ref(false)
 const task = ref<TracksideApTask | null>(null)
 const importInput = ref<HTMLInputElement | null>(null)
 const duplicateStrategy = ref<'replace' | 'skip' | 'error'>('replace')
-const reallocationPolicy = ref<'only_unlocked' | 'all'>('only_unlocked')
 const importPreview = ref<TracksideApPlanPreview | null>(null)
 const importPreviewVisible = ref(false)
 const impactPreview = ref<ApManagementVlanImpact | null>(null)
@@ -63,7 +62,7 @@ const allocationVisible = ref(false)
 const editingGroupId = ref('')
 const editingMemberIds = ref<string[]>([])
 const editingSectionName = ref('')
-const groupNetworkEditBaseline = ref<TracksideApPlanDraft | null>(null)
+const groupVlanEditBaseline = ref<TracksideApPlanDraft | null>(null)
 let pollTimer: number | undefined
 type ExportKind = 'template' | 'current'
 interface PendingDownload { taskId: string; kind: ExportKind }
@@ -81,13 +80,6 @@ const groupColumns: NcTableColumn<ApManagementVlanGroup>[] = [
   { key: 'station_count', label: '站点数', valueType: 'number', width: 88 },
   { key: 'ap_count', label: 'AP 总数', valueType: 'number', width: 95 },
   { key: 'management_vlan', label: '管理 VLAN', valueType: 'number', width: 110 },
-  { key: 'network_address', label: '网络地址', valueType: 'ip', width: 145 },
-  { key: 'prefix_length', label: '前缀', valueType: 'number', width: 82 },
-  { key: 'default_gateway', label: 'AP 网关', valueType: 'ip', width: 145 },
-  { key: 'ap_start_ip', label: 'AP 起始地址', valueType: 'ip', width: 145 },
-  { key: 'ap_end_ip', label: 'AP 结束地址', valueType: 'ip', width: 145 },
-  { key: 'address_capacity', label: '地址容量', valueType: 'number', width: 100 },
-  { key: 'used_address_count', label: '已用地址', valueType: 'number', width: 100 },
   { key: 'validation_status', label: '校验', valueType: 'status', width: 90 },
   { key: 'notes', label: '备注', valueType: 'description', width: 180, align: 'left', alignmentReason: 'long-text' },
 ]
@@ -95,11 +87,7 @@ const stationColumns: NcTableColumn<ApManagementVlanStationDetail>[] = [
   { key: 'station_name', label: '站点', valueType: 'name', fixed: 'left', width: 150 },
   { key: 'ap_count', label: 'AP 数', valueType: 'number', width: 85 },
   { key: 'group_name', label: 'VLAN 组', valueType: 'name', width: 170 },
-  { key: 'ap_start_ip', label: 'AP 起始地址', valueType: 'ip', width: 145 },
-  { key: 'ap_end_ip', label: 'AP 结束地址', valueType: 'ip', width: 145 },
   { key: 'management_vlan', label: '管理 VLAN（继承）', valueType: 'number', width: 150 },
-  { key: 'prefix_length', label: '掩码（继承）', valueType: 'number', width: 125 },
-  { key: 'default_gateway', label: '网关（继承）', valueType: 'ip', width: 145 },
   { key: 'source', label: '来源', valueType: 'status', width: 135 },
   { key: 'notes', label: '备注', valueType: 'description', width: 190, align: 'left', alignmentReason: 'long-text' },
 ]
@@ -110,16 +98,13 @@ const previewColumns: NcTableColumn<TracksideApPlanPreviewRow>[] = [
   { key: 'message', label: '说明', valueType: 'description', align: 'left', alignmentReason: 'long-text' },
 ]
 const allocationColumns: NcTableColumn<ApManagementVlanAllocation>[] = [
-  { key: 'allocation_order', label: '组内顺序', valueType: 'number', width: 95 },
   { key: 'station_name', label: '站点', valueType: 'name', width: 140 },
   { key: 'section_name', label: '区间', valueType: 'name', width: 170 },
   { key: 'ap_name', label: 'AP 名称', valueType: 'name', width: 180 },
   { key: 'point_code', label: '点位编号', valueType: 'name', width: 140 },
-  { key: 'planned_ip', label: '规划 IP', valueType: 'ip', width: 145 },
+  { key: 'planned_ip', label: '既有 AP IP（参考）', valueType: 'ip', width: 165 },
   { key: 'group_source', label: '有效组来源', valueType: 'status', width: 145 },
   { key: 'ap_override_group', label: 'AP 级覆盖', valueType: 'actions', width: 190 },
-  { key: 'source', label: '地址来源', valueType: 'status', width: 120 },
-  { key: 'is_locked', label: '手工锁定', valueType: 'status', width: 100 },
 ]
 
 const canPreviewImport = computed(() => !props.saving)
@@ -136,6 +121,18 @@ const modeLabels: Record<ApManagementVlanPlanningMode, string> = {
   line_single: '全线统一 VLAN',
   station_independent: '每站独立 VLAN',
   station_grouped: '按站点分组 VLAN',
+}
+const sourceLabels: Record<string, string> = {
+  vlan_group_inherited: 'VLAN 组继承',
+  station_inherited: 'VLAN 组继承',
+  ap_override: 'AP 单独指定',
+  section_default: '区间默认组',
+  interval_start_default: '区间起点默认组',
+  legacy: '站点历史配置',
+  legacy_station: '站点历史配置',
+  unassigned: '未配置',
+  existing_ap: '既有 AP 信息',
+  reference_only: '仅 VLAN 归属',
 }
 const editingGroup = computed(() => plan.value?.groups.find(
   (group) => group.group_id === editingGroupId.value,
@@ -154,6 +151,7 @@ const orderedStations = computed(() => [...props.stations].sort(
 
 function failure(reason: unknown, fallback: string): string { return reason instanceof Error ? reason.message : fallback }
 function deepCopy<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }
+function sourceLabel(value: string): string { return sourceLabels[value] || '未配置' }
 function stopPolling(): void { if (pollTimer !== undefined) window.clearTimeout(pollTimer); pollTimer = undefined }
 function rememberTask(value: TracksideApTask | null): void {
   task.value = value
@@ -203,16 +201,13 @@ async function applyServerPreview(
   loading.value = true
   error.value = ''
   try {
-    const preview = await previewTracksideApVlanChange(
-      proposed,
-      reallocationPolicy.value,
-    )
+    const preview = await previewTracksideApVlanChange(proposed)
     impactPreview.value = preview.impact
     impactVisible.value = true
     const accepted = await confirm({
       type: preview.impact.conflict_count ? 'DANGER' : 'WARNING',
       title,
-      message: `将影响 ${preview.impact.affected_station_count} 个站点、${preview.impact.affected_ap_count} 个 AP，IP 变化 ${preview.impact.ip_change_count} 个；手工/锁定地址 ${preview.impact.manual_address_override_count} 个。`,
+      message: `将影响 ${preview.impact.affected_station_count} 个站点、${preview.impact.affected_ap_count} 个 AP，管理 VLAN 变化 ${preview.impact.vlan_change_count} 个。`,
       confirmText: '应用预览结果',
     })
     if (accepted) {
@@ -229,17 +224,17 @@ async function applyServerPreview(
   finally { loading.value = false }
 }
 
-function beginGroupNetworkEdit(): void {
-  if (!groupNetworkEditBaseline.value && draft.value) {
-    groupNetworkEditBaseline.value = deepCopy(draft.value)
+function beginGroupVlanEdit(): void {
+  if (!groupVlanEditBaseline.value && draft.value) {
+    groupVlanEditBaseline.value = deepCopy(draft.value)
   }
 }
 
-async function commitGroupNetworkEdit(): Promise<void> {
-  if (!plan.value || !draft.value || !groupNetworkEditBaseline.value) return
+async function commitGroupVlanEdit(): Promise<void> {
+  if (!plan.value || !draft.value || !groupVlanEditBaseline.value) return
   const proposed = deepCopy(draft.value)
-  const baseline = groupNetworkEditBaseline.value
-  groupNetworkEditBaseline.value = null
+  const baseline = groupVlanEditBaseline.value
+  groupVlanEditBaseline.value = null
   plan.value = {
     ...plan.value,
     planning: baseline.planning,
@@ -247,7 +242,7 @@ async function commitGroupNetworkEdit(): Promise<void> {
     assignments: baseline.assignments,
     allocations: baseline.allocations,
   }
-  await applyServerPreview(proposed, '修改 VLAN 组网络参数影响预览')
+  await applyServerPreview(proposed, '修改管理 VLAN 影响预览')
 }
 
 async function regroup(mode = plan.value?.planning.planning_mode): Promise<void> {
@@ -259,14 +254,13 @@ async function regroup(mode = plan.value?.planning.planning_mode): Promise<void>
       planning_mode: mode,
       auto_group_station_count: plan.value.planning.auto_group_station_count,
       current: deepCopy(draft.value),
-      reallocation_policy: reallocationPolicy.value,
     })
     impactPreview.value = preview.impact
     impactVisible.value = true
     const accepted = await confirm({
-      type: preview.impact.manual_address_override_count ? 'DANGER' : 'WARNING',
+      type: preview.impact.conflict_count ? 'DANGER' : 'WARNING',
       title: '规划方式影响预览',
-      message: `${modeLabels[mode]}将生成 ${preview.plan.groups.length} 个 VLAN 组，影响 ${preview.impact.affected_station_count} 个站点和 ${preview.impact.affected_ap_count} 个 AP。默认仅重算未锁定地址。`,
+      message: `${modeLabels[mode]}将生成 ${preview.plan.groups.length} 个 VLAN 组，影响 ${preview.impact.affected_station_count} 个站点和 ${preview.impact.affected_ap_count} 个 AP；不会生成、校验或修改 AP IP。`,
       confirmText: '确认应用',
     })
     if (accepted) {
@@ -398,7 +392,7 @@ function showStations(): void {
   activeView.value = 'stations'
 }
 
-function showAllocations(): void {
+function showApReferences(): void {
   if (selectedGroups.value.length !== 1) return
   editingGroupId.value = selectedGroups.value[0].group_id
   editingSectionName.value = editingAllocations.value.find(
@@ -606,11 +600,6 @@ onBeforeUnmount(stopPolling)
       <el-tag v-if="plan" :type="plan.valid ? 'success' : 'danger'">{{ plan.valid ? '规划有效' : `${plan.issues.filter((item) => item.blocking).length} 个阻断问题` }}</el-tag>
       <el-tag v-if="plan?.unassigned_station_count" type="danger">未分配站点 {{ plan.unassigned_station_count }}</el-tag>
       <span class="revision">revision {{ plan?.planning.revision ?? 0 }}</span>
-      <span>地址重算</span>
-      <el-select v-model="reallocationPolicy" :disabled="!canWrite || loading" style="width:190px">
-        <el-option label="仅未锁定地址（默认）" value="only_unlocked" />
-        <el-option label="全部重新生成" value="all" />
-      </el-select>
     </div>
     <div class="toolbar">
       <el-select v-model="duplicateStrategy" aria-label="重复策略" style="width:150px"><el-option label="重复时覆盖" value="replace" /><el-option label="重复时跳过" value="skip" /><el-option label="重复时报错" value="error" /></el-select>
@@ -624,7 +613,7 @@ onBeforeUnmount(stopPolling)
       <el-button :disabled="!canWrite || selectedGroups.length !== 1 || taskRunning" @click="openMemberEditor">调整成员/边界</el-button>
       <el-button :disabled="!canWrite || selectedGroups.length !== 1 || selectedGroups[0]?.members.length !== 0 || taskRunning" @click="deleteEmptyGroup">删除空组</el-button>
       <el-button :disabled="!plan" @click="showStations">查看站点</el-button>
-      <el-button :disabled="selectedGroups.length !== 1" @click="showAllocations">查看地址分配</el-button>
+      <el-button :disabled="selectedGroups.length !== 1" @click="showApReferences">查看 AP/参考信息</el-button>
       <span class="dirty">{{ dirty ? '有未保存修改' : `已加载 ${plan?.groups.length ?? 0} 个 VLAN 组` }}</span>
     </div>
     <el-tabs v-model="activeView">
@@ -633,18 +622,16 @@ onBeforeUnmount(stopPolling)
           <NcDataTable v-loading="loading" table-id="rail-base-trackside-ap-vlan-groups" route-key="/rail-transit/base-data" :data="plan?.groups || []" :columns="groupColumns" border height="calc(100vh - 465px)" empty-text="暂无 VLAN 分组；解锁后选择规划方式生成" @selection-change="(value: ApManagementVlanGroup[]) => selectedGroups = value">
             <template #cell-sequence="{ row }">{{ row.sequence + 1 }}</template>
             <template #cell-group_name="{ row }"><el-input v-if="canWrite" v-model="row.group_name" @input="publishDirty" /><span v-else>{{ row.group_name }}</span></template>
-            <template #cell-management_vlan="{ row }"><el-input-number v-if="canWrite" v-model="row.management_vlan" :min="1" :max="4094" controls-position="right" @focus="beginGroupNetworkEdit" @change="commitGroupNetworkEdit" /><span v-else>{{ row.management_vlan ?? '--' }}</span></template>
-            <template #cell-network_address="{ row }"><el-input v-if="canWrite" v-model="row.network_address" @focus="beginGroupNetworkEdit" @change="commitGroupNetworkEdit" /><span v-else>{{ row.network_address || '--' }}</span></template>
-            <template #cell-prefix_length="{ row }"><el-input-number v-if="canWrite" v-model="row.prefix_length" :min="0" :max="32" controls-position="right" @focus="beginGroupNetworkEdit" @change="commitGroupNetworkEdit" /><span v-else>{{ row.prefix_length ?? '--' }}</span></template>
-            <template #cell-default_gateway="{ row }"><el-input v-if="canWrite" v-model="row.default_gateway" @focus="beginGroupNetworkEdit" @change="commitGroupNetworkEdit" /><span v-else>{{ row.default_gateway || '--' }}</span></template>
-            <template #cell-ap_start_ip="{ row }"><el-input v-if="canWrite" v-model="row.ap_start_ip" @focus="beginGroupNetworkEdit" @change="commitGroupNetworkEdit" /><span v-else>{{ row.ap_start_ip || '--' }}</span></template>
+            <template #cell-management_vlan="{ row }"><el-input-number v-if="canWrite" v-model="row.management_vlan" :min="1" :max="4094" controls-position="right" @focus="beginGroupVlanEdit" @change="commitGroupVlanEdit" /><span v-else>{{ row.management_vlan ?? '--' }}</span></template>
             <template #cell-notes="{ row }"><el-input v-if="canWrite" v-model="row.notes" @input="publishDirty" /><span v-else>{{ row.notes || '--' }}</span></template>
           </NcDataTable>
         </div>
       </el-tab-pane>
       <el-tab-pane label="按站点查看（继承值）" name="stations">
         <div class="table-scroll">
-          <NcDataTable table-id="rail-base-trackside-ap-vlan-stations" route-key="/rail-transit/base-data" :data="plan?.station_details || []" :columns="stationColumns" border height="calc(100vh - 465px)" empty-text="暂无站点有效网络配置" />
+          <NcDataTable table-id="rail-base-trackside-ap-vlan-stations" route-key="/rail-transit/base-data" :data="plan?.station_details || []" :columns="stationColumns" border height="calc(100vh - 465px)" empty-text="暂无站点 VLAN 归属">
+            <template #cell-source="{ row }">{{ sourceLabel(row.source) }}</template>
+          </NcDataTable>
         </div>
       </el-tab-pane>
     </el-tabs>
@@ -660,11 +647,11 @@ onBeforeUnmount(stopPolling)
     </el-dialog>
     <el-dialog v-model="impactVisible" title="规划影响预览" width="760px">
       <el-descriptions v-if="impactPreview" :column="3" border>
+        <el-descriptions-item label="原 VLAN 组">{{ impactPreview.old_group_count }}</el-descriptions-item>
+        <el-descriptions-item label="新 VLAN 组">{{ impactPreview.new_group_count }}</el-descriptions-item>
         <el-descriptions-item label="受影响站点">{{ impactPreview.affected_station_count }}</el-descriptions-item>
         <el-descriptions-item label="受影响 AP">{{ impactPreview.affected_ap_count }}</el-descriptions-item>
-        <el-descriptions-item label="IP 变化">{{ impactPreview.ip_change_count }}</el-descriptions-item>
         <el-descriptions-item label="VLAN 变化">{{ impactPreview.vlan_change_count }}</el-descriptions-item>
-        <el-descriptions-item label="手工/锁定地址">{{ impactPreview.manual_address_override_count }}</el-descriptions-item>
         <el-descriptions-item label="冲突/提示">{{ impactPreview.conflict_count }} / {{ impactPreview.warning_count }}</el-descriptions-item>
       </el-descriptions>
     </el-dialog>
@@ -675,8 +662,15 @@ onBeforeUnmount(stopPolling)
       </el-select>
       <template #footer><el-button @click="memberEditorVisible = false">取消</el-button><el-button type="primary" :disabled="!canWrite" @click="applyMemberEditor">生成影响预览</el-button></template>
     </el-dialog>
-    <el-dialog v-model="allocationVisible" :title="`${editingGroup?.group_name || 'VLAN 组'} · 地址分配`" width="980px">
-      <el-alert title="有效组来源依次为 AP 级覆盖、明确归属站点、区间默认组和已保存的区间起点默认；覆盖仅修改网络归属，不改变站点、区间或 AP 身份。" type="info" :closable="false" />
+    <el-dialog v-model="allocationVisible" :title="`${editingGroup?.group_name || 'VLAN 组'} · AP 与 IP 参考信息`" width="980px">
+      <el-alert title="IP 仅为既有资料的只读参考；本规划不生成、不校验、不修改 AP IP。有效 VLAN 组来源依次为 AP 级覆盖、明确归属站点、区间默认组和区间起点默认。" type="info" :closable="false" />
+      <el-descriptions v-if="editingGroup" :column="3" border>
+        <el-descriptions-item label="网络地址（参考）">{{ editingGroup.network_address || '--' }}</el-descriptions-item>
+        <el-descriptions-item label="掩码/前缀（参考）">{{ editingGroup.subnet_mask || (editingGroup.prefix_length == null ? '--' : `/${editingGroup.prefix_length}`) }}</el-descriptions-item>
+        <el-descriptions-item label="网关（参考）">{{ editingGroup.default_gateway || '--' }}</el-descriptions-item>
+        <el-descriptions-item label="AP 起始地址（参考）">{{ editingGroup.ap_start_ip || '--' }}</el-descriptions-item>
+        <el-descriptions-item label="AP 结束地址（参考）">{{ editingGroup.ap_end_ip || '--' }}</el-descriptions-item>
+      </el-descriptions>
       <div v-if="sectionNames.length" class="assignment-toolbar">
         <span>区间默认组</span>
         <el-select v-model="editingSectionName" filterable style="width:220px">
@@ -694,7 +688,9 @@ onBeforeUnmount(stopPolling)
         </el-select>
       </div>
       <div class="table-scroll">
-        <NcDataTable table-id="rail-base-trackside-ap-vlan-allocations" route-key="/rail-transit/base-data" :data="editingAllocations" :columns="allocationColumns" border height="420" empty-text="当前 VLAN 组暂无 AP 地址分配">
+        <NcDataTable table-id="rail-base-trackside-ap-vlan-allocations" route-key="/rail-transit/base-data" :data="editingAllocations" :columns="allocationColumns" border height="420" empty-text="当前 VLAN 组暂无 AP 参考信息">
+          <template #cell-planned_ip="{ row }">{{ row.planned_ip || '--' }}</template>
+          <template #cell-group_source="{ row }">{{ sourceLabel(row.group_source) }}</template>
           <template #cell-ap_override_group="{ row }">
             <el-select
               :model-value="assignmentGroupId(row.ap_id, 'ap_override')"
@@ -713,5 +709,5 @@ onBeforeUnmount(stopPolling)
 </template>
 
 <style scoped>
-.planning-tab,.preview{display:flex;flex-direction:column;gap:12px;min-width:0}.planning-mode,.toolbar,.assignment-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.planning-mode .label{font-weight:600}.revision{color:var(--nc-text-secondary)}.dirty{margin-left:auto;color:var(--nc-text-secondary)}.hidden{display:none}.table-scroll{min-width:0;overflow-x:auto}.table-scroll :deep(.nc-data-table){min-width:1680px}@media(max-width:900px){.dirty{margin-left:0}}
+.planning-tab,.preview{display:flex;flex-direction:column;gap:12px;min-width:0}.planning-mode,.toolbar,.assignment-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.planning-mode .label{font-weight:600}.revision{color:var(--nc-text-secondary)}.dirty{margin-left:auto;color:var(--nc-text-secondary)}.hidden{display:none}.table-scroll{min-width:0;overflow-x:auto}.table-scroll :deep(.nc-data-table){min-width:1120px}@media(max-width:900px){.dirty{margin-left:0}}
 </style>

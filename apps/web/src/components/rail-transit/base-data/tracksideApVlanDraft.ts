@@ -22,10 +22,6 @@ export function splitVlanGroup(
   right.group_name = `${original.group_name} B`
   right.members = original.members.splice(splitAt)
   right.management_vlan = null
-  right.network_address = ''
-  right.default_gateway = ''
-  right.ap_start_ip = ''
-  right.ap_end_ip = ''
   result.groups.splice(index + 1, 0, right)
   return result
 }

@@ -12,6 +12,7 @@ from uuid import uuid4
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
+from netconsole.models.device_address import normalize_ip_address
 from netconsole.models.api.rail_transit_base_data import (
     BaseDataChangeDTO,
     BaseDataClearPreviewDTO,
@@ -919,12 +920,15 @@ class RailTransitBaseDataApplicationService:
         if action == "delete":
             return {"name": str(raw.get("name") or "").strip()}
         name = str(raw.get("name") or "").strip()
-        address = str(raw.get("management_ip") or raw.get("primary_address") or "").strip()
+        raw_address = str(
+            raw.get("management_ip") or raw.get("primary_address") or ""
+        ).strip()
         protocol = str(raw.get("protocol") or "SSH").upper()
         try:
-            ipaddress.ip_address(address)
+            address = normalize_ip_address(raw_address, allow_empty=False)
         except ValueError:
             raise ValueError("车载 MR 管理地址格式无效") from None
+        assert address is not None
         station = str(raw.get("station") or "").strip()
         if parse_train_identity(name) is None and parse_train_identity(station) is None:
             raise ValueError("车载 MR 名称无法识别列车和 CT/TC 角色")

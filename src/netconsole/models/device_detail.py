@@ -111,7 +111,7 @@ def identify_device_platform(
     if (
         platform == "unknown"
         and vendor_text.casefold() == "h3c"
-        and role in {"switch", "mobile_router"}
+        and role in {"switch", "wireless_controller", "mobile_router"}
     ):
         platform = "comware"
         source = "verified_command_profile_selector"

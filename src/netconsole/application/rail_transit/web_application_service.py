@@ -1370,12 +1370,14 @@ class RailTransitWebApplicationService:
                 existing_value = group.get(field_name)
                 if existing_value in (None, ""):
                     group[field_name] = imported_value
-                elif str(existing_value) != str(imported_value):
+                elif (
+                    field_name == "management_vlan"
+                    and str(existing_value) != str(imported_value)
+                ):
                     inconsistent_fields.append(field_name)
             if inconsistent_fields:
                 message = (
-                    f"第{row_number}行 VLAN组“{code}”的网络参数与组内前序行不一致："
-                    + "、".join(inconsistent_fields)
+                    f"第{row_number}行 VLAN组“{code}”的管理 VLAN 与组内前序行不一致"
                 )
                 errors.append(message)
                 preview_rows.append(
@@ -1867,7 +1869,11 @@ class RailTransitWebApplicationService:
         try:
             return [
                 str(device.device_uuid or "")
-                for device in DeviceRepository(database).list(vendor="H3C", device_type="AC")
+                for device in DeviceRepository(database).list(
+                    vendor="H3C",
+                    device_type="AC",
+                    operation_status="in_service",
+                )
                 if str(device.device_uuid or "").strip()
             ]
         except sqlite3.OperationalError as exc:

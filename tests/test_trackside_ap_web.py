@@ -767,7 +767,7 @@ def test_trackside_plan_preview_save_export_and_artifact_download(tmp_path: Path
     template_workbook.close()
 
 
-def test_grouped_trackside_plan_import_rejects_conflicting_group_networks(
+def test_grouped_trackside_plan_import_rejects_conflicting_management_vlan(
     tmp_path: Path,
 ) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
@@ -826,9 +826,64 @@ def test_grouped_trackside_plan_import_rejects_conflicting_group_networks(
 
     assert preview.can_apply is False
     assert preview.error_count >= 1
-    assert any("网络参数与组内前序行不一致" in row.message for row in preview.rows)
+    assert any("管理 VLAN 与组内前序行不一致" in row.message for row in preview.rows)
     assert preview.result_plan is not None
     assert preview.result_plan.groups[0].members[0].station_id == "stable-a"
+
+
+def test_grouped_trackside_plan_import_allows_invalid_ip_references(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.ensure_site_dirs("demo")
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    AcRepository(database).replace_trackside_ap_plan_rows(
+        TRACKSIDE_AP_PLAN_MODE,
+        [
+            {
+                "station_name": station_name,
+                "ap_count": 1,
+                "ap_start_address": "",
+                "mask_length": None,
+                "ap_gateway": "",
+                "ap_management_vlans": "71",
+                "remark": "",
+            }
+            for station_name in ("站点A", "站点B")
+        ],
+    )
+    tasks = TaskApplicationService(paths=paths, site_name="demo")
+    service = RailTransitWebApplicationService(
+        paths,
+        tasks,
+        process_adapter=FakeLocalProcessAdapter(tasks),  # type: ignore[arg-type]
+        export_adapter=FakeExportProcessAdapter(tasks),  # type: ignore[arg-type]
+    )
+    content = (
+        "AP管理VLAN规划方式,VLAN组编号,VLAN组名称,管理VLAN,网络地址,"
+        "子网掩码,默认网关,组AP起始地址,组成员站点ID,组成员站点,"
+        "车站名称,AP数量,AP起始地址,掩码,AP网关,AP管理VLAN,备注\r\n"
+        "station_grouped,G001,一号组,71,invalid-network,invalid-mask,"
+        "invalid-gateway,invalid-start,\"stable-a,stable-b\",站点A、站点B,"
+        "站点A,1,invalid-a,invalid-mask,invalid-gateway,71,\r\n"
+        "station_grouped,G001,一号组,71,192.0.2.0,255.255.255.0,"
+        "203.0.113.254,198.51.100.10,\"stable-a,stable-b\",站点A、站点B,"
+        "站点B,1,invalid-b,another-mask,another-gateway,71,\r\n"
+    ).encode("utf-8-sig")
+
+    preview = service.preview_trackside_ap_plan(
+        "demo",
+        file_name="grouped.csv",
+        content=content,
+        duplicate_strategy="replace",
+    )
+
+    assert preview.can_apply is True
+    assert preview.error_count == 0
+    assert preview.result_plan is not None
+    assert preview.result_plan.valid is True
+    assert preview.result_plan.groups[0].management_vlan == 71
 
 
 def test_trackside_ap_base_template_and_draft_export_use_controlled_artifacts(tmp_path: Path) -> None:

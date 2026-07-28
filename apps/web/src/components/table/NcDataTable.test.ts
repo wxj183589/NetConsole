@@ -48,7 +48,15 @@ const global = {
   },
 }
 
-afterEach(() => { localStorage.clear(); tableDoLayout.mockClear(); Reflect.deleteProperty(window, 'netconsoleDesktop') })
+afterEach(() => {
+  localStorage.clear()
+  tableDoLayout.mockClear()
+  Reflect.deleteProperty(window, 'netconsoleDesktop')
+  Reflect.deleteProperty(document.documentElement, 'clientWidth')
+  Reflect.deleteProperty(document.documentElement, 'clientHeight')
+  document.body.innerHTML = ''
+  vi.restoreAllMocks()
+})
 
 describe('NcDataTable', () => {
   it('renders columns centered with widths that include the full header', async () => {
@@ -222,10 +230,28 @@ describe('NcDataTable', () => {
     wrapper.unmount()
   })
 
-  it('owns the typed context menu, explains disabled actions, clamps it and closes on Escape', async () => {
+  it('teleports the typed context menu to body, measures it and flips inside the viewport', async () => {
     const action = vi.fn()
     const row = { name: 'AP01' }
+    Object.defineProperty(document.documentElement, 'clientWidth', { configurable: true, value: 320 })
+    Object.defineProperty(document.documentElement, 'clientHeight', { configurable: true, value: 240 })
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const width = this.classList.contains('nc-data-table__context-menu') ? 180 : 0
+      const height = this.classList.contains('nc-data-table__context-menu') ? 160 : 0
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        right: width,
+        bottom: height,
+        left: 0,
+        width,
+        height,
+        toJSON: () => undefined,
+      }
+    })
     const wrapper = mount(NcDataTable, {
+      attachTo: document.body,
       props: {
         tableId: 'context-menu',
         routeKey: '/ac-management',
@@ -242,25 +268,141 @@ describe('NcDataTable', () => {
     wrapper.getComponent(ElTable).vm.$emit(
       'row-contextmenu',
       row,
-      { property: 'name' },
-      new MouseEvent('contextmenu', { clientX: window.innerWidth - 1, clientY: window.innerHeight - 1 }),
+      { property: 'name', columnKey: 'name' },
+      new MouseEvent('contextmenu', { clientX: 315, clientY: 235 }),
     )
-    await wrapper.vm.$nextTick()
+    await flushPromises()
 
-    const menu = wrapper.get('[role="menu"]')
-    expect(Number.parseInt(menu.attributes('style')?.match(/left: (\d+)px/)?.[1] || '0', 10)).toBeLessThan(window.innerWidth)
-    expect(menu.text()).toContain('当前 AP 离线')
-    const disabled = menu.findAll('button').find((button) => button.text().includes('不可用动作'))!
-    expect(disabled.attributes()).toHaveProperty('disabled')
-    await menu.findAll('button').find((button) => button.text().includes('打开'))!.trigger('click')
+    const menu = document.body.querySelector<HTMLElement>('[role="menu"]')
+    expect(menu).not.toBeNull()
+    expect(menu!.parentElement).toBe(document.body)
+    expect(menu!.style.left).toBe('132px')
+    expect(menu!.style.top).toBe('72px')
+    expect(menu!.style.visibility).toBe('visible')
+    expect(Number.parseFloat(menu!.style.left) + 180).toBeLessThanOrEqual(320 - 8)
+    expect(Number.parseFloat(menu!.style.top) + 160).toBeLessThanOrEqual(240 - 8)
+    expect(menu!.textContent).toContain('当前 AP 离线')
+    const buttons = [...menu!.querySelectorAll<HTMLButtonElement>('button')]
+    const disabled = buttons.find((button) => button.textContent?.includes('不可用动作'))!
+    expect(disabled.disabled).toBe(true)
+    buttons.find((button) => button.textContent?.includes('打开'))!.click()
+    await flushPromises()
     expect(action).toHaveBeenCalledWith(expect.objectContaining({ row, columnKey: 'name', cellValue: 'AP01' }))
-    expect(wrapper.find('[role="menu"]').exists()).toBe(false)
-
-    wrapper.getComponent(ElTable).vm.$emit('row-contextmenu', row, { property: 'name' }, new MouseEvent('contextmenu'))
-    await wrapper.vm.$nextTick()
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
-    await wrapper.vm.$nextTick()
-    expect(wrapper.find('[role="menu"]').exists()).toBe(false)
+    expect(document.body.querySelector('[role="menu"]')).toBeNull()
+    expect(wrapper.emitted('selection-change')).toBeUndefined()
     wrapper.unmount()
+  })
+
+  it('retargets another row and closes on outside pointer, Escape, resize, table scroll and data refresh', async () => {
+    const action = vi.fn()
+    const first = { name: 'AP01' }
+    const second = { name: 'AP02' }
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const width = this.classList.contains('nc-data-table__context-menu') ? 120 : 0
+      const height = this.classList.contains('nc-data-table__context-menu') ? 80 : 0
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        right: width,
+        bottom: height,
+        left: 0,
+        width,
+        height,
+        toJSON: () => undefined,
+      }
+    })
+    const wrapper = mount(NcDataTable, {
+      attachTo: document.body,
+      props: {
+        tableId: 'context-menu-lifecycle',
+        routeKey: '/devices',
+        showColumnSettings: false,
+        data: [first, second],
+        columns: [{ key: 'name', label: '名称', valueType: 'name' }],
+        contextMenuItems: [{ key: 'open', label: '打开', action }],
+      },
+      global,
+    })
+    const table = wrapper.getComponent(ElTable)
+    const open = async (row: typeof first, x = 100, y = 100) => {
+      table.vm.$emit(
+        'row-contextmenu',
+        row,
+        { property: 'name', columnKey: 'name' },
+        new MouseEvent('contextmenu', { clientX: x, clientY: y }),
+      )
+      await flushPromises()
+      return document.body.querySelector<HTMLElement>('[role="menu"]')!
+    }
+
+    await open(first)
+    const retargeted = await open(second, 180, 140)
+    expect(retargeted.style.left).toBe('180px')
+    retargeted.querySelector<HTMLButtonElement>('button')!.click()
+    await flushPromises()
+    expect(action).toHaveBeenLastCalledWith(expect.objectContaining({ row: second, rowIndex: 1 }))
+
+    await open(first)
+    document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    await flushPromises()
+    expect(document.body.querySelector('[role="menu"]')).toBeNull()
+
+    await open(first)
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+    expect(document.body.querySelector('[role="menu"]')).toBeNull()
+
+    await open(first)
+    window.dispatchEvent(new Event('resize'))
+    await flushPromises()
+    expect(document.body.querySelector('[role="menu"]')).toBeNull()
+
+    const menu = await open(first)
+    menu.dispatchEvent(new Event('scroll'))
+    await flushPromises()
+    expect(document.body.querySelector('[role="menu"]')).toBe(menu)
+    wrapper.get('.nc-data-table__scroll').element.dispatchEvent(new Event('scroll'))
+    await flushPromises()
+    expect(document.body.querySelector('[role="menu"]')).toBeNull()
+
+    await open(first)
+    await wrapper.setProps({ data: [{ name: 'AP03' }] })
+    await flushPromises()
+    expect(document.body.querySelector('[role="menu"]')).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('removes global context-menu listeners when unmounted', () => {
+    const addWindow = vi.spyOn(window, 'addEventListener')
+    const removeWindow = vi.spyOn(window, 'removeEventListener')
+    const addDocument = vi.spyOn(document, 'addEventListener')
+    const removeDocument = vi.spyOn(document, 'removeEventListener')
+    const wrapper = mount(NcDataTable, {
+      props: {
+        tableId: 'context-menu-cleanup',
+        routeKey: '/devices',
+        showColumnSettings: false,
+        data: [{ name: 'AP01' }],
+        columns: [{ key: 'name', label: '名称', valueType: 'name' }],
+        contextMenuItems: [{ key: 'open', label: '打开', action: vi.fn() }],
+      },
+      global,
+    })
+    const scrollRegistration = addWindow.mock.calls.find(([type]) => type === 'scroll')
+    const resizeRegistration = addWindow.mock.calls.find(([type]) => type === 'resize')
+    const pointerRegistration = addDocument.mock.calls.find(([type]) => type === 'pointerdown')
+    const keyboardRegistration = addDocument.mock.calls.find(([type]) => type === 'keydown')
+    expect(scrollRegistration).toBeTruthy()
+    expect(resizeRegistration).toBeTruthy()
+    expect(pointerRegistration).toBeTruthy()
+    expect(keyboardRegistration).toBeTruthy()
+
+    wrapper.unmount()
+
+    expect(removeWindow).toHaveBeenCalledWith(...scrollRegistration!)
+    expect(removeWindow).toHaveBeenCalledWith(...resizeRegistration!)
+    expect(removeDocument).toHaveBeenCalledWith(...pointerRegistration!)
+    expect(removeDocument).toHaveBeenCalledWith(...keyboardRegistration!)
   })
 })

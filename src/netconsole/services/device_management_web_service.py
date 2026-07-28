@@ -62,6 +62,7 @@ from netconsole.models.api.device_management import (
     DeviceImportConfirmRequestDTO,
     DeviceImportErrorDTO,
     DeviceImportPreviewDTO,
+    DeviceImportRowResultDTO,
     DeviceSecureCrtExportRequestDTO,
     DeviceTaskBatchDTO,
     DeviceTaskReferenceDTO,
@@ -71,6 +72,8 @@ from netconsole.models.api.device_management import (
     DeviceFactDTO,
     DeviceGroupOptionDTO,
     DeviceListItemDTO,
+    DeviceLifecycleUpdateDTO,
+    DeviceLifecycleUpdateRequestDTO,
     DevicePageDTO,
     DeviceTaskSummaryDTO,
 )
@@ -79,7 +82,11 @@ from netconsole.models.api.device_detail import (
     DeviceHistoryPageDTO,
     DeviceHistoryRecordDTO,
 )
-from netconsole.models.device import Device, validate_device_vendor_type
+from netconsole.models.device import (
+    Device,
+    is_device_available_for_manual_debug,
+    validate_device_vendor_type,
+)
 from netconsole.models.device_detail import DeviceOperationTask
 from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TaskState
@@ -366,6 +373,8 @@ class DeviceManagementWebService:
         device_type: str = "",
         vendor: str = "",
         connection_status: str = "",
+        project_phase: str = "all",
+        operation_status: str = "in_service",
         page: int = 1,
         page_size: int = 50,
         sort_by: str = "name",
@@ -391,6 +400,8 @@ class DeviceManagementWebService:
             vendor=vendor.strip() or None,
             device_type=device_type.strip() or None,
             group_filter="__ungrouped__" if ungrouped else group_id,
+            project_phase=project_phase,
+            operation_status=operation_status,
         )
         items = [
             self._list_item(
@@ -690,7 +701,14 @@ class DeviceManagementWebService:
         source = self._require_device(device_repository, device_uuid)
         record = source.to_record()
         record.update(
-            {"id": None, "device_uuid": None, "created_at": None, "updated_at": None}
+            {
+                "id": None,
+                "device_uuid": None,
+                "primary_address": "",
+                "normalized_primary_address": None,
+                "created_at": None,
+                "updated_at": None,
+            }
         )
         if str(record.get("name") or "").strip():
             record["name"] = f"{str(record['name']).strip()}-副本"
@@ -778,6 +796,19 @@ class DeviceManagementWebService:
         return DeviceGroupAssignmentDTO(
             success=result.success, failed=result.failed, group_id=payload.group_id
         )
+
+    def update_lifecycle(
+        self, payload: DeviceLifecycleUpdateRequestDTO
+    ) -> DeviceLifecycleUpdateDTO:
+        devices, _groups, _facts = self._repositories(self.current_site_id())
+        updated = devices.update_lifecycle_many(
+            self._unique_ids(payload.device_uuids),
+            project_phase=payload.project_phase,
+            operation_status=payload.operation_status,
+            reason=payload.reason,
+            updated_by="local_user",
+        )
+        return DeviceLifecycleUpdateDTO(updated=updated)
 
     def start_batch_refresh(
         self, payload: DeviceBatchRefreshRequestDTO
@@ -1056,8 +1087,25 @@ class DeviceManagementWebService:
             "未注册独立光模块刷新 Operation；请使用 device.inventory.collect"
         )
 
-    def preview_import(self, filename: str, stream: BinaryIO) -> DeviceImportPreviewDTO:
+    def preview_import(
+        self,
+        filename: str,
+        stream: BinaryIO,
+        *,
+        match_strategy: str | None = None,
+        write_mode: str | None = None,
+    ) -> DeviceImportPreviewDTO:
         site = self.current_site_id()
+        actual_match_strategy = (
+            str(match_strategy).strip().upper()
+            if match_strategy is not None
+            else "LEGACY_APPEND"
+        )
+        actual_write_mode = (
+            str(write_mode).strip().upper()
+            if write_mode is not None
+            else "CREATE_ONLY"
+        )
         self._cleanup_expired_import_previews(site)
         source_name = self._validate_upload_filename(filename)
         staged_path, source_sha256 = self._stage_csv_upload(site, source_name, stream)
@@ -1074,11 +1122,19 @@ class DeviceManagementWebService:
         create_count = 0
         update_count = 0
         conflict_count = 0
+        unchanged_count = 0
+        not_found_count = 0
+        row_results: list[DeviceImportRowResultDTO] = []
+        has_hard_errors = False
         detected_encoding = ""
         try:
             repository, groups, _ = self._repositories(site)
             importer = DeviceImportExportService(repository, groups)
-            preview = importer.preview_csv(staged_path)
+            preview = importer.preview_csv(
+                staged_path,
+                match_strategy=actual_match_strategy,
+                write_mode=actual_write_mode,
+            )
             columns = list(preview.columns)
             row_count = preview.total_rows
             total_rows = preview.total_rows
@@ -1089,6 +1145,9 @@ class DeviceManagementWebService:
             create_count = preview.create_count
             update_count = preview.update_count
             conflict_count = preview.conflict_count
+            unchanged_count = preview.unchanged_count
+            not_found_count = preview.not_found_count
+            has_hard_errors = preview.has_hard_errors
             detected_encoding = preview.detected_encoding
             duplicate_rows = list(preview.duplicate_rows)
             errors = [
@@ -1098,12 +1157,33 @@ class DeviceManagementWebService:
                     field=item.field,
                     raw_value=item.raw_value,
                     message=item.message,
+                    code=item.code,
                 )
                 for item in preview.errors
             ]
+            row_results = [
+                DeviceImportRowResultDTO(
+                    line=item.line,
+                    action=item.action,
+                    match_strategy=item.match_strategy,
+                    match_basis=item.match_basis,
+                    device_id=item.device_id,
+                    device_name=item.device_name,
+                    original_primary_address=item.original_primary_address,
+                    new_primary_address=item.new_primary_address,
+                    message=item.message,
+                    error_code=item.error_code,
+                    warnings=list(item.warnings),
+                )
+                for item in preview.row_results
+            ]
             if duplicate_rows:
                 warnings.append(
-                    f"有 {len(duplicate_rows)} 行主用地址已存在，请选择重复处理策略"
+                    (
+                        f"有 {len(duplicate_rows)} 行主用地址已存在，可拒绝或跳过重复行"
+                        if actual_match_strategy == "LEGACY_APPEND"
+                        else f"有 {len(duplicate_rows)} 行主用地址冲突，请修正后重新预检"
+                    )
                 )
         except Exception as exc:
             errors.append(
@@ -1112,6 +1192,7 @@ class DeviceManagementWebService:
                 )
             )
             invalid_rows = total_rows
+            has_hard_errors = True
         token = secrets.token_urlsafe(32)
         self._write_import_preview(
             site,
@@ -1136,7 +1217,13 @@ class DeviceManagementWebService:
                 "create_count": create_count,
                 "update_count": update_count,
                 "conflict_count": conflict_count,
+                "unchanged_count": unchanged_count,
+                "not_found_count": not_found_count,
+                "rows": [item.model_dump(mode="json") for item in row_results],
+                "has_hard_errors": has_hard_errors,
                 "detected_encoding": detected_encoding,
+                "match_strategy": actual_match_strategy,
+                "write_mode": actual_write_mode,
             },
         )
         return DeviceImportPreviewDTO(
@@ -1152,11 +1239,17 @@ class DeviceManagementWebService:
             create_count=create_count,
             update_count=update_count,
             conflict_count=conflict_count,
+            unchanged_count=unchanged_count,
+            not_found_count=not_found_count,
             detected_encoding=detected_encoding,
+            match_strategy=actual_match_strategy,
+            write_mode=actual_write_mode,
             columns=columns,
             errors=errors,
+            rows=row_results,
             warnings=warnings,
             duplicate_rows=duplicate_rows,
+            has_hard_errors=has_hard_errors,
         )
 
     def confirm_import(
@@ -1198,6 +1291,8 @@ class DeviceManagementWebService:
                     "source_sha256": preview.get("sha256"),
                     "backup_reference": str(backup_path),
                     "duplicate_strategy": payload.duplicate_strategy,
+                    "match_strategy": preview.get("match_strategy", "LEGACY_APPEND"),
+                    "write_mode": preview.get("write_mode", "CREATE_ONLY"),
                 },
             )
             job = BackgroundJob(
@@ -1213,6 +1308,8 @@ class DeviceManagementWebService:
                     "app_root": str(self.paths.app_root),
                     "data_root": str(self.paths.data_root),
                     "duplicate_strategy": payload.duplicate_strategy,
+                    "match_strategy": preview.get("match_strategy", "LEGACY_APPEND"),
+                    "write_mode": preview.get("write_mode", "CREATE_ONLY"),
                     "_cancel_grace_ms": 1000,
                 },
             )
@@ -1412,6 +1509,8 @@ class DeviceManagementWebService:
     def _external_terminal_launch(
         self, device: Device, terminal_type: str
     ) -> RegisteredLaunch:
+        if not is_device_available_for_manual_debug(device):
+            raise ValueError("设备已退役；如需连接，请先将投运状态改为调试中或在用")
         self._require_desktop_runtime()
         configs = {
             config.terminal_type: config
@@ -1755,6 +1854,14 @@ class DeviceManagementWebService:
         groups: DeviceGroupRepository,
     ) -> Device:
         values = payload.model_dump()
+        if existing is not None:
+            for field in (
+                "project_phase",
+                "operation_status",
+                "operation_status_reason",
+            ):
+                if field not in payload.model_fields_set:
+                    values.pop(field, None)
         clear_secret_fields = set(values.pop("clear_secret_fields", ()))
         secret_fields = (
             "ssh_password",
@@ -1784,6 +1891,9 @@ class DeviceManagementWebService:
             "location",
             "device_vendor",
             "device_type",
+            "project_phase",
+            "operation_status",
+            "operation_status_reason",
             "primary_address",
             "backup_address",
             "remark",
@@ -1794,7 +1904,8 @@ class DeviceManagementWebService:
             "tunnel2_host",
             "tunnel2_username",
         ):
-            values[field] = str(values.get(field) or "").strip()
+            if field in values:
+                values[field] = str(values.get(field) or "").strip()
         if not values.get("ssh_username") and existing is not None:
             values["ssh_username"] = str(
                 existing.ssh_username or existing.username or ""
@@ -1827,7 +1938,16 @@ class DeviceManagementWebService:
         values["tunnel2_enabled"] = tunnel2_enabled
         values["tunnel_enabled"] = tunnel1_enabled or tunnel2_enabled
         record = existing.to_record() if existing is not None else {}
+        previous_status = str(record.get("operation_status") or "")
         record.update(values)
+        if (
+            "operation_status" in values
+            and values["operation_status"] != previous_status
+        ):
+            record["operation_status_updated_at"] = datetime.now().isoformat(
+                timespec="seconds"
+            )
+            record["operation_status_updated_by"] = "local_user"
         if record["ssh_enabled"]:
             if "ssh_password" not in clear_secret_fields:
                 record["ssh_username"] = (
@@ -2516,6 +2636,8 @@ class DeviceManagementWebService:
             "vendor": payload.vendor.strip() or None,
             "device_type": payload.device_type.strip() or None,
             "group_filter": payload.group_filter,
+            "project_phase": payload.project_phase,
+            "operation_status": payload.operation_status,
         }
 
     def _require_web_task(
@@ -3083,6 +3205,8 @@ class DeviceManagementWebService:
         site = self.current_site_id()
         device_repository, _, _ = self._repositories(site)
         device = self._require_device(device_repository, device_uuid)
+        if not is_device_available_for_manual_debug(device):
+            raise ValueError("设备已退役；如需测试连接，请先将投运状态改为调试中或在用")
         selected_protocol = protocol.strip().upper()
         self._validate_protocol_enabled(device, selected_protocol)
         self._validate_connection_preflight(device, selected_protocol)
@@ -3315,6 +3439,12 @@ class DeviceManagementWebService:
             else "未分组",
             device_vendor=str(device.device_vendor or ""),
             device_type=str(device.device_type or ""),
+            project_phase=str(device.project_phase or "unspecified"),
+            operation_status=str(device.operation_status or "in_service"),
+            operation_status_reason=str(device.operation_status_reason or ""),
+            operation_status_updated_at=str(
+                device.operation_status_updated_at or ""
+            ),
             primary_address=str(device.primary_address or ""),
             backup_address=str(device.backup_address or ""),
             updated_at=str(device.updated_at or ""),
@@ -4084,10 +4214,16 @@ def run_device_csv_import(context: JobContext) -> dict[str, object]:
         duplicate_strategy=str(
             context.params.get("duplicate_strategy") or "create_new"
         ),
+        match_strategy=str(
+            context.params.get("match_strategy") or "LEGACY_APPEND"
+        ),
+        write_mode=str(context.params.get("write_mode") or "CREATE_ONLY"),
     )
     context.progress("device_csv_import", 1, 1, "设备 CSV 导入完成")
     return {
         "created": result.created,
+        "updated": result.updated,
+        "unchanged": result.unchanged,
         "skipped": result.skipped,
         "groups_created": result.groups_created,
         "errors": list(result.errors),
