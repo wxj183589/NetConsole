@@ -1,5 +1,7 @@
 # AC 管理
 
+轨旁端口 PVID 候选发现使用线路规划 VLAN 集合；最终核验在 AP 身份解析后，将实际端口 PVID 与该 AP 的有效管理 VLAN 组比较，不再通过交换机所属站点假设唯一 VLAN。相同 VLAN 跨站点是合法情况。VLAN 组、点表、迁移和核验细节见 [轨旁 AP 管理 VLAN 分组规划](AP_MANAGEMENT_VLAN_GROUPS.md)。
+
 ## 当前状态
 
 Electron AC/FIT-AP 处于 `PARTIAL / IMPLEMENTED_UNVERIFIED`。`/ac-management/fit-aps` 已不再是数据库只读页：Feature `web.ac_refresh` 的“更新 AC 信息”“更新 FIT-AP 资源”和 AP 详情“深度更新”都会创建持久化后台任务，经共享 Python Application Service 连接所选 H3C AC、保存 raw/命令记录并更新当前局点数据库。页面也已接入两项受控 AC 写动作、当前 AC 范围的 OmniPeek 名称表导出和桌面版单 AP 外部终端；这些闭环仍待 Electron 人工和真实 AC/AP 验收，全部缺口完成前不得标记 `COMPLETE`。

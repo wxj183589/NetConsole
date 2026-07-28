@@ -3,6 +3,8 @@ import type { RailTransitTask } from './railTransitWeb'
 export interface TracksideApBusinessRow {
   site: string; device_name: string; switch_vendor: string; interface_name: string; link_status: string; port_type: string
   description: string; pvid: unknown; vlan: unknown
+  planned_management_vlan: number | null; vlan_group_id: string; vlan_group_code: string; vlan_group_name: string
+  pvid_plan_status: 'matched' | 'mismatched' | 'unresolved'
   switch_rx_power: unknown; switch_tx_power: unknown
   switch_rx_low_alarm: unknown; switch_rx_high_alarm: unknown; switch_tx_low_alarm: unknown; switch_tx_high_alarm: unknown
   switch_optical_status: string
@@ -75,7 +77,59 @@ export interface TracksideApPlanRow {
   ap_gateway: string; ap_management_vlans: string; remark: string; sort_order: number
 }
 
-export interface TracksideApPlan { items: TracksideApPlanRow[]; total: number }
+export type ApManagementVlanPlanningMode = 'line_single' | 'station_independent' | 'station_grouped'
+export interface ApManagementVlanPlanning {
+  line_id: string; planning_mode: ApManagementVlanPlanningMode; auto_group_station_count: number
+  address_allocation_strategy: string; revision: number; updated_at: string
+}
+export interface ApManagementVlanGroupMember {
+  station_id: string; station_name: string; station_sequence: number; ap_count: number
+}
+export interface ApManagementVlanIssue {
+  code: string; severity: 'error' | 'warning' | 'info'; message: string; blocking: boolean
+  field_name: string; group_id: string; station_id: string; ap_id: string
+}
+export interface ApManagementVlanGroup {
+  group_id: string; line_id: string; group_code: string; group_name: string; sequence: number
+  management_vlan: number | null; legacy_management_vlans: string; network_address: string
+  prefix_length: number | null; subnet_mask: string; default_gateway: string; ap_start_ip: string
+  ap_end_ip: string; address_allocation_strategy: string; notes: string; created_at: string; updated_at: string
+  members: ApManagementVlanGroupMember[]; start_station_name: string; end_station_name: string
+  station_count: number; ap_count: number; address_capacity: number; used_address_count: number
+  validation_status: 'valid' | 'warning' | 'error'; issues: ApManagementVlanIssue[]
+}
+export interface ApManagementVlanAssignment {
+  assignment_id: string; assignment_type: 'section_default' | 'interval_default' | 'ap_override'
+  target_id: string; group_id: string; source: string; updated_at: string
+}
+export interface ApManagementVlanAllocation {
+  ap_id: string; ap_name: string; point_code: string; station_id: string; station_name: string
+  section_name: string; group_id: string; planned_ip: string; allocation_order: number
+  is_manual: boolean; is_locked: boolean; source: string; group_source: string; updated_at: string
+}
+export interface ApManagementVlanStationDetail {
+  station_id: string; station_name: string; station_sequence: number; ap_count: number
+  group_id: string; group_code: string; group_name: string; ap_start_ip: string; ap_end_ip: string
+  management_vlan: number | null; network_address: string; prefix_length: number | null
+  subnet_mask: string; default_gateway: string; source: string; notes: string
+}
+export interface TracksideApPlanDraft {
+  planning: ApManagementVlanPlanning
+  groups: ApManagementVlanGroup[]
+  assignments: ApManagementVlanAssignment[]
+  allocations: ApManagementVlanAllocation[]
+}
+export interface ApManagementVlanImpact {
+  old_group_count: number; new_group_count: number; affected_station_count: number; affected_ap_count: number
+  vlan_change_count: number; ip_change_count: number; gateway_change_count: number
+  manual_address_override_count: number; conflict_count: number; warning_count: number
+  issues: ApManagementVlanIssue[]
+}
+export interface TracksideApPlan extends TracksideApPlanDraft {
+  items: TracksideApPlanRow[]; total: number; station_details: ApManagementVlanStationDetail[]
+  issues: ApManagementVlanIssue[]; valid: boolean; unassigned_station_count: number
+}
+export interface ApManagementVlanPreview { plan: TracksideApPlan; impact: ApManagementVlanImpact }
 export interface TracksideApPlanPreviewRow {
   row_number: number; status: 'valid' | 'duplicate' | 'error'; key: string; message: string
   row: TracksideApPlanRow | null
@@ -83,5 +137,5 @@ export interface TracksideApPlanPreviewRow {
 export interface TracksideApPlanPreview {
   file_name: string; file_sha256: string; duplicate_strategy: 'replace' | 'skip' | 'error'
   can_apply: boolean; total_count: number; valid_count: number; duplicate_count: number; error_count: number
-  rows: TracksideApPlanPreviewRow[]; result_rows: TracksideApPlanRow[]
+  rows: TracksideApPlanPreviewRow[]; result_rows: TracksideApPlanRow[]; result_plan: TracksideApPlan | null
 }

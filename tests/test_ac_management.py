@@ -3732,7 +3732,7 @@ def test_trackside_ap_interface_matches_description_or_pvid_plan():
     ) == (False, "none")
 
 
-def test_trackside_ap_interface_prefers_station_vlans_and_falls_back_global():
+def test_trackside_ap_interface_uses_line_vlan_candidates_without_station_assumption():
     plan = {
         "mode": TRACKSIDE_AP_PLAN_MODE,
         "station_vlans": {"Station A": {921}, "Station B": {922}},
@@ -3741,7 +3741,7 @@ def test_trackside_ap_interface_prefers_station_vlans_and_falls_back_global():
     }
 
     assert pvid_matches_trackside_plan("Station A", "921", plan) is True
-    assert pvid_matches_trackside_plan("Station A", "922", plan) is False
+    assert pvid_matches_trackside_plan("Station A", "922", plan) is True
     assert pvid_matches_trackside_plan("", "922", plan) is True
 
 

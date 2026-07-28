@@ -1,7 +1,8 @@
 import { apiRequest } from './client'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 import type {
-  TracksideApBusinessPage, TracksideApPlan, TracksideApPlanPreview, TracksideApPlanRow,
+  ApManagementVlanPlanningMode, ApManagementVlanPreview, TracksideApBusinessPage,
+  TracksideApPlan, TracksideApPlanDraft, TracksideApPlanPreview, TracksideApPlanRow,
   TracksideApTask, TracksideApUpdateRequest, TracksideSwitchAdapterCatalog,
   TracksideSwitchSampleRequest,
 } from '../types/tracksideApBusiness'
@@ -62,14 +63,41 @@ export function previewTracksideApPlan(file: File, duplicateStrategy: 'replace' 
   return apiRequest(`${root}/plan/import/preview`, { method: 'POST', body: form })
 }
 
-export function saveTracksideApPlan(rows: TracksideApPlanRow[]): Promise<TracksideApTask> {
-  return apiRequest(`${root}/plan/save`, {
-    method: 'POST', body: JSON.stringify({ rows, explicit_confirmation: true, audit: { source: 'electron-trackside-plan' } }),
+export function previewTracksideApVlanAutoGroup(payload: {
+  planning_mode: ApManagementVlanPlanningMode
+  auto_group_station_count: number
+  current: TracksideApPlanDraft
+  reallocation_policy?: 'only_unlocked' | 'all'
+}): Promise<ApManagementVlanPreview> {
+  return apiRequest(`${root}/plan/auto-group-preview`, { method: 'POST', body: JSON.stringify(payload) })
+}
+
+export function previewTracksideApVlanChange(
+  proposed: TracksideApPlanDraft,
+  reallocationPolicy: 'only_unlocked' | 'all' = 'only_unlocked',
+): Promise<ApManagementVlanPreview> {
+  return apiRequest(`${root}/plan/adjustment-preview`, {
+    method: 'POST',
+    body: JSON.stringify({ proposed, reallocation_policy: reallocationPolicy }),
   })
 }
 
-export function exportTracksideApPlan(template = false, rows?: TracksideApPlanRow[]): Promise<TracksideApTask> {
-  return apiRequest(`${root}/plan/export`, { method: 'POST', body: JSON.stringify({ template, ...(rows ? { rows } : {}) }) })
+export function saveTracksideApPlan(draft: TracksideApPlanDraft | TracksideApPlanRow[]): Promise<TracksideApTask> {
+  const payload = Array.isArray(draft)
+    ? { rows: draft }
+    : { draft, expected_revision: draft.planning.revision, reallocation_policy: 'only_unlocked' }
+  return apiRequest(`${root}/plan/save`, {
+    method: 'POST',
+    body: JSON.stringify({
+      ...payload,
+      explicit_confirmation: true,
+      audit: { source: 'electron-trackside-plan' },
+    }),
+  })
+}
+
+export function exportTracksideApPlan(template = false, draft?: TracksideApPlanDraft): Promise<TracksideApTask> {
+  return apiRequest(`${root}/plan/export`, { method: 'POST', body: JSON.stringify({ template, ...(draft ? { draft } : {}) }) })
 }
 
 export const tracksideApPlanDownloadRequest = (artifactId: string, suggestedName = '轨旁AP规划.xlsx'): BackendDownloadRequest => ({

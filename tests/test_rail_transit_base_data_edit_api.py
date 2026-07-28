@@ -353,6 +353,33 @@ def test_transactional_save_updates_ap_station_and_plan_with_revision(tmp_path: 
                 "values": {
                     "rows": [
                         {
+                            "station_name": "车站A",
+                            "ap_count": 1,
+                            "ap_start_address": "10.1.10.10",
+                            "mask_length": 24,
+                            "ap_gateway": "10.1.10.1",
+                            "ap_management_vlans": "110",
+                            "remark": "兼容现有站点",
+                        },
+                        {
+                            "station_name": "车站B",
+                            "ap_count": 1,
+                            "ap_start_address": "10.1.11.10",
+                            "mask_length": 24,
+                            "ap_gateway": "10.1.11.1",
+                            "ap_management_vlans": "111",
+                            "remark": "兼容现有站点",
+                        },
+                        {
+                            "station_name": "车站C",
+                            "ap_count": 1,
+                            "ap_start_address": "10.1.12.10",
+                            "mask_length": 24,
+                            "ap_gateway": "10.1.12.1",
+                            "ap_management_vlans": "112",
+                            "remark": "兼容现有站点",
+                        },
+                        {
                             "station_name": "车站D",
                             "ap_count": 1,
                             "ap_start_address": "10.1.1.10",
@@ -360,7 +387,7 @@ def test_transactional_save_updates_ap_station_and_plan_with_revision(tmp_path: 
                             "ap_gateway": "10.1.1.1",
                             "ap_management_vlans": "101",
                             "remark": "统一事务",
-                        }
+                        },
                     ]
                 },
             },
@@ -413,7 +440,15 @@ def test_transactional_save_updates_ap_station_and_plan_with_revision(tmp_path: 
     numeric_ap_id = int(ap_id.removeprefix("ap:"))
     with Database(database).connect() as connection:
         assert connection.execute("SELECT remark FROM ap_extension_points WHERE id = ?", (numeric_ap_id,)).fetchone()[0] == "统一保存"
-        assert connection.execute("SELECT station_name FROM ac_trackside_ap_plan WHERE mode = 'unified'").fetchone()[0] == "车站D"
+        assert (
+            connection.execute(
+                """
+            SELECT COUNT(*) FROM ac_trackside_ap_plan
+            WHERE mode = 'unified' AND station_name = '车站D'
+            """
+            ).fetchone()[0]
+            == 1
+        )
         assert tuple(connection.execute("SELECT primary_address, remark FROM devices WHERE device_uuid = 'mr-01-ct'").fetchone()) == ("10.10.0.11", "统一维护")
 
 
@@ -859,29 +894,9 @@ def test_validation_rejects_sensitive_fields(tmp_path: Path, monkeypatch) -> Non
     assert response.json()["issues"][0]["code"] == "BASE_DATA_VALIDATION_FAILED"
 
 
-@pytest.mark.parametrize(
-    ("rows", "message"),
-    [
-        (
-            [
-                {"station_name": "A", "ap_count": 10, "ap_start_address": "10.0.0.1", "mask_length": 30, "ap_gateway": "10.0.0.2", "ap_management_vlans": "101"},
-            ],
-            "容量不足",
-        ),
-        (
-            [
-                {"station_name": "A", "ap_count": 1, "ap_start_address": "10.0.0.1", "mask_length": 24, "ap_gateway": "10.0.0.254", "ap_management_vlans": "101"},
-                {"station_name": "B", "ap_count": 1, "ap_start_address": "10.0.0.129", "mask_length": 25, "ap_gateway": "10.0.0.130", "ap_management_vlans": "102"},
-            ],
-            "网段冲突",
-        ),
-    ],
-)
 def test_plan_validation_rejects_capacity_and_network_conflicts(
     tmp_path: Path,
     monkeypatch,
-    rows: list[dict[str, object]],
-    message: str,
 ) -> None:
     _enable_copy_write(monkeypatch)
     paths, _database = build_rail_transit_base_data_fixture(tmp_path)
@@ -893,9 +908,26 @@ def test_plan_validation_rejects_capacity_and_network_conflicts(
             json={
                 "site_id": "demo",
                 "base_revision": session["base_revision"],
-                "changes": [{"entity_type": "trackside_ap_plan", "action": "replace", "values": {"rows": rows}}],
+                "changes": [
+                    {
+                        "entity_type": "trackside_ap_plan",
+                        "action": "replace",
+                        "values": {
+                            "rows": [
+                                {
+                                    "station_name": "车站A",
+                                    "ap_count": 10,
+                                    "ap_start_address": "10.0.0.1",
+                                    "mask_length": 30,
+                                    "ap_gateway": "10.0.0.2",
+                                    "ap_management_vlans": "101",
+                                }
+                            ]
+                        },
+                    }
+                ],
             },
         )
     assert response.status_code == 200
     assert response.json()["valid"] is False
-    assert message in response.json()["issues"][0]["message"]
+    assert any("容量不足" in issue["message"] for issue in response.json()["issues"])

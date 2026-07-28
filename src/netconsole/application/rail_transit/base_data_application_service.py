@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import sqlite3
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.rail_transit_base_data import (
@@ -33,6 +35,16 @@ from netconsole.repositories.rail_transit_base_data_repository import (
     RailTransitBaseDataConstraintError,
     RailTransitBaseDataRepository,
     RailTransitBaseDataRevisionConflict,
+)
+from netconsole.repositories.ap_management_vlan_repository import (
+    ApManagementVlanRepository,
+    ApManagementVlanRevisionConflict,
+)
+from netconsole.services.rail_transit.ap_management_vlan_planning import (
+    REALLOCATION_ONLY_UNLOCKED,
+    enrich_plan,
+    legacy_rows_to_draft,
+    stable_legacy_station_id,
 )
 from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
@@ -316,7 +328,10 @@ class RailTransitBaseDataApplicationService:
             if preview.base_revision != base_revision:
                 raise RailTransitBaseDataRevisionConflict("base data revision changed")
             result = self.repository.clear_station_section_base_data(site_id, base_revision)
-        except RailTransitBaseDataRevisionConflict as exc:
+        except (
+            RailTransitBaseDataRevisionConflict,
+            ApManagementVlanRevisionConflict,
+        ) as exc:
             raise RailTransitBaseDataApplicationError(
                 "BASE_DATA_REVISION_CONFLICT",
                 "基础资料已被其他操作更新，请重新加载后确认影响数量",
@@ -353,17 +368,44 @@ class RailTransitBaseDataApplicationService:
         issues: list[BaseDataValidationIssueDTO] = []
         if self.repository.base_data_revision(site_id) != base_revision:
             issues.append(self._issue(0, "BASE_DATA_REVISION_CONFLICT", "基础资料已被其他操作更新，请重新加载"))
+        for change in change_rows:
+            if (
+                change.entity_type == "station"
+                and change.action == "create"
+                and not str(change.values.get("node_uid") or "").strip()
+            ):
+                change.values["node_uid"] = str(uuid4())
         normalized: list[dict[str, Any]] = []
+        projected_vlan_stations = self._projected_vlan_stations(
+            site_id,
+            change_rows,
+        )
         for index, change in enumerate(change_rows):
             try:
-                normalized.append(
-                    self._normalize_change(change, main_path_code=main_path_code)
+                normalized_change = self._normalize_change(
+                    change,
+                    site_id=site_id,
+                    main_path_code=main_path_code,
+                    projected_vlan_stations=projected_vlan_stations,
+                )
+                normalized.append(normalized_change)
+                for plan_issue in (
+                    normalized_change.get("values", {}).get("validation_issues") or []
+                ):
+                    issues.append(
+                        self._issue(
+                            index,
+                            str(plan_issue.get("code") or "TRACKSIDE_AP_PLAN_INVALID"),
+                            str(plan_issue.get("message") or "轨旁 AP 规划无效"),
+                            str(plan_issue.get("field_name") or ""),
+                            blocking=bool(plan_issue.get("blocking", True)),
+                        )
                 )
             except BaseDataFieldValidationError as exc:
                 issues.append(self._issue(index, exc.code, str(exc), exc.field_name))
             except ValueError as exc:
                 issues.append(self._issue(index, "BASE_DATA_VALIDATION_FAILED", str(exc)))
-        if not issues:
+        if not any(issue.blocking for issue in issues):
             projected_metadata = self._projected_site_metadata(site_id, normalized)
             projected_sections = self._projected_sections(site_id, normalized)
             issues.extend(
@@ -434,7 +476,9 @@ class RailTransitBaseDataApplicationService:
         self,
         change: BaseDataChangeDTO,
         *,
+        site_id: str,
         main_path_code: str = DEFAULT_MAIN_PATH_CODE,
+        projected_vlan_stations: list[dict[str, object]] | None = None,
     ) -> dict[str, Any]:
         raw = dict(change.values)
         self._reject_sensitive(raw)
@@ -465,16 +509,53 @@ class RailTransitBaseDataApplicationService:
         elif entity_type == "vehicle_mr":
             values = self._mr_values(raw, action)
         else:
-            rows = raw.get("rows")
-            if not isinstance(rows, list):
-                raise ValueError("轨旁 AP 规划数据格式无效")
-            raw_rows = [dict(row) for row in rows if isinstance(row, Mapping)]
-            station_keys = [str(row.get("station_name") or "").strip().casefold() for row in raw_rows]
-            if len(station_keys) != len(set(station_keys)):
-                raise ValueError("轨旁 AP 规划存在重复站点")
-            normalized_rows = normalize_trackside_plan_rows(raw_rows)
-            self._validate_plan_networks(normalized_rows)
-            values = {"rows": normalized_rows}
+            stations = (
+                projected_vlan_stations
+                if projected_vlan_stations is not None
+                else [row.model_dump() for row in self._all_stations(site_id)]
+            )
+            aps = [
+                row.model_dump()
+                for row in self.query_service.list_ap_location_items(site_id)
+            ]
+            if isinstance(raw.get("groups"), list):
+                candidate: Mapping[str, Any] = raw
+            else:
+                rows = raw.get("rows")
+                if not isinstance(rows, list):
+                    raise ValueError("轨旁 AP 规划数据格式无效")
+                raw_rows = [dict(row) for row in rows if isinstance(row, Mapping)]
+                station_keys = [
+                    str(row.get("station_name") or "").strip().casefold()
+                    for row in raw_rows
+                ]
+                if len(station_keys) != len(set(station_keys)):
+                    raise ValueError("轨旁 AP 规划存在重复站点")
+                candidate = legacy_rows_to_draft(
+                    normalize_trackside_plan_rows(raw_rows),
+                    stations=stations,
+                )
+                current = ApManagementVlanRepository(
+                    Database(self.paths.site_db_path(site_id))
+                ).get_draft()
+                candidate["planning"]["revision"] = int(
+                    current["planning"].get("revision") or 0
+                )
+            plan = enrich_plan(
+                candidate,
+                stations=stations,
+                aps=aps,
+                reallocation_policy=str(
+                    raw.get("reallocation_policy") or REALLOCATION_ONLY_UNLOCKED
+                ),
+            )
+            values = {
+                "planning": plan["planning"],
+                "groups": plan["groups"],
+                "assignments": plan["assignments"],
+                "allocations": plan["allocations"],
+                "validation_issues": plan["issues"],
+            }
         return {
             "entity_type": entity_type,
             "action": action,
@@ -1291,6 +1372,67 @@ class RailTransitBaseDataApplicationService:
                 return items
             page += 1
 
+    def _projected_vlan_stations(
+        self,
+        site_id: str,
+        changes: list[BaseDataChangeDTO],
+    ) -> list[dict[str, object]]:
+        rows = {str(item.id): item.model_dump() for item in self._all_stations(site_id)}
+        for index, change in enumerate(changes):
+            if change.entity_type != "station":
+                continue
+            raw = dict(change.values)
+            entity_id = str(change.entity_id or "")
+            old_name = str(raw.get("old_name") or "").strip().casefold()
+            matched_id = entity_id
+            if not matched_id and old_name:
+                matched_id = next(
+                    (
+                        row_id
+                        for row_id, row in rows.items()
+                        if str(row.get("name") or "").strip().casefold() == old_name
+                    ),
+                    "",
+                )
+            if change.action == "delete":
+                if matched_id:
+                    rows.pop(matched_id, None)
+                continue
+            name = str(raw.get("name") or "").strip()
+            existing = dict(rows.pop(matched_id, {})) if matched_id else {}
+            node_uid = str(raw.get("node_uid") or existing.get("node_uid") or "")
+            row_id = matched_id or (
+                f"station:{hashlib.sha1(node_uid.encode('utf-8')).hexdigest()[:12]}"
+                if node_uid
+                else entity_id or f"new:station:{index}"
+            )
+            existing.update(
+                {
+                    "id": row_id,
+                    "node_uid": str(
+                        node_uid
+                        or existing.get("node_uid")
+                        or stable_legacy_station_id(name)
+                    ),
+                    "name": name,
+                    "sort_order": int(
+                        raw.get("sort_order")
+                        if raw.get("sort_order") is not None
+                        else existing.get("sort_order") or index
+                    ),
+                    "ap_count": int(existing.get("ap_count") or 0),
+                    "enabled": bool(raw.get("enabled", existing.get("enabled", True))),
+                }
+            )
+            rows[row_id] = existing
+        return sorted(
+            rows.values(),
+            key=lambda row: (
+                int(row.get("sort_order") or 0),
+                str(row.get("name") or ""),
+            ),
+        )
+
     def _projected_site_metadata(
         self,
         site_id: str,
@@ -1478,30 +1620,6 @@ class RailTransitBaseDataApplicationService:
             return any(item.mr_name == name for item in self.query_service.online_mr_query.list_sessions(site_id, limit=1000))
         except (OSError, ValueError):
             return True
-
-    @staticmethod
-    def _validate_plan_networks(rows: list[dict[str, object | None]]) -> None:
-        networks: list[tuple[str, ipaddress.IPv4Network]] = []
-        for row in rows:
-            station = str(row.get("station_name") or "")
-            start_text = str(row.get("ap_start_address") or "").strip()
-            gateway_text = str(row.get("ap_gateway") or "").strip()
-            count = int(row.get("ap_count") or 0)
-            mask = row.get("mask_length")
-            if not start_text or "X" in start_text.upper():
-                continue
-            if mask is None:
-                raise ValueError(f"{station}：填写 AP 起始地址时必须填写掩码")
-            start = ipaddress.IPv4Address(start_text)
-            network = ipaddress.IPv4Network(f"{start}/{int(mask)}", strict=False)
-            if gateway_text and ipaddress.IPv4Address(gateway_text) not in network:
-                raise ValueError(f"{station}：AP 网关不在规划网段内")
-            if count and int(start) + count - 1 > int(network.broadcast_address):
-                raise ValueError(f"{station}：规划地址段容量不足")
-            for other_station, other in networks:
-                if network.overlaps(other):
-                    raise ValueError(f"{station} 与 {other_station} 的规划网段冲突")
-            networks.append((station, network))
 
     @classmethod
     def _reject_sensitive(cls, value: Any) -> None:
