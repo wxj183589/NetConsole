@@ -1,8 +1,10 @@
 import csv
+from concurrent.futures import ThreadPoolExecutor
 import sqlite3
 
 import pytest
 
+from netconsole.core import app_logger
 from netconsole.core.database import Database
 from netconsole.models.device import (
     Device,
@@ -23,6 +25,37 @@ def _repository(tmp_path) -> DeviceRepository:
     database = Database(tmp_path / "devices.sqlite")
     database.initialize()
     return DeviceRepository(database)
+
+
+def _drop_lifecycle_schema(
+    database: Database,
+    *,
+    columns: tuple[str, ...] = (
+        "operation_status_updated_by",
+        "operation_status_updated_at",
+        "operation_status_reason",
+        "operation_status",
+        "project_phase",
+    ),
+) -> None:
+    with database.connect() as connection:
+        connection.execute("DROP INDEX IF EXISTS idx_devices_operation_status")
+        connection.execute("DROP INDEX IF EXISTS idx_devices_project_phase")
+        for column in columns:
+            connection.execute(f"ALTER TABLE devices DROP COLUMN {column}")
+        connection.execute(
+            "UPDATE schema_metadata SET value = ? WHERE key = 'schema_version'",
+            ("2026.07.29.device_primary_address_identity",),
+        )
+        connection.commit()
+
+
+def _migration_backups(database: Database) -> list:
+    return list(
+        (database.path.parent / "backups" / "database-migrations").glob(
+            "devices-site-*-before-operation-status-*.sqlite"
+        )
+    )
 
 
 def test_lifecycle_enums_accept_stable_and_chinese_values():
@@ -79,7 +112,7 @@ def test_additive_migration_preserves_device_and_defaults_to_in_service(tmp_path
     migrated = DeviceRepository(database).get(int(created.id or 0))
     backups = list(
         (database.path.parent / "backups" / "database-migrations").glob(
-            "devices-before-operation-status-*.sqlite"
+            "devices-site-*-before-operation-status-*.sqlite"
         )
     )
     assert migrated.id == created.id
@@ -96,7 +129,7 @@ def test_additive_migration_preserves_device_and_defaults_to_in_service(tmp_path
         len(
             list(
                 (database.path.parent / "backups" / "database-migrations").glob(
-                    "devices-before-operation-status-*.sqlite"
+                    "devices-site-*-before-operation-status-*.sqlite"
                 )
             )
         )
@@ -131,6 +164,176 @@ def test_repository_filters_and_atomic_lifecycle_update(tmp_path):
             project_phase="other",
         )
     assert repository.get(int(first.id or 0)).project_phase == "phase_1"
+
+
+def test_partial_lifecycle_migration_repairs_current_version_without_data_loss(
+    tmp_path,
+):
+    database = Database(tmp_path / "partial.sqlite")
+    database.initialize()
+    repository = DeviceRepository(database)
+    created = repository.create(
+        Device(
+            name="部分迁移设备",
+            primary_address="198.51.100.41",
+            ssh_username="admin",
+            ssh_password="partial-secret",
+        )
+    )
+    with database.connect() as connection:
+        connection.execute(
+            "ALTER TABLE devices DROP COLUMN operation_status_updated_by"
+        )
+        connection.execute(
+            "UPDATE schema_metadata SET value = ? WHERE key = 'schema_version'",
+            (
+                "2026.07.29.zte_optical_ap_vlan_"
+                "device_address_and_operation_status",
+            ),
+        )
+        connection.commit()
+
+    database.initialize()
+
+    with database.connect() as connection:
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(devices)")
+        }
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
+    migrated = repository.get(int(created.id or 0))
+    assert "operation_status_updated_by" in columns
+    assert integrity == "ok"
+    assert migrated.device_uuid == created.device_uuid
+    assert migrated.ssh_password == "partial-secret"
+    assert len(_migration_backups(database)) == 1
+
+
+def test_lifecycle_migration_repairs_missing_indexes_once(tmp_path):
+    database = Database(tmp_path / "missing-indexes.sqlite")
+    database.initialize()
+    with database.connect() as connection:
+        connection.execute("DROP INDEX idx_devices_operation_status")
+        connection.execute("DROP INDEX idx_devices_project_phase")
+        connection.commit()
+
+    database.initialize()
+    database.initialize()
+
+    with database.connect() as connection:
+        indexes = {
+            row["name"]
+            for row in connection.execute("PRAGMA index_list(devices)")
+        }
+    assert {
+        "idx_devices_operation_status",
+        "idx_devices_project_phase",
+    }.issubset(indexes)
+    assert len(_migration_backups(database)) == 1
+
+
+def test_lifecycle_migration_failure_rolls_back_and_reuses_verified_backup(
+    tmp_path, monkeypatch
+):
+    database = Database(tmp_path / "rollback.sqlite")
+    database.initialize()
+    created = DeviceRepository(database).create(
+        Device(
+            name="回滚设备",
+            primary_address="203.0.113.61",
+            ssh_username="admin",
+            ssh_password="rollback-secret",
+        )
+    )
+    _drop_lifecycle_schema(database)
+    log_rows: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        app_logger,
+        "log_error",
+        lambda event, detail="", **_kwargs: log_rows.append((event, detail)),
+    )
+
+    def fail_validation(
+        _database: Database, _connection: sqlite3.Connection
+    ) -> None:
+        raise sqlite3.OperationalError("forced lifecycle validation failure")
+
+    monkeypatch.setattr(
+        Database, "_validate_device_lifecycle_migration", fail_validation
+    )
+
+    for _attempt in range(2):
+        with pytest.raises(
+            sqlite3.OperationalError,
+            match="forced lifecycle validation failure",
+        ):
+            database.initialize()
+
+    with database.connect() as connection:
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(devices)")
+        }
+        version = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
+        ).fetchone()[0]
+        row = connection.execute(
+            "SELECT device_uuid, primary_address, ssh_password "
+            "FROM devices WHERE id = ?",
+            (created.id,),
+        ).fetchone()
+    backups = _migration_backups(database)
+    with sqlite3.connect(backups[0]) as backup:
+        backup_integrity = backup.execute("PRAGMA integrity_check").fetchone()[0]
+
+    assert "project_phase" not in columns
+    assert version == "2026.07.29.device_primary_address_identity"
+    assert tuple(row) == (
+        created.device_uuid,
+        "203.0.113.61",
+        "rollback-secret",
+    )
+    assert len(backups) == 1
+    assert backup_integrity == "ok"
+    assert any(
+        event == "DATABASE_INITIALIZE_FAILED"
+        and "stage=lifecycle_validation" in detail
+        and "traceback=" in detail
+        for event, detail in log_rows
+    )
+
+
+def test_concurrent_lifecycle_initialization_creates_one_backup(tmp_path):
+    database = Database(tmp_path / "concurrent.sqlite")
+    database.initialize()
+    DeviceRepository(database).create(
+        Device(name="并发迁移设备", primary_address="203.0.113.71")
+    )
+    _drop_lifecycle_schema(database)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda _index: Database(database.path).initialize(),
+                range(2),
+            )
+        )
+
+    assert results == [None, None]
+    assert len(_migration_backups(database)) == 1
+    assert len(DeviceRepository(database).list(operation_status="in_service")) == 1
+
+
+def test_corrupt_database_is_not_replaced_or_overwritten(tmp_path):
+    path = tmp_path / "corrupt.sqlite"
+    original = b"not-a-sqlite-database"
+    path.write_bytes(original)
+
+    with pytest.raises(sqlite3.DatabaseError):
+        Database(path).initialize()
+
+    assert path.read_bytes() == original
+    assert not (path.parent / "backups" / "database-migrations").exists()
 
 
 def test_manual_and_automatic_eligibility_are_independent():

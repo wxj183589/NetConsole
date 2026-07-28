@@ -16,6 +16,27 @@ If the database already exists, `Database.initialize()` applies only additive, i
 
 Current schema version: `2026.07.29.zte_optical_ap_vlan_device_address_and_operation_status`. The prior query-plan evidence and rollback boundaries remain recorded in [the E6 database archive](archive/migrations/electron-only/E6-2026-07-18.md).
 
+The 2026-07-29 device lifecycle migration adds the following additive fields to
+`devices`: `project_phase`, `operation_status`, `operation_status_reason`,
+`operation_status_updated_at`, and `operation_status_updated_by`. It also adds
+`idx_devices_operation_status` and `idx_devices_project_phase`. Existing rows
+are filled with `project_phase='unspecified'` and `operation_status='in_service'`
+so the default “在用” list remains backward compatible. Missing fields,
+indexes, empty defaults, or an interrupted previous migration are repaired
+idempotently before any device Repository is constructed.
+
+Every active site database is initialized during Backend assembly, site
+creation, site activation, and package import staging. Existing databases are
+backed up only when a real device schema change is detected. The backup is
+created with SQLite Backup API and must pass `PRAGMA integrity_check`; a
+verified backup with the same database-state fingerprint is reused on a
+repeated failed attempt. Schema changes and the final `schema_metadata`
+version write run in one `BEGIN IMMEDIATE` transaction. A failure rolls back
+the database, retains the original file, and records the migration stage,
+SQLite error code/name, missing lifecycle fields/indexes, backup path, and
+traceback in the local Backend log. The API never creates an empty replacement
+database.
+
 The 2026-07-29 additive migration adds `devices.normalized_primary_address`.
 Because every site has its own `devices.db`, the partial unique index on that
 column enforces the business key "current site + normalized primary address";

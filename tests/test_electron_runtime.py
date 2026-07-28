@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +18,10 @@ from netconsole.backend.electron_runtime import (
     wait_for_exit_command,
     watch_control_stream,
 )
+from netconsole.core.database import Database
+from netconsole.core.paths import PathResolver
+from netconsole.models.device import Device
+from netconsole.repositories.device_repository import DeviceRepository
 
 
 TOKEN = "electron-test-token-abcdefghijklmnopqrstuvwxyz"
@@ -197,6 +202,90 @@ def test_electron_runtime_authenticates_http_with_ephemeral_header(tmp_path, mon
     assert response.json()["active_site_id"]
     assert response.json()["storage_schema_version"] == 1
     assert response.json()["status"] == "ok"
+
+
+def test_electron_backend_initializes_legacy_active_site_before_device_query(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(
+        app_root=tmp_path / "app",
+        data_root=tmp_path / "data",
+    )
+    site = "legacy-site"
+    paths.ensure_site_dirs(site)
+    database = Database(paths.site_db_path(site))
+    database.initialize()
+    created = DeviceRepository(database).create(
+        Device(
+            name="冻结旧库设备",
+            primary_address="198.51.100.81",
+            ssh_username="admin",
+            ssh_password="secret",
+        )
+    )
+    with database.connect() as connection:
+        connection.execute("DROP INDEX idx_devices_operation_status")
+        connection.execute("DROP INDEX idx_devices_project_phase")
+        for column in (
+            "operation_status_updated_by",
+            "operation_status_updated_at",
+            "operation_status_reason",
+            "operation_status",
+            "project_phase",
+        ):
+            connection.execute(f"ALTER TABLE devices DROP COLUMN {column}")
+        connection.execute(
+            "UPDATE schema_metadata SET value = ? WHERE key = 'schema_version'",
+            ("2026.07.29.device_primary_address_identity",),
+        )
+        connection.commit()
+
+    app = build_app(
+        ElectronRuntimeOptions("127.0.0.1", 43123),
+        TOKEN,
+        paths=paths,
+    )
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/device-management/devices",
+            headers={DESKTOP_SESSION_HEADER: TOKEN},
+        )
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert response.json()["items"][0]["device_uuid"] == created.device_uuid
+    assert response.json()["items"][0]["project_phase"] == "unspecified"
+    assert response.json()["items"][0]["operation_status"] == "in_service"
+
+    backups = sorted(
+        (
+            paths.site_files_dir(site)
+            / "backups"
+            / "database-migrations"
+        ).glob("devices-site-*-before-operation-status-*.sqlite")
+    )
+    assert len(backups) == 1
+
+    restarted = build_app(
+        ElectronRuntimeOptions("127.0.0.1", 43123),
+        TOKEN,
+        paths=paths,
+    )
+    with TestClient(restarted) as client:
+        response = client.get(
+            "/api/device-management/devices",
+            headers={DESKTOP_SESSION_HEADER: TOKEN},
+        )
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert len(
+        list(
+            (
+                paths.site_files_dir(site)
+                / "backups"
+                / "database-migrations"
+            ).glob("devices-site-*-before-operation-status-*.sqlite")
+        )
+    ) == 1
 
 
 def test_electron_runtime_does_not_publish_api_documentation(tmp_path, monkeypatch) -> None:

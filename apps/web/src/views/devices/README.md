@@ -23,6 +23,14 @@
 5. 当前设备详情通过共享 Task Store 轮询任务状态。任务进入 `COMPLETED`、`FAILED` 或 `CANCELLED` 后，页面重新读取 overview 和已经加载的页签。
 6. 页面切换设备、页签或筛选时使用 generation 避免旧请求覆盖新状态；卸载时释放 polling、请求状态和图表/观察器资源。
 
+设备列表请求失败时，页面保持错误状态，不把失败误显示为“当前没有设备”或空列表。Backend
+会把 SQLite 异常映射为结构化错误：迁移未完成使用
+`DEVICE_DATABASE_SCHEMA_NOT_READY`，锁库使用 `DEVICE_DATABASE_BUSY`，权限/只读、
+完整性、磁盘 I/O 和未分类异常分别使用对应的 `DEVICE_DATABASE_*` code。Renderer
+显示后端返回的安全 `message`；本机路径、SQL、堆栈和设备凭据只写入 Backend
+诊断日志，不进入 API 响应。数据库迁移发生在局点激活和服务装配阶段，列表查询不会
+在请求中重复执行迁移。
+
 ## 新增/编辑表单连接测试
 
 - SSH 已启用且地址、端口、用户名和认证信息有效时，可在不保存设备的情况下提交真实连接测试；测试按钮在任务运行期间保持 loading，并保留“打开任务中心”入口。

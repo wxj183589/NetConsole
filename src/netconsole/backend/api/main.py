@@ -32,6 +32,7 @@ from netconsole.backend.web_build import (
     frontend_build_id,
     read_frontend_build_meta,
 )
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.feature_flags import FeatureGate
 from netconsole.core.resources import package_resource_path
@@ -755,12 +756,22 @@ def _current_site_name(paths: PathResolver) -> str:
         try:
             selected = SiteRegistryRepository(paths).resolve_directory_name(preferred)
             if paths.site_dir(selected).is_dir():
+                _initialize_active_site_database(paths, selected)
                 return selected
         except (SiteStorageError, ValueError):
             pass
     if not any(path.is_dir() and not path.is_symlink() for path in paths.sites_dir.glob("*")):
         DemoSiteSeedService(paths).seed()
-    return SiteManager(paths).get_current_site()
+    selected = SiteManager(paths).get_current_site()
+    _initialize_active_site_database(paths, selected)
+    return selected
+
+
+def _initialize_active_site_database(paths: PathResolver, site_name: str) -> None:
+    database = Database(paths.site_db_path(site_name))
+    if not database.exists():
+        raise RuntimeError("当前局点设备数据库不存在，Backend 未启动")
+    database.initialize()
 
 
 def _frontend_dist(paths: PathResolver) -> Path:

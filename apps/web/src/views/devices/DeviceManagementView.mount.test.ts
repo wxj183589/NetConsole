@@ -411,6 +411,20 @@ afterEach(() => {
 })
 
 describe('DeviceManagementView mounted interactions', () => {
+  it('shows the structured database message without rendering an empty result', async () => {
+    mocks.listDevices.mockRejectedValueOnce(
+      new Error('设备数据库升级未完成，请重启后端或查看数据库迁移日志。'),
+    )
+
+    const wrapper = await renderView()
+
+    expect(wrapper.get('.state-alert').attributes('title')).toBe(
+      '设备数据库升级未完成，请重启后端或查看数据库迁移日志。',
+    )
+    expect(wrapper.find('.device-table-host .el-empty').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('provides all device actions through the shared typed context menu and preserves copied cell text', async () => {
     const wrapper = await renderView()
     const deviceTable = wrapper.findComponent(NcDataTable) as unknown as VueWrapper

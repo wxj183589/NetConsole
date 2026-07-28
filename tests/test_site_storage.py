@@ -294,6 +294,42 @@ def test_full_migration_package_plainly_copies_and_restores_credentials(
     assert restored.credential_status == "available"
 
 
+def test_import_migrates_database_in_staging_before_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_paths = _paths(tmp_path / "source")
+    source_sites = SiteApplicationService(source_paths)
+    source_sites.create_site("legacy-source", "旧局点")
+    package = tmp_path / "legacy.ncsite"
+    SitePackageService(source_paths, source_sites).export_site("legacy-source", package)
+
+    target_paths = _paths(tmp_path / "target")
+    target_sites = SiteApplicationService(target_paths)
+    initialized_staging: list[Path] = []
+    original_initialize = Database.initialize
+
+    def fail_staging_initialize(database: Database) -> None:
+        if "site-import-staging" in database.path.parts:
+            initialized_staging.append(database.path)
+            raise sqlite3.OperationalError("forced staging migration failure")
+        original_initialize(database)
+
+    monkeypatch.setattr(Database, "initialize", fail_staging_initialize)
+
+    with pytest.raises(SiteStorageError, match="局点导入失败"):
+        SitePackageService(target_paths, target_sites).import_site(
+            package,
+            site_id="legacy-target",
+            display_name="迁移失败局点",
+        )
+
+    assert initialized_staging
+    assert not target_paths.site_dir("legacy-target").exists()
+    assert not any(
+        record.site_id == "legacy-target" for record in target_sites.registry.list()
+    )
+
+
 def test_full_migration_checksum_tampering_publishes_nothing(
     tmp_path: Path,
 ) -> None:
