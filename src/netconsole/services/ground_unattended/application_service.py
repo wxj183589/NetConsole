@@ -186,6 +186,9 @@ class GroundUnattendedApplicationService:
             profile.timezone,
         )
         run = self.repository.get_active_run() or self.repository.latest_run() or {}
+        run_summary = run.get("summary")
+        if not isinstance(run_summary, dict):
+            run_summary = {}
         run_id = str(run.get("run_id") or "")
         trains = self.repository.list_train_runs(run_id) if run_id else []
         archives = self.repository.list_archives()
@@ -212,7 +215,20 @@ class GroundUnattendedApplicationService:
         disk = shutil.disk_usage(self.paths.ground_unattended_root(site_id).parent)
         state = str(
             run.get("state") or ("WAITING_WINDOW" if profile.enabled else "DISABLED")
-        )
+        ).strip().upper()
+        if state not in {
+            "DISABLED",
+            "WAITING_WINDOW",
+            "STARTING",
+            "RUNNING",
+            "PAUSED",
+            "STOPPING",
+            "FINALIZING",
+            "ARCHIVING",
+            "COMPLETED",
+            "ERROR",
+        }:
+            state = "ERROR"
         if state == "COMPLETED" and profile.enabled and not window.active:
             state = "WAITING_WINDOW"
         return GroundUnattendedStatusDTO(
@@ -247,6 +263,7 @@ class GroundUnattendedApplicationService:
                 for row in trains
                 if row.get("ping_eligible")
                 for endpoint in row.get("endpoints", [])
+                if isinstance(endpoint, dict)
             ),
             active_deep_train_count=sum(
                 row.get("coverage_status") == "COLLECTING" for row in trains
@@ -265,7 +282,7 @@ class GroundUnattendedApplicationService:
                 syslog_health.get("udp_unidentified_count") or 0
             )
             + int(syslog_health.get("udp_dropped_count") or 0),
-            disk_used_bytes=int((run.get("summary") or {}).get("disk_used_bytes") or 0),
+            disk_used_bytes=int(run_summary.get("disk_used_bytes") or 0),
             disk_free_bytes=disk.free,
             disk_status=(
                 "CRITICAL"
@@ -581,7 +598,13 @@ class GroundUnattendedApplicationService:
             row.setdefault(
                 "mr_name", endpoint_names.get(str(row.get("mr_id") or ""), "")
             )
-        items = [GroundPingTargetDTO.model_validate(row) for row in rows]
+        dto_fields = GroundPingTargetDTO.model_fields
+        items = [
+            GroundPingTargetDTO.model_validate(
+                {key: value for key, value in row.items() if key in dto_fields}
+            )
+            for row in rows
+        ]
         return GroundPingSummaryPageDTO(items=items, total=len(items))
 
     def ping_series(
