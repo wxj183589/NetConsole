@@ -26,8 +26,20 @@
 - 业务代码进入 `src/netconsole`；Electron、Web、Agent 分别进入 `apps/desktop_electron`、`apps/web`、`apps/agent`。不得新增 `apps/desktop`、`src/netconsole/ui`、`frontend`、`desktop`、`netconsole`、`project` 等历史或模糊目录。
 - 根目录只保留项目级配置、入口和白名单目录；运行数据、日志、SQLite、抓包、采集结果、临时导出和正式报告不得提交。
 - 路径定位使用 `PathResolver`、资源 helper 或脚本自身位置；禁止用 `Path.cwd()` 定位源码、资源、配置或运行数据，禁止用临时 `sys.path` 掩盖包结构问题。
-- 开发数据使用受控本机数据根或 `.local/`；打包态使用系统应用数据目录或用户选择的导出目录。历史数据迁移和清理必须 dry-run、manifest、白名单，不得静默删除用户数据库、原始日志、会话或正式报告。
+- 源码开发、Electron 开发、Python Backend、打包验证和正式安装包默认都读取安装器登记的 `HKLM\Software\NetConsole\DataRoot`；`NETCONSOLE_DATA_ROOT` 只作为显式覆盖，未配置持久根时停止启动，不回退到 LocalAppData、用户目录、仓库、安装目录或系统 Temp。
+- 自动测试、发布 smoke 和安装包 smoke 必须显式使用 `RuntimeMode.TEST` 与唯一 `D:\NetConsoleTestData\<run-id>`，不得读取机器级指针、正式局点数据库、真实会话或报告；结束时只清理自己的 run-id。
+- 历史数据迁移和清理必须 dry-run、manifest、白名单、SHA-256 和 SQLite `quick_check/integrity_check`；同路径异内容进入 `migrations/conflicts/`，不得静默覆盖或删除用户数据库、原始日志、会话或正式报告。
 - 新增目录、移动文件或调整 Agent/工具/构建路径时，同步检查 import、测试、构建参数、前端工作目录、Agent 入口、文档链接和资源定位。
+
+## 安装器、局点与数据包
+
+- NSIS 安装器必须先在零写入状态下分类候选数据根，再执行候选根内部唯一临时文件的写入、flush/close、同目录重命名、回读和清理探测；探测成功后不得再按“普通目录非空”拒绝。
+- 数据根页面允许不存在路径、空目录、合法旧根和含无冲突普通文件的目录；不得自动拼接 `NetConsoleData` 子目录，不得重命名数据根、跨卷移动、覆盖 manifest 或读取/修改现有数据库与采集文件。
+- 写入注册表指针前必须由打包 Backend 原子初始化标准目录和 `config/storage-manifest.json`，或验证既有 manifest 兼容；损坏、根不一致或版本不兼容时安装失败且原文件保留。
+- 局点 Registry 的稳定 `site_id` 和跨电脑 `site_uuid` 是同步事实源，显示名称只用于展示；导入、回传和合并不得按显示名称或本地自增 ID 覆盖数据。
+- v4 `full_migration` 是不加密普通 ZIP，无需迁移密码，直接包含局点数据库及设备 SSH/Telnet 密码、SNMP community 和隧道凭据；只保存到可信位置。脱敏分享、现场采集、采集回传和旧无凭据包必须清除秘密并标记需要重录。
+- `collection_return` 只在匹配同一 `site_uuid` 后按稳定 UUID、任务/事件 ID、文件 SHA-256 和预检冲突策略合并；删除请求默认只记录和展示，不自动删除设备、AP、列车、原始文件、报告或历史数据。
+- 托盘“快速切换局点”只把目标 `site_id` 意图交回设置页，必须复用局点切换 preflight、活动任务阻塞、工作区快照、Backend 重启和回滚流程；Electron Main 不接受 Renderer 提供的局点名称或清单。
 
 ## 功能、UI 与表格
 
@@ -57,6 +69,9 @@
 - 轨道交通基础资料统一在 `/rail-transit/base-data` 维护，页面默认锁定；写入必须同时满足 Feature、环境/会话授权、目标范围、revision 校验和后端事务。正式资料、导入来源和运行态数据不得相互伪装。
 - 基础资料不建立第二套数据库；站点/区间、轨旁 AP、车载 MR 和规划写入复用当前局点 `devices.db`，失败必须完整回滚并保留前端编辑区。
 - `/rail-transit/train-communication` 是固定车载 TC1/TC2 六节点通信检测页，不是无线综合看板；不得聚合轨旁 AP、RSSI、fping、iPerf、Online MR、Agent 或 Mesh-Link。
+- 车内通信点表每列车只能包含 `TC1-MR/TC1-SW/TC1-SRV/TC2-MR/TC2-SW/TC2-SRV` 六节点；保存使用 SHA-256 revision。生成点表任务只返回编辑区预览，固定 `save_result=false`，`COMPLETED` 不等于预览可用，缺失或无效节点必须保留当前编辑内容。
+- 地面无人值守是独立 `/rail-transit/ground-unattended` 页面和 `web.ground_unattended` Feature，不复用人工 Online MR 页面状态，也不把全天无人值守塞入单一 Online MR Session；页面卸载只停止轮询，托盘隐藏时 Backend、AC 轮询、全车 Ping 和深度采集继续。
+- 地面无人值守调度必须用结构化正线分类、多目标 fping 分片、Online MR 强类型请求、并发预算、覆盖轮次、ZIP 原子归档和启动恢复；真实 AC/MR、长时 fping、托盘隐藏持续运行和进程残留仍是人工现场门禁。
 - AP Identity 当前仍是只读 shadow/diagnostics，不接管生产匹配、页面展示、导出字段或数据库写入；unavailable/failed 不能改变原 Job/Export 终态。
 
 ## 验证与发布
@@ -64,7 +79,18 @@
 - 开发阶段先跑与改动直接相关的 pytest、Vitest、Ruff、Go 测试、Electron test/typecheck/build/smoke 或架构单门；全量 pytest、完整前端测试/构建、Package Smoke 和九个架构门只在最终真实代码组合上运行。
 - 测试不得读取或写入 `D:\NetConsoleData`、正式局点数据库、真实会话和报告；使用 `D:\NetConsoleTestData\<run-id>`、Fake 服务或显式测试 `NETCONSOLE_DATA_ROOT`。
 - Electron-only 发布门包括九个架构 Guard、无 Qt 依赖/资源/许可证残留、锁定 Python constraints、SBOM/Notice、白名单 fping/iPerf 本地工具、安装包 smoke 和 Windows 图形人工验收。
+- 正式 NSIS 构建必须从已提交、工作区 clean 且 `HEAD` 已推送到 upstream 的状态开始；最终安装包文件名包含 Git short commit，PE 身份、内嵌 installer manifest、数据根 include 哈希、Backend/Frontend commit 和两次 SHA-256 必须与本轮输入一致。
+- 自动发布清单中的 `real_windows_install_status` 在隔离 Windows GUI 完成不存在目录、空目录、含普通文件目录和合法旧数据根等安装验收前必须保持 `PENDING`；单元测试、Backend smoke 或 unpacked Electron smoke 不能推断为 `PASS`。
 - 架构例外必须精确到 `rule_id + path`，含理由、责任域、创建时间、到期时间和测试；禁止目录级通配、陈旧例外或删除测试换通过。
+
+## 本周新增高置信沉淀（2026-07-20 至 2026-07-27）
+
+- 统一数据根从开发、Electron、Backend、打包验证到正式安装包形成硬边界：机器级 `DataRoot` 是唯一持久指针，自动测试只用隔离测试根。
+- 安装器数据根校验以“先分类、后探测、再初始化/发布指针”为固定流程，允许含普通文件目录且不得覆盖已有内容。
+- v4 完整迁移包明确改为无密码、不加密、保留凭据的可信位置 ZIP；其他包类型保持脱敏和重录凭据边界。
+- 工作区标签、多窗口和托盘驻留已成为 Electron 正式交互的一部分，但局点切换仍必须回到受控设置流程。
+- 轨道交通地面无人值守成为独立 Feature 和数据目录；真实长时运行、真实 AC/MR 和托盘隐藏持续执行仍需人工门禁。
+- 车内通信点表生成是预览契约，不是保存契约；任务完成只能说明调度结束，页面必须校验返回节点结构后再展示。
 
 ## 本周新增高置信沉淀（2026-07-13 至 2026-07-20）
 
