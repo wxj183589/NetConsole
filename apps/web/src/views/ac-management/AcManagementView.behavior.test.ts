@@ -362,6 +362,22 @@ describe('AC Management optical detail behavior', () => {
     wrapper.unmount()
   })
 
+  it('renders AC content without the legacy task banner and keeps refresh submission actions', async () => {
+    const wrapper = mountView()
+
+    expect(wrapper.text()).not.toContain('AC 任务 · 运行中')
+    expect(wrapper.text()).not.toContain('打开任务中心')
+    expect(wrapper.find('.task-summary').exists()).toBe(false)
+    expect(wrapper.find('[data-table-id="ac-fit-ap-resources"]').exists()).toBe(true)
+
+    await wrapper.findAll('button').find((button) => button.text().includes('更新 AC 信息'))!.trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('更新 FIT-AP 资源'))!.trigger('click')
+
+    expect(mocks.store!.startAcInfoRefresh).toHaveBeenCalledOnce()
+    expect(mocks.store!.startFitApRefresh).toHaveBeenCalledOnce()
+    wrapper.unmount()
+  })
+
   it('keeps external terminal enabled in Electron and disabled with a reason in Browser mode', () => {
     const wrapper = mountView()
     const menu = wrapper.findComponent(dataTableStub).props('contextMenuItems') as Array<Record<string, unknown>>

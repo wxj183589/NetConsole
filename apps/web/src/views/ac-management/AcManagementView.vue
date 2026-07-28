@@ -132,10 +132,6 @@ const configLines = computed(() => (store.configContent?.content || '').split('\
 const diffLines = computed(() => (store.configDiff?.raw_diff || '').split('\n'))
 const taskActive = computed(() => !!store.refreshTask && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(store.refreshTask.status))
 const actionTaskActive = computed(() => !!store.actionTask && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(store.actionTask.status))
-const publicAcTasks = computed(() => taskStore.tasks.filter((task) => task.module === 'ac' || task.owner === 'web_ac'))
-const activeAcTaskCount = computed(() => publicAcTasks.value.filter((task) => ['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'CREATED', 'QUEUED'].includes(task.status)).length)
-const failedAcTaskCount = computed(() => publicAcTasks.value.filter((task) => task.status === 'FAILED').length)
-const latestAcTask = computed(() => publicAcTasks.value.find((task) => task.id === store.refreshTask?.task_id) || publicAcTasks.value[0] || null)
 const acActionConflict = computed(() => actionTaskActive.value && store.actionTask?.target_id === store.filters.ac_id)
 const currentActionLoading = computed(() => {
   const actionId = actionPlan.value?.action_id
@@ -227,15 +223,6 @@ function handleVisibility(): void {
     store.startPolling()
     taskStore.acquirePolling(pollingConsumer)
   }
-}
-
-function openTaskWindow(requestedTaskId = ''): void {
-  const taskId = requestedTaskId || latestAcTask.value?.id || store.actionTask?.task_id || store.refreshTask?.task_id || ''
-  if (window.netconsoleDesktop) {
-    void window.netconsoleDesktop.openTaskWindow({ module: 'ac', ...(taskId ? { taskId } : {}) })
-    return
-  }
-  void router.push({ name: 'tasks', query: { module: 'ac', ...(taskId ? { task_id: taskId } : {}) } })
 }
 
 function clearFilters(): void {
@@ -722,14 +709,6 @@ function diffLineClass(line: string): string {
     </div>
 
     <el-alert v-if="store.error" :title="store.error" type="error" :closable="false" show-icon class="page-error" />
-    <el-alert
-      :title="`AC 任务 · 运行中 ${activeAcTaskCount} 项 / 失败 ${failedAcTaskCount} 项`"
-      :description="latestAcTask ? `${latestAcTask.name} · ${latestAcTask.status} · ${latestAcTask.message || latestAcTask.id}` : '任务状态由统一任务中心恢复'"
-      type="info"
-      :closable="false"
-      show-icon
-      class="task-summary"
-    ><el-button link type="primary" @click="openTaskWindow">打开任务中心</el-button></el-alert>
     <el-empty v-if="store.summary?.message && !store.summary.acs.length" :description="store.summary.message" />
 
     <el-descriptions v-else-if="store.activeAc" :column="4" border class="ac-info-strip">
@@ -1051,7 +1030,6 @@ function diffLineClass(line: string): string {
 <style scoped>
 .ac-management { width: 100%; max-width: none; margin: 0; }
 .page-error { margin-bottom: 16px; }
-.task-summary { margin-bottom: 16px; }
 .page-toolbar, .config-toolbar, .detail-heading, .config-searchbar, .pagination-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .page-toolbar { margin-bottom: 16px; }
 .page-toolbar h2, .config-toolbar h3, .detail-heading h2 { margin: 0; }
