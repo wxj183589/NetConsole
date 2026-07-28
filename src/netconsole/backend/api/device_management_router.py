@@ -45,6 +45,8 @@ from netconsole.models.api.device_management import (
     DeviceGroupDeleteDTO,
     DeviceGroupDTO,
     DeviceGroupRequestDTO,
+    DeviceLifecycleUpdateDTO,
+    DeviceLifecycleUpdateRequestDTO,
     DeviceImportConfirmRequestDTO,
     DeviceImportPreviewDTO,
     DevicePageDTO,
@@ -112,6 +114,14 @@ def list_devices(
         default="",
         pattern="^(|UNKNOWN|TESTING|REACHABLE|UNREACHABLE|AUTH_FAILED|ERROR)$",
     ),
+    project_phase: str = Query(
+        default="all",
+        pattern="^(all|phase_1|phase_2|phase_3|other|unspecified)$",
+    ),
+    operation_status: str = Query(
+        default="in_service",
+        pattern="^(all|in_service|not_integrated|commissioning|suspended|retired)$",
+    ),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     sort_by: str = Query(
@@ -128,6 +138,8 @@ def list_devices(
             device_type=device_type,
             vendor=vendor,
             connection_status=connection_status,
+            project_phase=project_phase,
+            operation_status=operation_status,
             page=page,
             page_size=page_size,
             sort_by=sort_by,
@@ -184,6 +196,17 @@ def assign_group(
     request: Request, payload: DeviceGroupAssignmentRequestDTO
 ) -> DeviceGroupAssignmentDTO:
     return _query(lambda: _service(request).assign_group(payload))
+
+
+@router.patch(
+    "/devices/lifecycle",
+    response_model=DeviceLifecycleUpdateDTO,
+    dependencies=[Depends(require_feature("web.device_management_write"))],
+)
+def update_lifecycle(
+    request: Request, payload: DeviceLifecycleUpdateRequestDTO
+) -> DeviceLifecycleUpdateDTO:
+    return _query(lambda: _service(request).update_lifecycle(payload))
 
 
 @router.post(

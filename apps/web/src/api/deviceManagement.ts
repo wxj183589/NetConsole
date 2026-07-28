@@ -25,6 +25,7 @@ import type {
   DeviceHistoryPage,
   DeviceOverviewResponse,
   DeviceListQuery,
+  DeviceLifecycleUpdateRequest,
   DevicePage,
   DeviceTaskBatch,
   DeviceTaskReference,
@@ -169,6 +170,13 @@ export function deleteDeviceGroup(groupId: number): Promise<void> {
 
 export function assignDeviceGroup(deviceUuids: string[], groupId: number | null): Promise<{ success: number; failed: number; group_id: number | null }> {
   return apiRequest<{ success: number; failed: number; group_id: number | null }>('/api/device-management/groups/assign', { method: 'POST', body: JSON.stringify({ device_uuids: deviceUuids, group_id: groupId }) })
+}
+
+export function updateDeviceLifecycle(payload: DeviceLifecycleUpdateRequest): Promise<{ updated: number }> {
+  return apiRequest<{ updated: number }>('/api/device-management/devices/lifecycle', {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
 }
 
 export function issueDeviceDeleteToken(deviceUuids: string[]): Promise<DeviceDeleteToken> {

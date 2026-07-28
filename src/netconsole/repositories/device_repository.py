@@ -16,7 +16,11 @@ from netconsole.core.device_credential_store import (
     replace_device_credential_state,
     resolve_device_credentials,
 )
-from netconsole.models.device import Device
+from netconsole.models.device import (
+    Device,
+    normalize_operation_status,
+    normalize_project_phase,
+)
 from netconsole.models.device_address import (
     DevicePrimaryAddressConflictError,
     normalize_ip_address,
@@ -286,6 +290,8 @@ class DeviceRepository:
         vendor: str | None = None,
         device_type: str | None = None,
         group_filter: int | str | None = None,
+        project_phase: str | None = None,
+        operation_status: str | None = None,
     ) -> list[Device]:
         clauses: list[str] = []
         params: list[object] = []
@@ -299,6 +305,12 @@ class DeviceRepository:
         if device_type:
             clauses.append("d.device_type = ?")
             params.append(device_type)
+        if project_phase and project_phase != "all":
+            clauses.append("d.project_phase = ?")
+            params.append(normalize_project_phase(project_phase))
+        if operation_status and operation_status != "all":
+            clauses.append("d.operation_status = ?")
+            params.append(normalize_operation_status(operation_status))
         if group_filter == "__ungrouped__":
             clauses.append("d.group_id IS NULL")
         elif group_filter is not None:
@@ -321,6 +333,67 @@ class DeviceRepository:
             )
         devices = [self._device_from_row(row, states) for row in rows]
         return sorted(devices, key=_device_natural_sort_key)
+
+    def update_lifecycle_many(
+        self,
+        device_uuids: list[str],
+        *,
+        project_phase: str | None = None,
+        operation_status: str | None = None,
+        reason: str | None = None,
+        updated_by: str | None = None,
+    ) -> int:
+        unique_uuids = list(dict.fromkeys(str(value).strip() for value in device_uuids))
+        if not unique_uuids:
+            raise ValueError("至少选择一台设备")
+        assignments: list[str] = []
+        params: list[object] = []
+        now = datetime.now().isoformat(timespec="seconds")
+        if project_phase is not None:
+            assignments.append("project_phase = ?")
+            params.append(normalize_project_phase(project_phase))
+        if operation_status is not None:
+            assignments.extend(
+                (
+                    "operation_status = ?",
+                    "operation_status_reason = ?",
+                    "operation_status_updated_at = ?",
+                    "operation_status_updated_by = ?",
+                )
+            )
+            params.extend(
+                (
+                    normalize_operation_status(operation_status),
+                    str(reason or "").strip() or None,
+                    now,
+                    str(updated_by or "").strip() or None,
+                )
+            )
+        if not assignments:
+            raise ValueError("未提供要修改的建设阶段或投运状态")
+        assignments.append("updated_at = ?")
+        params.append(now)
+        placeholders = ", ".join("?" for _ in unique_uuids)
+        with self.database.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            count = int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM devices WHERE device_uuid IN ({placeholders})",
+                    unique_uuids,
+                ).fetchone()[0]
+            )
+            if count != len(unique_uuids):
+                raise KeyError("部分设备不存在，未修改任何设备")
+            cursor = conn.execute(
+                f"""
+                UPDATE devices
+                SET {', '.join(assignments)}
+                WHERE device_uuid IN ({placeholders})
+                """,
+                [*params, *unique_uuids],
+            )
+            conn.commit()
+        return int(cursor.rowcount or 0)
 
     def update_group(self, device_id: int, group_id: int | None) -> Device:
         with self.database.connect() as conn:

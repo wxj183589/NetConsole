@@ -41,6 +41,9 @@ export interface DeviceGroupOption {
   name: string
 }
 
+export type ProjectPhase = 'phase_1' | 'phase_2' | 'phase_3' | 'other' | 'unspecified'
+export type OperationStatus = 'in_service' | 'not_integrated' | 'commissioning' | 'suspended' | 'retired'
+
 export interface DeviceListItem {
   id: number
   device_uuid: string
@@ -51,6 +54,10 @@ export interface DeviceListItem {
   group_name: string
   device_vendor: DeviceVendor
   device_type: string
+  project_phase: ProjectPhase
+  operation_status: OperationStatus
+  operation_status_reason: string
+  operation_status_updated_at: string
   primary_address: string
   backup_address: string
   updated_at: string
@@ -219,6 +226,10 @@ export interface DeviceOverviewResponse {
   name: string
   system_name: string | null
   device_type: string | null
+  project_phase?: ProjectPhase
+  operation_status?: OperationStatus
+  operation_status_reason?: string | null
+  operation_status_updated_at?: string | null
   station: string | null
   location: string | null
   primary_address: string | null
@@ -508,6 +519,9 @@ export interface DeviceWriteRequest {
   group_id?: number | null
   device_vendor?: DeviceVendor
   device_type?: string
+  project_phase?: ProjectPhase
+  operation_status?: OperationStatus
+  operation_status_reason?: string
   primary_address: string
   backup_address?: string
   ssh_enabled?: boolean
@@ -597,10 +611,19 @@ export interface DeviceListQuery {
   vendor?: DeviceVendor | ''
   group_filter?: number | '__ungrouped__'
   connection_status?: DeviceConnectionStatus | ''
+  project_phase?: ProjectPhase | 'all'
+  operation_status?: OperationStatus | 'all'
   page?: number
   page_size?: number
   sort_by?: string
   sort_order?: 'asc' | 'desc'
+}
+
+export interface DeviceLifecycleUpdateRequest {
+  device_uuids: string[]
+  project_phase?: ProjectPhase
+  operation_status?: OperationStatus
+  reason?: string
 }
 
 export interface DeviceWriteResponse {

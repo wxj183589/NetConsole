@@ -19,7 +19,7 @@ from netconsole.models.device_address import InvalidDeviceAddressError, normaliz
 
 
 CURRENT_SCHEMA_VERSION = (
-    "2026.07.29.zte_optical_ap_vlan_and_device_primary_address"
+    "2026.07.29.zte_optical_ap_vlan_device_address_and_operation_status"
 )
 
 
@@ -52,6 +52,13 @@ CREATE TABLE IF NOT EXISTS devices (
     group_id INTEGER,
     device_vendor TEXT NOT NULL DEFAULT 'H3C',
     device_type TEXT,
+    project_phase TEXT NOT NULL DEFAULT 'unspecified'
+        CHECK(project_phase IN ('phase_1', 'phase_2', 'phase_3', 'other', 'unspecified')),
+    operation_status TEXT NOT NULL DEFAULT 'in_service'
+        CHECK(operation_status IN ('in_service', 'not_integrated', 'commissioning', 'suspended', 'retired')),
+    operation_status_reason TEXT,
+    operation_status_updated_at TEXT,
+    operation_status_updated_by TEXT,
     primary_address TEXT NOT NULL,
     normalized_primary_address TEXT,
     backup_address TEXT,
@@ -1187,8 +1194,16 @@ class Database:
         conn = self.connect()
         try:
             initialize_sqlite_wal(conn)
-            if existed and self._requires_device_address_migration(conn):
-                self._backup_before_device_address_migration(conn)
+            if existed:
+                address_migration = self._requires_device_address_migration(conn)
+                lifecycle_migration = self._requires_device_lifecycle_migration(conn)
+                if address_migration or lifecycle_migration:
+                    self._backup_before_device_migration(
+                        conn,
+                        "primary-address"
+                        if address_migration
+                        else "operation-status",
+                    )
             conn.executescript(
                 "\n".join(
                     self._schema_scripts_for_existing_database(conn) if existed else self._all_schema_scripts()
@@ -1261,6 +1276,32 @@ class Database:
                     conn.execute(
                         f"ALTER {'TABLE'} {table} ADD COLUMN {column} {column_type}"
                     )
+
+        device_lifecycle_columns = {
+            "project_phase": (
+                "TEXT NOT NULL DEFAULT 'unspecified' "
+                "CHECK(project_phase IN ('phase_1', 'phase_2', 'phase_3', 'other', 'unspecified'))"
+            ),
+            "operation_status": (
+                "TEXT NOT NULL DEFAULT 'in_service' "
+                "CHECK(operation_status IN ('in_service', 'not_integrated', "
+                "'commissioning', 'suspended', 'retired'))"
+            ),
+            "operation_status_reason": "TEXT",
+            "operation_status_updated_at": "TEXT",
+            "operation_status_updated_by": "TEXT",
+        }
+        for column, definition in device_lifecycle_columns.items():
+            if not self._column_exists(conn, "devices", column):
+                conn.execute(f"ALTER TABLE devices ADD COLUMN {column} {definition}")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_devices_operation_status "
+            "ON devices(operation_status)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_devices_project_phase "
+            "ON devices(project_phase)"
+        )
         interface_columns = {
             "admin_status": "TEXT",
             "physical_status": "TEXT",
@@ -1540,8 +1581,24 @@ class Database:
             """
         ).fetchone() is not None
 
-    def _backup_before_device_address_migration(
-        self, source: sqlite3.Connection
+    def _requires_device_lifecycle_migration(
+        self, conn: sqlite3.Connection
+    ) -> bool:
+        if not self._table_exists(conn, "devices"):
+            return False
+        return any(
+            not self._column_exists(conn, "devices", column)
+            for column in (
+                "project_phase",
+                "operation_status",
+                "operation_status_reason",
+                "operation_status_updated_at",
+                "operation_status_updated_by",
+            )
+        )
+
+    def _backup_before_device_migration(
+        self, source: sqlite3.Connection, migration_name: str
     ) -> Path:
         if self.path.parent.name.casefold() == "db":
             backup_dir = (
@@ -1554,7 +1611,7 @@ class Database:
             backup_dir = self.path.parent / "backups" / "database-migrations"
         backup_dir.mkdir(parents=True, exist_ok=True)
         target = backup_dir / (
-            "devices-before-primary-address-"
+            f"devices-before-{migration_name}-"
             f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-"
             f"{uuid.uuid4().hex[:8]}.sqlite"
         )
