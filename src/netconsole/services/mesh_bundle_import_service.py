@@ -193,6 +193,15 @@ class MeshBundleProfileMatch:
     candidate_profile_ids: tuple[str, ...] = ()
 
 
+@dataclass
+class _ProfilePublishState:
+    production_root: Path
+    rollback_root: Path
+    created_files: list[Path]
+    overwritten_files: list[tuple[Path, Path]]
+    created_directories: list[Path]
+
+
 class MeshBundleImportError(ValueError):
     def __init__(self, code: str, message: str | None = None) -> None:
         super().__init__(message or code)
@@ -758,7 +767,6 @@ class MeshBundleImportService:
                 ],
             }
             self._commit_transaction(
-                transaction,
                 rollback,
                 staging_paths,
                 profiles,
@@ -1181,7 +1189,6 @@ class MeshBundleImportService:
 
     def _commit_transaction(
         self,
-        transaction: Path,
         rollback: Path,
         staging_paths: PathResolver,
         profiles: Mapping[str, MeshMrProfile],
@@ -1190,7 +1197,7 @@ class MeshBundleImportService:
         success_manifest: Mapping[str, object],
     ) -> None:
         rollback.mkdir(parents=True, exist_ok=False)
-        moved: list[tuple[Path, Path, Path]] = []
+        published: list[_ProfilePublishState] = []
         production_catalog = self.paths.mesh_catalog_path(self.site_name)
         staging_catalog = staging_paths.mesh_catalog_path(self.site_name)
         previous_catalog_summaries = _read_catalog_summaries(
@@ -1206,10 +1213,15 @@ class MeshBundleImportService:
             for profile in sorted(profiles.values(), key=lambda item: item.safe_folder_name.casefold()):
                 production = self.paths.mesh_mr_root(self.site_name, profile.safe_folder_name).resolve()
                 staging = staging_paths.mesh_mr_root(self.site_name, profile.safe_folder_name).resolve()
-                backup = rollback / profile.safe_folder_name
-                production.replace(backup)
-                staging.replace(production)
-                moved.append((production, backup, staging))
+                state = _ProfilePublishState(
+                    production_root=production,
+                    rollback_root=rollback / profile.safe_folder_name,
+                    created_files=[],
+                    overwritten_files=[],
+                    created_directories=[],
+                )
+                published.append(state)
+                _publish_profile_snapshot(staging, state)
             self._verify_final_paths(profiles)
             _write_catalog_summaries(production_catalog, staged_catalog_summaries)
             catalog_updated = True
@@ -1225,13 +1237,9 @@ class MeshBundleImportService:
             except Exception as exc:
                 rollback_error = exc
             finally:
-                for production, backup, staging in reversed(moved):
+                for state in reversed(published):
                     try:
-                        if production.exists():
-                            staging.parent.mkdir(parents=True, exist_ok=True)
-                            production.replace(staging)
-                        if backup.exists():
-                            backup.replace(production)
+                        _rollback_profile_snapshot(state)
                     except Exception as exc:
                         rollback_error = rollback_error or exc
             if rollback_error is not None:
@@ -1533,11 +1541,95 @@ def _copy_tree_snapshot(source: Path, target: Path) -> None:
         _sqlite_backup(source_db, target_db)
 
 
+def _publish_profile_snapshot(staging: Path, state: _ProfilePublishState) -> None:
+    production = state.production_root
+    if not staging.is_dir() or not production.is_dir():
+        raise MeshBundleImportError("PROFILE_STORAGE_NOT_FOUND", "MESH Profile 数据目录不存在")
+    entries = list(staging.rglob("*"))
+    if any(path.is_symlink() for path in entries):
+        raise MeshBundleImportError("PROFILE_STORAGE_INVALID", "MESH Profile 目录包含符号链接")
+    files = [path for path in entries if path.is_file() and not path.name.endswith(("-wal", "-shm"))]
+    files.sort(
+        key=lambda path: (
+            path.relative_to(staging).as_posix().casefold() == "mesh.sqlite",
+            path.relative_to(staging).as_posix().casefold(),
+        )
+    )
+    state.rollback_root.mkdir(parents=True, exist_ok=False)
+    for source in files:
+        relative = source.relative_to(staging)
+        target = production / relative
+        backup = state.rollback_root / relative
+        _require_child(target.resolve(), production)
+        if target.is_symlink():
+            raise MeshBundleImportError("PROFILE_STORAGE_INVALID", "MESH Profile 目录包含符号链接")
+        _create_publish_parent(target.parent, production, state.created_directories)
+        is_database = source.suffix.casefold() == ".sqlite"
+        if target.exists():
+            if not target.is_file():
+                raise MeshBundleImportError("PROFILE_STORAGE_INVALID", "MESH Profile 文件路径发生冲突")
+            if not is_database and _sha256_file(source) == _sha256_file(target):
+                continue
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            if is_database:
+                _sqlite_backup(target, backup)
+            else:
+                shutil.copy2(target, backup)
+            state.overwritten_files.append((target, backup))
+        else:
+            state.created_files.append(target)
+        if is_database:
+            _sqlite_backup(source, target)
+        else:
+            _copy_file_atomic(source, target)
+
+
+def _rollback_profile_snapshot(state: _ProfilePublishState) -> None:
+    for target, backup in reversed(state.overwritten_files):
+        if backup.suffix.casefold() == ".sqlite":
+            _sqlite_backup(backup, target)
+        else:
+            _copy_file_atomic(backup, target)
+    for target in reversed(state.created_files):
+        target.unlink(missing_ok=True)
+        if target.suffix.casefold() == ".sqlite":
+            for suffix in ("-wal", "-shm"):
+                target.with_name(target.name + suffix).unlink(missing_ok=True)
+    for directory in reversed(state.created_directories):
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+
+
+def _create_publish_parent(parent: Path, root: Path, created: list[Path]) -> None:
+    missing: list[Path] = []
+    current = parent
+    while current != root and not current.exists():
+        _require_child(current.resolve(), root)
+        missing.append(current)
+        current = current.parent
+    for directory in reversed(missing):
+        directory.mkdir(exist_ok=False)
+        created.append(directory)
+
+
+def _copy_file_atomic(source: Path, target: Path) -> None:
+    temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
+    try:
+        shutil.copy2(source, temporary)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _sqlite_backup(source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(source)) as source_connection, closing(
-        sqlite3.connect(target)
+    with closing(sqlite3.connect(source, timeout=30)) as source_connection, closing(
+        sqlite3.connect(target, timeout=30)
     ) as target_connection:
+        source_connection.execute("PRAGMA busy_timeout = 30000")
+        target_connection.execute("PRAGMA busy_timeout = 30000")
         source_connection.backup(target_connection)
         target_connection.commit()
 

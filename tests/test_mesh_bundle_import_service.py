@@ -268,6 +268,45 @@ def test_worker_commit_keeps_catalog_file_when_another_process_has_open_reader(
     assert refreshed.source_file_count == 1
 
 
+def test_worker_commit_keeps_profile_directory_with_open_reader(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    storage = MeshStorageService("demo", paths)
+    profile = storage.create_mr_profile("01-MR-CT")
+    archive = tmp_path / "bundle.zip"
+    _zip(archive, {"01CTmeshlog.log": VALID_LOG})
+    service = MeshBundleImportService("demo", paths)
+    with archive.open("rb") as source:
+        preview = service.create_preview(archive.name, source, [profile])
+    mappings = [
+        {
+            "member_id": "01CTmeshlog.log",
+            "train_number": "01",
+            "role": "CT",
+            "profile_id": profile.mr_id,
+        }
+    ]
+    service.approve_preview(str(preview["preview_id"]), mappings, [profile.mr_id])
+
+    profile_database = paths.mesh_mr_db_path("demo", profile.safe_folder_name)
+    with closing(sqlite3.connect(profile_database)) as reader:
+        reader.execute("PRAGMA journal_mode = WAL")
+        reader.execute("BEGIN")
+        assert reader.execute("SELECT COUNT(*) FROM source_files").fetchone() == (0,)
+        result = service.import_approved_preview(
+            str(preview["preview_id"]),
+            mappings,
+            job_id="mesh-bundle-open-profile-reader",
+        )
+        assert reader.execute("SELECT COUNT(*) FROM source_files").fetchone() == (0,)
+        reader.commit()
+        assert reader.execute("SELECT COUNT(*) FROM source_files").fetchone() == (1,)
+
+    assert result["imported_count"] == 1
+    assert MeshMrRepository(profile_database).summary()["source_file_count"] == 1
+
+
 def test_failed_worker_does_not_change_production_or_publish_success_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
