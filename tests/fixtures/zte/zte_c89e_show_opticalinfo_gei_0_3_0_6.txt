@@ -1,0 +1,39 @@
+HZDT-XZH#show opticalinfo gei-0/3/0/6
+gei-0/3/0/6
+The optical module is online
+Transceiver Type         : SFP
+Connector Type Code      : LC
+Transceiver Mode         : smf
+Directionality           : Normal
+SONET Compliance Codes   : no compliance
+Ethernet Compliance Codes: 1000BASE-LX
+Transfer Distance:9/125(Smf) um fiber 10000 (m)
+                 50/125(Om2) um fiber 0 (m)
+                 50/125(Om3) um fiber 0 (m)
+               62.5/125(Om1) um fiber 0 (m)
+                 50/125(Om4) um fiber 0 (m)
+Laser TX Wavelength: 1310 nm
+Laser RX Wavelength: 1310 nm
+Measured RX Input  Power: -15.2 dBm
+Measured TX Output Power: -5.5 dBm
+Measured TX Bias Current: 17.2 mA
+Measured Transceiver Temperature: 31.0 degree(s) Celsius
+Supply Voltage 1: 3.3 V
+Supply Voltage 2: N/A
+Receiver Sensitivity    : -28.2 dBm
+Receiver Overload       : 0.0 dBm
+TX Power Range          : N/A
+Default RX Power PreHighAlarm Thresholds: 0.0 dBm
+Default RX Power PreLowAlarm Thresholds: -28.2 dBm
+Default TX Power PreHighAlarm Thresholds: -0.5 dBm
+Default TX Power PreLowAlarm Thresholds: -10.0 dBm
+Vendor Name:  ZTRS
+Vendor PN  :  SFP-GE
+Vendor Rev :  A
+Vendor SN  :  UHD507000163
+Authentication     : ---
+AuthenticationCode : ---
+ProductSn          : ---
+ProductDate        : ---
+Speed              : 1300 M
+HZDT-XZH#

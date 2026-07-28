@@ -22,6 +22,7 @@ from netconsole.parsers.h3c.interface_parser import parse_interfaces as parse_h3
 from netconsole.parsers.h3c.lldp_parser import parse_lldp_neighbors
 from netconsole.parsers.h3c.transceiver_parser import parse_transceiver_diagnosis
 from netconsole.parsers.zte.zxr10 import (
+    merge_optical_modules,
     ZteParseResult,
     parse_device_identity,
     parse_interface_detail,
@@ -716,19 +717,15 @@ class ZteZxr10TracksideSwitchAdapter(TracksideSwitchAdapter):
                 )
                 if parsed_optical.value:
                     summary = optical_index.get(interface_name.casefold(), {})
-                    summary_status = summary.get("status")
-                    summary.update(parsed_optical.value)
+                    merged = merge_optical_modules(
+                        [summary] if summary else [],
+                        [parsed_optical.value],
+                    )
+                    summary = merged[0] if merged else dict(parsed_optical.value)
                     _annotate_raw_output_ref(
                         summary,
                         _artifact_file_name(selector),
                     )
-                    if summary_status in {
-                        "abnormal",
-                        "unverified",
-                        "dom_unavailable",
-                        "offline",
-                    }:
-                        summary["status"] = summary_status
                     optical_index[interface_name.casefold()] = summary
                 result.warnings.extend(parsed_optical.warnings)
             except (CommandOutputLimitExceeded, CommandCancelled):

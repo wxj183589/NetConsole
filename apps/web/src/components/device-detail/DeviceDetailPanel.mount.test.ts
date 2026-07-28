@@ -195,8 +195,17 @@ describe('DeviceDetailPanel mounted interactions', () => {
             { interface_name: 'GE1/0/4', severity: 'critical', severity_reason: 'Vendor raw reason', rx_power: -30 },
             { interface_name: 'GE1/0/5', severity: '正常', severity_reason: 'Port is DOWN', rx_power: -7 },
             { interface_name: 'GE1/0/6', severity: 'no_module', severity_reason: 'Optical module is not present', rx_power: null },
+            {
+              interface_name: 'gei-0/3/0/1',
+              device_vendor: 'ZTE',
+              severity: 'no_light',
+              severity_reason: '设备未返回接收光功率，原始值为 N/A',
+              rx_power: null,
+              rx_low_alarm: -28.2,
+              rx_high_alarm: 0,
+            },
           ],
-          total: 6, page: 1, page_size: 50, total_pages: 1,
+          total: 7, page: 1, page_size: 50, total_pages: 1,
           source: { available: true, source: 'snapshot', collected_at: '', reason: null },
         })
       }
@@ -266,19 +275,22 @@ describe('DeviceDetailPanel mounted interactions', () => {
     expect(wrapper.text()).toContain('严重告警')
     expect(wrapper.text()).toContain('未检测到光模块')
     expect(wrapper.text()).toContain('接收功率低于告警低阈值')
+    expect(wrapper.text()).toContain('设备未返回接收光功率，原始值为 N/A')
+    expect(wrapper.text()).not.toContain('接收功率缺失或不高于 -35 dBm')
     expect(wrapper.text()).toContain('Vendor raw reason')
     expect(wrapper.text()).not.toContain('接收功率高于维护正常线')
     expect(wrapper.text()).not.toContain('RX power is above maintenance normal line')
     expect(wrapper.text()).not.toContain('端口已断开')
     expect(wrapper.text()).not.toContain('Port is DOWN')
     const rxPowerCells = wrapper.findAll('.optical-rx-power')
-    expect(rxPowerCells).toHaveLength(6)
+    expect(rxPowerCells).toHaveLength(7)
     expect(rxPowerCells[0].classes()).toContain('optical-tone-normal')
     expect(rxPowerCells[1].classes()).toContain('optical-tone-warning')
     expect(rxPowerCells[2].classes()).toContain('optical-tone-danger')
     expect(rxPowerCells[3].classes()).toContain('optical-tone-danger')
     expect(rxPowerCells[4].classes()).toContain('optical-tone-normal')
     expect(rxPowerCells[5].classes()).toContain('optical-tone-neutral')
+    expect(rxPowerCells[6].classes()).toContain('optical-tone-danger')
 
     await wrapper.get('[data-testid="tab-lldp"]').trigger('click')
     await flushPromises()

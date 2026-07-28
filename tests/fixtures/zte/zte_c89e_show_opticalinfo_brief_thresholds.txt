@@ -1,0 +1,11 @@
+HZDT-XZH#show opticalinfo brief
+Interface         Type              Wavelength  RxPower(dBm)         TxPower(dBm)         Status    Mode
+sci-0/1/0/1       offline
+sci-0/1/0/2       offline
+gei-0/3/0/1       1G-10km-SFP       1310nm      N/A/[-28.2,0.0]      -5.4/[-10.0,-0.5]    Unknown   SingleMode
+gei-0/3/0/2	1G-10km-SFP	1310nm	N/A/[-28.2,0.0]	-5.7/[-10.0,-0.5]	Unknown	SingleMode
+malformed-interface-row
+gei-0/3/0/4       1G-10km-SFP       1310nm      -28.2/[-28.2,0.0]    -5.8/[-10.0,-0.5]    Normal    SingleMode
+gei-0/3/0/5       1G-10km-SFP       1310nm      -25.4/[-28.2,0.0]    -5.9/[-10.0,-0.5]    Normal    SingleMode
+gei-0/3/0/6       1G-10km-SFP       1310nm      -15.1/[-28.2,0.0]    -5.4/[-10.0,-0.5]    Normal    SingleMode
+HZDT-XZH#

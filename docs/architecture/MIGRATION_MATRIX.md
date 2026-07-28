@@ -54,7 +54,7 @@
 - `HIDDEN_PENDING_MIGRATION` 的入口必须保持不可见/不可用，不能以只读占位页冒充迁移。
 - 现场条件缺失时保持 `REAL_DEVICE_PENDING`；Fake 只验证协议，不替代真实设备。
 - 设备详情打开时先读取最近数据库快照，各页签首次激活再分页加载；“刷新全部”必须通过现有 Task Center 的 `device.inventory.collect`，不能在 Router 或 Renderer 直连设备。
-- 当前通用刷新只允许 H3C/Comware 交换机与车载 MR 且命中可执行版本化 Profile；H3C AC 只读复用 AC 业务 Query Service，H3C MR 关联信息只读复用 Online MR Query Service，Huawei/ZTE 和未知或未验证厂商、角色、平台、Profile 均失败关闭。
+- 当前通用刷新只允许 H3C/Comware 交换机与车载 MR，或 ZTE/ZXR10 交换机且命中可执行版本化 Profile；H3C AC 只读复用 AC 业务 Query Service，H3C MR 关联信息只读复用 Online MR Query Service，Huawei、ZTE AC 及未知或未验证厂商、角色、平台、Profile 均失败关闭。
 - 未知事实由 API 返回 `null` 并在页面显示“—”，不能伪造数值 `0`；设备详情 DTO 不得包含凭据或服务端绝对路径。
 - 设备详情 LLDP 公开契约不包含邻居能力或型号；删除的公开字段不保留 DTO/TypeScript/API 别名、双读或 fallback。如后续需要物理重建数据库，由独立维护脚本完成备份/迁移，不在正式启动路径中加入兼容迁移。
 - AC Mesh-Link 公开契约已硬删除 `link_status/channel/bandwidth/ap_online_status/optical_status` 及相关筛选；只返回当前产品需要的 MR/AP 事实、RSSI、位置和两侧收光。原始 snapshot status 只在 Query Service 内计算在线状态，不是公开兼容字段。

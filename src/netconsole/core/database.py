@@ -10,7 +10,7 @@ from netconsole.core.device_credential_store import (
 from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal
 
 
-CURRENT_SCHEMA_VERSION = "2026.07.28.zte_interface_vlan_lldp"
+CURRENT_SCHEMA_VERSION = "2026.07.29.zte_optical_thresholds"
 
 
 class DatabaseSchemaMismatchError(RuntimeError):
@@ -169,6 +169,13 @@ CREATE TABLE IF NOT EXISTS device_optical_modules (
     wavelength TEXT,
     transmission_distance TEXT,
     connector_type TEXT,
+    device_vendor TEXT,
+    device_reported_status TEXT,
+    threshold_source TEXT,
+    transceiver_mode TEXT,
+    vendor_part_number TEXT,
+    vendor_revision TEXT,
+    vendor_serial_number TEXT,
     rx_low_alarm TEXT,
     rx_high_alarm TEXT,
     tx_low_alarm TEXT,
@@ -291,6 +298,13 @@ CREATE TABLE IF NOT EXISTS device_optical_modules_history (
     wavelength TEXT,
     transmission_distance TEXT,
     connector_type TEXT,
+    device_vendor TEXT,
+    device_reported_status TEXT,
+    threshold_source TEXT,
+    transceiver_mode TEXT,
+    vendor_part_number TEXT,
+    vendor_revision TEXT,
+    vendor_serial_number TEXT,
     rx_low_alarm TEXT,
     rx_high_alarm TEXT,
     tx_low_alarm TEXT,
@@ -1088,6 +1102,23 @@ class Database:
             raise DatabaseSchemaMismatchError(self._schema_mismatch_message())
 
     def _apply_additive_schema_updates(self, conn: sqlite3.Connection) -> None:
+        optical_columns = {
+            "device_vendor": "TEXT",
+            "device_reported_status": "TEXT",
+            "threshold_source": "TEXT",
+            "transceiver_mode": "TEXT",
+            "vendor_part_number": "TEXT",
+            "vendor_revision": "TEXT",
+            "vendor_serial_number": "TEXT",
+        }
+        for table in ("device_optical_modules", "device_optical_modules_history"):
+            for column, column_type in optical_columns.items():
+                if self._table_exists(conn, table) and not self._column_exists(
+                    conn, table, column
+                ):
+                    conn.execute(
+                        f"ALTER {'TABLE'} {table} ADD COLUMN {column} {column_type}"
+                    )
         interface_columns = {
             "admin_status": "TEXT",
             "physical_status": "TEXT",

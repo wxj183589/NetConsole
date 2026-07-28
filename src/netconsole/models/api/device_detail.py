@@ -162,6 +162,25 @@ class DeviceTransceiverDTO(ApiModel):
     wavelength: str | None = None
     transmission_distance: str | None = None
     connector_type: str | None = None
+    device_vendor: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    device_reported_status: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    threshold_source: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    transceiver_mode: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    vendor_part_number: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    vendor_revision: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    vendor_serial_number: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     rx_low_alarm: float | None = None
     rx_high_alarm: float | None = None
     rx_low_warning: float | None = None

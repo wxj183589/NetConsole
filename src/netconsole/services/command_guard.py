@@ -295,6 +295,9 @@ DANGEROUS_ALLOWLIST_EXCEPTIONS = {
     "show vlan",
 }
 READ_ONLY_DYNAMIC_PATTERNS = {
+    "device.inventory.collect": (
+        re.compile(r"show opticalinfo [a-z][a-z0-9./:_-]{0,79}"),
+    ),
     "trackside_switch_collect": tuple(
         re.compile(pattern)
         for pattern in (

@@ -271,6 +271,17 @@ def test_zte_interface_lldp_additive_migration_is_repeatable_and_preserves_rows(
             ) VALUES ('device-1', 'gei-0/3/0/2', 'OLD-NEIGHBOR', '2026-07-01', '2026-07-01')
             """
         )
+        conn.execute(
+            """
+            INSERT INTO device_optical_modules (
+                device_uuid, interface_name, rx_power, module_vendor,
+                collected_at, updated_at
+            ) VALUES (
+                'device-1', 'gei-0/3/0/6', '-15.2', 'ZTRS',
+                '2026-07-01', '2026-07-01'
+            )
+            """
+        )
         for table, columns in (
             (
                 "device_interfaces",
@@ -318,6 +329,30 @@ def test_zte_interface_lldp_additive_migration_is_repeatable_and_preserves_rows(
                 "device_lldp_neighbors_history",
                 ("scope", "chassis_type", "chassis_id", "ttl", "pvid"),
             ),
+            (
+                "device_optical_modules",
+                (
+                    "device_vendor",
+                    "device_reported_status",
+                    "threshold_source",
+                    "transceiver_mode",
+                    "vendor_part_number",
+                    "vendor_revision",
+                    "vendor_serial_number",
+                ),
+            ),
+            (
+                "device_optical_modules_history",
+                (
+                    "device_vendor",
+                    "device_reported_status",
+                    "threshold_source",
+                    "transceiver_mode",
+                    "vendor_part_number",
+                    "vendor_revision",
+                    "vendor_serial_number",
+                ),
+            ),
         ):
             for column in columns:
                 conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
@@ -343,6 +378,11 @@ def test_zte_interface_lldp_additive_migration_is_repeatable_and_preserves_rows(
             "SELECT neighbor_sysname, chassis_id, ttl, pvid "
             "FROM device_lldp_neighbors WHERE device_uuid = 'device-1'"
         ).fetchone()
+        optical = conn.execute(
+            "SELECT interface_name, rx_power, module_vendor, device_vendor, "
+            "vendor_part_number FROM device_optical_modules "
+            "WHERE device_uuid = 'device-1'"
+        ).fetchone()
         version = conn.execute(
             "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
         ).fetchone()["value"]
@@ -363,6 +403,13 @@ def test_zte_interface_lldp_additive_migration_is_repeatable_and_preserves_rows(
         "chassis_id": None,
         "ttl": None,
         "pvid": None,
+    }
+    assert dict(optical) == {
+        "interface_name": "gei-0/3/0/6",
+        "rx_power": "-15.2",
+        "module_vendor": "ZTRS",
+        "device_vendor": None,
+        "vendor_part_number": None,
     }
     assert version == CURRENT_SCHEMA_VERSION
 

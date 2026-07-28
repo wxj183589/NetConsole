@@ -283,10 +283,21 @@ export interface DeviceTransceiverRecord {
   wavelength: string | null
   transmission_distance: string | null
   connector_type: string | null
+  device_vendor?: DeviceVendor | null
+  device_reported_status?: string | null
+  threshold_source?: string | null
+  transceiver_mode?: string | null
+  vendor_part_number?: string | null
+  vendor_revision?: string | null
+  vendor_serial_number?: string | null
   rx_low_alarm: number | null
   rx_high_alarm: number | null
   rx_low_warning: number | null
   rx_high_warning: number | null
+  tx_low_alarm: number | null
+  tx_high_alarm: number | null
+  tx_low_warning: number | null
+  tx_high_warning: number | null
   severity: string
   severity_reason: string | null
   collected_at: string | null

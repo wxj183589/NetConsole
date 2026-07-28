@@ -563,6 +563,82 @@ def test_optical_mapping_honors_collector_status_and_all_tx_thresholds(
     )
 
 
+def test_zte_optical_mapping_uses_vendor_evaluator_and_exposes_module_details(
+    tmp_path: Path,
+) -> None:
+    query, _operation, _adapter, h3c, _huawei, _ac = _fixture(tmp_path)
+    paths = PathResolver(
+        app_root=Path(__file__).parents[1], data_root=tmp_path / "runtime"
+    )
+    DeviceFactRepository(Database(paths.site_db_path("demo"))).replace_optical_modules(
+        str(h3c.device_uuid),
+        [
+            {
+                "interface_name": "gei-0/3/0/1",
+                "device_vendor": "ZTE",
+                "device_reported_status": "Unknown",
+                "threshold_source": "zte_brief",
+                "module_model": "1G-10km-SFP",
+                "rx_power": None,
+                "rx_low_alarm": -28.2,
+                "rx_high_alarm": 0.0,
+                "tx_power": -5.4,
+                "tx_low_alarm": -10.0,
+                "tx_high_alarm": -0.5,
+            },
+            {
+                "interface_name": "gei-0/3/0/4",
+                "device_vendor": "ZTE",
+                "device_reported_status": "Normal",
+                "threshold_source": "zte_detail",
+                "module_model": "SFP-GE",
+                "module_vendor": "ZTRS",
+                "vendor_part_number": "SFP-GE",
+                "vendor_revision": "A",
+                "vendor_serial_number": "UHD507000163",
+                "transceiver_mode": "smf",
+                "rx_power": -28.2,
+                "rx_low_alarm": -28.2,
+                "rx_high_alarm": 0.0,
+                "tx_power": -5.8,
+                "tx_low_alarm": -10.0,
+                "tx_high_alarm": -0.5,
+            },
+            {
+                "interface_name": "gei-0/3/0/5",
+                "device_vendor": "ZTE",
+                "device_reported_status": "Normal",
+                "module_model": "1G-10km-SFP",
+                "rx_power": -29.0,
+                "rx_low_alarm": -28.2,
+                "rx_high_alarm": 0.0,
+            },
+        ],
+    )
+
+    page = query.transceivers(str(h3c.device_uuid), page=1, page_size=10)
+    by_name = {item.interface_name: item for item in page.items}
+
+    assert by_name["gei-0/3/0/1"].severity == "no_light"
+    assert (
+        by_name["gei-0/3/0/1"].severity_reason
+        == "设备未返回接收光功率，原始值为 N/A"
+    )
+    assert "-35" not in str(by_name["gei-0/3/0/1"].severity_reason)
+    assert by_name["gei-0/3/0/4"].severity == "normal"
+    assert by_name["gei-0/3/0/4"].severity_reason is None
+    assert by_name["gei-0/3/0/4"].module_vendor == "ZTRS"
+    assert by_name["gei-0/3/0/4"].vendor_part_number == "SFP-GE"
+    assert by_name["gei-0/3/0/4"].vendor_revision == "A"
+    assert by_name["gei-0/3/0/4"].vendor_serial_number == "UHD507000163"
+    assert by_name["gei-0/3/0/4"].threshold_source == "zte_detail"
+    assert by_name["gei-0/3/0/5"].severity == "alarm"
+    assert (
+        by_name["gei-0/3/0/5"].severity_reason
+        == "接收光功率 -29.0 dBm，低于模块低告警阈值 -28.2 dBm"
+    )
+
+
 def test_optical_mapping_distinguishes_missing_module_from_missing_rx(
     tmp_path: Path,
 ) -> None:
