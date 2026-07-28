@@ -211,7 +211,11 @@ def test_ground_unattended_repository_failure_is_feature_scoped(
         profile = client.get("/api/rail-transit/ground-unattended/profile")
     assert health.status_code == 200
     assert profile.status_code == 503
-    assert profile.json()["detail"]["code"] == "GROUND_UNATTENDED_UNAVAILABLE"
+    assert profile.json()["detail"] == {
+        "code": "GROUND_UNATTENDED_STARTUP_FAILED",
+        "message": "地面无人值守后台初始化失败（OSError），请查看运行日志",
+        "details": {"startup_error": "OSError"},
+    }
 
 
 def test_ground_unattended_archive_summary_download_and_desktop_action(

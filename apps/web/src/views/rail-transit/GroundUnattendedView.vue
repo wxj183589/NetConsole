@@ -66,6 +66,16 @@ const timelineFilter = reactive({ query: '', eventType: '' })
 let pollTimer: number | undefined
 let disposed = false
 
+interface LoadIssue {
+  key: string
+  label: string
+  message: string
+}
+
+const loadIssues = ref<LoadIssue[]>([])
+const loadIssueDescription = computed(() => loadIssues.value.map((item) => `${item.label}：${item.message}`).join('；'))
+const profileLoadError = computed(() => loadIssues.value.find((item) => item.key === 'profile')?.message || '')
+
 const running = computed(() => Boolean(status.value && ['STARTING', 'RUNNING', 'PAUSED', 'STOPPING', 'FINALIZING', 'ARCHIVING'].includes(status.value.state)))
 const operationActive = computed(() => Boolean(currentOperation.value && ['PENDING', 'RUNNING'].includes(currentOperation.value.operation_state)))
 const filteredTrains = computed(() => {
@@ -197,22 +207,34 @@ const syslogColumns: NcTableColumn<GroundSyslogRecord>[] = [
 async function loadAll(silent = false): Promise<void> {
   if (!silent) loading.value = true
   try {
-    const [nextStatus, nextProfile, nextTrains, nextPing, nextDeep, nextTimeline, nextArchives, nextHealth, nextOperation] = await Promise.all([
+    const results = await Promise.allSettled([
       getGroundStatus(), getGroundProfile(), listGroundTrains(), listGroundPingTargets(),
       listGroundDeepCollections(), listGroundTimeline('', timelineFilter.eventType), listGroundArchives(), getGroundHealth(), getLatestGroundOperation(),
     ])
     if (disposed) return
-    status.value = nextStatus
-    profile.value = nextProfile
-    trains.value = nextTrains.items
-    pingTargets.value = nextPing.items
-    deepCollections.value = nextDeep.items
-    timeline.value = nextTimeline.items
-    archives.value = nextArchives.items
-    health.value = nextHealth
-    currentOperation.value = nextOperation
-  } catch (reason) {
-    if (!silent) ElMessage.error(errorText(reason, t('ground.load_failed', '地面无人值守数据加载失败')))
+    const issues: LoadIssue[] = []
+    function accept<T>(
+      result: PromiseSettledResult<T>,
+      key: string,
+      label: string,
+      apply: (value: T) => void,
+    ): void {
+      if (result.status === 'fulfilled') apply(result.value)
+      else issues.push({ key, label, message: errorText(result.reason, '请求失败') })
+    }
+    accept(results[0], 'status', '运行状态', (value) => { status.value = value })
+    accept(results[1], 'profile', '无人值守配置', (value) => { profile.value = value })
+    accept(results[2], 'trains', '正线车辆', (value) => { trains.value = value.items })
+    accept(results[3], 'ping', '长 Ping', (value) => { pingTargets.value = value.items })
+    accept(results[4], 'deep', '深度采集', (value) => { deepCollections.value = value.items })
+    accept(results[5], 'timeline', '时间轴', (value) => { timeline.value = value.items })
+    accept(results[6], 'archives', '历史归档', (value) => { archives.value = value.items })
+    accept(results[7], 'health', '系统健康', (value) => { health.value = value })
+    accept(results[8], 'operation', '运行操作', (value) => { currentOperation.value = value })
+    loadIssues.value = issues
+    if (!silent && issues.length) {
+      ElMessage.error(issues.length === results.length ? '地面无人值守数据加载失败' : `部分数据加载失败（${issues.length} 项）`)
+    }
   } finally {
     if (!silent) loading.value = false
   }
@@ -498,17 +520,28 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
       <small>操作编号 {{ currentOperation.operation_id }} · 最后更新 {{ currentOperation.updated_at }}</small>
     </section>
 
+    <section v-if="loadIssues.length" class="load-warning">
+      <el-alert
+        title="地面无人值守部分数据未加载"
+        :description="loadIssueDescription"
+        type="error"
+        :closable="false"
+        show-icon
+      />
+      <el-button :icon="Refresh" :loading="loading" @click="loadAll()">重新加载</el-button>
+    </section>
+
     <el-tabs v-model="activeTab" class="ground-tabs">
       <el-tab-pane :label="t('ground.overview', '运行概览')" name="overview">
         <section class="overview-band">
           <div class="status-line">
             <span>{{ t('ground.current_site', '当前局点') }} <b>{{ status?.site_id || '—' }}</b></span>
-            <el-tag :type="statusType(status?.state || '')">{{ groundStatusLabel(status?.state || 'DISABLED') }}</el-tag>
+            <el-tag :type="status ? statusType(status.state) : 'danger'">{{ status ? groundStatusLabel(status.state) : '状态未加载' }}</el-tag>
             <el-switch v-if="profile" v-model="profile.enabled" :active-text="t('ground.enabled', '启用无人值守')" @change="saveProfile()" />
             <span class="muted">{{ t('ground.pause_note', '暂停调度时 AC 轮询与长 Ping 继续') }}</span>
           </div>
           <div class="metric-grid">
-            <article><span>当前运行模式</span><strong>{{ groundRunModeLabel(status?.running_mode) }}</strong><small>{{ status?.running_mode === 'LIGHTWEIGHT' ? '不启动 SSH 深度 MR 采集' : '包含深度 MR 采集' }}</small></article>
+            <article><span>当前运行模式</span><strong>{{ status ? groundRunModeLabel(status.running_mode) : '—' }}</strong><small>{{ !status ? '等待运行状态加载' : status.running_mode === 'LIGHTWEIGHT' ? '不启动 SSH 深度 MR 采集' : '包含深度 MR 采集' }}</small></article>
             <article><span>{{ t('ground.window', '配置运行时间') }}</span><strong>{{ status?.schedule_start_time }} - {{ status?.schedule_end_time }}</strong></article>
             <article><span>{{ t('ground.next_start', '下一次启动') }}</span><strong>{{ status?.next_start_at || '—' }}</strong></article>
             <article><span>{{ t('ground.next_end', '下一次结束') }}</span><strong>{{ status?.next_end_at || '—' }}</strong></article>
@@ -659,7 +692,11 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
       </el-tab-pane>
 
       <el-tab-pane :label="t('ground.settings', '设置')" name="settings">
-        <el-form v-if="profile" :model="profile" label-position="top" class="settings-form">
+        <el-empty v-if="!profile" class="settings-empty" description="无人值守配置未加载">
+          <p class="muted">{{ profileLoadError || '请确认 Backend 已完成无人值守服务初始化。' }}</p>
+          <el-button :icon="Refresh" :loading="loading" type="primary" @click="loadAll()">重新加载配置</el-button>
+        </el-empty>
+        <el-form v-else :model="profile" label-position="top" class="settings-form">
           <section><h2>{{ t('ground.schedule', '运行时间与 AC') }}</h2><div class="form-grid">
             <el-form-item :label="t('ground.start_time', '开始时间')"><el-time-select v-model="profile.schedule_start_time" start="00:00" step="00:05" end="23:55" /></el-form-item>
             <el-form-item :label="t('ground.end_time', '结束时间')"><el-time-select v-model="profile.schedule_end_time" start="00:00" step="00:05" end="23:55" /></el-form-item>
@@ -824,5 +861,5 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
 </template>
 
 <style scoped>
-.ground-page{display:flex;flex-direction:column;gap:12px;min-width:0;min-height:0}.page-heading,.heading-actions,.status-line,.toolbar,.coverage-strip,.row-actions,.form-actions,.inline-numbers,.dialog-actions,.network-actions,.network-status,.boot-evidence,.operation-heading,.detail-heading,.mode-switch{display:flex;align-items:center;gap:10px}.page-heading,.operation-heading,.detail-heading{justify-content:space-between;flex-wrap:wrap}.page-heading h1{margin:2px 0 0;font-size:24px;letter-spacing:0}.eyebrow{margin:0;color:var(--el-color-primary);font-size:12px;font-weight:700;letter-spacing:0}.heading-actions,.toolbar,.dialog-actions,.network-actions,.network-status,.boot-evidence{flex-wrap:wrap}.operation-band{padding:12px 14px;border:1px solid var(--el-border-color);border-left:4px solid var(--el-color-warning);background:var(--el-fill-color-light)}.operation-band.operation-completed{border-left-color:var(--el-color-success)}.operation-band.operation-failed{border-left-color:var(--el-color-danger)}.operation-heading>div{display:flex;gap:12px;align-items:center}.operation-band p{margin:8px 0;color:var(--el-text-color-primary)}.operation-band small{color:var(--el-text-color-secondary)}.ground-tabs{min-width:0}.overview-band{padding:2px 0}.status-line{min-height:42px;flex-wrap:wrap;border-bottom:1px solid var(--el-border-color-lighter)}.metric-grid,.health-grid{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:1px;margin-top:12px;background:var(--el-border-color-lighter);border:1px solid var(--el-border-color-lighter)}.metric-grid article,.health-grid article{min-width:0;padding:12px;background:var(--el-bg-color)}.metric-grid span,.metric-grid small,.health-grid span,.health-grid small{display:block;color:var(--el-text-color-secondary);font-size:12px}.metric-grid strong,.health-grid strong{display:block;min-height:24px;margin:6px 0 3px;font-size:18px;letter-spacing:0;overflow-wrap:anywhere}.toolbar{min-height:42px}.toolbar .el-input{width:210px}.toolbar .el-select{width:130px}.toolbar .el-input-number{width:110px}.table-frame{height:clamp(360px,calc(100vh - 310px),680px);min-width:0;overflow:hidden;border-top:1px solid var(--el-border-color-lighter)}.ping-table{height:360px}.ping-detail{margin-top:16px;padding-top:14px;border-top:1px solid var(--el-border-color-lighter)}.ping-detail h2,.ping-detail h3{margin:0 0 8px}.ping-detail p{margin:0;color:var(--el-text-color-secondary);font-size:12px}.coverage-strip{flex-wrap:wrap;margin-bottom:8px}.coverage-strip span{display:flex;align-items:center;gap:5px;padding:5px 8px;background:var(--el-fill-color-light);border-radius:4px;color:var(--el-text-color-secondary);font-size:12px}.coverage-strip b{color:var(--el-text-color-primary);font-size:16px}.settings-form{display:flex;flex-direction:column;gap:18px;max-width:1180px}.settings-form section{padding-bottom:16px;border-bottom:1px solid var(--el-border-color-lighter)}.settings-form h2{margin:0 0 12px;font-size:16px;letter-spacing:0}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:0 16px}.form-grid :deep(.el-input-number),.form-grid :deep(.el-select),.form-grid :deep(.el-input){width:100%}.mode-switch{align-items:flex-start;margin-bottom:12px}.mode-switch span{color:var(--el-text-color-secondary);font-size:12px}.budget-disabled{opacity:.66}.inline-numbers{width:100%}.priority-grid{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:8px}.muted{color:var(--el-text-color-secondary);font-size:12px}.network-actions{margin:12px 0}.network-status{margin:10px 0;padding:8px;background:var(--el-fill-color-light)}.network-ok{color:var(--el-color-success);font-size:12px}.network-error{color:var(--el-color-danger);font-size:12px}.loghost-section{margin-top:14px;padding-top:8px;border-top:1px solid var(--el-border-color-lighter)}.boot-evidence{margin:8px 0;color:var(--el-text-color-secondary);font-size:12px}.form-actions{position:sticky;bottom:0;padding:10px 0;background:var(--el-bg-color)}.dialog-actions{justify-content:flex-end;margin-top:14px}@media(max-width:1300px){.metric-grid,.health-grid{grid-template-columns:repeat(3,minmax(150px,1fr))}.form-grid{grid-template-columns:repeat(3,minmax(170px,1fr))}.priority-grid{grid-template-columns:repeat(4,minmax(110px,1fr))}}@media(max-width:900px){.page-heading{align-items:flex-start;flex-direction:column}.metric-grid,.health-grid{grid-template-columns:repeat(2,minmax(140px,1fr))}.form-grid{grid-template-columns:repeat(2,minmax(150px,1fr))}.priority-grid{grid-template-columns:repeat(3,minmax(100px,1fr))}.table-frame{height:clamp(340px,calc(100vh - 350px),620px)}.ping-table{height:340px}}@media(max-width:620px){.metric-grid,.health-grid,.form-grid{grid-template-columns:1fr}.priority-grid{grid-template-columns:repeat(2,minmax(100px,1fr))}.heading-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}.heading-actions .el-button{margin:0}.toolbar .el-input,.toolbar .el-select{width:100%}}
+.ground-page{display:flex;flex-direction:column;gap:12px;min-width:0;min-height:0}.page-heading,.heading-actions,.status-line,.toolbar,.coverage-strip,.row-actions,.form-actions,.inline-numbers,.dialog-actions,.network-actions,.network-status,.boot-evidence,.operation-heading,.detail-heading,.mode-switch,.load-warning{display:flex;align-items:center;gap:10px}.page-heading,.operation-heading,.detail-heading{justify-content:space-between;flex-wrap:wrap}.page-heading h1{margin:2px 0 0;font-size:24px;letter-spacing:0}.eyebrow{margin:0;color:var(--el-color-primary);font-size:12px;font-weight:700;letter-spacing:0}.heading-actions,.toolbar,.dialog-actions,.network-actions,.network-status,.boot-evidence{flex-wrap:wrap}.operation-band{padding:12px 14px;border:1px solid var(--el-border-color);border-left:4px solid var(--el-color-warning);background:var(--el-fill-color-light)}.operation-band.operation-completed{border-left-color:var(--el-color-success)}.operation-band.operation-failed{border-left-color:var(--el-color-danger)}.operation-heading>div{display:flex;gap:12px;align-items:center}.operation-band p{margin:8px 0;color:var(--el-text-color-primary)}.operation-band small{color:var(--el-text-color-secondary)}.load-warning{align-items:flex-start}.load-warning :deep(.el-alert){min-width:0;flex:1}.ground-tabs{min-width:0}.overview-band{padding:2px 0}.status-line{min-height:42px;flex-wrap:wrap;border-bottom:1px solid var(--el-border-color-lighter)}.metric-grid,.health-grid{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:1px;margin-top:12px;background:var(--el-border-color-lighter);border:1px solid var(--el-border-color-lighter)}.metric-grid article,.health-grid article{min-width:0;padding:12px;background:var(--el-bg-color)}.metric-grid span,.metric-grid small,.health-grid span,.health-grid small{display:block;color:var(--el-text-color-secondary);font-size:12px}.metric-grid strong,.health-grid strong{display:block;min-height:24px;margin:6px 0 3px;font-size:18px;letter-spacing:0;overflow-wrap:anywhere}.toolbar{min-height:42px}.toolbar .el-input{width:210px}.toolbar .el-select{width:130px}.toolbar .el-input-number{width:110px}.table-frame{height:clamp(360px,calc(100vh - 310px),680px);min-width:0;overflow:hidden;border-top:1px solid var(--el-border-color-lighter)}.ping-table{height:360px}.ping-detail{margin-top:16px;padding-top:14px;border-top:1px solid var(--el-border-color-lighter)}.ping-detail h2,.ping-detail h3{margin:0 0 8px}.ping-detail p{margin:0;color:var(--el-text-color-secondary);font-size:12px}.coverage-strip{flex-wrap:wrap;margin-bottom:8px}.coverage-strip span{display:flex;align-items:center;gap:5px;padding:5px 8px;background:var(--el-fill-color-light);border-radius:4px;color:var(--el-text-color-secondary);font-size:12px}.coverage-strip b{color:var(--el-text-color-primary);font-size:16px}.settings-empty{padding:48px 16px}.settings-empty .muted{max-width:720px;margin:0 auto 12px;overflow-wrap:anywhere}.settings-form{display:flex;flex-direction:column;gap:18px;max-width:1180px}.settings-form section{padding-bottom:16px;border-bottom:1px solid var(--el-border-color-lighter)}.settings-form h2{margin:0 0 12px;font-size:16px;letter-spacing:0}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:0 16px}.form-grid :deep(.el-input-number),.form-grid :deep(.el-select),.form-grid :deep(.el-input){width:100%}.mode-switch{align-items:flex-start;margin-bottom:12px}.mode-switch span{color:var(--el-text-color-secondary);font-size:12px}.budget-disabled{opacity:.66}.inline-numbers{width:100%}.priority-grid{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:8px}.muted{color:var(--el-text-color-secondary);font-size:12px}.network-actions{margin:12px 0}.network-status{margin:10px 0;padding:8px;background:var(--el-fill-color-light)}.network-ok{color:var(--el-color-success);font-size:12px}.network-error{color:var(--el-color-danger);font-size:12px}.loghost-section{margin-top:14px;padding-top:8px;border-top:1px solid var(--el-border-color-lighter)}.boot-evidence{margin:8px 0;color:var(--el-text-color-secondary);font-size:12px}.form-actions{position:sticky;bottom:0;padding:10px 0;background:var(--el-bg-color)}.dialog-actions{justify-content:flex-end;margin-top:14px}@media(max-width:1300px){.metric-grid,.health-grid{grid-template-columns:repeat(3,minmax(150px,1fr))}.form-grid{grid-template-columns:repeat(3,minmax(170px,1fr))}.priority-grid{grid-template-columns:repeat(4,minmax(110px,1fr))}}@media(max-width:900px){.page-heading{align-items:flex-start;flex-direction:column}.metric-grid,.health-grid{grid-template-columns:repeat(2,minmax(140px,1fr))}.form-grid{grid-template-columns:repeat(2,minmax(150px,1fr))}.priority-grid{grid-template-columns:repeat(3,minmax(100px,1fr))}.table-frame{height:clamp(340px,calc(100vh - 350px),620px)}.ping-table{height:340px}}@media(max-width:620px){.metric-grid,.health-grid,.form-grid{grid-template-columns:1fr}.priority-grid{grid-template-columns:repeat(2,minmax(100px,1fr))}.heading-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}.heading-actions .el-button{margin:0}.load-warning{flex-direction:column}.toolbar .el-input,.toolbar .el-select{width:100%}}
 </style>
