@@ -4,6 +4,7 @@ import pytest
 
 from netconsole.services.rail_transit.station_source_utils import (
     parse_station_source_value,
+    station_identity_key,
 )
 
 
@@ -31,7 +32,9 @@ def test_numeric_station_prefix_is_auxiliary_order(value: str) -> None:
     assert parsed.sort_order == 1
     assert parsed.name == "小洋江站"
     assert parsed.canonical_station_name == "小洋江站"
-    assert parsed.source_station_key == "小洋江站"
+    assert parsed.source_station_key == station_identity_key(
+        "小洋江站", "station", "MAIN"
+    )
     assert parsed.parse_warning == ""
     assert parsed.parse_error == ""
 

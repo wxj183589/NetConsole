@@ -79,6 +79,8 @@ def test_feature_registry_lists_expected_features() -> None:
     assert FEATURE_BY_ID["web.online_mr_realtime"].parent_id == "rail.online_mr_collection"
     assert FEATURE_BY_ID["web.job_center"].item_type == "page"
     assert FEATURE_BY_ID["web.device_management"].parent_id == "module.devices"
+    assert "devices.omnipeek_name_table_export" not in feature_ids
+    assert FEATURE_BY_ID["ac.omnipeek_name_table_export"].parent_id == "module.ac"
     assert FEATURE_BY_ID["web.config_collection"].parent_id == "module.config_collection"
     assert FEATURE_BY_ID["web.file_management"].parent_id == "module.file_management"
     assert FEATURE_BY_ID["web.network_tools"].parent_id == "module.network_tools"

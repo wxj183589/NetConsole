@@ -2,6 +2,7 @@ from pathlib import Path
 
 from netconsole.parsers.h3c.boot_loader_parser import parse_boot_loader
 from netconsole.parsers.h3c.device_parser import parse_device_model
+from netconsole.parsers.h3c.device_clock_parser import parse_h3c_device_clock
 from netconsole.parsers.h3c.interface_parser import parse_interfaces
 from netconsole.parsers.h3c.lldp_parser import parse_lldp_neighbors
 from netconsole.parsers.h3c.ac.fit_ap_optical_parser import parse_fit_ap_optical, parse_fit_ap_transceiver
@@ -35,6 +36,25 @@ def test_version_parser_extracts_sysname_version_and_uptime():
     assert parsed["serial_number"] == "SN-SW01-0001"
     assert parsed["mac_address"] == "105e-ae3e-0700"
     assert parsed["vendor"] == "H3C"
+    assert parsed["uptime_precision_seconds"] == 60
+
+
+def test_device_clock_and_reboot_reason_are_parsed_without_local_timezone() -> None:
+    clock = parse_h3c_device_clock(
+        "11:26:48 BeiJing Mon 07/27/2026\n"
+        "Time Zone : BeiJing add 08:00:00\n"
+    )
+    version = parse_version(
+        "H3C WA6510E-T uptime is 0 weeks, 0 days, 1 hour, 59 minutes\n"
+        "Last reboot reason : Power on\n"
+    )
+
+    assert clock.timestamp.isoformat() == "2026-07-27T11:26:48+08:00"
+    assert clock.timezone_name == "BeiJing"
+    assert clock.utc_offset_seconds == 8 * 3600
+    assert version["uptime_seconds"] == 7140
+    assert version["uptime_precision_seconds"] == 60
+    assert version["last_reboot_reason"] == "Power on"
 
 
 def test_device_mac_normalizes_common_formats():

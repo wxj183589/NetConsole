@@ -159,6 +159,7 @@ class DeepMrCollectionScheduler:
         result = []
         for row in pool:
             pinned = bool(row.get("priority"))
+            policy_priority = int(row.get("scheduling_priority") or 0)
             attempts = int(row.get("attempt_count") or 0)
             status = str(row.get("coverage_status") or "NOT_SEEN")
             if first_round:
@@ -173,6 +174,7 @@ class DeepMrCollectionScheduler:
                 )
                 rank = (
                     0 if pinned else 1,
+                    -policy_priority,
                     0 if attempts == 0 else 1,
                     0 if status == "PARTIAL" else 1,
                     attempts,
@@ -182,6 +184,7 @@ class DeepMrCollectionScheduler:
                 reason = "全部可采集列车已完成第一轮，进入后续轮次"
                 rank = (
                     0 if pinned else 1,
+                    -policy_priority,
                     attempts,
                     -float(ping_loss_by_train.get(row["train_id"], 0.0)),
                     queue_index.get(row["train_id"], 10**9),

@@ -11,7 +11,6 @@ import {
   getDeviceConnectionTest,
   getExternalTerminalSettings,
   issueExternalTerminalConfirmation,
-  getOmniPeekPreview,
   listDevices,
   assignDeviceGroup,
   confirmDeviceImport,
@@ -31,8 +30,6 @@ import {
   startDeviceFormConnectionTest,
   startDeviceDiagnosticDownload,
   startDeviceTemplateExport,
-  startOmniPeekExport,
-  startOmniPeekPreview,
   startSecureCrtExport,
   startSecureCrtExportWithTemplate,
   updateDevice,
@@ -57,8 +54,6 @@ import type {
   DeviceExternalTerminalSettings,
   DeviceImportPreview,
   DeviceListItem,
-  DeviceOmniPeekPreview,
-  DeviceOmniPeekPreviewItem,
   DevicePage,
   DeviceSecretField,
   DeviceTaskReference,
@@ -155,13 +150,6 @@ const importDuplicateStrategy = ref<'reject' | 'skip' | 'create_new'>('reject')
 const secureCrtVisible = ref(false)
 const secureCrtTemplateFile = ref<File | null>(null)
 const secureCrtTemplateInput = ref<HTMLInputElement | null>(null)
-const omniPeekVisible = ref(false)
-const omniPeekLoading = ref(false)
-const omniPeekLineName = ref('NetConsole')
-const omniPeekPreview = ref<DeviceOmniPeekPreview | null>(null)
-const omniPeekSelectedKeys = ref<string[]>([])
-const omniPeekForceKeys = ref<string[]>([])
-const omniPeekTable = ref<TableSelectionController<DeviceOmniPeekPreviewItem>>()
 const lastSubmittedTask = ref<DeviceTaskReference | null>(null)
 const savedArtifactCapability = ref('')
 const savedDeviceArtifactNotice = ref<{ title: string; description: string } | null>(null)
@@ -216,16 +204,6 @@ const deviceColumns: NcTableColumn<DeviceListItem>[] = [
   { key: 'connection_status', label: '连接状态', valueType: 'status', cellKind: 'tag', stretch: 'none' },
   { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['详情', '编辑', '删除'], stretch: 'none' },
 ]
-const omniPeekColumns: NcTableColumn<DeviceOmniPeekPreviewItem>[] = [
-  { key: 'selection', label: '', type: 'selection', valueType: 'selection', hideable: false, columnAttrs: { reserveSelection: true } },
-  { key: 'name', label: '名称', valueType: 'name', fixed: 'left' },
-  { key: 'physical_mac', label: '物理 MAC', valueType: 'mac' },
-  { key: 'r1_mac', label: 'R1', valueType: 'mac' },
-  { key: 'r2_mac', label: 'R2', valueType: 'mac' },
-  { key: 'location', label: '位置', valueType: 'text' },
-  { key: 'status', label: '状态', valueType: 'status' },
-  { key: 'force_export', label: '强制导出', valueType: 'actions', cellKind: 'plain', hideable: false },
-]
 const importErrorColumns: NcTableColumn<DeviceImportPreview['errors'][number]>[] = [
   { key: 'line', label: 'CSV 行', valueType: 'number', stretch: 'none' },
   { key: 'device_name', label: '设备名称', valueType: 'name', stretch: 'normal' },
@@ -256,7 +234,6 @@ const secretRevealLoading = reactive<Record<DeviceSecretField, boolean>>({
   snmp_ro_community: false,
 })
 const contextMenu = reactive<{ visible: boolean; x: number; y: number; row: DeviceListItem | null; cellValue: string }>({ visible: false, x: 0, y: 0, row: null, cellValue: '' })
-let omniPeekPollGeneration = 0
 let editLoadGeneration = 0
 let editProfileAbortController: AbortController | null = null
 let componentActive = true
@@ -446,7 +423,6 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   componentActive = false
-  omniPeekPollGeneration += 1
   clearEditingProfileState()
   savedArtifactCapability.value = ''
   savedDeviceArtifactNotice.value = null
@@ -1513,84 +1489,6 @@ async function exportSecureCrt(): Promise<void> {
   }
 }
 
-async function openOmniPeekExport(): Promise<void> {
-  const generation = ++omniPeekPollGeneration
-  const deadline = Date.now() + 120_000
-  omniPeekVisible.value = true
-  omniPeekLoading.value = true
-  omniPeekPreview.value = null
-  omniPeekSelectedKeys.value = []
-  omniPeekForceKeys.value = []
-  try {
-    const task = await startOmniPeekPreview(currentExportFilters())
-    await presentTasks([task], 'OmniPeek 预览任务已提交')
-    for (;;) {
-      if (!componentActive || generation !== omniPeekPollGeneration || !omniPeekVisible.value) return
-      if (Date.now() >= deadline) {
-        await openTaskWindow(publicDeviceTasks.value.find((item) => item.id === task.task_id) || null)
-        throw new Error('OmniPeek 预览超过 120 秒，请在统一任务窗口停止任务')
-      }
-      const preview = await getOmniPeekPreview(task.task_id)
-      if (!componentActive || generation !== omniPeekPollGeneration || !omniPeekVisible.value) return
-      if (preview.ready) {
-        omniPeekPreview.value = preview
-        omniPeekSelectedKeys.value = preview.items.filter((item) => item.selected).map((item) => item.key)
-        omniPeekForceKeys.value = preview.items.filter((item) => item.force_export).map((item) => item.key)
-        await nextTick()
-        for (const item of preview.items) {
-          if (omniPeekSelectedKeys.value.includes(item.key)) omniPeekTable.value?.toggleRowSelection(item, true)
-        }
-        if (!preview.items.length) ElMessage.warning('当前筛选或勾选设备中没有可导出的车载 MR')
-        break
-      }
-      if (['FAILED', 'CANCELLED'].includes(preview.task_status)) throw new Error(preview.message || 'OmniPeek 预览失败')
-      await new Promise((resolve) => window.setTimeout(resolve, 500))
-    }
-  } catch (cause) {
-    if (componentActive && generation === omniPeekPollGeneration) {
-      ElMessage.error(errorMessage(cause, 'OmniPeek 名称表预览失败'))
-    }
-  } finally {
-    if (generation === omniPeekPollGeneration) omniPeekLoading.value = false
-  }
-}
-
-function stopOmniPeekPreview(): void {
-  omniPeekPollGeneration += 1
-  omniPeekLoading.value = false
-}
-
-function onOmniPeekSelectionChange(rows: DeviceOmniPeekPreviewItem[]): void {
-  omniPeekSelectedKeys.value = rows.map((row) => row.key)
-  omniPeekForceKeys.value = omniPeekForceKeys.value.filter((key) => omniPeekSelectedKeys.value.includes(key))
-}
-
-function setOmniPeekForce(key: string, enabled: boolean): void {
-  omniPeekForceKeys.value = enabled
-    ? [...new Set([...omniPeekForceKeys.value, key])]
-    : omniPeekForceKeys.value.filter((value) => value !== key)
-}
-
-async function exportOmniPeek(): Promise<void> {
-  if (!omniPeekPreview.value || !omniPeekSelectedKeys.value.length) {
-    ElMessage.warning('请至少选择一条名称记录')
-    return
-  }
-  try {
-    const selected = new Set(omniPeekSelectedKeys.value)
-    await presentTasks([await startOmniPeekExport({
-      ...currentExportFilters(),
-      line_name: omniPeekLineName.value.trim() || 'NetConsole',
-      selected_item_keys: [...selected],
-      excluded_item_keys: omniPeekPreview.value.items.filter((item) => !selected.has(item.key)).map((item) => item.key),
-      force_export_keys: omniPeekForceKeys.value,
-    })], 'OmniPeek 名称表任务已提交')
-    omniPeekVisible.value = false
-  } catch (cause) {
-    ElMessage.error(errorMessage(cause, 'OmniPeek 名称表导出失败'))
-  }
-}
-
 async function refreshSelectedDetails(): Promise<void> {
   const targets = [...selectedUuids.value]
   if (!targets.length) {
@@ -1832,7 +1730,7 @@ function errorMessage(cause: unknown, fallback: string): string {
       >下载模板</el-button>
       <el-dropdown>
         <el-button :icon="Download" :loading="csvExportSubmitting" :disabled="!isFeatureEnabled('web.device_management_export')">导出</el-button>
-        <template #dropdown><el-dropdown-menu><el-dropdown-item data-testid="device-export-csv-no-credentials" :disabled="csvExportActive || !isFeatureEnabled('web.device_management_export')" @click="exportCsv(false)">CSV 导出（不含凭据）</el-dropdown-item><el-dropdown-item :disabled="csvExportActive || !isFeatureEnabled('web.device_management_export')" @click="exportCsv(true)">CSV 导出（含凭据）</el-dropdown-item><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management_export')" @click="openOmniPeekExport">OmniPeek 名称表</el-dropdown-item><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management_export')" @click="openSecureCrtExport">SecureCRT 会话</el-dropdown-item></el-dropdown-menu></template>
+        <template #dropdown><el-dropdown-menu><el-dropdown-item data-testid="device-export-csv-no-credentials" :disabled="csvExportActive || !isFeatureEnabled('web.device_management_export')" @click="exportCsv(false)">CSV 导出（不含凭据）</el-dropdown-item><el-dropdown-item :disabled="csvExportActive || !isFeatureEnabled('web.device_management_export')" @click="exportCsv(true)">CSV 导出（含凭据）</el-dropdown-item><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management_export')" @click="openSecureCrtExport">SecureCRT 会话</el-dropdown-item></el-dropdown-menu></template>
       </el-dropdown>
       <el-button :disabled="!selectedUuids.length" @click="clearSelection">清空选择</el-button>
       <el-button :disabled="!pageData.items.length" @click="invertSelection">反选当前页</el-button>
@@ -2105,26 +2003,6 @@ function errorMessage(cause: unknown, fallback: string): string {
         <el-form-item v-if="importPreview.duplicate_rows.length" label="重复地址"><el-select v-model="importDuplicateStrategy" style="width:100%"><el-option label="拒绝导入（安全默认）" value="reject" /><el-option label="跳过重复行" value="skip" /><el-option label="仍新增为独立设备" value="create_new" /></el-select><span class="field-warning">涉及 CSV 行：{{ importPreview.duplicate_rows.join('、') }}</span></el-form-item>
       </div>
       <template #footer><el-button @click="closeImportDialog">关闭</el-button><el-button :loading="importLoading" :disabled="!importFile || !isFeatureEnabled('web.device_management_import')" @click="runImportPreview">预览</el-button><el-button type="primary" :disabled="!importPreview || !!importPreview.errors.length || !isFeatureEnabled('web.device_management_import')" @click="confirmImport">确认导入</el-button></template>
-    </el-dialog>
-
-    <el-dialog v-model="omniPeekVisible" title="导出 OmniPeek 名称表" width="min(1120px, 96vw)" @closed="stopOmniPeekPreview">
-      <el-form label-width="90px"><el-form-item label="线路名称"><el-input v-model="omniPeekLineName" maxlength="200" /></el-form-item></el-form>
-      <el-alert v-if="omniPeekPreview" :title="`共 ${omniPeekPreview.stats.total || 0} 项，异常 ${omniPeekPreview.stats.abnormal || 0} 项；异常项需人工确认后才能强制导出。`" type="info" show-icon :closable="false" />
-      <NcDataTable
-        ref="omniPeekTable"
-        v-loading="omniPeekLoading"
-        table-id="device-omnipeek-export"
-        route-key="/devices"
-        :data="omniPeekPreview?.items || []"
-        :columns="omniPeekColumns"
-        row-key="key"
-        :max-height="520"
-        empty-text="暂无可导出数据"
-        @selection-change="onOmniPeekSelectionChange"
-      >
-        <template #cell-force_export="{ row }"><el-checkbox :model-value="omniPeekForceKeys.includes(row.key)" :disabled="row.status === '正常' || !omniPeekSelectedKeys.includes(row.key)" @change="setOmniPeekForce(row.key, Boolean($event))" /></template>
-      </NcDataTable>
-      <template #footer><el-button @click="omniPeekVisible = false">取消</el-button><el-button type="primary" :loading="omniPeekLoading" :disabled="!omniPeekPreview || !omniPeekSelectedKeys.length" @click="exportOmniPeek">确认导出</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="secureCrtVisible" title="生成 SecureCRT 会话" width="min(560px, 94vw)">

@@ -8,13 +8,14 @@ import zipfile
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.ground_unattended import GroundUnattendedProfileDTO
 from netconsole.repositories.ground_unattended_repository import (
     GroundUnattendedRepository,
 )
+from netconsole.services.ground_unattended.schedule import resolve_timezone
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,9 @@ class GroundUnattendedArchiveService:
         self,
         run_id: str,
         profile: GroundUnattendedProfileDTO,
+        progress_callback: (
+            Callable[[str, int, str, dict[str, Any]], None] | None
+        ) = None,
     ) -> ArchiveResult:
         run = self.repository.get_run(run_id)
         if run is None:
@@ -52,11 +56,127 @@ class GroundUnattendedArchiveService:
         archive_id = f"archive_{run_id}"
         final_path = archive_dir / f"{run_date}_ground_unattended.zip"
         temp_path = final_path.with_name(f".{final_path.name}.{archive_id}.tmp")
+        existing = self.repository.get_archive_by_run(run_id)
+        if existing and existing.get("archive_status") == "READY":
+            _progress(
+                progress_callback,
+                "ARCHIVE_VERIFYING",
+                80,
+                "正在校验已有正式归档",
+                {"archive_id": str(existing["archive_id"])},
+            )
+            existing_path = self._archive_path(existing)
+            try:
+                self._validate_archive_path(existing_path)
+                if not existing_path.is_file() or existing_path.is_symlink():
+                    raise OSError("ready archive is not a regular file")
+                self._verify_zip(existing_path)
+                expected_sha = str(existing.get("sha256") or "")
+                if expected_sha and _sha256(existing_path) != expected_sha:
+                    raise OSError("ready archive checksum mismatch")
+            except (
+                OSError,
+                ValueError,
+                zipfile.BadZipFile,
+                json.JSONDecodeError,
+            ) as exc:
+                if not active_dir.is_dir():
+                    message = "正式归档校验失败且原始数据不存在，已保留现有文件"
+                    self.repository.upsert_archive(
+                        {
+                            "archive_id": str(existing["archive_id"]),
+                            "site_id": self.site_id,
+                            "run_id": run_id,
+                            "run_date": run_date,
+                            "relative_path": str(existing.get("relative_path") or ""),
+                            "archive_status": "FAILED",
+                            "archive_size_bytes": int(
+                                existing.get("archive_size_bytes") or 0
+                            ),
+                            "sha256": str(existing.get("sha256") or ""),
+                            "manifest_sha256": str(
+                                existing.get("manifest_sha256") or ""
+                            ),
+                            "retention_until": str(
+                                existing.get("retention_until") or ""
+                            ),
+                            "active_cleanup_pending": 0,
+                            "summary_json": json.dumps(
+                                existing.get("summary") or {}, ensure_ascii=False
+                            ),
+                            "message": message,
+                            "created_at": str(existing.get("created_at") or _now()),
+                            "updated_at": _now(),
+                        }
+                    )
+                    self.repository.add_event(
+                        run_id=run_id,
+                        event_type="archive_validation_failed",
+                        severity="error",
+                        title=message,
+                        message=f"{exc.__class__.__name__}: {exc}",
+                    )
+                    return ArchiveResult(str(existing["archive_id"]), False, message)
+            else:
+                cleanup_pending = bool(existing.get("active_cleanup_pending"))
+                if cleanup_pending and active_dir.is_dir():
+                    try:
+                        self._safe_remove_active_dir(active_dir)
+                        cleanup_pending = False
+                    except OSError:
+                        pass
+                if cleanup_pending != bool(existing.get("active_cleanup_pending")):
+                    self.repository.upsert_archive(
+                        {
+                            "archive_id": str(existing["archive_id"]),
+                            "site_id": self.site_id,
+                            "run_id": run_id,
+                            "run_date": run_date,
+                            "relative_path": str(existing.get("relative_path") or ""),
+                            "archive_status": "READY",
+                            "archive_size_bytes": existing_path.stat().st_size,
+                            "sha256": str(existing.get("sha256") or ""),
+                            "manifest_sha256": str(
+                                existing.get("manifest_sha256") or ""
+                            ),
+                            "retention_until": str(
+                                existing.get("retention_until") or ""
+                            ),
+                            "active_cleanup_pending": int(cleanup_pending),
+                            "summary_json": json.dumps(
+                                existing.get("summary") or {}, ensure_ascii=False
+                            ),
+                            "message": "归档已存在并通过校验",
+                            "created_at": str(existing.get("created_at") or _now()),
+                            "updated_at": _now(),
+                        }
+                    )
+                self.apply_retention(profile)
+                _progress(
+                    progress_callback,
+                    "ARCHIVE_READY",
+                    98,
+                    "已有正式归档校验完成",
+                    {"archive_id": str(existing["archive_id"])},
+                )
+                return ArchiveResult(
+                    str(existing["archive_id"]),
+                    True,
+                    "归档已存在并通过校验",
+                    cleanup_pending,
+                )
         now = _now()
         retention_until = (
             date.fromisoformat(run_date) + timedelta(days=profile.detail_retention_days)
         ).isoformat()
-        summary = self._build_summary(run_id, run)
+        summary = self._build_summary(run_id, run, profile)
+        _progress(
+            progress_callback,
+            "ARCHIVE_PREPARING",
+            60,
+            "正在准备每日汇总和清单",
+            {"archive_id": archive_id},
+        )
         self.repository.upsert_archive(
             {
                 "archive_id": archive_id,
@@ -84,11 +204,39 @@ class GroundUnattendedArchiveService:
             manifest = self._build_manifest(active_dir, run, summary)
             self._atomic_json(active_dir / "manifest.json", manifest)
             temp_path.unlink(missing_ok=True)
+            _progress(
+                progress_callback,
+                "ARCHIVE_WRITING",
+                70,
+                "正在写入临时 ZIP",
+                {"archive_id": archive_id, "archive_name": final_path.name},
+            )
             self._write_zip(active_dir, temp_path)
+            _progress(
+                progress_callback,
+                "ARCHIVE_VERIFYING",
+                82,
+                "正在校验 ZIP 完整性",
+                {
+                    "archive_id": archive_id,
+                    "written_bytes": temp_path.stat().st_size,
+                },
+            )
             self._verify_zip(temp_path)
             os.replace(temp_path, final_path)
             archive_sha = _sha256(final_path)
             manifest_sha = _sha256(active_dir / "manifest.json")
+            _progress(
+                progress_callback,
+                "ARCHIVE_REGISTERING",
+                90,
+                "正在登记正式归档",
+                {
+                    "archive_id": archive_id,
+                    "archive_name": final_path.name,
+                    "written_bytes": final_path.stat().st_size,
+                },
+            )
             self.repository.upsert_archive(
                 {
                     "archive_id": archive_id,
@@ -110,7 +258,20 @@ class GroundUnattendedArchiveService:
                     "updated_at": _now(),
                 }
             )
+            self.repository.mark_raw_files_archived(
+                run_id,
+                final_path.relative_to(
+                    self.paths.ground_unattended_root(self.site_id)
+                ).as_posix(),
+            )
             cleanup_pending = False
+            _progress(
+                progress_callback,
+                "CLEANING_ARCHIVED_ACTIVE",
+                95,
+                "正在按安全策略清理已归档 active 数据",
+                {"archive_id": archive_id},
+            )
             try:
                 self._safe_remove_active_dir(active_dir)
             except OSError:
@@ -139,6 +300,18 @@ class GroundUnattendedArchiveService:
                 }
             )
             self.apply_retention(profile)
+            _progress(
+                progress_callback,
+                "ARCHIVE_READY",
+                98,
+                "正式归档已生成并通过校验",
+                {
+                    "archive_id": archive_id,
+                    "archive_name": final_path.name,
+                    "archive_size_bytes": final_path.stat().st_size,
+                    "sha256": archive_sha,
+                },
+            )
             return ArchiveResult(archive_id, True, "归档完成", cleanup_pending)
         except Exception as exc:
             temp_path.unlink(missing_ok=True)
@@ -192,7 +365,8 @@ class GroundUnattendedArchiveService:
         self.repository.delete_archive_record(archive_id)
 
     def apply_retention(self, profile: GroundUnattendedProfileDTO) -> None:
-        today = date.today().isoformat()
+        today_value = datetime.now(resolve_timezone(profile.timezone)).date()
+        today = today_value.isoformat()
         for row in self.repository.list_archives():
             if (
                 row.get("archive_status") != "READY"
@@ -201,11 +375,16 @@ class GroundUnattendedArchiveService:
                 continue
             self.delete_archive(str(row["archive_id"]))
         summary_cutoff = (
-            date.today() - timedelta(days=profile.summary_retention_days)
+            today_value - timedelta(days=profile.summary_retention_days)
         ).isoformat()
         self.repository.delete_summaries_before(summary_cutoff)
 
-    def _build_summary(self, run_id: str, run: dict[str, Any]) -> dict[str, Any]:
+    def _build_summary(
+        self,
+        run_id: str,
+        run: dict[str, Any],
+        profile: GroundUnattendedProfileDTO,
+    ) -> dict[str, Any]:
         trains = self.repository.list_train_runs(run_id)
         deep = self.repository.list_deep_operations(run_id)
         ping = self.repository.list_ping_summaries(run_id)
@@ -235,12 +414,27 @@ class GroundUnattendedArchiveService:
             "partial_session_count": sum(
                 row.get("state") in {"PARTIAL", "FAILED"} for row in deep
             ),
+            "running_mode": (
+                "STANDARD"
+                if profile.deep_collection_master_enabled
+                else "LIGHTWEIGHT"
+            ),
+            "deep_collection_master_enabled": (
+                profile.deep_collection_master_enabled
+            ),
+            "deep_collection_skipped_reason": (
+                ""
+                if profile.deep_collection_master_enabled
+                else "局点配置为轻量监测模式"
+            ),
             "generated_at": _now(),
         }
 
     def _write_daily_artifacts(
         self, active_dir: Path, run_id: str, summary: dict[str, Any]
     ) -> None:
+        for directory in ("fleet_ping", "ac_snapshots", "timeline", "ping_summaries"):
+            (active_dir / directory).mkdir(parents=True, exist_ok=True)
         self._atomic_json(active_dir / "daily_summary.json", summary)
         events = list(reversed(self.repository.list_events(run_id, limit=5000)))
         self._atomic_jsonl(active_dir / "scheduler_events.jsonl", events)
@@ -293,6 +487,21 @@ class GroundUnattendedArchiveService:
                 ],
             },
         )
+        ping_rows = self.repository.list_ping_summaries(run_id, bucket_kind=None)
+        self._atomic_jsonl(
+            active_dir / "ping_summaries" / "all_summaries.jsonl", ping_rows
+        )
+        daily_by_mr = [
+            row for row in ping_rows if str(row.get("bucket_kind") or "") == "daily"
+        ]
+        self._atomic_json(
+            active_dir / "ping_summaries" / "daily_by_mr.json",
+            {"run_id": run_id, "items": daily_by_mr},
+        )
+        self._atomic_json(
+            active_dir / "ping_summaries" / "daily_by_train.json",
+            {"run_id": run_id, "items": _aggregate_daily_ping_by_train(daily_by_mr)},
+        )
 
     def _build_manifest(
         self, active_dir: Path, run: dict[str, Any], summary: dict[str, Any]
@@ -330,6 +539,11 @@ class GroundUnattendedArchiveService:
             target, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True
         ) as archive:
             for path in sorted(active_dir.rglob("*")):
+                if not path.is_dir():
+                    continue
+                self._validate_active_member(path, active_dir)
+                archive.writestr(f"{path.relative_to(active_dir).as_posix()}/", b"")
+            for path in sorted(active_dir.rglob("*")):
                 if not path.is_file() or path.name.endswith(".tmp"):
                     continue
                 self._validate_active_member(path, active_dir)
@@ -341,14 +555,32 @@ class GroundUnattendedArchiveService:
             if archive.testzip() is not None:
                 raise OSError("archive CRC validation failed")
             names = set(archive.namelist())
-            if "manifest.json" not in names:
-                raise OSError("archive manifest is missing")
+            required = {
+                "manifest.json",
+                "daily_summary.json",
+                "scheduler_events.jsonl",
+                "coverage_summary.csv",
+                "deep_collection_manifest.json",
+                "errors.jsonl",
+                "fleet_ping/",
+                "ac_snapshots/",
+                "timeline/",
+                "ping_summaries/",
+                "ping_summaries/all_summaries.jsonl",
+                "ping_summaries/daily_by_mr.json",
+                "ping_summaries/daily_by_train.json",
+            }
+            missing = required - names
+            if missing:
+                raise OSError(
+                    f"archive required member is missing: {sorted(missing)[0]}"
+                )
             manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
             for item in manifest.get("files", []):
                 name = str(item["path"])
                 if name not in names:
                     raise OSError(f"archive member is missing: {name}")
-                if hashlib.sha256(archive.read(name)).hexdigest() != item["sha256"]:
+                if _zip_member_sha256(archive, name) != item["sha256"]:
                     raise OSError(f"archive member checksum mismatch: {name}")
 
     def _safe_remove_active_dir(self, active_dir: Path) -> None:
@@ -425,6 +657,102 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _progress(
+    callback: Callable[[str, int, str, dict[str, Any]], None] | None,
+    stage: str,
+    percent: int,
+    message: str,
+    details: dict[str, Any],
+) -> None:
+    if callback is not None:
+        callback(stage, percent, message, details)
+
+
+def _zip_member_sha256(archive: zipfile.ZipFile, name: str) -> str:
+    digest = hashlib.sha256()
+    with archive.open(name, "r") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _aggregate_daily_ping_by_train(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        train_id = str(row.get("train_id") or "")
+        if not train_id:
+            continue
+        current = grouped.setdefault(
+            train_id,
+            {
+                "train_id": train_id,
+                "train_no": str(row.get("train_no") or ""),
+                "sent_count": 0,
+                "raw_sample_count": 0,
+                "warmup_ignored_count": 0,
+                "success_count": 0,
+                "loss_count": 0,
+                "rtt_weighted_sum": 0.0,
+                "min_rtt_ms": None,
+                "max_rtt_ms": None,
+                "continuous_loss_max_count": 0,
+                "continuous_loss_max_seconds": 0.0,
+                "mr_ids": set(),
+            },
+        )
+        sent = int(row.get("sent_count") or 0)
+        raw = int(row.get("raw_sample_count") or sent)
+        ignored = int(row.get("warmup_ignored_count") or 0)
+        success = int(row.get("success_count") or 0)
+        loss = int(row.get("loss_count") or 0)
+        current["sent_count"] += sent
+        current["raw_sample_count"] += raw
+        current["warmup_ignored_count"] += ignored
+        current["success_count"] += success
+        current["loss_count"] += loss
+        if row.get("avg_rtt_ms") is not None:
+            current["rtt_weighted_sum"] += float(row["avg_rtt_ms"]) * success
+        for field, reducer in (("min_rtt_ms", min), ("max_rtt_ms", max)):
+            value = row.get(field)
+            if value is not None:
+                current[field] = (
+                    float(value)
+                    if current[field] is None
+                    else reducer(float(current[field]), float(value))
+                )
+        current["continuous_loss_max_count"] = max(
+            int(current["continuous_loss_max_count"]),
+            int(row.get("continuous_loss_max_count") or 0),
+        )
+        current["continuous_loss_max_seconds"] = max(
+            float(current["continuous_loss_max_seconds"]),
+            float(row.get("continuous_loss_max_seconds") or 0),
+        )
+        if row.get("mr_id"):
+            current["mr_ids"].add(str(row["mr_id"]))
+    result = []
+    for current in grouped.values():
+        success = int(current.pop("success_count"))
+        sent = int(current.pop("sent_count"))
+        loss = int(current.pop("loss_count"))
+        weighted = float(current.pop("rtt_weighted_sum"))
+        mr_ids = sorted(current.pop("mr_ids"))
+        result.append(
+            {
+                **current,
+                "mr_ids": mr_ids,
+                "sent_count": sent,
+                "success_count": success,
+                "loss_count": loss,
+                "loss_rate_percent": round(loss * 100 / sent, 4) if sent else 0.0,
+                "avg_rtt_ms": round(weighted / success, 4) if success else None,
+            }
+        )
+    return sorted(result, key=lambda item: (item["train_no"], item["train_id"]))
 
 
 def _now() -> str:

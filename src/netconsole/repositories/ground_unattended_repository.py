@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from netconsole.models.api.ground_unattended import GroundUnattendedProfileDTO
+from netconsole.core.database import Database
+from netconsole.core.sqlite_utils import configure_sqlite_connection, initialize_sqlite_wal
 
 
 SCHEMA = """
@@ -23,7 +25,7 @@ CREATE TABLE IF NOT EXISTS ground_unattended_profiles (
     enabled INTEGER NOT NULL DEFAULT 0,
     schedule_start_time TEXT NOT NULL DEFAULT '07:00',
     schedule_end_time TEXT NOT NULL DEFAULT '23:00',
-    timezone TEXT NOT NULL DEFAULT 'system',
+    timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
     ac_poll_interval_seconds INTEGER NOT NULL DEFAULT 10,
     stationary_exclusion_minutes INTEGER NOT NULL DEFAULT 10,
     ac_stale_grace_seconds INTEGER NOT NULL DEFAULT 120,
@@ -34,10 +36,26 @@ CREATE TABLE IF NOT EXISTS ground_unattended_profiles (
     max_active_mrs INTEGER NOT NULL DEFAULT 4,
     max_starting_mrs INTEGER NOT NULL DEFAULT 2,
     max_finalizing_mrs INTEGER NOT NULL DEFAULT 2,
+    deep_collection_master_enabled INTEGER NOT NULL DEFAULT 1,
     fleet_ping_interval_ms INTEGER NOT NULL DEFAULT 1000,
     fleet_ping_timeout_ms INTEGER NOT NULL DEFAULT 4000,
     fleet_ping_packet_size INTEGER NOT NULL DEFAULT 64,
     fleet_ping_shard_size INTEGER NOT NULL DEFAULT 12,
+    fleet_ping_warmup_seconds INTEGER NOT NULL DEFAULT 10,
+    udp_listen_host TEXT NOT NULL DEFAULT '0.0.0.0',
+    udp_listen_port INTEGER NOT NULL DEFAULT 514,
+    udp_queue_capacity INTEGER NOT NULL DEFAULT 20000,
+    raw_flush_interval_seconds REAL NOT NULL DEFAULT 1.0,
+    raw_flush_record_count INTEGER NOT NULL DEFAULT 100,
+    event_batch_size INTEGER NOT NULL DEFAULT 100,
+    event_batch_interval_seconds REAL NOT NULL DEFAULT 1.0,
+    boot_time_tolerance_seconds INTEGER NOT NULL DEFAULT 120,
+    config_check_cooldown_seconds INTEGER NOT NULL DEFAULT 1800,
+    syslog_server_ip TEXT NOT NULL DEFAULT '',
+    syslog_server_port INTEGER NOT NULL DEFAULT 514,
+    allow_external_syslog_address INTEGER NOT NULL DEFAULT 0,
+    ping_raw_retention_days INTEGER NOT NULL DEFAULT 30,
+    syslog_raw_retention_days INTEGER NOT NULL DEFAULT 30,
     minimum_valid_collection_minutes INTEGER NOT NULL DEFAULT 10,
     preferred_collection_minutes INTEGER NOT NULL DEFAULT 20,
     maximum_collection_minutes INTEGER NOT NULL DEFAULT 30,
@@ -96,6 +114,13 @@ CREATE TABLE IF NOT EXISTS ground_unattended_train_runs (
     deep_collection_eligible INTEGER NOT NULL DEFAULT 0,
     eligibility_status TEXT NOT NULL DEFAULT 'AC_UNKNOWN',
     exclusion_reason TEXT NOT NULL DEFAULT '',
+    location_match_level TEXT NOT NULL DEFAULT 'UNMATCHED',
+    location_match_reason TEXT NOT NULL DEFAULT '',
+    resolved_ap_id TEXT NOT NULL DEFAULT '',
+    resolved_ap_name TEXT NOT NULL DEFAULT '',
+    raw_peer_ap_name TEXT NOT NULL DEFAULT '',
+    raw_peer_ap_mac TEXT NOT NULL DEFAULT '',
+    canonical_station_name TEXT NOT NULL DEFAULT '',
     current_ap_identity TEXT NOT NULL DEFAULT '',
     current_ap_name TEXT NOT NULL DEFAULT '',
     current_ap_mac TEXT NOT NULL DEFAULT '',
@@ -179,6 +204,19 @@ CREATE TABLE IF NOT EXISTS ground_unattended_ping_segments (
 CREATE INDEX IF NOT EXISTS idx_ground_ping_segments_run
 ON ground_unattended_ping_segments(site_id, run_id, started_at);
 
+CREATE TABLE IF NOT EXISTS ground_unattended_ping_target_activations (
+    site_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    target_ip TEXT NOT NULL,
+    activated_at TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    removed_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (site_id, run_id, target_ip)
+);
+CREATE INDEX IF NOT EXISTS idx_ground_ping_target_activations
+ON ground_unattended_ping_target_activations(site_id, run_id, active, updated_at);
+
 CREATE TABLE IF NOT EXISTS ground_unattended_ping_summaries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     site_id TEXT NOT NULL,
@@ -193,6 +231,8 @@ CREATE TABLE IF NOT EXISTS ground_unattended_ping_summaries (
     mr_position_code TEXT NOT NULL DEFAULT '',
     ac_snapshot_id INTEGER,
     ap_identity TEXT NOT NULL DEFAULT '',
+    raw_sample_count INTEGER NOT NULL DEFAULT 0,
+    warmup_ignored_count INTEGER NOT NULL DEFAULT 0,
     sent_count INTEGER NOT NULL DEFAULT 0,
     success_count INTEGER NOT NULL DEFAULT 0,
     loss_count INTEGER NOT NULL DEFAULT 0,
@@ -264,7 +304,279 @@ CREATE TABLE IF NOT EXISTS ground_unattended_archives (
 );
 CREATE INDEX IF NOT EXISTS idx_ground_archives_site_date
 ON ground_unattended_archives(site_id, run_date DESC);
+
+CREATE TABLE IF NOT EXISTS ground_unattended_operations (
+    operation_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    operation_type TEXT NOT NULL,
+    operation_state TEXT NOT NULL DEFAULT 'PENDING',
+    operation_stage TEXT NOT NULL DEFAULT 'STOP_REQUESTED',
+    progress_percent INTEGER NOT NULL DEFAULT 0,
+    message TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT NOT NULL DEFAULT '',
+    failure_code TEXT NOT NULL DEFAULT '',
+    failure_reason TEXT NOT NULL DEFAULT '',
+    result_summary_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_ground_operations_active
+ON ground_unattended_operations(site_id, run_id, operation_state, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS ground_unattended_train_inventory (
+    site_id TEXT NOT NULL,
+    train_id TEXT NOT NULL,
+    train_no TEXT NOT NULL DEFAULT '',
+    train_name TEXT NOT NULL DEFAULT '',
+    inventory_status TEXT NOT NULL DEFAULT 'ACTIVE',
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    removed_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (site_id, train_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ground_inventory_site_status
+ON ground_unattended_train_inventory(site_id, inventory_status, train_no);
+
+CREATE TABLE IF NOT EXISTS ground_unattended_train_endpoints (
+    site_id TEXT NOT NULL,
+    device_uuid TEXT NOT NULL,
+    device_id INTEGER,
+    train_id TEXT NOT NULL,
+    mr_role TEXT NOT NULL,
+    device_name TEXT NOT NULL DEFAULT '',
+    management_ip TEXT NOT NULL DEFAULT '',
+    protocol TEXT NOT NULL DEFAULT '',
+    port INTEGER,
+    source_hostname TEXT NOT NULL DEFAULT '',
+    last_syslog_source_ip TEXT NOT NULL DEFAULT '',
+    syslog_hostname TEXT NOT NULL DEFAULT '',
+    last_syslog_identity_verified_at TEXT NOT NULL DEFAULT '',
+    binding_status TEXT NOT NULL DEFAULT 'ACTIVE',
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    removed_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (site_id, device_uuid)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ground_endpoints_active_role
+ON ground_unattended_train_endpoints(site_id, train_id, mr_role)
+WHERE binding_status='ACTIVE';
+CREATE INDEX IF NOT EXISTS idx_ground_endpoints_ip
+ON ground_unattended_train_endpoints(site_id, management_ip, binding_status);
+
+CREATE TABLE IF NOT EXISTS ground_unattended_train_policies (
+    site_id TEXT NOT NULL,
+    train_id TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    priority INTEGER NOT NULL DEFAULT 0,
+    scheduling_priority INTEGER NOT NULL DEFAULT 0,
+    deep_collection_enabled INTEGER NOT NULL DEFAULT 1,
+    monitor_only INTEGER NOT NULL DEFAULT 0,
+    remark TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (site_id, train_id)
+);
+
+CREATE TABLE IF NOT EXISTS ground_unattended_boot_sessions (
+    boot_session_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL,
+    device_uuid TEXT NOT NULL,
+    device_id INTEGER,
+    train_id TEXT NOT NULL DEFAULT '',
+    mr_role TEXT NOT NULL DEFAULT '',
+    first_detected_at TEXT NOT NULL,
+    last_checked_at TEXT NOT NULL,
+    estimated_boot_time TEXT NOT NULL,
+    first_uptime_seconds INTEGER NOT NULL,
+    last_uptime_seconds INTEGER NOT NULL,
+    device_clock_before TEXT NOT NULL DEFAULT '',
+    device_clock_after TEXT NOT NULL DEFAULT '',
+    boot_time_uncertainty_seconds INTEGER NOT NULL DEFAULT 60,
+    reboot_reason TEXT NOT NULL DEFAULT '',
+    timezone_name TEXT NOT NULL DEFAULT '',
+    utc_offset_seconds INTEGER,
+    time_quality TEXT NOT NULL DEFAULT 'LOCAL_FALLBACK',
+    clock_jump_seconds REAL,
+    version_evidence_path TEXT NOT NULL DEFAULT '',
+    config_status TEXT NOT NULL DEFAULT 'NOT_CHECKED',
+    config_checked_at TEXT NOT NULL DEFAULT '',
+    config_applied_at TEXT NOT NULL DEFAULT '',
+    first_syslog_received_at TEXT NOT NULL DEFAULT '',
+    last_syslog_received_at TEXT NOT NULL DEFAULT '',
+    config_fingerprint TEXT NOT NULL DEFAULT '',
+    info_center_metrics_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ground_boot_device
+ON ground_unattended_boot_sessions(site_id, device_uuid, last_checked_at DESC);
+
+CREATE TABLE IF NOT EXISTS ground_unattended_syslog_config_audits (
+    audit_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL,
+    boot_session_id TEXT NOT NULL DEFAULT '',
+    device_uuid TEXT NOT NULL,
+    train_id TEXT NOT NULL DEFAULT '',
+    mr_role TEXT NOT NULL DEFAULT '',
+    checked_at TEXT NOT NULL,
+    target_ip TEXT NOT NULL DEFAULT '',
+    target_port INTEGER,
+    status TEXT NOT NULL,
+    missing_commands_json TEXT NOT NULL DEFAULT '[]',
+    applied_commands_json TEXT NOT NULL DEFAULT '[]',
+    evidence_path TEXT NOT NULL DEFAULT '',
+    evidence_sha256 TEXT NOT NULL DEFAULT '',
+    error_code TEXT NOT NULL DEFAULT '',
+    error_message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ground_config_audit_device
+ON ground_unattended_syslog_config_audits(site_id, device_uuid, checked_at DESC);
+
+CREATE TABLE IF NOT EXISTS ground_unattended_wmesh_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id TEXT NOT NULL,
+    run_id TEXT NOT NULL DEFAULT '',
+    device_uuid TEXT NOT NULL DEFAULT '',
+    device_id INTEGER,
+    train_id TEXT NOT NULL DEFAULT '',
+    mr_role TEXT NOT NULL DEFAULT '',
+    event_type TEXT NOT NULL,
+    device_time TEXT NOT NULL DEFAULT '',
+    receive_time TEXT NOT NULL,
+    source_ip TEXT NOT NULL DEFAULT '',
+    hostname TEXT NOT NULL DEFAULT '',
+    peer_name TEXT NOT NULL DEFAULT '',
+    peer_mac TEXT NOT NULL DEFAULT '',
+    previous_peer_name TEXT NOT NULL DEFAULT '',
+    previous_peer_mac TEXT NOT NULL DEFAULT '',
+    station TEXT NOT NULL DEFAULT '',
+    section TEXT NOT NULL DEFAULT '',
+    data_quality TEXT NOT NULL DEFAULT 'COMPLETE',
+    receive_delay_ms REAL,
+    clock_offset_ms REAL,
+    raw_file_id TEXT NOT NULL DEFAULT '',
+    raw_line_number INTEGER,
+    details_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ground_wmesh_timeline
+ON ground_unattended_wmesh_events(site_id, run_id, receive_time DESC, train_id);
+
+CREATE TABLE IF NOT EXISTS ground_unattended_ping_loss_intervals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    target_ip TEXT NOT NULL,
+    train_id TEXT NOT NULL DEFAULT '',
+    mr_id TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL,
+    ended_at TEXT NOT NULL DEFAULT '',
+    loss_count INTEGER NOT NULL DEFAULT 0,
+    duration_seconds REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ground_unattended_raw_files (
+    file_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL,
+    run_id TEXT NOT NULL DEFAULT '',
+    train_id TEXT NOT NULL DEFAULT '',
+    device_id INTEGER,
+    device_uuid TEXT NOT NULL DEFAULT '',
+    mr_role TEXT NOT NULL DEFAULT '',
+    data_type TEXT NOT NULL,
+    relative_path TEXT NOT NULL,
+    start_time TEXT NOT NULL DEFAULT '',
+    end_time TEXT NOT NULL DEFAULT '',
+    record_count INTEGER NOT NULL DEFAULT 0,
+    size_bytes INTEGER NOT NULL DEFAULT 0,
+    sha256 TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'OPEN',
+    archive_status TEXT NOT NULL DEFAULT 'PENDING',
+    parse_status TEXT NOT NULL DEFAULT 'PENDING',
+    compressed_path TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (site_id, relative_path)
+);
+CREATE INDEX IF NOT EXISTS idx_ground_raw_files_query
+ON ground_unattended_raw_files(site_id, data_type, start_time DESC, status);
+
+CREATE TABLE IF NOT EXISTS ground_unattended_health_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id TEXT NOT NULL,
+    run_id TEXT NOT NULL DEFAULT '',
+    ts TEXT NOT NULL,
+    component TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    code TEXT NOT NULL,
+    message TEXT NOT NULL DEFAULT '',
+    details_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_ground_health_events
+ON ground_unattended_health_events(site_id, ts DESC, severity);
 """
+
+
+_PROFILE_MIGRATION_COLUMNS = {
+    "deep_collection_master_enabled": "INTEGER NOT NULL DEFAULT 1",
+    "fleet_ping_warmup_seconds": "INTEGER NOT NULL DEFAULT 10",
+    "udp_listen_host": "TEXT NOT NULL DEFAULT '0.0.0.0'",
+    "udp_listen_port": "INTEGER NOT NULL DEFAULT 514",
+    "udp_queue_capacity": "INTEGER NOT NULL DEFAULT 20000",
+    "raw_flush_interval_seconds": "REAL NOT NULL DEFAULT 1.0",
+    "raw_flush_record_count": "INTEGER NOT NULL DEFAULT 100",
+    "event_batch_size": "INTEGER NOT NULL DEFAULT 100",
+    "event_batch_interval_seconds": "REAL NOT NULL DEFAULT 1.0",
+    "boot_time_tolerance_seconds": "INTEGER NOT NULL DEFAULT 120",
+    "config_check_cooldown_seconds": "INTEGER NOT NULL DEFAULT 1800",
+    "syslog_server_ip": "TEXT NOT NULL DEFAULT ''",
+    "syslog_server_port": "INTEGER NOT NULL DEFAULT 514",
+    "allow_external_syslog_address": "INTEGER NOT NULL DEFAULT 0",
+    "ping_raw_retention_days": "INTEGER NOT NULL DEFAULT 30",
+    "syslog_raw_retention_days": "INTEGER NOT NULL DEFAULT 30",
+}
+
+_PING_SUMMARY_MIGRATION_COLUMNS = {
+    "raw_sample_count": "INTEGER NOT NULL DEFAULT 0",
+    "warmup_ignored_count": "INTEGER NOT NULL DEFAULT 0",
+}
+
+_TRAIN_RUN_MIGRATION_COLUMNS = {
+    "location_match_level": "TEXT NOT NULL DEFAULT 'UNMATCHED'",
+    "location_match_reason": "TEXT NOT NULL DEFAULT ''",
+    "resolved_ap_id": "TEXT NOT NULL DEFAULT ''",
+    "resolved_ap_name": "TEXT NOT NULL DEFAULT ''",
+    "raw_peer_ap_name": "TEXT NOT NULL DEFAULT ''",
+    "raw_peer_ap_mac": "TEXT NOT NULL DEFAULT ''",
+    "canonical_station_name": "TEXT NOT NULL DEFAULT ''",
+}
+
+_ENDPOINT_MIGRATION_COLUMNS = {
+    "last_syslog_source_ip": "TEXT NOT NULL DEFAULT ''",
+    "syslog_hostname": "TEXT NOT NULL DEFAULT ''",
+    "last_syslog_identity_verified_at": "TEXT NOT NULL DEFAULT ''",
+}
+
+_BOOT_SESSION_MIGRATION_COLUMNS = {
+    "device_clock_before": "TEXT NOT NULL DEFAULT ''",
+    "device_clock_after": "TEXT NOT NULL DEFAULT ''",
+    "boot_time_uncertainty_seconds": "INTEGER NOT NULL DEFAULT 60",
+    "reboot_reason": "TEXT NOT NULL DEFAULT ''",
+    "timezone_name": "TEXT NOT NULL DEFAULT ''",
+    "utc_offset_seconds": "INTEGER",
+    "time_quality": "TEXT NOT NULL DEFAULT 'LOCAL_FALLBACK'",
+    "clock_jump_seconds": "REAL",
+    "info_center_metrics_json": "TEXT NOT NULL DEFAULT '{}'",
+}
+
+_WMESH_EVENT_MIGRATION_COLUMNS = {
+    "clock_offset_ms": "REAL",
+}
 
 
 _RUN_STATES_ACTIVE = {
@@ -288,14 +600,43 @@ class GroundUnattendedRepository:
     def initialize(self) -> None:
         with self._connection() as conn:
             conn.executescript(SCHEMA)
+            self._ensure_columns(conn, "ground_unattended_profiles", _PROFILE_MIGRATION_COLUMNS)
+            self._ensure_columns(
+                conn,
+                "ground_unattended_ping_summaries",
+                _PING_SUMMARY_MIGRATION_COLUMNS,
+            )
+            self._ensure_columns(
+                conn, "ground_unattended_train_runs", _TRAIN_RUN_MIGRATION_COLUMNS
+            )
+            self._ensure_columns(conn, "ground_unattended_train_endpoints", _ENDPOINT_MIGRATION_COLUMNS)
+            self._ensure_columns(conn, "ground_unattended_boot_sessions", _BOOT_SESSION_MIGRATION_COLUMNS)
+            self._ensure_columns(conn, "ground_unattended_wmesh_events", _WMESH_EVENT_MIGRATION_COLUMNS)
             conn.execute(
                 """
                 INSERT INTO ground_unattended_schema(key, value, updated_at)
-                VALUES('schema_version', '1', ?)
+                VALUES('schema_version', '6', ?)
                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
                 """,
                 (_now(),),
             )
+            conn.execute(
+                """
+                UPDATE ground_unattended_profiles
+                SET timezone='Asia/Shanghai', updated_at=?
+                WHERE TRIM(timezone)='' OR LOWER(TRIM(timezone))='system'
+                """,
+                (_now(),),
+            )
+
+    @staticmethod
+    def _ensure_columns(
+        conn: sqlite3.Connection, table: str, columns: dict[str, str]
+    ) -> None:
+        existing = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
+        for name, declaration in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
 
     def get_profile(self) -> GroundUnattendedProfileDTO:
         with self._connection() as conn:
@@ -357,8 +698,9 @@ class GroundUnattendedRepository:
     def list_priority_train_ids(self) -> set[str]:
         with self._connection() as conn:
             rows = conn.execute(
-                "SELECT train_id FROM ground_unattended_priority_trains WHERE site_id=? AND priority=1",
-                (self.site_id,),
+                "SELECT train_id FROM ground_unattended_priority_trains WHERE site_id=? AND priority=1 "
+                "UNION SELECT train_id FROM ground_unattended_train_policies WHERE site_id=? AND priority=1",
+                (self.site_id, self.site_id),
             ).fetchall()
         return {str(row[0]) for row in rows}
 
@@ -379,6 +721,260 @@ class GroundUnattendedRepository:
                     "DELETE FROM ground_unattended_priority_trains WHERE site_id=? AND train_id=?",
                     (self.site_id, train_id),
                 )
+            conn.execute(
+                """
+                INSERT INTO ground_unattended_train_policies(
+                    site_id, train_id, priority, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?)
+                ON CONFLICT(site_id, train_id) DO UPDATE SET
+                    priority=excluded.priority, updated_at=excluded.updated_at
+                """,
+                (self.site_id, train_id, int(priority), now, now),
+            )
+
+    def sync_inventory(
+        self,
+        *,
+        trains: list[dict[str, Any]],
+        endpoints: list[dict[str, Any]],
+    ) -> dict[str, int]:
+        """增量保存设备绑定快照；设备凭据和设备主体始终不进入本库。"""
+
+        now = _now()
+        active_train_ids = {str(row["train_id"]) for row in trains}
+        active_device_ids = {str(row["device_uuid"]) for row in endpoints}
+        with self._transaction() as conn:
+            previous_endpoints = {
+                str(row["device_uuid"]): dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM ground_unattended_train_endpoints WHERE site_id=?",
+                    (self.site_id,),
+                ).fetchall()
+            }
+            previous_trains = {
+                str(row["train_id"]): dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM ground_unattended_train_inventory WHERE site_id=?",
+                    (self.site_id,),
+                ).fetchall()
+            }
+            conn.execute(
+                "UPDATE ground_unattended_train_endpoints SET binding_status='REMOVED', "
+                "removed_at=?, updated_at=? WHERE site_id=? AND binding_status='ACTIVE'",
+                (now, now, self.site_id),
+            )
+            for train in trains:
+                train_id = str(train["train_id"])
+                conn.execute(
+                    """
+                    INSERT INTO ground_unattended_train_inventory(
+                        site_id, train_id, train_no, train_name, inventory_status,
+                        first_seen_at, last_seen_at, removed_at, updated_at
+                    ) VALUES(?, ?, ?, ?, 'ACTIVE', ?, ?, '', ?)
+                    ON CONFLICT(site_id, train_id) DO UPDATE SET
+                        train_no=excluded.train_no,
+                        train_name=excluded.train_name,
+                        inventory_status='ACTIVE',
+                        last_seen_at=excluded.last_seen_at,
+                        removed_at='',
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        self.site_id,
+                        train_id,
+                        str(train.get("train_no") or ""),
+                        str(train.get("train_name") or train_id),
+                        now,
+                        now,
+                        now,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO ground_unattended_train_policies(
+                        site_id, train_id, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?)
+                    ON CONFLICT(site_id, train_id) DO NOTHING
+                    """,
+                    (self.site_id, train_id, now, now),
+                )
+            for endpoint in endpoints:
+                conn.execute(
+                    """
+                    INSERT INTO ground_unattended_train_endpoints(
+                        site_id, device_uuid, device_id, train_id, mr_role,
+                        device_name, management_ip, protocol, port, source_hostname,
+                        binding_status, first_seen_at, last_seen_at, removed_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, '', ?)
+                    ON CONFLICT(site_id, device_uuid) DO UPDATE SET
+                        device_id=excluded.device_id,
+                        train_id=excluded.train_id,
+                        mr_role=excluded.mr_role,
+                        device_name=excluded.device_name,
+                        management_ip=excluded.management_ip,
+                        protocol=excluded.protocol,
+                        port=excluded.port,
+                        source_hostname=excluded.source_hostname,
+                        binding_status='ACTIVE',
+                        last_seen_at=excluded.last_seen_at,
+                        removed_at='',
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        self.site_id,
+                        str(endpoint["device_uuid"]),
+                        endpoint.get("device_id"),
+                        str(endpoint["train_id"]),
+                        str(endpoint["mr_role"]),
+                        str(endpoint.get("device_name") or ""),
+                        str(endpoint.get("management_ip") or ""),
+                        str(endpoint.get("protocol") or ""),
+                        endpoint.get("port"),
+                        str(endpoint.get("source_hostname") or ""),
+                        now,
+                        now,
+                        now,
+                    ),
+                )
+            if active_train_ids:
+                placeholders = ",".join("?" for _ in active_train_ids)
+                conn.execute(
+                    f"UPDATE ground_unattended_train_inventory SET inventory_status='REMOVED', "
+                    f"removed_at=?, updated_at=? WHERE site_id=? AND train_id NOT IN ({placeholders}) "
+                    "AND inventory_status='ACTIVE'",
+                    (now, now, self.site_id, *sorted(active_train_ids)),
+                )
+            else:
+                conn.execute(
+                    "UPDATE ground_unattended_train_inventory SET inventory_status='REMOVED', "
+                    "removed_at=?, updated_at=? WHERE site_id=? AND inventory_status='ACTIVE'",
+                    (now, now, self.site_id),
+                )
+            added = sum(key not in previous_endpoints for key in active_device_ids)
+            updated = sum(
+                key in previous_endpoints
+                and any(
+                    str(previous_endpoints[key].get(field) or "")
+                    != str(next(row for row in endpoints if str(row["device_uuid"]) == key).get(field) or "")
+                    for field in ("train_id", "mr_role", "management_ip", "device_name")
+                )
+                for key in active_device_ids
+            )
+            removed = sum(
+                key not in active_device_ids and row.get("binding_status") == "ACTIVE"
+                for key, row in previous_endpoints.items()
+            )
+            removed_trains = sum(
+                key not in active_train_ids and row.get("inventory_status") == "ACTIVE"
+                for key, row in previous_trains.items()
+            )
+        return {
+            "added_endpoint_count": added,
+            "updated_endpoint_count": updated,
+            "removed_endpoint_count": removed,
+            "removed_train_count": removed_trains,
+        }
+
+    def list_inventory(self, *, include_removed: bool = True) -> list[dict[str, Any]]:
+        where = "" if include_removed else "AND i.inventory_status='ACTIVE'"
+        with self._connection() as conn:
+            trains = conn.execute(
+                f"""
+                SELECT i.*, p.enabled, p.priority, p.scheduling_priority,
+                       p.deep_collection_enabled, p.monitor_only, p.remark
+                FROM ground_unattended_train_inventory i
+                LEFT JOIN ground_unattended_train_policies p
+                  ON p.site_id=i.site_id AND p.train_id=i.train_id
+                WHERE i.site_id=? {where}
+                ORDER BY COALESCE(p.priority, 0) DESC,
+                         COALESCE(p.scheduling_priority, 0) DESC,
+                         i.train_no, i.train_id
+                """,
+                (self.site_id,),
+            ).fetchall()
+            endpoints = conn.execute(
+                "SELECT * FROM ground_unattended_train_endpoints WHERE site_id=? "
+                "ORDER BY train_id, mr_role",
+                (self.site_id,),
+            ).fetchall()
+        by_train: dict[str, list[dict[str, Any]]] = {}
+        for row in endpoints:
+            by_train.setdefault(str(row["train_id"]), []).append(_decode_row(row))
+        result = []
+        for row in trains:
+            item = _decode_row(row)
+            item["endpoints"] = by_train.get(str(item["train_id"]), [])
+            result.append(item)
+        return result
+
+    def get_inventory_endpoint(self, device_uuid: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM ground_unattended_train_endpoints "
+                "WHERE site_id=? AND device_uuid=?",
+                (self.site_id, device_uuid),
+            ).fetchone()
+        return _decode_row(row) if row else None
+
+    def save_train_policy(self, train_id: str, values: dict[str, Any]) -> dict[str, Any]:
+        allowed = {
+            "enabled",
+            "priority",
+            "scheduling_priority",
+            "deep_collection_enabled",
+            "monitor_only",
+            "remark",
+        }
+        payload = {key: values[key] for key in allowed if key in values}
+        now = _now()
+        defaults = {
+            "enabled": True,
+            "priority": False,
+            "scheduling_priority": 0,
+            "deep_collection_enabled": True,
+            "monitor_only": False,
+            "remark": "",
+        }
+        current = self.get_train_policy(train_id) or defaults
+        current.update(payload)
+        with self._transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO ground_unattended_train_policies(
+                    site_id, train_id, enabled, priority, scheduling_priority,
+                    deep_collection_enabled, monitor_only, remark, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(site_id, train_id) DO UPDATE SET
+                    enabled=excluded.enabled,
+                    priority=excluded.priority,
+                    scheduling_priority=excluded.scheduling_priority,
+                    deep_collection_enabled=excluded.deep_collection_enabled,
+                    monitor_only=excluded.monitor_only,
+                    remark=excluded.remark,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    self.site_id,
+                    train_id,
+                    int(bool(current["enabled"])),
+                    int(bool(current["priority"])),
+                    int(current["scheduling_priority"]),
+                    int(bool(current["deep_collection_enabled"])),
+                    int(bool(current["monitor_only"])),
+                    str(current["remark"]),
+                    now,
+                    now,
+                ),
+            )
+        return self.get_train_policy(train_id) or {}
+
+    def get_train_policy(self, train_id: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM ground_unattended_train_policies WHERE site_id=? AND train_id=?",
+                (self.site_id, train_id),
+            ).fetchone()
+        return _decode_row(row) if row else None
 
     def create_or_get_run(
         self,
@@ -499,6 +1095,7 @@ class GroundUnattendedRepository:
             "train_id": values["train_id"],
             "train_no": values.get("train_no", ""),
             "train_name": values.get("train_name", ""),
+            "coverage_status": values.get("coverage_status", "NOT_SEEN"),
             "priority": int(bool(priority)),
             "ping_eligible": int(bool(values.get("ping_eligible"))),
             "deep_collection_eligible": int(
@@ -506,6 +1103,15 @@ class GroundUnattendedRepository:
             ),
             "eligibility_status": values.get("eligibility_status", "AC_UNKNOWN"),
             "exclusion_reason": values.get("exclusion_reason", ""),
+            "location_match_level": values.get(
+                "location_match_level", "UNMATCHED"
+            ),
+            "location_match_reason": values.get("location_match_reason", ""),
+            "resolved_ap_id": values.get("resolved_ap_id", ""),
+            "resolved_ap_name": values.get("resolved_ap_name", ""),
+            "raw_peer_ap_name": values.get("raw_peer_ap_name", ""),
+            "raw_peer_ap_mac": values.get("raw_peer_ap_mac", ""),
+            "canonical_station_name": values.get("canonical_station_name", ""),
             "current_ap_identity": ap_identity,
             "current_ap_name": values.get("current_ap_name", ""),
             "current_ap_mac": values.get("current_ap_mac", ""),
@@ -684,6 +1290,52 @@ class GroundUnattendedRepository:
             ).fetchall()
         return [_decode_row(row) for row in rows]
 
+    def ensure_ping_target_activation(
+        self, run_id: str, target_ip: str, activated_at: str
+    ) -> str:
+        now = _now()
+        with self._transaction() as conn:
+            row = conn.execute(
+                """
+                SELECT activated_at, active
+                FROM ground_unattended_ping_target_activations
+                WHERE site_id=? AND run_id=? AND target_ip=?
+                """,
+                (self.site_id, run_id, target_ip),
+            ).fetchone()
+            if row is not None and bool(row["active"]):
+                return str(row["activated_at"])
+            conn.execute(
+                """
+                INSERT INTO ground_unattended_ping_target_activations(
+                    site_id, run_id, target_ip, activated_at, active, removed_at, updated_at
+                ) VALUES(?, ?, ?, ?, 1, '', ?)
+                ON CONFLICT(site_id, run_id, target_ip) DO UPDATE SET
+                    activated_at=excluded.activated_at,
+                    active=1,
+                    removed_at='',
+                    updated_at=excluded.updated_at
+                """,
+                (self.site_id, run_id, target_ip, activated_at, now),
+            )
+        return activated_at
+
+    def deactivate_ping_targets(
+        self, run_id: str, target_ips: Iterable[str], *, removed_at: str
+    ) -> int:
+        targets = tuple({str(value) for value in target_ips if str(value)})
+        if not targets:
+            return 0
+        placeholders = ", ".join("?" for _ in targets)
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                "UPDATE ground_unattended_ping_target_activations "
+                "SET active=0, removed_at=?, updated_at=? "
+                f"WHERE site_id=? AND run_id=? AND target_ip IN ({placeholders}) AND active=1",
+                (removed_at, _now(), self.site_id, run_id, *targets),
+            )
+        return int(cursor.rowcount)
+
     def upsert_ping_summary(self, values: dict[str, Any]) -> None:
         fields = tuple(values)
         updates = ", ".join(
@@ -710,13 +1362,18 @@ class GroundUnattendedRepository:
             )
 
     def list_ping_summaries(
-        self, run_id: str, *, bucket_kind: str = "daily"
+        self, run_id: str, *, bucket_kind: str | None = "daily"
     ) -> list[dict[str, Any]]:
+        where = "WHERE site_id=? AND run_id=?"
+        params: list[Any] = [self.site_id, run_id]
+        if bucket_kind:
+            where += " AND bucket_kind=?"
+            params.append(bucket_kind)
         with self._connection() as conn:
             rows = conn.execute(
                 "SELECT * FROM ground_unattended_ping_summaries "
-                "WHERE site_id=? AND run_id=? AND bucket_kind=? ORDER BY train_no, mr_position_code",
-                (self.site_id, run_id, bucket_kind),
+                f"{where} ORDER BY bucket_start, train_no, mr_position_code",
+                params,
             ).fetchall()
         return [_decode_row(row) for row in rows]
 
@@ -793,6 +1450,7 @@ class GroundUnattendedRepository:
         train_id: str = "",
         event_type: str = "",
         limit: int = 500,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         where = ["site_id=?", "run_id=?"]
         params: list[Any] = [self.site_id, run_id]
@@ -802,14 +1460,34 @@ class GroundUnattendedRepository:
         if event_type:
             where.append("event_type=?")
             params.append(event_type)
-        params.append(max(1, min(int(limit), 5000)))
+        params.extend(
+            [max(1, min(int(limit), 500)), max(0, int(offset))]
+        )
         with self._connection() as conn:
             rows = conn.execute(
                 f"SELECT * FROM ground_unattended_events WHERE {' AND '.join(where)} "
-                "ORDER BY ts DESC, id DESC LIMIT ?",
+                "ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?",
                 params,
             ).fetchall()
         return [_decode_row(row) for row in rows]
+
+    def count_events(
+        self, run_id: str, *, train_id: str = "", event_type: str = ""
+    ) -> int:
+        where = ["site_id=?", "run_id=?"]
+        params: list[Any] = [self.site_id, run_id]
+        if train_id:
+            where.append("train_id=?")
+            params.append(train_id)
+        if event_type:
+            where.append("event_type=?")
+            params.append(event_type)
+        with self._connection() as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM ground_unattended_events WHERE {' AND '.join(where)}",
+                params,
+            ).fetchone()
+        return int(row[0] if row else 0)
 
     def upsert_archive(self, values: dict[str, Any]) -> None:
         fields = tuple(values)
@@ -852,12 +1530,563 @@ class GroundUnattendedRepository:
             ).fetchone()
         return _decode_row(row) if row else None
 
+    def get_archive_by_run(self, run_id: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT a.*, r.actual_started_at, r.actual_ended_at
+                FROM ground_unattended_archives a
+                LEFT JOIN ground_unattended_runs r ON r.run_id=a.run_id AND r.site_id=a.site_id
+                WHERE a.site_id=? AND a.run_id=?
+                """,
+                (self.site_id, run_id),
+            ).fetchone()
+        return _decode_row(row) if row else None
+
+    def save_operation(self, values: dict[str, Any]) -> dict[str, Any]:
+        row = dict(values)
+        row.setdefault("site_id", self.site_id)
+        row.setdefault("started_at", _now())
+        row.setdefault("updated_at", _now())
+        if "result_summary_json" not in row:
+            row["result_summary_json"] = json.dumps(
+                row.pop("result_summary", {}), ensure_ascii=False
+            )
+        fields = tuple(row)
+        updates = ", ".join(
+            f"{field}=excluded.{field}"
+            for field in fields
+            if field not in {"operation_id", "site_id", "started_at"}
+        )
+        with self._transaction() as conn:
+            conn.execute(
+                f"INSERT INTO ground_unattended_operations ({', '.join(fields)}) "
+                f"VALUES ({', '.join('?' for _ in fields)}) "
+                f"ON CONFLICT(operation_id) DO UPDATE SET {updates}",
+                tuple(row[field] for field in fields),
+            )
+        saved = self.get_operation(str(row["operation_id"]))
+        if saved is None:
+            raise RuntimeError("ground unattended operation was not saved")
+        return saved
+
+    def get_operation(self, operation_id: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM ground_unattended_operations "
+                "WHERE site_id=? AND operation_id=?",
+                (self.site_id, operation_id),
+            ).fetchone()
+        return _decode_row(row) if row else None
+
+    def latest_operation(
+        self, *, run_id: str = "", active_only: bool = False
+    ) -> dict[str, Any] | None:
+        where = ["site_id=?"]
+        params: list[Any] = [self.site_id]
+        if run_id:
+            where.append("run_id=?")
+            params.append(run_id)
+        if active_only:
+            where.append("operation_state IN ('PENDING','RUNNING')")
+        with self._connection() as conn:
+            row = conn.execute(
+                f"SELECT * FROM ground_unattended_operations WHERE {' AND '.join(where)} "
+                "ORDER BY updated_at DESC LIMIT 1",
+                params,
+            ).fetchone()
+        return _decode_row(row) if row else None
+
+    def update_operation(self, operation_id: str, **values: Any) -> dict[str, Any]:
+        if not values:
+            current = self.get_operation(operation_id)
+            if current is None:
+                raise ValueError("ground unattended operation not found")
+            return current
+        row = dict(values)
+        if "result_summary" in row:
+            row["result_summary_json"] = json.dumps(
+                row.pop("result_summary"), ensure_ascii=False
+            )
+        row["updated_at"] = _now()
+        assignments = ", ".join(f"{field}=?" for field in row)
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                f"UPDATE ground_unattended_operations SET {assignments} "
+                "WHERE site_id=? AND operation_id=?",
+                (*row.values(), self.site_id, operation_id),
+            )
+            if not cursor.rowcount:
+                raise ValueError("ground unattended operation not found")
+        current = self.get_operation(operation_id)
+        if current is None:
+            raise RuntimeError("ground unattended operation disappeared")
+        return current
+
     def delete_archive_record(self, archive_id: str) -> None:
         with self._transaction() as conn:
             conn.execute(
                 "DELETE FROM ground_unattended_archives WHERE site_id=? AND archive_id=?",
                 (self.site_id, archive_id),
             )
+
+    def upsert_raw_file(self, values: dict[str, Any]) -> None:
+        allowed = {
+            "file_id",
+            "site_id",
+            "run_id",
+            "train_id",
+            "device_id",
+            "device_uuid",
+            "mr_role",
+            "data_type",
+            "relative_path",
+            "start_time",
+            "end_time",
+            "record_count",
+            "size_bytes",
+            "sha256",
+            "status",
+            "archive_status",
+            "parse_status",
+            "compressed_path",
+            "created_at",
+            "updated_at",
+        }
+        row = {key: value for key, value in values.items() if key in allowed}
+        row.setdefault("site_id", self.site_id)
+        now = _now()
+        row.setdefault("created_at", now)
+        row["updated_at"] = now
+        fields = tuple(row)
+        updates = ", ".join(
+            f"{field}=excluded.{field}"
+            for field in fields
+            if field not in {"file_id", "site_id", "created_at"}
+        )
+        with self._transaction() as conn:
+            conn.execute(
+                f"INSERT INTO ground_unattended_raw_files ({', '.join(fields)}) "
+                f"VALUES ({', '.join('?' for _ in fields)}) "
+                f"ON CONFLICT(file_id) DO UPDATE SET {updates}",
+                tuple(row[field] for field in fields),
+            )
+
+    def list_raw_files(
+        self,
+        *,
+        data_type: str = "",
+        status: str = "",
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        where = ["site_id=?"]
+        params: list[Any] = [self.site_id]
+        if data_type:
+            where.append("data_type=?")
+            params.append(data_type)
+        if status:
+            where.append("status=?")
+            params.append(status)
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM ground_unattended_raw_files WHERE {' AND '.join(where)} "
+                "ORDER BY start_time DESC, created_at DESC LIMIT ? OFFSET ?",
+                (*params, max(1, min(int(limit), 1000)), max(0, int(offset))),
+            ).fetchall()
+        return [_decode_row(row) for row in rows]
+
+    def list_raw_files_for_query(
+        self,
+        *,
+        data_type: str,
+        start_time: str,
+        end_time: str,
+        run_id: str = "",
+    ) -> list[dict[str, Any]]:
+        where = ["site_id=?", "data_type=?"]
+        params: list[Any] = [self.site_id, data_type]
+        if run_id:
+            where.append("run_id=?")
+            params.append(run_id)
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM ground_unattended_raw_files WHERE {' AND '.join(where)} "
+                "ORDER BY start_time, created_at",
+                params,
+            ).fetchall()
+        result = []
+        for row in rows:
+            decoded = _decode_row(row)
+            if _raw_file_overlaps(
+                decoded, start_time=start_time, end_time=end_time
+            ):
+                result.append(decoded)
+        return result
+
+    def list_raw_files_for_run(self, run_id: str) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM ground_unattended_raw_files
+                WHERE site_id=? AND run_id=?
+                ORDER BY start_time, created_at
+                """,
+                (self.site_id, run_id),
+            ).fetchall()
+        return [_decode_row(row) for row in rows]
+
+    def count_raw_files(self, *, data_type: str = "", status: str = "") -> int:
+        where = ["site_id=?"]
+        params: list[Any] = [self.site_id]
+        if data_type:
+            where.append("data_type=?")
+            params.append(data_type)
+        if status:
+            where.append("status=?")
+            params.append(status)
+        with self._connection() as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM ground_unattended_raw_files WHERE {' AND '.join(where)}",
+                params,
+            ).fetchone()
+        return int(row[0] if row else 0)
+
+    def list_open_raw_files(self, run_id: str) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM ground_unattended_raw_files
+                WHERE site_id=? AND run_id=? AND status='OPEN'
+                ORDER BY start_time, created_at
+                """,
+                (self.site_id, run_id),
+            ).fetchall()
+        return [_decode_row(row) for row in rows]
+
+    def count_unarchived_raw_files(self, run_id: str) -> int:
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) FROM ground_unattended_raw_files
+                WHERE site_id=? AND run_id=? AND archive_status!='ARCHIVED'
+                """,
+                (self.site_id, run_id),
+            ).fetchone()
+        return int(row[0] if row else 0)
+
+    def mark_raw_files_archived(self, run_id: str, compressed_path: str) -> int:
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                "UPDATE ground_unattended_raw_files SET archive_status='ARCHIVED', "
+                "compressed_path=?, updated_at=? WHERE site_id=? AND run_id=? "
+                "AND status IN ('CLOSED','RECOVERED')",
+                (compressed_path, _now(), self.site_id, run_id),
+            )
+        return int(cursor.rowcount)
+
+    def insert_wmesh_events(self, rows: Iterable[dict[str, Any]]) -> int:
+        values = list(rows)
+        if not values:
+            return 0
+        fields = (
+            "site_id",
+            "run_id",
+            "device_uuid",
+            "device_id",
+            "train_id",
+            "mr_role",
+            "event_type",
+            "device_time",
+            "receive_time",
+            "source_ip",
+            "hostname",
+            "peer_name",
+            "peer_mac",
+            "previous_peer_name",
+            "previous_peer_mac",
+            "station",
+            "section",
+            "data_quality",
+            "receive_delay_ms",
+            "clock_offset_ms",
+            "raw_file_id",
+            "raw_line_number",
+            "details_json",
+            "created_at",
+        )
+        now = _now()
+        with self._transaction() as conn:
+            conn.executemany(
+                f"INSERT INTO ground_unattended_wmesh_events ({', '.join(fields)}) "
+                f"VALUES ({', '.join('?' for _ in fields)})",
+                [
+                    tuple(
+                        json.dumps(row.get("details") or {}, ensure_ascii=False)
+                        if field == "details_json"
+                        else row.get(field, self.site_id if field == "site_id" else now if field == "created_at" else "")
+                        for field in fields
+                    )
+                    for row in values
+                ],
+            )
+        return len(values)
+
+    def list_wmesh_events(
+        self, *, run_id: str = "", train_id: str = "", limit: int = 200, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        where = ["site_id=?"]
+        params: list[Any] = [self.site_id]
+        if run_id:
+            where.append("run_id=?")
+            params.append(run_id)
+        if train_id:
+            where.append("train_id=?")
+            params.append(train_id)
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM ground_unattended_wmesh_events WHERE {' AND '.join(where)} "
+                "ORDER BY receive_time DESC LIMIT ? OFFSET ?",
+                (*params, max(1, min(int(limit), 500)), max(0, int(offset))),
+            ).fetchall()
+        return [_decode_row(row) for row in rows]
+
+    def latest_wmesh_event(self, device_uuid: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM ground_unattended_wmesh_events "
+                "WHERE site_id=? AND device_uuid=? ORDER BY receive_time DESC LIMIT 1",
+                (self.site_id, device_uuid),
+            ).fetchone()
+        return _decode_row(row) if row else None
+
+    def latest_boot_session(self, device_uuid: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM ground_unattended_boot_sessions WHERE site_id=? AND device_uuid=? "
+                "ORDER BY last_checked_at DESC LIMIT 1",
+                (self.site_id, device_uuid),
+            ).fetchone()
+        return _decode_row(row) if row else None
+
+    def upsert_boot_session(self, values: dict[str, Any]) -> None:
+        fields = (
+            "boot_session_id",
+            "site_id",
+            "device_uuid",
+            "device_id",
+            "train_id",
+            "mr_role",
+            "first_detected_at",
+            "last_checked_at",
+            "estimated_boot_time",
+            "first_uptime_seconds",
+            "last_uptime_seconds",
+            "device_clock_before",
+            "device_clock_after",
+            "boot_time_uncertainty_seconds",
+            "reboot_reason",
+            "timezone_name",
+            "utc_offset_seconds",
+            "time_quality",
+            "clock_jump_seconds",
+            "version_evidence_path",
+            "config_status",
+            "config_checked_at",
+            "config_applied_at",
+            "first_syslog_received_at",
+            "last_syslog_received_at",
+            "config_fingerprint",
+            "info_center_metrics_json",
+            "created_at",
+            "updated_at",
+        )
+        now = _now()
+        row = dict(values)
+        row.setdefault("site_id", self.site_id)
+        row.setdefault("created_at", now)
+        row["updated_at"] = now
+        if "info_center_metrics" in row and "info_center_metrics_json" not in row:
+            row["info_center_metrics_json"] = json.dumps(
+                row.pop("info_center_metrics") or {}, ensure_ascii=False
+            )
+        elif isinstance(row.get("info_center_metrics_json"), (dict, list)):
+            row["info_center_metrics_json"] = json.dumps(
+                row["info_center_metrics_json"], ensure_ascii=False
+            )
+        with self._transaction() as conn:
+            conn.execute(
+                f"INSERT INTO ground_unattended_boot_sessions ({', '.join(fields)}) "
+                f"VALUES ({', '.join('?' for _ in fields)}) "
+                "ON CONFLICT(boot_session_id) DO UPDATE SET "
+                + ", ".join(
+                    f"{field}=excluded.{field}"
+                    for field in fields
+                    if field not in {"boot_session_id", "site_id", "created_at"}
+                ),
+                tuple(row.get(field, "") for field in fields),
+            )
+
+    def save_syslog_config_audit(self, values: dict[str, Any]) -> None:
+        fields = (
+            "audit_id",
+            "site_id",
+            "boot_session_id",
+            "device_uuid",
+            "train_id",
+            "mr_role",
+            "checked_at",
+            "target_ip",
+            "target_port",
+            "status",
+            "missing_commands_json",
+            "applied_commands_json",
+            "evidence_path",
+            "evidence_sha256",
+            "error_code",
+            "error_message",
+            "created_at",
+        )
+        row = dict(values)
+        now = _now()
+        row.setdefault("site_id", self.site_id)
+        row.setdefault("created_at", now)
+        for field in ("missing_commands_json", "applied_commands_json"):
+            if field not in row:
+                row[field] = json.dumps(
+                    row.get(field.removesuffix("_json"), []), ensure_ascii=False
+                )
+        with self._transaction() as conn:
+            conn.execute(
+                f"INSERT INTO ground_unattended_syslog_config_audits ({', '.join(fields)}) "
+                f"VALUES ({', '.join('?' for _ in fields)})",
+                tuple(row.get(field, "") for field in fields),
+            )
+
+    def latest_syslog_config_audit(self, device_uuid: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM ground_unattended_syslog_config_audits "
+                "WHERE site_id=? AND device_uuid=? ORDER BY checked_at DESC LIMIT 1",
+                (self.site_id, device_uuid),
+            ).fetchone()
+        return _decode_row(row) if row else None
+
+    def confirm_syslog_identity(
+        self,
+        *,
+        device_uuid: str,
+        source_ip: str,
+        hostname: str,
+        verified_at: str,
+    ) -> None:
+        with self._transaction() as conn:
+            conn.execute(
+                "UPDATE ground_unattended_train_endpoints SET last_syslog_source_ip=?, "
+                "syslog_hostname=?, last_syslog_identity_verified_at=?, updated_at=? "
+                "WHERE site_id=? AND device_uuid=?",
+                (source_ip, hostname, verified_at, _now(), self.site_id, device_uuid),
+            )
+
+    def touch_boot_syslog(
+        self,
+        device_uuid: str,
+        received_at: str,
+        *,
+        source_ip: str = "",
+        hostname: str = "",
+        identity_verified: bool = False,
+    ) -> None:
+        if not identity_verified:
+            return
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT boot_session_id, first_syslog_received_at, config_status FROM ground_unattended_boot_sessions "
+                "WHERE site_id=? AND device_uuid=? ORDER BY last_checked_at DESC LIMIT 1",
+                (self.site_id, device_uuid),
+            ).fetchone()
+            if row is None:
+                return
+            if str(row["config_status"] or "") not in {"WAITING_FIRST_LOG", "LOG_ACTIVE"}:
+                return
+            first = str(row["first_syslog_received_at"] or received_at)
+            conn.execute(
+                "UPDATE ground_unattended_boot_sessions SET first_syslog_received_at=?, "
+                "last_syslog_received_at=?, config_status='LOG_ACTIVE', updated_at=? "
+                "WHERE boot_session_id=?",
+                (first, received_at, _now(), str(row["boot_session_id"])),
+            )
+        self.confirm_syslog_identity(
+            device_uuid=device_uuid,
+            source_ip=source_ip,
+            hostname=hostname,
+            verified_at=received_at,
+        )
+
+    def add_health_event(
+        self,
+        *,
+        run_id: str = "",
+        component: str,
+        severity: str,
+        code: str,
+        message: str = "",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        with self._transaction() as conn:
+            conn.execute(
+                "INSERT INTO ground_unattended_health_events(site_id, run_id, ts, component, "
+                "severity, code, message, details_json) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    self.site_id,
+                    run_id,
+                    _now(),
+                    component,
+                    severity,
+                    code,
+                    message,
+                    json.dumps(details or {}, ensure_ascii=False),
+                ),
+            )
+
+    def add_events_batch(self, rows: Iterable[dict[str, Any]]) -> int:
+        values = list(rows)
+        if not values:
+            return 0
+        with self._transaction() as conn:
+            conn.executemany(
+                """
+                INSERT INTO ground_unattended_events(
+                    site_id, run_id, ts, event_type, severity, train_id, mr_id,
+                    title, message, details_json
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        self.site_id,
+                        str(row.get("run_id") or ""),
+                        str(row.get("ts") or _now()),
+                        str(row.get("event_type") or "event"),
+                        str(row.get("severity") or "info"),
+                        str(row.get("train_id") or ""),
+                        str(row.get("mr_id") or ""),
+                        str(row.get("title") or ""),
+                        str(row.get("message") or ""),
+                        json.dumps(row.get("details") or {}, ensure_ascii=False),
+                    )
+                    for row in values
+                ],
+            )
+        return len(values)
+
+    def latest_health_event(self) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM ground_unattended_health_events WHERE site_id=? "
+                "ORDER BY ts DESC LIMIT 1",
+                (self.site_id,),
+            ).fetchone()
+        return _decode_row(row) if row else None
 
     def purge_run_details(self, run_id: str) -> None:
         with self._transaction() as conn:
@@ -913,12 +2142,14 @@ class GroundUnattendedRepository:
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.db_path, timeout=5.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute("PRAGMA foreign_keys=ON")
+        conn = Database(self.db_path).connect()
+        configure_sqlite_connection(
+            conn,
+            busy_timeout_ms=10_000,
+            foreign_keys=True,
+            temp_store_memory=True,
+        )
+        initialize_sqlite_wal(conn)
         try:
             yield conn
             conn.commit()
@@ -938,6 +2169,30 @@ class GroundUnattendedRepository:
 
 def _now() -> str:
     return datetime.now().astimezone().isoformat(timespec="milliseconds")
+
+
+def _raw_file_overlaps(
+    row: dict[str, Any], *, start_time: str, end_time: str
+) -> bool:
+    query_start = _parse_datetime(start_time)
+    query_end = _parse_datetime(end_time)
+    file_start = _parse_datetime(str(row.get("start_time") or ""))
+    file_end = _parse_datetime(str(row.get("end_time") or ""))
+    if query_end is not None and file_start is not None and file_start > query_end:
+        return False
+    if query_start is not None and file_end is not None and file_end < query_start:
+        return False
+    return True
+
+
+def _parse_datetime(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.astimezone()
 
 
 def _decode_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
@@ -960,6 +2215,9 @@ def _decode_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         "finalization_complete",
         "package_verified",
         "active_cleanup_pending",
+        "deep_collection_enabled",
+        "deep_collection_master_enabled",
+        "monitor_only",
     ):
         if key in result:
             result[key] = bool(result[key])

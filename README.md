@@ -30,7 +30,7 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 
 | 一级模块 | Feature key | 主要能力 |
 | --- | --- | --- |
-| 设备管理 | `module.devices` | 设备、分组、连接测试、批量采集、SecureCRT/OmniPeek 导出 |
+| 设备管理 | `module.devices` | 设备、分组、连接测试、批量采集、CSV 与 SecureCRT 导出 |
 | AC 管理 | `module.ac` | FIT-AP 资源、扩展、光衰、受控固化/远程登录动作和 OmniPeek 名称表 |
 | 轨道交通 | `module.rail_transit` | 基础资料、列车在线、独立地面无人值守、车载 MR、Online MR、MR/Mesh 离线分析、轨旁 AP、全列车车内通信检测与点表 |
 | 配置采集 | `module.config_collection` | 配置快照、勾选/左右对比、批量采集和差异导出 |

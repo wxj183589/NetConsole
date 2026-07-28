@@ -1,0 +1,5 @@
+<189>Jul 26 05:25:35 2026 TEST-MR-CT %%10IFNET/3/PHY_UPDOWN: Physical state on the interface WLAN-Radio1/0/1 changed to up.
+<189>Jul 26 05:25:35 2026 TEST-MR-CT %%10WMESH/5/MESH_LINKUP: Mesh Link on the interface WLAN-MeshLink841 is up: peer MAC = 0200-0000-0001, peer radio mode = 3, RSSI = 25
+<189>Jul 26 05:25:35 2026 TEST-MR-CT %%10WMESH/5/MESH_ACTIVELINK_SWITCH: Switch an active link from NA_0000-0000-0000(0) to 0200-0000-00a1_0200-0000-0001(15): peer quantity = 13, link quantity = 1, switch reason = 1.
+<189>Jul 26 05:25:35 2026 TEST-MR-CT %%10WMESH/5/MESH_LINKDOWN: Mesh link on interface WLAN-MeshLink841 is down: peer MAC = 0200-0000-0001, RSSI = 15, reason: Weak RSSI (local).
+<189>Jul 26 05:25:36 2026 TEST-MR-CT %%10WMESH/5/MESH_ACTIVELINK_SWITCH: Switch an active link from 0200-0000-00a1_0200-0000-0001(15) to 0200-0000-00b1_0200-0000-0002(56): peer quantity = 13, link quantity = 3, switch reason = 4.

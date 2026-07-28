@@ -15,7 +15,11 @@ from netconsole.services.rail_transit.base_data_query_service import (
     RailTransitBaseDataQueryService,
 )
 from netconsole.services.rail_transit.station_source_utils import (
+    canonical_station_name,
     normalize_track_facilities,
+    parse_station_source_value,
+    parse_station_source_values,
+    station_identity_key,
 )
 from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
 
@@ -56,6 +60,73 @@ def test_custom_main_path_station_uses_the_same_structure_defaults() -> None:
         "underground",
         "island",
     )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        "01-小洋江站",
+        "01_小洋江站",
+        "01.小洋江站",
+        "01、小洋江站",
+        "01:小洋江站",
+        "01 小洋江站",
+        "1.小洋江站",
+    ),
+)
+def test_explicit_station_order_delimiters_share_one_canonical_identity(
+    raw: str,
+) -> None:
+    parsed = parse_station_source_value(raw)
+
+    assert parsed.canonical_name == "小洋江站"
+    assert parsed.source_order == 1
+    assert parsed.order_parse_method == "explicit_separator"
+    assert parsed.source_station_key == station_identity_key(
+        "小洋江站", "station", "MAIN"
+    )
+
+
+def test_no_delimiter_station_order_is_inferred_only_from_a_coherent_batch() -> None:
+    values = [
+        "01小洋江站",
+        "02云龙火车站",
+        "03甲站",
+        "04乙站",
+        "05丙站",
+        "06丁站",
+        "07戊站",
+        "08己站",
+        "09庚站",
+        "10辛站",
+        "11云龙车辆段",
+    ]
+
+    parsed = parse_station_source_values(values)
+
+    assert len(parsed) == 11
+    assert parsed["01小洋江站"].canonical_name == "小洋江站"
+    assert parsed["01小洋江站"].source_order == 1
+    assert parsed["01小洋江站"].parse_confidence == "batch_inferred"
+    depot = parsed["11云龙车辆段"]
+    assert depot.canonical_name == "云龙车辆段"
+    assert depot.node_type == "depot"
+    assert depot.path_code == "UNASSIGNED"
+    assert depot.participates_in_direction is False
+    assert depot.sort_order is None
+
+
+def test_ambiguous_numeric_station_names_are_never_stripped_by_single_value_or_bad_batch() -> None:
+    for raw in ("3号航站楼", "1号线换乘站", "101大道站"):
+        parsed = parse_station_source_value(raw)
+        assert parsed.name == raw
+        assert parsed.source_order is None
+        assert canonical_station_name(raw) == raw
+
+    sparse = parse_station_source_values(["01甲站", "05乙站", "11丙站"])
+    assert all(item.order_parse_method == "none" for item in sparse.values())
+    duplicates = parse_station_source_values(["01甲站", "01乙站", "02丙站"])
+    assert all(item.order_parse_method == "none" for item in duplicates.values())
 
 
 def test_legacy_turnback_type_maps_to_multiple_facilities_and_depot_connection_does_not_enable_turnback() -> None:

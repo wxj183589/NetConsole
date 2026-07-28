@@ -22,6 +22,8 @@ import type {
   Section,
   SectionGenerationPreview,
   Station,
+  StationConflictPreview,
+  StationDeletePreflight,
   StationSourcePreview,
   StationTemplatePreview,
   TracksideAp,
@@ -48,6 +50,8 @@ export const validateRailTransitBaseDataChanges = (payload: { site_id: string; b
 export const saveRailTransitBaseDataChanges = (payload: { site_id: string; base_revision: string; changes: BaseDataChange[]; explicit_confirmation: boolean }): Promise<BaseDataSaveResult> => apiRequest(`${root}/changes`, { method: 'POST', body: JSON.stringify(payload) })
 export const listStations = (values: PageQuery = {}): Promise<Page<Station>> => apiRequest(`${root}/stations${queryString(values)}`)
 export const getStationSourcePreview = (): Promise<StationSourcePreview> => apiRequest(`${root}/station-source-preview`)
+export const preflightStationDeletion = (payload: { site_id: string; base_revision: string; station_ids: string[] }): Promise<StationDeletePreflight> => apiRequest(`${root}/stations/delete-preflight`, { method: 'POST', body: JSON.stringify(payload) })
+export const getStationConflictPreview = (baseRevision: string): Promise<StationConflictPreview> => apiRequest(`${root}/stations/conflicts${queryString({ base_revision: baseRevision })}`)
 export const listSections = (values: PageQuery = {}): Promise<Page<Section>> => apiRequest(`${root}/sections${queryString(values)}`)
 export const listTracksideAps = (values: PageQuery = {}): Promise<Page<TracksideAp>> => apiRequest(`${root}/aps${queryString(values)}`)
 export const listTrains = (values: PageQuery = {}): Promise<Page<Train>> => apiRequest(`${root}/trains${queryString(values)}`)

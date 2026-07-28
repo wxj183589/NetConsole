@@ -98,7 +98,7 @@ H3C_TRACKSIDE_COMMAND_PROFILE = TracksideCommandProfile(
     reference_version="",
     device_version=("display version",),
     interface_brief=("display interface brief",),
-    interface_detail=("display interface <interface_name>",),
+    interface_detail=("display interface <interface>",),
     optical_brief=("display transceiver diagnosis interface",),
     lldp_global_candidates=("display lldp neighbor-information list",),
 )

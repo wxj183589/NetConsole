@@ -12,7 +12,7 @@
 
 - `job_center/`、`export/`：任务和导出执行契约。
 - `agent/`、`traffic/`、`online_mr/`：Agent、流量测试和 Online MR。
-- `ac/`、`rail_transit/`、`network_tools/`：AC、轨交和网络工具业务。
+- `ac/`、`rail_transit/`、`ground_unattended/`、`network_tools/`：AC、轨交、地面无人值守和网络工具业务。
 - `device_form_rules.py`、`device_batch_operations.py`、`mesh_chart_payload.py`：从历史桌面 UI 抽离的纯规则和批量策略。
 - `mesh_link_analyzer.py`：MESH 主链路分段、时间窗口、建链信号与切换阈值的共享分析核心；报告、API 和链路明细导出不得另建重复模型。
 - `device_detail_query_service.py`：从设备快照、任务和现有业务 Query Service 组合设备详情只读 DTO。

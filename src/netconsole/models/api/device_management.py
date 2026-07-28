@@ -367,24 +367,6 @@ class DeviceSecureCrtExportRequestDTO(DeviceExportRequestDTO):
     pass
 
 
-class DeviceOmniPeekExportRequestDTO(DeviceExportRequestDTO):
-    line_name: str = Field(min_length=1, max_length=200)
-    include_device_mr: bool = True
-    selected_item_keys: list[str] = Field(default_factory=list, max_length=5000)
-    excluded_item_keys: list[str] = Field(default_factory=list, max_length=5000)
-    force_export_keys: list[str] = Field(default_factory=list, max_length=5000)
-
-
-class DeviceOmniPeekPreviewDTO(ApiModel):
-    task_id: str
-    task_status: str
-    ready: bool = False
-    items: list[dict[str, object | None]] = Field(default_factory=list)
-    source_counts: dict[str, int] = Field(default_factory=dict)
-    stats: dict[str, int] = Field(default_factory=dict)
-    message: str = ""
-
-
 class DeviceExternalTerminalRequestDTO(ApiModel):
     terminal_type: Literal["securecrt", "putty", "xshell"] = "securecrt"
 

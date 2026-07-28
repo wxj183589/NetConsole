@@ -664,30 +664,3 @@ export interface DeviceExportRequest extends DeviceListQuery {
   export_scope?: 'selected' | 'filtered_all'
   include_credentials?: boolean
 }
-
-export interface DeviceOmniPeekPreviewItem {
-  key: string
-  role: 'trackside_ap' | 'onboard_mr'
-  name: string
-  physical_mac: string
-  system_name: string
-  location: string
-  source: string
-  selected: boolean
-  force_export: boolean
-  normalized_physical_mac: string
-  r1_mac: string
-  r2_mac: string
-  status: string
-  warnings: string[]
-}
-
-export interface DeviceOmniPeekPreview {
-  task_id: string
-  task_status: string
-  ready: boolean
-  items: DeviceOmniPeekPreviewItem[]
-  source_counts: Record<string, number>
-  stats: Record<string, number>
-  message: string
-}

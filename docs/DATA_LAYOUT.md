@@ -87,7 +87,10 @@ files/rail_transit/
 ├─ online_mr/<mr>/sessions/<session>/
 ├─ ground_unattended/
 │  ├─ active/<run_date>/
-│  │  ├─ fleet_ping/             # 按小时、按分片 JSONL
+│  │  ├─ fleet_ping/<train>/<mr>/<date>/<hour>_<generation>.ndjson
+│  │  │                           # 按 MR/小时顺序追加的 Ping 原始流；含预热标记和采样时 AP/站点/区间快照
+│  │  ├─ realtime/syslog/<train>/<mr>/<date>/<hour>_<generation>.ndjson
+│  │  │                           # UDP WMESH/IFNET 原始流；保留接收序号、时钟偏差和安全编码原始字节；未识别来源写入 _unidentified
 │  │  ├─ ac_snapshots/           # 按小时 AC 快照 JSONL
 │  │  ├─ timeline/               # AC/Ping 关联 JSONL
 │  │  ├─ scheduler_events.jsonl
@@ -97,7 +100,7 @@ files/rail_transit/
 │  │  ├─ errors.jsonl
 │  │  └─ manifest.json
 │  ├─ archives/<run_date>_ground_unattended.zip
-│  └─ index.sqlite               # 配置、运行/覆盖/事件、分段索引和汇总
+│  └─ index.sqlite               # 配置、运行/覆盖/事件、Ping 目标激活时间、停止/归档操作、分段索引和汇总；Boot Session 保存设备前后时钟/uptime/时区/误差，Syslog 仅索引/事件/健康指标，不保存高频原始报文
 ├─ base_data_import/             # 仅显式授权的受控基础资料写入产生
 │  ├─ backups/<operation>.sqlite # SQLite Backup API 生成的写前备份
 │  └─ operations/<operation>.json# 脱敏审计与相对备份引用

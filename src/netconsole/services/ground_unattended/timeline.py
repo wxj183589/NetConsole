@@ -59,7 +59,9 @@ class GroundUnattendedTimelineCorrelator:
                 "rssi": context.get("rssi") if ac_valid else None,
                 "ap_transition_context": transition_context,
                 "ac_position_status": "matched" if ac_valid else "unknown",
-                "loss_pattern": self._loss_pattern(ts, sample, context),
+                "loss_pattern": self._loss_pattern(
+                    ts, sample, context, ac_valid=ac_valid
+                ),
                 "ts": sample["ts"],
             }
             self._write(result, ts)
@@ -117,12 +119,19 @@ class GroundUnattendedTimelineCorrelator:
         if transition_at is None:
             return "same_ap"
         delta = (ts - transition_at).total_seconds()
-        if 0 <= delta <= self.switch_after_seconds:
+        # fping 进程可能在控制面切换目标元数据前已经吐出一条样本；
+        # 该样本在切换后被顺序处理时归入切换后窗口，避免产生虚假的时间轴空洞。
+        if -1.0 <= delta <= self.switch_after_seconds:
             return "after_transition"
         return "same_ap"
 
     def _loss_pattern(
-        self, ts: datetime, sample: dict[str, Any], context: dict[str, Any]
+        self,
+        ts: datetime,
+        sample: dict[str, Any],
+        context: dict[str, Any],
+        *,
+        ac_valid: bool,
     ) -> str:
         train_id = str(context.get("train_id") or "")
         endpoint = str(context.get("mr_position_code") or "")
@@ -131,12 +140,10 @@ class GroundUnattendedTimelineCorrelator:
         state = self._latest_by_train.setdefault(train_id, {})
         state[endpoint] = (ts, not bool(sample.get("ok")))
         other = "CW" if endpoint == "CT" else "CT"
-        if other not in state or abs((ts - state[other][0]).total_seconds()) > 2:
-            pattern = (
-                "AC_POSITION_UNKNOWN_LOSS"
-                if not context.get("ac_snapshot_id") and not sample.get("ok")
-                else ""
-            )
+        if not sample.get("ok") and not ac_valid:
+            pattern = "AC_POSITION_UNKNOWN_LOSS"
+        elif other not in state or abs((ts - state[other][0]).total_seconds()) > 2:
+            pattern = ""
         else:
             ct_loss = state.get("CT", (ts, False))[1]
             cw_loss = state.get("CW", (ts, False))[1]

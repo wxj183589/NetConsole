@@ -18,6 +18,7 @@ from netconsole.repositories.ground_unattended_repository import (
 from netconsole.services.ground_unattended.timeline import (
     GroundUnattendedTimelineCorrelator,
 )
+from netconsole.services.ground_unattended.syslog_runtime import RawStreamWriter
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,8 @@ class FleetPingTarget:
     train_no: str
     mr_id: str
     mr_position_code: str
+    mr_name: str = ""
+    device_id: int | None = None
     ac_snapshot_id: int | None = None
     ac_received_at: str = ""
     current_ap_identity: str = ""
@@ -41,6 +44,8 @@ class FleetPingTarget:
 
 @dataclass
 class _Stats:
+    raw: int = 0
+    ignored: int = 0
     sent: int = 0
     success: int = 0
     loss: int = 0
@@ -50,7 +55,11 @@ class _Stats:
     current_loss: int = 0
     max_loss: int = 0
 
-    def add(self, sample: FpingV5Sample) -> None:
+    def add(self, sample: FpingV5Sample, *, ignored: bool = False) -> None:
+        self.raw += 1
+        if ignored:
+            self.ignored += 1
+            return
         self.sent += 1
         if sample.ok:
             self.success += 1
@@ -225,10 +234,15 @@ class FleetPingSupervisor:
         self._timeout_ms = 4000
         self._packet_size = 64
         self._shard_size = 12
+        self._warmup_seconds = 10
+        self._switch_before_seconds = 5
+        self._switch_after_seconds = 5
         self._correlator: GroundUnattendedTimelineCorrelator | None = None
         self._sample_count = 0
         self._started_at: dict[str, str] = {}
+        self._transition_at: dict[str, str] = {}
         self._backend_warnings: list[str] = []
+        self._raw_writer: RawStreamWriter | None = None
 
     def start(
         self,
@@ -243,9 +257,15 @@ class FleetPingSupervisor:
         correlation_tolerance_seconds: int,
         switch_before_seconds: int,
         switch_after_seconds: int,
+        warmup_seconds: int = 0,
     ) -> None:
         if self._run_id and self._run_id != run_id:
-            self.stop()
+            stop_result = self.stop()
+            if not stop_result["success"]:
+                raise RuntimeError(
+                    "previous fleet ping workers did not stop: "
+                    + ", ".join(stop_result["alive_worker_ids"])
+                )
         self._recover_open_segments(run_id)
         with self._lock:
             if self._run_id == run_id:
@@ -257,12 +277,42 @@ class FleetPingSupervisor:
             self._dirty_buckets = set()
             self._sample_count = 0
             self._started_at = {}
+            self._transition_at = {}
             self._backend_warnings = []
             self._output_dir = Path(active_dir) / "fleet_ping"
+            self._output_dir.mkdir(parents=True, exist_ok=True)
+            (self._output_dir / "layout.jsonl").write_text(
+                json.dumps(
+                    {
+                        "schema": "ground_unattended_ping_per_mr_v1",
+                        "run_id": run_id,
+                        "generated_at": datetime.now()
+                        .astimezone()
+                        .isoformat(timespec="milliseconds"),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            self._raw_writer = RawStreamWriter(
+                root=Path(active_dir),
+                repository=self.repository,
+                site_id=self.site_id,
+                run_id=run_id,
+                run_date=run_date,
+                data_type="ping",
+                directory_name="fleet_ping",
+                flush_records=100,
+                flush_interval_seconds=1.0,
+            )
             self._period_ms = int(period_ms)
             self._timeout_ms = int(timeout_ms)
             self._packet_size = int(packet_size)
             self._shard_size = int(shard_size)
+            self._warmup_seconds = max(0, int(warmup_seconds))
+            self._switch_before_seconds = max(0, int(switch_before_seconds))
+            self._switch_after_seconds = max(0, int(switch_after_seconds))
             self._correlator = GroundUnattendedTimelineCorrelator(
                 Path(active_dir) / "timeline",
                 tolerance_seconds=correlation_tolerance_seconds,
@@ -277,18 +327,33 @@ class FleetPingSupervisor:
         with self._lock:
             self._flush_summaries_locked()
             desired = {item.target_ip: item for item in targets if item.target_ip}
+            removed = set(self._targets) - set(desired)
+            now = datetime.now().astimezone().isoformat(timespec="milliseconds")
+            if removed and self._run_id:
+                self.repository.deactivate_ping_targets(
+                    self._run_id, removed, removed_at=now
+                )
+                for address in removed:
+                    self._started_at.pop(address, None)
+            if self._run_id:
+                for address in desired:
+                    self._started_at[address] = (
+                        self.repository.ensure_ping_target_activation(
+                            self._run_id, address, now
+                        )
+                    )
             for address, current in desired.items():
                 previous = self._targets.get(address)
                 if (
                     previous
+                    and previous.current_ap_identity
+                    and current.current_ap_identity
                     and previous.current_ap_identity != current.current_ap_identity
                 ):
                     transition_at = (
                         datetime.now().astimezone().isoformat(timespec="milliseconds")
                     )
-                    current = FleetPingTarget(
-                        **{**current.__dict__, "same_ap_since": current.same_ap_since}
-                    )
+                    self._transition_at[address] = transition_at
                     if self._correlator:
                         self._correlator.ap_transition(
                             target_ip=address,
@@ -300,6 +365,11 @@ class FleetPingSupervisor:
                         )
                     desired[address] = current
             self._targets = desired
+            self._transition_at = {
+                address: value
+                for address, value in self._transition_at.items()
+                if address in desired
+            }
             addresses = tuple(sorted(desired))
         self._reconcile_shards(addresses)
 
@@ -327,22 +397,52 @@ class FleetPingSupervisor:
             flushed.add(key)
         self._dirty_buckets.difference_update(flushed)
 
-    def stop(self) -> None:
+    def stop(self) -> dict[str, Any]:
         with self._lock:
             workers = list(self._workers.values())
-            self._workers = {}
         for worker in workers:
             worker.stop_event.set()
         for worker in workers:
             worker.thread.join(timeout=8)
+        alive = [worker for worker in workers if worker.thread.is_alive()]
+        if alive:
+            with self._lock:
+                self._workers = {worker.shard_id: worker for worker in alive}
+            return {
+                "success": False,
+                "worker_count": len(workers),
+                "stopped_worker_count": len(workers) - len(alive),
+                "alive_worker_ids": [worker.shard_id for worker in alive],
+                "fping_processes_exited": False,
+                "sample_count": self.sample_count,
+            }
         with self._lock:
+            self._workers = {}
             if self._run_id:
                 self.flush_summaries()
             if self._correlator:
                 self._correlator.close()
             self._correlator = None
             self._targets = {}
+            self._transition_at = {}
             self._run_id = ""
+            closed_file_count = (
+                self._raw_writer.open_file_count
+                if self._raw_writer is not None
+                else 0
+            )
+            if self._raw_writer is not None:
+                self._raw_writer.close()
+            self._raw_writer = None
+        return {
+            "success": True,
+            "worker_count": len(workers),
+            "stopped_worker_count": len(workers),
+            "alive_worker_ids": [],
+            "fping_processes_exited": True,
+            "sample_count": self.sample_count,
+            "closed_file_count": closed_file_count,
+        }
 
     def target_summaries(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -360,6 +460,7 @@ class FleetPingSupervisor:
                         "train_id": target.train_id,
                         "train_no": target.train_no,
                         "mr_id": target.mr_id,
+                        "mr_name": target.mr_name,
                         "mr_position_code": target.mr_position_code,
                         "started_at": self._started_at.get(address, ""),
                         "updated_at": datetime.now()
@@ -493,9 +594,13 @@ class FleetPingSupervisor:
             shard_id, generation, targets, stop_event, started_event, thread
         )
         for address in targets:
-            self._started_at.setdefault(
-                address, datetime.now().astimezone().isoformat(timespec="milliseconds")
-            )
+            if address not in self._started_at:
+                now = datetime.now().astimezone().isoformat(timespec="milliseconds")
+                self._started_at[address] = (
+                    self.repository.ensure_ping_target_activation(
+                        self._run_id, address, now
+                    )
+                )
         thread.start()
         return worker
 
@@ -507,15 +612,6 @@ class FleetPingSupervisor:
         stop_event: threading.Event,
         started_event: threading.Event,
     ) -> None:
-        writer = _SegmentWriter(
-            root=self._output_dir or Path("."),
-            repository=self.repository,
-            site_id=self.site_id,
-            run_id=self._run_id,
-            shard_id=shard_id,
-            generation=generation,
-            target_count=len(targets),
-        )
         started_event.set()
         parsed = 0
         try:
@@ -529,10 +625,10 @@ class FleetPingSupervisor:
                 stop_event=stop_event,
             ):
                 parsed += 1
-                self._record_sample(sample, shard_id, writer)
+                self._record_sample(sample, shard_id)
             if not stop_event.is_set() and parsed == 0 and len(targets) > 1:
                 self._bounded_single_target_fallback(
-                    targets, stop_event, shard_id, writer
+                    targets, stop_event, shard_id
                 )
         except Exception as exc:
             self.repository.add_event(
@@ -545,13 +641,11 @@ class FleetPingSupervisor:
             )
             if not stop_event.is_set() and len(targets) > 1:
                 self._bounded_single_target_fallback(
-                    targets, stop_event, shard_id, writer
+                    targets, stop_event, shard_id
                 )
-        finally:
-            writer.close()
 
     def _bounded_single_target_fallback(
-        self, targets, stop_event, shard_id, writer
+        self, targets, stop_event, shard_id
     ) -> None:
         warning = f"{shard_id}: multi-target JSON unavailable; bounded round-robin fallback active"
         with self._lock:
@@ -587,13 +681,13 @@ class FleetPingSupervisor:
                                 "raw": raw,
                             }
                         )
-                        self._record_sample(sample, shard_id, writer)
+                        self._record_sample(sample, shard_id)
                 except Exception:
                     if stop_event.wait(min(1.0, self._period_ms / 1000)):
                         return
 
     def _record_sample(
-        self, sample: FpingV5Sample, shard_id: str, writer: _SegmentWriter
+        self, sample: FpingV5Sample, shard_id: str
     ) -> None:
         with self._lock:
             target = self._targets.get(sample.target)
@@ -601,6 +695,11 @@ class FleetPingSupervisor:
                 return
             ts = _parse_sample_ts(sample.ts)
             self._sample_count += 1
+            activation_started_at = self._started_at.get(sample.target, "")
+            warmup_ignored = self._is_warmup(ts, activation_started_at)
+            transition_context = self._transition_context(
+                ts, self._transition_at.get(sample.target, "")
+            )
             sample_id = f"{self._run_id}:{sample.target}:{sample.seq or self._sample_count}:{sample.ts}"
             payload = {
                 "sample_id": sample_id,
@@ -611,7 +710,11 @@ class FleetPingSupervisor:
                 "train_id": target.train_id,
                 "train_no": target.train_no,
                 "mr_id": target.mr_id,
+                "mr_name": target.mr_name,
                 "mr_position_code": target.mr_position_code,
+                "mr_role": target.mr_position_code,
+                "device_id": target.device_id,
+                "device_uuid": target.mr_id,
                 "seq": sample.seq,
                 "ok": bool(sample.ok),
                 "rtt_ms": sample.rtt_ms,
@@ -620,15 +723,43 @@ class FleetPingSupervisor:
                 "backend": sample.backend,
                 "error": sample.error,
                 "shard_id": shard_id,
+                "current_ap_identity": target.current_ap_identity,
+                "current_ap_name": target.current_ap_name,
+                "current_ap_mac": target.current_ap_mac,
+                "station": target.station,
+                "section": target.section,
+                "mileage": target.mileage,
+                "rssi": target.rssi,
+                "ac_snapshot_id": target.ac_snapshot_id,
+                "ac_received_at": target.ac_received_at,
+                "position_quality": (
+                    "MATCHED"
+                    if target.current_ap_identity
+                    or target.current_ap_name
+                    or target.station
+                    or target.section
+                    else "UNKNOWN"
+                ),
+                "ap_transition_context": transition_context,
+                "warmup_ignored": warmup_ignored,
+                "target_activation_started_at": activation_started_at,
             }
-            writer.write(payload, ts)
-            self._stats.setdefault(sample.target, _Stats()).add(sample)
+            if self._raw_writer is not None:
+                self._raw_writer.write(payload, ts)
+            self._stats.setdefault(sample.target, _Stats()).add(
+                sample, ignored=warmup_ignored
+            )
             for kind, bucket_start, ap_identity in self._bucket_keys(ts, target):
                 key = (kind, bucket_start, sample.target, ap_identity)
-                self._buckets.setdefault(key, _Stats()).add(sample)
+                self._buckets.setdefault(key, _Stats()).add(
+                    sample, ignored=warmup_ignored
+                )
                 self._dirty_buckets.add(key)
-            if self._correlator:
-                context = {**target.__dict__, "ap_transition_at": target.same_ap_since}
+            if self._correlator and not warmup_ignored:
+                context = {
+                    **target.__dict__,
+                    "ap_transition_at": self._transition_at.get(sample.target, ""),
+                }
                 self._correlator.correlate(payload, context)
 
     def _bucket_keys(self, ts: datetime, target: FleetPingTarget):
@@ -660,6 +791,8 @@ class FleetPingSupervisor:
             "mr_position_code": target.mr_position_code,
             "ac_snapshot_id": target.ac_snapshot_id,
             "ap_identity": ap_identity,
+            "raw_sample_count": values["raw_sample_count"],
+            "warmup_ignored_count": values["warmup_ignored_count"],
             "sent_count": values["sent_count"],
             "success_count": values["success_count"],
             "loss_count": values["loss_count"],
@@ -674,6 +807,9 @@ class FleetPingSupervisor:
 
     def _stats_values(self, stats: _Stats) -> dict[str, Any]:
         return {
+            "raw_sample_count": stats.raw,
+            "effective_sample_count": stats.sent,
+            "warmup_ignored_count": stats.ignored,
             "sent_count": stats.sent,
             "success_count": stats.success,
             "loss_count": stats.loss,
@@ -690,6 +826,33 @@ class FleetPingSupervisor:
                 stats.max_loss * self._period_ms / 1000, 3
             ),
         }
+
+    def _is_warmup(self, ts: datetime, activated_at: str) -> bool:
+        if self._warmup_seconds <= 0 or not activated_at:
+            return False
+        try:
+            activated = datetime.fromisoformat(activated_at)
+            if activated.tzinfo is None:
+                activated = activated.astimezone()
+        except ValueError:
+            return False
+        return (ts - activated).total_seconds() < self._warmup_seconds
+
+    def _transition_context(self, ts: datetime, transition_at: str) -> str:
+        if not transition_at:
+            return ""
+        try:
+            transition = datetime.fromisoformat(transition_at)
+            if transition.tzinfo is None:
+                transition = transition.astimezone()
+        except ValueError:
+            return ""
+        delta = (ts - transition).total_seconds()
+        if -self._switch_before_seconds <= delta < 0:
+            return "BEFORE_AP_TRANSITION"
+        if 0 <= delta <= self._switch_after_seconds:
+            return "AFTER_AP_TRANSITION"
+        return ""
 
     @staticmethod
     def _bucket_end(kind: str, start: str) -> str:

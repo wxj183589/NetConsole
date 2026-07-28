@@ -353,12 +353,6 @@
       "client_package": false,
       "internal_only": false
     },
-    "devices.omnipeek_name_table_export": {
-      "visible": true,
-      "enabled": true,
-      "client_package": true,
-      "internal_only": false
-    },
     "rail.train_online": {
       "visible": true,
       "enabled": true,

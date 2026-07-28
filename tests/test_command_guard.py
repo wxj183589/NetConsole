@@ -26,6 +26,21 @@ def test_command_guard_allows_whitelist_commands():
         assert is_command_allowed(command, "device_collect")
 
 
+def test_ground_unattended_syslog_read_context_is_fixed_and_read_only():
+    validate_command_list(
+        (
+            "screen-length disable",
+            "display version",
+            "display info-center",
+            "display current-configuration | include info-center",
+            "display current-configuration",
+        ),
+        "ground_unattended_syslog_read",
+    )
+    assert not is_command_allowed("save force", "ground_unattended_syslog_read")
+    assert not is_command_allowed("system-view", "ground_unattended_syslog_read")
+
+
 def test_command_guard_rejects_dangerous_commands():
     for command in (
         "save",

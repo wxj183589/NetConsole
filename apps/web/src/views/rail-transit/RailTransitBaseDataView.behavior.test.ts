@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
   importPolicies: vi.fn(),
   importOperations: vi.fn(),
   stationSourcePreview: vi.fn(),
+  stationDeletePreflight: vi.fn(),
+  stationConflictPreview: vi.fn(),
   stationTemplatePreview: vi.fn(),
   sectionGenerationPreview: vi.fn(),
   stationsPage: vi.fn(),
@@ -45,6 +47,8 @@ vi.mock('../../api/railTransitBaseData', () => ({
   previewRailTransitImport: vi.fn(),
   previewSectionGeneration: mocks.sectionGenerationPreview,
   getStationSourcePreview: mocks.stationSourcePreview,
+  preflightStationDeletion: mocks.stationDeletePreflight,
+  getStationConflictPreview: mocks.stationConflictPreview,
   previewStationTemplate: mocks.stationTemplatePreview,
   rollbackRailTransitImport: vi.fn(),
   saveRailTransitBaseDataChanges: mocks.save,
@@ -150,6 +154,8 @@ const CheckboxStub = defineComponent({
 })
 const DataTableStub = defineComponent({
   props: { data: { type: Array, default: () => [] }, columns: { type: Array, default: () => [] }, tableId: String },
+  emits: ['selection-change'],
+  data: () => ({ selectedRows: [] as Record<string, unknown>[] }),
   methods: {
     cell(row: Record<string, unknown>, column: Record<string, unknown>) {
       const displayValue = column.displayValue
@@ -158,10 +164,30 @@ const DataTableStub = defineComponent({
       if (Array.isArray(value)) return value.map((item) => item?.message || String(item)).join('；')
       return value ?? ''
     },
+    toggle(row: Record<string, unknown>, checked: boolean) {
+      this.selectedRows = checked
+        ? [...this.selectedRows.filter((item) => item !== row), row]
+        : this.selectedRows.filter((item) => item !== row)
+      this.$emit('selection-change', this.selectedRows)
+    },
+    clearSelection() {
+      this.selectedRows = []
+      this.$emit('selection-change', [])
+    },
+    toggleRowSelection(row: Record<string, unknown>, selected = true) {
+      this.toggle(row, selected)
+    },
   },
   template: `
     <div class="table-stub" :data-table-id="tableId">
       <div v-for="(row, rowIndex) in data" :key="row.id || row.candidate_id || row.row_number || rowIndex" class="table-row">
+        <input
+          v-if="columns.some((column) => column.type === 'selection')"
+          class="row-selection"
+          type="checkbox"
+          :checked="selectedRows.includes(row)"
+          @change="toggle(row, $event.target.checked)"
+        >
         <span v-for="column in columns" :key="column.key">{{ cell(row, column) }} </span>
         <slot name="cell-selected" :row="row" />
         <slot name="cell-issues" :row="row" />
@@ -205,7 +231,10 @@ const elementStubs = {
   ElDescriptions: Passthrough,
   ElDescriptionsItem: Passthrough,
   ElDialog: DialogStub,
+  ElDrawer: DialogStub,
   ElDivider: Passthrough,
+  ElForm: Passthrough,
+  ElFormItem: Passthrough,
   ElInput: InputStub,
   ElInputNumber: InputNumberStub,
   ElOption: OptionStub,
@@ -577,6 +606,24 @@ describe('轨道交通基础资料编辑闭环', () => {
     })
     mocks.importOperations.mockResolvedValue([])
     mocks.stationSourcePreview.mockResolvedValue(stationSourcePreviewPayload)
+    mocks.stationDeletePreflight.mockResolvedValue({
+      site_id: 'demo',
+      base_revision: 'a'.repeat(64),
+      items: [],
+      safe_delete_count: 0,
+      requires_merge_count: 0,
+      blocked_count: 0,
+    })
+    mocks.stationConflictPreview.mockResolvedValue({
+      site_id: 'demo',
+      base_revision: 'a'.repeat(64),
+      groups: [],
+      conflict_group_count: 0,
+      conflict_station_count: 0,
+      recommended_overwrite_count: 0,
+      recommended_merge_count: 0,
+      remaining_manual_count: 0,
+    })
     mocks.stationTemplatePreview.mockResolvedValue(stationTemplatePreviewPayload)
     mocks.sectionGenerationPreview.mockResolvedValue(sectionGenerationPreviewPayload)
     mocks.download.mockResolvedValue({ status: 'saved' })
@@ -1229,6 +1276,191 @@ describe('轨道交通基础资料编辑闭环', () => {
     const checkbox = wrapper.get('[data-table-id="rail-base-section-generation-preview"] input[type="checkbox"]')
     expect(checkbox.attributes('disabled')).toBeDefined()
     expect(button(wrapper, '应用到当前草稿').attributes('disabled')).toBeDefined()
+    wrapper.unmount()
+  })
+
+  it('站点选择仅在解锁后可用，批量删除预检不会静默跳过阻断项', async () => {
+    const safeStation = { ...sourceStationWuxiang, id: 'station:safe', node_uid: 'node-safe', name: '安全站', code: '01', sort_order: 1, source_kind: 'manual' }
+    const blockedStation = { ...sourceStationWuxiang, id: 'station:blocked', node_uid: 'node-blocked', name: '被引用站', code: '02', sort_order: 2, source_kind: 'manual' }
+    mocks.stationsPage.mockResolvedValue({ items: [safeStation, blockedStation], total: 2, page: 1, page_size: 50 })
+    mocks.stationDeletePreflight.mockResolvedValue({
+      site_id: 'demo',
+      base_revision: 'a'.repeat(64),
+      safe_delete_count: 1,
+      requires_merge_count: 1,
+      blocked_count: 0,
+      items: [
+        {
+          station_id: safeStation.id, station_name: safeStation.name, code: safeStation.code, sort_order: 1,
+          source_kind: 'manual', status: 'SAFE_DELETE', reason: '无正式引用', is_manual: true, is_line_terminal: false,
+          references: { section_start_count: 0, section_end_count: 0, ap_count: 0, relation_count: 0, endpoint_extension_count: 0, plan_count: 0, total_count: 0 },
+        },
+        {
+          station_id: blockedStation.id, station_name: blockedStation.name, code: blockedStation.code, sort_order: 2,
+          source_kind: 'manual', status: 'REQUIRES_MERGE', reason: '存在区间引用', is_manual: true, is_line_terminal: false,
+          references: { section_start_count: 1, section_end_count: 0, ap_count: 1, relation_count: 0, endpoint_extension_count: 0, plan_count: 0, total_count: 2 },
+        },
+      ],
+    })
+    const wrapper = await mountView()
+    const stationTable = wrapper.get('[data-table-id="rail-base-stations"]')
+    expect(stationTable.findAll('input.row-selection')).toHaveLength(0)
+
+    await button(wrapper, '解锁').trigger('click')
+    await flushPromises()
+    const selections = stationTable.findAll('input.row-selection')
+    expect(selections).toHaveLength(2)
+    await selections[0].setValue(true)
+    await selections[1].setValue(true)
+    expect(wrapper.text()).toContain('已选择 2 项')
+
+    await button(wrapper, '删除选中').trigger('click')
+    await flushPromises()
+    expect(mocks.stationDeletePreflight).toHaveBeenCalledWith({
+      site_id: 'demo',
+      base_revision: 'a'.repeat(64),
+      station_ids: [safeStation.id, blockedStation.id],
+    })
+    expect(wrapper.text()).toContain('REQUIRES_MERGE')
+    expect(wrapper.text()).toContain('不会被静默跳过')
+    await button(wrapper, '仅标记安全项').trigger('click')
+    await button(wrapper, '保存').trigger('click')
+    await flushPromises()
+
+    const changes = mocks.validate.mock.calls.at(-1)?.[0].changes
+    expect(changes).toEqual([
+      expect.objectContaining({ entity_type: 'station', action: 'delete', entity_id: safeStation.id }),
+    ])
+    expect(changes).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ entity_id: blockedStation.id }),
+    ]))
+    wrapper.unmount()
+  })
+
+  it('合并重复站点生成单个 replace 草稿并保留正式目标身份', async () => {
+    const formal = {
+      ...sourceStationWuxiang,
+      id: 'station:formal',
+      node_uid: 'node-formal',
+      name: '小洋江站',
+      code: '01',
+      sort_order: 1,
+      source_kind: 'manual',
+      source_station_key: '',
+      source_station_value: '',
+      remark: '人工字段',
+    }
+    const duplicate = {
+      ...sourceStationWuxiang,
+      id: 'station:duplicate',
+      node_uid: 'node-duplicate',
+      name: '1.小洋江站',
+      code: '01',
+      sort_order: 1,
+      source_kind: 'device_station_field',
+      source_station_key: '01小洋江站',
+      source_station_value: '01小洋江站',
+    }
+    mocks.stationsPage.mockResolvedValue({ items: [formal, duplicate], total: 2, page: 1, page_size: 50 })
+    const wrapper = await mountView()
+    await button(wrapper, '解锁').trigger('click')
+    await flushPromises()
+    const selections = wrapper.get('[data-table-id="rail-base-stations"]').findAll('input.row-selection')
+    await selections[0].setValue(true)
+    await selections[1].setValue(true)
+    await button(wrapper, '合并重复项').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('将被合并删除')
+    expect(wrapper.text()).toContain('保留身份')
+    expect(wrapper.text()).toContain(formal.node_uid)
+    await button(wrapper, '应用合并到草稿').trigger('click')
+    await button(wrapper, '保存').trigger('click')
+    await flushPromises()
+
+    const mergeChange = mocks.validate.mock.calls.at(-1)?.[0].changes.find((change: { action: string }) => change.action === 'replace')
+    expect(mergeChange).toMatchObject({
+      entity_type: 'station',
+      entity_id: formal.id,
+      values: {
+        node_uid: formal.node_uid,
+        old_name: formal.name,
+        merge_source_names: [duplicate.name],
+        merge_source_node_uids: [duplicate.node_uid],
+      },
+    })
+    wrapper.unmount()
+  })
+
+  it('撤销站点合并只恢复相关引用，不覆盖其他区间草稿修改', async () => {
+    const formal = {
+      ...sourceStationWuxiang,
+      id: 'station:formal',
+      node_uid: 'node-formal',
+      name: '小洋江站',
+      code: '01',
+      sort_order: 1,
+      source_kind: 'manual',
+      source_station_key: '',
+      source_station_value: '',
+    }
+    const duplicate = {
+      ...sourceStationWuxiang,
+      id: 'station:duplicate',
+      node_uid: 'node-duplicate',
+      name: '1.小洋江站',
+      code: '01',
+      sort_order: 1,
+      source_kind: 'device_station_field',
+    }
+    const referencedSection = {
+      ...generatedIncreasingSection,
+      id: 'section:referenced',
+      name: '小洋江-下一站',
+      start_node_uid: duplicate.node_uid,
+      start_station: duplicate.name,
+      end_node_uid: 'node-next',
+      end_station: '下一站',
+    }
+    const unrelatedSection = {
+      ...generatedIncreasingSection,
+      id: 'section:unrelated',
+      name: '其他区间',
+      start_node_uid: 'node-other-a',
+      start_station: '其他站A',
+      end_node_uid: 'node-other-b',
+      end_station: '其他站B',
+    }
+    mocks.stationsPage.mockResolvedValue({ items: [formal, duplicate], total: 2, page: 1, page_size: 50 })
+    mocks.sectionsPage.mockResolvedValue({ items: [referencedSection, unrelatedSection], total: 2, page: 1, page_size: 50 })
+    const wrapper = await mountView()
+    await button(wrapper, '解锁').trigger('click')
+    await flushPromises()
+
+    const sectionNames = wrapper.get('[data-table-id="rail-base-sections"]').findAll('input[data-field="section-name"]')
+    await sectionNames[1].setValue('其他区间-人工修改')
+    const selections = wrapper.get('[data-table-id="rail-base-stations"]').findAll('input.row-selection')
+    await selections[0].setValue(true)
+    await selections[1].setValue(true)
+    await button(wrapper, '合并重复项').trigger('click')
+    await button(wrapper, '应用合并到草稿').trigger('click')
+    await nextTick()
+
+    expect(wrapper.get('[data-table-id="rail-base-sections"]').text()).toContain(formal.name)
+    await button(wrapper, '撤销选中变更').trigger('click')
+    await nextTick()
+    const currentSectionNames = wrapper.get('[data-table-id="rail-base-sections"]').findAll('input[data-field="section-name"]')
+    expect((currentSectionNames[1].element as HTMLInputElement).value).toBe('其他区间-人工修改')
+
+    await button(wrapper, '保存').trigger('click')
+    await flushPromises()
+    const changes = mocks.validate.mock.calls.at(-1)?.[0].changes
+    expect(changes).toEqual([
+      expect.objectContaining({
+        entity_type: 'section',
+        entity_id: unrelatedSection.id,
+        values: expect.objectContaining({ name: '其他区间-人工修改' }),
+      }),
+    ])
     wrapper.unmount()
   })
 })

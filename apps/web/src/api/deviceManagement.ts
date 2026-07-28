@@ -23,7 +23,6 @@ import type {
   DeviceHistoryPage,
   DeviceOverviewResponse,
   DeviceListQuery,
-  DeviceOmniPeekPreview,
   DevicePage,
   DeviceTaskBatch,
   DeviceTaskReference,
@@ -244,18 +243,6 @@ export function startSecureCrtExportWithTemplate(payload: DeviceExportRequest, f
   form.append('selection', JSON.stringify(payload))
   form.append('file', file)
   return apiRequest<DeviceTaskReference>('/api/device-management/exports/securecrt-with-template', { method: 'POST', body: form })
-}
-
-export function startOmniPeekPreview(payload: DeviceExportRequest): Promise<DeviceTaskReference> {
-  return apiRequest<DeviceTaskReference>('/api/device-management/exports/omnipeek-preview', { method: 'POST', body: JSON.stringify(payload) })
-}
-
-export function getOmniPeekPreview(taskId: string): Promise<DeviceOmniPeekPreview> {
-  return apiRequest<DeviceOmniPeekPreview>(`/api/device-management/exports/omnipeek-preview/${encodeURIComponent(taskId)}`)
-}
-
-export function startOmniPeekExport(payload: DeviceExportRequest & { line_name: string; include_device_mr?: boolean; selected_item_keys?: string[]; excluded_item_keys?: string[]; force_export_keys?: string[] }): Promise<DeviceTaskReference> {
-  return apiRequest<DeviceTaskReference>('/api/device-management/exports/omnipeek', { method: 'POST', body: JSON.stringify(payload) })
 }
 
 export function startDeviceDiagnosticDownload(deviceUuids: string[]): Promise<DeviceTaskReference> {

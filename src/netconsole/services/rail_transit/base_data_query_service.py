@@ -1056,9 +1056,9 @@ class RailTransitBaseDataQueryService:
             parsed_source = parse_station_source_value(source_value)
             parsed_name = parse_station_source_value(name)
             source_key = str(
-                parsed_source.source_station_key
+                metadata.get("source_station_key")
+                or parsed_source.source_station_key
                 or parsed_name.source_station_key
-                or metadata.get("source_station_key")
                 or ""
             )
             canonical_station_name = str(

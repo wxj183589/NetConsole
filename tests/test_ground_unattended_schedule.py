@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import socket
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -71,7 +72,16 @@ def test_supervisor_auto_starts_and_finishes_at_window_boundary(tmp_path) -> Non
     repo = GroundUnattendedRepository(
         paths.ground_unattended_db_path("site-a"), site_id="site-a"
     )
-    repo.save_profile(repo.get_profile().model_copy(update={"enabled": True}))
+    repo.save_profile(
+        repo.get_profile().model_copy(
+            update={
+                "enabled": True,
+                "udp_listen_port": _available_udp_port(),
+                "syslog_server_ip": "192.0.2.100",
+                "allow_external_syslog_address": True,
+            }
+        )
+    )
     clock = [datetime.fromisoformat("2026-07-25T07:00:00+08:00")]
     supervisor = GroundUnattendedSupervisor(
         paths,
@@ -96,7 +106,16 @@ def test_manual_stop_does_not_auto_restart_inside_the_same_window(tmp_path) -> N
     repo = GroundUnattendedRepository(
         paths.ground_unattended_db_path("site-a"), site_id="site-a"
     )
-    repo.save_profile(repo.get_profile().model_copy(update={"enabled": True}))
+    repo.save_profile(
+        repo.get_profile().model_copy(
+            update={
+                "enabled": True,
+                "udp_listen_port": _available_udp_port(),
+                "syslog_server_ip": "192.0.2.100",
+                "allow_external_syslog_address": True,
+            }
+        )
+    )
     clock = [datetime.fromisoformat("2026-07-25T08:00:00+08:00")]
     supervisor = GroundUnattendedSupervisor(
         paths,
@@ -124,6 +143,115 @@ def test_manual_stop_does_not_auto_restart_inside_the_same_window(tmp_path) -> N
     assert repo.get_active_run()["state"] == "RUNNING"  # type: ignore[index]
     assert repo.get_active_run()["requested_action"] == "manual_start"  # type: ignore[index]
     supervisor._shutdown_active_run()
+
+
+def test_supervisor_does_not_reopen_ready_archived_run_date(tmp_path) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    paths.site_dir("site-a").mkdir(parents=True)
+    repo = GroundUnattendedRepository(
+        paths.ground_unattended_db_path("site-a"), site_id="site-a"
+    )
+    repo.save_profile(
+        repo.get_profile().model_copy(
+            update={
+                "enabled": True,
+                "udp_listen_port": _available_udp_port(),
+                "syslog_server_ip": "192.0.2.100",
+                "allow_external_syslog_address": True,
+            }
+        )
+    )
+    run = repo.create_or_get_run(
+        run_id="run-archived",
+        run_date="2026-07-25",
+        scheduled_start_at="2026-07-25T07:00:00+08:00",
+        scheduled_end_at="2026-07-25T23:00:00+08:00",
+    )
+    repo.update_run(
+        run["run_id"],
+        state="COMPLETED",
+        requested_action="restart_after_window",
+        actual_ended_at="2026-07-25T08:00:00+08:00",
+    )
+    repo.upsert_archive(
+        {
+            "archive_id": "archive-run-archived",
+            "site_id": "site-a",
+            "run_id": run["run_id"],
+            "run_date": run["run_date"],
+            "relative_path": "archives/2026-07-25_ground_unattended.zip",
+            "archive_status": "READY",
+            "archive_size_bytes": 1,
+            "sha256": "a" * 64,
+            "manifest_sha256": "b" * 64,
+            "retention_until": "2026-08-24",
+            "active_cleanup_pending": 0,
+            "summary_json": "{}",
+            "message": "归档完成",
+            "created_at": "2026-07-25T08:00:00+08:00",
+            "updated_at": "2026-07-25T08:00:00+08:00",
+        }
+    )
+    clock = [datetime.fromisoformat("2026-07-25T09:00:00+08:00")]
+    supervisor = GroundUnattendedSupervisor(
+        paths,
+        site_id="site-a",
+        repository=repo,
+        base_query=_BaseQuery(),  # type: ignore[arg-type]
+        mesh_query=_MeshQuery(),  # type: ignore[arg-type]
+        vehicle_query=_VehicleQuery(),  # type: ignore[arg-type]
+        now_provider=lambda: clock[0],
+    )
+
+    supervisor._tick()
+    assert repo.get_active_run() is None
+    assert repo.latest_run()["run_id"] == run["run_id"]  # type: ignore[index]
+    assert repo.latest_run()["state"] == "COMPLETED"  # type: ignore[index]
+
+    supervisor.request("start")
+    supervisor._tick()
+    assert repo.get_active_run() is None
+    assert repo.count_events(run["run_id"], event_type="start_rejected") == 1
+
+
+def test_classification_updates_daily_coverage_without_overwriting_results() -> None:
+    waiting = SimpleNamespace(
+        deep_collection_eligible=True, eligibility_status="MAINLINE"
+    )
+    excluded = SimpleNamespace(
+        deep_collection_eligible=False, eligibility_status="DEPOT"
+    )
+    offline = SimpleNamespace(
+        deep_collection_eligible=False, eligibility_status="OFFLINE"
+    )
+    assert (
+        GroundUnattendedSupervisor._coverage_status_for_classification(None, waiting)
+        == "WAITING"
+    )
+    assert (
+        GroundUnattendedSupervisor._coverage_status_for_classification(
+            {"coverage_status": "WAITING"}, excluded
+        )
+        == "EXCLUDED"
+    )
+    assert (
+        GroundUnattendedSupervisor._coverage_status_for_classification(
+            {"coverage_status": "EXCLUDED"}, offline
+        )
+        == "OFFLINE"
+    )
+    assert (
+        GroundUnattendedSupervisor._coverage_status_for_classification(
+            {"coverage_status": "COVERED"}, offline
+        )
+        == "COVERED"
+    )
+
+
+def _available_udp_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
 
 
 class _BaseQuery:

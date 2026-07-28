@@ -219,16 +219,26 @@ export interface StationSourceCandidate {
   source_order: number | null
   code: string
   name: string
+  canonical_name: string
+  order_parse_method: string
+  parse_confidence: string
+  parse_warning: string
   canonical_station_name: string
   node_type: StationNodeType
   path_code: string
   sort_order: number | null
   participates_in_direction: boolean
   source_device_count: number
-  match_status: 'create' | 'matched' | 'conflict' | 'manual_review'
+  match_status: 'exact_source_key' | 'canonical_name' | 'canonical_name_and_type' | 'alias' | 'create' | 'conflict' | 'manual_review'
   matched_station_id: string
   matched_station_name: string
+  matched_station_ids: string[]
+  matched_station_names: string[]
+  match_basis: string
   suggested_action: string
+  processing_strategy: StationSourceProcessingStrategy
+  processing_options: StationSourceProcessingStrategy[]
+  cleanup_name_prefix_recommended: boolean
   proposed_station: Station
   issues: StationSourceIssue[]
 }
@@ -246,9 +256,81 @@ export interface StationSourcePreview {
   create_count: number
   match_count: number
   conflict_count: number
+  manual_review_count: number
+  canonical_match_count: number
+  recommended_overwrite_count: number
+  recommended_create_count: number
+  recommended_merge_count: number
+  remaining_manual_count: number
   warning_count: number
   candidates: StationSourceCandidate[]
   issues: StationSourceIssue[]
+}
+
+export type StationSourceProcessingStrategy = 'auto_match' | 'overwrite_existing' | 'create' | 'ignore' | 'manual_target' | 'merge_duplicates'
+export type StationDeletePreflightStatus = 'SAFE_DELETE' | 'REQUIRES_MERGE' | 'BLOCKED'
+
+export interface StationReferenceSummary {
+  section_start_count: number
+  section_end_count: number
+  ap_count: number
+  relation_count: number
+  endpoint_extension_count: number
+  plan_count: number
+  total_count: number
+}
+
+export interface StationDeletePreflightItem {
+  station_id: string
+  station_name: string
+  code: string
+  sort_order: number | null
+  source_kind: StationSourceKind
+  status: StationDeletePreflightStatus
+  reason: string
+  is_manual: boolean
+  is_line_terminal: boolean
+  references: StationReferenceSummary
+}
+
+export interface StationDeletePreflight {
+  site_id: string
+  base_revision: string
+  items: StationDeletePreflightItem[]
+  safe_delete_count: number
+  requires_merge_count: number
+  blocked_count: number
+}
+
+export interface StationConflictMember {
+  station_id: string
+  station_name: string
+  code: string
+  node_uid: string
+  node_type: StationNodeType
+  path_code: string
+  sort_order: number | null
+  source_kind: StationSourceKind
+}
+
+export interface StationConflictGroup {
+  group_id: string
+  path_code: string
+  sort_order: number
+  stations: StationConflictMember[]
+  suggested_action: 'OVERWRITE' | 'MERGE' | 'MANUAL'
+  reason: string
+}
+
+export interface StationConflictPreview {
+  site_id: string
+  base_revision: string
+  groups: StationConflictGroup[]
+  conflict_group_count: number
+  conflict_station_count: number
+  recommended_overwrite_count: number
+  recommended_merge_count: number
+  remaining_manual_count: number
 }
 
 export interface StationTemplatePreviewRow {

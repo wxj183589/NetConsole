@@ -60,8 +60,6 @@ from netconsole.models.api.device_management import (
     DeviceImportConfirmRequestDTO,
     DeviceImportErrorDTO,
     DeviceImportPreviewDTO,
-    DeviceOmniPeekExportRequestDTO,
-    DeviceOmniPeekPreviewDTO,
     DeviceSecureCrtExportRequestDTO,
     DeviceTaskBatchDTO,
     DeviceTaskReferenceDTO,
@@ -155,7 +153,6 @@ EXPORT_TASK_TYPES = frozenset(
         "device_export_device_csv",
         "device_export_device_template_csv",
         "device_export_securecrt_sessions",
-        "device_export_omnipeek_name_table",
     }
 )
 MANAGED_DEVICE_CSV_TASK_TYPE = "web_export_device_csv"
@@ -170,7 +167,6 @@ _DEVICE_EXPORT_DISPLAY_NAMES = {
     "device_export_device_csv": ("设备清单", ".csv"),
     "device_export_device_template_csv": ("设备导入模板", ".csv"),
     "device_export_securecrt_sessions": ("SecureCRT会话", ".zip"),
-    "device_export_omnipeek_name_table": ("OmniPeek名称表", ".nam"),
     "device_diagnostic_download": ("设备诊断", ".zip"),
 }
 
@@ -187,7 +183,6 @@ DEVICE_COLLECT_TASK_TYPE = "device_detail_collect"
 DEVICE_OPTICAL_REFRESH_TASK_TYPE = "device_optical_refresh"
 DEVICE_DIAGNOSTIC_TASK_TYPE = "device_diagnostic_download"
 DEVICE_IMPORT_TASK_TYPE = "device_csv_import"
-DEVICE_OMNIPEEK_PREVIEW_TASK_TYPE = "omnipeek_name_table_preview"
 DEVICE_FORM_TEST_BOOTSTRAP_MAX_BYTES = 64 * 1024
 DEVICE_FORM_TEST_SECRET_FIELDS = (
     "ssh_password",
@@ -215,7 +210,6 @@ DEVICE_TASK_TYPES = frozenset(
         DEVICE_OPTICAL_REFRESH_TASK_TYPE,
         DEVICE_DIAGNOSTIC_TASK_TYPE,
         DEVICE_IMPORT_TASK_TYPE,
-        DEVICE_OMNIPEEK_PREVIEW_TASK_TYPE,
         *EXPORT_TASK_TYPES,
     }
 )
@@ -1346,96 +1340,6 @@ class DeviceManagementWebService:
                 )
             raise
 
-    def start_omnipeek_export(
-        self, payload: DeviceOmniPeekExportRequestDTO
-    ) -> DeviceTaskReferenceDTO:
-        site = self.current_site_id()
-        filters = self._export_filters(payload)
-        job_payload = {
-            "db_path": str(self.paths.site_db_path(site)),
-            "site_name": site,
-            "source": {
-                "device_filters": filters,
-                "selected_device_uuids": list(payload.device_uuids),
-                "ac_uuid": "",
-            },
-            "config": {
-                "line_name": payload.line_name,
-                "include_ac_fit_ap": False,
-                "include_ap_extensions": False,
-                "include_device_mr": payload.include_device_mr,
-            },
-            "selected_item_keys": list(payload.selected_item_keys),
-            "excluded_item_keys": list(payload.excluded_item_keys),
-            "force_export_keys": list(payload.force_export_keys),
-        }
-        return self._start_export(
-            site, "omnipeek_name_table", "nam", job_payload, "omnipeek_name_table"
-        )
-
-    def start_omnipeek_preview(
-        self, payload: DeviceExportRequestDTO
-    ) -> DeviceTaskReferenceDTO:
-        site = self.current_site_id()
-        task_id = f"device-omnipeek-preview-{uuid.uuid4().hex}"
-        job = BackgroundJob(
-            job_id=task_id,
-            task_type=DEVICE_OMNIPEEK_PREVIEW_TASK_TYPE,
-            params={
-                "db_path": str(self.paths.site_db_path(site)),
-                "site_name": site,
-                "device_filters": self._export_filters(payload),
-                "selected_device_uuids": self._unique_ids(payload.device_uuids),
-                "include_ac_fit_ap": False,
-                "include_ap_extensions": False,
-                "include_device_mr": True,
-                "preview_limit": 2000,
-                "task_name": "OmniPeek 名称表预览",
-                "owner": WEB_TASK_OWNER,
-                "task_source": "local",
-                "app_root": str(self.paths.app_root),
-                "data_root": str(self.paths.data_root),
-                "_cancel_grace_ms": 1000,
-            },
-        )
-        self.process_adapter.start_job(job)
-        snapshot = self.task_service.repository(site).get(task_id)
-        if snapshot is None:
-            raise RuntimeError("OmniPeek 预览任务创建后未写入任务中心")
-        return self._task_reference(snapshot)
-
-    def get_omnipeek_preview(self, task_id: str) -> DeviceOmniPeekPreviewDTO:
-        snapshot = self._require_web_task(
-            task_id, frozenset({DEVICE_OMNIPEEK_PREVIEW_TASK_TYPE})
-        )
-        result = dict(snapshot.result or {})
-        ready = snapshot.status is TaskState.COMPLETED
-        return DeviceOmniPeekPreviewDTO(
-            task_id=snapshot.task_id,
-            task_status=snapshot.status.value,
-            ready=ready,
-            items=[
-                dict(item)
-                for item in result.get("items") or []
-                if isinstance(item, dict)
-            ]
-            if ready
-            else [],
-            source_counts={
-                str(key): int(value)
-                for key, value in dict(result.get("source_counts") or {}).items()
-            }
-            if ready
-            else {},
-            stats={
-                str(key): int(value)
-                for key, value in dict(result.get("stats") or {}).items()
-            }
-            if ready
-            else {},
-            message=sanitize_sensitive_text(snapshot.message or snapshot.error_message),
-        )
-
     def get_export_task(self, task_id: str) -> DeviceTaskReferenceDTO:
         snapshot = self._require_web_export_task(task_id)
         return self._task_reference(snapshot)
@@ -2377,7 +2281,6 @@ class DeviceManagementWebService:
             DEVICE_DIAGNOSTIC_TASK_TYPE: "diagnostic_download",
             DEVICE_IMPORT_TASK_TYPE: "import_csv",
             DEVICE_CONNECTION_TEST_TASK_TYPE: "connection_test",
-            DEVICE_OMNIPEEK_PREVIEW_TASK_TYPE: "omnipeek_preview",
             MANAGED_DEVICE_CSV_TASK_TYPE: "export_csv",
             MANAGED_DEVICE_TEMPLATE_CSV_TASK_TYPE: "export_template",
         }

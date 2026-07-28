@@ -94,11 +94,10 @@ describe('Device Management Web view', () => {
     expect(source).toContain('copyDeviceInfo')
   })
 
-  it('uses the unified table contract for the device and OmniPeek tables', () => {
+  it('uses the unified table contract for the device table', () => {
     expect(source).toContain('table-id="device-list"')
-    expect(source).toContain('table-id="device-omnipeek-export"')
     expect(source).toContain(':columns="deviceColumns"')
-    expect(source).toContain(':columns="omniPeekColumns"')
+    expect(source).not.toContain('table-id="device-omnipeek-export"')
     expect(source).not.toContain('<el-table')
     expect(source).not.toContain('<el-table-column')
     expect(source).toContain("key: 'name', label: '名称', valueType: 'name', fixed: 'left', stretch: 'priority'")
@@ -125,13 +124,8 @@ describe('Device Management Web view', () => {
     expect(source).not.toContain('output_dir')
     expect(source).not.toContain('template_ini')
     expect(source).not.toContain('file_path')
-    expect(source).toContain('startOmniPeekPreview')
-    expect(source).toContain('getOmniPeekPreview')
-    expect(source).toContain('selected_item_keys')
-    expect(source).toContain('force_export_keys')
     expect(source).toContain('startSecureCrtExportWithTemplate')
     expect(source).toContain('accept=".ini"')
-    expect(source).toContain('stopOmniPeekPreview')
     expect(source).toContain('设备表格导出完成，共 ${task.row_count ?? 0} 台设备')
     expect(source).toContain('pendingDeviceExports')
     expect(source).toContain("'task_running'")
@@ -146,7 +140,6 @@ describe('Device Management Web view', () => {
     expect(source).toContain('expectedSha256: task.sha256')
     expect(source).toContain('重新选择保存位置')
     expect(source).toContain('openWindow = true')
-    expect(source).toContain('Date.now() + 120_000')
     for (const featureId of [
       'web.device_management_write',
       'web.device_management_collect',
@@ -158,9 +151,21 @@ describe('Device Management Web view', () => {
     }
   })
 
+  it('removes only the OmniPeek entry from the device export menu', () => {
+    expect(source).toContain('@click="exportCsv(false)">CSV 导出（不含凭据）')
+    expect(source).toContain('@click="exportCsv(true)">CSV 导出（含凭据）')
+    expect(source).toContain('@click="openSecureCrtExport">SecureCRT 会话')
+    expect(source).not.toContain('OmniPeek 名称表')
+    expect(source).not.toContain('openOmniPeekExport')
+  })
+
   it('uses the shared task store and persists only task-to-save authorization bindings', () => {
     expect(source).toContain('window.sessionStorage.setItem(PENDING_DEVICE_EXPORTS_KEY')
     expect(source).toContain('restorePendingDeviceExports')
+  })
+
+  it('statically guards against a page-private task system and path capabilities', () => {
+    expect(source).not.toContain('taskStorageKey')
     expect(source).not.toContain('trackedTasks')
     expect(source).not.toContain('refreshTrackedTasks')
     expect(source).not.toContain('cancelDeviceTask')
