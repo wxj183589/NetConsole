@@ -17,7 +17,7 @@ Main 不执行设备命令、数据库查询、Parser、报告或业务状态机
 - `bootstrap.ts`：在 Electron userData 中原子保存数据根和当前局点，不保存凭据。
 - `renderer-theme-display-gate.ts`：持久化主题解析、超时和 Renderer 失败的有界显示门。
 - `main-window-startup.ts`：新进程主窗口的当前主显示器定位、最大化、显示和聚焦。
-- `workspace-layout-store.ts`：导航快照与附加工作区窗口布局；主窗口不持久化几何或窗口状态。
+- `workspace-layout-store.ts`：当前进程内的导航快照与窗口记录；启动时精准清理旧 `workspace-layout.json`，不跨进程恢复标签或窗口。
 
 ## 依赖关系
 

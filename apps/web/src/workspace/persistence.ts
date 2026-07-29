@@ -8,6 +8,7 @@ import type { Router } from 'vue-router'
 export const WORKSPACE_SCHEMA_VERSION = 1
 export const WORKSPACE_MAX_TABS = 40
 const BROWSER_STORAGE_KEY = 'netconsole.workspace.v1'
+const LEGACY_OPEN_PAGE_TABS_STORAGE_KEY = 'netconsole.web.open-page-tabs'
 
 export interface RestoredWorkspace {
   windowId: string
@@ -17,6 +18,7 @@ export interface RestoredWorkspace {
 export async function loadWorkspace(
   router: Router,
 ): Promise<RestoredWorkspace> {
+  clearLegacyWorkspacePersistence()
   if (window.netconsoleDesktop?.getWorkspaceWindowState) {
     try {
       const value = await window.netconsoleDesktop.getWorkspaceWindowState()
@@ -28,23 +30,26 @@ export async function loadWorkspace(
       return { windowId: 'main', snapshot: null }
     }
   }
-  try {
-    const parsed = JSON.parse(localStorage.getItem(BROWSER_STORAGE_KEY) || 'null')
-    return {
-      windowId: 'browser-main',
-      snapshot: validateWorkspaceSnapshot(router, parsed),
-    }
-  } catch {
-    return { windowId: 'browser-main', snapshot: null }
-  }
+  return { windowId: 'browser-main', snapshot: null }
 }
 
 export async function saveWorkspace(snapshot: WorkspaceWindowState): Promise<void> {
   if (window.netconsoleDesktop?.saveWorkspaceWindowState) {
     await window.netconsoleDesktop.saveWorkspaceWindowState(snapshot)
-    return
   }
-  localStorage.setItem(BROWSER_STORAGE_KEY, JSON.stringify(snapshot))
+}
+
+function clearLegacyWorkspacePersistence(): void {
+  try {
+    localStorage.removeItem(BROWSER_STORAGE_KEY)
+  } catch {
+    // 浏览器禁用存储时仍以当前 Renderer 内存状态启动。
+  }
+  try {
+    sessionStorage.removeItem(LEGACY_OPEN_PAGE_TABS_STORAGE_KEY)
+  } catch {
+    // 同上；标签状态不是业务数据。
+  }
 }
 
 export function validateWorkspaceSnapshot(

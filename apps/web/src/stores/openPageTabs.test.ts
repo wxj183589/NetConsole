@@ -54,18 +54,10 @@ describe('open page tabs store', () => {
     expect(store.tabs[1].path).toContain('session=second')
     expect(store.cachedComponentNames).toEqual(['MeshAnalysisView'])
 
-    const persisted = JSON.parse(sessionStorage.getItem(OPEN_PAGE_TABS_STORAGE_KEY) || '{}')
-    expect(persisted.tabs[1]).toEqual({
-      routeName: 'mesh-analysis',
-      path: '/rail-transit/mesh-analysis?session=second',
-      title: 'MR 原始 MESH 日志分析',
-      navigationId: 'mesh-analysis',
-    })
-    expect(JSON.stringify(persisted)).not.toContain('componentName')
-    expect(JSON.stringify(persisted)).not.toContain('keepAlive')
+    expect(sessionStorage.getItem(OPEN_PAGE_TABS_STORAGE_KEY)).toBeNull()
   })
 
-  it('restores only valid route metadata and rebuilds the runtime cache allowlist', () => {
+  it('clears legacy tab data and always initializes Dashboard', () => {
     sessionStorage.setItem(OPEN_PAGE_TABS_STORAGE_KEY, JSON.stringify({
       version: 1,
       tabs: [
@@ -76,22 +68,14 @@ describe('open page tabs store', () => {
       activeRouteName: 'mesh-analysis',
     }))
     const store = useOpenPageTabsStore()
-    store.restoreTabs((saved) => {
-      if (saved.routeName === 'removed-page') return null
-      if (saved.routeName === 'mesh-analysis') {
-        return tab('mesh-analysis', {
-          path: saved.path,
-          title: 'MR 原始 MESH 日志分析',
-          keepAlive: true,
-          componentName: 'MeshAnalysisView',
-        })
-      }
-      return tab('dashboard', { path: '/', closable: false })
-    })
+    const resolver = vi.fn(() => tab('mesh-analysis'))
+    store.restoreTabs(resolver)
 
-    expect(store.tabs.map((item) => item.routeName)).toEqual(['dashboard', 'mesh-analysis'])
-    expect(store.activeRouteName).toBe('mesh-analysis')
-    expect(store.cachedComponentNames).toEqual(['MeshAnalysisView'])
+    expect(resolver).not.toHaveBeenCalled()
+    expect(store.tabs.map((item) => item.routeName)).toEqual(['dashboard'])
+    expect(store.activeRouteName).toBe('dashboard')
+    expect(store.cachedComponentNames).toEqual([])
+    expect(sessionStorage.getItem(OPEN_PAGE_TABS_STORAGE_KEY)).toBeNull()
   })
 
   it('evicts the least recently used ordinary tab at the limit and never auto-evicts MESH', () => {

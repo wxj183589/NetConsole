@@ -29,6 +29,7 @@ function createTestRouter(initial = '/') {
 beforeEach(() => {
   setActivePinia(createPinia())
   localStorage.clear()
+  sessionStorage.clear()
   Reflect.deleteProperty(window, 'netconsoleDesktop')
 })
 
@@ -108,6 +109,41 @@ describe('workspace store', () => {
     await store.initialize(router)
     expect(store.tabs).toHaveLength(1)
     expect(JSON.stringify(store.createSnapshot())).not.toContain('secret')
+  })
+
+  it('ignores and clears legacy tabs on a cold Electron start without touching preferences', async () => {
+    localStorage.setItem('netconsole.workspace.v1', JSON.stringify({
+      schemaVersion: 1,
+      windowId: 'main',
+      activeTabId: 'tasks-tab',
+      tabs: [{ id: 'tasks-tab', routeFullPath: '/tasks' }],
+    }))
+    localStorage.setItem('netconsole.theme', 'dark')
+    sessionStorage.setItem('netconsole.web.open-page-tabs', JSON.stringify({
+      version: 1,
+      activeRouteName: 'tasks',
+      tabs: [{ routeName: 'tasks', path: '/tasks', title: '任务中心' }],
+    }))
+    Object.defineProperty(window, 'netconsoleDesktop', {
+      configurable: true,
+      value: {
+        getWorkspaceWindowState: vi.fn(async () => ({ windowId: 'main', snapshot: null })),
+        saveWorkspaceWindowState: vi.fn(async () => undefined),
+        setWorkspaceWindowTitle: vi.fn(),
+      },
+    })
+    const router = await createTestRouter()
+    const store = useWorkspaceStore()
+
+    await store.initialize(router)
+
+    expect(store.tabs).toHaveLength(1)
+    expect(store.activeTab?.routeName).toBe('dashboard')
+    expect(store.activeTab?.routeFullPath).toBe('/')
+    expect(router.currentRoute.value.fullPath).toBe('/')
+    expect(localStorage.getItem('netconsole.workspace.v1')).toBeNull()
+    expect(sessionStorage.getItem('netconsole.web.open-page-tabs')).toBeNull()
+    expect(localStorage.getItem('netconsole.theme')).toBe('dark')
   })
 
   it('uses the Electron bridge for pop-out without exposing arbitrary URLs', async () => {
