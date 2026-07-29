@@ -47,6 +47,8 @@
 9. `CONFIRMED`：最新主线将工作区状态收敛为进程内存。冷启动只恢复 Dashboard，旧布局状态只清理；
    托盘隐藏/恢复同一进程时保留当前标签。因此交互会话不得宣称可跨进程恢复，后端重启、局点切换和
    完整退出必须使旧 session 明确失效。
+10. `INFERRED`：阶段 1 首发只允许受保护的 Electron Desktop session。Browser/Server 在建立独立、
+    可审计的终端认证与授权前必须 fail closed；现有 WS session cookie 不能作为两者已安全的证据。
 
 ## 当前能力审计
 
@@ -74,9 +76,12 @@
 | 路径 | `src/netconsole/core/paths.py` 已提供配置、任务、MESH、Online MR、AC Mesh-Link、无人值守目录入口 | 新数据目录必须由 PathResolver 增加，不允许 `Path.cwd()` 或用户文件名拼路径 | `CONFIRMED` |
 | Electron 安全 | `security.ts` 启用 sandbox/context isolation，禁用 Node integration/webview/任意导航，CSP 仅允许 self、受控 loopback、data/blob | xterm/G6 必须本地打包；不得用 CDN 或扩展为不受控源 | `CONFIRMED` |
 | 冻结打包 | `clean_build_spec.py` 由 `ALLOWED_DATA`、`RUNTIME_DATAS`、`RUNTIME_IMPORTS` 生成 PyInstaller 白名单；electron-builder `extraResources` 只复制受控 Backend/branding/native | TTP 模板、规则包、DuckDB 二进制依赖都需显式入白名单和 packaged smoke | `CONFIRMED` |
-| 合规 | `open_source_notices.json`、`THIRD_PARTY_COMPONENTS.md`、`generate_sbom.py`、`check_runtime_deps.py` 和 package smoke 是严格门 | 未知许可证、版本或组件缺失必须阻断发布 | `CONFIRMED` |
+| WebSocket | `/ws/tasks`、`/ws/agents`、`/ws/traffic/*` 当前只调用 `send_json`，生产代码没有 `receive_*` | 现有 WS 是服务端推送通道，不能冒充通用双向交互 Transport；终端必须新建独立、有界的双向协议 | `CONFIRMED` |
+| 桌面会话认证 | `DesktopSessionMiddleware` 可用短期 header/cookie 保护 Electron 本机 HTTP/WS，Browser/Server 没有独立终端认证 | 阶段 1 只开放 Electron Desktop；Browser/Server fail closed | `CONFIRMED` |
+| 合规 | `open_source_notices.json`、`THIRD_PARTY_COMPONENTS.md`、`generate_sbom.py`、`check_runtime_deps.py` 和 package smoke 是严格门；自动闭包主要覆盖 Python，普通前端 npm lock 依赖尚无同等精确的 PURL/SBOM 自动校验 | 未知许可证、版本或组件缺失必须阻断发布；新增 `@xterm/*` 时必须先补齐 npm 自动闭包门 | `CONFIRMED` |
 | 候选依赖现状 | Python/Node 依赖清单和锁文件未发现 xterm、TTP、G6、DuckDB、Parquet、scrapli、node-pty | 所有候选均是未来新增依赖，不得称为已具备 | `CONFIRMED` |
-| Windows Server 2012 | 当前仓库没有上述候选依赖在 Windows Server 2012 上的可信运行证据；旧检查清单还含与 fail-closed 数据根冲突的历史描述 | 全部标记未验证，以能力探测和旧路径回退代替兼容承诺 | `UNVERIFIED` |
+| Windows 10 | 当前仓库没有内置终端正式安装包的人工验收证据 | `embedded_terminal` 在目标机验收前保持关闭/development | `UNVERIFIED` |
+| Windows Server 2012 | 当前仓库没有上述候选依赖在 Windows Server 2012 上的可信运行证据；Electron 43/Node 24、旧 CPU 指令集和 VC Runtime 组合兼容性未知，旧检查清单还含与 fail-closed 数据根冲突的历史描述 | 全部标记未验证，以能力探测和旧路径回退代替兼容承诺 | `UNVERIFIED` |
 
 ### 重复实现风险
 
@@ -109,7 +114,7 @@
 
 | 候选 | 决策 | 预期用途 | 引入前门禁 |
 | --- | --- | --- | --- |
-| `@xterm/xterm` 与必要 addon | 直接依赖候选 | Renderer 终端显示、fit、search、受控链接 | 固定版本、MIT 复核、无 CDN、包体积、CSP、Electron build/package smoke |
+| `@xterm/xterm` 与必要 addon | 直接依赖候选 | DOM renderer 终端显示、fit、search；链接默认禁用或受控白名单 | 固定 npm lock 事实、许可证、精确 PURL/SBOM 自动校验、Notice/`THIRD_PARTY_COMPONENTS.md`、无 CDN、包体积、CSP、Electron build/package smoke |
 | TTP | 直接依赖候选 | 版本化 CLI 模板与 shadow parser | Python 3.13、模板错误隔离、冻结资源、许可证、NOTICE/SBOM |
 | `@antv/g6` | 直接依赖候选 | 共享关系拓扑组件 | 固定版本、许可证、CSP、按需打包、500～1000 节点和销毁测试 |
 | DuckDB | 直接依赖候选 | 对 Parquet 的本地只读分析和聚合 | wheel/CPU/VC Runtime/Server 2012/冻结加载/包体积/降级 |
@@ -123,7 +128,10 @@
 | 完整第三方 NMS | `REJECTED` | 不适用 | 会复制 Inventory、凭据、任务、数据库、API 和 UI 事实源 |
 
 具体版本和传递依赖不得在 ADR 中提前锁定。每个实现阶段使用当时维护中的版本，更新对应
-`package.json`/`pnpm-lock.yaml` 或 `pyproject.toml`/`constraints.txt`，并以构建脚本生成的依赖闭包为准。
+`package.json`/`pnpm-lock.yaml` 或 `pyproject.toml`/`constraints.txt`。当前构建脚本生成的精确闭包
+主要覆盖 Python；普通前端 npm 依赖不能仅凭 `package.json`/lock 更新或手工说明视为合规。引入
+`@xterm/*` 必须同批新增从 npm lock 提取版本/传递依赖事实并核对许可证、PURL、CycloneDX SBOM、
+Notice/`THIRD_PARTY_COMPONENTS.md` 的自动化测试，以及正式 package smoke。
 
 ## 目标边界
 
@@ -191,11 +199,15 @@ packaging_resource_missing
 
 ### WebSocket 背压和资源释放
 
+- 现有 Task/Agent/Traffic WS 都是服务端推送且没有 `receive_*`；Online MR、AC 常驻采集和 SFTP
+  只能借鉴连接/取消/清理生命周期，不得冒充终端所需的通用双向交互 Transport。
 - 终端输入控制帧与输出数据帧分型；限制单帧、发送队列、输出 ring buffer、滚屏和空闲时间。
 - 慢消费者不得无限积压；达到上限后先给稳定诊断，再受控断开，绝不阻塞设备读取线程。
 - Task WebSocket 继续复用 `/ws/tasks`；终端使用独立 session WS，不混写 Task Event。
 - 标签关闭、站点切换、Renderer 销毁、Backend 重启和 Electron 完整退出均必须关闭连接、reader、
   timer、queue 和临时授权。托盘隐藏同一进程时按明确设置保留或关闭。
+- `TerminalSessionStore` 和所有终端 Transport 必须接入现有 FastAPI lifespan shutdown；Backend
+  shutdown 即使没有 Renderer 主动断开，也要关闭全部 session、reader、timer、queue 和设备连接。
 - G6/ECharts 页面卸载时销毁实例和监听器；DuckDB 查询/Worker 取消时关闭连接并清理仅属于本次
   操作的 staging 文件。
 
@@ -213,7 +225,10 @@ syslog_rule_engine
 scrapli_transport
 ```
 
-用户可见页面、Tab 和动作还必须登记 Feature Registry，并接入 i18n。替换 parser、存储查询路径和
+用户可见页面、Tab 和动作还必须登记 Feature Registry，并接入 i18n。`embedded_terminal` 在正式
+package smoke、Windows 10/11 人工验收和安全门全部通过前保持默认关闭/development；能力探测成功
+只说明依赖可加载，不能使页面或入口显示。阶段 1 还必须同时满足 Electron Desktop runtime、本机
+受保护 session 和 Feature 门，Browser/Server 一律 fail closed。替换 parser、存储查询路径和
 Transport 的开关默认关闭；依赖缺失或能力探测失败时旧路径继续工作，应用不能因此启动失败。
 
 ## 阶段计划和文件影响范围
@@ -223,7 +238,7 @@ Transport 的开关默认关闭；依赖缺失或能力探测失败时旧路径�
 | 阶段 | 依赖顺序 | 预计主要影响 | Flag / 初始状态 | 回滚 |
 | --- | --- | --- | --- | --- |
 | 0 审计/ADR | 无 | 本 ADR、`docs/README.md` | 无 | 回退文档提交；不影响运行时 |
-| 1 xterm 会话终端 | 阶段 0 | `src/netconsole/services/terminal/`、Application Service、terminal Router/DTO/WS、`apps/web/src/views/terminal/`、导航/Feature/i18n、必要 Main/Preload 生命周期测试、Node 依赖与合规文件 | `embedded_terminal`；能力探测通过后才显示 | 关闭 Flag；移除新路由/依赖；外部终端与工具集保持可用 |
+| 1 xterm 会话终端 | 阶段 0 | `src/netconsole/services/terminal/`、Application Service、terminal Router/DTO/WS、`apps/web/src/views/terminal/`、导航/Feature/i18n、必要 Main/Preload 生命周期测试、Node 依赖与合规文件 | `embedded_terminal` 默认关闭/development；仅 Electron Desktop，正式 package smoke、Windows 10/11 人工验收和安全门通过后才可评审开启 | 关闭 Flag；移除新路由/依赖；外部终端与工具集保持可用 |
 | 2 TTP Parser Registry | 阶段 0；可与阶段 1独立 | parser registry、TTP adapter、版本化模板资源、shadow diagnostics、Worker/测试、PyInstaller data、Python 依赖与合规文件 | `ttp_parser_shadow` 默认关闭；即使开启仍由 legacy 产出生产结果 | 关闭 shadow；删除模板派生诊断；legacy parser 不删除 |
 | 3 G6 拓扑 | 阶段 0；建议复用阶段 2稳定 DTO | topology Query Service/DTO/API、`apps/web/src/components/topology/`、设备 LLDP 和车内固定拓扑页面、导出动作、Node 依赖与合规文件 | `g6_topology` 初始受控开启 | 关闭 Flag，保留原表格/固定拓扑；不影响 ECharts |
 | 4 DuckDB/Parquet MESH 试点 | 阶段 0；依赖稳定 MESH schema | analytics adapter、Dataset Manifest Repository、MESH build/query Job/API、PathResolver、包资源/依赖/性能脚本 | `duckdb_mesh_analytics` 默认关闭 | 停止新建数据集，旧 SQLite 查询恢复；删除仅可重建 Parquet，不删 raw/metadata |
@@ -239,15 +254,25 @@ Transport 的开关默认关闭；依赖缺失或能力探测失败时旧路径�
 
 ### 复用边界
 
+- 首发只允许 `RuntimeMode.DESKTOP`、本机 loopback 和已认证 Electron Desktop session；Browser/Server
+  即使能访问普通 API 或携带现有 cookie，也必须返回稳定的 `feature_disabled`/未授权结果并 fail closed。
 - 复用 `ConnectionManager`、`ConnectionTarget`、host key、隧道、编码和错误清理；新增
   `InteractiveTerminalTransport` 窄接口，不把现有命令采集 API 当作字节流接口硬套。
+- Online MR、AC 常驻采集和 SFTP 只复用可证明适用的连接生命周期、取消与资源释放模式；它们没有
+  通用双向 WS/Transport 契约，阶段 1 不得用这些既有能力替代 `InteractiveTerminalTransport`。
 - 新建轻量 `TerminalSessionStore`，状态至少为 `CREATED/CONNECTING/AUTHENTICATING/READY/
   RECONNECTING/CLOSING/CLOSED/FAILED`，且 session_id 与局点、设备、transport、编码、cols/rows、
-  创建和最近活动时间关联。
+  创建和最近活动时间关联，并由现有 FastAPI lifespan shutdown 统一关闭。
 - API/WS 只能提交设备 ID、协议选择、凭据来源、resize 和输入数据；不得提交任意本机程序、
   Python 类名、任意 host/port 绕过设备授权或明文已保存密码。
-- 快捷命令复用 Command Reference/设备 Profile；第一阶段默认只读。手工输入不逐键审计，
-  但可以在客户端做高风险提示。
+- 设备终端输出一律视为不可信输入。阶段 1 默认禁用或以严格白名单控制 Web Links、OSC hyperlink/
+  clipboard、任意 URL、文件协议和外部打开；不得执行设备输出携带的脚本、导航或剪贴板动作，也不得
+  为 xterm 放宽现有 CSP。
+- 默认使用 DOM renderer。WebGL addon 后置为独立兼容性、安全、资源释放和正式包评估，不进入阶段 1
+  首发依赖集合。
+- 快捷命令复用 Command Reference/设备 Profile；第一阶段默认只读。复制、粘贴和外部动作必须由
+  用户显式触发；多行粘贴和高风险命令必须提示确认，且不得绕过后端设备授权、命令 Profile 和命令边界。
+  手工输入不逐键审计，但客户端提示不能代替后端约束。
 - 日志导出登记固定 Export Action；不自行保存路径，不在页面加载或会话恢复时自动弹 Save As。
 - 工作区只在当前进程内保留 session 引用；冷启动、Backend 重启和站点切换返回
   `session_expired`，不尝试恢复设备连接。
@@ -260,22 +285,28 @@ Transport 的开关默认关闭；依赖缺失或能力探测失败时旧路径�
 4. 凭据不出现在 API、WS 状态、Task、日志、错误、标题、导出名或持久化工作区中。
 5. FIT-AP Telnet 23 不错误附带用户名/密码；普通设备权限仍由后端决定。
 6. 托盘隐藏/恢复的同进程策略与完整退出策略；冷启动只显示 Dashboard，旧 session 明确失效。
-7. `@xterm/*` 本地资源在 CSP 下工作，无 CDN、无 `node-pty`/ConPTY 运行时依赖。
+7. `@xterm/*` 本地资源以 DOM renderer 在原 CSP 下工作，无 CDN、CSP 放宽、WebGL addon 或
+   `node-pty`/ConPTY 运行时依赖。
 8. 不影响 SecureCRT/Xshell/PuTTY、第三方工具 Store、全局任务详情和现有 Job WS。
 9. Vue 组件行为、API/Application/adapter、Main/Preload 白名单、Feature/i18n 和架构 Guard。
-10. Web production build、Electron typecheck/build、正式 package smoke、NOTICE/SBOM、包体积对比。
-11. `git diff --check`、相关 Ruff/pytest/py_compile；记录 main、feature、new/common failed nodeids。
-12. Monaco 相关文件为零改动。
+10. 设备输出中的 Web Links、OSC hyperlink/clipboard、任意 URL、文件协议和外部打开默认禁用或
+    受白名单控制；复制粘贴只能由用户动作触发，多行/高风险输入确认不能绕过后端命令边界。
+11. Web production build、Electron typecheck/build、正式 package smoke；npm lock 版本与传递依赖、
+    许可证、精确 PURL/SBOM、Notice/`THIRD_PARTY_COMPONENTS.md` 自动一致性；包体积对比。
+12. `git diff --check`、相关 Ruff/pytest/py_compile；记录 main、feature、new/common failed nodeids。
+13. Monaco 相关文件为零改动。
 
 ### 人工和平台验收
 
 - 从设备详情、工具集内置入口和 AC/FIT-AP 上下文打开终端；同时连接两台设备且输出不串线。
 - 搜索、清屏、复制粘贴、fit、编码、重连、日志导出和活动操作关闭确认符合现有 UI 规范。
-- Windows 10/11 正式安装包实测；完整退出后无残留 SSH、Python、Electron 子进程。
+- `UNVERIFIED`：Windows 10/11 正式安装包实测和安全人工验收完成前，`embedded_terminal` 保持
+  默认关闭/development；完整退出后还必须确认无残留 SSH、Python、Electron 子进程。
 - `UNVERIFIED`：Windows Server 2012 只能在目标机实测后提升等级。阶段 1 不能以“不依赖 ConPTY”
-  推导出完整兼容。
+  推导出完整兼容；Electron 43/Node 24、旧 CPU 指令集和 VC Runtime 组合兼容性均未知。
 
-任一凭据泄漏、资源残留、无限缓冲、CSP 放宽、正式包资源缺失或第三方工具回归均阻断阶段 1。
+任一凭据泄漏、资源残留、无限缓冲、CSP 放宽、未受控链接/OSC/剪贴板/粘贴、Browser/Server
+错误开放、npm 合规闭包缺失、正式包资源缺失或第三方工具回归均阻断阶段 1。
 
 ## 阶段 2 fixture 和迁移清点
 
@@ -373,17 +404,21 @@ legacy，直到单命令同时满足多份 fixture、一致性、边界样本、
 每个新增依赖都要完成：
 
 1. 维护状态、许可证、固定版本和传递依赖清点；
-2. Python constraints 或 Node lock 更新；
-3. `open_source_notices.json`、`THIRD_PARTY_COMPONENTS.md` 和 CycloneDX SBOM 更新；
+2. Python constraints 或 Node lock 更新；Node 依赖还必须从 npm lock 自动提取精确版本和传递闭包；
+3. `open_source_notices.json`、Notice、`THIRD_PARTY_COMPONENTS.md` 和 CycloneDX SBOM 更新，并自动
+   校验许可证、精确 PURL 与 lock/SBOM 一致性；
 4. PyInstaller `RUNTIME_IMPORTS/RUNTIME_DATAS` 或 electron-builder 资源白名单更新；
 5. 完全离线、干净环境安装和构建；
 6. Electron CSP、asar/extraResources、Backend 冻结加载和 package smoke；
 7. 安装包体积前后对比、升级、修复和卸载验证；
 8. Windows 10/11，以及 Windows Server 2012、目标 CPU 指令和 VC Runtime 的分别记录。
 
-Windows Server 2012 当前统一标记 `UNVERIFIED`。能力探测必须在导入可选二进制依赖之前完成，
+Windows 10 和 Windows Server 2012 的内置终端当前均标记 `UNVERIFIED`。能力探测必须在导入可选
+二进制依赖之前完成，
 可选依赖不得在模块顶层使 Backend 崩溃；探测失败返回 `dependency_unavailable`，关闭 Feature 并
-保留旧路径。只有目标系统正式安装包实测证据才能提升兼容等级。
+保留旧路径。探测成功也不能自动显示或开启 `embedded_terminal`；只有正式 package smoke、
+Windows 10/11 人工验收、安全门和目标系统正式安装包实测证据才能提升对应兼容等级。Windows
+Server 2012 还必须单独验证 Electron 43/Node 24、旧 CPU 指令集和 VC Runtime。
 
 ## 验证和后续决策
 
@@ -394,9 +429,10 @@ pnpm install、前端全量构建或正式打包。阶段 0 没有生产代码�
 
 1. `InteractiveTerminalTransport` 是否能在不泄漏凭据的前提下复用现有 Netmiko/Paramiko 连接；
 2. 内置终端的托盘驻留默认策略和空闲关闭阈值；
-3. xterm addon 最小集合、包体积和正式包 CSP；
-4. Windows Server 2012 测试机及真实只读 H3C/ZTE 设备；
-5. main 基线失败集合，包括已知 Netmiko 定向失败是否仍存在。
+3. xterm addon 最小集合、DOM renderer、包体积和不放宽的正式包 CSP；
+4. npm lock/PURL/SBOM/许可证自动闭包以及 Notice/`THIRD_PARTY_COMPONENTS.md` 门禁；
+5. Windows 10/11、Windows Server 2012 测试机及真实只读 H3C/ZTE 设备；
+6. main 基线失败集合，包括已知 Netmiko 定向失败是否仍存在。
 
 本 ADR 不授权自动合并。每个阶段的 Draft PR 必须陈述修改/未修改范围、数据迁移、安全、回滚、
 测试、main/feature/new/common failed nodeids、正式包结果和现场待验证项。
