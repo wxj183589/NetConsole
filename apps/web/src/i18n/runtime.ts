@@ -111,6 +111,22 @@ const en: Record<string, string> = {
   'trackside.result.notice.not_executed_suffix': ', {count} targets were not executed',
   'trackside.result.notice.reason_suffix': '; primary reason: {reason}',
   'trackside.result.notice.ignored_suffix': '; {count} items were not applicable or were ignored',
+  'config_diff.visual': 'Visual comparison',
+  'config_diff.details': 'Diff details',
+  'config_diff.side_by_side': 'Side by side',
+  'config_diff.inline': 'Inline',
+  'config_diff.word_wrap': 'Word wrap',
+  'config_diff.filter_all': 'All lines',
+  'config_diff.filter_added': 'Added only',
+  'config_diff.filter_removed': 'Removed only',
+  'config_diff.filter_modified': 'Modified only',
+  'config_diff.previous': 'Previous difference',
+  'config_diff.next': 'Next difference',
+  'config_diff.empty_content': 'The configuration is empty',
+  'config_diff.no_difference': 'No differences between the configurations',
+  'config_diff.visual_aria': 'Visual configuration comparison',
+  'config_diff.monaco_failed': 'The advanced configuration viewer failed to load. The basic diff view is active.',
+  'config_diff.monaco_too_large': 'The configuration is too large for the advanced viewer. The structured diff view is active.',
 }
 export function setAppLocale(value: SystemLanguage): void { locale.value = value }
 export function currentAppLocale(): SystemLanguage { return locale.value }
