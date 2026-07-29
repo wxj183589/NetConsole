@@ -86,6 +86,16 @@ def test_ac_management_get_api_is_read_only_and_redacts_serial_number(tmp_path: 
     assert "SECRET-SN" not in detail.text
     assert content.status_code == 200
     assert diff.status_code == 200
+    diff_body = diff.json()
+    assert diff_body["left_label"].startswith("saved · ")
+    assert diff_body["right_label"].startswith("running · ")
+    assert diff_body["left_content"]
+    assert diff_body["right_content"]
+    assert diff_body["diff_rows"]
+    assert diff_body["diff_summary"]["modified"] >= 1
+    assert all(set(row) == {"left_line", "left_text", "status", "right_line", "right_text"} for row in diff_body["diff_rows"])
+    assert "file_path" not in diff.text
+    assert str(files["running"]) not in diff.text
     assert after_db == before_db
     assert after_config == before_config
 

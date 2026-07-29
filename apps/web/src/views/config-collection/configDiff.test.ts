@@ -2,14 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import {
   buildConfigDiffDocuments,
-  configDiffNavigationTargets,
-  correctConfigDiffChangeIndex,
-  exceedsMonacoDiffLimit,
-  MONACO_DIFF_MAX_TOTAL_CHARACTERS,
-  nextConfigDiffChangeIndex,
   parseConfigDiffRows,
   parseConfigDiffSummary,
-  statusForConfigDiffFilter,
 } from './configDiff'
 import type { ConfigDiffRow } from '../../types/configCollection'
 
@@ -22,16 +16,6 @@ describe('configuration side-by-side diff contract', () => {
       { left_line: 2, left_text: 'vlan 10', status: '~', right_line: 2, right_text: 'vlan 20' },
     ])
     expect(parseConfigDiffSummary({ added: 1, removed: 2, modified: 3 })).toEqual({ added: 1, removed: 2, modified: 3 })
-  })
-
-  it('maps all filters and wraps previous/next navigation', () => {
-    expect(statusForConfigDiffFilter('all')).toBeNull()
-    expect(statusForConfigDiffFilter('added')).toBe('+')
-    expect(statusForConfigDiffFilter('removed')).toBe('-')
-    expect(statusForConfigDiffFilter('modified')).toBe('~')
-    expect(nextConfigDiffChangeIndex(0, 3, -1)).toBe(2)
-    expect(nextConfigDiffChangeIndex(2, 3, 1)).toBe(0)
-    expect(nextConfigDiffChangeIndex(0, 0, 1)).toBe(0)
   })
 
   it('rebuilds complete left and right documents without changing the input', () => {
@@ -94,32 +78,6 @@ describe('configuration side-by-side diff contract', () => {
     })
   })
 
-  it('builds navigation targets from the complete row set and corrects filtered positions', () => {
-    const rows = [
-      row(1, 'same', '=', 1, 'same'),
-      row(2, 'old', '~', 2, 'new'),
-      row(null, '', '+', 3, 'added'),
-      row(3, 'removed', '-', null, ''),
-    ]
-
-    expect(configDiffNavigationTargets(rows)).toEqual([
-      { leftLine: 2, rightLine: 2 },
-      { leftLine: null, rightLine: 3 },
-      { leftLine: 3, rightLine: null },
-    ])
-    expect(configDiffNavigationTargets(rows, 'added')).toEqual([
-      { leftLine: null, rightLine: 3 },
-    ])
-    expect(correctConfigDiffChangeIndex(3, 1)).toBe(0)
-    expect(correctConfigDiffChangeIndex(-1, 2)).toBe(0)
-    expect(correctConfigDiffChangeIndex(1, 0)).toBe(0)
-  })
-
-  it('guards Monaco without truncating either document', () => {
-    const oversized = 'x'.repeat(MONACO_DIFF_MAX_TOTAL_CHARACTERS + 1)
-    expect(exceedsMonacoDiffLimit(oversized, '')).toBe(true)
-    expect(exceedsMonacoDiffLimit('line 1\nline 2', 'line 1\nline 3')).toBe(false)
-  })
 })
 
 function row(

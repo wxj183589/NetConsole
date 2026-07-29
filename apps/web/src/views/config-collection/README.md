@@ -2,7 +2,7 @@
 
 本目录呈现配置快照、差异、批量采集和导出状态。采集、原始文本、数据库和后台任务全部由 Core/Job Center 管理，页面只负责交互和状态绑定。
 
-主要入口为 `ConfigCollectionView.vue`、`configDiff.ts` 和通用只读 `components/ConfigMonacoDiff.vue`。修改差异语义或导入导出操作时运行本目录测试并检查文件契约。
+主要入口为 `ConfigCollectionView.vue`、`configDiff.ts` 和 `configDiffAdapter.ts`。页面只把后台结果适配为共享模型；只读 Monaco、工具栏、导航、结构化明细和降级统一位于 `apps/web/src/components/config-diff/`。
 
 快照、结构化双栏 Diff 和代码面板只消费 `theme/` 的面板与代码语义 Token；Monaco 通过全局主题事件切换 `vs` / `vs-dark`。新增 Diff 状态不得在页面内写固定色值。
 

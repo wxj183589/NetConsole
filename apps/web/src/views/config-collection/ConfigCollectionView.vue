@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Delete, Download, Refresh, Search, View } from '@element-plus/icons-vue'
@@ -38,17 +38,13 @@ import { downloadBackendResource } from '../../platform/runtime'
 import { t } from '../../i18n/runtime'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
-import ConfigMonacoDiff from './components/ConfigMonacoDiff.vue'
+import ConfigDiffViewer from '../../components/config-diff/ConfigDiffViewer.vue'
+import type { SharedConfigDiffModel } from '../../components/config-diff/configDiffTypes'
+import { configCollectionDiffModel } from './configDiffAdapter'
 import {
   buildConfigDiffDocuments,
-  configDiffNavigationTargets,
-  correctConfigDiffChangeIndex,
-  exceedsMonacoDiffLimit,
-  nextConfigDiffChangeIndex,
   parseConfigDiffRows,
   parseConfigDiffSummary,
-  statusForConfigDiffFilter,
-  type ConfigDiffFilter,
 } from './configDiff'
 
 const router = useRouter()
@@ -74,12 +70,6 @@ const loading = ref(false)
 const snapshotLoading = ref(false)
 const error = ref('')
 type ResultKind = 'none' | 'content' | 'diff'
-type DiffViewMode = 'visual' | 'details'
-type MonacoDiffExposed = {
-  revealDifference: (leftLine: number | null, rightLine: number | null) => void
-  layout: () => void
-  focus: () => void
-}
 const resultKind = ref<ResultKind>('none')
 const resultTitle = ref('')
 const resultText = ref('')
@@ -91,16 +81,8 @@ const resultDiffRightLabel = ref('right')
 const resultDiffOriginalText = ref('')
 const resultDiffModifiedText = ref('')
 const resultDiffComparisonId = ref('')
-const diffViewport = ref<HTMLElement | null>(null)
-const monacoDiffRef = ref<MonacoDiffExposed | null>(null)
-const diffViewMode = ref<DiffViewMode>('visual')
-const renderDiffSideBySide = ref(true)
-const diffWordWrap = ref(false)
-const monacoError = ref('')
 const resultArtifactId = ref('')
 const resultArtifactName = ref('')
-const diffFilter = ref<ConfigDiffFilter>('all')
-const currentDiffChange = ref(0)
 const focusedTaskId = ref('')
 const activeTaskIds = ref(new Set<string>())
 const handledTerminalTasks = new Set<string>()
@@ -145,26 +127,16 @@ const comparisonPairSource = computed(() => {
   return ''
 })
 const hasValidSnapshotPair = computed(() => Boolean(effectiveSnapshotPair.value))
-const filteredDiffRows = computed(() => {
-  const status = statusForConfigDiffFilter(diffFilter.value)
-  return status ? resultDiffRows.value.filter((row) => row.status === status) : resultDiffRows.value
-})
-const diffNavigation = computed(() => configDiffNavigationTargets(resultDiffRows.value, diffFilter.value))
-const diffChangeCount = computed(() => diffNavigation.value.length)
-const monacoLimitExceeded = computed(() => exceedsMonacoDiffLimit(
-  resultDiffOriginalText.value,
-  resultDiffModifiedText.value,
-))
-const monacoFallbackMessage = computed(() => {
-  if (monacoError.value) return monacoError.value
-  if (monacoLimitExceeded.value) {
-    return t(
-      'config_diff.monaco_too_large',
-      '配置内容过大，已切换为结构化差异明细。',
-    )
-  }
-  return ''
-})
+const sharedDiffModel = computed<SharedConfigDiffModel>(() => configCollectionDiffModel({
+  comparisonId: resultDiffComparisonId.value,
+  originalLabel: resultDiffLeftLabel.value,
+  modifiedLabel: resultDiffRightLabel.value,
+  originalText: resultDiffOriginalText.value,
+  modifiedText: resultDiffModifiedText.value,
+  summary: resultDiffSummary.value,
+  rows: resultDiffRows.value,
+  rawDiff: resultDiff.value,
+}))
 const deviceColumns: NcTableColumn<ConfigDevice>[] = [
   { key: 'selection', label: '', type: 'selection', valueType: 'selection', hideable: false },
   { key: 'device', label: '设备', valueType: 'name', measureValue: (row) => `${row.name || '—'} ${row.system_name || '—'}` },
@@ -488,18 +460,6 @@ function addTaskReferences(refs: ConfigTaskReference[]): void {
   tasks.value = [...known.values()].sort((left, right) => right.created_time.localeCompare(left.created_time))
 }
 
-async function changeDiffFilter(value: ConfigDiffFilter): Promise<void> {
-  diffFilter.value = value
-  currentDiffChange.value = correctConfigDiffChangeIndex(0, diffChangeCount.value)
-  await scrollToCurrentDiff()
-}
-
-async function changeDiffView(value: DiffViewMode): Promise<void> {
-  if (value === 'visual' && monacoFallbackMessage.value) return
-  diffViewMode.value = value
-  await scrollToCurrentDiff()
-}
-
 function chooseSnapshot(snapshot: ConfigSnapshot, side: 'left' | 'right'): void {
   if (!selectedDevice.value) return
   const choice = { device: selectedDevice.value, snapshot }
@@ -558,43 +518,6 @@ async function openResultDirectory(directoryKind: 'config_snapshots' | 'config_e
   }
 }
 
-function previousDiff(): void {
-  if (!diffChangeCount.value) return
-  currentDiffChange.value = nextConfigDiffChangeIndex(currentDiffChange.value, diffChangeCount.value, -1)
-  void scrollToCurrentDiff()
-}
-
-function nextDiff(): void {
-  if (!diffChangeCount.value) return
-  currentDiffChange.value = nextConfigDiffChangeIndex(currentDiffChange.value, diffChangeCount.value, 1)
-  void scrollToCurrentDiff()
-}
-
-async function scrollToCurrentDiff(): Promise<void> {
-  await nextTick()
-  currentDiffChange.value = correctConfigDiffChangeIndex(
-    currentDiffChange.value,
-    diffChangeCount.value,
-  )
-  const target = diffNavigation.value[currentDiffChange.value]
-  if (diffViewMode.value === 'visual' && target && monacoDiffRef.value) {
-    monacoDiffRef.value.revealDifference(target.leftLine, target.rightLine)
-    return
-  }
-  const rows = diffViewport.value?.querySelectorAll<HTMLElement>('[data-diff-change="true"]')
-  rows?.[currentDiffChange.value]?.scrollIntoView({ block: 'center' })
-}
-
-function handleMonacoReady(): void {
-  void scrollToCurrentDiff()
-}
-
-function handleMonacoError(message: string): void {
-  monacoError.value = message
-  diffViewMode.value = 'details'
-  void scrollToCurrentDiff()
-}
-
 function showTaskResult(task: ConfigTaskStatus): void {
   resultArtifactId.value = typeof task.result?.artifact_id === 'string' ? task.result.artifact_id : ''
   const result = task.result || {}
@@ -640,18 +563,8 @@ function showTaskResult(task: ConfigTaskStatus): void {
       : reconstructed.modifiedText
     resultDiffComparisonId.value = task.id
     resultDiffSummary.value = parseConfigDiffSummary(result.diff_summary)
-    diffFilter.value = 'all'
-    currentDiffChange.value = 0
-    diffViewMode.value = exceedsMonacoDiffLimit(
-      resultDiffOriginalText.value,
-      resultDiffModifiedText.value,
-    ) ? 'details' : 'visual'
-    renderDiffSideBySide.value = true
-    diffWordWrap.value = false
-    monacoError.value = ''
     resultText.value = ''
     resultKind.value = 'diff'
-    void scrollToCurrentDiff()
   } else if (resultArtifactId.value) {
     resultTitle.value = 'Artifact 已生成'
     resultText.value = 'Artifact 已生成，可下载。'
@@ -673,12 +586,6 @@ function resetDiffResult(): void {
   resultDiffOriginalText.value = ''
   resultDiffModifiedText.value = ''
   resultDiffComparisonId.value = ''
-  diffViewMode.value = 'visual'
-  renderDiffSideBySide.value = true
-  diffWordWrap.value = false
-  monacoError.value = ''
-  diffFilter.value = 'all'
-  currentDiffChange.value = 0
 }
 
 function clearResult(): void {
@@ -794,7 +701,7 @@ function formatBytes(value: number | null): string {
       <div class="card-heading">
         <div>
           <h2>{{ resultTitle || '配置结果' }}</h2>
-          <p v-if="resultKind === 'diff'">新增 {{ resultDiffSummary.added }} · 删除 {{ resultDiffSummary.removed }} · 修改块 {{ resultDiffSummary.modified }}</p>
+          <p v-if="resultKind === 'diff'">完整配置正文与差异结构由后台任务返回</p>
           <p v-else>内容由后台任务返回，未暴露本机绝对路径</p>
         </div>
         <div class="heading-actions">
@@ -802,66 +709,9 @@ function formatBytes(value: number | null): string {
           <el-button @click="clearResult">清空</el-button>
         </div>
       </div>
-      <div v-if="resultKind === 'diff'" class="result-toolbar" aria-label="配置差异视图工具栏">
-        <el-button-group>
-          <el-button :type="diffViewMode === 'visual' ? 'primary' : 'default'" :disabled="Boolean(monacoFallbackMessage)" @click="changeDiffView('visual')">{{ t('config_diff.visual', '可视化对比') }}</el-button>
-          <el-button :type="diffViewMode === 'details' ? 'primary' : 'default'" @click="changeDiffView('details')">{{ t('config_diff.details', '差异明细') }}</el-button>
-        </el-button-group>
-        <el-button-group v-if="diffViewMode === 'visual'">
-          <el-button :type="renderDiffSideBySide ? 'primary' : 'default'" @click="renderDiffSideBySide = true">{{ t('config_diff.side_by_side', '并排') }}</el-button>
-          <el-button :type="!renderDiffSideBySide ? 'primary' : 'default'" @click="renderDiffSideBySide = false">{{ t('config_diff.inline', '内联') }}</el-button>
-        </el-button-group>
-        <el-checkbox v-if="diffViewMode === 'visual'" v-model="diffWordWrap">{{ t('config_diff.word_wrap', '自动换行') }}</el-checkbox>
-        <el-select v-if="diffViewMode === 'details'" :model-value="diffFilter" size="small" @update:model-value="changeDiffFilter">
-          <el-option :label="t('config_diff.filter_all', '全部行')" value="all" />
-          <el-option :label="t('config_diff.filter_added', '仅新增')" value="added" />
-          <el-option :label="t('config_diff.filter_removed', '仅删除')" value="removed" />
-          <el-option :label="t('config_diff.filter_modified', '仅修改')" value="modified" />
-        </el-select>
-        <div class="diff-navigation">
-          <el-button :disabled="!diffChangeCount" @click="previousDiff">{{ t('config_diff.previous', '上一处差异') }}</el-button>
-          <span class="diff-position">{{ diffChangeCount ? currentDiffChange + 1 : 0 }} / {{ diffChangeCount }}</span>
-          <el-button :disabled="!diffChangeCount" @click="nextDiff">{{ t('config_diff.next', '下一处差异') }}</el-button>
-        </div>
-      </div>
-      <el-alert
-        v-if="resultKind === 'diff' && monacoFallbackMessage"
-        :title="monacoFallbackMessage"
-        type="warning"
-        :closable="false"
-        show-icon
-        class="diff-fallback-alert"
-      />
       <pre v-if="resultKind === 'content' && resultText" class="code-panel">{{ resultText }}</pre>
       <div v-else-if="resultKind === 'content'" class="result-empty">{{ t('config_diff.empty_content', '配置内容为空') }}</div>
-      <ConfigMonacoDiff
-        v-else-if="diffViewMode === 'visual' && !monacoFallbackMessage"
-        ref="monacoDiffRef"
-        :original-text="resultDiffOriginalText"
-        :modified-text="resultDiffModifiedText"
-        :original-label="resultDiffLeftLabel"
-        :modified-label="resultDiffRightLabel"
-        :comparison-id="resultDiffComparisonId"
-        :render-side-by-side="renderDiffSideBySide"
-        :word-wrap="diffWordWrap"
-        @ready="handleMonacoReady"
-        @initialization-error="handleMonacoError"
-      />
-      <div v-else-if="resultDiffRows.length" ref="diffViewport" class="diff-table" role="table" aria-label="配置差异双栏视图">
-        <div class="diff-row diff-header" role="row"><span>#</span><strong>{{ resultDiffLeftLabel }}</strong><span>状态</span><span>#</span><strong>{{ resultDiffRightLabel }}</strong></div>
-        <div
-          v-for="(row, index) in filteredDiffRows"
-          :key="`${row.left_line}-${row.right_line}-${index}`"
-          class="diff-row"
-          :class="{ 'is-added': row.status === '+', 'is-removed': row.status === '-', 'is-modified': row.status === '~', 'is-equal': row.status === '=' }"
-          :data-diff-change="row.status !== '=' ? 'true' : 'false'"
-          role="row"
-        >
-          <span class="line-number">{{ row.left_line ?? '' }}</span><code>{{ row.left_text }}</code><span class="diff-status">{{ row.status }}</span><span class="line-number">{{ row.right_line ?? '' }}</span><code>{{ row.right_text }}</code>
-        </div>
-      </div>
-      <pre v-else-if="resultDiff" class="code-panel diff-panel">{{ resultDiff }}</pre>
-      <div v-else class="result-empty">{{ t('config_diff.no_difference', '左右配置无差异') }}</div>
+      <ConfigDiffViewer v-else :model="sharedDiffModel" />
     </div>
   </section>
 </template>
@@ -889,26 +739,10 @@ function formatBytes(value: number | null): string {
 .snapshot-choice small { color: var(--nc-primary); font-size: 11px; white-space: nowrap; }
 .comparison-actions { display: flex; align-items: center; gap: 8px; }
 .result-card { display: flex; min-width: 0; min-height: 0; flex: none; flex-direction: column; margin-top: 16px; }
-.result-toolbar { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px; border-top: 1px solid var(--nc-divider); border-bottom: 1px solid var(--nc-divider); background: var(--nc-bg-muted); }
-.diff-navigation { display: flex; align-items: center; gap: 8px; margin-left: auto; }
-.diff-fallback-alert { margin: 10px 16px 0; }
 .result-empty { display: grid; min-height: 160px; place-items: center; padding: 24px; color: var(--nc-text-secondary); background: var(--nc-bg-muted); }
 .code-panel { max-height: 470px; margin: 0; padding: 16px; overflow: auto; color: var(--nc-text-code); background: var(--nc-bg-code); font: 12px/1.55 Consolas, "Microsoft YaHei", monospace; white-space: pre; }
-.diff-panel { color: var(--nc-text-code); }
-.diff-position { min-width: 48px; color: var(--nc-text-code-muted); text-align: center; }
-.diff-table { max-height: 720px; overflow: auto; background: var(--nc-bg-code); }
-.diff-row { display: grid; grid-template-columns: 70px minmax(360px, 1fr) 70px 70px minmax(360px, 1fr); min-width: 1100px; color: var(--nc-text-code); background: var(--nc-bg-code-muted); font: 12px/1.55 Consolas, "Microsoft YaHei", monospace; }
-.diff-row > * { min-height: 28px; padding: 5px 8px; border-right: 1px solid var(--nc-border-code); border-bottom: 1px solid var(--nc-border-code); }
-.diff-row code { overflow: hidden; color: inherit; font: inherit; text-overflow: ellipsis; white-space: pre; }
-.diff-header { position: sticky; z-index: 2; top: 0; color: var(--nc-text-code); background: var(--nc-bg-code-header); }
-.diff-header > * { font-weight: 600; text-align: center; }
-.line-number { color: var(--nc-text-code-muted); background: var(--nc-bg-code-header); text-align: center; }
-.diff-status { text-align: center; }
-.diff-row.is-added { color: var(--nc-text-code-success); background: var(--nc-bg-code-added); }
-.diff-row.is-removed { color: var(--nc-text-code-danger); background: var(--nc-bg-code-removed); }
-.diff-row.is-modified { color: var(--nc-text-code-warning); background: var(--nc-bg-code-modified); }
 @media (max-width: 1200px) { .config-collection { height: auto; min-height: 100%; overflow: visible; } .main-grid { flex: none; grid-template-columns: 1fr; } .device-card, .snapshot-card { min-height: 55dvh; } .result-card { max-height: none; } }
 @media (max-width: 1200px) { .comparison-basket { grid-template-columns: 1fr 1fr; } .comparison-actions { grid-column: 1 / -1; } }
 @media (max-width: 1200px) { .toolbar { grid-template-columns: minmax(260px, 1fr) 210px; } .toolbar-actions { grid-column: 1 / -1; justify-content: flex-start; } }
-@media (max-width: 760px) { .toolbar { grid-template-columns: 1fr; } .toolbar-actions { grid-column: auto; } .card-heading { align-items: flex-start; flex-direction: column; } .heading-actions { flex-wrap: wrap; width: 100%; } .diff-navigation { width: 100%; margin-left: 0; } }
+@media (max-width: 760px) { .toolbar { grid-template-columns: 1fr; } .toolbar-actions { grid-column: auto; } .card-heading { align-items: flex-start; flex-direction: column; } .heading-actions { flex-wrap: wrap; width: 100%; } }
 </style>

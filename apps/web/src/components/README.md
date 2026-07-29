@@ -1,5 +1,7 @@
 # Web 公共组件
 
+`config-diff/` 提供跨模块只读配置对比能力，包括共享模型、Monaco Diff 生命周期、工具栏、导航、结构化明细和大文件/加载失败降级。业务页面只能通过 Adapter 提供数据，不得让共享组件依赖业务 Store 或 API。
+
 本目录提供跨页面复用的 Vue 组件和基础交互约束；业务域专属组件放在对应子目录或视图目录。公共组件不得隐藏网络、数据库或长耗时任务。
 
 主要入口包括 `NcCard.vue`、`NcStatusTag.vue`、`NcTable.vue` 和 `table/NcDataTable.vue`。`NcTable` 是尚未迁移页面的基础样式包装器；新增和完成迁移的标准业务表格使用 `NcDataTable` 及统一列定义、自动列宽和视图偏好。表格遵守 `docs/ui/TABLE_AND_FIELD_STANDARDS.md`。修改后运行组件定向测试并检查主题、滚动和可访问性。

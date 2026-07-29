@@ -185,6 +185,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
   async function loadDiff(snapshotId: number): Promise<void> {
     configLoading.value = true
     configContent.value = null
+    configDiff.value = null
     try {
       configDiff.value = await getAcConfigDiff(snapshotId)
       recordSuccess()

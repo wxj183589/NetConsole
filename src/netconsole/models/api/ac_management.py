@@ -194,9 +194,29 @@ class AcConfigContentDTO(ApiModel):
     truncated: bool = False
 
 
+class AcConfigDiffRowDTO(ApiModel):
+    left_line: int | None = None
+    left_text: str = ""
+    status: str
+    right_line: int | None = None
+    right_text: str = ""
+
+
+class AcConfigDiffSummaryDTO(ApiModel):
+    added: int = 0
+    removed: int = 0
+    modified: int = 0
+
+
 class AcConfigDiffDTO(ApiModel):
     from_snapshot_id: int
     to_snapshot_id: int
+    left_label: str = ""
+    right_label: str = ""
+    left_content: str = ""
+    right_content: str = ""
+    diff_rows: list[AcConfigDiffRowDTO] = Field(default_factory=list)
+    diff_summary: AcConfigDiffSummaryDTO = Field(default_factory=AcConfigDiffSummaryDTO)
     added: list[str] = Field(default_factory=list)
     removed: list[str] = Field(default_factory=list)
     modified: list[dict[str, str]] = Field(default_factory=list)

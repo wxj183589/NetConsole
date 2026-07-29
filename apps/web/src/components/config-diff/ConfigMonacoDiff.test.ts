@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
   loadMonacoEditor: vi.fn(),
 }))
 
-vi.mock('../../../platform/monacoEnvironment', () => ({
+vi.mock('../../platform/monacoEnvironment', () => ({
   loadMonacoEditor: mocks.loadMonacoEditor,
 }))
 
@@ -128,6 +128,22 @@ describe('ConfigMonacoDiff', () => {
     expect(models[1].dispose).toHaveBeenCalledTimes(1)
     expect(editor.setModel).toHaveBeenLastCalledWith({ original: models[2], modified: models[3] })
     wrapper.unmount()
+  })
+
+  it('keeps model URIs isolated across simultaneous viewer instances', async () => {
+    const first = mountComponent({ comparisonId: 'same-task' })
+    await flushPromises()
+    const second = mountComponent({ comparisonId: 'same-task' })
+    await flushPromises()
+
+    const firstOriginalUri = createModel.mock.calls[0][2] as string
+    const secondOriginalUri = createModel.mock.calls[2][2] as string
+    expect(firstOriginalUri).not.toBe(secondOriginalUri)
+
+    first.unmount()
+    expect(models[0].dispose).toHaveBeenCalledTimes(1)
+    expect(models[2].dispose).not.toHaveBeenCalled()
+    second.unmount()
   })
 
   it('reveals both available lines and follows runtime theme changes', async () => {

@@ -5,6 +5,7 @@ import json
 import re
 import sqlite3
 from contextlib import closing
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -37,7 +38,11 @@ from netconsole.models.api.ac_management import (
 )
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.services.ap_extension_import import normalize_ap_mac
-from netconsole.services.config_text import compare_config_text, extract_h3c_configuration_body
+from netconsole.services.config_text import (
+    build_side_by_side_rows,
+    compare_config_text,
+    extract_h3c_configuration_body,
+)
 from netconsole.services.device_web_service import build_https_url, effective_https_port
 from netconsole.services.fit_ap_link_info import lldp_display_status
 from netconsole.services.offline_ap_ledger import is_fit_ap_offline
@@ -459,18 +464,40 @@ class AcManagementQueryService:
             return None
         other = self._snapshot_row(site_id, other_snapshot_id) if other_snapshot_id is not None else None
         running, saved = self._config_pair(site_id, selected, other)
-        result = compare_config_text(self._snapshot_text(site_id, running), self._snapshot_text(site_id, saved))
+        running_text = self._snapshot_text(site_id, running)
+        saved_text = self._snapshot_text(site_id, saved)
+        result = compare_config_text(running_text, saved_text)
+        rows, added_count, removed_count, modified_count = build_side_by_side_rows(
+            saved_text.splitlines(),
+            running_text.splitlines(),
+        )
         max_chars = max(1, min(int(limit), 500_000))
         raw_diff = result.raw_diff[:max_chars]
         return AcConfigDiffDTO(
             from_snapshot_id=int(saved["id"]),
             to_snapshot_id=int(running["id"]),
+            left_label=self._snapshot_label(saved),
+            right_label=self._snapshot_label(running),
+            left_content=saved_text,
+            right_content=running_text,
+            diff_rows=[asdict(row) for row in rows],
+            diff_summary={
+                "added": added_count,
+                "removed": removed_count,
+                "modified": modified_count,
+            },
             added=result.added,
             removed=result.removed,
             modified=result.modified,
             raw_diff=raw_diff,
             truncated=len(result.raw_diff) > len(raw_diff),
         )
+
+    @staticmethod
+    def _snapshot_label(row: dict[str, object]) -> str:
+        snapshot_type = str(row.get("type") or "config")
+        timestamp = str(row.get("timestamp") or "")
+        return f"{snapshot_type} · {timestamp}" if timestamp else snapshot_type
 
     def _filtered_aps(
         self,

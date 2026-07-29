@@ -24,8 +24,8 @@ import {
 } from 'vue'
 import type * as Monaco from 'monaco-editor/editor/editor.api.js'
 
-import { t } from '../../../i18n/runtime'
-import { NETCONSOLE_THEME_CHANGE_EVENT } from '../../../theme/theme'
+import { t } from '../../i18n/runtime'
+import { NETCONSOLE_THEME_CHANGE_EVENT } from '../../theme/theme'
 
 const props = withDefaults(defineProps<ConfigMonacoDiffProps>(), {
   renderSideBySide: true,
@@ -111,7 +111,7 @@ watch(
 
 async function initialize(): Promise<void> {
   try {
-    const environment = await import('../../../platform/monacoEnvironment')
+    const environment = await import('../../platform/monacoEnvironment')
     const loaded = await environment.loadMonacoEditor()
     if (disposed || !container.value) return
     monaco = loaded
@@ -173,12 +173,12 @@ function replaceModels(): void {
   previousModified?.dispose()
 }
 
-function resolvedTheme(): 'vs' | 'vs-dark' {
+function monacoThemeFromDocument(): 'vs' | 'vs-dark' {
   return document.documentElement.dataset.theme === 'dark' ? 'vs-dark' : 'vs'
 }
 
 function syncTheme(): void {
-  if (monaco) monaco.editor.setTheme(resolvedTheme())
+  if (monaco) monaco.editor.setTheme(monacoThemeFromDocument())
 }
 
 function bindEnvironmentListeners(): void {

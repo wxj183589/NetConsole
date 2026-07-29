@@ -48,7 +48,9 @@ Electron 页面 `/config-center` 负责 H3C/Comware 配置采集、保存配置�
 相关路径：
 
 - `apps/web/src/views/config-collection/`
-- `apps/web/src/views/config-collection/components/ConfigMonacoDiff.vue`
+- `apps/web/src/components/config-diff/ConfigDiffViewer.vue`
+- `apps/web/src/components/config-diff/ConfigMonacoDiff.vue`
+- `apps/web/src/views/config-collection/configDiffAdapter.ts`
 - `apps/web/src/platform/monacoEnvironment.ts`
 - `src/netconsole/services/config_collection_web_service.py`
 - `src/netconsole/services/config_lifecycle_service.py`

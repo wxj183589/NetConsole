@@ -4,22 +4,12 @@ import type {
   ConfigDiffSummary,
 } from '../../types/configCollection'
 
-export type ConfigDiffFilter = 'all' | 'added' | 'removed' | 'modified'
-
 export interface ConfigDiffDocuments {
   originalText: string
   modifiedText: string
   originalLineCount: number
   modifiedLineCount: number
 }
-
-export interface ConfigDiffNavigationTarget {
-  leftLine: number | null
-  rightLine: number | null
-}
-
-export const MONACO_DIFF_MAX_TOTAL_CHARACTERS = 4_000_000
-export const MONACO_DIFF_MAX_TOTAL_LINES = 100_000
 
 export function parseConfigDiffRows(value: unknown): ConfigDiffRow[] {
   if (!Array.isArray(value)) return []
@@ -48,17 +38,6 @@ export function parseConfigDiffSummary(value: unknown): ConfigDiffSummary {
   }
 }
 
-export function statusForConfigDiffFilter(value: ConfigDiffFilter): ConfigDiffStatus | null {
-  if (value === 'added') return '+'
-  if (value === 'removed') return '-'
-  if (value === 'modified') return '~'
-  return null
-}
-
-export function nextConfigDiffChangeIndex(current: number, count: number, step: -1 | 1): number {
-  return count > 0 ? (current + step + count) % count : 0
-}
-
 export function buildConfigDiffDocuments(diffRows: readonly ConfigDiffRow[]): ConfigDiffDocuments {
   const originalLines: string[] = []
   const modifiedLines: string[] = []
@@ -84,37 +63,8 @@ export function buildConfigDiffDocuments(diffRows: readonly ConfigDiffRow[]): Co
   }
 }
 
-export function configDiffNavigationTargets(
-  diffRows: readonly ConfigDiffRow[],
-  filter: ConfigDiffFilter = 'all',
-): ConfigDiffNavigationTarget[] {
-  const status = statusForConfigDiffFilter(filter)
-  return diffRows
-    .filter((row) => row.status !== '=' && (!status || row.status === status))
-    .map((row) => ({ leftLine: row.left_line, rightLine: row.right_line }))
-}
-
-export function correctConfigDiffChangeIndex(current: number, count: number): number {
-  if (count <= 0) return 0
-  return Math.min(Math.max(current, 0), count - 1)
-}
-
-export function exceedsMonacoDiffLimit(originalText: string, modifiedText: string): boolean {
-  if (originalText.length + modifiedText.length > MONACO_DIFF_MAX_TOTAL_CHARACTERS) return true
-  return countDocumentLines(originalText) + countDocumentLines(modifiedText) > MONACO_DIFF_MAX_TOTAL_LINES
-}
-
 function materializeDocument(lines: string[], lineCount: number): string {
   if (!lineCount) return ''
   const result = Array.from({ length: lineCount }, (_, index) => lines[index] ?? '')
   return result.join('\n')
-}
-
-function countDocumentLines(text: string): number {
-  if (!text) return 0
-  let count = 1
-  for (let index = 0; index < text.length; index += 1) {
-    if (text.charCodeAt(index) === 10) count += 1
-  }
-  return count
 }

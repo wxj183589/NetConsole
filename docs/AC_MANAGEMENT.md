@@ -59,9 +59,11 @@ FIT-AP 详情已提供站点、里程、点位说明和方向保存入口；保�
 
 ## 配置查看
 
-配置列表仅包含当前局点中 AC 对应的 `config_snapshots`。API 不返回绝对路径，只返回 `snapshot:<id>` 和文件名。正文继续调用现有 `extract_h3c_configuration_body`，差异继续调用 `compare_config_text`，本阶段没有改变配置裁剪或 diff 算法。
+配置列表仅包含当前局点中 AC 对应的 `config_snapshots`。API 不返回绝对路径，只返回 `snapshot:<id>` 和文件名。正文继续调用现有 `extract_h3c_configuration_body`，差异继续调用 `compare_config_text` 和 `build_side_by_side_rows`，没有改变配置裁剪或 diff 算法。
 
-正文单次最多返回 200,000 字符，页面默认按 100,000 字符分块加载；diff 选择时加载一次，不轮询。当前 `config_snapshots` 没有任务 ID 字段，DTO 的 `task_id` 保持空值，不从文件名或路径猜测任务关联。
+正文单次最多返回 200,000 字符，页面默认按 100,000 字符分块加载；diff 选择时加载一次，不轮询。对比响应按同批次 running/saved 快照 ID 与受控局点相对路径读取，返回左右完整清洗正文、标签、结构化行、计数摘要和兼容 `raw_diff`；Renderer 不解析 Unified Diff 还原正文。缺失、失败或 0B 快照不会打开空白对比器。
+
+AC 页面通过本域 Adapter 转为 `SharedConfigDiffModel`，与配置采集中心共同使用 `apps/web/src/components/config-diff/ConfigDiffViewer.vue`。共享 Viewer 统一 Monaco Worker、Model 生命周期、并排/内联、换行、导航、明暗主题、大文件保护和结构化降级，但不依赖 AC 或配置采集 Store/API。当前 `config_snapshots` 没有任务 ID 字段，DTO 的 `task_id` 保持空值，不从文件名或路径猜测任务关联。
 
 ## API 与受控刷新边界
 
