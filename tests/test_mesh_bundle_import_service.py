@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import json
 import sqlite3
 import stat
@@ -107,6 +108,53 @@ def test_bundle_enforces_archive_member_and_compression_boundaries(
     monkeypatch.setattr(bundle_module, "_MAX_ARCHIVE_SIZE", 8)
     with pytest.raises(MeshBundleImportError, match="50 MiB"):
         service.inspect(archive)
+
+
+def test_bundle_accepts_plain_and_gzip_logs_between_twenty_and_twenty_five_mib(
+    tmp_path: Path,
+) -> None:
+    payload = VALID_LOG + b"X" * (20 * 1024 * 1024)
+    archive = tmp_path / "large-logs.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as bundle:
+        bundle.writestr("plain/meshlog.log", payload)
+        bundle.writestr("gzip/meshlog.log.gz", gzip.compress(payload, compresslevel=0))
+
+    manifest = MeshBundleImportService("demo", PathResolver(tmp_path)).inspect(archive)
+
+    assert len(manifest.members) == 2
+    assert all(item.expanded_size_bytes == len(payload) for item in manifest.members)
+    assert all(item.expanded_size_bytes < 25 * 1024 * 1024 for item in manifest.members)
+
+
+def test_bundle_reports_gzip_expanded_size_and_damage_separately(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = MeshBundleImportService("demo", PathResolver(tmp_path))
+    oversized = tmp_path / "oversized-gzip.zip"
+    with zipfile.ZipFile(oversized, "w", compression=zipfile.ZIP_STORED) as bundle:
+        bundle.writestr("meshlog.log.gz", gzip.compress(b"X" * 2048))
+    monkeypatch.setattr(bundle_module, "_MAX_FILE_SIZE", 1024)
+
+    with pytest.raises(MeshBundleImportError) as expanded_error:
+        service.inspect(oversized)
+
+    assert expanded_error.value.code == "GZIP_EXPANDED_TOO_LARGE"
+    assert "解压后超过 25 MiB" in str(expanded_error.value)
+
+    damaged = tmp_path / "damaged-gzip.zip"
+    with zipfile.ZipFile(damaged, "w", compression=zipfile.ZIP_STORED) as bundle:
+        bundle.writestr("__uploads__/000001/meshlog.log.gz", b"not-gzip")
+
+    with pytest.raises(MeshBundleImportError) as damaged_error:
+        service.inspect(
+            damaged,
+            original_names={"__uploads__/000001/meshlog.log.gz": "meshlog.log.gz"},
+        )
+
+    assert damaged_error.value.code == "GZIP_INVALID"
+    assert str(damaged_error.value) == "GZIP 日志损坏或无法读取：meshlog.log.gz"
+    assert "__uploads__" not in str(damaged_error.value)
 
 
 def test_bundle_profile_mapping_uses_unmatched_contract(tmp_path: Path) -> None:

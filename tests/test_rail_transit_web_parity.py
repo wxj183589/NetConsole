@@ -782,6 +782,40 @@ def test_mesh_upload_staging_accepts_gzip_logs_and_preserves_parser_suffix(
     service.discard_mesh_staging("demo", staging)
 
 
+def test_mesh_upload_staging_accepts_file_between_twenty_and_twenty_five_mib(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    service, _normal, _export, _tasks = _service(paths)
+    payload = b"x" * (20 * 1024 * 1024 + 1)
+
+    staging, uploads = service.stage_mesh_uploads(
+        "demo",
+        [("meshlog.log", io.BytesIO(payload))],
+    )
+
+    assert uploads[0].stat().st_size == len(payload)
+    service.discard_mesh_staging("demo", staging)
+
+
+def test_mesh_upload_staging_rejects_file_over_twenty_five_mib_without_leaks(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    service, _normal, _export, _tasks = _service(paths)
+
+    with pytest.raises(RailTransitWebError) as error:
+        service.stage_mesh_uploads(
+            "demo",
+            [("meshlog.log", io.BytesIO(b"x" * (25 * 1024 * 1024 + 1)))],
+        )
+
+    assert error.value.code == "FILE_TOO_LARGE"
+    assert str(error.value) == "单个 MESH 日志不得超过 25 MiB"
+    upload_root = paths.runtime_cache_dir / "rail_web_uploads" / "demo"
+    assert not upload_root.exists() or not any(upload_root.iterdir())
+
+
 def test_mesh_upload_rejects_type_symlink_and_site_escape_without_leaks(
     tmp_path: Path,
 ) -> None:
@@ -1554,7 +1588,7 @@ def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_i
         oversized = client.post(
             "/api/online-mr/mesh-analysis/import",
             files={
-                "files": ("oversized.log", b"x" * (20 * 1024 * 1024 + 1), "text/plain")
+                "files": ("oversized.log", b"x" * (25 * 1024 * 1024 + 1), "text/plain")
             },
             data={"mr_id": profile.mr_id},
         )

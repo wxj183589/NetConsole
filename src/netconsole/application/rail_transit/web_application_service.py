@@ -74,6 +74,10 @@ from netconsole.services.job_center.local_process_adapter import LocalProcessAda
 from netconsole.services.job_center.task_application_service import TaskApplicationService, TaskResourceConflictError
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text, sanitize_web_export_snapshot
 from netconsole.services.mesh_storage_service import MeshStorageService
+from netconsole.services.mesh_import_limits import (
+    MESH_SINGLE_FILE_MAX_BYTES,
+    MESH_SINGLE_FILE_MAX_LABEL,
+)
 from netconsole.services.mesh_analysis_params_service import (
     load_site_mesh_analysis_params,
     mesh_analysis_params_template,
@@ -295,8 +299,11 @@ class RailTransitWebApplicationService:
                     while chunk := source.read(1024 * 1024):
                         file_size += len(chunk)
                         total_size += len(chunk)
-                        if file_size > 20 * 1024 * 1024:
-                            raise RailTransitWebError("FILE_TOO_LARGE", "单个 MESH 日志不得超过 20 MiB")
+                        if file_size > MESH_SINGLE_FILE_MAX_BYTES:
+                            raise RailTransitWebError(
+                                "FILE_TOO_LARGE",
+                                f"单个 MESH 日志不得超过 {MESH_SINGLE_FILE_MAX_LABEL}",
+                            )
                         if total_size > 100 * 1024 * 1024:
                             raise RailTransitWebError("FILES_TOO_LARGE", "MESH 导入文件总大小不得超过 100 MiB")
                         handle.write(chunk)

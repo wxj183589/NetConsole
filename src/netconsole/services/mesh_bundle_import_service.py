@@ -22,6 +22,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.models.mesh_log_models import MeshMrProfile
 from netconsole.parsers.mesh_log_parser import (
     MeshLogContentMetadata,
+    MeshLogSizeLimitError,
     inspect_mesh_log_path,
     inspect_mesh_log_stream,
 )
@@ -29,6 +30,10 @@ from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepositor
 from netconsole.repositories.mesh_mr_repository import SCHEMA_VERSION, MeshMrRepository, MeshSchemaRebuildRequired
 from netconsole.repositories.mesh_source_index_repository import MeshSourceIndexRepository
 from netconsole.services.mesh_import_service import MeshImportService
+from netconsole.services.mesh_import_limits import (
+    MESH_SINGLE_FILE_MAX_BYTES,
+    MESH_SINGLE_FILE_MAX_LABEL,
+)
 from netconsole.services.mesh_parsed_rebuild_service import MeshParsedRebuildService
 from netconsole.services.mesh_log_analysis_service import PARSER_VERSION
 from netconsole.services.mesh_storage_service import suggest_mesh_archive_filename
@@ -46,7 +51,7 @@ _PREVIEW_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _ALLOWED_SUFFIXES = (".log", ".txt", ".log.gz", ".txt.gz")
 _MAX_ARCHIVE_SIZE = 50 * 1024 * 1024
 _MAX_MEMBER_COUNT = 64
-_MAX_FILE_SIZE = 20 * 1024 * 1024
+_MAX_FILE_SIZE = MESH_SINGLE_FILE_MAX_BYTES
 _MAX_BUNDLE_SIZE = 100 * 1024 * 1024
 _MAX_COMPRESSION_RATIO = 200.0
 _PREVIEW_TTL_SECONDS = 15 * 60
@@ -273,8 +278,11 @@ class MeshBundleImportService:
                     if not normalized_key.endswith(_ALLOWED_SUFFIXES):
                         raise MeshBundleImportError("FILE_TYPE_INVALID", f"ZIP 包含不支持的文件：{entry.filename}")
                     if entry.file_size > _MAX_FILE_SIZE:
-                        raise MeshBundleImportError("MEMBER_TOO_LARGE", f"单个 MESH 日志超过 20 MiB：{entry.filename}")
-                    _validate_ratio(entry.file_size, entry.compress_size, entry.filename)
+                        raise MeshBundleImportError(
+                            "MEMBER_TOO_LARGE",
+                            f"单个 MESH 日志超过 {MESH_SINGLE_FILE_MAX_LABEL}：{safe_name}",
+                        )
+                    _validate_ratio(entry.file_size, entry.compress_size, safe_name)
                     metadata = _inspect_zip_member(source, entry, safe_name)
                     expanded_total += metadata.expanded_size_bytes
                     if expanded_total > _MAX_BUNDLE_SIZE:
@@ -1555,17 +1563,25 @@ def _inspect_zip_member(
                     size_bytes=entry.file_size,
                     max_expanded_size=_MAX_FILE_SIZE,
                 )
+    except MeshLogSizeLimitError as exc:
+        code = "GZIP_EXPANDED_TOO_LARGE" if safe_name.casefold().endswith(".gz") else "MEMBER_TOO_LARGE"
+        message = (
+            f"GZIP 日志解压后超过 {MESH_SINGLE_FILE_MAX_LABEL}：{safe_name}"
+            if safe_name.casefold().endswith(".gz")
+            else f"单个 MESH 日志超过 {MESH_SINGLE_FILE_MAX_LABEL}：{safe_name}"
+        )
+        raise MeshBundleImportError(code, message) from exc
     except (gzip.BadGzipFile, EOFError, OSError, ValueError) as exc:
         code = "GZIP_INVALID" if safe_name.casefold().endswith(".gz") else "MEMBER_SIZE_MISMATCH"
         message = (
-            f"GZIP 日志损坏或解压后超过 20 MiB：{entry.filename}"
+            f"GZIP 日志损坏或无法读取：{safe_name}"
             if safe_name.casefold().endswith(".gz")
-            else f"ZIP 成员大小校验失败：{entry.filename}"
+            else f"ZIP 成员大小校验失败：{safe_name}"
         )
         raise MeshBundleImportError(code, message) from exc
     if metadata.size_bytes != entry.file_size:
-        raise MeshBundleImportError("MEMBER_SIZE_MISMATCH", f"ZIP 成员大小校验失败：{entry.filename}")
-    _validate_ratio(metadata.expanded_size_bytes, entry.file_size, entry.filename)
+        raise MeshBundleImportError("MEMBER_SIZE_MISMATCH", f"ZIP 成员大小校验失败：{safe_name}")
+    _validate_ratio(metadata.expanded_size_bytes, entry.file_size, safe_name)
     return metadata
 
 

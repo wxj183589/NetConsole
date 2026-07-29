@@ -19,6 +19,7 @@ from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepositor
 from netconsole.repositories.mesh_mr_repository import PARSER_VERSION, SCHEMA_VERSION, MeshMrRepository
 from netconsole.repositories.mesh_source_index_repository import MeshSourceIndexRepository
 from netconsole.services.mesh_analysis_params_service import load_site_mesh_analysis_params
+from netconsole.services.mesh_import_limits import MESH_SINGLE_FILE_MAX_BYTES
 from netconsole.services.mesh_peer_mapping_service import MeshPeerMappingService
 from netconsole.services.mesh_source_locator import MeshSourceLocation, MeshSourceLocator
 
@@ -26,7 +27,7 @@ from netconsole.services.mesh_source_locator import MeshSourceLocation, MeshSour
 ProgressCallback = Callable[[str, int, int, str], None]
 CancelCallback = Callable[[], bool]
 _SESSION_RE = re.compile(r"^(?P<mr_id>[0-9a-fA-F-]{8,64}):(?P<source_id>[1-9][0-9]*)$")
-_MAX_RECOVERY_BYTES = 20 * 1024 * 1024
+_MAX_RECOVERY_BYTES = MESH_SINGLE_FILE_MAX_BYTES
 
 
 class MeshSourceRebuildService:

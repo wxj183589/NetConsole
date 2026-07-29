@@ -52,6 +52,10 @@ class MeshLogContentMetadata:
         return self.first_log_timestamp.date() if self.first_log_timestamp else None
 
 
+class MeshLogSizeLimitError(ValueError):
+    pass
+
+
 class MeshLogParser:
     def is_supported_file(self, path: Path) -> bool:
         current_radio: int | None = None
@@ -491,7 +495,7 @@ def _inspect_mesh_log_stream(
         payload = bytes(raw_line)
         expanded_size += len(payload)
         if max_expanded_size is not None and expanded_size > max_expanded_size:
-            raise ValueError("日志解压后超过允许大小")
+            raise MeshLogSizeLimitError("日志解压后超过允许大小")
         if first_line:
             first_line = False
             if payload.startswith(b"\xef\xbb\xbf"):

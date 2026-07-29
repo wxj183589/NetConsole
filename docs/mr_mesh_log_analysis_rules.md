@@ -132,6 +132,7 @@ RSSI 数值按规则文件既定口径比较。两套 profile 当前 fping 平�
 - compact v3 `timestamp_tag` 唯一键、同毫秒多块顺序和旧派生 schema 显式重建；
 - ZIP 路径/压缩安全、预览 TTL、人工映射、隔离提交补偿、manifest 时机、SHA 幂等和绝对路径脱敏；
 - Multipart 四份同名 `meshlog.log` 的唯一 `member_id`、四行映射、同日连续预计序号、批次正文重复跳过、弹窗内错误重试，以及冻结 Backend 的真实 `FormData` 导入；
+- 单个 LOG/TXT/GZ 上传文件及 GZIP 解压正文上限统一为 25 MiB；批次总解压大小仍限制为 100 MiB，并继续执行压缩比、路径和成员数量检查；
 - Rate 原始值、Retry/Error 回退空值、切换前后 RSSI 事件散点以及图表卸载资源释放；
 - 可见窗口、全量下采样、切换锚点保留、请求点数自动提升、安全上限抽样告警和重复加载防抖；
 - 大表导出取消、WPS/Excel 占用、临时文件清理和源证据回溯。
