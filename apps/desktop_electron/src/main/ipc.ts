@@ -26,6 +26,15 @@ import {
   validateSiteStorageRestartRequest,
   validateSettingsActionId, validateSettingsDirectoryId, validateSettingsToolId,
   validateUiPreferenceKey, validateUiPreferenceValue,
+  validateExternalToolCreateRequest,
+  validateExternalToolUpdateRequest,
+  validateExternalToolId,
+  validateExternalToolName,
+  validateExternalToolFavoriteRequest,
+  validateExternalToolReorderRequest,
+  validateExternalToolCategoryReorderRequest,
+  validateExternalToolCategoryRenameRequest,
+  validateExternalToolDeleteCategoryRequest,
 } from '../shared/validation'
 import type { BackendRuntimeInfo } from './backend-manager'
 import { BackendDownloadManager } from './backend-download'
@@ -33,6 +42,7 @@ import type { DesktopLogger } from './logger'
 import { resolveDesktopBackgroundColor } from './config'
 import { GrantedPathRegistry } from './path-access'
 import type { UiPreferenceStoreLike } from './ui-preferences'
+import type { ExternalToolServiceLike } from './external-tool-service'
 
 interface IpcEventLike {
   sender: unknown
@@ -115,6 +125,7 @@ export interface DesktopIpcDependencies {
   logger?: DesktopLogger
   fetchImpl?: typeof fetch
   uiPreferenceStore?: UiPreferenceStoreLike
+  externalToolService?: ExternalToolServiceLike
 }
 
 export interface DesktopIpcRegistration {
@@ -367,6 +378,122 @@ export function registerDesktopIpc(
     trusted((value, event) => downloadManager.download(value, dependencies.windowForEvent?.(event) ?? dependencies.window)),
   )
   dependencies.ipcMain.handle(
+    DESKTOP_IPC.listExternalTools,
+    trusted(() => requireExternalToolService(dependencies).list()),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.refreshExternalToolStatuses,
+    trusted(() => requireExternalToolService(dependencies).list()),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.selectExternalToolExecutable,
+    trusted(async (_value, event) => {
+      const result = await dependencies.dialog.showOpenDialog(
+        dependencies.windowForEvent?.(event) ?? dependencies.window,
+        {
+          properties: ['openFile'],
+          filters: [{ name: 'Windows 程序', extensions: ['exe'] }],
+        },
+      )
+      if (result.canceled || !result.filePaths[0]) return { cancelled: true }
+      return requireExternalToolService(dependencies).describeExecutable(result.filePaths[0])
+    }),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.selectExternalToolWorkingDirectory,
+    trusted(async (_value, event) => {
+      const result = await dependencies.dialog.showOpenDialog(
+        dependencies.windowForEvent?.(event) ?? dependencies.window,
+        { properties: ['openDirectory'] },
+      )
+      return result.canceled || !result.filePaths[0]
+        ? { cancelled: true }
+        : { cancelled: false, path: result.filePaths[0] }
+    }),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.selectExternalToolIcon,
+    trusted(async (_value, event) => {
+      const result = await dependencies.dialog.showOpenDialog(
+        dependencies.windowForEvent?.(event) ?? dependencies.window,
+        {
+          properties: ['openFile'],
+          filters: [{ name: '图片文件', extensions: ['png', 'jpg', 'jpeg', 'ico'] }],
+        },
+      )
+      if (result.canceled || !result.filePaths[0]) return { cancelled: true }
+      return requireExternalToolService(dependencies).stageCustomIcon(result.filePaths[0])
+    }),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.createExternalTool,
+    trusted((value) => requireExternalToolService(dependencies).create(
+      validateExternalToolCreateRequest(value),
+    )),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.updateExternalTool,
+    trusted((value) => requireExternalToolService(dependencies).update(
+      validateExternalToolUpdateRequest(value),
+    )),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.deleteExternalTool,
+    trusted((value) => requireExternalToolService(dependencies).delete(
+      validateExternalToolId(value),
+    )),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.setExternalToolFavorite,
+    trusted((value) => {
+      const request = validateExternalToolFavoriteRequest(value)
+      return requireExternalToolService(dependencies).setFavorite(request.toolId, request.favorite)
+    }),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.reorderExternalTools,
+    trusted((value) => requireExternalToolService(dependencies).reorderTools(
+      validateExternalToolReorderRequest(value),
+    )),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.reorderExternalToolCategories,
+    trusted((value) => requireExternalToolService(dependencies).reorderCategories(
+      validateExternalToolCategoryReorderRequest(value),
+    )),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.createExternalToolCategory,
+    trusted((value) => requireExternalToolService(dependencies).createCategory(
+      validateExternalToolName(value, 'category name'),
+    )),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.renameExternalToolCategory,
+    trusted((value) => {
+      const request = validateExternalToolCategoryRenameRequest(value)
+      return requireExternalToolService(dependencies).renameCategory(request.categoryId, request.name)
+    }),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.deleteExternalToolCategory,
+    trusted((value) => requireExternalToolService(dependencies).deleteCategory(
+      validateExternalToolDeleteCategoryRequest(value),
+    )),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.launchExternalTool,
+    trusted((value) => requireExternalToolService(dependencies).launch(
+      validateExternalToolId(value),
+    )),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.revealExternalTool,
+    trusted((value) => requireExternalToolService(dependencies).reveal(
+      validateExternalToolId(value),
+    )),
+  )
+  dependencies.ipcMain.handle(
     DESKTOP_IPC.executeFileDesktopAction,
     trusted((value, event) => executeFileDesktopAction(
       dependencies.backend,
@@ -545,6 +672,11 @@ function backendRestartErrorMessage(cause: unknown): string {
 interface ExternalWindowHandoff {
   window: ExternalWindowLike | null
   wasAlwaysOnTop: boolean
+}
+
+function requireExternalToolService(dependencies: DesktopIpcDependencies): ExternalToolServiceLike {
+  if (!dependencies.externalToolService) throw new Error('工具集服务尚未就绪')
+  return dependencies.externalToolService
 }
 
 function asExternalWindow(value: unknown): ExternalWindowLike | null {

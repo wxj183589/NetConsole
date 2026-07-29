@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 
 import { registerDesktopIpc } from '../src/main/ipc'
+import type { ExternalToolServiceLike } from '../src/main/external-tool-service'
 import { GrantedPathRegistry } from '../src/main/path-access'
 import type {
   NativeActionResult,
@@ -47,6 +48,7 @@ function createHarness(overrides: {
   setSiteSwitching?: (switching: boolean) => void
   windowForEvent?: (event: { sender: unknown }) => unknown
   fetchImpl?: typeof fetch
+  externalToolService?: ExternalToolServiceLike
 } = {}) {
   const ipcMain = new FakeIpcMain()
   const sender = {}
@@ -92,8 +94,29 @@ function createHarness(overrides: {
     refreshSiteContext: overrides.refreshSiteContext,
     setSiteSwitching: overrides.setSiteSwitching,
     fetchImpl: overrides.fetchImpl,
+    externalToolService: overrides.externalToolService,
   })
   return { ipcMain, sender, selectedFile, selectedDirectory, savedFile, shell, pathRegistry, dialog }
+}
+
+function externalToolService(): ExternalToolServiceLike {
+  const emptyList = { schema_version: 1 as const, categories: [], tools: [] }
+  return {
+    list: vi.fn(async () => emptyList),
+    describeExecutable: vi.fn(async (path: string) => ({ cancelled: false, path })),
+    stageCustomIcon: vi.fn(async () => ({ cancelled: true })),
+    create: vi.fn(async () => ({ success: true, list: emptyList })),
+    update: vi.fn(async () => ({ success: true, list: emptyList })),
+    delete: vi.fn(async () => ({ success: true, list: emptyList })),
+    setFavorite: vi.fn(async () => ({ success: true, list: emptyList })),
+    reorderTools: vi.fn(async () => ({ success: true, list: emptyList })),
+    reorderCategories: vi.fn(async () => ({ success: true, list: emptyList })),
+    createCategory: vi.fn(async () => ({ success: true, list: emptyList })),
+    renameCategory: vi.fn(async () => ({ success: true, list: emptyList })),
+    deleteCategory: vi.fn(async () => ({ success: true, list: emptyList })),
+    launch: vi.fn(async (toolId: string) => ({ success: true, toolId })),
+    reveal: vi.fn(async (toolId: string) => ({ success: true, toolId })),
+  }
 }
 
 describe('desktop IPC', () => {
@@ -138,6 +161,61 @@ describe('desktop IPC', () => {
     ipcMain.listeners.get(DESKTOP_IPC.setWorkspaceWindowTitle)?.({ sender: {} }, '设备：AC2')
     expect(setWorkspaceWindowTitle).toHaveBeenCalledWith(managedWindow, '设备：AC1')
     expect(setWorkspaceWindowTitle).toHaveBeenCalledOnce()
+  })
+
+  it('keeps external tool execution and reveal restricted to a validated tool id', async () => {
+    const toolId = '7c890030-3a3f-4d6b-b58e-7624d21daff9'
+    const service = externalToolService()
+    const { ipcMain, sender } = createHarness({ externalToolService: service })
+    const event = { sender }
+
+    await ipcMain.handlers.get(DESKTOP_IPC.launchExternalTool)?.(event, toolId)
+    await ipcMain.handlers.get(DESKTOP_IPC.revealExternalTool)?.(event, toolId)
+    expect(service.launch).toHaveBeenCalledWith(toolId)
+    expect(service.reveal).toHaveBeenCalledWith(toolId)
+    expect(() => ipcMain.handlers.get(DESKTOP_IPC.launchExternalTool)?.(event, {
+      toolId,
+      executablePath: 'C:\\Temp\\evil.exe',
+    })).toThrow('toolId is invalid')
+    expect(() => ipcMain.handlers.get(DESKTOP_IPC.revealExternalTool)?.(event, 'C:\\Temp\\evil.exe')).toThrow()
+    expect(() => ipcMain.handlers.get(DESKTOP_IPC.launchExternalTool)?.({ sender: {} }, toolId)).toThrow('未知渲染进程')
+  })
+
+  it('validates external tool create requests again in Main before calling the service', async () => {
+    const service = externalToolService()
+    const { ipcMain, sender } = createHarness({ externalToolService: service })
+    const handler = ipcMain.handlers.get(DESKTOP_IPC.createExternalTool)!
+    const base = {
+      name: 'IPOP',
+      executablePath: 'C:\\Tools\\IPOP.EXE',
+      arguments: [],
+      categoryId: 'e5057ec4-03c5-4c17-b24d-b8111ee8f942',
+      favorite: false,
+      iconMode: 'auto',
+    }
+    await handler({ sender }, base)
+    expect(service.create).toHaveBeenCalledWith(base)
+    expect(() => handler({ sender }, { ...base, executablePath: 'relative.exe' })).toThrow('absolute Windows path')
+    expect(() => handler({ sender }, { ...base, executablePath: 'C:\\Tools\\tool.cmd' })).toThrow('.exe')
+    expect(() => handler({ sender }, { ...base, command: 'calc.exe' })).toThrow('unsupported field')
+    expect(() => handler({ sender }, { ...base, arguments: ['x && calc'] })).toThrow('不支持管道')
+  })
+
+  it('uses dedicated native filters for external executable and icon selection', async () => {
+    const service = externalToolService()
+    const { ipcMain, sender, dialog, selectedFile } = createHarness({ externalToolService: service })
+    await ipcMain.handlers.get(DESKTOP_IPC.selectExternalToolExecutable)?.({ sender })
+    expect(dialog.showOpenDialog).toHaveBeenLastCalledWith({}, {
+      properties: ['openFile'],
+      filters: [{ name: 'Windows 程序', extensions: ['exe'] }],
+    })
+    expect(service.describeExecutable).toHaveBeenCalledWith(selectedFile)
+
+    await ipcMain.handlers.get(DESKTOP_IPC.selectExternalToolIcon)?.({ sender })
+    expect(dialog.showOpenDialog).toHaveBeenLastCalledWith({}, {
+      properties: ['openFile'],
+      filters: [{ name: '图片文件', extensions: ['png', 'jpg', 'jpeg', 'ico'] }],
+    })
   })
 
   it('returns restart success only after the managed Backend is ready', async () => {

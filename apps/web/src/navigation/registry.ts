@@ -19,7 +19,7 @@ export interface NavigationItem {
   feature_id?: string
   parent_id?: string
   order: number
-  icon: 'dashboard' | 'devices' | 'ac' | 'rail' | 'config' | 'files' | 'network' | 'tasks' | 'agent' | 'system'
+  icon: 'dashboard' | 'devices' | 'ac' | 'rail' | 'config' | 'files' | 'network' | 'tools' | 'tasks' | 'agent' | 'system'
   legacy_page_id?: string
   legacy_feature_id?: string
   /** @deprecated 仅用于读取 schema v1 历史数据；新注册项必须使用 legacy_page_id。 */
@@ -74,6 +74,7 @@ export const navigationRegistry: NavigationItem[] = [
     item({ navigation_id: 'network.toolbox', title: '小工具与连通性检测', route_name: 'network-tools-toolbox', route_path: '/network-tools/toolbox', feature_id: 'web.network_tools_toolbox', parent_id: 'network', order: 20, icon: 'network', legacy_feature_id: 'network_tools.toolbox', parity_state: 'PARTIAL', desktop_only: false, internal_only: false, implemented: true }),
     item({ navigation_id: 'network.wireless-scan', title: '无线扫描', route_name: 'network-tools-wireless-scan', route_path: '/network-tools/wireless-scan', feature_id: 'web.network_tools_wireless_scan', parent_id: 'network', order: 30, icon: 'network', legacy_feature_id: 'network_tools.wireless_scan', parity_state: 'REAL_DEVICE_PENDING', desktop_only: false, internal_only: false, implemented: true }),
   ] }),
+  item({ navigation_id: 'tools', title: '工具集', route_name: 'tool-collection', route_path: '/tools', feature_id: 'web.tool_collection', order: 75, icon: 'tools', parity_state: 'IMPLEMENTED_UNVERIFIED', desktop_only: true, internal_only: false, implemented: true }),
   item({ navigation_id: 'tasks', title: '任务中心', route_name: 'tasks', route_path: '/tasks', feature_id: 'web.job_center', order: 80, icon: 'tasks', parity_state: 'PARTIAL', desktop_only: false, internal_only: false, implemented: true }),
   item({ navigation_id: 'agents', title: 'Agent 管理', route_name: 'agents', route_path: '/agents', feature_id: 'web.agent_management', order: 90, icon: 'agent', parity_state: 'PARTIAL', desktop_only: false, internal_only: false, implemented: true }),
   item({ navigation_id: 'command-reference', title: '命令说明', route_name: 'command-reference', route_path: '/command-reference', feature_id: 'web.command_reference', order: 100, icon: 'system', legacy_page_id: 'command_reference', legacy_feature_id: 'module.command_reference', parity_state: 'PARTIAL', desktop_only: false, internal_only: false, implemented: true }),

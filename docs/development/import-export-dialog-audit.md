@@ -45,6 +45,7 @@
 | `/device-files` 文件管理 | `FileManagementView.vue` | 远程 SFTP 批量下载、重试、MESH 归档 | 受管下载 | 保持受管文件区，不逐文件 Save As | 不弹最终导出窗口 | 页面显示的受管 `local_path` | 创建持久下载任务 | 明确例外：需保持批量、断点/重试、队列、自动归档/导入 | `FileManagementView*.test.ts`、静态例外测试 |
 | `/network-tools/toolbox` | `NetworkToolboxPanel.vue` | 工具结果 CSV/XLSX | 导出 | 直接提交任务 → 先选路径再提交 | 点击后立即“另存为” | Main 授权的用户路径 | 确认路径后创建 | `network.toolbox_csv/xlsx` | 静态审计、协调器测试 |
 | `/network-tools/wireless-scan` | `WirelessScanPanel.vue` | 扫描结果 CSV/XLSX | 导出 | 直接提交任务 → 先选路径再提交 | 点击后立即“另存为” | Main 授权的用户路径 | 确认路径后创建 | `network.wireless_scan_csv/xlsx` | 静态审计、协调器测试 |
+| `/tools` 工具集 | `ExternalToolEditorDialog.vue` | 选择 EXE、工作目录和自定义图标 | 本地资源选择 | 最新 `main` 已使用 Electron 专用选择器 → 保持 | Main 文件/目录选择 | Electron userData 中保存经选择和复验的工具注册信息；图标复制到专用缓存 | 否 | 取消不更新表单；Renderer 不手输任意程序路径后直接启动，启动只传工具 UUID | `ExternalToolEditorDialog.test.ts`、静态审计 |
 | `/tasks` 任务中心 | `TaskDetailDrawer.vue` | 当前会话绑定 Artifact | 保存/重试 | 页面各自处理 → 全局识别绑定状态 | 首次已预选；失败重试才再弹 | 原授权路径或重新选择路径 | 否 | 就绪直接写入；失败复用原 Artifact | `useUserSelectedExport.test.ts`、Task Center 测试 |
 | `/tasks` 任务中心 | 同上 | 历史 Artifact / 保存导出表格 | 历史文件 | 保持手动另存 | 点击时一次“另存为” | 用户路径 | 否 | 没有显式绑定时绝不自动提示/保存 | 协调器恢复测试、Task Center 测试 |
 | `/settings` 局点与数据 | `SiteStoragePanel.vue` | 局点包导入 | 导入 | 已正确使用 `selectSitePackage` → 保持 | Main 文件选择 | Main 授权路径 | 选择并确认后按原流程 | 取消不调用 `importSite`，敏感/迁移包契约不变 | `exportEntryAudit.test.ts` 的专用流程检查及既有存储测试 |
@@ -52,7 +53,7 @@
 | `/command-reference` | `CommandReferenceView.vue` | 命令说明 Markdown | 导出 | 直接创建任务 → 先选 `.md` 再提交 | 点击后立即“另存为” | Main 授权的用户路径 | 确认路径后创建 | `command-reference.markdown` | `CommandReferenceView.test.ts`、协调器测试 |
 | `/logs` | `SystemMaintenanceView.vue` | 应用日志 CSV、开源清单 TXT/XLSX | 导出 | 先创建任务再处理 Artifact → 先选路径再建任务 | 点击后立即“另存为” | Main 授权的用户路径 | 确认路径后创建 | `system.logs/open_source_*` | `SystemMaintenanceView.test.ts`、协调器测试 |
 
-以下可见路由经扫描没有用户文件导入、最终导出或 Artifact 保存入口：`/`、`/rail-transit/wireless-dashboard`、`/rail-transit/online-mr`、`/network-tools/traffic`、`/agents`。Online MR 的 Agent 包同步/安全导入属于受控采集链内部收口，不是用户从任意本地路径发起的导入；本轮未改变其包校验或数据目录。重定向路由不承载独立页面动作。
+以下可见路由经扫描没有用户文件导入、最终导出或 Artifact 保存入口：`/`、`/rail-transit/wireless-dashboard`、`/rail-transit/online-mr`、`/network-tools/traffic`、`/agents`。工具集虽不导入业务数据，但其 EXE、目录和图标选择已作为本地资源交互单列。Online MR 的 Agent 包同步/安全导入属于受控采集链内部收口，不是用户从任意本地路径发起的导入；本轮未改变其包校验或数据目录。重定向路由不承载独立页面动作。
 
 ## 硬编码路径与写文件审计
 

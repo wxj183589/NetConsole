@@ -207,6 +207,8 @@ Renderer 当前只能调用：
 - `getRuntimeConfig`
 - `selectFile`
 - `selectDirectory`
+- `listExternalTools`、三个工具集专用选择器和受控增删改/分类/排序方法
+- `launchExternalTool(toolId)`、`revealExternalTool(toolId)` 与 `refreshExternalToolStatuses`
 - `chooseSavePath`
 - `downloadBackendResource`
 - `openPath`
@@ -218,6 +220,8 @@ Renderer 当前只能调用：
 - `getRendererRecoveryState`，只返回当前受管窗口在本次应用运行期内的固定恢复 DTO
 
 没有通用 `invoke(channel)`、`send(channel)`、文件读写、环境变量读取、Python 路径设置或命令执行接口。详细路径规则见 [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md)。
+
+工具集使用独立 `userData/external-tools.json` Store，不进入 UI Preference 或局点数据。Renderer 编辑时可以显示用户已经选择的 EXE 路径，但启动和定位只能传 UUID；Main 重新取已登记记录、检查 `.exe`/普通文件/工作目录并以参数数组 `spawn`，固定 `shell:false / detached:true / stdio:"ignore"`。自定义图标源路径留在 Main 的短期选择表，Renderer 只收到 `selectionId` 和 data URL。完整契约见[工具集](EXTERNAL_TOOL_COLLECTION.md)。
 
 ## 文件选择与导出边界
 

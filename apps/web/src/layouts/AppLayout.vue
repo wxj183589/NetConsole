@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import {
   Connection,
   DataBoard,
+  Briefcase,
   Files,
   Fold,
   Menu as MenuIcon,
@@ -61,6 +62,7 @@ const iconComponents = {
   config: Operation,
   files: Files,
   network: Operation,
+  tools: Briefcase,
   tasks: Operation,
   agent: Connection,
   system: Setting,

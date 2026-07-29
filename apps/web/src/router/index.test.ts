@@ -54,6 +54,17 @@ describe('Web route ownership', () => {
     expect(appRoutes.some((route) => route.path === '/desktop/tasks')).toBe(false)
   })
 
+  it('registers the desktop-only tool collection route consistently', () => {
+    const route = routes.find((item) => item.name === 'tool-collection')
+    expect(route?.path).toBe('tools')
+    expect(route?.meta).toMatchObject({
+      navigationId: 'tools',
+      featureId: 'web.tool_collection',
+      moduleId: 'tools',
+      desktopOnly: true,
+    })
+  })
+
   it('does not register excluded or unfinished routes', () => {
     const paths = routes.map((route) => `/${route.path}`)
     expect(paths.some((path) => /snmp|wifi-survey/.test(path))).toBe(false)

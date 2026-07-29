@@ -53,6 +53,105 @@ export interface NativeActionResult {
   error?: string
 }
 
+export type ExternalToolStatus = 'AVAILABLE' | 'MISSING' | 'INVALID' | 'WORKDIR_MISSING'
+export type ExternalToolIconMode = 'auto' | 'default' | 'custom'
+
+export interface ExternalToolCategory {
+  id: string
+  name: string
+  sort_order: number
+  builtin: boolean
+}
+
+export interface ExternalToolRecord {
+  id: string
+  name: string
+  executable_path: string
+  arguments: string[]
+  working_directory: string
+  category_id: string
+  favorite: boolean
+  sort_order: number
+  icon_mode: ExternalToolIconMode
+  custom_icon_path: string | null
+  launch_count: number
+  last_launched_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ExternalToolView extends ExternalToolRecord {
+  category_name: string
+  executable_name: string
+  status: ExternalToolStatus
+  status_message: string
+  icon_data_url: string | null
+}
+
+export interface ExternalToolCreateRequest {
+  name: string
+  executablePath: string
+  arguments: string[]
+  workingDirectory?: string
+  categoryId: string
+  favorite: boolean
+  iconMode: ExternalToolIconMode
+  iconSelectionId?: string
+}
+
+export interface ExternalToolUpdateRequest extends ExternalToolCreateRequest {
+  id: string
+}
+
+export interface ExternalToolReorderRequest {
+  categoryId: string
+  toolIds: string[]
+}
+
+export interface ExternalToolCategoryReorderRequest {
+  categoryIds: string[]
+}
+
+export interface ExternalToolDeleteCategoryRequest {
+  categoryId: string
+  moveToolsToOther: boolean
+}
+
+export interface ExternalToolListResult {
+  schema_version: 1
+  categories: ExternalToolCategory[]
+  tools: ExternalToolView[]
+}
+
+export interface ExternalToolSelectionResult {
+  cancelled: boolean
+  path?: string
+  suggestedName?: string
+  workingDirectory?: string
+  iconDataUrl?: string | null
+  duplicateTool?: Pick<ExternalToolView, 'id' | 'name'>
+}
+
+export interface ExternalToolIconSelectionResult {
+  cancelled: boolean
+  selectionId?: string
+  iconDataUrl?: string
+}
+
+export interface ExternalToolMutationResult {
+  success: boolean
+  tool?: ExternalToolView
+  list?: ExternalToolListResult
+  errorCode?: 'DUPLICATE_PATH' | 'INVALID_REQUEST' | 'NOT_FOUND' | 'PERSISTENCE_FAILED'
+  error?: string
+  existingTool?: Pick<ExternalToolView, 'id' | 'name'>
+}
+
+export interface ExternalToolLaunchResult extends NativeActionResult {
+  toolId: string
+  status?: ExternalToolStatus
+}
+
 export type SettingsToolId = 'iperf3' | 'fping' | 'ipop' | 'securecrt' | 'xshell' | 'putty'
 export type SettingsDirectoryId = 'securecrt_sessions_root'
 export type SettingsActionId = 'open_settings_config' | 'open_current_site' | 'launch_ipop'
@@ -314,6 +413,22 @@ export interface NetConsoleDesktopBridge {
   chooseSavePath(options: ChooseSavePathOptions): Promise<ChooseSavePathResult>
   downloadBackendResource(request: BackendDownloadRequest): Promise<BackendDownloadResult>
   executeFileDesktopAction(actionRef: string): Promise<NativeActionResult>
+  listExternalTools(): Promise<ExternalToolListResult>
+  selectExternalToolExecutable(): Promise<ExternalToolSelectionResult>
+  selectExternalToolWorkingDirectory(): Promise<SelectDirectoryResult>
+  selectExternalToolIcon(): Promise<ExternalToolIconSelectionResult>
+  createExternalTool(request: ExternalToolCreateRequest): Promise<ExternalToolMutationResult>
+  updateExternalTool(request: ExternalToolUpdateRequest): Promise<ExternalToolMutationResult>
+  deleteExternalTool(toolId: string): Promise<ExternalToolMutationResult>
+  setExternalToolFavorite(toolId: string, favorite: boolean): Promise<ExternalToolMutationResult>
+  reorderExternalTools(request: ExternalToolReorderRequest): Promise<ExternalToolMutationResult>
+  reorderExternalToolCategories(request: ExternalToolCategoryReorderRequest): Promise<ExternalToolMutationResult>
+  createExternalToolCategory(name: string): Promise<ExternalToolMutationResult>
+  renameExternalToolCategory(categoryId: string, name: string): Promise<ExternalToolMutationResult>
+  deleteExternalToolCategory(request: ExternalToolDeleteCategoryRequest): Promise<ExternalToolMutationResult>
+  launchExternalTool(toolId: string): Promise<ExternalToolLaunchResult>
+  revealExternalTool(toolId: string): Promise<ExternalToolLaunchResult>
+  refreshExternalToolStatuses(): Promise<ExternalToolListResult>
   openOnlineMrSessionLocation?(sessionId: string): Promise<NativeActionResult>
   openPath(capabilityId: string): Promise<NativeActionResult>
   showItemInFolder(capabilityId: string): Promise<NativeActionResult>
@@ -360,6 +475,22 @@ export const DESKTOP_IPC = Object.freeze({
   chooseSavePath: 'netconsole:desktop:choose-save-path',
   downloadBackendResource: 'netconsole:desktop:download-backend-resource',
   executeFileDesktopAction: 'netconsole:desktop:execute-file-action',
+  listExternalTools: 'netconsole:desktop:external-tools:list',
+  selectExternalToolExecutable: 'netconsole:desktop:external-tools:select-executable',
+  selectExternalToolWorkingDirectory: 'netconsole:desktop:external-tools:select-working-directory',
+  selectExternalToolIcon: 'netconsole:desktop:external-tools:select-icon',
+  createExternalTool: 'netconsole:desktop:external-tools:create',
+  updateExternalTool: 'netconsole:desktop:external-tools:update',
+  deleteExternalTool: 'netconsole:desktop:external-tools:delete',
+  setExternalToolFavorite: 'netconsole:desktop:external-tools:set-favorite',
+  reorderExternalTools: 'netconsole:desktop:external-tools:reorder',
+  reorderExternalToolCategories: 'netconsole:desktop:external-tools:reorder-categories',
+  createExternalToolCategory: 'netconsole:desktop:external-tools:create-category',
+  renameExternalToolCategory: 'netconsole:desktop:external-tools:rename-category',
+  deleteExternalToolCategory: 'netconsole:desktop:external-tools:delete-category',
+  launchExternalTool: 'netconsole:desktop:external-tools:launch',
+  revealExternalTool: 'netconsole:desktop:external-tools:reveal',
+  refreshExternalToolStatuses: 'netconsole:desktop:external-tools:refresh-statuses',
   openOnlineMrSessionLocation: 'netconsole:desktop:open-online-mr-session-location',
   openPath: 'netconsole:desktop:open-path',
   showItemInFolder: 'netconsole:desktop:show-item-in-folder',
@@ -400,6 +531,22 @@ export const DESKTOP_HANDLED_CHANNELS = Object.freeze([
   DESKTOP_IPC.chooseSavePath,
   DESKTOP_IPC.downloadBackendResource,
   DESKTOP_IPC.executeFileDesktopAction,
+  DESKTOP_IPC.listExternalTools,
+  DESKTOP_IPC.selectExternalToolExecutable,
+  DESKTOP_IPC.selectExternalToolWorkingDirectory,
+  DESKTOP_IPC.selectExternalToolIcon,
+  DESKTOP_IPC.createExternalTool,
+  DESKTOP_IPC.updateExternalTool,
+  DESKTOP_IPC.deleteExternalTool,
+  DESKTOP_IPC.setExternalToolFavorite,
+  DESKTOP_IPC.reorderExternalTools,
+  DESKTOP_IPC.reorderExternalToolCategories,
+  DESKTOP_IPC.createExternalToolCategory,
+  DESKTOP_IPC.renameExternalToolCategory,
+  DESKTOP_IPC.deleteExternalToolCategory,
+  DESKTOP_IPC.launchExternalTool,
+  DESKTOP_IPC.revealExternalTool,
+  DESKTOP_IPC.refreshExternalToolStatuses,
   DESKTOP_IPC.openOnlineMrSessionLocation,
   DESKTOP_IPC.openPath,
   DESKTOP_IPC.showItemInFolder,

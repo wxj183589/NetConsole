@@ -19,6 +19,10 @@ describe('preload bridge', () => {
 
     expect(Object.keys(bridge).sort()).toEqual([
       'chooseSavePath',
+      'createExternalTool',
+      'createExternalToolCategory',
+      'deleteExternalTool',
+      'deleteExternalToolCategory',
       'downloadBackendResource',
       'executeFileDesktopAction',
       'executeSettingsAction',
@@ -29,6 +33,8 @@ describe('preload bridge', () => {
       'getRuntimeConfig',
       'getUiPreference',
       'getWorkspaceWindowState',
+      'launchExternalTool',
+      'listExternalTools',
       'onBackendStatusChanged',
       'onCloseToTrayChanged',
       'onTaskCenterOpenRequested',
@@ -38,14 +44,22 @@ describe('preload bridge', () => {
       'openPath',
       'openTaskWindow',
       'openWorkspaceWindow',
+      'refreshExternalToolStatuses',
       'refreshSiteContext',
+      'renameExternalToolCategory',
+      'reorderExternalToolCategories',
+      'reorderExternalTools',
       'reportRendererReady',
       'reportRendererWorkload',
       'reportSiteSwitchState',
       'restartBackend',
+      'revealExternalTool',
       'saveWorkspaceWindowState',
       'selectDataRootDirectory',
       'selectDirectory',
+      'selectExternalToolExecutable',
+      'selectExternalToolIcon',
+      'selectExternalToolWorkingDirectory',
       'selectFile',
       'selectSettingsColor',
       'selectSettingsDirectory',
@@ -53,11 +67,13 @@ describe('preload bridge', () => {
       'selectSiteExportDestination',
       'selectSitePackage',
       'setCloseToTrayEnabled',
+      'setExternalToolFavorite',
       'setTaskTrayStatus',
       'setUiPreference',
       'setWorkspaceWindowTitle',
       'showItemInFolder',
       'showTaskNotification',
+      'updateExternalTool',
     ])
     expect('ipcRenderer' in bridge).toBe(false)
     expect('process' in bridge).toBe(false)
@@ -135,6 +151,16 @@ describe('preload bridge', () => {
     expect(() => bridge.showItemInFolder('C:\\private')).toThrow('capabilityId is invalid')
     expect(() => bridge.executeFileDesktopAction('C:\\private')).toThrow('file desktop action reference is invalid')
     expect(() => bridge.openOnlineMrSessionLocation?.('..\\private')).toThrow('Online MR session id is invalid')
+    expect(() => bridge.launchExternalTool('C:\\private\\tool.exe')).toThrow('toolId is invalid')
+    expect(() => bridge.revealExternalTool('not-an-id')).toThrow('toolId is invalid')
+    expect(() => bridge.createExternalTool({
+      name: '工具',
+      executablePath: 'relative.exe',
+      arguments: [],
+      categoryId: 'e5057ec4-03c5-4c17-b24d-b8111ee8f942',
+      favorite: false,
+      iconMode: 'auto',
+    })).toThrow('absolute Windows path')
     expect(() => bridge.restartBackend({ dataRoot: 'relative' })).toThrow('dataRoot must be absolute')
     expect(() => bridge.reportRendererWorkload?.({
       module: 'mesh-analysis',

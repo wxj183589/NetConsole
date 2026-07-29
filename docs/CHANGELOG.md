@@ -9,6 +9,12 @@
 - 导入入口统一保证用户触发、取消不预检、处理后清空 file input；OmniPeek 和局点包保留既有专用选择流程，远程 SFTP 批量下载保留受管文件区语义。Browser 开发模式只报告下载已启动，正式 Electron Bridge 缺失不回退浏览器下载。
 - 新增静态入口审计与共享协调器行为测试，禁止生产 Vue/TS 新增未登记任务导出、Renderer 下载旁路、测试输出目录或用户 Downloads 默认路径。完整矩阵见 [UI 导入导出文件选择审计](development/import-export-dialog-audit.md)。
 
+### 工具集
+
+- Electron Desktop 新增一级“工具集”模块，支持用户自备 Windows EXE 的分类、搜索、收藏、常用排序、状态刷新、重新定位、图标、编辑、删除记录、启动和资源管理器定位；Browser 隐藏导航并拒绝直接访问。
+- 工具注册表独立保存到 Electron userData，使用 schema v1 严格校验、Windows 路径大小写去重、串行原子写与损坏文件诊断恢复；不进入局点数据库、数据根或迁移/结果包，也不影响系统设置中的 fping、iperf3、IPOP 和终端依赖。
+- Renderer 启动和定位只传工具 UUID；Electron Main 从 Store 取可信路径并复验，以参数数组和 `shell:false` 启动。自定义图标通过短期选择 ID 复制到专用缓存，页面不使用 `file://` 读取本地文件。
+
 ## v1.4.5 - 2026-07-29
 
 ### 设备详情与表格偏好

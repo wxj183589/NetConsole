@@ -55,6 +55,9 @@ Electron-only E1 已删除无生产调用者的 `QtDesktopAdapter`。Python `Des
 | `selectSettingsDirectory` | `securecrt_sessions_root` | main 只接受语义 ID，返回值必须为绝对路径；FastAPI 保存时复验已存在目录和非符号链接 | SecureCRT 会话根目录选择 |
 | `selectSettingsColor` | 无 | 只返回系统设置契约允许的受控主题色之一 | 原生主题色选择 |
 | `executeSettingsAction` | `open_settings_config/open_current_site/launch_ipop` 之一 | main 调固定动态回环端点并注入短期会话；Renderer 不提供路径、程序或 argv；后端只打开受控目录或启动经复验的 IPOP | 系统设置本机动作 |
+| 工具集查询/选择/维护 | 固定工具/分类 DTO；EXE 选择和图标选择无路径输入 | preload/main 双重严格校验；EXE 限绝对 `.exe` 和普通文件；自定义图标源路径不返回 Renderer，使用十分钟 `selectionId`；记录只写 Electron userData | 用户自备第三方工具注册表 |
+| `launchExternalTool` / `revealExternalTool` | 工具 UUID | Main 从独立 Store 取得已登记路径/argv/cwd 并重新检查；启动固定 `spawn + shell:false`，定位固定 `showItemInFolder`；调用时拒绝路径、argv 或命令 | 启动或定位已登记工具 |
+| `refreshExternalToolStatuses` | 无 | 逐项检查 EXE/普通文件/工作目录；图标转 data URL 且有界缓存，单项失败不阻断列表 | 工具状态刷新 |
 | `onBackendStatusChanged` | 固定回调 | 只接收脱敏状态 | 意外退出通知 |
 
 `reportRendererReady` 仅用于自动开发冒烟的 health 结果回报，不接受 URL、路径、命令或令牌。
@@ -86,12 +89,12 @@ Electron Session 拒绝所有 Chromium 原生 `will-download`，因此 `<a downl
 ## 永久禁止
 
 - 通用 `execute(command)`、任意 IPC channel 或完整 `ipcRenderer`；
-- PowerShell/cmd、shell 字符串、`shell: true` 或 Renderer 提供的参数数组；
+- PowerShell/cmd、shell 字符串、`shell: true`，或在启动调用中由 Renderer 临时提供路径/参数数组；工具集仅在创建/编辑已登记记录时接受经过双重校验的 argv；
 - Renderer 指定 Python/executable、环境变量、工作目录或 backend module；
 - 任意文件系统读写、数据库路径、任意 URL/Header/目标路径或未知程序启动；
 - 把 Agent Token、SSH/SNMP 凭据、密码或完整环境返回给 Renderer；
 - 通过路径选择接口绕过 Artifact/Application Service 权限。
 
-未来新增 `openArtifact`、`launchTerminal` 和 `notification` 仍必须单独增加 DTO、Feature、main 白名单、权限/审计和测试后才能开放。IPOP 仅允许通过 `launch_ipop` 语义动作启动已保存且再次校验的 `IPOP.EXE`；通用外部程序、任意路径和 argv 始终不在白名单。
+未来新增 `openArtifact`、`launchTerminal` 和 `notification` 仍必须单独增加 DTO、Feature、main 白名单、权限/审计和测试后才能开放。IPOP 内置业务动作仍只允许通过 `launch_ipop` 启动系统设置中已保存且再次校验的 `IPOP.EXE`；工具集是独立用户快捷项，只能按已登记 UUID 启动，不能影响 IPOP/终端/流量测试等内置配置。任意路径即时执行、启动时替换 argv 和命令字符串始终不在白名单。
 
 文件管理模块已实现 `fda1_*`、60 秒有效、一次性消费的强类型动作契约，并在 main/preload/shared 增加独立白名单。Renderer 只能提交动作引用；main 调固定回环端点，Service 仅打开受控目录或启动固定 WinSCP。WinSCP 的 SSH 密码只在 Python 主进程消费动作后读取并 URL 编码，认证 URL 直接交给固定进程启动，不返回 Renderer、IPC 或 API；安全命令遮蔽原始和编码后密码。不得回退到 Renderer 路径、任意程序/argv 或由 Renderer 提供含密码 URL。验收状态见 [文件管理对等规格](development/parity/file-management.md)。

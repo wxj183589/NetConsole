@@ -87,6 +87,18 @@ const MANAGED_DOWNLOAD_EXCEPTIONS = [
   'views/file-management/FileManagementView.vue',
 ] as const
 
+const LOCAL_PATH_SELECTION_ENTRIES = [
+  {
+    file: 'views/tools/components/ExternalToolEditorDialog.vue',
+    selectors: [
+      'selectExternalToolExecutable',
+      'selectExternalToolWorkingDirectory',
+      'selectExternalToolIcon',
+    ],
+    reason: '工具集只接受 Electron Main 选择并复验的 EXE、工作目录和短期图标选择 ID。',
+  },
+] as const
+
 describe('visible import/export entry audit', () => {
   it('requires every registered task export to select and bind a destination before submission', () => {
     const registeredActions = new Set(Object.keys(userSelectedExportDefinitions))
@@ -155,6 +167,17 @@ describe('visible import/export entry audit', () => {
     const source = readSource(MANAGED_DOWNLOAD_EXCEPTIONS[0])
     expect(source).toContain('startRemoteFileDownload')
     expect(source).toContain('local_path')
+  })
+
+  it('keeps non-import local resource paths behind reviewed Main selectors', () => {
+    for (const item of LOCAL_PATH_SELECTION_ENTRIES) {
+      const source = readSource(item.file)
+      expect(item.reason.length).toBeGreaterThan(20)
+      expect(source).toContain('result.cancelled')
+      for (const selector of item.selectors) {
+        expect(source, `${item.file}: ${selector}`).toMatch(new RegExp(`\\b${selector}\\s*\\(`))
+      }
+    }
   })
 })
 

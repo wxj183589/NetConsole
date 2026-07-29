@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RouteLocationNormalized } from 'vue-router'
 
@@ -27,5 +29,12 @@ describe('Web route Feature Gate', () => {
     vi.mocked(getWebFeatureStates).mockRejectedValueOnce(new Error('unavailable'))
     const result = await enforceRouteFeature({ meta: { featureId: 'web.job_center' } } as Pick<RouteLocationNormalized, 'meta'>)
     expect(result).toEqual({ name: 'dashboard' })
+  })
+
+  it('rejects the tool collection in browser mode before evaluating its feature', async () => {
+    Reflect.deleteProperty(window, 'netconsoleDesktop')
+    expect(await enforceRouteFeature({
+      meta: { featureId: 'web.tool_collection', desktopOnly: true },
+    } as Pick<RouteLocationNormalized, 'meta'>)).toEqual({ name: 'dashboard' })
   })
 })
