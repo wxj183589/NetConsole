@@ -181,6 +181,22 @@ export interface AcConfigContent {
 export interface AcConfigDiff {
   from_snapshot_id: number
   to_snapshot_id: number
+  left_label: string
+  right_label: string
+  left_content: string
+  right_content: string
+  diff_rows: Array<{
+    left_line: number | null
+    left_text: string
+    status: '=' | '+' | '-' | '~'
+    right_line: number | null
+    right_text: string
+  }>
+  diff_summary: {
+    added: number
+    removed: number
+    modified: number
+  }
   added: string[]
   removed: string[]
   modified: Array<Record<string, string>>

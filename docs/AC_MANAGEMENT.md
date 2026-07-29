@@ -27,7 +27,7 @@ Vue AC 管理 -> POST /api/ac-management/refresh/fit-ap
 
 - AC 总览：管理 IP、型号、软件版本、AP 总数、在线/离线/未认证、Radio 数量、关联光衰异常和数据更新时间；
 - FIT-AP：后端搜索、筛选、排序和分页，默认按连接交换机自然升序、其次按归一化端口自然升序，缺失项后置；前端通过统一 `NcDataTable` 保存列显隐、顺序、手工列宽和固定位置，物理接口统一显示 `GE/XGE/25GE/40GE/100GE` 简称；FIT-AP、配置、Radio、历史、Mesh-Link、AP 扩展和规划页面不再各自维护列宽算法；
-- FIT-AP 资源导出：Feature `web.ac_fit_ap_resource_export` 提供“当前筛选结果 / 已选择 AP / 当前 AC 全部 AP”三种范围，筛选复用页面 Query Service 且不携带分页。Export Process 从当前局点只读 SQLite 重新查询，按规范化 MAC 去重；MAC 缺失时使用 `AC ID + AP 名称`，保证“AP资源清单”一台 AP 一行，“Radio明细”一条 Radio 一行，并附“导出说明”。缺失的光衰、LLDP、站点、区间、MAC 或 Radio 保持空白并写入“数据完整性”，单台缺失不阻断整份文件。该导出用于资产核对，不替代设备管理清单或 OmniPeek `.nam` 名称表，也不会在导出时连接 AC、AP 或交换机；
+- FIT-AP 资源导出：Feature `web.ac_fit_ap_resource_export` 提供“当前筛选结果 / 已选择 AP / 当前 AC 全部 AP”三种范围，筛选复用页面 Query Service 且不携带分页。用户点击后先选择最终 `.xlsx` 路径，取消不创建任务；确认后 Export Process 从当前局点只读 SQLite 重新查询，按规范化 MAC 去重。MAC 缺失时使用 `AC ID + AP 名称`，保证“AP资源清单”一台 AP 一行，“Radio明细”一条 Radio 一行，并附“导出说明”。缺失的光衰、LLDP、站点、区间、MAC 或 Radio 保持空白并写入“数据完整性”，单台缺失不阻断整份文件。Artifact 就绪后直接写入预选位置，不再突然弹出第二个保存窗口；失败时保留 Artifact 并允许在任务中心重新选择位置。该导出用于资产核对，不替代设备管理清单或 OmniPeek `.nam` 名称表，也不会在导出时连接 AC、AP 或交换机；
 - AP 详情：基本信息、connection-record、Radio 1/2 状态/模式/频段/信道/带宽/利用率/功率/客户端/BSSID、LLDP/端口、交换机光模块和 AP 侧光衰；
 - 真实更新：AC CPU/内存/型号/版本/HTTPS 端口、FIT-AP 普通资源、所选 AP 深度 BSSID 和 FIT-AP 光衰；FIT-AP 光衰默认共享并发 64，运行时按平台上限和目标 AP 数裁剪，并通过 `tasks.db` resource key 阻止同一 AC 与轨旁更新重复执行；任务进度、取消、失败、部分命令失败、页面重启恢复和完成后结果刷新；业务页只保留紧凑摘要，停止、日志和 Artifact 统一在 Electron 任务窗口处理；
 - 单 AP 定向更新接受 H3C 常见 `xxxx-xxxx-xxxx` MAC，后端统一规范化为标准格式；前端提交时优先使用 `ap_uuid`，其次 `ap_mac`，最后 `ap_name`，避免展示格式差异误拦稳定目标。
@@ -59,9 +59,11 @@ FIT-AP 详情已提供站点、里程、点位说明和方向保存入口；保�
 
 ## 配置查看
 
-配置列表仅包含当前局点中 AC 对应的 `config_snapshots`。API 不返回绝对路径，只返回 `snapshot:<id>` 和文件名。正文继续调用现有 `extract_h3c_configuration_body`，差异继续调用 `compare_config_text`，本阶段没有改变配置裁剪或 diff 算法。
+配置列表仅包含当前局点中 AC 对应的 `config_snapshots`。API 不返回绝对路径，只返回 `snapshot:<id>` 和文件名。正文继续调用现有 `extract_h3c_configuration_body`，差异继续调用 `compare_config_text` 和 `build_side_by_side_rows`，没有改变配置裁剪或 diff 算法。
 
-正文单次最多返回 200,000 字符，页面默认按 100,000 字符分块加载；diff 选择时加载一次，不轮询。当前 `config_snapshots` 没有任务 ID 字段，DTO 的 `task_id` 保持空值，不从文件名或路径猜测任务关联。
+正文单次最多返回 200,000 字符，页面默认按 100,000 字符分块加载；diff 选择时加载一次，不轮询。对比响应按同批次 running/saved 快照 ID 与受控局点相对路径读取，返回左右完整清洗正文、标签、结构化行、计数摘要和兼容 `raw_diff`；Renderer 不解析 Unified Diff 还原正文。缺失、失败或 0B 快照不会打开空白对比器。
+
+AC 页面通过本域 Adapter 转为 `SharedConfigDiffModel`，与配置采集中心共同使用 `apps/web/src/components/config-diff/ConfigDiffViewer.vue`。共享 Viewer 统一 Monaco Worker、Model 生命周期、并排/内联、换行、导航、明暗主题、大文件保护和结构化降级，但不依赖 AC 或配置采集 Store/API。当前 `config_snapshots` 没有任务 ID 字段，DTO 的 `task_id` 保持空值，不从文件名或路径猜测任务关联。
 
 ## API 与受控刷新边界
 
@@ -138,7 +140,7 @@ display wlan mesh-link switch-history  # 仅布尔开关启用
 ## 尚未完成或验收的 Electron 能力
 
 - 动作页只把 `plan_id` 写入 `localStorage`，UI 和日志不展示 `confirm_token`；但当前 `AcActionPlanDTO` 仍把 Token 返回 Renderer，前端确认请求从内存 plan 回传。该实现尚未满足“Renderer 永不接收确认 Token”的严格边界，需后续改为服务端短期绑定或等价方案；修复前不得描述为 Token 完全未暴露给前端；
-- FIT-AP 资源 XLSX 已接入 Export Process、`WebArtifactStore`、任务中心和受控下载：Electron 通过 Preload Bridge 打开系统保存对话框并校验大小与 SHA-256，浏览器通过 Artifact 响应下载；取消或失败不会删除 Artifact，可在页面或任务中心再次保存。固定样例已通过 openpyxl 结构校验，但真实局点 145 AP/290 Radio、WPS/Excel/LibreOffice 打开和 Electron 系统保存对话框仍待人工验收；详情页 Radio/LLDP/光衰历史独立 XLSX 仍未实现。批量删除、详情元数据保存及历史查看已进入永久链。AP 点表导入已归并到“轨道交通 / 基础资料”的统一预览、合并和审计链，AC 页不再显示独立导入入口；
+- FIT-AP 资源 XLSX 已接入 Export Process、`WebArtifactStore`、任务中心和共享用户目标协调器：Electron 在创建任务前通过 Preload Bridge 打开系统保存对话框，Artifact 完成后用预选目标、大小与 SHA-256 落盘；取消不创建任务，失败不删除 Artifact，可在任务中心重新选择位置。浏览器通过 Artifact 响应启动下载但不宣称验证本地落盘。固定样例已通过 openpyxl 结构校验，但真实局点 145 AP/290 Radio、WPS/Excel/LibreOffice 打开和 Electron 系统保存对话框仍待人工验收；详情页 Radio/LLDP/光衰历史独立 XLSX 仍未实现。批量删除、详情元数据保存及历史查看已进入永久链。AP 点表导入已归并到“轨道交通 / 基础资料”的统一预览、合并和审计链，AC 页不再显示独立导入入口；
 - AC OmniPeek NAM 已接入共享 Export Process、`WebArtifactStore` 当前局点 `trackside_ap_outputs` 受控根、统一任务中心和 Electron 受控另存为；仍需用现场 OmniPeek 验证实际导入结果；
 - 旧版 FIT-AP 登录凭据保存实现已废弃；当前 FIT-AP 外部终端固定生成 SecureCRT `/TELNET <AP_IP> 23`、Xshell `-url telnet://<AP_IP>:23` 或 PuTTY `-telnet <AP_IP> -P 23`，即使系统设置启用“启动外部终端时传递密码”也不会传递 FIT-AP 用户名或密码，也不会查询设备管理中的同 IP 记录。真实 AP 可达性和三类终端版本兼容仍需人工验收；
 - AP 扩展信息导入和重命名命令导出由轨道交通基础资料统一承载；AC 侧不提供第二套入口。基础资料联动详情使用规范化 MAC 唯一匹配得到的 FIT-AP/AC ID，重复 MAC 不自动择一；

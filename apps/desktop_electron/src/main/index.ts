@@ -1,4 +1,5 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, Notification as ElectronNotification, screen, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification as ElectronNotification, screen, shell, Tray } from 'electron'
+import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 
@@ -13,6 +14,10 @@ import { ensureDesktopRuntimePaths, resolveDesktopStorageContext } from './devel
 import { resolveDesktopDataRootConfiguration } from './data-root-configuration'
 import { GrantedPathRegistry } from './path-access'
 import { UiPreferenceStore } from './ui-preferences'
+import { ExternalToolStore } from './external-tool-store'
+import { ExternalToolService } from './external-tool-service'
+import { launchExternalToolElevated } from './elevated-tool-launcher'
+import { readExternalToolSystemSettings } from './external-tool-settings'
 import { StartupTimeline } from './startup-timeline'
 import {
   installRendererDiagnostics,
@@ -34,6 +39,11 @@ import { TaskNotificationController } from './task-notification'
 import { TrayController, type TrayMenuItem, type TraySiteSummary } from './tray-controller'
 import { WorkspaceLayoutStore, type WorkspaceWindowBounds } from './workspace-layout-store'
 import { WorkspaceWindowController } from './workspace-window-controller'
+import {
+  installMainWindowStartup,
+  MAIN_WINDOW_DEFAULT_HEIGHT,
+  MAIN_WINDOW_DEFAULT_WIDTH,
+} from './main-window-startup'
 import {
   desktopSessionCookiePath,
   installWindowSecurity,
@@ -73,6 +83,7 @@ let smokeWatchdogTimer: NodeJS.Timeout | undefined
 let smokeStableTimer: NodeJS.Timeout | undefined
 let smokeRendererHealthy = false
 let smokeRendererLoading = true
+let smokeMainWindowStartupValidated = false
 let taskCenterSmokeStarted = false
 let workspaceTraySmokeStarted = false
 const rendererOrigins = new Set<string>()
@@ -177,13 +188,31 @@ async function startDesktop(): Promise<void> {
   const storedCloseToTray = await uiPreferenceStore.get('desktop.close-to-tray')
   closeToTrayEnabled = typeof storedCloseToTray === 'boolean' ? storedCloseToTray : true
   workspaceLayoutStore = new WorkspaceLayoutStore(app.getPath('userData'), (event) => logger(event))
+  const externalToolStore = new ExternalToolStore(app.getPath('userData'), logger)
+  const elevatedToolLauncherPath = app.isPackaged
+    ? resolve(process.resourcesPath, 'native', 'netconsole-elevated-launcher.exe')
+    : resolve(app.getAppPath(), 'dist', 'native', 'netconsole-elevated-launcher.exe')
+  const externalToolService = new ExternalToolService({
+    store: externalToolStore,
+    spawn: (executable, arguments_, options) => spawn(executable, [...arguments_], options),
+    reveal: (path) => shell.showItemInFolder(path),
+    getExecutableIcon: async (path) => (await app.getFileIcon(path, { size: 'large' })).toDataURL(),
+    getCustomIcon: async (path) => {
+      const image = nativeImage.createFromPath(path)
+      return image.isEmpty() ? null : image.toDataURL()
+    },
+    resolveSystemSettings: () => readExternalToolSystemSettings(backend!),
+    elevatedLaunch: (request) => launchExternalToolElevated(elevatedToolLauncherPath, request),
+    applicationExecutablePath: process.execPath,
+    logger,
+  })
   workspaceWindowController = new WorkspaceWindowController(workspaceLayoutStore, {
     createWindow: (role, bounds) => {
       const window = createMainWindow(
         rendererDevelopment,
         role === 'main' ? developmentMenu : false,
         NETCONSOLE_WINDOW_TITLE,
-        bounds,
+        role === 'workspace' ? bounds : undefined,
       )
       if (role === 'main') {
         mainWindow = window
@@ -316,6 +345,7 @@ async function startDesktop(): Promise<void> {
     getRendererRecoveryState,
     logger,
     uiPreferenceStore,
+    externalToolService,
   })
   backend.onStatusChange((status) => {
     logger('ELECTRON_BACKEND_STATUS', `state=${status.state}`)
@@ -335,7 +365,6 @@ async function startDesktop(): Promise<void> {
 
   await loadStatusPage(mainWindow, '正在启动 NetConsole', '正在启动本地 Python Core，请稍候。')
   startupTimeline.mark('electron.loading_view_shown')
-  mainWindow.show()
 
   try {
     const runtime = await backend.start()
@@ -417,7 +446,7 @@ function createMainWindow(
   development: boolean,
   developmentMenu = false,
   title = NETCONSOLE_WINDOW_TITLE,
-  bounds: WorkspaceWindowBounds = { x: 80, y: 80, width: 1_360, height: 860 },
+  bounds?: WorkspaceWindowBounds,
 ): BrowserWindow {
   const window = new BrowserWindow({
     title,
@@ -426,13 +455,22 @@ function createMainWindow(
       appPath: app.getAppPath(),
       resourcesPath: process.resourcesPath,
     }),
-    x: bounds.x,
-    y: bounds.y,
-    width: bounds.width,
-    height: bounds.height,
+    ...(bounds
+      ? {
+          x: bounds.x,
+          y: bounds.y,
+          width: bounds.width,
+          height: bounds.height,
+        }
+      : {
+          width: MAIN_WINDOW_DEFAULT_WIDTH,
+          height: MAIN_WINDOW_DEFAULT_HEIGHT,
+        }),
     minWidth: 1024,
     minHeight: 680,
     show: false,
+    frame: true,
+    fullscreen: false,
     backgroundColor: DESKTOP_SAFE_BACKGROUND_COLOR,
     autoHideMenuBar: !developmentMenu,
     webPreferences: secureWebPreferences(
@@ -445,6 +483,13 @@ function createMainWindow(
     window.setTitle(title)
   })
   window.setTitle(title)
+  if (!bounds) {
+    installMainWindowStartup(
+      window,
+      () => ({ ...screen.getPrimaryDisplay().workArea }),
+      (event) => logger(event),
+    )
+  }
   installWindowSecurity(
     window,
     () => [...rendererOrigins],
@@ -838,6 +883,15 @@ function handleRendererReady(report: RendererHostReport, sourceWindow: unknown):
   if (report.phase === 'mounted') startupTimeline?.mark('renderer.mounted')
   if (report.phase === 'interactive' && report.healthOk) startupTimeline?.mark('desktop.interactive')
   if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST !== '1' || report.phase === 'mounted') return
+  if (!smokeMainWindowStartupValidated) {
+    if (!validateMainWindowStartupState()) {
+      logger('ELECTRON_MAIN_WINDOW_STARTUP_SMOKE_FAILED')
+      requestExit(2)
+      return
+    }
+    smokeMainWindowStartupValidated = true
+    logger('ELECTRON_MAIN_WINDOW_STARTUP_SMOKE_PASSED')
+  }
   logger('ELECTRON_SMOKE_RENDERER_READY', `phase=${report.phase} health_ok=${report.healthOk}`)
   if (smokeStableTimer) clearTimeout(smokeStableTimer)
   if (!report.healthOk || report.phase === 'failed') {
@@ -973,19 +1027,40 @@ async function runWorkspaceTraySmoke(): Promise<void> {
     if (!mainWindow || mainWindow.isDestroyed() || !trayAvailable) {
       throw new Error('tray runtime unavailable')
     }
+    mainWindow.unmaximize()
+    mainWindow.setSize(1_100, 720)
+    const restoredSize = mainWindow.getSize()
+    if (mainWindow.isMaximized()) throw new Error('main window could not be restored')
     mainWindow.close()
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 150))
     if (mainWindow.isVisible() || backend?.getStatus().state !== 'ready') {
       throw new Error('close-to-tray did not preserve backend')
     }
     await workspaceWindowController?.showMainWindow()
-    if (!mainWindow.isVisible()) throw new Error('main window restore failed')
+    if (
+      !mainWindow.isVisible()
+      || mainWindow.isMaximized()
+      || mainWindow.getSize().some((value, index) => value !== restoredSize[index])
+    ) {
+      throw new Error('tray restore reapplied main window startup state')
+    }
     logger('ELECTRON_WORKSPACE_TRAY_SMOKE_PASSED')
     requestExplicitQuit()
   } catch {
     logger('ELECTRON_WORKSPACE_TRAY_SMOKE_FAILED')
     requestExit(2)
   }
+}
+
+function validateMainWindowStartupState(): boolean {
+  if (!mainWindow || mainWindow.isDestroyed()) return false
+  const primaryDisplay = screen.getPrimaryDisplay()
+  const currentDisplay = screen.getDisplayMatching(mainWindow.getBounds())
+  return (
+    mainWindow.isMaximized()
+    && !mainWindow.isFullScreen()
+    && currentDisplay.id === primaryDisplay.id
+  )
 }
 
 function scheduleSmokeStableExit(): void {
@@ -1110,6 +1185,7 @@ async function shutdown(): Promise<void> {
   smokeStableTimer = undefined
   smokeRendererHealthy = false
   smokeRendererLoading = false
+  smokeMainWindowStartupValidated = false
   logger('ELECTRON_SHUTDOWN_STARTED')
   traceSmoke('SHUTDOWN_STARTED')
   try {

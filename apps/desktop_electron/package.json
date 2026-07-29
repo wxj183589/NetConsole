@@ -59,6 +59,13 @@
           "netconsole.ico",
           "netconsole.png"
         ]
+      },
+      {
+        "from": "dist/native",
+        "to": "native",
+        "filter": [
+          "netconsole-elevated-launcher.exe"
+        ]
       }
     ],
     "win": {

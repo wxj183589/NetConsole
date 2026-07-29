@@ -1,6 +1,6 @@
 # 导出进程规范
 
-本文定义 NetConsole 所有导出类任务的强制规范，是 [Renderer 响应性规范](ui_thread_policy.md) 的配套文档。
+本文定义 NetConsole 所有导出类任务的强制规范，是 [Renderer 响应性规范](ui_thread_policy.md) 的配套文档。用户选择文件、任务绑定和最终落盘的永久规则见 [用户文件导入导出交互契约](IMPORT_EXPORT_INTERACTION.md)。
 
 > 2026-07-11 代码核对：当前通用 registry 有 27 个导出类型，另有 `trackside_ap_business` 和 `mesh_link_detail` 两个专用类型。兼容直接 exporter 仍可能存在，但正式 UI 路径必须使用 Export Process。
 
@@ -11,6 +11,22 @@
 页面动作只能提交 ExportJob，由永久 Export Application Service/Process 启动。
 Renderer 禁止直接 Workbook.save、df.to_excel、matplotlib.savefig。
 ```
+
+正式 Electron 的“导出任务”和“用户最终保存”是两个连续但独立的阶段：
+
+```text
+用户点击导出
+  -> useUserSelectedExport 选择并持有 Main 授权目标
+  -> 用户取消：结束，不创建 Export Task
+  -> 用户确认：创建 Export Task
+  -> Export Process 生成内部 Artifact
+  -> Task Center 发布 Artifact 元数据
+  -> useUserSelectedExport 携带 destinationPath + size + SHA-256
+  -> Electron Main 流式写入同目录随机 .part
+  -> 校验通过后安全替换用户目标
+```
+
+用户最终导出不得默认写到业务数据根、仓库、当前工作目录、测试/构建目录或系统下载目录。Artifact Store、Worker 临时输出和 Job 描述文件仍属于受管内部数据，不要求用户逐次选择路径。
 
 ## 一、适用范围
 
@@ -60,7 +76,7 @@ Application Service 与导出进程通过 UTF-8 JSONL stdout 通信进度。导�
 
 ## 三、ExportJob
 
-UI 线程只负责创建导出任务描述文件，例如：
+Application Service 只创建内部 Artifact 的导出任务描述文件，例如：
 
 ```json
 {
@@ -72,6 +88,8 @@ UI 线程只负责创建导出任务描述文件，例如：
   "created_at": "2026-07-09T12:00:00"
 }
 ```
+
+`output_path` 是 Export Worker 的内部 Artifact 输出位置，不是 Renderer 任意传入的用户最终保存路径。用户最终路径由 Electron Main 当次授权，只保存在 Renderer 当前 session 的共享协调器绑定中，不进入 Python `ExportJob` 或业务数据库。
 
 job 参数只能包含可序列化数据：
 
@@ -166,6 +184,12 @@ ExportProcessManager
 - 输出文件先写临时文件，成功后再替换目标文件。
 - 失败时保留清晰错误信息，必要时清理不完整临时文件。
 - 本地 `.xlsx` 导出应优化列宽、筛选、冻结、文本格式，便于 WPS Office / Microsoft Office 打开。
+- Electron 主动导出必须在创建任务前通过 Platform Adapter 选择最终路径；取消不创建任务。
+- 任务型导出必须使用固定动作注册表校验建议扩展名、Artifact 扩展名和媒体类型，并把 `taskId` 与 Main 授权路径绑定。
+- Artifact 本地提交必须携带后端给出的准确大小和 SHA-256；已有预选目标时不得再次弹出保存窗口。
+- 本地保存失败时保留 Artifact，用户可在 Task Center 重新选择位置并复用同一 Artifact，不重新生成报告。
+- 没有显式绑定的历史 Artifact 只在用户点击后打开一次“另存为”；页面加载和历史任务恢复不得自动弹窗。
+- Browser 开发模式只能报告浏览器已开始下载，不能声称已验证本地文件或具体目录。
 
 禁止：
 
@@ -174,6 +198,8 @@ ExportProcessManager
 - 在 UI 线程中预先读取全量数据再传给导出进程。
 - 默认把大数据 inline rows 写入 Job JSON；兼容 inline 模式必须显式启用且不超过当前 5000 行上限。
 - 导出失败静默，或只写控制台不反馈 UI。
+- Electron Bridge 缺失时回退到 Browser anchor 下载。
+- 把 Renderer 任意提供的绝对路径当成新的授权目标，或把目标路径长期写入业务数据库。
 
 ## 八、日志事件
 

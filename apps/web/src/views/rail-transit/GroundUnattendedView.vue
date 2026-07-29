@@ -652,11 +652,21 @@ async function removeArchive(row: GroundArchive): Promise<void> {
   catch (reason) { ElMessage.error(errorText(reason, t('ground.archive_delete_failed', '归档删除失败'))) }
 }
 async function downloadArchiveSummary(row: GroundArchive): Promise<void> {
-  try { await downloadBackendResource(groundArchiveSummaryDownloadRequest(row)) }
+  try {
+    const result = await downloadBackendResource(groundArchiveSummaryDownloadRequest(row))
+    if (result.status === 'failed') throw new Error(result.error || '归档汇总下载失败')
+    if (result.status === 'started') ElMessage.info('浏览器已开始下载归档汇总；开发模式无法验证本地落盘')
+    else if (result.status === 'saved') ElMessage.success(`归档汇总已保存：${result.fileName || '用户选择的文件'}`)
+  }
   catch (reason) { ElMessage.error(errorText(reason, t('ground.archive_download_failed', '归档汇总下载失败'))) }
 }
 async function downloadArchiveZip(row: GroundArchive): Promise<void> {
-  try { await downloadBackendResource(groundArchiveZipDownloadRequest(row)) }
+  try {
+    const result = await downloadBackendResource(groundArchiveZipDownloadRequest(row))
+    if (result.status === 'failed') throw new Error(result.error || '原始归档 ZIP 下载失败')
+    if (result.status === 'started') ElMessage.info('浏览器已开始下载原始归档 ZIP；开发模式无法验证本地落盘')
+    else if (result.status === 'saved') ElMessage.success(`原始归档 ZIP 已保存：${result.fileName || '用户选择的文件'}`)
+  }
   catch (reason) { ElMessage.error(errorText(reason, '原始归档 ZIP 下载失败')) }
 }
 async function verifyArchive(): Promise<void> {

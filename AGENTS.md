@@ -55,6 +55,14 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 - 重要架构或状态变化同步 docs；区分已完成、兼容层、shadow/diagnostics、部分迁移和规划。
 - 完成后运行适用验证并如实报告；提交/推送说明使用中文，未经用户要求不自动提交。
 
+## 用户文件导入导出
+
+- 新增或修改任何用户可见的导入、导出、模板下载、报告生成或 Artifact 保存入口前，必须先阅读 `docs/IMPORT_EXPORT_INTERACTION.md` 和 `docs/development/import-export-dialog-audit.md`。
+- 新增任务型导出必须先登记 `apps/web/src/platform/exportActionRegistry.ts` 的固定动作，再复用 `apps/web/src/composables/useUserSelectedExport.ts`；禁止页面自行实现路径选择、任务绑定、Artifact 轮询、最终保存或失败重试。
+- 用户取消保存路径选择时不得创建任务、生成 Artifact 或提示提交成功。已有 Artifact 只在用户主动点击后另存，不得在页面加载、Tab 恢复或历史任务恢复时自动弹窗。
+- 新增导入必须复用现有 Browser `File/FileList` 或 Electron Main 专用选择器；取消不调用后端，处理后清空 file input，Main 路径模式只使用当次授权路径且保留 Backend 文件契约校验。
+- OmniPeek、局点包、SFTP 受管下载等新增例外必须同步永久规范和静态审计，写明不能使用通用协调器的技术原因并获得明确评审。
+
 ## 验证与交付
 
 - 开发阶段先运行与改动直接相关的定向测试；Python 文件改动至少运行相关 pytest、修改范围 Ruff，并按需运行 `python -m py_compile`。
@@ -85,6 +93,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 | Skill | 何时使用 | 不适用范围 |
 | --- | --- | --- |
 | `netconsole-job-center-skill` | 普通后台 Job、JSONL、取消和迁移 | 文件导出、轻量 UI |
+| `netconsole-user-file-interaction-skill` | 用户可见导入/导出、模板下载、报告保存、Artifact 另存和文件选择 | Worker 内部生成、SFTP 受管下载实现、数据库业务 |
 | `netconsole-export-report-skill` | ExportJob、本地 XLSX/CSV/PDF/ZIP 报告 | 实时采集、普通表格样式 |
 | `netconsole-ac-management-skill` | AC/FIT-AP、强类型动作、OmniPeek 名称表 | 普通设备管理、无 AC 作用域的 Identity |
 | `netconsole-train-communication-skill` | 车内通信点表、TC1/TC2、离线可测、VRRP 边界 | Online MR 实时采集、列车在线页 |

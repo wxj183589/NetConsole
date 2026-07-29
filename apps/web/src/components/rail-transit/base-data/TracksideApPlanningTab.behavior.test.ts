@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 
 import type { TracksideApPlan } from '../../../types/tracksideApBusiness'
+import { resetUserSelectedExportForTests } from '../../../composables/useUserSelectedExport'
 
 const api = vi.hoisted(() => ({
   exportTracksideApPlan: vi.fn(),
@@ -21,7 +22,10 @@ const routerPush = vi.hoisted(() => vi.fn())
 const messages = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn() }))
 
 vi.mock('../../../api/tracksideApBusiness', () => api)
-vi.mock('../../../platform/runtime', () => ({ downloadBackendResource }))
+vi.mock('../../../platform/runtime', () => ({
+  downloadBackendResource,
+  getPlatformAdapter: () => ({ hostType: 'browser' }),
+}))
 vi.mock('../../../features', () => ({ isFeatureEnabled: () => true }))
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: routerPush }) }))
 vi.mock('../../feedback/useConfirm', () => ({ useConfirm: () => ({ confirm: vi.fn(async () => true) }) }))
@@ -112,6 +116,7 @@ function button(wrapper: VueWrapper, label: string) {
 
 describe('TracksideApPlanningTab download behavior', () => {
   beforeEach(() => {
+    resetUserSelectedExportForTests()
     vi.useFakeTimers()
     localStorage.clear()
     routerPush.mockReset()
@@ -128,7 +133,7 @@ describe('TracksideApPlanningTab download behavior', () => {
     downloadBackendResource.mockReset().mockResolvedValue({ status: 'saved' })
   })
 
-  it('automatically downloads a newly created template once without opening task center', async () => {
+  it('does not page-download a newly created template when the task completes', async () => {
     api.exportTracksideApPlan.mockResolvedValue(task('new-template', 'RUNNING'))
     api.getTracksideApTask.mockResolvedValue(task('new-template', 'COMPLETED', true, 'artifact-1'))
     const wrapper = mount(TracksideApPlanningTab, { props: { locked: false, saving: false }, global: { stubs } })
@@ -141,11 +146,12 @@ describe('TracksideApPlanningTab download behavior', () => {
 
     await vi.advanceTimersByTimeAsync(1000)
     await flushPromises()
-    expect(downloadBackendResource).toHaveBeenCalledTimes(1)
-    expect(api.tracksideApPlanDownloadRequest).toHaveBeenCalledWith('artifact-1', '轨旁AP规划模板.xlsx')
+    expect(downloadBackendResource).not.toHaveBeenCalled()
+    expect(api.tracksideApPlanDownloadRequest).not.toHaveBeenCalled()
+    expect(sessionStorage.getItem('netconsole.user-selected-exports.v1')).toContain('new-template')
 
     await vi.advanceTimersByTimeAsync(3000)
-    expect(downloadBackendResource).toHaveBeenCalledTimes(1)
+    expect(downloadBackendResource).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
@@ -189,7 +195,7 @@ describe('TracksideApPlanningTab download behavior', () => {
     wrapper.unmount()
   })
 
-  it('downloads the current plan with its own fallback name', async () => {
+  it('submits the current plan without a delayed page download', async () => {
     api.exportTracksideApPlan.mockResolvedValue(task('current-plan', 'COMPLETED', true, 'artifact-current'))
     const wrapper = mount(TracksideApPlanningTab, { props: { locked: false, saving: false }, global: { stubs } })
     await flushPromises()
@@ -197,14 +203,15 @@ describe('TracksideApPlanningTab download behavior', () => {
     await button(wrapper, '导出当前').trigger('click')
     await flushPromises()
     expect(api.exportTracksideApPlan).toHaveBeenCalledWith(false, undefined)
-    expect(api.tracksideApPlanDownloadRequest).toHaveBeenCalledWith('artifact-current', '轨旁AP规划.xlsx')
+    expect(api.tracksideApPlanDownloadRequest).not.toHaveBeenCalled()
+    expect(downloadBackendResource).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
   it.each([
     ['FAILED', false, '', '轨旁 AP 规划导出失败'],
     ['CANCELLED', false, '', '轨旁 AP 规划导出已取消'],
-    ['COMPLETED', false, '', '没有可下载的 Artifact'],
+    ['COMPLETED', false, '', ''],
   ])('does not download terminal task state %s without an artifact', async (status, available, artifactId, message) => {
     api.exportTracksideApPlan.mockResolvedValue(task(`terminal-${status}`, status, available, artifactId))
     const wrapper = mount(TracksideApPlanningTab, { props: { locked: false, saving: false }, global: { stubs } })
@@ -213,11 +220,12 @@ describe('TracksideApPlanningTab download behavior', () => {
     await button(wrapper, '下载模板').trigger('click')
     await flushPromises()
     expect(downloadBackendResource).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain(message)
+    if (message) expect(wrapper.text()).toContain(message)
+    else expect(wrapper.text()).not.toContain('轨旁 AP 规划文件暂不可下载')
     wrapper.unmount()
   })
 
-  it('keeps manual download and task window actions after an automatic download failure', async () => {
+  it('keeps manual download and task window actions after a manual download failure', async () => {
     api.exportTracksideApPlan.mockResolvedValue(task('retry-task', 'COMPLETED', true, 'retry-artifact', '后端模板.xlsx'))
     downloadBackendResource.mockResolvedValueOnce({ status: 'failed', error: '保存失败' })
     const wrapper = mount(TracksideApPlanningTab, { props: { locked: false, saving: false }, global: { stubs } })
@@ -225,8 +233,12 @@ describe('TracksideApPlanningTab download behavior', () => {
 
     await button(wrapper, '下载模板').trigger('click')
     await flushPromises()
+    expect(downloadBackendResource).not.toHaveBeenCalled()
+
+    await button(wrapper, '下载文件').trigger('click')
+    await flushPromises()
     expect(downloadBackendResource).toHaveBeenCalledTimes(1)
-    expect(wrapper.text()).toContain('可使用“下载文件”重试')
+    expect(messages.error).toHaveBeenCalledWith('保存失败')
 
     downloadBackendResource.mockResolvedValueOnce({ status: 'saved' })
     await button(wrapper, '下载文件').trigger('click')

@@ -4,6 +4,7 @@
 
 ## 本次专题
 
+- [UI 导入导出文件选择审计（2026-07-30 整改证据）](development/import-export-dialog-audit.md)
 - [轨旁 AP 管理 VLAN 分组规划](AP_MANAGEMENT_VLAN_GROUPS.md)
 - [车内通信检测：点表与固定拓扑](rail-transit/train-communication/README.md)
 - [检测点表模型](rail-transit/train-communication/POINT_TABLE.md)
@@ -16,6 +17,7 @@
 | 文档 | 用途 | 主要维护对象 | 事实来源 | 必须更新时机 |
 | --- | --- | --- | --- | --- |
 | [项目总览](../README.md) | 产品定位、模块、架构摘要、运行入口 | 全体开发/维护人员 | Electron Main、`main.py`、Electron Runtime、Feature Registry | 一级模块、启动方式、版本或总体架构变化 |
+| [用户文件导入导出契约](IMPORT_EXPORT_INTERACTION.md) | 用户文件选择、固定导出动作、任务绑定、Artifact 最终落盘和受管下载例外 | Web/Electron/Export 开发 | `exportActionRegistry`、`useUserSelectedExport`、Electron BackendDownloadManager | 新增或修改任一导入、导出、下载、模板或 Artifact 保存入口 |
 | [永久架构与后续演进](ARCHITECTURE_NEXT.md) | Electron-only 永久层、不可回退边界与后续演进顺序 | 架构负责人 | 当前代码、最终迁移矩阵与目录规范 | 永久技术边界或演进顺序变化 |
 | [架构一致性审计](ARCHITECTURE_COMPLIANCE.md) | Electron-only 最终分层、Qt 历史迁移映射、自动 Guard、例外和发布阻塞规则 | 架构、迁移与发布负责人 | Git 历史、实际依赖、迁移矩阵、Guard 和非 Qt 测试 | 分层规则、Qt 删除范围、Guard 或最终发布门变化 |
 | [Electron Desktop](ELECTRON_DESKTOP.md) | Electron main/preload、Python 生命周期、临时令牌、开发/生产资源与 Qt 历史边界 | Desktop/Core/Web 开发 | `apps/desktop_electron`、`apps/web/src/platform`、`backend/electron_runtime.py` | Electron 生命周期、安全桥接、启动或发布状态变化 |
@@ -34,6 +36,7 @@
 | [设备文件下载](device-files/README.md) | Electron 设备文件只读浏览、SFTP、主机密钥和下载任务 | File Service/Task Center/Web | 当前代码、历史取证和定向测试 | SFTP、主机密钥、下载或安全边界变化 |
 | [配置采集与快照对比](CONFIG_COLLECTION.md) | 配置采集、快照选择、双栏 Diff、裁剪、导出和恢复 | Config Service/Task Center/Web | 配置 handler、API、Vue 与定向测试 | 快照、对比、裁剪、导出或恢复语义变化 |
 | [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md) | Electron 本机选择器、受控目录/Artifact、终端与通知的严格白名单 | Electron 桌面外壳与本机动作开发 | RuntimeMode、Desktop session、Feature Gate、PathResolver | 新增或修改任一本机 Bridge 动作前 |
+| [工具集](EXTERNAL_TOOL_COLLECTION.md) | 本机第三方 EXE 注册、分类、图标、状态、仅 ID 启动和独立 userData 存储 | Electron/Vue 桌面工具开发 | ExternalToolStore、ExternalToolService、专用 IPC 与工具集页面 | 工具模型、持久化、选择器、启动或安全边界变化 |
 | [外部终端白名单](external-terminal/README.md) | SecureCRT、Xshell、PuTTY 的受控可执行文件名、选择器和启动复验边界 | Desktop/Device/Application 开发 | Shared Bridge、Electron Main、Python Settings Tool Validation | 终端类型、文件名或启动边界变化 |
 | [表单与路径字段](ui/FORM_AND_PATH_FIELDS.md) | 路径输入、按钮组、字段反馈和窄窗口布局规范 | Vue Renderer 开发 | `NcExecutablePathField` 与系统设置页面 | 新增或修改路径选择字段时 |
 | [开发规则](DEVELOPMENT_RULES.md) | 编码、分层、任务、导出、Feature、测试规则 | 所有代码贡献者 | `AGENTS.md`、架构代码、测试 | 开发约束或工程基线变化 |

@@ -39,7 +39,7 @@ vi.mock('../../api/systemMaintenance', async (importOriginal) => ({
 vi.mock('../../features', () => ({ isFeatureEnabled: () => true }))
 vi.mock('../../platform/runtime', () => ({
   downloadBackendResource,
-  getPlatformAdapter: () => ({ openExternalUrl: vi.fn(), openTaskWindow }),
+  getPlatformAdapter: () => ({ hostType: 'browser', openExternalUrl: vi.fn(), openTaskWindow }),
 }))
 vi.mock('../../components/feedback/useConfirm', () => ({ useConfirm: () => ({ confirm: confirmDialog }) }))
 vi.mock('element-plus', async (importOriginal) => ({

@@ -12,17 +12,19 @@ Electron 复用同一 Vue Renderer、FastAPI 会话和 `TaskApplicationService -
 
 ## 工作区、多窗口与 Windows 通知区域
 
-`WorkspaceWindowController` 统一管理一个主窗口和附加工作区窗口；所有窗口复用同一个 `PythonBackendManager`、动态回环 Origin 和内存桌面会话，不会为标签、窗口或 Vite 另建 Backend。Vue 工作区使用 Pinia 管理标签的路由、实例和缓存键，主进程只持久化受限的导航快照与窗口布局，不保存业务页面响应式状态、绝对路径、Token、密码、`confirm_token` 或设备凭据。
+`WorkspaceWindowController` 统一管理一个主窗口和附加工作区窗口；所有窗口复用同一个 `PythonBackendManager`、动态回环 Origin 和内存桌面会话，不会为标签、窗口或 Vite 另建 Backend。Vue 工作区使用 Pinia 管理标签的路由、实例和缓存键，主进程只在当前进程内存中保存受限导航快照，不保存业务页面响应式状态、绝对路径、Token、密码、`confirm_token` 或设备凭据。
 
 工作区路由默认 `cache=false`、`allowDuplicate=false`。标签仍可保留在工作区，但普通页面离开时会卸载；`AppRouteView` 的 KeepAlive include 只包含标签仍存在且显式声明 `workspace.cache=true` 的路由。MESH 使用单一 `singleton` 标签和稳定 cache key，禁止同窗口复制；设备详情与 Online MR 分析等确有资源实例语义的页面单独声明复制策略。关闭标签或局点切换从 include 移除 cache key 后会触发真实卸载，不通过提高 KeepAlive 上限掩盖资源增长。
 
-工作区快照位于 Electron `userData/workspace-layout.json`。它使用严格 schema、内部路由/敏感 query 过滤、长度限制和原子替换；文件损坏、过期或多显示器越界时安全回退到主窗口默认布局。Renderer 只能通过白名单 IPC 打开受控内部路由、保存当前所属窗口的快照和更新已清理的窗口标题，不能提供 URL、`BrowserWindow` 参数或本机路径。
+工作区快照只存在于当前 Electron/Vue 进程内存。新进程首次读取工作区状态时固定返回主窗口空快照，不恢复主窗口或附加工作区窗口；旧 `userData/workspace-layout.json` 会被精准删除，且不影响同目录的主题、工具集或 UI preference 文件。Browser fallback 同样忽略并清理旧 `netconsole.workspace.v1` 与 `netconsole.web.open-page-tabs`，不再写标签持久化。Renderer 仍只能通过白名单 IPC 打开受控内部路由、保存当前所属窗口的进程内快照和更新已清理的窗口标题，不能提供 URL、`BrowserWindow` 参数或本机路径。
 
-局点重启前，Renderer 先持久化仅保留 Dashboard 与系统设置的快照；`WorkspaceWindowController` 再对所有受管窗口执行同一局点边界清理并保留回滚副本。`PythonBackendManager` ready 后，Main 读取新 Backend 的当前局点再次核对目标；不一致或启动失败会恢复原 Backend 和窗口快照。成功时才清除旧 MESH Renderer recovery/workload 并重新加载所有窗口，避免旧 `session_id`、KeepAlive 实例或多窗口业务标签跨局点恢复。
+每次新进程创建主窗口时，`BrowserWindow` 仅接收 `1280x800` 安全默认尺寸和既有 `1024x680` 最小约束，不接收历史坐标。首次 `ready-to-show` 按当时 `screen.getPrimaryDisplay().workArea` 将窗口放入当前主显示器，再执行 `maximize -> show -> focus`；窗口保持 `frame=true`、`fullscreen=false`，最大化使用 Windows 工作区而不是无边框全屏。启动完成后用户可正常还原、移动、调整尺寸或最小化。托盘和第二实例恢复只对仍在运行的同一窗口执行 `restore/show/focus`，不会重新最大化；完整退出、异常退出、升级启动和 `app.relaunch()` 创建的新进程才重新应用启动默认值。
+
+局点重启前，Renderer 先把当前进程快照收敛为仅保留 Dashboard 与系统设置；`WorkspaceWindowController` 再对所有受管窗口执行同一局点边界清理并在内存中保留回滚副本。`PythonBackendManager` ready 后，Main 读取新 Backend 的当前局点再次核对目标；不一致或启动失败会恢复原 Backend 和进程内窗口快照。成功时才清除旧 MESH Renderer recovery/workload 并重新加载所有窗口，避免旧 `session_id`、KeepAlive 实例或多窗口业务标签跨局点恢复。
 
 Windows 下启动时会创建 `TrayController`，图标统一由 `resolveTrayIconPath()` 解析：源码态取仓库 `resources/branding/netconsole.ico`，安装包从 `extraResources/branding/netconsole.ico` 读取。菜单包含打开主窗口、新建工作区、打开任务中心、运行/失败任务数量、脱敏的 Backend/当前局点状态、关闭到通知区域开关和“退出 NetConsole”。Vue 只向 Main 推送聚合计数；Main 不查询任务数据库。前台终态使用显式加载样式、挂载到 `document.body` 的 Vue Notification，后台终态使用有界 Windows 原生通知；两类通知的详情入口都恢复/保留当前主页面并直接打开任务详情抽屉。图标不可用或创建失败时托盘设置运行时不可用，主窗口不会被隐藏，避免留下无法恢复的后台进程。
 
-默认启用“关闭主窗口后驻留通知区域”。主窗口关闭会隐藏而不停止 Backend 或后台任务，附加工作区窗口正常销毁；所有普通窗口不可见时，托盘、Backend 和后台业务任务继续存在。只有托盘“退出 NetConsole”（以及显式系统关闭信号）进入单次受控退出：先 flush 工作区/偏好、拒绝新窗口、关闭受管窗口和 Tray，再停止下载、Backend 与会话授权。关闭该设置后，最后一个可见普通业务窗口触发相同的受控退出。
+默认启用“关闭主窗口后驻留通知区域”。主窗口关闭会隐藏而不停止 Backend、Renderer 或后台任务；托盘和第二实例恢复只显示、还原最小化并聚焦该窗口，不调用 `loadURL/reload/maximize`，因此标签、顺序和活动页保持不变。附加工作区窗口正常销毁；所有普通窗口不可见时，托盘、Backend 和后台业务任务继续存在。只有托盘“退出 NetConsole”（以及显式系统关闭信号）进入单次受控退出：丢弃工作区会话、拒绝新窗口、关闭受管窗口和 Tray，再停止下载、Backend 与会话授权。关闭该设置后，最后一个可见普通业务窗口触发相同的受控退出。
 
 ## 当前状态
 
@@ -121,7 +123,7 @@ pnpm smoke:workspace-tray
 
 冒烟只有在 Electron、Python、Vue runtime adapter 和真实 `/api/health` 全部成功后才以 0 退出，并检查退出链能够回收 Vite、Electron 和 Python。
 
-`smoke:workspace-tray` 使用隔离临时数据根，额外验证受管附加窗口创建/关闭、主窗口隐藏到托盘后 Backend 仍为 ready、恢复主窗口及明确退出后的回收。它不替代 Windows 通知区域右键菜单、真实缩放图标、多显示器布局和安装包的人工点击验收。
+普通与打包 smoke 会验证主窗口位于当前主显示器、处于最大化且非全屏状态。`smoke:workspace-tray` 使用隔离临时数据根，额外验证受管附加窗口创建/关闭、主窗口还原并调整尺寸、隐藏到托盘后 Backend 仍为 ready、恢复时不重新最大化或改写尺寸，以及明确退出后的回收。它不替代 Windows 通知区域右键菜单、真实缩放图标、主显示器切换、任务栏/标题栏控件和安装包的人工点击验收。
 
 Codex 开发链可用 `pnpm exec node scripts/dev.mjs --codex --smoke` 做同口径冒烟；它还验证受保护的 `/api/dev/runtime-status` 已就绪，并检查固定端口退出后可重新绑定。浏览器与 Electron 专项 E2E 将在独立 Playwright 阶段接入；在脚本真实存在前，不把 Vitest 或 smoke 冒充 E2E。
 
@@ -137,7 +139,7 @@ pnpm build
 pnpm start
 ```
 
-`pnpm build` 构建单文件 main/preload 和 `apps/web/dist`；`pnpm start` 启动 Electron 与本机 Python，由 FastAPI 在同一动态回环 Origin 提供已构建的 Vue 静态资源。Electron 不使用第二套 Renderer，也不把临时令牌放入页面 URL。
+`pnpm build` 构建单文件 main/preload、Windows x64 管理员启动 helper 和 `apps/web/dist`；构建机必须提供 Go，helper 使用 `CGO_ENABLED=0` 和 Windows GUI 子系统生成。`pnpm start` 启动 Electron 与本机 Python，由 FastAPI 在同一动态回环 Origin 提供已构建的 Vue 静态资源。正式运行只使用已打包的 `resources/native/netconsole-elevated-launcher.exe`，客户机不需要 Go。Electron 不使用第二套 Renderer，也不把临时令牌放入页面 URL。
 
 Electron Builder 目录包/NSIS 与 PyInstaller 受管 Backend 的构建链已经建立。NSIS 保持现有安装器，只新增程序目录之后的数据根选择页；它以管理员权限写入 HKLM 指针，普通卸载不会删除业务根。升级时保持原根；选择新根时由受管 Backend 迁移成功后才更新指针。依赖批准清单、NOTICE、SBOM 和 package smoke 仍是构建门，完整 Windows 安装/升级/卸载人工验收仍待最终组合执行。代码签名和自动升级尚未建立，不得把源码 `.venv` 当作交付依赖。
 
@@ -207,6 +209,8 @@ Renderer 当前只能调用：
 - `getRuntimeConfig`
 - `selectFile`
 - `selectDirectory`
+- `listExternalTools`、三个工具集专用选择器、系统终端引用和受控增删改/分类/排序方法
+- `launchExternalTool({toolId, launchMode})`、`revealExternalTool(toolId)` 与 `refreshExternalToolStatuses`
 - `chooseSavePath`
 - `downloadBackendResource`
 - `openPath`
@@ -218,6 +222,8 @@ Renderer 当前只能调用：
 - `getRendererRecoveryState`，只返回当前受管窗口在本次应用运行期内的固定恢复 DTO
 
 没有通用 `invoke(channel)`、`send(channel)`、文件读写、环境变量读取、Python 路径设置或命令执行接口。详细路径规则见 [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md)。
+
+工具集使用独立 `userData/external-tools.json` schema v2 Store，不进入 UI Preference 或局点数据。iperf3/fping 留在系统设置；SecureCRT/Xshell/PuTTY 卡片只保存系统设置引用；旧 IPOP 路径幂等迁移为独立工具。Renderer 启动只传工具 UUID 与普通/管理员模式，Main 重新取已登记记录并复验。普通启动固定 `shell:false / detached:true / stdio:"ignore"`；管理员启动通过打包的最小 Go helper 调用 `ShellExecuteExW(runas)`，禁止提升 NetConsole 自身，UAC 取消不增加统计。自定义图标源路径留在 Main 的短期选择表，Renderer 只收到 `selectionId` 和 data URL。真实 UAC 和正式包 helper 状态为 `IMPLEMENTED_UNVERIFIED`，完整契约见[工具集](EXTERNAL_TOOL_COLLECTION.md)。
 
 ## 文件选择与导出边界
 
@@ -262,4 +268,4 @@ pnpm test
 pnpm build
 ```
 
-完整 Windows 安装包、代码签名、升级和真实发布目录尚未验收；工作区与托盘已有单元测试及源码 smoke，但原生托盘菜单、通知区域图标缩放、多显示器恢复、原生保存对话框与关闭后进程残留仍需在本地主工作区人工点击核对，不能从上述源码冒烟推断为通过。
+完整 Windows 安装包、代码签名、升级和真实发布目录尚未验收；工作区与托盘已有单元测试及源码 smoke，但原生托盘菜单、通知区域图标缩放、运行中切换主显示器后的下次启动、任务栏与标题栏控件、原生保存对话框及关闭后进程残留仍需在本地主工作区人工点击核对，不能从上述源码冒烟推断为通过。

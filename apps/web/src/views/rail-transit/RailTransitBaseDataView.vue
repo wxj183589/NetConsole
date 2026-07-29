@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus'
 import { Connection, Download, Plus, Refresh, UploadFilled } from '@element-plus/icons-vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { useConfirm } from '../../components/feedback/useConfirm'
+import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import { downloadBackendResource } from '../../platform/runtime'
 import {
   getStationConflictPreview,
@@ -67,6 +68,7 @@ const store = useRailTransitBaseDataStore()
 const route = useRoute()
 const router = useRouter()
 const { confirm, confirmChoice } = useConfirm()
+const userSelectedExport = useUserSelectedExport()
 type BaseDataEditState = 'LOCKED' | 'UNLOCKED_CLEAN' | 'UNLOCKED_DIRTY' | 'VALIDATING' | 'SAVING' | 'SAVE_FAILED'
 interface BaseDataDraft {
   metadata: {
@@ -1838,9 +1840,18 @@ async function startApBaseExport(template: boolean): Promise<void> {
     if (choice === 'confirm') draftRows = cloneDto(apRows.value)
   }
   try {
-    rememberApBaseTask(await exportTracksideApBase(template, draftRows))
+    const result = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: template ? 'rail.trackside_base_template' : 'rail.trackside_base_current',
+      suggestedName: `${safeExportPart(store.summary?.line_name || '当前局点')}-${template ? '轨旁AP基础资料模板' : '轨旁AP基础资料'}-${exportTimestamp()}.xlsx`,
+      context: { template, draft: Boolean(draftRows) },
+      submit: () => exportTracksideApBase(template, draftRows),
+    })
+    if (result.status === 'cancelled') return
+    rememberApBaseTask(result.task)
     pollApBaseTask()
-    ElMessage.success(template ? '轨旁 AP 模板导出任务已启动' : '轨旁 AP 当前数据导出任务已启动')
+    ElMessage.success(template
+      ? '轨旁 AP 模板导出任务已启动，完成后将写入所选位置'
+      : '轨旁 AP 当前数据导出任务已启动，完成后将写入所选位置')
   } catch (cause) {
     ElMessage.error(message(cause, template ? '轨旁 AP 模板导出启动失败' : '轨旁 AP 当前数据导出启动失败'))
   }
@@ -1861,9 +1872,16 @@ async function startApRenameCommandExport(): Promise<void> {
     if (choice === 'confirm') draftRows = cloneDto(apRows.value)
   }
   try {
-    rememberApBaseTask(await exportTracksideApRenameCommands(draftRows))
+    const result = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: 'rail.trackside_rename_commands',
+      suggestedName: `${safeExportPart(store.summary?.line_name || '当前局点')}-轨旁AP重命名命令-${exportTimestamp()}.txt`,
+      context: { draft: Boolean(draftRows) },
+      submit: () => exportTracksideApRenameCommands(draftRows),
+    })
+    if (result.status === 'cancelled') return
+    rememberApBaseTask(result.task)
     pollApBaseTask()
-    ElMessage.success('轨旁 AP 重命名命令导出任务已启动')
+    ElMessage.success('轨旁 AP 重命名命令导出任务已启动，完成后将写入所选位置')
   } catch (cause) {
     ElMessage.error(message(cause, '轨旁 AP 重命名命令导出启动失败'))
   }
@@ -1896,6 +1914,15 @@ function apTaskSummary(value: TracksideApTask): string {
   const blocking = Number(summary.blocking_error_count || 0)
   if (value.action !== 'trackside_ap_rename_command_export' || (!scanned && !valid && !skipped && !blocking)) return ''
   return `扫描 ${scanned} · 有效命令 ${valid} · 跳过 ${skipped} · 阻断错误 ${blocking}`
+}
+
+function safeExportPart(value: string): string {
+  return value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim() || '当前局点'
+}
+
+function exportTimestamp(now = new Date()): string {
+  const part = (value: number) => String(value).padStart(2, '0')
+  return `${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}_${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}`
 }
 
 function openApBaseTaskWindow(): void {

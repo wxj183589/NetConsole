@@ -14,7 +14,6 @@ import {
   getAcExternalTerminalOptions,
   openAcFitApExternalTerminal,
   acFitApResourceArtifactDownloadRequest,
-  getAcWebTask,
   startAcFitApResourceExport,
 } from '../../api/acWebParity'
 import type { AcFitApResourceExportScope } from '../../api/acWebParity'
@@ -24,7 +23,9 @@ import { useAcManagementStore } from '../../stores/acManagement'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import { useTaskStore } from '../../stores/tasks'
 import { t } from '../../i18n/runtime'
+import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import NcDataTable from '../../components/table/NcDataTable.vue'
+import ConfigDiffViewer from '../../components/config-diff/ConfigDiffViewer.vue'
 import type { NcDataTableContextMenuItem } from '../../components/table/NcDataTableContextMenu'
 import type { NcColumnValueType, NcTableColumn } from '../../components/table/NcTableColumn'
 import AcOmniPeekExportDialog from './AcOmniPeekExportDialog.vue'
@@ -37,12 +38,14 @@ import type {
 } from '../../types/acWebParity'
 import { displayInterfaceName } from '../../utils/interfaceName'
 import { formatOpticalPower, opticalStatusPresentation, opticalValuePresentation } from '../../utils/opticalPresentation'
+import { acConfigDiffModel } from './configDiffAdapter'
 
 const store = useAcManagementStore()
 const taskStore = useTaskStore()
 const route = useRoute()
 const router = useRouter()
 const { confirm } = useConfirm()
+const userSelectedExport = useUserSelectedExport()
 const activeTab = ref('aps')
 const detailVisible = ref(false)
 const configVisible = ref(false)
@@ -67,7 +70,6 @@ const omniPeekScopeIds = ref<string[]>([])
 const resourceExportBusy = ref(false)
 const resourceExportSaving = ref(false)
 const lastResourceExportTask = ref<AcWebTask | null>(null)
-let resourceExportPolling = true
 const terminalVisible = ref(false)
 const terminalLoading = ref(false)
 const terminalTarget = ref<AcAp | null>(null)
@@ -129,7 +131,7 @@ const radioColumns: NcTableColumn<AcRadio>[] = [
 ]
 const detailRadios = computed(() => (store.selected?.radios || []).filter((radio) => radio.radio_id <= 2))
 const configLines = computed(() => (store.configContent?.content || '').split('\n'))
-const diffLines = computed(() => (store.configDiff?.raw_diff || '').split('\n'))
+const sharedConfigDiff = computed(() => store.configDiff ? acConfigDiffModel(store.configDiff) : null)
 const taskActive = computed(() => !!store.refreshTask && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(store.refreshTask.status))
 const actionTaskActive = computed(() => !!store.actionTask && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(store.actionTask.status))
 const acActionConflict = computed(() => actionTaskActive.value && store.actionTask?.target_id === store.filters.ac_id)
@@ -209,7 +211,6 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  resourceExportPolling = false
   document.removeEventListener('visibilitychange', handleVisibility)
   store.stopPolling()
   taskStore.releasePolling(pollingConsumer)
@@ -276,64 +277,35 @@ async function exportFitApResources(command: string): Promise<void> {
   if (resourceExportBusy.value) return
   resourceExportBusy.value = true
   try {
-    const task = await startAcFitApResourceExport(
-      store.filters.ac_id,
-      scope,
-      scope === 'selected' ? [...selectedApIds.value] : [],
-      scope === 'filtered'
-        ? {
-            query: store.filters.query,
-            status: store.filters.status,
-            optical_status: store.filters.optical_status,
-            station: store.filters.station,
-            section: store.filters.section,
-            model: store.filters.model,
-            switch: store.filters.switch,
-          }
-        : {},
-    )
-    lastResourceExportTask.value = task
-    ElMessage.success(t('ac.fit_ap_resource.task_created', 'FIT-AP 资源导出任务已创建，可在任务中心查看'))
+    const acId = store.filters.ac_id
+    const apIds = scope === 'selected' ? [...selectedApIds.value] : []
+    const exportFilters = scope === 'filtered'
+      ? {
+          query: store.filters.query,
+          status: store.filters.status,
+          optical_status: store.filters.optical_status,
+          station: store.filters.station,
+          section: store.filters.section,
+          model: store.filters.model,
+          switch: store.filters.switch,
+        }
+      : {}
+    const result = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: 'ac.fit_ap_resources',
+      suggestedName: `${safeExportPart(store.activeAc?.name || 'AC')}-FIT-AP资源-${exportTimestamp()}.xlsx`,
+      context: { acId, scope, selectedCount: apIds.length },
+      submit: () => startAcFitApResourceExport(acId, scope, apIds, exportFilters),
+    })
+    if (result.status === 'cancelled') return
+    lastResourceExportTask.value = result.task
+    ElMessage.success('FIT-AP 资源导出任务已创建，完成后将写入所选位置')
     await taskStore.refresh()
-    const completed = await waitForResourceExport(task.task_id)
-    lastResourceExportTask.value = completed
-    const apCount = Number(completed.result_summary.ap_count || completed.result_summary.row_count || 0)
-    const radioCount = Number(completed.result_summary.radio_count || 0)
-    const warningCount = Number(completed.result_summary.warning_count || 0)
-    ElMessage.success(
-      warningCount > 0
-        ? resourceExportText(
-            'ac.fit_ap_resource.completed_with_warnings',
-            'FIT-AP 资源导出完成，共 {apCount} 台 AP，其中 {warningCount} 台存在数据缺失，详见“数据完整性”字段。',
-            { apCount, warningCount },
-          )
-        : resourceExportText(
-            'ac.fit_ap_resource.completed',
-            'FIT-AP 资源导出完成，共 {apCount} 台 AP、{radioCount} 个 Radio。',
-            { apCount, radioCount },
-          ),
-    )
-    await saveResourceExportArtifact()
   } catch (cause) {
     ElMessage.error(safeError(cause, t('ac.fit_ap_resource.failed', 'FIT-AP 资源导出失败')))
   } finally {
     resourceExportBusy.value = false
     void taskStore.refresh()
   }
-}
-
-async function waitForResourceExport(taskId: string): Promise<AcWebTask> {
-  const deadline = Date.now() + 180_000
-  while (resourceExportPolling && Date.now() < deadline) {
-    const task = await getAcWebTask(taskId)
-    lastResourceExportTask.value = task
-    if (task.status === 'COMPLETED' && task.available && task.artifact_id) return task
-    if (['FAILED', 'CANCELLED'].includes(task.status)) {
-      throw new Error(task.error_message || task.message || t('ac.fit_ap_resource.task_failed', 'FIT-AP 资源导出任务失败'))
-    }
-    await new Promise<void>((resolvePromise) => window.setTimeout(resolvePromise, 500))
-  }
-  throw new Error(t('ac.fit_ap_resource.timeout', 'FIT-AP 资源导出超过 180 秒，请在任务中心查看'))
 }
 
 async function saveResourceExportArtifact(): Promise<void> {
@@ -448,6 +420,10 @@ async function openConfig(snapshot: AcConfigSnapshot): Promise<void> {
 }
 
 async function openDiff(snapshot: AcConfigSnapshot): Promise<void> {
+  if (snapshot.status !== 'AVAILABLE' || snapshot.size_bytes <= 0) {
+    ElMessage.warning(snapshot.status === 'MISSING' ? '配置快照文件缺失，无法对比' : '配置快照不可读取或内容为空，无法对比')
+    return
+  }
   configVisible.value = true
   configSearch.value = ''
   currentMatch.value = -1
@@ -463,6 +439,15 @@ async function nextConfigMatch(): Promise<void> {
 
 function display(value: unknown): string {
   return value === null || value === undefined || value === '' ? '--' : String(value)
+}
+
+function safeExportPart(value: string): string {
+  return value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim() || 'AC'
+}
+
+function exportTimestamp(now = new Date()): string {
+  const part = (value: number) => String(value).padStart(2, '0')
+  return `${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}_${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}`
 }
 
 async function recoverActionPlan(): Promise<void> {
@@ -663,13 +648,6 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
   return lines.filter(Boolean).join('\n')
 }
 
-function diffLineClass(line: string): string {
-  if (line.startsWith('+++') || line.startsWith('---')) return 'diff-file'
-  if (line.startsWith('+')) return 'diff-added'
-  if (line.startsWith('-')) return 'diff-removed'
-  if (line.startsWith('@@')) return 'diff-range'
-  return ''
-}
 </script>
 
 <template>
@@ -832,7 +810,7 @@ function diffLineClass(line: string): string {
           </div>
           <NcDataTable table-id="ac-config-snapshots" route-key="/ac-management" :data="store.snapshots" :columns="snapshotColumns" empty-text="暂无 AC 配置快照" height="calc(100vh - 405px)">
             <template #cell-status="{ row }"><el-tag :type="row.status === 'AVAILABLE' ? 'success' : row.status === 'FAILED' ? 'danger' : 'info'">{{ row.status }}</el-tag></template>
-            <template #cell-actions="{ row }"><el-button link type="primary" @click="openConfig(row)">查看</el-button><el-button link type="primary" @click="openDiff(row)">对比</el-button></template>
+            <template #cell-actions="{ row }"><el-button link type="primary" :disabled="row.status !== 'AVAILABLE'" @click="openConfig(row)">查看</el-button><el-button link type="primary" :disabled="row.status !== 'AVAILABLE' || row.size_bytes <= 0" @click="openDiff(row)">对比</el-button></template>
           </NcDataTable>
           <div class="pagination-row">
             <span>共 {{ store.snapshotTotal }} 条</span>
@@ -1016,12 +994,7 @@ function diffLineClass(line: string): string {
           </div>
           <el-button v-if="store.configContent.next_offset" class="load-more" @click="store.loadMoreConfig">加载下一块</el-button>
         </template>
-        <template v-else-if="store.configDiff">
-          <div class="diff-summary">新增 {{ store.configDiff.added.length }} 行 · 删除 {{ store.configDiff.removed.length }} 行<span v-if="store.configDiff.truncated"> · 大文本已截断</span></div>
-          <div class="code-panel diff-panel">
-            <div v-for="(line, index) in diffLines" :key="index" :class="['config-line', diffLineClass(line)]"><span>{{ index + 1 }}</span><code>{{ line || ' ' }}</code></div>
-          </div>
-        </template>
+        <ConfigDiffViewer v-else-if="sharedConfigDiff" :model="sharedConfigDiff" />
       </div>
     </el-drawer>
   </section>
@@ -1066,18 +1039,13 @@ function diffLineClass(line: string): string {
 .config-viewer { min-height: 360px; }
 .config-searchbar { position: sticky; top: 0; z-index: 2; padding: 10px 0; background: var(--nc-bg-panel); }
 .config-searchbar .el-input { max-width: 360px; }
-.config-searchbar span, .diff-summary { color: var(--nc-text-secondary); font-size: 12px; }
+.config-searchbar span { color: var(--nc-text-secondary); font-size: 12px; }
 .code-panel { max-height: calc(100vh - 190px); overflow: auto; background: var(--nc-bg-code); border-radius: 8px; color: var(--nc-text-code); font: 12px/1.55 Consolas, "Microsoft YaHei", monospace; }
 .config-line { display: grid; grid-template-columns: 58px minmax(max-content, 1fr); min-width: max-content; border-bottom: 1px solid var(--nc-border-code); }
 .config-line > span { padding: 2px 10px; color: var(--nc-text-code-muted); text-align: right; border-right: 1px solid var(--nc-border-code); user-select: none; }
 .config-line code { padding: 2px 12px; white-space: pre; }
 .config-line.matched { background: var(--nc-bg-code-match); }
 .config-line.current { background: var(--nc-bg-code-current); }
-.diff-added { color: var(--nc-text-code-success); background: var(--nc-bg-code-added); }
-.diff-removed { color: var(--nc-text-code-danger); background: var(--nc-bg-code-removed); }
-.diff-range { color: var(--nc-text-code-accent); }
-.diff-file { color: var(--nc-text-code-warning); }
-.diff-summary { margin-bottom: 10px; }
 .load-more { display: block; margin: 12px auto 0; }
 .action-summary { margin-top: 14px; }
 .command-preview { max-height: 260px; overflow: auto; padding: 14px; background: var(--nc-bg-code); border-radius: 8px; color: var(--nc-text-code); font: 13px/1.6 Consolas, "Microsoft YaHei", monospace; }

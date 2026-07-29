@@ -41,7 +41,7 @@ export interface WorkspaceWindowLike {
 }
 
 export interface WorkspaceWindowControllerOptions {
-  createWindow(role: 'main' | 'workspace', bounds: WorkspaceWindowBounds): WorkspaceWindowLike
+  createWindow(role: 'main' | 'workspace', bounds?: WorkspaceWindowBounds): WorkspaceWindowLike
   buildTarget(routeFullPath: string, windowId: string, role: 'main' | 'workspace'): string
   prepareNavigation(window: WorkspaceWindowLike, target: string): void
   loadLoadingPage(window: WorkspaceWindowLike): Promise<void>
@@ -92,8 +92,7 @@ export class WorkspaceWindowController {
   ensureMainWindow(navigate = true): WorkspaceWindowLike {
     const existing = this.managed.get(this.mainWindowId)
     if (existing && !existing.window.isDestroyed()) return existing.window
-    const record = this.layoutStore.get(this.mainWindowId)
-      || this.restored.find((item) => item.role === 'main')
+    const record = this.restored.find((item) => item.role === 'main')
       || defaultWindowRecord(this.mainWindowId, 'main')
     this.mainWindowId = record.windowId
     const managed = this.createManaged(record)
@@ -292,11 +291,14 @@ export class WorkspaceWindowController {
   }
 
   private createManaged(record: PersistedWorkspaceWindow): ManagedWorkspaceWindow {
+    if (record.role === 'main') {
+      return this.registerManaged(this.options.createWindow('main'), record)
+    }
     const normalized = {
       ...record,
       bounds: normalizeWorkspaceBounds(record.bounds, this.options.getWorkAreas()),
     }
-    const window = this.options.createWindow(normalized.role, normalized.bounds)
+    const window = this.options.createWindow('workspace', normalized.bounds)
     if (normalized.maximized) window.maximize()
     return this.registerManaged(window, normalized)
   }
@@ -320,8 +322,10 @@ export class WorkspaceWindowController {
     })
     window.on('show', () => this.emitVisibleCount())
     window.on('hide', () => this.emitVisibleCount())
-    window.on('move', () => this.scheduleLayoutSave())
-    window.on('resize', () => this.scheduleLayoutSave())
+    if (managed.role === 'workspace') {
+      window.on('move', () => this.scheduleLayoutSave())
+      window.on('resize', () => this.scheduleLayoutSave())
+    }
     window.on('close', (event: unknown) => {
       if (
         managed.role === 'main'
@@ -433,13 +437,19 @@ export class WorkspaceWindowController {
 
   private persistManaged(managed: ManagedWorkspaceWindow, scheduleFlush = true): void {
     if (managed.window.isDestroyed()) return
-    this.layoutStore.upsert({
-      windowId: managed.windowId,
-      role: managed.role,
-      bounds: managed.window.getBounds(),
-      maximized: managed.window.isMaximized(),
-      snapshot: managed.snapshot,
-    })
+    this.layoutStore.upsert(managed.role === 'main'
+      ? {
+          windowId: managed.windowId,
+          role: 'main',
+          snapshot: managed.snapshot,
+        }
+      : {
+          windowId: managed.windowId,
+          role: 'workspace',
+          bounds: managed.window.getBounds(),
+          maximized: managed.window.isMaximized(),
+          snapshot: managed.snapshot,
+        })
     if (scheduleFlush) this.scheduleLayoutSave()
   }
 
@@ -463,13 +473,15 @@ function defaultWindowRecord(
   windowId: string,
   role: PersistedWorkspaceWindow['role'],
 ): PersistedWorkspaceWindow {
-  return {
-    windowId,
-    role,
-    bounds: { x: 80, y: 80, width: 1_360, height: 860 },
-    maximized: false,
-    snapshot: null,
-  }
+  return role === 'main'
+    ? { windowId, role, snapshot: null }
+    : {
+        windowId,
+        role,
+        bounds: { x: 80, y: 80, width: 1_360, height: 860 },
+        maximized: false,
+        snapshot: null,
+      }
 }
 
 function createInitialSnapshot(

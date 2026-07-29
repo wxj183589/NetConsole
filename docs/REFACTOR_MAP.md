@@ -10,9 +10,9 @@
 | --- | --- | --- | --- |
 | Job Center | `TaskApplicationService/TaskRuntime/LocalProcessAdapter` | 协议统一；部分领域仍委托 `legacy_tasks.py`；已聚合通用业务部分成功结果到列表/详情告警，异构 legacy result 仍需逐域收敛 | 按生产调用逐项迁出，并统一剩余 legacy 业务结果语义 |
 | 设备管理 | Device Service -> Router -> Vue | `IMPLEMENTED_UNVERIFIED` | Electron 人工与真实设备 CRUD/连接/导入导出验收 |
-| AC/FIT-AP | AC Application/Query Service -> Router -> Vue | 受控固化/远程登录与 OmniPeek 已接线，`PARTIAL / REAL_DEVICE_PENDING` | 验证真实 AC 动作、确认/审计、NAM 导入和并发互斥 |
+| AC/FIT-AP | AC Application/Query Service -> Router -> Vue | 受控固化/远程登录与 OmniPeek 已接线；配置快照已返回完整安全 Diff 契约并接入共享 Monaco Viewer，`PARTIAL / REAL_DEVICE_PENDING` | 验证真实 AC 动作、确认/审计、NAM 导入、并发互斥和真实快照对比 |
 | 轨道交通 | Rail/Online MR/MESH/Ground Unattended Service -> Router -> Vue | 车内通信已解除在线硬门槛；地面无人值守已独立接线但真实 AC/MR/长时运行待验；AGENT executor 默认关闭；整体 `PARTIAL` | 按 LOCAL/AGENT/车内检测/MESH/地面无人值守独立闭环验收 |
-| 配置采集 | Config Application Service -> Router -> Vue | 两条勾选快照已进入真实对比输入，`IMPLEMENTED_UNVERIFIED` | 验证真实采集、裁剪、空/相同文件、双栏比较和 Artifact |
+| 配置采集 | Config Application Service -> Router -> Vue | 两条勾选快照已进入真实对比输入；跨模块共享 Monaco 只读主视图与结构化明细降级已接入，`IMPLEMENTED_UNVERIFIED` | 验证真实采集、裁剪、空/相同文件、Electron 离线 Worker、大配置和 Artifact |
 | 设备文件下载 | File Application Service -> Router -> Vue/Bridge | SSH/SFTP 能力区分、受控启用与分阶段首屏已实现，`IMPLEMENTED_UNVERIFIED` | 验证 AC/MR/主机密钥、大文件、队列恢复和本机动作 |
 | 网络工具 | Network/Traffic Service -> Router/WS -> Vue | `PARTIAL` | 本地/Agent fping、iPerf、无线扫描实机验收 |
 | 命令平台 | Operation -> Resolver -> Versioned Profile -> Adapter | 首个设备 inventory Profile 已接入 | AC/MR/配置/文件命令按证据逐域接入 |
@@ -20,6 +20,7 @@
 
 ## 已完成回收
 
+- 用户可见导入/导出入口已完成跨路由审计：任务型最终导出统一使用固定动作注册表和 Renderer 会话级目标协调器，在创建任务前选择 Main 授权路径；Task Center 区分当前会话绑定与历史 Artifact，受管 SFTP 下载和两项专用预选流程保留明确边界。完整矩阵见 [UI 导入导出文件选择审计](development/import-export-dialog-audit.md)。
 - `src/netconsole/ui/`、`apps/desktop/`、Qt probe、旧 WebShell 和兼容启动入口。
 - Qt/PySide/QFluentWidgets 依赖、许可证和发布内容。
 - SNMP Center、通用 MIB/OID 平台和无线勘测；用户历史数据不做破坏性清理。

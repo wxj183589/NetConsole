@@ -22,6 +22,17 @@ import {
   validateSettingsActionId, validateSettingsDirectoryId, validateSettingsToolId,
   validateSiteStorageRestartRequest,
   validateSiteId,
+  validateExternalToolCreateRequest,
+  validateExternalToolSystemReferenceCreateRequest,
+  validateExternalToolUpdateRequest,
+  validateExternalToolId,
+  validateExternalToolName,
+  validateExternalToolFavoriteRequest,
+  validateExternalToolReorderRequest,
+  validateExternalToolCategoryReorderRequest,
+  validateExternalToolCategoryRenameRequest,
+  validateExternalToolDeleteCategoryRequest,
+  validateExternalToolLaunchRequest,
 } from '../shared/validation'
 
 export interface IpcRendererLike {
@@ -156,6 +167,69 @@ export function createDesktopBridge(ipcRenderer: IpcRendererLike): NetConsoleDes
       DESKTOP_IPC.executeFileDesktopAction,
       validateFileDesktopActionRef(actionRef),
     ) as ReturnType<NetConsoleDesktopBridge['executeFileDesktopAction']>,
+    listExternalTools: () => ipcRenderer.invoke(
+      DESKTOP_IPC.listExternalTools,
+    ) as ReturnType<NetConsoleDesktopBridge['listExternalTools']>,
+    selectExternalToolExecutable: () => ipcRenderer.invoke(
+      DESKTOP_IPC.selectExternalToolExecutable,
+    ) as ReturnType<NetConsoleDesktopBridge['selectExternalToolExecutable']>,
+    selectExternalToolWorkingDirectory: () => ipcRenderer.invoke(
+      DESKTOP_IPC.selectExternalToolWorkingDirectory,
+    ) as ReturnType<NetConsoleDesktopBridge['selectExternalToolWorkingDirectory']>,
+    selectExternalToolIcon: () => ipcRenderer.invoke(
+      DESKTOP_IPC.selectExternalToolIcon,
+    ) as ReturnType<NetConsoleDesktopBridge['selectExternalToolIcon']>,
+    createExternalTool: (request) => ipcRenderer.invoke(
+      DESKTOP_IPC.createExternalTool,
+      validateExternalToolCreateRequest(request),
+    ) as ReturnType<NetConsoleDesktopBridge['createExternalTool']>,
+    createExternalToolSystemReference: (request) => ipcRenderer.invoke(
+      DESKTOP_IPC.createExternalToolSystemReference,
+      validateExternalToolSystemReferenceCreateRequest(request),
+    ) as ReturnType<NetConsoleDesktopBridge['createExternalToolSystemReference']>,
+    updateExternalTool: (request) => ipcRenderer.invoke(
+      DESKTOP_IPC.updateExternalTool,
+      validateExternalToolUpdateRequest(request),
+    ) as ReturnType<NetConsoleDesktopBridge['updateExternalTool']>,
+    deleteExternalTool: (toolId) => ipcRenderer.invoke(
+      DESKTOP_IPC.deleteExternalTool,
+      validateExternalToolId(toolId),
+    ) as ReturnType<NetConsoleDesktopBridge['deleteExternalTool']>,
+    setExternalToolFavorite: (toolId, favorite) => ipcRenderer.invoke(
+      DESKTOP_IPC.setExternalToolFavorite,
+      validateExternalToolFavoriteRequest({ toolId, favorite }),
+    ) as ReturnType<NetConsoleDesktopBridge['setExternalToolFavorite']>,
+    reorderExternalTools: (request) => ipcRenderer.invoke(
+      DESKTOP_IPC.reorderExternalTools,
+      validateExternalToolReorderRequest(request),
+    ) as ReturnType<NetConsoleDesktopBridge['reorderExternalTools']>,
+    reorderExternalToolCategories: (request) => ipcRenderer.invoke(
+      DESKTOP_IPC.reorderExternalToolCategories,
+      validateExternalToolCategoryReorderRequest(request),
+    ) as ReturnType<NetConsoleDesktopBridge['reorderExternalToolCategories']>,
+    createExternalToolCategory: (name) => ipcRenderer.invoke(
+      DESKTOP_IPC.createExternalToolCategory,
+      validateExternalToolName(name, 'category name'),
+    ) as ReturnType<NetConsoleDesktopBridge['createExternalToolCategory']>,
+    renameExternalToolCategory: (categoryId, name) => ipcRenderer.invoke(
+      DESKTOP_IPC.renameExternalToolCategory,
+      validateExternalToolCategoryRenameRequest({ categoryId, name }),
+    ) as ReturnType<NetConsoleDesktopBridge['renameExternalToolCategory']>,
+    deleteExternalToolCategory: (request) => ipcRenderer.invoke(
+      DESKTOP_IPC.deleteExternalToolCategory,
+      validateExternalToolDeleteCategoryRequest(request),
+    ) as ReturnType<NetConsoleDesktopBridge['deleteExternalToolCategory']>,
+    launchExternalTool: (request) => ipcRenderer.invoke(
+      DESKTOP_IPC.launchExternalTool,
+      validateExternalToolLaunchRequest(request),
+    ) as ReturnType<NetConsoleDesktopBridge['launchExternalTool']>,
+    revealExternalTool: (toolId) => ipcRenderer.invoke(
+      DESKTOP_IPC.revealExternalTool,
+      validateExternalToolId(toolId),
+    ) as ReturnType<NetConsoleDesktopBridge['revealExternalTool']>,
+    refreshExternalToolStatuses: () => ipcRenderer.invoke(
+      DESKTOP_IPC.refreshExternalToolStatuses,
+    ) as ReturnType<NetConsoleDesktopBridge['refreshExternalToolStatuses']>,
     openOnlineMrSessionLocation: (sessionId) => ipcRenderer.invoke(
       DESKTOP_IPC.openOnlineMrSessionLocation,
       validateOnlineMrSessionId(sessionId),

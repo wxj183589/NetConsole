@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -59,16 +59,43 @@ function createWindowHarness(id: number) {
   }
 }
 
-function createHarness() {
+function createHarness(legacyMainState?: {
+  bounds: { x: number; y: number; width: number; height: number }
+  maximized: boolean
+  snapshot?: object
+}) {
   const root = mkdtempSync(join(tmpdir(), 'netconsole-workspace-window-'))
   roots.push(root)
+  if (legacyMainState) {
+    writeFileSync(join(root, 'workspace-layout.json'), JSON.stringify({
+      schemaVersion: 1,
+      windows: [{
+        windowId: 'main',
+        role: 'main',
+        bounds: legacyMainState.bounds,
+        maximized: legacyMainState.maximized,
+        snapshot: legacyMainState.snapshot ?? null,
+      }, {
+        windowId: 'workspace-old',
+        role: 'workspace',
+        bounds: { x: 2_000, y: 100, width: 1_200, height: 800 },
+        maximized: false,
+        snapshot: legacyMainState.snapshot ?? null,
+      }],
+    }), 'utf8')
+  }
   const windows: ReturnType<typeof createWindowHarness>[] = []
+  const createWindowCalls: Array<{
+    role: 'main' | 'workspace'
+    bounds: { x: number; y: number; width: number; height: number } | undefined
+  }> = []
   let hideMain = true
   let explicitQuit = false
   const controller = new WorkspaceWindowController(
     new WorkspaceLayoutStore(root),
     {
-      createWindow: () => {
+      createWindow: (role, bounds) => {
+        createWindowCalls.push({ role, bounds })
         const harness = createWindowHarness(windows.length + 1)
         windows.push(harness)
         return harness.window
@@ -89,12 +116,55 @@ function createHarness() {
   return {
     controller,
     windows,
+    createWindowCalls,
     setHideMain: (value: boolean) => { hideMain = value },
     setExplicitQuit: (value: boolean) => { explicitQuit = value },
   }
 }
 
 describe('WorkspaceWindowController', () => {
+  it.each([
+    ['off-screen normal', { x: 50_000, y: 50_000, width: 900, height: 600 }, false],
+    ['secondary maximized', { x: 2_200, y: 100, width: 1_400, height: 900 }, true],
+    ['negative minimized-era bounds', { x: -2_000, y: -900, width: 1_100, height: 700 }, false],
+  ])('never passes legacy main window state into creation: %s', (_name, bounds, maximized) => {
+    const harness = createHarness({ bounds, maximized })
+    const main = harness.controller.ensureMainWindow(false)
+
+    expect(harness.createWindowCalls).toEqual([{ role: 'main', bounds: undefined }])
+    expect(main.maximize).not.toHaveBeenCalled()
+  })
+
+  it('starts with no legacy tabs or additional windows', async () => {
+    const legacySnapshot = {
+      schemaVersion: 1,
+      windowId: 'main',
+      activeTabId: 'tasks-tab',
+      tabs: [{
+        id: 'tasks-tab',
+        instanceId: 'tasks-instance',
+        routeFullPath: '/tasks',
+        title: '任务中心',
+        identityKey: 'singleton:tasks',
+        cacheKey: 'tasks:instance',
+        pinned: false,
+        openedAt: 1,
+        lastActivatedAt: 1,
+      }],
+    }
+    const harness = createHarness({
+      bounds: { x: 2_200, y: 100, width: 1_400, height: 900 },
+      maximized: true,
+      snapshot: legacySnapshot,
+    })
+
+    const main = harness.controller.ensureMainWindow(false)
+    await harness.controller.restoreAdditionalWindows()
+
+    expect(harness.controller.getWindowState(main).snapshot).toBeNull()
+    expect(harness.createWindowCalls).toEqual([{ role: 'main', bounds: undefined }])
+  })
+
   it('hides the main window to tray but destroys additional windows normally', async () => {
     const harness = createHarness()
     const main = harness.controller.ensureMainWindow(false)
@@ -178,5 +248,48 @@ describe('WorkspaceWindowController', () => {
     harness.windows[0].emitWindow('close', event)
     expect(event.preventDefault).not.toHaveBeenCalled()
     expect(main.hide).not.toHaveBeenCalled()
+  })
+
+  it('restores the existing tray-hidden window without reapplying startup maximization', async () => {
+    const harness = createHarness()
+    const main = harness.controller.ensureMainWindow(false)
+    const state = harness.controller.getWindowState(main)
+    const snapshot = {
+      schemaVersion: 1 as const,
+      windowId: state.windowId,
+      activeTabId: 'tasks-tab',
+      tabs: [{
+        id: 'dashboard-tab',
+        instanceId: 'dashboard-instance',
+        routeFullPath: '/',
+        title: 'Dashboard',
+        identityKey: 'singleton:dashboard',
+        cacheKey: 'dashboard:instance',
+        pinned: true,
+        openedAt: 1,
+        lastActivatedAt: 1,
+      }, {
+        id: 'tasks-tab',
+        instanceId: 'tasks-instance',
+        routeFullPath: '/tasks',
+        title: '任务中心',
+        identityKey: 'singleton:tasks',
+        cacheKey: 'tasks:instance',
+        pinned: false,
+        openedAt: 2,
+        lastActivatedAt: 2,
+      }],
+    }
+    harness.controller.saveWindowState(main, snapshot)
+    main.show()
+    harness.windows[0].emitWindow('close', { preventDefault: vi.fn() })
+
+    await harness.controller.showMainWindow()
+
+    expect(main.show).toHaveBeenCalledTimes(2)
+    expect(main.focus).toHaveBeenCalledOnce()
+    expect(main.maximize).not.toHaveBeenCalled()
+    expect(main.loadURL).not.toHaveBeenCalled()
+    expect(harness.controller.getWindowState(main).snapshot).toEqual(snapshot)
   })
 })

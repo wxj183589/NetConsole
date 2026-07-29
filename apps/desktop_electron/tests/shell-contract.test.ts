@@ -59,11 +59,18 @@ describe('Electron shell product contract', () => {
 
   it('shows an observable system-themed loading page and gates the business renderer theme', () => {
     expect(source).toContain('show: false')
+    expect(source).toContain('frame: true')
+    expect(source).toContain('fullscreen: false')
     expect(source).toContain('nativeTheme.shouldUseDarkColors')
     expect(source).toContain('armRendererThemeDisplay(rendererWindow)')
     expect(source).toContain("windowDisplayGates.get(window)?.acceptResolvedTheme()")
     expect(displayGateSource).toContain('if (this.window.isVisible?.()) this.window.hide()')
-    expect(source).toMatch(/startupTimeline\.mark\('electron\.loading_view_shown'\)\r?\n\s+mainWindow\.show\(\)/)
+    expect(source).toContain('installMainWindowStartup(')
+    expect(source).toContain('screen.getPrimaryDisplay().workArea')
+    expect(source).toContain('validateMainWindowStartupState()')
+    expect(source).toContain('!mainWindow.isFullScreen()')
+    expect(source).toContain('currentDisplay.id === primaryDisplay.id')
+    expect(source).not.toMatch(/startupTimeline\.mark\('electron\.loading_view_shown'\)\r?\n\s+mainWindow\.show\(\)/)
     expect(source.indexOf("startupTimeline.mark('electron.loading_view_shown')")).toBeLessThan(
       source.indexOf('const runtime = await backend.start()'),
     )
@@ -119,5 +126,15 @@ describe('Electron shell product contract', () => {
     expect(taskCenterSource).toContain('target.webContents.send(DESKTOP_IPC.taskCenterOpenRequested, context)')
     expect(source).toContain('for (const window of getAllDesktopWindows())')
     expect(source).toContain("error: '本地后端不可用'")
+  })
+
+  it('restores an existing process window without reapplying startup maximization', () => {
+    const restoreSource = source.slice(
+      source.indexOf('async function restoreApplicationWindow'),
+      source.indexOf('function requestExplicitQuit'),
+    )
+    expect(restoreSource).not.toContain('.maximize()')
+    expect(restoreSource).toContain('workspaceWindowController?.showMainWindow()')
+    expect(source).toContain("throw new Error('tray restore reapplied main window startup state')")
   })
 })

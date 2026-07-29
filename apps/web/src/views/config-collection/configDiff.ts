@@ -4,7 +4,12 @@ import type {
   ConfigDiffSummary,
 } from '../../types/configCollection'
 
-export type ConfigDiffFilter = 'all' | 'added' | 'removed' | 'modified'
+export interface ConfigDiffDocuments {
+  originalText: string
+  modifiedText: string
+  originalLineCount: number
+  modifiedLineCount: number
+}
 
 export function parseConfigDiffRows(value: unknown): ConfigDiffRow[] {
   if (!Array.isArray(value)) return []
@@ -33,13 +38,33 @@ export function parseConfigDiffSummary(value: unknown): ConfigDiffSummary {
   }
 }
 
-export function statusForConfigDiffFilter(value: ConfigDiffFilter): ConfigDiffStatus | null {
-  if (value === 'added') return '+'
-  if (value === 'removed') return '-'
-  if (value === 'modified') return '~'
-  return null
+export function buildConfigDiffDocuments(diffRows: readonly ConfigDiffRow[]): ConfigDiffDocuments {
+  const originalLines: string[] = []
+  const modifiedLines: string[] = []
+  let originalLineCount = 0
+  let modifiedLineCount = 0
+
+  for (const row of diffRows) {
+    if (row.left_line !== null && row.left_line > 0) {
+      originalLineCount = Math.max(originalLineCount, row.left_line)
+      originalLines[row.left_line - 1] = row.left_text
+    }
+    if (row.right_line !== null && row.right_line > 0) {
+      modifiedLineCount = Math.max(modifiedLineCount, row.right_line)
+      modifiedLines[row.right_line - 1] = row.right_text
+    }
+  }
+
+  return {
+    originalText: materializeDocument(originalLines, originalLineCount),
+    modifiedText: materializeDocument(modifiedLines, modifiedLineCount),
+    originalLineCount,
+    modifiedLineCount,
+  }
 }
 
-export function nextConfigDiffChangeIndex(current: number, count: number, step: -1 | 1): number {
-  return count > 0 ? (current + step + count) % count : 0
+function materializeDocument(lines: string[], lineCount: number): string {
+  if (!lineCount) return ''
+  const result = Array.from({ length: lineCount }, (_, index) => lines[index] ?? '')
+  return result.join('\n')
 }

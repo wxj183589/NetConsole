@@ -114,6 +114,42 @@ def test_project_skill_front_matter_is_unique_and_minimal() -> None:
     assert len(names) == len(set(names)), names
 
 
+def test_user_file_interaction_contract_is_routed_and_indexed() -> None:
+    contract_path = ROOT / "docs/IMPORT_EXPORT_INTERACTION.md"
+    contract = contract_path.read_text(encoding="utf-8")
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    docs_index = (ROOT / "docs/README.md").read_text(encoding="utf-8")
+    skills_index = (ROOT / "docs/CODEX_SKILLS.md").read_text(encoding="utf-8")
+    user_file_skill = (
+        ROOT / ".agents/skills/netconsole-user-file-interaction-skill/SKILL.md"
+    ).read_text(encoding="utf-8")
+    export_skill = (
+        ROOT / ".agents/skills/netconsole-export-report-skill/SKILL.md"
+    ).read_text(encoding="utf-8")
+    audit = (
+        ROOT / "docs/development/import-export-dialog-audit.md"
+    ).read_text(encoding="utf-8")
+
+    assert contract_path.is_file()
+    assert contract.count("[ ] ") == 15
+    for required_api in (
+        "exportActionRegistry.ts",
+        "submitExportAfterDestinationSelected",
+        "saveReadyArtifact",
+        "retryArtifactSave",
+        "downloadBackendResource",
+    ):
+        assert required_api in contract
+    assert "IMPORT_EXPORT_INTERACTION.md" in agents
+    assert "IMPORT_EXPORT_INTERACTION.md" in docs_index
+    assert "../IMPORT_EXPORT_INTERACTION.md" in audit
+    assert "netconsole-user-file-interaction-skill" in agents
+    assert "netconsole-user-file-interaction-skill" in skills_index
+    assert "useUserSelectedExport.ts" in user_file_skill
+    assert "useUserSelectedExport.ts" in export_skill
+    assert "netconsole-user-file-interaction-skill" in export_skill
+
+
 def test_project_skills_do_not_reference_deleted_qt_sources() -> None:
     forbidden = (
         "src/netconsole/ui/",

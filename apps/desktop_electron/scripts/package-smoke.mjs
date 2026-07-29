@@ -337,6 +337,7 @@ if (residue.length) throw new Error(`Electron 包检测到 Qt 残留：${residue
 validateDeviceCommandProfiles()
 validatePackagedRuntimeFeaturePolicy()
 validatePackagedBuildMetadata()
+validateElevatedLauncher()
 validateIperfDistribution()
 validateFpingDistribution()
 const runtimeVersions = readElectronRuntimeVersions()
@@ -1012,6 +1013,18 @@ function validatePackagedBuildMetadata() {
   console.log(`SELF_CHECK_COMMIT=${metadata.backend_commit}`)
   console.log(`PACKAGED_BUILD_TIME=${metadata.build_time_utc}`)
   console.log(`PACKAGED_DIRTY=${String(metadata.build_dirty).toLowerCase()}`)
+}
+
+function validateElevatedLauncher() {
+  const helper = resolve(
+    unpackedRoot,
+    'resources',
+    'native',
+    'netconsole-elevated-launcher.exe',
+  )
+  if (!statSync(helper).isFile()) {
+    throw new Error('Electron 包缺少工具集管理员启动 helper。')
+  }
 }
 
 function validatePythonArtifactInventory(backendRoot, sbom) {

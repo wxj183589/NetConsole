@@ -11,6 +11,7 @@ const api = vi.hoisted(() => ({
   getGroundStatus: vi.fn(),
   getGroundTrain: vi.fn(),
   groundArchiveSummaryDownloadRequest: vi.fn(),
+  groundArchiveZipDownloadRequest: vi.fn(),
   listGroundArchives: vi.fn(),
   getGroundHealth: vi.fn(),
   getActiveGroundOperation: vi.fn(),
@@ -38,11 +39,12 @@ const api = vi.hoisted(() => ({
   recommendLocalSourceIp: vi.fn(),
   getLatestGroundOperation: vi.fn(),
   verifyGroundArchive: vi.fn(),
+  downloadBackendResource: vi.fn(),
 }))
 
 vi.mock('../../api/groundUnattended', () => api)
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
-vi.mock('../../platform/runtime', () => ({ downloadBackendResource: vi.fn() }))
+vi.mock('../../platform/runtime', () => ({ downloadBackendResource: api.downloadBackendResource }))
 vi.mock('../../components/ground-unattended/GroundPingChart.vue', async () => {
   const { defineComponent, h } = await import('vue')
   return { default: defineComponent(() => () => h('div', { class: 'ground-ping-chart' })) }
@@ -161,6 +163,17 @@ beforeEach(() => {
   api.listGroundRuns.mockResolvedValue({ items: [], total: 0 })
   api.listGroundSyslogRecords.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 100 })
   api.listLocalIpv4Addresses.mockResolvedValue({ items: [], total: 0, generated_at: '' })
+  api.groundArchiveSummaryDownloadRequest.mockReturnValue({
+    apiPath: '/api/rail-transit/ground-unattended/artifacts/archive-1/summary-download',
+    suggestedName: '2026-07-30_ground_unattended_summary.json',
+  })
+  api.groundArchiveZipDownloadRequest.mockReturnValue({
+    apiPath: '/api/rail-transit/ground-unattended/artifacts/archive-1/download',
+    suggestedName: '2026-07-30_ground_unattended.zip',
+    expectedSizeBytes: 1024,
+    expectedSha256: 'a'.repeat(64),
+  })
+  api.downloadBackendResource.mockResolvedValue({ status: 'cancelled' })
 })
 
 afterEach(() => {
@@ -168,6 +181,35 @@ afterEach(() => {
 })
 
 describe('Ground unattended page loading behavior', () => {
+  it('saves existing archive artifacts only after an explicit user action', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(api.downloadBackendResource).not.toHaveBeenCalled()
+    const view = wrapper.vm as unknown as {
+      downloadArchiveSummary: (row: { archive_id: string; run_date: string }) => Promise<void>
+      downloadArchiveZip: (row: { archive_id: string; run_date: string }) => Promise<void>
+    }
+    const archive = { archive_id: 'archive-1', run_date: '2026-07-30' }
+
+    await view.downloadArchiveSummary(archive)
+    await view.downloadArchiveZip(archive)
+
+    expect(api.downloadBackendResource).toHaveBeenNthCalledWith(1, {
+      apiPath: '/api/rail-transit/ground-unattended/artifacts/archive-1/summary-download',
+      suggestedName: '2026-07-30_ground_unattended_summary.json',
+    })
+    expect(api.downloadBackendResource).toHaveBeenNthCalledWith(2, {
+      apiPath: '/api/rail-transit/ground-unattended/artifacts/archive-1/download',
+      suggestedName: '2026-07-30_ground_unattended.zip',
+      expectedSizeBytes: 1024,
+      expectedSha256: 'a'.repeat(64),
+    })
+    expect(api.downloadBackendResource.mock.calls.flat()).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ destinationPath: expect.anything() })]),
+    )
+    wrapper.unmount()
+  })
+
   it('selects the active run even when the run list responds first', async () => {
     let resolveStatus!: (value: ReturnType<typeof status>) => void
     api.getGroundStatus.mockImplementation(() => new Promise((resolve) => {

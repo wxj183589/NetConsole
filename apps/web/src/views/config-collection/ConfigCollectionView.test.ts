@@ -39,10 +39,14 @@ const message = vi.hoisted(() => ({
   success: vi.fn(),
   warning: vi.fn(),
 }))
+const monacoRevealDifference = vi.hoisted(() => vi.fn())
 
 vi.mock('../../api/configCollection', () => api)
 vi.mock('../../features', () => ({ isFeatureEnabled: () => true }))
-vi.mock('../../platform/runtime', () => ({ downloadBackendResource }))
+vi.mock('../../platform/runtime', () => ({
+  downloadBackendResource,
+  getPlatformAdapter: () => ({ hostType: 'browser' }),
+}))
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: routerPush }) }))
 vi.mock('../../components/feedback/useConfirm', () => ({ useConfirm: () => ({ confirm: confirmDialog }) }))
 vi.mock('element-plus', async (importOriginal) => {
@@ -138,6 +142,31 @@ const OptionStub = defineComponent({
     return () => h('span', props.label)
   },
 })
+const MonacoDiffStub = defineComponent({
+  name: 'ConfigMonacoDiff',
+  props: {
+    originalText: { type: String, default: '' },
+    modifiedText: { type: String, default: '' },
+    originalLabel: { type: String, default: '' },
+    modifiedLabel: { type: String, default: '' },
+    comparisonId: { type: String, default: '' },
+    renderSideBySide: Boolean,
+    wordWrap: Boolean,
+  },
+  emits: ['ready', 'initializationError'],
+  setup(props, { expose }) {
+    expose({
+      revealDifference: monacoRevealDifference,
+      layout: vi.fn(),
+      focus: vi.fn(),
+    })
+    return () => h('div', {
+      'data-testid': 'monaco-diff-stub',
+      'data-original-text': props.originalText,
+      'data-modified-text': props.modifiedText,
+    }, `${props.originalLabel} | ${props.modifiedLabel}`)
+  },
+})
 
 describe('ConfigCollectionView mounted workflow', () => {
   beforeEach(() => {
@@ -161,6 +190,7 @@ describe('ConfigCollectionView mounted workflow', () => {
     ))
     api.listConfigTasks.mockResolvedValue([])
     api.submitConfigCollection.mockResolvedValue([taskReference('collect-task', 'config_web_snapshot_fetch')])
+    api.submitSnapshotContent.mockResolvedValue(taskReference('content-task', 'config_snapshot_load_content'))
     api.previewSaveForce.mockResolvedValue(confirmation('save_force'))
     api.confirmSaveForce.mockResolvedValue(taskReference('save-task', 'config_web_save_force'))
     api.issueSnapshotDelete.mockResolvedValue(confirmation('delete_snapshots'))
@@ -168,6 +198,7 @@ describe('ConfigCollectionView mounted workflow', () => {
     api.submitSnapshotConfigDiff.mockResolvedValue(taskReference('diff-task', 'config_compare_snapshot_pair'))
     api.submitConfigDiffExport.mockResolvedValue(taskReference('export-task', 'config_web_export_diff'))
     api.submitConfigSnapshotsExport.mockResolvedValue(taskReference('zip-task', 'config_web_export_snapshots'))
+    monacoRevealDifference.mockClear()
   })
 
   afterEach(() => {
@@ -267,6 +298,8 @@ describe('ConfigCollectionView mounted workflow', () => {
         raw_diff: '--- SW-A\n+++ SW-B',
         left_label: 'SW-A · 运行配置 · 20260715_101500',
         right_label: 'SW-B · 运行配置 · 20260716_121500',
+        left_text: '#\nsysname SW-A',
+        right_text: '#\nsysname SW-B\nvlan 20',
         diff_rows: [
           { left_line: 1, left_text: '#', status: '=', right_line: 1, right_text: '#' },
           { left_line: 2, left_text: 'sysname SW-A', status: '~', right_line: 2, right_text: 'sysname SW-B' },
@@ -279,10 +312,27 @@ describe('ConfigCollectionView mounted workflow', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('配置差异 · SW-A · 运行配置 · 20260715_101500 → SW-B · 运行配置 · 20260716_121500')
+    expect(wrapper.text()).toContain('新增 1 · 删除 0 · 修改块 1')
     expect(wrapper.text()).toContain('1 / 2')
+    const monaco = wrapper.getComponent(MonacoDiffStub)
+    expect(monaco.props()).toEqual(expect.objectContaining({
+      originalText: '#\nsysname SW-A',
+      modifiedText: '#\nsysname SW-B\nvlan 20',
+      originalLabel: 'SW-A · 运行配置 · 20260715_101500',
+      modifiedLabel: 'SW-B · 运行配置 · 20260716_121500',
+      renderSideBySide: true,
+      wordWrap: false,
+    }))
+    monacoRevealDifference.mockClear()
     await button(wrapper, '下一处差异').trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('2 / 2')
+    expect(monacoRevealDifference).toHaveBeenCalledWith(null, 3)
+
+    await button(wrapper, '差异明细').trigger('click')
+    await flushPromises()
+    expect(wrapper.findComponent(MonacoDiffStub).exists()).toBe(false)
+    wrapper.get('[aria-label="配置差异双栏视图"]')
 
     await button(wrapper, '导出左右差异').trigger('click')
     await flushPromises()
@@ -306,6 +356,107 @@ describe('ConfigCollectionView mounted workflow', () => {
     await flushPromises()
     expect(openTaskWindow).toHaveBeenCalledWith({ module: 'config' })
     expect(routerPush).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('falls back to structured details when Monaco initialization fails', async () => {
+    const wrapper = await mountView()
+    wrapper.findAllComponents(TableStub)[1].vm.$emit('selection-change', [snapshotA, snapshotASaved])
+    await wrapper.vm.$nextTick()
+    await button(wrapper, '比较左右快照').trigger('click')
+    await flushPromises()
+    api.listConfigTasks.mockResolvedValue([
+      terminalTask('diff-task', 'config_compare_snapshot_pair', {
+        raw_diff: '--- running\n+++ saved',
+        left_label: '运行配置',
+        right_label: '保存配置',
+        left_text: '#\nvlan 10',
+        right_text: '#\nvlan 20',
+        diff_rows: [
+          { left_line: 1, left_text: '#', status: '=', right_line: 1, right_text: '#' },
+          { left_line: 2, left_text: 'vlan 10', status: '~', right_line: 2, right_text: 'vlan 20' },
+        ],
+        diff_summary: { added: 0, removed: 0, modified: 1 },
+      }),
+    ])
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushPromises()
+
+    wrapper.getComponent(MonacoDiffStub).vm.$emit(
+      'initializationError',
+      '高级配置对比器加载失败，已切换到基础差异视图。',
+    )
+    await flushPromises()
+
+    expect(wrapper.get('.diff-fallback-alert').attributes('title')).toContain('高级配置对比器加载失败')
+    expect(wrapper.findComponent(MonacoDiffStub).exists()).toBe(false)
+    wrapper.get('[aria-label="配置差异双栏视图"]')
+    wrapper.unmount()
+  })
+
+  it.each([
+    {
+      name: '两个空配置',
+      leftText: '',
+      rightText: '',
+      rows: [],
+    },
+    {
+      name: '两个相同配置',
+      leftText: '#\nreturn',
+      rightText: '#\nreturn',
+      rows: [
+        { left_line: 1, left_text: '#', status: '=', right_line: 1, right_text: '#' },
+        { left_line: 2, left_text: 'return', status: '=', right_line: 2, right_text: 'return' },
+      ],
+    },
+  ])('keeps a valid result and Monaco mounted for $name', async ({ leftText, rightText, rows }) => {
+    const wrapper = await mountView()
+    wrapper.findAllComponents(TableStub)[1].vm.$emit('selection-change', [snapshotA, snapshotASaved])
+    await wrapper.vm.$nextTick()
+    await button(wrapper, '比较左右快照').trigger('click')
+    await flushPromises()
+    api.listConfigTasks.mockResolvedValue([
+      terminalTask('diff-task', 'config_compare_snapshot_pair', {
+        raw_diff: '',
+        left_label: '左侧',
+        right_label: '右侧',
+        left_text: leftText,
+        right_text: rightText,
+        diff_rows: rows,
+        diff_summary: { added: 0, removed: 0, modified: 0 },
+      }),
+    ])
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('新增 0 · 删除 0 · 修改块 0')
+    expect(wrapper.getComponent(MonacoDiffStub).props()).toEqual(expect.objectContaining({
+      originalText: leftText,
+      modifiedText: rightText,
+    }))
+    await button(wrapper, '清空').trigger('click')
+    await flushPromises()
+    expect(wrapper.findComponent(MonacoDiffStub).exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('配置差异 · 左侧 → 右侧')
+    wrapper.unmount()
+  })
+
+  it('keeps an empty snapshot content result in the ordinary read-only view', async () => {
+    const wrapper = await mountView()
+    await buttons(wrapper, '查看')[0].trigger('click')
+    await flushPromises()
+    api.listConfigTasks.mockResolvedValue([
+      terminalTask('content-task', 'config_snapshot_load_content', {
+        snapshot_type: 'running',
+        text: '',
+      }),
+    ])
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('配置内容为空')
+    expect(wrapper.findComponent(MonacoDiffStub).exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -448,6 +599,7 @@ async function mountView(): Promise<VueWrapper> {
       stubs: {
         ElAlert: SlotStub,
         ElButton: ButtonStub,
+        ElButtonGroup: SlotStub,
         ElInput: SlotStub,
         ElOption: OptionStub,
         ElPagination: SlotStub,
@@ -455,6 +607,7 @@ async function mountView(): Promise<VueWrapper> {
         ElTable: TableStub,
         ElTableColumn: TableColumnStub,
         ElTag: SlotStub,
+        ConfigMonacoDiff: MonacoDiffStub,
       },
     },
   })

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -15,33 +15,64 @@ afterEach(() => {
 })
 
 describe('WorkspaceLayoutStore', () => {
-  it('writes an atomic validated layout and safely loads it', () => {
+  it('keeps layout records in process memory only', () => {
     const root = mkdtempSync(join(tmpdir(), 'netconsole-workspace-layout-'))
     roots.push(root)
     const store = new WorkspaceLayoutStore(root)
-    store.load()
+    expect(store.load()).toEqual([])
     store.upsert({
       windowId: 'main',
       role: 'main',
+      snapshot: null,
+    })
+    store.upsert({
+      windowId: 'workspace-1',
+      role: 'workspace',
       bounds: { x: 10, y: 20, width: 1_200, height: 800 },
       maximized: false,
       snapshot: null,
     })
     store.flush()
 
-    expect(JSON.parse(readFileSync(store.path, 'utf8')).schemaVersion).toBe(1)
-    expect(new WorkspaceLayoutStore(root).load()).toHaveLength(1)
+    expect(store.list()).toEqual([
+      { windowId: 'main', role: 'main', snapshot: null },
+      {
+        windowId: 'workspace-1',
+        role: 'workspace',
+        bounds: { x: 10, y: 20, width: 1_200, height: 800 },
+        maximized: false,
+        snapshot: null,
+      },
+    ])
+    expect(existsSync(store.path)).toBe(false)
+    expect(new WorkspaceLayoutStore(root).load()).toEqual([])
   })
 
-  it('falls back from corrupt data without preventing startup', () => {
+  it('clears the legacy workspace file without touching unrelated preferences', () => {
     const root = mkdtempSync(join(tmpdir(), 'netconsole-workspace-layout-'))
     roots.push(root)
     const logger = vi.fn()
     const store = new WorkspaceLayoutStore(root, logger)
-    writeFileSync(store.path, '{broken', 'utf8')
+    const preferencesPath = join(root, 'ui-preferences.json')
+    writeFileSync(preferencesPath, '{"theme":"dark"}', 'utf8')
+    writeFileSync(store.path, JSON.stringify({
+      schemaVersion: 1,
+      windows: [{
+        windowId: 'main',
+        role: 'main',
+        bounds: { x: -4_000, y: 500, width: 900, height: 600 },
+        maximized: true,
+        snapshot: {
+          activeTabId: 'tasks',
+          tabs: [{ routeFullPath: '/tasks' }],
+        },
+      }],
+    }), 'utf8')
 
     expect(store.load()).toEqual([])
-    expect(logger).toHaveBeenCalledWith('ELECTRON_WORKSPACE_LAYOUT_RECOVERY_FALLBACK')
+    expect(existsSync(store.path)).toBe(false)
+    expect(existsSync(preferencesPath)).toBe(true)
+    expect(logger).toHaveBeenCalledWith('ELECTRON_WORKSPACE_LEGACY_STATE_CLEARED')
   })
 
   it('moves off-screen windows back into the primary work area', () => {

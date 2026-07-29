@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import {
   Connection,
   DataBoard,
+  Briefcase,
   Files,
   Fold,
   Menu as MenuIcon,
@@ -27,6 +28,10 @@ import WorkspaceTabBar from '../components/workspace/WorkspaceTabBar.vue'
 import GlobalTaskCenter from '../task-center/components/GlobalTaskCenter.vue'
 import { navigationTitle, t } from '../i18n/runtime'
 import { getPlatformAdapter } from '../platform/runtime'
+import {
+  startExportSaveCoordinator,
+  stopExportSaveCoordinator,
+} from '../composables/useUserSelectedExport'
 import { useWorkspaceStore } from '../stores/workspace'
 import AppRouteView from './AppRouteView.vue'
 
@@ -57,6 +62,7 @@ const iconComponents = {
   config: Operation,
   files: Files,
   network: Operation,
+  tools: Briefcase,
   tasks: Operation,
   agent: Connection,
   system: Setting,
@@ -146,6 +152,7 @@ watch(
 
 onMounted(async () => {
   window.addEventListener('resize', updateViewport)
+  startExportSaveCoordinator()
   removeTraySiteSwitchListener = getPlatformAdapter().onTraySiteSwitchRequested((siteId) => {
     void handleTraySiteSwitchRequested(siteId)
   })
@@ -178,6 +185,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', updateViewport)
+  stopExportSaveCoordinator()
   removeTraySiteSwitchListener?.()
 })
 </script>

@@ -26,6 +26,7 @@
 | `traffic-test-skill` | fping/iPerf、TCP/UDP、模板、阈值和生命周期 | “修复 fping 丢包”“增加 PIS UDP 模板” | 普通 SSH/路由 |
 | `windows-encoding-skill` | Windows 控制台、H3C 输出、文件和 JSONL 编码 | “中文乱码”“GBK 日志导入失败” | i18n 设计、纯解析规则 |
 | `netconsole-job-center-skill` | 普通后台 Job、handler、JSONL、进度和取消 | “迁移到 Job Center”“取消后仍运行” | 导出文件、轻量 UI |
+| `netconsole-user-file-interaction-skill` | 用户可见文件选择、任务绑定、Artifact 最终保存和导入取消边界 | “导入文件”“下载模板”“另存 Artifact”“Save As 失败重试” | Worker 内部生成、SFTP 受管下载实现、数据库业务 |
 | `netconsole-export-report-skill` | Export Process、本地 XLSX/CSV/PDF/ZIP 与文件恢复 | “导出卡 UI”“Excel 列宽不合适” | 实时采集、普通表格样式 |
 | `netconsole-ac-management-skill` | AC/FIT-AP、强类型动作、确认审计和 OmniPeek 名称表 | “固化新 AP”“导出 .nam” | 普通设备管理、无 AC 作用域的 Identity |
 | `netconsole-train-communication-skill` | 点表、TC1/TC2、离线可测、部分失败与 VRRP 边界 | “离线列车不能检测”“VRRP 主端残留” | Online MR 实时采集、列车在线页 |
@@ -44,7 +45,8 @@
 | 主任务 | 主 Skill | 按需组合 |
 | --- | --- | --- |
 | 新增普通后台采集 | `netconsole-job-center-skill` | `network-command-parser-skill` |
-| 新增本地报告 | `netconsole-export-report-skill` | `netconsole-data-safety-skill` |
+| 新增用户可见任务型报告 | `netconsole-user-file-interaction-skill` | `netconsole-export-report-skill`、`netconsole-data-safety-skill` |
+| 修改 Export Worker 内部报告生成 | `netconsole-export-report-skill` | `netconsole-data-safety-skill` |
 | AC 受控动作/NAM | `netconsole-ac-management-skill` | `netconsole-job-center-skill`、`netconsole-export-report-skill` |
 | 车内通信检测 | `netconsole-train-communication-skill` | `netconsole-job-center-skill`、`network-command-parser-skill` |
 | 设备文件/SFTP | `netconsole-device-files-skill` | `netconsole-job-center-skill`、`netconsole-data-safety-skill` |
@@ -69,12 +71,14 @@ $netconsole-online-mr-skill 修复单设备选择时 Ping 2 被错误自动填�
 
 $netconsole-job-center-skill 把指定大日志解析迁到 Job Center，保留进度、取消和唯一终态。
 
+$netconsole-user-file-interaction-skill 为已有 Artifact 增加用户主动“另存为”，复用 Main 授权路径和共享协调器。
+
 $netconsole-export-report-skill 增加后台 XLSX 报告，验证中文列宽、冻结、筛选、文件占用和取消清理。
 
 $netconsole-change-review-skill 只读评审当前 diff，重点检查 UI 阻塞、SQLite、设备命令和原始日志回归。
 ```
 
-自然语言中明确出现 Job Center、Online MR、MESH、AP Identity、iperf3、fping、乱码等触发词时，Codex 也应自动选择相应 Skill。
+自然语言中明确出现用户可见导入/导出、模板下载、报告保存、Artifact 另存、Save As/Open/File/Folder 选择、Task Center 保存失败重试、Job Center、Online MR、MESH、AP Identity、iperf3、fping、乱码等触发词时，Codex 也应自动选择相应 Skill。任务型报告通常同时加载 `netconsole-user-file-interaction-skill` 和 `netconsole-export-report-skill`：前者负责用户选择和最终落盘，后者负责 Export Process、格式与内部 Artifact。
 
 ## 6. 如何升级 Skill
 

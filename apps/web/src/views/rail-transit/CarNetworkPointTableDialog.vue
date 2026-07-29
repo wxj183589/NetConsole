@@ -12,6 +12,7 @@ import {
 } from '../../api/railTransitWeb'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
+import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import { isFeatureEnabled } from '../../features'
 import type { TrainCommunicationRow } from '../../types/trainCommunication'
 import type { CarNetworkPointPreview, CarNetworkPointRow, RailTransitTask } from '../../types/railTransitWeb'
@@ -20,6 +21,7 @@ type DialogTrain = Pick<TrainCommunicationRow, 'train_id' | 'train_no' | 'train_
 const props = defineProps<{ modelValue: boolean; train?: DialogTrain | null }>()
 const router = useRouter()
 const { confirm } = useConfirm()
+const userSelectedExport = useUserSelectedExport()
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
   saved: [{ trainId: string; revision: string; rowCount: number }]
@@ -314,7 +316,34 @@ function applyPreview(): void {
   rows.value = preview.value.result_rows; dirty.value = true; previewVisible.value = false
   ElMessage.success('导入结果已应用到编辑区，请确认后保存')
 }
-async function exportTable(): Promise<void> { await startTask(() => exportCarNetworkPointTable(exportFormat.value), '车内通信点表导出启动失败') }
+async function exportTable(): Promise<void> {
+  loading.value = true
+  error.value = ''
+  const format = exportFormat.value
+  try {
+    const submitted = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: format === 'csv' ? 'rail.car_network_points_csv' : 'rail.car_network_points_xlsx',
+      suggestedName: `车内通信点表-${fileTimestamp()}.${format}`,
+      context: {
+        format,
+        trainId: currentTrainKey.value || 'all',
+      },
+      submit: () => exportCarNetworkPointTable(format),
+    })
+    if (submitted.status === 'cancelled') return
+    rememberTask(submitted.task)
+    poll()
+    openTaskWindow()
+  } catch (reason) {
+    error.value = failure(reason, '车内通信点表导出启动失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+function fileTimestamp(): string {
+  return new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15)
+}
 function openTaskWindow(): void {
   const taskId = task.value?.task_id || ''
   if (window.netconsoleDesktop) {
