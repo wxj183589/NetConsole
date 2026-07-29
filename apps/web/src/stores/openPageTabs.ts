@@ -18,17 +18,11 @@ export interface OpenPageTab {
 
 export type OpenPageTabDefinition = Omit<OpenPageTab, 'lastActiveAt'>
 
-interface PersistedOpenPageTab {
+interface LegacyOpenPageTab {
   routeName: string
   path: string
   title: string
   navigationId?: string
-}
-
-interface PersistedOpenPageTabs {
-  version: 1
-  tabs: PersistedOpenPageTab[]
-  activeRouteName: string | null
 }
 
 export interface OpenPageTabResult {
@@ -47,32 +41,12 @@ const dashboardTab: OpenPageTabDefinition = {
   keepAlive: false,
 }
 
-function readPersistedTabs(): PersistedOpenPageTabs | null {
-  if (typeof sessionStorage === 'undefined') return null
+function clearLegacyTabs(): void {
+  if (typeof sessionStorage === 'undefined') return
   try {
-    const value = JSON.parse(sessionStorage.getItem(OPEN_PAGE_TABS_STORAGE_KEY) || 'null') as Partial<PersistedOpenPageTabs> | null
-    if (!value || value.version !== 1 || !Array.isArray(value.tabs)) return null
-    const tabs = value.tabs.flatMap((item) => {
-      if (
-        !item
-        || typeof item.routeName !== 'string'
-        || typeof item.path !== 'string'
-        || typeof item.title !== 'string'
-      ) return []
-      return [{
-        routeName: item.routeName,
-        path: item.path,
-        title: item.title,
-        ...(typeof item.navigationId === 'string' ? { navigationId: item.navigationId } : {}),
-      }]
-    })
-    return {
-      version: 1,
-      tabs,
-      activeRouteName: typeof value.activeRouteName === 'string' ? value.activeRouteName : null,
-    }
+    sessionStorage.removeItem(OPEN_PAGE_TABS_STORAGE_KEY)
   } catch {
-    return null
+    // 标签状态不是业务数据；存储不可用时继续使用当前内存状态。
   }
 }
 
@@ -96,25 +70,6 @@ export const useOpenPageTabsStore = defineStore('open-page-tabs', () => {
     return activityClock
   }
 
-  function persist(): void {
-    if (typeof sessionStorage === 'undefined') return
-    const payload: PersistedOpenPageTabs = {
-      version: 1,
-      tabs: tabs.value.map((item) => ({
-        routeName: item.routeName,
-        path: item.path,
-        title: item.title,
-        ...(item.navigationId ? { navigationId: item.navigationId } : {}),
-      })),
-      activeRouteName: activeRouteName.value,
-    }
-    try {
-      sessionStorage.setItem(OPEN_PAGE_TABS_STORAGE_KEY, JSON.stringify(payload))
-    } catch {
-      // 标签状态不是业务数据；存储不可用时继续使用当前内存状态。
-    }
-  }
-
   function createTab(definition: OpenPageTabDefinition, active = false): OpenPageTab {
     return {
       ...definition,
@@ -131,24 +86,13 @@ export const useOpenPageTabsStore = defineStore('open-page-tabs', () => {
   }
 
   function restoreTabs(
-    resolveTab: (tab: PersistedOpenPageTab) => OpenPageTabDefinition | null,
+    _resolveTab: (tab: LegacyOpenPageTab) => OpenPageTabDefinition | null,
   ): void {
     if (restored.value) return
     restored.value = true
-    const persisted = readPersistedTabs()
-    const restoredTabs = (persisted?.tabs ?? []).flatMap((item) => {
-      const resolved = resolveTab(item)
-      return resolved ? [createTab(resolved)] : []
-    })
-    tabs.value = restoredTabs
-    ensureDashboard()
-    if (tabs.value.length > MAX_OPEN_PAGE_TABS) {
-      tabs.value = tabs.value.slice(0, MAX_OPEN_PAGE_TABS)
-    }
-    activeRouteName.value = tabs.value.some((item) => item.routeName === persisted?.activeRouteName)
-      ? persisted?.activeRouteName ?? null
-      : null
-    persist()
+    clearLegacyTabs()
+    tabs.value = [createTab(dashboardTab, true)]
+    activeRouteName.value = dashboardTab.routeName
   }
 
   function evictOldestOrdinaryTab(): string | undefined {
@@ -177,7 +121,6 @@ export const useOpenPageTabsStore = defineStore('open-page-tabs', () => {
       }
       activeRouteName.value = normalized.routeName
       ensureDashboard()
-      persist()
       return { accepted: true, opened: false }
     }
 
@@ -189,20 +132,17 @@ export const useOpenPageTabsStore = defineStore('open-page-tabs', () => {
     tabs.value.push(createTab(normalized, true))
     activeRouteName.value = normalized.routeName
     ensureDashboard()
-    persist()
     return { accepted: true, opened: true, ...(evictedRouteName ? { evictedRouteName } : {}) }
   }
 
   function setActiveRoute(routeName: string | null): void {
     if (!routeName || !tabs.value.some((item) => item.routeName === routeName)) {
       activeRouteName.value = null
-      persist()
       return
     }
     activeRouteName.value = routeName
     const tab = tabs.value.find((item) => item.routeName === routeName)
     if (tab) tab.lastActiveAt = nextActivityAt()
-    persist()
   }
 
   function fallbackFor(routeName: string): OpenPageTab {
@@ -225,7 +165,6 @@ export const useOpenPageTabsStore = defineStore('open-page-tabs', () => {
     if (activeRouteName.value && removedSet.has(activeRouteName.value)) {
       activeRouteName.value = dashboardTab.routeName
     }
-    persist()
     return removed
   }
 
