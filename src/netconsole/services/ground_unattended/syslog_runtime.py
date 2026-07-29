@@ -17,6 +17,9 @@ from typing import Any
 from netconsole.repositories.ground_unattended_repository import (
     GroundUnattendedRepository,
 )
+from netconsole.services.ground_unattended.ap_resolver import (
+    GroundApDisplayResolver,
+)
 _WMESH_EVENT_RE = re.compile(
     r"WMESH/\d+/(?P<event>MESH_LINKUP|MESH_LINKDOWN|MESH_ACTIVELINK_SWITCH)\s*:",
     re.IGNORECASE,
@@ -276,6 +279,7 @@ class WmeshRealtimeParser:
                 return _legacy_link_event(raw_text)
             peer_mac = match.group("peer_mac")
             reason = match.group("reason").strip().rstrip(".")
+            reason_code = _linkdown_reason_code(reason)
             return {
                 "peer_name": "",
                 "peer_mac": peer_mac,
@@ -286,7 +290,8 @@ class WmeshRealtimeParser:
                     "peer_mac": peer_mac,
                     "rssi": int(match.group("rssi")),
                     "reason_raw": reason,
-                    "reason_code": _linkdown_reason_code(reason),
+                    "reason_code": reason_code,
+                    "reason_label": _linkdown_reason_label(reason_code),
                 },
             }
         match = _ACTIVE_LINK_SWITCH_RE.search(raw_text)
@@ -371,6 +376,7 @@ class SyslogUdpReceiver:
         self._reported_dropped_count = 0
         self._ap_by_name: dict[str, dict[str, str]] = {}
         self._ap_by_mac: dict[str, dict[str, str]] = {}
+        self._ap_resolver = GroundApDisplayResolver()
 
     def start(
         self,
@@ -531,6 +537,7 @@ class SyslogUdpReceiver:
         self._endpoint_by_hostname = by_host
 
     def update_ap_locations(self, rows: list[Any]) -> None:
+        self._ap_resolver = GroundApDisplayResolver(rows)
         by_name: dict[str, dict[str, str]] = {}
         by_mac: dict[str, dict[str, str]] = {}
         for row in rows:
@@ -641,12 +648,20 @@ class SyslogUdpReceiver:
         if identity_status in {"UNIDENTIFIED", "IDENTITY_CONFLICT"}:
             self._unidentified_count += 1
         parsed = self.parser.parse(raw_text, receive_time=receive_time)
+        if parsed is not None:
+            parsed = self._ap_resolver.enrich_parsed(parsed)
         quality, clock_offset_ms = self._quality(
             endpoint,
             identity_status,
             raw_text,
             parsed,
             receive_time,
+        )
+        parsed_details = dict((parsed or {}).get("details") or {})
+        reason_code = str(
+            parsed_details.get("reason_code")
+            or parsed_details.get("switch_reason_code")
+            or ""
         )
         record = {
             "source_ip": envelope.source_ip,
@@ -672,6 +687,51 @@ class SyslogUdpReceiver:
             "data_quality": quality,
             "identity_status": identity_status,
             "clock_offset_ms": clock_offset_ms,
+            "event_type": str((parsed or {}).get("event_type") or ""),
+            "peer_name": str((parsed or {}).get("peer_name") or ""),
+            "peer_mac": str((parsed or {}).get("peer_mac") or ""),
+            "previous_peer_name": str(
+                (parsed or {}).get("previous_peer_name") or ""
+            ),
+            "previous_peer_mac": str(
+                (parsed or {}).get("previous_peer_mac") or ""
+            ),
+            "peer_radio_mac": str(
+                parsed_details.get("peer_radio_mac")
+                or parsed_details.get("new_peer_radio_mac")
+                or ""
+            ),
+            "previous_peer_radio_mac": str(
+                parsed_details.get("previous_peer_radio_mac")
+                or parsed_details.get("old_peer_radio_mac")
+                or ""
+            ),
+            "resolved_ap_id": str(parsed_details.get("peer_ap_id") or ""),
+            "resolved_ap_name": str(parsed_details.get("peer_ap_name") or ""),
+            "previous_resolved_ap_id": str(
+                parsed_details.get("previous_peer_ap_id") or ""
+            ),
+            "previous_resolved_ap_name": str(
+                parsed_details.get("previous_peer_ap_name") or ""
+            ),
+            "station": str((parsed or {}).get("station") or ""),
+            "section": str((parsed or {}).get("section") or ""),
+            "previous_station": str(
+                parsed_details.get("previous_station") or ""
+            ),
+            "previous_section": str(
+                parsed_details.get("previous_section") or ""
+            ),
+            "rssi": parsed_details.get("rssi")
+            if parsed_details.get("rssi") is not None
+            else parsed_details.get("new_rssi"),
+            "previous_rssi": parsed_details.get("old_rssi"),
+            "reason_code": reason_code,
+            "reason_text": str(parsed_details.get("reason_raw") or ""),
+            "resolution_status": str(
+                parsed_details.get("resolution_status") or ""
+            ),
+            "parsed_details": parsed_details,
         }
         if self._writer is None:
             return
@@ -702,11 +762,12 @@ class SyslogUdpReceiver:
                 "source_receive_sequence": envelope.source_receive_sequence,
             },
         }
-        location = self._ap_by_name.get(str(parsed.get("peer_name") or "").casefold()) or self._ap_by_mac.get(
-            _normalize_mac(parsed.get("peer_mac"))
+        event.update(
+            {
+                "station": str(parsed.get("station") or ""),
+                "section": str(parsed.get("section") or ""),
+            }
         )
-        if location:
-            event.update(location)
         self._event_batch.append(event)
         self._timeline_batch.append(
             {
@@ -717,7 +778,7 @@ class SyslogUdpReceiver:
                 "train_id": record["train_id"],
                 "mr_id": record["device_uuid"],
                 "title": _event_title(str(parsed["event_type"])),
-                "message": str(parsed.get("peer_name") or ""),
+                "message": _event_message(parsed),
                 "details": {
                     "data_quality": quality,
                     "identity_status": identity_status,
@@ -907,6 +968,15 @@ def _linkdown_reason_code(reason: str) -> str:
     return "UNKNOWN"
 
 
+def _linkdown_reason_label(reason_code: str) -> str:
+    return {
+        "WEAK_RSSI_LOCAL": "弱信号（本端）",
+        "WEAK_RSSI": "弱信号",
+        "RADIO_STATUS_CHANGE_LOCAL": "射频状态变化（本端）",
+        "RADIO_STATUS_CHANGE": "射频状态变化",
+    }.get(reason_code, "未知原因")
+
+
 def _legacy_link_event(raw_text: str) -> dict[str, Any] | None:
     """Keep historical compact WMESH records parseable when detail fields are absent."""
 
@@ -956,6 +1026,25 @@ def _event_title(event_type: str) -> str:
         "MESH_ACTIVELINK_SWITCH": "WMESH 主链路切换",
         "IFNET_PHY_UPDOWN": "接口物理状态变化",
     }.get(event_type, event_type)
+
+
+def _event_message(parsed: dict[str, Any]) -> str:
+    event_type = str(parsed.get("event_type") or "")
+    details = dict(parsed.get("details") or {})
+    current = str(parsed.get("peer_name") or parsed.get("peer_mac") or "")
+    previous = str(
+        parsed.get("previous_peer_name")
+        or parsed.get("previous_peer_mac")
+        or ""
+    )
+    if event_type == "MESH_ACTIVELINK_SWITCH":
+        if details.get("old_active_link_missing"):
+            previous = "无主链路"
+        return f"{previous or '未知 AP'} → {current or '未知 AP'}"
+    if event_type == "MESH_LINKDOWN" and details.get("reason_raw"):
+        reason = details.get("reason_label") or details["reason_raw"]
+        return f"{current or '未知 AP'}；原因：{reason}"
+    return current
 
 
 def _udp_port_is_available(host: str, port: int) -> bool:

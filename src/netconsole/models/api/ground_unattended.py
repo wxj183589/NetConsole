@@ -43,6 +43,14 @@ GroundCoverageStatus = Literal[
     "OFFLINE",
     "FAILED",
 ]
+GroundDataAvailability = Literal[
+    "ACTIVE_RAW",
+    "ARCHIVED_RAW",
+    "MIXED",
+    "SUMMARY_ONLY",
+    "MISSING",
+    "CORRUPT",
+]
 
 
 class GroundUnattendedProfileDTO(ApiModel):
@@ -149,6 +157,7 @@ class GroundUnattendedStatusDTO(ApiModel):
     site_id: str
     enabled: bool = False
     state: GroundRunState = "DISABLED"
+    service_state: GroundRunState = "DISABLED"
     paused: bool = False
     run_id: str = ""
     run_date: str = ""
@@ -177,8 +186,47 @@ class GroundUnattendedStatusDTO(ApiModel):
     disk_status: str = "UNKNOWN"
     latest_archive_status: str = ""
     latest_archive_message: str = ""
+    active_run_id: str = ""
+    active_run_state: str = ""
+    active_run_date: str = ""
+    active_run_started_at: str = ""
+    latest_run_id: str = ""
+    latest_run_state: str = ""
+    latest_run_date: str = ""
+    latest_run_started_at: str = ""
+    latest_run_ended_at: str = ""
+    active_operation_id: str = ""
+    active_operation_state: str = ""
+    latest_operation_id: str = ""
+    latest_operation_state: str = ""
     message: str = ""
     updated_at: str = ""
+
+
+class GroundRunDTO(ApiModel):
+    run_id: str
+    site_id: str
+    run_date: str
+    state: GroundRunState
+    paused: bool = False
+    scheduled_start_at: str = ""
+    scheduled_end_at: str = ""
+    actual_started_at: str = ""
+    actual_ended_at: str = ""
+    ping_sample_count: int = 0
+    archive_id: str = ""
+    archive_status: str = ""
+    data_availability: GroundDataAvailability = "MISSING"
+    message: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class GroundRunPageDTO(ApiModel):
+    items: list[GroundRunDTO] = Field(default_factory=list)
+    total: int = 0
+    limit: int = 100
+    offset: int = 0
 
 
 class GroundSyslogHostDTO(ApiModel):
@@ -386,6 +434,8 @@ class GroundRawFilePageDTO(ApiModel):
 
 
 class GroundPingTargetDTO(ApiModel):
+    run_id: str = ""
+    run_date: str = ""
     target_ip: str
     train_id: str = ""
     train_no: str = ""
@@ -410,6 +460,14 @@ class GroundPingTargetDTO(ApiModel):
     current_ap_name: str = ""
     station: str = ""
     section: str = ""
+    first_sample_at: str = ""
+    last_sample_at: str = ""
+    active_raw_file_count: int = 0
+    archived_raw_file_count: int = 0
+    raw_file_available: bool = False
+    archive_available: bool = False
+    data_source: Literal["ACTIVE", "ARCHIVE", "MIXED", "NONE"] = "NONE"
+    data_availability: GroundDataAvailability = "MISSING"
 
 
 class GroundPingSummaryPageDTO(ApiModel):
@@ -454,6 +512,27 @@ class GroundTimelineEventDTO(ApiModel):
     mr_position_code: str = ""
     title: str = ""
     message: str = ""
+    peer_ap_id: str = ""
+    peer_ap_name: str = ""
+    peer_ap_mac: str = ""
+    peer_radio_mac: str = ""
+    previous_peer_ap_id: str = ""
+    previous_peer_ap_name: str = ""
+    previous_peer_ap_mac: str = ""
+    previous_peer_radio_mac: str = ""
+    station: str = ""
+    section: str = ""
+    previous_station: str = ""
+    previous_section: str = ""
+    rssi: int | None = None
+    previous_rssi: int | None = None
+    reason_code: str = ""
+    reason_label: str = ""
+    resolution_status: str = ""
+    ap_display: str = ""
+    ap_transition_display: str = ""
+    resolved_ap_name: str = ""
+    previous_resolved_ap_name: str = ""
     details: dict[str, object] = Field(default_factory=dict)
 
 
@@ -476,7 +555,11 @@ class GroundArchiveDTO(ApiModel):
     complete_session_count: int = 0
     partial_session_count: int = 0
     archive_size_bytes: int = 0
+    sha256: str = ""
+    manifest_sha256: str = ""
     archive_status: str = ""
+    file_count: int = 0
+    integrity_status: str = "NOT_CHECKED"
     retention_until: str = ""
     summary: dict[str, object] = Field(default_factory=dict)
     message: str = ""
@@ -487,6 +570,39 @@ class GroundArchiveDTO(ApiModel):
 class GroundArchivePageDTO(ApiModel):
     items: list[GroundArchiveDTO] = Field(default_factory=list)
     total: int = 0
+
+
+class GroundArchiveFileDTO(ApiModel):
+    path: str
+    data_type: str = ""
+    train_id: str = ""
+    mr_id: str = ""
+    mr_role: str = ""
+    hour: str = ""
+    record_count: int = 0
+    size_bytes: int = 0
+    compressed_size_bytes: int = 0
+    sha256: str = ""
+    parse_status: str = ""
+
+
+class GroundArchiveValidationDTO(ApiModel):
+    status: Literal["READY", "FAILED", "NOT_CHECKED"] = "NOT_CHECKED"
+    checked_at: str = ""
+    archive_size_bytes: int = 0
+    archive_sha256: str = ""
+    manifest_sha256: str = ""
+    file_count: int = 0
+    legacy_manifest: bool = False
+    message: str = ""
+
+
+class GroundArchiveDetailDTO(ApiModel):
+    archive: GroundArchiveDTO
+    files: list[GroundArchiveFileDTO] = Field(default_factory=list)
+    validation: GroundArchiveValidationDTO = Field(
+        default_factory=GroundArchiveValidationDTO
+    )
 
 
 class GroundActionResponseDTO(ApiModel):
@@ -541,6 +657,25 @@ class GroundPingSampleDTO(ApiModel):
     ap_transition_context: str = ""
     warmup_ignored: bool = False
     target_activation_started_at: str = ""
+    archive_entry: str = ""
+    data_source: Literal["ACTIVE", "ARCHIVE"] = "ACTIVE"
+
+
+class GroundQueryDiagnosticsDTO(ApiModel):
+    requested_run_id: str = ""
+    resolved_start_time: str = ""
+    resolved_end_time: str = ""
+    source_kind: Literal["ACTIVE", "ARCHIVE", "MIXED", "NONE"] = "NONE"
+    data_availability: GroundDataAvailability = "MISSING"
+    files_considered: int = 0
+    files_scanned: int = 0
+    records_scanned: int = 0
+    bytes_scanned: int = 0
+    malformed_record_count: int = 0
+    duplicate_record_count: int = 0
+    truncated: bool = False
+    legacy_archive: bool = False
+    no_data_reason: str = ""
 
 
 class GroundPingSamplePageDTO(ApiModel):
@@ -551,6 +686,9 @@ class GroundPingSamplePageDTO(ApiModel):
     raw_sample_count: int = 0
     effective_sample_count: int = 0
     ignored_sample_count: int = 0
+    diagnostics: GroundQueryDiagnosticsDTO = Field(
+        default_factory=GroundQueryDiagnosticsDTO
+    )
 
 
 class GroundPingSeriesDTO(ApiModel):
@@ -561,6 +699,9 @@ class GroundPingSeriesDTO(ApiModel):
     loss_windows: list[dict[str, object]] = Field(default_factory=list)
     ap_transitions: list[dict[str, object]] = Field(default_factory=list)
     position_segments: list[dict[str, object]] = Field(default_factory=list)
+    diagnostics: GroundQueryDiagnosticsDTO = Field(
+        default_factory=GroundQueryDiagnosticsDTO
+    )
 
 
 class GroundSyslogRecordDTO(ApiModel):
@@ -585,7 +726,30 @@ class GroundSyslogRecordDTO(ApiModel):
     global_receive_sequence: int | None = None
     source_receive_sequence: int | None = None
     raw_file_id: str = ""
+    raw_line_number: int | None = None
     raw_file_status: str = ""
+    archive_entry: str = ""
+    data_source: Literal["ACTIVE", "ARCHIVE"] = "ACTIVE"
+    display_enriched: bool = False
+    event_type: str = ""
+    peer_ap_id: str = ""
+    peer_name: str = ""
+    peer_mac: str = ""
+    peer_radio_mac: str = ""
+    previous_peer_ap_id: str = ""
+    previous_peer_name: str = ""
+    previous_peer_mac: str = ""
+    previous_peer_radio_mac: str = ""
+    station: str = ""
+    section: str = ""
+    previous_station: str = ""
+    previous_section: str = ""
+    rssi: int | None = None
+    previous_rssi: int | None = None
+    reason_code: str = ""
+    reason_text: str = ""
+    resolution_status: str = ""
+    parsed_details: dict[str, object] = Field(default_factory=dict)
 
 
 class GroundSyslogRecordPageDTO(ApiModel):
@@ -593,6 +757,9 @@ class GroundSyslogRecordPageDTO(ApiModel):
     total: int = 0
     page: int = 1
     page_size: int = 100
+    diagnostics: GroundQueryDiagnosticsDTO = Field(
+        default_factory=GroundQueryDiagnosticsDTO
+    )
 
 
 class GroundArchiveDeleteRequestDTO(ApiModel):

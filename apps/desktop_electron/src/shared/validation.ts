@@ -67,6 +67,7 @@ const OPENABLE_ARTIFACT_SUFFIXES = [
   '.cfg', '.md', '.tgz', '.zip',
 ]
 const DOWNLOAD_SEGMENT = String.raw`(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})+`
+const GROUND_ARCHIVE_ID = String.raw`[A-Za-z0-9][A-Za-z0-9_-]{0,159}`
 const DOWNLOAD_ENDPOINTS = [
   { pattern: new RegExp(`^/api/device-management/exports/${DOWNLOAD_SEGMENT}/download$`), query: new Set(['artifact_id']), required: new Set(['artifact_id']) },
   { pattern: new RegExp(`^/api/config-collection/artifacts/${DOWNLOAD_SEGMENT}$`), query: new Set<string>(), required: new Set<string>() },
@@ -76,6 +77,8 @@ const DOWNLOAD_ENDPOINTS = [
   { pattern: new RegExp(`^/api/ac-management/fit-aps/artifacts/${DOWNLOAD_SEGMENT}/download$`), query: new Set<string>(), required: new Set<string>() },
   { pattern: new RegExp(`^/api/rail-transit/mesh-analysis/sessions/${DOWNLOAD_SEGMENT}/artifacts/${DOWNLOAD_SEGMENT}/download$`), query: new Set<string>(), required: new Set<string>() },
   { pattern: new RegExp(`^/api/rail-transit/trackside-ap-business/artifacts/${DOWNLOAD_SEGMENT}/download$`), query: new Set<string>(), required: new Set<string>() },
+  { pattern: new RegExp(`^/api/rail-transit/ground-unattended/artifacts/${GROUND_ARCHIVE_ID}/download$`), query: new Set<string>(), required: new Set<string>() },
+  { pattern: new RegExp(`^/api/rail-transit/ground-unattended/artifacts/${GROUND_ARCHIVE_ID}/summary-download$`), query: new Set<string>(), required: new Set<string>() },
   { pattern: /^\/api\/rail-transit\/base-data\/station-template$/, query: new Set(['site_id']), required: new Set<string>() },
   { pattern: /^\/api\/rail-transit\/base-data\/station-template-export$/, query: new Set(['site_id']), required: new Set<string>() },
   { pattern: new RegExp(`^/api/online-mr/report-artifacts/${DOWNLOAD_SEGMENT}/download$`), query: new Set<string>(), required: new Set<string>() },

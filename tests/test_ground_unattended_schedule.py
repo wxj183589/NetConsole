@@ -214,6 +214,68 @@ def test_supervisor_does_not_reopen_ready_archived_run_date(tmp_path) -> None:
     assert repo.count_events(run["run_id"], event_type="start_rejected") == 1
 
 
+def test_supervisor_reconciles_incomplete_operations_without_active_run(
+    tmp_path,
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    paths.site_dir("site-a").mkdir(parents=True)
+    repo = GroundUnattendedRepository(
+        paths.ground_unattended_db_path("site-a"), site_id="site-a"
+    )
+    run = repo.create_or_get_run(
+        run_id="run-completed",
+        run_date="2026-07-25",
+        scheduled_start_at="2026-07-25T07:00:00+08:00",
+        scheduled_end_at="2026-07-25T23:00:00+08:00",
+    )
+    repo.update_run(
+        run["run_id"],
+        state="COMPLETED",
+        actual_ended_at="2026-07-25T08:00:00+08:00",
+    )
+    repo.save_operation(
+        {
+            "operation_id": "operation-completed",
+            "run_id": run["run_id"],
+            "operation_type": "STOP",
+            "operation_state": "RUNNING",
+            "operation_stage": "FINALIZING",
+            "progress_percent": 60,
+            "message": "正在保存运行汇总",
+        }
+    )
+    repo.save_operation(
+        {
+            "operation_id": "operation-orphaned",
+            "run_id": "missing-run",
+            "operation_type": "STOP_AND_ARCHIVE",
+            "operation_state": "PENDING",
+            "operation_stage": "STOP_REQUESTED",
+            "progress_percent": 5,
+            "message": "等待停止",
+        }
+    )
+    supervisor = GroundUnattendedSupervisor(
+        paths,
+        site_id="site-a",
+        repository=repo,
+        base_query=_BaseQuery(),  # type: ignore[arg-type]
+        mesh_query=_MeshQuery(),  # type: ignore[arg-type]
+        vehicle_query=_VehicleQuery(),  # type: ignore[arg-type]
+        now_provider=lambda: datetime.fromisoformat("2026-07-25T09:00:00+08:00"),
+    )
+
+    supervisor._recover_on_start()
+
+    completed = repo.get_operation("operation-completed")
+    orphaned = repo.get_operation("operation-orphaned")
+    assert completed is not None
+    assert completed["operation_state"] == "COMPLETED"
+    assert orphaned is not None
+    assert orphaned["operation_state"] == "FAILED"
+    assert orphaned["failure_code"] == "GROUND_OPERATION_RECOVERY_INCOMPLETE"
+
+
 def test_classification_updates_daily_coverage_without_overwriting_results() -> None:
     waiting = SimpleNamespace(
         deep_collection_eligible=True, eligibility_status="MAINLINE"

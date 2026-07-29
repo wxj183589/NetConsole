@@ -1,5 +1,27 @@
 # NetConsole 更新日志
 
+## 未发布
+
+### 轨道交通地面无人值守
+
+- 当前服务状态不再回退最近一次运行：无活动运行时按 Profile 返回“未启用/等待运行时段”，活动运行、
+  最近运行、活动操作和最近终态操作分别查询；运行选择器统一驱动 Ping、Syslog、时间轴和深度采集。
+- 页面移除 5 秒全量刷新，改为按状态、操作、健康和活动页签独立轮询，增加防重入、请求取消、代次丢弃、
+  隐藏暂停、恢复增量刷新和错误退避。Ping/Syslog 表格改为剩余高度内部滚动，Ping 曲线迁入可重复打开
+  的弹窗并在关闭时释放 ECharts 和监听资源。
+- 历史 Ping/Syslog 可从 READY ZIP 流式读取，支持 ACTIVE/ARCHIVE/MIXED、稳定去重、运行实际时间范围、
+  文件预筛、查询预算、扫描诊断和保留丢包点降采样；旧 Syslog 在内存中只读重解析，不修改 NDJSON。
+- 归档新增七页签详情、文件清单和只读重新校验；ZIP 与汇总 JSON 使用独立严格 Artifact 端点。后端校验
+  READY 状态、受管路径、大小、SHA-256、manifest、成员哈希、CRC 和压缩预算，Electron 只放行两个精确
+  endpoint，不接受 Renderer 物理路径。
+- WMESH 链路建立、断开和主链路切换按 Peer AP MAC、显式 Radio/BSSID、H3C Radio 派生规则和唯一
+  Alias 只读补全轨旁 AP 展示；AC Detail 使用 30 秒缓存，页面区分工程名称、AC 配置名称与事件状态。
+  多候选保持 `AMBIGUOUS`，主链路进入或离开空态分别显示“无主链路 → 新 AP”和
+  “旧 AP → 无主链路”，不写 AP Identity 主数据。
+- 新增 50k READY ZIP Ping、500k active Ping、100k Syslog、36 MR/30 天 Registry、30 分钟页面轮询、
+  10 分钟 Syslog 自动刷新和 100 次图表开关规模门；详细结论见
+  [地面无人值守风险审计](GROUND_UNATTENDED_RISK_AUDIT.md)。
+
 ## v1.4.5 - 2026-07-29
 
 ### 设备详情与表格偏好

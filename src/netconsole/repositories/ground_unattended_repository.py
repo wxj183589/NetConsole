@@ -505,6 +505,10 @@ CREATE TABLE IF NOT EXISTS ground_unattended_raw_files (
 );
 CREATE INDEX IF NOT EXISTS idx_ground_raw_files_query
 ON ground_unattended_raw_files(site_id, data_type, start_time DESC, status);
+CREATE INDEX IF NOT EXISTS idx_ground_raw_files_run_query
+ON ground_unattended_raw_files(
+    site_id, run_id, data_type, train_id, device_uuid, mr_role, start_time, end_time
+);
 
 CREATE TABLE IF NOT EXISTS ground_unattended_health_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1027,7 +1031,7 @@ class GroundUnattendedRepository:
         placeholders = ",".join("?" for _ in _RUN_STATES_ACTIVE)
         with self._connection() as conn:
             row = conn.execute(
-                f"SELECT * FROM ground_unattended_runs WHERE site_id=? AND state IN ({placeholders}) "
+                f"SELECT * FROM ground_unattended_runs WHERE site_id=? AND UPPER(state) IN ({placeholders}) "
                 "ORDER BY updated_at DESC LIMIT 1",
                 (self.site_id, *sorted(_RUN_STATES_ACTIVE)),
             ).fetchone()
@@ -1040,6 +1044,34 @@ class GroundUnattendedRepository:
                 (self.site_id,),
             ).fetchone()
         return _decode_row(row) if row else None
+
+    def list_runs(self, *, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT r.*, a.archive_id, a.archive_status, a.relative_path AS archive_relative_path
+                FROM ground_unattended_runs r
+                LEFT JOIN ground_unattended_archives a
+                  ON a.site_id=r.site_id AND a.run_id=r.run_id
+                WHERE r.site_id=?
+                ORDER BY r.run_date DESC, r.updated_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (
+                    self.site_id,
+                    max(1, min(int(limit), 500)),
+                    max(0, int(offset)),
+                ),
+            ).fetchall()
+        return [_decode_row(row) for row in rows]
+
+    def count_runs(self) -> int:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM ground_unattended_runs WHERE site_id=?",
+                (self.site_id,),
+            ).fetchone()
+        return int(row[0] if row else 0)
 
     def update_run(self, run_id: str, **values: Any) -> None:
         allowed = {
@@ -1588,7 +1620,7 @@ class GroundUnattendedRepository:
             where.append("run_id=?")
             params.append(run_id)
         if active_only:
-            where.append("operation_state IN ('PENDING','RUNNING')")
+            where.append("UPPER(operation_state) IN ('PENDING','RUNNING')")
         with self._connection() as conn:
             row = conn.execute(
                 f"SELECT * FROM ground_unattended_operations WHERE {' AND '.join(where)} "
@@ -1596,6 +1628,48 @@ class GroundUnattendedRepository:
                 params,
             ).fetchone()
         return _decode_row(row) if row else None
+
+    def latest_terminal_operation(
+        self, *, run_id: str = ""
+    ) -> dict[str, Any] | None:
+        where = [
+            "site_id=?",
+            "UPPER(operation_state) IN ('COMPLETED','FAILED')",
+        ]
+        params: list[Any] = [self.site_id]
+        if run_id:
+            where.append("run_id=?")
+            params.append(run_id)
+        with self._connection() as conn:
+            row = conn.execute(
+                f"SELECT * FROM ground_unattended_operations WHERE {' AND '.join(where)} "
+                "ORDER BY updated_at DESC LIMIT 1",
+                params,
+            ).fetchone()
+        return _decode_row(row) if row else None
+
+    def list_operations(
+        self,
+        *,
+        run_id: str = "",
+        active_only: bool = False,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        where = ["site_id=?"]
+        params: list[Any] = [self.site_id]
+        if run_id:
+            where.append("run_id=?")
+            params.append(run_id)
+        if active_only:
+            where.append("UPPER(operation_state) IN ('PENDING','RUNNING')")
+        params.append(max(1, min(int(limit), 500)))
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM ground_unattended_operations WHERE {' AND '.join(where)} "
+                "ORDER BY updated_at DESC LIMIT ?",
+                params,
+            ).fetchall()
+        return [_decode_row(row) for row in rows]
 
     def update_operation(self, operation_id: str, **values: Any) -> dict[str, Any]:
         if not values:
@@ -1703,17 +1777,42 @@ class GroundUnattendedRepository:
         start_time: str,
         end_time: str,
         run_id: str = "",
+        train_id: str = "",
+        device_uuid: str = "",
+        mr_role: str = "",
+        limit: int = 256,
     ) -> list[dict[str, Any]]:
         where = ["site_id=?", "data_type=?"]
         params: list[Any] = [self.site_id, data_type]
         if run_id:
             where.append("run_id=?")
             params.append(run_id)
+        if train_id:
+            where.append("train_id=?")
+            params.append(train_id)
+        if device_uuid:
+            where.append("device_uuid=?")
+            params.append(device_uuid)
+        if mr_role:
+            where.append("mr_role=?")
+            params.append(mr_role)
+        if start_time:
+            where.append(
+                "(end_time='' OR julianday(end_time) IS NULL "
+                "OR julianday(end_time)>=julianday(?))"
+            )
+            params.append(start_time)
+        if end_time:
+            where.append(
+                "(start_time='' OR julianday(start_time) IS NULL "
+                "OR julianday(start_time)<=julianday(?))"
+            )
+            params.append(end_time)
         with self._connection() as conn:
             rows = conn.execute(
                 f"SELECT * FROM ground_unattended_raw_files WHERE {' AND '.join(where)} "
-                "ORDER BY start_time, created_at",
-                params,
+                "ORDER BY start_time, created_at LIMIT ?",
+                (*params, max(1, min(int(limit), 1000))),
             ).fetchall()
         result = []
         for row in rows:

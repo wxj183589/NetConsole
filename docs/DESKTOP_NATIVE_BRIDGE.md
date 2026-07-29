@@ -59,6 +59,14 @@ Electron-only E1 已删除无生产调用者的 `QtDesktopAdapter`。Python `Des
 
 `reportRendererReady` 仅用于自动开发冒烟的 health 结果回报，不接受 URL、路径、命令或令牌。
 
+地面无人值守只增加两个精确 Artifact 模式：
+`/api/rail-transit/ground-unattended/artifacts/<opaque-id>/download` 和
+`/api/rail-transit/ground-unattended/artifacts/<opaque-id>/summary-download`。两者不接受 Query；
+ID 必须通过单段安全字符校验，编码斜杠、路径穿越、额外路径、token Query、旧
+`/archives/.../summary-download` 和任意其他无人值守 API 均拒绝。ZIP 请求必须同时携带 Repository
+提供的期望大小和 SHA-256；汇总 JSON 使用独立建议名和 JSON 过滤器。Main 仍只负责受控搬运，READY、
+局点、受管路径、ZIP/manifest 完整性由 Python Application Service 校验。
+
 ## 路径授权模型
 
 Renderer 不能把绝对路径提交给打开动作。`downloadBackendResource` 仅在流式下载和原子替换成功后，针对至少具备 `open/reveal` 一项的文件把最终路径登记到最多 256 项、默认 15 分钟有效的 Main 内存授权表，并返回随机 capability ID。每条记录包含 purpose、独立 action、规范化实际扩展名和过期时间；未知、伪造、过期、FIFO 淘汰或跨用途复用均失败。`openPath`/`showItemInFolder` 只接受该 ID，由 Main 分别校验动作并解析路径；退出时授权表清空，不持久化。
@@ -71,7 +79,7 @@ Renderer 不能把绝对路径提交给打开动作。`downloadBackendResource` 
 
 ## 文件导出边界
 
-`chooseSavePath` 只返回用户确认并登记为当前会话授权的目标路径；可选默认目录同样必须先由 `selectDirectory` 授权。Main 同时记录目标当时是不存在还是普通文件，以及文件的大小、时间和文件标识。报告生成及 Excel/ZIP/PDF/NAM 内容继续属于 Python Application Service 与 Export Process。`downloadBackendResource` 只搬运既有受控 HTTP 响应：Renderer 可以回传刚取得的另存为路径，但 main 必须在内存授权表中重新校验后才跳过第二次对话框；任意绝对路径仍会被拒绝。Renderer 只能提交设备、配置、文件、AC、MESH、Online MR 和网络工具现有正式 Artifact endpoint 模式及各端点允许的字符串 Query，main 使用当前 `PythonBackendManager` 的动态回环 Origin 与内存令牌请求，先流式写入目标同目录的随机 `.part`，同步计算实际大小和 SHA-256，并在期望元数据存在时完成校验；提交前再次复验目标未被其他进程创建、替换或改变，再安全替换并校验最终文件。目标变化、HTTP 失败、路径不可写、空间不足或完整性不一致均不改变服务端任务终态，且不留下 `.part` 或伪成功文件。Electron Main/Preload 不读取数据库、不解释或生成报告。
+`chooseSavePath` 只返回用户确认并登记为当前会话授权的目标路径；可选默认目录同样必须先由 `selectDirectory` 授权。Main 同时记录目标当时是不存在还是普通文件，以及文件的大小、时间和文件标识。报告生成及 Excel/ZIP/PDF/NAM 内容继续属于 Python Application Service 与 Export Process。`downloadBackendResource` 只搬运既有受控 HTTP 响应：Renderer 可以回传刚取得的另存为路径，但 main 必须在内存授权表中重新校验后才跳过第二次对话框；任意绝对路径仍会被拒绝。Renderer 只能提交设备、配置、文件、AC、MESH、Online MR、地面无人值守和网络工具现有正式 Artifact endpoint 模式及各端点允许的字符串 Query，main 使用当前 `PythonBackendManager` 的动态回环 Origin 与内存令牌请求，先流式写入目标同目录的随机 `.part`，同步计算实际大小和 SHA-256，并在期望元数据存在时完成校验；提交前再次复验目标未被其他进程创建、替换或改变，再安全替换并校验最终文件。目标变化、HTTP 失败、路径不可写、空间不足或完整性不一致均不改变服务端任务终态，且不留下 `.part` 或伪成功文件。Electron Main/Preload 不读取数据库、不解释或生成报告。
 
 Electron Main 为所有受管 Renderer URL 注入 `netconsole_host=electron`。Renderer 看到该标记但未发现 preload bridge 时必须失败关闭，显示“Electron 文件保存组件未加载”，不得创建 `<a download>` 或回退 Browser Adapter。只有未携带 Electron 宿主标记的普通浏览器页面才允许启动浏览器下载，并且 `started` 只表示已交给浏览器，不能转换为“已保存到本地”。
 

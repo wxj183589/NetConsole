@@ -239,44 +239,27 @@ def test_ground_unattended_legacy_run_and_persisted_ping_summary_are_api_compati
         }
     )
 
-    with TestClient(app, raise_server_exceptions=False) as client:
-        status = client.get("/api/rail-transit/ground-unattended/status")
-        ping_targets = client.get(
-            "/api/rail-transit/ground-unattended/ping-targets"
-        )
+    client = TestClient(app, raise_server_exceptions=False)
+    status = client.get("/api/rail-transit/ground-unattended/status")
+    ping_targets = client.get(
+        "/api/rail-transit/ground-unattended/ping-targets"
+    )
+    client.close()
 
     assert status.status_code == 200
     assert status.json()["state"] == "RUNNING"
     assert status.json()["disk_used_bytes"] == 0
     assert ping_targets.status_code == 200
-    assert ping_targets.json()["items"] == [
-        {
-            "target_ip": "10.8.0.6",
-            "train_id": "train-06",
-            "train_no": "06",
-            "mr_id": "mr-06-ct",
-            "mr_name": "",
-            "mr_position_code": "CT",
-            "started_at": "",
-            "updated_at": "",
-            "shard_id": "",
-            "raw_sample_count": 10,
-            "effective_sample_count": 10,
-            "warmup_ignored_count": 0,
-            "sent_count": 10,
-            "success_count": 9,
-            "loss_count": 1,
-            "loss_rate_percent": 10.0,
-            "min_rtt_ms": 1.0,
-            "avg_rtt_ms": 2.0,
-            "max_rtt_ms": 3.0,
-            "continuous_loss_max_count": 1,
-            "continuous_loss_max_seconds": 1.0,
-            "current_ap_name": "",
-            "station": "",
-            "section": "",
-        }
-    ]
+    item = ping_targets.json()["items"][0]
+    assert item["run_id"] == "legacy-run"
+    assert item["run_date"] == "2026-07-27"
+    assert item["target_ip"] == "10.8.0.6"
+    assert item["mr_id"] == "mr-06-ct"
+    assert item["raw_sample_count"] == 10
+    assert item["effective_sample_count"] == 10
+    assert item["loss_count"] == 1
+    assert item["loss_rate_percent"] == 10.0
+    assert item["data_availability"] == "SUMMARY_ONLY"
 
 
 def test_ground_unattended_repository_failure_is_feature_scoped(

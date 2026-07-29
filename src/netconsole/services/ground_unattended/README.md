@@ -19,7 +19,13 @@
   文件、单 Worker SSH 复用、间隔热更新、立即轮询、同 Task 重连和正常停止。
 - `boot_config.py`、`syslog_runtime.py`：Information Center 只读核验、受控修复与 WMESH UDP 接收。
 - `fleet_ping.py`、`timeline.py`：分片 Ping 生命周期、汇总和 AC/Ping 时间关联。
-- `raw_query.py`：只读扫描与查询时间范围相交的已登记 Ping/Syslog NDJSON，执行有界内存分页、降采样和路径/链接安全校验。
+- `raw_query.py`：按运行/列车/MR/端位/时间预筛，流式查询 active 或 READY ZIP 中的 Ping/Syslog
+  NDJSON，执行有界分页、保留丢包点降采样、去重和扫描预算。
+- `archive_reader.py`：READY ZIP 的受管路径、大小、SHA-256、manifest、成员哈希、CRC、路径和压缩预算
+  校验；只读流式访问登记成员，不解压或重写归档。
+- `ap_resolver.py`：按 Peer AP MAC、显式 Radio/BSSID、带证据等级的 H3C Radio 派生规则和唯一
+  Alias 补全 WMESH 展示字段；AC Detail 使用 30 秒查询缓存，名称来源保持可见，歧义保持未绑定，
+  不写 AP Identity 主数据。
 - `deep_scheduler.py`：每日覆盖队列、置顶和并发预算。
 - `archive_service.py`：manifest、ZIP 校验、原子发布和保留清理。
 
@@ -33,6 +39,10 @@ Syslog 和位置关联，Deep Scheduler 只同步/收尾已有任务，不再填
 记录 controller/task/连接状态并有界强停，不伪装完成；归档通过回调更新准备、写入、校验、登记和清理
 阶段。暂停深度调度不会停止 AC Poller、Fleet Ping 或 Syslog。
 
+`/status` 不回退最近一次已完成运行；活动运行、最近运行、活动操作和最近终态操作独立映射。页面统一
+使用 `selectedRunId` 查看 Ping、Syslog、时间轴和深度采集。当前运行默认最近 30 分钟，历史运行默认
+实际起止时间；active 文件已清理时可从 READY ZIP 读取，混合来源按稳定记录标识去重。
+
 ## 数据安全
 
 运行数据位于 `data/sites/<site_id>/ground_unattended/`，路径由 `PathResolver` 解析。归档校验失败时保留 active 原始数据；删除归档必须经过当前局点校验、显式确认和 Repository 状态检查。自动测试只能使用 `RuntimeMode.TEST` 与 `D:\NetConsoleTestData\<run-id>`。
@@ -44,6 +54,7 @@ Syslog 和位置关联，Deep Scheduler 只同步/收尾已有任务，不再填
 ## 相关文档
 
 - [地面无人值守](../../../../docs/GROUND_UNATTENDED.md)
+- [地面无人值守风险审计](../../../../docs/GROUND_UNATTENDED_RISK_AUDIT.md)
 - [数据布局](../../../../docs/DATA_LAYOUT.md)
 - [Online MR](../../../../docs/ONLINE_MR_COLLECTION.md)
 - [项目架构](../../../../docs/ARCHITECTURE.md)

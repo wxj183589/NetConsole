@@ -1,0 +1,142 @@
+# 地面无人值守风险审计
+
+## 范围与口径
+
+本文审计“轨道交通 / 地面无人值守”的运行状态、原始 Ping/Syslog、READY ZIP、Artifact 下载、
+WMESH 时间轴和 Vue 页面生命周期。结论基于代码、自动测试、隔离测试根和宁波地铁 12 号线只读来源
+副本；正式安装结果仍必须单独记录，不能由模拟数据替代。
+
+状态口径：
+
+- **已防护**：本轮前已有明确保护，代码和定向测试仍通过。
+- **本轮修复**：本轮存在缺口，已修改代码并增加回归测试。
+- **后续优化**：当前行为可控且不阻断本轮使用，但仍有可量化的增强项。
+- **尚未验证**：必须依赖真实数据、设备、长时间运行、安装包或人工视觉验收。
+- **现场数据缺口**：代码可以保持安全降级，但现场数据没有完成业务名称或身份关联，不能宣称已验收。
+
+## 运行状态
+
+| 风险 | 状态 | 当前控制与证据 |
+| --- | --- | --- |
+| active run 与 latest run 混淆 | 本轮修复 | `/status` 只用 active run 生成当前状态；最近运行使用独立字段。 |
+| Profile disabled 仍显示 `COMPLETED` | 本轮修复 | 无 active run 时固定按 Profile 返回 `DISABLED/WAITING_WINDOW`。 |
+| 操作完成状态永久置顶 | 本轮修复 | active 与 terminal 分离；成功提示按完成时间最多保留 12 秒，失败需确认。 |
+| `/operations/latest` 依赖活动运行 | 本轮修复 | latest 只查询当前局点最近 `COMPLETED/FAILED`，active 只查询 `PENDING/RUNNING`。 |
+| Backend 重启后陈旧操作仍显示运行中 | 已防护 | Supervisor 恢复流程收敛未完成 run/operation，无法恢复时写入失败或部分结果。 |
+| 运行页签混用错误 run_id | 本轮修复 | `/runs` 与统一 `selectedRunId`；Ping 行级 run/目标上下文优先。 |
+
+## 原始数据
+
+| 风险 | 状态 | 当前控制与证据 |
+| --- | --- | --- |
+| active 已清理但 Registry 仍指向原路径 | 本轮修复 | 缺失 active 文件时按同 run 的 READY 归档读取登记成员。 |
+| ZIP READY 但 manifest 缺失 | 本轮修复 | 仅对旧 ZIP 启用 `legacy_archive`；只允许已登记的已知 Ping/Syslog 前缀。 |
+| Registry 记录数与 NDJSON 行数不一致 | 后续优化 | 查询返回登记记录数和实际扫描数，但归档详情尚未逐文件判定差异级别。 |
+| 同一记录同时存在于 active 与 archive | 本轮修复 | Ping 按 sample/目标/时间/序号，Syslog 按接收序号或稳定字段去重。 |
+| OPEN 文件异常恢复 | 已防护 | 启动恢复收口上次 OPEN 文件并登记为恢复状态，不静默覆盖。 |
+| 小时轮转文件重复 | 已防护 | relative path 唯一约束、generation 和稳定记录标识共同限制重复。 |
+| 30 天 Registry 在 `LIMIT` 前误滤掉目标文件 | 本轮修复 | 时间重叠与 MR 端位在 Repository 中先筛选再限制；36 MR/30 天测试覆盖。 |
+
+## Ping
+
+| 风险 | 状态 | 当前控制与证据 |
+| --- | --- | --- |
+| 每秒采样造成大响应或内存膨胀 | 本轮修复 | 流式扫描；默认 3000、最多 10000 点；500k 样本门禁未截断。 |
+| 单目标查询扫描所有车辆 | 本轮修复 | Repository 按 run/train/device/role/time 预筛，通常只扫描目标 MR 文件。 |
+| 丢包点在降采样中消失 | 本轮修复 | 丢包点优先保留，剩余预算才分配成功点；50k READY ZIP 测试覆盖。 |
+| 历史运行错误使用“当前时间前 30 分钟” | 本轮修复 | 历史默认 actual start/end，缺失时按运行/文件范围逐级解析。 |
+| Ping 时间与 AC 位置错配 | 已防护 | 按本机接收时间和容差关联，超出容差明确标记位置未知。 |
+| AP 切换前后窗口误判 | 已防护 | 首次 AP 只建基线，真实 identity 变化才建切换窗口并保留 marker。 |
+| Backend 重启后重复预热 | 已防护 | 目标激活时间按 site/run/target 持久化，分片重建不重置。 |
+| 查询预算导致无提示的部分结果 | 本轮修复 | 文件/记录/字节/时间预算统一返回 `truncated` 和扫描诊断。 |
+
+## Syslog
+
+| 风险 | 状态 | 当前控制与证据 |
+| --- | --- | --- |
+| UDP 队列溢出 | 已防护 | 有界队列、丢弃计数和健康事件；不阻塞接收线程。 |
+| 未识别来源或身份冲突误绑 MR | 已防护 | IP/hostname 双证据；冲突不绑定，未知来源进入 `_unidentified`。 |
+| 设备时间漂移被误称网络延迟 | 已防护 | 分开展示 device/receive time，差值命名为时钟偏差。 |
+| 同秒事件排序不稳定 | 已防护 | 保存全局与来源接收序号，分页以接收时间和稳定序号处理。 |
+| 重复报文 | 已防护 | Runtime 记录重复质量事件；active/archive 查询再次按接收序号去重。 |
+| 旧记录缺少 WMESH/AP 字段 | 本轮修复 | 查询时只读重解析并标记 `display_enriched`，不修改 NDJSON。 |
+| 同一旧事件因 AP Registry 变化而展示变化 | 后续优化 | 新记录保存解析结果；旧记录只读使用当前 Registry，尚无历史 Registry 快照。 |
+| WMESH Peer 无法关联唯一物理 AP | 本轮修复 | 显式 BSSID 优先；H3C Radio 派生固定标记 90 置信度，30 秒缓存 AC Detail，多候选仍 `AMBIGUOUS`。 |
+| AC 配置名为 MAC，缺少轨旁工程名称映射 | 现场数据缺口 | 6310 个真实 WMESH AP 展示均来自 `AC_AP_NAME`；轨旁点位没有 AP/Radio MAC，不按序号或站点模糊推断。 |
+| 主链路切换缺少旧或新 Peer | 本轮修复 | 分别标记 `NO_ACTIVE_LINK`，展示“无主链路 → 新 AP”或“旧 AP → 无主链路”，不计为解析失败。 |
+| 已归档日志无法查看 | 本轮修复 | READY ZIP 流式查询、分页、过滤和 archive entry 诊断。 |
+| 100k 记录加载到前端 | 本轮修复 | 后端有界 heap 只保留所需页，默认每页 100；100k 测试覆盖。 |
+
+## 归档与下载
+
+| 风险 | 状态 | 当前控制与证据 |
+| --- | --- | --- |
+| ZIP 损坏或 CRC 失败 | 本轮修复 | 读取/下载前校验 ZIP 结构、CRC、登记大小和 SHA-256。 |
+| ZIP Bomb | 本轮修复 | 限制成员数、单成员/总解压量、压缩比和查询扫描字节。 |
+| ZIP 路径穿越、重复成员或符号链接 | 本轮修复 | POSIX 成员规范化，拒绝绝对路径、`..`、反斜杠、重复和 symlink mode。 |
+| Renderer 下载任意文件 | 本轮修复 | 只提交 opaque archive ID；Backend 解析受管路径，Bridge 精确匹配 endpoint。 |
+| READY 后误清理未归档文件 | 已防护 | ZIP/manifest/哈希登记 READY 后才白名单清理；失败保留 active。 |
+| 下载按钮实际只下载汇总 | 本轮修复 | “下载归档 ZIP”和“下载汇总 JSON”使用独立按钮与文件名。 |
+| 重新校验覆盖 READY ZIP | 本轮修复 | `verify` 强制重新读取和校验，只更新响应，不生成或写入 ZIP。 |
+| 归档详情缺少文件清单 | 本轮修复 | 七页签详情展示登记元数据、压缩大小、哈希和完整性。 |
+
+## 前端
+
+| 风险 | 状态 | 当前控制与证据 |
+| --- | --- | --- |
+| 每 5 秒全量请求 | 本轮修复 | 状态/操作/健康/活动页签独立调度；静态数据按需读取。 |
+| 同类请求重叠或旧响应覆盖新状态 | 本轮修复 | `AbortController`、请求序号、防重入和过期响应丢弃。 |
+| 隐藏页面继续轮询 | 本轮修复 | `visibilitychange` 隐藏时取消，恢复时清空节流并增量加载。 |
+| 隐藏容器初始化 ECharts | 本轮修复 | Dialog opened 后挂载；`nextTick + resize`。 |
+| 图表、Observer 或 listener 累积 | 本轮修复 | unmount/关闭时 dispose、disconnect、unsubscribe；100 次循环测试覆盖。 |
+| Ping/Syslog 外层滚动与大面积空白 | 本轮修复 | 表格使用视口约束和内部滚动，曲线从 Ping 列表移入弹窗。 |
+| 1366x768、125%/150% 缩放视觉冲突 | 尚未验证 | 已有响应式约束和构建测试，仍需正式 Electron 截图/人工验收。 |
+| 30 分钟页面与 10 分钟自动刷新资源累积 | 本轮修复 | 假时钟测试确认请求频率有界且 unmount 后停止。 |
+
+## 时间与时区
+
+| 风险 | 状态 | 当前控制与证据 |
+| --- | --- | --- |
+| `Asia/Shanghai` 在冻结包缺失 | 已防护 | `tzdata` 已进入冻结依赖和 package smoke；本轮安装包仍需复验。 |
+| 当前时间范围用于历史运行 | 本轮修复 | 历史 run 默认实际起止时间，当前 run 才默认最近 30 分钟。 |
+| 设备时间与接收时间混淆 | 已防护 | 字段、DTO 和 UI 分列展示；接收时间用于本机排序/关联。 |
+| 时钟差误称网络延迟 | 已防护 | 文档和 UI 固定为 clock offset，不作为 UDP 延迟。 |
+| 跨日/跨小时查询遗漏 | 本轮修复 | Repository 用 SQLite `julianday` 做时区感知重叠筛选，查询最长 7 天。 |
+
+## 规模验证
+
+| 场景 | 结果 | 边界 |
+| --- | --- | --- |
+| READY ZIP Ping 50,000 条 | 通过 | 完整扫描，输出不超过 3000 点，51 个丢包点保留。 |
+| active Ping 500,000 条 | 通过 | 完整扫描 500,000 条，未触发 12 秒预算或截断。 |
+| active Syslog 100,000 条 | 通过 | 总数正确，响应只保留 100 条当前页。 |
+| 36 台 MR、30 天 Registry | 通过 | 目标日期/MR 在 `LIMIT` 前完成预筛。 |
+| Ping 图表开关 100 次 | 通过 | init/dispose、observer 和主题订阅数量成对。 |
+| 页面轮询 30 分钟 | 通过 | 请求频率有界，unmount 后不再请求。 |
+| Syslog 自动刷新 10 分钟 | 通过 | 只在活动运行和 Syslog 页签按约 8 秒刷新。 |
+
+500,000 条门禁默认跳过，需显式设置 `NETCONSOLE_RUN_SCALE_TESTS=1`；本轮交付前已实际执行。测试数据只
+位于 `D:\NetConsoleTestData\<run-id>`，未写入真实局点。
+
+## 真实数据只读验证
+
+来源为 `D:\NetConsoleData\sites\宁波地铁12号线`，验证时只读取源文件，并将 ground index、2026-07-28
+READY ZIP 和 `devices.db` 复制到
+`D:\NetConsoleTestData\ground-unattended-real-20260730-3e6c6ef1`。副本 SQLite
+`integrity_check=ok`；未启动真实无人值守、未写设备、未修改真实 SQLite/NDJSON/ZIP。
+
+| 场景 | 结果 | 结论 |
+| --- | --- | --- |
+| 2026-07-28 Ping | 扫描 9708 条，稳定去重后 9705 条，曲线 9680 点 | 3 个重复键中 1 条完全重复、2 条 RTT 相差 0.1 ms；未截断。 |
+| 2026-07-28 Syslog | 6414 条，分页、旧记录只读 enrichment、archive entry 正常 | READY ZIP 历史查询可用，未回写原始记录。 |
+| 2026-07-28 时间轴 | 7421 条，其中 WMESH 6330 条、主链路切换 1951 条 | 4381 条 `H3C_RADIO_DERIVED`、1929 条 `RADIO_BSSID`、20 条 `NO_ACTIVE_LINK`；无未知 AP 切换。 |
+| AP 名称来源 | 6310 条 `AC_AP_NAME`、20 条 `EVENT_STATE` | 唯一物理 AP 已解析；AC 名称为 MAC 形式，工程点位名称未验收。 |
+| Registry 规模 | 36 台 MR、30 天文件索引 | 目标日期、MR 与端位在 `LIMIT` 前预筛。 |
+
+## 剩余验收
+
+- 导入可信的轨旁 AP/Radio MAC 到点位编号或工程名称映射，并复验 `display_name_source` 不再仅为
+  `AC_AP_NAME`；不得按站点、序号或 MAC 相似度推断。
+- Electron 保存对话框、ZIP/JSON 本地文件、1366x768 与 125%/150% 缩放人工验证。
+- 合并后 clean package、冻结 Backend status smoke、正式安装和 AC 常驻轮询回归。
+- 十几小时真实 fping、多列车 UDP、真实 AP 漫游、主备 AC 切换和低磁盘故障注入。

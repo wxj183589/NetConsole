@@ -1,0 +1,596 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import zipfile
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from fastapi.testclient import TestClient
+
+from netconsole.backend.api.main import create_app
+from netconsole.core.paths import PathResolver
+from netconsole.repositories.ground_unattended_repository import (
+    GroundUnattendedRepository,
+)
+from netconsole.services.ground_unattended.archive_reader import (
+    GroundArchiveReadError,
+    GroundArchiveReader,
+)
+from netconsole.services.ground_unattended.archive_service import (
+    GroundUnattendedArchiveService,
+)
+from netconsole.services.ground_unattended.application_service import (
+    GroundUnattendedApplicationService,
+)
+from netconsole.services.ground_unattended.raw_query import (
+    GroundRawQueryError,
+    GroundRawStreamQueryService,
+)
+
+
+START = "2026-07-25T07:00:00+08:00"
+END = "2026-07-25T23:00:00+08:00"
+
+
+def test_ready_archive_is_queryable_and_mixed_sources_are_deduplicated(
+    tmp_path: Path,
+) -> None:
+    paths, repository, run_id = _setup_run(tmp_path)
+    active = paths.ground_unattended_active_dir("site-a", "2026-07-25")
+    first = active / "fleet_ping" / "ping-a.jsonl"
+    second = active / "fleet_ping" / "ping-b.jsonl"
+    _register_ping_file(
+        repository,
+        first,
+        file_id="raw-a",
+        run_id=run_id,
+        sample_id="sample-a",
+        ts="2026-07-25T08:00:00+08:00",
+    )
+    _register_ping_file(
+        repository,
+        second,
+        file_id="raw-b",
+        run_id=run_id,
+        sample_id="sample-b",
+        ts="2026-07-25T08:01:00+08:00",
+    )
+    query = GroundRawStreamQueryService(repository)
+    active_result = query.ping_series(run_id=run_id)
+    assert active_result["raw_sample_count"] == 2
+    assert active_result["diagnostics"]["source_kind"] == "ACTIVE"
+
+    archive_result = GroundUnattendedArchiveService(
+        paths, site_id="site-a", repository=repository
+    ).archive_run(run_id, repository.get_profile())
+    assert archive_result.success
+    assert not active.exists()
+
+    archived_result = query.ping_series(run_id=run_id)
+    assert archived_result["raw_sample_count"] == 2
+    assert archived_result["diagnostics"]["source_kind"] == "ARCHIVE"
+    assert (
+        archived_result["diagnostics"]["data_availability"]
+        == "ARCHIVED_RAW"
+    )
+    assert all(
+        item["data_source"] == "ARCHIVE"
+        for item in archived_result["points"]
+    )
+
+    inspection = query.archive_reader.inspect_archive(archive_result.archive_id)
+    with zipfile.ZipFile(inspection.path) as archive:
+        first.parent.mkdir(parents=True, exist_ok=True)
+        first.write_bytes(archive.read("fleet_ping/ping-a.jsonl"))
+    mixed_result = query.ping_series(run_id=run_id)
+    assert mixed_result["raw_sample_count"] == 2
+    assert mixed_result["diagnostics"]["source_kind"] == "MIXED"
+    assert {item["sample_id"] for item in mixed_result["points"]} == {
+        "sample-a",
+        "sample-b",
+    }
+
+
+def test_run_without_actual_times_uses_registered_raw_file_range(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    repository = GroundUnattendedRepository(
+        paths.ground_unattended_db_path("site-a"), site_id="site-a"
+    )
+    run = repository.create_or_get_run(
+        run_id="run-no-actual-times",
+        run_date="2026-07-25",
+        scheduled_start_at="2026-07-25T09:00:00+08:00",
+        scheduled_end_at="2026-07-25T10:00:00+08:00",
+    )
+    repository.update_run(
+        str(run["run_id"]),
+        state="COMPLETED",
+        actual_started_at="",
+        actual_ended_at="",
+    )
+    raw_path = (
+        paths.ground_unattended_active_dir("site-a", "2026-07-25")
+        / "fleet_ping"
+        / "early.jsonl"
+    )
+    raw_time = "2026-07-25T08:00:00+08:00"
+    _register_ping_file(
+        repository,
+        raw_path,
+        file_id="raw-before-schedule",
+        run_id=str(run["run_id"]),
+        sample_id="sample-before-schedule",
+        ts=raw_time,
+    )
+
+    result = GroundRawStreamQueryService(repository).ping_series(
+        run_id=str(run["run_id"])
+    )
+
+    assert result["raw_sample_count"] == 1
+    assert result["points"][0]["sample_id"] == "sample-before-schedule"
+    expected_range_time = "2026-07-25T08:00:00.000+08:00"
+    assert result["diagnostics"]["resolved_start_time"] == expected_range_time
+    assert result["diagnostics"]["resolved_end_time"] == expected_range_time
+
+
+def test_archive_reader_rejects_zip_slip_and_reports_corruption(
+    tmp_path: Path,
+) -> None:
+    paths, repository, run_id = _setup_run(tmp_path)
+    archive_path = (
+        paths.ground_unattended_archives_dir("site-a") / "unsafe.zip"
+    )
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("../escape.ndjson", "{}\n")
+    _register_archive(repository, archive_path, run_id=run_id)
+
+    with pytest.raises(GroundArchiveReadError, match="路径不安全"):
+        GroundArchiveReader(repository).inspect_archive("archive-test")
+
+    repository.upsert_raw_file(
+        {
+            "file_id": "raw-history",
+            "run_id": run_id,
+            "data_type": "ping",
+            "relative_path": "active/2026-07-25/fleet_ping/history.jsonl",
+            "start_time": "2026-07-25T08:00:00+08:00",
+            "end_time": "2026-07-25T08:00:00+08:00",
+            "status": "CLOSED",
+            "archive_status": "ARCHIVED",
+            "compressed_path": "archives/unsafe.zip",
+        }
+    )
+    with pytest.raises(GroundRawQueryError, match="完整性校验失败"):
+        GroundRawStreamQueryService(repository).ping_series(run_id=run_id)
+
+
+def test_archive_reader_rejects_abnormal_compression_ratio(
+    tmp_path: Path,
+) -> None:
+    paths, repository, run_id = _setup_run(tmp_path)
+    archive_path = (
+        paths.ground_unattended_archives_dir("site-a") / "zip-bomb.zip"
+    )
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(
+        archive_path, "w", compression=zipfile.ZIP_DEFLATED
+    ) as archive:
+        archive.writestr("fleet_ping/bomb.jsonl", b"0" * (2 * 1024 * 1024))
+    _register_archive(repository, archive_path, run_id=run_id)
+
+    with pytest.raises(GroundArchiveReadError, match="压缩比异常"):
+        GroundArchiveReader(repository).inspect_archive("archive-test")
+
+
+def test_archive_reader_rejects_member_crc_failure(tmp_path: Path) -> None:
+    paths, repository, run_id = _setup_run(tmp_path)
+    archive_path = (
+        paths.ground_unattended_archives_dir("site-a") / "bad-crc.zip"
+    )
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = b'{"sample_id":"crc"}\n'
+    with zipfile.ZipFile(
+        archive_path, "w", compression=zipfile.ZIP_STORED
+    ) as archive:
+        archive.writestr("fleet_ping/crc.jsonl", payload)
+    raw_zip = bytearray(archive_path.read_bytes())
+    payload_offset = raw_zip.find(payload)
+    assert payload_offset >= 0
+    raw_zip[payload_offset] ^= 0x01
+    archive_path.write_bytes(raw_zip)
+    _register_archive(repository, archive_path, run_id=run_id)
+
+    with pytest.raises(GroundArchiveReadError, match="CRC 校验失败"):
+        GroundArchiveReader(repository).inspect_archive("archive-test")
+
+
+def test_legacy_ready_archive_only_reads_known_registered_prefix(
+    tmp_path: Path,
+) -> None:
+    paths, repository, run_id = _setup_run(tmp_path)
+    archive_path = (
+        paths.ground_unattended_archives_dir("site-a") / "legacy.zip"
+    )
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "sample_id": "legacy-sample",
+        "ts": "2026-07-25T08:00:00+08:00",
+        "target_ip": "192.0.2.20",
+        "ok": True,
+    }
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr(
+            "fleet_ping/legacy.jsonl",
+            json.dumps(record).encode("utf-8") + b"\n",
+        )
+    _register_archive(repository, archive_path, run_id=run_id)
+    repository.upsert_raw_file(
+        {
+            "file_id": "raw-legacy",
+            "run_id": run_id,
+            "data_type": "ping",
+            "relative_path": "active/2026-07-25/fleet_ping/legacy.jsonl",
+            "start_time": record["ts"],
+            "end_time": record["ts"],
+            "record_count": 1,
+            "status": "CLOSED",
+            "archive_status": "ARCHIVED",
+            "compressed_path": "archives/legacy.zip",
+        }
+    )
+
+    result = GroundRawStreamQueryService(repository).ping_series(run_id=run_id)
+    assert result["raw_sample_count"] == 1
+    assert result["diagnostics"]["legacy_archive"] is True
+    assert result["diagnostics"]["source_kind"] == "ARCHIVE"
+
+
+def test_status_separates_service_active_and_latest_run_and_downloads_artifact(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    repository = app.state.ground_unattended_repository
+    run = repository.create_or_get_run(
+        run_id="run-completed",
+        run_date="2026-07-25",
+        scheduled_start_at=START,
+        scheduled_end_at=END,
+    )
+    repository.update_run(
+        str(run["run_id"]),
+        state="COMPLETED",
+        actual_started_at=START,
+        actual_ended_at=END,
+    )
+    repository.save_operation(
+        {
+            "operation_id": "groundop-completed",
+            "run_id": "run-completed",
+            "operation_type": "STOP",
+            "operation_state": "COMPLETED",
+            "operation_stage": "COMPLETED",
+            "progress_percent": 100,
+            "message": "正常停止完成",
+        }
+    )
+    archive_path = (
+        paths.ground_unattended_archives_dir("demo") / "download.zip"
+    )
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("daily_summary.json", b"{}\n")
+    repository.upsert_archive(
+        {
+            "archive_id": "archive-download",
+            "site_id": "demo",
+            "run_id": "run-completed",
+            "run_date": "2026-07-25",
+            "relative_path": archive_path.relative_to(
+                repository.db_path.parent
+            ).as_posix(),
+            "archive_status": "READY",
+            "archive_size_bytes": archive_path.stat().st_size,
+            "sha256": _sha256(archive_path),
+            "manifest_sha256": "",
+            "retention_until": "2099-01-01",
+            "active_cleanup_pending": 0,
+            "summary_json": json.dumps({"run_id": "run-completed"}),
+            "message": "ready",
+            "created_at": START,
+            "updated_at": END,
+        }
+    )
+
+    with TestClient(app) as client:
+        status_response = client.get(
+            "/api/rail-transit/ground-unattended/status"
+        )
+        runs_response = client.get(
+            "/api/rail-transit/ground-unattended/runs"
+        )
+        detail_response = client.get(
+            "/api/rail-transit/ground-unattended/archives/"
+            "archive-download/detail"
+        )
+        artifact_response = client.get(
+            "/api/rail-transit/ground-unattended/artifacts/"
+            "archive-download/download"
+        )
+        latest_operation_response = client.get(
+            "/api/rail-transit/ground-unattended/operations/latest"
+        )
+
+    status_body = status_response.json()
+    assert status_body["state"] == "DISABLED"
+    assert status_body["active_run_id"] == ""
+    assert status_body["latest_run_id"] == "run-completed"
+    assert status_body["latest_run_state"] == "COMPLETED"
+    assert status_body["active_operation_id"] == ""
+    assert status_body["latest_operation_id"] == "groundop-completed"
+    assert latest_operation_response.json()["operation_id"] == "groundop-completed"
+    assert runs_response.json()["items"][0]["run_id"] == "run-completed"
+    assert detail_response.json()["validation"]["status"] == "READY"
+    assert detail_response.json()["validation"]["legacy_manifest"] is True
+    assert artifact_response.content == archive_path.read_bytes()
+    assert artifact_response.headers["x-content-sha256"] == _sha256(
+        archive_path
+    )
+
+
+def test_archive_detail_api_returns_registered_file_metadata(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    repository = app.state.ground_unattended_repository
+    run = repository.create_or_get_run(
+        run_id="run-detail",
+        run_date="2026-07-25",
+        scheduled_start_at=START,
+        scheduled_end_at=END,
+    )
+    repository.update_run(
+        str(run["run_id"]),
+        state="COMPLETED",
+        actual_started_at=START,
+        actual_ended_at=END,
+    )
+    active = paths.ground_unattended_active_dir("demo", "2026-07-25")
+    raw_path = active / "fleet_ping" / "ping-detail.jsonl"
+    _register_ping_file(
+        repository,
+        raw_path,
+        file_id="raw-detail",
+        run_id="run-detail",
+        sample_id="sample-detail",
+        ts="2026-07-25T08:00:00+08:00",
+    )
+    archived = GroundUnattendedArchiveService(
+        paths, site_id="demo", repository=repository
+    ).archive_run("run-detail", repository.get_profile())
+    assert archived.success
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/rail-transit/ground-unattended/archives/"
+            f"{archived.archive_id}/detail"
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["validation"]["legacy_manifest"] is False
+    assert body["validation"]["file_count"] == len(body["files"])
+    raw_file = next(
+        item
+        for item in body["files"]
+        if item["path"] == "fleet_ping/ping-detail.jsonl"
+    )
+    assert raw_file == {
+        "path": "fleet_ping/ping-detail.jsonl",
+        "data_type": "ping",
+        "train_id": "train-1",
+        "mr_id": "mr-ct",
+        "mr_role": "CT",
+        "hour": "08",
+        "record_count": 1,
+        "size_bytes": raw_file["size_bytes"],
+        "compressed_size_bytes": raw_file["compressed_size_bytes"],
+        "sha256": raw_file["sha256"],
+        "parse_status": "PENDING",
+    }
+    assert raw_file["size_bytes"] > 0
+    assert raw_file["compressed_size_bytes"] > 0
+    assert len(raw_file["sha256"]) == 64
+
+
+def test_legacy_syslog_is_enriched_at_read_time_without_modifying_ndjson(
+    tmp_path: Path,
+) -> None:
+    paths, repository, run_id = _setup_run(tmp_path)
+    raw_path = (
+        paths.ground_unattended_active_dir("site-a", "2026-07-25")
+        / "realtime"
+        / "syslog"
+        / "legacy.ndjson"
+    )
+    raw_text = (
+        "<189>Jul 25 08:00:00 2026 TEST-MR-CT "
+        "%%10WMESH/5/MESH_LINKUP: Mesh Link on the interface "
+        "WLAN-MeshLink841 is up: peer MAC = 0200-0000-0001, "
+        "peer radio mode = 3, RSSI = 25"
+    )
+    record = {
+        "receive_time": "2026-07-25T08:00:00+08:00",
+        "source_ip": "192.0.2.10",
+        "raw_text": raw_text,
+        "train_id": "train-1",
+        "device_uuid": "mr-ct",
+        "mr_role": "CT",
+        "identity_status": "VERIFIED",
+    }
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    original = (
+        json.dumps(record, ensure_ascii=False).encode("utf-8") + b"\n"
+    )
+    raw_path.write_bytes(original)
+    repository.upsert_raw_file(
+        {
+            "file_id": "raw-syslog-legacy",
+            "run_id": run_id,
+            "train_id": "train-1",
+            "device_uuid": "mr-ct",
+            "mr_role": "CT",
+            "data_type": "syslog",
+            "relative_path": raw_path.relative_to(
+                repository.db_path.parent
+            ).as_posix(),
+            "start_time": record["receive_time"],
+            "end_time": record["receive_time"],
+            "record_count": 1,
+            "size_bytes": len(original),
+            "sha256": _sha256(raw_path),
+            "status": "CLOSED",
+            "archive_status": "PENDING",
+        }
+    )
+    ap = SimpleNamespace(
+        id="ap-1",
+        name="站点A-AP01",
+        point_code="",
+        mac="0200-0000-0001",
+        station="站点A",
+        section="站点A-站点B",
+        radios=[],
+        base_metadata={},
+    )
+    service = GroundUnattendedApplicationService(
+        paths,
+        site_id="site-a",
+        repository=repository,
+        supervisor=SimpleNamespace(),
+        base_query=SimpleNamespace(
+            list_ap_location_items=lambda _site_id: [ap]
+        ),
+    )
+
+    result = service.syslog_records("site-a", run_id=run_id)
+
+    assert result.total == 1
+    item = result.items[0]
+    assert item.display_enriched is True
+    assert item.event_type == "MESH_LINKUP"
+    assert item.peer_name == "站点A-AP01"
+    assert item.peer_mac == "02:00:00:00:00:01"
+    assert item.resolution_status == "PEER_MAC_EXACT"
+    assert item.raw_file_id == "raw-syslog-legacy"
+    assert item.raw_line_number == 1
+    assert item.data_source == "ACTIVE"
+    assert result.diagnostics.source_kind == "ACTIVE"
+    assert result.diagnostics.data_availability == "ACTIVE_RAW"
+    assert raw_path.read_bytes() == original
+
+
+def _setup_run(
+    tmp_path: Path,
+) -> tuple[PathResolver, GroundUnattendedRepository, str]:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    repository = GroundUnattendedRepository(
+        paths.ground_unattended_db_path("site-a"), site_id="site-a"
+    )
+    run = repository.create_or_get_run(
+        run_id="run-history",
+        run_date="2026-07-25",
+        scheduled_start_at=START,
+        scheduled_end_at=END,
+    )
+    repository.update_run(
+        str(run["run_id"]),
+        state="COMPLETED",
+        actual_started_at=START,
+        actual_ended_at=END,
+    )
+    return paths, repository, str(run["run_id"])
+
+
+def _register_ping_file(
+    repository: GroundUnattendedRepository,
+    path: Path,
+    *,
+    file_id: str,
+    run_id: str,
+    sample_id: str,
+    ts: str,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "sample_id": sample_id,
+        "ts": ts,
+        "target_ip": "192.0.2.10",
+        "train_id": "train-1",
+        "mr_id": "mr-ct",
+        "ok": True,
+        "rtt_ms": 2.0,
+    }
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    repository.upsert_raw_file(
+        {
+            "file_id": file_id,
+            "run_id": run_id,
+            "train_id": "train-1",
+            "device_uuid": "mr-ct",
+            "mr_role": "CT",
+            "data_type": "ping",
+            "relative_path": path.relative_to(
+                repository.db_path.parent
+            ).as_posix(),
+            "start_time": ts,
+            "end_time": ts,
+            "record_count": 1,
+            "size_bytes": path.stat().st_size,
+            "sha256": _sha256(path),
+            "status": "CLOSED",
+            "archive_status": "PENDING",
+        }
+    )
+
+
+def _register_archive(
+    repository: GroundUnattendedRepository,
+    archive_path: Path,
+    *,
+    run_id: str,
+) -> None:
+    repository.upsert_archive(
+        {
+            "archive_id": "archive-test",
+            "site_id": repository.site_id,
+            "run_id": run_id,
+            "run_date": "2026-07-25",
+            "relative_path": archive_path.relative_to(
+                repository.db_path.parent
+            ).as_posix(),
+            "archive_status": "READY",
+            "archive_size_bytes": archive_path.stat().st_size,
+            "sha256": _sha256(archive_path),
+            "manifest_sha256": "",
+            "retention_until": "2099-01-01",
+            "active_cleanup_pending": 0,
+            "summary_json": "{}",
+            "message": "ready",
+            "created_at": START,
+            "updated_at": END,
+        }
+    )
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()

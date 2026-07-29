@@ -5,24 +5,24 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Box, Delete, Download, FolderOpened, Refresh, SwitchButton, VideoPause, VideoPlay } from '@element-plus/icons-vue'
 
 import {
-  deleteGroundArchive, getGroundArchive, getGroundProfile, getGroundStatus, getGroundTrain, groundArchiveSummaryDownloadRequest, listGroundArchives,
+  deleteGroundArchive, getGroundArchiveDetail, getGroundProfile, getGroundStatus, getGroundTrain, groundArchiveSummaryDownloadRequest, groundArchiveZipDownloadRequest, listGroundArchives,
   getGroundHealth, listGroundDeepCollections, listGroundPingTargets, listGroundTimeline, listGroundTrains, requestGroundConfigCheck,
   openGroundArchiveDirectory, pauseGroundRun, resumeGroundRun, saveGroundProfile, setGroundTrainPriority, startGroundRun,
   stopAndArchiveGroundRun, stopGroundRun, saveGroundTrainPolicy, syncGroundInventory,
   checkGroundUdpPort, listLocalIpv4Addresses, recommendLocalSourceIp,
-  getGroundPingSeries, getLatestGroundOperation, listGroundSyslogRecords,
+  getActiveGroundOperation, getGroundOperation, getGroundPingSeries, listGroundRuns, listGroundSyslogRecords, verifyGroundArchive,
 } from '../../api/groundUnattended'
 import GroundPingChart from '../../components/ground-unattended/GroundPingChart.vue'
 import { NcDataTable, type NcTableColumn } from '../../components/table'
 import { t } from '../../i18n/runtime'
 import { downloadBackendResource } from '../../platform/runtime'
 import type {
-  GroundActionResponse, GroundArchive, GroundDeepCollection, GroundPingSeries, GroundPingTarget, GroundProfile, GroundStatus,
-  GroundHealth, GroundOperation, GroundSyslogRecord, GroundTimelineEvent, GroundTrain,
+  GroundActionResponse, GroundArchive, GroundArchiveDetail, GroundDeepCollection, GroundPingSeries, GroundPingTarget, GroundProfile, GroundStatus,
+  GroundHealth, GroundOperation, GroundQueryDiagnostics, GroundRun, GroundSyslogRecord, GroundTimelineEvent, GroundTrain,
   LocalIpv4Address, SourceIpRecommendation, UdpPortCheck,
 } from '../../types/groundUnattended'
 import {
-  groundEventLabel, groundOperationStageLabel, groundRunModeLabel, groundSeverityLabel,
+  groundDisplayNameSourceLabel, groundEventLabel, groundOperationStageLabel, groundRunModeLabel, groundSeverityLabel,
   groundSourceLabel, groundStatusLabel, groundTransitionContextLabel,
 } from './groundUnattendedLabels'
 
@@ -39,24 +39,39 @@ const deepCollections = ref<GroundDeepCollection[]>([])
 const timeline = ref<GroundTimelineEvent[]>([])
 const archives = ref<GroundArchive[]>([])
 const health = ref<GroundHealth | null>(null)
-const currentOperation = ref<GroundOperation | null>(null)
+const activeOperation = ref<GroundOperation | null>(null)
+const latestTerminalOperation = ref<GroundOperation | null>(null)
+const runs = ref<GroundRun[]>([])
+const selectedRunId = ref('')
 const pingSeries = ref<GroundPingSeries | null>(null)
 const selectedPingTarget = ref<GroundPingTarget | null>(null)
+const pingDialog = ref(false)
+const pingDialogOpened = ref(false)
 const pingSeriesLoading = ref(false)
 const includeWarmup = ref(false)
-const pingRange = ref<'5m' | '30m' | '1h' | 'custom'>('30m')
+const pingRange = ref<'run' | '5m' | '30m' | '1h' | 'custom'>('30m')
 const pingCustomRange = ref<[Date, Date] | null>(null)
 const pingAutoRefresh = ref(true)
 const syslogRecords = ref<GroundSyslogRecord[]>([])
 const syslogTotal = ref(0)
 const syslogLoading = ref(false)
-const syslogFilter = reactive({ trainId: '', mrName: '', sourceIp: '', severity: '', keyword: '', page: 1, pageSize: 100 })
+const syslogAutoRefresh = ref(true)
+const syslogDiagnostics = ref<GroundQueryDiagnostics | null>(null)
+const selectedSyslogRecord = ref<GroundSyslogRecord | null>(null)
+const syslogDetailDrawer = ref(false)
+const syslogTimeRange = ref<[Date, Date] | null>(null)
+const syslogFilter = reactive({
+  trainId: '', mrName: '', mrRole: '', sourceIp: '', systemName: '', facility: '', severity: '',
+  identityStatus: '', eventType: '', peerName: '', dataSource: '', keyword: '',
+  startTime: '', endTime: '', page: 1, pageSize: 100,
+})
 const localIpv4Addresses = ref<LocalIpv4Address[]>([])
 const sourceRecommendation = ref<SourceIpRecommendation | null>(null)
 const udpPortCheck = ref<UdpPortCheck | null>(null)
 const networkLoading = ref(false)
 const showAllAddresses = ref(false)
-const selectedArchive = ref<GroundArchive | null>(null)
+const selectedArchive = ref<GroundArchiveDetail | null>(null)
+const archiveDetailTab = ref('overview')
 const selectedTrain = ref<GroundTrain | null>(null)
 const archiveDialog = ref(false)
 const trainDialog = ref(false)
@@ -65,6 +80,12 @@ const pingFilter = reactive({ query: '', endpoint: '', station: '', section: '',
 const timelineFilter = reactive({ query: '', eventType: '' })
 let pollTimer: number | undefined
 let disposed = false
+const requestControllers = new Map<string, AbortController>()
+const requestSequences = new Map<string, number>()
+const requestFailureCounts = new Map<string, number>()
+const lastPollAt = new Map<string, number>()
+const dismissedTerminalOperationIds = new Set<string>()
+let completedOperationTimer: number | undefined
 
 interface LoadIssue {
   key: string
@@ -77,7 +98,13 @@ const loadIssueDescription = computed(() => loadIssues.value.map((item) => `${it
 const profileLoadError = computed(() => loadIssues.value.find((item) => item.key === 'profile')?.message || '')
 
 const running = computed(() => Boolean(status.value && ['STARTING', 'RUNNING', 'PAUSED', 'STOPPING', 'FINALIZING', 'ARCHIVING'].includes(status.value.state)))
-const operationActive = computed(() => Boolean(currentOperation.value && ['PENDING', 'RUNNING'].includes(currentOperation.value.operation_state)))
+const operationActive = computed(() => Boolean(activeOperation.value && ['PENDING', 'RUNNING'].includes(activeOperation.value.operation_state)))
+const visibleOperation = computed(() => activeOperation.value ?? latestTerminalOperation.value)
+const selectedRun = computed(() => runs.value.find((row) => row.run_id === selectedRunId.value) ?? null)
+const historicalRun = computed(() => Boolean(selectedRunId.value && selectedRunId.value !== status.value?.active_run_id))
+const selectedPingHistorical = computed(() => Boolean(selectedPingTarget.value?.run_id && selectedPingTarget.value.run_id !== status.value?.active_run_id))
+const runScopedTab = computed(() => ['ping', 'deep', 'timeline', 'syslog'].includes(activeTab.value))
+const archiveRecordCount = computed(() => selectedArchive.value?.files.reduce((total, row) => total + row.record_count, 0) ?? 0)
 const filteredTrains = computed(() => {
   const needle = trainFilter.value.trim().toLocaleLowerCase()
   return needle ? trains.value.filter((row) => `${row.train_no} ${row.train_name} ${row.current_ap_name} ${row.station} ${row.section}`.toLocaleLowerCase().includes(needle)) : trains.value
@@ -172,6 +199,7 @@ const timelineColumns: NcTableColumn<GroundTimelineEvent>[] = [
   { key: 'mr_name', label: t('ground.mr', 'MR 设备'), valueType: 'text' },
   { key: 'title', label: t('ground.event', '事件'), valueType: 'name' },
   { key: 'message', label: t('ground.message', '说明'), valueType: 'description', minWidth: 260 },
+  { key: 'resolution_status', label: 'AP 解析', valueType: 'status', displayValue: (row) => groundStatusLabel(row.resolution_status) },
   { key: 'severity', label: t('ground.severity', '级别'), valueType: 'status', displayValue: (row) => groundSeverityLabel(row.severity) },
 ]
 const archiveColumns: NcTableColumn<GroundArchive>[] = [
@@ -187,7 +215,7 @@ const archiveColumns: NcTableColumn<GroundArchive>[] = [
   { key: 'archive_size_bytes', label: t('ground.archive_size', '归档大小'), valueType: 'number', displayValue: (row) => bytes(row.archive_size_bytes) },
   { key: 'archive_status', label: t('ground.archive_status', '归档状态'), valueType: 'status', displayValue: (row) => groundStatusLabel(row.archive_status) },
   { key: 'retention_until', label: t('ground.retention_until', '保留截止'), valueType: 'datetime' },
-  { key: 'actions', label: t('ground.actions', '操作'), valueType: 'actions', fixed: 'right', width: 190, hideable: false },
+  { key: 'actions', label: t('ground.actions', '操作'), valueType: 'actions', fixed: 'right', width: 230, hideable: false },
 ]
 const syslogColumns: NcTableColumn<GroundSyslogRecord>[] = [
   { key: 'receive_time', label: '接收时间', valueType: 'datetime', fixed: 'left', width: 180 },
@@ -197,64 +225,186 @@ const syslogColumns: NcTableColumn<GroundSyslogRecord>[] = [
   { key: 'mr_role', label: '端点', valueType: 'status' },
   { key: 'source_ip', label: '来源 IP', valueType: 'ip' },
   { key: 'system_name', label: '设备系统名', valueType: 'text' },
+  { key: 'facility', label: 'Facility', valueType: 'text' },
   { key: 'severity', label: '级别', valueType: 'status', displayValue: (row) => groundSeverityLabel(row.severity) },
+  { key: 'event_type', label: 'WMESH 事件', valueType: 'status', displayValue: (row) => groundEventLabel(row.event_type) },
+  { key: 'peer_name', label: '当前 AP', valueType: 'name', displayValue: (row) => row.peer_name || row.peer_mac || '—' },
+  { key: 'peer_mac', label: 'Peer MAC', valueType: 'mac' },
+  { key: 'previous_peer_name', label: '原 AP', valueType: 'name', displayValue: (row) => row.previous_peer_name || row.previous_peer_mac || '—' },
+  { key: 'rssi', label: 'RSSI', valueType: 'number', displayValue: (row) => row.rssi == null ? '—' : `${row.rssi} dBm` },
+  { key: 'reason_text', label: '原因', valueType: 'description', minWidth: 180 },
+  { key: 'data_source', label: '数据来源', valueType: 'status', displayValue: (row) => groundSourceLabel(row.data_source) },
   { key: 'identity_status', label: '身份状态', valueType: 'status', displayValue: (row) => groundStatusLabel(row.identity_status) },
+  { key: 'resolution_status', label: 'AP 解析', valueType: 'status', displayValue: (row) => groundStatusLabel(row.resolution_status) },
   { key: 'clock_offset_ms', label: '时间差', valueType: 'number', displayValue: (row) => metric(row.clock_offset_ms, 'ms') },
   { key: 'raw_file_status', label: '文件状态', valueType: 'status', displayValue: (row) => groundStatusLabel(row.raw_file_status) },
   { key: 'raw_text', label: '原始内容', valueType: 'description', minWidth: 420 },
+  { key: 'actions', label: '操作', valueType: 'actions', fixed: 'right', width: 90, hideable: false },
 ]
 
+async function latestRequest<T>(
+  key: string,
+  label: string,
+  request: (signal: AbortSignal) => Promise<T>,
+  apply: (value: T) => void,
+  silent = true,
+): Promise<boolean> {
+  requestControllers.get(key)?.abort()
+  const controller = new AbortController()
+  requestControllers.set(key, controller)
+  const sequence = (requestSequences.get(key) ?? 0) + 1
+  requestSequences.set(key, sequence)
+  try {
+    const value = await request(controller.signal)
+    if (disposed || controller.signal.aborted || requestSequences.get(key) !== sequence) return false
+    apply(value)
+    requestFailureCounts.set(key, 0)
+    loadIssues.value = loadIssues.value.filter((item) => item.key !== key)
+    return true
+  } catch (reason) {
+    if (reason instanceof Error && reason.name === 'AbortError') return false
+    if (requestSequences.get(key) !== sequence) return false
+    requestFailureCounts.set(key, (requestFailureCounts.get(key) ?? 0) + 1)
+    const issue = { key, label, message: errorText(reason, '请求失败') }
+    loadIssues.value = [...loadIssues.value.filter((item) => item.key !== key), issue]
+    if (!silent) ElMessage.error(`${label}加载失败：${issue.message}`)
+    return false
+  } finally {
+    if (requestControllers.get(key) === controller) requestControllers.delete(key)
+  }
+}
+const loadStatus = (silent = true) => latestRequest('status', '运行状态', (signal) => getGroundStatus({ signal }), (value) => {
+  status.value = value
+  if (!selectedRunId.value) selectedRunId.value = value.active_run_id || value.latest_run_id
+}, silent)
+const loadProfile = (silent = true) => latestRequest('profile', '无人值守配置', (signal) => getGroundProfile({ signal }), (value) => { profile.value = value }, silent)
+const loadRuns = (silent = true) => latestRequest('runs', '运行历史', (signal) => listGroundRuns({ signal }), (value) => {
+  runs.value = value.items
+  if (!value.items.some((row) => row.run_id === selectedRunId.value)) {
+    selectedRunId.value = status.value
+      ? status.value.active_run_id || value.items[0]?.run_id || ''
+      : ''
+  }
+}, silent)
+const loadTrains = (silent = true) => latestRequest('trains', '正线车辆', (signal) => listGroundTrains({ signal }), (value) => { trains.value = value.items }, silent)
+const loadPingTargets = (silent = true) => latestRequest('ping', '长 Ping', (signal) => listGroundPingTargets(selectedRunId.value, { signal }), (value) => { pingTargets.value = value.items }, silent)
+const loadDeep = (silent = true) => latestRequest('deep', '深度采集', (signal) => listGroundDeepCollections(selectedRunId.value, { signal }), (value) => { deepCollections.value = value.items }, silent)
+const loadTimelineData = (silent = true) => latestRequest('timeline', '时间轴', (signal) => listGroundTimeline('', timelineFilter.eventType, selectedRunId.value, { signal }), (value) => { timeline.value = value.items }, silent)
+const loadArchives = (silent = true) => latestRequest('archives', '历史归档', (signal) => listGroundArchives({ signal }), (value) => { archives.value = value.items }, silent)
+const loadHealth = (silent = true) => latestRequest('health', '系统健康', (signal) => getGroundHealth({ signal }), (value) => { health.value = value }, silent)
+async function loadOperation(silent = true): Promise<void> {
+  await latestRequest('operation', '运行操作', async (signal) => {
+    const active = await getActiveGroundOperation({ signal })
+    if (active) return { active, terminal: null }
+    const operationId = status.value?.latest_operation_id
+    if (
+      !operationId
+      || dismissedTerminalOperationIds.has(operationId)
+      || !['COMPLETED', 'FAILED'].includes(status.value?.latest_operation_state || '')
+    ) return { active: null, terminal: null }
+    if (latestTerminalOperation.value?.operation_id === operationId) {
+      return { active: null, terminal: latestTerminalOperation.value }
+    }
+    return { active: null, terminal: await getGroundOperation(operationId, { signal }) }
+  }, applyOperation, silent)
+}
+function applyOperation(value: { active: GroundOperation | null; terminal: GroundOperation | null }): void {
+  if (completedOperationTimer !== undefined) window.clearTimeout(completedOperationTimer)
+  activeOperation.value = value.active
+  if (value.active) {
+    latestTerminalOperation.value = null
+    return
+  }
+  const terminal = value.terminal
+  if (!terminal || dismissedTerminalOperationIds.has(terminal.operation_id)) {
+    latestTerminalOperation.value = null
+    return
+  }
+  if (terminal.operation_state === 'COMPLETED') {
+    const updated = new Date(terminal.completed_at || terminal.updated_at).getTime()
+    const remaining = Math.max(0, 12_000 - Math.max(0, Date.now() - updated))
+    if (!remaining) {
+      dismissedTerminalOperationIds.add(terminal.operation_id)
+      latestTerminalOperation.value = null
+      return
+    }
+    latestTerminalOperation.value = terminal
+    void loadRuns(true)
+    if (terminal.operation_type === 'STOP_AND_ARCHIVE' && activeTab.value === 'archives') void loadArchives(true)
+    completedOperationTimer = window.setTimeout(() => {
+      dismissedTerminalOperationIds.add(terminal.operation_id)
+      if (latestTerminalOperation.value?.operation_id === terminal.operation_id) latestTerminalOperation.value = null
+    }, remaining)
+    return
+  }
+  latestTerminalOperation.value = terminal
+}
+function dismissOperation(): void {
+  const operation = latestTerminalOperation.value
+  if (!operation) return
+  dismissedTerminalOperationIds.add(operation.operation_id)
+  latestTerminalOperation.value = null
+}
+async function loadActiveTab(silent = true): Promise<void> {
+  if (activeTab.value === 'overview') await loadHealth(silent)
+  else if (activeTab.value === 'trains') await loadTrains(silent)
+  else if (activeTab.value === 'ping') await loadPingTargets(silent)
+  else if (activeTab.value === 'deep') await loadDeep(silent)
+  else if (activeTab.value === 'timeline') await loadTimelineData(silent)
+  else if (activeTab.value === 'syslog') await loadSyslog(silent)
+  else if (activeTab.value === 'health') await loadHealth(silent)
+  else if (activeTab.value === 'archives') await loadArchives(silent)
+  else if (activeTab.value === 'settings') await Promise.all([loadProfile(silent), loadTrains(silent)])
+}
 async function loadAll(silent = false): Promise<void> {
   if (!silent) loading.value = true
   try {
-    const results = await Promise.allSettled([
-      getGroundStatus(), getGroundProfile(), listGroundTrains(), listGroundPingTargets(),
-      listGroundDeepCollections(), listGroundTimeline('', timelineFilter.eventType), listGroundArchives(), getGroundHealth(), getLatestGroundOperation(),
-    ])
-    if (disposed) return
-    const issues: LoadIssue[] = []
-    function accept<T>(
-      result: PromiseSettledResult<T>,
-      key: string,
-      label: string,
-      apply: (value: T) => void,
-    ): void {
-      if (result.status === 'fulfilled') apply(result.value)
-      else issues.push({ key, label, message: errorText(result.reason, '请求失败') })
+    const staticRequests = [loadStatus(silent), loadRuns(silent)]
+    if (!profile.value || activeTab.value === 'settings') staticRequests.push(loadProfile(silent))
+    await Promise.allSettled(staticRequests)
+    if (!selectedRunId.value) {
+      selectedRunId.value = status.value?.active_run_id || status.value?.latest_run_id || runs.value[0]?.run_id || ''
     }
-    accept(results[0], 'status', '运行状态', (value) => { status.value = value })
-    accept(results[1], 'profile', '无人值守配置', (value) => { profile.value = value })
-    accept(results[2], 'trains', '正线车辆', (value) => { trains.value = value.items })
-    accept(results[3], 'ping', '长 Ping', (value) => { pingTargets.value = value.items })
-    accept(results[4], 'deep', '深度采集', (value) => { deepCollections.value = value.items })
-    accept(results[5], 'timeline', '时间轴', (value) => { timeline.value = value.items })
-    accept(results[6], 'archives', '历史归档', (value) => { archives.value = value.items })
-    accept(results[7], 'health', '系统健康', (value) => { health.value = value })
-    accept(results[8], 'operation', '运行操作', (value) => { currentOperation.value = value })
-    loadIssues.value = issues
-    if (!silent && issues.length) {
-      ElMessage.error(issues.length === results.length ? '地面无人值守数据加载失败' : `部分数据加载失败（${issues.length} 项）`)
-    }
+    await Promise.allSettled([loadOperation(silent), loadActiveTab(silent)])
   } finally {
     if (!silent) loading.value = false
   }
 }
+function pollDue(key: string, intervalMs: number, callback: () => Promise<unknown>): void {
+  if (requestControllers.has(key)) return
+  const now = Date.now()
+  const failures = Math.min(requestFailureCounts.get(key) ?? 0, 5)
+  const effectiveInterval = Math.min(intervalMs * (2 ** failures), 120_000)
+  if (now - (lastPollAt.get(key) ?? 0) < effectiveInterval) return
+  lastPollAt.set(key, now)
+  void callback()
+}
 function schedulePoll(): void {
   if (pollTimer !== undefined) window.clearTimeout(pollTimer)
-  pollTimer = window.setTimeout(async () => {
-    if (!document.hidden) await loadAll(true)
-    if (!document.hidden && activeTab.value === 'syslog') await loadSyslog()
-    if (
-      !document.hidden
-      && activeTab.value === 'ping'
-      && selectedPingTarget.value
-      && pingAutoRefresh.value
-      && !pingSeriesLoading.value
-    ) {
-      await showPingSeries(selectedPingTarget.value, true)
+  pollTimer = window.setTimeout(() => {
+    if (!document.hidden) {
+      pollDue('status', running.value ? 5_000 : 20_000, () => loadStatus())
+      if (operationActive.value || status.value?.active_operation_id) {
+        pollDue('operation', 2_000, () => loadOperation())
+      } else if (
+        status.value?.latest_operation_id
+        && !dismissedTerminalOperationIds.has(status.value.latest_operation_id)
+        && latestTerminalOperation.value?.operation_id !== status.value.latest_operation_id
+      ) {
+        pollDue('operation', 2_000, () => loadOperation())
+      }
+      if (running.value) {
+        if (activeTab.value === 'overview' || activeTab.value === 'health') pollDue('health', 5_000, () => loadHealth())
+        else if (activeTab.value === 'trains') pollDue('trains', 8_000, () => loadTrains())
+        else if (activeTab.value === 'ping') pollDue('ping', 8_000, () => loadPingTargets())
+        else if (activeTab.value === 'syslog' && syslogAutoRefresh.value && !historicalRun.value) pollDue('syslog', 8_000, () => loadSyslog(true))
+      }
+      if (activeTab.value === 'ping' && pingDialog.value && selectedPingTarget.value && pingAutoRefresh.value && !selectedPingHistorical.value) {
+        pollDue('ping-series', 8_000, () => showPingSeries(selectedPingTarget.value!, true))
+      }
     }
     if (!disposed) schedulePoll()
-  }, 5000)
+  }, 1_000)
 }
 async function saveProfile(message = t('ground.profile_saved', '无人值守配置已保存，运行中配置在下一次调度周期生效')): Promise<void> {
   if (!profile.value) return
@@ -325,7 +475,13 @@ async function runAction(key: string, callback: () => Promise<unknown>): Promise
     const result = await callback()
     if (isActionResponse(result)) {
       ElMessage.success(result.message)
-      if (result.operation_id) currentOperation.value = await getLatestGroundOperation()
+      if (result.operation_id) {
+        const operation = await getGroundOperation(result.operation_id)
+        applyOperation({
+          active: ['PENDING', 'RUNNING'].includes(operation.operation_state) ? operation : null,
+          terminal: ['COMPLETED', 'FAILED'].includes(operation.operation_state) ? operation : null,
+        })
+      }
     }
     await loadAll(true)
   }
@@ -344,47 +500,89 @@ async function submitStop(archive: boolean): Promise<void> {
   await runAction(archive ? 'archive' : 'stop', archive ? stopAndArchiveGroundRun : stopGroundRun)
 }
 async function showPingSeries(row: GroundPingTarget, silent = false): Promise<void> {
-  const range = pingTimeRange()
+  const targetRunId = row.run_id || selectedRunId.value
+  if (!silent && !pingDialog.value) {
+    pingRange.value = targetRunId && targetRunId !== status.value?.active_run_id ? 'run' : '30m'
+    pingDialog.value = true
+    pingDialogOpened.value = false
+  }
+  const range = pingTimeRange(row, targetRunId)
   if (pingRange.value === 'custom' && !range.start_time) {
     if (!silent) ElMessage.warning('请选择自定义开始和结束时间')
     return
   }
   selectedPingTarget.value = row
-  if (!silent) pingSeriesLoading.value = true
-  try {
-    pingSeries.value = await getGroundPingSeries({
-      run_id: status.value?.run_id || undefined,
+  pingSeriesLoading.value = true
+  const succeeded = await latestRequest(
+    'ping-series',
+    '长 Ping 逐包数据',
+    (signal) => getGroundPingSeries({
+      run_id: targetRunId || undefined,
+      train_id: row.train_id || undefined,
+      mr_id: row.mr_id || undefined,
       target_ip: row.target_ip,
       include_warmup: includeWarmup.value,
       max_points: 3000,
       ...range,
-    })
-  } catch (reason) {
-    if (!silent) ElMessage.error(errorText(reason, '长 Ping 逐包数据读取失败'))
-  } finally {
-    if (!silent) pingSeriesLoading.value = false
+    }, { signal }),
+    (value) => {
+      pingSeries.value = value
+    },
+    silent,
+  )
+  if (!requestControllers.has('ping-series')) pingSeriesLoading.value = false
+  if (
+    succeeded
+    && !silent
+    && pingSeries.value
+    && pingSeries.value.points.length === 0
+    && pingRange.value !== 'run'
+    && targetRunId !== status.value?.active_run_id
+  ) {
+    try {
+      await ElMessageBox.confirm(
+        '当前范围没有样本，是否切换到本次运行全部时间？',
+        '未找到 Ping 样本',
+        { type: 'info', confirmButtonText: '切换到完整运行', cancelButtonText: '保持当前范围' },
+      )
+      pingRange.value = 'run'
+      await showPingSeries(row)
+    } catch {
+      // 用户保留当前范围。
+    }
   }
 }
-async function loadSyslog(): Promise<void> {
-  syslogLoading.value = true
-  try {
-    const result = await listGroundSyslogRecords({
-      run_id: status.value?.run_id || undefined,
+async function loadSyslog(silent = false): Promise<void> {
+  if (!silent) syslogLoading.value = true
+  const [startValue, endValue] = syslogTimeRange.value || []
+  await latestRequest('syslog', 'Syslog 日志', (signal) => listGroundSyslogRecords({
+      run_id: selectedRunId.value || undefined,
       train_id: syslogFilter.trainId,
       mr_name: syslogFilter.mrName,
+      mr_role: syslogFilter.mrRole,
       source_ip: syslogFilter.sourceIp,
+      system_name: syslogFilter.systemName,
+      facility: syslogFilter.facility,
       severity: syslogFilter.severity,
+      identity_status: syslogFilter.identityStatus,
+      event_type: syslogFilter.eventType,
+      peer_name: syslogFilter.peerName,
+      data_source: syslogFilter.dataSource,
       keyword: syslogFilter.keyword,
+      start_time: startValue?.toISOString(),
+      end_time: endValue?.toISOString(),
       page: syslogFilter.page,
       page_size: syslogFilter.pageSize,
-    })
+    }, { signal }), (result) => {
     syslogRecords.value = result.items
     syslogTotal.value = result.total
-  } catch (reason) {
-    ElMessage.error(errorText(reason, 'Syslog 日志读取失败'))
-  } finally {
-    syslogLoading.value = false
-  }
+    syslogDiagnostics.value = result.diagnostics ?? null
+  }, silent)
+  if (!silent) syslogLoading.value = false
+}
+function showSyslogRecord(row: GroundSyslogRecord): void {
+  selectedSyslogRecord.value = row
+  syslogDetailDrawer.value = true
 }
 async function togglePriority(row: GroundTrain): Promise<void> {
   try { await setGroundTrainPriority(row.train_id, !row.priority); await loadAll(true) }
@@ -441,7 +639,11 @@ async function openDeepSession(sessionId: string): Promise<void> {
   await router.push({ name: 'online-mr-analysis', query: { session_id: sessionId } })
 }
 async function showArchive(row: GroundArchive): Promise<void> {
-  try { selectedArchive.value = await getGroundArchive(row.archive_id); archiveDialog.value = true }
+  try {
+    selectedArchive.value = await getGroundArchiveDetail(row.archive_id)
+    archiveDetailTab.value = 'overview'
+    archiveDialog.value = true
+  }
   catch (reason) { ElMessage.error(errorText(reason, t('ground.archive_load_failed', '归档汇总读取失败'))) }
 }
 async function removeArchive(row: GroundArchive): Promise<void> {
@@ -453,12 +655,31 @@ async function downloadArchiveSummary(row: GroundArchive): Promise<void> {
   try { await downloadBackendResource(groundArchiveSummaryDownloadRequest(row)) }
   catch (reason) { ElMessage.error(errorText(reason, t('ground.archive_download_failed', '归档汇总下载失败'))) }
 }
+async function downloadArchiveZip(row: GroundArchive): Promise<void> {
+  try { await downloadBackendResource(groundArchiveZipDownloadRequest(row)) }
+  catch (reason) { ElMessage.error(errorText(reason, '原始归档 ZIP 下载失败')) }
+}
+async function verifyArchive(): Promise<void> {
+  if (!selectedArchive.value) return
+  try {
+    selectedArchive.value = await verifyGroundArchive(selectedArchive.value.archive.archive_id)
+    ElMessage.success('归档完整性校验通过')
+  } catch (reason) {
+    ElMessage.error(errorText(reason, '归档完整性校验失败'))
+  }
+}
 async function openArchiveDirectory(): Promise<void> {
   try { const result = await openGroundArchiveDirectory(); if (!result.success) throw new Error(result.message) }
   catch (reason) { ElMessage.error(errorText(reason, t('ground.archive_open_failed', '归档目录打开失败'))) }
 }
 function endpoint(row: GroundTrain, code: 'CT' | 'CW') { return row.endpoints.find((item) => item.endpoint === code) }
-function pingTimeRange(): { start_time?: string; end_time?: string } {
+function pingTimeRange(row: GroundPingTarget, runId: string): { start_time?: string; end_time?: string } {
+  if (pingRange.value === 'run') {
+    const run = runs.value.find((item) => item.run_id === runId)
+    const start = row.first_sample_at || run?.actual_started_at || run?.scheduled_start_at
+    const end = row.last_sample_at || run?.actual_ended_at || run?.scheduled_end_at
+    return start && end ? { start_time: start, end_time: end } : {}
+  }
   const end = new Date()
   if (pingRange.value === 'custom') {
     const [startValue, endValue] = pingCustomRange.value || []
@@ -480,10 +701,56 @@ function isActionResponse(value: unknown): value is GroundActionResponse {
   return Boolean(value && typeof value === 'object' && 'accepted' in value && 'message' in value)
 }
 function statusType(value: string): 'success' | 'warning' | 'danger' | 'info' | 'primary' { if (['RUNNING', 'COVERED', 'READY', 'FRESH', 'MAINLINE'].includes(value)) return 'success'; if (['PAUSED', 'PARTIAL', 'STALE', 'MAINLINE_STATIONARY', 'WARNING'].includes(value)) return 'warning'; if (['ERROR', 'FAILED', 'CRITICAL'].includes(value)) return 'danger'; return 'info' }
+function abortRequests(): void {
+  requestControllers.forEach((controller) => controller.abort())
+  requestControllers.clear()
+}
+function handleVisibilityChange(): void {
+  if (document.hidden) abortRequests()
+  else {
+    lastPollAt.clear()
+    void loadAll(true)
+  }
+}
+function useFullPingRange(): void {
+  if (!selectedPingTarget.value) return
+  pingRange.value = 'run'
+  void showPingSeries(selectedPingTarget.value)
+}
+function handlePingDialogClosed(): void {
+  pingDialogOpened.value = false
+  requestControllers.get('ping-series')?.abort()
+  selectedPingTarget.value = null
+  pingSeries.value = null
+  pingSeriesLoading.value = false
+}
 
-onMounted(() => { void loadAll(); void loadLocalAddresses(); schedulePoll() })
-watch(activeTab, (value) => { if (value === 'syslog' && !syslogRecords.value.length) void loadSyslog() })
-onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.clearTimeout(pollTimer) })
+onMounted(() => {
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+  void loadAll()
+  void loadLocalAddresses()
+  schedulePoll()
+})
+watch(activeTab, () => {
+  requestControllers.forEach((controller, key) => {
+    if (!['status', 'operation'].includes(key)) controller.abort()
+  })
+  void loadActiveTab(false)
+})
+watch(selectedRunId, () => {
+  selectedPingTarget.value = null
+  pingSeries.value = null
+  syslogRecords.value = []
+  syslogFilter.page = 1
+  if (runScopedTab.value) void loadActiveTab(false)
+})
+onBeforeUnmount(() => {
+  disposed = true
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+  abortRequests()
+  if (pollTimer !== undefined) window.clearTimeout(pollTimer)
+  if (completedOperationTimer !== undefined) window.clearTimeout(completedOperationTimer)
+})
 </script>
 
 <template>
@@ -505,19 +772,22 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
       </div>
     </header>
 
-    <section v-if="currentOperation" class="operation-band" :class="`operation-${currentOperation.operation_state.toLocaleLowerCase()}`">
+    <section v-if="visibleOperation" class="operation-band" :class="`operation-${visibleOperation.operation_state.toLocaleLowerCase()}`">
       <div class="operation-heading">
         <div>
-          <b>{{ currentOperation.operation_type === 'STOP_AND_ARCHIVE' ? '停止并归档' : '正常停止' }}</b>
-          <span>{{ groundOperationStageLabel(currentOperation.operation_stage) }}</span>
+          <b>{{ visibleOperation.operation_type === 'STOP_AND_ARCHIVE' ? '停止并归档' : '正常停止' }}</b>
+          <span>{{ groundOperationStageLabel(visibleOperation.operation_stage) }}</span>
         </div>
-        <el-tag :type="currentOperation.operation_state === 'FAILED' ? 'danger' : currentOperation.operation_state === 'COMPLETED' ? 'success' : 'warning'">
-          {{ groundStatusLabel(currentOperation.operation_state) }}
-        </el-tag>
+        <div class="row-actions">
+          <el-tag :type="visibleOperation.operation_state === 'FAILED' ? 'danger' : visibleOperation.operation_state === 'COMPLETED' ? 'success' : 'warning'">
+            {{ groundStatusLabel(visibleOperation.operation_state) }}
+          </el-tag>
+          <el-button v-if="!operationActive" text @click="dismissOperation">关闭</el-button>
+        </div>
       </div>
-      <el-progress :percentage="currentOperation.progress_percent" :status="currentOperation.operation_state === 'FAILED' ? 'exception' : currentOperation.operation_state === 'COMPLETED' ? 'success' : undefined" />
-      <p>{{ currentOperation.message }}<span v-if="currentOperation.failure_reason">：{{ currentOperation.failure_reason }}</span></p>
-      <small>操作编号 {{ currentOperation.operation_id }} · 最后更新 {{ currentOperation.updated_at }}</small>
+      <el-progress :percentage="visibleOperation.progress_percent" :status="visibleOperation.operation_state === 'FAILED' ? 'exception' : visibleOperation.operation_state === 'COMPLETED' ? 'success' : undefined" />
+      <p>{{ visibleOperation.message }}<span v-if="visibleOperation.failure_reason">：{{ visibleOperation.failure_reason }}</span></p>
+      <small>操作编号 {{ visibleOperation.operation_id }} · 最后更新 {{ visibleOperation.updated_at }}</small>
     </section>
 
     <section v-if="loadIssues.length" class="load-warning">
@@ -531,6 +801,23 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
       <el-button :icon="Refresh" :loading="loading" @click="loadAll()">重新加载</el-button>
     </section>
 
+    <section v-if="runScopedTab" class="run-context-bar">
+      <div>
+        <b>数据运行上下文</b>
+        <span>Ping、深度采集、时间轴与 Syslog 使用同一个运行筛选，不再隐式跟随“最近一次”。</span>
+      </div>
+      <el-select v-model="selectedRunId" filterable placeholder="选择运行日期">
+        <el-option
+          v-for="row in runs"
+          :key="row.run_id"
+          :value="row.run_id"
+          :label="`${row.run_date} · ${groundStatusLabel(row.state)} · ${groundStatusLabel(row.data_availability)}`"
+        />
+      </el-select>
+      <el-tag :type="historicalRun ? 'info' : 'success'">{{ historicalRun ? '历史运行' : '当前活动运行' }}</el-tag>
+      <span class="muted">{{ selectedRun?.actual_started_at || selectedRun?.scheduled_start_at || '—' }} 至 {{ selectedRun?.actual_ended_at || '进行中' }}</span>
+    </section>
+
     <el-tabs v-model="activeTab" class="ground-tabs">
       <el-tab-pane :label="t('ground.overview', '运行概览')" name="overview">
         <section class="overview-band">
@@ -542,6 +829,8 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
           </div>
           <div class="metric-grid">
             <article><span>当前运行模式</span><strong>{{ status ? groundRunModeLabel(status.running_mode) : '—' }}</strong><small>{{ !status ? '等待运行状态加载' : status.running_mode === 'LIGHTWEIGHT' ? '不启动 SSH 深度 MR 采集' : '包含深度 MR 采集' }}</small></article>
+            <article><span>当前活动运行</span><strong>{{ status?.active_run_date || '无' }}</strong><small>{{ status?.active_run_id || '当前没有正在执行的运行' }}</small></article>
+            <article><span>最近历史运行</span><strong>{{ status?.latest_run_date || '—' }}</strong><small>{{ status?.latest_run_state ? groundStatusLabel(status.latest_run_state) : '暂无历史运行' }}</small></article>
             <article><span>{{ t('ground.window', '配置运行时间') }}</span><strong>{{ status?.schedule_start_time }} - {{ status?.schedule_end_time }}</strong></article>
             <article><span>{{ t('ground.next_start', '下一次启动') }}</span><strong>{{ status?.next_start_at || '—' }}</strong></article>
             <article><span>{{ t('ground.next_end', '下一次结束') }}</span><strong>{{ status?.next_end_at || '—' }}</strong></article>
@@ -582,52 +871,17 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
           <span>{{ t('ground.min_loss', '最低丢包率') }}</span><el-input-number v-model="pingFilter.minLoss" :min="0" :max="100" :controls="false" />
         </div>
         <div class="table-frame ping-table"><NcDataTable :data="filteredPing" :columns="pingColumns" table-id="ground-ping" route-key="rail-ground-unattended" row-key="target_ip" compact>
-          <template #cell-actions="{ row }"><el-button size="small" text type="primary" @click="showPingSeries(row)">查看曲线</el-button></template>
+          <template #cell-actions="{ row }">
+            <el-button
+              size="small"
+              text
+              type="primary"
+              :disabled="['SUMMARY_ONLY', 'MISSING', 'CORRUPT'].includes(row.data_availability)"
+              :title="row.data_availability === 'SUMMARY_ONLY' ? '仅保留汇总，没有逐包原始数据' : row.data_availability === 'CORRUPT' ? '原始数据或归档校验失败' : row.data_availability === 'MISSING' ? '本运行没有逐包原始数据' : '查看逐包曲线'"
+              @click="showPingSeries(row)"
+            >查看曲线</el-button>
+          </template>
         </NcDataTable></div>
-        <section v-if="selectedPingTarget" v-loading="pingSeriesLoading" class="ping-detail">
-          <div class="detail-heading">
-            <div><h2>{{ selectedPingTarget.train_no }} · {{ selectedPingTarget.mr_name || selectedPingTarget.mr_position_code }} · {{ selectedPingTarget.target_ip }}</h2><p>逐包位置使用采样时快照，丢包点在降采样时优先保留。</p></div>
-          </div>
-          <div class="toolbar">
-            <el-select v-model="pingRange" aria-label="长 Ping 时间范围" @change="showPingSeries(selectedPingTarget)">
-              <el-option label="最近 5 分钟" value="5m" />
-              <el-option label="最近 30 分钟" value="30m" />
-              <el-option label="最近 1 小时" value="1h" />
-              <el-option label="自定义时间" value="custom" />
-            </el-select>
-            <el-date-picker
-              v-if="pingRange === 'custom'"
-              v-model="pingCustomRange"
-              type="datetimerange"
-              start-placeholder="开始时间"
-              end-placeholder="结束时间"
-              @change="showPingSeries(selectedPingTarget)"
-            />
-            <el-checkbox v-model="includeWarmup" @change="showPingSeries(selectedPingTarget)">显示预热样本</el-checkbox>
-            <el-checkbox v-model="pingAutoRefresh">自动刷新</el-checkbox>
-            <el-button :icon="Refresh" @click="showPingSeries(selectedPingTarget)">刷新曲线</el-button>
-          </div>
-          <div class="coverage-strip">
-            <span>原始样本 <b>{{ pingSeries?.raw_sample_count ?? 0 }}</b></span>
-            <span>有效样本 <b>{{ pingSeries?.effective_sample_count ?? 0 }}</b></span>
-            <span>预热忽略 <b>{{ pingSeries?.ignored_sample_count ?? 0 }}</b></span>
-            <span>丢包区段 <b>{{ pingSeries?.loss_windows.length ?? 0 }}</b></span>
-          </div>
-          <GroundPingChart :series="pingSeries" />
-          <h3>丢包区段</h3>
-          <el-table :data="pingSeries?.loss_windows || []" size="small" max-height="260" empty-text="暂无丢包区段">
-            <el-table-column prop="started_at" label="开始时间" min-width="180" />
-            <el-table-column prop="ended_at" label="结束时间" min-width="180" />
-            <el-table-column prop="duration_seconds" label="持续时间（秒）" width="130" />
-            <el-table-column prop="loss_count" label="丢包数" width="90" />
-            <el-table-column prop="mr_name" label="MR" min-width="150" />
-            <el-table-column prop="current_ap_name" label="AP" min-width="150" />
-            <el-table-column prop="station" label="站点" min-width="130" />
-            <el-table-column prop="section" label="区间" min-width="130" />
-            <el-table-column prop="ap_transition_context" label="AP 切换前后" min-width="140"><template #default="{ row }">{{ groundTransitionContextLabel(row.ap_transition_context) }}</template></el-table-column>
-            <el-table-column prop="position_quality" label="位置质量" min-width="110"><template #default="{ row }">{{ groundStatusLabel(row.position_quality) }}</template></el-table-column>
-          </el-table>
-        </section>
       </el-tab-pane>
 
       <el-tab-pane :label="t('ground.deep_collection', '深度采集')" name="deep">
@@ -653,14 +907,41 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
         <div class="toolbar">
           <el-input v-model="syslogFilter.trainId" clearable placeholder="列车 ID" />
           <el-input v-model="syslogFilter.mrName" clearable placeholder="MR 设备名称" />
+          <el-select v-model="syslogFilter.mrRole" clearable placeholder="CT/CW"><el-option label="CT" value="CT" /><el-option label="CW" value="CW" /></el-select>
           <el-input v-model="syslogFilter.sourceIp" clearable placeholder="来源 IP" />
+          <el-input v-model="syslogFilter.systemName" clearable placeholder="system_name" />
+          <el-input v-model="syslogFilter.facility" clearable placeholder="Facility" />
           <el-select v-model="syslogFilter.severity" clearable placeholder="严重级别">
             <el-option label="提示" value="info" /><el-option label="警告" value="warning" /><el-option label="错误" value="error" />
           </el-select>
+          <el-select v-model="syslogFilter.identityStatus" clearable placeholder="身份状态">
+            <el-option label="身份已确认" value="VERIFIED" /><el-option label="来源未识别" value="UNIDENTIFIED" /><el-option label="身份冲突" value="IDENTITY_CONFLICT" />
+          </el-select>
+          <el-select v-model="syslogFilter.eventType" clearable placeholder="WMESH 事件">
+            <el-option v-for="value in ['MESH_LINKUP', 'MESH_LINKDOWN', 'MESH_ACTIVELINK_SWITCH', 'IFNET_PHY_UPDOWN']" :key="value" :label="groundEventLabel(value)" :value="value" />
+          </el-select>
+          <el-input v-model="syslogFilter.peerName" clearable placeholder="AP 名称或 MAC" />
+          <el-select v-model="syslogFilter.dataSource" clearable placeholder="数据来源">
+            <el-option label="活动原始文件" value="ACTIVE" /><el-option label="READY 归档" value="ARCHIVE" />
+          </el-select>
           <el-input v-model="syslogFilter.keyword" clearable placeholder="原始内容关键字" />
+          <el-date-picker v-model="syslogTimeRange" type="datetimerange" start-placeholder="开始时间" end-placeholder="结束时间" />
+          <el-checkbox v-model="syslogAutoRefresh" :disabled="historicalRun">自动刷新</el-checkbox>
           <el-button :icon="Refresh" :loading="syslogLoading" @click="syslogFilter.page = 1; loadSyslog()">查询</el-button>
         </div>
-        <div class="table-frame"><NcDataTable :data="syslogRecords" :columns="syslogColumns" table-id="ground-syslog" route-key="rail-ground-unattended" row-key="global_receive_sequence" compact /></div>
+        <div v-if="syslogDiagnostics" class="coverage-strip">
+          <span>数据来源 <b>{{ groundSourceLabel(syslogDiagnostics.source_kind) }}</b></span>
+          <span>可用性 <b>{{ groundStatusLabel(syslogDiagnostics.data_availability) }}</b></span>
+          <span>扫描文件 <b>{{ syslogDiagnostics.files_scanned }}</b></span>
+          <span>扫描记录 <b>{{ syslogDiagnostics.records_scanned }}</b></span>
+          <span>匹配记录 <b>{{ syslogTotal }}</b></span>
+          <span>接收器 <b>{{ health?.udp_running ? '正在监听' : '未监听' }}</b></span>
+          <span v-if="syslogDiagnostics.truncated">查询预算已截断</span>
+          <span v-if="syslogDiagnostics.no_data_reason">{{ groundStatusLabel(syslogDiagnostics.no_data_reason) }}</span>
+        </div>
+        <div class="table-frame"><NcDataTable :data="syslogRecords" :columns="syslogColumns" table-id="ground-syslog" route-key="rail-ground-unattended" row-key="global_receive_sequence" compact>
+          <template #cell-actions="{ row }"><el-button size="small" text type="primary" @click="showSyslogRecord(row)">详情</el-button></template>
+        </NcDataTable></div>
         <el-pagination
           v-model:current-page="syslogFilter.page"
           v-model:page-size="syslogFilter.pageSize"
@@ -703,7 +984,7 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
         <div class="toolbar"><el-button :icon="FolderOpened" @click="openArchiveDirectory">{{ t('ground.open_archive_directory', '打开归档目录') }}</el-button></div>
         <div class="table-frame"><NcDataTable :data="archives" :columns="archiveColumns" table-id="ground-archives" route-key="rail-ground-unattended" row-key="archive_id" compact>
           <template #cell-archive_status="{ row }"><el-tag size="small" :type="statusType(row.archive_status)">{{ groundStatusLabel(row.archive_status) }}</el-tag></template>
-          <template #cell-actions="{ row }"><div class="row-actions"><el-button size="small" text type="primary" @click="showArchive(row)">{{ t('common.view', '查看') }}</el-button><el-button :icon="Download" size="small" text circle :title="t('common.download', '下载汇总')" @click="downloadArchiveSummary(row)" /><el-button :icon="Delete" size="small" text type="danger" circle :title="t('common.delete', '删除')" @click="removeArchive(row)" /></div></template>
+          <template #cell-actions="{ row }"><div class="row-actions"><el-button size="small" text type="primary" @click="showArchive(row)">{{ t('common.view', '查看') }}</el-button><el-button :icon="Download" size="small" text circle title="下载原始 ZIP" @click="downloadArchiveZip(row)" /><el-button size="small" text @click="downloadArchiveSummary(row)">JSON</el-button><el-button :icon="Delete" size="small" text type="danger" circle :title="t('common.delete', '删除')" @click="removeArchive(row)" /></div></template>
         </NcDataTable></div>
       </el-tab-pane>
 
@@ -798,18 +1079,180 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
       </el-tab-pane>
     </el-tabs>
 
-    <el-dialog v-model="archiveDialog" :title="t('ground.archive_summary', '无人值守归档汇总')" width="min(720px, 92vw)">
-      <el-descriptions v-if="selectedArchive" :column="2" border>
-        <el-descriptions-item :label="t('ground.run_date', '运行日期')">{{ selectedArchive.run_date }}</el-descriptions-item>
-        <el-descriptions-item :label="t('ground.archive_status', '归档状态')">{{ groundStatusLabel(selectedArchive.archive_status) }}</el-descriptions-item>
-        <el-descriptions-item :label="t('ground.ping_samples', 'Ping 样本')">{{ selectedArchive.ping_sample_count }}</el-descriptions-item>
-        <el-descriptions-item :label="t('ground.covered_trains', '覆盖列车')">{{ selectedArchive.covered_train_count }}</el-descriptions-item>
-        <el-descriptions-item :label="t('ground.complete_sessions', '完整会话')">{{ selectedArchive.complete_session_count }}</el-descriptions-item>
-        <el-descriptions-item :label="t('ground.partial_sessions', '部分会话')">{{ selectedArchive.partial_session_count }}</el-descriptions-item>
-        <el-descriptions-item :label="t('ground.archive_size', '归档大小')">{{ bytes(selectedArchive.archive_size_bytes) }}</el-descriptions-item>
-        <el-descriptions-item :label="t('ground.retention_until', '保留截止')">{{ selectedArchive.retention_until }}</el-descriptions-item>
-      </el-descriptions>
+    <el-dialog
+      v-model="pingDialog"
+      width="min(1180px, 96vw)"
+      top="4vh"
+      destroy-on-close
+      @opened="pingDialogOpened = true"
+      @closed="handlePingDialogClosed"
+    >
+      <template #header>
+        <div v-if="selectedPingTarget" class="detail-heading">
+          <div>
+            <h2>{{ selectedPingTarget.train_no }} · {{ selectedPingTarget.mr_name || selectedPingTarget.mr_position_code }} · {{ selectedPingTarget.target_ip }}</h2>
+            <p>运行日期 {{ selectedPingTarget.run_date || selectedRun?.run_date || '—' }} · 逐包位置使用采样时快照，丢包点在降采样时优先保留。</p>
+          </div>
+        </div>
+      </template>
+      <section v-if="selectedPingTarget" v-loading="pingSeriesLoading" class="ping-detail-dialog">
+        <div class="toolbar">
+          <el-select v-model="pingRange" aria-label="长 Ping 时间范围" @change="showPingSeries(selectedPingTarget)">
+            <el-option label="完整运行时段" value="run" />
+            <el-option label="最近 5 分钟" value="5m" />
+            <el-option label="最近 30 分钟" value="30m" />
+            <el-option label="最近 1 小时" value="1h" />
+            <el-option label="自定义时间" value="custom" />
+          </el-select>
+          <el-date-picker
+            v-if="pingRange === 'custom'"
+            v-model="pingCustomRange"
+            type="datetimerange"
+            start-placeholder="开始时间"
+            end-placeholder="结束时间"
+            @change="showPingSeries(selectedPingTarget)"
+          />
+          <el-checkbox v-model="includeWarmup" @change="showPingSeries(selectedPingTarget)">显示预热样本</el-checkbox>
+          <el-checkbox v-model="pingAutoRefresh" :disabled="selectedPingHistorical">自动刷新</el-checkbox>
+          <el-button @click="useFullPingRange">自动适配有效数据范围</el-button>
+          <el-button :icon="Refresh" @click="showPingSeries(selectedPingTarget)">刷新曲线</el-button>
+        </div>
+        <div class="coverage-strip">
+          <span>原始样本 <b>{{ pingSeries?.raw_sample_count ?? 0 }}</b></span>
+          <span>有效样本 <b>{{ pingSeries?.effective_sample_count ?? 0 }}</b></span>
+          <span>预热忽略 <b>{{ pingSeries?.ignored_sample_count ?? 0 }}</b></span>
+          <span>丢包区段 <b>{{ pingSeries?.loss_windows.length ?? 0 }}</b></span>
+          <span v-if="pingSeries">来源 <b>{{ groundSourceLabel(pingSeries.diagnostics.source_kind) }}</b></span>
+          <span v-if="pingSeries">可用性 <b>{{ groundStatusLabel(pingSeries.diagnostics.data_availability) }}</b></span>
+          <span v-if="pingSeries?.diagnostics.truncated">查询预算已截断</span>
+        </div>
+        <el-empty
+          v-if="pingSeries && !pingSeries.points.length"
+          :description="groundStatusLabel(pingSeries.diagnostics.no_data_reason || 'NO_SAMPLES')"
+        />
+        <GroundPingChart v-else-if="pingDialogOpened" :series="pingSeries" />
+        <h3>丢包区段</h3>
+        <el-table :data="pingSeries?.loss_windows || []" size="small" max-height="260" empty-text="暂无丢包区段">
+          <el-table-column prop="started_at" label="开始时间" min-width="180" />
+          <el-table-column prop="ended_at" label="结束时间" min-width="180" />
+          <el-table-column prop="duration_seconds" label="持续时间（秒）" width="130" />
+          <el-table-column prop="loss_count" label="丢包数" width="90" />
+          <el-table-column prop="mr_name" label="MR" min-width="150" />
+          <el-table-column prop="current_ap_name" label="AP" min-width="150" />
+          <el-table-column prop="station" label="站点" min-width="130" />
+          <el-table-column prop="section" label="区间" min-width="130" />
+          <el-table-column prop="ap_transition_context" label="AP 切换前后" min-width="140"><template #default="{ row }">{{ groundTransitionContextLabel(row.ap_transition_context) }}</template></el-table-column>
+          <el-table-column prop="position_quality" label="位置质量" min-width="110"><template #default="{ row }">{{ groundStatusLabel(row.position_quality) }}</template></el-table-column>
+        </el-table>
+      </section>
     </el-dialog>
+
+    <el-dialog v-model="archiveDialog" :title="t('ground.archive_summary', '无人值守归档汇总')" width="min(1100px, 96vw)" top="4vh">
+      <el-tabs v-if="selectedArchive" v-model="archiveDetailTab">
+        <el-tab-pane label="归档概览" name="overview">
+          <el-descriptions :column="2" border>
+            <el-descriptions-item :label="t('ground.run_date', '运行日期')">{{ selectedArchive.archive.run_date }}</el-descriptions-item>
+            <el-descriptions-item :label="t('ground.archive_status', '归档状态')">{{ groundStatusLabel(selectedArchive.archive.archive_status) }}</el-descriptions-item>
+            <el-descriptions-item label="实际开始">{{ selectedArchive.archive.actual_started_at || '—' }}</el-descriptions-item>
+            <el-descriptions-item label="实际结束">{{ selectedArchive.archive.actual_ended_at || '—' }}</el-descriptions-item>
+            <el-descriptions-item label="运行模式">{{ groundRunModeLabel(selectedArchive.archive.summary.running_mode) }}</el-descriptions-item>
+            <el-descriptions-item :label="t('ground.mainline_trains', '正线车辆')">{{ selectedArchive.archive.mainline_train_count }}</el-descriptions-item>
+            <el-descriptions-item :label="t('ground.ping_targets', 'Ping 目标')">{{ selectedArchive.archive.ping_target_count }}</el-descriptions-item>
+            <el-descriptions-item :label="t('ground.ping_samples', 'Ping 样本')">{{ selectedArchive.archive.ping_sample_count }}</el-descriptions-item>
+            <el-descriptions-item label="Syslog 记录">{{ selectedArchive.archive.summary.syslog_record_count || 0 }}</el-descriptions-item>
+            <el-descriptions-item :label="t('ground.covered_trains', '覆盖列车')">{{ selectedArchive.archive.covered_train_count }}</el-descriptions-item>
+            <el-descriptions-item :label="t('ground.complete_sessions', '完整会话')">{{ selectedArchive.archive.complete_session_count }}</el-descriptions-item>
+            <el-descriptions-item :label="t('ground.partial_sessions', '部分会话')">{{ selectedArchive.archive.partial_session_count }}</el-descriptions-item>
+            <el-descriptions-item :label="t('ground.archive_size', '归档大小')">{{ bytes(selectedArchive.archive.archive_size_bytes) }}</el-descriptions-item>
+            <el-descriptions-item label="归档 SHA-256" :span="2"><code>{{ selectedArchive.archive.sha256 }}</code></el-descriptions-item>
+          </el-descriptions>
+        </el-tab-pane>
+        <el-tab-pane label="文件清单" name="files">
+          <el-table :data="selectedArchive.files" size="small" max-height="480" empty-text="归档没有可展示的文件成员">
+            <el-table-column prop="path" label="ZIP Entry" min-width="300" fixed />
+            <el-table-column prop="data_type" label="数据类型" width="110" />
+            <el-table-column prop="train_id" label="列车" width="120" />
+            <el-table-column prop="mr_id" label="MR" min-width="150" />
+            <el-table-column prop="mr_role" label="CT/CW" width="80" />
+            <el-table-column prop="hour" label="小时" width="90" />
+            <el-table-column prop="record_count" label="记录数" width="100" />
+            <el-table-column label="原始大小" width="120"><template #default="{ row }">{{ bytes(row.size_bytes) }}</template></el-table-column>
+            <el-table-column label="压缩大小" width="120"><template #default="{ row }">{{ bytes(row.compressed_size_bytes) }}</template></el-table-column>
+            <el-table-column prop="parse_status" label="解析状态" width="110" />
+            <el-table-column prop="sha256" label="SHA-256" min-width="260" show-overflow-tooltip />
+          </el-table>
+        </el-tab-pane>
+        <el-tab-pane label="Ping 汇总" name="ping">
+          <el-descriptions :column="2" border>
+            <el-descriptions-item label="Ping 目标">{{ selectedArchive.archive.ping_target_count }}</el-descriptions-item>
+            <el-descriptions-item label="Ping 样本">{{ selectedArchive.archive.ping_sample_count }}</el-descriptions-item>
+          </el-descriptions>
+        </el-tab-pane>
+        <el-tab-pane label="Syslog 汇总" name="syslog">
+          <el-descriptions :column="2" border>
+            <el-descriptions-item label="Syslog 记录">{{ selectedArchive.archive.summary.syslog_record_count || 0 }}</el-descriptions-item>
+            <el-descriptions-item label="Syslog 文件">{{ selectedArchive.files.filter((row) => row.data_type === 'syslog').length }}</el-descriptions-item>
+          </el-descriptions>
+        </el-tab-pane>
+        <el-tab-pane label="深度会话" name="deep">
+          <el-descriptions :column="2" border>
+            <el-descriptions-item label="完整会话">{{ selectedArchive.archive.complete_session_count }}</el-descriptions-item>
+            <el-descriptions-item label="部分会话">{{ selectedArchive.archive.partial_session_count }}</el-descriptions-item>
+            <el-descriptions-item label="覆盖列车">{{ selectedArchive.archive.covered_train_count }}</el-descriptions-item>
+          </el-descriptions>
+        </el-tab-pane>
+        <el-tab-pane label="完整性校验" name="integrity">
+          <el-descriptions :column="2" border>
+            <el-descriptions-item label="校验状态">{{ groundStatusLabel(selectedArchive.validation.status) }}</el-descriptions-item>
+            <el-descriptions-item label="最后校验">{{ selectedArchive.validation.checked_at || '—' }}</el-descriptions-item>
+            <el-descriptions-item label="清单文件数">{{ selectedArchive.validation.file_count }}</el-descriptions-item>
+            <el-descriptions-item label="总记录数">{{ archiveRecordCount }}</el-descriptions-item>
+            <el-descriptions-item label="ZIP 大小">{{ bytes(selectedArchive.validation.archive_size_bytes) }}</el-descriptions-item>
+            <el-descriptions-item label="旧版 Manifest">{{ selectedArchive.validation.legacy_manifest ? '是' : '否' }}</el-descriptions-item>
+            <el-descriptions-item label="ZIP SHA-256" :span="2"><code>{{ selectedArchive.validation.archive_sha256 }}</code></el-descriptions-item>
+            <el-descriptions-item label="Manifest SHA-256" :span="2"><code>{{ selectedArchive.validation.manifest_sha256 }}</code></el-descriptions-item>
+            <el-descriptions-item label="校验说明" :span="2">{{ selectedArchive.validation.message }}</el-descriptions-item>
+          </el-descriptions>
+        </el-tab-pane>
+        <el-tab-pane label="保留策略" name="retention">
+          <el-descriptions :column="1" border>
+            <el-descriptions-item label="保留截止">{{ selectedArchive.archive.retention_until || '未设置' }}</el-descriptions-item>
+            <el-descriptions-item label="归档创建">{{ selectedArchive.archive.created_at || '—' }}</el-descriptions-item>
+            <el-descriptions-item label="最近更新">{{ selectedArchive.archive.updated_at || '—' }}</el-descriptions-item>
+          </el-descriptions>
+        </el-tab-pane>
+      </el-tabs>
+      <template #footer>
+        <el-button v-if="selectedArchive" @click="verifyArchive">重新校验</el-button>
+        <el-button v-if="selectedArchive" @click="downloadArchiveSummary(selectedArchive.archive)">下载 JSON</el-button>
+        <el-button v-if="selectedArchive" type="primary" @click="downloadArchiveZip(selectedArchive.archive)">下载原始 ZIP</el-button>
+      </template>
+    </el-dialog>
+
+    <el-drawer v-model="syslogDetailDrawer" title="Syslog 原始记录详情" size="min(720px, 92vw)" destroy-on-close>
+      <template v-if="selectedSyslogRecord">
+        <el-descriptions :column="1" border>
+          <el-descriptions-item label="运行上下文">{{ selectedRun?.run_date || '—' }} · {{ selectedRunId || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="接收 / 设备时间">{{ selectedSyslogRecord.receive_time }} / {{ selectedSyslogRecord.device_time || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="时间差">{{ selectedSyslogRecord.clock_offset_ms == null ? '—' : `${selectedSyslogRecord.clock_offset_ms} ms` }}</el-descriptions-item>
+          <el-descriptions-item label="列车 / MR">{{ selectedSyslogRecord.train_no || '未识别' }}（{{ selectedSyslogRecord.train_id || '—' }}）/ {{ selectedSyslogRecord.mr_name || selectedSyslogRecord.source_ip }}（{{ selectedSyslogRecord.device_uuid || '—' }}）</el-descriptions-item>
+          <el-descriptions-item label="来源 / system_name">{{ selectedSyslogRecord.source_ip }}:{{ selectedSyslogRecord.source_port || '—' }} / {{ selectedSyslogRecord.system_name || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="Facility / 级别">{{ selectedSyslogRecord.facility || '—' }} / {{ groundSeverityLabel(selectedSyslogRecord.severity) }}</el-descriptions-item>
+          <el-descriptions-item label="WMESH 事件">{{ groundEventLabel(selectedSyslogRecord.event_type) }}</el-descriptions-item>
+          <el-descriptions-item label="AP 切换">{{ selectedSyslogRecord.previous_peer_name || selectedSyslogRecord.previous_peer_mac || '—' }} → {{ selectedSyslogRecord.peer_name || selectedSyslogRecord.peer_mac || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="站点 / 区间">{{ selectedSyslogRecord.station || '—' }} / {{ selectedSyslogRecord.section || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="AP 解析 / 名称来源">{{ groundStatusLabel(selectedSyslogRecord.resolution_status) }} / {{ groundDisplayNameSourceLabel(selectedSyslogRecord.parsed_details.display_name_source) }}</el-descriptions-item>
+          <el-descriptions-item label="身份 / 解析 / 质量">{{ groundStatusLabel(selectedSyslogRecord.identity_status) }} / {{ groundStatusLabel(selectedSyslogRecord.parse_status) }} / {{ groundStatusLabel(selectedSyslogRecord.data_quality) }}</el-descriptions-item>
+          <el-descriptions-item label="接收序号">{{ selectedSyslogRecord.global_receive_sequence ?? '—' }} / {{ selectedSyslogRecord.source_receive_sequence ?? '—' }}</el-descriptions-item>
+          <el-descriptions-item label="数据来源">{{ groundSourceLabel(selectedSyslogRecord.data_source) }}<span v-if="selectedSyslogRecord.archive_entry"> · {{ selectedSyslogRecord.archive_entry }}</span></el-descriptions-item>
+          <el-descriptions-item label="原始文件">{{ selectedSyslogRecord.raw_file_id }} · 行 {{ selectedSyslogRecord.raw_line_number ?? '—' }} · {{ groundStatusLabel(selectedSyslogRecord.raw_file_status) }}</el-descriptions-item>
+        </el-descriptions>
+        <h3>解析字段</h3>
+        <pre class="raw-record">{{ JSON.stringify(selectedSyslogRecord.parsed_details, null, 2) }}</pre>
+        <h3>原始报文</h3>
+        <pre class="raw-record">{{ selectedSyslogRecord.raw_text }}</pre>
+      </template>
+    </el-drawer>
 
     <el-dialog v-model="trainDialog" :title="t('ground.train_detail', '列车无人值守详情')" width="min(820px, 94vw)">
       <template v-if="selectedTrain">
@@ -879,4 +1322,5 @@ onBeforeUnmount(() => { disposed = true; if (pollTimer !== undefined) window.cle
 <style scoped>
 .ground-page{display:flex;flex-direction:column;gap:12px;min-width:0;min-height:0}.page-heading,.heading-actions,.status-line,.toolbar,.coverage-strip,.row-actions,.form-actions,.inline-numbers,.dialog-actions,.network-actions,.network-status,.boot-evidence,.operation-heading,.detail-heading,.mode-switch,.load-warning{display:flex;align-items:center;gap:10px}.page-heading,.operation-heading,.detail-heading{justify-content:space-between;flex-wrap:wrap}.page-heading h1{margin:2px 0 0;font-size:24px;letter-spacing:0}.eyebrow{margin:0;color:var(--el-color-primary);font-size:12px;font-weight:700;letter-spacing:0}.heading-actions,.toolbar,.dialog-actions,.network-actions,.network-status,.boot-evidence{flex-wrap:wrap}.operation-band{padding:12px 14px;border:1px solid var(--el-border-color);border-left:4px solid var(--el-color-warning);background:var(--el-fill-color-light)}.operation-band.operation-completed{border-left-color:var(--el-color-success)}.operation-band.operation-failed{border-left-color:var(--el-color-danger)}.operation-heading>div{display:flex;gap:12px;align-items:center}.operation-band p{margin:8px 0;color:var(--el-text-color-primary)}.operation-band small{color:var(--el-text-color-secondary)}.load-warning{align-items:flex-start}.load-warning :deep(.el-alert){min-width:0;flex:1}.ground-tabs{min-width:0}.overview-band{padding:2px 0}.status-line{min-height:42px;flex-wrap:wrap;border-bottom:1px solid var(--el-border-color-lighter)}.metric-grid,.health-grid{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:1px;margin-top:12px;background:var(--el-border-color-lighter);border:1px solid var(--el-border-color-lighter)}.metric-grid article,.health-grid article{min-width:0;padding:12px;background:var(--el-bg-color)}.metric-grid span,.metric-grid small,.health-grid span,.health-grid small{display:block;color:var(--el-text-color-secondary);font-size:12px}.metric-grid strong,.health-grid strong{display:block;min-height:24px;margin:6px 0 3px;font-size:18px;letter-spacing:0;overflow-wrap:anywhere}.toolbar{min-height:42px}.toolbar .el-input{width:210px}.toolbar .el-select{width:130px}.toolbar .el-input-number{width:110px}.table-frame{height:clamp(360px,calc(100vh - 310px),680px);min-width:0;overflow:hidden;border-top:1px solid var(--el-border-color-lighter)}.ping-table{height:360px}.ping-detail{margin-top:16px;padding-top:14px;border-top:1px solid var(--el-border-color-lighter)}.ping-detail h2,.ping-detail h3{margin:0 0 8px}.ping-detail p{margin:0;color:var(--el-text-color-secondary);font-size:12px}.coverage-strip{flex-wrap:wrap;margin-bottom:8px}.coverage-strip span{display:flex;align-items:center;gap:5px;padding:5px 8px;background:var(--el-fill-color-light);border-radius:4px;color:var(--el-text-color-secondary);font-size:12px}.coverage-strip b{color:var(--el-text-color-primary);font-size:16px}.settings-empty{padding:48px 16px}.settings-empty .muted{max-width:720px;margin:0 auto 12px;overflow-wrap:anywhere}.settings-form{display:flex;flex-direction:column;gap:18px;max-width:1180px}.settings-form section{padding-bottom:16px;border-bottom:1px solid var(--el-border-color-lighter)}.settings-form h2{margin:0 0 12px;font-size:16px;letter-spacing:0}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:0 16px}.form-grid :deep(.el-input-number),.form-grid :deep(.el-select),.form-grid :deep(.el-input){width:100%}.mode-switch{align-items:flex-start;margin-bottom:12px}.mode-switch span{color:var(--el-text-color-secondary);font-size:12px}.budget-disabled{opacity:.66}.inline-numbers{width:100%}.priority-grid{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:8px}.muted{color:var(--el-text-color-secondary);font-size:12px}.network-actions{margin:12px 0}.network-status{margin:10px 0;padding:8px;background:var(--el-fill-color-light)}.network-ok{color:var(--el-color-success);font-size:12px}.network-error{color:var(--el-color-danger);font-size:12px}.loghost-section{margin-top:14px;padding-top:8px;border-top:1px solid var(--el-border-color-lighter)}.boot-evidence{margin:8px 0;color:var(--el-text-color-secondary);font-size:12px}.form-actions{position:sticky;bottom:0;padding:10px 0;background:var(--el-bg-color)}.dialog-actions{justify-content:flex-end;margin-top:14px}@media(max-width:1300px){.metric-grid,.health-grid{grid-template-columns:repeat(3,minmax(150px,1fr))}.form-grid{grid-template-columns:repeat(3,minmax(170px,1fr))}.priority-grid{grid-template-columns:repeat(4,minmax(110px,1fr))}}@media(max-width:900px){.page-heading{align-items:flex-start;flex-direction:column}.metric-grid,.health-grid{grid-template-columns:repeat(2,minmax(140px,1fr))}.form-grid{grid-template-columns:repeat(2,minmax(150px,1fr))}.priority-grid{grid-template-columns:repeat(3,minmax(100px,1fr))}.table-frame{height:clamp(340px,calc(100vh - 350px),620px)}.ping-table{height:340px}}@media(max-width:620px){.metric-grid,.health-grid,.form-grid{grid-template-columns:1fr}.priority-grid{grid-template-columns:repeat(2,minmax(100px,1fr))}.heading-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}.heading-actions .el-button{margin:0}.load-warning{flex-direction:column}.toolbar .el-input,.toolbar .el-select{width:100%}}
 .ac-poller-health{margin-top:14px}.ac-poller-grid{display:grid;grid-template-columns:repeat(2,minmax(280px,1fr));gap:10px}.ac-poller-grid article{padding:12px;border:1px solid var(--el-border-color);border-radius:6px;background:var(--el-fill-color-extra-light)}.ac-poller-grid header{display:flex;align-items:center;justify-content:space-between;gap:12px}.ac-poller-grid p{margin:8px 0}.ac-poller-grid small{display:block;margin-top:5px;color:var(--el-text-color-secondary);overflow-wrap:anywhere}.ac-poller-grid .health-error{color:var(--el-color-danger)}@media(max-width:900px){.ac-poller-grid{grid-template-columns:1fr}}
+.run-context-bar{display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:10px 12px;border:1px solid var(--el-border-color-lighter);background:var(--el-fill-color-extra-light)}.run-context-bar>div{display:flex;flex-direction:column;min-width:240px}.run-context-bar>div span{font-size:12px;color:var(--el-text-color-secondary)}.run-context-bar .el-select{width:min(440px,100%)}.ping-table{height:clamp(420px,calc(100vh - 330px),760px)}.ping-detail-dialog{max-height:78vh;overflow:auto;padding-right:4px}.ping-detail-dialog h3,.detail-heading h2{margin:0 0 8px}.detail-heading p{margin:0;color:var(--el-text-color-secondary);font-size:12px}.raw-record{max-height:320px;overflow:auto;padding:12px;border:1px solid var(--el-border-color-lighter);background:var(--el-fill-color-extra-light);white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:900px){.ping-table{height:clamp(380px,calc(100vh - 380px),650px)}}
 </style>
