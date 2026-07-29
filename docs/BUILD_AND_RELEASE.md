@@ -66,6 +66,20 @@ python -m scripts.maintenance.clean_generated_artifacts --target build-temporary
 
 ## Electron 安装包
 
+在最终提交已经推送、工作区 clean 后，可在仓库根目录使用 Windows 一键入口：
+
+```powershell
+.\scripts\build\package_windows.ps1
+```
+
+也可双击 `scripts\build\package_windows.bat`。脚本会检查 Windows、Git/upstream、项目 `.venv`、pnpm 和 Python 依赖，按两个 `pnpm-lock.yaml` 安装锁定依赖，依次运行 Web/Electron 测试，再调用下方同一个 `pnpm package` 正式链路。构建成功后，脚本会定位当前 Git HEAD 对应的 `.exe.release.json`，复核安装包大小和 SHA-256 并输出绝对路径。只检查环境而不安装依赖、测试或打包时使用：
+
+```powershell
+.\scripts\build\package_windows.ps1 -PreflightOnly
+```
+
+一键入口不会替代真实 GUI 安装验收，也不会把 `real_windows_install_status` 从 `PENDING` 改为 `PASS`。
+
 ```powershell
 cd apps/desktop_electron
 pnpm install --frozen-lockfile
