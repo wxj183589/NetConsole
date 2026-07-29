@@ -100,4 +100,49 @@ describe('ExternalToolEditorDialog', () => {
     await unsafeVm.submit(false)
     expect(unsafe.emitted('save')).toBeUndefined()
   })
+
+  it('keeps system setting reference paths read-only and omits them from updates', async () => {
+    const wrapper = shallowMount(ExternalToolEditorDialog, {
+      props: {
+        modelValue: true,
+        categories,
+        tool: {
+          id: '7c890030-3a3f-4d6b-b58e-7624d21daff9',
+          name: 'SecureCRT',
+          source_type: 'system_setting',
+          source_key: 'securecrt',
+          executable_path: 'C:\\Tools\\SecureCRT.exe',
+          executable_name: 'SecureCRT.exe',
+          arguments: [],
+          working_directory: 'C:\\Tools',
+          category_id: categories[0].id,
+          category_name: categories[0].name,
+          favorite: true,
+          sort_order: 10,
+          icon_mode: 'auto',
+          custom_icon_path: null,
+          icon_data_url: null,
+          launch_privilege: 'normal',
+          launch_count: 0,
+          administrator_launch_count: 0,
+          last_launched_at: null,
+          last_launch_mode: null,
+          status: 'AVAILABLE',
+          status_message: '可用',
+          created_at: '2026-07-30T00:00:00.000Z',
+          updated_at: '2026-07-30T00:00:00.000Z',
+        },
+      },
+    })
+    const vm = wrapper.vm as unknown as { submit(launch: boolean): Promise<void> }
+
+    await vm.submit(false)
+    expect(wrapper.emitted('save')?.[0]?.[0]).toMatchObject({
+      id: '7c890030-3a3f-4d6b-b58e-7624d21daff9',
+      launchPrivilege: 'normal',
+      arguments: [],
+    })
+    expect(wrapper.emitted('save')?.[0]?.[0]).not.toHaveProperty('executablePath')
+    expect(wrapper.emitted('save')?.[0]?.[0]).not.toHaveProperty('workingDirectory')
+  })
 })

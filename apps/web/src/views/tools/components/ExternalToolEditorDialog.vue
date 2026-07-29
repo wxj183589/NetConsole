@@ -13,6 +13,7 @@ import type {
   ExternalToolCategory,
   ExternalToolCreateRequest,
   ExternalToolIconMode,
+  ExternalToolLaunchPrivilege,
   ExternalToolUpdateRequest,
   ExternalToolView,
 } from '../../../types/externalTools'
@@ -34,6 +35,7 @@ const saving = ref(false)
 const dirty = ref(false)
 const resetting = ref(false)
 const iconPreview = ref('')
+const isSystemReference = computed(() => props.tool?.source_type === 'system_setting')
 const form = reactive({
   name: '',
   executablePath: '',
@@ -43,6 +45,7 @@ const form = reactive({
   favorite: false,
   iconMode: 'auto' as ExternalToolIconMode,
   iconSelectionId: '',
+  launchPrivilege: 'normal' as ExternalToolLaunchPrivilege,
 })
 
 const title = computed(() => props.tool ? '编辑工具' : '添加工具')
@@ -50,7 +53,7 @@ const title = computed(() => props.tool ? '编辑工具' : '添加工具')
 watch(() => props.modelValue, async (visible) => {
   if (!visible) return
   reset()
-  if (props.relocateOnOpen) await chooseExecutable()
+  if (props.relocateOnOpen && !isSystemReference.value) await chooseExecutable()
 }, { immediate: true })
 watch(form, () => {
   if (props.modelValue && !resetting.value && !saving.value) dirty.value = true
@@ -68,6 +71,7 @@ function reset(): void {
     favorite: props.tool.favorite,
     iconMode: props.tool.icon_mode,
     iconSelectionId: '',
+    launchPrivilege: props.tool.launch_privilege,
   } : {
     name: '',
     executablePath: '',
@@ -77,6 +81,7 @@ function reset(): void {
     favorite: false,
     iconMode: 'auto',
     iconSelectionId: '',
+    launchPrivilege: 'normal',
   })
   iconPreview.value = props.tool?.icon_data_url || ''
   saving.value = false
@@ -154,7 +159,7 @@ function quickCreateCategory(): void {
 
 async function submit(launch: boolean): Promise<void> {
   if (!form.name.trim()) return void ElMessage.warning('请输入工具名称')
-  if (!form.executablePath) return void ElMessage.warning('请选择程序')
+  if (!isSystemReference.value && !form.executablePath) return void ElMessage.warning('请选择程序')
   if (!form.categoryId) return void ElMessage.warning('请选择分类')
   let arguments_: string[]
   try {
@@ -174,9 +179,23 @@ async function submit(launch: boolean): Promise<void> {
     categoryId: form.categoryId,
     favorite: form.favorite,
     iconMode: form.iconMode,
+    launchPrivilege: form.launchPrivilege,
     ...(form.iconSelectionId ? { iconSelectionId: form.iconSelectionId } : {}),
   }
-  emit('save', props.tool ? { id: props.tool.id, ...base } : base, launch)
+  if (isSystemReference.value && props.tool) {
+    emit('save', {
+      id: props.tool.id,
+      name: base.name,
+      arguments: [],
+      categoryId: base.categoryId,
+      favorite: base.favorite,
+      iconMode: base.iconMode,
+      launchPrivilege: base.launchPrivilege,
+      ...(base.iconSelectionId ? { iconSelectionId: base.iconSelectionId } : {}),
+    }, launch)
+  } else {
+    emit('save', props.tool ? { id: props.tool.id, ...base } : base, launch)
+  }
 }
 
 function markSaved(success: boolean): void {
@@ -223,8 +242,9 @@ defineExpose({ markSaved, chooseExecutable, submit, form })
       </el-form-item>
       <el-form-item label="程序路径" required>
         <el-input v-model="form.executablePath" readonly data-testid="tool-executable">
-          <template #append><el-button @click="chooseExecutable">选择程序</el-button></template>
+          <template v-if="!isSystemReference" #append><el-button @click="chooseExecutable">选择程序</el-button></template>
         </el-input>
+        <div v-if="isSystemReference" class="field-help">路径来自“系统设置 → 外部终端”，在此只读。</div>
       </el-form-item>
       <div class="editor-grid">
         <el-form-item label="分类" required>
@@ -237,13 +257,20 @@ defineExpose({ markSaved, chooseExecutable, submit, form })
           <el-switch v-model="form.favorite" active-text="加入收藏" />
         </el-form-item>
       </div>
+      <el-form-item label="启动权限">
+        <el-radio-group v-model="form.launchPrivilege">
+          <el-radio-button value="normal">普通权限</el-radio-button>
+          <el-radio-button value="ask">每次询问</el-radio-button>
+          <el-radio-button value="administrator">始终请求管理员权限</el-radio-button>
+        </el-radio-group>
+      </el-form-item>
       <el-form-item label="启动参数">
-        <el-input v-model="form.argumentsText" placeholder='示例：--profile "现场维护"' data-testid="tool-arguments" />
+        <el-input v-model="form.argumentsText" :disabled="isSystemReference" placeholder='示例：--profile "现场维护"' data-testid="tool-arguments" />
         <div class="field-help">按 argv 保存；不支持管道、重定向、&& 或 ||。</div>
       </el-form-item>
       <el-form-item label="工作目录">
         <el-input v-model="form.workingDirectory" readonly placeholder="留空时使用 EXE 所在目录">
-          <template #append><el-button @click="chooseWorkingDirectory">选择目录</el-button></template>
+          <template v-if="!isSystemReference" #append><el-button @click="chooseWorkingDirectory">选择目录</el-button></template>
         </el-input>
       </el-form-item>
       <el-form-item label="图标">

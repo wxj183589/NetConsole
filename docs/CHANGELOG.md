@@ -12,8 +12,9 @@
 ### 工具集
 
 - Electron Desktop 新增一级“工具集”模块，支持用户自备 Windows EXE 的分类、搜索、收藏、常用排序、状态刷新、重新定位、图标、编辑、删除记录、启动和资源管理器定位；Browser 隐藏导航并拒绝直接访问。
-- 工具注册表独立保存到 Electron userData，使用 schema v1 严格校验、Windows 路径大小写去重、串行原子写与损坏文件诊断恢复；不进入局点数据库、数据根或迁移/结果包，也不影响系统设置中的 fping、iperf3、IPOP 和终端依赖。
-- Renderer 启动和定位只传工具 UUID；Electron Main 从 Store 取可信路径并复验，以参数数组和 `shell:false` 启动。自定义图标通过短期选择 ID 复制到专用缓存，页面不使用 `file://` 读取本地文件。
+- 工具注册表独立保存到 Electron userData，升级为 schema v2，支持 v1 无损升级、来源类型、启动权限与普通/管理员启动统计；继续使用 Windows 路径大小写去重、串行原子写与损坏文件诊断恢复，不进入局点数据库、数据根或迁移/结果包。
+- 重新划分系统设置边界：iperf3/fping 留在“网络测试组件”，SecureCRT/Xshell/PuTTY 留在“外部终端”并可添加实时引用卡片；IPOP 从系统设置 UI 移除，旧 `ipop_path` 经幂等、失败可重试的一次性迁移进入工具集，后端旧字段与动作暂留兼容。
+- Renderer 启动严格只传 `{toolId, launchMode}`；Electron Main 从 Store 或当前系统设置解析可信路径并复验。普通启动使用参数数组和 `shell:false`，管理员启动通过固定 JSON stdin 的最小 Go helper 调用 `ShellExecuteExW(runas)`，禁止 PowerShell/CMD、通用命令和提升 NetConsole 自身；UAC 取消返回 `ELEVATION_CANCELLED` 且所有失败路径不增加统计。真实 UAC、普通用户和正式安装包 helper 状态为 `IMPLEMENTED_UNVERIFIED`。
 
 ## v1.4.5 - 2026-07-29
 

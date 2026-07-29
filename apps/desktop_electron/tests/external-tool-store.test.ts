@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { promises as fs } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -35,6 +35,7 @@ async function fixture() {
     categoryId: OTHER_TOOLS_CATEGORY_ID,
     favorite: false,
     iconMode: 'auto',
+    launchPrivilege: 'normal',
   }
   return { root, executable, icon, store, snapshot, request }
 }
@@ -44,13 +45,13 @@ afterEach(async () => {
 })
 
 describe('ExternalToolStore', () => {
-  it('initializes the five default categories and writes schema version 1', async () => {
+  it('initializes the five default categories and writes schema version 2', async () => {
     const { store, snapshot } = await fixture()
-    expect(snapshot.schema_version).toBe(1)
+    expect(snapshot.schema_version).toBe(2)
     expect(snapshot.categories.map((item) => item.name)).toEqual([
       '网络工具', '终端工具', '分析工具', '厂商工具', '其他工具',
     ])
-    expect(JSON.parse(await fs.readFile(store.path, 'utf8')).schema_version).toBe(1)
+    expect(JSON.parse(await fs.readFile(store.path, 'utf8')).schema_version).toBe(2)
   })
 
   it('creates, updates, favorites and deletes a tool without deleting the executable', async () => {
@@ -79,7 +80,7 @@ describe('ExternalToolStore', () => {
     await Promise.all([
       store.setFavorite(created.id, true),
       store.createCategory('现场工具'),
-      store.recordLaunch(created.id),
+      store.recordLaunch(created.id, 'normal'),
     ])
     const snapshot = await store.list()
     expect(snapshot.tools[0]).toMatchObject({ favorite: true, launch_count: 1 })
@@ -119,7 +120,78 @@ describe('ExternalToolStore', () => {
     expect((await fs.readdir(first.root)).some((name) => name.startsWith('external-tools.json.corrupt-'))).toBe(true)
 
     await fs.writeFile(first.store.path, JSON.stringify({ schema_version: 99, categories: [], tools: [] }), 'utf8')
-    expect((await new ExternalToolStore(first.root).list()).schema_version).toBe(1)
+    expect((await new ExternalToolStore(first.root).list()).schema_version).toBe(2)
+  })
+
+  it('upgrades schema version 1 in place without losing existing tools', async () => {
+    const { store, request } = await fixture()
+    const created = await store.create(request)
+    const persisted = JSON.parse(await fs.readFile(store.path, 'utf8'))
+    const legacyTool = { ...persisted.tools[0] }
+    for (const key of [
+      'source_type', 'source_key', 'launch_privilege', 'administrator_launch_count',
+      'last_launch_mode',
+    ]) delete legacyTool[key]
+    await fs.writeFile(store.path, JSON.stringify({
+      schema_version: 1,
+      categories: persisted.categories,
+      tools: [legacyTool],
+    }), 'utf8')
+
+    const upgraded = await new ExternalToolStore(dirname(store.path)).list()
+
+    expect(upgraded.schema_version).toBe(2)
+    expect(upgraded.tools).toHaveLength(1)
+    expect(upgraded.tools[0]).toMatchObject({
+      id: created.id,
+      source_type: 'independent',
+      source_key: null,
+      launch_privilege: 'normal',
+      administrator_launch_count: 0,
+      last_launch_mode: null,
+    })
+    expect(JSON.parse(await fs.readFile(store.path, 'utf8')).schema_version).toBe(2)
+  })
+
+  it('migrates legacy IPOP once, deduplicates paths, and leaves failures retryable', async () => {
+    const migrated = await fixture()
+    await migrated.store.migrateLegacyIpop(migrated.executable)
+    await migrated.store.migrateLegacyIpop(migrated.executable.toUpperCase())
+    const snapshot = await migrated.store.list()
+    expect(snapshot.migrations.legacy_ipop_v1).toBe(true)
+    expect(snapshot.tools).toHaveLength(1)
+    expect(snapshot.tools[0]).toMatchObject({
+      name: 'IPOP',
+      favorite: true,
+      launch_privilege: 'normal',
+      source_type: 'independent',
+    })
+    expect(snapshot.categories.find((item) => item.id === snapshot.tools[0]?.category_id)?.name).toBe('网络工具')
+
+    const failed = await fixture()
+    const missing = join(failed.root, 'missing', 'IPOP.EXE')
+    await expect(failed.store.migrateLegacyIpop(missing)).rejects.toMatchObject({ code: 'INVALID_REQUEST' })
+    expect((await failed.store.list()).migrations.legacy_ipop_v1).toBe(false)
+    expect((await failed.store.list()).tools).toEqual([])
+  })
+
+  it('persists system terminal references without copying their executable paths', async () => {
+    const { store } = await fixture()
+    const reference = await store.createSystemReference('securecrt')
+    const persisted = JSON.parse(await fs.readFile(store.path, 'utf8'))
+    expect(reference).toMatchObject({
+      source_type: 'system_setting',
+      source_key: 'securecrt',
+      executable_path: null,
+      working_directory: null,
+    })
+    expect(persisted.tools[0].executable_path).toBeNull()
+    await expect(store.createSystemReference('securecrt')).rejects.toMatchObject({
+      code: 'DUPLICATE_SOURCE',
+      existingToolId: reference.id,
+    })
+    await store.delete(reference.id)
+    expect((await store.list()).tools).toEqual([])
   })
 })
 
@@ -138,9 +210,17 @@ describe('ExternalToolService launcher', () => {
       reveal: vi.fn(),
       getExecutableIcon: vi.fn(async () => null),
       getCustomIcon: vi.fn(async () => null),
+      resolveSystemSettings: vi.fn(async () => ({
+        legacyIpopPath: '',
+        terminalPaths: { securecrt: '', xshell: '', putty: '' },
+      })),
+      elevatedLaunch: vi.fn(async () => 'launched' as const),
     })
 
-    await expect(service.launch(tool.id)).resolves.toEqual({ success: true, toolId: tool.id })
+    await expect(service.launch({ toolId: tool.id, launchMode: 'normal' })).resolves.toEqual({
+      success: true,
+      toolId: tool.id,
+    })
     expect(spawn).toHaveBeenCalledWith(tool.executable_path, tool.arguments, {
       shell: false,
       detached: true,
@@ -167,9 +247,160 @@ describe('ExternalToolService launcher', () => {
       reveal: vi.fn(),
       getExecutableIcon: vi.fn(async () => null),
       getCustomIcon: vi.fn(async () => null),
+      resolveSystemSettings: vi.fn(async () => ({
+        legacyIpopPath: '',
+        terminalPaths: { securecrt: '', xshell: '', putty: '' },
+      })),
+      elevatedLaunch: vi.fn(async () => 'launched' as const),
     })
-    await expect(service.launch(tool.id)).resolves.toMatchObject({ success: false, error: '没有权限启动该程序。' })
+    await expect(service.launch({ toolId: tool.id, launchMode: 'normal' })).resolves.toMatchObject({
+      success: false,
+      error: '没有权限启动该程序。',
+    })
     expect((await store.get(tool.id))?.launch_count).toBe(0)
     expect(child.unref).not.toHaveBeenCalled()
+  })
+
+  it('resolves a system terminal reference from current settings on every list', async () => {
+    const { root, store } = await fixture()
+    const first = join(root, 'Terminals', 'SecureCRT.exe')
+    const second = join(root, 'Terminals2', 'SecureCRT.exe')
+    await fs.mkdir(join(root, 'Terminals'), { recursive: true })
+    await fs.mkdir(join(root, 'Terminals2'), { recursive: true })
+    await fs.writeFile(first, 'first')
+    await fs.writeFile(second, 'second')
+    const reference = await store.createSystemReference('securecrt')
+    let configuredPath = first
+    const service = new ExternalToolService({
+      store,
+      spawn: vi.fn(),
+      reveal: vi.fn(),
+      getExecutableIcon: vi.fn(async () => null),
+      getCustomIcon: vi.fn(async () => null),
+      resolveSystemSettings: vi.fn(async () => ({
+        legacyIpopPath: '',
+        terminalPaths: { securecrt: configuredPath, xshell: '', putty: '' },
+      })),
+      elevatedLaunch: vi.fn(async () => 'launched' as const),
+    })
+
+    expect((await service.list()).tools.find((item) => item.id === reference.id)?.executable_path).toBe(first)
+    configuredPath = second
+    expect((await service.list()).tools.find((item) => item.id === reference.id)?.executable_path).toBe(second)
+    const persisted = JSON.parse(await fs.readFile(store.path, 'utf8'))
+    expect(persisted.tools.find((item: { id: string }) => item.id === reference.id).executable_path).toBeNull()
+  })
+
+  it('returns UAC cancellation without counters and records only successful elevated launches', async () => {
+    const { store, request } = await fixture()
+    const tool = await store.create({ ...request, launchPrivilege: 'administrator' })
+    const elevatedLaunch = vi.fn(async (): Promise<'launched' | 'cancelled'> => 'cancelled')
+    const spawn = vi.fn()
+    const service = new ExternalToolService({
+      store,
+      spawn,
+      reveal: vi.fn(),
+      getExecutableIcon: vi.fn(async () => null),
+      getCustomIcon: vi.fn(async () => null),
+      resolveSystemSettings: vi.fn(async () => ({
+        legacyIpopPath: '',
+        terminalPaths: { securecrt: '', xshell: '', putty: '' },
+      })),
+      elevatedLaunch,
+    })
+
+    await expect(service.launch({ toolId: tool.id, launchMode: 'normal' })).resolves.toMatchObject({
+      success: false,
+      status: 'cancelled',
+      errorCode: 'ELEVATION_CANCELLED',
+    })
+    expect(spawn).not.toHaveBeenCalled()
+    expect(await store.get(tool.id)).toMatchObject({
+      launch_count: 0,
+      administrator_launch_count: 0,
+      last_launch_mode: null,
+    })
+
+    elevatedLaunch.mockResolvedValueOnce('launched')
+    await expect(service.launch({ toolId: tool.id, launchMode: 'normal' })).resolves.toEqual({
+      success: true,
+      toolId: tool.id,
+    })
+    expect(elevatedLaunch).toHaveBeenLastCalledWith({
+      executablePath: tool.executable_path,
+      arguments: tool.arguments,
+      workingDirectory: tool.working_directory,
+    })
+    expect(await store.get(tool.id)).toMatchObject({
+      launch_count: 1,
+      administrator_launch_count: 1,
+      last_launch_mode: 'administrator',
+    })
+  })
+
+  it('does not update counters when the elevated launcher fails', async () => {
+    const { store, request } = await fixture()
+    const tool = await store.create({ ...request, launchPrivilege: 'administrator' })
+    const service = new ExternalToolService({
+      store,
+      spawn: vi.fn(),
+      reveal: vi.fn(),
+      getExecutableIcon: vi.fn(async () => null),
+      getCustomIcon: vi.fn(async () => null),
+      resolveSystemSettings: vi.fn(async () => ({
+        legacyIpopPath: '',
+        terminalPaths: { securecrt: '', xshell: '', putty: '' },
+      })),
+      elevatedLaunch: vi.fn(async () => {
+        throw Object.assign(new Error('helper failed'), { code: 'ELEVATED_HELPER_EXIT_24' })
+      }),
+    })
+
+    await expect(service.launch({ toolId: tool.id, launchMode: 'administrator' })).resolves.toMatchObject({
+      success: false,
+    })
+    expect(await store.get(tool.id)).toMatchObject({
+      launch_count: 0,
+      administrator_launch_count: 0,
+      last_launched_at: null,
+      last_launch_mode: null,
+    })
+  })
+
+  it('rejects elevating NetConsole itself before invoking the helper', async () => {
+    const { root, store, request } = await fixture()
+    const executablePath = join(root, 'Tools', 'NetConsole.exe')
+    await fs.writeFile(executablePath, 'test executable')
+    const tool = await store.create({
+      ...request,
+      name: 'NetConsole',
+      executablePath,
+      launchPrivilege: 'administrator',
+    })
+    const elevatedLaunch = vi.fn(async () => 'launched' as const)
+    const service = new ExternalToolService({
+      store,
+      spawn: vi.fn(),
+      reveal: vi.fn(),
+      getExecutableIcon: vi.fn(async () => null),
+      getCustomIcon: vi.fn(async () => null),
+      resolveSystemSettings: vi.fn(async () => ({
+        legacyIpopPath: '',
+        terminalPaths: { securecrt: '', xshell: '', putty: '' },
+      })),
+      elevatedLaunch,
+      applicationExecutablePath: executablePath,
+    })
+
+    await expect(service.launch({ toolId: tool.id, launchMode: 'administrator' })).resolves.toMatchObject({
+      success: false,
+      error: '禁止以管理员身份启动 NetConsole。',
+    })
+    expect(elevatedLaunch).not.toHaveBeenCalled()
+    expect(await store.get(tool.id)).toMatchObject({
+      launch_count: 0,
+      administrator_launch_count: 0,
+      last_launch_mode: null,
+    })
   })
 })

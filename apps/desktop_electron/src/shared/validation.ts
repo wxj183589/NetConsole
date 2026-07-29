@@ -22,6 +22,11 @@ import type {
   ExternalToolCategoryReorderRequest,
   ExternalToolDeleteCategoryRequest,
   ExternalToolIconMode,
+  ExternalToolLaunchMode,
+  ExternalToolLaunchPrivilege,
+  ExternalToolLaunchRequest,
+  ExternalToolSystemReferenceCreateRequest,
+  ExternalToolSystemSettingKey,
 } from './bridge'
 
 const MAX_FILTERS = 20
@@ -379,7 +384,7 @@ export function validateSelectFileOptions(value: unknown): SelectFileOptions {
 }
 
 export function validateSettingsToolId(value: unknown): SettingsToolId {
-  if (!['iperf3', 'fping', 'ipop', 'securecrt', 'xshell', 'putty'].includes(String(value))) {
+  if (!['iperf3', 'fping', 'securecrt', 'xshell', 'putty'].includes(String(value))) {
     throw new TypeError('settings tool id is invalid')
   }
   return value as SettingsToolId
@@ -391,7 +396,7 @@ export function validateSettingsDirectoryId(value: unknown): SettingsDirectoryId
 }
 
 export function validateSettingsActionId(value: unknown): SettingsActionId {
-  if (!['open_settings_config', 'open_current_site', 'launch_ipop'].includes(String(value))) {
+  if (!['open_settings_config', 'open_current_site'].includes(String(value))) {
     throw new TypeError('settings action id is invalid')
   }
   return value as SettingsActionId
@@ -417,7 +422,7 @@ export function validateExternalToolCreateRequest(value: unknown): ExternalToolC
   const record = asRecord(value, 'external tool create request')
   rejectUnknownKeys(record, [
     'name', 'executablePath', 'arguments', 'workingDirectory', 'categoryId',
-    'favorite', 'iconMode', 'iconSelectionId',
+    'favorite', 'iconMode', 'iconSelectionId', 'launchPrivilege',
   ])
   return {
     name: validateExternalToolName(record.name),
@@ -429,6 +434,7 @@ export function validateExternalToolCreateRequest(value: unknown): ExternalToolC
     categoryId: validateExternalToolId(record.categoryId, 'categoryId'),
     favorite: validateBoolean(record.favorite, 'favorite'),
     iconMode: validateExternalToolIconMode(record.iconMode),
+    launchPrivilege: validateExternalToolLaunchPrivilege(record.launchPrivilege),
     ...(record.iconSelectionId === undefined
       ? {}
       : { iconSelectionId: validateExternalToolId(record.iconSelectionId, 'iconSelectionId') }),
@@ -437,10 +443,45 @@ export function validateExternalToolCreateRequest(value: unknown): ExternalToolC
 
 export function validateExternalToolUpdateRequest(value: unknown): ExternalToolUpdateRequest {
   const record = asRecord(value, 'external tool update request')
-  const request = validateExternalToolCreateRequest(
-    Object.fromEntries(Object.entries(record).filter(([key]) => key !== 'id')),
-  )
-  return { id: validateExternalToolId(record.id), ...request }
+  rejectUnknownKeys(record, [
+    'id', 'name', 'executablePath', 'arguments', 'workingDirectory', 'categoryId',
+    'favorite', 'iconMode', 'iconSelectionId', 'launchPrivilege',
+  ])
+  return {
+    id: validateExternalToolId(record.id),
+    name: validateExternalToolName(record.name),
+    ...(record.executablePath === undefined
+      ? {}
+      : { executablePath: validateExternalToolExecutablePath(record.executablePath) }),
+    arguments: validateExternalToolArguments(record.arguments),
+    ...(record.workingDirectory === undefined || record.workingDirectory === ''
+      ? {}
+      : { workingDirectory: validateExternalToolAbsolutePath(record.workingDirectory, 'workingDirectory') }),
+    categoryId: validateExternalToolId(record.categoryId, 'categoryId'),
+    favorite: validateBoolean(record.favorite, 'favorite'),
+    iconMode: validateExternalToolIconMode(record.iconMode),
+    launchPrivilege: validateExternalToolLaunchPrivilege(record.launchPrivilege),
+    ...(record.iconSelectionId === undefined
+      ? {}
+      : { iconSelectionId: validateExternalToolId(record.iconSelectionId, 'iconSelectionId') }),
+  }
+}
+
+export function validateExternalToolSystemReferenceCreateRequest(
+  value: unknown,
+): ExternalToolSystemReferenceCreateRequest {
+  const record = asRecord(value, 'external tool system reference create request')
+  rejectUnknownKeys(record, ['sourceKey'])
+  return { sourceKey: validateExternalToolSystemSettingKey(record.sourceKey) }
+}
+
+export function validateExternalToolLaunchRequest(value: unknown): ExternalToolLaunchRequest {
+  const record = asRecord(value, 'external tool launch request')
+  rejectUnknownKeys(record, ['toolId', 'launchMode'])
+  return {
+    toolId: validateExternalToolId(record.toolId),
+    launchMode: validateExternalToolLaunchMode(record.launchMode),
+  }
 }
 
 export function validateExternalToolFavoriteRequest(value: unknown): { toolId: string; favorite: boolean } {
@@ -517,6 +558,25 @@ function validateExternalToolArguments(value: unknown): string[] {
 function validateExternalToolIconMode(value: unknown): ExternalToolIconMode {
   if (!['auto', 'default', 'custom'].includes(String(value))) throw new TypeError('iconMode is invalid')
   return value as ExternalToolIconMode
+}
+
+function validateExternalToolLaunchPrivilege(value: unknown): ExternalToolLaunchPrivilege {
+  if (!['normal', 'ask', 'administrator'].includes(String(value))) {
+    throw new TypeError('launchPrivilege is invalid')
+  }
+  return value as ExternalToolLaunchPrivilege
+}
+
+function validateExternalToolLaunchMode(value: unknown): ExternalToolLaunchMode {
+  if (!['normal', 'administrator'].includes(String(value))) throw new TypeError('launchMode is invalid')
+  return value as ExternalToolLaunchMode
+}
+
+function validateExternalToolSystemSettingKey(value: unknown): ExternalToolSystemSettingKey {
+  if (!['securecrt', 'xshell', 'putty'].includes(String(value))) {
+    throw new TypeError('system setting tool key is invalid')
+  }
+  return value as ExternalToolSystemSettingKey
 }
 
 function validateExternalToolIdArray(value: unknown, fieldName: string): string[] {

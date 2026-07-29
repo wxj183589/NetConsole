@@ -38,7 +38,7 @@ _TERMINAL_KEYS = {
     "xshell": "external_terminal/xshell_path",
 }
 _TOOL_FIELDS = {
-    "iperf3": "iperf_path", "fping": "fping_path", "ipop": "ipop_path",
+    "iperf3": "iperf_path", "fping": "fping_path",
     "putty": "putty", "securecrt": "securecrt", "xshell": "xshell",
 }
 _INTERNAL_TITLE_KEY = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+$")

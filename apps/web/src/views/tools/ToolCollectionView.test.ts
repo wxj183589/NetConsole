@@ -22,6 +22,8 @@ function tool(overrides: Partial<ExternalToolView> = {}): ExternalToolView {
   return {
     id: '7c890030-3a3f-4d6b-b58e-7624d21daff9',
     name: 'IPOP',
+    source_type: 'independent',
+    source_key: null,
     executable_path: 'C:\\Tools\\IPOP.EXE',
     executable_name: 'IPOP.EXE',
     arguments: [],
@@ -33,10 +35,13 @@ function tool(overrides: Partial<ExternalToolView> = {}): ExternalToolView {
     icon_mode: 'auto',
     custom_icon_path: null,
     icon_data_url: null,
+    launch_privilege: 'normal',
     status: 'AVAILABLE',
     status_message: '可用',
     launch_count: 0,
+    administrator_launch_count: 0,
     last_launched_at: null,
+    last_launch_mode: null,
     created_at: '2026-07-30T00:00:00.000Z',
     updated_at: '2026-07-30T00:00:00.000Z',
     ...overrides,
@@ -58,14 +63,26 @@ afterEach(() => Reflect.deleteProperty(window, 'netconsoleDesktop'))
 
 describe('ToolCollectionView', () => {
   it('shows a compact empty state with the first-tool action', async () => {
-    const wrapper = await mounted({ schema_version: 1, categories: [category], tools: [] })
+    const wrapper = await mounted({ schema_version: 2, categories: [category], tools: [] })
     expect(wrapper.text()).toContain('尚未添加第三方工具')
     expect(wrapper.text()).toContain('添加第一个工具')
+    expect(wrapper.text()).toContain('添加系统已配置工具')
+  })
+
+  it('adds a terminal shortcut through a semantic system setting key', async () => {
+    vi.mocked(api.createExternalToolSystemReference).mockResolvedValueOnce({
+      success: true,
+      list: { schema_version: 2, categories: [category], tools: [] },
+    })
+    const wrapper = await mounted({ schema_version: 2, categories: [category], tools: [] })
+    wrapper.findComponent({ name: 'ElDropdown' }).vm.$emit('command', 'securecrt')
+    await flushPromises()
+    expect(api.createExternalToolSystemReference).toHaveBeenCalledWith('securecrt')
   })
 
   it('searches name, category and executable name', async () => {
     const wrapper = await mounted({
-      schema_version: 1,
+      schema_version: 2,
       categories: [category],
       tools: [tool(), tool({
         id: '718694db-36e8-4a91-909d-ad328e350271',
@@ -81,7 +98,7 @@ describe('ToolCollectionView', () => {
 
   it('marks a missing executable and offers relocation without hiding other tools', async () => {
     const wrapper = await mounted({
-      schema_version: 1,
+      schema_version: 2,
       categories: [category],
       tools: [
         tool({ status: 'MISSING', status_message: '程序文件不存在' }),

@@ -27,6 +27,7 @@ import {
   validateSettingsActionId, validateSettingsDirectoryId, validateSettingsToolId,
   validateUiPreferenceKey, validateUiPreferenceValue,
   validateExternalToolCreateRequest,
+  validateExternalToolSystemReferenceCreateRequest,
   validateExternalToolUpdateRequest,
   validateExternalToolId,
   validateExternalToolName,
@@ -35,6 +36,7 @@ import {
   validateExternalToolCategoryReorderRequest,
   validateExternalToolCategoryRenameRequest,
   validateExternalToolDeleteCategoryRequest,
+  validateExternalToolLaunchRequest,
 } from '../shared/validation'
 import type { BackendRuntimeInfo } from './backend-manager'
 import { BackendDownloadManager } from './backend-download'
@@ -432,6 +434,12 @@ export function registerDesktopIpc(
     )),
   )
   dependencies.ipcMain.handle(
+    DESKTOP_IPC.createExternalToolSystemReference,
+    trusted((value) => requireExternalToolService(dependencies).createSystemReference(
+      validateExternalToolSystemReferenceCreateRequest(value),
+    )),
+  )
+  dependencies.ipcMain.handle(
     DESKTOP_IPC.updateExternalTool,
     trusted((value) => requireExternalToolService(dependencies).update(
       validateExternalToolUpdateRequest(value),
@@ -484,7 +492,7 @@ export function registerDesktopIpc(
   dependencies.ipcMain.handle(
     DESKTOP_IPC.launchExternalTool,
     trusted((value) => requireExternalToolService(dependencies).launch(
-      validateExternalToolId(value),
+      validateExternalToolLaunchRequest(value),
     )),
   )
   dependencies.ipcMain.handle(

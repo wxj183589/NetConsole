@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, Search, Setting } from '@element-plus/icons-vue'
+import { Connection, Plus, Refresh, Search, Setting } from '@element-plus/icons-vue'
 
 import { useExternalToolsStore } from '../../stores/externalTools'
 import type {
   ExternalToolCategory,
   ExternalToolCreateRequest,
+  ExternalToolLaunchMode,
+  ExternalToolSystemSettingKey,
   ExternalToolUpdateRequest,
   ExternalToolView,
 } from '../../types/externalTools'
@@ -16,6 +19,7 @@ import ExternalToolCategoryDialog from './components/ExternalToolCategoryDialog.
 import ExternalToolEditorDialog from './components/ExternalToolEditorDialog.vue'
 
 const store = useExternalToolsStore()
+const router = useRouter()
 const { categories, tools, loading, error, launchingIds, favoriteTools, commonTools } = storeToRefs(store)
 const activeTab = ref<'all' | 'favorites'>('all')
 const search = ref('')
@@ -83,12 +87,54 @@ async function saveTool(
   }
 }
 
-async function launchTool(tool: ExternalToolView): Promise<void> {
+async function launchTool(
+  tool: ExternalToolView,
+  requestedMode?: ExternalToolLaunchMode,
+): Promise<void> {
   try {
-    await store.launch(tool)
+    let launchMode = requestedMode
+      ?? (tool.launch_privilege === 'administrator' ? 'administrator' : 'normal')
+    if (!requestedMode && tool.launch_privilege === 'ask') {
+      try {
+        await ElMessageBox.confirm(
+          '选择本次启动权限。',
+          '启动权限',
+          {
+            confirmButtonText: '管理员身份',
+            cancelButtonText: '普通权限',
+            distinguishCancelAndClose: true,
+            type: 'warning',
+          },
+        )
+        launchMode = 'administrator'
+      } catch (action) {
+        if (action === 'cancel') launchMode = 'normal'
+        else return
+      }
+    }
+    const result = await store.launch(tool, launchMode)
+    if (!result) return
+    if (result.errorCode === 'ELEVATION_CANCELLED') {
+      ElMessage.info('已取消管理员身份启动。')
+    } else if (!result.success) {
+      ElMessage.error(result.error || '工具启动失败')
+    }
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '工具启动失败')
   }
+}
+
+async function addSystemReference(value: string | number | object): Promise<void> {
+  const sourceKey = String(value)
+  if (!['securecrt', 'xshell', 'putty'].includes(sourceKey)) return
+  const result = await store.addSystemReference(sourceKey as ExternalToolSystemSettingKey)
+  if (result.success) ElMessage.success('系统已配置工具已添加')
+  else if (result.existingTool) await openExisting(result.existingTool.id)
+  else ElMessage.error(result.error || '系统已配置工具添加失败')
+}
+
+async function configureSystemTool(): Promise<void> {
+  await router.push({ path: '/system-settings', query: { section: 'external-terminal' } })
 }
 
 async function toggleFavorite(tool: ExternalToolView): Promise<void> {
@@ -107,7 +153,9 @@ async function revealTool(tool: ExternalToolView): Promise<void> {
 async function removeTool(tool: ExternalToolView): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      '仅删除 NetConsole 中的工具记录，不会删除本机程序文件。',
+      tool.source_type === 'system_setting'
+        ? '仅删除工具集快捷入口，不会清除系统设置中的外部终端路径。'
+        : '仅删除 NetConsole 中的工具记录，不会删除本机程序文件。',
       '删除工具',
       { confirmButtonText: '删除记录', cancelButtonText: '取消', type: 'warning' },
     )
@@ -202,6 +250,16 @@ async function reorderCategories(ids: string[]): Promise<void> {
         </div>
         <div class="header-actions">
           <el-button type="primary" :icon="Plus" @click="openEditor()">添加工具</el-button>
+          <el-dropdown @command="addSystemReference">
+            <el-button :icon="Connection">添加系统已配置工具</el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="securecrt">SecureCRT</el-dropdown-item>
+                <el-dropdown-item command="xshell">Xshell</el-dropdown-item>
+                <el-dropdown-item command="putty">PuTTY</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
           <el-button :icon="Setting" @click="categoryVisible = true">管理分类</el-button>
           <el-button :icon="Refresh" :loading="loading" @click="store.refresh(true)">刷新状态</el-button>
         </div>
@@ -236,11 +294,13 @@ async function reorderCategories(ids: string[]): Promise<void> {
                 :tool="tool"
                 :launching="launchingIds.has(tool.id)"
                 @launch="launchTool"
+                @launch-admin="(item) => launchTool(item, 'administrator')"
                 @favorite="toggleFavorite"
                 @edit="openEditor"
                 @relocate="(item) => openEditor(item, true)"
                 @reveal="revealTool"
                 @remove="removeTool"
+                @configure="configureSystemTool"
               />
             </div>
           </section>
@@ -257,7 +317,9 @@ async function reorderCategories(ids: string[]): Promise<void> {
                 :tool="tool"
                 :launching="launchingIds.has(tool.id)"
                 @launch="launchTool" @favorite="toggleFavorite" @edit="openEditor"
+                @launch-admin="(item) => launchTool(item, 'administrator')"
                 @relocate="(item) => openEditor(item, true)" @reveal="revealTool" @remove="removeTool"
+                @configure="configureSystemTool"
               />
             </div>
           </section>
@@ -271,7 +333,9 @@ async function reorderCategories(ids: string[]): Promise<void> {
                 :tool="tool"
                 :launching="launchingIds.has(tool.id)"
                 @launch="launchTool" @favorite="toggleFavorite" @edit="openEditor"
+                @launch-admin="(item) => launchTool(item, 'administrator')"
                 @relocate="(item) => openEditor(item, true)" @reveal="revealTool" @remove="removeTool"
+                @configure="configureSystemTool"
               />
             </div>
           </section>

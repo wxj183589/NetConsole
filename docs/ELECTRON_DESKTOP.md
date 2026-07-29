@@ -139,7 +139,7 @@ pnpm build
 pnpm start
 ```
 
-`pnpm build` 构建单文件 main/preload 和 `apps/web/dist`；`pnpm start` 启动 Electron 与本机 Python，由 FastAPI 在同一动态回环 Origin 提供已构建的 Vue 静态资源。Electron 不使用第二套 Renderer，也不把临时令牌放入页面 URL。
+`pnpm build` 构建单文件 main/preload、Windows x64 管理员启动 helper 和 `apps/web/dist`；构建机必须提供 Go，helper 使用 `CGO_ENABLED=0` 和 Windows GUI 子系统生成。`pnpm start` 启动 Electron 与本机 Python，由 FastAPI 在同一动态回环 Origin 提供已构建的 Vue 静态资源。正式运行只使用已打包的 `resources/native/netconsole-elevated-launcher.exe`，客户机不需要 Go。Electron 不使用第二套 Renderer，也不把临时令牌放入页面 URL。
 
 Electron Builder 目录包/NSIS 与 PyInstaller 受管 Backend 的构建链已经建立。NSIS 保持现有安装器，只新增程序目录之后的数据根选择页；它以管理员权限写入 HKLM 指针，普通卸载不会删除业务根。升级时保持原根；选择新根时由受管 Backend 迁移成功后才更新指针。依赖批准清单、NOTICE、SBOM 和 package smoke 仍是构建门，完整 Windows 安装/升级/卸载人工验收仍待最终组合执行。代码签名和自动升级尚未建立，不得把源码 `.venv` 当作交付依赖。
 
@@ -209,8 +209,8 @@ Renderer 当前只能调用：
 - `getRuntimeConfig`
 - `selectFile`
 - `selectDirectory`
-- `listExternalTools`、三个工具集专用选择器和受控增删改/分类/排序方法
-- `launchExternalTool(toolId)`、`revealExternalTool(toolId)` 与 `refreshExternalToolStatuses`
+- `listExternalTools`、三个工具集专用选择器、系统终端引用和受控增删改/分类/排序方法
+- `launchExternalTool({toolId, launchMode})`、`revealExternalTool(toolId)` 与 `refreshExternalToolStatuses`
 - `chooseSavePath`
 - `downloadBackendResource`
 - `openPath`
@@ -223,7 +223,7 @@ Renderer 当前只能调用：
 
 没有通用 `invoke(channel)`、`send(channel)`、文件读写、环境变量读取、Python 路径设置或命令执行接口。详细路径规则见 [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md)。
 
-工具集使用独立 `userData/external-tools.json` Store，不进入 UI Preference 或局点数据。Renderer 编辑时可以显示用户已经选择的 EXE 路径，但启动和定位只能传 UUID；Main 重新取已登记记录、检查 `.exe`/普通文件/工作目录并以参数数组 `spawn`，固定 `shell:false / detached:true / stdio:"ignore"`。自定义图标源路径留在 Main 的短期选择表，Renderer 只收到 `selectionId` 和 data URL。完整契约见[工具集](EXTERNAL_TOOL_COLLECTION.md)。
+工具集使用独立 `userData/external-tools.json` schema v2 Store，不进入 UI Preference 或局点数据。iperf3/fping 留在系统设置；SecureCRT/Xshell/PuTTY 卡片只保存系统设置引用；旧 IPOP 路径幂等迁移为独立工具。Renderer 启动只传工具 UUID 与普通/管理员模式，Main 重新取已登记记录并复验。普通启动固定 `shell:false / detached:true / stdio:"ignore"`；管理员启动通过打包的最小 Go helper 调用 `ShellExecuteExW(runas)`，禁止提升 NetConsole 自身，UAC 取消不增加统计。自定义图标源路径留在 Main 的短期选择表，Renderer 只收到 `selectionId` 和 data URL。真实 UAC 和正式包 helper 状态为 `IMPLEMENTED_UNVERIFIED`，完整契约见[工具集](EXTERNAL_TOOL_COLLECTION.md)。
 
 ## 文件选择与导出边界
 

@@ -4,6 +4,7 @@ import { defineStore } from 'pinia'
 import {
   createExternalTool,
   createExternalToolCategory,
+  createExternalToolSystemReference,
   deleteExternalTool,
   deleteExternalToolCategory,
   launchExternalTool,
@@ -21,9 +22,12 @@ import type {
   ExternalToolCreateRequest,
   ExternalToolDeleteCategoryRequest,
   ExternalToolListResult,
+  ExternalToolLaunchMode,
+  ExternalToolLaunchResult,
   ExternalToolMutationResult,
   ExternalToolUpdateRequest,
   ExternalToolView,
+  ExternalToolSystemSettingKey,
 } from '../types/externalTools'
 
 export const useExternalToolsStore = defineStore('external-tools', () => {
@@ -81,18 +85,29 @@ export const useExternalToolsStore = defineStore('external-tools', () => {
     return result
   }
 
-  async function launch(tool: ExternalToolView): Promise<void> {
-    if (launchingIds.value.has(tool.id)) return
+  async function launch(
+    tool: ExternalToolView,
+    launchMode: ExternalToolLaunchMode,
+  ): Promise<ExternalToolLaunchResult | undefined> {
+    if (launchingIds.value.has(tool.id)) return undefined
     launchingIds.value = new Set(launchingIds.value).add(tool.id)
     try {
-      const result = await launchExternalTool(tool.id)
-      if (!result.success) throw new Error(result.error || '工具启动失败')
-      await refresh()
+      const result = await launchExternalTool(tool.id, launchMode)
+      if (result.success) await refresh()
+      return result
     } finally {
       const next = new Set(launchingIds.value)
       next.delete(tool.id)
       launchingIds.value = next
     }
+  }
+
+  async function addSystemReference(
+    sourceKey: ExternalToolSystemSettingKey,
+  ): Promise<ExternalToolMutationResult> {
+    const result = await createExternalToolSystemReference(sourceKey)
+    if (result.list) applyList(result.list)
+    return result
   }
 
   async function reveal(toolId: string): Promise<void> {
@@ -143,6 +158,7 @@ export const useExternalToolsStore = defineStore('external-tools', () => {
     remove,
     favorite,
     launch,
+    addSystemReference,
     reveal,
     createCategory,
     renameCategory,

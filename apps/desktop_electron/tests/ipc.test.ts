@@ -100,12 +100,13 @@ function createHarness(overrides: {
 }
 
 function externalToolService(): ExternalToolServiceLike {
-  const emptyList = { schema_version: 1 as const, categories: [], tools: [] }
+  const emptyList = { schema_version: 2 as const, categories: [], tools: [] }
   return {
     list: vi.fn(async () => emptyList),
     describeExecutable: vi.fn(async (path: string) => ({ cancelled: false, path })),
     stageCustomIcon: vi.fn(async () => ({ cancelled: true })),
     create: vi.fn(async () => ({ success: true, list: emptyList })),
+    createSystemReference: vi.fn(async () => ({ success: true, list: emptyList })),
     update: vi.fn(async () => ({ success: true, list: emptyList })),
     delete: vi.fn(async () => ({ success: true, list: emptyList })),
     setFavorite: vi.fn(async () => ({ success: true, list: emptyList })),
@@ -114,7 +115,7 @@ function externalToolService(): ExternalToolServiceLike {
     createCategory: vi.fn(async () => ({ success: true, list: emptyList })),
     renameCategory: vi.fn(async () => ({ success: true, list: emptyList })),
     deleteCategory: vi.fn(async () => ({ success: true, list: emptyList })),
-    launch: vi.fn(async (toolId: string) => ({ success: true, toolId })),
+    launch: vi.fn(async (request) => ({ success: true, toolId: request.toolId })),
     reveal: vi.fn(async (toolId: string) => ({ success: true, toolId })),
   }
 }
@@ -169,16 +170,27 @@ describe('desktop IPC', () => {
     const { ipcMain, sender } = createHarness({ externalToolService: service })
     const event = { sender }
 
-    await ipcMain.handlers.get(DESKTOP_IPC.launchExternalTool)?.(event, toolId)
+    await ipcMain.handlers.get(DESKTOP_IPC.launchExternalTool)?.(event, {
+      toolId,
+      launchMode: 'normal',
+    })
     await ipcMain.handlers.get(DESKTOP_IPC.revealExternalTool)?.(event, toolId)
-    expect(service.launch).toHaveBeenCalledWith(toolId)
+    expect(service.launch).toHaveBeenCalledWith({ toolId, launchMode: 'normal' })
     expect(service.reveal).toHaveBeenCalledWith(toolId)
     expect(() => ipcMain.handlers.get(DESKTOP_IPC.launchExternalTool)?.(event, {
       toolId,
+      launchMode: 'normal',
       executablePath: 'C:\\Temp\\evil.exe',
-    })).toThrow('toolId is invalid')
+    })).toThrow('unsupported field')
+    expect(() => ipcMain.handlers.get(DESKTOP_IPC.launchExternalTool)?.(event, {
+      toolId,
+      launchMode: 'runas',
+    })).toThrow('launchMode is invalid')
     expect(() => ipcMain.handlers.get(DESKTOP_IPC.revealExternalTool)?.(event, 'C:\\Temp\\evil.exe')).toThrow()
-    expect(() => ipcMain.handlers.get(DESKTOP_IPC.launchExternalTool)?.({ sender: {} }, toolId)).toThrow('未知渲染进程')
+    expect(() => ipcMain.handlers.get(DESKTOP_IPC.launchExternalTool)?.(
+      { sender: {} },
+      { toolId, launchMode: 'normal' },
+    )).toThrow('未知渲染进程')
   })
 
   it('validates external tool create requests again in Main before calling the service', async () => {
@@ -192,6 +204,7 @@ describe('desktop IPC', () => {
       categoryId: 'e5057ec4-03c5-4c17-b24d-b8111ee8f942',
       favorite: false,
       iconMode: 'auto',
+      launchPrivilege: 'normal',
     }
     await handler({ sender }, base)
     expect(service.create).toHaveBeenCalledWith(base)
@@ -199,6 +212,20 @@ describe('desktop IPC', () => {
     expect(() => handler({ sender }, { ...base, executablePath: 'C:\\Tools\\tool.cmd' })).toThrow('.exe')
     expect(() => handler({ sender }, { ...base, command: 'calc.exe' })).toThrow('unsupported field')
     expect(() => handler({ sender }, { ...base, arguments: ['x && calc'] })).toThrow('不支持管道')
+  })
+
+  it('adds system terminal references by semantic key without accepting a copied path', async () => {
+    const service = externalToolService()
+    const { ipcMain, sender } = createHarness({ externalToolService: service })
+    const handler = ipcMain.handlers.get(DESKTOP_IPC.createExternalToolSystemReference)!
+
+    await handler({ sender }, { sourceKey: 'securecrt' })
+    expect(service.createSystemReference).toHaveBeenCalledWith({ sourceKey: 'securecrt' })
+    expect(() => handler({ sender }, {
+      sourceKey: 'securecrt',
+      executablePath: 'C:\\Tools\\SecureCRT.exe',
+    })).toThrow('unsupported field')
+    expect(() => handler({ sender }, { sourceKey: 'ipop' })).toThrow('system setting tool key is invalid')
   })
 
   it('uses dedicated native filters for external executable and icon selection', async () => {
@@ -532,8 +559,10 @@ describe('desktop IPC', () => {
     await expect(ipcMain.handlers.get(DESKTOP_IPC.selectSettingsTool)!(event, 'putty')).rejects.toThrow('does not match tool id')
     await expect(ipcMain.handlers.get(DESKTOP_IPC.selectSettingsTool)!(event, 'cmd')).rejects.toThrow('settings tool id is invalid')
     await expect(ipcMain.handlers.get(DESKTOP_IPC.selectSettingsColor)!(event)).resolves.toEqual({ cancelled: false, color: '#2563EB' })
-    await expect(ipcMain.handlers.get(DESKTOP_IPC.executeSettingsAction)!(event, 'launch_ipop')).resolves.toEqual({ success: true })
+    await expect(ipcMain.handlers.get(DESKTOP_IPC.executeSettingsAction)!(event, 'open_settings_config')).resolves.toEqual({ success: true })
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe('http://127.0.0.1:43123/api/settings/native-action')
+    expect(() => ipcMain.handlers.get(DESKTOP_IPC.executeSettingsAction)!(event, 'launch_ipop'))
+      .toThrow('settings action id is invalid')
   })
 
   it('parents dialogs and downloads to the calling managed window', async () => {

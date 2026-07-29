@@ -23,6 +23,7 @@ import {
   validateSiteStorageRestartRequest,
   validateSiteId,
   validateExternalToolCreateRequest,
+  validateExternalToolSystemReferenceCreateRequest,
   validateExternalToolUpdateRequest,
   validateExternalToolId,
   validateExternalToolName,
@@ -31,6 +32,7 @@ import {
   validateExternalToolCategoryReorderRequest,
   validateExternalToolCategoryRenameRequest,
   validateExternalToolDeleteCategoryRequest,
+  validateExternalToolLaunchRequest,
 } from '../shared/validation'
 
 export interface IpcRendererLike {
@@ -181,6 +183,10 @@ export function createDesktopBridge(ipcRenderer: IpcRendererLike): NetConsoleDes
       DESKTOP_IPC.createExternalTool,
       validateExternalToolCreateRequest(request),
     ) as ReturnType<NetConsoleDesktopBridge['createExternalTool']>,
+    createExternalToolSystemReference: (request) => ipcRenderer.invoke(
+      DESKTOP_IPC.createExternalToolSystemReference,
+      validateExternalToolSystemReferenceCreateRequest(request),
+    ) as ReturnType<NetConsoleDesktopBridge['createExternalToolSystemReference']>,
     updateExternalTool: (request) => ipcRenderer.invoke(
       DESKTOP_IPC.updateExternalTool,
       validateExternalToolUpdateRequest(request),
@@ -213,9 +219,9 @@ export function createDesktopBridge(ipcRenderer: IpcRendererLike): NetConsoleDes
       DESKTOP_IPC.deleteExternalToolCategory,
       validateExternalToolDeleteCategoryRequest(request),
     ) as ReturnType<NetConsoleDesktopBridge['deleteExternalToolCategory']>,
-    launchExternalTool: (toolId) => ipcRenderer.invoke(
+    launchExternalTool: (request) => ipcRenderer.invoke(
       DESKTOP_IPC.launchExternalTool,
-      validateExternalToolId(toolId),
+      validateExternalToolLaunchRequest(request),
     ) as ReturnType<NetConsoleDesktopBridge['launchExternalTool']>,
     revealExternalTool: (toolId) => ipcRenderer.invoke(
       DESKTOP_IPC.revealExternalTool,

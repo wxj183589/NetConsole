@@ -25,6 +25,11 @@ describe('Electron-only packaging', () => {
       to: 'branding',
       filter: ['netconsole.ico', 'netconsole.png'],
     })
+    expect(packageJson.build.extraResources).toContainEqual({
+      from: 'dist/native',
+      to: 'native',
+      filter: ['netconsole-elevated-launcher.exe'],
+    })
     expect(packageJson.build.win.icon).toBe('../../resources/branding/netconsole.ico')
     expect(packageJson.build.nsis.installerIcon).toBe('../../resources/branding/netconsole.ico')
     expect(packageJson.build.nsis.uninstallerIcon).toBe('../../resources/branding/netconsole.ico')

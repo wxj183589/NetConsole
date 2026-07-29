@@ -16,7 +16,7 @@ Gate 成功后在安装包旁生成同名 `.exe.release.json`，记录文件名�
 
 ## 依赖安装
 
-目标环境是 Windows 11、CPython 3.13。依赖按职责拆分，并由单一 `constraints.txt` 精确锁定：
+目标环境是 Windows 11、CPython 3.13。Electron 构建环境还必须提供可用的 Go，用于生成 Windows x64 工具提升 helper；该 helper 以 `CGO_ENABLED=0` 构建，正式客户机运行不需要 Go。Python 依赖按职责拆分，并由单一 `constraints.txt` 精确锁定：
 
 ```powershell
 python -m pip install -r requirements-runtime.txt -c constraints.txt
@@ -89,7 +89,7 @@ pnpm run build
 pnpm package
 ```
 
-上述 `pnpm package` 必须在最终提交推送后执行；它会依次完成 Electron main/preload 与 Web、Backend 冻结、electron-builder NSIS、现有 package smoke 和最终 setup.exe Gate。只需检查 unpacked 目录时仍可使用 `pnpm run package:dir` 后运行 `node scripts/package-smoke.mjs`，但该路径不会生成或验证可发布的 NSIS 安装包，不能作为正式打包结果。
+上述 `pnpm package` 必须在最终提交推送后执行；它会依次完成 Electron main/preload、`dist/native/netconsole-elevated-launcher.exe` 与 Web、Backend 冻结、electron-builder NSIS、现有 package smoke 和最终 setup.exe Gate。electron-builder 把 helper 固定放入 `resources/native/`，package smoke 要求该文件存在。只需检查 unpacked 目录时仍可使用 `pnpm run package:dir` 后运行 `node scripts/package-smoke.mjs`，但该路径不会生成或验证可发布的 NSIS 安装包，不能作为正式打包结果。
 
 `package.mjs` 只接受项目 `.venv` Python 来生成 Backend，安装包通过 `extraResources` 固定放在 `resources/backend/`，运行时不依赖客户机系统 Python。`package-smoke.mjs` 只按安装包相对路径和精确 basename/目录规则扫描 Qt 残留，阻断 PySide/PyQt、shiboken、QFluentWidgets、SIP、Qt5/6 库、Qt WebEngine 进程、Qt plugin DLL 和 `qt.conf`，不会因为构建机父目录名或普通 `plugins/imageformats` 目录误报。
 
@@ -110,7 +110,7 @@ Package smoke 还会在最终冻结的 `resources/backend/NetConsoleBackend.exe`
 
 正式 Windows 用户入口固定为 `dist/electron/win-unpacked/NetConsole.exe`。`build.win.executableName` 必须保持为 `NetConsole`，并由 `package-smoke.mjs` 直接读取该构建配置，禁止在 smoke 脚本重复硬编码名称。`resources/backend/NetConsoleBackend.exe` 仅由 Electron Main 使用 `--electron-backend` 作为受管子进程启动；直接运行它会记录运行日志、显示提示并以非零状态退出，不能尝试启动源码 Electron 开发链。
 
-正式安装包发布门还需要在 Windows 图形环境完成人工启动、签名、安装/卸载和升级验收；必须额外覆盖全新 Windows 用户、无 Python/Node/pnpm/Git/源码、普通用户、中文用户名或中文数据路径、跨电脑 v4 普通 ZIP 完整包无需密码恢复全部凭据、导入/导出敏感警告、脱敏包凭据重录、本机 Electron 眼睛按钮显式读取与关闭清理，以及真实/仿真 H3C SSH 中文任务日志。单元测试、PyInstaller smoke 或 unpacked Electron smoke 不能替代这些验收。卸载不得删除 `D:\NetConsoleData`，也不得创建 LocalAppData 数据回退。
+正式安装包发布门还需要在 Windows 图形环境完成人工启动、签名、安装/卸载和升级验收；必须额外覆盖全新 Windows 用户、无 Python/Node/pnpm/Git/Go/源码、普通用户、中文用户名或中文数据路径、工具集真实 UAC 接受/取消、不同第三方工具、包内 helper 存在且无控制台闪现、跨电脑 v4 普通 ZIP 完整包无需密码恢复全部凭据、导入/导出敏感警告、脱敏包凭据重录、本机 Electron 眼睛按钮显式读取与关闭清理，以及真实/仿真 H3C SSH 中文任务日志。这些工具提升项当前为 `IMPLEMENTED_UNVERIFIED`；单元测试、PyInstaller smoke 或 unpacked Electron smoke 不能替代人工验收。卸载不得删除 `D:\NetConsoleData`，也不得创建 LocalAppData 数据回退。
 
 ## 外部工具与许可证阻塞
 

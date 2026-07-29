@@ -209,7 +209,7 @@ describe('SystemSettingsView mounted behavior', () => {
 
   it('keeps the three terminal paths independent and saves with the current version', async () => {
     const { wrapper } = await mounted()
-    const pathInput = () => wrapper.findAllComponents({ name: 'ElInput' })[3]!
+    const pathInput = () => wrapper.findAllComponents({ name: 'ElInput' })[2]!
     expect(pathInput().props('modelValue')).toBe('C:\\tools\\SecureCRT.exe')
     await change(wrapper, 'terminal-type', 'xshell')
     expect(pathInput().props('modelValue')).toBe('C:\\tools\\Xshell.exe')
@@ -230,7 +230,7 @@ describe('SystemSettingsView mounted behavior', () => {
 
     await wrapper.find('[data-testid="select-terminal-tool"]').trigger('click'); await flushPromises()
 
-    const pathInput = wrapper.findAllComponents({ name: 'ElInput' })[3]!
+    const pathInput = wrapper.findAllComponents({ name: 'ElInput' })[2]!
     expect(pathInput.props('modelValue')).toBe('D:\\PuTTY\\PuTTY64.exe')
     expect(wrapper.text()).toContain('已识别为 PuTTY 程序')
     expect(wrapper.text()).not.toContain('所选程序与 PuTTY 类型不匹配')
@@ -240,7 +240,7 @@ describe('SystemSettingsView mounted behavior', () => {
   it('blocks save and keeps a PuTTY executable mismatch beside the field', async () => {
     const { wrapper } = await mounted()
     await change(wrapper, 'terminal-type', 'putty')
-    const field = wrapper.findAllComponents({ name: 'NcExecutablePathField' })[3]!
+    const field = wrapper.findAllComponents({ name: 'NcExecutablePathField' })[2]!
 
     field.vm.$emit('update:modelValue', 'D:\\PuTTY\\plink.exe'); await nextTick()
 
@@ -348,30 +348,27 @@ describe('SystemSettingsView mounted behavior', () => {
     wrapper.unmount()
   })
 
-  it('saves the selected IPOP path before invoking the semantic launch action', async () => {
+  it('hides legacy IPOP controls while preserving the compatibility field on save', async () => {
+    const legacy = snapshot()
+    legacy.values.ipop_path = 'D:\\IPOP\\IPOP.EXE'
+    vi.mocked(api.getSystemSettings).mockResolvedValueOnce(legacy)
     const { wrapper } = await mounted()
-    settingsBridge.selectSettingsTool.mockResolvedValueOnce({ cancelled: false, path: 'D:\\IPOP\\IPOP.EXE' })
-    vi.mocked(api.saveSystemSettings).mockImplementationOnce(async (values) => ({ ...snapshot(), values, version: 'next' }))
+    await change(wrapper, 'theme', 'dark')
+    vi.mocked(api.saveSystemSettings).mockImplementationOnce(async (values) => ({
+      ...legacy,
+      values,
+      version: 'next',
+    }))
 
-    await wrapper.find('[data-testid="select-ipop"]').trigger('click'); await flushPromises()
-    await wrapper.find('[data-testid="launch-ipop"]').trigger('click'); await flushPromises()
-
-    expect(api.saveSystemSettings).toHaveBeenCalledWith(expect.objectContaining({ ipop_path: 'D:\\IPOP\\IPOP.EXE' }), 'missing')
-    expect(vi.mocked(api.saveSystemSettings).mock.invocationCallOrder[0]).toBeLessThan(settingsBridge.executeSettingsAction.mock.invocationCallOrder[0]!)
-    expect(settingsBridge.executeSettingsAction).toHaveBeenCalledWith('launch_ipop')
-    wrapper.unmount()
-  })
-
-  it('blocks IPOP launch after a CAS save failure', async () => {
-    const { wrapper } = await mounted()
-    settingsBridge.selectSettingsTool.mockResolvedValueOnce({ cancelled: false, path: 'D:\\IPOP\\IPOP.EXE' })
-    vi.mocked(api.saveSystemSettings).mockRejectedValueOnce(new Error('version conflict'))
-
-    await wrapper.find('[data-testid="select-ipop"]').trigger('click'); await flushPromises()
-    await wrapper.find('[data-testid="launch-ipop"]').trigger('click'); await flushPromises()
-
-    expect(settingsBridge.executeSettingsAction).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('version conflict')
+    expect(wrapper.find('[data-testid="select-ipop"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="launch-ipop"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('网络测试组件')
+    await wrapper.find('[data-testid="save"]').trigger('click')
+    await flushPromises()
+    expect(api.saveSystemSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ ipop_path: 'D:\\IPOP\\IPOP.EXE' }),
+      'missing',
+    )
     wrapper.unmount()
   })
 
@@ -382,7 +379,7 @@ describe('SystemSettingsView mounted behavior', () => {
     settingsBridge.selectSettingsColor.mockRejectedValueOnce(new Error('color bridge failed'))
     settingsBridge.executeSettingsAction.mockRejectedValueOnce(new Error('action bridge failed'))
 
-    await wrapper.find('[data-testid="select-ipop"]').trigger('click'); await flushPromises()
+    await wrapper.find('[data-testid="select-terminal-tool"]').trigger('click'); await flushPromises()
     expect(wrapper.text()).toContain('tool bridge failed')
     await wrapper.find('[data-testid="select-sessions"]').trigger('click'); await flushPromises()
     expect(wrapper.text()).toContain('directory bridge failed')

@@ -6,11 +6,13 @@ import type {
   ExternalToolCategory,
   ExternalToolCreateRequest,
   ExternalToolIconMode,
+  ExternalToolLaunchMode,
   ExternalToolRecord,
+  ExternalToolSystemSettingKey,
   ExternalToolUpdateRequest,
 } from '../shared/bridge'
 
-export const EXTERNAL_TOOL_SCHEMA_VERSION = 1
+export const EXTERNAL_TOOL_SCHEMA_VERSION = 2
 export const EXTERNAL_TOOL_MAX_ICON_BYTES = 5 * 1024 * 1024
 export const OTHER_TOOLS_CATEGORY_ID = 'e5057ec4-03c5-4c17-b24d-b8111ee8f942'
 const EXTERNAL_TOOL_STORE_MAX_BYTES = 4 * 1024 * 1024
@@ -29,14 +31,20 @@ interface ExternalToolState {
   schema_version: typeof EXTERNAL_TOOL_SCHEMA_VERSION
   categories: ExternalToolCategory[]
   tools: ExternalToolRecord[]
+  migrations: {
+    legacy_ipop_v1: boolean
+  }
 }
 
 type StoreLogger = (event: string, detail?: string) => void
 
 export interface ExternalToolStoreSnapshot {
-  schema_version: 1
+  schema_version: 2
   categories: ExternalToolCategory[]
   tools: ExternalToolRecord[]
+  migrations: {
+    legacy_ipop_v1: boolean
+  }
 }
 
 export class ExternalToolStore {
@@ -75,7 +83,8 @@ export class ExternalToolStore {
       await assertExecutable(request.executablePath)
       const executablePath = normalizeWindowsPath(request.executablePath)
       const duplicate = state.tools.find(
-        (tool) => windowsPathKey(tool.executable_path) === windowsPathKey(executablePath),
+        (tool) => tool.executable_path !== null
+          && windowsPathKey(tool.executable_path) === windowsPathKey(executablePath),
       )
       if (duplicate) throw new ExternalToolStoreError('DUPLICATE_PATH', `该程序已经添加为「${duplicate.name}」。`, duplicate.id)
       const category = requireCategory(state, request.categoryId)
@@ -93,6 +102,8 @@ export class ExternalToolStore {
       const record: ExternalToolRecord = {
         id,
         name: request.name,
+        source_type: 'independent',
+        source_key: null,
         executable_path: executablePath,
         arguments: [...request.arguments],
         working_directory: workingDirectory,
@@ -101,8 +112,11 @@ export class ExternalToolStore {
         sort_order: nextToolOrder(state, category.id),
         icon_mode: request.iconMode,
         custom_icon_path: customIconPath,
+        launch_privilege: request.launchPrivilege,
         launch_count: 0,
+        administrator_launch_count: 0,
         last_launched_at: null,
+        last_launch_mode: null,
         created_at: now,
         updated_at: now,
       }
@@ -118,6 +132,103 @@ export class ExternalToolStore {
     })
   }
 
+  async createSystemReference(sourceKey: ExternalToolSystemSettingKey): Promise<ExternalToolRecord> {
+    return this.enqueue(async () => {
+      await this.ensureLoaded()
+      const state = this.requireState()
+      const before = cloneState(state)
+      const duplicate = state.tools.find(
+        (tool) => tool.source_type === 'system_setting' && tool.source_key === sourceKey,
+      )
+      if (duplicate) {
+        throw new ExternalToolStoreError(
+          'DUPLICATE_SOURCE',
+          `系统已配置工具「${duplicate.name}」已在工具集中。`,
+          duplicate.id,
+        )
+      }
+      const category = state.categories.find((item) => item.name === '终端工具')
+      if (!category) throw new ExternalToolStoreError('NOT_FOUND', '“终端工具”分类不存在。')
+      const now = new Date().toISOString()
+      const record: ExternalToolRecord = {
+        id: randomUUID(),
+        name: systemSettingToolName(sourceKey),
+        source_type: 'system_setting',
+        source_key: sourceKey,
+        executable_path: null,
+        arguments: [],
+        working_directory: null,
+        category_id: category.id,
+        favorite: true,
+        sort_order: nextToolOrder(state, category.id),
+        icon_mode: 'auto',
+        custom_icon_path: null,
+        launch_privilege: 'normal',
+        launch_count: 0,
+        administrator_launch_count: 0,
+        last_launched_at: null,
+        last_launch_mode: null,
+        created_at: now,
+        updated_at: now,
+      }
+      state.tools.push(record)
+      await this.writeWithRollback(before)
+      return cloneTool(record)
+    })
+  }
+
+  async migrateLegacyIpop(path: string): Promise<void> {
+    await this.enqueue(async () => {
+      await this.ensureLoaded()
+      const state = this.requireState()
+      if (state.migrations.legacy_ipop_v1) return
+      const before = cloneState(state)
+      const candidate = path.trim()
+      if (!candidate) {
+        state.migrations.legacy_ipop_v1 = true
+        await this.writeWithRollback(before)
+        return
+      }
+      await assertExecutable(candidate)
+      const executablePath = normalizeWindowsPath(candidate)
+      if (basename(executablePath).toLocaleLowerCase('en-US') !== 'ipop.exe') {
+        throw new ExternalToolStoreError('INVALID_REQUEST', '旧 IPOP 路径不是 IPOP.EXE。')
+      }
+      const duplicate = state.tools.find(
+        (tool) => tool.executable_path !== null
+          && windowsPathKey(tool.executable_path) === windowsPathKey(executablePath),
+      )
+      if (!duplicate) {
+        const category = state.categories.find((item) => item.name === '网络工具')
+        if (!category) throw new ExternalToolStoreError('NOT_FOUND', '“网络工具”分类不存在。')
+        const now = new Date().toISOString()
+        state.tools.push({
+          id: randomUUID(),
+          name: 'IPOP',
+          source_type: 'independent',
+          source_key: null,
+          executable_path: executablePath,
+          arguments: [],
+          working_directory: win32.dirname(executablePath),
+          category_id: category.id,
+          favorite: true,
+          sort_order: nextToolOrder(state, category.id),
+          icon_mode: 'auto',
+          custom_icon_path: null,
+          launch_privilege: 'normal',
+          launch_count: 0,
+          administrator_launch_count: 0,
+          last_launched_at: null,
+          last_launch_mode: null,
+          created_at: now,
+          updated_at: now,
+        })
+      }
+      state.migrations.legacy_ipop_v1 = true
+      await this.writeWithRollback(before)
+    })
+  }
+
   async update(
     request: ExternalToolUpdateRequest,
     customIconSourcePath?: string,
@@ -126,18 +237,40 @@ export class ExternalToolStore {
       await this.ensureLoaded()
       const state = this.requireState()
       const existing = requireTool(state, request.id)
-      await assertExecutable(request.executablePath)
-      const executablePath = normalizeWindowsPath(request.executablePath)
-      const duplicate = state.tools.find(
-        (tool) => tool.id !== existing.id
-          && windowsPathKey(tool.executable_path) === windowsPathKey(executablePath),
-      )
-      if (duplicate) throw new ExternalToolStoreError('DUPLICATE_PATH', `该程序已经添加为「${duplicate.name}」。`, duplicate.id)
       requireCategory(state, request.categoryId)
-      const workingDirectory = normalizeWindowsPath(
-        request.workingDirectory || win32.dirname(executablePath),
-      )
-      await assertDirectory(workingDirectory)
+      let executablePath = existing.executable_path
+      let workingDirectory = existing.working_directory
+      let arguments_ = [...request.arguments]
+      if (existing.source_type === 'independent') {
+        if (!request.executablePath) {
+          throw new ExternalToolStoreError('INVALID_REQUEST', '请选择程序。')
+        }
+        await assertExecutable(request.executablePath)
+        executablePath = normalizeWindowsPath(request.executablePath)
+        const duplicate = state.tools.find(
+          (tool) => tool.id !== existing.id
+            && tool.executable_path !== null
+            && windowsPathKey(tool.executable_path) === windowsPathKey(executablePath as string),
+        )
+        if (duplicate) {
+          throw new ExternalToolStoreError(
+            'DUPLICATE_PATH',
+            `该程序已经添加为「${duplicate.name}」。`,
+            duplicate.id,
+          )
+        }
+        workingDirectory = normalizeWindowsPath(
+          request.workingDirectory || win32.dirname(executablePath),
+        )
+        await assertDirectory(workingDirectory)
+      } else {
+        if (request.executablePath !== undefined || request.workingDirectory !== undefined || request.arguments.length) {
+          throw new ExternalToolStoreError('INVALID_REQUEST', '系统设置引用的路径、参数和工作目录不能在工具集中修改。')
+        }
+        executablePath = null
+        workingDirectory = null
+        arguments_ = []
+      }
       const oldIconPath = existing.custom_icon_path
       let customIconPath = oldIconPath
       if (request.iconMode === 'custom' && customIconSourcePath) {
@@ -152,13 +285,14 @@ export class ExternalToolStore {
       Object.assign(existing, {
         name: request.name,
         executable_path: executablePath,
-        arguments: [...request.arguments],
+        arguments: arguments_,
         working_directory: workingDirectory,
         category_id: request.categoryId,
         favorite: request.favorite,
         sort_order: changedCategory ? nextToolOrder(state, request.categoryId) : existing.sort_order,
         icon_mode: request.iconMode,
         custom_icon_path: customIconPath,
+        launch_privilege: request.launchPrivilege,
         updated_at: new Date().toISOString(),
       })
       try {
@@ -193,10 +327,12 @@ export class ExternalToolStore {
     })
   }
 
-  async recordLaunch(toolId: string): Promise<ExternalToolRecord> {
+  async recordLaunch(toolId: string, launchMode: ExternalToolLaunchMode): Promise<ExternalToolRecord> {
     return this.mutateTool(toolId, (tool) => {
       tool.launch_count += 1
+      if (launchMode === 'administrator') tool.administrator_launch_count += 1
       tool.last_launched_at = new Date().toISOString()
+      tool.last_launch_mode = launchMode
       tool.updated_at = tool.last_launched_at
     })
   }
@@ -299,13 +435,14 @@ export class ExternalToolStore {
 
   private async ensureLoaded(): Promise<void> {
     if (this.state) return
+    let loaded: { state: ExternalToolState; upgraded: boolean }
     try {
       const stat = await fs.stat(this.path)
       if (!stat.isFile() || stat.size > EXTERNAL_TOOL_STORE_MAX_BYTES) {
         throw new TypeError('external tool store file is invalid')
       }
       const raw = await fs.readFile(this.path, 'utf8')
-      this.state = validatePersistedState(JSON.parse(raw), this.iconsPath)
+      loaded = validatePersistedState(JSON.parse(raw), this.iconsPath)
     } catch (cause) {
       if (isMissingFile(cause)) {
         this.state = defaultState()
@@ -313,7 +450,10 @@ export class ExternalToolStore {
         return
       }
       await this.recoverDamagedFile(cause)
+      return
     }
+    this.state = loaded.state
+    if (loaded.upgraded) await this.writeState()
   }
 
   private async recoverDamagedFile(cause: unknown): Promise<void> {
@@ -392,7 +532,7 @@ export class ExternalToolStore {
 
 export class ExternalToolStoreError extends Error {
   constructor(
-    readonly code: 'DUPLICATE_PATH' | 'INVALID_REQUEST' | 'NOT_FOUND' | 'PERSISTENCE_FAILED',
+    readonly code: 'DUPLICATE_PATH' | 'DUPLICATE_SOURCE' | 'INVALID_REQUEST' | 'NOT_FOUND' | 'PERSISTENCE_FAILED',
     message: string,
     readonly existingToolId?: string,
   ) {
@@ -463,14 +603,16 @@ function defaultState(): ExternalToolState {
     schema_version: EXTERNAL_TOOL_SCHEMA_VERSION,
     categories: DEFAULT_CATEGORIES.map((category) => ({ ...category })),
     tools: [],
+    migrations: { legacy_ipop_v1: false },
   }
 }
 
 function cloneState(state: ExternalToolState): ExternalToolStoreSnapshot {
   return {
-    schema_version: 1,
+    schema_version: 2,
     categories: state.categories.map((category) => ({ ...category })),
     tools: state.tools.map(cloneTool),
+    migrations: { ...state.migrations },
   }
 }
 
@@ -478,9 +620,23 @@ function cloneTool(tool: ExternalToolRecord): ExternalToolRecord {
   return { ...tool, arguments: [...tool.arguments] }
 }
 
-function validatePersistedState(value: unknown, iconsPath: string): ExternalToolState {
-  const record = strictRecord(value, ['schema_version', 'categories', 'tools'], '工具集配置')
-  if (record.schema_version !== EXTERNAL_TOOL_SCHEMA_VERSION) throw new TypeError('external tool schema version is invalid')
+function validatePersistedState(
+  value: unknown,
+  iconsPath: string,
+): { state: ExternalToolState; upgraded: boolean } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('工具集配置无效')
+  }
+  const schemaVersion = (value as { schema_version?: unknown }).schema_version
+  const upgraded = schemaVersion === 1
+  const record = strictRecord(
+    value,
+    upgraded ? ['schema_version', 'categories', 'tools'] : ['schema_version', 'categories', 'tools', 'migrations'],
+    '工具集配置',
+  )
+  if (schemaVersion !== 1 && schemaVersion !== EXTERNAL_TOOL_SCHEMA_VERSION) {
+    throw new TypeError('external tool schema version is invalid')
+  }
   if (!Array.isArray(record.categories) || !Array.isArray(record.tools)) throw new TypeError('external tool collections are invalid')
   if (record.categories.length > EXTERNAL_TOOL_MAX_CATEGORIES || record.tools.length > EXTERNAL_TOOL_MAX_RECORDS) {
     throw new TypeError('external tool collection limit exceeded')
@@ -491,12 +647,29 @@ function validatePersistedState(value: unknown, iconsPath: string): ExternalTool
   if (new Set(categories.map((item) => item.name.toLocaleLowerCase())).size !== categories.length) {
     throw new TypeError('external tool category names are duplicated')
   }
-  const tools = record.tools.map((item) => validateTool(item, categoryIds, iconsPath))
+  const tools = record.tools.map((item) => (
+    upgraded
+      ? validateLegacyTool(item, categoryIds, iconsPath)
+      : validateTool(item, categoryIds, iconsPath)
+  ))
   if (new Set(tools.map((item) => item.id)).size !== tools.length) throw new TypeError('external tool ids are duplicated')
-  if (new Set(tools.map((item) => windowsPathKey(item.executable_path))).size !== tools.length) {
+  const executablePaths = tools
+    .map((item) => item.executable_path)
+    .filter((item): item is string => item !== null)
+  if (new Set(executablePaths.map(windowsPathKey)).size !== executablePaths.length) {
     throw new TypeError('external tool paths are duplicated')
   }
-  return { schema_version: 1, categories, tools }
+  const sourceKeys = tools
+    .filter((item) => item.source_type === 'system_setting')
+    .map((item) => item.source_key)
+  if (new Set(sourceKeys).size !== sourceKeys.length) throw new TypeError('external tool sources are duplicated')
+  const migrations = upgraded
+    ? { legacy_ipop_v1: false }
+    : validateMigrations(record.migrations)
+  return {
+    state: { schema_version: 2, categories, tools, migrations },
+    upgraded,
+  }
 }
 
 function validateCategory(value: unknown): ExternalToolCategory {
@@ -516,11 +689,15 @@ function validateCategory(value: unknown): ExternalToolCategory {
 
 function validateTool(value: unknown, categoryIds: Set<string>, iconsPath: string): ExternalToolRecord {
   const keys: Array<keyof ExternalToolRecord> = [
-    'id', 'name', 'executable_path', 'arguments', 'working_directory', 'category_id',
-    'favorite', 'sort_order', 'icon_mode', 'custom_icon_path', 'launch_count',
-    'last_launched_at', 'created_at', 'updated_at',
+    'id', 'name', 'source_type', 'source_key', 'executable_path', 'arguments',
+    'working_directory', 'category_id', 'favorite', 'sort_order', 'icon_mode',
+    'custom_icon_path', 'launch_privilege', 'launch_count',
+    'administrator_launch_count', 'last_launched_at', 'last_launch_mode',
+    'created_at', 'updated_at',
   ]
   const record = strictRecord(value, keys, '工具记录')
+  const independent = record.source_type === 'independent'
+  const systemReference = record.source_type === 'system_setting'
   if (
     typeof record.id !== 'string'
     || !isUuid(record.id)
@@ -528,9 +705,15 @@ function validateTool(value: unknown, categoryIds: Set<string>, iconsPath: strin
     || !record.name.trim()
     || record.name.length > 80
     || /[\u0000-\u001f\u007f]/.test(record.name)
-    || typeof record.executable_path !== 'string'
-    || record.executable_path.length > 32_767
-    || extname(record.executable_path).toLowerCase() !== '.exe'
+    || (!independent && !systemReference)
+    || (independent && record.source_key !== null)
+    || (systemReference && !['securecrt', 'xshell', 'putty'].includes(String(record.source_key)))
+    || (independent && (
+      typeof record.executable_path !== 'string'
+      || record.executable_path.length > 32_767
+      || extname(record.executable_path).toLowerCase() !== '.exe'
+    ))
+    || (systemReference && record.executable_path !== null)
     || !Array.isArray(record.arguments)
     || record.arguments.length > 64
     || record.arguments.some((item) => (
@@ -539,19 +722,27 @@ function validateTool(value: unknown, categoryIds: Set<string>, iconsPath: strin
       || /[\u0000\r\n]/.test(item)
       || /(?:&&|\|\||[|<>])/.test(item)
     ))
-    || typeof record.working_directory !== 'string'
-    || record.working_directory.length > 32_767
+    || (independent && (
+      typeof record.working_directory !== 'string'
+      || record.working_directory.length > 32_767
+    ))
+    || (systemReference && (record.working_directory !== null || record.arguments.length !== 0))
     || typeof record.category_id !== 'string'
     || !categoryIds.has(record.category_id)
     || typeof record.favorite !== 'boolean'
     || !isSafeOrder(record.sort_order)
     || !['auto', 'default', 'custom'].includes(String(record.icon_mode))
+    || !['normal', 'ask', 'administrator'].includes(String(record.launch_privilege))
     || (record.custom_icon_path !== null && (
       typeof record.custom_icon_path !== 'string' || record.custom_icon_path.length > 32_767
     ))
     || !Number.isSafeInteger(record.launch_count)
     || (record.launch_count as number) < 0
+    || !Number.isSafeInteger(record.administrator_launch_count)
+    || (record.administrator_launch_count as number) < 0
+    || (record.administrator_launch_count as number) > (record.launch_count as number)
     || (record.last_launched_at !== null && !isIsoDate(record.last_launched_at))
+    || (record.last_launch_mode !== null && !['normal', 'administrator'].includes(String(record.last_launch_mode)))
     || !isIsoDate(record.created_at)
     || !isIsoDate(record.updated_at)
   ) throw new TypeError('external tool record is invalid')
@@ -570,19 +761,54 @@ function validateTool(value: unknown, categoryIds: Set<string>, iconsPath: strin
   return {
     id: record.id.toLowerCase(),
     name: record.name.trim(),
-    executable_path: normalizeWindowsPath(record.executable_path),
+    source_type: record.source_type,
+    source_key: systemReference ? record.source_key : null,
+    executable_path: independent ? normalizeWindowsPath(record.executable_path) : null,
     arguments: [...record.arguments] as string[],
-    working_directory: normalizeWindowsPath(record.working_directory),
+    working_directory: independent ? normalizeWindowsPath(record.working_directory) : null,
     category_id: record.category_id,
     favorite: record.favorite,
     sort_order: record.sort_order,
     icon_mode: record.icon_mode as ExternalToolIconMode,
     custom_icon_path: record.custom_icon_path,
+    launch_privilege: record.launch_privilege,
     launch_count: record.launch_count as number,
+    administrator_launch_count: record.administrator_launch_count as number,
     last_launched_at: record.last_launched_at as string | null,
+    last_launch_mode: record.last_launch_mode as ExternalToolLaunchMode | null,
     created_at: record.created_at as string,
     updated_at: record.updated_at as string,
   }
+}
+
+function validateLegacyTool(
+  value: unknown,
+  categoryIds: Set<string>,
+  iconsPath: string,
+): ExternalToolRecord {
+  const record = strictRecord(value, [
+    'id', 'name', 'executable_path', 'arguments', 'working_directory', 'category_id',
+    'favorite', 'sort_order', 'icon_mode', 'custom_icon_path', 'launch_count',
+    'last_launched_at', 'created_at', 'updated_at',
+  ], '旧版工具记录')
+  return validateTool({
+    ...record,
+    source_type: 'independent',
+    source_key: null,
+    launch_privilege: 'normal',
+    administrator_launch_count: 0,
+    last_launch_mode: null,
+  }, categoryIds, iconsPath)
+}
+
+function validateMigrations(value: unknown): ExternalToolState['migrations'] {
+  const record = strictRecord(value, ['legacy_ipop_v1'], '工具集迁移标识')
+  if (typeof record.legacy_ipop_v1 !== 'boolean') throw new TypeError('external tool migrations are invalid')
+  return { legacy_ipop_v1: record.legacy_ipop_v1 }
+}
+
+function systemSettingToolName(sourceKey: ExternalToolSystemSettingKey): string {
+  return sourceKey === 'securecrt' ? 'SecureCRT' : sourceKey === 'xshell' ? 'Xshell' : 'PuTTY'
 }
 
 function strictRecord(value: unknown, allowed: readonly string[], label: string): Record<string, any> {
@@ -615,5 +841,5 @@ function errorCode(cause: unknown): string {
 }
 
 export function externalToolFileName(tool: ExternalToolRecord): string {
-  return basename(tool.executable_path)
+  return tool.executable_path ? basename(tool.executable_path) : systemSettingToolName(tool.source_key!)
 }

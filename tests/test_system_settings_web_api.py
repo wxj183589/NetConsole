@@ -131,6 +131,29 @@ def test_rejects_malicious_tool_paths_and_stale_versions(tmp_path: Path) -> None
     assert client.get("/api/settings").json()["values"]["theme"] == "dark"
 
 
+def test_legacy_ipop_path_round_trips_without_blocking_other_settings(
+    tmp_path: Path,
+) -> None:
+    client, paths = _client(tmp_path)
+    initial = client.get("/api/settings").json()
+    legacy_path = str((tmp_path / "removed" / "IPOP.EXE").resolve())
+
+    response = client.put(
+        "/api/settings",
+        json={
+            **initial["values"],
+            "theme": "dark",
+            "ipop_path": legacy_path,
+            "expected_version": initial["version"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["values"]["ipop_path"] == legacy_path
+    persisted = json.loads(paths.settings_path.read_text(encoding="utf-8"))
+    assert persisted["external_tools/ipop_path"] == legacy_path
+
+
 def test_ipop_native_action_uses_latest_cas_persisted_path(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -21,6 +21,7 @@ describe('preload bridge', () => {
       'chooseSavePath',
       'createExternalTool',
       'createExternalToolCategory',
+      'createExternalToolSystemReference',
       'deleteExternalTool',
       'deleteExternalToolCategory',
       'downloadBackendResource',
@@ -151,7 +152,11 @@ describe('preload bridge', () => {
     expect(() => bridge.showItemInFolder('C:\\private')).toThrow('capabilityId is invalid')
     expect(() => bridge.executeFileDesktopAction('C:\\private')).toThrow('file desktop action reference is invalid')
     expect(() => bridge.openOnlineMrSessionLocation?.('..\\private')).toThrow('Online MR session id is invalid')
-    expect(() => bridge.launchExternalTool('C:\\private\\tool.exe')).toThrow('toolId is invalid')
+    expect(() => bridge.launchExternalTool({
+      toolId: '7c890030-3a3f-4d6b-b58e-7624d21daff9',
+      launchMode: 'normal',
+      executablePath: 'C:\\private\\tool.exe',
+    } as never)).toThrow('unsupported field')
     expect(() => bridge.revealExternalTool('not-an-id')).toThrow('toolId is invalid')
     expect(() => bridge.createExternalTool({
       name: '工具',
@@ -160,6 +165,7 @@ describe('preload bridge', () => {
       categoryId: 'e5057ec4-03c5-4c17-b24d-b8111ee8f942',
       favorite: false,
       iconMode: 'auto',
+      launchPrivilege: 'normal',
     })).toThrow('absolute Windows path')
     expect(() => bridge.restartBackend({ dataRoot: 'relative' })).toThrow('dataRoot must be absolute')
     expect(() => bridge.reportRendererWorkload?.({

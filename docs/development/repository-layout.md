@@ -59,7 +59,7 @@ NetConsole/
 
 - `apps/agent` 只放独立 Windows Go Agent、Python MR sidecar、Agent Web 静态文件、示例配置和 Agent 构建脚本；Agent 的开发与交付运行数据统一写入 `D:\NetConsoleData\agents\local`，测试使用显式测试根的 `agents/` 子树。
 - Qt 桌面源码与历史 Web Shell 已回收，`apps/desktop/` 和 `src/netconsole/ui/` 不得重新创建；历史事实通过 Git 与迁移归档查询。
-- `apps/desktop_electron` 只放 Electron main、单文件 preload 构建源、共享 IPC DTO、安全测试和应用级开发脚本；不得复制 Python Core、业务 Service 或 Vue 页面。
+- `apps/desktop_electron` 只放 Electron main、单文件 preload 构建源、共享 IPC DTO、安全测试、应用级开发脚本和受控 Windows 原生 helper 源码；`native/elevated-launcher` 仅负责固定 JSON 请求到 `ShellExecuteExW(runas)` 的转换，不得扩展为通用执行器。不得复制 Python Core、业务 Service 或 Vue 页面。
 - `apps/web` 只放 Vue/TypeScript/Vite 源码、前端配置和锁文件；`node_modules`、前端 `dist` 和 TypeScript 缓存不得提交。
 - `src/netconsole` 放共享 Python 业务代码、模型、Repository、Service、Parser 和包内静态资源；包名仍为 `netconsole`，不得重新引入 Qt UI。
 - 任何应用不得把数据库、日志、抓包、采集结果、缓存或正式报告写入源码目录。

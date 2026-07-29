@@ -4,10 +4,13 @@ import type {
   ExternalToolDeleteCategoryRequest,
   ExternalToolIconSelectionResult,
   ExternalToolLaunchResult,
+  ExternalToolLaunchMode,
   ExternalToolListResult,
   ExternalToolMutationResult,
   ExternalToolReorderRequest,
   ExternalToolSelectionResult,
+  ExternalToolSystemReferenceCreateRequest,
+  ExternalToolSystemSettingKey,
   ExternalToolUpdateRequest,
 } from '../types/externalTools'
 
@@ -42,6 +45,13 @@ export function createExternalTool(request: ExternalToolCreateRequest): Promise<
   return bridge().createExternalTool(request)
 }
 
+export function createExternalToolSystemReference(
+  sourceKey: ExternalToolSystemSettingKey,
+): Promise<ExternalToolMutationResult> {
+  const request: ExternalToolSystemReferenceCreateRequest = { sourceKey }
+  return bridge().createExternalToolSystemReference(request)
+}
+
 export function updateExternalTool(request: ExternalToolUpdateRequest): Promise<ExternalToolMutationResult> {
   return bridge().updateExternalTool(request)
 }
@@ -74,8 +84,11 @@ export function deleteExternalToolCategory(request: ExternalToolDeleteCategoryRe
   return bridge().deleteExternalToolCategory(request)
 }
 
-export function launchExternalTool(toolId: string): Promise<ExternalToolLaunchResult> {
-  return bridge().launchExternalTool(toolId)
+export function launchExternalTool(
+  toolId: string,
+  launchMode: ExternalToolLaunchMode,
+): Promise<ExternalToolLaunchResult> {
+  return bridge().launchExternalTool({ toolId, launchMode })
 }
 
 export function revealExternalTool(toolId: string): Promise<ExternalToolLaunchResult> {

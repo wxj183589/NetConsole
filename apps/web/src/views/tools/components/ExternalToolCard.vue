@@ -1,17 +1,19 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Briefcase, MoreFilled, Star, StarFilled, VideoPlay, WarningFilled } from '@element-plus/icons-vue'
+import { Briefcase, Lock, MoreFilled, Star, StarFilled, VideoPlay, WarningFilled } from '@element-plus/icons-vue'
 
 import type { ExternalToolView } from '../../../types/externalTools'
 
 const props = defineProps<{ tool: ExternalToolView; launching?: boolean }>()
 const emit = defineEmits<{
   launch: [tool: ExternalToolView]
+  'launch-admin': [tool: ExternalToolView]
   favorite: [tool: ExternalToolView]
   edit: [tool: ExternalToolView]
   reveal: [tool: ExternalToolView]
   remove: [tool: ExternalToolView]
   relocate: [tool: ExternalToolView]
+  configure: [tool: ExternalToolView]
 }>()
 
 const available = computed(() => props.tool.status === 'AVAILABLE')
@@ -19,6 +21,8 @@ const statusType = computed(() => props.tool.status === 'MISSING' ? 'danger' : '
 
 function handleCommand(command: string): void {
   if (command === 'edit') emit('edit', props.tool)
+  else if (command === 'launch-admin') emit('launch-admin', props.tool)
+  else if (command === 'configure') emit('configure', props.tool)
   else if (command === 'reveal') emit('reveal', props.tool)
   else if (command === 'remove') emit('remove', props.tool)
 }
@@ -66,12 +70,17 @@ function handleCommand(command: string): void {
         >
           <el-icon><VideoPlay /></el-icon>启动
         </el-button>
+        <el-button v-else-if="tool.source_type === 'system_setting'" type="primary" link @click.stop="emit('configure', tool)">配置路径</el-button>
         <el-button v-else type="primary" link @click.stop="emit('relocate', tool)">重新定位程序</el-button>
         <el-dropdown trigger="click" @command="handleCommand" @click.stop>
           <el-button text circle aria-label="更多操作"><el-icon><MoreFilled /></el-icon></el-button>
           <template #dropdown>
             <el-dropdown-menu>
+              <el-dropdown-item command="launch-admin" :disabled="!available">
+                <el-icon><Lock /></el-icon>本次以管理员身份启动
+              </el-dropdown-item>
               <el-dropdown-item command="edit">编辑</el-dropdown-item>
+              <el-dropdown-item v-if="tool.source_type === 'system_setting'" command="configure">配置路径</el-dropdown-item>
               <el-dropdown-item command="reveal" :disabled="!available">在资源管理器中显示</el-dropdown-item>
               <el-dropdown-item command="remove" divided>删除</el-dropdown-item>
             </el-dropdown-menu>

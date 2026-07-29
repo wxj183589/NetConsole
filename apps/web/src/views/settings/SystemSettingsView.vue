@@ -72,7 +72,6 @@ const anyDirty = computed(() => dirty.value || featuresDirty.value)
 const pathErrors = computed<Record<SettingsToolId, string>>(() => ({
   iperf3: toolPathError('iperf3', form.iperf_path),
   fping: toolPathError('fping', form.fping_path),
-  ipop: toolPathError('ipop', form.ipop_path),
   securecrt: toolPathError('securecrt', form.terminal_paths.securecrt),
   xshell: toolPathError('xshell', form.terminal_paths.xshell),
   putty: toolPathError('putty', form.terminal_paths.putty),
@@ -375,6 +374,12 @@ async function focusSiteStorage(): Promise<void> {
   siteStorageFocusTimer = setTimeout(() => { siteStorageFocused.value = false }, 1600)
 }
 
+async function focusExternalTerminal(): Promise<void> {
+  if (route.query.section !== 'external-terminal') return
+  await nextTick()
+  document.getElementById('external-terminal-settings')?.scrollIntoView({ block: 'start' })
+}
+
 async function processTraySiteSwitch(): Promise<void> {
   const requestedSiteId = typeof route.query.tray_site_switch === 'string'
     ? route.query.tray_site_switch
@@ -399,7 +404,10 @@ onActivated(() => { void focusSiteStorage() })
 
 watch(
   () => [route.query.section, route.query.site_focus],
-  () => { void focusSiteStorage() },
+  () => {
+    void focusSiteStorage()
+    void focusExternalTerminal()
+  },
   { immediate: true },
 )
 
@@ -409,7 +417,7 @@ watch(
   { immediate: true },
 )
 
-async function selectTool(toolId: SettingsToolId, field?: 'iperf_path' | 'fping_path' | 'ipop_path'): Promise<void> {
+async function selectTool(toolId: SettingsToolId, field?: 'iperf_path' | 'fping_path'): Promise<void> {
   try {
     const result = await getPlatformAdapter().selectSettingsTool(toolId)
     if (result.cancelled || !result.path) return
@@ -451,25 +459,13 @@ async function selectColor(): Promise<void> {
     if (result.color) { form.theme_color = result.color; previewAppearance() }
   } catch (cause) { showError(cause, '主题色选择失败') }
 }
-async function nativeAction(action: 'open_settings_config' | 'open_current_site' | 'launch_ipop'): Promise<void> {
+async function nativeAction(action: 'open_settings_config' | 'open_current_site'): Promise<void> {
   try {
     const result = await getPlatformAdapter().executeSettingsAction(action)
     if (result.success) ElMessage.success('操作已完成')
     else showError(new Error(result.error || '操作失败'), '操作失败')
   } catch (cause) { showError(cause, '本机操作失败') }
 }
-async function launchIpop(): Promise<void> {
-  if (!snapshot.value) return
-  error.value = ''
-  if (dirty.value) {
-    saving.value = true
-    try { acceptSnapshot(await saveSystemSettings(cloneValues(form), snapshot.value.version)) }
-    catch (cause) { restoreAppearance(); assignToolError(cause); showError(cause, '保存当前设置失败，未启动 IPOP'); return }
-    finally { saving.value = false }
-  }
-  await nativeAction('launch_ipop')
-}
-
 function previewFeatures(): void {
   featurePreviewDrawer.value = true
 }
@@ -650,15 +646,14 @@ function message(cause: unknown, fallback: string): string { return cause instan
 
     <SiteStoragePanel ref="siteStoragePanel" :focused="siteStorageFocused" :switch-blocked="saving || anyDirty" />
 
-    <section class="settings-band"><h2>{{ t('settings.tools', '工具路径') }}</h2>
+    <section class="settings-band"><h2>{{ t('settings.network_test_components', '网络测试组件') }}</h2>
       <el-form label-position="top">
         <el-form-item :label="SETTINGS_TOOL_DEFINITIONS.iperf3.fieldLabel"><NcExecutablePathField v-model="form.iperf_path" :error="pathErrors.iperf3" :success="toolPathSuccess('iperf3', form.iperf_path)" @select="selectTool('iperf3','iperf_path')" @clear="clearToolError('iperf3')" /></el-form-item>
         <el-form-item :label="SETTINGS_TOOL_DEFINITIONS.fping.fieldLabel"><NcExecutablePathField v-model="form.fping_path" :error="pathErrors.fping" :success="toolPathSuccess('fping', form.fping_path)" @select="selectTool('fping','fping_path')" @clear="clearToolError('fping')" /></el-form-item>
-        <el-form-item :label="SETTINGS_TOOL_DEFINITIONS.ipop.fieldLabel"><NcExecutablePathField v-model="form.ipop_path" testable select-test-id="select-ipop" test-test-id="launch-ipop" :loading="saving" :error="pathErrors.ipop" :success="toolPathSuccess('ipop', form.ipop_path)" @select="selectTool('ipop','ipop_path')" @clear="clearToolError('ipop')" @test="launchIpop" /></el-form-item>
       </el-form>
     </section>
 
-    <section class="settings-band"><h2>{{ t('settings.terminal', '外部终端') }}</h2>
+    <section id="external-terminal-settings" class="settings-band"><h2>{{ t('settings.terminal', '外部终端') }}</h2>
       <el-form class="settings-grid" label-position="top">
         <el-form-item label="终端类型"><el-select v-model="form.terminal_type" data-testid="terminal-type"><el-option label="SecureCRT" value="securecrt"/><el-option label="Xshell" value="xshell"/><el-option label="PuTTY" value="putty"/></el-select></el-form-item>
         <el-form-item class="wide" :label="SETTINGS_TOOL_DEFINITIONS[form.terminal_type].fieldLabel"><NcExecutablePathField v-model="form.terminal_paths[form.terminal_type]" data-testid="terminal-path" select-test-id="select-terminal-tool" clear-test-id="clear-terminal-tool" :error="pathErrors[form.terminal_type]" :success="toolPathSuccess(form.terminal_type, form.terminal_paths[form.terminal_type])" @select="selectTool(form.terminal_type)" @clear="clearToolError(form.terminal_type)" /></el-form-item>

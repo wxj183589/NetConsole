@@ -16,6 +16,8 @@ import { GrantedPathRegistry } from './path-access'
 import { UiPreferenceStore } from './ui-preferences'
 import { ExternalToolStore } from './external-tool-store'
 import { ExternalToolService } from './external-tool-service'
+import { launchExternalToolElevated } from './elevated-tool-launcher'
+import { readExternalToolSystemSettings } from './external-tool-settings'
 import { StartupTimeline } from './startup-timeline'
 import {
   installRendererDiagnostics,
@@ -187,6 +189,9 @@ async function startDesktop(): Promise<void> {
   closeToTrayEnabled = typeof storedCloseToTray === 'boolean' ? storedCloseToTray : true
   workspaceLayoutStore = new WorkspaceLayoutStore(app.getPath('userData'), (event) => logger(event))
   const externalToolStore = new ExternalToolStore(app.getPath('userData'), logger)
+  const elevatedToolLauncherPath = app.isPackaged
+    ? resolve(process.resourcesPath, 'native', 'netconsole-elevated-launcher.exe')
+    : resolve(app.getAppPath(), 'dist', 'native', 'netconsole-elevated-launcher.exe')
   const externalToolService = new ExternalToolService({
     store: externalToolStore,
     spawn: (executable, arguments_, options) => spawn(executable, [...arguments_], options),
@@ -196,6 +201,9 @@ async function startDesktop(): Promise<void> {
       const image = nativeImage.createFromPath(path)
       return image.isEmpty() ? null : image.toDataURL()
     },
+    resolveSystemSettings: () => readExternalToolSystemSettings(backend!),
+    elevatedLaunch: (request) => launchExternalToolElevated(elevatedToolLauncherPath, request),
+    applicationExecutablePath: process.execPath,
     logger,
   })
   workspaceWindowController = new WorkspaceWindowController(workspaceLayoutStore, {

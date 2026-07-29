@@ -55,6 +55,10 @@ export interface NativeActionResult {
 
 export type ExternalToolStatus = 'AVAILABLE' | 'MISSING' | 'INVALID' | 'WORKDIR_MISSING'
 export type ExternalToolIconMode = 'auto' | 'default' | 'custom'
+export type ExternalToolLaunchMode = 'normal' | 'administrator'
+export type ExternalToolLaunchPrivilege = 'normal' | 'ask' | 'administrator'
+export type ExternalToolSourceType = 'independent' | 'system_setting'
+export type ExternalToolSystemSettingKey = 'securecrt' | 'xshell' | 'putty'
 
 export interface ExternalToolCategory {
   id: string
@@ -66,21 +70,28 @@ export interface ExternalToolCategory {
 export interface ExternalToolRecord {
   id: string
   name: string
-  executable_path: string
+  source_type: ExternalToolSourceType
+  source_key: ExternalToolSystemSettingKey | null
+  executable_path: string | null
   arguments: string[]
-  working_directory: string
+  working_directory: string | null
   category_id: string
   favorite: boolean
   sort_order: number
   icon_mode: ExternalToolIconMode
   custom_icon_path: string | null
+  launch_privilege: ExternalToolLaunchPrivilege
   launch_count: number
+  administrator_launch_count: number
   last_launched_at: string | null
+  last_launch_mode: ExternalToolLaunchMode | null
   created_at: string
   updated_at: string
 }
 
-export interface ExternalToolView extends ExternalToolRecord {
+export interface ExternalToolView extends Omit<ExternalToolRecord, 'executable_path' | 'working_directory'> {
+  executable_path: string
+  working_directory: string
   category_name: string
   executable_name: string
   status: ExternalToolStatus
@@ -97,10 +108,21 @@ export interface ExternalToolCreateRequest {
   favorite: boolean
   iconMode: ExternalToolIconMode
   iconSelectionId?: string
+  launchPrivilege: ExternalToolLaunchPrivilege
 }
 
-export interface ExternalToolUpdateRequest extends ExternalToolCreateRequest {
+export interface ExternalToolUpdateRequest extends Omit<ExternalToolCreateRequest, 'executablePath'> {
   id: string
+  executablePath?: string
+}
+
+export interface ExternalToolSystemReferenceCreateRequest {
+  sourceKey: ExternalToolSystemSettingKey
+}
+
+export interface ExternalToolLaunchRequest {
+  toolId: string
+  launchMode: ExternalToolLaunchMode
 }
 
 export interface ExternalToolReorderRequest {
@@ -118,7 +140,7 @@ export interface ExternalToolDeleteCategoryRequest {
 }
 
 export interface ExternalToolListResult {
-  schema_version: 1
+  schema_version: 2
   categories: ExternalToolCategory[]
   tools: ExternalToolView[]
 }
@@ -142,19 +164,20 @@ export interface ExternalToolMutationResult {
   success: boolean
   tool?: ExternalToolView
   list?: ExternalToolListResult
-  errorCode?: 'DUPLICATE_PATH' | 'INVALID_REQUEST' | 'NOT_FOUND' | 'PERSISTENCE_FAILED'
+  errorCode?: 'DUPLICATE_PATH' | 'DUPLICATE_SOURCE' | 'INVALID_REQUEST' | 'NOT_FOUND' | 'PERSISTENCE_FAILED'
   error?: string
   existingTool?: Pick<ExternalToolView, 'id' | 'name'>
 }
 
 export interface ExternalToolLaunchResult extends NativeActionResult {
   toolId: string
-  status?: ExternalToolStatus
+  status?: ExternalToolStatus | 'cancelled'
+  errorCode?: 'ELEVATION_CANCELLED'
 }
 
-export type SettingsToolId = 'iperf3' | 'fping' | 'ipop' | 'securecrt' | 'xshell' | 'putty'
+export type SettingsToolId = 'iperf3' | 'fping' | 'securecrt' | 'xshell' | 'putty'
 export type SettingsDirectoryId = 'securecrt_sessions_root'
-export type SettingsActionId = 'open_settings_config' | 'open_current_site' | 'launch_ipop'
+export type SettingsActionId = 'open_settings_config' | 'open_current_site'
 export type SettingsThemeColor = '#0078D4' | '#2563EB' | '#0891B2' | '#16A34A'
 
 export interface SettingsToolDefinition {
@@ -167,7 +190,6 @@ export interface SettingsToolDefinition {
 export const SETTINGS_TOOL_DEFINITIONS: Record<SettingsToolId, SettingsToolDefinition> = {
   iperf3: { displayName: 'iperf3', fieldLabel: 'iperf3.exe', filterName: 'iperf3.exe', executableNames: ['iperf3.exe'] },
   fping: { displayName: 'fping', fieldLabel: 'fping.exe', filterName: 'fping.exe', executableNames: ['fping.exe', 'Fping_v3.exe'] },
-  ipop: { displayName: 'IPOP', fieldLabel: 'IPOP.exe', filterName: 'IPOP.exe', executableNames: ['IPOP.EXE'] },
   securecrt: { displayName: 'SecureCRT', fieldLabel: 'SecureCRT.exe', filterName: 'SecureCRT', executableNames: ['SecureCRT.exe'] },
   xshell: { displayName: 'Xshell', fieldLabel: 'Xshell.exe', filterName: 'Xshell', executableNames: ['Xshell.exe'] },
   putty: { displayName: 'PuTTY', fieldLabel: 'PuTTY.exe / PuTTY64.exe', filterName: 'PuTTY', executableNames: ['putty.exe', 'putty64.exe'] },
@@ -418,6 +440,7 @@ export interface NetConsoleDesktopBridge {
   selectExternalToolWorkingDirectory(): Promise<SelectDirectoryResult>
   selectExternalToolIcon(): Promise<ExternalToolIconSelectionResult>
   createExternalTool(request: ExternalToolCreateRequest): Promise<ExternalToolMutationResult>
+  createExternalToolSystemReference(request: ExternalToolSystemReferenceCreateRequest): Promise<ExternalToolMutationResult>
   updateExternalTool(request: ExternalToolUpdateRequest): Promise<ExternalToolMutationResult>
   deleteExternalTool(toolId: string): Promise<ExternalToolMutationResult>
   setExternalToolFavorite(toolId: string, favorite: boolean): Promise<ExternalToolMutationResult>
@@ -426,7 +449,7 @@ export interface NetConsoleDesktopBridge {
   createExternalToolCategory(name: string): Promise<ExternalToolMutationResult>
   renameExternalToolCategory(categoryId: string, name: string): Promise<ExternalToolMutationResult>
   deleteExternalToolCategory(request: ExternalToolDeleteCategoryRequest): Promise<ExternalToolMutationResult>
-  launchExternalTool(toolId: string): Promise<ExternalToolLaunchResult>
+  launchExternalTool(request: ExternalToolLaunchRequest): Promise<ExternalToolLaunchResult>
   revealExternalTool(toolId: string): Promise<ExternalToolLaunchResult>
   refreshExternalToolStatuses(): Promise<ExternalToolListResult>
   openOnlineMrSessionLocation?(sessionId: string): Promise<NativeActionResult>
@@ -480,6 +503,7 @@ export const DESKTOP_IPC = Object.freeze({
   selectExternalToolWorkingDirectory: 'netconsole:desktop:external-tools:select-working-directory',
   selectExternalToolIcon: 'netconsole:desktop:external-tools:select-icon',
   createExternalTool: 'netconsole:desktop:external-tools:create',
+  createExternalToolSystemReference: 'netconsole:desktop:external-tools:create-system-reference',
   updateExternalTool: 'netconsole:desktop:external-tools:update',
   deleteExternalTool: 'netconsole:desktop:external-tools:delete',
   setExternalToolFavorite: 'netconsole:desktop:external-tools:set-favorite',
@@ -536,6 +560,7 @@ export const DESKTOP_HANDLED_CHANNELS = Object.freeze([
   DESKTOP_IPC.selectExternalToolWorkingDirectory,
   DESKTOP_IPC.selectExternalToolIcon,
   DESKTOP_IPC.createExternalTool,
+  DESKTOP_IPC.createExternalToolSystemReference,
   DESKTOP_IPC.updateExternalTool,
   DESKTOP_IPC.deleteExternalTool,
   DESKTOP_IPC.setExternalToolFavorite,
