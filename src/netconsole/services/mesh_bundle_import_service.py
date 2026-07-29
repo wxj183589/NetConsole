@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import BinaryIO
 from uuid import uuid4
 
+from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.models.mesh_log_models import MeshMrProfile
 from netconsole.parsers.mesh_log_parser import (
@@ -880,6 +881,7 @@ class MeshBundleImportService:
                 manifest,
                 success_manifest,
             )
+            self._publish_catalog_fingerprints(source_results)
             created_session_ids = self._created_session_ids(profiles, approved, manifest)
             return {
                 "archive_sha256": manifest.archive_sha256,
@@ -899,6 +901,32 @@ class MeshBundleImportService:
             shutil.rmtree(transaction, ignore_errors=True)
             shutil.rmtree(rollback, ignore_errors=True)
             self._release_import_lock(lock)
+
+    def _publish_catalog_fingerprints(
+        self,
+        source_results: Iterable[Mapping[str, object]],
+    ) -> None:
+        rows = [
+            {
+                "content_sha256": item.get("content_sha256"),
+                "raw_sha256": item.get("raw_sha256"),
+                "mr_id": item.get("profile_id"),
+                "source_file_id": item.get("source_id"),
+                "stored_filename": item.get("stored_filename"),
+            }
+            for item in source_results
+            if item.get("profile_id") and item.get("source_id")
+        ]
+        catalog = MeshCatalogRepository(self.paths.mesh_catalog_path(self.site_name))
+        try:
+            catalog.upsert_source_fingerprints(rows)
+            catalog.mark_index_pending()
+        except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
+            # 业务数据已原子提交；派生目录失败时保留导入成功并交由后台重建补齐。
+            app_logger.log_warning(
+                "MESH_CATALOG_FINGERPRINT_PUBLISH_FAILED",
+                f"site={self.site_name} error={exc}",
+            )
 
     def is_archived(self, archive_sha256: str) -> bool:
         manifest_path = self._bundle_dir(archive_sha256) / "manifest.json"

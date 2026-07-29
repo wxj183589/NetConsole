@@ -298,6 +298,11 @@ def test_successful_worker_commit_rewrites_staging_paths_and_finalizes_manifest(
     assert manifest["parsed_schema_version"] == SCHEMA_VERSION
     assert manifest["file_mappings"][0]["original_name"] == "01CTmeshlog.log"
 
+    with archive.open("rb") as source:
+        repeated_preview = service.create_preview(archive.name, source, [profile])
+    assert repeated_preview["items"][0]["duplicate_status"] == "duplicate_same_mr"
+    assert repeated_preview["items"][0]["existing_source_id"] == source_row["id"]
+
     duplicate = service.import_approved_preview(
         str(preview["preview_id"]),
         mappings,
