@@ -6,28 +6,29 @@ import { useTaskStore } from '../../stores/tasks'
 import type { TaskItem } from '../../types/task'
 import JobCenterView from './JobCenterView.vue'
 import source from './JobCenterView.vue?raw'
+import detailSource from '../../task-center/components/TaskDetailDrawer.vue?raw'
 
 it('uses Backend text integrity instead of guessing from replacement characters', () => {
-  expect(source).toContain('historicalTextDamaged')
-  expect(source).toContain("store.selected?.text_integrity === 'historical_corrupted'")
-  expect(source).toContain("store.selected?.text_integrity === 'current_corrupted'")
-  expect(source).toContain("store.selected?.text_integrity === 'unknown_corrupted'")
-  expect(source).toContain('该历史日志由旧版本生成，文字已经发生编码损坏；没有原始字节时无法恢复。')
-  expect(source).toContain('当前任务发生文本编码异常，请停止任务并查看应用日志。')
-  expect(source).toContain('该任务包含已损坏文字，但无法确认产生版本。')
-  expect(source).not.toContain("value.includes('\\uFFFD')")
+  expect(detailSource).toContain('historicalTextDamaged')
+  expect(detailSource).toContain("store.selected?.text_integrity === 'historical_corrupted'")
+  expect(detailSource).toContain("store.selected?.text_integrity === 'current_corrupted'")
+  expect(detailSource).toContain("store.selected?.text_integrity === 'unknown_corrupted'")
+  expect(detailSource).toContain('该历史日志由旧版本生成，文字已经发生编码损坏；没有原始字节时无法恢复。')
+  expect(detailSource).toContain('当前任务发生文本编码异常，请停止任务并查看应用日志。')
+  expect(detailSource).toContain('该任务包含已损坏文字，但无法确认产生版本。')
+  expect(detailSource).not.toContain("value.includes('\\uFFFD')")
 })
 
 it('describes task logs as expanded by default and keeps the manual toggle', () => {
-  expect(source).toContain('默认展开；每秒读取最后 300 条结构化事件。')
-  expect(source).toContain("store.logsExpanded ? '隐藏日志' : '显示日志'")
+  expect(detailSource).toContain('默认展开；每秒读取最后 300 条结构化事件。')
+  expect(detailSource).toContain("store.logsExpanded ? '隐藏日志' : '显示日志'")
 })
 
 it('renders the controlled point-table preview summary instead of a generic empty record count', () => {
-  expect(source).toContain('showPointTablePreviewResult')
-  expect(source).toContain('生成节点数')
-  expect(source).toContain('等待用户保存')
-  expect(source).toContain("stringDetail('target_train_display', stringDetail('target_train'))")
+  expect(detailSource).toContain('showPointTablePreviewResult')
+  expect(detailSource).toContain('生成节点数')
+  expect(detailSource).toContain('等待用户保存')
+  expect(detailSource).toContain("stringDetail('target_train_display', stringDetail('target_train'))")
 })
 
 const platformMocks = vi.hoisted(() => ({
@@ -79,6 +80,7 @@ vi.mock('element-plus', async () => {
     ElMessage: messageMocks,
     ElOption: empty,
     ElProgress: empty,
+    ElResult: empty,
     ElSelect: passthrough('select'),
     ElSwitch: passthrough('switch'),
     ElTable: empty,
@@ -126,6 +128,7 @@ vi.mock('element-plus/es', async () => {
     ElLoadingDirective: {},
     ElOption: empty,
     ElProgress: empty,
+    ElResult: empty,
     ElSelect: passthrough('select'),
     ElSwitch: passthrough('switch'),
     ElTable: empty,
@@ -688,7 +691,7 @@ describe('Job Center saved artifact capability lifecycle', () => {
     app.use(pinia)
     app.mount(root)
 
-    expect(store.selectTask).toHaveBeenCalledWith('missing-task')
+    await vi.waitFor(() => expect(store.selectTask).toHaveBeenCalledWith('missing-task'))
     await vi.waitFor(() => expect(messageMocks.warning).toHaveBeenCalledWith('未找到任务 missing-task，已保留当前任务列表。'))
     await nextTick()
     expect(alertTitles(root)).toContain('未找到任务 missing-task，已保留当前任务列表。')

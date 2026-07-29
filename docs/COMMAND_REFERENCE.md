@@ -167,4 +167,4 @@ Electron Desktop：主导航 -> 命令说明
 
 该页面只读展示，不执行任何命令。Electron 支持搜索、筛选、查看详情、复制命令模板和刷新；搜索使用 250ms debounce，并以请求代次丢弃过期响应。Markdown 导出复用既有 Export Process、`TaskDTO/TaskCancelResponse` 和公共 `WebArtifactStore`，公开 Task/下载文件名固定为安全可读 `.md` 名称，不公开 UUID 物理名或路径。模块只用严格命名的 localStorage key 保存当前任务 ID，通过既有 `/exports/{task_id}` 串行轮询；取消请求成功后立即 GET 并持续收敛到 `CANCELLED/FAILED/COMPLETED`，临时网络或 5xx 错误按固定延迟重试且不清任务 ID，仅终态、真实 404 或页面卸载停止轮询。
 
-命令说明已接入共享 `TaskWindowContext`/validator、Job Center `command-reference` 模块筛选和真实取消 owner capability；Electron 和浏览器均通过正式 PlatformAdapter 传递受控的 `{taskId,module,status}`，由根布局打开任务中心抽屉，完整详情继续进入同一 `/tasks` 页面。页面文本直接消费系统设置使用的共享动态 locale runtime，不建立第二套语言状态。
+命令说明已接入共享 `TaskWindowContext`/validator、Job Center `command-reference` 模块筛选和真实取消 owner capability；Electron 和浏览器均通过正式 PlatformAdapter 传递受控的 `{taskId,module,status}`，有 `taskId` 时由根布局在当前页直接打开可复用任务详情抽屉，无 `taskId` 时打开任务列表抽屉。页面文本直接消费系统设置使用的共享动态 locale runtime，不建立第二套语言状态。

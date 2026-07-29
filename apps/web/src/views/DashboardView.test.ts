@@ -11,6 +11,7 @@ import source from './DashboardView.vue?raw'
 import deviceManagementSource from './devices/DeviceManagementView.vue?raw'
 import fileManagementSource from './file-management/FileManagementView.vue?raw'
 import jobCenterSource from './job-center/JobCenterView.vue?raw'
+import taskDetailSource from '../task-center/components/TaskDetailDrawer.vue?raw'
 
 const mocks = vi.hoisted(() => ({
   push: vi.fn(),
@@ -144,8 +145,9 @@ describe('Dashboard home page', () => {
     expect(deviceManagementSource).toContain('删除后设备将从当前局点数据库移除')
     expect(fileManagementSource).toContain('clearFileDownloads')
     expect(fileManagementSource).toContain("actionLabels: ['取消', '重试', '打开', '所在目录']")
-    expect(jobCenterSource).toContain('requestCancel')
-    expect(jobCenterSource).toContain('保存导出表格')
+    expect(jobCenterSource).toContain('TaskDetailDrawer')
+    expect(taskDetailSource).toContain('requestCancel')
+    expect(taskDetailSource).toContain('保存导出表格')
   })
 
   it('fills the desktop route viewport with a responsive two-by-two card grid', () => {

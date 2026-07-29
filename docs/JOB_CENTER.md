@@ -1,8 +1,8 @@
 # Job Center 使用说明
 
-Vue 根布局持有全局任务入口、右侧任务中心抽屉和单个合并进度浮层；完整历史、日志和 Artifact 仍进入主工作区 `/tasks` 页面。设备管理等业务页不再保留常驻任务状态条。`useTaskStore` 通过 REST 快照恢复状态，并由根布局持有唯一 `/ws/tasks` 消费者；WebSocket 事件只触发 300ms 合并刷新，断线或 Backend 重启后继续用 REST 补偿，不让每个业务页面各建连接。
+Vue 根布局持有全局任务入口、右侧任务中心抽屉、可复用的完整任务详情抽屉和单个合并进度浮层。通知、全局任务列表、悬浮卡片及携带 `taskId` 的 Electron 事件会在当前页面直接打开同一个 `TaskDetailDrawer`，展示完整详情、日志和 Artifact，不切换路由；只有用户明确点击“进入完整任务中心”时才进入主工作区 `/tasks` 的完整历史、筛选和搜索页面。设备管理等业务页不再保留常驻任务状态条。`useTaskStore` 通过 REST 快照恢复状态，并由根布局持有唯一 `/ws/tasks` 消费者；WebSocket 事件只触发 300ms 合并刷新，断线或 Backend 重启后继续用 REST 补偿，不让每个业务页面各建连接。
 
-Electron 不再创建任务专用 `BrowserWindow`，`/desktop/tasks`、`TaskWindowLayout` 和窗口控制器已经删除。历史调用保留 `openTaskWindow({taskId,module,status})` 兼容契约，但 Main 只恢复主窗口并向根布局发送“打开抽屉并定位任务”事件。前台终态只显示 Vue 通知；窗口隐藏、最小化或失焦时才请求 Windows 原生通知，同一终态按任务状态去重，点击通知恢复主窗口、打开抽屉并定位 `task_id`。托盘只接收运行、失败和部分成功数量，不接收任务对象或查询数据库。
+Electron 不再创建任务专用 `BrowserWindow`，`/desktop/tasks`、`TaskWindowLayout` 和窗口控制器已经删除。历史调用保留 `openTaskWindow({taskId,module,status})` 兼容契约，但 Main 只恢复主窗口并向根布局发送任务中心事件：无 `taskId` 时打开任务列表抽屉，有 `taskId` 时直接打开完整任务详情抽屉。前台终态只显示 Vue Notification，程序化 Message/Notification 样式由 Web 入口显式按需加载；通知使用受控 VNode 内容和“查看详情”按钮并挂载到 `document.body`。窗口隐藏、最小化或失焦时才请求 Windows 原生通知，同一终态按任务状态去重，点击通知恢复主窗口并直接定位 `task_id` 详情。托盘只接收运行、失败和部分成功数量，不接收任务对象或查询数据库。
 
 停止、重试、Artifact 下载和本机打开动作必须由任务 owner capability 明确授权，未支持能力不得假成功。统一取消只调用对应 owner 的既有 Application Service，owner 未接线时禁用；`STOPPING` 只在 owner 已确认停止请求后返回。设备数据与设备模板分别以 `web_export_device_csv`、`web_export_device_template_csv` 进入同一受管 Export Adapter；Worker 运行时丢失时收敛为 `FAILED / WORKER_RUNTIME_LOST`，不会遗留长期 `RUNNING 0%`。统一任务的 `message/error/error_summary/phase/stage` 等文本，以及日志的嵌套 `message/error/traceback/diagnostic/state/stage`，在 DTO 输出前统一脱敏 Windows/UNC 绝对路径；Artifact DTO 固定为安全 ID、显示名、大小、可用时的 SHA-256、类型和受控 endpoint。Task Center 的“Artifact 下载”统一调用 Electron Save As 或浏览器下载；取消本地保存不改写服务端任务终态。关闭抽屉、完整任务中心页面或业务标签不改变后台任务生命周期。
 

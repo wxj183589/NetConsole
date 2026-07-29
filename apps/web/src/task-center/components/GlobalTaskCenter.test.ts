@@ -20,6 +20,9 @@ describe('GlobalTaskCenter', () => {
     expect(source).toContain("runtime.hostType !== 'electron'")
     expect(source).toContain('showTaskNotification')
     expect(source).toContain("duration: kind === 'success' ? 5000 : 0")
+    expect(source).toContain("customClass: 'nc-task-notification'")
+    expect(source).toContain('appendTo: document.body')
+    expect(source).toContain("}, '查看详情')")
   })
 
   it('updates the tray with bounded aggregate task status instead of task payloads', () => {
@@ -43,10 +46,22 @@ describe('GlobalTaskCenter', () => {
     expect(source).not.toContain('drawerVisible.value = false\n    await confirm')
   })
 
-  it('loads the programmatic MessageBox base style and bounds shared confirmation dialogs', () => {
+  it('loads only the required programmatic Element Plus styles and bounds shared dialogs', () => {
+    expect(mainSource).toContain("import 'element-plus/theme-chalk/el-message.css'")
     expect(mainSource).toContain("import 'element-plus/theme-chalk/el-message-box.css'")
+    expect(mainSource).toContain("import 'element-plus/theme-chalk/el-notification.css'")
+    expect(mainSource).not.toContain("import 'element-plus/dist/index.css'")
     expect(confirmDialogSource).toContain('nc-confirm-dialog')
     expect(confirmDialogSource).toContain("request.value?.options.width || 'min(620px, calc(100vw - 32px))'")
     expect(confirmDialogSource).not.toContain('width: 100vw')
+  })
+
+  it('opens reusable details in place and reserves route navigation for the full task center', () => {
+    expect(source).toContain("import TaskDetailDrawer from './TaskDetailDrawer.vue'")
+    expect(source).toContain('openTaskDetail(task.id)')
+    expect(source).toContain("openTaskDetail(primaryActiveTask.id, 'floating')")
+    expect(source).toContain("await workspace.openOrActivateRoute('/tasks')")
+    expect(source).not.toContain('openFullTaskCenter')
+    expect(source).not.toContain("openOrActivateRoute(`/tasks")
   })
 })
