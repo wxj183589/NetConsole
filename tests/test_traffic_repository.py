@@ -47,7 +47,7 @@ def _run(
 
 def test_traffic_paths_and_config_contract(tmp_path) -> None:
     paths = PathResolver(tmp_path)
-    root = tmp_path / "data" / "sites" / "site-a" / "files" / "network_tools" / "traffic"
+    root = tmp_path / "sites" / "site-a" / "files" / "network_tools" / "traffic"
     assert paths.traffic_root("site-a") == root
     assert paths.traffic_runs_db_path("site-a") == root / "parsed" / "traffic_runs.sqlite"
     assert paths.traffic_run_events_path("site-a", "run-1") == root / "runs" / "run-1" / "events.jsonl"

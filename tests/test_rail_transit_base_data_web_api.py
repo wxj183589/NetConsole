@@ -93,6 +93,7 @@ def _insert_station_source_devices(db_path: Path) -> None:
             [(uuid, name, system_name, station, group_id, address, now, now) for uuid, name, system_name, station, group_id, address in rows],
         )
         conn.commit()
+    database.initialize()
     with database.connect() as conn:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 

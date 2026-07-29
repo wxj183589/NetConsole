@@ -301,7 +301,12 @@ def test_application_collection_duration_limit_uses_same_stop_and_flush_path(
 ) -> None:
     paths = PathResolver(tmp_path)
     order: list[str] = []
-    clock_values = iter((0.0, 61.0, 61.0))
+
+    def duration_clock() -> float:
+        # Startup milestones may read the clock repeatedly; only the monitor tick advances time.
+        if threading.current_thread().name == "online-mr-job-cancel-monitor":
+            return 61.0
+        return 0.0
 
     class TrafficCoordinator:
         def start_for_session(self, _session, _config):
@@ -323,7 +328,7 @@ def test_application_collection_duration_limit_uses_same_stop_and_flush_path(
         OnlineMrSessionStore(paths),
         connection_factory=lambda _config: FakeConnection(),
         traffic_coordinator=TrafficCoordinator(),
-        clock=lambda: next(clock_values, 61.0),
+        clock=duration_clock,
     )
 
     result = service.run(config, manage_traffic=True, package_on_stop=False)

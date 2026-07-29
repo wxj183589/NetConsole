@@ -270,6 +270,7 @@ class GroundUnattendedSupervisor:
                     self.archive_service.archive_run(
                         str(candidate["run_id"]), self.repository.get_profile()
                     )
+            self._reconcile_incomplete_operations_without_active_run()
             return
         profile = self.repository.get_profile()
         if str(run.get("state") or "") in {
@@ -346,6 +347,93 @@ class GroundUnattendedSupervisor:
                 state="FINALIZING",
                 requested_action="restart_after_window",
             )
+
+    def _reconcile_incomplete_operations_without_active_run(self) -> None:
+        completed_at = self._now().isoformat(timespec="milliseconds")
+        for operation in self.repository.list_operations(active_only=True):
+            operation_id = str(operation["operation_id"])
+            run_id = str(operation.get("run_id") or "")
+            run = self.repository.get_run(run_id) if run_id else None
+            operation_type = str(operation.get("operation_type") or "").upper()
+            archive = (
+                next(
+                    (
+                        item
+                        for item in self.repository.list_archives()
+                        if str(item.get("run_id") or "") == run_id
+                    ),
+                    None,
+                )
+                if run_id
+                else None
+            )
+            archive_status = str((archive or {}).get("archive_status") or "").upper()
+            run_state = str((run or {}).get("state") or "").upper()
+
+            completed = bool(
+                run
+                and run_state == "COMPLETED"
+                and (
+                    operation_type == "STOP"
+                    or (
+                        operation_type == "STOP_AND_ARCHIVE"
+                        and archive_status == "READY"
+                    )
+                )
+            )
+            if completed:
+                result_summary = dict(operation.get("result_summary") or {})
+                if archive:
+                    result_summary.update(
+                        {
+                            "archive_id": str(archive.get("archive_id") or ""),
+                            "archive_status": archive_status,
+                            "archive_relative_path": str(
+                                archive.get("relative_path") or ""
+                            ),
+                            "archive_size_bytes": int(
+                                archive.get("archive_size_bytes") or 0
+                            ),
+                            "archive_sha256": str(archive.get("sha256") or ""),
+                        }
+                    )
+                self.repository.update_operation(
+                    operation_id,
+                    operation_state="COMPLETED",
+                    operation_stage="COMPLETED",
+                    progress_percent=100,
+                    message="Backend 重启后根据运行和归档最终状态恢复为已完成",
+                    completed_at=completed_at,
+                    failure_code="",
+                    failure_reason="",
+                    result_summary=result_summary,
+                )
+                continue
+
+            reason = (
+                "Backend 重启时未找到可恢复的活动运行"
+                if run is None or run_state != "COMPLETED"
+                else "运行已结束，但停止并归档未形成 READY 归档"
+            )
+            self.repository.update_operation(
+                operation_id,
+                operation_state="FAILED",
+                operation_stage="FAILED",
+                progress_percent=100,
+                message=reason,
+                completed_at=completed_at,
+                failure_code="GROUND_OPERATION_RECOVERY_INCOMPLETE",
+                failure_reason=reason,
+            )
+            if run_id:
+                self.repository.add_event(
+                    run_id=run_id,
+                    event_type="operation_recovery_failed",
+                    severity="error",
+                    title="停止或归档操作恢复失败",
+                    message=reason,
+                    details={"operation_id": operation_id},
+                )
 
     def _tick(self) -> None:
         self._collect_config_checks()
@@ -1083,8 +1171,9 @@ class GroundUnattendedSupervisor:
             percent=22,
             message="正在停止 AC 常驻轮询",
         )
-        if self.ac_resident_service is not None:
-            ac_stop = self.ac_resident_service.request_stop_run(
+        ac_resident_service = getattr(self, "ac_resident_service", None)
+        if ac_resident_service is not None:
+            ac_stop = ac_resident_service.request_stop_run(
                 site_name=self.site_id,
                 run_id=run_id,
                 timeout_seconds=25.0,

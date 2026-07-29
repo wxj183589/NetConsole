@@ -1,6 +1,26 @@
 # NetConsole 更新日志
 
-## 未发布
+## v1.4.6 - 2026-07-30
+
+### 轨道交通地面无人值守
+
+- 当前服务状态不再回退最近一次运行：无活动运行时按 Profile 返回“未启用/等待运行时段”，活动运行、
+  最近运行、活动操作和最近终态操作分别查询；运行选择器统一驱动 Ping、Syslog、时间轴和深度采集。
+- 页面移除 5 秒全量刷新，改为按状态、操作、健康和活动页签独立轮询，增加防重入、请求取消、代次丢弃、
+  隐藏暂停、恢复增量刷新和错误退避。Ping/Syslog 表格改为剩余高度内部滚动，Ping 曲线迁入可重复打开
+  的弹窗并在关闭时释放 ECharts 和监听资源。
+- 历史 Ping/Syslog 可从 READY ZIP 流式读取，支持 ACTIVE/ARCHIVE/MIXED、稳定去重、运行实际时间范围、
+  文件预筛、查询预算、扫描诊断和保留丢包点降采样；旧 Syslog 在内存中只读重解析，不修改 NDJSON。
+- 归档新增七页签详情、文件清单和只读重新校验；ZIP 与汇总 JSON 使用独立严格 Artifact 端点。后端校验
+  READY 状态、受管路径、大小、SHA-256、manifest、成员哈希、CRC 和压缩预算，Electron 只放行两个精确
+  endpoint，不接受 Renderer 物理路径。
+- WMESH 链路建立、断开和主链路切换按 Peer AP MAC、显式 Radio/BSSID、H3C Radio 派生规则和唯一
+  Alias 只读补全轨旁 AP 展示；AC Detail 使用 30 秒缓存，页面区分工程名称、AC 配置名称与事件状态。
+  多候选保持 `AMBIGUOUS`，主链路进入或离开空态分别显示“无主链路 → 新 AP”和
+  “旧 AP → 无主链路”，不写 AP Identity 主数据。
+- 新增 50k READY ZIP Ping、500k active Ping、100k Syslog、36 MR/30 天 Registry、30 分钟页面轮询、
+  10 分钟 Syslog 自动刷新和 100 次图表开关规模门；详细结论见
+  [地面无人值守风险审计](GROUND_UNATTENDED_RISK_AUDIT.md)。
 
 ### 配置对比
 
@@ -26,6 +46,10 @@
 - 工具注册表独立保存到 Electron userData，升级为 schema v2，支持 v1 无损升级、来源类型、启动权限与普通/管理员启动统计；继续使用 Windows 路径大小写去重、串行原子写与损坏文件诊断恢复，不进入局点数据库、数据根或迁移/结果包。
 - 重新划分系统设置边界：iperf3/fping 留在“网络测试组件”，SecureCRT/Xshell/PuTTY 留在“外部终端”并可添加实时引用卡片；IPOP 从系统设置 UI 移除，旧 `ipop_path` 经幂等、失败可重试的一次性迁移进入工具集，后端旧字段与动作暂留兼容。
 - Renderer 启动严格只传 `{toolId, launchMode}`；Electron Main 从 Store 或当前系统设置解析可信路径并复验。普通启动使用参数数组和 `shell:false`，管理员启动通过固定 JSON stdin 的最小 Go helper 调用 `ShellExecuteExW(runas)`，禁止 PowerShell/CMD、通用命令和提升 NetConsole 自身；UAC 取消返回 `ELEVATION_CANCELLED` 且所有失败路径不增加统计。真实 UAC、普通用户和正式安装包 helper 状态为 `IMPLEMENTED_UNVERIFIED`。
+
+### 版本与发布
+
+- 正式产品版本升级到 `v1.4.6`，同步 Python 版本事实源、Electron 包版本、Web/Electron 产品标题、内置更新日志和发布文档；正式安装包继续使用 Git 提交号、UTC 构建时间和 dirty 状态记录唯一构建身份。
 
 ## v1.4.5 - 2026-07-29
 

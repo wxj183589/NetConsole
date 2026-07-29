@@ -361,13 +361,20 @@ def test_timeline_resolves_device_name_and_stop_operation_is_idempotent(
             "message": "旧运行已停止",
         }
     )
-    assert application.latest_operation("site-a") is None
+    assert (
+        application.latest_operation("site-a").operation_id
+        == "groundop_previous"
+    )
 
     first = application.stop("site-a", archive=False)
     second = application.stop("site-a", archive=False)
     assert first.operation_id == second.operation_id
     assert len(request_log) == 1
-    assert application.latest_operation("site-a").operation_id == first.operation_id
+    assert application.active_operation("site-a").operation_id == first.operation_id
+    assert (
+        application.latest_operation("site-a").operation_id
+        == "groundop_previous"
+    )
 
     supervisor = object.__new__(GroundUnattendedSupervisor)
     supervisor.repository = repository

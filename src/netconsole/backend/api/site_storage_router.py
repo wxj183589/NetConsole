@@ -67,6 +67,14 @@ def _packages(request: Request) -> SitePackageService:
     return request.app.state.site_package_service
 
 
+def _audit(request: Request) -> SiteAuditService:
+    return request.app.state.site_audit_service
+
+
+def _cleanup(request: Request) -> SiteCleanupApplicationService:
+    return request.app.state.site_cleanup_application_service
+
+
 @router.get(
     "/sites",
     summary="列出全部局点",
@@ -116,7 +124,7 @@ def get_site(request: Request, site_id: str) -> dict[str, object]:
     dependencies=[Depends(_desktop), Depends(_persistent_storage)],
 )
 def audit_site(request: Request, site_id: str) -> SiteTaskResponse:
-    if not SiteAuditService(request.app.state.paths).site_exists(site_id):
+    if not _audit(request).site_exists(site_id):
         raise HTTPException(
             status_code=404, detail={"code": "SITE_NOT_FOUND", "message": "局点不存在"}
         )
@@ -130,7 +138,7 @@ def audit_site(request: Request, site_id: str) -> SiteTaskResponse:
     dependencies=[Depends(_desktop)],
 )
 def latest_site_audit(request: Request, site_id: str) -> SiteAuditSummaryResponse:
-    result = _call(lambda: SiteAuditService(request.app.state.paths).latest(site_id))
+    result = _call(lambda: _audit(request).latest(site_id))
     if not result:
         raise HTTPException(
             status_code=404,
@@ -156,11 +164,7 @@ def latest_site_audit(request: Request, site_id: str) -> SiteAuditSummaryRespons
     dependencies=[Depends(_desktop), Depends(_persistent_storage)],
 )
 def prepare_site_cleanup(request: Request, site_id: str) -> SiteCleanupPlanResponse:
-    plan = _call(
-        lambda: SiteCleanupApplicationService(request.app.state.paths).prepare_cleanup(
-            site_id
-        )
-    )
+    plan = _call(lambda: _cleanup(request).prepare_cleanup(site_id))
     return SiteCleanupPlanResponse.model_validate(
         {
             name: plan[name]
@@ -189,11 +193,7 @@ def apply_site_cleanup(
                 "message": "清理前必须明确确认",
             },
         )
-    plan = _call(
-        lambda: SiteCleanupApplicationService(request.app.state.paths).load_plan(
-            payload.cleanup_token
-        )
-    )
+    plan = _call(lambda: _cleanup(request).load_plan(payload.cleanup_token))
     if plan.get("site_id") != site_id:
         raise HTTPException(
             status_code=409,
@@ -229,11 +229,7 @@ def restore_site_cleanup(
                 "message": "恢复前必须明确确认",
             },
         )
-    plan = _call(
-        lambda: SiteCleanupApplicationService(request.app.state.paths).load_plan(
-            cleanup_token
-        )
-    )
+    plan = _call(lambda: _cleanup(request).load_plan(cleanup_token))
     if str(plan.get("status") or "") != "applied":
         raise HTTPException(
             status_code=409,
@@ -275,7 +271,7 @@ def rebuild_demo(request: Request, payload: SiteDemoRebuildRequest) -> SiteTaskR
                 "message": "Demo 存在用户数据时必须先导出或备份，不能绕过审计",
             },
         )
-    audit = _call(lambda: SiteAuditService(request.app.state.paths).latest("demo"))
+    audit = _call(lambda: _audit(request).latest("demo"))
     if not audit:
         raise HTTPException(
             status_code=409,

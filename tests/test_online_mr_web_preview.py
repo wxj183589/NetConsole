@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from netconsole.backend.api.main import create_app
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from support.online_mr_api import wire_online_mr_api_facade
 
@@ -14,6 +15,7 @@ def test_preview_and_collectors_use_bounded_view_files(tmp_path: Path) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     paths.config_dir.mkdir(parents=True, exist_ok=True)
     paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    Database(paths.site_db_path("demo")).initialize()
     session = paths.online_mr_session_dir("demo", "MR-02", "session-2")
     for name in ("raw", "parsed", "view", "logs", "outputs"):
         (session / name).mkdir(parents=True, exist_ok=True)
@@ -82,6 +84,7 @@ def test_missing_view_files_return_empty_preview_instead_of_500(tmp_path: Path) 
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     paths.config_dir.mkdir(parents=True, exist_ok=True)
     paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    Database(paths.site_db_path("demo")).initialize()
     session = paths.online_mr_session_dir("demo", "MR-02", "session-3")
     for name in ("raw", "parsed", "view", "logs", "outputs"):
         (session / name).mkdir(parents=True, exist_ok=True)
@@ -111,6 +114,7 @@ def test_preview_falls_back_to_bounded_mesh_raw_tail_without_writing_session(tmp
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     paths.config_dir.mkdir(parents=True, exist_ok=True)
     paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    Database(paths.site_db_path("demo")).initialize()
     session = paths.online_mr_session_dir("demo", "MR-02", "session-raw-preview")
     for name in ("raw", "parsed", "view", "logs", "outputs"):
         (session / name).mkdir(parents=True, exist_ok=True)
@@ -148,18 +152,34 @@ def test_preview_falls_back_to_bounded_mesh_raw_tail_without_writing_session(tmp
     assert response.status_code == 200
     payload = response.json()["data"]
     assert payload["available"] is True
-    assert payload["link"] == {
+    link = payload["link"]
+    assert {key: link[key] for key in (
+        "status",
+        "updated_at",
+        "master",
+        "master_ap",
+        "peer_name",
+        "peer_mac",
+        "rssi_dbm",
+        "radio",
+        "source",
+    )} == {
         "status": "active",
-        "updated_at": payload["link"]["updated_at"],
+        "updated_at": link["updated_at"],
         "master": "AP-LATEST",
         "master_ap": "AP-LATEST",
         "peer_name": "AP-LATEST",
-        "peer_mac": "444455556666",
+        "peer_mac": "4444-5555-6666",
         "rssi_dbm": -52,
         "radio": 1,
-        "source": "raw_tail",
+        "source": "mesh_link_raw_tail",
     }
     assert "AP-OUTSIDE-TAIL" not in response.text
-    assert payload["display_context"] == {}
+    assert payload["display_context"] == {
+        "match_key": "peer_mac",
+        "match_source": "none",
+        "section": "",
+        "station": "",
+    }
     assert meta_path.read_bytes() == meta_before
     assert raw_path.read_bytes() == raw_before

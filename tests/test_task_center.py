@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from netconsole.backend.api.main import create_app
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.models.task_snapshot import TaskSnapshot, utc_now_iso
@@ -28,6 +29,20 @@ from netconsole.services.job_center.worker_protocol import encode_event
 
 def _service(tmp_path: Path) -> TaskApplicationService:
     return TaskApplicationService(paths=PathResolver(tmp_path), site_name="demo")
+
+
+def _app_for_service(
+    service: TaskApplicationService,
+    *,
+    frontend_dist: Path,
+):
+    Database(service.paths.site_db_path("demo")).initialize()
+    return create_app(
+        RuntimeMode.SERVER,
+        paths=service.paths,
+        task_service=service,
+        frontend_dist=frontend_dist,
+    )
 
 
 def _complete_task(service: TaskApplicationService, task_id: str = "task-complete") -> None:
@@ -740,7 +755,7 @@ def test_task_rest_api_lists_details_events_and_cancel(tmp_path: Path) -> None:
     _complete_task(service)
     service.prepare(BackgroundJob(job_id="task-running", task_type="demo_task", params={"task_name": "运行任务"}))
     service.mark_running("task-running")
-    app = create_app(RuntimeMode.SERVER, paths=service.paths, task_service=service, frontend_dist=tmp_path / "missing-dist")
+    app = _app_for_service(service, frontend_dist=tmp_path / "missing-dist")
 
     with TestClient(app) as client:
         listing = client.get("/api/tasks")
@@ -1045,7 +1060,7 @@ def test_task_api_marks_external_task_not_cancellable(tmp_path: Path) -> None:
         source="agent",
         agent="agent-1",
     )
-    app = create_app(RuntimeMode.SERVER, paths=service.paths, task_service=service, frontend_dist=tmp_path / "missing-dist")
+    app = _app_for_service(service, frontend_dist=tmp_path / "missing-dist")
 
     with TestClient(app) as client:
         detail = client.get("/api/tasks/agent-traffic")
@@ -1059,7 +1074,7 @@ def test_task_api_marks_external_task_not_cancellable(tmp_path: Path) -> None:
 def test_task_websocket_sends_snapshot_and_hub_event(tmp_path: Path) -> None:
     service = _service(tmp_path)
     service.prepare(BackgroundJob(job_id="socket-task", task_type="demo_task", params={"task_name": "Socket任务"}))
-    app = create_app(RuntimeMode.SERVER, paths=service.paths, task_service=service, frontend_dist=tmp_path / "missing-dist")
+    app = _app_for_service(service, frontend_dist=tmp_path / "missing-dist")
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws/tasks") as socket:
@@ -1088,7 +1103,7 @@ def test_fastapi_serves_vue_spa_routes(tmp_path: Path) -> None:
     dist.mkdir(parents=True)
     (dist / "index.html").write_text('<div id="app">NetConsole Web</div>', encoding="utf-8")
     service = _service(tmp_path)
-    app = create_app(RuntimeMode.SERVER, paths=service.paths, task_service=service, frontend_dist=dist)
+    app = _app_for_service(service, frontend_dist=dist)
 
     with TestClient(app) as client:
         root = client.get("/")

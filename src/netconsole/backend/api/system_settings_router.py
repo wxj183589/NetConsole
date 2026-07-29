@@ -60,6 +60,10 @@ def _service(request: Request) -> SettingsApplicationService:
     return request.app.state.settings_application_service
 
 
+def _self_check(request: Request) -> RuntimeSelfCheckService:
+    return request.app.state.runtime_self_check_service
+
+
 @router.get("", response_model=SystemSettingsSnapshotDTO, dependencies=[Depends(_desktop)])
 def get_settings(request: Request) -> SystemSettingsSnapshotDTO:
     return _call(_service(request).get)
@@ -81,12 +85,7 @@ def reload_settings(request: Request) -> SystemSettingsSnapshotDTO:
     dependencies=[Depends(_desktop)],
 )
 def runtime_self_check(request: Request) -> RuntimeSelfCheckSnapshotDTO:
-    service = _service(request)
-    return RuntimeSelfCheckService(
-        service.paths,
-        service.feature_gate,
-        service.site_name,
-    ).run(
+    return _self_check(request).run(
         backend_build_id=str(getattr(request.app.state, "backend_build_id", "")),
         frontend_build_id=str(getattr(request.app.state, "frontend_build_id", "")),
     )

@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import io
 import json
 from pathlib import Path
-import sys
 
 import pytest
 
@@ -217,6 +215,7 @@ def test_ac_command_job_success_custom_failed_and_cancelled(monkeypatch: pytest.
 
 
 def test_ac_command_worker_stdout_is_jsonl_and_cancel_has_one_terminal(
+    capfd: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -252,11 +251,8 @@ def test_ac_command_worker_stdout_is_jsonl_and_cancel_has_one_terminal(
         ),
         encoding="utf-8",
     )
-    stdout = io.StringIO()
-    monkeypatch.setattr(sys, "__stdout__", stdout)
-
     assert background_worker.main(["--job", str(job_path)]) == 0
-    output = stdout.getvalue()
+    output = capfd.readouterr().out
     events = [json.loads(line) for line in output.splitlines() if line.strip()]
     assert [event["type"] for event in events] == ["progress", "log", "finished"]
     assert "raw device echo" not in output
@@ -270,8 +266,7 @@ def test_ac_command_worker_stdout_is_jsonl_and_cancel_has_one_terminal(
         cancel_path=str(cancel_path),
     )
     job_path.write_text(json.dumps(cancelled_job.to_dict(), ensure_ascii=False), encoding="utf-8")
-    stdout.seek(0)
-    stdout.truncate(0)
     assert background_worker.main(["--job", str(job_path)]) == 2
-    cancelled_events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
+    cancelled_output = capfd.readouterr().out
+    cancelled_events = [json.loads(line) for line in cancelled_output.splitlines() if line.strip()]
     assert [event["type"] for event in cancelled_events] == ["cancelled"]

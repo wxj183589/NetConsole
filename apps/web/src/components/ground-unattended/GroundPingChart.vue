@@ -13,16 +13,19 @@ let rttChart: EChartsType | null = null
 let resultChart: EChartsType | null = null
 let resizeObserver: ResizeObserver | null = null
 let unsubscribeTheme: (() => void) | null = null
+let disposed = false
 
 onMounted(async () => {
   const [core, charts, components, renderers] = await Promise.all([
     import('echarts/core'), import('echarts/charts'), import('echarts/components'), import('echarts/renderers'),
   ])
+  if (disposed) return
   core.use([
     charts.LineChart, charts.ScatterChart, components.GridComponent, components.TooltipComponent,
     components.DataZoomComponent, components.MarkLineComponent, components.LegendComponent, renderers.CanvasRenderer,
   ])
   await nextTick()
+  if (disposed) return
   if (rttContainer.value) rttChart = core.init(rttContainer.value)
   if (resultContainer.value) resultChart = core.init(resultContainer.value)
   unsubscribeTheme = subscribeNetConsoleChartTheme(render)
@@ -31,9 +34,12 @@ onMounted(async () => {
   if (resultContainer.value) resizeObserver?.observe(resultContainer.value)
   window.addEventListener('resize', resize)
   render()
+  await nextTick()
+  resize()
 })
 
 onBeforeUnmount(() => {
+  disposed = true
   window.removeEventListener('resize', resize)
   resizeObserver?.disconnect()
   unsubscribeTheme?.()

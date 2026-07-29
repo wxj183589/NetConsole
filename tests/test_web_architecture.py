@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from netconsole.backend.api.health import health_response
 from netconsole.backend.api.main import create_app
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.version import APP_VERSION
@@ -267,6 +268,7 @@ def test_web_lifespan_stops_local_adapters_in_parallel(
             pass
 
     paths = PathResolver(tmp_path)
+    Database(paths.site_db_path("demo")).initialize()
     tasks = TaskApplicationService(paths=paths)
     monkeypatch.setattr(
         "netconsole.backend.api.main.LocalProcessAdapter", BlockingAdapter
@@ -312,6 +314,7 @@ def test_web_lifespan_stops_file_queue_before_shared_process_adapter(
             pass
 
     paths = PathResolver(tmp_path)
+    Database(paths.site_db_path("demo")).initialize()
     monkeypatch.setattr(
         "netconsole.backend.api.main.LocalProcessAdapter", OrderedAdapter
     )
@@ -359,10 +362,12 @@ def test_web_lifespan_rolls_back_when_traffic_start_fails(tmp_path: Path) -> Non
     agent = AgentService()
     traffic = TrafficService()
     ac = AcService()
+    paths = PathResolver(tmp_path)
+    Database(paths.site_db_path("demo")).initialize()
     app = create_app(
         RuntimeMode.SERVER,
-        paths=PathResolver(tmp_path),
-        task_service=TaskApplicationService(paths=PathResolver(tmp_path)),
+        paths=paths,
+        task_service=TaskApplicationService(paths=paths),
         agent_service=agent,  # type: ignore[arg-type]
         traffic_service=traffic,  # type: ignore[arg-type]
         ac_mesh_link_refresh_service=ac,  # type: ignore[arg-type]
@@ -394,10 +399,12 @@ def test_web_lifespan_cleanup_failure_does_not_skip_agent_stop(tmp_path: Path) -
 
     agent = AgentService()
     traffic = FailingTrafficService()
+    paths = PathResolver(tmp_path)
+    Database(paths.site_db_path("demo")).initialize()
     app = create_app(
         RuntimeMode.SERVER,
-        paths=PathResolver(tmp_path),
-        task_service=TaskApplicationService(paths=PathResolver(tmp_path)),
+        paths=paths,
+        task_service=TaskApplicationService(paths=paths),
         agent_service=agent,  # type: ignore[arg-type]
         traffic_service=traffic,  # type: ignore[arg-type]
         ac_mesh_link_refresh_service=AgentService(),  # type: ignore[arg-type]

@@ -15,7 +15,7 @@ from netconsole.models.task_snapshot import (
     TaskSnapshot,
     utc_now_iso,
 )
-from netconsole.services.job_center.task_history_policy import (
+from netconsole.models.task_history_policy import (
     ACTIVE_TASK_STATE_VALUES,
     TERMINAL_TASK_STATE_VALUES,
     task_expires_at,

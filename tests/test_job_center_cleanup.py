@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from netconsole.backend.api.main import create_app
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.models.task_snapshot import TaskEvent, TaskSnapshot
@@ -205,6 +206,7 @@ def test_cleanup_api_publishes_incremental_event_and_rejects_file_deletion(
         site_name="demo",
         reconcile_on_start=False,
     )
+    Database(paths.site_db_path("demo")).initialize()
     app = create_app(
         RuntimeMode.TEST,
         paths=paths,

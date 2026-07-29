@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import heapq
 import json
+import time
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
@@ -9,6 +12,20 @@ from typing import Any, Iterator
 from netconsole.repositories.ground_unattended_repository import (
     GroundUnattendedRepository,
 )
+from netconsole.services.ground_unattended.archive_reader import (
+    GroundArchiveInspection,
+    GroundArchiveReadError,
+    GroundArchiveReader,
+)
+from netconsole.services.ground_unattended.syslog_runtime import (
+    WmeshRealtimeParser,
+)
+
+
+MAX_QUERY_FILES = 256
+MAX_QUERY_RECORDS = 1_000_000
+MAX_QUERY_BYTES = 256 * 1024**2
+MAX_QUERY_SECONDS = 12.0
 
 
 class GroundRawQueryError(ValueError):
@@ -16,11 +33,12 @@ class GroundRawQueryError(ValueError):
 
 
 class GroundRawStreamQueryService:
-    """Bounded, read-only queries over registered unattended NDJSON files."""
+    """对 active/READY ZIP 中已登记 NDJSON 执行有界、只读查询。"""
 
     def __init__(self, repository: GroundUnattendedRepository) -> None:
         self.repository = repository
         self.root = repository.db_path.parent.resolve()
+        self.archive_reader = GroundArchiveReader(repository)
 
     def ping_series(
         self,
@@ -34,7 +52,15 @@ class GroundRawStreamQueryService:
         include_warmup: bool = False,
         max_points: int = 3000,
     ) -> dict[str, Any]:
-        start, end = _time_range(start_time, end_time)
+        start, end = self._time_range(
+            run_id,
+            start_time,
+            end_time,
+            data_type="ping",
+            train_id=train_id,
+            mr_id=mr_id,
+        )
+        diagnostics = _new_diagnostics(run_id, start, end)
         max_points = max(10, min(int(max_points), 10_000))
         duration = max(1.0, (end - start).total_seconds())
         bucket_seconds = max(0.001, duration / max_points)
@@ -48,7 +74,14 @@ class GroundRawStreamQueryService:
         last_position: dict[str, tuple[str, str, str, str]] = {}
 
         for item in self._records(
-            data_type="ping", run_id=run_id, start=start, end=end, time_key="ts"
+            data_type="ping",
+            run_id=run_id,
+            train_id=train_id,
+            mr_id=mr_id,
+            start=start,
+            end=end,
+            time_key="ts",
+            diagnostics=diagnostics,
         ):
             if not _matches(
                 item,
@@ -166,6 +199,16 @@ class GroundRawStreamQueryService:
         points = sorted(
             [*loss_points, *successes], key=lambda item: str(item.get("ts") or "")
         )[:max_points]
+        self._finish_diagnostics(
+            diagnostics,
+            matched_count=counts["raw"],
+            run_id=run_id,
+            data_type="ping",
+        )
+        if counts["raw"] == 0 and diagnostics["files_scanned"]:
+            diagnostics["no_data_reason"] = (
+                "TARGET_NOT_FOUND" if target_ip else "NO_SAMPLES"
+            )
         return {
             "raw_sample_count": counts["raw"],
             "effective_sample_count": counts["effective"],
@@ -174,6 +217,7 @@ class GroundRawStreamQueryService:
             "loss_windows": loss_windows,
             "ap_transitions": ap_transitions[:max_points],
             "position_segments": position_segments[:max_points],
+            "diagnostics": diagnostics,
         }
 
     def ping_samples(
@@ -189,7 +233,15 @@ class GroundRawStreamQueryService:
         page: int = 1,
         page_size: int = 100,
     ) -> dict[str, Any]:
-        start, end = _time_range(start_time, end_time)
+        start, end = self._time_range(
+            run_id,
+            start_time,
+            end_time,
+            data_type="ping",
+            train_id=train_id,
+            mr_id=mr_id,
+        )
+        diagnostics = _new_diagnostics(run_id, start, end)
         page = max(1, min(int(page), 200))
         page_size = max(1, min(int(page_size), 500))
         keep_count = page * page_size
@@ -197,7 +249,14 @@ class GroundRawStreamQueryService:
         counts = {"raw": 0, "effective": 0, "ignored": 0}
         serial = 0
         for item in self._records(
-            data_type="ping", run_id=run_id, start=start, end=end, time_key="ts"
+            data_type="ping",
+            run_id=run_id,
+            train_id=train_id,
+            mr_id=mr_id,
+            start=start,
+            end=end,
+            time_key="ts",
+            diagnostics=diagnostics,
         ):
             if not _matches(
                 item,
@@ -226,16 +285,26 @@ class GroundRawStreamQueryService:
             )
         ]
         offset = (page - 1) * page_size
+        total = (
+            counts["effective"] + counts["ignored"]
+            if include_warmup
+            else counts["effective"]
+        )
+        self._finish_diagnostics(
+            diagnostics,
+            matched_count=counts["raw"],
+            run_id=run_id,
+            data_type="ping",
+        )
         return {
             "items": matched_items[offset : offset + page_size],
-            "total": counts["effective"] + counts["ignored"]
-            if include_warmup
-            else counts["effective"],
+            "total": total,
             "page": page,
             "page_size": page_size,
             "raw_sample_count": counts["raw"],
             "effective_sample_count": counts["effective"],
             "ignored_sample_count": counts["ignored"],
+            "diagnostics": diagnostics,
         }
 
     def syslog_records(
@@ -247,14 +316,29 @@ class GroundRawStreamQueryService:
         mr_name: str = "",
         source_ip: str = "",
         system_name: str = "",
+        mr_role: str = "",
+        facility: str = "",
         severity: str = "",
+        identity_status: str = "",
+        event_type: str = "",
+        peer_name: str = "",
+        data_source: str = "",
         keyword: str = "",
         start_time: str = "",
         end_time: str = "",
         page: int = 1,
         page_size: int = 100,
     ) -> dict[str, Any]:
-        start, end = _time_range(start_time, end_time)
+        start, end = self._time_range(
+            run_id,
+            start_time,
+            end_time,
+            data_type="syslog",
+            train_id=train_id,
+            mr_id=mr_id,
+            mr_role=mr_role,
+        )
+        diagnostics = _new_diagnostics(run_id, start, end)
         page = max(1, min(int(page), 200))
         page_size = max(1, min(int(page_size), 500))
         keep_count = page * page_size
@@ -267,16 +351,70 @@ class GroundRawStreamQueryService:
             "mr_name": mr_name.casefold(),
             "source_ip": source_ip.casefold(),
             "system_name": system_name.casefold(),
+            "mr_role": mr_role.casefold(),
+            "facility": facility.casefold(),
             "severity": severity.casefold(),
+            "identity_status": identity_status.casefold(),
+            "event_type": event_type.casefold(),
+            "peer_name": peer_name.casefold(),
+            "data_source": data_source.casefold(),
         }
         keyword_value = keyword.casefold()
+        parser = WmeshRealtimeParser()
         for item in self._records(
             data_type="syslog",
             run_id=run_id,
+            train_id=train_id,
+            mr_id=mr_id,
+            mr_role=mr_role,
             start=start,
             end=end,
             time_key="receive_time",
+            diagnostics=diagnostics,
         ):
+            if not item.get("event_type") and item.get("raw_text"):
+                receive_time = _parse_time(
+                    str(item.get("receive_time") or "")
+                )
+                if receive_time is not None:
+                    parsed = parser.parse(
+                        str(item["raw_text"]), receive_time=receive_time
+                    )
+                    if parsed:
+                        item.update(
+                            {
+                                "display_enriched": True,
+                                "event_type": parsed.get("event_type", ""),
+                                "peer_name": parsed.get("peer_name", ""),
+                                "peer_mac": parsed.get("peer_mac", ""),
+                                "previous_peer_name": parsed.get(
+                                    "previous_peer_name", ""
+                                ),
+                                "previous_peer_mac": parsed.get(
+                                    "previous_peer_mac", ""
+                                ),
+                                "peer_radio_mac": (
+                                    parsed.get("details") or {}
+                                ).get("new_peer_radio_mac", ""),
+                                "previous_peer_radio_mac": (
+                                    parsed.get("details") or {}
+                                ).get("old_peer_radio_mac", ""),
+                                "rssi": (parsed.get("details") or {}).get(
+                                    "rssi",
+                                    (parsed.get("details") or {}).get("new_rssi"),
+                                ),
+                                "previous_rssi": (
+                                    parsed.get("details") or {}
+                                ).get("old_rssi"),
+                                "reason_code": (
+                                    parsed.get("details") or {}
+                                ).get("reason_code", ""),
+                                "reason_text": (
+                                    parsed.get("details") or {}
+                                ).get("reason_raw", ""),
+                                "parsed_details": parsed.get("details") or {},
+                            }
+                        )
             if any(
                 expected
                 and expected not in _syslog_filter_value(item, field)
@@ -304,55 +442,179 @@ class GroundRawStreamQueryService:
             )
         ]
         offset = (page - 1) * page_size
+        self._finish_diagnostics(
+            diagnostics,
+            matched_count=matched_count,
+            run_id=run_id,
+            data_type="syslog",
+        )
         return {
             "items": row_items[offset : offset + page_size],
             "total": matched_count,
             "page": page,
             "page_size": page_size,
+            "diagnostics": diagnostics,
         }
+
+    def _finish_diagnostics(
+        self,
+        diagnostics: dict[str, Any],
+        *,
+        matched_count: int,
+        run_id: str,
+        data_type: str,
+    ) -> None:
+        _finish_diagnostics(diagnostics, matched_count=matched_count)
+        if (
+            diagnostics["data_availability"] == "MISSING"
+            and run_id
+            and self._has_summary(run_id, data_type)
+        ):
+            diagnostics["data_availability"] = "SUMMARY_ONLY"
+            diagnostics["no_data_reason"] = "SUMMARY_ONLY"
+
+    def _has_summary(self, run_id: str, data_type: str) -> bool:
+        if data_type == "ping" and self.repository.list_ping_summaries(run_id):
+            return True
+        run = self.repository.get_run(run_id) or {}
+        raw_summary = run.get("summary")
+        summary = raw_summary if isinstance(raw_summary, Mapping) else {}
+        key = "ping_sample_count" if data_type == "ping" else "syslog_record_count"
+        return bool(int(summary.get(key) or 0))
 
     def _records(
         self,
         *,
         data_type: str,
         run_id: str,
+        train_id: str,
+        mr_id: str,
         start: datetime,
         end: datetime,
         time_key: str,
+        diagnostics: dict[str, Any],
+        mr_role: str = "",
     ) -> Iterator[dict[str, Any]]:
         files = self.repository.list_raw_files_for_query(
             data_type=data_type,
             start_time=start.isoformat(),
             end_time=end.isoformat(),
             run_id=run_id,
+            train_id=train_id,
+            device_uuid=mr_id,
+            mr_role=mr_role,
+            limit=MAX_QUERY_FILES + 1,
         )
+        diagnostics["files_considered"] = len(files)
+        if len(files) > MAX_QUERY_FILES:
+            diagnostics["truncated"] = True
+            files = files[:MAX_QUERY_FILES]
+
+        inspection: GroundArchiveInspection | None = None
+        archive_checked = False
+        seen: set[str] = set()
+        started = time.monotonic()
+        unavailable_files = 0
+
         for registered in files:
-            path = self._registered_path(str(registered.get("relative_path") or ""))
-            if not path.is_file():
-                continue
+            if _budget_exhausted(diagnostics, started):
+                diagnostics["truncated"] = True
+                break
+            path = self._registered_path(
+                str(registered.get("relative_path") or "")
+            )
+            source = "ACTIVE"
+            archive_entry = ""
+            lines: Iterator[tuple[bytes, str]]
+            if path.is_file():
+                lines = _active_lines(path)
+            else:
+                if not archive_checked:
+                    archive_checked = True
+                    try:
+                        inspection = (
+                            self.archive_reader.inspect_run(run_id)
+                            if run_id
+                            else None
+                        )
+                    except GroundArchiveReadError as exc:
+                        diagnostics["data_availability"] = "CORRUPT"
+                        diagnostics["no_data_reason"] = "ARCHIVE_INTEGRITY_FAILED"
+                        raise GroundRawQueryError(
+                            f"历史归档损坏或完整性校验失败：{exc}"
+                        ) from exc
+                if inspection is None:
+                    unavailable_files += 1
+                    diagnostics["_archive_unavailable"] = True
+                    continue
+                source = "ARCHIVE"
+                diagnostics["legacy_archive"] = (
+                    diagnostics["legacy_archive"] or inspection.legacy_manifest
+                )
+                try:
+                    lines = self.archive_reader.iter_registered_lines(
+                        inspection, registered
+                    )
+                except GroundArchiveReadError as exc:
+                    diagnostics["data_availability"] = "CORRUPT"
+                    diagnostics["no_data_reason"] = "ARCHIVE_MEMBER_MISSING"
+                    raise GroundRawQueryError(
+                        f"历史归档缺少已登记的原始文件：{exc}"
+                    ) from exc
+            diagnostics["files_scanned"] += 1
+            sources = set(diagnostics.pop("_sources", []))
+            sources.add(source)
+            diagnostics["_sources"] = sorted(sources)
+
             try:
-                with path.open("r", encoding="utf-8", errors="replace") as handle:
-                    for line in handle:
-                        try:
-                            item = json.loads(line)
-                        except (TypeError, json.JSONDecodeError):
-                            continue
-                        if not isinstance(item, dict):
-                            continue
-                        ts = _parse_time(str(item.get(time_key) or ""))
-                        if ts is None or ts < start or ts > end:
-                            continue
-                        item["raw_file_id"] = str(
-                            registered.get("file_id") or ""
-                        )
-                        item["raw_file_status"] = str(
-                            registered.get("status") or ""
-                        )
-                        yield item
+                for line_number, (line, entry) in enumerate(lines, start=1):
+                    diagnostics["bytes_scanned"] += len(line)
+                    diagnostics["records_scanned"] += 1
+                    archive_entry = entry
+                    if _budget_exhausted(diagnostics, started):
+                        diagnostics["truncated"] = True
+                        break
+                    try:
+                        item = json.loads(line.decode("utf-8"))
+                    except (
+                        TypeError,
+                        UnicodeDecodeError,
+                        json.JSONDecodeError,
+                    ):
+                        diagnostics["malformed_record_count"] += 1
+                        continue
+                    if not isinstance(item, dict):
+                        diagnostics["malformed_record_count"] += 1
+                        continue
+                    ts = _parse_time(str(item.get(time_key) or ""))
+                    if ts is None or ts < start or ts > end:
+                        continue
+                    dedup_key = _record_key(data_type, item, line)
+                    if dedup_key in seen:
+                        diagnostics["duplicate_record_count"] += 1
+                        continue
+                    seen.add(dedup_key)
+                    item["raw_file_id"] = str(registered.get("file_id") or "")
+                    item["raw_line_number"] = line_number
+                    item["raw_file_status"] = str(
+                        registered.get("status") or ""
+                    )
+                    item["data_source"] = source
+                    item["archive_entry"] = archive_entry if source == "ARCHIVE" else ""
+                    yield item
+                if diagnostics["truncated"]:
+                    break
             except OSError as exc:
                 raise GroundRawQueryError(
                     f"无法读取已登记的 {data_type} 原始文件"
                 ) from exc
+            except GroundArchiveReadError as exc:
+                diagnostics["data_availability"] = "CORRUPT"
+                diagnostics["no_data_reason"] = "ARCHIVE_READ_FAILED"
+                raise GroundRawQueryError(f"无法读取历史归档：{exc}") from exc
+
+        if unavailable_files:
+            diagnostics["_unavailable_files"] = unavailable_files
 
     def _registered_path(self, relative_path: str) -> Path:
         if not relative_path:
@@ -373,26 +635,208 @@ class GroundRawStreamQueryService:
             raise GroundRawQueryError("拒绝读取数据根之外的原始文件") from exc
         return path
 
+    def _time_range(
+        self,
+        run_id: str,
+        start_time: str,
+        end_time: str,
+        *,
+        data_type: str = "",
+        train_id: str = "",
+        mr_id: str = "",
+        mr_role: str = "",
+    ) -> tuple[datetime, datetime]:
+        now = datetime.now().astimezone()
+        start = _parse_time(start_time)
+        end = _parse_time(end_time)
+        run: dict[str, Any] | None = None
+        raw_start: datetime | None = None
+        raw_end: datetime | None = None
+        if run_id:
+            run = self.repository.get_run(run_id)
+            raw_files = self.repository.list_raw_files_for_run(run_id)
+            if run is None and not raw_files:
+                raise GroundRawQueryError("指定的无人值守运行不存在")
+            raw_times = [
+                row
+                for row in raw_files
+                if (not data_type or str(row.get("data_type") or "") == data_type)
+                and (not train_id or str(row.get("train_id") or "") == train_id)
+                and (
+                    not mr_id
+                    or str(row.get("device_uuid") or "") == mr_id
+                )
+                and (not mr_role or str(row.get("mr_role") or "") == mr_role)
+            ]
+            starts = [
+                parsed
+                for row in raw_times
+                if (
+                    parsed := _parse_time(str(row.get("start_time") or ""))
+                )
+                is not None
+            ]
+            ends = [
+                parsed
+                for row in raw_times
+                if (
+                    parsed := _parse_time(
+                        str(row.get("end_time") or row.get("start_time") or "")
+                    )
+                )
+                is not None
+            ]
+            raw_start = min(starts, default=None)
+            raw_end = max(ends, default=None)
+        if run is not None:
+            if start is None:
+                start = _first_time(
+                    run.get("actual_started_at"),
+                    raw_start,
+                    run.get("scheduled_start_at"),
+                    run.get("created_at"),
+                )
+            if end is None:
+                end = _first_time(
+                    run.get("actual_ended_at"),
+                    raw_end,
+                    run.get("scheduled_end_at")
+                    if str(run.get("state") or "")
+                    in {"COMPLETED", "ERROR"}
+                    else None,
+                    run.get("updated_at")
+                    if str(run.get("state") or "")
+                    in {"COMPLETED", "ERROR"}
+                    else None,
+                )
+                if end is None:
+                    end = now
+        end = end or now
+        start = start or end - timedelta(minutes=30)
+        if start > end:
+            raise GroundRawQueryError("开始时间不能晚于结束时间")
+        if (end - start) > timedelta(days=7):
+            raise GroundRawQueryError("单次原始数据查询最长支持 7 天")
+        return start, end
 
-def _time_range(start_time: str, end_time: str) -> tuple[datetime, datetime]:
-    now = datetime.now().astimezone()
-    end = _parse_time(end_time) or now
-    start = _parse_time(start_time) or end - timedelta(minutes=30)
-    if start > end:
-        raise GroundRawQueryError("开始时间不能晚于结束时间")
-    if (end - start) > timedelta(days=7):
-        raise GroundRawQueryError("单次原始数据查询最长支持 7 天")
-    return start, end
+
+def _new_diagnostics(
+    run_id: str, start: datetime, end: datetime
+) -> dict[str, Any]:
+    return {
+        "requested_run_id": run_id,
+        "resolved_start_time": start.isoformat(timespec="milliseconds"),
+        "resolved_end_time": end.isoformat(timespec="milliseconds"),
+        "source_kind": "NONE",
+        "data_availability": "MISSING",
+        "files_considered": 0,
+        "files_scanned": 0,
+        "records_scanned": 0,
+        "bytes_scanned": 0,
+        "malformed_record_count": 0,
+        "duplicate_record_count": 0,
+        "truncated": False,
+        "legacy_archive": False,
+        "no_data_reason": "",
+    }
+
+
+def _finish_diagnostics(
+    diagnostics: dict[str, Any], *, matched_count: int
+) -> None:
+    sources = set(diagnostics.pop("_sources", []))
+    unavailable = int(diagnostics.pop("_unavailable_files", 0))
+    archive_unavailable = bool(diagnostics.pop("_archive_unavailable", False))
+    if sources == {"ACTIVE", "ARCHIVE"}:
+        diagnostics["source_kind"] = "MIXED"
+    elif sources:
+        diagnostics["source_kind"] = next(iter(sources))
+    if diagnostics.get("data_availability") == "CORRUPT":
+        return
+    if not diagnostics["files_considered"]:
+        diagnostics["data_availability"] = "MISSING"
+        diagnostics["no_data_reason"] = "NO_REGISTERED_FILES"
+    elif not diagnostics["files_scanned"]:
+        diagnostics["data_availability"] = "MISSING"
+        diagnostics["no_data_reason"] = (
+            "ARCHIVE_NOT_READY" if archive_unavailable else "RAW_FILE_MISSING"
+        )
+    else:
+        diagnostics["data_availability"] = (
+            "MIXED"
+            if sources == {"ACTIVE", "ARCHIVE"}
+            else "ACTIVE_RAW"
+            if sources == {"ACTIVE"}
+            else "ARCHIVED_RAW"
+            if sources == {"ARCHIVE"}
+            else "MISSING"
+        )
+    if (
+        diagnostics["truncated"]
+        or unavailable
+        or diagnostics["malformed_record_count"]
+    ):
+        diagnostics["no_data_reason"] = (
+            "QUERY_BUDGET_REACHED"
+            if diagnostics["truncated"]
+            else "SOME_RAW_FILES_MISSING"
+            if unavailable
+            else "MALFORMED_RECORDS_SKIPPED"
+        )
+    elif matched_count == 0 and diagnostics["files_scanned"]:
+        diagnostics["no_data_reason"] = "FILTER_NO_MATCH"
+
+
+def _budget_exhausted(
+    diagnostics: dict[str, Any], started: float
+) -> bool:
+    return (
+        int(diagnostics["records_scanned"]) >= MAX_QUERY_RECORDS
+        or int(diagnostics["bytes_scanned"]) >= MAX_QUERY_BYTES
+        or time.monotonic() - started >= MAX_QUERY_SECONDS
+    )
+
+
+def _active_lines(path: Path) -> Iterator[tuple[bytes, str]]:
+    with path.open("rb") as handle:
+        for line in handle:
+            yield line, ""
+
+
+def _record_key(data_type: str, item: dict[str, Any], raw: bytes) -> str:
+    if data_type == "ping":
+        stable = item.get("sample_id") or (
+            str(item.get("target_ip") or ""),
+            str(item.get("ts") or ""),
+            item.get("seq"),
+        )
+    else:
+        stable = item.get("global_receive_sequence") or (
+            str(item.get("source_ip") or ""),
+            item.get("source_receive_sequence"),
+            str(item.get("receive_time") or ""),
+        )
+    if stable in {"", None, ("", None, "")}:
+        return hashlib.sha256(raw).hexdigest()
+    return f"{data_type}:{stable!r}"
 
 
 def _parse_time(value: str) -> datetime | None:
     if not value:
         return None
     try:
-        result = datetime.fromisoformat(value)
+        result = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
     return result if result.tzinfo else result.astimezone()
+
+
+def _first_time(*values: object) -> datetime | None:
+    for value in values:
+        parsed = _parse_time(str(value or ""))
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _matches(
@@ -413,6 +857,8 @@ def _syslog_filter_value(item: dict[str, Any], field: str) -> str:
     value = item.get(field)
     if field == "system_name" and not value:
         value = item.get("hostname")
+    if field == "peer_name" and not value:
+        value = item.get("peer_mac")
     return str(value or "").casefold()
 
 
@@ -428,7 +874,10 @@ def _finish_loss_window(current: dict[str, Any]) -> None:
 
 def _is_junction(path: Path) -> bool:
     checker = getattr(path, "is_junction", None)
-    return bool(checker and checker())
+    try:
+        return bool(checker()) if callable(checker) else False
+    except OSError:
+        return True
 
 
 __all__ = ["GroundRawQueryError", "GroundRawStreamQueryService"]

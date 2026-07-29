@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from netconsole.backend.api.main import create_app
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.models.api.online_mr_control import OnlineMrWebControlStatusDTO, OnlineMrWebOperationDTO
@@ -66,6 +67,7 @@ def _app(tmp_path: Path, service: _ControlService, *, mode: RuntimeMode = Runtim
     paths.site_dir("demo").mkdir(parents=True, exist_ok=True)
     paths.app_config_path.parent.mkdir(parents=True, exist_ok=True)
     paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    Database(paths.site_db_path("demo")).initialize()
     app = create_app(
         mode,
         paths=paths,
@@ -149,6 +151,7 @@ def test_control_api_default_feature_is_disabled(tmp_path: Path, monkeypatch) ->
 
 def test_control_application_service_is_created_only_for_protected_desktop_mode(tmp_path: Path) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    Database(paths.site_db_path("demo")).initialize()
     desktop = create_app(
         RuntimeMode.DESKTOP,
         paths=paths,

@@ -90,10 +90,15 @@ from netconsole.services.traffic.application_service import TrafficTestApplicati
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
 from netconsole.services.traffic.web_application_service import TrafficWebApplicationService
 from netconsole.services.settings_application_service import SettingsApplicationService
+from netconsole.services.runtime_self_check_service import RuntimeSelfCheckService
 from netconsole.services.system_network_application_service import (
     SystemNetworkApplicationService,
 )
-from netconsole.services.site_lifecycle import DemoSiteSeedService
+from netconsole.services.site_lifecycle import (
+    DemoSiteSeedService,
+    SiteAuditService,
+    SiteCleanupApplicationService,
+)
 from netconsole.services.site_storage import (
     DataRootApplicationService,
     SiteApplicationService,
@@ -478,11 +483,18 @@ def create_app(
     app.state.site_application_service = site_application_service
     app.state.data_root_application_service = data_root_application_service
     app.state.site_package_service = site_package_service
+    app.state.site_audit_service = SiteAuditService(paths)
+    app.state.site_cleanup_application_service = SiteCleanupApplicationService(paths)
     app.state.site_process_adapter = web_process_adapter
     app.state.web_artifact_store = web_artifact_store
     app.state.desktop_action_service = desktop_action_service
     app.state.feature_gate = feature_gate
     app.state.settings_application_service = SettingsApplicationService(paths, feature_gate, site_name)
+    app.state.runtime_self_check_service = RuntimeSelfCheckService(
+        paths,
+        feature_gate,
+        site_name,
+    )
     app.state.system_network_application_service = SystemNetworkApplicationService()
     app.state.ac_management_query_service = ac_management_query_service
     app.state.ac_mesh_link_query_service = AcMeshLinkQueryService(paths)

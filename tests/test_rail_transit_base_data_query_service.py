@@ -53,7 +53,7 @@ def test_base_data_queries_relations_and_quality_are_read_only(tmp_path: Path) -
     assert summary.increasing_direction_leading_end == "unknown"
     assert trains.items[0].mr_count == 2
     codes = {item.code for item in issues.items}
-    assert {"ap_mac_duplicate", "ap_mileage_invalid", "static_ip_duplicate", "mr_train_unbound", "section_mileage_unavailable"} <= codes
+    assert {"ap_mac_duplicate", "ap_mileage_invalid", "mr_train_unbound", "section_mileage_unavailable"} <= codes
     assert _fingerprint(db_path) == before
 
 

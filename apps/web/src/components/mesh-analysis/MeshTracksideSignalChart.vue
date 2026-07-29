@@ -504,7 +504,7 @@ function tooltipEntry(point: ResolvedTracksidePoint): TracksideTooltipEntry {
     station: meta.station ?? series.station,
     section: meta.section ?? series.section,
     activeDurationSeconds: meta.segmentDurationSeconds,
-    color: seriesColor(series.seriesId, '#909399'),
+    color: seriesColor(series.seriesId, readNetConsoleChartTokens().textSecondary),
   }
 }
 

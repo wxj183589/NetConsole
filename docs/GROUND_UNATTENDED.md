@@ -16,12 +16,29 @@ Vue 独立页面
   -> AC/基础资料/Online MR/fping/Repository
 ```
 
-页面卸载只停止 5 秒 REST 轮询。Electron 主窗口隐藏到通知区域时 Backend、AC 常驻轮询、全车长
+页面卸载只停止 Renderer 增量轮询。Electron 主窗口隐藏到通知区域时 Backend、AC 常驻轮询、全车长
 Ping 和深度采集继续；明确退出时 lifespan 先关闭 Supervisor，Supervisor 请求 AC Poller 正常停止，
 fping 进程仍由统一 `ShutdownManager` 登记和回收，Online MR Worker 继续使用既有
 `LocalProcessAdapter` 进程树收口。
 功能关闭时不创建无人值守 Repository 或 Supervisor；索引库初始化失败也只让本功能 API 返回结构化
 `GROUND_UNATTENDED_UNAVAILABLE`，不会阻断人工 Online MR 或整个 Backend 启动。
+
+## 运行状态与查看上下文
+
+`/status` 分开返回服务状态、活动运行、最近运行、活动操作和最近终态操作。没有活动运行时，页面只按
+Profile 返回 `DISABLED` 或 `WAITING_WINDOW`；最近一次 `COMPLETED` 运行只出现在“最近运行”，不能
+继续充当当前状态。`/operations/active` 只返回 `PENDING/RUNNING`，`/operations/latest` 只返回当前
+局点最近的 `COMPLETED/FAILED`。完成操作提示在 12 秒内自动收起，失败操作保留到用户确认。
+
+页面使用统一 `selectedRunId` 驱动 Ping、Syslog、时间轴和深度采集历史查看；运行选择器来自 `/runs`，
+不会再隐式复用状态接口的 `run_id`。Ping 行仍以自身 `run_id/train_id/mr_id/target_ip` 为最高优先级，
+避免历史汇总与当前运行曲线交叉。
+
+Renderer 初次加载状态、运行列表、必要配置和当前页签；之后按类别增量刷新。活动运行的状态和健康最长
+分别约 5 秒刷新，活动操作约 2 秒，列车/Ping/Syslog 约 8 秒且只在对应活动页签刷新；无活动运行时状态
+约 20 秒刷新，归档、时间轴、深度采集和设置不做后台全量轮询。相同请求防重入并用
+`AbortController`、请求代次和指数退避处理切页、隐藏、恢复和过期响应；页面隐藏时暂停请求，卸载时
+取消请求、定时器和图表资源。
 
 ## 配置和时间窗口
 
@@ -120,11 +137,16 @@ AC 位置未知，并继续识别 CT 单端、CW 单端和双端同时丢包。
 保存采样时的 AP identity/名称/MAC、站点、区间、里程、RSSI、AC 快照及接收时间、位置质量和
 AP 切换上下文，历史查询不会把当前 AP 回填到旧样本。
 
-页面“长 Ping”保留汇总表，并通过受控的 `/ping-series` 和 `/ping-samples` 查询逐包 RTT、成功/丢包、
-预热、位置未知、AP 切换和连续丢包区段。页面支持最近 5 分钟、30 分钟、1 小时、自定义时间和可关闭的
-自动刷新；默认只读最近 30 分钟，单次最多 7 天，图表点数默认 3000、最多 10000。后端只选择与时间范围
-相交的已登记文件，逐行读取并优先保留丢包点；逐包和 Syslog 分页仅保留当前请求页所需的有界最新记录，
-不把全天原始流一次加载到前端、进程内存或 SQLite。
+页面“长 Ping”保留内部滚动汇总表；曲线只在弹窗 `opened` 后初始化，关闭时释放 ECharts、
+`ResizeObserver` 和窗口监听。弹窗通过受控的 `/ping-series` 和 `/ping-samples` 查询逐包 RTT、
+成功/丢包、预热、位置未知、AP 切换和连续丢包区段。当前活动运行默认最近 30 分钟，历史运行默认实际
+起止时间，行级起止时间优先；页面也支持最近 5 分钟、1 小时、运行全部、自定义时间和可关闭的自动刷新。
+单次最多 7 天，图表点数默认 3000、最多 10000。
+
+后端先按 `run_id/data_type/train_id/device_uuid/mr_role/start_time/end_time` 在 Repository 预筛文件，
+再逐行读取并优先保留丢包点。单次最多 256 个文件、1,000,000 条扫描记录、256 MiB 解压/读取字节和
+12 秒处理预算，达到预算返回 `truncated` 和扫描诊断；逐包和 Syslog 分页仅保留当前请求页所需的有界
+最新记录，不把全天原始流一次加载到前端、进程内存或 SQLite。
 
 ## 第一阶段实时采集基础
 
@@ -148,10 +170,22 @@ MR。设备主体、地址和凭据仍只存在于设备管理；无人值守只
 文件不会被压缩；停止、轮转或重启恢复后才登记为关闭/恢复文件。SQLite 只保存分钟汇总、连续丢包区间、
 WMESH 关键事件、原始文件索引和健康事件，不逐条保存秒级原始 Ping 或 Syslog。
 
-页面新增独立“Syslog 日志”标签，通过 `/syslog-records` 分页查看当前 OPEN 和历史 CLOSED/RECOVERED
-文件中的真实接收内容。默认最近 30 分钟、每页 100、每页最多 500，支持列车、MR 名称、来源 IP、
-设备系统名、级别和原文关键字过滤，分别展示设备时间、本机接收时间和时钟差。查询仅解析 Repository
-已登记且位于当前无人值守数据根内的普通文件，拒绝路径逃逸、符号链接和目录联接。
+页面新增独立“Syslog 日志”标签，通过 `/syslog-records` 分页查看当前 OPEN、历史
+CLOSED/RECOVERED 和 READY ZIP 中的真实接收内容。当前运行默认最近 30 分钟，历史运行默认完整运行
+时段；每页默认 100、最多 500，支持列车、MR、CT/CW、来源 IP、设备系统名、facility、级别、身份状态、
+WMESH 事件、AP、关键字和 ACTIVE/ARCHIVE 来源过滤。表格填充剩余视口并内部滚动，行详情展示完整原文、
+接收序号、原始文件/行号、归档成员、设备/接收时间、时钟差、身份和解析字段。
+
+新 Syslog NDJSON 在写入时携带 WMESH 解析和 AP 展示字段。旧记录缺字段时在查询内存中只读重解析并标记
+`display_enriched=true`，不会回写原始文件。查询仅解析 Repository 已登记且位于当前无人值守数据根内
+的普通文件或受校验 ZIP 成员，拒绝路径逃逸、符号链接和目录联接。
+
+AP 展示解析先使用轨旁基础资料中的稳定 AP MAC、显式 Radio/BSSID 和唯一 Alias，再使用 AC Detail
+中的显式 Radio/BSSID；H3C WMESH Peer MAC 与 AP MAC 的 Radio 前缀派生只能返回
+`H3C_RADIO_DERIVED` 和 90 置信度，不能伪装成精确 BSSID。AC Detail 只读结果缓存 30 秒，避免 Syslog
+自动刷新反复加载全量 FIT-AP。响应同时保存 `resolution_status/resolution_rule/confidence` 和
+`display_name_source`；`AC_AP_NAME` 只表示 AC 当前配置名称，不等于轨旁工程点位名。多候选保持
+`AMBIGUOUS`，主链路切换缺少旧或新 Peer 时分别显示“无主链路 → 新 AP”或“旧 AP → 无主链路”。
 
 Ping 稳定成功后，`MrSyslogConfigService` 通过既有设备凭据按
 `display clock -> display version -> display clock` 连续取证。Boot Session 的主时间轴为两次设备
@@ -232,6 +266,19 @@ ZIP 先写隐藏临时文件，逐成员 CRC、manifest 和流式 SHA-256 校验
 之后才用白名单递归清理对应 `active/<run_date>`。任一步失败均显示“归档失败，原始数据仍保留”。
 深度 Session ZIP 只引用、不嵌入每日 ZIP。
 
+历史原始查询优先读取仍存在的 active 文件；active 已清理且归档为 READY 时，通过
+`GroundArchiveReader` 直接流式读取 ZIP，不把归档解压回 active。同一运行同时存在 active 与 archive
+时返回 `MIXED` 并按稳定接收/采样标识去重。读取前校验受管 archives 路径、登记大小、ZIP SHA-256、
+manifest SHA-256、成员 SHA-256、CRC、成员数量、单成员/总解压量和压缩比；只读取 manifest 登记的
+Ping/Syslog NDJSON。旧 ZIP 缺少 manifest 时只允许已登记的 `fleet_ping/`、`realtime/syslog/` 或
+`syslog/` 成员，并标记 `legacy_archive`，不放宽路径规则。
+
+归档详情提供概览、文件清单、Ping/Syslog 汇总、深度会话、完整性和保留策略七个页签；“重新校验”只读
+检查现有 ZIP，不重写 READY 文件。ZIP 与汇总 JSON 使用两个明确按钮和严格 Artifact 端点：
+`/artifacts/{archive_id}/download` 与 `/artifacts/{archive_id}/summary-download`。后端只按 opaque
+`archive_id` 解析受管文件，Electron 再核对 endpoint、文件名、大小和 SHA-256；Renderer 不能提交物理
+路径。
+
 同一运行日的 READY 归档视为已封账：重复归档只校验既有 ZIP 并补做待完成的 active 清理，不重写正式
 文件；已有活动 run 时“立即开始”幂等返回，已归档运行日则拒绝复用。若 READY 文件损坏且 active 已
 不存在，索引标记失败并保留现场文件，不用空目录覆盖证据。详细保留和汇总清理均按 profile
@@ -249,7 +296,8 @@ Backend 启动重试。
 数据拒绝删除。
 
 普通停止和停止并归档均先创建持久化 `operation_id`，重复请求返回同一活动操作。操作记录保存阶段、
-进度、消息、失败码、结果摘要和完成时间；页面刷新或 Backend 重启后从 `/operations/latest` 恢复。
+进度、消息、失败码、结果摘要和完成时间；页面刷新或 Backend 重启后分别从 `/operations/active` 和
+`/operations/latest` 恢复。
 停止流程包含 `STOPPING_AC_POLLER / 正在停止 AC 常驻轮询` 阶段。只有 AC Poller 已关闭 SSH 并退出、
 深采安全收尾、全部 fping worker 退出、UDP 接收线程退出、原监听地址和端口可重新绑定、队列清空、
 writer flush 且没有 OPEN 原始文件后才把 run 标记为 `COMPLETED`。Poller 超时会保存具体 controller、
@@ -267,14 +315,17 @@ GET      /status
 POST     /start | /pause | /resume | /stop | /stop-and-archive
 POST     /inventory/sync | /config-check
 GET      /health | /raw-files | /syslog-records
+GET      /runs
 GET      /trains | /trains/{train_id}
 PUT      /trains/{train_id}/priority
 PUT      /trains/{train_id}/policy
 GET      /ping-targets | /ping-summary | /ping-series | /ping-samples | /timeline
 GET      /deep-collections | /coverage
-GET      /operations/latest | /operations/{operation_id}
-GET      /archives | /archives/{archive_id}
-GET      /archives/{archive_id}/summary-download
+GET      /operations/active | /operations/latest | /operations/{operation_id}
+GET      /archives | /archives/{archive_id} | /archives/{archive_id}/detail
+POST     /archives/{archive_id}/verify
+GET      /artifacts/{archive_id}/download
+GET      /artifacts/{archive_id}/summary-download
 POST     /archives/open-directory
 DELETE   /archives/{archive_id}
 ```
@@ -297,15 +348,26 @@ POST /check-udp-port
 首轮覆盖排序、可复现队列、ZIP 成功清理、
 ZIP 失败保留、Repository 故障隔离、API 空态和前端七页签。第一阶段还覆盖清单增量同步/策略保留、
 多 MR UDP 分流与未知来源隔离、设备时钟中点减 uptime、NTP 跳变保持 Session、本机地址校验、多 loghost
-解析、Syslog 分页、时间轴 MR 名称解析、持久化停止操作、同 IP 端口冲突只读保护，以及不执行
-`save/undo` 的 Syslog Profile。`vue-tsc`、
-定向 Vitest 和 Web production build 作为提交门。
+解析、历史 Syslog 分页、活动/最近操作分离、READY ZIP/混合来源查询、ZIP 路径/CRC/压缩比防护、时间轴
+AP 展示、持久化停止操作、同 IP 端口冲突只读保护，以及不执行 `save/undo` 的 Syslog Profile。
+规模门覆盖 50,000 条 READY ZIP Ping、500,000 条 active Ping、100,000 条 Syslog、36 台 MR/30 天
+Registry；前端假时钟覆盖 30 分钟页面轮询、10 分钟 Syslog 自动刷新和 100 次图表开关。
+`vue-tsc`、定向 Vitest、Electron 测试/类型检查和 Web/Main production build 作为提交门。
 
 已完成一台 H3C MR 的 10 分钟真实 UDP 单机验证：Comware 省略默认 enable/514 配置文本时只读复查为
 `CONFIG_PRESENT`，未进入配置视图；Receiver 实收 668 条并全部完成身份匹配和 WMESH 解析，队列无丢弃，
 Boot Session 进入 `LOG_ACTIVE`，停止后原始文件已关闭登记。该结果只确认当前单台设备和现场样本，不能
 外推为多列车压力、所有 Comware 版本或 IFNET 事件均已真实验证。
 
+宁波地铁 12 号线 2026-07-28 数据已复制到隔离测试根做只读来源验证：READY ZIP 扫描 9708 条 Ping，
+按稳定标识保留 9705 条唯一样本；6414 条 Syslog 可分页读取。7421 条时间轴中有 6330 条 WMESH 事件，
+4381 条按 H3C Radio 规则映射、1929 条按显式 Radio/BSSID 映射、20 条为无新 Peer 的
+`NO_ACTIVE_LINK`，未出现 `UNRESOLVED/AMBIGUOUS` 或“未知 AP”切换。现场 AC 配置名称仍全部为 MAC
+形式，轨旁基础资料虽有点位编号但没有 AP/Radio MAC，因此本次只验证到唯一物理 AP；工程点位名称仍需
+导入可信的 MAC 映射后验收。
+
 以下仍是人工现场门禁，不得由 fake 或本机回环测试提升为已验证：主备 AC 真实切换与设备时钟偏差、
 十几小时持续多目标 fping、真实列车 AP 漫游、2 车/4 MR 并发 SSH、Session 现场 ZIP、低磁盘故障注入、
 Electron 隐藏到通知区域后的整窗运行，以及退出后的 fping/Worker/SSH 进程核对。
+
+逐项风险状态和剩余验证见 [地面无人值守风险审计](GROUND_UNATTENDED_RISK_AUDIT.md)。

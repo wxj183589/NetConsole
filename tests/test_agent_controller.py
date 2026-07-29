@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from netconsole.backend.api.main import create_app
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.agent import AgentAuthenticationType, AgentConfig, AgentRuntimeSnapshot, AgentStatus
 from netconsole.models.agent_traffic import (
@@ -102,8 +103,10 @@ class FakeReadOnlyAgentClient(FakeAgentClient):
 
 
 def _service(tmp_path, *, client=None, site="demo") -> AgentControllerService:
+    paths = PathResolver(tmp_path)
+    Database(paths.site_db_path(site)).initialize()
     return AgentControllerService(
-        paths=PathResolver(tmp_path),
+        paths=paths,
         site_name=site,
         client=client or FakeAgentClient(),
         settings=AgentControllerSettings(health_check_enabled=False),
@@ -560,6 +563,7 @@ def test_fastapi_lifespan_starts_and_stops_agent_controller(tmp_path) -> None:
             self.stopped = True
 
     service = TrackingService(paths=PathResolver(tmp_path), settings=AgentControllerSettings(health_check_enabled=False))
+    Database(service.paths.site_db_path("demo")).initialize()
     app = create_app(
         paths=PathResolver(tmp_path),
         task_service=TaskApplicationService(paths=PathResolver(tmp_path)),
