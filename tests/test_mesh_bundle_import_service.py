@@ -73,7 +73,8 @@ def test_preview_uses_catalog_fingerprint_index_without_historical_raw_backfill(
 
     assert len(preview["items"]) == 1
     assert len(preview["items"][0]["candidates"]) == 36
-    assert preview["items"][0]["profile_import_states"] == []
+    assert len(preview["items"][0]["profile_import_states"]) == 1
+    assert preview["items"][0]["stored_filename"].endswith("unknown.log")
 
 
 def test_bundle_manifest_maps_train_role_and_06_alias(tmp_path: Path) -> None:

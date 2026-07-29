@@ -381,6 +381,10 @@ class MeshBundleImportService:
                 state_profile_ids.update(
                     str(item.get("profile_id") or "") for item in content_matches
                 )
+                if not state_profile_ids and candidate_ids:
+                    # 保留既有顶层归档命名预览，但未知归属时只计算一个默认候选，
+                    # 避免恢复 member × 全部 Profile 的目录扫描。
+                    state_profile_ids.add(candidate_ids[0])
                 for profile_id in candidate_ids:
                     if profile_id not in state_profile_ids:
                         continue
