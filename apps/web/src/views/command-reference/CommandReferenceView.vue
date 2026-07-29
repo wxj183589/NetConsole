@@ -12,6 +12,7 @@ import {
   startCommandReferenceExport,
 } from '../../api/commandReference'
 import { downloadBackendResource, getPlatformAdapter, getRuntimeConfig } from '../../platform/runtime'
+import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import type { CommandReference, CommandReferenceExportTask, CommandReferencePage } from '../../types/commandReference'
@@ -27,6 +28,7 @@ const taskWindowStatuses = new Set<TaskWindowStatus>(['PENDING', 'STARTING', 'RU
 const t = createCommandReferenceTranslator()
 const route = useRoute()
 const router = useRouter()
+const userSelectedExport = useUserSelectedExport()
 const filters = reactive({ query: '', module: '', device_scope: '', vendor: '', protocol: '', category: '', risk_level: '' })
 const page = ref<CommandReferencePage | null>(null)
 const selected = ref<CommandReference | null>(null)
@@ -114,8 +116,16 @@ async function startExport(): Promise<void> {
   if (!page.value || exporting.value) return
   exporting.value = true
   try {
-    setExportTask(await startCommandReferenceExport(page.value.items.map((item) => item.id)))
-    ElMessage.success(t('taskSubmitted'))
+    const selectedIds = page.value.items.map((item) => item.id)
+    const result = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: 'command-reference.markdown',
+      suggestedName: `NetConsole-命令说明-${exportTimestamp()}.md`,
+      context: { itemCount: selectedIds.length },
+      submit: () => startCommandReferenceExport(selectedIds),
+    })
+    if (result.status === 'cancelled') return
+    setExportTask(result.task)
+    ElMessage.success('命令说明导出任务已提交，完成后将写入所选位置')
   } catch (reason) {
     ElMessage.error(reason instanceof Error ? reason.message : t('exportFailed'))
   } finally {
@@ -179,6 +189,11 @@ function setExportTask(snapshot: CommandReferenceExportTask): void {
   persistExportTask(snapshot.id)
   if (terminalStates.has(snapshot.status)) stopExportPolling()
   else startExportPolling(snapshot.id)
+}
+
+function exportTimestamp(now = new Date()): string {
+  const part = (value: number) => String(value).padStart(2, '0')
+  return `${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}_${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}`
 }
 
 function startExportPolling(taskId: string): void {

@@ -74,7 +74,10 @@ vi.mock('../../api/railTransitWeb', () => ({
 }))
 vi.mock('../../components/feedback/useConfirm', () => ({ useConfirm: () => ({ confirm: vi.fn().mockResolvedValue(true) }) }))
 vi.mock('../../features', () => ({ isFeatureEnabled: vi.fn(() => true) }))
-vi.mock('../../platform/runtime', () => ({ downloadBackendResource: vi.fn() }))
+vi.mock('../../platform/runtime', () => ({
+  downloadBackendResource: vi.fn(),
+  getPlatformAdapter: () => ({ hostType: 'browser' }),
+}))
 vi.mock('vue-router', () => ({
   useRouter: () => ({
     push: mocks.routerPush,

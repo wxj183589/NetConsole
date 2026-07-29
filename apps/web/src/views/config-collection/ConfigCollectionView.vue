@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Delete, Download, Refresh, Search, View } from '@element-plus/icons-vue'
 import { useConfirm } from '../../components/feedback/useConfirm'
+import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 
 import { isFeatureEnabled } from '../../features'
 import {
@@ -46,6 +47,7 @@ import {
 
 const router = useRouter()
 const { confirm } = useConfirm()
+const userSelectedExport = useUserSelectedExport()
 const emptyPage: ConfigDevicePage = { items: [], total: 0, page: 1, page_size: 50, total_pages: 1, groups: [] }
 const emptyDiffSummary: ConfigDiffSummary = { added: 0, removed: 0, modified: 0 }
 const devicePage = ref<ConfigDevicePage>(emptyPage)
@@ -383,13 +385,22 @@ async function exportSelectedDiff(): Promise<void> {
     return
   }
   try {
-    const task = await submitConfigDiffExport(
-      pair.left.snapshot.id,
-      pair.right.snapshot.id,
-    )
-    addTaskReferences([task])
-    focusedTaskId.value = task.id
-    ElMessage.success('配置差异导出任务已提交')
+    const result = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: 'config.diff',
+      suggestedName: `配置差异-${exportTimestamp()}.diff`,
+      context: {
+        leftSnapshotId: pair.left.snapshot.id,
+        rightSnapshotId: pair.right.snapshot.id,
+      },
+      submit: () => submitConfigDiffExport(
+        pair.left.snapshot.id,
+        pair.right.snapshot.id,
+      ),
+    })
+    if (result.status === 'cancelled') return
+    addTaskReferences([result.task])
+    focusedTaskId.value = result.task.id
+    ElMessage.success('配置差异导出任务已提交，完成后将写入所选位置')
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '配置差异导出失败')
   }
@@ -401,10 +412,17 @@ async function exportSelectedSnapshots(): Promise<void> {
     return
   }
   try {
-    const task = await submitConfigSnapshotsExport(selectedSnapshots.value.map((snapshot) => snapshot.id))
-    addTaskReferences([task])
-    focusedTaskId.value = task.id
-    ElMessage.success('快照 ZIP 导出任务已提交')
+    const snapshotIds = selectedSnapshots.value.map((snapshot) => snapshot.id)
+    const result = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: 'config.snapshots',
+      suggestedName: `配置快照-${exportTimestamp()}.zip`,
+      context: { snapshotCount: snapshotIds.length },
+      submit: () => submitConfigSnapshotsExport(snapshotIds),
+    })
+    if (result.status === 'cancelled') return
+    addTaskReferences([result.task])
+    focusedTaskId.value = result.task.id
+    ElMessage.success('快照 ZIP 导出任务已提交，完成后将写入所选位置')
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '快照 ZIP 导出失败')
   }
@@ -591,6 +609,11 @@ function formatTime(value: string): string {
   if (!value) return '--'
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
+}
+
+function exportTimestamp(now = new Date()): string {
+  const part = (value: number) => String(value).padStart(2, '0')
+  return `${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}_${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}`
 }
 
 function formatBytes(value: number | null): string {

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 
 import { resetWebFeaturesForTest, setWebFeaturesForTest } from '../../features'
+import { resetUserSelectedExportForTests } from '../../composables/useUserSelectedExport'
 import type {
   TracksideApBusinessPage,
   TracksideApBusinessRow,
@@ -24,7 +25,10 @@ const platformMocks = vi.hoisted(() => ({
 }))
 
 vi.mock('../../api/tracksideApBusiness', () => api)
-vi.mock('../../platform/runtime', () => ({ downloadBackendResource: platformMocks.downloadBackendResource }))
+vi.mock('../../platform/runtime', () => ({
+  downloadBackendResource: platformMocks.downloadBackendResource,
+  getPlatformAdapter: () => ({ hostType: 'browser' }),
+}))
 
 import TracksideApBusinessView from './TracksideApBusinessView.vue'
 
@@ -207,6 +211,7 @@ const ElementStubs = {
 
 describe('TracksideApBusinessView mounted behavior', () => {
   beforeEach(() => {
+    resetUserSelectedExportForTests()
     resetWebFeaturesForTest()
     setWebFeaturesForTest({
       'web.rail_trackside_ap_business_update': { visible: true, enabled: true },
@@ -579,12 +584,12 @@ describe('TracksideApBusinessView mounted behavior', () => {
     wrapper.unmount()
   })
 
-  it('auto-saves completed business exports with the backend artifact name without a page save button', async () => {
+  it('does not open a delayed Save As when a business export completes', async () => {
     vi.useFakeTimers()
     const expectedName = '宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx'
     api.startTracksideApBusinessExport.mockResolvedValueOnce(task('export-running', 'RUNNING', 'trackside_ap_business_export'))
     api.getTracksideApTask.mockResolvedValueOnce({
-      ...task('export-complete', 'COMPLETED', 'trackside_ap_business_export'),
+      ...task('export-running', 'COMPLETED', 'trackside_ap_business_export'),
       artifact_id: 'artifact-1',
       artifact_name: expectedName,
       available: true,
@@ -596,11 +601,9 @@ describe('TracksideApBusinessView mounted behavior', () => {
     await vi.advanceTimersByTimeAsync(1000)
     await flushPromises()
 
-    expect(platformMocks.downloadBackendResource).toHaveBeenCalledWith({
-      apiPath: '/api/rail-transit/trackside-ap-business/artifacts/artifact-1/download',
-      suggestedName: expectedName,
-    })
+    expect(platformMocks.downloadBackendResource).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('轨旁 AP 业务表格已生成')
+    expect(sessionStorage.getItem('netconsole.user-selected-exports.v1')).toContain('export-running')
     expect(wrapper.text()).not.toContain('保存导出表格')
     expect(wrapper.text()).not.toContain('轨旁 AP 任务')
     expect(buttons(wrapper, '打开任务中心')).toHaveLength(0)

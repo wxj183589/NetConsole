@@ -27,6 +27,8 @@ Electron 页面 `/config-collection` 负责 H3C/Comware 配置采集、保存配
 
 - 前端不提交设备命令、密码、服务端路径或任意文件路径；`save force` 走独立计划/确认链路。
 - 采集、读取和对比使用普通 Job；ZIP 与差异文件使用 Export Process，临时文件完成后原子提交。
+- 用户主动导出配置差异或快照 ZIP 时，Electron 在创建 Export Task 前先选择最终路径；取消不创建任务。Artifact 完成后通过任务绑定写入预选路径，不再弹第二次窗口；保存失败保留 Artifact，可在 Task Center 重新选择位置而不重新生成。
+- 单个已有配置 Artifact 和历史任务没有预绑定路径，只在用户点击下载/另存时打开一次 Save As。页面恢复历史任务不会自动弹窗。
 - 删除先把文件移入受控隔离区，再更新数据库；数据库失败必须恢复文件。确认 Token 有局点、摘要和有效期约束，不写日志。
 - 页面重载后从 Task API 恢复活动任务；关闭页面不停止后台任务。原始回显、快照和 Artifact 仍由 `PathResolver` 管理。
 

@@ -20,6 +20,7 @@
 
 ## 已完成回收
 
+- 用户可见导入/导出入口已完成跨路由审计：任务型最终导出统一使用固定动作注册表和 Renderer 会话级目标协调器，在创建任务前选择 Main 授权路径；Task Center 区分当前会话绑定与历史 Artifact，受管 SFTP 下载和两项专用预选流程保留明确边界。完整矩阵见 [UI 导入导出文件选择审计](development/import-export-dialog-audit.md)。
 - `src/netconsole/ui/`、`apps/desktop/`、Qt probe、旧 WebShell 和兼容启动入口。
 - Qt/PySide/QFluentWidgets 依赖、许可证和发布内容。
 - SNMP Center、通用 MIB/OID 平台和无线勘测；用户历史数据不做破坏性清理。

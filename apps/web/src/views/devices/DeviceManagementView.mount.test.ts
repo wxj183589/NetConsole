@@ -55,6 +55,7 @@ vi.mock('../../platform/runtime', () => ({
   downloadBackendResource: mocks.downloadBackendResource,
   getRuntimeConfig: () => ({ hostType: 'electron', apiBaseUrl: '', apiToken: '' }),
   getPlatformAdapter: () => ({
+    hostType: 'electron',
     chooseSavePath: mocks.chooseSavePath,
     openPath: mocks.openPath,
     showItemInFolder: mocks.showItemInFolder,
@@ -70,6 +71,10 @@ vi.mock('element-plus', async (importOriginal) => ({
 
 import DeviceManagementView from './DeviceManagementView.vue'
 import NcDataTable from '../../components/table/NcDataTable.vue'
+import {
+  resetUserSelectedExportForTests,
+  saveReadyArtifact,
+} from '../../composables/useUserSelectedExport'
 
 const listItem = {
   id: 1,
@@ -321,6 +326,7 @@ const elementStubs: Record<string, Component | boolean> = {
 }
 
 beforeEach(() => {
+  resetUserSelectedExportForTests()
   vi.clearAllMocks()
   mocks.chooseSavePath.mockReset()
   mocks.downloadBackendResource.mockReset()
@@ -819,6 +825,10 @@ describe('DeviceManagementView mounted interactions', () => {
         media_type: 'text/csv',
       },
     })]
+    await saveReadyArtifact(
+      'device-csv-export-1',
+      mocks.taskStore!.tasks[0].artifact_download as never,
+    )
     await flushPromises()
 
     expect(mocks.downloadBackendResource).toHaveBeenCalledWith({
@@ -829,7 +839,7 @@ describe('DeviceManagementView mounted interactions', () => {
       expectedSizeBytes: 128,
       expectedSha256: 'a'.repeat(64),
     })
-    expect(wrapper.get('[title="设备表格导出完成"]').attributes('description')).toContain('位置：D:\\exports')
+    expect(wrapper.get('[title="设备任务文件已生成"]').attributes('description')).toContain('目标：全部设备.csv')
     wrapper.unmount()
   })
 
@@ -855,7 +865,7 @@ describe('DeviceManagementView mounted interactions', () => {
     await first.get('[data-testid="device-export-csv-no-credentials"]').trigger('click')
     await first.get('[data-testid="confirm-device-export-scope"]').trigger('click')
     await flushPromises()
-    expect(window.sessionStorage.getItem('netconsole.devices.pending-exports.v1')).toContain('device-csv-export-1')
+    expect(window.sessionStorage.getItem('netconsole.user-selected-exports.v1')).toContain('device-csv-export-1')
     first.unmount()
 
     mocks.downloadBackendResource.mockClear()
@@ -876,6 +886,10 @@ describe('DeviceManagementView mounted interactions', () => {
       },
     })]
     const second = await renderView()
+    await saveReadyArtifact(
+      'device-csv-export-1',
+      mocks.taskStore!.tasks[0].artifact_download as never,
+    )
     await flushPromises()
 
     expect(mocks.downloadBackendResource).toHaveBeenCalledWith(expect.objectContaining({
@@ -884,32 +898,8 @@ describe('DeviceManagementView mounted interactions', () => {
     second.unmount()
   })
 
-  it('retries completed task details when Artifact readiness changes without an updated_time change', async () => {
-    vi.useFakeTimers()
+  it('keeps the preselected target while Artifact registration finishes later', async () => {
     mocks.chooseSavePath.mockResolvedValueOnce({ cancelled: false, path: 'D:\\exports\\延迟设备表.csv' })
-    mocks.getDeviceExportTask
-      .mockResolvedValueOnce({
-        task_id: 'device-csv-export-1',
-        task_status: 'COMPLETED',
-        action: 'export_csv',
-        artifact_id: 'artifact-csv-1',
-        available: false,
-        sha256: '',
-        size_bytes: 0,
-        row_count: 0,
-        message: 'Artifact 正在注册',
-      })
-      .mockResolvedValueOnce({
-        task_id: 'device-csv-export-1',
-        task_status: 'COMPLETED',
-        action: 'export_csv',
-        artifact_id: 'artifact-csv-1',
-        available: true,
-        sha256: 'a'.repeat(64),
-        size_bytes: 128,
-        row_count: 1,
-        message: '设备表格完整性校验完成',
-      })
     const wrapper = await renderView()
     await wrapper.get('[data-testid="device-export-csv-no-credentials"]').trigger('click')
     await wrapper.get('[data-testid="confirm-device-export-scope"]').trigger('click')
@@ -932,13 +922,14 @@ describe('DeviceManagementView mounted interactions', () => {
       },
     })]
     await flushPromises()
-    expect(mocks.getDeviceExportTask).toHaveBeenCalledOnce()
     expect(mocks.downloadBackendResource).not.toHaveBeenCalled()
 
-    await vi.advanceTimersByTimeAsync(1000)
+    await saveReadyArtifact(
+      'device-csv-export-1',
+      mocks.taskStore!.tasks[0].artifact_download as never,
+    )
     await flushPromises()
 
-    expect(mocks.getDeviceExportTask).toHaveBeenCalledTimes(2)
     expect(mocks.downloadBackendResource).toHaveBeenCalledWith(expect.objectContaining({
       destinationPath: 'D:\\exports\\延迟设备表.csv',
     }))
@@ -991,8 +982,12 @@ describe('DeviceManagementView mounted interactions', () => {
         media_type: 'text/csv',
       },
     })]
+    await saveReadyArtifact(
+      'device-csv-export-1',
+      mocks.taskStore!.tasks[0].artifact_download as never,
+    )
     await flushPromises()
-    expect(mocks.messages.error).toHaveBeenCalledWith('无法写入所选目录。')
+    expect(mocks.messages.error).toHaveBeenCalledWith(expect.stringContaining('无法写入所选目录。'))
     expect(wrapper.findAll('button').some((button) => button.text() === '重新保存')).toBe(true)
 
     await wrapper.findAll('button').find((button) => button.text() === '重新保存')!.trigger('click')
@@ -1047,6 +1042,14 @@ describe('DeviceManagementView mounted interactions', () => {
         },
       }),
     ]
+    await saveReadyArtifact(
+      'device-csv-export-1',
+      mocks.taskStore!.tasks[0].artifact_download as never,
+    )
+    await saveReadyArtifact(
+      'device-template-export-1',
+      mocks.taskStore!.tasks[1].artifact_download as never,
+    )
     await flushPromises()
 
     expect(mocks.downloadBackendResource).toHaveBeenCalledWith(expect.objectContaining({

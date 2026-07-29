@@ -9,12 +9,14 @@ import { useTaskStore } from '../../stores/tasks'
 import type { TaskItem } from '../../types/task'
 import { downloadBackendResource, getPlatformAdapter } from '../../platform/runtime'
 import { t } from '../../i18n/runtime'
+import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import {
   isTracksideApBusinessArtifactTask,
   saveTracksideApBusinessArtifact,
 } from '../../views/rail-transit/tracksideApBusinessArtifact'
 
 const store = useTaskStore()
+const userSelectedExport = useUserSelectedExport()
 const router = useRouter()
 const props = withDefaults(defineProps<{
   modelValue: boolean
@@ -45,8 +47,19 @@ function clearSavedCapability(): void {
   nativeActionError.value = ''
 }
 
-const artifactDownloadLabel = computed(() => (
-  isTracksideApBusinessArtifactTask(store.selected) ? '保存导出表格' : '另存 Artifact'
+const selectedExportBinding = computed(() => (
+  store.selected ? userSelectedExport.bindingForTask(store.selected.id) : null
+))
+const artifactDownloadLabel = computed(() => {
+  if (selectedExportBinding.value?.state === 'save_failed') return '重新选择保存位置'
+  if (selectedExportBinding.value?.state === 'saving') return '正在写入预选位置'
+  if (['task_running', 'artifact_ready'].includes(selectedExportBinding.value?.state || '')) {
+    return '写入预选位置'
+  }
+  return isTracksideApBusinessArtifactTask(store.selected) ? '保存导出表格' : '另存 Artifact'
+})
+const artifactDownloadDisabled = computed(() => (
+  !store.selected?.artifact_download || selectedExportBinding.value?.state === 'saving'
 ))
 const selectedDetails = computed<Record<string, unknown>>(() => store.selected?.details || {})
 const selectedResident = computed(() => isResidentTask(store.selected))
@@ -200,6 +213,14 @@ async function cancelSelected(): Promise<void> {
 async function downloadArtifact(): Promise<void> {
   if (!store.selected?.artifact_download) return
   const taskId = store.selected.id
+  if (selectedExportBinding.value?.state === 'save_failed') {
+    await userSelectedExport.retryArtifactSave(taskId)
+    return
+  }
+  if (['task_running', 'artifact_ready'].includes(selectedExportBinding.value?.state || '')) {
+    await userSelectedExport.saveReadyArtifact(taskId, store.selected.artifact_download)
+    return
+  }
   clearSavedCapability()
   const generation = downloadGeneration
   const tracksideArtifact = isTracksideApBusinessArtifactTask(store.selected)
@@ -529,7 +550,7 @@ function handleClosed(): void {
         <div class="association-actions">
           <el-tooltip :content="store.selected.cancel_reason" :disabled="store.selected.cancellable"><span><el-button type="danger" :disabled="!store.selected.cancellable" @click="cancelSelected">停止 / 取消</el-button></span></el-tooltip>
           <el-tooltip :content="store.selected.retry_reason" :disabled="store.selected.retryable"><span><el-button :disabled="!store.selected.retryable">重试</el-button></span></el-tooltip>
-          <el-tooltip :content="store.selected.artifact_reason" :disabled="Boolean(store.selected.artifact_download)"><span><el-button :disabled="!store.selected.artifact_download" @click="downloadArtifact">{{ artifactDownloadLabel }}</el-button></span></el-tooltip>
+          <el-tooltip :content="store.selected.artifact_reason" :disabled="Boolean(store.selected.artifact_download)"><span><el-button :disabled="artifactDownloadDisabled" @click="downloadArtifact">{{ artifactDownloadLabel }}</el-button></span></el-tooltip>
           <el-button
             v-if="selectedNeedsAcknowledgement"
             :icon="Check"

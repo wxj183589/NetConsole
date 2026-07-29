@@ -12,6 +12,7 @@ import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { isFeatureEnabled } from '../../features'
 import { t } from '../../i18n/runtime'
+import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import type {
   TracksideApBusinessPage,
   TracksideApBusinessRow,
@@ -21,7 +22,6 @@ import type {
 import { displayInterfaceName } from '../../utils/interfaceName'
 import {
   isTracksideApBusinessArtifactTask,
-  saveTracksideApBusinessArtifact,
   TRACKSIDE_AP_BUSINESS_EXPORT_ACTION,
 } from './tracksideApBusinessArtifact'
 import {
@@ -33,10 +33,9 @@ import {
 } from './tracksideApBusinessDisplay'
 
 const storageKey = 'netconsole.trackside-ap.last-task'
-const autoSaveStorageKey = 'netconsole.trackside-ap-business.auto-saved-task-ids'
 const activeStates = new Set(['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'QUEUED', 'CANCELLING'])
 const businessTaskActions = new Set(['trackside_ap_optical_update', TRACKSIDE_AP_BUSINESS_EXPORT_ACTION])
-const autoSaveInFlight = new Set<string>()
+const userSelectedExport = useUserSelectedExport()
 const initialLoading = ref(false)
 const refreshing = ref(false)
 const taskSubmitting = ref(false)
@@ -108,14 +107,6 @@ function singleApUpdatePayload(row: TracksideApBusinessRow): TracksideApUpdateRe
   return null
 }
 function hasApIdentity(row: TracksideApBusinessRow): boolean { return singleApUpdatePayload(row) !== null }
-function autoSavedTaskIds(): string[] {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(autoSaveStorageKey) || '[]')
-    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []
-  } catch {
-    return []
-  }
-}
 function summaryCount(summary: Record<string, unknown>, key: string): number {
   const value = Number(summary[key] ?? 0)
   return Number.isFinite(value) ? Math.max(0, value) : 0
@@ -177,22 +168,6 @@ function updateFinishedNotice(value: TracksideApTask): { message: string; type: 
     : ''
   return { message: resultMessage('trackside.result.notice.success', '轨旁 AP 光衰数据已刷新：成功 {success}，失败 0{ignored}', { success: successCount, ignored }), type: 'success', autoHideMs: 4000 }
 }
-function rememberAutoSavedTask(taskId: string): void {
-  const values = [...autoSavedTaskIds().filter((item) => item !== taskId), taskId].slice(-50)
-  try { localStorage.setItem(autoSaveStorageKey, JSON.stringify(values)) } catch { /* ignore quota errors */ }
-}
-function shouldAutoSaveExport(value: TracksideApTask | null): value is TracksideApTask {
-  if (!value || value.status !== 'COMPLETED' || !value.available || !isTracksideApBusinessArtifactTask(value) || !value.artifact_id || !value.artifact_name) return false
-  return !autoSavedTaskIds().includes(value.task_id) && !autoSaveInFlight.has(value.task_id)
-}
-async function maybeAutoSaveExport(value: TracksideApTask | null): Promise<void> {
-  if (!shouldAutoSaveExport(value)) return
-  autoSaveInFlight.add(value.task_id)
-  rememberAutoSavedTask(value.task_id)
-  try { await saveTracksideApBusinessArtifact(value) }
-  finally { autoSaveInFlight.delete(value.task_id) }
-}
-
 function handleTerminalTask(value: TracksideApTask | null): void {
   if (!value) return
   if (value.action === 'trackside_ap_optical_update') {
@@ -208,9 +183,7 @@ function handleTerminalTask(value: TracksideApTask | null): void {
   }
   if (isTracksideApBusinessArtifactTask(value)) {
     if (value.status === 'COMPLETED') {
-      const done = () => setTaskNotice('轨旁 AP 业务表格已生成', 'success', 4000)
-      if (shouldAutoSaveExport(value)) void maybeAutoSaveExport(value).finally(done)
-      else done()
+      setTaskNotice('轨旁 AP 业务表格已生成，正在写入用户预选位置', 'success', 4000)
       return
     }
     if (value.status === 'FAILED') setTaskNotice('轨旁 AP 业务导出失败，请在任务中心查看原因', 'error')
@@ -288,7 +261,35 @@ function updateAp(row: TracksideApBusinessRow): void {
     `update:ap:${scopeValue}`,
   )
 }
-function exportBusiness(): void { void startTask(() => startTracksideApBusinessExport(), '轨旁 AP 业务导出启动失败', 'export:business', '导出任务已提交，可通过顶部任务入口查看进度') }
+async function exportBusiness(): Promise<void> {
+  const scopeKey = 'export:business'
+  if (pendingScopeKey.value === scopeKey) return
+  pendingScopeKey.value = scopeKey
+  taskSubmitting.value = true
+  error.value = ''
+  clearTaskNotice()
+  try {
+    const result = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: 'rail.trackside_business',
+      suggestedName: `轨旁AP业务-${exportTimestamp()}.xlsx`,
+      submit: startTracksideApBusinessExport,
+    })
+    if (result.status === 'cancelled') return
+    rememberTask(result.task)
+    setTaskNotice('导出任务已提交，完成后将写入所选位置', 'info')
+    poll()
+  } catch (reason) {
+    error.value = failure(reason, '轨旁 AP 业务导出启动失败')
+  } finally {
+    taskSubmitting.value = false
+    pendingScopeKey.value = ''
+  }
+}
+
+function exportTimestamp(now = new Date()): string {
+  const part = (value: number) => String(value).padStart(2, '0')
+  return `${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}_${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}`
+}
 
 async function recoverTasks(): Promise<void> {
   if (!isFeatureEnabled('web.rail_task_control')) return

@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from netconsole.backend.api.main import create_app
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.models.online_mr_application import (
@@ -207,6 +208,7 @@ def _install_device_export(
 
 def _app_with_tasks(tmp_path: Path):
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    Database(paths.site_db_path("demo")).initialize()
     db_path = paths.site_tasks_db_path("demo")
     repository = TaskRepository(db_path)
     repository.record(
