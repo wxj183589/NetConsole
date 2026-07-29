@@ -14,7 +14,6 @@ import {
   getAcExternalTerminalOptions,
   openAcFitApExternalTerminal,
   acFitApResourceArtifactDownloadRequest,
-  getAcWebTask,
   startAcFitApResourceExport,
 } from '../../api/acWebParity'
 import type { AcFitApResourceExportScope } from '../../api/acWebParity'
@@ -24,6 +23,7 @@ import { useAcManagementStore } from '../../stores/acManagement'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import { useTaskStore } from '../../stores/tasks'
 import { t } from '../../i18n/runtime'
+import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcDataTableContextMenuItem } from '../../components/table/NcDataTableContextMenu'
 import type { NcColumnValueType, NcTableColumn } from '../../components/table/NcTableColumn'
@@ -43,6 +43,7 @@ const taskStore = useTaskStore()
 const route = useRoute()
 const router = useRouter()
 const { confirm } = useConfirm()
+const userSelectedExport = useUserSelectedExport()
 const activeTab = ref('aps')
 const detailVisible = ref(false)
 const configVisible = ref(false)
@@ -67,7 +68,6 @@ const omniPeekScopeIds = ref<string[]>([])
 const resourceExportBusy = ref(false)
 const resourceExportSaving = ref(false)
 const lastResourceExportTask = ref<AcWebTask | null>(null)
-let resourceExportPolling = true
 const terminalVisible = ref(false)
 const terminalLoading = ref(false)
 const terminalTarget = ref<AcAp | null>(null)
@@ -209,7 +209,6 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  resourceExportPolling = false
   document.removeEventListener('visibilitychange', handleVisibility)
   store.stopPolling()
   taskStore.releasePolling(pollingConsumer)
@@ -276,64 +275,35 @@ async function exportFitApResources(command: string): Promise<void> {
   if (resourceExportBusy.value) return
   resourceExportBusy.value = true
   try {
-    const task = await startAcFitApResourceExport(
-      store.filters.ac_id,
-      scope,
-      scope === 'selected' ? [...selectedApIds.value] : [],
-      scope === 'filtered'
-        ? {
-            query: store.filters.query,
-            status: store.filters.status,
-            optical_status: store.filters.optical_status,
-            station: store.filters.station,
-            section: store.filters.section,
-            model: store.filters.model,
-            switch: store.filters.switch,
-          }
-        : {},
-    )
-    lastResourceExportTask.value = task
-    ElMessage.success(t('ac.fit_ap_resource.task_created', 'FIT-AP 资源导出任务已创建，可在任务中心查看'))
+    const acId = store.filters.ac_id
+    const apIds = scope === 'selected' ? [...selectedApIds.value] : []
+    const exportFilters = scope === 'filtered'
+      ? {
+          query: store.filters.query,
+          status: store.filters.status,
+          optical_status: store.filters.optical_status,
+          station: store.filters.station,
+          section: store.filters.section,
+          model: store.filters.model,
+          switch: store.filters.switch,
+        }
+      : {}
+    const result = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: 'ac.fit_ap_resources',
+      suggestedName: `${safeExportPart(store.activeAc?.name || 'AC')}-FIT-AP资源-${exportTimestamp()}.xlsx`,
+      context: { acId, scope, selectedCount: apIds.length },
+      submit: () => startAcFitApResourceExport(acId, scope, apIds, exportFilters),
+    })
+    if (result.status === 'cancelled') return
+    lastResourceExportTask.value = result.task
+    ElMessage.success('FIT-AP 资源导出任务已创建，完成后将写入所选位置')
     await taskStore.refresh()
-    const completed = await waitForResourceExport(task.task_id)
-    lastResourceExportTask.value = completed
-    const apCount = Number(completed.result_summary.ap_count || completed.result_summary.row_count || 0)
-    const radioCount = Number(completed.result_summary.radio_count || 0)
-    const warningCount = Number(completed.result_summary.warning_count || 0)
-    ElMessage.success(
-      warningCount > 0
-        ? resourceExportText(
-            'ac.fit_ap_resource.completed_with_warnings',
-            'FIT-AP 资源导出完成，共 {apCount} 台 AP，其中 {warningCount} 台存在数据缺失，详见“数据完整性”字段。',
-            { apCount, warningCount },
-          )
-        : resourceExportText(
-            'ac.fit_ap_resource.completed',
-            'FIT-AP 资源导出完成，共 {apCount} 台 AP、{radioCount} 个 Radio。',
-            { apCount, radioCount },
-          ),
-    )
-    await saveResourceExportArtifact()
   } catch (cause) {
     ElMessage.error(safeError(cause, t('ac.fit_ap_resource.failed', 'FIT-AP 资源导出失败')))
   } finally {
     resourceExportBusy.value = false
     void taskStore.refresh()
   }
-}
-
-async function waitForResourceExport(taskId: string): Promise<AcWebTask> {
-  const deadline = Date.now() + 180_000
-  while (resourceExportPolling && Date.now() < deadline) {
-    const task = await getAcWebTask(taskId)
-    lastResourceExportTask.value = task
-    if (task.status === 'COMPLETED' && task.available && task.artifact_id) return task
-    if (['FAILED', 'CANCELLED'].includes(task.status)) {
-      throw new Error(task.error_message || task.message || t('ac.fit_ap_resource.task_failed', 'FIT-AP 资源导出任务失败'))
-    }
-    await new Promise<void>((resolvePromise) => window.setTimeout(resolvePromise, 500))
-  }
-  throw new Error(t('ac.fit_ap_resource.timeout', 'FIT-AP 资源导出超过 180 秒，请在任务中心查看'))
 }
 
 async function saveResourceExportArtifact(): Promise<void> {
@@ -463,6 +433,15 @@ async function nextConfigMatch(): Promise<void> {
 
 function display(value: unknown): string {
   return value === null || value === undefined || value === '' ? '--' : String(value)
+}
+
+function safeExportPart(value: string): string {
+  return value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim() || 'AC'
+}
+
+function exportTimestamp(now = new Date()): string {
+  const part = (value: number) => String(value).padStart(2, '0')
+  return `${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}_${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}`
 }
 
 async function recoverActionPlan(): Promise<void> {

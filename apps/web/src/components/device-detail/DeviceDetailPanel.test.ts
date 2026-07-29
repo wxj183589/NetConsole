@@ -104,7 +104,7 @@ describe('DeviceDetailPanel', () => {
     expect(source).toContain('.device-detail-tabs { display: flex; min-height: 0; flex: 1; flex-direction: column;')
     expect(source).toContain('.device-detail-section-pane { display: flex; height: 100%; min-height: 0; flex-direction: column;')
     expect(source).toContain('.device-detail-table-host { display: flex; min-height: 0; flex: 1; flex-direction: column;')
-    expect(source).toContain('</NcDataTable>\n                </div>\n                <el-pagination')
+    expect(source).toMatch(/<\/NcDataTable>\r?\n {16}<\/div>\r?\n {16}<el-pagination/)
     expect(source).not.toContain('sectionTableHeight')
     expect(source).not.toContain('sectionTableMaxHeight')
     expect(source).not.toContain('calc(100dvh - 390px)')

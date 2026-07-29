@@ -12,6 +12,21 @@
 Renderer 禁止直接 Workbook.save、df.to_excel、matplotlib.savefig。
 ```
 
+正式 Electron 的“导出任务”和“用户最终保存”是两个连续但独立的阶段：
+
+```text
+用户点击导出
+  -> 当前业务窗口先打开 Windows 另存为
+  -> 用户取消：结束，不创建 ExportJob
+  -> 用户确认：Main 返回本次授权目标
+  -> 创建 ExportJob，在 Artifact Store 生成受管 Artifact
+  -> 任务与授权目标在 Renderer 当前 session 一对一绑定
+  -> Artifact 就绪后按 size + SHA-256 写入同目录随机 .part
+  -> 校验通过后安全替换用户目标
+```
+
+用户最终导出不得默认写到业务数据根、仓库、当前工作目录、测试/构建目录或系统下载目录。Artifact Store、Worker 临时输出和 Job 描述文件仍属于受管内部数据，不要求用户逐次选择路径。
+
 ## 一、适用范围
 
 以下导出必须使用独立进程：
@@ -166,6 +181,12 @@ ExportProcessManager
 - 输出文件先写临时文件，成功后再替换目标文件。
 - 失败时保留清晰错误信息，必要时清理不完整临时文件。
 - 本地 `.xlsx` 导出应优化列宽、筛选、冻结、文本格式，便于 WPS Office / Microsoft Office 打开。
+- Electron 主动导出必须在创建任务前通过 Platform Adapter 选择最终路径；取消不创建任务。
+- 任务型导出必须使用固定动作注册表校验建议扩展名、Artifact 扩展名和媒体类型，并把 `taskId` 与 Main 授权路径绑定。
+- Artifact 本地提交必须携带后端给出的准确大小和 SHA-256；已有预选目标时不得再次弹出保存窗口。
+- 本地保存失败时保留 Artifact，用户可在 Task Center 重新选择位置并复用同一 Artifact，不重新生成报告。
+- 没有显式绑定的历史 Artifact 只在用户点击后打开一次“另存为”；页面加载和历史任务恢复不得自动弹窗。
+- Browser 开发模式只能报告浏览器已开始下载，不能声称已验证本地文件或具体目录。
 
 禁止：
 
@@ -174,6 +195,8 @@ ExportProcessManager
 - 在 UI 线程中预先读取全量数据再传给导出进程。
 - 默认把大数据 inline rows 写入 Job JSON；兼容 inline 模式必须显式启用且不超过当前 5000 行上限。
 - 导出失败静默，或只写控制台不反馈 UI。
+- Electron Bridge 缺失时回退到 Browser anchor 下载。
+- 把 Renderer 任意提供的绝对路径当成新的授权目标，或把目标路径长期写入业务数据库。
 
 ## 八、日志事件
 

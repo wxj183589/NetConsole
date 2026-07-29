@@ -19,6 +19,7 @@ import { deleteOnlineMrSession, exportOnlineMrReport, getRailTransitTask, parseO
 import OnlineMrAnalysisChart from '../../components/online-mr-analysis/OnlineMrAnalysisChart.vue'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import { useAvailablePanelHeight } from '../../composables/useAvailablePanelHeight'
+import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { isFeatureEnabled } from '../../features'
@@ -39,6 +40,7 @@ import type { RailTransitTask } from '../../types/railTransitWeb'
 const route = useRoute()
 const router = useRouter()
 const { confirm } = useConfirm()
+const userSelectedExport = useUserSelectedExport()
 
 type BusinessRow = OnlineMrBusinessRow
 type RequestContext = { sessionId: string; generation: number; signal: AbortSignal }
@@ -685,14 +687,30 @@ async function startReport(): Promise<void> {
   reportSubmitting.value = true
   error.value = ''
   try {
-    rememberTask(await exportOnlineMrReport(detail.value.session_id, ''))
+    const selected = detail.value
+    const suggestedName = `${safeExportPart(selected.device_name || selected.mr_name || 'Online-MR')}-分析报告-${exportTimestamp()}.xlsx`
+    const result = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: 'rail.online_mr_report',
+      suggestedName,
+      context: { sessionId: selected.session_id },
+      submit: () => exportOnlineMrReport(selected.session_id, suggestedName),
+    })
+    if (result.status === 'cancelled') return
+    rememberTask(result.task)
     poll()
-    ElMessage.success('分析报告任务已提交，请在任务中心查看进度。')
+    ElMessage.success('分析报告任务已提交，完成后将写入所选位置。')
   } catch (cause) {
     error.value = message(cause, 'Online MR 报告生成启动失败')
   } finally {
     reportSubmitting.value = false
   }
+}
+function safeExportPart(value: string): string {
+  return value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim() || 'Online-MR'
+}
+function exportTimestamp(now = new Date()): string {
+  const part = (value: number) => String(value).padStart(2, '0')
+  return `${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}_${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}`
 }
 function taskResultBoolean(value: RailTransitTask, key: string): boolean {
   return value.result_summary[key] === true

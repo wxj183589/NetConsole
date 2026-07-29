@@ -33,7 +33,7 @@ vi.mock('../../api/commandReference', async (importOriginal) => ({
 }))
 vi.mock('../../platform/runtime', () => ({
   downloadBackendResource: mocks.download,
-  getPlatformAdapter: () => ({ openTaskWindow: mocks.openTaskWindow }),
+  getPlatformAdapter: () => ({ hostType: 'browser', openTaskWindow: mocks.openTaskWindow }),
   getRuntimeConfig: () => ({ hostType: mocks.hostType }),
 }))
 vi.mock('vue-router', () => ({

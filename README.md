@@ -92,7 +92,7 @@ flowchart LR
 - 正式桌面后台任务走 `Vue/FastAPI Application Service -> LocalProcessAdapter -> TaskApplicationService/TaskRuntime -> background_worker -> JobRegistry -> handler`。
 - 任务快照和事件写入每局点 `tasks.db`；Vue 任务中心支持列表、详情、日志和协作取消。`COMPLETED` 只表示调度生命周期结束，不保证所有业务目标成功；批量任务还需读取结构化业务结果。当前轨旁 AP 光衰任务已在详情中区分部分成功，但列表级通用警告聚合仍是已知缺口。
 - Agent 配置与运行状态分别写入每局点 `agents.db`；Token 仅保存在当前 Python 进程内，REST/WebSocket 不返回凭据。
-- 所有正式导出走独立 Export Process，使用临时文件完成后原子替换目标文件。
+- 所有正式导出走独立 Export Process。Electron 主动导出先由用户选择最终路径，取消不创建任务；Artifact 完成后使用 Main 授权目标、大小和 SHA-256 写入同目录临时文件并安全替换。没有会话绑定的历史 Artifact 继续由用户点击后另存。
 - 可再次导入的 XLSX/CSV/JSON/ZIP 正式导出写入 NetConsole 文件契约；导入入口在业务层统一校验扩展名、模块、类型、schema、必要结构和非空数据，不能只依赖文件选择框过滤。
 - `JobRegistry` 按领域 handler 模块分区；能力集合由测试校验，不再在文档和测试中绑定易漂移的任务总数。多数既有领域 handler 仍通过 `legacy_tasks.py` 薄适配，迁移尚未完成。
 - 设备批量连接测试和批量详情采集使用永久后台 Worker/进程链；是否已由统一 Job Center 接管以生产 handler 和测试为准。

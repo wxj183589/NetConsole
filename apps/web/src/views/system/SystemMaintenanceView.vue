@@ -7,6 +7,7 @@ import { downloadBackendResource, getPlatformAdapter } from '../../platform/runt
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { useConfirm } from '../../components/feedback/useConfirm'
+import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import {
   cancelMaintenanceTask,
   clearLogs,
@@ -34,6 +35,7 @@ import {
 
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const { confirm } = useConfirm()
+const userSelectedExport = useUserSelectedExport()
 const activeTab = ref('logs')
 const loading = ref(false)
 const logs = ref<LogEntry[]>([])
@@ -235,7 +237,21 @@ async function scanOpenSource(): Promise<void> {
 async function runLogExport(scope: 'current' | 'all'): Promise<void> {
   if (taskBusy.value) return
   try {
-    applyTaskResult(await startLogExport({ scope, keyword: keyword.value.trim(), level: level.value, page: page.value, page_size: pageSize.value }))
+    const result = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: 'system.logs',
+      suggestedName: `NetConsole-应用日志-${scope === 'current' ? '当前页' : '全部'}-${exportTimestamp()}.csv`,
+      context: { scope, page: page.value, pageSize: pageSize.value },
+      submit: () => startLogExport({
+        scope,
+        keyword: keyword.value.trim(),
+        level: level.value,
+        page: page.value,
+        page_size: pageSize.value,
+      }),
+    })
+    if (result.status === 'cancelled') return
+    applyTaskResult(result.task)
+    ElMessage.success('日志导出任务已提交，完成后将写入所选位置')
   } catch (cause) {
     ElMessage.error(errorMessage(cause))
   }
@@ -244,7 +260,15 @@ async function runLogExport(scope: 'current' | 'all'): Promise<void> {
 async function runOpenSourceExport(format: 'txt' | 'xlsx'): Promise<void> {
   if (taskBusy.value) return
   try {
-    applyTaskResult(await startOpenSourceExport(format))
+    const result = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: format === 'txt' ? 'system.open_source_txt' : 'system.open_source_xlsx',
+      suggestedName: `NetConsole-开源清单-${exportTimestamp()}.${format}`,
+      context: { format },
+      submit: () => startOpenSourceExport(format),
+    })
+    if (result.status === 'cancelled') return
+    applyTaskResult(result.task)
+    ElMessage.success('开源清单导出任务已提交，完成后将写入所选位置')
   } catch (cause) {
     ElMessage.error(errorMessage(cause))
   }
@@ -315,6 +339,11 @@ function formatBytes(size: number): string {
   if (size < 1024) return `${size} B`
   if (size < 1024 ** 2) return `${(size / 1024).toFixed(1)} KB`
   return `${(size / 1024 ** 2).toFixed(1)} MB`
+}
+
+function exportTimestamp(now = new Date()): string {
+  const part = (value: number) => String(value).padStart(2, '0')
+  return `${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}_${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}`
 }
 
 onMounted(async () => {

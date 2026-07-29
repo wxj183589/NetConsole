@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useConfirm } from '../../components/feedback/useConfirm'
+import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 
 import {
   applyAcExtension,
@@ -39,6 +40,7 @@ const loading = ref(false)
 const taskBusy = ref(false)
 const router = useRouter()
 const { confirm } = useConfirm()
+const userSelectedExport = useUserSelectedExport()
 let pollTimer: number | undefined
 
 const extensionColumns: NcTableColumn<AcExtension>[] = [
@@ -111,7 +113,9 @@ async function recoverTask(): Promise<void> {
 }
 
 async function chooseFile(event: Event): Promise<void> {
-  const file = (event.target as HTMLInputElement).files?.[0]
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
   if (!file) return
   error.value = ''
   try {
@@ -178,8 +182,30 @@ function rebuild(kind: Parameters<typeof startAcLocalRebuild>[0]): void {
   void startTask(() => startAcLocalRebuild(kind, targetId.value), 'AC 本地重算任务启动失败')
 }
 
-function exportExtensions(): void {
-  void startTask(() => exportAcExtensions('', targetId.value), 'AP 扩展导出启动失败')
+async function exportExtensions(): Promise<void> {
+  if (taskBusy.value) return
+  taskBusy.value = true
+  error.value = ''
+  try {
+    const result = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: 'ac.extensions',
+      suggestedName: `AP扩展信息-${exportTimestamp()}.xlsx`,
+      context: { acId: targetId.value },
+      submit: () => exportAcExtensions('', targetId.value),
+    })
+    if (result.status === 'cancelled') return
+    rememberTask(result.task)
+    schedulePolling()
+  } catch (cause) {
+    error.value = message(cause, 'AP 扩展导出启动失败')
+  } finally {
+    taskBusy.value = false
+  }
+}
+
+function exportTimestamp(now = new Date()): string {
+  const part = (value: number) => String(value).padStart(2, '0')
+  return `${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}_${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}`
 }
 
 function openTaskWindow(): void {

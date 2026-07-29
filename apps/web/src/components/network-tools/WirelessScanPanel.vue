@@ -17,6 +17,7 @@ import {
   listWirelessRuns,
   startWirelessScan,
 } from '../../api/networkTools'
+import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import { downloadBackendResource } from '../../platform/runtime'
 import NcDataTable from '../table/NcDataTable.vue'
 import type { NcTableColumn } from '../table/NcTableColumn'
@@ -26,6 +27,7 @@ import type { TaskItem } from '../../types/task'
 
 const taskStore = useTaskStore()
 const { confirm } = useConfirm()
+const userSelectedExport = useUserSelectedExport()
 const adapters = ref<WirelessAdapter[]>([])
 const projects = ref<WirelessProject[]>([])
 const runs = ref<WirelessScanRun[]>([])
@@ -332,15 +334,26 @@ async function exportRun(format: 'csv' | 'xlsx'): Promise<void> {
   const run = selectedRun.value || runs.value[0]
   if (!run) return
   try {
-    const response = await exportWirelessScan(run.scan_id, format)
+    const response = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: format === 'csv' ? 'network.wireless_scan_csv' : 'network.wireless_scan_xlsx',
+      suggestedName: `无线扫描结果-${fileTimestamp()}.${format}`,
+      context: { format, scanId: run.scan_id },
+      submit: () => exportWirelessScan(run.scan_id, format),
+      taskId: (value) => value.task.id,
+    })
+    if (response.status === 'cancelled') return
     stopWirelessMonitor()
-    selectedTask.value = response.task
-    monitorWirelessTask(response.task.id)
+    selectedTask.value = response.task.task
+    monitorWirelessTask(response.task.task.id)
     await taskStore.refresh()
-    ElMessage.success(`无线扫描导出任务已提交：${response.task.id}`)
+    ElMessage.success(`无线扫描导出任务已提交：${response.task.task.id}`)
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '无线扫描导出失败')
   }
+}
+
+function fileTimestamp(): string {
+  return new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15)
 }
 
 async function selectTask(task: TaskItem): Promise<void> {

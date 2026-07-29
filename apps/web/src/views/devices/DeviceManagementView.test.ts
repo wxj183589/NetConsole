@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import source from './DeviceManagementView.vue?raw'
 import deviceTypesSource from '../../types/deviceManagement.ts?raw'
+import coordinatorSource from '../../composables/useUserSelectedExport.ts?raw'
 
 describe('Device Management Web view', () => {
   it('fills the route width and gives the device table the remaining window height', () => {
@@ -148,19 +149,21 @@ describe('Device Management Web view', () => {
     expect(source).not.toContain('file_path')
     expect(source).toContain('startSecureCrtExportWithTemplate')
     expect(source).toContain('accept=".ini"')
-    expect(source).toContain('设备表格导出完成，共 ${task.row_count ?? 0} 台设备')
-    expect(source).toContain('pendingDeviceExports')
-    expect(source).toContain("'task_running'")
-    expect(source).toContain("'artifact_ready'")
-    expect(source).toContain("'save_failed'")
-    expect(source).toContain('savePendingDeviceExport')
-    expect(source).toContain('getPlatformAdapter().chooseSavePath')
-    expect(source).toContain('destinationPath: pending.destinationPath')
+    expect(source).toContain('submitExportAfterDestinationSelected')
+    expect(source).toContain("'devices.csv'")
+    expect(source).toContain("'devices.template'")
+    expect(source).toContain("'devices.securecrt'")
+    expect(source).toContain("'devices.diagnostics'")
+    expect(coordinatorSource).toContain("'task_running'")
+    expect(coordinatorSource).toContain("'artifact_ready'")
+    expect(coordinatorSource).toContain("'save_failed'")
+    expect(coordinatorSource).toContain('getPlatformAdapter()')
+    expect(coordinatorSource).toContain('destinationPath: binding.destinationPath')
     expect(source).toContain("export_scope: scope")
     expect(source).toContain("scope === 'selected' ? [...selectedUuids.value] : []")
-    expect(source).toContain('expectedSizeBytes: task.size_bytes')
-    expect(source).toContain('expectedSha256: task.sha256')
-    expect(source).toContain('重新选择保存位置')
+    expect(coordinatorSource).toContain('expectedSizeBytes: artifact.size_bytes')
+    expect(coordinatorSource).toContain('expectedSha256: artifact.sha256!')
+    expect(coordinatorSource).toContain('重新选择保存位置')
     expect(source).toContain('openWindow = true')
     for (const featureId of [
       'web.device_management_write',
@@ -182,8 +185,10 @@ describe('Device Management Web view', () => {
   })
 
   it('uses the shared task store and persists only task-to-save authorization bindings', () => {
-    expect(source).toContain('window.sessionStorage.setItem(PENDING_DEVICE_EXPORTS_KEY')
-    expect(source).toContain('restorePendingDeviceExports')
+    expect(source).toContain('useUserSelectedExport')
+    expect(coordinatorSource).toContain("const STORAGE_KEY = 'netconsole.user-selected-exports.v1'")
+    expect(coordinatorSource).toContain('window.sessionStorage.setItem')
+    expect(coordinatorSource).toContain('restoreBindings')
   })
 
   it('statically guards against a page-private task system and path capabilities', () => {
@@ -197,10 +202,10 @@ describe('Device Management Web view', () => {
     expect(source).toContain('taskStore.releasePolling(pollingConsumer)')
     expect(source).toContain('openTaskWindow')
     expect(source).toContain('downloadBackendResource')
-    expect(source).toContain('result.capabilityId')
+    expect(source).toContain('latestPendingExport.value?.capabilityId')
     expect(source).not.toContain('savedPath')
-    expect(source).toContain('getPlatformAdapter().openPath(savedArtifactCapability.value)')
-    expect(source).toContain('getPlatformAdapter().showItemInFolder(savedArtifactCapability.value)')
+    expect(source).toContain('getPlatformAdapter().openPath(latestSavedArtifactCapability.value)')
+    expect(source).toContain('getPlatformAdapter().showItemInFolder(latestSavedArtifactCapability.value)')
     expect(source).not.toContain('window.location.assign')
   })
 

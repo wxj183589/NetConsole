@@ -8,7 +8,7 @@
 
 FIT-AP OmniPeek 入口提交当前 AC、勾选 AP UUID、数据源/内容/颜色和稳定 `item_key` 选择，预览走普通 Job，`.nam` 生成走 Export Process；Vue 不生成 XML。行右键菜单使用 `NcDataTable` 的类型安全菜单模型，外部终端只提交 AP、AC 和受控终端类型，Browser 模式禁用，程序路径、启动参数、协议、端口、用户名和密码不得进入 Renderer。H3C FIT-AP 外部终端固定由后端按 Telnet 23 直连生成，不保存、不读取、不传递 FIT-AP 登录凭据。
 
-FIT-AP 资源 XLSX 与 OmniPeek 名称表是独立入口：前者面向资产核对，提交当前 AC、`filtered / selected / all` 范围、AP UUID 和页面同语义筛选，不提交分页或整行数据；后端 Export Process 从只读 SQLite 生成“AP资源清单 / Radio明细 / 导出说明”。AP 主表按规范化 MAC 去重且始终一 AP 一行，Radio 单独展开；缺失字段保留空白并写入数据完整性。Electron 保存使用 Artifact 大小和 SHA-256 校验，取消或失败后保留 Artifact 并允许再次保存；Browser 使用后端下载响应。导出过程不得连接 AC、AP 或交换机。
+FIT-AP 资源 XLSX 与 OmniPeek 名称表是独立入口：前者面向资产核对，提交当前 AC、`filtered / selected / all` 范围、AP UUID 和页面同语义筛选，不提交分页或整行数据；后端 Export Process 从只读 SQLite 生成“AP资源清单 / Radio明细 / 导出说明”。AP 主表按规范化 MAC 去重且始终一 AP 一行，Radio 单独展开；缺失字段保留空白并写入数据完整性。FIT-AP 资源使用共享用户目标协调器，在创建任务前选择 `.xlsx` 路径，取消不提交；Artifact 就绪后按大小和 SHA-256 写入预选位置，失败时保留并允许在任务中心换位置，不重新生成。OmniPeek 保留既有专用目录/文件选择和授权绑定。Browser 仅启动后端下载，不声称已验证本地落盘。两类导出过程都不得连接 AC、AP 或交换机。
 
 FIT-AP 资源、配置快照、Radio、历史和 AP 扩展表格使用 `NcDataTable`。FIT-AP 页面原有私有列显隐已由公共列设置替代；排序、筛选、光衰状态、选择和详情操作继续使用原 Store/API 语义。页面不得重新直接声明 `el-table-column` 或私有列宽算法。
 

@@ -51,6 +51,7 @@ import NcDataTable from '../../components/table/NcDataTable.vue'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { useAvailablePanelHeight } from '../../composables/useAvailablePanelHeight'
+import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import { ApiRequestError } from '../../api/client'
 import {
   applyMeshBundleImport, createMeshProfile, deleteMeshArtifact, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisParamsTemplate, getMeshAnalysisSession, getMeshAnalysisSummary, getMeshPeerSegmentChart, getMeshRawTail, getMeshTracksideSignalChart,
@@ -95,6 +96,7 @@ defineOptions({
 
 const router = useRouter()
 const { confirm } = useConfirm()
+const userSelectedExport = useUserSelectedExport()
 const meshRuntimeToken = registerMeshAnalysisInstance()
 const pageActive = ref(true)
 const pageActivatedOnce = ref(false)
@@ -2098,11 +2100,31 @@ function openReportDialog(): void {
   reportVisible.value = true
 }
 
-function generateReport(): void {
+async function generateReport(): Promise<void> {
   if (!selected.value) return
+  const sessionId = selected.value.session.session_id
+  const suggestedName = `${safeExportPart(selected.value.session.mr_name || 'MESH')}-分析报告-${exportTimestamp()}.xlsx`
   const override = useTemporaryReportParams.value ? { ...reportParams } : undefined
-  reportVisible.value = false
-  void startTask(() => exportMeshAnalysisReport(selected.value!.session.session_id, override), 'MESH 分析报告生成启动失败')
+  taskLoading.value = true
+  error.value = ''
+  try {
+    const result = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: 'rail.mesh_report',
+      suggestedName,
+      context: { sessionId },
+      submit: () => exportMeshAnalysisReport(sessionId, override),
+    })
+    if (result.status === 'cancelled') return
+    reportVisible.value = false
+    rememberTask(result.task)
+    pollTask()
+    void openTaskWindow(result.task.task_id)
+    ElMessage.success('MESH 分析报告任务已提交，完成后将写入所选位置')
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : 'MESH 分析报告生成启动失败'
+  } finally {
+    taskLoading.value = false
+  }
 }
 function openLinkExportDialog(): void {
   if (!selected.value) return
@@ -2110,20 +2132,34 @@ function openLinkExportDialog(): void {
   linkExportVisible.value = true
 }
 
-function exportLinkDetails(): void {
+async function exportLinkDetails(): Promise<void> {
   const sourceFileId = selectedSource.value?.source_file_id
   if (!selected.value || typeof sourceFileId !== 'number' || !Number.isInteger(sourceFileId) || sourceFileId <= 0) {
     ElMessage.error('当前来源缺少正式 source_file_id，请刷新或重新解析后再试。')
     return
   }
-  linkExportVisible.value = false
-  ElMessage.info('正在提交链路明细导出任务')
-  void startTask(
-    () => exportMeshLinkDetails(selected.value!.session.session_id, sourceFileId, { ...linkExportParams }),
-    'MESH 链路明细导出启动失败',
-  ).then((created) => {
-    if (created) ElMessage.success(`链路明细导出任务已创建：${created.task_id}`)
-  })
+  const sessionId = selected.value.session.session_id
+  const suggestedName = `${safeExportPart(selected.value.session.mr_name || 'MESH')}-链路明细-${exportTimestamp()}.xlsx`
+  taskLoading.value = true
+  error.value = ''
+  try {
+    const result = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: 'rail.mesh_link_details',
+      suggestedName,
+      context: { sessionId, sourceFileId },
+      submit: () => exportMeshLinkDetails(sessionId, sourceFileId, { ...linkExportParams }),
+    })
+    if (result.status === 'cancelled') return
+    linkExportVisible.value = false
+    rememberTask(result.task)
+    pollTask()
+    void openTaskWindow(result.task.task_id)
+    ElMessage.success('链路明细导出任务已提交，完成后将写入所选位置')
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : 'MESH 链路明细导出启动失败'
+  } finally {
+    taskLoading.value = false
+  }
 }
 async function rebuildSelected(): Promise<void> {
   if (!selected.value) return
@@ -2194,6 +2230,13 @@ function buildResultType(value: string): 'success' | 'warning' | 'danger' | 'inf
 }
 function buildResultLabel(value: string): string {
   return ({ normal: '正常', short: '短时建链', same_ap_radio_switch: '同 AP 双射频切换', pingpong_abnormal: 'AP 乒乓切换异常', critical_return: '临界回切', boundary: '边界区段' } as Record<string, string>)[value] || value
+}
+function safeExportPart(value: string): string {
+  return value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim() || 'MESH'
+}
+function exportTimestamp(now = new Date()): string {
+  const part = (value: number) => String(value).padStart(2, '0')
+  return `${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}_${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}`
 }
 </script>
 

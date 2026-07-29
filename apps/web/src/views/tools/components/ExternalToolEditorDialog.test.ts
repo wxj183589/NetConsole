@@ -49,6 +49,24 @@ describe('ExternalToolEditorDialog', () => {
     expect(vm.form.workingDirectory).toBe('C:\\Tools')
   })
 
+  it('keeps the form unchanged when executable selection is cancelled', async () => {
+    vi.mocked(api.selectExternalToolExecutable).mockResolvedValueOnce({ cancelled: true })
+    const wrapper = shallowMount(ExternalToolEditorDialog, {
+      props: { modelValue: true, categories },
+    })
+    const vm = wrapper.vm as unknown as {
+      chooseExecutable(): Promise<void>
+      form: { name: string; executablePath: string; workingDirectory: string }
+    }
+
+    await vm.chooseExecutable()
+
+    expect(vm.form.name).toBe('')
+    expect(vm.form.executablePath).toBe('')
+    expect(vm.form.workingDirectory).toBe('')
+    expect(wrapper.emitted('save')).toBeUndefined()
+  })
+
   it('emits a strict argv request and rejects shell syntax before save', async () => {
     const wrapper = shallowMount(ExternalToolEditorDialog, {
       props: { modelValue: true, categories },

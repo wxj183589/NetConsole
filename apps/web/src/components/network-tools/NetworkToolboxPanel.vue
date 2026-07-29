@@ -17,6 +17,7 @@ import {
   startNetworkTask,
   summarizeRoutes,
 } from '../../api/networkTools'
+import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import { downloadBackendResource } from '../../platform/runtime'
 import NcDataTable from '../table/NcDataTable.vue'
 import type { NcTableColumn } from '../table/NcTableColumn'
@@ -26,6 +27,7 @@ import type { TaskItem } from '../../types/task'
 import { buildSubnetStatusGrid } from './subnetStatusGrid'
 
 const taskStore = useTaskStore()
+const userSelectedExport = useUserSelectedExport()
 
 const calculator = ref('ipv4')
 const text = ref('192.168.1.10/24')
@@ -212,14 +214,26 @@ async function cancelTask(): Promise<void> {
 async function exportTask(format: 'csv' | 'xlsx'): Promise<void> {
   if (!selectedTask.value || !selectedProbeHasResults.value) return
   try {
-    const response = await exportNetworkTask(selectedTask.value.id, format)
+    const sourceTaskId = selectedTask.value.id
+    const response = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: format === 'csv' ? 'network.toolbox_csv' : 'network.toolbox_xlsx',
+      suggestedName: `网络工具结果-${fileTimestamp()}.${format}`,
+      context: { format, sourceTaskId },
+      submit: () => exportNetworkTask(sourceTaskId, format),
+      taskId: (value) => value.task.id,
+    })
+    if (response.status === 'cancelled') return
     stopProbeMonitor()
-    selectedTask.value = response.task
+    selectedTask.value = response.task.task
     await taskStore.refresh()
-    ElMessage.success(`导出任务已提交：${response.task.id}`)
+    ElMessage.success(`导出任务已提交：${response.task.task.id}`)
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '网络任务导出失败')
   }
+}
+
+function fileTimestamp(): string {
+  return new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15)
 }
 
 async function loadTaskResults(): Promise<void> {

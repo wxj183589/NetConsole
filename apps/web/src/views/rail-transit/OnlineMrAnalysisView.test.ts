@@ -197,8 +197,11 @@ describe('Online MR analysis view behavior', () => {
     await flushPromises()
 
     expect(mocks.exportOnlineMrReport).toHaveBeenCalledOnce()
-    expect(mocks.exportOnlineMrReport).toHaveBeenCalledWith('session-1', '')
-    expect(mocks.messageSuccess).toHaveBeenCalledWith('分析报告任务已提交，请在任务中心查看进度。')
+    expect(mocks.exportOnlineMrReport).toHaveBeenCalledWith(
+      'session-1',
+      expect.stringMatching(/^MR-1-分析报告-\d{8}_\d{6}\.xlsx$/),
+    )
+    expect(mocks.messageSuccess).toHaveBeenCalledWith('分析报告任务已提交，完成后将写入所选位置。')
     expect(mocks.routerPush).not.toHaveBeenCalled()
     wrapper.unmount()
   })

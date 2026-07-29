@@ -16,6 +16,7 @@ import {
 } from '../../../api/tracksideApBusiness'
 import { isFeatureEnabled } from '../../../features'
 import { downloadBackendResource } from '../../../platform/runtime'
+import { useUserSelectedExport } from '../../../composables/useUserSelectedExport'
 import type {
   ApManagementVlanAllocation,
   ApManagementVlanGroup,
@@ -43,6 +44,7 @@ const emit = defineEmits<{ change: [draft: TracksideApPlanDraft, dirty: boolean]
 const storageKey = 'netconsole.trackside-ap-plan.last-task'
 const router = useRouter()
 const { confirm } = useConfirm()
+const userSelectedExport = useUserSelectedExport()
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const plan = ref<TracksideApPlan | null>(null)
 const selectedGroups = ref<ApManagementVlanGroup[]>([])
@@ -64,12 +66,7 @@ const editingMemberIds = ref<string[]>([])
 const editingSectionName = ref('')
 const groupVlanEditBaseline = ref<TracksideApPlanDraft | null>(null)
 let pollTimer: number | undefined
-type ExportKind = 'template' | 'current'
-interface PendingDownload { taskId: string; kind: ExportKind }
-const pendingDownload = ref<PendingDownload | null>(null)
 const downloadingArtifact = ref(false)
-const taskKinds = new Map<string, ExportKind>()
-const autoDownloadedTaskIds = new Set<string>()
 
 const groupColumns: NcTableColumn<ApManagementVlanGroup>[] = [
   { key: 'selection', label: '', type: 'selection', valueType: 'selection', width: 46, fixed: 'left', hideable: false },
@@ -469,11 +466,15 @@ async function exportPlan(template: boolean): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    const created = await exportTracksideApPlan(template, !template && dirty.value && draft.value ? deepCopy(draft.value) : undefined)
-    const kind: ExportKind = template ? 'template' : 'current'
-    taskKinds.set(created.task_id, kind)
-    pendingDownload.value = { taskId: created.task_id, kind }
-    await handleTaskUpdate(created)
+    const draftPayload = !template && dirty.value && draft.value ? deepCopy(draft.value) : undefined
+    const result = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: template ? 'rail.trackside_plan_template' : 'rail.trackside_plan_current',
+      suggestedName: `${template ? '轨旁AP规划模板' : '轨旁AP规划'}-${exportTimestamp()}.xlsx`,
+      context: { template, draft: Boolean(draftPayload) },
+      submit: () => exportTracksideApPlan(template, draftPayload),
+    })
+    if (result.status === 'cancelled') return
+    await handleTaskUpdate(result.task)
     poll()
   } catch (reason) { error.value = failure(reason, template ? '规划模板导出启动失败' : '轨旁 AP 规划导出启动失败') }
   finally { loading.value = false }
@@ -504,45 +505,39 @@ function openTaskWindow(): void {
   }
   void router.push({ name: 'tasks', query: { module: 'rail', ...(taskId ? { task_id: taskId } : {}) } })
 }
-async function downloadArtifact(): Promise<void> { if (task.value) await downloadCompletedTask(task.value, false) }
-async function downloadCompletedTask(current: TracksideApTask, automatic: boolean): Promise<void> {
+async function downloadArtifact(): Promise<void> { if (task.value) await downloadCompletedTask(task.value) }
+async function downloadCompletedTask(current: TracksideApTask): Promise<void> {
   if (current.status !== 'COMPLETED') return
-  if (automatic && autoDownloadedTaskIds.has(current.task_id)) return
   if (!current.available || !current.artifact_id) {
-    if (automatic) error.value = '轨旁 AP 规划任务已完成，但没有可下载的 Artifact'
-    else ElMessage.error('轨旁 AP 规划文件暂不可下载')
+    ElMessage.error('轨旁 AP 规划文件暂不可下载')
     return
   }
-  if (automatic) autoDownloadedTaskIds.add(current.task_id)
-  const kind = taskKinds.get(current.task_id) || 'current'
-  const suggestedName = current.artifact_name || (kind === 'template' ? '轨旁AP规划模板.xlsx' : '轨旁AP规划.xlsx')
+  const suggestedName = current.artifact_name || '轨旁AP规划.xlsx'
   downloadingArtifact.value = true
   try {
     const result = await downloadBackendResource(tracksideApPlanDownloadRequest(current.artifact_id, suggestedName))
     if (result.status === 'saved') ElMessage.success(`已保存 ${suggestedName}`)
     else if (result.status === 'started') ElMessage.success(`浏览器已开始下载 ${suggestedName}`)
-    else if (result.status === 'cancelled') {
-      ElMessage.info('下载已取消')
-      if (automatic) error.value = '自动下载已取消，可使用“下载文件”重试'
-    } else if (result.status === 'failed') {
+    else if (result.status === 'cancelled') ElMessage.info('下载已取消')
+    else if (result.status === 'failed') {
       const message = result.error || '轨旁 AP 规划文件下载失败'
       ElMessage.error(message)
-      if (automatic) error.value = `${message}，可使用“下载文件”重试`
     }
   } catch (reason) {
     const message = failure(reason, '轨旁 AP 规划文件下载失败')
     ElMessage.error(message)
-    if (automatic) error.value = `${message}，可使用“下载文件”重试`
   } finally { downloadingArtifact.value = false }
 }
 async function handleTaskUpdate(value: TracksideApTask): Promise<void> {
   rememberTask(value)
-  const pending = pendingDownload.value
-  if (!pending || pending.taskId !== value.task_id || !terminalStates.has(value.status)) return
-  pendingDownload.value = null
-  if (value.status === 'COMPLETED') await downloadCompletedTask(value, true)
-  else if (value.status === 'FAILED') error.value = value.error_message || '轨旁 AP 规划导出失败'
+  if (!terminalStates.has(value.status)) return
+  if (value.status === 'FAILED') error.value = value.error_message || '轨旁 AP 规划导出失败'
   else if (value.status === 'CANCELLED') error.value = '轨旁 AP 规划导出已取消'
+}
+
+function exportTimestamp(now = new Date()): string {
+  const part = (value: number) => String(value).padStart(2, '0')
+  return `${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}_${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}`
 }
 async function recoverTasks(): Promise<void> {
   try {

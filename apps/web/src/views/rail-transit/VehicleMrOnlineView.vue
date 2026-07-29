@@ -3,6 +3,7 @@ import { ElMessage } from 'element-plus'
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useConfirm } from '../../components/feedback/useConfirm'
+import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 
 import {
   exportVehicleMrHistory,
@@ -39,6 +40,7 @@ import type {
 const router = useRouter()
 const route = useRoute()
 const { confirm } = useConfirm()
+const userSelectedExport = useUserSelectedExport()
 const storageKey = 'netconsole.vehicle-mr-online.last-task'
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const loading = ref(false)
@@ -224,9 +226,27 @@ async function openDetail(row: VehicleMrTrainState): Promise<void> {
   finally { loading.value = false }
 }
 function resetHistory(): void { historyRange.value = []; historyFilters.car_end_label = ''; historyFilters.event_status = ''; historyFilters.station = ''; historyFilters.ap_name = ''; void loadEvents() }
-function exportHistory(): void {
+async function exportHistory(): Promise<void> {
   if (!selectedTrain.value) return
-  void startTask(() => exportVehicleMrHistory(selectedTrain.value!.train_id, currentHistoryFilters()), '列车经过历史导出启动失败')
+  loading.value = true
+  error.value = ''
+  try {
+    const selected = selectedTrain.value
+    const result = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: 'rail.vehicle_history',
+      suggestedName: `${safeExportPart(selected.train_name || selected.train_id || '列车')}-经过历史-${exportTimestamp()}.xlsx`,
+      context: { trainId: selected.train_id },
+      submit: () => exportVehicleMrHistory(selected.train_id, currentHistoryFilters()),
+    })
+    if (result.status === 'cancelled') return
+    rememberTask(result.task)
+    poll()
+    openTaskWindow()
+  } catch (reason) {
+    error.value = failure(reason, '列车经过历史导出启动失败')
+  } finally {
+    loading.value = false
+  }
 }
 async function openMappings(): Promise<void> { await loadMappings(); mappingVisible.value = true }
 function addMapping(): void { mappings.value.push({ id: null, enabled: true, train_display_name: '', train_id: '', train_no: '', tc1_peer_name: '', tc2_peer_name: '', online_policy: 'auto', remark: '', created_at: '', updated_at: '' }) }
@@ -248,7 +268,32 @@ function applyMappingPreview(): void {
   mappings.value = mappingPreview.value.result_rows; mappingPreviewVisible.value = false
   ElMessage.success('导入预览已应用到映射编辑区，请确认后保存')
 }
-function exportMappingTemplate(): void { void startTask(exportVehicleMrMappingTemplate, '列车 MR 映射模板导出启动失败') }
+async function exportMappingTemplate(): Promise<void> {
+  loading.value = true
+  error.value = ''
+  try {
+    const result = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: 'rail.vehicle_mapping_template',
+      suggestedName: `列车MR映射模板-${exportTimestamp()}.xlsx`,
+      submit: exportVehicleMrMappingTemplate,
+    })
+    if (result.status === 'cancelled') return
+    rememberTask(result.task)
+    poll()
+    openTaskWindow()
+  } catch (reason) {
+    error.value = failure(reason, '列车 MR 映射模板导出启动失败')
+  } finally {
+    loading.value = false
+  }
+}
+function safeExportPart(value: string): string {
+  return value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim() || '列车'
+}
+function exportTimestamp(now = new Date()): string {
+  const part = (value: number) => String(value).padStart(2, '0')
+  return `${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}_${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}`
+}
 function openTaskWindow(): void {
   const taskId = task.value?.task_id || ''
   if (window.netconsoleDesktop) {

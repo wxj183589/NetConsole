@@ -42,7 +42,10 @@ const message = vi.hoisted(() => ({
 
 vi.mock('../../api/configCollection', () => api)
 vi.mock('../../features', () => ({ isFeatureEnabled: () => true }))
-vi.mock('../../platform/runtime', () => ({ downloadBackendResource }))
+vi.mock('../../platform/runtime', () => ({
+  downloadBackendResource,
+  getPlatformAdapter: () => ({ hostType: 'browser' }),
+}))
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: routerPush }) }))
 vi.mock('../../components/feedback/useConfirm', () => ({ useConfirm: () => ({ confirm: confirmDialog }) }))
 vi.mock('element-plus', async (importOriginal) => {
