@@ -19,11 +19,13 @@ describe('device detail API client', () => {
       physical_status: 'down',
       protocol_status: 'down',
       media_type: 'optical',
+      sort_by: 'description',
+      sort_order: 'desc',
     })
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       '/api/device-management/devices/device%2F1/overview',
-      '/api/device-management/devices/device%2F1/interfaces?page=2&page_size=20&search=Gigabit&status=PHYSICAL_DOWN&admin_status=up&physical_status=down&protocol_status=down&media_type=optical',
+      '/api/device-management/devices/device%2F1/interfaces?page=2&page_size=20&search=Gigabit&status=PHYSICAL_DOWN&admin_status=up&physical_status=down&protocol_status=down&media_type=optical&sort_by=description&sort_order=desc',
     ])
   })
 

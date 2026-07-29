@@ -509,6 +509,8 @@ export interface DeviceDetailSectionQuery {
   severity?: string
   linked_only?: boolean
   snapshot_type?: string
+  sort_by?: string
+  sort_order?: 'asc' | 'desc'
 }
 
 export interface DeviceWriteRequest {

@@ -86,6 +86,8 @@ const sectionQuery = reactive({
   media_type: '',
   linked_only: false,
   snapshot_type: '',
+  sort_by: '',
+  sort_order: 'asc' as 'asc' | 'desc',
   page: 1,
   page_size: 50,
 })
@@ -227,6 +229,22 @@ const columnsBySection: Record<Exclude<DeviceDetailSection, 'overview'>, NcTable
   ],
 }
 
+const sortableKeysBySection: Partial<Record<DeviceDetailSection, ReadonlySet<string>>> = {
+  interfaces: new Set([
+    'interface_name', 'link_status', 'admin_status', 'physical_status', 'protocol_status',
+    'speed', 'duplex', 'media_type', 'category', 'port_mode', 'pvid', 'description', 'collected_at',
+  ]),
+  optical: new Set([
+    'interface_name', 'rx_power', 'tx_power', 'temperature', 'voltage', 'bias_current',
+    'module_model', 'module_serial_number', 'module_vendor', 'wavelength',
+    'transmission_distance', 'connector_type', 'collected_at',
+  ]),
+  lldp: new Set([
+    'local_interface', 'neighbor_sysname', 'neighbor_mac', 'neighbor_interface',
+    'neighbor_ip', 'pvid', 'ttl', 'port_description', 'collected_at',
+  ]),
+}
+
 const visibleSections = computed<DeviceDetailSection[]>(() => {
   const response = overview.value
   if (!response) return ['overview']
@@ -238,7 +256,13 @@ const currentPage = computed(() => {
   return sectionPages.value[selectedSection.value]
 })
 
-const currentColumns = computed(() => selectedSection.value === 'overview' ? [] : columnsBySection[selectedSection.value])
+const currentColumns = computed(() => {
+  if (selectedSection.value === 'overview') return []
+  const sortableKeys = sortableKeysBySection[selectedSection.value]
+  return columnsBySection[selectedSection.value].map((column) => (
+    sortableKeys?.has(column.key) ? { ...column, sortable: 'custom' as const } : column
+  ))
+})
 const currentRows = computed(() => currentPage.value?.items ?? [])
 const actionSections: DeviceDetailSection[] = ['interfaces', 'optical', 'lldp', 'configuration', 'tasks']
 const currentTableColumns = computed<NcTableColumn<DeviceDetailRecord>[]>(() => [
@@ -420,6 +444,8 @@ async function activateSection(name: string | number): Promise<void> {
   sectionQuery.media_type = ''
   sectionQuery.linked_only = false
   sectionQuery.snapshot_type = ''
+  sectionQuery.sort_by = ''
+  sectionQuery.sort_order = 'asc'
   sectionQuery.page = 1
   await loadSection(section, false)
 }
@@ -441,6 +467,8 @@ async function loadSection(section = selectedSection.value as Exclude<DeviceDeta
     media_type: section === 'interfaces' ? sectionQuery.media_type : undefined,
     linked_only: section === 'lldp' ? sectionQuery.linked_only : undefined,
     snapshot_type: section === 'configuration' ? sectionQuery.snapshot_type : undefined,
+    sort_by: ['interfaces', 'optical', 'lldp'].includes(section) ? sectionQuery.sort_by || undefined : undefined,
+    sort_order: ['interfaces', 'optical', 'lldp'].includes(section) && sectionQuery.sort_by ? sectionQuery.sort_order : undefined,
   }
   const cacheKey = [
     section,
@@ -456,6 +484,8 @@ async function loadSection(section = selectedSection.value as Exclude<DeviceDeta
     query.media_type || '',
     query.linked_only ? '1' : '0',
     query.snapshot_type || '',
+    query.sort_by || '',
+    query.sort_order || '',
   ].join('|')
   const cached = sectionCache.get(cacheKey)
   if (cached) {
@@ -474,6 +504,17 @@ async function loadSection(section = selectedSection.value as Exclude<DeviceDeta
   } finally {
     if (generation === sectionLoadGeneration) sectionLoading[section] = false
   }
+}
+
+function handleSectionSortChange(sort: { prop?: string; order?: 'ascending' | 'descending' | null }): void {
+  const section = selectedSection.value
+  if (!['interfaces', 'optical', 'lldp'].includes(section)) return
+  const prop = String(sort.prop || '')
+  if (sort.order && !sortableKeysBySection[section]?.has(prop)) return
+  sectionQuery.sort_by = sort.order ? prop : ''
+  sectionQuery.sort_order = sort.order === 'descending' ? 'desc' : 'asc'
+  sectionQuery.page = 1
+  void loadSection(section as Exclude<DeviceDetailSection, 'overview'>)
 }
 
 function mapBusinessAssociation(item: DeviceBusinessAssociationRecord): DeviceDetailRecord {
@@ -1235,6 +1276,7 @@ function errorMessage(cause: unknown, fallback: string): string {
                     :columns="currentTableColumns"
                     height="100%"
                     empty-text="暂无数据"
+                    @sort-change="handleSectionSortChange"
                   >
                     <template #cell-selection="{ row }"><el-checkbox :model-value="configurationSelection.includes(Number(row.snapshot_id))" @change="(checked: boolean) => toggleConfigurationSelection(Number(row.snapshot_id), checked)" /></template>
                     <template #cell-severity="{ row, columnDefinition }"><span :class="['optical-severity', opticalToneClass(row.severity)]">{{ formatEnumeratedValue(columnDefinition.key, row[columnDefinition.key], row) }}</span></template>

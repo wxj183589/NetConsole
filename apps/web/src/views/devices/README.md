@@ -23,6 +23,12 @@
 5. 当前设备详情通过共享 Task Store 轮询任务状态。任务进入 `COMPLETED`、`FAILED` 或 `CANCELLED` 后，页面重新读取 overview 和已经加载的页签。
 6. 页面切换设备、页签或筛选时使用 generation 避免旧请求覆盖新状态；卸载时释放 polling、请求状态和图表/观察器资源。
 
+接口、光模块和 LLDP 当前快照默认复用 `src/netconsole/utils/interface_sort.py`
+的接口名自然排序规则，并在 SQLite 查询中对完整筛选结果排序后分页。接口与光模块
+按接口名升序；LLDP 依次按本地接口、邻居系统名、邻居接口和稳定记录 ID 排序，本地
+接口和邻居接口都按数值层级比较。页面主动选择受支持的其他列时改用服务端全局排序，
+取消列排序后恢复上述默认顺序；刷新、筛选和分页不在 Renderer 中对当前页二次排序。
+
 设备列表请求失败时，页面保持错误状态，不把失败误显示为“当前没有设备”或空列表。Backend
 会把 SQLite 异常映射为结构化错误：迁移未完成使用
 `DEVICE_DATABASE_SCHEMA_NOT_READY`，锁库使用 `DEVICE_DATABASE_BUSY`，权限/只读、

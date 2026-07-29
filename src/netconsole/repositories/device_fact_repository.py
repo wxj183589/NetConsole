@@ -11,6 +11,7 @@ from netconsole.core.optical_severity_engine import (
 )
 from netconsole.utils.interface_normalize import normalize_interface_name
 from netconsole.utils.interface_sort import interface_sort_key
+from netconsole.utils.natural_sort import natural_text_key
 
 
 FACT_FIELDS = (
@@ -142,6 +143,72 @@ COLLECT_RUN_FIELDS = (
     "created_at",
 )
 
+_PAGE_SORT_FIELDS = {
+    "device_interfaces": frozenset(
+        {
+            "interface_name",
+            "link_status",
+            "admin_status",
+            "physical_status",
+            "protocol_status",
+            "speed",
+            "duplex",
+            "media_type",
+            "category",
+            "port_mode",
+            "pvid",
+            "description",
+            "collected_at",
+        }
+    ),
+    "device_optical_modules": frozenset(
+        {
+            "interface_name",
+            "rx_power",
+            "tx_power",
+            "temperature",
+            "voltage",
+            "bias_current",
+            "module_model",
+            "module_serial_number",
+            "module_vendor",
+            "wavelength",
+            "transmission_distance",
+            "connector_type",
+            "collected_at",
+        }
+    ),
+    "device_lldp_neighbors": frozenset(
+        {
+            "local_interface",
+            "neighbor_sysname",
+            "neighbor_mac",
+            "neighbor_interface",
+            "neighbor_ip",
+            "pvid",
+            "ttl",
+            "port_description",
+            "collected_at",
+        }
+    ),
+}
+_INTERFACE_NATURAL_SORT_FIELDS = frozenset(
+    {"interface_name", "local_interface", "neighbor_interface"}
+)
+_NATURAL_TEXT_SORT_FIELDS = frozenset({"neighbor_sysname", "module_model"})
+_NUMERIC_SORT_FIELDS = frozenset(
+    {
+        "pvid",
+        "ttl",
+        "rx_power",
+        "tx_power",
+        "temperature",
+        "voltage",
+        "bias_current",
+        "wavelength",
+    }
+)
+
 
 class DeviceFactRepository:
     def __init__(self, database: Database) -> None:
@@ -247,6 +314,8 @@ class DeviceFactRepository:
         physical_status: str = "",
         protocol_status: str = "",
         media_type: str = "",
+        sort_by: str = "interface_name",
+        sort_order: str = "asc",
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[dict[str, object | None]], int]:
@@ -278,7 +347,8 @@ class DeviceFactRepository:
             params,
             limit=limit,
             offset=offset,
-            natural_order=True,
+            sort_by=sort_by,
+            sort_order=sort_order,
         )
 
     def get_device_interface(
@@ -329,6 +399,8 @@ class DeviceFactRepository:
         device_uuid: str,
         *,
         search: str = "",
+        sort_by: str = "interface_name",
+        sort_order: str = "asc",
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[dict[str, object | None]], int]:
@@ -342,6 +414,8 @@ class DeviceFactRepository:
             params,
             limit=limit,
             offset=offset,
+            sort_by=sort_by,
+            sort_order=sort_order,
         )
         return _normalize_optical_rows(rows), total
 
@@ -350,6 +424,8 @@ class DeviceFactRepository:
         device_uuid: str,
         *,
         search: str = "",
+        sort_by: str = "interface_name",
+        sort_order: str = "asc",
         limit: int = 1000,
     ) -> tuple[list[dict[str, object | None]], int, bool]:
         scan_limit = max(1, min(int(limit), 1000))
@@ -358,13 +434,15 @@ class DeviceFactRepository:
         _append_search_clause(clauses, params, search, _OPTICAL_SEARCH_FIELDS)
         where = " AND ".join(clauses)
         with self.database.connect() as conn:
+            _register_sort_collations(conn)
             total_row = conn.execute(
                 f"SELECT COUNT(*) AS total FROM device_optical_modules WHERE {where}",
                 params,
             ).fetchone()
             rows = conn.execute(
                 f"SELECT * FROM device_optical_modules WHERE {where} "
-                "ORDER BY interface_name COLLATE NOCASE, id DESC LIMIT ?",
+                f"ORDER BY {_page_order_clause('device_optical_modules', sort_by, sort_order)} "
+                "LIMIT ?",
                 [*params, scan_limit],
             ).fetchall()
         total = int(total_row["total"] if total_row is not None else 0)
@@ -448,8 +526,9 @@ class DeviceFactRepository:
             (dict(row) for row in rows),
             key=lambda row: (
                 interface_sort_key(row.get("local_interface")),
-                str(row.get("neighbor_sysname") or ""),
-                str(row.get("neighbor_interface") or ""),
+                natural_text_key(row.get("neighbor_sysname")),
+                interface_sort_key(row.get("neighbor_interface")),
+                int(row.get("id") or 0),
             ),
         )
 
@@ -459,6 +538,8 @@ class DeviceFactRepository:
         *,
         search: str = "",
         linked_only: bool = False,
+        sort_by: str = "local_interface",
+        sort_order: str = "asc",
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[dict[str, object | None]], int]:
@@ -474,6 +555,8 @@ class DeviceFactRepository:
             params,
             limit=limit,
             offset=offset,
+            sort_by=sort_by,
+            sort_order=sort_order,
         )
 
     def list_lldp_neighbors_for_interface(
@@ -637,7 +720,8 @@ class DeviceFactRepository:
         *,
         limit: int,
         offset: int,
-        natural_order: bool = False,
+        sort_by: str,
+        sort_order: str,
     ) -> tuple[list[dict[str, object | None]], int]:
         if table not in {
             "device_interfaces",
@@ -651,28 +735,16 @@ class DeviceFactRepository:
         size = max(1, min(int(limit), 200))
         start = max(0, int(offset))
         with self.database.connect() as conn:
+            _register_sort_collations(conn)
             total_row = conn.execute(
                 f"SELECT COUNT(*) AS total FROM {table} WHERE {where}", params
             ).fetchone()
-            if natural_order:
-                conn.create_collation(
-                    "NETCONSOLE_INTERFACE_NATURAL",
-                    _compare_interface_names,
-                )
-                rows = conn.execute(
-                    f"SELECT * FROM {table} WHERE {where} "
-                    f"ORDER BY CASE WHEN TRIM(COALESCE({order_field}, '')) = '' "
-                    f"THEN 1 ELSE 0 END, "
-                    f"{order_field} COLLATE NETCONSOLE_INTERFACE_NATURAL, id ASC "
-                    "LIMIT ? OFFSET ?",
-                    [*params, size, start],
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    f"SELECT * FROM {table} WHERE {where} "
-                    f"ORDER BY {order_field} COLLATE NOCASE, id DESC LIMIT ? OFFSET ?",
-                    [*params, size, start],
-                ).fetchall()
+            rows = conn.execute(
+                f"SELECT * FROM {table} WHERE {where} "
+                f"ORDER BY {_page_order_clause(table, sort_by or order_field, sort_order)} "
+                "LIMIT ? OFFSET ?",
+                [*params, size, start],
+            ).fetchall()
         return (
             [dict(row) for row in rows],
             int(total_row["total"] if total_row is not None else 0),
@@ -815,6 +887,56 @@ def _compare_interface_names(left: str, right: str) -> int:
     left_key = interface_sort_key(left)
     right_key = interface_sort_key(right)
     return (left_key > right_key) - (left_key < right_key)
+
+
+def _compare_natural_text(left: str, right: str) -> int:
+    left_key = natural_text_key(left)
+    right_key = natural_text_key(right)
+    return (left_key > right_key) - (left_key < right_key)
+
+
+def _register_sort_collations(conn) -> None:
+    conn.create_collation("NETCONSOLE_INTERFACE_NATURAL", _compare_interface_names)
+    conn.create_collation("NETCONSOLE_NATURAL_TEXT", _compare_natural_text)
+
+
+def _page_order_clause(table: str, sort_by: str, sort_order: str) -> str:
+    allowed = _PAGE_SORT_FIELDS.get(table)
+    field = str(sort_by or "").strip()
+    if allowed is None or field not in allowed:
+        raise ValueError(f"不支持的设备详情排序字段：{field}")
+    direction = str(sort_order or "").strip().casefold()
+    if direction not in {"asc", "desc"}:
+        raise ValueError("设备详情排序方向必须为 asc 或 desc")
+
+    terms = [_field_order_term(field, direction)]
+    default_interface = {
+        "device_interfaces": "interface_name",
+        "device_optical_modules": "interface_name",
+        "device_lldp_neighbors": "local_interface",
+    }[table]
+    if field != default_interface:
+        terms.append(_field_order_term(default_interface, "asc"))
+    if table == "device_lldp_neighbors":
+        if field != "neighbor_sysname":
+            terms.append(_field_order_term("neighbor_sysname", "asc"))
+        if field != "neighbor_interface":
+            terms.append(_field_order_term("neighbor_interface", "asc"))
+    terms.append("id ASC")
+    return ", ".join(terms)
+
+
+def _field_order_term(field: str, direction: str) -> str:
+    empty_last = f"CASE WHEN TRIM(COALESCE({field}, '')) = '' THEN 1 ELSE 0 END"
+    if field in _INTERFACE_NATURAL_SORT_FIELDS:
+        value = f"{field} COLLATE NETCONSOLE_INTERFACE_NATURAL"
+    elif field in _NATURAL_TEXT_SORT_FIELDS:
+        value = f"{field} COLLATE NETCONSOLE_NATURAL_TEXT"
+    elif field in _NUMERIC_SORT_FIELDS:
+        value = f"CAST({field} AS REAL)"
+    else:
+        value = f"{field} COLLATE NOCASE"
+    return f"{empty_last} ASC, {value} {direction.upper()}"
 
 
 def _latest_rows_by_interface(rows: list[dict[str, object | None]], field: str) -> list[dict[str, object | None]]:

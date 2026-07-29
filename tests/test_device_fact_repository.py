@@ -249,6 +249,36 @@ def test_optical_modules_use_logical_interface_sort(tmp_path):
     ]
 
 
+def test_optical_module_paging_uses_natural_order_before_slicing(tmp_path):
+    repository = make_repository(tmp_path)
+    repository.replace_optical_modules(
+        "device-1",
+        [
+            {
+                "interface_name": f"gei-0/3/0/{index}",
+                "status": "normal" if index % 2 else "no_light",
+            }
+            for index in range(20, 0, -1)
+        ],
+    )
+
+    first_page, first_total = repository.list_optical_modules_page(
+        "device-1", limit=9, offset=0
+    )
+    second_page, second_total = repository.list_optical_modules_page(
+        "device-1", limit=11, offset=9
+    )
+    bounded, bounded_total, truncated = repository.list_optical_modules_bounded(
+        "device-1", limit=20
+    )
+
+    expected = [f"gei-0/3/0/{index}" for index in range(1, 21)]
+    assert first_total == second_total == bounded_total == 20
+    assert [item["interface_name"] for item in [*first_page, *second_page]] == expected
+    assert [item["interface_name"] for item in bounded] == expected
+    assert truncated is False
+
+
 def test_list_optical_history_orders_by_collected_at_desc(tmp_path):
     repository = make_repository(tmp_path)
     repository.append_optical_history({"device_uuid": "device-1", "interface_name": "GE1/0/1", "collected_at": "2026-06-13T09:00:00", "rx_power": "-3.45 dBm"})
@@ -329,6 +359,101 @@ def test_lldp_neighbors_use_logical_local_interface_sort(tmp_path):
     )
 
     assert [item["local_interface"] for item in repository.list_lldp_neighbors("device-1")] == ["GE1/0/2", "GE1/0/10"]
+
+
+def test_lldp_paging_uses_compound_natural_order_and_stable_id(tmp_path):
+    repository = make_repository(tmp_path)
+    repository.replace_lldp_neighbors(
+        "device-1",
+        [
+            {
+                "local_interface": "gei-0/3/0/10",
+                "neighbor_sysname": "SW1",
+                "neighbor_interface": "GigabitEthernet1/0/1",
+            },
+            {
+                "local_interface": "gei-0/3/0/2",
+                "neighbor_sysname": "AP10",
+                "neighbor_interface": "GigabitEthernet1/0/1",
+            },
+            {
+                "local_interface": "gei-0/3/0/2",
+                "neighbor_sysname": "AP2",
+                "neighbor_interface": "GigabitEthernet1/0/10",
+            },
+            {
+                "local_interface": "gei-0/3/0/2",
+                "neighbor_sysname": "AP2",
+                "neighbor_interface": "GigabitEthernet1/0/2",
+            },
+            {
+                "local_interface": "",
+                "neighbor_sysname": "unknown",
+                "neighbor_interface": "GigabitEthernet1/0/1",
+            },
+        ],
+        preserve_existing=False,
+    )
+
+    first_page, total = repository.list_lldp_neighbors_page(
+        "device-1", limit=2, offset=0
+    )
+    second_page, _ = repository.list_lldp_neighbors_page(
+        "device-1", limit=3, offset=2
+    )
+    ordered = [*first_page, *second_page]
+
+    assert total == 5
+    assert [
+        (row["local_interface"], row["neighbor_sysname"], row["neighbor_interface"])
+        for row in ordered
+    ] == [
+        ("gei-0/3/0/2", "AP2", "GigabitEthernet1/0/2"),
+        ("gei-0/3/0/2", "AP2", "GigabitEthernet1/0/10"),
+        ("gei-0/3/0/2", "AP10", "GigabitEthernet1/0/1"),
+        ("gei-0/3/0/10", "SW1", "GigabitEthernet1/0/1"),
+        ("", "unknown", "GigabitEthernet1/0/1"),
+    ]
+    assert [row["id"] for row in ordered] == [
+        row["id"]
+        for row in repository.list_lldp_neighbors_page(
+            "device-1", limit=5, offset=0
+        )[0]
+    ]
+
+
+def test_device_detail_custom_sort_is_global_and_cancel_can_restore_default(tmp_path):
+    repository = make_repository(tmp_path)
+    repository.replace_device_interfaces(
+        "device-1",
+        [
+            {"interface_name": "GE1/0/10", "description": "A"},
+            {"interface_name": "GE1/0/2", "description": "C"},
+            {"interface_name": "GE1/0/1", "description": "B"},
+        ],
+    )
+
+    custom, _ = repository.list_device_interfaces_page(
+        "device-1",
+        sort_by="description",
+        sort_order="desc",
+        limit=2,
+        offset=0,
+    )
+    default, _ = repository.list_device_interfaces_page(
+        "device-1",
+        sort_by="interface_name",
+        sort_order="asc",
+        limit=3,
+        offset=0,
+    )
+
+    assert [row["interface_name"] for row in custom] == ["GE1/0/2", "GE1/0/1"]
+    assert [row["interface_name"] for row in default] == [
+        "GE1/0/1",
+        "GE1/0/2",
+        "GE1/0/10",
+    ]
 
 
 def test_list_lldp_history_orders_by_collected_at_desc(tmp_path):

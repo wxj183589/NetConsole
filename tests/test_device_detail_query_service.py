@@ -524,6 +524,45 @@ def test_optical_alarm_and_lldp_association_are_derived_in_python(
     assert detail.lldp_truncated is False
 
 
+def test_optical_severity_filter_keeps_natural_order_across_pages(
+    tmp_path: Path,
+) -> None:
+    query, _operation, _adapter, h3c, _huawei, _ac = _fixture(tmp_path)
+    paths = PathResolver(
+        app_root=Path(__file__).parents[1], data_root=tmp_path / "runtime"
+    )
+    DeviceFactRepository(Database(paths.site_db_path("demo"))).replace_optical_modules(
+        str(h3c.device_uuid),
+        [
+            {
+                "interface_name": f"gei-0/3/0/{index}",
+                "rx_power": "-18" if index not in {3, 7} else "-10",
+                "rx_low_warning": "-17",
+                "rx_low_alarm": "-19",
+            }
+            for index in (20, 19, 11, 10, 9, 7, 3, 2, 1)
+        ],
+    )
+
+    first = query.transceivers(
+        str(h3c.device_uuid), severity="warning", page=1, page_size=4
+    )
+    second = query.transceivers(
+        str(h3c.device_uuid), severity="warning", page=2, page_size=4
+    )
+
+    assert first.total == second.total == 7
+    assert [item.interface_name for item in [*first.items, *second.items]] == [
+        "gei-0/3/0/1",
+        "gei-0/3/0/2",
+        "gei-0/3/0/9",
+        "gei-0/3/0/10",
+        "gei-0/3/0/11",
+        "gei-0/3/0/19",
+        "gei-0/3/0/20",
+    ]
+
+
 def test_optical_mapping_honors_collector_status_and_all_tx_thresholds(
     tmp_path: Path,
 ) -> None:

@@ -343,6 +343,11 @@ def device_interfaces(
     physical_status: str = Query(default="", max_length=40),
     protocol_status: str = Query(default="", max_length=40),
     media_type: str = Query(default="", max_length=40),
+    sort_by: str = Query(
+        default="interface_name",
+        pattern="^(interface_name|link_status|admin_status|physical_status|protocol_status|speed|duplex|media_type|category|port_mode|pvid|description|collected_at)$",
+    ),
+    sort_order: str = Query(default="asc", pattern="^(asc|desc)$"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
 ) -> DeviceInterfacePageDTO:
@@ -356,6 +361,8 @@ def device_interfaces(
             physical_status=physical_status,
             protocol_status=protocol_status,
             media_type=media_type,
+            sort_by=sort_by,
+            sort_order=sort_order,
             page=page,
             page_size=page_size,
         ),
@@ -394,6 +401,11 @@ def device_transceivers(
         default="",
         pattern="^(|normal|notice|warning|alarm|link_abnormal|no_light|no_module|unknown)$",
     ),
+    sort_by: str = Query(
+        default="interface_name",
+        pattern="^(interface_name|rx_power|tx_power|temperature|voltage|bias_current|module_model|module_serial_number|module_vendor|wavelength|transmission_distance|connector_type|collected_at)$",
+    ),
+    sort_order: str = Query(default="asc", pattern="^(asc|desc)$"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
 ) -> DeviceTransceiverPageDTO:
@@ -402,6 +414,8 @@ def device_transceivers(
             device_uuid,
             search=search,
             severity=severity,
+            sort_by=sort_by,
+            sort_order=sort_order,
             page=page,
             page_size=page_size,
         ),
@@ -420,6 +434,11 @@ def device_lldp(
     device_uuid: str,
     search: str = Query(default="", max_length=200),
     linked_only: bool = False,
+    sort_by: str = Query(
+        default="local_interface",
+        pattern="^(local_interface|neighbor_sysname|neighbor_mac|neighbor_interface|neighbor_ip|pvid|ttl|port_description|collected_at)$",
+    ),
+    sort_order: str = Query(default="asc", pattern="^(asc|desc)$"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
 ) -> DeviceLldpPageDTO:
@@ -428,6 +447,8 @@ def device_lldp(
             device_uuid,
             search=search,
             linked_only=linked_only,
+            sort_by=sort_by,
+            sort_order=sort_order,
             page=page,
             page_size=page_size,
         ),

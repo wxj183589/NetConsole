@@ -38,6 +38,8 @@ class DeviceDetailDataGateway(Protocol):
         physical_status: str,
         protocol_status: str,
         media_type: str,
+        sort_by: str,
+        sort_order: str,
         limit: int,
         offset: int,
     ) -> tuple[list[dict[str, object | None]], int]: ...
@@ -51,6 +53,8 @@ class DeviceDetailDataGateway(Protocol):
         device_uuid: str,
         *,
         search: str,
+        sort_by: str,
+        sort_order: str,
         limit: int,
         offset: int,
     ) -> tuple[list[dict[str, object | None]], int]: ...
@@ -60,7 +64,13 @@ class DeviceDetailDataGateway(Protocol):
     ) -> dict[str, object | None] | None: ...
 
     def list_transceivers_bounded(
-        self, device_uuid: str, *, search: str, limit: int
+        self,
+        device_uuid: str,
+        *,
+        search: str,
+        sort_by: str,
+        sort_order: str,
+        limit: int,
     ) -> tuple[list[dict[str, object | None]], int, bool]: ...
 
     def list_lldp(
@@ -69,6 +79,8 @@ class DeviceDetailDataGateway(Protocol):
         *,
         search: str,
         linked_only: bool,
+        sort_by: str,
+        sort_order: str,
         limit: int,
         offset: int,
     ) -> tuple[list[dict[str, object | None]], int]: ...
@@ -152,6 +164,8 @@ class DeviceDetailRepository:
         physical_status: str = "",
         protocol_status: str = "",
         media_type: str = "",
+        sort_by: str = "interface_name",
+        sort_order: str = "asc",
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[dict[str, object | None]], int]:
@@ -165,6 +179,8 @@ class DeviceDetailRepository:
             physical_status=physical_status,
             protocol_status=protocol_status,
             media_type=media_type,
+            sort_by=sort_by,
+            sort_order=sort_order,
             limit=limit,
             offset=offset,
         )
@@ -179,11 +195,18 @@ class DeviceDetailRepository:
         device_uuid: str,
         *,
         search: str = "",
+        sort_by: str = "interface_name",
+        sort_order: str = "asc",
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[dict[str, object | None]], int]:
         return self._facts().list_optical_modules_page(
-            device_uuid, search=search, limit=limit, offset=offset
+            device_uuid,
+            search=search,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            limit=limit,
+            offset=offset,
         )
 
     def get_transceiver(
@@ -192,10 +215,20 @@ class DeviceDetailRepository:
         return self._facts().get_optical_module(device_uuid, interface_name)
 
     def list_transceivers_bounded(
-        self, device_uuid: str, *, search: str = "", limit: int = 1000
+        self,
+        device_uuid: str,
+        *,
+        search: str = "",
+        sort_by: str = "interface_name",
+        sort_order: str = "asc",
+        limit: int = 1000,
     ) -> tuple[list[dict[str, object | None]], int, bool]:
         return self._facts().list_optical_modules_bounded(
-            device_uuid, search=search, limit=limit
+            device_uuid,
+            search=search,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            limit=limit,
         )
 
     def list_lldp(
@@ -204,6 +237,8 @@ class DeviceDetailRepository:
         *,
         search: str = "",
         linked_only: bool = False,
+        sort_by: str = "local_interface",
+        sort_order: str = "asc",
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[dict[str, object | None]], int]:
@@ -211,6 +246,8 @@ class DeviceDetailRepository:
             device_uuid,
             search=search,
             linked_only=linked_only,
+            sort_by=sort_by,
+            sort_order=sort_order,
             limit=limit,
             offset=offset,
         )

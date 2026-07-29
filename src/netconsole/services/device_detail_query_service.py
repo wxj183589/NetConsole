@@ -274,6 +274,8 @@ class DeviceDetailQueryService:
         physical_status: str = "",
         protocol_status: str = "",
         media_type: str = "",
+        sort_by: str = "interface_name",
+        sort_order: str = "asc",
         page: int = 1,
         page_size: int = 50,
     ) -> DeviceInterfacePageDTO:
@@ -288,6 +290,8 @@ class DeviceDetailQueryService:
             physical_status=physical_status,
             protocol_status=protocol_status,
             media_type=media_type,
+            sort_by=sort_by,
+            sort_order=sort_order,
             limit=size,
             offset=offset,
         )
@@ -351,6 +355,8 @@ class DeviceDetailQueryService:
         *,
         search: str = "",
         severity: str = "",
+        sort_by: str = "interface_name",
+        sort_order: str = "asc",
         page: int = 1,
         page_size: int = 50,
     ) -> DeviceTransceiverPageDTO:
@@ -360,7 +366,11 @@ class DeviceDetailQueryService:
         truncated = False
         if selected_severity:
             rows, _scanned_total, truncated = self.gateway.list_transceivers_bounded(
-                device_uuid, search=search, limit=_TRANSCEIVER_SCAN_LIMIT
+                device_uuid,
+                search=search,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                limit=_TRANSCEIVER_SCAN_LIMIT,
             )
             mapped = [
                 self._transceiver(row, device_vendor=device.device_vendor)
@@ -371,7 +381,12 @@ class DeviceDetailQueryService:
             items = selected[offset : offset + size]
         else:
             rows, total = self.gateway.list_transceivers(
-                device_uuid, search=search, limit=size, offset=offset
+                device_uuid,
+                search=search,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                limit=size,
+                offset=offset,
             )
             items = [
                 self._transceiver(row, device_vendor=device.device_vendor)
@@ -402,6 +417,8 @@ class DeviceDetailQueryService:
         *,
         search: str = "",
         linked_only: bool = False,
+        sort_by: str = "local_interface",
+        sort_order: str = "asc",
         page: int = 1,
         page_size: int = 50,
     ) -> DeviceLldpPageDTO:
@@ -411,6 +428,8 @@ class DeviceDetailQueryService:
             device_uuid,
             search=search,
             linked_only=linked_only,
+            sort_by=sort_by,
+            sort_order=sort_order,
             limit=size,
             offset=offset,
         )
