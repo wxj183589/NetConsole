@@ -16,6 +16,12 @@ import type {
   UiPreferenceKey,
   SettingsActionId, SettingsDirectoryId, SettingsToolId,
   SiteStorageRestartRequest,
+  ExternalToolCreateRequest,
+  ExternalToolUpdateRequest,
+  ExternalToolReorderRequest,
+  ExternalToolCategoryReorderRequest,
+  ExternalToolDeleteCategoryRequest,
+  ExternalToolIconMode,
 } from './bridge'
 
 const MAX_FILTERS = 20
@@ -34,9 +40,15 @@ const MAX_WORKSPACE_TABS = 40
 const WORKSPACE_ID_RE = /^[A-Za-z0-9_-]{1,100}$/
 const WORKSPACE_SAFE_TEXT_RE = /^[^\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]{1,512}$/
 const WORKSPACE_INTERNAL_QUERY_KEYS = new Set(['task_window', 'workspace_window', 'workspace_window_id', 'workspace_restore'])
+const EXTERNAL_TOOL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const EXTERNAL_TOOL_NAME_MAX = 80
+const EXTERNAL_TOOL_ARGUMENT_MAX = 2_000
+const EXTERNAL_TOOL_ARGUMENT_COUNT_MAX = 64
+const EXTERNAL_TOOL_SHELL_TOKEN_RE = /(?:&&|\|\||[|<>])/
 const WORKSPACE_ALLOWED_PATHS = new Set([
   '/',
   '/network/devices',
+  '/tools',
   '/ac-management/fit-aps',
   '/ac-management/extensions',
   '/rail-transit/wireless-dashboard',
@@ -383,6 +395,140 @@ export function validateSettingsActionId(value: unknown): SettingsActionId {
     throw new TypeError('settings action id is invalid')
   }
   return value as SettingsActionId
+}
+
+export function validateExternalToolId(value: unknown, fieldName = 'toolId'): string {
+  if (typeof value !== 'string' || !EXTERNAL_TOOL_ID_RE.test(value)) {
+    throw new TypeError(`${fieldName} is invalid`)
+  }
+  return value.toLowerCase()
+}
+
+export function validateExternalToolName(value: unknown, fieldName = 'name'): string {
+  if (typeof value !== 'string') throw new TypeError(`${fieldName} is invalid`)
+  const normalized = value.trim()
+  if (!normalized || normalized.length > EXTERNAL_TOOL_NAME_MAX || /[\u0000-\u001f\u007f]/.test(normalized)) {
+    throw new TypeError(`${fieldName} is invalid`)
+  }
+  return normalized
+}
+
+export function validateExternalToolCreateRequest(value: unknown): ExternalToolCreateRequest {
+  const record = asRecord(value, 'external tool create request')
+  rejectUnknownKeys(record, [
+    'name', 'executablePath', 'arguments', 'workingDirectory', 'categoryId',
+    'favorite', 'iconMode', 'iconSelectionId',
+  ])
+  return {
+    name: validateExternalToolName(record.name),
+    executablePath: validateExternalToolExecutablePath(record.executablePath),
+    arguments: validateExternalToolArguments(record.arguments),
+    ...(record.workingDirectory === undefined || record.workingDirectory === ''
+      ? {}
+      : { workingDirectory: validateExternalToolAbsolutePath(record.workingDirectory, 'workingDirectory') }),
+    categoryId: validateExternalToolId(record.categoryId, 'categoryId'),
+    favorite: validateBoolean(record.favorite, 'favorite'),
+    iconMode: validateExternalToolIconMode(record.iconMode),
+    ...(record.iconSelectionId === undefined
+      ? {}
+      : { iconSelectionId: validateExternalToolId(record.iconSelectionId, 'iconSelectionId') }),
+  }
+}
+
+export function validateExternalToolUpdateRequest(value: unknown): ExternalToolUpdateRequest {
+  const record = asRecord(value, 'external tool update request')
+  const request = validateExternalToolCreateRequest(
+    Object.fromEntries(Object.entries(record).filter(([key]) => key !== 'id')),
+  )
+  return { id: validateExternalToolId(record.id), ...request }
+}
+
+export function validateExternalToolFavoriteRequest(value: unknown): { toolId: string; favorite: boolean } {
+  const record = asRecord(value, 'external tool favorite request')
+  rejectUnknownKeys(record, ['toolId', 'favorite'])
+  return {
+    toolId: validateExternalToolId(record.toolId),
+    favorite: validateBoolean(record.favorite, 'favorite'),
+  }
+}
+
+export function validateExternalToolReorderRequest(value: unknown): ExternalToolReorderRequest {
+  const record = asRecord(value, 'external tool reorder request')
+  rejectUnknownKeys(record, ['categoryId', 'toolIds'])
+  return {
+    categoryId: validateExternalToolId(record.categoryId, 'categoryId'),
+    toolIds: validateExternalToolIdArray(record.toolIds, 'toolIds'),
+  }
+}
+
+export function validateExternalToolCategoryReorderRequest(value: unknown): ExternalToolCategoryReorderRequest {
+  const record = asRecord(value, 'external tool category reorder request')
+  rejectUnknownKeys(record, ['categoryIds'])
+  return { categoryIds: validateExternalToolIdArray(record.categoryIds, 'categoryIds') }
+}
+
+export function validateExternalToolCategoryRenameRequest(value: unknown): { categoryId: string; name: string } {
+  const record = asRecord(value, 'external tool category rename request')
+  rejectUnknownKeys(record, ['categoryId', 'name'])
+  return {
+    categoryId: validateExternalToolId(record.categoryId, 'categoryId'),
+    name: validateExternalToolName(record.name, 'category name'),
+  }
+}
+
+export function validateExternalToolDeleteCategoryRequest(value: unknown): ExternalToolDeleteCategoryRequest {
+  const record = asRecord(value, 'external tool delete category request')
+  rejectUnknownKeys(record, ['categoryId', 'moveToolsToOther'])
+  return {
+    categoryId: validateExternalToolId(record.categoryId, 'categoryId'),
+    moveToolsToOther: validateBoolean(record.moveToolsToOther, 'moveToolsToOther'),
+  }
+}
+
+function validateExternalToolExecutablePath(value: unknown): string {
+  const path = validateExternalToolAbsolutePath(value, 'executablePath')
+  if (!/\.exe$/i.test(path)) throw new TypeError('executablePath must point to an .exe file')
+  return path
+}
+
+function validateExternalToolAbsolutePath(value: unknown, fieldName: string): string {
+  const path = validateBridgePath(value)
+  if (!/^(?:[A-Za-z]:[\\/]|\\\\)/.test(path)) throw new TypeError(`${fieldName} must be an absolute Windows path`)
+  return path
+}
+
+function validateExternalToolArguments(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > EXTERNAL_TOOL_ARGUMENT_COUNT_MAX) {
+    throw new TypeError('arguments are invalid')
+  }
+  return value.map((argument) => {
+    if (
+      typeof argument !== 'string'
+      || argument.length > EXTERNAL_TOOL_ARGUMENT_MAX
+      || /[\u0000\r\n]/.test(argument)
+      || EXTERNAL_TOOL_SHELL_TOKEN_RE.test(argument)
+    ) {
+      throw new TypeError('启动参数不支持管道、重定向、&& 或 ||')
+    }
+    return argument
+  })
+}
+
+function validateExternalToolIconMode(value: unknown): ExternalToolIconMode {
+  if (!['auto', 'default', 'custom'].includes(String(value))) throw new TypeError('iconMode is invalid')
+  return value as ExternalToolIconMode
+}
+
+function validateExternalToolIdArray(value: unknown, fieldName: string): string[] {
+  if (!Array.isArray(value) || value.length > 1_000) throw new TypeError(`${fieldName} is invalid`)
+  const result = value.map((item) => validateExternalToolId(item, fieldName))
+  if (new Set(result).size !== result.length) throw new TypeError(`${fieldName} contains duplicates`)
+  return result
+}
+
+function validateBoolean(value: unknown, fieldName: string): boolean {
+  if (typeof value !== 'boolean') throw new TypeError(`${fieldName} must be a boolean`)
+  return value
 }
 
 export function validateOnlineMrSessionId(value: unknown): string {

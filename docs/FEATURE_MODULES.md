@@ -18,6 +18,7 @@
 | `module.config_collection` | 配置采集 | `ENABLED` | 快照、比较、批量采集 |
 | `module.file_management` | 文件管理 | `ENABLED` | 局点文件和下载 |
 | `module.network_tools` | 网络工具 | `ENABLED` | Ping/fping、iPerf、无线扫描和工具箱 |
+| `module.tools` | 工具集 | `ENABLED` | Electron Desktop 本机第三方 EXE 注册、分类与仅 ID 启动 |
 | `module.command_reference` | 命令参考 | `ENABLED` | 命令、解析器与消费者索引 |
 | `module.logs` | 日志 | `ENABLED` | 应用日志 |
 | `module.system_settings` | 系统设置 | `ENABLED` | 设置、清理、版本等 |
@@ -27,6 +28,8 @@
 `web.ground_unattended` 是轨道交通下的独立正式页面，依赖任务中心、轨道交通基础资料和列车在线能力。页面维护自己的局点配置、运行、全车长 Ping、每日深度覆盖和归档状态；底层复用 AC Mesh-Link、Online MR Session/最终化和 fping，不建立第二套人工采集页面。该页面代码与自动测试已接入生产基线，真实 AC/MR、长时运行和托盘隐藏验收状态仍为 `REAL_DEVICE_PENDING`。
 
 Registry 当前显式登记的主要子功能包括：设备管理页面、连接测试、正式写入、采集诊断、导入、导出和桌面联动；这些真实页面/API 已提升为 `ENABLED`，但现场状态仍是 `IMPLEMENTED_UNVERIFIED`。其他登记项包括配置采集、比较、下载，以及删除、`save force`、报告导出和目录动作；文件管理下载、本地下载目录写入、设备 SFTP 浏览/下载和文件桌面联动；网络工具 toolbox、TCP 端口测试和已进入正式路由但仍为 `REAL_DEVICE_PENDING` 的无线扫描；轨道交通基础资料、其下的轨旁 AP 规划页签、轨旁 AP 业务与光衰更新、列车在线、通信监测、Mesh/Online MR。已有 Router、Application Service、Vue 页面和定向测试的列车在线动作、Mesh 导入/报告、Online MR 解析/报告及统一任务控制也已进入 `ENABLED`；未接入生产调用的 `web.online_mr_local_control / web.online_mr_agent_control`、隐藏兼容车内诊断页和 AC 规划能力继续保持 `DEVELOPMENT`。Online MR 分析页另登记 `web.online_mr_session_open_location` 与 `web.online_mr_session_delete` 两个稳定动作，前者还必须同时满足 `desktop.native_bridge`，后者继续受统一任务控制和会话资源互斥约束；AC FIT-AP，以及 AP 扩展预览/写入/回滚/导出、本地重算和高风险动作；命令说明、应用日志与安全维护页面 `web.logs` 及日志导出动作 `web.logs_export`；统一任务中心、Agent 管理、Electron 外壳状态与白名单 Native Bridge `desktop.native_bridge`，以及开发态 Feature 页面。Mesh-Link 底层 API 与刷新动作归属 `web.rail_train_online`，不再登记第二个页面 Feature。所有未经人工或真实设备验收的能力都不能据自动测试直接标记为 `COMPLETE`。
+
+`web.tool_collection` 是 `module.tools` 下的 Electron Desktop 页面。它不进入 Python Backend 或局点数据，Browser 不生成导航且直接路由由 `desktopOnly` Guard 拒绝；Renderer 启动和定位只传工具 UUID，Electron Main 从独立 Store 取可信路径。当前代码与自动测试状态为 `IMPLEMENTED_UNVERIFIED`，原生选择器、真实 EXE 焦点、重启持久化和安装包环境仍需 Windows 人工验收。
 
 `desktop.native_bridge` 只控制 Vue 中 Electron 本机能力状态区的产品可见性和禁用状态。它不能绕过 Electron main 的发送方校验、参数白名单和同会话路径授权，也不能替代具体业务模块的人工验收。
 

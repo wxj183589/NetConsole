@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -19,6 +21,7 @@ describe('Web navigation registry', () => {
       '配置采集中心',
       '设备文件下载',
       '网络工具',
+      '工具集',
       '任务中心',
       'Agent 管理',
       '命令说明',
@@ -59,6 +62,23 @@ describe('Web navigation registry', () => {
     expect(visible.every((item) => item.children.length > 0 || Boolean(item.route_name && item.route_path))).toBe(true)
     expect(visible.some((item) => item.navigation_id === 'network.wireless-scan')).toBe(true)
     expect(visible.some((item) => item.navigation_id === 'command-reference')).toBe(true)
+  })
+
+  it('shows the desktop-only tool collection in Electron between network tools and tasks', () => {
+    const previous = window.netconsoleDesktop
+    Object.defineProperty(window, 'netconsoleDesktop', { configurable: true, value: {} })
+    const visible = visibleNavigation(() => true)
+    const ids = visible.map((entry) => entry.navigation_id)
+    expect(ids.slice(ids.indexOf('network'), ids.indexOf('tasks') + 1)).toEqual(['network', 'tools', 'tasks'])
+    const tools = visible.find((entry) => entry.navigation_id === 'tools')
+    expect(tools).toMatchObject({
+      route_name: 'tool-collection',
+      route_path: '/tools',
+      feature_id: 'web.tool_collection',
+      desktop_only: true,
+    })
+    if (previous === undefined) Reflect.deleteProperty(window, 'netconsoleDesktop')
+    else Object.defineProperty(window, 'netconsoleDesktop', { configurable: true, value: previous })
   })
 
   it('hides a group when none of its children are visible', () => {

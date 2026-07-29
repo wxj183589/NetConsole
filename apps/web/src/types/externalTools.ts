@@ -1,0 +1,17 @@
+export type {
+  ExternalToolCategory,
+  ExternalToolCategoryReorderRequest,
+  ExternalToolCreateRequest,
+  ExternalToolDeleteCategoryRequest,
+  ExternalToolIconMode,
+  ExternalToolIconSelectionResult,
+  ExternalToolLaunchResult,
+  ExternalToolListResult,
+  ExternalToolMutationResult,
+  ExternalToolRecord,
+  ExternalToolReorderRequest,
+  ExternalToolSelectionResult,
+  ExternalToolStatus,
+  ExternalToolUpdateRequest,
+  ExternalToolView,
+} from '../../../desktop_electron/src/shared/bridge'

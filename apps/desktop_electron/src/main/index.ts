@@ -1,4 +1,5 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, Notification as ElectronNotification, screen, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification as ElectronNotification, screen, shell, Tray } from 'electron'
+import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 
@@ -13,6 +14,8 @@ import { ensureDesktopRuntimePaths, resolveDesktopStorageContext } from './devel
 import { resolveDesktopDataRootConfiguration } from './data-root-configuration'
 import { GrantedPathRegistry } from './path-access'
 import { UiPreferenceStore } from './ui-preferences'
+import { ExternalToolStore } from './external-tool-store'
+import { ExternalToolService } from './external-tool-service'
 import { StartupTimeline } from './startup-timeline'
 import {
   installRendererDiagnostics,
@@ -177,6 +180,18 @@ async function startDesktop(): Promise<void> {
   const storedCloseToTray = await uiPreferenceStore.get('desktop.close-to-tray')
   closeToTrayEnabled = typeof storedCloseToTray === 'boolean' ? storedCloseToTray : true
   workspaceLayoutStore = new WorkspaceLayoutStore(app.getPath('userData'), (event) => logger(event))
+  const externalToolStore = new ExternalToolStore(app.getPath('userData'), logger)
+  const externalToolService = new ExternalToolService({
+    store: externalToolStore,
+    spawn: (executable, arguments_, options) => spawn(executable, [...arguments_], options),
+    reveal: (path) => shell.showItemInFolder(path),
+    getExecutableIcon: async (path) => (await app.getFileIcon(path, { size: 'large' })).toDataURL(),
+    getCustomIcon: async (path) => {
+      const image = nativeImage.createFromPath(path)
+      return image.isEmpty() ? null : image.toDataURL()
+    },
+    logger,
+  })
   workspaceWindowController = new WorkspaceWindowController(workspaceLayoutStore, {
     createWindow: (role, bounds) => {
       const window = createMainWindow(
@@ -316,6 +331,7 @@ async function startDesktop(): Promise<void> {
     getRendererRecoveryState,
     logger,
     uiPreferenceStore,
+    externalToolService,
   })
   backend.onStatusChange((status) => {
     logger('ELECTRON_BACKEND_STATUS', `state=${status.state}`)

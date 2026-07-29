@@ -13,6 +13,7 @@ const en: Record<string, string> = {
   'shell.close_right_pages': 'Close tabs to the right', 'shell.close_all_pages': 'Close all closable tabs',
   'shell.page_tab_limit': 'The page tab limit has been reached. Close a tab first.',
   'nav.settings': 'System Settings',
+  'nav.tools': 'Tool Collection',
   'settings.title': 'System Settings', 'settings.save': 'Save', 'settings.reload': 'Reload',
   'settings.defaults': 'Restore form defaults', 'settings.cancel': 'Cancel changes',
   'settings.appearance': 'Appearance', 'settings.tools': 'Tool paths', 'settings.terminal': 'External terminal',

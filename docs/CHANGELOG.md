@@ -1,5 +1,13 @@
 # NetConsole 更新日志
 
+## 未发布
+
+### 工具集
+
+- Electron Desktop 新增一级“工具集”模块，支持用户自备 Windows EXE 的分类、搜索、收藏、常用排序、状态刷新、重新定位、图标、编辑、删除记录、启动和资源管理器定位；Browser 隐藏导航并拒绝直接访问。
+- 工具注册表独立保存到 Electron userData，使用 schema v1 严格校验、Windows 路径大小写去重、串行原子写与损坏文件诊断恢复；不进入局点数据库、数据根或迁移/结果包，也不影响系统设置中的 fping、iperf3、IPOP 和终端依赖。
+- Renderer 启动和定位只传工具 UUID；Electron Main 从 Store 取可信路径并复验，以参数数组和 `shell:false` 启动。自定义图标通过短期选择 ID 复制到专用缓存，页面不使用 `file://` 读取本地文件。
+
 ## v1.4.5 - 2026-07-29
 
 ### 设备详情与表格偏好

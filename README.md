@@ -17,7 +17,7 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 
 当前开发技术栈为 Python 3.13、SQLite、Netmiko、openpyxl、FastAPI、Pydantic、Vue 3、TypeScript、Vite、Electron、Element Plus、Pinia、Vue Router 和 ECharts。`apps/desktop_electron` 是唯一正式桌面产品，复用 FastAPI 与唯一 Vue Renderer；源码态 Browser 仅用于开发、联调和诊断。Qt/PySide6/QFluentWidgets 源码、运行时和回退入口已经退出活动仓库，历史 Qt 终版只作为仓库外归档成果和旧功能事实记录。Python 依赖按 runtime/test/build/dev 分层并由 `constraints.txt` 锁定；Vue 与 Electron 分别以各自 `apps/*/package.json` 和 `pnpm-lock.yaml` 为准。
 
-长期产品架构已确定为 **Python Core + FastAPI 永久业务层、Vue 永久主界面、Electron 唯一桌面外壳**。Electron 已完成安全宿主以及设备、AC/FIT-AP、轨交、配置、文件、网络工具、命令参考、系统设置、日志维护等代码闭环，但真实设备和桌面人工验收仍按模块标记为 `REAL_DEVICE_PENDING` 或 `IMPLEMENTED_UNVERIFIED`。浏览器式工作区、多窗口和 Windows 通知区域驻留已接入；签名、升级和最终 Windows 安装包人工验收仍属于后续门槛。
+长期产品架构已确定为 **Python Core + FastAPI 永久业务层、Vue 永久主界面、Electron 唯一桌面外壳**。Electron 已完成安全宿主以及设备、AC/FIT-AP、轨交、配置、文件、网络工具、工具集、命令参考、系统设置、日志维护等代码闭环，但真实设备和桌面人工验收仍按模块标记为 `REAL_DEVICE_PENDING` 或 `IMPLEMENTED_UNVERIFIED`。工具集只在 Electron Desktop 注册用户自备 EXE，使用独立 userData Store 与仅工具 ID 的安全启动链，不进入局点数据或 Python Backend。浏览器式工作区、多窗口和 Windows 通知区域驻留已接入；签名、升级和最终 Windows 安装包人工验收仍属于后续门槛。
 
 ## 工作区与通知区域
 
