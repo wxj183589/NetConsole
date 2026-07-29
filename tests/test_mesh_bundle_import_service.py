@@ -182,9 +182,10 @@ def test_successful_worker_commit_rewrites_staging_paths_and_finalizes_manifest(
     service = MeshBundleImportService("demo", paths)
     with archive.open("rb") as source:
         preview = service.create_preview(archive.name, source, [profile])
+    member_id = str(preview["items"][0]["member_id"])
     mappings = [
         {
-            "member_id": "01CTmeshlog.log",
+            "member_id": member_id,
             "train_number": "01",
             "role": "CT",
             "profile_id": profile.mr_id,
@@ -208,7 +209,7 @@ def test_successful_worker_commit_rewrites_staging_paths_and_finalizes_manifest(
     assert source_row["raw_relative_path"].startswith("raw/")
     assert source_row["parsed_relative_path"].startswith("parsed/")
     assert source_row["archive_sha256"] == preview["archive_sha256"]
-    assert source_row["bundle_member_id"] == "01CTmeshlog.log"
+    assert source_row["bundle_member_id"] == member_id
     with sqlite3.connect(parsed_path) as connection:
         assert connection.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == SCHEMA_VERSION
     manifest_path = paths.site_mesh_root("demo") / "bundles" / preview["archive_sha256"] / "manifest.json"
@@ -238,9 +239,10 @@ def test_worker_commit_keeps_catalog_file_when_another_process_has_open_reader(
     service = MeshBundleImportService("demo", paths)
     with archive.open("rb") as source:
         preview = service.create_preview(archive.name, source, [profile])
+    member_id = str(preview["items"][0]["member_id"])
     mappings = [
         {
-            "member_id": "01CTmeshlog.log",
+            "member_id": member_id,
             "train_number": "01",
             "role": "CT",
             "profile_id": profile.mr_id,
@@ -279,9 +281,10 @@ def test_worker_commit_keeps_profile_directory_with_open_reader(
     service = MeshBundleImportService("demo", paths)
     with archive.open("rb") as source:
         preview = service.create_preview(archive.name, source, [profile])
+    member_id = str(preview["items"][0]["member_id"])
     mappings = [
         {
-            "member_id": "01CTmeshlog.log",
+            "member_id": member_id,
             "train_number": "01",
             "role": "CT",
             "profile_id": profile.mr_id,
@@ -318,7 +321,14 @@ def test_failed_worker_does_not_change_production_or_publish_success_manifest(
     service = MeshBundleImportService("demo", paths)
     with archive.open("rb") as source:
         preview = service.create_preview(archive.name, source, [profile])
-    mappings = [{"member_id": "01CTmeshlog.log", "train_number": "01", "role": "CT", "profile_id": profile.mr_id}]
+    mappings = [
+        {
+            "member_id": preview["items"][0]["member_id"],
+            "train_number": "01",
+            "role": "CT",
+            "profile_id": profile.mr_id,
+        }
+    ]
     service.approve_preview(str(preview["preview_id"]), mappings, [profile.mr_id])
 
     def fail_import(*_args, **_kwargs):
@@ -354,7 +364,14 @@ def test_bundle_import_rebuilds_legacy_index_only_inside_staging(tmp_path: Path)
     service = MeshBundleImportService("demo", paths)
     with archive.open("rb") as source:
         preview = service.create_preview(archive.name, source, [profile])
-    mappings = [{"member_id": "01CTmeshlog.log", "train_number": "01", "role": "CT", "profile_id": profile.mr_id}]
+    mappings = [
+        {
+            "member_id": preview["items"][0]["member_id"],
+            "train_number": "01",
+            "role": "CT",
+            "profile_id": profile.mr_id,
+        }
+    ]
     service.approve_preview(str(preview["preview_id"]), mappings, [profile.mr_id])
 
     result = service.import_approved_preview(str(preview["preview_id"]), mappings, job_id="legacy-index-import")

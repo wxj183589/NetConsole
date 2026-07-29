@@ -38,6 +38,10 @@ _MESH_MEMBER_RE = re.compile(
     r"^(?P<train>\d{1,2})[-_ ]?(?P<role>CT|CW)meshlog\.log(?:\.gz)?$",
     re.IGNORECASE,
 )
+_ARCHIVE_SEQUENCE_RE = re.compile(
+    r"_(?P<sequence>[1-9]\d*)(?P<tail>meshlog\.(?:log|txt)(?:\.gz)?)$",
+    re.IGNORECASE,
+)
 _PREVIEW_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _ALLOWED_SUFFIXES = (".log", ".txt", ".log.gz", ".txt.gz")
 _MAX_ARCHIVE_SIZE = 50 * 1024 * 1024
@@ -49,7 +53,7 @@ _PREVIEW_TTL_SECONDS = 15 * 60
 _SUBMITTED_PREVIEW_TTL_SECONDS = 60 * 60
 _MAX_PREVIEW_COUNT = 16
 _MAX_PREVIEW_BYTES = 256 * 1024 * 1024
-_MANIFEST_SCHEMA_VERSION = 2
+_MANIFEST_SCHEMA_VERSION = 3
 _CATALOG_SUMMARY_FIELDS = (
     "earliest_sample_time",
     "latest_sample_time",
@@ -65,6 +69,8 @@ _CATALOG_SUMMARY_FIELDS = (
 
 @dataclass(frozen=True)
 class MeshBundleMember:
+    member_id: str
+    internal_member_name: str
     original_name: str
     safe_name: str
     size_bytes: int
@@ -80,14 +86,14 @@ class MeshBundleMember:
     role: str | None
     train_aliases: tuple[str, ...]
 
-    @property
-    def member_id(self) -> str:
-        return self.original_name
-
     def to_dict(self) -> dict[str, object]:
         return {
             "member_id": self.member_id,
-            "original_name": self.original_name,
+            "internal_member_name": self.internal_member_name,
+            "original_name": Path(self.original_name).name,
+            "original_relative_path": (
+                self.original_name if "/" in self.original_name else ""
+            ),
             "safe_name": self.safe_name,
             "size_bytes": self.size_bytes,
             "expanded_size_bytes": self.expanded_size_bytes,
@@ -134,8 +140,16 @@ class MeshBundleMember:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> MeshBundleMember:
+        original_name = str(
+            value.get("original_relative_path")
+            or value.get("original_name")
+            or ""
+        )
+        internal_member_name = str(value.get("internal_member_name") or original_name)
         return cls(
-            original_name=str(value.get("original_name") or ""),
+            member_id=str(value.get("member_id") or original_name),
+            internal_member_name=internal_member_name,
+            original_name=original_name,
             safe_name=str(value.get("safe_name") or ""),
             size_bytes=int(value.get("size_bytes") or 0),
             expanded_size_bytes=int(value.get("expanded_size_bytes") or value.get("size_bytes") or 0),
@@ -214,7 +228,12 @@ class MeshBundleImportService:
         self.paths = paths
         self._fingerprints_backfilled: set[str] = set()
 
-    def inspect(self, archive: Path) -> MeshBundleManifest:
+    def inspect(
+        self,
+        archive: Path,
+        *,
+        original_names: Mapping[str, str] | None = None,
+    ) -> MeshBundleManifest:
         archive = archive.resolve()
         if not archive.is_file() or archive.suffix.casefold() != ".zip":
             raise MeshBundleImportError("FILE_TYPE_INVALID", "MESH Bundle 必须是 ZIP 文件")
@@ -227,6 +246,10 @@ class MeshBundleImportService:
         members: list[MeshBundleMember] = []
         seen_paths: set[str] = set()
         expanded_total = 0
+        original_name_by_member = {
+            _safe_member_name(internal_name): _safe_member_name(original_name)
+            for internal_name, original_name in (original_names or {}).items()
+        }
         try:
             with zipfile.ZipFile(archive) as source:
                 entries = source.infolist()
@@ -243,7 +266,7 @@ class MeshBundleImportService:
                     if entry.is_dir():
                         continue
                     normalized_key = normalized.casefold()
-                    safe_name = normalized
+                    safe_name = original_name_by_member.get(normalized, normalized)
                     if normalized_key in seen_paths:
                         raise MeshBundleImportError("DUPLICATE_MEMBER", f"ZIP 成员路径重复：{entry.filename}")
                     seen_paths.add(normalized_key)
@@ -259,7 +282,9 @@ class MeshBundleImportService:
                     train, role, aliases = _infer_mapping(Path(safe_name).name)
                     members.append(
                         MeshBundleMember(
-                            original_name=normalized,
+                            member_id=_member_id(len(members) + 1, normalized),
+                            internal_member_name=normalized,
+                            original_name=safe_name,
                             safe_name=safe_name,
                             size_bytes=entry.file_size,
                             expanded_size_bytes=metadata.expanded_size_bytes,
@@ -289,6 +314,8 @@ class MeshBundleImportService:
         file_name: str,
         source: BinaryIO,
         profiles: Iterable[object],
+        *,
+        original_names: Mapping[str, str] | None = None,
     ) -> dict[str, object]:
         display_name = _safe_upload_name(file_name)
         preview_id = uuid4().hex
@@ -300,7 +327,7 @@ class MeshBundleImportService:
         archive = preview_dir / "source.zip"
         try:
             _copy_upload(source, archive)
-            manifest = self.inspect(archive)
+            manifest = self.inspect(archive, original_names=original_names)
             profile_rows = tuple(profiles)
             matches = self.match_profiles(manifest, profile_rows)
             candidates = {
@@ -326,22 +353,32 @@ class MeshBundleImportService:
             match_by_member = {match.member.member_id: match for match in matches}
             items: list[dict[str, object]] = []
             first_member_by_content: dict[str, str] = {}
+            reserved_sequences: dict[tuple[str, str], int] = {}
             for member in manifest.members:
                 match = match_by_member[member.member_id]
+                batch_duplicate_of = first_member_by_content.get(member.content_sha256, "")
+                first_member_by_content.setdefault(member.content_sha256, member.member_id)
                 candidate_ids = match.candidate_profile_ids
                 if match.profile_id:
                     candidate_ids = (match.profile_id,)
                 if not candidate_ids:
                     candidate_ids = tuple(candidates)
-                profile_states = [
-                    self._preview_profile_state(
+                profile_states = []
+                for profile_id in candidate_ids:
+                    if profile_id not in candidates:
+                        continue
+                    state = self._preview_profile_state(
                         member,
                         profile_id,
                         candidates.get(profile_id, ""),
                     )
-                    for profile_id in candidate_ids
-                    if profile_id in candidates
-                ]
+                    if not batch_duplicate_of:
+                        state = self._reserve_preview_sequence(
+                            member,
+                            state,
+                            reserved_sequences,
+                        )
+                    profile_states.append(state)
                 selected_state = next(
                     (
                         state
@@ -361,8 +398,6 @@ class MeshBundleImportService:
                     )
                 if selected_state is None and profile_states:
                     selected_state = profile_states[0]
-                batch_duplicate_of = first_member_by_content.get(member.content_sha256, "")
-                first_member_by_content.setdefault(member.content_sha256, member.member_id)
                 items.append(
                     {
                         **member.to_dict(),
@@ -416,6 +451,40 @@ class MeshBundleImportService:
         except Exception:
             shutil.rmtree(preview_dir, ignore_errors=True)
             raise
+
+    @staticmethod
+    def _reserve_preview_sequence(
+        member: MeshBundleMember,
+        state: dict[str, object],
+        reserved_sequences: dict[tuple[str, str], int],
+    ) -> dict[str, object]:
+        sequence = state.get("daily_sequence")
+        if (
+            state.get("duplicate_status") != "new"
+            or state.get("rename_status")
+            not in {"renamed_by_log_date_sequence", "timestamp_not_found"}
+            or not isinstance(sequence, int)
+        ):
+            return state
+        profile_id = str(state.get("profile_id") or "")
+        log_date = (
+            member.first_log_timestamp.date().isoformat()
+            if member.first_log_timestamp
+            else "unknown_date"
+        )
+        scope = (profile_id, log_date)
+        reserved = max(sequence, reserved_sequences.get(scope, 0) + 1)
+        reserved_sequences[scope] = reserved
+        if reserved == sequence:
+            return state
+        stored_filename = str(state.get("stored_filename") or "")
+        updated = dict(state)
+        updated["daily_sequence"] = reserved
+        updated["stored_filename"] = _ARCHIVE_SEQUENCE_RE.sub(
+            lambda match: f"_{reserved}{match.group('tail')}",
+            stored_filename,
+        )
+        return updated
 
     def _preview_profile_state(
         self,
@@ -490,7 +559,10 @@ class MeshBundleImportService:
             )
         if seen != set(members):
             raise MeshBundleImportError("MAPPING_INCOMPLETE", "必须确认 ZIP 中每个 MESH 日志的映射")
-        current = self.inspect(archive)
+        current = self.inspect(
+            archive,
+            original_names=_manifest_original_names(manifest),
+        )
         if current != manifest:
             raise MeshBundleImportError("PREVIEW_CHANGED", "MESH ZIP 预览内容已变化，请重新预览")
         member_by_id = {member.member_id: member for member in manifest.members}
@@ -620,10 +692,14 @@ class MeshBundleImportService:
                 expanded_total = 0
                 for member in selected.members:
                     _raise_if_cancelled(should_cancel)
-                    entry = entries.get(member.original_name)
+                    entry = entries.get(member.internal_member_name)
                     if entry is None:
                         raise MeshBundleImportError("PREVIEW_CHANGED", "MESH ZIP 成员已变化")
-                    compressed_target = directory / member.safe_name
+                    compressed_target = (
+                        directory
+                        / f"{member.file_order:06d}"
+                        / Path(member.safe_name).name
+                    )
                     compressed_target.parent.mkdir(parents=True, exist_ok=True)
                     copied = _copy_limited(source.open(entry), compressed_target, _MAX_FILE_SIZE)
                     if copied != member.size_bytes or _sha256_file(compressed_target) != member.sha256:
@@ -674,7 +750,10 @@ class MeshBundleImportService:
                     "created_session_ids": self._created_session_ids(profiles, approved, manifest),
                     "idempotent": True,
                 }
-            current = self.inspect(archive)
+            current = self.inspect(
+                archive,
+                original_names=_manifest_original_names(manifest),
+            )
             if current != manifest:
                 raise MeshBundleImportError("PREVIEW_CHANGED", "MESH ZIP 预览内容已变化，请重新预览")
             members_by_id = {member.member_id: member for member in manifest.members}
@@ -1407,6 +1486,22 @@ def _copy_upload(source: BinaryIO, target: Path) -> None:
             handle.write(chunk)
     if total <= 0:
         raise MeshBundleImportError("FILE_EMPTY", "MESH ZIP 不能为空")
+
+
+def _member_id(file_order: int, internal_member_name: str) -> str:
+    digest = hashlib.sha256(
+        f"{file_order}\0{internal_member_name}".encode("utf-8")
+    ).hexdigest()
+    return f"member-{file_order:06d}-{digest[:24]}"
+
+
+def _manifest_original_names(
+    manifest: MeshBundleManifest,
+) -> dict[str, str]:
+    return {
+        member.internal_member_name: member.original_name
+        for member in manifest.members
+    }
 
 
 def _safe_member_name(value: str) -> str:

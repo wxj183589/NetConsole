@@ -17,11 +17,13 @@
 - 设备文件下载链路不得为归档原始 `meshlog` 而初始化派生 SQLite；旧 schema 只能影响后续导入/查询状态，不能阻止 raw 文件落盘。
 - 正式资产来源是当前局点基础资料/设备管理中的车载 MR。打开导入时由显式 ApplicationService POST 按 `linked_device_id → device_uuid → 规范化名称` 幂等准备内部 Profile；设备改名只更新显示名，稳定 `safe_folder_name` 和已有数据目录不变，普通 GET 不隐式写库。
 - `POST /api/rail-transit/mesh-analysis/import-context/prepare` 的全局异常必须记录完整 Backend 堆栈，并返回 `MESH_IMPORT_CONTEXT_PREPARE_FAILED`/`MESH_IMPORT_CONTEXT_SERVICE_UNAVAILABLE` 结构化 JSON；单条基础资料 MR 同步失败只计入 `skipped_count`/`warnings`，不得清空已有 Profile 或使 Backend 连接中断。重复 prepare 的 `created_count` 必须为 0。
-- ZIP、单个/多个 LOG/GZ 和文件夹统一为“安全预览 → 自动确认唯一列车号/CT-CW/正式 MR 映射 → `mesh_bundle_import` Job → 隔离 Profile/SQLite 导入 → 路径复验 → 原子目录提交 → 成功 manifest”。非 ZIP 上传只在运行时缓存封装为受保护 ZIP 后复用同一链。Preview 使用有 TTL/总容量限制的随机 ID，Renderer 不接收绝对路径；检查成员数、单文件/总解压量、压缩比、加密、符号链接、路径穿越、重复显示名和扩展名。整批成功前不得发布成功 manifest，失败或取消恢复原 Profile/catalog。
+- ZIP、单个/多个 LOG/GZ 和文件夹统一为“安全预览 → 自动确认唯一列车号/CT-CW/正式 MR 映射 → `mesh_bundle_import` Job → 隔离 Profile/SQLite 导入 → 路径复验 → 原子目录提交 → 成功 manifest”。非 ZIP 上传只在运行时缓存封装为受保护 ZIP 后复用同一链；一次 Multipart 中允许多份同名 `meshlog.log`，每份使用唯一 `__uploads__/序号/文件名` 作为临时传输成员，并在 manifest 中单独保留原始名称/相对路径。临时传输路径不得进入正式归档名、来源文件名或普通 UI。用户 ZIP 自身仍拒绝重复成员路径。Preview 使用有 TTL/总容量限制的随机 ID，Renderer 不接收绝对路径；检查成员数、单文件/总解压量、压缩比、加密、符号链接、路径穿越和扩展名。整批成功前不得发布成功 manifest，失败或取消恢复原 Profile/catalog。
+- 同一预览批次的业务成员统一使用批次内唯一且可复验的 `member_id`；Vue key、人工映射、批次重复关系、提交 payload、worker 解压定位和来源 provenance 都不得以 `original_name`、`safe_name` 或 `stored_filename` 代替。弹窗内直接显示结构化预览错误并允许保留已选文件重新预览，迟到请求按 generation 丢弃。
 - `source_files` 保存 `raw_relative_path`、`parsed_relative_path`、bundle/archive SHA 与成员 ID/SHA。读取优先使用当前 MR 相对路径，其次安全文件名、SHA、bundle 归档，最后才读旧绝对路径。当前来源重建走 `mesh_source_rebuild`，只恢复/替换一个 detail SQLite；`mesh_schema_rebuild` 是高级 Profile 全量重建，两者不能混用。
 - API 来源摘要明确区分三个标识：`source_file_id` 是索引库 `source_files.id` 数字值，用于分析查询、重建和导出；`source_action_id` 是受控 raw tail/来源操作的安全 ID，可以是哈希值；`bundle_member_id` 仅用于 ZIP manifest 成员恢复。旧 `source_id` 仅作为等同 `source_action_id` 的兼容别名，新客户端不得将其转换为导出 ID。
 - 同一 ZIP SHA 默认幂等。真实 12 文件包已在系统临时数据根验证：6 列车/12 MR、353,035 条解析记录、0 个解析问题；最终 353,033 条链路中 ACTIVE 129,524、STANDBY 223,509。重复导入同一 SHA 返回 12 个 duplicate，不重复写入；manifest 不含临时根/staging 路径，退出后无 staging/backup 残留。该结果证明当前样本闭环，不等同于所有 H3C 版本现场兼容。
 - 新导入的通用 `meshlog.log`、`meshlog.txt` 及 `.gz` 复合扩展名按正文首个有效时间戳归档为 `YYYY_MM_DD_<daily_sequence>meshlog.<ext>`；序号作用域是当前局点 + MESH Profile + 日志日期，按目录中最大有效序号递增，跨日期从 1 开始。无有效首时间戳使用 `unknown_date_<sequence>meshlog.<ext>` 并保留 `timestamp_not_found` 告警；已经规范命名或已有业务名称的历史文件不静默重命名。
+- 预览会在已有目录序号基础上为同一批次、同一 Profile 和日期的不同正文临时保留连续预计序号；批次内重复正文不占第二个预计序号。正式提交仍在局点导入锁内重新检查正文 hash 并按实际目录原子确认最终序号，因此并发导入时预计名称可以顺延。
 - `source_files` 同时保存 `original_filename`、`stored_filename`、`raw_sha256`、解压正文 `content_sha256`、首尾日志时间、`log_date`、`daily_sequence` 和重命名状态。普通文件 raw/content hash 相同；GZ/ZIP 成员的 content hash 来自解压正文，明确 UTF-8 BOM 只在正文 hash 中移除，禁止排序、去空格或修改大小写。
 - 同一 Profile 的正文 hash 是强重复键：重复导入返回已有 source/session/归档名，不增加序号、不复制 raw、不重新解析或生成新分析结果。批次内相同正文只保留一个待导入成员；相同正文映射到其他 Profile 默认阻断并要求检查 MR 映射。预览只提供建议归档名，正式提交在局点导入锁内再次检查 hash 和序号。
 - 2026-07-20 使用同一真实包复验统一入口与来源恢复：12/12 自动匹配，raw/parsed 各 12 份；移走一个 raw 后从 bundle 恢复并重解析 39,160 条，SHA 一致。宁波地铁 1 号线既有 06/34 四个 missing 来源使用现存 raw 原位修复为 ready，合计解析 189,468 条；未移动或删除 raw，也未重建同 MR 其他来源。
@@ -129,6 +131,7 @@ RSSI 数值按规则文件既定口径比较。两套 profile 当前 fping 平�
 - 目录库到 `parsed_db_path` 的正确解析；
 - compact v3 `timestamp_tag` 唯一键、同毫秒多块顺序和旧派生 schema 显式重建；
 - ZIP 路径/压缩安全、预览 TTL、人工映射、隔离提交补偿、manifest 时机、SHA 幂等和绝对路径脱敏；
+- Multipart 四份同名 `meshlog.log` 的唯一 `member_id`、四行映射、同日连续预计序号、批次正文重复跳过、弹窗内错误重试，以及冻结 Backend 的真实 `FormData` 导入；
 - Rate 原始值、Retry/Error 回退空值、切换前后 RSSI 事件散点以及图表卸载资源释放；
 - 可见窗口、全量下采样、切换锚点保留、请求点数自动提升、安全上限抽样告警和重复加载防抖；
 - 大表导出取消、WPS/Excel 占用、临时文件清理和源证据回溯。

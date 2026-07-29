@@ -152,6 +152,7 @@ class MeshBundleApplicationService:
         *,
         file_name: str,
         source: BinaryIO,
+        original_names: Mapping[str, str] | None = None,
     ) -> dict[str, object]:
         site_id = self._site(site_id)
         profiles = MeshCatalogRepository(self.paths.mesh_catalog_path(site_id)).list_profiles()
@@ -160,6 +161,7 @@ class MeshBundleApplicationService:
                 file_name,
                 source,
                 profiles,
+                original_names=original_names,
             )
             preview["items"] = [
                 {
@@ -167,6 +169,7 @@ class MeshBundleApplicationService:
                     for key in (
                         "member_id",
                         "original_name",
+                        "original_relative_path",
                         "safe_name",
                         "size_bytes",
                         "sha256",
@@ -211,28 +214,33 @@ class MeshBundleApplicationService:
             raise MeshBundleApplicationError("FILE_COUNT_INVALID", "请选择 1 到 64 个 MESH 日志文件")
         if len(files) == 1 and str(files[0][0]).casefold().endswith(".zip"):
             return self.preview_bundle(site_id, file_name=files[0][0], source=files[0][1])
-        normalized: list[tuple[str, BinaryIO]] = []
-        seen: set[str] = set()
-        for name, source in files:
+        normalized: list[tuple[str, str, BinaryIO]] = []
+        original_names: dict[str, str] = {}
+        for file_order, (name, source) in enumerate(files, start=1):
             safe = self._safe_preview_member_name(name)
-            key = safe.casefold()
-            if key in seen:
-                raise MeshBundleApplicationError("DUPLICATE_MEMBER", f"存在重复文件名：{safe}")
-            seen.add(key)
-            normalized.append((safe, source))
+            internal_member_name = (
+                f"__uploads__/{file_order:06d}/{safe.rsplit('/', 1)[-1]}"
+            )
+            normalized.append((internal_member_name, safe, source))
+            original_names[internal_member_name] = safe
         with ExitStack() as stack:
             archive = stack.enter_context(SpooledTemporaryFile(max_size=16 * 1024 * 1024, mode="w+b"))
             total = 0
             with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
-                for name, source in normalized:
-                    with bundle.open(name, "w") as target:
+                for internal_member_name, _original_name, source in normalized:
+                    with bundle.open(internal_member_name, "w") as target:
                         while chunk := source.read(1024 * 1024):
                             total += len(chunk)
                             if total > self._MAX_PREVIEW_SOURCE_BYTES:
                                 raise MeshBundleApplicationError("SOURCE_SIZE_EXCEEDED", "MESH 日志总大小超过 100 MiB")
                             target.write(chunk)
             archive.seek(0)
-            return self.preview_bundle(site_id, file_name="mesh-import.zip", source=archive)
+            return self.preview_bundle(
+                site_id,
+                file_name="mesh-import.zip",
+                source=archive,
+                original_names=original_names,
+            )
 
     @staticmethod
     def _safe_preview_member_name(value: str) -> str:

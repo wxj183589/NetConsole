@@ -279,3 +279,42 @@ def test_mesh_bundle_preview_returns_safe_token_without_server_path(tmp_path: Pa
     assert str(tmp_path) not in response.text
     assert missing.status_code == 404
     assert missing.json()["detail"]["code"] == "PREVIEW_NOT_FOUND"
+
+
+def test_mesh_import_preview_accepts_four_multipart_files_with_same_basename(
+    tmp_path: Path,
+) -> None:
+    paths, _session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
+    timestamps = (
+        "2026/07/27 08:10:01.001",
+        "2026/07/28 00:18:56.311",
+        "2026/07/28 13:20:16.625",
+        "2026/07/29 00:03:11.002",
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/rail-transit/mesh-analysis/import-preview",
+            files=[
+                (
+                    "files",
+                    (
+                        "meshlog.log",
+                        f"[1] {timestamp}\n".encode(),
+                        "text/plain",
+                    ),
+                )
+                for timestamp in timestamps
+            ],
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["member_count"] == 4
+    assert len(payload["items"]) == 4
+    assert len({item["member_id"] for item in payload["items"]}) == 4
+    assert [item["original_name"] for item in payload["items"]] == ["meshlog.log"] * 4
+    assert all("__uploads__" not in item["stored_filename"] for item in payload["items"])

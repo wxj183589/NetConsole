@@ -255,10 +255,15 @@ describe('Electron-only packaging', () => {
     expect(script).toContain('/api/rail-transit/mesh-analysis/import-preview')
     expect(script).toContain('/api/online-mr/tasks/')
     expect(script).toContain('/api/tasks/')
+    expect(script).toContain('new Set(importItems.map((item) => item.member_id)).size !== 4')
+    expect(script).toContain("item.original_name !== 'meshlog.log'")
+    expect(script).toContain('2026_07_27_1meshlog.log')
     expect(script).toContain('2026_07_28_1meshlog.log')
+    expect(script).toContain('2026_07_28_2meshlog.log')
+    expect(script).toContain('2026_07_29_1meshlog.log')
     expect(script).toContain("duplicateProfileState?.duplicate_status !== 'duplicate_same_mr'")
-    expect(script).toContain('sessionsAfterDuplicate.total !== 1')
-    expect(script).toContain('MESH import context idempotency and duplicate-safe archive naming')
+    expect(script).toContain('sessionsAfterDuplicate.total !== 4')
+    expect(script).toContain('MESH import context idempotency, four duplicate basenames, duplicate-safe archive naming')
   })
 
   it('requires the packaged production feature baseline', () => {

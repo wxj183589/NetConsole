@@ -377,7 +377,7 @@ try {
   rmSync(smokeRoot, { recursive: true, force: true })
 }
 
-console.log('Electron packaged smoke passed with frozen timezone data, device database migration/list HTTP 200, ground unattended status HTTP 200, MESH import context idempotency and duplicate-safe archive naming, frozen Worker Chinese protocol, no Qt residue, and NOTICE/SBOM metadata.')
+console.log('Electron packaged smoke passed with frozen timezone data, device database migration/list HTTP 200, ground unattended status HTTP 200, MESH import context idempotency, four duplicate basenames, duplicate-safe archive naming, frozen Worker Chinese protocol, no Qt residue, and NOTICE/SBOM metadata.')
 
 function validateFrozenWorkerTextProtocol(dataRoot) {
   const backend = resolve(unpackedRoot, 'resources', 'backend', 'NetConsoleBackend.exe')
@@ -643,14 +643,22 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
       throw new Error(`MESH smoke 导入上下文幂等性失败：${JSON.stringify({ firstPrepare, secondPrepare, profilesAfter })}`)
     }
     const ctProfile = profilesAfter.find((item) => item.display_name === '列车34-MR-CT')
-    const meshLog = [
-      '[1] 2026/07/28 00:18:56.311',
-      '[1] Active 30f5-277a-5a2f 2026/07/28 00:18:50 0d 00h 00m 03s 1 36/43 2%/4% 45%/47% 3/1 15/27 60/72060 88/105 0/5000 2/297 314/0 0/93 0/0 0/0 0/0',
+    const meshLogTimestamps = [
+      '2026/07/27 08:10:01.001',
+      '2026/07/28 00:18:56.311',
+      '2026/07/28 13:20:16.625',
+      '2026/07/29 00:03:11.002',
+    ]
+    const meshLogs = meshLogTimestamps.map((timestamp) => [
+      `[1] ${timestamp}`,
+      `[1] Active 30f5-277a-5a2f ${timestamp.replace(/\.\d+$/, '')} 0d 00h 00m 03s 1 36/43 2%/4% 45%/47% 3/1 15/27 60/72060 88/105 0/5000 2/297 314/0 0/93 0/0 0/0 0/0`,
       '',
-    ].join('\n')
-    const previewMeshLog = async () => {
+    ].join('\n'))
+    const previewMeshLogs = async (logs = meshLogs) => {
       const form = new FormData()
-      form.append('files', new Blob([meshLog], { type: 'text/plain' }), 'meshlog.log')
+      for (const meshLog of logs) {
+        form.append('files', new Blob([meshLog], { type: 'text/plain' }), 'meshlog.log')
+      }
       const response = await fetch(`http://127.0.0.1:${port}/api/rail-transit/mesh-analysis/import-preview`, {
         method: 'POST',
         body: form,
@@ -681,41 +689,53 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
       }
       return task.result ?? {}
     }
-    const importPreview = await previewMeshLog()
-    const importItem = importPreview.items?.[0]
+    const importPreview = await previewMeshLogs()
+    const importItems = importPreview.items ?? []
+    const expectedStoredFilenames = [
+      '2026_07_27_1meshlog.log',
+      '2026_07_28_1meshlog.log',
+      '2026_07_28_2meshlog.log',
+      '2026_07_29_1meshlog.log',
+    ]
     if (
       !ctProfile?.mr_id
-      || importItem?.stored_filename !== '2026_07_28_1meshlog.log'
-      || importItem?.log_date !== '2026-07-28'
-      || importItem?.duplicate_status !== 'new'
-      || String(importItem?.content_sha256 ?? '').length !== 64
+      || importItems.length !== 4
+      || new Set(importItems.map((item) => item.member_id)).size !== 4
+      || importItems.some((item) => item.original_name !== 'meshlog.log')
+      || importItems.some((item) => item.duplicate_status !== 'new')
+      || importItems.some((item) => String(item.content_sha256 ?? '').length !== 64)
+      || JSON.stringify(importItems.map((item) => item.stored_filename)) !== JSON.stringify(expectedStoredFilenames)
     ) {
       throw new Error(`MESH smoke 归档预览不符合契约：${JSON.stringify(importPreview)}`)
     }
-    const mapping = {
-      member_id: importItem.member_id,
+    const mappings = importItems.map((item) => ({
+      member_id: item.member_id,
       train_number: '34',
       role: 'CT',
       profile_id: ctProfile.mr_id,
-    }
+    }))
     const firstImport = await requestJson('/api/rail-transit/mesh-analysis/bundles/import', {
       method: 'POST',
       body: JSON.stringify({
         preview_id: importPreview.preview_id,
-        mappings: [mapping],
+        mappings,
         explicit_confirmation: true,
       }),
     }, 202)
     const firstImportTask = await waitForMeshTask(firstImport.task_id)
     const firstImportResult = await readMeshTaskResult(firstImport.task_id)
     if (
-      firstImportTask.result_summary?.imported_count !== 1
-      || firstImportResult.imported_count !== 1
-      || firstImportResult.source_results?.[0]?.stored_filename !== '2026_07_28_1meshlog.log'
+      firstImportTask.result_summary?.imported_count !== 4
+      || firstImportResult.imported_count !== 4
+      || JSON.stringify(
+        (firstImportResult.source_results ?? [])
+          .map((item) => item.stored_filename)
+          .sort(),
+      ) !== JSON.stringify([...expectedStoredFilenames].sort())
     ) {
       throw new Error(`MESH smoke 首次导入结果不符合契约：${JSON.stringify({ firstImportTask, firstImportResult })}`)
     }
-    const duplicatePreview = await previewMeshLog()
+    const duplicatePreview = await previewMeshLogs([meshLogs[1]])
     const duplicateItem = duplicatePreview.items?.[0]
     const duplicateProfileState = duplicateItem?.profile_import_states?.find(
       (state) => state.profile_id === ctProfile.mr_id,
@@ -731,7 +751,7 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
       method: 'POST',
       body: JSON.stringify({
         preview_id: duplicatePreview.preview_id,
-        mappings: [{ ...mapping, member_id: duplicateItem.member_id }],
+        mappings: [{ ...mappings[1], member_id: duplicateItem.member_id }],
         explicit_confirmation: true,
       }),
     }, 202)
@@ -743,7 +763,7 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
       || duplicateImportTask.result_summary?.duplicate_count !== 1
       || duplicateImportResult.imported_count !== 0
       || duplicateImportResult.duplicate_count !== 1
-      || sessionsAfterDuplicate.total !== 1
+      || sessionsAfterDuplicate.total !== 4
     ) {
       throw new Error(`MESH smoke 重复导入防护失败：${JSON.stringify({ duplicateImportTask, duplicateImportResult, sessionsAfterDuplicate })}`)
     }
