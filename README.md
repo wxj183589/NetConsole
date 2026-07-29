@@ -2,7 +2,7 @@
 
 NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，当前重点覆盖 H3C/Comware 设备管理、AC/FIT AP、轨道交通无线与车内通信检测、网络测试、配置采集、文件管理和日志诊断。设备管理保留 SNMP v1/v2c 只读基础识别；不提供 SNMPv3、通用 MIB/OID 平台或 SNMP Center。
 
-当前版本：`v1.4.3`。版本唯一来源为 `src/netconsole/core/version.py`；本文只同步展示该事实源。
+当前版本：`v1.4.5`。版本唯一来源为 `src/netconsole/core/version.py`；本文只同步展示该事实源。
 
 局点、新建/切换、全局数据根迁移、备份恢复和数据包导入导出由 Python Core 统一管理。设置页支持完整迁移包、脱敏分享包、现场采集包和采集回传包；`full_migration` 是无需迁移密码的普通 ZIP 完整包，直接包含局点数据库及设备用户名、密码、SNMP community 和隧道凭据，界面会明确警告只能保存到可信位置。只有脱敏/现场/回传及旧无凭据包会清除秘密并要求重新录入。回传包按稳定局点 UUID、文件 SHA-256 和可识别记录 UUID 预检合并，绝不以局点名称或本地自增 ID 覆盖数据。Electron 只通过版本化 API 和白名单 Native Bridge 操作。完整约束见 [局点与数据存储](docs/storage/README.md)。
 
