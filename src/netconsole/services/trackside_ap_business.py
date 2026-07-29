@@ -36,6 +36,7 @@ from netconsole.utils.station_normalize import normalize_station_value
 
 
 TRACKSIDE_ATTENUATION_SAMPLE_WINDOW = timedelta(minutes=30)
+TRACKSIDE_RX_NORMAL_MIN_DBM = -13.0
 _PRESERVED_SWITCH_MODULE_STATUSES = {
     "abnormal",
     "unverified",
@@ -43,6 +44,24 @@ _PRESERVED_SWITCH_MODULE_STATUSES = {
     "offline",
     "no_module",
 }
+_TRACKSIDE_RX_STATUS_PRESERVE = {
+    "critical",
+    "dom_unavailable",
+    "failed",
+    "link_abnormal",
+    "link_down",
+    "no_light",
+    "no_module",
+    "not_collected",
+    "offline",
+    "skipped",
+    "timeout",
+    "unverified",
+}
+_TRACKSIDE_NATIVE_PVID_SEGMENT_RE = re.compile(
+    r"^native\s*/\s*pvid\s*[:=]?\s*\d{1,4}$",
+    re.IGNORECASE,
+)
 
 
 TRACKSIDE_AP_BUSINESS_INTERNAL_FIELDS = {
@@ -155,7 +174,15 @@ AP_OPTICAL_TREATMENT_RECORD_COLUMNS = (
     ("trackside.export.completed_at", "completed_at"),
 )
 
-OPTICAL_TREATMENT_ISSUE_STATUSES = {"notice", "warning", "alarm", "link_abnormal", "link_down", "no_light"}
+OPTICAL_TREATMENT_ISSUE_STATUSES = {
+    "abnormal",
+    "alarm",
+    "link_abnormal",
+    "link_down",
+    "no_light",
+    "notice",
+    "warning",
+}
 OPTICAL_TREATMENT_IGNORED_STATUSES = {"normal", "unknown", "not_collected", "skipped", "failed", "timeout", "offline", "no_module", ""}
 AP_SIDE_LABEL = "AP\u4fa7"
 SWITCH_SIDE_LABEL = "\u4ea4\u6362\u673a\u4fa7"
@@ -196,6 +223,7 @@ TRACKSIDE_OPTICAL_COLOR_RGB = {
     "notice": "FEF9C3",
     "warning": "FEF9C3",
     "alarm": "FEE2E2",
+    "abnormal": "FEE2E2",
     "link_abnormal": "FFE4E6",
     "link_down": "FFE4E6",
     "no_light": "E5E7EB",
@@ -221,6 +249,55 @@ CURRENT_OPTICAL_ABNORMAL_EXTRA_COLUMNS = (
 
 class TracksideApExportCancelled(RuntimeError):
     """Raised when a trackside AP export is cancelled."""
+
+
+def normalize_trackside_vlan_display(value: object) -> str:
+    """Remove the Native/PVID fragment duplicated by the dedicated PVID column."""
+
+    text = str(value or "").strip()
+    if not text:
+        return "—"
+    parts = []
+    for raw_part in re.split(r"[;；]+", text):
+        part = re.sub(r"\s+", " ", raw_part).strip()
+        if not part or _TRACKSIDE_NATIVE_PVID_SEGMENT_RE.fullmatch(part):
+            continue
+        parts.append(part)
+    return "; ".join(parts) or "—"
+
+
+def compute_trackside_rx_business_status(
+    status: object,
+    rx_power: object,
+) -> str:
+    """Overlay the trackside maintenance RX line without changing native thresholds."""
+
+    normalized = _normalized_optical_status(status)
+    rx_value = _float_value(rx_power)
+    if rx_value is None or normalized in _TRACKSIDE_RX_STATUS_PRESERVE:
+        return normalized
+    if rx_value < TRACKSIDE_RX_NORMAL_MIN_DBM:
+        return worse_optical_severity(normalized, "abnormal")
+    return normalized
+
+
+def normalize_trackside_ap_business_row(
+    row: dict[str, object | None],
+) -> dict[str, object | None]:
+    """Return one row with trackside-only display and maintenance semantics."""
+
+    normalized = dict(row)
+    normalized["vlan"] = normalize_trackside_vlan_display(normalized.get("vlan"))
+    normalized["switch_optical_status"] = compute_trackside_rx_business_status(
+        normalized.get("switch_optical_status"),
+        normalized.get("switch_rx_power"),
+    )
+    normalized["ap_optical_status"] = compute_trackside_rx_business_status(
+        normalized.get("ap_optical_status"),
+        normalized.get("ap_rx_power"),
+    )
+    normalized["optical_severity"] = trackside_row_status(normalized)
+    return normalized
 
 AP_SIDE_DISPLAY_FIELDS = {"ap_rx_power", "ap_tx_power"}
 AP_SIDE_MISSING_DISPLAY = "-"
@@ -694,7 +771,10 @@ def build_trackside_ap_business_rows(
             _ensure_ap_optical_status(row)
             result.append(row)
     result.extend(_offline_ledger_to_trackside_rows(offline_ap_ledger_rows or [], interfaces_by_device, optical_by_device))
-    result = _merge_duplicate_trackside_rows(result)
+    result = [
+        normalize_trackside_ap_business_row(row)
+        for row in _merge_duplicate_trackside_rows(result)
+    ]
     _log_trackside_identity_coverage(
         devices,
         result,
@@ -1480,8 +1560,20 @@ def _trackside_rows_by_switch_interface(rows: list[dict[str, object | None]]) ->
 
 
 def trackside_row_status(row: dict[str, object | None]) -> str:
-    switch_status = str(row.get("switch_optical_status") or "")
-    ap_status = str(row.get("ap_optical_status") or "") if has_ap_side_optical_data(row) else ""
+    switch_status = compute_trackside_rx_business_status(
+        row.get("switch_optical_status"),
+        row.get("switch_rx_power"),
+    )
+    ap_status = (
+        compute_trackside_rx_business_status(
+            row.get("ap_optical_status"),
+            row.get("ap_rx_power"),
+        )
+        if has_ap_side_optical_data(row)
+        else ""
+    )
+    if "critical" in {switch_status, ap_status}:
+        return "critical"
     return worse_optical_severity(switch_status, ap_status)
 
 
@@ -1594,6 +1686,8 @@ def format_trackside_display_value(field: str, row: dict[str, object | None], la
         return normalize_link_state(row.get("link_status") or row.get("link") or row.get("status"))
     if field == "protocol_status":
         return normalize_link_state(row.get("protocol_status") or row.get("protocol"))
+    if field == "vlan":
+        return normalize_trackside_vlan_display(row.get("vlan"))
     if field == "ap_optical_status":
         if bool(row.get("is_ap_offline")) or row.get("offline_reason") in {"switch_offline", "ac_idle"}:
             return OFFLINE_AP_STATUS_TEXT
@@ -2570,6 +2664,7 @@ def _normalized_optical_status(value: object) -> str:
         "高告警": "warning",
         "一般告警": "alarm",
         "严重告警": "alarm",
+        "功率异常": "abnormal",
         "链路异常": "link_abnormal",
         "链路断开": "link_down",
         "无光": "no_light",
@@ -2591,7 +2686,12 @@ def _is_ap_offline_abnormal(row: dict[str, object | None]) -> bool:
 def _is_ap_side_current_abnormal(row: dict[str, object | None]) -> bool:
     if not has_valid_ap_binding(row):
         return False
-    status = _normalized_optical_status(row.get("ap_optical_status") or row.get("optical_alarm_status") or row.get("alarm_status"))
+    status = compute_trackside_rx_business_status(
+        row.get("ap_optical_status")
+        or row.get("optical_alarm_status")
+        or row.get("alarm_status"),
+        row.get("ap_rx_power"),
+    )
     if is_optical_health_abnormal(status):
         return True
     if status in {"", "unknown"} and _has_valid_rx_power(row.get("ap_rx_power")):
@@ -2602,7 +2702,10 @@ def _is_ap_side_current_abnormal(row: dict[str, object | None]) -> bool:
 def _is_switch_side_current_abnormal(row: dict[str, object | None]) -> bool:
     if not has_valid_ap_binding(row):
         return False
-    status = _normalized_optical_status(row.get("switch_optical_status"))
+    status = compute_trackside_rx_business_status(
+        row.get("switch_optical_status"),
+        row.get("switch_rx_power"),
+    )
     if is_optical_health_abnormal(status):
         return True
     if status in {"", "unknown"} and _has_valid_rx_power(row.get("switch_rx_power")):
@@ -2623,10 +2726,17 @@ def current_optical_abnormal_reason(row: dict[str, object | None]) -> dict[str, 
     ap_state = _ap_state(row)
     ap_online_status = "离线" if _is_ap_offline_abnormal(row) or ap_state == "offline" else "在线" if ap_state == "online" else "未知"
     if _is_ap_side_current_abnormal(row):
-        status = _normalized_optical_status(row.get("ap_optical_status") or _compute_ap_optical_status_from_row(row))
+        status = compute_trackside_rx_business_status(
+            row.get("ap_optical_status") or _compute_ap_optical_status_from_row(row),
+            row.get("ap_rx_power"),
+        )
         return {"ap_online_status": ap_online_status, "judgement": "异常", "reason": "AP侧光衰告警", "side": "AP侧", "level": display_optical_status(status), "detail": ""}
     if _is_switch_side_current_abnormal(row):
-        return {"ap_online_status": ap_online_status, "judgement": "异常", "reason": "交换机侧光衰告警", "side": "交换机侧", "level": display_optical_status(_normalized_optical_status(row.get("switch_optical_status"))), "detail": ""}
+        status = compute_trackside_rx_business_status(
+            row.get("switch_optical_status"),
+            row.get("switch_rx_power"),
+        )
+        return {"ap_online_status": ap_online_status, "judgement": "异常", "reason": "交换机侧光衰告警", "side": "交换机侧", "level": display_optical_status(status), "detail": ""}
     return {"ap_online_status": ap_online_status, "judgement": "", "reason": "", "side": "", "level": "", "detail": ""}
 
 

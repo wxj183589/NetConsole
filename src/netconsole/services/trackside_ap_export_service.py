@@ -36,6 +36,7 @@ from netconsole.services.trackside_ap_business import (
     export_trackside_ap_business_xlsx,
     filter_station_switch_devices,
     is_trackside_ap_interface,
+    normalize_trackside_ap_business_row,
 )
 from netconsole.services.rail_transit.trackside_ap_identity_shadow import (
     TracksideApIdentityShadowService,
@@ -248,14 +249,17 @@ def export_trackside_ap_business_from_database(
         device_lookup_by_name=build_device_lookup_by_name(devices),
         resource_history_rows=resource_history_rows,
     )
-    rows = enrich_trackside_export_rows(
-        snapshot.rows,
-        fact_repository,
-        ac_repository,
-        switch_optical_history_rows=switch_optical_history_rows,
-        ap_optical_history_rows=ap_optical_history_rows,
-        ap_lldp_history_rows=ap_lldp_history_rows,
-    )
+    rows = [
+        normalize_trackside_ap_business_row(row)
+        for row in enrich_trackside_export_rows(
+            snapshot.rows,
+            fact_repository,
+            ac_repository,
+            switch_optical_history_rows=switch_optical_history_rows,
+            ap_optical_history_rows=ap_optical_history_rows,
+            ap_lldp_history_rows=ap_lldp_history_rows,
+        )
+    ]
     unauthenticated_rows = ac_repository.list_all_fit_ap_unauthenticated()
     new_online_ap_rows = build_new_online_ap_overview_rows(resources, resource_history_rows, snapshot.rows, unauthenticated_rows)
     optical_treatment_rows = build_ap_optical_treatment_records(

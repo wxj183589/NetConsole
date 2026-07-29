@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  displayBidirectionalLoss,
   displayLldpStatus,
   displaySwitchVendor,
   displayTracksideValue,
@@ -36,17 +35,8 @@ describe('trackside AP business display', () => {
     expect(displayTracksideValue(0)).toBe('0')
   })
 
-  it('formats ZTE vendor, LLDP verification and bidirectional loss semantics', () => {
+  it('formats ZTE vendor and LLDP verification semantics', () => {
     expect(displaySwitchVendor('ZTE')).toBe('中兴 ZTE')
     expect(displayLldpStatus('SAMPLE_REQUIRED')).toBe('待真实样本验证')
-    expect(displayBidirectionalLoss('SINGLE_ENDED_ONLY', null, null)).toBe(
-      '无法计算（仅有单端光功率）',
-    )
-    expect(displayBidirectionalLoss('NOT_VERIFIED', null, null)).toBe(
-      '当前数据不足，无法计算双向光衰',
-    )
-    expect(displayBidirectionalLoss('CALCULATED', 5.6, 8.8)).toBe(
-      '正向 5.6 dB / 反向 8.8 dB',
-    )
   })
 })

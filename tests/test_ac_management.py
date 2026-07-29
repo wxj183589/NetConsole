@@ -2893,7 +2893,7 @@ def test_trackside_ap_business_export_adds_current_optical_abnormal_sheet(tmp_pa
     assert (
         abnormal_sheet["A2"].fill.fgColor.rgb
         == source_sheet["A3"].fill.fgColor.rgb
-        == "00FEF9C3"
+        == "00FEE2E2"
     )
     assert abnormal_sheet["A1"].font.bold
     assert abnormal_sheet.freeze_panes == "A2"
@@ -3833,7 +3833,7 @@ def test_trackside_ap_business_rows_join_interface_optical_and_fit_ap_data():
     assert format_trackside_display_value("link_status", rows[1]) == "UP"
     assert format_trackside_display_value("port_type", rows[1]) == "trunk"
     assert rows[1]["ap_rx_power"] == "-14.35"
-    assert rows[1]["ap_optical_status"] == "notice"
+    assert rows[1]["ap_optical_status"] == "abnormal"
     assert rows[1]["ap_name"] == "AP10"
 
 
@@ -3991,7 +3991,7 @@ def test_trackside_ap_business_matches_fit_ap_by_lldp_neighbor_mac():
     assert rows[0]["ap_mac"] == "bc5a-3457-cbe0"
     assert rows[0]["ap_name"] == "Business-AP-22"
     assert rows[0]["ap_rx_power"] == "-14.35"
-    assert rows[0]["ap_optical_status"] == "notice"
+    assert rows[0]["ap_optical_status"] == "abnormal"
 
 
 def test_trackside_ap_business_matches_fit_ap_resource_by_lldp_neighbor_mac():

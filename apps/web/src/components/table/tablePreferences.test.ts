@@ -41,7 +41,10 @@ describe('table preferences', () => {
     expect(reconcileTablePreferences(columns, {
       version: 1,
       order: ['status', 'status', 'removed'],
-      columns: [{ key: 'status', visible: false, fixed: false }],
+      columns: [
+        { key: 'status', visible: false, fixed: false },
+        { key: 'calculation_status', width: 230, visible: true, fixed: false },
+      ],
     })).toEqual({
       version: 1,
       order: ['status', 'name', 'actions'],

@@ -72,22 +72,3 @@ export function displayLldpStatus(value: unknown): string {
     SAMPLE_REQUIRED: '待真实样本验证',
   }[status] || status || '—'
 }
-
-export function displayBidirectionalLoss(
-  statusValue: unknown,
-  forward: unknown,
-  reverse: unknown,
-): string {
-  const status = String(statusValue || '').trim().toUpperCase()
-  if (status === 'CALCULATED') {
-    return `正向 ${displayTracksideValue(forward)} dB / 反向 ${displayTracksideValue(reverse)} dB`
-  }
-  return {
-    SINGLE_ENDED_ONLY: '无法计算（仅有单端光功率）',
-    REMOTE_DOM_UNAVAILABLE: '无法计算（对端 DOM 不可用）',
-    STALE_SAMPLE: '无法计算（两端样本不同步）',
-    NEIGHBOR_UNCERTAIN: '无法计算（对端关系不可靠）',
-    MODULE_OFFLINE: '无法计算（模块离线或无 DOM）',
-    NOT_VERIFIED: '当前数据不足，无法计算双向光衰',
-  }[status] || '—'
-}

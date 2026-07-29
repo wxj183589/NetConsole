@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -121,6 +122,46 @@ def test_trackside_query_reuses_snapshot_filter_and_optical_status(monkeypatch, 
     assert page.items[0].optical_severity == "warning"
     assert page.optical_abnormal_count == 1
     assert page.identity_shadow == {"status": "matched"}
+
+
+def test_trackside_query_recalculates_legacy_normal_status_with_business_threshold(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    original = _snapshot()
+    snapshot = replace(
+        original,
+        rows=[
+            {
+                **original.rows[0],
+                "pvid": 71,
+                "vlan": "Native/PVID 71; Tagged 201",
+                "switch_rx_power": -24.7,
+                "switch_optical_status": "normal",
+                "ap_rx_power": -26.8,
+                "ap_optical_status": "normal",
+            }
+        ],
+    )
+    monkeypatch.setattr(trackside_ap_business_query_service, "Database", lambda _path: object())
+    monkeypatch.setattr(trackside_ap_business_query_service, "DeviceRepository", lambda _database: object())
+    monkeypatch.setattr(
+        trackside_ap_business_query_service,
+        "load_trackside_ap_business_snapshot",
+        lambda *_args, **_kwargs: snapshot,
+    )
+
+    page = trackside_ap_business_query_service.TracksideApBusinessQueryService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path)
+    ).list_rows("demo", optical_anomaly_only=True)
+
+    assert page.total == 1
+    assert page.optical_abnormal_count == 1
+    assert page.items[0].pvid == 71
+    assert page.items[0].vlan == "Tagged 201"
+    assert page.items[0].switch_optical_status == "abnormal"
+    assert page.items[0].ap_optical_status == "abnormal"
+    assert page.items[0].optical_severity == "abnormal"
 
 
 def test_trackside_query_counts_multiple_abnormal_interfaces_once_per_ap(monkeypatch, tmp_path: Path) -> None:
