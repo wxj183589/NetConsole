@@ -131,10 +131,12 @@ class MeshAnalysisQueryService:
         paths: PathResolver,
         *,
         base_query: RailTransitBaseDataQueryService | None = None,
+        schedule_catalog_index: bool = True,
     ) -> None:
         self.paths = paths
         self.base_query = base_query or RailTransitBaseDataQueryService(paths)
         self.location_service = MeshApLocationService(self.base_query)
+        self.schedule_catalog_index = schedule_catalog_index
 
     def current_site_id(self) -> str:
         try:
@@ -167,39 +169,53 @@ class MeshAnalysisQueryService:
         ]
 
     def get_summary(self, site_id: str) -> MeshAnalysisSummaryDTO:
-        sessions = self._session_rows(site_id)
-        summary = MeshAnalysisSummaryDTO(site_id=site_id, session_count=len(sessions))
-        trains: set[str] = set()
-        mrs: set[str] = set()
-        latest = ""
-        for context in sessions:
-            stats = self._stats(context)
-            train_name, _role = self._mr_identity(context.mr_name)
-            if train_name:
-                trains.add(train_name)
-            mrs.add(context.mr_name)
-            for field, key in (
-                ("link_record_count", "links"),
-                ("active_link_count", "active"),
-                ("standby_link_count", "standby"),
-                ("link_up_event_count", "link_up"),
-                ("link_down_event_count", "link_down"),
-                ("switch_event_count", "switches"),
-                ("short_link_count", "short"),
-                ("pingpong_count", "pingpong"),
-                ("rssi_anomaly_count", "rssi_anomalies"),
-                ("channel_busy_anomaly_count", "busy_anomalies"),
-                ("unmatched_ap_count", "unmatched"),
-            ):
-                value = stats[key]
-                current = getattr(summary, field)
-                setattr(summary, field, None if value is None or current is None else current + int(value))
-            summary.warning_session_count += int(stats["warnings"] > 0)
-            latest = max(latest, str(context.source.get("imported_at") or ""))
-        summary.train_count = len(trains)
-        summary.mr_count = len(mrs)
-        summary.latest_analysis_time = latest or None
-        return summary
+        self._schedule_catalog_backfill(site_id)
+        catalog = self.paths.mesh_catalog_path(site_id)
+        if not catalog.is_file():
+            return MeshAnalysisSummaryDTO(site_id=site_id)
+        try:
+            with closing(self._connect_readonly(catalog)) as conn:
+                if not self._table_exists(conn, "mesh_session_index"):
+                    return MeshAnalysisSummaryDTO(site_id=site_id)
+                state = self._catalog_index_state(conn)
+                row = conn.execute(
+                    """
+                    SELECT COUNT(*) AS session_count,
+                           COUNT(DISTINCT NULLIF(train_name, '')) AS train_count,
+                           COUNT(DISTINCT mr_id) AS mr_count,
+                           SUM(link_record_count) AS link_record_count,
+                           SUM(active_link_count) AS active_link_count,
+                           SUM(standby_link_count) AS standby_link_count,
+                           SUM(link_up_event_count) AS link_up_event_count,
+                           SUM(link_down_event_count) AS link_down_event_count,
+                           SUM(switch_event_count) AS switch_event_count,
+                           SUM(short_link_count) AS short_link_count,
+                           SUM(pingpong_count) AS pingpong_count,
+                           SUM(rssi_anomaly_count) AS rssi_anomaly_count,
+                           SUM(channel_busy_anomaly_count) AS channel_busy_anomaly_count,
+                           SUM(unmatched_ap_count) AS unmatched_ap_count,
+                           SUM(CASE WHEN warning_count > 0 THEN 1 ELSE 0 END)
+                               AS warning_session_count,
+                           MAX(analysis_time) AS latest_analysis_time
+                    FROM mesh_session_index
+                    """
+                ).fetchone()
+        except sqlite3.Error:
+            LOGGER.warning("MESH 目录摘要读取失败", exc_info=True)
+            return MeshAnalysisSummaryDTO(site_id=site_id, index_status="failed")
+        values = dict(row) if row else {}
+        return MeshAnalysisSummaryDTO(
+            site_id=site_id,
+            index_status=str(state.get("status") or "pending"),
+            indexed_session_count=int(state.get("indexed_session_count") or 0),
+            pending_session_count=max(
+                0,
+                int(state.get("discovered_session_count") or 0)
+                - int(state.get("detail_indexed_session_count") or 0),
+            ),
+            index_updated_at=str(state.get("updated_at") or "") or None,
+            **values,
+        )
 
     def list_analysis_sessions(
         self,
@@ -219,36 +235,141 @@ class MeshAnalysisQueryService:
         sort_by: str = "analysis_time",
         sort_order: str = "desc",
     ) -> MeshAnalysisSessionPageDTO:
-        rows = [self._session_dto(context) for context in self._session_rows(site_id)]
-        filters = {
-            "train_name": train,
-            "mr_name": mr_name,
-            "mr_role": mr_role,
-            "source_type": source_type,
-            "analysis_status": analysis_status,
-        }
-        for field, value in filters.items():
-            if value:
-                needle = value.casefold()
-                rows = [row for row in rows if needle in str(getattr(row, field)).casefold()]
-        if has_warning is not None:
-            rows = [row for row in rows if (row.warning_count > 0) is has_warning]
-        if time_from:
-            rows = [row for row in rows if (row.last_sample_time or row.analysis_time or "") >= time_from]
-        if time_to:
-            rows = [row for row in rows if (row.first_sample_time or row.analysis_time or "") <= time_to]
-        if query:
-            needle = query.casefold()
-            rows = [row for row in rows if needle in f"{row.train_name} {row.mr_name} {row.original_filename}".casefold()]
-        sort_keys = {
-            "analysis_time": lambda row: (row.analysis_time or "", row.session_id),
-            "mr_name": lambda row: (row.mr_name.casefold(), row.analysis_time or ""),
-            "link_record_count": lambda row: (row.link_record_count, row.analysis_time or ""),
-        }
-        rows.sort(key=sort_keys.get(sort_by, sort_keys["analysis_time"]), reverse=sort_order != "asc")
+        self._schedule_catalog_backfill(site_id)
         current, size = self._page(page, page_size)
-        start = (current - 1) * size
-        return MeshAnalysisSessionPageDTO(items=rows[start : start + size], total=len(rows), page=current, page_size=size)
+        catalog = self.paths.mesh_catalog_path(site_id)
+        if not catalog.is_file():
+            return MeshAnalysisSessionPageDTO(page=current, page_size=size)
+        where: list[str] = []
+        values: list[Any] = []
+        for field, value in (
+            ("train_name", train),
+            ("mr_name", mr_name),
+            ("mr_role", mr_role),
+            ("source_type", source_type),
+            ("analysis_status", analysis_status),
+        ):
+            if value:
+                where.append(f"{field} LIKE ? ESCAPE '\\' COLLATE NOCASE")
+                values.append(f"%{self._like_value(value)}%")
+        if has_warning is not None:
+            where.append("warning_count > 0" if has_warning else "warning_count = 0")
+        if time_from:
+            where.append("COALESCE(last_sample_time, analysis_time, '') >= ?")
+            values.append(time_from)
+        if time_to:
+            where.append("COALESCE(first_sample_time, analysis_time, '') <= ?")
+            values.append(time_to)
+        if query:
+            where.append(
+                "(train_name LIKE ? ESCAPE '\\' COLLATE NOCASE "
+                "OR mr_name LIKE ? ESCAPE '\\' COLLATE NOCASE "
+                "OR original_filename LIKE ? ESCAPE '\\' COLLATE NOCASE)"
+            )
+            needle = f"%{self._like_value(query)}%"
+            values.extend((needle, needle, needle))
+        clause = f"WHERE {' AND '.join(where)}" if where else ""
+        sort_columns = {
+            "analysis_time": "analysis_time",
+            "mr_name": "mr_name COLLATE NOCASE",
+            "link_record_count": "link_record_count",
+        }
+        sort_column = sort_columns.get(sort_by, sort_columns["analysis_time"])
+        direction = "ASC" if sort_order == "asc" else "DESC"
+        offset = (current - 1) * size
+        try:
+            with closing(self._connect_readonly(catalog)) as conn:
+                if not self._table_exists(conn, "mesh_session_index"):
+                    return MeshAnalysisSessionPageDTO(page=current, page_size=size)
+                state = self._catalog_index_state(conn)
+                total = int(
+                    conn.execute(
+                        f"SELECT COUNT(*) FROM mesh_session_index {clause}",
+                        values,
+                    ).fetchone()[0]
+                )
+                rows = conn.execute(
+                    f"""
+                    SELECT * FROM mesh_session_index {clause}
+                    ORDER BY {sort_column} {direction}, session_id {direction}
+                    LIMIT ? OFFSET ?
+                    """,
+                    [*values, size, offset],
+                ).fetchall()
+        except sqlite3.Error:
+            LOGGER.warning("MESH 会话目录读取失败", exc_info=True)
+            return MeshAnalysisSessionPageDTO(
+                page=current, page_size=size, index_status="failed"
+            )
+        return MeshAnalysisSessionPageDTO(
+            items=[self._indexed_session_dto(dict(row), site_id) for row in rows],
+            total=total,
+            page=current,
+            page_size=size,
+            index_status=str(state.get("status") or "pending"),
+            indexed_session_count=int(state.get("indexed_session_count") or 0),
+            pending_session_count=max(
+                0,
+                int(state.get("discovered_session_count") or 0)
+                - int(state.get("detail_indexed_session_count") or 0),
+            ),
+        )
+
+    def _schedule_catalog_backfill(self, site_id: str) -> None:
+        if not self.schedule_catalog_index:
+            return
+        from netconsole.core.runtime_environment import runtime_mode
+        from netconsole.core.runtime_mode import RuntimeMode
+        from netconsole.services.mesh_catalog_index_service import MeshCatalogIndexService
+
+        index_service = MeshCatalogIndexService(self.paths)
+        if runtime_mode() is RuntimeMode.TEST:
+            index_service.rebuild_now(site_id)
+        else:
+            index_service.schedule(site_id)
+
+    @classmethod
+    def _indexed_session_dto(
+        cls, row: dict[str, Any], site_id: str
+    ) -> MeshAnalysisSessionDTO:
+        return MeshAnalysisSessionDTO(
+            **{
+                field: row.get(field)
+                for field in MeshAnalysisSessionDTO.model_fields
+                if field in row
+                and field not in {"site_id", "available_capabilities", "missing_capabilities"}
+            },
+            site_id=site_id,
+            available_capabilities=cls._json_array(
+                row.get("available_capabilities_json")
+            ),
+            missing_capabilities=cls._json_array(
+                row.get("missing_capabilities_json")
+            ),
+        )
+
+    @staticmethod
+    def _catalog_index_state(conn: sqlite3.Connection) -> dict[str, Any]:
+        if not MeshAnalysisQueryService._table_exists(
+            conn, "mesh_catalog_index_state"
+        ):
+            return {}
+        row = conn.execute(
+            "SELECT * FROM mesh_catalog_index_state WHERE singleton = 1"
+        ).fetchone()
+        return dict(row) if row else {}
+
+    @staticmethod
+    def _json_array(value: Any) -> list[str]:
+        try:
+            parsed = json.loads(str(value or "[]"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+        return [str(item) for item in parsed] if isinstance(parsed, list) else []
+
+    @staticmethod
+    def _like_value(value: str) -> str:
+        return str(value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     def get_analysis_session(self, site_id: str, session_id: str) -> MeshAnalysisSessionDetailDTO:
         context = self._context(site_id, session_id)

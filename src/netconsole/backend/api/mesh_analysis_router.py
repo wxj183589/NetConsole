@@ -22,6 +22,7 @@ from netconsole.models.api.mesh_analysis import (
     MeshAnalysisParamsDTO,
     MeshAnalysisParamsSaveRequestDTO,
     MeshAnalysisSessionPageDTO,
+    MeshAnalysisOverviewDTO,
     MeshAnalysisSummaryDTO,
     MeshActiveBuildOrderPageDTO,
     MeshAnomalyPageDTO,
@@ -29,6 +30,7 @@ from netconsole.models.api.mesh_analysis import (
     MeshBundleImportRequestDTO,
     MeshBundlePreviewDTO,
     MeshImportContextPrepareDTO,
+    MeshImportContextDTO,
     MeshLinkDetailExportRequestDTO,
     MeshChannelBusyPageDTO,
     MeshCounterDeltaPageDTO,
@@ -167,6 +169,21 @@ def prepare_import_context(request: Request) -> MeshImportContextPrepareDTO:
                 "details": {"stage": "request_context"},
             },
         ) from exc
+
+
+@router.get(
+    "/import-context",
+    response_model=MeshImportContextDTO,
+    summary="读取 MESH 导入所需的轻量身份上下文",
+)
+def import_context(request: Request) -> MeshImportContextDTO:
+    try:
+        return MeshImportContextDTO.model_validate(
+            _bundle_service(request).get_import_context(_current_site_id(request)),
+            from_attributes=True,
+        )
+    except MeshBundleApplicationError as exc:
+        _raise_bundle_error(exc)
 
 
 @router.post(
@@ -313,6 +330,49 @@ def sessions(
             page_size=page_size,
             sort_by=sort_by,
             sort_order=sort_order,
+        )
+    )
+
+
+@router.get("/overview", response_model=MeshAnalysisOverviewDTO)
+def overview(
+    request: Request,
+    site_id: str = Query(default="", max_length=100),
+    train: str = Query(default="", max_length=100),
+    mr_name: str = Query(default="", max_length=100),
+    mr_role: str = Query(default="", max_length=20),
+    source_type: str = Query(default="", max_length=50),
+    analysis_status: str = Query(default="", max_length=50),
+    has_warning: bool | None = None,
+    time_from: str = Query(default="", max_length=40),
+    time_to: str = Query(default="", max_length=40),
+    query: str = Query(default="", max_length=200),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=500),
+    sort_by: str = Query(default="analysis_time", pattern="^(analysis_time|mr_name|link_record_count)$"),
+    sort_order: str = Query(default="desc", pattern="^(asc|desc)$"),
+) -> MeshAnalysisOverviewDTO:
+    selected_site = _site_id(request, site_id)
+    service = _service(request)
+    return _query(
+        lambda: MeshAnalysisOverviewDTO(
+            summary=service.get_summary(selected_site),
+            sessions=service.list_analysis_sessions(
+                selected_site,
+                train=train,
+                mr_name=mr_name,
+                mr_role=mr_role,
+                source_type=source_type,
+                analysis_status=analysis_status,
+                has_warning=has_warning,
+                time_from=time_from,
+                time_to=time_to,
+                query=query,
+                page=page,
+                page_size=page_size,
+                sort_by=sort_by,
+                sort_order=sort_order,
+            ),
         )
     )
 

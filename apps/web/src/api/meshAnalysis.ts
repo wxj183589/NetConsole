@@ -2,7 +2,7 @@ import { apiRequest } from './client'
 import type {
   MeshAnalysisSession, MeshAnalysisSummary, MeshAnomaly, MeshArtifact,
   MeshActiveBuildOrder, MeshChannelBusy, MeshCounterDeltaPage, MeshLinkDetail, MeshPathChart, MeshRawSource, MeshRawTail, MeshRatePage, MeshRssi, MeshSessionDetail, MeshSwitchEvent,
-  MeshTimelineItem, MeshProfile, MeshImportContextPrepare, MeshBundleImportRequest, MeshBundlePreview, MeshAnalysisParams, MeshTracksideSignalChartData, Page,
+  MeshTimelineItem, MeshProfile, MeshImportContext, MeshImportContextPrepare, MeshBundleImportRequest, MeshBundlePreview, MeshAnalysisParams, MeshTracksideSignalChartData, MeshAnalysisOverview, Page,
 } from '../types/meshAnalysis'
 import type { RailTransitTask } from '../types/railTransitWeb'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
@@ -18,7 +18,9 @@ function qs(values: Record<string, string | number | boolean | null | undefined>
 }
 
 export const getMeshAnalysisSummary = (): Promise<MeshAnalysisSummary> => apiRequest(`${root}/summary`)
+export const getMeshAnalysisOverview = (values: Record<string, string | number | boolean | null | undefined>): Promise<MeshAnalysisOverview> => apiRequest(`${root}/overview${qs(values)}`)
 export const listMeshProfiles = (): Promise<MeshProfile[]> => apiRequest(`${root}/profiles`)
+export const getMeshImportContext = (): Promise<MeshImportContext> => apiRequest(`${root}/import-context`)
 export const prepareMeshImportContext = (): Promise<MeshImportContextPrepare> => apiRequest(`${root}/import-context/prepare`, { method: 'POST' })
 export const createMeshProfile = (payload: { display_name: string; linked_mr_id?: string; notes?: string }): Promise<MeshProfile> => apiRequest(`${root}/profiles`, { method: 'POST', body: JSON.stringify(payload) })
 export function previewMeshBundle(file: File): Promise<MeshBundlePreview> {
@@ -26,13 +28,13 @@ export function previewMeshBundle(file: File): Promise<MeshBundlePreview> {
   form.append('file', file, file.name)
   return apiRequest<MeshBundlePreview>(`${root}/bundles/preview`, { method: 'POST', body: form })
 }
-export function previewMeshImport(files: File[]): Promise<MeshBundlePreview> {
+export function previewMeshImport(files: File[], signal?: AbortSignal): Promise<MeshBundlePreview> {
   const form = new FormData()
   for (const file of files) {
     const relative = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
     form.append('files', file, relative)
   }
-  return apiRequest<MeshBundlePreview>(`${root}/import-preview`, { method: 'POST', body: form })
+  return apiRequest<MeshBundlePreview>(`${root}/import-preview`, { method: 'POST', body: form, signal })
 }
 export const applyMeshBundleImport = (payload: MeshBundleImportRequest): Promise<RailTransitTask> => apiRequest(`${root}/bundles/import`, { method: 'POST', body: JSON.stringify(payload) })
 export const listMeshAnalysisSessions = (values: Record<string, string | number | boolean | null | undefined>): Promise<Page<MeshAnalysisSession>> => apiRequest(`${root}/sessions${qs(values)}`)

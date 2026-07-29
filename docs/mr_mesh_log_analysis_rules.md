@@ -9,15 +9,16 @@
 ## 2. 导入与存储
 
 - 原始文件归档到当前数据根的局点 MESH MR `raw/` 目录，重名使用防冲突归档名；路径由 `PathResolver` 解析，不写死仓库或历史 `.local` 位置。
-- `catalog.sqlite` 和目录型 `mesh.sqlite` 管理文件目录与入口；明细数据可能在 `source_files.parsed_db_path` 指向的单文件 parsed SQLite。
+- `catalog.sqlite` 和目录型 `mesh.sqlite` 管理文件目录与入口；明细数据可能在 `source_files.parsed_db_path` 指向的单文件 parsed SQLite。`catalog.sqlite` 中的 `mesh_session_index`、`mesh_source_fingerprints` 和 `mesh_catalog_index_state` 是可重建的中央查询目录：会话摘要、筛选和分页只查询中央目录，不得在 HTTP 请求中遍历 Profile 或打开单文件 parsed SQLite。旧数据先从各 Profile 的 `source_files` 后台发现并发布基础行，再逐来源低优先级补齐明细统计；页面必须展示 `pending/discovering/enriching/ready/failed` 状态，回填失败时继续显示最近一次可用目录。
 - `raw/` 永不因解析失败而删除；`parsed/` 和 `outputs/` 可重建。
 - 解析保留源文件、源行号和必要原始证据，便于从报表回溯。
 - 当前派生库 schema/parser 版本为 `meshlog_compact_v3_tagged_samples`。同一毫秒内日志携带的 `(2)`、`(4)` 等 `timestamp_tag` 属于采样身份的一部分，解析、唯一键、链路分组、质量分析和报告不得把它们合并。
 - 正式启动和查询不兼容旧派生 schema，也不自动移动、删除或清空用户数据。检测到旧版或损坏的 `mesh.sqlite` 时返回需要重建的明确错误；常规处理通过应用内 `mesh_schema_rebuild` Job 从受保护 raw 重建，`scripts/maintenance/rebuild_mesh_parsed_data.py` 仅保留为维护 CLI 适配器。重建只归档派生数据库和 `parsed/`，不移动或删除 `raw/`、`outputs/` 与 catalog，失败时恢复旧派生数据。
 - 设备文件下载链路不得为归档原始 `meshlog` 而初始化派生 SQLite；旧 schema 只能影响后续导入/查询状态，不能阻止 raw 文件落盘。
 - 正式资产来源是当前局点基础资料/设备管理中的车载 MR。打开导入时由显式 ApplicationService POST 按 `linked_device_id → device_uuid → 规范化名称` 幂等准备内部 Profile；设备改名只更新显示名，稳定 `safe_folder_name` 和已有数据目录不变，普通 GET 不隐式写库。
-- `POST /api/rail-transit/mesh-analysis/import-context/prepare` 的全局异常必须记录完整 Backend 堆栈，并返回 `MESH_IMPORT_CONTEXT_PREPARE_FAILED`/`MESH_IMPORT_CONTEXT_SERVICE_UNAVAILABLE` 结构化 JSON；单条基础资料 MR 同步失败只计入 `skipped_count`/`warnings`，不得清空已有 Profile 或使 Backend 连接中断。重复 prepare 的 `created_count` 必须为 0。
-- ZIP、单个/多个 LOG/GZ 和文件夹统一为“安全预览 → 自动确认唯一列车号/CT-CW/正式 MR 映射 → `mesh_bundle_import` Job → 隔离 Profile/SQLite 导入 → 路径复验 → 原子目录提交 → 成功 manifest”。非 ZIP 上传只在运行时缓存封装为受保护 ZIP 后复用同一链；一次 Multipart 中允许多份同名 `meshlog.log`，每份使用唯一 `__uploads__/序号/文件名` 作为临时传输成员，并在 manifest 中单独保留原始名称/相对路径。临时传输路径不得进入正式归档名、来源文件名或普通 UI。用户 ZIP 自身仍拒绝重复成员路径。Preview 使用有 TTL/总容量限制的随机 ID，Renderer 不接收绝对路径；检查成员数、单文件/总解压量、压缩比、加密、符号链接、路径穿越和扩展名。整批成功前不得发布成功 manifest，失败或取消恢复原 Profile/catalog。
+- 导入弹窗首次打开只请求轻量 `GET /api/rail-transit/mesh-analysis/import-context`，一次返回当前 Profile 与不拼接运行态的车载 MR 身份；不得因此启动全量同步。`POST /api/rail-transit/mesh-analysis/import-context/prepare` 只用于用户显式重新准备，且仅写入新增或身份确有变化的 Profile；全局异常必须记录完整 Backend 堆栈，并返回 `MESH_IMPORT_CONTEXT_PREPARE_FAILED`/`MESH_IMPORT_CONTEXT_SERVICE_UNAVAILABLE` 结构化 JSON。单条基础资料 MR 同步失败只计入 `skipped_count`/`warnings`，不得清空已有 Profile 或使 Backend 连接中断；重复 prepare 的 `created_count` 必须为 0。
+- ZIP、单个/多个 LOG/GZ 和文件夹统一为“安全预览 → 自动确认唯一列车号/CT-CW/正式 MR 映射 → `mesh_bundle_import` Job → 隔离 Profile/SQLite 导入 → 路径复验 → 原子目录提交 → 成功 manifest”。非 ZIP 上传只在运行时缓存以 `ZIP_STORED` 封装成员边界，不做 DEFLATE 压缩；一次 Multipart 中允许多份同名 `meshlog.log`，每份使用唯一 `__uploads__/序号/文件名` 作为临时传输成员，并在 manifest 中单独保留原始名称/相对路径。临时传输路径不得进入正式归档名、来源文件名或普通 UI。用户 ZIP 自身仍拒绝重复成员路径。Preview 使用有 TTL/总容量限制的随机 ID，Renderer 不接收绝对路径；检查成员数、单文件/总解压量、压缩比、加密、符号链接、路径穿越和扩展名。每个成员的正文指纹只查询一次中央 `mesh_source_fingerprints`，预览不得为补历史指纹而读取既有 raw；未匹配 36 个候选时不得为每个候选预先扫描归档名。整批成功前不得发布成功 manifest，失败或取消恢复原 Profile/catalog。
+- 导入 UI 选择文件后立即显示逐文件占位、阶段和取消入口；默认支持“一次选择车载 MR”批量派生列车号、CT/CW 和内部 Profile，并只做一次整批确认。逐文件修正保留在高级区，不要求对每行重复输入和勾选。
 - 同一预览批次的业务成员统一使用批次内唯一且可复验的 `member_id`；Vue key、人工映射、批次重复关系、提交 payload、worker 解压定位和来源 provenance 都不得以 `original_name`、`safe_name` 或 `stored_filename` 代替。弹窗内直接显示结构化预览错误并允许保留已选文件重新预览，迟到请求按 generation 丢弃。
 - `source_files` 保存 `raw_relative_path`、`parsed_relative_path`、bundle/archive SHA 与成员 ID/SHA。读取优先使用当前 MR 相对路径，其次安全文件名、SHA、bundle 归档，最后才读旧绝对路径。当前来源重建走 `mesh_source_rebuild`，只恢复/替换一个 detail SQLite；`mesh_schema_rebuild` 是高级 Profile 全量重建，两者不能混用。
 - API 来源摘要明确区分三个标识：`source_file_id` 是索引库 `source_files.id` 数字值，用于分析查询、重建和导出；`source_action_id` 是受控 raw tail/来源操作的安全 ID，可以是哈希值；`bundle_member_id` 仅用于 ZIP manifest 成员恢复。旧 `source_id` 仅作为等同 `source_action_id` 的兼容别名，新客户端不得将其转换为导出 ID。
@@ -132,6 +133,7 @@ RSSI 数值按规则文件既定口径比较。两套 profile 当前 fping 平�
 - compact v3 `timestamp_tag` 唯一键、同毫秒多块顺序和旧派生 schema 显式重建；
 - ZIP 路径/压缩安全、预览 TTL、人工映射、隔离提交补偿、manifest 时机、SHA 幂等和绝对路径脱敏；
 - Multipart 四份同名 `meshlog.log` 的唯一 `member_id`、四行映射、同日连续预计序号、批次正文重复跳过、弹窗内错误重试，以及冻结 Backend 的真实 `FormData` 导入；
+- `scripts/maintenance/benchmark_mesh_analysis_loading.py` 提供 36 Profile / 1000 来源的隔离性能基准，同时输出旧遍历链和中央目录链的耗时、数据库/明细库打开次数、SQL 数与峰值内存；基准目录必须位于测试数据根并在默认结束时清理；
 - 单个 LOG/TXT/GZ 上传文件及 GZIP 解压正文上限统一为 25 MiB；批次总解压大小仍限制为 100 MiB，并继续执行压缩比、路径和成员数量检查；
 - Rate 原始值、Retry/Error 回退空值、切换前后 RSSI 事件散点以及图表卸载资源释放；
 - 可见窗口、全量下采样、切换锚点保留、请求点数自动提升、安全上限抽样告警和重复加载防抖；

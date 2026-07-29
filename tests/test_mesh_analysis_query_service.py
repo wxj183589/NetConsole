@@ -15,6 +15,7 @@ from netconsole.services.rail_transit.mesh_analysis_query_service import (
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
 from netconsole.services.job_center.job_registry import registered_task_types
 from netconsole.services.mesh_chart_payload import render_indices
+from netconsole.services.mesh_catalog_index_service import MeshCatalogIndexService
 from tests.mesh_analysis_test_support import EmptyBaseQuery, create_mesh_analysis_fixture
 
 
@@ -131,6 +132,34 @@ def test_reads_persisted_mesh_results_without_modifying_sources(tmp_path: Path) 
     assert anomalies.total >= 4
     assert location_snapshot.to_serializable() == []
     assert before == [_fingerprint(path) for path in protected]
+
+
+def test_catalog_index_serves_summary_and_page_without_opening_detail_databases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, _session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    MeshCatalogIndexService(paths).rebuild_now("demo")
+    service = MeshAnalysisQueryService(
+        paths,
+        base_query=EmptyBaseQuery(),  # type: ignore[arg-type]
+        schedule_catalog_index=False,
+    )
+    original = service._connect_readonly
+    opened: list[Path] = []
+
+    def counted(path: Path):
+        opened.append(path)
+        return original(path)
+
+    monkeypatch.setattr(service, "_connect_readonly", counted)
+    summary = service.get_summary("demo")
+    page = service.list_analysis_sessions("demo", page=1, page_size=1)
+
+    assert summary.session_count == 1
+    assert page.total == 1
+    assert all(not path.name.endswith(".mesh.sqlite") for path in opened)
+    assert len(opened) == 2
 
 
 def test_link_pagination_and_existing_artifact_metadata(tmp_path: Path) -> None:

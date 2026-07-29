@@ -2512,6 +2512,7 @@ class RailTransitWebApplicationService:
                     },
                 }
             },
+            context={"session_id": session_id},
         )
         return self._start_export(site_id, job, "mesh_analysis_report", reservation)
 
@@ -2575,6 +2576,7 @@ class RailTransitWebApplicationService:
                 "fallback_analysis_params": site_analysis_params,
             },
             context={
+                "session_id": session_id,
                 "source_file_id": context.detail_source_id,
                 "site_name": site_id,
                 "mr_name": context.mr_name,
@@ -2604,6 +2606,9 @@ class RailTransitWebApplicationService:
             deleted += 1
         if deleted == 0:
             raise RailTransitWebError("MESH_ARTIFACT_NOT_FOUND", "分析报告已不存在")
+        MeshCatalogRepository(
+            self.paths.mesh_catalog_path(site_id)
+        ).mark_session_index_dirty(session_id)
         return MeshArtifactDeleteResultDTO(artifact_id=artifact_id, name=name, deleted_files=deleted)
 
     def start_mesh_rebuild(self, site_id: str, session_id: str, *, explicit_confirmation: bool) -> RailTransitTaskDTO:

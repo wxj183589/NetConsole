@@ -4,6 +4,7 @@ from collections.abc import Mapping
 
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.mesh_bundle_import_service import MeshBundleImportService
+from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 
 
 def mesh_bundle_import(context: JobContext) -> dict[str, object]:
@@ -20,6 +21,9 @@ def mesh_bundle_import(context: JobContext) -> dict[str, object]:
         should_cancel=lambda: bool(context.should_cancel and context.should_cancel()),
         progress=context.progress,
     )
+    MeshCatalogRepository(
+        context.paths.mesh_catalog_path(site_name)
+    ).mark_index_pending()
     context.check_cancelled()
     return result
 

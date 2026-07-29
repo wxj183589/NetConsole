@@ -53,12 +53,11 @@ import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { useAvailablePanelHeight } from '../../composables/useAvailablePanelHeight'
 import { ApiRequestError } from '../../api/client'
 import {
-  applyMeshBundleImport, createMeshProfile, deleteMeshArtifact, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisParamsTemplate, getMeshAnalysisSession, getMeshAnalysisSummary, getMeshPeerSegmentChart, getMeshRawTail, getMeshTracksideSignalChart,
-  listMeshActiveBuildOrder, listMeshAnalysisSessions,
-  listMeshArtifacts, listMeshLinks, listMeshProfiles, listMeshSwitchEvents, meshArtifactDownloadRequest, previewMeshImport, rebuildMeshAnalysis,
+  applyMeshBundleImport, createMeshProfile, deleteMeshArtifact, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisOverview, getMeshAnalysisParamsTemplate, getMeshAnalysisSession, getMeshImportContext, getMeshPeerSegmentChart, getMeshRawTail, getMeshTracksideSignalChart,
+  listMeshActiveBuildOrder,
+  listMeshArtifacts, listMeshLinks, listMeshSwitchEvents, meshArtifactDownloadRequest, previewMeshImport, rebuildMeshAnalysis,
   prepareMeshImportContext, saveMeshAnalysisParams,
 } from '../../api/meshAnalysis'
-import { listVehicleMrs } from '../../api/railTransitBaseData'
 import { exportMeshAnalysisReport, getRailTransitTask, recoverRailTransitTasks } from '../../api/railTransitWeb'
 import type { MeshAnalysisParamsOverride } from '../../api/railTransitWeb'
 import { isFeatureEnabled } from '../../features'
@@ -221,7 +220,10 @@ const loadedTabs = reactive<Record<string, boolean>>({})
 const warningsExpanded = ref(false)
 const bundlePreview = ref<MeshBundlePreview | null>(null)
 const bundleMappings = reactive<Record<string, Omit<MeshBundleMapping, 'role'> & { role: '' | 'CT' | 'CW'; confirmed: boolean }>>({})
+const batchLinkedMrId = ref('')
+const batchMappingConfirmed = ref(false)
 const bundlePreviewLoading = ref(false)
+const importPreviewStage = ref('')
 const filters = reactive({ query: '', mr_role: '', has_warning: '' as '' | 'true' | 'false', page: 1, page_size: 50 })
 const buildOrderFilters = reactive({ page: 1, page_size: 100, sort_order: 'desc', radio: '', peer: '', station: '', build_result: '', pingpong_only: false })
 const linkFilters = reactive({ query: '', link_role: '', page: 1, page_size: 100, sort_order: 'asc' })
@@ -254,6 +256,7 @@ let importProfilesReadyPromise: Promise<void> | null = null
 let importContextGeneration = 0
 let profileLoadGeneration = 0
 let importPreviewGeneration = 0
+let importPreviewController: AbortController | null = null
 let profileNameManuallyEdited = false
 const reportedWorkloadPhases = new Set<string>()
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
@@ -285,6 +288,7 @@ const bundleCanApply = computed(() => Boolean(
   && bundlePreview.value.items.length > 0
   && bundlePreview.value.items.every((item) => Boolean(bundleMappings[item.member_id]))
   && bundlePreview.value.items.some((item) => previewImportState(item)?.duplicate_status === 'new')
+  && batchMappingConfirmed.value
   && bundlePreview.value.items.every((item) => bundleItemReady(item)),
 ))
 const bundleSubmitLabel = computed(() => (
@@ -303,7 +307,8 @@ const bundleValidationMessage = computed(() => {
   })
   if (blocked.length) return `有 ${blocked.length} 个文件内容已归属其他 MR 或批次内映射冲突，请检查 MR 映射。`
   const unresolved = bundlePreview.value.items.filter((item) => !bundleItemReady(item))
-  if (unresolved.length) return `还有 ${unresolved.length} 个文件未完成列车号、端位、对应车载 MR 和人工确认。`
+  if (unresolved.length) return `还有 ${unresolved.length} 个文件未完成列车号、端位或对应车载 MR。`
+  if (!batchMappingConfirmed.value) return '请核对批量映射结果并完成一次确认。'
   const newCount = bundlePreview.value.items.filter((item) => previewImportState(item)?.duplicate_status === 'new').length
   return newCount ? `可导入 ${newCount} 个新日志；重复内容将自动跳过且不占用序号。` : '所选日志均已导入，本次不会重复保存或分析。'
 })
@@ -907,13 +912,13 @@ async function refreshOverview(silent = false): Promise<void> {
   if (loading.value) return
   loading.value = !silent
   try {
-    const [nextSummary, page] = await Promise.all([
-      getMeshAnalysisSummary(),
-      listMeshAnalysisSessions({ ...filters, has_warning: filters.has_warning === '' ? null : filters.has_warning === 'true' }),
-    ])
-    summary.value = nextSummary
-    sessions.value = page.items
-    total.value = page.total
+    const overview = await getMeshAnalysisOverview({
+      ...filters,
+      has_warning: filters.has_warning === '' ? null : filters.has_warning === 'true',
+    })
+    summary.value = overview.summary
+    sessions.value = overview.sessions.items
+    total.value = overview.sessions.total
     error.value = ''
     failureCount = 0
   } catch (reason) {
@@ -1680,36 +1685,30 @@ async function loadProfiles(): Promise<void> {
   const generation = ++profileLoadGeneration
   profileLoadError.value = ''
   vehicleMrLoadError.value = ''
-  const vehicleMrsPromise = (async (): Promise<VehicleMr[]> => {
-    const rows: VehicleMr[] = []
-    let page = 1
-    while (true) {
-      const result = await listVehicleMrs({ page, page_size: 200 })
-      rows.push(...result.items)
-      if (rows.length >= result.total || result.items.length === 0) break
-      page += 1
-    }
-    return rows
-  })()
-  const [profileResult, vehicleMrResult] = await Promise.allSettled([
-    listMeshProfiles(),
-    vehicleMrsPromise,
-  ])
+  const [contextResult] = await Promise.allSettled([getMeshImportContext()])
   if (generation !== profileLoadGeneration) return
-  if (profileResult.status === 'fulfilled') profiles.value = profileResult.value
-  else profileLoadError.value = profileResult.reason instanceof Error
-    ? profileResult.reason.message
-    : 'MESH Profile 加载失败'
-  if (vehicleMrResult.status === 'fulfilled') baseMrs.value = vehicleMrResult.value
-  else vehicleMrLoadError.value = vehicleMrResult.reason instanceof Error
-    ? vehicleMrResult.reason.message
-    : '当前局点车载 MR 加载失败'
+  if (contextResult.status === 'fulfilled') {
+    profiles.value = contextResult.value.profiles
+    baseMrs.value = contextResult.value.vehicle_mrs
+  } else {
+    const message = contextResult.reason instanceof Error
+      ? contextResult.reason.message
+      : 'MESH 导入上下文加载失败'
+    profileLoadError.value = message
+    vehicleMrLoadError.value = message
+  }
   applyLinkedMrProfileName()
 }
 
-async function openImportDialog(): Promise<void> {
+function openImportDialog(): void {
   importVisible.value = true
-  await prepareImportContext()
+  if (!importProfilesReadyPromise) {
+    const promise = loadProfiles()
+    importProfilesReadyPromise = promise
+    void promise.finally(() => {
+      if (importProfilesReadyPromise === promise) importProfilesReadyPromise = null
+    })
+  }
 }
 
 async function prepareImportContext(): Promise<void> {
@@ -1806,6 +1805,31 @@ function applyLinkedMrProfileName(): void {
   }
 }
 
+function applyBatchMrMapping(): void {
+  batchMappingConfirmed.value = false
+  const mr = baseMrs.value.find((item) => item.id === batchLinkedMrId.value)
+  if (!mr || !bundlePreview.value) return
+  const profile = profiles.value.find((item) => (
+    item.linked_device_uuid === mr.id
+    || (mr.device_id !== null && item.linked_device_id === mr.device_id)
+  ))
+  const role = normalizeVehicleMrRole(mr)
+  const trainNumber = String(mr.train_no || '').trim().replace(/^列车\s*/i, '')
+  if (!profile || !role || !trainNumber) {
+    ElMessage.warning('所选 MR 缺少内部归属、列车号或 CT/CW 端位，请先准备导入上下文。')
+    return
+  }
+  for (const item of bundlePreview.value.items) {
+    bundleMappings[item.member_id] = {
+      member_id: item.member_id,
+      train_number: trainNumber,
+      role,
+      profile_id: profile.mr_id,
+      confirmed: false,
+    }
+  }
+}
+
 function markProfileNameEdited(value: string): void {
   profileNameManuallyEdited = String(value || '').trim() !== lastAutoFilledProfileName.value
 }
@@ -1867,8 +1891,13 @@ function chooseFiles(event: Event): void {
     return ['.zip', '.log', '.txt', '.gz'].some((suffix) => name.endsWith(suffix)) && isSafeRelativePath(relative)
   })
   importPreviewGeneration += 1
+  importPreviewController?.abort()
+  importPreviewController = null
+  importPreviewStage.value = selectedFiles.value.length ? '等待预览' : ''
   importPreviewError.value = ''
   bundlePreview.value = null
+  batchLinkedMrId.value = ''
+  batchMappingConfirmed.value = false
   for (const key of Object.keys(bundleMappings)) delete bundleMappings[key]
   input.value = ''
   if (selectedFiles.value.length) void previewImportFiles()
@@ -1878,16 +1907,22 @@ async function previewImportFiles(): Promise<void> {
   const files = [...selectedFiles.value]
   if (!files.length) return
   bundlePreviewLoading.value = true
+  importPreviewController?.abort()
+  const controller = new AbortController()
+  importPreviewController = controller
+  importPreviewStage.value = '正在上传并校验文件'
   importPreviewError.value = ''
   bundlePreview.value = null
+  batchMappingConfirmed.value = false
   for (const key of Object.keys(bundleMappings)) delete bundleMappings[key]
   error.value = ''
   try {
     await importProfilesReadyPromise
     if (generation !== importPreviewGeneration) return
-    const preview = await previewMeshImport(files)
+    const preview = await previewMeshImport(files, controller.signal)
     if (generation !== importPreviewGeneration) return
     bundlePreview.value = preview
+    importPreviewStage.value = '预览完成'
     for (const item of preview.items) {
       const firstCandidate = item.selected_profile_id || item.candidates[0]?.profile_id || ''
       bundleMappings[item.member_id] = {
@@ -1900,6 +1935,10 @@ async function previewImportFiles(): Promise<void> {
     }
   } catch (reason) {
     if (generation !== importPreviewGeneration) return
+    if (controller.signal.aborted) {
+      importPreviewStage.value = '已取消'
+      return
+    }
     bundlePreview.value = null
     importPreviewError.value = reason instanceof ApiRequestError && reason.code
       ? `${reason.code}：${reason.message}`
@@ -1907,8 +1946,19 @@ async function previewImportFiles(): Promise<void> {
         ? reason.message
         : 'MESH 日志预览失败'
   } finally {
-    if (generation === importPreviewGeneration) bundlePreviewLoading.value = false
+    if (generation === importPreviewGeneration) {
+      bundlePreviewLoading.value = false
+      if (importPreviewController === controller) importPreviewController = null
+    }
   }
+}
+
+function cancelImportPreview(): void {
+  importPreviewGeneration += 1
+  importPreviewController?.abort()
+  importPreviewController = null
+  bundlePreviewLoading.value = false
+  importPreviewStage.value = '已取消'
 }
 function profileCandidates(item: MeshBundlePreview['items'][number]): Array<{ profile_id: string; display_name: string }> {
   return item.candidates.length ? item.candidates : profiles.value.map((profile) => ({ profile_id: profile.mr_id, display_name: profile.display_name }))
@@ -1948,7 +1998,7 @@ function bundleItemReady(item: MeshBundlePreview['items'][number]): boolean {
   const state = previewImportState(item)
   if (state?.duplicate_status === 'duplicate_other_mr') return false
   if (state?.duplicate_status === 'duplicate_same_mr') return true
-  return mapping.confirmed
+  return true
 }
 function previewDuplicateLabel(item: MeshBundlePreview['items'][number]): string {
   if (item.batch_duplicate_of) return '批次内重复'
@@ -1962,8 +2012,13 @@ function previewStoredFilename(item: MeshBundlePreview['items'][number]): string
 }
 function clearImportSelection(): void {
   importPreviewGeneration += 1
+  importPreviewController?.abort()
+  importPreviewController = null
+  importPreviewStage.value = ''
   selectedFiles.value = []
   bundlePreview.value = null
+  batchLinkedMrId.value = ''
+  batchMappingConfirmed.value = false
   importPreviewError.value = ''
   for (const key of Object.keys(bundleMappings)) delete bundleMappings[key]
   if (fileInput.value) fileInput.value.value = ''
@@ -2232,29 +2287,47 @@ function buildResultLabel(value: string): string {
           <div class="jump-actions"><el-button @click="fileInput?.click()">选择 ZIP / LOG / GZ 文件</el-button><el-button @click="folderInput?.click()">选择文件夹</el-button><span>已选择 {{ selectedFiles.length }} 个文件</span></div>
           <input ref="fileInput" class="hidden-input" type="file" multiple accept=".zip,.log,.txt,.gz" @change="chooseFiles"><input ref="folderInput" class="hidden-input" type="file" multiple webkitdirectory @change="chooseFiles">
         </el-form-item>
+        <div v-if="selectedFiles.length && !bundlePreview" class="bundle-table-wrap">
+          <table class="bundle-table"><thead><tr><th>待预览文件</th><th>大小</th><th>状态</th></tr></thead><tbody>
+            <tr v-for="file in selectedFiles" :key="`${file.name}:${file.size}:${file.lastModified}`"><td>{{ file.name }}</td><td>{{ file.size }} B</td><td>{{ importPreviewStage }}</td></tr>
+          </tbody></table>
+          <el-button v-if="bundlePreviewLoading" size="small" @click="cancelImportPreview">取消预览</el-button>
+        </div>
         <div v-if="importPreviewError" class="jump-actions import-context-retry">
           <el-alert :title="`日志预览失败：${importPreviewError}`" type="error" :closable="false" show-icon />
           <el-button :icon="Refresh" :loading="bundlePreviewLoading" :disabled="selectedFiles.length === 0" @click="previewImportFiles">重新预览</el-button>
         </div>
-        <el-alert v-if="bundlePreviewLoading" title="正在识别日志并匹配当前局点车载 MR…" type="info" :closable="false" show-icon />
+        <el-alert v-if="bundlePreviewLoading" :title="`${importPreviewStage}；正在识别日志并匹配当前局点车载 MR…`" type="info" :closable="false" show-icon />
         <template v-if="bundlePreview">
           <el-divider content-position="left">日志自动映射</el-divider>
+          <el-form-item label="批量归属到车载 MR">
+            <el-select v-model="batchLinkedMrId" filterable clearable placeholder="选择一次，自动应用列车号、端位和内部归属" @change="applyBatchMrMapping">
+              <el-option v-for="mr in baseMrs" :key="mr.id" :label="vehicleMrOptionLabel(mr)" :value="mr.id" />
+            </el-select>
+          </el-form-item>
           <el-alert :title="bundleValidationMessage" :type="bundleCanApply ? 'success' : 'warning'" :closable="false" show-icon />
           <div class="bundle-table-wrap">
-            <table class="bundle-table"><thead><tr><th>原始文件 / 内容指纹</th><th>首条日志时间</th><th>预计归档文件名</th><th>列车号</th><th>端位</th><th>对应车载 MR</th><th>重复状态</th><th>确认</th></tr></thead><tbody>
+            <table class="bundle-table"><thead><tr><th>原始文件 / 内容指纹</th><th>首条日志时间</th><th>预计归档文件名</th><th>自动映射</th><th>重复状态</th></tr></thead><tbody>
               <tr v-for="(item, itemIndex) in bundlePreview.items" :key="item.member_id">
                 <td><strong>{{ item.original_name }}</strong><small v-if="item.original_relative_path">{{ item.original_relative_path }}</small><small>成员 {{ itemIndex + 1 }} · {{ item.member_id.slice(-8) }} · {{ item.size_bytes }} B · {{ (item.content_sha256 || item.sha256).slice(0, 12) }}…</small></td>
                 <td>{{ item.first_log_timestamp || '未识别' }}<small>{{ item.log_date || 'unknown_date' }}</small></td>
                 <td><strong>{{ previewStoredFilename(item) }}</strong><small v-if="previewImportState(item)?.rename_warning || item.rename_warning">{{ previewImportState(item)?.rename_warning || item.rename_warning }}</small></td>
-                <td><el-input v-model="bundleMappings[item.member_id].train_number" size="small" @input="bundleMappings[item.member_id].confirmed = false" /></td>
-                <td><el-select v-model="bundleMappings[item.member_id].role" size="small" @change="bundleMappings[item.member_id].confirmed = false"><el-option label="CT" value="CT" /><el-option label="CW" value="CW" /></el-select></td>
-                <td><el-select v-model="bundleMappings[item.member_id].profile_id" filterable size="small" @change="bundleMappings[item.member_id].confirmed = false"><el-option v-for="candidate in profileCandidates(item)" :key="candidate.profile_id" :label="candidate.display_name" :value="candidate.profile_id" /></el-select></td>
+                <td>{{ bundleMappings[item.member_id]?.train_number || '—' }} · {{ bundleMappings[item.member_id]?.role || '—' }}<small>{{ profiles.find((profile) => profile.mr_id === bundleMappings[item.member_id]?.profile_id)?.display_name || '未选择 MR' }}</small></td>
                 <td><el-tag :type="previewDuplicateLabel(item) === '新日志' ? 'success' : previewDuplicateLabel(item) === '内容属于其他 MR' ? 'danger' : 'warning'">{{ previewDuplicateLabel(item) }}</el-tag><small v-if="previewImportState(item)?.existing_stored_filename">已有：{{ previewImportState(item)?.existing_stored_filename }} · {{ previewImportState(item)?.existing_profile_name }}</small></td>
-                <td><el-checkbox v-model="bundleMappings[item.member_id].confirmed" :disabled="Boolean(item.batch_duplicate_of) || previewImportState(item)?.duplicate_status === 'duplicate_same_mr' || !bundleMappings[item.member_id].train_number.trim() || !bundleMappings[item.member_id].role || !bundleMappings[item.member_id].profile_id">人工确认</el-checkbox></td>
               </tr>
             </tbody></table>
             <p class="hint">预计归档文件名可能因并发导入在正式保存时自动顺延。</p>
           </div>
+          <el-checkbox v-model="batchMappingConfirmed">我已核对以上文件的列车号、端位和车载 MR 归属</el-checkbox>
+          <el-collapse>
+            <el-collapse-item title="高级：逐文件修正映射" name="advanced-mapping">
+              <div v-for="item in bundlePreview.items" :key="`mapping-${item.member_id}`" class="profile-grid">
+                <el-form-item :label="`${item.original_name} · 列车号`"><el-input v-model="bundleMappings[item.member_id].train_number" @input="batchMappingConfirmed = false" /></el-form-item>
+                <el-form-item label="端位"><el-select v-model="bundleMappings[item.member_id].role" @change="batchMappingConfirmed = false"><el-option label="CT" value="CT" /><el-option label="CW" value="CW" /></el-select></el-form-item>
+                <el-form-item label="对应车载 MR"><el-select v-model="bundleMappings[item.member_id].profile_id" filterable @change="batchMappingConfirmed = false"><el-option v-for="candidate in profileCandidates(item)" :key="candidate.profile_id" :label="candidate.display_name" :value="candidate.profile_id" /></el-select></el-form-item>
+              </div>
+            </el-collapse-item>
+          </el-collapse>
         </template>
         <el-collapse><el-collapse-item title="高级：无法匹配时创建内部归属" name="advanced-profile"><div class="profile-grid"><el-form-item label="显示名称"><el-input v-model="newProfileName" placeholder="例如：列车01-MR-CT" @input="markProfileNameEdited" /></el-form-item><el-form-item label="关联基础资料 MR（可选）"><el-select v-model="linkedMrId" clearable filterable><el-option v-for="mr in baseMrs" :key="mr.id" :label="vehicleMrOptionLabel(mr)" :value="mr.id" /></el-select></el-form-item><el-form-item label="备注"><el-input v-model="profileNotes" /></el-form-item></div><el-button :loading="taskLoading" :disabled="!newProfileName.trim()" @click="createProfile">创建内部归属</el-button></el-collapse-item></el-collapse>
       </el-form>
@@ -2302,7 +2375,7 @@ function buildResultLabel(value: string): string {
       <template #footer><el-button @click="linkExportVisible = false">取消</el-button><el-button @click="saveSiteAnalysisParams(linkExportParams)">保存为局点默认</el-button><el-button type="primary" :loading="taskLoading" @click="exportLinkDetails">开始导出</el-button></template>
     </el-dialog>
 
-    <section class="content-card sessions-panel" v-loading="loading">
+    <section class="content-card sessions-panel">
       <button class="sessions-toggle" type="button" :aria-expanded="sessionDetailsExpanded" @click="toggleSessionDetails">
         <el-icon><ArrowDown v-if="sessionDetailsExpanded" /><ArrowRight v-else /></el-icon>
         <strong>分析会话 · {{ total }} 个来源 · {{ summary?.train_count ?? 0 }} 列车 / {{ summary?.mr_count ?? 0 }} MR</strong>
@@ -2310,6 +2383,14 @@ function buildResultLabel(value: string): string {
         <el-tag v-if="task" size="small">任务 {{ task.status }}</el-tag>
       </button>
       <template v-if="sessionDetailsExpanded">
+        <el-alert
+          v-if="summary && summary.index_status !== 'ready'"
+          :title="summary.index_status === 'failed' ? '来源目录更新失败，当前显示最近一次可用结果。' : `正在后台整理来源目录，已索引 ${summary.indexed_session_count} 个来源，尚有 ${summary.pending_session_count} 个明细统计待补齐。`"
+          :type="summary.index_status === 'failed' ? 'warning' : 'info'"
+          :closable="false"
+          show-icon
+        />
+        <el-skeleton v-if="loading && !sessions.length" :rows="5" animated />
         <div v-if="task" class="task-card">
           <div class="task-line">
             <div class="task-copy"><strong>{{ task.action }}</strong><span>{{ task.task_id }}</span></div>

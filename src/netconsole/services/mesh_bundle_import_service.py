@@ -364,6 +364,7 @@ class MeshBundleImportService:
             reserved_sequences: dict[tuple[str, str], int] = {}
             for member in manifest.members:
                 match = match_by_member[member.member_id]
+                content_matches = self._find_content_sources(member, backfill=False)
                 batch_duplicate_of = first_member_by_content.get(member.content_sha256, "")
                 first_member_by_content.setdefault(member.content_sha256, member.member_id)
                 candidate_ids = match.candidate_profile_ids
@@ -372,13 +373,24 @@ class MeshBundleImportService:
                 if not candidate_ids:
                     candidate_ids = tuple(candidates)
                 profile_states = []
+                state_profile_ids = set(match.candidate_profile_ids)
+                if match.profile_id:
+                    state_profile_ids.add(match.profile_id)
+                if len(candidates) == 1:
+                    state_profile_ids.update(candidates)
+                state_profile_ids.update(
+                    str(item.get("profile_id") or "") for item in content_matches
+                )
                 for profile_id in candidate_ids:
+                    if profile_id not in state_profile_ids:
+                        continue
                     if profile_id not in candidates:
                         continue
                     state = self._preview_profile_state(
                         member,
                         profile_id,
                         candidates.get(profile_id, ""),
+                        content_matches,
                     )
                     if not batch_duplicate_of:
                         state = self._reserve_preview_sequence(
@@ -499,6 +511,7 @@ class MeshBundleImportService:
         member: MeshBundleMember,
         profile_id: str,
         profile_name: str,
+        matches: list[dict[str, object]] | None = None,
     ) -> dict[str, object]:
         catalog = MeshCatalogRepository(self.paths.mesh_catalog_path(self.site_name))
         profile = catalog.get_profile(profile_id)
@@ -508,7 +521,9 @@ class MeshBundleImportService:
                 "duplicate_status": "hash_failed",
                 "import_allowed": False,
             }
-        matches = self._find_content_sources(member, backfill=True)
+        matches = matches if matches is not None else self._find_content_sources(
+            member, backfill=False
+        )
         same = next((item for item in matches if item["profile_id"] == profile_id), None)
         other = next((item for item in matches if item["profile_id"] != profile_id), None)
         stored_filename, sequence, rename_status, rename_warning = suggest_mesh_archive_filename(
@@ -585,7 +600,7 @@ class MeshBundleImportService:
                     "DUPLICATE_CONTENT_CROSS_PROFILE",
                     "同一批次存在相同日志正文但映射到不同 MR，请检查 CT/CW、列车号和 MR 归属",
                 )
-            matches = self._find_content_sources(member, backfill=True)
+            matches = self._find_content_sources(member, backfill=False)
             same = next(
                 (item for item in matches if item["profile_id"] == mapping["profile_id"]),
                 None,
@@ -895,39 +910,23 @@ class MeshBundleImportService:
         *,
         backfill: bool,
     ) -> list[dict[str, object]]:
-        profiles = MeshCatalogRepository(
+        del backfill  # 历史缺失指纹由低优先级目录回填处理，预览不得读取历史原始日志。
+        rows = MeshCatalogRepository(
             self.paths.mesh_catalog_path(self.site_name)
-        ).list_profiles()
-        matches: list[dict[str, object]] = []
-        for profile in profiles:
-            database = self.paths.mesh_mr_db_path(self.site_name, profile.safe_folder_name)
-            try:
-                repository = MeshMrRepository(database)
-                if backfill:
-                    self._backfill_profile_fingerprints(profile, repository)
-                source = repository.find_by_content_sha256(
-                    member.content_sha256,
-                    raw_sha256=member.raw_sha256,
-                )
-            except MeshSchemaRebuildRequired:
-                source = self._find_legacy_content_source(database, member)
-            if source is None:
-                continue
-            source_id = int(source["id"])
-            matches.append(
-                {
-                    "source_id": source_id,
-                    "stored_filename": str(
-                        source.get("stored_filename")
-                        or source.get("archived_filename")
-                        or ""
-                    ),
-                    "profile_id": profile.mr_id,
-                    "profile_name": profile.display_name,
-                    "session_id": f"{profile.mr_id}:{source_id}",
-                }
-            )
-        return matches
+        ).find_source_fingerprints(
+            content_sha256=member.content_sha256,
+            raw_sha256=member.raw_sha256,
+        )
+        return [
+            {
+                "source_id": int(row["source_file_id"]),
+                "stored_filename": str(row.get("stored_filename") or ""),
+                "profile_id": str(row["mr_id"]),
+                "profile_name": str(row.get("profile_name") or ""),
+                "session_id": f"{row['mr_id']}:{int(row['source_file_id'])}",
+            }
+            for row in rows
+        ]
 
     @staticmethod
     def _find_legacy_content_source(

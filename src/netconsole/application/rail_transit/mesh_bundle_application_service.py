@@ -87,6 +87,16 @@ class MeshBundleApplicationService:
 
         warnings: list[str] = []
         skipped_count = 0
+        existing_by_uuid = {
+            str(item.linked_device_uuid or ""): item
+            for item in before.values()
+            if str(item.linked_device_uuid or "")
+        }
+        existing_by_device = {
+            int(item.linked_device_id): item
+            for item in before.values()
+            if item.linked_device_id is not None
+        }
         for mr in vehicle_mrs:
             try:
                 device_id = mr.device_id
@@ -94,10 +104,21 @@ class MeshBundleApplicationService:
                     skipped_count += 1
                     warnings.append("存在未绑定设备的基础资料 MR，已跳过同步。")
                     continue
+                existing = existing_by_uuid.get(str(mr.id or "").strip()) or existing_by_device.get(
+                    int(device_id)
+                )
+                display_name = str(mr.name or "").strip()
+                if (
+                    existing is not None
+                    and existing.display_name == display_name
+                    and existing.linked_device_id == int(device_id)
+                    and str(existing.linked_device_uuid or "") == str(mr.id or "").strip()
+                ):
+                    continue
                 storage.ensure_mr_profile_for_asset(
                     device_id=int(device_id),
                     device_uuid=str(mr.id or "").strip(),
-                    display_name=str(mr.name or "").strip(),
+                    display_name=display_name,
                 )
             except Exception as exc:
                 skipped_count += 1
@@ -144,6 +165,32 @@ class MeshBundleApplicationService:
             "updated_count": updated,
             "skipped_count": skipped_count,
             "warnings": list(dict.fromkeys(warnings)),
+        }
+
+    def get_import_context(self, site_id: str) -> dict[str, object]:
+        site_id = self._site(site_id)
+        from netconsole.services.mesh_catalog_index_service import MeshCatalogIndexService
+        from netconsole.core.runtime_environment import runtime_mode
+        from netconsole.core.runtime_mode import RuntimeMode
+
+        index_service = MeshCatalogIndexService(self.paths)
+        if runtime_mode() is RuntimeMode.TEST:
+            index_service.rebuild_now(site_id)
+        else:
+            index_service.schedule(site_id)
+        catalog = MeshCatalogRepository(self.paths.mesh_catalog_path(site_id))
+        profiles = catalog.list_profiles()
+        vehicle_mrs = self.base_data_query_service.list_mesh_import_context_mrs(site_id)
+        site_db = self.paths.site_db_path(site_id)
+        try:
+            revision = f"{site_db.stat().st_mtime_ns}:{site_db.stat().st_size}"
+        except OSError:
+            revision = "empty"
+        return {
+            "site_id": site_id,
+            "revision": revision,
+            "profiles": profiles,
+            "vehicle_mrs": vehicle_mrs,
         }
 
     def preview_bundle(
@@ -226,7 +273,9 @@ class MeshBundleApplicationService:
         with ExitStack() as stack:
             archive = stack.enter_context(SpooledTemporaryFile(max_size=16 * 1024 * 1024, mode="w+b"))
             total = 0
-            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+            # 直接选择的 LOG/GZ 已经是待导入原件；使用 STORE 仅封装成员边界，
+            # 避免用户在预览阶段先等待一次无业务价值的压缩。
+            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as bundle:
                 for internal_member_name, _original_name, source in normalized:
                     with bundle.open(internal_member_name, "w") as target:
                         while chunk := source.read(1024 * 1024):
