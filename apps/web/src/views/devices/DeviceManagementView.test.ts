@@ -11,6 +11,8 @@ describe('Device Management Web view', () => {
     expect(source).toContain('height="100%"')
     expect(source).not.toContain('max-width: 1720px')
     expect(source).not.toContain('height="calc(100vh - 380px)"')
+    expect(source).toContain('class="device-detail-drawer"')
+    expect(source).toContain(':global(.device-detail-drawer .el-drawer__body) { display: flex; min-height: 0; flex-direction: column; overflow: hidden; }')
   })
 
   it('covers loading, empty, error and success states', () => {

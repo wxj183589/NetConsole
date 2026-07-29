@@ -278,6 +278,7 @@ class DeviceFactRepository:
             params,
             limit=limit,
             offset=offset,
+            natural_order=True,
         )
 
     def get_device_interface(
@@ -636,6 +637,7 @@ class DeviceFactRepository:
         *,
         limit: int,
         offset: int,
+        natural_order: bool = False,
     ) -> tuple[list[dict[str, object | None]], int]:
         if table not in {
             "device_interfaces",
@@ -652,11 +654,25 @@ class DeviceFactRepository:
             total_row = conn.execute(
                 f"SELECT COUNT(*) AS total FROM {table} WHERE {where}", params
             ).fetchone()
-            rows = conn.execute(
-                f"SELECT * FROM {table} WHERE {where} "
-                f"ORDER BY {order_field} COLLATE NOCASE, id DESC LIMIT ? OFFSET ?",
-                [*params, size, start],
-            ).fetchall()
+            if natural_order:
+                conn.create_collation(
+                    "NETCONSOLE_INTERFACE_NATURAL",
+                    _compare_interface_names,
+                )
+                rows = conn.execute(
+                    f"SELECT * FROM {table} WHERE {where} "
+                    f"ORDER BY CASE WHEN TRIM(COALESCE({order_field}, '')) = '' "
+                    f"THEN 1 ELSE 0 END, "
+                    f"{order_field} COLLATE NETCONSOLE_INTERFACE_NATURAL, id ASC "
+                    "LIMIT ? OFFSET ?",
+                    [*params, size, start],
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"SELECT * FROM {table} WHERE {where} "
+                    f"ORDER BY {order_field} COLLATE NOCASE, id DESC LIMIT ? OFFSET ?",
+                    [*params, size, start],
+                ).fetchall()
         return (
             [dict(row) for row in rows],
             int(total_row["total"] if total_row is not None else 0),
@@ -793,6 +809,12 @@ class DeviceFactRepository:
     @staticmethod
     def _now() -> str:
         return datetime.now().isoformat(timespec="seconds")
+
+
+def _compare_interface_names(left: str, right: str) -> int:
+    left_key = interface_sort_key(left)
+    right_key = interface_sort_key(right)
+    return (left_key > right_key) - (left_key < right_key)
 
 
 def _latest_rows_by_interface(rows: list[dict[str, object | None]], field: str) -> list[dict[str, object | None]]:

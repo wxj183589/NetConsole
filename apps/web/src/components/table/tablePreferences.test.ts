@@ -4,12 +4,14 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   clearTablePreferences,
+  clearTablePreferencesAsync,
   loadTablePreferencesAsync,
   loadTablePreferences,
   MESH_LINK_DETAILS_V2_DEFAULT_ORDER,
   migrateVersionedPreference,
   reconcileTablePreferences,
   saveTablePreferences,
+  saveTablePreferencesAsync,
   tablePreferenceKey,
   type NcTablePreferenceIdentity,
   type NcTablePreferences,
@@ -53,7 +55,7 @@ describe('table preferences', () => {
       .toEqual(['name', 'status', 'actions'])
   })
 
-  it('drops invalid widths and fixed values while forcing non-hideable columns visible', () => {
+  it('falls back to defaults when a saved column contains invalid runtime values', () => {
     const normalized = reconcileTablePreferences(columns, {
       version: 1,
       order: ['name', 'status', 'actions'],
@@ -64,8 +66,8 @@ describe('table preferences', () => {
       ],
     })
     expect(normalized.columns).toEqual([
-      { key: 'name', visible: false, fixed: false },
-      { key: 'status', width: 180, visible: false, fixed: 'left' },
+      { key: 'name', visible: true, fixed: false },
+      { key: 'status', visible: true, fixed: 'right' },
       { key: 'actions', visible: true, fixed: 'right' },
     ])
   })
@@ -94,8 +96,46 @@ describe('table preferences', () => {
   it('ignores damaged or structurally invalid preferences', () => {
     expect(loadTablePreferences(identity, { getItem: () => '{broken' })).toBeUndefined()
     expect(loadTablePreferences(identity, {
+      getItem: () => JSON.stringify({ version: 2, order: ['name'], columns: [] }),
+    })).toBeUndefined()
+    expect(loadTablePreferences(identity, {
       getItem: () => JSON.stringify({ version: 1, order: [], columns: [{ key: 'name', width: -1 }] }),
-    })).toEqual({ version: 1, order: [], columns: [{ key: 'name', width: -1 }] })
+    })).toBeUndefined()
+    expect(loadTablePreferences(identity, {
+      getItem: () => JSON.stringify({ version: 1, order: [], columns: [{ key: 'name', visible: 'yes' }] }),
+    })).toBeUndefined()
+  })
+
+  it('uses stable isolated Electron keys for the device list and five detail tables', async () => {
+    const tableKeys = new Map([
+      ['device-list', 'device-management.device-list'],
+      ['device-detail-sections:interfaces', 'device-detail.interfaces'],
+      ['device-detail-sections:optical', 'device-detail.optical-modules'],
+      ['device-detail-sections:lldp', 'device-detail.lldp'],
+      ['device-detail-sections:tasks', 'device-detail.task-records'],
+      ['device-detail-sections:business', 'device-detail.related-businesses'],
+    ])
+    const getUiPreference = vi.fn().mockResolvedValue(preference)
+    const setUiPreference = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'netconsoleDesktop', {
+      configurable: true,
+      value: { getUiPreference, setUiPreference },
+    })
+
+    try {
+      for (const [tableId, key] of tableKeys) {
+        const tableIdentity = { ...identity, tableId }
+        await expect(loadTablePreferencesAsync(tableIdentity)).resolves.toEqual(preference)
+        expect(getUiPreference).toHaveBeenLastCalledWith(key)
+        await saveTablePreferencesAsync(tableIdentity, preference)
+        expect(setUiPreference).toHaveBeenLastCalledWith(key, preference)
+        await clearTablePreferencesAsync(tableIdentity)
+        expect(setUiPreference).toHaveBeenLastCalledWith(key, null)
+      }
+    } finally {
+      Reflect.deleteProperty(window, 'netconsoleDesktop')
+      localStorage.clear()
+    }
   })
 
   it('migrates a valid legacy session layout to the stable table key', () => {

@@ -2179,7 +2179,7 @@ function errorMessage(cause: unknown, fallback: string): string {
       </template>
     </el-dialog>
 
-    <el-drawer v-model="detailVisible" title="设备详情" :size="detailDrawerWidth" :class="{ 'is-detail-drawer-dragging': detailDrawerDragging }" @closed="endDrawerResize">
+    <el-drawer v-model="detailVisible" title="设备详情" :size="detailDrawerWidth" class="device-detail-drawer" :class="{ 'is-detail-drawer-dragging': detailDrawerDragging }" @closed="endDrawerResize">
       <div class="detail-drawer-resizer" role="separator" tabindex="0" aria-orientation="vertical" aria-label="调整设备详情宽度" :aria-valuenow="detailDrawerWidthPx || defaultDrawerWidth()" :aria-valuemin="drawerMinWidth()" :aria-valuemax="drawerMaxWidth()" @pointerdown="beginDrawerResize" @keydown="handleDrawerResizeKeydown" />
       <DeviceDetailPanel
         v-if="detailDeviceUuid"
@@ -2421,6 +2421,7 @@ function errorMessage(cause: unknown, fallback: string): string {
 .table-card strong, .table-card small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .table-card small { margin-top: 4px; color: var(--nc-text-tertiary); }
 .detail-body { min-height: 240px; }
+:global(.device-detail-drawer .el-drawer__body) { display: flex; min-height: 0; flex-direction: column; overflow: hidden; }
 .detail-drawer-resizer { position: absolute; z-index: 2; top: 0; bottom: 0; left: 0; width: 8px; cursor: col-resize; }
 .detail-drawer-resizer:hover { background: var(--el-color-primary-light-8); }
 .is-detail-drawer-dragging, .is-detail-drawer-dragging * { user-select: none; }

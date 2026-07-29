@@ -270,6 +270,12 @@ export const UI_PREFERENCE_KEYS = Object.freeze([
   'mesh-analysis.table.switch-events:v3',
   'mesh-analysis.table.artifacts:v2',
   'mesh-analysis.table.sources:v2',
+  'device-management.device-list',
+  'device-detail.interfaces',
+  'device-detail.optical-modules',
+  'device-detail.lldp',
+  'device-detail.task-records',
+  'device-detail.related-businesses',
 ] as const)
 
 export type UiPreferenceKey = typeof UI_PREFERENCE_KEYS[number]

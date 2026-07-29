@@ -240,8 +240,6 @@ const currentPage = computed(() => {
 
 const currentColumns = computed(() => selectedSection.value === 'overview' ? [] : columnsBySection[selectedSection.value])
 const currentRows = computed(() => currentPage.value?.items ?? [])
-const sectionTableHeight = computed(() => props.mode === 'page' ? 'max(320px, calc(100dvh - 390px))' : undefined)
-const sectionTableMaxHeight = computed(() => props.mode === 'drawer' ? 560 : undefined)
 const actionSections: DeviceDetailSection[] = ['interfaces', 'optical', 'lldp', 'configuration', 'tasks']
 const currentTableColumns = computed<NcTableColumn<DeviceDetailRecord>[]>(() => [
   ...(selectedSection.value === 'configuration' ? [{
@@ -1110,30 +1108,31 @@ function errorMessage(cause: unknown, fallback: string): string {
         <el-tabs v-model="selectedSection" class="device-detail-tabs" @tab-change="activateSection">
           <el-tab-pane v-for="section in visibleSections" :key="section" :label="sectionLabels[section]" :name="section">
             <template v-if="section === 'overview'">
-              <div class="section-actions">
-                <el-button :icon="Refresh" :disabled="!overview.command_profile?.executable" :title="!overview.command_profile?.executable ? `刷新不可用：${formatValue(overview.command_profile?.reason)}` : undefined" @click="refreshAll">刷新全部</el-button>
-                <el-button :icon="Refresh" plain @click="refreshCurrentSection">刷新概览</el-button>
-              </div>
-              <el-alert v-if="!overview.command_profile?.executable" :title="`刷新不可用：${formatValue(overview.command_profile?.reason)}`" type="warning" show-icon :closable="false" />
-              <el-descriptions :column="2" border>
-                <el-descriptions-item label="名称">{{ formatValue(overview.name) }}</el-descriptions-item>
-                <el-descriptions-item label="系统名">{{ formatValue(overview.system_name) }}</el-descriptions-item>
-                <el-descriptions-item label="主地址">{{ formatValue(overview.primary_address) }}</el-descriptions-item>
-                <el-descriptions-item label="备用地址">{{ formatValue(overview.backup_address) }}</el-descriptions-item>
-                <el-descriptions-item label="MAC">{{ formatValue(overview.mac_address) }}</el-descriptions-item>
-                <el-descriptions-item label="类型">{{ formatValue(overview.device_type) }}</el-descriptions-item>
-                <el-descriptions-item label="建设阶段">{{ formatEnumeratedValue('project_phase', overview.project_phase) }}</el-descriptions-item>
-                <el-descriptions-item label="投运状态">{{ formatEnumeratedValue('operation_status', overview.operation_status) }}</el-descriptions-item>
-                <el-descriptions-item label="状态说明">{{ formatValue(overview.operation_status_reason) }}</el-descriptions-item>
-                <el-descriptions-item label="状态更新时间">{{ formatTime(overview.operation_status_updated_at) }}</el-descriptions-item>
-                <el-descriptions-item label="站点">{{ formatValue(overview.station) }}</el-descriptions-item>
-                <el-descriptions-item label="位置">{{ formatValue(overview.location) }}</el-descriptions-item>
-                <el-descriptions-item label="连接状态">{{ formatValue(overview.connection_status) }}</el-descriptions-item>
-                <el-descriptions-item label="型号">{{ formatValue(overview.model) }}</el-descriptions-item>
-                <el-descriptions-item label="序列号">{{ formatValue(overview.serial_number) }}</el-descriptions-item>
-                <el-descriptions-item label="BootROM">{{ formatValue(overview.bootrom_version) }}</el-descriptions-item>
-                <el-descriptions-item label="运行时间">{{ formatValue(overview.uptime) }}</el-descriptions-item>
-              </el-descriptions>
+              <div class="device-detail-overview-pane">
+                <div class="section-actions">
+                  <el-button :icon="Refresh" :disabled="!overview.command_profile?.executable" :title="!overview.command_profile?.executable ? `刷新不可用：${formatValue(overview.command_profile?.reason)}` : undefined" @click="refreshAll">刷新全部</el-button>
+                  <el-button :icon="Refresh" plain @click="refreshCurrentSection">刷新概览</el-button>
+                </div>
+                <el-alert v-if="!overview.command_profile?.executable" :title="`刷新不可用：${formatValue(overview.command_profile?.reason)}`" type="warning" show-icon :closable="false" />
+                <el-descriptions :column="2" border>
+                  <el-descriptions-item label="名称">{{ formatValue(overview.name) }}</el-descriptions-item>
+                  <el-descriptions-item label="系统名">{{ formatValue(overview.system_name) }}</el-descriptions-item>
+                  <el-descriptions-item label="主地址">{{ formatValue(overview.primary_address) }}</el-descriptions-item>
+                  <el-descriptions-item label="备用地址">{{ formatValue(overview.backup_address) }}</el-descriptions-item>
+                  <el-descriptions-item label="MAC">{{ formatValue(overview.mac_address) }}</el-descriptions-item>
+                  <el-descriptions-item label="类型">{{ formatValue(overview.device_type) }}</el-descriptions-item>
+                  <el-descriptions-item label="建设阶段">{{ formatEnumeratedValue('project_phase', overview.project_phase) }}</el-descriptions-item>
+                  <el-descriptions-item label="投运状态">{{ formatEnumeratedValue('operation_status', overview.operation_status) }}</el-descriptions-item>
+                  <el-descriptions-item label="状态说明">{{ formatValue(overview.operation_status_reason) }}</el-descriptions-item>
+                  <el-descriptions-item label="状态更新时间">{{ formatTime(overview.operation_status_updated_at) }}</el-descriptions-item>
+                  <el-descriptions-item label="站点">{{ formatValue(overview.station) }}</el-descriptions-item>
+                  <el-descriptions-item label="位置">{{ formatValue(overview.location) }}</el-descriptions-item>
+                  <el-descriptions-item label="连接状态">{{ formatValue(overview.connection_status) }}</el-descriptions-item>
+                  <el-descriptions-item label="型号">{{ formatValue(overview.model) }}</el-descriptions-item>
+                  <el-descriptions-item label="序列号">{{ formatValue(overview.serial_number) }}</el-descriptions-item>
+                  <el-descriptions-item label="BootROM">{{ formatValue(overview.bootrom_version) }}</el-descriptions-item>
+                  <el-descriptions-item label="运行时间">{{ formatValue(overview.uptime) }}</el-descriptions-item>
+                </el-descriptions>
 
               <section class="detail-section">
                 <h3>平台事实</h3>
@@ -1204,49 +1203,53 @@ function errorMessage(cause: unknown, fallback: string): string {
                 <div class="section-actions"><el-button link @click="openTaskWindow(connectionTest?.task_id || '')">打开任务中心</el-button></div>
                 <el-alert v-if="connectionTest" :title="`${formatValue(connectionTest.protocol)} · ${formatValue(connectionTest.task_status)} · ${formatValue(connectionTest.message)}`" :type="statusType(connectionTest.success)" :description="`Task ID: ${formatValue(connectionTest.task_id)}${connectionTest.suggestion ? `；建议：${connectionTest.suggestion}` : ''}`" show-icon :closable="false" />
               </section>
+              </div>
             </template>
 
             <template v-else>
-              <div class="section-toolbar">
-                <el-input v-if="['interfaces', 'optical', 'lldp'].includes(section)" v-model="sectionQuery.search" clearable placeholder="搜索当前分区" @keyup.enter="loadSection(section, true)" />
-                <el-select v-if="section === 'optical'" v-model="sectionQuery.severity" clearable placeholder="全部严重性" @change="loadSection(section, true)"><el-option v-for="option in getSectionFilterOptions(section)" :key="option.value" :label="option.label" :value="option.value" /></el-select>
-                <el-select v-else-if="['interfaces', 'tasks'].includes(section) && getSectionFilterOptions(section).length" v-model="sectionQuery.status" clearable placeholder="全部状态" @change="loadSection(section, true)"><el-option v-for="option in getSectionFilterOptions(section)" :key="option.value" :label="option.label" :value="option.value" /></el-select>
-                <el-select v-if="section === 'interfaces'" v-model="sectionQuery.admin_status" clearable placeholder="全部管理状态" @change="loadSection(section, true)"><el-option v-for="option in binaryInterfaceStatusOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select>
-                <el-select v-if="section === 'interfaces'" v-model="sectionQuery.physical_status" clearable placeholder="全部物理状态" @change="loadSection(section, true)"><el-option v-for="option in binaryInterfaceStatusOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select>
-                <el-select v-if="section === 'interfaces'" v-model="sectionQuery.protocol_status" clearable placeholder="全部协议状态" @change="loadSection(section, true)"><el-option v-for="option in binaryInterfaceStatusOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select>
-                <el-select v-if="section === 'interfaces'" v-model="sectionQuery.media_type" clearable placeholder="全部介质类型" @change="loadSection(section, true)"><el-option v-for="option in interfaceMediaOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select>
-                <el-checkbox v-if="section === 'lldp'" v-model="sectionQuery.linked_only" @change="loadSection(section, true)">仅已关联</el-checkbox>
-                <el-select v-if="section === 'configuration'" v-model="sectionQuery.snapshot_type" clearable placeholder="全部快照" @change="loadSection(section, true)"><el-option v-for="option in getSectionFilterOptions(section)" :key="option.value" :label="option.label" :value="option.value" /></el-select>
-                <el-button v-if="section === 'configuration'" :disabled="configurationSelection.length !== 2" @click="compareConfigurationSnapshots">比较选中</el-button>
-                <el-button v-if="section === 'configuration' && savedArtifactCapability" @click="openSavedArtifact(false)">打开 Artifact</el-button>
-                <el-button v-if="section === 'configuration' && savedArtifactCapability" @click="openSavedArtifact(true)">所在目录</el-button>
-                <el-button :icon="Refresh" :loading="sectionLoading[section]" @click="refreshCurrentSection">刷新</el-button>
+              <div class="device-detail-section-pane">
+                <div class="section-toolbar">
+                  <el-input v-if="['interfaces', 'optical', 'lldp'].includes(section)" v-model="sectionQuery.search" clearable placeholder="搜索当前分区" @keyup.enter="loadSection(section, true)" />
+                  <el-select v-if="section === 'optical'" v-model="sectionQuery.severity" clearable placeholder="全部严重性" @change="loadSection(section, true)"><el-option v-for="option in getSectionFilterOptions(section)" :key="option.value" :label="option.label" :value="option.value" /></el-select>
+                  <el-select v-else-if="['interfaces', 'tasks'].includes(section) && getSectionFilterOptions(section).length" v-model="sectionQuery.status" clearable placeholder="全部状态" @change="loadSection(section, true)"><el-option v-for="option in getSectionFilterOptions(section)" :key="option.value" :label="option.label" :value="option.value" /></el-select>
+                  <el-select v-if="section === 'interfaces'" v-model="sectionQuery.admin_status" clearable placeholder="全部管理状态" @change="loadSection(section, true)"><el-option v-for="option in binaryInterfaceStatusOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select>
+                  <el-select v-if="section === 'interfaces'" v-model="sectionQuery.physical_status" clearable placeholder="全部物理状态" @change="loadSection(section, true)"><el-option v-for="option in binaryInterfaceStatusOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select>
+                  <el-select v-if="section === 'interfaces'" v-model="sectionQuery.protocol_status" clearable placeholder="全部协议状态" @change="loadSection(section, true)"><el-option v-for="option in binaryInterfaceStatusOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select>
+                  <el-select v-if="section === 'interfaces'" v-model="sectionQuery.media_type" clearable placeholder="全部介质类型" @change="loadSection(section, true)"><el-option v-for="option in interfaceMediaOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select>
+                  <el-checkbox v-if="section === 'lldp'" v-model="sectionQuery.linked_only" @change="loadSection(section, true)">仅已关联</el-checkbox>
+                  <el-select v-if="section === 'configuration'" v-model="sectionQuery.snapshot_type" clearable placeholder="全部快照" @change="loadSection(section, true)"><el-option v-for="option in getSectionFilterOptions(section)" :key="option.value" :label="option.label" :value="option.value" /></el-select>
+                  <el-button v-if="section === 'configuration'" :disabled="configurationSelection.length !== 2" @click="compareConfigurationSnapshots">比较选中</el-button>
+                  <el-button v-if="section === 'configuration' && savedArtifactCapability" @click="openSavedArtifact(false)">打开 Artifact</el-button>
+                  <el-button v-if="section === 'configuration' && savedArtifactCapability" @click="openSavedArtifact(true)">所在目录</el-button>
+                  <el-button :icon="Refresh" :loading="sectionLoading[section]" @click="refreshCurrentSection">刷新</el-button>
+                </div>
+                <el-alert v-if="sectionErrors[section]" :title="sectionErrors[section]" type="error" show-icon :closable="false" />
+                <div class="section-metadata"><span>刷新时间：{{ formatTime(currentPage?.fetched_at) }}</span><span>来源：{{ sourceLabel(currentPage?.source) }}</span><span>任务：{{ formatValue(currentPage?.task_id) }}</span><span v-if="currentPage?.truncated">结果已截断：{{ sourceReason(currentPage?.source) }}</span></div>
+                <div class="device-detail-table-host">
+                  <NcDataTable
+                    v-loading="sectionLoading[section]"
+                    table-id="device-detail-sections"
+                    route-key="/devices/:deviceId"
+                    :preference-scope="section"
+                    :data="currentRows"
+                    :columns="currentTableColumns"
+                    height="100%"
+                    empty-text="暂无数据"
+                  >
+                    <template #cell-selection="{ row }"><el-checkbox :model-value="configurationSelection.includes(Number(row.snapshot_id))" @change="(checked: boolean) => toggleConfigurationSelection(Number(row.snapshot_id), checked)" /></template>
+                    <template #cell-severity="{ row, columnDefinition }"><span :class="['optical-severity', opticalToneClass(row.severity)]">{{ formatEnumeratedValue(columnDefinition.key, row[columnDefinition.key], row) }}</span></template>
+                    <template #cell-status="{ row, columnDefinition }"><span :class="businessStatusClass(section, row)">{{ section === 'business' ? businessStatusText(row) : formatEnumeratedValue(columnDefinition.key, row[columnDefinition.key], row) }}</span></template>
+                    <template #cell-rx_power="{ row, columnDefinition }"><span :class="opticalRxPowerClass(section, columnDefinition.key, row)">{{ formatEnumeratedValue(columnDefinition.key, row[columnDefinition.key], row) }}</span></template>
+                    <template #cell-actions="{ row }">
+                      <el-button v-if="['interfaces', 'optical', 'lldp'].includes(section)" link :icon="View" @click="openHistory(section, row)">历史</el-button>
+                      <el-button v-if="section !== 'tasks'" link :icon="CopyDocument" @click="openRowDetail(section, row)">详情</el-button>
+                      <el-button v-if="section === 'tasks'" link @click="openTaskWindow(recordText(row, 'task_id'))">任务中心</el-button>
+                      <el-button v-if="section === 'configuration'" link @click="downloadConfigurationArtifact(row)">下载</el-button>
+                    </template>
+                  </NcDataTable>
+                </div>
+                <el-pagination v-if="currentPage?.total" :current-page="currentPage.page" :page-size="currentPage.page_size" :total="currentPage.total" :page-sizes="[20, 50, 100, 200]" layout="total, sizes, prev, pager, next" @current-change="(page: number) => { sectionQuery.page = page; loadSection(section) }" @size-change="(size: number) => { sectionQuery.page_size = size; sectionQuery.page = 1; loadSection(section) }" />
               </div>
-              <el-alert v-if="sectionErrors[section]" :title="sectionErrors[section]" type="error" show-icon :closable="false" />
-              <div class="section-metadata"><span>刷新时间：{{ formatTime(currentPage?.fetched_at) }}</span><span>来源：{{ sourceLabel(currentPage?.source) }}</span><span>任务：{{ formatValue(currentPage?.task_id) }}</span><span v-if="currentPage?.truncated">结果已截断：{{ sourceReason(currentPage?.source) }}</span></div>
-              <NcDataTable
-                v-loading="sectionLoading[section]"
-                table-id="device-detail-sections"
-                route-key="/devices/:deviceId"
-                :preference-scope="section"
-                :data="currentRows"
-                :columns="currentTableColumns"
-                :height="sectionTableHeight"
-                :max-height="sectionTableMaxHeight"
-                empty-text="暂无数据"
-              >
-                <template #cell-selection="{ row }"><el-checkbox :model-value="configurationSelection.includes(Number(row.snapshot_id))" @change="(checked: boolean) => toggleConfigurationSelection(Number(row.snapshot_id), checked)" /></template>
-                <template #cell-severity="{ row, columnDefinition }"><span :class="['optical-severity', opticalToneClass(row.severity)]">{{ formatEnumeratedValue(columnDefinition.key, row[columnDefinition.key], row) }}</span></template>
-                <template #cell-status="{ row, columnDefinition }"><span :class="businessStatusClass(section, row)">{{ section === 'business' ? businessStatusText(row) : formatEnumeratedValue(columnDefinition.key, row[columnDefinition.key], row) }}</span></template>
-                <template #cell-rx_power="{ row, columnDefinition }"><span :class="opticalRxPowerClass(section, columnDefinition.key, row)">{{ formatEnumeratedValue(columnDefinition.key, row[columnDefinition.key], row) }}</span></template>
-                <template #cell-actions="{ row }">
-                  <el-button v-if="['interfaces', 'optical', 'lldp'].includes(section)" link :icon="View" @click="openHistory(section, row)">历史</el-button>
-                  <el-button v-if="section !== 'tasks'" link :icon="CopyDocument" @click="openRowDetail(section, row)">详情</el-button>
-                  <el-button v-if="section === 'tasks'" link @click="openTaskWindow(recordText(row, 'task_id'))">任务中心</el-button>
-                  <el-button v-if="section === 'configuration'" link @click="downloadConfigurationArtifact(row)">下载</el-button>
-                </template>
-              </NcDataTable>
-              <el-pagination v-if="currentPage?.total" :current-page="currentPage.page" :page-size="currentPage.page_size" :total="currentPage.total" :page-sizes="[20, 50, 100, 200]" layout="total, sizes, prev, pager, next" @current-change="(page: number) => { sectionQuery.page = page; loadSection(section) }" @size-change="(size: number) => { sectionQuery.page_size = size; sectionQuery.page = 1; loadSection(section) }" />
             </template>
           </el-tab-pane>
         </el-tabs>
@@ -1278,24 +1281,31 @@ function errorMessage(cause: unknown, fallback: string): string {
 </template>
 
 <style scoped>
-.device-detail-panel { min-width: 0; }
-.device-detail-content { min-height: 280px; }
+.device-detail-panel { display: flex; min-width: 0; min-height: 0; height: 100%; flex-direction: column; overflow: hidden; }
+.device-detail-content { display: flex; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }
 .detail-heading { position: sticky; z-index: 5; top: 0; display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: -1px 0 16px; padding: 10px 0; background: var(--nc-bg-card); border-bottom: 1px solid var(--nc-border-light); }
+.device-detail-tabs { display: flex; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }
+.device-detail-tabs :deep(.el-tabs__header) { flex: none; }
+.device-detail-tabs :deep(.el-tabs__content) { min-height: 0; flex: 1; overflow: hidden; }
+.device-detail-tabs :deep(.el-tab-pane) { height: 100%; min-height: 0; }
+.device-detail-overview-pane { height: 100%; min-height: 0; padding-right: 4px; overflow: auto; }
+.device-detail-section-pane { display: flex; height: 100%; min-height: 0; flex-direction: column; overflow: hidden; }
+.device-detail-table-host { display: flex; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }
 .detail-heading h2, .detail-section h3 { margin: 0; }
 .detail-heading p { margin: 5px 0 0; color: var(--el-text-color-secondary); font-size: 12px; }
 .heading-actions, .section-actions, .section-toolbar, .metadata-row, .section-metadata { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .section-actions { margin-bottom: 14px; }
 .detail-section { margin-top: 22px; }
 .detail-section h3 { margin-bottom: 11px; font-size: 15px; }
-.section-toolbar { margin-bottom: 12px; }
+.section-toolbar { flex: none; margin-bottom: 12px; }
 .section-toolbar .el-input { width: min(320px, 100%); }
 .section-toolbar .el-select { width: 150px; }
-.metadata-row, .section-metadata { margin: 10px 0; color: var(--el-text-color-secondary); font-size: 12px; }
+.metadata-row, .section-metadata { flex: none; margin: 10px 0; color: var(--el-text-color-secondary); font-size: 12px; }
 .optical-tone-danger { color: var(--nc-danger); font-weight: 600; }
 .optical-tone-warning { color: var(--nc-warning); font-weight: 600; }
 .optical-tone-normal { color: var(--nc-success); }
 .optical-tone-neutral { color: var(--el-text-color-secondary); font-weight: 400; }
-.device-detail-panel :deep(.el-pagination) { justify-content: flex-end; padding: 14px 0 0; }
+.device-detail-section-pane > :deep(.el-pagination) { flex: none; justify-content: flex-end; padding: 14px 0 0; }
 .record-detail { max-height: 60vh; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--el-fill-color-light); border-radius: 6px; font: 12px/1.5 Consolas, "Microsoft YaHei", monospace; }
 @media (max-width: 760px) {
   .detail-heading { align-items: flex-start; flex-direction: column; }

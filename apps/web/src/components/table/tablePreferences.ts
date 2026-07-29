@@ -34,6 +34,12 @@ const STORAGE_PREFIX = 'netconsole.table-preferences.v2'
 const LEGACY_STORAGE_PREFIX = 'netconsole:table-layout:v1:'
 
 const BRIDGE_TABLE_KEYS: Record<string, UiPreferenceKey> = {
+  'device-list': 'device-management.device-list',
+  'device-detail-sections:interfaces': 'device-detail.interfaces',
+  'device-detail-sections:optical': 'device-detail.optical-modules',
+  'device-detail-sections:lldp': 'device-detail.lldp',
+  'device-detail-sections:tasks': 'device-detail.task-records',
+  'device-detail-sections:business': 'device-detail.related-businesses',
   'mesh-analysis-sessions:v2': 'mesh-analysis.table.sessions:v2',
   'mesh-analysis-active-build-order:v2': 'mesh-analysis.table.active-build-order:v2',
   'mesh-analysis-link-details:v2': 'mesh-analysis.table.link-details:v2',
@@ -109,12 +115,24 @@ function isPreference(value: unknown): value is NcTablePreferences {
   const candidate = value as Partial<NcTablePreferences>
   return candidate.version === 1
     && Array.isArray(candidate.order)
-    && candidate.order.every((item) => typeof item === 'string')
+    && candidate.order.length <= 256
+    && candidate.order.every((item) => typeof item === 'string' && item.length > 0 && item.length <= 128)
     && Array.isArray(candidate.columns)
+    && candidate.columns.length <= 256
     && candidate.columns.every((item) => {
       if (!item || typeof item !== 'object') return false
       const column = item as NcTableColumnPreference
       return typeof column.key === 'string'
+        && column.key.length > 0
+        && column.key.length <= 128
+        && (column.width === undefined || (
+          typeof column.width === 'number'
+          && Number.isFinite(column.width)
+          && column.width > 0
+          && column.width <= 10_000
+        ))
+        && (column.visible === undefined || typeof column.visible === 'boolean')
+        && (column.fixed === undefined || validFixed(column.fixed))
     })
 }
 

@@ -6,7 +6,7 @@ import {
   validateUiPreferenceValue,
 } from '../src/shared/validation'
 
-describe('RSSI layout UI preferences', () => {
+describe('UI preference validation', () => {
   it('allowlists the layout keys and accepts only the three layout modes', () => {
     expect(UI_PREFERENCE_KEYS).toContain('mesh-analysis-rssi.layout-mode')
     expect(validateUiPreferenceKey('mesh-analysis-rssi.layout-mode')).toBe(
@@ -22,6 +22,32 @@ describe('RSSI layout UI preferences', () => {
       'mesh-analysis-rssi.layout-mode',
       'fullscreen',
     )).toThrow('UI RSSI layout preference is invalid')
+  })
+
+  it('allowlists versioned device table preferences and validates their shape', () => {
+    const preference = {
+      version: 1,
+      order: ['name', 'status'],
+      columns: [
+        { key: 'name', width: 220, visible: true, fixed: 'left' },
+        { key: 'status', visible: false, fixed: false },
+      ],
+    }
+    for (const key of [
+      'device-management.device-list',
+      'device-detail.interfaces',
+      'device-detail.optical-modules',
+      'device-detail.lldp',
+      'device-detail.task-records',
+      'device-detail.related-businesses',
+    ] as const) {
+      expect(validateUiPreferenceKey(key)).toBe(key)
+      expect(validateUiPreferenceValue(key, preference)).toEqual(preference)
+    }
+    expect(() => validateUiPreferenceValue(
+      'device-detail.interfaces',
+      { ...preference, version: 2 },
+    )).toThrow('table preference version is invalid')
   })
 
   it('accepts only finite split ratios from 0.25 through 0.75', () => {

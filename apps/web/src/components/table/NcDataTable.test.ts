@@ -36,6 +36,7 @@ const ElTableColumn = defineComponent({
       'data-width': props.width,
       'data-align': props.align,
       'data-header-align': props.headerAlign,
+      'data-fixed': props.fixed || 'none',
     }, slots.default?.({ row: { name: 'AP01' }, $index: 0 }))
   },
 })
@@ -179,6 +180,56 @@ describe('NcDataTable', () => {
     await flushPromises()
     expect(wrapper.findAll('.el-table-column-stub:not(.nc-data-table__column--hidden)').map((item) => item.attributes('data-key'))).toEqual(['name', 'status'])
     expect(tableDoLayout).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('restores visibility, order, right pinning and manual width after remount', async () => {
+    const props = {
+      tableId: 'device-detail-sections',
+      routeKey: '/devices/:deviceId',
+      preferenceScope: 'interfaces',
+      language: 'zh-CN',
+      showColumnSettings: true,
+      data: [{ name: 'GE1/0/1', status: 'UP', description: 'uplink' }],
+      columns: [
+        { key: 'name', label: '接口', valueType: 'port' as const, minWidth: 120 },
+        { key: 'status', label: '状态', valueType: 'status' as const },
+        { key: 'description', label: '描述', valueType: 'description' as const },
+      ],
+    }
+    let wrapper = mount(NcDataTable, { props, global })
+    const settings = wrapper.findComponent({ name: 'NcColumnSettings' })
+
+    settings.vm.$emit('toggle', 'status', false)
+    settings.vm.$emit('move', 'description', -1)
+    settings.vm.$emit('pin', 'description')
+    settings.vm.$emit('pin', 'description')
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 140))
+    wrapper.getComponent(ElTable).vm.$emit(
+      'header-dragend',
+      260,
+      180,
+      { columnKey: 'name' },
+      new MouseEvent('mouseup'),
+    )
+    await flushPromises()
+    wrapper.unmount()
+
+    wrapper = mount(NcDataTable, { props, global })
+    await flushPromises()
+    const columns = wrapper.findAll('.el-table-column-stub')
+    expect(columns.map((column) => column.attributes('data-key'))).toEqual(['name', 'description'])
+    expect(columns[0].attributes('data-width')).toBe('260')
+    expect(columns[1].attributes('data-fixed')).toBe('right')
+
+    wrapper.findComponent({ name: 'NcColumnSettings' }).vm.$emit('pin', 'description')
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 140))
+    expect(JSON.parse(localStorage.getItem(tablePreferenceKey({
+      userKey: 'local-user',
+      routeKey: '/devices/:deviceId',
+      tableId: 'device-detail-sections:interfaces',
+      language: 'zh-CN',
+    })) || '{}').columns.find((column: { key: string }) => column.key === 'description').fixed).toBe(false)
     wrapper.unmount()
   })
 

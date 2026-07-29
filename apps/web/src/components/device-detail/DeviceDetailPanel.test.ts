@@ -92,10 +92,18 @@ describe('DeviceDetailPanel', () => {
     for (const removedColumnKey of ['ac_id', 'ac_name', 'ac_ip', 'ap_model', 'ap_state', 'switch_name', 'switch_interface', 'optical_severity', 'mr_name', 'mr_phase', 'mr_duration_seconds', 'mr_task_id']) {
       expect(businessColumns).not.toContain(`key: '${removedColumnKey}'`)
     }
-    expect(source).toContain(':height="sectionTableHeight"')
-    expect(source).toContain("props.mode === 'page' ? 'max(320px, calc(100dvh - 390px))'")
-    expect(source).not.toContain('820px')
-    expect(source).toContain("props.mode === 'drawer' ? 560")
+    expect(source).toContain('class="device-detail-section-pane"')
+    expect(source).toContain('class="device-detail-table-host"')
+    expect(source).toContain('height="100%"')
+    expect(source).toContain('.device-detail-panel { display: flex; min-width: 0; min-height: 0; height: 100%; flex-direction: column;')
+    expect(source).toContain('.device-detail-tabs { display: flex; min-height: 0; flex: 1; flex-direction: column;')
+    expect(source).toContain('.device-detail-section-pane { display: flex; height: 100%; min-height: 0; flex-direction: column;')
+    expect(source).toContain('.device-detail-table-host { display: flex; min-height: 0; flex: 1; flex-direction: column;')
+    expect(source).toContain('</NcDataTable>\n                </div>\n                <el-pagination')
+    expect(source).not.toContain('sectionTableHeight')
+    expect(source).not.toContain('sectionTableMaxHeight')
+    expect(source).not.toContain('calc(100dvh - 390px)')
+    expect(source).not.toContain(':max-height="sectionTableMaxHeight"')
   })
 
   it('centralizes missing value formatting and task client lifecycle', () => {

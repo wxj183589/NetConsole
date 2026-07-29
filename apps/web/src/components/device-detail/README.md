@@ -17,11 +17,15 @@
 
 组件依赖 Vue、Element Plus、NetConsole Design Token、`deviceManagement` API、统一 Task Store 和受控 Artifact 下载桥接。设备详情数据、分页、筛选枚举和任务状态来自后端 API/Task Store；组件不直接访问数据库、Agent、Electron Main/Preload 或 Python Service。
 
-能力事实、动态分区和历史记录统一使用 `NcDataTable`。分区和历史分别以 section/kind 作为偏好 scope，避免接口、光模块、LLDP、配置和任务列布局相互污染；固定首列、操作列、长文本对齐和列宽均由公共列定义表达，组件不直接声明 `el-table-column`。
+能力事实、动态分区和历史记录统一使用 `NcDataTable`。分区和历史分别以 section/kind 作为偏好 scope，避免接口、光模块、LLDP、配置和任务列布局相互污染；固定首列、操作列、长文本对齐和列宽均由公共列定义表达，组件不直接声明 `el-table-column`。接口、光模块、LLDP、任务记录和关联业务的正式 Electron 偏好键分别为 `device-detail.interfaces`、`device-detail.optical-modules`、`device-detail.lldp`、`device-detail.task-records` 和 `device-detail.related-businesses`；浏览器开发模式继续使用公共 localStorage 回退。偏好结构固定为 `version: 1` 和稳定列 key，保存显隐、顺序、固定方向与手工列宽；列增删通过当前代码定义合并，损坏或不兼容版本整体回退默认，“恢复默认布局”同时清除当前表的本地配置。
+
+抽屉 Body、共享 Panel、Tabs、活动 Pane 和表格宿主形成连续的纵向 flex 高度链，所有可收缩节点均保留 `min-height: 0`。筛选栏、错误提示和来源信息使用自然高度，表格宿主占用剩余空间并将横纵滚动留在 Element Plus 表体内，分页器作为表格宿主的同级元素紧随其后；概览页签单独在 Pane 内滚动。接口、光模块、LLDP、配置、任务记录和关联业务统一使用该策略，不再按抽屉/完整页写死表格高度或最大高度。
 
 ## 数据与状态
 
 打开抽屉或完整详情只读取数据库中的最近 overview 快照，不立即连接设备；其余页签首次激活后按后端 DTO 分页加载并缓存。筛选和分页值必须使用后端传输枚举，展示文案可以本地化。刷新通过 `device.inventory.collect` 进入现有 Task Center，组件通过共享 Task Store polling 跟踪状态，不另建 WebSocket 或第二套任务模型。任务完成、失败或取消后重新加载 overview 及已经加载的页签；请求使用 generation 防止切换设备、页签或筛选后的旧响应覆盖新状态。卸载时释放 Task Store polling，并清理本组件请求状态、图表和观察器。
+
+接口默认顺序由 Python Repository 在筛选后的完整结果上使用 `interface_sort_key()` 计算，再执行分页；前端不对当前页二次排序。比较时接口类型别名只用于排序键，端口层级和子接口数字按数值比较，原始接口名仍按 DTO 原样展示；无法解析的名称排在可解析接口之后，空名称最后。
 
 空值、`null` 和空字符串统一展示为“—”；数量 `0` 必须保留。接口表、详情和历史不展示入/出速率、入/出错误、CRC 错误、错误总数或最后变化；光模块不展示采集状态或内部阈值来源，严重性为正常时不展示原因，只有注意、告警、无光等异常状态显示原因。详情弹窗只展示白名单字段，不序列化任意 DTO。
 

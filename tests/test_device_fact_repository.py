@@ -168,6 +168,31 @@ def test_device_interfaces_use_logical_interface_sort(tmp_path):
     ]
 
 
+def test_device_interface_paging_sorts_complete_filtered_result_before_slicing(
+    tmp_path,
+):
+    repository = make_repository(tmp_path)
+    repository.replace_device_interfaces(
+        "device-1",
+        [
+            {"interface_name": f"gei-0/3/0/{index}", "media_type": "optical"}
+            for index in range(100, 0, -1)
+        ],
+    )
+
+    first_page, first_total = repository.list_device_interfaces_page(
+        "device-1", media_type="optical", limit=50, offset=0
+    )
+    second_page, second_total = repository.list_device_interfaces_page(
+        "device-1", media_type="optical", limit=50, offset=50
+    )
+
+    assert first_total == second_total == 100
+    assert [item["interface_name"] for item in [*first_page, *second_page]] == [
+        f"gei-0/3/0/{index}" for index in range(1, 101)
+    ]
+
+
 def test_list_interface_history_orders_by_collected_at_desc(tmp_path):
     repository = make_repository(tmp_path)
     repository.append_interface_history({"device_uuid": "device-1", "interface_name": "GE1/0/1", "collected_at": "2026-06-13T09:00:00", "link_status": "OLD"})
