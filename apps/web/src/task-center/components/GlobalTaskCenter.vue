@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import { Check, Close, Delete, Loading, MoreFilled, Tickets, View } from '@element-plus/icons-vue'
 
@@ -14,6 +14,7 @@ import {
   onTaskCenterOpenRequested,
   type TaskCenterOpenContext,
 } from '../events'
+import TaskDetailDrawer from './TaskDetailDrawer.vue'
 
 const GLOBAL_POLLING_CONSUMER = 'global-task-center'
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED', 'ABORTED', 'STOPPED'])
@@ -24,6 +25,9 @@ const store = useTaskStore()
 const workspace = useWorkspaceStore()
 const { confirm } = useConfirm()
 const drawerVisible = ref(false)
+const detailVisible = ref(false)
+const detailTaskId = ref('')
+const detailSource = ref<'notification' | 'global-list' | 'floating' | 'native'>('global-list')
 const drawerFilter = ref<'all' | 'active' | 'attention' | 'completed' | 'running' | 'queued'>('all')
 const focusedTaskId = ref('')
 const floatingMinimized = ref(false)
@@ -121,8 +125,8 @@ watch(
 )
 
 onMounted(async () => {
-  removeLocalOpenListener = onTaskCenterOpenRequested(openDrawer)
-  removeNativeOpenListener = getPlatformAdapter().onTaskCenterOpenRequested(openDrawer)
+  removeLocalOpenListener = onTaskCenterOpenRequested(openRequestedTaskCenter)
+  removeNativeOpenListener = getPlatformAdapter().onTaskCenterOpenRequested(openRequestedTaskCenter)
   await store.refresh()
   seedNotificationStates()
   notificationsReady = true
@@ -154,12 +158,35 @@ function sortDrawerTasks(left: TaskItem, right: TaskItem): number {
   return priority(left) - priority(right) || sortNewest(left, right)
 }
 
-function openDrawer(context: TaskCenterOpenContext = {}): void {
-  focusedTaskId.value = context.taskId || ''
-  drawerVisible.value = true
-  if (context.taskId && !store.tasks.some((task) => task.id === context.taskId)) {
-    void store.refresh()
+function openRequestedTaskCenter(context: TaskCenterOpenContext = {}): void {
+  if (context.taskId) {
+    openTaskDetail(context.taskId, 'native')
+    return
   }
+  openTaskSummaryDrawer()
+}
+
+function openTaskSummaryDrawer(): void {
+  detailVisible.value = false
+  focusedTaskId.value = ''
+  drawerVisible.value = true
+}
+
+function openTaskDetail(
+  taskId: string,
+  source: 'notification' | 'global-list' | 'floating' | 'native' = 'global-list',
+): void {
+  const normalizedTaskId = taskId.trim()
+  if (!normalizedTaskId) return
+  drawerVisible.value = false
+  focusedTaskId.value = normalizedTaskId
+  detailTaskId.value = normalizedTaskId
+  detailSource.value = source
+  detailVisible.value = true
+}
+
+function handleDetailLoadError(_taskId: string, message: string): void {
+  ElMessage.error(message)
 }
 
 function matchesDrawerFilter(task: TaskItem): boolean {
@@ -178,13 +205,9 @@ function dismissFloating(): void {
   floatingDismissedSignature.value = activeSignature.value
 }
 
-async function openFullTaskCenter(task?: TaskItem): Promise<void> {
+async function navigateToFullTaskCenter(): Promise<void> {
   drawerVisible.value = false
-  const query = new URLSearchParams()
-  const taskId = task?.id || focusedTaskId.value
-  if (taskId) query.set('task_id', taskId)
-  if (task?.module) query.set('module', task.module)
-  await workspace.openOrActivateRoute(`/tasks${query.size ? `?${query}` : ''}`)
+  await workspace.openOrActivateRoute('/tasks')
 }
 
 async function cancelTask(task: TaskItem): Promise<void> {
@@ -307,7 +330,7 @@ function taskCanDismiss(task: TaskItem): boolean {
 }
 
 function handleTaskMenu(command: string, task: TaskItem): void {
-  if (command === 'detail') void openFullTaskCenter(task)
+  if (command === 'detail') openTaskDetail(task.id)
   else if (command === 'acknowledge') void acknowledgeTask(task)
   else if (command === 'dismiss') void dismissTask(task)
 }
@@ -347,12 +370,30 @@ function notifyTaskTerminal(task: TaskItem): void {
   const foreground = document.visibilityState === 'visible' && document.hasFocus()
 
   if (foreground) {
-    ElNotification({
+    let notification: ReturnType<typeof ElNotification> | undefined
+    const showDetail = () => {
+      notification?.close()
+      openTaskDetail(task.id, 'notification')
+    }
+    notification = ElNotification({
       title,
-      message: body,
+      message: h('div', { class: 'nc-task-notification__content' }, [
+        h('p', { class: 'nc-task-notification__summary' }, body),
+        h('button', {
+          type: 'button',
+          class: 'nc-task-notification__detail',
+          'aria-label': `查看任务 ${task.name || task.id} 详情`,
+          onClick: (event: MouseEvent) => {
+            event.stopPropagation()
+            showDetail()
+          },
+        }, '查看详情'),
+      ]),
       type: kind === 'failure' ? 'error' : kind,
       duration: kind === 'success' ? 5000 : 0,
-      onClick: () => openDrawer({ taskId: task.id, module: task.module as TaskCenterOpenContext['module'] }),
+      position: 'top-right',
+      customClass: 'nc-task-notification',
+      appendTo: document.body,
     })
     return
   }
@@ -393,7 +434,7 @@ function terminalTitle(task: TaskItem, kind: 'success' | 'warning' | 'failure'):
           :class="['global-task-indicator', indicatorState]"
           :aria-label="`打开任务中心，运行中 ${activeTasks.length}，失败 ${failedTasks.length}`"
           data-testid="global-task-indicator"
-          @click="openDrawer()"
+          @click="openTaskSummaryDrawer"
         >
           <el-icon :class="{ spinning: indicatorState === 'active' }">
             <Loading v-if="indicatorState === 'active'" />
@@ -507,8 +548,14 @@ function terminalTitle(task: TaskItem, kind: 'success' | 'warning' | 'failure'):
               type="danger"
               @click="cancelTask(task)"
             >取消</el-button>
-            <el-button link type="primary" :icon="View" @click="openFullTaskCenter(task)">
-              {{ task.status === 'FAILED' ? '查看原因' : '查看详情' }}
+            <el-button
+              link
+              type="primary"
+              :icon="View"
+              :data-testid="`task-summary-detail-${task.id}`"
+              @click="openTaskDetail(task.id)"
+            >
+              查看详情
             </el-button>
           </div>
         </article>
@@ -518,10 +565,21 @@ function terminalTitle(task: TaskItem, kind: 'success' | 'warning' | 'failure'):
       <template #footer>
         <div class="task-drawer-footer">
           <el-button @click="store.manualRefresh">刷新</el-button>
-          <el-button type="primary" @click="openFullTaskCenter()">进入完整任务中心</el-button>
+          <el-button
+            type="primary"
+            data-testid="navigate-full-task-center"
+            @click="navigateToFullTaskCenter"
+          >进入完整任务中心</el-button>
         </div>
       </template>
     </el-drawer>
+
+    <TaskDetailDrawer
+      v-model="detailVisible"
+      :task-id="detailTaskId"
+      :source="detailSource"
+      @load-error="handleDetailLoadError"
+    />
 
     <aside
       v-if="showFloatingCard"
@@ -544,7 +602,12 @@ function terminalTitle(task: TaskItem, kind: 'success' | 'warning' | 'failure'):
         <el-progress :percentage="floatingProgress" :stroke-width="8" />
         <div class="floating-actions">
           <el-button link @click="floatingMinimized = true">后台运行</el-button>
-          <el-button link type="primary" @click="openDrawer({ taskId: primaryActiveTask?.id })">查看详情</el-button>
+          <el-button
+            link
+            type="primary"
+            data-testid="floating-task-detail"
+            @click="primaryActiveTask && openTaskDetail(primaryActiveTask.id, 'floating')"
+          >查看详情</el-button>
           <el-button
             v-if="primaryActiveTask?.cancellable"
             link
@@ -593,7 +656,7 @@ function terminalTitle(task: TaskItem, kind: 'success' | 'warning' | 'failure'):
 .task-drawer-item p.error { color: var(--nc-danger); }
 .task-item-actions { display: flex; justify-content: flex-end; gap: 4px; margin-top: 7px; }
 .task-drawer-footer { display: flex; justify-content: flex-end; gap: 8px; }
-.active-task-floating { position: fixed; z-index: 2050; right: 24px; bottom: 24px; width: min(360px, calc(100vw - 32px)); padding: 15px; border: 1px solid color-mix(in srgb, var(--nc-primary) 28%, var(--nc-border-light)); border-radius: 12px; background: var(--nc-bg-card); box-shadow: var(--nc-shadow-floating); }
+.active-task-floating { position: fixed; z-index: 1990; right: 24px; bottom: 24px; width: min(360px, calc(100vw - 32px)); padding: 15px; border: 1px solid color-mix(in srgb, var(--nc-primary) 28%, var(--nc-border-light)); border-radius: 12px; background: var(--nc-bg-card); box-shadow: var(--nc-shadow-floating); }
 .active-task-floating.minimized { width: auto; padding: 0; border: 0; border-radius: 999px; }
 .floating-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .floating-heading div { min-width: 0; }

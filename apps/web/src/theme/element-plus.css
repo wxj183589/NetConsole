@@ -133,3 +133,37 @@ html[data-theme="dark"] {
   background: var(--nc-bg-elevated);
   border-color: var(--nc-border);
 }
+
+.el-notification.nc-task-notification {
+  max-width: calc(100vw - 32px);
+}
+
+.nc-task-notification .nc-task-notification__content {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.nc-task-notification .nc-task-notification__summary {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--nc-text-secondary);
+  line-height: 1.55;
+}
+
+.nc-task-notification .nc-task-notification__detail {
+  justify-self: start;
+  padding: 0;
+  border: 0;
+  color: var(--nc-primary);
+  background: transparent;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.nc-task-notification .nc-task-notification__detail:hover,
+.nc-task-notification .nc-task-notification__detail:focus-visible {
+  color: var(--nc-primary-hover);
+  text-decoration: underline;
+}

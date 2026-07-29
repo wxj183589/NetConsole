@@ -2,7 +2,7 @@
 
 ## 任务中心与工作区窗口 DTO
 
-`openTaskWindow` 是保留给既有业务调用方的兼容方法，只接受可选的 `taskId`、`module`、`status`。`taskId` 仅允许受控 ID 字符，`module` 和 `status` 固定为任务契约枚举；未知字段和任意 URL、路径、程序或 argv 均拒绝。Main 不再创建任务专用窗口，只恢复主窗口并通过 `taskCenterOpenRequested` 通知 Vue 根布局打开任务中心抽屉。文件对话框以实际调用的受管窗口为父窗口。
+`openTaskWindow` 是保留给既有业务调用方的兼容方法，只接受可选的 `taskId`、`module`、`status`。`taskId` 仅允许受控 ID 字符，`module` 和 `status` 固定为任务契约枚举；未知字段和任意 URL、路径、程序或 argv 均拒绝。Main 不再创建任务专用窗口，只恢复主窗口并通过 `taskCenterOpenRequested` 通知 Vue 根布局：有 `taskId` 时直接打开当前页任务详情抽屉，无 `taskId` 时打开任务列表抽屉。文件对话框以实际调用的受管窗口为父窗口。
 
 `showTaskNotification` 只接受有界 `eventId/taskId/title/body/kind` DTO；Main 负责终态事件去重、Windows 原生通知和点击后恢复主窗口。`setTaskTrayStatus` 只接受 `0..999` 的 `active/failed/warning` 聚合计数，Electron 不读取任务数据库或维护第二套任务列表。普通 Browser Adapter 使用同一 Vue 抽屉，但上述原生通知和托盘动作安全降级为无操作。
 
@@ -36,7 +36,7 @@ Electron-only E1 已删除无生产调用者的 `QtDesktopAdapter`。Python `Des
 | `getAppInfo` | 无 | 只返回版本、平台、是否打包 | 状态展示 |
 | `getBackendStatus` | 无 | 不返回令牌 | 生命周期展示 |
 | `getRuntimeConfig` | 无 | 仅后端 `ready` 且受信 sender 可取 | Vue 内存 API 配置 |
-| `openTaskWindow` / `onTaskCenterOpenRequested` | 可选的受控 `taskId/module/status` / 固定回调 | 兼容入口只恢复主窗口并请求 Vue 打开抽屉，不创建 BrowserWindow | 业务页、托盘和通知点击定位任务 |
+| `openTaskWindow` / `onTaskCenterOpenRequested` | 可选的受控 `taskId/module/status` / 固定回调 | 兼容入口只恢复主窗口；有 taskId 打开当前页详情，无 taskId 打开列表，不创建 BrowserWindow | 业务页、托盘和通知点击定位任务 |
 | `showTaskNotification` | 有界终态通知 DTO | sender、字段、长度和事件 ID 白名单；Main 内存去重 | 应用在后台时显示 Windows 通知 |
 | `setTaskTrayStatus` | 运行/失败/告警聚合计数 | 只接受 `0..999` 整数，不接收任务明细 | 托盘任务数量与提示 |
 | `openWorkspaceWindow` | 受控内部路由、已清理标题 | preload/main 校验路由和标题；Main 创建受管窗口，复用唯一 Backend | 当前标签或 Dashboard 在独立工作区打开 |

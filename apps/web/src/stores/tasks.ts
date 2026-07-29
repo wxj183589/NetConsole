@@ -26,6 +26,7 @@ export const useTaskStore = defineStore('tasks', () => {
   const selected = selectedDetail
   const logs = ref<TaskLogLine[]>([])
   const loading = ref(false)
+  const detailLoading = ref(false)
   const error = ref('')
   const detailError = ref('')
   const logError = ref('')
@@ -35,6 +36,7 @@ export const useTaskStore = defineStore('tasks', () => {
   let detailVisible = false
   let listBusy = false
   let detailBusy = false
+  let detailContextGeneration = 0
   let logContextGeneration = 0
   let activeLogRequest: { generation: number; taskId: string } | null = null
   let listTimer: number | null = null
@@ -75,23 +77,47 @@ export const useTaskStore = defineStore('tasks', () => {
   }
 
   async function selectTask(id: string): Promise<void> {
-    selected.value = await getTask(id)
+    const taskId = id.trim()
+    const generation = ++detailContextGeneration
     detailVisible = true
     detailError.value = ''
+    detailLoading.value = true
+    selected.value = null
     logs.value = []
     logError.value = ''
     logContextGeneration += 1
     activeLogRequest = null
-    setLogsExpanded(true)
+    setLogsExpanded(false)
+    try {
+      const detail = await getTask(taskId)
+      if (generation !== detailContextGeneration || !detailVisible) return
+      selected.value = detail
+      setLogsExpanded(true)
+    } catch (cause) {
+      if (generation !== detailContextGeneration || !detailVisible) return
+      detailError.value = cause instanceof Error ? cause.message : '任务详情加载失败'
+      throw cause
+    } finally {
+      if (generation === detailContextGeneration) detailLoading.value = false
+    }
   }
 
   async function refreshSelected(): Promise<void> {
     if (!detailVisible || !selected.value || detailBusy) return
+    const generation = detailContextGeneration
+    const taskId = selected.value.id
     detailBusy = true
     try {
-      selected.value = await getTask(selected.value.id)
+      const detail = await getTask(taskId)
+      if (
+        generation !== detailContextGeneration
+        || !detailVisible
+        || selected.value?.id !== taskId
+      ) return
+      selected.value = detail
       detailError.value = ''
     } catch (cause) {
+      if (generation !== detailContextGeneration || selected.value?.id !== taskId) return
       detailError.value = cause instanceof Error ? cause.message : '任务详情刷新失败'
     } finally {
       detailBusy = false
@@ -188,9 +214,15 @@ export const useTaskStore = defineStore('tasks', () => {
   function setDetailVisible(value: boolean): void {
     detailVisible = value
     if (!value) {
+      detailContextGeneration += 1
       logContextGeneration += 1
       activeLogRequest = null
       setLogsExpanded(false)
+      detailLoading.value = false
+      selected.value = null
+      logs.value = []
+      detailError.value = ''
+      logError.value = ''
     }
   }
 
@@ -305,9 +337,11 @@ export const useTaskStore = defineStore('tasks', () => {
     if (!dismissed.size) return
     tasks.value = tasks.value.filter((task) => !dismissed.has(task.id))
     if (selected.value && dismissed.has(selected.value.id)) {
+      detailContextGeneration += 1
       selected.value = null
       logs.value = []
       detailVisible = false
+      detailLoading.value = false
       logContextGeneration += 1
       activeLogRequest = null
     }
@@ -335,6 +369,7 @@ export const useTaskStore = defineStore('tasks', () => {
     selectedDetail,
     logs,
     loading,
+    detailLoading,
     error,
     detailError,
     logError,

@@ -263,6 +263,48 @@ describe('Job Center polling store', () => {
     vi.useRealTimers()
   })
 
+  it('keeps the newest detail when an earlier task response arrives late', async () => {
+    let resolveTaskA: ((value: TaskItem) => void) | undefined
+    let resolveTaskB: ((value: TaskItem) => void) | undefined
+    vi.mocked(getTask).mockImplementation((id) => new Promise((resolve) => {
+      if (id === 'task-A') resolveTaskA = resolve
+      else resolveTaskB = resolve
+    }))
+    const store = useTaskStore()
+
+    const taskA = store.selectTask('task-A')
+    const taskB = store.selectTask('task-B')
+    resolveTaskB?.({ ...task, id: 'task-B', name: '任务 B' })
+    await taskB
+    expect(store.selected?.id).toBe('task-B')
+
+    resolveTaskA?.({ ...task, id: 'task-A', name: '任务 A' })
+    await taskA
+    expect(store.selected?.id).toBe('task-B')
+    expect(store.detailLoading).toBe(false)
+  })
+
+  it('clears selected detail and logs when the detail drawer closes', async () => {
+    const store = useTaskStore()
+    await store.selectTask(task.id)
+    store.logs = [{
+      sequence: 1,
+      time: task.updated_time,
+      level: 'INFO',
+      type: 'log',
+      source: 'worker',
+      message: '旧日志',
+    }]
+
+    store.setDetailVisible(false)
+
+    expect(store.selected).toBeNull()
+    expect(store.logs).toEqual([])
+    expect(store.logsExpanded).toBe(false)
+    expect(store.detailError).toBe('')
+    expect(store.logError).toBe('')
+  })
+
   it('does not overlap list requests and reports after three failures', async () => {
     let rejectRequest: ((reason?: unknown) => void) | undefined
     vi.mocked(listTasks).mockImplementation(() => new Promise((_, reject) => { rejectRequest = reject }))

@@ -2,7 +2,7 @@
 
 ## 全局任务中心
 
-Electron 复用同一 Vue Renderer、FastAPI 会话和 `TaskApplicationService -> TaskRepository -> tasks.db`。全局任务入口、右侧抽屉和合并进度浮层均位于 Vue 根布局，完整任务中心位于主工作区 `/tasks`；不再创建任务专用 `BrowserWindow`。严格的 `taskId/module/status` DTO 仅用于恢复主窗口、打开抽屉和定位任务；关闭抽屉或业务标签不取消后台任务。
+Electron 复用同一 Vue Renderer、FastAPI 会话和 `TaskApplicationService -> TaskRepository -> tasks.db`。全局任务入口、右侧任务列表抽屉、完整任务详情抽屉和合并进度浮层均位于 Vue 根布局，完整历史/筛选页面位于主工作区 `/tasks`；不再创建任务专用 `BrowserWindow`。严格的 `taskId/module/status` DTO 仅用于恢复主窗口：有 `taskId` 时直接在当前页面打开可复用详情抽屉，无 `taskId` 时打开任务列表抽屉，不创建工作区标签或切换路由；关闭抽屉或业务标签不取消后台任务。
 
 任务动作以后端 owner capability 为准。当前统一停止入口只显式路由到设备管理、配置采集和文件管理既有 Application Service；其他 owner 保持禁用，不回退到通用 cancel 文件。设备 Export 只有在当前服务仍持有匹配的 Export spec、持久化 Job cancel 路径和活跃进程时才能确认 `STOPPING`。Artifact 使用强类型 DTO 携带不透明标识、正式显示名、大小、类型和受控 API 请求，经既有 Electron 流式下载、临时文件及原子替换保存；统一 DTO 和日志均不向 Renderer 返回服务端绝对路径。
 
@@ -20,7 +20,7 @@ Electron 复用同一 Vue Renderer、FastAPI 会话和 `TaskApplicationService -
 
 局点重启前，Renderer 先持久化仅保留 Dashboard 与系统设置的快照；`WorkspaceWindowController` 再对所有受管窗口执行同一局点边界清理并保留回滚副本。`PythonBackendManager` ready 后，Main 读取新 Backend 的当前局点再次核对目标；不一致或启动失败会恢复原 Backend 和窗口快照。成功时才清除旧 MESH Renderer recovery/workload 并重新加载所有窗口，避免旧 `session_id`、KeepAlive 实例或多窗口业务标签跨局点恢复。
 
-Windows 下启动时会创建 `TrayController`，图标统一由 `resolveTrayIconPath()` 解析：源码态取仓库 `resources/branding/netconsole.ico`，安装包从 `extraResources/branding/netconsole.ico` 读取。菜单包含打开主窗口、新建工作区、打开任务中心、运行/失败任务数量、脱敏的 Backend/当前局点状态、关闭到通知区域开关和“退出 NetConsole”。Vue 只向 Main 推送聚合计数；Main 不查询任务数据库。前台终态使用 Vue 通知，后台终态使用有界 Windows 原生通知；通知点击后恢复主窗口并定位任务。图标不可用或创建失败时托盘设置运行时不可用，主窗口不会被隐藏，避免留下无法恢复的后台进程。
+Windows 下启动时会创建 `TrayController`，图标统一由 `resolveTrayIconPath()` 解析：源码态取仓库 `resources/branding/netconsole.ico`，安装包从 `extraResources/branding/netconsole.ico` 读取。菜单包含打开主窗口、新建工作区、打开任务中心、运行/失败任务数量、脱敏的 Backend/当前局点状态、关闭到通知区域开关和“退出 NetConsole”。Vue 只向 Main 推送聚合计数；Main 不查询任务数据库。前台终态使用显式加载样式、挂载到 `document.body` 的 Vue Notification，后台终态使用有界 Windows 原生通知；两类通知的详情入口都恢复/保留当前主页面并直接打开任务详情抽屉。图标不可用或创建失败时托盘设置运行时不可用，主窗口不会被隐藏，避免留下无法恢复的后台进程。
 
 默认启用“关闭主窗口后驻留通知区域”。主窗口关闭会隐藏而不停止 Backend 或后台任务，附加工作区窗口正常销毁；所有普通窗口不可见时，托盘、Backend 和后台业务任务继续存在。只有托盘“退出 NetConsole”（以及显式系统关闭信号）进入单次受控退出：先 flush 工作区/偏好、拒绝新窗口、关闭受管窗口和 Tray，再停止下载、Backend 与会话授权。关闭该设置后，最后一个可见普通业务窗口触发相同的受控退出。
 
