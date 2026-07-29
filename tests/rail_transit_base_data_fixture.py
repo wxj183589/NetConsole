@@ -28,7 +28,7 @@ def build_rail_transit_base_data_fixture(tmp_path: Path) -> tuple[PathResolver, 
             """,
             [
                 ("mr-01-ct", "列车01-MR-CT", "MR01CT", "0011-2233-4401", "列车01车头", group_id, "10.10.0.1", "private-user", "private-pass", "正式 MR", now, now),
-                ("mr-01-cw", "列车01-MR-CW", "MR01CW", "0011-2233-4402", "列车01车尾", group_id, "10.10.0.1", "private-user", "private-pass", "正式 MR", now, now),
+                ("mr-01-cw", "列车01-MR-CW", "MR01CW", "0011-2233-4402", "列车01车尾", group_id, "10.10.0.2", "private-user", "private-pass", "正式 MR", now, now),
                 ("mr-temp", "临时目标", "TEMP", "", "", group_id, "10.10.0.3", "private-user", "private-pass", "Agent 临时名称", now, now),
             ],
         )
@@ -49,6 +49,7 @@ def build_rail_transit_base_data_fixture(tmp_path: Path) -> tuple[PathResolver, 
             ],
         )
         conn.commit()
+    database.initialize()
     with database.connect() as conn:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     paths.app_config_path.parent.mkdir(parents=True, exist_ok=True)

@@ -18,7 +18,7 @@ SCAN_DIRS = ("src/netconsole", "apps/agent/mr_collector_py")
 TEXT_SUFFIXES = {".py"}
 SKIP_PATH_PARTS = {"build", "__pycache__"}
 DEFERRED_PROFILE_MIGRATION_COMMANDS: set[tuple[str, str]] = set()
-EXPECTED_LOG_MESSAGE_COMMANDS = {
+EXPECTED_NON_COMMAND_LITERALS = {
     (
         "src/netconsole/services/h3c_ac_collect_service.py",
         "display wlan ap unauthenticated failed",
@@ -26,6 +26,10 @@ EXPECTED_LOG_MESSAGE_COMMANDS = {
     (
         "src/netconsole/services/netmiko_connection.py",
         "display clock failed",
+    ),
+    (
+        "src/netconsole/utils/interface_sort.py",
+        "display name",
     ),
 }
 
@@ -323,7 +327,7 @@ def is_expected_noise(command: str, path: Path) -> bool:
         return True
     if text in {"display ", "iperf3", "iperf3.exe", "fping_v3.exe", "restful api", "winscp.exe"}:
         return True
-    if (relative.as_posix(), text) in EXPECTED_LOG_MESSAGE_COMMANDS:
+    if (relative.as_posix(), text) in EXPECTED_NON_COMMAND_LITERALS:
         return True
     if text.startswith("iperf3") and re.search(r"[\u4e00-\u9fff]", text):
         return True

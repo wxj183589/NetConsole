@@ -115,6 +115,7 @@ def test_empty_python_entrypoint_dispatches_electron_desktop(capsys, monkeypatch
 
 def test_empty_frozen_backend_entrypoint_rejects_standalone_launch(capsys, monkeypatch) -> None:
     from netconsole import entrypoint
+    from netconsole.core import app_logger
     from netconsole.launcher import electron_desktop
 
     monkeypatch.setattr(sys, "argv", ["NetConsoleBackend.exe"])
@@ -125,7 +126,7 @@ def test_empty_frozen_backend_entrypoint_rejects_standalone_launch(capsys, monke
         lambda: pytest.fail("冻结后端不得启动源码 Electron 开发链"),
     )
     events: list[tuple[str, str]] = []
-    monkeypatch.setattr(entrypoint.app_logger, "log_error", lambda event, detail: events.append((event, detail)))
+    monkeypatch.setattr(app_logger, "log_error", lambda event, detail: events.append((event, detail)))
     dialogs: list[bool] = []
     monkeypatch.setattr(entrypoint, "_show_managed_backend_standalone_message", lambda: dialogs.append(True))
 

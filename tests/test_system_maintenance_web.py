@@ -15,6 +15,7 @@ from netconsole.application.system_maintenance import (
 )
 from netconsole.application.web_artifacts import WebArtifactStore
 from netconsole.backend.api.main import create_app
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.infrastructure.desktop import UnavailableDesktopAdapter
@@ -36,6 +37,7 @@ def _paths(tmp_path: Path) -> PathResolver:
     paths = PathResolver(app_root=app_root, data_root=tmp_path)
     paths.ensure_project_dirs()
     paths.ensure_site_dirs("demo")
+    Database(paths.site_db_path("demo")).initialize()
     return paths
 
 

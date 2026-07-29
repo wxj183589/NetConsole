@@ -388,6 +388,7 @@ def test_online_mr_session_action_api_rejects_browser_location_and_confirms_dele
     paths.ensure_site_dirs("demo")
     paths.config_dir.mkdir(parents=True, exist_ok=True)
     paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    Database(paths.site_db_path("demo")).initialize()
     session = _online_mr_session(paths, "session-api-delete")
     app = create_app(
         RuntimeMode.SERVER,
@@ -1480,6 +1481,7 @@ def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_i
     paths.ensure_site_dirs("demo")
     paths.config_dir.mkdir(parents=True, exist_ok=True)
     paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    Database(paths.site_db_path("demo")).initialize()
     app = create_app(
         RuntimeMode.SERVER,
         paths=paths,

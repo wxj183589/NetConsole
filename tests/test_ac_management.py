@@ -4216,8 +4216,8 @@ def test_trackside_ap_optical_status_uses_default_profile_without_thresholds():
     )
 
     assert rows[0]["ap_rx_power"] == "-14.41"
-    assert rows[0]["ap_optical_status"] == "notice"
-    assert format_trackside_display_value("ap_optical_status", rows[0]) == "偏低关注"
+    assert rows[0]["ap_optical_status"] == "abnormal"
+    assert format_trackside_display_value("ap_optical_status", rows[0]) == "功率异常"
 
 
 def test_trackside_row_status_ignores_missing_ap_side_data():
@@ -4292,7 +4292,7 @@ def test_trackside_ap_progress_text_has_no_mojibake_or_i18n_key():
     assert "trackside_ap." not in en_text
 
 
-def test_trackside_optical_command_adapter_supports_h3c_aliases_and_rejects_reserved_vendors():
+def test_trackside_optical_command_adapter_supports_h3c_and_zte_aliases_and_rejects_huawei():
     assert (
         OpticalCommandAdapter.get_optical_diagnosis_commands("H3C", "SW")
         == TRACKSIDE_OPTICAL_COMMANDS
@@ -4303,7 +4303,11 @@ def test_trackside_optical_command_adapter_supports_h3c_aliases_and_rejects_rese
         )
         == TRACKSIDE_OPTICAL_COMMANDS
     )
-    for vendor in ("Huawei", "\u534e\u4e3a", "ZTE", "\u4e2d\u5174"):
+    for vendor in ("ZTE", "\u4e2d\u5174"):
+        assert OpticalCommandAdapter.get_optical_diagnosis_commands(
+            vendor, "SW"
+        ) == ("show version", "show opticalinfo brief")
+    for vendor in ("Huawei", "\u534e\u4e3a"):
         with pytest.raises(UnsupportedVendor):
             OpticalCommandAdapter.get_optical_diagnosis_commands(vendor, "SW")
 
@@ -4546,8 +4550,14 @@ def test_trackside_optical_collection_runs_commands_writes_database_and_skips_ra
     assert result.requested_concurrency == 64
     assert result.success_count == 1
     assert result.failed_count == 1
+    expected_commands = [
+        "screen-length disable",
+        "display interface brief",
+        "display transceiver diagnosis interface",
+        "display lldp neighbor-information list",
+    ]
     assert any(
-        connection.commands == list(TRACKSIDE_OPTICAL_COMMANDS)
+        connection.commands == expected_commands
         for connection in FakeOpticalConnection.instances
     )
     assert not (result.session_dir / "raw").exists()
@@ -5250,7 +5260,8 @@ def test_export_ap_extension_template_xlsx_allows_empty_template(tmp_path):
 
 
 def test_neighbor_matcher_matches_sysname_mac_and_rx_power(tmp_path):
-    database = make_database(tmp_path / "data" / "sites" / "demo" / "db")
+    paths = PathResolver(tmp_path)
+    database = make_database(paths.site_db_path("demo").parent)
     device_repository = DeviceRepository(database)
     device = device_repository.create(
         Device(name="HX Device", sysname="HX_1", ip_address="10.0.0.2")
@@ -5279,7 +5290,6 @@ def test_neighbor_matcher_matches_sysname_mac_and_rx_power(tmp_path):
         ],
     )
 
-    paths = PathResolver(tmp_path)
     by_sysname = match_neighbor_device("demo", neighbor_sysname="HX_1", paths=paths)
     by_mac = match_neighbor_device("demo", neighbor_mac="903f-8645-6e00", paths=paths)
 
@@ -5297,7 +5307,8 @@ def test_neighbor_matcher_matches_sysname_mac_and_rx_power(tmp_path):
 
 
 def test_neighbor_matcher_reverse_matches_ap_mac_from_device_lldp(tmp_path):
-    database = make_database(tmp_path / "data" / "sites" / "demo" / "db")
+    paths = PathResolver(tmp_path)
+    database = make_database(paths.site_db_path("demo").parent)
     device_repository = DeviceRepository(database)
     device = device_repository.create(
         Device(name="HX Switch", station="Station A", ip_address="10.0.0.2")
@@ -5318,7 +5329,7 @@ def test_neighbor_matcher_reverse_matches_ap_mac_from_device_lldp(tmp_path):
     )
 
     match = match_ap_from_device_lldp(
-        "demo", ap_mac="bc5a-3457-cbe0", paths=PathResolver(tmp_path)
+        "demo", ap_mac="bc5a-3457-cbe0", paths=paths
     )
 
     assert match.device_uuid == device.device_uuid
@@ -5329,7 +5340,8 @@ def test_neighbor_matcher_reverse_matches_ap_mac_from_device_lldp(tmp_path):
 
 
 def test_neighbor_matcher_reverse_matches_ap_sysname_from_device_lldp(tmp_path):
-    database = make_database(tmp_path / "data" / "sites" / "demo" / "db")
+    paths = PathResolver(tmp_path)
+    database = make_database(paths.site_db_path("demo").parent)
     device_repository = DeviceRepository(database)
     device = device_repository.create(
         Device(name="HX Switch", station="Station B", ip_address="10.0.0.2")
@@ -5349,7 +5361,7 @@ def test_neighbor_matcher_reverse_matches_ap_sysname_from_device_lldp(tmp_path):
     )
 
     match = match_ap_from_device_lldp(
-        "demo", ap_name="bc5a-3457-cbe1", paths=PathResolver(tmp_path)
+        "demo", ap_name="bc5a-3457-cbe1", paths=paths
     )
 
     assert match.device_uuid == device.device_uuid
@@ -5357,7 +5369,8 @@ def test_neighbor_matcher_reverse_matches_ap_sysname_from_device_lldp(tmp_path):
 
 
 def test_neighbor_optical_module_matches_interface_alias(tmp_path):
-    database = make_database(tmp_path / "data" / "sites" / "demo" / "db")
+    paths = PathResolver(tmp_path)
+    database = make_database(paths.site_db_path("demo").parent)
     device_repository = DeviceRepository(database)
     device = device_repository.create(
         Device(name="HX Switch", station="Station A", ip_address="10.0.0.2")
@@ -5375,7 +5388,7 @@ def test_neighbor_optical_module_matches_interface_alias(tmp_path):
     )
 
     module = find_neighbor_optical_module(
-        "demo", device.device_uuid, "GE2/0/22", paths=PathResolver(tmp_path)
+        "demo", device.device_uuid, "GE2/0/22", paths=paths
     )
 
     assert normalize_interface_name("GE2/0/22") == "GigabitEthernet2/0/22"
@@ -5384,7 +5397,8 @@ def test_neighbor_optical_module_matches_interface_alias(tmp_path):
 
 
 def test_neighbor_matcher_prefers_fact_sysname_and_returns_station(tmp_path):
-    database = make_database(tmp_path / "data" / "sites" / "demo" / "db")
+    paths = PathResolver(tmp_path)
+    database = make_database(paths.site_db_path("demo").parent)
     device_repository = DeviceRepository(database)
     device = device_repository.create(
         Device(
@@ -5405,7 +5419,7 @@ def test_neighbor_matcher_prefers_fact_sysname_and_returns_station(tmp_path):
     )
 
     match = match_neighbor_device(
-        "demo", neighbor_sysname="HX_1", paths=PathResolver(tmp_path)
+        "demo", neighbor_sysname="HX_1", paths=paths
     )
 
     assert match.device_uuid == device.device_uuid

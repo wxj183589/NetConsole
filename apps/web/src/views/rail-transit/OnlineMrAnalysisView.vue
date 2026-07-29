@@ -1028,10 +1028,10 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
 .raw-layout{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(320px,.85fr);gap:12px}
 .raw-preview{margin:0;min-height:360px;max-height:480px;overflow:auto;padding:12px;border:1px solid var(--el-border-color-lighter);border-radius:8px;background:var(--el-fill-color-light);font:12px/1.6 Consolas,monospace;white-space:pre-wrap}
 .timeline-actions{display:flex;align-items:center;gap:8px}
-:deep(.online-mr-row--group-a > td.el-table__cell){background:rgba(64,158,255,.04)}
-:deep(.online-mr-row--group-b > td.el-table__cell){background:rgba(103,194,58,.04)}
+:deep(.online-mr-row--group-a > td.el-table__cell){background:color-mix(in srgb, var(--nc-primary), transparent 96%)}
+:deep(.online-mr-row--group-b > td.el-table__cell){background:color-mix(in srgb, var(--nc-success), transparent 96%)}
 :deep(.online-mr-row--active .nc-table-cell){color:var(--el-color-success);font-weight:600}
-:deep(.online-mr-row--active > td.el-table__cell){background:rgba(103,194,58,.06)}
+:deep(.online-mr-row--active > td.el-table__cell){background:color-mix(in srgb, var(--nc-success), transparent 94%)}
 @media(max-width:1200px){
   .summary-grid{grid-template-columns:repeat(3,minmax(140px,1fr))}
   .business-summary{grid-template-columns:repeat(2,minmax(140px,1fr))}

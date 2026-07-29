@@ -31,7 +31,7 @@ def test_backend_release_reads_unified_version() -> None:
     config = load_config()
 
     assert config.app_name == "NetConsole"
-    assert config.app_version == APP_VERSION == "v1.4.5"
+    assert config.app_version == APP_VERSION == "v1.4.6"
     assert config.zip_path("pyinstaller").name == f"NetConsole_{APP_VERSION}_pyinstaller.zip"
 
 

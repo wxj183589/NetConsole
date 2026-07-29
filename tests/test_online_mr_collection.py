@@ -347,9 +347,8 @@ def _prepare_parsed_channel_busy_session(tmp_path: Path, count: int = 3):
                 """
                 INSERT INTO channel_busy_records (
                     session_id, device_time, device_clock, time_source, radio, ctl_channel, bandwidth,
-                    record_interval, row_index, ctl_busy, tx_busy, rx_busy,
-                    raw_file, raw_line_start, raw_line_end
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    record_interval, row_index, ctl_busy, tx_busy, rx_busy
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session.meta.session_id,
@@ -364,9 +363,6 @@ def _prepare_parsed_channel_busy_session(tmp_path: Path, count: int = 3):
                     7 + index,
                     4 + index,
                     3 + index,
-                    "raw/channel_busy_raw.log",
-                    index,
-                    index + 1,
                 ),
             )
         conn.execute(
@@ -431,8 +427,8 @@ def _insert_main_link_sample(
             session_id, collector_time, device_time, device_clock, time_source, radio, link_state,
             peer_name, peer_mac, peer_mac_normalized, resolved_peer_name, mr_rssi,
             bssid, mesh_interface, belong_station, belong_section, belong_type,
-            belonging_source, online_time, raw_file, raw_line_start, raw_line_end
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            belonging_source, online_time
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             session_id,
@@ -454,9 +450,6 @@ def _insert_main_link_sample(
             "unknown",
             "",
             online_time,
-            "raw/mesh_link_raw.log",
-            0,
-            1,
         ),
     )
 
@@ -476,10 +469,10 @@ def _insert_channel_busy_record(
         """
         INSERT INTO channel_busy_records (
             session_id, device_time, time_source, radio,
-            row_index, ctl_busy, tx_busy, rx_busy, raw_file, raw_line_start, raw_line_end
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            row_index, ctl_busy, tx_busy, rx_busy
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (session_id, collected_at, "device_record_time", radio, 1, ctl_busy, tx_busy, rx_busy, "raw/channel_busy_raw.log", 0, 1),
+        (session_id, collected_at, "device_record_time", radio, 1, ctl_busy, tx_busy, rx_busy),
     )
 
 
@@ -546,11 +539,10 @@ def _insert_interface_rate_sample(
         """
         INSERT INTO interface_rate_samples (
             session_id, device_time, device_clock, time_source, interface_name, interface_normalized,
-            direction, total_pps, broadcast_pps, multicast_pps, usage_percent,
-            raw_file, raw_line_start, raw_line_end
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            direction, total_pps, broadcast_pps, multicast_pps, usage_percent
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (session_id, collected_at, None, "device_clock", interface_name, interface_name, direction, total_pps, 0, 0, None, "raw/interface_rate_raw.log", 0, 1),
+        (session_id, collected_at, None, "device_clock", interface_name, interface_name, direction, total_pps, 0, 0, None),
     )
 
 
@@ -582,9 +574,8 @@ def _insert_switch_realtime_event(
             session_id, device_time, time_source, device_name,
             old_peer_name, old_peer_mac, old_rssi, old_belong_station, old_belong_section,
             new_peer_name, new_peer_mac, new_rssi, new_belong_station, new_belong_section,
-            peer_quantity, link_quantity, switch_reason_code, switch_reason_text,
-            raw_file, raw_line_start, raw_line_end
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            peer_quantity, link_quantity, switch_reason_code, switch_reason_text
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             session_id,
@@ -605,9 +596,6 @@ def _insert_switch_realtime_event(
             link_quantity,
             reason_code,
             reason_text,
-            "raw/terminal_monitor_raw.log",
-            0,
-            1,
         ),
     )
 
@@ -621,15 +609,13 @@ def _ensure_test_new_parsed_tables(conn: sqlite3.Connection) -> None:
             radio INTEGER, link_state TEXT, peer_name TEXT, peer_mac TEXT,
             peer_mac_normalized TEXT, resolved_peer_name TEXT, mr_rssi INTEGER,
             bssid TEXT, mesh_interface TEXT, belong_station TEXT, belong_section TEXT,
-            belong_type TEXT, belonging_source TEXT, online_time TEXT,
-            raw_file TEXT, raw_line_start INTEGER, raw_line_end INTEGER
+            belong_type TEXT, belonging_source TEXT, online_time TEXT
         );
         CREATE TABLE IF NOT EXISTS channel_busy_records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT, device_time TEXT, device_clock TEXT, time_source TEXT,
             radio INTEGER, ctl_channel INTEGER, bandwidth INTEGER, record_interval INTEGER,
-            row_index INTEGER, ctl_busy INTEGER, tx_busy INTEGER, rx_busy INTEGER,
-            raw_file TEXT, raw_line_start INTEGER, raw_line_end INTEGER
+            row_index INTEGER, ctl_busy INTEGER, tx_busy INTEGER, rx_busy INTEGER
         );
         CREATE TABLE IF NOT EXISTS fping_samples (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -649,15 +635,13 @@ def _ensure_test_new_parsed_tables(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS time_sync_samples (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT NOT NULL, collector_time TEXT NOT NULL, device_time TEXT NOT NULL,
-            offset_ms REAL NOT NULL, source TEXT, raw_file TEXT,
-            raw_line_start INTEGER, raw_line_end INTEGER
+            offset_ms REAL NOT NULL, source TEXT
         );
         CREATE TABLE IF NOT EXISTS interface_rate_samples (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT, device_time TEXT, device_clock TEXT, time_source TEXT,
             interface_name TEXT, interface_normalized TEXT, direction TEXT, total_pps REAL,
-            broadcast_pps REAL, multicast_pps REAL, usage_percent REAL, raw_file TEXT,
-            raw_line_start INTEGER, raw_line_end INTEGER
+            broadcast_pps REAL, multicast_pps REAL, usage_percent REAL
         );
         CREATE TABLE IF NOT EXISTS switch_realtime_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -666,8 +650,7 @@ def _ensure_test_new_parsed_tables(conn: sqlite3.Connection) -> None:
             old_belong_station TEXT, old_belong_section TEXT, new_peer_name TEXT,
             new_peer_mac TEXT, new_rssi INTEGER, new_belong_station TEXT,
             new_belong_section TEXT, peer_quantity INTEGER, link_quantity INTEGER,
-            switch_reason_code INTEGER, switch_reason_text TEXT, raw_file TEXT,
-            raw_line_start INTEGER, raw_line_end INTEGER
+            switch_reason_code INTEGER, switch_reason_text TEXT
         );
         """
     )
@@ -2422,7 +2405,7 @@ def test_netmiko_shell_connection_falls_back_to_tunnel_and_releases_session(tmp_
     connection.close()
 
     assert output.endswith("OK")
-    assert config.connection_method == "tunnel1"
+    assert config.connection_method == "tunnel1_primary"
     assert calls == ["10.0.0.1", "10.0.1.1", "127.0.0.1"]
     assert closed == [True, True]
 

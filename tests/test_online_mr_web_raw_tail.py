@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from netconsole.backend.api.main import create_app
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from support.online_mr_api import wire_online_mr_api_facade
 
@@ -14,6 +15,7 @@ def _app_with_session(tmp_path: Path) -> tuple[TestClient, Path]:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     paths.config_dir.mkdir(parents=True, exist_ok=True)
     paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    Database(paths.site_db_path("demo")).initialize()
     session = paths.online_mr_session_dir("demo", "MR-03", "session-4")
     for name in ("raw", "parsed", "view", "logs", "outputs"):
         (session / name).mkdir(parents=True, exist_ok=True)

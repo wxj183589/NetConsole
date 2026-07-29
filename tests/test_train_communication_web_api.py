@@ -10,6 +10,7 @@ from netconsole.backend.api.main import create_app
 from netconsole.backend.api.train_communication_router import (
     router as train_communication_router,
 )
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.train_communication import (
     MrCommunicationDetailDTO,
@@ -204,6 +205,7 @@ def test_missing_iperf_raw_tail_returns_chinese_empty_state(tmp_path: Path) -> N
         ),
         encoding="utf-8",
     )
+    Database(paths.site_db_path("demo")).initialize()
     app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
 
     with TestClient(app) as client:

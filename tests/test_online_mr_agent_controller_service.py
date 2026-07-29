@@ -388,7 +388,15 @@ def test_sync_packages_requires_manual_resolution_when_ip_is_unknown(tmp_path: P
 def test_sync_packages_reports_duplicate_static_ip_as_conflict(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     _create_device(paths, name="MR-A", host="192.0.2.12")
-    _create_device(paths, name="MR-B", host="192.0.2.12")
+    duplicate = _create_device(paths, name="MR-B", host="192.0.2.13")
+    # 模拟地址唯一约束上线前遗留的重复主地址数据。
+    with Database(paths.site_db_path("site-a")).connect() as conn:
+        conn.execute("DROP INDEX uq_devices_normalized_primary_address")
+        conn.execute(
+            "UPDATE devices SET primary_address = ?, normalized_primary_address = ? WHERE id = ?",
+            ("192.0.2.12", "192.0.2.12", duplicate.id),
+        )
+        conn.commit()
     service = OnlineMrAgentControllerService(paths, _SyncClient())  # type: ignore[arg-type]
 
     package = asyncio.run(service.sync_agent_packages(site_id="site-a")).packages[0]

@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from netconsole.backend.api.main import create_app
 from netconsole.backend.api.online_mr_router import router as online_mr_router
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from support.online_mr_api import wire_online_mr_api_facade
 
@@ -44,6 +45,7 @@ def test_status_api_returns_current_recent_and_readonly_mapping_state(
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     paths.config_dir.mkdir(parents=True, exist_ok=True)
     paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    Database(paths.site_db_path("demo")).initialize()
     app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
     wire_online_mr_api_facade(app, paths)
     session = _session(paths)
@@ -86,6 +88,7 @@ def test_status_api_returns_current_recent_and_readonly_mapping_state(
     }
     assert post_paths == {
         "/online-mr/sessions/{session_id}/notes",
+        "/online-mr/sessions/{session_id}/desktop-location",
         "/online-mr/sessions/{session_id}/parse",
         "/online-mr/sessions/{session_id}/report",
         "/online-mr/mesh-analysis/import",
@@ -100,6 +103,7 @@ def test_current_session_returns_none_when_only_terminal_sessions_exist(
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     paths.config_dir.mkdir(parents=True, exist_ok=True)
     paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    Database(paths.site_db_path("demo")).initialize()
     app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
     wire_online_mr_api_facade(app, paths)
     session = _session(paths)
@@ -119,6 +123,7 @@ def test_analysis_api_preserves_metric_paging_units_and_switch_sources(tmp_path:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     paths.config_dir.mkdir(parents=True, exist_ok=True)
     paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    Database(paths.site_db_path("demo")).initialize()
     app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
     wire_online_mr_api_facade(app, paths)
     session = _session(paths)
@@ -198,6 +203,7 @@ def test_legacy_metrics_endpoint_still_returns_a_series_list(tmp_path: Path) -> 
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     paths.config_dir.mkdir(parents=True, exist_ok=True)
     paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    Database(paths.site_db_path("demo")).initialize()
     app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
     wire_online_mr_api_facade(app, paths)
     session = _session(paths)

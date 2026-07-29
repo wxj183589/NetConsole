@@ -929,10 +929,10 @@ def test_repository_vehicle_mr_write_uses_normalized_unique_address(
             ORDER BY device_uuid
             """
         ).fetchall()
-    assert [tuple(row) for row in rows] == [
-        ("mr-01-ct", "2001:db8::1", "2001:db8::1"),
-        ("mr-01-cw", "10.10.0.1", None),
-    ]
+        assert [tuple(row) for row in rows] == [
+            ("mr-01-ct", "2001:db8::1", "2001:db8::1"),
+            ("mr-01-cw", "10.10.0.2", "10.10.0.2"),
+        ]
 
 
 def test_validation_rejects_sensitive_fields(tmp_path: Path, monkeypatch) -> None:

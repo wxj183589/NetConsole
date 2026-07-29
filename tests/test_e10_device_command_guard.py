@@ -1,6 +1,7 @@
 import pytest
 
 from scripts.architecture.checks import device_command_findings
+from scripts.maintenance.audit_commands import ROOT, is_expected_noise
 
 from netconsole.services.command_guard import (
     CommandRejected,
@@ -73,3 +74,11 @@ def test_operation_guard_requires_the_exact_registered_sequence(mutation: str) -
 
 def test_architecture_command_guard_reuses_strict_command_audit() -> None:
     assert device_command_findings() == []
+
+
+def test_command_audit_ignores_only_the_exact_interface_sort_display_label() -> None:
+    interface_sort = ROOT / "src/netconsole/utils/interface_sort.py"
+
+    assert is_expected_noise("display name", interface_sort)
+    assert not is_expected_noise("display name", ROOT / "src/netconsole/utils/other.py")
+    assert not is_expected_noise("display names", interface_sort)

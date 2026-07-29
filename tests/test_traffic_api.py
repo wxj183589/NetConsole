@@ -5,6 +5,7 @@ from dataclasses import replace
 from fastapi.testclient import TestClient
 
 from netconsole.backend.api.main import create_app
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.agent import AgentStatus
 from netconsole.models.task_snapshot import utc_now_iso
@@ -178,6 +179,7 @@ class FakeTrafficService:
 
 def _app(tmp_path):
     paths = PathResolver(tmp_path)
+    Database(paths.site_db_path("demo")).initialize()
     traffic = FakeTrafficService()
     agent = FakeAgentService()
     app = create_app(

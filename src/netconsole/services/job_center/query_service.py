@@ -53,7 +53,7 @@ from netconsole.services.job_center.handlers.site_jobs import (
     SITE_STORAGE_OWNER,
     SITE_STORAGE_TASK_TYPES,
 )
-from netconsole.services.job_center.task_history_policy import business_result_has_warning
+from netconsole.models.task_history_policy import business_result_has_warning
 
 AC_WEB_OWNER = "web_ac"
 RAIL_WEB_OWNER = "web_rail_transit"

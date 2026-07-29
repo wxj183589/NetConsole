@@ -214,8 +214,8 @@ def test_registered_vehicle_mr_devices_prebuild_train_rows(tmp_path: Path) -> No
     repository = DeviceRepository(database)
     group = DeviceGroupRepository(database, "demo").create("车载")
     for index in range(1, 19):
-        for suffix in ("CT", "CW"):
-            repository.create(Device(name=f"NBL12-LC{index:02d}-MR-{suffix}", group_id=group.id, device_type="FAT-AP", primary_address=f"192.0.2.{index}"))
+        for offset, suffix in enumerate(("CT", "CW")):
+            repository.create(Device(name=f"NBL12-LC{index:02d}-MR-{suffix}", group_id=group.id, device_type="FAT-AP", primary_address=f"192.0.2.{index * 2 - 1 + offset}"))
 
     trains = build_registered_trains(repository.list(), {group.id: group.name})
 

@@ -17,6 +17,7 @@ body { overflow: hidden; color: var(--nc-text-primary); background: var(--nc-bg-
 .app-shell, .app-workspace, .app-main, .app-route-viewport, .content-card, .el-table { min-width: 0; }
 .app-shell { position: relative; height: 100dvh; overflow: hidden; }
 .app-workspace { width: 0; height: 100%; min-width: 0; min-height: 0; flex: 1 1 auto; }
+.app-main { width: 100%; }
 
 .workspace-tab-bar {
   position: relative;
