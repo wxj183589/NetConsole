@@ -72,15 +72,43 @@ const statusLabels: Record<string, string> = {
   OPEN: '正在写入',
   CLOSED: '已关闭',
   RECOVERED: '已恢复关闭',
-  MISSING: '文件缺失',
+  ACTIVE_RAW: '活动原始数据',
+  ARCHIVED_RAW: '归档原始数据',
+  MIXED: '活动与归档混合',
+  SUMMARY_ONLY: '仅有汇总',
+  MISSING: '原始数据缺失',
+  CORRUPT: '原始数据损坏',
   PENDING_RECOVERY: '等待恢复处理',
   MATCHED: '位置已匹配',
+  AMBIGUOUS: '存在多个候选',
+  UNRESOLVED: '未解析',
+  PEER_MAC_EXACT: 'Peer MAC 精确匹配',
+  RADIO_BSSID: 'Radio/BSSID 映射',
+  H3C_RADIO_DERIVED: 'H3C Radio 规则映射',
+  AP_MAC_FALLBACK: 'AP MAC 降级匹配',
+  AC_AP_NAME_EXACT: 'AC AP 名称精确匹配',
+  NO_ACTIVE_LINK: '无主链路',
   BEFORE_AP_TRANSITION: 'AP 切换前',
   AFTER_AP_TRANSITION: 'AP 切换后',
   CLOCK_OFFSET: '设备时间有偏差',
   CLOCK_JUMP: '设备时钟跳变',
   DEVICE_CLOCK: '设备时钟',
   LOCAL_FALLBACK: '本机时间降级',
+  TIME_RANGE_EMPTY: '查询时间范围为空',
+  RAW_FILE_MISSING: '原始文件缺失',
+  ARCHIVE_NOT_READY: '归档尚未就绪',
+  ARCHIVE_ENTRY_MISSING: '归档条目缺失',
+  ARCHIVE_MEMBER_MISSING: '归档条目缺失',
+  ARCHIVE_INTEGRITY_FAILED: '归档完整性校验失败',
+  ARCHIVE_READ_FAILED: '归档读取失败',
+  TARGET_NOT_FOUND: '未找到目标',
+  FILE_CORRUPT: '原始数据损坏',
+  NO_SAMPLES: '本范围没有样本',
+  NO_REGISTERED_FILES: '本运行没有登记原始文件',
+  FILTER_NO_MATCH: '查询范围内没有匹配记录',
+  QUERY_BUDGET_REACHED: '数据量较大，查询已截断',
+  SOME_RAW_FILES_MISSING: '部分原始文件缺失',
+  MALFORMED_RECORDS_SKIPPED: '已跳过格式异常记录',
   UNKNOWN: '未知',
 }
 
@@ -159,10 +187,33 @@ export function groundRunModeLabel(value: unknown): string {
 }
 
 export function groundSourceLabel(value: unknown): string {
-  return value === 'NETCONSOLE_MANAGED' ? 'NetConsole 管理目标' : '设备已有配置'
+  const key = String(value || '').trim()
+  const labels: Record<string, string> = {
+    ACTIVE: '活动原始文件',
+    ARCHIVE: 'READY 归档',
+    MIXED: '活动与归档混合',
+    NONE: '无原始数据',
+    NETCONSOLE_MANAGED: 'NetConsole 管理目标',
+    DEVICE_EXISTING: '设备已有配置',
+  }
+  return key ? labels[key] || '其他来源' : '无来源'
 }
 
 export function groundTransitionContextLabel(value: unknown): string {
   const key = String(value || '').trim()
   return key ? groundStatusLabel(key) : '否'
+}
+
+export function groundDisplayNameSourceLabel(value: unknown): string {
+  const key = String(value || '').trim()
+  const labels: Record<string, string> = {
+    BASE_NAME: '轨旁基础资料名称',
+    TRACKSIDE_AP_NAME: '轨旁 AP 工程名称',
+    POINT_CODE: '轨旁 AP 点位编号',
+    AC_AP_NAME: 'AC 配置名称',
+    MAC_FALLBACK: 'MAC 降级显示',
+    EVENT_STATE: '事件状态',
+    RAW_OBSERVATION: '原始观测',
+  }
+  return key ? labels[key] || '其他来源' : '暂无来源'
 }

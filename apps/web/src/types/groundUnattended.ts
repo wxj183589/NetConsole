@@ -1,5 +1,6 @@
 export type GroundRunState = 'DISABLED' | 'WAITING_WINDOW' | 'STARTING' | 'RUNNING' | 'PAUSED' | 'STOPPING' | 'FINALIZING' | 'ARCHIVING' | 'COMPLETED' | 'ERROR'
 export type GroundCoverageStatus = 'NOT_SEEN' | 'WAITING' | 'COLLECTING' | 'PARTIAL' | 'COVERED' | 'EXCLUDED' | 'OFFLINE' | 'FAILED'
+export type GroundDataAvailability = 'ACTIVE_RAW' | 'ARCHIVED_RAW' | 'MIXED' | 'SUMMARY_ONLY' | 'MISSING' | 'CORRUPT'
 
 export interface GroundProfile {
   site_id: string; enabled: boolean; schedule_start_time: string; schedule_end_time: string; timezone: string
@@ -17,14 +18,24 @@ export interface GroundProfile {
   storage_warning_free_gb: number; storage_critical_free_gb: number; created_at: string; updated_at: string
 }
 export interface GroundStatus {
-  site_id: string; enabled: boolean; state: GroundRunState; paused: boolean; run_id: string; run_date: string
+  site_id: string; enabled: boolean; state: GroundRunState; service_state: GroundRunState; paused: boolean; run_id: string; run_date: string
   actual_started_at: string; actual_ended_at: string; schedule_start_time: string; schedule_end_time: string; timezone: string
   running_mode: 'STANDARD' | 'LIGHTWEIGHT'
   next_start_at: string; next_end_at: string; profile_effective_at: string; ac_last_updated_at: string; ac_freshness_status: string
   mainline_train_count: number; ping_target_count: number; active_deep_train_count: number; covered_train_count: number
   incomplete_train_count: number; disk_used_bytes: number; disk_free_bytes: number; disk_status: string
   inventory_train_count: number; syslog_active_mr_count: number; config_abnormal_count: number; data_quality_warning_count: number
-  latest_archive_status: string; latest_archive_message: string; message: string; updated_at: string
+  latest_archive_status: string; latest_archive_message: string
+  active_run_id: string; active_run_state: string; active_run_date: string; active_run_started_at: string
+  latest_run_id: string; latest_run_state: string; latest_run_date: string; latest_run_started_at: string; latest_run_ended_at: string
+  active_operation_id: string; active_operation_state: string; latest_operation_id: string; latest_operation_state: string
+  message: string; updated_at: string
+}
+export interface GroundRun {
+  run_id: string; site_id: string; run_date: string; state: GroundRunState; paused: boolean
+  scheduled_start_at: string; scheduled_end_at: string; actual_started_at: string; actual_ended_at: string
+  ping_sample_count: number; archive_id: string; archive_status: string; data_availability: GroundDataAvailability
+  message: string; created_at: string; updated_at: string
 }
 export interface GroundEndpoint {
   endpoint: 'CT' | 'CW'; mr_id: string; mr_name: string; device_id: number | null; management_ip: string; online_status: string
@@ -51,11 +62,14 @@ export interface GroundTrain {
   attempt_count: number; covered_rounds: number; selection_reason: string; failure_reason: string; endpoints: GroundEndpoint[]; updated_at: string
 }
 export interface GroundPingTarget {
-  target_ip: string; train_id: string; train_no: string; mr_id: string; mr_name: string; mr_position_code: string; started_at: string; updated_at: string
+  run_id: string; run_date: string; target_ip: string; train_id: string; train_no: string; mr_id: string; mr_name: string; mr_position_code: string; started_at: string; updated_at: string
   shard_id: string; raw_sample_count: number; effective_sample_count: number; warmup_ignored_count: number
   sent_count: number; success_count: number; loss_count: number; loss_rate_percent: number
   min_rtt_ms: number | null; avg_rtt_ms: number | null; max_rtt_ms: number | null
   continuous_loss_max_count: number; continuous_loss_max_seconds: number; current_ap_name: string; station: string; section: string
+  first_sample_at: string; last_sample_at: string; active_raw_file_count: number; archived_raw_file_count: number
+  raw_file_available: boolean; archive_available: boolean
+  data_source: 'ACTIVE' | 'ARCHIVE' | 'MIXED' | 'NONE'; data_availability: GroundDataAvailability
 }
 export interface GroundDeepCollection {
   train_id: string; train_no: string; status: GroundCoverageStatus; queue_position: number | null; scheduling_priority: number
@@ -65,13 +79,31 @@ export interface GroundDeepCollection {
 export interface GroundTimelineEvent {
   event_id: number | string; ts: string; event_type: string; severity: string; train_id: string; train_no: string; train_name: string; mr_id: string
   mr_name: string; mr_position_code: string
-  title: string; message: string; details: Record<string, unknown>
+  title: string; message: string; peer_ap_id: string; peer_ap_name: string; peer_ap_mac: string
+  peer_radio_mac: string; previous_peer_ap_id: string; previous_peer_ap_name: string; previous_peer_ap_mac: string
+  previous_peer_radio_mac: string; station: string; section: string; previous_station: string; previous_section: string
+  rssi: number | null; previous_rssi: number | null; reason_code: string; reason_label: string; resolution_status: string
+  ap_display: string; ap_transition_display: string; resolved_ap_name: string; previous_resolved_ap_name: string
+  details: Record<string, unknown>
 }
 export interface GroundArchive {
   archive_id: string; site_id: string; run_id: string; run_date: string; actual_started_at: string; actual_ended_at: string
   mainline_train_count: number; ping_target_count: number; ping_sample_count: number; covered_train_count: number
-  complete_session_count: number; partial_session_count: number; archive_size_bytes: number; archive_status: string
+  complete_session_count: number; partial_session_count: number; archive_size_bytes: number; sha256: string; manifest_sha256: string
+  archive_status: string; file_count: number; integrity_status: string
   retention_until: string; summary: Record<string, unknown>; message: string; created_at: string; updated_at: string
+}
+export interface GroundArchiveFile {
+  path: string; data_type: string; train_id: string; mr_id: string; mr_role: string; hour: string; record_count: number
+  size_bytes: number; compressed_size_bytes: number; sha256: string; parse_status: string
+}
+export interface GroundArchiveDetail {
+  archive: GroundArchive
+  files: GroundArchiveFile[]
+  validation: {
+    status: 'READY' | 'FAILED' | 'NOT_CHECKED'; checked_at: string; archive_size_bytes: number
+    archive_sha256: string; manifest_sha256: string; file_count: number; legacy_manifest: boolean; message: string
+  }
 }
 export interface GroundActionResponse { accepted: boolean; state: GroundRunState; run_id: string; operation_id: string; message: string }
 export interface GroundOperation {
@@ -86,18 +118,32 @@ export interface GroundPingSample {
   current_ap_identity: string; current_ap_name: string; current_ap_mac: string; station: string; section: string; mileage: string
   rssi: number | null; ac_snapshot_id: number | null; ac_received_at: string; position_quality: string
   ap_transition_context: string; warmup_ignored: boolean; target_activation_started_at: string
+  archive_entry: string; data_source: 'ACTIVE' | 'ARCHIVE'
+}
+export interface GroundQueryDiagnostics {
+  requested_run_id: string; resolved_start_time: string; resolved_end_time: string
+  source_kind: 'ACTIVE' | 'ARCHIVE' | 'MIXED' | 'NONE'; data_availability: GroundDataAvailability
+  files_considered: number; files_scanned: number; records_scanned: number; bytes_scanned: number
+  malformed_record_count: number; duplicate_record_count: number; truncated: boolean; legacy_archive: boolean; no_data_reason: string
 }
 export interface GroundPingSeries {
   raw_sample_count: number; effective_sample_count: number; ignored_sample_count: number; points: GroundPingSample[]
   loss_windows: Array<Record<string, unknown>>; ap_transitions: Array<Record<string, unknown>>; position_segments: Array<Record<string, unknown>>
+  diagnostics: GroundQueryDiagnostics
 }
 export interface GroundSyslogRecord {
   receive_time: string; device_time: string; source_ip: string; source_port: number | null; hostname: string; system_name: string
   facility: string; severity: string; train_id: string; train_no: string; device_uuid: string; mr_name: string; mr_role: string
   identity_status: string; parse_status: string; data_quality: string; clock_offset_ms: number | null; raw_text: string
   global_receive_sequence: number | null; source_receive_sequence: number | null; raw_file_id: string; raw_file_status: string
+  raw_line_number: number | null; archive_entry: string; data_source: 'ACTIVE' | 'ARCHIVE'; display_enriched: boolean
+  event_type: string; peer_ap_id: string; peer_name: string; peer_mac: string; peer_radio_mac: string
+  previous_peer_ap_id: string; previous_peer_name: string; previous_peer_mac: string; previous_peer_radio_mac: string
+  station: string; section: string; previous_station: string; previous_section: string; rssi: number | null
+  previous_rssi: number | null; reason_code: string; reason_text: string; resolution_status: string
+  parsed_details: Record<string, unknown>
 }
-export interface GroundPagedResult<T> extends GroundPage<T> { page: number; page_size: number }
+export interface GroundPagedResult<T> extends GroundPage<T> { page: number; page_size: number; diagnostics?: GroundQueryDiagnostics }
 export interface GroundPage<T> { items: T[]; total: number }
 export interface GroundInventorySummary {
   site_id: string; discovered_train_count: number; complete_train_count: number; ct_only_count: number; cw_only_count: number

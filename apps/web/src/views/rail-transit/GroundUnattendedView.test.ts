@@ -81,4 +81,28 @@ describe('Ground unattended page', () => {
     expect(source).not.toContain('CT Session')
     expect(source).not.toContain('CW Session')
   })
+
+  it('uses row-scoped Ping context and keeps static historical tabs out of polling', () => {
+    expect(source).toContain('train_id: row.train_id')
+    expect(source).toContain('mr_id: row.mr_id')
+    expect(source).toContain('row.first_sample_at')
+    expect(source).toContain('当前范围没有样本，是否切换到本次运行全部时间？')
+    expect(source).toContain("activeTab.value === 'ping'")
+    expect(source).toContain("activeTab.value === 'syslog'")
+    expect(source).not.toMatch(/pollDue\('(?:timeline|deep|archives)'/)
+    expect(source).toContain('requestFailureCounts')
+  })
+
+  it('separates active and terminal operations and exposes archive metadata tabs', () => {
+    expect(source).toContain('activeOperation')
+    expect(source).toContain('latestTerminalOperation')
+    expect(source).toContain('dismissedTerminalOperationIds')
+    expect(source).not.toContain('currentOperation')
+    for (const label of ['归档概览', '文件清单', 'Ping 汇总', 'Syslog 汇总', '深度会话', '完整性校验', '保留策略']) {
+      expect(source).toContain(label)
+    }
+    for (const field of ['compressed_size_bytes', 'parse_status', 'manifest_sha256']) {
+      expect(source).toContain(field)
+    }
+  })
 })

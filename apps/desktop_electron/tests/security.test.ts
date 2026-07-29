@@ -58,6 +58,8 @@ describe('Electron security policy', () => {
       ['/api/rail-transit/mesh-analysis/sessions/session-1/artifacts/artifact-1/download', undefined],
       ['/api/rail-transit/mesh-analysis/sessions/%E4%BC%9A%E8%AF%9D%2F1/artifacts/%E6%8A%A5%E5%91%8A%2F1/download', undefined],
       ['/api/rail-transit/trackside-ap-business/artifacts/artifact-1/download', undefined],
+      ['/api/rail-transit/ground-unattended/artifacts/archive-1/download', undefined],
+      ['/api/rail-transit/ground-unattended/artifacts/archive-1/summary-download', undefined],
       ['/api/rail-transit/base-data/station-template', undefined],
       ['/api/rail-transit/base-data/station-template-export', { site_id: 'demo' }],
       ['/api/online-mr/report-artifacts/artifact-1/download', undefined],
@@ -85,6 +87,30 @@ describe('Electron security policy', () => {
       apiPath: '/api/device-management/exports/task-1/download',
       suggestedName: '设备.csv',
     })).toThrow('approved Artifact download endpoint')
+    expect(() => validateBackendDownloadRequest({
+      apiPath: '/api/rail-transit/ground-unattended/archives/archive-1/download',
+      suggestedName: '越权归档.zip',
+    })).toThrow('approved Artifact download endpoint')
+    expect(() => validateBackendDownloadRequest({
+      apiPath: '/api/rail-transit/ground-unattended/artifacts/../archive-1/download',
+      suggestedName: '穿越归档.zip',
+    })).toThrow()
+    for (const apiPath of [
+      '/api/rail-transit/ground-unattended/artifacts/%61rchive-1/download',
+      '/api/rail-transit/ground-unattended/artifacts/archive%2F1/download',
+      '/api/rail-transit/ground-unattended/artifacts/archive.1/download',
+      '/api/rail-transit/ground-unattended/artifacts/archive-1/download?token=secret',
+    ]) {
+      expect(() => validateBackendDownloadRequest({
+        apiPath,
+        suggestedName: '越权归档.zip',
+      })).toThrow()
+    }
+    expect(() => validateBackendDownloadRequest({
+      apiPath: '/api/rail-transit/ground-unattended/artifacts/archive-1/download',
+      query: { token: 'secret' },
+      suggestedName: '越权归档.zip',
+    })).toThrow()
   })
 
   it('limits the development cookie to WebSocket paths and authenticates production assets', () => {

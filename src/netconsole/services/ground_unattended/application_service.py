@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import shutil
+import sqlite3
+import threading
+import time
 import uuid
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -11,13 +15,18 @@ from netconsole.core.sites import SiteManager
 from netconsole.models.api.ground_unattended import (
     GroundActionResponseDTO,
     GroundArchiveDTO,
+    GroundArchiveDetailDTO,
+    GroundArchiveFileDTO,
     GroundArchivePageDTO,
+    GroundArchiveValidationDTO,
     GroundDeepCollectionDTO,
     GroundDeepCollectionPageDTO,
     GroundPingSummaryPageDTO,
     GroundPingSamplePageDTO,
     GroundPingSeriesDTO,
     GroundPingTargetDTO,
+    GroundRunDTO,
+    GroundRunPageDTO,
     GroundAcPollerHealthDTO,
     GroundHealthDTO,
     GroundInventorySummaryDTO,
@@ -42,6 +51,9 @@ from netconsole.repositories.ground_unattended_repository import (
 from netconsole.services.ground_unattended.deep_scheduler import (
     DeepMrCollectionScheduler,
 )
+from netconsole.services.ground_unattended.ap_resolver import (
+    GroundApDisplayResolver,
+)
 from netconsole.services.ground_unattended.inventory import TrainInventorySyncService
 from netconsole.services.ground_unattended.raw_query import (
     GroundRawQueryError,
@@ -49,6 +61,9 @@ from netconsole.services.ground_unattended.raw_query import (
 )
 from netconsole.services.ground_unattended.schedule import schedule_window
 from netconsole.services.ground_unattended.supervisor import GroundUnattendedSupervisor
+from netconsole.services.ground_unattended.syslog_runtime import (
+    WmeshRealtimeParser,
+)
 from netconsole.models.api.system_maintenance import DesktopActionDTO
 from netconsole.services.rail_transit.base_data_query_service import (
     RailTransitBaseDataQueryService,
@@ -103,6 +118,10 @@ class GroundUnattendedApplicationService:
         self.desktop_action_service = desktop_action_service
         self.network_service = network_service or SystemNetworkApplicationService()
         self.raw_query = GroundRawStreamQueryService(repository)
+        self._ap_display_cache = GroundApDisplayResolver()
+        self._ap_display_cache_loaded_at = float("-inf")
+        self._ap_display_cache_ttl_seconds = 30.0
+        self._ap_display_cache_lock = threading.Lock()
         self.inventory_sync = (
             TrainInventorySyncService(
                 paths,
@@ -186,7 +205,9 @@ class GroundUnattendedApplicationService:
             profile.schedule_end_time,
             profile.timezone,
         )
-        run = self.repository.get_active_run() or self.repository.latest_run() or {}
+        active_run = self.repository.get_active_run()
+        latest_run = self.repository.latest_run()
+        run = active_run or {}
         run_summary = run.get("summary")
         if not isinstance(run_summary, dict):
             run_summary = {}
@@ -230,12 +251,21 @@ class GroundUnattendedApplicationService:
             "ERROR",
         }:
             state = "ERROR"
-        if state == "COMPLETED" and profile.enabled and not window.active:
-            state = "WAITING_WINDOW"
+        if active_run is None:
+            state = "WAITING_WINDOW" if profile.enabled else "DISABLED"
+        active_operation = (
+            self.repository.latest_operation(
+                run_id=str(active_run["run_id"]), active_only=True
+            )
+            if active_run
+            else None
+        )
+        latest_operation = self.repository.latest_terminal_operation()
         return GroundUnattendedStatusDTO(
             site_id=site_id,
             enabled=profile.enabled,
             state=state,  # type: ignore[arg-type]
+            service_state=state,  # type: ignore[arg-type]
             paused=bool(run.get("paused")),
             run_id=run_id,
             run_date=str(run.get("run_date") or ""),
@@ -298,6 +328,45 @@ class GroundUnattendedApplicationService:
             latest_archive_message=str(archives[0].get("message") or "")
             if archives
             else "",
+            active_run_id=str(active_run.get("run_id") or "")
+            if active_run
+            else "",
+            active_run_state=str(active_run.get("state") or "")
+            if active_run
+            else "",
+            active_run_date=str(active_run.get("run_date") or "")
+            if active_run
+            else "",
+            active_run_started_at=str(active_run.get("actual_started_at") or "")
+            if active_run
+            else "",
+            latest_run_id=str(latest_run.get("run_id") or "")
+            if latest_run
+            else "",
+            latest_run_state=str(latest_run.get("state") or "")
+            if latest_run
+            else "",
+            latest_run_date=str(latest_run.get("run_date") or "")
+            if latest_run
+            else "",
+            latest_run_started_at=str(latest_run.get("actual_started_at") or "")
+            if latest_run
+            else "",
+            latest_run_ended_at=str(latest_run.get("actual_ended_at") or "")
+            if latest_run
+            else "",
+            active_operation_id=str(
+                (active_operation or {}).get("operation_id") or ""
+            ),
+            active_operation_state=str(
+                (active_operation or {}).get("operation_state") or ""
+            ),
+            latest_operation_id=str(
+                (latest_operation or {}).get("operation_id") or ""
+            ),
+            latest_operation_state=str(
+                (latest_operation or {}).get("operation_state") or ""
+            ),
             message=str(run.get("error_message") or ""),
             updated_at=datetime.now().astimezone().isoformat(timespec="milliseconds"),
         )
@@ -405,6 +474,7 @@ class GroundUnattendedApplicationService:
         items = [self._train_dto(row) for row in rows]
         if not items:
             items = self._inventory_train_candidates()
+        items = self._merge_base_candidate_endpoints(items)
         items = self._merge_inventory_policy(items)
         items = self._enrich_train_endpoints(items, run)
         return GroundUnattendedTrainPageDTO(items=items, total=len(items))
@@ -667,11 +737,61 @@ class GroundUnattendedApplicationService:
             total=self.repository.count_raw_files(data_type=data_type, status=status),
         )
 
-    def ping_summary(self, site_id: str) -> GroundPingSummaryPageDTO:
-        run = self._latest_run(site_id)
-        rows = self.supervisor.fleet_ping.target_summaries()
+    def runs(
+        self,
+        site_id: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> GroundRunPageDTO:
+        self._require_site(site_id)
+        rows = self.repository.list_runs(limit=limit, offset=offset)
+        return GroundRunPageDTO(
+            items=[self._run_dto(row) for row in rows],
+            total=self.repository.count_runs(),
+            limit=max(1, min(int(limit), 500)),
+            offset=max(0, int(offset)),
+        )
+
+    def ping_summary(
+        self, site_id: str, *, run_id: str = ""
+    ) -> GroundPingSummaryPageDTO:
+        self._require_site(site_id)
+        run = self._resolve_run(run_id)
+        active = self.repository.get_active_run()
+        use_live = bool(
+            run
+            and active
+            and str(run["run_id"]) == str(active["run_id"])
+        )
+        rows = (
+            self.supervisor.fleet_ping.target_summaries()
+            if use_live
+            else []
+        )
         if not rows and run:
             rows = self.repository.list_ping_summaries(str(run["run_id"]))
+        availability, source = self._run_data_availability(run)
+        raw_files = (
+            [
+                item
+                for item in self.repository.list_raw_files_for_run(
+                    str(run["run_id"])
+                )
+                if str(item.get("data_type") or "") == "ping"
+            ]
+            if run
+            else []
+        )
+        raw_root = self.repository.db_path.parent.resolve()
+        archive = (
+            self.repository.get_archive_by_run(str(run["run_id"]))
+            if run
+            else None
+        )
+        archive_ready = (
+            str((archive or {}).get("archive_status") or "") == "READY"
+        )
         endpoint_names = {
             str(endpoint.get("device_uuid") or ""): str(
                 endpoint.get("device_name") or ""
@@ -680,6 +800,72 @@ class GroundUnattendedApplicationService:
             for endpoint in train.get("endpoints", [])
         }
         for row in rows:
+            matching_files = [
+                item
+                for item in raw_files
+                if (
+                    not row.get("train_id")
+                    or str(item.get("train_id") or "")
+                    == str(row.get("train_id") or "")
+                )
+                and (
+                    not row.get("mr_id")
+                    or str(item.get("device_uuid") or "")
+                    == str(row.get("mr_id") or "")
+                )
+                and (
+                    not row.get("mr_position_code")
+                    or str(item.get("mr_role") or "")
+                    == str(row.get("mr_position_code") or "")
+                )
+            ]
+            active_raw_count = sum(
+                self._registered_raw_file_exists(raw_root, item)
+                for item in matching_files
+            )
+            archived_raw_count = sum(
+                archive_ready
+                and str(item.get("archive_status") or "") == "ARCHIVED"
+                for item in matching_files
+            )
+            target_source = (
+                "MIXED"
+                if active_raw_count and archived_raw_count
+                else "ACTIVE"
+                if active_raw_count
+                else "ARCHIVE"
+                if archived_raw_count
+                else source
+            )
+            target_availability = (
+                "MIXED"
+                if target_source == "MIXED"
+                else "ACTIVE_RAW"
+                if target_source == "ACTIVE"
+                else "ARCHIVED_RAW"
+                if target_source == "ARCHIVE"
+                else availability
+            )
+            row.setdefault("run_id", str((run or {}).get("run_id") or ""))
+            row.setdefault("run_date", str((run or {}).get("run_date") or ""))
+            row.setdefault("data_availability", target_availability)
+            row.setdefault("data_source", target_source)
+            row.setdefault("active_raw_file_count", active_raw_count)
+            row.setdefault("archived_raw_file_count", archived_raw_count)
+            row.setdefault("raw_file_available", bool(active_raw_count))
+            row.setdefault("archive_available", bool(archived_raw_count))
+            starts = [
+                str(item.get("start_time") or "")
+                for item in matching_files
+                if item.get("start_time")
+            ]
+            ends = [
+                str(item.get("end_time") or "")
+                for item in matching_files
+                if item.get("end_time")
+            ]
+            row.setdefault("first_sample_at", min(starts) if starts else "")
+            row.setdefault("last_sample_at", max(ends) if ends else "")
             row.setdefault(
                 "effective_sample_count", int(row.get("sent_count") or 0)
             )
@@ -744,16 +930,86 @@ class GroundUnattendedApplicationService:
     ) -> GroundSyslogRecordPageDTO:
         self._require_site(site_id)
         try:
-            return GroundSyslogRecordPageDTO.model_validate(
-                self.raw_query.syslog_records(**filters)
-            )
+            result = self.raw_query.syslog_records(**filters)
+            resolver = self._ap_display_resolver()
+            parser = WmeshRealtimeParser()
+            for item in result.get("items", []):
+                parsed = None
+                display_enriched = bool(item.get("display_enriched"))
+                if not item.get("event_type") and item.get("raw_text"):
+                    receive_time = self._parse_datetime(item.get("receive_time"))
+                    if receive_time is not None:
+                        parsed = parser.parse(
+                            str(item["raw_text"]), receive_time=receive_time
+                        )
+                        display_enriched = parsed is not None
+                if parsed is None and item.get("event_type"):
+                    parsed = {
+                        "event_type": item.get("event_type"),
+                        "peer_name": item.get("peer_name"),
+                        "peer_mac": item.get("peer_mac"),
+                        "previous_peer_name": item.get("previous_peer_name"),
+                        "previous_peer_mac": item.get("previous_peer_mac"),
+                        "details": item.get("parsed_details") or {},
+                    }
+                if parsed is None:
+                    continue
+                enriched = resolver.enrich_parsed(parsed)
+                details = dict(enriched.get("details") or {})
+                item.update(
+                    {
+                        "display_enriched": display_enriched,
+                        "event_type": str(enriched.get("event_type") or ""),
+                        "peer_ap_id": str(details.get("peer_ap_id") or ""),
+                        "peer_name": str(enriched.get("peer_name") or ""),
+                        "peer_mac": str(enriched.get("peer_mac") or ""),
+                        "previous_peer_ap_id": str(
+                            details.get("previous_peer_ap_id") or ""
+                        ),
+                        "previous_peer_name": str(
+                            enriched.get("previous_peer_name") or ""
+                        ),
+                        "previous_peer_mac": str(
+                            enriched.get("previous_peer_mac") or ""
+                        ),
+                        "peer_radio_mac": str(
+                            details.get("peer_radio_mac") or ""
+                        ),
+                        "previous_peer_radio_mac": str(
+                            details.get("previous_peer_radio_mac") or ""
+                        ),
+                        "station": str(enriched.get("station") or ""),
+                        "section": str(enriched.get("section") or ""),
+                        "previous_station": str(
+                            details.get("previous_station") or ""
+                        ),
+                        "previous_section": str(
+                            details.get("previous_section") or ""
+                        ),
+                        "rssi": details.get("rssi", details.get("new_rssi")),
+                        "previous_rssi": details.get("old_rssi"),
+                        "reason_code": str(
+                            details.get("reason_code")
+                            or details.get("switch_reason_code")
+                            or ""
+                        ),
+                        "reason_text": str(details.get("reason_raw") or ""),
+                        "resolution_status": str(
+                            details.get("resolution_status") or ""
+                        ),
+                        "parsed_details": details,
+                    }
+                )
+            return GroundSyslogRecordPageDTO.model_validate(result)
         except GroundRawQueryError as exc:
             raise GroundUnattendedError(
                 "RAW_QUERY_REJECTED", str(exc), status_code=422
             ) from exc
 
-    def deep_collections(self, site_id: str) -> GroundDeepCollectionPageDTO:
-        run = self._latest_run(site_id)
+    def deep_collections(
+        self, site_id: str, *, run_id: str = ""
+    ) -> GroundDeepCollectionPageDTO:
+        run = self._resolve_run(run_id)
         rows = self.repository.list_train_runs(str(run["run_id"])) if run else []
         queue_order: list[str] = []
         scheduling: dict[str, tuple[int, str]] = {}
@@ -838,10 +1094,11 @@ class GroundUnattendedApplicationService:
         *,
         train_id: str = "",
         event_type: str = "",
+        run_id: str = "",
         limit: int = 200,
         offset: int = 0,
     ) -> GroundTimelinePageDTO:
-        run = self._latest_run(site_id)
+        run = self._resolve_run(run_id)
         rows = (
             self.repository.list_events(
                 str(run["run_id"]),
@@ -861,6 +1118,7 @@ class GroundUnattendedApplicationService:
             for endpoint in train.get("endpoints", [])
         }
         items = []
+        resolver = self._ap_display_resolver()
         for row in rows:
             details = dict(row.get("details") or {})
             mr_id = str(row.get("mr_id") or "")
@@ -868,6 +1126,56 @@ class GroundUnattendedApplicationService:
             train = train_by_id.get(train_id_value) or {}
             endpoint = endpoint_by_id.get(mr_id) or {}
             suffix = mr_id[-8:] if mr_id else ""
+            ap_display = resolver.enrich_parsed(
+                {
+                    "event_type": str(row.get("event_type") or "").upper(),
+                    "peer_name": details.get("peer_ap_name") or "",
+                    "peer_mac": details.get("peer_ap_mac")
+                    or details.get("new_peer_mac")
+                    or details.get("peer_mac")
+                    or "",
+                    "previous_peer_name": details.get(
+                        "previous_peer_ap_name"
+                    )
+                    or "",
+                    "previous_peer_mac": details.get(
+                        "previous_peer_ap_mac"
+                    )
+                    or details.get("old_peer_mac")
+                    or "",
+                    "details": details,
+                }
+            )
+            details = dict(ap_display.get("details") or details)
+            current_name = str(ap_display.get("peer_name") or "")
+            previous_name = str(
+                ap_display.get("previous_peer_name") or ""
+            )
+            message = str(row.get("message") or "")
+            event_kind = str(row.get("event_type") or "").casefold()
+            current_mac = str(ap_display.get("peer_mac") or "")
+            if event_kind == "mesh_activelink_switch":
+                if details.get("old_active_link_missing"):
+                    previous_name = "无主链路"
+                message = (
+                    f"{previous_name or '未知 AP'} → "
+                    f"{current_name or '未知 AP'}"
+                )
+            elif event_kind in {"mesh_linkup", "mesh_linkdown"}:
+                parts = [current_name or current_mac or "未知 AP"]
+                if current_mac and current_mac.casefold() != current_name.casefold():
+                    parts.append(current_mac)
+                if details.get("rssi") is not None:
+                    parts.append(f"RSSI {details['rssi']} dBm")
+                if event_kind == "mesh_linkdown" and (
+                    details.get("reason_label") or details.get("reason_raw")
+                ):
+                    parts.append(
+                        f"原因：{details.get('reason_label') or details.get('reason_raw')}"
+                    )
+                message = " · ".join(parts)
+            elif not message and current_name:
+                message = current_name
             items.append(
                 GroundTimelineEventDTO(
                     event_id=row["id"],
@@ -891,7 +1199,56 @@ class GroundUnattendedApplicationService:
                         or ""
                     ),
                     title=row["title"],
-                    message=row["message"],
+                    message=message,
+                    peer_ap_id=str(details.get("peer_ap_id") or ""),
+                    peer_ap_name=current_name,
+                    peer_ap_mac=str(details.get("peer_ap_mac") or ""),
+                    peer_radio_mac=str(
+                        details.get("peer_radio_mac") or ""
+                    ),
+                    previous_peer_ap_id=str(
+                        details.get("previous_peer_ap_id") or ""
+                    ),
+                    previous_peer_ap_name=previous_name,
+                    previous_peer_ap_mac=str(
+                        details.get("previous_peer_ap_mac") or ""
+                    ),
+                    previous_peer_radio_mac=str(
+                        details.get("previous_peer_radio_mac") or ""
+                    ),
+                    station=str(ap_display.get("station") or ""),
+                    section=str(ap_display.get("section") or ""),
+                    previous_station=str(
+                        details.get("previous_station") or ""
+                    ),
+                    previous_section=str(
+                        details.get("previous_section") or ""
+                    ),
+                    rssi=details.get("rssi", details.get("new_rssi")),
+                    previous_rssi=details.get("old_rssi"),
+                    reason_code=str(
+                        details.get("reason_code")
+                        or details.get("switch_reason_code")
+                        or ""
+                    ),
+                    reason_label=str(
+                        details.get("reason_label")
+                        or details.get("reason_raw")
+                        or ""
+                    ),
+                    resolution_status=str(
+                        details.get("resolution_status") or ""
+                    ),
+                    ap_display=current_name,
+                    ap_transition_display=(
+                        f"{previous_name or '未知 AP'} → "
+                        f"{current_name or '未知 AP'}"
+                        if str(row.get("event_type") or "").casefold()
+                        == "mesh_activelink_switch"
+                        else current_name
+                    ),
+                    resolved_ap_name=current_name,
+                    previous_resolved_ap_name=previous_name,
                     details=details,
                 )
             )
@@ -917,9 +1274,16 @@ class GroundUnattendedApplicationService:
 
     def latest_operation(self, site_id: str) -> GroundOperationDTO | None:
         self._require_site(site_id)
+        row = self.repository.latest_terminal_operation()
+        return GroundOperationDTO.model_validate(row) if row else None
+
+    def active_operation(self, site_id: str) -> GroundOperationDTO | None:
+        self._require_site(site_id)
         active_run = self.repository.get_active_run()
+        if active_run is None:
+            return None
         row = self.repository.latest_operation(
-            run_id=str(active_run["run_id"]) if active_run else ""
+            run_id=str(active_run["run_id"]), active_only=True
         )
         return GroundOperationDTO.model_validate(row) if row else None
 
@@ -936,6 +1300,58 @@ class GroundUnattendedApplicationService:
                 "ARCHIVE_NOT_FOUND", "无人值守归档不存在", status_code=404
             )
         return self._archive_dto(row)
+
+    def archive_detail(
+        self,
+        site_id: str,
+        archive_id: str,
+        *,
+        verify: bool = False,
+    ) -> GroundArchiveDetailDTO:
+        self._require_site(site_id)
+        try:
+            inspection = self.raw_query.archive_reader.inspect_archive(
+                archive_id, force=verify
+            )
+        except ValueError as exc:
+            raise GroundUnattendedError(
+                "ARCHIVE_INTEGRITY_FAILED", str(exc), status_code=409
+            ) from exc
+        archive = self._archive_dto(inspection.row).model_copy(
+            update={
+                "file_count": len(inspection.files),
+                "integrity_status": "READY",
+            }
+        )
+        return GroundArchiveDetailDTO(
+            archive=archive,
+            files=[
+                GroundArchiveFileDTO.model_validate(item)
+                for item in inspection.files
+            ],
+            validation=GroundArchiveValidationDTO(
+                status="READY",
+                checked_at=inspection.checked_at,
+                archive_size_bytes=inspection.path.stat().st_size,
+                archive_sha256=inspection.archive_sha256,
+                manifest_sha256=inspection.manifest_sha256,
+                file_count=len(inspection.files),
+                legacy_manifest=inspection.legacy_manifest,
+                message="归档路径、大小、SHA-256、ZIP CRC 与成员清单校验通过",
+            ),
+        )
+
+    def archive_artifact(
+        self, site_id: str, archive_id: str
+    ) -> tuple[Path, str, int, str]:
+        detail = self.archive_detail(site_id, archive_id)
+        inspection = self.raw_query.archive_reader.inspect_archive(archive_id)
+        return (
+            inspection.path,
+            f"{detail.archive.run_date}_ground_unattended.zip",
+            inspection.path.stat().st_size,
+            inspection.archive_sha256,
+        )
 
     def open_archive_directory(self, site_id: str) -> DesktopActionDTO:
         self._require_site(site_id)
@@ -1136,6 +1552,35 @@ class GroundUnattendedApplicationService:
                 item.train_id,
             ),
         )
+
+    def _merge_base_candidate_endpoints(
+        self, items: list[GroundUnattendedTrainDTO]
+    ) -> list[GroundUnattendedTrainDTO]:
+        base_by_train = {
+            item.train_id: item for item in self._base_train_candidates()
+        }
+        if not items:
+            return list(base_by_train.values())
+        result = []
+        seen: set[str] = set()
+        for item in items:
+            seen.add(item.train_id)
+            base = base_by_train.get(item.train_id)
+            if base is None:
+                result.append(item)
+                continue
+            base_endpoints = {endpoint.endpoint: endpoint for endpoint in base.endpoints}
+            endpoints = [
+                endpoint
+                if endpoint.mr_id
+                else base_endpoints.get(endpoint.endpoint, endpoint)
+                for endpoint in item.endpoints
+            ]
+            result.append(item.model_copy(update={"endpoints": endpoints}))
+        result.extend(
+            item for train_id, item in base_by_train.items() if train_id not in seen
+        )
+        return result
 
     def _base_train_candidates(self) -> list[GroundUnattendedTrainDTO]:
         if self.base_query is None:
@@ -1379,6 +1824,56 @@ class GroundUnattendedApplicationService:
             }
         return dict(receiver.health_snapshot())
 
+    def _ap_display_resolver(self) -> GroundApDisplayResolver:
+        if self.base_query is None:
+            return self._ap_display_cache
+        now = time.monotonic()
+        if (
+            now - self._ap_display_cache_loaded_at
+            < self._ap_display_cache_ttl_seconds
+        ):
+            return self._ap_display_cache
+        with self._ap_display_cache_lock:
+            now = time.monotonic()
+            if (
+                now - self._ap_display_cache_loaded_at
+                < self._ap_display_cache_ttl_seconds
+            ):
+                return self._ap_display_cache
+            rows: list[Any] = []
+            resources: list[Any] = []
+            loaded = False
+            try:
+                rows = self.base_query.list_ap_location_items(self.site_id)
+                loaded = True
+            except (OSError, ValueError, RuntimeError, sqlite3.Error):
+                pass
+            ac_query = getattr(self.base_query, "ac_query", None)
+            list_details = getattr(ac_query, "list_all_ap_details", None)
+            if callable(list_details):
+                try:
+                    resources = list_details(self.site_id)
+                    loaded = True
+                except (OSError, ValueError, RuntimeError, sqlite3.Error):
+                    pass
+            if loaded:
+                self._ap_display_cache = GroundApDisplayResolver(
+                    rows,
+                    resources=resources,
+                )
+            self._ap_display_cache_loaded_at = now
+            return self._ap_display_cache
+
+    @staticmethod
+    def _parse_datetime(value: object) -> datetime | None:
+        try:
+            parsed = datetime.fromisoformat(
+                str(value or "").replace("Z", "+00:00")
+            )
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.astimezone()
+
     @staticmethod
     def _archive_dto(row: dict[str, Any]) -> GroundArchiveDTO:
         summary = row.get("summary") or {}
@@ -1396,6 +1891,8 @@ class GroundUnattendedApplicationService:
             complete_session_count=int(summary.get("complete_session_count") or 0),
             partial_session_count=int(summary.get("partial_session_count") or 0),
             archive_size_bytes=int(row.get("archive_size_bytes") or 0),
+            sha256=str(row.get("sha256") or ""),
+            manifest_sha256=str(row.get("manifest_sha256") or ""),
             archive_status=row.get("archive_status", ""),
             retention_until=row.get("retention_until", ""),
             summary=summary,
@@ -1403,6 +1900,120 @@ class GroundUnattendedApplicationService:
             created_at=row.get("created_at", ""),
             updated_at=row.get("updated_at", ""),
         )
+
+    def _run_dto(self, row: dict[str, Any]) -> GroundRunDTO:
+        availability, _source = self._run_data_availability(row)
+        state = str(row.get("state") or "ERROR")
+        return GroundRunDTO(
+            run_id=str(row["run_id"]),
+            site_id=str(row.get("site_id") or self.site_id),
+            run_date=str(row.get("run_date") or ""),
+            state=state,  # type: ignore[arg-type]
+            paused=bool(row.get("paused")),
+            scheduled_start_at=str(row.get("scheduled_start_at") or ""),
+            scheduled_end_at=str(row.get("scheduled_end_at") or ""),
+            actual_started_at=str(row.get("actual_started_at") or ""),
+            actual_ended_at=str(row.get("actual_ended_at") or ""),
+            ping_sample_count=int(row.get("ping_sample_count") or 0),
+            archive_id=str(row.get("archive_id") or ""),
+            archive_status=str(row.get("archive_status") or ""),
+            data_availability=availability,  # type: ignore[arg-type]
+            message=str(row.get("error_message") or ""),
+            created_at=str(row.get("created_at") or ""),
+            updated_at=str(row.get("updated_at") or ""),
+        )
+
+    def _resolve_run(self, run_id: str = "") -> dict[str, Any] | None:
+        if not run_id:
+            return self.repository.get_active_run() or self.repository.latest_run()
+        run = self.repository.get_run(run_id)
+        if run is None:
+            raise GroundUnattendedError(
+                "RUN_NOT_FOUND", "指定的无人值守运行不存在", status_code=404
+            )
+        return run
+
+    def _run_data_availability(
+        self, run: dict[str, Any] | None
+    ) -> tuple[str, str]:
+        if not run:
+            return "MISSING", "NONE"
+        raw_summary = run.get("summary")
+        summary = raw_summary if isinstance(raw_summary, Mapping) else {}
+        has_summary = bool(
+            int(run.get("ping_sample_count") or 0)
+            or any(
+                int(summary.get(key) or 0)
+                for key in (
+                    "ping_sample_count",
+                    "syslog_record_count",
+                    "covered_train_count",
+                )
+            )
+            or self.repository.list_ping_summaries(str(run["run_id"]))
+        )
+        rows = self.repository.list_raw_files_for_run(str(run["run_id"]))
+        if not rows:
+            return ("SUMMARY_ONLY" if has_summary else "MISSING"), "NONE"
+        active_count = 0
+        archived_count = 0
+        root = self.repository.db_path.parent.resolve()
+        archive = self.repository.get_archive_by_run(str(run["run_id"]))
+        archive_status = str((archive or {}).get("archive_status") or "")
+        if archive_status == "FAILED":
+            return "CORRUPT", "NONE"
+        for row in rows:
+            if self._registered_raw_file_exists(root, row):
+                active_count += 1
+            elif (
+                str(row.get("archive_status") or "") == "ARCHIVED"
+                and archive_status == "READY"
+            ):
+                archived_count += 1
+        source = (
+            "MIXED"
+            if active_count and archived_count
+            else "ACTIVE"
+            if active_count
+            else "ARCHIVE"
+            if archived_count
+            else "NONE"
+        )
+        availability = (
+            "MIXED"
+            if source == "MIXED"
+            else "ACTIVE_RAW"
+            if source == "ACTIVE"
+            else "ARCHIVED_RAW"
+            if source == "ARCHIVE"
+            else "SUMMARY_ONLY"
+            if has_summary
+            else "MISSING"
+        )
+        return availability, source
+
+    @staticmethod
+    def _registered_raw_file_exists(
+        root: Path, row: dict[str, Any]
+    ) -> bool:
+        relative = Path(str(row.get("relative_path") or ""))
+        if (
+            not relative.parts
+            or relative.is_absolute()
+            or ".." in relative.parts
+        ):
+            return False
+        candidate = root / relative
+        try:
+            return (
+                candidate.is_file()
+                and not candidate.is_symlink()
+                and not bool(
+                    getattr(candidate, "is_junction", lambda: False)()
+                )
+            )
+        except OSError:
+            return False
 
     def _active(self, site_id: str) -> dict[str, Any]:
         self._require_site(site_id)

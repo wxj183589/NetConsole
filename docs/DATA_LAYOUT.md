@@ -106,7 +106,7 @@ files/rail_transit/
 │  │  ├─ errors.jsonl
 │  │  └─ manifest.json
 │  ├─ archives/<run_date>_ground_unattended.zip
-│  └─ index.sqlite               # 配置、运行/覆盖/事件、Ping 目标激活时间、停止/归档操作、分段索引和汇总；Boot Session 保存设备前后时钟/uptime/时区/误差，Syslog 仅索引/事件/健康指标，不保存高频原始报文
+│  └─ index.sqlite               # 配置、运行/覆盖/事件、Ping 目标激活时间、停止/归档操作、分段索引和汇总；原始文件索引按 run/类型/列车/MR/端位/时间预筛；Boot Session 保存设备前后时钟/uptime/时区/误差，Syslog 仅索引/事件/健康指标，不保存高频原始报文
 ├─ base_data_import/             # 仅显式授权的受控基础资料写入产生
 │  ├─ backups/<operation>.sqlite # SQLite Backup API 生成的写前备份
 │  └─ operations/<operation>.json# 脱敏审计与相对备份引用
@@ -120,6 +120,12 @@ files/rail_transit/
    ├─ parsed/
    └─ outputs/
 ```
+
+无人值守 READY ZIP 是封账后的原始事实源之一。查询历史 Ping/Syslog 时，服务优先读取仍存在的
+`active/` 普通文件；文件已按归档策略清理时直接流式读取受校验 ZIP 成员，不解压、恢复或覆盖
+`active/`。`index.sqlite` 只保存相对路径、时间范围、记录数、大小、哈希和状态；同一运行的
+active/archive 并存时返回 `MIXED` 并去重。ZIP 下载只能通过后端按 `archive_id` 解析的 Artifact 端点，
+Renderer 和 Electron Bridge 都不接受数据根物理路径。
 
 ## 清理边界
 
