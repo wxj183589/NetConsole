@@ -12,6 +12,8 @@ FIT-AP 资源 XLSX 与 OmniPeek 名称表是独立入口：前者面向资产核
 
 FIT-AP 资源、配置快照、Radio、历史和 AP 扩展表格使用 `NcDataTable`。FIT-AP 页面原有私有列显隐已由公共列设置替代；排序、筛选、光衰状态、选择和详情操作继续使用原 Store/API 语义。页面不得重新直接声明 `el-table-column` 或私有列宽算法。
 
+AC running/saved 快照对比通过 `configDiffAdapter.ts` 转为共享配置 Diff 模型，并复用 `apps/web/src/components/config-diff/ConfigDiffViewer.vue`。Renderer 不解析 Unified Diff 还原正文；完整左右文本、标签、结构化行和摘要均由 AC 后端按快照 ID 与受控局点路径返回。
+
 AP 点表导入入口归属“轨道交通 / 基础资料”；AC 管理不显示独立“导入 AP 元数据”按钮。FIT-AP 仍可按 MAC 消费共享基础资料关联结果，但不得在 AC 页面建立第二套点表预览或写入流程。
 
 基础资料页传入 FIT-AP 详情时使用唯一 MAC 匹配得到的 `fit_ap_id` 与 `fit_ap_ac_id`，AC 页面监听路由变化并复用现有详情抽屉；MAC 未匹配或重复匹配时不打开任意 AP。
