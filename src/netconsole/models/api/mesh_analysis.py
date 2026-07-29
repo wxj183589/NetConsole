@@ -67,6 +67,7 @@ class MeshBundleProfileImportStateDTO(ApiModel):
 class MeshBundleMemberPreviewDTO(ApiModel):
     member_id: str
     original_name: str
+    original_relative_path: str = ""
     safe_name: str
     size_bytes: int
     sha256: str

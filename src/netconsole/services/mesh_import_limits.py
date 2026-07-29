@@ -1,0 +1,8 @@
+from __future__ import annotations
+
+
+MESH_SINGLE_FILE_MAX_BYTES = 25 * 1024 * 1024
+MESH_SINGLE_FILE_MAX_LABEL = "25 MiB"
+
+
+__all__ = ["MESH_SINGLE_FILE_MAX_BYTES", "MESH_SINGLE_FILE_MAX_LABEL"]

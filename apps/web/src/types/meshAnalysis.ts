@@ -34,7 +34,7 @@ export interface MeshBundleProfileImportState {
   existing_profile_id: string; existing_profile_name: string
 }
 export interface MeshBundleMemberPreview {
-  member_id: string; original_name: string; safe_name: string; size_bytes: number; sha256: string
+  member_id: string; original_name: string; original_relative_path?: string; safe_name: string; size_bytes: number; sha256: string
   raw_sha256: string; content_sha256: string
   first_log_timestamp: string | null; last_log_timestamp: string | null; log_date: string | null
   stored_filename: string; daily_sequence: number | null; rename_status: string; rename_warning: string

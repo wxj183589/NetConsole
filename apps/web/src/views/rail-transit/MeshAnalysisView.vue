@@ -150,6 +150,7 @@ const linkExportParams = reactive<MeshAnalysisParams>({ ...reportParams })
 const importContextLoading = ref(false)
 const importContextError = ref('')
 const importContextWarnings = ref<string[]>([])
+const importPreviewError = ref('')
 const profileLoadError = ref('')
 const vehicleMrLoadError = ref('')
 const selectedFiles = ref<File[]>([])
@@ -282,9 +283,17 @@ const selectedSource = computed(() => selected.value?.sources[0] || null)
 const bundleCanApply = computed(() => Boolean(
   bundlePreview.value
   && bundlePreview.value.items.length > 0
-  && Object.values(bundleMappings).length === bundlePreview.value.items.length
+  && bundlePreview.value.items.every((item) => Boolean(bundleMappings[item.member_id]))
   && bundlePreview.value.items.some((item) => previewImportState(item)?.duplicate_status === 'new')
   && bundlePreview.value.items.every((item) => bundleItemReady(item)),
+))
+const bundleSubmitLabel = computed(() => (
+  bundlePreview.value?.items.length
+  && bundlePreview.value.items.every(
+    (item) => previewImportState(item)?.duplicate_status === 'duplicate_same_mr',
+  )
+    ? '全部已导入'
+    : '确认导入并分析'
 ))
 const bundleValidationMessage = computed(() => {
   if (!bundlePreview.value) return 'ZIP 尚未预览。'
@@ -1850,21 +1859,28 @@ function isSafeRelativePath(value: string): boolean {
   return !normalized.startsWith('/') && !/^[A-Za-z]:\//.test(normalized) && !normalized.split('/').includes('..')
 }
 function chooseFiles(event: Event): void {
-  const files = Array.from((event.target as HTMLInputElement).files || [])
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files || [])
   selectedFiles.value = files.filter((file) => {
     const name = file.name.toLowerCase()
     const relative = (file as File & { webkitRelativePath?: string }).webkitRelativePath || name
     return ['.zip', '.log', '.txt', '.gz'].some((suffix) => name.endsWith(suffix)) && isSafeRelativePath(relative)
   })
   importPreviewGeneration += 1
+  importPreviewError.value = ''
   bundlePreview.value = null
   for (const key of Object.keys(bundleMappings)) delete bundleMappings[key]
+  input.value = ''
   if (selectedFiles.value.length) void previewImportFiles()
 }
 async function previewImportFiles(): Promise<void> {
   const generation = ++importPreviewGeneration
   const files = [...selectedFiles.value]
+  if (!files.length) return
   bundlePreviewLoading.value = true
+  importPreviewError.value = ''
+  bundlePreview.value = null
+  for (const key of Object.keys(bundleMappings)) delete bundleMappings[key]
   error.value = ''
   try {
     await importProfilesReadyPromise
@@ -1874,7 +1890,7 @@ async function previewImportFiles(): Promise<void> {
     bundlePreview.value = preview
     for (const item of preview.items) {
       const firstCandidate = item.selected_profile_id || item.candidates[0]?.profile_id || ''
-      bundleMappings[item.safe_name] = {
+      bundleMappings[item.member_id] = {
         member_id: item.member_id,
         train_number: item.train_number,
         role: item.role === 'CT' || item.role === 'CW' ? item.role : '',
@@ -1885,7 +1901,11 @@ async function previewImportFiles(): Promise<void> {
   } catch (reason) {
     if (generation !== importPreviewGeneration) return
     bundlePreview.value = null
-    error.value = reason instanceof Error ? reason.message : 'MESH ZIP 预览失败'
+    importPreviewError.value = reason instanceof ApiRequestError && reason.code
+      ? `${reason.code}：${reason.message}`
+      : reason instanceof Error
+        ? reason.message
+        : 'MESH 日志预览失败'
   } finally {
     if (generation === importPreviewGeneration) bundlePreviewLoading.value = false
   }
@@ -1894,7 +1914,7 @@ function profileCandidates(item: MeshBundlePreview['items'][number]): Array<{ pr
   return item.candidates.length ? item.candidates : profiles.value.map((profile) => ({ profile_id: profile.mr_id, display_name: profile.display_name }))
 }
 function previewImportState(item: MeshBundlePreview['items'][number]) {
-  const profileId = bundleMappings[item.safe_name]?.profile_id || item.selected_profile_id
+  const profileId = bundleMappings[item.member_id]?.profile_id || item.selected_profile_id
   return (item.profile_import_states || []).find((state) => state.profile_id === profileId) || {
     profile_id: profileId,
     profile_name: item.selected_profile_name,
@@ -1916,12 +1936,12 @@ function batchDuplicateMappingMatches(item: MeshBundlePreview['items'][number]):
   const original = bundlePreview.value.items.find((candidate) => candidate.member_id === item.batch_duplicate_of)
   if (!original) return false
   return Boolean(
-    bundleMappings[item.safe_name]?.profile_id
-    && bundleMappings[item.safe_name]?.profile_id === bundleMappings[original.safe_name]?.profile_id,
+    bundleMappings[item.member_id]?.profile_id
+    && bundleMappings[item.member_id]?.profile_id === bundleMappings[original.member_id]?.profile_id,
   )
 }
 function bundleItemReady(item: MeshBundlePreview['items'][number]): boolean {
-  const mapping = bundleMappings[item.safe_name]
+  const mapping = bundleMappings[item.member_id]
   if (!mapping?.member_id || !mapping.train_number.trim() || !mapping.role || !mapping.profile_id) return false
   if (!batchDuplicateMappingMatches(item)) return false
   if (item.batch_duplicate_of) return true
@@ -1939,6 +1959,15 @@ function previewDuplicateLabel(item: MeshBundlePreview['items'][number]): string
 }
 function previewStoredFilename(item: MeshBundlePreview['items'][number]): string {
   return previewImportState(item)?.stored_filename || item.stored_filename || item.safe_name
+}
+function clearImportSelection(): void {
+  importPreviewGeneration += 1
+  selectedFiles.value = []
+  bundlePreview.value = null
+  importPreviewError.value = ''
+  for (const key of Object.keys(bundleMappings)) delete bundleMappings[key]
+  if (fileInput.value) fileInput.value.value = ''
+  if (folderInput.value) folderInput.value.value = ''
 }
 function rememberTask(value: RailTransitTask | null): void {
   task.value = value
@@ -2023,14 +2052,19 @@ async function deleteArtifact(artifact: MeshArtifact): Promise<void> {
     ElMessage.error(reason instanceof Error ? reason.message : '分析报告删除失败')
   }
 }
-function startBundleImport(): void {
+async function startBundleImport(): Promise<void> {
   if (!bundlePreview.value || !bundleCanApply.value) return
   const payload: MeshBundleImportRequest = {
     preview_id: bundlePreview.value.preview_id,
-    mappings: Object.values(bundleMappings).map(({ confirmed: _confirmed, ...mapping }) => ({ ...mapping, role: mapping.role as 'CT' | 'CW' })),
+    mappings: bundlePreview.value.items.map((item) => {
+      const { confirmed: _confirmed, ...mapping } = bundleMappings[item.member_id]
+      return { ...mapping, role: mapping.role as 'CT' | 'CW' }
+    }),
     explicit_confirmation: true,
   }
-  void startTask(() => applyMeshBundleImport(payload), 'MESH ZIP 导入启动失败')
+  const created = await startTask(() => applyMeshBundleImport(payload), 'MESH ZIP 导入启动失败')
+  if (!created) return
+  clearImportSelection()
   importVisible.value = false
 }
 function assignAnalysisParams(target: MeshAnalysisParams, value: MeshAnalysisParams): void {
@@ -2198,21 +2232,25 @@ function buildResultLabel(value: string): string {
           <div class="jump-actions"><el-button @click="fileInput?.click()">选择 ZIP / LOG / GZ 文件</el-button><el-button @click="folderInput?.click()">选择文件夹</el-button><span>已选择 {{ selectedFiles.length }} 个文件</span></div>
           <input ref="fileInput" class="hidden-input" type="file" multiple accept=".zip,.log,.txt,.gz" @change="chooseFiles"><input ref="folderInput" class="hidden-input" type="file" multiple webkitdirectory @change="chooseFiles">
         </el-form-item>
+        <div v-if="importPreviewError" class="jump-actions import-context-retry">
+          <el-alert :title="`日志预览失败：${importPreviewError}`" type="error" :closable="false" show-icon />
+          <el-button :icon="Refresh" :loading="bundlePreviewLoading" :disabled="selectedFiles.length === 0" @click="previewImportFiles">重新预览</el-button>
+        </div>
         <el-alert v-if="bundlePreviewLoading" title="正在识别日志并匹配当前局点车载 MR…" type="info" :closable="false" show-icon />
         <template v-if="bundlePreview">
           <el-divider content-position="left">日志自动映射</el-divider>
           <el-alert :title="bundleValidationMessage" :type="bundleCanApply ? 'success' : 'warning'" :closable="false" show-icon />
           <div class="bundle-table-wrap">
             <table class="bundle-table"><thead><tr><th>原始文件 / 内容指纹</th><th>首条日志时间</th><th>预计归档文件名</th><th>列车号</th><th>端位</th><th>对应车载 MR</th><th>重复状态</th><th>确认</th></tr></thead><tbody>
-              <tr v-for="item in bundlePreview.items" :key="item.safe_name">
-                <td><strong>{{ item.original_name }}</strong><small>{{ item.size_bytes }} B · {{ (item.content_sha256 || item.sha256).slice(0, 12) }}…</small></td>
+              <tr v-for="(item, itemIndex) in bundlePreview.items" :key="item.member_id">
+                <td><strong>{{ item.original_name }}</strong><small v-if="item.original_relative_path">{{ item.original_relative_path }}</small><small>成员 {{ itemIndex + 1 }} · {{ item.member_id.slice(-8) }} · {{ item.size_bytes }} B · {{ (item.content_sha256 || item.sha256).slice(0, 12) }}…</small></td>
                 <td>{{ item.first_log_timestamp || '未识别' }}<small>{{ item.log_date || 'unknown_date' }}</small></td>
                 <td><strong>{{ previewStoredFilename(item) }}</strong><small v-if="previewImportState(item)?.rename_warning || item.rename_warning">{{ previewImportState(item)?.rename_warning || item.rename_warning }}</small></td>
-                <td><el-input v-model="bundleMappings[item.safe_name].train_number" size="small" @input="bundleMappings[item.safe_name].confirmed = false" /></td>
-                <td><el-select v-model="bundleMappings[item.safe_name].role" size="small" @change="bundleMappings[item.safe_name].confirmed = false"><el-option label="CT" value="CT" /><el-option label="CW" value="CW" /></el-select></td>
-                <td><el-select v-model="bundleMappings[item.safe_name].profile_id" filterable size="small" @change="bundleMappings[item.safe_name].confirmed = false"><el-option v-for="candidate in profileCandidates(item)" :key="candidate.profile_id" :label="candidate.display_name" :value="candidate.profile_id" /></el-select></td>
+                <td><el-input v-model="bundleMappings[item.member_id].train_number" size="small" @input="bundleMappings[item.member_id].confirmed = false" /></td>
+                <td><el-select v-model="bundleMappings[item.member_id].role" size="small" @change="bundleMappings[item.member_id].confirmed = false"><el-option label="CT" value="CT" /><el-option label="CW" value="CW" /></el-select></td>
+                <td><el-select v-model="bundleMappings[item.member_id].profile_id" filterable size="small" @change="bundleMappings[item.member_id].confirmed = false"><el-option v-for="candidate in profileCandidates(item)" :key="candidate.profile_id" :label="candidate.display_name" :value="candidate.profile_id" /></el-select></td>
                 <td><el-tag :type="previewDuplicateLabel(item) === '新日志' ? 'success' : previewDuplicateLabel(item) === '内容属于其他 MR' ? 'danger' : 'warning'">{{ previewDuplicateLabel(item) }}</el-tag><small v-if="previewImportState(item)?.existing_stored_filename">已有：{{ previewImportState(item)?.existing_stored_filename }} · {{ previewImportState(item)?.existing_profile_name }}</small></td>
-                <td><el-checkbox v-model="bundleMappings[item.safe_name].confirmed" :disabled="Boolean(item.batch_duplicate_of) || previewImportState(item)?.duplicate_status === 'duplicate_same_mr' || !bundleMappings[item.safe_name].train_number.trim() || !bundleMappings[item.safe_name].role || !bundleMappings[item.safe_name].profile_id">人工确认</el-checkbox></td>
+                <td><el-checkbox v-model="bundleMappings[item.member_id].confirmed" :disabled="Boolean(item.batch_duplicate_of) || previewImportState(item)?.duplicate_status === 'duplicate_same_mr' || !bundleMappings[item.member_id].train_number.trim() || !bundleMappings[item.member_id].role || !bundleMappings[item.member_id].profile_id">人工确认</el-checkbox></td>
               </tr>
             </tbody></table>
             <p class="hint">预计归档文件名可能因并发导入在正式保存时自动顺延。</p>
@@ -2220,7 +2258,7 @@ function buildResultLabel(value: string): string {
         </template>
         <el-collapse><el-collapse-item title="高级：无法匹配时创建内部归属" name="advanced-profile"><div class="profile-grid"><el-form-item label="显示名称"><el-input v-model="newProfileName" placeholder="例如：列车01-MR-CT" @input="markProfileNameEdited" /></el-form-item><el-form-item label="关联基础资料 MR（可选）"><el-select v-model="linkedMrId" clearable filterable><el-option v-for="mr in baseMrs" :key="mr.id" :label="vehicleMrOptionLabel(mr)" :value="mr.id" /></el-select></el-form-item><el-form-item label="备注"><el-input v-model="profileNotes" /></el-form-item></div><el-button :loading="taskLoading" :disabled="!newProfileName.trim()" @click="createProfile">创建内部归属</el-button></el-collapse-item></el-collapse>
       </el-form>
-      <template #footer><el-button @click="importVisible = false">取消</el-button><el-button type="primary" :loading="taskLoading" :disabled="!bundleCanApply" @click="startBundleImport">确认导入并分析</el-button></template>
+      <template #footer><el-button @click="importVisible = false">取消</el-button><el-button type="primary" :loading="taskLoading" :disabled="!bundleCanApply" @click="startBundleImport">{{ bundleSubmitLabel }}</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="reportVisible" title="生成 MESH 分析报告" width="min(720px, 94vw)">

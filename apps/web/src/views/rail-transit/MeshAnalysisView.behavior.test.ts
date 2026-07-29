@@ -4,6 +4,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { defineComponent, h, KeepAlive, nextTick, ref, useAttrs, type Component } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ApiRequestError } from '../../api/client'
 import meshAnalysisViewSource from './MeshAnalysisView.vue?raw'
 import type { TracksideSeriesCache } from '../../components/mesh-analysis/tracksideSeriesCache'
 
@@ -309,6 +310,117 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals())
 
 describe('Mesh analysis import context behavior', () => {
+  it('keeps four duplicate basenames as independent member mappings', async () => {
+    mocks.listProfiles.mockResolvedValueOnce([{
+      mr_id: 'profile-1',
+      display_name: '列车34-MR-CT',
+      safe_folder_name: '列车34-MR-CT',
+      linked_device_id: 34,
+      linked_device_uuid: 'uuid-34-ct',
+    }])
+    mocks.previewImport.mockResolvedValueOnce({
+      preview_id: 'preview-duplicate-names',
+      items: Array.from({ length: 4 }, (_, index) => ({
+        member_id: `member-${index + 1}`,
+        original_name: 'meshlog.log',
+        original_relative_path: '',
+        safe_name: 'meshlog.log',
+        size_bytes: 100 + index,
+        sha256: String(index + 1).repeat(64),
+        raw_sha256: String(index + 1).repeat(64),
+        content_sha256: String(index + 5).repeat(64),
+        first_log_timestamp: `2026-07-${27 + index}T00:18:56.311000`,
+        last_log_timestamp: `2026-07-${27 + index}T00:19:56.311000`,
+        log_date: `2026-07-${27 + index}`,
+        stored_filename: `2026_07_${27 + index}_1meshlog.log`,
+        daily_sequence: 1,
+        rename_status: 'renamed_by_log_date_sequence',
+        rename_warning: '',
+        duplicate_status: 'new',
+        batch_duplicate_of: '',
+        import_allowed: true,
+        existing_source_id: null,
+        existing_stored_filename: '',
+        existing_session_id: '',
+        existing_profile_id: '',
+        existing_profile_name: '',
+        train_number: '34',
+        role: 'CT',
+        match_status: 'matched',
+        selected_profile_id: 'profile-1',
+        selected_profile_name: '列车34-MR-CT',
+        profile_import_states: [{
+          profile_id: 'profile-1',
+          profile_name: '列车34-MR-CT',
+          stored_filename: `2026_07_${27 + index}_1meshlog.log`,
+          daily_sequence: 1,
+          rename_status: 'renamed_by_log_date_sequence',
+          rename_warning: '',
+          duplicate_status: 'new',
+          import_allowed: true,
+          existing_source_id: null,
+          existing_stored_filename: '',
+          existing_session_id: '',
+          existing_profile_id: '',
+          existing_profile_name: '',
+        }],
+        candidates: [{ profile_id: 'profile-1', display_name: '列车34-MR-CT' }],
+      })),
+    })
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text().includes('导入原始 MESH 日志'))!.trigger('click')
+    await flushPromises()
+    const files = Array.from(
+      { length: 4 },
+      (_, index) => new File([`mesh-${index}`], 'meshlog.log', { type: 'text/plain' }),
+    )
+    const fileInput = wrapper.findAll('input[type="file"]')[0]
+    Object.defineProperty(fileInput.element, 'files', { configurable: true, value: files })
+
+    await fileInput.trigger('change')
+    await flushPromises()
+
+    expect(mocks.previewImport).toHaveBeenCalledWith(files)
+    expect(wrapper.findAll('.bundle-table tbody tr')).toHaveLength(4)
+    expect(wrapper.text()).toContain('成员 1')
+    expect(wrapper.text()).toContain('成员 4')
+    const submit = wrapper.findAll('button').find((button) => button.text() === '确认导入并分析')!
+    expect(submit.attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('shows structured preview errors inside the dialog and retries without clearing files', async () => {
+    mocks.previewImport.mockRejectedValueOnce(
+      new ApiRequestError(
+        '存在重复文件名：meshlog.log',
+        422,
+        'DUPLICATE_MEMBER',
+      ),
+    )
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text().includes('导入原始 MESH 日志'))!.trigger('click')
+    await flushPromises()
+    const file = new File(['mesh'], 'meshlog.log', { type: 'text/plain' })
+    const fileInput = wrapper.findAll('input[type="file"]')[0]
+    Object.defineProperty(fileInput.element, 'files', { configurable: true, value: [file] })
+
+    await fileInput.trigger('change')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('日志预览失败：DUPLICATE_MEMBER：存在重复文件名：meshlog.log')
+    expect(wrapper.text()).toContain('已选择 1 个文件')
+    const retry = wrapper.findAll('button').find((button) => button.text() === '重新预览')!
+    await retry.trigger('click')
+    await flushPromises()
+
+    expect(mocks.previewImport).toHaveBeenCalledTimes(2)
+    expect(mocks.previewImport).toHaveBeenLastCalledWith([file])
+    expect(wrapper.text()).toContain('已选择 1 个文件')
+    wrapper.unmount()
+  })
+
   it('prepares context, pages VehicleMr by 200, and keeps VehicleMr when profiles fail', async () => {
     const firstPage = Array.from({ length: 200 }, (_, index) => ({ id: `uuid-${index}`, device_id: index + 1, name: `列车${index + 1}-MR-CT`, train_no: String(index + 1), role: 'CT' }))
     mocks.listVehicleMrs

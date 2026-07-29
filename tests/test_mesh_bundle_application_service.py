@@ -28,6 +28,16 @@ def _bundle_bytes() -> bytes:
     return output.getvalue()
 
 
+def _mesh_log(timestamp: str) -> bytes:
+    active_timestamp = timestamp.rsplit(".", 1)[0]
+    return (
+        f"[1] {timestamp}\n"
+        f"[1] Active 30f5-277a-5a2f {active_timestamp} 0d 00h 00m 03s 1 "
+        "36/43 2%/4% 45%/47% 3/1 15/27 60/72060 88/105 0/5000 "
+        "2/297 314/0 0/93 0/0 0/0 0/0\n"
+    ).encode()
+
+
 class _VehicleMrPages:
     def __init__(self) -> None:
         self.calls: list[tuple[int, int]] = []
@@ -135,6 +145,137 @@ def test_manual_profile_creation_rejects_duplicate_linked_mr(tmp_path: Path) -> 
         )
 
 
+def test_preview_files_accepts_duplicate_basenames_and_reserves_daily_sequences(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("列车34-MR-CT")
+    tasks = TaskApplicationService(paths=paths, site_name="demo")
+    application = MeshBundleApplicationService(
+        paths,
+        tasks,
+        FakeLocalProcessAdapter(tasks),  # type: ignore[arg-type]
+    )
+    timestamps = (
+        "2026/07/27 08:10:01.001",
+        "2026/07/28 00:18:56.311",
+        "2026/07/28 13:20:16.625",
+        "2026/07/29 00:03:11.002",
+    )
+
+    preview = application.preview_files(
+        "demo",
+        [
+            ("meshlog.log", io.BytesIO(_mesh_log(timestamp)))
+            for timestamp in timestamps
+        ],
+    )
+    items = preview["items"]
+
+    assert len(items) == 4
+    assert len({str(item["member_id"]) for item in items}) == 4
+    assert [item["original_name"] for item in items] == ["meshlog.log"] * 4
+    assert [item["stored_filename"] for item in items] == [
+        "2026_07_27_1meshlog.log",
+        "2026_07_28_1meshlog.log",
+        "2026_07_28_2meshlog.log",
+        "2026_07_29_1meshlog.log",
+    ]
+    assert all("__uploads__" not in str(item["stored_filename"]) for item in items)
+
+    service = MeshBundleImportService("demo", paths)
+    _preview_dir, _archive, _meta, manifest = service.load_preview(str(preview["preview_id"]))
+    assert len({member.internal_member_name for member in manifest.members}) == 4
+    assert all(member.internal_member_name.startswith("__uploads__/") for member in manifest.members)
+    assert all(member.original_name == "meshlog.log" for member in manifest.members)
+    assert all(profile.mr_id in {state["profile_id"] for state in item["profile_import_states"]} for item in items)
+    mappings = [
+        {
+            "member_id": item["member_id"],
+            "train_number": "34",
+            "role": "CT",
+            "profile_id": profile.mr_id,
+        }
+        for item in items
+    ]
+    _manifest, approved = service.approve_preview(
+        str(preview["preview_id"]),
+        mappings,
+        [profile.mr_id],
+    )
+
+    result = service.import_approved_preview(
+        str(preview["preview_id"]),
+        approved,
+        job_id="mesh-duplicate-basename-import",
+    )
+
+    assert result["imported_count"] == 4
+    assert sorted(
+        str(item["stored_filename"])
+        for item in result["source_results"]
+    ) == [
+        "2026_07_27_1meshlog.log",
+        "2026_07_28_1meshlog.log",
+        "2026_07_28_2meshlog.log",
+        "2026_07_29_1meshlog.log",
+    ]
+
+
+def test_preview_files_marks_same_content_as_batch_duplicate_despite_duplicate_names(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("列车34-MR-CT")
+    tasks = TaskApplicationService(paths=paths, site_name="demo")
+    application = MeshBundleApplicationService(
+        paths,
+        tasks,
+        FakeLocalProcessAdapter(tasks),  # type: ignore[arg-type]
+    )
+    body = _mesh_log("2026/07/28 00:18:56.311")
+
+    preview = application.preview_files(
+        "demo",
+        [("meshlog.log", io.BytesIO(body)), ("meshlog.log", io.BytesIO(body))],
+    )
+
+    assert [item["duplicate_status"] for item in preview["items"]] == [
+        "new",
+        "duplicate_in_current_batch",
+    ]
+    assert preview["items"][1]["batch_duplicate_of"] == preview["items"][0]["member_id"]
+    assert preview["items"][1]["stored_filename"] == preview["items"][0]["stored_filename"]
+    mappings = [
+        {
+            "member_id": item["member_id"],
+            "train_number": "34",
+            "role": "CT",
+            "profile_id": profile.mr_id,
+        }
+        for item in preview["items"]
+    ]
+    service = MeshBundleImportService("demo", paths)
+    _manifest, approved = service.approve_preview(
+        str(preview["preview_id"]),
+        mappings,
+        [profile.mr_id],
+    )
+
+    result = service.import_approved_preview(
+        str(preview["preview_id"]),
+        approved,
+        job_id="mesh-duplicate-content-import",
+    )
+
+    assert result["imported_count"] == 1
+    assert result["duplicate_count"] == 1
+    assert [
+        str(item["stored_filename"])
+        for item in result["source_results"]
+    ] == ["2026_07_28_1meshlog.log"]
+
+
 def test_application_preview_confirmation_and_serializable_job_params(tmp_path: Path) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     profile = MeshStorageService("demo", paths).create_mr_profile("01-MR-CT")
@@ -147,9 +288,10 @@ def test_application_preview_confirmation_and_serializable_job_params(tmp_path: 
         file_name="bundle.zip",
         source=io.BytesIO(_bundle_bytes()),
     )
+    member_id = str(preview["items"][0]["member_id"])
     mappings = [
         {
-            "member_id": "01CTmeshlog.log",
+            "member_id": member_id,
             "train_number": "01",
             "role": "CT",
             "profile_id": profile.mr_id,
