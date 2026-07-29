@@ -1,6 +1,6 @@
 # 导出进程规范
 
-本文定义 NetConsole 所有导出类任务的强制规范，是 [Renderer 响应性规范](ui_thread_policy.md) 的配套文档。
+本文定义 NetConsole 所有导出类任务的强制规范，是 [Renderer 响应性规范](ui_thread_policy.md) 的配套文档。用户选择文件、任务绑定和最终落盘的永久规则见 [用户文件导入导出交互契约](IMPORT_EXPORT_INTERACTION.md)。
 
 > 2026-07-11 代码核对：当前通用 registry 有 27 个导出类型，另有 `trackside_ap_business` 和 `mesh_link_detail` 两个专用类型。兼容直接 exporter 仍可能存在，但正式 UI 路径必须使用 Export Process。
 
@@ -16,12 +16,13 @@ Renderer 禁止直接 Workbook.save、df.to_excel、matplotlib.savefig。
 
 ```text
 用户点击导出
-  -> 当前业务窗口先打开 Windows 另存为
-  -> 用户取消：结束，不创建 ExportJob
-  -> 用户确认：Main 返回本次授权目标
-  -> 创建 ExportJob，在 Artifact Store 生成受管 Artifact
-  -> 任务与授权目标在 Renderer 当前 session 一对一绑定
-  -> Artifact 就绪后按 size + SHA-256 写入同目录随机 .part
+  -> useUserSelectedExport 选择并持有 Main 授权目标
+  -> 用户取消：结束，不创建 Export Task
+  -> 用户确认：创建 Export Task
+  -> Export Process 生成内部 Artifact
+  -> Task Center 发布 Artifact 元数据
+  -> useUserSelectedExport 携带 destinationPath + size + SHA-256
+  -> Electron Main 流式写入同目录随机 .part
   -> 校验通过后安全替换用户目标
 ```
 
@@ -75,7 +76,7 @@ Application Service 与导出进程通过 UTF-8 JSONL stdout 通信进度。导�
 
 ## 三、ExportJob
 
-UI 线程只负责创建导出任务描述文件，例如：
+Application Service 只创建内部 Artifact 的导出任务描述文件，例如：
 
 ```json
 {
@@ -87,6 +88,8 @@ UI 线程只负责创建导出任务描述文件，例如：
   "created_at": "2026-07-09T12:00:00"
 }
 ```
+
+`output_path` 是 Export Worker 的内部 Artifact 输出位置，不是 Renderer 任意传入的用户最终保存路径。用户最终路径由 Electron Main 当次授权，只保存在 Renderer 当前 session 的共享协调器绑定中，不进入 Python `ExportJob` 或业务数据库。
 
 job 参数只能包含可序列化数据：
 

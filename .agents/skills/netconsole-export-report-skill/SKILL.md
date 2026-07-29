@@ -28,7 +28,8 @@ description: "NetConsole Export Center、ExportJob、XLSX/CSV/PDF/ZIP/Markdown �
 
 # 开始前读取
 
-- `docs/export_process_policy.md`、`docs/JOB_CENTER.md`、`docs/DEVELOPMENT_RULES.md`。
+- `docs/export_process_policy.md`、`docs/IMPORT_EXPORT_INTERACTION.md`、`docs/JOB_CENTER.md`、`docs/DEVELOPMENT_RULES.md`。
+- `apps/web/src/platform/exportActionRegistry.ts`、`apps/web/src/composables/useUserSelectedExport.ts`。
 - `src/netconsole/export_worker.py`、`src/netconsole/services/export/`、`src/netconsole/services/export_task_models.py`。
 - `src/netconsole/services/excel_autosize.py`、`src/netconsole/services/excel_report_utils.py`、`src/netconsole/services/excel_stream_exporter.py`。
 - 目标报告 Service、对应 FastAPI Router/Vue 下载入口、`src/netconsole/utils/excel_workbook.py`。
@@ -36,12 +37,14 @@ description: "NetConsole Export Center、ExportJob、XLSX/CSV/PDF/ZIP/Markdown �
 
 # 工作流程
 
-1. Vue 只提交受控导出 DTO；Application Service 构造 `ExportTaskSpec`/`ExportJob` 并调用 `submit_export_task()`。Renderer/Router 不得直接 `Workbook.save()`、`to_excel()` 或 `savefig()`。
-2. 优先传数据库/结果文件/筛选/ID等数据源；不得遍历全量 UI 表格传入 Worker。仅符合现有 builder 限制的小型静态 inline rows 可例外并说明原因。
-3. Worker 写目标旁临时文件；成功后 `os.replace` 原子替换，失败/取消/启动异常清理 tmp、Job 和 cancel 文件。
-4. handler 分阶段报告查询、生成、样式、落盘；UI 显示进度、失败原因、取消结果和打开目录入口。
-5. XLSX 统一表头、冻结、筛选、文本/数值/时间/百分比/状态格式和采样列宽上限；不产生用户未要求的重复列。
-6. 文件被 WPS/Excel 占用时提示关闭文件后重试，不覆盖已有可用文件。
+1. 涉及用户可见任务型导出时，组合 `netconsole-user-file-interaction-skill`：先登记固定动作并复用 `submitExportAfterDestinationSelected(...)`，不得在目标页面自行调用 `chooseSavePath` 后复制保存状态机。
+2. Vue 只提交受控导出 DTO；Application Service 构造 `ExportTaskSpec`/`ExportJob` 并调用 `submit_export_task()`。Renderer/Router 不得直接 `Workbook.save()`、`to_excel()` 或 `savefig()`，也不得把用户最终路径作为任意 Renderer 参数写入 Python `ExportJob`。
+3. Worker 的 `output_path` 是内部 Artifact 路径；最终用户副本由共享协调器携带 Main 授权路径、大小和 SHA-256，交给 Electron Main 保存。
+4. 优先传数据库/结果文件/筛选/ID等数据源；不得遍历全量 UI 表格传入 Worker。仅符合现有 builder 限制的小型静态 inline rows 可例外并说明原因。
+5. Worker 写内部目标旁临时文件；成功后 `os.replace` 原子替换，失败/取消/启动异常清理 tmp、Job 和 cancel 文件。
+6. handler 分阶段报告查询、生成、样式、落盘；UI 显示进度、失败原因和取消结果，最终保存状态由共享协调器和 Task Center 管理。
+7. XLSX 统一表头、冻结、筛选、文本/数值/时间/百分比/状态格式和采样列宽上限；不产生用户未要求的重复列。
+8. 文件被 WPS/Excel 占用时提示关闭文件后重试，不覆盖已有可用文件。
 
 # 项目约束
 
@@ -58,6 +61,7 @@ description: "NetConsole Export Center、ExportJob、XLSX/CSV/PDF/ZIP/Markdown �
 
 # 相关 Skills
 
+- 用户文件选择、任务绑定和最终落盘：`netconsole-user-file-interaction-skill`。
 - Job 协议：`netconsole-job-center-skill`。
 - 数据目录安全：`netconsole-data-safety-skill`。
 - MESH 报告：`netconsole-mesh-analysis-skill`。

@@ -87,6 +87,13 @@ const MANAGED_DOWNLOAD_EXCEPTIONS = [
   'views/file-management/FileManagementView.vue',
 ] as const
 
+const DIRECT_SAVE_PATH_ENTRIES = [
+  'composables/useUserSelectedExport.ts',
+  'components/DesktopRuntimeStatus.vue',
+  'platform/electron-adapter.ts',
+  'views/ac-management/AcOmniPeekExportDialog.vue',
+] as const
+
 const LOCAL_PATH_SELECTION_ENTRIES = [
   {
     file: 'views/tools/components/ExternalToolEditorDialog.vue',
@@ -158,6 +165,17 @@ describe('visible import/export entry audit', () => {
       expect(source, name).not.toMatch(/NetConsole(?:ExportTest|TestData|BuildLogs)/)
       expect(source, name).not.toMatch(/(?:^|[\\/])Downloads(?:[\\/]|$)/)
     }
+  })
+
+  it('limits direct Save As and private export state to the shared or reviewed flows', () => {
+    const directSavePathEntries: string[] = []
+    for (const file of sourceFiles(SRC_ROOT).filter((item) => !item.endsWith('.test.ts'))) {
+      const source = readFileSync(file, 'utf8')
+      const name = relative(SRC_ROOT, file).replaceAll('\\', '/')
+      if (/\.chooseSavePath\s*\(/.test(source)) directSavePathEntries.push(name)
+      expect(source, name).not.toMatch(/\b(?:pendingExports|autoSavedTaskIds)\b/)
+    }
+    expect(directSavePathEntries.sort()).toEqual([...DIRECT_SAVE_PATH_ENTRIES].sort())
   })
 
   it('limits managed-directory download exceptions to the reviewed device-file workflow', () => {

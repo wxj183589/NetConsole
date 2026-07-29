@@ -55,12 +55,26 @@ Worker 必须支持 `progress / log / finished / error / cancelled`。失败不�
 
 ## 导出统一规则
 
-- UI 只创建 `ExportJob`，不得直接写 Excel。
-- 输出先写临时文件，成功后替换目标文件。
+- 永久交互契约见 [用户文件导入导出交互契约](IMPORT_EXPORT_INTERACTION.md)。
+- 导出必须区分两层路径：Python Export Process 的内部 Artifact 路径，以及 Electron Main 当次授权的用户最终保存路径。
+- 用户最终路径不进入 Python `ExportJob` 或业务数据库；`ExportJob.output_path` 只表示 Worker 的内部 Artifact 输出位置。
+- Worker 只负责生成内部 Artifact，并保留临时文件、JSONL、取消和原子替换规则；Renderer 的共享协调器负责当前 session 中任务与授权路径的绑定。
+- Electron Main 负责按 Artifact 元数据流式复制、大小与 SHA-256 校验及安全替换。只有 Main 返回 `saved` 才能提示已保存。
+- 新任务型导出必须先在 `exportActionRegistry.ts` 登记固定动作，通过 `submitExportAfterDestinationSelected(...)` 先选路径再创建任务；取消不得创建任务。
+- 现成文件和历史 Artifact 只在用户点击时调用 `downloadBackendResource(...)` 另存，不得在页面或任务恢复时自动弹窗。
+- 页面不得自行维护 destinationPath、session storage、Artifact 轮询、自动保存或失败重试状态机。
 - 取消、失败和进程异常必须清理临时文件、Job 文件和取消文件。
 - Excel 列宽按表头和采样内容自适应，长字段有上限，保留横向滚动/查看能力。
 - XLSX 保持 WPS/Excel 兼容、冻结表头、筛选、文本格式和中文字段。
 - 目标文件被 WPS/Excel 占用时提供明确关闭文件后重试提示。
+
+## 导入统一规则
+
+- Browser `File/FileList` 导入只能由用户点击触发；取消不调用 prepare/preview/import API，处理后清空 `input.value`，保证同名文件可再次选择。
+- `multiple` / `webkitdirectory` 只处理用户实际选择的 FileList，不扫描默认目录或上次目录。
+- Electron 路径导入必须复用 `selectFile`、`selectDirectory`、`selectSitePackage` 等现有专用选择器，只使用 Main 返回的当次授权路径，不接受 Renderer 任意文本路径。
+- 选择器 filter/accept 仅改善交互，不能替代 Backend 对扩展名、文件头、契约、schema、必要字段/Sheet/manifest、非空、重复内容和 ZIP 路径穿越的校验。
+- OmniPeek、局点包、SFTP 受管下载等例外以永久交互契约登记为准；新增例外必须同步静态审计。
 
 ## 页面瘦身
 

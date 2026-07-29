@@ -1,5 +1,7 @@
 # UI 导入导出文件选择审计
 
+> 本文是 2026-07-30 的实现审计、页面矩阵和验证证据。永久开发规则见 [用户文件导入导出交互契约](../IMPORT_EXPORT_INTERACTION.md)。后续新增功能不得只在本表追加一行后自行实现，必须先登记固定动作并复用共享协调器；只有新增例外才需要同步更新本审计矩阵和例外清单。
+
 本审计以 `apps/web/src/router/routes.ts` 的全部可见路由为入口，覆盖页面、弹窗、共享组件、Task Center、Electron Platform Adapter、Python API、Export Worker、Artifact Store、测试和构建脚本。审计基线为 2026-07-30。
 
 ## 统一结论

@@ -4,7 +4,7 @@
 
 ## 本次专题
 
-- [UI 导入导出文件选择审计](development/import-export-dialog-audit.md)
+- [UI 导入导出文件选择审计（2026-07-30 整改证据）](development/import-export-dialog-audit.md)
 - [轨旁 AP 管理 VLAN 分组规划](AP_MANAGEMENT_VLAN_GROUPS.md)
 - [车内通信检测：点表与固定拓扑](rail-transit/train-communication/README.md)
 - [检测点表模型](rail-transit/train-communication/POINT_TABLE.md)
@@ -17,6 +17,7 @@
 | 文档 | 用途 | 主要维护对象 | 事实来源 | 必须更新时机 |
 | --- | --- | --- | --- | --- |
 | [项目总览](../README.md) | 产品定位、模块、架构摘要、运行入口 | 全体开发/维护人员 | Electron Main、`main.py`、Electron Runtime、Feature Registry | 一级模块、启动方式、版本或总体架构变化 |
+| [用户文件导入导出契约](IMPORT_EXPORT_INTERACTION.md) | 用户文件选择、固定导出动作、任务绑定、Artifact 最终落盘和受管下载例外 | Web/Electron/Export 开发 | `exportActionRegistry`、`useUserSelectedExport`、Electron BackendDownloadManager | 新增或修改任一导入、导出、下载、模板或 Artifact 保存入口 |
 | [永久架构与后续演进](ARCHITECTURE_NEXT.md) | Electron-only 永久层、不可回退边界与后续演进顺序 | 架构负责人 | 当前代码、最终迁移矩阵与目录规范 | 永久技术边界或演进顺序变化 |
 | [架构一致性审计](ARCHITECTURE_COMPLIANCE.md) | Electron-only 最终分层、Qt 历史迁移映射、自动 Guard、例外和发布阻塞规则 | 架构、迁移与发布负责人 | Git 历史、实际依赖、迁移矩阵、Guard 和非 Qt 测试 | 分层规则、Qt 删除范围、Guard 或最终发布门变化 |
 | [Electron Desktop](ELECTRON_DESKTOP.md) | Electron main/preload、Python 生命周期、临时令牌、开发/生产资源与 Qt 历史边界 | Desktop/Core/Web 开发 | `apps/desktop_electron`、`apps/web/src/platform`、`backend/electron_runtime.py` | Electron 生命周期、安全桥接、启动或发布状态变化 |
