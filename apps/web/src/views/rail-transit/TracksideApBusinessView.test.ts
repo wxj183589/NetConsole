@@ -120,8 +120,8 @@ const adapterCatalog: TracksideSwitchAdapterCatalog = {
       vendor_label: '中兴 ZTE',
       platform: 'ZXR10',
       product_family: '5960X-ES',
-      adaptation_status: '已接入，待实机验证',
-      verification_status: 'DOCUMENT_SAMPLE_ONLY',
+      adaptation_status: 'C89E-4 Release 已验证；其他 ZXR10/5960X 型号需逐型号复核',
+      verification_status: 'REAL_DEVICE_PENDING',
       profile: {
         profile_id: 'zte_zxr10_5960x_es_v2',
         vendor: 'ZTE',
@@ -142,12 +142,12 @@ const adapterCatalog: TracksideSwitchAdapterCatalog = {
         lldp_config_candidates: ['show lldp config', 'show lldp config interface <interface_name>'],
       },
       capabilities: [
-        { key: 'ssh', label: 'SSH', status: 'SAMPLE_REQUIRED', message: '会话框架已实现，待实机验证' },
-        { key: 'interface_status', label: '接口状态', status: 'IMPLEMENTED', message: '基于文档样例实现' },
-        { key: 'lldp', label: 'LLDP', status: 'SAMPLE_REQUIRED', message: '仅登记候选命令' },
-        { key: 'bidirectional_attenuation', label: '双向光衰', status: 'SAMPLE_REQUIRED', message: '第一阶段暂不可用' },
+        { key: 'ssh', label: 'SSH', status: 'VERIFIED', message: 'C89E-4 Release 只读会话已实机验证' },
+        { key: 'interface_status', label: '接口状态', status: 'VERIFIED', message: 'C89E-4 Release 已实机验证' },
+        { key: 'lldp', label: 'LLDP', status: 'VERIFIED', message: 'C89E-4 Release 已实机验证；其他型号需逐型号复核' },
+        { key: 'bidirectional_attenuation', label: '双向光衰', status: 'SAMPLE_REQUIRED', message: '仅有单端光功率时不计算双向光衰' },
       ],
-      pending_items: ['SSH 登录与提示符验证', 'LLDP 命令探测与 Parser 实现'],
+      pending_items: ['非 C89E-4 Release 型号的命令与字段兼容性复核', '双端 ZTE 光衰计算验证'],
     },
   }],
 }
@@ -354,12 +354,15 @@ describe('TracksideApBusinessView mounted behavior', () => {
     const wrapper = await mountView()
 
     expect(wrapper.text()).toContain('中兴 ZTE')
-    expect(wrapper.text()).toContain('已接入，待实机验证')
+    expect(wrapper.text()).toContain('C89E-4 Release 已验证；其他 ZXR10/5960X 型号需逐型号复核')
     expect(wrapper.text()).not.toContain('完全支持')
+    expect(wrapper.text()).not.toContain('已接入，待实机验证')
+    expect(wrapper.text()).not.toContain('功能未启用')
     await button(wrapper, '查看 Profile').trigger('click')
     expect(wrapper.text()).toContain('zte_zxr10_5960x_es_v2')
-    expect(wrapper.text()).toContain('待采集真实样本')
-    expect(wrapper.text()).toContain('尚未接入真实节点，无法计算光衰')
+    expect(wrapper.text()).toContain('兼容性边界')
+    expect(wrapper.text()).toContain('仅有单端光功率时不计算双向光衰')
+    expect(wrapper.text()).toContain('已自动隐藏暂停使用设备')
 
     await wrapper.find('.adapter-interface-input').setValue('xgei-0/1/1/2')
     await button(wrapper, '启动厂商采样').trigger('click')
@@ -542,13 +545,13 @@ describe('TracksideApBusinessView mounted behavior', () => {
   })
 
   it('shows backend failures on the current page', async () => {
-    api.startTracksideApUpdate.mockRejectedValueOnce(new Error('后端拒绝：功能未启用'))
+    api.startTracksideApUpdate.mockRejectedValueOnce(new Error('后端拒绝：任务资源繁忙'))
     const wrapper = await mountView()
 
     await button(wrapper, '更新全部光衰').trigger('click')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('后端拒绝：功能未启用')
+    expect(wrapper.text()).toContain('后端拒绝：任务资源繁忙')
     expect(wrapper.text()).not.toContain('轨旁 AP 任务')
     wrapper.unmount()
   })

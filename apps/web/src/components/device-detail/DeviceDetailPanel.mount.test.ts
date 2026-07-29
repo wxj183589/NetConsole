@@ -199,7 +199,7 @@ describe('DeviceDetailPanel mounted interactions', () => {
               interface_name: 'gei-0/3/0/1',
               device_vendor: 'ZTE',
               severity: 'no_light',
-              severity_reason: '设备未返回接收光功率，原始值为 N/A',
+              severity_reason: '设备未返回接收光功率',
               rx_power: null,
               rx_low_alarm: -28.2,
               rx_high_alarm: 0,
@@ -275,7 +275,7 @@ describe('DeviceDetailPanel mounted interactions', () => {
     expect(wrapper.text()).toContain('严重告警')
     expect(wrapper.text()).toContain('未检测到光模块')
     expect(wrapper.text()).toContain('接收功率低于告警低阈值')
-    expect(wrapper.text()).toContain('设备未返回接收光功率，原始值为 N/A')
+    expect(wrapper.text()).toContain('设备未返回接收光功率')
     expect(wrapper.text()).not.toContain('接收功率缺失或不高于 -35 dBm')
     expect(wrapper.text()).toContain('Vendor raw reason')
     expect(wrapper.text()).not.toContain('接收功率高于维护正常线')

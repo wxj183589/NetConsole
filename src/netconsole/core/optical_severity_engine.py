@@ -11,6 +11,69 @@ AP_DEFAULT_OPTICAL_THRESHOLD_PROFILE = {
     "alarm_low": -19.00,
     "warning_low": -16.99,
 }
+ZTE_NO_LIGHT_REASON = "设备未返回接收光功率"
+ZTE_NO_MODULE_FIELDS = frozenset(
+    {
+        "rx_power",
+        "rx_power_dbm",
+        "tx_power",
+        "tx_power_dbm",
+        "temperature",
+        "temperature_c",
+        "temperature_celsius",
+        "voltage",
+        "voltage_v",
+        "supply_voltage_1_v",
+        "supply_voltage_2_v",
+        "bias_current",
+        "tx_bias_ma",
+        "tx_bias_current_ma",
+        "module_type",
+        "module_model",
+        "module_serial_number",
+        "module_vendor",
+        "vendor_name",
+        "wavelength",
+        "wavelength_nm",
+        "tx_wavelength_nm",
+        "rx_wavelength_nm",
+        "transmission_distance",
+        "transfer_distance_smf_m",
+        "connector",
+        "connector_type",
+        "transceiver_type",
+        "transceiver_mode",
+        "directionality",
+        "ethernet_compliance",
+        "vendor_part_number",
+        "vendor_revision",
+        "vendor_serial_number",
+        "authentication",
+        "authentication_code",
+        "product_serial_number",
+        "product_sn",
+        "product_date",
+        "speed",
+        "receiver_sensitivity_dbm",
+        "receiver_overload_dbm",
+        "rx_low_alarm",
+        "rx_low_alarm_dbm",
+        "rx_low_threshold_dbm",
+        "rx_high_alarm",
+        "rx_high_alarm_dbm",
+        "rx_high_threshold_dbm",
+        "tx_low_alarm",
+        "tx_low_alarm_dbm",
+        "tx_low_threshold_dbm",
+        "tx_high_alarm",
+        "tx_high_alarm_dbm",
+        "tx_high_threshold_dbm",
+        "rx_low_warning",
+        "rx_high_warning",
+        "tx_low_warning",
+        "tx_high_warning",
+    }
+)
 
 SEVERITY_RANK = {
     "unknown": 0,
@@ -199,19 +262,23 @@ def compute_zte_optical_severity(record: dict) -> OpticalSeverityResult:
         )
         or ""
     ).strip().casefold()
-    if _is_false(_first_value(record, "module_online")) or reported_status == "offline":
+    if (
+        is_optical_module_absent(record)
+        or _is_false(_first_value(record, "module_online"))
+        or reported_status == "offline"
+    ):
         return OpticalSeverityResult(
-            "offline",
-            "Device reported optical module offline",
+            "no_module",
+            "设备返回 offline，未检测到光模块",
             warning_source="zte_device",
             source_label="ZTE device reported",
         )
 
     rx_power = _first_float(record, "rx_power", "rx_power_dbm")
-    if rx_power is None:
+    if reported_status == "unknown" or rx_power is None:
         return OpticalSeverityResult(
             "no_light",
-            "Device did not report RX power; raw value is N/A",
+            ZTE_NO_LIGHT_REASON,
             warning_source="zte_device",
             source_label="ZTE device reported",
         )
@@ -246,7 +313,7 @@ def compute_zte_optical_severity(record: dict) -> OpticalSeverityResult:
     for kind, value, threshold, matched in comparisons:
         if matched and value is not None and threshold is not None:
             return OpticalSeverityResult(
-                "alarm",
+                "abnormal",
                 reason_by_kind[kind].format(value=value, threshold=threshold),
                 rx_power=rx_power,
                 alarm_low=rx_low,
@@ -272,14 +339,6 @@ def compute_zte_optical_severity(record: dict) -> OpticalSeverityResult:
                 else "ZTE device reported"
             ),
         )
-    if reported_status in {"abnormal", "alarm"}:
-        return OpticalSeverityResult(
-            "alarm",
-            f"ZTE device reported optical status {reported_status}",
-            rx_power=rx_power,
-            warning_source="zte_device",
-            source_label="ZTE device reported",
-        )
     return OpticalSeverityResult(
         "unknown",
         "Device did not report optical power thresholds; threshold evaluation is unavailable",
@@ -287,6 +346,33 @@ def compute_zte_optical_severity(record: dict) -> OpticalSeverityResult:
         warning_source="missing",
         source_label="ZTE threshold missing",
     )
+
+
+def is_zte_optical_record(record: dict) -> bool:
+    vendor = str(record.get("device_vendor") or "").strip().casefold()
+    threshold_source = str(record.get("threshold_source") or "").strip().casefold()
+    return vendor == "zte" or threshold_source.startswith("zte_")
+
+
+def normalize_zte_optical_record(record: dict) -> dict:
+    """Return one canonical ZTE optical record for storage, DTOs and exports."""
+
+    normalized = dict(record)
+    result = compute_zte_optical_severity(normalized)
+    status = result.severity
+    normalized["device_vendor"] = "ZTE"
+    normalized["status"] = status
+    normalized["normalized_status"] = status.upper()
+    normalized["module_present"] = status != "no_module"
+    normalized["module_online"] = status != "no_module"
+    normalized["severity_reason"] = result.reason
+    if status == "no_module":
+        for field in ZTE_NO_MODULE_FIELDS:
+            normalized[field] = None
+        normalized["dom_supported"] = False
+    elif status == "no_light":
+        normalized["dom_supported"] = False
+    return normalized
 
 
 def worse_optical_severity(left: str, right: str) -> str:

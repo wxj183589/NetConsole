@@ -242,11 +242,10 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("web.rail_trackside_ap_business_export", "轨旁 AP 业务导出（Web）", "web.rail_trackside_ap_business", "action"),
     FeatureItem(
         "rail.zte_trackside_switch_adapter",
-        "ZTE 轨旁交换机适配（试验性）",
+        "ZTE 轨旁交换机适配",
         "web.rail_trackside_ap_business",
         "action",
-        description_key="ZXR10 C89E 已完成只读实机验证，5960X-ES 仍待复核",
-        status=FeatureStatus.DEVELOPMENT,
+        description_key="ZXR10 C89E-4 Release 已完成只读实机验证；其他型号仍需逐型号复核",
         dependencies=("web.rail_task_control",),
     ),
     FeatureItem("web.rail_trackside_ap_plan", "轨旁 AP 规划（基础资料页签）", "web.rail_transit_base_data", "tab"),

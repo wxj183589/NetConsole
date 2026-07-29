@@ -26,6 +26,7 @@ from netconsole.parsers.zte.vlan import (
 )
 from netconsole.parsers.zte.zxr10 import (
     merge_optical_modules as merge_zte_optical_modules,
+    merge_optical_snapshot as merge_zte_optical_snapshot,
     parse_device_identity as parse_zte_device_identity,
     parse_interfaces as parse_zte_interfaces,
     parse_lldp_brief as parse_zte_lldp_brief,
@@ -109,6 +110,7 @@ def collect_h3c_device_details(
     paths: PathResolver | None = None,
     progress_callback: ProgressCallback | None = None,
     cancel_check: CancelCheck | None = None,
+    include_zte_optical_detail: bool = False,
 ) -> CollectDeviceResult:
     paths = paths or PathResolver()
     repository = repository or DeviceFactRepository(Database(paths.site_db_path(site_name)))
@@ -276,7 +278,8 @@ def collect_h3c_device_details(
                 ):
                     raise ValueError("ZTE_DEVICE_NOT_RECOGNIZED")
         if (
-            str(device.device_vendor or "").strip().casefold() == "zte"
+            include_zte_optical_detail
+            and str(device.device_vendor or "").strip().casefold() == "zte"
             and outputs.get("inventory.optical_brief")
         ):
             optical_step = next(
@@ -849,7 +852,7 @@ def _parse_zte_and_write(
             parse_errors.append(
                 f"ZTE_TRANSCEIVER_DETAIL_{interface_name}_{detail_result.status}"
             )
-    optical_modules = [
+    current_optical_modules = [
         {
             **item,
             "device_vendor": "ZTE",
@@ -860,6 +863,10 @@ def _parse_zte_and_write(
             optical_detail_rows,
         )
     ]
+    optical_modules = merge_zte_optical_snapshot(
+        repository.list_optical_modules(str(device.device_uuid)),
+        current_optical_modules,
+    )
     optical_modules_updated = 0
     if optical_result.status == "OK" and optical_modules:
         repository.replace_optical_modules(

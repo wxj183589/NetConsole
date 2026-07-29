@@ -921,7 +921,7 @@ const displayEnumLabels: Record<string, Record<string, string>> = {
     no_module: '无光模块',
     link_abnormal: '链路异常',
     link_down: '链路中断',
-    offline: '模块离线',
+    offline: '离线',
     not_collected: '未采集',
     skipped: '已跳过',
   },

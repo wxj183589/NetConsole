@@ -5,6 +5,10 @@ from datetime import datetime
 from uuid import uuid4
 
 from netconsole.core.database import Database
+from netconsole.core.optical_severity_engine import (
+    is_zte_optical_record,
+    normalize_zte_optical_record,
+)
 from netconsole.utils.interface_normalize import normalize_interface_name
 from netconsole.utils.interface_sort import interface_sort_key
 
@@ -299,6 +303,8 @@ class DeviceFactRepository:
         with self.database.connect() as conn:
             conn.execute("DELETE FROM device_optical_modules WHERE device_uuid = ?", (device_uuid,))
             for item in modules:
+                if is_zte_optical_record(item):
+                    item = normalize_zte_optical_record(item)
                 payload = self._payload(OPTICAL_MODULE_FIELDS, {**item, "device_uuid": device_uuid})
                 payload["collected_at"] = payload.get("collected_at") or now
                 payload["updated_at"] = payload.get("updated_at") or now
@@ -312,7 +318,9 @@ class DeviceFactRepository:
                 "SELECT * FROM device_optical_modules WHERE device_uuid = ?",
                 (device_uuid,),
             ).fetchall()
-        latest = _latest_rows_by_interface([dict(row) for row in rows], "interface_name")
+        latest = _normalize_optical_rows(
+            _latest_rows_by_interface([dict(row) for row in rows], "interface_name")
+        )
         return sorted(latest, key=lambda row: interface_sort_key(row.get("interface_name")))
 
     def list_optical_modules_page(
@@ -326,7 +334,7 @@ class DeviceFactRepository:
         clauses = ["device_uuid = ?"]
         params: list[object] = [device_uuid]
         _append_search_clause(clauses, params, search, _OPTICAL_SEARCH_FIELDS)
-        return self._current_page(
+        rows, total = self._current_page(
             "device_optical_modules",
             "interface_name",
             clauses,
@@ -334,6 +342,7 @@ class DeviceFactRepository:
             limit=limit,
             offset=offset,
         )
+        return _normalize_optical_rows(rows), total
 
     def list_optical_modules_bounded(
         self,
@@ -358,17 +367,20 @@ class DeviceFactRepository:
                 [*params, scan_limit],
             ).fetchall()
         total = int(total_row["total"] if total_row is not None else 0)
-        mapped = [dict(row) for row in rows]
+        mapped = _normalize_optical_rows([dict(row) for row in rows])
         return mapped, total, total > len(mapped)
 
     def get_optical_module(
         self, device_uuid: str, interface_name: str
     ) -> dict[str, object | None] | None:
-        return self._get_current_interface_row(
+        row = self._get_current_interface_row(
             "device_optical_modules", "interface_name", device_uuid, interface_name
         )
+        return _normalize_optical_row(row) if row is not None else None
 
     def append_optical_history(self, data: dict[str, object | None]) -> None:
+        if is_zte_optical_record(data):
+            data = normalize_zte_optical_record(data)
         payload = self._payload(OPTICAL_MODULE_HISTORY_FIELDS, data)
         self._set_required_defaults(payload, ("collected_at", "created_at"))
         with self.database.connect() as conn:
@@ -511,11 +523,11 @@ class DeviceFactRepository:
         )
 
     def list_optical_history(self, device_uuid: str, interface_name: str) -> list[dict[str, object | None]]:
-        return self._list_history(
+        return _normalize_optical_rows(self._list_history(
             "device_optical_modules_history",
             "device_uuid = ? AND interface_name = ?",
             (device_uuid, interface_name),
-        )
+        ))
 
     def list_all_optical_history(self, device_uuids: list[str] | None = None, limit: int = 100000) -> list[dict[str, object | None]]:
         params: list[object] = []
@@ -539,7 +551,7 @@ class DeviceFactRepository:
                 """,
                 params,
             ).fetchall()
-        return [dict(row) for row in rows]
+        return _normalize_optical_rows([dict(row) for row in rows])
 
     def get_previous_optical_history(
         self,
@@ -569,7 +581,7 @@ class DeviceFactRepository:
                 """,
                 params,
             ).fetchone()
-        return dict(row) if row is not None else None
+        return _normalize_optical_row(dict(row)) if row is not None else None
 
     def list_lldp_history(self, device_uuid: str, local_interface: str) -> list[dict[str, object | None]]:
         return self._list_history(
@@ -599,7 +611,12 @@ class DeviceFactRepository:
                     max(0, int(offset)),
                 ),
             ).fetchall()
-        return [dict(row) for row in rows]
+        mapped = [dict(row) for row in rows]
+        return (
+            _normalize_optical_rows(mapped)
+            if str(history_kind or "").strip().casefold() in {"optical", "optical_module"}
+            else mapped
+        )
 
     def count_object_history(self, history_kind: str, device_uuid: str, object_name: str) -> int:
         table, object_field = _device_object_history_source(history_kind)
@@ -867,6 +884,20 @@ def _append_search_clause(
         + ")"
     )
     params.extend([f"%{escaped}%"] * len(fields))
+
+
+def _normalize_optical_row(
+    row: dict[str, object | None],
+) -> dict[str, object | None]:
+    if is_zte_optical_record(row):
+        return normalize_zte_optical_record(row)
+    return row
+
+
+def _normalize_optical_rows(
+    rows: list[dict[str, object | None]],
+) -> list[dict[str, object | None]]:
+    return [_normalize_optical_row(row) for row in rows]
 
 
 def _interface_name_aliases(value: object) -> list[str]:

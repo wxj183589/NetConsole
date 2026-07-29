@@ -163,6 +163,7 @@ class TracksideSwitchAdapter(ABC):
         *,
         artifact_dir: Path | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        optical_fast_only: bool = False,
     ) -> TracksideSwitchCollection:
         raise NotImplementedError
 
@@ -490,6 +491,7 @@ class H3CTracksideSwitchAdapter(TracksideSwitchAdapter):
         *,
         artifact_dir: Path | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        optical_fast_only: bool = False,
     ) -> TracksideSwitchCollection:
         result = TracksideSwitchCollection(
             self.vendor, self.profile_id, self.capabilities
@@ -615,6 +617,7 @@ class ZteZxr10TracksideSwitchAdapter(TracksideSwitchAdapter):
         *,
         artifact_dir: Path | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        optical_fast_only: bool = False,
     ) -> TracksideSwitchCollection:
         result = TracksideSwitchCollection(
             self.vendor, self.profile_id, self.capabilities
@@ -631,6 +634,18 @@ class ZteZxr10TracksideSwitchAdapter(TracksideSwitchAdapter):
         result.warnings.extend(identity.warnings)
         if identity.status == "NOT_RECOGNIZED":
             raise ValueError("ZTE_DEVICE_NOT_RECOGNIZED")
+
+        if optical_fast_only:
+            optical_output = self.collect_optical_summary(connection, cancel_check)
+            commands["optical-brief"] = self.optical_summary_command()
+            result.raw_outputs["optical-brief"] = optical_output.raw_output
+            result.command_pages["optical-brief"] = optical_output.page_count
+            optical_parse = self.parse_optical_summary(optical_output.output)
+            result.optical_modules = optical_parse.value
+            _annotate_raw_output_refs(result.optical_modules, "optical-brief.txt")
+            result.warnings.extend(optical_parse.warnings)
+            self._write_artifacts(artifact_dir, result, commands)
+            return result
 
         interface_output = self.collect_interfaces(connection, cancel_check)
         commands["interface-brief"] = self.interface_summary_command()
@@ -805,51 +820,51 @@ class ZteZxr10TracksideSwitchAdapter(TracksideSwitchAdapter):
             vendor_label="中兴 ZTE",
             platform=self.platform_family,
             product_family=self.model_family,
-            adaptation_status="C89E 已验证，5960X-ES 待复核",
-            verification_status=ParserVerificationStatus.DOCUMENT_SAMPLE_ONLY,
+            adaptation_status="C89E-4 Release 已验证；其他 ZXR10/5960X 型号需逐型号复核",
+            verification_status=ParserVerificationStatus.REAL_DEVICE_PENDING,
             profile=self.command_profile,
             capabilities=(
                 TracksideCapabilityDescriptor(
                     "ssh",
                     "SSH",
-                    CommandCapabilityState.SAMPLE_REQUIRED,
-                    "会话与提示符框架已实现，待实机验证",
+                    CommandCapabilityState.VERIFIED,
+                    "C89E-4 Release 只读会话已实机验证",
                 ),
                 TracksideCapabilityDescriptor(
                     "device_version",
                     "设备版本",
-                    CommandCapabilityState.IMPLEMENTED,
-                    "基于 V2.00.20.03 手册样例实现",
+                    CommandCapabilityState.VERIFIED,
+                    "C89E-4 Release 已实机验证",
                 ),
                 TracksideCapabilityDescriptor(
                     "interface_status",
                     "接口状态",
-                    CommandCapabilityState.IMPLEMENTED,
-                    "基于手册样例实现，待实机校准",
+                    CommandCapabilityState.VERIFIED,
+                    "C89E-4 Release 已实机验证",
                 ),
                 TracksideCapabilityDescriptor(
                     "optical_dom",
                     "光模块 DOM",
-                    CommandCapabilityState.IMPLEMENTED,
-                    "基于手册样例实现，待实机校准",
+                    CommandCapabilityState.VERIFIED,
+                    "C89E-4 Release brief 状态与原生门限已实机验证",
                 ),
                 TracksideCapabilityDescriptor(
                     "lldp",
                     "LLDP",
-                    CommandCapabilityState.IMPLEMENTED,
-                    "C89E-4 V1.9.0 已实机验证；5960X-ES V2 仍待现场复核",
+                    CommandCapabilityState.VERIFIED,
+                    "C89E-4 Release 已实机验证；其他型号需逐型号复核",
                 ),
                 TracksideCapabilityDescriptor(
                     "ap_auto_match",
                     "AP 自动匹配",
-                    CommandCapabilityState.SAMPLE_REQUIRED,
-                    "等待真实 LLDP 与 AP 样本",
+                    CommandCapabilityState.IMPLEMENTED,
+                    "复用当前 LLDP 与 AP Identity 匹配链",
                 ),
                 TracksideCapabilityDescriptor(
                     "bidirectional_attenuation",
                     "双向光衰",
                     CommandCapabilityState.SAMPLE_REQUIRED,
-                    "第一阶段暂不可用",
+                    "仅有单端光功率时不计算双向光衰",
                 ),
                 TracksideCapabilityDescriptor(
                     "configuration_write",
@@ -859,12 +874,8 @@ class ZteZxr10TracksideSwitchAdapter(TracksideSwitchAdapter):
                 ),
             ),
             pending_items=(
-                "SSH 登录与提示符验证",
-                "enable 15 与权限边界验证",
-                "分页提示和长输出终止行为验证",
-                "接口与 opticalinfo 实机样本校准",
-                "5960X-ES V2 LLDP 输出现场复核",
-                "AP 关联和双向光衰验证",
+                "非 C89E-4 Release 型号的命令与字段兼容性复核",
+                "双端 ZTE 光衰计算验证",
                 "其他 ZXR10 型号与版本兼容验证",
             ),
         )

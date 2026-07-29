@@ -48,7 +48,7 @@ describe('DeviceDetailPanel', () => {
     expect(source).toContain("normal: '正常'")
     expect(source).toContain("notice: '注意'")
     expect(source).toContain("critical: '严重告警'")
-    expect(source).toContain("offline: '模块离线'")
+    expect(source).toContain("offline: '离线'")
     expect(source).toContain("matched: '已关联'")
     expect(source).toContain("unresolved: '未关联'")
     expect(source).toContain("pending: '等待中'")

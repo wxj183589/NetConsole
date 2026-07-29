@@ -5,13 +5,14 @@ import pytest
 from netconsole.core.optical_severity_engine import (
     compute_optical_severity,
     compute_zte_optical_severity,
+    normalize_zte_optical_record,
 )
 
 
 @pytest.mark.parametrize(
     ("record", "severity"),
     [
-        ({"module_online": False}, "offline"),
+        ({"module_online": False}, "no_module"),
         ({"module_online": True, "rx_power": None}, "no_light"),
         (
             {
@@ -20,7 +21,7 @@ from netconsole.core.optical_severity_engine import (
                 "rx_low_alarm": -28.2,
                 "rx_high_alarm": 0.0,
             },
-            "alarm",
+            "abnormal",
         ),
         (
             {
@@ -41,7 +42,7 @@ from netconsole.core.optical_severity_engine import (
                 "rx_power": 0.1,
                 "rx_high_alarm": 0.0,
             },
-            "alarm",
+            "abnormal",
         ),
         (
             {
@@ -53,7 +54,7 @@ from netconsole.core.optical_severity_engine import (
                 "tx_low_alarm": -10.0,
                 "tx_high_alarm": -0.5,
             },
-            "alarm",
+            "abnormal",
         ),
         (
             {
@@ -65,7 +66,7 @@ from netconsole.core.optical_severity_engine import (
                 "tx_low_alarm": -10.0,
                 "tx_high_alarm": -0.5,
             },
-            "alarm",
+            "abnormal",
         ),
         (
             {
@@ -81,7 +82,7 @@ from netconsole.core.optical_severity_engine import (
                 "rx_power": -15.2,
                 "device_reported_status": "Unknown",
             },
-            "unknown",
+            "no_light",
         ),
         (
             {
@@ -90,14 +91,14 @@ from netconsole.core.optical_severity_engine import (
                 "rx_low_alarm": -28.2,
                 "device_reported_status": "Unknown",
             },
-            "unknown",
+            "no_light",
         ),
         (
             {
                 "status": "offline",
                 "rx_power": None,
             },
-            "offline",
+            "no_module",
         ),
     ],
 )
@@ -112,8 +113,49 @@ def test_zte_missing_rx_reason_does_not_reference_global_minus_35() -> None:
         {"module_online": True, "rx_power": None, "device_reported_status": "Unknown"}
     )
 
-    assert result.reason == "Device did not report RX power; raw value is N/A"
+    assert result.reason == "设备未返回接收光功率"
     assert "-35" not in str(result.reason)
+
+
+def test_zte_reported_abnormal_without_native_thresholds_is_unavailable() -> None:
+    result = compute_zte_optical_severity(
+        {
+            "module_online": True,
+            "rx_power": -10.0,
+            "tx_power": -5.0,
+            "device_reported_status": "Abnormal",
+        }
+    )
+
+    assert result.severity == "unknown"
+    assert result.warning_source == "missing"
+
+
+def test_zte_no_module_normalization_clears_identity_power_and_thresholds() -> None:
+    normalized = normalize_zte_optical_record(
+        {
+            "interface_name": "gei-0/3/0/1",
+            "device_vendor": "ZTE",
+            "device_reported_status": "offline",
+            "module_model": "STALE",
+            "module_serial_number": "STALE-SN",
+            "rx_power": -7.2,
+            "tx_power": -5.1,
+            "rx_low_alarm": -28.2,
+        }
+    )
+
+    assert normalized["status"] == "no_module"
+    assert normalized["module_present"] is False
+    assert normalized["module_online"] is False
+    for field in (
+        "module_model",
+        "module_serial_number",
+        "rx_power",
+        "tx_power",
+        "rx_low_alarm",
+    ):
+        assert normalized[field] is None
 
 
 def test_h3c_generic_severity_behavior_remains_unchanged() -> None:

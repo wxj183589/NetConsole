@@ -1763,8 +1763,15 @@ class RailTransitWebApplicationService:
             ap_name=params.get("ap_name", ""),
         )
         resource_keys = fit_ap_optical_resource_keys(site_id, ac_uuids)
-        if resource_keys:
-            params["resource_keys"] = resource_keys
+        scope_key = self._trackside_ap_update_scope_resource_key(site_id, params)
+        params["resource_keys"] = [*resource_keys, scope_key]
+        params["reuse_equivalent_task"] = True
+        existing = self._active_equivalent_trackside_task(
+            site_id,
+            params["resource_keys"],
+        )
+        if existing is not None:
+            return existing
         if len(ac_uuids) == 1:
             params["device_uuid"] = ac_uuids[0]
             params["ac_uuid"] = ac_uuids[0]
@@ -1773,6 +1780,53 @@ class RailTransitWebApplicationService:
             "trackside_ap_optical_update",
             params,
         )
+
+    @staticmethod
+    def _trackside_ap_update_scope_resource_key(
+        site_id: str,
+        params: dict[str, object],
+    ) -> str:
+        if params.get("station"):
+            scope = f"station:{str(params['station']).strip().casefold()}"
+        elif any(params.get(key) for key in ("ap_uuid", "ap_mac", "ap_name")):
+            scope = "|".join(
+                f"{key}:{str(params.get(key) or '').strip().casefold()}"
+                for key in ("ap_uuid", "ap_mac", "ap_name")
+                if params.get(key)
+            )
+        else:
+            scope = "all"
+        return f"site:{site_id}|trackside_ap_optical|scope:{scope}"
+
+    def _active_equivalent_trackside_task(
+        self,
+        site_id: str,
+        resource_keys: list[str],
+    ) -> RailTransitTaskDTO | None:
+        requested = {
+            str(value)
+            for value in resource_keys
+            if str(value or "").strip()
+        }
+        active = {
+            TaskState.PENDING,
+            TaskState.STARTING,
+            TaskState.RUNNING,
+            TaskState.STOPPING,
+        }
+        for snapshot in self.task_service.repository(site_id).list_filtered(
+            statuses=active,
+            owner=self._OWNER,
+            source="local",
+            site_name=site_id,
+            limit=1000,
+        ):
+            if (
+                snapshot.task_type == "trackside_ap_optical_update"
+                and set(snapshot.resource_keys) == requested
+            ):
+                return self._task_dto(site_id, snapshot)
+        return None
 
     def _trackside_ap_update_scope_params(
         self,
@@ -2726,6 +2780,17 @@ class RailTransitWebApplicationService:
                 on_complete=on_complete,
             )
         except TaskResourceConflictError as exc:
+            requested_keys = {
+                str(value)
+                for value in job_params.get("resource_keys", [])
+                if str(value or "").strip()
+            }
+            if (
+                bool(job_params.get("reuse_equivalent_task"))
+                and exc.task.task_type == task_type
+                and set(exc.task.resource_keys) == requested_keys
+            ):
+                return self._task_dto(site_id, exc.task)
             code = "TRACKSIDE_AP_OPTICAL_UPDATE_RUNNING" if task_type == "trackside_ap_optical_update" else "TASK_RESOURCE_BUSY"
             raise RailTransitWebError(code, str(exc)) from exc
         return self.get_task(site_id, task_id)

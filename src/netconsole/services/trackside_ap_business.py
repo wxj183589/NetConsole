@@ -11,8 +11,10 @@ from netconsole.core import app_logger
 from netconsole.core.optical_severity_engine import (
     classify_optical_freshness,
     compute_optical_severity,
+    compute_zte_optical_severity,
     display_optical_status,
     is_optical_health_abnormal,
+    normalize_zte_optical_record,
     worse_optical_severity,
 )
 from netconsole.core.sources.switch_source import build_switch_data_lookup
@@ -319,8 +321,16 @@ def filter_station_switch_devices(devices: list[Device], database, site_name: st
     return [
         device
         for device in devices
-        if groups.get(device.group_id or -1, "") == "车站" and is_switch_device_type(device.device_type)
+        if groups.get(device.group_id or -1, "") == "车站"
+        and is_switch_device_type(device.device_type)
+        and is_trackside_device_eligible(device)
     ]
+
+
+def is_trackside_device_eligible(device: Device) -> bool:
+    """Trackside reads and tasks exclude only explicitly suspended devices."""
+
+    return str(device.operation_status or "").strip().casefold() != "suspended"
 
 
 def is_trackside_layer2_interface(interface: dict[str, object | None]) -> bool:
@@ -514,18 +524,22 @@ def build_trackside_ap_business_rows(
                     or _find_fit_ap_row(fit_ap_index, device_names, interface_name)
                 )
             switch_collection_status = _switch_collection_status(device, interface, optical)
-            switch_result = compute_optical_severity(
-                {
-                    "module_present": bool(_has_optical_module_data(optical)),
-                    "no_module": _explicit_no_module(optical),
-                    "switch_rx_power": optical.get("rx_power"),
-                    "switch_port_status": optical.get("port_status"),
-                    "alarm_low": optical.get("rx_low_alarm"),
-                    "alarm_high": optical.get("rx_high_alarm"),
-                    "warning_low": optical.get("rx_low_warning"),
-                    "device_type": "switch",
-                }
-            )
+            if str(device.device_vendor or "").strip().casefold() == "zte":
+                optical = normalize_zte_optical_record(optical)
+                switch_result = compute_zte_optical_severity(optical)
+            else:
+                switch_result = compute_optical_severity(
+                    {
+                        "module_present": bool(_has_optical_module_data(optical)),
+                        "no_module": _explicit_no_module(optical),
+                        "switch_rx_power": optical.get("rx_power"),
+                        "switch_port_status": optical.get("port_status"),
+                        "alarm_low": optical.get("rx_low_alarm"),
+                        "alarm_high": optical.get("rx_high_alarm"),
+                        "warning_low": optical.get("rx_low_warning"),
+                        "device_type": "switch",
+                    }
+                )
             collected_module_status = str(optical.get("status") or "").strip().casefold()
             switch_status = (
                 collected_module_status

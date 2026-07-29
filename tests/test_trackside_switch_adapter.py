@@ -51,8 +51,10 @@ def test_adapter_registry_keeps_vendor_selection_out_of_application_service() ->
     assert manifest["platform_family"] == "ZXR10"
     assert manifest["model_family"] == "5960X-ES"
     assert manifest["command_profile_version"] == ZTE_PROFILE_ID
-    assert manifest["adaptation_status"] == "C89E 已验证，5960X-ES 待复核"
-    assert manifest["verification_status"] == "DOCUMENT_SAMPLE_ONLY"
+    assert manifest["adaptation_status"] == (
+        "C89E-4 Release 已验证；其他 ZXR10/5960X 型号需逐型号复核"
+    )
+    assert manifest["verification_status"] == "REAL_DEVICE_PENDING"
     assert manifest["capabilities"]["lldp_neighbors"] is True
     assert manifest["capabilities"]["lldp_interface_neighbor"] is False
     assert manifest["capabilities"]["bidirectional_attenuation"] is False
@@ -61,7 +63,7 @@ def test_adapter_registry_keeps_vendor_selection_out_of_application_service() ->
         item["key"]: item["status"]
         for item in manifest["capability_statuses"]
     }
-    assert statuses["lldp"] == CommandCapabilityState.IMPLEMENTED.value
+    assert statuses["lldp"] == CommandCapabilityState.VERIFIED.value
     assert statuses["bidirectional_attenuation"] == (
         CommandCapabilityState.SAMPLE_REQUIRED.value
     )
@@ -146,7 +148,7 @@ def test_zte_adapter_uses_confirmed_commands_and_writes_raw_artifacts(
     assert result.interfaces[0]["interface_name"] == "xgei-0/1/1/2"
     assert result.interfaces[0]["ifindex"] == 101
     assert result.optical_modules[0]["rx_power"] == -11.904
-    assert result.optical_modules[0]["status"] == "unverified"
+    assert result.optical_modules[0]["status"] == "no_light"
     assert result.lldp_status == "VERIFIED"
     assert len(result.lldp_neighbors) == 36
     assert (artifact_dir / "version.txt").read_text(encoding="utf-8").startswith(
@@ -159,6 +161,46 @@ def test_zte_adapter_uses_confirmed_commands_and_writes_raw_artifacts(
     assert manifest["lldp_status"] == "VERIFIED"
     assert manifest["capabilities"]["configuration_write"] is False
     assert "password" not in json.dumps(manifest, ensure_ascii=False).casefold()
+
+
+def test_zte_optical_fast_path_uses_one_brief_for_many_modules(
+    tmp_path: Path,
+) -> None:
+    device = Device(
+        device_uuid="11111111-1111-4111-8111-222222222222",
+        name="ZTE-FAST",
+        device_vendor="ZTE",
+        device_type="SW",
+    )
+    rows = [
+        (
+            f"xgei-0/1/1/{index} 10G-10km-SFP+ 1310nm "
+            "-7.0/[-28.2,0.0] -5.0/[-10.0,-0.5] Normal"
+        )
+        for index in range(1, 31)
+    ]
+    connection = _FakeConnection(
+        {
+            "show version": _fixture("zte_5960x_show_version.txt"),
+            "show opticalinfo brief": "\n".join(
+                [
+                    "Interface Type Wavelength RxPower(dBm) TxPower(dBm) Status",
+                    *rows,
+                ]
+            ),
+        }
+    )
+
+    result = ZteZxr10TracksideSwitchAdapter(device).collect(
+        connection,
+        artifact_dir=tmp_path / "fast",
+        optical_fast_only=True,
+    )
+
+    assert connection.commands == ["show version", "show opticalinfo brief"]
+    assert len(result.optical_modules) == 30
+    assert result.interfaces == []
+    assert result.lldp_neighbors == []
 
 
 def test_zte_lldp_sampling_chain_is_fixed_and_interface_is_validated() -> None:

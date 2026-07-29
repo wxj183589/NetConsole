@@ -208,7 +208,7 @@ def test_ambiguous_current_lldp_does_not_rebind_through_legacy_interface_fallbac
     assert row["calculation_reason"] == "REAL_DEVICE_SAMPLE_REQUIRED"
 
 
-def test_zte_trackside_keeps_bidirectional_loss_not_verified() -> None:
+def test_zte_trackside_uses_native_thresholds_and_keeps_loss_not_verified() -> None:
     resource = _resource("ap-1", "AP-01", "0011-2233-4455", "10.10.1.10")
 
     rows = build_trackside_ap_business_rows(
@@ -229,7 +229,7 @@ def test_zte_trackside_keeps_bidirectional_loss_not_verified() -> None:
 
     row = rows[0]
     assert row["switch_vendor"] == "ZTE"
-    assert row["switch_optical_status"] == "unverified"
+    assert row["switch_optical_status"] == "abnormal"
     assert row["calculation_status"] == "NOT_VERIFIED"
     assert row["calculation_reason"] == "REAL_DEVICE_SAMPLE_REQUIRED"
     assert row["forward_loss_db"] is None
@@ -305,7 +305,7 @@ def test_h3c_trackside_keeps_existing_bidirectional_loss_calculation() -> None:
     assert row["sample_time_delta_seconds"] == 300
 
 
-def test_trackside_preserves_zte_abnormal_and_dom_unavailable_statuses() -> None:
+def test_trackside_recomputes_zte_status_from_native_thresholds() -> None:
     abnormal = build_trackside_ap_business_rows(
         [_switch()],
         _interfaces(),
@@ -321,5 +321,5 @@ def test_trackside_preserves_zte_abnormal_and_dom_unavailable_statuses() -> None
 
     assert abnormal["switch_optical_status"] == "abnormal"
     assert trackside_row_status(abnormal) == "abnormal"
-    assert dom_unavailable["switch_optical_status"] == "dom_unavailable"
+    assert dom_unavailable["switch_optical_status"] == "abnormal"
     assert dom_unavailable["lldp_match_status"] == "SAMPLE_REQUIRED"

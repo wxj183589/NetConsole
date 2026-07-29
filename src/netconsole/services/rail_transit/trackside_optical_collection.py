@@ -14,7 +14,11 @@ from netconsole.adapters.trackside_switch import (
     TracksidePortError,
     resolve_trackside_switch_adapter,
 )
-from netconsole.core.optical_severity_engine import compute_optical_severity
+from netconsole.core.optical_severity_engine import (
+    compute_optical_severity,
+    compute_zte_optical_severity,
+    normalize_zte_optical_record,
+)
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
 from netconsole.models.device import Device
@@ -23,6 +27,7 @@ from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.trackside_optical_result_repository import TracksideOpticalResultRepository
+from netconsole.parsers.zte.zxr10 import merge_optical_snapshot as merge_zte_optical_snapshot
 from netconsole.services import netmiko_connection
 from netconsole.services.ac.fit_ap_optical_concurrency import (
     DEFAULT_FIT_AP_OPTICAL_CONCURRENCY,
@@ -53,7 +58,10 @@ TRACKSIDE_MAX_DEVICE_CONCURRENCY_KEY = "trackside_ap/max_device_concurrency"
 TRACKSIDE_MAX_SWITCH_CONCURRENCY_KEY = "trackside_ap/max_switch_concurrency"
 TRACKSIDE_MAX_FIT_AP_CONCURRENCY_KEY = "trackside_ap/max_fit_ap_concurrency"
 UNSUPPORTED_VENDOR_REASON = "vendor_not_supported"
-IGNORED_SKIPPED_REASONS = frozenset({"no_station_switches"})
+SUSPENDED_OPERATION_STATUS_REASON = "设备投运状态为暂停使用，已自动排除"
+IGNORED_SKIPPED_REASONS = frozenset(
+    {"no_station_switches", SUSPENDED_OPERATION_STATUS_REASON}
+)
 ACTIVE_AC_KEYWORDS = ("active", "master", "primary", "主用", "主控", "主")
 STANDBY_AC_KEYWORDS = ("standby", "backup", "secondary", "备机", "备用", "备")
 
@@ -106,9 +114,7 @@ class OpticalCommandAdapter:
         if normalized == "ZTE":
             return (
                 "show version",
-                "show interface brief",
                 "show opticalinfo brief",
-                "show lldp config",
             )
         raise UnsupportedVendor(UNSUPPORTED_VENDOR_REASON)
 
@@ -160,6 +166,7 @@ class TracksideDeviceCollectionResult:
     warnings: list[str] = field(default_factory=list)
     port_errors: list[TracksidePortError] = field(default_factory=list)
     lldp_status: str = ""
+    skipped_reason: str = ""
 
 
 @dataclass
@@ -272,6 +279,25 @@ class TracksideOpticalProgressTracker:
                     "target_ip": result.target.host,
                     "device_uuid": result.target.device_uuid or "",
                     "error_message": result.error_message or "",
+                },
+            )
+
+    def mark_switch_skipped(self, result: TracksideDeviceCollectionResult) -> None:
+        with self._lock:
+            self.switch_completed = min(self.switch_total, self.switch_completed + 1)
+            self.skipped_count += 1
+            self._recount_fit_ap_status_locked()
+            self._emit_locked(
+                "trackside_ap.switch.persist",
+                f"交换机 {self.switch_completed}/{self.switch_total} 已跳过：{result.target.name}",
+                {
+                    "phase": "switch_optical",
+                    "event": "switch_skipped",
+                    "status": "skipped",
+                    "target_name": result.target.name,
+                    "target_ip": result.target.host,
+                    "device_uuid": result.target.device_uuid or "",
+                    "reason": result.skipped_reason,
                 },
             )
 
@@ -442,6 +468,16 @@ def build_station_switch_targets(repository: DeviceRepository, site_name: str, s
             continue
         if group_name != "车站" or not is_switch_device_type(device.device_type):
             continue
+        if _is_suspended_device(device):
+            skipped.append(
+                TracksideSkippedTarget(
+                    device.name,
+                    "SWITCH",
+                    SUSPENDED_OPERATION_STATUS_REASON,
+                    device.primary_address,
+                )
+            )
+            continue
         target = choose_connection_target(device)
         if target is None or not target.host or not target.username or not target.password:
             skipped.append(TracksideSkippedTarget(device.name, "SWITCH", "connection_incomplete", device.primary_address))
@@ -495,6 +531,16 @@ def build_trackside_ap_targets(
         device = _find_related_device(ap, devices)
         if device is None:
             skipped.append(TracksideSkippedTarget(name, "AP", "no_device_connection", str(ap.get("ap_ip") or "")))
+            continue
+        if _is_suspended_device(device):
+            skipped.append(
+                TracksideSkippedTarget(
+                    name,
+                    "AP",
+                    SUSPENDED_OPERATION_STATUS_REASON,
+                    device.primary_address,
+                )
+            )
             continue
         target = choose_connection_target(device)
         if target is None or not target.host or not target.username or not target.password:
@@ -665,10 +711,22 @@ def collect_trackside_optical(
                         target,
                         device_artifact_dir,
                         cancel_event,
+                        repository,
                     )
                 )
             for future in as_completed(futures):
                 result = future.result()
+                if result.skipped_reason:
+                    skipped.append(
+                        TracksideSkippedTarget(
+                            result.target.name,
+                            result.target.target_type,
+                            result.skipped_reason,
+                            result.target.host,
+                        )
+                    )
+                    progress_tracker.mark_switch_skipped(result)
+                    continue
                 results.append(result)
                 stage("trackside_ap.switch.persist")
                 _persist_result(repository, ac_repository, result, parsed_dir / "trackside_update_results.sqlite")
@@ -985,7 +1043,11 @@ def _collect_fit_ap_optical_subtasks(
     total = 0
     summaries = {str(row.get("ac_device_uuid") or ""): row for row in ac_repository.list_ac_ap_summaries()}
     ac_devices = sorted(
-        repository.list(vendor="H3C", device_type="AC"),
+        [
+            device
+            for device in repository.list(vendor="H3C", device_type="AC")
+            if not _is_suspended_device(device)
+        ],
         key=lambda item: rank_ac_device_for_trackside(item, summaries.get(str(item.device_uuid or ""))),
     )
     ac_total = len(ac_devices)
@@ -1285,15 +1347,33 @@ def _collect_one_target(
     target: TracksideOpticalTarget,
     artifact_dir: Path | None = None,
     cancel_event: Event | None = None,
+    repository: DeviceRepository | None = None,
 ) -> TracksideDeviceCollectionResult:
     connection = None
     try:
-        connection = netmiko_connection.ConnectHandler(**build_netmiko_params(choose_connection_target(target.device)))  # type: ignore[arg-type]
-        adapter = resolve_trackside_switch_adapter(target.device)
+        current_device = target.device
+        if repository is not None and target.device_uuid:
+            current = repository.get_by_uuid(str(target.device_uuid))
+            if current is None:
+                return TracksideDeviceCollectionResult(
+                    target=target,
+                    success=True,
+                    skipped_reason="设备已不存在，已自动排除",
+                )
+            if _is_suspended_device(current):
+                return TracksideDeviceCollectionResult(
+                    target=target,
+                    success=True,
+                    skipped_reason=SUSPENDED_OPERATION_STATUS_REASON,
+                )
+            current_device = current
+        connection = netmiko_connection.ConnectHandler(**build_netmiko_params(choose_connection_target(current_device)))  # type: ignore[arg-type]
+        adapter = resolve_trackside_switch_adapter(current_device)
         collected = adapter.collect(
             connection,
             artifact_dir=artifact_dir,
             cancel_check=(cancel_event.is_set if cancel_event is not None else None),
+            optical_fast_only=(str(current_device.device_vendor or "").casefold() == "zte"),
         )
         raw_log_path = str(artifact_dir or "")
         rows = [
@@ -1370,21 +1450,27 @@ def _persist_result(repository: DeviceRepository, ac_repository: AcRepository, r
         existing = fact_repository.list_optical_modules(str(result.target.device_uuid or ""))
         diagnostics = result.rows
         if result.vendor == "ZTE":
-            diagnostics = [
+            diagnostics = merge_zte_optical_snapshot(
+                existing,
+                [
                 {
                     **row,
+                    "device_vendor": "ZTE",
                     "status": row.get("module_status")
                     or row.get("optical_alarm_status")
                     or row.get("status"),
                 }
                 for row in result.rows
-            ]
-        modules = merge_existing_optical_modules(
-            existing,
-            diagnostics,
-            [],
-            metadata,
-        )
+                ],
+            )
+            modules = [{**row, **metadata} for row in diagnostics]
+        else:
+            modules = merge_existing_optical_modules(
+                existing,
+                diagnostics,
+                [],
+                metadata,
+            )
         fact_repository.replace_optical_modules(str(result.target.device_uuid or ""), modules)
         if result.lldp_rows:
             fact_repository.replace_lldp_neighbors(str(result.target.device_uuid or ""), [{**row, **metadata} for row in result.lldp_rows])
@@ -1420,25 +1506,30 @@ def _result_row(
     raw_log_path: str = "",
 ) -> dict[str, object | None]:
     collected_at = _now()
-    collector_status = str(parsed.get("status") or "").strip().casefold()
-    if collector_status in {
-        "no_module",
-        "abnormal",
-        "unverified",
-        "dom_unavailable",
-        "offline",
-    }:
-        severity = collector_status
+    if str(target.device.device_vendor or "").strip().casefold() == "zte":
+        parsed = normalize_zte_optical_record(parsed)
+        collector_status = str(parsed.get("status") or "").strip().casefold()
+        severity = compute_zte_optical_severity(parsed).severity
     else:
-        severity = compute_optical_severity(
-            {
-                "switch_rx_power" if target.target_type == "SWITCH" else "ap_rx_power": parsed.get("rx_power"),
-                "alarm_low": parsed.get("rx_low_alarm"),
-                "alarm_high": parsed.get("rx_high_alarm"),
-                "warning_low": parsed.get("rx_low_warning"),
-                "device_type": "switch" if target.target_type == "SWITCH" else "ap",
-            }
-        ).severity
+        collector_status = str(parsed.get("status") or "").strip().casefold()
+        if collector_status in {
+            "no_module",
+            "abnormal",
+            "unverified",
+            "dom_unavailable",
+            "offline",
+        }:
+            severity = collector_status
+        else:
+            severity = compute_optical_severity(
+                {
+                    "switch_rx_power" if target.target_type == "SWITCH" else "ap_rx_power": parsed.get("rx_power"),
+                    "alarm_low": parsed.get("rx_low_alarm"),
+                    "alarm_high": parsed.get("rx_high_alarm"),
+                    "warning_low": parsed.get("rx_low_warning"),
+                    "device_type": "switch" if target.target_type == "SWITCH" else "ap",
+                }
+            ).severity
     return {
         **parsed,
         "device_name": target.name,
@@ -1470,6 +1561,10 @@ def _find_related_device(ap: dict[str, object | None], devices: list[Device]) ->
         if ap_name and ap_name in {str(device.name or "").strip().casefold(), str(device.system_name or "").strip().casefold()}:
             return device
     return None
+
+
+def _is_suspended_device(device: Device) -> bool:
+    return str(device.operation_status or "").strip().casefold() == "suspended"
 
 
 def _write_session_meta(path: Path, data: dict[str, object]) -> None:

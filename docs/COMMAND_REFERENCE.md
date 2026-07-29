@@ -55,7 +55,7 @@
 | Parser contract | H3C 结构化 parser；ZTE `netconsole.zte.zxr10-switch.v3` |
 | DTO contract | `netconsole.device-inventory.v1` / ZTE `netconsole.device-detail.v1` |
 | 样例证据 | Comware `7.1.070` fixture；车载 MR 只读核心命令合同；ZXR10 5960X-ES V2.00.20.03 手册 fixture；C89E-4 V1.9.0 脱敏实机 fixture |
-| 真实设备状态 | H3C switch/无线控制器/MR `REAL_DEVICE_PENDING`；ZTE 固定七命令为 `REAL_DEVICE_VERIFIED`（仅两台 C89E-4 V1.9.0），动态光模块 detail 为 `REAL_DEVICE_PENDING` |
+| 真实设备状态 | H3C switch/无线控制器/MR `REAL_DEVICE_PENDING`；ZTE 固定七命令为 `REAL_DEVICE_VERIFIED`（仅两台 C89E-4 V1.9.0），光模块 detail 仅保留为显式 opt-in 的 `REAL_DEVICE_PENDING` 诊断能力 |
 
 `device.sftp.enable` 当前只登记 H3C Comware V7 的交换机、无线 AC 和车载 MR 三类精确 Profile，
 风险为 `controlled_write`，真实设备状态均为 `REAL_DEVICE_PENDING`。命令顺序固定为：
@@ -72,7 +72,7 @@ quit
 `Application Service -> DeviceOperationService -> Task Center -> Command Profile` 提交。
 Huawei、ZTE、未知厂商、未知角色、未知平台和未知版本均失败关闭，不猜测命令、不提供兼容 fallback。
 
-每个固定 step 都包含稳定 `step_id`、顺序、输出 selector、parser/DTO contract、只读风险和验证证据。`src/netconsole/services/h3c_collect_service.py` 按 Profile 固定步骤执行：H3C switch 与无线控制器继续保持同一组通用只读命令和解析行为，单项失败保留其他成功结果；AC/FIT-AP 专用命令仍由独立业务服务管理。ZTE 先执行 `show version` 并确认 C89E 或 59X/5960X-ES，通过型号门后继续执行接口、VLAN、光模块摘要和两条 LLDP 命令。`show opticalinfo brief` 成功后，服务只为摘要中明确在线的模块生成 `show opticalinfo <safe-interface>`；接口参数先经过安全构造器校验，Guard 只允许该只读模板。单个 detail 失败保留 brief 并形成 `partial_success`，离线模块不执行 detail。2026-07-28 的既有真实验证结论只覆盖当时执行的固定命令，不外推为本次动态 detail 已现场验证。分页由通用 SSH 交互执行器处理，raw 保留分页提示而 parser 使用清理副本。未知厂商、设备角色或平台失败关闭，任何厂商都不得回退到 H3C。
+每个固定 step 都包含稳定 `step_id`、顺序、输出 selector、parser/DTO contract、只读风险和验证证据。`src/netconsole/services/h3c_collect_service.py` 按 Profile 固定步骤执行：H3C switch 与无线控制器继续保持同一组通用只读命令和解析行为，单项失败保留其他成功结果；AC/FIT-AP 专用命令仍由独立业务服务管理。ZTE 先执行 `show version` 并确认 C89E 或 59X/5960X-ES，通过型号门后继续执行接口、VLAN、一次光模块摘要和两条 LLDP 命令。普通详情默认不为在线模块追加 `show opticalinfo <safe-interface>`；该模板仍受接口参数构造器和 Guard 保护，只能由显式 opt-in 的诊断路径调用。2026-07-28 的既有真实验证结论只覆盖当时实际执行的 C89E-4 固定命令，不外推到其他 ZXR10 型号。分页由通用 SSH 交互执行器处理，raw 保留分页提示而 parser 使用清理副本。未知厂商、设备角色或平台失败关闭，任何厂商都不得回退到 H3C。
 
 除 `device.sftp.enable` 外，AC、MR、配置、诊断和文件管理的其他命令尚未迁入统一 Profile，
 仍属于后续命令平台治理范围。不得用本切片状态替代逐域迁移和真实设备验收。
@@ -129,14 +129,14 @@ SNMP Center、通用 MIB/OID 字典、SNMPv3、RW community、SET、Trap 和通�
 
 Huawei 仍只有未来扩展边界，没有生产 Profile、命令、Parser 或真实 fixture；相关设备返回不支持，不能凭空猜测或回退到 H3C。
 
-ZTE 当前生产详情 Profile v3 固定执行七条已登记的只读命令，并在光模块摘要成功后按在线接口追加受控 detail。固定命令的 C89E-4 V1.9.0 现场证据与动态 detail 的验证状态分别记录，不能混为全链路已验证；5960X-ES V2 仍只有文档 fixture：
+ZTE 当前生产详情 Profile v3 固定执行七条已登记的只读命令，不在普通刷新中按在线接口追加 detail。固定命令的现场证据仅覆盖 C89E-4 V1.9.0，不能外推为整个 ZXR10/5960X 系列已验证；5960X-ES V2 仍只有文档 fixture：
 
 | 能力 | ZTE 命令 |
 | --- | --- |
 | 会话分页 | 现场提供 `terminal length 0`；普通详情 Profile 暂不下发，执行器继续受页数、字节、命令/空闲超时和取消限制 |
 | 版本 / 型号 | `show version` |
 | 接口 | 生产详情使用 `show interface brief`；现场另提供 `show interface` / `show interface <safe-interface>` |
-| 光模块 | 固定 `show opticalinfo brief`；只对 brief 在线模块追加 `show opticalinfo <safe-interface>`，详情失败保留摘要 |
+| 光模块 | 普通详情固定一次 `show opticalinfo brief`；`show opticalinfo <safe-interface>` 只保留为显式 opt-in 的受控诊断模板 |
 | LLDP | 生产详情固定使用 `show lldp neighbor brief` / `show lldp entry`；Brief 与 Entry 均已实机解析 |
 | 硬件 / SN | 现场提供 `show hardware`、`show serial-number`、`show system-info`；尚未执行和解析 |
 | 配置 | 现场提供 `show running-config`、`show startup-config`；普通详情不读取完整配置 |
@@ -147,7 +147,7 @@ ZTE 当前生产详情 Profile v3 固定执行七条已登记的只读命令，�
 
 ZTE 配置采集中心、配置下发、文件管理、CLI Ping、完整诊断包和 AC 仍未接入生产能力。运行配置的脱敏 fixture 仅用于动态解析接口 mode、tagged/untagged/native VLAN；代码不内置杭州 10 号线管理 VLAN，也不发送尚未补充的 `show interface description`。
 
-ZTE 设备详情的单模块状态使用设备返回的 RX/TX 低高阈值，不使用通用 `-35 dBm` 兜底；这不等于已实现轨旁 AP 双端光衰。轨旁业务行仍为 `NOT_VERIFIED / REAL_DEVICE_SAMPLE_REQUIRED`，不凭单端值计算双向光衰；H3C 继续使用既有计算和状态规则。
+ZTE 设备详情、轨旁业务、任务和导出的单模块状态使用同一规则：离线为 `no_module` 并清空身份/功率，`Unknown` 或 RX 缺失为 `no_light`，异常只按设备返回的 RX/TX 低高阈值严格越界判断，等于低阈值仍正常；不使用通用 `-35 dBm` 兜底。轨旁快速采集每设备只执行版本和一次 optical brief，不凭单端值计算双向光衰；H3C 继续使用既有计算和状态规则。
 
 ## 维护方式
 

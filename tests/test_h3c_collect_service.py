@@ -222,6 +222,7 @@ def test_zte_collect_uses_fixture_verified_commands_and_persists_dom(
         "demo",
         repository=repository,
         paths=make_paths(tmp_path),
+        include_zte_optical_detail=True,
     )
 
     assert result.success is True
@@ -265,7 +266,7 @@ def test_zte_collect_uses_fixture_verified_commands_and_persists_dom(
         for item in repository.list_optical_modules(str(device.device_uuid))
     }
     assert optical["xgei-0/1/1/2"]["rx_power"] == "-11.904"
-    assert optical["xgei-0/1/1/2"]["status"] == "unverified"
+    assert optical["xgei-0/1/1/2"]["status"] == "no_light"
     assert optical["xgei-0/1/1/2"]["device_vendor"] == "ZTE"
     assert optical["xgei-0/1/1/2"]["module_vendor"] == "HG GENUINE"
     assert optical["xgei-0/1/1/2"]["vendor_part_number"] == "MTRS-01X11-G"
@@ -665,6 +666,7 @@ def test_zte_optical_detail_failure_keeps_brief_snapshot(
         "demo",
         repository=repository,
         paths=make_paths(tmp_path),
+        include_zte_optical_detail=True,
     )
     optical = {
         item["interface_name"]: item
@@ -679,6 +681,53 @@ def test_zte_optical_detail_failure_keeps_brief_snapshot(
     assert any(
         item.command == "show opticalinfo xgei-0/1/1/3" and not item.success
         for item in result.command_results
+    )
+
+
+def test_zte_default_inventory_collection_does_not_run_per_port_optical_detail(
+    monkeypatch,
+    tmp_path,
+):
+    connection = ZteFakeConnection()
+    monkeypatch.setattr(
+        h3c_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
+    repository = make_repository(tmp_path)
+    device = Device(
+        device_uuid="35353535-3535-4353-8353-353535353535",
+        name="ZTE-SUMMARY",
+        device_vendor="ZTE",
+        device_type="SW",
+        ip_address="192.0.2.35",
+        ssh_enabled=1,
+        ssh_username="readonly",
+        ssh_password="test-only",
+    )
+
+    result = collect_h3c_device_details(
+        device,
+        "demo",
+        repository=repository,
+        paths=make_paths(tmp_path),
+    )
+
+    commands = [command for command in connection.commands if command.strip()]
+    assert result.success is True
+    assert commands == [
+        "show version",
+        "show interface brief",
+        "show running-config switchvlan",
+        "show vlan",
+        "show opticalinfo brief",
+        "show lldp neighbor brief",
+        "show lldp entry",
+    ]
+    assert not any(
+        command.startswith("show opticalinfo ")
+        and command != "show opticalinfo brief"
+        for command in commands
     )
 
 

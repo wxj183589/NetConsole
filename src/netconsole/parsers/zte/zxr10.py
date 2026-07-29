@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Generic, TypeVar
 
+from netconsole.core.optical_severity_engine import normalize_zte_optical_record
 from netconsole.models.trackside_switch import (
     ParseStatus,
     ParserVerificationStatus,
@@ -44,6 +45,21 @@ UNSUPPORTED_MARKERS = (
 )
 ZTE_PARSER_VERSION = "zte-zxr10-switch.mixed-evidence.v2"
 ZTE_VERIFICATION_STATUS = ParserVerificationStatus.DOCUMENT_SAMPLE_ONLY.value
+ZTE_STABLE_DETAIL_FIELDS = frozenset(
+    {
+        "temperature",
+        "voltage",
+        "bias_current",
+        "module_serial_number",
+        "module_vendor",
+        "transmission_distance",
+        "connector_type",
+        "transceiver_mode",
+        "vendor_part_number",
+        "vendor_revision",
+        "vendor_serial_number",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -359,7 +375,8 @@ def parse_optical_summary(raw: str) -> ZteParseResult[list[dict[str, object | No
         interface_name = parts[0]
         if len(parts) >= 2 and parts[1].casefold() == "offline":
             rows.append(
-                {
+                normalize_zte_optical_record(
+                    {
                     "interface_name": interface_name,
                     "module_online": False,
                     "module_present": False,
@@ -367,11 +384,12 @@ def parse_optical_summary(raw: str) -> ZteParseResult[list[dict[str, object | No
                     "device_reported_status": "offline",
                     "threshold_source": "zte_brief",
                     "vendor_status": "offline",
-                    "normalized_status": "OFFLINE",
-                    "status": "offline",
+                    "normalized_status": "NO_MODULE",
+                    "status": "no_module",
                     "raw_output": "",
                     **_parser_metadata(ParseStatus.PARSED),
-                }
+                    }
+                )
             )
             continue
         data_parts = parts[:-1] if header_has_mode and len(parts) >= 7 else parts
@@ -386,7 +404,8 @@ def parse_optical_summary(raw: str) -> ZteParseResult[list[dict[str, object | No
             vendor_status, rx_value, tx_value
         )
         rows.append(
-            {
+            normalize_zte_optical_record(
+                {
                 "interface_name": interface_name,
                 "module_online": True,
                 "module_present": True,
@@ -421,7 +440,8 @@ def parse_optical_summary(raw: str) -> ZteParseResult[list[dict[str, object | No
                 "status": normalized_status.casefold(),
                 "raw_output": "",
                 **_parser_metadata(ParseStatus.PARSED),
-            }
+                }
+            )
         )
     if not header_seen:
         warnings.append("未找到 show opticalinfo brief 表头")
@@ -529,7 +549,7 @@ def parse_optical_detail(
         warnings.append("未解析到光模块接口名称")
     if not online and not offline and not fields:
         return ZteParseResult({}, tuple(warnings or ["光模块详情为空"]), "EMPTY")
-    status = "normal" if online else "offline" if offline else (
+    status = "normal" if online else "no_module" if offline else (
         "unverified" if dom_supported else "dom_unavailable"
     )
     tx_wavelength = _number_field(fields, "laser_tx_wavelength")
@@ -639,7 +659,7 @@ def parse_optical_detail(
         "raw_output": "",
         **_parser_metadata(ParseStatus.PARSED, warnings=warnings),
     }
-    return ZteParseResult(item, tuple(warnings))
+    return ZteParseResult(normalize_zte_optical_record(item), tuple(warnings))
 
 
 def merge_optical_modules(
@@ -673,7 +693,36 @@ def merge_optical_modules(
             ):
                 continue
             target[field_name] = value
-    return [merged_by_interface[key] for key in order]
+    return [
+        normalize_zte_optical_record(merged_by_interface[key])
+        for key in order
+    ]
+
+
+def merge_optical_snapshot(
+    existing_rows: list[dict[str, object | None]],
+    current_rows: list[dict[str, object | None]],
+) -> list[dict[str, object | None]]:
+    """Keep detail-only identity across brief refreshes, except explicit no-module."""
+
+    existing_by_interface = {
+        _optical_interface_key(item.get("interface_name")): dict(item)
+        for item in existing_rows
+        if _optical_interface_key(item.get("interface_name"))
+    }
+    merged: list[dict[str, object | None]] = []
+    for current in current_rows:
+        key = _optical_interface_key(current.get("interface_name"))
+        if not key:
+            continue
+        normalized = normalize_zte_optical_record(current)
+        if normalized.get("status") != "no_module":
+            previous = existing_by_interface.get(key, {})
+            for field_name in ZTE_STABLE_DETAIL_FIELDS:
+                if _is_missing_optical_value(normalized.get(field_name)):
+                    normalized[field_name] = previous.get(field_name)
+        merged.append(normalize_zte_optical_record(normalized))
+    return merged
 
 
 def parse_lldp_brief(
@@ -977,9 +1026,9 @@ def _normalize_optical_status(
     if status == "abnormal":
         return "ABNORMAL"
     if status == "offline":
-        return "OFFLINE"
+        return "NO_MODULE"
     if status == "unknown":
-        return "UNVERIFIED" if rx_power is not None or tx_power is not None else "DOM_UNAVAILABLE"
+        return "NO_LIGHT"
     return "UNVERIFIED" if rx_power is not None or tx_power is not None else "DOM_UNAVAILABLE"
 
 

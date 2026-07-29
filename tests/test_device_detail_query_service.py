@@ -630,7 +630,7 @@ def test_zte_optical_mapping_uses_vendor_evaluator_and_exposes_module_details(
     assert by_name["gei-0/3/0/1"].severity == "no_light"
     assert (
         by_name["gei-0/3/0/1"].severity_reason
-        == "设备未返回接收光功率，原始值为 N/A"
+        == "设备未返回接收光功率"
     )
     assert "-35" not in str(by_name["gei-0/3/0/1"].severity_reason)
     assert by_name["gei-0/3/0/4"].severity == "normal"
@@ -640,7 +640,7 @@ def test_zte_optical_mapping_uses_vendor_evaluator_and_exposes_module_details(
     assert by_name["gei-0/3/0/4"].vendor_revision == "A"
     assert by_name["gei-0/3/0/4"].vendor_serial_number == "UHD507000163"
     assert by_name["gei-0/3/0/4"].threshold_source == "zte_detail"
-    assert by_name["gei-0/3/0/5"].severity == "alarm"
+    assert by_name["gei-0/3/0/5"].severity == "abnormal"
     assert (
         by_name["gei-0/3/0/5"].severity_reason
         == "接收光功率 -29.0 dBm，低于模块低告警阈值 -28.2 dBm"

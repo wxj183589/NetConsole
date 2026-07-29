@@ -28,13 +28,13 @@ NetConsole 使用代码内登记的设备兼容性基线描述当前适配范围
 | 厂商 / 类型 | 当前支持 | 当前边界 |
 | --- | --- | --- |
 | H3C | 保持既有 Comware 设备管理、采集和导入导出范围 | 具体型号、Release 与真实设备状态仍以版本化 Profile 和 fixture 为准 |
-| ZTE ZXR10 C89E-4 V1.9.0 / SW | Profile v3 固定七条只读详情命令；光模块摘要后仅为在线模块追加受控 detail；设备事实、接口、VLAN、光模块及 LLDP Brief/Entry 结构化解析 | 固定命令已有分阶段实机证据；动态光模块 detail 仅以用户提供的现场样本和自动测试验证，仍为 `REAL_DEVICE_PENDING`；配置中心、文件管理、CLI Ping、诊断包和写操作未验证 |
-| ZTE ZXR10 5960X-ES V2 / SW | 设备模型、只读 SSH 框架、命令 Profile、接口/DOM 文档样例 Parser、厂商采样 Job 和轨旁 AP 页面入口 | 版本、接口和 DOM 仍为 `DOCUMENT_SAMPLE_ONLY`；共享 LLDP Parser 已实现，但 V2 输出仍待现场复核；AP 关联和双向光衰均待真实节点验证 |
+| ZTE ZXR10 C89E-4 V1.9.0 / SW | Profile v3 固定七条只读详情命令；普通刷新不逐端口读取光模块 detail；轨旁更新每设备只执行版本和一次 DOM brief；设备事实、接口、VLAN、光模块及 LLDP Brief/Entry 结构化解析 | 固定命令已有分阶段实机证据；已验证声明只覆盖 C89E-4 Release；配置中心、文件管理、CLI Ping、诊断包和写操作未验证 |
+| ZTE ZXR10 5960X-ES V2 / SW | 设备模型、只读 SSH 框架、命令 Profile、接口/DOM 文档样例 Parser、厂商采样 Job 和轨旁 AP 页面入口 | 版本、接口和 DOM 仍为 `DOCUMENT_SAMPLE_ONLY`；共享 LLDP Parser 已实现，但 V2 输出仍待现场复核；不能继承 C89E-4 的已验证状态 |
 | ZTE / AC | 不支持 | 导入和写入返回“当前版本尚未适配 ZTE 无线控制器” |
 | ZTE 诊断包 | 不支持 | 不猜测 `display diagnostic-information` 等价命令，不向 ZTE 发送 H3C 诊断命令 |
 
-ZTE 不代表“全系列完全适配”。既有 `REAL_DEVICE_VERIFIED` 证据只适用于记录中实际执行过的 C89E-4 V1.9.0 固定命令；本次接入的 `show opticalinfo <safe-interface>` 动态 detail 尚未在开发环境现场复核。项目仍不支持 ZTE 配置下发、配置采集中心、文件管理、CLI Ping、完整诊断包或 ZTE AC。
+ZTE 不代表“全系列完全适配”。既有 `REAL_DEVICE_VERIFIED` 证据只适用于记录中实际执行过的 C89E-4 V1.9.0 固定命令；`show opticalinfo <safe-interface>` 只保留为显式 opt-in 的受控诊断能力，不进入普通或轨旁刷新。项目仍不支持 ZTE 配置下发、配置采集中心、文件管理、CLI Ping、完整诊断包或 ZTE AC。
 
-C89E 实机 `show opticalinfo brief` 的 Rx/Tx 可作为单端光功率事实保存；仍不能仅凭单端值计算正向或反向链路光衰。5960X 文档 fixture 不保存为现场业务数据，H3C 保持既有两端 DOM 计算规则。
+C89E 实机 `show opticalinfo brief` 的 Rx/Tx 可作为单端光功率事实保存；仍不能仅凭单端值计算正向或反向链路光衰。模块离线统一为 `no_module` 并清空身份和功率字段，`Unknown` 或 RX 缺失统一为 `no_light`；异常只按 ZTE 原生 RX/TX 严格越界判断，等于低阈值为正常。5960X 文档 fixture 不保存为现场业务数据，H3C 保持既有两端 DOM 计算规则。
 
 命令来源仍以 `resources/device_command_profiles.json`、命令说明和后端受控命令 Guard 为准。任何新增兼容配置不得引入删除网络设备、重启网络设备、恢复出厂、清空配置、格式化存储或任意 CLI 执行入口。

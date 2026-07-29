@@ -21,13 +21,15 @@ NetConsole 的轨道交通无线能力不采用企业 WLAN 的“AP—客户端�
 
 ## 轨旁 AP 接入交换机
 
-轨旁 AP 业务通过 `TracksideSwitchAdapter` 隔离厂商差异，H3C 保留原有采集路径，ZTE ZXR10 使用独立只读 Adapter。ZTE 普通详情采集固定使用版本、接口、DOM、LLDP Brief 和 LLDP Entry 五条命令；不进入配置模式，不提供配置采集、配置下发、文件管理、CLI Ping 或 ZTE AC 能力。
+轨旁 AP 业务通过 `TracksideSwitchAdapter` 隔离厂商差异，H3C 保留原有采集路径，ZTE ZXR10 使用独立只读 Adapter。ZTE 普通设备详情固定执行 Profile v3 的七条只读命令，默认不按端口追加光模块 detail；轨旁更新使用每设备一个 SSH 会话，只执行 `show version` 和一次 `show opticalinfo brief`，接口与 LLDP 关系读取数据库已有快照。两条路径都不进入配置模式，不提供配置采集、配置下发、文件管理、CLI Ping 或 ZTE AC 能力。
 
-ZTE C89E-4 V1.9.0 的固定五条命令已在 11 台现场设备上完成只读验证，证据状态为 `REAL_DEVICE_VERIFIED`；接口综合状态、介质语义和 LLDP Brief/Entry 均已按脱敏 fixture 回归。5960X-ES V2 及指定端口详情仍只基于 V2.00.20.03 文档样例，保持 `DOCUMENT_SAMPLE_ONLY`，不能描述为已完成全系列实机兼容。
+ZTE C89E-4 V1.9.0 的固定五条命令已在 11 台现场设备上完成只读验证，另有两台车站设备完成 Profile v3 七条固定命令验证，证据状态为 `REAL_DEVICE_VERIFIED`；接口综合状态、介质语义和 LLDP Brief/Entry 均已按脱敏 fixture 回归。页面只声明 C89E-4 Release 已验证，5960X-ES V2 仍为文档样例，其他 ZXR10/5960X 型号需要逐型号复核。
 
 厂商采样任务生成 `zte-adapter-sample-<device>-<timestamp>.zip`，固定包含 manifest、逐命令状态、版本/接口/DOM/LLDP raw 和会话元数据。Artifact 进入 `WebArtifactStore` 完整性校验，不保存 SSH 密码、enable 密码、Token、私钥或其他明文凭据。
 
-第一阶段不会根据文档样例生成 AP 绑定。即使输入模拟的两端数据，ZTE 行也固定返回 `NOT_VERIFIED / REAL_DEVICE_SAMPLE_REQUIRED`，页面显示“尚未接入真实节点，无法计算光衰”；H3C 既有 LLDP/AP 关联和双向光衰规则不变。完整边界和阶段二清单见 [ZTE 轨旁交换机 Adapter](ZTE_TRACKSIDE_SWITCH_ADAPTER.md)。
+ZTE AP 自动匹配复用现有 LLDP 与 AP Identity 匹配链；无唯一证据时保持未匹配，不生成占位关系。单端 RX/TX 只作为模块事实保存，数据不足时页面显示“当前数据不足，无法计算双向光衰”；H3C 既有 LLDP/AP 关联和双向光衰规则不变。
+
+轨旁查询、筛选项、统计、导出和任务目标都只排除 `operation_status=suspended` 的设备，不把建设分期或其他状态当作暂停使用。Worker 在连接前再次检查状态，期间转为暂停使用时按跳过记录；同一局点、同一更新范围的活动任务复用原 Task ID，取消任务会关闭当前设备会话。完整边界和后续清单见 [ZTE 轨旁交换机 Adapter](ZTE_TRACKSIDE_SWITCH_ADAPTER.md)。
 
 ## 5C-9 无线综合看板
 

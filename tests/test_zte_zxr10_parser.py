@@ -6,6 +6,7 @@ import pytest
 
 from netconsole.parsers.zte.zxr10 import (
     merge_optical_modules,
+    merge_optical_snapshot,
     normalize_zte_cli_text,
     parse_device_identity,
     parse_interface_detail,
@@ -176,9 +177,9 @@ def test_parse_zte_optical_summary_keeps_unknown_and_na_rows() -> None:
     parsed = parse_optical_summary(_fixture("zte_5960x_show_opticalinfo_brief.txt"))
     by_name = {str(row["interface_name"]): row for row in parsed.value}
 
-    assert by_name["xgei-0/1/1/1"]["status"] == "offline"
+    assert by_name["xgei-0/1/1/1"]["status"] == "no_module"
     unknown = by_name["xgei-0/1/1/2"]
-    assert unknown["status"] == "unverified"
+    assert unknown["status"] == "no_light"
     assert unknown["rx_power"] == -11.9
     assert unknown["rx_low_alarm"] == -11.1
     assert unknown["rx_high_alarm"] == 0.5
@@ -186,7 +187,7 @@ def test_parse_zte_optical_summary_keeps_unknown_and_na_rows() -> None:
     assert unknown["tx_low_alarm"] == -7.3
     assert by_name["xgei-0/1/1/3"]["status"] == "normal"
     assert by_name["xgei-0/1/1/4"]["status"] == "abnormal"
-    assert by_name["xgei-0/1/1/5"]["status"] == "dom_unavailable"
+    assert by_name["xgei-0/1/1/5"]["status"] == "no_light"
     assert by_name["xgei-0/1/1/5"]["rx_power"] is None
 
 
@@ -201,9 +202,9 @@ def test_parse_real_c89e_optical_summary_with_mode_column() -> None:
     assert by_name["sci-0/1/0/1"]["rx_power"] == -7.2
     assert by_name["sci-0/1/0/1"]["tx_power"] == -5.1
     assert by_name["sci-0/1/0/1"]["transceiver_mode"] == "SingleMode"
-    assert by_name["gei-0/3/0/1"]["status"] == "offline"
+    assert by_name["gei-0/3/0/1"]["status"] == "no_module"
     assert by_name["xgeis-0/4/0/5"]["tx_power"] is None
-    assert by_name["xgeis-0/4/0/5"]["status"] == "unverified"
+    assert by_name["xgeis-0/4/0/5"]["status"] == "no_light"
 
 
 def test_parse_switchport_config_uses_observed_vlan_values_without_site_defaults() -> None:
@@ -265,6 +266,7 @@ def test_parse_c89e_optical_summary_preserves_native_thresholds_and_status() -> 
     assert missing_rx["tx_low_alarm_dbm"] == -10
     assert missing_rx["tx_high_alarm_dbm"] == -0.5
     assert missing_rx["device_reported_status"] == "Unknown"
+    assert missing_rx["status"] == "no_light"
     assert missing_rx["transceiver_mode"] == "SingleMode"
     assert by_name["gei-0/3/0/4"]["rx_power_dbm"] == -28.2
     assert by_name["gei-0/3/0/5"]["rx_power_dbm"] == -25.4
@@ -335,6 +337,62 @@ def test_merge_zte_optical_detail_by_interface_skips_empty_values() -> None:
     assert merged[0]["vendor_serial_number"] == "UHD507000163"
     assert merged[1]["interface_name"] == "gei-0/3/0/5"
     assert "vendor_serial_number" not in merged[1]
+
+
+def test_zte_brief_refresh_preserves_detail_until_module_is_removed() -> None:
+    existing = [
+        {
+            "interface_name": "gei-0/3/0/6",
+            "device_vendor": "ZTE",
+            "device_reported_status": "Normal",
+            "status": "normal",
+            "rx_power": -15.2,
+            "module_model": "SFP-GE",
+            "module_serial_number": "SN-OLD",
+            "module_vendor": "ZTRS",
+        }
+    ]
+    online = merge_optical_snapshot(
+        existing,
+        [
+            {
+                "interface_name": "gei-0/3/0/6",
+                "device_vendor": "ZTE",
+                "device_reported_status": "Normal",
+                "status": "normal",
+                "rx_power": -15.1,
+            }
+        ],
+    )
+
+    assert online[0]["module_serial_number"] == "SN-OLD"
+    removed = merge_optical_snapshot(
+        online,
+        [
+            {
+                "interface_name": "gei-0/3/0/6",
+                "device_vendor": "ZTE",
+                "device_reported_status": "offline",
+                "status": "no_module",
+            }
+        ],
+    )
+    assert removed[0]["status"] == "no_module"
+    assert removed[0]["module_serial_number"] is None
+
+    reinserted = merge_optical_snapshot(
+        removed,
+        [
+            {
+                "interface_name": "gei-0/3/0/6",
+                "device_vendor": "ZTE",
+                "device_reported_status": "Normal",
+                "status": "normal",
+                "rx_power": -14.8,
+            }
+        ],
+    )
+    assert reinserted[0]["module_serial_number"] is None
 
 
 def test_normalize_zte_cli_text_removes_ansi_pager_and_backspace_overwrite() -> None:

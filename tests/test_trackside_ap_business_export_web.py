@@ -227,7 +227,7 @@ def test_trackside_business_export_api_uses_owned_artifact_and_supports_cancel(
         assert adapters.json()["items"][0]["device_uuid"] == zte_device.device_uuid
         assert (
             adapters.json()["items"][0]["adapter"]["adaptation_status"]
-            == "C89E 已验证，5960X-ES 待复核"
+            == "C89E-4 Release 已验证；其他 ZXR10/5960X 型号需逐型号复核"
         )
 
         sample = client.post(

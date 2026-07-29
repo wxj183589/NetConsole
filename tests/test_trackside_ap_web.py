@@ -317,7 +317,10 @@ def test_trackside_application_starts_scoped_update(tmp_path: Path) -> None:
     )
 
     update = service.start_trackside_ap_update("demo", station="站点A")
+    duplicate = service.start_trackside_ap_update("demo", station="站点A")
     update_job = process.jobs[update.task_id]
+    assert duplicate.task_id == update.task_id
+    assert len(process.jobs) == 1
     assert update_job.task_type == "trackside_ap_optical_update"
     assert update_job.params["station"] == "站点A"
 
@@ -348,14 +351,14 @@ def test_trackside_application_lists_zte_adapter_and_finalizes_sample_artifact(
     assert catalog.items[0].device_uuid == device.device_uuid
     assert (
         catalog.items[0].adapter.adaptation_status
-        == "C89E 已验证，5960X-ES 待复核"
+        == "C89E-4 Release 已验证；其他 ZXR10/5960X 型号需逐型号复核"
     )
     assert catalog.items[0].adapter.profile.profile_id == (
         "zte_zxr10_5960x_es_v2"
     )
     assert {
         item.key: item.status for item in catalog.items[0].adapter.capabilities
-    }["lldp"] == "IMPLEMENTED"
+    }["lldp"] == "VERIFIED"
 
     tasks = TaskApplicationService(paths=paths, site_name="demo")
     process = FakeLocalProcessAdapter(tasks)
@@ -560,11 +563,13 @@ def test_trackside_application_validates_update_scope_and_ap_identity(tmp_path: 
     assert all_job.params["resource_keys"] == [
         f"site:demo|ac:{ac_uuid_1}|fit_ap_optical",
         f"site:demo|ac:{ac_uuid_2}|fit_ap_optical",
+        "site:demo|trackside_ap_optical|scope:all",
     ]
     assert station_job.params["station"] == "站点A"
     assert station_job.params["ap_uuid"] == ""
     assert station_job.params["resource_keys"] == [
-        f"site:demo|ac:{ac_uuid_1}|fit_ap_optical"
+        f"site:demo|ac:{ac_uuid_1}|fit_ap_optical",
+        "site:demo|trackside_ap_optical|scope:station:站点a",
     ]
     for job in (uuid_job, mac_job, name_job, ap_job):
         assert job.params["station"] == ""
@@ -574,7 +579,11 @@ def test_trackside_application_validates_update_scope_and_ap_identity(tmp_path: 
         assert job.params["ac_uuid"] == ac_uuid_1
         assert job.params["device_uuid"] == ac_uuid_1
         assert job.params["resource_keys"] == [
-            f"site:demo|ac:{ac_uuid_1}|fit_ap_optical"
+            f"site:demo|ac:{ac_uuid_1}|fit_ap_optical",
+            (
+                "site:demo|trackside_ap_optical|scope:"
+                "ap_uuid:ap-1|ap_mac:bc:5a:34:57:8c:c0|ap_name:ap-a"
+            ),
         ]
 
     with pytest.raises(RailTransitWebError) as scope_conflict:

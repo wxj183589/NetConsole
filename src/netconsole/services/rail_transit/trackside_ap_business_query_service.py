@@ -17,6 +17,7 @@ from netconsole.services.trackside_ap_business import (
     is_current_optical_abnormal_row,
     trackside_station_options,
     trackside_row_status,
+    is_trackside_device_eligible,
 )
 from netconsole.services.trackside_ap_export_service import load_trackside_ap_business_snapshot
 
@@ -37,6 +38,8 @@ class TracksideApBusinessQueryService:
         repository = DeviceRepository(Database(self.paths.site_db_path(site_id)))
         items: list[TracksideSwitchDeviceDTO] = []
         for device in repository.list(device_type="SW"):
+            if not is_trackside_device_eligible(device):
+                continue
             try:
                 description = resolve_trackside_switch_adapter(
                     device
