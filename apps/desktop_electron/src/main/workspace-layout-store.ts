@@ -11,7 +11,7 @@ import { dirname, isAbsolute, resolve } from 'node:path'
 import type { WorkspaceWindowSnapshot } from '../shared/bridge'
 import { validateWorkspaceWindowSnapshot } from '../shared/validation'
 
-export const WORKSPACE_LAYOUT_SCHEMA_VERSION = 1
+export const WORKSPACE_LAYOUT_SCHEMA_VERSION = 2
 export const WORKSPACE_LAYOUT_MAX_WINDOWS = 8
 
 export interface WorkspaceWindowBounds {
@@ -21,13 +21,23 @@ export interface WorkspaceWindowBounds {
   height: number
 }
 
-export interface PersistedWorkspaceWindow {
+export interface PersistedMainWindow {
   windowId: string
-  role: 'main' | 'workspace'
+  role: 'main'
+  snapshot: WorkspaceWindowSnapshot | null
+}
+
+export interface PersistedAdditionalWorkspaceWindow {
+  windowId: string
+  role: 'workspace'
   bounds: WorkspaceWindowBounds
   maximized: boolean
   snapshot: WorkspaceWindowSnapshot | null
 }
+
+export type PersistedWorkspaceWindow =
+  | PersistedMainWindow
+  | PersistedAdditionalWorkspaceWindow
 
 interface PersistedWorkspaceLayout {
   schemaVersion: typeof WORKSPACE_LAYOUT_SCHEMA_VERSION
@@ -52,12 +62,18 @@ export class WorkspaceLayoutStore {
     this.loaded = true
     try {
       const parsed = JSON.parse(readFileSync(this.path, 'utf8')) as Record<string, unknown>
-      if (parsed.schemaVersion !== WORKSPACE_LAYOUT_SCHEMA_VERSION || !Array.isArray(parsed.windows)) {
+      if (
+        (
+          parsed.schemaVersion !== 1
+          && parsed.schemaVersion !== WORKSPACE_LAYOUT_SCHEMA_VERSION
+        )
+        || !Array.isArray(parsed.windows)
+      ) {
         throw new TypeError('workspace layout schema is invalid')
       }
       const values = parsed.windows
         .slice(0, WORKSPACE_LAYOUT_MAX_WINDOWS)
-        .map(validateWindowRecord)
+        .map((value) => validateWindowRecord(value, parsed.schemaVersion === 1))
       this.windows = new Map(values.map((item) => [item.windowId, item]))
     } catch {
       if (existsSync(this.path)) this.logger('ELECTRON_WORKSPACE_LAYOUT_RECOVERY_FALLBACK')
@@ -135,7 +151,10 @@ export function normalizeWorkspaceBounds(
   }
 }
 
-function validateWindowRecord(value: unknown): PersistedWorkspaceWindow {
+function validateWindowRecord(
+  value: unknown,
+  legacyWindowState = false,
+): PersistedWorkspaceWindow {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new TypeError('workspace window record is invalid')
   }
@@ -148,21 +167,32 @@ function validateWindowRecord(value: unknown): PersistedWorkspaceWindow {
     typeof record.windowId !== 'string'
     || !/^[A-Za-z0-9_-]{1,80}$/.test(record.windowId)
     || !['main', 'workspace'].includes(String(record.role))
-    || typeof record.maximized !== 'boolean'
   ) {
     throw new TypeError('workspace window record fields are invalid')
   }
-  const bounds = validateBounds(record.bounds)
   const snapshot = record.snapshot == null
     ? null
     : validateWorkspaceWindowSnapshot(record.snapshot)
   if (snapshot && snapshot.windowId !== record.windowId) {
     throw new TypeError('workspace snapshot window id mismatch')
   }
+  if (record.role === 'main') {
+    if (!legacyWindowState && (record.bounds !== undefined || record.maximized !== undefined)) {
+      throw new TypeError('main window state must not be persisted')
+    }
+    return {
+      windowId: record.windowId,
+      role: 'main',
+      snapshot,
+    }
+  }
+  if (typeof record.maximized !== 'boolean') {
+    throw new TypeError('workspace window record fields are invalid')
+  }
   return {
     windowId: record.windowId,
-    role: record.role as PersistedWorkspaceWindow['role'],
-    bounds,
+    role: 'workspace',
+    bounds: validateBounds(record.bounds),
     maximized: record.maximized,
     snapshot,
   }
@@ -190,15 +220,25 @@ function validateBounds(value: unknown): WorkspaceWindowBounds {
 }
 
 function cloneRecord(value: PersistedWorkspaceWindow): PersistedWorkspaceWindow {
+  const snapshot = value.snapshot
+    ? {
+        ...value.snapshot,
+        tabs: value.snapshot.tabs.map((tab) => ({ ...tab })),
+      }
+    : null
+  if (value.role === 'main') {
+    return {
+      windowId: value.windowId,
+      role: 'main',
+      snapshot,
+    }
+  }
   return {
-    ...value,
+    windowId: value.windowId,
+    role: 'workspace',
     bounds: { ...value.bounds },
-    snapshot: value.snapshot
-      ? {
-          ...value.snapshot,
-          tabs: value.snapshot.tabs.map((tab) => ({ ...tab })),
-        }
-      : null,
+    maximized: value.maximized,
+    snapshot,
   }
 }
 

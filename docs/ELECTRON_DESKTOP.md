@@ -12,11 +12,13 @@ Electron 复用同一 Vue Renderer、FastAPI 会话和 `TaskApplicationService -
 
 ## 工作区、多窗口与 Windows 通知区域
 
-`WorkspaceWindowController` 统一管理一个主窗口和附加工作区窗口；所有窗口复用同一个 `PythonBackendManager`、动态回环 Origin 和内存桌面会话，不会为标签、窗口或 Vite 另建 Backend。Vue 工作区使用 Pinia 管理标签的路由、实例和缓存键，主进程只持久化受限的导航快照与窗口布局，不保存业务页面响应式状态、绝对路径、Token、密码、`confirm_token` 或设备凭据。
+`WorkspaceWindowController` 统一管理一个主窗口和附加工作区窗口；所有窗口复用同一个 `PythonBackendManager`、动态回环 Origin 和内存桌面会话，不会为标签、窗口或 Vite 另建 Backend。Vue 工作区使用 Pinia 管理标签的路由、实例和缓存键，主进程只持久化受限的导航快照及附加工作区窗口布局，不保存业务页面响应式状态、绝对路径、Token、密码、`confirm_token` 或设备凭据。
 
 工作区路由默认 `cache=false`、`allowDuplicate=false`。标签仍可保留在工作区，但普通页面离开时会卸载；`AppRouteView` 的 KeepAlive include 只包含标签仍存在且显式声明 `workspace.cache=true` 的路由。MESH 使用单一 `singleton` 标签和稳定 cache key，禁止同窗口复制；设备详情与 Online MR 分析等确有资源实例语义的页面单独声明复制策略。关闭标签或局点切换从 include 移除 cache key 后会触发真实卸载，不通过提高 KeepAlive 上限掩盖资源增长。
 
-工作区快照位于 Electron `userData/workspace-layout.json`。它使用严格 schema、内部路由/敏感 query 过滤、长度限制和原子替换；文件损坏、过期或多显示器越界时安全回退到主窗口默认布局。Renderer 只能通过白名单 IPC 打开受控内部路由、保存当前所属窗口的快照和更新已清理的窗口标题，不能提供 URL、`BrowserWindow` 参数或本机路径。
+工作区快照位于 Electron `userData/workspace-layout.json`。schema v2 对主窗口只保存受限导航快照，不写入 `x/y/width/height`、最大化/全屏/最小化状态或显示器标识；读取 schema v1 时会保留合法导航快照并丢弃旧主窗口 `bounds/maximized`，随后按 v2 原子替换。附加工作区窗口仍保存并校验自己的布局，多显示器越界时回到可见工作区。Renderer 只能通过白名单 IPC 打开受控内部路由、保存当前所属窗口的快照和更新已清理的窗口标题，不能提供 URL、`BrowserWindow` 参数或本机路径。
+
+每次新进程创建主窗口时，`BrowserWindow` 仅接收 `1280x800` 安全默认尺寸和既有 `1024x680` 最小约束，不接收历史坐标。首次 `ready-to-show` 按当时 `screen.getPrimaryDisplay().workArea` 将窗口放入当前主显示器，再执行 `maximize -> show -> focus`；窗口保持 `frame=true`、`fullscreen=false`，最大化使用 Windows 工作区而不是无边框全屏。启动完成后用户可正常还原、移动、调整尺寸或最小化。托盘和第二实例恢复只对仍在运行的同一窗口执行 `restore/show/focus`，不会重新最大化；完整退出、异常退出、升级启动和 `app.relaunch()` 创建的新进程才重新应用启动默认值。
 
 局点重启前，Renderer 先持久化仅保留 Dashboard 与系统设置的快照；`WorkspaceWindowController` 再对所有受管窗口执行同一局点边界清理并保留回滚副本。`PythonBackendManager` ready 后，Main 读取新 Backend 的当前局点再次核对目标；不一致或启动失败会恢复原 Backend 和窗口快照。成功时才清除旧 MESH Renderer recovery/workload 并重新加载所有窗口，避免旧 `session_id`、KeepAlive 实例或多窗口业务标签跨局点恢复。
 
@@ -121,7 +123,7 @@ pnpm smoke:workspace-tray
 
 冒烟只有在 Electron、Python、Vue runtime adapter 和真实 `/api/health` 全部成功后才以 0 退出，并检查退出链能够回收 Vite、Electron 和 Python。
 
-`smoke:workspace-tray` 使用隔离临时数据根，额外验证受管附加窗口创建/关闭、主窗口隐藏到托盘后 Backend 仍为 ready、恢复主窗口及明确退出后的回收。它不替代 Windows 通知区域右键菜单、真实缩放图标、多显示器布局和安装包的人工点击验收。
+普通与打包 smoke 会验证主窗口位于当前主显示器、处于最大化且非全屏状态。`smoke:workspace-tray` 使用隔离临时数据根，额外验证受管附加窗口创建/关闭、主窗口还原并调整尺寸、隐藏到托盘后 Backend 仍为 ready、恢复时不重新最大化或改写尺寸，以及明确退出后的回收。它不替代 Windows 通知区域右键菜单、真实缩放图标、主显示器切换、任务栏/标题栏控件和安装包的人工点击验收。
 
 Codex 开发链可用 `pnpm exec node scripts/dev.mjs --codex --smoke` 做同口径冒烟；它还验证受保护的 `/api/dev/runtime-status` 已就绪，并检查固定端口退出后可重新绑定。浏览器与 Electron 专项 E2E 将在独立 Playwright 阶段接入；在脚本真实存在前，不把 Vitest 或 smoke 冒充 E2E。
 
@@ -266,4 +268,4 @@ pnpm test
 pnpm build
 ```
 
-完整 Windows 安装包、代码签名、升级和真实发布目录尚未验收；工作区与托盘已有单元测试及源码 smoke，但原生托盘菜单、通知区域图标缩放、多显示器恢复、原生保存对话框与关闭后进程残留仍需在本地主工作区人工点击核对，不能从上述源码冒烟推断为通过。
+完整 Windows 安装包、代码签名、升级和真实发布目录尚未验收；工作区与托盘已有单元测试及源码 smoke，但原生托盘菜单、通知区域图标缩放、运行中切换主显示器后的下次启动、任务栏与标题栏控件、原生保存对话框及关闭后进程残留仍需在本地主工作区人工点击核对，不能从上述源码冒烟推断为通过。
