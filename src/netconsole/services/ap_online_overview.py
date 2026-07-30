@@ -11,7 +11,7 @@ from netconsole.utils.station_normalize import normalize_station_value
 
 AP_ONLINE_OVERVIEW_COLUMNS = (
     ("ac.station", "site"),
-    ("ac.ap_total", "total"),
+    ("trackside.planned_ap_count", "total"),
     ("ac.online", "online"),
     ("ac.offline", "offline"),
     ("ac.online_rate", "online_rate"),

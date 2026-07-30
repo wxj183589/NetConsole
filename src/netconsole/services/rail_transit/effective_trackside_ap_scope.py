@@ -1,0 +1,855 @@
+from __future__ import annotations
+
+from collections import defaultdict
+from dataclasses import dataclass, field
+import hashlib
+import json
+import re
+import unicodedata
+from typing import Iterable, Mapping
+from uuid import NAMESPACE_URL, uuid5
+
+from netconsole.core.database import Database
+from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
+from netconsole.services.ap_online_overview import is_fit_ap_online
+from netconsole.services.rail_transit.station_source_utils import canonical_station_name
+
+
+_BASE_STATION = "__base_station__"
+_BASE_SECTION = "__base_section__"
+_IN_SERVICE_STATES = {"", "active", "enabled", "in_service", "normal", "在用"}
+_EXCLUDED_SCOPE_STATES = {
+    "excluded",
+    "not_included",
+    "out_of_scope",
+    "disabled",
+    "排除",
+    "明确排除",
+    "不纳入",
+    "未纳入当前项目",
+}
+_FALSE_VALUES = {"0", "false", "no", "off", "disabled", "否"}
+
+
+@dataclass(frozen=True)
+class TracksideApScopeContext:
+    site_id: str
+    project_id: str = ""
+    line_name: str = ""
+    project_phase: str = ""
+
+    @classmethod
+    def from_metadata(
+        cls,
+        site_id: str,
+        metadata: Mapping[str, object] | None = None,
+    ) -> "TracksideApScopeContext":
+        values = metadata or {}
+        return cls(
+            site_id=str(site_id or "").strip(),
+            project_id=str(values.get("project_id") or site_id or "").strip(),
+            line_name=str(values.get("line_name") or "").strip(),
+            project_phase=str(
+                values.get("construction_phase_id")
+                or values.get("project_phase_id")
+                or values.get("project_phase")
+                or ""
+            ).strip(),
+        )
+
+
+@dataclass(frozen=True)
+class TracksideApScopeExcludedItem:
+    source: str
+    item_id: str
+    device_name: str = ""
+    station_name: str = ""
+    operation_status: str = ""
+    project_phase: str = ""
+    reason: str = ""
+    mac: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "source": self.source,
+            "item_id": self.item_id,
+            "device_name": self.device_name,
+            "station_name": self.station_name,
+            "operation_status": self.operation_status,
+            "project_phase": self.project_phase,
+            "reason": self.reason,
+            "mac": self.mac,
+        }
+
+
+@dataclass(frozen=True)
+class EffectiveTracksideApReference:
+    reference_id: str
+    station_id: str
+    station_name: str
+    ap_name: str
+    ap_mac: str
+    ap_uuid: str
+    operation_status: str
+    project_phase: str
+    row: dict[str, object | None] = field(compare=False)
+
+
+@dataclass
+class EffectiveTracksideApScope:
+    context: TracksideApScopeContext
+    station_names: dict[str, str]
+    station_sort_orders: dict[str, int]
+    references: list[EffectiveTracksideApReference]
+    resources: list[dict[str, object | None]]
+    plans_by_station: dict[str, dict[str, object | None]]
+    online_reference_ids: set[str]
+    excluded_items: list[TracksideApScopeExcludedItem]
+    updated_at: str = ""
+    _reference_by_id: dict[str, EffectiveTracksideApReference] = field(
+        default_factory=dict,
+        repr=False,
+    )
+    _identity_index: dict[tuple[str, str], set[str]] = field(
+        default_factory=dict,
+        repr=False,
+    )
+
+    @property
+    def eligible_station_ids(self) -> set[str]:
+        return {reference.station_id for reference in self.references}
+
+    @property
+    def scope_station_count(self) -> int:
+        return len(self.eligible_station_ids)
+
+    @property
+    def scope_device_count(self) -> int:
+        return len(self.references)
+
+    @property
+    def excluded_device_count(self) -> int:
+        return len(
+            {
+                ("mac", item.mac)
+                if item.mac
+                else (item.source, item.item_id)
+                for item in self.excluded_items
+            }
+        )
+
+    @property
+    def scope_description(self) -> str:
+        parts = ["当前项目"]
+        if self.context.project_phase:
+            parts.append(self.context.project_phase)
+        parts.append("在用轨旁 AP")
+        return " · ".join(parts)
+
+    def match_reference(
+        self,
+        row: Mapping[str, object | None],
+    ) -> EffectiveTracksideApReference | None:
+        direct = _reference_id(row.get("_scope_reference_id") or row.get("extension_id"))
+        if direct and direct in self._reference_by_id:
+            return self._reference_by_id[direct]
+        for key in _identity_keys(row):
+            candidates = self._identity_index.get(key, set())
+            if len(candidates) == 1:
+                return self._reference_by_id[next(iter(candidates))]
+            if len(candidates) > 1:
+                return None
+        return None
+
+    def filter_identity_rows(
+        self,
+        rows: Iterable[dict[str, object | None]],
+    ) -> list[dict[str, object | None]]:
+        result: list[dict[str, object | None]] = []
+        for row in rows:
+            reference = self.match_reference(row)
+            if reference is None:
+                continue
+            result.append(
+                {
+                    **row,
+                    "_scope_reference_id": reference.reference_id,
+                    "station_id": reference.station_id,
+                    "site": reference.station_name,
+                    "site_name": reference.station_name,
+                }
+            )
+        return result
+
+    def filter_business_rows(
+        self,
+        rows: Iterable[dict[str, object | None]],
+    ) -> list[dict[str, object | None]]:
+        result: list[dict[str, object | None]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for row in rows:
+            reference = self.match_reference(row)
+            if reference is None:
+                continue
+            key = (
+                reference.reference_id,
+                str(row.get("device_uuid") or row.get("device_name") or ""),
+                str(row.get("interface_name") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(
+                {
+                    **row,
+                    "_scope_reference_id": reference.reference_id,
+                    "station_id": reference.station_id,
+                    "site": reference.station_name,
+                }
+            )
+        return result
+
+    def station_statistics(self) -> list[dict[str, object | None]]:
+        online_by_station: dict[str, int] = defaultdict(int)
+        for reference_id in self.online_reference_ids:
+            reference = self._reference_by_id.get(reference_id)
+            if reference is not None:
+                online_by_station[reference.station_id] += 1
+
+        rows: list[dict[str, object | None]] = []
+        for station_id in sorted(
+            self.eligible_station_ids,
+            key=lambda value: (
+                self.station_sort_orders.get(value, 2**31 - 1),
+                self.station_names.get(value, ""),
+            ),
+        ):
+            plan = self.plans_by_station.get(station_id)
+            planning_missing = plan is None
+            planned = int((plan or {}).get("ap_count") or 0)
+            actual = online_by_station.get(station_id, 0)
+            status = "normal"
+            warning = ""
+            if planning_missing:
+                status = "planning_missing"
+                warning = "缺少规划资料。"
+            elif planned == 0 and actual > 0:
+                status = "unplanned_online"
+                warning = "存在未纳入规划的在线 AP。"
+            elif actual > planned:
+                status = "over_planned"
+                warning = "实际上线 AP 数量超过当前规划数量，请检查规划资料或 AP 归属关系。"
+            count_anomaly = status in {"unplanned_online", "over_planned"} or (
+                planning_missing and actual > 0
+            )
+            rows.append(
+                {
+                    "station_id": station_id,
+                    "station_name": self.station_names.get(station_id, ""),
+                    "planned_ap_count": planned,
+                    "actual_online_count": actual,
+                    "offline_count": max(planned - actual, 0),
+                    "online_rate": (
+                        round(actual * 100 / planned, 1)
+                        if planned > 0 and status == "normal"
+                        else None
+                    ),
+                    "remark": str((plan or {}).get("remark") or ""),
+                    "planning_missing": planning_missing,
+                    "count_anomaly": count_anomaly,
+                    "status": status,
+                    "warning": warning,
+                }
+            )
+        return rows
+
+    def overview_export_rows(self) -> list[dict[str, object | None]]:
+        station_rows = self.station_statistics()
+        result: list[dict[str, object | None]] = []
+        for row in station_rows:
+            remark = str(row.get("remark") or "")
+            warning = str(row.get("warning") or "")
+            result.append(
+                {
+                    "site": row["station_name"],
+                    "total": (
+                        None
+                        if row.get("planning_missing")
+                        else row["planned_ap_count"]
+                    ),
+                    "online": row["actual_online_count"],
+                    "offline": row["offline_count"],
+                    "online_rate": (
+                        f"{float(row['online_rate']):.1f}%"
+                        if row.get("online_rate") is not None
+                        else "—"
+                    ),
+                    "remark": "；".join(value for value in (remark, warning) if value),
+                    "status": row["status"],
+                }
+            )
+        planned_total = sum(int(row["planned_ap_count"] or 0) for row in station_rows)
+        online_total = sum(int(row["actual_online_count"] or 0) for row in station_rows)
+        total_anomaly = any(bool(row.get("count_anomaly")) for row in station_rows)
+        result.append(
+            {
+                "site": "合计",
+                "total": planned_total,
+                "online": online_total,
+                "offline": max(planned_total - online_total, 0),
+                "online_rate": (
+                    f"{online_total / planned_total:.1%}"
+                    if planned_total > 0 and not total_anomaly
+                    else "—"
+                ),
+                "remark": "统计范围存在数量异常，请查看分站状态。" if total_anomaly else "",
+                "status": "anomaly" if total_anomaly else "normal",
+            }
+        )
+        return result
+
+
+def resolve_effective_trackside_ap_scope_from_database(
+    database: Database,
+    *,
+    site_id: str,
+    context: TracksideApScopeContext | None = None,
+) -> EffectiveTracksideApScope:
+    repository = AcRepository(database)
+    plans = repository.list_trackside_ap_plan()
+    extension_points = repository.list_ap_extension_points()
+    selected_plans = [
+        row for row in plans if str(row.get("mode") or "") == TRACKSIDE_AP_PLAN_MODE
+    ]
+    if not selected_plans:
+        selected_plans = [
+            row
+            for row in plans
+            if str(row.get("mode") or "") in {"multi_vlan", "single_vlan"}
+        ]
+    return resolve_effective_trackside_ap_scope(
+        context=context or TracksideApScopeContext(site_id=site_id, project_id=site_id),
+        station_rows=extension_points,
+        plan_rows=selected_plans,
+        reference_rows=extension_points,
+        resource_rows=repository.list_all_fit_ap_resources_with_metadata(),
+    )
+
+
+def resolve_effective_trackside_ap_scope(
+    *,
+    context: TracksideApScopeContext,
+    station_rows: Iterable[Mapping[str, object | None]],
+    plan_rows: Iterable[Mapping[str, object | None]],
+    reference_rows: Iterable[Mapping[str, object | None]],
+    resource_rows: Iterable[Mapping[str, object | None]],
+) -> EffectiveTracksideApScope:
+    all_station_rows = [dict(row) for row in station_rows]
+    plans = [dict(row) for row in plan_rows]
+    station_names, station_sort_orders, station_aliases, station_node_uids = (
+        _build_station_index(context.site_id, all_station_rows, plans)
+    )
+    excluded: list[TracksideApScopeExcludedItem] = []
+    all_references: dict[str, EffectiveTracksideApReference] = {}
+    eligible: dict[str, EffectiveTracksideApReference] = {}
+
+    for row in reference_rows:
+        values = dict(row)
+        if str(values.get("belong_type") or "") in {_BASE_STATION, _BASE_SECTION}:
+            continue
+        metadata = _metadata(values.get("raw_payload_json"))
+        reference_id = _reference_id(values.get("id"))
+        station_name = str(values.get("station_name") or "").strip()
+        operation_status = str(
+            metadata.get("operation_status") or values.get("operation_status") or ""
+        ).strip()
+        project_phase = str(
+            metadata.get("construction_phase_id")
+            or metadata.get("project_phase_id")
+            or metadata.get("project_phase")
+            or ""
+        ).strip()
+        ap_name = str(values.get("ap_name") or metadata.get("ap_name") or "").strip()
+        ap_mac = _normalize_mac(
+            values.get("ap_mac_norm")
+            or values.get("ap_mac_display")
+            or metadata.get("ap_mac")
+        )
+        ap_uuid = str(metadata.get("ap_uuid") or "").strip()
+        station_id, station_reason = _resolve_station_id(
+            values,
+            metadata,
+            station_aliases,
+            station_node_uids,
+        )
+        reference = EffectiveTracksideApReference(
+            reference_id=reference_id,
+            station_id=station_id,
+            station_name=station_names.get(station_id, station_name),
+            ap_name=ap_name,
+            ap_mac=ap_mac,
+            ap_uuid=ap_uuid,
+            operation_status=operation_status,
+            project_phase=project_phase,
+            row=values,
+        )
+        all_references[reference_id] = reference
+        reason = _reference_exclusion_reason(
+            values,
+            metadata,
+            context,
+            station_reason,
+            operation_status,
+            project_phase,
+            reference,
+        )
+        if reason:
+            excluded.append(_excluded_reference(reference, reason))
+        else:
+            eligible[reference_id] = reference
+
+    aliases: dict[str, str] = {}
+    for reference_ids in _group_reference_identities(eligible.values()):
+        if len(reference_ids) <= 1:
+            continue
+        stations = {eligible[reference_id].station_id for reference_id in reference_ids}
+        if len(stations) == 1:
+            selected = min(reference_ids)
+            for duplicate_id in reference_ids:
+                if duplicate_id == selected:
+                    continue
+                aliases[duplicate_id] = selected
+                duplicate = eligible.pop(duplicate_id)
+                excluded.append(_excluded_reference(duplicate, "同一 AP 稳定身份重复，已去重。"))
+        else:
+            for ambiguous_id in reference_ids:
+                ambiguous = eligible.pop(ambiguous_id)
+                excluded.append(
+                    _excluded_reference(
+                        ambiguous,
+                        "同一 AP 稳定身份关联到多个站点，需人工处理。",
+                    )
+                )
+
+    all_identity_index = _build_identity_index(all_references.values(), aliases)
+    eligible_identity_index = _build_identity_index(eligible.values())
+    resources: list[dict[str, object | None]] = []
+    online_reference_ids: set[str] = set()
+    updated_at = ""
+    resource_identity_index: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for raw_resource in resource_rows:
+        resource = dict(raw_resource)
+        reference_id, reason = _match_resource_reference(
+            resource,
+            all_references,
+            all_identity_index,
+            eligible,
+            aliases,
+        )
+        online = is_fit_ap_online(resource)
+        updated_at = max(
+            updated_at,
+            str(resource.get("updated_at") or resource.get("collected_at") or ""),
+        )
+        if not reference_id:
+            if online:
+                excluded.append(
+                    TracksideApScopeExcludedItem(
+                        source=(
+                            "fit_ap_online"
+                            if reason
+                            == "在线 AP 未匹配到当前有效轨旁 AP 资料。"
+                            else "fit_ap_online_excluded"
+                        ),
+                        item_id=str(
+                            resource.get("ap_uuid")
+                            or resource.get("ap_mac")
+                            or resource.get("ap_name")
+                            or ""
+                        ),
+                        device_name=str(resource.get("ap_name") or ""),
+                        station_name=str(
+                            resource.get("site_name")
+                            or resource.get("site")
+                            or resource.get("extension_station_name")
+                            or ""
+                        ),
+                        operation_status=str(
+                            resource.get("state")
+                            or resource.get("state_raw")
+                            or resource.get("state_display")
+                            or ""
+                        ),
+                        reason=reason or "在线 AP 未匹配到当前有效轨旁 AP 资料。",
+                        mac=_normalize_mac(resource.get("ap_mac")),
+                    )
+                )
+            continue
+        reference = eligible[reference_id]
+        enriched = {
+            **resource,
+            "_scope_reference_id": reference_id,
+            "station_id": reference.station_id,
+            "site": reference.station_name,
+            "site_name": reference.station_name,
+        }
+        resources.append(enriched)
+        for key in _identity_keys(resource):
+            resource_identity_index[key].add(reference_id)
+        if online:
+            online_reference_ids.add(reference_id)
+
+    for key, values in resource_identity_index.items():
+        eligible_identity_index.setdefault(key, set()).update(values)
+
+    plans_by_station: dict[str, dict[str, object | None]] = {}
+    for plan in plans:
+        station_id, _reason = _resolve_plan_station_id(
+            plan,
+            station_aliases,
+            station_node_uids,
+        )
+        if station_id and station_id in {item.station_id for item in eligible.values()}:
+            plans_by_station[station_id] = plan
+
+    return EffectiveTracksideApScope(
+        context=context,
+        station_names=station_names,
+        station_sort_orders=station_sort_orders,
+        references=list(eligible.values()),
+        resources=resources,
+        plans_by_station=plans_by_station,
+        online_reference_ids=online_reference_ids,
+        excluded_items=excluded,
+        updated_at=updated_at,
+        _reference_by_id=eligible,
+        _identity_index=eligible_identity_index,
+    )
+
+
+def _build_station_index(
+    site_id: str,
+    station_rows: list[dict[str, object | None]],
+    plans: list[dict[str, object | None]],
+) -> tuple[dict[str, str], dict[str, int], dict[str, set[str]], dict[str, str]]:
+    station_names: dict[str, str] = {}
+    station_sort_orders: dict[str, int] = {}
+    station_aliases: dict[str, set[str]] = defaultdict(set)
+    station_node_uids: dict[str, str] = {}
+
+    for row in station_rows:
+        if str(row.get("belong_type") or "") != _BASE_STATION:
+            continue
+        metadata = _metadata(row.get("raw_payload_json"))
+        name = str(row.get("station_name") or "").strip()
+        node_uid = str(metadata.get("node_uid") or "").strip()
+        if not node_uid:
+            identity = f"ap:{row.get('id')}"
+            node_uid = str(
+                uuid5(
+                    NAMESPACE_URL,
+                    f"netconsole:{site_id}:station:{identity}",
+                )
+            )
+        station_id = _derived_station_id(node_uid)
+        station_names[station_id] = name
+        station_sort_orders[station_id] = _integer(metadata.get("sort_order"), 2**31 - 1)
+        station_node_uids[node_uid] = station_id
+        for value in (
+            name,
+            metadata.get("canonical_station_name"),
+            metadata.get("source_station_value"),
+        ):
+            key = _station_key(value)
+            if key:
+                station_aliases[key].add(station_id)
+
+    formal_aliases = {key: next(iter(values)) for key, values in station_aliases.items() if len(values) == 1}
+    for index, plan in enumerate(plans):
+        name = str(plan.get("station_name") or "").strip()
+        key = _station_key(name)
+        station_id = formal_aliases.get(key, "")
+        raw_station_id = str(plan.get("station_id") or "").strip()
+        if not station_id:
+            station_id = station_node_uids.get(raw_station_id, raw_station_id)
+        if not station_id:
+            continue
+        station_names.setdefault(station_id, name)
+        station_sort_orders.setdefault(
+            station_id,
+            _integer(plan.get("sequence_no"), index + 1),
+        )
+        if key:
+            station_aliases[key].add(station_id)
+        if raw_station_id and raw_station_id != station_id:
+            station_node_uids[raw_station_id] = station_id
+    return station_names, station_sort_orders, station_aliases, station_node_uids
+
+
+def _resolve_station_id(
+    row: Mapping[str, object | None],
+    metadata: Mapping[str, object],
+    station_aliases: Mapping[str, set[str]],
+    station_node_uids: Mapping[str, str],
+) -> tuple[str, str]:
+    direct = str(
+        metadata.get("station_id")
+        or metadata.get("station_node_uid")
+        or row.get("station_id")
+        or ""
+    ).strip()
+    if direct:
+        mapped = station_node_uids.get(direct, direct)
+        known = {value for values in station_aliases.values() for value in values}
+        if mapped in known:
+            return mapped, ""
+        return "", "关联的 station_id 不属于当前有效站点。"
+    key = _station_key(row.get("station_name"))
+    candidates = station_aliases.get(key, set())
+    if len(candidates) == 1:
+        return next(iter(candidates)), ""
+    if len(candidates) > 1:
+        return "", "历史站名匹配到多个 station_id，需人工处理。"
+    return "", "缺少有效 station_id，且历史站名无法唯一匹配。"
+
+
+def _resolve_plan_station_id(
+    plan: Mapping[str, object | None],
+    station_aliases: Mapping[str, set[str]],
+    station_node_uids: Mapping[str, str],
+) -> tuple[str, str]:
+    key = _station_key(plan.get("station_name"))
+    candidates = station_aliases.get(key, set())
+    direct = str(plan.get("station_id") or "").strip()
+    if direct:
+        mapped = station_node_uids.get(direct, direct)
+        known = {value for values in station_aliases.values() for value in values}
+        if mapped in known:
+            return mapped, ""
+    if len(candidates) == 1:
+        return next(iter(candidates)), ""
+    return "", "规划站点无法唯一关联当前有效 station_id。"
+
+
+def _reference_exclusion_reason(
+    row: Mapping[str, object | None],
+    metadata: Mapping[str, object],
+    context: TracksideApScopeContext,
+    station_reason: str,
+    operation_status: str,
+    project_phase: str,
+    reference: EffectiveTracksideApReference,
+) -> str:
+    row_site_id = str(row.get("site_id") or metadata.get("site_id") or "").strip()
+    if row_site_id and row_site_id != context.site_id:
+        return "不属于当前局点。"
+    row_project_id = str(metadata.get("project_id") or "").strip()
+    if row_project_id and context.project_id and row_project_id != context.project_id:
+        return "不属于当前项目。"
+    row_line_name = str(row.get("line_name") or metadata.get("line_name") or "").strip()
+    if (
+        row_line_name
+        and context.line_name
+        and _scope_token(row_line_name) != _scope_token(context.line_name)
+    ):
+        return "不属于当前线路。"
+    if _scope_token(operation_status) not in _IN_SERVICE_STATES:
+        return "投运状态不是在用。"
+    for key in ("enabled", "include_in_statistics", "participates_in_statistics"):
+        if _is_false(metadata.get(key)):
+            return "已明确设置为不参与当前统计。"
+    scope_status = _scope_token(metadata.get("project_scope_status"))
+    if scope_status in _EXCLUDED_SCOPE_STATES:
+        return "已明确排除在当前项目范围外。"
+    if context.project_phase:
+        if not project_phase:
+            return "缺少当前项目要求的建设阶段。"
+        if _scope_token(project_phase) != _scope_token(context.project_phase):
+            return "建设阶段与当前项目不一致。"
+    if station_reason:
+        return station_reason
+    if not (reference.ap_uuid or reference.ap_mac or _name_key(reference.ap_name)):
+        return "缺少可用于关联的稳定 AP 身份。"
+    return ""
+
+
+def _group_reference_identities(
+    references: Iterable[EffectiveTracksideApReference],
+) -> list[list[str]]:
+    items = list(references)
+    parent = {reference.reference_id: reference.reference_id for reference in items}
+
+    def find(reference_id: str) -> str:
+        while parent[reference_id] != reference_id:
+            parent[reference_id] = parent[parent[reference_id]]
+            reference_id = parent[reference_id]
+        return reference_id
+
+    def union(left: str, right: str) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    identity_owner: dict[tuple[str, str], str] = {}
+    for reference in items:
+        stable_keys = [
+            key
+            for key in _reference_identity_keys(reference)
+            if key[0] in {"uuid", "mac"}
+        ]
+        keys = stable_keys or [
+            key
+            for key in _reference_identity_keys(reference)
+            if key[0] == "name"
+        ]
+        for key in keys:
+            owner = identity_owner.setdefault(key, reference.reference_id)
+            union(owner, reference.reference_id)
+
+    grouped: dict[str, list[str]] = defaultdict(list)
+    for reference in items:
+        grouped[find(reference.reference_id)].append(reference.reference_id)
+    return [reference_ids for reference_ids in grouped.values() if len(reference_ids) > 1]
+
+
+def _build_identity_index(
+    references: Iterable[EffectiveTracksideApReference],
+    aliases: Mapping[str, str] | None = None,
+) -> dict[tuple[str, str], set[str]]:
+    result: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for reference in references:
+        reference_id = (aliases or {}).get(reference.reference_id, reference.reference_id)
+        for key in _reference_identity_keys(reference):
+            result[key].add(reference_id)
+    return result
+
+
+def _match_resource_reference(
+    resource: Mapping[str, object | None],
+    all_references: Mapping[str, EffectiveTracksideApReference],
+    all_identity_index: Mapping[tuple[str, str], set[str]],
+    eligible: Mapping[str, EffectiveTracksideApReference],
+    aliases: Mapping[str, str],
+) -> tuple[str, str]:
+    direct = _reference_id(resource.get("extension_id"))
+    if direct in all_references:
+        direct = aliases.get(direct, direct)
+        if direct in eligible:
+            return direct, ""
+        return "", "匹配到的轨旁 AP 资料不在当前有效范围。"
+    for key in _identity_keys(resource):
+        candidates = all_identity_index.get(key, set())
+        if len(candidates) == 1:
+            reference_id = next(iter(candidates))
+            if reference_id in eligible:
+                return reference_id, ""
+            return "", "匹配到的轨旁 AP 资料不在当前有效范围。"
+        if len(candidates) > 1:
+            return "", "AP 稳定身份匹配到多条资料，需人工处理。"
+    return "", "在线 AP 未匹配到当前有效轨旁 AP 资料。"
+
+
+def _excluded_reference(
+    reference: EffectiveTracksideApReference,
+    reason: str,
+) -> TracksideApScopeExcludedItem:
+    return TracksideApScopeExcludedItem(
+        source="trackside_ap_reference",
+        item_id=reference.reference_id,
+        device_name=reference.ap_name,
+        station_name=reference.station_name,
+        operation_status=reference.operation_status,
+        project_phase=reference.project_phase,
+        reason=reason,
+        mac=reference.ap_mac,
+    )
+
+
+def _reference_identity_keys(
+    reference: EffectiveTracksideApReference,
+) -> list[tuple[str, str]]:
+    return [
+        key
+        for key in (
+            ("uuid", _text_key(reference.ap_uuid)),
+            ("mac", reference.ap_mac),
+            ("name", _name_key(reference.ap_name)),
+        )
+        if key[1]
+    ]
+
+
+def _identity_keys(row: Mapping[str, object | None]) -> list[tuple[str, str]]:
+    return [
+        key
+        for key in (
+            ("uuid", _text_key(row.get("ap_uuid") or row.get("uuid"))),
+            ("mac", _normalize_mac(row.get("ap_mac") or row.get("mac"))),
+            ("name", _name_key(row.get("ap_name") or row.get("name"))),
+        )
+        if key[1]
+    ]
+
+
+def _metadata(value: object) -> dict[str, object]:
+    try:
+        payload = json.loads(str(value or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _reference_id(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text if text.startswith("ap:") else f"ap:{text}"
+
+
+def _derived_station_id(node_uid: str) -> str:
+    digest = hashlib.sha1(node_uid.encode("utf-8")).hexdigest()[:12]
+    return f"station:{digest}"
+
+
+def _station_key(value: object) -> str:
+    return canonical_station_name(value).strip().casefold()
+
+
+def _scope_token(value: object) -> str:
+    return unicodedata.normalize("NFKC", str(value or "")).strip().casefold()
+
+
+def _text_key(value: object) -> str:
+    return _scope_token(value)
+
+
+def _name_key(value: object) -> str:
+    text = _scope_token(value)
+    return re.sub(r"[\s_\-:./\\|,;，。；、]+", "", text)
+
+
+def _normalize_mac(value: object) -> str:
+    text = re.sub(r"[^0-9a-fA-F]", "", str(value or ""))
+    return text.casefold() if len(text) == 12 else ""
+
+
+def _is_false(value: object) -> bool:
+    return value is False or _scope_token(value) in _FALSE_VALUES
+
+
+def _integer(value: object, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+__all__ = [
+    "EffectiveTracksideApReference",
+    "EffectiveTracksideApScope",
+    "TracksideApScopeContext",
+    "TracksideApScopeExcludedItem",
+    "resolve_effective_trackside_ap_scope",
+    "resolve_effective_trackside_ap_scope_from_database",
+]

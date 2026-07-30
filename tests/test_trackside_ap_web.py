@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 from web_parity_test_support import FakeExportProcessAdapter, FakeLocalProcessAdapter
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
@@ -14,18 +15,112 @@ from netconsole.application.web_artifacts import WebArtifactError
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
-from netconsole.models.api.trackside_ap_business import (
-    TracksideApPlanDTO,
-    TracksideApPlanRowDTO,
-)
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.job_registry import registered_task_types
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.export.export_handlers import run_generic_export_handler
 from netconsole.services.rail_transit import trackside_ap_business_query_service, trackside_ap_update_job, trackside_optical_collection
-from netconsole.services.trackside_ap_export_service import TracksideApBusinessLoadResult
+from netconsole.services.trackside_ap_export_service import (
+    TracksideApBusinessLoadResult,
+    load_trackside_ap_business_snapshot,
+)
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.repositories.device_repository import DeviceRepository
+
+
+def _seed_effective_trackside_scope(
+    repository: AcRepository,
+    samples: list[tuple[str, int, int, int, str]],
+    *,
+    site_id: str = "demo",
+    extra_references: list[dict[str, object]] | None = None,
+    extra_resources: list[dict[str, object]] | None = None,
+    numbered_display: bool = True,
+) -> None:
+    extension_rows: list[dict[str, object]] = []
+    plan_rows: list[dict[str, object]] = []
+    resource_rows: list[dict[str, object]] = []
+    for station_index, (
+        station_name,
+        planned,
+        reference_count,
+        online_count,
+        remark,
+    ) in enumerate(samples, start=1):
+        display_name = (
+            f"{station_index:02d}{station_name}"
+            if numbered_display
+            else station_name
+        )
+        node_uid = f"station-node-{station_index}"
+        extension_rows.append(
+            {
+                "site_id": site_id,
+                "belong_type": "__base_station__",
+                "station_name": display_name,
+                "raw_payload_json": json.dumps(
+                    {
+                        "node_uid": node_uid,
+                        "canonical_station_name": station_name,
+                        "sort_order": station_index,
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+        )
+        plan_rows.append(
+            {
+                "sequence_no": station_index,
+                "station_name": station_name,
+                "ap_count": planned,
+                "management_vlan": 920 + station_index,
+                "ap_management_vlans": str(920 + station_index),
+                "remark": remark,
+                "sort_order": station_index - 1,
+            }
+        )
+        for ap_index in range(reference_count):
+            ap_name = f"AP-{station_index:02d}-{ap_index:03d}"
+            ap_uuid = f"ap-{station_index}-{ap_index}"
+            ap_mac = f"{station_index:02x}{ap_index:010x}"
+            extension_rows.append(
+                {
+                    "site_id": site_id,
+                    "belong_type": "station",
+                    "station_name": station_name,
+                    "ap_name": ap_name,
+                    "ap_mac_norm": ap_mac,
+                    "raw_payload_json": json.dumps(
+                        {
+                            "station_node_uid": node_uid,
+                            "operation_status": "in_service",
+                            "project_id": site_id,
+                            "ap_uuid": ap_uuid,
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            )
+            resource_rows.append(
+                {
+                    "ap_uuid": ap_uuid,
+                    "ap_name": ap_name,
+                    "ap_mac": ap_mac,
+                    "state": "R" if ap_index < online_count else "I",
+                    "updated_at": "2026-07-30T11:30:25+08:00",
+                }
+            )
+
+    extension_rows.extend(extra_references or [])
+    resource_rows.extend(extra_resources or [])
+    result = repository.import_ap_extension_points(
+        extension_rows,
+        source_file="scope-fixture.xlsx",
+        template_type="trackside_ap_scope_fixture",
+    )
+    assert result["error_rows"] == 0
+    repository.replace_trackside_ap_plan_rows(TRACKSIDE_AP_PLAN_MODE, plan_rows)
+    repository.replace_fit_ap_resources("ac-fixture", resource_rows)
 
 
 def _snapshot() -> TracksideApBusinessLoadResult:
@@ -73,6 +168,80 @@ def _snapshot() -> TracksideApBusinessLoadResult:
         fit_ap_resource_count=1,
         identity_shadow={"status": "matched"},
     )
+
+
+def test_business_snapshot_and_online_overview_share_effective_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "scope.sqlite")
+    database.initialize()
+    repository = AcRepository(database)
+    _seed_effective_trackside_scope(
+        repository,
+        [("双陈站", 1, 1, 1, "")],
+        extra_references=[
+            {
+                "site_id": "demo",
+                "belong_type": "station",
+                "station_name": "双陈站",
+                "ap_name": "暂停 AP",
+                "ap_mac_norm": "aabbccdde001",
+                "raw_payload_json": json.dumps(
+                    {
+                        "station_node_uid": "station-node-1",
+                        "operation_status": "suspended",
+                        "project_id": "demo",
+                        "ap_uuid": "ap-suspended",
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+        ],
+        extra_resources=[
+            {
+                "ap_uuid": "ap-suspended",
+                "ap_name": "暂停 AP",
+                "ap_mac": "aabbccdde001",
+                "state": "R",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "netconsole.services.trackside_ap_export_service.build_trackside_ap_business_rows",
+        lambda *_args, **_kwargs: [
+            {
+                "site": "双陈站",
+                "device_uuid": "switch-1",
+                "interface_name": "XGE1/0/1",
+                "ap_uuid": "ap-1-0",
+                "ap_name": "AP-01-000",
+                "ap_mac": "010000000000",
+            },
+            {
+                "site": "双陈站",
+                "device_uuid": "switch-1",
+                "interface_name": "XGE1/0/2",
+                "ap_uuid": "ap-suspended",
+                "ap_name": "暂停 AP",
+                "ap_mac": "aabbccdde001",
+            },
+        ],
+    )
+
+    snapshot = load_trackside_ap_business_snapshot(
+        DeviceRepository(database),
+        "demo",
+        generation=1,
+    )
+
+    assert len(snapshot.rows) == 1
+    assert snapshot.rows[0]["site"] == "01双陈站"
+    assert snapshot.scope is not None
+    overview = snapshot.scope.overview_export_rows()
+    assert [row["site"] for row in overview] == ["01双陈站", "合计"]
+    assert overview[0]["online"] == 1
+    assert snapshot.scope.excluded_device_count == 1
 
 
 def _station_option_snapshot() -> TracksideApBusinessLoadResult:
@@ -767,7 +936,7 @@ def test_trackside_plan_preview_save_export_and_artifact_download(tmp_path: Path
         export_adapter=export,  # type: ignore[arg-type]
     )
     content = (
-        "车站名称,AP数量,AP起始地址,掩码,AP网关,AP管理VLAN,备注\r\n"
+        "车站名称,规划AP总数量,AP起始地址,掩码,AP网关,AP管理VLAN,备注\r\n"
         "站点A,30,10.1.1.1,255.255.255.0,10.1.1.254,921,覆盖值\r\n"
         "站点B,10,10.2.1.X,24,10.2.1.254,922,新增值\r\n"
     ).encode("utf-8-sig")
@@ -779,7 +948,12 @@ def test_trackside_plan_preview_save_export_and_artifact_download(tmp_path: Path
     assert preview.duplicate_count == 1
     assert preview.valid_count == 1
     assert {row.station_name for row in preview.result_rows} == {"站点A", "站点B"}
-    assert next(row for row in preview.result_rows if row.station_name == "站点A").ap_count == 30
+    assert (
+        next(
+            row for row in preview.result_rows if row.station_name == "站点A"
+        ).planned_ap_count
+        == 30
+    )
 
     started = service.start_trackside_ap_plan_save(
         "demo",
@@ -796,18 +970,80 @@ def test_trackside_plan_preview_save_export_and_artifact_download(tmp_path: Path
     export.complete(current.task_id, current_content)
     completed = service.get_task("demo", current.task_id)
     assert completed.available is True
-    current_path, _name = service.open_trackside_ap_plan_export("demo", completed.artifact_id)
+    current_path, current_name = service.open_trackside_ap_plan_export(
+        "demo",
+        completed.artifact_id,
+    )
+    assert current_name.startswith("demo_轨旁AP规划及上线概览_")
     current_workbook = load_workbook(current_path)
-    assert current_workbook.sheetnames[:2] == ["轨旁AP规划", "字段说明"]
+    assert current_workbook.sheetnames == [
+        "AP规划",
+        "AP上线情况概览",
+        "_netconsole_meta",
+    ]
     assert [
-        current_workbook["轨旁AP规划"].cell(2, column).value
+        current_workbook["AP规划"].cell(1, column).value
         for column in range(1, 9)
-    ] == ["序号", "车站名称", "AP数量", "AP起始地址", "掩码", "AP网关", "AP管理VLAN", "备注"]
-    assert current_workbook["轨旁AP规划"]["A3"].value == 1
-    assert current_workbook["轨旁AP规划"]["B3"].value == "站点A"
-    assert current_workbook["轨旁AP规划"]["G3"].value == 921
-    assert current_workbook["字段说明"]["A2"].value == "序号"
+    ] == [
+        "序号",
+        "车站名称",
+        "规划AP总数量",
+        "AP起始地址",
+        "掩码",
+        "AP网关",
+        "AP管理VLAN",
+        "备注",
+    ]
+    assert current_workbook["AP规划"].freeze_panes == "A2"
+    assert current_workbook["AP规划"].auto_filter.ref == "A1:H2"
+    assert current_workbook["AP规划"]["A2"].value == 1
+    assert current_workbook["AP规划"]["B2"].value == "站点A"
+    assert current_workbook["AP规划"]["C2"].value == 20
+    assert current_workbook["AP规划"]["C2"].data_type == "n"
+    assert current_workbook["AP规划"]["C2"].number_format == "0"
+    assert current_workbook["AP规划"]["G2"].value == 921
+    assert current_workbook["AP规划"]["G2"].data_type == "n"
+    assert current_workbook["AP规划"]["G2"].number_format == "0"
+    assert current_workbook["AP规划"]["H2"].alignment.wrap_text is True
+    overview = current_workbook["AP上线情况概览"]
+    assert [overview.cell(1, column).value for column in range(1, 7)] == [
+        "归属站点",
+        "规划AP总数量",
+        "实际上线",
+        "未上线",
+        "上线率",
+        "备注",
+    ]
+    assert [overview.cell(2, column).value for column in range(1, 6)] == [
+        "合计",
+        0,
+        0,
+        0,
+        None,
+    ]
+    assert overview.max_row == 2
+    assert overview["E2"].value is None
+    assert overview["E2"].number_format == "0.0%"
+    assert overview["E2"].font.bold is True
+    metadata = json.loads(current_workbook["_netconsole_meta"]["B1"].value)
+    assert current_workbook["_netconsole_meta"].sheet_state == "hidden"
+    assert metadata["template_type"] == "trackside_ap_station_plan"
+    assert metadata["schema_version"] == 2
+    assert metadata["project_id"] == "demo"
+    assert metadata["line_id"] == "current"
     current_workbook.close()
+    current_roundtrip = service.preview_trackside_ap_plan(
+        "demo",
+        file_name=current_name,
+        content=current_path.read_bytes(),
+        duplicate_strategy="replace",
+    )
+    assert current_roundtrip.can_apply is True
+    assert [
+        row.station_name
+        for row in current_roundtrip.result_rows
+    ] == ["站点A"]
+    assert current_roundtrip.result_rows[0].planned_ap_count == 20
     snapshot = tasks.repository("demo").get(current.task_id)
     assert snapshot is not None
     assert snapshot.result["sha256"] == hashlib.sha256(current_content).hexdigest()
@@ -819,11 +1055,67 @@ def test_trackside_plan_preview_save_export_and_artifact_download(tmp_path: Path
     template_content = Path(template_job.output_path).read_bytes()
     export.complete(template.task_id, template_content)
     template_task = service.get_task("demo", template.task_id)
-    template_path, _name = service.open_trackside_ap_plan_export("demo", template_task.artifact_id)
+    template_path, template_name = service.open_trackside_ap_plan_export(
+        "demo",
+        template_task.artifact_id,
+    )
+    assert template_name == "轨旁AP逐站规划模板.xlsx"
     template_workbook = load_workbook(template_path)
-    assert template_workbook.sheetnames[:2] == ["轨旁AP规划", "字段说明"]
-    assert template_workbook["轨旁AP规划"].max_row == 2
+    assert template_workbook.sheetnames == ["AP规划", "_netconsole_meta"]
+    assert template_workbook["AP规划"].max_row == 1
+    template_headers = [
+        template_workbook["AP规划"].cell(1, column).value
+        for column in range(1, 9)
+    ]
+    assert template_headers == [
+        "序号",
+        "车站名称",
+        "规划AP总数量",
+        "AP起始地址",
+        "掩码",
+        "AP网关",
+        "AP管理VLAN",
+        "备注",
+    ]
+    assert not {
+        "VLAN组编号",
+        "VLAN组名称",
+        "实际上线",
+        "未上线",
+        "上线率",
+        "revision",
+    }.intersection(template_headers)
+    template_workbook["AP规划"].append(
+        [
+            1,
+            "小洋江站",
+            28,
+            "10.122.221.X",
+            "/24",
+            "10.122.221.254",
+            921,
+            "左线01、02无法铺设，核减2个AP，原30个AP",
+        ]
+    )
+    template_workbook.save(template_path)
     template_workbook.close()
+    repository.replace_trackside_ap_plan_rows(TRACKSIDE_AP_PLAN_MODE, [])
+    roundtrip = service.preview_trackside_ap_plan(
+        "demo",
+        file_name="轨旁AP逐站规划模板.xlsx",
+        content=template_path.read_bytes(),
+        duplicate_strategy="replace",
+    )
+    assert roundtrip.can_apply is True, roundtrip.model_dump()
+    roundtrip_row = next(
+        row
+        for row in roundtrip.result_rows
+        if row.station_name == "小洋江站"
+    )
+    assert roundtrip_row.planned_ap_count == 28
+    assert roundtrip_row.ap_start_address == "10.122.221.X"
+    assert roundtrip_row.subnet_mask == "/24"
+    assert roundtrip_row.management_vlan == 921
 
 
 def test_legacy_grouped_trackside_plan_import_uses_station_values(
@@ -892,6 +1184,68 @@ def test_legacy_grouped_trackside_plan_import_uses_station_values(
     assert [row.station_name for row in preview.result_plan.items] == ["站点A", "站点B"]
 
 
+def test_legacy_xlsx_plan_import_maps_count_and_group_vlan_fallback(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.ensure_site_dirs("demo")
+    Database(paths.site_db_path("demo")).initialize()
+    tasks = TaskApplicationService(paths=paths, site_name="demo")
+    service = RailTransitWebApplicationService(
+        paths,
+        tasks,
+        process_adapter=FakeLocalProcessAdapter(tasks),  # type: ignore[arg-type]
+        export_adapter=FakeExportProcessAdapter(tasks),  # type: ignore[arg-type]
+    )
+    legacy_path = tmp_path / "legacy-trackside-plan.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "轨旁AP规划"
+    sheet.append(
+        [
+            "车站名称",
+            "AP数量",
+            "AP起始地址",
+            "掩码",
+            "AP网关",
+            "AP管理VLAN",
+            "备注",
+            "VLAN组编号",
+            "管理VLAN",
+        ]
+    )
+    sheet.append(
+        [
+            "小洋江站",
+            28,
+            "10.122.221.X",
+            "/24",
+            "10.122.221.254",
+            "",
+            "核减2个AP，原30个AP",
+            "G001",
+            921,
+        ]
+    )
+    workbook.create_sheet("字段说明")
+    workbook.save(legacy_path)
+    workbook.close()
+
+    preview = service.preview_trackside_ap_plan(
+        "demo",
+        file_name=legacy_path.name,
+        content=legacy_path.read_bytes(),
+        duplicate_strategy="replace",
+    )
+
+    assert preview.can_apply is True
+    assert preview.legacy_schema is True
+    assert preview.message == "已识别旧版 VLAN 分组模板，将转换为逐站 AP 规划。"
+    assert len(preview.result_rows) == 1
+    assert preview.result_rows[0].planned_ap_count == 28
+    assert preview.result_rows[0].management_vlan == 921
+
+
 def test_legacy_grouped_trackside_plan_import_validates_station_references(
     tmp_path: Path,
 ) -> None:
@@ -946,22 +1300,24 @@ def test_legacy_grouped_trackside_plan_import_validates_station_references(
     assert any("掩码" in row.message for row in preview.rows)
 
 
-def test_trackside_ap_online_status_uses_actual_effective_aps_and_weighted_total(
-    monkeypatch,
+def test_trackside_ap_online_status_uses_planned_targets_and_weighted_total(
     tmp_path: Path,
 ) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     paths.ensure_site_dirs("demo")
-    Database(paths.site_db_path("demo")).initialize()
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    repository = AcRepository(database)
     tasks = TaskApplicationService(paths=paths, site_name="demo")
+    export = FakeExportProcessAdapter(tasks)
     service = RailTransitWebApplicationService(
         paths,
         tasks,
         process_adapter=FakeLocalProcessAdapter(tasks),  # type: ignore[arg-type]
-        export_adapter=FakeExportProcessAdapter(tasks),  # type: ignore[arg-type]
+        export_adapter=export,  # type: ignore[arg-type]
     )
     samples = [
-        ("小洋江站", 30, 28, 28, "左线01、02无法铺设，核减2个AP，原30个AP"),
+        ("小洋江站", 28, 28, 28, "左线01、02无法铺设，核减2个AP，原30个AP"),
         ("云龙火车站站", 56, 56, 56, ""),
         ("横溪站", 126, 126, 77, ""),
         ("塘溪站", 138, 138, 133, ""),
@@ -970,134 +1326,187 @@ def test_trackside_ap_online_status_uses_actual_effective_aps_and_weighted_total
         ("大徐站", 94, 94, 94, ""),
         ("丹城站", 78, 78, 0, ""),
         ("滨海大道站", 56, 56, 0, ""),
-        ("大目湾站", 42, 34, 0, "路段未铺设，核减8个AP，原42个AP"),
+        ("大目湾站", 34, 34, 0, "路段未铺设，核减8个AP，原42个AP"),
         ("云龙车辆段", 67, 67, 66, ""),
     ]
-    stations = [
-        SimpleNamespace(
-            id=f"station:{index}",
-            name=f"{index:02d}{name}",
-            canonical_station_name=name,
-            sort_order=index,
-        )
-        for index, (name, *_rest) in enumerate(samples, start=1)
-    ]
-    plans = TracksideApPlanDTO(
-        items=[
-            TracksideApPlanRowDTO(
-                station_id=f"station:{index}",
-                sequence_no=index,
-                station_name=name,
-                ap_count=planned,
-                management_vlan=920 + index,
-                ap_management_vlans=str(920 + index),
-                remark=remark,
-                sort_order=index - 1,
-            )
-            for index, (name, planned, _actual, _online, remark) in enumerate(
-                samples,
-                start=1,
-            )
-        ],
-        total=len(samples),
-    )
-    aps = []
-    for index, (name, _planned, actual, online, _remark) in enumerate(
+    _seed_effective_trackside_scope(
+        repository,
         samples,
-        start=1,
-    ):
-        for ap_index in range(actual):
-            aps.append(
-                SimpleNamespace(
-                    id=f"ap:{index}:{ap_index}",
-                    name=f"AP-{index:02d}-{ap_index:03d}",
-                    point_code=f"{index:02d}{ap_index:03d}",
-                    mac="",
-                    station=f"{index:02d}{name}",
-                    base_metadata={},
-                    runtime=SimpleNamespace(
-                        fit_ap_status="online" if ap_index < online else "unknown",
-                        updated_at="2026-07-30T11:30:25",
-                    ),
-                    updated_at="2026-07-30T11:30:00",
-                )
-            )
-    aps.extend(
-        [
-            SimpleNamespace(
-                id="ap:suspended",
-                name="暂停 AP",
-                point_code="SUSPENDED",
-                mac="",
-                station="01小洋江站",
-                base_metadata={"operation_status": "suspended"},
-                runtime=SimpleNamespace(
-                    fit_ap_status="online",
-                    updated_at="2026-07-30T11:30:25",
+        extra_references=[
+            {
+                "site_id": "demo",
+                "belong_type": "station",
+                "station_name": "小洋江站",
+                "ap_name": "暂停 AP",
+                "ap_mac_norm": "aabbccdde001",
+                "raw_payload_json": json.dumps(
+                    {
+                        "station_node_uid": "station-node-1",
+                        "operation_status": "suspended",
+                        "project_id": "demo",
+                        "ap_uuid": "ap-suspended",
+                    },
+                    ensure_ascii=False,
                 ),
-                updated_at="2026-07-30T11:30:00",
-            ),
-            SimpleNamespace(
-                id="ap:retired",
-                name="退役 AP",
-                point_code="RETIRED",
-                mac="",
-                station="01小洋江站",
-                base_metadata={"operation_status": "retired"},
-                runtime=SimpleNamespace(
-                    fit_ap_status="online",
-                    updated_at="2026-07-30T11:30:25",
+            },
+            {
+                "site_id": "demo",
+                "belong_type": "station",
+                "station_name": "小洋江站",
+                "ap_name": "退役 AP",
+                "ap_mac_norm": "aabbccdde002",
+                "raw_payload_json": json.dumps(
+                    {
+                        "station_node_uid": "station-node-1",
+                        "operation_status": "retired",
+                        "project_id": "demo",
+                        "ap_uuid": "ap-retired",
+                    },
+                    ensure_ascii=False,
                 ),
-                updated_at="2026-07-30T11:30:00",
-            ),
-            SimpleNamespace(
-                id="ap:unassigned",
-                name="未分配 AP",
-                point_code="UNASSIGNED",
-                mac="",
-                station="",
-                base_metadata={},
-                runtime=SimpleNamespace(
-                    fit_ap_status="online",
-                    updated_at="2026-07-30T11:30:25",
-                ),
-                updated_at="2026-07-30T11:30:00",
-            ),
-        ]
+            },
+        ],
+        extra_resources=[
+            {
+                "ap_uuid": "ap-suspended",
+                "ap_name": "暂停 AP",
+                "ap_mac": "aabbccdde001",
+                "state": "R",
+                "updated_at": "2026-07-30T11:30:25+08:00",
+            },
+            {
+                "ap_uuid": "ap-retired",
+                "ap_name": "退役 AP",
+                "ap_mac": "aabbccdde002",
+                "state": "R",
+                "updated_at": "2026-07-30T11:30:25+08:00",
+            },
+            {
+                "ap_uuid": "ap-unassigned",
+                "ap_name": "未分配 AP",
+                "ap_mac": "aabbccdde003",
+                "state": "R",
+                "updated_at": "2026-07-30T11:30:25+08:00",
+            },
+        ],
     )
-
-    class Query:
-        def __init__(self, _paths):
-            pass
-
-        def list_stations(self, *_args, **_kwargs):
-            return SimpleNamespace(items=stations)
-
-        def list_ap_status_items(self, *_args, **_kwargs):
-            return aps
-
-    monkeypatch.setattr(
-        "netconsole.application.rail_transit.web_application_service.RailTransitBaseDataQueryService",
-        Query,
-    )
-    monkeypatch.setattr(service, "get_trackside_ap_plan", lambda _site_id: plans)
 
     status = service.get_trackside_ap_online_status("demo")
 
-    assert status.planned_ap_count == 955
-    assert status.actual_ap_count == 945
-    assert status.online_count == 719
+    assert status.planned_ap_count == 945
+    assert status.actual_online_count == 719
     assert status.offline_count == 226
     assert status.online_rate == 76.1
     assert status.unassigned_count == 1
-    assert status.warning == "当前有 1 个轨旁 AP 尚未分配归属站点。"
+    assert "当前有 1 个在线轨旁 AP 未纳入有效统计范围。" in status.warning
+    assert status.excluded_device_count == 3
+    assert "actual_ap_count" not in status.model_dump()
+    assert "online_count" not in status.model_dump()
     by_name = {row.station_name: row for row in status.items}
-    assert by_name["01小洋江站"].planned_ap_count == 30
-    assert by_name["01小洋江站"].actual_ap_count == 28
+    assert by_name["01小洋江站"].planned_ap_count == 28
+    assert by_name["01小洋江站"].actual_online_count == 28
+    assert by_name["01小洋江站"].offline_count == 0
+    assert by_name["01小洋江站"].online_rate == 100.0
     assert by_name["03横溪站"].online_rate == 61.1
     assert by_name["04塘溪站"].online_rate == 96.4
     assert by_name["06象山贤庠"].online_rate == 97.8
+    assert by_name["10大目湾站"].planned_ap_count == 34
+    assert by_name["10大目湾站"].actual_online_count == 0
+    assert by_name["10大目湾站"].offline_count == 34
+    assert by_name["10大目湾站"].online_rate == 0.0
     assert by_name["11云龙车辆段"].online_rate == 98.5
+    assert all(row.count_anomaly is False for row in status.items)
+
+    current = service.start_trackside_ap_plan_export("demo", template=False)
+    current_job = export.jobs[current.task_id]
+    run_generic_export_handler(current_job)
+    workbook = load_workbook(current_job.output_path)
+    overview = workbook["AP上线情况概览"]
+    assert [overview.cell(2, column).value for column in range(1, 6)] == [
+        "01小洋江站",
+        28,
+        28,
+        0,
+        1,
+    ]
+    assert [overview.cell(4, column).value for column in range(1, 6)] == [
+        "03横溪站",
+        126,
+        77,
+        49,
+        0.611,
+    ]
+    assert [overview.cell(11, column).value for column in range(1, 6)] == [
+        "10大目湾站",
+        34,
+        0,
+        34,
+        0,
+    ]
+    assert [overview.cell(13, column).value for column in range(1, 5)] == [
+        "合计",
+        945,
+        719,
+        226,
+    ]
+    assert overview["E13"].value == pytest.approx(0.761)
+    assert overview["E13"].number_format == "0.0%"
+    assert overview["E13"].font.bold is True
+    workbook.close()
+
+
+def test_trackside_ap_online_status_ignores_reference_count_and_flags_excess(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.ensure_site_dirs("demo")
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    repository = AcRepository(database)
+    tasks = TaskApplicationService(paths=paths, site_name="demo")
+    service = RailTransitWebApplicationService(
+        paths,
+        tasks,
+        process_adapter=FakeLocalProcessAdapter(tasks),  # type: ignore[arg-type]
+        export_adapter=FakeExportProcessAdapter(tasks),  # type: ignore[arg-type]
+    )
+    _seed_effective_trackside_scope(
+        repository,
+        [
+            ("站点A", 5, 2, 1, ""),
+            ("站点B", 1, 2, 2, ""),
+            ("站点C", 0, 1, 1, ""),
+        ],
+        numbered_display=False,
+    )
+
+    status = service.get_trackside_ap_online_status("demo")
+    by_name = {row.station_name: row for row in status.items}
+
+    assert by_name["站点A"].planned_ap_count == 5
+    assert by_name["站点A"].actual_online_count == 1
+    assert by_name["站点A"].offline_count == 4
+    assert by_name["站点A"].online_rate == 20.0
+    assert by_name["站点B"].actual_online_count == 2
+    assert by_name["站点B"].offline_count == 0
+    assert by_name["站点B"].online_rate is None
+    assert by_name["站点B"].count_anomaly is True
+    assert by_name["站点B"].status == "over_planned"
+    assert (
+        by_name["站点B"].warning
+        == "实际上线 AP 数量超过当前规划数量，请检查规划资料或 AP 归属关系。"
+    )
+    assert by_name["站点C"].planned_ap_count == 0
+    assert by_name["站点C"].actual_online_count == 1
+    assert by_name["站点C"].offline_count == 0
+    assert by_name["站点C"].online_rate is None
+    assert by_name["站点C"].count_anomaly is True
+    assert status.planned_ap_count == 6
+    assert status.actual_online_count == 4
+    assert status.offline_count == 2
+    assert status.online_rate is None
+    assert status.count_anomaly is True
+    assert status.scope_device_count == 5
 
 
 def test_trackside_ap_base_template_and_draft_export_use_controlled_artifacts(tmp_path: Path) -> None:

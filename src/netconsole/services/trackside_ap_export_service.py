@@ -15,7 +15,7 @@ from netconsole.core.sources.switch_source import build_switch_data_lookup
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
-from netconsole.services.ap_online_overview import AP_ONLINE_OVERVIEW_COLUMNS, ApOnlineOverviewService
+from netconsole.services.ap_online_overview import AP_ONLINE_OVERVIEW_COLUMNS
 from netconsole.services.offline_ap_ledger import (
     OFFLINE_AP_LEDGER_COLUMNS,
     OFFLINE_AP_STATS_COLUMNS,
@@ -41,6 +41,11 @@ from netconsole.services.trackside_ap_business import (
 from netconsole.services.rail_transit.trackside_ap_identity_shadow import (
     TracksideApIdentityShadowService,
     unavailable_trackside_identity_shadow,
+)
+from netconsole.services.rail_transit.effective_trackside_ap_scope import (
+    EffectiveTracksideApScope,
+    TracksideApScopeContext,
+    resolve_effective_trackside_ap_scope_from_database,
 )
 
 ProgressCallback = Callable[[str, int, int, str], None]
@@ -68,6 +73,7 @@ class TracksideApBusinessLoadResult:
     row_count: int = 0
     empty_reason: str = ""
     identity_shadow: dict[str, object] = field(default_factory=dict)
+    scope: EffectiveTracksideApScope | None = None
 
 
 def build_trackside_ap_business_export_name(site_display_name: str, created_at: datetime) -> str:
@@ -95,16 +101,34 @@ def _safe_trackside_site_name(value: str) -> str:
     return site_name
 
 
-def load_trackside_ap_business_snapshot(repository: DeviceRepository, site_name: str, generation: int) -> TracksideApBusinessLoadResult:
+def load_trackside_ap_business_snapshot(
+    repository: DeviceRepository,
+    site_name: str,
+    generation: int,
+    *,
+    scope_context: TracksideApScopeContext | None = None,
+) -> TracksideApBusinessLoadResult:
     query_start = perf_counter()
     fact_repository = DeviceFactRepository(repository.database)
     ac_repository = AcRepository(repository.database)
-    devices = filter_station_switch_devices(repository.list(), repository.database, site_name)
+    scope = resolve_effective_trackside_ap_scope_from_database(
+        repository.database,
+        site_id=site_name,
+        context=scope_context,
+    )
+    devices = filter_station_switch_devices(
+        repository.list(),
+        repository.database,
+        site_name,
+        project_phase=scope.context.project_phase,
+    )
     interfaces_by_device = {str(device.device_uuid or ""): fact_repository.list_device_interfaces(str(device.device_uuid or "")) for device in devices}
     optical_by_device = {str(device.device_uuid or ""): fact_repository.list_optical_modules(str(device.device_uuid or "")) for device in devices}
     lldp_by_device = {str(device.device_uuid or ""): fact_repository.list_lldp_neighbors(str(device.device_uuid or "")) for device in devices}
-    fit_ap_optical_rows = ac_repository.list_all_fit_ap_optical()
-    fit_ap_resource_rows = ac_repository.list_all_fit_ap_resources_with_metadata()
+    fit_ap_optical_rows = scope.filter_identity_rows(
+        ac_repository.list_all_fit_ap_optical()
+    )
+    fit_ap_resource_rows = scope.resources
     historical_lldp_rows = ac_repository.list_latest_ap_lldp_histories()
     active_plan = ac_repository.get_active_trackside_pvid_plan()
     switch_lookup = build_switch_data_lookup(devices, optical_by_device)
@@ -127,17 +151,19 @@ def load_trackside_ap_business_snapshot(repository: DeviceRepository, site_name:
     query_ms = int((perf_counter() - query_start) * 1000)
 
     build_start = perf_counter()
-    rows = build_trackside_ap_business_rows(
-        devices,
-        interfaces_by_device,
-        optical_by_device,
-        fit_ap_optical_rows,
-        lldp_by_device,
-        fit_ap_resource_rows,
-        switch_lookup,
-        active_plan,
-        offline_ledger_rows,
-        historical_lldp_rows,
+    rows = scope.filter_business_rows(
+        build_trackside_ap_business_rows(
+            devices,
+            interfaces_by_device,
+            optical_by_device,
+            fit_ap_optical_rows,
+            lldp_by_device,
+            fit_ap_resource_rows,
+            switch_lookup,
+            active_plan,
+            offline_ledger_rows,
+            historical_lldp_rows,
+        )
     )
     try:
         identity_shadow = TracksideApIdentityShadowService().shadow_rows(rows, fit_ap_resource_rows).to_payload()
@@ -157,21 +183,22 @@ def load_trackside_ap_business_snapshot(repository: DeviceRepository, site_name:
             len(fit_ap_resource_rows),
         )
     return TracksideApBusinessLoadResult(
-        generation,
-        site_name,
-        rows,
-        len(devices),
-        query_ms,
-        build_ms,
-        interface_count,
-        optical_count,
-        lldp_count,
-        len(fit_ap_optical_rows),
-        len(fit_ap_resource_rows),
-        candidate_ap_interface_count,
-        row_count,
-        empty_reason,
-        identity_shadow,
+        generation=generation,
+        site_name=site_name,
+        rows=rows,
+        device_count=len(devices),
+        query_ms=query_ms,
+        build_ms=build_ms,
+        interface_count=interface_count,
+        optical_count=optical_count,
+        lldp_count=lldp_count,
+        fit_ap_optical_count=len(fit_ap_optical_rows),
+        fit_ap_resource_count=len(fit_ap_resource_rows),
+        candidate_ap_interface_count=candidate_ap_interface_count,
+        row_count=row_count,
+        empty_reason=empty_reason,
+        identity_shadow=identity_shadow,
+        scope=scope,
     )
 
 
@@ -182,6 +209,7 @@ def export_trackside_ap_business_from_database(
     output_path: str | Path,
     tmp_path: str | Path,
     language: str = "zh_CN",
+    scope_context: dict[str, object] | None = None,
     progress_callback: ProgressCallback | None = None,
     should_cancel: CancelCheck | None = None,
 ) -> dict[str, object]:
@@ -205,7 +233,15 @@ def export_trackside_ap_business_from_database(
     emit("prepare", 0, 0, "准备导出")
     check_cancel()
     emit("query_trackside_data", 0, 0, "正在读取轨旁AP业务数据")
-    snapshot = load_trackside_ap_business_snapshot(repository, site_name, generation=0)
+    snapshot = load_trackside_ap_business_snapshot(
+        repository,
+        site_name,
+        generation=0,
+        scope_context=TracksideApScopeContext.from_metadata(
+            site_name,
+            scope_context,
+        ),
+    )
     app_logger.log_info(
         "TRACKSIDE_AP_EXPORT_STARTED",
         f"site={site_name} rows={len(snapshot.rows)} output={output.name}",
@@ -213,7 +249,10 @@ def export_trackside_ap_business_from_database(
     check_cancel()
 
     emit("query_fit_ap_resources", 0, 0, "正在读取AP信息")
-    resources = ac_repository.list_all_fit_ap_resources_with_metadata()
+    scope = snapshot.scope
+    if scope is None:
+        raise RuntimeError("轨旁 AP 有效范围解析失败")
+    resources = scope.resources
     ac_device_names = {str(device.device_uuid or ""): device.name for device in repository.list() if str(device.device_uuid or "")}
     resources = [
         {
@@ -225,22 +264,26 @@ def export_trackside_ap_business_from_database(
     check_cancel()
 
     emit("query_fit_ap_optical", 0, 0, "正在读取光衰与状态")
-    optical_rows = ac_repository.list_all_fit_ap_optical()
-    resource_history_rows = ac_repository.list_all_fit_ap_resource_history()
-    ap_optical_history_rows = ac_repository.list_all_ap_optical_history()
-    ap_lldp_history_rows = ac_repository.list_all_ap_lldp_history()
-    capacity_details = ac_repository.list_active_trackside_plan_capacity_details() or ac_repository.list_station_ap_capacity_details()
+    resource_history_rows = scope.filter_identity_rows(
+        ac_repository.list_all_fit_ap_resource_history()
+    )
+    ap_optical_history_rows = scope.filter_identity_rows(
+        ac_repository.list_all_ap_optical_history()
+    )
+    ap_lldp_history_rows = scope.filter_identity_rows(
+        ac_repository.list_all_ap_lldp_history()
+    )
     check_cancel()
 
     emit("build_workbook_data", 0, 0, "正在生成导出工作簿")
-    overview_rows = ApOnlineOverviewService.build_rows(
-        metadata_rows=ac_repository.list_fit_ap_metadata(),
-        fit_ap_resources=resources,
-        optical_rows=optical_rows,
-        capacity_details=capacity_details,
-    )
+    overview_rows = scope.overview_export_rows()
     latest_lldp, latest_optical = build_latest_ap_history_indexes(ac_repository, resources)
-    devices = filter_station_switch_devices(repository.list(), repository.database, site_name)
+    devices = filter_station_switch_devices(
+        repository.list(),
+        repository.database,
+        site_name,
+        project_phase=scope.context.project_phase,
+    )
     switch_optical_history_rows = fact_repository.list_all_optical_history([str(device.device_uuid or "") for device in devices])
     offline_stats, offline_ledger_rows = build_offline_ap_ledger(
         fit_ap_resources=resources,
@@ -260,7 +303,9 @@ def export_trackside_ap_business_from_database(
             ap_lldp_history_rows=ap_lldp_history_rows,
         )
     ]
-    unauthenticated_rows = ac_repository.list_all_fit_ap_unauthenticated()
+    unauthenticated_rows = scope.filter_identity_rows(
+        ac_repository.list_all_fit_ap_unauthenticated()
+    )
     new_online_ap_rows = build_new_online_ap_overview_rows(resources, resource_history_rows, snapshot.rows, unauthenticated_rows)
     optical_treatment_rows = build_ap_optical_treatment_records(
         rows,

@@ -1,7 +1,7 @@
 import type { RailTransitTask } from './railTransitWeb'
 
 export interface TracksideApBusinessRow {
-  site: string; device_name: string; switch_vendor: string; interface_name: string; link_status: string; port_type: string
+  station_id?: string; site: string; device_name: string; switch_vendor: string; interface_name: string; link_status: string; port_type: string
   description: string; pvid: unknown; vlan: unknown
   planned_management_vlan: number | null; vlan_group_id: string; vlan_group_code: string; vlan_group_name: string
   pvid_plan_status: 'matched' | 'mismatched' | 'unresolved'
@@ -22,6 +22,8 @@ export interface TracksideApBusinessPage {
   device_count: number; candidate_interface_count: number; optical_abnormal_count: number
   fit_ap_resource_count: number; query_ms: number; build_ms: number; empty_reason: string
   identity_shadow: Record<string, unknown>
+  scope_description?: string; scope_station_count?: number; scope_device_count?: number
+  excluded_device_count?: number; excluded_items?: TracksideApScopeExcluded[]
 }
 
 export interface TracksideApUpdateRequest { station?: string; ap_uuid?: string; ap_mac?: string; ap_name?: string }
@@ -73,7 +75,7 @@ export interface TracksideSwitchSampleRequest {
 }
 
 export interface TracksideApPlanRow {
-  station_id: string; sequence_no: number; station_name: string; ap_count: number
+  station_id: string; sequence_no: number; station_name: string; planned_ap_count: number
   ap_start_address: string; subnet_mask: string; mask_length: number | null
   ap_gateway: string; management_vlan: number | null; ap_management_vlans: string
   remark: string; sort_order: number
@@ -81,20 +83,29 @@ export interface TracksideApPlanRow {
 
 export interface TracksideApOnlineStatusRow {
   station_id: string; station_name: string; planned_ap_count: number
-  actual_ap_count: number; online_count: number; offline_count: number
-  online_rate: number | null; remark: string
+  actual_online_count: number; offline_count: number; online_rate: number | null
+  remark: string; planning_missing?: boolean; count_anomaly: boolean
+  status?: 'normal' | 'planning_missing' | 'unplanned_online' | 'over_planned'
+  warning: string
 }
 
 export interface TracksideApUnassigned {
   ap_id: string; ap_name: string; point_code: string; mac: string; station_name: string
 }
 
+export interface TracksideApScopeExcluded {
+  source: string; item_id: string; device_name: string; station_name: string
+  operation_status: string; project_phase: string; reason: string; mac: string
+}
+
 export interface TracksideApOnlineStatus {
   items: TracksideApOnlineStatusRow[]
-  planned_ap_count: number; actual_ap_count: number; online_count: number
-  offline_count: number; online_rate: number | null
+  planned_ap_count: number; actual_online_count: number; offline_count: number
+  online_rate: number | null
   unassigned_count: number; unassigned_items: TracksideApUnassigned[]
-  updated_at: string; warning: string
+  updated_at: string; warning: string; count_anomaly?: boolean; status?: 'normal' | 'anomaly'
+  scope_description?: string; scope_station_count?: number; scope_device_count?: number
+  excluded_device_count?: number; excluded_items?: TracksideApScopeExcluded[]
 }
 
 export type ApManagementVlanPlanningMode = 'line_single' | 'station_independent' | 'station_grouped'

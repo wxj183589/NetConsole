@@ -98,17 +98,14 @@ export function saveTracksideApPlan(draft: TracksideApPlanDraft | TracksideApPla
   })
 }
 
-export function exportTracksideApPlan(
-  template = false,
-  rows?: TracksideApPlanRow[],
-): Promise<TracksideApTask> {
+export function exportTracksideApPlan(template = false): Promise<TracksideApTask> {
   return apiRequest(`${root}/plan/export`, {
     method: 'POST',
-    body: JSON.stringify({ template, ...(rows ? { rows } : {}) }),
+    body: JSON.stringify({ template }),
   })
 }
 
-export const tracksideApPlanDownloadRequest = (artifactId: string, suggestedName = '轨旁AP规划.xlsx'): BackendDownloadRequest => ({
+export const tracksideApPlanDownloadRequest = (artifactId: string, suggestedName = '轨旁AP规划及上线概览.xlsx'): BackendDownloadRequest => ({
   apiPath: `${root}/plan/artifacts/${encodeURIComponent(artifactId)}/download`,
   suggestedName,
 })

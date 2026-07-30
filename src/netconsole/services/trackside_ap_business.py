@@ -18,7 +18,7 @@ from netconsole.core.optical_severity_engine import (
     worse_optical_severity,
 )
 from netconsole.core.sources.switch_source import build_switch_data_lookup
-from netconsole.models.device import Device
+from netconsole.models.device import Device, is_device_eligible_for_automatic_collection
 from netconsole.models.trackside_switch import CommandCapabilityState
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.services.ap_online_overview import AP_ONLINE_OVERVIEW_COLUMNS, write_ap_online_overview_sheet
@@ -393,21 +393,36 @@ def is_switch_device_type(device_type: object) -> bool:
     return str(device_type or "").strip().casefold() in {"sw", "switch", "交换机"}
 
 
-def filter_station_switch_devices(devices: list[Device], database, site_name: str) -> list[Device]:
+def filter_station_switch_devices(
+    devices: list[Device],
+    database,
+    site_name: str,
+    *,
+    project_phase: str = "",
+) -> list[Device]:
     groups = {group.id: group.name for group in DeviceGroupRepository(database, site_name).list()}
     return [
         device
         for device in devices
         if groups.get(device.group_id or -1, "") == "车站"
         and is_switch_device_type(device.device_type)
-        and is_trackside_device_eligible(device)
+        and is_trackside_device_eligible(device, project_phase=project_phase)
     ]
 
 
-def is_trackside_device_eligible(device: Device) -> bool:
-    """Trackside reads and tasks exclude only explicitly suspended devices."""
+def is_trackside_device_eligible(
+    device: Device,
+    *,
+    project_phase: str = "",
+) -> bool:
+    """Trackside business reads only in-service devices in the configured phase."""
 
-    return str(device.operation_status or "").strip().casefold() != "suspended"
+    if not is_device_eligible_for_automatic_collection(device):
+        return False
+    expected_phase = str(project_phase or "").strip().casefold()
+    if not expected_phase:
+        return True
+    return str(device.project_phase or "").strip().casefold() == expected_phase
 
 
 def is_trackside_layer2_interface(interface: dict[str, object | None]) -> bool:

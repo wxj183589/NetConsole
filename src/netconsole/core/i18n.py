@@ -1068,6 +1068,7 @@ TRANSLATIONS = {
         "trackside.ap_not_found": "未找到对应AP。",
         "trackside.switch_optical_status": "室内侧状态",
         "trackside.planned_management_vlan": "规划管理 VLAN",
+        "trackside.planned_ap_count": "规划AP总数量",
         "trackside.pvid_plan_status": "PVID 核验",
         "trackside.vlan_group": "VLAN 组",
         "trackside.ap_optical_status": "AP侧光告警",
@@ -2501,6 +2502,7 @@ TRANSLATIONS = {
         "trackside.ap_not_found": "No matching AP found.",
         "trackside.switch_optical_status": "Switch Optical Status",
         "trackside.planned_management_vlan": "Planned Management VLAN",
+        "trackside.planned_ap_count": "Planned AP Total",
         "trackside.pvid_plan_status": "PVID Verification",
         "trackside.vlan_group": "VLAN Group",
         "trackside.ap_optical_status": "AP Optical Alarm",
@@ -2967,7 +2969,7 @@ TRANSLATIONS["zh_CN"].update(
     {
         "ac.trackside_ap_plan": "\u8f68\u65c1AP\u89c4\u5212",
         "ac.trackside_plan.station_name": "\u8f66\u7ad9\u540d\u79f0",
-        "ac.trackside_plan.ap_count": "AP\u6570\u91cf",
+        "ac.trackside_plan.ap_count": "\u89c4\u5212AP\u603b\u6570\u91cf",
         "ac.trackside_plan.ap_start_address": "AP\u8d77\u59cb\u5730\u5740",
         "ac.trackside_plan.mask": "\u63a9\u7801",
         "ac.trackside_plan.ap_gateway": "AP\u7f51\u5173",
@@ -2991,7 +2993,7 @@ TRANSLATIONS["en_US"].update(
     {
         "ac.trackside_ap_plan": "Trackside AP Plan",
         "ac.trackside_plan.station_name": "Station",
-        "ac.trackside_plan.ap_count": "AP Count",
+        "ac.trackside_plan.ap_count": "Planned AP Total",
         "ac.trackside_plan.ap_start_address": "AP Start Address",
         "ac.trackside_plan.mask": "Mask",
         "ac.trackside_plan.ap_gateway": "AP Gateway",

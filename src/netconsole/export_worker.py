@@ -109,6 +109,11 @@ def _run_trackside_ap_business(job: ExportJob) -> None:
         output_path=job.output_path,
         tmp_path=job.tmp_path,
         language=language,
+        scope_context=(
+            dict(job.params.get("scope_context") or {})
+            if isinstance(job.params.get("scope_context"), dict)
+            else None
+        ),
         progress_callback=lambda stage, current, total, message: _emit_progress(job, current, total, stage, message),
         should_cancel=lambda: _should_cancel(job),
     )

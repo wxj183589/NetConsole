@@ -12,7 +12,7 @@ describe('trackside AP planning base-data tab', () => {
       'recoverTracksideApTasks',
       "openTaskWindow({ module: 'rail'",
       'AP 规划维护',
-      'AP 上线统计',
+      'AP 上线情况概览',
       '新增站点',
       '删除所选',
       '保存',
@@ -22,14 +22,20 @@ describe('trackside AP planning base-data tab', () => {
       '下载模板',
       '刷新上线状态',
       '查看 AP 参考信息',
+      '查看异常 AP 资料',
       "label: '序号'",
       "label: '车站名称'",
-      "label: 'AP数量'",
+      "label: '规划AP总数量'",
       "label: 'AP起始地址'",
       "label: '掩码'",
       "label: 'AP网关'",
       "label: 'AP管理VLAN'",
       "label: '备注'",
+      "label: '实际上线'",
+      "label: '未上线'",
+      "label: '上线率'",
+      '规划 AP 总数量由用户维护；实际上线数量来自最新 AC/FIT-AP 状态。',
+      '超规划',
       '重复时报错',
       '有未保存修改',
       'importPreview.legacy_schema',
@@ -52,6 +58,13 @@ describe('trackside AP planning base-data tab', () => {
       '按站点查看（继承值）',
       '阻断问题',
       'revision',
+      "key: 'actual_ap_count'",
+      "key: 'online_count'",
+      "label: 'AP总数量'",
+      "label: 'AP数量'",
+      '规划影响预览',
+      '修改管理 VLAN 影响预览',
+      '应用预览结果',
     ]) expect(source).not.toContain(removed)
 
     expect(source).toContain("emit('change'")
@@ -61,6 +74,8 @@ describe('trackside AP planning base-data tab', () => {
     expect(source).toContain(':disabled="!importPreview?.can_apply || !canWrite"')
     expect(source).toContain('tracksideApPlanDownloadRequest')
     expect(source).toContain('downloadBackendResource')
+    expect(source).toContain('轨旁AP逐站规划模板.xlsx')
+    expect(source).toContain('_轨旁AP规划及上线概览_')
     expect(source).toContain('deepCopy(rows.value)')
     expect(source).toContain('pasteGrid($event')
     expect(source).toContain('validStartAddress')
