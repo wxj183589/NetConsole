@@ -57,9 +57,12 @@ class TracksideBssidMatch:
     matched: bool
     match_status: str
     ap_name: str = "-"
+    point_code: str = ""
     ap_mac: str = ""
     station: str = ""
     section: str = ""
+    section_start_station: str = ""
+    section_end_station: str = ""
     belong_type: str = "unknown"
     belonging_source: str = ""
     serial_number: str = ""

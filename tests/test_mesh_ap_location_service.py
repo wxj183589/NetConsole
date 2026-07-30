@@ -84,11 +84,15 @@ def test_location_snapshot_serialization_round_trip_is_worker_safe() -> None:
     assert serialized == [
         {
             "name": "AP-04",
+            "point_code": "",
             "mac": "0000-0000-0040",
             "station": "车站D",
             "section": "",
+            "section_start_station": "",
+            "section_end_station": "",
             "mileage": "K12+300",
             "line_side": "上行",
+            "direction": "",
         }
     ]
     assert restored.resolve({"peer_ap_mac": "000000000040"}) == MeshApLocation(
@@ -98,6 +102,35 @@ def test_location_snapshot_serialization_round_trip_is_worker_safe() -> None:
         mileage="K12+300",
         line_side="上行",
     )
+
+
+def test_location_snapshot_uses_point_code_when_base_ap_name_is_empty() -> None:
+    snapshot = MeshApLocationSnapshot.from_base_data_items(
+        (
+            SimpleNamespace(
+                name="",
+                point_code="AP0127",
+                mac="1c94-6876-8ee0",
+                station="高桥西",
+                section="高桥西-高桥",
+                section_start_station="高桥西",
+                section_end_station="高桥",
+                mileage=SimpleNamespace(raw="ZDK12+300"),
+                line_side="左线",
+                direction="下行",
+            ),
+        )
+    )
+
+    location = snapshot.resolve({"peer_ap_mac": "1c9468768ee0"})
+    assert location.name == "AP0127"
+    assert location.point_code == "AP0127"
+    assert location.station == "高桥西"
+    assert location.section == "高桥西-高桥"
+    assert location.section_start_station == "高桥西"
+    assert location.section_end_station == "高桥"
+    assert location.mileage == "ZDK12+300"
+    assert location.direction == "下行"
 
 
 def test_location_service_prefers_the_unpaged_location_source() -> None:

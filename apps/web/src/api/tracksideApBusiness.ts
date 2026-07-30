@@ -114,6 +114,29 @@ export function exportTracksideApBase(template = false, rows?: TracksideAp[]): P
   return apiRequest(`${root}/base/export`, { method: 'POST', body: JSON.stringify({ template, ...(rows ? { rows } : {}) }) })
 }
 
+export interface TracksideApImportIssueExportRow {
+  row_number: number
+  result: string
+  severity: string
+  code: string
+  field_name: string
+  original_value: string
+  message: string
+  suggested_action: string
+  ap_name: string
+  point_code: string
+  ap_mac: string
+}
+
+export function exportTracksideApImportIssues(
+  issues: TracksideApImportIssueExportRow[],
+): Promise<TracksideApTask> {
+  return apiRequest(`${root}/base/export`, {
+    method: 'POST',
+    body: JSON.stringify({ issues }),
+  })
+}
+
 export function exportTracksideApRenameCommands(rows?: TracksideAp[]): Promise<TracksideApTask> {
   return apiRequest(`${root}/base/rename-commands/export`, { method: 'POST', body: JSON.stringify(rows ? { rows } : {}) })
 }

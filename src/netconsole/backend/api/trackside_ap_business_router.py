@@ -196,6 +196,7 @@ def export_base(
             _site_id(request),
             template=payload.template,
             rows=None if payload.rows is None else [row.model_dump() for row in payload.rows],
+            issues=None if payload.issues is None else [row.model_dump() for row in payload.issues],
         )
     except RailTransitWebError as exc:
         _raise_error(exc)

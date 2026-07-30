@@ -9,20 +9,28 @@ from netconsole.services.rail_transit.base_data_query_service import RailTransit
 @dataclass(frozen=True)
 class MeshApLocation:
     name: str = ""
+    point_code: str = ""
     mac: str = ""
     station: str = ""
     section: str = ""
+    section_start_station: str = ""
+    section_end_station: str = ""
     mileage: str = ""
     line_side: str = ""
+    direction: str = ""
 
     def to_serializable(self) -> dict[str, str]:
         return {
             "name": self.name,
+            "point_code": self.point_code,
             "mac": self.mac,
             "station": self.station,
             "section": self.section,
+            "section_start_station": self.section_start_station,
+            "section_end_station": self.section_end_station,
             "mileage": self.mileage,
             "line_side": self.line_side,
+            "direction": self.direction,
         }
 
 
@@ -49,12 +57,24 @@ class MeshApLocationSnapshot:
             mileage = getattr(getattr(item, "mileage", None), "raw", "")
             locations.append(
                 MeshApLocation(
-                    name=str(getattr(item, "name", "") or ""),
+                    name=str(
+                        getattr(item, "name", "")
+                        or getattr(item, "point_code", "")
+                        or ""
+                    ),
+                    point_code=str(getattr(item, "point_code", "") or ""),
                     mac=str(getattr(item, "mac", "") or ""),
                     station=str(getattr(item, "station", "") or ""),
                     section=str(getattr(item, "section", "") or ""),
+                    section_start_station=str(
+                        getattr(item, "section_start_station", "") or ""
+                    ),
+                    section_end_station=str(
+                        getattr(item, "section_end_station", "") or ""
+                    ),
                     mileage=str(mileage or ""),
                     line_side=str(getattr(item, "line_side", "") or ""),
+                    direction=str(getattr(item, "direction", "") or ""),
                 )
             )
         return cls(locations)
@@ -63,12 +83,16 @@ class MeshApLocationSnapshot:
     def from_serializable(cls, rows: Iterable[Mapping[str, object]]) -> MeshApLocationSnapshot:
         return cls(
             MeshApLocation(
-                name=str(row.get("name") or ""),
+                name=str(row.get("name") or row.get("point_code") or ""),
+                point_code=str(row.get("point_code") or ""),
                 mac=str(row.get("mac") or ""),
                 station=str(row.get("station") or ""),
                 section=str(row.get("section") or ""),
+                section_start_station=str(row.get("section_start_station") or ""),
+                section_end_station=str(row.get("section_end_station") or ""),
                 mileage=str(row.get("mileage") or ""),
                 line_side=str(row.get("line_side") or ""),
+                direction=str(row.get("direction") or ""),
             )
             for row in rows
         )
@@ -95,11 +119,15 @@ class MeshApLocationSnapshot:
             return location
         return MeshApLocation(
             name=name,
+            point_code=str(row.get("point_code") or row.get("ap_point_code") or ""),
             mac=mac,
             station=str(row.get("peer_site") or row.get("station") or row.get("belong_station") or ""),
             section=str(row.get("peer_section") or row.get("section") or row.get("belong_section") or ""),
+            section_start_station=str(row.get("section_start_station") or ""),
+            section_end_station=str(row.get("section_end_station") or ""),
             mileage=str(row.get("mileage") or ""),
             line_side=str(row.get("line_side") or ""),
+            direction=str(row.get("direction") or ""),
         )
 
 

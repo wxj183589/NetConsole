@@ -14,8 +14,11 @@ from netconsole.utils.station_normalize import normalize_station_value
 class TracksideApIdentity:
     ap_name: str
     ap_mac: str
+    point_code: str = ""
     station: str = ""
     section: str = ""
+    section_start_station: str = ""
+    section_end_station: str = ""
     belong_type: str = "unknown"
     belonging_source: str = ""
     serial_number: str = ""
@@ -96,10 +99,13 @@ class TracksideApBssidResolver:
         return TracksideBssidMatch(
             matched=True,
             match_status="matched",
-            ap_name=ap.ap_name or "-",
+            ap_name=ap.ap_name or ap.point_code or "-",
+            point_code=ap.point_code,
             ap_mac=format_h3c_mac(ap.ap_mac),
             station=ap.station,
             section=ap.section,
+            section_start_station=ap.section_start_station,
+            section_end_station=ap.section_end_station,
             belong_type=ap.belong_type,
             belonging_source=ap.belonging_source,
             serial_number=ap.serial_number,
@@ -115,14 +121,18 @@ class TracksideApBssidResolver:
 
 def _identity(row: dict[str, object]) -> TracksideApIdentity:
     ap_name = str(row.get("ap_name") or "")
+    point_code = str(row.get("ap_point_code") or row.get("point_code") or "")
     station = normalize_station_value(row) or str(row.get("station_name") or "")
     section = str(row.get("section_name") or row.get("belong_section") or row.get("metadata_belong_section") or "")
     belong_type = _belong_type(row, station, section)
     return TracksideApIdentity(
         ap_name=ap_name,
         ap_mac=str(row.get("ap_mac") or row.get("ap_mac_display") or row.get("ap_mac_norm") or ""),
+        point_code=point_code,
         station=station,
         section=section,
+        section_start_station=str(row.get("section_start_station") or ""),
+        section_end_station=str(row.get("section_end_station") or ""),
         belong_type=belong_type,
         belonging_source=str(row.get("_identity_source") or row.get("extension_match_status") or "fit_ap"),
         serial_number=_serial_number(row),
@@ -130,17 +140,20 @@ def _identity(row: dict[str, object]) -> TracksideApIdentity:
         mileage=str(row.get("metadata_mileage") or row.get("mileage") or row.get("mileage_text") or ""),
         direction=str(row.get("metadata_direction") or row.get("direction") or ""),
         radio_macs=_extract_radio_macs(row),
-        peer_names=tuple(value for value in (ap_name, str(row.get("peer_name") or ""), str(row.get("mesh_peer_name") or "")) if value),
+        peer_names=tuple(value for value in (ap_name, point_code, str(row.get("peer_name") or ""), str(row.get("mesh_peer_name") or "")) if value),
         raw=row,
     )
 
 
 def _candidate_payload(ap: TracksideApIdentity, radio_id: int | None, rule: str) -> dict[str, object]:
     return {
-        "ap_name": ap.ap_name,
+        "ap_name": ap.ap_name or ap.point_code,
+        "point_code": ap.point_code,
         "ap_mac": format_h3c_mac(ap.ap_mac),
         "station": ap.station,
         "section": ap.section,
+        "section_start_station": ap.section_start_station,
+        "section_end_station": ap.section_end_station,
         "belong_type": ap.belong_type,
         "belonging_source": ap.belonging_source,
         "serial_number": ap.serial_number,

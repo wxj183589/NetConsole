@@ -10,13 +10,17 @@ from netconsole.services.rail_transit.source_policy import (
 
 def test_ap_source_policy_prefers_formal_identity_and_ignores_dhcp_ip() -> None:
     existing = [
-        {"id": 1, "ap_name": "AP-001", "ap_mac_norm": "001122334455", "ap_ip": "10.0.0.10"},
+        {"id": 1, "ap_name": "AP-001", "ap_point_code": "P001", "ap_mac_norm": "001122334455", "ap_ip": "10.0.0.10"},
     ]
 
     assert match_trackside_ap({"ap_mac_display": "0011-2233-4455"}, existing).entity_id == "ap:1"
-    assert match_trackside_ap({"ap_name": "AP-001"}, existing).method == "name_exact"
+    assert match_trackside_ap({"ap_point_code": "P001"}, existing).method == "point_code_exact"
     assert match_trackside_ap({"ap_ip": "10.0.0.10"}, existing).status == "create"
-    assert match_trackside_ap({"ap_name": "AP-00"}, existing).status == "create"
+    assert match_trackside_ap({"ap_name": "AP-001"}, existing).status == "create"
+    assert match_trackside_ap(
+        {"ap_point_code": "P001", "ap_mac_display": "0011-2233-4466"},
+        existing,
+    ).status == "conflict"
     assert field_action("正式名称", "AC 运行时名称", source_type="ac_fit_ap") == "manual_review"
     assert is_runtime_field("management_ip") is True
 

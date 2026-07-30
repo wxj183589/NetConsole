@@ -247,6 +247,54 @@ class RailTransitBaseDataRepository:
         finally:
             connection.close()
 
+    def apply_operations_partially(
+        self,
+        site_id: str,
+        operation_id: str,
+        operations: Iterable[Mapping[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Apply importable rows in one transaction while isolating row-level failures."""
+        path = self._database_path(site_id)
+        connection = sqlite3.connect(path, timeout=30.0)
+        connection.row_factory = sqlite3.Row
+        configure_sqlite_connection(connection, foreign_keys=True)
+        changes: list[dict[str, Any]] = []
+        failures: list[dict[str, Any]] = []
+        try:
+            self._require_table(connection)
+            connection.execute("BEGIN IMMEDIATE")
+            for index, operation in enumerate(operations):
+                savepoint = f"trackside_import_row_{index}"
+                connection.execute(f"SAVEPOINT {savepoint}")
+                try:
+                    change = self._apply_operation(
+                        connection,
+                        site_id,
+                        operation_id,
+                        operation,
+                    )
+                    change["row_number"] = int(operation.get("row_number") or 0)
+                    changes.append(change)
+                    connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+                except (sqlite3.Error, ValueError, RailTransitBaseDataConstraintError) as exc:
+                    connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                    connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+                    failures.append(
+                        {
+                            "row_number": int(operation.get("row_number") or 0),
+                            "kind": str(operation.get("kind") or ""),
+                            "error_type": type(exc).__name__,
+                        }
+                    )
+            self._assert_integrity(connection)
+            connection.commit()
+            return changes, failures
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def apply_base_data_changes(
         self,
         site_id: str,

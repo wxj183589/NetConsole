@@ -176,12 +176,17 @@ describe('Rail Transit base data polling store', () => {
         plan_id: '11111111-1111-4111-8111-111111111111', site_id: 'demo', source_file_name: 'preview.json',
         source_file_sha256: 'b'.repeat(64), source_type: 'json', created_at: '', database_hash: 'a'.repeat(64),
         preview_expires_at: '', write_enabled: true, items: [], summary: {
+          total_rows: 1, importable_count: 1,
           create_count: 1, update_count: 0, unchanged_count: 0, skip_count: 0,
-          conflict_count: 0, needs_confirmation_count: 0, blocking_count: 0,
+          conflict_count: 0, invalid_count: 0, warning_count: 0, unmatched_fit_ap_count: 0,
+          needs_confirmation_count: 0, blocking_count: 0,
         },
       },
     })
     vi.mocked(applyRailTransitImport).mockResolvedValue({
+      total_rows: 1, imported_rows: 1, created_rows: 1, updated_rows: 0, unchanged_rows: 0,
+      warning_rows: 0, skipped_conflict_rows: 0, skipped_invalid_rows: 0,
+      unmatched_fit_ap_rows: 0, issues: [],
       operation_id: 'op-1', status: 'APPLIED', created_count: 1, updated_count: 0, skipped_count: 0,
       warning_count: 0, backup_id: 'op-1', database_sha256_before: 'a', database_sha256_after: 'b', audit_id: 'op-1',
     })

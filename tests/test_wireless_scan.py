@@ -157,6 +157,37 @@ def test_trackside_bssid_resolver_preserves_section_belonging():
     assert match.belonging_source == "ap_metadata"
 
 
+def test_trackside_bssid_resolver_uses_point_code_for_offline_base_data():
+    resolver = TracksideApBssidResolver(
+        [
+            {
+                "ap_name": "",
+                "ap_point_code": "AP0127",
+                "ap_mac_display": "1c94-6876-8ee0",
+                "station_name": "高桥西",
+                "section_name": "高桥西-高桥",
+                "section_start_station": "高桥西",
+                "section_end_station": "高桥",
+                "mileage_text": "ZDK12+300",
+                "direction": "下行",
+                "_identity_source": "ap_metadata",
+            }
+        ]
+    )
+
+    match = resolver.resolve("1c94-6876-8ee0")
+
+    assert match.matched
+    assert match.ap_name == "AP0127"
+    assert match.point_code == "AP0127"
+    assert match.station == "高桥西"
+    assert match.section == "高桥西-高桥"
+    assert match.section_start_station == "高桥西"
+    assert match.section_end_station == "高桥"
+    assert match.mileage == "ZDK12+300"
+    assert match.direction == "下行"
+
+
 def test_trackside_bssid_resolver_matches_name_only_extension_section():
     resolver = TracksideApBssidResolver(
         [

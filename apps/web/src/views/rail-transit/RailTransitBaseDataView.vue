@@ -14,6 +14,7 @@ import {
 } from '../../api/railTransitBaseData'
 import {
   exportTracksideApBase,
+  exportTracksideApImportIssues,
   exportTracksideApRenameCommands,
   getTracksideApTask,
   recoverTracksideApTasks,
@@ -171,16 +172,54 @@ const stationOverwriteManualFields = ref<string[]>([])
 const selectedTemplateRows = ref<number[]>([])
 const selectedTemplateSectionRows = ref<number[]>([])
 const selectedSectionGenerationIds = ref<string[]>([])
-const applyConfirmed = ref(false)
 const decisionSelections = ref<Record<string, MergeFieldDecision['action'] | ''>>({})
 const mergeRows = computed(() => {
   const rows = store.importPreview?.merge_plan?.items || []
-  return previewFilter.value === 'all' ? rows : rows.filter((row) => row.result === previewFilter.value)
+  if (previewFilter.value === 'all') return rows
+  if (previewFilter.value === 'WARNING') {
+    return rows.filter((row) => row.issues.some((issue) => issue.severity === 'warning'))
+  }
+  return rows.filter((row) => row.result === previewFilter.value)
 })
-const previewBlocked = computed(() => {
-  const summary = store.importPreview?.merge_plan?.summary
-  return Boolean(summary && (summary.blocking_count > 0 || summary.conflict_count > 0))
-})
+const previewImportableCount = computed(
+  () => store.importPreview?.merge_plan?.summary.importable_count || 0,
+)
+const previewProblemRows = computed(() => (
+  (store.importPreview?.merge_plan?.items || [])
+    .filter((item) => ['CONFLICT', 'INVALID'].includes(item.result))
+    .flatMap((item) => {
+      const identity = item.source_identity
+      const issues = [...item.issues]
+      if (item.result === 'CONFLICT' && !issues.some((issue) => issue.severity === 'error')) {
+        issues.push({
+            severity: 'error',
+            code: 'identity_conflict',
+            entity_type: 'ap',
+            entity_id: '',
+            entity_name: '',
+            row_number: item.row_number,
+            field_name: '',
+            original_value: '',
+            message: item.conflict_summary || '该行存在身份冲突',
+            suggested_action: '核对 AP MAC 与点位编号',
+            blocking: true,
+        })
+      }
+      return issues.map((issue) => ({
+        row_number: item.row_number,
+        result: item.result,
+        severity: issue.severity,
+        code: issue.code,
+        field_name: issue.field_name,
+        original_value: issue.original_value,
+        message: issue.message,
+        suggested_action: issue.suggested_action,
+        ap_name: String(identity.ap_name || ''),
+        point_code: String(identity.ap_point_code || ''),
+        ap_mac: String(identity.ap_mac || ''),
+      }))
+    })
+))
 const stationSourceCandidates = computed(() => store.stationSourcePreview?.candidates || [])
 const localStationConflictGroups = computed(() => groupStationOrderConflicts(stationRows.value))
 const stationConflictGroups = computed(() => editingDraft.value
@@ -315,7 +354,7 @@ const sectionColumns: NcTableColumn<Section>[] = [
   { key: 'remark', label: '备注', valueType: 'description', minWidth: 180, displayValue: (row) => display(row.remark), alignmentReason: 'long-text' },
 ]
 const apColumns: NcTableColumn<TracksideAp>[] = [
-  { key: 'name', label: 'AP 名称', valueType: 'name', minWidth: 150, fixed: 'left', displayValue: (row) => row.runtime.fit_ap_name || row.name || '--' },
+  { key: 'name', label: 'AP 名称', valueType: 'name', minWidth: 150, fixed: 'left', displayValue: (row) => row.runtime.fit_ap_name || row.name || row.point_code || '--' },
   { key: 'point_code', label: '点位编号', minWidth: 120, displayValue: (row) => display(row.point_code) },
   { key: 'mac', label: 'AP MAC', valueType: 'mac', minWidth: 150 },
   { key: 'management_ip', label: '管理 IP', valueType: 'ip', minWidth: 125, displayValue: (row) => display(row.management_ip) },
@@ -1867,6 +1906,26 @@ async function startApBaseExport(template: boolean): Promise<void> {
   }
 }
 
+async function exportImportIssues(): Promise<void> {
+  if (!previewProblemRows.value.length) {
+    ElMessage.info('当前没有冲突或无效数据')
+    return
+  }
+  try {
+    const result = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: 'rail.trackside_base_import_issues',
+      suggestedName: `${safeExportPart(store.summary?.line_name || '当前局点')}-轨旁AP导入问题明细-${exportTimestamp()}.xlsx`,
+      context: { issue_count: previewProblemRows.value.length },
+      submit: () => exportTracksideApImportIssues(previewProblemRows.value),
+    })
+    if (result.status === 'cancelled') return
+    rememberApBaseTask(result.task)
+    pollApBaseTask()
+  } catch (cause) {
+    ElMessage.error(message(cause, '导入问题明细导出失败'))
+  }
+}
+
 async function startApRenameCommandExport(): Promise<void> {
   let draftRows: TracksideAp[] | undefined
   if (!locked.value && dirty.value) {
@@ -2214,7 +2273,6 @@ async function handleTracksideApFile(event: Event): Promise<void> {
 async function previewApImport(file: File): Promise<boolean> {
   try {
     await store.previewImport(file)
-    applyConfirmed.value = false
     decisionSelections.value = {}
     ElMessage.success('导入预览解析完成，未写入数据库')
     return true
@@ -2239,7 +2297,7 @@ function manualDecisions(): MergeFieldDecision[] {
 }
 
 async function handleApply(): Promise<void> {
-  if (!applyConfirmed.value || locked.value || !editingDraft.value || !store.canApplyImport()) return
+  if (locked.value || !editingDraft.value || previewImportableCount.value <= 0) return
   try {
     const decisions = new Map(
       manualDecisions().map((item) => [decisionKey(item.row_number, item.field_name), item.action]),
@@ -2272,9 +2330,15 @@ async function handleApply(): Promise<void> {
       markAp(row)
       applied += 1
     }
-    applyConfirmed.value = false
     apImportDialogVisible.value = false
-    ElMessage.success(`已应用 ${applied} 行到当前编辑草稿，保存后才会写入数据库`)
+    const summary = store.importPreview?.merge_plan?.summary
+    const unmatched = summary?.unmatched_fit_ap_count || 0
+    ElMessage.success(
+      `有效数据已加入编辑草稿：新增 ${summary?.create_count || 0} 条，更新 ${summary?.update_count || 0} 条，不变 ${summary?.unchanged_count || 0} 条；`
+      + `跳过冲突 ${summary?.conflict_count || 0} 条，无效 ${summary?.invalid_count || 0} 条。`
+      + `${unmatched ? `${unmatched} 条记录暂未匹配 FIT-AP，不影响 MR 日志识别。` : ''}`
+      + `本次草稿应用 ${applied} 条，请点击页面顶部“保存并锁定”使其生效。`,
+    )
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '导入应用失败')
   }
@@ -2341,7 +2405,7 @@ function issueType(value: string): 'danger' | 'warning' | 'info' {
 }
 function mergeType(value: string): 'success' | 'danger' | 'warning' | 'info' {
   if (value === 'CREATE' || value === 'UPDATE') return 'success'
-  if (value === 'CONFLICT') return 'danger'
+  if (value === 'CONFLICT' || value === 'INVALID') return 'danger'
   if (value === 'NEEDS_CONFIRMATION') return 'warning'
   return 'info'
 }
@@ -2878,7 +2942,7 @@ function sectionSourceLabel(row: Section): string {
           </div>
           <el-alert v-if="apBaseTask" :title="`${apBaseTask.status} · ${apTaskSummary(apBaseTask) || apBaseTask.message || apBaseTask.task_id}`" :type="apBaseTask.error_message ? 'error' : 'info'" :closable="false"><el-button v-if="apBaseTask.available && apBaseTask.artifact_id" link type="primary" @click="downloadApBaseArtifact">下载文件</el-button><el-button link @click="openApBaseTaskWindow">打开任务中心</el-button></el-alert>
           <NcDataTable table-id="rail-base-trackside-aps" route-key="/rail-transit/base-data" :data="apRows" :columns="apColumns" height="calc(100vh - 430px)" empty-text="暂无轨旁 AP 扩展资料">
-            <template #cell-name="{ row }"><span>{{ row.runtime.fit_ap_name || row.name || '--' }}</span></template>
+            <template #cell-name="{ row }"><span>{{ row.runtime.fit_ap_name || row.name || row.point_code || '--' }}</span></template>
             <template #cell-point_code="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.point_code" :class="{ 'field-error': fieldError('trackside_ap', row.id, 'point_code') }" @input="markAp(row)" /><span v-else>{{ display(row.point_code) }}</span></template>
             <template #cell-mac="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.mac" :class="{ 'field-error': fieldError('trackside_ap', row.id, 'mac') }" @input="markAp(row)" /><span v-else>{{ display(row.mac) }}</span></template>
             <template #cell-station="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.station" @input="markAp(row)" /><span v-else>{{ display(row.station) }}</span></template>
@@ -2895,16 +2959,17 @@ function sectionSourceLabel(row: Section): string {
           <el-dialog v-model="apImportDialogVisible" title="轨旁 AP 导入预览" width="min(1400px, 94vw)" destroy-on-close>
             <template v-if="store.importPreview">
               <el-descriptions :column="5" border>
-                <el-descriptions-item label="文件名">{{ store.importPreview.file_name }}</el-descriptions-item><el-descriptions-item label="工作表">{{ store.importPreview.sheet_names?.join('、') || '--' }}</el-descriptions-item><el-descriptions-item label="模板类型">{{ templateLabel(store.importPreview.template_type) }}</el-descriptions-item><el-descriptions-item label="总行数">{{ store.importPreview.total_rows }}</el-descriptions-item><el-descriptions-item label="有效行">{{ store.importPreview.valid_rows }}</el-descriptions-item>
-                <el-descriptions-item label="新增">{{ store.importPreview.merge_plan?.summary.create_count || 0 }}</el-descriptions-item><el-descriptions-item label="更新">{{ store.importPreview.merge_plan?.summary.update_count || 0 }}</el-descriptions-item><el-descriptions-item label="不变">{{ store.importPreview.merge_plan?.summary.unchanged_count || 0 }}</el-descriptions-item><el-descriptions-item label="冲突">{{ store.importPreview.merge_plan?.summary.conflict_count || 0 }}</el-descriptions-item><el-descriptions-item label="待人工确认">{{ store.importPreview.merge_plan?.summary.needs_confirmation_count || 0 }}</el-descriptions-item>
-                <el-descriptions-item label="缺少里程">{{ store.importPreview.statistics?.missing_mileage_rows || 0 }}</el-descriptions-item><el-descriptions-item label="未匹配 FIT-AP">{{ store.importPreview.statistics?.unmatched_fit_ap_rows || 0 }}</el-descriptions-item><el-descriptions-item label="无效行">{{ store.importPreview.error_count + (store.importPreview.statistics?.placeholder_rows || 0) }}</el-descriptions-item>
+                <el-descriptions-item label="文件名">{{ store.importPreview.file_name }}</el-descriptions-item><el-descriptions-item label="工作表">{{ store.importPreview.sheet_names?.join('、') || '--' }}</el-descriptions-item><el-descriptions-item label="模板类型">{{ templateLabel(store.importPreview.template_type) }}</el-descriptions-item><el-descriptions-item label="总行数">{{ store.importPreview.total_rows }}</el-descriptions-item><el-descriptions-item label="可导入">{{ previewImportableCount }}</el-descriptions-item>
+                <el-descriptions-item label="新增">{{ store.importPreview.merge_plan?.summary.create_count || 0 }}</el-descriptions-item><el-descriptions-item label="更新">{{ store.importPreview.merge_plan?.summary.update_count || 0 }}</el-descriptions-item><el-descriptions-item label="不变">{{ store.importPreview.merge_plan?.summary.unchanged_count || 0 }}</el-descriptions-item><el-descriptions-item label="警告">{{ store.importPreview.merge_plan?.summary.warning_count || 0 }}</el-descriptions-item><el-descriptions-item label="冲突">{{ store.importPreview.merge_plan?.summary.conflict_count || 0 }}</el-descriptions-item>
+                <el-descriptions-item label="无效">{{ store.importPreview.merge_plan?.summary.invalid_count || 0 }}</el-descriptions-item><el-descriptions-item label="缺少里程">{{ store.importPreview.statistics?.missing_mileage_rows || 0 }}</el-descriptions-item><el-descriptions-item label="未匹配 FIT-AP">{{ store.importPreview.merge_plan?.summary.unmatched_fit_ap_count || 0 }}</el-descriptions-item>
               </el-descriptions>
+              <el-alert v-if="store.importPreview.merge_plan?.summary.unmatched_fit_ap_count" title="当前局点暂无对应 FIT-AP 运行态资料，不影响基础资料导入及 MR 日志识别。" type="warning" :closable="false" show-icon />
               <NcDataTable table-id="rail-base-trackside-ap-direct-preview" route-key="/rail-transit/base-data" :data="mergeRows" :columns="mergeColumns" height="430" empty-text="当前文件没有可预览数据">
                 <template #cell-expand="{ row }"><NcDataTable table-id="rail-base-trackside-ap-direct-field-diffs" route-key="/rail-transit/base-data" :preference-scope="String(row.row_number)" :data="row.field_diffs" :columns="mergeFieldColumns" compact :show-column-settings="false"><template #cell-decision="{ row: field }"><el-select v-if="field.action === 'manual_review'" v-model="decisionSelections[decisionKey(row.row_number, field.field_name)]" placeholder="请选择"><el-option label="保留正式值" value="keep_existing" /><el-option label="采用导入值" value="use_imported" /></el-select><span v-else>{{ field.action }}</span></template></NcDataTable></template>
                 <template #cell-result="{ row }"><el-tag :type="mergeType(row.result)">{{ row.result }}</el-tag></template>
               </NcDataTable>
             </template>
-            <template #footer><el-button @click="apImportDialogVisible = false">关闭</el-button><el-checkbox v-model="applyConfirmed" :disabled="locked">我已核对差异、冲突和目标局点</el-checkbox><el-button type="primary" :disabled="locked || saving || !store.canApplyImport() || !applyConfirmed || previewBlocked" @click="handleApply">应用到编辑草稿</el-button></template>
+            <template #footer><el-button @click="apImportDialogVisible = false">关闭</el-button><el-button :icon="Download" :disabled="!previewProblemRows.length" @click="exportImportIssues">导出问题明细</el-button><el-button type="primary" :disabled="locked || saving || previewImportableCount <= 0" @click="handleApply">导入 {{ previewImportableCount }} 条有效数据到草稿</el-button></template>
           </el-dialog>
         </el-tab-pane>
 
@@ -2968,16 +3033,21 @@ function sectionSourceLabel(row: Section): string {
         </el-tab-pane>
 
         <el-tab-pane label="导入预览" name="import-preview">
-          <el-alert title="基础资料写入默认关闭" description="支持 XLSX、CSV、JSON；原文件不会保存在运行目录。只有明确授权的范围可以应用，正式身份和运行态字段不会被自动覆盖。" type="warning" :closable="false" show-icon />
+          <el-alert title="逐行校验并导入有效数据" description="支持 XLSX、CSV、JSON；冲突和无效行会跳过，未匹配 FIT-AP 仅提示且不影响基础资料导入。" type="info" :closable="false" show-icon />
           <div class="preview-toolbar">
             <label class="file-picker"><el-icon><UploadFilled /></el-icon><span>{{ store.selectedFileName || '选择预览文件' }}</span><input type="file" accept=".xlsx,.csv,.json" @change="handleFile" /></label>
             <span v-if="store.importPreview">{{ formatBytes(store.importPreview.file_size) }} · {{ templateLabel(store.importPreview.template_type) }} · 工作表 {{ store.importPreview.sheet_names?.join('、') || '--' }} · 置信度 {{ store.importPreview.confidence_score }}</span>
           </div>
           <div v-if="store.importPreview" class="preview-summary">
             <article><span>解析行数</span><strong>{{ store.importPreview.total_rows }}</strong></article>
-            <article class="normal"><span>有效行</span><strong>{{ store.importPreview.valid_rows }}</strong></article>
-            <article class="danger"><span>错误</span><strong>{{ store.importPreview.error_count }}</strong></article>
-            <article class="warning"><span>警告</span><strong>{{ store.importPreview.warning_count }}</strong></article>
+            <article class="normal"><span>可导入</span><strong>{{ previewImportableCount }}</strong></article>
+            <article class="normal"><span>新增</span><strong>{{ store.importPreview.merge_plan?.summary.create_count || 0 }}</strong></article>
+            <article><span>更新</span><strong>{{ store.importPreview.merge_plan?.summary.update_count || 0 }}</strong></article>
+            <article><span>不变</span><strong>{{ store.importPreview.merge_plan?.summary.unchanged_count || 0 }}</strong></article>
+            <article class="warning"><span>警告</span><strong>{{ store.importPreview.merge_plan?.summary.warning_count || 0 }}</strong></article>
+            <article class="danger"><span>冲突</span><strong>{{ store.importPreview.merge_plan?.summary.conflict_count || 0 }}</strong></article>
+            <article class="danger"><span>无效</span><strong>{{ store.importPreview.merge_plan?.summary.invalid_count || 0 }}</strong></article>
+            <article class="warning"><span>未匹配 FIT-AP</span><strong>{{ store.importPreview.merge_plan?.summary.unmatched_fit_ap_count || 0 }}</strong></article>
             <template v-if="store.importPreview.template_type === 'ap_switch_port_point_table'">
               <article><span>带归属区间</span><strong>{{ store.importPreview.statistics?.section_rows || 0 }}</strong></article>
               <article><span>无归属区间</span><strong>{{ store.importPreview.statistics?.without_section_rows || 0 }}</strong></article>
@@ -2986,12 +3056,12 @@ function sectionSourceLabel(row: Section): string {
             </template>
           </div>
           <div v-if="store.importPreview" class="preview-actions">
-            <el-radio-group v-model="previewFilter" class="preview-filter"><el-radio-button value="all">全部</el-radio-button><el-radio-button value="CREATE">CREATE</el-radio-button><el-radio-button value="UPDATE">UPDATE</el-radio-button><el-radio-button value="UNCHANGED">UNCHANGED</el-radio-button><el-radio-button value="CONFLICT">CONFLICT</el-radio-button><el-radio-button value="NEEDS_CONFIRMATION">待人工确认</el-radio-button></el-radio-group>
-            <div v-if="store.canApplyImport() && !locked" class="apply-controls">
-              <el-checkbox v-model="applyConfirmed">我已核对差异、冲突和目标局点</el-checkbox>
-              <el-button type="primary" :loading="store.applyLoading" :disabled="!applyConfirmed || previewBlocked" @click="handleApply">应用导入</el-button>
+            <el-radio-group v-model="previewFilter" class="preview-filter"><el-radio-button value="all">全部</el-radio-button><el-radio-button value="CREATE">新增</el-radio-button><el-radio-button value="UPDATE">更新</el-radio-button><el-radio-button value="UNCHANGED">不变</el-radio-button><el-radio-button value="WARNING">警告</el-radio-button><el-radio-button value="CONFLICT">仅显示冲突</el-radio-button><el-radio-button value="INVALID">仅显示无效</el-radio-button></el-radio-group>
+            <div v-if="!locked" class="apply-controls">
+              <el-button :icon="Download" :disabled="!previewProblemRows.length" @click="exportImportIssues">导出问题明细</el-button>
+              <el-button type="primary" :disabled="saving || previewImportableCount <= 0" @click="handleApply">导入 {{ previewImportableCount }} 条有效数据到草稿</el-button>
             </div>
-            <el-tag v-else type="info">{{ store.canApplyImport() ? '解锁后可应用' : '写入未授权，仅可预览' }}</el-tag>
+            <div v-else class="apply-controls"><el-button :icon="Download" :disabled="!previewProblemRows.length" @click="exportImportIssues">导出问题明细</el-button><el-tag type="info">解锁后可导入有效数据到草稿</el-tag></div>
           </div>
           <NcDataTable v-loading="store.previewLoading" table-id="rail-base-merge-plan" route-key="/rail-transit/base-data" :data="mergeRows" :columns="mergeColumns" height="calc(100vh - 520px)" empty-text="请选择文件生成合并预览">
             <template #cell-expand="{ row }">

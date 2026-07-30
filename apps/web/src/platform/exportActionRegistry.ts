@@ -25,6 +25,7 @@ export const userSelectedExportDefinitions = {
   'rail.trackside_plan_current': xlsxDefinition('rail', '轨旁 AP 规划资料'),
   'rail.trackside_base_template': xlsxDefinition('rail', '轨旁 AP 基础资料模板'),
   'rail.trackside_base_current': xlsxDefinition('rail', '轨旁 AP 基础资料'),
+  'rail.trackside_base_import_issues': xlsxDefinition('rail', '轨旁 AP 导入问题明细'),
   'rail.trackside_rename_commands': textDefinition('rail', '轨旁 AP 重命名命令', 'txt'),
   'rail.online_mr_report': xlsxDefinition('rail', 'Online MR 分析报告'),
   'rail.vehicle_history': xlsxDefinition('rail', '列车经过历史'),

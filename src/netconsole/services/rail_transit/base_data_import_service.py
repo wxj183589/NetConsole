@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -10,7 +10,9 @@ from uuid import UUID, uuid4
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
+from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.models.api.rail_transit_base_data import (
+    DataQualityIssueDTO,
     FieldProvenanceDTO,
     ImportChangeDTO,
     ImportOperationDTO,
@@ -138,13 +140,23 @@ class RailTransitBaseDataImportService:
     ) -> MergePlanDTO:
         now = datetime.now(timezone.utc)
         safe_file_name = Path(source_file_name).name
+        rows = list(rows)
         existing = self.repository.list_ap_records(site_id)
         by_id = {f"ap:{row['id']}": row for row in existing}
+        file_results = self._classify_file_rows(rows)
         items = [
-            self._plan_item(row, existing, by_id, safe_file_name, source_type, now)
-            for row in rows
+            self._plan_item(
+                row,
+                existing,
+                by_id,
+                safe_file_name,
+                source_type,
+                now,
+                file_result=file_results.get(index),
+            )
+            for index, row in enumerate(rows)
         ]
-        counts = Counter(item.result for item in items)
+        summary = self._plan_summary(items)
         return MergePlanDTO(
             plan_id=str(uuid4()),
             site_id=site_id,
@@ -156,15 +168,7 @@ class RailTransitBaseDataImportService:
             preview_expires_at=(now + timedelta(minutes=PREVIEW_TTL_MINUTES)).isoformat(),
             write_enabled=self.write_enabled,
             items=items,
-            summary=MergePlanSummaryDTO(
-                create_count=counts["CREATE"],
-                update_count=counts["UPDATE"],
-                unchanged_count=counts["UNCHANGED"],
-                skip_count=counts["SKIP"],
-                conflict_count=counts["CONFLICT"],
-                needs_confirmation_count=counts["NEEDS_CONFIRMATION"],
-                blocking_count=sum(item.blocking for item in items),
-            ),
+            summary=summary,
         )
 
     def resolve_decisions(
@@ -218,7 +222,13 @@ class RailTransitBaseDataImportService:
                         deep=True,
                     )
                 )
-            if item.result == "CREATE":
+            if item.result in {"SKIP", "CONFLICT", "INVALID"}:
+                result = item.result
+            elif item.result == "UNCHANGED" and not any(
+                key[0] == item.row_number for key in selected
+            ):
+                result = "UNCHANGED"
+            elif item.result == "CREATE":
                 result = "CREATE"
             elif any(diff.action == "manual_review" for diff in diffs):
                 result = "NEEDS_CONFIRMATION"
@@ -230,19 +240,10 @@ class RailTransitBaseDataImportService:
 
         if consumed != set(selected):
             raise BaseDataImportError("BASE_DATA_SOURCE_INVALID", "人工决策引用了不可修改字段")
-        counts = Counter(item.result for item in resolved_items)
         return plan.model_copy(
             update={
                 "items": resolved_items,
-                "summary": MergePlanSummaryDTO(
-                    create_count=counts["CREATE"],
-                    update_count=counts["UPDATE"],
-                    unchanged_count=counts["UNCHANGED"],
-                    skip_count=counts["SKIP"],
-                    conflict_count=counts["CONFLICT"],
-                    needs_confirmation_count=counts["NEEDS_CONFIRMATION"],
-                    blocking_count=sum(item.blocking for item in resolved_items),
-                ),
+                "summary": self._plan_summary(resolved_items),
             },
             deep=True,
         )
@@ -269,10 +270,8 @@ class RailTransitBaseDataImportService:
             raise BaseDataImportError("BASE_DATA_PREVIEW_EXPIRED", "合并预览已过期，请重新预览")
         if self.repository.database_hash(plan.site_id) != plan.database_hash:
             raise BaseDataImportError("BASE_DATA_DATABASE_CHANGED", "基础资料数据库已变化，请重新预览")
-        if any(item.blocking or item.result == "CONFLICT" for item in plan.items):
-            raise BaseDataImportError("BASE_DATA_BLOCKING_ISSUES", "合并计划包含阻断问题")
-        if any(item.result == "NEEDS_CONFIRMATION" for item in plan.items):
-            raise BaseDataImportError("BASE_DATA_IMPORT_CONFLICT", "合并计划仍有待人工确认字段")
+        if plan.summary.importable_count <= 0:
+            raise BaseDataImportError("BASE_DATA_NO_IMPORTABLE_ROWS", "合并计划中没有可导入数据")
 
     def apply_merge_plan(
         self,
@@ -329,14 +328,54 @@ class RailTransitBaseDataImportService:
             raise BaseDataImportError("BASE_DATA_AUDIT_FAILED", "基础资料审计初始化失败，未执行业务写入") from exc
         operations = self._operations(plan)
         try:
-            changes = self.repository.apply_operations(plan.site_id, operation_id, operations)
+            changes, write_failures = self.repository.apply_operations_partially(
+                plan.site_id,
+                operation_id,
+                operations,
+            )
             self.repository.assert_integrity(plan.site_id)
             database_hash_after = self.repository.database_hash(plan.site_id)
+            created_rows = sum(change.get("kind") == "create" for change in changes)
+            updated_rows = sum(change.get("kind") == "update" for change in changes)
+            failure_issues = [
+                DataQualityIssueDTO(
+                    severity="error",
+                    code="row_write_failed",
+                    entity_type="ap",
+                    row_number=int(failure.get("row_number") or 0) or None,
+                    message="该行数据库写入失败，已跳过；其他有效行不受影响",
+                    suggested_action="导出问题明细并核对该行数据",
+                    blocking=False,
+                )
+                for failure in write_failures
+            ]
+            plan_issues = [issue for item in plan.items for issue in item.issues]
+            skipped_invalid_rows = plan.summary.invalid_count + len(write_failures)
             audit.update(
                 status="APPLIED",
                 applied_at=datetime.now(timezone.utc).isoformat(),
                 ended_at=datetime.now(timezone.utc).isoformat(),
                 database_hash_after=database_hash_after,
+                total_rows=plan.summary.total_rows,
+                imported_rows=created_rows + updated_rows + plan.summary.unchanged_count,
+                created_rows=created_rows,
+                updated_rows=updated_rows,
+                unchanged_rows=plan.summary.unchanged_count,
+                warning_rows=plan.summary.warning_count,
+                skipped_conflict_rows=plan.summary.conflict_count,
+                skipped_invalid_rows=skipped_invalid_rows,
+                unmatched_fit_ap_rows=plan.summary.unmatched_fit_ap_count,
+                created_count=created_rows,
+                updated_count=updated_rows,
+                skipped_count=(
+                    plan.summary.conflict_count
+                    + skipped_invalid_rows
+                    + plan.summary.unchanged_count
+                ),
+                issues=[
+                    issue.model_dump(mode="json")
+                    for issue in [*plan_issues, *failure_issues]
+                ],
                 changes=changes,
                 import_changes=self._flatten_changes(plan, changes, decisions or []),
             )
@@ -419,6 +458,103 @@ class RailTransitBaseDataImportService:
         audit = self._read_audit(self._audit_path(site_id, operation_id))
         return [ImportChangeDTO.model_validate(item) for item in audit.get("import_changes") or []]
 
+    @staticmethod
+    def _plan_summary(items: list[MergePlanItemDTO]) -> MergePlanSummaryDTO:
+        counts = Counter(item.result for item in items)
+        return MergePlanSummaryDTO(
+            total_rows=len(items),
+            importable_count=counts["CREATE"] + counts["UPDATE"] + counts["UNCHANGED"],
+            create_count=counts["CREATE"],
+            update_count=counts["UPDATE"],
+            unchanged_count=counts["UNCHANGED"],
+            skip_count=counts["SKIP"],
+            conflict_count=counts["CONFLICT"],
+            invalid_count=counts["INVALID"] + counts["SKIP"],
+            warning_count=sum(
+                any(issue.severity == "warning" for issue in item.issues)
+                for item in items
+            ),
+            unmatched_fit_ap_count=sum(
+                any(issue.code == "fit_ap_unmatched" for issue in item.issues)
+                for item in items
+            ),
+            needs_confirmation_count=counts["NEEDS_CONFIRMATION"],
+            blocking_count=sum(item.blocking for item in items),
+        )
+
+    @classmethod
+    def _classify_file_rows(
+        cls,
+        rows: list[ImportPreviewRowDTO],
+    ) -> dict[int, tuple[str, str]]:
+        results: dict[int, tuple[str, str]] = {}
+        identities: list[tuple[str, str]] = []
+        payloads: list[str] = []
+        mac_groups: dict[str, list[int]] = defaultdict(list)
+        point_groups: dict[str, list[int]] = defaultdict(list)
+        pair_groups: dict[tuple[str, str], list[int]] = defaultdict(list)
+        for index, row in enumerate(rows):
+            mac = cls._normalized_mac(row.values)
+            point_code = cls._identity_text(row.values.get("ap_point_code"))
+            identities.append((mac, point_code))
+            payloads.append(cls._business_payload(row.values))
+            if any(issue.severity == "error" for issue in row.issues) or not (mac or point_code):
+                results[index] = ("INVALID", "该行基础身份或字段格式无效")
+                continue
+            if mac:
+                mac_groups[mac].append(index)
+            if point_code:
+                point_groups[point_code].append(index)
+            pair_groups[(mac, point_code)].append(index)
+
+        conflict_indexes: set[int] = set()
+        for indexes in mac_groups.values():
+            points = {identities[index][1] for index in indexes if identities[index][1]}
+            if len(points) > 1:
+                conflict_indexes.update(indexes)
+        for indexes in point_groups.values():
+            macs = {identities[index][0] for index in indexes if identities[index][0]}
+            if len(macs) > 1:
+                conflict_indexes.update(indexes)
+        duplicate_indexes: set[int] = set()
+        for indexes in pair_groups.values():
+            if len(indexes) <= 1:
+                continue
+            if len({payloads[index] for index in indexes}) == 1:
+                duplicate_indexes.update(indexes[1:])
+            else:
+                conflict_indexes.update(indexes)
+        for index in conflict_indexes:
+            if index not in results:
+                results[index] = ("CONFLICT", "文件内同一 MAC 或点位编号对应不同内容")
+        for index in duplicate_indexes - conflict_indexes:
+            if index not in results:
+                results[index] = ("UNCHANGED", "文件内完全重复，已保留首条")
+        return results
+
+    @staticmethod
+    def _normalized_mac(values: Mapping[str, Any]) -> str:
+        return normalize_ap_mac(
+            values.get("ap_mac_norm") or values.get("ap_mac_display")
+        ).normalized
+
+    @staticmethod
+    def _identity_text(value: object) -> str:
+        return " ".join(str(value or "").strip().split()).casefold()
+
+    @classmethod
+    def _business_payload(cls, values: Mapping[str, Any]) -> str:
+        payload = {
+            field: (
+                cls._normalized_mac(values)
+                if field in {"ap_mac_norm", "ap_mac_display"}
+                else str(values.get(field) or "").strip()
+            )
+            for field in AP_MERGE_FIELDS
+            if field not in _SOURCE_TRACKING_FIELDS
+        }
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+
     def _plan_item(
         self,
         row: ImportPreviewRowDTO,
@@ -427,6 +563,8 @@ class RailTransitBaseDataImportService:
         source_file_name: str,
         source_type: str,
         now: datetime,
+        *,
+        file_result: tuple[str, str] | None = None,
     ) -> MergePlanItemDTO:
         values = {field: row.values.get(field) for field in AP_MERGE_FIELDS if field in row.values}
         values["source_file"] = source_file_name
@@ -435,8 +573,73 @@ class RailTransitBaseDataImportService:
             issue.model_copy(update={"blocking": issue.blocking or is_blocking_issue(issue.code, issue.severity)})
             for issue in row.issues
         ]
-        placeholder_mac = str(values.get("ap_mac_display") or "").strip().casefold() in {"-", "--", "无", "n/a", "na", "none"}
-        blocking = any(issue.blocking for issue in issues) or match.status == "conflict"
+        mac = normalize_ap_mac(
+            values.get("ap_mac_norm") or values.get("ap_mac_display")
+        )
+        point_code = str(values.get("ap_point_code") or "").strip()
+        placeholder_mac = str(mac.raw or "").strip().casefold() in {
+            "-",
+            "--",
+            "无",
+            "n/a",
+            "na",
+            "none",
+        }
+        if not (mac.normalized or point_code) and not any(
+            issue.code in {"ap_identity_missing", "ap_mac_placeholder"}
+            for issue in issues
+        ):
+            issues.append(
+                DataQualityIssueDTO(
+                    severity="error",
+                    code="ap_identity_missing",
+                    entity_type="ap",
+                    row_number=row.row_number,
+                    message="点位编号和 AP MAC 不能同时为空",
+                    suggested_action="至少补充点位编号或 AP MAC",
+                    blocking=True,
+                )
+            )
+        elif mac.raw and not mac.valid and not placeholder_mac and not any(
+            issue.code == "ap_mac_invalid" for issue in issues
+        ):
+            issues.append(
+                DataQualityIssueDTO(
+                    severity="error",
+                    code="ap_mac_invalid",
+                    entity_type="ap",
+                    row_number=row.row_number,
+                    field_name="ap_mac_display",
+                    original_value=mac.raw,
+                    message="AP MAC 格式无效",
+                    suggested_action="使用项目支持的常见 MAC 格式",
+                    blocking=True,
+                )
+            )
+        if file_result and file_result[0] == "CONFLICT":
+            issues.append(
+                DataQualityIssueDTO(
+                    severity="error",
+                    code="file_identity_conflict",
+                    entity_type="ap",
+                    row_number=row.row_number,
+                    message=file_result[1],
+                    suggested_action="导出问题明细并核对文件内的 MAC 与点位编号",
+                    blocking=True,
+                )
+            )
+        elif file_result and file_result[0] == "UNCHANGED":
+            issues.append(
+                DataQualityIssueDTO(
+                    severity="info",
+                    code="file_duplicate_unchanged",
+                    entity_type="ap",
+                    row_number=row.row_number,
+                    message=file_result[1],
+                    suggested_action="无需处理",
+                    blocking=False,
+                )
+            )
         current = by_id.get(match.entity_id, {})
         if values.get("raw_payload_json"):
             values["raw_payload_json"] = self._merge_raw_payload_json(
@@ -454,6 +657,27 @@ class RailTransitBaseDataImportService:
                 proposed,
                 source_type=source_type,
             )
+            if action == "manual_review":
+                action = "keep_existing"
+                issues.append(
+                    DataQualityIssueDTO(
+                        severity="warning",
+                        code="existing_value_preserved",
+                        entity_type="ap",
+                        entity_id=match.entity_id,
+                        entity_name=str(
+                            current.get("ap_name")
+                            or current.get("ap_point_code")
+                            or ""
+                        ),
+                        row_number=row.row_number,
+                        field_name=field,
+                        original_value=str(proposed),
+                        message="正式资料已有不同值，本次保留现值并继续导入其他字段",
+                        suggested_action="如需覆盖，请在编辑草稿中明确修改",
+                        blocking=False,
+                    )
+                )
             if action == "keep_existing" and str(current_value or "") == str(proposed or ""):
                 continue
             diffs.append(
@@ -470,10 +694,10 @@ class RailTransitBaseDataImportService:
                         imported_at=now.isoformat(),
                         confirmed=False,
                         priority=SOURCE_PRIORITIES.get(source_type, 0),
-                        warning="现有正式值不会被自动覆盖" if action == "manual_review" else "",
+                        warning="现有正式值不会被自动覆盖" if action == "keep_existing" else "",
                     ),
                     action=action,  # type: ignore[arg-type]
-                    warning="现有正式值与导入值不同" if action == "manual_review" else "",
+                    warning="现有正式值与导入值不同" if action == "keep_existing" else "",
                 )
             )
         has_business_value = any(
@@ -481,23 +705,21 @@ class RailTransitBaseDataImportService:
             for field in AP_MERGE_FIELDS
             if field not in _SOURCE_TRACKING_FIELDS
         )
-        if placeholder_mac:
-            result = "SKIP"
+        if file_result and file_result[0] in {"INVALID", "CONFLICT", "UNCHANGED"}:
+            result = file_result[0]
         elif not has_business_value:
-            result = "SKIP"
-        elif blocking:
+            result = "INVALID"
+        elif any(issue.severity == "error" for issue in issues):
+            result = "INVALID"
+        elif match.status == "conflict":
             result = "CONFLICT"
-        elif not any(str(values.get(field) or "").strip() for field in ("ap_name", "ap_mac_norm", "ap_mac_display")):
-            result = "NEEDS_CONFIRMATION"
         elif match.status == "create":
-            display_identity = values.get("ap_name") or values.get("ap_point_code")
-            result = "NEEDS_CONFIRMATION" if not display_identity or not values.get("ap_mac_norm") else "CREATE"
-        elif any(diff.action == "manual_review" for diff in diffs):
-            result = "NEEDS_CONFIRMATION"
-        elif diffs:
+            result = "CREATE"
+        elif any(diff.action in {"fill_missing", "use_imported"} for diff in diffs):
             result = "UPDATE"
         else:
             result = "UNCHANGED"
+        blocking = result in {"CONFLICT", "INVALID"} or any(issue.blocking for issue in issues)
         return MergePlanItemDTO(
             row_number=row.row_number,
             source_identity={
@@ -506,7 +728,9 @@ class RailTransitBaseDataImportService:
                 "ap_point_code": values.get("ap_point_code") or "",
             },
             matched_entity_id=match.entity_id,
-            matched_entity_name=str(current.get("ap_name") or ""),
+            matched_entity_name=str(
+                current.get("ap_name") or current.get("ap_point_code") or ""
+            ),
             match_method=match.method,
             result=result,  # type: ignore[arg-type]
             conflict_summary=match.warning,
@@ -521,7 +745,13 @@ class RailTransitBaseDataImportService:
         operations = []
         for item in plan.items:
             if item.result == "CREATE":
-                operations.append({"kind": "create", "values": item.source_values})
+                operations.append(
+                    {
+                        "kind": "create",
+                        "row_number": item.row_number,
+                        "values": item.source_values,
+                    }
+                )
             elif item.result == "UPDATE":
                 fields = {
                     diff.field_name: diff.proposed_value
@@ -533,7 +763,14 @@ class RailTransitBaseDataImportService:
                     if value is not None and value != "":
                         fields[field] = value
                 fields["source_file"] = plan.source_file_name
-                operations.append({"kind": "update", "entity_id": item.matched_entity_id, "values": fields})
+                operations.append(
+                    {
+                        "kind": "update",
+                        "row_number": item.row_number,
+                        "entity_id": item.matched_entity_id,
+                        "values": fields,
+                    }
+                )
         return operations
 
     @staticmethod
@@ -571,15 +808,33 @@ class RailTransitBaseDataImportService:
             "ended_at": "",
             "applied_at": "",
             "status": "STARTING",
+            "total_rows": plan.summary.total_rows,
+            "imported_rows": 0,
+            "created_rows": 0,
+            "updated_rows": 0,
+            "unchanged_rows": plan.summary.unchanged_count,
+            "warning_rows": plan.summary.warning_count,
+            "skipped_conflict_rows": plan.summary.conflict_count,
+            "skipped_invalid_rows": plan.summary.invalid_count,
+            "unmatched_fit_ap_rows": plan.summary.unmatched_fit_ap_count,
             "created_count": plan.summary.create_count,
             "updated_count": plan.summary.update_count,
-            "skipped_count": plan.summary.skip_count + plan.summary.unchanged_count,
+            "skipped_count": (
+                plan.summary.invalid_count
+                + plan.summary.conflict_count
+                + plan.summary.unchanged_count
+            ),
             "conflict_count": plan.summary.conflict_count,
-            "warning_count": sum(issue.severity == "warning" for item in plan.items for issue in item.issues),
+            "warning_count": plan.summary.warning_count,
             "backup_reference": backup_path.resolve().relative_to(root).as_posix(),
             "database_hash_before": database_hash_before,
             "database_hash_after": "",
-            "warnings": ["NEEDS_CONFIRMATION"] if plan.summary.needs_confirmation_count else [],
+            "warnings": [],
+            "issues": [
+                issue.model_dump(mode="json")
+                for item in plan.items
+                for issue in item.issues
+            ],
             "error_code": "",
             "error_summary": "",
             "owner": self._safe_owner(owner),
@@ -602,7 +857,11 @@ class RailTransitBaseDataImportService:
         changes: list[dict[str, Any]],
         decisions: list[MergeFieldDecisionDTO],
     ) -> list[dict[str, Any]]:
-        actionable = [item for item in plan.items if item.result in {"CREATE", "UPDATE"}]
+        actionable = {
+            item.row_number: item
+            for item in plan.items
+            if item.result in {"CREATE", "UPDATE"}
+        }
         explicit = {(item.row_number, item.field_name) for item in decisions if item.action != "skip_entity"}
         allowed = [
             field
@@ -610,7 +869,10 @@ class RailTransitBaseDataImportService:
             if field not in _SOURCE_TRACKING_FIELDS
         ]
         output = []
-        for item, change in zip(actionable, changes, strict=True):
+        for change in changes:
+            item = actionable.get(int(change.get("row_number") or 0))
+            if item is None:
+                continue
             old_values = change.get("old_values") or {}
             new_values = change.get("new_values") or {}
             for field in allowed:
