@@ -347,6 +347,7 @@ def test_trackside_business_workbook_preserves_sheets_and_export_style(
         "当前异常光衰",
         "AP上线情况概览",
         "新增上线AP概览",
+        "待关联在线AP",
         "AP光衰处理记录",
         "AP离线情况",
         "离线AP台账",

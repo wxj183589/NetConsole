@@ -4473,6 +4473,48 @@ def test_trackside_ap_targets_skip_missing_connection_info(tmp_path):
     assert {item.name for item in skipped} == {"AP-NO-IP", "AP-NO-PASSWORD"}
 
 
+def test_trackside_fit_ap_branch_skips_without_resources_instead_of_failing(
+    tmp_path,
+    monkeypatch,
+):
+    database = make_database(tmp_path)
+    repository = DeviceRepository(database)
+    repository.create(
+        Device(
+            name="AC-EMPTY",
+            device_type="AC",
+            device_vendor="H3C",
+            ip_address="10.0.0.20",
+            ssh_username="u",
+            ssh_password="p",
+        )
+    )
+    monkeypatch.setattr(
+        trackside_optical_collection,
+        "collect_h3c_ac_resources",
+        lambda *_args, **_kwargs: SimpleNamespace(success=True),
+    )
+    monkeypatch.setattr(
+        trackside_optical_collection,
+        "collect_h3c_fit_ap_optical",
+        lambda *_args, **_kwargs: pytest.fail("无 FIT-AP 资源时不应启动 AP 光衰采集"),
+    )
+
+    results, total, skipped = trackside_optical_collection._collect_fit_ap_optical_subtasks(
+        repository,
+        "demo",
+        PathResolver(tmp_path),
+        concurrency=1,
+        cancel_event=trackside_optical_collection.Event(),
+    )
+
+    assert results == []
+    assert total == 0
+    assert [(item.target_type, item.reason) for item in skipped] == [
+        ("FIT_AP", "no_fit_ap_resource")
+    ]
+
+
 def test_trackside_collection_dedupes_by_device_id_and_uses_default_concurrency(
     tmp_path,
 ):

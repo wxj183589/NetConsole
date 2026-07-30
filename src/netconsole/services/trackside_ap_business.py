@@ -155,6 +155,15 @@ NEW_ONLINE_AP_OVERVIEW_COLUMNS = (
     ("trackside.export.suggestion", "suggestion"),
 )
 
+TRACKSIDE_AP_UNMATCHED_ONLINE_COLUMNS = (
+    ("trackside.export.unmatched_ap_name", "ap_name"),
+    ("trackside.export.unmatched_ap_mac", "mac"),
+    ("trackside.export.unmatched_ac_status", "ac_status"),
+    ("trackside.export.unmatched_runtime_station", "runtime_station_text"),
+    ("trackside.export.unmatched_reason", "reason"),
+    ("trackside.export.unmatched_suggestion", "suggested_action"),
+)
+
 AP_OPTICAL_TREATMENT_RECORD_COLUMNS = (
     ("ac.station", "site"),
     ("ac.ap_name", "ap_name"),
@@ -1813,6 +1822,10 @@ def export_trackside_ap_business_xlsx(
     offline_ap_ledger_rows: list[dict[str, object | None]] | None = None,
     offline_ap_stats_headers: list[str] | None = None,
     offline_ap_ledger_headers: list[str] | None = None,
+    unmatched_online_rows: list[dict[str, object | None]] | None = None,
+    unmatched_online_columns: tuple[tuple[str, str], ...] | None = None,
+    unmatched_online_headers: list[str] | None = None,
+    unmatched_online_sheet_title: str = "待关联在线AP",
     progress_callback=None,
     should_cancel=None,
 ) -> None:
@@ -1901,6 +1914,21 @@ def export_trackside_ap_business_xlsx(
         header_fill,
     )
     log_write_phase("write_new_online_ap_sheet", phase_start, rows=len(new_online_ap_rows or []))
+    _raise_if_trackside_export_cancelled(should_cancel)
+    _emit_trackside_export_progress(progress_callback, "write_unmatched_online_ap", 0, len(unmatched_online_rows or []), "正在写入待关联在线AP")
+    phase_start = perf_counter()
+    _append_export_rows_sheet(
+        workbook,
+        unmatched_online_sheet_title,
+        unmatched_online_rows or [],
+        unmatched_online_columns or TRACKSIDE_AP_UNMATCHED_ONLINE_COLUMNS,
+        unmatched_online_headers or [key for key, _field in (unmatched_online_columns or TRACKSIDE_AP_UNMATCHED_ONLINE_COLUMNS)],
+        alignment,
+        border,
+        header_font,
+        header_fill,
+    )
+    log_write_phase("write_unmatched_online_ap_sheet", phase_start, rows=len(unmatched_online_rows or []))
     _raise_if_trackside_export_cancelled(should_cancel)
     _emit_trackside_export_progress(progress_callback, "write_optical_treatment", 0, len(ap_optical_treatment_rows or []), "正在写入AP光衰处理记录")
     phase_start = perf_counter()

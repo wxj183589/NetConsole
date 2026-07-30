@@ -1057,17 +1057,18 @@ def test_trackside_plan_preview_save_export_and_artifact_download(tmp_path: Path
         "上线率",
         "备注",
     ]
-    assert [overview.cell(2, column).value for column in range(1, 6)] == [
-        "合计",
-        0,
-        0,
-        0,
-        None,
+    assert [
+        [overview.cell(row, column).value for column in range(1, 6)]
+        for row in range(2, 6)
+    ] == [
+        ["站点A", 20, 0, 20, 0],
+        ["站点B", None, 0, 0, None],
+        ["小洋江站", None, 0, 0, None],
+        ["合计", 20, 0, 20, 0.0],
     ]
-    assert overview.max_row == 2
-    assert overview["E2"].value is None
-    assert overview["E2"].number_format == "0.0%"
-    assert overview["E2"].font.bold is True
+    assert overview.max_row == 5
+    assert overview["E5"].number_format == "0.0%"
+    assert overview["E5"].font.bold is True
     metadata = json.loads(current_workbook["_netconsole_meta"]["B1"].value)
     assert current_workbook["_netconsole_meta"].sheet_state == "hidden"
     assert metadata["template_type"] == "trackside_ap_station_plan"
@@ -1551,8 +1552,11 @@ def test_trackside_ap_online_status_uses_planned_targets_and_weighted_total(
     assert status.offline_count == 226
     assert status.online_rate == 76.1
     assert status.unassigned_count == 1
-    assert "当前有 1 个在线轨旁 AP 未纳入有效统计范围。" in status.warning
-    assert status.excluded_device_count == 3
+    assert "当前有 1 个待关联在线轨旁 AP。" in status.warning
+    assert status.excluded_device_count == 2
+    assert status.fit_ap_resource_total_count == 948
+    assert status.fit_ap_matched_count == 945
+    assert status.fit_ap_unmatched_online_count == 1
     assert "actual_ap_count" not in status.model_dump()
     assert "online_count" not in status.model_dump()
     by_name = {row.station_name: row for row in status.items}

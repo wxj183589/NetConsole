@@ -206,6 +206,14 @@ function clipboard(text: string): Record<string, unknown> {
   return { clipboardData: { getData: () => text } }
 }
 
+function stationOptions(count: number): Array<{ id: string; name: string; sort_order: number }> {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `station:${index + 1}`,
+    name: `站点${index + 1}`,
+    sort_order: index + 1,
+  }))
+}
+
 describe('TracksideApPlanningTab behavior', () => {
   beforeEach(() => {
     resetUserSelectedExportForTests()
@@ -243,7 +251,6 @@ describe('TracksideApPlanningTab behavior', () => {
     })
     await flushPromises()
 
-    await button(wrapper, '新增站点').trigger('click')
     await wrapper.find('[data-plan-cell="0-sequence_no"] input').trigger(
       'paste',
       clipboard([
@@ -263,6 +270,172 @@ describe('TracksideApPlanningTab behavior', () => {
     wrapper.unmount()
   })
 
+  it('creates a clean planning skeleton for all current stations', async () => {
+    const wrapper = mount(TracksideApPlanningTab, {
+      props: {
+        locked: false,
+        saving: false,
+        stations: stationOptions(15),
+      },
+      global: { stubs },
+    })
+    await flushPromises()
+
+    const latest = wrapper.emitted('change')?.at(-1)?.[0] as TracksideApPlanRow[]
+    const dirty = wrapper.emitted('change')?.at(-1)?.[1]
+    expect(latest).toHaveLength(15)
+    expect(latest.map((row) => row.station_id)).toEqual(
+      stationOptions(15).map((station) => station.id),
+    )
+    expect(latest.every((row) => row.planned_ap_count === 0 && row.management_vlan === null)).toBe(true)
+    expect(dirty).toBe(false)
+    expect(wrapper.text()).not.toContain('有未保存修改')
+    wrapper.unmount()
+  })
+
+  it('fills the planning skeleton when stations arrive asynchronously', async () => {
+    const wrapper = mount(TracksideApPlanningTab, {
+      props: { locked: false, saving: false, stations: [] },
+      global: { stubs },
+    })
+    await flushPromises()
+    await wrapper.setProps({ stations: stationOptions(15) })
+    await flushPromises()
+
+    const latest = wrapper.emitted('change')?.at(-1)?.[0] as TracksideApPlanRow[]
+    expect(latest).toHaveLength(15)
+    expect(wrapper.text()).toContain('已加载 15 行')
+    wrapper.unmount()
+  })
+
+  it('preserves saved fields while filling missing stations', async () => {
+    api.getTracksideApPlan.mockResolvedValue({
+      ...emptyPlan(),
+      items: [planRow({ planned_ap_count: 28, management_vlan: 922, remark: '保留值' })],
+      total: 1,
+    })
+    const wrapper = mount(TracksideApPlanningTab, {
+      props: {
+        locked: false,
+        saving: false,
+        stations: stationOptions(2),
+      },
+      global: { stubs },
+    })
+    await flushPromises()
+
+    const latest = wrapper.emitted('change')?.at(-1)?.[0] as TracksideApPlanRow[]
+    expect(latest).toHaveLength(2)
+    expect(latest[0]).toMatchObject({
+      station_id: 'station:1',
+      planned_ap_count: 28,
+      management_vlan: 922,
+      remark: '保留值',
+    })
+    expect(latest[1]).toMatchObject({
+      station_id: 'station:2',
+      planned_ap_count: 0,
+      management_vlan: null,
+    })
+    expect(wrapper.emitted('change')?.at(-1)?.[1]).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('keeps dirty edits and appends only newly arrived stations', async () => {
+    api.getTracksideApPlan.mockResolvedValue({
+      ...emptyPlan(),
+      items: [planRow({ planned_ap_count: 28, management_vlan: 922 })],
+      total: 1,
+    })
+    const wrapper = mount(TracksideApPlanningTab, {
+      props: {
+        locked: false,
+        saving: false,
+        stations: [{ id: 'station:1', name: '小洋江站', sort_order: 1 }],
+      },
+      global: { stubs },
+    })
+    await flushPromises()
+
+    await wrapper.find('[data-plan-cell="0-planned_ap_count"] input').setValue('99')
+    await flushPromises()
+    await wrapper.setProps({
+      stations: [
+        { id: 'station:1', name: '小洋江站（更新名）', sort_order: 1 },
+        { id: 'station:2', name: '新增站点', sort_order: 2 },
+      ],
+    })
+    await flushPromises()
+
+    const latest = wrapper.emitted('change')?.at(-1)?.[0] as TracksideApPlanRow[]
+    const edited = latest.find((row) => row.station_id === 'station:1')
+    const appended = latest.find((row) => row.station_id === 'station:2')
+    expect(edited?.planned_ap_count).toBe(99)
+    expect(edited?.station_name).toBe('小洋江站（更新名）')
+    expect(appended).toMatchObject({ planned_ap_count: 0, management_vlan: null })
+    expect(wrapper.emitted('change')?.at(-1)?.[1]).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('does not duplicate a dirty row when its station id arrives later', async () => {
+    api.getTracksideApPlan.mockResolvedValue({
+      ...emptyPlan(),
+      items: [planRow({ planned_ap_count: 28, management_vlan: 922 })],
+      total: 1,
+    })
+    const wrapper = mount(TracksideApPlanningTab, {
+      props: { locked: false, saving: false, stations: [] },
+      global: { stubs },
+    })
+    await flushPromises()
+
+    await wrapper.find('[data-plan-cell="0-planned_ap_count"] input').setValue('77')
+    await flushPromises()
+    await wrapper.setProps({
+      stations: [{ id: 'station:1', name: '小洋江站（新名称）', sort_order: 1 }],
+    })
+    await flushPromises()
+
+    const latest = wrapper.emitted('change')?.at(-1)?.[0] as TracksideApPlanRow[]
+    expect(latest).toHaveLength(1)
+    expect(latest[0]).toMatchObject({
+      station_id: 'station:1',
+      station_name: '小洋江站（新名称）',
+      planned_ap_count: 77,
+    })
+    expect(wrapper.emitted('change')?.at(-1)?.[1]).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('retains unmatched history rows and blocks saving until repaired', async () => {
+    api.getTracksideApPlan.mockResolvedValue({
+      ...emptyPlan(),
+      items: [planRow({
+        station_id: 'station:legacy',
+        station_name: '已删除站点',
+        planned_ap_count: 12,
+        management_vlan: 921,
+      })],
+      total: 1,
+    })
+    const wrapper = mount(TracksideApPlanningTab, {
+      props: {
+        locked: false,
+        saving: false,
+        stations: [{ id: 'station:1', name: '当前站点', sort_order: 1 }],
+      },
+      global: { stubs },
+    })
+    await flushPromises()
+
+    const latest = wrapper.emitted('change')?.at(-1)?.[0] as TracksideApPlanRow[]
+    expect(latest).toHaveLength(2)
+    expect(latest.find((row) => row.station_id === 'station:legacy')?.station_match_status).toBe('unmatched')
+    expect(wrapper.text()).toContain('未匹配当前站点')
+    expect(button(wrapper, '保存').attributes('disabled')).toBeDefined()
+    wrapper.unmount()
+  })
+
   it('shows a cell-level summary for an invalid AP count', async () => {
     api.getTracksideApPlan.mockResolvedValue({
       ...emptyPlan(),
@@ -270,7 +443,11 @@ describe('TracksideApPlanningTab behavior', () => {
       total: 1,
     })
     const wrapper = mount(TracksideApPlanningTab, {
-      props: { locked: false, saving: false },
+      props: {
+        locked: false,
+        saving: false,
+        stations: [{ id: 'station:1', name: '小洋江站', sort_order: 1 }],
+      },
       global: { stubs },
     })
     await flushPromises()
@@ -373,7 +550,14 @@ describe('TracksideApPlanningTab behavior', () => {
       total: 2,
     })
     const wrapper = mount(TracksideApPlanningTab, {
-      props: { locked: false, saving: false },
+      props: {
+        locked: false,
+        saving: false,
+        stations: [
+          { id: 'station:1', name: '小洋江站', sort_order: 1 },
+          { id: 'station:2', name: '云龙火车站站', sort_order: 2 },
+        ],
+      },
       global: { stubs },
     })
     await flushPromises()
