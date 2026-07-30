@@ -9,8 +9,8 @@ describe('trackside AP planning base-data tab', () => {
       'getTracksideApOnlineStatus',
       'previewTracksideApPlan',
       'exportTracksideApPlan',
-      'recoverTracksideApTasks',
-      "openTaskWindow({ module: 'rail'",
+      'useTaskStore',
+      'taskStore.refresh()',
       'AP 规划维护',
       'AP 上线情况概览',
       '新增站点',
@@ -74,8 +74,6 @@ describe('trackside AP planning base-data tab', () => {
     expect(source).toContain('if (!file || props.saving) return')
     expect(source).toContain("input.value = ''")
     expect(source).toContain(':disabled="!canApplyImport || !canWrite"')
-    expect(source).toContain('tracksideApPlanDownloadRequest')
-    expect(source).toContain('downloadBackendResource')
     expect(source).toContain('轨旁AP逐站规划模板.xlsx')
     expect(source).toContain('_轨旁AP规划及上线概览_')
     expect(source).toContain('deepCopy(rows.value)')
@@ -87,6 +85,11 @@ describe('trackside AP planning base-data tab', () => {
     expect(source).toContain('width: 100%')
     expect(source).toContain('route-key="/rail-transit/base-data"')
     expect(source).not.toContain('saveTracksideApPlan')
+    expect(source).not.toContain('getTracksideApTask')
+    expect(source).not.toContain('recoverTracksideApTasks')
+    expect(source).not.toContain('netconsole.trackside-ap-plan.last-task')
+    expect(source).not.toContain('打开任务中心')
+    expect(source).not.toContain('tracksideApPlanDownloadRequest')
     expect(source).not.toContain('<el-table')
     expect(source).not.toContain('<el-table-column')
   })

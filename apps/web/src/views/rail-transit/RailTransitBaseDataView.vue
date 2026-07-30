@@ -16,10 +16,6 @@ import {
   exportTracksideApBase,
   exportTracksideApImportIssues,
   exportTracksideApRenameCommands,
-  getTracksideApTask,
-  recoverTracksideApTasks,
-  tracksideApBaseDownloadRequest,
-  tracksideApRenameCommandDownloadRequest,
 } from '../../api/tracksideApBusiness'
 import { isFeatureEnabled } from '../../features'
 
@@ -27,6 +23,7 @@ import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import TracksideApPlanningTab from '../../components/rail-transit/base-data/TracksideApPlanningTab.vue'
 import { useRailTransitBaseDataStore } from '../../stores/railTransitBaseData'
+import { useTaskStore } from '../../stores/tasks'
 import type {
   DataQualityEntityGroup,
   DataQualityIssue,
@@ -53,7 +50,8 @@ import type {
   Train,
   VehicleMr,
 } from '../../types/railTransitBaseData'
-import type { TracksideApPlanRow, TracksideApTask } from '../../types/tracksideApBusiness'
+import type { TracksideApPlanRow } from '../../types/tracksideApBusiness'
+import { activeTaskStatuses } from '../../utils/taskStatus'
 import {
   groupStationOrderConflicts,
   MANUAL_STATION_FIELDS,
@@ -70,6 +68,12 @@ const route = useRoute()
 const router = useRouter()
 const { confirm, confirmChoice } = useConfirm()
 const userSelectedExport = useUserSelectedExport()
+const taskStore = useTaskStore()
+const activeTaskStateSet = new Set(activeTaskStatuses)
+const apBaseTaskTypes = new Set([
+  'web_export_trackside_ap_base_xlsx',
+  'web_export_trackside_ap_rename_commands',
+])
 type BaseDataEditState = 'LOCKED' | 'UNLOCKED_CLEAN' | 'UNLOCKED_DIRTY' | 'VALIDATING' | 'SAVING' | 'SAVE_FAILED'
 interface BaseDataDraft {
   metadata: {
@@ -140,10 +144,10 @@ const stationTemplateDialogVisible = ref(false)
 const sectionGenerationDialogVisible = ref(false)
 const apImportDialogVisible = ref(false)
 const tracksideApImportInput = ref<HTMLInputElement | null>(null)
-const apBaseTask = ref<TracksideApTask | null>(null)
-const apBaseTaskStorageKey = 'netconsole.trackside-ap-base.last-task'
-const apTaskTerminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
-let apBasePollTimer: number | undefined
+const apBaseTaskId = ref('')
+const apBaseTaskRunning = computed(() => taskStore.tasks.some(
+  (item) => apBaseTaskTypes.has(item.type) && activeTaskStateSet.has(item.status),
+))
 const selectedStationSourceIds = ref<string[]>([])
 const stationSourceStrategies = ref<Record<string, StationSourceProcessingStrategy>>({})
 const stationSourceTargets = ref<Record<string, string>>({})
@@ -544,13 +548,16 @@ onMounted(() => {
   window.addEventListener('beforeunload', beforeUnload)
   store.startPolling()
   void store.refreshImportGovernance().catch(() => undefined)
-  void recoverApBaseTask()
+  void taskStore.refresh().then(() => {
+    apBaseTaskId.value = taskStore.tasks.find(
+      (item) => apBaseTaskTypes.has(item.type) && activeTaskStateSet.has(item.status),
+    )?.id || ''
+  })
 })
 onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', handleVisibility)
   window.removeEventListener('beforeunload', beforeUnload)
   store.stopPolling()
-  stopApBasePolling()
 })
 onBeforeRouteLeave(async () => !dirty.value || confirmUnsavedChanges())
 
@@ -1835,45 +1842,6 @@ async function downloadStationTemplate(): Promise<void> {
   }
 }
 
-function stopApBasePolling(): void {
-  if (apBasePollTimer !== undefined) window.clearTimeout(apBasePollTimer)
-  apBasePollTimer = undefined
-}
-
-function rememberApBaseTask(value: TracksideApTask | null): void {
-  apBaseTask.value = value
-  if (value) localStorage.setItem(apBaseTaskStorageKey, value.task_id)
-  else localStorage.removeItem(apBaseTaskStorageKey)
-}
-
-function pollApBaseTask(): void {
-  stopApBasePolling()
-  if (!apBaseTask.value || apTaskTerminalStates.has(apBaseTask.value.status)) return
-  apBasePollTimer = window.setTimeout(async () => {
-    try {
-      rememberApBaseTask(await getTracksideApTask(apBaseTask.value!.task_id))
-      pollApBaseTask()
-    } catch (cause) {
-      ElMessage.error(message(cause, '轨旁 AP 导出任务状态读取失败'))
-    }
-  }, 1000)
-}
-
-async function recoverApBaseTask(): Promise<void> {
-  try {
-    const tasks = await recoverTracksideApTasks()
-    const saved = localStorage.getItem(apBaseTaskStorageKey) || ''
-    const exportActions = new Set(['trackside_ap_base_export', 'trackside_ap_rename_command_export'])
-    rememberApBaseTask(
-      tasks.find((item) => item.task_id === saved)
-      || tasks.find((item) => exportActions.has(item.action) && !apTaskTerminalStates.has(item.status))
-      || tasks.find((item) => exportActions.has(item.action))
-      || null,
-    )
-    pollApBaseTask()
-  } catch { /* 页面主数据仍可使用，任务恢复失败由后续操作重试。 */ }
-}
-
 async function startApBaseExport(template: boolean): Promise<void> {
   let draftRows: TracksideAp[] | undefined
   if (!template && !locked.value && dirty.value) {
@@ -1896,8 +1864,8 @@ async function startApBaseExport(template: boolean): Promise<void> {
       submit: () => exportTracksideApBase(template, draftRows),
     })
     if (result.status === 'cancelled') return
-    rememberApBaseTask(result.task)
-    pollApBaseTask()
+    apBaseTaskId.value = result.task.task_id
+    await taskStore.refresh()
     ElMessage.success(template
       ? '轨旁 AP 模板导出任务已启动，完成后将写入所选位置'
       : '轨旁 AP 当前数据导出任务已启动，完成后将写入所选位置')
@@ -1919,8 +1887,8 @@ async function exportImportIssues(): Promise<void> {
       submit: () => exportTracksideApImportIssues(previewProblemRows.value),
     })
     if (result.status === 'cancelled') return
-    rememberApBaseTask(result.task)
-    pollApBaseTask()
+    apBaseTaskId.value = result.task.task_id
+    await taskStore.refresh()
   } catch (cause) {
     ElMessage.error(message(cause, '导入问题明细导出失败'))
   }
@@ -1948,41 +1916,12 @@ async function startApRenameCommandExport(): Promise<void> {
       submit: () => exportTracksideApRenameCommands(draftRows),
     })
     if (result.status === 'cancelled') return
-    rememberApBaseTask(result.task)
-    pollApBaseTask()
+    apBaseTaskId.value = result.task.task_id
+    await taskStore.refresh()
     ElMessage.success('轨旁 AP 重命名命令导出任务已启动，完成后将写入所选位置')
   } catch (cause) {
     ElMessage.error(message(cause, '轨旁 AP 重命名命令导出启动失败'))
   }
-}
-
-async function downloadApBaseArtifact(): Promise<void> {
-  const current = apBaseTask.value
-  if (!current?.available || !current.artifact_id) return
-  const isRenameExport = current.action === 'trackside_ap_rename_command_export'
-  const label = isRenameExport ? '轨旁 AP 重命名命令' : '轨旁 AP 基础资料'
-  try {
-    const result = await downloadBackendResource(
-      isRenameExport
-        ? tracksideApRenameCommandDownloadRequest(current.artifact_id, current.artifact_name || '轨旁AP重命名命令.txt')
-        : tracksideApBaseDownloadRequest(current.artifact_id, current.artifact_name || '轨旁AP基础资料.xlsx'),
-    )
-    if (result.status === 'saved') ElMessage.success(`已保存 ${current.artifact_name || label}`)
-    else if (result.status === 'started') ElMessage.success(`浏览器已开始下载${label}`)
-    else if (result.status === 'failed') ElMessage.error(result.error || `${label}下载失败`)
-  } catch (cause) {
-    ElMessage.error(message(cause, `${label}下载失败`))
-  }
-}
-
-function apTaskSummary(value: TracksideApTask): string {
-  const summary = value.result_summary || {}
-  const scanned = Number(summary.scanned_count || 0)
-  const valid = Number(summary.valid_command_count || 0)
-  const skipped = Number(summary.skipped_count || 0)
-  const blocking = Number(summary.blocking_error_count || 0)
-  if (value.action !== 'trackside_ap_rename_command_export' || (!scanned && !valid && !skipped && !blocking)) return ''
-  return `扫描 ${scanned} · 有效命令 ${valid} · 跳过 ${skipped} · 阻断错误 ${blocking}`
 }
 
 function safeExportPart(value: string): string {
@@ -1992,15 +1931,6 @@ function safeExportPart(value: string): string {
 function exportTimestamp(now = new Date()): string {
   const part = (value: number) => String(value).padStart(2, '0')
   return `${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}_${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}`
-}
-
-function openApBaseTaskWindow(): void {
-  const taskId = apBaseTask.value?.task_id || ''
-  if (window.netconsoleDesktop) {
-    void window.netconsoleDesktop.openTaskWindow({ module: 'rail', ...(taskId ? { taskId } : {}) })
-    return
-  }
-  void router.push({ name: 'tasks', query: { module: 'rail', ...(taskId ? { task_id: taskId } : {}) } })
 }
 
 async function exportCurrentStations(): Promise<void> {
@@ -2958,13 +2888,12 @@ function sectionSourceLabel(row: Section): string {
             <el-select v-model="store.apFilters.has_issue" clearable placeholder="数据质量"><el-option label="只看异常" :value="true" /><el-option label="只看正常" :value="false" /></el-select>
             <el-button type="primary" :disabled="!locked" @click="store.applyApFilters">应用筛选</el-button>
             <input ref="tracksideApImportInput" type="file" accept=".xlsx,.csv,.json" hidden @change="handleTracksideApFile">
-            <el-button v-if="isFeatureEnabled('web.rail_trackside_ap_base_io')" :icon="Download" :disabled="Boolean(apBaseTask && !apTaskTerminalStates.has(apBaseTask.status))" @click="startApBaseExport(true)">下载模板</el-button>
+            <el-button v-if="isFeatureEnabled('web.rail_trackside_ap_base_io')" :icon="Download" :disabled="apBaseTaskRunning" @click="startApBaseExport(true)">下载模板</el-button>
             <el-button v-if="isFeatureEnabled('web.rail_trackside_ap_base_io')" :icon="UploadFilled" :loading="store.previewLoading" :disabled="saving" @click="tracksideApImportInput?.click()">导入并预览</el-button>
-            <el-button v-if="isFeatureEnabled('web.rail_trackside_ap_base_io')" :icon="Download" :disabled="Boolean(apBaseTask && !apTaskTerminalStates.has(apBaseTask.status))" @click="startApBaseExport(false)">导出当前</el-button>
-            <el-button v-if="isFeatureEnabled('web.rail_trackside_ap_base_io')" :icon="Download" :disabled="Boolean(apBaseTask && !apTaskTerminalStates.has(apBaseTask.status))" @click="startApRenameCommandExport">导出重命名命令</el-button>
+            <el-button v-if="isFeatureEnabled('web.rail_trackside_ap_base_io')" :icon="Download" :disabled="apBaseTaskRunning" @click="startApBaseExport(false)">导出当前</el-button>
+            <el-button v-if="isFeatureEnabled('web.rail_trackside_ap_base_io')" :icon="Download" :disabled="apBaseTaskRunning" @click="startApRenameCommandExport">导出重命名命令</el-button>
             <el-button :icon="Plus" :disabled="locked || saving" @click="addAp">新增轨旁 AP</el-button>
           </div>
-          <el-alert v-if="apBaseTask" :title="`${apBaseTask.status} · ${apTaskSummary(apBaseTask) || apBaseTask.message || apBaseTask.task_id}`" :type="apBaseTask.error_message ? 'error' : 'info'" :closable="false"><el-button v-if="apBaseTask.available && apBaseTask.artifact_id" link type="primary" @click="downloadApBaseArtifact">下载文件</el-button><el-button link @click="openApBaseTaskWindow">打开任务中心</el-button></el-alert>
           <NcDataTable table-id="rail-base-trackside-aps" route-key="/rail-transit/base-data" :data="apRows" :columns="apColumns" height="calc(100vh - 430px)" empty-text="暂无轨旁 AP 扩展资料">
             <template #cell-name="{ row }"><span>{{ row.runtime.fit_ap_name || row.name || row.point_code || '--' }}</span></template>
             <template #cell-point_code="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.point_code" :class="{ 'field-error': fieldError('trackside_ap', row.id, 'point_code') }" @input="markAp(row)" /><span v-else>{{ display(row.point_code) }}</span></template>

@@ -17,8 +17,9 @@ describe('Rail Transit base data maintenance view', () => {
     expect(source).toContain('站点与区间')
     expect(source).toContain('轨旁 AP')
     expect(source).toContain('轨旁 AP 导入预览')
-    expect(source).toContain('tracksideApBaseDownloadRequest')
     expect(source).toContain('exportTracksideApBase')
+    expect(source).toContain('useTaskStore')
+    expect(source).toContain('taskStore.refresh()')
     expect(source).toContain('handleTracksideApFile')
     expect(source).toContain('导入 {{ previewImportableCount }} 条有效数据到草稿')
     expect(source).toContain('保存并锁定')
@@ -114,6 +115,10 @@ describe('Rail Transit base data maintenance view', () => {
     expect(source).toContain("name=\"trackside-ap-planning\"")
     expect(source).toContain("path: '/rail-transit/train-online'")
     expect(source).not.toContain("path: '/ac-management/mesh-links'")
+    expect(source).not.toContain('getTracksideApTask')
+    expect(source).not.toContain('recoverTracksideApTasks')
+    expect(source).not.toContain('netconsole.trackside-ap-base.last-task')
+    expect(source).not.toContain('打开任务中心')
   })
 
   it('does not expose generic deletion, credentials or unguarded persistence', () => {
