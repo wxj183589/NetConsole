@@ -583,36 +583,18 @@ def _car_network_save_point_table(params: dict[str, Any], progress: ProgressCall
 
 def _trackside_ap_plan_import(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
     from netconsole.core.database import Database
-    from netconsole.repositories.ap_management_vlan_repository import (
-        ApManagementVlanRepository,
-    )
-    from netconsole.services.rail_transit.ap_management_vlan_planning import (
-        legacy_rows_to_draft,
-    )
+    from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
+    from netconsole.services.trackside_ap_plan_io import normalize_trackside_plan_rows
 
     _emit(progress, "trackside_ap_plan_import", 0, 1, "正在导入轨旁 AP 规划")
     _check_cancel(should_cancel)
     rows = _dedupe_trackside_station_rows(_read_trackside_plan_file(Path(str(params.get("path") or ""))))
     _validate_trackside_plan_rows(rows)
-    repository = ApManagementVlanRepository(
+    AcRepository(
         Database(Path(str(params.get("db_path") or "")))
-    )
-    current = repository.get_draft()
-    draft = legacy_rows_to_draft(
-        rows,
-        stations=[
-            {
-                "id": f"legacy-import:{index}",
-                "name": row.get("station_name"),
-                "sort_order": index,
-                "ap_count": row.get("ap_count"),
-            }
-            for index, row in enumerate(rows)
-        ],
-    )
-    repository.replace(
-        draft,
-        expected_revision=int(current["planning"].get("revision") or 0),
+    ).replace_trackside_ap_plan_rows(
+        TRACKSIDE_AP_PLAN_MODE,
+        normalize_trackside_plan_rows(rows),
     )
     _emit(progress, "trackside_ap_plan_import", 1, 1, "轨旁 AP 规划导入完成")
     return {"count": len(rows)}
@@ -632,62 +614,44 @@ def _trackside_ap_plan_refresh(params: dict[str, Any], progress: ProgressCallbac
 
 def _trackside_ap_plan_save(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
     from netconsole.core.database import Database
-    from netconsole.repositories.ap_management_vlan_repository import (
-        ApManagementVlanRepository,
+    from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
+    from netconsole.services.rail_transit.ap_management_vlan_planning import (
+        project_legacy_station_rows,
     )
+    from netconsole.services.trackside_ap_plan_io import normalize_trackside_plan_rows
 
-    draft = dict(params.get("draft") or {})
-    if not draft:
-        from netconsole.services.rail_transit.ap_management_vlan_planning import (
-            legacy_rows_to_draft,
-        )
-
-        rows = [
-            dict(row)
-            for row in params.get("rows") or []
-            if isinstance(row, dict)
-        ]
-        draft = legacy_rows_to_draft(
-            rows,
-            stations=[
-                {
-                    "id": f"legacy-save:{index}",
-                    "name": row.get("station_name"),
-                    "sort_order": index,
-                    "ap_count": row.get("ap_count"),
-                }
-                for index, row in enumerate(rows)
-            ],
-        )
-    group_count = len(draft.get("groups") or [])
+    rows = [
+        dict(row)
+        for row in params.get("rows") or []
+        if isinstance(row, dict)
+    ]
+    if not rows and isinstance(params.get("draft"), dict):
+        rows = project_legacy_station_rows(dict(params["draft"]))
+    normalized_rows = normalize_trackside_plan_rows(rows)
+    row_count = len(normalized_rows)
     _emit(
         progress,
         "trackside_ap_plan_save",
         0,
-        max(group_count, 1),
-        "正在保存轨旁 AP 管理 VLAN 组",
+        max(row_count, 1),
+        "正在保存逐站轨旁 AP 规划",
     )
     _check_cancel(should_cancel)
-    repository = ApManagementVlanRepository(
+    repository = AcRepository(
         Database(Path(str(params.get("db_path") or "")))
     )
-    current = repository.get_draft()
-    revision = repository.replace(
-        draft,
-        expected_revision=int(
-            params.get("expected_revision")
-            if params.get("expected_revision") is not None
-            else current["planning"].get("revision") or 0
-        ),
+    repository.replace_trackside_ap_plan_rows(
+        TRACKSIDE_AP_PLAN_MODE,
+        normalized_rows,
     )
     _emit(
         progress,
         "trackside_ap_plan_save",
-        max(group_count, 1),
-        max(group_count, 1),
-        "轨旁 AP 管理 VLAN 组保存完成",
+        max(row_count, 1),
+        max(row_count, 1),
+        "逐站轨旁 AP 规划保存完成",
     )
-    return {"count": group_count, "revision": revision}
+    return {"count": row_count}
 
 
 def _vehicle_mr_mapping_import(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:

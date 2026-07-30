@@ -1030,6 +1030,89 @@ class RailTransitBaseDataRepository:
         connection: sqlite3.Connection,
         values: Mapping[str, Any],
     ) -> None:
+        rows = values.get("rows")
+        if isinstance(rows, list):
+            now = self._now()
+            existing_created_at = {
+                (
+                    str(row["station_id"] or ""),
+                    str(row["station_name"] or "").casefold(),
+                ): str(row["created_at"] or now)
+                for row in connection.execute(
+                    """
+                    SELECT station_id, station_name, created_at
+                    FROM ac_trackside_ap_plan
+                    WHERE mode = 'unified'
+                    """
+                )
+            }
+            connection.execute(
+                "DELETE FROM ac_trackside_ap_plan WHERE mode = 'unified'"
+            )
+            fields = (
+                "mode",
+                "station_id",
+                "sequence_no",
+                "station_name",
+                "ap_count",
+                "ap_start_address",
+                "subnet_mask",
+                "mask_length",
+                "ap_gateway",
+                "management_vlan",
+                "ap_management_vlans",
+                "remark",
+                "sort_order",
+                "created_at",
+                "updated_at",
+            )
+            for row in rows:
+                if not isinstance(row, Mapping):
+                    raise RailTransitBaseDataConstraintError(
+                        "轨旁 AP 规划行格式无效"
+                    )
+                station_id = str(row.get("station_id") or "")
+                station_name = str(row.get("station_name") or "")
+                sequence_no = int(row.get("sequence_no") or 0)
+                management_vlan = int(row.get("management_vlan") or 0)
+                created_at = existing_created_at.get(
+                    (station_id, station_name.casefold()),
+                    now,
+                )
+                connection.execute(
+                    f"""
+                    INSERT INTO ac_trackside_ap_plan ({", ".join(fields)})
+                    VALUES ({", ".join("?" for _ in fields)})
+                    """,
+                    (
+                        "unified",
+                        station_id,
+                        sequence_no,
+                        station_name,
+                        int(row.get("ap_count") or 0),
+                        str(row.get("ap_start_address") or ""),
+                        str(row.get("subnet_mask") or ""),
+                        row.get("mask_length"),
+                        str(row.get("ap_gateway") or ""),
+                        management_vlan,
+                        str(management_vlan),
+                        str(row.get("remark") or ""),
+                        sequence_no - 1,
+                        created_at,
+                        now,
+                    ),
+                )
+            connection.execute(
+                """
+                INSERT INTO ac_trackside_ap_plan_settings (key, value, updated_at)
+                VALUES ('current_source', 'station_rows', ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (now,),
+            )
+            return
         planning = values.get("planning")
         if not isinstance(planning, Mapping):
             raise RailTransitBaseDataConstraintError(

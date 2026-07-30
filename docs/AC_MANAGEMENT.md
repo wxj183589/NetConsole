@@ -1,6 +1,6 @@
 # AC 管理
 
-轨旁端口 PVID 候选发现使用线路规划 VLAN 集合；最终核验在 AP 身份解析后，将实际端口 PVID 与该 AP 的有效管理 VLAN 组比较，不再通过交换机所属站点假设唯一 VLAN。相同 VLAN 跨站点是合法情况。VLAN 组、点表、迁移和核验细节见 [轨旁 AP 管理 VLAN 分组规划](AP_MANAGEMENT_VLAN_GROUPS.md)。
+轨旁端口 PVID 候选发现使用逐站规划的 VLAN 集合；最终核验在 AP 身份解析后，将实际端口 PVID 与该 AP 归属站点的规划 VLAN 比较，不通过交换机所属站点或 VLAN 反推 AP 身份。相同 VLAN 跨站点是合法情况。旧 VLAN 分组数据仅在缺少逐站规划时作为兼容回退。规划、迁移和核验细节见 [轨旁 AP 逐站规划与 VLAN 分组兼容](AP_MANAGEMENT_VLAN_GROUPS.md)。
 
 ## 当前状态
 

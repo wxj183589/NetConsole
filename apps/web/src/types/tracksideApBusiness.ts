@@ -73,8 +73,28 @@ export interface TracksideSwitchSampleRequest {
 }
 
 export interface TracksideApPlanRow {
-  station_name: string; ap_count: number; ap_start_address: string; mask_length: number | null
-  ap_gateway: string; ap_management_vlans: string; remark: string; sort_order: number
+  station_id: string; sequence_no: number; station_name: string; ap_count: number
+  ap_start_address: string; subnet_mask: string; mask_length: number | null
+  ap_gateway: string; management_vlan: number | null; ap_management_vlans: string
+  remark: string; sort_order: number
+}
+
+export interface TracksideApOnlineStatusRow {
+  station_id: string; station_name: string; planned_ap_count: number
+  actual_ap_count: number; online_count: number; offline_count: number
+  online_rate: number | null; remark: string
+}
+
+export interface TracksideApUnassigned {
+  ap_id: string; ap_name: string; point_code: string; mac: string; station_name: string
+}
+
+export interface TracksideApOnlineStatus {
+  items: TracksideApOnlineStatusRow[]
+  planned_ap_count: number; actual_ap_count: number; online_count: number
+  offline_count: number; online_rate: number | null
+  unassigned_count: number; unassigned_items: TracksideApUnassigned[]
+  updated_at: string; warning: string
 }
 
 export type ApManagementVlanPlanningMode = 'line_single' | 'station_independent' | 'station_grouped'
@@ -138,4 +158,5 @@ export interface TracksideApPlanPreview {
   file_name: string; file_sha256: string; duplicate_strategy: 'replace' | 'skip' | 'error'
   can_apply: boolean; total_count: number; valid_count: number; duplicate_count: number; error_count: number
   rows: TracksideApPlanPreviewRow[]; result_rows: TracksideApPlanRow[]; result_plan: TracksideApPlan | null
+  legacy_schema: boolean; message: string
 }

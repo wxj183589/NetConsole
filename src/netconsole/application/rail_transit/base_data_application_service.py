@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
-from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.device_address import normalize_ip_address
@@ -37,13 +36,12 @@ from netconsole.repositories.rail_transit_base_data_repository import (
     RailTransitBaseDataRevisionConflict,
 )
 from netconsole.repositories.ap_management_vlan_repository import (
-    ApManagementVlanRepository,
     ApManagementVlanRevisionConflict,
 )
 from netconsole.services.rail_transit.ap_management_vlan_planning import (
     REALLOCATION_ONLY_UNLOCKED,
     enrich_plan,
-    legacy_rows_to_draft,
+    project_legacy_station_rows,
     stable_legacy_station_id,
 )
 from netconsole.services.ap_extension_import import normalize_ap_mac
@@ -518,44 +516,55 @@ class RailTransitBaseDataApplicationService:
                 row.model_dump()
                 for row in self.query_service.list_ap_location_items(site_id)
             ]
-            if isinstance(raw.get("groups"), list):
-                candidate: Mapping[str, Any] = raw
-            else:
-                rows = raw.get("rows")
-                if not isinstance(rows, list):
-                    raise ValueError("轨旁 AP 规划数据格式无效")
-                raw_rows = [dict(row) for row in rows if isinstance(row, Mapping)]
-                station_keys = [
-                    str(row.get("station_name") or "").strip().casefold()
-                    for row in raw_rows
+            rows = raw.get("rows")
+            if isinstance(rows, list):
+                raw_rows = [
+                    dict(row) for row in rows if isinstance(row, Mapping)
                 ]
-                if len(station_keys) != len(set(station_keys)):
-                    raise ValueError("轨旁 AP 规划存在重复站点")
-                candidate = legacy_rows_to_draft(
-                    normalize_trackside_plan_rows(raw_rows),
+            elif isinstance(raw.get("groups"), list):
+                plan = enrich_plan(
+                    raw,
                     stations=stations,
+                    aps=aps,
+                    reallocation_policy=str(
+                        raw.get("reallocation_policy")
+                        or REALLOCATION_ONLY_UNLOCKED
+                    ),
                 )
-                current = ApManagementVlanRepository(
-                    Database(self.paths.site_db_path(site_id))
-                ).get_draft()
-                candidate["planning"]["revision"] = int(
-                    current["planning"].get("revision") or 0
-                )
-            plan = enrich_plan(
-                candidate,
-                stations=stations,
-                aps=aps,
-                reallocation_policy=str(
-                    raw.get("reallocation_policy") or REALLOCATION_ONLY_UNLOCKED
-                ),
-            )
-            values = {
-                "planning": plan["planning"],
-                "groups": plan["groups"],
-                "assignments": plan["assignments"],
-                "allocations": plan["allocations"],
-                "validation_issues": plan["issues"],
+                raw_rows = [
+                    dict(row) for row in project_legacy_station_rows(plan)
+                ]
+            else:
+                raise ValueError("轨旁 AP 规划数据格式无效")
+            normalized_rows = normalize_trackside_plan_rows(raw_rows)
+            station_by_id = {
+                str(row.get("id") or ""): row for row in stations
             }
+            station_by_name = {
+                str(row.get("name") or "").strip().casefold(): row
+                for row in stations
+                if str(row.get("name") or "").strip()
+            }
+            for row in normalized_rows:
+                station_id = str(row.get("station_id") or "")
+                station = station_by_id.get(station_id)
+                if station is None:
+                    station = station_by_name.get(
+                        str(row["station_name"]).casefold()
+                    )
+                if station is not None:
+                    row["station_id"] = str(station.get("id") or "")
+                    row["station_name"] = str(
+                        station.get("name") or row["station_name"]
+                    )
+            station_ids = [
+                str(row.get("station_id") or "")
+                for row in normalized_rows
+                if str(row.get("station_id") or "")
+            ]
+            if len(station_ids) != len(set(station_ids)):
+                raise ValueError("轨旁 AP 规划存在重复 station_id")
+            values = {"rows": normalized_rows, "validation_issues": []}
         return {
             "entity_type": entity_type,
             "action": action,

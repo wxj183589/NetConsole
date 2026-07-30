@@ -1,453 +1,517 @@
 <script setup lang="ts">
 import { ElMessage } from 'element-plus'
-import { Download, UploadFilled } from '@element-plus/icons-vue'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import {
+  Check,
+  Delete,
+  Download,
+  Plus,
+  Refresh,
+  RefreshLeft,
+  UploadFilled,
+  View,
+} from '@element-plus/icons-vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import {
   exportTracksideApPlan,
+  getTracksideApOnlineStatus,
   getTracksideApPlan,
   getTracksideApTask,
   previewTracksideApPlan,
-  previewTracksideApVlanAutoGroup,
-  previewTracksideApVlanChange,
   recoverTracksideApTasks,
+  startTracksideApUpdate,
   tracksideApPlanDownloadRequest,
 } from '../../../api/tracksideApBusiness'
+import { useUserSelectedExport } from '../../../composables/useUserSelectedExport'
 import { isFeatureEnabled } from '../../../features'
 import { downloadBackendResource } from '../../../platform/runtime'
-import { useUserSelectedExport } from '../../../composables/useUserSelectedExport'
 import type {
-  ApManagementVlanAllocation,
-  ApManagementVlanGroup,
-  ApManagementVlanImpact,
-  ApManagementVlanPlanningMode,
-  ApManagementVlanStationDetail,
-  TracksideApPlan,
-  TracksideApPlanDraft,
+  TracksideApOnlineStatus,
+  TracksideApOnlineStatusRow,
   TracksideApPlanPreview,
-  TracksideApPlanPreviewRow,
+  TracksideApPlanRow,
   TracksideApTask,
+  TracksideApUnassigned,
 } from '../../../types/tracksideApBusiness'
-import { useConfirm } from '../../feedback/useConfirm'
 import NcDataTable from '../../table/NcDataTable.vue'
 import type { NcTableColumn } from '../../table/NcTableColumn'
-import {
-  mergeAdjacentVlanGroups,
-  splitVlanGroup,
-  updateVlanGroupMembers,
-} from './tracksideApVlanDraft'
 
-interface StationOption { id: string; name: string; sort_order: number | null; ap_count?: number }
-const props = withDefaults(defineProps<{ locked: boolean; saving: boolean; stations?: StationOption[] }>(), { stations: () => [] })
-const emit = defineEmits<{ change: [draft: TracksideApPlanDraft, dirty: boolean] }>()
-const storageKey = 'netconsole.trackside-ap-plan.last-task'
+interface StationOption {
+  id: string
+  name: string
+  sort_order: number | null
+  ap_count?: number
+}
+
+type EditableField =
+  | 'sequence_no'
+  | 'station_name'
+  | 'ap_count'
+  | 'ap_start_address'
+  | 'subnet_mask'
+  | 'ap_gateway'
+  | 'management_vlan'
+  | 'remark'
+
+interface ValidationIssue {
+  row: TracksideApPlanRow
+  field: EditableField
+  message: string
+}
+
+const props = withDefaults(
+  defineProps<{ locked: boolean; saving: boolean; stations?: StationOption[] }>(),
+  { stations: () => [] },
+)
+const emit = defineEmits<{
+  change: [rows: TracksideApPlanRow[], dirty: boolean]
+  save: []
+}>()
+
 const router = useRouter()
-const { confirm } = useConfirm()
 const userSelectedExport = useUserSelectedExport()
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
-const plan = ref<TracksideApPlan | null>(null)
-const selectedGroups = ref<ApManagementVlanGroup[]>([])
+const storageKey = 'netconsole.trackside-ap-plan.last-task'
+const rows = ref<TracksideApPlanRow[]>([])
+const baselineRows = ref<TracksideApPlanRow[]>([])
+const selectedRows = ref<TracksideApPlanRow[]>([])
+const activeView = ref<'plan' | 'status'>('plan')
 const loading = ref(false)
+const statusLoading = ref(false)
 const error = ref('')
 const dirty = ref(false)
 const task = ref<TracksideApTask | null>(null)
 const importInput = ref<HTMLInputElement | null>(null)
 const duplicateStrategy = ref<'replace' | 'skip' | 'error'>('replace')
 const importPreview = ref<TracksideApPlanPreview | null>(null)
+const importRows = ref<TracksideApPlanRow[]>([])
 const importPreviewVisible = ref(false)
-const impactPreview = ref<ApManagementVlanImpact | null>(null)
-const impactVisible = ref(false)
-const activeView = ref<'groups' | 'stations'>('groups')
-const memberEditorVisible = ref(false)
-const allocationVisible = ref(false)
-const editingGroupId = ref('')
-const editingMemberIds = ref<string[]>([])
-const editingSectionName = ref('')
-const groupVlanEditBaseline = ref<TracksideApPlanDraft | null>(null)
-let pollTimer: number | undefined
+const onlineStatus = ref<TracksideApOnlineStatus | null>(null)
+const unassignedVisible = ref(false)
 const downloadingArtifact = ref(false)
+let pollTimer: number | undefined
+let editingBaseline:
+  | { row: TracksideApPlanRow; field: EditableField; value: unknown }
+  | null = null
 
-const groupColumns: NcTableColumn<ApManagementVlanGroup>[] = [
+const planColumns: NcTableColumn<TracksideApPlanRow>[] = [
   { key: 'selection', label: '', type: 'selection', valueType: 'selection', width: 46, fixed: 'left', hideable: false },
-  { key: 'sequence', label: '组序号', valueType: 'number', width: 82, fixed: 'left' },
-  { key: 'group_name', label: 'VLAN 组名称', valueType: 'name', width: 170 },
-  { key: 'start_station_name', label: '起始站', valueType: 'name', width: 140 },
-  { key: 'end_station_name', label: '结束站', valueType: 'name', width: 140 },
-  { key: 'station_count', label: '站点数', valueType: 'number', width: 88 },
-  { key: 'ap_count', label: 'AP 总数', valueType: 'number', width: 95 },
-  { key: 'management_vlan', label: '管理 VLAN', valueType: 'number', width: 110 },
-  { key: 'validation_status', label: '校验', valueType: 'status', width: 90 },
-  { key: 'notes', label: '备注', valueType: 'description', width: 180, align: 'left', alignmentReason: 'long-text' },
-]
-const stationColumns: NcTableColumn<ApManagementVlanStationDetail>[] = [
-  { key: 'station_name', label: '站点', valueType: 'name', fixed: 'left', width: 150 },
-  { key: 'ap_count', label: 'AP 数', valueType: 'number', width: 85 },
-  { key: 'group_name', label: 'VLAN 组', valueType: 'name', width: 170 },
-  { key: 'management_vlan', label: '管理 VLAN（继承）', valueType: 'number', width: 150 },
-  { key: 'source', label: '来源', valueType: 'status', width: 135 },
-  { key: 'notes', label: '备注', valueType: 'description', width: 190, align: 'left', alignmentReason: 'long-text' },
-]
-const previewColumns: NcTableColumn<TracksideApPlanPreviewRow>[] = [
-  { key: 'row_number', label: '行', valueType: 'number' },
-  { key: 'status', label: '状态', valueType: 'status' },
-  { key: 'key', label: 'VLAN 组/站点', valueType: 'name' },
-  { key: 'message', label: '说明', valueType: 'description', align: 'left', alignmentReason: 'long-text' },
-]
-const allocationColumns: NcTableColumn<ApManagementVlanAllocation>[] = [
-  { key: 'station_name', label: '站点', valueType: 'name', width: 140 },
-  { key: 'section_name', label: '区间', valueType: 'name', width: 170 },
-  { key: 'ap_name', label: 'AP 名称', valueType: 'name', width: 180 },
-  { key: 'point_code', label: '点位编号', valueType: 'name', width: 140 },
-  { key: 'planned_ip', label: '既有 AP IP（参考）', valueType: 'ip', width: 165 },
-  { key: 'group_source', label: '有效组来源', valueType: 'status', width: 145 },
-  { key: 'ap_override_group', label: 'AP 级覆盖', valueType: 'actions', width: 190 },
+  { key: 'sequence_no', label: '序号', valueType: 'number', width: 88, fixed: 'left' },
+  { key: 'station_name', label: '车站名称', valueType: 'name', width: 190 },
+  { key: 'ap_count', label: 'AP数量', valueType: 'number', width: 105 },
+  { key: 'ap_start_address', label: 'AP起始地址', valueType: 'ip', width: 165 },
+  { key: 'subnet_mask', label: '掩码', valueType: 'name', width: 135 },
+  { key: 'ap_gateway', label: 'AP网关', valueType: 'ip', width: 165 },
+  { key: 'management_vlan', label: 'AP管理VLAN', valueType: 'number', width: 130 },
+  { key: 'remark', label: '备注', valueType: 'description', width: 240, align: 'left', alignmentReason: 'long-text' },
+  { key: 'actions', label: '操作', valueType: 'actions', width: 72, fixed: 'right', hideable: false },
 ]
 
-const canPreviewImport = computed(() => !props.saving)
-const canApplyImport = computed(() => !props.locked && !props.saving)
-const canWrite = canApplyImport
+const statusColumns: NcTableColumn<TracksideApOnlineStatusRow>[] = [
+  { key: 'station_name', label: '归属站点', valueType: 'name', minWidth: 170, fixed: 'left' },
+  { key: 'planned_ap_count', label: '规划AP数量', valueType: 'number', width: 125 },
+  { key: 'actual_ap_count', label: 'AP总数量', valueType: 'number', width: 115 },
+  { key: 'online_count', label: '上线', valueType: 'number', width: 90 },
+  { key: 'offline_count', label: '未上线', valueType: 'number', width: 100 },
+  { key: 'online_rate', label: '上线率', valueType: 'number', width: 105 },
+  { key: 'remark', label: '备注', valueType: 'description', minWidth: 260, align: 'left', alignmentReason: 'long-text' },
+]
+
+const unassignedColumns: NcTableColumn<TracksideApUnassigned>[] = [
+  { key: 'ap_name', label: 'AP名称', valueType: 'name', minWidth: 170 },
+  { key: 'point_code', label: '点位编号', valueType: 'name', width: 130 },
+  { key: 'mac', label: 'MAC', valueType: 'mac', width: 170 },
+  { key: 'station_name', label: '原归属文本', valueType: 'name', minWidth: 160 },
+]
+
+const editableFields: EditableField[] = [
+  'sequence_no',
+  'station_name',
+  'ap_count',
+  'ap_start_address',
+  'subnet_mask',
+  'ap_gateway',
+  'management_vlan',
+  'remark',
+]
+const canWrite = computed(() => !props.locked && !props.saving)
 const taskRunning = computed(() => Boolean(task.value && !terminalStates.has(task.value.status)))
-const draft = computed<TracksideApPlanDraft | null>(() => plan.value && ({
-  planning: plan.value.planning,
-  groups: plan.value.groups,
-  assignments: plan.value.assignments,
-  allocations: plan.value.allocations,
-}))
-const modeLabels: Record<ApManagementVlanPlanningMode, string> = {
-  line_single: '全线统一 VLAN',
-  station_independent: '每站独立 VLAN',
-  station_grouped: '按站点分组 VLAN',
-}
-const sourceLabels: Record<string, string> = {
-  vlan_group_inherited: 'VLAN 组继承',
-  station_inherited: 'VLAN 组继承',
-  ap_override: 'AP 单独指定',
-  section_default: '区间默认组',
-  interval_start_default: '区间起点默认组',
-  legacy: '站点历史配置',
-  legacy_station: '站点历史配置',
-  unassigned: '未配置',
-  existing_ap: '既有 AP 信息',
-  reference_only: '仅 VLAN 归属',
-}
-const editingGroup = computed(() => plan.value?.groups.find(
-  (group) => group.group_id === editingGroupId.value,
-) || null)
-const editingAllocations = computed(() => plan.value?.allocations.filter(
-  (row) => row.group_id === editingGroupId.value,
-) || [])
-const sectionNames = computed(() => [...new Set(
-  plan.value?.allocations.map((row) => row.section_name).filter(Boolean) || [],
-)].sort((left, right) => left.localeCompare(right, 'zh-CN')))
+const orderedRows = computed(() => [...rows.value].sort(compareRows))
 const orderedStations = computed(() => [...props.stations].sort(
   (left, right) => (left.sort_order ?? Number.MAX_SAFE_INTEGER)
     - (right.sort_order ?? Number.MAX_SAFE_INTEGER)
     || left.name.localeCompare(right.name, 'zh-CN'),
 ))
 
-function failure(reason: unknown, fallback: string): string { return reason instanceof Error ? reason.message : fallback }
-function deepCopy<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }
-function sourceLabel(value: string): string { return sourceLabels[value] || '未配置' }
-function stopPolling(): void { if (pollTimer !== undefined) window.clearTimeout(pollTimer); pollTimer = undefined }
-function rememberTask(value: TracksideApTask | null): void {
-  task.value = value
-  if (value) localStorage.setItem(storageKey, value.task_id)
-  else localStorage.removeItem(storageKey)
+const validationIssues = computed<ValidationIssue[]>(() => validateRows(rows.value))
+const validationCount = computed(() => validationIssues.value.length)
+
+function deepCopy<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
 }
-function refreshLocalStatistics(): void {
-  if (!plan.value) return
-  for (const [index, group] of plan.value.groups.entries()) {
-    group.sequence = index
-    group.station_count = group.members.length
-    group.start_station_name = group.members[0]?.station_name || ''
-    group.end_station_name = group.members.at(-1)?.station_name || ''
-    group.ap_count = group.members.reduce((total, member) => total + member.ap_count, 0)
+
+function failure(reason: unknown, fallback: string): string {
+  return reason instanceof Error ? reason.message : fallback
+}
+
+function compareRows(left: TracksideApPlanRow, right: TracksideApPlanRow): number {
+  return left.sequence_no - right.sequence_no
+    || left.station_name.localeCompare(right.station_name, 'zh-CN')
+}
+
+function blankRow(sequenceNo = nextSequence()): TracksideApPlanRow {
+  return {
+    station_id: '',
+    sequence_no: sequenceNo,
+    station_name: '',
+    ap_count: 0,
+    ap_start_address: '',
+    subnet_mask: '',
+    mask_length: null,
+    ap_gateway: '',
+    management_vlan: null,
+    ap_management_vlans: '',
+    remark: '',
+    sort_order: sequenceNo - 1,
   }
 }
-function publishDirty(): void {
-  if (!draft.value) return
-  refreshLocalStatistics()
+
+function nextSequence(): number {
+  return Math.max(0, ...rows.value.map((row) => Number(row.sequence_no) || 0)) + 1
+}
+
+function publishDirty(sort = false): void {
+  if (sort) rows.value.sort(compareRows)
   dirty.value = true
-  emit('change', deepCopy(draft.value), true)
+  emit('change', deepCopy(rows.value), true)
+}
+
+function hydrateStation(row: TracksideApPlanRow): void {
+  const station = props.stations.find((item) => item.id === row.station_id)
+    || props.stations.find((item) => item.name === row.station_name)
+  if (!station) {
+    row.station_id = ''
+    return
+  }
+  row.station_id = station.id
+  row.station_name = station.name
 }
 
 async function loadPlan(force = false): Promise<boolean> {
-  if (dirty.value && !force) {
-    const accepted = await confirm({ type: 'WARNING', title: '未保存修改', message: '刷新会丢弃尚未保存的轨旁 AP 管理 VLAN 分组，是否继续？', confirmText: '放弃修改并刷新' })
-    if (!accepted) return false
-  }
+  if (dirty.value && !force) return false
   loading.value = true
   error.value = ''
   try {
-    plan.value = await getTracksideApPlan()
+    const plan = await getTracksideApPlan()
+    const loaded = plan.items.map((row, index) => ({
+      ...row,
+      sequence_no: row.sequence_no || index + 1,
+      subnet_mask: row.subnet_mask || (row.mask_length == null ? '' : String(row.mask_length)),
+      management_vlan: row.management_vlan
+        ?? (row.ap_management_vlans ? Number(row.ap_management_vlans) : null),
+    }))
+    for (const row of loaded) hydrateStation(row)
+    rows.value = loaded.sort(compareRows)
+    baselineRows.value = deepCopy(rows.value)
     dirty.value = false
-    selectedGroups.value = []
-    if (draft.value) emit('change', deepCopy(draft.value), false)
+    selectedRows.value = []
+    emit('change', deepCopy(rows.value), false)
+    await loadOnlineStatus()
     return true
   } catch (reason) {
-    error.value = failure(reason, '轨旁 AP 管理 VLAN 规划加载失败')
+    error.value = failure(reason, '轨旁 AP 规划加载失败')
     return false
-  } finally { loading.value = false }
+  } finally {
+    loading.value = false
+  }
 }
 
-async function applyServerPreview(
-  proposed: TracksideApPlanDraft,
-  title: string,
-): Promise<boolean> {
-  loading.value = true
-  error.value = ''
+async function loadOnlineStatus(): Promise<void> {
+  statusLoading.value = true
   try {
-    const preview = await previewTracksideApVlanChange(proposed)
-    impactPreview.value = preview.impact
-    impactVisible.value = true
-    const accepted = await confirm({
-      type: preview.impact.conflict_count ? 'DANGER' : 'WARNING',
-      title,
-      message: `将影响 ${preview.impact.affected_station_count} 个站点、${preview.impact.affected_ap_count} 个 AP，管理 VLAN 变化 ${preview.impact.vlan_change_count} 个。`,
-      confirmText: '应用预览结果',
-    })
-    if (accepted) {
-      plan.value = preview.plan
-      selectedGroups.value = []
-      publishDirty()
-      return true
-    }
-    return false
+    onlineStatus.value = await getTracksideApOnlineStatus()
   } catch (reason) {
-    error.value = failure(reason, 'VLAN 分组调整预览失败')
-    return false
-  }
-  finally { loading.value = false }
-}
-
-function beginGroupVlanEdit(): void {
-  if (!groupVlanEditBaseline.value && draft.value) {
-    groupVlanEditBaseline.value = deepCopy(draft.value)
+    error.value = failure(reason, 'AP 上线统计加载失败')
+  } finally {
+    statusLoading.value = false
   }
 }
 
-async function commitGroupVlanEdit(): Promise<void> {
-  if (!plan.value || !draft.value || !groupVlanEditBaseline.value) return
-  const proposed = deepCopy(draft.value)
-  const baseline = groupVlanEditBaseline.value
-  groupVlanEditBaseline.value = null
-  plan.value = {
-    ...plan.value,
-    planning: baseline.planning,
-    groups: baseline.groups,
-    assignments: baseline.assignments,
-    allocations: baseline.allocations,
-  }
-  await applyServerPreview(proposed, '修改管理 VLAN 影响预览')
+function addRow(): void {
+  if (!canWrite.value) return
+  rows.value.push(blankRow())
+  publishDirty(true)
+  void nextTick(() => focusCell(rows.value.at(-1), 'station_name'))
 }
 
-async function regroup(mode = plan.value?.planning.planning_mode): Promise<void> {
-  if (!canWrite.value || !plan.value || !draft.value || !mode) return
-  loading.value = true
-  error.value = ''
-  try {
-    const preview = await previewTracksideApVlanAutoGroup({
-      planning_mode: mode,
-      auto_group_station_count: plan.value.planning.auto_group_station_count,
-      current: deepCopy(draft.value),
-    })
-    impactPreview.value = preview.impact
-    impactVisible.value = true
-    const accepted = await confirm({
-      type: preview.impact.conflict_count ? 'DANGER' : 'WARNING',
-      title: '规划方式影响预览',
-      message: `${modeLabels[mode]}将生成 ${preview.plan.groups.length} 个 VLAN 组，影响 ${preview.impact.affected_station_count} 个站点和 ${preview.impact.affected_ap_count} 个 AP；不会生成、校验或修改 AP IP。`,
-      confirmText: '确认应用',
-    })
-    if (accepted) {
-      plan.value = preview.plan
-      publishDirty()
-    }
-  } catch (reason) { error.value = failure(reason, '自动分组预览失败') }
-  finally { loading.value = false }
-}
-
-async function splitGroup(): Promise<void> {
-  if (!draft.value || selectedGroups.value.length !== 1) return
-  const source = selectedGroups.value[0]
-  if (source.members.length < 2) {
-    ElMessage.warning('至少包含两个站点的组才能拆分')
-    return
-  }
-  const proposed = splitVlanGroup(
-    draft.value,
-    source.group_id,
-    Math.ceil(source.members.length / 2),
-    `group-${Date.now()}`,
-  )
-  await applyServerPreview(proposed, '拆分 VLAN 组影响预览')
-}
-
-async function mergeGroups(): Promise<void> {
-  if (!draft.value || selectedGroups.value.length !== 2) return
-  const ordered = [...selectedGroups.value].sort((left, right) => left.sequence - right.sequence)
-  if (ordered[1].sequence !== ordered[0].sequence + 1) {
-    ElMessage.warning('只能合并相邻 VLAN 组')
-    return
-  }
-  let proposed: TracksideApPlanDraft
-  try {
-    proposed = mergeAdjacentVlanGroups(
-      draft.value,
-      ordered[0].group_id,
-      ordered[1].group_id,
-    )
-  } catch (reason) {
-    ElMessage.warning(failure(reason, 'VLAN 组合并失败'))
-    return
-  }
-  await applyServerPreview(proposed, '合并 VLAN 组影响预览')
-}
-
-function addEmptyGroup(): void {
-  if (!canWrite.value || !plan.value) return
-  const sequence = plan.value.groups.length
-  const groupId = `group-${Date.now()}-${sequence}`
-  plan.value.groups.push({
-    group_id: groupId,
-    line_id: plan.value.planning.line_id,
-    group_code: `G${String(sequence + 1).padStart(3, '0')}`,
-    group_name: `VLAN 组 ${sequence + 1}`,
-    sequence,
-    management_vlan: null,
-    legacy_management_vlans: '',
-    network_address: '',
-    prefix_length: null,
-    subnet_mask: '',
-    default_gateway: '',
-    ap_start_ip: '',
-    ap_end_ip: '',
-    address_allocation_strategy: plan.value.planning.address_allocation_strategy,
-    notes: '',
-    created_at: '',
-    updated_at: '',
-    members: [],
-    start_station_name: '',
-    end_station_name: '',
-    station_count: 0,
-    ap_count: 0,
-    address_capacity: 0,
-    used_address_count: 0,
-    validation_status: 'error',
-    issues: [],
-  })
-  editingGroupId.value = groupId
-  editingMemberIds.value = []
-  memberEditorVisible.value = true
+function removeRow(row: TracksideApPlanRow): void {
+  if (!canWrite.value) return
+  rows.value = rows.value.filter((item) => item !== row)
+  selectedRows.value = selectedRows.value.filter((item) => item !== row)
   publishDirty()
 }
 
-function openMemberEditor(): void {
-  if (!canWrite.value || selectedGroups.value.length !== 1) return
-  editingGroupId.value = selectedGroups.value[0].group_id
-  editingMemberIds.value = selectedGroups.value[0].members.map(
-    (member) => member.station_id,
-  )
-  memberEditorVisible.value = true
+function removeSelected(): void {
+  if (!canWrite.value || !selectedRows.value.length) return
+  const selected = new Set(selectedRows.value)
+  rows.value = rows.value.filter((row) => !selected.has(row))
+  selectedRows.value = []
+  publishDirty()
 }
 
-async function applyMemberEditor(): Promise<void> {
-  if (!draft.value || !editingGroup.value) return
-  const selected = new Set(editingMemberIds.value)
-  const proposed = updateVlanGroupMembers(
-    draft.value,
-    editingGroup.value.group_id,
-    orderedStations.value
-      .filter((station) => selected.has(station.id))
-      .map((station) => ({
-        station_id: station.id,
-        station_name: station.name,
-        station_sequence: station.sort_order ?? 0,
-        ap_count: station.ap_count ?? 0,
-      })),
-  )
-  memberEditorVisible.value = false
-  await applyServerPreview(proposed, '调整 VLAN 组边界影响预览')
+function undoChanges(): void {
+  if (!canWrite.value || !dirty.value) return
+  rows.value = deepCopy(baselineRows.value)
+  selectedRows.value = []
+  dirty.value = false
+  emit('change', deepCopy(rows.value), false)
 }
 
-async function deleteEmptyGroup(): Promise<void> {
-  if (!draft.value || selectedGroups.value.length !== 1) return
-  const target = selectedGroups.value[0]
-  if (target.members.length) {
-    ElMessage.warning('只能删除没有站点成员的空组')
+function requestSave(): void {
+  if (!canWrite.value || !dirty.value) return
+  if (validationIssues.value.length) {
+    focusFirstError()
     return
   }
-  const proposed = deepCopy(draft.value)
-  proposed.groups = proposed.groups
-    .filter((group) => group.group_id !== target.group_id)
-    .map((group, sequence) => ({ ...group, sequence }))
-  await applyServerPreview(proposed, '删除空 VLAN 组影响预览')
+  emit('save')
 }
 
-function showStations(): void {
-  activeView.value = 'stations'
+function stationChanged(row: TracksideApPlanRow): void {
+  hydrateStation(row)
+  publishDirty()
 }
 
-function showApReferences(): void {
-  if (selectedGroups.value.length !== 1) return
-  editingGroupId.value = selectedGroups.value[0].group_id
-  editingSectionName.value = editingAllocations.value.find(
-    (row) => row.section_name,
-  )?.section_name || sectionNames.value[0] || ''
-  allocationVisible.value = true
+function cellError(row: TracksideApPlanRow, field: EditableField): string {
+  return validationIssues.value.find(
+    (issue) => issue.row === row && issue.field === field,
+  )?.message || ''
 }
 
-function assignmentGroupId(
-  targetId: string,
-  assignmentType: 'section_default' | 'ap_override',
-): string {
-  return plan.value?.assignments.find(
-    (row) => row.target_id === targetId && row.assignment_type === assignmentType,
-  )?.group_id || ''
-}
-
-function assignmentDraft(
-  targetId: string,
-  assignmentType: 'section_default' | 'ap_override',
-  groupId?: string,
-): TracksideApPlanDraft | null {
-  if (!draft.value) return null
-  const proposed = deepCopy(draft.value)
-  proposed.assignments = proposed.assignments.filter((row) => (
-    assignmentType === 'ap_override'
-      ? row.target_id !== targetId
-      : !(row.target_id === targetId && row.assignment_type === assignmentType)
-  ))
-  if (groupId) {
-    proposed.assignments.push({
-      assignment_id: `assignment:${assignmentType}:${targetId}`,
-      assignment_type: assignmentType,
-      target_id: targetId,
-      group_id: groupId,
-      source: assignmentType,
-      updated_at: '',
-    })
+function validateRows(source: TracksideApPlanRow[]): ValidationIssue[] {
+  const issues: ValidationIssue[] = []
+  const sequences = new Map<number, number>()
+  const names = new Map<string, number>()
+  const stationIds = new Map<string, number>()
+  for (const row of source) {
+    if (!Number.isInteger(Number(row.sequence_no)) || Number(row.sequence_no) <= 0) {
+      issues.push({ row, field: 'sequence_no', message: '序号必须是正整数' })
+    } else {
+      sequences.set(row.sequence_no, (sequences.get(row.sequence_no) || 0) + 1)
+    }
+    const name = row.station_name.trim()
+    if (!name) issues.push({ row, field: 'station_name', message: '车站名称不能为空' })
+    else names.set(name.toLocaleLowerCase(), (names.get(name.toLocaleLowerCase()) || 0) + 1)
+    if (row.station_id) stationIds.set(row.station_id, (stationIds.get(row.station_id) || 0) + 1)
+    if (!Number.isInteger(Number(row.ap_count)) || Number(row.ap_count) < 0) {
+      issues.push({ row, field: 'ap_count', message: 'AP数量必须是非负整数' })
+    }
+    if (row.ap_start_address && !validStartAddress(row.ap_start_address)) {
+      issues.push({ row, field: 'ap_start_address', message: '应为 IPv4 或末段 X 占位符' })
+    }
+    if (row.subnet_mask && !validMask(row.subnet_mask)) {
+      issues.push({ row, field: 'subnet_mask', message: '支持 24、/24 或点分掩码' })
+    }
+    if (row.ap_gateway && !validIpv4(row.ap_gateway)) {
+      issues.push({ row, field: 'ap_gateway', message: 'IPv4 格式无效' })
+    }
+    if (!Number.isInteger(Number(row.management_vlan))
+      || Number(row.management_vlan) < 1
+      || Number(row.management_vlan) > 4094) {
+      issues.push({ row, field: 'management_vlan', message: 'VLAN 必须在 1～4094 范围内' })
+    }
   }
-  return proposed
+  for (const row of source) {
+    if ((sequences.get(row.sequence_no) || 0) > 1) {
+      issues.push({ row, field: 'sequence_no', message: '序号不能重复' })
+    }
+    if ((names.get(row.station_name.trim().toLocaleLowerCase()) || 0) > 1) {
+      issues.push({ row, field: 'station_name', message: '车站名称不能重复' })
+    }
+    if (row.station_id && (stationIds.get(row.station_id) || 0) > 1) {
+      issues.push({ row, field: 'station_name', message: '同一正式站点只能规划一次' })
+    }
+  }
+  return issues
 }
 
-async function applySectionGroup(groupId?: string): Promise<void> {
-  if (!editingSectionName.value) return
-  const proposed = assignmentDraft(
-    `section:${editingSectionName.value}`,
-    'section_default',
-    groupId,
+function validStartAddress(value: string): boolean {
+  const text = value.trim()
+  if (/^(?:\d{1,3}\.){3}[xX]$/.test(text)) {
+    return validIpv4(text.replace(/[xX]$/, '1'))
+  }
+  return validIpv4(text)
+}
+
+function validIpv4(value: string): boolean {
+  const parts = value.trim().split('.')
+  return parts.length === 4 && parts.every(
+    (part) => /^\d{1,3}$/.test(part) && Number(part) >= 0 && Number(part) <= 255,
   )
-  if (proposed) await applyServerPreview(proposed, '调整区间默认 VLAN 组影响预览')
 }
 
-async function applyApGroup(
-  row: ApManagementVlanAllocation,
-  groupId?: string,
-): Promise<void> {
-  const proposed = assignmentDraft(row.ap_id, 'ap_override', groupId)
-  if (proposed) await applyServerPreview(proposed, '调整 AP 级 VLAN 组覆盖影响预览')
+function validMask(value: string): boolean {
+  const text = value.trim().replace(/^\//, '')
+  if (/^\d{1,2}$/.test(text)) return Number(text) >= 0 && Number(text) <= 32
+  if (!validIpv4(text)) return false
+  const bits = text.split('.').map((part) => Number(part).toString(2).padStart(8, '0')).join('')
+  return /^1*0*$/.test(bits)
+}
+
+function beginCellEdit(row: TracksideApPlanRow, field: EditableField): void {
+  editingBaseline = { row, field, value: row[field] }
+}
+
+function cancelCellEdit(row: TracksideApPlanRow, field: EditableField): void {
+  if (editingBaseline?.row === row && editingBaseline.field === field) {
+    ;(row[field] as unknown) = editingBaseline.value
+  }
+  editingBaseline = null
+  const element = document.activeElement
+  if (element instanceof HTMLElement) element.blur()
+}
+
+function focusCell(row: TracksideApPlanRow | undefined, field: EditableField): void {
+  if (!row) return
+  const selector = `[data-plan-cell="${cellId(row, field)}"] input`
+  document.querySelector<HTMLInputElement>(selector)?.focus()
+}
+
+function focusNextRow(row: TracksideApPlanRow, field: EditableField): void {
+  const ordered = orderedRows.value
+  const index = ordered.indexOf(row)
+  const next = ordered[index + 1]
+  if (next) void nextTick(() => focusCell(next, field))
+}
+
+function cellId(row: TracksideApPlanRow, field: EditableField): string {
+  return `${rows.value.indexOf(row)}-${field}`
+}
+
+function focusFirstError(): void {
+  const issue = validationIssues.value[0]
+  if (!issue) return
+  activeView.value = 'plan'
+  void nextTick(() => focusCell(issue.row, issue.field))
+}
+
+function pasteGrid(
+  event: ClipboardEvent,
+  startRow: TracksideApPlanRow,
+  startField: EditableField,
+): void {
+  if (!canWrite.value) return
+  const text = event.clipboardData?.getData('text/plain') || ''
+  if (!text) return
+  event.preventDefault()
+  const grid = text.replace(/\r/g, '').split('\n').filter(
+    (line, index, all) => line.length > 0 || index < all.length - 1,
+  ).map((line) => line.split('\t'))
+  const visible = orderedRows.value
+  const rowIndex = Math.max(visible.indexOf(startRow), 0)
+  const columnIndex = editableFields.indexOf(startField)
+  for (let y = 0; y < grid.length; y += 1) {
+    let target = visible[rowIndex + y]
+    if (!target) {
+      target = blankRow()
+      rows.value.push(target)
+      visible.push(target)
+    }
+    for (let x = 0; x < grid[y].length; x += 1) {
+      const field = editableFields[columnIndex + x]
+      if (!field) break
+      assignPastedValue(target, field, grid[y][x])
+    }
+    hydrateStation(target)
+  }
+  publishDirty(true)
+}
+
+function assignPastedValue(
+  row: TracksideApPlanRow,
+  field: EditableField,
+  value: string,
+): void {
+  const text = value.trim()
+  if (field === 'sequence_no' || field === 'ap_count') {
+    ;(row[field] as number) = Number(text)
+  } else if (field === 'management_vlan') {
+    row.management_vlan = text ? Number(text) : null
+    row.ap_management_vlans = text
+  } else {
+    ;(row[field] as string) = value
+  }
+}
+
+async function chooseImport(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || props.saving) return
+  loading.value = true
+  error.value = ''
+  try {
+    importPreview.value = await previewTracksideApPlan(file, duplicateStrategy.value)
+    importRows.value = deepCopy(importPreview.value.result_rows)
+    importPreviewVisible.value = true
+  } catch (reason) {
+    error.value = failure(reason, '轨旁 AP 规划导入预览失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+function applyImportPreview(): void {
+  if (!importPreview.value?.can_apply || !canWrite.value) return
+  const issues = validateRows(importRows.value)
+  if (issues.length) {
+    ElMessage.error(issues[0].message)
+    return
+  }
+  rows.value = deepCopy(importRows.value).sort(compareRows)
+  importPreviewVisible.value = false
+  publishDirty()
+  ElMessage.success('导入预览已应用到编辑区')
+}
+
+async function exportPlan(template: boolean): Promise<void> {
+  loading.value = true
+  error.value = ''
+  try {
+    const draftRows = !template && dirty.value ? deepCopy(rows.value) : undefined
+    const result = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: template ? 'rail.trackside_plan_template' : 'rail.trackside_plan_current',
+      suggestedName: `${template ? '轨旁AP规划模板' : '轨旁AP规划'}-${exportTimestamp()}.xlsx`,
+      context: { template, draft: Boolean(draftRows) },
+      submit: () => exportTracksideApPlan(template, draftRows),
+    })
+    if (result.status === 'cancelled') return
+    await handleTaskUpdate(result.task)
+    poll()
+  } catch (reason) {
+    error.value = failure(reason, template ? '规划模板导出启动失败' : '轨旁 AP 规划导出启动失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+async function refreshOnlineStatus(): Promise<void> {
+  if (taskRunning.value) return
+  statusLoading.value = true
+  error.value = ''
+  try {
+    const started = await startTracksideApUpdate({})
+    await handleTaskUpdate(started)
+    poll()
+  } catch (reason) {
+    error.value = failure(reason, '上线状态刷新启动失败')
+    statusLoading.value = false
+  }
+}
+
+function stopPolling(): void {
+  if (pollTimer !== undefined) window.clearTimeout(pollTimer)
+  pollTimer = undefined
 }
 
 function poll(): void {
@@ -456,47 +520,49 @@ function poll(): void {
   pollTimer = window.setTimeout(async () => {
     try {
       const latest = await getTracksideApTask(task.value!.task_id)
-      error.value = ''
       await handleTaskUpdate(latest)
       poll()
-    } catch (reason) { error.value = failure(reason, '轨旁 AP 规划任务状态读取失败') }
+    } catch (reason) {
+      error.value = failure(reason, '轨旁 AP 任务状态读取失败')
+      statusLoading.value = false
+    }
   }, 1000)
 }
-async function exportPlan(template: boolean): Promise<void> {
-  loading.value = true
-  error.value = ''
+
+function rememberTask(value: TracksideApTask | null): void {
+  task.value = value
+  if (value) localStorage.setItem(storageKey, value.task_id)
+  else localStorage.removeItem(storageKey)
+}
+
+async function handleTaskUpdate(value: TracksideApTask): Promise<void> {
+  rememberTask(value)
+  if (!terminalStates.has(value.status)) return
+  if (value.status === 'COMPLETED' && value.action === 'trackside_ap_optical_update') {
+    await loadOnlineStatus()
+  } else if (value.status === 'FAILED') {
+    error.value = value.error_message || '轨旁 AP 任务失败'
+  } else if (value.status === 'CANCELLED') {
+    error.value = '轨旁 AP 任务已取消'
+  }
+  statusLoading.value = false
+}
+
+async function recoverTasks(): Promise<void> {
   try {
-    const draftPayload = !template && dirty.value && draft.value ? deepCopy(draft.value) : undefined
-    const result = await userSelectedExport.submitExportAfterDestinationSelected({
-      action: template ? 'rail.trackside_plan_template' : 'rail.trackside_plan_current',
-      suggestedName: `${template ? '轨旁AP规划模板' : '轨旁AP规划'}-${exportTimestamp()}.xlsx`,
-      context: { template, draft: Boolean(draftPayload) },
-      submit: () => exportTracksideApPlan(template, draftPayload),
-    })
-    if (result.status === 'cancelled') return
-    await handleTaskUpdate(result.task)
+    const recovered = await recoverTracksideApTasks()
+    const saved = localStorage.getItem(storageKey) || ''
+    rememberTask(
+      recovered.find((item) => item.task_id === saved)
+      || recovered.find((item) => !terminalStates.has(item.status))
+      || null,
+    )
     poll()
-  } catch (reason) { error.value = failure(reason, template ? '规划模板导出启动失败' : '轨旁 AP 规划导出启动失败') }
-  finally { loading.value = false }
+  } catch (reason) {
+    error.value = failure(reason, '轨旁 AP 任务恢复失败')
+  }
 }
-async function chooseImport(event: Event): Promise<void> {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = ''
-  if (!file || !canPreviewImport.value) return
-  loading.value = true
-  error.value = ''
-  try { importPreview.value = await previewTracksideApPlan(file, duplicateStrategy.value); importPreviewVisible.value = true }
-  catch (reason) { error.value = failure(reason, '轨旁 AP 规划导入预览失败') }
-  finally { loading.value = false }
-}
-function applyImportPreview(): void {
-  if (!importPreview.value?.can_apply || !importPreview.value.result_plan || !canApplyImport.value) return
-  plan.value = importPreview.value.result_plan
-  importPreviewVisible.value = false
-  publishDirty()
-  ElMessage.success('导入预览已应用到 VLAN 分组编辑区，请使用页面右上角“保存”提交')
-}
+
 function openTaskWindow(): void {
   const taskId = task.value?.task_id || ''
   if (window.netconsoleDesktop) {
@@ -505,204 +571,353 @@ function openTaskWindow(): void {
   }
   void router.push({ name: 'tasks', query: { module: 'rail', ...(taskId ? { task_id: taskId } : {}) } })
 }
-async function downloadArtifact(): Promise<void> { if (task.value) await downloadCompletedTask(task.value) }
-async function downloadCompletedTask(current: TracksideApTask): Promise<void> {
-  if (current.status !== 'COMPLETED') return
-  if (!current.available || !current.artifact_id) {
-    ElMessage.error('轨旁 AP 规划文件暂不可下载')
-    return
-  }
+
+async function downloadArtifact(): Promise<void> {
+  const current = task.value
+  if (!current || current.status !== 'COMPLETED' || !current.available || !current.artifact_id) return
   const suggestedName = current.artifact_name || '轨旁AP规划.xlsx'
   downloadingArtifact.value = true
   try {
-    const result = await downloadBackendResource(tracksideApPlanDownloadRequest(current.artifact_id, suggestedName))
+    const result = await downloadBackendResource(
+      tracksideApPlanDownloadRequest(current.artifact_id, suggestedName),
+    )
     if (result.status === 'saved') ElMessage.success(`已保存 ${suggestedName}`)
-    else if (result.status === 'started') ElMessage.success(`浏览器已开始下载 ${suggestedName}`)
-    else if (result.status === 'cancelled') ElMessage.info('下载已取消')
-    else if (result.status === 'failed') {
-      const message = result.error || '轨旁 AP 规划文件下载失败'
-      ElMessage.error(message)
-    }
+    else if (result.status === 'started') ElMessage.info(`浏览器已开始下载 ${suggestedName}`)
+    else if (result.status === 'failed') ElMessage.error(result.error || '轨旁 AP 规划文件下载失败')
   } catch (reason) {
-    const message = failure(reason, '轨旁 AP 规划文件下载失败')
-    ElMessage.error(message)
-  } finally { downloadingArtifact.value = false }
-}
-async function handleTaskUpdate(value: TracksideApTask): Promise<void> {
-  rememberTask(value)
-  if (!terminalStates.has(value.status)) return
-  if (value.status === 'FAILED') error.value = value.error_message || '轨旁 AP 规划导出失败'
-  else if (value.status === 'CANCELLED') error.value = '轨旁 AP 规划导出已取消'
+    ElMessage.error(failure(reason, '轨旁 AP 规划文件下载失败'))
+  } finally {
+    downloadingArtifact.value = false
+  }
 }
 
 function exportTimestamp(now = new Date()): string {
   const part = (value: number) => String(value).padStart(2, '0')
   return `${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}_${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}`
 }
-async function recoverTasks(): Promise<void> {
-  try {
-    const recovered = await recoverTracksideApTasks()
-    const saved = localStorage.getItem(storageKey) || ''
-    rememberTask(recovered.find((item) => item.task_id === saved)
-      || recovered.find((item) => item.action === 'trackside_ap_plan_export' && !terminalStates.has(item.status))
-      || recovered.find((item) => item.action === 'trackside_ap_plan_export') || null)
-    poll()
-  } catch (reason) { error.value = failure(reason, '轨旁 AP 规划任务恢复失败') }
+
+function displayRate(value: number | null): string {
+  return value == null ? '—' : `${value.toFixed(1)}%`
 }
 
-watch(() => props.stations, (stations) => {
-  if (!plan.value || !stations.length) return
-  const byId = new Map(stations.map((station) => [station.id, station]))
-  const byName = new Map(stations.map((station) => [station.name.toLocaleLowerCase(), station]))
+function openApReferences(): void {
+  void router.replace({ query: { ...router.currentRoute.value.query, tab: 'trackside-ap' } })
+}
+
+watch(() => props.stations, () => {
   let changed = false
-  for (const group of plan.value.groups) {
-    group.members = group.members.filter((member) => {
-      const station = byId.get(member.station_id) || byName.get(member.station_name.toLocaleLowerCase())
-      if (!station) { changed = true; return false }
-      if (member.station_name !== station.name || member.station_sequence !== (station.sort_order ?? 0)) changed = true
-      member.station_id = station.id
-      member.station_name = station.name
-      member.station_sequence = station.sort_order ?? 0
-      member.ap_count = station.ap_count ?? member.ap_count
-      return true
-    })
+  for (const row of rows.value) {
+    const station = props.stations.find((item) => item.id === row.station_id)
+    if (station && station.name !== row.station_name) {
+      row.station_name = station.name
+      changed = true
+    }
   }
   if (changed && canWrite.value) publishDirty()
 }, { deep: true })
 
 defineExpose({ reload: loadPlan })
-onMounted(() => { void Promise.all([loadPlan(true), recoverTasks()]) })
+onMounted(() => {
+  void Promise.all([loadPlan(true), recoverTasks()])
+})
 onBeforeUnmount(stopPolling)
 </script>
 
 <template>
   <section class="planning-tab">
-    <el-alert v-if="error" :title="error" type="error" show-icon :closable="false"><el-button link @click="recoverTasks">恢复任务状态</el-button></el-alert>
-    <div class="planning-mode">
-      <span class="label">AP 管理 VLAN 规划方式</span>
-      <el-select :model-value="plan?.planning.planning_mode" :disabled="!canWrite || loading" style="width:190px" @change="(value: ApManagementVlanPlanningMode) => regroup(value)">
-        <el-option label="全线统一 VLAN" value="line_single" />
-        <el-option label="每站独立 VLAN" value="station_independent" />
-        <el-option label="按站点分组 VLAN" value="station_grouped" />
-      </el-select>
-      <template v-if="plan?.planning.planning_mode === 'station_grouped'">
-        <span>自动每组</span>
-        <el-select v-model="plan.planning.auto_group_station_count" :disabled="!canWrite" style="width:82px">
-          <el-option v-for="count in 4" :key="count" :label="`${count} 站`" :value="count" />
-        </el-select>
-        <el-button :disabled="!canWrite || taskRunning" @click="regroup()">自动分组预览</el-button>
-      </template>
-      <el-tag v-if="plan" :type="plan.valid ? 'success' : 'danger'">{{ plan.valid ? '规划有效' : `${plan.issues.filter((item) => item.blocking).length} 个阻断问题` }}</el-tag>
-      <el-tag v-if="plan?.unassigned_station_count" type="danger">未分配站点 {{ plan.unassigned_station_count }}</el-tag>
-      <span class="revision">revision {{ plan?.planning.revision ?? 0 }}</span>
-    </div>
-    <div class="toolbar">
-      <el-select v-model="duplicateStrategy" aria-label="重复策略" style="width:150px"><el-option label="重复时覆盖" value="replace" /><el-option label="重复时跳过" value="skip" /><el-option label="重复时报错" value="error" /></el-select>
-      <input ref="importInput" class="hidden" type="file" accept=".xlsx,.csv" @change="chooseImport">
-      <el-button :icon="Download" :disabled="!isFeatureEnabled('web.rail_trackside_ap_plan_export') || taskRunning" @click="exportPlan(true)">下载模板</el-button>
-      <el-button :icon="UploadFilled" :disabled="!canPreviewImport || taskRunning" @click="importInput?.click()">导入并预览</el-button>
-      <el-button :icon="Download" :disabled="!isFeatureEnabled('web.rail_trackside_ap_plan_export') || taskRunning" @click="exportPlan(false)">导出当前</el-button>
-      <el-button :disabled="!canWrite || selectedGroups.length !== 1 || taskRunning" @click="splitGroup">拆分 VLAN 组</el-button>
-      <el-button :disabled="!canWrite || selectedGroups.length !== 2 || taskRunning" @click="mergeGroups">合并相邻组</el-button>
-      <el-button :disabled="!canWrite || taskRunning" @click="addEmptyGroup">新增空组</el-button>
-      <el-button :disabled="!canWrite || selectedGroups.length !== 1 || taskRunning" @click="openMemberEditor">调整成员/边界</el-button>
-      <el-button :disabled="!canWrite || selectedGroups.length !== 1 || selectedGroups[0]?.members.length !== 0 || taskRunning" @click="deleteEmptyGroup">删除空组</el-button>
-      <el-button :disabled="!plan" @click="showStations">查看站点</el-button>
-      <el-button :disabled="selectedGroups.length !== 1" @click="showApReferences">查看 AP/参考信息</el-button>
-      <span class="dirty">{{ dirty ? '有未保存修改' : `已加载 ${plan?.groups.length ?? 0} 个 VLAN 组` }}</span>
-    </div>
-    <el-tabs v-model="activeView">
-      <el-tab-pane label="VLAN 组视图" name="groups">
-        <div class="table-scroll">
-          <NcDataTable v-loading="loading" table-id="rail-base-trackside-ap-vlan-groups" route-key="/rail-transit/base-data" :data="plan?.groups || []" :columns="groupColumns" border height="calc(100vh - 465px)" empty-text="暂无 VLAN 分组；解锁后选择规划方式生成" @selection-change="(value: ApManagementVlanGroup[]) => selectedGroups = value">
-            <template #cell-sequence="{ row }">{{ row.sequence + 1 }}</template>
-            <template #cell-group_name="{ row }"><el-input v-if="canWrite" v-model="row.group_name" @input="publishDirty" /><span v-else>{{ row.group_name }}</span></template>
-            <template #cell-management_vlan="{ row }"><el-input-number v-if="canWrite" v-model="row.management_vlan" :min="1" :max="4094" controls-position="right" @focus="beginGroupVlanEdit" @change="commitGroupVlanEdit" /><span v-else>{{ row.management_vlan ?? '--' }}</span></template>
-            <template #cell-notes="{ row }"><el-input v-if="canWrite" v-model="row.notes" @input="publishDirty" /><span v-else>{{ row.notes || '--' }}</span></template>
+    <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" />
+
+    <el-tabs v-model="activeView" class="plan-tabs">
+      <el-tab-pane label="AP 规划维护" name="plan">
+        <div class="toolbar">
+          <el-button :icon="Plus" :disabled="!canWrite" @click="addRow">新增站点</el-button>
+          <el-button :icon="Delete" :disabled="!canWrite || !selectedRows.length" @click="removeSelected">删除所选</el-button>
+          <el-button type="primary" :icon="Check" :disabled="!canWrite || !dirty || validationCount > 0" @click="requestSave">保存</el-button>
+          <el-button :icon="RefreshLeft" :disabled="!canWrite || !dirty" @click="undoChanges">撤销修改</el-button>
+          <el-select v-model="duplicateStrategy" aria-label="重复策略" class="strategy-select">
+            <el-option label="覆盖更新" value="replace" />
+            <el-option label="跳过已有" value="skip" />
+            <el-option label="重复时报错" value="error" />
+          </el-select>
+          <input ref="importInput" class="hidden" type="file" accept=".xlsx,.csv" @change="chooseImport">
+          <el-button :icon="Download" :disabled="!isFeatureEnabled('web.rail_trackside_ap_plan_export') || taskRunning" @click="exportPlan(true)">下载模板</el-button>
+          <el-button :icon="UploadFilled" :disabled="props.saving || taskRunning" @click="importInput?.click()">导入并预览</el-button>
+          <el-button :icon="Download" :disabled="!isFeatureEnabled('web.rail_trackside_ap_plan_export') || taskRunning" @click="exportPlan(false)">导出当前</el-button>
+          <el-button :icon="View" @click="openApReferences">查看 AP 参考信息</el-button>
+          <el-button v-if="validationCount" type="danger" plain @click="focusFirstError">有 {{ validationCount }} 项需要修正</el-button>
+          <span class="dirty-state">{{ dirty ? '有未保存修改' : `已加载 ${rows.length} 行` }}</span>
+        </div>
+
+        <div class="table-shell">
+          <NcDataTable
+            v-loading="loading"
+            table-id="rail-base-trackside-ap-plan"
+            route-key="/rail-transit/base-data"
+            :data="orderedRows"
+            :columns="planColumns"
+            border
+            height="calc(100vh - 430px)"
+            empty-text="暂无 AP 规划"
+            @selection-change="(value: TracksideApPlanRow[]) => selectedRows = value"
+          >
+            <template #cell-sequence_no="{ row }">
+              <div :data-plan-cell="cellId(row, 'sequence_no')" :title="cellError(row, 'sequence_no')">
+                <el-input-number
+                  v-if="canWrite"
+                  v-model="row.sequence_no"
+                  :min="1"
+                  :controls="false"
+                  :class="{ 'field-error': cellError(row, 'sequence_no') }"
+                  @focus="beginCellEdit(row, 'sequence_no')"
+                  @change="publishDirty(true)"
+                  @paste="pasteGrid($event, row, 'sequence_no')"
+                  @keydown.enter.prevent="focusNextRow(row, 'sequence_no')"
+                  @keydown.esc.prevent="cancelCellEdit(row, 'sequence_no')"
+                />
+                <span v-else>{{ row.sequence_no }}</span>
+              </div>
+            </template>
+            <template #cell-station_name="{ row }">
+              <div :data-plan-cell="cellId(row, 'station_name')" :title="cellError(row, 'station_name')">
+                <el-select
+                  v-if="canWrite"
+                  v-model="row.station_name"
+                  filterable
+                  allow-create
+                  default-first-option
+                  :class="{ 'field-error': cellError(row, 'station_name') }"
+                  @focus="beginCellEdit(row, 'station_name')"
+                  @change="stationChanged(row)"
+                  @paste="pasteGrid($event, row, 'station_name')"
+                  @keydown.enter.prevent="focusNextRow(row, 'station_name')"
+                  @keydown.esc.prevent="cancelCellEdit(row, 'station_name')"
+                >
+                  <el-option v-for="station in orderedStations" :key="station.id" :label="station.name" :value="station.name" />
+                </el-select>
+                <span v-else>{{ row.station_name }}</span>
+              </div>
+            </template>
+            <template #cell-ap_count="{ row }">
+              <div :data-plan-cell="cellId(row, 'ap_count')" :title="cellError(row, 'ap_count')">
+                <el-input-number
+                  v-if="canWrite"
+                  v-model="row.ap_count"
+                  :min="0"
+                  :controls="false"
+                  :class="{ 'field-error': cellError(row, 'ap_count') }"
+                  @focus="beginCellEdit(row, 'ap_count')"
+                  @change="publishDirty()"
+                  @paste="pasteGrid($event, row, 'ap_count')"
+                  @keydown.enter.prevent="focusNextRow(row, 'ap_count')"
+                  @keydown.esc.prevent="cancelCellEdit(row, 'ap_count')"
+                />
+                <span v-else>{{ row.ap_count }}</span>
+              </div>
+            </template>
+            <template v-for="field in (['ap_start_address', 'subnet_mask', 'ap_gateway', 'remark'] as EditableField[])" #[`cell-${field}`]="{ row }" :key="field">
+              <div :data-plan-cell="cellId(row, field)" :title="cellError(row, field)">
+                <el-input
+                  v-if="canWrite"
+                  v-model="row[field]"
+                  :class="{ 'field-error': cellError(row, field) }"
+                  @focus="beginCellEdit(row, field)"
+                  @input="publishDirty()"
+                  @paste="pasteGrid($event, row, field)"
+                  @keydown.enter.prevent="focusNextRow(row, field)"
+                  @keydown.esc.prevent="cancelCellEdit(row, field)"
+                />
+                <span v-else>{{ row[field] || '--' }}</span>
+              </div>
+            </template>
+            <template #cell-management_vlan="{ row }">
+              <div :data-plan-cell="cellId(row, 'management_vlan')" :title="cellError(row, 'management_vlan')">
+                <el-input-number
+                  v-if="canWrite"
+                  v-model="row.management_vlan"
+                  :min="1"
+                  :max="4094"
+                  :controls="false"
+                  :class="{ 'field-error': cellError(row, 'management_vlan') }"
+                  @focus="beginCellEdit(row, 'management_vlan')"
+                  @change="publishDirty()"
+                  @paste="pasteGrid($event, row, 'management_vlan')"
+                  @keydown.enter.prevent="focusNextRow(row, 'management_vlan')"
+                  @keydown.esc.prevent="cancelCellEdit(row, 'management_vlan')"
+                />
+                <span v-else>{{ row.management_vlan ?? '--' }}</span>
+              </div>
+            </template>
+            <template #cell-actions="{ row }">
+              <el-button link type="danger" :icon="Delete" :disabled="!canWrite" title="删除" @click="removeRow(row)" />
+            </template>
           </NcDataTable>
         </div>
       </el-tab-pane>
-      <el-tab-pane label="按站点查看（继承值）" name="stations">
-        <div class="table-scroll">
-          <NcDataTable table-id="rail-base-trackside-ap-vlan-stations" route-key="/rail-transit/base-data" :data="plan?.station_details || []" :columns="stationColumns" border height="calc(100vh - 465px)" empty-text="暂无站点 VLAN 归属">
-            <template #cell-source="{ row }">{{ sourceLabel(row.source) }}</template>
+
+      <el-tab-pane label="AP 上线统计" name="status">
+        <div class="status-toolbar">
+          <el-button type="primary" :icon="Refresh" :loading="statusLoading" :disabled="taskRunning" @click="refreshOnlineStatus">刷新上线状态</el-button>
+          <span>状态更新时间：{{ onlineStatus?.updated_at || '--' }}</span>
+        </div>
+        <el-alert
+          v-if="onlineStatus?.warning"
+          :title="onlineStatus.warning"
+          type="warning"
+          :closable="false"
+          show-icon
+        >
+          <el-button link type="warning" @click="unassignedVisible = true">查看未分配 AP</el-button>
+        </el-alert>
+        <div class="table-shell">
+          <NcDataTable
+            v-loading="statusLoading"
+            table-id="rail-base-trackside-ap-online-status"
+            route-key="/rail-transit/base-data"
+            :data="onlineStatus?.items || []"
+            :columns="statusColumns"
+            border
+            height="calc(100vh - 460px)"
+            empty-text="暂无 AP 上线统计"
+          >
+            <template #cell-online_rate="{ row }">{{ displayRate(row.online_rate) }}</template>
+            <template #cell-remark="{ row }">{{ row.remark || '--' }}</template>
           </NcDataTable>
+          <div v-if="onlineStatus" class="status-total">
+            <strong>合计</strong>
+            <span>规划 {{ onlineStatus.planned_ap_count }}</span>
+            <span>AP {{ onlineStatus.actual_ap_count }}</span>
+            <span>上线 {{ onlineStatus.online_count }}</span>
+            <span>未上线 {{ onlineStatus.offline_count }}</span>
+            <span>总上线率 {{ displayRate(onlineStatus.online_rate) }}</span>
+          </div>
         </div>
       </el-tab-pane>
     </el-tabs>
-    <el-alert v-if="plan?.issues.length" :title="plan.issues.map((item) => item.message).join('；')" :type="plan.valid ? 'warning' : 'error'" :closable="false" />
-    <el-alert v-if="task" :title="`${task.status} · ${task.message || task.task_id}`" :type="task.error_message ? 'error' : 'info'" :closable="false"><el-button v-if="task.available && task.artifact_id" link type="primary" :loading="downloadingArtifact" @click="downloadArtifact">下载文件</el-button><el-button link @click="openTaskWindow">打开任务中心</el-button></el-alert>
-    <el-dialog v-model="importPreviewVisible" title="导入预览" width="960px" destroy-on-close>
+
+    <el-alert
+      v-if="task"
+      :title="`${task.status} · ${task.message || task.task_id}`"
+      :type="task.error_message ? 'error' : 'info'"
+      :closable="false"
+    >
+      <el-button v-if="task.available && task.artifact_id" link type="primary" :loading="downloadingArtifact" @click="downloadArtifact">下载文件</el-button>
+      <el-button link @click="openTaskWindow">打开任务中心</el-button>
+    </el-alert>
+
+    <el-dialog v-model="importPreviewVisible" title="导入预览" width="min(1180px, 94vw)" destroy-on-close>
       <div v-if="importPreview" class="preview">
-        <el-descriptions :column="5" border><el-descriptions-item label="总行数">{{ importPreview.total_count }}</el-descriptions-item><el-descriptions-item label="有效">{{ importPreview.valid_count }}</el-descriptions-item><el-descriptions-item label="重复">{{ importPreview.duplicate_count }}</el-descriptions-item><el-descriptions-item label="错误">{{ importPreview.error_count }}</el-descriptions-item><el-descriptions-item label="SHA-256">{{ importPreview.file_sha256.slice(0, 12) }}…</el-descriptions-item></el-descriptions>
-        <NcDataTable table-id="rail-base-trackside-ap-plan-import-preview" route-key="/rail-transit/base-data" :data="importPreview.rows" :columns="previewColumns" border height="360" :show-column-settings="false" />
-        <el-alert v-if="!importPreview.can_apply" title="预览存在阻断错误，请修正文件或更换重复策略后重新导入" type="error" :closable="false" />
-      </div>
-      <template #footer><el-button @click="importPreviewVisible = false">取消</el-button><el-button type="primary" :disabled="!importPreview?.can_apply || !canApplyImport" @click="applyImportPreview">应用到编辑区</el-button></template>
-    </el-dialog>
-    <el-dialog v-model="impactVisible" title="规划影响预览" width="760px">
-      <el-descriptions v-if="impactPreview" :column="3" border>
-        <el-descriptions-item label="原 VLAN 组">{{ impactPreview.old_group_count }}</el-descriptions-item>
-        <el-descriptions-item label="新 VLAN 组">{{ impactPreview.new_group_count }}</el-descriptions-item>
-        <el-descriptions-item label="受影响站点">{{ impactPreview.affected_station_count }}</el-descriptions-item>
-        <el-descriptions-item label="受影响 AP">{{ impactPreview.affected_ap_count }}</el-descriptions-item>
-        <el-descriptions-item label="VLAN 变化">{{ impactPreview.vlan_change_count }}</el-descriptions-item>
-        <el-descriptions-item label="冲突/提示">{{ impactPreview.conflict_count }} / {{ impactPreview.warning_count }}</el-descriptions-item>
-      </el-descriptions>
-    </el-dialog>
-    <el-dialog v-model="memberEditorVisible" :title="`调整 ${editingGroup?.group_name || 'VLAN 组'} 成员/边界`" width="680px">
-      <el-alert title="站点按正式顺序保存；从其他组选择站点会将其移动到当前组，Backend 预览会阻断遗漏、重复和不连续范围。" type="info" :closable="false" />
-      <el-select v-model="editingMemberIds" multiple filterable style="width:100%" placeholder="选择连续站点">
-        <el-option v-for="station in orderedStations" :key="station.id" :label="station.name" :value="station.id" />
-      </el-select>
-      <template #footer><el-button @click="memberEditorVisible = false">取消</el-button><el-button type="primary" :disabled="!canWrite" @click="applyMemberEditor">生成影响预览</el-button></template>
-    </el-dialog>
-    <el-dialog v-model="allocationVisible" :title="`${editingGroup?.group_name || 'VLAN 组'} · AP 与 IP 参考信息`" width="980px">
-      <el-alert title="IP 仅为既有资料的只读参考；本规划不生成、不校验、不修改 AP IP。有效 VLAN 组来源依次为 AP 级覆盖、明确归属站点、区间默认组和区间起点默认。" type="info" :closable="false" />
-      <el-descriptions v-if="editingGroup" :column="3" border>
-        <el-descriptions-item label="网络地址（参考）">{{ editingGroup.network_address || '--' }}</el-descriptions-item>
-        <el-descriptions-item label="掩码/前缀（参考）">{{ editingGroup.subnet_mask || (editingGroup.prefix_length == null ? '--' : `/${editingGroup.prefix_length}`) }}</el-descriptions-item>
-        <el-descriptions-item label="网关（参考）">{{ editingGroup.default_gateway || '--' }}</el-descriptions-item>
-        <el-descriptions-item label="AP 起始地址（参考）">{{ editingGroup.ap_start_ip || '--' }}</el-descriptions-item>
-        <el-descriptions-item label="AP 结束地址（参考）">{{ editingGroup.ap_end_ip || '--' }}</el-descriptions-item>
-      </el-descriptions>
-      <div v-if="sectionNames.length" class="assignment-toolbar">
-        <span>区间默认组</span>
-        <el-select v-model="editingSectionName" filterable style="width:220px">
-          <el-option v-for="sectionName in sectionNames" :key="sectionName" :label="sectionName" :value="sectionName" />
-        </el-select>
-        <el-select
-          :model-value="assignmentGroupId(`section:${editingSectionName}`, 'section_default')"
-          clearable
-          placeholder="按区间起点继承（默认）"
-          style="width:240px"
-          :disabled="!canWrite"
-          @change="(groupId?: string) => applySectionGroup(groupId)"
+        <el-alert v-if="importPreview.legacy_schema" :title="importPreview.message" type="warning" :closable="false" show-icon />
+        <el-descriptions :column="4" border>
+          <el-descriptions-item label="总行数">{{ importPreview.total_count }}</el-descriptions-item>
+          <el-descriptions-item label="有效">{{ importPreview.valid_count }}</el-descriptions-item>
+          <el-descriptions-item label="重复">{{ importPreview.duplicate_count }}</el-descriptions-item>
+          <el-descriptions-item label="错误">{{ importPreview.error_count }}</el-descriptions-item>
+        </el-descriptions>
+        <NcDataTable
+          table-id="rail-base-trackside-ap-plan-import-preview"
+          route-key="/rail-transit/base-data"
+          :data="importRows"
+          :columns="planColumns.filter((column) => !['selection', 'actions'].includes(String(column.key)))"
+          border
+          height="390"
+          :show-column-settings="false"
         >
-          <el-option v-for="group in plan?.groups || []" :key="group.group_id" :label="group.group_name" :value="group.group_id" />
-        </el-select>
-      </div>
-      <div class="table-scroll">
-        <NcDataTable table-id="rail-base-trackside-ap-vlan-allocations" route-key="/rail-transit/base-data" :data="editingAllocations" :columns="allocationColumns" border height="420" empty-text="当前 VLAN 组暂无 AP 参考信息">
-          <template #cell-planned_ip="{ row }">{{ row.planned_ip || '--' }}</template>
-          <template #cell-group_source="{ row }">{{ sourceLabel(row.group_source) }}</template>
-          <template #cell-ap_override_group="{ row }">
-            <el-select
-              :model-value="assignmentGroupId(row.ap_id, 'ap_override')"
-              clearable
-              placeholder="继承"
-              :disabled="!canWrite"
-              @change="(groupId?: string) => applyApGroup(row, groupId)"
-            >
-              <el-option v-for="group in plan?.groups || []" :key="group.group_id" :label="group.group_name" :value="group.group_id" />
-            </el-select>
-          </template>
+          <template #cell-sequence_no="{ row }"><el-input-number v-model="row.sequence_no" :min="1" :controls="false" /></template>
+          <template #cell-station_name="{ row }"><el-input v-model="row.station_name" /></template>
+          <template #cell-ap_count="{ row }"><el-input-number v-model="row.ap_count" :min="0" :controls="false" /></template>
+          <template #cell-ap_start_address="{ row }"><el-input v-model="row.ap_start_address" /></template>
+          <template #cell-subnet_mask="{ row }"><el-input v-model="row.subnet_mask" /></template>
+          <template #cell-ap_gateway="{ row }"><el-input v-model="row.ap_gateway" /></template>
+          <template #cell-management_vlan="{ row }"><el-input-number v-model="row.management_vlan" :min="1" :max="4094" :controls="false" /></template>
+          <template #cell-remark="{ row }"><el-input v-model="row.remark" /></template>
         </NcDataTable>
+        <el-alert v-if="!importPreview.can_apply" title="预览存在错误" type="error" :closable="false" />
       </div>
+      <template #footer>
+        <el-button @click="importPreviewVisible = false">取消</el-button>
+        <el-button type="primary" :disabled="!importPreview?.can_apply || !canWrite" @click="applyImportPreview">应用到编辑区</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="unassignedVisible" title="未分配站点 AP" width="min(900px, 92vw)">
+      <NcDataTable
+        table-id="rail-base-trackside-ap-unassigned"
+        route-key="/rail-transit/base-data"
+        :data="onlineStatus?.unassigned_items || []"
+        :columns="unassignedColumns"
+        border
+        height="420"
+        empty-text="没有未分配 AP"
+      />
     </el-dialog>
   </section>
 </template>
 
 <style scoped>
-.planning-tab,.preview{display:flex;flex-direction:column;gap:12px;min-width:0}.planning-mode,.toolbar,.assignment-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.planning-mode .label{font-weight:600}.revision{color:var(--nc-text-secondary)}.dirty{margin-left:auto;color:var(--nc-text-secondary)}.hidden{display:none}.table-scroll{min-width:0;overflow-x:auto}.table-scroll :deep(.nc-data-table){min-width:1120px}@media(max-width:900px){.dirty{margin-left:0}}
+.planning-tab,
+.preview {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.plan-tabs {
+  min-width: 0;
+}
+
+.toolbar,
+.status-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.strategy-select {
+  width: 128px;
+}
+
+.dirty-state {
+  margin-left: auto;
+  color: var(--nc-text-secondary);
+}
+
+.hidden {
+  display: none;
+}
+
+.table-shell {
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.table-shell :deep(.nc-data-table) {
+  width: 100%;
+  min-width: 1120px;
+}
+
+.field-error :deep(.el-input__wrapper) {
+  box-shadow: 0 0 0 1px var(--el-color-danger) inset;
+}
+
+.status-total {
+  display: grid;
+  grid-template-columns: minmax(170px, 1fr) repeat(5, minmax(100px, auto));
+  align-items: center;
+  min-width: 900px;
+  padding: 10px 16px;
+  border: 1px solid var(--nc-border-color);
+  border-top: 0;
+  background: var(--nc-surface-muted);
+}
+
+@media (max-width: 900px) {
+  .dirty-state {
+    width: 100%;
+    margin-left: 0;
+  }
+}
 </style>

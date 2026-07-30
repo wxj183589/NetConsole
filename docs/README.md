@@ -5,7 +5,7 @@
 ## 本次专题
 
 - [UI 导入导出文件选择审计（2026-07-30 整改证据）](development/import-export-dialog-audit.md)
-- [轨旁 AP 管理 VLAN 分组规划](AP_MANAGEMENT_VLAN_GROUPS.md)
+- [轨旁 AP 逐站规划与 VLAN 分组兼容](AP_MANAGEMENT_VLAN_GROUPS.md)
 - [车内通信检测：点表与固定拓扑](rail-transit/train-communication/README.md)
 - [检测点表模型](rail-transit/train-communication/POINT_TABLE.md)
 - [检测任务流程](rail-transit/train-communication/CHECK_WORKFLOW.md)
@@ -79,11 +79,11 @@
 | [统一流量测试架构](TRAFFIC_TEST_ARCHITECTURE.md) | 本地/Agent 执行、Task 映射、Traffic 事件、数据与恢复边界 | 流量测试与阶段 4C 开发 | `services/traffic`、`TrafficRunRepository`、Traffic handlers | 执行端、状态、事件、存储、恢复或 Web 接入变化 |
 | [AC 管理](AC_MANAGEMENT.md) | Electron AC/FIT-AP 查询、受控更新/写操作、光衰、配置和验收边界 | AC/FIT-AP 开发 | AC Application Service/Repository/API/Vue/Task | AC 命令、查询字段、光衰、配置、写操作或验收状态变化 |
 | [轨道交通无线业务模型](RAIL_TRANSIT_WIRELESS.md) | 轨旁 AP、AC Mesh-Link、Online MR 与离线分析的业务边界和匹配规则 | 轨道交通无线与 AC Mesh-Link 开发 | `src/netconsole/services/vehicle_mr_online.py`、Mesh-Link Query API/Vue | Mesh-Link 字段、匹配、时效性或采集/分析边界变化 |
-| [轨旁 AP 管理 VLAN 分组规划](AP_MANAGEMENT_VLAN_GROUPS.md) | 三种 VLAN 分组方式、IP 参考边界、点表、迁移和 PVID 核验 | 轨旁 AP/Core/API/Vue 开发 | VLAN Planning Service、Repository、API 与 Vue | 分组规则、IP 参考、点表、模板、迁移或 PVID 语义变化 |
+| [轨旁 AP 逐站规划与 VLAN 分组兼容](AP_MANAGEMENT_VLAN_GROUPS.md) | 逐站规划、上线统计、8 列模板、历史 VLAN 分组兼容和 PVID 核验 | 轨旁 AP/Core/API/Vue 开发 | 基础资料 Application Service、Repository、API 与 Vue | 逐站字段、统计、模板、兼容迁移或 PVID 语义变化 |
 | [轨道交通地面无人值守](GROUND_UNATTENDED.md) / [风险审计](GROUND_UNATTENDED_RISK_AUDIT.md) | 独立运行窗口、正线分类、全车长 Ping、历史 Syslog、READY ZIP 查询、归档和恢复 | 地面无人值守开发、风险与验收 | `src/netconsole/services/ground_unattended/`、独立 API/Vue | 配置、分类、Ping、Syslog、调度、归档、风险或人工验收状态变化 |
 | [轨道交通无线综合看板](RAIL_TRANSIT_WIRELESS_DASHBOARD.md) | 基础设施、列车、任务、Agent 与 Mesh 分析只读聚合 | 轨道交通综合监控开发 | `src/netconsole/services/rail_transit/wireless_dashboard_query_service.py`、对应 API/Vue | 聚合来源、告警映射、刷新或只读边界变化 |
 | [车内通信检测](TRAIN_COMMUNICATION_MONITORING.md) | TC1/TC2 固定六节点拓扑、VRRP 虚拟 IP 静态配置、跨端状态和车内通信检测 Task | 轨道交通车内通信开发 | `src/netconsole/services/rail_transit/train_communication_query_service.py`、对应 API/Vue | 节点关联、状态、检测任务或刷新边界变化 |
-| [轨道交通基础资料](RAIL_TRANSIT_BASE_DATA.md) | 默认锁定维护、revision 事务、线路参数、设备 station 来源预览、站点模板、站点/区间、轨旁 AP/规划、列车/MR 与受控导入 | 轨道交通基础资料开发 | `src/netconsole/application/rail_transit/base_data_application_service.py`、Repository、API/Vue | 字段、校验、编辑会话、来源预览、模板、规划页签或写入边界变化 |
+| [轨道交通基础资料](RAIL_TRANSIT_BASE_DATA.md) | 默认锁定维护、revision 事务、线路参数、设备 station 来源预览、站点模板、站点/区间、轨旁 AP、逐站规划与上线统计、列车/MR 及受控导入 | 轨道交通基础资料开发 | `src/netconsole/application/rail_transit/base_data_application_service.py`、Repository、API/Vue | 字段、校验、编辑会话、来源预览、模板、规划页签或写入边界变化 |
 | [变更记录](CHANGELOG.md) | 用户可见与架构变更摘要 | 发布/模块维护者 | Git 提交、发行版本 | 每次发布及重要未发布变更 |
 
 ## 业务专题

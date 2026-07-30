@@ -19,11 +19,15 @@ LEGACY_TRACKSIDE_PLAN_MODES = {"single_vlan", "multi_vlan"}
 TRACKSIDE_PLAN_MODES = {TRACKSIDE_AP_PLAN_MODE, *LEGACY_TRACKSIDE_PLAN_MODES}
 TRACKSIDE_PLAN_FIELDS = (
     "mode",
+    "station_id",
+    "sequence_no",
     "station_name",
     "ap_count",
     "ap_start_address",
+    "subnet_mask",
     "mask_length",
     "ap_gateway",
+    "management_vlan",
     "ap_management_vlans",
     "remark",
     "sort_order",
@@ -1751,7 +1755,10 @@ class AcRepository:
         return {
             str(row["station_name"]): {
                 "ap_total": int(row.get("ap_count") or 0),
-                "remark": (old_details.get(str(row["station_name"])) or {}).get("remark", ""),
+                "remark": str(row.get("remark") or "")
+                or (old_details.get(str(row["station_name"])) or {}).get(
+                    "remark", ""
+                ),
                 "source": "trackside_plan",
             }
             for row in rows
@@ -1764,6 +1771,34 @@ class AcRepository:
         )
 
         mode = TRACKSIDE_AP_PLAN_MODE
+        station_rows = self.list_trackside_ap_plan(mode)
+        if station_rows:
+            station_vlans: dict[str, set[int]] = {}
+            station_totals: dict[str, int] = {}
+            all_vlans: set[int] = set()
+            for row in station_rows:
+                station = str(row.get("station_name") or "").strip()
+                raw_vlan = (
+                    row.get("management_vlan")
+                    if row.get("management_vlan") not in (None, "")
+                    else row.get("ap_management_vlans")
+                )
+                vlans = parse_vlan_set(raw_vlan)
+                if not station or not vlans:
+                    continue
+                station_vlans[station] = vlans
+                all_vlans.update(vlans)
+                station_totals[station] = int(row.get("ap_count") or 0)
+            return {
+                "mode": mode,
+                "planning_mode": "station_rows",
+                "station_vlans": station_vlans,
+                "all_vlans": all_vlans,
+                "station_totals": station_totals,
+                "group_networks": {},
+                "ap_networks_by_mac": {},
+                "ap_networks_by_name": {},
+            }
         draft = ApManagementVlanRepository(self.database).get_draft()
         groups = {
             str(group.get("group_id") or ""): group
@@ -2674,11 +2709,37 @@ class AcRepository:
             raise ValueError("station_name is required")
         payload = cls._payload(TRACKSIDE_PLAN_FIELDS, row)
         payload["mode"] = mode
+        payload["station_id"] = str(row.get("station_id") or "").strip()
+        payload["sequence_no"] = int(
+            row.get("sequence_no")
+            if row.get("sequence_no") not in (None, "")
+            else int(row.get("sort_order") or sort_order) + 1
+        )
         payload["station_name"] = station_name
         payload["ap_count"] = max(int(row.get("ap_count") or 0), 0)
         payload["mask_length"] = row.get("mask_length")
-        payload["sort_order"] = row.get("sort_order") if row.get("sort_order") is not None else sort_order
-        payload["ap_management_vlans"] = str(row.get("ap_management_vlans") or "").strip()
+        payload["subnet_mask"] = str(
+            row.get("subnet_mask")
+            if row.get("subnet_mask") not in (None, "")
+            else row.get("mask_length")
+            if row.get("mask_length") is not None
+            else ""
+        ).strip()
+        payload["sort_order"] = payload["sequence_no"] - 1
+        raw_vlan = (
+            row.get("management_vlan")
+            if row.get("management_vlan") not in (None, "")
+            else row.get("ap_management_vlans")
+        )
+        parsed_vlans = parse_vlan_set(raw_vlan)
+        payload["management_vlan"] = (
+            next(iter(parsed_vlans)) if len(parsed_vlans) == 1 else None
+        )
+        payload["ap_management_vlans"] = (
+            str(payload["management_vlan"])
+            if row.get("management_vlan") not in (None, "")
+            else str(row.get("ap_management_vlans") or "").strip()
+        )
         payload["remark"] = str(row.get("remark") or "").strip()
         payload["created_at"] = row.get("created_at") or now
         payload["updated_at"] = now

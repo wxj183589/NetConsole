@@ -14,7 +14,7 @@ The built-in demonstration site is `demo`. If `sites/demo/db/devices.db` does no
 
 If the database already exists, `Database.initialize()` applies only additive, idempotent schema updates and records `schema_metadata`; it does not backfill demo facts or delete existing rows. The current migration adds the non-secret device credential state table without rewriting existing device credentials. Never delete a user database to apply an upgrade. Development fixtures must use a temporary data root.
 
-Current schema version: `2026.07.29.zte_optical_ap_vlan_device_address_and_operation_status`. The prior query-plan evidence and rollback boundaries remain recorded in [the E6 database archive](archive/migrations/electron-only/E6-2026-07-18.md).
+Current schema version: `2026.07.30.trackside_ap_station_plan`. The prior query-plan evidence and rollback boundaries remain recorded in [the E6 database archive](archive/migrations/electron-only/E6-2026-07-18.md).
 
 The 2026-07-29 device lifecycle migration adds the following additive fields to
 `devices`: `project_phase`, `operation_status`, `operation_status_reason`,
@@ -62,20 +62,23 @@ holdtime/TTL, descriptions, capabilities, PVID, MAU, and maximum frame size) to
 both LLDP tables. Initialization is idempotent and keeps all existing interface,
 optical, LLDP, and history rows.
 
-The same additive initialization introduces `rail_ap_vlan_plans`,
-`rail_ap_vlan_groups`, `rail_ap_vlan_group_members`,
-`rail_ap_vlan_assignments`, and `rail_ap_vlan_allocations`. When no new plan
-exists, every saved `ac_trackside_ap_plan(mode='unified')` station row migrates
-to one `station_independent` VLAN group in the same initialization transaction.
-The migration is idempotent; existing AP, location, device, MAC, and runtime IP
-rows are not rewritten. See [AP Management VLAN Groups](AP_MANAGEMENT_VLAN_GROUPS.md).
-The group IP/network columns remain nullable or empty-compatible reference data
-and do not participate in VLAN planning validation. For existing databases,
-initialization transactionally rebuilds only `rail_ap_vlan_allocations` to remove
-the legacy unique constraint on `planned_ip`, copies every existing row unchanged,
-and recreates its group/order index. A failure rolls back the schema and data
-together. The table is a compatibility reference cache, not the source of truth
-for AP IP or VLAN assignment.
+The 2026-07-30 additive migration makes
+`ac_trackside_ap_plan(mode='unified')` the current station-plan source of truth.
+It adds `station_id`, `sequence_no`, `subnet_mask`, and `management_vlan`,
+backfills the compatible legacy values, and creates partial unique indexes for
+non-empty station IDs and positive sequence numbers. If historical sequence
+numbers are zero or duplicated, initialization deterministically renumbers the
+rows by their existing order before creating the index. The migration is
+idempotent and runs in the existing initialization transaction.
+
+`rail_ap_vlan_plans`, `rail_ap_vlan_groups`,
+`rail_ap_vlan_group_members`, `rail_ap_vlan_assignments`, and
+`rail_ap_vlan_allocations` remain unchanged as a historical compatibility
+layer. When no station plan exists, the read path can project those groups into
+station rows. Saving the current page replaces only station-plan rows and does
+not delete or rewrite the historical group tables. Existing AP, location,
+device, MAC, and runtime IP rows are not rewritten. See
+[Trackside AP station planning and VLAN compatibility](AP_MANAGEMENT_VLAN_GROUPS.md).
 
 Current local tables:
 
@@ -85,6 +88,7 @@ Current local tables:
 - `device_interfaces`
 - `device_lldp_neighbors`
 - `device_credential_states`
+- `ac_trackside_ap_plan`
 - `rail_ap_vlan_plans`
 - `rail_ap_vlan_groups`
 - `rail_ap_vlan_group_members`

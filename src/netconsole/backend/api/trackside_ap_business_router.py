@@ -18,6 +18,7 @@ from netconsole.models.api.trackside_ap_business import (
     TracksideApBusinessPageDTO,
     TracksideApPlanDTO,
     TracksideApPlanExportRequestDTO,
+    TracksideApOnlineStatusDTO,
     TracksideApPlanPreviewDTO,
     TracksideApPlanWriteRequestDTO,
     TracksideApPointTablePreviewDTO,
@@ -260,6 +261,20 @@ def download_rename_command_artifact(request: Request, artifact_id: str) -> File
 def plan(request: Request) -> TracksideApPlanDTO:
     try:
         return _application_service(request).get_trackside_ap_plan(_site_id(request))
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
+@router.get(
+    "/plan/online-status",
+    response_model=TracksideApOnlineStatusDTO,
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan"))],
+)
+def plan_online_status(request: Request) -> TracksideApOnlineStatusDTO:
+    try:
+        return _application_service(request).get_trackside_ap_online_status(
+            _site_id(request)
+        )
     except RailTransitWebError as exc:
         _raise_error(exc)
 
