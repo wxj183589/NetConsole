@@ -45,8 +45,8 @@ from netconsole.models.api.device_management import (
     DeviceGroupDeleteDTO,
     DeviceGroupDTO,
     DeviceGroupRequestDTO,
-    DeviceLifecycleUpdateDTO,
-    DeviceLifecycleUpdateRequestDTO,
+    DeviceClassificationUpdateDTO,
+    DeviceClassificationUpdateRequestDTO,
     DeviceImportConfirmRequestDTO,
     DeviceImportPreviewDTO,
     DevicePageDTO,
@@ -118,9 +118,9 @@ def list_devices(
         default="all",
         pattern="^(all|phase_1|phase_2|phase_3|other|unspecified)$",
     ),
-    operation_status: str = Query(
-        default="in_service",
-        pattern="^(all|in_service|not_integrated|commissioning|suspended|retired)$",
+    work_scope_status: str = Query(
+        default="included",
+        pattern="^(all|included|excluded)$",
     ),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
@@ -139,7 +139,7 @@ def list_devices(
             vendor=vendor,
             connection_status=connection_status,
             project_phase=project_phase,
-            operation_status=operation_status,
+            work_scope_status=work_scope_status,
             page=page,
             page_size=page_size,
             sort_by=sort_by,
@@ -201,14 +201,14 @@ def assign_group(
 
 
 @router.patch(
-    "/devices/lifecycle",
-    response_model=DeviceLifecycleUpdateDTO,
+    "/devices/classification",
+    response_model=DeviceClassificationUpdateDTO,
     dependencies=[Depends(require_feature("web.device_management_write"))],
 )
-def update_lifecycle(
-    request: Request, payload: DeviceLifecycleUpdateRequestDTO
-) -> DeviceLifecycleUpdateDTO:
-    return _query(lambda: _service(request).update_lifecycle(payload))
+def update_classification(
+    request: Request, payload: DeviceClassificationUpdateRequestDTO
+) -> DeviceClassificationUpdateDTO:
+    return _query(lambda: _service(request).update_classification(payload))
 
 
 @router.post(

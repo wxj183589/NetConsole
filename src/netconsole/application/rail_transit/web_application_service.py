@@ -2111,7 +2111,7 @@ class RailTransitWebApplicationService:
                 for device in DeviceRepository(database).list(
                     vendor="H3C",
                     device_type="AC",
-                    operation_status="in_service",
+                    work_scope_status="included",
                 )
                 if str(device.device_uuid or "").strip()
             ]

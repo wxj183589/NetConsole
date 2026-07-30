@@ -103,7 +103,7 @@ def test_shared_api_error_mapping_keeps_database_and_io_contracts() -> None:
 @pytest.mark.parametrize(
     ("message", "expected"),
     (
-        ("no such column: d.operation_status", "DEVICE_DATABASE_SCHEMA_NOT_READY"),
+        ("no such column: d.work_scope_status", "DEVICE_DATABASE_SCHEMA_NOT_READY"),
         ("database is locked", "DEVICE_DATABASE_BUSY"),
         ("attempt to write a readonly database", "DEVICE_DATABASE_ACCESS_DENIED"),
         ("database disk image is malformed", "DEVICE_DATABASE_INTEGRITY_ERROR"),
@@ -127,11 +127,11 @@ def test_structured_database_error_hides_private_diagnostics() -> None:
                 "site": "line-one",
                 "database_path": r"D:\private\devices.db",
                 "schema_version": "old",
-                "missing_columns": ["operation_status"],
+                "missing_columns": ["work_scope_status"],
             },
         ):
             raise sqlite3.OperationalError(
-                "no such column: d.operation_status"
+                "no such column: d.work_scope_status"
             )
 
     assert captured.value.status_code == 503

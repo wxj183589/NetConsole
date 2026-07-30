@@ -21,19 +21,26 @@ from netconsole.models.device_address import InvalidDeviceAddressError, normaliz
 
 
 CURRENT_SCHEMA_VERSION = (
-    "2026.07.30.trackside_ap_station_plan"
+    "2026.07.30.device_work_scope_status"
 )
 
-DEVICE_LIFECYCLE_COLUMNS = (
+DEVICE_CLASSIFICATION_COLUMNS = (
     "project_phase",
-    "operation_status",
-    "operation_status_reason",
-    "operation_status_updated_at",
-    "operation_status_updated_by",
+    "work_scope_status",
+    "work_scope_reason",
+    "work_scope_updated_at",
+    "work_scope_updated_by",
 )
-DEVICE_LIFECYCLE_INDEXES = (
-    "idx_devices_operation_status",
+DEVICE_CLASSIFICATION_INDEXES = (
+    "idx_devices_work_scope_status",
     "idx_devices_project_phase",
+)
+LEGACY_OPERATION_STATUS_VALUES = (
+    "in_service",
+    "not_integrated",
+    "commissioning",
+    "suspended",
+    "retired",
 )
 
 _DATABASE_INITIALIZE_LOCKS: dict[str, threading.RLock] = {}
@@ -71,11 +78,11 @@ CREATE TABLE IF NOT EXISTS devices (
     device_type TEXT,
     project_phase TEXT NOT NULL DEFAULT 'unspecified'
         CHECK(project_phase IN ('phase_1', 'phase_2', 'phase_3', 'other', 'unspecified')),
-    operation_status TEXT NOT NULL DEFAULT 'in_service'
-        CHECK(operation_status IN ('in_service', 'not_integrated', 'commissioning', 'suspended', 'retired')),
-    operation_status_reason TEXT,
-    operation_status_updated_at TEXT,
-    operation_status_updated_by TEXT,
+    work_scope_status TEXT NOT NULL DEFAULT 'included'
+        CHECK(work_scope_status IN ('included', 'excluded')),
+    work_scope_reason TEXT,
+    work_scope_updated_at TEXT,
+    work_scope_updated_by TEXT,
     primary_address TEXT NOT NULL,
     normalized_primary_address TEXT,
     backup_address TEXT,
@@ -1219,7 +1226,7 @@ class Database:
             backup_path: Path | None = None
             schema_version_before = ""
             address_migration = False
-            lifecycle_migration = False
+            classification_migration = False
             try:
                 conn = self.connect()
                 stage = "configure"
@@ -1228,16 +1235,16 @@ class Database:
                     stage = "inspect"
                     schema_version_before = self._safe_schema_version(conn)
                     address_migration = self._requires_device_address_migration(conn)
-                    lifecycle_migration = self._requires_device_lifecycle_migration(
+                    classification_migration = self._requires_device_classification_migration(
                         conn
                     )
-                    if address_migration or lifecycle_migration:
+                    if address_migration or classification_migration:
                         stage = "backup"
                         backup_path = self._backup_before_device_migration(
                             conn,
                             "primary-address"
                             if address_migration
-                            else "operation-status",
+                            else "work-scope-status",
                         )
                 stage = "schema"
                 schema_scripts = (
@@ -1250,8 +1257,8 @@ class Database:
                 )
                 stage = "additive_updates"
                 self._apply_additive_schema_updates(conn)
-                stage = "lifecycle_validation"
-                self._validate_device_lifecycle_migration(conn)
+                stage = "classification_validation"
+                self._validate_device_classification_migration(conn)
                 stage = "ap_vlan_reference_migration"
                 self._migrate_trackside_ap_vlan_allocation_references(conn)
                 stage = "ap_vlan_group_migration"
@@ -1264,12 +1271,17 @@ class Database:
                 self._write_schema_version(conn)
                 stage = "commit"
                 conn.commit()
-                if existed and (address_migration or lifecycle_migration):
+                if existed and (address_migration or classification_migration):
                     self._log_migration_completed(
                         schema_version_before=schema_version_before,
                         backup_path=backup_path,
                         address_migration=address_migration,
-                        lifecycle_migration=lifecycle_migration,
+                        classification_migration=classification_migration,
+                        legacy_operation_status_counts=(
+                            self._legacy_operation_status_counts(conn)
+                            if classification_migration
+                            else {}
+                        ),
                     )
             except Exception as exc:
                 if conn is not None:
@@ -1338,34 +1350,65 @@ class Database:
                         f"ALTER {'TABLE'} {table} ADD COLUMN {column} {column_type}"
                     )
 
-        device_lifecycle_columns = {
+        work_scope_status_existed = self._column_exists(
+            conn, "devices", "work_scope_status"
+        )
+        device_classification_columns = {
             "project_phase": (
                 "TEXT NOT NULL DEFAULT 'unspecified' "
                 "CHECK(project_phase IN ('phase_1', 'phase_2', 'phase_3', 'other', 'unspecified'))"
             ),
-            "operation_status": (
-                "TEXT NOT NULL DEFAULT 'in_service' "
-                "CHECK(operation_status IN ('in_service', 'not_integrated', "
-                "'commissioning', 'suspended', 'retired'))"
+            "work_scope_status": (
+                "TEXT NOT NULL DEFAULT 'included' "
+                "CHECK(work_scope_status IN ('included', 'excluded'))"
             ),
-            "operation_status_reason": "TEXT",
-            "operation_status_updated_at": "TEXT",
-            "operation_status_updated_by": "TEXT",
+            "work_scope_reason": "TEXT",
+            "work_scope_updated_at": "TEXT",
+            "work_scope_updated_by": "TEXT",
         }
-        for column, definition in device_lifecycle_columns.items():
+        for column, definition in device_classification_columns.items():
             if not self._column_exists(conn, "devices", column):
                 conn.execute(f"ALTER TABLE devices ADD COLUMN {column} {definition}")
         conn.execute(
             "UPDATE devices SET project_phase = 'unspecified' "
             "WHERE project_phase IS NULL OR TRIM(project_phase) = ''"
         )
+        if (
+            not work_scope_status_existed
+            and self._column_exists(conn, "devices", "operation_status")
+        ):
+            self._validate_legacy_operation_status_values(conn)
+            conn.execute(
+                """
+                UPDATE devices
+                SET work_scope_status =
+                    CASE LOWER(TRIM(COALESCE(operation_status, '')))
+                        WHEN 'in_service' THEN 'included'
+                        WHEN 'not_integrated' THEN 'excluded'
+                        WHEN 'commissioning' THEN 'excluded'
+                        WHEN 'suspended' THEN 'excluded'
+                        WHEN 'retired' THEN 'excluded'
+                        ELSE 'included'
+                    END
+                """
+            )
+            for current, legacy in (
+                ("work_scope_reason", "operation_status_reason"),
+                ("work_scope_updated_at", "operation_status_updated_at"),
+                ("work_scope_updated_by", "operation_status_updated_by"),
+            ):
+                if self._column_exists(conn, "devices", legacy):
+                    conn.execute(
+                        f"UPDATE devices SET {current} = {legacy} "
+                        f"WHERE {current} IS NULL"
+                    )
         conn.execute(
-            "UPDATE devices SET operation_status = 'in_service' "
-            "WHERE operation_status IS NULL OR TRIM(operation_status) = ''"
+            "UPDATE devices SET work_scope_status = 'included' "
+            "WHERE work_scope_status IS NULL OR TRIM(work_scope_status) = ''"
         )
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_devices_operation_status "
-            "ON devices(operation_status)"
+            "CREATE INDEX IF NOT EXISTS idx_devices_work_scope_status "
+            "ON devices(work_scope_status)"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_devices_project_phase "
@@ -1727,19 +1770,19 @@ class Database:
             """
         ).fetchone() is not None
 
-    def _requires_device_lifecycle_migration(
+    def _requires_device_classification_migration(
         self, conn: sqlite3.Connection
     ) -> bool:
         if not self._table_exists(conn, "devices"):
             return False
-        missing_columns = self._missing_device_lifecycle_columns(conn)
+        missing_columns = self._missing_device_classification_columns(conn)
         if missing_columns:
             return True
         indexes = {
             str(row["name"])
             for row in conn.execute("PRAGMA index_list(devices)").fetchall()
         }
-        if any(index not in indexes for index in DEVICE_LIFECYCLE_INDEXES):
+        if any(index not in indexes for index in DEVICE_CLASSIFICATION_INDEXES):
             return True
         return (
             conn.execute(
@@ -1748,32 +1791,32 @@ class Database:
                 FROM devices
                 WHERE project_phase IS NULL
                    OR TRIM(project_phase) = ''
-                   OR operation_status IS NULL
-                   OR TRIM(operation_status) = ''
+                   OR work_scope_status IS NULL
+                   OR TRIM(work_scope_status) = ''
                 LIMIT 1
                 """
             ).fetchone()
             is not None
         )
 
-    def _validate_device_lifecycle_migration(
+    def _validate_device_classification_migration(
         self, conn: sqlite3.Connection
     ) -> None:
-        missing_columns = self._missing_device_lifecycle_columns(conn)
+        missing_columns = self._missing_device_classification_columns(conn)
         if missing_columns:
             raise sqlite3.DatabaseError(
-                "设备生命周期字段迁移不完整: " + ",".join(missing_columns)
+                "设备分类字段迁移不完整: " + ",".join(missing_columns)
             )
         indexes = {
             str(row["name"])
             for row in conn.execute("PRAGMA index_list(devices)").fetchall()
         }
         missing_indexes = [
-            index for index in DEVICE_LIFECYCLE_INDEXES if index not in indexes
+            index for index in DEVICE_CLASSIFICATION_INDEXES if index not in indexes
         ]
         if missing_indexes:
             raise sqlite3.DatabaseError(
-                "设备生命周期索引迁移不完整: " + ",".join(missing_indexes)
+                "设备分类索引迁移不完整: " + ",".join(missing_indexes)
             )
         invalid_defaults = conn.execute(
             """
@@ -1781,21 +1824,63 @@ class Database:
             FROM devices
             WHERE project_phase IS NULL
                OR TRIM(project_phase) = ''
-               OR operation_status IS NULL
-               OR TRIM(operation_status) = ''
+               OR project_phase NOT IN ('phase_1', 'phase_2', 'phase_3', 'other', 'unspecified')
+               OR work_scope_status IS NULL
+               OR TRIM(work_scope_status) = ''
+               OR work_scope_status NOT IN ('included', 'excluded')
             """
         ).fetchone()
         if invalid_defaults and int(invalid_defaults[0]) > 0:
-            raise sqlite3.DatabaseError("设备生命周期默认值迁移不完整")
+            raise sqlite3.DatabaseError("设备分类默认值迁移不完整")
 
-    def _missing_device_lifecycle_columns(
+    def _missing_device_classification_columns(
         self, conn: sqlite3.Connection
     ) -> list[str]:
         return [
             column
-            for column in DEVICE_LIFECYCLE_COLUMNS
+            for column in DEVICE_CLASSIFICATION_COLUMNS
             if not self._column_exists(conn, "devices", column)
         ]
+
+    def _validate_legacy_operation_status_values(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        placeholders = ", ".join("?" for _ in LEGACY_OPERATION_STATUS_VALUES)
+        rows = conn.execute(
+            f"""
+            SELECT operation_status, COUNT(*) AS count
+            FROM devices
+            WHERE TRIM(COALESCE(operation_status, '')) <> ''
+              AND LOWER(TRIM(operation_status)) NOT IN ({placeholders})
+            GROUP BY operation_status
+            ORDER BY operation_status
+            """,
+            LEGACY_OPERATION_STATUS_VALUES,
+        ).fetchall()
+        if rows:
+            values = ", ".join(
+                f"{row['operation_status']}={int(row['count'])}" for row in rows
+            )
+            raise DatabaseSchemaMismatchError(
+                "旧投运状态存在无法安全映射的值，原数据库未修改：" + values
+            )
+
+    def _legacy_operation_status_counts(
+        self, conn: sqlite3.Connection
+    ) -> dict[str, int]:
+        if not self._column_exists(conn, "devices", "operation_status"):
+            return {}
+        return {
+            str(row["operation_status"] or "<empty>"): int(row["count"])
+            for row in conn.execute(
+                """
+                SELECT operation_status, COUNT(*) AS count
+                FROM devices
+                GROUP BY operation_status
+                ORDER BY operation_status
+                """
+            ).fetchall()
+        }
 
     def _backup_before_device_migration(
         self, source: sqlite3.Connection, migration_name: str
@@ -2235,7 +2320,8 @@ class Database:
         schema_version_before: str,
         backup_path: Path | None,
         address_migration: bool,
-        lifecycle_migration: bool,
+        classification_migration: bool,
+        legacy_operation_status_counts: dict[str, int],
     ) -> None:
         try:
             from netconsole.core import app_logger
@@ -2247,7 +2333,9 @@ class Database:
                     f"schema_version_before={schema_version_before or '<missing>'} "
                     f"schema_version_after={CURRENT_SCHEMA_VERSION} "
                     f"address_migration={address_migration} "
-                    f"lifecycle_migration={lifecycle_migration} "
+                    f"classification_migration={classification_migration} "
+                    "legacy_operation_status_counts="
+                    f"{json.dumps(legacy_operation_status_counts, ensure_ascii=True, sort_keys=True)} "
                     f"backup_path={backup_path or '<none>'}"
                 ),
             )
@@ -2271,7 +2359,7 @@ class Database:
             if conn is not None:
                 schema_version = self._safe_schema_version(conn) or schema_version
                 if self._table_exists(conn, "devices"):
-                    missing_columns = self._missing_device_lifecycle_columns(conn)
+                    missing_columns = self._missing_device_classification_columns(conn)
                     indexes = {
                         str(row["name"])
                         for row in conn.execute(
@@ -2280,7 +2368,7 @@ class Database:
                     }
                     missing_indexes = [
                         index
-                        for index in DEVICE_LIFECYCLE_INDEXES
+                        for index in DEVICE_CLASSIFICATION_INDEXES
                         if index not in indexes
                     ]
         except Exception as diagnostic_exc:

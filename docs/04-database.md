@@ -14,16 +14,26 @@ The built-in demonstration site is `demo`. If `sites/demo/db/devices.db` does no
 
 If the database already exists, `Database.initialize()` applies only additive, idempotent schema updates and records `schema_metadata`; it does not backfill demo facts or delete existing rows. The current migration adds the non-secret device credential state table without rewriting existing device credentials. Never delete a user database to apply an upgrade. Development fixtures must use a temporary data root.
 
-Current schema version: `2026.07.30.trackside_ap_station_plan`. The prior query-plan evidence and rollback boundaries remain recorded in [the E6 database archive](archive/migrations/electron-only/E6-2026-07-18.md).
+Current schema version: `2026.07.30.device_work_scope_status`. The prior query-plan evidence and rollback boundaries remain recorded in [the E6 database archive](archive/migrations/electron-only/E6-2026-07-18.md).
 
-The 2026-07-29 device lifecycle migration adds the following additive fields to
-`devices`: `project_phase`, `operation_status`, `operation_status_reason`,
-`operation_status_updated_at`, and `operation_status_updated_by`. It also adds
-`idx_devices_operation_status` and `idx_devices_project_phase`. Existing rows
-are filled with `project_phase='unspecified'` and `operation_status='in_service'`
-so the default “在用” list remains backward compatible. Missing fields,
-indexes, empty defaults, or an interrupted previous migration are repaired
-idempotently before any device Repository is constructed.
+The 2026-07-30 device classification migration uses `project_phase` only for
+the construction phase and adds the following work-scope fields to `devices`:
+`work_scope_status`, `work_scope_reason`, `work_scope_updated_at`, and
+`work_scope_updated_by`. New databases use `work_scope_status='included'` and
+the `idx_devices_work_scope_status` index. This status means whether the device
+participates in the current debugging and collection scope; it is independent
+from the device's real operation, connectivity, credential, and collection
+states.
+
+Databases that already contain the previous `operation_status*` fields are
+upgraded additively. The old columns remain unchanged for later deprecation,
+while `in_service` maps to `included` and `not_integrated`, `commissioning`,
+`suspended`, and `retired` map to `excluded`; reason, update time, and updater
+are copied into the new fields. An unknown non-empty old status stops and rolls
+back the migration instead of guessing. Databases without either status model
+receive the new fields with the `included` default. Missing fields, indexes,
+empty defaults, or an interrupted previous migration are repaired idempotently
+before any device Repository is constructed.
 
 Every active site database is initialized during Backend assembly, site
 creation, site activation, and package import staging. Existing databases are
@@ -33,7 +43,7 @@ verified backup with the same database-state fingerprint is reused on a
 repeated failed attempt. Schema changes and the final `schema_metadata`
 version write run in one `BEGIN IMMEDIATE` transaction. A failure rolls back
 the database, retains the original file, and records the migration stage,
-SQLite error code/name, missing lifecycle fields/indexes, backup path, and
+SQLite error code/name, missing classification fields/indexes, backup path, and
 traceback in the local Backend log. The API never creates an empty replacement
 database.
 

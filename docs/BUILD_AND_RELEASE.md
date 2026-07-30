@@ -96,7 +96,7 @@ pnpm package
 Package smoke 还会在最终冻结的 `resources/backend/NetConsoleBackend.exe`
 上运行 `scripts/build/smoke_frozen_device_database.py`：脚本在独立测试数据根创建旧
 `devices` schema，启动冻结 Backend 请求 `/api/device-management/devices`，确认旧设备
-仍可读取且默认生命周期为 `unspecified / in_service`，正常停止后再次启动并确认没有
+仍可读取且默认分类为 `unspecified / included`，正常停止后再次启动并确认没有
 重复迁移备份。该 smoke 不读取机器级数据根，也不修改真实局点数据库。若构建机没有可用
 的最终冻结 Backend，只能报告 Python/应用层定向测试，不能声称正式 Backend smoke 已通过。
 

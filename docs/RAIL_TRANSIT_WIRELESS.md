@@ -33,7 +33,7 @@ ZTE C89E-4 V1.9.0 的固定五条命令已在 11 台现场设备上完成只读�
 
 ZTE AP 自动匹配复用现有 LLDP 与 AP Identity 匹配链；无唯一证据时保持未匹配，不生成占位关系。单端 RX/TX 和双向光衰字段继续作为内部事实保留，但正式轨旁 AP 业务表与业务导出不展示“双向光衰”列；H3C 既有 LLDP/AP 关联和内部双向光衰规则不变。业务表 VLAN 列不重复展示独立 PVID 列已有的 `Native/PVID <VLAN>` 片段。
 
-轨旁查询、筛选项、统计、导出和任务目标都只排除 `operation_status=suspended` 的设备，不把建设分期或其他状态当作暂停使用。Worker 在连接前再次检查状态，期间转为暂停使用时按跳过记录；同一局点、同一更新范围的活动任务复用原 Task ID，取消任务会关闭当前设备会话。完整边界和后续清单见 [ZTE 轨旁交换机 Adapter](ZTE_TRACKSIDE_SWITCH_ADAPTER.md)。
+轨旁查询、筛选项、统计、导出和自动任务目标只包含 `work_scope_status=included` 的设备，建设分期不直接决定工作范围。Worker 在连接前再次检查状态，期间转为 `excluded` 时按“当前工作状态为暂不参与”跳过；用户在设备管理中明确发起的手动只读操作仍允许执行。同一局点、同一更新范围的活动任务复用原 Task ID，取消任务会关闭当前设备会话。完整边界和后续清单见 [ZTE 轨旁交换机 Adapter](ZTE_TRACKSIDE_SWITCH_ADAPTER.md)。
 
 ## 5C-9 无线综合看板
 

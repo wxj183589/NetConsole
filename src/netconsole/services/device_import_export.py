@@ -9,7 +9,10 @@ from typing import Callable, Iterable
 
 from netconsole.models.device import (
     Device,
+    legacy_operation_status_to_work_scope_status,
     normalize_device_vendor,
+    normalize_project_phase,
+    normalize_work_scope_status,
     validate_device_vendor_type,
 )
 from netconsole.models.device_address import normalize_ip_address
@@ -59,18 +62,24 @@ IDENTITY_TEMPLATE_FIELDS = [
     "设备ID",
     "原主用地址",
 ]
-DEVICE_CSV_COLUMNS = [
+OPERATION_STATUS_TEMPLATE_FIELDS = [
     *IDENTITY_TEMPLATE_FIELDS,
     "建设阶段",
     "投运状态",
     "投运状态说明",
 ]
+DEVICE_CSV_COLUMNS = [
+    *IDENTITY_TEMPLATE_FIELDS,
+    "建设阶段",
+    "当前工作状态",
+    "当前工作状态说明",
+]
 TEMPLATE_FIELDS = DEVICE_CSV_COLUMNS
 
 TEMPLATE_EXAMPLE_ROWS = [
-    ["核心交换机-示例", "192.168.1.1", "", "SSH", "22", "admin", "Admin@123", "H3C", "SW", "COCC", "控制中心", "否", "", "", "", "", "", "", "", "", "是", "否", "是", "161", "public", "2000", "1", "SSH设备示例", "", "", "未指定", "在用", ""],
-    ["无线控制器-示例", "192.168.1.10", "192.168.2.10", "SSH", "22", "admin", "Admin@123", "H3C", "AC", "COCC", "控制中心", "是", "10.0.0.10", "22", "jump", "Jump@123", "", "", "", "", "是", "是", "是", "161", "public", "2000", "1", "主备地址+隧道示例", "", "", "二期", "未并网", "示例：未并网设备仍可手动调试"],
-    ["列车01-MR-CT", "10.122.1.249", "10.122.89.101", "SSH", "22", "admin", "Admin@123", "H3C", "MR", "车载-MR", "01车车头", "否", "", "", "", "", "", "", "", "", "是", "否", "是", "161", "public", "2000", "1", "车载 MR 示例", "", "", "未指定", "在用", ""],
+    ["核心交换机-示例", "192.168.1.1", "", "SSH", "22", "admin", "Admin@123", "H3C", "SW", "COCC", "控制中心", "否", "", "", "", "", "", "", "", "", "是", "否", "是", "161", "public", "2000", "1", "SSH设备示例", "", "", "未指定", "参与当前调试", ""],
+    ["无线控制器-示例", "192.168.1.10", "192.168.2.10", "SSH", "22", "admin", "Admin@123", "H3C", "AC", "COCC", "控制中心", "是", "10.0.0.10", "22", "jump", "Jump@123", "", "", "", "", "是", "是", "是", "161", "public", "2000", "1", "主备地址+隧道示例", "", "", "二期", "暂不参与", "示例：设备仍可由用户明确发起手动调试"],
+    ["列车01-MR-CT", "10.122.1.249", "10.122.89.101", "SSH", "22", "admin", "Admin@123", "H3C", "MR", "车载-MR", "01车车头", "否", "", "", "", "", "", "", "", "", "是", "否", "是", "161", "public", "2000", "1", "车载 MR 示例", "", "", "未指定", "参与当前调试", ""],
 ]
 
 TEMPLATE_FIELD_MAP = {
@@ -113,6 +122,8 @@ TEMPLATE_FIELD_MAP = {
     "设备ID": "device_id",
     "原主用地址": "original_primary_address",
     "建设阶段": "project_phase",
+    "当前工作状态": "work_scope_status",
+    "当前工作状态说明": "work_scope_reason",
     "投运状态": "operation_status",
     "投运状态说明": "operation_status_reason",
 }
@@ -662,6 +673,14 @@ class DeviceImportExportService:
             raise ValueError(f"Invalid device_uuid: {device_uuid}")
         if device_uuid is not None and self.repository.exists_by_uuid(str(device_uuid)):
             raise ValueError(f"Duplicate device_uuid: {device_uuid}")
+        if payload.get("project_phase") is not None:
+            payload["project_phase"] = normalize_project_phase(
+                payload["project_phase"]
+            )
+        if payload.get("work_scope_status") is not None:
+            payload["work_scope_status"] = normalize_work_scope_status(
+                payload["work_scope_status"]
+            )
         payload["device_vendor"], payload["device_type"] = validate_device_vendor_type(
             payload["device_vendor"], payload["device_type"]
         )
@@ -700,6 +719,8 @@ class DeviceImportExportService:
     def _detect_mode(headers: list[str]) -> str:
         if headers == TEMPLATE_FIELDS:
             return "template"
+        if headers == OPERATION_STATUS_TEMPLATE_FIELDS:
+            return "operation_status_template"
         if headers == IDENTITY_TEMPLATE_FIELDS:
             return "identity_template"
         if headers == PREVIOUS_TEMPLATE_FIELDS:
@@ -716,6 +737,18 @@ class DeviceImportExportService:
             field = field_map[header]
             value = values[index] if index < len(values) else None
             result[field] = DeviceImportExportService._clean_value(value)
+        if mode == "operation_status_template":
+            legacy_status = result.pop("operation_status", None)
+            if legacy_status is not None:
+                try:
+                    result["work_scope_status"] = (
+                        legacy_operation_status_to_work_scope_status(legacy_status)
+                    )
+                except ValueError:
+                    result["work_scope_status"] = legacy_status
+            legacy_reason = result.pop("operation_status_reason", None)
+            if legacy_reason is not None:
+                result["work_scope_reason"] = legacy_reason
         return result
 
     @staticmethod

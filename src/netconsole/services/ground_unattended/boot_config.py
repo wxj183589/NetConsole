@@ -300,7 +300,7 @@ class MrSyslogConfigService:
         if device is None:
             raise ValueError("设备管理中已找不到 MR")
         if not is_device_eligible_for_automatic_collection(device):
-            raise ValueError("MR 当前不是在用状态，已退出无人值守自动任务")
+            raise ValueError("MR 当前不参与本次调试，已退出无人值守自动任务")
         if str(device.device_vendor or "H3C").casefold() != "h3c":
             raise ValueError("当前 Syslog Profile 仅适配 H3C MR")
         config = _connection_config(self.site_id, device)
