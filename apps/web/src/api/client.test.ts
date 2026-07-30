@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { apiRequest } from './client'
+import { ApiRequestError, apiErrorDetail, apiRequest } from './client'
 import type { NetConsoleDesktopBridge } from '../../../desktop_electron/src/shared/bridge'
 import { initializePlatformRuntime, resetPlatformRuntimeForTests } from '../platform/runtime'
 
@@ -8,6 +8,59 @@ describe('API client errors', () => {
   afterEach(() => {
     resetPlatformRuntimeForTests()
     vi.unstubAllGlobals()
+  })
+
+  it('normalizes network request diagnostics', () => {
+    const detail = apiErrorDetail(new ApiRequestError(
+      'Backend 连接中断，请重试。',
+      0,
+      'CONNECTION_RESET',
+      {
+        path: '/api/rail-transit/base-data/mrs',
+        network_error: 'socket hang up',
+      },
+    ))
+
+    expect(detail).toEqual({
+      path: '/api/rail-transit/base-data/mrs',
+      code: 'CONNECTION_RESET',
+      status: 0,
+      requestId: '',
+      message: 'Backend 连接中断，请重试。',
+      originalMessage: 'socket hang up',
+    })
+  })
+
+  it('preserves HTTP request ids and original messages', () => {
+    const detail = apiErrorDetail(new ApiRequestError(
+      '服务暂时不可用',
+      503,
+      'SERVICE_UNAVAILABLE',
+      {
+        path: '/api/service',
+        request_id: 'request-503',
+        original_message: 'upstream reset',
+      },
+    ))
+
+    expect(detail).toMatchObject({
+      path: '/api/service',
+      code: 'SERVICE_UNAVAILABLE',
+      status: 503,
+      requestId: 'request-503',
+      originalMessage: 'upstream reset',
+    })
+  })
+
+  it('normalizes unexpected errors with the fallback path', () => {
+    expect(apiErrorDetail(new Error('unexpected'), '/api/fallback')).toEqual({
+      path: '/api/fallback',
+      code: 'UNEXPECTED_ERROR',
+      status: 0,
+      requestId: '',
+      message: 'unexpected',
+      originalMessage: 'unexpected',
+    })
   })
 
   it('shows standardized backend message without exposing stack details', async () => {

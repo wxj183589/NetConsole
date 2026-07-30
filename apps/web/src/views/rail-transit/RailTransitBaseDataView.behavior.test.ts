@@ -87,8 +87,8 @@ const DialogStub = defineComponent({
   template: '<div v-if="modelValue" class="dialog-stub"><h3>{{ title }}</h3><slot /><slot name="footer" /></div>',
 })
 const AlertStub = defineComponent({
-  props: { title: String, description: String },
-  template: '<div class="alert-stub">{{ title }} {{ description }}<slot /></div>',
+  props: { title: String, description: String, type: String },
+  template: '<div class="alert-stub" :data-type="type">{{ title }} {{ description }}<slot /></div>',
 })
 const ButtonStub = defineComponent({
   inheritAttrs: false,
@@ -628,6 +628,30 @@ describe('轨道交通基础资料编辑闭环', () => {
     mocks.stationTemplatePreview.mockResolvedValue(stationTemplatePreviewPayload)
     mocks.sectionGenerationPreview.mockResolvedValue(sectionGenerationPreviewPayload)
     mocks.download.mockResolvedValue({ status: 'saved' })
+  })
+
+  it('单个业务接口失败时显示部分刷新失败并保留已加载站点', async () => {
+    mocks.stationsPage.mockResolvedValue({
+      items: [sourceStationWuxiang],
+      total: 1,
+      page: 1,
+      page_size: 50,
+    })
+    mocks.issuePage.mockRejectedValue(new Error('connection reset'))
+
+    const wrapper = await mountView()
+
+    const warning = wrapper.findAll('.alert-stub').find(
+      (item) => item.text().includes('部分基础资料刷新失败，已保留最后成功数据。'),
+    )
+    expect(warning?.attributes('data-type')).toBe('warning')
+    expect(warning?.text()).toContain('数据质量问题')
+    expect(warning?.text()).toContain('错误码：UNEXPECTED_ERROR')
+    expect(wrapper.text()).not.toContain('Backend 连接中断，请重试。')
+    expect(wrapper.get('[data-table-id="rail-base-stations"]').text()).toContain(
+      sourceStationWuxiang.name,
+    )
+    wrapper.unmount()
   })
 
   it('真实点击解锁后建立草稿，并保存线路和项目类型', async () => {

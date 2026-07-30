@@ -435,6 +435,7 @@ def resolve_effective_trackside_ap_scope_from_database(
     *,
     site_id: str,
     context: TracksideApScopeContext | None = None,
+    resource_rows: Iterable[Mapping[str, object | None]] | None = None,
 ) -> EffectiveTracksideApScope:
     repository = AcRepository(database)
     plans = repository.list_trackside_ap_plan()
@@ -453,7 +454,11 @@ def resolve_effective_trackside_ap_scope_from_database(
         station_rows=extension_points,
         plan_rows=selected_plans,
         reference_rows=extension_points,
-        resource_rows=repository.list_all_fit_ap_resources_with_metadata(),
+        resource_rows=(
+            repository.list_all_fit_ap_resources_with_metadata()
+            if resource_rows is None
+            else resource_rows
+        ),
     )
 
 

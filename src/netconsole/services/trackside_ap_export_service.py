@@ -79,6 +79,9 @@ class TracksideApBusinessLoadResult:
     empty_reason: str = ""
     identity_shadow: dict[str, object] = field(default_factory=dict)
     scope: EffectiveTracksideApScope | None = None
+    partial_data: bool = False
+    source_statuses: dict[str, str] = field(default_factory=dict)
+    unavailable_sources: list[dict[str, str]] = field(default_factory=list)
 
 
 def build_trackside_ap_business_export_name(site_display_name: str, created_at: datetime) -> str:
@@ -116,28 +119,176 @@ def load_trackside_ap_business_snapshot(
     query_start = perf_counter()
     fact_repository = DeviceFactRepository(repository.database)
     ac_repository = AcRepository(repository.database)
+    source_statuses: dict[str, str] = {
+        "switch_devices": "loaded",
+        "interfaces": "loaded",
+        "switch_optical": "loaded",
+        "lldp": "loaded",
+        "fit_ap_resources": "loaded",
+        "fit_ap_optical": "loaded",
+        "ap_lldp_history": "loaded",
+        "planning": "loaded",
+    }
+    unavailable_sources: list[dict[str, str]] = []
+
+    def source_failure(
+        source: str,
+        label: str,
+        code: str,
+        error: Exception,
+        *,
+        device_id: str = "",
+    ) -> None:
+        unavailable_sources.append(
+            {
+                "source": source,
+                "label": label,
+                "code": code,
+                "message": f"{label}暂时不可用。",
+                "device_id": device_id,
+            }
+        )
+        app_logger.log_warning(
+            "TRACKSIDE_AP_SOURCE_UNAVAILABLE",
+            (
+                f"site={site_name} source={source} device={device_id or '-'} "
+                f"error={type(error).__name__}: {error}"
+            ),
+        )
+
+    try:
+        fit_ap_resource_input = (
+            ac_repository.list_all_fit_ap_resources_with_metadata()
+        )
+    except Exception as exc:
+        fit_ap_resource_input = []
+        source_statuses["fit_ap_resources"] = "failed"
+        source_failure(
+            "fit_ap_resources",
+            "FIT-AP 资源",
+            "FIT_AP_RESOURCES_UNAVAILABLE",
+            exc,
+        )
     scope = resolve_effective_trackside_ap_scope_from_database(
         repository.database,
         site_id=site_name,
         context=scope_context,
+        resource_rows=fit_ap_resource_input,
     )
-    devices = filter_station_switch_devices(
-        repository.list(),
-        repository.database,
-        site_name,
-        project_phase=scope.context.project_phase,
+    try:
+        devices = filter_station_switch_devices(
+            repository.list(),
+            repository.database,
+            site_name,
+            project_phase=scope.context.project_phase,
+        )
+    except Exception as exc:
+        devices = []
+        source_statuses["switch_devices"] = "failed"
+        source_failure(
+            "switch_devices",
+            "站点交换机",
+            "SWITCH_DEVICES_UNAVAILABLE",
+            exc,
+        )
+
+    def device_facts(
+        source: str,
+        label: str,
+        code: str,
+        loader: Callable[[str], list[dict[str, object | None]]],
+    ) -> dict[str, list[dict[str, object | None]]]:
+        values: dict[str, list[dict[str, object | None]]] = {}
+        failed = 0
+        for device in devices:
+            device_id = str(device.device_uuid or "")
+            try:
+                values[device_id] = loader(device_id)
+            except Exception as exc:
+                failed += 1
+                values[device_id] = []
+                source_failure(
+                    source,
+                    label,
+                    code,
+                    exc,
+                    device_id=device_id,
+                )
+        if failed:
+            source_statuses[source] = (
+                "failed" if failed == len(devices) else "partial"
+            )
+        return values
+
+    interfaces_by_device = device_facts(
+        "interfaces",
+        "交换机接口事实",
+        "SWITCH_INTERFACES_UNAVAILABLE",
+        fact_repository.list_device_interfaces,
     )
-    interfaces_by_device = {str(device.device_uuid or ""): fact_repository.list_device_interfaces(str(device.device_uuid or "")) for device in devices}
-    optical_by_device = {str(device.device_uuid or ""): fact_repository.list_optical_modules(str(device.device_uuid or "")) for device in devices}
-    lldp_by_device = {str(device.device_uuid or ""): fact_repository.list_lldp_neighbors(str(device.device_uuid or "")) for device in devices}
-    fit_ap_optical_rows = scope.filter_identity_rows(
-        ac_repository.list_all_fit_ap_optical()
+    optical_by_device = device_facts(
+        "switch_optical",
+        "交换机光模块事实",
+        "SWITCH_OPTICAL_UNAVAILABLE",
+        fact_repository.list_optical_modules,
     )
+    lldp_by_device = device_facts(
+        "lldp",
+        "交换机 LLDP 事实",
+        "SWITCH_LLDP_UNAVAILABLE",
+        fact_repository.list_lldp_neighbors,
+    )
+    try:
+        fit_ap_optical_rows = scope.filter_identity_rows(
+            ac_repository.list_all_fit_ap_optical()
+        )
+    except Exception as exc:
+        fit_ap_optical_rows = []
+        source_statuses["fit_ap_optical"] = "failed"
+        source_failure(
+            "fit_ap_optical",
+            "FIT-AP 光衰",
+            "FIT_AP_OPTICAL_UNAVAILABLE",
+            exc,
+        )
     fit_ap_resource_rows = scope.resources
-    historical_lldp_rows = ac_repository.list_latest_ap_lldp_histories()
-    active_plan = ac_repository.get_active_trackside_pvid_plan()
+    try:
+        historical_lldp_rows = ac_repository.list_latest_ap_lldp_histories()
+    except Exception as exc:
+        historical_lldp_rows = []
+        source_statuses["ap_lldp_history"] = "failed"
+        source_failure(
+            "ap_lldp_history",
+            "AP 历史 LLDP",
+            "AP_LLDP_HISTORY_UNAVAILABLE",
+            exc,
+        )
+    try:
+        active_plan = ac_repository.get_active_trackside_pvid_plan()
+    except Exception as exc:
+        active_plan = None
+        source_statuses["planning"] = "failed"
+        source_failure(
+            "planning",
+            "轨旁 AP 规划",
+            "TRACKSIDE_AP_PLAN_UNAVAILABLE",
+            exc,
+        )
     switch_lookup = build_switch_data_lookup(devices, optical_by_device)
-    latest_lldp, latest_optical = build_latest_ap_history_indexes(ac_repository, fit_ap_resource_rows)
+    try:
+        latest_lldp, latest_optical = build_latest_ap_history_indexes(
+            ac_repository,
+            fit_ap_resource_rows,
+        )
+    except Exception as exc:
+        latest_lldp, latest_optical = {}, {}
+        source_statuses["ap_lldp_history"] = "failed"
+        source_failure(
+            "ap_lldp_history",
+            "AP 历史 LLDP",
+            "AP_LLDP_HISTORY_UNAVAILABLE",
+            exc,
+        )
     _offline_stats, offline_ledger_rows = build_offline_ap_ledger(
         fit_ap_resources=fit_ap_resource_rows,
         latest_lldp_by_ap=latest_lldp,
@@ -209,6 +360,9 @@ def load_trackside_ap_business_snapshot(
         empty_reason=empty_reason,
         identity_shadow=identity_shadow,
         scope=scope,
+        partial_data=bool(unavailable_sources),
+        source_statuses=source_statuses,
+        unavailable_sources=unavailable_sources,
     )
 
 
@@ -252,6 +406,7 @@ def export_trackside_ap_business_from_database(
             scope_context,
         ),
     )
+    require_complete_trackside_snapshot(snapshot, "轨旁 AP 业务导出")
     app_logger.log_info(
         "TRACKSIDE_AP_EXPORT_STARTED",
         f"site={site_name} rows={len(snapshot.rows)} output={output.name}",
@@ -374,6 +529,23 @@ def export_trackside_ap_business_from_database(
         f"site={site_name} rows={len(rows)} output={output.name}",
     )
     return {"path": str(output), "row_count": len(rows)}
+
+
+def require_complete_trackside_snapshot(
+    snapshot: TracksideApBusinessLoadResult,
+    operation: str,
+) -> None:
+    if not snapshot.partial_data:
+        return
+    labels = sorted(
+        {
+            str(item.get("label") or item.get("source") or "").strip()
+            for item in snapshot.unavailable_sources
+            if str(item.get("label") or item.get("source") or "").strip()
+        }
+    )
+    detail = "、".join(labels) or "部分数据来源"
+    raise RuntimeError(f"{operation}所需数据不完整：{detail}暂时不可用，请刷新后重试")
 
 
 def _trackside_empty_reason(

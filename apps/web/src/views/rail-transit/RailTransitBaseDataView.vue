@@ -2607,7 +2607,28 @@ function sectionSourceLabel(row: Section): string {
         <el-button type="primary" :loading="saving" :disabled="locked || !dirty" @click="saveAllChanges()">保存</el-button>
       </div>
     </div>
-    <el-alert v-if="store.error" :title="store.error" type="error" :closable="false" show-icon class="page-error" />
+    <el-alert
+      v-if="store.error"
+      :title="store.error"
+      :type="store.backendOffline ? 'error' : 'warning'"
+      :closable="false"
+      show-icon
+      class="page-error"
+    >
+      <details v-if="store.refreshErrors.length" class="refresh-error-details">
+        <summary>查看失败详情（{{ store.refreshErrors.length }}）</summary>
+        <ul>
+          <li v-for="item in store.refreshErrors" :key="item.key">
+            <strong>{{ item.label }}</strong>
+            <span>错误码：{{ item.code || 'UNKNOWN_ERROR' }}</span>
+            <span v-if="item.status > 0">HTTP {{ item.status }}</span>
+            <span v-if="item.requestId">request_id：{{ item.requestId }}</span>
+            <small>{{ item.path }}</small>
+            <small>{{ item.originalMessage }}</small>
+          </li>
+        </ul>
+      </details>
+    </el-alert>
     <el-alert v-if="locked && writeDeniedReason" :title="writeDeniedReason" type="warning" :closable="false" show-icon class="page-error" />
     <el-alert v-if="saveIssues.length || localStationConflictGroups.length" title="基础资料校验失败" type="error" :closable="false" show-icon class="page-error">
       <div v-if="localStationConflictGroups.length" class="conflict-summary">
@@ -3544,6 +3565,11 @@ function sectionSourceLabel(row: Section): string {
 .page-toolbar h2 { margin: 0; color: var(--nc-text-primary); }
 .page-toolbar p { margin: 5px 0 0; color: var(--nc-text-secondary); font-size: 12px; }
 .page-error { margin-bottom: 14px; }
+.refresh-error-details { margin-top: 8px; }
+.refresh-error-details summary { cursor: pointer; }
+.refresh-error-details ul { display: grid; gap: 6px; margin: 8px 0 0; padding-left: 18px; }
+.refresh-error-details li { display: flex; flex-wrap: wrap; gap: 6px 12px; }
+.refresh-error-details small { width: 100%; overflow-wrap: anywhere; color: var(--nc-text-secondary); }
 .validation-list { margin: 6px 0 0; padding-left: 20px; }
 .conflict-summary ul { margin: 6px 0 10px; padding-left: 20px; }
 .content-card { display: flex; min-width: 0; min-height: 0; flex: 1; padding: 0 18px 18px; overflow: hidden; background: var(--nc-bg-panel); border: 1px solid var(--nc-border); border-radius: 10px; }

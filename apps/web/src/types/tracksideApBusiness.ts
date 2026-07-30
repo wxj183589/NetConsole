@@ -27,6 +27,13 @@ export interface TracksideApBusinessPage {
   scope_description?: string; scope_station_count?: number; scope_device_count?: number
   scope_ap_reference_count?: number; excluded_device_count?: number; excluded_items?: TracksideApScopeExcluded[]
   unmatched_online_items?: TracksideApUnmatchedOnline[]
+  partial_data?: boolean
+  source_statuses?: Record<string, 'loaded' | 'partial' | 'failed'>
+  unavailable_sources?: TracksideApDataSourceIssue[]
+}
+
+export interface TracksideApDataSourceIssue {
+  source: string; label: string; code: string; message: string; device_id?: string
 }
 
 export interface TracksideApUpdateRequest { station?: string; ap_uuid?: string; ap_mac?: string; ap_name?: string }
