@@ -50,9 +50,10 @@
 | P1-03 | P1 | CONFIRMED | Feature/验收事实 | 文档维度不完整 | 是（文档） |
 | P1-04 | P1 | CONFIRMED | Windows Server 2012 文档 | 待修复 | 是 |
 | P1-05 | P1 | CONFIRMED | 版本/依赖元数据 | 待修复 | 是 |
-| P1-06 | P1 | CONFIRMED | API Client | 待修复 | 是 |
+| P1-06 | P1 | CONFIRMED | API Client | 已修复 | 是 |
+| P1-07 | P1 | CONFIRMED | UI 架构分类 | 已修复 | 是 |
 
-当前确认发现共 11 项：P0 5 项、P1 6 项。另有 12 项 P2 整改候选，仅记录计划，不在本次实施大规模重构。
+当前确认发现共 12 项：P0 5 项、P1 7 项。另有 12 项 P2 整改候选，仅记录计划，不在本次实施大规模重构。
 
 ## 发现详情
 
@@ -210,14 +211,28 @@
 - 修复建议：集中 AbortController 超时；GET/HEAD 对可恢复传输错误做一次短指数退避；外部 signal 和写请求不自动重试。
 - 自动测试建议：GET 超时、GET 恢复、最大次数、POST 不重试和调用方 Abort 保持可取消。
 - 本次是否实施：是
+- 实施提交：`60c3f18f`
+
+### P1-07 轨旁 AP 站点骨架缺少 UI 架构分类
+
+- 严重级别：P1
+- 证据等级：CONFIRMED
+- 所属模块：UI 架构 Guard、轨旁 AP 规划
+- 代码路径：`apps/web/src/components/rail-transit/base-data/TracksideApPlanningTab.vue`、`config/architecture/ui_business_logic.yaml`
+- 用户表现：安装锁定的 Web 依赖后，`ui-business-logic` 架构门以 `UI_BUSINESS_LOGIC_UNCLASSIFIED` 拒绝 `mergePlanRows`，阻断组合验证和发布门。
+- 根因：站点规划骨架合并函数已进入基线，但对应精确符号没有同步登记到 UI 人工分类清单。
+- 数据风险：无直接数据风险；函数只把 Backend 规划行与当前站点列表投影为页面可编辑骨架，正式保存仍由 Backend 独立校验。
+- 修复建议：把该精确路径和符号登记为 `DISPLAY_ONLY`，指向已有规划行为测试；不放宽扫描规则、不增加目录级豁免。
+- 自动测试建议：运行 `TracksideApPlanningTab.behavior.test.ts` 和 `check_ui_business_logic.py`，同时保持配置陈旧项检查开启。
+- 本次是否实施：是
 - 实施提交：待填写
 
 ## 其他审计结论
 
 ### 架构与分层
 
-- 基线运行九个架构门时，`forbidden-imports`、`direct-sql-access`、`device-command-hardcoding`、`removed-features`、`runtime-paths`、`orphan-modules`、`migration-map` 七门通过。
-- `architecture-boundaries` 与 `ui-business-logic` 仅因独立 worktree 尚未安装 Web/Electron `node_modules`，TypeScript Compiler API 不可用而失败；这是环境前置条件，不是代码命中。安装锁定依赖后必须重跑。
+- 基线首次运行九个架构门时，`forbidden-imports`、`direct-sql-access`、`device-command-hardcoding`、`removed-features`、`runtime-paths`、`orphan-modules`、`migration-map` 七门通过。
+- 安装锁定的 Web/Electron 依赖后，`architecture-boundaries` 通过；`ui-business-logic` 确认唯一未分类符号为 `TracksideApPlanningTab.vue` 的 `mergePlanRows`，已按 P1-07 登记为精确 `DISPLAY_ONLY`。
 - Python 分层当前 23 个、orphan Service 当前 21 个命中均由精确限时例外覆盖；本次不扩展例外、不把既有债务伪报为已迁移。
 - 未发现新增直接 SQLite 访问、被移除功能入口或 Qt/PySide 回流证据。
 
