@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -9,6 +8,9 @@ from fastapi.testclient import TestClient
 from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture, mark_base_data_copy
 from netconsole.backend.api.main import create_app
 from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.repositories.rail_transit_base_data_repository import (
+    RailTransitBaseDataRepository,
+)
 
 
 class _NoopAsyncService:
@@ -122,7 +124,7 @@ def test_import_apply_persists_valid_rows_and_reports_skipped_rows(tmp_path: Pat
     monkeypatch.setenv("RAIL_TRANSIT_BASE_DATA_WRITE_ENABLED", "1")
     monkeypatch.setenv("NETCONSOLE_ALLOW_BASE_DATA_COPY_WRITE", "1")
     monkeypatch.delenv("NETCONSOLE_ALLOW_REAL_BASE_DATA_WRITE", raising=False)
-    paths, database = build_rail_transit_base_data_fixture(tmp_path)
+    paths, _database = build_rail_transit_base_data_fixture(tmp_path)
     mark_base_data_copy(paths)
     with TestClient(_app(paths, tmp_path)) as client:
         preview_response = client.post(
@@ -179,9 +181,13 @@ def test_import_apply_persists_valid_rows_and_reports_skipped_rows(tmp_path: Pat
     assert payload["skipped_invalid_rows"] == 1
     assert payload["unmatched_fit_ap_rows"] == 2
     assert payload["issues"]
-    with sqlite3.connect(database) as connection:
-        imported = connection.execute(
-            "SELECT ap_name, ap_point_code, ap_mac_norm FROM ap_extension_points WHERE ap_point_code = ?",
-            ("PARTIAL-NEW",),
-        ).fetchone()
-    assert imported == ("", "PARTIAL-NEW", "aa0000000001")
+    imported = next(
+        row
+        for row in RailTransitBaseDataRepository(paths).list_ap_records("demo")
+        if row["ap_point_code"] == "PARTIAL-NEW"
+    )
+    assert (
+        imported["ap_name"],
+        imported["ap_point_code"],
+        imported["ap_mac_norm"],
+    ) == ("", "PARTIAL-NEW", "aa0000000001")

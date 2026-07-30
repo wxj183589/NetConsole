@@ -276,7 +276,11 @@ class RailTransitBaseDataRepository:
                     change["row_number"] = int(operation.get("row_number") or 0)
                     changes.append(change)
                     connection.execute(f"RELEASE SAVEPOINT {savepoint}")
-                except (sqlite3.Error, ValueError, RailTransitBaseDataConstraintError) as exc:
+                except (
+                    sqlite3.IntegrityError,
+                    ValueError,
+                    RailTransitBaseDataConstraintError,
+                ) as exc:
                     connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
                     connection.execute(f"RELEASE SAVEPOINT {savepoint}")
                     failures.append(

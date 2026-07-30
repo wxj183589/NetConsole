@@ -134,7 +134,7 @@ def test_merge_plan_deduplicates_identical_rows_and_conflicts_only_related_rows(
 
 
 def test_repository_row_savepoint_keeps_other_import_rows(tmp_path: Path, monkeypatch) -> None:
-    paths, database = build_rail_transit_base_data_fixture(tmp_path)
+    paths, _database = build_rail_transit_base_data_fixture(tmp_path)
     repository = RailTransitBaseDataRepository(paths)
     original = repository._apply_operation
 
@@ -168,8 +168,9 @@ def test_repository_row_savepoint_keeps_other_import_rows(tmp_path: Path, monkey
 
     assert [change["row_number"] for change in changes] == [1, 3]
     assert failures == [{"row_number": 2, "kind": "create", "error_type": "IntegrityError"}]
-    with sqlite3.connect(database) as connection:
-        rows = connection.execute(
-            "SELECT ap_point_code FROM ap_extension_points WHERE ap_point_code LIKE 'SAVEPOINT-%' ORDER BY ap_point_code"
-        ).fetchall()
-    assert rows == [("SAVEPOINT-1",), ("SAVEPOINT-3",)]
+    point_codes = sorted(
+        row["ap_point_code"]
+        for row in repository.list_ap_records("demo")
+        if str(row["ap_point_code"]).startswith("SAVEPOINT-")
+    )
+    assert point_codes == ["SAVEPOINT-1", "SAVEPOINT-3"]

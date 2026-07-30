@@ -68,7 +68,9 @@ def test_expired_preview_and_changed_database_are_rejected_before_backup(tmp_pat
     assert not paths.rail_transit_base_data_import_backups_dir("demo").exists()
 
 
-def test_manual_decision_is_revalidated_and_blocking_conflict_cannot_be_skipped(tmp_path: Path) -> None:
+def test_existing_value_is_preserved_and_blocking_conflict_cannot_be_skipped(
+    tmp_path: Path,
+) -> None:
     _paths, _database, service = build_copy_service(tmp_path)
     manual = service.build_merge_plan(
         site_id="demo",
@@ -86,27 +88,36 @@ def test_manual_decision_is_revalidated_and_blocking_conflict_cannot_be_skipped(
         ],
     )
     manual_id = service.save_preview(manual)
-    with pytest.raises(BaseDataImportError) as error:
-        service.apply_preview(
-            preview_id=manual_id,
-            site_id="demo",
-            expected_database_sha256=manual.database_hash,
-            explicit_confirmation=True,
-        )
-    assert error.value.code == "BASE_DATA_IMPORT_CONFLICT"
-
-    resolved = service.resolve_decisions(
-        manual,
-        [MergeFieldDecisionDTO(row_number=1, field_name="section_name", action="keep_existing")],
+    audit = service.apply_preview(
+        preview_id=manual_id,
+        site_id="demo",
+        expected_database_sha256=manual.database_hash,
+        explicit_confirmation=True,
     )
-    assert resolved.items[0].result == "UNCHANGED"
+    assert audit["unchanged_rows"] == 1
+    assert any(issue["code"] == "existing_value_preserved" for issue in audit["issues"])
+    persisted = next(
+        row
+        for row in service.repository.list_ap_records("demo")
+        if row["ap_mac_norm"] == "000000000002"
+    )
+    assert persisted["section_name"] == "A-B 区间"
 
     conflict = service.build_merge_plan(
         site_id="demo",
         source_file_name="conflict.json",
         source_file_sha256="f" * 64,
-        rows=[ImportPreviewRowDTO(row_number=1, values={"ap_name": "AP-Online", "ap_mac_norm": "000000009999"})],
+        rows=[
+            ImportPreviewRowDTO(
+                row_number=1,
+                values={
+                    "ap_point_code": "OTHER-POINT",
+                    "ap_mac_norm": "000000000002",
+                },
+            )
+        ],
     )
+    assert conflict.items[0].result == "CONFLICT"
     with pytest.raises(BaseDataImportError) as error:
         service.resolve_decisions(
             conflict,
