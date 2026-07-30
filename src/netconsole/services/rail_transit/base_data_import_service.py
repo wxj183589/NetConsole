@@ -735,7 +735,12 @@ class RailTransitBaseDataImportService:
             result=result,  # type: ignore[arg-type]
             conflict_summary=match.warning,
             field_diffs=diffs,
-            source_values=values,
+            source_values={
+                **values,
+                "location_class_original": row.values.get(
+                    "location_class_original", ""
+                ),
+            },
             blocking=blocking,
             issues=issues,
         )

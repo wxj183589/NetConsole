@@ -27,7 +27,7 @@ from netconsole.models.device_address import InvalidDeviceAddressError, normaliz
 
 
 CURRENT_SCHEMA_VERSION = (
-    "2026.07.30.device_work_scope_status"
+    "2026.07.31.trackside_ap_location"
 )
 
 DEVICE_CLASSIFICATION_COLUMNS = (
@@ -40,6 +40,21 @@ DEVICE_CLASSIFICATION_COLUMNS = (
 DEVICE_CLASSIFICATION_INDEXES = (
     "idx_devices_work_scope_status",
     "idx_devices_project_phase",
+)
+TRACKSIDE_AP_LOCATION_COLUMNS = (
+    "location_class",
+    "participates_in_mainline",
+    "location_class_source",
+)
+TRACKSIDE_AP_LOCATION_CLASSES = (
+    "MAINLINE",
+    "DEPOT",
+    "PARKING_YARD",
+    "STABLING",
+    "DEPOT_CONNECTION",
+    "TEST_TRACK",
+    "NON_MAINLINE",
+    "UNKNOWN",
 )
 LEGACY_OPERATION_STATUS_VALUES = (
     "in_service",
@@ -576,6 +591,9 @@ CREATE TABLE IF NOT EXISTS ap_extension_points (
     area_name TEXT,
     line_side TEXT,
     direction TEXT,
+    location_class TEXT NOT NULL DEFAULT 'MAINLINE',
+    participates_in_mainline INTEGER NOT NULL DEFAULT 1,
+    location_class_source TEXT NOT NULL DEFAULT 'DEFAULT_MAINLINE',
     mileage_text TEXT,
     mileage_m REAL,
     distance_to_prev_m REAL,
@@ -1213,6 +1231,75 @@ CREATE TABLE IF NOT EXISTS config_snapshots (
 """
 
 
+def _normalized_trackside_ap_location_class(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    aliases = {
+        "MAINLINE": "MAINLINE",
+        "正线": "MAINLINE",
+        "DEPOT": "DEPOT",
+        "车辆段": "DEPOT",
+        "场段": "DEPOT",
+        "PARKING_YARD": "PARKING_YARD",
+        "PARKING_LOT": "PARKING_YARD",
+        "停车场": "PARKING_YARD",
+        "STABLING": "STABLING",
+        "STORAGE_TRACK": "STABLING",
+        "存车线": "STABLING",
+        "DEPOT_CONNECTION": "DEPOT_CONNECTION",
+        "出入段线": "DEPOT_CONNECTION",
+        "出段线": "DEPOT_CONNECTION",
+        "入段线": "DEPOT_CONNECTION",
+        "TEST_TRACK": "TEST_TRACK",
+        "试车线": "TEST_TRACK",
+        "NON_MAINLINE": "NON_MAINLINE",
+        "非正线": "NON_MAINLINE",
+        "UNKNOWN": "UNKNOWN",
+        "未知": "UNKNOWN",
+    }
+    return aliases.get(text.upper(), aliases.get(text, "UNKNOWN"))
+
+
+def _legacy_trackside_ap_location_class(row: dict[str, object]) -> str:
+    belong_type = str(row.get("belong_type") or "").strip()
+    explicit = _normalized_trackside_ap_location_class(belong_type)
+    if belong_type.casefold() in {
+        "depot",
+        "parking_yard",
+        "parking_lot",
+        "stabling",
+        "storage_track",
+        "depot_connection",
+        "test_track",
+        "non_mainline",
+    }:
+        return explicit
+    text = " ".join(
+        str(row.get(field) or "").strip()
+        for field in (
+            "yard_name",
+            "area_name",
+            "station_name",
+            "section_name",
+            "install_scene",
+            "location_desc",
+        )
+    )
+    if any(token in text for token in ("出入段线", "出段线", "入段线", "出场线", "入场线")):
+        return "DEPOT_CONNECTION"
+    if "试车线" in text:
+        return "TEST_TRACK"
+    if "存车线" in text or "存车场" in text:
+        return "STABLING"
+    if "停车场" in text:
+        return "PARKING_YARD"
+    if "车辆段" in text:
+        return "DEPOT"
+    if "非正线" in text:
+        return "NON_MAINLINE"
+    return "MAINLINE"
+
 
 class Database:
     def __init__(self, path: Path) -> None:
@@ -1256,6 +1343,7 @@ class Database:
             schema_version_before = ""
             address_migration = False
             classification_migration = False
+            trackside_ap_location_migration = False
             try:
                 conn = self.connect()
                 stage = "configure"
@@ -1267,13 +1355,22 @@ class Database:
                     classification_migration = self._requires_device_classification_migration(
                         conn
                     )
-                    if address_migration or classification_migration:
+                    trackside_ap_location_migration = (
+                        self._requires_trackside_ap_location_migration(conn)
+                    )
+                    if (
+                        address_migration
+                        or classification_migration
+                        or trackside_ap_location_migration
+                    ):
                         stage = "backup"
                         backup_path = self._backup_before_device_migration(
                             conn,
                             "primary-address"
                             if address_migration
-                            else "work-scope-status",
+                            else "work-scope-status"
+                            if classification_migration
+                            else "trackside-ap-location",
                         )
                 stage = "schema"
                 schema_scripts = (
@@ -1288,6 +1385,8 @@ class Database:
                 self._apply_additive_schema_updates(conn)
                 stage = "classification_validation"
                 self._validate_device_classification_migration(conn)
+                stage = "trackside_ap_location_validation"
+                self._validate_trackside_ap_location_migration(conn)
                 stage = "ap_vlan_reference_migration"
                 self._migrate_trackside_ap_vlan_allocation_references(conn)
                 stage = "ap_vlan_group_migration"
@@ -1300,12 +1399,19 @@ class Database:
                 self._write_schema_version(conn)
                 stage = "commit"
                 conn.commit()
-                if existed and (address_migration or classification_migration):
+                if existed and (
+                    address_migration
+                    or classification_migration
+                    or trackside_ap_location_migration
+                ):
                     self._log_migration_completed(
                         schema_version_before=schema_version_before,
                         backup_path=backup_path,
                         address_migration=address_migration,
                         classification_migration=classification_migration,
+                        trackside_ap_location_migration=(
+                            trackside_ap_location_migration
+                        ),
                         legacy_operation_status_counts=(
                             self._legacy_operation_status_counts(conn)
                             if classification_migration
@@ -1627,10 +1733,32 @@ class Database:
             "section_end_station": "TEXT",
             "yard_name": "TEXT",
             "area_name": "TEXT",
+            "location_class": "TEXT NOT NULL DEFAULT 'MAINLINE'",
+            "participates_in_mainline": "INTEGER NOT NULL DEFAULT 1",
+            "location_class_source": (
+                "TEXT NOT NULL DEFAULT 'DEFAULT_MAINLINE'"
+            ),
+        }
+        trackside_location_columns_before = {
+            column: self._column_exists(conn, "ap_extension_points", column)
+            for column in TRACKSIDE_AP_LOCATION_COLUMNS
         }
         for column, column_type in ap_extension_point_columns.items():
             if self._table_exists(conn, "ap_extension_points") and not self._column_exists(conn, "ap_extension_points", column):
                 conn.execute(f"ALTER {'TABLE'} ap_extension_points ADD COLUMN {column} {column_type}")
+        if self._table_exists(conn, "ap_extension_points"):
+            self._migrate_trackside_ap_locations(
+                conn,
+                location_column_existed=trackside_location_columns_before[
+                    "location_class"
+                ],
+                participation_column_existed=trackside_location_columns_before[
+                    "participates_in_mainline"
+                ],
+                source_column_existed=trackside_location_columns_before[
+                    "location_class_source"
+                ],
+            )
         fit_ap_optical_columns = {
             "lldp_source": "TEXT",
             "lldp_confidence": "INTEGER",
@@ -1827,6 +1955,130 @@ class Database:
             ).fetchone()
             is not None
         )
+
+    def _requires_trackside_ap_location_migration(
+        self, conn: sqlite3.Connection
+    ) -> bool:
+        if not self._table_exists(conn, "ap_extension_points"):
+            return False
+        if any(
+            not self._column_exists(conn, "ap_extension_points", column)
+            for column in TRACKSIDE_AP_LOCATION_COLUMNS
+        ):
+            return True
+        placeholders = ", ".join("?" for _ in TRACKSIDE_AP_LOCATION_CLASSES)
+        return (
+            conn.execute(
+                f"""
+                SELECT 1
+                FROM ap_extension_points
+                WHERE location_class IS NULL
+                   OR TRIM(location_class) = ''
+                   OR UPPER(TRIM(location_class)) NOT IN ({placeholders})
+                   OR participates_in_mainline IS NULL
+                   OR location_class_source IS NULL
+                   OR TRIM(location_class_source) = ''
+                LIMIT 1
+                """,
+                TRACKSIDE_AP_LOCATION_CLASSES,
+            ).fetchone()
+            is not None
+        )
+
+    def _migrate_trackside_ap_locations(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        location_column_existed: bool,
+        participation_column_existed: bool,
+        source_column_existed: bool,
+    ) -> None:
+        rows = conn.execute(
+            """
+            SELECT id, belong_type, station_name, section_name, yard_name,
+                   area_name, install_scene, location_desc, location_class,
+                   participates_in_mainline, location_class_source
+            FROM ap_extension_points
+            """
+        ).fetchall()
+        for row in rows:
+            raw_class = (
+                str(row["location_class"] or "").strip()
+                if location_column_existed
+                else ""
+            )
+            normalized = _normalized_trackside_ap_location_class(raw_class)
+            inferred = False
+            if not normalized:
+                normalized = _legacy_trackside_ap_location_class(dict(row))
+                inferred = True
+
+            raw_source = (
+                str(row["location_class_source"] or "").strip()
+                if source_column_existed
+                else ""
+            )
+            if raw_source:
+                source = raw_source
+            elif inferred:
+                source = (
+                    "DEFAULT_MAINLINE"
+                    if normalized == "MAINLINE"
+                    else "LEGACY_INFERRED"
+                )
+            else:
+                source = (
+                    "DEFAULT_MAINLINE"
+                    if normalized == "MAINLINE"
+                    else "EXPLICIT"
+                )
+
+            participates = (
+                bool(row["participates_in_mainline"])
+                if participation_column_existed
+                and row["participates_in_mainline"] is not None
+                else normalized == "MAINLINE"
+            )
+            conn.execute(
+                """
+                UPDATE ap_extension_points
+                SET location_class = ?,
+                    participates_in_mainline = ?,
+                    location_class_source = ?
+                WHERE id = ?
+                """,
+                (normalized, int(participates), source, int(row["id"])),
+            )
+
+    def _validate_trackside_ap_location_migration(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        if not self._table_exists(conn, "ap_extension_points"):
+            raise sqlite3.DatabaseError("轨旁 AP 表缺失")
+        missing = [
+            column
+            for column in TRACKSIDE_AP_LOCATION_COLUMNS
+            if not self._column_exists(conn, "ap_extension_points", column)
+        ]
+        if missing:
+            raise sqlite3.DatabaseError(
+                "轨旁 AP 位置字段迁移不完整: " + ",".join(missing)
+            )
+        placeholders = ", ".join("?" for _ in TRACKSIDE_AP_LOCATION_CLASSES)
+        invalid = conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM ap_extension_points
+            WHERE location_class IS NULL
+               OR UPPER(TRIM(location_class)) NOT IN ({placeholders})
+               OR participates_in_mainline IS NULL
+               OR location_class_source IS NULL
+               OR TRIM(location_class_source) = ''
+            """,
+            TRACKSIDE_AP_LOCATION_CLASSES,
+        ).fetchone()
+        if invalid and int(invalid[0]) > 0:
+            raise sqlite3.DatabaseError("轨旁 AP 位置分类迁移不完整")
 
     def _validate_device_classification_migration(
         self, conn: sqlite3.Connection
@@ -2350,6 +2602,7 @@ class Database:
         backup_path: Path | None,
         address_migration: bool,
         classification_migration: bool,
+        trackside_ap_location_migration: bool,
         legacy_operation_status_counts: dict[str, int],
     ) -> None:
         try:
@@ -2363,6 +2616,8 @@ class Database:
                     f"schema_version_after={CURRENT_SCHEMA_VERSION} "
                     f"address_migration={address_migration} "
                     f"classification_migration={classification_migration} "
+                    "trackside_ap_location_migration="
+                    f"{trackside_ap_location_migration} "
                     "legacy_operation_status_counts="
                     f"{json.dumps(legacy_operation_status_counts, ensure_ascii=True, sort_keys=True)} "
                     f"backup_path={backup_path or '<none>'}"

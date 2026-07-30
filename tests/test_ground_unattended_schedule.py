@@ -48,11 +48,13 @@ def test_cross_midnight_schedule_uses_start_date() -> None:
 
 def test_profile_persists_updated_schedule(tmp_path) -> None:
     repo = GroundUnattendedRepository(tmp_path / "index.sqlite", site_id="site-a")
+    assert repo.get_profile().ping_depot_trains_enabled is False
     profile = repo.get_profile().model_copy(
         update={
             "enabled": True,
             "schedule_start_time": "08:15",
             "schedule_end_time": "00:30",
+            "ping_depot_trains_enabled": True,
         }
     )
     repo.save_profile(profile)
@@ -64,6 +66,70 @@ def test_profile_persists_updated_schedule(tmp_path) -> None:
         "00:30",
         True,
     )
+    assert loaded.ping_depot_trains_enabled is True
+
+
+def test_train_run_schema_migration_backfills_historical_location_decisions(
+    tmp_path,
+) -> None:
+    path = tmp_path / "index.sqlite"
+    repo = GroundUnattendedRepository(path, site_id="site-a")
+    repo.create_or_get_run(
+        run_id="legacy",
+        run_date="2026-07-30",
+        scheduled_start_at="2026-07-30T07:00:00+08:00",
+        scheduled_end_at="2026-07-30T23:00:00+08:00",
+    )
+    repo.upsert_train_state(
+        "legacy",
+        "2026-07-30",
+        {
+            "train_id": "train-mainline",
+            "eligibility_status": "MAINLINE_STATIONARY",
+        },
+        ap_identity="",
+        same_ap_since="",
+    )
+    repo.upsert_train_state(
+        "legacy",
+        "2026-07-30",
+        {
+            "train_id": "train-depot",
+            "eligibility_status": "DEPOT",
+        },
+        ap_identity="",
+        same_ap_since="",
+    )
+
+    GroundUnattendedRepository(path, site_id="site-a")
+    rows = {
+        row["train_id"]: row for row in repo.list_train_runs("legacy")
+    }
+
+    assert rows["train-mainline"]["location_class"] == "MAINLINE"
+    assert rows["train-mainline"]["mainline_eligible"] is True
+    assert rows["train-depot"]["location_class"] == "DEPOT"
+    assert rows["train-depot"]["mainline_eligible"] is False
+
+
+def test_running_profile_applies_depot_ping_switch_without_restarting_run() -> None:
+    supervisor = object.__new__(GroundUnattendedSupervisor)
+    supervisor._active_profile = GroundUnattendedProfileDTO(
+        site_id="site-a",
+        fleet_ping_interval_ms=1000,
+        ping_depot_trains_enabled=False,
+    )
+    latest = GroundUnattendedProfileDTO(
+        site_id="site-a",
+        fleet_ping_interval_ms=2500,
+        ping_depot_trains_enabled=True,
+    )
+
+    effective = supervisor._runtime_profile(latest)
+
+    assert effective.ping_depot_trains_enabled is True
+    assert effective.fleet_ping_interval_ms == 1000
+    assert supervisor._active_profile.ping_depot_trains_enabled is False
 
 
 def test_supervisor_auto_starts_and_finishes_at_window_boundary(tmp_path) -> None:

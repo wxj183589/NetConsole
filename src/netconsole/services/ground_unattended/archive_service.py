@@ -395,7 +395,7 @@ class GroundUnattendedArchiveService:
             "actual_started_at": run.get("actual_started_at", ""),
             "actual_ended_at": run.get("actual_ended_at", ""),
             "mainline_train_count": sum(
-                row.get("eligibility_status") in {"MAINLINE", "MAINLINE_STATIONARY"}
+                bool(row.get("mainline_eligible"))
                 for row in trains
             ),
             "ping_target_count": len(

@@ -56,6 +56,10 @@ from netconsole.services.rail_transit.station_source_utils import (
     normalize_station_source_value,
     parse_station_source_value,
 )
+from netconsole.services.rail_transit.trackside_ap_location import (
+    NON_MAINLINE_LOCATION_CLASSES,
+    resolve_trackside_ap_location,
+)
 from netconsole.utils.mileage import parse_track_mileage
 
 
@@ -71,6 +75,9 @@ _AP_FIELDS = (
     "section_name",
     "line_side",
     "direction",
+    "location_class",
+    "participates_in_mainline",
+    "location_class_source",
     "mileage_text",
     "mileage_m",
     "distance_to_prev_m",
@@ -532,6 +539,15 @@ class RailTransitBaseDataQueryService:
             links = links_by_ap.get(mac_key) or links_by_ap.get(name.casefold()) or []
             parsed = self._mileage(row.get("mileage_text"), row.get("mileage_m"))
             record_kind = str(row.get("belong_type") or "")
+            (
+                location_class,
+                participates_in_mainline,
+                location_class_source,
+            ) = resolve_trackside_ap_location(row)
+            location_class_conflict = bool(
+                location_class in NON_MAINLINE_LOCATION_CLASSES
+                and participates_in_mainline
+            )
             base_metadata = self._base_metadata(row.get("raw_payload_json"))
             for field_name in (
                 "belong_type", "system_type", "network_domain", "yard_name", "area_name",
@@ -543,6 +559,13 @@ class RailTransitBaseDataQueryService:
                 value = row.get(field_name)
                 if value not in (None, ""):
                     base_metadata[field_name] = value
+            base_metadata.update(
+                {
+                    "location_class": location_class,
+                    "participates_in_mainline": participates_in_mainline,
+                    "location_class_source": location_class_source,
+                }
+            )
             radios = []
             if ac:
                 radios = [
@@ -585,6 +608,10 @@ class RailTransitBaseDataQueryService:
                     mileage=parsed,
                     line_side=str(row.get("line_side") or ""),
                     direction=str(row.get("direction") or ""),
+                    location_class=location_class,
+                    participates_in_mainline=participates_in_mainline,
+                    location_class_source=location_class_source,
+                    location_class_conflict=location_class_conflict,
                     radios=radios,
                     remark=str(row.get("remark") or ""),
                     source_file=Path(str(row.get("source_file") or "")).name,

@@ -247,13 +247,17 @@ const pingLiveStats = computed(() => {
 const locationStats = computed(() => ({
   ap: trains.value.filter((row) => String(row.location_match_level || '').startsWith('AP_')).length,
   station: trains.value.filter((row) => String(row.location_match_level || '').startsWith('STATION_')).length,
-  unmatched: trains.value.filter((row) => row.location_match_level === 'UNMATCHED').length,
+  unmatched: trains.value.filter((row) => row.eligibility_status === 'AP_UNMATCHED').length,
   excluded: trains.value.filter((row) => ['DEPOT', 'PARKING_LOT', 'STORAGE_TRACK'].includes(row.eligibility_status)).length,
 }))
 
 const trainColumns: NcTableColumn<GroundTrain>[] = [
   { key: 'train_no', label: t('ground.train', '列车'), valueType: 'name', fixed: 'left' },
+  { key: 'location_class', label: '位置类型', valueType: 'status', displayValue: (row) => groundStatusLabel(row.location_class) },
   { key: 'eligibility_status', label: t('ground.eligibility', '正线判断'), valueType: 'status', displayValue: (row) => groundStatusLabel(row.eligibility_status) },
+  { key: 'mainline_eligible', label: '是否正线', valueType: 'status', displayValue: (row) => row.mainline_eligible ? '是' : '否' },
+  { key: 'ping_reason', label: 'Ping 纳入原因', valueType: 'description', minWidth: 220, displayValue: (row) => row.ping_inclusion_reason || row.ping_exclusion_reason || '—' },
+  { key: 'deep_state', label: '深度采集状态', valueType: 'status', minWidth: 150, displayValue: (row) => row.deep_collection_eligible ? '参与' : row.deep_exclusion_reason || '不参与' },
   { key: 'location_match_level', label: '匹配等级', valueType: 'status', width: 130, displayValue: (row) => groundStatusLabel(row.location_match_level) },
   { key: 'exclusion_reason', label: t('ground.exclusion_reason', '排除原因'), valueType: 'description', minWidth: 220 },
   { key: 'raw_peer_ap_name', label: '原始 AP', valueType: 'name' },
@@ -275,6 +279,10 @@ const pingColumns: NcTableColumn<GroundPingTarget>[] = [
   { key: 'train_no', label: t('ground.train', '列车'), valueType: 'name', fixed: 'left' },
   { key: 'mr_position_code', label: t('ground.mr_endpoint', 'MR 端点'), valueType: 'status' },
   { key: 'target_ip', label: t('ground.management_ip', '管理 IP'), valueType: 'ip' },
+  { key: 'location_class', label: '位置类型', valueType: 'status', displayValue: (row) => groundStatusLabel(row.location_class) },
+  { key: 'ping_inclusion_reason', label: 'Ping 纳入原因', valueType: 'description', minWidth: 190 },
+  { key: 'mainline_eligible', label: '正线', valueType: 'status', displayValue: (row) => row.mainline_eligible ? '是' : '否' },
+  { key: 'deep_collection_eligible', label: '深度采集', valueType: 'status', displayValue: (row) => row.deep_collection_eligible ? '参与' : '不参与' },
   { key: 'started_at', label: t('ground.started_at', '开始时间'), valueType: 'datetime' },
   { key: 'raw_sample_count', label: '原始发送', valueType: 'number' },
   { key: 'effective_sample_count', label: '有效发送', valueType: 'number' },
@@ -1484,7 +1492,9 @@ onBeforeUnmount(() => {
             <article><span>{{ t('ground.next_end', '下一次结束') }}</span><strong>{{ status?.next_end_at || '—' }}</strong></article>
             <article><span>{{ t('ground.ac_updated', 'AC 最近更新') }}</span><strong>{{ status?.ac_last_updated_at || '—' }}</strong></article>
             <article><span>{{ t('ground.mainline_trains', '正线列车') }}</span><strong>{{ status?.mainline_train_count ?? 0 }}</strong></article>
-            <article><span>{{ t('ground.ping_mrs', 'Ping 中 MR') }}</span><strong>{{ status?.ping_target_count ?? 0 }}</strong></article>
+            <article><span>正线 Ping MR</span><strong>{{ status?.mainline_ping_target_count ?? 0 }}</strong></article>
+            <article><span>车辆段 Ping MR</span><strong>{{ status?.depot_ping_target_count ?? 0 }}</strong></article>
+            <article><span>{{ t('ground.ping_mrs', 'Ping 总目标') }}</span><strong>{{ status?.ping_target_count ?? 0 }}</strong></article>
             <article><span>{{ t('ground.active_deep', '当前深度采集车辆') }}</span><strong>{{ status?.active_deep_train_count ?? 0 }}</strong></article>
             <article><span>{{ t('ground.covered_today', '今日已完成 / 未完成') }}</span><strong>{{ status?.covered_train_count ?? 0 }} / {{ status?.incomplete_train_count ?? 0 }}</strong></article>
             <article><span>{{ t('ground.disk_usage', '当前占用 / 磁盘剩余') }}</span><strong>{{ bytes(status?.disk_used_bytes ?? 0) }} / {{ bytes(status?.disk_free_bytes ?? 0) }}</strong><el-tag size="small" :type="statusType(status?.disk_status || '')">{{ groundStatusLabel(status?.disk_status) }}</el-tag></article>
@@ -1576,9 +1586,9 @@ onBeforeUnmount(() => {
         <div class="toolbar"><el-input v-model="trainFilter" clearable :placeholder="t('ground.train_filter', '筛选列车、AP、站点或区间')" /></div>
         <div class="coverage-strip">
           <span>轨旁 AP 匹配 <b>{{ locationStats.ap }}</b></span>
-          <span>站点级匹配 <b>{{ locationStats.station }}</b></span>
-          <span>未匹配 <b>{{ locationStats.unmatched }}</b></span>
-          <span>车辆段 / 停车场 / 存车线排除 <b>{{ locationStats.excluded }}</b></span>
+          <span>站点文本诊断 <b>{{ locationStats.station }}</b></span>
+          <span>AP 未匹配 <b>{{ locationStats.unmatched }}</b></span>
+          <span>车辆段 / 停车场 / 存车线 <b>{{ locationStats.excluded }}</b></span>
         </div>
         <div ref="trainTableHost" class="table-frame"><NcDataTable :data="filteredTrains" :columns="trainColumns" table-id="ground-trains" route-key="rail-ground-unattended" row-key="train_id" :max-height="trainTableMaxHeight" auto-height compact>
           <template #cell-eligibility_status="{ row }"><el-tag size="small" :type="statusType(row.eligibility_status)">{{ groundStatusLabel(row.eligibility_status) }}</el-tag></template>
@@ -1838,6 +1848,12 @@ onBeforeUnmount(() => {
             <el-form-item :label="t('ground.packet_size', '包大小（字节）')"><el-input-number v-model="profile.fleet_ping_packet_size" :min="1" :max="65507" /></el-form-item>
             <el-form-item :label="t('ground.shard_size', '每个 fping 分片目标数')"><el-input-number v-model="profile.fleet_ping_shard_size" :min="2" :max="32" /></el-form-item>
             <el-form-item label="启动预热忽略时间（秒）"><el-input-number v-model="profile.fleet_ping_warmup_seconds" :min="0" :max="300" /></el-form-item>
+            <el-form-item label="Ping 车辆段/停车场列车">
+              <div class="switch-with-description">
+                <el-switch v-model="profile.ping_depot_trains_enabled" />
+                <span>启用后，对当前位于车辆段、停车场或存车线的在线列车执行 CT/CW 长 Ping。该设置不会将车辆计入正线，也不会自动启动深度 MR 采集。</span>
+              </div>
+            </el-form-item>
             <el-form-item :label="t('ground.detail_retention', '详细数据保留天数')"><el-select v-model="profile.detail_retention_days"><el-option v-for="day in [7,15,30,60,90,180]" :key="day" :label="`${day} 天`" :value="day" /></el-select></el-form-item>
             <el-form-item :label="t('ground.summary_retention', '汇总保留天数')"><el-input-number v-model="profile.summary_retention_days" :min="profile.detail_retention_days" :max="3650" /></el-form-item>
             <el-form-item :label="t('ground.warning_space', '空间预警阈值（GB）')"><el-input-number v-model="profile.storage_warning_free_gb" :min="0.1" :max="1024" /></el-form-item>
@@ -2116,6 +2132,10 @@ onBeforeUnmount(() => {
         <el-descriptions :column="2" border>
           <el-descriptions-item :label="t('ground.train', '列车')">{{ selectedTrain.train_no || selectedTrain.train_name }}</el-descriptions-item>
           <el-descriptions-item :label="t('ground.eligibility', '正线判断')"><el-tag :type="statusType(selectedTrain.eligibility_status)">{{ groundStatusLabel(selectedTrain.eligibility_status) }}</el-tag></el-descriptions-item>
+          <el-descriptions-item label="位置类型">{{ groundStatusLabel(selectedTrain.location_class) }}</el-descriptions-item>
+          <el-descriptions-item label="是否正线">{{ selectedTrain.mainline_eligible ? '是' : '否' }}</el-descriptions-item>
+          <el-descriptions-item label="Ping 纳入原因">{{ selectedTrain.ping_inclusion_reason || selectedTrain.ping_exclusion_reason || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="深度采集">{{ selectedTrain.deep_collection_eligible ? '参与' : selectedTrain.deep_exclusion_reason || '不参与' }}</el-descriptions-item>
           <el-descriptions-item :label="t('ground.current_ap', '当前 AP')">{{ selectedTrain.current_ap_name || '—' }}</el-descriptions-item>
           <el-descriptions-item label="位置匹配等级">{{ groundStatusLabel(selectedTrain.location_match_level) }}</el-descriptions-item>
           <el-descriptions-item label="原始 AP 名称">{{ selectedTrain.raw_peer_ap_name || '—' }}</el-descriptions-item>
@@ -2195,6 +2215,7 @@ onBeforeUnmount(() => {
 .syslog-failure{padding-bottom:8px}
 .syslog-bulk-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px;min-height:42px;padding:6px 0;border-top:1px solid var(--el-border-color-lighter)}
 .ping-query-error{margin-bottom:10px}
+.switch-with-description{display:flex;align-items:flex-start;gap:10px}.switch-with-description span{color:var(--el-text-color-secondary);font-size:12px;line-height:1.5}
 @media(max-width:1366px){.log-filter-grid{grid-template-columns:repeat(4,minmax(120px,1fr))}.syslog-common-filters :deep(.el-date-editor){grid-column:span 2}}
 @media(max-width:900px){.log-filter-grid{grid-template-columns:repeat(2,minmax(140px,1fr))}.timeline-filter-grid{grid-template-columns:1fr 1fr}.timeline-filter-grid .el-button{grid-column:span 2}}
 </style>

@@ -102,7 +102,7 @@ def test_unmatched_and_stale_ac_do_not_become_depot() -> None:
     }
 
 
-def test_station_exclusion_precedes_unmatched_ap_for_depot_and_parking_lot() -> None:
+def test_unmatched_ap_mac_stays_unknown_even_when_station_is_special() -> None:
     depot = _classify(
         ap=None,
         stations=[
@@ -131,16 +131,17 @@ def test_station_exclusion_precedes_unmatched_ap_for_depot_and_parking_lot() -> 
         row_station="停车场",
     )
 
-    assert depot.train.eligibility_status == "DEPOT"
+    assert depot.train.eligibility_status == "AP_UNMATCHED"
+    assert depot.train.location_class == "UNKNOWN"
     assert depot.train.location_match_level == "STATION_EXACT"
-    assert depot.train.exclusion_reason == "当前车辆位于云龙车辆段"
+    assert depot.train.exclusion_reason == "当前 AP MAC 未匹配任何轨旁 AP 基础资料"
     assert depot.train.raw_peer_ap_name == "bc5a-3457-bc00"
     assert depot.train.resolved_ap_id == ""
-    assert parking.train.eligibility_status == "PARKING_LOT"
+    assert parking.train.eligibility_status == "AP_UNMATCHED"
     assert parking.train.location_match_level == "STATION_EXACT"
 
 
-def test_station_level_fallback_keeps_mainline_ping_and_applies_deep_safety_policy() -> None:
+def test_station_level_match_does_not_replace_trackside_ap_identity() -> None:
     exact = _classify(
         ap=None,
         stations=[StationDTO(id="main", name="小洋江站")],
@@ -163,18 +164,20 @@ def test_station_level_fallback_keeps_mainline_ping_and_applies_deep_safety_poli
         row_station="未知位置",
     )
 
-    assert exact.train.eligibility_status == "MAINLINE"
+    assert exact.train.eligibility_status == "AP_UNMATCHED"
     assert exact.train.location_match_level == "STATION_EXACT"
-    assert exact.train.ping_eligible and exact.train.deep_collection_eligible
-    assert alias.train.eligibility_status == "MAINLINE"
+    assert not exact.train.ping_eligible
+    assert not exact.train.deep_collection_eligible
+    assert alias.train.eligibility_status == "AP_UNMATCHED"
     assert alias.train.location_match_level == "STATION_ALIAS"
-    assert alias.train.ping_eligible and not alias.train.deep_collection_eligible
+    assert not alias.train.ping_eligible
+    assert not alias.train.deep_collection_eligible
     assert unknown.train.eligibility_status == "AP_UNMATCHED"
     assert unknown.train.location_match_level == "UNMATCHED"
     assert not unknown.train.ping_eligible
 
 
-def test_ap_registry_and_confirmed_alias_have_distinct_match_levels() -> None:
+def test_ap_registry_matches_mac_but_ap_name_alias_is_not_identity() -> None:
     registry_ap = _ap("正线站", "", {}).model_copy(
         update={
             "mac": "",
@@ -202,8 +205,109 @@ def test_ap_registry_and_confirmed_alias_have_distinct_match_levels() -> None:
 
     assert registry.train.location_match_level == "AP_REGISTRY"
     assert registry.train.resolved_ap_id == "ap-1"
-    assert alias.train.location_match_level == "AP_ALIAS"
-    assert alias.train.resolved_ap_name == "AP-1"
+    assert alias.train.location_match_level == "UNMATCHED"
+    assert alias.train.eligibility_status == "AP_UNMATCHED"
+    assert alias.train.resolved_ap_name == ""
+
+
+@pytest.mark.parametrize(
+    ("location_class", "expected_status"),
+    [
+        ("DEPOT", "DEPOT"),
+        ("PARKING_YARD", "PARKING_LOT"),
+        ("STABLING", "STORAGE_TRACK"),
+    ],
+)
+def test_depot_ping_switch_only_enables_ping_for_supported_special_locations(
+    location_class: str,
+    expected_status: str,
+) -> None:
+    ap = _ap("", "", {}).model_copy(
+        update={
+            "location_class": location_class,
+            "participates_in_mainline": False,
+            "location_class_source": "MANUAL_EXPLICIT",
+        }
+    )
+
+    disabled = _classify(ap=ap, ping_depot_trains_enabled=False)
+    enabled = _classify(ap=ap, ping_depot_trains_enabled=True)
+
+    assert disabled.train.eligibility_status == expected_status
+    assert not disabled.train.mainline_eligible
+    assert not disabled.train.ping_eligible
+    assert not disabled.train.deep_collection_eligible
+    assert enabled.train.eligibility_status == expected_status
+    assert not enabled.train.mainline_eligible
+    assert enabled.train.ping_eligible
+    assert enabled.train.ping_inclusion_reason == "已启用车辆段长 Ping"
+    assert not enabled.train.deep_collection_eligible
+
+
+def test_matched_trackside_ap_without_special_marker_defaults_to_mainline() -> None:
+    result = _classify(ap=_ap("正线站", "", {}))
+
+    assert result.train.location_class == "MAINLINE"
+    assert result.train.mainline_eligible
+    assert result.train.ping_eligible
+    assert result.train.deep_collection_eligible
+
+
+def test_endpoint_targets_are_independent_and_require_online_valid_management_ip() -> None:
+    endpoints = GroundUnattendedEligibilityClassifier._endpoints(
+        [
+            VehicleMrDTO(
+                id="mr-ct",
+                name="01-CT",
+                train_id="train-01",
+                train_no="01",
+                mr_position_code="CT",
+                management_ip="192.0.2.10",
+            ),
+            VehicleMrDTO(
+                id="mr-cw",
+                name="01-CW",
+                train_id="train-01",
+                train_no="01",
+                mr_position_code="CW",
+                management_ip="bad-address",
+            ),
+        ],
+        [
+            AcMeshMrStatusDTO(
+                mr_id="mr-ct",
+                train_no="01",
+                car_end="CT",
+                mr_name="01-CT",
+                management_ip="192.0.2.10",
+                online_status="online",
+            ),
+            AcMeshMrStatusDTO(
+                mr_id="mr-cw",
+                train_no="01",
+                car_end="CW",
+                mr_name="01-CW",
+                management_ip="bad-address",
+                online_status="online",
+            ),
+        ],
+    )
+
+    assert endpoints[0].ping_target_eligible is True
+    assert endpoints[1].ping_target_eligible is False
+    assert endpoints[1].ping_exclusion_reason == "CW 管理 IP 无效"
+
+
+def test_invalid_management_ip_returns_explicit_ping_exclusion_reason() -> None:
+    result = _classify(
+        ap=_ap("正线站", "", {}),
+        management_ip="bad-address",
+    )
+
+    assert result.train.mainline_eligible is True
+    assert result.train.ping_eligible is False
+    assert result.train.ping_exclusion_reason == "CT 管理 IP 无效"
+    assert result.train.deep_collection_eligible is False
 
 
 def test_same_ap_stationary_keeps_ping_and_ap_change_restores_deep_collection() -> None:
@@ -235,6 +339,8 @@ def _classify(
     peer_ap_name="",
     peer_ap_mac="",
     peer_ap_id=None,
+    ping_depot_trains_enabled=False,
+    management_ip="192.0.2.10",
 ):
     classifier = GroundUnattendedEligibilityClassifier()
     row = AcMeshMrStatusDTO(
@@ -243,7 +349,7 @@ def _classify(
         train_no="01",
         car_end="CT",
         mr_name="01-CT",
-        management_ip="192.0.2.10",
+        management_ip=management_ip,
         online_status=online_status,
         peer_ap_id=(
             peer_ap_id
@@ -274,13 +380,14 @@ def _classify(
                 train_id="train-01",
                 train_no="01",
                 mr_position_code="CT",
-                management_ip="192.0.2.10",
+                management_ip=management_ip,
             )
         ],
         ac_rows=[row],
         trackers={"train-01": tracker},
         stationary_exclusion_minutes=10,
         now=NOW,
+        ping_depot_trains_enabled=ping_depot_trains_enabled,
     )
     return result[0]
 

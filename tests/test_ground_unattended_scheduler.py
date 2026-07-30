@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from netconsole.models.api.ground_unattended import GroundUnattendedTrainDTO
 from netconsole.repositories.ground_unattended_repository import (
     GroundUnattendedRepository,
 )
 from netconsole.services.ground_unattended.deep_scheduler import (
     DeepMrCollectionScheduler,
+)
+from netconsole.services.ground_unattended.supervisor import (
+    GroundUnattendedSupervisor,
 )
 
 
@@ -24,6 +28,46 @@ def test_daily_coverage_prioritizes_pinned_then_unseen_then_partial() -> None:
     )
     assert [item.train_id for item in ordered] == ["pinned", "unseen", "partial"]
     assert "covered" not in {item.train_id for item in ordered}
+
+
+def test_monitor_only_and_deep_disabled_do_not_cancel_depot_ping() -> None:
+    for policy in (
+        {"monitor_only": True},
+        {"deep_collection_enabled": False},
+    ):
+        train = GroundUnattendedTrainDTO(
+            train_id="train-depot",
+            location_class="DEPOT",
+            ping_eligible=True,
+            deep_collection_eligible=False,
+            ping_inclusion_reason="已启用车辆段长 Ping",
+        )
+
+        GroundUnattendedSupervisor._apply_train_policy(
+            train, policy, priority=True
+        )
+
+        assert train.ping_eligible is True
+        assert train.deep_collection_eligible is False
+        assert train.priority is True
+
+
+def test_disabled_train_cancels_all_unattended_eligibility() -> None:
+    train = GroundUnattendedTrainDTO(
+        train_id="train-depot",
+        location_class="DEPOT",
+        mainline_eligible=True,
+        ping_eligible=True,
+        deep_collection_eligible=True,
+    )
+
+    GroundUnattendedSupervisor._apply_train_policy(
+        train, {"enabled": False}, priority=False
+    )
+
+    assert train.mainline_eligible is False
+    assert train.ping_eligible is False
+    assert train.deep_collection_eligible is False
 
 
 def test_second_round_starts_only_after_every_eligible_train_is_covered() -> None:

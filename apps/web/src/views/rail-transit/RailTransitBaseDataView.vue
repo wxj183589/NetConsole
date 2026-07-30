@@ -47,6 +47,7 @@ import type {
   StationTemplateSectionPreviewRow,
   StationTemplatePreviewRow,
   TracksideAp,
+  TracksideApLocationClass,
   Train,
   VehicleMr,
 } from '../../types/railTransitBaseData'
@@ -144,6 +145,8 @@ const stationTemplateDialogVisible = ref(false)
 const sectionGenerationDialogVisible = ref(false)
 const apImportDialogVisible = ref(false)
 const tracksideApImportInput = ref<HTMLInputElement | null>(null)
+const selectedTracksideAps = ref<TracksideAp[]>([])
+const batchApLocationClass = ref<TracksideApLocationClass>('MAINLINE')
 const apBaseTaskId = ref('')
 const apBaseTaskRunning = computed(() => taskStore.tasks.some(
   (item) => apBaseTaskTypes.has(item.type) && activeTaskStateSet.has(item.status),
@@ -361,13 +364,31 @@ const sectionColumns: NcTableColumn<Section>[] = [
   { key: 'enabled', label: '状态', valueType: 'status', width: 90, displayValue: (row) => row.enabled ? '启用' : '停用' },
   { key: 'remark', label: '备注', valueType: 'description', minWidth: 180, displayValue: (row) => display(row.remark), alignmentReason: 'long-text' },
 ]
+const apLocationOptions: Array<{ value: TracksideApLocationClass; label: string }> = [
+  { value: 'MAINLINE', label: '正线' },
+  { value: 'DEPOT', label: '车辆段' },
+  { value: 'PARKING_YARD', label: '停车场' },
+  { value: 'STABLING', label: '存车线' },
+  { value: 'DEPOT_CONNECTION', label: '出入段线' },
+  { value: 'TEST_TRACK', label: '试车线' },
+  { value: 'NON_MAINLINE', label: '非正线' },
+]
+function apLocationLabel(row: Pick<TracksideAp, 'location_class' | 'location_class_source'>): string {
+  const label = apLocationOptions.find((item) => item.value === row.location_class)?.label || '未知'
+  return row.location_class === 'MAINLINE' && row.location_class_source === 'DEFAULT_MAINLINE'
+    ? `${label}（默认）`
+    : label
+}
 const apColumns: NcTableColumn<TracksideAp>[] = [
+  { key: 'selection', label: '选择', type: 'selection', width: 48, hideable: false },
   { key: 'name', label: 'AP 名称', valueType: 'name', minWidth: 150, fixed: 'left', displayValue: (row) => row.runtime.fit_ap_name || row.name || row.point_code || '--' },
   { key: 'point_code', label: '点位编号', minWidth: 120, displayValue: (row) => display(row.point_code) },
   { key: 'mac', label: 'AP MAC', valueType: 'mac', minWidth: 150 },
   { key: 'management_ip', label: '管理 IP', valueType: 'ip', minWidth: 125, displayValue: (row) => display(row.management_ip) },
   { key: 'station', label: '站点', minWidth: 130, displayValue: (row) => display(row.station) },
   { key: 'section', label: '区间', minWidth: 170, displayValue: (row) => display(row.section) },
+  { key: 'location_class', label: '位置类型', valueType: 'status', minWidth: 135, displayValue: (row) => apLocationLabel(row) },
+  { key: 'participates_in_mainline', label: '参与正线', valueType: 'status', width: 110, displayValue: (row) => row.participates_in_mainline ? '是' : '否' },
   { key: 'mileage', label: '里程', valueType: 'mileage', minWidth: 120, displayValue: (row) => row.mileage.normalized || row.mileage.raw || '--' },
   { key: 'direction', label: '行车方向', width: 110, displayValue: (row) => display(row.direction) },
   { key: 'remark', label: '备注', valueType: 'description', minWidth: 180, alignmentReason: 'long-text', displayValue: (row) => display(row.remark) },
@@ -424,6 +445,10 @@ const mergeColumns: NcTableColumn<MergePlanItem>[] = [
   { key: 'station_name', label: '归属站点', minWidth: 130, displayValue: (row) => display(row.source_values.station_name) },
   { key: 'section_name', label: '归属区间', minWidth: 210, displayValue: (row) => display(row.source_values.section_name) },
   { key: 'direction', label: '线路方向', width: 100, displayValue: (row) => display(row.source_values.direction) },
+  { key: 'location_class_original', label: '原始位置类型', minWidth: 130, displayValue: (row) => display(row.source_values.location_class_original) },
+  { key: 'location_class', label: '解析后位置类型', minWidth: 150, displayValue: (row) => row.source_values.location_class === 'MAINLINE' && row.source_values.location_class_source === 'DEFAULT_MAINLINE' ? '正线（默认）' : display(row.source_values.location_class) },
+  { key: 'participates_in_mainline', label: '参与正线', width: 100, displayValue: (row) => row.source_values.participates_in_mainline ? '是' : '否' },
+  { key: 'location_class_source', label: '默认值来源', minWidth: 140, displayValue: (row) => display(row.source_values.location_class_source) },
   { key: 'uplink_switch', label: '室内交换机', minWidth: 140, displayValue: (row) => display(row.source_values.uplink_switch) },
   { key: 'uplink_port', label: '接口名称', minWidth: 120, displayValue: (row) => display(row.source_values.uplink_port) },
   { key: 'matched_entity_name', label: '正式实体', valueType: 'name', minWidth: 170, displayValue: (row) => display(row.matched_entity_name) },
@@ -1431,7 +1456,7 @@ function addAp(): void {
   editingDraft.value.aps.push(row); markAp(row)
 }
 function newTracksideAp(): TracksideAp {
-  return { id: temporaryId(), site_id: store.editSession?.site_id || '', line_name: store.summary?.line_name || '', name: '', point_code: '', mac: '', management_ip: '', model: '', station: '', section: '', section_start_station: '', section_end_station: '', mileage: { raw: '', normalized: '', meters: null, line_type: '', valid: false, error: '' }, line_side: '', line_side_source: 'unavailable', line_side_derivation_issue_code: '', line_side_derivation_issue_message: '', direction: '', radios: [], remark: '', source_file: '', source_sheet: '', source_row: null, updated_at: '', runtime: emptyRuntime(), issue_count: 0, highest_issue_severity: '', record_kind: 'manual', base_metadata: {} }
+  return { id: temporaryId(), site_id: store.editSession?.site_id || '', line_name: store.summary?.line_name || '', name: '', point_code: '', mac: '', management_ip: '', model: '', station: '', section: '', section_start_station: '', section_end_station: '', mileage: { raw: '', normalized: '', meters: null, line_type: '', valid: false, error: '' }, line_side: '', line_side_source: 'unavailable', line_side_derivation_issue_code: '', line_side_derivation_issue_message: '', direction: '', location_class: 'MAINLINE', participates_in_mainline: true, location_class_source: 'DEFAULT_MAINLINE', location_class_conflict: false, radios: [], remark: '', source_file: '', source_sheet: '', source_row: null, updated_at: '', runtime: emptyRuntime(), issue_count: 0, highest_issue_severity: '', record_kind: 'manual', base_metadata: {} }
 }
 function addMr(): void {
   if (!editingDraft.value) return
@@ -1523,6 +1548,9 @@ function apValues(row: TracksideAp): Record<string, unknown> {
     mileage: row.mileage.raw,
     line_side: row.line_side,
     direction: row.direction,
+    location_class: row.location_class,
+    participates_in_mainline: row.participates_in_mainline,
+    location_class_source: row.location_class_source,
     remark: row.remark,
     source_file: row.source_file,
     source_sheet: row.source_sheet,
@@ -2291,6 +2319,9 @@ function applyImportedApValue(row: TracksideAp, field: string, value: unknown): 
   else if (field === 'section_end_station') row.section_end_station = text
   else if (field === 'line_side') row.line_side = text
   else if (field === 'direction') row.direction = text
+  else if (field === 'location_class') row.location_class = text as TracksideApLocationClass
+  else if (field === 'participates_in_mainline') row.participates_in_mainline = Boolean(value)
+  else if (field === 'location_class_source') row.location_class_source = text || 'DEFAULT_MAINLINE'
   else if (field === 'mileage_text') row.mileage = { ...row.mileage, raw: text, normalized: text }
   else if (field === 'remark') row.remark = text
   else if (field === 'source_file') row.source_file = text
@@ -2305,6 +2336,22 @@ function applyImportedApValue(row: TracksideAp, field: string, value: unknown): 
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) row.base_metadata = { ...row.base_metadata, ...parsed }
     } catch { /* 无效来源元数据不影响已校验的正式字段。 */ }
   } else if (!['id', 'mileage_m'].includes(field)) row.base_metadata[field] = value
+}
+
+function setApLocationClass(row: TracksideAp, locationClass: TracksideApLocationClass): void {
+  row.location_class = locationClass
+  row.participates_in_mainline = locationClass === 'MAINLINE'
+  row.location_class_source = 'MANUAL_EXPLICIT'
+  row.location_class_conflict = false
+  markAp(row)
+}
+
+function batchSetApLocationClass(): void {
+  if (locked.value || !selectedTracksideAps.value.length) return
+  for (const row of selectedTracksideAps.value) {
+    setApLocationClass(row, batchApLocationClass.value)
+  }
+  ElMessage.success(`已将 ${selectedTracksideAps.value.length} 条轨旁 AP 设为${apLocationOptions.find((item) => item.value === batchApLocationClass.value)?.label || batchApLocationClass.value}`)
 }
 
 async function handleRollback(operationId: string): Promise<void> {
@@ -2896,14 +2943,20 @@ function sectionSourceLabel(row: Section): string {
             <el-button v-if="isFeatureEnabled('web.rail_trackside_ap_base_io')" :icon="UploadFilled" :loading="store.previewLoading" :disabled="saving" @click="tracksideApImportInput?.click()">导入并预览</el-button>
             <el-button v-if="isFeatureEnabled('web.rail_trackside_ap_base_io')" :icon="Download" :disabled="apBaseTaskRunning" @click="startApBaseExport(false)">导出当前</el-button>
             <el-button v-if="isFeatureEnabled('web.rail_trackside_ap_base_io')" :icon="Download" :disabled="apBaseTaskRunning" @click="startApRenameCommandExport">导出重命名命令</el-button>
+            <el-select v-if="!locked" v-model="batchApLocationClass" placeholder="批量位置类型" style="width: 150px">
+              <el-option v-for="option in apLocationOptions" :key="option.value" :label="option.label" :value="option.value" />
+            </el-select>
+            <el-button v-if="!locked" :disabled="!selectedTracksideAps.length" @click="batchSetApLocationClass">批量设置位置类型</el-button>
             <el-button :icon="Plus" :disabled="locked || saving" @click="addAp">新增轨旁 AP</el-button>
           </div>
-          <NcDataTable table-id="rail-base-trackside-aps" route-key="/rail-transit/base-data" :data="apRows" :columns="apColumns" height="calc(100vh - 430px)" empty-text="暂无轨旁 AP 扩展资料">
+          <NcDataTable table-id="rail-base-trackside-aps" route-key="/rail-transit/base-data" :data="apRows" :columns="apColumns" row-key="id" height="calc(100vh - 430px)" empty-text="暂无轨旁 AP 扩展资料" @selection-change="(rows: TracksideAp[]) => selectedTracksideAps = rows">
             <template #cell-name="{ row }"><span>{{ row.runtime.fit_ap_name || row.name || row.point_code || '--' }}</span></template>
             <template #cell-point_code="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.point_code" :class="{ 'field-error': fieldError('trackside_ap', row.id, 'point_code') }" @input="markAp(row)" /><span v-else>{{ display(row.point_code) }}</span></template>
             <template #cell-mac="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.mac" :class="{ 'field-error': fieldError('trackside_ap', row.id, 'mac') }" @input="markAp(row)" /><span v-else>{{ display(row.mac) }}</span></template>
             <template #cell-station="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.station" @input="markAp(row)" /><span v-else>{{ display(row.station) }}</span></template>
             <template #cell-section="{ row }"><el-select v-if="canEditRow('trackside_ap', row.id)" v-model="row.section" filterable allow-create default-first-option @change="handleApSectionChange(row)"><el-option v-for="section in sectionRows" :key="section.id" :label="section.name" :value="section.name" /></el-select><span v-else>{{ display(row.section) }}</span></template>
+            <template #cell-location_class="{ row }"><el-select v-if="canEditRow('trackside_ap', row.id)" :model-value="row.location_class" @change="setApLocationClass(row, $event as TracksideApLocationClass)"><el-option v-for="option in apLocationOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select><el-tag v-else :type="row.location_class_conflict ? 'danger' : row.location_class === 'MAINLINE' ? 'success' : 'warning'">{{ apLocationLabel(row) }}</el-tag></template>
+            <template #cell-participates_in_mainline="{ row }"><el-switch v-if="canEditRow('trackside_ap', row.id)" v-model="row.participates_in_mainline" :disabled="row.location_class !== 'MAINLINE'" active-text="是" inactive-text="否" @change="() => { row.location_class_source = 'MANUAL_EXPLICIT'; markAp(row) }" /><el-tag v-else :type="row.location_class_conflict ? 'danger' : row.participates_in_mainline ? 'success' : 'info'">{{ row.participates_in_mainline ? '是' : '否' }}</el-tag></template>
             <template #cell-mileage="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.mileage.raw" @input="markAp(row)" /><span v-else>{{ row.mileage.normalized || row.mileage.raw || '--' }}</span></template>
             <template #cell-direction="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.direction" @input="markAp(row)" /><span v-else>{{ display(row.direction) }}</span></template>
             <template #cell-remark="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.remark" @input="markAp(row)" /><span v-else>{{ display(row.remark) }}</span></template>

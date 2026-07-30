@@ -290,6 +290,20 @@ class GroundUnattendedApplicationService:
             else None
         )
         latest_operation = self.repository.latest_terminal_operation()
+        eligible_ping_endpoints = [
+            (row, endpoint)
+            for row in trains
+            if row.get("ping_eligible")
+            for endpoint in row.get("endpoints", [])
+            if isinstance(endpoint, dict)
+            and (
+                bool(endpoint.get("ping_target_eligible"))
+                or (
+                    endpoint.get("online_status") == "ONLINE"
+                    and bool(endpoint.get("management_ip"))
+                )
+            )
+        ]
         return GroundUnattendedStatusDTO(
             site_id=site_id,
             enabled=profile.enabled,
@@ -313,18 +327,19 @@ class GroundUnattendedApplicationService:
             ac_last_updated_at=str(run.get("ac_last_updated_at") or ""),
             ac_freshness_status=str(run.get("ac_freshness_status") or "NO_DATA"),
             mainline_train_count=sum(
-                row.get("eligibility_status") in {"MAINLINE", "MAINLINE_STATIONARY"}
-                for row in trains
+                bool(row.get("mainline_eligible")) for row in trains
+            ),
+            mainline_ping_target_count=sum(
+                bool(row.get("mainline_eligible"))
+                for row, _endpoint in eligible_ping_endpoints
+            ),
+            depot_ping_target_count=sum(
+                str(row.get("location_class") or "")
+                in {"DEPOT", "PARKING_YARD", "STABLING"}
+                for row, _endpoint in eligible_ping_endpoints
             ),
             ping_target_count=self.supervisor.fleet_ping.target_count
-            or sum(
-                bool(endpoint.get("management_ip"))
-                and endpoint.get("online_status") == "ONLINE"
-                for row in trains
-                if row.get("ping_eligible")
-                for endpoint in row.get("endpoints", [])
-                if isinstance(endpoint, dict)
-            ),
+            or len(eligible_ping_endpoints),
             active_deep_train_count=sum(
                 row.get("coverage_status") == "COLLECTING" for row in trains
             ),
@@ -994,7 +1009,16 @@ class GroundUnattendedApplicationService:
             for train in self.repository.list_inventory(include_removed=True)
             for endpoint in train.get("endpoints", [])
         }
+        train_states = {
+            str(item.get("train_id") or ""): item
+            for item in (
+                self.repository.list_train_runs(str(run["run_id"]))
+                if run
+                else []
+            )
+        }
         for row in rows:
+            train_state = train_states.get(str(row.get("train_id") or ""), {})
             identity_error = ""
             try:
                 identity = self.raw_query.identity_resolver.resolve_ping(
@@ -1050,6 +1074,22 @@ class GroundUnattendedApplicationService:
             )
             row.setdefault("run_id", str((run or {}).get("run_id") or ""))
             row.setdefault("run_date", str((run or {}).get("run_date") or ""))
+            row.setdefault(
+                "location_class",
+                str(train_state.get("location_class") or "UNKNOWN"),
+            )
+            row.setdefault(
+                "ping_inclusion_reason",
+                str(train_state.get("ping_inclusion_reason") or ""),
+            )
+            row.setdefault(
+                "mainline_eligible",
+                bool(train_state.get("mainline_eligible")),
+            )
+            row.setdefault(
+                "deep_collection_eligible",
+                bool(train_state.get("deep_collection_eligible")),
+            )
             row.setdefault("data_availability", target_availability)
             row.setdefault("data_source", target_source)
             row.setdefault("active_raw_file_count", active_raw_count)

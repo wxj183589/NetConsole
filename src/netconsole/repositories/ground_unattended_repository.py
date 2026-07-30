@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS ground_unattended_profiles (
     fleet_ping_packet_size INTEGER NOT NULL DEFAULT 64,
     fleet_ping_shard_size INTEGER NOT NULL DEFAULT 12,
     fleet_ping_warmup_seconds INTEGER NOT NULL DEFAULT 10,
+    ping_depot_trains_enabled INTEGER NOT NULL DEFAULT 0,
     udp_listen_host TEXT NOT NULL DEFAULT '0.0.0.0',
     udp_listen_port INTEGER NOT NULL DEFAULT 514,
     udp_queue_capacity INTEGER NOT NULL DEFAULT 20000,
@@ -108,10 +109,15 @@ CREATE TABLE IF NOT EXISTS ground_unattended_train_runs (
     train_id TEXT NOT NULL,
     train_no TEXT NOT NULL DEFAULT '',
     train_name TEXT NOT NULL DEFAULT '',
+    location_class TEXT NOT NULL DEFAULT 'UNKNOWN',
+    mainline_eligible INTEGER NOT NULL DEFAULT 0,
     coverage_status TEXT NOT NULL DEFAULT 'NOT_SEEN',
     priority INTEGER NOT NULL DEFAULT 0,
     ping_eligible INTEGER NOT NULL DEFAULT 0,
     deep_collection_eligible INTEGER NOT NULL DEFAULT 0,
+    ping_inclusion_reason TEXT NOT NULL DEFAULT '',
+    ping_exclusion_reason TEXT NOT NULL DEFAULT '',
+    deep_exclusion_reason TEXT NOT NULL DEFAULT '',
     eligibility_status TEXT NOT NULL DEFAULT 'AC_UNKNOWN',
     exclusion_reason TEXT NOT NULL DEFAULT '',
     location_match_level TEXT NOT NULL DEFAULT 'UNMATCHED',
@@ -555,6 +561,7 @@ ON ground_unattended_health_events(site_id, ts DESC, severity);
 _PROFILE_MIGRATION_COLUMNS = {
     "deep_collection_master_enabled": "INTEGER NOT NULL DEFAULT 1",
     "fleet_ping_warmup_seconds": "INTEGER NOT NULL DEFAULT 10",
+    "ping_depot_trains_enabled": "INTEGER NOT NULL DEFAULT 0",
     "udp_listen_host": "TEXT NOT NULL DEFAULT '0.0.0.0'",
     "udp_listen_port": "INTEGER NOT NULL DEFAULT 514",
     "udp_queue_capacity": "INTEGER NOT NULL DEFAULT 20000",
@@ -577,6 +584,11 @@ _PING_SUMMARY_MIGRATION_COLUMNS = {
 }
 
 _TRAIN_RUN_MIGRATION_COLUMNS = {
+    "location_class": "TEXT NOT NULL DEFAULT 'UNKNOWN'",
+    "mainline_eligible": "INTEGER NOT NULL DEFAULT 0",
+    "ping_inclusion_reason": "TEXT NOT NULL DEFAULT ''",
+    "ping_exclusion_reason": "TEXT NOT NULL DEFAULT ''",
+    "deep_exclusion_reason": "TEXT NOT NULL DEFAULT ''",
     "location_match_level": "TEXT NOT NULL DEFAULT 'UNMATCHED'",
     "location_match_reason": "TEXT NOT NULL DEFAULT ''",
     "resolved_ap_id": "TEXT NOT NULL DEFAULT ''",
@@ -643,6 +655,7 @@ class GroundUnattendedRepository:
             self._ensure_columns(
                 conn, "ground_unattended_train_runs", _TRAIN_RUN_MIGRATION_COLUMNS
             )
+            self._migrate_train_run_location_decisions(conn)
             self._ensure_columns(conn, "ground_unattended_train_endpoints", _ENDPOINT_MIGRATION_COLUMNS)
             self._ensure_columns(conn, "ground_unattended_boot_sessions", _BOOT_SESSION_MIGRATION_COLUMNS)
             self._ensure_columns(conn, "ground_unattended_wmesh_events", _WMESH_EVENT_MIGRATION_COLUMNS)
@@ -654,7 +667,7 @@ class GroundUnattendedRepository:
             conn.execute(
                 """
                 INSERT INTO ground_unattended_schema(key, value, updated_at)
-                VALUES('schema_version', '7', ?)
+                VALUES('schema_version', '8', ?)
                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
                 """,
                 (_now(),),
@@ -676,6 +689,45 @@ class GroundUnattendedRepository:
         for name, declaration in columns.items():
             if name not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
+
+    @staticmethod
+    def _migrate_train_run_location_decisions(
+        conn: sqlite3.Connection,
+    ) -> None:
+        conn.execute(
+            """
+            UPDATE ground_unattended_train_runs
+            SET location_class = CASE eligibility_status
+                    WHEN 'MAINLINE' THEN 'MAINLINE'
+                    WHEN 'MAINLINE_STATIONARY' THEN 'MAINLINE'
+                    WHEN 'DEPOT' THEN 'DEPOT'
+                    WHEN 'PARKING_LOT' THEN 'PARKING_YARD'
+                    WHEN 'STORAGE_TRACK' THEN 'STABLING'
+                    WHEN 'DEPOT_CONNECTION' THEN 'DEPOT_CONNECTION'
+                    WHEN 'NON_MAIN_PATH' THEN 'NON_MAINLINE'
+                    WHEN 'OFFLINE' THEN 'OFFLINE'
+                    ELSE location_class
+                END,
+                mainline_eligible = CASE
+                    WHEN eligibility_status IN (
+                        'MAINLINE',
+                        'MAINLINE_STATIONARY'
+                    ) THEN 1
+                    ELSE mainline_eligible
+                END
+            WHERE location_class = 'UNKNOWN'
+              AND eligibility_status IN (
+                    'MAINLINE',
+                    'MAINLINE_STATIONARY',
+                    'DEPOT',
+                    'PARKING_LOT',
+                    'STORAGE_TRACK',
+                    'DEPOT_CONNECTION',
+                    'NON_MAIN_PATH',
+                    'OFFLINE'
+              )
+            """
+        )
 
     def get_profile(self) -> GroundUnattendedProfileDTO:
         with self._connection() as conn:
@@ -1162,12 +1214,17 @@ class GroundUnattendedRepository:
             "train_id": values["train_id"],
             "train_no": values.get("train_no", ""),
             "train_name": values.get("train_name", ""),
+            "location_class": values.get("location_class", "UNKNOWN"),
+            "mainline_eligible": int(bool(values.get("mainline_eligible"))),
             "coverage_status": values.get("coverage_status", "NOT_SEEN"),
             "priority": int(bool(priority)),
             "ping_eligible": int(bool(values.get("ping_eligible"))),
             "deep_collection_eligible": int(
                 bool(values.get("deep_collection_eligible"))
             ),
+            "ping_inclusion_reason": values.get("ping_inclusion_reason", ""),
+            "ping_exclusion_reason": values.get("ping_exclusion_reason", ""),
+            "deep_exclusion_reason": values.get("deep_exclusion_reason", ""),
             "eligibility_status": values.get("eligibility_status", "AC_UNKNOWN"),
             "exclusion_reason": values.get("exclusion_reason", ""),
             "location_match_level": values.get(
@@ -2777,6 +2834,7 @@ def _decode_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         "enabled",
         "paused",
         "priority",
+        "mainline_eligible",
         "ping_eligible",
         "deep_collection_eligible",
         "finalization_complete",
@@ -2784,6 +2842,7 @@ def _decode_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         "active_cleanup_pending",
         "deep_collection_enabled",
         "deep_collection_master_enabled",
+        "ping_depot_trains_enabled",
         "monitor_only",
     ):
         if key in result:

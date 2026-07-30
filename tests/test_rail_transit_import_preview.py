@@ -120,7 +120,10 @@ def test_import_preview_accepts_ap_switch_port_table_and_skips_placeholders(tmp_
     assert json.loads(result.merge_plan.items[0].source_values["raw_payload_json"]) == {
         "import_source": {"station_name": "11-高桥西"},
         "line_side_source": "unavailable",
+        "location_class_source": "DEFAULT_MAINLINE",
     }
+    assert result.merge_plan.items[0].source_values["location_class"] == "MAINLINE"
+    assert result.merge_plan.items[0].source_values["participates_in_mainline"] is True
     assert result.merge_plan.items[1].result == "INVALID"
     assert result.merge_plan.items[1].issues[0].code == "ap_mac_placeholder"
     assert _fingerprint(db_path) == before
@@ -216,4 +219,75 @@ def test_import_preview_allows_624_offline_trackside_aps_without_fit_ap_runtime(
         for item in result.merge_plan.items
         for issue in item.issues
         if issue.code == "fit_ap_unmatched"
+    )
+
+
+def test_import_preview_defaults_empty_location_and_normalizes_explicit_special_type(
+    tmp_path: Path,
+) -> None:
+    paths, _db_path = build_rail_transit_base_data_fixture(tmp_path)
+    service = RailTransitImportPreviewService(
+        RailTransitBaseDataQueryService(paths)
+    )
+    rows = [
+        {
+            "ap_point_code": "AP-DEFAULT",
+            "ap_mac_display": "0011-2233-4491",
+            "station_name": "车站A",
+        },
+        {
+            "ap_point_code": "AP-DEPOT",
+            "ap_mac_display": "0011-2233-4492",
+            "station_name": "车站A",
+            "location_class": "车辆段",
+            "participates_in_mainline": "否",
+        },
+    ]
+
+    result = service.preview(
+        site_id="demo",
+        file_name="location.json",
+        content=json.dumps(rows, ensure_ascii=False).encode("utf-8"),
+        content_type="application/json",
+    )
+
+    default_row, depot_row = result.rows
+    assert default_row.values["location_class"] == "MAINLINE"
+    assert default_row.values["participates_in_mainline"] is True
+    assert default_row.values["location_class_source"] == "DEFAULT_MAINLINE"
+    assert depot_row.values["location_class"] == "DEPOT"
+    assert depot_row.values["participates_in_mainline"] is False
+    assert depot_row.values["location_class_source"] == "IMPORT_EXPLICIT"
+
+
+def test_import_preview_blocks_special_location_that_participates_in_mainline(
+    tmp_path: Path,
+) -> None:
+    paths, _db_path = build_rail_transit_base_data_fixture(tmp_path)
+    service = RailTransitImportPreviewService(
+        RailTransitBaseDataQueryService(paths)
+    )
+
+    result = service.preview(
+        site_id="demo",
+        file_name="location-conflict.json",
+        content=json.dumps(
+            [
+                {
+                    "ap_point_code": "AP-CONFLICT",
+                    "ap_mac_display": "0011-2233-4493",
+                    "station_name": "车站A",
+                    "location_class": "DEPOT",
+                    "participates_in_mainline": True,
+                }
+            ]
+        ).encode("utf-8"),
+        content_type="application/json",
+    )
+
+    assert result.merge_plan is not None
+    assert result.merge_plan.items[0].result == "INVALID"
+    assert any(
+        issue.code == "ap_mainline_participation_conflict"
+        for issue in result.merge_plan.items[0].issues
     )

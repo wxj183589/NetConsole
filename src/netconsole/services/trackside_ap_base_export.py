@@ -20,6 +20,8 @@ TRACKSIDE_AP_BASE_COLUMNS = (
     ("管理 IP", "management_ip"),
     ("型号", "model"),
     ("归属类型", "belong_type"),
+    ("位置类型", "location_class"),
+    ("是否参与正线判断", "participates_in_mainline"),
     ("归属站点", "station_name"),
     ("归属区间", "section_name"),
     ("区间起点站", "section_start_station"),
@@ -69,6 +71,8 @@ _FIELD_NOTES = (
     ("管理 IP", "只读", "来自当前 FIT-AP 运行态；重新导入不会覆盖正式基础资料。"),
     ("型号", "只读", "来自当前 FIT-AP 运行态；重新导入不会覆盖正式基础资料。"),
     ("归属类型", "可选", "section、station、yard 或 unknown；缺失时按站点/区间推断。"),
+    ("位置类型", "可选", "空值默认正线；可填写正线、车辆段、停车场、存车线、出入段线、试车线或非正线。"),
+    ("是否参与正线判断", "自动/可选", "正线默认为是，特殊位置默认为否；特殊位置不能设置为是。"),
     ("归属站点", "可选", "空白默认 KEEP，不清除已有站点。"),
     ("归属区间", "可选", "空白默认 KEEP，不清除已有区间。"),
     ("区间起点站", "可选", "归属区间的起点站。"),
@@ -195,6 +199,17 @@ def _export_row(raw: Mapping[str, Any]) -> dict[str, object]:
         "management_ip": raw.get("management_ip") or "",
         "model": raw.get("model") or "",
         "belong_type": base.get("belong_type") or raw.get("record_kind") or raw.get("belong_type") or "unknown",
+        "location_class": raw.get("location_class") or base.get("location_class") or "MAINLINE",
+        "participates_in_mainline": (
+            "是"
+            if bool(
+                raw.get(
+                    "participates_in_mainline",
+                    base.get("participates_in_mainline", True),
+                )
+            )
+            else "否"
+        ),
         "station_name": raw.get("station") or raw.get("station_name") or "",
         "section_name": raw.get("section") or raw.get("section_name") or "",
         "section_start_station": raw.get("section_start_station") or "",

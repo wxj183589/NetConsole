@@ -74,6 +74,80 @@ def test_base_data_mac_mileage_filters_and_public_dto_have_no_secrets(tmp_path: 
     assert "password" not in payload
 
 
+def test_trackside_ap_location_read_compatibility_defaults_only_matched_records(
+    tmp_path: Path,
+) -> None:
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE ap_extension_points
+            SET belong_type='depot', yard_name='云龙车辆段'
+            WHERE ap_name='AP-Online'
+            """
+        )
+        connection.execute(
+            "ALTER TABLE ap_extension_points DROP COLUMN location_class_source"
+        )
+        connection.execute(
+            "ALTER TABLE ap_extension_points DROP COLUMN participates_in_mainline"
+        )
+        connection.execute(
+            "ALTER TABLE ap_extension_points DROP COLUMN location_class"
+        )
+        connection.commit()
+
+    rows = RailTransitBaseDataQueryService(paths).list_aps(
+        "demo", page_size=200
+    ).items
+    depot = next(item for item in rows if item.name == "AP-Online")
+    defaults = [item for item in rows if item.name != "AP-Online"]
+
+    assert (
+        depot.location_class,
+        depot.participates_in_mainline,
+        depot.location_class_source,
+    ) == ("DEPOT", False, "LEGACY_INFERRED")
+    assert all(
+        (
+            item.location_class,
+            item.participates_in_mainline,
+            item.location_class_source,
+        )
+        == ("MAINLINE", True, "DEFAULT_MAINLINE")
+        for item in defaults
+    )
+
+
+def test_trackside_ap_query_exposes_historical_location_conflict(
+    tmp_path: Path,
+) -> None:
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE ap_extension_points
+            SET location_class='DEPOT',
+                participates_in_mainline=1,
+                location_class_source='EXPLICIT'
+            WHERE ap_name='AP-Online'
+            """
+        )
+        connection.commit()
+
+    row = next(
+        item
+        for item in RailTransitBaseDataQueryService(paths).list_aps(
+            "demo", page_size=200
+        ).items
+        if item.name == "AP-Online"
+    )
+
+    assert row.location_class == "DEPOT"
+    assert row.participates_in_mainline is True
+    assert row.location_class_conflict is True
+
+
 def test_query_non_destructively_completes_empty_line_side_from_formal_section(tmp_path: Path) -> None:
     paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
     metadata = {

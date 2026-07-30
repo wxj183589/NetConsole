@@ -27,6 +27,20 @@ class _NoopAsyncService:
         return None
 
 
+def test_trackside_ap_special_location_cannot_participate_in_mainline() -> None:
+    with pytest.raises(
+        RailTransitBaseDataConstraintError,
+        match="不能同时设置为参与正线判断",
+    ):
+        RailTransitBaseDataRepository._safe_values(
+            {
+                "location_class": "DEPOT",
+                "participates_in_mainline": True,
+                "location_class_source": "MANUAL_EXPLICIT",
+            }
+        )
+
+
 def _app(paths, tmp_path: Path):
     return create_app(
         RuntimeMode.SERVER,

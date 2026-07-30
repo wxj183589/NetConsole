@@ -33,6 +33,17 @@ GroundEligibilityStatus = Literal[
     "AP_UNMATCHED",
     "OFFLINE",
 ]
+GroundLocationClass = Literal[
+    "MAINLINE",
+    "DEPOT",
+    "PARKING_YARD",
+    "STABLING",
+    "DEPOT_CONNECTION",
+    "TEST_TRACK",
+    "NON_MAINLINE",
+    "OFFLINE",
+    "UNKNOWN",
+]
 GroundCoverageStatus = Literal[
     "NOT_SEEN",
     "WAITING",
@@ -95,6 +106,7 @@ class GroundUnattendedProfileDTO(ApiModel):
     fleet_ping_packet_size: int = Field(default=64, ge=1, le=65_507)
     fleet_ping_shard_size: int = Field(default=12, ge=2, le=32)
     fleet_ping_warmup_seconds: int = Field(default=10, ge=0, le=300)
+    ping_depot_trains_enabled: bool = False
     udp_listen_host: str = Field(default="0.0.0.0", min_length=1, max_length=255)
     udp_listen_port: int = Field(default=514, ge=1, le=65_535)
     udp_queue_capacity: int = Field(default=20_000, ge=100, le=500_000)
@@ -189,6 +201,8 @@ class GroundUnattendedStatusDTO(ApiModel):
     ac_last_updated_at: str = ""
     ac_freshness_status: str = "NO_DATA"
     mainline_train_count: int = 0
+    mainline_ping_target_count: int = 0
+    depot_ping_target_count: int = 0
     ping_target_count: int = 0
     active_deep_train_count: int = 0
     covered_train_count: int = 0
@@ -261,6 +275,8 @@ class GroundUnattendedEndpointDTO(ApiModel):
     device_id: int | None = None
     management_ip: str = ""
     online_status: str = "UNKNOWN"
+    ping_target_eligible: bool = False
+    ping_exclusion_reason: str = ""
     ping_active: bool = False
     ping_sent_count: int = 0
     ping_success_count: int = 0
@@ -292,8 +308,13 @@ class GroundUnattendedTrainDTO(ApiModel):
     train_id: str
     train_no: str = ""
     train_name: str = ""
+    location_class: GroundLocationClass = "UNKNOWN"
+    mainline_eligible: bool = False
     ping_eligible: bool = False
     deep_collection_eligible: bool = False
+    ping_inclusion_reason: str = ""
+    ping_exclusion_reason: str = ""
+    deep_exclusion_reason: str = ""
     eligibility_status: GroundEligibilityStatus = "AC_UNKNOWN"
     exclusion_reason: str = ""
     location_match_level: Literal[
@@ -488,6 +509,10 @@ class GroundPingTargetDTO(ApiModel):
     mr_id: str = ""
     mr_name: str = ""
     mr_position_code: str = ""
+    location_class: GroundLocationClass = "UNKNOWN"
+    ping_inclusion_reason: str = ""
+    mainline_eligible: bool = False
+    deep_collection_eligible: bool = False
     started_at: str = ""
     updated_at: str = ""
     shard_id: str = ""

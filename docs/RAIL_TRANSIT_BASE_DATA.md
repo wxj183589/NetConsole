@@ -98,11 +98,29 @@ revision 校验 + SQLite BEGIN IMMEDIATE 单事务
 
 ## 轨旁 AP 文件闭环
 
-“轨旁 AP”标签页直接提供“下载模板 / 导入并预览 / 导出当前 / 导出重命名命令 / 新增轨旁 AP”。模板和当前导出均通过独立 Export Process 生成 `轨旁AP` 与 `字段说明` 两个工作表，并经 `source=trackside_ap_base` 的公共 Artifact 完成校验和受控下载。模板包含 AP 名称、点位编号、AP MAC、站点/区间、方向、可选里程、上联交换机/端口、供电和光缆等正式字段；FIT-AP 关联、当前光衰、来源和问题数为只读导出列。冲突和无效行可通过“导出问题明细”生成独立 XLSX Artifact；前端必须先由用户选择保存位置，再提交 Export Process。
+“轨旁 AP”标签页直接提供“下载模板 / 导入并预览 / 导出当前 / 导出重命名命令 / 新增轨旁 AP”。模板和当前导出均通过独立 Export Process 生成 `轨旁AP` 与 `字段说明` 两个工作表，并经 `source=trackside_ap_base` 的公共 Artifact 完成校验和受控下载。模板包含 AP 名称、点位编号、AP MAC、站点/区间、方向、位置类型、是否参与正线判断、可选里程、上联交换机/端口、供电和光缆等正式字段；FIT-AP 关联、当前光衰、来源和问题数为只读导出列。冲突和无效行可通过“导出问题明细”生成独立 XLSX Artifact；前端必须先由用户选择保存位置，再提交 Export Process。
 
 锁定状态允许下载、导出和只读预览，不能应用；解锁后“导入 N 条有效数据到草稿”只更新 `editingDraft.aps` 和 `pendingChanges`，不调用独立写库接口，仍由页面右上角“保存并锁定”统一提交 revision 校验与事务。按钮只在没有可导入行、页面锁定或正在保存时禁用，不再要求额外确认勾选，也不因其他行存在冲突、无效或未匹配 FIT-AP 而禁用。导入空值默认 KEEP，不能清除已有里程、位置或上联资料；删除只能通过页面明确操作。
 
-轨旁 AP 基础资料独立于 AC、FIT-AP 运行态、设备管理和上联交换机资料。点位编号与 AP MAC 至少存在一个即可导入；AP 名称、交换机、端口、光口、供电和光缆字段均可为空。AP MAC 存在时按公共规范器校验并以 `xxxx-xxxx-xxxx` 展示；MR/MESH 位置快照优先按规范化 MAC 匹配。AP 名称为空时页面、基础资料导出和 MESH 位置结果回退到点位编号。当前 FIT-AP 未发现相同 MAC 时只产生非阻断 warning，后续 AC 采集到相同 MAC 后继续自动关联。
+轨旁 AP 基础资料独立于 AC、FIT-AP 运行态、设备管理和上联交换机资料。点位编号与 AP MAC 至少存在一个即可导入；AP 名称、交换机、端口、光口、供电和光缆字段均可为空。AP MAC 存在时按公共规范器校验并以 `xxxx-xxxx-xxxx` 展示；MR/MESH 位置快照优先按规范化 MAC 匹配。AP 名称为空时页面、基础资料导出和 MESH 位置结果回退到点位编号，但 AP 名称和别名不能代替 MAC 参与无人值守位置身份匹配。当前 FIT-AP 未发现相同 MAC 时只产生非阻断 warning，后续 AC 采集到相同 MAC 后继续自动关联。
+
+轨旁 AP 统一保存 `location_class`、`participates_in_mainline` 和 `location_class_source`。允许的位置类型为
+`MAINLINE/DEPOT/PARKING_YARD/STABLING/DEPOT_CONNECTION/TEST_TRACK/NON_MAINLINE/UNKNOWN`。
+手工新增、轨旁 AP 模板/点表导入、规划或 FIT-AP 来源生成以及历史资料迁移在没有明确特殊类型时统一
+使用 `MAINLINE + participates_in_mainline=true + DEFAULT_MAINLINE`；因此已匹配 AP 的空位置类型显示为
+“正线（默认）”，不要求逐条手工补选。完全未匹配的 AC AP MAC 仍为 `UNKNOWN/AP_UNMATCHED`，不能使用
+这条默认正线规则。
+
+历史 AP 若能从 `belong_type`、车辆段/停车场/存车线、出入段线、试车线或非正线等结构化字段明确推断
+特殊区域，则以特殊区域覆盖默认值；已有明确分类不被迁移覆盖。Schema migration 只增加字段并事务化
+回填，执行前创建 `trackside-ap-location` 数据库备份，可重复执行。兼容读取同样使用统一解析器，不在
+只读页面写库。
+
+导入位置类型空值解析为 `MAINLINE`，预览明确显示默认来源；中文“车辆段/场段、停车场、存车线、
+出入段线/出段线/入段线、试车线、非正线”会归一化为对应枚举。页面支持批量设置位置类型，特殊类型会
+自动建议“不参与正线”。`DEPOT/PARKING_YARD/STABLING/DEPOT_CONNECTION/TEST_TRACK/NON_MAINLINE/
+UNKNOWN` 与 `participates_in_mainline=true` 属于阻断冲突，导入预览和保存都会拒绝，不静默修正用户
+明确输入。
 
 `ap_switch_port_point_table` 兼容 `轨旁AP业务` 工作表：`AP编号/点位编号/AP点位/AP名称编号 → point_code`、`AP_MAC → mac`、`归属站点 → station`、`区间 → section/direction`、`室内交换机 → uplink_switch`、`接口名称 → uplink_port`。带编号站点保留原文到来源 metadata 后再匹配正式站名；文件中的 `AP名称` 不覆盖 AC 当前真实名称；缺少里程不阻断，MAC 为占位符的空端口行跳过。
 
@@ -283,3 +301,11 @@ AP 点表导入、预览、确认、审计和回滚只在“轨道交通 / 基�
 - 离线分析和正式报告 Web 化。
 
 自动测试只在临时局点副本验证保存、导入和回滚；宁波地铁 12 号线等正式局点的内容修改仍须在正常持久化 Electron 中人工确认。自动测试前后应核对正式 `devices.db`、bootstrap 和当前局点未变化。
+
+2026-07-31 对宁波地铁 12 号线执行过一次严格只读位置迁移预览：SQLite 使用
+`mode=ro&immutable=1`，没有初始化或迁移正式库。`ap_extension_points` 共 993 行，按活动页面相同
+规则排除 76 条站点/区间辅助行后得到 917 条正式轨旁 AP；现有记录均没有明确特殊区域证据，因此建议
+结果为 `MAINLINE/DEFAULT_MAINLINE` 917、车辆段 0、停车场 0、存车线 0、出入段线 0、试车线/非正线
+0、分类冲突 0。最新已完成无人值守 run 的 36 个端点快照中只出现 1 个有效 AP MAC；当前正式 AP
+资料没有可匹配 MAC，因此动态结果为 `AP_UNMATCHED` 1，而不是默认正线。读取前后 `devices.db` 与
+无人值守 `index.sqlite` 的 SHA-256、大小和 mtime 均保持不变。

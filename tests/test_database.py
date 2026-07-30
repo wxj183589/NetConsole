@@ -244,6 +244,71 @@ def test_database_initialize_auto_updates_additive_schema(tmp_path):
     assert "idx_fit_ap_radio_history_ap_time" in radio_history_indexes
 
 
+def test_trackside_ap_location_migration_defaults_mainline_and_preserves_special_rows(
+    tmp_path,
+):
+    db = Database(tmp_path / "devices.db")
+    db.initialize()
+    with db.connect() as conn:
+        now = "2026-07-31T00:00:00"
+        conn.executemany(
+            """
+            INSERT INTO ap_extension_points (
+                site_id, belong_type, station_name, section_name, yard_name,
+                ap_point_code, ap_name, created_at, updated_at
+            ) VALUES ('demo', ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ("station", "正线站", "", "", "AP-1", "AP-1", now, now),
+                ("yard", "", "", "云龙车辆段", "AP-2", "AP-2", now, now),
+                ("yard", "", "", "停车场", "AP-3", "AP-3", now, now),
+                ("storage_track", "", "", "", "AP-4", "AP-4", now, now),
+                ("section", "", "出入段线", "", "AP-5", "AP-5", now, now),
+            ],
+        )
+        conn.execute("ALTER TABLE ap_extension_points DROP COLUMN location_class_source")
+        conn.execute("ALTER TABLE ap_extension_points DROP COLUMN participates_in_mainline")
+        conn.execute("ALTER TABLE ap_extension_points DROP COLUMN location_class")
+        conn.execute(
+            "UPDATE schema_metadata SET value='2026.07.30.device_work_scope_status' "
+            "WHERE key='schema_version'"
+        )
+        conn.commit()
+
+    db.initialize()
+    db.initialize()
+
+    with db.connect() as conn:
+        rows = {
+            row["ap_point_code"]: (
+                row["location_class"],
+                bool(row["participates_in_mainline"]),
+                row["location_class_source"],
+            )
+            for row in conn.execute(
+                """
+                SELECT ap_point_code, location_class,
+                       participates_in_mainline, location_class_source
+                FROM ap_extension_points
+                WHERE ap_point_code LIKE 'AP-%'
+                """
+            )
+        }
+    assert rows == {
+        "AP-1": ("MAINLINE", True, "DEFAULT_MAINLINE"),
+        "AP-2": ("DEPOT", False, "LEGACY_INFERRED"),
+        "AP-3": ("PARKING_YARD", False, "LEGACY_INFERRED"),
+        "AP-4": ("STABLING", False, "LEGACY_INFERRED"),
+        "AP-5": ("DEPOT_CONNECTION", False, "LEGACY_INFERRED"),
+    }
+    backups = list(
+        (tmp_path / "backups" / "database-migrations").glob(
+            "*before-trackside-ap-location-*.sqlite"
+        )
+    )
+    assert backups
+
+
 def test_zte_interface_lldp_additive_migration_is_repeatable_and_preserves_rows(
     tmp_path,
 ):

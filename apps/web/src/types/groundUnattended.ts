@@ -9,6 +9,7 @@ export interface GroundProfile {
   max_active_trains: number; max_active_mrs: number; max_starting_mrs: number; max_finalizing_mrs: number
   deep_collection_master_enabled: boolean
   fleet_ping_interval_ms: number; fleet_ping_timeout_ms: number; fleet_ping_packet_size: number; fleet_ping_shard_size: number; fleet_ping_warmup_seconds: number
+  ping_depot_trains_enabled: boolean
   udp_listen_host: string; udp_listen_port: number; udp_queue_capacity: number; raw_flush_interval_seconds: number; raw_flush_record_count: number
   event_batch_size: number; event_batch_interval_seconds: number; boot_time_tolerance_seconds: number; config_check_cooldown_seconds: number
   syslog_server_ip: string; syslog_server_port: number; ping_raw_retention_days: number; syslog_raw_retention_days: number
@@ -22,7 +23,7 @@ export interface GroundStatus {
   actual_started_at: string; actual_ended_at: string; schedule_start_time: string; schedule_end_time: string; timezone: string
   running_mode: 'STANDARD' | 'LIGHTWEIGHT'
   next_start_at: string; next_end_at: string; profile_effective_at: string; ac_last_updated_at: string; ac_freshness_status: string
-  mainline_train_count: number; ping_target_count: number; active_deep_train_count: number; covered_train_count: number
+  mainline_train_count: number; mainline_ping_target_count: number; depot_ping_target_count: number; ping_target_count: number; active_deep_train_count: number; covered_train_count: number
   incomplete_train_count: number; disk_used_bytes: number; disk_free_bytes: number; disk_status: string
   inventory_train_count: number; syslog_active_mr_count: number; config_abnormal_count: number; data_quality_warning_count: number
   latest_archive_status: string; latest_archive_message: string
@@ -39,6 +40,7 @@ export interface GroundRun {
 }
 export interface GroundEndpoint {
   endpoint: 'CT' | 'CW'; mr_id: string; mr_name: string; device_id: number | null; management_ip: string; online_status: string
+  ping_target_eligible: boolean; ping_exclusion_reason: string
   ping_active: boolean; ping_sent_count: number; ping_success_count: number; ping_loss_rate_percent: number | null
   ping_avg_rtt_ms: number | null; active_operation_id: string; latest_session_id: string
   syslog_status: string; last_syslog_received_at: string; current_active_peer: string; last_link_switch_at: string
@@ -52,7 +54,10 @@ export interface GroundSyslogHost {
   source: 'DEVICE_EXISTING' | 'NETCONSOLE_MANAGED'
 }
 export interface GroundTrain {
-  train_id: string; train_no: string; train_name: string; ping_eligible: boolean; deep_collection_eligible: boolean
+  train_id: string; train_no: string; train_name: string
+  location_class: 'MAINLINE' | 'DEPOT' | 'PARKING_YARD' | 'STABLING' | 'DEPOT_CONNECTION' | 'TEST_TRACK' | 'NON_MAINLINE' | 'OFFLINE' | 'UNKNOWN'
+  mainline_eligible: boolean; ping_eligible: boolean; deep_collection_eligible: boolean
+  ping_inclusion_reason: string; ping_exclusion_reason: string; deep_exclusion_reason: string
   eligibility_status: string; exclusion_reason: string; current_ap_name: string; current_ap_mac: string
   location_match_level: 'AP_EXACT' | 'AP_REGISTRY' | 'AP_ALIAS' | 'STATION_EXACT' | 'STATION_ALIAS' | 'UNMATCHED'
   location_match_reason: string; resolved_ap_id: string; resolved_ap_name: string; raw_peer_ap_name: string; raw_peer_ap_mac: string; canonical_station_name: string
@@ -63,6 +68,7 @@ export interface GroundTrain {
 }
 export interface GroundPingTarget {
   run_id: string; run_date: string; target_ip: string; train_id: string; train_no: string; mr_id: string; mr_name: string; mr_position_code: string; started_at: string; updated_at: string
+  location_class: GroundTrain['location_class']; ping_inclusion_reason: string; mainline_eligible: boolean; deep_collection_eligible: boolean
   shard_id: string; raw_sample_count: number; effective_sample_count: number; warmup_ignored_count: number
   sent_count: number; success_count: number; loss_count: number; loss_rate_percent: number
   min_rtt_ms: number | null; avg_rtt_ms: number | null; max_rtt_ms: number | null

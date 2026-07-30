@@ -71,7 +71,8 @@
 - `/rail-transit/train-communication` 是固定车载 TC1/TC2 六节点通信检测页，不是无线综合看板；不得聚合轨旁 AP、RSSI、fping、iPerf、Online MR、Agent 或 Mesh-Link。
 - 车内通信点表每列车只能包含 `TC1-MR/TC1-SW/TC1-SRV/TC2-MR/TC2-SW/TC2-SRV` 六节点；保存使用 SHA-256 revision。生成点表任务只返回编辑区预览，固定 `save_result=false`，`COMPLETED` 不等于预览可用，缺失或无效节点必须保留当前编辑内容。
 - 地面无人值守是独立 `/rail-transit/ground-unattended` 页面和 `web.ground_unattended` Feature，不复用人工 Online MR 页面状态，也不把全天无人值守塞入单一 Online MR Session；页面卸载只停止轮询，托盘隐藏时 Backend、AC 轮询、全车 Ping 和深度采集继续。
-- 地面无人值守调度必须用结构化正线分类、多目标 fping 分片、Online MR 强类型请求、并发预算、覆盖轮次、ZIP 原子归档和启动恢复；真实 AC/MR、长时 fping、托盘隐藏持续运行和进程残留仍是人工现场门禁。
+- 轨旁 AP 已按规范化 MAC/Registry/稳定 ID 匹配且没有特殊区域标记时默认正线；完全未匹配 AP 必须保持 `UNKNOWN/AP_UNMATCHED`，名称、alias 和站点文本不能绕过身份边界。
+- 地面无人值守调度必须独立计算正线、Ping 和深采资格，使用多目标 fping 分片、Online MR 强类型请求、并发预算、覆盖轮次、ZIP 原子归档和启动恢复；车辆段、停车场和存车线只可由默认关闭的全局开关加入长 Ping，仍排除正线统计与深采。真实 AC/MR、长时 fping、托盘隐藏持续运行和进程残留仍是人工现场门禁。
 - AP Identity 当前仍是只读 shadow/diagnostics，不接管生产匹配、页面展示、导出字段或数据库写入；unavailable/failed 不能改变原 Job/Export 终态。
 
 ## 验证与发布
