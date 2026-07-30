@@ -1,27 +1,28 @@
 from __future__ import annotations
 
-import csv
-import io
-import ipaddress
-import re
+import unicodedata
+from collections.abc import Mapping
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from netconsole.services.export.common_exporters import export_table_xlsx
 from netconsole.services.file_contract import (
     ImportValidationError,
     read_validated_csv_rows,
-    validate_csv_import,
-    validate_excel_import,
+    validate_optional_contract_metadata,
 )
-from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
+from netconsole.services.rail_transit.station_source_utils import (
+    canonical_station_name,
+    normalize_station_source_value,
+)
+from netconsole.utils.excel_workbook import (
+    load_workbook_without_unsupported_image_warning,
+)
 
 TRACKSIDE_PLAN_COLUMNS = (
     ("ac.trackside_plan.sequence_no", "sequence_no"),
     ("ac.trackside_plan.station_name", "station_name"),
     ("ac.trackside_plan.ap_count", "ap_count"),
-    ("ac.trackside_plan.ap_start_address", "ap_start_address"),
-    ("ac.trackside_plan.mask", "subnet_mask"),
-    ("ac.trackside_plan.ap_gateway", "ap_gateway"),
     ("ac.trackside_plan.ap_management_vlan", "management_vlan"),
     ("field.remark", "remark"),
 )
@@ -30,28 +31,16 @@ LEGACY_TRACKSIDE_PLAN_SHEET = "轨旁AP规划"
 TRACKSIDE_PLAN_HEADERS = [
     "序号",
     "车站名称",
-    "规划AP总数量",
-    "AP起始地址",
-    "掩码",
-    "AP网关",
+    "AP数量",
     "AP管理VLAN",
     "备注",
 ]
-# 规划数量单独校验新旧二选一表头，避免旧模板失效。
-TRACKSIDE_PLAN_REQUIRED_HEADERS = [
-    "车站名称",
-    "AP管理VLAN",
-]
-TRACKSIDE_PLAN_COUNT_HEADERS = ("规划AP总数量", "AP数量")
 TRACKSIDE_PLAN_COLUMN_WIDTHS = {
-    "sequence_no": 80,
-    "station_name": 260,
-    "ap_count": 90,
-    "ap_start_address": 170,
-    "subnet_mask": 150,
-    "ap_gateway": 170,
-    "management_vlan": 120,
-    "remark": 220,
+    "sequence_no": 10,
+    "station_name": 30,
+    "ap_count": 14,
+    "management_vlan": 16,
+    "remark": 42,
 }
 TRACKSIDE_PLAN_FIELD_NOTES = (
     {
@@ -60,86 +49,122 @@ TRACKSIDE_PLAN_FIELD_NOTES = (
         "description": "当前局点内唯一的正整数，保存后按序号升序显示。",
     },
     {
-        "field": "站点",
+        "field": "车站名称",
         "requirement": "必填",
-        "description": "站点名称不能为空；重复站点按导入时选择的覆盖、跳过或报错策略处理。",
+        "description": "必须能够匹配当前基础资料中的站点。",
     },
     {
-        "field": "规划AP总数量",
+        "field": "AP数量",
         "requirement": "必填",
-        "description": "当前确认应建设、应上线的 AP 总数；非负整数，可按现场核减调整。",
+        "description": "非负整数，表示该站点规划的轨旁 AP 数量。",
     },
     {
-        "field": "AP 起始地址",
-        "requirement": "可选参考",
-        "description": "允许 IPv4、末段 X/x 占位符或空值，不参与自动地址分配。",
-    },
-    {
-        "field": "掩码",
-        "requirement": "可选参考",
-        "description": "支持 24、/24、点分十进制掩码或空值。",
-    },
-    {
-        "field": "AP 网关",
-        "requirement": "可选参考",
-        "description": "允许为空或保留既有文本，不参与 VLAN 规划校验。",
-    },
-    {
-        "field": "管理 VLAN",
+        "field": "AP管理VLAN",
         "requirement": "必填",
         "description": "1～4094 的单个 VLAN；不同站点允许填写相同 VLAN。",
     },
     {"field": "备注", "requirement": "可选", "description": "规划备注。"},
 )
+TRACKSIDE_PLAN_FIELD_NOTE_COLUMNS = (
+    {"key": "field", "title": "字段", "width": 18},
+    {"key": "requirement", "title": "填写要求", "width": 12},
+    {
+        "key": "description",
+        "title": "说明",
+        "width": 58,
+        "wrap": True,
+        "horizontal": "left",
+    },
+)
 
-_LEGACY_HEADERS = {
-    "AP管理VLAN规划方式": "planning_mode",
-    "VLAN组编号": "group_code",
-    "VLAN组名称": "group_name",
-    "VLAN组起始站": "start_station_name",
-    "VLAN组结束站": "end_station_name",
-    "管理VLAN": "group_management_vlan",
-    "网络地址": "network_address",
-    "子网掩码": "group_subnet_mask",
-    "默认网关": "group_default_gateway",
-    "组AP起始地址": "group_ap_start_address",
-    "组AP结束地址": "group_ap_end_address",
-    "组内分配顺序": "allocation_order",
-    "是否手工锁定": "is_locked",
-    "组成员站点ID": "station_ids",
-    "组成员站点": "station_names",
+_HEADER_ALIASES = {
+    "sequence_no": ("序号", "顺序", "排序号"),
+    "station_name": ("车站名称", "站点名称", "站点", "车站"),
+    "ap_count": (
+        "AP数量",
+        "AP 数量",
+        "AP数",
+        "AP 数",
+        "规划AP数量",
+        "规划 AP 数量",
+        "规划AP总数量",
+    ),
+    "management_vlan": (
+        "AP管理VLAN",
+        "AP 管理 VLAN",
+        "AP 管理VLAN",
+        "管理VLAN",
+        "管理 VLAN",
+        "AP VLAN",
+    ),
+    "remark": ("备注", "说明"),
+    # 以下字段只用于识别旧模板，读取后不进入当前规划。
+    "ap_start_address": ("AP起始地址", "AP 起始地址"),
+    "subnet_mask": ("掩码", "子网掩码"),
+    "ap_gateway": ("AP网关", "AP 网关", "默认网关"),
+    "planning_mode": ("AP管理VLAN规划方式", "VLAN规划方式"),
+    "group_code": ("VLAN组编号",),
+    "group_name": ("VLAN组名称",),
+    "group_start_station": ("VLAN组起始站",),
+    "group_end_station": ("VLAN组结束站",),
+    "group_management_vlan": ("组管理VLAN",),
+    "group_network_address": ("网络地址",),
+    "group_ap_start_address": ("组AP起始地址",),
+    "group_ap_end_address": ("组AP结束地址",),
+    "allocation_order": ("组内分配顺序", "组内顺序"),
+    "is_locked": ("是否手工锁定", "手工锁定"),
+    "station_ids": ("组成员站点ID",),
+    "station_names": ("组成员站点", "组成员"),
+    "revision": ("revision",),
+}
+_HEADER_FIELD_BY_ALIAS = {
+    "".join(
+        unicodedata.normalize("NFKC", alias).split()
+    ).casefold(): field
+    for field, aliases in _HEADER_ALIASES.items()
+    for alias in aliases
+}
+_RETIRED_OR_GROUP_FIELDS = {
+    "ap_start_address",
+    "subnet_mask",
+    "ap_gateway",
+    "planning_mode",
+    "group_code",
+    "group_name",
+    "group_start_station",
+    "group_end_station",
+    "group_management_vlan",
+    "group_network_address",
+    "group_ap_start_address",
+    "group_ap_end_address",
+    "allocation_order",
+    "is_locked",
+    "station_ids",
+    "station_names",
+    "revision",
 }
 
 
 def read_trackside_plan_file(path: Path) -> list[dict[str, object | None]]:
-    if path.suffix.casefold() == ".csv":
-        validation = validate_csv_import(
-            path,
-            expected_module="ac.trackside_ap_plan",
-            required_headers=TRACKSIDE_PLAN_REQUIRED_HEADERS,
-            allow_legacy=True,
-        )
-        _validate_plan_count_header(validation.headers)
-        rows, _metadata, _encoding = read_validated_csv_rows(path)
-        return [_row_from_named(row) for row in csv.DictReader(io.StringIO(_rows_to_csv(rows)))]
-    sheet_name = _trackside_plan_sheet_name(path)
-    validation = validate_excel_import(
+    validate_optional_contract_metadata(
         path,
         expected_module="ac.trackside_ap_plan",
-        required_headers={sheet_name: TRACKSIDE_PLAN_REQUIRED_HEADERS},
-        allow_legacy=True,
     )
-    _validate_plan_count_header(validation.headers)
-    workbook = load_workbook_without_unsupported_image_warning(path, data_only=True)
+    if path.suffix.casefold() == ".csv":
+        rows, _metadata, _encoding = read_validated_csv_rows(path)
+        return _read_plan_rows(rows)
+
+    sheet_name = _trackside_plan_sheet_name(path)
+    workbook = load_workbook_without_unsupported_image_warning(
+        path,
+        data_only=True,
+    )
     try:
-        sheet = workbook[sheet_name]
-        headers = [str(cell.value or "").strip() for cell in sheet[1]]
-        rows = []
-        for values in sheet.iter_rows(min_row=2, values_only=True):
-            raw = {headers[index]: values[index] if index < len(values) else "" for index in range(len(headers))}
-            if any(value not in (None, "") for value in raw.values()):
-                rows.append(_row_from_named(raw))
-        return rows
+        rows = list(workbook[sheet_name].iter_rows(values_only=True))
+        return _read_plan_rows(
+            rows,
+            legacy_sheet=sheet_name == LEGACY_TRACKSIDE_PLAN_SHEET,
+        )
     finally:
         workbook.close()
 
@@ -152,9 +177,11 @@ def _trackside_plan_sheet_name(path: Path) -> str:
     )
     try:
         visible = [
-            name
-            for name in workbook.sheetnames
-            if name != "_netconsole_meta"
+            sheet.title
+            for sheet in workbook.worksheets
+            if sheet.title != "_netconsole_meta"
+            and sheet.sheet_state == "visible"
+            and sheet.title != "字段说明"
         ]
         if TRACKSIDE_PLAN_SHEET in visible:
             return TRACKSIDE_PLAN_SHEET
@@ -167,78 +194,96 @@ def _trackside_plan_sheet_name(path: Path) -> str:
     raise ImportValidationError("缺少必要 sheet：AP规划")
 
 
-def _rows_to_csv(rows: list[list[str]]) -> str:
-    output = io.StringIO(newline="")
-    csv.writer(output).writerows(rows)
-    return output.getvalue()
+def _read_plan_rows(
+    source_rows: list[list[object]] | list[tuple[object, ...]],
+    *,
+    legacy_sheet: bool = False,
+) -> list[dict[str, object | None]]:
+    if not source_rows:
+        raise ImportValidationError("文件为空")
+    header_index, header_fields, legacy_schema = _find_plan_header(source_rows)
+    output: list[dict[str, object | None]] = []
+    for source_row_number, values in enumerate(
+        source_rows[header_index + 1 :],
+        start=header_index + 2,
+    ):
+        if not any(value not in (None, "") for value in values):
+            continue
+        row: dict[str, object | None] = {}
+        for column_index, field in header_fields.items():
+            value = values[column_index] if column_index < len(values) else ""
+            if field not in row or row[field] in (None, ""):
+                row[field] = value
+        if row.get("management_vlan") in (None, ""):
+            row["management_vlan"] = row.get("group_management_vlan", "")
+        if row.get("sequence_no") in (None, ""):
+            row["sequence_no"] = len(output) + 1
+        row["__source_row_number__"] = source_row_number
+        row["__legacy_schema__"] = legacy_sheet or legacy_schema
+        output.append(row)
+    if not output:
+        raise ImportValidationError("文件为空：没有可导入的数据")
+    return output
 
 
-def _validate_plan_count_header(headers: tuple[str, ...]) -> None:
-    if not any(header in headers for header in TRACKSIDE_PLAN_COUNT_HEADERS):
-        raise ImportValidationError(
-            "缺少必要字段：规划AP总数量（旧模板可使用 AP数量）"
-        )
+def _find_plan_header(
+    rows: list[list[object]] | list[tuple[object, ...]],
+) -> tuple[int, dict[int, str], bool]:
+    for row_index, values in enumerate(rows[:10]):
+        fields = {
+            column_index: field
+            for column_index, value in enumerate(values)
+            if (field := _header_field(value))
+        }
+        present = set(fields.values())
+        if not {"station_name", "ap_count"}.issubset(present):
+            continue
+        if not {"management_vlan", "group_management_vlan"}.intersection(present):
+            continue
+        legacy = bool(present.intersection(_RETIRED_OR_GROUP_FIELDS))
+        if "sequence_no" not in present:
+            # 历史模板没有序号时按数据顺序补齐；新模板始终导出序号。
+            legacy = True
+        if any(
+            _normalize_header(value) == _normalize_header("规划AP总数量")
+            for value in values
+        ):
+            legacy = True
+        return row_index, fields, legacy
+    raise ImportValidationError(
+        "缺少必要字段：序号、车站名称、AP数量、AP管理VLAN"
+    )
 
 
-def export_trackside_plan_xlsx(path: Path, rows: list[dict[str, object | None]]) -> None:
+def _header_field(value: object) -> str:
+    return _HEADER_FIELD_BY_ALIAS.get(_normalize_header(value), "")
+
+
+def _normalize_header(value: object) -> str:
+    return "".join(
+        unicodedata.normalize("NFKC", str(value or "")).strip().split()
+    ).casefold()
+
+
+def export_trackside_plan_xlsx(
+    path: Path,
+    rows: list[dict[str, object | None]],
+) -> None:
     export_table_xlsx(
         path,
         {
             "sheet_name": TRACKSIDE_PLAN_SHEET,
-            "columns": [{"key": field, "title": TRACKSIDE_PLAN_HEADERS[index], "width": TRACKSIDE_PLAN_COLUMN_WIDTHS.get(field)} for index, (_key, field) in enumerate(TRACKSIDE_PLAN_COLUMNS)],
+            "columns": [
+                {
+                    "key": field,
+                    "title": TRACKSIDE_PLAN_HEADERS[index],
+                    "width": TRACKSIDE_PLAN_COLUMN_WIDTHS.get(field),
+                }
+                for index, (_key, field) in enumerate(TRACKSIDE_PLAN_COLUMNS)
+            ],
             "rows": rows,
         },
     )
-
-
-def _row_from_named(row: dict[object, object]) -> dict[str, object | None]:
-    simple_mapping = dict(
-        zip(
-            TRACKSIDE_PLAN_HEADERS,
-            [field for _key, field in TRACKSIDE_PLAN_COLUMNS],
-            strict=False,
-        )
-    )
-    result = {field: row.get(header, "") for header, field in simple_mapping.items()}
-    if result.get("ap_count") in (None, ""):
-        result["ap_count"] = row.get("AP数量", "")
-    legacy = any(str(row.get(header) or "").strip() for header in _LEGACY_HEADERS)
-    for header, field in _LEGACY_HEADERS.items():
-        result[field] = row.get(header, "")
-    result["__legacy_schema__"] = legacy
-    return result
-
-
-def _parse_mask_length(value: object) -> int | None:
-    text = "" if value is None else str(value).strip()
-    if not text:
-        return None
-    if text.startswith("/"):
-        text = text[1:].strip()
-    if text.isdigit():
-        prefix = int(text)
-        return prefix if 0 <= prefix <= 32 else None
-    if "." in text:
-        return _dotted_netmask_to_prefix(text)
-    return None
-
-
-def _dotted_netmask_to_prefix(mask: str) -> int | None:
-    parts = mask.split(".")
-    if len(parts) != 4:
-        return None
-    octets: list[int] = []
-    for part in parts:
-        if not part.isdigit():
-            return None
-        value = int(part)
-        if value < 0 or value > 255:
-            return None
-        octets.append(value)
-    bits = "".join(f"{octet:08b}" for octet in octets)
-    if re.fullmatch(r"1*0*", bits) is None:
-        return None
-    return bits.count("1")
 
 
 def normalize_trackside_plan_row(
@@ -247,48 +292,39 @@ def normalize_trackside_plan_row(
     row_number: int = 2,
 ) -> dict[str, object | None]:
     value = dict(row)
-    try:
-        sequence_no = int(
-            str(
-                value.get("sequence_no")
-                or (
-                    int(value.get("sort_order") or 0) + 1
-                    if value.get("sort_order") not in (None, "")
-                    else row_number - 1
-                )
-            ).strip()
-        )
-    except (TypeError, ValueError):
-        raise ValueError(f"第{row_number}行 序号：必须是正整数") from None
+    sequence_no = _required_integer(
+        value.get("sequence_no")
+        if value.get("sequence_no") not in (None, "")
+        else (
+            int(value.get("sort_order") or 0) + 1
+            if value.get("sort_order") not in (None, "")
+            else row_number - 1
+        ),
+        row_number=row_number,
+        field="序号",
+    )
     if sequence_no <= 0:
         raise ValueError(f"第{row_number}行 序号：必须是正整数")
+
     station = str(value.get("station_name") or "").strip()
     if not station:
         raise ValueError(f"第{row_number}行 车站名称：必填")
-    raw_planned_ap_count = (
+
+    raw_ap_count = (
         value.get("planned_ap_count")
         if value.get("planned_ap_count") not in (None, "")
         else value.get("ap_count")
     )
-    if raw_planned_ap_count in (None, ""):
-        raise ValueError(f"第{row_number}行 规划AP总数量：必填")
-    try:
-        ap_count = int(str(raw_planned_ap_count).strip())
-    except ValueError:
-        raise ValueError(f"第{row_number}行 规划AP总数量：必须是整数") from None
-    if ap_count < 0:
-        raise ValueError(f"第{row_number}行 规划AP总数量：必须是非负整数")
-    raw_mask = (
-        value.get("subnet_mask")
-        if value.get("subnet_mask") not in (None, "")
-        else value.get("mask_length")
-        if value.get("mask_length") not in (None, "")
-        else value.get("group_subnet_mask")
+    if raw_ap_count in (None, ""):
+        raise ValueError(f"第{row_number}行 AP数量：必填")
+    ap_count = _required_integer(
+        raw_ap_count,
+        row_number=row_number,
+        field="AP数量",
     )
-    subnet_mask = str(raw_mask or "").strip()
-    mask_length = _parse_mask_length(subnet_mask)
-    if subnet_mask and mask_length is None:
-        raise ValueError(f"第{row_number}行 掩码：格式无效")
+    if ap_count < 0:
+        raise ValueError(f"第{row_number}行 AP数量：必须是非负整数")
+
     raw_vlan = (
         value.get("management_vlan")
         if value.get("management_vlan") not in (None, "")
@@ -296,55 +332,80 @@ def normalize_trackside_plan_row(
         if value.get("ap_management_vlans") not in (None, "")
         else value.get("group_management_vlan")
     )
-    try:
-        management_vlan = int(str(raw_vlan).strip())
-    except (TypeError, ValueError):
+    if raw_vlan in (None, ""):
         raise ValueError(f"第{row_number}行 AP管理VLAN：必填")
+    management_vlan = _required_integer(
+        raw_vlan,
+        row_number=row_number,
+        field="AP管理VLAN",
+    )
     if not 1 <= management_vlan <= 4094:
         raise ValueError(f"第{row_number}行 AP管理VLAN：必须在 1～4094 范围内")
-    start = str(
-        value.get("ap_start_address")
-        or value.get("group_ap_start_address")
-        or ""
-    ).strip()
-    if start:
-        candidate = re.sub(r"[xX]$", "1", start)
-        try:
-            ipaddress.IPv4Address(candidate)
-        except ipaddress.AddressValueError:
-            raise ValueError(
-                f"第{row_number}行 AP起始地址：应为 IPv4 或末段 X 占位符"
-            ) from None
-        if re.search(r"[xX]", start) and re.fullmatch(
-            r"(?:\d{1,3}\.){3}[xX]", start
-        ) is None:
-            raise ValueError(
-                f"第{row_number}行 AP起始地址：X 只能用于地址末段"
-            )
-    gateway = str(
-        value.get("ap_gateway")
-        or value.get("group_default_gateway")
-        or ""
-    ).strip()
-    if gateway:
-        try:
-            ipaddress.IPv4Address(gateway)
-        except ipaddress.AddressValueError:
-            raise ValueError(f"第{row_number}行 AP网关：IPv4 格式无效") from None
+
     return {
         "station_id": str(value.get("station_id") or "").strip(),
         "sequence_no": sequence_no,
         "station_name": station,
         "ap_count": ap_count,
-        "ap_start_address": start,
-        "subnet_mask": subnet_mask,
-        "mask_length": mask_length,
-        "ap_gateway": gateway,
         "management_vlan": management_vlan,
+        "remark": str(value.get("remark") or value.get("notes") or "").strip(),
+        # 数据库保留历史列，但当前规划不读取、校验或保存用户输入的 IP 字段。
+        "ap_start_address": "",
+        "subnet_mask": "",
+        "mask_length": None,
+        "ap_gateway": "",
         "ap_management_vlans": str(management_vlan),
-        "remark": str(value.get("remark") or "").strip(),
         "sort_order": sequence_no - 1,
     }
+
+
+def bind_trackside_plan_station(
+    row: Mapping[str, object | None],
+    stations: list[Mapping[str, object]],
+    *,
+    row_number: int,
+) -> dict[str, object | None]:
+    result = dict(row)
+    station_id = str(result.get("station_id") or "").strip()
+    if station_id:
+        direct = [
+            station
+            for station in stations
+            if _station_id(station) == station_id
+        ]
+        if len(direct) == 1:
+            result["station_id"] = _station_id(direct[0])
+            result["station_name"] = _station_name(direct[0])
+            return result
+
+    requested_name = str(result.get("station_name") or "").strip()
+    exact_key = normalize_station_source_value(requested_name)[1]
+    exact = [
+        station
+        for station in stations
+        if normalize_station_source_value(_station_name(station))[1] == exact_key
+    ]
+    if len(exact) == 1:
+        result["station_id"] = _station_id(exact[0])
+        result["station_name"] = _station_name(exact[0])
+        return result
+    if len(exact) > 1:
+        raise ValueError(f"第{row_number}行 车站名称：匹配到多个当前站点")
+
+    canonical_key = canonical_station_name(requested_name).casefold()
+    compatible = [
+        station
+        for station in stations
+        if canonical_station_name(_station_name(station)).casefold()
+        == canonical_key
+    ]
+    if len(compatible) == 1:
+        result["station_id"] = _station_id(compatible[0])
+        result["station_name"] = _station_name(compatible[0])
+        return result
+    if len(compatible) > 1:
+        raise ValueError(f"第{row_number}行 车站名称：去除序号后匹配到多个当前站点")
+    raise ValueError(f"第{row_number}行 车站名称：未匹配到当前站点")
 
 
 def normalize_trackside_plan_rows(
@@ -354,20 +415,35 @@ def normalize_trackside_plan_rows(
         normalize_trackside_plan_row(row, row_number=index)
         for index, row in enumerate(rows, start=2)
     ]
-    station_names = [str(row["station_name"]).casefold() for row in normalized]
-    if len(station_names) != len(set(station_names)):
-        raise ValueError("轨旁 AP 规划存在重复车站名称")
+    station_keys = [
+        str(row.get("station_id") or "").strip()
+        or canonical_station_name(row["station_name"]).casefold()
+        for row in normalized
+    ]
+    if len(station_keys) != len(set(station_keys)):
+        raise ValueError("轨旁 AP 规划存在重复车站")
     sequence_numbers = [int(row["sequence_no"]) for row in normalized]
     if len(sequence_numbers) != len(set(sequence_numbers)):
         raise ValueError("轨旁 AP 规划存在重复序号")
-    station_ids = [
-        str(row.get("station_id") or "")
-        for row in normalized
-        if str(row.get("station_id") or "")
-    ]
-    if len(station_ids) != len(set(station_ids)):
-        raise ValueError("轨旁 AP 规划存在重复 station_id")
     return sorted(
         normalized,
         key=lambda row: (int(row["sequence_no"]), str(row["station_name"])),
     )
+
+
+def _required_integer(value: object, *, row_number: int, field: str) -> int:
+    try:
+        number = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        raise ValueError(f"第{row_number}行 {field}：必须是整数") from None
+    if not number.is_finite() or number != number.to_integral_value():
+        raise ValueError(f"第{row_number}行 {field}：必须是整数")
+    return int(number)
+
+
+def _station_id(station: Mapping[str, object]) -> str:
+    return str(station.get("id") or station.get("station_id") or "").strip()
+
+
+def _station_name(station: Mapping[str, object]) -> str:
+    return str(station.get("name") or station.get("station_name") or "").strip()

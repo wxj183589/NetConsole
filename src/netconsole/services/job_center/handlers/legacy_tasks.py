@@ -584,17 +584,36 @@ def _car_network_save_point_table(params: dict[str, Any], progress: ProgressCall
 def _trackside_ap_plan_import(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
     from netconsole.core.database import Database
     from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
-    from netconsole.services.trackside_ap_plan_io import normalize_trackside_plan_rows
+    from netconsole.services.trackside_ap_plan_io import (
+        bind_trackside_plan_station,
+        normalize_trackside_plan_row,
+        normalize_trackside_plan_rows,
+        read_trackside_plan_file,
+    )
 
     _emit(progress, "trackside_ap_plan_import", 0, 1, "正在导入轨旁 AP 规划")
     _check_cancel(should_cancel)
-    rows = _dedupe_trackside_station_rows(_read_trackside_plan_file(Path(str(params.get("path") or ""))))
-    _validate_trackside_plan_rows(rows)
-    AcRepository(
+    repository = AcRepository(
         Database(Path(str(params.get("db_path") or "")))
-    ).replace_trackside_ap_plan_rows(
+    )
+    stations = _trackside_plan_station_rows(repository)
+    raw_rows = read_trackside_plan_file(Path(str(params.get("path") or "")))
+    rows = normalize_trackside_plan_rows(
+        [
+            bind_trackside_plan_station(
+                normalize_trackside_plan_row(
+                    row,
+                    row_number=int(row.get("__source_row_number__") or index),
+                ),
+                stations,
+                row_number=int(row.get("__source_row_number__") or index),
+            )
+            for index, row in enumerate(raw_rows, start=2)
+        ]
+    )
+    repository.replace_trackside_ap_plan_rows(
         TRACKSIDE_AP_PLAN_MODE,
-        normalize_trackside_plan_rows(rows),
+        rows,
     )
     _emit(progress, "trackside_ap_plan_import", 1, 1, "轨旁 AP 规划导入完成")
     return {"count": len(rows)}
@@ -618,7 +637,11 @@ def _trackside_ap_plan_save(params: dict[str, Any], progress: ProgressCallback |
     from netconsole.services.rail_transit.ap_management_vlan_planning import (
         project_legacy_station_rows,
     )
-    from netconsole.services.trackside_ap_plan_io import normalize_trackside_plan_rows
+    from netconsole.services.trackside_ap_plan_io import (
+        bind_trackside_plan_station,
+        normalize_trackside_plan_row,
+        normalize_trackside_plan_rows,
+    )
 
     rows = [
         dict(row)
@@ -627,7 +650,20 @@ def _trackside_ap_plan_save(params: dict[str, Any], progress: ProgressCallback |
     ]
     if not rows and isinstance(params.get("draft"), dict):
         rows = project_legacy_station_rows(dict(params["draft"]))
-    normalized_rows = normalize_trackside_plan_rows(rows)
+    repository = AcRepository(
+        Database(Path(str(params.get("db_path") or "")))
+    )
+    stations = _trackside_plan_station_rows(repository)
+    normalized_rows = normalize_trackside_plan_rows(
+        [
+            bind_trackside_plan_station(
+                normalize_trackside_plan_row(row, row_number=index),
+                stations,
+                row_number=index,
+            )
+            for index, row in enumerate(rows, start=2)
+        ]
+    )
     row_count = len(normalized_rows)
     _emit(
         progress,
@@ -637,9 +673,6 @@ def _trackside_ap_plan_save(params: dict[str, Any], progress: ProgressCallback |
         "正在保存逐站轨旁 AP 规划",
     )
     _check_cancel(should_cancel)
-    repository = AcRepository(
-        Database(Path(str(params.get("db_path") or "")))
-    )
     repository.replace_trackside_ap_plan_rows(
         TRACKSIDE_AP_PLAN_MODE,
         normalized_rows,
@@ -652,6 +685,19 @@ def _trackside_ap_plan_save(params: dict[str, Any], progress: ProgressCallback |
         "逐站轨旁 AP 规划保存完成",
     )
     return {"count": row_count}
+
+
+def _trackside_plan_station_rows(
+    repository: Any,
+) -> list[dict[str, object]]:
+    return [
+        {
+            "id": str(row.get("id") or ""),
+            "name": str(row.get("station_name") or ""),
+        }
+        for row in repository.list_ap_extension_points()
+        if str(row.get("belong_type") or "") == "__base_station__"
+    ]
 
 
 def _vehicle_mr_mapping_import(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
@@ -1966,23 +2012,6 @@ def _network_profile_store(params: dict[str, Any], progress: ProgressCallback | 
     }
 
 
-TRACKSIDE_PLAN_HEADERS = ["车站名称", "AP数量", "AP起始地址", "掩码", "AP网关", "AP管理VLAN", "备注"]
-TRACKSIDE_PLAN_REQUIRED_HEADERS = TRACKSIDE_PLAN_HEADERS[:-1]
-TRACKSIDE_PLAN_FIELDS = ["station_name", "ap_count", "ap_start_address", "mask_length", "ap_gateway", "ap_management_vlans", "remark"]
-MASK_ERROR_TEXT = "必须是0-32或合法连续IPv4掩码"
-
-
-def _read_trackside_plan_file(path: Path) -> list[dict[str, object | None]]:
-    return [
-        {field: row.get(header, "") for header, field in zip(TRACKSIDE_PLAN_HEADERS, TRACKSIDE_PLAN_FIELDS, strict=False)}
-        for row in _read_named_table_file(
-            path,
-            expected_module="ac.trackside_ap_plan",
-            required_headers=TRACKSIDE_PLAN_REQUIRED_HEADERS,
-        )
-    ]
-
-
 def _read_named_table_file(
     path: Path,
     *,
@@ -2012,110 +2041,6 @@ def _read_named_table_file(
         return []
     headers = [str(value or "").strip() for value in rows[0]]
     return [{headers[index]: value for index, value in enumerate(values) if index < len(headers)} for values in rows[1:]]
-
-
-def _validate_trackside_plan_rows(rows: list[dict[str, object | None]]) -> None:
-    from netconsole.services.trackside_ap_business import parse_vlan_set
-
-    seen: set[str] = set()
-    for index, row in enumerate(rows, start=2):
-        station = str(row.get("station_name") or "").strip()
-        if not station:
-            raise ValueError(f"第{index}行 车站名称：必填")
-        if station.casefold() in seen:
-            continue
-        seen.add(station.casefold())
-        try:
-            row["ap_count"] = int(str(row.get("ap_count") or "0").strip())
-        except ValueError:
-            raise ValueError(f"第{index}行 AP数量：必须是整数") from None
-        if int(row["ap_count"] or 0) < 0:
-            raise ValueError(f"第{index}行 AP数量：必须是非负整数")
-        mask_length = _parse_mask_length(row.get("mask_length"))
-        if mask_length is None and str(row.get("mask_length") or "").strip():
-            raise ValueError(f"第{index}行 掩码：{MASK_ERROR_TEXT}")
-        row["mask_length"] = mask_length
-        vlans = parse_vlan_set(row.get("ap_management_vlans"))
-        if not vlans:
-            raise ValueError(f"第{index}行 AP管理VLAN：必填")
-        row["station_name"] = station
-        row["ap_management_vlans"] = ",".join(str(vlan) for vlan in sorted(vlans))
-        start = str(row.get("ap_start_address") or "").strip()
-        gateway = str(row.get("ap_gateway") or "").strip()
-        if start and not _valid_ipv4_or_placeholder(start):
-            raise ValueError(f"第{index}行 AP起始地址：格式无效")
-        if gateway and not _valid_ipv4(gateway):
-            raise ValueError(f"第{index}行 AP网关：必须是IPv4")
-
-
-def _dedupe_trackside_station_rows(rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:
-    by_station: dict[str, dict[str, object | None]] = {}
-    order: list[str] = []
-    for row in rows:
-        station = str(row.get("station_name") or "").strip()
-        key = station.casefold()
-        if not key:
-            key = f"__blank_{len(order)}"
-        if key not in by_station:
-            order.append(key)
-        by_station[key] = row
-    result = [by_station[key] for key in order if key in by_station]
-    for index, row in enumerate(result):
-        row["sort_order"] = index
-    return result
-
-
-def _parse_mask_length(value: object) -> int | None:
-    text = "" if value is None else str(value).strip()
-    if not text:
-        return None
-    if text.isdigit():
-        prefix = int(text)
-        return prefix if 0 <= prefix <= 32 else None
-    if "." in text:
-        return _dotted_netmask_to_prefix(text)
-    return None
-
-
-def _dotted_netmask_to_prefix(mask: str) -> int | None:
-    parts = mask.split(".")
-    if len(parts) != 4:
-        return None
-    try:
-        octets = [int(part) for part in parts]
-    except ValueError:
-        return None
-    if any(octet < 0 or octet > 255 for octet in octets):
-        return None
-    bits = "".join(f"{octet:08b}" for octet in octets)
-    if not all(char == "1" for char in bits[: bits.count("1")]) or "1" in bits[bits.count("1") :]:
-        return None
-    return bits.count("1")
-
-
-def _valid_ipv4(value: str) -> bool:
-    parts = value.split(".")
-    if len(parts) != 4:
-        return False
-    try:
-        return all(0 <= int(part) <= 255 for part in parts)
-    except ValueError:
-        return False
-
-
-def _valid_ipv4_or_placeholder(value: str) -> bool:
-    parts = value.split(".")
-    if len(parts) != 4:
-        return False
-    for part in parts:
-        if part.upper() == "X":
-            continue
-        try:
-            if int(part) < 0 or int(part) > 255:
-                return False
-        except ValueError:
-            return False
-    return True
 
 
 def _emit(progress: ProgressCallback | None, stage: str, current: int, total: int, message: str) -> None:

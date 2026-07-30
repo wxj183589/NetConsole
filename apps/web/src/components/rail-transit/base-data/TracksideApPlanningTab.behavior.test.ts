@@ -136,11 +136,10 @@ const NcDataTableStub = defineComponent({
         <slot name="cell-sequence_no" :row="row" />
         <slot name="cell-station_name" :row="row" />
         <slot name="cell-planned_ap_count" :row="row" />
-        <slot name="cell-ap_start_address" :row="row" />
-        <slot name="cell-subnet_mask" :row="row" />
-        <slot name="cell-ap_gateway" :row="row" />
         <slot name="cell-management_vlan" :row="row" />
         <slot name="cell-remark" :row="row" />
+        <slot name="cell-preview_status" :row="row" />
+        <slot name="cell-preview_message" :row="row" />
         <slot name="cell-actual_online_count" :row="row" />
         <slot name="cell-online_rate" :row="row" />
         <slot name="cell-actions" :row="row" />
@@ -187,18 +186,12 @@ const emptyStatus = (): TracksideApOnlineStatus => ({
 
 function planRow(overrides: Partial<TracksideApPlanRow> = {}): TracksideApPlanRow {
   return {
-    station_id: '',
+    station_id: 'station:1',
     sequence_no: 1,
     station_name: '小洋江站',
     planned_ap_count: 30,
-    ap_start_address: '10.122.221.X',
-    subnet_mask: '24',
-    mask_length: 24,
-    ap_gateway: '10.122.221.254',
     management_vlan: 921,
-    ap_management_vlans: '921',
     remark: '',
-    sort_order: 0,
     ...overrides,
   }
 }
@@ -238,7 +231,14 @@ describe('TracksideApPlanningTab behavior', () => {
 
   it('adds a row and pastes an Excel grid with repeated VLAN values', async () => {
     const wrapper = mount(TracksideApPlanningTab, {
-      props: { locked: false, saving: false },
+      props: {
+        locked: false,
+        saving: false,
+        stations: [
+          { id: 'station:1', name: '小洋江站', sort_order: 1 },
+          { id: 'station:2', name: '云龙火车站站', sort_order: 2 },
+        ],
+      },
       global: { stubs },
     })
     await flushPromises()
@@ -247,8 +247,8 @@ describe('TracksideApPlanningTab behavior', () => {
     await wrapper.find('[data-plan-cell="0-sequence_no"] input').trigger(
       'paste',
       clipboard([
-        '1\t小洋江站\t30\t10.122.221.X\t24\t10.122.221.254\t921\t规划一',
-        '2\t云龙火车站站\t0\t10.122.222.x\t/24\t10.122.222.254\t921\t规划二',
+        '1\t小洋江站\t30\t921\t规划一',
+        '2\t云龙火车站站\t0\t921\t规划二',
       ].join('\n')),
     )
     await flushPromises()
@@ -257,14 +257,13 @@ describe('TracksideApPlanningTab behavior', () => {
     const latest = changes.at(-1)?.[0] as TracksideApPlanRow[]
     expect(latest).toHaveLength(2)
     expect(latest.map((row) => row.management_vlan)).toEqual([921, 921])
-    expect(latest[0].ap_start_address).toBe('10.122.221.X')
     expect(latest[1].planned_ap_count).toBe(0)
     expect(wrapper.text()).not.toContain('项需要修正')
     expect(button(wrapper, '保存').attributes('disabled')).toBeUndefined()
     wrapper.unmount()
   })
 
-  it('shows a cell-level summary for invalid pasted values', async () => {
+  it('shows a cell-level summary for an invalid AP count', async () => {
     api.getTracksideApPlan.mockResolvedValue({
       ...emptyPlan(),
       items: [planRow()],
@@ -276,16 +275,86 @@ describe('TracksideApPlanningTab behavior', () => {
     })
     await flushPromises()
 
-    await wrapper.find('[data-plan-cell="0-ap_start_address"] input').trigger(
+    await wrapper.find('[data-plan-cell="0-planned_ap_count"] input').trigger(
       'paste',
-      clipboard('not-an-address'),
+      clipboard('-1'),
     )
     await flushPromises()
 
     expect(wrapper.text()).toContain('有 1 项需要修正')
     expect(
-      wrapper.find('[data-plan-cell="0-ap_start_address"]').attributes('title'),
-    ).toBe('应为 IPv4 或末段 X 占位符')
+      wrapper.find('[data-plan-cell="0-planned_ap_count"]').attributes('title'),
+    ).toBe('AP数量必须是非负整数')
+    wrapper.unmount()
+  })
+
+  it('keeps invalid import rows visible and applies valid rows only', async () => {
+    api.previewTracksideApPlan.mockResolvedValue({
+      file_name: 'partial.xlsx',
+      file_sha256: 'sha256',
+      duplicate_strategy: 'replace',
+      can_apply: true,
+      total_count: 2,
+      valid_count: 1,
+      duplicate_count: 0,
+      error_count: 1,
+      rows: [
+        {
+          row_number: 3,
+          status: 'valid',
+          key: '小洋江站',
+          message: '',
+          row: planRow({ planned_ap_count: 28 }),
+        },
+        {
+          row_number: 4,
+          status: 'error',
+          key: '',
+          message: '第4行 AP数量：必须是整数',
+          row: {
+            station_id: '',
+            sequence_no: 2,
+            station_name: '不存在站',
+            planned_ap_count: 'invalid',
+            management_vlan: 922,
+            remark: '错误行',
+          },
+        },
+      ],
+      result_rows: [planRow({ planned_ap_count: 28 })],
+      result_plan: null,
+      legacy_schema: false,
+      message: '',
+    })
+    const wrapper = mount(TracksideApPlanningTab, {
+      props: {
+        locked: false,
+        saving: false,
+        stations: [
+          { id: 'station:1', name: '小洋江站', sort_order: 1 },
+        ],
+      },
+      global: { stubs },
+    })
+    await flushPromises()
+
+    const input = wrapper.find('input[type="file"]')
+    Object.defineProperty(input.element, 'files', {
+      configurable: true,
+      value: [new File(['xlsx'], 'partial.xlsx')],
+    })
+    await input.trigger('change')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('不存在站')
+    expect(wrapper.text()).toContain('请选择当前基础资料中的站点')
+    await button(wrapper, '应用有效行').trigger('click')
+    await flushPromises()
+
+    const latest = wrapper.emitted('change')?.at(-1)?.[0] as TracksideApPlanRow[]
+    expect(latest).toHaveLength(1)
+    expect(latest[0].station_name).toBe('小洋江站')
+    expect(latest[0].planned_ap_count).toBe(28)
     wrapper.unmount()
   })
 
@@ -299,7 +368,6 @@ describe('TracksideApPlanningTab behavior', () => {
           sequence_no: 2,
           station_name: '云龙火车站站',
           management_vlan: 922,
-          ap_management_vlans: '922',
         }),
       ],
       total: 2,

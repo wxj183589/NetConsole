@@ -478,6 +478,37 @@ def test_pvid_verification_uses_effective_ap_group():
     assert result["vlan_group_id"] == "g1"
 
 
+def test_pvid_verification_falls_back_to_ap_station_plan():
+    plan = {
+        "ap_networks_by_mac": {},
+        "ap_networks_by_name": {},
+        "station_vlans_by_id": {
+            "station-1": {921},
+            "station-2": {921},
+        },
+        "station_vlans": {},
+    }
+
+    matched = effective_pvid_plan(
+        ap_mac="",
+        ap_name="AP-01",
+        station_id="station-1",
+        pvid=921,
+        active_plan=plan,
+    )
+    mismatched = effective_pvid_plan(
+        ap_mac="",
+        ap_name="AP-02",
+        station_id="station-1",
+        pvid=922,
+        active_plan=plan,
+    )
+
+    assert matched["planned_management_vlan"] == 921
+    assert matched["pvid_plan_status"] == "matched"
+    assert mismatched["pvid_plan_status"] == "mismatched"
+
+
 def test_database_migration_is_idempotent_and_preserves_legacy_values(tmp_path):
     database = Database(tmp_path / "site.db")
     database.initialize()

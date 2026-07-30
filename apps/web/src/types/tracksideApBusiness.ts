@@ -76,9 +76,7 @@ export interface TracksideSwitchSampleRequest {
 
 export interface TracksideApPlanRow {
   station_id: string; sequence_no: number; station_name: string; planned_ap_count: number
-  ap_start_address: string; subnet_mask: string; mask_length: number | null
-  ap_gateway: string; management_vlan: number | null; ap_management_vlans: string
-  remark: string; sort_order: number
+  management_vlan: number | null; remark: string
 }
 
 export interface TracksideApOnlineStatusRow {
@@ -163,7 +161,7 @@ export interface TracksideApPlan extends TracksideApPlanDraft {
 export interface ApManagementVlanPreview { plan: TracksideApPlan; impact: ApManagementVlanImpact }
 export interface TracksideApPlanPreviewRow {
   row_number: number; status: 'valid' | 'duplicate' | 'error'; key: string; message: string
-  row: TracksideApPlanRow | null
+  row: Record<string, unknown> | null
 }
 export interface TracksideApPlanPreview {
   file_name: string; file_sha256: string; duplicate_strategy: 'replace' | 'skip' | 'error'

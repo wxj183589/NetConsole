@@ -123,8 +123,11 @@ from netconsole.services.rail_transit.vehicle_mr_online_query_service import Veh
 from netconsole.services.trackside_ap_plan_io import (
     TRACKSIDE_PLAN_COLUMNS,
     TRACKSIDE_PLAN_COLUMN_WIDTHS,
+    TRACKSIDE_PLAN_FIELD_NOTE_COLUMNS,
+    TRACKSIDE_PLAN_FIELD_NOTES,
     TRACKSIDE_PLAN_HEADERS,
     TRACKSIDE_PLAN_SHEET,
+    bind_trackside_plan_station,
     normalize_trackside_plan_row,
     normalize_trackside_plan_rows,
     read_trackside_plan_file,
@@ -135,7 +138,6 @@ from netconsole.services.rail_transit.ap_management_vlan_planning import (
     build_point_table_rows,
     effective_network,
     enrich_plan,
-    legacy_rows_to_draft,
     plan_impact,
     project_legacy_station_rows,
 )
@@ -947,15 +949,29 @@ class RailTransitWebApplicationService:
             TRACKSIDE_AP_PLAN_MODE
         )
         draft = ApManagementVlanRepository(database).get_draft()
-        if station_rows:
-            draft = legacy_rows_to_draft(station_rows, stations=stations)
-        elif draft["groups"]:
+        if not station_rows and draft["groups"]:
             station_rows = project_legacy_station_rows(
                 enrich_plan(draft, stations=stations, aps=aps)
             )
-            draft = legacy_rows_to_draft(station_rows, stations=stations)
-        view = enrich_plan(draft, stations=stations, aps=aps)
-        return self._trackside_plan_dto(view, source_rows=station_rows)
+        bound_rows: list[Mapping[str, object]] = []
+        for index, row in enumerate(station_rows, start=2):
+            try:
+                bound_rows.append(
+                    bind_trackside_plan_station(
+                        normalize_trackside_plan_row(
+                            dict(row),
+                            row_number=index,
+                        ),
+                        stations,
+                        row_number=index,
+                    )
+                )
+            except ValueError:
+                bound_rows.append(row)
+        return self._trackside_plan_dto(
+            {"planning": draft["planning"]},
+            source_rows=bound_rows,
+        )
 
     def get_trackside_ap_online_status(
         self,
@@ -1174,13 +1190,6 @@ class RailTransitWebApplicationService:
             sequence_no = int(item.get("sequence_no") or 0)
             if sequence_no <= 0:
                 sequence_no = int(item.get("sort_order") or index) + 1
-            subnet_mask = str(
-                item.get("subnet_mask")
-                if item.get("subnet_mask") not in (None, "")
-                else item.get("mask_length")
-                if item.get("mask_length") is not None
-                else ""
-            ).strip()
             raw_vlan = (
                 item.get("management_vlan")
                 if item.get("management_vlan") not in (None, "")
@@ -1195,17 +1204,14 @@ class RailTransitWebApplicationService:
                     station_id=str(item.get("station_id") or "").strip(),
                     sequence_no=sequence_no,
                     station_name=str(item.get("station_name") or "").strip(),
-                    planned_ap_count=int(item.get("ap_count") or 0),
-                    ap_start_address=str(item.get("ap_start_address") or "").strip(),
-                    subnet_mask=subnet_mask,
-                    mask_length=item.get("mask_length"),
-                    ap_gateway=str(item.get("ap_gateway") or "").strip(),
-                    management_vlan=management_vlan,
-                    ap_management_vlans=(
-                        str(management_vlan) if management_vlan is not None else ""
+                    planned_ap_count=int(
+                        item.get("planned_ap_count")
+                        if item.get("planned_ap_count") not in (None, "")
+                        else item.get("ap_count")
+                        or 0
                     ),
+                    management_vlan=management_vlan,
                     remark=str(item.get("remark") or "").strip(),
-                    sort_order=sequence_no - 1,
                 )
             )
         return TracksideApPlanDTO.model_validate(
@@ -1243,19 +1249,36 @@ class RailTransitWebApplicationService:
         legacy_schema = any(
             bool(row.pop("__legacy_schema__", False)) for row in raw_rows
         )
+        stations, _aps = self._trackside_vlan_context(site_id)
+        current_plan = self.get_trackside_ap_plan(site_id)
         existing = {
-            row.station_name.casefold(): row
-            for row in self.get_trackside_ap_plan(site_id).items
+            self._trackside_plan_station_key(row.model_dump()): row
+            for row in current_plan.items
         }
         imported: set[str] = set()
         preview_rows: list[TracksideApPlanPreviewRowDTO] = []
         duplicate_count = 0
         error_count = 0
         valid_count = 0
-        for row_number, raw in enumerate(raw_rows, start=2):
+        applied_count = 0
+        for fallback_row_number, raw in enumerate(raw_rows, start=2):
+            row_number = int(
+                raw.pop("__source_row_number__", fallback_row_number)
+                or fallback_row_number
+            )
+            preview_value = self._trackside_plan_preview_value(raw)
             try:
+                normalized = normalize_trackside_plan_row(
+                    dict(raw),
+                    row_number=row_number,
+                )
+                bound = bind_trackside_plan_station(
+                    normalized,
+                    stations,
+                    row_number=row_number,
+                )
                 row = TracksideApPlanRowDTO.model_validate(
-                    normalize_trackside_plan_row(dict(raw), row_number=row_number)
+                    self._trackside_plan_preview_value(bound)
                 )
             except (TypeError, ValueError) as exc:
                 error_count += 1
@@ -1264,10 +1287,11 @@ class RailTransitWebApplicationService:
                         row_number=row_number,
                         status="error",
                         message=str(exc),
+                        row=preview_value,
                     )
                 )
                 continue
-            key = row.station_name.casefold()
+            key = self._trackside_plan_station_key(row.model_dump())
             duplicate = key in existing or key in imported
             if duplicate:
                 duplicate_count += 1
@@ -1281,14 +1305,16 @@ class RailTransitWebApplicationService:
                             "skip": "重复车站将保留现有值",
                             "error": "重复车站阻止确认导入",
                         }[strategy],
-                        row=row,
+                        row=row.model_dump(),
                     )
                 )
                 if strategy == "replace":
                     existing[key] = row
+                    applied_count += 1
                 imported.add(key)
                 continue
             valid_count += 1
+            applied_count += 1
             imported.add(key)
             existing[key] = row
             preview_rows.append(
@@ -1296,15 +1322,17 @@ class RailTransitWebApplicationService:
                     row_number=row_number,
                     status="valid",
                     key=row.station_name,
-                    row=row,
+                    row=row.model_dump(),
                 )
             )
-        can_apply = error_count == 0 and (strategy != "error" or duplicate_count == 0)
+        can_apply = applied_count > 0
         result_rows = list(existing.values()) if can_apply else []
         if can_apply:
             try:
                 result_rows = [
-                    TracksideApPlanRowDTO.model_validate(row)
+                    TracksideApPlanRowDTO.model_validate(
+                        self._trackside_plan_preview_value(row)
+                    )
                     for row in normalize_trackside_plan_rows(
                         [row.model_dump() for row in result_rows]
                     )
@@ -1333,14 +1361,8 @@ class RailTransitWebApplicationService:
             result_rows=result_rows,
             result_plan=(
                 self._trackside_plan_dto(
-                    enrich_plan(
-                        legacy_rows_to_draft(
-                            [row.model_dump() for row in result_rows],
-                            stations=self._trackside_vlan_context(site_id)[0],
-                        ),
-                        stations=self._trackside_vlan_context(site_id)[0],
-                        aps=self._trackside_vlan_context(site_id)[1],
-                    )
+                    {"planning": current_plan.planning.model_dump()},
+                    source_rows=[row.model_dump() for row in result_rows],
                 )
                 if can_apply
                 else None
@@ -1352,6 +1374,34 @@ class RailTransitWebApplicationService:
                 else ""
             ),
         )
+
+    @staticmethod
+    def _trackside_plan_station_key(row: Mapping[str, object]) -> str:
+        station_id = str(row.get("station_id") or "").strip()
+        if station_id:
+            return f"id:{station_id.casefold()}"
+        return f"name:{str(row.get('station_name') or '').strip().casefold()}"
+
+    @staticmethod
+    def _trackside_plan_preview_value(
+        row: Mapping[str, object],
+    ) -> dict[str, object]:
+        return {
+            "station_id": str(row.get("station_id") or "").strip(),
+            "sequence_no": row.get("sequence_no"),
+            "station_name": row.get("station_name"),
+            "planned_ap_count": (
+                row.get("planned_ap_count")
+                if row.get("planned_ap_count") not in (None, "")
+                else row.get("ap_count")
+            ),
+            "management_vlan": (
+                row.get("management_vlan")
+                if row.get("management_vlan") not in (None, "")
+                else row.get("ap_management_vlans")
+            ),
+            "remark": row.get("remark"),
+        }
 
     def _preview_grouped_trackside_ap_plan(
         self,
@@ -1571,7 +1621,9 @@ class RailTransitWebApplicationService:
                     row_number=row_number,
                     status="valid",
                     key=f"{code}/{station_name}",
-                    row=TracksideApPlanRowDTO.model_validate(station_row),
+                    row=TracksideApPlanRowDTO.model_validate(
+                        self._trackside_plan_preview_value(station_row)
+                    ).model_dump(),
                 )
             )
         proposed = {
@@ -1601,7 +1653,9 @@ class RailTransitWebApplicationService:
         result_plan = self._trackside_plan_dto(view) if view is not None else None
         result_rows = (
             [
-                TracksideApPlanRowDTO.model_validate(row)
+                TracksideApPlanRowDTO.model_validate(
+                    self._trackside_plan_preview_value(row)
+                )
                 for row in project_legacy_station_rows(view)
             ]
             if can_apply and view is not None
@@ -1637,12 +1691,20 @@ class RailTransitWebApplicationService:
             raise RailTransitWebError(
                 "CONFIRMATION_REQUIRED", "保存轨旁 AP 规划前必须明确确认"
             )
+        stations, _aps = self._trackside_vlan_context(site_id)
         if draft is None:
-            normalized_rows = normalize_trackside_plan_rows(rows)
+            raw_rows = rows
         else:
-            normalized_rows = normalize_trackside_plan_rows(
-                project_legacy_station_rows(draft)
+            raw_rows = project_legacy_station_rows(draft)
+        bound_rows = [
+            bind_trackside_plan_station(
+                normalize_trackside_plan_row(row, row_number=index),
+                stations,
+                row_number=index,
             )
+            for index, row in enumerate(raw_rows, start=2)
+        ]
+        normalized_rows = normalize_trackside_plan_rows(bound_rows)
         current_revision = int(self.get_trackside_ap_plan(site_id).planning.revision)
         return self._start_task(
             site_id,
@@ -1725,7 +1787,21 @@ class RailTransitWebApplicationService:
                 "source": plan_source,
             }
         ]
-        if not template:
+        if template:
+            sheets.append(
+                {
+                    "sheet_name": "字段说明",
+                    "columns": [
+                        dict(column)
+                        for column in TRACKSIDE_PLAN_FIELD_NOTE_COLUMNS
+                    ],
+                    "rows": [
+                        dict(row) for row in TRACKSIDE_PLAN_FIELD_NOTES
+                    ],
+                    "auto_filter": False,
+                }
+            )
+        else:
             status = self.get_trackside_ap_online_status(site_id)
             status_rows = [
                 {
@@ -1811,7 +1887,7 @@ class RailTransitWebApplicationService:
                     "source_module": "ac.trackside_ap_plan",
                     "contract_metadata": {
                         "template_type": "trackside_ap_station_plan",
-                        "schema_version": 2,
+                        "schema_version": 3,
                         "generated_at": generated_at.isoformat(timespec="seconds"),
                         "project_id": site_id,
                         "line_id": "current",

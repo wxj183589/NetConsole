@@ -365,6 +365,8 @@ def effective_pvid_plan(
     *,
     ap_mac: object,
     ap_name: object,
+    station_id: object = "",
+    station_name: object = "",
     pvid: object,
     active_plan: dict | None,
 ) -> dict[str, object]:
@@ -375,12 +377,31 @@ def effective_pvid_plan(
     if network is None:
         name = _normalize_name(ap_name)
         network = (active_plan.get("ap_networks_by_name") or {}).get(name)
+    if network is None:
+        station_key = str(station_id or "").strip()
+        station_vlans = (
+            (active_plan.get("station_vlans_by_id") or {}).get(station_key)
+            if station_key
+            else None
+        )
+        if station_vlans is None:
+            station_label = str(station_name or "").strip()
+            station_vlans = (
+                (active_plan.get("station_vlans") or {}).get(station_label)
+                if station_label
+                else None
+            )
+        vlan_values = sorted(
+            int(value) for value in (station_vlans or set())
+        )
+        if len(vlan_values) == 1:
+            network = {"management_vlan": vlan_values[0]}
     if not isinstance(network, dict):
         return {"pvid_plan_status": "unresolved"}
     try:
         actual = int(str(pvid or "").strip())
         planned = int(network.get("management_vlan") or 0)
-    except ValueError:
+    except (TypeError, ValueError):
         return {**network, "pvid_plan_status": "unresolved"}
     return {
         **network,
@@ -723,6 +744,7 @@ def build_trackside_ap_business_rows(
                 else:
                     lldp_match_status = "NO_NEIGHBOR"
             row = {
+                    "station_id": str(fit_ap.get("station_id") or "").strip(),
                     "site": device.station or normalize_station_value(fit_ap) or "",
                     "ac_device_uuid": fit_ap.get("ac_device_uuid"),
                     "ap_uuid": fit_ap.get("ap_uuid") or (historical_lldp or {}).get("ap_uuid"),
@@ -779,6 +801,8 @@ def build_trackside_ap_business_rows(
                     **effective_pvid_plan(
                         ap_mac=ap_candidate["ap_mac"],
                         ap_name=ap_candidate["ap_name"],
+                        station_id=fit_ap.get("station_id"),
+                        station_name=normalize_station_value(fit_ap),
                         pvid=interface.get("pvid"),
                         active_plan=trackside_ap_plan,
                     ),

@@ -21,16 +21,15 @@ describe('trackside AP planning base-data tab', () => {
       '导出当前',
       '下载模板',
       '刷新上线状态',
-      '查看 AP 参考信息',
       '查看异常 AP 资料',
       "label: '序号'",
       "label: '车站名称'",
+      "label: 'AP数量'",
       "label: '规划AP总数量'",
-      "label: 'AP起始地址'",
-      "label: '掩码'",
-      "label: 'AP网关'",
       "label: 'AP管理VLAN'",
       "label: '备注'",
+      "label: 'Excel行'",
+      "label: '问题'",
       "label: '实际上线'",
       "label: '未上线'",
       "label: '上线率'",
@@ -61,27 +60,30 @@ describe('trackside AP planning base-data tab', () => {
       "key: 'actual_ap_count'",
       "key: 'online_count'",
       "label: 'AP总数量'",
-      "label: 'AP数量'",
+      "label: 'AP起始地址'",
+      "label: '掩码'",
+      "label: 'AP网关'",
       '规划影响预览',
       '修改管理 VLAN 影响预览',
       '应用预览结果',
+      'allow-create',
     ]) expect(source).not.toContain(removed)
 
     expect(source).toContain("emit('change'")
     expect(source).toContain("emit('save')")
     expect(source).toContain('if (!file || props.saving) return')
     expect(source).toContain("input.value = ''")
-    expect(source).toContain(':disabled="!importPreview?.can_apply || !canWrite"')
+    expect(source).toContain(':disabled="!canApplyImport || !canWrite"')
     expect(source).toContain('tracksideApPlanDownloadRequest')
     expect(source).toContain('downloadBackendResource')
     expect(source).toContain('轨旁AP逐站规划模板.xlsx')
     expect(source).toContain('_轨旁AP规划及上线概览_')
     expect(source).toContain('deepCopy(rows.value)')
     expect(source).toContain('pasteGrid($event')
-    expect(source).toContain('validStartAddress')
+    expect(source).toContain('错误行会保留在预览中')
     expect(source).toContain('displayRate(onlineStatus.online_rate)')
     expect(source).toContain('overflow-x: auto')
-    expect(source).toContain('min-width: 1120px')
+    expect(source).not.toContain('min-width: 1120px')
     expect(source).toContain('width: 100%')
     expect(source).toContain('route-key="/rail-transit/base-data"')
     expect(source).not.toContain('saveTracksideApPlan')
