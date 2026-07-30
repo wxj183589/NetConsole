@@ -669,11 +669,13 @@ class GroundQueryDiagnosticsDTO(ApiModel):
     data_availability: GroundDataAvailability = "MISSING"
     files_considered: int = 0
     files_scanned: int = 0
+    registered_record_count: int = 0
     records_scanned: int = 0
     bytes_scanned: int = 0
     malformed_record_count: int = 0
     duplicate_record_count: int = 0
     truncated: bool = False
+    optimized_latest_page: bool = False
     legacy_archive: bool = False
     no_data_reason: str = ""
 
@@ -755,6 +757,7 @@ class GroundSyslogRecordDTO(ApiModel):
 class GroundSyslogRecordPageDTO(ApiModel):
     items: list[GroundSyslogRecordDTO] = Field(default_factory=list)
     total: int = 0
+    total_exact: bool = True
     page: int = 1
     page_size: int = 100
     diagnostics: GroundQueryDiagnosticsDTO = Field(

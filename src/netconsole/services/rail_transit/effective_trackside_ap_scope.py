@@ -17,7 +17,16 @@ from netconsole.services.rail_transit.station_source_utils import canonical_stat
 
 _BASE_STATION = "__base_station__"
 _BASE_SECTION = "__base_section__"
-_IN_SERVICE_STATES = {"", "active", "enabled", "in_service", "normal", "在用"}
+_IN_SERVICE_STATES = {
+    "",
+    "active",
+    "enabled",
+    "included",
+    "in_service",
+    "normal",
+    "参与当前调试",
+    "在用",
+}
 _EXCLUDED_SCOPE_STATES = {
     "excluded",
     "not_included",
@@ -143,7 +152,7 @@ class EffectiveTracksideApScope:
         parts = ["当前项目"]
         if self.context.project_phase:
             parts.append(self.context.project_phase)
-        parts.append("在用轨旁 AP")
+        parts.append("当前工作范围轨旁 AP")
         return " · ".join(parts)
 
     def match_reference(
@@ -361,7 +370,11 @@ def resolve_effective_trackside_ap_scope(
         reference_id = _reference_id(values.get("id"))
         station_name = str(values.get("station_name") or "").strip()
         operation_status = str(
-            metadata.get("operation_status") or values.get("operation_status") or ""
+            metadata.get("work_scope_status")
+            or metadata.get("operation_status")
+            or values.get("work_scope_status")
+            or values.get("operation_status")
+            or ""
         ).strip()
         project_phase = str(
             metadata.get("construction_phase_id")
@@ -654,7 +667,7 @@ def _reference_exclusion_reason(
     ):
         return "不属于当前线路。"
     if _scope_token(operation_status) not in _IN_SERVICE_STATES:
-        return "投运状态不是在用。"
+        return "当前工作状态不是参与当前调试。"
     for key in ("enabled", "include_in_statistics", "participates_in_statistics"):
         if _is_false(metadata.get(key)):
             return "已明确设置为不参与当前统计。"

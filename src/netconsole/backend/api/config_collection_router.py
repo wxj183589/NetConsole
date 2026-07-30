@@ -43,9 +43,9 @@ def list_devices(
     request: Request,
     search: str = Query(default="", max_length=200),
     group_filter: str = Query(default="", max_length=40),
-    operation_status: str = Query(
-        default="in_service",
-        pattern="^(all|in_service|not_integrated|commissioning|suspended|retired)$",
+    work_scope_status: str = Query(
+        default="included",
+        pattern="^(all|included|excluded)$",
     ),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
@@ -55,7 +55,7 @@ def list_devices(
             _site_id(request),
             search=search,
             group_filter=group_filter,
-            operation_status=operation_status,
+            work_scope_status=work_scope_status,
             page=page,
             page_size=page_size,
         )

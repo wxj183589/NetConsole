@@ -81,7 +81,7 @@ const businessColumns: NcTableColumn<TracksideApBusinessRow>[] = [
 const excludedColumns: NcTableColumn<TracksideApScopeExcluded>[] = [
   { key: 'device_name', label: '设备名称', valueType: 'name', minWidth: 170 },
   { key: 'station_name', label: '归属站点', valueType: 'name', minWidth: 150 },
-  { key: 'operation_status', label: '投运状态', valueType: 'status', width: 120 },
+  { key: 'operation_status', label: '当前工作状态', valueType: 'status', width: 130 },
   { key: 'project_phase', label: '建设批次', valueType: 'status', width: 120 },
   { key: 'reason', label: '排除原因', valueType: 'description', minWidth: 280, align: 'left', alignmentReason: 'long-text' },
 ]
@@ -343,7 +343,7 @@ onBeforeUnmount(() => { stopPolling(); clearTaskNotice() })
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="true" @close="error = ''"><el-button link @click="recoverTasks">恢复任务</el-button></el-alert>
     <el-alert v-if="taskNotice" :title="taskNotice" :type="taskNoticeType" show-icon :closable="taskNoticeType === 'error'" @close="clearTaskNotice" />
     <div v-if="page" class="scope-summary">
-      <strong>统计范围：{{ page.scope_description || '当前项目 · 在用轨旁 AP' }}</strong>
+      <strong>统计范围：{{ page.scope_description || '当前项目 · 当前工作范围轨旁 AP' }}</strong>
       <span>纳入站点 {{ page.scope_station_count || 0 }}</span>
       <span>纳入设备 {{ page.scope_device_count || 0 }}</span>
       <span>排除设备 {{ page.excluded_device_count || 0 }}</span>
@@ -375,7 +375,7 @@ onBeforeUnmount(() => { stopPolling(); clearTaskNotice() })
         <el-checkbox v-model="filters.optical_anomaly_only">仅光衰异常</el-checkbox>
         <el-button type="primary" :loading="refreshing" :disabled="initialLoading" @click="loadRows(true)">查询</el-button>
         <span v-if="refreshing" class="refresh-indicator">正在刷新，当前数据保持显示</span>
-        <span class="suspended-filter-hint">已按当前项目、在用状态和有效 AP 身份过滤</span>
+        <span class="work-scope-filter-hint">已按当前项目、建设阶段、当前工作状态和有效 AP 身份过滤</span>
       </div>
       <div class="business-table-host">
         <NcDataTable
@@ -414,5 +414,5 @@ onBeforeUnmount(() => { stopPolling(); clearTaskNotice() })
 </template>
 
 <style scoped>
-.trackside-page{display:flex;height:100%;min-height:0;min-width:0;flex-direction:column;gap:16px}.page-heading,.actions,.toolbar,.pagination,.scope-summary{display:flex;align-items:center;gap:12px}.page-heading,.pagination{flex:none;justify-content:space-between}.page-heading h1{margin:2px 0 6px}.page-heading p{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:0}.actions,.toolbar,.scope-summary{flex-wrap:wrap}.scope-summary{color:var(--el-text-color-secondary)}.scope-summary strong{color:var(--el-text-color-primary)}.summary-grid{display:grid;flex:none;grid-template-columns:repeat(5,minmax(130px,1fr));gap:10px}.summary-grid article,.content-card{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:8px}.summary-grid article{padding:13px}.summary-grid span{color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;margin-top:6px;font-size:22px}.content-card{display:flex;min-height:0;min-width:0;flex:1;flex-direction:column;padding:14px 16px;overflow:hidden}.business-table-host{min-height:0;min-width:0;flex:1}.toolbar{flex:none;margin-bottom:12px}.toolbar .el-input{width:230px}.station-select{width:260px}.refresh-indicator{color:var(--el-color-primary);font-size:13px}.suspended-filter-hint{color:var(--el-text-color-secondary);font-size:12px}.pagination{padding-top:12px}.optical-normal{color:var(--el-color-success)}.optical-notice,.optical-warning{color:var(--el-color-warning)}.optical-alarm,.optical-link-abnormal,.optical-link-down,.optical-no-light,.optical-offline{color:var(--el-color-danger);font-weight:600}.optical-no-module,.optical-missing,.optical-skipped,.optical-not-collected,.optical-unknown{color:var(--el-text-color-secondary)}@media(max-width:1000px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}}
+.trackside-page{display:flex;height:100%;min-height:0;min-width:0;flex-direction:column;gap:16px}.page-heading,.actions,.toolbar,.pagination,.scope-summary{display:flex;align-items:center;gap:12px}.page-heading,.pagination{flex:none;justify-content:space-between}.page-heading h1{margin:2px 0 6px}.page-heading p{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:0}.actions,.toolbar,.scope-summary{flex-wrap:wrap}.scope-summary{color:var(--el-text-color-secondary)}.scope-summary strong{color:var(--el-text-color-primary)}.summary-grid{display:grid;flex:none;grid-template-columns:repeat(5,minmax(130px,1fr));gap:10px}.summary-grid article,.content-card{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:8px}.summary-grid article{padding:13px}.summary-grid span{color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;margin-top:6px;font-size:22px}.content-card{display:flex;min-height:0;min-width:0;flex:1;flex-direction:column;padding:14px 16px;overflow:hidden}.business-table-host{min-height:0;min-width:0;flex:1}.toolbar{flex:none;margin-bottom:12px}.toolbar .el-input{width:230px}.station-select{width:260px}.refresh-indicator{color:var(--el-color-primary);font-size:13px}.work-scope-filter-hint{color:var(--el-text-color-secondary);font-size:12px}.pagination{padding-top:12px}.optical-normal{color:var(--el-color-success)}.optical-notice,.optical-warning{color:var(--el-color-warning)}.optical-alarm,.optical-link-abnormal,.optical-link-down,.optical-no-light,.optical-offline{color:var(--el-color-danger);font-weight:600}.optical-no-module,.optical-missing,.optical-skipped,.optical-not-collected,.optical-unknown{color:var(--el-text-color-secondary)}@media(max-width:1000px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}}
 </style>

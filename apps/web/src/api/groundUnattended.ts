@@ -1,4 +1,4 @@
-import { apiRequest } from './client'
+import { ApiRequestError, apiRequest, getHealth } from './client'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 import type {
   GroundActionResponse, GroundArchive, GroundArchiveDetail, GroundDeepCollection, GroundPage, GroundPingTarget,
@@ -8,6 +8,40 @@ import type {
 } from '../types/groundUnattended'
 
 const root = '/api/rail-transit/ground-unattended'
+
+export interface GroundSyslogTransportState {
+  code: string
+  requestId: string
+  backendState: 'ONLINE' | 'OFFLINE' | 'UNKNOWN'
+}
+
+export async function probeGroundSyslogTransportState(reason: unknown): Promise<GroundSyslogTransportState> {
+  const requestId = reason instanceof ApiRequestError
+    ? String(reason.details.request_id || '')
+    : ''
+  let code = reason instanceof ApiRequestError ? reason.code : 'UNKNOWN_ERROR'
+  let backendState: GroundSyslogTransportState['backendState'] = 'UNKNOWN'
+  if (
+    reason instanceof ApiRequestError
+    && [
+      'BACKEND_CONNECTION_INTERRUPTED',
+      'CONNECTION_RESET',
+      'RAW_QUERY_TIMEOUT',
+      'BACKEND_RESTARTED',
+    ].includes(reason.code)
+  ) {
+    try {
+      await getHealth()
+      backendState = 'ONLINE'
+    } catch {
+      backendState = 'OFFLINE'
+      code = 'BACKEND_UNREACHABLE'
+    }
+  } else if (reason instanceof ApiRequestError && reason.status > 0) {
+    backendState = 'ONLINE'
+  }
+  return { code, requestId, backendState }
+}
 
 export const getGroundStatus = (options: RequestInit = {}): Promise<GroundStatus> => apiRequest(`${root}/status`, options)
 export const getGroundProfile = (options: RequestInit = {}): Promise<GroundProfile> => apiRequest(`${root}/profile`, options)

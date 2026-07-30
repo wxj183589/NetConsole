@@ -74,8 +74,8 @@ from netconsole.models.api.device_management import (
     DeviceFactDTO,
     DeviceGroupOptionDTO,
     DeviceListItemDTO,
-    DeviceLifecycleUpdateDTO,
-    DeviceLifecycleUpdateRequestDTO,
+    DeviceClassificationUpdateDTO,
+    DeviceClassificationUpdateRequestDTO,
     DevicePageDTO,
     DeviceTaskSummaryDTO,
 )
@@ -86,7 +86,6 @@ from netconsole.models.api.device_detail import (
 )
 from netconsole.models.device import (
     Device,
-    is_device_available_for_manual_debug,
     validate_device_vendor_type,
 )
 from netconsole.models.device_detail import DeviceOperationTask
@@ -376,7 +375,7 @@ class DeviceManagementWebService:
         vendor: str = "",
         connection_status: str = "",
         project_phase: str = "all",
-        operation_status: str = "in_service",
+        work_scope_status: str = "included",
         page: int = 1,
         page_size: int = 50,
         sort_by: str = "name",
@@ -403,7 +402,7 @@ class DeviceManagementWebService:
             device_type=device_type.strip() or None,
             group_filter="__ungrouped__" if ungrouped else group_id,
             project_phase=project_phase,
-            operation_status=operation_status,
+            work_scope_status=work_scope_status,
         )
         items = [
             self._list_item(
@@ -799,18 +798,18 @@ class DeviceManagementWebService:
             success=result.success, failed=result.failed, group_id=payload.group_id
         )
 
-    def update_lifecycle(
-        self, payload: DeviceLifecycleUpdateRequestDTO
-    ) -> DeviceLifecycleUpdateDTO:
+    def update_classification(
+        self, payload: DeviceClassificationUpdateRequestDTO
+    ) -> DeviceClassificationUpdateDTO:
         devices, _groups, _facts = self._repositories(self.current_site_id())
-        updated = devices.update_lifecycle_many(
+        updated = devices.update_classification_many(
             self._unique_ids(payload.device_uuids),
             project_phase=payload.project_phase,
-            operation_status=payload.operation_status,
+            work_scope_status=payload.work_scope_status,
             reason=payload.reason,
             updated_by="local_user",
         )
-        return DeviceLifecycleUpdateDTO(updated=updated)
+        return DeviceClassificationUpdateDTO(updated=updated)
 
     def start_batch_refresh(
         self, payload: DeviceBatchRefreshRequestDTO
@@ -1511,8 +1510,6 @@ class DeviceManagementWebService:
     def _external_terminal_launch(
         self, device: Device, terminal_type: str
     ) -> RegisteredLaunch:
-        if not is_device_available_for_manual_debug(device):
-            raise ValueError("设备已退役；如需连接，请先将投运状态改为调试中或在用")
         self._require_desktop_runtime()
         configs = {
             config.terminal_type: config
@@ -1859,8 +1856,8 @@ class DeviceManagementWebService:
         if existing is not None:
             for field in (
                 "project_phase",
-                "operation_status",
-                "operation_status_reason",
+                "work_scope_status",
+                "work_scope_reason",
             ):
                 if field not in payload.model_fields_set:
                     values.pop(field, None)
@@ -1894,8 +1891,8 @@ class DeviceManagementWebService:
             "device_vendor",
             "device_type",
             "project_phase",
-            "operation_status",
-            "operation_status_reason",
+            "work_scope_status",
+            "work_scope_reason",
             "primary_address",
             "backup_address",
             "remark",
@@ -1940,16 +1937,16 @@ class DeviceManagementWebService:
         values["tunnel2_enabled"] = tunnel2_enabled
         values["tunnel_enabled"] = tunnel1_enabled or tunnel2_enabled
         record = existing.to_record() if existing is not None else {}
-        previous_status = str(record.get("operation_status") or "")
+        previous_status = str(record.get("work_scope_status") or "")
         record.update(values)
         if (
-            "operation_status" in values
-            and values["operation_status"] != previous_status
+            "work_scope_status" in values
+            and values["work_scope_status"] != previous_status
         ):
-            record["operation_status_updated_at"] = datetime.now().isoformat(
+            record["work_scope_updated_at"] = datetime.now().isoformat(
                 timespec="seconds"
             )
-            record["operation_status_updated_by"] = "local_user"
+            record["work_scope_updated_by"] = "local_user"
         if record["ssh_enabled"]:
             if "ssh_password" not in clear_secret_fields:
                 record["ssh_username"] = (
@@ -2639,7 +2636,7 @@ class DeviceManagementWebService:
             "device_type": payload.device_type.strip() or None,
             "group_filter": payload.group_filter,
             "project_phase": payload.project_phase,
-            "operation_status": payload.operation_status,
+            "work_scope_status": payload.work_scope_status,
         }
 
     def _require_web_task(
@@ -3207,8 +3204,6 @@ class DeviceManagementWebService:
         site = self.current_site_id()
         device_repository, _, _ = self._repositories(site)
         device = self._require_device(device_repository, device_uuid)
-        if not is_device_available_for_manual_debug(device):
-            raise ValueError("设备已退役；如需测试连接，请先将投运状态改为调试中或在用")
         selected_protocol = protocol.strip().upper()
         self._validate_protocol_enabled(device, selected_protocol)
         self._validate_connection_preflight(device, selected_protocol)
@@ -3361,16 +3356,16 @@ class DeviceManagementWebService:
             context["missing_columns"] = sorted(
                 {
                     "project_phase",
-                    "operation_status",
-                    "operation_status_reason",
-                    "operation_status_updated_at",
-                    "operation_status_updated_by",
+                    "work_scope_status",
+                    "work_scope_reason",
+                    "work_scope_updated_at",
+                    "work_scope_updated_by",
                 }
                 - columns
             )
             context["missing_indexes"] = sorted(
                 {
-                    "idx_devices_operation_status",
+                    "idx_devices_work_scope_status",
                     "idx_devices_project_phase",
                 }
                 - indexes
@@ -3509,10 +3504,10 @@ class DeviceManagementWebService:
             device_vendor=str(device.device_vendor or ""),
             device_type=str(device.device_type or ""),
             project_phase=str(device.project_phase or "unspecified"),
-            operation_status=str(device.operation_status or "in_service"),
-            operation_status_reason=str(device.operation_status_reason or ""),
-            operation_status_updated_at=str(
-                device.operation_status_updated_at or ""
+            work_scope_status=str(device.work_scope_status or "included"),
+            work_scope_reason=str(device.work_scope_reason or ""),
+            work_scope_updated_at=str(
+                device.work_scope_updated_at or ""
             ),
             primary_address=str(device.primary_address or ""),
             backup_address=str(device.backup_address or ""),

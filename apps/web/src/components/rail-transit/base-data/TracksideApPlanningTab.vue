@@ -136,7 +136,7 @@ const unassignedColumns: NcTableColumn<TracksideApUnassigned>[] = [
 const excludedColumns: NcTableColumn<TracksideApScopeExcluded>[] = [
   { key: 'device_name', label: '设备名称', valueType: 'name', minWidth: 170 },
   { key: 'station_name', label: '归属站点', valueType: 'name', minWidth: 150 },
-  { key: 'operation_status', label: '投运状态', valueType: 'status', width: 120 },
+  { key: 'operation_status', label: '当前工作状态', valueType: 'status', width: 130 },
   { key: 'project_phase', label: '建设批次', valueType: 'status', width: 120 },
   { key: 'reason', label: '排除原因', valueType: 'description', minWidth: 280, align: 'left', alignmentReason: 'long-text' },
 ]
@@ -807,7 +807,7 @@ onBeforeUnmount(stopPolling)
           <span class="status-definition">规划 AP 总数量由用户维护；实际上线数量来自最新 AC/FIT-AP 状态。</span>
         </div>
         <div v-if="onlineStatus" class="scope-summary">
-          <strong>统计范围：{{ onlineStatus.scope_description || '当前项目 · 在用轨旁 AP' }}</strong>
+          <strong>统计范围：{{ onlineStatus.scope_description || '当前项目 · 当前工作范围轨旁 AP' }}</strong>
           <span>纳入站点 {{ onlineStatus.scope_station_count || 0 }}</span>
           <span>纳入设备 {{ onlineStatus.scope_device_count || 0 }}</span>
           <span>排除设备 {{ onlineStatus.excluded_device_count || 0 }}</span>

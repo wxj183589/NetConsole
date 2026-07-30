@@ -166,13 +166,63 @@ def test_application_service_caches_ap_display_sources(tmp_path) -> None:
     )
 
     first = service._ap_display_resolver()
+    thread = service._ap_display_refresh_thread
+    assert thread is not None
+    thread.join(timeout=2)
     second = service._ap_display_resolver()
 
-    assert first is second
+    assert first is not second
     assert calls == {"base": 1, "ac": 1}
     service._ap_display_cache_loaded_at -= 31
     service._ap_display_resolver()
+    thread = service._ap_display_refresh_thread
+    assert thread is not None
+    thread.join(timeout=2)
     assert calls == {"base": 2, "ac": 2}
+
+
+def test_application_service_keeps_old_ap_cache_when_background_refresh_fails(
+    tmp_path,
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    repository = GroundUnattendedRepository(
+        paths.ground_unattended_db_path("site-a"), site_id="site-a"
+    )
+    fail = False
+
+    def list_ac(_site_id: str) -> list[SimpleNamespace]:
+        if fail:
+            raise RuntimeError("AC detail unavailable")
+        return [_ac_detail("ap-1", "0011-2233-4450")]
+
+    service = GroundUnattendedApplicationService(
+        paths,
+        site_id="site-a",
+        repository=repository,
+        supervisor=SimpleNamespace(),
+        base_query=SimpleNamespace(
+            list_ap_location_items=lambda _site_id: [],
+            ac_query=SimpleNamespace(list_all_ap_details=list_ac),
+        ),
+    )
+    service._ap_display_resolver()
+    thread = service._ap_display_refresh_thread
+    assert thread is not None
+    thread.join(timeout=2)
+    cached = service._ap_display_resolver()
+    assert cached.resolve(mac="0011-2233-4450")["peer_ap_id"] == "ap-1"
+
+    fail = True
+    service._ap_display_cache_loaded_at -= 31
+    stale = service._ap_display_resolver()
+    thread = service._ap_display_refresh_thread
+    assert thread is not None
+    thread.join(timeout=2)
+
+    assert stale.resolve(mac="0011-2233-4450")["peer_ap_id"] == "ap-1"
+    assert service._ap_display_resolver().resolve(
+        mac="0011-2233-4450"
+    )["peer_ap_id"] == "ap-1"
 
 
 def test_timeline_enriches_link_events_and_no_active_link_switch(tmp_path) -> None:

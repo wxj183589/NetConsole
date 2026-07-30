@@ -86,6 +86,10 @@ const listItem = {
   group_name: '车载 MR',
   device_vendor: 'H3C',
   device_type: 'AC',
+  project_phase: 'phase_2',
+  work_scope_status: 'included',
+  work_scope_reason: '当前二期调试范围',
+  work_scope_updated_at: '2026-07-30T00:00:00+00:00',
   primary_address: '192.0.2.12',
   backup_address: '',
   updated_at: '2026-07-17T00:00:00+00:00',
@@ -417,6 +421,23 @@ afterEach(() => {
 })
 
 describe('DeviceManagementView mounted interactions', () => {
+  it('renders current work scope wording without lifecycle labels', async () => {
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="select-first-device"]').trigger('click')
+    const button = wrapper.findAll('button').find(
+      (item) => item.text() === '设置当前工作状态' && item.attributes('disabled') === undefined,
+    )
+    expect(button).toBeTruthy()
+    await button!.trigger('click')
+
+    expect(wrapper.text()).toContain('当前工作状态')
+    expect(wrapper.find('[label="参与当前调试"]').exists()).toBe(true)
+    expect(wrapper.find('[label="暂不参与"]').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('投运状态')
+    expect(wrapper.text()).not.toContain('暂停使用')
+    wrapper.unmount()
+  })
+
   it('shows the structured database message without rendering an empty result', async () => {
     mocks.listDevices.mockRejectedValueOnce(
       new Error('设备数据库升级未完成，请重启后端或查看数据库迁移日志。'),
@@ -445,7 +466,7 @@ describe('DeviceManagementView mounted interactions', () => {
     expect(items.map((item) => item.label)).toEqual([
       '详情',
       '设置建设阶段',
-      '设置投运状态',
+      '设置当前工作状态',
       '编辑',
       '复制设备',
       '复制当前单元格',

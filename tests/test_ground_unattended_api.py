@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from netconsole.backend.api import main as api_main
+from netconsole.backend.api import ground_unattended_router
 from netconsole.backend.api.main import create_app
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.ground_unattended import GroundUnattendedProfileDTO
@@ -191,6 +192,52 @@ def test_ground_unattended_empty_pages_are_stable(tmp_path) -> None:
         )
         assert operation.status_code == 200
         assert operation.json() is None
+
+
+def test_syslog_unexpected_failure_returns_request_id_and_keeps_backend_alive(
+    tmp_path, monkeypatch
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    events: list[tuple[str, str]] = []
+
+    def fail_query(*_args, **_kwargs):
+        raise RuntimeError("serialization failed")
+
+    monkeypatch.setattr(
+        app.state.ground_unattended_application_service,
+        "syslog_records",
+        fail_query,
+    )
+    monkeypatch.setattr(
+        ground_unattended_router.app_logger,
+        "log_info",
+        lambda event, detail="": events.append((event, detail)),
+    )
+    monkeypatch.setattr(
+        ground_unattended_router.app_logger,
+        "log_error",
+        lambda event, detail="": events.append((event, detail)),
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/rail-transit/ground-unattended/syslog-records",
+            params={"run_id": "run-failure", "page": 1, "page_size": 100},
+        )
+        health = client.get("/api/health")
+
+    assert response.status_code == 500
+    body = response.json()["detail"]
+    request_id = body["details"]["request_id"]
+    assert body["code"] == "GROUND_SYSLOG_QUERY_FAILED"
+    assert len(request_id) == 32
+    assert response.headers["x-request-id"] == request_id
+    assert health.status_code == 200
+    failed = next(detail for event, detail in events if event == "GROUND_SYSLOG_QUERY_FAILED")
+    assert f"request_id={request_id}" in failed
+    assert "exception_type=RuntimeError" in failed
+    assert "Traceback" in failed
 
 
 def test_ground_unattended_legacy_run_and_persisted_ping_summary_are_api_compatible(

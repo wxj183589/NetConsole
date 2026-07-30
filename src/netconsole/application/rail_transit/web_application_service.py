@@ -981,7 +981,7 @@ class RailTransitWebApplicationService:
             )
         if scope.excluded_device_count:
             warning_parts.append(
-                f"已按项目、投运状态、站点关联和稳定身份排除 {scope.excluded_device_count} 项。"
+                f"已按项目、当前工作状态、站点关联和稳定身份排除 {scope.excluded_device_count} 项。"
             )
         return TracksideApOnlineStatusDTO(
             items=result,
@@ -2109,7 +2109,7 @@ class RailTransitWebApplicationService:
                 for device in DeviceRepository(database).list(
                     vendor="H3C",
                     device_type="AC",
-                    operation_status="in_service",
+                    work_scope_status="included",
                 )
                 if str(device.device_uuid or "").strip()
             ]

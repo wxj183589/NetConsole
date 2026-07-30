@@ -156,13 +156,13 @@ def test_switch_site_migrates_legacy_database_before_repository_query(tmp_path):
         Device(name="B-SW", primary_address="192.0.2.12")
     )
     with Database(site_b.database_path).connect() as connection:
-        connection.execute("DROP INDEX idx_devices_operation_status")
+        connection.execute("DROP INDEX idx_devices_work_scope_status")
         connection.execute("DROP INDEX idx_devices_project_phase")
         for column in (
-            "operation_status_updated_by",
-            "operation_status_updated_at",
-            "operation_status_reason",
-            "operation_status",
+            "work_scope_updated_by",
+            "work_scope_updated_at",
+            "work_scope_reason",
+            "work_scope_status",
             "project_phase",
         ):
             connection.execute(f"ALTER TABLE devices DROP COLUMN {column}")
@@ -175,19 +175,19 @@ def test_switch_site_migrates_legacy_database_before_repository_query(tmp_path):
     manager.switch_site("A")
     switched = manager.switch_site("B")
     devices = DeviceRepository(Database(switched.database_path)).list(
-        operation_status="in_service"
+        work_scope_status="included"
     )
 
     assert [device.name for device in devices] == ["B-SW"]
     assert devices[0].project_phase == "unspecified"
-    assert devices[0].operation_status == "in_service"
+    assert devices[0].work_scope_status == "included"
     assert len(
         list(
             (
                 paths.site_files_dir("B")
                 / "backups"
                 / "database-migrations"
-            ).glob("devices-site-*-before-operation-status-*.sqlite")
+            ).glob("devices-site-*-before-work-scope-status-*.sqlite")
         )
     ) == 1
 

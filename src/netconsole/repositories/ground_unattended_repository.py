@@ -1781,6 +1781,7 @@ class GroundUnattendedRepository:
         device_uuid: str = "",
         mr_role: str = "",
         limit: int = 256,
+        newest_first: bool = False,
     ) -> list[dict[str, Any]]:
         where = ["site_id=?", "data_type=?"]
         params: list[Any] = [self.site_id, data_type]
@@ -1809,9 +1810,15 @@ class GroundUnattendedRepository:
             )
             params.append(end_time)
         with self._connection() as conn:
+            order = (
+                "COALESCE(NULLIF(end_time, ''), start_time) DESC, "
+                "start_time DESC, created_at DESC"
+                if newest_first
+                else "start_time, created_at"
+            )
             rows = conn.execute(
                 f"SELECT * FROM ground_unattended_raw_files WHERE {' AND '.join(where)} "
-                "ORDER BY start_time, created_at LIMIT ?",
+                f"ORDER BY {order} LIMIT ?",
                 (*params, max(1, min(int(limit), 1000))),
             ).fetchall()
         result = []

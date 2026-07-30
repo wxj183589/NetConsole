@@ -81,7 +81,7 @@ class TracksideApBusinessPageDTO(ApiModel):
     build_ms: int = 0
     empty_reason: str = ""
     identity_shadow: dict[str, object] = Field(default_factory=dict)
-    scope_description: str = "当前项目 · 在用轨旁 AP"
+    scope_description: str = "当前项目 · 当前工作范围轨旁 AP"
     scope_station_count: int = Field(default=0, ge=0)
     scope_device_count: int = Field(default=0, ge=0)
     excluded_device_count: int = Field(default=0, ge=0)
@@ -213,7 +213,7 @@ class TracksideApOnlineStatusDTO(ApiModel):
     warning: str = ""
     count_anomaly: bool = False
     status: Literal["normal", "anomaly"] = "normal"
-    scope_description: str = "当前项目 · 在用轨旁 AP"
+    scope_description: str = "当前项目 · 当前工作范围轨旁 AP"
     scope_station_count: int = Field(default=0, ge=0)
     scope_device_count: int = Field(default=0, ge=0)
     excluded_device_count: int = Field(default=0, ge=0)

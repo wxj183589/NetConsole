@@ -415,7 +415,7 @@ def is_trackside_device_eligible(
     *,
     project_phase: str = "",
 ) -> bool:
-    """Trackside business reads only in-service devices in the configured phase."""
+    """Trackside automatic scopes use current debugging targets in the configured phase."""
 
     if not is_device_eligible_for_automatic_collection(device):
         return False

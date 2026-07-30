@@ -20,9 +20,12 @@
 - `boot_config.py`、`syslog_runtime.py`：Information Center 只读核验、受控修复与 WMESH UDP 接收。
 - `fleet_ping.py`、`timeline.py`：分片 Ping 生命周期、汇总和 AC/Ping 时间关联。
 - `raw_query.py`：按运行/列车/MR/端位/时间预筛，流式查询 active 或 READY ZIP 中的 Ping/Syslog
-  NDJSON，执行有界分页、保留丢包点降采样、去重和扫描预算。
+  NDJSON；Syslog 无记录级筛选的首屏按最新文件优先读取，旧 WMESH 只对返回页或确实依赖解析字段的
+  有界筛选执行 read-time parse。交互查询限制为 128 个文件、250,000 条、128MB 和 8 秒；单一
+  ACTIVE/ARCHIVE 不建立全局去重集合，MIXED 使用 250,000 个稳定键的上限。
 - `archive_reader.py`：READY ZIP 的受管路径、大小、SHA-256、manifest、成员哈希、CRC、路径和压缩预算
-  校验；只读流式访问登记成员，不解压或重写归档。
+  校验；普通原始列表只做路径、READY、登记大小、ZIP/manifest/成员边界检查，并在读取目标成员时校验
+  CRC，完整 ZIP 与成员 SHA-256 保留给详情和显式重新校验。只读流式访问登记成员，不解压或重写归档。
 - `ap_resolver.py`：按 Peer AP MAC、显式 Radio/BSSID、带证据等级的 H3C Radio 派生规则和唯一
   Alias 补全 WMESH 展示字段；AC Detail 使用 30 秒查询缓存，名称来源保持可见，歧义保持未绑定，
   不写 AP Identity 主数据。
@@ -41,7 +44,9 @@ Syslog 和位置关联，Deep Scheduler 只同步/收尾已有任务，不再填
 
 `/status` 不回退最近一次已完成运行；活动运行、最近运行、活动操作和最近终态操作独立映射。页面统一
 使用 `selectedRunId` 查看 Ping、Syslog、时间轴和深度采集。当前运行默认最近 30 分钟，历史运行默认
-实际起止时间；active 文件已清理时可从 READY ZIP 读取，混合来源按稳定记录标识去重。
+实际起止时间；active 文件已清理时可从 READY ZIP 读取，混合来源按稳定记录标识去重。Syslog API
+只投影公开 DTO 字段，不下发 `raw_bytes_base64`、内部局点或设备数据库标识；每次请求记录
+`GROUND_SYSLOG_QUERY_STARTED/COMPLETED/FAILED` 并通过响应头或错误详情返回 `request_id`。
 
 ## 数据安全
 

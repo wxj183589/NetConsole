@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from netconsole.core.database import Database
@@ -7,9 +8,10 @@ from netconsole.models.device import Device
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.repositories.ac_repository import AcRepository
 from netconsole.services.rail_transit import trackside_optical_collection
 from netconsole.services.rail_transit.trackside_optical_collection import (
-    SUSPENDED_OPERATION_STATUS_REASON,
+    EXCLUDED_WORK_SCOPE_REASON,
     _collect_one_target,
     build_station_switch_targets,
 )
@@ -31,7 +33,7 @@ def _create_switch(
     group_id: int,
     name: str,
     address: str,
-    operation_status: str = "in_service",
+    work_scope_status: str = "included",
     project_phase: str = "phase_1",
 ) -> Device:
     device = repository.create(
@@ -42,7 +44,7 @@ def _create_switch(
             device_type="SW",
             device_vendor="ZTE",
             project_phase=project_phase,
-            operation_status=operation_status,
+            work_scope_status=work_scope_status,
             primary_address=address,
             ssh_enabled=1,
             ssh_username="readonly",
@@ -83,7 +85,81 @@ def _create_switch(
     return device
 
 
-def test_trackside_snapshot_export_and_targets_exclude_only_suspended(
+def _seed_effective_trackside_aps(
+    repository: DeviceRepository,
+    devices: list[Device],
+) -> None:
+    extension_rows: list[dict[str, object]] = []
+    fit_ap_rows: list[dict[str, object]] = []
+    facts = DeviceFactRepository(repository.database)
+    for index, device in enumerate(devices, start=1):
+        node_uid = f"station-{device.device_uuid}"
+        ap_name = f"{device.name}-AP"
+        ap_uuid = f"ap-{index}"
+        ap_mac = f"0011223344{index:02x}"
+        extension_rows.extend(
+            [
+                {
+                    "site_id": "demo",
+                    "belong_type": "__base_station__",
+                    "station_name": str(device.station or ""),
+                    "raw_payload_json": json.dumps(
+                        {
+                            "node_uid": node_uid,
+                            "canonical_station_name": str(device.station or ""),
+                            "sort_order": index,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+                {
+                    "site_id": "demo",
+                    "belong_type": "station",
+                    "station_name": str(device.station or ""),
+                    "ap_name": ap_name,
+                    "ap_mac_norm": ap_mac,
+                    "raw_payload_json": json.dumps(
+                        {
+                            "station_node_uid": node_uid,
+                            "work_scope_status": "included",
+                            "project_id": "demo",
+                            "ap_uuid": ap_uuid,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ]
+        )
+        fit_ap_rows.append(
+            {
+                "ap_uuid": ap_uuid,
+                "ap_name": ap_name,
+                "ap_mac": ap_mac,
+                "state": "R",
+            }
+        )
+        facts.replace_lldp_neighbors(
+            str(device.device_uuid),
+            [
+                {
+                    "local_interface": "gei-0/3/0/1",
+                    "neighbor_sysname": ap_name,
+                    "neighbor_mac": ap_mac,
+                    "neighbor_interface": "GigabitEthernet1/0/1",
+                }
+            ],
+        )
+    ac_repository = AcRepository(repository.database)
+    result = ac_repository.import_ap_extension_points(
+        extension_rows,
+        source_file="work-scope-fixture.xlsx",
+        template_type="trackside_ap_scope_fixture",
+    )
+    assert result["error_rows"] == 0
+    ac_repository.replace_fit_ap_resources("ac-fixture", fit_ap_rows)
+
+
+def test_trackside_snapshot_export_and_targets_exclude_work_scope(
     tmp_path: Path,
 ) -> None:
     repository = _repository(tmp_path)
@@ -95,14 +171,15 @@ def test_trackside_snapshot_export_and_targets_exclude_only_suspended(
         address="192.0.2.11",
         project_phase="phase_1",
     )
-    suspended = _create_switch(
+    excluded = _create_switch(
         repository,
         group_id=int(station.id or 0),
-        name="暂停",
+        name="暂不参与",
         address="192.0.2.12",
-        operation_status="suspended",
+        work_scope_status="excluded",
         project_phase="phase_2",
     )
+    _seed_effective_trackside_aps(repository, [phase_one, excluded])
 
     snapshot = load_trackside_ap_business_snapshot(repository, "demo", generation=1)
     targets, skipped = build_station_switch_targets(repository, "demo")
@@ -119,14 +196,14 @@ def test_trackside_snapshot_export_and_targets_exclude_only_suspended(
     assert export_result["row_count"] == snapshot.row_count
     assert [target.device_uuid for target in targets] == [phase_one.device_uuid]
     assert any(
-        item.host == suspended.primary_address
-        and item.reason == SUSPENDED_OPERATION_STATUS_REASON
+        item.host == excluded.primary_address
+        and item.reason == EXCLUDED_WORK_SCOPE_REASON
         for item in skipped
     )
 
-    repository.update_lifecycle_many(
-        [str(suspended.device_uuid)],
-        operation_status="in_service",
+    repository.update_classification_many(
+        [str(excluded.device_uuid)],
+        work_scope_status="included",
     )
     restored = load_trackside_ap_business_snapshot(repository, "demo", generation=2)
     restored_targets, _ = build_station_switch_targets(repository, "demo")
@@ -134,11 +211,11 @@ def test_trackside_snapshot_export_and_targets_exclude_only_suspended(
     assert restored.row_count == 2
     assert {target.device_uuid for target in restored_targets} == {
         phase_one.device_uuid,
-        suspended.device_uuid,
+        excluded.device_uuid,
     }
 
 
-def test_trackside_execute_time_recheck_skips_suspended_before_ssh(
+def test_trackside_execute_time_recheck_skips_excluded_before_ssh(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -151,16 +228,16 @@ def test_trackside_execute_time_recheck_skips_suspended_before_ssh(
         address="192.0.2.21",
     )
     targets, _ = build_station_switch_targets(repository, "demo")
-    repository.update_lifecycle_many(
+    repository.update_classification_many(
         [str(device.device_uuid)],
-        operation_status="suspended",
+        work_scope_status="excluded",
     )
     connected = False
 
     def fail_if_connected(**_kwargs):
         nonlocal connected
         connected = True
-        raise AssertionError("suspended target must not open SSH")
+        raise AssertionError("excluded target must not open SSH")
 
     monkeypatch.setattr(
         trackside_optical_collection.netmiko_connection,
@@ -176,7 +253,7 @@ def test_trackside_execute_time_recheck_skips_suspended_before_ssh(
 
     assert connected is False
     assert result.success is True
-    assert result.skipped_reason == SUSPENDED_OPERATION_STATUS_REASON
+    assert result.skipped_reason == EXCLUDED_WORK_SCOPE_REASON
 
 
 def test_old_zte_database_rows_are_normalized_on_read(tmp_path: Path) -> None:

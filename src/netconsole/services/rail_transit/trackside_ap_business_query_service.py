@@ -120,7 +120,7 @@ class TracksideApBusinessQueryService:
             scope_description=(
                 scope.scope_description
                 if scope is not None
-                else "当前项目 · 在用轨旁 AP"
+                else "当前项目 · 当前工作范围轨旁 AP"
             ),
             scope_station_count=scope.scope_station_count if scope is not None else 0,
             scope_device_count=scope.scope_device_count if scope is not None else 0,

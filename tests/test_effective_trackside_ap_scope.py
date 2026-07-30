@@ -296,7 +296,7 @@ def test_scope_excludes_non_service_cross_project_and_ambiguous_station_rows() -
     assert rows[0]["online_rate"] is None
     assert rows[0]["status"] == "unplanned_online"
     reasons = {item.reason for item in scope.excluded_items}
-    assert "投运状态不是在用。" in reasons
+    assert "当前工作状态不是参与当前调试。" in reasons
     assert "不属于当前项目。" in reasons
     assert "缺少当前项目要求的建设阶段。" in reasons
     assert "历史站名匹配到多个 station_id，需人工处理。" in reasons
