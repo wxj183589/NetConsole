@@ -1774,10 +1774,12 @@ class AcRepository:
         station_rows = self.list_trackside_ap_plan(mode)
         if station_rows:
             station_vlans: dict[str, set[int]] = {}
+            station_vlans_by_id: dict[str, set[int]] = {}
             station_totals: dict[str, int] = {}
             all_vlans: set[int] = set()
             for row in station_rows:
                 station = str(row.get("station_name") or "").strip()
+                station_id = str(row.get("station_id") or "").strip()
                 raw_vlan = (
                     row.get("management_vlan")
                     if row.get("management_vlan") not in (None, "")
@@ -1787,12 +1789,15 @@ class AcRepository:
                 if not station or not vlans:
                     continue
                 station_vlans[station] = vlans
+                if station_id:
+                    station_vlans_by_id[station_id] = vlans
                 all_vlans.update(vlans)
                 station_totals[station] = int(row.get("ap_count") or 0)
             return {
                 "mode": mode,
                 "planning_mode": "station_rows",
                 "station_vlans": station_vlans,
+                "station_vlans_by_id": station_vlans_by_id,
                 "all_vlans": all_vlans,
                 "station_totals": station_totals,
                 "group_networks": {},
@@ -1805,6 +1810,7 @@ class AcRepository:
             for group in draft.get("groups") or []
         }
         station_vlans: dict[str, set[int]] = {}
+        station_vlans_by_id: dict[str, set[int]] = {}
         station_totals: dict[str, int] = {}
         all_vlans: set[int] = set()
         group_networks: dict[str, dict[str, object]] = {}
@@ -1822,17 +1828,25 @@ class AcRepository:
             }
             for member in group.get("members") or []:
                 station = str(member.get("station_name") or "").strip()
+                station_id = str(member.get("station_id") or "").strip()
                 if not station:
                     continue
                 station_vlans.setdefault(station, set()).add(vlan_value)
+                if station_id:
+                    station_vlans_by_id.setdefault(station_id, set()).add(
+                        vlan_value
+                    )
                 station_totals[station] = int(member.get("ap_count") or 0)
         if not groups:
             for row in self.list_trackside_ap_plan(mode):
                 station = str(row.get("station_name") or "").strip()
+                station_id = str(row.get("station_id") or "").strip()
                 vlans = parse_vlan_set(row.get("ap_management_vlans"))
                 if not station or not vlans:
                     continue
                 station_vlans[station] = vlans
+                if station_id:
+                    station_vlans_by_id[station_id] = vlans
                 all_vlans.update(vlans)
                 station_totals[station] = int(row.get("ap_count") or 0)
         group_by_ap_id = {
@@ -1881,6 +1895,7 @@ class AcRepository:
                 else ""
             ),
             "station_vlans": station_vlans,
+            "station_vlans_by_id": station_vlans_by_id,
             "all_vlans": all_vlans,
             "station_totals": station_totals,
             "group_networks": group_networks,

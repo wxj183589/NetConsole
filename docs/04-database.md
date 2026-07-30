@@ -81,6 +81,11 @@ numbers are zero or duplicated, initialization deterministically renumbers the
 rows by their existing order before creating the index. The migration is
 idempotent and runs in the existing initialization transaction.
 
+The active station-plan contract now uses only `station_id`, sequence, station
+name, AP count, `management_vlan`, and remark. Historical address, mask,
+gateway, and multi-VLAN columns remain in the table for backward compatibility,
+but the active DTO, page, template, import preview, and validation ignore them.
+
 `rail_ap_vlan_plans`, `rail_ap_vlan_groups`,
 `rail_ap_vlan_group_members`, `rail_ap_vlan_assignments`, and
 `rail_ap_vlan_allocations` remain unchanged as a historical compatibility

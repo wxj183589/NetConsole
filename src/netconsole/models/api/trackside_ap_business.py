@@ -164,14 +164,8 @@ class TracksideApPlanRowDTO(ApiModel):
         ge=0,
         validation_alias=AliasChoices("planned_ap_count", "ap_count"),
     )
-    ap_start_address: str = ""
-    subnet_mask: str = ""
-    mask_length: int | None = None
-    ap_gateway: str = ""
     management_vlan: int | None = Field(default=None, ge=1, le=4094)
-    ap_management_vlans: str = ""
     remark: str = ""
-    sort_order: int = 0
 
 
 class TracksideApOnlineStatusRowDTO(ApiModel):
@@ -388,7 +382,7 @@ class TracksideApPlanPreviewRowDTO(ApiModel):
     status: Literal["valid", "duplicate", "error"]
     key: str = ""
     message: str = ""
-    row: TracksideApPlanRowDTO | None = None
+    row: dict[str, Any] | None = None
 
 
 class TracksideApPlanPreviewDTO(ApiModel):

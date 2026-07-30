@@ -62,7 +62,11 @@ from netconsole.services.rail_transit.station_source_utils import (
     parse_station_source_value,
     station_structure_defaults,
 )
-from netconsole.services.trackside_ap_plan_io import normalize_trackside_plan_rows
+from netconsole.services.trackside_ap_plan_io import (
+    bind_trackside_plan_station,
+    normalize_trackside_plan_row,
+    normalize_trackside_plan_rows,
+)
 from netconsole.services.vehicle_mr_online import parse_train_identity
 from netconsole.utils.mileage import parse_track_mileage
 
@@ -536,34 +540,15 @@ class RailTransitBaseDataApplicationService:
                 ]
             else:
                 raise ValueError("轨旁 AP 规划数据格式无效")
-            normalized_rows = normalize_trackside_plan_rows(raw_rows)
-            station_by_id = {
-                str(row.get("id") or ""): row for row in stations
-            }
-            station_by_name = {
-                str(row.get("name") or "").strip().casefold(): row
-                for row in stations
-                if str(row.get("name") or "").strip()
-            }
-            for row in normalized_rows:
-                station_id = str(row.get("station_id") or "")
-                station = station_by_id.get(station_id)
-                if station is None:
-                    station = station_by_name.get(
-                        str(row["station_name"]).casefold()
-                    )
-                if station is not None:
-                    row["station_id"] = str(station.get("id") or "")
-                    row["station_name"] = str(
-                        station.get("name") or row["station_name"]
-                    )
-            station_ids = [
-                str(row.get("station_id") or "")
-                for row in normalized_rows
-                if str(row.get("station_id") or "")
+            bound_rows = [
+                bind_trackside_plan_station(
+                    normalize_trackside_plan_row(row, row_number=index),
+                    stations,
+                    row_number=index,
+                )
+                for index, row in enumerate(raw_rows, start=2)
             ]
-            if len(station_ids) != len(set(station_ids)):
-                raise ValueError("轨旁 AP 规划存在重复 station_id")
+            normalized_rows = normalize_trackside_plan_rows(bound_rows)
             values = {"rows": normalized_rows, "validation_issues": []}
         return {
             "entity_type": entity_type,
