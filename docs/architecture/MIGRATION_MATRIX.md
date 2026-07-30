@@ -8,6 +8,34 @@
 
 迁移处置只使用 `MIGRATED`、`REMOVED`、`HIDDEN_PENDING_MIGRATION`、`BLOCKED`。产品验收状态词汇固定为 `NOT_STARTED`、`UI_ONLY`、`READ_ONLY`、`FAKE`、`PARTIAL`、`IMPLEMENTED_UNVERIFIED`、`REAL_DEVICE_PENDING`、`COMPLETE`、`BLOCKED`；其中 `FAKE` 只能说明协议/测试替身覆盖，不能替代真实设备验收。迁移处置与产品验收不能互相替代。
 
+## 事实维度验收矩阵
+
+Feature Registry 的 `FeatureStatus` 只表达入口是否允许进入生产基线，Navigation Registry 的 `implemented/parity_state` 只表达页面接线和迁移状态；二者都不等于自动化、Electron 人工、真实设备/局点或正式包验收。下表按当前生产代码、测试、`docs/PACKAGED_FEATURE_MATRIX.md` 和已记录人工事实给出主要模块的独立维度，不扩展 `FeatureItem` Schema。
+
+状态含义：
+
+- `AUTOMATION_COVERED` 表示仓库存在对应定向自动证据，不表示本次发布候选已经执行全量门禁；
+- `PENDING` / `REAL_DEVICE_PENDING` 表示未记录对应人工或现场验收，不得由自动测试提升；
+- `RELEASE_INCLUDED / GUI_PENDING` 表示代码进入正式包契约，但安装包 GUI 和跨电脑验收仍未通过；
+- `USER_FIELD_CONFIRMED` 只记录用户确认的现场运行事实，不替代自动化 VM 或正式包验收。
+
+| 主要模块（Feature / Navigation） | Registry | 入口实现 | 自动化 | Electron 人工 | 真实设备/局点 | 正式包 | 主要事实源 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 设备管理（`web.device_management` / `devices`） | `ENABLED` | `IMPLEMENTED_UNVERIFIED` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | Device API/Vue、Navigation Registry、设备定向测试 |
+| AC/FIT-AP（`web.ac_management`、`web.ac_fit_ap_resources` / `ac.fit-aps`） | `ENABLED` | `PARTIAL / REAL_DEVICE_PENDING` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | AC Application Service/API/Vue、AC 动作与导出测试 |
+| 轨交基础资料与轨旁 AP（`web.rail_transit_base_data`、`web.rail_trackside_ap_business` / `rail.base-data`、`rail.trackside-ap-business`） | `ENABLED` | `PARTIAL` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | Rail API/Vue、基础资料和轨旁 AP 定向测试 |
+| 列车在线、通信、MESH、Online MR（`web.rail_train_online` 等 / `rail.*`） | `ENABLED` | `PARTIAL / REAL_DEVICE_PENDING` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | Rail/Online MR/MESH Service、API、Vue 与定向测试 |
+| 配置采集（`web.config_collection` / `config`） | `ENABLED` | `IMPLEMENTED_UNVERIFIED` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | Config Service/API/Vue、采集/差异/Artifact 测试 |
+| 设备文件下载（`web.file_management` / `files`） | `ENABLED` | `IMPLEMENTED_UNVERIFIED` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | File Service/API/Vue/Bridge 与 SFTP/队列测试 |
+| 网络工具与 Traffic（`web.network_tools` / `network.*`） | `ENABLED` | `PARTIAL / REAL_DEVICE_PENDING` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | Network/Traffic Service/API/WebSocket/Vue 测试 |
+| 工具集（`web.tool_collection` / `tools`） | `ENABLED` | `IMPLEMENTED_UNVERIFIED` | `AUTOMATION_COVERED` | `PENDING` | `NOT_APPLICABLE` | `RELEASE_INCLUDED / GUI_PENDING` | Electron 外部工具 Store/IPC/Vue 测试 |
+| Task Center 与 Agent 管理（`web.job_center`、`web.agent_management` / `tasks`、`agents`） | `ENABLED` | `PARTIAL` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | Job/Agent Service、REST/WebSocket、Vue 测试 |
+| 命令、日志、系统设置（`web.command_reference`、`web.logs`、`web.system_settings`） | `ENABLED` | `PARTIAL / IMPLEMENTED_UNVERIFIED` | `AUTOMATION_COVERED` | `PENDING` | `NOT_APPLICABLE` | `RELEASE_INCLUDED / GUI_PENDING` | 对应 Application Service/API/Vue/Bridge 测试 |
+| 内部/开发功能（`web.feature_switch`、`web.ac_extensions*` 等） | `DEVELOPMENT` / `internal_only` | `HIDDEN` 或 `NOT_STARTED` | `AUTOMATION_COVERED` | `NOT_APPLICABLE` | `NOT_APPLICABLE` | `EXCLUDED` | Feature Gate、生产基线与导航测试 |
+| SNMP Center、无线勘测 | `REMOVED` | `REMOVED` | `AUTOMATION_COVERED` | `NOT_APPLICABLE` | `NOT_APPLICABLE` | `EXCLUDED` | `REMOVED_FEATURE_IDS`、removed-feature/package Guard |
+
+Windows Server 2012 x64 的兼容性证据单独记录：NetConsole 主程序和独立 Agent 均为 `USER_FIELD_CONFIRMED`；仓库自动化 VM 为 `AUTOMATION_NOT_RECORDED`；正式安装包 GUI 验收仍为 `PENDING`。这组状态不改变上表各业务模块的现场验收结论，也不引入 OS 启动阻断。
+
 ## 已删除路径分类
 
 | 原 Qt 路径/代表类与入口 | 分类 | 永久位置 | 主要自动证据 | 删除依据 |

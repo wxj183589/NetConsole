@@ -26,6 +26,10 @@ Windows 下启动时会创建 `TrayController`，图标统一由 `resolveTrayIco
 
 默认启用“关闭主窗口后驻留通知区域”。主窗口关闭会隐藏而不停止 Backend、Renderer 或后台任务；托盘和第二实例恢复只显示、还原最小化并聚焦该窗口，不调用 `loadURL/reload/maximize`，因此标签、顺序和活动页保持不变。附加工作区窗口正常销毁；所有普通窗口不可见时，托盘、Backend 和后台业务任务继续存在。只有托盘“退出 NetConsole”（以及显式系统关闭信号）进入单次受控退出：丢弃工作区会话、拒绝新窗口、关闭受管窗口和 Tray，再停止下载、Backend 与会话授权。关闭该设置后，最后一个可见普通业务窗口触发相同的受控退出。
 
+## Windows Server 2012 兼容事实
+
+Windows Server 2012 x64 的 NetConsole 主程序已有用户现场运行确认，证据等级为 `USER_FIELD_CONFIRMED`。仓库没有隔离 Server 2012 自动化 VM 的安装、启动、健康和退出记录，自动化证据记为 `AUTOMATION_NOT_RECORDED`；正式安装包 GUI 验收仍为 `PENDING`。该事实不增加 Electron 或 Backend 的 OS 启动阻断，Windows 11 x64 仍是默认构建与开发目标。
+
 ## 当前状态
 
 Electron Desktop 安全基础已在 `apps/desktop_electron/` 建立，复用唯一 Vue Renderer `apps/web/` 和唯一 FastAPI 组合根 `src/netconsole/backend/api/main.py:create_app()`。Electron 是唯一正式桌面产品；Qt 源码、运行时与入口已经退出活动仓库。部分业务仍处于自动实现完成但真实设备待验收状态，不能把“零 Qt”误写成全部业务已经现场验收完成。

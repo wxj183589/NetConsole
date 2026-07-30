@@ -12,6 +12,17 @@ NSIS 必须显式启用 Unicode 安装器，并先在零写入状态下识别候
 
 Gate 成功后在安装包旁生成同名 `.exe.release.json`，记录文件名、SHA-256、字节数、Installer/Backend/Frontend commit、build ID、策略源码哈希、新旧文案扫描结果和 `real_windows_install_status`。自动构建只能将真实安装状态写为 `PENDING`；只有在隔离的全新 Windows 机器或 VM 完成不存在目录、空目录、含普通文件目录和合法旧数据根四种 GUI 安装，并核对注册表指针及原文件哈希后，才能在交付记录中改为 `PASS`。
 
+## Windows Server 2012 兼容事实
+
+| 范围 | 证据等级 | 说明 |
+| --- | --- | --- |
+| NetConsole 主程序（Electron + Backend） | `USER_FIELD_CONFIRMED` | Windows Server 2012 x64 已有用户现场运行确认；这不是本仓库自动化或正式安装包 GUI 结果。 |
+| 独立 Windows Go Agent | `USER_FIELD_CONFIRMED` | 同一现场确认覆盖 Agent；Go 运行时、托盘、工具和 Python sidecar 的自动化 VM 记录仍缺失。 |
+| Windows Server 2012 自动化 VM | `AUTOMATION_NOT_RECORDED` | 仓库没有可引用的隔离 VM 安装、启动、健康、退出和 Agent API 记录；不得伪造测试结论。 |
+| 正式安装包 GUI 验收 | `PENDING` | 仍须按本文件安装/升级/卸载门禁执行；兼容事实不改变 `real_windows_install_status`。 |
+
+上述是证据分层，不是 OS 支持阻断条件；启动路径不按 Server 版本拒绝主程序或 Agent。未知的具体能力仍以真实探测和现有能力 API 为准。
+
 安装包人工验收至少覆盖：程序安装在 C 盘而数据在 D/E 盘、阻止 C 盘数据根、`GetDriveTypeW` 收到 `E:\` 等根路径、Windows 空目录直接作为数据根并生成有效 manifest、合法既有根复用、含无冲突普通文件的目录保留原文件并成功初始化、必需路径真实冲突时原样阻止、损坏 manifest 原样保留并阻止安装、旧固定探测残留不误判、不自动创建嵌套 `NetConsoleData`、安装失败不删除或修改用户所选目录、升级/修复保持旧根、更换根的 staging/SQLite 校验失败回滚，以及普通卸载保留数据和注册表指针。源码 `pnpm dev` 还必须读取同一指针；测试模式不得读取注册表或真实根。Backend 向 Electron 输出的监听、关闭和启动失败握手必须是代码页无关的 ASCII JSON；中文通过 JSON Unicode 转义逐字恢复。
 
 ## 依赖安装
