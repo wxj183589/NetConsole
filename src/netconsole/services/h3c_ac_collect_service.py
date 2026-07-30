@@ -312,6 +312,11 @@ def collect_h3c_fit_ap_resources(
         if target_resource is not None:
             target_name = str(target_resource.get("ap_name") or "").strip().casefold()
             resources = [row for row in resources if str(row.get("ap_name") or "").strip().casefold() == target_name]
+            if len(resources) == 1:
+                # 深度刷新由内部 UUID 定向，回显缺少 UUID 时仍写回已选实体；
+                # 这不是按名称跨模块匹配，名称仅用于限定本次命令回显行。
+                resources[0]["ap_uuid"] = target_resource.get("ap_uuid")
+                resources[0]["ap_mac"] = resources[0].get("ap_mac") or target_resource.get("ap_mac")
         dynamic_summary_updated = _can_update_dynamic_summary(command_results, summary)
         progress("正在写入数据库...")
         if dynamic_summary_updated:
