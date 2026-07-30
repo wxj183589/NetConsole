@@ -301,6 +301,7 @@ describe('Job Center saved artifact capability lifecycle', () => {
   it('uses the unified data table contract', () => {
     expect(source).toContain('table-id="job-center-tasks"')
     expect(source).toContain(':columns="columns"')
+    expect(source).toContain("key: 'business_status'")
     expect(source).not.toContain('<el-table')
   })
 
@@ -645,6 +646,14 @@ describe('Job Center saved artifact capability lifecycle', () => {
       type: 'trackside_ap_optical_update',
       name: '轨旁 AP 光衰更新',
       status: 'COMPLETED',
+      lifecycle_status: 'COMPLETED',
+      business_status: 'PARTIAL_SUCCESS',
+      success_count: 745,
+      failed_count: 0,
+      skipped_count: 1,
+      warning_count: 0,
+      partial_success: true,
+      primary_failure_reason: 'connection_incomplete',
       module: 'rail',
       details: {
         status: 'PARTIAL_SUCCESS',
@@ -670,6 +679,8 @@ describe('Job Center saved artifact capability lifecycle', () => {
     const text = textContent(root)
     expect(text).toContain('业务结果：部分成功')
     expect(text).toContain('任务状态：已完成 · 部分成功')
+    expect(text).toContain('成功 745 / 失败 0 / 跳过 1 / 告警 0')
+    expect(text).toContain('connection_incomplete')
     expect(text).toContain('745')
     expect(text).toContain('未执行')
     expect(text).toContain('连接信息不完整')

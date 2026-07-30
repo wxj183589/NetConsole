@@ -14,6 +14,7 @@ from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.models.task_history_policy import project_business_result
 from netconsole.models.task_snapshot import TaskSnapshot, utc_now_iso
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.task_repository import TaskRepository
@@ -60,6 +61,69 @@ def _complete_task(service: TaskApplicationService, task_id: str = "task-complet
         encode_event(finished_event(task_id, {"count": 3, "result_path": "outputs/result.json"})).encode("utf-8"),
     )
     service.complete(task_id, 0)
+
+
+@pytest.mark.parametrize(
+    ("result", "lifecycle_status", "expected"),
+    [
+        (
+            {"status": "SUCCESS", "success_count": 4},
+            "COMPLETED",
+            ("SUCCESS", 4, 0, 0, 0, False),
+        ),
+        (
+            {"success_count": 3, "failed_count": 1},
+            "COMPLETED",
+            ("PARTIAL_SUCCESS", 3, 1, 0, 0, True),
+        ),
+        (
+            {"business_outcome": "WARNING", "warning_count": 2},
+            "COMPLETED",
+            ("WARNING", 0, 0, 0, 2, False),
+        ),
+        (
+            {"status": "NO_TARGET", "skipped_count": 5},
+            "COMPLETED",
+            ("NO_EFFECTIVE_TARGET", 0, 0, 5, 0, False),
+        ),
+        (
+            {
+                "collection": {
+                    "partial_success": True,
+                    "success_count": 2,
+                    "failed_count": 1,
+                }
+            },
+            "COMPLETED",
+            ("PARTIAL_SUCCESS", 2, 1, 0, 0, True),
+        ),
+        (
+            {"failure_reason_counts": {"timeout": 3, "auth_failed": 1}},
+            "FAILED",
+            ("FAILED", 0, 0, 0, 0, False),
+        ),
+    ],
+)
+def test_business_result_projection_normalizes_legacy_results(
+    result: dict[str, object],
+    lifecycle_status: str,
+    expected: tuple[str, int, int, int, int, bool],
+) -> None:
+    projection = project_business_result(
+        result,
+        lifecycle_status=lifecycle_status,
+    )
+
+    assert (
+        projection.business_status,
+        projection.success_count,
+        projection.failed_count,
+        projection.skipped_count,
+        projection.warning_count,
+        projection.partial_success,
+    ) == expected
+    if lifecycle_status == "FAILED":
+        assert projection.primary_failure_reason == "timeout"
 
 
 def test_task_snapshot_extracts_display_name_from_device_mapping(tmp_path: Path) -> None:
@@ -407,8 +471,26 @@ def test_trackside_business_result_is_exposed_in_task_detail_without_raw_result_
 
     assert detail is not None
     assert detail.status == "COMPLETED"
+    assert detail.lifecycle_status == "COMPLETED"
+    assert detail.business_status == "PARTIAL_SUCCESS"
+    assert detail.success_count == 745
+    assert detail.failed_count == 0
+    assert detail.skipped_count == 1
+    assert detail.warning_count == 0
+    assert detail.partial_success is True
+    assert detail.primary_failure_reason == "connection_incomplete"
     assert detail.has_warning is True
     assert listing[task_id].has_warning is True
+    assert listing[task_id].business_status == detail.business_status
+    assert listing[task_id].success_count == detail.success_count
+    assert listing[task_id].failed_count == detail.failed_count
+    assert listing[task_id].skipped_count == detail.skipped_count
+    assert listing[task_id].warning_count == detail.warning_count
+    assert listing[task_id].partial_success == detail.partial_success
+    assert (
+        listing[task_id].primary_failure_reason
+        == detail.primary_failure_reason
+    )
     assert [item.id for item in query.list_tasks("demo", warning_only=True)] == [task_id]
     assert detail.details == {
         "status": "PARTIAL_SUCCESS",

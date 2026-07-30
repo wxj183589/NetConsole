@@ -92,11 +92,13 @@ const currentApProgress = computed(() => {
   const total = numberDetail('fit_ap_total', numberDetail('total', 0))
   return total ? `${completed} / ${total}` : '--'
 })
-const selectedBusinessStatus = computed(() => String(selectedDetails.value.status || '').toUpperCase())
+const selectedBusinessStatus = computed(() => (
+  String(store.selected?.business_status || selectedDetails.value.status || '').toUpperCase()
+))
 const showTracksideBusinessResult = computed(() => (
   store.selected?.type === 'trackside_ap_optical_update'
   && ['COMPLETED', 'FAILED', 'CANCELLED'].includes(store.selected.status)
-  && ['SUCCESS', 'PARTIAL_SUCCESS', 'FAILED', 'NO_TARGET', 'CANCELLED'].includes(selectedBusinessStatus.value)
+  && ['SUCCESS', 'PARTIAL_SUCCESS', 'FAILED', 'WARNING', 'NO_TARGET', 'NO_EFFECTIVE_TARGET', 'CANCELLED'].includes(selectedBusinessStatus.value)
 ))
 const showPointTablePreviewResult = computed(() => (
   store.selected?.type === 'car_network_generate_point_table'
@@ -107,9 +109,27 @@ const businessStatusLabel = computed(() => ({
   SUCCESS: t('job_center.business_result.success', '成功'),
   PARTIAL_SUCCESS: t('job_center.business_result.partial_success', '部分成功'),
   FAILED: t('job_center.business_result.failed', '失败'),
+  WARNING: t('job_center.business_result.warning', '告警'),
   NO_TARGET: t('job_center.business_result.no_target', '未找到目标'),
+  NO_EFFECTIVE_TARGET: t('job_center.business_result.no_effective_target', '无有效目标'),
   CANCELLED: t('job_center.business_result.cancelled', '已取消'),
 }[selectedBusinessStatus.value] || selectedBusinessStatus.value))
+const selectedBusinessCounts = computed(() => {
+  const task = store.selected
+  if (!task) return '--'
+  return [
+    `${t('job_center.business_result.success', '成功')} ${task.success_count ?? numberDetail('success_count')}`,
+    `${t('job_center.business_result.failed', '失败')} ${task.failed_count ?? numberDetail('failed_count')}`,
+    `${t('job_center.business_result.skipped_reason', '跳过')} ${task.skipped_count ?? numberDetail('actionable_skipped_count')}`,
+    `${t('job_center.business_result.warning', '告警')} ${task.warning_count ?? numberDetail('warning_count')}`,
+  ].join(' / ')
+})
+const selectedPrimaryFailureReason = computed(() => String(
+  store.selected?.primary_failure_reason
+  || selectedDetails.value.primary_failure_reason
+  || selectedDetails.value.failure_reason
+  || '',
+))
 const businessReasonRows = computed(() => {
   const rows: Array<{ key: string; label: string; count: number; category: string }> = []
   for (const [field, category] of [
@@ -452,7 +472,10 @@ function handleClosed(): void {
 
         <el-descriptions :column="2" border>
           <el-descriptions-item label="任务类型">{{ store.selected.type }}</el-descriptions-item>
-          <el-descriptions-item label="状态 / 阶段">{{ store.selected.status }} / {{ store.selected.phase || '--' }}</el-descriptions-item>
+          <el-descriptions-item label="状态 / 阶段">{{ store.selected.lifecycle_status || store.selected.status }} / {{ store.selected.phase || '--' }}</el-descriptions-item>
+          <el-descriptions-item v-if="selectedBusinessStatus" :label="t('job_center.business_result.label', '业务结果')">{{ businessStatusLabel }}</el-descriptions-item>
+          <el-descriptions-item v-if="selectedBusinessStatus" :label="t('job_center.business_result.counts', '成功 / 失败 / 跳过 / 告警')">{{ selectedBusinessCounts }}</el-descriptions-item>
+          <el-descriptions-item v-if="selectedPrimaryFailureReason" :label="t('job_center.business_result.primary_failure_reason', '主要失败原因')" :span="2">{{ selectedPrimaryFailureReason }}</el-descriptions-item>
           <el-descriptions-item label="进度">
             {{ selectedResident ? residentProgressLabel(store.selected) : `${store.selected.progress}%` }}
           </el-descriptions-item>
