@@ -24,6 +24,7 @@ const api = vi.hoisted(() => ({
 const downloadBackendResource = vi.hoisted(() => vi.fn())
 const routerPush = vi.hoisted(() => vi.fn())
 const routerReplace = vi.hoisted(() => vi.fn())
+const confirmDialog = vi.hoisted(() => vi.fn())
 const messages = vi.hoisted(() => ({
   success: vi.fn(),
   error: vi.fn(),
@@ -36,6 +37,9 @@ vi.mock('../../../platform/runtime', () => ({
   getPlatformAdapter: () => ({ hostType: 'browser' }),
 }))
 vi.mock('../../../features', () => ({ isFeatureEnabled: () => true }))
+vi.mock('../../feedback/useConfirm', () => ({
+  useConfirm: () => ({ confirm: confirmDialog }),
+}))
 vi.mock('vue-router', () => ({
   useRouter: () => ({
     currentRoute: { value: { query: {} } },
@@ -57,6 +61,18 @@ vi.mock('element-plus', async () => {
     emits: ['update:modelValue'],
     template: '<input :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)">',
   })
+  const InputNumber = defineComponent({
+    props: ['modelValue'],
+    emits: ['update:modelValue', 'change'],
+    template: `
+      <input
+        type="number"
+        :value="modelValue"
+        @input="$emit('update:modelValue', Number($event.target.value))"
+        @change="$emit('change', Number($event.target.value))"
+      >
+    `,
+  })
   return {
     ElMessage: messages,
     ElAlert: defineComponent({
@@ -68,7 +84,7 @@ vi.mock('element-plus', async () => {
     ElDescriptions: Container,
     ElDescriptionsItem: Container,
     ElInput: Input,
-    ElInputNumber: Input,
+    ElInputNumber: InputNumber,
     ElLoadingDirective: {},
     ElOption: defineComponent({ template: '<option><slot /></option>' }),
     ElSelect: Input,
@@ -96,10 +112,11 @@ const task = (
   available = false,
   artifactId = '',
   artifactName = '',
+  action = 'trackside_ap_plan_export',
 ) => ({
   task_id: taskId,
   status,
-  action: 'trackside_ap_plan_export',
+  action,
   artifact_id: artifactId,
   artifact_name: artifactName,
   available,
@@ -118,12 +135,13 @@ const NcDataTableStub = defineComponent({
         <span class="row-station">{{ row.station_name }}</span>
         <slot name="cell-sequence_no" :row="row" />
         <slot name="cell-station_name" :row="row" />
-        <slot name="cell-ap_count" :row="row" />
+        <slot name="cell-planned_ap_count" :row="row" />
         <slot name="cell-ap_start_address" :row="row" />
         <slot name="cell-subnet_mask" :row="row" />
         <slot name="cell-ap_gateway" :row="row" />
         <slot name="cell-management_vlan" :row="row" />
         <slot name="cell-remark" :row="row" />
+        <slot name="cell-actual_online_count" :row="row" />
         <slot name="cell-online_rate" :row="row" />
         <slot name="cell-actions" :row="row" />
       </div>
@@ -158,8 +176,7 @@ const emptyPlan = (): TracksideApPlan => ({
 const emptyStatus = (): TracksideApOnlineStatus => ({
   items: [],
   planned_ap_count: 0,
-  actual_ap_count: 0,
-  online_count: 0,
+  actual_online_count: 0,
   offline_count: 0,
   online_rate: null,
   unassigned_count: 0,
@@ -173,7 +190,7 @@ function planRow(overrides: Partial<TracksideApPlanRow> = {}): TracksideApPlanRo
     station_id: '',
     sequence_no: 1,
     station_name: '小洋江站',
-    ap_count: 30,
+    planned_ap_count: 30,
     ap_start_address: '10.122.221.X',
     subnet_mask: '24',
     mask_length: 24,
@@ -204,6 +221,7 @@ describe('TracksideApPlanningTab behavior', () => {
     sessionStorage.clear()
     routerPush.mockReset()
     routerReplace.mockReset()
+    confirmDialog.mockReset().mockResolvedValue(true)
     for (const message of Object.values(messages)) message.mockReset()
     for (const method of Object.values(api)) method.mockReset()
     api.getTracksideApPlan.mockResolvedValue(emptyPlan())
@@ -240,7 +258,7 @@ describe('TracksideApPlanningTab behavior', () => {
     expect(latest).toHaveLength(2)
     expect(latest.map((row) => row.management_vlan)).toEqual([921, 921])
     expect(latest[0].ap_start_address).toBe('10.122.221.X')
-    expect(latest[1].ap_count).toBe(0)
+    expect(latest[1].planned_ap_count).toBe(0)
     expect(wrapper.text()).not.toContain('项需要修正')
     expect(button(wrapper, '保存').attributes('disabled')).toBeUndefined()
     wrapper.unmount()
@@ -271,21 +289,117 @@ describe('TracksideApPlanningTab behavior', () => {
     wrapper.unmount()
   })
 
+  it('keeps multi-row count and VLAN edits local until one explicit save', async () => {
+    api.getTracksideApPlan.mockResolvedValue({
+      ...emptyPlan(),
+      items: [
+        planRow({ planned_ap_count: 0 }),
+        planRow({
+          station_id: 'station:2',
+          sequence_no: 2,
+          station_name: '云龙火车站站',
+          management_vlan: 922,
+          ap_management_vlans: '922',
+        }),
+      ],
+      total: 2,
+    })
+    const wrapper = mount(TracksideApPlanningTab, {
+      props: { locked: false, saving: false },
+      global: { stubs },
+    })
+    await flushPromises()
+
+    const firstCount = wrapper.find('[data-plan-cell="0-planned_ap_count"] input')
+    expect(firstCount.attributes('readonly')).toBeUndefined()
+    expect(firstCount.attributes('disabled')).toBeUndefined()
+    await firstCount.setValue('30')
+    await wrapper.find('[data-plan-cell="1-planned_ap_count"] input').setValue('56')
+    await wrapper.find('[data-plan-cell="1-management_vlan"] input').setValue('923')
+    await flushPromises()
+
+    const latest = wrapper.emitted('change')?.at(-1)?.[0] as TracksideApPlanRow[]
+    expect(latest.map((row) => row.planned_ap_count)).toEqual([30, 56])
+    expect(latest[1].management_vlan).toBe(923)
+    expect(api.previewTracksideApPlan).not.toHaveBeenCalled()
+    expect(api.startTracksideApUpdate).not.toHaveBeenCalled()
+    expect(wrapper.emitted('save')).toBeUndefined()
+
+    await button(wrapper, '保存').trigger('click')
+    expect(wrapper.emitted('save')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('refreshes actual online status without replacing the planned-count draft', async () => {
+    api.getTracksideApPlan.mockResolvedValue({
+      ...emptyPlan(),
+      items: [planRow({ planned_ap_count: 28 })],
+      total: 1,
+    })
+    api.getTracksideApOnlineStatus
+      .mockResolvedValueOnce(emptyStatus())
+      .mockResolvedValueOnce({
+        ...emptyStatus(),
+        items: [{
+          station_id: 'station:1',
+          station_name: '小洋江站',
+          planned_ap_count: 28,
+          actual_online_count: 28,
+          offline_count: 0,
+          online_rate: 100,
+          remark: '',
+          count_anomaly: false,
+          warning: '',
+        }],
+        planned_ap_count: 28,
+        actual_online_count: 28,
+        online_rate: 100,
+        updated_at: '2026-07-30 12:00:00',
+      })
+    api.startTracksideApUpdate.mockResolvedValue(
+      task(
+        'refresh-status',
+        'COMPLETED',
+        false,
+        '',
+        '',
+        'trackside_ap_optical_update',
+      ),
+    )
+    const wrapper = mount(TracksideApPlanningTab, {
+      props: { locked: false, saving: false },
+      global: { stubs },
+    })
+    await flushPromises()
+
+    const countInput = wrapper.find('[data-plan-cell="0-planned_ap_count"] input')
+    await countInput.setValue('29')
+    await button(wrapper, '刷新上线状态').trigger('click')
+    await flushPromises()
+
+    expect(api.getTracksideApPlan).toHaveBeenCalledTimes(1)
+    expect(api.getTracksideApOnlineStatus).toHaveBeenCalledTimes(2)
+    expect((countInput.element as HTMLInputElement).value).toBe('29')
+    const latest = wrapper.emitted('change')?.at(-1)?.[0] as TracksideApPlanRow[]
+    expect(latest[0].planned_ap_count).toBe(29)
+    wrapper.unmount()
+  })
+
   it('renders weighted totals and a normal unassigned AP warning', async () => {
     api.getTracksideApOnlineStatus.mockResolvedValue({
       items: [{
         station_id: 'station:1',
         station_name: '01小洋江站',
-        planned_ap_count: 30,
-        actual_ap_count: 28,
-        online_count: 28,
+        planned_ap_count: 28,
+        actual_online_count: 28,
         offline_count: 0,
         online_rate: 100,
         remark: '核减2个AP',
+        count_anomaly: false,
+        warning: '',
       }],
-      planned_ap_count: 955,
-      actual_ap_count: 945,
-      online_count: 719,
+      planned_ap_count: 945,
+      actual_online_count: 719,
       offline_count: 226,
       online_rate: 76.1,
       unassigned_count: 11,
@@ -308,10 +422,61 @@ describe('TracksideApPlanningTab behavior', () => {
     expect(wrapper.text()).toContain('状态更新时间：2026-07-30 11:30:25')
     expect(wrapper.text()).toContain('当前有 11 个轨旁 AP 尚未分配归属站点。')
     expect(wrapper.text()).toContain('查看未分配 AP')
-    expect(wrapper.text()).toContain('AP 945')
-    expect(wrapper.text()).toContain('上线 719')
+    expect(wrapper.text()).toContain('规划总数 945')
+    expect(wrapper.text()).toContain('实际上线 719')
     expect(wrapper.text()).toContain('未上线 226')
     expect(wrapper.text()).toContain('总上线率 76.1%')
+    wrapper.unmount()
+  })
+
+  it('shows over-planned and zero-plan rates as a dash', async () => {
+    api.getTracksideApOnlineStatus.mockResolvedValue({
+      items: [
+        {
+          station_id: 'station:1',
+          station_name: '站点A',
+          planned_ap_count: 1,
+          actual_online_count: 2,
+          offline_count: 0,
+          online_rate: null,
+          remark: '',
+          count_anomaly: true,
+          status: 'over_planned',
+          warning: '实际上线 AP 数量超过当前规划数量，请检查规划资料或 AP 归属关系。',
+        },
+        {
+          station_id: 'station:2',
+          station_name: '站点B',
+          planned_ap_count: 0,
+          actual_online_count: 0,
+          offline_count: 0,
+          online_rate: null,
+          remark: '',
+          count_anomaly: false,
+          warning: '',
+        },
+      ],
+      planned_ap_count: 1,
+      actual_online_count: 2,
+      offline_count: 0,
+      online_rate: null,
+      unassigned_count: 0,
+      unassigned_items: [],
+      updated_at: '',
+      warning: '',
+      count_anomaly: true,
+      status: 'anomaly',
+    })
+    const wrapper = mount(TracksideApPlanningTab, {
+      props: { locked: false, saving: false },
+      global: { stubs },
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('200.0%')
+    expect(wrapper.text()).toContain('超规划')
+    expect(wrapper.text()).toContain('存在未纳入规划或超规划的在线 AP')
+    expect(wrapper.text()).toContain('—')
     wrapper.unmount()
   })
 
@@ -341,7 +506,7 @@ describe('TracksideApPlanningTab behavior', () => {
     wrapper.unmount()
   })
 
-  it('exports the current draft without a delayed page download', async () => {
+  it('exports the saved plan with a line-specific overview filename', async () => {
     api.getTracksideApPlan.mockResolvedValue({
       ...emptyPlan(),
       items: [planRow()],
@@ -351,7 +516,11 @@ describe('TracksideApPlanningTab behavior', () => {
       task('current-plan', 'COMPLETED', true, 'artifact-current'),
     )
     const wrapper = mount(TracksideApPlanningTab, {
-      props: { locked: false, saving: false },
+      props: {
+        locked: false,
+        saving: false,
+        lineName: '宁波地铁12号线',
+      },
       global: { stubs },
     })
     await flushPromises()
@@ -360,9 +529,9 @@ describe('TracksideApPlanningTab behavior', () => {
     await button(wrapper, '导出当前').trigger('click')
     await flushPromises()
 
-    expect(api.exportTracksideApPlan).toHaveBeenCalledWith(
-      false,
-      expect.arrayContaining([expect.objectContaining({ remark: '未保存备注' })]),
+    expect(api.exportTracksideApPlan).toHaveBeenCalledWith(false)
+    expect(sessionStorage.getItem('netconsole.user-selected-exports.v1')).toContain(
+      '宁波地铁12号线_轨旁AP规划及上线概览_',
     )
     expect(downloadBackendResource).not.toHaveBeenCalled()
     wrapper.unmount()

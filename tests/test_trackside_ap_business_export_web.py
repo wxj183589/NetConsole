@@ -135,7 +135,8 @@ def test_trackside_business_export_api_uses_owned_artifact_and_supports_cancel(
         assert job.job_type == "trackside_ap_business"
         assert job.site_name == "demo"
         assert job.db_path == str(paths.site_db_path("demo"))
-        assert job.params == {"language": "zh_CN"}
+        assert job.params["language"] == "zh_CN"
+        assert job.params["scope_context"]["display_name"] == "宁波地铁12号线"
         assert Path(job.output_path).name == expected_name
 
         export.complete(task_id, b"xlsx-fixture")

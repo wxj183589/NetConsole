@@ -31,9 +31,11 @@ import type {
   TracksideApOnlineStatusRow,
   TracksideApPlanPreview,
   TracksideApPlanRow,
+  TracksideApScopeExcluded,
   TracksideApTask,
   TracksideApUnassigned,
 } from '../../../types/tracksideApBusiness'
+import { useConfirm } from '../../feedback/useConfirm'
 import NcDataTable from '../../table/NcDataTable.vue'
 import type { NcTableColumn } from '../../table/NcTableColumn'
 
@@ -41,13 +43,12 @@ interface StationOption {
   id: string
   name: string
   sort_order: number | null
-  ap_count?: number
 }
 
 type EditableField =
   | 'sequence_no'
   | 'station_name'
-  | 'ap_count'
+  | 'planned_ap_count'
   | 'ap_start_address'
   | 'subnet_mask'
   | 'ap_gateway'
@@ -61,8 +62,13 @@ interface ValidationIssue {
 }
 
 const props = withDefaults(
-  defineProps<{ locked: boolean; saving: boolean; stations?: StationOption[] }>(),
-  { stations: () => [] },
+  defineProps<{
+    locked: boolean
+    saving: boolean
+    stations?: StationOption[]
+    lineName?: string
+  }>(),
+  { stations: () => [], lineName: '' },
 )
 const emit = defineEmits<{
   change: [rows: TracksideApPlanRow[], dirty: boolean]
@@ -70,6 +76,7 @@ const emit = defineEmits<{
 }>()
 
 const router = useRouter()
+const { confirm } = useConfirm()
 const userSelectedExport = useUserSelectedExport()
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const storageKey = 'netconsole.trackside-ap-plan.last-task'
@@ -89,6 +96,7 @@ const importRows = ref<TracksideApPlanRow[]>([])
 const importPreviewVisible = ref(false)
 const onlineStatus = ref<TracksideApOnlineStatus | null>(null)
 const unassignedVisible = ref(false)
+const excludedVisible = ref(false)
 const downloadingArtifact = ref(false)
 let pollTimer: number | undefined
 let editingBaseline:
@@ -99,7 +107,7 @@ const planColumns: NcTableColumn<TracksideApPlanRow>[] = [
   { key: 'selection', label: '', type: 'selection', valueType: 'selection', width: 46, fixed: 'left', hideable: false },
   { key: 'sequence_no', label: '序号', valueType: 'number', width: 88, fixed: 'left' },
   { key: 'station_name', label: '车站名称', valueType: 'name', width: 190 },
-  { key: 'ap_count', label: 'AP数量', valueType: 'number', width: 105 },
+  { key: 'planned_ap_count', label: '规划AP总数量', valueType: 'number', width: 135 },
   { key: 'ap_start_address', label: 'AP起始地址', valueType: 'ip', width: 165 },
   { key: 'subnet_mask', label: '掩码', valueType: 'name', width: 135 },
   { key: 'ap_gateway', label: 'AP网关', valueType: 'ip', width: 165 },
@@ -110,11 +118,11 @@ const planColumns: NcTableColumn<TracksideApPlanRow>[] = [
 
 const statusColumns: NcTableColumn<TracksideApOnlineStatusRow>[] = [
   { key: 'station_name', label: '归属站点', valueType: 'name', minWidth: 170, fixed: 'left' },
-  { key: 'planned_ap_count', label: '规划AP数量', valueType: 'number', width: 125 },
-  { key: 'actual_ap_count', label: 'AP总数量', valueType: 'number', width: 115 },
-  { key: 'online_count', label: '上线', valueType: 'number', width: 90 },
+  { key: 'planned_ap_count', label: '规划AP总数量', valueType: 'number', width: 135 },
+  { key: 'actual_online_count', label: '实际上线', valueType: 'number', width: 110 },
   { key: 'offline_count', label: '未上线', valueType: 'number', width: 100 },
   { key: 'online_rate', label: '上线率', valueType: 'number', width: 105 },
+  { key: 'status', label: '状态', valueType: 'status', width: 140 },
   { key: 'remark', label: '备注', valueType: 'description', minWidth: 260, align: 'left', alignmentReason: 'long-text' },
 ]
 
@@ -125,10 +133,18 @@ const unassignedColumns: NcTableColumn<TracksideApUnassigned>[] = [
   { key: 'station_name', label: '原归属文本', valueType: 'name', minWidth: 160 },
 ]
 
+const excludedColumns: NcTableColumn<TracksideApScopeExcluded>[] = [
+  { key: 'device_name', label: '设备名称', valueType: 'name', minWidth: 170 },
+  { key: 'station_name', label: '归属站点', valueType: 'name', minWidth: 150 },
+  { key: 'operation_status', label: '当前工作状态', valueType: 'status', width: 130 },
+  { key: 'project_phase', label: '建设批次', valueType: 'status', width: 120 },
+  { key: 'reason', label: '排除原因', valueType: 'description', minWidth: 280, align: 'left', alignmentReason: 'long-text' },
+]
+
 const editableFields: EditableField[] = [
   'sequence_no',
   'station_name',
-  'ap_count',
+  'planned_ap_count',
   'ap_start_address',
   'subnet_mask',
   'ap_gateway',
@@ -146,6 +162,9 @@ const orderedStations = computed(() => [...props.stations].sort(
 
 const validationIssues = computed<ValidationIssue[]>(() => validateRows(rows.value))
 const validationCount = computed(() => validationIssues.value.length)
+const countAnomalyRows = computed(
+  () => onlineStatus.value?.items.filter((row) => row.count_anomaly) || [],
+)
 
 function deepCopy<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
@@ -165,7 +184,7 @@ function blankRow(sequenceNo = nextSequence()): TracksideApPlanRow {
     station_id: '',
     sequence_no: sequenceNo,
     station_name: '',
-    ap_count: 0,
+    planned_ap_count: 0,
     ap_start_address: '',
     subnet_mask: '',
     mask_length: null,
@@ -183,8 +202,8 @@ function nextSequence(): number {
 
 function publishDirty(sort = false): void {
   if (sort) rows.value.sort(compareRows)
-  dirty.value = true
-  emit('change', deepCopy(rows.value), true)
+  dirty.value = JSON.stringify(rows.value) !== JSON.stringify(baselineRows.value)
+  emit('change', deepCopy(rows.value), dirty.value)
 }
 
 function hydrateStation(row: TracksideApPlanRow): void {
@@ -232,7 +251,7 @@ async function loadOnlineStatus(): Promise<void> {
   try {
     onlineStatus.value = await getTracksideApOnlineStatus()
   } catch (reason) {
-    error.value = failure(reason, 'AP 上线统计加载失败')
+    error.value = failure(reason, 'AP 上线情况加载失败')
   } finally {
     statusLoading.value = false
   }
@@ -260,8 +279,15 @@ function removeSelected(): void {
   publishDirty()
 }
 
-function undoChanges(): void {
+async function undoChanges(): Promise<void> {
   if (!canWrite.value || !dirty.value) return
+  const accepted = await confirm({
+    type: 'WARNING',
+    title: '放弃规划修改',
+    message: '确定放弃当前未保存的修改吗？',
+    confirmText: '放弃修改',
+  })
+  if (!accepted) return
   rows.value = deepCopy(baselineRows.value)
   selectedRows.value = []
   dirty.value = false
@@ -303,8 +329,8 @@ function validateRows(source: TracksideApPlanRow[]): ValidationIssue[] {
     if (!name) issues.push({ row, field: 'station_name', message: '车站名称不能为空' })
     else names.set(name.toLocaleLowerCase(), (names.get(name.toLocaleLowerCase()) || 0) + 1)
     if (row.station_id) stationIds.set(row.station_id, (stationIds.get(row.station_id) || 0) + 1)
-    if (!Number.isInteger(Number(row.ap_count)) || Number(row.ap_count) < 0) {
-      issues.push({ row, field: 'ap_count', message: 'AP数量必须是非负整数' })
+    if (!Number.isInteger(Number(row.planned_ap_count)) || Number(row.planned_ap_count) < 0) {
+      issues.push({ row, field: 'planned_ap_count', message: '规划AP总数量必须是非负整数' })
     }
     if (row.ap_start_address && !validStartAddress(row.ap_start_address)) {
       issues.push({ row, field: 'ap_start_address', message: '应为 IPv4 或末段 X 占位符' })
@@ -367,6 +393,7 @@ function cancelCellEdit(row: TracksideApPlanRow, field: EditableField): void {
     ;(row[field] as unknown) = editingBaseline.value
   }
   editingBaseline = null
+  publishDirty()
   const element = document.activeElement
   if (element instanceof HTMLElement) element.blur()
 }
@@ -433,7 +460,7 @@ function assignPastedValue(
   value: string,
 ): void {
   const text = value.trim()
-  if (field === 'sequence_no' || field === 'ap_count') {
+  if (field === 'sequence_no' || field === 'planned_ap_count') {
     ;(row[field] as number) = Number(text)
   } else if (field === 'management_vlan') {
     row.management_vlan = text ? Number(text) : null
@@ -478,12 +505,14 @@ async function exportPlan(template: boolean): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    const draftRows = !template && dirty.value ? deepCopy(rows.value) : undefined
+    const suggestedName = template
+      ? '轨旁AP逐站规划模板.xlsx'
+      : `${safeFileNamePart(props.lineName || '当前线路')}_轨旁AP规划及上线概览_${exportDate()}.xlsx`
     const result = await userSelectedExport.submitExportAfterDestinationSelected({
       action: template ? 'rail.trackside_plan_template' : 'rail.trackside_plan_current',
-      suggestedName: `${template ? '轨旁AP规划模板' : '轨旁AP规划'}-${exportTimestamp()}.xlsx`,
-      context: { template, draft: Boolean(draftRows) },
-      submit: () => exportTracksideApPlan(template, draftRows),
+      suggestedName,
+      context: { template },
+      submit: () => exportTracksideApPlan(template),
     })
     if (result.status === 'cancelled') return
     await handleTaskUpdate(result.task)
@@ -575,7 +604,7 @@ function openTaskWindow(): void {
 async function downloadArtifact(): Promise<void> {
   const current = task.value
   if (!current || current.status !== 'COMPLETED' || !current.available || !current.artifact_id) return
-  const suggestedName = current.artifact_name || '轨旁AP规划.xlsx'
+  const suggestedName = current.artifact_name || '轨旁AP规划及上线概览.xlsx'
   downloadingArtifact.value = true
   try {
     const result = await downloadBackendResource(
@@ -591,13 +620,30 @@ async function downloadArtifact(): Promise<void> {
   }
 }
 
-function exportTimestamp(now = new Date()): string {
+function exportDate(now = new Date()): string {
   const part = (value: number) => String(value).padStart(2, '0')
-  return `${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}_${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}`
+  return `${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}`
+}
+
+function safeFileNamePart(value: string): string {
+  return value.replace(/[\u0000-\u001f<>:"/\\|?*]/g, '_').trim() || '当前线路'
 }
 
 function displayRate(value: number | null): string {
   return value == null ? '—' : `${value.toFixed(1)}%`
+}
+
+function statusLabel(row: TracksideApOnlineStatusRow): string {
+  if (row.status === 'planning_missing') return '缺少规划资料'
+  if (row.status === 'unplanned_online') return '未纳入规划'
+  if (row.status === 'over_planned') return '超规划'
+  return '正常'
+}
+
+function statusTagType(row: TracksideApOnlineStatusRow): 'success' | 'warning' | 'danger' {
+  if (row.status === 'over_planned' || row.status === 'unplanned_online') return 'danger'
+  if (row.status === 'planning_missing') return 'warning'
+  return 'success'
 }
 
 function openApReferences(): void {
@@ -632,7 +678,7 @@ onBeforeUnmount(stopPolling)
         <div class="toolbar">
           <el-button :icon="Plus" :disabled="!canWrite" @click="addRow">新增站点</el-button>
           <el-button :icon="Delete" :disabled="!canWrite || !selectedRows.length" @click="removeSelected">删除所选</el-button>
-          <el-button type="primary" :icon="Check" :disabled="!canWrite || !dirty || validationCount > 0" @click="requestSave">保存</el-button>
+          <el-button type="primary" :icon="Check" :loading="props.saving" :disabled="!canWrite || !dirty || validationCount > 0" @click="requestSave">保存</el-button>
           <el-button :icon="RefreshLeft" :disabled="!canWrite || !dirty" @click="undoChanges">撤销修改</el-button>
           <el-select v-model="duplicateStrategy" aria-label="重复策略" class="strategy-select">
             <el-option label="覆盖更新" value="replace" />
@@ -697,21 +743,21 @@ onBeforeUnmount(stopPolling)
                 <span v-else>{{ row.station_name }}</span>
               </div>
             </template>
-            <template #cell-ap_count="{ row }">
-              <div :data-plan-cell="cellId(row, 'ap_count')" :title="cellError(row, 'ap_count')">
+            <template #cell-planned_ap_count="{ row }">
+              <div :data-plan-cell="cellId(row, 'planned_ap_count')" :title="cellError(row, 'planned_ap_count')">
                 <el-input-number
                   v-if="canWrite"
-                  v-model="row.ap_count"
+                  v-model="row.planned_ap_count"
                   :min="0"
                   :controls="false"
-                  :class="{ 'field-error': cellError(row, 'ap_count') }"
-                  @focus="beginCellEdit(row, 'ap_count')"
+                  :class="{ 'field-error': cellError(row, 'planned_ap_count') }"
+                  @focus="beginCellEdit(row, 'planned_ap_count')"
                   @change="publishDirty()"
-                  @paste="pasteGrid($event, row, 'ap_count')"
-                  @keydown.enter.prevent="focusNextRow(row, 'ap_count')"
-                  @keydown.esc.prevent="cancelCellEdit(row, 'ap_count')"
+                  @paste="pasteGrid($event, row, 'planned_ap_count')"
+                  @keydown.enter.prevent="focusNextRow(row, 'planned_ap_count')"
+                  @keydown.esc.prevent="cancelCellEdit(row, 'planned_ap_count')"
                 />
-                <span v-else>{{ row.ap_count }}</span>
+                <span v-else>{{ row.planned_ap_count }}</span>
               </div>
             </template>
             <template v-for="field in (['ap_start_address', 'subnet_mask', 'ap_gateway', 'remark'] as EditableField[])" #[`cell-${field}`]="{ row }" :key="field">
@@ -754,10 +800,23 @@ onBeforeUnmount(stopPolling)
         </div>
       </el-tab-pane>
 
-      <el-tab-pane label="AP 上线统计" name="status">
+      <el-tab-pane label="AP 上线情况概览" name="status">
         <div class="status-toolbar">
           <el-button type="primary" :icon="Refresh" :loading="statusLoading" :disabled="taskRunning" @click="refreshOnlineStatus">刷新上线状态</el-button>
           <span>状态更新时间：{{ onlineStatus?.updated_at || '--' }}</span>
+          <span class="status-definition">规划 AP 总数量由用户维护；实际上线数量来自最新 AC/FIT-AP 状态。</span>
+        </div>
+        <div v-if="onlineStatus" class="scope-summary">
+          <strong>统计范围：{{ onlineStatus.scope_description || '当前项目 · 当前工作范围轨旁 AP' }}</strong>
+          <span>纳入站点 {{ onlineStatus.scope_station_count || 0 }}</span>
+          <span>纳入设备 {{ onlineStatus.scope_device_count || 0 }}</span>
+          <span>排除设备 {{ onlineStatus.excluded_device_count || 0 }}</span>
+          <el-button
+            v-if="onlineStatus.excluded_device_count"
+            link
+            type="warning"
+            @click="excludedVisible = true"
+          >查看排除项</el-button>
         </div>
         <el-alert
           v-if="onlineStatus?.warning"
@@ -766,7 +825,17 @@ onBeforeUnmount(stopPolling)
           :closable="false"
           show-icon
         >
-          <el-button link type="warning" @click="unassignedVisible = true">查看未分配 AP</el-button>
+          <el-button v-if="onlineStatus?.unassigned_count" link type="warning" @click="unassignedVisible = true">查看未分配 AP</el-button>
+          <el-button v-if="onlineStatus?.excluded_device_count" link type="warning" @click="excludedVisible = true">查看排除项</el-button>
+        </el-alert>
+        <el-alert
+          v-if="countAnomalyRows.length"
+          title="存在未纳入规划或超规划的在线 AP，请检查规划资料和 AP 归属关系。"
+          type="warning"
+          :closable="false"
+          show-icon
+        >
+          <el-button link type="warning" @click="openApReferences">查看异常 AP 资料</el-button>
         </el-alert>
         <div class="table-shell">
           <NcDataTable
@@ -777,16 +846,22 @@ onBeforeUnmount(stopPolling)
             :columns="statusColumns"
             border
             height="calc(100vh - 460px)"
-            empty-text="暂无 AP 上线统计"
+            empty-text="暂无 AP 上线情况"
           >
+            <template #cell-station_name="{ row }">
+              <span>{{ row.station_name }}</span>
+            </template>
+            <template #cell-planned_ap_count="{ row }">{{ row.planning_missing ? '未填写' : row.planned_ap_count }}</template>
             <template #cell-online_rate="{ row }">{{ displayRate(row.online_rate) }}</template>
+            <template #cell-status="{ row }">
+              <el-tag :type="statusTagType(row)" size="small" :title="row.warning">{{ statusLabel(row) }}</el-tag>
+            </template>
             <template #cell-remark="{ row }">{{ row.remark || '--' }}</template>
           </NcDataTable>
           <div v-if="onlineStatus" class="status-total">
             <strong>合计</strong>
-            <span>规划 {{ onlineStatus.planned_ap_count }}</span>
-            <span>AP {{ onlineStatus.actual_ap_count }}</span>
-            <span>上线 {{ onlineStatus.online_count }}</span>
+            <span>规划总数 {{ onlineStatus.planned_ap_count }}</span>
+            <span>实际上线 {{ onlineStatus.actual_online_count }}</span>
             <span>未上线 {{ onlineStatus.offline_count }}</span>
             <span>总上线率 {{ displayRate(onlineStatus.online_rate) }}</span>
           </div>
@@ -824,7 +899,7 @@ onBeforeUnmount(stopPolling)
         >
           <template #cell-sequence_no="{ row }"><el-input-number v-model="row.sequence_no" :min="1" :controls="false" /></template>
           <template #cell-station_name="{ row }"><el-input v-model="row.station_name" /></template>
-          <template #cell-ap_count="{ row }"><el-input-number v-model="row.ap_count" :min="0" :controls="false" /></template>
+          <template #cell-planned_ap_count="{ row }"><el-input-number v-model="row.planned_ap_count" :min="0" :controls="false" /></template>
           <template #cell-ap_start_address="{ row }"><el-input v-model="row.ap_start_address" /></template>
           <template #cell-subnet_mask="{ row }"><el-input v-model="row.subnet_mask" /></template>
           <template #cell-ap_gateway="{ row }"><el-input v-model="row.ap_gateway" /></template>
@@ -848,6 +923,18 @@ onBeforeUnmount(stopPolling)
         border
         height="420"
         empty-text="没有未分配 AP"
+      />
+    </el-dialog>
+
+    <el-dialog v-model="excludedVisible" title="当前统计范围排除项" width="min(1040px, 94vw)">
+      <NcDataTable
+        table-id="rail-base-trackside-ap-scope-excluded"
+        route-key="/rail-transit/base-data"
+        :data="onlineStatus?.excluded_items || []"
+        :columns="excludedColumns"
+        border
+        height="460"
+        empty-text="没有排除项"
       />
     </el-dialog>
   </section>
@@ -879,6 +966,23 @@ onBeforeUnmount(stopPolling)
   width: 128px;
 }
 
+.status-definition {
+  color: var(--nc-text-secondary);
+}
+
+.scope-summary {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  padding: 0 0 12px;
+  color: var(--nc-text-secondary);
+}
+
+.scope-summary strong {
+  color: var(--nc-text-primary);
+}
+
 .dirty-state {
   margin-left: auto;
   color: var(--nc-text-secondary);
@@ -905,7 +1009,7 @@ onBeforeUnmount(stopPolling)
 
 .status-total {
   display: grid;
-  grid-template-columns: minmax(170px, 1fr) repeat(5, minmax(100px, auto));
+  grid-template-columns: minmax(170px, 1fr) repeat(4, minmax(120px, auto));
   align-items: center;
   min-width: 900px;
   padding: 10px 16px;

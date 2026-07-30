@@ -42,7 +42,7 @@ export interface DeviceGroupOption {
 }
 
 export type ProjectPhase = 'phase_1' | 'phase_2' | 'phase_3' | 'other' | 'unspecified'
-export type OperationStatus = 'in_service' | 'not_integrated' | 'commissioning' | 'suspended' | 'retired'
+export type WorkScopeStatus = 'included' | 'excluded'
 
 export interface DeviceListItem {
   id: number
@@ -55,9 +55,9 @@ export interface DeviceListItem {
   device_vendor: DeviceVendor
   device_type: string
   project_phase: ProjectPhase
-  operation_status: OperationStatus
-  operation_status_reason: string
-  operation_status_updated_at: string
+  work_scope_status: WorkScopeStatus
+  work_scope_reason: string
+  work_scope_updated_at: string
   primary_address: string
   backup_address: string
   updated_at: string
@@ -227,9 +227,9 @@ export interface DeviceOverviewResponse {
   system_name: string | null
   device_type: string | null
   project_phase?: ProjectPhase
-  operation_status?: OperationStatus
-  operation_status_reason?: string | null
-  operation_status_updated_at?: string | null
+  work_scope_status?: WorkScopeStatus
+  work_scope_reason?: string | null
+  work_scope_updated_at?: string | null
   station: string | null
   location: string | null
   primary_address: string | null
@@ -522,8 +522,8 @@ export interface DeviceWriteRequest {
   device_vendor?: DeviceVendor
   device_type?: string
   project_phase?: ProjectPhase
-  operation_status?: OperationStatus
-  operation_status_reason?: string
+  work_scope_status?: WorkScopeStatus
+  work_scope_reason?: string
   primary_address: string
   backup_address?: string
   ssh_enabled?: boolean
@@ -614,17 +614,17 @@ export interface DeviceListQuery {
   group_filter?: number | '__ungrouped__'
   connection_status?: DeviceConnectionStatus | ''
   project_phase?: ProjectPhase | 'all'
-  operation_status?: OperationStatus | 'all'
+  work_scope_status?: WorkScopeStatus | 'all'
   page?: number
   page_size?: number
   sort_by?: string
   sort_order?: 'asc' | 'desc'
 }
 
-export interface DeviceLifecycleUpdateRequest {
+export interface DeviceClassificationUpdateRequest {
   device_uuids: string[]
   project_phase?: ProjectPhase
-  operation_status?: OperationStatus
+  work_scope_status?: WorkScopeStatus
   reason?: string
 }
 

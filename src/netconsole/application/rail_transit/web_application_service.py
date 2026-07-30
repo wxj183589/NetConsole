@@ -92,6 +92,10 @@ from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.online_mr.collection_paths import OnlineMrCollectionPaths
 from netconsole.services.online_mr.session_lifecycle import online_mr_session_resource_key
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
+from netconsole.services.rail_transit.effective_trackside_ap_scope import (
+    TracksideApScopeContext,
+    resolve_effective_trackside_ap_scope_from_database,
+)
 from netconsole.services.rail_transit.car_network_diagnostic import (
     DEFAULT_GLOBAL_CONFIG,
     CarNetworkNode,
@@ -120,7 +124,7 @@ from netconsole.services.trackside_ap_plan_io import (
     TRACKSIDE_PLAN_COLUMNS,
     TRACKSIDE_PLAN_COLUMN_WIDTHS,
     TRACKSIDE_PLAN_HEADERS,
-    TRACKSIDE_PLAN_FIELD_NOTES,
+    TRACKSIDE_PLAN_SHEET,
     normalize_trackside_plan_row,
     normalize_trackside_plan_rows,
     read_trackside_plan_file,
@@ -649,7 +653,10 @@ class RailTransitWebApplicationService:
             site_name=site_id,
             output_path=str(reservation.output_path),
             db_path=str(self.paths.site_db_path(site_id)),
-            params={"language": "zh_CN"},
+            params={
+                "language": "zh_CN",
+                "scope_context": SiteManager(self.paths).load_site_metadata(site_id),
+            },
         )
         return self._start_export(
             site_id,
@@ -944,124 +951,59 @@ class RailTransitWebApplicationService:
         site_id: str,
     ) -> TracksideApOnlineStatusDTO:
         site_id = self._site(site_id)
-        query = RailTransitBaseDataQueryService(self.paths)
-        stations = query.list_stations(
-            site_id,
-            page=1,
-            page_size=10_000,
-        ).items
-        plans = self.get_trackside_ap_plan(site_id).items
-        aps = query.list_ap_status_items(site_id)
-        station_by_id = {station.id: station for station in stations}
-        station_aliases: dict[str, str] = {}
-        for station in stations:
-            for value in (
-                station.name,
-                station.canonical_station_name,
-            ):
-                key = self._trackside_station_key(value)
-                if key:
-                    station_aliases.setdefault(key, station.id)
-        plan_by_station: dict[str, TracksideApPlanRowDTO] = {}
-        unbound_plans: list[TracksideApPlanRowDTO] = []
-        for row in plans:
-            station_id = row.station_id if row.station_id in station_by_id else ""
-            if not station_id:
-                station_id = station_aliases.get(
-                    self._trackside_station_key(row.station_name),
-                    "",
-                )
-            if station_id:
-                plan_by_station[station_id] = row
-            else:
-                unbound_plans.append(row)
-        actual_by_station: dict[str, list[object]] = {}
-        unassigned: list[TracksideApUnassignedDTO] = []
-        updated_at = ""
-        for ap in aps:
-            if not self._trackside_ap_counts_in_status(ap.base_metadata):
-                continue
-            updated_at = max(updated_at, ap.runtime.updated_at, ap.updated_at)
-            station_id = station_aliases.get(
-                self._trackside_station_key(ap.station),
-                "",
-            )
-            if not station_id:
-                unassigned.append(
-                    TracksideApUnassignedDTO(
-                        ap_id=ap.id,
-                        ap_name=ap.name,
-                        point_code=ap.point_code,
-                        mac=ap.mac,
-                        station_name=ap.station,
-                    )
-                )
-                continue
-            actual_by_station.setdefault(station_id, []).append(ap)
-        result: list[TracksideApOnlineStatusRowDTO] = []
-        ordered_station_ids = sorted(
-            set(plan_by_station) | set(actual_by_station),
-            key=lambda station_id: (
-                station_by_id[station_id].sort_order is None,
-                station_by_id[station_id].sort_order or 0,
-                station_by_id[station_id].name,
-            ),
+        metadata = SiteManager(self.paths).load_site_metadata(site_id)
+        scope = resolve_effective_trackside_ap_scope_from_database(
+            Database(self.paths.site_db_path(site_id)),
+            site_id=site_id,
+            context=TracksideApScopeContext.from_metadata(site_id, metadata),
         )
-        for station_id in ordered_station_ids:
-            station = station_by_id[station_id]
-            plan = plan_by_station.get(station_id)
-            station_aps = actual_by_station.get(station_id, [])
-            online_count = sum(
-                getattr(ap, "runtime").fit_ap_status == "online"
-                for ap in station_aps
+        result = [
+            TracksideApOnlineStatusRowDTO.model_validate(row)
+            for row in scope.station_statistics()
+        ]
+        planned_total = sum(row.planned_ap_count for row in result)
+        actual_online_total = sum(row.actual_online_count for row in result)
+        unassigned = [
+            TracksideApUnassignedDTO(
+                ap_id=item.item_id,
+                ap_name=item.device_name,
+                mac=item.mac,
+                station_name=item.station_name,
             )
-            actual_count = len(station_aps)
-            result.append(
-                TracksideApOnlineStatusRowDTO(
-                    station_id=station_id,
-                    station_name=station.name,
-                    planned_ap_count=plan.ap_count if plan else 0,
-                    actual_ap_count=actual_count,
-                    online_count=online_count,
-                    offline_count=max(actual_count - online_count, 0),
-                    online_rate=(
-                        round(online_count * 100 / actual_count, 1)
-                        if actual_count
-                        else None
-                    ),
-                    remark=plan.remark if plan else "",
-                )
+            for item in scope.excluded_items
+            if item.source == "fit_ap_online"
+        ]
+        anomaly = any(row.count_anomaly for row in result)
+        warning_parts = []
+        if unassigned:
+            warning_parts.append(
+                f"当前有 {len(unassigned)} 个在线轨旁 AP 未纳入有效统计范围。"
             )
-        for row in unbound_plans:
-            result.append(
-                TracksideApOnlineStatusRowDTO(
-                    station_name=row.station_name,
-                    planned_ap_count=row.ap_count,
-                    remark=row.remark,
-                )
+        if scope.excluded_device_count:
+            warning_parts.append(
+                f"已按项目、当前工作状态、站点关联和稳定身份排除 {scope.excluded_device_count} 项。"
             )
-        actual_total = sum(row.actual_ap_count for row in result)
-        online_total = sum(row.online_count for row in result)
-        warning = (
-            f"当前有 {len(unassigned)} 个轨旁 AP 尚未分配归属站点。"
-            if unassigned
-            else ""
-        )
         return TracksideApOnlineStatusDTO(
             items=result,
-            planned_ap_count=sum(row.planned_ap_count for row in result),
-            actual_ap_count=actual_total,
-            online_count=online_total,
-            offline_count=max(actual_total - online_total, 0),
+            planned_ap_count=planned_total,
+            actual_online_count=actual_online_total,
+            offline_count=max(planned_total - actual_online_total, 0),
             online_rate=(
-                round(online_total * 100 / actual_total, 1)
-                if actual_total
+                round(actual_online_total * 100 / planned_total, 1)
+                if planned_total and not anomaly
                 else None
             ),
             unassigned_count=len(unassigned),
             unassigned_items=unassigned,
-            updated_at=updated_at,
-            warning=warning,
+            updated_at=scope.updated_at,
+            warning=" ".join(warning_parts),
+            count_anomaly=anomaly,
+            status="anomaly" if anomaly else "normal",
+            scope_description=scope.scope_description,
+            scope_station_count=scope.scope_station_count,
+            scope_device_count=scope.scope_device_count,
+            excluded_device_count=scope.excluded_device_count,
+            excluded_items=[item.to_dict() for item in scope.excluded_items[:200]],
         )
 
     def preview_trackside_ap_vlan_auto_group(
@@ -1242,7 +1184,7 @@ class RailTransitWebApplicationService:
                     station_id=str(item.get("station_id") or "").strip(),
                     sequence_no=sequence_no,
                     station_name=str(item.get("station_name") or "").strip(),
-                    ap_count=int(item.get("ap_count") or 0),
+                    planned_ap_count=int(item.get("ap_count") or 0),
                     ap_start_address=str(item.get("ap_start_address") or "").strip(),
                     subnet_mask=subnet_mask,
                     mask_length=item.get("mask_length"),
@@ -1711,10 +1653,20 @@ class RailTransitWebApplicationService:
         site_id: str,
         *,
         template: bool,
-        rows: list[dict[str, object | None]] | None = None,
-        draft: dict[str, object] | None = None,
     ) -> RailTransitTaskDTO:
         site_id = self._site(site_id)
+        generated_at = datetime.now().astimezone()
+        summary = RailTransitBaseDataQueryService(self.paths).get_summary(site_id)
+        line_name = str(summary.line_name or summary.site_name or site_id).strip()
+        safe_line_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", line_name)
+        preferred_name = (
+            "轨旁AP逐站规划模板.xlsx"
+            if template
+            else (
+                f"{safe_line_name}_轨旁AP规划及上线概览_"
+                f"{generated_at:%Y%m%d}.xlsx"
+            )
+        )
         task_id = f"rail-export-{uuid4().hex}"
         try:
             reservation = self.artifact_store.reserve(
@@ -1725,37 +1677,28 @@ class RailTransitWebApplicationService:
                 task_id=task_id,
                 task_type=self._ARTIFACT_TASK_TYPES["trackside_ap_plan"],
                 output_root=self.paths.trackside_ap_outputs_dir(site_id) / "web_plan",
-                preferred_name="轨旁AP规划模板.xlsx" if template else "轨旁AP规划.xlsx",
+                preferred_name=preferred_name,
             )
         except WebArtifactError as exc:
             self._task_window_blocked("轨旁 AP 规划导出", exc)
-        columns = [
-            {
+        columns = []
+        for index, (_key, field) in enumerate(TRACKSIDE_PLAN_COLUMNS):
+            column = {
                 "key": field,
                 "title": TRACKSIDE_PLAN_HEADERS[index],
                 "width": TRACKSIDE_PLAN_COLUMN_WIDTHS.get(field),
             }
-            for index, (_key, field) in enumerate(TRACKSIDE_PLAN_COLUMNS)
-        ]
+            if field in {"sequence_no", "ap_count", "management_vlan"}:
+                column["number_format"] = "0"
+            if field == "remark":
+                column["wrap"] = True
+                column["horizontal"] = "left"
+            columns.append(column)
         if template:
             plan_source = inline_rows_source(
                 [],
                 allow_inline_rows=True,
                 inline_reason="轨旁 AP 规划空白模板",
-            )
-        elif draft is not None:
-            plan_source = inline_rows_source(
-                normalize_trackside_plan_rows(
-                    project_legacy_station_rows(draft)
-                ),
-                allow_inline_rows=True,
-                inline_reason="兼容导出当前旧版规划草稿",
-            )
-        elif rows is not None:
-            plan_source = inline_rows_source(
-                normalize_trackside_plan_rows(rows),
-                allow_inline_rows=True,
-                inline_reason="用户明确选择导出当前规划编辑草稿",
             )
         else:
             plan_source = repository_query_source(
@@ -1764,6 +1707,90 @@ class RailTransitWebApplicationService:
                 method="list_trackside_ap_plan",
                 filters={"mode": TRACKSIDE_AP_PLAN_MODE},
             )
+        sheets: list[dict[str, object]] = [
+            {
+                "sheet_name": TRACKSIDE_PLAN_SHEET,
+                "columns": columns,
+                "source": plan_source,
+            }
+        ]
+        if not template:
+            status = self.get_trackside_ap_online_status(site_id)
+            status_rows = [
+                {
+                    "station_name": row.station_name,
+                    "planned_ap_count": (
+                        None if row.planning_missing else row.planned_ap_count
+                    ),
+                    "actual_online_count": row.actual_online_count,
+                    "offline_count": row.offline_count,
+                    "online_rate": (
+                        None
+                        if row.online_rate is None
+                        else row.online_rate / 100
+                    ),
+                    "remark": row.remark,
+                    "__row_kind": "station",
+                }
+                for row in status.items
+            ]
+            status_rows.append(
+                {
+                    "station_name": "合计",
+                    "planned_ap_count": status.planned_ap_count,
+                    "actual_online_count": status.actual_online_count,
+                    "offline_count": status.offline_count,
+                    "online_rate": (
+                        None
+                        if status.online_rate is None
+                        else status.online_rate / 100
+                    ),
+                    "remark": "",
+                    "__row_kind": "total",
+                }
+            )
+            sheets.append(
+                {
+                    "sheet_name": "AP上线情况概览",
+                    "columns": [
+                        {"key": "station_name", "title": "归属站点", "width": 24},
+                        {
+                            "key": "planned_ap_count",
+                            "title": "规划AP总数量",
+                            "width": 16,
+                            "number_format": "0",
+                        },
+                        {
+                            "key": "actual_online_count",
+                            "title": "实际上线",
+                            "width": 12,
+                            "number_format": "0",
+                        },
+                        {
+                            "key": "offline_count",
+                            "title": "未上线",
+                            "width": 12,
+                            "number_format": "0",
+                        },
+                        {
+                            "key": "online_rate",
+                            "title": "上线率",
+                            "width": 12,
+                            "number_format": "0.0%",
+                        },
+                        {
+                            "key": "remark",
+                            "title": "备注",
+                            "width": 42,
+                            "wrap": True,
+                            "horizontal": "left",
+                        },
+                    ],
+                    "rows": status_rows,
+                    "bold_row_field": "__row_kind",
+                    "bold_row_values": ["total"],
+                }
+            )
         job = replace(
             ExportTaskSpec(
                 task_type="multi_sheet_xlsx",
@@ -1771,23 +1798,14 @@ class RailTransitWebApplicationService:
                 site_name=site_id,
                 payload={
                     "source_module": "ac.trackside_ap_plan",
-                    "sheets": [
-                        {
-                            "sheet_name": "轨旁AP规划",
-                            "title": "轨旁 AP 规划模板" if template else "轨旁 AP 规划",
-                            "columns": columns,
-                            "source": plan_source,
-                        },
-                        {
-                            "sheet_name": "字段说明",
-                            "columns": [
-                                {"key": "field", "title": "字段"},
-                                {"key": "requirement", "title": "填写要求"},
-                                {"key": "description", "title": "说明", "width": 60},
-                            ],
-                            "rows": [dict(item) for item in TRACKSIDE_PLAN_FIELD_NOTES],
-                        },
-                    ],
+                    "contract_metadata": {
+                        "template_type": "trackside_ap_station_plan",
+                        "schema_version": 2,
+                        "generated_at": generated_at.isoformat(timespec="seconds"),
+                        "project_id": site_id,
+                        "line_id": "current",
+                    },
+                    "sheets": sheets,
                 },
             )
             .to_job(task_id)
@@ -1809,26 +1827,6 @@ class RailTransitWebApplicationService:
             "trackside_ap_plan_export",
             reservation,
         )
-
-    @staticmethod
-    def _trackside_station_key(value: object) -> str:
-        text = re.sub(r"\s+", "", str(value or "")).casefold()
-        return re.sub(r"^\d{1,3}[._-]*", "", text)
-
-    @staticmethod
-    def _trackside_ap_counts_in_status(
-        metadata: Mapping[str, object],
-    ) -> bool:
-        if metadata.get("enabled") is False:
-            return False
-        if metadata.get("include_in_statistics") is False:
-            return False
-        if metadata.get("participates_in_statistics") is False:
-            return False
-        return str(metadata.get("operation_status") or "").casefold() not in {
-            "suspended",
-            "retired",
-        }
 
     def open_trackside_ap_plan_export(self, site_id: str, artifact_id: str) -> tuple[Path, str]:
         return self._open_artifact(site_id, artifact_id, "trackside_ap_plan")
@@ -2111,7 +2109,7 @@ class RailTransitWebApplicationService:
                 for device in DeviceRepository(database).list(
                     vendor="H3C",
                     device_type="AC",
-                    operation_status="in_service",
+                    work_scope_status="included",
                 )
                 if str(device.device_uuid or "").strip()
             ]

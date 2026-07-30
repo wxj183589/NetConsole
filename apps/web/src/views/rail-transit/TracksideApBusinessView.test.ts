@@ -307,7 +307,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
       '下载原始输出 ZIP',
     ]) expect(wrapper.text()).not.toContain(removed)
     expect(wrapper.find('.adapter-section').exists()).toBe(false)
-    expect(wrapper.text()).toContain('已自动隐藏暂停使用设备')
+    expect(wrapper.text()).toContain('已按当前项目、建设阶段、当前工作状态和有效 AP 身份过滤')
     wrapper.unmount()
   })
 

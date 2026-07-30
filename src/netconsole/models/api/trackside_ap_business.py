@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 
 from netconsole.models.api.common import ApiModel
 from netconsole.models.api.rail_transit_base_data import TracksideApDTO
 
 
 class TracksideApBusinessRowDTO(ApiModel):
+    station_id: str = ""
     site: str = ""
     device_name: str = ""
     switch_vendor: str = ""
@@ -54,6 +55,17 @@ class TracksideApBusinessRowDTO(ApiModel):
     optical_severity: str = "normal"
 
 
+class TracksideApScopeExcludedDTO(ApiModel):
+    source: str = ""
+    item_id: str = ""
+    device_name: str = ""
+    station_name: str = ""
+    operation_status: str = ""
+    project_phase: str = ""
+    reason: str = ""
+    mac: str = ""
+
+
 class TracksideApBusinessPageDTO(ApiModel):
     items: list[TracksideApBusinessRowDTO] = Field(default_factory=list)
     total: int = 0
@@ -69,6 +81,11 @@ class TracksideApBusinessPageDTO(ApiModel):
     build_ms: int = 0
     empty_reason: str = ""
     identity_shadow: dict[str, object] = Field(default_factory=dict)
+    scope_description: str = "当前项目 · 当前工作范围轨旁 AP"
+    scope_station_count: int = Field(default=0, ge=0)
+    scope_device_count: int = Field(default=0, ge=0)
+    excluded_device_count: int = Field(default=0, ge=0)
+    excluded_items: list[TracksideApScopeExcludedDTO] = Field(default_factory=list)
 
 
 class TracksideApUpdateRequestDTO(ApiModel):
@@ -142,7 +159,11 @@ class TracksideApPlanRowDTO(ApiModel):
     station_id: str = ""
     sequence_no: int = 0
     station_name: str = ""
-    ap_count: int = 0
+    planned_ap_count: int = Field(
+        default=0,
+        ge=0,
+        validation_alias=AliasChoices("planned_ap_count", "ap_count"),
+    )
     ap_start_address: str = ""
     subnet_mask: str = ""
     mask_length: int | None = None
@@ -156,12 +177,20 @@ class TracksideApPlanRowDTO(ApiModel):
 class TracksideApOnlineStatusRowDTO(ApiModel):
     station_id: str = ""
     station_name: str
-    planned_ap_count: int = 0
-    actual_ap_count: int = 0
-    online_count: int = 0
-    offline_count: int = 0
+    planned_ap_count: int = Field(default=0, ge=0)
+    actual_online_count: int = Field(default=0, ge=0)
+    offline_count: int = Field(default=0, ge=0)
     online_rate: float | None = None
     remark: str = ""
+    planning_missing: bool = False
+    count_anomaly: bool = False
+    status: Literal[
+        "normal",
+        "planning_missing",
+        "unplanned_online",
+        "over_planned",
+    ] = "normal"
+    warning: str = ""
 
 
 class TracksideApUnassignedDTO(ApiModel):
@@ -174,15 +203,21 @@ class TracksideApUnassignedDTO(ApiModel):
 
 class TracksideApOnlineStatusDTO(ApiModel):
     items: list[TracksideApOnlineStatusRowDTO] = Field(default_factory=list)
-    planned_ap_count: int = 0
-    actual_ap_count: int = 0
-    online_count: int = 0
-    offline_count: int = 0
+    planned_ap_count: int = Field(default=0, ge=0)
+    actual_online_count: int = Field(default=0, ge=0)
+    offline_count: int = Field(default=0, ge=0)
     online_rate: float | None = None
     unassigned_count: int = 0
     unassigned_items: list[TracksideApUnassignedDTO] = Field(default_factory=list)
     updated_at: str = ""
     warning: str = ""
+    count_anomaly: bool = False
+    status: Literal["normal", "anomaly"] = "normal"
+    scope_description: str = "当前项目 · 当前工作范围轨旁 AP"
+    scope_station_count: int = Field(default=0, ge=0)
+    scope_device_count: int = Field(default=0, ge=0)
+    excluded_device_count: int = Field(default=0, ge=0)
+    excluded_items: list[TracksideApScopeExcludedDTO] = Field(default_factory=list)
 
 
 class ApManagementVlanPlanningDTO(ApiModel):
@@ -374,8 +409,6 @@ class TracksideApPlanPreviewDTO(ApiModel):
 
 class TracksideApPlanExportRequestDTO(ApiModel):
     template: bool = False
-    rows: list[TracksideApPlanRowDTO] | None = Field(default=None, max_length=2000)
-    draft: TracksideApPlanDraftDTO | None = None
 
 
 class ApManagementVlanAutoGroupRequestDTO(ApiModel):

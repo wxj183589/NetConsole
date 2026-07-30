@@ -21,7 +21,7 @@ META_SHEET = "_netconsole_meta"
 ZIP_MANIFEST = "_netconsole_manifest.json"
 CSV_META_MARKER = "#NETCONSOLE_META"
 CONTRACT_SCHEMA_VERSION = 1
-SUPPORTED_SCHEMA_VERSIONS = {1}
+SUPPORTED_SCHEMA_VERSIONS = {1, 2}
 _ARTIFACT_MEDIA_TYPES = {
     ".cfg": "text/plain",
     ".conf": "text/plain",
@@ -112,7 +112,7 @@ def attach_export_metadata(
     payload = dict(payload or {})
     module = str(payload.get("source_module") or _infer_module(export_type, payload))
     if suffix == ".xlsx":
-        _attach_xlsx_metadata(target, module, export_type)
+        _attach_xlsx_metadata(target, module, export_type, payload)
     elif suffix == ".csv":
         _attach_csv_metadata(target, module, export_type)
     elif suffix == ".json":
@@ -319,7 +319,12 @@ def safe_extract_zip(archive: zipfile.ZipFile, destination: str | Path) -> None:
     archive.extractall(root)
 
 
-def _attach_xlsx_metadata(path: Path, module: str, export_type: str) -> None:
+def _attach_xlsx_metadata(
+    path: Path,
+    module: str,
+    export_type: str,
+    payload: Mapping[str, Any],
+) -> None:
     with path.open("rb") as handle:
         workbook = load_workbook_without_unsupported_image_warning(handle, read_only=False)
     try:
@@ -337,6 +342,17 @@ def _attach_xlsx_metadata(path: Path, module: str, export_type: str) -> None:
             required_sheets=required_sheets,
             required_columns=required_columns,
         )
+        contract_metadata = payload.get("contract_metadata")
+        if isinstance(contract_metadata, Mapping):
+            for key in (
+                "template_type",
+                "schema_version",
+                "generated_at",
+                "project_id",
+                "line_id",
+            ):
+                if key in contract_metadata:
+                    metadata[key] = contract_metadata[key]
         sheet = workbook.create_sheet(META_SHEET)
         sheet.sheet_state = "hidden"
         sheet.append(["metadata_json", json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))])

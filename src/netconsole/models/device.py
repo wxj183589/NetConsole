@@ -49,12 +49,9 @@ class ProjectPhase(StrEnum):
     UNSPECIFIED = "unspecified"
 
 
-class OperationStatus(StrEnum):
-    IN_SERVICE = "in_service"
-    NOT_INTEGRATED = "not_integrated"
-    COMMISSIONING = "commissioning"
-    SUSPENDED = "suspended"
-    RETIRED = "retired"
+class WorkScopeStatus(StrEnum):
+    INCLUDED = "included"
+    EXCLUDED = "excluded"
 
 
 PROJECT_PHASE_LABELS = {
@@ -64,12 +61,23 @@ PROJECT_PHASE_LABELS = {
     ProjectPhase.OTHER.value: "其他",
     ProjectPhase.UNSPECIFIED.value: "未指定",
 }
-OPERATION_STATUS_LABELS = {
-    OperationStatus.IN_SERVICE.value: "在用",
-    OperationStatus.NOT_INTEGRATED.value: "未并网",
-    OperationStatus.COMMISSIONING.value: "调试中",
-    OperationStatus.SUSPENDED.value: "暂停使用",
-    OperationStatus.RETIRED.value: "已退役",
+WORK_SCOPE_STATUS_LABELS = {
+    WorkScopeStatus.INCLUDED.value: "参与当前调试",
+    WorkScopeStatus.EXCLUDED.value: "暂不参与",
+}
+LEGACY_OPERATION_STATUS_LABELS = {
+    "in_service": "在用",
+    "not_integrated": "未并网",
+    "commissioning": "调试中",
+    "suspended": "暂停使用",
+    "retired": "已退役",
+}
+LEGACY_OPERATION_STATUS_TO_WORK_SCOPE = {
+    "in_service": WorkScopeStatus.INCLUDED.value,
+    "not_integrated": WorkScopeStatus.EXCLUDED.value,
+    "commissioning": WorkScopeStatus.EXCLUDED.value,
+    "suspended": WorkScopeStatus.EXCLUDED.value,
+    "retired": WorkScopeStatus.EXCLUDED.value,
 }
 
 
@@ -89,18 +97,39 @@ def normalize_project_phase(value: object) -> str:
     return _normalize_enum_value(value, ProjectPhase, PROJECT_PHASE_LABELS, "建设阶段")
 
 
-def normalize_operation_status(value: object) -> str:
-    return _normalize_enum_value(
-        value, OperationStatus, OPERATION_STATUS_LABELS, "投运状态"
+def normalize_work_scope_status(value: object) -> str:
+    text = str(value or "").strip()
+    aliases = {
+        WorkScopeStatus.INCLUDED.value: WorkScopeStatus.INCLUDED.value,
+        WorkScopeStatus.EXCLUDED.value: WorkScopeStatus.EXCLUDED.value,
+        "参与当前调试": WorkScopeStatus.INCLUDED.value,
+        "参与当前工作": WorkScopeStatus.INCLUDED.value,
+        "暂不参与": WorkScopeStatus.EXCLUDED.value,
+        "暂不参与当前工作": WorkScopeStatus.EXCLUDED.value,
+    }
+    normalized = aliases.get(text.casefold())
+    if normalized is None:
+        raise ValueError(f"不支持的当前工作状态：{text or '空值'}")
+    return normalized
+
+
+def legacy_operation_status_to_work_scope_status(value: object) -> str:
+    text = str(value or "").strip()
+    aliases = {
+        stable.casefold(): stable
+        for stable in LEGACY_OPERATION_STATUS_TO_WORK_SCOPE
+    }
+    aliases.update(
+        {label.casefold(): stable for stable, label in LEGACY_OPERATION_STATUS_LABELS.items()}
     )
+    legacy_status = aliases.get(text.casefold())
+    if legacy_status is None:
+        raise ValueError(f"不支持的旧投运状态：{text or '空值'}")
+    return LEGACY_OPERATION_STATUS_TO_WORK_SCOPE[legacy_status]
 
 
 def is_device_eligible_for_automatic_collection(device: "Device") -> bool:
-    return device.operation_status == OperationStatus.IN_SERVICE.value
-
-
-def is_device_available_for_manual_debug(device: "Device") -> bool:
-    return device.operation_status != OperationStatus.RETIRED.value
+    return device.work_scope_status == WorkScopeStatus.INCLUDED.value
 
 
 def normalize_device_vendor(value: object) -> str:
@@ -136,10 +165,10 @@ class Device:
     device_vendor: str = "H3C"
     device_type: str | None = "SW"
     project_phase: str = ProjectPhase.UNSPECIFIED.value
-    operation_status: str = OperationStatus.IN_SERVICE.value
-    operation_status_reason: str | None = None
-    operation_status_updated_at: str | None = None
-    operation_status_updated_by: str | None = None
+    work_scope_status: str = WorkScopeStatus.INCLUDED.value
+    work_scope_reason: str | None = None
+    work_scope_updated_at: str | None = None
+    work_scope_updated_by: str | None = None
     primary_address: str = ""
     normalized_primary_address: str | None = None
     backup_address: str | None = None
@@ -199,9 +228,9 @@ class Device:
             kwargs["device_vendor"] = normalize_device_vendor(kwargs["device_vendor"])
         if "project_phase" in kwargs:
             kwargs["project_phase"] = normalize_project_phase(kwargs["project_phase"])
-        if "operation_status" in kwargs:
-            kwargs["operation_status"] = normalize_operation_status(
-                kwargs["operation_status"]
+        if "work_scope_status" in kwargs:
+            kwargs["work_scope_status"] = normalize_work_scope_status(
+                kwargs["work_scope_status"]
             )
         field_names = set(self.field_names())
         unknown = set(kwargs) - field_names
@@ -248,6 +277,19 @@ class Device:
     @classmethod
     def from_mapping(cls, data: dict[str, object]) -> "Device":
         normalized = dict(data)
+        if "work_scope_status" not in normalized and "operation_status" in normalized:
+            normalized["work_scope_status"] = (
+                legacy_operation_status_to_work_scope_status(
+                    normalized.get("operation_status")
+                )
+            )
+        for current, legacy in (
+            ("work_scope_reason", "operation_status_reason"),
+            ("work_scope_updated_at", "operation_status_updated_at"),
+            ("work_scope_updated_by", "operation_status_updated_by"),
+        ):
+            if current not in normalized and legacy in normalized:
+                normalized[current] = normalized.get(legacy)
         if "primary_address" not in normalized and "ip_address" in normalized:
             normalized["primary_address"] = normalized.get("ip_address")
         if "system_name" not in normalized and "sysname" in normalized:

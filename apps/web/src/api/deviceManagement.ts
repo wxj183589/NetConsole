@@ -25,7 +25,7 @@ import type {
   DeviceHistoryPage,
   DeviceOverviewResponse,
   DeviceListQuery,
-  DeviceLifecycleUpdateRequest,
+  DeviceClassificationUpdateRequest,
   DevicePage,
   DeviceTaskBatch,
   DeviceTaskReference,
@@ -172,8 +172,8 @@ export function assignDeviceGroup(deviceUuids: string[], groupId: number | null)
   return apiRequest<{ success: number; failed: number; group_id: number | null }>('/api/device-management/groups/assign', { method: 'POST', body: JSON.stringify({ device_uuids: deviceUuids, group_id: groupId }) })
 }
 
-export function updateDeviceLifecycle(payload: DeviceLifecycleUpdateRequest): Promise<{ updated: number }> {
-  return apiRequest<{ updated: number }>('/api/device-management/devices/lifecycle', {
+export function updateDeviceClassification(payload: DeviceClassificationUpdateRequest): Promise<{ updated: number }> {
+  return apiRequest<{ updated: number }>('/api/device-management/devices/classification', {
     method: 'PATCH',
     body: JSON.stringify(payload),
   })

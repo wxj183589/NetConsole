@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
+from netconsole.core.sites import SiteManager
 from netconsole.models.api.trackside_ap_business import (
     TracksideApBusinessPageDTO,
     TracksideApBusinessRowDTO,
@@ -21,6 +22,9 @@ from netconsole.services.trackside_ap_business import (
     is_trackside_device_eligible,
 )
 from netconsole.services.trackside_ap_export_service import load_trackside_ap_business_snapshot
+from netconsole.services.rail_transit.effective_trackside_ap_scope import (
+    TracksideApScopeContext,
+)
 
 
 class TracksideApBusinessQueryService:
@@ -37,9 +41,16 @@ class TracksideApBusinessQueryService:
         self, site_id: str
     ) -> TracksideSwitchAdapterCatalogDTO:
         repository = DeviceRepository(Database(self.paths.site_db_path(site_id)))
+        scope_context = TracksideApScopeContext.from_metadata(
+            site_id,
+            SiteManager(self.paths).load_site_metadata(site_id),
+        )
         items: list[TracksideSwitchDeviceDTO] = []
         for device in repository.list(device_type="SW"):
-            if not is_trackside_device_eligible(device):
+            if not is_trackside_device_eligible(
+                device,
+                project_phase=scope_context.project_phase,
+            ):
                 continue
             try:
                 description = resolve_trackside_switch_adapter(
@@ -72,6 +83,10 @@ class TracksideApBusinessQueryService:
             DeviceRepository(Database(self.paths.site_db_path(site_id))),
             site_id,
             generation=0,
+            scope_context=TracksideApScopeContext.from_metadata(
+                site_id,
+                SiteManager(self.paths).load_site_metadata(site_id),
+            ),
         )
         business_rows = [
             normalize_trackside_ap_business_row(row)
@@ -86,6 +101,7 @@ class TracksideApBusinessQueryService:
         size = max(1, min(int(page_size), 200))
         start = (current_page - 1) * size
         items = [self._row(row, severity) for row, severity in enriched[start : start + size]]
+        scope = snapshot.scope
         return TracksideApBusinessPageDTO(
             items=items,
             total=len(enriched),
@@ -101,11 +117,27 @@ class TracksideApBusinessQueryService:
             build_ms=snapshot.build_ms,
             empty_reason=snapshot.empty_reason,
             identity_shadow=snapshot.identity_shadow,
+            scope_description=(
+                scope.scope_description
+                if scope is not None
+                else "当前项目 · 当前工作范围轨旁 AP"
+            ),
+            scope_station_count=scope.scope_station_count if scope is not None else 0,
+            scope_device_count=scope.scope_device_count if scope is not None else 0,
+            excluded_device_count=(
+                scope.excluded_device_count if scope is not None else 0
+            ),
+            excluded_items=(
+                [item.to_dict() for item in scope.excluded_items[:200]]
+                if scope is not None
+                else []
+            ),
         )
 
     @staticmethod
     def _row(row: dict[str, object | None], severity: str) -> TracksideApBusinessRowDTO:
         return TracksideApBusinessRowDTO(
+            station_id=str(row.get("station_id") or ""),
             site=str(row.get("site") or ""),
             device_name=str(row.get("device_name") or ""),
             switch_vendor=str(row.get("switch_vendor") or ""),

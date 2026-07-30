@@ -673,7 +673,7 @@ async function beforeTabLeave(next: string, current: string): Promise<boolean> {
   return !dirty.value || confirmUnsavedChanges()
 }
 
-async function saveAllChanges(): Promise<boolean> {
+async function saveAllChanges(successMessage = ''): Promise<boolean> {
   if (!store.editSession || saving.value || !dirty.value) return !dirty.value
   const changes = Object.values(pendingChanges.value)
   if (planningDirty.value && planningDraft.value) {
@@ -710,13 +710,20 @@ async function saveAllChanges(): Promise<boolean> {
     serverSnapshot.value = null
     editingDraft.value = null
     store.startPolling()
-    ElMessage.success(`基础资料已保存：新增 ${result.created_count}，更新 ${result.updated_count}，删除 ${result.deleted_count}${result.warnings.length ? `，提示 ${result.warnings.length}` : ''}`)
+    ElMessage.success(
+      successMessage
+      || `基础资料已保存：新增 ${result.created_count}，更新 ${result.updated_count}，删除 ${result.deleted_count}${result.warnings.length ? `，提示 ${result.warnings.length}` : ''}`,
+    )
     return true
   } catch (cause) {
     editState.value = 'SAVE_FAILED'
     ElMessage.error(message(cause, '基础资料保存失败，修改已保留'))
     return false
   }
+}
+
+async function saveTracksideApPlanning(): Promise<void> {
+  await saveAllChanges('轨旁 AP 规划已保存。')
 }
 
 async function cancelEditing(): Promise<void> {
@@ -2533,7 +2540,7 @@ function sectionSourceLabel(row: Section): string {
         <el-button :icon="Refresh" :loading="store.loading" :disabled="saving" @click="refreshPage">刷新</el-button>
         <el-button :type="locked ? 'primary' : 'warning'" :disabled="saving || (locked && !canUnlock)" @click="toggleLock">{{ locked ? '解锁' : '锁定' }}</el-button>
         <el-button v-if="editing" :disabled="saving" @click="cancelEditing">取消修改</el-button>
-        <el-button type="primary" :loading="saving" :disabled="locked || !dirty" @click="saveAllChanges">保存</el-button>
+        <el-button type="primary" :loading="saving" :disabled="locked || !dirty" @click="saveAllChanges()">保存</el-button>
       </div>
     </div>
     <el-alert v-if="store.error" :title="store.error" type="error" :closable="false" show-icon class="page-error" />
@@ -2906,9 +2913,10 @@ function sectionSourceLabel(row: Section): string {
             ref="planningTab"
             :locked="locked"
             :saving="saving"
-            :stations="stationRows.map((row) => ({ id: row.id, name: row.name, sort_order: row.sort_order, ap_count: row.ap_count }))"
+            :stations="stationRows.map((row) => ({ id: row.id, name: row.name, sort_order: row.sort_order }))"
+            :line-name="store.summary?.line_name || store.summary?.site_name || ''"
             @change="handlePlanningChange"
-            @save="saveAllChanges"
+            @save="saveTracksideApPlanning"
           />
         </el-tab-pane>
 

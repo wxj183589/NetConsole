@@ -33,7 +33,7 @@ import {
   startSecureCrtExport,
   startSecureCrtExportWithTemplate,
   updateDevice,
-  updateDeviceLifecycle,
+  updateDeviceClassification,
   updateExternalTerminalSettings,
 } from '../../api/deviceManagement'
 import {
@@ -69,8 +69,8 @@ import type {
   DeviceImportRowResult,
   DeviceImportWriteMode,
   DeviceListItem,
-  OperationStatus,
   ProjectPhase,
+  WorkScopeStatus,
   DevicePage,
   DeviceSecretField,
   DeviceTaskReference,
@@ -139,12 +139,12 @@ const groupVisible = ref(false)
 const groupName = ref('')
 const groupAssignVisible = ref(false)
 const groupAssignId = ref<number | null>(null)
-const lifecycleVisible = ref(false)
-const lifecycleMode = ref<'phase' | 'status'>('phase')
-const lifecycleValue = ref<ProjectPhase | OperationStatus>('unspecified')
-const lifecycleReason = ref('')
-const lifecycleTargetUuids = ref<string[]>([])
-const lifecycleLoading = ref(false)
+const classificationVisible = ref(false)
+const classificationMode = ref<'phase' | 'status'>('phase')
+const classificationValue = ref<ProjectPhase | WorkScopeStatus>('unspecified')
+const classificationReason = ref('')
+const classificationTargetUuids = ref<string[]>([])
+const classificationLoading = ref(false)
 const importVisible = ref(false)
 const importFile = ref<File | null>(null)
 const importFileInput = ref<HTMLInputElement | null>(null)
@@ -184,7 +184,7 @@ const filters = reactive({
   device_type: '',
   connection_status: '' as DeviceConnectionStatus | '',
   project_phase: 'all' as ProjectPhase | 'all',
-  operation_status: 'in_service' as OperationStatus | 'all',
+  work_scope_status: 'included' as WorkScopeStatus | 'all',
   sort_by: 'name',
   sort_order: 'asc' as 'asc' | 'desc',
   page: 1,
@@ -196,7 +196,7 @@ const deviceColumns: NcTableColumn<DeviceListItem>[] = [
   { key: 'group_name', label: '分组', valueType: 'text', stretch: 'normal' },
   { key: 'device_vendor', label: '厂商', valueType: 'text', stretch: 'normal', displayValue: (row) => formatDeviceVendor(row.device_vendor) },
   { key: 'project_phase', label: '建设阶段', valueType: 'status', cellKind: 'tag', stretch: 'none' },
-  { key: 'operation_status', label: '投运状态', valueType: 'status', cellKind: 'tag', stretch: 'none' },
+  { key: 'work_scope_status', label: '当前工作状态', valueType: 'status', cellKind: 'tag', stretch: 'none' },
   { key: 'system_name', label: '系统名', valueType: 'name', stretch: 'normal' },
   { key: 'station', label: '站点', valueType: 'text', stretch: 'priority' },
   { key: 'primary_address', label: '主地址', valueType: 'ip', stretch: 'normal' },
@@ -242,7 +242,7 @@ const batchRefreshColumns: NcTableColumn<DeviceBatchRefreshItem>[] = [
   { key: 'last_collected_at', label: '采集时间', valueType: 'datetime', stretch: 'none' },
   { key: 'error_message', label: '错误信息', valueType: 'text', stretch: 'priority' },
 ]
-const writeForm = reactive<DeviceWriteRequest>({ name: '', primary_address: '', project_phase: 'unspecified', operation_status: 'in_service', operation_status_reason: '', ssh_enabled: true, ssh_port: 22, telnet_enabled: false, telnet_port: 23, snmp_enabled: true, snmp_v2c_enabled: true, snmp_port: 161 })
+const writeForm = reactive<DeviceWriteRequest>({ name: '', primary_address: '', project_phase: 'unspecified', work_scope_status: 'included', work_scope_reason: '', ssh_enabled: true, ssh_port: 22, telnet_enabled: false, telnet_port: 23, snmp_enabled: true, snmp_v2c_enabled: true, snmp_port: 161 })
 const filteredImportRows = computed(() => {
   const rows = importPreview.value?.rows || []
   return importActionFilter.value === 'ALL'
@@ -426,7 +426,7 @@ async function loadDevices(resetPage = false, preserveSelection = false): Promis
       vendor: filters.vendor,
       connection_status: filters.connection_status,
       project_phase: filters.project_phase,
-      operation_status: filters.operation_status,
+      work_scope_status: filters.work_scope_status,
       page: filters.page,
       page_size: filters.page_size,
       sort_by: filters.sort_by,
@@ -671,8 +671,8 @@ function currentDeviceWriteValues(): DeviceWriteRequest | null {
     device_vendor: profile.device_vendor,
     device_type: profile.device_type,
     project_phase: profile.project_phase,
-    operation_status: profile.operation_status,
-    operation_status_reason: profile.operation_status_reason,
+    work_scope_status: profile.work_scope_status,
+    work_scope_reason: profile.work_scope_reason,
     primary_address: profile.primary_address,
     backup_address: profile.backup_address,
     ssh_enabled: profile.ssh_enabled ?? false,
@@ -765,13 +765,13 @@ const deviceContextMenuItems = computed<NcDataTableContextMenuItem<DeviceListIte
   {
     key: 'set-project-phase',
     label: '设置建设阶段',
-    action: ({ row }) => openLifecycleDialog('phase', [row.device_uuid]),
+    action: ({ row }) => openClassificationDialog('phase', [row.device_uuid]),
     disabled: !isFeatureEnabled('web.device_management_write'),
   },
   {
-    key: 'set-operation-status',
-    label: '设置投运状态',
-    action: ({ row }) => openLifecycleDialog('status', [row.device_uuid]),
+    key: 'set-work-scope-status',
+    label: '设置当前工作状态',
+    action: ({ row }) => openClassificationDialog('status', [row.device_uuid]),
     disabled: !isFeatureEnabled('web.device_management_write'),
   },
   {
@@ -819,7 +819,7 @@ function openCreate(): void {
   writeMode.value = 'create'
   resetSecretClears()
   Object.assign(writeForm, {
-    name: '', system_name: '', station: '', location: '', group_id: null, device_vendor: 'H3C', device_type: 'SW', project_phase: 'unspecified', operation_status: 'in_service', operation_status_reason: '', primary_address: '', backup_address: '',
+    name: '', system_name: '', station: '', location: '', group_id: null, device_vendor: 'H3C', device_type: 'SW', project_phase: 'unspecified', work_scope_status: 'included', work_scope_reason: '', primary_address: '', backup_address: '',
     ssh_enabled: true, ssh_port: 22, ssh_username: '', ssh_password: '', telnet_enabled: false, telnet_port: 23, telnet_username: '', telnet_password: '',
     tunnel_enabled: false, tunnel1_enabled: false, tunnel1_host: '', tunnel1_port: 22, tunnel1_username: '', tunnel1_password: '', tunnel2_enabled: false, tunnel2_host: '', tunnel2_port: 22, tunnel2_username: '', tunnel2_password: '',
     snmp_enabled: true, snmp_v1_enabled: false, snmp_v2c_enabled: true, snmp_port: 161, snmp_ro_community: '', snmp_timeout_ms: 2000, snmp_retries: 1,
@@ -1165,42 +1165,33 @@ async function saveGroupAssignment(): Promise<void> {
   }
 }
 
-function openLifecycleDialog(
+function openClassificationDialog(
   mode: 'phase' | 'status',
   targets = selectedUuids.value,
 ): void {
   if (!targets.length) return
-  lifecycleMode.value = mode
-  lifecycleTargetUuids.value = [...targets]
-  lifecycleValue.value = mode === 'phase' ? 'unspecified' : 'in_service'
-  lifecycleReason.value = ''
-  lifecycleVisible.value = true
+  classificationMode.value = mode
+  classificationTargetUuids.value = [...targets]
+  classificationValue.value = mode === 'phase' ? 'unspecified' : 'included'
+  classificationReason.value = ''
+  classificationVisible.value = true
 }
 
-async function saveLifecycle(): Promise<void> {
-  if (!lifecycleTargetUuids.value.length) return
-  if (lifecycleMode.value === 'status' && lifecycleValue.value === 'retired') {
-    const accepted = await confirm({
-      type: 'DANGER',
-      title: '确认设置为已退役',
-      message: '已退役设备默认禁止新采集，但设备、凭据和历史数据不会删除。',
-      confirmText: '确认退役',
-    })
-    if (!accepted) return
-  }
-  lifecycleLoading.value = true
+async function saveClassification(): Promise<void> {
+  if (!classificationTargetUuids.value.length) return
+  classificationLoading.value = true
   try {
-    const payload = lifecycleMode.value === 'phase'
-      ? { device_uuids: lifecycleTargetUuids.value, project_phase: lifecycleValue.value as ProjectPhase }
-      : { device_uuids: lifecycleTargetUuids.value, operation_status: lifecycleValue.value as OperationStatus, reason: lifecycleReason.value }
-    const result = await updateDeviceLifecycle(payload)
-    lifecycleVisible.value = false
+    const payload = classificationMode.value === 'phase'
+      ? { device_uuids: classificationTargetUuids.value, project_phase: classificationValue.value as ProjectPhase }
+      : { device_uuids: classificationTargetUuids.value, work_scope_status: classificationValue.value as WorkScopeStatus, reason: classificationReason.value }
+    const result = await updateDeviceClassification(payload)
+    classificationVisible.value = false
     ElMessage.success(`已更新 ${result.updated} 台设备`)
     await loadDevices(true)
   } catch (cause) {
     ElMessage.error(errorMessage(cause, '设备状态设置失败'))
   } finally {
-    lifecycleLoading.value = false
+    classificationLoading.value = false
   }
 }
 
@@ -1281,7 +1272,7 @@ function currentExportFilters(
     device_type: filters.device_type,
     group_filter: filters.group === 'ungrouped' ? '__ungrouped__' : filters.group ? Number(filters.group) : undefined,
     project_phase: filters.project_phase,
-    operation_status: filters.operation_status,
+    work_scope_status: filters.work_scope_status,
     include_credentials: includeCredentials,
   }
 }
@@ -1684,13 +1675,10 @@ function projectPhaseLabel(value: ProjectPhase): string {
   }[value] || value
 }
 
-function operationStatusLabel(value: OperationStatus): string {
+function workScopeStatusLabel(value: WorkScopeStatus): string {
   return {
-    in_service: '在用',
-    not_integrated: '未并网',
-    commissioning: '调试中',
-    suspended: '暂停使用',
-    retired: '已退役',
+    included: '参与当前调试',
+    excluded: '暂不参与',
   }[value] || value
 }
 
@@ -1723,10 +1711,10 @@ function errorMessage(cause: unknown, fallback: string): string {
         <el-option label="二期" value="phase_2" /><el-option label="三期" value="phase_3" />
         <el-option label="其他" value="other" /><el-option label="未指定" value="unspecified" />
       </el-select>
-      <el-select v-model="filters.operation_status" placeholder="投运状态" @change="loadDevices(true)">
-        <el-option label="投运状态：全部" value="all" /><el-option label="在用" value="in_service" />
-        <el-option label="未并网" value="not_integrated" /><el-option label="调试中" value="commissioning" />
-        <el-option label="暂停使用" value="suspended" /><el-option label="已退役" value="retired" />
+      <el-select v-model="filters.work_scope_status" placeholder="当前工作状态" @change="loadDevices(true)">
+        <el-option label="参与当前调试" value="included" />
+        <el-option label="暂不参与" value="excluded" />
+        <el-option label="当前工作状态：全部" value="all" />
       </el-select>
       <el-select v-model="filters.connection_status" clearable placeholder="全部状态" @change="loadDevices(true)">
         <el-option label="未测试" value="UNKNOWN" /><el-option label="测试中" value="TESTING" />
@@ -1751,8 +1739,8 @@ function errorMessage(cause: unknown, fallback: string): string {
       <el-button :icon="CopyDocument" :disabled="selectedUuids.length !== 1 || !isFeatureEnabled('web.device_management_write')" @click="duplicateSelected">复制</el-button>
       <el-button :icon="Delete" type="danger" plain :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management_write')" @click="deleteSelected">批量删除</el-button>
       <el-button :icon="FolderOpened" :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management_write')" @click="groupAssignVisible = true">设置分组</el-button>
-      <el-button :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management_write')" @click="openLifecycleDialog('phase')">设置建设阶段</el-button>
-      <el-button :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management_write')" @click="openLifecycleDialog('status')">设置投运状态</el-button>
+      <el-button :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management_write')" @click="openClassificationDialog('phase')">设置建设阶段</el-button>
+      <el-button :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management_write')" @click="openClassificationDialog('status')">设置当前工作状态</el-button>
       <el-button :icon="Plus" :disabled="!isFeatureEnabled('web.device_management_write')" @click="groupVisible = true">分组管理</el-button>
       <el-button :icon="Connection" :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_connection_test')" @click="startSelectedConnectionTests">测试连接</el-button>
       <el-button :icon="FolderOpened" :disabled="!desktopHost || !selectedUuids.length || !isFeatureEnabled('web.device_management_desktop')" @click="requestTerminal()">外部终端</el-button>
@@ -1776,8 +1764,8 @@ function errorMessage(cause: unknown, fallback: string): string {
       <el-button :disabled="!pageData.items.length" @click="invertSelection">反选当前页</el-button>
     </div>
     <el-alert
-      v-if="filters.operation_status !== 'in_service'"
-      title="当前正在查看包含非正式投运设备的范围；这些设备默认不参与自动任务，但未并网、调试中和暂停使用设备仍可手动调试。"
+      v-if="filters.work_scope_status !== 'included'"
+      title="当前正在查看包含暂不参与当前调试的设备。这些设备默认不参与自动任务，但仍可筛选查看并执行明确的手动操作。"
       type="info"
       :closable="false"
       show-icon
@@ -1834,10 +1822,10 @@ function errorMessage(cause: unknown, fallback: string): string {
           @row-dblclick="openDetail"
         >
           <template #cell-project_phase="{ row }"><el-tag effect="plain">{{ projectPhaseLabel(row.project_phase) }}</el-tag></template>
-          <template #cell-operation_status="{ row }">
-            <el-tooltip :content="row.operation_status === 'not_integrated' ? '未并网设备保留用于手动调试，默认不参与自动采集。' : row.operation_status_reason || ''" :disabled="row.operation_status !== 'not_integrated' && !row.operation_status_reason">
-              <el-tag :type="row.operation_status === 'in_service' ? 'success' : row.operation_status === 'commissioning' ? 'primary' : row.operation_status === 'suspended' ? 'warning' : row.operation_status === 'retired' ? 'danger' : 'info'">
-                {{ operationStatusLabel(row.operation_status) }}
+          <template #cell-work_scope_status="{ row }">
+            <el-tooltip :content="row.work_scope_reason || ''" :disabled="!row.work_scope_reason">
+              <el-tag :type="row.work_scope_status === 'included' ? 'success' : 'info'">
+                {{ workScopeStatusLabel(row.work_scope_status) }}
               </el-tag>
             </el-tooltip>
           </template>
@@ -1975,8 +1963,8 @@ function errorMessage(cause: unknown, fallback: string): string {
             <el-form-item label="厂商"><el-select v-model="writeForm.device_vendor" style="width:100%"><el-option v-for="vendor in DEVICE_VENDOR_OPTIONS" :key="vendor.value" :label="vendor.label" :value="vendor.value" /></el-select></el-form-item>
             <el-form-item label="类型"><el-select v-model="writeForm.device_type" style="width:100%"><el-option v-for="type in DEVICE_TYPE_OPTIONS" :key="type" :label="type" :value="type" /></el-select></el-form-item>
             <el-form-item label="建设阶段"><el-select v-model="writeForm.project_phase" style="width:100%"><el-option label="一期" value="phase_1" /><el-option label="二期" value="phase_2" /><el-option label="三期" value="phase_3" /><el-option label="其他" value="other" /><el-option label="未指定" value="unspecified" /></el-select></el-form-item>
-            <el-form-item label="投运状态"><el-select v-model="writeForm.operation_status" style="width:100%"><el-option label="在用" value="in_service" /><el-option label="未并网" value="not_integrated" /><el-option label="调试中" value="commissioning" /><el-option label="暂停使用" value="suspended" /><el-option label="已退役" value="retired" /></el-select></el-form-item>
-            <el-form-item label="状态说明"><el-input v-model="writeForm.operation_status_reason" type="textarea" :rows="2" /></el-form-item>
+            <el-form-item label="当前工作状态"><el-select v-model="writeForm.work_scope_status" style="width:100%"><el-option label="参与当前调试" value="included" /><el-option label="暂不参与" value="excluded" /></el-select></el-form-item>
+            <el-form-item label="当前工作状态说明"><el-input v-model="writeForm.work_scope_reason" type="textarea" :rows="2" /></el-form-item>
             <el-form-item label="站点"><el-input v-model="writeForm.station" /></el-form-item>
             <el-form-item label="备注"><el-input v-model="writeForm.remark" type="textarea" :rows="3" /></el-form-item>
           </section>
@@ -2034,23 +2022,22 @@ function errorMessage(cause: unknown, fallback: string): string {
       <template #footer><el-button @click="groupAssignVisible = false">取消</el-button><el-button type="primary" :disabled="!isFeatureEnabled('web.device_management_write')" @click="saveGroupAssignment">确认</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="lifecycleVisible" :title="lifecycleMode === 'phase' ? '设置建设阶段' : '设置投运状态'" width="480px">
-      <p>已选择 {{ lifecycleTargetUuids.length }} 台设备</p>
-      <el-select v-if="lifecycleMode === 'phase'" v-model="lifecycleValue" style="width:100%">
+    <el-dialog v-model="classificationVisible" :title="classificationMode === 'phase' ? '设置建设阶段' : '设置当前工作状态'" width="480px">
+      <p>已选择 {{ classificationTargetUuids.length }} 台设备</p>
+      <el-select v-if="classificationMode === 'phase'" v-model="classificationValue" style="width:100%">
         <el-option label="一期" value="phase_1" /><el-option label="二期" value="phase_2" />
         <el-option label="三期" value="phase_3" /><el-option label="其他" value="other" />
         <el-option label="未指定" value="unspecified" />
       </el-select>
       <template v-else>
-        <el-select v-model="lifecycleValue" style="width:100%">
-          <el-option label="在用" value="in_service" /><el-option label="未并网" value="not_integrated" />
-          <el-option label="调试中" value="commissioning" /><el-option label="暂停使用" value="suspended" />
-          <el-option label="已退役" value="retired" />
+        <el-select v-model="classificationValue" style="width:100%">
+          <el-option label="参与当前调试" value="included" />
+          <el-option label="暂不参与" value="excluded" />
         </el-select>
-        <el-input v-model="lifecycleReason" type="textarea" :rows="3" maxlength="1000" show-word-limit placeholder="调整原因（可选）" class="lifecycle-reason" />
-        <el-alert :title="lifecycleValue === 'in_service' ? '改为在用后，设备将恢复默认显示，并可能进入自动采集候选。' : '非在用设备会退出默认列表和自动任务候选，但不会被删除。'" type="info" :closable="false" show-icon />
+        <el-input v-model="classificationReason" type="textarea" :rows="3" maxlength="1000" show-word-limit placeholder="调整原因（可选）" class="classification-reason" />
+        <el-alert :title="classificationValue === 'included' ? '设备将进入默认设备列表，并参与当前自动调试和采集任务候选。' : '设备将退出默认设备列表和自动任务候选范围，但不会被删除，历史数据、凭据和设备关联均会保留。'" type="info" :closable="false" show-icon />
       </template>
-      <template #footer><el-button @click="lifecycleVisible = false">取消</el-button><el-button type="primary" :loading="lifecycleLoading" @click="saveLifecycle">确认设置</el-button></template>
+      <template #footer><el-button @click="classificationVisible = false">取消</el-button><el-button type="primary" :loading="classificationLoading" @click="saveClassification">确认设置</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="importVisible" :title="importWriteMode === 'UPDATE_ONLY' ? '批量更新设备预检' : 'CSV 导入预检'" width="min(1180px, 96vw)" @close="closeImportDialog">
@@ -2145,7 +2132,7 @@ function errorMessage(cause: unknown, fallback: string): string {
 .action-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 14px; margin-bottom: 14px; }
 .action-bar > span { margin-right: 4px; color: var(--nc-text-secondary); font-size: 13px; }
 .task-summary { margin-bottom: 14px; }
-.lifecycle-reason { margin: 14px 0; }
+.classification-reason { margin: 14px 0; }
 .export-scope-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
 .export-scope-summary span { display: grid; gap: 4px; color: var(--nc-text-secondary); font-size: 13px; }
 .export-scope-summary strong { color: var(--nc-text-primary); font-size: 15px; }

@@ -707,7 +707,7 @@ class DeepMrCollectionScheduler:
             detail.mr.device_id
         )
         if not is_device_eligible_for_automatic_collection(device):
-            raise ValueError("MR 当前不是在用状态，已退出无人值守自动任务")
+            raise ValueError("MR 当前不参与本次调试，已退出无人值守自动任务")
         if device.ssh_enabled:
             protocol = "SSH"
             port = int(device.ssh_port or device.port or 22)

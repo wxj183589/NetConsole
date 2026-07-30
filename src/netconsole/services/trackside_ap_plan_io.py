@@ -7,7 +7,12 @@ import re
 from pathlib import Path
 
 from netconsole.services.export.common_exporters import export_table_xlsx
-from netconsole.services.file_contract import read_validated_csv_rows, validate_csv_import, validate_excel_import
+from netconsole.services.file_contract import (
+    ImportValidationError,
+    read_validated_csv_rows,
+    validate_csv_import,
+    validate_excel_import,
+)
 from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
 
 TRACKSIDE_PLAN_COLUMNS = (
@@ -20,22 +25,24 @@ TRACKSIDE_PLAN_COLUMNS = (
     ("ac.trackside_plan.ap_management_vlan", "management_vlan"),
     ("field.remark", "remark"),
 )
+TRACKSIDE_PLAN_SHEET = "AP规划"
+LEGACY_TRACKSIDE_PLAN_SHEET = "轨旁AP规划"
 TRACKSIDE_PLAN_HEADERS = [
     "序号",
     "车站名称",
-    "AP数量",
+    "规划AP总数量",
     "AP起始地址",
     "掩码",
     "AP网关",
     "AP管理VLAN",
     "备注",
 ]
-# 旧模板仍以这些列作为最低契约；新模板保留它们，因此双向兼容。
+# 规划数量单独校验新旧二选一表头，避免旧模板失效。
 TRACKSIDE_PLAN_REQUIRED_HEADERS = [
     "车站名称",
-    "AP数量",
     "AP管理VLAN",
 ]
+TRACKSIDE_PLAN_COUNT_HEADERS = ("规划AP总数量", "AP数量")
 TRACKSIDE_PLAN_COLUMN_WIDTHS = {
     "sequence_no": 80,
     "station_name": 260,
@@ -58,9 +65,9 @@ TRACKSIDE_PLAN_FIELD_NOTES = (
         "description": "站点名称不能为空；重复站点按导入时选择的覆盖、跳过或报错策略处理。",
     },
     {
-        "field": "AP 数",
+        "field": "规划AP总数量",
         "requirement": "必填",
-        "description": "非负整数；AP 数为 0 时允许 AP 起始地址为空。",
+        "description": "当前确认应建设、应上线的 AP 总数；非负整数，可按现场核减调整。",
     },
     {
         "field": "AP 起始地址",
@@ -106,24 +113,58 @@ _LEGACY_HEADERS = {
 
 def read_trackside_plan_file(path: Path) -> list[dict[str, object | None]]:
     if path.suffix.casefold() == ".csv":
-        validate_csv_import(path, expected_module="ac.trackside_ap_plan", required_headers=TRACKSIDE_PLAN_REQUIRED_HEADERS, allow_legacy=True)
+        validation = validate_csv_import(
+            path,
+            expected_module="ac.trackside_ap_plan",
+            required_headers=TRACKSIDE_PLAN_REQUIRED_HEADERS,
+            allow_legacy=True,
+        )
+        _validate_plan_count_header(validation.headers)
         rows, _metadata, _encoding = read_validated_csv_rows(path)
         return [_row_from_named(row) for row in csv.DictReader(io.StringIO(_rows_to_csv(rows)))]
-    validate_excel_import(
+    sheet_name = _trackside_plan_sheet_name(path)
+    validation = validate_excel_import(
         path,
         expected_module="ac.trackside_ap_plan",
-        required_headers={"轨旁AP规划": TRACKSIDE_PLAN_REQUIRED_HEADERS},
+        required_headers={sheet_name: TRACKSIDE_PLAN_REQUIRED_HEADERS},
         allow_legacy=True,
     )
+    _validate_plan_count_header(validation.headers)
     workbook = load_workbook_without_unsupported_image_warning(path, data_only=True)
-    sheet = workbook[workbook.sheetnames[0]]
-    headers = [str(cell.value or "").strip() for cell in sheet[1]]
-    rows = []
-    for values in sheet.iter_rows(min_row=2, values_only=True):
-        raw = {headers[index]: values[index] if index < len(values) else "" for index in range(len(headers))}
-        if any(value not in (None, "") for value in raw.values()):
-            rows.append(_row_from_named(raw))
-    return rows
+    try:
+        sheet = workbook[sheet_name]
+        headers = [str(cell.value or "").strip() for cell in sheet[1]]
+        rows = []
+        for values in sheet.iter_rows(min_row=2, values_only=True):
+            raw = {headers[index]: values[index] if index < len(values) else "" for index in range(len(headers))}
+            if any(value not in (None, "") for value in raw.values()):
+                rows.append(_row_from_named(raw))
+        return rows
+    finally:
+        workbook.close()
+
+
+def _trackside_plan_sheet_name(path: Path) -> str:
+    workbook = load_workbook_without_unsupported_image_warning(
+        path,
+        data_only=True,
+        read_only=True,
+    )
+    try:
+        visible = [
+            name
+            for name in workbook.sheetnames
+            if name != "_netconsole_meta"
+        ]
+        if TRACKSIDE_PLAN_SHEET in visible:
+            return TRACKSIDE_PLAN_SHEET
+        if LEGACY_TRACKSIDE_PLAN_SHEET in visible:
+            return LEGACY_TRACKSIDE_PLAN_SHEET
+        if len(visible) == 1:
+            return visible[0]
+    finally:
+        workbook.close()
+    raise ImportValidationError("缺少必要 sheet：AP规划")
 
 
 def _rows_to_csv(rows: list[list[str]]) -> str:
@@ -132,11 +173,18 @@ def _rows_to_csv(rows: list[list[str]]) -> str:
     return output.getvalue()
 
 
+def _validate_plan_count_header(headers: tuple[str, ...]) -> None:
+    if not any(header in headers for header in TRACKSIDE_PLAN_COUNT_HEADERS):
+        raise ImportValidationError(
+            "缺少必要字段：规划AP总数量（旧模板可使用 AP数量）"
+        )
+
+
 def export_trackside_plan_xlsx(path: Path, rows: list[dict[str, object | None]]) -> None:
     export_table_xlsx(
         path,
         {
-            "sheet_name": "轨旁AP规划",
+            "sheet_name": TRACKSIDE_PLAN_SHEET,
             "columns": [{"key": field, "title": TRACKSIDE_PLAN_HEADERS[index], "width": TRACKSIDE_PLAN_COLUMN_WIDTHS.get(field)} for index, (_key, field) in enumerate(TRACKSIDE_PLAN_COLUMNS)],
             "rows": rows,
         },
@@ -152,6 +200,8 @@ def _row_from_named(row: dict[object, object]) -> dict[str, object | None]:
         )
     )
     result = {field: row.get(header, "") for header, field in simple_mapping.items()}
+    if result.get("ap_count") in (None, ""):
+        result["ap_count"] = row.get("AP数量", "")
     legacy = any(str(row.get(header) or "").strip() for header in _LEGACY_HEADERS)
     for header, field in _LEGACY_HEADERS.items():
         result[field] = row.get(header, "")
@@ -215,14 +265,19 @@ def normalize_trackside_plan_row(
     station = str(value.get("station_name") or "").strip()
     if not station:
         raise ValueError(f"第{row_number}行 车站名称：必填")
-    if value.get("ap_count") in (None, ""):
-        raise ValueError(f"第{row_number}行 AP数量：必填")
+    raw_planned_ap_count = (
+        value.get("planned_ap_count")
+        if value.get("planned_ap_count") not in (None, "")
+        else value.get("ap_count")
+    )
+    if raw_planned_ap_count in (None, ""):
+        raise ValueError(f"第{row_number}行 规划AP总数量：必填")
     try:
-        ap_count = int(str(value.get("ap_count")).strip())
+        ap_count = int(str(raw_planned_ap_count).strip())
     except ValueError:
-        raise ValueError(f"第{row_number}行 AP数量：必须是整数") from None
+        raise ValueError(f"第{row_number}行 规划AP总数量：必须是整数") from None
     if ap_count < 0:
-        raise ValueError(f"第{row_number}行 AP数量：必须是非负整数")
+        raise ValueError(f"第{row_number}行 规划AP总数量：必须是非负整数")
     raw_mask = (
         value.get("subnet_mask")
         if value.get("subnet_mask") not in (None, "")

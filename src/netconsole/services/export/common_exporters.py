@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import zipfile
+from copy import copy
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -87,6 +88,13 @@ def export_multi_sheet_xlsx(path: Path, payload: Mapping[str, Any], progress: Pr
         if bool(sheet_payload.get("auto_filter", True)) and columns:
             worksheet.auto_filter.ref = worksheet.dimensions
         apply_basic_sheet_style(worksheet, header_row=header_row, column_count=len(columns))
+        for row_number, row in enumerate(rows, start=header_row + 1):
+            _apply_xlsx_column_styles(worksheet, row_number, columns)
+            if _is_bold_export_row(row, sheet_payload):
+                for cell in worksheet[row_number]:
+                    font = copy(cell.font)
+                    font.bold = True
+                    cell.font = font
         if bool(sheet_payload.get("auto_width", True)) and columns:
             apply_worksheet_column_widths(
                 worksheet,
@@ -457,7 +465,7 @@ def export_device_csv(path: Path, payload: Mapping[str, Any], progress: Progress
             device_type=filters.get("device_type") or None,
             group_filter=filters.get("group_filter"),
             project_phase=filters.get("project_phase"),
-            operation_status=filters.get("operation_status"),
+            work_scope_status=filters.get("work_scope_status"),
         )
         service = DeviceImportExportService(repository, group_repository)
     selected_uuids = {
@@ -523,7 +531,7 @@ def export_securecrt_sessions_task(path: Path, payload: Mapping[str, Any], progr
         device_type=filters.get("device_type") or None,
         group_filter=filters.get("group_filter"),
         project_phase=filters.get("project_phase"),
-        operation_status=filters.get("operation_status"),
+        work_scope_status=filters.get("work_scope_status"),
     )
     if selected_uuids:
         devices = [device for device in devices if str(device.device_uuid or "").strip() in selected_uuids]
@@ -979,7 +987,17 @@ def normalize_columns(columns: Iterable[Any]) -> list[dict[str, Any]]:
         if isinstance(column, Mapping):
             key = str(column.get("key") or column.get("field") or "")
             title = str(column.get("title") or column.get("header") or key)
-            result.append({"key": key, "title": title, "width": column.get("width"), "text": bool(column.get("text", True))})
+            result.append(
+                {
+                    "key": key,
+                    "title": title,
+                    "width": column.get("width"),
+                    "text": bool(column.get("text", True)),
+                    "number_format": str(column.get("number_format") or ""),
+                    "wrap": bool(column.get("wrap", False)),
+                    "horizontal": str(column.get("horizontal") or ""),
+                }
+            )
             continue
         if isinstance(column, Sequence) and not isinstance(column, (str, bytes)) and len(column) >= 2:
             title, key = column[0], column[1]
@@ -1142,6 +1160,39 @@ def _apply_row_fill(worksheet, row: Any, row_fill_field: str, row_fill_colors: M
     fill = PatternFill(fill_type="solid", fgColor=normalized[-6:])
     for cell in worksheet[worksheet.max_row]:
         cell.fill = fill
+
+
+def _apply_xlsx_column_styles(
+    worksheet,
+    row_number: int,
+    columns: list[dict[str, Any]],
+) -> None:
+    from openpyxl.styles import Alignment
+
+    for column_number, column in enumerate(columns, start=1):
+        cell = worksheet.cell(row=row_number, column=column_number)
+        number_format = str(column.get("number_format") or "")
+        if number_format:
+            cell.number_format = number_format
+        if column.get("wrap") or column.get("horizontal"):
+            cell.alignment = Alignment(
+                horizontal=str(column.get("horizontal") or "left"),
+                vertical="center",
+                wrap_text=bool(column.get("wrap")),
+            )
+
+
+def _is_bold_export_row(row: Any, sheet_payload: Mapping[str, Any]) -> bool:
+    if not isinstance(row, Mapping):
+        return False
+    field = str(sheet_payload.get("bold_row_field") or "")
+    if not field:
+        return False
+    values = {
+        str(value)
+        for value in sheet_payload.get("bold_row_values") or []
+    }
+    return str(row.get(field) or "") in values
 
 
 def _zip_entries(payload: Mapping[str, Any]) -> list[tuple[Path, str]]:

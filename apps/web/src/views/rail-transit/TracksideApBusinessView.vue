@@ -16,6 +16,7 @@ import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import type {
   TracksideApBusinessPage,
   TracksideApBusinessRow,
+  TracksideApScopeExcluded,
   TracksideApTask,
   TracksideApUpdateRequest,
 } from '../../types/tracksideApBusiness'
@@ -44,6 +45,7 @@ const error = ref('')
 const taskNotice = ref('')
 const taskNoticeType = ref<'success' | 'info' | 'warning' | 'error'>('info')
 const page = ref<TracksideApBusinessPage | null>(null)
+const excludedVisible = ref(false)
 const task = ref<TracksideApTask | null>(null)
 const filters = reactive({ station: '', query: '', optical_anomaly_only: false, page: 1, page_size: 50 })
 let pollTimer: number | undefined
@@ -74,6 +76,14 @@ const businessColumns: NcTableColumn<TracksideApBusinessRow>[] = [
   { key: 'optical_severity', label: '综合', valueType: 'status', cellKind: 'tag' },
   { key: 'updated_at', label: '更新时间', valueType: 'datetime' },
   { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['更新站点', '更新 AP'] },
+]
+
+const excludedColumns: NcTableColumn<TracksideApScopeExcluded>[] = [
+  { key: 'device_name', label: '设备名称', valueType: 'name', minWidth: 170 },
+  { key: 'station_name', label: '归属站点', valueType: 'name', minWidth: 150 },
+  { key: 'operation_status', label: '当前工作状态', valueType: 'status', width: 130 },
+  { key: 'project_phase', label: '建设批次', valueType: 'status', width: 120 },
+  { key: 'reason', label: '排除原因', valueType: 'description', minWidth: 280, align: 'left', alignmentReason: 'long-text' },
 ]
 const updateTaskRunning = computed(() => isActiveTask(task.value) && task.value?.action === 'trackside_ap_optical_update')
 const exportTaskRunning = computed(() => isActiveTask(task.value) && task.value?.action === TRACKSIDE_AP_BUSINESS_EXPORT_ACTION)
@@ -332,6 +342,13 @@ onBeforeUnmount(() => { stopPolling(); clearTaskNotice() })
     </header>
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="true" @close="error = ''"><el-button link @click="recoverTasks">恢复任务</el-button></el-alert>
     <el-alert v-if="taskNotice" :title="taskNotice" :type="taskNoticeType" show-icon :closable="taskNoticeType === 'error'" @close="clearTaskNotice" />
+    <div v-if="page" class="scope-summary">
+      <strong>统计范围：{{ page.scope_description || '当前项目 · 当前工作范围轨旁 AP' }}</strong>
+      <span>纳入站点 {{ page.scope_station_count || 0 }}</span>
+      <span>纳入设备 {{ page.scope_device_count || 0 }}</span>
+      <span>排除设备 {{ page.excluded_device_count || 0 }}</span>
+      <el-button v-if="page.excluded_device_count" link type="warning" @click="excludedVisible = true">查看排除项</el-button>
+    </div>
     <div v-if="page" class="summary-grid">
       <article><span>站点交换机</span><strong>{{ page.device_count }}</strong></article><article><span>候选 AP 端口</span><strong>{{ page.candidate_interface_count }}</strong></article><article><span>光衰异常</span><strong>{{ page.optical_abnormal_count }}</strong></article><article><span>FIT-AP 资源</span><strong>{{ page.fit_ap_resource_count }}</strong></article><article><span>查询 / 构建</span><strong>{{ page.query_ms }} / {{ page.build_ms }} ms</strong></article>
     </div>
@@ -358,7 +375,7 @@ onBeforeUnmount(() => { stopPolling(); clearTaskNotice() })
         <el-checkbox v-model="filters.optical_anomaly_only">仅光衰异常</el-checkbox>
         <el-button type="primary" :loading="refreshing" :disabled="initialLoading" @click="loadRows(true)">查询</el-button>
         <span v-if="refreshing" class="refresh-indicator">正在刷新，当前数据保持显示</span>
-        <span class="suspended-filter-hint">已自动隐藏暂停使用设备</span>
+        <span class="work-scope-filter-hint">已按当前项目、建设阶段、当前工作状态和有效 AP 身份过滤</span>
       </div>
       <div class="business-table-host">
         <NcDataTable
@@ -383,9 +400,19 @@ onBeforeUnmount(() => { stopPolling(); clearTaskNotice() })
       </div>
       <div class="pagination"><span>共 {{ page?.total || 0 }} 条</span><el-pagination :current-page="page?.page || filters.page" :page-size="filters.page_size" layout="prev, pager, next" :total="page?.total || 0" @current-change="(value: number) => { filters.page = value; loadRows() }" /></div>
     </div>
+    <el-dialog v-model="excludedVisible" title="当前统计范围排除项" width="min(1040px, 94vw)">
+      <NcDataTable
+        table-id="trackside-ap-business-scope-excluded"
+        route-key="/rail-transit/trackside-ap-business"
+        :data="page?.excluded_items || []"
+        :columns="excludedColumns"
+        height="460"
+        empty-text="没有排除项"
+      />
+    </el-dialog>
   </section>
 </template>
 
 <style scoped>
-.trackside-page{display:flex;height:100%;min-height:0;min-width:0;flex-direction:column;gap:16px}.page-heading,.actions,.toolbar,.pagination{display:flex;align-items:center;gap:12px}.page-heading,.pagination{flex:none;justify-content:space-between}.page-heading h1{margin:2px 0 6px}.page-heading p{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:0}.actions,.toolbar{flex-wrap:wrap}.summary-grid{display:grid;flex:none;grid-template-columns:repeat(5,minmax(130px,1fr));gap:10px}.summary-grid article,.content-card{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:12px}.summary-grid article{padding:13px}.summary-grid span{color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;margin-top:6px;font-size:22px}.content-card{display:flex;min-height:0;min-width:0;flex:1;flex-direction:column;padding:14px 16px;overflow:hidden}.business-table-host{min-height:0;min-width:0;flex:1}.toolbar{flex:none;margin-bottom:12px}.toolbar .el-input{width:230px}.station-select{width:260px}.refresh-indicator{color:var(--el-color-primary);font-size:13px}.suspended-filter-hint{color:var(--el-text-color-secondary);font-size:12px}.pagination{padding-top:12px}.optical-normal{color:var(--el-color-success)}.optical-notice,.optical-warning{color:var(--el-color-warning)}.optical-alarm,.optical-link-abnormal,.optical-link-down,.optical-no-light,.optical-offline{color:var(--el-color-danger);font-weight:600}.optical-no-module,.optical-missing,.optical-skipped,.optical-not-collected,.optical-unknown{color:var(--el-text-color-secondary)}@media(max-width:1000px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}}
+.trackside-page{display:flex;height:100%;min-height:0;min-width:0;flex-direction:column;gap:16px}.page-heading,.actions,.toolbar,.pagination,.scope-summary{display:flex;align-items:center;gap:12px}.page-heading,.pagination{flex:none;justify-content:space-between}.page-heading h1{margin:2px 0 6px}.page-heading p{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:0}.actions,.toolbar,.scope-summary{flex-wrap:wrap}.scope-summary{color:var(--el-text-color-secondary)}.scope-summary strong{color:var(--el-text-color-primary)}.summary-grid{display:grid;flex:none;grid-template-columns:repeat(5,minmax(130px,1fr));gap:10px}.summary-grid article,.content-card{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:8px}.summary-grid article{padding:13px}.summary-grid span{color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;margin-top:6px;font-size:22px}.content-card{display:flex;min-height:0;min-width:0;flex:1;flex-direction:column;padding:14px 16px;overflow:hidden}.business-table-host{min-height:0;min-width:0;flex:1}.toolbar{flex:none;margin-bottom:12px}.toolbar .el-input{width:230px}.station-select{width:260px}.refresh-indicator{color:var(--el-color-primary);font-size:13px}.work-scope-filter-hint{color:var(--el-text-color-secondary);font-size:12px}.pagination{padding-top:12px}.optical-normal{color:var(--el-color-success)}.optical-notice,.optical-warning{color:var(--el-color-warning)}.optical-alarm,.optical-link-abnormal,.optical-link-down,.optical-no-light,.optical-offline{color:var(--el-color-danger);font-weight:600}.optical-no-module,.optical-missing,.optical-skipped,.optical-not-collected,.optical-unknown{color:var(--el-text-color-secondary)}@media(max-width:1000px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}}
 </style>

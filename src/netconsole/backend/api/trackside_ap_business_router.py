@@ -465,10 +465,6 @@ def export_plan(request: Request, payload: TracksideApPlanExportRequestDTO) -> R
         return _application_service(request).start_trackside_ap_plan_export(
             _site_id(request),
             template=payload.template,
-            rows=None
-            if payload.rows is None
-            else [row.model_dump() for row in payload.rows],
-            draft=None if payload.draft is None else payload.draft.model_dump(),
         )
     except RailTransitWebError as exc:
         _raise_error(exc)

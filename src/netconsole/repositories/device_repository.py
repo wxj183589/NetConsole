@@ -18,8 +18,8 @@ from netconsole.core.device_credential_store import (
 )
 from netconsole.models.device import (
     Device,
-    normalize_operation_status,
     normalize_project_phase,
+    normalize_work_scope_status,
 )
 from netconsole.models.device_address import (
     DevicePrimaryAddressConflictError,
@@ -291,7 +291,7 @@ class DeviceRepository:
         device_type: str | None = None,
         group_filter: int | str | None = None,
         project_phase: str | None = None,
-        operation_status: str | None = None,
+        work_scope_status: str | None = None,
     ) -> list[Device]:
         clauses: list[str] = []
         params: list[object] = []
@@ -308,9 +308,9 @@ class DeviceRepository:
         if project_phase and project_phase != "all":
             clauses.append("d.project_phase = ?")
             params.append(normalize_project_phase(project_phase))
-        if operation_status and operation_status != "all":
-            clauses.append("d.operation_status = ?")
-            params.append(normalize_operation_status(operation_status))
+        if work_scope_status and work_scope_status != "all":
+            clauses.append("d.work_scope_status = ?")
+            params.append(normalize_work_scope_status(work_scope_status))
         if group_filter == "__ungrouped__":
             clauses.append("d.group_id IS NULL")
         elif group_filter is not None:
@@ -334,12 +334,12 @@ class DeviceRepository:
         devices = [self._device_from_row(row, states) for row in rows]
         return sorted(devices, key=_device_natural_sort_key)
 
-    def update_lifecycle_many(
+    def update_classification_many(
         self,
         device_uuids: list[str],
         *,
         project_phase: str | None = None,
-        operation_status: str | None = None,
+        work_scope_status: str | None = None,
         reason: str | None = None,
         updated_by: str | None = None,
     ) -> int:
@@ -352,25 +352,25 @@ class DeviceRepository:
         if project_phase is not None:
             assignments.append("project_phase = ?")
             params.append(normalize_project_phase(project_phase))
-        if operation_status is not None:
+        if work_scope_status is not None:
             assignments.extend(
                 (
-                    "operation_status = ?",
-                    "operation_status_reason = ?",
-                    "operation_status_updated_at = ?",
-                    "operation_status_updated_by = ?",
+                    "work_scope_status = ?",
+                    "work_scope_reason = ?",
+                    "work_scope_updated_at = ?",
+                    "work_scope_updated_by = ?",
                 )
             )
             params.extend(
                 (
-                    normalize_operation_status(operation_status),
+                    normalize_work_scope_status(work_scope_status),
                     str(reason or "").strip() or None,
                     now,
                     str(updated_by or "").strip() or None,
                 )
             )
         if not assignments:
-            raise ValueError("未提供要修改的建设阶段或投运状态")
+            raise ValueError("未提供要修改的建设阶段或当前工作状态")
         assignments.append("updated_at = ?")
         params.append(now)
         placeholders = ", ".join("?" for _ in unique_uuids)
