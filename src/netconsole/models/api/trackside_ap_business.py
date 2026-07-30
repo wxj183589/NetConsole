@@ -470,6 +470,24 @@ class TracksideApPointTablePreviewDTO(ApiModel):
 class TracksideApBaseExportRequestDTO(ApiModel):
     template: bool = False
     rows: list[TracksideApDTO] | None = Field(default=None, max_length=2000)
+    issues: list["TracksideApImportIssueExportRowDTO"] | None = Field(
+        default=None,
+        max_length=50000,
+    )
+
+
+class TracksideApImportIssueExportRowDTO(ApiModel):
+    row_number: int = Field(ge=1)
+    result: str
+    severity: str
+    code: str
+    field_name: str = ""
+    original_value: str = ""
+    message: str
+    suggested_action: str = ""
+    ap_name: str = ""
+    point_code: str = ""
+    ap_mac: str = ""
 
 
 class TracksideApRenameCommandExportRequestDTO(ApiModel):

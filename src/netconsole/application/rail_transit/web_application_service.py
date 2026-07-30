@@ -804,10 +804,19 @@ class RailTransitWebApplicationService:
         *,
         template: bool,
         rows: list[dict[str, object]] | None = None,
+        issues: list[dict[str, object]] | None = None,
     ) -> RailTransitTaskDTO:
         site_id = self._site(site_id)
         task_id = f"rail-export-{uuid4().hex}"
-        if template:
+        if issues is not None:
+            try:
+                preferred_name = build_trackside_ap_base_export_name(
+                    self._site_display_name(site_id),
+                    datetime.now(),
+                ).replace("_轨旁AP基础资料_", "_轨旁AP导入问题明细_")
+            except ValueError as exc:
+                raise RailTransitWebError("SITE_DISPLAY_NAME_INVALID", str(exc)) from exc
+        elif template:
             preferred_name = "轨旁AP基础资料模板.xlsx"
         else:
             try:
@@ -839,6 +848,8 @@ class RailTransitWebApplicationService:
         }
         if rows is not None:
             payload["draft_rows"] = rows
+        if issues is not None:
+            payload["issue_rows"] = issues
         job = replace(
             ExportTaskSpec(
                 task_type="trackside_ap_base_xlsx",

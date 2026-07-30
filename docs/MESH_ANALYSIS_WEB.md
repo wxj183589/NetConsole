@@ -80,7 +80,7 @@ PUT /api/rail-transit/mesh-analysis/analysis-params
 
 - Job/Application Service 继续负责导入、重建、解析和报告；
 - Web 不连接 AC、不控制 Agent、不开放 `executor=AGENT`，也不修改 Online MR 生命周期；
-- 页面和报告共用 `MeshApLocationSnapshot`；无法唯一匹配 AP 时保持原始值和空归属，不猜测站点、区间、里程或方向。
+- 页面和报告共用 `MeshApLocationSnapshot`；候选同时读取 FIT-AP 与独立轨旁 AP 基础资料，优先按规范化 AP MAC 匹配，不要求存在 AC、FIT-AP 或交换机资料。匹配成功后返回点位编号、AP 名称、站点、区间起终点、方向和里程；基础 AP 名称为空时回退点位编号。无法唯一匹配 AP 时保持原始值和空归属，不猜测站点、区间、里程或方向。
 - 报告和链路明细弹窗默认沿用来源快照；临时参数优先级为 `temporary > source snapshot > site > default`，可保存为当前局点默认但不会改写来源或 parsed 数据库。统一链路模型默认基准时间 4000ms、切换阈值 10、维持链路 22、发现链路 4，建链信号阈值为 26，首个主链路忽略信号阈值。
 - Excel/WPS 报告由 Export Process 生成，包含主链路建链顺序、链路明细、全部 ACTIVE RSSI/空口负载、单 AP 经过时段统计、切换事件和异常摘要；链路明细导出额外包含“分析参数”Sheet，嵌入图表硬上限 5,000 点，完整业务 Sheet 不截断。
 - [轨道交通无线综合看板](RAIL_TRANSIT_WIRELESS_DASHBOARD.md) 只复用本服务的摘要和最近会话，不读取明细表、不触发重解析，正式分析详情仍由本页面承担。

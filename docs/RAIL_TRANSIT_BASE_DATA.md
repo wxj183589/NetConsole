@@ -96,9 +96,11 @@ revision 校验 + SQLite BEGIN IMMEDIATE 单事务
 
 ## 轨旁 AP 文件闭环
 
-“轨旁 AP”标签页直接提供“下载模板 / 导入并预览 / 导出当前 / 导出重命名命令 / 新增轨旁 AP”。模板和当前导出均通过独立 Export Process 生成 `轨旁AP` 与 `字段说明` 两个工作表，并经 `source=trackside_ap_base` 的公共 Artifact 完成校验和受控下载。模板包含 AP 名称、点位编号、AP MAC、站点/区间、方向、可选里程、上联交换机/端口、供电和光缆等正式字段；FIT-AP 关联、当前光衰、来源和问题数为只读导出列。
+“轨旁 AP”标签页直接提供“下载模板 / 导入并预览 / 导出当前 / 导出重命名命令 / 新增轨旁 AP”。模板和当前导出均通过独立 Export Process 生成 `轨旁AP` 与 `字段说明` 两个工作表，并经 `source=trackside_ap_base` 的公共 Artifact 完成校验和受控下载。模板包含 AP 名称、点位编号、AP MAC、站点/区间、方向、可选里程、上联交换机/端口、供电和光缆等正式字段；FIT-AP 关联、当前光衰、来源和问题数为只读导出列。冲突和无效行可通过“导出问题明细”生成独立 XLSX Artifact；前端必须先由用户选择保存位置，再提交 Export Process。
 
-锁定状态允许下载、导出和只读预览，不能应用；解锁后“应用到编辑草稿”只更新 `editingDraft.aps` 和 `pendingChanges`，不调用独立写库接口，仍由页面右上角“保存并锁定”统一提交 revision 校验与事务。导入空值默认 KEEP，不能清除已有里程、位置或上联资料；删除只能通过页面明确操作。当前 FIT-AP 未发现相同 MAC 时只产生非阻断提示，资料仍可新增，后续继续按规范化 MAC 关联。
+锁定状态允许下载、导出和只读预览，不能应用；解锁后“导入 N 条有效数据到草稿”只更新 `editingDraft.aps` 和 `pendingChanges`，不调用独立写库接口，仍由页面右上角“保存并锁定”统一提交 revision 校验与事务。按钮只在没有可导入行、页面锁定或正在保存时禁用，不再要求额外确认勾选，也不因其他行存在冲突、无效或未匹配 FIT-AP 而禁用。导入空值默认 KEEP，不能清除已有里程、位置或上联资料；删除只能通过页面明确操作。
+
+轨旁 AP 基础资料独立于 AC、FIT-AP 运行态、设备管理和上联交换机资料。点位编号与 AP MAC 至少存在一个即可导入；AP 名称、交换机、端口、光口、供电和光缆字段均可为空。AP MAC 存在时按公共规范器校验并以 `xxxx-xxxx-xxxx` 展示；MR/MESH 位置快照优先按规范化 MAC 匹配。AP 名称为空时页面、基础资料导出和 MESH 位置结果回退到点位编号。当前 FIT-AP 未发现相同 MAC 时只产生非阻断 warning，后续 AC 采集到相同 MAC 后继续自动关联。
 
 `ap_switch_port_point_table` 兼容 `轨旁AP业务` 工作表：`AP编号/点位编号/AP点位/AP名称编号 → point_code`、`AP_MAC → mac`、`归属站点 → station`、`区间 → section/direction`、`室内交换机 → uplink_switch`、`接口名称 → uplink_port`。带编号站点保留原文到来源 metadata 后再匹配正式站名；文件中的 `AP名称` 不覆盖 AC 当前真实名称；缺少里程不阻断，MAC 为占位符的空端口行跳过。
 
@@ -213,10 +215,11 @@ POST /api/rail-transit/base-data/import-operations/{operation_id}/rollback
 - 轨旁 AP 规划导入只读取新 8 列模板或兼容旧 22 列模板；旧组字段只用于转换，不写入活动规划草稿。
 - 返回值只保留基础资料安全字段。账号、密码、Token、Community、Secret、Credential、上传模板原路径和用户本机绝对路径不返回、不记录。
 - 预览不写 `devices.db`、`tasks.db` 或正式资料目录，不创建 Task，不生成正式资产。合并计划以 `preview_id` 保存到 `.local/runtime/base_data_import_previews/`，只包含安全字段、文件 basename/SHA-256、数据库 SHA-256、问题和 15 分钟有效期，不保存上传原文件或绝对路径；过期预览会被受控清理。
-- 预览逐行返回 `CREATE / UPDATE / UNCHANGED / SKIP / CONFLICT / NEEDS_CONFIRMATION`，并展示字段级现值、候选值、来源、动作和警告。
-- `ap_switch_port_point_table`（AP 交换机端口点表）识别 `轨旁AP业务` 中的 `AP_MAC`、`AP编号`、`AP名称编号`、`归属站点`、`区间`、`室内交换机` 和 `接口名称`。带数字前缀的站点以安全来源元数据保留原值并规范为正式站名，区间末尾提取上下行；缺少里程允许导入且不会清除已有里程或备注，MAC 为 `-` 的空端口行只进入 `SKIP`。文件中的 `AP名称` 不进入点位编号字段，轨旁 AP 页面显示 AC 当前真实 AP 名称并单独显示点位编号。
+- 预览逐行返回 `CREATE / UPDATE / UNCHANGED / CONFLICT / INVALID`，并展示字段级现值、候选值、来源、动作和警告。`importable_count` 只汇总 CREATE、UPDATE 和 UNCHANGED；WARNING 不改变行的基础分类。
+- `ap_switch_port_point_table`（AP 交换机端口点表）识别 `轨旁AP业务` 中的 `AP_MAC`、`AP编号`、`AP名称编号`、`归属站点`、`区间`、`室内交换机` 和 `接口名称`。带数字前缀的站点以安全来源元数据保留原值并规范为正式站名，区间末尾提取上下行；缺少里程允许导入且不会清除已有里程或备注，点位编号和有效 MAC 都缺失的占位行进入 `INVALID`。文件中的 `AP名称` 不进入点位编号字段，轨旁 AP 页面显示 AC 当前真实 AP 名称并单独显示点位编号。
+- 同一 MAC 与同一点位的完全重复行只保留首条，后续计为 UNCHANGED；同一 MAC 对应不同点位、同一点位对应不同 MAC，或相同身份对应不同文件内容时，仅相关行进入 CONFLICT。已存在记录的空字段可补充为 UPDATE；非空非身份字段不同则保留正式值并产生 warning，不要求人工确认。
 - 数据质量按实体分组。同一 AP 或 MR 的多个问题只占一个实体组；阻断项、警告项和仅提示项分开统计，页面不得把字段问题数误称为设备数。
-- 重复 MAC、重复静态 IP、MR 角色冲突和身份冲突属于阻断项。缺少 AP 正式名称、缺少 MAC、里程缺失等可进入补录队列，但不得绕过冲突检查。
+- 正式库中的重复 MAC、重复静态 IP、MR 角色冲突和身份冲突仍属于数据质量阻断项。导入文件中的 AP 身份冲突和无效格式只阻断对应行，不阻断同批其他有效行；缺少 AP 正式名称、缺少 MAC或里程缺失可进入补录队列。
 
 2026-07-14 的宁波地铁 12 号线只读治理口径为“5C-6A 来源策略与实体分组 v1”：2726 条字段问题、951 个实体组、blocking 0。此前的 2723 是旧规则统计；统计变化来自规则重新分类，不代表数据库发生写入，判断数据是否变化仍以 `devices.db` SHA-256 和 mtime 为准。
 
@@ -244,13 +247,13 @@ Electron Desktop 受管会话由短期 `desktop_session_token` 显式启用正�
 
 受控导入一次写入固定满足：
 
-1. 合并预览未过期、数据库逻辑 SHA-256 未变化、无阻断项或待确认项；
+1. 合并预览未过期、数据库逻辑 SHA-256 未变化且 `importable_count > 0`；CONFLICT、INVALID 和未匹配 FIT-AP 不阻断其他行；
 2. 调用方显式确认且安全开关为 `1`；
-3. 使用 SQLite Backup API 先生成可校验备份，再在一个事务内执行 CREATE/UPDATE；
-4. 记录操作 UUID、来源文件 basename/SHA-256、创建/更新/跳过/冲突数、相对备份引用、数据库前后哈希和可逆字段变化；
-5. 失败事务全部回滚；回滚前还要确认数据库仍等于本次写入后的哈希，避免覆盖后续修改。
+3. 使用 SQLite Backup API 先生成可校验备份，再在一个事务内对 CREATE/UPDATE 逐行使用 savepoint；行级约束失败回滚该行并继续，数据库不可用或最终完整性校验失败才回滚整个事务；
+4. 记录操作 UUID、来源文件 basename/SHA-256、总行数、实际导入/创建/更新/不变、warning、跳过冲突/无效、未匹配 FIT-AP、问题明细、相对备份引用、数据库前后哈希和可逆字段变化；
+5. 回滚前确认数据库仍等于本次写入后的哈希，避免覆盖后续修改。
 
-同一 `preview_id` 只处理一次；重复提交返回 `ALREADY_APPLIED`，不得重复 CREATE/UPDATE。`NEEDS_CONFIRMATION` 必须逐字段选择保留正式值或采用导入值，后端重新校验；blocking 冲突、运行态字段和空值覆盖不能由前端决策绕过。
+同一 `preview_id` 只处理一次；重复提交返回 `ALREADY_APPLIED`，不得重复 CREATE/UPDATE。运行态字段和空值覆盖不能进入正式资料写入计划；冲突或无效行不得由前端决策绕过，只能修正来源后重新预览。
 
 AP 点表导入、预览、确认、审计和回滚只在“轨道交通 / 基础资料”显示。AC 管理不再提供独立“导入 AP 元数据”入口；FIT-AP 运行态仍通过共享 MAC 关联读取基础资料，不建立第二套导入数据。
 

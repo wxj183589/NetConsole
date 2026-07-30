@@ -4,9 +4,13 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from openpyxl import load_workbook
 
 from netconsole.services.ap_extension_import import _field_for_header
-from netconsole.services.trackside_ap_base_export import _export_row
+from netconsole.services.trackside_ap_base_export import (
+    _export_row,
+    export_trackside_ap_base_xlsx_task,
+)
 from netconsole.services.trackside_ap_rename_export import (
     TracksideApRenameConflictError,
     build_trackside_ap_rename_commands,
@@ -101,6 +105,53 @@ def test_base_export_separates_runtime_name_from_point_code() -> None:
     assert row["ap_name"] == "AP0127"
     assert row["ap_point_code"] == "AP1"
     assert row["line_side"] == "右线"
+
+
+def test_base_export_uses_point_code_as_empty_ap_name_fallback() -> None:
+    row = _export_row({"name": "", "point_code": "AP0127"})
+
+    assert row["ap_name"] == "AP0127"
+    assert row["ap_point_code"] == "AP0127"
+
+
+def test_import_issue_export_writes_structured_problem_details(tmp_path: Path) -> None:
+    output = tmp_path / "issues.xlsx"
+    count = export_trackside_ap_base_xlsx_task(
+        output,
+        {
+            "issue_rows": [
+                {
+                    "row_number": 12,
+                    "result": "CONFLICT",
+                    "severity": "error",
+                    "code": "identity_conflict",
+                    "field_name": "ap_mac_display",
+                    "original_value": "0011-2233-4455",
+                    "message": "同一 MAC 对应不同点位编号",
+                    "suggested_action": "核对点位编号",
+                    "ap_name": "",
+                    "point_code": "AP0127",
+                    "ap_mac": "0011-2233-4455",
+                }
+            ]
+        },
+    )
+
+    workbook = load_workbook(output, read_only=True)
+    sheet = workbook["问题明细"]
+    assert count == 1
+    assert [cell.value for cell in next(sheet.iter_rows())][:4] == [
+        "源行号",
+        "分类",
+        "级别",
+        "问题代码",
+    ]
+    assert [cell.value for cell in next(sheet.iter_rows(min_row=2, max_row=2))][:4] == [
+        12,
+        "CONFLICT",
+        "error",
+        "identity_conflict",
+    ]
 
 
 def test_ap_name_number_header_maps_to_point_code_only() -> None:

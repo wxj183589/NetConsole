@@ -48,6 +48,20 @@ TRACKSIDE_AP_BASE_COLUMNS = (
     ("数据质量问题数（只读）", "issue_count"),
 )
 
+TRACKSIDE_AP_IMPORT_ISSUE_COLUMNS = (
+    ("源行号", "row_number"),
+    ("分类", "result"),
+    ("级别", "severity"),
+    ("问题代码", "code"),
+    ("字段", "field_name"),
+    ("原始值", "original_value"),
+    ("说明", "message"),
+    ("建议处理", "suggested_action"),
+    ("AP 名称", "ap_name"),
+    ("点位编号", "point_code"),
+    ("AP MAC", "ap_mac"),
+)
+
 _FIELD_NOTES = (
     ("AP名称", "只读", "AC 当前真实 FIT-AP 名称；未匹配运行态时回退为基础资料中的名称。"),
     ("点位编号", "条件必填", "项目定义的 AP 点位编号，也是重命名命令的目标名称。"),
@@ -96,6 +110,23 @@ def export_trackside_ap_base_xlsx_task(
     should_cancel: CancelCallback | None = None,
 ) -> int:
     template = bool(payload.get("template"))
+    issue_rows = payload.get("issue_rows")
+    if issue_rows is not None:
+        rows = [dict(row) for row in list(issue_rows) if isinstance(row, Mapping)]
+        sheets = [
+            {
+                "sheet_name": "问题明细",
+                "columns": [
+                    {"key": key, "title": title, "text": key != "row_number"}
+                    for title, key in TRACKSIDE_AP_IMPORT_ISSUE_COLUMNS
+                ],
+                "rows": rows,
+                "freeze_header": True,
+                "auto_filter": True,
+                "auto_width": True,
+            }
+        ]
+        return export_multi_sheet_xlsx(path, {"sheets": sheets}, progress, should_cancel)
     if template:
         rows: list[dict[str, object]] = []
     elif payload.get("draft_rows") is not None:
@@ -151,7 +182,14 @@ def _export_row(raw: Mapping[str, Any]) -> dict[str, object]:
     mileage_raw = raw.get("mileage")
     mileage = dict(mileage_raw) if isinstance(mileage_raw, Mapping) else {}
     return {
-        "ap_name": runtime.get("fit_ap_name") or raw.get("name") or raw.get("ap_name") or "",
+        "ap_name": (
+            runtime.get("fit_ap_name")
+            or raw.get("name")
+            or raw.get("ap_name")
+            or raw.get("point_code")
+            or raw.get("ap_point_code")
+            or ""
+        ),
         "ap_point_code": raw.get("point_code") or raw.get("ap_point_code") or "",
         "ap_mac": raw.get("mac") or raw.get("ap_mac_display") or raw.get("ap_mac_norm") or "",
         "management_ip": raw.get("management_ip") or "",

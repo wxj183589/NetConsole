@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   stationDeletePreflight: vi.fn(),
   stationConflictPreview: vi.fn(),
   stationTemplatePreview: vi.fn(),
+  importPreview: vi.fn(),
   sectionGenerationPreview: vi.fn(),
   stationsPage: vi.fn(),
   sectionsPage: vi.fn(),
@@ -44,7 +45,7 @@ vi.mock('../../api/railTransitBaseData', () => ({
   listTracksideAps: mocks.emptyPage,
   listTrains: mocks.emptyPage,
   listVehicleMrs: mocks.emptyPage,
-  previewRailTransitImport: vi.fn(),
+  previewRailTransitImport: mocks.importPreview,
   previewSectionGeneration: mocks.sectionGenerationPreview,
   getStationSourcePreview: mocks.stationSourcePreview,
   preflightStationDeletion: mocks.stationDeletePreflight,
@@ -914,6 +915,90 @@ describe('轨道交通基础资料编辑闭环', () => {
       }),
     ]))
     expect(mocks.save).toHaveBeenCalledOnce()
+    wrapper.unmount()
+  })
+
+  it('轨旁 AP 预览存在冲突和无效行时仍允许导入有效数据', async () => {
+    mocks.importPreview.mockResolvedValue({
+      preview_id: 'preview-1',
+      file_name: '轨旁AP.xlsx',
+      file_size: 1024,
+      template_type: 'ap_switch_port_point_table',
+      confidence_score: 100,
+      total_rows: 3,
+      valid_rows: 1,
+      error_count: 2,
+      warning_count: 1,
+      sheet_names: ['轨旁AP'],
+      statistics: { unmatched_fit_ap_rows: 1 },
+      rows: [],
+      database_hash: 'a'.repeat(64),
+      preview_expires_at: '2026-07-30T12:00:00+00:00',
+      write_enabled: false,
+      message: '',
+      merge_plan: {
+        plan_id: 'plan-1',
+        site_id: 'demo',
+        source_file_name: '轨旁AP.xlsx',
+        source_file_sha256: 'b'.repeat(64),
+        source_type: 'official_point_table',
+        database_hash: 'a'.repeat(64),
+        created_at: '2026-07-30T11:00:00+00:00',
+        preview_expires_at: '2026-07-30T12:00:00+00:00',
+        write_enabled: false,
+        items: [
+          {
+            row_number: 1, entity_type: 'ap', source_identity: { ap_point_code: 'AP001', ap_mac: '0011-2233-4401' },
+            matched_entity_id: '', matched_entity_name: '', match_method: 'no_exact_match',
+            result: 'CREATE', conflict_summary: '', field_diffs: [], source_values: {
+              ap_point_code: 'AP001', ap_mac_norm: '001122334401',
+            }, blocking: false, issues: [{
+              severity: 'warning', code: 'fit_ap_unmatched', entity_type: 'ap', entity_id: '',
+              entity_name: '', row_number: 1, field_name: 'ap_mac_display', original_value: '',
+              message: '当前局点暂无对应 FIT-AP 运行态资料', suggested_action: '', blocking: false,
+            }],
+          },
+          {
+            row_number: 2, entity_type: 'ap', source_identity: { ap_point_code: 'AP002', ap_mac: '0011-2233-4402' },
+            matched_entity_id: '', matched_entity_name: '', match_method: 'cross_key',
+            result: 'CONFLICT', conflict_summary: '身份冲突', field_diffs: [], source_values: {},
+            blocking: true, issues: [],
+          },
+          {
+            row_number: 3, entity_type: 'ap', source_identity: { ap_point_code: 'AP003', ap_mac: 'bad' },
+            matched_entity_id: '', matched_entity_name: '', match_method: '',
+            result: 'INVALID', conflict_summary: '', field_diffs: [], source_values: {},
+            blocking: true, issues: [{
+              severity: 'error', code: 'ap_mac_invalid', entity_type: 'ap', entity_id: '',
+              entity_name: '', row_number: 3, field_name: 'ap_mac_display', original_value: 'bad',
+              message: 'AP MAC 格式无效', suggested_action: '', blocking: true,
+            }],
+          },
+        ],
+        summary: {
+          total_rows: 3, importable_count: 1, create_count: 1, update_count: 0,
+          unchanged_count: 0, skip_count: 0, conflict_count: 1, invalid_count: 1,
+          warning_count: 1, unmatched_fit_ap_count: 1, needs_confirmation_count: 0,
+          blocking_count: 2,
+        },
+      },
+    })
+    const wrapper = await mountView()
+    await button(wrapper, '解锁').trigger('click')
+    await flushPromises()
+    const input = wrapper.find('input[accept=".xlsx,.csv,.json"]')
+    Object.defineProperty(input.element, 'files', {
+      configurable: true,
+      value: [new File(['preview'], '轨旁AP.xlsx')],
+    })
+    await input.trigger('change')
+    await flushPromises()
+
+    const importButton = button(wrapper, '导入 1 条有效数据到草稿')
+    expect(importButton.attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).toContain('仅显示冲突')
+    expect(wrapper.text()).toContain('仅显示无效')
+    expect(wrapper.text()).not.toContain('我已核对差异、冲突和目标局点')
     wrapper.unmount()
   })
 

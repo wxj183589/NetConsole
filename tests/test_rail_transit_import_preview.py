@@ -95,7 +95,7 @@ def test_import_preview_accepts_ap_switch_port_table_and_skips_placeholders(tmp_
     assert result.template_type == "ap_switch_port_point_table"
     assert result.total_rows == 2
     assert result.valid_rows == 1
-    assert result.error_count == 0
+    assert result.error_count == 1
     assert result.sheet_names == ["轨旁AP业务"]
     assert result.statistics == {
         "valid_ap_rows": 1,
@@ -106,10 +106,14 @@ def test_import_preview_accepts_ap_switch_port_table_and_skips_placeholders(tmp_
         "unmatched_fit_ap_rows": 1,
         "up_direction_rows": 1,
         "down_direction_rows": 0,
+        "importable_rows": 1,
+        "warning_rows": 2,
+        "conflict_rows": 0,
+        "invalid_rows": 1,
     }
     assert result.merge_plan is not None
     assert result.merge_plan.summary.create_count == 1
-    assert result.merge_plan.summary.skip_count == 1
+    assert result.merge_plan.summary.invalid_count == 1
     assert result.merge_plan.items[0].source_values["ap_name"] == ""
     assert result.merge_plan.items[0].source_values["ap_point_code"] == "AP0127"
     assert result.merge_plan.items[0].source_values["uplink_switch"] == "11-高桥西1"
@@ -117,6 +121,7 @@ def test_import_preview_accepts_ap_switch_port_table_and_skips_placeholders(tmp_
         "import_source": {"station_name": "11-高桥西"},
         "line_side_source": "unavailable",
     }
+    assert result.merge_plan.items[1].result == "INVALID"
     assert result.merge_plan.items[1].issues[0].code == "ap_mac_placeholder"
     assert _fingerprint(db_path) == before
 
@@ -175,3 +180,40 @@ def test_import_preview_derives_line_side_and_warns_on_explicit_conflict(tmp_pat
     assert result.rows[1].values["line_side"] == "左线"
     conflict = next(issue for issue in result.rows[1].issues if issue.code == "ap_line_side_section_conflict")
     assert conflict.blocking is False
+
+
+def test_import_preview_allows_624_offline_trackside_aps_without_fit_ap_runtime(tmp_path: Path) -> None:
+    paths, _db_path = build_rail_transit_base_data_fixture(tmp_path)
+    service = RailTransitImportPreviewService(RailTransitBaseDataQueryService(paths))
+    rows = [
+        {
+            "ap_name": "",
+            "ap_point_code": f"OFFLINE-{index:04d}",
+            "ap_mac_display": f"aa00{index:08x}",
+            "station_name": "车站A",
+            "section_name": "A-B 区间",
+            "mileage_text": f"ZDK{index}+000",
+        }
+        for index in range(1, 625)
+    ]
+
+    result = service.preview(
+        site_id="demo",
+        file_name="offline-trackside.json",
+        content=json.dumps(rows, ensure_ascii=False).encode("utf-8"),
+        content_type="application/json",
+    )
+
+    assert result.merge_plan is not None
+    assert result.merge_plan.summary.create_count == 624
+    assert result.merge_plan.summary.importable_count == 624
+    assert result.merge_plan.summary.invalid_count == 0
+    assert result.merge_plan.summary.conflict_count == 0
+    assert result.merge_plan.summary.unmatched_fit_ap_count == 624
+    assert result.merge_plan.summary.blocking_count == 0
+    assert all(
+        not issue.blocking
+        for item in result.merge_plan.items
+        for issue in item.issues
+        if issue.code == "fit_ap_unmatched"
+    )

@@ -79,22 +79,35 @@ def field_action(current: Any, proposed: Any, *, source_type: str) -> str:
 
 def match_trackside_ap(source: Mapping[str, Any], existing: Sequence[Mapping[str, Any]]) -> IdentityMatch:
     mac = _mac(source.get("ap_mac_norm") or source.get("ap_mac_display") or source.get("mac"))
-    name = _name(source.get("ap_name") or source.get("name"))
-    if mac:
-        matches = [row for row in existing if _mac(row.get("ap_mac_norm") or row.get("ap_mac_display")) == mac]
-        if len(matches) == 1:
-            return IdentityMatch("matched", _ap_entity_id(matches[0]), "mac_exact")
-        if len(matches) > 1:
-            return IdentityMatch("conflict", method="mac_exact", warning="同一 MAC 对应多个正式 AP")
-    if name:
-        matches = [row for row in existing if _name(row.get("ap_name")) == name]
-        if len(matches) == 1:
-            current_mac = _mac(matches[0].get("ap_mac_norm") or matches[0].get("ap_mac_display"))
-            if mac and current_mac and mac != current_mac:
-                return IdentityMatch("conflict", method="name_exact", warning="正式 AP 名称相同但 MAC 不一致")
-            return IdentityMatch("matched", _ap_entity_id(matches[0]), "name_exact")
-        if len(matches) > 1:
-            return IdentityMatch("conflict", method="name_exact", warning="正式 AP 名称存在多个精确候选")
+    point_code = _point_code(source.get("ap_point_code") or source.get("point_code"))
+    mac_matches = [
+        row
+        for row in existing
+        if mac and _mac(row.get("ap_mac_norm") or row.get("ap_mac_display")) == mac
+    ]
+    point_matches = [
+        row
+        for row in existing
+        if point_code and _point_code(row.get("ap_point_code") or row.get("point_code")) == point_code
+    ]
+    if len(mac_matches) > 1:
+        return IdentityMatch("conflict", method="mac_exact", warning="同一 MAC 对应多个正式 AP")
+    if len(point_matches) > 1:
+        return IdentityMatch("conflict", method="point_code_exact", warning="同一点位编号对应多个正式 AP")
+    if mac_matches and point_matches and _ap_entity_id(mac_matches[0]) != _ap_entity_id(point_matches[0]):
+        return IdentityMatch("conflict", method="cross_key", warning="AP MAC 与点位编号指向不同正式 AP")
+    if mac_matches:
+        current_point = _point_code(mac_matches[0].get("ap_point_code"))
+        if point_code and current_point and point_code != current_point:
+            return IdentityMatch("conflict", method="mac_exact", warning="同一 MAC 对应不同点位编号")
+        return IdentityMatch("matched", _ap_entity_id(mac_matches[0]), "mac_exact")
+    if point_matches:
+        current_mac = _mac(
+            point_matches[0].get("ap_mac_norm") or point_matches[0].get("ap_mac_display")
+        )
+        if mac and current_mac and mac != current_mac:
+            return IdentityMatch("conflict", method="point_code_exact", warning="同一点位编号对应不同 MAC")
+        return IdentityMatch("matched", _ap_entity_id(point_matches[0]), "point_code_exact")
     return IdentityMatch("create", method="no_exact_match")
 
 
@@ -138,6 +151,10 @@ def _text(value: Any) -> str:
 
 def _name(value: Any) -> str:
     return " ".join(_text(value).split()).casefold()
+
+
+def _point_code(value: Any) -> str:
+    return _name(value)
 
 
 def _mac(value: Any) -> str:

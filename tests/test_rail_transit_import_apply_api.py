@@ -8,6 +8,9 @@ from fastapi.testclient import TestClient
 from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture, mark_base_data_copy
 from netconsole.backend.api.main import create_app
 from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.repositories.rail_transit_base_data_repository import (
+    RailTransitBaseDataRepository,
+)
 
 
 class _NoopAsyncService:
@@ -115,3 +118,76 @@ def test_copy_apply_operation_queries_and_idempotency(tmp_path: Path, monkeypatc
     routes = app.openapi()["paths"]
     assert "/api/rail-transit/base-data/import-apply" in routes
     assert not any(path.endswith(("/sql", "/aps", "/devices", "/trains", "/stations")) and "delete" in methods for path, methods in routes.items())
+
+
+def test_import_apply_persists_valid_rows_and_reports_skipped_rows(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("RAIL_TRANSIT_BASE_DATA_WRITE_ENABLED", "1")
+    monkeypatch.setenv("NETCONSOLE_ALLOW_BASE_DATA_COPY_WRITE", "1")
+    monkeypatch.delenv("NETCONSOLE_ALLOW_REAL_BASE_DATA_WRITE", raising=False)
+    paths, _database = build_rail_transit_base_data_fixture(tmp_path)
+    mark_base_data_copy(paths)
+    with TestClient(_app(paths, tmp_path)) as client:
+        preview_response = client.post(
+            "/api/rail-transit/base-data/import-preview",
+            files={
+                "file": (
+                    "partial.json",
+                    json.dumps(
+                        [
+                            {
+                                "ap_name": "",
+                                "ap_point_code": "PARTIAL-NEW",
+                                "ap_mac_display": "aa00-0000-0001",
+                                "station_name": "车站A",
+                            },
+                            {
+                                "ap_point_code": "AP002",
+                                "ap_mac_display": "aa00-0000-0002",
+                            },
+                            {
+                                "ap_point_code": "PARTIAL-BAD",
+                                "ap_mac_display": "not-a-mac",
+                            },
+                        ],
+                        ensure_ascii=False,
+                    ).encode("utf-8"),
+                    "application/json",
+                )
+            },
+        )
+        assert preview_response.status_code == 200
+        preview = preview_response.json()
+        assert preview["merge_plan"]["summary"]["importable_count"] == 1
+
+        applied = client.post(
+            "/api/rail-transit/base-data/import-apply",
+            json={
+                "preview_id": preview["preview_id"],
+                "site_id": "demo",
+                "explicit_confirmation": True,
+                "decisions": [],
+                "expected_database_sha256": preview["database_hash"],
+            },
+        )
+
+    assert applied.status_code == 200
+    payload = applied.json()
+    assert payload["total_rows"] == 3
+    assert payload["imported_rows"] == 1
+    assert payload["created_rows"] == 1
+    assert payload["updated_rows"] == 0
+    assert payload["unchanged_rows"] == 0
+    assert payload["skipped_conflict_rows"] == 1
+    assert payload["skipped_invalid_rows"] == 1
+    assert payload["unmatched_fit_ap_rows"] == 2
+    assert payload["issues"]
+    imported = next(
+        row
+        for row in RailTransitBaseDataRepository(paths).list_ap_records("demo")
+        if row["ap_point_code"] == "PARTIAL-NEW"
+    )
+    assert (
+        imported["ap_name"],
+        imported["ap_point_code"],
+        imported["ap_mac_norm"],
+    ) == ("", "PARTIAL-NEW", "aa0000000001")

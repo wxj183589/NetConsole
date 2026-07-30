@@ -5,7 +5,7 @@ import json
 import mimetypes
 import sqlite3
 import tempfile
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -139,11 +139,6 @@ class RailTransitImportPreviewService:
         for issue in parser_issues:
             row_number = self._row_number(issue)
             issues_by_row[row_number].append(self._parser_issue(issue, row_number))
-        mac_counts = Counter(
-            normalize_ap_mac(row.get("ap_mac_norm") or row.get("ap_mac_display")).normalized
-            for row in rows
-            if normalize_ap_mac(row.get("ap_mac_norm") or row.get("ap_mac_display")).normalized
-        )
         output: list[ImportPreviewRowDTO] = []
         for index, raw in enumerate(rows, 1):
             values = self._safe_values(raw, index)
@@ -192,7 +187,6 @@ class RailTransitImportPreviewService:
                 self._validate_row(
                     values,
                     row_number,
-                    mac_counts,
                     known_stations,
                     known_sections,
                     template_type=template_type,
@@ -201,14 +195,6 @@ class RailTransitImportPreviewService:
             )
             row_issues = self._deduplicate_issues(row_issues)
             output.append(ImportPreviewRowDTO(row_number=row_number, values=values, issues=row_issues))
-        error_count = sum(issue.severity == "error" for row in output for issue in row.issues)
-        warning_count = sum(issue.severity == "warning" for row in output for issue in row.issues)
-        valid_rows = sum(
-            not any(issue.severity == "error" for issue in row.issues)
-            and not any(issue.code == "ap_mac_placeholder" for issue in row.issues)
-            for row in output
-        )
-        statistics = self._statistics(output)
         merge_plan = self.import_service.build_merge_plan(
             site_id=site_id,
             rows=output,
@@ -216,6 +202,24 @@ class RailTransitImportPreviewService:
             source_file_sha256=hashlib.sha256(content).hexdigest(),
             source_type="official_point_table" if suffix in {".xlsx", ".csv"} else "import_file",
         )
+        error_count = sum(
+            issue.severity == "error"
+            for item in merge_plan.items
+            for issue in item.issues
+        )
+        warning_count = sum(
+            issue.severity == "warning"
+            for item in merge_plan.items
+            for issue in item.issues
+        )
+        valid_rows = merge_plan.summary.importable_count
+        statistics = {
+            **self._statistics(output),
+            "importable_rows": merge_plan.summary.importable_count,
+            "warning_rows": merge_plan.summary.warning_count,
+            "conflict_rows": merge_plan.summary.conflict_count,
+            "invalid_rows": merge_plan.summary.invalid_count,
+        }
         preview_id = self.import_service.save_preview(merge_plan)
         return ImportPreviewResultDTO(
             preview_id=preview_id,
@@ -332,7 +336,6 @@ class RailTransitImportPreviewService:
         cls,
         values: dict[str, Any],
         row_number: int,
-        mac_counts: Counter[str],
         known_stations: set[str],
         known_sections: set[str],
         *,
@@ -341,17 +344,21 @@ class RailTransitImportPreviewService:
     ) -> list[DataQualityIssueDTO]:
         issues: list[DataQualityIssueDTO] = []
         name = str(values.get("ap_name") or "").strip()
+        point_code = str(values.get("ap_point_code") or "").strip()
         mac = normalize_ap_mac(values.get("ap_mac_norm") or values.get("ap_mac_display"))
         if not name and template_type != AP_SWITCH_PORT_POINT_TABLE:
-            issues.append(cls._issue("warning", "ap_name_missing", row_number, "ap_name", "", "AP 名称为空", "补充正式 AP 名称"))
-        if not mac.raw:
-            issues.append(cls._issue("warning", "ap_mac_missing", row_number, "ap_mac_display", "", "AP MAC 为空", "补充有效 AP MAC"))
-        elif template_type == AP_SWITCH_PORT_POINT_TABLE and str(mac.raw or "").strip().casefold() in {"-", "--", "无", "n/a", "na", "none"}:
-            issues.append(cls._issue("warning", "ap_mac_placeholder", row_number, "ap_mac_display", mac.raw, "无效占位行，将跳过导入", "确认是否为无效空端口行"))
+            issues.append(cls._issue("info", "ap_name_missing", row_number, "ap_name", "", "AP 名称为空，显示时使用点位编号", "后续可由 FIT-AP 运行态补充"))
+        placeholder_mac = str(mac.raw or "").strip().casefold() in {"-", "--", "无", "n/a", "na", "none"}
+        if not mac.raw and not point_code:
+            issues.append(cls._issue("error", "ap_identity_missing", row_number, "ap_mac_display", "", "点位编号和 AP MAC 不能同时为空", "至少补充点位编号或 AP MAC"))
+        elif placeholder_mac and not point_code:
+            issues.append(cls._issue("error", "ap_mac_placeholder", row_number, "ap_mac_display", mac.raw, "无效占位行，将跳过导入", "至少补充点位编号或有效 AP MAC"))
+        elif placeholder_mac:
+            issues.append(cls._issue("warning", "ap_mac_missing", row_number, "ap_mac_display", mac.raw, "AP MAC 为空，当前仅按点位编号导入", "建议补充有效 AP MAC"))
+        elif not mac.raw:
+            issues.append(cls._issue("warning", "ap_mac_missing", row_number, "ap_mac_display", "", "AP MAC 为空，无法用于 MR 日志自动识别", "建议补充有效 AP MAC"))
         elif not mac.valid:
             issues.append(cls._issue("error", "ap_mac_invalid", row_number, "ap_mac_display", mac.raw, "AP MAC 格式无效", "使用项目支持的常见 MAC 格式"))
-        elif mac_counts[mac.normalized] > 1:
-            issues.append(cls._issue("error", "ap_mac_duplicate", row_number, "ap_mac_display", mac.raw, "预览文件内 AP MAC 重复", "核对重复行"))
         elif fit_ap_macs is not None and mac.normalized not in fit_ap_macs:
             issues.append(
                 cls._issue(
@@ -360,10 +367,12 @@ class RailTransitImportPreviewService:
                     row_number,
                     "ap_mac_display",
                     mac.display,
-                    "尚未关联 FIT-AP，仍可作为轨旁 AP 基础资料保存",
+                    "当前局点暂无对应 FIT-AP 运行态资料，不影响基础资料导入及 MR 日志识别",
                     "后续 AC 采集到相同 MAC 后自动关联",
                 )
             )
+        if not point_code and mac.valid:
+            issues.append(cls._issue("warning", "ap_point_code_missing", row_number, "ap_point_code", "", "点位编号为空，暂以 AP MAC 识别", "建议补充点位编号用于显示"))
         station = str(values.get("station_name") or "").strip()
         section = str(values.get("section_name") or "").strip()
         if station and known_stations and station not in known_stations:

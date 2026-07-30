@@ -1335,11 +1335,15 @@ def test_mesh_report_uses_existing_context_and_artifact_manifest(
     assert job.params["payload"]["options"]["ap_location_snapshot"] == [
         {
             "name": "AP-01",
+            "point_code": "",
             "mac": "000000000010",
             "station": "车站A",
             "section": "区间A-B",
+            "section_start_station": "",
+            "section_end_station": "",
             "mileage": "K12+300",
             "line_side": "上行",
+            "direction": "",
         }
     ]
 

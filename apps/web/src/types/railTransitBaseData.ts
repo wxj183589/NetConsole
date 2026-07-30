@@ -556,7 +556,7 @@ export interface ImportPreviewResult {
   message: string
 }
 
-export type MergeResult = 'CREATE' | 'UPDATE' | 'UNCHANGED' | 'SKIP' | 'CONFLICT' | 'NEEDS_CONFIRMATION'
+export type MergeResult = 'CREATE' | 'UPDATE' | 'UNCHANGED' | 'SKIP' | 'CONFLICT' | 'INVALID' | 'NEEDS_CONFIRMATION'
 
 export interface MergeFieldDiff {
   field_name: string
@@ -594,11 +594,16 @@ export interface MergePlan {
   write_enabled: boolean
   items: MergePlanItem[]
   summary: {
+    total_rows: number
+    importable_count: number
     create_count: number
     update_count: number
     unchanged_count: number
     skip_count: number
     conflict_count: number
+    invalid_count: number
+    warning_count: number
+    unmatched_fit_ap_count: number
     needs_confirmation_count: number
     blocking_count: number
   }
@@ -624,6 +629,16 @@ export interface MergeFieldDecision {
 export interface ImportApplyResult {
   operation_id: string
   status: string
+  total_rows: number
+  imported_rows: number
+  created_rows: number
+  updated_rows: number
+  unchanged_rows: number
+  warning_rows: number
+  skipped_conflict_rows: number
+  skipped_invalid_rows: number
+  unmatched_fit_ap_rows: number
+  issues: DataQualityIssue[]
   created_count: number
   updated_count: number
   skipped_count: number

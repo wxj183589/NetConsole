@@ -8,7 +8,15 @@ from netconsole.models.api.common import ApiModel
 
 
 IssueSeverity = Literal["error", "warning", "info"]
-MergeResult = Literal["CREATE", "UPDATE", "UNCHANGED", "SKIP", "CONFLICT", "NEEDS_CONFIRMATION"]
+MergeResult = Literal[
+    "CREATE",
+    "UPDATE",
+    "UNCHANGED",
+    "SKIP",
+    "CONFLICT",
+    "INVALID",
+    "NEEDS_CONFIRMATION",
+]
 BaseDataEntityType = Literal["site_metadata", "station", "section", "trackside_ap", "vehicle_mr", "trackside_ap_plan"]
 BaseDataChangeAction = Literal["create", "update", "delete", "replace"]
 StationNodeType = Literal["station", "parking_lot", "depot", "connection_point", "other", "unknown"]
@@ -716,11 +724,16 @@ class MergePlanItemDTO(ApiModel):
 
 
 class MergePlanSummaryDTO(ApiModel):
+    total_rows: int = 0
+    importable_count: int = 0
     create_count: int = 0
     update_count: int = 0
     unchanged_count: int = 0
     skip_count: int = 0
     conflict_count: int = 0
+    invalid_count: int = 0
+    warning_count: int = 0
+    unmatched_fit_ap_count: int = 0
     needs_confirmation_count: int = 0
     blocking_count: int = 0
 
@@ -795,6 +808,16 @@ class ImportApplyRequestDTO(ApiModel):
 class ImportApplyResultDTO(ApiModel):
     operation_id: str
     status: str
+    total_rows: int = 0
+    imported_rows: int = 0
+    created_rows: int = 0
+    updated_rows: int = 0
+    unchanged_rows: int = 0
+    warning_rows: int = 0
+    skipped_conflict_rows: int = 0
+    skipped_invalid_rows: int = 0
+    unmatched_fit_ap_rows: int = 0
+    issues: list[DataQualityIssueDTO] = Field(default_factory=list)
     created_count: int = 0
     updated_count: int = 0
     skipped_count: int = 0
