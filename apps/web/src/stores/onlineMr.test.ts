@@ -108,4 +108,40 @@ describe('Online MR polling store', () => {
     expect(store.preview).toBeNull()
     expect(store.rawFiles).toEqual([])
   })
+
+  it('updates successful overview domains and preserves only the failed domain data', async () => {
+    const store = useOnlineMrStore()
+    await store.refreshOverview()
+    const previousPreview = store.preview
+
+    vi.mocked(listOnlineMrCollectors).mockResolvedValue([{
+      name: 'mesh_link', label: 'Mesh', enabled: true, status: 'RUNNING', raw_file: 'mesh.txt',
+      exists: true, size_bytes: 12, error: '', started_at: null, ended_at: null, updated_at: null,
+      health_status: 'normal', stale_seconds: null,
+    }])
+    vi.mocked(getOnlineMrPreview).mockRejectedValueOnce(new Error('preview unavailable'))
+    vi.mocked(listOnlineMrRawFiles).mockResolvedValue([{
+      name: 'mesh.txt', relative_name: 'mesh.txt', exists: true, size_bytes: 12, modified_at: null,
+    }])
+
+    await store.refreshOverview()
+
+    expect(store.collectors).toHaveLength(1)
+    expect(store.rawFiles).toHaveLength(1)
+    expect(store.preview).toEqual(previousPreview)
+    expect(store.error).toContain('部分实时数据刷新失败')
+    expect(store.error).toContain('实时预览')
+
+    vi.mocked(listOnlineMrCollectors).mockRejectedValueOnce(new Error('collectors unavailable'))
+    vi.mocked(getOnlineMrPreview).mockResolvedValue({
+      session_id: 'session-1', available: true, updated_at: null, message: 'recovered',
+      display_context: {}, link: {}, fping: {}, iperf: {},
+    })
+    await store.refreshOverview()
+
+    expect(store.collectors).toHaveLength(1)
+    expect(store.preview?.message).toBe('recovered')
+    expect(store.error).toContain('采集器状态')
+    expect(store.error).not.toContain('实时预览')
+  })
 })

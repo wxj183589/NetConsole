@@ -74,6 +74,26 @@ describe('AC Management polling store', () => {
     expect(store.error).toContain('AC 数据刷新失败')
   })
 
+  it('keeps successful partial refresh data and its AP error independently', async () => {
+    const store = useAcManagementStore()
+    store.aps = [{ id: 'ap-existing', name: 'existing' }] as never
+    vi.mocked(listAcAps).mockRejectedValue(new Error('AP refresh unavailable'))
+    await store.refreshAps()
+    await store.refreshAps()
+
+    vi.mocked(listAcConfigSnapshots).mockResolvedValue({
+      items: [{ id: 1 }] as never,
+      total: 1,
+      page: 1,
+      page_size: 30,
+    })
+    await store.manualRefresh()
+
+    expect(store.aps).toEqual([{ id: 'ap-existing', name: 'existing' }])
+    expect(store.snapshots).toEqual([{ id: 1 }])
+    expect(store.error).toContain('AC 数据刷新失败')
+  })
+
   it('stops every timer and exposes the approved resource operations', async () => {
     vi.useFakeTimers()
     window.setTimeout = setTimeout

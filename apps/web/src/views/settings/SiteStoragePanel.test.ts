@@ -86,6 +86,18 @@ describe('SiteStoragePanel', () => {
     expect(wrapper.find('[data-testid="migrate-data-root"]').exists()).toBe(true)
   })
 
+  it('applies a successful data-root refresh when the site list request fails', async () => {
+    vi.mocked(api.listSites).mockRejectedValueOnce(new Error('site list unavailable'))
+    vi.mocked(api.getDataRoot).mockResolvedValueOnce({ data_root: 'D:\\partial-data', default_data_root: 'C:\\default', site_count: 1, active_site_id: 'demo', storage_mode: 'persistent', data_root_kind: 'persistent', persistent: true })
+
+    const wrapper = mount(SiteStoragePanel)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('D:\\partial-data')
+    expect(wrapper.text()).toContain('部分数据刷新失败，已保留最后成功数据')
+    expect(wrapper.text()).toContain('局点列表（site list unavailable）')
+  })
+
   it('inspects a selected data package before opening the merge dialog', async () => {
     adapter.selectSitePackage.mockResolvedValueOnce({ cancelled: false, path: 'C:\\packages\\line.ncresult' } as never)
     vi.mocked(api.inspectSitePackage).mockResolvedValue({

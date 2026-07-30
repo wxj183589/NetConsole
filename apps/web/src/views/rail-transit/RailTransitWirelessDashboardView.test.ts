@@ -25,8 +25,20 @@ describe('rail transit wireless dashboard', () => {
     expect(source).toContain('due.alerts = now + 5_000')
     expect(source).toContain('onBeforeUnmount')
     expect(source).toContain("document.visibilityState !== 'visible'")
-    expect(source).toContain('保留上次数据')
+    expect(source).toContain('已保留最后成功数据')
+    expect(source).toContain('Promise.allSettled')
+    expect(source).toContain("label: '汇总指标'")
+    expect(source).toContain("label: '列车通信'")
+    expect(source).toContain("label: '最近任务与会话'")
+    expect(source).toContain('部分看板数据刷新失败')
+    expect(source).not.toContain('const core = await Promise.all')
     expect(source).not.toContain('setInterval')
+  })
+
+  it('does not render unloaded metrics as real zero values', () => {
+    expect(source).toContain("return data.value ? (value ?? 0) : '—'")
+    expect(source).toContain("s ? `${s.registered_trains} / ${s.registered_mrs}` : '—'")
+    expect(source).toContain("data ? `${data.alerts.total} 条` : '—'")
   })
 
   it('uses typed compact data tables with stable dashboard identities', () => {

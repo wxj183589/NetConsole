@@ -308,22 +308,26 @@ const sectionNodeOptions = computed(() => {
   return options
 })
 const issueCodeStats = computed(() => Object.entries(store.issueCodeCounts).sort((left, right) => right[1] - left[1]))
+function summaryMetric(value: number | undefined): number | string {
+  if (store.summary) return value ?? 0
+  return store.summaryError ? '加载失败' : '—'
+}
 const summaryCards = computed(() => [
-  ['站点', store.summary?.station_count || 0, 'normal'],
-  ['普通车站', store.summary?.normal_station_count || 0, 'normal'],
-  ['特殊节点', store.summary?.special_node_count || 0, 'warning'],
-  ['来源待确认', store.summary?.source_pending_count || 0, 'warning'],
-  ['来源冲突', store.summary?.source_conflict_count || 0, 'danger'],
-  ['来源失效', store.summary?.source_stale_count || 0, 'warning'],
-  ['区间', store.summary?.section_count || 0, 'normal'],
-  ['轨旁 AP', store.summary?.ap_count || 0, 'normal'],
-  ['列车', store.summary?.train_count || 0, 'normal'],
-  ['车载 MR', store.summary?.mr_count || 0, 'normal'],
-  ['缺失位置 AP', store.summary?.missing_location_ap_count || 0, 'warning'],
-  ['无效里程', store.summary?.invalid_mileage_count || 0, 'danger'],
-  ['重复 AP MAC', store.summary?.duplicate_ap_mac_count || 0, 'danger'],
-  ['重复静态 IP', store.summary?.duplicate_static_ip_count || 0, 'danger'],
-  ['未关联列车 MR', store.summary?.unbound_mr_count || 0, 'warning'],
+  ['站点', summaryMetric(store.summary?.station_count), 'normal'],
+  ['普通车站', summaryMetric(store.summary?.normal_station_count), 'normal'],
+  ['特殊节点', summaryMetric(store.summary?.special_node_count), 'warning'],
+  ['来源待确认', summaryMetric(store.summary?.source_pending_count), 'warning'],
+  ['来源冲突', summaryMetric(store.summary?.source_conflict_count), 'danger'],
+  ['来源失效', summaryMetric(store.summary?.source_stale_count), 'warning'],
+  ['区间', summaryMetric(store.summary?.section_count), 'normal'],
+  ['轨旁 AP', summaryMetric(store.summary?.ap_count), 'normal'],
+  ['列车', summaryMetric(store.summary?.train_count), 'normal'],
+  ['车载 MR', summaryMetric(store.summary?.mr_count), 'normal'],
+  ['缺失位置 AP', summaryMetric(store.summary?.missing_location_ap_count), 'warning'],
+  ['无效里程', summaryMetric(store.summary?.invalid_mileage_count), 'danger'],
+  ['重复 AP MAC', summaryMetric(store.summary?.duplicate_ap_mac_count), 'danger'],
+  ['重复静态 IP', summaryMetric(store.summary?.duplicate_static_ip_count), 'danger'],
+  ['未关联列车 MR', summaryMetric(store.summary?.unbound_mr_count), 'warning'],
 ])
 
 const stationColumns: NcTableColumn<Station>[] = [

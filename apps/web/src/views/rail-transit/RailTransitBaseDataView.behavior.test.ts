@@ -657,6 +657,21 @@ describe('轨道交通基础资料编辑闭环', () => {
     wrapper.unmount()
   })
 
+  it('总览尚无成功数据且加载失败时不把未知统计显示为零', async () => {
+    mocks.summary.mockRejectedValue(new Error('summary unavailable'))
+
+    const wrapper = await mountView()
+
+    const stationCard = wrapper.findAll('.summary-grid article').find(
+      (item) => item.text().includes('站点'),
+    )
+    expect(stationCard?.text()).toContain('加载失败')
+    expect(stationCard?.text()).not.toMatch(/站点\s*0/)
+    expect(wrapper.text()).toContain('部分基础资料刷新失败，已保留最后成功数据。')
+    expect(wrapper.text()).not.toContain('Backend 连接中断，请重试。')
+    wrapper.unmount()
+  })
+
   it('真实点击解锁后建立草稿，并保存线路和项目类型', async () => {
     let saved = false
     mocks.summary.mockImplementation(async () => ({
