@@ -6,6 +6,8 @@
 
 原独立 `/rail-transit/trackside-ap-plan` 页面和导航已删除；旧路由只重定向到 `/rail-transit/base-data?tab=trackside-ap-planning`。规划查询、导入预览、导出和 Task Center 继续复用现有能力，规划编辑由基础资料统一保存事务提交。轨旁 AP 规划当前是一站一行的直接维护模型，只维护 AP 数量和 AP 管理 VLAN；多个站使用相同管理 VLAN 合法。IP、掩码、网关及旧 VLAN 分组表/API 仅作历史兼容，不再由活动页面编辑。详细边界见 [轨旁 AP 逐站规划与 VLAN 分组兼容](AP_MANAGEMENT_VLAN_GROUPS.md)。
 
+基础资料和轨旁 AP 只读查询按接口独立刷新。成功接口立即更新对应数据；失败接口保留最后成功值，不会让站点、区间、AP、列车或规划整组闪空。健康检查在线但业务接口失败时，页面显示局部“部分基础资料刷新失败”提示；只有核心健康和多个核心查询持续失败才显示 Backend 整体不可用。总览在无成功缓存时用 `—` 或“加载失败”表示未知，不把接口失败统计成真实 `0`。
+
 ```text
 devices.db
 ├─ ap_extension_points       轨旁 AP 点位、位置和里程资料

@@ -8,7 +8,7 @@
 
 | 领域 | 当前永久入口 | 当前状态 | 下一步 |
 | --- | --- | --- | --- |
-| Job Center | `TaskApplicationService/TaskRuntime/LocalProcessAdapter` | 协议统一；部分领域仍委托 `legacy_tasks.py`；已聚合通用业务部分成功结果到列表/详情告警，异构 legacy result 仍需逐域收敛 | 按生产调用逐项迁出，并统一剩余 legacy 业务结果语义 |
+| Job Center | `TaskApplicationService/TaskRuntime/LocalProcessAdapter` | 协议统一；部分领域仍委托 `legacy_tasks.py`；已聚合通用业务部分成功结果到列表/详情告警，查询刷新也按域保留部分成功，异构 legacy result 仍需逐域收敛 | 按生产调用逐项迁出，并统一剩余 legacy 业务结果语义 |
 | 设备管理 | Device Service -> Router -> Vue | `IMPLEMENTED_UNVERIFIED` | Electron 人工与真实设备 CRUD/连接/导入导出验收 |
 | AC/FIT-AP | AC Application/Query Service -> Router -> Vue | 受控固化/远程登录与 OmniPeek 已接线；配置快照已返回完整安全 Diff 契约并接入共享 Monaco Viewer，`PARTIAL / REAL_DEVICE_PENDING` | 验证真实 AC 动作、确认/审计、NAM 导入、并发互斥和真实快照对比 |
 | 轨道交通 | Rail/Online MR/MESH/Ground Unattended Service -> Router -> Vue | 车内通信已解除在线硬门槛；地面无人值守已独立接线但真实 AC/MR/长时运行待验；AGENT executor 默认关闭；整体 `PARTIAL` | 按 LOCAL/AGENT/车内检测/MESH/地面无人值守独立闭环验收 |

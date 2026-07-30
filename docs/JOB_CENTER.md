@@ -69,12 +69,12 @@ Worker JSONL 是本程序内部协议，不使用 Windows 当前代码页。Work
 
 当前公开 DTO 包含 `status`、`error_code`、`error_summary`、`has_warning` 和按任务白名单返回的 `details`。轨旁 AP 光衰任务 `trackside_ap_optical_update` 已在详情白名单中返回 `status/success_count/failed_count/skipped_count/actionable_skipped_count/ignored_skipped_count/target_count` 及原因计数，Vue 详情可在 `COMPLETED` 旁独立显示“部分成功”。这些字段不是第八个 Task 状态，也不能把 `COMPLETED` 改写为 `FAILED`。
 
-仍有一个明确缺口：任务列表与顶部“警告”计数只根据 `error_summary` 计算 `has_warning`，列表查询又不读取结果详情。因此轨旁 AP 任务即使详情为 `PARTIAL_SUCCESS`，列表仍可能只显示绿色“已完成”，`warning_only` 也可能漏掉它。其他批量 handler 还没有统一 `business_outcome` 契约。本轮文档不把该问题描述为已完全修复。
+当前 Job Center 查询层已把结构化业务结果投影为统一字段：`lifecycle_status`、`business_status`、成功/失败/跳过/告警计数、`partial_success` 和 `primary_failure_reason`。列表、详情和顶部告警使用同一投影；历史 `NO_TARGET` 仅在读取时显示为 `NO_EFFECTIVE_TARGET`，不改写历史记录。仍有部分异构 legacy handler 只提供旧 `details` 结构，后续按领域继续收敛。
 
 后续代码收口应满足：
 
-1. 在通用 DTO 中增加稳定的业务结果、成功/失败/跳过/警告计数，或由后端统一聚合为等价字段；
-2. 列表与详情读取同一聚合结果，`has_warning` 覆盖部分失败、可行动跳过和完成警告；
+1. 剩余 legacy handler 逐域补齐稳定的业务结果、成功/失败/跳过/警告计数；
+2. 列表与详情继续读取同一聚合结果，`has_warning` 覆盖部分失败、可行动跳过和完成警告；
 3. `COMPLETED + PARTIAL_SUCCESS/WARNING` 使用警告样式，完全失败仍为 `FAILED`，取消与强停保持各自终态；
 4. 页面 toast、Job Center、结果摘要、失败数量和详细原因必须一致；
 5. 自动测试覆盖列表、警告筛选、详情、汇总计数和刷新后的持久状态。

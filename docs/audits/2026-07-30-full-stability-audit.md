@@ -40,20 +40,21 @@
 
 | ID | 级别 | 证据 | 模块 | 状态 | 本次实施 |
 | --- | --- | --- | --- | --- | --- |
-| P0-01 | P0 | CONFIRMED | 轨旁 AP 规划 | 待修复 | 是 |
+| P0-01 | P0 | CONFIRMED | 轨旁 AP 规划 | 已修复 | 是 |
 | P0-02 | P0 | CONFIRMED（基线已修复） | 基础资料刷新 | 已有实现，待回归 | 否 |
-| P0-03 | P0 | CONFIRMED | 基础资料错误状态 | 部分实现，字段不完整 | 是 |
+| P0-03 | P0 | CONFIRMED | 基础资料错误状态 | 已按域隔离，诊断字段仍可扩展 | 是 |
 | P0-04 | P0 | CONFIRMED（基线已修复） | 规划/上线概览 | 已有实现，待回归 | 否 |
 | P0-05 | P0 | CONFIRMED（基线已修复） | 轨旁 AP 业务 | 已有实现，待回归 | 否 |
-| P1-01 | P1 | CONFIRMED | 轨旁 AP 任务状态 | 待修复 | 是 |
-| P1-02 | P1 | CONFIRMED | Task Center 业务结果 | 部分实现，待统一 | 是 |
+| P1-01 | P1 | CONFIRMED | 轨旁 AP 任务状态 | 已修复 | 是 |
+| P1-02 | P1 | CONFIRMED | Task Center 业务结果 | 已统一兼容投影，legacy 仍需逐域收敛 | 是 |
 | P1-03 | P1 | CONFIRMED | Feature/验收事实 | 文档维度不完整 | 是（文档） |
-| P1-04 | P1 | CONFIRMED | Windows Server 2012 文档 | 待修复 | 是 |
-| P1-05 | P1 | CONFIRMED | 版本/依赖元数据 | 待修复 | 是 |
+| P1-04 | P1 | CONFIRMED | Windows Server 2012 文档 | 已修复（文档） | 是 |
+| P1-05 | P1 | CONFIRMED | 版本/依赖元数据 | 已修复（文档/元数据） | 是 |
 | P1-06 | P1 | CONFIRMED | API Client | 已修复 | 是 |
 | P1-07 | P1 | CONFIRMED | UI 架构分类 | 已修复 | 是 |
+| P1-08 | P1 | CONFIRMED | 全仓查询部分刷新 | 已修复 | 是 |
 
-当前确认发现共 12 项：P0 5 项、P1 7 项。另有 12 项 P2 整改候选，仅记录计划，不在本次实施大规模重构。
+当前确认发现共 13 项：P0 5 项、P1 8 项。另有 12 项 P2 整改候选，仅记录计划，不在本次实施大规模重构。
 
 ## 发现详情
 
@@ -71,7 +72,7 @@
 - 修复建议：仅在 AP 数量大于 0 时要求 VLAN；已有 VLAN 无论数量是否为 0 都必须保持 1～4094；空值原样落为 SQL `NULL` 和兼容空字符串。
 - 自动测试建议：覆盖前端骨架/按钮/边界值、导入标准化、服务保存、事务仓储和导出。
 - 本次是否实施：是
-- 实施提交：待填写
+- 实施提交：`e71eb2ac`
 
 ### P0-02 基础资料单接口失败曾放大为整组失败
 
@@ -99,7 +100,7 @@
 - 修复建议：为每端点维护最近成功时间，并把 `retainedLastSuccess`、`consecutiveFailures`、`lastSuccessfulAt` 写入错误对象和展开详情。
 - 自动测试建议：覆盖首次失败、已有成功数据后失败、连续失败和单域恢复。
 - 本次是否实施：是
-- 实施提交：待填写
+- 实施提交：`3bccedb5`
 
 ### P0-04 规划维护与上线概览曾互相阻断
 
@@ -141,7 +142,7 @@
 - 修复建议：全局 Task Store 成为唯一轮询/恢复事实源；页面只记录当前内存 `taskId` 并从 Store 派生状态，详情复用全局抽屉。
 - 自动测试建议：静态禁止局部任务 localStorage/轮询，并覆盖页面重进、终态和详情入口。
 - 本次是否实施：是
-- 实施提交：待填写
+- 实施提交：`5515f667`
 
 ### P1-02 Task Center 缺少统一的业务结果投影
 
@@ -155,7 +156,7 @@
 - 修复建议：保持七状态生命周期不变；在 Job Center 查询层增加只读、兼容旧结果的业务结果投影，输出 `business_status`、成功/失败/跳过/告警计数、`partial_success` 和 `primary_failure_reason`；列表展示业务状态。历史 `NO_TARGET` 读取时兼容投影为 `NO_EFFECTIVE_TARGET`，不重写历史任务结果。
 - 自动测试建议：覆盖完全成功、部分成功、完成有告警、无有效目标、失败和旧结果兼容；列表与详情使用同一投影。
 - 本次是否实施：是
-- 实施提交：待填写
+- 实施提交：`ca5f9f87`
 
 ### P1-03 Feature 状态未完整表达验收事实
 
@@ -169,7 +170,7 @@
 - 修复建议：不改 `FeatureItem` Schema；在活动文档增加主要模块验证矩阵，分别记录实现、自动化、Electron 人工、真实设备和正式包状态，并保留 Windows Server 2012 的现场事实等级。
 - 自动测试建议：文档 Guard 校验矩阵列和受控状态词；Feature/Navigation 现有一致性测试继续作为入口事实证据。
 - 本次是否实施：是，仅更新文档
-- 实施提交：待填写
+- 实施提交：`925863f0`
 
 ### P1-04 Windows Server 2012 文档结论与现场事实冲突
 
@@ -183,7 +184,7 @@
 - 修复建议：主程序与 Agent 标记 `USER_FIELD_CONFIRMED`；自动化 VM 标记 `AUTOMATION_NOT_RECORDED`；不新增 OS 启动阻断。PR #13 不在本 worktree 修改，只在报告声明旧结论已过时。
 - 自动测试建议：静态文档 Guard 确认不再出现否定现场事实的活动表述。
 - 本次是否实施：是
-- 实施提交：待填写
+- 实施提交：`925863f0`
 
 ### P1-05 版本和依赖元数据漂移
 
@@ -197,7 +198,7 @@
 - 修复建议：去除锁文件中的过期产品版本；保留 `version.py` 唯一产品事实源，明确 Web 包版本仅为内部工作区版本。
 - 自动测试建议：版本一致性和元数据静态测试。
 - 本次是否实施：是
-- 实施提交：待填写
+- 实施提交：`925863f0`
 
 ### P1-06 API 查询缺少超时和有限恢复
 
@@ -225,7 +226,20 @@
 - 修复建议：把该精确路径和符号登记为 `DISPLAY_ONLY`，指向已有规划行为测试；不放宽扫描规则、不增加目录级豁免。
 - 自动测试建议：运行 `TracksideApPlanningTab.behavior.test.ts` 和 `check_ui_business_logic.py`，同时保持配置陈旧项检查开启。
 - 本次是否实施：是
-- 实施提交：待填写
+- 实施提交：`588b8893`
+
+### P1-08 全仓查询子接口失败放大
+
+- 严重级别：P1
+- 证据等级：CONFIRMED
+- 所属模块：Online MR、无线看板、AC/FIT-AP、Agent 任务详情、局点存储
+- 代码路径：`apps/web/src/stores/onlineMr.ts`、`apps/web/src/views/rail-transit/RailTransitWirelessDashboardView.vue`、`apps/web/src/stores/acManagement.ts`、`apps/web/src/views/agents/AgentListView.vue`、`apps/web/src/views/settings/SiteStoragePanel.vue`
+- 用户表现：配对的只读请求中任一接口失败时，成功返回的数据不落入页面，旧数据可能被清空或轮询被停止。
+- 根因：详情/日志、局点列表/数据根及多个看板域使用整组 `Promise.all` 或共享错误/失败计数。
+- 修复结果：改用 `Promise.allSettled` 或按域结算；成功结果立即落值，失败域保留旧值，恢复只清除自身错误；未加载数字显示 `—`。
+- 自动测试：覆盖 Online MR、无线看板、AC Store、Agent 详情、Site Storage 和基础资料行为。
+- 本次是否实施：是
+- 实施提交：`a13eb8ac`
 
 ## 其他审计结论
 
@@ -254,6 +268,7 @@
 - Web package 的 `0.1.0` 是工作区内部包版本，不应被解释为产品版本；`constraints.txt` 首行仍引用 `v1.3.9`，属于确认漂移。
 - 正式构建已有 clean、upstream、Git metadata、唯一制品、Notice/SBOM、冻结 Backend 和最终 Electron package smoke 门；本次不放宽这些门。
 - Windows Server 2012 x64 的主程序与 Agent 现场运行事实均为 `USER_FIELD_CONFIRMED`；自动化 VM 记录为 `AUTOMATION_NOT_RECORDED`，两者不得互相替代。
+- 本轮稳定性补丁提交为 `a13eb8ac`；仅包含只读查询刷新与前端状态语义，不改变设备命令、凭据、迁移包或导出协议。
 
 ## P2 后续计划
 
@@ -281,21 +296,27 @@
 - `git fetch github --prune`
 - 基线、工作区、worktree、开放 PR 和版本元数据只读核对
 - `D:\study\NetConsole\.venv\Scripts\python.exe -m pytest tests/test_ap_management_vlan_planning.py tests/test_trackside_ap_web.py tests/test_task_center.py -q`：`116 passed, 1 warning`
+- Python 相关业务回归：`249 passed, 7 warnings`
+- Python 全量：`3183 passed, 2 skipped, 1 quality gate fixed`（初次唯一失败为缺少 `docs/audits/README.md`，补齐后质量门 `15 passed`）
+- Web 全量 Vitest：`146 files, 839 tests passed`
+- Web `vue-tsc -b` 和 production build：通过
+- Electron Vitest：`32 files, 228 tests passed`；typecheck 与 main/preload build：通过
+- Agent Go：`go test ./...` 通过；Python `compileall`、Ruff、`pip check`：通过
+- 架构 Guard：`9/9 passed`；稳定性脚本：100 轮规划/基础资料 HTTP 200，0 网络错误，Backend PID 未变化
+- 修改差异和 Markdown 链接检查：通过
 
 ### 待执行
 
-- Python、Web、Electron 定向测试
-- Python/Web/Electron 全量测试与构建
-- 架构门、文档 Guard、`pip check`、`git diff --check`
-- package smoke
+- 正式安装包构建与 package smoke
+- Windows Server 2012 自动化 VM 和正式包 GUI 人工验收
 
 ## 既有失败
 
-尚未发现；以基线代码的独立验证结果为准。
+完整 Python 首次门禁发现 `docs/audits` 缺失 README，已补充目录索引并通过质量测试；没有业务测试失败。
 
 ## 修复结果
 
-审计中。
+本轮已完成查询部分刷新审计及修复，提交 `a13eb8ac`；文档同步和审计目录索引待本次文档提交。
 
 ## 未验证项
 
@@ -304,4 +325,4 @@
 
 ## 后续建议
 
-审计中。
+继续按 P2 计划逐域迁移 legacy handler、建立 Server 2012 自动化 VM，并完成正式安装包 GUI 验收；这些不影响本轮只读查询稳定性修复的自动化结论。
