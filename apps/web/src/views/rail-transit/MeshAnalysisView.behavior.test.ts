@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   listProfiles: vi.fn(),
   listVehicleMrs: vi.fn(),
   prepareContext: vi.fn(),
+  getImportContext: vi.fn(),
   createProfile: vi.fn(),
   previewImport: vi.fn(),
   recoverTasks: vi.fn(),
@@ -48,7 +49,21 @@ vi.mock('../../api/meshAnalysis', () => ({
   exportMeshLinkDetails: mocks.exportDetails,
   getMeshActivePathChart: mocks.getActivePath,
   getMeshAnalysisSession: mocks.getSession,
+  getMeshAnalysisOverview: vi.fn(async (values) => ({
+    summary: {
+      site_id: 'demo',
+      index_status: 'ready',
+      indexed_session_count: 0,
+      pending_session_count: 0,
+      index_updated_at: null,
+      session_count: 0,
+      train_count: 0,
+      mr_count: 0,
+    },
+    sessions: await mocks.listSessions(values),
+  })),
   getMeshAnalysisSummary: vi.fn().mockResolvedValue({ session_count: 0, train_count: 0, mr_count: 0 }),
+  getMeshImportContext: mocks.getImportContext,
   getMeshPeerSegmentChart: mocks.getPeerPath,
   getMeshTracksideSignalChart: mocks.getTracksideSignal,
   getMeshRawTail: vi.fn(),
@@ -246,6 +261,18 @@ beforeEach(() => {
   })
   mocks.listProfiles.mockResolvedValue([])
   mocks.listVehicleMrs.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 200 })
+  mocks.getImportContext.mockImplementation(async () => {
+    const [profiles, vehiclePage] = await Promise.all([
+      mocks.listProfiles(),
+      mocks.listVehicleMrs({ page: 1, page_size: 200 }),
+    ])
+    return {
+      site_id: 'demo',
+      revision: 'test',
+      profiles,
+      vehicle_mrs: vehiclePage.items,
+    }
+  })
   mocks.prepareContext.mockResolvedValue({
     site_id: 'demo',
     vehicle_mr_count: 0,
@@ -384,12 +411,13 @@ describe('Mesh analysis import context behavior', () => {
     await fileInput.trigger('change')
     await flushPromises()
 
-    expect(mocks.previewImport).toHaveBeenCalledWith(files)
+    expect(mocks.previewImport).toHaveBeenCalledWith(files, expect.any(AbortSignal))
     expect(wrapper.findAll('.bundle-table tbody tr')).toHaveLength(4)
     expect(wrapper.text()).toContain('成员 1')
     expect(wrapper.text()).toContain('成员 4')
+    expect(wrapper.text()).toContain('我已核对以上文件的列车号、端位和车载 MR 归属')
     const submit = wrapper.findAll('button').find((button) => button.text() === '确认导入并分析')!
-    expect(submit.attributes('disabled')).toBeUndefined()
+    expect(submit.attributes('disabled')).toBeDefined()
     wrapper.unmount()
   })
 
@@ -419,12 +447,12 @@ describe('Mesh analysis import context behavior', () => {
     await flushPromises()
 
     expect(mocks.previewImport).toHaveBeenCalledTimes(2)
-    expect(mocks.previewImport).toHaveBeenLastCalledWith([file])
+    expect(mocks.previewImport).toHaveBeenLastCalledWith([file], expect.any(AbortSignal))
     expect(wrapper.text()).toContain('已选择 1 个文件')
     wrapper.unmount()
   })
 
-  it('prepares context, pages VehicleMr by 200, and keeps VehicleMr when profiles fail', async () => {
+  it('loads the lightweight import context once without starting a full profile sync', async () => {
     const firstPage = Array.from({ length: 200 }, (_, index) => ({ id: `uuid-${index}`, device_id: index + 1, name: `列车${index + 1}-MR-CT`, train_no: String(index + 1), role: 'CT' }))
     mocks.listVehicleMrs
       .mockResolvedValueOnce({ items: firstPage, total: 201, page: 1, page_size: 200 })
@@ -438,20 +466,15 @@ describe('Mesh analysis import context behavior', () => {
     await importButton!.trigger('click')
     await flushPromises()
 
-    expect(mocks.prepareContext).toHaveBeenCalledTimes(1)
+    expect(mocks.prepareContext).not.toHaveBeenCalled()
+    expect(mocks.getImportContext).toHaveBeenCalledTimes(1)
     expect(mocks.listVehicleMrs).toHaveBeenCalledWith({ page: 1, page_size: 200 })
-    expect(mocks.listVehicleMrs).toHaveBeenCalledWith({ page: 2, page_size: 200 })
     expect(wrapper.text()).toContain('内部 MESH 归属加载失败：profile unavailable')
-    expect(wrapper.text()).not.toContain('车载 MR 加载失败')
-    expect(wrapper.text()).not.toContain('当前局点没有可识别的车载 MR')
+    expect(wrapper.text()).toContain('车载 MR 加载失败：profile unavailable')
     wrapper.unmount()
   })
 
-  it('keeps selected files usable after prepare fails and waits for profile loading before preview', async () => {
-    let rejectPrepare!: (reason: unknown) => void
-    mocks.prepareContext.mockReturnValueOnce(new Promise((_resolve, reject) => {
-      rejectPrepare = reject
-    }))
+  it('keeps selected files usable and does not wait for a full profile sync before preview', async () => {
     mocks.listProfiles.mockResolvedValueOnce([{
       mr_id: 'profile-1',
       display_name: '列车34-MR-CT',
@@ -518,19 +541,13 @@ describe('Mesh analysis import context behavior', () => {
     Object.defineProperty(fileInput.element, 'files', { configurable: true, value: [file] })
     await fileInput.trigger('change')
     await flushPromises()
-    expect(mocks.previewImport).not.toHaveBeenCalled()
-
-    rejectPrepare(new TypeError('Failed to fetch'))
-    await flushPromises()
-
     expect(mocks.listProfiles).toHaveBeenCalled()
-    expect(mocks.previewImport).toHaveBeenCalledWith([file])
+    expect(mocks.prepareContext).not.toHaveBeenCalled()
+    expect(mocks.previewImport).toHaveBeenCalledWith([file], expect.any(AbortSignal))
     expect(wrapper.text()).toContain('已选择 1 个文件')
     expect(wrapper.text()).toContain('2026_07_28_1meshlog.log')
     expect(wrapper.text()).toContain('2026-07-28T00:18:56.311000')
     expect(wrapper.text()).toContain('bbbbbbbbbbbb')
-    expect(wrapper.text()).toContain('现有内部归属仍可继续使用')
-    expect(wrapper.text()).not.toContain('导入上下文准备失败：Failed to fetch')
     wrapper.unmount()
   })
 
@@ -586,10 +603,10 @@ describe('Mesh analysis import context behavior', () => {
     wrapper.unmount()
   })
 
-  it('shares one in-flight prepare request across rapid repeated opens', async () => {
-    let resolvePrepare!: (value: unknown) => void
-    mocks.prepareContext.mockReturnValueOnce(new Promise((resolve) => {
-      resolvePrepare = resolve
+  it('shares one in-flight lightweight context request across rapid repeated opens', async () => {
+    let resolveContext!: (value: unknown) => void
+    mocks.getImportContext.mockReturnValueOnce(new Promise((resolve) => {
+      resolveContext = resolve
     }))
     const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
     await flushPromises()
@@ -597,16 +614,14 @@ describe('Mesh analysis import context behavior', () => {
     void importButton.trigger('click')
     void importButton.trigger('click')
     await flushPromises()
-    expect(mocks.prepareContext).toHaveBeenCalledTimes(1)
+    expect(mocks.getImportContext).toHaveBeenCalledTimes(1)
+    expect(mocks.prepareContext).not.toHaveBeenCalled()
 
-    resolvePrepare({
+    resolveContext({
       site_id: 'demo',
-      vehicle_mr_count: 0,
-      profile_count: 0,
-      created_count: 0,
-      updated_count: 0,
-      skipped_count: 0,
-      warnings: [],
+      revision: 'test',
+      profiles: [],
+      vehicle_mrs: [],
     })
     await flushPromises()
     wrapper.unmount()

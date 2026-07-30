@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
+from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
+from netconsole.core.paths import PathResolver
 from netconsole.models.mesh_analysis_params import mesh_analysis_params_from_json
 from netconsole.services.export.common_exporters import ExportCancelled
 from netconsole.services.export import error_event, finished_event, progress_event
@@ -120,6 +122,25 @@ def _run_trackside_ap_business(job: ExportJob) -> None:
     )
 
 
+def _mark_mesh_session_index_dirty(job: ExportJob) -> None:
+    session_id = str(job.context.get("session_id") or "")
+    if not session_id or not job.site_name:
+        return
+    try:
+        paths = PathResolver()
+        MeshCatalogRepository(
+            paths.mesh_catalog_path(job.site_name)
+        ).mark_session_index_dirty(session_id)
+    except Exception as exc:
+        _emit(
+            log_event(
+                job.job_id,
+                f"MESH 目录索引待刷新标记失败：{type(exc).__name__}",
+                level="warning",
+            )
+        )
+
+
 def _run_mesh_link_detail_export(job: ExportJob) -> None:
     job.validate()
     db_path = Path(job.db_path)
@@ -199,6 +220,7 @@ def _run_mesh_link_detail_export(job: ExportJob) -> None:
     if isinstance(result, dict):
         result.update(export_result)
         result["analysis_parameter"] = merged_params
+    _mark_mesh_session_index_dirty(job)
     _emit(event)
 
 
@@ -267,6 +289,7 @@ def _run_mesh_analysis_report(job: ExportJob) -> None:
         tmp_path.parent.mkdir(parents=True, exist_ok=True)
         os.replace(generated, tmp_path)
         os.replace(tmp_path, job.output_path)
+        _mark_mesh_session_index_dirty(job)
         _emit(_finished(job, job.output_path, row_count=1))
     except Exception:
         for value in queue.generated_files:

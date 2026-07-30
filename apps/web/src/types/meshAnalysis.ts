@@ -1,5 +1,9 @@
 export interface MeshAnalysisSummary {
   site_id: string
+  index_status: 'pending' | 'discovering' | 'enriching' | 'ready' | 'failed'
+  indexed_session_count: number
+  pending_session_count: number
+  index_updated_at: string | null
   session_count: number
   train_count: number
   mr_count: number
@@ -84,7 +88,15 @@ export interface MeshAnalysisSession {
   last_sample_time: string | null
 }
 
-export interface Page<T> { items: T[]; total: number; page: number; page_size: number }
+export interface Page<T> {
+  items: T[]; total: number; page: number; page_size: number
+  index_status?: string; indexed_session_count?: number; pending_session_count?: number
+}
+export interface MeshImportContext {
+  site_id: string; revision: string; profiles: MeshProfile[]
+  vehicle_mrs: import('./railTransitBaseData').VehicleMr[]
+}
+export interface MeshAnalysisOverview { summary: MeshAnalysisSummary; sessions: Page<MeshAnalysisSession> }
 export interface MeshWarning { code: string; message: string; severity: string }
 export interface MeshRawSource {
   source_file_id: number; source_action_id: string; source_id?: string; source_type: string; name: string; exists: boolean; size_bytes: number; modified_at: string | null

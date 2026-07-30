@@ -46,6 +46,37 @@ def _mark_first_member_encrypted(path: Path) -> None:
     path.write_bytes(payload)
 
 
+def test_preview_uses_catalog_fingerprint_index_without_historical_raw_backfill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    storage = MeshStorageService("demo", paths)
+    profiles = [
+        storage.create_mr_profile(f"列车{index:02d}-MR-CT")
+        for index in range(1, 37)
+    ]
+    archive = tmp_path / "unknown.zip"
+    _zip(archive, {"unknown.log": VALID_LOG})
+    monkeypatch.setattr(
+        MeshBundleImportService,
+        "_backfill_profile_fingerprints",
+        lambda *_args, **_kwargs: pytest.fail("预览不得回读历史原始日志"),
+    )
+
+    with archive.open("rb") as source:
+        preview = MeshBundleImportService("demo", paths).create_preview(
+            archive.name,
+            source,
+            profiles,
+        )
+
+    assert len(preview["items"]) == 1
+    assert len(preview["items"][0]["candidates"]) == 36
+    assert len(preview["items"][0]["profile_import_states"]) == 1
+    assert preview["items"][0]["stored_filename"].endswith("unknown.log")
+
+
 def test_bundle_manifest_maps_train_role_and_06_alias(tmp_path: Path) -> None:
     archive = tmp_path / "mesh.zip"
     _zip(
@@ -266,6 +297,11 @@ def test_successful_worker_commit_rewrites_staging_paths_and_finalizes_manifest(
     assert manifest["parser_version"] == PARSER_VERSION
     assert manifest["parsed_schema_version"] == SCHEMA_VERSION
     assert manifest["file_mappings"][0]["original_name"] == "01CTmeshlog.log"
+
+    with archive.open("rb") as source:
+        repeated_preview = service.create_preview(archive.name, source, [profile])
+    assert repeated_preview["items"][0]["duplicate_status"] == "duplicate_same_mr"
+    assert repeated_preview["items"][0]["existing_source_id"] == source_row["id"]
 
     duplicate = service.import_approved_preview(
         str(preview["preview_id"]),

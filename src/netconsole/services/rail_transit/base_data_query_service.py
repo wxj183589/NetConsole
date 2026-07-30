@@ -344,6 +344,10 @@ class RailTransitBaseDataQueryService:
         selected, current, size = self._page(items, page, page_size)
         return VehicleMrPageDTO(items=selected, total=len(items), page=current, page_size=size)
 
+    def list_mesh_import_context_mrs(self, site_id: str) -> list[VehicleMrDTO]:
+        """导入弹窗只需身份字段，不拼接 MESH/Online MR 运行态与质量汇总。"""
+        return self._all_mrs(site_id, include_runtime=False)
+
     def get_mr(self, site_id: str, mr_id: str) -> VehicleMrDetailDTO | None:
         item = next((row for row in self._all_mrs(site_id, include_runtime=True) if row.id == mr_id), None)
         if item is None:

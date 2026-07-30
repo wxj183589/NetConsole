@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from netconsole.models.api.common import ApiModel
+from netconsole.models.api.rail_transit_base_data import VehicleMrDTO
 
 
 class MeshAnalysisWarningDTO(ApiModel):
@@ -41,6 +42,13 @@ class MeshImportContextPrepareDTO(ApiModel):
     updated_count: int = 0
     skipped_count: int = 0
     warnings: list[str] = Field(default_factory=list)
+
+
+class MeshImportContextDTO(ApiModel):
+    site_id: str
+    revision: str
+    profiles: list[MeshProfileDTO] = Field(default_factory=list)
+    vehicle_mrs: list[VehicleMrDTO] = Field(default_factory=list)
 
 
 class MeshBundleProfileCandidateDTO(ApiModel):
@@ -164,6 +172,10 @@ class MeshArtifactDeleteRequestDTO(ApiModel):
 
 class MeshAnalysisSummaryDTO(ApiModel):
     site_id: str
+    index_status: str = "pending"
+    indexed_session_count: int = 0
+    pending_session_count: int = 0
+    index_updated_at: str | None = None
     session_count: int = 0
     train_count: int = 0
     mr_count: int = 0
@@ -214,6 +226,14 @@ class MeshAnalysisSessionPageDTO(ApiModel):
     total: int = 0
     page: int = 1
     page_size: int = 50
+    index_status: str = "pending"
+    indexed_session_count: int = 0
+    pending_session_count: int = 0
+
+
+class MeshAnalysisOverviewDTO(ApiModel):
+    summary: MeshAnalysisSummaryDTO
+    sessions: MeshAnalysisSessionPageDTO
 
 
 class MeshDataSourceDTO(ApiModel):
