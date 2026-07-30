@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import sqlite3
 import threading
+import time
 from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +18,7 @@ from netconsole.adapters.trackside_switch import resolve_trackside_switch_adapte
 from netconsole.application.web_artifacts import ReservedWebArtifact, WebArtifactError, WebArtifactStore
 from netconsole.application.web_export_process_adapter import WebExportProcessAdapter
 from netconsole.core.database import Database
+from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.online_mr import (
@@ -941,13 +944,36 @@ class RailTransitWebApplicationService:
     def open_trackside_ap_rename_command_export(self, site_id: str, artifact_id: str) -> tuple[Path, str]:
         return self._open_artifact(site_id, artifact_id, "trackside_ap_rename_commands", "txt")
 
-    def get_trackside_ap_plan(self, site_id: str) -> TracksideApPlanDTO:
+    def get_trackside_ap_plan(
+        self,
+        site_id: str,
+        *,
+        request_id: str = "",
+    ) -> TracksideApPlanDTO:
         site_id = self._site(site_id)
         stations, aps = self._trackside_vlan_context(site_id)
+        app_logger.log_info(
+            "trackside_ap_plan.context_loaded",
+            (
+                f"request_id={request_id} site_id={site_id} "
+                f"backend_pid={os.getpid()} thread_id={threading.get_ident()} "
+                f"stations={len(stations)} aps={len(aps)}"
+            ),
+        )
         database = Database(self.paths.site_db_path(site_id))
         repository = AcRepository(database)
+        repository_started = time.perf_counter()
         station_rows = repository.list_trackside_ap_plan(
             TRACKSIDE_AP_PLAN_MODE
+        )
+        app_logger.log_info(
+            "trackside_ap_plan.repository_loaded",
+            (
+                f"request_id={request_id} site_id={site_id} "
+                f"backend_pid={os.getpid()} thread_id={threading.get_ident()} "
+                f"database_path={database.path} rows={len(station_rows)} "
+                f"sql_ms={(time.perf_counter() - repository_started) * 1000:.2f}"
+            ),
         )
         draft = ApManagementVlanRepository(database).get_draft()
         if not station_rows and draft["groups"]:
@@ -969,10 +995,20 @@ class RailTransitWebApplicationService:
                 )
             except ValueError:
                 bound_rows.append(row)
-        return self._trackside_plan_dto(
+        result = self._trackside_plan_dto(
             {"planning": draft["planning"]},
             source_rows=bound_rows,
         )
+        result.model_dump(mode="json")
+        app_logger.log_info(
+            "trackside_ap_plan.dto_validated",
+            (
+                f"request_id={request_id} site_id={site_id} "
+                f"backend_pid={os.getpid()} thread_id={threading.get_ident()} "
+                f"rows={len(result.items)}"
+            ),
+        )
+        return result
 
     def get_trackside_ap_online_status(
         self,
@@ -1192,7 +1228,11 @@ class RailTransitWebApplicationService:
         *,
         source_rows: list[Mapping[str, object]] | None = None,
     ) -> TracksideApPlanDTO:
-        legacy_rows = source_rows or project_legacy_station_rows(view)
+        legacy_rows = (
+            source_rows
+            if source_rows is not None
+            else project_legacy_station_rows(view)
+        )
         items = []
         for index, row in enumerate(legacy_rows):
             item = dict(row)

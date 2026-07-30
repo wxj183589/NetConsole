@@ -16,7 +16,13 @@ from netconsole.core.device_credential_store import (
     DEVICE_CREDENTIAL_STATE_SCHEMA,
     repair_device_credential_states,
 )
-from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal
+from netconsole.core.sqlite_utils import (
+    DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
+    DEFAULT_SQLITE_TIMEOUT_SECONDS,
+    configure_sqlite_connection,
+    connect_sqlite,
+    initialize_sqlite_wal,
+)
 from netconsole.models.device_address import InvalidDeviceAddressError, normalize_ip_address
 
 
@@ -1217,6 +1223,29 @@ class Database:
 
     def connect(self) -> sqlite3.Connection:
         return connect_sqlite(self.path, foreign_keys=True)
+
+    def connect_readonly(self) -> sqlite3.Connection:
+        """Open an existing database through SQLite's read-only URI mode.
+
+        Read endpoints must not create a missing database or accidentally
+        acquire a write transaction while projecting legacy data.
+        """
+        if not self.path.is_file():
+            raise sqlite3.OperationalError(f"unable to open database file: {self.path}")
+        uri = f"{self.path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(
+            uri,
+            uri=True,
+            timeout=DEFAULT_SQLITE_TIMEOUT_SECONDS,
+        )
+        connection.row_factory = sqlite3.Row
+        configure_sqlite_connection(
+            connection,
+            busy_timeout_ms=DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
+            foreign_keys=True,
+        )
+        connection.execute("PRAGMA query_only = ON")
+        return connection
 
     def initialize(self) -> None:
         with _database_initialize_lock(self.path):

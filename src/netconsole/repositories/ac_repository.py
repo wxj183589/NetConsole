@@ -1681,17 +1681,17 @@ class AcRepository:
             if result:
                 return result
             legacy_rows = self._list_legacy_trackside_plan_as_unified()
-            if legacy_rows:
-                self.replace_trackside_ap_plan_rows(TRACKSIDE_AP_PLAN_MODE, legacy_rows)
-                return self._list_trackside_ap_plan_by_mode(TRACKSIDE_AP_PLAN_MODE)
-            return []
+            # Historical VLAN rows are a read-only compatibility projection.
+            # Persisting them from a GET races with base-data saves and turns a
+            # harmless read into a DELETE/INSERT transaction.
+            return legacy_rows
 
         params: list[object] = []
         where = ""
         if mode is not None:
             where = "WHERE mode = ?"
             params.append(self._normalize_trackside_plan_mode(mode))
-        with self.database.connect() as conn:
+        with self.database.connect_readonly() as conn:
             rows = conn.execute(
                 f"""
                 SELECT * FROM ac_trackside_ap_plan
@@ -2772,7 +2772,7 @@ class AcRepository:
 
     def _list_trackside_ap_plan_by_mode(self, mode: str) -> list[dict[str, object | None]]:
         mode = self._normalize_trackside_plan_mode(mode)
-        with self.database.connect() as conn:
+        with self.database.connect_readonly() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM ac_trackside_ap_plan
