@@ -24,6 +24,7 @@ const ACTIVE_TASK_KEY = 'netconsole.ac.active-task'
 const ACTIVE_ACTION_TASK_KEY = 'netconsole.ac.active-action-task'
 const TERMINAL_TASKS = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const REFRESH_ACTIONS = new Set(['ac_info_refresh', 'ac_fit_ap_resources_refresh', 'ac_fit_ap_detail_refresh', 'ac_fit_ap_optical_refresh', 'ac_fit_ap_delete_many', 'fit_ap_metadata_import', 'fit_ap_metadata_save'])
+type RefreshDomain = 'summary' | 'aps' | 'detail' | 'snapshots' | 'config'
 
 export const useAcManagementStore = defineStore('ac-management', () => {
   const summary = ref<AcManagementSummary | null>(null)
@@ -37,8 +38,11 @@ export const useAcManagementStore = defineStore('ac-management', () => {
   const loading = ref(false)
   const detailLoading = ref(false)
   const configLoading = ref(false)
-  const failures = ref(0)
-  const error = ref('')
+  const refreshFailureCounts = reactive<Record<RefreshDomain, number>>({ summary: 0, aps: 0, detail: 0, snapshots: 0, config: 0 })
+  const refreshErrors = reactive<Record<RefreshDomain, string>>({ summary: '', aps: '', detail: '', snapshots: '', config: '' })
+  const failures = computed(() => Math.max(...Object.values(refreshFailureCounts)))
+  const operationError = ref('')
+  const error = computed(() => [operationError.value, ...Object.values(refreshErrors)].filter(Boolean).join(' '))
   const refreshTask = ref<AcWebTask | null>(null)
   const actionTask = ref<AcWebTask | null>(null)
   const refreshStarting = ref(false)
@@ -80,9 +84,9 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     try {
       summary.value = await getAcSummary()
       if (!filters.ac_id && summary.value.acs.length) filters.ac_id = summary.value.acs[0].id
-      recordSuccess()
+      recordSuccess('summary')
     } catch (cause) {
-      recordFailure(cause)
+      recordFailure('summary', cause)
     } finally {
       summaryBusy = false
     }
@@ -96,9 +100,9 @@ export const useAcManagementStore = defineStore('ac-management', () => {
       const result = await listAcAps(filters)
       aps.value = result.items
       total.value = result.total
-      recordSuccess()
+      recordSuccess('aps')
     } catch (cause) {
-      recordFailure(cause)
+      recordFailure('aps', cause)
     } finally {
       apsBusy = false
       loading.value = false
@@ -113,12 +117,11 @@ export const useAcManagementStore = defineStore('ac-management', () => {
       const detail = await getAcApDetail(apId)
       if (requestId === detailRequestId) {
         selected.value = detail
-        recordSuccess()
+        recordSuccess('detail')
       }
     } catch (cause) {
       if (requestId === detailRequestId) {
-        recordFailure(cause)
-        if (cause instanceof Error) error.value = cause.message
+        recordFailure('detail', cause)
       }
     } finally {
       if (requestId === detailRequestId) {
@@ -144,9 +147,9 @@ export const useAcManagementStore = defineStore('ac-management', () => {
       })
       snapshots.value = result.items
       snapshotTotal.value = result.total
-      recordSuccess()
+      recordSuccess('snapshots')
     } catch (cause) {
-      recordFailure(cause)
+      recordFailure('snapshots', cause)
     } finally {
       snapshotBusy = false
     }
@@ -157,10 +160,9 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     configDiff.value = null
     try {
       configContent.value = await getAcConfigSnapshot(snapshotId)
-      recordSuccess()
+      recordSuccess('config')
     } catch (cause) {
-      recordFailure(cause)
-      if (cause instanceof Error) error.value = cause.message
+      recordFailure('config', cause)
     } finally {
       configLoading.value = false
     }
@@ -173,10 +175,9 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     try {
       const next = await getAcConfigSnapshot(current.snapshot.id, current.next_offset)
       configContent.value = { ...next, content: current.content + next.content, offset: 0 }
-      recordSuccess()
+      recordSuccess('config')
     } catch (cause) {
-      recordFailure(cause)
-      if (cause instanceof Error) error.value = cause.message
+      recordFailure('config', cause)
     } finally {
       configLoading.value = false
     }
@@ -188,10 +189,9 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     configDiff.value = null
     try {
       configDiff.value = await getAcConfigDiff(snapshotId)
-      recordSuccess()
+      recordSuccess('config')
     } catch (cause) {
-      recordFailure(cause)
-      if (cause instanceof Error) error.value = cause.message
+      recordFailure('config', cause)
     } finally {
       configLoading.value = false
     }
@@ -205,13 +205,13 @@ export const useAcManagementStore = defineStore('ac-management', () => {
   async function startRefresh(kind: 'ac' | 'fit-ap' | 'ap-detail' | 'optical', apId = ''): Promise<void> {
     if (!filters.ac_id || refreshStarting.value || (refreshTask.value && !TERMINAL_TASKS.has(refreshTask.value.status))) return
     refreshStarting.value = true
-    error.value = ''
+    operationError.value = ''
     try {
       refreshTask.value = await startAcResourceRefresh(kind, filters.ac_id, apId)
       window.localStorage?.setItem(ACTIVE_TASK_KEY, refreshTask.value.task_id)
       scheduleTask()
     } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : 'AC / FIT-AP 更新启动失败'
+      operationError.value = cause instanceof Error ? cause.message : 'AC / FIT-AP 更新启动失败'
     } finally {
       refreshStarting.value = false
     }
@@ -226,13 +226,13 @@ export const useAcManagementStore = defineStore('ac-management', () => {
   async function startFitApDelete(apIds: string[]): Promise<void> {
     if (!filters.ac_id || !apIds.length || refreshStarting.value || (refreshTask.value && !TERMINAL_TASKS.has(refreshTask.value.status))) return
     refreshStarting.value = true
-    error.value = ''
+    operationError.value = ''
     try {
       refreshTask.value = await deleteAcFitAps(filters.ac_id, apIds)
       window.localStorage?.setItem(ACTIVE_TASK_KEY, refreshTask.value.task_id)
       scheduleTask()
     } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : 'FIT-AP 批量删除启动失败'
+      operationError.value = cause instanceof Error ? cause.message : 'FIT-AP 批量删除启动失败'
     } finally {
       refreshStarting.value = false
     }
@@ -241,13 +241,13 @@ export const useAcManagementStore = defineStore('ac-management', () => {
   async function startFitApMetadataImport(file: File): Promise<void> {
     if (refreshStarting.value || (refreshTask.value && !TERMINAL_TASKS.has(refreshTask.value.status))) return
     refreshStarting.value = true
-    error.value = ''
+    operationError.value = ''
     try {
       refreshTask.value = await importAcFitApMetadata(file)
       window.localStorage?.setItem(ACTIVE_TASK_KEY, refreshTask.value.task_id)
       scheduleTask()
     } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : 'FIT-AP 元数据导入启动失败'
+      operationError.value = cause instanceof Error ? cause.message : 'FIT-AP 元数据导入启动失败'
     } finally {
       refreshStarting.value = false
     }
@@ -261,13 +261,13 @@ export const useAcManagementStore = defineStore('ac-management', () => {
   }): Promise<void> {
     if (!filters.ac_id || !selected.value || refreshStarting.value || (refreshTask.value && !TERMINAL_TASKS.has(refreshTask.value.status))) return
     refreshStarting.value = true
-    error.value = ''
+    operationError.value = ''
     try {
       refreshTask.value = await saveAcFitApMetadata(filters.ac_id, selected.value.ap.id, metadata)
       window.localStorage?.setItem(ACTIVE_TASK_KEY, refreshTask.value.task_id)
       scheduleTask()
     } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : 'FIT-AP 元数据保存启动失败'
+      operationError.value = cause instanceof Error ? cause.message : 'FIT-AP 元数据保存启动失败'
     } finally {
       refreshStarting.value = false
     }
@@ -279,7 +279,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
       refreshTask.value = await cancelAcWebTask(refreshTask.value.task_id)
       scheduleTask()
     } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : '取消 AC / FIT-AP 更新失败'
+      operationError.value = cause instanceof Error ? cause.message : '取消 AC / FIT-AP 更新失败'
     }
   }
 
@@ -316,7 +316,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
       if (TERMINAL_TASKS.has(actionTask.value.status)) window.localStorage?.removeItem(ACTIVE_ACTION_TASK_KEY)
       else scheduleActionTask()
     } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : 'AC 动作任务读取失败'
+      operationError.value = cause instanceof Error ? cause.message : 'AC 动作任务读取失败'
     }
   }
 
@@ -330,7 +330,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
         scheduleTask()
       }
     } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : 'AC / FIT-AP 更新任务读取失败'
+      operationError.value = cause instanceof Error ? cause.message : 'AC / FIT-AP 更新任务读取失败'
     }
   }
 
@@ -403,38 +403,38 @@ export const useAcManagementStore = defineStore('ac-management', () => {
   }
 
   function scheduleSummary(): void {
-    summaryTimer = schedule(refreshSummary, 15_000, scheduleSummary)
+    summaryTimer = schedule(refreshSummary, 'summary', 15_000, scheduleSummary)
   }
 
   function scheduleAps(): void {
-    apsTimer = schedule(refreshAps, 30_000, scheduleAps)
+    apsTimer = schedule(refreshAps, 'aps', 30_000, scheduleAps)
   }
 
   function scheduleDetail(): void {
-    detailTimer = schedule(refreshSelected, 15_000, scheduleDetail)
+    detailTimer = schedule(refreshSelected, 'detail', 15_000, scheduleDetail)
   }
 
   function scheduleSnapshots(): void {
-    snapshotTimer = schedule(refreshSnapshots, 30_000, scheduleSnapshots)
+    snapshotTimer = schedule(refreshSnapshots, 'snapshots', 30_000, scheduleSnapshots)
   }
 
-  function schedule(callback: () => Promise<void>, delay: number, again: () => void): number | null {
+  function schedule(callback: () => Promise<void>, domain: RefreshDomain, delay: number, again: () => void): number | null {
     if (!polling) return null
     return window.setTimeout(async () => {
       await callback()
       if (polling) again()
-    }, failures.value >= 3 ? 60_000 : delay)
+    }, refreshFailureCounts[domain] >= 3 ? 60_000 : delay)
   }
 
-  function recordSuccess(): void {
-    failures.value = 0
-    error.value = ''
+  function recordSuccess(domain: RefreshDomain): void {
+    refreshFailureCounts[domain] = 0
+    refreshErrors[domain] = ''
   }
 
-  function recordFailure(cause: unknown): void {
-    failures.value += 1
-    if (failures.value >= 3) error.value = 'AC 数据刷新失败，已保留最后一次成功数据并降低刷新频率。'
-    else if (!aps.value.length && cause instanceof Error) error.value = cause.message
+  function recordFailure(domain: RefreshDomain, cause: unknown): void {
+    refreshFailureCounts[domain] += 1
+    if (refreshFailureCounts[domain] >= 3) refreshErrors[domain] = 'AC 数据刷新失败，已保留最后一次成功数据并降低刷新频率。'
+    else if (!aps.value.length && cause instanceof Error) refreshErrors[domain] = cause.message
   }
 
   return {
