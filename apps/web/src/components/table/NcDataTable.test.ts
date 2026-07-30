@@ -16,6 +16,7 @@ const ElTable = defineComponent({
     stripe: Boolean,
     fit: Boolean,
     flexible: Boolean,
+    maxHeight: [Number, String],
     scrollbarAlwaysOn: Boolean,
   },
   emits: ['header-dragend', 'row-contextmenu'],
@@ -60,6 +61,25 @@ afterEach(() => {
 })
 
 describe('NcDataTable', () => {
+  it('uses content height when autoHeight is enabled', () => {
+    const wrapper = mount(NcDataTable, {
+      props: {
+        tableId: 'adaptive-table',
+        routeKey: '/adaptive',
+        showColumnSettings: false,
+        autoHeight: true,
+        maxHeight: 420,
+        data: Array.from({ length: 5 }, (_, index) => ({ name: `AP${index}` })),
+        columns: [{ key: 'name', label: '名称', valueType: 'name' }],
+      },
+      global,
+    })
+
+    expect(wrapper.classes()).toContain('nc-data-table--auto-height')
+    expect(wrapper.getComponent(ElTable).props('maxHeight')).toBe(420)
+    wrapper.unmount()
+  })
+
   it('renders columns centered with widths that include the full header', async () => {
     const wrapper = mount(NcDataTable, {
       props: {

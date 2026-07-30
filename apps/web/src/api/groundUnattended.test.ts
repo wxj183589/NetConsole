@@ -15,7 +15,11 @@ vi.mock('./client', async (importOriginal) => {
 })
 
 import { ApiRequestError } from './client'
-import { probeGroundSyslogTransportState } from './groundUnattended'
+import {
+  getGroundPingSeriesIncremental,
+  getGroundSyslogTransportStatus,
+  probeGroundSyslogTransportState,
+} from './groundUnattended'
 
 describe('ground unattended Syslog failure classification', () => {
   afterEach(() => {
@@ -102,5 +106,28 @@ describe('ground unattended Syslog failure classification', () => {
       requestId: 'request-2',
       backendState: 'ONLINE',
     })
+  })
+
+  it('uses dedicated read-only Transport and incremental Ping endpoints', async () => {
+    client.apiRequest.mockResolvedValue({})
+
+    await getGroundSyslogTransportStatus({ signal: new AbortController().signal })
+    await getGroundPingSeriesIncremental({
+      run_id: 'run-1',
+      train_id: '列车07',
+      mr_id: 'mr-ct',
+      target_ip: '10.122.7.249',
+      cursor: 'cursor-1',
+      max_points: 200,
+    })
+
+    expect(client.apiRequest).toHaveBeenNthCalledWith(
+      1,
+      '/api/rail-transit/ground-unattended/syslog-transport-status',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+    expect(String(client.apiRequest.mock.calls[1][0])).toContain('/ping-series/incremental?')
+    expect(String(client.apiRequest.mock.calls[1][0])).toContain('cursor=cursor-1')
+    expect(String(client.apiRequest.mock.calls[1][0])).toContain('max_points=200')
   })
 })

@@ -9,6 +9,9 @@ const mocks = vi.hoisted(() => ({
   disconnect: vi.fn(),
   dispose: vi.fn(),
   init: vi.fn(),
+  dispatchAction: vi.fn(),
+  off: vi.fn(),
+  on: vi.fn(),
   resize: vi.fn(),
   setOption: vi.fn(),
   unsubscribe: vi.fn(),
@@ -22,6 +25,7 @@ vi.mock('echarts/components', () => ({
   GridComponent: {},
   LegendComponent: {},
   MarkLineComponent: {},
+  MarkAreaComponent: {},
   TooltipComponent: {},
 }))
 vi.mock('echarts/renderers', () => ({ CanvasRenderer: {} }))
@@ -43,6 +47,13 @@ const series = {
   raw_sample_count: 1,
   effective_sample_count: 1,
   ignored_sample_count: 0,
+  success_count: 1,
+  loss_count: 0,
+  rtt_sample_count: 1,
+  rtt_sum_ms: 2,
+  current_rtt_ms: 2,
+  average_rtt_ms: 2,
+  max_rtt_ms: 2,
   points: [{
     sample_id: 'sample-1',
     ts: '2026-07-28T08:00:00+08:00',
@@ -92,12 +103,22 @@ const series = {
     legacy_archive: false,
     no_data_reason: '',
   },
+  next_cursor: 'cursor-1',
+  latest_sequence: 1,
+  latest_timestamp: '2026-07-28T08:00:00+08:00',
+  server_time: '2026-07-28T08:00:01+08:00',
+  active: true,
+  target_state: 'RUNNING',
+  has_more: false,
 } satisfies GroundPingSeries
 
 beforeEach(() => {
   vi.clearAllMocks()
   mocks.init.mockImplementation(() => ({
     dispose: mocks.dispose,
+    dispatchAction: mocks.dispatchAction,
+    off: mocks.off,
+    on: mocks.on,
     resize: mocks.resize,
     setOption: mocks.setOption,
   }))
@@ -105,6 +126,11 @@ beforeEach(() => {
     observe() {}
     disconnect() { mocks.disconnect() }
   })
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    callback(0)
+    return 1
+  })
+  vi.stubGlobal('cancelAnimationFrame', vi.fn())
 })
 
 afterEach(() => {
@@ -130,6 +156,7 @@ describe('Ground Ping chart lifecycle', () => {
 
     expect(mocks.init).toHaveBeenCalledTimes(2)
     expect(mocks.setOption).toHaveBeenCalledTimes(2)
+    expect(mocks.dispatchAction).toHaveBeenCalledTimes(2)
     expect(mocks.resize).toHaveBeenCalledTimes(2)
 
     window.dispatchEvent(new Event('resize'))
@@ -145,6 +172,28 @@ describe('Ground Ping chart lifecycle', () => {
     expect(mocks.init).toHaveBeenCalledTimes(4)
     reopened.unmount()
     expect(mocks.dispose).toHaveBeenCalledTimes(4)
+  })
+
+  it('keeps dataZoom after initialization and reports user zoom without rebuilding charts', async () => {
+    const wrapper = mount(GroundPingChart, { props: { series, followLatest: true } })
+    await flushPromises()
+    const initialOptions = mocks.setOption.mock.calls.map(([value]) => value)
+    expect(initialOptions.every((value) => value.dataZoom)).toBe(true)
+    const dataZoomHandler = mocks.on.mock.calls.find(([name]) => name === 'datazoom')?.[1] as (() => void)
+
+    const updated = {
+      ...series,
+      points: [...series.points, { ...series.points[0], sample_id: 'sample-2', seq: 2, ts: '2026-07-28T08:00:01+08:00' }],
+    }
+    await wrapper.setProps({ series: updated })
+    await flushPromises()
+
+    expect(mocks.init).toHaveBeenCalledTimes(2)
+    const incrementalOptions = mocks.setOption.mock.calls.slice(2).map(([value]) => value)
+    expect(incrementalOptions.every((value) => value.dataZoom === undefined)).toBe(true)
+    dataZoomHandler()
+    expect(wrapper.emitted('user-zoom')).toHaveLength(1)
+    wrapper.unmount()
   })
 
   it('does not retain chart or observer resources across 100 open-close cycles', async () => {

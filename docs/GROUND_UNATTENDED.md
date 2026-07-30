@@ -38,7 +38,13 @@ Renderer 初次加载状态、运行列表、必要配置和当前页签；之�
 分别约 5 秒刷新，活动操作约 2 秒，列车/Ping/Syslog 约 8 秒且只在对应活动页签刷新；无活动运行时状态
 约 20 秒刷新，归档、时间轴、深度采集和设置不做后台全量轮询。相同请求防重入并用
 `AbortController`、请求代次和指数退避处理切页、隐藏、恢复和过期响应；页面隐藏时暂停请求，卸载时
-取消请求、定时器和图表资源。
+取消请求、定时器和图表资源。活动长 Ping 浮窗另按约 1.8 秒调用增量接口，每次最多读取 200 个新点；
+页面隐藏、用户暂停或历史运行不会继续轮询，恢复后使用原游标补拉缺失样本。
+
+正线车辆、长 Ping、深度采集、时间轴、Syslog 和历史归档表统一按容器顶部、视口高度、行高和行数计算
+最大高度。少量行按真实内容结束，超过 18 行（长 Ping 为 20 行）后表体内部滚动；时间轴和 Syslog 空态
+主体固定为 190px，包含表格边框和表头的完整区域约为 231px。工具栏、统计条和分页保持紧邻表格，页签不再用固定
+`height: clamp(...)` 或 `100vh` 撑出空白；设置页继续使用正常纵向页面滚动。
 
 ## 配置和时间窗口
 
@@ -61,9 +67,12 @@ Renderer 初次加载状态、运行列表、必要配置和当前页签；之�
 设置页通过 `/api/system/network/ipv4-addresses` 读取 Windows IP Helper 的本机 IPv4、网卡状态、
 前缀、网关、路由 metric 和物理/虚拟属性，并分开配置“本机 UDP 监听地址”和“MR 日志回传地址”。
 `0.0.0.0` 只允许用于监听，不能作为 MR 回传目标；保存和启动都会重新校验所选地址仍属于本机。
-“检测到 MR 网络的推荐地址”只用 UDP `connect` 查询系统选路，不发送数据包；UDP 端口检查使用临时
-独占绑定。外部 NAT 地址必须启用 `allow_external_syslog_address` 并在本次保存中二次确认，后端同时
-记录高风险审计；普通无效、回环、组播和广播地址始终拒绝。
+“检测到 MR 网络的推荐地址”只用 UDP `connect` 查询系统选路，不发送数据包；Windows UDP 端口检查
+统一使用 IP Helper 只读读取 endpoint 表，不绑定被检查端口。运行概览的
+`/syslog-transport-status` 还会优先识别 NetConsole 自身 Receiver，避免把正常监听误判为其他进程
+占用。外部 NAT 地址必须启用
+`allow_external_syslog_address` 并在本次保存中二次确认，后端同时记录高风险审计；普通无效、回环、
+组播和广播地址始终拒绝。
 
 开始和结束时间不能相同，支持 `22:00-06:00` 跨午夜窗口，运行日期取窗口开始日期。运行中保存
 配置不会重启当前 fping 或 SSH 任务；`ac_poll_interval_seconds` 通过 Poller 控制文件热更新，
@@ -137,17 +146,27 @@ AC 位置未知，并继续识别 CT 单端、CW 单端和双端同时丢包。
 保存采样时的 AP identity/名称/MAC、站点、区间、里程、RSSI、AC 快照及接收时间、位置质量和
 AP 切换上下文，历史查询不会把当前 AP 回填到旧样本。
 
-页面“长 Ping”保留内部滚动汇总表；曲线只在弹窗 `opened` 后初始化，关闭时释放 ECharts、
-`ResizeObserver` 和窗口监听。弹窗通过受控的 `/ping-series` 和 `/ping-samples` 查询逐包 RTT、
-成功/丢包、预热、位置未知、AP 切换和连续丢包区段。当前活动运行默认最近 30 分钟，历史运行默认实际
-起止时间，行级起止时间优先；页面也支持最近 5 分钟、1 小时、运行全部、自定义时间和可关闭的自动刷新。
-单次最多 7 天，图表点数默认 3000、最多 10000。
+页面“长 Ping”保留内容自适应、超限内部滚动的汇总表，曲线不再占用列表下方空间。点击“查看曲线”
+打开 Vue 内部非模态浮窗：没有遮罩，不锁定页面滚动，主页面仍可切换页签、筛选和查看其他列车；标题栏
+可拖动，八个边/角可缩放，支持最大化、还原和关闭。同一时刻只保留一个浮窗，选择另一目标时复用窗口；
+位置和尺寸按用户、路由和窗口 ID 保存到 Renderer 本地偏好，不写局点数据库。离开路由时释放
+ECharts、`ResizeObserver`、pointer/resize/visibility 监听和请求资源。
+
+首次打开通过受控的 `/ping-series` 查询逐包 RTT、成功/丢包、预热、位置未知、AP 切换和连续丢包
+区段，并返回绑定运行、列车、MR、目标和预热选项的游标。当前活动运行默认最近 30 分钟，历史运行默认
+实际起止时间，行级起止时间优先；页面也支持最近 5 分钟、1 小时、运行全部和自定义时间。首次点数默认
+最多 3000，完整运行最多 10000 个降采样点；活动运行后续通过 `/ping-series/incremental` 按 OPEN
+文件字节偏移增量读取，单次最多 200 点，服务端硬上限 500。前端按 `sample_id` 或
+`target_ip + timestamp + sequence` 去重，按时间和序号重排，并维护 3000/10000 点环形缓存；丢包与
+AP 切换标记优先保留。用户缩放后停止跟随最新，“回到实时”恢复滚动；ECharts 实例不因每批数据重建。
 
 后端先按 `run_id/data_type/train_id/device_uuid/mr_role/start_time/end_time` 在 Repository 预筛文件，
 再逐行读取并优先保留丢包点。Ping 原始查询沿用最多 256 个文件、1,000,000 条扫描记录、256 MiB
 解压/读取字节和 12 秒处理预算；Syslog 列表使用更严格的交互预算，达到预算返回 `truncated` 和扫描
 诊断。逐包和 Syslog 分页仅保留当前请求页所需的有界最新记录，不把全天原始流一次加载到前端、进程
-内存或 SQLite。
+内存或 SQLite。列车筛选先把页面身份解析到 Registry 中唯一等价身份，再读取文件；记录级匹配继续使用
+同一规范化规则，因此历史 `_07` 与页面“列车07”等同车异名不会再把真实 `ACTIVE_RAW` 错降级为
+`SUMMARY_ONLY`。
 
 ## 第一阶段实时采集基础
 
@@ -187,6 +206,12 @@ AP 展示解析先使用轨旁基础资料中的稳定 AP MAC、显式 Radio/BSS
 自动刷新反复加载全量 FIT-AP。响应同时保存 `resolution_status/resolution_rule/confidence` 和
 `display_name_source`；`AC_AP_NAME` 只表示 AC 当前配置名称，不等于轨旁工程点位名。多候选保持
 `AMBIGUOUS`，主链路切换缺少旧或新 Peer 时分别显示“无主链路 → 新 AP”或“旧 AP → 无主链路”。
+
+运行概览另有“UDP Syslog 与 MR 日志回传”状态区，由单一只读 DTO 返回保存的 MR 回传目标、地址是否
+属于本机或已确认外部/NAT、本机监听地址、Receiver 状态、端口空闲/本进程监听/其他进程占用、目标端口
+与监听端口是否一致、最近接收、活跃 MR、未识别来源、身份冲突、队列和丢弃数。推荐地址与网卡只展示，
+不会自动覆盖 Profile；`NOT_LOCAL/EMPTY/INVALID` 阻止立即开始，`EXTERNAL_CONFIRMED` 允许启动但持续
+显示风险。本状态查询不连接设备、不下发配置，也不启动 UDP Receiver。
 
 Ping 稳定成功后，`MrSyslogConfigService` 通过既有设备凭据按
 `display clock -> display version -> display clock` 连续取证。Boot Session 的主时间轴为两次设备
@@ -313,6 +338,7 @@ task 和连接状态并执行有界进程树收口，操作以 `AC_POLLER_STOP_T
 ```text
 GET/PUT  /profile
 GET      /status
+GET      /syslog-transport-status
 POST     /start | /pause | /resume | /stop | /stop-and-archive
 POST     /inventory/sync | /config-check
 GET      /health | /raw-files | /syslog-records
@@ -320,7 +346,8 @@ GET      /runs
 GET      /trains | /trains/{train_id}
 PUT      /trains/{train_id}/priority
 PUT      /trains/{train_id}/policy
-GET      /ping-targets | /ping-summary | /ping-series | /ping-samples | /timeline
+GET      /ping-targets | /ping-summary | /ping-series | /ping-series/incremental
+GET      /ping-samples | /timeline
 GET      /deep-collections | /coverage
 GET      /operations/active | /operations/latest | /operations/{operation_id}
 GET      /archives | /archives/{archive_id} | /archives/{archive_id}/detail
@@ -353,6 +380,8 @@ ZIP 失败保留、Repository 故障隔离、API 空态和前端七页签。第�
 AP 展示、持久化停止操作、同 IP 端口冲突只读保护，以及不执行 `save/undo` 的 Syslog Profile。
 规模门覆盖 50,000 条 READY ZIP Ping、500,000 条 active Ping、100,000 条 Syslog、36 台 MR/30 天
 Registry；前端假时钟覆盖 30 分钟页面轮询、10 分钟 Syslog 自动刷新和 100 次图表开关。
+本轮另覆盖表格少量/空态/超限高度、非模态浮窗拖动与八向缩放、位置恢复、单窗口目标复用、3000 点
+环形缓存、重复与乱序增量样本、Windows 只读 UDP endpoint 检查，以及 Receiver 自身监听不误判占用。
 
 Syslog 列表使用独立交互预算：最多 128 个候选文件、250,000 条记录、128MB 和 8 秒。无记录级筛选的
 首屏按 Registry 结束时间从新到旧读取；当已取得所需页且下一个文件可证明更旧时提前结束，返回
@@ -382,6 +411,11 @@ Boot Session 进入 `LOG_ACTIVE`，停止后原始文件已关闭登记。该结
 `NO_ACTIVE_LINK`，未出现 `UNRESOLVED/AMBIGUOUS` 或“未知 AP”切换。现场 AC 配置名称仍全部为 MAC
 形式，轨旁基础资料虽有点位编号但没有 AP/Radio MAC，因此本次只验证到唯一物理 AP；工程点位名称仍需
 导入可信的 MAC 映射后验收。
+
+2026-07-29 活动运行的只读核对还确认了另一类空曲线根因：页面列车身份为“列车07”，原始文件 Registry
+保存为 `_07`，逐包 OPEN NDJSON 实际存在且可读取，并非真正的 `SUMMARY_ONLY`。查询现已在文件预筛和
+记录匹配两层复用列车身份规范化；该样本恢复为 `ACTIVE_RAW`，419 条原始记录中 409 条有效、27 条
+丢包可形成真实曲线。该核对未修改 Profile、SQLite、NDJSON 或 ZIP，也未启动无人值守或 UDP Receiver。
 
 以下仍是人工现场门禁，不得由 fake 或本机回环测试提升为已验证：主备 AC 真实切换与设备时钟偏差、
 十几小时持续多目标 fping、真实列车 AP 漫游、2 车/4 MR 并发 SSH、Session 现场 ZIP、低磁盘故障注入、

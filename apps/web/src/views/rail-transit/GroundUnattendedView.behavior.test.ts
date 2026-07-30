@@ -18,6 +18,8 @@ const api = vi.hoisted(() => ({
   getActiveGroundOperation: vi.fn(),
   getGroundOperation: vi.fn(),
   getGroundPingSeries: vi.fn(),
+  getGroundPingSeriesIncremental: vi.fn(),
+  getGroundSyslogTransportStatus: vi.fn(),
   listGroundDeepCollections: vi.fn(),
   listGroundPingTargets: vi.fn(),
   listGroundRuns: vi.fn(),
@@ -68,6 +70,18 @@ vi.mock('../../components/table', async () => {
   const { defineComponent, h } = await import('vue')
   return { NcDataTable: defineComponent(() => () => h('div', { class: 'nc-data-table' })) }
 })
+vi.mock('../../components/workspace/NcFloatingWindow.vue', async () => {
+  const { defineComponent, h } = await import('vue')
+  return {
+    default: defineComponent({
+      props: { modelValue: Boolean },
+      emits: ['update:modelValue', 'close'],
+      setup(props, { slots }) {
+        return () => props.modelValue ? h('section', { class: 'nc-floating-window' }, slots.default?.()) : null
+      },
+    }),
+  }
+})
 
 import GroundUnattendedView from './GroundUnattendedView.vue'
 import { ApiRequestError } from '../../api/client'
@@ -116,6 +130,7 @@ const stubs: Record<string, Component> = {
   ElOption: passthrough,
   ElPagination: passthrough,
   ElProgress: passthrough,
+  ElSkeleton: passthrough,
   ElSelect: passthrough,
   ElSwitch: passthrough,
   ElTabPane: passthrough,
@@ -157,6 +172,118 @@ function status() {
   }
 }
 
+function pingTarget(overrides: Record<string, unknown> = {}) {
+  return {
+    run_id: 'run-active',
+    run_date: '2026-07-30',
+    target_ip: '192.0.2.10',
+    train_id: 'train-1',
+    train_no: '01',
+    mr_id: 'mr-ct',
+    mr_name: '01-MR-CT',
+    mr_position_code: 'CT',
+    started_at: '',
+    updated_at: '',
+    shard_id: 'shard-1',
+    raw_sample_count: 1,
+    effective_sample_count: 1,
+    warmup_ignored_count: 0,
+    sent_count: 1,
+    success_count: 1,
+    loss_count: 0,
+    loss_rate_percent: 0,
+    min_rtt_ms: 2,
+    avg_rtt_ms: 2,
+    max_rtt_ms: 2,
+    continuous_loss_max_count: 0,
+    continuous_loss_max_seconds: 0,
+    current_ap_name: 'AP01',
+    station: '站点A',
+    section: '站点A-站点B',
+    first_sample_at: '2026-07-30T08:00:00+08:00',
+    last_sample_at: '2026-07-30T08:00:02+08:00',
+    active_raw_file_count: 1,
+    archived_raw_file_count: 0,
+    raw_file_available: true,
+    archive_available: false,
+    data_source: 'ACTIVE',
+    data_availability: 'ACTIVE_RAW',
+    ...overrides,
+  }
+}
+
+function pingSeries(points: Array<Record<string, unknown>>, overrides: Record<string, unknown> = {}) {
+  const effective = points.filter((point) => !point.warmup_ignored)
+  const successes = effective.filter((point) => point.ok)
+  const rtts = successes.flatMap((point) => (
+    typeof point.rtt_ms === 'number' ? [point.rtt_ms] : []
+  ))
+  return {
+    raw_sample_count: points.length,
+    effective_sample_count: effective.length,
+    ignored_sample_count: points.length - effective.length,
+    success_count: successes.length,
+    loss_count: effective.length - successes.length,
+    rtt_sample_count: rtts.length,
+    rtt_sum_ms: rtts.reduce((total, rtt) => total + rtt, 0),
+    current_rtt_ms: rtts.at(-1) ?? null,
+    average_rtt_ms: rtts.length
+      ? rtts.reduce((total, rtt) => total + rtt, 0) / rtts.length
+      : null,
+    max_rtt_ms: rtts.length ? Math.max(...rtts) : null,
+    points,
+    loss_windows: [],
+    ap_transitions: [],
+    position_segments: [],
+    diagnostics: {
+      requested_run_id: 'run-active',
+      resolved_start_time: '',
+      resolved_end_time: '',
+      source_kind: 'ACTIVE',
+      data_availability: 'ACTIVE_RAW',
+      files_considered: 1,
+      files_scanned: 1,
+      records_scanned: points.length,
+      bytes_scanned: 100,
+      malformed_record_count: 0,
+      duplicate_record_count: 0,
+      truncated: false,
+      legacy_archive: false,
+      no_data_reason: '',
+    },
+    next_cursor: 'cursor-1',
+    latest_sequence: Number(points.at(-1)?.seq ?? 0),
+    latest_timestamp: String(points.at(-1)?.ts ?? ''),
+    server_time: '2026-07-30T08:00:03+08:00',
+    active: true,
+    target_state: 'RUNNING',
+    has_more: false,
+    ...overrides,
+  }
+}
+
+function pingPoint(sampleId: string, ts: string, seq: number) {
+  return {
+    sample_id: sampleId,
+    ts,
+    seq,
+    target_ip: '192.0.2.10',
+    train_id: 'train-1',
+    train_no: '01',
+    mr_id: 'mr-ct',
+    mr_name: '01-MR-CT',
+    mr_position_code: 'CT',
+    ok: true,
+    rtt_ms: 2,
+    warmup_ignored: false,
+    position_quality: 'MATCHED',
+    current_ap_name: 'AP01',
+    station: '站点A',
+    section: '站点A-站点B',
+    data_source: 'ACTIVE',
+  }
+}
+
 function mountPage() {
   return mount(GroundUnattendedView, {
     global: { stubs, directives: { loading: {} } },
@@ -173,6 +300,33 @@ beforeEach(() => {
   api.listGroundTimeline.mockResolvedValue({ items: [], total: 0 })
   api.listGroundArchives.mockResolvedValue({ items: [], total: 0 })
   api.getGroundHealth.mockResolvedValue({ site_id: 'line-12', status: 'OK' })
+  api.getGroundSyslogTransportStatus.mockResolvedValue({
+    configured_return_ip: '10.8.0.4',
+    configured_return_port: 5514,
+    return_address_status: 'LOCAL_ADDRESS',
+    return_address_is_local: true,
+    allow_external_address: false,
+    listen_host: '0.0.0.0',
+    listen_port: 5514,
+    receiver_running: false,
+    receiver_state: 'STOPPED',
+    actual_listen_address: '',
+    port_state: 'AVAILABLE',
+    port_message: '端口空闲',
+    ports_match: true,
+    target_port_message: '目标端口与本地监听一致',
+    last_received_at: '',
+    received_count: 0,
+    active_mr_count: 0,
+    unidentified_count: 0,
+    identity_conflict_count: 0,
+    queue_length: 0,
+    queue_capacity: 20_000,
+    dropped_count: 0,
+    recommended_local_ip: '10.8.0.4',
+    recommended_adapter_name: '板载',
+    checked_at: '',
+  })
   api.getActiveGroundOperation.mockResolvedValue(null)
   api.getGroundOperation.mockResolvedValue(null)
   api.getLatestGroundOperation.mockResolvedValue(null)
@@ -202,6 +356,218 @@ afterEach(() => {
 })
 
 describe('Ground unattended page loading behavior', () => {
+  it('shows NOT_LOCAL Transport status, blocks start, and does not overwrite the saved address', async () => {
+    api.getGroundProfile.mockResolvedValue({ ...profile(), enabled: true, syslog_server_ip: '10.8.0.3' })
+    api.getGroundSyslogTransportStatus.mockResolvedValue({
+      ...(await api.getGroundSyslogTransportStatus()),
+      configured_return_ip: '10.8.0.3',
+      configured_return_port: 514,
+      return_address_status: 'NOT_LOCAL',
+      return_address_is_local: false,
+      recommended_local_ip: '10.0.0.24',
+      recommended_adapter_name: '板载',
+      port_state: 'AVAILABLE',
+      target_port_message: '目标为外部/NAT 地址，本机监听端口状态不适用',
+    })
+
+    const wrapper = mountPage()
+    await flushPromises()
+    const view = wrapper.vm as unknown as {
+      profile: { syslog_server_ip: string }
+      startBlockedReason: string
+    }
+
+    expect(wrapper.text()).toContain('10.8.0.3:514 当前不属于本机')
+    expect(wrapper.text()).toContain('10.0.0.24')
+    expect(wrapper.text()).toContain('仅展示，不自动覆盖')
+    expect(view.profile.syslog_server_ip).toBe('10.8.0.3')
+    expect(view.startBlockedReason).toContain('当前不属于本机')
+    wrapper.unmount()
+  })
+
+  it('merges incremental Ping samples without duplicates and sorts late samples', async () => {
+    api.getGroundStatus.mockResolvedValue({
+      ...status(),
+      state: 'RUNNING',
+      service_state: 'RUNNING',
+      active_run_id: 'run-active',
+      active_run_state: 'RUNNING',
+    })
+    api.listGroundRuns.mockResolvedValue({
+      items: [{ run_id: 'run-active', run_date: '2026-07-30', state: 'RUNNING' }],
+      total: 1,
+    })
+    const second = pingPoint('sample-2', '2026-07-30T08:00:02+08:00', 2)
+    api.getGroundPingSeries.mockResolvedValue(pingSeries([second], {
+      position_segments: [{
+        started_at: '2026-07-30T08:00:02+08:00',
+        target_ip: '192.0.2.10',
+        current_ap_identity: 'ap-a',
+        current_ap_name: 'AP01',
+        station: '站点A',
+        section: '站点A-站点B',
+        position_quality: 'MATCHED',
+      }],
+    }))
+    api.getGroundPingSeriesIncremental.mockResolvedValue(pingSeries([
+      second,
+      pingPoint('sample-late', '2026-07-30T08:00:01.500+08:00', 3),
+      pingPoint('sample-3', '2026-07-30T08:00:03+08:00', 4),
+    ], {
+      raw_sample_count: 3,
+      effective_sample_count: 3,
+      next_cursor: 'cursor-2',
+      latest_sequence: 4,
+      latest_timestamp: '2026-07-30T08:00:03+08:00',
+      position_segments: [{
+        started_at: '2026-07-30T08:00:01.500+08:00',
+        target_ip: '192.0.2.10',
+        current_ap_identity: 'ap-a',
+        current_ap_name: 'AP01',
+        station: '站点A',
+        section: '站点A-站点B',
+        position_quality: 'MATCHED',
+      }, {
+        started_at: '2026-07-30T08:00:03+08:00',
+        target_ip: '192.0.2.10',
+        current_ap_identity: 'ap-b',
+        current_ap_name: 'AP02',
+        station: '站点B',
+        section: '站点A-站点B',
+        position_quality: 'MATCHED',
+      }],
+    }))
+    const wrapper = mountPage()
+    await flushPromises()
+    const view = wrapper.vm as unknown as {
+      pingSeries: {
+        points: Array<{ sample_id: string }>
+        raw_sample_count: number
+        position_segments: Array<Record<string, unknown>>
+      }
+      showPingSeries: (row: ReturnType<typeof pingTarget>) => Promise<void>
+      loadPingIncremental: () => Promise<void>
+      pingPaused: boolean
+    }
+
+    await view.showPingSeries(pingTarget())
+    await view.loadPingIncremental()
+    expect(api.getGroundPingSeriesIncremental).toHaveBeenCalledWith(
+      expect.objectContaining({ cursor: 'cursor-1', max_points: 200 }),
+      expect.any(Object),
+    )
+    expect(view.pingSeries.points.map((point) => point.sample_id)).toEqual([
+      'sample-late',
+      'sample-2',
+      'sample-3',
+    ])
+    expect(view.pingSeries.raw_sample_count).toBe(3)
+    expect(view.pingSeries.position_segments.map((row) => row.current_ap_identity)).toEqual([
+      'ap-a',
+      'ap-b',
+    ])
+
+    view.pingPaused = true
+    await view.loadPingIncremental()
+    expect(api.getGroundPingSeriesIncremental).toHaveBeenCalledOnce()
+    wrapper.unmount()
+  })
+
+  it('keeps one floating window while switching the selected Ping target', async () => {
+    api.getGroundPingSeries.mockResolvedValue(pingSeries([
+      pingPoint('sample-1', '2026-07-30T08:00:01+08:00', 1),
+    ]))
+    const wrapper = mountPage()
+    await flushPromises()
+    const view = wrapper.vm as unknown as {
+      activeTab: string
+      pingWindowOpen: boolean
+      selectedPingTarget: { target_ip: string }
+      showPingSeries: (row: ReturnType<typeof pingTarget>) => Promise<void>
+    }
+
+    await view.showPingSeries(pingTarget({ target_ip: '192.0.2.10' }))
+    await view.showPingSeries(pingTarget({
+      target_ip: '192.0.2.11',
+      mr_id: 'mr-cw',
+      mr_name: '01-MR-CW',
+      mr_position_code: 'CW',
+    }))
+
+    expect(view.pingWindowOpen).toBe(true)
+    expect(view.selectedPingTarget.target_ip).toBe('192.0.2.11')
+    expect(api.getGroundPingSeries).toHaveBeenCalledTimes(2)
+    expect(wrapper.findAll('.nc-floating-window')).toHaveLength(1)
+
+    view.activeTab = 'timeline'
+    await flushPromises()
+    expect(view.pingWindowOpen).toBe(true)
+    expect(view.selectedPingTarget.target_ip).toBe('192.0.2.11')
+    expect(wrapper.findAll('.nc-floating-window')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('caps the live Ping ring buffer and keeps duplicate statistics classified', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+    const view = wrapper.vm as unknown as {
+      mergePingSeries: (value: ReturnType<typeof pingSeries>, reset: boolean) => void
+      pingSeries: {
+        points: Array<{ sample_id: string }>
+        raw_sample_count: number
+        effective_sample_count: number
+        ignored_sample_count: number
+        success_count: number
+        loss_count: number
+        rtt_sample_count: number
+        rtt_sum_ms: number
+        average_rtt_ms: number | null
+      }
+      pingLiveStats: { success: number; loss: number; averageRtt: number | null }
+    }
+    const startedAt = Date.parse('2026-07-30T08:00:00+08:00')
+    const initial = Array.from({ length: 3_000 }, (_, index) => (
+      pingPoint(
+        `sample-${index}`,
+        new Date(startedAt + index * 1_000).toISOString(),
+        index,
+      )
+    ))
+    view.mergePingSeries(pingSeries(initial), true)
+    const duplicateWarmup = {
+      ...initial.at(-1)!,
+      warmup_ignored: true,
+    }
+    const additions = [
+      duplicateWarmup,
+      pingPoint('sample-3000', new Date(startedAt + 3_000_000).toISOString(), 3_000),
+      pingPoint('sample-3001', new Date(startedAt + 3_001_000).toISOString(), 3_001),
+    ]
+    view.mergePingSeries(pingSeries(additions, {
+      raw_sample_count: 3,
+      effective_sample_count: 2,
+      ignored_sample_count: 1,
+    }), false)
+
+    expect(view.pingSeries.points).toHaveLength(3_000)
+    expect(view.pingSeries.points[0]?.sample_id).toBe('sample-2')
+    expect(view.pingSeries.points.at(-1)?.sample_id).toBe('sample-3001')
+    expect(view.pingSeries.raw_sample_count).toBe(3_002)
+    expect(view.pingSeries.effective_sample_count).toBe(3_002)
+    expect(view.pingSeries.ignored_sample_count).toBe(0)
+    expect(view.pingSeries.success_count).toBe(3_002)
+    expect(view.pingSeries.loss_count).toBe(0)
+    expect(view.pingSeries.rtt_sample_count).toBe(3_002)
+    expect(view.pingSeries.rtt_sum_ms).toBe(6_004)
+    expect(view.pingSeries.average_rtt_ms).toBe(2)
+    expect(view.pingLiveStats).toMatchObject({
+      success: 3_002,
+      loss: 0,
+      averageRtt: 2,
+    })
+    wrapper.unmount()
+  })
+
   it('keeps initial Syslog failure local and confirms Backend remains online', async () => {
     const message = vi.spyOn(ElMessage, 'error').mockImplementation(() => undefined as never)
     api.listGroundSyslogRecords.mockRejectedValue(
@@ -486,7 +852,7 @@ describe('Ground unattended page loading behavior', () => {
     const view = wrapper.vm as unknown as {
       activeTab: string
       handlePingDialogClosed: () => void
-      pingDialog: boolean
+      pingWindowOpen: boolean
       selectedPingTarget: unknown
       showPingSeries: (row: typeof target) => Promise<void>
     }
@@ -497,7 +863,7 @@ describe('Ground unattended page loading behavior', () => {
     expect(api.getGroundPingSeries).toHaveBeenCalledOnce()
     expect(requestSignal?.aborted).toBe(false)
 
-    view.pingDialog = false
+    view.pingWindowOpen = false
     view.handlePingDialogClosed()
     await flushPromises()
     await vi.advanceTimersByTimeAsync(20_000)

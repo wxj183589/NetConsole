@@ -127,6 +127,12 @@ files/rail_transit/
 active/archive 并存时返回 `MIXED` 并去重。ZIP 下载只能通过后端按 `archive_id` 解析的 Artifact 端点，
 Renderer 和 Electron Bridge 都不接受数据根物理路径。
 
+活动长 Ping 首次查询按受控时间范围最多返回 3000 个点，完整运行最多返回 10000 个降采样点；增量游标
+保存已登记 OPEN 文件的稳定 `file_id` 与下一字节偏移，并绑定 run、列车、MR、目标和预热选项。游标只在
+API 调用方内存/Renderer 状态中流转，不写 SQLite、不修改 NDJSON，也不是可提交的物理路径。后续读取从
+完整换行结束的位置继续，尚未 flush 完整的一行留到下一次；同一文件中时间较早的晚到记录仍会读取，并由
+前端按时间与 sequence 重排。CLOSED/READY 历史数据保持静态有界查询，不通过活动游标修改或恢复原文件。
+
 ## 清理边界
 
 自动和手动清理只能处理已白名单的 `runtime/cache/`、`runtime/temp/` 与受认可的运行日志；不触及局点数据库、配置、raw、会话业务日志、正式 outputs、报告、备份、Agent 包或迁移材料。删除前必须重新确认规范化后的路径位于数据根的允许子树。

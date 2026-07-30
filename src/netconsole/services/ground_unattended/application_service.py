@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import shutil
 import sqlite3
 import threading
@@ -35,6 +36,7 @@ from netconsole.models.api.ground_unattended import (
     GroundSyslogHostDTO,
     GroundSyslogRecordDTO,
     GroundSyslogRecordPageDTO,
+    GroundSyslogTransportStatusDTO,
     GroundTrainPolicyUpdateDTO,
     GroundTimelineEventDTO,
     GroundTimelinePageDTO,
@@ -66,6 +68,7 @@ from netconsole.services.ground_unattended.syslog_runtime import (
     WmeshRealtimeParser,
 )
 from netconsole.models.api.system_maintenance import DesktopActionDTO
+from netconsole.models.api.system_network import SourceIpRecommendationRequestDTO
 from netconsole.services.rail_transit.base_data_query_service import (
     RailTransitBaseDataQueryService,
 )
@@ -639,6 +642,172 @@ class GroundUnattendedApplicationService:
             updated_at=datetime.now().astimezone().isoformat(timespec="milliseconds"),
         )
 
+    def syslog_transport_status(
+        self, site_id: str
+    ) -> GroundSyslogTransportStatusDTO:
+        self._require_site(site_id)
+        profile = self.repository.get_profile()
+        health = self._syslog_health()
+        now = datetime.now().astimezone().isoformat(timespec="milliseconds")
+        return_ip = str(profile.syslog_server_ip or "").strip()
+        return_is_local = bool(
+            return_ip and self.network_service.is_local_ipv4(return_ip)
+        )
+        if not return_ip:
+            return_status = "EMPTY"
+        else:
+            try:
+                parsed_return = ipaddress.ip_address(return_ip)
+                valid_return = (
+                    isinstance(parsed_return, ipaddress.IPv4Address)
+                    and not parsed_return.is_unspecified
+                    and not parsed_return.is_loopback
+                    and not parsed_return.is_multicast
+                    and str(parsed_return) != "255.255.255.255"
+                )
+            except ValueError:
+                valid_return = False
+            return_status = (
+                "INVALID"
+                if not valid_return
+                else "LOCAL_ADDRESS"
+                if return_is_local
+                else "EXTERNAL_CONFIRMED"
+                if profile.allow_external_syslog_address
+                else "NOT_LOCAL"
+            )
+
+        listen_is_local = (
+            profile.udp_listen_host == "0.0.0.0"
+            or self.network_service.is_local_ipv4(profile.udp_listen_host)
+        )
+        receiver_running = bool(health.get("udp_running"))
+        actual_listen = str(health.get("udp_listen_address") or "")
+        receiver_state = (
+            "ERROR"
+            if str(health.get("last_error") or "")
+            else "LISTENING"
+            if receiver_running
+            else "STARTING"
+            if str((self.repository.get_active_run() or {}).get("state") or "")
+            == "STARTING"
+            else "STOPPED"
+        )
+        if not listen_is_local:
+            port_state = "ADDRESS_NOT_LOCAL"
+            port_message = "本机监听地址已不属于当前计算机"
+        elif receiver_running and _listen_address_matches(
+            actual_listen,
+            profile.udp_listen_host,
+            profile.udp_listen_port,
+        ):
+            port_state = "NETCONSOLE_LISTENING"
+            port_message = "NetConsole 正在占用并监听该 UDP 端口"
+        else:
+            try:
+                inspected = self.network_service.inspect_udp_port(
+                    profile.udp_listen_host,
+                    profile.udp_listen_port,
+                )
+                port_state = (
+                    "AVAILABLE"
+                    if inspected.available
+                    else "OCCUPIED_BY_OTHER"
+                )
+                port_message = (
+                    inspected.message
+                    if inspected.available
+                    else "UDP 端口已被其他进程占用"
+                )
+            except (SystemNetworkError, OSError, RuntimeError):
+                port_state = "UNKNOWN"
+                port_message = "UDP 端口状态检查失败，不影响运行概览加载"
+
+        inventory = self.repository.list_inventory(include_removed=False)
+        active_mr_count = 0
+        target_ips: list[str] = []
+        for train in inventory:
+            for endpoint in train.get("endpoints", []):
+                management_ip = str(endpoint.get("management_ip") or "").strip()
+                if management_ip:
+                    target_ips.append(management_ip)
+                boot = self.repository.latest_boot_session(
+                    str(endpoint.get("device_uuid") or "")
+                )
+                if boot and boot.get("last_syslog_received_at"):
+                    active_mr_count += 1
+
+        recommended_ip = ""
+        recommended_adapter = ""
+        try:
+            recommendation = self.network_service.recommend_source_ip(
+                SourceIpRecommendationRequestDTO(
+                    target_ips=list(dict.fromkeys(target_ips)),
+                    preferred_ip=return_ip,
+                )
+            )
+            recommended_ip = recommendation.recommended_ip
+            candidates = recommendation.candidates
+            if not recommended_ip and candidates:
+                recommended_ip = candidates[0].ipv4
+            recommended_adapter = next(
+                (
+                    row.adapter_name
+                    for row in candidates
+                    if row.ipv4 == recommended_ip
+                ),
+                "",
+            )
+        except (SystemNetworkError, OSError, RuntimeError):
+            pass
+
+        ports_match: bool | None = (
+            profile.syslog_server_port == profile.udp_listen_port
+            if return_is_local
+            else None
+        )
+        target_port_message = (
+            "目标端口与本地监听一致"
+            if ports_match is True
+            else (
+                f"目标端口 {profile.syslog_server_port} / "
+                f"本地监听 {profile.udp_listen_port}，两者不一致"
+            )
+            if ports_match is False
+            else "目标为外部/NAT 地址，本机监听端口状态不适用"
+            if return_status in {"EXTERNAL_CONFIRMED", "NOT_LOCAL"}
+            else "MR 日志回传地址尚未有效配置"
+        )
+        return GroundSyslogTransportStatusDTO(
+            configured_return_ip=return_ip,
+            configured_return_port=profile.syslog_server_port,
+            return_address_status=return_status,  # type: ignore[arg-type]
+            return_address_is_local=return_is_local,
+            allow_external_address=profile.allow_external_syslog_address,
+            listen_host=profile.udp_listen_host,
+            listen_port=profile.udp_listen_port,
+            receiver_running=receiver_running,
+            receiver_state=receiver_state,  # type: ignore[arg-type]
+            actual_listen_address=actual_listen,
+            port_state=port_state,  # type: ignore[arg-type]
+            port_message=port_message,
+            ports_match=ports_match,
+            target_port_message=target_port_message,
+            last_received_at=str(health.get("udp_last_received_at") or ""),
+            received_count=int(health.get("udp_received_count") or 0),
+            active_mr_count=active_mr_count,
+            unidentified_count=int(health.get("udp_unidentified_count") or 0),
+            identity_conflict_count=int(
+                health.get("udp_identity_conflict_count") or 0
+            ),
+            queue_length=int(health.get("udp_queue_length") or 0),
+            queue_capacity=int(health.get("udp_queue_capacity") or 0),
+            dropped_count=int(health.get("udp_dropped_count") or 0),
+            recommended_local_ip=recommended_ip,
+            recommended_adapter_name=recommended_adapter,
+            checked_at=now,
+        )
+
     def _ac_poller_health(
         self, site_id: str, run_id: str
     ) -> list[GroundAcPollerHealthDTO]:
@@ -910,6 +1079,21 @@ class GroundUnattendedApplicationService:
         except GroundRawQueryError as exc:
             raise GroundUnattendedError(
                 "RAW_QUERY_REJECTED", str(exc), status_code=422
+            ) from exc
+
+    def ping_series_incremental(
+        self,
+        site_id: str,
+        **filters: Any,
+    ) -> GroundPingSeriesDTO:
+        self._require_site(site_id)
+        try:
+            return GroundPingSeriesDTO.model_validate(
+                self.raw_query.ping_series_incremental(**filters)
+            )
+        except GroundRawQueryError as exc:
+            raise GroundUnattendedError(
+                exc.code, str(exc), status_code=422
             ) from exc
 
     def ping_samples(
@@ -1822,6 +2006,8 @@ class GroundUnattendedApplicationService:
                 "udp_receive_rate_per_second": 0.0,
                 "udp_received_count": 0,
                 "udp_unidentified_count": 0,
+                "udp_identity_conflict_count": 0,
+                "udp_last_received_at": "",
                 "udp_queue_length": 0,
                 "udp_queue_capacity": 0,
                 "udp_dropped_count": 0,
@@ -2077,6 +2263,18 @@ class GroundUnattendedApplicationService:
             raise GroundUnattendedError(
                 "SITE_MISMATCH", "请求局点必须与当前局点一致", status_code=409
             )
+
+
+def _listen_address_matches(actual: str, configured_host: str, configured_port: int) -> bool:
+    try:
+        actual_host, actual_port = actual.rsplit(":", 1)
+        return int(actual_port) == int(configured_port) and (
+            actual_host == configured_host
+            or actual_host == "0.0.0.0"
+            or configured_host == "0.0.0.0"
+        )
+    except (TypeError, ValueError):
+        return False
 
 
 __all__ = ["GroundUnattendedApplicationService", "GroundUnattendedError"]

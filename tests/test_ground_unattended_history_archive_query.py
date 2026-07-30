@@ -93,6 +93,128 @@ def test_ready_archive_is_queryable_and_mixed_sources_are_deduplicated(
     }
 
 
+def test_ping_query_normalizes_registry_train_id_and_incrementally_reads_appends(
+    tmp_path: Path,
+) -> None:
+    paths, repository, run_id = _setup_run(tmp_path)
+    repository.update_run(run_id, state="RUNNING", actual_ended_at="")
+    raw_path = (
+        paths.ground_unattended_active_dir("site-a", "2026-07-25")
+        / "fleet_ping"
+        / "_07"
+        / "CT"
+        / "2026-07-25"
+        / "08_live.ndjson"
+    )
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def sample(sample_id: str, ts: str, seq: int) -> dict[str, object]:
+        return {
+            "sample_id": sample_id,
+            "ts": ts,
+            "target_ip": "10.122.7.249",
+            "train_id": "_07",
+            "train_no": "07",
+            "mr_id": "mr-ct",
+            "mr_name": "列车07-MR-CT",
+            "mr_position_code": "CT",
+            "seq": seq,
+            "ok": True,
+            "rtt_ms": float(seq),
+            "position_quality": "MATCHED",
+        }
+
+    initial_rows = [
+        sample("sample-1", "2026-07-25T08:00:01+08:00", 1),
+        sample("sample-2", "2026-07-25T08:00:02+08:00", 2),
+    ]
+    raw_path.write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in initial_rows),
+        encoding="utf-8",
+    )
+    repository.upsert_raw_file(
+        {
+            "file_id": "raw-live-07",
+            "run_id": run_id,
+            "train_id": "_07",
+            "device_uuid": "mr-ct",
+            "mr_role": "CT",
+            "data_type": "ping",
+            "relative_path": raw_path.relative_to(
+                repository.db_path.parent
+            ).as_posix(),
+            "start_time": "2026-07-25T08:00:01+08:00",
+            "end_time": "",
+            "record_count": 0,
+            "size_bytes": 0,
+            "status": "OPEN",
+            "archive_status": "PENDING",
+        }
+    )
+    query = GroundRawStreamQueryService(repository)
+
+    initial = query.ping_series(
+        run_id=run_id,
+        train_id="列车07",
+        mr_id="mr-ct",
+        target_ip="10.122.7.249",
+    )
+
+    assert initial["raw_sample_count"] == 2
+    assert initial["success_count"] == 2
+    assert initial["loss_count"] == 0
+    assert initial["rtt_sample_count"] == 2
+    assert initial["rtt_sum_ms"] == 3.0
+    assert initial["current_rtt_ms"] == 2.0
+    assert initial["average_rtt_ms"] == 1.5
+    assert initial["max_rtt_ms"] == 2.0
+    assert initial["diagnostics"]["data_availability"] == "ACTIVE_RAW"
+    assert initial["next_cursor"]
+
+    appended = [
+        sample("sample-late", "2026-07-25T08:00:01.500+08:00", 3),
+        sample("sample-3", "2026-07-25T08:00:03+08:00", 4),
+    ]
+    with raw_path.open("a", encoding="utf-8", newline="\n") as handle:
+        for row in appended:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    incremental = query.ping_series_incremental(
+        run_id=run_id,
+        train_id="列车07",
+        mr_id="mr-ct",
+        target_ip="10.122.7.249",
+        cursor=initial["next_cursor"],
+    )
+
+    assert [row["sample_id"] for row in incremental["points"]] == [
+        "sample-late",
+        "sample-3",
+    ]
+    assert incremental["success_count"] == 2
+    assert incremental["loss_count"] == 0
+    assert incremental["rtt_sample_count"] == 2
+    assert incremental["rtt_sum_ms"] == 7.0
+    assert incremental["current_rtt_ms"] == 4.0
+    assert incremental["average_rtt_ms"] == 3.5
+    assert incremental["max_rtt_ms"] == 4.0
+    assert incremental["latest_sequence"] == 4
+    assert incremental["diagnostics"]["records_scanned"] == len(appended)
+    assert incremental["diagnostics"]["bytes_scanned"] == sum(
+        len((json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8"))
+        for row in appended
+    )
+    repeated = query.ping_series_incremental(
+        run_id=run_id,
+        train_id="列车07",
+        mr_id="mr-ct",
+        target_ip="10.122.7.249",
+        cursor=incremental["next_cursor"],
+    )
+    assert repeated["points"] == []
+    assert repeated["diagnostics"]["no_data_reason"] == "NEW_SAMPLES_PENDING"
+
+
 def test_run_without_actual_times_uses_registered_raw_file_range(
     tmp_path: Path,
 ) -> None:

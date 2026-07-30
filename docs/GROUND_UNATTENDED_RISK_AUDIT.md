@@ -49,6 +49,10 @@ WMESH 时间轴和 Vue 页面生命周期。结论基于代码、自动测试、
 | AP 切换前后窗口误判 | 已防护 | 首次 AP 只建基线，真实 identity 变化才建切换窗口并保留 marker。 |
 | Backend 重启后重复预热 | 已防护 | 目标激活时间按 site/run/target 持久化，分片重建不重置。 |
 | 查询预算导致无提示的部分结果 | 本轮修复 | 文件/记录/字节/时间预算统一返回 `truncated` 和扫描诊断。 |
+| 页面列车 ID 与 Registry 历史 ID 不同导致空曲线 | 本轮修复 | 文件预筛和记录匹配统一复用列车身份归一化，`列车07` 与 `_07` 可解析为同一列车。 |
+| 活动曲线每轮重新扫描 3000 点 | 本轮修复 | 首次查询建立绑定运行/目标的游标，后续按 OPEN 文件字节偏移约 1.8 秒增量读取，每次最多 200 点。 |
+| 重复、乱序或晚到样本破坏曲线 | 本轮修复 | 同一文件偏移保证晚到记录仍被读取；前端按稳定样本键去重，再按时间和 sequence 排序。 |
+| 长时间运行导致 Renderer 数据持续增长 | 本轮修复 | 点、丢包区段、AP 切换和位置段统一受 3000/10000 环形上限约束。 |
 
 ## Syslog
 
@@ -71,6 +75,9 @@ WMESH 时间轴和 Vue 页面生命周期。结论基于代码、自动测试、
 | Syslog 交互查询占用过大 | 本轮修复 | 独立限制 128 文件、250,000 条、128MB、8 秒；达到预算返回部分结果与 `truncated`。 |
 | 单一来源建立无界去重集合 | 本轮修复 | ACTIVE/ARCHIVE 单一来源不做全局去重；MIXED 稳定键上限 250,000。 |
 | AP Detail 同步刷新阻塞首屏 | 本轮修复 | 请求线程先用基础快照和旧缓存，AC Detail 单后台线程刷新；失败保留旧 resolver。 |
+| 运行概览缺少回传与监听整体状态 | 本轮修复 | 单一 Transport DTO 区分保存目标、地址有效性、Receiver、本地监听端口、目标端口、最近接收和身份质量。 |
+| 端口检查短暂绑定现场端口 | 本轮修复 | Windows 使用 IP Helper 只读 endpoint 表，不绑定被检查端口；本 Receiver 通过运行状态单独识别。 |
+| 非本机回传地址被推荐值自动覆盖 | 本轮修复 | 推荐地址/网卡只展示；`NOT_LOCAL` 阻止启动，只有明确确认外部/NAT 后才转为 `EXTERNAL_CONFIRMED`。 |
 
 ## 归档与下载
 
@@ -93,9 +100,11 @@ WMESH 时间轴和 Vue 页面生命周期。结论基于代码、自动测试、
 | 每 5 秒全量请求 | 本轮修复 | 状态/操作/健康/活动页签独立调度；静态数据按需读取。 |
 | 同类请求重叠或旧响应覆盖新状态 | 本轮修复 | `AbortController`、请求序号、防重入和过期响应丢弃。 |
 | 隐藏页面继续轮询 | 本轮修复 | `visibilitychange` 隐藏时取消，恢复时清空节流并增量加载。 |
-| 隐藏容器初始化 ECharts | 本轮修复 | Dialog opened 后挂载；`nextTick + resize`。 |
+| 隐藏容器初始化 ECharts | 本轮修复 | 非模态浮窗显示后挂载；`nextTick + resize`。 |
 | 图表、Observer 或 listener 累积 | 本轮修复 | unmount/关闭时 dispose、disconnect、unsubscribe；100 次循环测试覆盖。 |
-| Ping/Syslog 外层滚动与大面积空白 | 本轮修复 | 表格使用视口约束和内部滚动，曲线从 Ping 列表移入弹窗。 |
+| Ping/Syslog 外层滚动与大面积空白 | 本轮修复 | 少量行按内容结束，超限表体内部滚动；时间轴/Syslog 空态主体为 190px，完整区域约 231px，分页紧跟表格。 |
+| Ping 曲线遮罩并阻塞主页面 | 本轮修复 | Vue 非模态浮窗层自身可交互，周围区域 click-through；主页面可切页、筛选和滚动。 |
+| 浮窗位置、尺寸或监听器残留 | 本轮修复 | 按用户/路由/窗口 ID 保存 Renderer 本地偏好；拖动会话结束和卸载均移除 pointer/resize 监听。 |
 | 1366x768、125%/150% 缩放视觉冲突 | 尚未验证 | 已有响应式约束和构建测试，仍需正式 Electron 截图/人工验收。 |
 | 30 分钟页面与 10 分钟自动刷新资源累积 | 本轮修复 | 假时钟测试确认请求频率有界且 unmount 后停止。 |
 
@@ -118,6 +127,7 @@ WMESH 时间轴和 Vue 页面生命周期。结论基于代码、自动测试、
 | active Syslog 100,000 条 | 通过 | 总数正确，响应只保留 100 条当前页。 |
 | 36 台 MR、30 天 Registry | 通过 | 目标日期/MR 在 `LIMIT` 前完成预筛。 |
 | Ping 图表开关 100 次 | 通过 | init/dispose、observer 和主题订阅数量成对。 |
+| Ping 浮窗与环形缓存 | 通过 | 位置恢复、目标复用、3000 点上限、重复分类和乱序排序测试覆盖。 |
 | 页面轮询 30 分钟 | 通过 | 请求频率有界，unmount 后不再请求。 |
 | Syslog 自动刷新 10 分钟 | 通过 | 只在活动运行和 Syslog 页签按约 8 秒刷新。 |
 | Syslog 请求并发、取消和恢复 | 本轮修复 | 稳定 fingerprint 复用同参在途请求；参数变化才取消；Abort 不报错，恢复只提示一次。 |
@@ -129,9 +139,8 @@ WMESH 时间轴和 Vue 页面生命周期。结论基于代码、自动测试、
 
 ## 真实数据只读验证
 
-来源为 `D:\NetConsoleData\sites\宁波地铁12号线`，验证时只读取源文件，并将 ground index、2026-07-28
-READY ZIP 和 `devices.db` 复制到
-`D:\NetConsoleTestData\ground-unattended-real-20260730-3e6c6ef1`。副本 SQLite
+来源为当前机器配置的 `<data_root>/sites/宁波地铁12号线`，验证时只读取源文件，并将 ground index、
+2026-07-28 READY ZIP 和 `devices.db` 复制到独立 `<test_data_root>/<run-id>`。副本 SQLite
 `integrity_check=ok`；未启动真实无人值守、未写设备、未修改真实 SQLite/NDJSON/ZIP。
 
 | 场景 | 结果 | 结论 |
@@ -141,6 +150,7 @@ READY ZIP 和 `devices.db` 复制到
 | 2026-07-28 时间轴 | 7421 条，其中 WMESH 6330 条、主链路切换 1951 条 | 4381 条 `H3C_RADIO_DERIVED`、1929 条 `RADIO_BSSID`、20 条 `NO_ACTIVE_LINK`；无未知 AP 切换。 |
 | AP 名称来源 | 6310 条 `AC_AP_NAME`、20 条 `EVENT_STATE` | 唯一物理 AP 已解析；AC 名称为 MAC 形式，工程点位名称未验收。 |
 | Registry 规模 | 36 台 MR、30 天文件索引 | 目标日期、MR 与端位在 `LIMIT` 前预筛。 |
+| 2026-07-29 活动 Ping | OPEN NDJSON 419 条原始、409 条有效、27 条丢包 | Registry `_07` 与页面“列车07”身份不一致是误判 `SUMMARY_ONLY` 的根因；修复后为 `ACTIVE_RAW`。 |
 
 ## 剩余验收
 
@@ -148,4 +158,5 @@ READY ZIP 和 `devices.db` 复制到
   `AC_AP_NAME`；不得按站点、序号或 MAC 相似度推断。
 - Electron 保存对话框、ZIP/JSON 本地文件、1366x768 与 125%/150% 缩放人工验证。
 - 合并后 clean package、冻结 Backend status smoke、正式安装和 AC 常驻轮询回归。
-- 十几小时真实 fping、多列车 UDP、真实 AP 漫游、主备 AC 切换和低磁盘故障注入。
+- 十几小时真实 fping、多列车 UDP、真实 AP 漫游、主备 AC 切换、低磁盘故障注入，以及 10 目标各
+  100,000 点并持续操作 30 分钟的真实 Renderer/Backend 内存曲线。

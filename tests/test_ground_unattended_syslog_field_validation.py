@@ -25,6 +25,7 @@ from netconsole.services.ground_unattended.boot_config import (
 )
 from netconsole.services.ground_unattended.syslog_runtime import (
     SyslogUdpReceiver,
+    UdpEnvelope,
     WmeshRealtimeParser,
 )
 
@@ -838,6 +839,44 @@ def test_udp_receiver_preserves_sequences_facility_and_identity_states(tmp_path:
     assert receiver._resolve_identity("203.0.113.9", "test-mr-ct")[1] == "UNCONFIRMED_HOSTNAME"
     receiver._endpoint_by_hostname["other-host"] = [{"device_uuid": "other"}]
     assert receiver._resolve_identity("127.0.0.1", "other-host") == (None, "IDENTITY_CONFLICT")
+
+
+def test_udp_receiver_counts_unidentified_and_identity_conflict_separately(
+    tmp_path: Path,
+) -> None:
+    receiver = SyslogUdpReceiver(
+        repository=GroundUnattendedRepository(
+            tmp_path / "ground" / "index.sqlite", site_id="site-a"
+        ),
+        site_id="site-a",
+    )
+    receiver._endpoint_by_ip["192.0.2.10"] = [{"device_uuid": "mr-a"}]
+    receiver._endpoint_by_hostname["mr-b"] = [{"device_uuid": "mr-b"}]
+    received_at = "2026-07-30T08:00:00+08:00"
+    receiver._process(
+        UdpEnvelope(
+            source_ip="192.0.2.10",
+            source_port=514,
+            receive_time=received_at,
+            global_receive_sequence=1,
+            source_receive_sequence=1,
+            payload=b"<189>Jul 30 08:00:00 2026 MR-B WMESH/5/MESH_LINKUP: peer AP-A_0000-0000-0001",
+        )
+    )
+    receiver._process(
+        UdpEnvelope(
+            source_ip="192.0.2.11",
+            source_port=514,
+            receive_time=received_at,
+            global_receive_sequence=2,
+            source_receive_sequence=1,
+            payload=b"<189>Jul 30 08:00:00 2026 UNKNOWN WMESH/5/MESH_LINKUP: peer AP-A_0000-0000-0001",
+        )
+    )
+
+    health = receiver.health_snapshot()
+    assert health["udp_identity_conflict_count"] == 1
+    assert health["udp_unidentified_count"] == 1
 
 
 def _context(tmp_path: Path) -> tuple[PathResolver, GroundUnattendedRepository, str]:

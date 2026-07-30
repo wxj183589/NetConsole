@@ -362,7 +362,9 @@ class SyslogUdpReceiver:
         self._endpoint_by_hostname: dict[str, list[dict[str, Any]]] = {}
         self._received_count = 0
         self._unidentified_count = 0
+        self._identity_conflict_count = 0
         self._dropped_count = 0
+        self._last_received_at = ""
         self._started_monotonic = 0.0
         self._last_error = ""
         self._event_batch: list[dict[str, Any]] = []
@@ -404,6 +406,8 @@ class SyslogUdpReceiver:
         self._run_id = run_id
         self._stop.clear()
         self._received_count = self._unidentified_count = self._dropped_count = 0
+        self._identity_conflict_count = 0
+        self._last_received_at = ""
         self._global_receive_sequence = 0
         self._source_receive_sequences = {}
         self._last_clock_offset_ms = {}
@@ -563,6 +567,8 @@ class SyslogUdpReceiver:
             "udp_receive_rate_per_second": round(self._received_count / elapsed, 3),
             "udp_received_count": self._received_count,
             "udp_unidentified_count": self._unidentified_count,
+            "udp_identity_conflict_count": self._identity_conflict_count,
+            "udp_last_received_at": self._last_received_at,
             "udp_queue_length": self._queue.qsize(),
             "udp_queue_capacity": self._queue.maxsize,
             "udp_dropped_count": self._dropped_count,
@@ -607,6 +613,7 @@ class SyslogUdpReceiver:
                 payload=payload,
             )
             self._received_count += 1
+            self._last_received_at = envelope.receive_time
             try:
                 self._queue.put_nowait(envelope)
             except queue.Full:
@@ -645,8 +652,10 @@ class SyslogUdpReceiver:
         hostname = _extract_hostname(raw_text)
         facility, severity = _extract_facility_severity(raw_text)
         endpoint, identity_status = self._resolve_identity(envelope.source_ip, hostname)
-        if identity_status in {"UNIDENTIFIED", "IDENTITY_CONFLICT"}:
+        if identity_status == "UNIDENTIFIED":
             self._unidentified_count += 1
+        if identity_status == "IDENTITY_CONFLICT":
+            self._identity_conflict_count += 1
         parsed = self.parser.parse(raw_text, receive_time=receive_time)
         if parsed is not None:
             parsed = self._ap_resolver.enrich_parsed(parsed)

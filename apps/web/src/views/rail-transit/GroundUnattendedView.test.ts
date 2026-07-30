@@ -56,10 +56,13 @@ describe('Ground unattended page', () => {
     expect(source).toContain('调度优先级')
   })
 
-  it('uses the shared data table with bounded responsive table frames', () => {
+  it('uses adaptive shared data tables without fixed viewport-filling frames', () => {
     expect(source).toContain('NcDataTable')
     expect(source).toContain('table-frame')
-    expect(source).toContain('height:clamp(')
+    expect(source).toContain('useAdaptiveTableHeight')
+    expect(source).toContain('auto-height')
+    expect(source).toContain('.table-frame{height:auto')
+    expect(source).not.toContain('height:clamp(')
     expect(source).toContain('@media(max-width:620px)')
   })
 
@@ -70,7 +73,7 @@ describe('Ground unattended page', () => {
     expect(source).toContain('最近 5 分钟')
     expect(source).toContain('最近 1 小时')
     expect(source).toContain('自定义时间')
-    expect(source).toContain('自动刷新')
+    expect(source).toContain('实时增量')
     expect(apiSource).toContain('/ping-series')
     expect(apiSource).toContain('/syslog-records')
     expect(apiSource).toContain('/operations/latest')
@@ -86,7 +89,10 @@ describe('Ground unattended page', () => {
     expect(source).toContain('train_id: row.train_id')
     expect(source).toContain('mr_id: row.mr_id')
     expect(source).toContain('row.first_sample_at')
-    expect(source).toContain('当前范围没有样本，是否切换到本次运行全部时间？')
+    expect(source).toContain('当前时间范围内没有样本，可切换到完整运行时段。')
+    expect(source).toContain('getGroundPingSeriesIncremental')
+    expect(source).toContain('onDeactivated')
+    expect(source).toContain("pollDue('ping-series-incremental', 1_800")
     expect(source).toContain("activeTab.value === 'ping'")
     expect(source).toContain("activeTab.value === 'syslog'")
     expect(source).not.toMatch(/pollDue\('(?:timeline|deep|archives)'/)

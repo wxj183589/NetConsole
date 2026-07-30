@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import ipaddress
 import socket
+import struct
 import sys
 from collections import Counter
 from datetime import datetime
@@ -179,6 +180,8 @@ class SystemNetworkApplicationService:
         host = str(_ipv4(request.listen_host, field_name="监听地址"))
         if host != "0.0.0.0":
             self.validate_listen_host(host)
+        if sys.platform == "win32":
+            return self.inspect_udp_port(host, request.listen_port)
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
@@ -199,6 +202,40 @@ class SystemNetworkApplicationService:
             available=available,
             status=status,
             message=message,
+            checked_at=_now(),
+        )
+
+    def inspect_udp_port(self, listen_host: str, listen_port: int) -> UdpPortCheckDTO:
+        """只读检查 Windows UDP endpoint 表，不临时绑定被检测端口。"""
+
+        host = str(_ipv4(listen_host, field_name="监听地址"))
+        if host != "0.0.0.0":
+            self.validate_listen_host(host)
+        if not 1 <= int(listen_port) <= 65_535:
+            raise SystemNetworkError("NETWORK_PORT_INVALID", "UDP 监听端口无效")
+        if sys.platform != "win32":
+            return self.check_udp_port(
+                UdpPortCheckRequestDTO(
+                    listen_host=host,
+                    listen_port=int(listen_port),
+                )
+            )
+        endpoints = _windows_udp_endpoints()
+        occupied = any(
+            port == int(listen_port)
+            and (
+                host == "0.0.0.0"
+                or address == "0.0.0.0"
+                or address == host
+            )
+            for address, port, _pid in endpoints
+        )
+        return UdpPortCheckDTO(
+            listen_host=host,
+            listen_port=int(listen_port),
+            available=not occupied,
+            status="IN_USE" if occupied else "AVAILABLE",
+            message="UDP 端口已被占用" if occupied else "UDP 端口空闲",
             checked_at=_now(),
         )
 
@@ -503,6 +540,61 @@ def _windows_ipv4_addresses() -> list[LocalIpv4AddressDTO]:
             unicast = item.next
         current = adapter.next
     return rows
+
+
+def _windows_udp_endpoints() -> list[tuple[str, int, int]]:
+    from ctypes import wintypes
+
+    class UdpRowOwnerPid(ctypes.Structure):
+        _fields_ = [
+            ("local_address", wintypes.DWORD),
+            ("local_port", wintypes.DWORD),
+            ("owning_pid", wintypes.DWORD),
+        ]
+
+    function = ctypes.windll.iphlpapi.GetExtendedUdpTable
+    function.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.ULONG),
+        wintypes.BOOL,
+        wintypes.ULONG,
+        ctypes.c_int,
+        wintypes.ULONG,
+    ]
+    function.restype = wintypes.DWORD
+    size = wintypes.ULONG(0)
+    result = function(None, ctypes.byref(size), False, socket.AF_INET, 1, 0)
+    if result not in {0, 122}:
+        raise SystemNetworkError(
+            "UDP_ENDPOINT_ENUMERATION_FAILED",
+            f"Windows IP Helper 无法读取 UDP endpoint（错误码 {result}）",
+            status_code=503,
+        )
+    buffer = ctypes.create_string_buffer(max(4, int(size.value)))
+    result = function(
+        buffer,
+        ctypes.byref(size),
+        False,
+        socket.AF_INET,
+        1,
+        0,
+    )
+    if result != 0:
+        raise SystemNetworkError(
+            "UDP_ENDPOINT_ENUMERATION_FAILED",
+            f"Windows IP Helper 无法读取 UDP endpoint（错误码 {result}）",
+            status_code=503,
+        )
+    count = ctypes.cast(buffer, ctypes.POINTER(wintypes.DWORD)).contents.value
+    base = ctypes.addressof(buffer) + ctypes.sizeof(wintypes.DWORD)
+    row_size = ctypes.sizeof(UdpRowOwnerPid)
+    endpoints: list[tuple[str, int, int]] = []
+    for index in range(int(count)):
+        row = UdpRowOwnerPid.from_address(base + index * row_size)
+        address = socket.inet_ntoa(struct.pack("<I", int(row.local_address)))
+        port = socket.ntohs(int(row.local_port) & 0xFFFF)
+        endpoints.append((address, port, int(row.owning_pid)))
+    return endpoints
 
 
 def _socket_address_ipv4(address: object) -> str:

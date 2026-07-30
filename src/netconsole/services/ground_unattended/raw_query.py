@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import heapq
 import json
@@ -35,6 +36,8 @@ MAX_SYSLOG_QUERY_RECORDS = 250_000
 MAX_SYSLOG_QUERY_BYTES = 128 * 1024**2
 MAX_SYSLOG_QUERY_SECONDS = 8.0
 MAX_MIXED_DEDUP_KEYS = 250_000
+MAX_INCREMENTAL_POINTS = 500
+MAX_CURSOR_FILES = 32
 
 
 class GroundRawQueryError(ValueError):
@@ -63,12 +66,24 @@ class GroundRawStreamQueryService:
         include_warmup: bool = False,
         max_points: int = 3000,
     ) -> dict[str, Any]:
+        registered_train_id = self._registered_train_id(
+            run_id,
+            train_id,
+            data_type="ping",
+        )
+        cursor_state = self._initial_ping_cursor(
+            run_id=run_id,
+            train_id=registered_train_id,
+            mr_id=mr_id,
+            target_ip=target_ip,
+            include_warmup=include_warmup,
+        )
         start, end = self._time_range(
             run_id,
             start_time,
             end_time,
             data_type="ping",
-            train_id=train_id,
+            train_id=registered_train_id,
             mr_id=mr_id,
         )
         diagnostics = _new_diagnostics(run_id, start, end)
@@ -77,7 +92,18 @@ class GroundRawStreamQueryService:
         bucket_seconds = max(0.001, duration / max_points)
         success_buckets: dict[tuple[str, int], dict[str, Any]] = {}
         loss_points: list[dict[str, Any]] = []
-        counts = {"raw": 0, "effective": 0, "ignored": 0}
+        counts = {
+            "raw": 0,
+            "effective": 0,
+            "ignored": 0,
+            "success": 0,
+            "loss": 0,
+            "rtt_samples": 0,
+        }
+        rtt_sum_ms = 0.0
+        max_rtt_ms: float | None = None
+        current_rtt_ms: float | None = None
+        current_rtt_key: tuple[str, int] = ("", -1)
         loss_state: dict[str, dict[str, Any]] = {}
         loss_windows: list[dict[str, Any]] = []
         ap_transitions: list[dict[str, Any]] = []
@@ -87,7 +113,7 @@ class GroundRawStreamQueryService:
         for item in self._records(
             data_type="ping",
             run_id=run_id,
-            train_id=train_id,
+            train_id=registered_train_id,
             mr_id=mr_id,
             start=start,
             end=end,
@@ -107,6 +133,26 @@ class GroundRawStreamQueryService:
                 counts["ignored"] += 1
             else:
                 counts["effective"] += 1
+                if bool(item.get("ok")):
+                    counts["success"] += 1
+                    rtt_ms = _optional_float(item.get("rtt_ms"))
+                    if rtt_ms is not None:
+                        counts["rtt_samples"] += 1
+                        rtt_sum_ms += rtt_ms
+                        max_rtt_ms = (
+                            rtt_ms
+                            if max_rtt_ms is None
+                            else max(max_rtt_ms, rtt_ms)
+                        )
+                        rtt_key = (
+                            str(item.get("ts") or ""),
+                            _optional_int(item.get("seq")) or -1,
+                        )
+                        if rtt_key >= current_rtt_key:
+                            current_rtt_key = rtt_key
+                            current_rtt_ms = rtt_ms
+                else:
+                    counts["loss"] += 1
             if ignored and not include_warmup:
                 continue
             address = str(item.get("target_ip") or "")
@@ -220,16 +266,223 @@ class GroundRawStreamQueryService:
             diagnostics["no_data_reason"] = (
                 "TARGET_NOT_FOUND" if target_ip else "NO_SAMPLES"
             )
-        return {
+        result = {
             "raw_sample_count": counts["raw"],
             "effective_sample_count": counts["effective"],
             "ignored_sample_count": counts["ignored"],
+            "success_count": counts["success"],
+            "loss_count": counts["loss"],
+            "rtt_sample_count": counts["rtt_samples"],
+            "rtt_sum_ms": rtt_sum_ms,
+            "current_rtt_ms": current_rtt_ms,
+            "average_rtt_ms": (
+                rtt_sum_ms / counts["rtt_samples"]
+                if counts["rtt_samples"]
+                else None
+            ),
+            "max_rtt_ms": max_rtt_ms,
             "points": points,
             "loss_windows": loss_windows,
             "ap_transitions": ap_transitions[:max_points],
             "position_segments": position_segments[:max_points],
             "diagnostics": diagnostics,
         }
+        self._attach_ping_runtime(
+            result,
+            run_id=run_id,
+            cursor_state=cursor_state,
+        )
+        return result
+
+    def ping_series_incremental(
+        self,
+        *,
+        run_id: str,
+        train_id: str = "",
+        mr_id: str = "",
+        target_ip: str = "",
+        cursor: str = "",
+        after_sequence: int | None = None,
+        after_timestamp: str = "",
+        include_warmup: bool = False,
+        max_points: int = 200,
+    ) -> dict[str, Any]:
+        if not run_id:
+            raise GroundRawQueryError("增量 Ping 查询必须指定运行")
+        registered_train_id = self._registered_train_id(
+            run_id,
+            train_id,
+            data_type="ping",
+        )
+        context = {
+            "run_id": run_id,
+            "train_id": registered_train_id,
+            "mr_id": mr_id,
+            "target_ip": target_ip,
+            "include_warmup": bool(include_warmup),
+        }
+        cursor_state = _decode_ping_cursor(cursor) if cursor else {}
+        if cursor_state and any(
+            cursor_state.get(key) != value for key, value in context.items()
+        ):
+            raise GroundRawQueryError(
+                "Ping 增量游标与当前目标不匹配",
+                code="RAW_CURSOR_INVALID",
+            )
+        offsets = {
+            str(key): max(0, int(value))
+            for key, value in dict(cursor_state.get("offsets") or {}).items()
+        }
+        cursor_timestamp = str(
+            after_timestamp or cursor_state.get("after_timestamp") or ""
+        )
+        cursor_sequence = (
+            after_sequence
+            if after_sequence is not None
+            else _optional_int(cursor_state.get("after_sequence"))
+        )
+        start = _parse_time(cursor_timestamp)
+        now = datetime.now().astimezone()
+        if start is None:
+            run = self.repository.get_run(run_id) or {}
+            start = _first_time(
+                run.get("actual_started_at"),
+                run.get("scheduled_start_at"),
+                run.get("created_at"),
+            ) or now - timedelta(minutes=30)
+        if start > now:
+            start = now
+        diagnostics = _new_diagnostics(run_id, start, now)
+        limit = max(1, min(int(max_points), MAX_INCREMENTAL_POINTS))
+        files = self.repository.list_raw_files_for_query(
+            data_type="ping",
+            start_time=start.isoformat(),
+            end_time=now.isoformat(),
+            run_id=run_id,
+            train_id=registered_train_id,
+            device_uuid=mr_id,
+            limit=MAX_QUERY_FILES,
+        )
+        diagnostics["files_considered"] = len(files)
+        diagnostics["registered_record_count"] = sum(
+            max(0, int(row.get("record_count") or 0)) for row in files
+        )
+        records: list[dict[str, Any]] = []
+        has_more = False
+        started = time.monotonic()
+        original_offset_ids = set(offsets)
+        processed_files: list[dict[str, Any]] = []
+        for registered in files:
+            path = self._registered_path(str(registered.get("relative_path") or ""))
+            if not path.is_file():
+                continue
+            file_id = str(registered.get("file_id") or "")
+            registered_end = _parse_time(str(registered.get("end_time") or ""))
+            if (
+                file_id not in original_offset_ids
+                and registered_end is not None
+                and registered_end < start
+            ):
+                continue
+            diagnostics["files_scanned"] += 1
+            diagnostics["_sources"] = ["ACTIVE"]
+            processed_files.append(registered)
+            file_size = path.stat().st_size
+            offset = min(max(0, offsets.get(file_id, 0)), file_size)
+            has_file_offset = file_id in original_offset_ids
+            with path.open("rb") as handle:
+                handle.seek(offset)
+                while len(records) < limit:
+                    line_offset = handle.tell()
+                    line = handle.readline()
+                    if not line:
+                        break
+                    if not line.endswith(b"\n"):
+                        handle.seek(line_offset)
+                        break
+                    offsets[file_id] = handle.tell()
+                    diagnostics["bytes_scanned"] += len(line)
+                    diagnostics["records_scanned"] += 1
+                    if _budget_exhausted(
+                        diagnostics,
+                        started,
+                        data_type="ping",
+                    ):
+                        diagnostics["truncated"] = True
+                        has_more = True
+                        break
+                    try:
+                        item = json.loads(line.decode("utf-8"))
+                    except (
+                        TypeError,
+                        UnicodeDecodeError,
+                        json.JSONDecodeError,
+                    ):
+                        diagnostics["malformed_record_count"] += 1
+                        continue
+                    if not isinstance(item, dict):
+                        diagnostics["malformed_record_count"] += 1
+                        continue
+                    if not _matches(
+                        item,
+                        train_id=train_id,
+                        mr_id=mr_id,
+                        target_ip=target_ip,
+                    ):
+                        continue
+                    sample_time = _parse_time(str(item.get("ts") or ""))
+                    if sample_time is None:
+                        continue
+                    if not has_file_offset and not _after_ping_cursor(
+                        item, sample_time, cursor_timestamp, cursor_sequence
+                    ):
+                        continue
+                    item["raw_file_id"] = file_id
+                    item["raw_line_number"] = diagnostics["records_scanned"]
+                    item["raw_file_status"] = str(registered.get("status") or "")
+                    item["data_source"] = "ACTIVE"
+                    item["archive_entry"] = ""
+                    records.append(item)
+                if len(records) >= limit and handle.tell() < file_size:
+                    has_more = True
+            if diagnostics["truncated"] or len(records) >= limit:
+                break
+
+        result = _incremental_ping_result(
+            records,
+            include_warmup=include_warmup,
+            max_points=limit,
+            diagnostics=diagnostics,
+        )
+        self._finish_diagnostics(
+            diagnostics,
+            matched_count=int(result["raw_sample_count"]),
+            run_id=run_id,
+            data_type="ping",
+        )
+        if not records and diagnostics["files_scanned"]:
+            diagnostics["no_data_reason"] = "NEW_SAMPLES_PENDING"
+        cursor_state = {
+            **context,
+            "offsets": _prune_cursor_offsets(processed_files, offsets),
+            "after_timestamp": (
+                str(records[-1].get("ts") or "")
+                if records
+                else cursor_timestamp
+            ),
+            "after_sequence": (
+                _optional_int(records[-1].get("seq"))
+                if records
+                else cursor_sequence
+            ),
+        }
+        result["has_more"] = has_more
+        self._attach_ping_runtime(
+            result,
+            run_id=run_id,
+            cursor_state=cursor_state,
+        )
+        return result
 
     def ping_samples(
         self,
@@ -244,12 +497,17 @@ class GroundRawStreamQueryService:
         page: int = 1,
         page_size: int = 100,
     ) -> dict[str, Any]:
+        registered_train_id = self._registered_train_id(
+            run_id,
+            train_id,
+            data_type="ping",
+        )
         start, end = self._time_range(
             run_id,
             start_time,
             end_time,
             data_type="ping",
-            train_id=train_id,
+            train_id=registered_train_id,
             mr_id=mr_id,
         )
         diagnostics = _new_diagnostics(run_id, start, end)
@@ -262,7 +520,7 @@ class GroundRawStreamQueryService:
         for item in self._records(
             data_type="ping",
             run_id=run_id,
-            train_id=train_id,
+            train_id=registered_train_id,
             mr_id=mr_id,
             start=start,
             end=end,
@@ -500,6 +758,78 @@ class GroundRawStreamQueryService:
         if len(matches) == 1:
             return matches[0]
         return "" if matches else train_id
+
+    def _initial_ping_cursor(
+        self,
+        *,
+        run_id: str,
+        train_id: str,
+        mr_id: str,
+        target_ip: str,
+        include_warmup: bool,
+    ) -> dict[str, Any]:
+        offsets: dict[str, int] = {}
+        files = self.repository.list_raw_files_for_run(run_id) if run_id else []
+        candidates = [
+            row
+            for row in files
+            if str(row.get("data_type") or "") == "ping"
+            and (not train_id or str(row.get("train_id") or "") == train_id)
+            and (not mr_id or str(row.get("device_uuid") or "") == mr_id)
+            and str(row.get("status") or "") == "OPEN"
+        ][-MAX_CURSOR_FILES:]
+        for row in candidates:
+            path = self._registered_path(str(row.get("relative_path") or ""))
+            if path.is_file():
+                offsets[str(row.get("file_id") or "")] = path.stat().st_size
+        return {
+            "run_id": run_id,
+            "train_id": train_id,
+            "mr_id": mr_id,
+            "target_ip": target_ip,
+            "include_warmup": bool(include_warmup),
+            "offsets": offsets,
+            "after_timestamp": "",
+            "after_sequence": None,
+        }
+
+    def _attach_ping_runtime(
+        self,
+        result: dict[str, Any],
+        *,
+        run_id: str,
+        cursor_state: dict[str, Any],
+    ) -> None:
+        points = list(result.get("points") or [])
+        if points:
+            latest = max(
+                points,
+                key=lambda item: (
+                    str(item.get("ts") or ""),
+                    _optional_int(item.get("seq")) or -1,
+                ),
+            )
+            cursor_state["after_timestamp"] = str(latest.get("ts") or "")
+            cursor_state["after_sequence"] = _optional_int(latest.get("seq"))
+        run = self.repository.get_run(run_id) if run_id else None
+        target_state = str((run or {}).get("state") or "")
+        result.update(
+            {
+                "next_cursor": _encode_ping_cursor(cursor_state),
+                "latest_sequence": _optional_int(
+                    cursor_state.get("after_sequence")
+                ),
+                "latest_timestamp": str(
+                    cursor_state.get("after_timestamp") or ""
+                ),
+                "server_time": datetime.now()
+                .astimezone()
+                .isoformat(timespec="milliseconds"),
+                "active": target_state
+                in {"STARTING", "RUNNING", "PAUSED", "STOPPING"},
+                "target_state": target_state,
+            }
+        )
 
     def _finish_diagnostics(
         self,
@@ -779,17 +1109,15 @@ class GroundRawStreamQueryService:
                     run.get("created_at"),
                 )
             if end is None:
+                terminal = str(run.get("state") or "") in {
+                    "COMPLETED",
+                    "ERROR",
+                }
                 end = _first_time(
                     run.get("actual_ended_at"),
-                    raw_end,
-                    run.get("scheduled_end_at")
-                    if str(run.get("state") or "")
-                    in {"COMPLETED", "ERROR"}
-                    else None,
-                    run.get("updated_at")
-                    if str(run.get("state") or "")
-                    in {"COMPLETED", "ERROR"}
-                    else None,
+                    raw_end if terminal else None,
+                    run.get("scheduled_end_at") if terminal else None,
+                    run.get("updated_at") if terminal else None,
                 )
                 if end is None:
                     end = now
@@ -949,10 +1277,236 @@ def _matches(
     target_ip: str,
 ) -> bool:
     return (
-        (not train_id or str(item.get("train_id") or "") == train_id)
+        (
+            not train_id
+            or train_identity_matches(
+                (train_id,),
+                (str(item.get("train_id") or ""),),
+            )
+        )
         and (not mr_id or str(item.get("mr_id") or "") == mr_id)
         and (not target_ip or str(item.get("target_ip") or "") == target_ip)
     )
+
+
+def _incremental_ping_result(
+    records: list[dict[str, Any]],
+    *,
+    include_warmup: bool,
+    max_points: int,
+    diagnostics: dict[str, Any],
+) -> dict[str, Any]:
+    ordered = sorted(
+        records,
+        key=lambda item: (
+            str(item.get("ts") or ""),
+            _optional_int(item.get("seq")) or -1,
+            str(item.get("sample_id") or ""),
+        ),
+    )
+    effective = sum(not bool(item.get("warmup_ignored")) for item in ordered)
+    ignored = len(ordered) - effective
+    effective_rows = [
+        item for item in ordered if not bool(item.get("warmup_ignored"))
+    ]
+    successful_rows = [item for item in effective_rows if bool(item.get("ok"))]
+    loss_count = len(effective_rows) - len(successful_rows)
+    rtts = [
+        value
+        for item in successful_rows
+        if (value := _optional_float(item.get("rtt_ms"))) is not None
+    ]
+    points = [
+        item
+        for item in ordered
+        if include_warmup or not bool(item.get("warmup_ignored"))
+    ][:max_points]
+    loss_windows: list[dict[str, Any]] = []
+    current_loss: dict[str, Any] | None = None
+    ap_transitions: list[dict[str, Any]] = []
+    position_segments: list[dict[str, Any]] = []
+    previous_position: tuple[str, str, str, str] | None = None
+    for item in points:
+        ignored_sample = bool(item.get("warmup_ignored"))
+        if not ignored_sample and not bool(item.get("ok")):
+            if current_loss is None:
+                current_loss = {
+                    "target_ip": str(item.get("target_ip") or ""),
+                    "train_id": str(item.get("train_id") or ""),
+                    "mr_id": str(item.get("mr_id") or ""),
+                    "mr_name": str(item.get("mr_name") or ""),
+                    "mr_position_code": str(item.get("mr_position_code") or ""),
+                    "started_at": str(item.get("ts") or ""),
+                    "ended_at": str(item.get("ts") or ""),
+                    "loss_count": 0,
+                    "current_ap_name": str(item.get("current_ap_name") or ""),
+                    "station": str(item.get("station") or ""),
+                    "section": str(item.get("section") or ""),
+                    "ap_transition_context": str(
+                        item.get("ap_transition_context") or ""
+                    ),
+                    "position_quality": str(
+                        item.get("position_quality") or "UNKNOWN"
+                    ),
+                }
+            current_loss["ended_at"] = str(item.get("ts") or "")
+            current_loss["loss_count"] = int(current_loss["loss_count"]) + 1
+        elif current_loss is not None:
+            _finish_loss_window(current_loss)
+            loss_windows.append(current_loss)
+            current_loss = None
+        transition = str(item.get("ap_transition_context") or "")
+        if transition:
+            marker = {
+                "ts": str(item.get("ts") or ""),
+                "target_ip": str(item.get("target_ip") or ""),
+                "context": transition,
+                "current_ap_name": str(item.get("current_ap_name") or ""),
+                "station": str(item.get("station") or ""),
+                "section": str(item.get("section") or ""),
+            }
+            if not ap_transitions or ap_transitions[-1] != marker:
+                ap_transitions.append(marker)
+        position = (
+            str(item.get("current_ap_identity") or ""),
+            str(item.get("current_ap_name") or ""),
+            str(item.get("station") or ""),
+            str(item.get("section") or ""),
+        )
+        if position != previous_position:
+            position_segments.append(
+                {
+                    "started_at": str(item.get("ts") or ""),
+                    "target_ip": str(item.get("target_ip") or ""),
+                    "current_ap_identity": position[0],
+                    "current_ap_name": position[1],
+                    "station": position[2],
+                    "section": position[3],
+                    "position_quality": str(
+                        item.get("position_quality") or "UNKNOWN"
+                    ),
+                }
+            )
+            previous_position = position
+    if current_loss is not None:
+        _finish_loss_window(current_loss)
+        loss_windows.append(current_loss)
+    return {
+        "raw_sample_count": len(ordered),
+        "effective_sample_count": effective,
+        "ignored_sample_count": ignored,
+        "success_count": len(successful_rows),
+        "loss_count": loss_count,
+        "rtt_sample_count": len(rtts),
+        "rtt_sum_ms": sum(rtts),
+        "current_rtt_ms": rtts[-1] if rtts else None,
+        "average_rtt_ms": sum(rtts) / len(rtts) if rtts else None,
+        "max_rtt_ms": max(rtts) if rtts else None,
+        "points": points,
+        "loss_windows": loss_windows,
+        "ap_transitions": ap_transitions,
+        "position_segments": position_segments,
+        "diagnostics": diagnostics,
+    }
+
+
+def _after_ping_cursor(
+    item: dict[str, Any],
+    sample_time: datetime,
+    after_timestamp: str,
+    after_sequence: int | None,
+) -> bool:
+    cursor_time = _parse_time(after_timestamp)
+    if cursor_time is None:
+        return True
+    if sample_time > cursor_time:
+        return True
+    if sample_time < cursor_time:
+        return False
+    sequence = _optional_int(item.get("seq"))
+    return (
+        after_sequence is None
+        or sequence is None
+        or sequence > after_sequence
+    )
+
+
+def _encode_ping_cursor(state: dict[str, Any]) -> str:
+    payload = {"v": 1, **state}
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(encoded).decode("ascii").rstrip("=")
+
+
+def _decode_ping_cursor(value: str) -> dict[str, Any]:
+    if not value or len(value) > 20_000:
+        raise GroundRawQueryError(
+            "Ping 增量游标无效",
+            code="RAW_CURSOR_INVALID",
+        )
+    try:
+        padding = "=" * (-len(value) % 4)
+        payload = json.loads(
+            base64.urlsafe_b64decode((value + padding).encode("ascii")).decode(
+                "utf-8"
+            )
+        )
+    except (ValueError, UnicodeError, json.JSONDecodeError) as exc:
+        raise GroundRawQueryError(
+            "Ping 增量游标无效",
+            code="RAW_CURSOR_INVALID",
+        ) from exc
+    if not isinstance(payload, dict) or payload.get("v") != 1:
+        raise GroundRawQueryError(
+            "Ping 增量游标版本无效",
+            code="RAW_CURSOR_INVALID",
+        )
+    payload.pop("v", None)
+    return payload
+
+
+def _prune_cursor_offsets(
+    files: list[dict[str, Any]],
+    offsets: dict[str, int],
+) -> dict[str, int]:
+    ordered_ids = [
+        str(row.get("file_id") or "")
+        for row in sorted(
+            files,
+            key=lambda row: (
+                str(row.get("status") or "") == "OPEN",
+                str(row.get("start_time") or ""),
+            ),
+            reverse=True,
+        )
+    ]
+    return {
+        file_id: offsets[file_id]
+        for file_id in ordered_ids[:MAX_CURSOR_FILES]
+        if file_id in offsets
+    }
+
+
+def _optional_int(value: object) -> int | None:
+    if value in {None, ""}:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_float(value: object) -> float | None:
+    if value in {None, ""}:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _syslog_filter_value(item: dict[str, Any], field: str) -> str:
