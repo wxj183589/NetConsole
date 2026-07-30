@@ -405,9 +405,9 @@ def filter_station_switch_devices(devices: list[Device], database, site_name: st
 
 
 def is_trackside_device_eligible(device: Device) -> bool:
-    """Trackside reads and tasks exclude only explicitly suspended devices."""
+    """Trackside automatic scopes include only current debugging targets."""
 
-    return str(device.operation_status or "").strip().casefold() != "suspended"
+    return str(device.work_scope_status or "").strip().casefold() == "included"
 
 
 def is_trackside_layer2_interface(interface: dict[str, object | None]) -> bool:

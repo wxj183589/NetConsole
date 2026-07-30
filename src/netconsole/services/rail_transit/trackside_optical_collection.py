@@ -58,9 +58,9 @@ TRACKSIDE_MAX_DEVICE_CONCURRENCY_KEY = "trackside_ap/max_device_concurrency"
 TRACKSIDE_MAX_SWITCH_CONCURRENCY_KEY = "trackside_ap/max_switch_concurrency"
 TRACKSIDE_MAX_FIT_AP_CONCURRENCY_KEY = "trackside_ap/max_fit_ap_concurrency"
 UNSUPPORTED_VENDOR_REASON = "vendor_not_supported"
-SUSPENDED_OPERATION_STATUS_REASON = "设备投运状态为暂停使用，已自动排除"
+EXCLUDED_WORK_SCOPE_REASON = "设备当前工作状态为暂不参与，已自动排除"
 IGNORED_SKIPPED_REASONS = frozenset(
-    {"no_station_switches", SUSPENDED_OPERATION_STATUS_REASON}
+    {"no_station_switches", EXCLUDED_WORK_SCOPE_REASON}
 )
 ACTIVE_AC_KEYWORDS = ("active", "master", "primary", "主用", "主控", "主")
 STANDBY_AC_KEYWORDS = ("standby", "backup", "secondary", "备机", "备用", "备")
@@ -468,12 +468,12 @@ def build_station_switch_targets(repository: DeviceRepository, site_name: str, s
             continue
         if group_name != "车站" or not is_switch_device_type(device.device_type):
             continue
-        if _is_suspended_device(device):
+        if _is_excluded_device(device):
             skipped.append(
                 TracksideSkippedTarget(
                     device.name,
                     "SWITCH",
-                    SUSPENDED_OPERATION_STATUS_REASON,
+                    EXCLUDED_WORK_SCOPE_REASON,
                     device.primary_address,
                 )
             )
@@ -532,12 +532,12 @@ def build_trackside_ap_targets(
         if device is None:
             skipped.append(TracksideSkippedTarget(name, "AP", "no_device_connection", str(ap.get("ap_ip") or "")))
             continue
-        if _is_suspended_device(device):
+        if _is_excluded_device(device):
             skipped.append(
                 TracksideSkippedTarget(
                     name,
                     "AP",
-                    SUSPENDED_OPERATION_STATUS_REASON,
+                    EXCLUDED_WORK_SCOPE_REASON,
                     device.primary_address,
                 )
             )
@@ -1046,7 +1046,7 @@ def _collect_fit_ap_optical_subtasks(
         [
             device
             for device in repository.list(vendor="H3C", device_type="AC")
-            if not _is_suspended_device(device)
+            if not _is_excluded_device(device)
         ],
         key=lambda item: rank_ac_device_for_trackside(item, summaries.get(str(item.device_uuid or ""))),
     )
@@ -1360,11 +1360,11 @@ def _collect_one_target(
                     success=True,
                     skipped_reason="设备已不存在，已自动排除",
                 )
-            if _is_suspended_device(current):
+            if _is_excluded_device(current):
                 return TracksideDeviceCollectionResult(
                     target=target,
                     success=True,
-                    skipped_reason=SUSPENDED_OPERATION_STATUS_REASON,
+                    skipped_reason=EXCLUDED_WORK_SCOPE_REASON,
                 )
             current_device = current
         connection = netmiko_connection.ConnectHandler(**build_netmiko_params(choose_connection_target(current_device)))  # type: ignore[arg-type]
@@ -1563,8 +1563,8 @@ def _find_related_device(ap: dict[str, object | None], devices: list[Device]) ->
     return None
 
 
-def _is_suspended_device(device: Device) -> bool:
-    return str(device.operation_status or "").strip().casefold() == "suspended"
+def _is_excluded_device(device: Device) -> bool:
+    return str(device.work_scope_status or "").strip().casefold() == "excluded"
 
 
 def _write_session_meta(path: Path, data: dict[str, object]) -> None:

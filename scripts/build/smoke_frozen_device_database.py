@@ -54,7 +54,7 @@ def main() -> int:
                 "status_code": second["status_code"],
                 "total": second["total"],
                 "project_phase": second["project_phase"],
-                "operation_status": second["operation_status"],
+                "work_scope_status": second["work_scope_status"],
                 "backup_count": len(backups_after_second),
             },
             ensure_ascii=False,
@@ -336,7 +336,7 @@ def _device_list(port: int) -> dict[str, object]:
         "status_code": response.status,
         "total": payload.get("total"),
         "project_phase": item.get("project_phase"),
-        "operation_status": item.get("operation_status"),
+        "work_scope_status": item.get("work_scope_status"),
     }
 
 

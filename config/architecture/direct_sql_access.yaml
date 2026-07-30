@@ -50,7 +50,7 @@
   {"path":"tests/test_ac_management.py","classification":"TEST_ONLY","owner":"test","reason":"AC 测试 fixture。"},
   {"path":"tests/test_agent_controller.py","classification":"TEST_ONLY","owner":"test","reason":"Agent 测试 fixture。"},
   {"path":"tests/test_device_compatibility.py","classification":"TEST_ONLY","owner":"test","reason":"设备兼容性测试只读断言未创建 tasks.db。"},
-  {"path":"tests/test_device_operation_status.py","classification":"TEST_ONLY","owner":"test","reason":"设备状态 schema 迁移测试读取临时备份并校验完整性。"},
+  {"path":"tests/test_device_work_scope_status.py","classification":"TEST_ONLY","owner":"test","reason":"设备当前工作状态 schema 迁移测试读取临时备份并校验完整性。"},
   {"path":"tests/test_device_repository.py","classification":"TEST_ONLY","owner":"test","reason":"设备 Repository 测试准备旧凭据状态并断言幂等修复。"},
   {"path":"tests/test_export_identity_diagnostics.py","classification":"TEST_ONLY","owner":"test","reason":"导出诊断测试 fixture。"},
   {"path":"tests/test_fping_v5.py","classification":"TEST_ONLY","owner":"test","reason":"fping 测试 fixture。"},

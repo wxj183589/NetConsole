@@ -3764,7 +3764,12 @@ def test_device_write_api_returns_structured_primary_address_conflict(
 def test_device_import_api_previews_site_ip_update_and_persists_strategy(
     tmp_path: Path,
 ) -> None:
-    client, _service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+    client, _service, adapter, devices, _facts, mr, _sw = _fixture(tmp_path)
+    devices.update_classification_many(
+        [str(mr.device_uuid)],
+        work_scope_status="excluded",
+        reason="既有一期设备，不纳入二三期调试范围",
+    )
     source = tmp_path / "site-ip-update.csv"
     _write_import_csv(
         source,
@@ -3790,6 +3795,7 @@ def test_device_import_api_previews_site_ip_update_and_persists_strategy(
     assert body["has_hard_errors"] is False
     assert body["rows"][0]["action"] == "UPDATE"
     assert body["rows"][0]["device_id"] == mr.id
+    assert devices.get_by_uuid(str(mr.device_uuid)).work_scope_status == "excluded"
 
     confirmed = client.post(
         "/api/device-management/imports/confirm",
@@ -3799,27 +3805,27 @@ def test_device_import_api_previews_site_ip_update_and_persists_strategy(
     assert confirmed.status_code == 202
     assert adapter.jobs[-1].params["match_strategy"] == "SITE_PRIMARY_IP"
     assert adapter.jobs[-1].params["write_mode"] == "UPDATE_ONLY"
-def test_device_list_defaults_to_in_service_and_supports_lifecycle_filters(
+def test_device_list_defaults_to_included_and_supports_classification_filters(
     tmp_path: Path,
 ) -> None:
     client, _service, _adapter, devices, _facts, mr, sw = _fixture(tmp_path)
     response = client.patch(
-        "/api/device-management/devices/lifecycle",
+        "/api/device-management/devices/classification",
         json={
             "device_uuids": [sw.device_uuid],
             "project_phase": "phase_2",
-            "operation_status": "not_integrated",
-            "reason": "二期暂未并网",
+            "work_scope_status": "excluded",
+            "reason": "暂不参与当前调试",
         },
     )
 
     default_items = client.get("/api/device-management/devices").json()["items"]
     all_items = client.get(
-        "/api/device-management/devices?operation_status=all"
+        "/api/device-management/devices?work_scope_status=all"
     ).json()["items"]
     phase_items = client.get(
         "/api/device-management/devices"
-        "?project_phase=phase_2&operation_status=not_integrated"
+        "?project_phase=phase_2&work_scope_status=excluded"
     ).json()["items"]
 
     assert response.status_code == 200
@@ -3830,7 +3836,7 @@ def test_device_list_defaults_to_in_service_and_supports_lifecycle_filters(
         sw.device_uuid,
     }
     assert [item["device_uuid"] for item in phase_items] == [sw.device_uuid]
-    assert phase_items[0]["operation_status_reason"] == "二期暂未并网"
+    assert phase_items[0]["work_scope_reason"] == "暂不参与当前调试"
     reread = devices.get_by_uuid(str(sw.device_uuid))
     assert reread is not None
     assert reread.primary_address == sw.primary_address
@@ -3842,9 +3848,9 @@ def test_device_list_reports_schema_not_ready_with_safe_diagnostics(
     client, service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
     database = Database(service.paths.site_db_path("demo"))
     with database.connect() as connection:
-        connection.execute("DROP INDEX idx_devices_operation_status")
+        connection.execute("DROP INDEX idx_devices_work_scope_status")
         connection.execute(
-            "ALTER TABLE devices DROP COLUMN operation_status"
+            "ALTER TABLE devices DROP COLUMN work_scope_status"
         )
         connection.commit()
     log_rows: list[tuple[str, str]] = []
@@ -3866,7 +3872,7 @@ def test_device_list_reports_schema_not_ready_with_safe_diagnostics(
         event == "DEVICE_DATABASE_QUERY_FAILED"
         and "sqlite_errorcode=1" in message
         and "sqlite_errorname=SQLITE_ERROR" in message
-        and "missing_columns=operation_status" in message
+        and "missing_columns=work_scope_status" in message
         and "traceback=" in message
         for event, message in log_rows
     )
@@ -3891,22 +3897,28 @@ def test_device_list_reports_busy_without_claiming_database_damage(
     assert "完整性" not in detail["message"]
 
 
-def test_not_integrated_device_can_still_submit_manual_connection_test(
+def test_excluded_device_can_still_submit_manual_connection_test(
     tmp_path: Path,
 ) -> None:
     client, _service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
     changed = client.patch(
-        "/api/device-management/devices/lifecycle",
+        "/api/device-management/devices/classification",
         json={
             "device_uuids": [mr.device_uuid],
-            "operation_status": "not_integrated",
+            "work_scope_status": "excluded",
         },
     )
     started = client.post(
         f"/api/device-management/devices/{mr.device_uuid}/connection-tests",
         json={"protocol": "SSH"},
     )
+    refreshed = client.post(
+        "/api/device-management/devices/batch-refresh-details",
+        json={"device_uuids": [mr.device_uuid]},
+    )
 
     assert changed.status_code == 200
     assert started.status_code == 202
-    assert len(adapter.jobs) == 1
+    assert refreshed.status_code == 202
+    assert refreshed.json()["items"][0]["submission_status"] == "ACCEPTED"
+    assert len(adapter.jobs) == 2

@@ -224,13 +224,13 @@ def test_electron_backend_initializes_legacy_active_site_before_device_query(
         )
     )
     with database.connect() as connection:
-        connection.execute("DROP INDEX idx_devices_operation_status")
+        connection.execute("DROP INDEX idx_devices_work_scope_status")
         connection.execute("DROP INDEX idx_devices_project_phase")
         for column in (
-            "operation_status_updated_by",
-            "operation_status_updated_at",
-            "operation_status_reason",
-            "operation_status",
+            "work_scope_updated_by",
+            "work_scope_updated_at",
+            "work_scope_reason",
+            "work_scope_status",
             "project_phase",
         ):
             connection.execute(f"ALTER TABLE devices DROP COLUMN {column}")
@@ -254,14 +254,14 @@ def test_electron_backend_initializes_legacy_active_site_before_device_query(
     assert response.json()["total"] == 1
     assert response.json()["items"][0]["device_uuid"] == created.device_uuid
     assert response.json()["items"][0]["project_phase"] == "unspecified"
-    assert response.json()["items"][0]["operation_status"] == "in_service"
+    assert response.json()["items"][0]["work_scope_status"] == "included"
 
     backups = sorted(
         (
             paths.site_files_dir(site)
             / "backups"
             / "database-migrations"
-        ).glob("devices-site-*-before-operation-status-*.sqlite")
+        ).glob("devices-site-*-before-work-scope-status-*.sqlite")
     )
     assert len(backups) == 1
 
@@ -283,7 +283,7 @@ def test_electron_backend_initializes_legacy_active_site_before_device_query(
                 paths.site_files_dir(site)
                 / "backups"
                 / "database-migrations"
-            ).glob("devices-site-*-before-operation-status-*.sqlite")
+            ).glob("devices-site-*-before-work-scope-status-*.sqlite")
         )
     ) == 1
 

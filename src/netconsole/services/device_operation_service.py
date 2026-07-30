@@ -9,7 +9,6 @@ from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.device import Device
-from netconsole.models.device import is_device_available_for_manual_debug
 from netconsole.models.device_detail import (
     DeviceCapability,
     DeviceOperationTask,
@@ -155,8 +154,6 @@ class DeviceOperationService:
         device = self.gateway.get_device(device_uuid)
         if device is None:
             raise KeyError(device_uuid)
-        if not is_device_available_for_manual_debug(device):
-            raise ValueError("设备已退役；如需新采集，请先将投运状态改为调试中或在用")
         fact = self.gateway.get_fact(device_uuid)
         platform_facts = self._platform_facts(device, fact)
         if operation_id == DEVICE_SFTP_ENABLE_OPERATION_ID and not platform_facts.software_major:
@@ -348,8 +345,6 @@ def run_device_inventory_refresh(context: JobContext) -> dict[str, object]:
     devices = DeviceRepository(database)
     facts = DeviceFactRepository(database)
     selected = [_require_device(devices, value) for value in values]
-    if any(not is_device_available_for_manual_debug(device) for device in selected):
-        raise ValueError("设备已退役，任务执行前状态复核已拒绝新采集")
     results: list[dict[str, object]] = []
     context.progress("device_detail_collect", 0, len(selected), "正在采集设备详情")
 

@@ -942,12 +942,9 @@ const displayEnumLabels: Record<string, Record<string, string>> = {
     other: '其他',
     unspecified: '未指定',
   },
-  operation_status: {
-    in_service: '在用',
-    not_integrated: '未并网',
-    commissioning: '调试中',
-    suspended: '暂停使用',
-    retired: '已退役',
+  work_scope_status: {
+    included: '参与当前调试',
+    excluded: '暂不参与',
   },
   severity: {
     normal: '正常',
@@ -1163,9 +1160,9 @@ function errorMessage(cause: unknown, fallback: string): string {
                   <el-descriptions-item label="MAC">{{ formatValue(overview.mac_address) }}</el-descriptions-item>
                   <el-descriptions-item label="类型">{{ formatValue(overview.device_type) }}</el-descriptions-item>
                   <el-descriptions-item label="建设阶段">{{ formatEnumeratedValue('project_phase', overview.project_phase) }}</el-descriptions-item>
-                  <el-descriptions-item label="投运状态">{{ formatEnumeratedValue('operation_status', overview.operation_status) }}</el-descriptions-item>
-                  <el-descriptions-item label="状态说明">{{ formatValue(overview.operation_status_reason) }}</el-descriptions-item>
-                  <el-descriptions-item label="状态更新时间">{{ formatTime(overview.operation_status_updated_at) }}</el-descriptions-item>
+                  <el-descriptions-item label="当前工作状态">{{ formatEnumeratedValue('work_scope_status', overview.work_scope_status) }}</el-descriptions-item>
+                  <el-descriptions-item label="当前工作状态说明">{{ formatValue(overview.work_scope_reason) }}</el-descriptions-item>
+                  <el-descriptions-item label="工作状态更新时间">{{ formatTime(overview.work_scope_updated_at) }}</el-descriptions-item>
                   <el-descriptions-item label="站点">{{ formatValue(overview.station) }}</el-descriptions-item>
                   <el-descriptions-item label="位置">{{ formatValue(overview.location) }}</el-descriptions-item>
                   <el-descriptions-item label="连接状态">{{ formatValue(overview.connection_status) }}</el-descriptions-item>

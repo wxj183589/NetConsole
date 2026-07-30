@@ -48,7 +48,7 @@ brief 刷新可在模块仍存在时保留既有 detail 的稳定身份字段；
 - 普通 `device.inventory.collect` 固定执行 Profile v3 的七条只读命令：版本、接口摘要、交换 VLAN 配置、VLAN、光模块摘要和两条 LLDP。默认不追加 `show opticalinfo <interface>`。
 - 轨旁光衰更新对每台 ZTE 设备只建立一个会话，只执行 `show version` 和一次 `show opticalinfo brief`；接口和 LLDP 关系读取数据库已有快照，不在逐行查询时连接设备。
 - 同一局点、同一更新范围的活动任务复用已有 Task ID；设备列表先去重并受控并发，取消任务时关闭当前设备会话。
-- `operation_status=suspended` 的设备在列表、统计、筛选项、导出和任务目标中排除。Worker 在建立 SSH 前再次读取设备状态；若期间变为暂停使用，记录“设备投运状态为暂停使用，已自动排除”并按跳过处理。建设分期和其他非在用状态不被这个规则误排除，恢复投运状态后自动重新进入范围。
+- 轨旁列表、统计、筛选项、导出和自动任务目标只包含 `work_scope_status=included` 的设备。Worker 在建立 SSH 前再次读取设备状态；若期间变为 `excluded`，记录“设备当前工作状态为暂不参与，已自动排除”并按跳过处理。建设分期不直接决定工作范围，改回 `included` 后自动重新进入候选；用户明确发起的手动只读设备操作不受此自动过滤限制。
 
 ## 采样 Artifact
 
