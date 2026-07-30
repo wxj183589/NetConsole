@@ -33,6 +33,7 @@ from netconsole.models.api.ground_unattended import (
     GroundRawFileDTO,
     GroundRawFilePageDTO,
     GroundSyslogHostDTO,
+    GroundSyslogRecordDTO,
     GroundSyslogRecordPageDTO,
     GroundTrainPolicyUpdateDTO,
     GroundTimelineEventDTO,
@@ -119,9 +120,12 @@ class GroundUnattendedApplicationService:
         self.network_service = network_service or SystemNetworkApplicationService()
         self.raw_query = GroundRawStreamQueryService(repository)
         self._ap_display_cache = GroundApDisplayResolver()
+        self._ap_display_base_rows: list[Any] = []
+        self._ap_display_resource_rows: list[Any] = []
         self._ap_display_cache_loaded_at = float("-inf")
         self._ap_display_cache_ttl_seconds = 30.0
         self._ap_display_cache_lock = threading.Lock()
+        self._ap_display_refresh_thread: threading.Thread | None = None
         self.inventory_sync = (
             TrainInventorySyncService(
                 paths,
@@ -1000,10 +1004,17 @@ class GroundUnattendedApplicationService:
                         "parsed_details": details,
                     }
                 )
+            dto_fields = GroundSyslogRecordDTO.model_fields
+            result["items"] = [
+                GroundSyslogRecordDTO.model_validate(
+                    {key: value for key, value in item.items() if key in dto_fields}
+                )
+                for item in result.get("items", [])
+            ]
             return GroundSyslogRecordPageDTO.model_validate(result)
         except GroundRawQueryError as exc:
             raise GroundUnattendedError(
-                "RAW_QUERY_REJECTED", str(exc), status_code=422
+                exc.code, str(exc), status_code=422
             ) from exc
 
     def deep_collections(
@@ -1840,29 +1851,62 @@ class GroundUnattendedApplicationService:
                 < self._ap_display_cache_ttl_seconds
             ):
                 return self._ap_display_cache
-            rows: list[Any] = []
-            resources: list[Any] = []
-            loaded = False
             try:
-                rows = self.base_query.list_ap_location_items(self.site_id)
-                loaded = True
+                self._ap_display_base_rows = list(
+                    self.base_query.list_ap_location_items(self.site_id)
+                )
             except (OSError, ValueError, RuntimeError, sqlite3.Error):
                 pass
-            ac_query = getattr(self.base_query, "ac_query", None)
-            list_details = getattr(ac_query, "list_all_ap_details", None)
-            if callable(list_details):
-                try:
-                    resources = list_details(self.site_id)
-                    loaded = True
-                except (OSError, ValueError, RuntimeError, sqlite3.Error):
-                    pass
-            if loaded:
-                self._ap_display_cache = GroundApDisplayResolver(
-                    rows,
+            self._ap_display_cache = GroundApDisplayResolver(
+                self._ap_display_base_rows,
+                resources=self._ap_display_resource_rows,
+            )
+            self._ap_display_cache_loaded_at = now
+            resolver = self._ap_display_cache
+        self._schedule_ap_display_resource_refresh()
+        return resolver
+
+    def _schedule_ap_display_resource_refresh(self) -> None:
+        if self.base_query is None:
+            return
+        ac_query = getattr(self.base_query, "ac_query", None)
+        list_details = getattr(ac_query, "list_all_ap_details", None)
+        if not callable(list_details):
+            return
+        with self._ap_display_cache_lock:
+            active = self._ap_display_refresh_thread
+            if active is not None and active.is_alive():
+                return
+            thread = threading.Thread(
+                target=self._refresh_ap_display_resources,
+                args=(list_details,),
+                name="ground-ap-display-refresh",
+                daemon=True,
+            )
+            self._ap_display_refresh_thread = thread
+            thread.start()
+
+    def _refresh_ap_display_resources(self, list_details: Any) -> None:
+        resources: list[Any] | None = None
+        try:
+            resources = list(list_details(self.site_id))
+        except Exception:
+            pass
+        resolver: GroundApDisplayResolver | None = None
+        if resources is not None:
+            try:
+                resolver = GroundApDisplayResolver(
+                    self._ap_display_base_rows,
                     resources=resources,
                 )
-            self._ap_display_cache_loaded_at = now
-            return self._ap_display_cache
+            except Exception:
+                pass
+        with self._ap_display_cache_lock:
+            if resources is not None and resolver is not None:
+                self._ap_display_resource_rows = resources
+                self._ap_display_cache = resolver
+                self._ap_display_cache_loaded_at = time.monotonic()
+            self._ap_display_refresh_thread = None
 
     @staticmethod
     def _parse_datetime(value: object) -> datetime | None:

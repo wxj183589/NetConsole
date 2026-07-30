@@ -10,7 +10,7 @@ import {
   openGroundArchiveDirectory, pauseGroundRun, resumeGroundRun, saveGroundProfile, setGroundTrainPriority, startGroundRun,
   stopAndArchiveGroundRun, stopGroundRun, saveGroundTrainPolicy, syncGroundInventory,
   checkGroundUdpPort, listLocalIpv4Addresses, recommendLocalSourceIp,
-  getActiveGroundOperation, getGroundOperation, getGroundPingSeries, listGroundRuns, listGroundSyslogRecords, verifyGroundArchive,
+  getActiveGroundOperation, getGroundOperation, getGroundPingSeries, listGroundRuns, listGroundSyslogRecords, probeGroundSyslogTransportState, verifyGroundArchive,
 } from '../../api/groundUnattended'
 import GroundPingChart from '../../components/ground-unattended/GroundPingChart.vue'
 import { NcDataTable, type NcTableColumn } from '../../components/table'
@@ -57,6 +57,12 @@ const syslogTotal = ref(0)
 const syslogLoading = ref(false)
 const syslogAutoRefresh = ref(true)
 const syslogDiagnostics = ref<GroundQueryDiagnostics | null>(null)
+const syslogTotalExact = ref(true)
+const syslogBackendState = ref<'ONLINE' | 'OFFLINE' | 'UNKNOWN'>('UNKNOWN')
+const syslogRequestId = ref('')
+const syslogLastAttemptAt = ref('')
+const syslogFailureCount = ref(0)
+const syslogErrorCode = ref('')
 const selectedSyslogRecord = ref<GroundSyslogRecord | null>(null)
 const syslogDetailDrawer = ref(false)
 const syslogTimeRange = ref<[Date, Date] | null>(null)
@@ -81,8 +87,11 @@ const timelineFilter = reactive({ query: '', eventType: '' })
 let pollTimer: number | undefined
 let disposed = false
 const requestControllers = new Map<string, AbortController>()
+const requestFingerprints = new Map<string, string>()
+const requestPromises = new Map<string, Promise<boolean>>()
 const requestSequences = new Map<string, number>()
 const requestFailureCounts = new Map<string, number>()
+const requestNotifySequences = new Map<string, number>()
 const lastPollAt = new Map<string, number>()
 const dismissedTerminalOperationIds = new Set<string>()
 let completedOperationTimer: number | undefined
@@ -91,10 +100,16 @@ interface LoadIssue {
   key: string
   label: string
   message: string
+  code?: string
+  requestId?: string
+  attemptedAt?: string
+  backendState?: 'ONLINE' | 'OFFLINE' | 'UNKNOWN'
 }
 
 const loadIssues = ref<LoadIssue[]>([])
-const loadIssueDescription = computed(() => loadIssues.value.map((item) => `${item.label}：${item.message}`).join('；'))
+const generalLoadIssues = computed(() => loadIssues.value.filter((item) => item.key !== 'syslog'))
+const syslogIssue = computed(() => loadIssues.value.find((item) => item.key === 'syslog') ?? null)
+const loadIssueDescription = computed(() => generalLoadIssues.value.map((item) => `${item.label}：${item.message}`).join('；'))
 const profileLoadError = computed(() => loadIssues.value.find((item) => item.key === 'profile')?.message || '')
 
 const running = computed(() => Boolean(status.value && ['STARTING', 'RUNNING', 'PAUSED', 'STOPPING', 'FINALIZING', 'ARCHIVING'].includes(status.value.state)))
@@ -248,30 +263,76 @@ async function latestRequest<T>(
   request: (signal: AbortSignal) => Promise<T>,
   apply: (value: T) => void,
   silent = true,
+  fingerprint = '',
+  mapError?: (reason: unknown) => Promise<LoadIssue>,
 ): Promise<boolean> {
-  requestControllers.get(key)?.abort()
+  const current = requestPromises.get(key)
+  const currentController = requestControllers.get(key)
+  if (
+    fingerprint
+    && current
+    && currentController
+    && !currentController.signal.aborted
+    && requestFingerprints.get(key) === fingerprint
+  ) {
+    if (!silent) {
+      requestNotifySequences.set(key, requestSequences.get(key) ?? 0)
+    }
+    return current
+  }
+  if (current) currentController?.abort()
   const controller = new AbortController()
   requestControllers.set(key, controller)
+  requestFingerprints.set(key, fingerprint)
   const sequence = (requestSequences.get(key) ?? 0) + 1
   requestSequences.set(key, sequence)
-  try {
-    const value = await request(controller.signal)
-    if (disposed || controller.signal.aborted || requestSequences.get(key) !== sequence) return false
-    apply(value)
-    requestFailureCounts.set(key, 0)
-    loadIssues.value = loadIssues.value.filter((item) => item.key !== key)
-    return true
-  } catch (reason) {
-    if (reason instanceof Error && reason.name === 'AbortError') return false
-    if (requestSequences.get(key) !== sequence) return false
-    requestFailureCounts.set(key, (requestFailureCounts.get(key) ?? 0) + 1)
-    const issue = { key, label, message: errorText(reason, '请求失败') }
-    loadIssues.value = [...loadIssues.value.filter((item) => item.key !== key), issue]
-    if (!silent) ElMessage.error(`${label}加载失败：${issue.message}`)
-    return false
-  } finally {
-    if (requestControllers.get(key) === controller) requestControllers.delete(key)
-  }
+  if (!silent) requestNotifySequences.set(key, sequence)
+  let promise!: Promise<boolean>
+  promise = (async () => {
+    try {
+      const value = await request(controller.signal)
+      if (disposed || controller.signal.aborted || requestSequences.get(key) !== sequence) return false
+      apply(value)
+      requestFailureCounts.set(key, 0)
+      loadIssues.value = loadIssues.value.filter((item) => item.key !== key)
+      return true
+    } catch (reason) {
+      if (reason instanceof Error && reason.name === 'AbortError') return false
+      if (requestSequences.get(key) !== sequence) return false
+      requestFailureCounts.set(key, (requestFailureCounts.get(key) ?? 0) + 1)
+      const issue = mapError
+        ? await mapError(reason)
+        : { key, label, message: errorText(reason, '请求失败') }
+      if (
+        disposed
+        || controller.signal.aborted
+        || requestSequences.get(key) !== sequence
+      ) return false
+      if (key === 'syslog') {
+        syslogBackendState.value = issue.backendState ?? 'UNKNOWN'
+        syslogRequestId.value = issue.requestId ?? ''
+        syslogErrorCode.value = issue.code ?? 'UNKNOWN_ERROR'
+        syslogFailureCount.value += 1
+      }
+      loadIssues.value = [...loadIssues.value.filter((item) => item.key !== key), issue]
+      if (!silent || requestNotifySequences.get(key) === sequence) {
+        ElMessage.error(`${label}加载失败：${issue.message}`)
+      }
+      return false
+    } finally {
+      if (requestControllers.get(key) === controller) requestControllers.delete(key)
+      window.setTimeout(() => {
+        if (requestPromises.get(key) === promise) {
+          requestPromises.delete(key)
+          if (requestNotifySequences.get(key) === sequence) {
+            requestNotifySequences.delete(key)
+          }
+        }
+      }, 0)
+    }
+  })()
+  requestPromises.set(key, promise)
+  return promise
 }
 const loadStatus = (silent = true) => latestRequest('status', '运行状态', (signal) => getGroundStatus({ signal }), (value) => {
   status.value = value
@@ -398,6 +459,9 @@ function schedulePoll(): void {
         else if (activeTab.value === 'trains') pollDue('trains', 8_000, () => loadTrains())
         else if (activeTab.value === 'ping') pollDue('ping', 8_000, () => loadPingTargets())
         else if (activeTab.value === 'syslog' && syslogAutoRefresh.value && !historicalRun.value) pollDue('syslog', 8_000, () => loadSyslog(true))
+      }
+      if (activeTab.value === 'syslog' && syslogAutoRefresh.value && historicalRun.value) {
+        pollDue('syslog', 30_000, () => loadSyslog(true))
       }
       if (activeTab.value === 'ping' && pingDialog.value && selectedPingTarget.value && pingAutoRefresh.value && !selectedPingHistorical.value) {
         pollDue('ping-series', 8_000, () => showPingSeries(selectedPingTarget.value!, true))
@@ -555,7 +619,7 @@ async function showPingSeries(row: GroundPingTarget, silent = false): Promise<vo
 async function loadSyslog(silent = false): Promise<void> {
   if (!silent) syslogLoading.value = true
   const [startValue, endValue] = syslogTimeRange.value || []
-  await latestRequest('syslog', 'Syslog 日志', (signal) => listGroundSyslogRecords({
+  const params = {
       run_id: selectedRunId.value || undefined,
       train_id: syslogFilter.trainId,
       mr_name: syslogFilter.mrName,
@@ -573,12 +637,51 @@ async function loadSyslog(silent = false): Promise<void> {
       end_time: endValue?.toISOString(),
       page: syslogFilter.page,
       page_size: syslogFilter.pageSize,
-    }, { signal }), (result) => {
+    }
+  const fingerprint = JSON.stringify(params)
+  const hadIssue = loadIssues.value.some((item) => item.key === 'syslog')
+  let recovered = false
+  const succeeded = await latestRequest('syslog', 'Syslog 日志', (signal) => {
+    syslogLastAttemptAt.value = new Date().toISOString()
+    return listGroundSyslogRecords(params, { signal })
+  }, (result) => {
     syslogRecords.value = result.items
     syslogTotal.value = result.total
+    syslogTotalExact.value = result.total_exact ?? true
     syslogDiagnostics.value = result.diagnostics ?? null
-  }, silent)
+    syslogBackendState.value = 'ONLINE'
+    syslogRequestId.value = ''
+    syslogErrorCode.value = ''
+    syslogFailureCount.value = 0
+    recovered = hadIssue
+  }, silent, fingerprint, mapSyslogLoadIssue)
+  if (succeeded && recovered) ElMessage.success(t('ground.syslog.recovered', 'Syslog 日志已恢复'))
   if (!silent) syslogLoading.value = false
+}
+async function mapSyslogLoadIssue(reason: unknown): Promise<LoadIssue> {
+  const attemptedAt = syslogLastAttemptAt.value
+  const transport = await probeGroundSyslogTransportState(reason)
+  const message = transport.code === 'BACKEND_UNREACHABLE'
+    ? t('ground.syslog.backend_unreachable', '无法连接本机 Backend，请重试或查看 Backend 日志。')
+    : transport.backendState === 'ONLINE' && transport.code === 'RAW_QUERY_TIMEOUT'
+    ? t('ground.syslog.timeout_online', 'Syslog 查询超时，Backend 仍在线，请缩小时间范围或增加筛选条件后重试。')
+    : transport.backendState === 'ONLINE' && transport.code === 'BACKEND_RESTARTED'
+    ? t('ground.syslog.restarted_online', 'Syslog 查询期间 Backend 发生重启，当前已恢复在线，请重试。')
+    : transport.backendState === 'ONLINE' && ['BACKEND_CONNECTION_INTERRUPTED', 'CONNECTION_RESET'].includes(transport.code)
+    ? t('ground.syslog.connection_interrupted_online', 'Syslog 查询连接中断，Backend 仍在线，请重试。')
+    : errorText(reason, '请求失败')
+  return {
+    key: 'syslog',
+    label: 'Syslog 日志',
+    message,
+    code: transport.code,
+    requestId: transport.requestId,
+    attemptedAt,
+    backendState: transport.backendState,
+  }
+}
+function openBackendLogs(): void {
+  void router.push({ name: 'logs', query: { keyword: syslogRequestId.value || 'GROUND_SYSLOG_QUERY' } })
 }
 function showSyslogRecord(row: GroundSyslogRecord): void {
   selectedSyslogRecord.value = row
@@ -714,6 +817,8 @@ function statusType(value: string): 'success' | 'warning' | 'danger' | 'info' | 
 function abortRequests(): void {
   requestControllers.forEach((controller) => controller.abort())
   requestControllers.clear()
+  requestFingerprints.clear()
+  requestNotifySequences.clear()
 }
 function handleVisibilityChange(): void {
   if (document.hidden) abortRequests()
@@ -745,14 +850,15 @@ watch(activeTab, () => {
   requestControllers.forEach((controller, key) => {
     if (!['status', 'operation'].includes(key)) controller.abort()
   })
-  void loadActiveTab(false)
+  void loadActiveTab(true)
 })
 watch(selectedRunId, () => {
   selectedPingTarget.value = null
   pingSeries.value = null
   syslogRecords.value = []
   syslogFilter.page = 1
-  if (runScopedTab.value) void loadActiveTab(false)
+  if (historicalRun.value) syslogAutoRefresh.value = false
+  if (runScopedTab.value) void loadActiveTab(true)
 })
 onBeforeUnmount(() => {
   disposed = true
@@ -800,7 +906,7 @@ onBeforeUnmount(() => {
       <small>操作编号 {{ visibleOperation.operation_id }} · 最后更新 {{ visibleOperation.updated_at }}</small>
     </section>
 
-    <section v-if="loadIssues.length" class="load-warning">
+    <section v-if="generalLoadIssues.length" class="load-warning">
       <el-alert
         title="地面无人值守部分数据未加载"
         :description="loadIssueDescription"
@@ -936,17 +1042,45 @@ onBeforeUnmount(() => {
           </el-select>
           <el-input v-model="syslogFilter.keyword" clearable placeholder="原始内容关键字" />
           <el-date-picker v-model="syslogTimeRange" type="datetimerange" start-placeholder="开始时间" end-placeholder="结束时间" />
-          <el-checkbox v-model="syslogAutoRefresh" :disabled="historicalRun">自动刷新</el-checkbox>
+          <el-checkbox v-model="syslogAutoRefresh">自动刷新{{ historicalRun ? t('ground.syslog.auto_refresh_30', '（30 秒）') : '' }}</el-checkbox>
           <el-button :icon="Refresh" :loading="syslogLoading" @click="syslogFilter.page = 1; loadSyslog()">查询</el-button>
         </div>
+        <section v-if="syslogIssue" class="syslog-failure">
+          <el-alert
+            :title="t('ground.syslog.failure_title', 'Syslog 日志暂时无法加载')"
+            :description="syslogIssue.message"
+            type="error"
+            :closable="false"
+            show-icon
+          />
+          <div class="coverage-strip">
+            <span>{{ t('ground.syslog.backend_status', 'Backend 状态') }} <b>{{ groundStatusLabel(syslogBackendState) }}</b></span>
+            <span>{{ t('ground.syslog.error_type', '错误类型') }} <b>{{ syslogErrorCode || 'UNKNOWN_ERROR' }}</b></span>
+            <span>{{ t('ground.syslog.failure_count', '失败次数') }} <b>{{ syslogFailureCount }}</b></span>
+            <span>{{ t('ground.syslog.last_attempt', '最近尝试') }} <b>{{ syslogLastAttemptAt || '—' }}</b></span>
+            <span v-if="syslogRequestId">{{ t('ground.syslog.request_id', '请求编号') }} <b>{{ syslogRequestId }}</b></span>
+          </div>
+          <div class="row-actions">
+            <el-button :icon="Refresh" :loading="syslogLoading" type="primary" @click="loadSyslog()">{{ t('ground.syslog.retry', '重新查询') }}</el-button>
+            <el-button @click="openBackendLogs">{{ t('ground.syslog.open_backend_logs', '查看 Backend 日志') }}</el-button>
+          </div>
+        </section>
+        <el-alert
+          v-else-if="syslogDiagnostics?.truncated"
+          :title="t('ground.syslog.truncated', '日志量较大，本次已返回最近的数据。请设置时间范围或增加筛选条件。')"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
         <div v-if="syslogDiagnostics" class="coverage-strip">
           <span>数据来源 <b>{{ groundSourceLabel(syslogDiagnostics.source_kind) }}</b></span>
           <span>可用性 <b>{{ groundStatusLabel(syslogDiagnostics.data_availability) }}</b></span>
           <span>扫描文件 <b>{{ syslogDiagnostics.files_scanned }}</b></span>
           <span>扫描记录 <b>{{ syslogDiagnostics.records_scanned }}</b></span>
-          <span>匹配记录 <b>{{ syslogTotal }}</b></span>
+          <span>匹配记录 <b>{{ syslogTotal }}{{ syslogTotalExact ? '' : '+' }}</b></span>
           <span>接收器 <b>{{ health?.udp_running ? '正在监听' : '未监听' }}</b></span>
           <span v-if="syslogDiagnostics.truncated">查询预算已截断</span>
+          <span v-if="syslogDiagnostics.optimized_latest_page">首屏最新优先</span>
           <span v-if="syslogDiagnostics.no_data_reason">{{ groundStatusLabel(syslogDiagnostics.no_data_reason) }}</span>
         </div>
         <div class="table-frame"><NcDataTable :data="syslogRecords" :columns="syslogColumns" table-id="ground-syslog" route-key="rail-ground-unattended" row-key="global_receive_sequence" compact>

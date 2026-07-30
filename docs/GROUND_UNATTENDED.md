@@ -144,9 +144,10 @@ AP 切换上下文，历史查询不会把当前 AP 回填到旧样本。
 单次最多 7 天，图表点数默认 3000、最多 10000。
 
 后端先按 `run_id/data_type/train_id/device_uuid/mr_role/start_time/end_time` 在 Repository 预筛文件，
-再逐行读取并优先保留丢包点。单次最多 256 个文件、1,000,000 条扫描记录、256 MiB 解压/读取字节和
-12 秒处理预算，达到预算返回 `truncated` 和扫描诊断；逐包和 Syslog 分页仅保留当前请求页所需的有界
-最新记录，不把全天原始流一次加载到前端、进程内存或 SQLite。
+再逐行读取并优先保留丢包点。Ping 原始查询沿用最多 256 个文件、1,000,000 条扫描记录、256 MiB
+解压/读取字节和 12 秒处理预算；Syslog 列表使用更严格的交互预算，达到预算返回 `truncated` 和扫描
+诊断。逐包和 Syslog 分页仅保留当前请求页所需的有界最新记录，不把全天原始流一次加载到前端、进程
+内存或 SQLite。
 
 ## 第一阶段实时采集基础
 
@@ -352,6 +353,22 @@ ZIP 失败保留、Repository 故障隔离、API 空态和前端七页签。第�
 AP 展示、持久化停止操作、同 IP 端口冲突只读保护，以及不执行 `save/undo` 的 Syslog Profile。
 规模门覆盖 50,000 条 READY ZIP Ping、500,000 条 active Ping、100,000 条 Syslog、36 台 MR/30 天
 Registry；前端假时钟覆盖 30 分钟页面轮询、10 分钟 Syslog 自动刷新和 100 次图表开关。
+
+Syslog 列表使用独立交互预算：最多 128 个候选文件、250,000 条记录、128MB 和 8 秒。无记录级筛选的
+首屏按 Registry 结束时间从新到旧读取；当已取得所需页且下一个文件可证明更旧时提前结束，返回
+`total_exact=false` 与 `diagnostics.optimized_latest_page=true`，总数使用本次候选文件登记值。旧记录缺少
+WMESH 字段时，无解析字段筛选只对最终返回页解析；`event_type` 或 AP 名称/MAC 筛选才在预算内逐条解析。
+单一 ACTIVE 或 ARCHIVE 查询不维护全局哈希集合；只有 MIXED 查询使用最多 250,000 个稳定去重键。
+列车筛选复用统一列车身份归一化，兼容历史 Registry 中的 `_07` 与记录、页面中的“列车07”等同车异名。
+
+Syslog 响应在 Application Service 显式投影 `GroundSyslogRecordDTO`，原始记录中的内部字节、局点 ID 和
+设备数据库 ID 不进入 API。Router 为每次请求生成 `request_id`，记录开始、完成、失败、扫描量、来源、
+截断和耗时；未知异常保存 traceback，向前端返回不含物理路径或堆栈的稳定 500，Backend 不退出。
+公共 API Client 分开标记连接中断、连接重置、超时、Backend 重启、响应体读取失败、非法 JSON 和 HTTP
+错误。Syslog 网络错误会立即复核 `/api/health`：复核成功显示查询连接中断但 Backend 在线，复核失败
+才显示 Backend 无法连接。相同查询 fingerprint 复用在途请求，参数变化才取消；初次和自动加载只显示
+页内错误，手动查询失败只 Toast 一次，恢复后清除错误并提示一次。历史运行默认关闭自动刷新，用户手动
+开启时最小间隔为 30 秒。
 `vue-tsc`、定向 Vitest、Electron 测试/类型检查和 Web/Main production build 作为提交门。
 
 已完成一台 H3C MR 的 10 分钟真实 UDP 单机验证：Comware 省略默认 enable/514 配置文本时只读复查为

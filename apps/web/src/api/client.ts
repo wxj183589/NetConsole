@@ -17,6 +17,7 @@ import {
   resolveApiUrl,
   resolveFrontendAssetUrl,
 } from '../platform/runtime'
+import { t } from '../i18n/runtime'
 
 const DESKTOP_SESSION_HEADER = 'X-NetConsole-Session'
 
@@ -24,6 +25,58 @@ export class ApiRequestError extends Error {
   constructor(message: string, readonly status: number, readonly code = '', readonly details: Record<string, unknown> = {}) {
     super(message)
     this.name = 'ApiRequestError'
+  }
+}
+
+async function readJsonResponse<T>(
+  response: Response,
+  path: string,
+  errorCode: 'HTTP_ERROR' | 'INVALID_JSON_RESPONSE',
+): Promise<T> {
+  if (typeof response.text !== 'function') {
+    try {
+      return await response.json() as T
+    } catch (cause) {
+      throw new ApiRequestError(
+        response.ok
+          ? t('api.backend_incomplete', 'Backend 返回内容不完整，请重试。')
+          : `${t('api.request_failed', '请求失败')} (${response.status})`,
+        response.status,
+        response.ok ? errorCode : 'HTTP_ERROR',
+        {
+          path,
+          response_error: cause instanceof Error ? cause.message : String(cause),
+        },
+      )
+    }
+  }
+  let text: string
+  try {
+    text = await response.text()
+  } catch (cause) {
+    console.error('API_RESPONSE_BODY_FAILED', {
+      path,
+      status: response.status,
+      error: cause instanceof Error ? cause.message : String(cause),
+    })
+    throw new ApiRequestError(
+      t('api.backend_body_interrupted', 'Backend 返回内容读取中断，请重试。'),
+      response.status,
+      'RESPONSE_BODY_FAILED',
+      { path },
+    )
+  }
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    throw new ApiRequestError(
+      response.ok
+        ? t('api.backend_incomplete', 'Backend 返回内容不完整，请重试。')
+        : `${t('api.request_failed', '请求失败')} (${response.status})`,
+      response.status,
+      errorCode,
+      { path },
+    )
   }
 }
 
@@ -42,37 +95,64 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
       credentials: options.credentials ?? (runtime.hostType === 'electron' ? 'include' : 'same-origin'),
     })
   } catch (cause) {
-    if (cause instanceof Error && cause.name === 'AbortError') throw cause
+    if (cause instanceof Error && cause.name === 'AbortError') {
+      const aborted = new ApiRequestError(
+        t('api.request_cancelled', '请求已取消'),
+        0,
+        'REQUEST_ABORTED',
+        { path },
+      )
+      aborted.name = 'AbortError'
+      throw aborted
+    }
     console.error('API_REQUEST_NETWORK_FAILED', {
       path,
       error: cause instanceof Error ? cause.message : String(cause),
     })
+    const networkMessage = cause instanceof Error ? cause.message : String(cause)
+    const code = /backend restart|process exited/i.test(networkMessage)
+      ? 'BACKEND_RESTARTED'
+      : /timeout|timed out/i.test(networkMessage)
+      ? 'RAW_QUERY_TIMEOUT'
+      : /connection reset|econnreset|socket hang up/i.test(networkMessage)
+      ? 'CONNECTION_RESET'
+      : 'BACKEND_CONNECTION_INTERRUPTED'
     throw new ApiRequestError(
-      '无法连接本机 Backend，请重试或查看 Backend 日志。',
+      t('api.backend_connection_interrupted', 'Backend 连接中断，请重试。'),
       0,
-      'BACKEND_UNREACHABLE',
-      { path },
+      code,
+      {
+        path,
+        network_error: networkMessage,
+      },
     )
   }
   if (!response.ok) {
-    let message = `请求失败 (${response.status})`
+    let message = `${t('api.request_failed', '请求失败')} (${response.status})`
     let code = ''
     let details: Record<string, unknown> = {}
     try {
-      const body = (await response.json()) as {
+      const body = await readJsonResponse<{
         detail?: string | { code?: string; message?: string; details?: Record<string, unknown> }
         error?: { code?: string; message?: string; details?: Record<string, unknown> }
-      }
+      }>(response, path, 'HTTP_ERROR')
       const detail = typeof body.detail === 'string' ? null : body.detail
       message = typeof body.detail === 'string' ? body.detail : detail?.message || body.error?.message || message
       code = detail?.code || body.error?.code || ''
       details = detail?.details || body.error?.details || {}
-    } catch {
-      // 保留稳定的 HTTP 状态错误。
+    } catch (reason) {
+      if (reason instanceof ApiRequestError) {
+        message = reason.message
+        code = reason.code
+        details = reason.details
+      }
     }
-    throw new ApiRequestError(message, response.status, code, details)
+    throw new ApiRequestError(message, response.status, code || 'HTTP_ERROR', {
+      ...details,
+      request_id: details.request_id || response.headers?.get?.('X-Request-ID') || '',
+    })
   }
-  return (await response.json()) as T
+  return readJsonResponse<T>(response, path, 'INVALID_JSON_RESPONSE')
 }
 
 export function getHealth(): Promise<HealthResponse> {

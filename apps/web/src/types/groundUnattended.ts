@@ -123,8 +123,8 @@ export interface GroundPingSample {
 export interface GroundQueryDiagnostics {
   requested_run_id: string; resolved_start_time: string; resolved_end_time: string
   source_kind: 'ACTIVE' | 'ARCHIVE' | 'MIXED' | 'NONE'; data_availability: GroundDataAvailability
-  files_considered: number; files_scanned: number; records_scanned: number; bytes_scanned: number
-  malformed_record_count: number; duplicate_record_count: number; truncated: boolean; legacy_archive: boolean; no_data_reason: string
+  files_considered: number; files_scanned: number; registered_record_count?: number; records_scanned: number; bytes_scanned: number
+  malformed_record_count: number; duplicate_record_count: number; truncated: boolean; optimized_latest_page?: boolean; legacy_archive: boolean; no_data_reason: string
 }
 export interface GroundPingSeries {
   raw_sample_count: number; effective_sample_count: number; ignored_sample_count: number; points: GroundPingSample[]
@@ -143,7 +143,7 @@ export interface GroundSyslogRecord {
   previous_rssi: number | null; reason_code: string; reason_text: string; resolution_status: string
   parsed_details: Record<string, unknown>
 }
-export interface GroundPagedResult<T> extends GroundPage<T> { page: number; page_size: number; diagnostics?: GroundQueryDiagnostics }
+export interface GroundPagedResult<T> extends GroundPage<T> { total_exact?: boolean; page: number; page_size: number; diagnostics?: GroundQueryDiagnostics }
 export interface GroundPage<T> { items: T[]; total: number }
 export interface GroundInventorySummary {
   site_id: string; discovered_train_count: number; complete_train_count: number; ct_only_count: number; cw_only_count: number

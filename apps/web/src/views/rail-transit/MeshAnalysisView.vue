@@ -15,6 +15,7 @@ import {
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowDown, ArrowRight, Delete, Document, Download, FullScreen, Hide, Lock, Refresh, Unlock, View } from '@element-plus/icons-vue'
+import { t } from '../../i18n/runtime'
 
 import MeshChannelBusyChart from '../../components/mesh-analysis/MeshChannelBusyChart.vue'
 import MeshRssiChart from '../../components/mesh-analysis/MeshRssiChart.vue'
@@ -1750,10 +1751,21 @@ async function prepareImportContext(): Promise<void> {
 
 function meshImportContextErrorMessage(reason: unknown): string {
   if (
-    (reason instanceof ApiRequestError && reason.code === 'BACKEND_UNREACHABLE')
+    (
+      reason instanceof ApiRequestError
+      && [
+        'BACKEND_UNREACHABLE',
+        'BACKEND_CONNECTION_INTERRUPTED',
+        'CONNECTION_RESET',
+        'BACKEND_RESTARTED',
+      ].includes(reason.code)
+    )
     || (reason instanceof TypeError && /failed to fetch/i.test(reason.message))
   ) {
-    return '无法连接本机 Backend，导入上下文未完成。现有内部归属仍可继续使用，请重试或查看 Backend 日志。'
+    return t(
+      'mesh.import.backend_interrupted',
+      'Backend 连接中断，导入上下文未完成。现有内部归属仍可继续使用，请重试或查看 Backend 日志。',
+    )
   }
   if (reason instanceof ApiRequestError && reason.code) return `${reason.message}（${reason.code}）`
   return reason instanceof Error ? reason.message : '车载 MR 与内部 MESH 归属同步失败'

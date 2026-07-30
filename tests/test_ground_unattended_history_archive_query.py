@@ -430,6 +430,9 @@ def test_legacy_syslog_is_enriched_at_read_time_without_modifying_ndjson(
         "receive_time": "2026-07-25T08:00:00+08:00",
         "source_ip": "192.0.2.10",
         "raw_text": raw_text,
+        "raw_bytes_base64": "c2Vuc2l0aXZlLWludGVybmFsLWJ5dGVz",
+        "site_id": "internal-site-id",
+        "device_id": 42,
         "train_id": "train-1",
         "device_uuid": "mr-ct",
         "mr_role": "CT",
@@ -492,9 +495,72 @@ def test_legacy_syslog_is_enriched_at_read_time_without_modifying_ndjson(
     assert item.raw_file_id == "raw-syslog-legacy"
     assert item.raw_line_number == 1
     assert item.data_source == "ACTIVE"
+    assert {
+        "raw_bytes_base64",
+        "site_id",
+        "device_id",
+    }.isdisjoint(item.model_dump())
     assert result.diagnostics.source_kind == "ACTIVE"
     assert result.diagnostics.data_availability == "ACTIVE_RAW"
     assert raw_path.read_bytes() == original
+
+
+def test_regular_archive_query_skips_full_archive_hash(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths, repository, run_id = _setup_run(tmp_path)
+    raw_path = (
+        paths.ground_unattended_active_dir("site-a", "2026-07-25")
+        / "realtime"
+        / "syslog"
+        / "archived.ndjson"
+    )
+    record = {
+        "global_receive_sequence": 1,
+        "receive_time": "2026-07-25T08:00:00+08:00",
+        "event_type": "MESH_LINKUP",
+        "raw_text": "WMESH LINKUP",
+    }
+    payload = json.dumps(record).encode("utf-8") + b"\n"
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_path.write_bytes(payload)
+    repository.upsert_raw_file(
+        {
+            "file_id": "raw-archive-lightweight",
+            "run_id": run_id,
+            "data_type": "syslog",
+            "relative_path": raw_path.relative_to(
+                repository.db_path.parent
+            ).as_posix(),
+            "start_time": record["receive_time"],
+            "end_time": record["receive_time"],
+            "record_count": 1,
+            "size_bytes": len(payload),
+            "status": "CLOSED",
+            "archive_status": "ARCHIVED",
+        }
+    )
+    archive_path = (
+        paths.ground_unattended_archives_dir("site-a") / "lightweight.zip"
+    )
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("realtime/syslog/archived.ndjson", payload)
+    raw_path.unlink()
+    _register_archive(repository, archive_path, run_id=run_id)
+
+    def reject_full_hash(_path: Path) -> str:
+        raise AssertionError("regular query must not hash the whole archive")
+
+    monkeypatch.setattr(
+        "netconsole.services.ground_unattended.archive_reader._sha256",
+        reject_full_hash,
+    )
+
+    result = GroundRawStreamQueryService(repository).syslog_records(run_id=run_id)
+
+    assert result["total"] == 1
+    assert result["items"][0]["data_source"] == "ARCHIVE"
 
 
 def _setup_run(

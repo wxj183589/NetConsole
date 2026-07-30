@@ -45,7 +45,7 @@ class GroundArchiveReader:
         self.root = repository.db_path.parent.resolve()
         self.archives_root = (self.root / "archives").resolve()
         self._inspection_cache: dict[
-            tuple[str, int, int, str], GroundArchiveInspection
+            tuple[str, int, int, str, bool], GroundArchiveInspection
         ] = {}
 
     def inspect_archive(
@@ -53,6 +53,7 @@ class GroundArchiveReader:
         archive_id: str,
         *,
         force: bool = False,
+        full_integrity: bool = True,
     ) -> GroundArchiveInspection:
         row = self.repository.get_archive(archive_id)
         if row is None:
@@ -65,22 +66,31 @@ class GroundArchiveReader:
         if expected_size and file_stat.st_size != expected_size:
             raise GroundArchiveReadError("归档文件大小与登记值不一致")
         expected_sha = str(row.get("sha256") or "").casefold()
-        cache_key = (str(path), file_stat.st_size, file_stat.st_mtime_ns, expected_sha)
+        cache_key = (
+            str(path),
+            file_stat.st_size,
+            file_stat.st_mtime_ns,
+            expected_sha,
+            full_integrity,
+        )
         if not force and cache_key in self._inspection_cache:
             return self._inspection_cache[cache_key]
 
-        actual_sha = _sha256(path)
-        if expected_sha and actual_sha.casefold() != expected_sha:
-            raise GroundArchiveReadError("归档文件 SHA-256 与登记值不一致")
+        actual_sha = expected_sha
+        if full_integrity:
+            actual_sha = _sha256(path)
+            if expected_sha and actual_sha.casefold() != expected_sha:
+                raise GroundArchiveReadError("归档文件 SHA-256 与登记值不一致")
         try:
             with zipfile.ZipFile(path, "r") as archive:
                 infos = archive.infolist()
                 self._validate_infos(infos)
-                bad_member = archive.testzip()
-                if bad_member is not None:
-                    raise GroundArchiveReadError(
-                        f"归档成员 CRC 校验失败：{bad_member}"
-                    )
+                if full_integrity:
+                    bad_member = archive.testzip()
+                    if bad_member is not None:
+                        raise GroundArchiveReadError(
+                            f"归档成员 CRC 校验失败：{bad_member}"
+                        )
                 names = {info.filename for info in infos if not info.is_dir()}
                 legacy = MANIFEST_NAME not in names
                 manifest: dict[str, Any] = {}
@@ -125,14 +135,15 @@ class GroundArchiveReader:
                                 f"归档 manifest 成员不存在：{name}"
                             )
                         manifest_files[name] = item
-                    for name, item in manifest_files.items():
-                        expected_member_sha = str(item.get("sha256") or "")
-                        if expected_member_sha and _zip_member_sha256(
-                            archive, name
-                        ) != expected_member_sha:
-                            raise GroundArchiveReadError(
-                                f"归档成员 SHA-256 校验失败：{name}"
-                            )
+                    if full_integrity:
+                        for name, item in manifest_files.items():
+                            expected_member_sha = str(item.get("sha256") or "")
+                            if expected_member_sha and _zip_member_sha256(
+                                archive, name
+                            ) != expected_member_sha:
+                                raise GroundArchiveReadError(
+                                    f"归档成员 SHA-256 校验失败：{name}"
+                                )
                 registered_by_entry: dict[str, dict[str, Any]] = {}
                 for registered in self.repository.list_raw_files_for_run(
                     str(row.get("run_id") or "")
@@ -200,14 +211,20 @@ class GroundArchiveReader:
                 timespec="milliseconds"
             ),
         )
-        self._inspection_cache = {cache_key: inspection}
+        self._inspection_cache[cache_key] = inspection
+        while len(self._inspection_cache) > 16:
+            self._inspection_cache.pop(next(iter(self._inspection_cache)))
         return inspection
 
-    def inspect_run(self, run_id: str) -> GroundArchiveInspection | None:
+    def inspect_run(
+        self, run_id: str, *, full_integrity: bool = True
+    ) -> GroundArchiveInspection | None:
         row = self.repository.get_archive_by_run(run_id)
         if row is None or str(row.get("archive_status") or "") != "READY":
             return None
-        return self.inspect_archive(str(row["archive_id"]))
+        return self.inspect_archive(
+            str(row["archive_id"]), full_integrity=full_integrity
+        )
 
     def iter_registered_lines(
         self,
