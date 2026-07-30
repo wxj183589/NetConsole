@@ -66,6 +66,16 @@ describe('Ground unattended page', () => {
     expect(source).toContain('@media(max-width:620px)')
   })
 
+  it('uses one remaining-height workspace for timeline and Syslog consoles', () => {
+    expect(source.match(/<NcLogWorkspace/g)).toHaveLength(2)
+    expect(source.match(/fill-remaining-height/g)).toHaveLength(2)
+    expect(source).toContain('.log-console-pane){display:flex;overflow:hidden}')
+    expect(source).toContain('.ground-tabs :deep(.el-tabs__content){flex:1;height:100%;min-height:0;overflow:hidden}')
+    expect(source).toContain('高级筛选（{{ syslogAdvancedFilterCount }} 个条件）')
+    expect(source).toContain('v-model:current-page="timelinePage"')
+    expect(source).toContain('v-model:current-page="syslogFilter.page"')
+  })
+
   it('centralizes Chinese labels and exposes packet charts and operation progress', () => {
     expect(source).toContain('groundStatusLabel')
     expect(source).toContain('groundOperationStageLabel')

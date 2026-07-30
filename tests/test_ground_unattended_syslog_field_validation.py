@@ -769,7 +769,7 @@ def test_repository_additively_migrates_syslog_runtime_columns(tmp_path: Path) -
         "ground_unattended_ping_target_activations",
         "ground_unattended_operations",
     } <= table_names
-    assert schema_version == "6"
+    assert schema_version == "7"
 
 
 def test_real_syslog_shapes_keep_parser_fields_and_clock_semantics(tmp_path: Path) -> None:

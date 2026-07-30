@@ -133,6 +133,17 @@ Backend 崩溃后旧 Worker 不作为孤儿继续运行。启动时 Job Center �
 现有 orphan reconciliation 收敛；若无人值守 run 仍有效，Supervisor 为该控制器创建新 Task，但延用
 相同逻辑 `poll_session_id`。因此重启最多增加一条可解释的恢复 Task，不会按轮询周期新增历史记录。
 
+### 地面无人值守 Syslog 生命周期 Job
+
+`ground_syslog_delete` 只接收由 `GroundRawDataDeletionApplicationService` 生成并确认的删除计划。
+Renderer 先请求 preview，显示原始记录、文件和 provenance 派生事件影响，再输入运行日期或局点名；确认
+后 Application Service 写入 `PREVIEWED/PENDING` 审计并提交一个 Job，不能由页面逐行创建任务。
+
+Worker 依次报告 `LOCKING_FILES / REWRITING_FILES / UPDATING_REGISTRY / VERIFYING / COMPLETED`。
+生命周期服务只改写已完成 run 的受管 active Syslog，不触碰 Ping、深采或 READY ZIP。文件锁超时、
+revision 冲突、路径/文件/归档状态异常和原子替换失败都进入 `FAILED`，审计记录稳定 failure code；
+成功记录删除数量、派生事件数量和前后 revision。Job 参数不含物理任意路径、原始报文或凭据。
+
 ## 事件协议
 
 每个事件至少包含：

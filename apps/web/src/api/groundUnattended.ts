@@ -4,23 +4,24 @@ import type {
   GroundActionResponse, GroundArchive, GroundArchiveDetail, GroundDeepCollection, GroundPage, GroundPingTarget,
   GroundProfile, GroundStatus, GroundTimelineEvent, GroundTrain, GroundHealth, GroundInventorySummary, GroundRawFile, GroundTrainPolicy,
   GroundOperation, GroundPingSeries, GroundPingSample, GroundRun, GroundSyslogRecord, GroundPagedResult,
+  GroundSyslogDeleteAccepted, GroundSyslogDeletePreview, GroundSyslogDeletePreviewRequest,
   GroundSyslogTransportStatus, LocalIpv4Address, SourceIpRecommendation, UdpPortCheck,
 } from '../types/groundUnattended'
 
 const root = '/api/rail-transit/ground-unattended'
 
-export interface GroundSyslogTransportState {
+export interface GroundRawQueryTransportState {
   code: string
   requestId: string
   backendState: 'ONLINE' | 'OFFLINE' | 'UNKNOWN'
 }
 
-export async function probeGroundSyslogTransportState(reason: unknown): Promise<GroundSyslogTransportState> {
+export async function probeGroundRawQueryTransportState(reason: unknown): Promise<GroundRawQueryTransportState> {
   const requestId = reason instanceof ApiRequestError
     ? String(reason.details.request_id || '')
     : ''
   let code = reason instanceof ApiRequestError ? reason.code : 'UNKNOWN_ERROR'
-  let backendState: GroundSyslogTransportState['backendState'] = 'UNKNOWN'
+  let backendState: GroundRawQueryTransportState['backendState'] = 'UNKNOWN'
   if (
     reason instanceof ApiRequestError
     && [
@@ -42,6 +43,8 @@ export async function probeGroundSyslogTransportState(reason: unknown): Promise<
   }
   return { code, requestId, backendState }
 }
+
+export const probeGroundSyslogTransportState = probeGroundRawQueryTransportState
 
 export const getGroundStatus = (options: RequestInit = {}): Promise<GroundStatus> => apiRequest(`${root}/status`, options)
 export const getGroundProfile = (options: RequestInit = {}): Promise<GroundProfile> => apiRequest(`${root}/profile`, options)
@@ -73,7 +76,7 @@ export const listGroundPingTargets = (runId = '', options: RequestInit = {}): Pr
   return apiRequest(`${root}/ping-targets${query}`, options)
 }
 export function getGroundPingSeries(params: {
-  run_id?: string; train_id?: string; mr_id?: string; target_ip?: string; start_time?: string; end_time?: string
+  run_id?: string; train_id?: string; mr_id?: string; target_ip?: string; query_identity?: string; start_time?: string; end_time?: string
   include_warmup?: boolean; max_points?: number
 }, options: RequestInit = {}): Promise<GroundPingSeries> {
   const query = new URLSearchParams()
@@ -81,7 +84,7 @@ export function getGroundPingSeries(params: {
   return apiRequest(`${root}/ping-series?${query}`, options)
 }
 export function getGroundPingSeriesIncremental(params: {
-  run_id: string; train_id?: string; mr_id?: string; target_ip?: string; cursor?: string
+  run_id: string; train_id?: string; mr_id?: string; target_ip?: string; query_identity?: string; cursor?: string
   after_sequence?: number | null; after_timestamp?: string; include_warmup?: boolean; max_points?: number
 }, options: RequestInit = {}): Promise<GroundPingSeries> {
   const query = new URLSearchParams()
@@ -89,7 +92,7 @@ export function getGroundPingSeriesIncremental(params: {
   return apiRequest(`${root}/ping-series/incremental?${query}`, options)
 }
 export function listGroundPingSamples(params: {
-  run_id?: string; train_id?: string; mr_id?: string; target_ip?: string; start_time?: string; end_time?: string
+  run_id?: string; train_id?: string; mr_id?: string; target_ip?: string; query_identity?: string; start_time?: string; end_time?: string
   include_warmup?: boolean; page?: number; page_size?: number
 }, options: RequestInit = {}): Promise<GroundPagedResult<GroundPingSample> & { raw_sample_count: number; effective_sample_count: number; ignored_sample_count: number }> {
   const query = new URLSearchParams()
@@ -105,6 +108,25 @@ export function listGroundSyslogRecords(params: {
   Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
   return apiRequest(`${root}/syslog-records?${query}`, options)
 }
+export const previewGroundSyslogDelete = (
+  request: GroundSyslogDeletePreviewRequest,
+): Promise<GroundSyslogDeletePreview> => apiRequest(`${root}/syslog-delete-preview`, {
+  method: 'POST',
+  body: JSON.stringify({
+    ...request,
+    record_keys: request.record_keys ?? [],
+    filters: request.filters ?? {},
+  }),
+})
+export const submitGroundSyslogDelete = (request: {
+  preview_token: string
+  explicit_confirmation: boolean
+  confirmation_text: string
+  include_derived_events: boolean
+}): Promise<GroundSyslogDeleteAccepted> => apiRequest(`${root}/syslog-delete`, {
+  method: 'POST',
+  body: JSON.stringify(request),
+})
 export const getLatestGroundOperation = (options: RequestInit = {}): Promise<GroundOperation | null> => apiRequest(`${root}/operations/latest`, options)
 export const getActiveGroundOperation = (options: RequestInit = {}): Promise<GroundOperation | null> => apiRequest(`${root}/operations/active`, options)
 export const getGroundOperation = (operationId: string, options: RequestInit = {}): Promise<GroundOperation> => apiRequest(`${root}/operations/${encodeURIComponent(operationId)}`, options)
@@ -112,11 +134,22 @@ export const listGroundDeepCollections = (runId = '', options: RequestInit = {})
   const query = runId ? `?run_id=${encodeURIComponent(runId)}` : ''
   return apiRequest(`${root}/deep-collections${query}`, options)
 }
-export function listGroundTimeline(trainId = '', eventType = '', runId = '', options: RequestInit = {}): Promise<GroundPage<GroundTimelineEvent>> {
+export function listGroundTimeline(
+  trainId = '',
+  eventType = '',
+  runId = '',
+  options: RequestInit = {},
+  page = 1,
+  pageSize = 100,
+  query = '',
+): Promise<GroundPagedResult<GroundTimelineEvent>> {
   const params = new URLSearchParams()
   if (trainId) params.set('train_id', trainId)
   if (eventType) params.set('event_type', eventType)
   if (runId) params.set('run_id', runId)
+  if (query) params.set('query', query)
+  params.set('page', String(page))
+  params.set('page_size', String(pageSize))
   return apiRequest(`${root}/timeline?${params}`, options)
 }
 export const listGroundArchives = (options: RequestInit = {}): Promise<GroundPage<GroundArchive>> => apiRequest(`${root}/archives`, options)

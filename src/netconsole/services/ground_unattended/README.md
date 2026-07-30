@@ -19,10 +19,15 @@
   文件、单 Worker SSH 复用、间隔热更新、立即轮询、同 Task 重连和正常停止。
 - `boot_config.py`、`syslog_runtime.py`：Information Center 只读核验、受控修复与 WMESH UDP 接收。
 - `fleet_ping.py`、`timeline.py`：分片 Ping 生命周期、汇总和 AC/Ping 时间关联。
+- `identity.py`：将历史列车/MR 别名、端位和管理 IP 解析为稳定 Ping 查询身份；`run_id + target_ip`
+  唯一时不再被漂移的 MR UUID 排除，冲突和参数不一致返回稳定错误。
 - `raw_query.py`：按运行/列车/MR/端位/时间预筛，流式查询 active 或 READY ZIP 中的 Ping/Syslog
   NDJSON；Syslog 无记录级筛选的首屏按最新文件优先读取，旧 WMESH 只对返回页或确实依赖解析字段的
   有界筛选执行 read-time parse。交互查询限制为 128 个文件、250,000 条、128MB 和 8 秒；单一
   ACTIVE/ARCHIVE 不建立全局去重集合，MIXED 使用 250,000 个稳定键的上限。
+- `raw_deletion.py`、`raw_lifecycle.py`：删除预览/确认、Job Center 投递、文件生命周期锁、同目录
+  `.part` 原子重写、Registry revision、派生 provenance 和删除审计；只允许已完成 run 的
+  `CLOSED/RECOVERED/PENDING` Syslog，READY ZIP 永久不可变。
 - `archive_reader.py`：READY ZIP 的受管路径、大小、SHA-256、manifest、成员哈希、CRC、路径和压缩预算
   校验；普通原始列表只做路径、READY、登记大小、ZIP/manifest/成员边界检查，并在读取目标成员时校验
   CRC，完整 ZIP 与成员 SHA-256 保留给详情和显式重新校验。只读流式访问登记成员，不解压或重写归档。
@@ -50,7 +55,7 @@ Syslog 和位置关联，Deep Scheduler 只同步/收尾已有任务，不再填
 
 ## 数据安全
 
-运行数据位于 `data/sites/<site_id>/ground_unattended/`，路径由 `PathResolver` 解析。归档校验失败时保留 active 原始数据；删除归档必须经过当前局点校验、显式确认和 Repository 状态检查。自动测试只能使用 `RuntimeMode.TEST` 与 `D:\NetConsoleTestData\<run-id>`。
+运行数据位于 `data/sites/<site_id>/ground_unattended/`，路径由 `PathResolver` 解析。归档校验失败时保留 active 原始数据；删除归档必须经过当前局点校验、显式确认和 Repository 状态检查。记录级 Syslog 删除只能使用 opaque file/sequence/line 身份，Vue 与 Router 不接触物理路径、文件 API 或 SQL；锁、revision、文件哈希和 SQLite 派生清理由生命周期服务与 Repository 协作完成。自动测试只能使用 `RuntimeMode.TEST` 与 `D:\NetConsoleTestData\<run-id>`。
 
 ## 验证
 

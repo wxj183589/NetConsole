@@ -499,6 +499,7 @@ CREATE TABLE IF NOT EXISTS ground_unattended_raw_files (
     archive_status TEXT NOT NULL DEFAULT 'PENDING',
     parse_status TEXT NOT NULL DEFAULT 'PENDING',
     compressed_path TEXT NOT NULL DEFAULT '',
+    revision INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE (site_id, relative_path)
@@ -509,6 +510,31 @@ CREATE INDEX IF NOT EXISTS idx_ground_raw_files_run_query
 ON ground_unattended_raw_files(
     site_id, run_id, data_type, train_id, device_uuid, mr_role, start_time, end_time
 );
+
+CREATE TABLE IF NOT EXISTS ground_unattended_delete_operations (
+    operation_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    filters_json TEXT NOT NULL DEFAULT '{}',
+    selected_count INTEGER NOT NULL DEFAULT 0,
+    matched_count INTEGER NOT NULL DEFAULT 0,
+    affected_file_count INTEGER NOT NULL DEFAULT 0,
+    deleted_record_count INTEGER NOT NULL DEFAULT 0,
+    deleted_event_count INTEGER NOT NULL DEFAULT 0,
+    revision_before_json TEXT NOT NULL DEFAULT '{}',
+    revision_after_json TEXT NOT NULL DEFAULT '{}',
+    started_at TEXT NOT NULL,
+    completed_at TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'PREVIEWED',
+    failure_code TEXT NOT NULL DEFAULT '',
+    failure_message TEXT NOT NULL DEFAULT '',
+    confirmation_source TEXT NOT NULL DEFAULT '',
+    task_id TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ground_delete_operations_run
+ON ground_unattended_delete_operations(site_id, run_id, started_at DESC);
 
 CREATE TABLE IF NOT EXISTS ground_unattended_health_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -582,6 +608,10 @@ _WMESH_EVENT_MIGRATION_COLUMNS = {
     "clock_offset_ms": "REAL",
 }
 
+_RAW_FILE_MIGRATION_COLUMNS = {
+    "revision": "INTEGER NOT NULL DEFAULT 0",
+}
+
 
 _RUN_STATES_ACTIVE = {
     "STARTING",
@@ -616,10 +646,15 @@ class GroundUnattendedRepository:
             self._ensure_columns(conn, "ground_unattended_train_endpoints", _ENDPOINT_MIGRATION_COLUMNS)
             self._ensure_columns(conn, "ground_unattended_boot_sessions", _BOOT_SESSION_MIGRATION_COLUMNS)
             self._ensure_columns(conn, "ground_unattended_wmesh_events", _WMESH_EVENT_MIGRATION_COLUMNS)
+            self._ensure_columns(
+                conn,
+                "ground_unattended_raw_files",
+                _RAW_FILE_MIGRATION_COLUMNS,
+            )
             conn.execute(
                 """
                 INSERT INTO ground_unattended_schema(key, value, updated_at)
-                VALUES('schema_version', '6', ?)
+                VALUES('schema_version', '7', ?)
                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
                 """,
                 (_now(),),
@@ -1481,6 +1516,7 @@ class GroundUnattendedRepository:
         *,
         train_id: str = "",
         event_type: str = "",
+        query: str = "",
         limit: int = 500,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
@@ -1492,6 +1528,12 @@ class GroundUnattendedRepository:
         if event_type:
             where.append("event_type=?")
             params.append(event_type)
+        if query:
+            where.append(
+                "LOWER(train_id || ' ' || mr_id || ' ' || title || ' ' || "
+                "message || ' ' || details_json) LIKE ?"
+            )
+            params.append(f"%{query.casefold()}%")
         params.extend(
             [max(1, min(int(limit), 500)), max(0, int(offset))]
         )
@@ -1504,7 +1546,12 @@ class GroundUnattendedRepository:
         return [_decode_row(row) for row in rows]
 
     def count_events(
-        self, run_id: str, *, train_id: str = "", event_type: str = ""
+        self,
+        run_id: str,
+        *,
+        train_id: str = "",
+        event_type: str = "",
+        query: str = "",
     ) -> int:
         where = ["site_id=?", "run_id=?"]
         params: list[Any] = [self.site_id, run_id]
@@ -1514,6 +1561,12 @@ class GroundUnattendedRepository:
         if event_type:
             where.append("event_type=?")
             params.append(event_type)
+        if query:
+            where.append(
+                "LOWER(train_id || ' ' || mr_id || ' ' || title || ' ' || "
+                "message || ' ' || details_json) LIKE ?"
+            )
+            params.append(f"%{query.casefold()}%")
         with self._connection() as conn:
             row = conn.execute(
                 f"SELECT COUNT(*) FROM ground_unattended_events WHERE {' AND '.join(where)}",
@@ -1842,6 +1895,15 @@ class GroundUnattendedRepository:
             ).fetchall()
         return [_decode_row(row) for row in rows]
 
+    def get_raw_file(self, file_id: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM ground_unattended_raw_files "
+                "WHERE site_id=? AND file_id=?",
+                (self.site_id, file_id),
+            ).fetchone()
+        return _decode_row(row) if row else None
+
     def count_raw_files(self, *, data_type: str = "", status: str = "") -> int:
         where = ["site_id=?"]
         params: list[Any] = [self.site_id]
@@ -1890,6 +1952,250 @@ class GroundUnattendedRepository:
                 (compressed_path, _now(), self.site_id, run_id),
             )
         return int(cursor.rowcount)
+
+    def update_raw_file_after_rewrite(
+        self,
+        file_id: str,
+        *,
+        base_revision: int,
+        record_count: int,
+        size_bytes: int,
+        sha256: str,
+        start_time: str,
+        end_time: str,
+    ) -> int:
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                "UPDATE ground_unattended_raw_files SET "
+                "record_count=?, size_bytes=?, sha256=?, start_time=?, "
+                "end_time=?, revision=revision+1, updated_at=? "
+                "WHERE site_id=? AND file_id=? AND revision=?",
+                (
+                    max(0, int(record_count)),
+                    max(0, int(size_bytes)),
+                    str(sha256 or ""),
+                    str(start_time or ""),
+                    str(end_time or ""),
+                    _now(),
+                    self.site_id,
+                    file_id,
+                    int(base_revision),
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("RAW_FILE_REVISION_CONFLICT")
+        return int(base_revision) + 1
+
+    def save_delete_operation(self, values: dict[str, Any]) -> dict[str, Any]:
+        allowed = {
+            "operation_id",
+            "site_id",
+            "run_id",
+            "mode",
+            "filters_json",
+            "selected_count",
+            "matched_count",
+            "affected_file_count",
+            "deleted_record_count",
+            "deleted_event_count",
+            "revision_before_json",
+            "revision_after_json",
+            "started_at",
+            "completed_at",
+            "status",
+            "failure_code",
+            "failure_message",
+            "confirmation_source",
+            "task_id",
+            "updated_at",
+        }
+        row = {key: value for key, value in values.items() if key in allowed}
+        row.setdefault("site_id", self.site_id)
+        row.setdefault("started_at", _now())
+        row["updated_at"] = _now()
+        fields = tuple(row)
+        updates = ", ".join(
+            f"{field}=excluded.{field}"
+            for field in fields
+            if field not in {"operation_id", "site_id", "started_at"}
+        )
+        with self._transaction() as conn:
+            conn.execute(
+                f"INSERT INTO ground_unattended_delete_operations "
+                f"({', '.join(fields)}) VALUES "
+                f"({', '.join('?' for _ in fields)}) "
+                f"ON CONFLICT(operation_id) DO UPDATE SET {updates}",
+                tuple(row[field] for field in fields),
+            )
+        saved = self.get_delete_operation(str(row["operation_id"]))
+        if saved is None:
+            raise RuntimeError("Syslog 删除操作审计未保存")
+        return saved
+
+    def get_delete_operation(
+        self, operation_id: str
+    ) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM ground_unattended_delete_operations "
+                "WHERE site_id=? AND operation_id=?",
+                (self.site_id, operation_id),
+            ).fetchone()
+        return _decode_row(row) if row else None
+
+    def update_delete_operation(
+        self, operation_id: str, **values: Any
+    ) -> dict[str, Any]:
+        current = self.get_delete_operation(operation_id)
+        if current is None:
+            raise ValueError("Syslog 删除操作不存在")
+        merged = {
+            **current,
+            **values,
+            "operation_id": operation_id,
+            "site_id": self.site_id,
+            "filters_json": json.dumps(
+                values.get("filters", current.get("filters", {})),
+                ensure_ascii=False,
+            ),
+            "revision_before_json": json.dumps(
+                values.get(
+                    "revision_before",
+                    current.get("revision_before", {}),
+                ),
+                ensure_ascii=False,
+            ),
+            "revision_after_json": json.dumps(
+                values.get(
+                    "revision_after",
+                    current.get("revision_after", {}),
+                ),
+                ensure_ascii=False,
+            ),
+        }
+        return self.save_delete_operation(merged)
+
+    def syslog_derived_effects(
+        self,
+        run_id: str,
+        record_refs: Iterable[dict[str, Any]],
+        *,
+        apply: bool,
+        include_derived_events: bool,
+    ) -> dict[str, int]:
+        references = list(record_refs)
+        if not references:
+            return {"wmesh": 0, "timeline": 0}
+        wmesh_count = 0
+        timeline_count = 0
+        with self._transaction() as conn:
+            wmesh_ids, timeline_ids = _find_syslog_derived_ids(
+                conn,
+                site_id=self.site_id,
+                run_id=run_id,
+                references=references,
+            )
+            wmesh_count = len(wmesh_ids)
+            timeline_count = len(timeline_ids)
+            if not apply:
+                return {
+                    "wmesh": wmesh_count,
+                    "timeline": timeline_count,
+                }
+            if include_derived_events:
+                _delete_ids(
+                    conn,
+                    "ground_unattended_wmesh_events",
+                    wmesh_ids,
+                )
+                _delete_ids(
+                    conn,
+                    "ground_unattended_events",
+                    timeline_ids,
+                )
+            else:
+                _mark_source_deleted(
+                    conn,
+                    "ground_unattended_wmesh_events",
+                    wmesh_ids,
+                )
+                _mark_source_deleted(
+                    conn,
+                    "ground_unattended_events",
+                    timeline_ids,
+                )
+        return {"wmesh": wmesh_count, "timeline": timeline_count}
+
+    def apply_syslog_deletion_metadata(
+        self,
+        run_id: str,
+        *,
+        file_updates: Iterable[dict[str, Any]],
+        record_refs: Iterable[dict[str, Any]],
+        include_derived_events: bool,
+    ) -> dict[str, Any]:
+        updates = list(file_updates)
+        references = list(record_refs)
+        revision_after: dict[str, int] = {}
+        with self._transaction() as conn:
+            for update in updates:
+                file_id = str(update.get("file_id") or "")
+                base_revision = int(update.get("base_revision") or 0)
+                cursor = conn.execute(
+                    "UPDATE ground_unattended_raw_files SET "
+                    "record_count=?, size_bytes=?, sha256=?, start_time=?, "
+                    "end_time=?, revision=revision+1, updated_at=? "
+                    "WHERE site_id=? AND run_id=? AND data_type='syslog' "
+                    "AND file_id=? AND revision=?",
+                    (
+                        max(0, int(update.get("record_count") or 0)),
+                        max(0, int(update.get("size_bytes") or 0)),
+                        str(update.get("sha256") or ""),
+                        str(update.get("start_time") or ""),
+                        str(update.get("end_time") or ""),
+                        _now(),
+                        self.site_id,
+                        run_id,
+                        file_id,
+                        base_revision,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError("RAW_FILE_REVISION_CONFLICT")
+                revision_after[file_id] = base_revision + 1
+            wmesh_ids, timeline_ids = _find_syslog_derived_ids(
+                conn,
+                site_id=self.site_id,
+                run_id=run_id,
+                references=references,
+            )
+            if include_derived_events:
+                _delete_ids(
+                    conn,
+                    "ground_unattended_wmesh_events",
+                    wmesh_ids,
+                )
+                _delete_ids(
+                    conn,
+                    "ground_unattended_events",
+                    timeline_ids,
+                )
+            else:
+                _mark_source_deleted(
+                    conn,
+                    "ground_unattended_wmesh_events",
+                    wmesh_ids,
+                )
+                _mark_source_deleted(
+                    conn,
+                    "ground_unattended_events",
+                    timeline_ids,
+                )
+        return {
+            "revision_after": revision_after,
+            "wmesh": len(wmesh_ids),
+            "timeline": len(timeline_ids),
+        }
 
     def insert_wmesh_events(self, rows: Iterable[dict[str, Any]]) -> int:
         values = list(rows)
@@ -2299,6 +2605,161 @@ def _parse_datetime(value: str) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.astimezone()
+
+
+def _syslog_reference_matches(
+    references: list[dict[str, Any]],
+    *,
+    raw_file_id: str = "",
+    raw_line_number: object = None,
+    details_json: str,
+) -> bool:
+    try:
+        details = json.loads(details_json or "{}")
+    except json.JSONDecodeError:
+        details = {}
+    if not isinstance(details, dict):
+        details = {}
+    candidate_file_id = str(
+        raw_file_id or details.get("raw_file_id") or ""
+    )
+    candidate_line = _optional_int(
+        raw_line_number
+        if raw_line_number not in {None, ""}
+        else details.get("raw_line_number")
+    )
+    candidate_global = _optional_int(
+        details.get("global_receive_sequence")
+    )
+    candidate_source = _optional_int(
+        details.get("source_receive_sequence")
+    )
+    for reference in references:
+        expected_file_id = str(reference.get("raw_file_id") or "")
+        if expected_file_id and candidate_file_id != expected_file_id:
+            continue
+        matched_discriminator = False
+        mismatch = False
+        for expected, candidate in (
+            (
+                _optional_int(reference.get("raw_line_number")),
+                candidate_line,
+            ),
+            (
+                _optional_int(
+                    reference.get("global_receive_sequence")
+                ),
+                candidate_global,
+            ),
+            (
+                _optional_int(
+                    reference.get("source_receive_sequence")
+                ),
+                candidate_source,
+            ),
+        ):
+            if expected is None or candidate is None:
+                continue
+            if expected != candidate:
+                mismatch = True
+                break
+            matched_discriminator = True
+        if not mismatch and matched_discriminator:
+            return True
+    return False
+
+
+def _find_syslog_derived_ids(
+    conn: sqlite3.Connection,
+    *,
+    site_id: str,
+    run_id: str,
+    references: list[dict[str, Any]],
+) -> tuple[list[int], list[int]]:
+    wmesh_rows = conn.execute(
+        "SELECT id, raw_file_id, raw_line_number, details_json "
+        "FROM ground_unattended_wmesh_events "
+        "WHERE site_id=? AND run_id=?",
+        (site_id, run_id),
+    ).fetchall()
+    wmesh_ids = [
+        int(row["id"])
+        for row in wmesh_rows
+        if _syslog_reference_matches(
+            references,
+            raw_file_id=str(row["raw_file_id"] or ""),
+            raw_line_number=row["raw_line_number"],
+            details_json=str(row["details_json"] or "{}"),
+        )
+    ]
+    timeline_rows = conn.execute(
+        "SELECT id, event_type, details_json "
+        "FROM ground_unattended_events "
+        "WHERE site_id=? AND run_id=? AND event_type IN "
+        "('mesh_linkup', 'mesh_linkdown', "
+        "'mesh_activelink_switch', 'ifnet_phy_updown')",
+        (site_id, run_id),
+    ).fetchall()
+    timeline_ids = [
+        int(row["id"])
+        for row in timeline_rows
+        if _syslog_reference_matches(
+            references,
+            details_json=str(row["details_json"] or "{}"),
+        )
+    ]
+    return wmesh_ids, timeline_ids
+
+
+def _delete_ids(
+    conn: sqlite3.Connection,
+    table: str,
+    ids: list[int],
+) -> None:
+    if not ids:
+        return
+    placeholders = ",".join("?" for _ in ids)
+    conn.execute(
+        f"DELETE FROM {table} WHERE id IN ({placeholders})",
+        ids,
+    )
+
+
+def _mark_source_deleted(
+    conn: sqlite3.Connection,
+    table: str,
+    ids: list[int],
+) -> None:
+    if not ids:
+        return
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"SELECT id, details_json FROM {table} "
+        f"WHERE id IN ({placeholders})",
+        ids,
+    ).fetchall()
+    for row in rows:
+        try:
+            details = json.loads(str(row["details_json"] or "{}"))
+        except json.JSONDecodeError:
+            details = {}
+        if not isinstance(details, dict):
+            details = {}
+        details["source_deleted"] = True
+        details["source_deleted_reason"] = "SYSLOG_RAW_DELETED"
+        conn.execute(
+            f"UPDATE {table} SET details_json=? WHERE id=?",
+            (json.dumps(details, ensure_ascii=False), int(row["id"])),
+        )
+
+
+def _optional_int(value: object) -> int | None:
+    if value in {None, ""}:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _decode_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:

@@ -16,6 +16,7 @@ const ElTable = defineComponent({
     stripe: Boolean,
     fit: Boolean,
     flexible: Boolean,
+    height: [Number, String],
     maxHeight: [Number, String],
     scrollbarAlwaysOn: Boolean,
   },
@@ -77,6 +78,29 @@ describe('NcDataTable', () => {
 
     expect(wrapper.classes()).toContain('nc-data-table--auto-height')
     expect(wrapper.getComponent(ElTable).props('maxHeight')).toBe(420)
+    wrapper.unmount()
+  })
+
+  it('uses the remaining-height mode without conflicting auto or max heights', () => {
+    const wrapper = mount(NcDataTable, {
+      props: {
+        tableId: 'log-workspace-table',
+        routeKey: '/logs',
+        showColumnSettings: false,
+        autoHeight: true,
+        fillRemainingHeight: true,
+        height: 260,
+        maxHeight: 420,
+        data: [{ name: 'AP01' }],
+        columns: [{ key: 'name', label: '名称', valueType: 'name' }],
+      },
+      global,
+    })
+
+    expect(wrapper.classes()).toContain('nc-data-table--fill-remaining')
+    expect(wrapper.classes()).not.toContain('nc-data-table--auto-height')
+    expect(wrapper.getComponent(ElTable).props('height')).toBe('100%')
+    expect(wrapper.getComponent(ElTable).props('maxHeight')).toBeUndefined()
     wrapper.unmount()
   })
 

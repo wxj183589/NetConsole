@@ -15,6 +15,7 @@
 - `apps/web/src/theme/echarts.ts`：从当前 CSS Token 读取图表色并通知已挂载图表重绘；
 - `NcCard`、`NcStatusTag`、`NcTable` 和 `NcLayout`：首批公共基础件；
 - `components/table/NcDataTable`：标准业务表格、统一列定义、自动列宽、列设置和视图偏好的阶段 1 基础；当前仍有旧表待按清单逐域迁移；
+- `components/workspace/NcLogWorkspace`：日志控制台的固定筛选/摘要/动作/分页与单一弹性表格区域；
 - `AppLayout`：继续作为唯一应用 Shell，并开始消费统一尺寸和颜色 Token。
 - Electron Main：窗口初始背景使用预定义浅/深安全色，运行期只接受受信 Renderer 报告的 `{ resolvedTheme: 'light' | 'dark' }`，不接受任意颜色或窗口参数。
 

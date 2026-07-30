@@ -2,7 +2,7 @@
 
 import { defineComponent, h, useAttrs, type Component } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const api = vi.hoisted(() => ({
@@ -40,7 +40,10 @@ const api = vi.hoisted(() => ({
   checkGroundUdpPort: vi.fn(),
   listLocalIpv4Addresses: vi.fn(),
   recommendLocalSourceIp: vi.fn(),
+  previewGroundSyslogDelete: vi.fn(),
+  probeGroundRawQueryTransportState: vi.fn(),
   probeGroundSyslogTransportState: vi.fn(),
+  submitGroundSyslogDelete: vi.fn(),
   getLatestGroundOperation: vi.fn(),
   verifyGroundArchive: vi.fn(),
   downloadBackendResource: vi.fn(),
@@ -204,10 +207,17 @@ function pingTarget(overrides: Record<string, unknown> = {}) {
     last_sample_at: '2026-07-30T08:00:02+08:00',
     active_raw_file_count: 1,
     archived_raw_file_count: 0,
+    raw_file_count: 1,
+    raw_record_count: 1,
+    raw_file_ids: ['raw-1'],
     raw_file_available: true,
     archive_available: false,
+    archive_id: '',
     data_source: 'ACTIVE',
+    source_kind: 'ACTIVE',
     data_availability: 'ACTIVE_RAW',
+    availability_reason: '',
+    query_identity: 'gpq1.stable-target',
     ...overrides,
   }
 }
@@ -236,6 +246,7 @@ function pingSeries(points: Array<Record<string, unknown>>, overrides: Record<st
     ap_transitions: [],
     position_segments: [],
     diagnostics: {
+      request_id: 'request-ping',
       requested_run_id: 'run-active',
       resolved_start_time: '',
       resolved_end_time: '',
@@ -250,6 +261,10 @@ function pingSeries(points: Array<Record<string, unknown>>, overrides: Record<st
       truncated: false,
       legacy_archive: false,
       no_data_reason: '',
+      resolved_train_ids: ['train-1'],
+      resolved_mr_ids: ['mr-ct'],
+      raw_file_registry_hit_count: 1,
+      matched_count: points.length,
     },
     next_cursor: 'cursor-1',
     latest_sequence: Number(points.at(-1)?.seq ?? 0),
@@ -258,6 +273,7 @@ function pingSeries(points: Array<Record<string, unknown>>, overrides: Record<st
     active: true,
     target_state: 'RUNNING',
     has_more: false,
+    query_identity: 'gpq1.stable-target',
     ...overrides,
   }
 }
@@ -349,6 +365,9 @@ beforeEach(() => {
     requestId: reason instanceof ApiRequestError ? String(reason.details.request_id || '') : '',
     backendState: reason instanceof ApiRequestError && reason.status > 0 ? 'ONLINE' : 'UNKNOWN',
   }))
+  api.probeGroundRawQueryTransportState.mockImplementation(
+    api.probeGroundSyslogTransportState,
+  )
 })
 
 afterEach(() => {
@@ -470,6 +489,82 @@ describe('Ground unattended page loading behavior', () => {
     view.pingPaused = true
     await view.loadPingIncremental()
     expect(api.getGroundPingSeriesIncremental).toHaveBeenCalledOnce()
+    wrapper.unmount()
+  })
+
+  it('does not start Ping incremental reads after the initial query fails', async () => {
+    api.getGroundStatus.mockResolvedValue({
+      ...status(),
+      state: 'RUNNING',
+      service_state: 'RUNNING',
+      active_run_id: 'run-active',
+      active_run_state: 'RUNNING',
+    })
+    api.getGroundPingSeries.mockRejectedValue(new ApiRequestError(
+      '未找到逐包记录',
+      422,
+      'PING_TARGET_NOT_FOUND',
+      { request_id: 'request-ping-failed' },
+    ))
+    api.probeGroundRawQueryTransportState.mockResolvedValue({
+      code: 'PING_TARGET_NOT_FOUND',
+      requestId: 'request-ping-failed',
+      backendState: 'ONLINE',
+    })
+    const toast = vi.spyOn(ElMessage, 'error')
+    const wrapper = mountPage()
+    await flushPromises()
+    const view = wrapper.vm as unknown as {
+      showPingSeries: (row: ReturnType<typeof pingTarget>) => Promise<void>
+      loadPingIncremental: () => Promise<void>
+      pingInitialLoadSucceeded: boolean
+      pingRequestId: string
+      pingErrorCode: string
+    }
+
+    await view.showPingSeries(pingTarget())
+    await view.loadPingIncremental()
+
+    expect(view.pingInitialLoadSucceeded).toBe(false)
+    expect(view.pingRequestId).toBe('request-ping-failed')
+    expect(view.pingErrorCode).toBe('PING_TARGET_NOT_FOUND')
+    expect(api.getGroundPingSeriesIncremental).not.toHaveBeenCalled()
+    expect(toast).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('uses stable Ping query identity and never increments a completed run', async () => {
+    api.getGroundStatus.mockResolvedValue({
+      ...status(),
+      state: 'RUNNING',
+      service_state: 'RUNNING',
+      active_run_id: 'run-other',
+      active_run_state: 'RUNNING',
+    })
+    api.getGroundPingSeries.mockResolvedValue(pingSeries([
+      pingPoint('sample-history', '2026-07-30T08:00:01+08:00', 1),
+    ], { active: false, target_state: 'COMPLETED' }))
+    const wrapper = mountPage()
+    await flushPromises()
+    const view = wrapper.vm as unknown as {
+      showPingSeries: (row: ReturnType<typeof pingTarget>) => Promise<void>
+      loadPingIncremental: () => Promise<void>
+      pingInitialLoadSucceeded: boolean
+    }
+    const target = pingTarget({ run_id: 'run-history' })
+
+    await view.showPingSeries(target)
+    await view.loadPingIncremental()
+
+    expect(api.getGroundPingSeries).toHaveBeenCalledWith(
+      expect.objectContaining({
+        run_id: 'run-history',
+        query_identity: 'gpq1.stable-target',
+      }),
+      expect.any(Object),
+    )
+    expect(view.pingInitialLoadSucceeded).toBe(true)
+    expect(api.getGroundPingSeriesIncremental).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
@@ -637,6 +732,300 @@ describe('Ground unattended page loading behavior', () => {
     expect(message).toHaveBeenCalledWith('Syslog 日志加载失败：查询失败')
     expect(message).toHaveBeenCalledTimes(1)
     message.mockRestore()
+    wrapper.unmount()
+  })
+
+  it('previews selected Syslog records and submits one confirmed delete task', async () => {
+    api.getGroundStatus.mockResolvedValue({
+      ...status(),
+      latest_run_id: 'run-delete',
+      latest_run_state: 'COMPLETED',
+      latest_run_date: '2026-07-29',
+    })
+    api.listGroundRuns.mockResolvedValue({
+      items: [{
+        run_id: 'run-delete',
+        run_date: '2026-07-29',
+        state: 'COMPLETED',
+        data_availability: 'ACTIVE_RAW',
+      }],
+      total: 1,
+    })
+    api.previewGroundSyslogDelete.mockResolvedValue({
+      run_id: 'run-delete',
+      run_date: '2026-07-29',
+      mode: 'SELECTED',
+      matched_record_count: 1,
+      affected_file_count: 1,
+      affected_event_count: 1,
+      affected_timeline_count: 1,
+      total_bytes: 128,
+      file_statuses: [],
+      archive_status: '',
+      blocked_reasons: [],
+      warnings: [],
+      preview_token: 'preview-token-with-safe-length',
+      expires_at: '2026-07-31T12:00:00+08:00',
+      confirmation_hint: 'DELETE 2026-07-29',
+    })
+    api.submitGroundSyslogDelete.mockResolvedValue({
+      accepted: true,
+      operation_id: 'operation-1',
+      task_id: 'task-1',
+      run_id: 'run-delete',
+      status: 'PENDING',
+      message: 'Syslog 删除任务已进入任务中心',
+    })
+    vi.spyOn(ElMessageBox, 'prompt').mockResolvedValue({
+      value: 'DELETE 2026-07-29',
+      action: 'confirm',
+    } as never)
+    const wrapper = mountPage()
+    await flushPromises()
+    const view = wrapper.vm as unknown as {
+      handleSyslogSelection: (rows: Array<Record<string, unknown>>) => void
+      deleteSyslog: (mode: 'SELECTED') => Promise<void>
+    }
+    view.handleSyslogSelection([{
+      raw_file_id: 'raw-1',
+      global_receive_sequence: 10,
+      source_receive_sequence: 3,
+      raw_line_number: 7,
+    }])
+
+    await view.deleteSyslog('SELECTED')
+
+    expect(api.previewGroundSyslogDelete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        run_id: 'run-delete',
+        mode: 'SELECTED',
+        record_keys: [{
+          raw_file_id: 'raw-1',
+          global_receive_sequence: 10,
+          source_receive_sequence: 3,
+          raw_line_number: 7,
+        }],
+      }),
+    )
+    expect(api.submitGroundSyslogDelete).toHaveBeenCalledWith({
+      preview_token: 'preview-token-with-safe-length',
+      explicit_confirmation: true,
+      confirmation_text: 'DELETE 2026-07-29',
+      include_derived_events: true,
+    })
+    vi.mocked(ElMessageBox.prompt).mockRestore()
+    wrapper.unmount()
+  })
+
+  it('sends the current server-side filters for one filtered delete preview', async () => {
+    api.getGroundStatus.mockResolvedValue({
+      ...status(),
+      latest_run_id: 'run-delete',
+      latest_run_state: 'COMPLETED',
+      latest_run_date: '2026-07-29',
+    })
+    api.listGroundRuns.mockResolvedValue({
+      items: [{
+        run_id: 'run-delete',
+        run_date: '2026-07-29',
+        state: 'COMPLETED',
+        data_availability: 'ACTIVE_RAW',
+      }],
+      total: 1,
+    })
+    api.previewGroundSyslogDelete.mockResolvedValue({
+      run_id: 'run-delete',
+      run_date: '2026-07-29',
+      mode: 'FILTERED',
+      matched_record_count: 4,
+      affected_file_count: 1,
+      affected_event_count: 2,
+      affected_timeline_count: 2,
+      total_bytes: 512,
+      file_statuses: [],
+      archive_status: '',
+      blocked_reasons: [],
+      warnings: [],
+      preview_token: 'preview-token-with-safe-length',
+      expires_at: '2026-07-31T12:00:00+08:00',
+      confirmation_hint: 'DELETE 2026-07-29',
+    })
+    api.submitGroundSyslogDelete.mockResolvedValue({
+      accepted: true,
+      operation_id: 'operation-filtered',
+      task_id: 'task-filtered',
+      run_id: 'run-delete',
+      status: 'PENDING',
+      message: 'Syslog 删除任务已进入任务中心',
+    })
+    const prompt = vi.spyOn(ElMessageBox, 'prompt').mockResolvedValue({
+      value: 'DELETE 2026-07-29',
+      action: 'confirm',
+    } as never)
+    const wrapper = mountPage()
+    await flushPromises()
+    const view = wrapper.vm as unknown as {
+      syslogFilter: {
+        keyword: string
+        mrRole: string
+        sourceIp: string
+        eventType: string
+      }
+      deleteSyslog: (mode: 'FILTERED') => Promise<void>
+    }
+    view.syslogFilter.keyword = 'WMESH'
+    view.syslogFilter.mrRole = 'CT'
+    view.syslogFilter.sourceIp = '192.0.2.3'
+    view.syslogFilter.eventType = 'MESH_LINKUP'
+
+    await view.deleteSyslog('FILTERED')
+
+    expect(api.previewGroundSyslogDelete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        run_id: 'run-delete',
+        mode: 'FILTERED',
+        record_keys: [],
+        filters: expect.objectContaining({
+          keyword: 'WMESH',
+          mr_role: 'CT',
+          source_ip: '192.0.2.3',
+          event_type: 'MESH_LINKUP',
+        }),
+      }),
+    )
+    prompt.mockRestore()
+    wrapper.unmount()
+  })
+
+  it('shows READY immutability reasons and does not submit a blocked delete', async () => {
+    api.getGroundStatus.mockResolvedValue({
+      ...status(),
+      latest_run_id: 'run-ready',
+      latest_run_state: 'COMPLETED',
+      latest_run_date: '2026-07-29',
+    })
+    api.listGroundRuns.mockResolvedValue({
+      items: [{
+        run_id: 'run-ready',
+        run_date: '2026-07-29',
+        state: 'COMPLETED',
+        data_availability: 'ARCHIVED',
+      }],
+      total: 1,
+    })
+    api.previewGroundSyslogDelete.mockResolvedValue({
+      run_id: 'run-ready',
+      run_date: '2026-07-29',
+      mode: 'RUN_ALL',
+      matched_record_count: 0,
+      affected_file_count: 0,
+      affected_event_count: 0,
+      affected_timeline_count: 0,
+      total_bytes: 0,
+      file_statuses: [],
+      archive_status: 'READY',
+      blocked_reasons: [
+        'READY_ARCHIVE_IMMUTABLE: 该日志已进入不可变 READY 归档。需要清理时请删除完整归档。',
+      ],
+      warnings: [],
+      preview_token: '',
+      expires_at: '',
+      confirmation_hint: 'DELETE 2026-07-29',
+    })
+    const alert = vi.spyOn(ElMessageBox, 'alert').mockResolvedValue(
+      'confirm' as never,
+    )
+    const wrapper = mountPage()
+    await flushPromises()
+    const view = wrapper.vm as unknown as {
+      deleteSyslog: (mode: 'RUN_ALL') => Promise<void>
+    }
+
+    await view.deleteSyslog('RUN_ALL')
+
+    expect(alert).toHaveBeenCalledWith(
+      expect.stringContaining('READY_ARCHIVE_IMMUTABLE'),
+      '当前范围禁止记录级删除',
+      expect.objectContaining({ type: 'warning' }),
+    )
+    expect(api.submitGroundSyslogDelete).not.toHaveBeenCalled()
+    alert.mockRestore()
+    wrapper.unmount()
+  })
+
+  it('disables Syslog deletion for an ERROR run before preview', async () => {
+    api.getGroundStatus.mockResolvedValue({
+      ...status(),
+      latest_run_id: 'run-error',
+      latest_run_state: 'ERROR',
+      latest_run_date: '2026-07-29',
+    })
+    api.listGroundRuns.mockResolvedValue({
+      items: [{
+        run_id: 'run-error',
+        run_date: '2026-07-29',
+        state: 'ERROR',
+      }],
+      total: 1,
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+    const view = wrapper.vm as unknown as {
+      syslogDeleteBlocked: boolean
+    }
+
+    expect(view.syslogDeleteBlocked).toBe(true)
+    expect(wrapper.text()).toContain('ERROR 状态')
+    expect(api.previewGroundSyslogDelete).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('loads timeline search with the selected server page and size', async () => {
+    api.getGroundStatus.mockResolvedValue({
+      ...status(),
+      latest_run_id: 'run-timeline',
+      latest_run_state: 'COMPLETED',
+      latest_run_date: '2026-07-29',
+    })
+    api.listGroundRuns.mockResolvedValue({
+      items: [{
+        run_id: 'run-timeline',
+        run_date: '2026-07-29',
+        state: 'COMPLETED',
+      }],
+      total: 1,
+    })
+    api.listGroundTimeline.mockResolvedValue({
+      items: [],
+      total: 250,
+      page: 3,
+      page_size: 50,
+      total_exact: true,
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+    const view = wrapper.vm as unknown as {
+      timelinePage: number
+      timelinePageSize: number
+      timelineFilter: { eventType: string; query: string }
+      loadTimelineData: (silent?: boolean) => Promise<void>
+    }
+    view.timelinePage = 3
+    view.timelinePageSize = 50
+    view.timelineFilter.eventType = 'mesh_linkup'
+    view.timelineFilter.query = 'AP01'
+
+    await view.loadTimelineData(false)
+
+    expect(api.listGroundTimeline).toHaveBeenLastCalledWith(
+      '',
+      'mesh_linkup',
+      'run-timeline',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      3,
+      50,
+      'AP01',
+    )
     wrapper.unmount()
   })
 

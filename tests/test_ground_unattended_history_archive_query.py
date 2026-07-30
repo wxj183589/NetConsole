@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from netconsole.backend.api.main import create_app
 from netconsole.core.paths import PathResolver
+from netconsole.models.api.ground_unattended import GroundPingSeriesDTO
 from netconsole.repositories.ground_unattended_repository import (
     GroundUnattendedRepository,
 )
@@ -23,6 +24,9 @@ from netconsole.services.ground_unattended.archive_service import (
 )
 from netconsole.services.ground_unattended.application_service import (
     GroundUnattendedApplicationService,
+)
+from netconsole.services.ground_unattended.identity import (
+    encode_ping_query_identity,
 )
 from netconsole.services.ground_unattended.raw_query import (
     GroundRawQueryError,
@@ -683,6 +687,360 @@ def test_regular_archive_query_skips_full_archive_hash(
 
     assert result["total"] == 1
     assert result["items"][0]["data_source"] == "ARCHIVE"
+
+
+def test_ping_target_ip_survives_inventory_mr_uuid_drift(
+    tmp_path: Path,
+) -> None:
+    paths, repository, run_id = _setup_run(tmp_path)
+    repository.sync_inventory(
+        trains=[
+            {
+                "train_id": "inventory-train-03",
+                "train_no": "03",
+                "train_name": "列车03",
+            }
+        ],
+        endpoints=[
+            {
+                "device_uuid": "current-mr-uuid",
+                "device_id": 3,
+                "train_id": "inventory-train-03",
+                "mr_role": "CW",
+                "device_name": "列车03-MR-CW",
+                "management_ip": "10.122.3.250",
+                "source_hostname": "列车03-MR-CW",
+            }
+        ],
+    )
+    raw_path = (
+        paths.ground_unattended_active_dir("site-a", "2026-07-25")
+        / "fleet_ping"
+        / "drifted.ndjson"
+    )
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "sample_id": "sample-drifted",
+        "ts": "2026-07-25T08:00:00+08:00",
+        "target_ip": "10.122.3.250",
+        "train_id": "列车03",
+        "train_no": "03",
+        "mr_id": "historical-mr-uuid",
+        "device_uuid": "historical-mr-uuid",
+        "mr_name": "列车03-MR-CW",
+        "mr_position_code": "CW",
+        "ok": True,
+        "rtt_ms": 43.0,
+        "site_id": "site-a",
+        "automation_run_id": run_id,
+        "raw_file_id": "raw-drifted",
+        "raw_line_number": 1,
+    }
+    raw_path.write_text(
+        json.dumps(record, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    repository.upsert_raw_file(
+        {
+            "file_id": "raw-drifted",
+            "run_id": run_id,
+            "train_id": "_03",
+            "device_uuid": "historical-mr-uuid",
+            "mr_role": "CW",
+            "data_type": "ping",
+            "relative_path": raw_path.relative_to(
+                repository.db_path.parent
+            ).as_posix(),
+            "start_time": record["ts"],
+            "end_time": record["ts"],
+            "record_count": 1,
+            "size_bytes": raw_path.stat().st_size,
+            "status": "CLOSED",
+            "archive_status": "PENDING",
+        }
+    )
+
+    raw_result = GroundRawStreamQueryService(repository).ping_series(
+        run_id=run_id,
+        train_id="inventory-train-03",
+        mr_id="current-mr-uuid",
+        target_ip="10.122.3.250",
+    )
+    raw_result["points"] = (
+        GroundUnattendedApplicationService._project_ping_samples(
+            raw_result["points"]
+        )
+    )
+
+    dto = GroundPingSeriesDTO.model_validate(raw_result)
+    assert dto.raw_sample_count == 1
+    assert dto.points[0].sample_id == "sample-drifted"
+    assert dto.diagnostics.raw_file_registry_hit_count == 1
+    assert dto.diagnostics.matched_count == 1
+    assert dto.query_identity == encode_ping_query_identity(
+        run_id, "10.122.3.250"
+    )
+
+
+def test_ping_target_ip_accepts_historical_records_with_missing_alias_fields(
+    tmp_path: Path,
+) -> None:
+    paths, repository, run_id = _setup_run(tmp_path)
+    repository.sync_inventory(
+        trains=[
+            {
+                "train_id": "inventory-train-03",
+                "train_no": "03",
+                "train_name": "列车03",
+            }
+        ],
+        endpoints=[
+            {
+                "device_uuid": "current-mr-uuid",
+                "device_id": 3,
+                "train_id": "inventory-train-03",
+                "mr_role": "CW",
+                "device_name": "列车03-MR-CW",
+                "management_ip": "10.122.3.250",
+                "source_hostname": "列车03-MR-CW",
+            }
+        ],
+    )
+    raw_path = (
+        paths.ground_unattended_active_dir("site-a", "2026-07-25")
+        / "fleet_ping"
+        / "missing-alias-fields.ndjson"
+    )
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "sample_id": "sample-missing-aliases",
+        "ts": "2026-07-25T08:00:00+08:00",
+        "target_ip": "10.122.3.250",
+        "ok": True,
+        "rtt_ms": 42.0,
+    }
+    raw_path.write_text(
+        json.dumps(record, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    repository.upsert_raw_file(
+        {
+            "file_id": "raw-missing-aliases",
+            "run_id": run_id,
+            "train_id": "_03",
+            "device_uuid": "historical-mr-uuid",
+            "mr_role": "CW",
+            "data_type": "ping",
+            "relative_path": raw_path.relative_to(
+                repository.db_path.parent
+            ).as_posix(),
+            "start_time": record["ts"],
+            "end_time": record["ts"],
+            "record_count": 1,
+            "size_bytes": raw_path.stat().st_size,
+            "status": "CLOSED",
+            "archive_status": "PENDING",
+        }
+    )
+
+    result = GroundRawStreamQueryService(repository).ping_series(
+        run_id=run_id,
+        train_id="inventory-train-03",
+        mr_id="current-mr-uuid",
+        target_ip="10.122.3.250",
+    )
+
+    assert result["raw_sample_count"] == 1
+    assert result["points"][0]["sample_id"] == "sample-missing-aliases"
+
+
+def test_ping_query_identity_rejects_mismatch_and_duplicate_target_ip(
+    tmp_path: Path,
+) -> None:
+    paths, repository, run_id = _setup_run(tmp_path)
+    for index, (train_id, role) in enumerate(
+        (("_03", "CW"), ("_07", "CT")),
+        start=1,
+    ):
+        path = (
+            paths.ground_unattended_active_dir("site-a", "2026-07-25")
+            / "fleet_ping"
+            / f"conflict-{index}.ndjson"
+        )
+        record = {
+            "sample_id": f"conflict-{index}",
+            "ts": f"2026-07-25T08:0{index}:00+08:00",
+            "target_ip": "10.122.99.250",
+            "train_id": train_id,
+            "mr_position_code": role,
+            "ok": True,
+            "rtt_ms": 2.0,
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(record, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        repository.upsert_raw_file(
+            {
+                "file_id": f"raw-conflict-{index}",
+                "run_id": run_id,
+                "train_id": train_id,
+                "device_uuid": f"mr-{index}",
+                "mr_role": role,
+                "data_type": "ping",
+                "relative_path": path.relative_to(
+                    repository.db_path.parent
+                ).as_posix(),
+                "start_time": record["ts"],
+                "end_time": record["ts"],
+                "record_count": 1,
+                "size_bytes": path.stat().st_size,
+                "status": "CLOSED",
+                "archive_status": "PENDING",
+            }
+        )
+    query = GroundRawStreamQueryService(repository)
+
+    with pytest.raises(
+        GroundRawQueryError,
+        match="多个列车或 MR 端位",
+    ) as conflict:
+        query.ping_series(
+            run_id=run_id,
+            target_ip="10.122.99.250",
+        )
+    assert conflict.value.code == "PING_TARGET_IDENTITY_CONFLICT"
+
+    with pytest.raises(GroundRawQueryError) as mismatch:
+        query.ping_series(
+            run_id=run_id,
+            target_ip="10.122.99.250",
+            query_identity=encode_ping_query_identity(
+                run_id, "10.122.99.251"
+            ),
+        )
+    assert mismatch.value.code == "PING_IDENTITY_MISMATCH"
+
+
+def test_ping_series_api_projects_raw_fields_and_returns_request_id(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    repository = app.state.ground_unattended_repository
+    run = repository.create_or_get_run(
+        run_id="run-api-ping",
+        run_date="2026-07-25",
+        scheduled_start_at=START,
+        scheduled_end_at=END,
+    )
+    repository.update_run(
+        str(run["run_id"]),
+        state="COMPLETED",
+        actual_started_at=START,
+        actual_ended_at=END,
+    )
+    raw_path = (
+        paths.ground_unattended_active_dir(
+            repository.site_id, "2026-07-25"
+        )
+        / "fleet_ping"
+        / "api-extra.ndjson"
+    )
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "sample_id": "api-sample",
+        "ts": "2026-07-25T08:00:00+08:00",
+        "target_ip": "192.0.2.80",
+        "train_id": "_80",
+        "mr_id": "mr-api",
+        "mr_position_code": "CT",
+        "ok": True,
+        "rtt_ms": 8.0,
+        "site_id": repository.site_id,
+        "automation_run_id": "run-api-ping",
+        "device_uuid": "mr-api",
+        "backend": "fping",
+        "error": "",
+        "shard_id": "shard-api",
+        "raw_file_id": "raw-api-extra",
+        "raw_line_number": 1,
+        "raw_file_status": "CLOSED",
+    }
+    raw_path.write_text(
+        json.dumps(record, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    repository.upsert_raw_file(
+        {
+            "file_id": "raw-api-extra",
+            "run_id": "run-api-ping",
+            "train_id": "_80",
+            "device_uuid": "mr-api",
+            "mr_role": "CT",
+            "data_type": "ping",
+            "relative_path": raw_path.relative_to(
+                repository.db_path.parent
+            ).as_posix(),
+            "start_time": record["ts"],
+            "end_time": record["ts"],
+            "record_count": 1,
+            "size_bytes": raw_path.stat().st_size,
+            "status": "CLOSED",
+            "archive_status": "PENDING",
+        }
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/rail-transit/ground-unattended/ping-series",
+            params={
+                "run_id": "run-api-ping",
+                "target_ip": "192.0.2.80",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["raw_sample_count"] == 1
+    assert response.json()["points"][0]["sample_id"] == "api-sample"
+    assert "site_id" not in response.json()["points"][0]
+    request_id = response.json()["diagnostics"]["request_id"]
+    assert request_id
+    assert response.headers["x-request-id"] == request_id
+
+
+def test_ping_series_unknown_error_returns_stable_500(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    service = app.state.ground_unattended_application_service
+
+    def fail_ping(*_args, **_kwargs):
+        raise RuntimeError("sensitive physical path must stay in logs")
+
+    monkeypatch.setattr(service, "ping_series", fail_ping)
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/rail-transit/ground-unattended/ping-series",
+            params={
+                "run_id": "run-failure",
+                "target_ip": "192.0.2.99",
+            },
+        )
+        status_response = client.get(
+            "/api/rail-transit/ground-unattended/status"
+        )
+
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert detail["code"] == "GROUND_PING_QUERY_FAILED"
+    assert detail["details"]["request_id"]
+    assert response.headers["x-request-id"] == detail["details"]["request_id"]
+    assert "sensitive" not in response.text
+    assert status_response.status_code == 200
 
 
 def _setup_run(

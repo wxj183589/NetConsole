@@ -672,6 +672,7 @@ def create_app(
                     base_query=app.state.rail_transit_base_data_query_service,
                     desktop_action_service=desktop_action_service,
                     network_service=app.state.system_network_application_service,
+                    process_adapter=web_process_adapter,
                 )
             )
         except Exception as exc:

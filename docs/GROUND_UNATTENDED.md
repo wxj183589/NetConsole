@@ -12,8 +12,10 @@
 Vue 独立页面
   -> /api/rail-transit/ground-unattended
   -> GroundUnattendedApplicationService
-  -> GroundUnattendedSupervisor（FastAPI lifespan）
-  -> AC/基础资料/Online MR/fping/Repository
+  -> Identity / Raw Query / Raw Data Lifecycle Service
+  -> GroundUnattendedRepository / 受管文件 Adapter
+  -> GroundUnattendedSupervisor（FastAPI lifespan，运行态编排）
+  -> AC/基础资料/Online MR/fping
 ```
 
 页面卸载只停止 Renderer 增量轮询。Electron 主窗口隐藏到通知区域时 Backend、AC 常驻轮询、全车长
@@ -41,10 +43,12 @@ Renderer 初次加载状态、运行列表、必要配置和当前页签；之�
 取消请求、定时器和图表资源。活动长 Ping 浮窗另按约 1.8 秒调用增量接口，每次最多读取 200 个新点；
 页面隐藏、用户暂停或历史运行不会继续轮询，恢复后使用原游标补拉缺失样本。
 
-正线车辆、长 Ping、深度采集、时间轴、Syslog 和历史归档表统一按容器顶部、视口高度、行高和行数计算
-最大高度。少量行按真实内容结束，超过 18 行（长 Ping 为 20 行）后表体内部滚动；时间轴和 Syslog 空态
-主体固定为 190px，包含表格边框和表头的完整区域约为 231px。工具栏、统计条和分页保持紧邻表格，页签不再用固定
-`height: clamp(...)` 或 `100vh` 撑出空白；设置页继续使用正常纵向页面滚动。
+普通资料表继续使用 `NcDataTable.autoHeight`。时间轴和 Syslog 属于日志控制台，统一使用
+`NcLogWorkspace + NcDataTable.fillRemainingHeight`：筛选、诊断、批量动作和分页固定占用自身高度，表格
+区域使用 `flex: 1; min-height: 0` 填满余下空间，唯一主纵向滚动区为 `el-table` body。日志页不再叠加
+`autoHeight/maxHeight/flex:1` 三套高度策略，也不硬编码单一分辨率高度。时间轴通过服务端
+`page/page_size/query` 返回精确总数，默认每页 100；Syslog 常用筛选常驻，高级筛选折叠并显示条件数量。
+设置页和其他普通内容页继续使用正常纵向页面滚动。
 
 ## 配置和时间窗口
 
@@ -160,6 +164,17 @@ ECharts、`ResizeObserver`、pointer/resize/visibility 监听和请求资源。
 `target_ip + timestamp + sequence` 去重，按时间和序号重排，并维护 3000/10000 点环形缓存；丢包与
 AP 切换标记优先保留。用户缩放后停止跟随最新，“回到实时”恢复滚动；ECharts 实例不因每批数据重建。
 
+Ping 汇总同时返回 Backend 生成的 `query_identity`，其稳定身份为 `run_id + target_ip`。首次和增量查询
+优先使用该身份；`target_ip` 在同一 run 内唯一时作为目标级强身份，历史 `train_id/mr_id/device_uuid`
+别名只用于解析和诊断，不能再把目标 IP 已精确命中的样本排除。同一 run 内目标 IP 冲突明确返回
+`PING_TARGET_IDENTITY_CONFLICT`，查询身份与参数不一致返回 `PING_IDENTITY_MISMATCH`。
+
+2026-07-29 现场故障并非 ECharts 或 Backend 进程退出：原始点查询已经命中，但 raw point 中的
+`site_id/automation_run_id/device_uuid/backend/raw_file_id` 等内部字段直接进入
+`GroundPingSeriesDTO`，触发数千条 `extra_forbidden` 校验错误并返回 500。Application Service 现逐点
+显式投影 `GroundPingSampleDTO`；Router 记录 `GROUND_PING_QUERY_STARTED/COMPLETED/FAILED`、
+`request_id`、扫描/Registry/匹配量和完整 traceback，未知错误仍返回稳定 500 且不泄露物理路径。
+
 后端先按 `run_id/data_type/train_id/device_uuid/mr_role/start_time/end_time` 在 Repository 预筛文件，
 再逐行读取并优先保留丢包点。Ping 原始查询沿用最多 256 个文件、1,000,000 条扫描记录、256 MiB
 解压/读取字节和 12 秒处理预算；Syslog 列表使用更严格的交互预算，达到预算返回 `truncated` 和扫描
@@ -195,6 +210,20 @@ CLOSED/RECOVERED 和 READY ZIP 中的真实接收内容。当前运行默认最�
 时段；每页默认 100、最多 500，支持列车、MR、CT/CW、来源 IP、设备系统名、facility、级别、身份状态、
 WMESH 事件、AP、关键字和 ACTIVE/ARCHIVE 来源过滤。表格填充剩余视口并内部滚动，行详情展示完整原文、
 接收序号、原始文件/行号、归档成员、设备/接收时间、时钟差、身份和解析字段。
+
+已完成运行的 active Syslog 支持 `SELECTED/FILTERED/RUN_ALL` 三种服务端删除范围。页面只提交稳定记录
+身份或筛选条件，先调用 `/syslog-delete-preview` 取得匹配数量、影响文件/派生事件、revision、阻断原因
+和短期 token，再要求输入 `DELETE <run_date>` 或当前局点名；确认后只创建一个
+`ground_syslog_delete` Job。活动/ERROR/停止/最终化/归档 run、OPEN 文件、READY/校验/下载归档、路径
+不安全、文件缺失、锁超时和 revision 变化均阻断。READY ZIP 永不做记录级改写，只能使用既有整包归档
+删除入口。
+
+`GroundRawDataLifecycleService` 只对 Registry 登记且位于当前局点根内的
+`CLOSED/RECOVERED/PENDING` NDJSON 工作：同目录写受控 `.part`，flush/fsync 后重算行数、大小、
+SHA-256、起止时间，再用 `os.replace` 原子替换并在单一 SQLite 事务中更新 revision 和 provenance
+派生数据。Registry 事务失败时由同目录备份恢复原文件；损坏单行原样保留。默认删除对应 WMESH 与
+Syslog 时间轴事件；取消该选项时保留事件并标记 `source_deleted=true`。操作审计保存范围、数量、
+前后 revision、阶段、任务号和失败码，不保存原始报文或凭据。
 
 新 Syslog NDJSON 在写入时携带 WMESH 解析和 AP 展示字段。旧记录缺字段时在查询内存中只读重解析并标记
 `display_enriched=true`，不会回写原始文件。查询仅解析 Repository 已登记且位于当前无人值守数据根内
@@ -241,10 +270,11 @@ IP/端口，保留其他 IP 的外部目标，不执行 `undo`。当前现场 H3
 详情中明确二次确认后才允许改端口，并写入高风险授权与执行审计。配置指纹包含排序后的全部 loghost 和
 当前 managed target，因此设备输出顺序变化不产生伪变更。
 
-`ground_unattended` 索引库的 additive schema v6 包含列车清单/端点绑定/策略、boot session、Syslog
+`ground_unattended` 索引库的 additive schema v7 包含列车清单/端点绑定/策略、boot session、Syslog
 配置审计、WMESH 事件、原始文件索引、Ping 丢包区间和健康事件表；新增 Profile 外部地址确认字段，以及
 Boot Session 的前后设备时钟、估算误差、重启原因、设备时区、UTC offset、时间质量和时钟跳变证据。
-本轮新增深采总开关、Ping 预热字段、目标激活表和运行控制操作表；旧 `system` 或空时区迁移为
+本轮新增深采总开关、Ping 预热字段、目标激活表、运行控制操作表、raw file `revision` 和
+`ground_unattended_delete_operations` 删除审计表；旧 `system` 或空时区迁移为
 `Asia/Shanghai`，其他显式 IANA 时区保持不变。启动迁移为幂等加列与
 `CREATE TABLE IF NOT EXISTS`，不重建既有局点数据库。
 
@@ -380,8 +410,10 @@ ZIP 失败保留、Repository 故障隔离、API 空态和前端七页签。第�
 AP 展示、持久化停止操作、同 IP 端口冲突只读保护，以及不执行 `save/undo` 的 Syslog Profile。
 规模门覆盖 50,000 条 READY ZIP Ping、500,000 条 active Ping、100,000 条 Syslog、36 台 MR/30 天
 Registry；前端假时钟覆盖 30 分钟页面轮询、10 分钟 Syslog 自动刷新和 100 次图表开关。
-本轮另覆盖表格少量/空态/超限高度、非模态浮窗拖动与八向缩放、位置恢复、单窗口目标复用、3000 点
-环形缓存、重复与乱序增量样本、Windows 只读 UDP endpoint 检查，以及 Receiver 自身监听不误判占用。
+本轮另覆盖 `NcLogWorkspace`、日志表格填充剩余高度、时间轴服务端分页、非模态浮窗拖动与八向缩放、
+位置恢复、单窗口目标复用、3000 点环形缓存、重复与乱序增量样本、Windows 只读 UDP endpoint 检查，
+以及 Receiver 自身监听不误判占用。Syslog 删除测试覆盖选中/筛选/运行范围、活动/OPEN/READY 阻断、
+路径穿越、锁超时、revision 冲突、原子重写/回滚、损坏行保留、派生 provenance 与 Job 审计。
 
 Syslog 列表使用独立交互预算：最多 128 个候选文件、250,000 条记录、128MB 和 8 秒。无记录级筛选的
 首屏按 Registry 结束时间从新到旧读取；当已取得所需页且下一个文件可证明更旧时提前结束，返回
@@ -412,13 +444,23 @@ Boot Session 进入 `LOG_ACTIVE`，停止后原始文件已关闭登记。该结
 形式，轨旁基础资料虽有点位编号但没有 AP/Radio MAC，因此本次只验证到唯一物理 AP；工程点位名称仍需
 导入可信的 MAC 映射后验收。
 
-2026-07-29 活动运行的只读核对还确认了另一类空曲线根因：页面列车身份为“列车07”，原始文件 Registry
-保存为 `_07`，逐包 OPEN NDJSON 实际存在且可读取，并非真正的 `SUMMARY_ONLY`。查询现已在文件预筛和
-记录匹配两层复用列车身份规范化；该样本恢复为 `ACTIVE_RAW`，419 条原始记录中 409 条有效、27 条
-丢包可形成真实曲线。该核对未修改 Profile、SQLite、NDJSON 或 ZIP，也未启动无人值守或 UDP Receiver。
+2026-07-29 已完成运行的真实根只读核对确认：原请求实际命中原始点，DTO 对内部字段执行
+`extra_forbidden` 才是 500 的直接原因；请求前后 Backend PID 未变化。隔离副本修复后，
+列车03-CW/`10.122.3.250` 返回 420 条原始、410 条有效、0 条丢包，平均 RTT 约 43.162 ms；
+列车07-CT/`10.122.7.249` 返回 419/409 条、27 条丢包，平均约 46.411 ms；
+列车11-CW/`10.122.11.250` 返回 407/397 条、110 条丢包，平均约 50.030 ms。故意传入历史错误 MR UUID
+时列车03-CW 仍由稳定目标身份返回相同结果。该核对未修改真实 Profile、SQLite、NDJSON 或 ZIP，也未
+启动无人值守或 UDP Receiver；正式 Syslog 删除只在隔离副本执行。
+
+同一来源复制到 `D:\NetConsoleTestData\ground-ping-log-layout-20260731-a1` 后，选中
+`raw_41c8...` 的第 4 行完成一次正式删除：preview 命中 1 条原始记录、1 个 WMESH 和 1 个 Syslog
+时间轴事件；Job 完成后文件记录数 264→263、revision 0→1，SHA-256/大小与 Registry 一致，
+`integrity_check=ok`，4 个运行生命周期事件保留且无 `.part/.bak` 残留。真实根仅通过 SQLite
+`mode=ro&immutable=1` 执行相同 preview；前后真实 index/NDJSON 的 SHA-256、大小和修改时间完全一致。
 
 以下仍是人工现场门禁，不得由 fake 或本机回环测试提升为已验证：主备 AC 真实切换与设备时钟偏差、
-十几小时持续多目标 fping、真实列车 AP 漫游、2 车/4 MR 并发 SSH、Session 现场 ZIP、低磁盘故障注入、
-Electron 隐藏到通知区域后的整窗运行，以及退出后的 fping/Worker/SSH 进程核对。
+十几小时持续多目标 fping、当前活动 run 的真实增量曲线、真实列车 AP 漫游、2 车/4 MR 并发 SSH、
+Session 现场 ZIP、低磁盘故障注入、1366×768 与 Windows 125%/150% 缩放截图、Electron 隐藏到通知
+区域后的整窗运行，以及退出后的 fping/Worker/SSH 进程核对。
 
 逐项风险状态和剩余验证见 [地面无人值守风险审计](GROUND_UNATTENDED_RISK_AUDIT.md)。

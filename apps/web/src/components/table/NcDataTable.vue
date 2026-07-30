@@ -47,6 +47,7 @@ const props = withDefaults(defineProps<{
   border?: boolean
   compact?: boolean
   autoHeight?: boolean
+  fillRemainingHeight?: boolean
   showColumnSettings?: boolean
   sampleLimit?: number
   emptySpaceStrategy?: NcTableEmptySpaceStrategy
@@ -63,6 +64,7 @@ const props = withDefaults(defineProps<{
   border: false,
   compact: false,
   autoHeight: false,
+  fillRemainingHeight: false,
   showColumnSettings: true,
   sampleLimit: 200,
   emptySpaceStrategy: 'stretch',
@@ -118,6 +120,12 @@ const identity = computed(() => ({
   language: currentLanguage.value,
 }))
 const resolvedEmptyText = computed(() => props.emptyText || t('table.no_data', '暂无数据'))
+const resolvedHeight = computed(() => (
+  props.fillRemainingHeight ? '100%' : props.height
+))
+const resolvedMaxHeight = computed(() => (
+  props.fillRemainingHeight ? undefined : props.maxHeight
+))
 type RenderColumn = ResolvedNcTableColumn<Row> & { sourceIndex: number }
 
 watch(() => props.language, (language) => {
@@ -543,7 +551,7 @@ defineExpose({ tableRef, availableWidth, resolvedTableWidth, recalculate, resetL
 </script>
 
 <template>
-  <div ref="containerRef" :class="['nc-data-table', { 'nc-data-table--compact': compact, 'nc-data-table--auto-height': autoHeight }]">
+  <div ref="containerRef" :class="['nc-data-table', { 'nc-data-table--compact': compact, 'nc-data-table--auto-height': autoHeight && !fillRemainingHeight, 'nc-data-table--fill-remaining': fillRemainingHeight }]">
     <div v-if="showColumnSettings || $slots.tools" class="nc-data-table__tools">
       <slot name="tools" />
       <NcColumnSettings
@@ -561,11 +569,11 @@ defineExpose({ tableRef, availableWidth, resolvedTableWidth, recalculate, resetL
       <el-table
         ref="tableRef"
         :key="columnLayoutRevision"
-        v-memo="[tableData, columnLayoutRevision, widths, height, maxHeight, rowKey, stripe, border]"
+        v-memo="[tableData, columnLayoutRevision, widths, resolvedHeight, resolvedMaxHeight, rowKey, stripe, border]"
         v-bind="$attrs"
         :data="tableData"
-        :height="height"
-        :max-height="maxHeight"
+        :height="resolvedHeight"
+        :max-height="resolvedMaxHeight"
         :empty-text="resolvedEmptyText"
         :row-key="rowKey"
         :stripe="stripe"
@@ -666,6 +674,9 @@ defineExpose({ tableRef, availableWidth, resolvedTableWidth, recalculate, resetL
 .nc-data-table { display: flex; flex-direction: column; min-width: 0; min-height: 0; width: 100%; height: 100%; overflow: hidden; }
 .nc-data-table--auto-height { height: auto; }
 .nc-data-table--auto-height .nc-data-table__scroll { flex: none; }
+.nc-data-table--fill-remaining { flex: 1; height: 100%; min-height: 0; }
+.nc-data-table--fill-remaining .nc-data-table__scroll,
+.nc-data-table--fill-remaining :deep(.el-table) { height: 100%; min-height: 0; }
 .nc-data-table__tools { display: flex; flex: none; align-items: center; justify-content: flex-end; gap: 8px; min-height: 34px; padding: 0 0 8px; }
 .nc-data-table__scroll { flex: 1; min-width: 0; min-height: 0; width: 100%; overflow: hidden; }
 .nc-data-table :deep(.el-table) { width: 100%; color: var(--nc-text-primary); font-size: var(--nc-font-size-base); }

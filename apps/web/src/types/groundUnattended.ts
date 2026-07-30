@@ -68,8 +68,10 @@ export interface GroundPingTarget {
   min_rtt_ms: number | null; avg_rtt_ms: number | null; max_rtt_ms: number | null
   continuous_loss_max_count: number; continuous_loss_max_seconds: number; current_ap_name: string; station: string; section: string
   first_sample_at: string; last_sample_at: string; active_raw_file_count: number; archived_raw_file_count: number
-  raw_file_available: boolean; archive_available: boolean
-  data_source: 'ACTIVE' | 'ARCHIVE' | 'MIXED' | 'NONE'; data_availability: GroundDataAvailability
+  raw_file_count: number; raw_record_count: number; raw_file_ids: string[]
+  raw_file_available: boolean; archive_available: boolean; archive_id: string
+  data_source: 'ACTIVE' | 'ARCHIVE' | 'MIXED' | 'NONE'; source_kind: 'ACTIVE' | 'ARCHIVE' | 'MIXED' | 'NONE'
+  data_availability: GroundDataAvailability; availability_reason: string; query_identity: string
 }
 export interface GroundDeepCollection {
   train_id: string; train_no: string; status: GroundCoverageStatus; queue_position: number | null; scheduling_priority: number
@@ -121,10 +123,11 @@ export interface GroundPingSample {
   archive_entry: string; data_source: 'ACTIVE' | 'ARCHIVE'
 }
 export interface GroundQueryDiagnostics {
-  requested_run_id: string; resolved_start_time: string; resolved_end_time: string
+  request_id: string; requested_run_id: string; resolved_start_time: string; resolved_end_time: string
   source_kind: 'ACTIVE' | 'ARCHIVE' | 'MIXED' | 'NONE'; data_availability: GroundDataAvailability
   files_considered: number; files_scanned: number; registered_record_count?: number; records_scanned: number; bytes_scanned: number
   malformed_record_count: number; duplicate_record_count: number; truncated: boolean; optimized_latest_page?: boolean; legacy_archive: boolean; no_data_reason: string
+  resolved_train_ids: string[]; resolved_mr_ids: string[]; raw_file_registry_hit_count: number; matched_count: number
 }
 export interface GroundPingSeries {
   raw_sample_count: number; effective_sample_count: number; ignored_sample_count: number
@@ -134,7 +137,7 @@ export interface GroundPingSeries {
   loss_windows: Array<Record<string, unknown>>; ap_transitions: Array<Record<string, unknown>>; position_segments: Array<Record<string, unknown>>
   diagnostics: GroundQueryDiagnostics
   next_cursor: string; latest_sequence: number | null; latest_timestamp: string; server_time: string
-  active: boolean; target_state: string; has_more: boolean
+  active: boolean; target_state: string; has_more: boolean; query_identity: string
 }
 export interface GroundSyslogRecord {
   receive_time: string; device_time: string; source_ip: string; source_port: number | null; hostname: string; system_name: string
@@ -147,6 +150,35 @@ export interface GroundSyslogRecord {
   station: string; section: string; previous_station: string; previous_section: string; rssi: number | null
   previous_rssi: number | null; reason_code: string; reason_text: string; resolution_status: string
   parsed_details: Record<string, unknown>
+}
+export interface GroundSyslogRecordKey {
+  raw_file_id: string
+  global_receive_sequence?: number | null
+  source_receive_sequence?: number | null
+  raw_line_number?: number | null
+}
+export interface GroundSyslogDeleteFilters {
+  train_id?: string; mr_id?: string; mr_name?: string; mr_role?: string; source_ip?: string
+  system_name?: string; facility?: string; severity?: string; identity_status?: string
+  event_type?: string; peer_name?: string; data_source?: string; keyword?: string
+  start_time?: string; end_time?: string
+}
+export interface GroundSyslogDeletePreviewRequest {
+  run_id: string
+  mode: 'SELECTED' | 'FILTERED' | 'RUN_ALL'
+  record_keys?: GroundSyslogRecordKey[]
+  filters?: GroundSyslogDeleteFilters
+  include_derived_events: boolean
+}
+export interface GroundSyslogDeletePreview {
+  run_id: string; run_date: string; mode: 'SELECTED' | 'FILTERED' | 'RUN_ALL'
+  matched_record_count: number; affected_file_count: number; affected_event_count: number
+  affected_timeline_count: number; total_bytes: number; file_statuses: Array<Record<string, unknown>>
+  archive_status: string; blocked_reasons: string[]; warnings: string[]
+  preview_token: string; expires_at: string; confirmation_hint: string
+}
+export interface GroundSyslogDeleteAccepted {
+  accepted: boolean; operation_id: string; task_id: string; run_id: string; status: string; message: string
 }
 export interface GroundPagedResult<T> extends GroundPage<T> { total_exact?: boolean; page: number; page_size: number; diagnostics?: GroundQueryDiagnostics }
 export interface GroundPage<T> { items: T[]; total: number }

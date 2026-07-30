@@ -24,6 +24,16 @@
 
 ### 轨道交通地面无人值守
 
+- 修复 2026-07-29 真实长 Ping 查询的 DTO 500：内部 raw point 字段不再直接进入公开响应，Backend
+  生成 `run_id + target_ip` 稳定查询身份；目标 IP 唯一时不再被历史 MR UUID 漂移排除，冲突和身份
+  不一致返回结构化错误。首次成功后才增量，历史运行保持静态；失败展示 request ID、Backend 健康和
+  Registry/扫描/匹配诊断。
+- Syslog 新增选中、当前筛选和当前运行三种安全删除。删除先预览再输入运行日期/局点名确认，仅对已完成
+  run 的 CLOSED/RECOVERED/PENDING active NDJSON 创建一个 Job；活动/OPEN/READY/路径/锁/revision
+  异常全部阻断。文件使用 `.part + fsync + os.replace`，Registry/派生事件按 provenance 单事务更新并
+  写前后 revision 审计，READY ZIP 不可变。
+- 时间轴和 Syslog 改用公共 `NcLogWorkspace` 与 `NcDataTable.fillRemainingHeight`，表格填满剩余区域且
+  只有 table body 纵向滚动；时间轴增加精确服务端分页和搜索，Syslog 筛选分常用/高级两级。
 - 当前服务状态不再回退最近一次运行：无活动运行时按 Profile 返回“未启用/等待运行时段”，活动运行、
   最近运行、活动操作和最近终态操作分别查询；运行选择器统一驱动 Ping、Syslog、时间轴和深度采集。
 - 页面移除 5 秒全量刷新，改为按状态、操作、健康和活动页签独立轮询，增加防重入、请求取消、代次丢弃、
