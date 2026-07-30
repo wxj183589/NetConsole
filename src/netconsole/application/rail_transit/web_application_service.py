@@ -45,6 +45,7 @@ from netconsole.models.api.trackside_ap_business import (
     TracksideApPlanRowDTO,
     TracksideApPointTablePreviewDTO,
     TracksideApPointTableRowDTO,
+    TracksideApUnmatchedOnlineDTO,
     TracksideApUnassignedDTO,
 )
 from netconsole.models.api.vehicle_mr_online import (
@@ -990,21 +991,24 @@ class RailTransitWebApplicationService:
         ]
         planned_total = sum(row.planned_ap_count for row in result)
         actual_online_total = sum(row.actual_online_count for row in result)
+        unmatched = [
+            TracksideApUnmatchedOnlineDTO.model_validate(item.to_dict())
+            for item in scope.unmatched_online_items
+        ]
         unassigned = [
             TracksideApUnassignedDTO(
                 ap_id=item.item_id,
-                ap_name=item.device_name,
+                ap_name=item.ap_name,
                 mac=item.mac,
-                station_name=item.station_name,
+                station_name=item.runtime_station_text,
             )
-            for item in scope.excluded_items
-            if item.source == "fit_ap_online"
+            for item in scope.unmatched_online_items
         ]
         anomaly = any(row.count_anomaly for row in result)
         warning_parts = []
         if unassigned:
             warning_parts.append(
-                f"当前有 {len(unassigned)} 个在线轨旁 AP 未纳入有效统计范围。"
+                f"当前有 {len(unassigned)} 个待关联在线轨旁 AP。"
             )
         if scope.excluded_device_count:
             warning_parts.append(
@@ -1029,8 +1033,13 @@ class RailTransitWebApplicationService:
             scope_description=scope.scope_description,
             scope_station_count=scope.scope_station_count,
             scope_device_count=scope.scope_device_count,
+            scope_ap_reference_count=scope.scope_ap_reference_count,
             excluded_device_count=scope.excluded_device_count,
             excluded_items=[item.to_dict() for item in scope.excluded_items[:200]],
+            fit_ap_resource_total_count=scope.fit_ap_resource_total_count,
+            fit_ap_matched_count=scope.fit_ap_matched_count,
+            fit_ap_unmatched_online_count=scope.fit_ap_unmatched_online_count,
+            unmatched_online_items=unmatched,
         )
 
     def preview_trackside_ap_vlan_auto_group(

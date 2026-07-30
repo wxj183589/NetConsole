@@ -1094,6 +1094,16 @@ def _collect_fit_ap_optical_subtasks(
         )
         total += len(resources)
         emit_ac_progress(f"AC {ac_name} 可用 FIT-AP 目标 {len(resources)} 台", event="ac_resource_refresh_completed")
+        if not resources:
+            skipped.append(
+                TracksideSkippedTarget(
+                    ac_name,
+                    "FIT_AP",
+                    "no_fit_ap_resource",
+                    ac_device.primary_address,
+                )
+            )
+            continue
         skipped.extend(
             TracksideSkippedTarget(str(row.get("ap_name") or row.get("ap_uuid") or "FIT-AP"), "FIT_AP", "connection_incomplete", str(row.get("ap_ip") or ""))
             for row in resources

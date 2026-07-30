@@ -66,6 +66,17 @@ class TracksideApScopeExcludedDTO(ApiModel):
     mac: str = ""
 
 
+class TracksideApUnmatchedOnlineDTO(ApiModel):
+    source: str = ""
+    item_id: str = ""
+    ap_name: str = ""
+    mac: str = ""
+    ac_status: str = ""
+    runtime_station_text: str = ""
+    reason: str = ""
+    suggested_action: str = ""
+
+
 class TracksideApBusinessPageDTO(ApiModel):
     items: list[TracksideApBusinessRowDTO] = Field(default_factory=list)
     total: int = 0
@@ -77,6 +88,10 @@ class TracksideApBusinessPageDTO(ApiModel):
     candidate_interface_count: int = 0
     optical_abnormal_count: int = 0
     fit_ap_resource_count: int = 0
+    fit_ap_resource_total_count: int = 0
+    fit_ap_matched_count: int = 0
+    fit_ap_unmatched_online_count: int = 0
+    business_row_count: int = 0
     query_ms: int = 0
     build_ms: int = 0
     empty_reason: str = ""
@@ -84,8 +99,10 @@ class TracksideApBusinessPageDTO(ApiModel):
     scope_description: str = "当前项目 · 当前工作范围轨旁 AP"
     scope_station_count: int = Field(default=0, ge=0)
     scope_device_count: int = Field(default=0, ge=0)
+    scope_ap_reference_count: int = Field(default=0, ge=0)
     excluded_device_count: int = Field(default=0, ge=0)
     excluded_items: list[TracksideApScopeExcludedDTO] = Field(default_factory=list)
+    unmatched_online_items: list[TracksideApUnmatchedOnlineDTO] = Field(default_factory=list)
 
 
 class TracksideApUpdateRequestDTO(ApiModel):
@@ -210,8 +227,13 @@ class TracksideApOnlineStatusDTO(ApiModel):
     scope_description: str = "当前项目 · 当前工作范围轨旁 AP"
     scope_station_count: int = Field(default=0, ge=0)
     scope_device_count: int = Field(default=0, ge=0)
+    scope_ap_reference_count: int = Field(default=0, ge=0)
     excluded_device_count: int = Field(default=0, ge=0)
     excluded_items: list[TracksideApScopeExcludedDTO] = Field(default_factory=list)
+    fit_ap_resource_total_count: int = Field(default=0, ge=0)
+    fit_ap_matched_count: int = Field(default=0, ge=0)
+    fit_ap_unmatched_online_count: int = Field(default=0, ge=0)
+    unmatched_online_items: list[TracksideApUnmatchedOnlineDTO] = Field(default_factory=list)
 
 
 class ApManagementVlanPlanningDTO(ApiModel):

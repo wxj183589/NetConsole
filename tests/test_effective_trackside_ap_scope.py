@@ -289,18 +289,20 @@ def test_scope_excludes_non_service_cross_project_and_ambiguous_station_rows() -
     )
 
     rows = scope.station_statistics()
-    assert len(rows) == 1
-    assert rows[0]["station_name"] == "18-仁和南站"
-    assert rows[0]["planned_ap_count"] == 0
-    assert rows[0]["actual_online_count"] == 1
-    assert rows[0]["online_rate"] is None
-    assert rows[0]["status"] == "unplanned_online"
+    assert len(rows) == 3
+    by_name = {row["station_name"]: row for row in rows}
+    assert by_name["18-仁和南站"]["planned_ap_count"] == 0
+    assert by_name["18-仁和南站"]["actual_online_count"] == 1
+    assert by_name["18-仁和南站"]["online_rate"] is None
+    assert by_name["18-仁和南站"]["status"] == "unplanned_online"
     reasons = {item.reason for item in scope.excluded_items}
     assert "当前工作状态不是参与当前调试。" in reasons
     assert "不属于当前项目。" in reasons
     assert "缺少当前项目要求的建设阶段。" in reasons
     assert "历史站名匹配到多个 station_id，需人工处理。" in reasons
-    assert "在线 AP 未匹配到当前有效轨旁 AP 资料。" in reasons
+    assert "在线 AP 未匹配到当前有效轨旁 AP 资料。" in {
+        item.reason for item in scope.unmatched_online_items
+    }
 
 
 def test_over_planned_rate_is_not_exported_as_a_large_percentage() -> None:
@@ -385,3 +387,234 @@ def test_business_rows_are_filtered_and_station_name_is_canonicalized() -> None:
     assert len(rows) == 1
     assert rows[0]["site"] == "16-双陈站"
     assert rows[0]["station_id"]
+
+
+def test_planned_station_scope_survives_without_references_or_resources() -> None:
+    stations = [
+        _station(index, f"{index:02d}站点{index}", f"node-{index}", index)
+        for index in range(1, 16)
+    ]
+    plans = [
+        {
+            "station_id": "",
+            "station_name": f"站点{index}",
+            "sequence_no": index,
+            "ap_count": index + 1,
+        }
+        for index in range(1, 16)
+    ]
+
+    scope = _resolve(
+        stations=stations,
+        plans=plans,
+        references=[],
+        resources=[],
+    )
+
+    assert scope.scope_station_count == 15
+    rows = scope.station_statistics()
+    assert len(rows) == 15
+    assert all(row["actual_online_count"] == 0 for row in rows)
+    assert all(row["offline_count"] == row["planned_ap_count"] for row in rows)
+    assert all(row["status"] == "normal" for row in rows)
+    assert all(row["online_rate"] == 0.0 for row in rows)
+
+
+def test_switch_scope_keeps_candidate_ports_without_ap_references() -> None:
+    scope = _resolve(
+        stations=[_station(1, "01-站点A", "node-a", 1)],
+        plans=[{"station_name": "站点A", "ap_count": 8, "sequence_no": 1}],
+        references=[],
+        resources=[],
+    )
+
+    rows = scope.filter_switch_scope_rows(
+        [
+            {
+                "device_uuid": "switch-a",
+                "device_name": "SW-A",
+                "site": "站点A",
+                "interface_name": "XGE1/0/1",
+                "link_status": "UP",
+                "switch_rx_power": -10.0,
+                "ap_name": "",
+                "ap_mac": "",
+            }
+        ],
+        switch_device_ids={"switch-a"},
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["station_id"]
+    assert rows[0]["site"] == "01-站点A"
+    assert rows[0]["interface_name"] == "XGE1/0/1"
+    assert rows[0]["ap_name"] == ""
+
+
+def test_ambiguous_stable_identity_is_excluded_from_switch_scope() -> None:
+    scope = _resolve(
+        stations=[
+            _station(1, "01-站点A", "node-a", 1),
+            _station(2, "02-站点B", "node-b", 2),
+        ],
+        plans=[
+            {"station_name": "站点A", "ap_count": 1, "sequence_no": 1},
+            {"station_name": "站点B", "ap_count": 1, "sequence_no": 2},
+        ],
+        references=[
+            _reference(
+                1,
+                "AP-AMBIGUOUS-A",
+                "站点A",
+                "001122334455",
+                station_node_uid="node-a",
+                operation_status="in_service",
+                project_id="extension",
+                construction_phase_id="phase_2",
+            ),
+            _reference(
+                2,
+                "AP-AMBIGUOUS-B",
+                "站点B",
+                "001122334455",
+                station_node_uid="node-b",
+                operation_status="in_service",
+                project_id="extension",
+                construction_phase_id="phase_2",
+            ),
+        ],
+        resources=[],
+    )
+
+    rows = scope.filter_switch_scope_rows(
+        [
+            {
+                "device_uuid": "switch-a",
+                "site": "站点A",
+                "interface_name": "XGE1/0/1",
+                "ap_mac": "0011-2233-4455",
+            }
+        ],
+        switch_device_ids={"switch-a"},
+    )
+
+    assert rows == []
+    assert len(scope.excluded_items) == 2
+
+
+def test_unmatched_online_resources_are_diagnostics_not_exclusions() -> None:
+    stations = [_station(1, "01站点", "node-1", 1)]
+    scope = _resolve(
+        stations=stations,
+        plans=[{"station_name": "站点", "ap_count": 2, "sequence_no": 1}],
+        references=[],
+        resources=[
+            _resource(
+                None,
+                f"在线 AP {index}",
+                f"0011223344{index:02x}",
+                ap_uuid=f"online-{index}",
+            )
+            for index in range(1, 4)
+        ],
+    )
+
+    assert scope.fit_ap_resource_total_count == 3
+    assert scope.fit_ap_matched_count == 0
+    assert scope.fit_ap_unmatched_online_count == 3
+    assert scope.excluded_device_count == 0
+    assert len(scope.excluded_items) == 0
+
+
+def test_runtime_resources_with_same_name_but_different_macs_are_not_deduped() -> None:
+    station = _station(1, "01站点", "node-1", 1)
+    scope = _resolve(
+        stations=[station],
+        plans=[{"station_name": "站点", "ap_count": 2, "sequence_no": 1}],
+        references=[
+            _reference(
+                1,
+                "同名 AP",
+                "站点",
+                "001122334401",
+                station_node_uid="node-1",
+                operation_status="in_service",
+                project_id="extension",
+                construction_phase_id="phase_2",
+            ),
+            _reference(
+                2,
+                "同名 AP",
+                "站点",
+                "001122334402",
+                station_node_uid="node-1",
+                operation_status="in_service",
+                project_id="extension",
+                construction_phase_id="phase_2",
+            ),
+        ],
+        resources=[
+            _resource(1, "同名 AP", "001122334401", ap_uuid="online-1"),
+            _resource(2, "同名 AP", "001122334402", ap_uuid="online-2"),
+        ],
+    )
+
+    assert scope.fit_ap_matched_count == 2
+    assert scope.station_statistics()[0]["actual_online_count"] == 2
+
+
+def test_site_equivalent_fixture_keeps_switch_ports_and_unmatched_online_resources() -> None:
+    stations = [
+        _station(index, f"{index:02d}站点{index}", f"node-{index}", index)
+        for index in range(1, 16)
+    ]
+    plans = [
+        {"station_name": f"站点{index}", "sequence_no": index, "ap_count": 50}
+        for index in range(1, 16)
+    ]
+    scope = _resolve(
+        stations=stations,
+        plans=plans,
+        references=[],
+        resources=[
+            _resource(
+                None,
+                f"在线 AP {index}",
+                f"001122{index:06x}",
+                ap_uuid=f"online-{index}",
+            )
+            for index in range(1, 189)
+        ],
+    )
+    candidate_rows = [
+        {
+            "device_uuid": f"switch-{station_index}",
+            "site": f"站点{station_index}",
+            "interface_name": f"XGE1/0/{port_index}",
+            "ap_name": "",
+            "ap_mac": "",
+        }
+        for station_index in range(1, 16)
+        for port_index in range(1, 51)
+    ]
+    candidate_rows.extend(
+        {
+            "device_uuid": "switch-1",
+            "site": "站点1",
+            "interface_name": f"XGE1/0/{port_index}",
+            "ap_name": "",
+            "ap_mac": "",
+        }
+        for port_index in range(51, 57)
+    )
+
+    filtered = scope.filter_switch_scope_rows(
+        candidate_rows,
+        switch_device_ids={f"switch-{index}" for index in range(1, 16)},
+    )
+
+    assert scope.scope_station_count == 15
+    assert len(filtered) == 756
+    assert scope.fit_ap_unmatched_online_count == 188
+    assert scope.excluded_device_count == 0
+    assert len(scope.station_statistics()) == 15

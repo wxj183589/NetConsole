@@ -28,6 +28,7 @@ from netconsole.services.trackside_ap_business import (
     AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
     NEW_ONLINE_AP_OVERVIEW_COLUMNS,
     TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
+    TRACKSIDE_AP_UNMATCHED_ONLINE_COLUMNS,
     TracksideApExportCancelled,
     build_ap_optical_treatment_records,
     build_new_online_ap_overview_rows,
@@ -69,8 +70,12 @@ class TracksideApBusinessLoadResult:
     lldp_count: int = 0
     fit_ap_optical_count: int = 0
     fit_ap_resource_count: int = 0
+    fit_ap_resource_total_count: int = 0
+    fit_ap_matched_count: int = 0
+    fit_ap_unmatched_online_count: int = 0
     candidate_ap_interface_count: int = 0
     row_count: int = 0
+    business_row_count: int = 0
     empty_reason: str = ""
     identity_shadow: dict[str, object] = field(default_factory=dict)
     scope: EffectiveTracksideApScope | None = None
@@ -151,7 +156,7 @@ def load_trackside_ap_business_snapshot(
     query_ms = int((perf_counter() - query_start) * 1000)
 
     build_start = perf_counter()
-    rows = scope.filter_business_rows(
+    rows = scope.filter_switch_scope_rows(
         build_trackside_ap_business_rows(
             devices,
             interfaces_by_device,
@@ -163,7 +168,8 @@ def load_trackside_ap_business_snapshot(
             active_plan,
             offline_ledger_rows,
             historical_lldp_rows,
-        )
+        ),
+        switch_device_ids={str(device.device_uuid or "") for device in devices},
     )
     try:
         identity_shadow = TracksideApIdentityShadowService().shadow_rows(rows, fit_ap_resource_rows).to_payload()
@@ -194,8 +200,12 @@ def load_trackside_ap_business_snapshot(
         lldp_count=lldp_count,
         fit_ap_optical_count=len(fit_ap_optical_rows),
         fit_ap_resource_count=len(fit_ap_resource_rows),
+        fit_ap_resource_total_count=scope.fit_ap_resource_total_count,
+        fit_ap_matched_count=scope.fit_ap_matched_count,
+        fit_ap_unmatched_online_count=scope.fit_ap_unmatched_online_count,
         candidate_ap_interface_count=candidate_ap_interface_count,
         row_count=row_count,
+        business_row_count=row_count,
         empty_reason=empty_reason,
         identity_shadow=identity_shadow,
         scope=scope,
@@ -315,6 +325,9 @@ def export_trackside_ap_business_from_database(
         resource_history_rows,
         offline_ledger_rows=offline_ledger_rows,
     )
+    unmatched_online_rows = [
+        item.to_dict() for item in scope.unmatched_online_items
+    ]
     check_cancel()
 
     export_trackside_ap_business_xlsx(
@@ -337,6 +350,10 @@ def export_trackside_ap_business_from_database(
         offline_ledger_rows,
         offline_ap_headers(OFFLINE_AP_STATS_COLUMNS),
         offline_ap_headers(OFFLINE_AP_LEDGER_COLUMNS),
+        unmatched_online_rows,
+        TRACKSIDE_AP_UNMATCHED_ONLINE_COLUMNS,
+        [i18n.t(key) for key, _field in TRACKSIDE_AP_UNMATCHED_ONLINE_COLUMNS],
+        i18n.t("trackside.export.sheet_unmatched_online"),
         progress_callback=emit,
         should_cancel=should_cancel,
     )

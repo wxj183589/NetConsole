@@ -20,10 +20,13 @@ export interface TracksideApBusinessPage {
   items: TracksideApBusinessRow[]; total: number; page: number; page_size: number; site_id: string
   station_options: string[]
   device_count: number; candidate_interface_count: number; optical_abnormal_count: number
-  fit_ap_resource_count: number; query_ms: number; build_ms: number; empty_reason: string
+  fit_ap_resource_count: number; fit_ap_resource_total_count?: number; fit_ap_matched_count?: number
+  fit_ap_unmatched_online_count?: number; business_row_count?: number
+  query_ms: number; build_ms: number; empty_reason: string
   identity_shadow: Record<string, unknown>
   scope_description?: string; scope_station_count?: number; scope_device_count?: number
-  excluded_device_count?: number; excluded_items?: TracksideApScopeExcluded[]
+  scope_ap_reference_count?: number; excluded_device_count?: number; excluded_items?: TracksideApScopeExcluded[]
+  unmatched_online_items?: TracksideApUnmatchedOnline[]
 }
 
 export interface TracksideApUpdateRequest { station?: string; ap_uuid?: string; ap_mac?: string; ap_name?: string }
@@ -76,7 +79,7 @@ export interface TracksideSwitchSampleRequest {
 
 export interface TracksideApPlanRow {
   station_id: string; sequence_no: number; station_name: string; planned_ap_count: number
-  management_vlan: number | null; remark: string
+  management_vlan: number | null; remark: string; station_match_status?: 'matched' | 'unmatched'
 }
 
 export interface TracksideApOnlineStatusRow {
@@ -96,6 +99,11 @@ export interface TracksideApScopeExcluded {
   operation_status: string; project_phase: string; reason: string; mac: string
 }
 
+export interface TracksideApUnmatchedOnline {
+  source: string; item_id: string; ap_name: string; mac: string; ac_status: string
+  runtime_station_text: string; reason: string; suggested_action: string
+}
+
 export interface TracksideApOnlineStatus {
   items: TracksideApOnlineStatusRow[]
   planned_ap_count: number; actual_online_count: number; offline_count: number
@@ -103,7 +111,9 @@ export interface TracksideApOnlineStatus {
   unassigned_count: number; unassigned_items: TracksideApUnassigned[]
   updated_at: string; warning: string; count_anomaly?: boolean; status?: 'normal' | 'anomaly'
   scope_description?: string; scope_station_count?: number; scope_device_count?: number
-  excluded_device_count?: number; excluded_items?: TracksideApScopeExcluded[]
+  scope_ap_reference_count?: number; excluded_device_count?: number; excluded_items?: TracksideApScopeExcluded[]
+  fit_ap_resource_total_count?: number; fit_ap_matched_count?: number; fit_ap_unmatched_online_count?: number
+  unmatched_online_items?: TracksideApUnmatchedOnline[]
 }
 
 export type ApManagementVlanPlanningMode = 'line_single' | 'station_independent' | 'station_grouped'

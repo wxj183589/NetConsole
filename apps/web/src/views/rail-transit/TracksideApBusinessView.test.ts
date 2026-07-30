@@ -152,7 +152,13 @@ function task(
 
 const NcDataTableStub = defineComponent({
   name: 'NcDataTable',
-  props: { data: { type: Array, default: () => [] }, columns: { type: Array, default: () => [] }, height: String, tableId: String },
+  props: {
+    data: { type: Array, default: () => [] },
+    columns: { type: Array, default: () => [] },
+    emptyText: String,
+    height: String,
+    tableId: String,
+  },
   template: `
     <div class="nc-data-table" :data-table-id="tableId" :data-height="height">
       <div v-for="(row, index) in data" :key="index" class="table-row">
@@ -265,6 +271,54 @@ describe('TracksideApBusinessView mounted behavior', () => {
     wrapper.unmount()
   })
 
+  it('localizes empty reasons and exposes unmatched online counts', async () => {
+    api.listTracksideApBusiness.mockResolvedValueOnce({
+      ...page([], 1, []),
+      device_count: 15,
+      candidate_interface_count: 756,
+      fit_ap_resource_count: 0,
+      fit_ap_matched_count: 0,
+      fit_ap_unmatched_online_count: 188,
+      empty_reason: 'trackside.empty.no_fit_ap_resource',
+      unmatched_online_items: [{
+        source: 'fit_ap_online',
+        item_id: 'ap-unmatched',
+        ap_name: 'AP-UNMATCHED',
+        mac: '0011-2233-4455',
+        ac_status: 'R',
+        runtime_station_text: '站点A',
+        reason: '在线 AP 未匹配到当前有效轨旁 AP 资料。',
+        suggested_action: '补充基础资料',
+      }],
+    })
+    const wrapper = await mountView()
+
+    expect(wrapper.getComponent(NcDataTableStub).props('emptyText')).toBe(
+      '已发现候选 AP 端口，部分端口尚未关联 AP 运行态资料。',
+    )
+    expect(wrapper.text()).not.toContain('trackside.empty.no_fit_ap_resource')
+    expect(wrapper.text()).toContain('待关联在线 AP 188')
+    wrapper.unmount()
+  })
+
+  it('keeps station update enabled while disabling AP update without identity', async () => {
+    const candidate: TracksideApBusinessRow = {
+      ...rows[1],
+      site: '站点C',
+      device_name: 'SW-C',
+      interface_name: 'XGE1/0/3',
+      ap_uuid: '',
+      ap_mac: '',
+      ap_name: '',
+    }
+    api.listTracksideApBusiness.mockResolvedValueOnce(page([candidate]))
+    const wrapper = await mountView()
+
+    expect(buttons(wrapper, '更新站点')[0].attributes('disabled')).toBeUndefined()
+    expect(buttons(wrapper, '更新 AP')[0].attributes('disabled')).toBeDefined()
+    wrapper.unmount()
+  })
+
   it('keeps vendor, LLDP and optical columns without bidirectional loss', async () => {
     const wrapper = await mountView()
     const columns = wrapper.getComponent(NcDataTableStub).props('columns') as Array<{
@@ -307,7 +361,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
       '下载原始输出 ZIP',
     ]) expect(wrapper.text()).not.toContain(removed)
     expect(wrapper.find('.adapter-section').exists()).toBe(false)
-    expect(wrapper.text()).toContain('已按当前项目、建设阶段、当前工作状态和有效 AP 身份过滤')
+    expect(wrapper.text()).toContain('已按当前项目、建设阶段、当前工作状态和站点交换机工作范围过滤；AP 身份仅用于关联')
     wrapper.unmount()
   })
 

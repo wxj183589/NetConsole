@@ -113,6 +113,10 @@ class TracksideApBusinessQueryService:
             candidate_interface_count=snapshot.candidate_ap_interface_count,
             optical_abnormal_count=count_current_optical_abnormal_aps(business_rows),
             fit_ap_resource_count=snapshot.fit_ap_resource_count,
+            fit_ap_resource_total_count=snapshot.fit_ap_resource_total_count,
+            fit_ap_matched_count=snapshot.fit_ap_matched_count,
+            fit_ap_unmatched_online_count=snapshot.fit_ap_unmatched_online_count,
+            business_row_count=snapshot.business_row_count or len(business_rows),
             query_ms=snapshot.query_ms,
             build_ms=snapshot.build_ms,
             empty_reason=snapshot.empty_reason,
@@ -124,11 +128,22 @@ class TracksideApBusinessQueryService:
             ),
             scope_station_count=scope.scope_station_count if scope is not None else 0,
             scope_device_count=scope.scope_device_count if scope is not None else 0,
+            scope_ap_reference_count=(
+                scope.scope_ap_reference_count if scope is not None else 0
+            ),
             excluded_device_count=(
                 scope.excluded_device_count if scope is not None else 0
             ),
             excluded_items=(
                 [item.to_dict() for item in scope.excluded_items[:200]]
+                if scope is not None
+                else []
+            ),
+            unmatched_online_items=(
+                [
+                    item.to_dict()
+                    for item in scope.unmatched_online_items[:200]
+                ]
                 if scope is not None
                 else []
             ),

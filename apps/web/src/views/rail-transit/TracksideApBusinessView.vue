@@ -17,6 +17,7 @@ import type {
   TracksideApBusinessPage,
   TracksideApBusinessRow,
   TracksideApScopeExcluded,
+  TracksideApUnmatchedOnline,
   TracksideApTask,
   TracksideApUpdateRequest,
 } from '../../types/tracksideApBusiness'
@@ -46,6 +47,7 @@ const taskNotice = ref('')
 const taskNoticeType = ref<'success' | 'info' | 'warning' | 'error'>('info')
 const page = ref<TracksideApBusinessPage | null>(null)
 const excludedVisible = ref(false)
+const unmatchedVisible = ref(false)
 const task = ref<TracksideApTask | null>(null)
 const filters = reactive({ station: '', query: '', optical_anomaly_only: false, page: 1, page_size: 50 })
 let pollTimer: number | undefined
@@ -85,6 +87,14 @@ const excludedColumns: NcTableColumn<TracksideApScopeExcluded>[] = [
   { key: 'project_phase', label: '建设批次', valueType: 'status', width: 120 },
   { key: 'reason', label: '排除原因', valueType: 'description', minWidth: 280, align: 'left', alignmentReason: 'long-text' },
 ]
+const unmatchedColumns: NcTableColumn<TracksideApUnmatchedOnline>[] = [
+  { key: 'ap_name', label: 'AP名称', valueType: 'name', minWidth: 170 },
+  { key: 'mac', label: 'AP MAC', valueType: 'mac', width: 170 },
+  { key: 'ac_status', label: 'AC状态', valueType: 'status', width: 130 },
+  { key: 'runtime_station_text', label: '运行态站点', valueType: 'name', minWidth: 170 },
+  { key: 'reason', label: '未关联原因', valueType: 'description', minWidth: 280, align: 'left', alignmentReason: 'long-text' },
+  { key: 'suggested_action', label: '建议处理', valueType: 'description', minWidth: 300, align: 'left', alignmentReason: 'long-text' },
+]
 const updateTaskRunning = computed(() => isActiveTask(task.value) && task.value?.action === 'trackside_ap_optical_update')
 const exportTaskRunning = computed(() => isActiveTask(task.value) && task.value?.action === TRACKSIDE_AP_BUSINESS_EXPORT_ACTION)
 const updateFeatureEnabled = computed(() => isFeatureEnabled('web.rail_trackside_ap_business_update') && isFeatureEnabled('web.rail_task_control'))
@@ -117,6 +127,21 @@ function singleApUpdatePayload(row: TracksideApBusinessRow): TracksideApUpdateRe
   return null
 }
 function hasApIdentity(row: TracksideApBusinessRow): boolean { return singleApUpdatePayload(row) !== null }
+function emptyReasonLabel(value: string): string {
+  const labels: Record<string, string> = {
+    'trackside.empty.no_devices': '当前工作范围内没有可用的车站交换机。',
+    'trackside.empty.no_interfaces': '当前车站交换机没有接口事实。',
+    'trackside.empty.no_ap_interfaces': '已找到车站交换机，但未识别到候选 AP 端口。',
+    'trackside.empty.no_optical_or_fit': '已找到候选 AP 端口，但暂未采集光衰或 FIT-AP 运行态。',
+    'trackside.empty.no_lldp_or_fit': '已找到候选 AP 端口，但暂未采集 LLDP 或 FIT-AP 运行态。',
+    'trackside.empty.no_fit_ap_optical': '已发现候选 AP 端口，暂未关联 AP 光衰资料。',
+    'trackside.empty.no_fit_ap_resource': '已发现候选 AP 端口，部分端口尚未关联 AP 运行态资料。',
+    'trackside.empty.no_rows': '已发现候选 AP 端口，部分端口尚未关联 AP 运行态资料。',
+  }
+  if (labels[value]) return labels[value]
+  if (value.startsWith('trackside.')) return '暂无轨旁 AP 业务数据'
+  return value || '暂无轨旁 AP 业务数据'
+}
 function summaryCount(summary: Record<string, unknown>, key: string): number {
   const value = Number(summary[key] ?? 0)
   return Number.isFinite(value) ? Math.max(0, value) : 0
@@ -345,12 +370,13 @@ onBeforeUnmount(() => { stopPolling(); clearTaskNotice() })
     <div v-if="page" class="scope-summary">
       <strong>统计范围：{{ page.scope_description || '当前项目 · 当前工作范围轨旁 AP' }}</strong>
       <span>纳入站点 {{ page.scope_station_count || 0 }}</span>
-      <span>纳入设备 {{ page.scope_device_count || 0 }}</span>
+      <span>纳入 AP 资料 {{ page.scope_ap_reference_count ?? page.scope_device_count ?? 0 }}</span>
       <span>排除设备 {{ page.excluded_device_count || 0 }}</span>
+      <el-button v-if="page.fit_ap_unmatched_online_count" link type="warning" @click="unmatchedVisible = true">待关联在线 AP {{ page.fit_ap_unmatched_online_count }}</el-button>
       <el-button v-if="page.excluded_device_count" link type="warning" @click="excludedVisible = true">查看排除项</el-button>
     </div>
     <div v-if="page" class="summary-grid">
-      <article><span>站点交换机</span><strong>{{ page.device_count }}</strong></article><article><span>候选 AP 端口</span><strong>{{ page.candidate_interface_count }}</strong></article><article><span>光衰异常</span><strong>{{ page.optical_abnormal_count }}</strong></article><article><span>FIT-AP 资源</span><strong>{{ page.fit_ap_resource_count }}</strong></article><article><span>查询 / 构建</span><strong>{{ page.query_ms }} / {{ page.build_ms }} ms</strong></article>
+      <article><span>站点交换机</span><strong>{{ page.device_count }}</strong></article><article><span>候选 AP 端口</span><strong>{{ page.candidate_interface_count }}</strong></article><article><span>已关联 AP</span><strong>{{ page.fit_ap_matched_count ?? page.fit_ap_resource_count }}</strong></article><article><span>待关联在线 AP</span><strong>{{ page.fit_ap_unmatched_online_count ?? 0 }}</strong></article><article><span>光衰异常</span><strong>{{ page.optical_abnormal_count }}</strong></article>
     </div>
     <div class="content-card">
       <div class="toolbar">
@@ -375,7 +401,7 @@ onBeforeUnmount(() => { stopPolling(); clearTaskNotice() })
         <el-checkbox v-model="filters.optical_anomaly_only">仅光衰异常</el-checkbox>
         <el-button type="primary" :loading="refreshing" :disabled="initialLoading" @click="loadRows(true)">查询</el-button>
         <span v-if="refreshing" class="refresh-indicator">正在刷新，当前数据保持显示</span>
-        <span class="work-scope-filter-hint">已按当前项目、建设阶段、当前工作状态和有效 AP 身份过滤</span>
+        <span class="work-scope-filter-hint">已按当前项目、建设阶段、当前工作状态和站点交换机工作范围过滤；AP 身份仅用于关联</span>
       </div>
       <div class="business-table-host">
         <NcDataTable
@@ -386,7 +412,7 @@ onBeforeUnmount(() => { stopPolling(); clearTaskNotice() })
           :columns="businessColumns"
           class="business-table"
           height="100%"
-          :empty-text="page?.empty_reason || '暂无轨旁 AP 业务数据'"
+          :empty-text="emptyReasonLabel(page?.empty_reason || '')"
         >
           <template #cell-switch_rx_power="{ row }"><span :class="tracksideOpticalPresentation(row.switch_optical_status).className">{{ displayTracksideValue(row.switch_rx_power) }}</span></template>
           <template #cell-switch_tx_power="{ row }"><span :class="tracksideOpticalPresentation(row.switch_optical_status).className">{{ displayTracksideValue(row.switch_tx_power) }}</span></template>
@@ -408,6 +434,16 @@ onBeforeUnmount(() => { stopPolling(); clearTaskNotice() })
         :columns="excludedColumns"
         height="460"
         empty-text="没有排除项"
+      />
+    </el-dialog>
+    <el-dialog v-model="unmatchedVisible" title="待关联在线 AP" width="min(1280px, 96vw)">
+      <NcDataTable
+        table-id="trackside-ap-business-unmatched-online"
+        route-key="/rail-transit/trackside-ap-business"
+        :data="page?.unmatched_online_items || []"
+        :columns="unmatchedColumns"
+        height="460"
+        empty-text="没有待关联在线 AP"
       />
     </el-dialog>
   </section>

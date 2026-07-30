@@ -33,6 +33,7 @@ import type {
   TracksideApPlanRow,
   TracksideApScopeExcluded,
   TracksideApTask,
+  TracksideApUnmatchedOnline,
   TracksideApUnassigned,
 } from '../../../types/tracksideApBusiness'
 import { useConfirm } from '../../feedback/useConfirm'
@@ -100,6 +101,7 @@ const importPreviewVisible = ref(false)
 const onlineStatus = ref<TracksideApOnlineStatus | null>(null)
 const unassignedVisible = ref(false)
 const excludedVisible = ref(false)
+const unmatchedVisible = ref(false)
 const downloadingArtifact = ref(false)
 let pollTimer: number | undefined
 let editingBaseline:
@@ -151,6 +153,14 @@ const excludedColumns: NcTableColumn<TracksideApScopeExcluded>[] = [
   { key: 'project_phase', label: '建设批次', valueType: 'status', width: 120 },
   { key: 'reason', label: '排除原因', valueType: 'description', minWidth: 280, align: 'left', alignmentReason: 'long-text' },
 ]
+const unmatchedColumns: NcTableColumn<TracksideApUnmatchedOnline>[] = [
+  { key: 'ap_name', label: 'AP名称', valueType: 'name', minWidth: 170 },
+  { key: 'mac', label: 'AP MAC', valueType: 'mac', width: 170 },
+  { key: 'ac_status', label: 'AC状态', valueType: 'status', width: 130 },
+  { key: 'runtime_station_text', label: '运行态站点', valueType: 'name', minWidth: 170 },
+  { key: 'reason', label: '未关联原因', valueType: 'description', minWidth: 280, align: 'left', alignmentReason: 'long-text' },
+  { key: 'suggested_action', label: '建议处理', valueType: 'description', minWidth: 300, align: 'left', alignmentReason: 'long-text' },
+]
 
 const editableFields: EditableField[] = [
   'sequence_no',
@@ -198,6 +208,7 @@ function blankRow(sequenceNo = nextSequence()): TracksideApPlanRow {
     planned_ap_count: 0,
     management_vlan: null,
     remark: '',
+    station_match_status: 'unmatched',
   }
 }
 
@@ -211,15 +222,86 @@ function publishDirty(sort = false): void {
   emit('change', deepCopy(rows.value), dirty.value)
 }
 
+function canonicalStationName(value: unknown): string {
+  return String(value || '')
+    .normalize('NFKC')
+    .trim()
+    .replace(/^[0-9０-９]+(?:[-_.、\s]*)/, '')
+    .replace(/\s+/g, '')
+    .toLocaleLowerCase()
+}
+
+function stationForRow(row: TracksideApPlanRow): StationOption | null {
+  const byId = props.stations.find((item) => item.id === row.station_id)
+  if (byId) return byId
+  const key = canonicalStationName(row.station_name)
+  if (!key) return null
+  const matches = props.stations.filter((item) => canonicalStationName(item.name) === key)
+  return matches.length === 1 ? matches[0] : null
+}
+
 function hydrateStation(row: TracksideApPlanRow): void {
-  const station = props.stations.find((item) => item.id === row.station_id)
-    || props.stations.find((item) => item.name === row.station_name)
+  const station = stationForRow(row)
   if (!station) {
-    if (props.stations.length) row.station_id = ''
+    row.station_match_status = 'unmatched'
     return
   }
   row.station_id = station.id
   row.station_name = station.name
+  row.station_match_status = 'matched'
+}
+
+function mergePlanRows(sourceRows: TracksideApPlanRow[]): TracksideApPlanRow[] {
+  const merged: TracksideApPlanRow[] = sourceRows.map((source, index) => {
+    const row = {
+      ...source,
+      sequence_no: Number(source.sequence_no) || index + 1,
+      station_match_status: source.station_match_status || 'unmatched',
+    }
+    hydrateStation(row)
+    return row
+  })
+  const represented = new Set(
+    merged
+      .filter((row) => row.station_match_status === 'matched')
+      .map((row) => row.station_id),
+  )
+  for (const [index, station] of orderedStations.value.entries()) {
+    if (represented.has(station.id)) continue
+    merged.push({
+      station_id: station.id,
+      sequence_no: Number(station.sort_order) || index + 1,
+      station_name: station.name,
+      planned_ap_count: 0,
+      management_vlan: null,
+      remark: '',
+      station_match_status: 'matched',
+    })
+  }
+  return merged.sort(compareRows)
+}
+
+function appendMissingStationRows(sourceRows: TracksideApPlanRow[]): TracksideApPlanRow[] {
+  const merged = [...sourceRows]
+  const represented = new Set(
+    merged
+      .filter((row) => row.station_id)
+      .map((row) => row.station_id),
+  )
+  for (const [index, station] of orderedStations.value.entries()) {
+    if (represented.has(station.id)) continue
+    merged.push({
+      station_id: station.id,
+      sequence_no: Number(station.sort_order) || index + 1,
+      station_name: station.name,
+      planned_ap_count: 0,
+      management_vlan: null,
+      remark: '',
+      station_match_status: 'matched',
+    })
+    represented.add(station.id)
+  }
+  return merged.sort(compareRows)
 }
 
 async function loadPlan(force = false): Promise<boolean> {
@@ -228,12 +310,7 @@ async function loadPlan(force = false): Promise<boolean> {
   error.value = ''
   try {
     const plan = await getTracksideApPlan()
-    const loaded = plan.items.map((row, index) => ({
-      ...row,
-      sequence_no: row.sequence_no || index + 1,
-    }))
-    for (const row of loaded) hydrateStation(row)
-    rows.value = loaded.sort(compareRows)
+    rows.value = mergePlanRows(plan.items)
     baselineRows.value = deepCopy(rows.value)
     dirty.value = false
     selectedRows.value = []
@@ -332,6 +409,8 @@ function validateRows(source: TracksideApPlanRow[]): ValidationIssue[] {
     else names.set(name.toLocaleLowerCase(), (names.get(name.toLocaleLowerCase()) || 0) + 1)
     if (!row.station_id) {
       issues.push({ row, field: 'station_name', message: '请选择当前基础资料中的站点' })
+    } else if (row.station_match_status === 'unmatched' || !props.stations.some((station) => station.id === row.station_id)) {
+      issues.push({ row, field: 'station_name', message: '未匹配当前站点，请重新选择有效站点或删除该行' })
     } else {
       stationIds.set(row.station_id, (stationIds.get(row.station_id) || 0) + 1)
     }
@@ -705,15 +784,30 @@ function openApReferences(): void {
 }
 
 watch(() => props.stations, () => {
+  if (!dirty.value) {
+    const merged = mergePlanRows(rows.value)
+    rows.value = merged
+    baselineRows.value = deepCopy(merged)
+    dirty.value = false
+    emit('change', deepCopy(rows.value), false)
+    return
+  }
+  const withMissingStations = appendMissingStationRows(rows.value)
+  if (withMissingStations.length !== rows.value.length) {
+    rows.value = withMissingStations
+    emit('change', deepCopy(rows.value), true)
+  }
   let changed = false
   for (const row of rows.value) {
+    if (!row.station_id) continue
     const station = props.stations.find((item) => item.id === row.station_id)
-    if (station && station.name !== row.station_name) {
+    if (station && (station.name !== row.station_name || row.station_match_status !== 'matched')) {
       row.station_name = station.name
+      row.station_match_status = 'matched'
       changed = true
     }
   }
-  if (changed && canWrite.value) publishDirty()
+  if (changed) publishDirty()
 }, { deep: true })
 
 defineExpose({ reload: loadPlan })
@@ -756,7 +850,7 @@ onBeforeUnmount(stopPolling)
             :columns="planColumns"
             border
             height="calc(100vh - 430px)"
-            empty-text="暂无 AP 规划"
+            :empty-text="props.stations.length ? '暂无 AP 规划' : '暂无站点资料，请先在‘站点与区间’中维护站点。'"
             @selection-change="(value: TracksideApPlanRow[]) => selectedRows = value"
           >
             <template #cell-sequence_no="{ row }">
@@ -793,6 +887,7 @@ onBeforeUnmount(stopPolling)
                   <el-option v-for="station in orderedStations" :key="station.id" :label="station.name" :value="station.name" />
                 </el-select>
                 <span v-else>{{ row.station_name }}</span>
+                <el-tag v-if="row.station_match_status === 'unmatched'" type="danger" size="small">未匹配当前站点</el-tag>
               </div>
             </template>
             <template #cell-planned_ap_count="{ row }">
@@ -861,8 +956,9 @@ onBeforeUnmount(stopPolling)
         <div v-if="onlineStatus" class="scope-summary">
           <strong>统计范围：{{ onlineStatus.scope_description || '当前项目 · 当前工作范围轨旁 AP' }}</strong>
           <span>纳入站点 {{ onlineStatus.scope_station_count || 0 }}</span>
-          <span>纳入设备 {{ onlineStatus.scope_device_count || 0 }}</span>
+          <span>纳入 AP 资料 {{ onlineStatus.scope_ap_reference_count ?? onlineStatus.scope_device_count ?? 0 }}</span>
           <span>排除设备 {{ onlineStatus.excluded_device_count || 0 }}</span>
+          <el-button v-if="onlineStatus.fit_ap_unmatched_online_count" link type="warning" @click="unmatchedVisible = true">待关联在线 AP {{ onlineStatus.fit_ap_unmatched_online_count }}</el-button>
           <el-button
             v-if="onlineStatus.excluded_device_count"
             link
@@ -877,6 +973,7 @@ onBeforeUnmount(stopPolling)
           :closable="false"
           show-icon
         >
+          <el-button v-if="onlineStatus?.fit_ap_unmatched_online_count" link type="warning" @click="unmatchedVisible = true">待关联在线 AP {{ onlineStatus.fit_ap_unmatched_online_count }}</el-button>
           <el-button v-if="onlineStatus?.unassigned_count" link type="warning" @click="unassignedVisible = true">查看未分配 AP</el-button>
           <el-button v-if="onlineStatus?.excluded_device_count" link type="warning" @click="excludedVisible = true">查看排除项</el-button>
         </el-alert>
@@ -1002,6 +1099,17 @@ onBeforeUnmount(stopPolling)
         border
         height="460"
         empty-text="没有排除项"
+      />
+    </el-dialog>
+    <el-dialog v-model="unmatchedVisible" title="待关联在线 AP" width="min(1280px, 96vw)">
+      <NcDataTable
+        table-id="rail-base-trackside-ap-unmatched-online"
+        route-key="/rail-transit/base-data"
+        :data="onlineStatus?.unmatched_online_items || []"
+        :columns="unmatchedColumns"
+        border
+        height="460"
+        empty-text="没有待关联在线 AP"
       />
     </el-dialog>
   </section>

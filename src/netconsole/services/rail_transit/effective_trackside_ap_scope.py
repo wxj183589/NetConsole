@@ -92,6 +92,30 @@ class TracksideApScopeExcludedItem:
 
 
 @dataclass(frozen=True)
+class TracksideApScopeUnmatchedOnlineItem:
+    source: str
+    item_id: str
+    ap_name: str = ""
+    mac: str = ""
+    ac_status: str = ""
+    runtime_station_text: str = ""
+    reason: str = ""
+    suggested_action: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "source": self.source,
+            "item_id": self.item_id,
+            "ap_name": self.ap_name,
+            "mac": self.mac,
+            "ac_status": self.ac_status,
+            "runtime_station_text": self.runtime_station_text,
+            "reason": self.reason,
+            "suggested_action": self.suggested_action,
+        }
+
+
+@dataclass(frozen=True)
 class EffectiveTracksideApReference:
     reference_id: str
     station_id: str
@@ -114,6 +138,10 @@ class EffectiveTracksideApScope:
     plans_by_station: dict[str, dict[str, object | None]]
     online_reference_ids: set[str]
     excluded_items: list[TracksideApScopeExcludedItem]
+    unmatched_online_items: list[TracksideApScopeUnmatchedOnlineItem] = field(
+        default_factory=list
+    )
+    fit_ap_resource_total_count: int = 0
     updated_at: str = ""
     _reference_by_id: dict[str, EffectiveTracksideApReference] = field(
         default_factory=dict,
@@ -123,10 +151,22 @@ class EffectiveTracksideApScope:
         default_factory=dict,
         repr=False,
     )
+    _all_reference_by_id: dict[str, EffectiveTracksideApReference] = field(
+        default_factory=dict,
+        repr=False,
+    )
+    _all_identity_index: dict[tuple[str, str], set[str]] = field(
+        default_factory=dict,
+        repr=False,
+    )
 
     @property
     def eligible_station_ids(self) -> set[str]:
-        return {reference.station_id for reference in self.references}
+        return set(self.station_scope_ids)
+
+    @property
+    def station_scope_ids(self) -> set[str]:
+        return set(self.station_names)
 
     @property
     def scope_station_count(self) -> int:
@@ -135,6 +175,18 @@ class EffectiveTracksideApScope:
     @property
     def scope_device_count(self) -> int:
         return len(self.references)
+
+    @property
+    def scope_ap_reference_count(self) -> int:
+        return len(self.references)
+
+    @property
+    def fit_ap_matched_count(self) -> int:
+        return len(self.resources)
+
+    @property
+    def fit_ap_unmatched_online_count(self) -> int:
+        return len(self.unmatched_online_items)
 
     @property
     def excluded_device_count(self) -> int:
@@ -193,30 +245,90 @@ class EffectiveTracksideApScope:
     def filter_business_rows(
         self,
         rows: Iterable[dict[str, object | None]],
+        *,
+        switch_device_ids: set[str] | None = None,
+    ) -> list[dict[str, object | None]]:
+        return self.filter_switch_scope_rows(rows, switch_device_ids=switch_device_ids)
+
+    def filter_switch_scope_rows(
+        self,
+        rows: Iterable[dict[str, object | None]],
+        *,
+        switch_device_ids: set[str] | None = None,
     ) -> list[dict[str, object | None]]:
         result: list[dict[str, object | None]] = []
         seen: set[tuple[str, str, str]] = set()
         for row in rows:
-            reference = self.match_reference(row)
-            if reference is None:
+            device_id = str(row.get("device_uuid") or "").strip()
+            if switch_device_ids and device_id not in switch_device_ids:
                 continue
+            reference = self.match_reference(row)
+            if reference is None and self._has_excluded_reference_match(row):
+                continue
+            enriched = dict(row)
+            if reference is not None:
+                enriched.update(
+                    {
+                        "_scope_reference_id": reference.reference_id,
+                        "station_id": reference.station_id,
+                        "site": reference.station_name,
+                        "site_name": reference.station_name,
+                    }
+                )
+            else:
+                station_id = str(row.get("station_id") or "").strip()
+                station_name = str(
+                    row.get("site")
+                    or row.get("site_name")
+                    or row.get("station_name")
+                    or ""
+                ).strip()
+                if not station_id:
+                    station_id = self._resolve_scope_station_id("", station_name)
+                if not station_id:
+                    continue
+                if station_id in self.station_scope_ids:
+                    enriched["station_id"] = station_id
+                    enriched["site"] = self.station_names.get(station_id, station_name)
+                    enriched["site_name"] = enriched["site"]
+                else:
+                    continue
             key = (
-                reference.reference_id,
-                str(row.get("device_uuid") or row.get("device_name") or ""),
-                str(row.get("interface_name") or ""),
+                str(enriched.get("device_uuid") or enriched.get("device_name") or ""),
+                str(enriched.get("interface_name") or ""),
+                str(enriched.get("_scope_reference_id") or ""),
             )
             if key in seen:
                 continue
             seen.add(key)
-            result.append(
-                {
-                    **row,
-                    "_scope_reference_id": reference.reference_id,
-                    "station_id": reference.station_id,
-                    "site": reference.station_name,
-                }
-            )
+            result.append(enriched)
         return result
+
+    def _has_excluded_reference_match(
+        self,
+        row: Mapping[str, object | None],
+    ) -> bool:
+        direct = _reference_id(row.get("_scope_reference_id") or row.get("extension_id"))
+        if direct and direct in self._all_reference_by_id:
+            return direct not in self._reference_by_id
+        for key in _identity_keys(row):
+            candidates = self._all_identity_index.get(key, set())
+            if len(candidates) == 1:
+                return next(iter(candidates)) not in self._reference_by_id
+            if len(candidates) > 1:
+                return True
+        return False
+
+    def _resolve_scope_station_id(self, station_id: str, station_name: str) -> str:
+        if station_id in self.station_scope_ids:
+            return station_id
+        key = _station_key(station_name)
+        candidates = {
+            candidate
+            for candidate, name in self.station_names.items()
+            if _station_key(name) == key
+        }
+        return next(iter(candidates)) if len(candidates) == 1 else ""
 
     def station_statistics(self) -> list[dict[str, object | None]]:
         online_by_station: dict[str, int] = defaultdict(int)
@@ -227,7 +339,7 @@ class EffectiveTracksideApScope:
 
         rows: list[dict[str, object | None]] = []
         for station_id in sorted(
-            self.eligible_station_ids,
+            self.station_scope_ids,
             key=lambda value: (
                 self.station_sort_orders.get(value, 2**31 - 1),
                 self.station_names.get(value, ""),
@@ -355,10 +467,12 @@ def resolve_effective_trackside_ap_scope(
 ) -> EffectiveTracksideApScope:
     all_station_rows = [dict(row) for row in station_rows]
     plans = [dict(row) for row in plan_rows]
+    resources_input = [dict(row) for row in resource_rows]
     station_names, station_sort_orders, station_aliases, station_node_uids = (
         _build_station_index(context.site_id, all_station_rows, plans)
     )
     excluded: list[TracksideApScopeExcludedItem] = []
+    unmatched_online: list[TracksideApScopeUnmatchedOnlineItem] = []
     all_references: dict[str, EffectiveTracksideApReference] = {}
     eligible: dict[str, EffectiveTracksideApReference] = {}
 
@@ -450,8 +564,13 @@ def resolve_effective_trackside_ap_scope(
     online_reference_ids: set[str] = set()
     updated_at = ""
     resource_identity_index: dict[tuple[str, str], set[str]] = defaultdict(set)
-    for raw_resource in resource_rows:
-        resource = dict(raw_resource)
+    runtime_identity_keys: set[tuple[str, str]] = set()
+    matched_resources: dict[str, dict[str, object | None]] = {}
+    unmatched_online_by_identity: dict[
+        tuple[str, str], TracksideApScopeUnmatchedOnlineItem
+    ] = {}
+    for resource in resources_input:
+        runtime_identity_keys.add(_runtime_resource_key(resource))
         reference_id, reason = _match_resource_reference(
             resource,
             all_references,
@@ -466,37 +585,56 @@ def resolve_effective_trackside_ap_scope(
         )
         if not reference_id:
             if online:
-                excluded.append(
-                    TracksideApScopeExcludedItem(
-                        source=(
-                            "fit_ap_online"
-                            if reason
-                            == "在线 AP 未匹配到当前有效轨旁 AP 资料。"
-                            else "fit_ap_online_excluded"
-                        ),
-                        item_id=str(
-                            resource.get("ap_uuid")
-                            or resource.get("ap_mac")
-                            or resource.get("ap_name")
-                            or ""
-                        ),
-                        device_name=str(resource.get("ap_name") or ""),
-                        station_name=str(
-                            resource.get("site_name")
-                            or resource.get("site")
-                            or resource.get("extension_station_name")
-                            or ""
-                        ),
-                        operation_status=str(
-                            resource.get("state")
-                            or resource.get("state_raw")
-                            or resource.get("state_display")
-                            or ""
-                        ),
-                        reason=reason or "在线 AP 未匹配到当前有效轨旁 AP 资料。",
-                        mac=_normalize_mac(resource.get("ap_mac")),
-                    )
+                item_id = str(
+                    resource.get("ap_uuid")
+                    or resource.get("ap_mac")
+                    or resource.get("ap_name")
+                    or ""
                 )
+                runtime_station_text = str(
+                    resource.get("site_name")
+                    or resource.get("site")
+                    or resource.get("extension_station_name")
+                    or ""
+                )
+                if reason in {
+                    "匹配到的轨旁 AP 资料不在当前有效范围。",
+                    "AP 稳定身份匹配到多条资料，需人工处理。",
+                }:
+                    excluded.append(
+                        TracksideApScopeExcludedItem(
+                            source="fit_ap_online_excluded",
+                            item_id=item_id,
+                            device_name=str(resource.get("ap_name") or ""),
+                            station_name=runtime_station_text,
+                            operation_status=str(
+                                resource.get("state")
+                                or resource.get("state_raw")
+                                or resource.get("state_display")
+                                or ""
+                            ),
+                            reason=reason,
+                            mac=_normalize_mac(resource.get("ap_mac")),
+                        )
+                    )
+                else:
+                    unmatched_online_by_identity[
+                        _runtime_resource_key(resource)
+                    ] = TracksideApScopeUnmatchedOnlineItem(
+                        source="fit_ap_online",
+                        item_id=item_id,
+                        ap_name=str(resource.get("ap_name") or ""),
+                        mac=_normalize_mac(resource.get("ap_mac")),
+                        ac_status=str(
+                            resource.get("state_display")
+                            or resource.get("state_raw")
+                            or resource.get("state")
+                            or ""
+                        ),
+                        runtime_station_text=runtime_station_text,
+                        reason=reason or "在线 AP 未匹配到当前有效轨旁 AP 资料。",
+                        suggested_action="补充或绑定轨旁 AP 基础资料后重新刷新 FIT-AP。",
+                    )
             continue
         reference = eligible[reference_id]
         enriched = {
@@ -506,23 +644,28 @@ def resolve_effective_trackside_ap_scope(
             "site": reference.station_name,
             "site_name": reference.station_name,
         }
-        resources.append(enriched)
+        current = matched_resources.get(reference_id)
+        if current is None or _resource_preference_key(enriched) > _resource_preference_key(current):
+            matched_resources[reference_id] = enriched
         for key in _identity_keys(resource):
             resource_identity_index[key].add(reference_id)
         if online:
             online_reference_ids.add(reference_id)
 
+    resources = list(matched_resources.values())
+    unmatched_online = list(unmatched_online_by_identity.values())
     for key, values in resource_identity_index.items():
         eligible_identity_index.setdefault(key, set()).update(values)
 
     plans_by_station: dict[str, dict[str, object | None]] = {}
+    station_scope_ids = set(station_names)
     for plan in plans:
         station_id, _reason = _resolve_plan_station_id(
             plan,
             station_aliases,
             station_node_uids,
         )
-        if station_id and station_id in {item.station_id for item in eligible.values()}:
+        if station_id and station_id in station_scope_ids:
             plans_by_station[station_id] = plan
 
     return EffectiveTracksideApScope(
@@ -534,9 +677,13 @@ def resolve_effective_trackside_ap_scope(
         plans_by_station=plans_by_station,
         online_reference_ids=online_reference_ids,
         excluded_items=excluded,
+        unmatched_online_items=unmatched_online,
+        fit_ap_resource_total_count=len(runtime_identity_keys),
         updated_at=updated_at,
         _reference_by_id=eligible,
         _identity_index=eligible_identity_index,
+        _all_reference_by_id=all_references,
+        _all_identity_index=all_identity_index,
     )
 
 
@@ -805,6 +952,36 @@ def _identity_keys(row: Mapping[str, object | None]) -> list[tuple[str, str]]:
     ]
 
 
+def _runtime_resource_key(row: Mapping[str, object | None]) -> tuple[str, str]:
+    """Return one stable key for de-duplicating the same AP reported by ACs."""
+
+    for key in _identity_keys(row):
+        if key[0] in {"uuid", "mac"}:
+            return key
+    ac_uuid = _text_key(row.get("ac_device_uuid") or row.get("device_uuid"))
+    ap_id = _text_key(row.get("ap_id") or row.get("apid"))
+    if ac_uuid and ap_id:
+        return "apid", f"{ac_uuid}:{ap_id}"
+    fallback = _text_key(
+        row.get("id")
+        or row.get("resource_id")
+        or row.get("extension_id")
+        or row.get("source_ref")
+    )
+    return "row", fallback or hashlib.sha1(
+        json.dumps(dict(row), ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _resource_preference_key(row: Mapping[str, object | None]) -> tuple[int, str]:
+    """Prefer the freshest runtime copy when multiple ACs report one AP."""
+
+    return (
+        int(bool(is_fit_ap_online(row))),
+        str(row.get("updated_at") or row.get("collected_at") or ""),
+    )
+
+
 def _metadata(value: object) -> dict[str, object]:
     try:
         payload = json.loads(str(value or "{}"))
@@ -863,6 +1040,7 @@ __all__ = [
     "EffectiveTracksideApScope",
     "TracksideApScopeContext",
     "TracksideApScopeExcludedItem",
+    "TracksideApScopeUnmatchedOnlineItem",
     "resolve_effective_trackside_ap_scope",
     "resolve_effective_trackside_ap_scope_from_database",
 ]
