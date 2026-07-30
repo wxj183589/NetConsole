@@ -287,6 +287,10 @@ class RailTransitBaseDataQueryService:
         """一次返回 AP 位置基础字段，不拼接运行态、质量问题或分页结果。"""
         return self._all_aps(site_id, include_runtime=False)
 
+    def list_ap_status_items(self, site_id: str) -> list[TracksideApDTO]:
+        """返回轨旁 AP 基础资料及统一 AC/FIT-AP 运行态，不附加质量扫描。"""
+        return self._all_aps(site_id, include_runtime=True)
+
     def list_ap_export_items(self, site_id: str) -> list[TracksideApDTO]:
         """一次返回导出所需的 AP 基础资料、运行态和质量摘要。"""
         items = self._all_aps(site_id, include_runtime=True)

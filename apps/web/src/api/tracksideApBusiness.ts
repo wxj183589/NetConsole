@@ -2,7 +2,7 @@ import { apiRequest } from './client'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 import type {
   ApManagementVlanPlanningMode, ApManagementVlanPreview, TracksideApBusinessPage,
-  TracksideApPlan, TracksideApPlanDraft, TracksideApPlanPreview, TracksideApPlanRow,
+  TracksideApOnlineStatus, TracksideApPlan, TracksideApPlanDraft, TracksideApPlanPreview, TracksideApPlanRow,
   TracksideApTask, TracksideApUpdateRequest, TracksideSwitchAdapterCatalog,
   TracksideSwitchSampleRequest,
 } from '../types/tracksideApBusiness'
@@ -56,6 +56,10 @@ export function getTracksideApPlan(): Promise<TracksideApPlan> {
   return apiRequest(`${root}/plan`)
 }
 
+export function getTracksideApOnlineStatus(): Promise<TracksideApOnlineStatus> {
+  return apiRequest(`${root}/plan/online-status`)
+}
+
 export function previewTracksideApPlan(file: File, duplicateStrategy: 'replace' | 'skip' | 'error'): Promise<TracksideApPlanPreview> {
   const form = new FormData()
   form.append('file', file)
@@ -94,8 +98,14 @@ export function saveTracksideApPlan(draft: TracksideApPlanDraft | TracksideApPla
   })
 }
 
-export function exportTracksideApPlan(template = false, draft?: TracksideApPlanDraft): Promise<TracksideApTask> {
-  return apiRequest(`${root}/plan/export`, { method: 'POST', body: JSON.stringify({ template, ...(draft ? { draft } : {}) }) })
+export function exportTracksideApPlan(
+  template = false,
+  rows?: TracksideApPlanRow[],
+): Promise<TracksideApTask> {
+  return apiRequest(`${root}/plan/export`, {
+    method: 'POST',
+    body: JSON.stringify({ template, ...(rows ? { rows } : {}) }),
+  })
 }
 
 export const tracksideApPlanDownloadRequest = (artifactId: string, suggestedName = '轨旁AP规划.xlsx'): BackendDownloadRequest => ({

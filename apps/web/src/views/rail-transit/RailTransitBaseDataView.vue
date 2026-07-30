@@ -52,7 +52,7 @@ import type {
   Train,
   VehicleMr,
 } from '../../types/railTransitBaseData'
-import type { TracksideApPlanDraft, TracksideApTask } from '../../types/tracksideApBusiness'
+import type { TracksideApPlanRow, TracksideApTask } from '../../types/tracksideApBusiness'
 import {
   groupStationOrderConflicts,
   MANUAL_STATION_FIELDS,
@@ -108,7 +108,7 @@ const baselines = new Map<string, Record<string, unknown>>()
 const stationReferencePatches = new Map<string, StationReferencePatch[]>()
 const serverSnapshot = ref<BaseDataDraft | null>(null)
 const editingDraft = ref<BaseDataDraft | null>(null)
-const planningDraft = ref<TracksideApPlanDraft | null>(null)
+const planningDraft = ref<TracksideApPlanRow[] | null>(null)
 const planningDirty = ref(false)
 const saveIssues = ref<BaseDataValidationIssue[]>([])
 const fieldErrors = ref<Record<string, string>>({})
@@ -677,7 +677,11 @@ async function saveAllChanges(): Promise<boolean> {
   if (!store.editSession || saving.value || !dirty.value) return !dirty.value
   const changes = Object.values(pendingChanges.value)
   if (planningDirty.value && planningDraft.value) {
-    changes.push({ entity_type: 'trackside_ap_plan', action: 'replace', values: planningDraft.value })
+    changes.push({
+      entity_type: 'trackside_ap_plan',
+      action: 'replace',
+      values: { rows: planningDraft.value },
+    })
   }
   editState.value = 'VALIDATING'
   saveIssues.value = []
@@ -762,8 +766,8 @@ function captureBaselines(): void {
   clearStationSelection()
 }
 
-function handlePlanningChange(draft: TracksideApPlanDraft, changed: boolean): void {
-  planningDraft.value = draft
+function handlePlanningChange(rows: TracksideApPlanRow[], changed: boolean): void {
+  planningDraft.value = rows
   planningDirty.value = changed
   updateEditState()
 }
@@ -919,10 +923,9 @@ async function openStationDeletePreflight(stationIds: string[]): Promise<void> {
     const sectionStartCount = editingDraft.value?.sections.filter((item) => item.start_station === row.name).length || 0
     const sectionEndCount = editingDraft.value?.sections.filter((item) => item.end_station === row.name).length || 0
     const apCount = editingDraft.value?.aps.filter((item) => item.station === row.name).length || 0
-    const planCount = planningDraft.value?.groups.reduce(
-      (count, group) => count + group.members.filter((item) => item.station_name === row.name).length,
-      0,
-    ) || 0
+    const planCount = planningDraft.value?.filter(
+      (item) => item.station_id === row.id || item.station_name === row.name,
+    ).length || 0
     const totalCount = sectionStartCount + sectionEndCount + apCount + planCount
     const status: StationDeletePreflightItem['status'] = row.is_line_terminal ? 'BLOCKED' : totalCount ? 'REQUIRES_MERGE' : 'SAFE_DELETE'
     return {
@@ -2905,6 +2908,7 @@ function sectionSourceLabel(row: Section): string {
             :saving="saving"
             :stations="stationRows.map((row) => ({ id: row.id, name: row.name, sort_order: row.sort_order, ap_count: row.ap_count }))"
             @change="handlePlanningChange"
+            @save="saveAllChanges"
           />
         </el-tab-pane>
 

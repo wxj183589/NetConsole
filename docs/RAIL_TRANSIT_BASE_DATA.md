@@ -4,12 +4,14 @@
 
 `/rail-transit/base-data` 是站点、区间、轨旁 AP、轨旁 AP 规划、列车和车载 MR 的统一维护入口，Feature key 为 `web.rail_transit_base_data`。页面默认锁定；正常 `persistent` Electron 受管会话可解锁并维护当前局点，`isolated_test` 始终只读并显示明确原因。普通 Server、未认证浏览器和未授权副本仍保持锁定。页面复用现有 Python Core 和当前局点 `devices.db`，不建立第二套基础资料数据库。
 
-原独立 `/rail-transit/trackside-ap-plan` 页面和导航已删除；旧路由只重定向到 `/rail-transit/base-data?tab=trackside-ap-planning`。规划查询、导入预览、导出和 Task Center 继续复用现有能力，规划编辑由基础资料统一保存事务提交。轨旁 AP 管理 VLAN 已由站点行重构为统一 VLAN 组模型；本模块只决定站点/AP 的 VLAN 归属，IP 仅作参考。三种模式、点表、迁移和 PVID 规则见 [轨旁 AP 管理 VLAN 分组规划](AP_MANAGEMENT_VLAN_GROUPS.md)。
+原独立 `/rail-transit/trackside-ap-plan` 页面和导航已删除；旧路由只重定向到 `/rail-transit/base-data?tab=trackside-ap-planning`。规划查询、导入预览、导出和 Task Center 继续复用现有能力，规划编辑由基础资料统一保存事务提交。轨旁 AP 规划当前是一站一行的直接维护模型；多个站使用相同管理 VLAN 合法，IP、掩码和网关只作参考。旧 VLAN 分组表和 API 仅作兼容，不再由活动页面编辑。详细边界见 [轨旁 AP 逐站规划与 VLAN 分组兼容](AP_MANAGEMENT_VLAN_GROUPS.md)。
 
 ```text
 devices.db
 ├─ ap_extension_points       轨旁 AP 点位、位置和里程资料
+├─ ac_trackside_ap_plan      逐站 AP 规划事实
 ├─ devices / device_groups   列车、车载 MR 和其他静态设备
+├─ rail_ap_vlan_*            历史 VLAN 分组兼容层
 └─ AC 当前资源表             FIT-AP、光衰和接入信息
         |
         v
@@ -104,7 +106,7 @@ revision 校验 + SQLite BEGIN IMMEDIATE 单事务
 
 “导出重命名命令”只读取当前局点的结构化轨旁 AP 资料或用户明确选择的未保存草稿，通过 Export Process 生成 UTF-8 BOM、Windows CRLF 的 TXT Artifact。每条命令使用唯一 MAC 和 `point_code` 生成 `wlan rename-ap <AP_MAC> <点位编号>`，空值、无效 MAC、名称已一致和不安全目标名称记录为跳过；同一 MAC 多目标或同一目标多 MAC 直接阻断。该功能只导出命令，不连接 AC、不执行命令，也不附加保存、重启、删除等高风险命令。FIT-AP 详情联动只接受按规范化 MAC 唯一匹配出的 `fit_ap_id`；未匹配或重复匹配不会打开错误详情。
 
-“轨旁 AP 规划”标签页复用同一任务与下载体验，提供三种规划方式、自动分组影响预览、精简 VLAN 组视图、站点继承视图、拆分和相邻合并。“查看 AP/参考信息”只读展示组网络、掩码/前缀、网关、AP 起止地址和既有 AP IP，并维护区间/AP VLAN 覆盖；页面没有地址重算入口。规划预览不受基础资料锁定影响，但应用仍要求解锁；未保存规划修改导出当前草稿。规划模板通过 `source=trackside_ap_plan` 生成 `轨旁AP规划` 与 `字段说明`，同时保留旧站点/IP 参考列和新增 VLAN 组列，不依赖任意服务端路径。
+“轨旁 AP 规划”标签页分为“AP 规划维护”和“AP 上线统计”。维护表固定为序号、车站名称、AP 数量、AP 起始地址、掩码、AP 网关、AP 管理 VLAN 和备注，支持直接编辑、Excel 整片粘贴、新增、删除、撤销、单元格校验和统一保存；同 VLAN 跨站合法，设计 AP 数量不要求等于实际数量。统计表按稳定站点汇总实际有效轨旁 AP 与现有 FIT-AP 在线状态，暂停/退役 AP 排除，未分配 AP 单独警告且不计入线路合计。规划模板与当前导出通过 `source=trackside_ap_plan` 只生成上述 8 个业务列；旧 22 列 VLAN 分组模板导入时转换为逐站行并显示兼容提示。规划预览不受基础资料锁定影响，但应用仍要求解锁；未保存规划修改会明确作为当前草稿导出。
 
 ## 区间生成与统计
 
@@ -164,6 +166,8 @@ GET /api/rail-transit/base-data/station-source-preview
 GET /api/rail-transit/base-data/stations/conflicts
 GET /api/rail-transit/base-data/station-template
 GET /api/rail-transit/base-data/station-template-export
+GET /api/rail-transit/trackside-ap-business/plan
+GET /api/rail-transit/trackside-ap-business/plan/online-status
 ```
 
 普通维护接口：
@@ -182,6 +186,8 @@ POST /api/rail-transit/base-data/stations/delete-preflight
 POST /api/rail-transit/base-data/import-preview
 POST /api/rail-transit/base-data/station-template-preview
 POST /api/rail-transit/base-data/section-generation-preview
+POST /api/rail-transit/trackside-ap-business/plan/import/preview
+POST /api/rail-transit/trackside-ap-business/plan/export
 ```
 
 受控导入与只读审计接口：
@@ -202,6 +208,7 @@ POST /api/rail-transit/base-data/import-operations/{operation_id}/rollback
 - 只允许 `.xlsx`、`.csv`、`.json` 与 MIME 白名单；不接受宏工作簿。
 - XLSX 使用 `data_only=True` 读取，不执行公式或宏，也不使用外部链接生成业务值。
 - XLSX/CSV 仅写入系统受控临时目录，返回前由 `TemporaryDirectory` 清理；JSON 直接在内存解析。
+- 轨旁 AP 规划导入只读取新 8 列模板或兼容旧 22 列模板；旧组字段只用于转换，不写入活动规划草稿。
 - 返回值只保留基础资料安全字段。账号、密码、Token、Community、Secret、Credential、上传模板原路径和用户本机绝对路径不返回、不记录。
 - 预览不写 `devices.db`、`tasks.db` 或正式资料目录，不创建 Task，不生成正式资产。合并计划以 `preview_id` 保存到 `.local/runtime/base_data_import_previews/`，只包含安全字段、文件 basename/SHA-256、数据库 SHA-256、问题和 15 分钟有效期，不保存上传原文件或绝对路径；过期预览会被受控清理。
 - 预览逐行返回 `CREATE / UPDATE / UNCHANGED / SKIP / CONFLICT / NEEDS_CONFIRMATION`，并展示字段级现值、候选值、来源、动作和警告。

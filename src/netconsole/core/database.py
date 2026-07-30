@@ -21,7 +21,7 @@ from netconsole.models.device_address import InvalidDeviceAddressError, normaliz
 
 
 CURRENT_SCHEMA_VERSION = (
-    "2026.07.29.zte_optical_ap_vlan_device_address_and_operation_status"
+    "2026.07.30.trackside_ap_station_plan"
 )
 
 DEVICE_LIFECYCLE_COLUMNS = (
@@ -778,17 +778,23 @@ AC_TRACKSIDE_AP_PLAN_SCHEMA = """
 CREATE TABLE IF NOT EXISTS ac_trackside_ap_plan (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     mode TEXT NOT NULL,
+    station_id TEXT NOT NULL DEFAULT '',
+    sequence_no INTEGER NOT NULL DEFAULT 0,
     station_name TEXT NOT NULL,
     ap_count INTEGER NOT NULL DEFAULT 0,
     ap_start_address TEXT,
+    subnet_mask TEXT NOT NULL DEFAULT '',
     mask_length INTEGER,
     ap_gateway TEXT,
+    management_vlan INTEGER,
     ap_management_vlans TEXT NOT NULL,
     remark TEXT,
     sort_order INTEGER DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    UNIQUE(mode, station_name)
+    UNIQUE(mode, station_name),
+    CHECK (sequence_no >= 0),
+    CHECK (management_vlan IS NULL OR management_vlan BETWEEN 1 AND 4094)
 );
 """
 
@@ -1413,6 +1419,83 @@ class Database:
                     )
         if self._table_exists(conn, "ac_trackside_ap_plan") and not self._column_exists(conn, "ac_trackside_ap_plan", "remark"):
             conn.execute("ALTER TABLE ac_trackside_ap_plan ADD COLUMN remark TEXT")
+        trackside_plan_columns = {
+            "station_id": "TEXT NOT NULL DEFAULT ''",
+            "sequence_no": "INTEGER NOT NULL DEFAULT 0",
+            "subnet_mask": "TEXT NOT NULL DEFAULT ''",
+            "management_vlan": "INTEGER",
+        }
+        if self._table_exists(conn, "ac_trackside_ap_plan"):
+            for column, definition in trackside_plan_columns.items():
+                if not self._column_exists(conn, "ac_trackside_ap_plan", column):
+                    conn.execute(
+                        f"ALTER TABLE ac_trackside_ap_plan ADD COLUMN {column} {definition}"
+                    )
+            sequence_rows = conn.execute(
+                """
+                SELECT id, sequence_no, sort_order, station_name
+                FROM ac_trackside_ap_plan
+                WHERE mode = 'unified'
+                ORDER BY
+                    CASE WHEN sequence_no > 0 THEN sequence_no ELSE sort_order + 1 END,
+                    sort_order,
+                    station_name,
+                    id
+                """
+            ).fetchall()
+            sequence_numbers = [int(row["sequence_no"] or 0) for row in sequence_rows]
+            if any(value <= 0 for value in sequence_numbers) or len(
+                sequence_numbers
+            ) != len(set(sequence_numbers)):
+                conn.execute(
+                    """
+                    UPDATE ac_trackside_ap_plan
+                    SET sequence_no = 0
+                    WHERE mode = 'unified'
+                    """
+                )
+                for sequence_no, row in enumerate(sequence_rows, start=1):
+                    conn.execute(
+                        """
+                        UPDATE ac_trackside_ap_plan
+                        SET sequence_no = ?, sort_order = ?
+                        WHERE id = ?
+                        """,
+                        (sequence_no, sequence_no - 1, int(row["id"])),
+                    )
+            conn.execute(
+                """
+                UPDATE ac_trackside_ap_plan
+                SET subnet_mask = CASE
+                    WHEN mask_length IS NULL THEN ''
+                    ELSE CAST(mask_length AS TEXT)
+                END
+                WHERE mode = 'unified' AND TRIM(COALESCE(subnet_mask, '')) = ''
+                """
+            )
+            conn.execute(
+                """
+                UPDATE ac_trackside_ap_plan
+                SET management_vlan = CAST(ap_management_vlans AS INTEGER)
+                WHERE mode = 'unified'
+                  AND management_vlan IS NULL
+                  AND TRIM(ap_management_vlans) GLOB '[0-9]*'
+                """
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_trackside_plan_sequence
+                ON ac_trackside_ap_plan(mode, sequence_no)
+                WHERE mode = 'unified' AND sequence_no > 0
+                """
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_trackside_plan_station_id
+                ON ac_trackside_ap_plan(mode, station_id)
+                WHERE mode = 'unified' AND station_id != ''
+                """
+            )
         fit_ap_resource_columns = {
             "connection_ip": "TEXT",
             "connection_state": "TEXT",

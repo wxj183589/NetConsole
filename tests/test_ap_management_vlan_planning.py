@@ -10,6 +10,10 @@ from netconsole.repositories.ap_management_vlan_repository import (
     ApManagementVlanRepository,
     ApManagementVlanRevisionConflict,
 )
+from netconsole.repositories.ac_repository import (
+    AcRepository,
+    TRACKSIDE_AP_PLAN_MODE,
+)
 from netconsole.services.rail_transit.ap_management_vlan_planning import (
     LINE_SINGLE,
     STATION_GROUPED,
@@ -498,6 +502,62 @@ def test_database_migration_is_idempotent_and_preserves_legacy_values(tmp_path):
     assert draft["groups"][0]["management_vlan"] == 71
     assert draft["groups"][0]["ap_start_ip"] == "10.10.1.10"
     assert draft["groups"][0]["default_gateway"] == "10.10.1.1"
+
+
+def test_trackside_station_plan_migration_repairs_duplicate_sequences(tmp_path):
+    database = Database(tmp_path / "site.db")
+    database.initialize()
+    repository = AcRepository(database)
+    repository.replace_trackside_ap_plan_rows(
+        TRACKSIDE_AP_PLAN_MODE,
+        [
+            {"station_name": "站点A", "sequence_no": 1, "ap_count": 1, "management_vlan": 71},
+            {"station_name": "站点B", "sequence_no": 2, "ap_count": 1, "management_vlan": 71},
+            {"station_name": "站点C", "sequence_no": 3, "ap_count": 0, "management_vlan": 72},
+        ],
+    )
+    with database.connect() as connection:
+        connection.execute("DROP INDEX idx_trackside_plan_sequence")
+        connection.execute(
+            """
+            UPDATE ac_trackside_ap_plan
+            SET sequence_no = CASE station_name
+                WHEN '站点A' THEN 1
+                WHEN '站点B' THEN 1
+                ELSE 0
+            END,
+            sort_order = CASE station_name
+                WHEN '站点A' THEN 5
+                WHEN '站点B' THEN 2
+                ELSE 0
+            END
+            WHERE mode = 'unified'
+            """
+        )
+        connection.commit()
+
+    database.initialize()
+    database.initialize()
+
+    with database.connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT station_name, sequence_no, sort_order, management_vlan, ap_count
+            FROM ac_trackside_ap_plan
+            WHERE mode = 'unified'
+            ORDER BY sequence_no
+            """
+        ).fetchall()
+        indexes = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA index_list(ac_trackside_ap_plan)")
+        }
+    assert [tuple(row) for row in rows] == [
+        ("站点C", 1, 0, 72, 0),
+        ("站点B", 2, 1, 71, 1),
+        ("站点A", 3, 2, 71, 1),
+    ]
+    assert "idx_trackside_plan_sequence" in indexes
 
 
 def test_allocation_reference_migration_removes_unique_ip_without_data_loss(

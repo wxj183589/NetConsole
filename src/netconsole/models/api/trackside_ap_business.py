@@ -139,14 +139,50 @@ class TracksideSwitchSampleRequestDTO(ApiModel):
 
 
 class TracksideApPlanRowDTO(ApiModel):
+    station_id: str = ""
+    sequence_no: int = 0
     station_name: str = ""
     ap_count: int = 0
     ap_start_address: str = ""
+    subnet_mask: str = ""
     mask_length: int | None = None
     ap_gateway: str = ""
+    management_vlan: int | None = Field(default=None, ge=1, le=4094)
     ap_management_vlans: str = ""
     remark: str = ""
     sort_order: int = 0
+
+
+class TracksideApOnlineStatusRowDTO(ApiModel):
+    station_id: str = ""
+    station_name: str
+    planned_ap_count: int = 0
+    actual_ap_count: int = 0
+    online_count: int = 0
+    offline_count: int = 0
+    online_rate: float | None = None
+    remark: str = ""
+
+
+class TracksideApUnassignedDTO(ApiModel):
+    ap_id: str
+    ap_name: str = ""
+    point_code: str = ""
+    mac: str = ""
+    station_name: str = ""
+
+
+class TracksideApOnlineStatusDTO(ApiModel):
+    items: list[TracksideApOnlineStatusRowDTO] = Field(default_factory=list)
+    planned_ap_count: int = 0
+    actual_ap_count: int = 0
+    online_count: int = 0
+    offline_count: int = 0
+    online_rate: float | None = None
+    unassigned_count: int = 0
+    unassigned_items: list[TracksideApUnassignedDTO] = Field(default_factory=list)
+    updated_at: str = ""
+    warning: str = ""
 
 
 class ApManagementVlanPlanningDTO(ApiModel):
@@ -332,6 +368,8 @@ class TracksideApPlanPreviewDTO(ApiModel):
     rows: list[TracksideApPlanPreviewRowDTO] = Field(default_factory=list)
     result_rows: list[TracksideApPlanRowDTO] = Field(default_factory=list)
     result_plan: TracksideApPlanDTO | None = None
+    legacy_schema: bool = False
+    message: str = ""
 
 
 class TracksideApPlanExportRequestDTO(ApiModel):
