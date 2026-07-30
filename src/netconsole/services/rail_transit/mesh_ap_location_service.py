@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
+from netconsole.services.ap_identity.normalizers import normalize_mac
 
 
 @dataclass(frozen=True)
@@ -18,12 +19,15 @@ class MeshApLocation:
     mileage: str = ""
     line_side: str = ""
     direction: str = ""
+    identity_status: str = "unresolved"
+    identity_source: str = ""
+    identity_reason: str = ""
 
     def to_serializable(self) -> dict[str, str]:
         return {
             "name": self.name,
             "point_code": self.point_code,
-            "mac": self.mac,
+            "mac": normalize_mac(self.mac) or "",
             "station": self.station,
             "section": self.section,
             "section_start_station": self.section_start_station,
@@ -31,30 +35,30 @@ class MeshApLocation:
             "mileage": self.mileage,
             "line_side": self.line_side,
             "direction": self.direction,
+            "identity_status": self.identity_status,
+            "identity_source": self.identity_source,
+            "identity_reason": self.identity_reason,
         }
 
 
 class MeshApLocationSnapshot:
     def __init__(self, locations: Iterable[MeshApLocation] = ()) -> None:
         self._locations = tuple(locations)
-        self._by_mac: dict[str, MeshApLocation] = {}
-        self._by_name: dict[str, MeshApLocation | None] = {}
+        self._by_mac: dict[str, MeshApLocation | None] = {}
         for location in self._locations:
-            mac = normalize_mesh_ap_mac(location.mac)
+            mac = normalize_mac(location.mac)
             if mac:
-                self._by_mac[mac] = location
-            if location.name:
-                name = location.name.casefold()
-                if name in self._by_name:
-                    self._by_name[name] = None
+                if mac in self._by_mac:
+                    self._by_mac[mac] = None  # type: ignore[assignment]
                 else:
-                    self._by_name[name] = location
+                    self._by_mac[mac] = location
 
     @classmethod
     def from_base_data_items(cls, items: Iterable[object]) -> MeshApLocationSnapshot:
         locations: list[MeshApLocation] = []
         for item in items:
             mileage = getattr(getattr(item, "mileage", None), "raw", "")
+            mac = normalize_mac(getattr(item, "mac", ""))
             locations.append(
                 MeshApLocation(
                     name=str(
@@ -63,7 +67,7 @@ class MeshApLocationSnapshot:
                         or ""
                     ),
                     point_code=str(getattr(item, "point_code", "") or ""),
-                    mac=str(getattr(item, "mac", "") or ""),
+                    mac=mac or "",
                     station=str(getattr(item, "station", "") or ""),
                     section=str(getattr(item, "section", "") or ""),
                     section_start_station=str(
@@ -74,7 +78,9 @@ class MeshApLocationSnapshot:
                     ),
                     mileage=str(mileage or ""),
                     line_side=str(getattr(item, "line_side", "") or ""),
-                    direction=str(getattr(item, "direction", "") or ""),
+                direction=str(getattr(item, "direction", "") or ""),
+                    identity_status="matched" if mac else "unresolved",
+                    identity_source="BASE_DATA_AP_MAC" if mac else "",
                 )
             )
         return cls(locations)
@@ -85,7 +91,7 @@ class MeshApLocationSnapshot:
             MeshApLocation(
                 name=str(row.get("name") or row.get("point_code") or ""),
                 point_code=str(row.get("point_code") or ""),
-                mac=str(row.get("mac") or ""),
+                mac=normalize_mac(row.get("mac")) or "",
                 station=str(row.get("station") or ""),
                 section=str(row.get("section") or ""),
                 section_start_station=str(row.get("section_start_station") or ""),
@@ -93,6 +99,9 @@ class MeshApLocationSnapshot:
                 mileage=str(row.get("mileage") or ""),
                 line_side=str(row.get("line_side") or ""),
                 direction=str(row.get("direction") or ""),
+                identity_status=str(row.get("identity_status") or "unresolved"),
+                identity_source=str(row.get("identity_source") or ""),
+                identity_reason=str(row.get("identity_reason") or ""),
             )
             for row in rows
         )
@@ -113,10 +122,9 @@ class MeshApLocationSnapshot:
         )
         name = str(row.get("peer_ap_name") or row.get("ap_name") or "")
         location = self._by_mac.get(mac) if mac else None
-        if location is None and name:
-            location = self._by_name.get(name.casefold())
         if location is not None:
             return location
+        reason = "缺少规范 AP MAC" if not mac else "未找到唯一 AP MAC 基础资料"
         return MeshApLocation(
             name=name,
             point_code=str(row.get("point_code") or row.get("ap_point_code") or ""),
@@ -128,6 +136,9 @@ class MeshApLocationSnapshot:
             mileage=str(row.get("mileage") or ""),
             line_side=str(row.get("line_side") or ""),
             direction=str(row.get("direction") or ""),
+            identity_status="ambiguous" if mac and mac in self._by_mac and self._by_mac[mac] is None else "unresolved",
+            identity_source="",
+            identity_reason=reason,
         )
 
 
@@ -152,7 +163,8 @@ class MeshApLocationService:
 
 
 def normalize_mesh_ap_mac(value: object) -> str:
-    return "".join(character for character in str(value or "").lower() if character in "0123456789abcdef")
+    """兼容旧调用方，统一返回公共规范 MAC；非法值返回空串。"""
+    return normalize_mac(value) or ""
 
 
 __all__ = [

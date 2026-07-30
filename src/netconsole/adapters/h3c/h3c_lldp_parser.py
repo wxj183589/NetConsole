@@ -1,16 +1,8 @@
 from __future__ import annotations
 
-import re
-
 from netconsole.adapters.h3c.h3c_interface_parser import normalize_interface
 from netconsole.parsers.h3c.lldp_parser import parse_lldp_neighbors
-
-
-def normalize_mac(value: object) -> str | None:
-    text = re.sub(r"[^0-9A-Fa-f]", "", str(value or ""))
-    if len(text) != 12:
-        return str(value or "").strip() or None
-    return ":".join(text[index : index + 2] for index in range(0, 12, 2)).lower()
+from netconsole.services.ap_identity.normalizers import normalize_mac
 
 
 def parse_lldp(raw: str, verbose: str = "") -> list[dict[str, object | None]]:

@@ -24,7 +24,7 @@ class MeshPeerMappingService:
         if resolver is None:
             return _unresolved(peer)
         match = resolver.resolve(peer, peer_name=peer_name)
-        if not match.matched:
+        if not match.matched or not _is_explicit_radio_mapping(match.match_rule):
             return _unresolved(peer)
         radio_id = int(match.radio_id or 0) or None
         radio_rule = str(match.match_rule or "")
@@ -33,6 +33,7 @@ class MeshPeerMappingService:
             "peer_mac_normalized": peer,
             "peer_ap_name": match.ap_name if match.ap_name != "-" else "",
             "peer_ap_mac": normalize_mac(match.ap_mac) or match.ap_mac,
+            "canonical_ap_mac": normalize_mac(match.ap_mac) or "",
             "peer_radio_id": radio_id,
             "peer_radio_label": f"radio{radio_id}" if radio_id else "",
             "peer_radio_mac": peer_radio_mac,
@@ -46,6 +47,9 @@ class MeshPeerMappingService:
             "peer_direction": match.direction,
             "match_rule": radio_rule or "resolved",
             "match_confidence": int(match.confidence or 0),
+            "identity_status": "matched",
+            "identity_source": radio_rule or "explicit_radio_mapping",
+            "identity_reason": "",
         }
 
     def build_rows(self, peer_macs: list[str]) -> list[dict[str, object]]:
@@ -99,4 +103,13 @@ def _unresolved(peer_mac: str) -> dict[str, object]:
         "peer_direction": "",
         "match_rule": "unresolved",
         "match_confidence": 0,
+        "canonical_ap_mac": "",
+        "identity_status": "unresolved",
+        "identity_source": "",
+        "identity_reason": "缺少明确 Radio/BSSID 到物理 AP MAC 的映射",
     }
+
+
+def _is_explicit_radio_mapping(rule: object) -> bool:
+    text = str(rule or "").casefold()
+    return "radio_mac" in text or "bssid" in text or text.startswith("ac_radio")

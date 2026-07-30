@@ -509,23 +509,19 @@ class AcMeshLinkQueryService:
             if cached and cached[0] == signature:
                 return cached[1]
             by_mac: dict[str, list[_ApCandidate]] = {}
-            by_name: dict[str, list[_ApCandidate]] = {}
-            by_normalized_name: dict[str, list[_ApCandidate]] = {}
             for detail in self.ac_query.list_all_ap_details(site_id):
                 candidate = _ApCandidate(detail)
-                self._append_index(by_name, detail.ap.name.strip().casefold(), candidate)
-                self._append_index(by_normalized_name, self._normalize_name(detail.ap.name), candidate)
                 self._append_index(by_mac, _normalize_vehicle_mac(detail.ap.mac), candidate)
                 for radio in detail.radios:
                     self._append_index(by_mac, _normalize_vehicle_mac(radio.bssid), _ApCandidate(detail, radio))
-            indexes = {"mac": by_mac, "name": by_name, "normalized_name": by_normalized_name}
+            indexes = {"mac": by_mac}
             self._ap_cache[site_id] = (signature, indexes)
             return indexes
 
     def _offline_ap_ids(self, site_id: str) -> set[str]:
         return {
             candidate.detail.ap.id
-            for candidates in self._ap_indexes(site_id)["name"].values()
+            for candidates in self._ap_indexes(site_id)["mac"].values()
             for candidate in candidates
             if candidate.detail.ap.status == "offline"
         }
@@ -553,14 +549,6 @@ class AcMeshLinkQueryService:
             candidate, warning = self._unique(indexes["mac"].get(mac, []), "Mesh Radio/BSSID MAC")
             if candidate or warning:
                 return candidate, "peer_mac" if candidate else "unmatched", warning
-        name = str(row.get("local_ap_name") or "").strip()
-        if name:
-            candidate, warning = self._unique(indexes["name"].get(name.casefold(), []), "AP 名称")
-            if candidate or warning:
-                return candidate, "peer_name" if candidate else "unmatched", warning
-            candidate, warning = self._unique(indexes["normalized_name"].get(self._normalize_name(name), []), "规范化 AP 名称")
-            if candidate or warning:
-                return candidate, "normalized_peer_name" if candidate else "unmatched", warning
         return None, "unmatched", "未与当前 FIT-AP/AP 扩展信息精确匹配。"
 
     @staticmethod

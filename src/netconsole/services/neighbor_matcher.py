@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
+from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.utils.interface_normalize import normalize_interface_name
 
 
@@ -62,18 +63,21 @@ def match_neighbor_device(
         if row:
             return NeighborMatchResult(device_uuid=str(row["device_uuid"]), device_name=str(row["name"]), station=row["station"], matched_by="sysname", confidence=1.0)
 
-    mac = _normalize_mac(neighbor_mac)
+    mac = normalize_mac(neighbor_mac)
     if mac:
+        compact_mac = mac.replace(":", "")
         with database.connect() as conn:
             row = conn.execute(
                 """
                 SELECT d.device_uuid, d.name, d.station
                 FROM device_interfaces i
                 JOIN devices d ON d.device_uuid = i.device_uuid
-                WHERE lower(replace(i.mac_address, ':', '-')) = ?
+                WHERE lower(
+                    replace(replace(replace(i.mac_address, ':', ''), '-', ''), '.', '')
+                ) = ?
                 LIMIT 1
                 """,
-                (mac,),
+                (compact_mac,),
             ).fetchone()
         if row:
             return NeighborMatchResult(device_uuid=str(row["device_uuid"]), device_name=str(row["name"]), station=row["station"], matched_by="mac", confidence=0.9)
@@ -87,36 +91,36 @@ def match_ap_from_device_lldp(
     ap_name: str | None = None,
     paths: PathResolver | None = None,
 ) -> NeighborMatchResult:
-    candidates = [item for item in {_normalize_mac(ap_mac), _normalize_mac(ap_name), str(ap_name or "").strip()} if item]
-    if not candidates:
+    normalized_ap_mac = normalize_mac(ap_mac)
+    if not normalized_ap_mac:
         return NeighborMatchResult()
     database = Database((paths or PathResolver()).site_db_path(site_name))
+    compact_mac = normalized_ap_mac.replace(":", "")
     with database.connect() as conn:
-        for value in candidates:
-            row = conn.execute(
-                """
-                SELECT l.local_interface, l.neighbor_interface,
-                       d.device_uuid, d.name, d.station
-                FROM device_lldp_neighbors l
-                JOIN devices d ON d.device_uuid = l.device_uuid
-                WHERE lower(replace(l.neighbor_mac, ':', '-')) = ?
-                   OR lower(replace(l.neighbor_sysname, ':', '-')) = ?
-                   OR l.neighbor_sysname = ?
-                ORDER BY l.id DESC
-                LIMIT 1
-                """,
-                (value, value, value),
-            ).fetchone()
-            if row:
-                return NeighborMatchResult(
-                    device_uuid=str(row["device_uuid"]),
-                    device_name=str(row["name"]),
-                    station=row["station"],
-                    local_interface=row["local_interface"],
-                    ap_interface=row["neighbor_interface"],
-                    matched_by="device_lldp",
-                    confidence=1.0,
-                )
+        rows = conn.execute(
+            """
+            SELECT l.local_interface, l.neighbor_interface,
+                   d.device_uuid, d.name, d.station
+            FROM device_lldp_neighbors l
+            JOIN devices d ON d.device_uuid = l.device_uuid
+            WHERE lower(
+                replace(replace(replace(l.neighbor_mac, ':', ''), '-', ''), '.', '')
+            ) = ?
+            ORDER BY l.id DESC
+            """,
+            (compact_mac,),
+        ).fetchall()
+    if len(rows) == 1:
+        row = rows[0]
+        return NeighborMatchResult(
+            device_uuid=str(row["device_uuid"]),
+            device_name=str(row["name"]),
+            station=row["station"],
+            local_interface=row["local_interface"],
+            ap_interface=row["neighbor_interface"],
+            matched_by="device_lldp",
+            confidence=1.0,
+        )
     return NeighborMatchResult()
 
 
@@ -156,7 +160,3 @@ def find_neighbor_optical_module(site_name: str, device_uuid: str | None, interf
                 if normalize_interface_name(item["interface_name"]) == normalized:
                     return dict(item)
     return dict(row) if row else None
-
-
-def _normalize_mac(value: str | None) -> str:
-    return str(value or "").strip().lower().replace(":", "-")

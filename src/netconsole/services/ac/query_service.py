@@ -1013,8 +1013,9 @@ class AcManagementQueryService:
             ac_id = str(row.get("ac_device_uuid") or "")
             if row.get("ap_uuid"):
                 result[(ac_id, f"uuid:{row['ap_uuid']}")] = row
-            if row.get("ap_name"):
-                result[(ac_id, f"name:{str(row['ap_name']).strip().casefold()}")] = row
+            mac = normalize_ap_mac(row.get("ap_mac")).normalized
+            if mac:
+                result[(ac_id, f"mac:{mac}")] = row
         return result
 
     @staticmethod
@@ -1027,20 +1028,19 @@ class AcManagementQueryService:
             found = index.get((ac_id, f"uuid:{resource['ap_uuid']}"))
             if found:
                 return found
-        return index.get((ac_id, f"name:{str(resource.get('ap_name') or '').strip().casefold()}"))
+        mac = normalize_ap_mac(resource.get("ap_mac")).normalized
+        return index.get((ac_id, f"mac:{mac}")) if mac else None
 
     @staticmethod
     def _append_unmatched_unauthenticated(
         resources: list[dict[str, object | None]],
         unauthenticated: list[dict[str, object | None]],
     ) -> list[dict[str, object | None]]:
-        names = {str(row.get("ap_name") or "").strip().casefold() for row in resources}
         macs = {normalize_ap_mac(row.get("ap_mac")).normalized for row in resources if row.get("ap_mac")}
         result = [dict(row) for row in resources]
         for row in unauthenticated:
-            name = str(row.get("ap_name") or "").strip().casefold()
             mac = normalize_ap_mac(row.get("inferred_ap_mac")).normalized
-            if (name and name in names) or (mac and mac in macs):
+            if mac and mac in macs:
                 continue
             result.append(
                 {

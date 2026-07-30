@@ -297,11 +297,6 @@ class GroundUnattendedEligibilityClassifier:
                 "AP_REGISTRY",
                 "通过基础资料中的 Radio/BSSID 映射到 AP",
             )
-        name = row.peer_ap_name.strip().casefold()
-        if name and name in by_name:
-            return by_name[name], "AP_EXACT", "通过 AP 实际名称精确匹配"
-        if name and name in by_alias:
-            return by_alias[name], "AP_ALIAS", "通过已确认 AP Alias 匹配"
         return None, "UNMATCHED", ""
 
     @staticmethod

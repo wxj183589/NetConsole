@@ -186,7 +186,7 @@ def test_missing_ap_mac_is_unresolved():
     assert result.status is ApMatchStatus.UNRESOLVED
 
 
-def test_ap_name_matching_is_scoped_and_never_higher_than_ap_mac():
+def test_ap_name_is_display_only_and_mac_remains_the_only_identity():
     by_name = candidate(ap_uuid="ap-name", ap_name="AP-01", ap_mac="00:11:22:33:44:55", ac_uuid="ac-a")
     by_mac = candidate(ap_uuid="ap-mac", ap_name="AP-OLD", ap_mac="aa:bb:cc:dd:ee:ff", ac_uuid="ac-a")
     duplicate_name = candidate(ap_uuid="ap-other", ap_name="ap-01", ac_uuid="ac-b")
@@ -196,8 +196,8 @@ def test_ap_name_matching_is_scoped_and_never_higher_than_ap_mac():
     ambiguous = resolver.resolve(ApObservation(ap_name="AP-01"), [by_name, duplicate_name])
     mac_wins = resolver.resolve(ApObservation(ap_name="AP-01", ap_mac="aa-bb-cc-dd-ee-ff"), [by_name, by_mac])
 
-    assert scoped.candidate is by_name
-    assert ambiguous.status is ApMatchStatus.AMBIGUOUS
+    assert scoped.status is ApMatchStatus.UNRESOLVED
+    assert ambiguous.status is ApMatchStatus.UNRESOLVED
     assert mac_wins.candidate is by_mac
     assert mac_wins.evidence[0].field == "ap_mac"
 
@@ -240,15 +240,15 @@ def test_peer_observation_prefers_explicit_radio_mapping_over_ap_mac_fallback():
     assert result.evidence[0].field == "peer_mac"
 
 
-def test_peer_mac_matching_ap_mac_alone_stays_unresolved_with_low_confidence_evidence():
+def test_peer_mac_matching_ap_mac_alone_stays_unresolved_without_evidence():
     ap = candidate(ap_uuid="ap-1", ap_mac="aa:bb:cc:dd:ee:ff")
 
     result = ApIdentityResolver().resolve(ApObservation(peer_mac="aa-bb-cc-dd-ee-ff"), [ap])
 
     assert result.status is ApMatchStatus.UNRESOLVED
-    assert result.candidates == (ap,)
-    assert result.evidence[-1].confidence == 55
-    assert any("未发现显式 Radio/BSSID" in warning for warning in result.warnings)
+    assert result.candidates == ()
+    assert result.evidence == ()
+    assert result.warnings == ()
 
 
 def test_duplicate_peer_and_peer_radio_mac_records_warning_without_dropping_observation():

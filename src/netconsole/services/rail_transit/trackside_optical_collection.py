@@ -29,6 +29,7 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.trackside_optical_result_repository import TracksideOpticalResultRepository
 from netconsole.parsers.zte.zxr10 import merge_optical_snapshot as merge_zte_optical_snapshot
 from netconsole.services import netmiko_connection
+from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.services.ac.fit_ap_optical_concurrency import (
     DEFAULT_FIT_AP_OPTICAL_CONCURRENCY,
     fit_ap_optical_platform_concurrency_limit,
@@ -515,17 +516,18 @@ def build_trackside_ap_targets(
     trackside_rows: list[dict[str, object | None]],
 ) -> tuple[list[TracksideOpticalTarget], list[TracksideSkippedTarget]]:
     row_ap_uuids = {str(row.get("ap_uuid") or "") for row in trackside_rows if row.get("ap_uuid")}
-    row_ap_names = {str(row.get("ap_name") or "") for row in trackside_rows if row.get("ap_name")}
-    row_ap_macs = {str(row.get("ap_mac") or "").casefold() for row in trackside_rows if row.get("ap_mac")}
+    row_ap_macs = {
+        normalize_mac(row.get("ap_mac"))
+        for row in trackside_rows
+        if normalize_mac(row.get("ap_mac"))
+    }
     devices = device_repository.list()
     targets: list[TracksideOpticalTarget] = []
     skipped: list[TracksideSkippedTarget] = []
     for ap in ac_repository.list_all_fit_ap_resources_with_metadata():
         if row_ap_uuids and str(ap.get("ap_uuid") or "") not in row_ap_uuids:
             continue
-        if not row_ap_uuids and row_ap_names and str(ap.get("ap_name") or "") not in row_ap_names:
-            continue
-        if not row_ap_uuids and not row_ap_names and row_ap_macs and str(ap.get("ap_mac") or "").casefold() not in row_ap_macs:
+        if not row_ap_uuids and row_ap_macs and normalize_mac(ap.get("ap_mac")) not in row_ap_macs:
             continue
         name = str(ap.get("ap_name") or ap.get("ap_ip") or "trackside-ap")
         device = _find_related_device(ap, devices)
@@ -606,6 +608,8 @@ def collect_trackside_optical(
 
     stage("trackside_ap.prepare")
     ac_repository = AcRepository(repository.database)
+    if target_ap_name and not (target_ap_uuid or target_ap_mac):
+        raise ValueError("定向轨旁 AP 更新必须提供 ap_uuid 或规范化 ap_mac，禁止按 AP 名称选择")
     stage("trackside_ap.fit_ap.plan", "正在统计轨旁 AP 与车站交换机目标", phase="prepare", event="target_planning")
     effective_station = str(target_station or "").strip()
     target_ap_update = bool(target_ap_uuid or target_ap_mac or target_ap_name)
@@ -941,7 +945,7 @@ def _trackside_update_coverage(
 
 
 def _has_trackside_ap_identity(row: dict[str, object | None]) -> bool:
-    return bool(_normalize_mac_text(row.get("ap_mac")) or str(row.get("ap_name") or "").strip())
+    return bool(_normalize_mac_text(row.get("ap_mac")))
 
 
 def _trackside_concurrency_settings(paths: PathResolver) -> dict[str, int]:
@@ -1262,17 +1266,13 @@ def _row_matches_target_ap(
 ) -> bool:
     ap_uuid = str(target_ap_uuid or "").strip()
     ap_mac = _normalize_mac_text(target_ap_mac)
-    ap_name = str(target_ap_name or "").strip().casefold()
     checks: list[bool] = []
     row_uuid = str(row.get("ap_uuid") or "").strip()
     row_mac = _normalize_mac_text(row.get("ap_mac"))
-    row_name = str(row.get("ap_name") or "").strip().casefold()
     if ap_uuid and row_uuid:
         checks.append(row_uuid == ap_uuid)
     if ap_mac and row_mac:
         checks.append(row_mac == ap_mac)
-    if ap_name and row_name:
-        checks.append(row_name == ap_name)
     return bool(checks) and all(checks)
 
 
@@ -1320,18 +1320,15 @@ def _filter_scoped_fit_ap_resources(
     station = str(target_station or "").strip().casefold()
     ap_uuid = str(target_ap_uuid or "").strip()
     ap_mac = _normalize_mac_text(target_ap_mac)
-    ap_name = str(target_ap_name or "").strip().casefold()
-    if not any((station, ap_uuid, ap_mac, ap_name)):
+    if not any((station, ap_uuid, ap_mac)):
         return list(rows)
-    has_ap_identity = bool(ap_uuid or ap_mac or ap_name)
+    has_ap_identity = bool(ap_uuid or ap_mac)
     result: list[dict[str, object | None]] = []
     for row in rows:
         if has_ap_identity:
             if ap_uuid and str(row.get("ap_uuid") or "").strip() != ap_uuid:
                 continue
             if ap_mac and _normalize_mac_text(row.get("ap_mac")) != ap_mac:
-                continue
-            if ap_name and str(row.get("ap_name") or "").strip().casefold() != ap_name:
                 continue
             result.append(row)
             continue
@@ -1342,8 +1339,8 @@ def _filter_scoped_fit_ap_resources(
 
 
 def _normalize_mac_text(value: object) -> str:
-    hex_text = re.sub(r"[^0-9a-fA-F]", "", str(value or ""))
-    return hex_text.casefold() if len(hex_text) == 12 else ""
+    normalized = normalize_mac(value)
+    return normalized.replace(":", "") if normalized else ""
 
 
 def _int_value(value: object) -> int:

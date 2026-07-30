@@ -348,8 +348,11 @@ def _attach_xlsx_metadata(
                 "template_type",
                 "schema_version",
                 "generated_at",
+                "exported_at",
                 "project_id",
                 "line_id",
+                "site_id",
+                "site_display_name",
             ):
                 if key in contract_metadata:
                     metadata[key] = contract_metadata[key]

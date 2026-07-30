@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import {
+  getTracksideApBusinessExportProposal,
   listTracksideApBusiness,
   startTracksideApBusinessExport,
   startTracksideApUpdate,
@@ -112,8 +113,6 @@ function singleApUpdatePayload(row: TracksideApBusinessRow): TracksideApUpdateRe
   if (apUuid) return { ap_uuid: apUuid }
   const apMac = cleanIdentity(row.ap_mac)
   if (apMac) return { ap_mac: apMac }
-  const apName = cleanIdentity(row.ap_name)
-  if (apName) return { ap_name: apName }
   return null
 }
 function hasApIdentity(row: TracksideApBusinessRow): boolean { return singleApUpdatePayload(row) !== null }
@@ -203,8 +202,8 @@ function updateStation(row: TracksideApBusinessRow): void { void startTask(() =>
 function updateAp(row: TracksideApBusinessRow): void {
   const payload = singleApUpdatePayload(row)
   if (!payload) { actionError.value = '缺少 AP 身份，无法定向更新'; return }
-  const target = cleanIdentity(row.ap_name) || cleanIdentity(row.ap_mac) || cleanIdentity(row.ap_uuid)
-  const scopeValue = payload.ap_uuid || payload.ap_mac || payload.ap_name || target
+  const target = cleanIdentity(row.ap_mac) || cleanIdentity(row.ap_uuid)
+  const scopeValue = payload.ap_uuid || payload.ap_mac || target
   void startTask(
     () => startTracksideApUpdate(payload),
     'AP 更新启动失败',
@@ -218,10 +217,11 @@ async function exportBusiness(): Promise<void> {
   taskSubmitting.value = true
   actionError.value = ''
   try {
+    const proposal = await getTracksideApBusinessExportProposal()
     const result = await userSelectedExport.submitExportAfterDestinationSelected({
       action: 'rail.trackside_business',
-      suggestedName: `轨旁AP业务-${exportTimestamp()}.xlsx`,
-      submit: startTracksideApBusinessExport,
+      suggestedName: proposal.suggested_name,
+      submit: () => startTracksideApBusinessExport(proposal),
     })
     if (result.status === 'cancelled') return
     currentTaskId.value = result.task.task_id

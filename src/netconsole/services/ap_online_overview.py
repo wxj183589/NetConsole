@@ -6,6 +6,7 @@ import re
 import unicodedata
 
 from netconsole.core import app_logger
+from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.utils.station_normalize import normalize_station_value
 
 
@@ -60,8 +61,6 @@ def build_ap_online_overview_rows(
     raw_metadata_count = len(metadata_source)
     normalized_metadata = [normalize_planned_ap(row) for row in metadata_source if _metadata_row_has_data(row)]
     normalized_optical = [normalize_optical_row(row) for row in optical_source]
-    if not normalized_metadata and not capacity_map and normalized_resources and not normalized_optical:
-        normalized_metadata = [normalize_planned_ap(row) for row in resources if _resource_site(row) not in DIRTY_RESOURCE_SITES]
     metadata_indexes = build_plan_index(normalized_metadata)
     optical_indexes = build_optical_index(normalized_optical)
     grouped = build_station_totals(normalized_metadata, capacity_map)
@@ -75,11 +74,7 @@ def build_ap_online_overview_rows(
 def normalize_planned_ap(row: dict[str, object | None]) -> dict[str, object | None]:
     result = dict(row)
     result["_match_mac"] = _row_mac(row)
-    result["_match_name"] = _row_name(row)
-    result["_match_name_compact"] = _row_name(row, compact=True)
     result["_match_uuid"] = _first_text(row, "ap_uuid", "uuid", "AP_UUID")
-    result["_match_serial"] = _first_text(row, "serial_number", "serial", "SN")
-    result["_match_apid"] = _first_text(row, "apid", "APID")
     result["_station"] = _plan_site(row)
     return result
 
@@ -87,11 +82,7 @@ def normalize_planned_ap(row: dict[str, object | None]) -> dict[str, object | No
 def normalize_fit_ap_resource(row: dict[str, object | None]) -> dict[str, object | None]:
     result = dict(row)
     result["_match_mac"] = _row_mac(row)
-    result["_match_name"] = _row_name(row)
-    result["_match_name_compact"] = _row_name(row, compact=True)
     result["_match_uuid"] = _first_text(row, "ap_uuid", "uuid", "AP_UUID")
-    result["_match_serial"] = _first_text(row, "serial_number", "serial", "SN")
-    result["_match_apid"] = _first_text(row, "apid", "APID")
     result["_resource_site"] = _resource_site(row)
     result["_online"] = is_fit_ap_online(row)
     return result
@@ -100,8 +91,6 @@ def normalize_fit_ap_resource(row: dict[str, object | None]) -> dict[str, object
 def normalize_optical_row(row: dict[str, object | None]) -> dict[str, object | None]:
     result = dict(row)
     result["_match_mac"] = _row_mac(row)
-    result["_match_name"] = _row_name(row)
-    result["_match_name_compact"] = _row_name(row, compact=True)
     result["_match_uuid"] = _first_text(row, "ap_uuid", "uuid", "AP_UUID")
     result["_station"] = normalize_station_value(row)
     return result
@@ -111,11 +100,7 @@ def build_plan_index(planned_aps: list[dict[str, object | None]]) -> dict[str, o
     indexes: dict[str, object] = {
         "plans": [],
         "by_mac": {},
-        "by_name": {},
-        "by_name_compact": {},
         "by_uuid": {},
-        "by_serial": {},
-        "by_apid": {},
     }
     seen: set[str] = set()
     for plan in planned_aps:
@@ -126,23 +111,17 @@ def build_plan_index(planned_aps: list[dict[str, object | None]]) -> dict[str, o
             seen.add(key)
         indexes["plans"].append(plan)  # type: ignore[index]
         _index_value(indexes["by_mac"], plan.get("_match_mac"), plan)
-        _index_value(indexes["by_name"], plan.get("_match_name"), plan)
-        _index_value(indexes["by_name_compact"], plan.get("_match_name_compact"), plan)
         _index_value(indexes["by_uuid"], plan.get("_match_uuid"), plan)
-        _index_value(indexes["by_serial"], plan.get("_match_serial"), plan)
-        _index_value(indexes["by_apid"], plan.get("_match_apid"), plan)
     return indexes
 
 
 def build_optical_index(optical_rows: list[dict[str, object | None]]) -> dict[str, object]:
-    indexes: dict[str, object] = {"by_uuid": {}, "by_mac": {}, "by_name": {}, "by_name_compact": {}}
+    indexes: dict[str, object] = {"by_uuid": {}, "by_mac": {}}
     for row in optical_rows:
         if not str(row.get("_station") or "").strip():
             continue
         _index_value(indexes["by_uuid"], row.get("_match_uuid"), row)
         _index_value(indexes["by_mac"], row.get("_match_mac"), row)
-        _index_value(indexes["by_name"], row.get("_match_name"), row)
-        _index_value(indexes["by_name_compact"], row.get("_match_name_compact"), row)
     return indexes
 
 
@@ -151,12 +130,7 @@ def match_resource_to_plan(
     indexes: dict[str, object],
 ) -> tuple[dict[str, object | None] | None, str]:
     checks = (
-        ("uuid", resource.get("_match_uuid"), "by_uuid"),
         ("mac", resource.get("_match_mac"), "by_mac"),
-        ("name", resource.get("_match_name"), "by_name"),
-        ("name", resource.get("_match_name_compact"), "by_name_compact"),
-        ("serial", resource.get("_match_serial"), "by_serial"),
-        ("apid", resource.get("_match_apid"), "by_apid"),
     )
     for method, value, index_name in checks:
         index = indexes.get(index_name)
@@ -170,10 +144,7 @@ def match_resource_to_optical(
     indexes: dict[str, object],
 ) -> tuple[dict[str, object | None] | None, str]:
     checks = (
-        ("optical_uuid", resource.get("_match_uuid"), "by_uuid"),
         ("optical_mac", resource.get("_match_mac"), "by_mac"),
-        ("optical_name", resource.get("_match_name"), "by_name"),
-        ("optical_name", resource.get("_match_name_compact"), "by_name_compact"),
     )
     for method, value, index_name in checks:
         index = indexes.get(index_name)
@@ -220,9 +191,7 @@ def build_online_counts(
 ) -> dict[str, object]:
     stats: dict[str, object] = {
         "online_resource_count": 0,
-        "matched_by_optical_uuid": 0,
         "matched_by_optical_mac": 0,
-        "matched_by_optical_name": 0,
         "matched_by_metadata": 0,
         "matched_by_known_resource_site": 0,
         "unmatched_online": 0,
@@ -233,16 +202,20 @@ def build_online_counts(
     for resource in fit_ap_resources:
         if not bool(resource.get("_online")):
             continue
+        if not resource.get("_match_mac"):
+            stats["unmatched_online"] = int(stats["unmatched_online"] or 0) + 1
+            _append_unmatched_sample(stats, resource)
+            continue
         stats["online_resource_count"] = int(stats["online_resource_count"] or 0) + 1
         optical, optical_method = match_resource_to_optical(resource, optical_indexes)
         metadata, _metadata_method = match_resource_to_plan(resource, metadata_indexes)
         resource_site = str(resource.get("_resource_site") or "").strip()
-        if optical:
-            site = str(optical.get("_station") or UNASSIGNED_SITE_LABEL)
+        if optical and str(optical.get("_station") or "").strip():
+            site = str(optical.get("_station") or "")
             online_key = _resource_unique_key(resource)
             stats[f"matched_by_{optical_method}"] = int(stats.get(f"matched_by_{optical_method}") or 0) + 1
         elif metadata and str(metadata.get("_station") or "").strip():
-            site = str(metadata.get("_station") or UNASSIGNED_SITE_LABEL)
+            site = str(metadata.get("_station") or "")
             online_key = _resource_unique_key(resource)
             stats["matched_by_metadata"] = int(stats["matched_by_metadata"] or 0) + 1
         elif resource_site and resource_site in capacity_sites:
@@ -253,7 +226,7 @@ def build_online_counts(
             stats["unmatched_online"] = int(stats["unmatched_online"] or 0) + 1
             _append_unmatched_sample(stats, resource)
             continue
-        if online_key in seen_online:
+        if not online_key or online_key in seen_online:
             continue
         seen_online.add(online_key)
         item = grouped.setdefault(site, {"site": site, "total": 0, "online": 0, "offline": 0, "remark": ""})
@@ -435,7 +408,7 @@ def _resource_site(row: dict[str, object | None]) -> str:
 
 def _row_mac(row: dict[str, object | None]) -> str:
     for field in ("ap_mac", "AP_MAC", "mac", "MAC", "MAC地址"):
-        mac = _normalize_mac(row.get(field))
+        mac = normalize_mac(row.get(field)) or ""
         if mac:
             return mac
     return ""
@@ -462,35 +435,14 @@ def _normalize_name(value: object, *, compact: bool = False) -> str:
     return text
 
 
-def _normalize_mac(value: object) -> str:
-    text = re.sub(r"[^0-9a-fA-F]", "", str(value or ""))
-    return text.casefold() if len(text) == 12 else ""
-
-
 def _plan_unique_key(row: dict[str, object | None]) -> str:
-    for prefix, field in (
-        ("mac", "_match_mac"),
-        ("uuid", "_match_uuid"),
-        ("serial", "_match_serial"),
-        ("name", "_match_name_compact"),
-    ):
-        value = str(row.get(field) or "")
-        if value:
-            return f"{prefix}:{value}"
-    return ""
+    value = str(row.get("_match_mac") or "")
+    return f"mac:{value}" if value else f"row:{id(row)}"
 
 
 def _resource_unique_key(row: dict[str, object | None]) -> str:
-    for prefix, field in (
-        ("mac", "_match_mac"),
-        ("uuid", "_match_uuid"),
-        ("serial", "_match_serial"),
-        ("name", "_match_name_compact"),
-    ):
-        value = str(row.get(field) or "")
-        if value:
-            return f"{prefix}:{value}"
-    return f"row:{id(row)}"
+    value = str(row.get("_match_mac") or "")
+    return f"mac:{value}" if value else ""
 
 
 def _append_unmatched_sample(stats: dict[str, object], resource: dict[str, object | None]) -> None:
@@ -519,7 +471,11 @@ def _capacity_total_remark(value: object) -> tuple[int, str]:
 def _with_online_rate(row: dict[str, object | None]) -> dict[str, object | None]:
     total = int(row.get("total") or 0)
     online = int(row.get("online") or 0)
-    row["online_rate"] = f"{online / total:.1%}" if total else "0.0%"
+    row["online_rate"] = (
+        f"{online / total:.1%}"
+        if total > 0 and online <= total
+        else "—"
+    )
     return row
 
 

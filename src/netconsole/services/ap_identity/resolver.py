@@ -14,7 +14,6 @@ from .normalizers import normalize_ap_name, normalize_identifier, normalize_mac,
 
 
 PEER_MAC_DUPLICATE_WARNING = "peer_mac 与 peer_radio_mac 规范化后重复"
-PEER_AP_MAC_FALLBACK_WARNING = "peer observation 仅命中 AP MAC，未发现显式 Radio/BSSID 映射"
 
 
 class ApIdentityResolver:
@@ -30,8 +29,6 @@ class ApIdentityResolver:
             self._match_scoped_ap_id,
             self._match_scoped_ap_mac,
             self._match_ap_mac,
-            self._match_scoped_ap_name,
-            self._match_ap_name,
             self._match_radio_mac,
             self._match_bssid,
             self._match_peer_radio,
@@ -42,14 +39,6 @@ class ApIdentityResolver:
                 continue
             return _result_for_matches(matched, (*base_evidence, *evidence), warnings, observation)
 
-        peer_candidates, peer_evidence = self._peer_ap_mac_fallback(observation, candidate_rows)
-        if peer_candidates:
-            return ApMatchResult(
-                status=ApMatchStatus.UNRESOLVED,
-                candidates=peer_candidates,
-                evidence=(*base_evidence, *peer_evidence),
-                warnings=(*warnings, PEER_AP_MAC_FALLBACK_WARNING),
-            )
         return ApMatchResult(status=ApMatchStatus.UNRESOLVED, evidence=base_evidence, warnings=warnings)
 
     @staticmethod
@@ -92,25 +81,6 @@ class ApIdentityResolver:
         return _identity_matches(candidates, "ap_mac", normalize_mac(observation.ap_mac), lambda item: normalize_mac(item.identity.ap_mac), 92, "AP MAC 精确匹配")
 
     @staticmethod
-    def _match_scoped_ap_name(observation: ApObservation, candidates: tuple[ApIdentityCandidate, ...]):
-        ac_uuid = _key(observation.ac_uuid)
-        ap_name = _name_key(observation.ap_name)
-        if not ac_uuid or not ap_name:
-            return (), ()
-        return _matches(
-            candidates,
-            "ac_uuid+ap_name",
-            f"{ac_uuid}:{ap_name}",
-            lambda item: f"{_key(item.identity.ac_uuid)}:{_name_key(item.identity.ap_name)}" if _key(item.identity.ac_uuid) and _name_key(item.identity.ap_name) else None,
-            85,
-            "AC 作用域内 AP 名称精确匹配",
-        )
-
-    @staticmethod
-    def _match_ap_name(observation: ApObservation, candidates: tuple[ApIdentityCandidate, ...]):
-        return _identity_matches(candidates, "ap_name", _name_key(observation.ap_name), lambda item: _name_key(item.identity.ap_name), 75, "AP 名称精确匹配")
-
-    @staticmethod
     def _match_radio_mac(observation: ApObservation, candidates: tuple[ApIdentityCandidate, ...]):
         return _radio_matches(candidates, "radio_mac", normalize_mac(observation.radio_mac), lambda radio: (normalize_mac(radio.radio_mac),), 90, "显式 Radio MAC 映射")
 
@@ -140,23 +110,6 @@ class ApIdentityResolver:
             if matched:
                 return matched, evidence
         return (), ()
-
-    @staticmethod
-    def _peer_ap_mac_fallback(observation: ApObservation, candidates: tuple[ApIdentityCandidate, ...]):
-        for field, value in (("peer_radio_mac", observation.peer_radio_mac), ("peer_mac", observation.peer_mac)):
-            normalized = normalize_mac(value)
-            matched, evidence = _identity_matches(
-                candidates,
-                field,
-                normalized,
-                lambda item: normalize_mac(item.identity.ap_mac),
-                55,
-                "Peer observation 低置信命中 AP MAC",
-            )
-            if matched:
-                return matched, evidence
-        return (), ()
-
 
 def _result_for_matches(
     matches: tuple[ApIdentityCandidate, ...],
@@ -258,9 +211,4 @@ def _observation_warnings(observation: ApObservation) -> tuple[tuple[ApMatchEvid
 
 def _key(value: object) -> str | None:
     normalized = normalize_identifier(value)
-    return normalized.casefold() if normalized else None
-
-
-def _name_key(value: object) -> str | None:
-    normalized = normalize_ap_name(value)
     return normalized.casefold() if normalized else None

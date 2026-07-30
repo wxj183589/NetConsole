@@ -13,6 +13,7 @@ from netconsole.services.ac.ac_models import AcOpticalRefreshRequest, AcOpticalR
 from netconsole.services.h3c_ac_collect_service import FitApOpticalCollectResult, collect_h3c_fit_ap_optical
 from netconsole.services.ac.fit_ap_optical_partial_success import install_fit_ap_optical_partial_success
 from netconsole.services.offline_ap_ledger import OFFLINE_AP_STATUS_TEXT, is_fit_ap_offline
+from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.utils.interface_sort import interface_sort_key
 
 
@@ -36,13 +37,13 @@ def enrich_fit_ap_optical_rows(
     should_cancel: CancelCallback | None = None,
 ) -> list[dict[str, object | None]]:
     resources_by_uuid = {str(row.get("ap_uuid") or ""): row for row in resources if row.get("ap_uuid")}
-    resources_by_name = {str(row.get("ap_name") or ""): row for row in resources if row.get("ap_name")}
+    resources_by_mac = {normalize_mac(row.get("ap_mac")): row for row in resources if normalize_mac(row.get("ap_mac"))}
     lookup = device_optical_status_lookup or {}
     result: list[dict[str, object | None]] = []
     for row in rows:
         if should_cancel is not None and should_cancel():
             raise AcOpticalRefreshCancelled("用户已取消更新")
-        resource = resources_by_uuid.get(str(row.get("ap_uuid") or "")) or resources_by_name.get(str(row.get("ap_name") or ""), {})
+        resource = resources_by_uuid.get(str(row.get("ap_uuid") or "")) or resources_by_mac.get(normalize_mac(row.get("ap_mac")), {})
         result.append(_classify_optical_status(row, resource, lookup))
     return result
 
@@ -164,7 +165,9 @@ class AcOpticalService:
         progress_callback: ProgressCallback | None = None,
         should_cancel: CancelCallback | None = None,
     ) -> AcOpticalRefreshResult:
-        if not any((request.target_ap_uuids, request.target_ap_macs, request.target_ap_names)):
+        if not any((request.target_ap_uuids, request.target_ap_macs)):
+            if request.target_ap_names:
+                raise ValueError("AP 名称仅用于展示兼容，单 AP 光衰刷新必须提供 AP UUID 或规范化 MAC")
             raise ValueError("单 AP 光衰刷新缺少 AP 标识")
         return self.refresh_fit_ap_optical(
             request,

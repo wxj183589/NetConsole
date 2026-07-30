@@ -1019,9 +1019,6 @@ def _filter_fit_ap_optical_targets(
         if mac_set and _normalize_mac_text(row.get("ap_mac")) in mac_set:
             result.append(row)
             continue
-        if name_set and str(row.get("ap_name") or "").strip().casefold() in name_set:
-            result.append(row)
-            continue
         row_station = str(row.get("site") or row.get("site_name") or row.get("station") or "").strip().casefold()
         if station_set and row_station in station_set:
             result.append(row)

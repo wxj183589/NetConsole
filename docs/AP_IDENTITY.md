@@ -2,9 +2,9 @@
 
 ## 1. 工具定位
 
-`src/netconsole/services/ap_identity/` 是 AP 统一模型阶段 1 的纯 Python、只读 identity 工具。它把 AP、Radio、BSSID/BBSSID、Peer observation、位置和拓扑作用域分开表达，并返回可审计的匹配证据。
+`src/netconsole/services/ap_identity/` 是 AP 统一模型和生产身份解析入口。它把物理 AP、Radio、BSSID/BBSSID、Peer observation、位置和拓扑作用域分开表达，并返回可审计的匹配证据。
 
-阶段 2 已在 AC FIT-AP 资源与 AP 扩展信息之间接入只读 shadow comparison；阶段 3 已在 AC 光衰 Job result 中附加只读 `identity_shadow`；阶段 4/4.1 已完成轨旁评估和只读 shadow 接入；阶段 5/5.1 已完成 MR/Mesh评估和第一批只读shadow接入；阶段 6/6.1 已完成导出评估和两个 P0 diagnostics 接入；阶段 7 已定义真实局点只读观测、脱敏汇总和准入阈值；阶段 8 已完成只读展示方案评估；阶段 8.1 已实现默认关闭的纯 Python 诊断摘要 ViewModel；阶段 8.2 已确认当前没有统一 Job 详情宿主，阶段 8.3 可见 UI 暂缓。各阶段均未让 resolver 接管生产结果；MR/Mesh生产解析、无线扫描、页面和导出字段语义保持不变。
+2026-07-31 起，轨旁 AP 业务、AP 上线概览、Mesh peer mapping、Online MR、Vehicle MR 和地面无人值守的生产关联统一采用 MAC-only policy：AP 名称只用于展示，不能成为跨模块身份键；Radio/BSSID/Peer MAC 只有存在显式 Radio/BSSID 到物理 AP MAC 的映射时才可归属 AP。旧的名称匹配、MAC-like 名称推导和 H3C Radio 前缀推导不再是生产回退。shadow/diagnostics 仍可保留旧结果用于审计，但不得覆盖新生产结果。
 
 目录结构：
 
@@ -103,25 +103,23 @@ Resolver 使用第一个有候选的精确策略，不用位置字段给重复 i
 
 | 顺序 | 规则 | 置信度 |
 | ---: | --- | ---: |
-| 1 | `ap_uuid` 精确 | 100 |
-| 2 | `ac_uuid + ap_id/apid` 精确 | 98 |
-| 3 | `ac_uuid + ap_mac` 精确 | 96 |
-| 4 | `ap_mac` 精确 | 92 |
-| 5 | `ac_uuid + ap_name` 精确 | 85 |
-| 6 | `ap_name` 精确 | 75 |
-| 7 | 显式 `radio_mac` | 90 |
-| 8 | 显式 `bssid/bbssid` | 90 |
-| 9 | `peer_radio_mac`，再以 `peer_mac` 命中显式 Radio/BSSID | 80 |
-| 10（证据） | Peer observation 只命中 AP MAC | 55，不产生 matched |
+| 1 | 当前 LLDP 通过 MAC/IP 映射到物理 AP | 100 |
+| 2 | 最近一次可信历史 LLDP 通过 MAC 映射 | 95 |
+| 3 | 基础资料 `ap_mac` 精确匹配 | 92 |
+| 4 | `ap_uuid` 或同一 AC 内 `ap_id/apid` 辅助定位 | 90 |
+| 5 | 显式 `radio_mac` | 90 |
+| 6 | 显式 `bssid/bbssid` | 90 |
+| 7 | `peer_radio_mac`/`peer_mac` 命中显式 Radio/BSSID | 80 |
+| 8（证据） | Peer observation 只命中物理 AP MAC | 不产生 matched |
 | 辅助 | site/station/section/mileage 一致 | 10，只追加证据 |
 
-AP MAC 优先于 AP 名称。相同 AP MAC/名称跨 AC 重复时，无 AC 作用域返回 ambiguous；不会选择第一条。
+AP MAC 是唯一生产身份。相同 MAC 关联多个基础资料或多个站点时返回 `ambiguous`；没有 MAC 时返回 `unresolved`，不会选择第一条。
 
 ## 6. matched、ambiguous 与 unresolved
 
 - `matched`：当前精确策略只有一个候选。
 - `ambiguous`：当前最高优先级有效策略得到多个候选。
-- `unresolved`：没有可靠候选，或 Peer 只低置信命中 AP MAC但缺少显式映射。
+- `unresolved`：没有可靠候选，或 Peer 只命中物理 AP MAC但缺少显式 Radio/BSSID 映射。
 
 位置字段、站点、区间、里程和交换机接口只能补充证据，不能单独将 unresolved 变为 matched。
 
@@ -130,7 +128,7 @@ AP MAC 优先于 AP 名称。相同 AP MAC/名称跨 AC 重复时，无 AC 作�
 - Radio MAC、BSSID、BBSSID 是射频/BSS 身份，不是物理 AP MAC。
 - `peer_mac` 和 `peer_radio_mac` 永远先作为 observation。
 - Peer 命中显式 Candidate Radio/BSSID 时可 matched。
-- Peer 只命中 Candidate AP MAC 时返回低置信 Evidence 和 unresolved warning。
+- Peer 只等于 Candidate AP MAC 时保持 `unresolved`，不产生物理 AP 绑定。
 - `peer_mac` 与 `peer_radio_mac` 规范化后相同时，保留两个原始字段，并添加重复 warning；本阶段不修改导出展示。
 
 ## 8. 位置和业务边界
@@ -185,25 +183,19 @@ AP MAC 优先于 AP 名称。相同 AP MAC/名称跨 AC 重复时，无 AC 作�
 - AC/FIT-AP 常见 `xxxx-xxxx-xxxx` MAC 只在本适配器边界转换后交给通用 resolver，不改通用模型或持久化值。
 - report 统计 matched、unresolved、ambiguous、identity unchanged/changed、记录类型、interface-only、name-only、MAC-like name 和缺失 AC 作用域。
 
-`ac_fit_ap_optical_refresh` 的 load/collect、all/single 都保留原 result 字段，只新增 `identity_shadow`。shadow 异常返回 `available=false`，不改变 finished/failed；删除该附加字段即可回退。原 `AcOpticalService` 的 UUID/name 关联、AP 在线/离线、交换机无光、阈值、历史合并和 Repository 写入仍是生产路径。
+`ac_fit_ap_optical_refresh` 的 load/collect、all/single 都保留原 result 字段，只新增 `identity_shadow`。shadow 异常返回 `available=false`，不改变 finished/failed；删除该附加字段即可回退。光衰阈值、在线/离线、交换机无光、历史合并和 Repository 写入规则保持不变；AP 关联生产路径只接受规范化 MAC，缺少 MAC 时保持 unresolved。
 
-## 12. 轨旁、MR/Mesh 与导出后续接入
+## 12. 轨旁、MR/Mesh 与导出接入
 
-轨旁业务的数据来源、旧 lookup、双击详情、缓存/历史和阶段 4.1 实现见 [TRACKSIDE_AP_IDENTITY_ASSESSMENT.md](TRACKSIDE_AP_IDENTITY_ASSESSMENT.md)。当前只在旧聚合完成后附加 `identity_shadow`，在旧详情 matches 生成后附加 `detail_identity_shadow`；lookup、缓存、双击定位、采集范围和业务规则均未替换。
+轨旁业务先按当前 LLDP，再按可信历史 LLDP，最后按基础资料 MAC 解析 AP；交换机名称、AP 名称、序列号和接口描述只保留为展示/诊断字段。`effective_trackside_ap_scope` 只建立 MAC identity index，缺少 `station_id` 的历史资料由 `scripts/maintenance/backfill_trackside_ap_station_identity.py` 在副本上 dry-run/apply 回填。
 
-MR/Mesh、Online MR、Vehicle MR 的数据来源、Peer/Radio语义、lookup差异、主备链依赖、导出风险和阶段 5.1实现见 [MR_MESH_AP_IDENTITY_ASSESSMENT.md](MR_MESH_AP_IDENTITY_ASSESSMENT.md)。当前只在`mesh_log_import`、`online_mr_parse`和`vehicle_mr_mapping_load`旧结果后附加`identity_shadow`；生产parser、mapping/cache、链路判断、页面和导出未接入shadow。
+MR/Mesh、Online MR、Vehicle MR 和地面无人值守统一输出 `canonical_ap_mac`、展示名称、站点/区间、`identity_source`、`identity_status` 和 `identity_reason`。`MeshPeerMappingService`、无线扫描和 Online MR 不再把 `peer_mac`、Radio MAC 或 BSSID 直接写入物理 `ap_mac`；没有显式映射时保留原始观测并标记 `unresolved`。
 
-阶段 6 导出字段去重诊断评估与阶段 6.1 P0 实施见 [EXPORT_FIELD_DEDUP_ASSESSMENT.md](EXPORT_FIELD_DEDUP_ASSESSMENT.md)。Mesh 链路明细和 `OnlineMrAnalysisReportExporter` 只附加小型 `export_identity_diagnostics` 元数据；没有修改 workbook/CSV/NAM、表头、报告 SQL、解析、页面或业务统计，默认不写 sidecar。
+导出继续由 Export Job/Artifact 负责落盘，轨旁 AP 业务的安全局点显示名由共享 file contract 同时提供给后端 Artifact、任务中心和前端保存目标；GET 规划只读并严格校验 DTO。
 
-阶段 7 真实局点运行步骤、统一指标、HMAC 脱敏、采样范围、风险分级和保守决策门见 [AP_IDENTITY_OBSERVATION_PLAN.md](AP_IDENTITY_OBSERVATION_PLAN.md)。观测只提取聚合，不保存完整 items/evidence/raw log/xlsx；达到阈值也只允许进入阶段 8 的只读展示评估，不授权生产接管。
+## 13. 2026-07-31 代码同步结论
 
-阶段 8 可展示字段允许列表、禁止字段、UI/报告候选、默认关闭策略、不可用状态和阶段 8.1 实现见 [AP_IDENTITY_DISPLAY_ASSESSMENT.md](AP_IDENTITY_DISPLAY_ASSESSMENT.md)。阶段 8.2 Job/Export 宿主现状、七类结果流、候选矩阵和阶段 8.3 准入结论见 [AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md](AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md)。当前没有统一 Job 详情启动点或安全结果保留层；阶段 8.3 可见 UI 暂缓，不得改业务页面或持久化完整 result。
-
-## 13. 2026-07-11 代码同步结论
-
-- 统一模型仍为 `CanonicalApIdentity`、`CanonicalApRadioIdentity`、`CanonicalApLocation`、`ApObservation`、`ApIdentityCandidate`、`ApMatchEvidence`、`ApMatchResult`。
-- resolver 仍按显式 UUID、AC 作用域 ID/MAC、全局 AP MAC、作用域名称/名称、Radio/BSSID、peer observation 的保守顺序解析；唯一候选才 matched，多候选 ambiguous，无候选 unresolved。位置只作辅助证据，不单独决定身份。
-- peer 到 AP MAC 的低置信 fallback 仍只形成 unresolved 诊断，不允许伪装成 matched。
-- 当前接入仍只附加 `identity_shadow`、`detail_identity_shadow` 或 `export_identity_diagnostics`；没有替换旧 matcher、数据库写入、页面字段或报表统计。
-- `online_mr_parse` 可附加 shadow，但 Online MR 实时生产匹配不接管；Mesh 链路明细 diagnostics 只随 finished result 返回 metadata。
-- 阶段 8.3 继续 hold。没有真实局点准入结果、统一 Job 详情宿主和安全结果生命周期之前，不新增可见 UI。
+- 统一模型为 `CanonicalApIdentity`、`CanonicalApRadioIdentity`、`CanonicalApLocation`、`ApObservation`、`ApIdentityCandidate`、`ApMatchEvidence`、`ApMatchResult`。
+- 公共 `normalize_mac()` 唯一输出小写冒号格式 `aa:bb:cc:dd:ee:ff`；非法值返回 `None`。导入层可保留 legacy display 字段，但生产查询、索引、匹配和新输出使用公共规范。
+- 生产优先级为当前 LLDP、历史 LLDP、基础资料 MAC、`unresolved/ambiguous`。AP 名称永远是展示字段，MAC-like 名称不会写入 AP MAC。
+- Radio/BSSID/Peer 只有明确映射才能关联物理 AP；Peer 单独命中 AP MAC 不再产生低置信生产绑定。

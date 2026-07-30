@@ -6,7 +6,7 @@ import re
 
 from netconsole.models.wireless_scan_models import TracksideBssidMatch
 from netconsole.repositories.ac_repository import AcRepository
-from netconsole.services.network_tools.wireless_channel_analyzer import format_h3c_mac, normalize_mac
+from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.utils.station_normalize import normalize_station_value
 
 
@@ -32,25 +32,12 @@ class TracksideApIdentity:
 
 class TracksideApBssidResolver:
     def __init__(self, aps: list[dict[str, object]] | None = None) -> None:
-        self.aps = [ap for ap in (_identity(row) for row in aps or []) if normalize_mac(ap.ap_mac) or ap.ap_name]
+        self.aps = [ap for ap in (_identity(row) for row in aps or []) if normalize_mac(ap.ap_mac)]
         self.radio_mac_map: dict[str, list[tuple[TracksideApIdentity, int | None, str]]] = defaultdict(list)
-        self.radio1_map: dict[str, list[TracksideApIdentity]] = defaultdict(list)
-        self.radio2_map: dict[str, list[TracksideApIdentity]] = defaultdict(list)
-        self.ap_mac_map: dict[str, list[TracksideApIdentity]] = defaultdict(list)
-        self.peer_name_map: dict[str, list[TracksideApIdentity]] = defaultdict(list)
         for ap in self.aps:
-            for peer_name in ap.peer_names:
-                key = _name_key(peer_name)
-                if key:
-                    self.peer_name_map[key].append(ap)
             mac = normalize_mac(ap.ap_mac)
             if not mac:
                 continue
-            self.ap_mac_map[mac].append(ap)
-            self.radio1_map[mac[:11]].append(ap)
-            if mac[10] != "f":
-                radio2 = f"{mac[:10]}{int(mac[10], 16) + 1:x}"
-                self.radio2_map[radio2].append(ap)
             for radio_mac, radio_id, source in ap.radio_macs:
                 self.radio_mac_map[radio_mac].append((ap, radio_id, source))
 
@@ -69,21 +56,6 @@ class TracksideApBssidResolver:
         if match is not None:
             return match
 
-        h3c_candidates = [(ap, 1, "h3c_radio_1_ap_mac_prefix11") for ap in self.radio1_map.get(bssid[:11], [])]
-        h3c_candidates.extend((ap, 2, "h3c_radio_2_ap_mac_nibble_plus_1") for ap in self.radio2_map.get(bssid[:11], []))
-        match = self._single_match(h3c_candidates)
-        if match is not None:
-            return match
-
-        match = self._single_match([(ap, None, "fit_ap_ap_mac_exact") for ap in self.ap_mac_map.get(bssid, [])])
-        if match is not None:
-            return match
-
-        key = _name_key(peer_name)
-        if key:
-            match = self._single_match([(ap, None, "mesh_peer_name_ap_name_exact") for ap in self.peer_name_map.get(key, [])])
-            if match is not None:
-                return match
         return TracksideBssidMatch(matched=False, match_status="unmatched")
 
     def _single_match(self, candidates: list[tuple[TracksideApIdentity, int | None, str]]) -> TracksideBssidMatch | None:
@@ -101,7 +73,7 @@ class TracksideApBssidResolver:
             match_status="matched",
             ap_name=ap.ap_name or ap.point_code or "-",
             point_code=ap.point_code,
-            ap_mac=format_h3c_mac(ap.ap_mac),
+            ap_mac=normalize_mac(ap.ap_mac) or "",
             station=ap.station,
             section=ap.section,
             section_start_station=ap.section_start_station,
@@ -149,7 +121,7 @@ def _candidate_payload(ap: TracksideApIdentity, radio_id: int | None, rule: str)
     return {
         "ap_name": ap.ap_name or ap.point_code,
         "point_code": ap.point_code,
-        "ap_mac": format_h3c_mac(ap.ap_mac),
+        "ap_mac": normalize_mac(ap.ap_mac) or "",
         "station": ap.station,
         "section": ap.section,
         "section_start_station": ap.section_start_station,
@@ -171,18 +143,22 @@ def _extract_radio_macs(row: dict[str, object]) -> tuple[tuple[str, int | None, 
     radio_keys = {
         "radio_mac",
         "bssid",
-        "peer_radio_mac",
-        "mesh_peer_radio_mac",
-        "mesh_peer_mac",
-        "local_mac",
+        "bbssid",
         "rid1_mac",
         "rid2_mac",
+        "rid1_bssid",
+        "rid2_bssid",
+        "rid1_bbssid",
+        "rid2_bbssid",
         "radio1_mac",
         "radio2_mac",
     }
     for key, value in row.items():
         key_l = str(key).lower()
-        if key_l not in radio_keys and not (("radio" in key_l or "bssid" in key_l) and "mac" in key_l):
+        if key_l not in radio_keys and not (
+            ("radio" in key_l or "bssid" in key_l or "bbssid" in key_l)
+            and "mac" in key_l
+        ):
             continue
         mac = normalize_mac(value)
         if not mac or mac == ap_mac:
@@ -197,14 +173,10 @@ def _extension_identity_rows(repository: AcRepository, fit_rows: list[dict[str, 
     except Exception:
         return []
     known_macs = {normalize_mac(row.get("ap_mac")) for row in fit_rows if normalize_mac(row.get("ap_mac"))}
-    known_names = {str(row.get("ap_name") or "").strip().casefold() for row in fit_rows if str(row.get("ap_name") or "").strip()}
     rows: list[dict[str, object]] = []
     for extension in extensions:
         mac = normalize_mac(extension.get("ap_mac_display") or extension.get("ap_mac_norm"))
-        name = str(extension.get("ap_name") or "").strip()
         if mac and mac in known_macs:
-            continue
-        if not mac and name and name.casefold() in known_names:
             continue
         row = dict(extension)
         row["ap_mac"] = extension.get("ap_mac_display") or extension.get("ap_mac_norm") or ""
