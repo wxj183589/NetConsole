@@ -304,10 +304,10 @@
 - Agent Go：`go test ./...` 通过；Python `compileall`、Ruff、`pip check`：通过
 - 架构 Guard：`9/9 passed`；稳定性脚本：100 轮规划/基础资料 HTTP 200，0 网络错误，Backend PID 未变化
 - 修改差异和 Markdown 链接检查：通过
+- 正式 NSIS 与 package smoke：通过；制品 `NetConsole-1.4.6-d3272991-x64-setup.exe`，SHA-256 `b430a402b8cfa963ab35be220fb0fd9cfcb0295a56fb58efc8454569c8173084`，154,705,071 bytes，`NSIS-3 Unicode`，`REAL_WINDOWS_INSTALL_STATUS=PENDING`
 
 ### 待执行
 
-- 正式安装包构建与 package smoke
 - Windows Server 2012 自动化 VM 和正式包 GUI 人工验收
 
 ## 既有失败
@@ -316,7 +316,7 @@
 
 ## 修复结果
 
-本轮已完成查询部分刷新审计及修复，提交 `a13eb8ac`；文档同步和审计目录索引待本次文档提交。
+本轮已完成查询部分刷新审计及修复，提交 `a13eb8ac`；文档与审计索引提交 `d3272991`。正式包已按该提交构建并通过 smoke；若审计文档再次变更，必须重新构建以保持制品 commit 一致。
 
 ## 未验证项
 
