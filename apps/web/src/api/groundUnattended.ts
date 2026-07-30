@@ -4,7 +4,7 @@ import type {
   GroundActionResponse, GroundArchive, GroundArchiveDetail, GroundDeepCollection, GroundPage, GroundPingTarget,
   GroundProfile, GroundStatus, GroundTimelineEvent, GroundTrain, GroundHealth, GroundInventorySummary, GroundRawFile, GroundTrainPolicy,
   GroundOperation, GroundPingSeries, GroundPingSample, GroundRun, GroundSyslogRecord, GroundPagedResult,
-  LocalIpv4Address, SourceIpRecommendation, UdpPortCheck,
+  GroundSyslogTransportStatus, LocalIpv4Address, SourceIpRecommendation, UdpPortCheck,
 } from '../types/groundUnattended'
 
 const root = '/api/rail-transit/ground-unattended'
@@ -65,6 +65,7 @@ export const requestGroundConfigCheck = (deviceUuid = '', allowTargetPortChange 
   }),
 })
 export const getGroundHealth = (options: RequestInit = {}): Promise<GroundHealth> => apiRequest(`${root}/health`, options)
+export const getGroundSyslogTransportStatus = (options: RequestInit = {}): Promise<GroundSyslogTransportStatus> => apiRequest(`${root}/syslog-transport-status`, options)
 export const listGroundRawFiles = (options: RequestInit = {}): Promise<GroundPage<GroundRawFile>> => apiRequest(`${root}/raw-files?limit=100`, options)
 export const listGroundRuns = (options: RequestInit = {}): Promise<GroundPage<GroundRun>> => apiRequest(`${root}/runs?limit=200`, options)
 export const listGroundPingTargets = (runId = '', options: RequestInit = {}): Promise<GroundPage<GroundPingTarget>> => {
@@ -78,6 +79,14 @@ export function getGroundPingSeries(params: {
   const query = new URLSearchParams()
   Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
   return apiRequest(`${root}/ping-series?${query}`, options)
+}
+export function getGroundPingSeriesIncremental(params: {
+  run_id: string; train_id?: string; mr_id?: string; target_ip?: string; cursor?: string
+  after_sequence?: number | null; after_timestamp?: string; include_warmup?: boolean; max_points?: number
+}, options: RequestInit = {}): Promise<GroundPingSeries> {
+  const query = new URLSearchParams()
+  Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== null && value !== '') query.set(key, String(value)) })
+  return apiRequest(`${root}/ping-series/incremental?${query}`, options)
 }
 export function listGroundPingSamples(params: {
   run_id?: string; train_id?: string; mr_id?: string; target_ip?: string; start_time?: string; end_time?: string

@@ -181,6 +181,21 @@ def test_udp_port_check_reports_exclusive_occupancy() -> None:
     assert result.status == "IN_USE"
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows IP Helper smoke")
+def test_udp_port_inspection_is_read_only_and_reports_owner_table() -> None:
+    service = SystemNetworkApplicationService(_Provider())
+    occupied = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    occupied.bind(("0.0.0.0", 0))
+    port = int(occupied.getsockname()[1])
+    try:
+        result = service.inspect_udp_port("0.0.0.0", port)
+    finally:
+        occupied.close()
+
+    assert result.available is False
+    assert result.status == "IN_USE"
+
+
 def test_network_api_delegates_to_read_only_application_service(tmp_path) -> None:
     app = create_app(paths=PathResolver(tmp_path / "app", tmp_path / "data"))
     app.state.system_network_application_service = (

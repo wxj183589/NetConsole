@@ -6,7 +6,13 @@ import type { GroundPingSample, GroundPingSeries } from '../../types/groundUnatt
 import { readNetConsoleChartTokens, subscribeNetConsoleChartTheme } from '../../theme/echarts'
 import { groundTransitionContextLabel } from '../../views/rail-transit/groundUnattendedLabels'
 
-const props = defineProps<{ series: GroundPingSeries | null }>()
+const props = withDefaults(defineProps<{
+  series: GroundPingSeries | null
+  followLatest?: boolean
+}>(), {
+  followLatest: true,
+})
+const emit = defineEmits<{ 'user-zoom': [] }>()
 const rttContainer = ref<HTMLDivElement | null>(null)
 const resultContainer = ref<HTMLDivElement | null>(null)
 let rttChart: EChartsType | null = null
@@ -14,6 +20,9 @@ let resultChart: EChartsType | null = null
 let resizeObserver: ResizeObserver | null = null
 let unsubscribeTheme: (() => void) | null = null
 let disposed = false
+let renderFrame: number | null = null
+let optionsInitialized = false
+let programmaticZoom = false
 
 onMounted(async () => {
   const [core, charts, components, renderers] = await Promise.all([
@@ -22,17 +31,21 @@ onMounted(async () => {
   if (disposed) return
   core.use([
     charts.LineChart, charts.ScatterChart, components.GridComponent, components.TooltipComponent,
-    components.DataZoomComponent, components.MarkLineComponent, components.LegendComponent, renderers.CanvasRenderer,
+    components.DataZoomComponent, components.MarkLineComponent, components.MarkAreaComponent,
+    components.LegendComponent, renderers.CanvasRenderer,
   ])
   await nextTick()
   if (disposed) return
   if (rttContainer.value) rttChart = core.init(rttContainer.value)
   if (resultContainer.value) resultChart = core.init(resultContainer.value)
-  unsubscribeTheme = subscribeNetConsoleChartTheme(render)
+  rttChart?.on?.('datazoom', handleUserZoom)
+  resultChart?.on?.('datazoom', handleUserZoom)
+  unsubscribeTheme = subscribeNetConsoleChartTheme(scheduleRender)
   resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(resize)
   if (rttContainer.value) resizeObserver?.observe(rttContainer.value)
   if (resultContainer.value) resizeObserver?.observe(resultContainer.value)
   window.addEventListener('resize', resize)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
   render()
   await nextTick()
   resize()
@@ -40,18 +53,56 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   disposed = true
+  if (renderFrame !== null) cancelAnimationFrame(renderFrame)
   window.removeEventListener('resize', resize)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
   resizeObserver?.disconnect()
   unsubscribeTheme?.()
+  rttChart?.off?.('datazoom', handleUserZoom)
+  resultChart?.off?.('datazoom', handleUserZoom)
   rttChart?.dispose()
   resultChart?.dispose()
 })
 
-watch(() => props.series, render, { deep: true })
+watch(() => props.series, scheduleRender, { deep: true })
+watch(() => props.followLatest, (follow) => {
+  if (follow) scheduleRender()
+})
 
 function resize(): void {
   rttChart?.resize()
   resultChart?.resize()
+}
+
+function handleVisibilityChange(): void {
+  if (!document.hidden) {
+    scheduleRender()
+    resize()
+  }
+}
+
+function scheduleRender(): void {
+  if (disposed || document.hidden) return
+  if (renderFrame !== null) cancelAnimationFrame(renderFrame)
+  renderFrame = requestAnimationFrame(() => {
+    renderFrame = null
+    render()
+  })
+}
+
+function handleUserZoom(): void {
+  if (!programmaticZoom) emit('user-zoom')
+}
+
+function followLatestWindow(pointCount: number): void {
+  if (!props.followLatest || !pointCount) return
+  const visibleCount = Math.min(300, pointCount)
+  const start = Math.max(0, 100 - visibleCount / pointCount * 100)
+  programmaticZoom = true
+  const action = { type: 'dataZoom', start, end: 100 }
+  rttChart?.dispatchAction?.(action)
+  resultChart?.dispatchAction?.(action)
+  queueMicrotask(() => { programmaticZoom = false })
 }
 
 function render(): void {
@@ -62,11 +113,27 @@ function render(): void {
   const losses = points.filter((point) => !point.ok && !point.warmup_ignored)
   const warmup = points.filter((point) => point.warmup_ignored)
   const transitions = props.series?.ap_transitions || []
+  const positionSegments = props.series?.position_segments || []
+  const lastTimestamp = String(points.at(-1)?.ts || '')
+  const markAreas = positionSegments.flatMap((segment, index) => {
+    const startedAt = String(segment.started_at || '')
+    const endedAt = String(positionSegments[index + 1]?.started_at || lastTimestamp)
+    if (!startedAt || !endedAt) return []
+    const label = [
+      String(segment.current_ap_name || ''),
+      String(segment.station || ''),
+      String(segment.section || ''),
+    ].filter(Boolean).join(' · ') || '位置未知'
+    return [[
+      { name: label, xAxis: startedAt },
+      { xAxis: endedAt },
+    ]]
+  })
   const common = {
     animation: points.length < 1500,
     grid: { left: 54, right: 24, top: 38, bottom: 54 },
     tooltip: { trigger: 'item', formatter: tooltip },
-    dataZoom: [{ type: 'inside' }, { type: 'slider', height: 18, bottom: 8 }],
+    ...(!optionsInitialized ? { dataZoom: [{ type: 'inside' }, { type: 'slider', height: 18, bottom: 8 }] } : {}),
     xAxis: { type: 'time', axisLabel: { color: theme.textSecondary } },
   }
   rttChart.setOption({
@@ -84,6 +151,12 @@ function render(): void {
           lineStyle: { color: theme.warning, type: 'dashed' },
           data: transitions.map((item) => ({ xAxis: String(item.ts || '') })),
         },
+        markArea: {
+          silent: true,
+          label: { show: true, color: theme.textSecondary, fontSize: 10 },
+          itemStyle: { color: theme.primary, opacity: 0.05 },
+          data: markAreas,
+        },
       },
       {
         name: '丢包', type: 'scatter', symbol: 'diamond', symbolSize: 10,
@@ -91,7 +164,7 @@ function render(): void {
         itemStyle: { color: theme.danger },
       },
     ],
-  }, { replaceMerge: ['series'] })
+  }, { replaceMerge: ['series'], lazyUpdate: true })
   resultChart.setOption({
     ...common,
     grid: { ...common.grid, top: 22 },
@@ -105,7 +178,9 @@ function render(): void {
       packetSeries('预热忽略', warmup, 1, theme.textSecondary),
       packetSeries('位置未知', points.filter((point) => point.position_quality === 'UNKNOWN'), 0, theme.warning),
     ],
-  }, { replaceMerge: ['series'] })
+  }, { replaceMerge: ['series'], lazyUpdate: true })
+  optionsInitialized = true
+  followLatestWindow(points.length)
 }
 
 function packetSeries(name: string, points: GroundPingSample[], y: number, color: string) {
@@ -157,6 +232,6 @@ function escapeHtml(value: unknown): string {
 <style scoped>
 .ping-charts { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; width: 100%; }
 .ping-charts h3 { margin: 0 0 6px; font-size: 14px; letter-spacing: 0; }
-.chart { width: 100%; height: 330px; min-width: 0; }
-.result-chart { height: 230px; }
+.chart { width: 100%; height: 280px; min-width: 0; }
+.result-chart { height: 190px; }
 </style>

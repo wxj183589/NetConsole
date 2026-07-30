@@ -165,6 +165,124 @@ def test_ground_profile_requires_local_address_or_confirmed_external_nat(
         assert saved.json()["syslog_server_ip"] == "192.0.2.100"
 
 
+def test_syslog_transport_status_keeps_return_and_listen_state_separate(
+    tmp_path,
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    repository = app.state.ground_unattended_repository
+    repository.save_profile(
+        repository.get_profile().model_copy(
+            update={
+                "syslog_server_ip": "10.8.0.3",
+                "syslog_server_port": 514,
+                "udp_listen_host": "0.0.0.0",
+                "udp_listen_port": 514,
+                "allow_external_syslog_address": False,
+            }
+        )
+    )
+    inspected: list[tuple[str, int]] = []
+    candidate = SimpleNamespace(ipv4="10.0.0.24", adapter_name="板载")
+    network = SimpleNamespace(
+        is_local_ipv4=lambda value: value == "10.0.0.24",
+        inspect_udp_port=lambda host, port: (
+            inspected.append((host, port))
+            or SimpleNamespace(available=True, message="UDP 端口空闲")
+        ),
+        recommend_source_ip=lambda _request: SimpleNamespace(
+            recommended_ip="10.0.0.24",
+            candidates=[candidate],
+        ),
+    )
+    service = app.state.ground_unattended_application_service
+    service.network_service = network
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/rail-transit/ground-unattended/syslog-transport-status"
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["configured_return_ip"] == "10.8.0.3"
+    assert payload["return_address_status"] == "NOT_LOCAL"
+    assert payload["listen_host"] == "0.0.0.0"
+    assert payload["port_state"] == "AVAILABLE"
+    assert payload["ports_match"] is None
+    assert payload["recommended_local_ip"] == "10.0.0.24"
+    assert payload["recommended_adapter_name"] == "板载"
+    assert inspected == [("0.0.0.0", 514)]
+
+
+def test_syslog_transport_status_distinguishes_receiver_from_other_process(
+    tmp_path,
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    repository = GroundUnattendedRepository(
+        paths.ground_unattended_db_path("site-a"), site_id="site-a"
+    )
+    repository.save_profile(
+        repository.get_profile().model_copy(
+            update={
+                "syslog_server_ip": "10.0.0.24",
+                "udp_listen_host": "0.0.0.0",
+                "udp_listen_port": 514,
+            }
+        )
+    )
+    health = {
+        "udp_running": True,
+        "udp_listen_address": "0.0.0.0:514",
+        "udp_received_count": 8,
+        "udp_unidentified_count": 2,
+        "udp_identity_conflict_count": 1,
+        "udp_last_received_at": "2026-07-30T12:00:00+08:00",
+        "udp_queue_length": 3,
+        "udp_queue_capacity": 20_000,
+        "udp_dropped_count": 0,
+        "last_error": "",
+    }
+    supervisor = _Supervisor()
+    supervisor.syslog_receiver = SimpleNamespace(
+        health_snapshot=lambda: dict(health)
+    )
+    inspected = []
+    candidate = SimpleNamespace(ipv4="10.0.0.24", adapter_name="板载")
+    network = SimpleNamespace(
+        is_local_ipv4=lambda value: value == "10.0.0.24",
+        inspect_udp_port=lambda host, port: (
+            inspected.append((host, port))
+            or SimpleNamespace(available=False, message="UDP 端口已被占用")
+        ),
+        recommend_source_ip=lambda _request: SimpleNamespace(
+            recommended_ip="10.0.0.24",
+            candidates=[candidate],
+        ),
+    )
+    service = GroundUnattendedApplicationService(
+        paths,
+        site_id="site-a",
+        repository=repository,
+        supervisor=supervisor,  # type: ignore[arg-type]
+        network_service=network,  # type: ignore[arg-type]
+    )
+
+    own = service.syslog_transport_status("site-a")
+    assert own.receiver_state == "LISTENING"
+    assert own.port_state == "NETCONSOLE_LISTENING"
+    assert own.received_count == 8
+    assert own.identity_conflict_count == 1
+    assert inspected == []
+
+    health["udp_running"] = False
+    health["udp_listen_address"] = ""
+    other = service.syslog_transport_status("site-a")
+    assert other.receiver_state == "STOPPED"
+    assert other.port_state == "OCCUPIED_BY_OTHER"
+    assert inspected == [("0.0.0.0", 514)]
+
+
 def test_ground_unattended_empty_pages_are_stable(tmp_path) -> None:
     paths = PathResolver(tmp_path / "app", tmp_path / "data")
     with TestClient(create_app(paths=paths)) as client:

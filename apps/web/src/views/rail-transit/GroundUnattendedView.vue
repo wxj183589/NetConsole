@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Box, Delete, Download, FolderOpened, Refresh, SwitchButton, VideoPause, VideoPlay } from '@element-plus/icons-vue'
+import { Box, CopyDocument, Delete, Download, FolderOpened, Refresh, SwitchButton, VideoPause, VideoPlay } from '@element-plus/icons-vue'
 
 import {
   deleteGroundArchive, getGroundArchiveDetail, getGroundProfile, getGroundStatus, getGroundTrain, groundArchiveSummaryDownloadRequest, groundArchiveZipDownloadRequest, listGroundArchives,
@@ -10,16 +10,19 @@ import {
   openGroundArchiveDirectory, pauseGroundRun, resumeGroundRun, saveGroundProfile, setGroundTrainPriority, startGroundRun,
   stopAndArchiveGroundRun, stopGroundRun, saveGroundTrainPolicy, syncGroundInventory,
   checkGroundUdpPort, listLocalIpv4Addresses, recommendLocalSourceIp,
-  getActiveGroundOperation, getGroundOperation, getGroundPingSeries, listGroundRuns, listGroundSyslogRecords, probeGroundSyslogTransportState, verifyGroundArchive,
+  getActiveGroundOperation, getGroundOperation, getGroundPingSeries, getGroundPingSeriesIncremental, getGroundSyslogTransportStatus,
+  listGroundRuns, listGroundSyslogRecords, probeGroundSyslogTransportState, verifyGroundArchive,
 } from '../../api/groundUnattended'
 import GroundPingChart from '../../components/ground-unattended/GroundPingChart.vue'
 import { NcDataTable, type NcTableColumn } from '../../components/table'
+import NcFloatingWindow from '../../components/workspace/NcFloatingWindow.vue'
+import { useAdaptiveTableHeight } from '../../composables/useAdaptiveTableHeight'
 import { t } from '../../i18n/runtime'
 import { downloadBackendResource } from '../../platform/runtime'
 import type {
   GroundActionResponse, GroundArchive, GroundArchiveDetail, GroundDeepCollection, GroundPingSeries, GroundPingTarget, GroundProfile, GroundStatus,
-  GroundHealth, GroundOperation, GroundQueryDiagnostics, GroundRun, GroundSyslogRecord, GroundTimelineEvent, GroundTrain,
-  LocalIpv4Address, SourceIpRecommendation, UdpPortCheck,
+  GroundHealth, GroundOperation, GroundPingSample, GroundQueryDiagnostics, GroundRun, GroundSyslogRecord,
+  GroundSyslogTransportStatus, GroundTimelineEvent, GroundTrain, LocalIpv4Address, SourceIpRecommendation, UdpPortCheck,
 } from '../../types/groundUnattended'
 import {
   groundDisplayNameSourceLabel, groundEventLabel, groundOperationStageLabel, groundRunModeLabel, groundSeverityLabel,
@@ -45,13 +48,17 @@ const runs = ref<GroundRun[]>([])
 const selectedRunId = ref('')
 const pingSeries = ref<GroundPingSeries | null>(null)
 const selectedPingTarget = ref<GroundPingTarget | null>(null)
-const pingDialog = ref(false)
-const pingDialogOpened = ref(false)
+const pingWindowOpen = ref(false)
 const pingSeriesLoading = ref(false)
+const pingIncrementalLoading = ref(false)
 const includeWarmup = ref(false)
 const pingRange = ref<'run' | '5m' | '30m' | '1h' | 'custom'>('30m')
 const pingCustomRange = ref<[Date, Date] | null>(null)
 const pingAutoRefresh = ref(true)
+const pingPaused = ref(false)
+const pingFollowLatest = ref(true)
+const pingCursor = ref('')
+const pingSeenSamples = new Set<string>()
 const syslogRecords = ref<GroundSyslogRecord[]>([])
 const syslogTotal = ref(0)
 const syslogLoading = ref(false)
@@ -74,6 +81,8 @@ const syslogFilter = reactive({
 const localIpv4Addresses = ref<LocalIpv4Address[]>([])
 const sourceRecommendation = ref<SourceIpRecommendation | null>(null)
 const udpPortCheck = ref<UdpPortCheck | null>(null)
+const syslogTransport = ref<GroundSyslogTransportStatus | null>(null)
+const syslogTransportLoading = ref(false)
 const networkLoading = ref(false)
 const showAllAddresses = ref(false)
 const selectedArchive = ref<GroundArchiveDetail | null>(null)
@@ -142,10 +151,73 @@ const filteredTimeline = computed(() => {
       .includes(needle)
   ))
 })
+const trainTableHost = ref<HTMLElement | null>(null)
+const pingTableHost = ref<HTMLElement | null>(null)
+const deepTableHost = ref<HTMLElement | null>(null)
+const timelineTableHost = ref<HTMLElement | null>(null)
+const syslogTableHost = ref<HTMLElement | null>(null)
+const archiveTableHost = ref<HTMLElement | null>(null)
+const trainTableHeight = useAdaptiveTableHeight(trainTableHost, computed(() => filteredTrains.value.length), { maxVisibleRows: 18 })
+const pingTableHeight = useAdaptiveTableHeight(pingTableHost, computed(() => filteredPing.value.length), { maxVisibleRows: 20 })
+const deepTableHeight = useAdaptiveTableHeight(deepTableHost, computed(() => deepCollections.value.length), { maxVisibleRows: 18 })
+const timelineTableHeight = useAdaptiveTableHeight(timelineTableHost, computed(() => filteredTimeline.value.length), { maxVisibleRows: 18, emptyHeight: 190 })
+const syslogTableHeight = useAdaptiveTableHeight(syslogTableHost, computed(() => syslogRecords.value.length), { maxVisibleRows: 100, bottomGap: 76, emptyHeight: 190 })
+const archiveTableHeight = useAdaptiveTableHeight(archiveTableHost, computed(() => archives.value.length), { maxVisibleRows: 18 })
+const trainTableMaxHeight = trainTableHeight.maxHeight
+const pingTableMaxHeight = pingTableHeight.maxHeight
+const deepTableMaxHeight = deepTableHeight.maxHeight
+const timelineTableMaxHeight = timelineTableHeight.maxHeight
+const syslogTableMaxHeight = syslogTableHeight.maxHeight
+const archiveTableMaxHeight = archiveTableHeight.maxHeight
+const timelineTableEmptyHeight = computed(() => filteredTimeline.value.length ? undefined : timelineTableHeight.contentHeight.value)
+const syslogTableEmptyHeight = computed(() => syslogRecords.value.length ? undefined : syslogTableHeight.contentHeight.value)
 const visibleIpv4Addresses = computed(() => localIpv4Addresses.value.filter((row) => showAllAddresses.value || !row.is_virtual))
 const localIpv4Values = computed(() => new Set(localIpv4Addresses.value.map((row) => row.ipv4)))
 const returnAddressIsLocal = computed(() => Boolean(profile.value?.syslog_server_ip && localIpv4Values.value.has(profile.value.syslog_server_ip)))
 const listenAddressIsLocal = computed(() => Boolean(profile.value && (profile.value.udp_listen_host === '0.0.0.0' || localIpv4Values.value.has(profile.value.udp_listen_host))))
+const startBlockedReason = computed(() => {
+  const transport = syslogTransport.value
+  if (!profile.value?.enabled) return ''
+  if (!transport) return '正在检查 MR 日志回传地址，请稍候。'
+  if (transport.return_address_status === 'NOT_LOCAL') {
+    return `MR 日志回传地址 ${transport.configured_return_ip}:${transport.configured_return_port} 当前不属于本机。请前往设置选择本机地址，或确认使用外部/NAT 地址。`
+  }
+  if (transport.return_address_status === 'EMPTY') return '尚未配置 MR 日志回传地址，请前往设置。'
+  if (transport.return_address_status === 'INVALID') return 'MR 日志回传地址无效，请前往设置。'
+  return ''
+})
+const pingAvailability = computed(() => (
+  pingSeries.value?.diagnostics.data_availability
+  || selectedPingTarget.value?.data_availability
+  || 'MISSING'
+))
+const pingEmptyDescription = computed(() => {
+  if (pingAvailability.value === 'SUMMARY_ONLY') return '本次运行仅保留汇总，无法生成逐包曲线。'
+  if (pingAvailability.value === 'CORRUPT') return '逐包原始文件或 READY 归档损坏，已停止读取曲线数据。'
+  if (pingAvailability.value === 'MISSING') return '本次运行缺少逐包原始数据，请查看文件诊断。'
+  if (pingSeries.value?.active) return '当前目标尚未产生 Ping 样本，窗口将继续等待新增样本。'
+  if (pingRange.value !== 'run') return '当前时间范围内没有样本，可切换到完整运行时段。'
+  return '本次运行时段内没有逐包 Ping 样本。'
+})
+const pingLiveStats = computed(() => {
+  const series = pingSeries.value
+  const points = pingSeries.value?.points ?? []
+  const latest = points.at(-1)
+  return {
+    success: series?.success_count ?? 0,
+    loss: series?.loss_count ?? 0,
+    lossRate: series?.effective_sample_count
+      ? (series.loss_count / series.effective_sample_count) * 100
+      : 0,
+    currentRtt: series?.current_rtt_ms ?? null,
+    averageRtt: series?.average_rtt_ms ?? null,
+    maxRtt: series?.max_rtt_ms ?? null,
+    currentAp: latest?.current_ap_name || selectedPingTarget.value?.current_ap_name || '',
+    station: latest?.station || selectedPingTarget.value?.station || '',
+    section: latest?.section || selectedPingTarget.value?.section || '',
+    latestAt: latest?.ts || pingSeries.value?.latest_timestamp || '',
+  }
+})
 const locationStats = computed(() => ({
   ap: trains.value.filter((row) => String(row.location_match_level || '').startsWith('AP_')).length,
   station: trains.value.filter((row) => String(row.location_match_level || '').startsWith('STATION_')).length,
@@ -353,6 +425,17 @@ const loadDeep = (silent = true) => latestRequest('deep', '深度采集', (signa
 const loadTimelineData = (silent = true) => latestRequest('timeline', '时间轴', (signal) => listGroundTimeline('', timelineFilter.eventType, selectedRunId.value, { signal }), (value) => { timeline.value = value.items }, silent)
 const loadArchives = (silent = true) => latestRequest('archives', '历史归档', (signal) => listGroundArchives({ signal }), (value) => { archives.value = value.items }, silent)
 const loadHealth = (silent = true) => latestRequest('health', '系统健康', (signal) => getGroundHealth({ signal }), (value) => { health.value = value }, silent)
+const loadSyslogTransport = async (silent = true) => {
+  if (!silent) syslogTransportLoading.value = true
+  await latestRequest(
+    'syslog-transport',
+    'UDP Syslog 运行状态',
+    (signal) => getGroundSyslogTransportStatus({ signal }),
+    (value) => { syslogTransport.value = value },
+    silent,
+  )
+  syslogTransportLoading.value = false
+}
 async function loadOperation(silent = true): Promise<void> {
   await latestRequest('operation', '运行操作', async (signal) => {
     const active = await getActiveGroundOperation({ signal })
@@ -407,7 +490,7 @@ function dismissOperation(): void {
   latestTerminalOperation.value = null
 }
 async function loadActiveTab(silent = true): Promise<void> {
-  if (activeTab.value === 'overview') await loadHealth(silent)
+  if (activeTab.value === 'overview') await Promise.all([loadHealth(silent), loadSyslogTransport(silent)])
   else if (activeTab.value === 'trains') await loadTrains(silent)
   else if (activeTab.value === 'ping') await loadPingTargets(silent)
   else if (activeTab.value === 'deep') await loadDeep(silent)
@@ -455,7 +538,10 @@ function schedulePoll(): void {
         pollDue('operation', 2_000, () => loadOperation())
       }
       if (running.value) {
-        if (activeTab.value === 'overview' || activeTab.value === 'health') pollDue('health', 5_000, () => loadHealth())
+        if (activeTab.value === 'overview') {
+          pollDue('health', 5_000, () => loadHealth())
+          pollDue('syslog-transport', 5_000, () => loadSyslogTransport())
+        } else if (activeTab.value === 'health') pollDue('health', 5_000, () => loadHealth())
         else if (activeTab.value === 'trains') pollDue('trains', 8_000, () => loadTrains())
         else if (activeTab.value === 'ping') pollDue('ping', 8_000, () => loadPingTargets())
         else if (activeTab.value === 'syslog' && syslogAutoRefresh.value && !historicalRun.value) pollDue('syslog', 8_000, () => loadSyslog(true))
@@ -463,8 +549,14 @@ function schedulePoll(): void {
       if (activeTab.value === 'syslog' && syslogAutoRefresh.value && historicalRun.value) {
         pollDue('syslog', 30_000, () => loadSyslog(true))
       }
-      if (activeTab.value === 'ping' && pingDialog.value && selectedPingTarget.value && pingAutoRefresh.value && !selectedPingHistorical.value) {
-        pollDue('ping-series', 8_000, () => showPingSeries(selectedPingTarget.value!, true))
+      if (
+        pingWindowOpen.value
+        && selectedPingTarget.value
+        && pingAutoRefresh.value
+        && !pingPaused.value
+        && !selectedPingHistorical.value
+      ) {
+        pollDue('ping-series-incremental', 1_800, loadPingIncremental)
       }
     }
     if (!disposed) schedulePoll()
@@ -533,6 +625,20 @@ async function checkUdpPort(): Promise<void> {
     networkLoading.value = false
   }
 }
+async function refreshSyslogAddresses(): Promise<void> {
+  await loadLocalAddresses()
+  await loadSyslogTransport(false)
+}
+async function copyReturnTarget(): Promise<void> {
+  const transport = syslogTransport.value
+  if (!transport?.configured_return_ip) return
+  try {
+    await navigator.clipboard.writeText(`${transport.configured_return_ip}:${transport.configured_return_port}`)
+    ElMessage.success('MR 日志回传目标已复制')
+  } catch {
+    ElMessage.error('无法访问剪贴板')
+  }
+}
 async function runAction(key: string, callback: () => Promise<unknown>): Promise<void> {
   action.value = key
   try {
@@ -565,10 +671,9 @@ async function submitStop(archive: boolean): Promise<void> {
 }
 async function showPingSeries(row: GroundPingTarget, silent = false): Promise<void> {
   const targetRunId = row.run_id || selectedRunId.value
-  if (!silent && !pingDialog.value) {
+  if (!silent && !pingWindowOpen.value) {
     pingRange.value = targetRunId && targetRunId !== status.value?.active_run_id ? 'run' : '30m'
-    pingDialog.value = true
-    pingDialogOpened.value = false
+    pingWindowOpen.value = true
   }
   const range = pingTimeRange(row, targetRunId)
   if (pingRange.value === 'custom' && !range.start_time) {
@@ -576,8 +681,10 @@ async function showPingSeries(row: GroundPingTarget, silent = false): Promise<vo
     return
   }
   selectedPingTarget.value = row
+  pingPaused.value = false
+  pingFollowLatest.value = true
   pingSeriesLoading.value = true
-  const succeeded = await latestRequest(
+  await latestRequest(
     'ping-series',
     '长 Ping 逐包数据',
     (signal) => getGroundPingSeries({
@@ -586,35 +693,168 @@ async function showPingSeries(row: GroundPingTarget, silent = false): Promise<vo
       mr_id: row.mr_id || undefined,
       target_ip: row.target_ip,
       include_warmup: includeWarmup.value,
-      max_points: 3000,
+      max_points: pingRange.value === 'run' ? 10_000 : 3_000,
       ...range,
     }, { signal }),
     (value) => {
-      pingSeries.value = value
+      mergePingSeries(value, true)
     },
     silent,
   )
   if (!requestControllers.has('ping-series')) pingSeriesLoading.value = false
-  if (
-    succeeded
-    && !silent
-    && pingSeries.value
-    && pingSeries.value.points.length === 0
-    && pingRange.value !== 'run'
-    && targetRunId !== status.value?.active_run_id
-  ) {
-    try {
-      await ElMessageBox.confirm(
-        '当前范围没有样本，是否切换到本次运行全部时间？',
-        '未找到 Ping 样本',
-        { type: 'info', confirmButtonText: '切换到完整运行', cancelButtonText: '保持当前范围' },
-      )
-      pingRange.value = 'run'
-      await showPingSeries(row)
-    } catch {
-      // 用户保留当前范围。
+}
+
+function pingSampleIdentity(point: GroundPingSample): string {
+  return point.sample_id || `${point.target_ip}|${point.ts}|${point.seq ?? ''}`
+}
+
+function mergeRecordList(
+  current: Array<Record<string, unknown>>,
+  incoming: Array<Record<string, unknown>>,
+  key: (row: Record<string, unknown>) => string,
+): Array<Record<string, unknown>> {
+  const seen = new Set<string>()
+  return [...current, ...incoming].filter((row) => {
+    const identity = key(row)
+    if (seen.has(identity)) return false
+    seen.add(identity)
+    return true
+  })
+}
+
+function mergePingSeries(value: GroundPingSeries, reset: boolean): void {
+  if (reset) pingSeenSamples.clear()
+  const existing = reset ? [] : pingSeries.value?.points ?? []
+  existing.forEach((point) => pingSeenSamples.add(pingSampleIdentity(point)))
+  let duplicateEffectiveCount = 0
+  let duplicateIgnoredCount = 0
+  const additions = value.points.filter((point) => {
+    const identity = pingSampleIdentity(point)
+    if (pingSeenSamples.has(identity)) {
+      if (point.warmup_ignored) duplicateIgnoredCount += 1
+      else duplicateEffectiveCount += 1
+      return false
     }
+    pingSeenSamples.add(identity)
+    return true
+  })
+  const addedEffective = additions.filter((point) => !point.warmup_ignored)
+  const addedSuccesses = addedEffective.filter((point) => point.ok)
+  const addedLosses = addedEffective.length - addedSuccesses.length
+  const addedRtts = addedSuccesses.flatMap((point) => (
+    point.rtt_ms == null ? [] : [point.rtt_ms]
+  ))
+  const limit = pingRange.value === 'run' ? 10_000 : 3_000
+  const points = [...existing, ...additions]
+    .sort((left, right) => (
+      left.ts.localeCompare(right.ts)
+      || (left.seq ?? -1) - (right.seq ?? -1)
+      || pingSampleIdentity(left).localeCompare(pingSampleIdentity(right))
+    ))
+    .slice(-limit)
+  const retained = new Set(points.map(pingSampleIdentity))
+  for (const identity of pingSeenSamples) {
+    if (!retained.has(identity)) pingSeenSamples.delete(identity)
   }
+  const previous = pingSeries.value
+  const rttSampleCount = reset
+    ? value.rtt_sample_count
+    : (previous?.rtt_sample_count ?? 0) + addedRtts.length
+  const rttSumMs = reset
+    ? value.rtt_sum_ms
+    : (previous?.rtt_sum_ms ?? 0) + addedRtts.reduce((total, rtt) => total + rtt, 0)
+  const latestAddedRtt = [...addedSuccesses]
+    .sort((left, right) => (
+      left.ts.localeCompare(right.ts)
+      || (left.seq ?? -1) - (right.seq ?? -1)
+    ))
+    .at(-1)?.rtt_ms ?? null
+  const mergedMaxRtt = Math.max(
+    previous?.max_rtt_ms ?? Number.NEGATIVE_INFINITY,
+    ...addedRtts,
+  )
+  pingSeries.value = {
+    ...value,
+    raw_sample_count: reset ? value.raw_sample_count : (previous?.raw_sample_count ?? 0) + Math.max(0, value.raw_sample_count - duplicateEffectiveCount - duplicateIgnoredCount),
+    effective_sample_count: reset ? value.effective_sample_count : (previous?.effective_sample_count ?? 0) + Math.max(0, value.effective_sample_count - duplicateEffectiveCount),
+    ignored_sample_count: reset ? value.ignored_sample_count : (previous?.ignored_sample_count ?? 0) + Math.max(0, value.ignored_sample_count - duplicateIgnoredCount),
+    success_count: reset ? value.success_count : (previous?.success_count ?? 0) + addedSuccesses.length,
+    loss_count: reset ? value.loss_count : (previous?.loss_count ?? 0) + addedLosses,
+    rtt_sample_count: rttSampleCount,
+    rtt_sum_ms: rttSumMs,
+    current_rtt_ms: reset
+      ? value.current_rtt_ms
+      : latestAddedRtt ?? previous?.current_rtt_ms ?? null,
+    average_rtt_ms: rttSampleCount ? rttSumMs / rttSampleCount : null,
+    max_rtt_ms: reset
+      ? value.max_rtt_ms
+      : mergedMaxRtt === Number.NEGATIVE_INFINITY ? null : mergedMaxRtt,
+    points,
+    loss_windows: mergeRecordList(
+      reset ? [] : previous?.loss_windows ?? [],
+      value.loss_windows,
+      (row) => `${row.target_ip ?? ''}|${row.started_at ?? ''}|${row.ended_at ?? ''}`,
+    ).slice(-limit),
+    ap_transitions: mergeRecordList(
+      reset ? [] : previous?.ap_transitions ?? [],
+      value.ap_transitions,
+      (row) => `${row.target_ip ?? ''}|${row.ts ?? ''}|${row.context ?? ''}`,
+    ).slice(-limit),
+    position_segments: mergeRecordList(
+      reset ? [] : previous?.position_segments ?? [],
+      value.position_segments,
+      (row) => `${row.target_ip ?? ''}|${row.started_at ?? ''}|${row.current_ap_identity ?? ''}`,
+    )
+      .sort((left, right) => (
+        String(left.started_at ?? '').localeCompare(String(right.started_at ?? ''))
+      ))
+      .filter((row, index, rows) => (
+        index === 0
+        || [
+          'target_ip',
+          'current_ap_identity',
+          'current_ap_name',
+          'station',
+          'section',
+          'position_quality',
+        ].some((field) => row[field] !== rows[index - 1]?.[field])
+      ))
+      .slice(-limit),
+  }
+  pingCursor.value = value.next_cursor
+}
+
+async function loadPingIncremental(): Promise<void> {
+  const row = selectedPingTarget.value
+  const runId = row?.run_id || selectedRunId.value
+  if (
+    !row
+    || !runId
+    || !pingWindowOpen.value
+    || !pingAutoRefresh.value
+    || pingPaused.value
+    || selectedPingHistorical.value
+    || document.hidden
+  ) return
+  pingIncrementalLoading.value = true
+  await latestRequest(
+    'ping-series-incremental',
+    '长 Ping 实时增量',
+    (signal) => getGroundPingSeriesIncremental({
+      run_id: runId,
+      train_id: row.train_id || undefined,
+      mr_id: row.mr_id || undefined,
+      target_ip: row.target_ip,
+      cursor: pingCursor.value || undefined,
+      after_sequence: pingSeries.value?.latest_sequence,
+      after_timestamp: pingSeries.value?.latest_timestamp,
+      include_warmup: includeWarmup.value,
+      max_points: 200,
+    }, { signal }),
+    (value) => mergePingSeries(value, false),
+    true,
+  )
+  pingIncrementalLoading.value = false
 }
 async function loadSyslog(silent = false): Promise<void> {
   if (!silent) syslogLoading.value = true
@@ -813,7 +1053,12 @@ function errorText(reason: unknown, fallback: string): string { return reason in
 function isActionResponse(value: unknown): value is GroundActionResponse {
   return Boolean(value && typeof value === 'object' && 'accepted' in value && 'message' in value)
 }
-function statusType(value: string): 'success' | 'warning' | 'danger' | 'info' | 'primary' { if (['RUNNING', 'COVERED', 'READY', 'FRESH', 'MAINLINE'].includes(value)) return 'success'; if (['PAUSED', 'PARTIAL', 'STALE', 'MAINLINE_STATIONARY', 'WARNING'].includes(value)) return 'warning'; if (['ERROR', 'FAILED', 'CRITICAL'].includes(value)) return 'danger'; return 'info' }
+function statusType(value: string): 'success' | 'warning' | 'danger' | 'info' | 'primary' {
+  if (['RUNNING', 'COVERED', 'READY', 'FRESH', 'MAINLINE', 'LOCAL_ADDRESS', 'LISTENING', 'NETCONSOLE_LISTENING', 'AVAILABLE'].includes(value)) return 'success'
+  if (['PAUSED', 'PARTIAL', 'STALE', 'MAINLINE_STATIONARY', 'WARNING', 'EXTERNAL_CONFIRMED', 'STARTING'].includes(value)) return 'warning'
+  if (['ERROR', 'FAILED', 'CRITICAL', 'NOT_LOCAL', 'INVALID', 'OCCUPIED_BY_OTHER', 'ADDRESS_NOT_LOCAL'].includes(value)) return 'danger'
+  return 'info'
+}
 function abortRequests(): void {
   requestControllers.forEach((controller) => controller.abort())
   requestControllers.clear()
@@ -825,6 +1070,7 @@ function handleVisibilityChange(): void {
   else {
     lastPollAt.clear()
     void loadAll(true)
+    if (pingWindowOpen.value && selectedPingTarget.value) void loadPingIncremental()
   }
 }
 function useFullPingRange(): void {
@@ -832,13 +1078,41 @@ function useFullPingRange(): void {
   pingRange.value = 'run'
   void showPingSeries(selectedPingTarget.value)
 }
-function handlePingDialogClosed(): void {
-  pingDialogOpened.value = false
+function togglePingPaused(): void {
+  pingPaused.value = !pingPaused.value
+  if (!pingPaused.value) {
+    lastPollAt.delete('ping-series-incremental')
+    void loadPingIncremental()
+  }
+}
+function returnPingToLive(): void {
+  pingFollowLatest.value = true
+  pingPaused.value = false
+  lastPollAt.delete('ping-series-incremental')
+  void loadPingIncremental()
+}
+async function copyPingDiagnostics(): Promise<void> {
+  if (!pingSeries.value) return
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(pingSeries.value.diagnostics, null, 2))
+    ElMessage.success('Ping 文件诊断已复制')
+  } catch {
+    ElMessage.error('无法访问剪贴板')
+  }
+}
+function handlePingWindowClosed(): void {
   requestControllers.get('ping-series')?.abort()
+  requestControllers.get('ping-series-incremental')?.abort()
   selectedPingTarget.value = null
   pingSeries.value = null
+  pingCursor.value = ''
+  pingSeenSamples.clear()
   pingSeriesLoading.value = false
+  pingIncrementalLoading.value = false
+  pingPaused.value = false
+  pingFollowLatest.value = true
 }
+const handlePingDialogClosed = handlePingWindowClosed
 
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibilityChange)
@@ -848,17 +1122,26 @@ onMounted(() => {
 })
 watch(activeTab, () => {
   requestControllers.forEach((controller, key) => {
-    if (!['status', 'operation'].includes(key)) controller.abort()
+    if (
+      !['status', 'operation'].includes(key)
+      && !(pingWindowOpen.value && ['ping-series', 'ping-series-incremental'].includes(key))
+    ) controller.abort()
   })
   void loadActiveTab(true)
 })
 watch(selectedRunId, () => {
-  selectedPingTarget.value = null
-  pingSeries.value = null
+  if (selectedPingTarget.value?.run_id !== selectedRunId.value) {
+    pingWindowOpen.value = false
+    handlePingWindowClosed()
+  }
   syslogRecords.value = []
   syslogFilter.page = 1
   if (historicalRun.value) syslogAutoRefresh.value = false
   if (runScopedTab.value) void loadActiveTab(true)
+})
+onDeactivated(() => {
+  pingWindowOpen.value = false
+  handlePingWindowClosed()
 })
 onBeforeUnmount(() => {
   disposed = true
@@ -880,7 +1163,15 @@ onBeforeUnmount(() => {
         <el-button :icon="Refresh" circle :title="t('common.refresh', '刷新')" @click="loadAll()" />
         <el-button :icon="Refresh" :loading="action === 'sync'" @click="runAction('sync', syncInventory)">同步设备</el-button>
         <el-button :loading="action === 'config'" :disabled="!running || !profile?.syslog_server_ip" @click="runAction('config', () => checkConfigs())">检查 MR 配置</el-button>
-        <el-button :icon="VideoPlay" type="primary" :loading="action === 'start'" :disabled="running || !profile?.enabled" @click="runAction('start', startGroundRun)">{{ t('ground.start_now', '立即开始') }}</el-button>
+        <span :title="startBlockedReason">
+          <el-button
+            :icon="VideoPlay"
+            type="primary"
+            :loading="action === 'start'"
+            :disabled="running || !profile?.enabled || Boolean(startBlockedReason)"
+            @click="runAction('start', startGroundRun)"
+          >{{ t('ground.start_now', '立即开始') }}</el-button>
+        </span>
         <el-button :icon="VideoPause" :loading="action === 'pause'" :disabled="status?.state !== 'RUNNING'" @click="runAction('pause', pauseGroundRun)">{{ t('ground.pause', '暂停调度') }}</el-button>
         <el-button :icon="VideoPlay" :loading="action === 'resume'" :disabled="status?.state !== 'PAUSED'" @click="runAction('resume', resumeGroundRun)">{{ t('ground.resume', '继续调度') }}</el-button>
         <el-button :icon="SwitchButton" :loading="action === 'stop'" :disabled="!running || operationActive" @click="submitStop(false)">{{ t('ground.stop', '正常停止') }}</el-button>
@@ -960,6 +1251,83 @@ onBeforeUnmount(() => {
             <article><span>Syslog 活跃 / 配置异常</span><strong>{{ status?.syslog_active_mr_count ?? 0 }} / {{ status?.config_abnormal_count ?? 0 }}</strong></article>
             <article><span>UDP 队列 / 丢弃</span><strong>{{ health?.udp_queue_length ?? 0 }} / {{ health?.udp_dropped_count ?? 0 }}</strong><small>{{ health?.udp_listen_address || '未监听' }}</small></article>
           </div>
+          <section class="syslog-transport-band" v-loading="syslogTransportLoading">
+            <div class="transport-heading">
+              <div>
+                <h2>UDP Syslog 与 MR 日志回传</h2>
+                <p>MR 目标地址与 NetConsole 本机监听是两条独立配置。</p>
+              </div>
+              <div class="row-actions">
+                <el-button :icon="Refresh" @click="refreshSyslogAddresses">刷新地址</el-button>
+                <el-button @click="loadSyslogTransport(false)">检查端口</el-button>
+                <el-button @click="activeTab = 'settings'">前往设置</el-button>
+                <el-button :icon="CopyDocument" :disabled="!syslogTransport?.configured_return_ip" @click="copyReturnTarget">复制回传目标</el-button>
+              </div>
+            </div>
+            <el-alert
+              v-if="syslogTransport && ['NOT_LOCAL', 'INVALID', 'EMPTY'].includes(syslogTransport.return_address_status)"
+              :title="syslogTransport.return_address_status === 'NOT_LOCAL' ? `MR 日志回传地址 ${syslogTransport.configured_return_ip}:${syslogTransport.configured_return_port} 当前不属于本机` : groundStatusLabel(syslogTransport.return_address_status)"
+              :description="syslogTransport.return_address_status === 'NOT_LOCAL' ? '不会自动采用推荐地址；请前往设置选择本机地址，或明确确认外部/NAT 地址。' : '请前往设置完成有效配置。'"
+              type="error"
+              :closable="false"
+              show-icon
+            />
+            <el-alert
+              v-else-if="syslogTransport?.return_address_status === 'EXTERNAL_CONFIRMED'"
+              title="当前使用已确认的外部/NAT 日志回传地址"
+              description="启动允许继续，但本机监听端口状态不代表外部映射可达。"
+              type="warning"
+              :closable="false"
+              show-icon
+            />
+            <div class="transport-grid">
+              <article>
+                <span>MR 日志回传地址</span>
+                <strong>{{ syslogTransport?.configured_return_ip ? `${syslogTransport.configured_return_ip}:${syslogTransport.configured_return_port}` : '尚未配置' }}</strong>
+                <el-tag size="small" :type="statusType(syslogTransport?.return_address_status || '')">{{ groundStatusLabel(syslogTransport?.return_address_status) }}</el-tag>
+              </article>
+              <article>
+                <span>系统推荐地址</span>
+                <strong>{{ syslogTransport?.recommended_local_ip || '无可靠推荐' }}</strong>
+                <small>{{ syslogTransport?.recommended_adapter_name || '未匹配网卡' }} · 仅展示，不自动覆盖</small>
+              </article>
+              <article>
+                <span>本机监听地址</span>
+                <strong>{{ syslogTransport ? `${syslogTransport.listen_host}:${syslogTransport.listen_port}` : '—' }}</strong>
+                <small>{{ syslogTransport?.listen_host === '0.0.0.0' ? '监听全部本机网卡' : syslogTransport?.actual_listen_address || '指定网卡地址' }}</small>
+              </article>
+              <article>
+                <span>UDP Receiver</span>
+                <strong>{{ groundStatusLabel(syslogTransport?.receiver_state) }}</strong>
+                <small>{{ syslogTransport?.actual_listen_address || '当前未监听' }}</small>
+              </article>
+              <article>
+                <span>本机监听端口</span>
+                <strong>{{ groundStatusLabel(syslogTransport?.port_state) }}</strong>
+                <small>{{ syslogTransport?.port_message || '尚未检测' }}</small>
+              </article>
+              <article>
+                <span>MR 目标端口 / 本地端口</span>
+                <strong>{{ syslogTransport ? `${syslogTransport.configured_return_port} / ${syslogTransport.listen_port}` : '—' }}</strong>
+                <small>{{ syslogTransport?.target_port_message || '尚未检测' }}</small>
+              </article>
+              <article>
+                <span>最近接收 / 已接收</span>
+                <strong>{{ syslogTransport?.last_received_at || '尚无记录' }}</strong>
+                <small>{{ syslogTransport?.received_count ?? 0 }} 条 · 活跃 MR {{ syslogTransport?.active_mr_count ?? 0 }}</small>
+              </article>
+              <article>
+                <span>身份质量</span>
+                <strong>{{ syslogTransport?.unidentified_count ?? 0 }} / {{ syslogTransport?.identity_conflict_count ?? 0 }}</strong>
+                <small>未识别来源 / 身份冲突</small>
+              </article>
+              <article>
+                <span>UDP 队列 / 丢弃</span>
+                <strong>{{ syslogTransport?.queue_length ?? 0 }} / {{ syslogTransport?.queue_capacity ?? 0 }}</strong>
+                <small>已丢弃 {{ syslogTransport?.dropped_count ?? 0 }} 条</small>
+              </article>
+            </div>
+          </section>
         </section>
       </el-tab-pane>
 
@@ -971,7 +1339,7 @@ onBeforeUnmount(() => {
           <span>未匹配 <b>{{ locationStats.unmatched }}</b></span>
           <span>车辆段 / 停车场 / 存车线排除 <b>{{ locationStats.excluded }}</b></span>
         </div>
-        <div class="table-frame"><NcDataTable :data="filteredTrains" :columns="trainColumns" table-id="ground-trains" route-key="rail-ground-unattended" row-key="train_id" compact>
+        <div ref="trainTableHost" class="table-frame"><NcDataTable :data="filteredTrains" :columns="trainColumns" table-id="ground-trains" route-key="rail-ground-unattended" row-key="train_id" :max-height="trainTableMaxHeight" auto-height compact>
           <template #cell-eligibility_status="{ row }"><el-tag size="small" :type="statusType(row.eligibility_status)">{{ groundStatusLabel(row.eligibility_status) }}</el-tag></template>
           <template #cell-coverage_status="{ row }"><el-tag size="small" :type="statusType(row.coverage_status)">{{ groundStatusLabel(row.coverage_status) }}</el-tag></template>
           <template #cell-actions="{ row }"><div class="row-actions"><el-button size="small" text type="primary" @click="showTrain(row)">{{ t('common.view', '查看') }}</el-button><el-button size="small" text type="primary" @click="togglePriority(row)">{{ row.priority ? t('ground.unpin', '取消置顶') : t('ground.pin', '置顶') }}</el-button><el-button size="small" text @click="updatePolicy(row, { enabled: !row.enabled })">{{ row.enabled ? '停用' : '启用' }}</el-button></div></template>
@@ -986,13 +1354,12 @@ onBeforeUnmount(() => {
           <el-input v-model="pingFilter.section" clearable :placeholder="t('ground.section', '区间')" />
           <span>{{ t('ground.min_loss', '最低丢包率') }}</span><el-input-number v-model="pingFilter.minLoss" :min="0" :max="100" :controls="false" />
         </div>
-        <div class="table-frame ping-table"><NcDataTable :data="filteredPing" :columns="pingColumns" table-id="ground-ping" route-key="rail-ground-unattended" row-key="target_ip" compact>
+        <div ref="pingTableHost" class="table-frame ping-table"><NcDataTable :data="filteredPing" :columns="pingColumns" table-id="ground-ping" route-key="rail-ground-unattended" row-key="target_ip" :max-height="pingTableMaxHeight" auto-height compact>
           <template #cell-actions="{ row }">
             <el-button
               size="small"
               text
               type="primary"
-              :disabled="['SUMMARY_ONLY', 'MISSING', 'CORRUPT'].includes(row.data_availability)"
               :title="row.data_availability === 'SUMMARY_ONLY' ? '仅保留汇总，没有逐包原始数据' : row.data_availability === 'CORRUPT' ? '原始数据或归档校验失败' : row.data_availability === 'MISSING' ? '本运行没有逐包原始数据' : '查看逐包曲线'"
               @click="showPingSeries(row)"
             >查看曲线</el-button>
@@ -1003,7 +1370,7 @@ onBeforeUnmount(() => {
       <el-tab-pane :label="t('ground.deep_collection', '深度采集')" name="deep">
         <el-alert v-if="profile && !profile.deep_collection_master_enabled" title="当前为轻量模式：深度采集已关闭，历史记录仍可查看。" type="info" :closable="false" show-icon />
         <div class="coverage-strip"><span v-for="value in ['COLLECTING','WAITING','NOT_SEEN','PARTIAL','COVERED','EXCLUDED']" :key="value"><b>{{ deepCollections.filter((row) => row.status === value).length }}</b>{{ groundStatusLabel(value) }}</span></div>
-        <div class="table-frame"><NcDataTable :data="deepCollections" :columns="deepColumns" table-id="ground-deep" route-key="rail-ground-unattended" row-key="train_id" compact>
+        <div ref="deepTableHost" class="table-frame"><NcDataTable :data="deepCollections" :columns="deepColumns" table-id="ground-deep" route-key="rail-ground-unattended" row-key="train_id" :max-height="deepTableMaxHeight" auto-height compact>
           <template #cell-status="{ row }"><el-tag size="small" :type="statusType(row.status)">{{ groundStatusLabel(row.status) }}</el-tag></template>
         </NcDataTable></div>
       </el-tab-pane>
@@ -1016,7 +1383,7 @@ onBeforeUnmount(() => {
           </el-select>
           <el-button :icon="Refresh" @click="loadAll()">{{ t('common.query', '查询') }}</el-button>
         </div>
-        <div class="table-frame"><NcDataTable :data="filteredTimeline" :columns="timelineColumns" table-id="ground-timeline" route-key="rail-ground-unattended" row-key="event_id" compact /></div>
+        <div ref="timelineTableHost" class="table-frame"><NcDataTable :data="filteredTimeline" :columns="timelineColumns" table-id="ground-timeline" route-key="rail-ground-unattended" row-key="event_id" :height="timelineTableEmptyHeight" :max-height="timelineTableMaxHeight" auto-height compact /></div>
       </el-tab-pane>
 
       <el-tab-pane label="Syslog 日志" name="syslog">
@@ -1083,10 +1450,10 @@ onBeforeUnmount(() => {
           <span v-if="syslogDiagnostics.optimized_latest_page">首屏最新优先</span>
           <span v-if="syslogDiagnostics.no_data_reason">{{ groundStatusLabel(syslogDiagnostics.no_data_reason) }}</span>
         </div>
-        <div class="table-frame"><NcDataTable :data="syslogRecords" :columns="syslogColumns" table-id="ground-syslog" route-key="rail-ground-unattended" row-key="global_receive_sequence" compact>
+        <div ref="syslogTableHost" class="table-frame"><NcDataTable :data="syslogRecords" :columns="syslogColumns" table-id="ground-syslog" route-key="rail-ground-unattended" row-key="global_receive_sequence" :height="syslogTableEmptyHeight" :max-height="syslogTableMaxHeight" auto-height compact>
           <template #cell-actions="{ row }"><el-button size="small" text type="primary" @click="showSyslogRecord(row)">详情</el-button></template>
         </NcDataTable></div>
-        <el-pagination
+        <el-pagination class="table-pagination"
           v-model:current-page="syslogFilter.page"
           v-model:page-size="syslogFilter.pageSize"
           :total="syslogTotal"
@@ -1126,7 +1493,7 @@ onBeforeUnmount(() => {
 
       <el-tab-pane :label="t('ground.archives', '历史归档')" name="archives">
         <div class="toolbar"><el-button :icon="FolderOpened" @click="openArchiveDirectory">{{ t('ground.open_archive_directory', '打开归档目录') }}</el-button></div>
-        <div class="table-frame"><NcDataTable :data="archives" :columns="archiveColumns" table-id="ground-archives" route-key="rail-ground-unattended" row-key="archive_id" compact>
+        <div ref="archiveTableHost" class="table-frame"><NcDataTable :data="archives" :columns="archiveColumns" table-id="ground-archives" route-key="rail-ground-unattended" row-key="archive_id" :max-height="archiveTableMaxHeight" auto-height compact>
           <template #cell-archive_status="{ row }"><el-tag size="small" :type="statusType(row.archive_status)">{{ groundStatusLabel(row.archive_status) }}</el-tag></template>
           <template #cell-actions="{ row }"><div class="row-actions"><el-button size="small" text type="primary" @click="showArchive(row)">{{ t('common.view', '查看') }}</el-button><el-button :icon="Download" size="small" text circle title="下载原始 ZIP" @click="downloadArchiveZip(row)" /><el-button size="small" text @click="downloadArchiveSummary(row)">JSON</el-button><el-button :icon="Delete" size="small" text type="danger" circle :title="t('common.delete', '删除')" @click="removeArchive(row)" /></div></template>
         </NcDataTable></div>
@@ -1223,23 +1590,15 @@ onBeforeUnmount(() => {
       </el-tab-pane>
     </el-tabs>
 
-    <el-dialog
-      v-model="pingDialog"
-      width="min(1180px, 96vw)"
-      top="4vh"
-      destroy-on-close
-      @opened="pingDialogOpened = true"
-      @closed="handlePingDialogClosed"
+    <NcFloatingWindow
+      v-model="pingWindowOpen"
+      :title="selectedPingTarget ? `${selectedPingTarget.train_no || selectedPingTarget.train_id} · ${selectedPingTarget.mr_name || selectedPingTarget.mr_position_code} · ${selectedPingTarget.target_ip}` : '长 Ping 逐包曲线'"
+      :subtitle="selectedPingTarget ? `运行日期 ${selectedPingTarget.run_date || selectedRun?.run_date || '—'} · ${selectedPingHistorical ? '历史静态数据' : pingPaused ? '实时刷新已暂停' : '实时增量'} · ${groundStatusLabel(pingAvailability)}` : ''"
+      window-id="ground-ping-series"
+      route-key="rail-ground-unattended"
+      @close="handlePingDialogClosed"
     >
-      <template #header>
-        <div v-if="selectedPingTarget" class="detail-heading">
-          <div>
-            <h2>{{ selectedPingTarget.train_no }} · {{ selectedPingTarget.mr_name || selectedPingTarget.mr_position_code }} · {{ selectedPingTarget.target_ip }}</h2>
-            <p>运行日期 {{ selectedPingTarget.run_date || selectedRun?.run_date || '—' }} · 逐包位置使用采样时快照，丢包点在降采样时优先保留。</p>
-          </div>
-        </div>
-      </template>
-      <section v-if="selectedPingTarget" v-loading="pingSeriesLoading" class="ping-detail-dialog">
+      <section v-if="selectedPingTarget" class="ping-floating-content">
         <div class="toolbar">
           <el-select v-model="pingRange" aria-label="长 Ping 时间范围" @change="showPingSeries(selectedPingTarget)">
             <el-option label="完整运行时段" value="run" />
@@ -1257,26 +1616,51 @@ onBeforeUnmount(() => {
             @change="showPingSeries(selectedPingTarget)"
           />
           <el-checkbox v-model="includeWarmup" @change="showPingSeries(selectedPingTarget)">显示预热样本</el-checkbox>
-          <el-checkbox v-model="pingAutoRefresh" :disabled="selectedPingHistorical">自动刷新</el-checkbox>
-          <el-button @click="useFullPingRange">自动适配有效数据范围</el-button>
-          <el-button :icon="Refresh" @click="showPingSeries(selectedPingTarget)">刷新曲线</el-button>
+          <el-checkbox v-model="pingAutoRefresh" :disabled="selectedPingHistorical">实时增量</el-checkbox>
+          <el-checkbox v-model="pingFollowLatest">跟随最新</el-checkbox>
+          <el-button v-if="!selectedPingHistorical" :icon="pingPaused ? VideoPlay : VideoPause" @click="togglePingPaused">{{ pingPaused ? '继续' : '暂停' }}</el-button>
+          <el-button v-if="!pingFollowLatest" type="primary" plain @click="returnPingToLive">回到实时</el-button>
+          <el-button @click="useFullPingRange">完整运行</el-button>
+          <el-button :icon="Refresh" :loading="pingSeriesLoading || pingIncrementalLoading" @click="showPingSeries(selectedPingTarget)">刷新</el-button>
         </div>
         <div class="coverage-strip">
           <span>原始样本 <b>{{ pingSeries?.raw_sample_count ?? 0 }}</b></span>
           <span>有效样本 <b>{{ pingSeries?.effective_sample_count ?? 0 }}</b></span>
           <span>预热忽略 <b>{{ pingSeries?.ignored_sample_count ?? 0 }}</b></span>
-          <span>丢包区段 <b>{{ pingSeries?.loss_windows.length ?? 0 }}</b></span>
+          <span>成功 / 丢包 <b>{{ pingLiveStats.success }} / {{ pingLiveStats.loss }}</b></span>
+          <span>丢包率 <b>{{ pingLiveStats.lossRate.toFixed(2) }}%</b></span>
+          <span>当前 / 平均 / 最大 RTT <b>{{ metric(pingLiveStats.currentRtt, 'ms') }} / {{ metric(pingLiveStats.averageRtt, 'ms') }} / {{ metric(pingLiveStats.maxRtt, 'ms') }}</b></span>
+          <span>最长连续丢包 <b>{{ selectedPingTarget.continuous_loss_max_count ?? 0 }} / {{ (selectedPingTarget.continuous_loss_max_seconds ?? 0).toFixed(1) }}s</b></span>
           <span v-if="pingSeries">来源 <b>{{ groundSourceLabel(pingSeries.diagnostics.source_kind) }}</b></span>
           <span v-if="pingSeries">可用性 <b>{{ groundStatusLabel(pingSeries.diagnostics.data_availability) }}</b></span>
-          <span v-if="pingSeries?.diagnostics.truncated">查询预算已截断</span>
         </div>
+        <div class="coverage-strip">
+          <span>当前状态 <b>{{ groundStatusLabel(pingSeries?.target_state || selectedPingTarget.data_availability) }}</b></span>
+          <span>当前 AP <b>{{ pingLiveStats.currentAp || '未知' }}</b></span>
+          <span>站点 / 区间 <b>{{ pingLiveStats.station || '未知' }} / {{ pingLiveStats.section || '未知' }}</b></span>
+          <span>最近样本 <b>{{ pingLiveStats.latestAt || '尚无样本' }}</b></span>
+          <span v-if="pingSeries?.diagnostics.truncated">查询预算已截断</span>
+          <span v-if="pingIncrementalLoading">正在补拉增量</span>
+        </div>
+        <el-skeleton v-if="pingSeriesLoading && !pingSeries" :rows="8" animated />
         <el-empty
-          v-if="pingSeries && !pingSeries.points.length"
-          :description="groundStatusLabel(pingSeries.diagnostics.no_data_reason || 'NO_SAMPLES')"
+          v-else-if="!pingSeries?.points.length"
+          class="ping-empty-state"
+          :description="pingEmptyDescription"
+        >
+          <div class="row-actions">
+            <el-button v-if="pingRange !== 'run'" @click="useFullPingRange">切换到完整运行时段</el-button>
+            <el-button v-if="pingSeries" :icon="CopyDocument" @click="copyPingDiagnostics">复制文件诊断</el-button>
+          </div>
+        </el-empty>
+        <GroundPingChart
+          v-else
+          :series="pingSeries"
+          :follow-latest="pingFollowLatest"
+          @user-zoom="pingFollowLatest = false"
         />
-        <GroundPingChart v-else-if="pingDialogOpened" :series="pingSeries" />
-        <h3>丢包区段</h3>
-        <el-table :data="pingSeries?.loss_windows || []" size="small" max-height="260" empty-text="暂无丢包区段">
+        <h3 v-if="pingSeries?.points.length">丢包区段</h3>
+        <el-table v-if="pingSeries?.points.length" :data="pingSeries?.loss_windows || []" size="small" max-height="260" empty-text="暂无丢包区段">
           <el-table-column prop="started_at" label="开始时间" min-width="180" />
           <el-table-column prop="ended_at" label="结束时间" min-width="180" />
           <el-table-column prop="duration_seconds" label="持续时间（秒）" width="130" />
@@ -1289,7 +1673,7 @@ onBeforeUnmount(() => {
           <el-table-column prop="position_quality" label="位置质量" min-width="110"><template #default="{ row }">{{ groundStatusLabel(row.position_quality) }}</template></el-table-column>
         </el-table>
       </section>
-    </el-dialog>
+    </NcFloatingWindow>
 
     <el-dialog v-model="archiveDialog" :title="t('ground.archive_summary', '无人值守归档汇总')" width="min(1100px, 96vw)" top="4vh">
       <el-tabs v-if="selectedArchive" v-model="archiveDetailTab">
@@ -1464,7 +1848,8 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.ground-page{display:flex;flex-direction:column;gap:12px;min-width:0;min-height:0}.page-heading,.heading-actions,.status-line,.toolbar,.coverage-strip,.row-actions,.form-actions,.inline-numbers,.dialog-actions,.network-actions,.network-status,.boot-evidence,.operation-heading,.detail-heading,.mode-switch,.load-warning{display:flex;align-items:center;gap:10px}.page-heading,.operation-heading,.detail-heading{justify-content:space-between;flex-wrap:wrap}.page-heading h1{margin:2px 0 0;font-size:24px;letter-spacing:0}.eyebrow{margin:0;color:var(--el-color-primary);font-size:12px;font-weight:700;letter-spacing:0}.heading-actions,.toolbar,.dialog-actions,.network-actions,.network-status,.boot-evidence{flex-wrap:wrap}.operation-band{padding:12px 14px;border:1px solid var(--el-border-color);border-left:4px solid var(--el-color-warning);background:var(--el-fill-color-light)}.operation-band.operation-completed{border-left-color:var(--el-color-success)}.operation-band.operation-failed{border-left-color:var(--el-color-danger)}.operation-heading>div{display:flex;gap:12px;align-items:center}.operation-band p{margin:8px 0;color:var(--el-text-color-primary)}.operation-band small{color:var(--el-text-color-secondary)}.load-warning{align-items:flex-start}.load-warning :deep(.el-alert){min-width:0;flex:1}.ground-tabs{min-width:0}.overview-band{padding:2px 0}.status-line{min-height:42px;flex-wrap:wrap;border-bottom:1px solid var(--el-border-color-lighter)}.metric-grid,.health-grid{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:1px;margin-top:12px;background:var(--el-border-color-lighter);border:1px solid var(--el-border-color-lighter)}.metric-grid article,.health-grid article{min-width:0;padding:12px;background:var(--el-bg-color)}.metric-grid span,.metric-grid small,.health-grid span,.health-grid small{display:block;color:var(--el-text-color-secondary);font-size:12px}.metric-grid strong,.health-grid strong{display:block;min-height:24px;margin:6px 0 3px;font-size:18px;letter-spacing:0;overflow-wrap:anywhere}.toolbar{min-height:42px}.toolbar .el-input{width:210px}.toolbar .el-select{width:130px}.toolbar .el-input-number{width:110px}.table-frame{height:clamp(360px,calc(100vh - 310px),680px);min-width:0;overflow:hidden;border-top:1px solid var(--el-border-color-lighter)}.ping-table{height:360px}.ping-detail{margin-top:16px;padding-top:14px;border-top:1px solid var(--el-border-color-lighter)}.ping-detail h2,.ping-detail h3{margin:0 0 8px}.ping-detail p{margin:0;color:var(--el-text-color-secondary);font-size:12px}.coverage-strip{flex-wrap:wrap;margin-bottom:8px}.coverage-strip span{display:flex;align-items:center;gap:5px;padding:5px 8px;background:var(--el-fill-color-light);border-radius:4px;color:var(--el-text-color-secondary);font-size:12px}.coverage-strip b{color:var(--el-text-color-primary);font-size:16px}.settings-empty{padding:48px 16px}.settings-empty .muted{max-width:720px;margin:0 auto 12px;overflow-wrap:anywhere}.settings-form{display:flex;flex-direction:column;gap:18px;max-width:1180px}.settings-form section{padding-bottom:16px;border-bottom:1px solid var(--el-border-color-lighter)}.settings-form h2{margin:0 0 12px;font-size:16px;letter-spacing:0}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:0 16px}.form-grid :deep(.el-input-number),.form-grid :deep(.el-select),.form-grid :deep(.el-input){width:100%}.mode-switch{align-items:flex-start;margin-bottom:12px}.mode-switch span{color:var(--el-text-color-secondary);font-size:12px}.budget-disabled{opacity:.66}.inline-numbers{width:100%}.priority-grid{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:8px}.muted{color:var(--el-text-color-secondary);font-size:12px}.network-actions{margin:12px 0}.network-status{margin:10px 0;padding:8px;background:var(--el-fill-color-light)}.network-ok{color:var(--el-color-success);font-size:12px}.network-error{color:var(--el-color-danger);font-size:12px}.loghost-section{margin-top:14px;padding-top:8px;border-top:1px solid var(--el-border-color-lighter)}.boot-evidence{margin:8px 0;color:var(--el-text-color-secondary);font-size:12px}.form-actions{position:sticky;bottom:0;padding:10px 0;background:var(--el-bg-color)}.dialog-actions{justify-content:flex-end;margin-top:14px}@media(max-width:1300px){.metric-grid,.health-grid{grid-template-columns:repeat(3,minmax(150px,1fr))}.form-grid{grid-template-columns:repeat(3,minmax(170px,1fr))}.priority-grid{grid-template-columns:repeat(4,minmax(110px,1fr))}}@media(max-width:900px){.page-heading{align-items:flex-start;flex-direction:column}.metric-grid,.health-grid{grid-template-columns:repeat(2,minmax(140px,1fr))}.form-grid{grid-template-columns:repeat(2,minmax(150px,1fr))}.priority-grid{grid-template-columns:repeat(3,minmax(100px,1fr))}.table-frame{height:clamp(340px,calc(100vh - 350px),620px)}.ping-table{height:340px}}@media(max-width:620px){.metric-grid,.health-grid,.form-grid{grid-template-columns:1fr}.priority-grid{grid-template-columns:repeat(2,minmax(100px,1fr))}.heading-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}.heading-actions .el-button{margin:0}.load-warning{flex-direction:column}.toolbar .el-input,.toolbar .el-select{width:100%}}
+.ground-page{display:flex;flex-direction:column;gap:12px;min-width:0;min-height:0}.page-heading,.heading-actions,.status-line,.toolbar,.coverage-strip,.row-actions,.form-actions,.inline-numbers,.dialog-actions,.network-actions,.network-status,.boot-evidence,.operation-heading,.detail-heading,.mode-switch,.load-warning{display:flex;align-items:center;gap:10px}.page-heading,.operation-heading,.detail-heading{justify-content:space-between;flex-wrap:wrap}.page-heading h1{margin:2px 0 0;font-size:24px;letter-spacing:0}.eyebrow{margin:0;color:var(--el-color-primary);font-size:12px;font-weight:700;letter-spacing:0}.heading-actions,.toolbar,.dialog-actions,.network-actions,.network-status,.boot-evidence{flex-wrap:wrap}.operation-band{padding:12px 14px;border:1px solid var(--el-border-color);border-left:4px solid var(--el-color-warning);background:var(--el-fill-color-light)}.operation-band.operation-completed{border-left-color:var(--el-color-success)}.operation-band.operation-failed{border-left-color:var(--el-color-danger)}.operation-heading>div{display:flex;gap:12px;align-items:center}.operation-band p{margin:8px 0;color:var(--el-text-color-primary)}.operation-band small{color:var(--el-text-color-secondary)}.load-warning{align-items:flex-start}.load-warning :deep(.el-alert){min-width:0;flex:1}.ground-tabs{min-width:0}.ground-tabs :deep(.el-tabs__content),.ground-tabs :deep(.el-tab-pane){min-width:0;min-height:0;overflow:visible}.overview-band{padding:2px 0}.status-line{min-height:42px;flex-wrap:wrap;border-bottom:1px solid var(--el-border-color-lighter)}.metric-grid,.health-grid{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:1px;margin-top:12px;background:var(--el-border-color-lighter);border:1px solid var(--el-border-color-lighter)}.metric-grid article,.health-grid article{min-width:0;padding:12px;background:var(--el-bg-color)}.metric-grid span,.metric-grid small,.health-grid span,.health-grid small{display:block;color:var(--el-text-color-secondary);font-size:12px}.metric-grid strong,.health-grid strong{display:block;min-height:24px;margin:6px 0 3px;font-size:18px;letter-spacing:0;overflow-wrap:anywhere}.toolbar{min-height:42px;flex-wrap:wrap}.toolbar .el-input{width:210px}.toolbar .el-select{width:130px}.toolbar .el-input-number{width:110px}.table-frame{height:auto;min-width:0;overflow:visible;border-top:1px solid var(--el-border-color-lighter)}.table-pagination{margin-top:8px}.coverage-strip{flex-wrap:wrap;margin-bottom:8px}.coverage-strip span{display:flex;align-items:center;gap:5px;padding:5px 8px;background:var(--el-fill-color-light);border-radius:4px;color:var(--el-text-color-secondary);font-size:12px}.coverage-strip b{color:var(--el-text-color-primary);font-size:16px}.settings-empty{padding:48px 16px}.settings-empty .muted{max-width:720px;margin:0 auto 12px;overflow-wrap:anywhere}.settings-form{display:flex;flex-direction:column;gap:18px;max-width:1180px}.settings-form section{padding-bottom:16px;border-bottom:1px solid var(--el-border-color-lighter)}.settings-form h2{margin:0 0 12px;font-size:16px;letter-spacing:0}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:0 16px}.form-grid :deep(.el-input-number),.form-grid :deep(.el-select),.form-grid :deep(.el-input){width:100%}.mode-switch{align-items:flex-start;margin-bottom:12px}.mode-switch span{color:var(--el-text-color-secondary);font-size:12px}.budget-disabled{opacity:.66}.inline-numbers{width:100%}.priority-grid{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:8px}.muted{color:var(--el-text-color-secondary);font-size:12px}.network-actions{margin:12px 0}.network-status{margin:10px 0;padding:8px;background:var(--el-fill-color-light)}.network-ok{color:var(--el-color-success);font-size:12px}.network-error{color:var(--el-color-danger);font-size:12px}.loghost-section{margin-top:14px;padding-top:8px;border-top:1px solid var(--el-border-color-lighter)}.boot-evidence{margin:8px 0;color:var(--el-text-color-secondary);font-size:12px}.form-actions{position:sticky;bottom:0;padding:10px 0;background:var(--el-bg-color)}.dialog-actions{justify-content:flex-end;margin-top:14px}@media(max-width:1300px){.metric-grid,.health-grid{grid-template-columns:repeat(3,minmax(150px,1fr))}.form-grid{grid-template-columns:repeat(3,minmax(170px,1fr))}.priority-grid{grid-template-columns:repeat(4,minmax(110px,1fr))}}@media(max-width:900px){.page-heading{align-items:flex-start;flex-direction:column}.metric-grid,.health-grid{grid-template-columns:repeat(2,minmax(140px,1fr))}.form-grid{grid-template-columns:repeat(2,minmax(150px,1fr))}.priority-grid{grid-template-columns:repeat(3,minmax(100px,1fr))}}@media(max-width:620px){.metric-grid,.health-grid,.form-grid{grid-template-columns:1fr}.priority-grid{grid-template-columns:repeat(2,minmax(100px,1fr))}.heading-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}.heading-actions .el-button{margin:0}.load-warning{flex-direction:column}.toolbar .el-input,.toolbar .el-select{width:100%}}
 .ac-poller-health{margin-top:14px}.ac-poller-grid{display:grid;grid-template-columns:repeat(2,minmax(280px,1fr));gap:10px}.ac-poller-grid article{padding:12px;border:1px solid var(--el-border-color);border-radius:6px;background:var(--el-fill-color-extra-light)}.ac-poller-grid header{display:flex;align-items:center;justify-content:space-between;gap:12px}.ac-poller-grid p{margin:8px 0}.ac-poller-grid small{display:block;margin-top:5px;color:var(--el-text-color-secondary);overflow-wrap:anywhere}.ac-poller-grid .health-error{color:var(--el-color-danger)}@media(max-width:900px){.ac-poller-grid{grid-template-columns:1fr}}
-.run-context-bar{display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:10px 12px;border:1px solid var(--el-border-color-lighter);background:var(--el-fill-color-extra-light)}.run-context-bar>div{display:flex;flex-direction:column;min-width:240px}.run-context-bar>div span{font-size:12px;color:var(--el-text-color-secondary)}.run-context-bar .el-select{width:min(440px,100%)}.ping-table{height:clamp(420px,calc(100vh - 330px),760px)}.ping-detail-dialog{max-height:78vh;overflow:auto;padding-right:4px}.ping-detail-dialog h3,.detail-heading h2{margin:0 0 8px}.detail-heading p{margin:0;color:var(--el-text-color-secondary);font-size:12px}.raw-record{max-height:320px;overflow:auto;padding:12px;border:1px solid var(--el-border-color-lighter);background:var(--el-fill-color-extra-light);white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:900px){.ping-table{height:clamp(380px,calc(100vh - 380px),650px)}}
+.run-context-bar{display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:10px 12px;border:1px solid var(--el-border-color-lighter);background:var(--el-fill-color-extra-light)}.run-context-bar>div{display:flex;flex-direction:column;min-width:240px}.run-context-bar>div span{font-size:12px;color:var(--el-text-color-secondary)}.run-context-bar .el-select{width:min(440px,100%)}.ping-floating-content{min-width:720px}.ping-floating-content h3,.detail-heading h2{margin:12px 0 8px}.ping-empty-state{height:210px}.raw-record{max-height:320px;overflow:auto;padding:12px;border:1px solid var(--el-border-color-lighter);background:var(--el-fill-color-extra-light);white-space:pre-wrap;overflow-wrap:anywhere}
+.syslog-transport-band{margin-top:14px;padding:14px;border:1px solid var(--el-border-color);background:var(--el-bg-color)}.transport-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}.transport-heading h2{margin:0;font-size:16px;letter-spacing:0}.transport-heading p{margin:4px 0 0;color:var(--el-text-color-secondary);font-size:12px}.syslog-transport-band>.el-alert{margin-top:12px}.transport-grid{display:grid;grid-template-columns:repeat(3,minmax(190px,1fr));gap:1px;margin-top:12px;background:var(--el-border-color-lighter);border:1px solid var(--el-border-color-lighter)}.transport-grid article{min-width:0;padding:11px;background:var(--el-bg-color)}.transport-grid span,.transport-grid small{display:block;color:var(--el-text-color-secondary);font-size:12px}.transport-grid strong{display:block;margin:5px 0;overflow-wrap:anywhere;font-size:15px;letter-spacing:0}@media(max-width:1000px){.transport-grid{grid-template-columns:repeat(2,minmax(180px,1fr))}}@media(max-width:620px){.transport-grid{grid-template-columns:1fr}}
 </style>

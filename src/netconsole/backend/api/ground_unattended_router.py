@@ -27,6 +27,7 @@ from netconsole.models.api.ground_unattended import (
     GroundRawFilePageDTO,
     GroundRunPageDTO,
     GroundSyslogRecordPageDTO,
+    GroundSyslogTransportStatusDTO,
     GroundTrainPolicyUpdateDTO,
     GroundTimelinePageDTO,
     GroundOperationDTO,
@@ -209,6 +210,16 @@ def health(request: Request) -> GroundHealthDTO:
     return _call(lambda: _service(request).health(_site_id(request)))
 
 
+@router.get(
+    "/syslog-transport-status",
+    response_model=GroundSyslogTransportStatusDTO,
+)
+def syslog_transport_status(request: Request) -> GroundSyslogTransportStatusDTO:
+    return _call(
+        lambda: _service(request).syslog_transport_status(_site_id(request))
+    )
+
+
 @router.get("/raw-files", response_model=GroundRawFilePageDTO)
 def raw_files(
     request: Request,
@@ -282,6 +293,35 @@ def ping_series(
             target_ip=target_ip,
             start_time=start_time,
             end_time=end_time,
+            include_warmup=include_warmup,
+            max_points=max_points,
+        )
+    )
+
+
+@router.get("/ping-series/incremental", response_model=GroundPingSeriesDTO)
+def ping_series_incremental(
+    request: Request,
+    run_id: str = Query(min_length=1, max_length=100),
+    train_id: str = Query(default="", max_length=100),
+    mr_id: str = Query(default="", max_length=100),
+    target_ip: str = Query(default="", max_length=100),
+    cursor: str = Query(default="", max_length=20_000),
+    after_sequence: int | None = Query(default=None, ge=0),
+    after_timestamp: str = Query(default="", max_length=100),
+    include_warmup: bool = False,
+    max_points: int = Query(default=200, ge=1, le=500),
+) -> GroundPingSeriesDTO:
+    return _call(
+        lambda: _service(request).ping_series_incremental(
+            _site_id(request),
+            run_id=run_id,
+            train_id=train_id,
+            mr_id=mr_id,
+            target_ip=target_ip,
+            cursor=cursor,
+            after_sequence=after_sequence,
+            after_timestamp=after_timestamp,
             include_warmup=include_warmup,
             max_points=max_points,
         )

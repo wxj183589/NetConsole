@@ -46,6 +46,7 @@ const props = withDefaults(defineProps<{
   stripe?: boolean
   border?: boolean
   compact?: boolean
+  autoHeight?: boolean
   showColumnSettings?: boolean
   sampleLimit?: number
   emptySpaceStrategy?: NcTableEmptySpaceStrategy
@@ -61,6 +62,7 @@ const props = withDefaults(defineProps<{
   stripe: true,
   border: false,
   compact: false,
+  autoHeight: false,
   showColumnSettings: true,
   sampleLimit: 200,
   emptySpaceStrategy: 'stretch',
@@ -541,7 +543,7 @@ defineExpose({ tableRef, availableWidth, resolvedTableWidth, recalculate, resetL
 </script>
 
 <template>
-  <div ref="containerRef" :class="['nc-data-table', { 'nc-data-table--compact': compact }]">
+  <div ref="containerRef" :class="['nc-data-table', { 'nc-data-table--compact': compact, 'nc-data-table--auto-height': autoHeight }]">
     <div v-if="showColumnSettings || $slots.tools" class="nc-data-table__tools">
       <slot name="tools" />
       <NcColumnSettings
@@ -662,6 +664,8 @@ defineExpose({ tableRef, availableWidth, resolvedTableWidth, recalculate, resetL
 
 <style scoped>
 .nc-data-table { display: flex; flex-direction: column; min-width: 0; min-height: 0; width: 100%; height: 100%; overflow: hidden; }
+.nc-data-table--auto-height { height: auto; }
+.nc-data-table--auto-height .nc-data-table__scroll { flex: none; }
 .nc-data-table__tools { display: flex; flex: none; align-items: center; justify-content: flex-end; gap: 8px; min-height: 34px; padding: 0 0 8px; }
 .nc-data-table__scroll { flex: 1; min-width: 0; min-height: 0; width: 100%; overflow: hidden; }
 .nc-data-table :deep(.el-table) { width: 100%; color: var(--nc-text-primary); font-size: var(--nc-font-size-base); }

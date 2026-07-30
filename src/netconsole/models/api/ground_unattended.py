@@ -51,6 +51,22 @@ GroundDataAvailability = Literal[
     "MISSING",
     "CORRUPT",
 ]
+GroundSyslogReturnAddressStatus = Literal[
+    "LOCAL_ADDRESS",
+    "EXTERNAL_CONFIRMED",
+    "NOT_LOCAL",
+    "EMPTY",
+    "INVALID",
+]
+GroundSyslogReceiverState = Literal["LISTENING", "STOPPED", "STARTING", "ERROR"]
+GroundSyslogPortState = Literal[
+    "NETCONSOLE_LISTENING",
+    "AVAILABLE",
+    "OCCUPIED_BY_OTHER",
+    "ADDRESS_NOT_LOCAL",
+    "NOT_CHECKED",
+    "UNKNOWN",
+]
 
 
 class GroundUnattendedProfileDTO(ApiModel):
@@ -387,6 +403,8 @@ class GroundHealthDTO(ApiModel):
     udp_receive_rate_per_second: float = 0.0
     udp_received_count: int = 0
     udp_unidentified_count: int = 0
+    udp_identity_conflict_count: int = 0
+    udp_last_received_at: str = ""
     udp_queue_length: int = 0
     udp_queue_capacity: int = 0
     udp_dropped_count: int = 0
@@ -404,6 +422,34 @@ class GroundHealthDTO(ApiModel):
     disk_free_bytes: int = 0
     last_error: str = ""
     updated_at: str = ""
+
+
+class GroundSyslogTransportStatusDTO(ApiModel):
+    configured_return_ip: str = ""
+    configured_return_port: int = Field(default=514, ge=1, le=65_535)
+    return_address_status: GroundSyslogReturnAddressStatus = "EMPTY"
+    return_address_is_local: bool = False
+    allow_external_address: bool = False
+    listen_host: str = "0.0.0.0"
+    listen_port: int = Field(default=514, ge=1, le=65_535)
+    receiver_running: bool = False
+    receiver_state: GroundSyslogReceiverState = "STOPPED"
+    actual_listen_address: str = ""
+    port_state: GroundSyslogPortState = "NOT_CHECKED"
+    port_message: str = ""
+    ports_match: bool | None = None
+    target_port_message: str = ""
+    last_received_at: str = ""
+    received_count: int = 0
+    active_mr_count: int = 0
+    unidentified_count: int = 0
+    identity_conflict_count: int = 0
+    queue_length: int = 0
+    queue_capacity: int = 0
+    dropped_count: int = 0
+    recommended_local_ip: str = ""
+    recommended_adapter_name: str = ""
+    checked_at: str = ""
 
 
 class GroundRawFileDTO(ApiModel):
@@ -697,6 +743,13 @@ class GroundPingSeriesDTO(ApiModel):
     raw_sample_count: int = 0
     effective_sample_count: int = 0
     ignored_sample_count: int = 0
+    success_count: int = 0
+    loss_count: int = 0
+    rtt_sample_count: int = 0
+    rtt_sum_ms: float = 0.0
+    current_rtt_ms: float | None = None
+    average_rtt_ms: float | None = None
+    max_rtt_ms: float | None = None
     points: list[GroundPingSampleDTO] = Field(default_factory=list)
     loss_windows: list[dict[str, object]] = Field(default_factory=list)
     ap_transitions: list[dict[str, object]] = Field(default_factory=list)
@@ -704,6 +757,13 @@ class GroundPingSeriesDTO(ApiModel):
     diagnostics: GroundQueryDiagnosticsDTO = Field(
         default_factory=GroundQueryDiagnosticsDTO
     )
+    next_cursor: str = ""
+    latest_sequence: int | None = None
+    latest_timestamp: str = ""
+    server_time: str = ""
+    active: bool = False
+    target_state: str = ""
+    has_more: bool = False
 
 
 class GroundSyslogRecordDTO(ApiModel):

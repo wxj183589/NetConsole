@@ -127,9 +127,14 @@ export interface GroundQueryDiagnostics {
   malformed_record_count: number; duplicate_record_count: number; truncated: boolean; optimized_latest_page?: boolean; legacy_archive: boolean; no_data_reason: string
 }
 export interface GroundPingSeries {
-  raw_sample_count: number; effective_sample_count: number; ignored_sample_count: number; points: GroundPingSample[]
+  raw_sample_count: number; effective_sample_count: number; ignored_sample_count: number
+  success_count: number; loss_count: number; rtt_sample_count: number; rtt_sum_ms: number
+  current_rtt_ms: number | null; average_rtt_ms: number | null; max_rtt_ms: number | null
+  points: GroundPingSample[]
   loss_windows: Array<Record<string, unknown>>; ap_transitions: Array<Record<string, unknown>>; position_segments: Array<Record<string, unknown>>
   diagnostics: GroundQueryDiagnostics
+  next_cursor: string; latest_sequence: number | null; latest_timestamp: string; server_time: string
+  active: boolean; target_state: string; has_more: boolean
 }
 export interface GroundSyslogRecord {
   receive_time: string; device_time: string; source_ip: string; source_port: number | null; hostname: string; system_name: string
@@ -158,7 +163,8 @@ export interface GroundAcPollerHealth {
 }
 export interface GroundHealth {
   site_id: string; status: string; udp_running: boolean; udp_listen_address: string; udp_receive_rate_per_second: number; udp_received_count: number
-  udp_unidentified_count: number; udp_queue_length: number; udp_queue_capacity: number; udp_dropped_count: number; raw_records_written: number; raw_bytes_written: number
+  udp_unidentified_count: number; udp_identity_conflict_count: number; udp_last_received_at: string
+  udp_queue_length: number; udp_queue_capacity: number; udp_dropped_count: number; raw_records_written: number; raw_bytes_written: number
   raw_last_write_duration_ms: number; database_pending_count: number; database_last_batch_duration_ms: number; open_file_count: number
   ping_target_count: number; ping_process_count: number; deep_queue_length: number; archive_pending_count: number; ac_pollers: GroundAcPollerHealth[]
   disk_free_bytes: number; last_error: string; updated_at: string
@@ -178,4 +184,18 @@ export interface SourceIpRecommendation {
 }
 export interface UdpPortCheck {
   listen_host: string; listen_port: number; available: boolean; status: string; message: string; checked_at: string
+}
+export interface GroundSyslogTransportStatus {
+  configured_return_ip: string; configured_return_port: number
+  return_address_status: 'LOCAL_ADDRESS' | 'EXTERNAL_CONFIRMED' | 'NOT_LOCAL' | 'EMPTY' | 'INVALID'
+  return_address_is_local: boolean; allow_external_address: boolean
+  listen_host: string; listen_port: number; receiver_running: boolean
+  receiver_state: 'LISTENING' | 'STOPPED' | 'STARTING' | 'ERROR'
+  actual_listen_address: string
+  port_state: 'NETCONSOLE_LISTENING' | 'AVAILABLE' | 'OCCUPIED_BY_OTHER' | 'ADDRESS_NOT_LOCAL' | 'NOT_CHECKED' | 'UNKNOWN'
+  port_message: string; ports_match: boolean | null; target_port_message: string
+  last_received_at: string; received_count: number; active_mr_count: number
+  unidentified_count: number; identity_conflict_count: number
+  queue_length: number; queue_capacity: number; dropped_count: number
+  recommended_local_ip: string; recommended_adapter_name: string; checked_at: string
 }
