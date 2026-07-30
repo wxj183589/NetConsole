@@ -64,21 +64,77 @@ describe('API client errors', () => {
     })
   })
 
-  it('turns fetch failures into a stable Backend connection error', async () => {
+  it('classifies fetch failures as an interrupted connection', async () => {
     const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
 
     await expect(apiRequest('/api/rail-transit/mesh-analysis/import-context/prepare')).rejects.toEqual(
       expect.objectContaining({
-        message: '无法连接本机 Backend，请重试或查看 Backend 日志。',
+        message: 'Backend 连接中断，请重试。',
         status: 0,
-        code: 'BACKEND_UNREACHABLE',
+        code: 'BACKEND_CONNECTION_INTERRUPTED',
       }),
     )
     expect(diagnostic).toHaveBeenCalledWith('API_REQUEST_NETWORK_FAILED', {
       path: '/api/rail-transit/mesh-analysis/import-context/prepare',
       error: 'Failed to fetch',
     })
+    diagnostic.mockRestore()
+  })
+
+  it('classifies response body read failures without calling Backend unreachable', async () => {
+    const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => { throw new TypeError('terminated') },
+    }))
+
+    await expect(apiRequest('/api/health')).rejects.toMatchObject({
+      message: 'Backend 返回内容读取中断，请重试。',
+      status: 200,
+      code: 'RESPONSE_BODY_FAILED',
+    })
+    expect(diagnostic).toHaveBeenCalledWith('API_RESPONSE_BODY_FAILED', {
+      path: '/api/health',
+      status: 200,
+      error: 'terminated',
+    })
+    diagnostic.mockRestore()
+  })
+
+  it('classifies invalid successful JSON responses separately', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => '{"incomplete":',
+    }))
+
+    await expect(apiRequest('/api/health')).rejects.toMatchObject({
+      message: 'Backend 返回内容不完整，请重试。',
+      status: 200,
+      code: 'INVALID_JSON_RESPONSE',
+    })
+  })
+
+  it('keeps AbortError cancellable without translating it to a load error', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new DOMException('aborted', 'AbortError')))
+
+    await expect(apiRequest('/api/health')).rejects.toMatchObject({
+      name: 'AbortError',
+      code: 'REQUEST_ABORTED',
+    })
+  })
+
+  it.each([
+    ['socket hang up: connection reset', 'CONNECTION_RESET'],
+    ['request timed out', 'RAW_QUERY_TIMEOUT'],
+    ['backend restarted while waiting', 'BACKEND_RESTARTED'],
+  ])('classifies recognizable network signals: %s', async (message, code) => {
+    const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError(message)))
+
+    await expect(apiRequest('/api/query')).rejects.toMatchObject({ code })
     diagnostic.mockRestore()
   })
 

@@ -2,6 +2,7 @@
 
 import { defineComponent, h, useAttrs, type Component } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
+import { ElMessage } from 'element-plus'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const api = vi.hoisted(() => ({
@@ -37,12 +38,26 @@ const api = vi.hoisted(() => ({
   checkGroundUdpPort: vi.fn(),
   listLocalIpv4Addresses: vi.fn(),
   recommendLocalSourceIp: vi.fn(),
+  probeGroundSyslogTransportState: vi.fn(),
   getLatestGroundOperation: vi.fn(),
   verifyGroundArchive: vi.fn(),
   downloadBackendResource: vi.fn(),
 }))
 
 vi.mock('../../api/groundUnattended', () => api)
+vi.mock('../../api/client', () => ({
+  ApiRequestError: class ApiRequestError extends Error {
+    constructor(
+      message: string,
+      readonly status: number,
+      readonly code = '',
+      readonly details: Record<string, unknown> = {},
+    ) {
+      super(message)
+      this.name = 'ApiRequestError'
+    }
+  },
+}))
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
 vi.mock('../../platform/runtime', () => ({ downloadBackendResource: api.downloadBackendResource }))
 vi.mock('../../components/ground-unattended/GroundPingChart.vue', async () => {
@@ -55,6 +70,7 @@ vi.mock('../../components/table', async () => {
 })
 
 import GroundUnattendedView from './GroundUnattendedView.vue'
+import { ApiRequestError } from '../../api/client'
 
 const passthrough = defineComponent({
   inheritAttrs: false,
@@ -174,6 +190,11 @@ beforeEach(() => {
     expectedSha256: 'a'.repeat(64),
   })
   api.downloadBackendResource.mockResolvedValue({ status: 'cancelled' })
+  api.probeGroundSyslogTransportState.mockImplementation(async (reason: unknown) => ({
+    code: reason instanceof ApiRequestError ? reason.code : 'UNKNOWN_ERROR',
+    requestId: reason instanceof ApiRequestError ? String(reason.details.request_id || '') : '',
+    backendState: reason instanceof ApiRequestError && reason.status > 0 ? 'ONLINE' : 'UNKNOWN',
+  }))
 })
 
 afterEach(() => {
@@ -181,6 +202,194 @@ afterEach(() => {
 })
 
 describe('Ground unattended page loading behavior', () => {
+  it('keeps initial Syslog failure local and confirms Backend remains online', async () => {
+    const message = vi.spyOn(ElMessage, 'error').mockImplementation(() => undefined as never)
+    api.listGroundSyslogRecords.mockRejectedValue(
+      new ApiRequestError(
+        'Backend 连接中断，请重试。',
+        0,
+        'BACKEND_CONNECTION_INTERRUPTED',
+      ),
+    )
+    api.probeGroundSyslogTransportState.mockResolvedValue({
+      code: 'BACKEND_CONNECTION_INTERRUPTED',
+      requestId: '',
+      backendState: 'ONLINE',
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+
+    ;(wrapper.vm as unknown as { activeTab: string }).activeTab = 'syslog'
+    await flushPromises()
+
+    expect(api.probeGroundSyslogTransportState).toHaveBeenCalledOnce()
+    expect(wrapper.text()).toContain('Syslog 日志暂时无法加载')
+    expect(wrapper.text()).toContain('Syslog 查询连接中断，Backend 仍在线')
+    expect(wrapper.text()).toContain('Backend 状态 在线')
+    expect(message).not.toHaveBeenCalled()
+    message.mockRestore()
+    wrapper.unmount()
+  })
+
+  it('only reports Backend unreachable when the health recheck also fails', async () => {
+    api.listGroundSyslogRecords.mockRejectedValue(
+      new ApiRequestError(
+        'Backend 连接中断，请重试。',
+        0,
+        'BACKEND_CONNECTION_INTERRUPTED',
+      ),
+    )
+    api.probeGroundSyslogTransportState.mockResolvedValue({
+      code: 'BACKEND_UNREACHABLE',
+      requestId: '',
+      backendState: 'OFFLINE',
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+
+    ;(wrapper.vm as unknown as { activeTab: string }).activeTab = 'syslog'
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('无法连接本机 Backend')
+    expect(wrapper.text()).toContain('Backend 状态 离线')
+    expect(wrapper.text()).toContain('BACKEND_UNREACHABLE')
+    wrapper.unmount()
+  })
+
+  it('shows one Toast for a manual Syslog failure', async () => {
+    const message = vi.spyOn(ElMessage, 'error').mockImplementation(() => undefined as never)
+    api.listGroundSyslogRecords.mockRejectedValue(
+      new ApiRequestError('查询失败', 500, 'GROUND_SYSLOG_QUERY_FAILED'),
+    )
+    const wrapper = mountPage()
+    await flushPromises()
+    const view = wrapper.vm as unknown as { loadSyslog: (silent?: boolean) => Promise<void> }
+
+    await view.loadSyslog(false)
+    await flushPromises()
+
+    expect(message).toHaveBeenCalledWith('Syslog 日志加载失败：查询失败')
+    expect(message).toHaveBeenCalledTimes(1)
+    message.mockRestore()
+    wrapper.unmount()
+  })
+
+  it('reuses an in-flight Syslog request with the same fingerprint', async () => {
+    let resolveRequest!: (value: { items: []; total: number; page: number; page_size: number }) => void
+    api.listGroundSyslogRecords.mockImplementation(() => new Promise((resolve) => {
+      resolveRequest = resolve
+    }))
+    const wrapper = mountPage()
+    await flushPromises()
+    const view = wrapper.vm as unknown as { loadSyslog: (silent?: boolean) => Promise<void> }
+
+    const first = view.loadSyslog(true)
+    const second = view.loadSyslog(true)
+    await flushPromises()
+
+    expect(api.listGroundSyslogRecords).toHaveBeenCalledOnce()
+    resolveRequest({ items: [], total: 0, page: 1, page_size: 100 })
+    await Promise.all([first, second])
+    wrapper.unmount()
+  })
+
+  it('cancels changed Syslog parameters and ignores the old response', async () => {
+    const requests: Array<{
+      signal: AbortSignal
+      resolve: (value: { items: Array<{ raw_text: string }>; total: number; page: number; page_size: number }) => void
+    }> = []
+    api.listGroundSyslogRecords.mockImplementation(
+      (_params: unknown, options: { signal: AbortSignal }) => new Promise((resolve) => {
+        requests.push({ signal: options.signal, resolve })
+      }),
+    )
+    const wrapper = mountPage()
+    await flushPromises()
+    const view = wrapper.vm as unknown as {
+      loadSyslog: (silent?: boolean) => Promise<void>
+      syslogFilter: { keyword: string }
+      syslogRecords: Array<{ raw_text: string }>
+    }
+
+    void view.loadSyslog(true)
+    await flushPromises()
+    view.syslogFilter.keyword = 'new-filter'
+    void view.loadSyslog(true)
+    await flushPromises()
+
+    expect(requests).toHaveLength(2)
+    expect(requests[0].signal.aborted).toBe(true)
+    requests[1].resolve({ items: [{ raw_text: 'new' }], total: 1, page: 1, page_size: 100 })
+    await flushPromises()
+    requests[0].resolve({ items: [{ raw_text: 'old' }], total: 1, page: 1, page_size: 100 })
+    await flushPromises()
+    expect(view.syslogRecords).toEqual([{ raw_text: 'new' }])
+    wrapper.unmount()
+  })
+
+  it('clears the Syslog issue and reports recovery once', async () => {
+    const success = vi.spyOn(ElMessage, 'success').mockImplementation(() => undefined as never)
+    api.listGroundSyslogRecords
+      .mockRejectedValueOnce(new ApiRequestError(
+        'Backend 连接中断，请重试。',
+        0,
+        'BACKEND_CONNECTION_INTERRUPTED',
+      ))
+      .mockResolvedValue({ items: [], total: 0, page: 1, page_size: 100 })
+    api.probeGroundSyslogTransportState.mockResolvedValue({
+      code: 'BACKEND_CONNECTION_INTERRUPTED',
+      requestId: '',
+      backendState: 'ONLINE',
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+    const view = wrapper.vm as unknown as {
+      activeTab: string
+      loadSyslog: (silent?: boolean) => Promise<void>
+    }
+    view.activeTab = 'syslog'
+    await flushPromises()
+    expect(wrapper.text()).toContain('Syslog 日志暂时无法加载')
+
+    await view.loadSyslog(true)
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('Syslog 日志暂时无法加载')
+    expect(success).toHaveBeenCalledWith('Syslog 日志已恢复')
+    expect(success).toHaveBeenCalledTimes(1)
+    success.mockRestore()
+    wrapper.unmount()
+  })
+
+  it('turns historical Syslog auto-refresh off by default', async () => {
+    api.getGroundStatus.mockResolvedValue({
+      ...status(),
+      active_run_id: 'run-active',
+      active_run_state: 'RUNNING',
+      latest_run_id: 'run-history',
+      latest_run_state: 'COMPLETED',
+    })
+    api.listGroundRuns.mockResolvedValue({
+      items: [
+        { run_id: 'run-active', run_date: '2026-07-30', state: 'RUNNING' },
+        { run_id: 'run-history', run_date: '2026-07-29', state: 'COMPLETED' },
+      ],
+      total: 2,
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+    const view = wrapper.vm as unknown as {
+      selectedRunId: string
+      syslogAutoRefresh: boolean
+    }
+
+    view.selectedRunId = 'run-history'
+    await flushPromises()
+
+    expect(view.syslogAutoRefresh).toBe(false)
+    wrapper.unmount()
+  })
+
   it('saves existing archive artifacts only after an explicit user action', async () => {
     const wrapper = mountPage()
     await flushPromises()

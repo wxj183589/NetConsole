@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import zipfile
 from datetime import date, timedelta
@@ -15,6 +16,11 @@ from netconsole.repositories.ground_unattended_repository import (
 from netconsole.services.ground_unattended.raw_query import (
     GroundRawStreamQueryService,
 )
+from netconsole.services.ground_unattended.application_service import (
+    GroundUnattendedApplicationService,
+)
+from netconsole.services.ground_unattended.syslog_runtime import WmeshRealtimeParser
+from types import SimpleNamespace
 
 
 RUN_ID = "run-scale"
@@ -148,6 +154,306 @@ def test_syslog_query_pages_100000_records_without_materializing_all_rows(
     assert result["diagnostics"]["truncated"] is False
 
 
+def test_legacy_syslog_display_parse_is_limited_to_returned_page(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths, repository = _setup(tmp_path)
+    path = (
+        paths.ground_unattended_active_dir("site-a", RUN_DATE)
+        / "realtime"
+        / "syslog"
+        / "legacy.ndjson"
+    )
+    raw_text = (
+        "<189>Jul 25 08:00:00 2026 TEST-MR-CT "
+        "%%10WMESH/5/MESH_LINKUP: Mesh Link on the interface "
+        "WLAN-MeshLink841 is up: peer MAC = 0200-0000-0001, "
+        "peer radio mode = 3, RSSI = 25"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for sequence in range(250):
+            handle.write(
+                json.dumps(
+                    {
+                        "global_receive_sequence": sequence,
+                        "receive_time": SAMPLE_TIME,
+                        "raw_text": raw_text,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    repository.upsert_raw_file(
+        _raw_file_row(
+            file_id="raw-syslog-legacy-page",
+            relative_path=path.relative_to(repository.db_path.parent).as_posix(),
+            data_type="syslog",
+            record_count=250,
+            size_bytes=path.stat().st_size,
+        )
+    )
+    original_parse = WmeshRealtimeParser.parse
+    calls = 0
+
+    def counted_parse(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_parse(self, *args, **kwargs)
+
+    monkeypatch.setattr(WmeshRealtimeParser, "parse", counted_parse)
+    service = GroundUnattendedApplicationService(
+        paths,
+        site_id="site-a",
+        repository=repository,
+        supervisor=SimpleNamespace(),
+    )
+
+    result = service.syslog_records(
+        "site-a", run_id=RUN_ID, page=1, page_size=100
+    )
+
+    assert result.total == 250
+    assert len(result.items) == 100
+    assert calls == 100
+    assert all(item.event_type == "MESH_LINKUP" for item in result.items)
+
+    calls = 0
+    filtered = service.syslog_records(
+        "site-a",
+        run_id=RUN_ID,
+        event_type="MESH_LINKUP",
+        page=1,
+        page_size=100,
+    )
+    assert filtered.total == 250
+    assert calls == 250
+
+
+def test_unfiltered_first_page_stops_before_provably_older_file(
+    tmp_path: Path,
+) -> None:
+    paths, repository = _setup(tmp_path)
+    base = (
+        paths.ground_unattended_active_dir("site-a", RUN_DATE)
+        / "realtime"
+        / "syslog"
+    )
+    old_path = base / "old.ndjson"
+    new_path = base / "new.ndjson"
+    _write_timestamped_syslog(old_path, 500, "2026-07-25T08:00:00+08:00", 0)
+    _write_timestamped_syslog(new_path, 100, "2026-07-25T09:00:00+08:00", 500)
+    for file_id, path, timestamp, count in (
+        ("raw-old", old_path, "2026-07-25T08:00:00+08:00", 500),
+        ("raw-new", new_path, "2026-07-25T09:00:00+08:00", 100),
+    ):
+        repository.upsert_raw_file(
+            {
+                **_raw_file_row(
+                    file_id=file_id,
+                    relative_path=path.relative_to(
+                        repository.db_path.parent
+                    ).as_posix(),
+                    data_type="syslog",
+                    record_count=count,
+                    size_bytes=path.stat().st_size,
+                ),
+                "start_time": timestamp,
+                "end_time": timestamp,
+            }
+        )
+
+    result = GroundRawStreamQueryService(repository).syslog_records(
+        run_id=RUN_ID, page=1, page_size=100
+    )
+
+    assert len(result["items"]) == 100
+    assert result["total"] == 600
+    assert result["total_exact"] is False
+    assert result["diagnostics"]["optimized_latest_page"] is True
+    assert result["diagnostics"]["files_scanned"] == 1
+    assert result["diagnostics"]["records_scanned"] == 100
+    assert min(item["global_receive_sequence"] for item in result["items"]) == 500
+
+
+def test_syslog_train_filter_matches_legacy_registry_identity(
+    tmp_path: Path,
+) -> None:
+    paths, repository = _setup(tmp_path)
+    path = (
+        paths.ground_unattended_active_dir("site-a", RUN_DATE)
+        / "realtime"
+        / "syslog"
+        / "_07"
+        / "CT"
+        / "legacy-train-id.ndjson"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "global_receive_sequence": 1,
+                "receive_time": SAMPLE_TIME,
+                "train_id": "列车07",
+                "mr_name": "列车07-MR-CT",
+                "mr_role": "CT",
+                "event_type": "MESH_LINKUP",
+                "raw_text": "WMESH LINKUP",
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    repository.upsert_raw_file(
+        {
+            **_raw_file_row(
+                file_id="raw-legacy-train-id",
+                relative_path=path.relative_to(
+                    repository.db_path.parent
+                ).as_posix(),
+                data_type="syslog",
+                record_count=1,
+                size_bytes=path.stat().st_size,
+            ),
+            "train_id": "_07",
+        }
+    )
+    alias_path = path.with_name("alias-train-id.ndjson")
+    alias_path.write_text(
+        json.dumps(
+            {
+                "global_receive_sequence": 2,
+                "receive_time": SAMPLE_TIME,
+                "train_id": "列车07",
+                "mr_name": "列车07-MR-CW",
+                "mr_role": "CW",
+                "event_type": "MESH_LINKDOWN",
+                "raw_text": "WMESH LINKDOWN",
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    repository.upsert_raw_file(
+        {
+            **_raw_file_row(
+                file_id="raw-alias-train-id",
+                relative_path=alias_path.relative_to(
+                    repository.db_path.parent
+                ).as_posix(),
+                data_type="syslog",
+                record_count=1,
+                size_bytes=alias_path.stat().st_size,
+            ),
+            "train_id": "LC07",
+            "mr_role": "CW",
+        }
+    )
+    query = GroundRawStreamQueryService(repository)
+
+    for train_id in ("列车07", "_07"):
+        result = query.syslog_records(
+            run_id=RUN_ID,
+            train_id=train_id,
+            page=1,
+            page_size=100,
+        )
+
+        assert result["total"] == 2
+        assert len(result["items"]) == 2
+        assert {item["train_id"] for item in result["items"]} == {"列车07"}
+        assert result["diagnostics"]["files_scanned"] == 2
+
+
+def test_active_syslog_skips_malformed_records_without_global_dedup(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths, repository = _setup(tmp_path)
+    path = (
+        paths.ground_unattended_active_dir("site-a", RUN_DATE)
+        / "realtime"
+        / "syslog"
+        / "malformed.ndjson"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    valid = (
+        json.dumps(
+            {
+                "global_receive_sequence": 1,
+                "receive_time": SAMPLE_TIME,
+                "event_type": "MESH_LINKUP",
+            }
+        ).encode("utf-8")
+        + b"\n"
+    )
+    path.write_bytes(valid + b"{not-json}\n" + b"\xff\xfe\n")
+    repository.upsert_raw_file(
+        _raw_file_row(
+            file_id="raw-malformed",
+            relative_path=path.relative_to(repository.db_path.parent).as_posix(),
+            data_type="syslog",
+            record_count=3,
+            size_bytes=path.stat().st_size,
+        )
+    )
+
+    def reject_dedup(*_args) -> str:
+        raise AssertionError("single ACTIVE source must not build dedup keys")
+
+    monkeypatch.setattr(
+        "netconsole.services.ground_unattended.raw_query._record_key",
+        reject_dedup,
+    )
+    result = GroundRawStreamQueryService(repository).syslog_records(run_id=RUN_ID)
+
+    assert len(result["items"]) == 1
+    assert result["diagnostics"]["malformed_record_count"] == 2
+    assert result["diagnostics"]["duplicate_record_count"] == 0
+    assert result["diagnostics"]["no_data_reason"] == "MALFORMED_RECORDS_SKIPPED"
+
+
+def test_syslog_query_budget_returns_partial_results(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths, repository = _setup(tmp_path)
+    path = (
+        paths.ground_unattended_active_dir("site-a", RUN_DATE)
+        / "realtime"
+        / "syslog"
+        / "budget.ndjson"
+    )
+    _write_timestamped_syslog(path, 200, SAMPLE_TIME, 0)
+    repository.upsert_raw_file(
+        _raw_file_row(
+            file_id="raw-budget",
+            relative_path=path.relative_to(repository.db_path.parent).as_posix(),
+            data_type="syslog",
+            record_count=200,
+            size_bytes=path.stat().st_size,
+        )
+    )
+    monkeypatch.setattr(
+        "netconsole.services.ground_unattended.raw_query.MAX_SYSLOG_QUERY_RECORDS",
+        120,
+    )
+
+    result = GroundRawStreamQueryService(repository).syslog_records(
+        run_id=RUN_ID,
+        event_type="MESH_LINKUP",
+        page=1,
+        page_size=100,
+    )
+
+    assert len(result["items"]) == 100
+    assert result["total"] == 119
+    assert result["total_exact"] is False
+    assert result["diagnostics"]["records_scanned"] == 120
+    assert result["diagnostics"]["truncated"] is True
+    assert result["diagnostics"]["no_data_reason"] == "QUERY_BUDGET_REACHED"
+
+
 def test_registry_prefilters_36_mrs_across_30_days_before_limit(
     tmp_path: Path,
 ) -> None:
@@ -265,6 +571,25 @@ def _write_syslog_records(path: Path, count: int) -> None:
                     '"mr_role":"CT","source_ip":"192.0.2.20",'
                     '"event_type":"mesh_linkup","raw_text":"WMESH LINKUP"}\n'
                 ).encode("ascii")
+            )
+
+
+def _write_timestamped_syslog(
+    path: Path, count: int, timestamp: str, sequence_start: int
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for offset in range(count):
+            handle.write(
+                json.dumps(
+                    {
+                        "global_receive_sequence": sequence_start + offset,
+                        "receive_time": timestamp,
+                        "event_type": "MESH_LINKUP",
+                        "raw_text": "WMESH LINKUP",
+                    }
+                )
+                + "\n"
             )
 
 

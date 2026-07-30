@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import time
+import traceback
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse
 
 from netconsole.backend.api.feature_access import require_feature
+from netconsole.core import app_logger
 from netconsole.models.api.ground_unattended import (
     GroundActionResponseDTO,
     GroundArchiveDTO,
@@ -316,6 +320,7 @@ def ping_samples(
 @router.get("/syslog-records", response_model=GroundSyslogRecordPageDTO)
 def syslog_records(
     request: Request,
+    response: Response,
     run_id: str = Query(default="", max_length=100),
     train_id: str = Query(default="", max_length=100),
     mr_id: str = Query(default="", max_length=100),
@@ -335,9 +340,47 @@ def syslog_records(
     page: int = Query(default=1, ge=1, le=200),
     page_size: int = Query(default=100, ge=1, le=500),
 ) -> GroundSyslogRecordPageDTO:
-    return _call(
-        lambda: _service(request).syslog_records(
-            _site_id(request),
+    request_id = uuid.uuid4().hex
+    started = time.monotonic()
+    filter_values = (
+        train_id,
+        mr_id,
+        mr_name,
+        mr_role,
+        source_ip,
+        system_name,
+        facility,
+        severity,
+        identity_status,
+        event_type,
+        peer_name,
+        data_source,
+        keyword,
+        start_time,
+        end_time,
+    )
+    bound_service = getattr(
+        request.app.state, "ground_unattended_application_service", None
+    )
+    site_id = str(getattr(bound_service, "site_id", "") or "")
+    app_logger.log_info(
+        "GROUND_SYSLOG_QUERY_STARTED",
+        _syslog_log_detail(
+            request_id=request_id,
+            site_id=site_id,
+            run_id=run_id,
+            page=page,
+            page_size=page_size,
+            filter_count=sum(bool(value) for value in filter_values),
+            start_time=start_time,
+            end_time=end_time,
+        ),
+    )
+    try:
+        service = _service(request)
+        site_id = service.current_site_id()
+        result = service.syslog_records(
+            site_id,
             run_id=run_id,
             train_id=train_id,
             mr_id=mr_id,
@@ -357,7 +400,116 @@ def syslog_records(
             page=page,
             page_size=page_size,
         )
-    )
+        diagnostics = result.diagnostics
+        response.headers["X-Request-ID"] = request_id
+        app_logger.log_info(
+            "GROUND_SYSLOG_QUERY_COMPLETED",
+            _syslog_log_detail(
+                request_id=request_id,
+                site_id=site_id,
+                run_id=run_id,
+                page=page,
+                page_size=page_size,
+                filter_count=sum(bool(value) for value in filter_values),
+                start_time=start_time,
+                end_time=end_time,
+                files_considered=diagnostics.files_considered,
+                files_scanned=diagnostics.files_scanned,
+                records_scanned=diagnostics.records_scanned,
+                bytes_scanned=diagnostics.bytes_scanned,
+                matched_count=result.total,
+                returned_count=len(result.items),
+                source_kind=diagnostics.source_kind,
+                truncated=diagnostics.truncated,
+                elapsed_ms=round((time.monotonic() - started) * 1000, 3),
+            ),
+        )
+        return result
+    except GroundUnattendedError as exc:
+        app_logger.log_error(
+            "GROUND_SYSLOG_QUERY_FAILED",
+            _syslog_log_detail(
+                request_id=request_id,
+                site_id=site_id,
+                run_id=run_id,
+                page=page,
+                page_size=page_size,
+                filter_count=sum(bool(value) for value in filter_values),
+                start_time=start_time,
+                end_time=end_time,
+                elapsed_ms=round((time.monotonic() - started) * 1000, 3),
+                exception_type=type(exc).__name__,
+            ),
+        )
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={
+                "code": exc.code,
+                "message": exc.message,
+                "details": {"request_id": request_id},
+            },
+            headers={"X-Request-ID": request_id},
+        ) from exc
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        details = (
+            dict(detail.get("details") or {})
+            if isinstance(detail.get("details"), dict)
+            else {}
+        )
+        details["request_id"] = request_id
+        app_logger.log_error(
+            "GROUND_SYSLOG_QUERY_FAILED",
+            _syslog_log_detail(
+                request_id=request_id,
+                site_id=site_id,
+                run_id=run_id,
+                page=page,
+                page_size=page_size,
+                filter_count=sum(bool(value) for value in filter_values),
+                start_time=start_time,
+                end_time=end_time,
+                elapsed_ms=round((time.monotonic() - started) * 1000, 3),
+                exception_type=type(exc).__name__,
+            ),
+        )
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={
+                "code": str(detail.get("code") or "GROUND_SYSLOG_UNAVAILABLE"),
+                "message": str(
+                    detail.get("message") or "Syslog 查询服务暂时不可用"
+                ),
+                "details": details,
+            },
+            headers={"X-Request-ID": request_id},
+        ) from exc
+    except Exception as exc:
+        app_logger.log_error(
+            "GROUND_SYSLOG_QUERY_FAILED",
+            _syslog_log_detail(
+                request_id=request_id,
+                site_id=site_id,
+                run_id=run_id,
+                page=page,
+                page_size=page_size,
+                filter_count=sum(bool(value) for value in filter_values),
+                start_time=start_time,
+                end_time=end_time,
+                elapsed_ms=round((time.monotonic() - started) * 1000, 3),
+                exception_type=type(exc).__name__,
+                traceback=traceback.format_exc(),
+            ),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "GROUND_SYSLOG_QUERY_FAILED",
+                "message": "Syslog 查询失败，请使用请求编号查看 Backend 日志",
+                "details": {"request_id": request_id},
+            },
+            headers={"X-Request-ID": request_id},
+        ) from exc
 
 
 @router.get("/timeline", response_model=GroundTimelinePageDTO)
@@ -536,6 +688,13 @@ def _call(callback):
             status_code=exc.status_code,
             detail={"code": exc.code, "message": exc.message},
         ) from exc
+
+
+def _syslog_log_detail(**values: object) -> str:
+    return " ".join(
+        f"{key}={str(value).replace(chr(13), r'\r').replace(chr(10), r'\n')}"
+        for key, value in values.items()
+    )
 
 
 __all__ = ["router"]

@@ -4,7 +4,7 @@ import hashlib
 import heapq
 import json
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
@@ -20,16 +20,27 @@ from netconsole.services.ground_unattended.archive_reader import (
 from netconsole.services.ground_unattended.syslog_runtime import (
     WmeshRealtimeParser,
 )
+from netconsole.services.rail_transit.train_identity import (
+    canonical_train_id_for,
+    train_identity_matches,
+)
 
 
 MAX_QUERY_FILES = 256
 MAX_QUERY_RECORDS = 1_000_000
 MAX_QUERY_BYTES = 256 * 1024**2
 MAX_QUERY_SECONDS = 12.0
+MAX_SYSLOG_QUERY_FILES = 128
+MAX_SYSLOG_QUERY_RECORDS = 250_000
+MAX_SYSLOG_QUERY_BYTES = 128 * 1024**2
+MAX_SYSLOG_QUERY_SECONDS = 8.0
+MAX_MIXED_DEDUP_KEYS = 250_000
 
 
 class GroundRawQueryError(ValueError):
-    pass
+    def __init__(self, message: str, *, code: str = "RAW_QUERY_REJECTED") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class GroundRawStreamQueryService:
@@ -329,12 +340,17 @@ class GroundRawStreamQueryService:
         page: int = 1,
         page_size: int = 100,
     ) -> dict[str, Any]:
+        registered_train_id = self._registered_train_id(
+            run_id,
+            train_id,
+            data_type="syslog",
+        )
         start, end = self._time_range(
             run_id,
             start_time,
             end_time,
             data_type="syslog",
-            train_id=train_id,
+            train_id=registered_train_id,
             mr_id=mr_id,
             mr_role=mr_role,
         )
@@ -346,7 +362,7 @@ class GroundRawStreamQueryService:
         matched_count = 0
         serial = 0
         filters = {
-            "train_id": train_id.casefold(),
+            "train_id": canonical_train_id_for(train_id).casefold(),
             "device_uuid": mr_id.casefold(),
             "mr_name": mr_name.casefold(),
             "source_ip": source_ip.casefold(),
@@ -361,60 +377,53 @@ class GroundRawStreamQueryService:
         }
         keyword_value = keyword.casefold()
         parser = WmeshRealtimeParser()
+        requires_parsed_fields = bool(filters["event_type"] or filters["peer_name"])
+        record_level_filters = (
+            mr_name,
+            source_ip,
+            system_name,
+            facility,
+            severity,
+            identity_status,
+            event_type,
+            peer_name,
+            data_source,
+            keyword,
+        )
+        latest_page_fast_path = not any(record_level_filters) and not (
+            train_id and not registered_train_id
+        )
+
+        def stop_before_older_file(registered: dict[str, Any]) -> bool:
+            if not latest_page_fast_path or len(rows) < keep_count:
+                return False
+            registered_end = _parse_time(
+                str(
+                    registered.get("end_time")
+                    or registered.get("start_time")
+                    or ""
+                )
+            )
+            return (
+                registered_end is not None
+                and registered_end.timestamp() < rows[0][0]
+            )
+
         for item in self._records(
             data_type="syslog",
             run_id=run_id,
-            train_id=train_id,
+            train_id=registered_train_id,
             mr_id=mr_id,
             mr_role=mr_role,
             start=start,
             end=end,
             time_key="receive_time",
             diagnostics=diagnostics,
+            newest_first=latest_page_fast_path,
+            stop_before_file=stop_before_older_file,
         ):
-            if not item.get("event_type") and item.get("raw_text"):
-                receive_time = _parse_time(
-                    str(item.get("receive_time") or "")
-                )
-                if receive_time is not None:
-                    parsed = parser.parse(
-                        str(item["raw_text"]), receive_time=receive_time
-                    )
-                    if parsed:
-                        item.update(
-                            {
-                                "display_enriched": True,
-                                "event_type": parsed.get("event_type", ""),
-                                "peer_name": parsed.get("peer_name", ""),
-                                "peer_mac": parsed.get("peer_mac", ""),
-                                "previous_peer_name": parsed.get(
-                                    "previous_peer_name", ""
-                                ),
-                                "previous_peer_mac": parsed.get(
-                                    "previous_peer_mac", ""
-                                ),
-                                "peer_radio_mac": (
-                                    parsed.get("details") or {}
-                                ).get("new_peer_radio_mac", ""),
-                                "previous_peer_radio_mac": (
-                                    parsed.get("details") or {}
-                                ).get("old_peer_radio_mac", ""),
-                                "rssi": (parsed.get("details") or {}).get(
-                                    "rssi",
-                                    (parsed.get("details") or {}).get("new_rssi"),
-                                ),
-                                "previous_rssi": (
-                                    parsed.get("details") or {}
-                                ).get("old_rssi"),
-                                "reason_code": (
-                                    parsed.get("details") or {}
-                                ).get("reason_code", ""),
-                                "reason_text": (
-                                    parsed.get("details") or {}
-                                ).get("reason_raw", ""),
-                                "parsed_details": parsed.get("details") or {},
-                            }
-                        )
+            if requires_parsed_fields:
+                _enrich_legacy_syslog(item, parser)
             if any(
                 expected
                 and expected not in _syslog_filter_value(item, field)
@@ -448,13 +457,49 @@ class GroundRawStreamQueryService:
             run_id=run_id,
             data_type="syslog",
         )
+        total_exact = not (
+            diagnostics["truncated"] or diagnostics["optimized_latest_page"]
+        )
+        total = (
+            max(
+                matched_count,
+                int(diagnostics.get("registered_record_count") or 0),
+            )
+            if diagnostics["optimized_latest_page"]
+            else matched_count
+        )
         return {
             "items": row_items[offset : offset + page_size],
-            "total": matched_count,
+            "total": total,
+            "total_exact": total_exact,
             "page": page,
             "page_size": page_size,
             "diagnostics": diagnostics,
         }
+
+    def _registered_train_id(
+        self,
+        run_id: str,
+        train_id: str,
+        *,
+        data_type: str,
+    ) -> str:
+        if not run_id or not train_id:
+            return train_id
+        registered_ids = {
+            str(row.get("train_id") or "")
+            for row in self.repository.list_raw_files_for_run(run_id)
+            if str(row.get("data_type") or "") == data_type
+            and str(row.get("train_id") or "")
+        }
+        matches = [
+            registered_id
+            for registered_id in registered_ids
+            if train_identity_matches((train_id,), (registered_id,))
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        return "" if matches else train_id
 
     def _finish_diagnostics(
         self,
@@ -494,7 +539,14 @@ class GroundRawStreamQueryService:
         time_key: str,
         diagnostics: dict[str, Any],
         mr_role: str = "",
+        newest_first: bool = False,
+        stop_before_file: Callable[[dict[str, Any]], bool] | None = None,
     ) -> Iterator[dict[str, Any]]:
+        max_query_files = (
+            MAX_SYSLOG_QUERY_FILES
+            if data_type == "syslog"
+            else MAX_QUERY_FILES
+        )
         files = self.repository.list_raw_files_for_query(
             data_type=data_type,
             start_time=start.isoformat(),
@@ -503,26 +555,41 @@ class GroundRawStreamQueryService:
             train_id=train_id,
             device_uuid=mr_id,
             mr_role=mr_role,
-            limit=MAX_QUERY_FILES + 1,
+            limit=max_query_files + 1,
+            newest_first=newest_first,
         )
         diagnostics["files_considered"] = len(files)
-        if len(files) > MAX_QUERY_FILES:
+        if len(files) > max_query_files:
             diagnostics["truncated"] = True
-            files = files[:MAX_QUERY_FILES]
+            files = files[:max_query_files]
+        diagnostics["registered_record_count"] = sum(
+            max(0, int(row.get("record_count") or 0)) for row in files
+        )
 
         inspection: GroundArchiveInspection | None = None
         archive_checked = False
-        seen: set[str] = set()
+        registered_paths = [
+            self._registered_path(str(row.get("relative_path") or ""))
+            for row in files
+        ]
+        mixed_sources_possible = any(path.is_file() for path in registered_paths) and any(
+            not path.is_file() for path in registered_paths
+        )
+        seen: set[str] | None = set() if mixed_sources_possible else None
         started = time.monotonic()
         unavailable_files = 0
 
-        for registered in files:
-            if _budget_exhausted(diagnostics, started):
+        for registered, path in zip(files, registered_paths, strict=True):
+            if _budget_exhausted(
+                diagnostics,
+                started,
+                data_type=data_type,
+            ):
                 diagnostics["truncated"] = True
                 break
-            path = self._registered_path(
-                str(registered.get("relative_path") or "")
-            )
+            if stop_before_file is not None and stop_before_file(registered):
+                diagnostics["optimized_latest_page"] = True
+                break
             source = "ACTIVE"
             archive_entry = ""
             lines: Iterator[tuple[bytes, str]]
@@ -533,7 +600,9 @@ class GroundRawStreamQueryService:
                     archive_checked = True
                     try:
                         inspection = (
-                            self.archive_reader.inspect_run(run_id)
+                            self.archive_reader.inspect_run(
+                                run_id, full_integrity=False
+                            )
                             if run_id
                             else None
                         )
@@ -541,7 +610,8 @@ class GroundRawStreamQueryService:
                         diagnostics["data_availability"] = "CORRUPT"
                         diagnostics["no_data_reason"] = "ARCHIVE_INTEGRITY_FAILED"
                         raise GroundRawQueryError(
-                            f"历史归档损坏或完整性校验失败：{exc}"
+                            f"历史归档损坏或完整性校验失败：{exc}",
+                            code="RAW_ARCHIVE_CORRUPT",
                         ) from exc
                 if inspection is None:
                     unavailable_files += 1
@@ -559,7 +629,8 @@ class GroundRawStreamQueryService:
                     diagnostics["data_availability"] = "CORRUPT"
                     diagnostics["no_data_reason"] = "ARCHIVE_MEMBER_MISSING"
                     raise GroundRawQueryError(
-                        f"历史归档缺少已登记的原始文件：{exc}"
+                        f"历史归档缺少已登记的原始文件：{exc}",
+                        code="RAW_ARCHIVE_CORRUPT",
                     ) from exc
             diagnostics["files_scanned"] += 1
             sources = set(diagnostics.pop("_sources", []))
@@ -571,7 +642,11 @@ class GroundRawStreamQueryService:
                     diagnostics["bytes_scanned"] += len(line)
                     diagnostics["records_scanned"] += 1
                     archive_entry = entry
-                    if _budget_exhausted(diagnostics, started):
+                    if _budget_exhausted(
+                        diagnostics,
+                        started,
+                        data_type=data_type,
+                    ):
                         diagnostics["truncated"] = True
                         break
                     try:
@@ -589,11 +664,15 @@ class GroundRawStreamQueryService:
                     ts = _parse_time(str(item.get(time_key) or ""))
                     if ts is None or ts < start or ts > end:
                         continue
-                    dedup_key = _record_key(data_type, item, line)
-                    if dedup_key in seen:
-                        diagnostics["duplicate_record_count"] += 1
-                        continue
-                    seen.add(dedup_key)
+                    if seen is not None:
+                        dedup_key = _record_key(data_type, item, line)
+                        if dedup_key in seen:
+                            diagnostics["duplicate_record_count"] += 1
+                            continue
+                        if len(seen) >= MAX_MIXED_DEDUP_KEYS:
+                            diagnostics["truncated"] = True
+                            break
+                        seen.add(dedup_key)
                     item["raw_file_id"] = str(registered.get("file_id") or "")
                     item["raw_line_number"] = line_number
                     item["raw_file_status"] = str(
@@ -611,7 +690,10 @@ class GroundRawStreamQueryService:
             except GroundArchiveReadError as exc:
                 diagnostics["data_availability"] = "CORRUPT"
                 diagnostics["no_data_reason"] = "ARCHIVE_READ_FAILED"
-                raise GroundRawQueryError(f"无法读取历史归档：{exc}") from exc
+                raise GroundRawQueryError(
+                    f"无法读取历史归档：{exc}",
+                    code="RAW_ARCHIVE_CORRUPT",
+                ) from exc
 
         if unavailable_files:
             diagnostics["_unavailable_files"] = unavailable_files
@@ -731,11 +813,13 @@ def _new_diagnostics(
         "data_availability": "MISSING",
         "files_considered": 0,
         "files_scanned": 0,
+        "registered_record_count": 0,
         "records_scanned": 0,
         "bytes_scanned": 0,
         "malformed_record_count": 0,
         "duplicate_record_count": 0,
         "truncated": False,
+        "optimized_latest_page": False,
         "legacy_archive": False,
         "no_data_reason": "",
     }
@@ -788,12 +872,30 @@ def _finish_diagnostics(
 
 
 def _budget_exhausted(
-    diagnostics: dict[str, Any], started: float
+    diagnostics: dict[str, Any],
+    started: float,
+    *,
+    data_type: str,
 ) -> bool:
+    max_records = (
+        MAX_SYSLOG_QUERY_RECORDS
+        if data_type == "syslog"
+        else MAX_QUERY_RECORDS
+    )
+    max_bytes = (
+        MAX_SYSLOG_QUERY_BYTES
+        if data_type == "syslog"
+        else MAX_QUERY_BYTES
+    )
+    max_seconds = (
+        MAX_SYSLOG_QUERY_SECONDS
+        if data_type == "syslog"
+        else MAX_QUERY_SECONDS
+    )
     return (
-        int(diagnostics["records_scanned"]) >= MAX_QUERY_RECORDS
-        or int(diagnostics["bytes_scanned"]) >= MAX_QUERY_BYTES
-        or time.monotonic() - started >= MAX_QUERY_SECONDS
+        int(diagnostics["records_scanned"]) >= max_records
+        or int(diagnostics["bytes_scanned"]) >= max_bytes
+        or time.monotonic() - started >= max_seconds
     )
 
 
@@ -855,11 +957,44 @@ def _matches(
 
 def _syslog_filter_value(item: dict[str, Any], field: str) -> str:
     value = item.get(field)
+    if field == "train_id":
+        return canonical_train_id_for(value).casefold()
     if field == "system_name" and not value:
         value = item.get("hostname")
     if field == "peer_name" and not value:
         value = item.get("peer_mac")
     return str(value or "").casefold()
+
+
+def _enrich_legacy_syslog(
+    item: dict[str, Any], parser: WmeshRealtimeParser
+) -> None:
+    if item.get("event_type") or not item.get("raw_text"):
+        return
+    receive_time = _parse_time(str(item.get("receive_time") or ""))
+    if receive_time is None:
+        return
+    parsed = parser.parse(str(item["raw_text"]), receive_time=receive_time)
+    if not parsed:
+        return
+    details = parsed.get("details") or {}
+    item.update(
+        {
+            "display_enriched": True,
+            "event_type": parsed.get("event_type", ""),
+            "peer_name": parsed.get("peer_name", ""),
+            "peer_mac": parsed.get("peer_mac", ""),
+            "previous_peer_name": parsed.get("previous_peer_name", ""),
+            "previous_peer_mac": parsed.get("previous_peer_mac", ""),
+            "peer_radio_mac": details.get("new_peer_radio_mac", ""),
+            "previous_peer_radio_mac": details.get("old_peer_radio_mac", ""),
+            "rssi": details.get("rssi", details.get("new_rssi")),
+            "previous_rssi": details.get("old_rssi"),
+            "reason_code": details.get("reason_code", ""),
+            "reason_text": details.get("reason_raw", ""),
+            "parsed_details": details,
+        }
+    )
 
 
 def _finish_loss_window(current: dict[str, Any]) -> None:
