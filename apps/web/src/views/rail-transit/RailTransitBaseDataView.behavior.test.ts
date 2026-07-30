@@ -647,10 +647,28 @@ describe('轨道交通基础资料编辑闭环', () => {
     expect(warning?.attributes('data-type')).toBe('warning')
     expect(warning?.text()).toContain('数据质量问题')
     expect(warning?.text()).toContain('错误码：UNEXPECTED_ERROR')
+    expect(warning?.text()).toContain('连续失败：1 次')
+    expect(warning?.text()).toContain('最近成功：尚无成功记录')
+    expect(warning?.text()).toContain('该项目暂无成功缓存')
     expect(wrapper.text()).not.toContain('Backend 连接中断，请重试。')
     expect(wrapper.get('[data-table-id="rail-base-stations"]').text()).toContain(
       sourceStationWuxiang.name,
     )
+    wrapper.unmount()
+  })
+
+  it('总览尚无成功数据且加载失败时不把未知统计显示为零', async () => {
+    mocks.summary.mockRejectedValue(new Error('summary unavailable'))
+
+    const wrapper = await mountView()
+
+    const stationCard = wrapper.findAll('.summary-grid article').find(
+      (item) => item.text().includes('站点'),
+    )
+    expect(stationCard?.text()).toContain('加载失败')
+    expect(stationCard?.text()).not.toMatch(/站点\s*0/)
+    expect(wrapper.text()).toContain('部分基础资料刷新失败，已保留最后成功数据。')
+    expect(wrapper.text()).not.toContain('Backend 连接中断，请重试。')
     wrapper.unmount()
   })
 

@@ -20,7 +20,7 @@ class ApManagementVlanRepository:
         self.database = database
 
     def get_draft(self) -> dict[str, object]:
-        with self.database.connect() as connection:
+        with self.database.connect_readonly() as connection:
             return self.get_draft_from_connection(connection)
 
     @staticmethod

@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import threading
+import time
+import traceback
+import uuid
+from typing import NoReturn
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import FileResponse
 
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
 from netconsole.backend.api.feature_access import require_feature
+from netconsole.backend.api.error_mapping import map_api_errors
+from netconsole.core import app_logger
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 from netconsole.models.api.trackside_ap_business import (
@@ -259,11 +267,82 @@ def download_rename_command_artifact(request: Request, artifact_id: str) -> File
     response_model=TracksideApPlanDTO,
     dependencies=[Depends(require_feature("web.rail_trackside_ap_plan"))],
 )
-def plan(request: Request) -> TracksideApPlanDTO:
+def plan(request: Request, response: Response) -> TracksideApPlanDTO:
+    request_id = uuid.uuid4().hex
+    started = time.perf_counter()
+    path = str(request.url.path)
+    site_id = ""
+    app_logger.log_info(
+        "trackside_ap_plan.request_started",
+        (
+            f"request_id={request_id} path={path} method={request.method} "
+            f"backend_pid={os.getpid()} thread_id={threading.get_ident()}"
+        ),
+    )
     try:
-        return _application_service(request).get_trackside_ap_plan(_site_id(request))
+        site_id = _site_id(request)
+        service = _application_service(request)
+        with map_api_errors(
+            "轨旁 AP 规划数据库暂时不可读",
+            structured_database_errors=True,
+            database_context=lambda: {
+                "request_id": request_id,
+                "operation": "trackside_ap_plan_load",
+                "route": path,
+                "site": site_id,
+                "database_path": str(request.app.state.paths.site_db_path(site_id)),
+            },
+        ):
+            result = service.get_trackside_ap_plan(site_id, request_id=request_id)
+        # Validate JSON serialization inside the controlled error boundary so a
+        # malformed persisted row cannot terminate the response stream.
+        payload = result.model_dump(mode="json")
+        response.headers["X-Request-ID"] = request_id
+        response.headers["X-NetConsole-Backend-PID"] = str(os.getpid())
+        app_logger.log_info(
+            "trackside_ap_plan.request_completed",
+            (
+                f"request_id={request_id} path={path} site_id={site_id} "
+                f"backend_pid={os.getpid()} thread_id={threading.get_ident()} "
+                f"status=200 rows={len(result.items)} json_bytes={len(str(payload).encode('utf-8'))} "
+                f"duration_ms={(time.perf_counter() - started) * 1000:.2f}"
+            ),
+        )
+        return result
     except RailTransitWebError as exc:
-        _raise_error(exc)
+        _raise_plan_error(
+            request_id,
+            path,
+            site_id,
+            started,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            code=exc.code,
+            message=str(exc),
+            cause=exc,
+        )
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        _raise_plan_error(
+            request_id,
+            path,
+            site_id,
+            started,
+            status_code=exc.status_code,
+            code=str(detail.get("code") or "TRACKSIDE_AP_PLAN_REQUEST_INVALID"),
+            message=str(detail.get("message") or detail or "轨旁 AP 规划请求失败"),
+            cause=exc,
+        )
+    except Exception as exc:
+        _raise_plan_error(
+            request_id,
+            path,
+            site_id,
+            started,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            code="TRACKSIDE_AP_PLAN_LOAD_FAILED",
+            message="轨旁 AP 规划加载失败，请查看诊断信息。",
+            cause=exc,
+        )
 
 
 @router.get(
@@ -561,6 +640,50 @@ def _raise_error(exc: RailTransitWebError) -> None:
         "BLOCKED_ON_TASK_WINDOW": status.HTTP_503_SERVICE_UNAVAILABLE,
     }.get(exc.code, status.HTTP_422_UNPROCESSABLE_ENTITY)
     raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+
+
+def _raise_plan_error(
+    request_id: str,
+    path: str,
+    site_id: str,
+    started: float,
+    *,
+    status_code: int,
+    code: str,
+    message: str,
+    cause: BaseException,
+) -> NoReturn:
+    original_message = app_logger.sanitize_detail(str(cause))
+    safe_traceback = app_logger.sanitize_detail(traceback.format_exc())
+    app_logger.log_error(
+        "trackside_ap_plan.request_failed",
+        (
+            f"request_id={request_id} path={path} site_id={site_id} "
+            f"backend_pid={os.getpid()} thread_id={threading.get_ident()} "
+            f"status={status_code} code={code} exception_type={cause.__class__.__name__} "
+            f"message={original_message} duration_ms={(time.perf_counter() - started) * 1000:.2f} "
+            f"traceback={safe_traceback}"
+        ),
+    )
+    raise HTTPException(
+        status_code=status_code,
+        detail={
+            "code": code,
+            "message": message,
+            "request_id": request_id,
+            "path": path,
+            "status": status_code,
+            "details": {
+                "site_id": site_id,
+                "exception_type": cause.__class__.__name__,
+                "original_message": original_message,
+            },
+        },
+        headers={
+            "X-Request-ID": request_id,
+            "X-NetConsole-Backend-PID": str(os.getpid()),
+        },
+    ) from cause
 
 
 __all__ = ["router"]

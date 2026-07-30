@@ -18,6 +18,14 @@ export interface TaskItem {
   type: string
   name: string
   status: TaskStatus
+  lifecycle_status?: string
+  business_status?: string
+  success_count?: number
+  failed_count?: number
+  skipped_count?: number
+  warning_count?: number
+  partial_success?: boolean
+  primary_failure_reason?: string
   progress: number
   current?: number
   total?: number

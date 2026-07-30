@@ -55,10 +55,14 @@ async function reload(options: { reportError?: boolean } = {}): Promise<void> {
     error.value = ''
   }
   try {
-    const [nextSites, nextRoot] = await Promise.all([listSites(), getDataRoot()])
+    const [sitesResult, rootResult] = await Promise.allSettled([listSites(), getDataRoot()])
     if (!panelMounted || generation !== reloadGeneration) return
-    sites.value = nextSites
-    root.value = nextRoot
+    const failures: string[] = []
+    if (sitesResult.status === 'fulfilled') sites.value = sitesResult.value
+    else failures.push(`局点列表（${sitesResult.reason instanceof Error ? sitesResult.reason.message : '未知错误'}）`)
+    if (rootResult.status === 'fulfilled') root.value = rootResult.value
+    else failures.push(`数据路径（${rootResult.reason instanceof Error ? rootResult.reason.message : '未知错误'}）`)
+    if (failures.length) throw new Error(`部分数据刷新失败，已保留最后成功数据。失败项目：${failures.join('、')}`)
   } catch (cause) {
     if (panelMounted && generation === reloadGeneration && options.reportError !== false) {
       showError(cause, '局点与数据路径加载失败')

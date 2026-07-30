@@ -55,6 +55,7 @@ const taskDialogVisible = ref(false)
 const selectedTask = ref<AgentRemoteTask | null>(null)
 const taskLogs = ref<string[]>([])
 const taskDetailLoading = ref(false)
+const taskDetailError = ref('')
 let remoteTimer: number | undefined
 let taskTimer: number | undefined
 const formRef = ref<FormInstance>()
@@ -202,6 +203,7 @@ async function refreshRemote(): Promise<void> {
 function openTask(task: AgentRemoteTask): void {
   selectedTask.value = task
   taskLogs.value = []
+  taskDetailError.value = ''
   taskDialogVisible.value = true
 }
 
@@ -211,15 +213,20 @@ async function refreshTaskDetail(): Promise<void> {
   if (!agent || !task || taskDetailLoading.value) return
   taskDetailLoading.value = true
   try {
-    const [detail, logs] = await Promise.all([
+    const [detail, logs] = await Promise.allSettled([
       getAgentRemoteTask(agent.agent_id, task.task_id),
       getAgentRemoteTaskLogs(agent.agent_id, task.task_id),
     ])
-    selectedTask.value = detail
-    taskLogs.value = logs.lines
+    const failures: string[] = []
+    if (detail.status === 'fulfilled') selectedTask.value = detail.value
+    else failures.push(`任务详情（${detail.reason instanceof Error ? detail.reason.message : '未知错误'}）`)
+    if (logs.status === 'fulfilled') taskLogs.value = logs.value.lines
+    else failures.push(`日志 tail（${logs.reason instanceof Error ? logs.reason.message : '未知错误'}）`)
+    taskDetailError.value = failures.length
+      ? `部分远端任务数据刷新失败，已保留最后成功数据。失败项目：${failures.join('、')}`
+      : ''
   } catch (cause) {
-    ElMessage.error(cause instanceof Error ? cause.message : '读取远端任务详情失败')
-    clearTaskTimer()
+    taskDetailError.value = `远端任务数据刷新失败，已保留最后成功数据：${cause instanceof Error ? cause.message : '未知错误'}`
   } finally {
     taskDetailLoading.value = false
   }
@@ -445,6 +452,7 @@ function capabilityText(capabilities: Record<string, unknown>): string {
 
     <el-dialog v-model="taskDialogVisible" title="Agent 任务详情（只读）" width="min(900px, 94vw)" destroy-on-close>
       <div v-if="selectedTask" v-loading="taskDetailLoading">
+        <el-alert v-if="taskDetailError" :title="taskDetailError" type="error" show-icon :closable="false" />
         <el-descriptions :column="2" border>
           <el-descriptions-item label="任务 ID" :span="2">{{ selectedTask.task_id }}</el-descriptions-item>
           <el-descriptions-item label="任务类型">{{ selectedTask.task_type }}</el-descriptions-item>

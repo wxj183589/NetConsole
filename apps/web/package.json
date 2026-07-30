@@ -2,6 +2,7 @@
   "name": "netconsole-web",
   "private": true,
   "version": "0.1.0",
+  "description": "Internal NetConsole Web workspace package; product version comes from src/netconsole/core/version.py.",
   "type": "module",
   "scripts": {
     "dev": "vite",

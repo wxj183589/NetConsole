@@ -1,10 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import {
-  getTracksideApTask,
   listTracksideApBusiness,
-  recoverTracksideApTasks,
   startTracksideApBusinessExport,
   startTracksideApUpdate,
 } from '../../api/tracksideApBusiness'
@@ -21,11 +19,11 @@ import type {
   TracksideApTask,
   TracksideApUpdateRequest,
 } from '../../types/tracksideApBusiness'
+import { useTaskStore } from '../../stores/tasks'
+import type { TaskItem } from '../../types/task'
 import { displayInterfaceName } from '../../utils/interfaceName'
-import {
-  isTracksideApBusinessArtifactTask,
-  TRACKSIDE_AP_BUSINESS_EXPORT_ACTION,
-} from './tracksideApBusinessArtifact'
+import { TRACKSIDE_AP_BUSINESS_EXPORT_TASK_TYPE } from './tracksideApBusinessArtifact'
+import { activeTaskStatuses } from '../../utils/taskStatus'
 import {
   displayLldpStatus,
   displayPowerThreshold,
@@ -34,25 +32,24 @@ import {
   tracksideOpticalPresentation,
 } from './tracksideApBusinessDisplay'
 
-const storageKey = 'netconsole.trackside-ap.last-task'
-const activeStates = new Set(['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'QUEUED', 'CANCELLING'])
-const businessTaskActions = new Set(['trackside_ap_optical_update', TRACKSIDE_AP_BUSINESS_EXPORT_ACTION])
 const userSelectedExport = useUserSelectedExport()
+const taskStore = useTaskStore()
+const activeStates = new Set(activeTaskStatuses)
+const businessTaskTypes = new Set([
+  'trackside_ap_optical_update',
+  TRACKSIDE_AP_BUSINESS_EXPORT_TASK_TYPE,
+])
 const initialLoading = ref(false)
 const refreshing = ref(false)
 const taskSubmitting = ref(false)
 const pendingScopeKey = ref('')
 const loadError = ref('')
 const actionError = ref('')
-const taskNotice = ref('')
-const taskNoticeType = ref<'success' | 'info' | 'warning' | 'error'>('info')
 const page = ref<TracksideApBusinessPage | null>(null)
 const excludedVisible = ref(false)
 const unmatchedVisible = ref(false)
-const task = ref<TracksideApTask | null>(null)
+const currentTaskId = ref('')
 const filters = reactive({ station: '', query: '', optical_anomaly_only: false, page: 1, page_size: 50 })
-let pollTimer: number | undefined
-let taskNoticeTimer: number | undefined
 let loadGeneration = 0
 
 const businessColumns: NcTableColumn<TracksideApBusinessRow>[] = [
@@ -96,26 +93,18 @@ const unmatchedColumns: NcTableColumn<TracksideApUnmatchedOnline>[] = [
   { key: 'reason', label: '未关联原因', valueType: 'description', minWidth: 280, align: 'left', alignmentReason: 'long-text' },
   { key: 'suggested_action', label: '建议处理', valueType: 'description', minWidth: 300, align: 'left', alignmentReason: 'long-text' },
 ]
-const updateTaskRunning = computed(() => isActiveTask(task.value) && task.value?.action === 'trackside_ap_optical_update')
-const exportTaskRunning = computed(() => isActiveTask(task.value) && task.value?.action === TRACKSIDE_AP_BUSINESS_EXPORT_ACTION)
+const currentTask = computed<TaskItem | null>(() => (
+  taskStore.tasks.find((item) => item.id === currentTaskId.value) || null
+))
+const updateTaskRunning = computed(() => taskStore.tasks.some(
+  (item) => item.type === 'trackside_ap_optical_update' && activeStates.has(item.status),
+))
+const exportTaskRunning = computed(() => taskStore.tasks.some(
+  (item) => item.type === TRACKSIDE_AP_BUSINESS_EXPORT_TASK_TYPE && activeStates.has(item.status),
+))
 const updateFeatureEnabled = computed(() => isFeatureEnabled('web.rail_trackside_ap_business_update') && isFeatureEnabled('web.rail_task_control'))
 
 function failure(reason: unknown, fallback: string): string { return reason instanceof Error ? reason.message : fallback }
-function stopPolling(): void { if (pollTimer !== undefined) window.clearTimeout(pollTimer); pollTimer = undefined }
-function clearTaskNotice(): void {
-  if (taskNoticeTimer !== undefined) window.clearTimeout(taskNoticeTimer)
-  taskNoticeTimer = undefined
-  taskNotice.value = ''
-  taskNoticeType.value = 'info'
-}
-function setTaskNotice(message: string, type: 'success' | 'info' | 'warning' | 'error' = 'info', autoHideMs = 0): void {
-  clearTaskNotice()
-  taskNotice.value = message
-  taskNoticeType.value = type
-  if (autoHideMs > 0) taskNoticeTimer = window.setTimeout(clearTaskNotice, autoHideMs)
-}
-function rememberTask(value: TracksideApTask | null): void { task.value = value; if (value) localStorage.setItem(storageKey, value.task_id); else localStorage.removeItem(storageKey) }
-function isActiveTask(value: TracksideApTask | null): boolean { return Boolean(value && activeStates.has(value.status)) }
 function cleanIdentity(value: string): string { return String(value || '').trim() }
 function handleStationChange(): void { filters.page = 1; void loadRows() }
 function singleApUpdatePayload(row: TracksideApBusinessRow): TracksideApUpdateRequest | null {
@@ -143,10 +132,6 @@ function emptyReasonLabel(value: string): string {
   if (value.startsWith('trackside.')) return '暂无轨旁 AP 业务数据'
   return value || '暂无轨旁 AP 业务数据'
 }
-function summaryCount(summary: Record<string, unknown>, key: string): number {
-  const value = Number(summary[key] ?? 0)
-  return Number.isFinite(value) ? Math.max(0, value) : 0
-}
 type DataAvailability = 'loaded' | 'partial' | 'failed' | 'unloaded'
 function dataAvailability(sources: string[]): DataAvailability {
   if (!page.value) return 'unloaded'
@@ -164,98 +149,6 @@ function metricValue(value: number | undefined, sources: string[]): string | num
   if (availability === 'partial') return '部分可用'
   return Number(value ?? 0)
 }
-function updateReasonLabel(value: string): string {
-  const labels: Record<string, string> = {
-    connection_incomplete: t('trackside.result.reason.connection_incomplete', '连接信息不完整'),
-    no_device_connection: t('trackside.result.reason.no_device_connection', '未配置设备连接'),
-    vendor_not_supported: t('trackside.result.reason.vendor_not_supported', '厂商暂不支持光衰采集'),
-    unsupported_vendor: t('trackside.result.reason.vendor_not_supported', '厂商暂不支持光衰采集'),
-    fit_ap_resource_failed: t('trackside.result.reason.fit_ap_resource_failed', 'FIT-AP 资源刷新失败'),
-    cancelled: t('trackside.result.reason.cancelled', '采集已取消'),
-    device_collection_failed: t('trackside.result.reason.device_collection_failed', '交换机采集失败'),
-    fit_ap_collection_failed: t('trackside.result.reason.fit_ap_collection_failed', 'AP 光衰采集失败'),
-  }
-  return labels[value] || value
-}
-function resultMessage(key: string, fallback: string, values: Record<string, number | string> = {}): string {
-  return Object.entries(values).reduce(
-    (message, [name, value]) => message.replaceAll(`{${name}}`, String(value)),
-    t(key, fallback),
-  )
-}
-function primaryFailureReason(summary: Record<string, unknown>): string {
-  for (const key of ['failure_reason_counts', 'skipped_reason_counts']) {
-    const counts = summary[key]
-    if (!counts || typeof counts !== 'object' || Array.isArray(counts)) continue
-    const reason = Object.entries(counts as Record<string, unknown>)
-      .filter(([code, count]) => code !== 'no_station_switches' && Number.isFinite(Number(count)) && Number(count) > 0)
-      .sort((left, right) => Number(right[1]) - Number(left[1]))[0]?.[0]
-    if (reason) return updateReasonLabel(reason)
-  }
-  return ''
-}
-function updateFinishedNotice(value: TracksideApTask): { message: string; type: 'success' | 'info' | 'warning' | 'error'; autoHideMs: number } {
-  const summary = value.result_summary || {}
-  const status = String(summary.status || value.status || '').toUpperCase()
-  const successCount = summaryCount(summary, 'success_count')
-  const failedCount = summaryCount(summary, 'failed_count')
-  const actionableSkippedCount = summaryCount(summary, 'actionable_skipped_count')
-  const ignoredSkippedCount = summaryCount(summary, 'ignored_skipped_count')
-  if (value.status === 'FAILED' || status === 'FAILED') {
-    const notExecuted = actionableSkippedCount
-      ? resultMessage('trackside.result.notice.not_executed_suffix', '，{count} 个目标未执行', { count: actionableSkippedCount })
-      : ''
-    const reason = primaryFailureReason(summary)
-    const reasonText = reason
-      ? resultMessage('trackside.result.notice.reason_suffix', '；主要原因：{reason}', { reason })
-      : ''
-    return { message: resultMessage('trackside.result.notice.failed', '轨旁 AP 光衰更新失败：成功 {success}，失败 {failed}{not_executed}{reason}，请在任务中心查看详情', { success: successCount, failed: failedCount, not_executed: notExecuted, reason: reasonText }), type: 'error', autoHideMs: 0 }
-  }
-  if (value.status === 'CANCELLED' || status === 'CANCELLED') return { message: t('trackside.result.notice.cancelled', '轨旁 AP 光衰更新已取消，请在任务中心查看详情'), type: 'warning', autoHideMs: 0 }
-  if (status === 'NO_TARGET') return { message: t('trackside.result.notice.no_target', '轨旁 AP 光衰更新未找到目标，请在任务中心查看详情'), type: 'info', autoHideMs: 4000 }
-  if (failedCount > 0) return { message: resultMessage('trackside.result.notice.partial_failed', '轨旁 AP 光衰数据已刷新：成功 {success}，失败 {failed}，请在任务中心查看详情', { success: successCount, failed: failedCount }), type: 'warning', autoHideMs: 0 }
-  if (actionableSkippedCount > 0) return { message: resultMessage('trackside.result.notice.not_executed', '轨旁 AP 光衰数据已刷新：成功 {success}，{not_executed} 个目标未执行，请在任务中心查看详情', { success: successCount, not_executed: actionableSkippedCount }), type: 'warning', autoHideMs: 0 }
-  if (status === 'PARTIAL_SUCCESS') return { message: resultMessage('trackside.result.notice.partial', '轨旁 AP 光衰数据已刷新：成功 {success}，业务结果为部分成功，请在任务中心查看详情', { success: successCount }), type: 'warning', autoHideMs: 0 }
-  const ignored = ignoredSkippedCount
-    ? resultMessage('trackside.result.notice.ignored_suffix', '；另有 {count} 项不适用或已忽略', { count: ignoredSkippedCount })
-    : ''
-  return { message: resultMessage('trackside.result.notice.success', '轨旁 AP 光衰数据已刷新：成功 {success}，失败 0{ignored}', { success: successCount, ignored }), type: 'success', autoHideMs: 4000 }
-}
-function handleTerminalTask(value: TracksideApTask | null): void {
-  if (!value) return
-  if (value.action === 'trackside_ap_optical_update') {
-    const notice = updateFinishedNotice(value)
-    if (value.status === 'COMPLETED') {
-      void loadRows().then((succeeded) => {
-        if (succeeded) setTaskNotice(notice.message, notice.type, notice.autoHideMs)
-      })
-      return
-    }
-    if (!isActiveTask(value)) setTaskNotice(notice.message, notice.type, notice.autoHideMs)
-    return
-  }
-  if (isTracksideApBusinessArtifactTask(value)) {
-    if (value.status === 'COMPLETED') {
-      setTaskNotice('轨旁 AP 业务表格已生成，正在写入用户预选位置', 'success', 4000)
-      return
-    }
-    if (value.status === 'FAILED') setTaskNotice('轨旁 AP 业务导出失败，请在任务中心查看原因', 'error')
-    else if (value.status === 'CANCELLED') setTaskNotice('轨旁 AP 业务导出已取消，请在任务中心查看详情', 'warning')
-  }
-}
-
-function poll(): void {
-  stopPolling()
-  if (!task.value || !isActiveTask(task.value)) {
-    handleTerminalTask(task.value)
-    return
-  }
-  pollTimer = window.setTimeout(async () => {
-    try { rememberTask(await getTracksideApTask(task.value!.task_id)); actionError.value = ''; poll() }
-    catch (reason) { actionError.value = failure(reason, '轨旁 AP 任务状态读取失败') }
-  }, 1000)
-}
-
 async function loadRows(reset = false): Promise<boolean> {
   if (reset) filters.page = 1
   const generation = ++loadGeneration
@@ -291,15 +184,15 @@ async function loadRows(reset = false): Promise<boolean> {
   return succeeded
 }
 
-async function startTask(factory: () => Promise<TracksideApTask>, fallback: string, scopeKey: string, notice = '任务已提交，可通过顶部任务入口查看进度'): Promise<void> {
+async function startTask(factory: () => Promise<TracksideApTask>, fallback: string, scopeKey: string): Promise<void> {
   if (pendingScopeKey.value === scopeKey) return
   pendingScopeKey.value = scopeKey
-  taskSubmitting.value = true; actionError.value = ''; clearTaskNotice()
+  taskSubmitting.value = true
+  actionError.value = ''
   try {
     const started = await factory()
-    rememberTask(started)
-    setTaskNotice(notice, 'info')
-    poll()
+    currentTaskId.value = started.task_id
+    await taskStore.refresh()
   }
   catch (reason) { actionError.value = failure(reason, fallback) }
   finally { taskSubmitting.value = false; pendingScopeKey.value = '' }
@@ -324,7 +217,6 @@ async function exportBusiness(): Promise<void> {
   pendingScopeKey.value = scopeKey
   taskSubmitting.value = true
   actionError.value = ''
-  clearTaskNotice()
   try {
     const result = await userSelectedExport.submitExportAfterDestinationSelected({
       action: 'rail.trackside_business',
@@ -332,9 +224,8 @@ async function exportBusiness(): Promise<void> {
       submit: startTracksideApBusinessExport,
     })
     if (result.status === 'cancelled') return
-    rememberTask(result.task)
-    setTaskNotice('导出任务已提交，完成后将写入所选位置', 'info')
-    poll()
+    currentTaskId.value = result.task.task_id
+    await taskStore.refresh()
   } catch (reason) {
     actionError.value = failure(reason, '轨旁 AP 业务导出启动失败')
   } finally {
@@ -348,24 +239,28 @@ function exportTimestamp(now = new Date()): string {
   return `${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}_${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}`
 }
 
-async function recoverTasks(): Promise<void> {
-  if (!isFeatureEnabled('web.rail_task_control')) return
-  try {
-    const rows = (await recoverTracksideApTasks()).filter((item) => businessTaskActions.has(item.action))
-    const saved = localStorage.getItem(storageKey) || ''
-    const savedTask = rows.find((item) => item.task_id === saved)
-    const activeUpdate = rows.find((item) => item.action === 'trackside_ap_optical_update' && isActiveTask(item))
-    const activeAny = rows.find((item) => isActiveTask(item))
-    const recovered = savedTask && isActiveTask(savedTask) ? savedTask : activeUpdate || activeAny || null
-    rememberTask(recovered)
-    if (recovered) setTaskNotice('检测到正在运行的轨旁 AP 任务，可通过顶部任务入口查看进度', 'info')
-    else clearTaskNotice()
-    poll()
-  } catch (reason) { actionError.value = failure(reason, '轨旁 AP 任务恢复失败') }
-}
+watch(
+  () => currentTask.value?.status,
+  (status, previousStatus) => {
+    if (
+      currentTask.value?.type === 'trackside_ap_optical_update'
+      && status
+      && !activeStates.has(status)
+      && status !== previousStatus
+    ) void loadRows()
+  },
+)
 
-onMounted(() => { void Promise.all([loadRows(), recoverTasks()]) })
-onBeforeUnmount(() => { stopPolling(); clearTaskNotice() })
+onMounted(() => {
+  void Promise.all([
+    loadRows(),
+    taskStore.refresh().then(() => {
+      currentTaskId.value = taskStore.tasks.find(
+        (item) => businessTaskTypes.has(item.type) && activeStates.has(item.status),
+      )?.id || ''
+    }),
+  ])
+})
 </script>
 
 <template>
@@ -403,8 +298,7 @@ onBeforeUnmount(() => { stopPolling(); clearTaskNotice() })
         </span>
       </details>
     </el-alert>
-    <el-alert v-if="actionError" :title="actionError" type="error" show-icon :closable="true" @close="actionError = ''"><el-button link @click="recoverTasks">恢复任务</el-button></el-alert>
-    <el-alert v-if="taskNotice" :title="taskNotice" :type="taskNoticeType" show-icon :closable="taskNoticeType === 'error'" @close="clearTaskNotice" />
+    <el-alert v-if="actionError" :title="actionError" type="error" show-icon closable @close="actionError = ''" />
     <div v-if="page" class="scope-summary">
       <strong>统计范围：{{ page.scope_description || '当前项目 · 当前工作范围轨旁 AP' }}</strong>
       <span>纳入站点 {{ page.scope_station_count || 0 }}</span>

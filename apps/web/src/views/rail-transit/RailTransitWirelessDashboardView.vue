@@ -80,16 +80,20 @@ const agentColumns: NcTableColumn<AgentItem>[] = [
   dashboardColumn('last_error_message', '错误摘要', 'error', { minWidth: 180, align: 'left', alignmentReason: 'long-text' }),
 ]
 
+function metric(value: number | null | undefined): number | string {
+  return data.value ? (value ?? 0) : '—'
+}
+
 const summaryCards = computed(() => {
   const s = data.value?.summary
   return [
-    ['FIT-AP', s?.ap_total ?? 0, ''], ['在线 AP', s?.online_aps ?? 0, 'good'], ['离线 AP', s?.offline_aps ?? 0, 'warning'],
-    ['未认证 AP', s?.unauthenticated_aps ?? 0, 'warning'], ['光衰异常', s?.optical_anomalies ?? 0, 'danger'],
-    ['列车 / MR', `${s?.registered_trains ?? 0} / ${s?.registered_mrs ?? 0}`, ''],
-    ['MR 在线 / 离线 / 过期', `${s?.online_mrs ?? 0} / ${s?.offline_mrs ?? 0} / ${s?.stale_mrs ?? 0}`, ''],
-    ['运行中采集', s?.active_online_mr_sessions ?? 0, 'good'], ['Agent 在线', `${s?.online_agents ?? 0} / ${s?.agent_total ?? 0}`, ''],
-    ['运行中任务', s?.running_tasks ?? 0, ''], ['Mesh 分析会话', s?.mesh_analysis_sessions ?? 0, ''],
-    ['告警', `${s?.critical_alerts ?? 0} / ${s?.warning_alerts ?? 0}`, 'danger'],
+    ['FIT-AP', metric(s?.ap_total), ''], ['在线 AP', metric(s?.online_aps), 'good'], ['离线 AP', metric(s?.offline_aps), 'warning'],
+    ['未认证 AP', metric(s?.unauthenticated_aps), 'warning'], ['光衰异常', metric(s?.optical_anomalies), 'danger'],
+    ['列车 / MR', s ? `${s.registered_trains} / ${s.registered_mrs}` : '—', ''],
+    ['MR 在线 / 离线 / 过期', s ? `${s.online_mrs} / ${s.offline_mrs} / ${s.stale_mrs}` : '—', ''],
+    ['运行中采集', metric(s?.active_online_mr_sessions), 'good'], ['Agent 在线', s ? `${s.online_agents} / ${s.agent_total}` : '—', ''],
+    ['运行中任务', metric(s?.running_tasks), ''], ['Mesh 分析会话', metric(s?.mesh_analysis_sessions), ''],
+    ['告警', s ? `${s.critical_alerts} / ${s.warning_alerts}` : '—', 'danger'],
   ] as const
 })
 const active = computed(() => (data.value?.summary.active_online_mr_sessions ?? 0) > 0 || (data.value?.summary.running_tasks ?? 0) > 0)
@@ -135,24 +139,33 @@ async function refreshSections(): Promise<void> {
   loading.value = true
   const now = Date.now()
   try {
-    const core = await Promise.all([
-      getWirelessDashboardSummary(), getWirelessDashboardTrains(), getWirelessDashboardRecentOperations(),
-    ])
-    data.value.summary = core[0]; data.value.trains = core[1]; data.value.recent_operations = core[2]
-    const optional: Promise<void>[] = []
-    if (now >= due.infrastructure || now >= due.mesh) optional.push(getWirelessDashboardInfrastructure().then((value) => {
+    const requests: Array<{ label: string; request: Promise<void> }> = [
+      { label: '汇总指标', request: getWirelessDashboardSummary().then((value) => { data.value!.summary = value }) },
+      { label: '列车通信', request: getWirelessDashboardTrains().then((value) => { data.value!.trains = value }) },
+      { label: '最近任务与会话', request: getWirelessDashboardRecentOperations().then((value) => { data.value!.recent_operations = value }) },
+    ]
+    if (now >= due.infrastructure || now >= due.mesh) requests.push({ label: '基础设施与 Mesh-Link', request: getWirelessDashboardInfrastructure().then((value) => {
       if (now >= due.infrastructure) { data.value!.infrastructure.ac = value.ac; data.value!.infrastructure.optical_anomalies = value.optical_anomalies; due.infrastructure = now + 30_000 }
       if (now >= due.mesh) { data.value!.infrastructure.mesh_link = value.mesh_link; data.value!.infrastructure.current_links = value.current_links; due.mesh = now + 5_000 }
-    }))
-    if (now >= due.alerts) optional.push(getWirelessDashboardAlerts().then((value) => { data.value!.alerts = value; due.alerts = now + 5_000 }))
-    if (now >= due.freshness) optional.push(getWirelessDashboardFreshness().then((value) => { data.value!.freshness = value; due.freshness = now + 5_000 }))
-    if (now >= due.analysis) optional.push(getWirelessDashboardAnalysis().then((value) => { data.value!.analysis = value; due.analysis = now + 30_000 }))
-    if (now >= due.agents) optional.push(getWirelessDashboardAgents().then((value) => { data.value!.agents = value; due.agents = now + 10_000 }))
-    await Promise.all(optional)
-    failureCount.value = 0; error.value = ''; lastRefreshAt.value = new Date().toISOString()
-  } catch (reason) {
-    failureCount.value += 1
-    error.value = `刷新失败，保留上次数据：${reason instanceof Error ? reason.message : '未知错误'}`
+    }) })
+    if (now >= due.alerts) requests.push({ label: '告警', request: getWirelessDashboardAlerts().then((value) => { data.value!.alerts = value; due.alerts = now + 5_000 }) })
+    if (now >= due.freshness) requests.push({ label: '数据时效', request: getWirelessDashboardFreshness().then((value) => { data.value!.freshness = value; due.freshness = now + 5_000 }) })
+    if (now >= due.analysis) requests.push({ label: 'Mesh 离线分析', request: getWirelessDashboardAnalysis().then((value) => { data.value!.analysis = value; due.analysis = now + 30_000 }) })
+    if (now >= due.agents) requests.push({ label: 'Agent 状态', request: getWirelessDashboardAgents().then((value) => { data.value!.agents = value; due.agents = now + 10_000 }) })
+    const results = await Promise.allSettled(requests.map((item) => item.request))
+    const failed = results.flatMap((result, index) => result.status === 'rejected'
+      ? [`${requests[index]!.label}（${result.reason instanceof Error ? result.reason.message : '未知错误'}）`]
+      : [])
+    const successCount = results.length - failed.length
+    if (successCount) {
+      failureCount.value = 0
+      lastRefreshAt.value = new Date().toISOString()
+    } else {
+      failureCount.value += 1
+    }
+    error.value = failed.length
+      ? `${successCount ? '部分看板数据刷新失败' : '看板刷新失败'}，已保留最后成功数据。失败项目：${failed.join('、')}`
+      : ''
   } finally {
     loading.value = false
     schedule()
@@ -185,8 +198,8 @@ onBeforeUnmount(() => { document.removeEventListener('visibilitychange', handleV
       <article class="panel">
         <div class="panel-title"><div><h2>基础设施状态</h2><p>FIT-AP、光衰与最新 Mesh-Link 快照</p></div><el-button link type="primary" @click="go('/ac-management')">查看 AC 管理</el-button></div>
         <div class="mini-grid">
-          <span>AP 在线 <b>{{ data?.infrastructure.ac.online_aps ?? 0 }}</b></span><span>AP 离线 <b>{{ data?.infrastructure.ac.offline_aps ?? 0 }}</b></span>
-          <span>光衰异常 <b>{{ data?.infrastructure.ac.optical_anomalies ?? 0 }}</b></span><span>活动链路 <b>{{ data?.infrastructure.mesh_link.active_links ?? 0 }}</b></span>
+          <span>AP 在线 <b>{{ metric(data?.infrastructure.ac.online_aps) }}</b></span><span>AP 离线 <b>{{ metric(data?.infrastructure.ac.offline_aps) }}</b></span>
+          <span>光衰异常 <b>{{ metric(data?.infrastructure.ac.optical_anomalies) }}</b></span><span>活动链路 <b>{{ metric(data?.infrastructure.mesh_link.active_links) }}</b></span>
         </div>
         <NcDataTable table-id="rail-wireless-dashboard-mesh-links" route-key="/rail-transit/wireless-dashboard" :data="data?.infrastructure.current_links || []" :columns="meshLinkColumns" :show-column-settings="false" :stripe="false" size="small" max-height="285" empty-text="暂无 Mesh-Link 快照">
           <template #cell-rssi="{ row }">{{ display(row.rssi, ' dBm') }}</template>
@@ -206,7 +219,7 @@ onBeforeUnmount(() => { document.removeEventListener('visibilitychange', handleV
 
     <div class="two-columns">
       <article class="panel">
-        <div class="panel-title"><div><h2>告警与异常</h2><p>仅复用已有状态和分析结果，不在浏览器推断</p></div><span>{{ data?.alerts.total ?? 0 }} 条</span></div>
+        <div class="panel-title"><div><h2>告警与异常</h2><p>仅复用已有状态和分析结果，不在浏览器推断</p></div><span>{{ data ? `${data.alerts.total} 条` : '—' }}</span></div>
         <NcDataTable table-id="rail-wireless-dashboard-alerts" route-key="/rail-transit/wireless-dashboard" :data="data?.alerts.items || []" :columns="alertColumns" :show-column-settings="false" :stripe="false" size="small" max-height="350" empty-text="当前没有既有告警">
           <template #cell-severity="{ row }"><el-tag :type="statusType(row.severity)">{{ row.severity }}</el-tag></template>
           <template #cell-actions="{ row }"><el-button v-if="row.detail_path" link type="primary" @click="go(row.detail_path)">详情</el-button></template>
@@ -225,7 +238,7 @@ onBeforeUnmount(() => { document.removeEventListener('visibilitychange', handleV
     <div class="three-columns">
       <article class="panel"><div class="panel-title"><div><h2>最近任务</h2><p>任务中心现有记录</p></div><el-button link type="primary" @click="go('/tasks')">任务中心</el-button></div><ul class="record-list"><li v-for="task in data?.recent_operations.tasks.slice(0, 8)" :key="task.id" @click="go(`/tasks?task=${task.id}`)"><span>{{ task.name }}</span><el-tag size="small" :type="statusType(task.status)">{{ task.status }}</el-tag><small>{{ formatTime(task.updated_time) }}</small></li></ul><el-empty v-if="!data?.recent_operations.tasks.length" description="暂无任务" :image-size="50" /></article>
       <article class="panel"><div class="panel-title"><div><h2>最近采集会话</h2><p>LOCAL / Agent 导入会话</p></div><el-button link type="primary" @click="go('/rail-transit/online-mr')">实时展示</el-button></div><ul class="record-list"><li v-for="session in data?.recent_operations.sessions.slice(0, 8)" :key="session.session_id" @click="go(`/rail-transit/online-mr?session_id=${session.session_id}`)"><span>{{ session.mr_name || session.device_name }}</span><el-tag size="small" :type="statusType(session.status)">{{ session.status }}</el-tag><small>{{ formatTime(session.started_at) }}</small></li></ul><el-empty v-if="!data?.recent_operations.sessions.length" description="暂无会话" :image-size="50" /></article>
-      <article class="panel"><div class="panel-title"><div><h2>Mesh 离线分析</h2><p>既有解析结果摘要</p></div><el-button link type="primary" @click="go('/rail-transit/mesh-analysis')">分析详情</el-button></div><div class="analysis-grid"><span>会话 <b>{{ data?.analysis.summary.session_count ?? 0 }}</b></span><span>链路记录 <b>{{ data?.analysis.summary.link_record_count ?? 0 }}</b></span><span>切换 <b>{{ data?.analysis.summary.switch_event_count ?? 0 }}</b></span><span>短时建链 <b>{{ data?.analysis.summary.short_link_count ?? 0 }}</b></span><span>乒乓 <b>{{ data?.analysis.summary.pingpong_count ?? 0 }}</b></span><span>未匹配 AP <b>{{ data?.analysis.summary.unmatched_ap_count ?? 0 }}</b></span></div></article>
+      <article class="panel"><div class="panel-title"><div><h2>Mesh 离线分析</h2><p>既有解析结果摘要</p></div><el-button link type="primary" @click="go('/rail-transit/mesh-analysis')">分析详情</el-button></div><div class="analysis-grid"><span>会话 <b>{{ metric(data?.analysis.summary.session_count) }}</b></span><span>链路记录 <b>{{ metric(data?.analysis.summary.link_record_count) }}</b></span><span>切换 <b>{{ metric(data?.analysis.summary.switch_event_count) }}</b></span><span>短时建链 <b>{{ metric(data?.analysis.summary.short_link_count) }}</b></span><span>乒乓 <b>{{ metric(data?.analysis.summary.pingpong_count) }}</b></span><span>未匹配 AP <b>{{ metric(data?.analysis.summary.unmatched_ap_count) }}</b></span></div></article>
     </div>
 
     <article class="panel"><div class="panel-title"><div><h2>Agent 状态</h2><p>仅使用 Controller 已缓存状态，不主动连接 Agent</p></div><el-button link type="primary" @click="go('/agents')">Agent 控制中心</el-button></div><NcDataTable table-id="rail-wireless-dashboard-agents" route-key="/rail-transit/wireless-dashboard" :data="data?.agents.items || []" :columns="agentColumns" :show-column-settings="false" :stripe="false" size="small" empty-text="当前局点未登记 Agent"><template #cell-status="{ row }"><el-tag :type="statusType(row.status)">{{ row.status }}</el-tag></template><template #cell-last_checked_at="{ row }">{{ formatTime(row.last_checked_at) }}</template></NcDataTable></article>

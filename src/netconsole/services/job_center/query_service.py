@@ -53,7 +53,10 @@ from netconsole.services.job_center.handlers.site_jobs import (
     SITE_STORAGE_OWNER,
     SITE_STORAGE_TASK_TYPES,
 )
-from netconsole.models.task_history_policy import business_result_has_warning
+from netconsole.models.task_history_policy import (
+    business_result_has_warning,
+    project_business_result,
+)
 
 AC_WEB_OWNER = "web_ac"
 RAIL_WEB_OWNER = "web_rail_transit"
@@ -280,6 +283,7 @@ class JobCenterQueryService:
             ", task.result_json"
             if detail
             else """
+                , task.result_json AS business_result_json
                 , CASE WHEN task.status = 'COMPLETED' THEN task.result_json ELSE NULL END
                   AS artifact_result_json
             """
@@ -335,6 +339,11 @@ class JobCenterQueryService:
 
     def _task_from_row(self, row: dict[str, object], *, include_result: bool = False) -> JobCenterTaskDTO:
         result = self._json_object(row.get("result_json")) if include_result else {}
+        business_result = (
+            result
+            if include_result
+            else self._json_object(row.get("business_result_json"))
+        )
         artifact_result = (
             result
             if include_result
@@ -367,11 +376,43 @@ class JobCenterQueryService:
             artifact_result,
         )
         text_integrity, text_integrity_reason = self._text_integrity(row)
+        business = project_business_result(
+            business_result,
+            lifecycle_status=status,
+            error_message=error_summary,
+        )
+        if (
+            status == "COMPLETED"
+            and error_summary
+            and business.business_status in {"", "SUCCESS", "UNKNOWN"}
+        ):
+            business = project_business_result(
+                {
+                    **business_result,
+                    "business_status": "WARNING",
+                    "warning_count": max(1, business.warning_count),
+                    "primary_failure_reason": (
+                        business.primary_failure_reason or error_summary
+                    ),
+                },
+                lifecycle_status=status,
+                error_message=error_summary,
+            )
         return JobCenterTaskDTO(
             id=task_id,
             type=task_type,
             name=redact_web_task_text(row.get("task_name") or row.get("task_type") or ""),
             status=status,
+            lifecycle_status=status,
+            business_status=business.business_status,
+            success_count=business.success_count,
+            failed_count=business.failed_count,
+            skipped_count=business.skipped_count,
+            warning_count=business.warning_count,
+            partial_success=business.partial_success,
+            primary_failure_reason=redact_web_task_text(
+                business.primary_failure_reason
+            ),
             progress=max(0, min(int(row.get("progress") or 0), 100)),
             current=max(0, int(row.get("current") or 0)),
             total=max(0, int(row.get("total") or 0)),
@@ -410,7 +451,8 @@ class JobCenterQueryService:
             error_summary=error_summary,
             has_warning=bool(
                 (error_summary and status != "FAILED")
-                or business_result_has_warning(artifact_result)
+                or business.business_status in {"PARTIAL_SUCCESS", "WARNING"}
+                or business_result_has_warning(business_result)
             ),
             text_integrity=text_integrity,
             text_integrity_reason=text_integrity_reason,

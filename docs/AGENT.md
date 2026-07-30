@@ -25,6 +25,6 @@ apps\agent\scripts\build_windows.bat
 
 输出为 `dist/agent/windows-x64/`，临时构建目录为 `dist/agent/.build-windows-x64/`，包含 console 版、GUI 托盘版、sidecar（若构建环境可用）、工具目录和启动/兼容检查脚本；不进入当前 Python 主程序发布白名单。`apps/agent/bin|data|dist|logs|packages|tmp` 不作为源码子目录保留。
 
-当前构建和开发验收目标是 Windows 11 x64。仓库没有可引用的 Windows 10 或 Windows Server 2012 全链路验收记录，因此两者不得写成已支持；尤其 Server 2012 还需单独验证 Go 运行时、托盘、Cygwin fping/iPerf、Python sidecar 和防休眠 API。CentOS 7.4 没有 Agent 实现或离线交付包。离线 Windows 构建只使用仓库锁定依赖、Go module 缓存和 `resources/tools/windows-x64/` 白名单资源，不在构建时联网补齐业务工具。
+当前构建和开发验收目标仍是 Windows 11 x64。Windows Server 2012 x64 的 Agent 已有用户现场运行确认，证据等级为 `USER_FIELD_CONFIRMED`；仓库没有隔离 Server 2012 自动化 VM 记录，自动化证据记为 `AUTOMATION_NOT_RECORDED`。这记录的是现场兼容事实，不等同于正式安装包 GUI 或完整工具链自动化通过；不新增按操作系统阻断 Agent 启动的逻辑。Windows 10 仍无仓库或现场确认，不得写成已支持。CentOS 7.4 没有 Agent 实现或离线交付包。离线 Windows 构建只使用仓库锁定依赖、Go module 缓存和 `resources/tools/windows-x64/` 白名单资源，不在构建时联网补齐业务工具。
 
 Python 控制面、凭据与数据库边界见 [Agent Controller](AGENT_CONTROLLER.md)，Online MR 远程生命周期见 [Online MR Agent 远程执行器](ONLINE_MR_AGENT_EXECUTOR.md)，流量任务协议见 [Agent 流量测试协议](AGENT_TRAFFIC_API.md)，统一执行与恢复见 [流量测试架构](TRAFFIC_TEST_ARCHITECTURE.md)。

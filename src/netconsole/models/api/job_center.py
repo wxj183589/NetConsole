@@ -22,6 +22,14 @@ class JobCenterTaskDTO(ApiModel):
     type: str
     name: str
     status: str
+    lifecycle_status: str = ""
+    business_status: str = ""
+    success_count: int = 0
+    failed_count: int = 0
+    skipped_count: int = 0
+    warning_count: int = 0
+    partial_success: bool = False
+    primary_failure_reason: str = ""
     progress: int = 0
     current: int = 0
     total: int = 0

@@ -60,8 +60,8 @@ TRACKSIDE_PLAN_FIELD_NOTES = (
     },
     {
         "field": "AP管理VLAN",
-        "requirement": "必填",
-        "description": "1～4094 的单个 VLAN；不同站点允许填写相同 VLAN。",
+        "requirement": "条件必填",
+        "description": "AP数量大于 0 时必填 1～4094 的单个 VLAN；数量为 0 时可留空或保留合法 VLAN。",
     },
     {"field": "备注", "requirement": "可选", "description": "规划备注。"},
 )
@@ -332,15 +332,18 @@ def normalize_trackside_plan_row(
         if value.get("ap_management_vlans") not in (None, "")
         else value.get("group_management_vlan")
     )
+    management_vlan: int | None = None
     if raw_vlan in (None, ""):
-        raise ValueError(f"第{row_number}行 AP管理VLAN：必填")
-    management_vlan = _required_integer(
-        raw_vlan,
-        row_number=row_number,
-        field="AP管理VLAN",
-    )
-    if not 1 <= management_vlan <= 4094:
-        raise ValueError(f"第{row_number}行 AP管理VLAN：必须在 1～4094 范围内")
+        if ap_count > 0:
+            raise ValueError(f"第{row_number}行 AP管理VLAN：AP数量大于 0 时必填")
+    else:
+        management_vlan = _required_integer(
+            raw_vlan,
+            row_number=row_number,
+            field="AP管理VLAN",
+        )
+        if not 1 <= management_vlan <= 4094:
+            raise ValueError(f"第{row_number}行 AP管理VLAN：必须在 1～4094 范围内")
 
     return {
         "station_id": str(value.get("station_id") or "").strip(),
@@ -354,7 +357,7 @@ def normalize_trackside_plan_row(
         "subnet_mask": "",
         "mask_length": None,
         "ap_gateway": "",
-        "ap_management_vlans": str(management_vlan),
+        "ap_management_vlans": "" if management_vlan is None else str(management_vlan),
         "sort_order": sequence_no - 1,
     }
 

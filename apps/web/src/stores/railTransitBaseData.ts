@@ -72,6 +72,9 @@ export interface BaseDataRefreshError extends ApiErrorDetail {
   domain: RefreshDomain
   label: string
   failedAt: string
+  retainedLastSuccess: boolean
+  consecutiveFailures: number
+  lastSuccessfulAt: string
 }
 
 const REFRESH_ENDPOINTS: Record<RefreshEndpointKey, {
@@ -132,6 +135,9 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
   const endpointErrors = reactive<Partial<Record<RefreshEndpointKey, BaseDataRefreshError>>>({})
   const endpointFailureCounts = reactive<Record<RefreshEndpointKey, number>>(
     Object.fromEntries(Object.keys(REFRESH_ENDPOINTS).map((key) => [key, 0])) as Record<RefreshEndpointKey, number>,
+  )
+  const endpointLastSuccessfulAt = reactive<Record<RefreshEndpointKey, string>>(
+    Object.fromEntries(Object.keys(REFRESH_ENDPOINTS).map((key) => [key, ''])) as Record<RefreshEndpointKey, string>,
   )
   const healthError = ref<BaseDataRefreshError | null>(null)
   const backendState = ref<'unknown' | 'online' | 'offline'>('unknown')
@@ -432,6 +438,9 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
       domain: endpoint.domain,
       label: endpoint.label,
       failedAt: new Date().toISOString(),
+      retainedLastSuccess: Boolean(endpointLastSuccessfulAt[key]),
+      consecutiveFailures: endpointFailureCounts[key],
+      lastSuccessfulAt: endpointLastSuccessfulAt[key],
       ...apiErrorDetail(cause, endpoint.path),
     }
   }
@@ -454,18 +463,17 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
 
   function recordEndpointSuccess(key: RefreshEndpointKey): void {
     endpointFailureCounts[key] = 0
+    endpointLastSuccessfulAt[key] = new Date().toISOString()
     delete endpointErrors[key]
-    backendState.value = 'online'
-    healthError.value = null
+    if (!healthError.value) backendState.value = 'online'
   }
 
   function recordEndpointFailure(key: RefreshEndpointKey, cause: unknown): void {
     endpointFailureCounts[key] += 1
     const detail = refreshError(key, cause)
     endpointErrors[key] = detail
-    if (detail.status > 0) {
+    if (detail.status > 0 && !healthError.value) {
       backendState.value = 'online'
-      healthError.value = null
     }
   }
 
@@ -474,18 +482,18 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
       const detail = endpointErrors[key]
       return endpointFailureCounts[key] >= 3 && detail?.status === 0
     })
-    if (persistentTransportFailures.length < 2) {
-      if (backendState.value === 'offline') backendState.value = 'unknown'
-      healthError.value = null
-      return
-    }
+    const healthRecoveryRequired = Boolean(healthError.value)
+    if (persistentTransportFailures.length < 2 && !healthRecoveryRequired) return
     if (!healthProbe) {
       healthProbe = (async () => {
         try {
           await getHealth()
+          endpointFailureCounts.health = 0
+          endpointLastSuccessfulAt.health = new Date().toISOString()
           backendState.value = 'online'
           healthError.value = null
         } catch (cause) {
+          endpointFailureCounts.health += 1
           backendState.value = 'offline'
           healthError.value = refreshError('health', cause)
         }

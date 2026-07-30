@@ -6,6 +6,7 @@ import { initializePlatformRuntime, resetPlatformRuntimeForTests } from '../plat
 
 describe('API client errors', () => {
   afterEach(() => {
+    vi.useRealTimers()
     resetPlatformRuntimeForTests()
     vi.unstubAllGlobals()
   })
@@ -189,6 +190,113 @@ describe('API client errors', () => {
 
     await expect(apiRequest('/api/query')).rejects.toMatchObject({ code })
     diagnostic.mockRestore()
+  })
+
+  it('retries one failed GET transport request and returns the recovered response', async () => {
+    const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'ok' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(apiRequest('/api/recoverable-query')).resolves.toEqual({ status: 'ok' })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(diagnostic).not.toHaveBeenCalled()
+    diagnostic.mockRestore()
+  })
+
+  it('returns REQUEST_TIMEOUT after the bounded GET attempts expire', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn((_url: RequestInfo | URL, request?: RequestInit) => new Promise((_resolve, reject) => {
+      request?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const rejection = expect(apiRequest('/api/slow-query')).rejects.toMatchObject({
+      name: 'ApiRequestError',
+      code: 'REQUEST_TIMEOUT',
+      status: 0,
+      details: {
+        path: '/api/slow-query',
+        timeout_ms: 15_000,
+      },
+    })
+    await vi.advanceTimersByTimeAsync(15_000)
+    await vi.advanceTimersByTimeAsync(150)
+    await vi.advanceTimersByTimeAsync(15_000)
+
+    await rejection
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([502, 503, 504])('retries transient HTTP %s once for GET requests', async (status) => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('', { status }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ recovered: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(apiRequest('/api/transient-http')).resolves.toEqual({ recovered: true })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([
+    ['POST', '/api/tasks', JSON.stringify({ type: 'COLLECT' })],
+    ['POST', '/api/import', new FormData()],
+    ['PUT', '/api/resource/1', JSON.stringify({ enabled: true })],
+    ['PATCH', '/api/resource/1', JSON.stringify({ name: 'updated' })],
+    ['DELETE', '/api/resource/1', undefined],
+  ])('does not retry %s request failures for %s', async (method, path, body) => {
+    const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(apiRequest(path, { method, body })).rejects.toMatchObject({
+      code: 'BACKEND_CONNECTION_INTERRUPTED',
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    diagnostic.mockRestore()
+  })
+
+  it('does not retry an externally aborted GET and preserves AbortError semantics', async () => {
+    const controller = new AbortController()
+    const fetchMock = vi.fn((_url: RequestInfo | URL, request?: RequestInit) => new Promise((_resolve, reject) => {
+      request?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const rejection = expect(apiRequest('/api/cancellable-query', { signal: controller.signal })).rejects.toMatchObject({
+      name: 'AbortError',
+      code: 'REQUEST_ABORTED',
+    })
+    controller.abort()
+
+    await rejection
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries HEAD queries and does not parse a successful response body', async () => {
+    const text = vi.fn()
+    const json = vi.fn()
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError('connection reset'))
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text,
+        json,
+      })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(apiRequest('/api/readiness', { method: 'HEAD' })).resolves.toBeUndefined()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(text).not.toHaveBeenCalled()
+    expect(json).not.toHaveBeenCalled()
   })
 
   it('uses the ephemeral Electron URL and header without changing browser call sites', async () => {

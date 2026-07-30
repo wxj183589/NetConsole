@@ -431,10 +431,10 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     refreshErrors[domain] = ''
   }
 
-  function recordFailure(domain: RefreshDomain, cause: unknown): void {
+  function recordFailure(domain: RefreshDomain, _cause: unknown): void {
     refreshFailureCounts[domain] += 1
     if (refreshFailureCounts[domain] >= 3) refreshErrors[domain] = 'AC 数据刷新失败，已保留最后一次成功数据并降低刷新频率。'
-    else if (!aps.value.length && cause instanceof Error) refreshErrors[domain] = cause.message
+    else refreshErrors[domain] = '部分 AC 数据刷新失败，已保留最后成功数据。'
   }
 
   return {

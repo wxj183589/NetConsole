@@ -196,7 +196,7 @@ apps\agent\scripts\build_windows.bat
 
 - Windows x64 第一版；
 - Agent 不主动注册、上传，也不知道 Controller 地址；
-- 当前正式构建/验收目标为 Windows 11 x64；Windows 10 与 Windows Server 2012 没有仓库内全链路兼容证据，CentOS 7.4 Agent/离线包尚未实现；
+- 当前正式构建/验收目标仍为 Windows 11 x64；Windows Server 2012 x64 的 Agent 有用户现场运行确认（`USER_FIELD_CONFIRMED`），仓库无隔离 Server 2012 自动化 VM 记录（`AUTOMATION_NOT_RECORDED`），不增加 OS 启动阻断；Windows 10 仍无仓库或现场确认，CentOS 7.4 Agent/离线包尚未实现；
 - Agent 不做复杂业务分析；
 - MR 第一版仅实现 SSH，Telnet 仅在目标连接测试中做 TCP 检查；
 - `ping_probe` V1 采用 TCP connect fallback，事件明确标记 `mode=tcp`，默认端口 80 可在请求中用 `tcp_port` 修改；它验证端口连通性，不等同于 ICMP 丢包；

@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 
@@ -10,16 +11,24 @@ import type {
   TracksideApPlan,
   TracksideApPlanRow,
 } from '../../../types/tracksideApBusiness'
+import type { TaskItem } from '../../../types/task'
 
 const api = vi.hoisted(() => ({
   exportTracksideApPlan: vi.fn(),
   getTracksideApOnlineStatus: vi.fn(),
   getTracksideApPlan: vi.fn(),
-  getTracksideApTask: vi.fn(),
   previewTracksideApPlan: vi.fn(),
-  recoverTracksideApTasks: vi.fn(),
   startTracksideApUpdate: vi.fn(),
-  tracksideApPlanDownloadRequest: vi.fn(),
+}))
+const taskApi = vi.hoisted(() => ({
+  acknowledgeAllTaskAlerts: vi.fn(),
+  acknowledgeTask: vi.fn(),
+  cancelTask: vi.fn(),
+  cleanupTasks: vi.fn(),
+  dismissTask: vi.fn(),
+  getTask: vi.fn(),
+  getTaskLogs: vi.fn(),
+  listTasks: vi.fn(),
 }))
 const downloadBackendResource = vi.hoisted(() => vi.fn())
 const routerPush = vi.hoisted(() => vi.fn())
@@ -32,6 +41,7 @@ const messages = vi.hoisted(() => ({
 }))
 
 vi.mock('../../../api/tracksideApBusiness', () => api)
+vi.mock('../../../api/tasks', () => taskApi)
 vi.mock('../../../platform/runtime', () => ({
   downloadBackendResource,
   getPlatformAdapter: () => ({ hostType: 'browser' }),
@@ -127,6 +137,42 @@ const task = (
   result_summary: {},
 })
 
+const globalTask = (
+  id: string,
+  status: TaskItem['status'],
+  type = 'trackside_ap_optical_update',
+): TaskItem => ({
+  id,
+  type,
+  name: type,
+  status,
+  progress: status === 'COMPLETED' ? 100 : 50,
+  phase: '',
+  stage: '',
+  message: '',
+  site_name: 'demo',
+  owner: 'web_rail_transit',
+  executor: 'LOCAL',
+  source: 'local',
+  device_id: '',
+  device_name: '',
+  agent: '',
+  mr_name: '',
+  session_id: '',
+  mapping_state: '',
+  created_time: '',
+  started_time: '',
+  finished_time: '',
+  updated_time: '',
+  duration_seconds: 0,
+  error_code: '',
+  error_summary: '',
+  has_warning: false,
+  snapshot_id: null,
+  records_count: null,
+  parser_version: '',
+})
+
 const NcDataTableStub = defineComponent({
   props: { data: { type: Array, default: () => [] } },
   template: `
@@ -216,6 +262,7 @@ function stationOptions(count: number): Array<{ id: string; name: string; sort_o
 
 describe('TracksideApPlanningTab behavior', () => {
   beforeEach(() => {
+    setActivePinia(createPinia())
     resetUserSelectedExportForTests()
     vi.useFakeTimers()
     localStorage.clear()
@@ -225,15 +272,10 @@ describe('TracksideApPlanningTab behavior', () => {
     confirmDialog.mockReset().mockResolvedValue(true)
     for (const message of Object.values(messages)) message.mockReset()
     for (const method of Object.values(api)) method.mockReset()
+    for (const method of Object.values(taskApi)) method.mockReset()
     api.getTracksideApPlan.mockResolvedValue(emptyPlan())
     api.getTracksideApOnlineStatus.mockResolvedValue(emptyStatus())
-    api.recoverTracksideApTasks.mockResolvedValue([])
-    api.tracksideApPlanDownloadRequest.mockImplementation(
-      (artifactId: string, suggestedName: string) => ({
-        apiPath: `/api/artifacts/${artifactId}`,
-        suggestedName,
-      }),
-    )
+    taskApi.listTasks.mockResolvedValue([])
     downloadBackendResource.mockReset().mockResolvedValue({ status: 'saved' })
   })
 
@@ -251,6 +293,8 @@ describe('TracksideApPlanningTab behavior', () => {
     })
     await flushPromises()
 
+    await button(wrapper, '新增站点').trigger('click')
+    await flushPromises()
     await wrapper.find('[data-plan-cell="0-sequence_no"] input').trigger(
       'paste',
       clipboard([
@@ -270,12 +314,12 @@ describe('TracksideApPlanningTab behavior', () => {
     wrapper.unmount()
   })
 
-  it('creates a clean planning skeleton for all current stations', async () => {
+  it('keeps an empty sparse plan when the current site has stations', async () => {
     const wrapper = mount(TracksideApPlanningTab, {
       props: {
         locked: false,
         saving: false,
-        stations: stationOptions(15),
+        stations: stationOptions(29),
       },
       global: { stubs },
     })
@@ -283,17 +327,59 @@ describe('TracksideApPlanningTab behavior', () => {
 
     const latest = wrapper.emitted('change')?.at(-1)?.[0] as TracksideApPlanRow[]
     const dirty = wrapper.emitted('change')?.at(-1)?.[1]
-    expect(latest).toHaveLength(15)
-    expect(latest.map((row) => row.station_id)).toEqual(
-      stationOptions(15).map((station) => station.id),
-    )
-    expect(latest.every((row) => row.planned_ap_count === 0 && row.management_vlan === null)).toBe(true)
+    expect(latest).toEqual([])
     expect(dirty).toBe(false)
+    expect(wrapper.text()).toContain('已加载 0 行')
     expect(wrapper.text()).not.toContain('有未保存修改')
+    expect(wrapper.text()).not.toContain('项需要修正')
+
+    await button(wrapper, '新增站点').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('有 2 项需要修正')
+    await wrapper.find('button[title="删除"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('项需要修正')
     wrapper.unmount()
   })
 
-  it('fills the planning skeleton when stations arrive asynchronously', async () => {
+  it('requires VLAN only for positive AP counts and rejects invalid values', async () => {
+    const values: Array<Partial<TracksideApPlanRow>> = [
+      { planned_ap_count: 0, management_vlan: null },
+      { planned_ap_count: 0, management_vlan: 71 },
+      { planned_ap_count: 1, management_vlan: null },
+      { planned_ap_count: -1, management_vlan: null },
+      { planned_ap_count: 0, management_vlan: 0 },
+      { planned_ap_count: 0, management_vlan: 4095 },
+      { planned_ap_count: 0, management_vlan: 71.5 },
+    ]
+    const stations = stationOptions(values.length)
+    api.getTracksideApPlan.mockResolvedValue({
+      ...emptyPlan(),
+      items: values.map((value, index) => planRow({
+        station_id: stations[index].id,
+        station_name: stations[index].name,
+        sequence_no: index + 1,
+        ...value,
+      })),
+      total: values.length,
+    })
+    const wrapper = mount(TracksideApPlanningTab, {
+      props: { locked: false, saving: false, stations },
+      global: { stubs },
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('有 5 项需要修正')
+    expect(wrapper.find('[data-plan-cell="2-management_vlan"]').attributes('title'))
+      .toBe('AP数量大于 0 时必须填写 VLAN')
+    expect(wrapper.find('[data-plan-cell="3-planned_ap_count"]').attributes('title'))
+      .toBe('AP数量必须是非负整数')
+    expect(wrapper.find('[data-plan-cell="4-management_vlan"]').attributes('title'))
+      .toBe('VLAN 必须在 1～4094 范围内')
+    wrapper.unmount()
+  })
+
+  it('does not add planning rows when stations arrive asynchronously', async () => {
     const wrapper = mount(TracksideApPlanningTab, {
       props: { locked: false, saving: false, stations: [] },
       global: { stubs },
@@ -303,12 +389,12 @@ describe('TracksideApPlanningTab behavior', () => {
     await flushPromises()
 
     const latest = wrapper.emitted('change')?.at(-1)?.[0] as TracksideApPlanRow[]
-    expect(latest).toHaveLength(15)
-    expect(wrapper.text()).toContain('已加载 15 行')
+    expect(latest).toEqual([])
+    expect(wrapper.text()).toContain('已加载 0 行')
     wrapper.unmount()
   })
 
-  it('preserves saved fields while filling missing stations', async () => {
+  it('preserves only saved sparse planning rows', async () => {
     api.getTracksideApPlan.mockResolvedValue({
       ...emptyPlan(),
       items: [planRow({ planned_ap_count: 28, management_vlan: 922, remark: '保留值' })],
@@ -325,23 +411,19 @@ describe('TracksideApPlanningTab behavior', () => {
     await flushPromises()
 
     const latest = wrapper.emitted('change')?.at(-1)?.[0] as TracksideApPlanRow[]
-    expect(latest).toHaveLength(2)
+    expect(latest).toHaveLength(1)
     expect(latest[0]).toMatchObject({
       station_id: 'station:1',
       planned_ap_count: 28,
       management_vlan: 922,
       remark: '保留值',
     })
-    expect(latest[1]).toMatchObject({
-      station_id: 'station:2',
-      planned_ap_count: 0,
-      management_vlan: null,
-    })
+    expect(latest.find((row) => row.station_id === 'station:2')).toBeUndefined()
     expect(wrapper.emitted('change')?.at(-1)?.[1]).toBe(false)
     wrapper.unmount()
   })
 
-  it('keeps dirty edits and appends only newly arrived stations', async () => {
+  it('keeps dirty edits without appending newly arrived stations', async () => {
     api.getTracksideApPlan.mockResolvedValue({
       ...emptyPlan(),
       items: [planRow({ planned_ap_count: 28, management_vlan: 922 })],
@@ -372,7 +454,7 @@ describe('TracksideApPlanningTab behavior', () => {
     const appended = latest.find((row) => row.station_id === 'station:2')
     expect(edited?.planned_ap_count).toBe(99)
     expect(edited?.station_name).toBe('小洋江站（更新名）')
-    expect(appended).toMatchObject({ planned_ap_count: 0, management_vlan: null })
+    expect(appended).toBeUndefined()
     expect(wrapper.emitted('change')?.at(-1)?.[1]).toBe(true)
     wrapper.unmount()
   })
@@ -429,7 +511,7 @@ describe('TracksideApPlanningTab behavior', () => {
     await flushPromises()
 
     const latest = wrapper.emitted('change')?.at(-1)?.[0] as TracksideApPlanRow[]
-    expect(latest).toHaveLength(2)
+    expect(latest).toHaveLength(1)
     expect(latest.find((row) => row.station_id === 'station:legacy')?.station_match_status).toBe('unmatched')
     expect(wrapper.text()).toContain('未匹配当前站点')
     expect(button(wrapper, '保存').attributes('disabled')).toBeDefined()
@@ -618,6 +700,9 @@ describe('TracksideApPlanningTab behavior', () => {
         'trackside_ap_optical_update',
       ),
     )
+    taskApi.listTasks
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([globalTask('refresh-status', 'COMPLETED')])
     const wrapper = mount(TracksideApPlanningTab, {
       props: { locked: false, saving: false },
       global: { stubs },
@@ -656,6 +741,9 @@ describe('TracksideApPlanningTab behavior', () => {
         'trackside_ap_optical_update',
       ),
     )
+    taskApi.listTasks
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([globalTask('refresh-status', 'COMPLETED')])
     const wrapper = mount(TracksideApPlanningTab, {
       props: {
         locked: false,
@@ -779,13 +867,9 @@ describe('TracksideApPlanningTab behavior', () => {
     wrapper.unmount()
   })
 
-  it('does not page-download a newly created template or recovered task', async () => {
-    api.exportTracksideApPlan.mockResolvedValue(task('new-template', 'RUNNING'))
-    api.getTracksideApTask.mockResolvedValue(
-      task('new-template', 'COMPLETED', true, 'artifact-1'),
-    )
-    api.recoverTracksideApTasks.mockResolvedValue([
-      task('history', 'COMPLETED', true, 'history-artifact'),
+  it('recovers an active planning task from the global store without a local task banner', async () => {
+    taskApi.listTasks.mockResolvedValue([
+      globalTask('active-plan-export', 'RUNNING', 'web_export_multi_sheet_xlsx'),
     ])
     const wrapper = mount(TracksideApPlanningTab, {
       props: { locked: false, saving: false },
@@ -793,15 +877,11 @@ describe('TracksideApPlanningTab behavior', () => {
     })
     await flushPromises()
 
-    await button(wrapper, '下载模板').trigger('click')
-    await flushPromises()
+    expect(button(wrapper, '下载模板').attributes('disabled')).toBeDefined()
+    expect(button(wrapper, '导出当前').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).not.toContain('打开任务中心')
+    expect(wrapper.text()).not.toContain('下载文件')
     expect(downloadBackendResource).not.toHaveBeenCalled()
-    await vi.advanceTimersByTimeAsync(1500)
-    await flushPromises()
-    expect(downloadBackendResource).not.toHaveBeenCalled()
-    expect(sessionStorage.getItem('netconsole.user-selected-exports.v1')).toContain(
-      'new-template',
-    )
     wrapper.unmount()
   })
 
@@ -836,36 +916,20 @@ describe('TracksideApPlanningTab behavior', () => {
     wrapper.unmount()
   })
 
-  it('keeps manual Artifact download after a save failure', async () => {
-    localStorage.setItem('netconsole.trackside-ap-plan.last-task', 'retry-task')
-    api.recoverTracksideApTasks.mockResolvedValue([
-      task('retry-task', 'COMPLETED', true, 'retry-artifact', '后端模板.xlsx'),
+  it('does not restore completed Artifact state into a page-local banner', async () => {
+    taskApi.listTasks.mockResolvedValue([
+      globalTask('completed-plan-export', 'COMPLETED', 'web_export_multi_sheet_xlsx'),
     ])
-    downloadBackendResource.mockResolvedValueOnce({
-      status: 'failed',
-      error: '保存失败',
-    })
     const wrapper = mount(TracksideApPlanningTab, {
       props: { locked: false, saving: false },
       global: { stubs },
     })
     await flushPromises()
 
-    await button(wrapper, '下载文件').trigger('click')
-    await flushPromises()
-    expect(downloadBackendResource).toHaveBeenCalledTimes(1)
-    expect(messages.error).toHaveBeenCalledWith('保存失败')
-
-    downloadBackendResource.mockResolvedValueOnce({ status: 'saved' })
-    await button(wrapper, '下载文件').trigger('click')
-    await flushPromises()
-    expect(downloadBackendResource).toHaveBeenCalledTimes(2)
-
-    await button(wrapper, '打开任务中心').trigger('click')
-    expect(routerPush).toHaveBeenCalledWith({
-      name: 'tasks',
-      query: { module: 'rail', task_id: 'retry-task' },
-    })
+    expect(wrapper.text()).not.toContain('completed-plan-export')
+    expect(wrapper.text()).not.toContain('下载文件')
+    expect(wrapper.text()).not.toContain('打开任务中心')
+    expect(downloadBackendResource).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 })

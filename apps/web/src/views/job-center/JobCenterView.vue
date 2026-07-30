@@ -35,6 +35,7 @@ const visibleTasks = computed(() => {
 const columns: NcTableColumn<TaskItem>[] = [
   { key: 'task', label: '任务', valueType: 'name', fixed: 'left' },
   { key: 'status', label: '状态', valueType: 'status', cellKind: 'tag' },
+  { key: 'business_status', label: '业务结果', valueType: 'status', displayValue: (row) => businessResultText(row) },
   { key: 'progress', label: '进度', valueType: 'percentage' },
   { key: 'site_name', label: '局点', valueType: 'text' },
   { key: 'device_name', label: '设备', valueType: 'name' },
@@ -119,9 +120,43 @@ function matchesFilter(task: TaskItem): boolean {
 }
 
 function taskSearchText(task: TaskItem): string {
-  return [task.id, task.type, task.name, task.session_id, task.device_name, task.site_name, task.error_summary]
+  return [
+    task.id,
+    task.type,
+    task.name,
+    task.session_id,
+    task.device_name,
+    task.site_name,
+    task.error_summary,
+    task.business_status,
+    task.primary_failure_reason,
+  ]
     .join(' ')
     .toLowerCase()
+}
+
+function businessStatusLabel(status: string): string {
+  return {
+    SUCCESS: '成功',
+    PARTIAL_SUCCESS: '部分成功',
+    FAILED: '失败',
+    WARNING: '告警',
+    NO_EFFECTIVE_TARGET: '无有效目标',
+    NO_TARGET: '无有效目标',
+    CANCELLED: '已取消',
+  }[status] || status || '--'
+}
+
+function businessResultText(task: TaskItem): string {
+  const status = businessStatusLabel(String(task.business_status || '').toUpperCase())
+  if (status === '--') return status
+  const counts = [
+    task.success_count ? `成功 ${task.success_count}` : '',
+    task.failed_count ? `失败 ${task.failed_count}` : '',
+    task.skipped_count ? `跳过 ${task.skipped_count}` : '',
+    task.warning_count ? `告警 ${task.warning_count}` : '',
+  ].filter(Boolean)
+  return counts.length ? `${status} · ${counts.join(' / ')}` : status
 }
 
 function formatTime(value: string): string {

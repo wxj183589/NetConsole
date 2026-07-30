@@ -1,38 +1,48 @@
 // @vitest-environment happy-dom
 
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 
 import { resetWebFeaturesForTest, setWebFeaturesForTest } from '../../features'
 import { resetUserSelectedExportForTests } from '../../composables/useUserSelectedExport'
+import { useTaskStore } from '../../stores/tasks'
 import type {
   TracksideApBusinessPage,
   TracksideApBusinessRow,
   TracksideApTask,
 } from '../../types/tracksideApBusiness'
+import type { TaskItem } from '../../types/task'
 
 const api = vi.hoisted(() => ({
-  getTracksideApTask: vi.fn(),
   listTracksideApBusiness: vi.fn(),
-  recoverTracksideApTasks: vi.fn(),
   startTracksideApBusinessExport: vi.fn(),
   startTracksideApUpdate: vi.fn(),
   tracksideApBusinessDownloadRequest: vi.fn(),
+}))
+const taskApi = vi.hoisted(() => ({
+  acknowledgeAllTaskAlerts: vi.fn(),
+  acknowledgeTask: vi.fn(),
+  cancelTask: vi.fn(),
+  cleanupTasks: vi.fn(),
+  dismissTask: vi.fn(),
+  getTask: vi.fn(),
+  getTaskLogs: vi.fn(),
+  listTasks: vi.fn(),
 }))
 const platformMocks = vi.hoisted(() => ({
   downloadBackendResource: vi.fn(),
 }))
 
 vi.mock('../../api/tracksideApBusiness', () => api)
+vi.mock('../../api/tasks', () => taskApi)
 vi.mock('../../platform/runtime', () => ({
   downloadBackendResource: platformMocks.downloadBackendResource,
   getPlatformAdapter: () => ({ hostType: 'browser' }),
 }))
 
 import TracksideApBusinessView from './TracksideApBusinessView.vue'
-
-const storageKey = 'netconsole.trackside-ap.last-task'
 
 const extendedRowDefaults = {
   switch_vendor: 'H3C',
@@ -150,6 +160,44 @@ function task(
   }
 }
 
+function globalTask(
+  id: string,
+  status: TaskItem['status'],
+  type = 'trackside_ap_optical_update',
+): TaskItem {
+  return {
+    id,
+    type,
+    name: type,
+    status,
+    progress: status === 'COMPLETED' ? 100 : 50,
+    phase: '',
+    stage: '',
+    message: '',
+    site_name: 'demo',
+    owner: 'web_rail_transit',
+    executor: 'LOCAL',
+    source: 'local',
+    device_id: '',
+    device_name: '',
+    agent: '',
+    mr_name: '',
+    session_id: '',
+    mapping_state: '',
+    created_time: '',
+    started_time: '',
+    finished_time: '',
+    updated_time: '',
+    duration_seconds: 0,
+    error_code: '',
+    error_summary: '',
+    has_warning: false,
+    snapshot_id: null,
+    records_count: null,
+    parser_version: '',
+  }
+}
+
 const NcDataTableStub = defineComponent({
   name: 'NcDataTable',
   props: {
@@ -217,6 +265,7 @@ const ElementStubs = {
 
 describe('TracksideApBusinessView mounted behavior', () => {
   beforeEach(() => {
+    setActivePinia(createPinia())
     resetUserSelectedExportForTests()
     resetWebFeaturesForTest()
     setWebFeaturesForTest({
@@ -226,8 +275,8 @@ describe('TracksideApBusinessView mounted behavior', () => {
       'rail.zte_trackside_switch_adapter': { visible: true, enabled: true },
     })
     api.listTracksideApBusiness.mockResolvedValue(page())
-    api.recoverTracksideApTasks.mockResolvedValue([])
-    api.getTracksideApTask.mockResolvedValue(task('task-complete', 'COMPLETED', 'trackside_ap_optical_update', { status: 'DONE', target_count: 1, success_count: 1 }))
+    for (const method of Object.values(taskApi)) method.mockReset()
+    taskApi.listTasks.mockResolvedValue([])
     api.startTracksideApBusinessExport.mockResolvedValue(task('export-task', 'RUNNING', 'trackside_ap_business_export'))
     api.startTracksideApUpdate.mockResolvedValue(task('update-task', 'COMPLETED', 'trackside_ap_optical_update', { status: 'DONE', target_count: 1, success_count: 1 }))
     api.tracksideApBusinessDownloadRequest.mockImplementation((artifactId: string, artifactName: string) => ({
@@ -533,7 +582,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
 
     expect(api.startTracksideApUpdate).toHaveBeenLastCalledWith({})
     expect(openTaskWindow).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('任务已提交，可通过顶部任务入口查看进度')
+    expect(taskApi.listTasks).toHaveBeenCalledTimes(2)
     expect(wrapper.text()).not.toContain('轨旁 AP 任务')
     expect(wrapper.text()).not.toContain('停止、日志和恢复统一在任务窗口处理')
     expect(buttons(wrapper, '打开任务中心')).toHaveLength(0)
@@ -575,48 +624,37 @@ describe('TracksideApBusinessView mounted behavior', () => {
   })
 
   it('recovers active tasks without adding a page-level task-center entry', async () => {
-    api.recoverTracksideApTasks.mockResolvedValueOnce([task('update-running', 'RUNNING', 'trackside_ap_optical_update')])
-    localStorage.setItem(storageKey, 'update-running')
+    taskApi.listTasks.mockResolvedValueOnce([
+      globalTask('update-running', 'RUNNING'),
+    ])
     const activeWrapper = await mountView()
 
     expect(button(activeWrapper, '更新全部光衰').attributes('disabled')).toBeDefined()
-    expect(activeWrapper.text()).toContain('检测到正在运行的轨旁 AP 任务，可通过顶部任务入口查看进度')
+    expect(activeWrapper.text()).not.toContain('检测到正在运行的轨旁 AP 任务')
     expect(activeWrapper.text()).not.toContain('停止、日志和恢复统一在任务窗口处理')
     expect(buttons(activeWrapper, '打开任务中心')).toHaveLength(0)
     activeWrapper.unmount()
   })
 
-  it('does not let an export task lock update buttons and clears stale recovered tasks', async () => {
-    api.recoverTracksideApTasks.mockResolvedValueOnce([task('export-running', 'RUNNING', 'trackside_ap_business_export')])
-    localStorage.setItem(storageKey, 'export-running')
+  it('does not let a globally tracked export task lock update buttons', async () => {
+    taskApi.listTasks.mockResolvedValueOnce([
+      globalTask('export-running', 'RUNNING', 'web_export_trackside_ap_business'),
+    ])
     const exportWrapper = await mountView()
 
     expect(button(exportWrapper, '更新全部光衰').attributes('disabled')).toBeUndefined()
+    expect(button(exportWrapper, '导出表格').attributes('disabled')).toBeDefined()
     expect(buttons(exportWrapper, '打开任务中心')).toHaveLength(0)
     expect(exportWrapper.text()).not.toContain('停止、日志和恢复统一在任务窗口处理')
     exportWrapper.unmount()
-
-    api.recoverTracksideApTasks.mockResolvedValueOnce([])
-    localStorage.setItem(storageKey, 'stale-task')
-    const staleWrapper = await mountView()
-
-    expect(localStorage.getItem(storageKey)).toBeNull()
-    expect(button(staleWrapper, '更新全部光衰').attributes('disabled')).toBeUndefined()
-    expect(staleWrapper.text()).not.toContain('检测到正在运行的轨旁 AP 任务')
-    expect(staleWrapper.text()).not.toContain('轨旁 AP 任务')
-    staleWrapper.unmount()
   })
 
   it('refreshes completed update tasks without resetting filters or page', async () => {
-    vi.useFakeTimers()
     api.listTracksideApBusiness.mockResolvedValueOnce(page(rows, 1, ['01-小洋江站', '02-云龙火车站']))
     api.startTracksideApUpdate.mockResolvedValueOnce(task('update-running', 'RUNNING', 'trackside_ap_optical_update'))
-    api.getTracksideApTask.mockResolvedValueOnce(task('update-running', 'COMPLETED', 'trackside_ap_optical_update', {
-      status: 'DONE',
-      target_count: 1,
-      success_count: 1,
-      failed_count: 0,
-    }))
+    taskApi.listTasks
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([globalTask('update-running', 'RUNNING')])
     const wrapper = await mountView()
     api.listTracksideApBusiness.mockResolvedValue(page(rows, 1, ['01-小洋江站', '02-云龙火车站']))
     await wrapper.find('.station-select').setValue('02-云龙火车站')
@@ -627,10 +665,12 @@ describe('TracksideApBusinessView mounted behavior', () => {
 
     await button(wrapper, '更新全部光衰').trigger('click')
     await flushPromises()
-    await vi.advanceTimersByTimeAsync(1000)
+    taskApi.listTasks.mockResolvedValue([
+      globalTask('update-running', 'COMPLETED'),
+    ])
+    await useTaskStore().refresh()
     await flushPromises()
 
-    expect(api.getTracksideApTask).toHaveBeenCalledWith('update-running')
     expect(api.listTracksideApBusiness).toHaveBeenLastCalledWith({
       station: '02-云龙火车站',
       query: 'AP-A',
@@ -638,93 +678,19 @@ describe('TracksideApBusinessView mounted behavior', () => {
       page: 2,
       page_size: 50,
     })
-    expect(wrapper.text()).toContain('轨旁 AP 光衰数据已刷新')
-    expect(wrapper.text()).not.toContain('结果项')
-    expect(wrapper.text()).not.toContain('target_count')
+    expect(wrapper.text()).not.toContain('轨旁 AP 光衰数据已刷新')
     expect((wrapper.find('.station-select').element as HTMLSelectElement).value).toBe('02-云龙火车站')
     wrapper.unmount()
   })
 
-  it.each([
-    {
-      name: '仅忽略可选交换机分支时显示绿色成功',
-      taskStatus: 'COMPLETED',
-      summary: {
-        status: 'SUCCESS', success_count: 746, failed_count: 0, skipped_count: 1,
-        actionable_skipped_count: 0, ignored_skipped_count: 1,
-        skipped_reason_counts: { no_station_switches: 1 },
-      },
-      expected: '轨旁 AP 光衰数据已刷新：成功 746，失败 0；另有 1 项不适用或已忽略',
-      type: 'success',
-    },
-    {
-      name: '存在真实失败时显示明确成功和失败数量',
-      taskStatus: 'COMPLETED',
-      summary: {
-        status: 'PARTIAL_SUCCESS', success_count: 745, failed_count: 1,
-        actionable_skipped_count: 0, ignored_skipped_count: 0,
-      },
-      expected: '轨旁 AP 光衰数据已刷新：成功 745，失败 1，请在任务中心查看详情',
-      type: 'warning',
-    },
-    {
-      name: '存在可处理跳过时明确显示未执行数量',
-      taskStatus: 'COMPLETED',
-      summary: {
-        status: 'PARTIAL_SUCCESS', success_count: 745, failed_count: 0,
-        actionable_skipped_count: 1, ignored_skipped_count: 0,
-        skipped_reason_counts: { connection_incomplete: 1 },
-      },
-      expected: '轨旁 AP 光衰数据已刷新：成功 745，1 个目标未执行，请在任务中心查看详情',
-      type: 'warning',
-    },
-    {
-      name: '所有目标失败时显示失败数量和主要原因',
-      taskStatus: 'FAILED',
-      summary: {
-        status: 'FAILED', success_count: 0, failed_count: 746,
-        actionable_skipped_count: 0, ignored_skipped_count: 0,
-        failure_reason_counts: { fit_ap_collection_failed: 746 },
-      },
-      expected: '轨旁 AP 光衰更新失败：成功 0，失败 746；主要原因：AP 光衰采集失败，请在任务中心查看详情',
-      type: 'error',
-    },
-  ])('$name', async ({ taskStatus, summary, expected, type }) => {
-    vi.useFakeTimers()
-    api.startTracksideApUpdate.mockResolvedValueOnce(task('update-running', 'RUNNING', 'trackside_ap_optical_update'))
-    api.getTracksideApTask.mockResolvedValueOnce(task('update-running', taskStatus, 'trackside_ap_optical_update', summary))
-    const wrapper = await mountView()
-
-    await button(wrapper, '更新全部光衰').trigger('click')
-    await flushPromises()
-    await vi.advanceTimersByTimeAsync(1000)
-    await flushPromises()
-
-    const notice = wrapper.findAll('.el-alert').find((item) => item.text().includes(expected))
-    expect(notice?.attributes('data-type')).toBe(type)
-    expect(wrapper.text()).not.toContain('部分目标未成功')
-    wrapper.unmount()
-  })
-
   it('does not open a delayed Save As when a business export completes', async () => {
-    vi.useFakeTimers()
-    const expectedName = '宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx'
     api.startTracksideApBusinessExport.mockResolvedValueOnce(task('export-running', 'RUNNING', 'trackside_ap_business_export'))
-    api.getTracksideApTask.mockResolvedValueOnce({
-      ...task('export-running', 'COMPLETED', 'trackside_ap_business_export'),
-      artifact_id: 'artifact-1',
-      artifact_name: expectedName,
-      available: true,
-    })
     const wrapper = await mountView()
 
     await button(wrapper, '导出表格').trigger('click')
     await flushPromises()
-    await vi.advanceTimersByTimeAsync(1000)
-    await flushPromises()
 
     expect(platformMocks.downloadBackendResource).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('轨旁 AP 业务表格已生成')
     expect(sessionStorage.getItem('netconsole.user-selected-exports.v1')).toContain('export-running')
     expect(wrapper.text()).not.toContain('保存导出表格')
     expect(wrapper.text()).not.toContain('轨旁 AP 任务')

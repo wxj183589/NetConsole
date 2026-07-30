@@ -24,7 +24,10 @@ from netconsole.services.trackside_ap_export_service import (
     TracksideApBusinessLoadResult,
     load_trackside_ap_business_snapshot,
 )
-from netconsole.services.trackside_ap_plan_io import bind_trackside_plan_station
+from netconsole.services.trackside_ap_plan_io import (
+    bind_trackside_plan_station,
+    normalize_trackside_plan_row,
+)
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
@@ -1369,6 +1372,120 @@ def test_trackside_plan_preview_save_export_and_artifact_download(tmp_path: Path
     )
     assert roundtrip_row.planned_ap_count == 28
     assert roundtrip_row.management_vlan == 921
+
+
+@pytest.mark.parametrize(
+    ("ap_count", "management_vlan", "expected_vlan"),
+    [
+        (0, None, None),
+        (0, 71, 71),
+    ],
+)
+def test_trackside_plan_zero_count_accepts_empty_or_valid_vlan(
+    ap_count: int,
+    management_vlan: object,
+    expected_vlan: int | None,
+) -> None:
+    row = normalize_trackside_plan_row(
+        {
+            "station_id": "station-1",
+            "sequence_no": 1,
+            "station_name": "站点A",
+            "planned_ap_count": ap_count,
+            "management_vlan": management_vlan,
+        }
+    )
+
+    assert row["ap_count"] == 0
+    assert row["management_vlan"] == expected_vlan
+    assert row["ap_management_vlans"] == (
+        "" if expected_vlan is None else str(expected_vlan)
+    )
+
+
+@pytest.mark.parametrize(
+    ("ap_count", "management_vlan", "message"),
+    [
+        (1, None, "AP数量大于 0 时必填"),
+        (-1, None, "AP数量：必须是非负整数"),
+        (0, 0, "必须在 1～4094 范围内"),
+        (0, 4095, "必须在 1～4094 范围内"),
+        (0, 71.5, "AP管理VLAN：必须是整数"),
+    ],
+)
+def test_trackside_plan_rejects_invalid_count_or_vlan(
+    ap_count: int,
+    management_vlan: object,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        normalize_trackside_plan_row(
+            {
+                "station_id": "station-1",
+                "sequence_no": 1,
+                "station_name": "站点A",
+                "planned_ap_count": ap_count,
+                "management_vlan": management_vlan,
+            }
+        )
+
+
+def test_trackside_plan_import_and_save_keep_empty_vlan(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.ensure_site_dirs("demo")
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    repository = AcRepository(database)
+    _seed_base_stations(repository, ["站点A"])
+    tasks = TaskApplicationService(paths=paths, site_name="demo")
+    process = FakeLocalProcessAdapter(tasks)
+    export = FakeExportProcessAdapter(tasks)
+    service = RailTransitWebApplicationService(
+        paths,
+        tasks,
+        process_adapter=process,  # type: ignore[arg-type]
+        export_adapter=export,  # type: ignore[arg-type]
+    )
+
+    preview = service.preview_trackside_ap_plan(
+        "demo",
+        file_name="zero.csv",
+        content=(
+            "序号,车站名称,AP数量,AP管理VLAN,备注\r\n"
+            "1,站点A,0,,尚未规划\r\n"
+        ).encode("utf-8-sig"),
+        duplicate_strategy="replace",
+    )
+    assert preview.can_apply is True, [
+        (row.status, row.message, row.row) for row in preview.rows
+    ]
+    assert preview.error_count == 0
+    assert len(preview.result_rows) == 1, preview.model_dump()
+    assert preview.result_rows[0].management_vlan is None
+
+    started = service.start_trackside_ap_plan_save(
+        "demo",
+        rows=[row.model_dump() for row in preview.result_rows],
+        explicit_confirmation=True,
+    )
+    saved_row = process.jobs[started.task_id].params["rows"][0]
+
+    assert saved_row["management_vlan"] is None
+    assert saved_row["ap_management_vlans"] == ""
+
+    repository.replace_trackside_ap_plan_rows(
+        TRACKSIDE_AP_PLAN_MODE,
+        process.jobs[started.task_id].params["rows"],
+    )
+    current = service.start_trackside_ap_plan_export("demo", template=False)
+    current_job = export.jobs[current.task_id]
+    run_generic_export_handler(current_job)
+    workbook = load_workbook(current_job.output_path)
+    try:
+        assert workbook["AP规划"]["C2"].value == 0
+        assert workbook["AP规划"]["D2"].value is None
+    finally:
+        workbook.close()
 
 
 def test_legacy_grouped_trackside_plan_import_uses_station_values(

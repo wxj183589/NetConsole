@@ -10,33 +10,31 @@ import {
   UploadFilled,
   View,
 } from '@element-plus/icons-vue'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import {
   exportTracksideApPlan,
   getTracksideApOnlineStatus,
   getTracksideApPlan,
-  getTracksideApTask,
   previewTracksideApPlan,
-  recoverTracksideApTasks,
   startTracksideApUpdate,
-  tracksideApPlanDownloadRequest,
 } from '../../../api/tracksideApBusiness'
 import { apiErrorDetail, type ApiErrorDetail } from '../../../api/client'
 import { useUserSelectedExport } from '../../../composables/useUserSelectedExport'
 import { isFeatureEnabled } from '../../../features'
-import { downloadBackendResource } from '../../../platform/runtime'
+import { useTaskStore } from '../../../stores/tasks'
 import type {
   TracksideApOnlineStatus,
   TracksideApOnlineStatusRow,
   TracksideApPlanPreview,
   TracksideApPlanRow,
   TracksideApScopeExcluded,
-  TracksideApTask,
   TracksideApUnmatchedOnline,
   TracksideApUnassigned,
 } from '../../../types/tracksideApBusiness'
+import type { TaskItem } from '../../../types/task'
+import { activeTaskStatuses } from '../../../utils/taskStatus'
 import { useConfirm } from '../../feedback/useConfirm'
 import NcDataTable from '../../table/NcDataTable.vue'
 import type { NcTableColumn } from '../../table/NcTableColumn'
@@ -66,6 +64,17 @@ interface ValidationIssue {
   message: string
 }
 
+interface ValidationIssueRow {
+  id: string
+  row_number: number
+  sequence_no: number
+  station_name: string
+  field: string
+  message: string
+  suggestion: string
+  source: ValidationIssue
+}
+
 const props = withDefaults(
   defineProps<{
     locked: boolean
@@ -83,8 +92,12 @@ const emit = defineEmits<{
 const router = useRouter()
 const { confirm } = useConfirm()
 const userSelectedExport = useUserSelectedExport()
-const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
-const storageKey = 'netconsole.trackside-ap-plan.last-task'
+const taskStore = useTaskStore()
+const activeStates = new Set(activeTaskStatuses)
+const planningTaskTypes = new Set([
+  'trackside_ap_optical_update',
+  'web_export_multi_sheet_xlsx',
+])
 const rows = ref<TracksideApPlanRow[]>([])
 const baselineRows = ref<TracksideApPlanRow[]>([])
 const selectedRows = ref<TracksideApPlanRow[]>([])
@@ -95,7 +108,7 @@ const error = ref('')
 const planningError = ref<ApiErrorDetail | null>(null)
 const onlineStatusError = ref<ApiErrorDetail | null>(null)
 const dirty = ref(false)
-const task = ref<TracksideApTask | null>(null)
+const currentTaskId = ref('')
 const importInput = ref<HTMLInputElement | null>(null)
 const duplicateStrategy = ref<'replace' | 'skip' | 'error'>('replace')
 const importPreview = ref<TracksideApPlanPreview | null>(null)
@@ -105,8 +118,7 @@ const onlineStatus = ref<TracksideApOnlineStatus | null>(null)
 const unassignedVisible = ref(false)
 const excludedVisible = ref(false)
 const unmatchedVisible = ref(false)
-const downloadingArtifact = ref(false)
-let pollTimer: number | undefined
+const issuesVisible = ref(false)
 let editingBaseline:
   | { row: TracksideApPlanRow; field: EditableField; value: unknown }
   | null = null
@@ -141,6 +153,15 @@ const statusColumns: NcTableColumn<TracksideApOnlineStatusRow>[] = [
   { key: 'status', label: '状态', valueType: 'status', width: 140 },
   { key: 'remark', label: '备注', valueType: 'description', minWidth: 260, align: 'left', alignmentReason: 'long-text' },
 ]
+const issueColumns: NcTableColumn<ValidationIssueRow>[] = [
+  { key: 'row_number', label: '行号', valueType: 'number', width: 80 },
+  { key: 'sequence_no', label: '序号', valueType: 'number', width: 80 },
+  { key: 'station_name', label: '车站名称', valueType: 'name', minWidth: 180 },
+  { key: 'field', label: '字段', valueType: 'name', width: 120 },
+  { key: 'message', label: '问题', valueType: 'description', minWidth: 240, align: 'left', alignmentReason: 'long-text' },
+  { key: 'suggestion', label: '建议处理', valueType: 'description', minWidth: 260, align: 'left', alignmentReason: 'long-text' },
+  { key: 'actions', label: '操作', valueType: 'actions', width: 90, hideable: false },
+]
 
 const unassignedColumns: NcTableColumn<TracksideApUnassigned>[] = [
   { key: 'ap_name', label: 'AP名称', valueType: 'name', minWidth: 170 },
@@ -173,7 +194,12 @@ const editableFields: EditableField[] = [
   'remark',
 ]
 const canWrite = computed(() => !props.locked && !props.saving)
-const taskRunning = computed(() => Boolean(task.value && !terminalStates.has(task.value.status)))
+const currentTask = computed<TaskItem | null>(() => (
+  taskStore.tasks.find((item) => item.id === currentTaskId.value) || null
+))
+const taskRunning = computed(() => taskStore.tasks.some(
+  (item) => planningTaskTypes.has(item.type) && activeStates.has(item.status),
+))
 const orderedRows = computed(() => [...rows.value].sort(compareRows))
 const orderedStations = computed(() => [...props.stations].sort(
   (left, right) => (left.sort_order ?? Number.MAX_SAFE_INTEGER)
@@ -183,6 +209,18 @@ const orderedStations = computed(() => [...props.stations].sort(
 
 const validationIssues = computed<ValidationIssue[]>(() => validateRows(rows.value))
 const validationCount = computed(() => validationIssues.value.length)
+const validationIssueRows = computed<ValidationIssueRow[]>(() => validationIssues.value.map(
+  (issue, index) => ({
+    id: `${rows.value.indexOf(issue.row)}:${issue.field}:${index}`,
+    row_number: rows.value.indexOf(issue.row) + 1,
+    sequence_no: issue.row.sequence_no,
+    station_name: issue.row.station_name,
+    field: fieldLabel(issue.field),
+    message: issue.message,
+    suggestion: issueSuggestion(issue),
+    source: issue,
+  }),
+))
 const canApplyImport = computed(
   () => importRows.value.some((row) => validateRows([row]).length === 0),
 )
@@ -255,7 +293,7 @@ function hydrateStation(row: TracksideApPlanRow): void {
 }
 
 function mergePlanRows(sourceRows: TracksideApPlanRow[]): TracksideApPlanRow[] {
-  const merged: TracksideApPlanRow[] = sourceRows.map((source, index) => {
+  return sourceRows.map((source, index) => {
     const row = {
       ...source,
       sequence_no: Number(source.sequence_no) || index + 1,
@@ -263,48 +301,7 @@ function mergePlanRows(sourceRows: TracksideApPlanRow[]): TracksideApPlanRow[] {
     }
     hydrateStation(row)
     return row
-  })
-  const represented = new Set(
-    merged
-      .filter((row) => row.station_match_status === 'matched')
-      .map((row) => row.station_id),
-  )
-  for (const [index, station] of orderedStations.value.entries()) {
-    if (represented.has(station.id)) continue
-    merged.push({
-      station_id: station.id,
-      sequence_no: Number(station.sort_order) || index + 1,
-      station_name: station.name,
-      planned_ap_count: 0,
-      management_vlan: null,
-      remark: '',
-      station_match_status: 'matched',
-    })
-  }
-  return merged.sort(compareRows)
-}
-
-function appendMissingStationRows(sourceRows: TracksideApPlanRow[]): TracksideApPlanRow[] {
-  const merged = [...sourceRows]
-  const represented = new Set(
-    merged
-      .filter((row) => row.station_id)
-      .map((row) => row.station_id),
-  )
-  for (const [index, station] of orderedStations.value.entries()) {
-    if (represented.has(station.id)) continue
-    merged.push({
-      station_id: station.id,
-      sequence_no: Number(station.sort_order) || index + 1,
-      station_name: station.name,
-      planned_ap_count: 0,
-      management_vlan: null,
-      remark: '',
-      station_match_status: 'matched',
-    })
-    represented.add(station.id)
-  }
-  return merged.sort(compareRows)
+  }).sort(compareRows)
 }
 
 async function loadPlan(force = false): Promise<boolean> {
@@ -404,6 +401,28 @@ function stationChanged(row: TracksideApPlanRow): void {
   publishDirty()
 }
 
+function stationOptionDisabled(station: StationOption, current: TracksideApPlanRow): boolean {
+  return rows.value.some((row) => row !== current && row.station_id === station.id)
+}
+
+function fieldLabel(field: EditableField): string {
+  return {
+    sequence_no: '序号',
+    station_name: '车站名称',
+    planned_ap_count: 'AP数量',
+    management_vlan: 'AP管理VLAN',
+    remark: '备注',
+  }[field]
+}
+
+function issueSuggestion(issue: ValidationIssue): string {
+  if (issue.field === 'sequence_no') return '填写不重复的正整数序号；序号可不连续。'
+  if (issue.field === 'station_name') return '从当前基础资料站点中重新选择，或删除该规划行。'
+  if (issue.field === 'planned_ap_count') return '填写大于或等于 0 的整数。'
+  if (issue.field === 'management_vlan') return 'AP 数量大于 0 时填写 1～4094 的整数。'
+  return '修正当前字段后重新校验。'
+}
+
 function cellError(row: TracksideApPlanRow, field: EditableField): string {
   return validationIssues.value.find(
     (issue) => issue.row === row && issue.field === field,
@@ -431,12 +450,19 @@ function validateRows(source: TracksideApPlanRow[]): ValidationIssue[] {
     } else {
       stationIds.set(row.station_id, (stationIds.get(row.station_id) || 0) + 1)
     }
-    if (!Number.isInteger(Number(row.planned_ap_count)) || Number(row.planned_ap_count) < 0) {
+    const plannedApCount = Number(row.planned_ap_count)
+    if (!Number.isInteger(plannedApCount) || plannedApCount < 0) {
       issues.push({ row, field: 'planned_ap_count', message: 'AP数量必须是非负整数' })
     }
-    if (!Number.isInteger(Number(row.management_vlan))
+    const vlanMissing = row.management_vlan === null
+      || row.management_vlan === undefined
+    if (vlanMissing && plannedApCount > 0) {
+      issues.push({ row, field: 'management_vlan', message: 'AP数量大于 0 时必须填写 VLAN' })
+    } else if (!vlanMissing && (
+      !Number.isInteger(Number(row.management_vlan))
       || Number(row.management_vlan) < 1
-      || Number(row.management_vlan) > 4094) {
+      || Number(row.management_vlan) > 4094
+    )) {
       issues.push({ row, field: 'management_vlan', message: 'VLAN 必须在 1～4094 范围内' })
     }
   }
@@ -665,8 +691,8 @@ async function exportPlan(template: boolean): Promise<void> {
       submit: () => exportTracksideApPlan(template),
     })
     if (result.status === 'cancelled') return
-    await handleTaskUpdate(result.task)
-    poll()
+    currentTaskId.value = result.task.task_id
+    await taskStore.refresh()
   } catch (reason) {
     error.value = failure(reason, template ? '规划模板导出启动失败' : '轨旁 AP 规划导出启动失败')
   } finally {
@@ -680,94 +706,21 @@ async function refreshOnlineStatus(): Promise<void> {
   error.value = ''
   try {
     const started = await startTracksideApUpdate({})
-    await handleTaskUpdate(started)
-    poll()
+    currentTaskId.value = started.task_id
+    await taskStore.refresh()
+    if (!currentTask.value || !activeStates.has(currentTask.value.status)) {
+      statusLoading.value = false
+    }
   } catch (reason) {
     error.value = failure(reason, '上线状态刷新启动失败')
     statusLoading.value = false
   }
 }
 
-function stopPolling(): void {
-  if (pollTimer !== undefined) window.clearTimeout(pollTimer)
-  pollTimer = undefined
-}
-
-function poll(): void {
-  stopPolling()
-  if (!task.value || terminalStates.has(task.value.status)) return
-  pollTimer = window.setTimeout(async () => {
-    try {
-      const latest = await getTracksideApTask(task.value!.task_id)
-      await handleTaskUpdate(latest)
-      poll()
-    } catch (reason) {
-      error.value = failure(reason, '轨旁 AP 任务状态读取失败')
-      statusLoading.value = false
-    }
-  }, 1000)
-}
-
-function rememberTask(value: TracksideApTask | null): void {
-  task.value = value
-  if (value) localStorage.setItem(storageKey, value.task_id)
-  else localStorage.removeItem(storageKey)
-}
-
-async function handleTaskUpdate(value: TracksideApTask): Promise<void> {
-  rememberTask(value)
-  if (!terminalStates.has(value.status)) return
-  if (value.status === 'COMPLETED' && value.action === 'trackside_ap_optical_update') {
-    await loadOnlineStatus()
-  } else if (value.status === 'FAILED') {
-    error.value = value.error_message || '轨旁 AP 任务失败'
-  } else if (value.status === 'CANCELLED') {
-    error.value = '轨旁 AP 任务已取消'
-  }
-  statusLoading.value = false
-}
-
-async function recoverTasks(): Promise<void> {
-  try {
-    const recovered = await recoverTracksideApTasks()
-    const saved = localStorage.getItem(storageKey) || ''
-    rememberTask(
-      recovered.find((item) => item.task_id === saved)
-      || recovered.find((item) => !terminalStates.has(item.status))
-      || null,
-    )
-    poll()
-  } catch (reason) {
-    error.value = failure(reason, '轨旁 AP 任务恢复失败')
-  }
-}
-
-function openTaskWindow(): void {
-  const taskId = task.value?.task_id || ''
-  if (window.netconsoleDesktop) {
-    void window.netconsoleDesktop.openTaskWindow({ module: 'rail', ...(taskId ? { taskId } : {}) })
-    return
-  }
-  void router.push({ name: 'tasks', query: { module: 'rail', ...(taskId ? { task_id: taskId } : {}) } })
-}
-
-async function downloadArtifact(): Promise<void> {
-  const current = task.value
-  if (!current || current.status !== 'COMPLETED' || !current.available || !current.artifact_id) return
-  const suggestedName = current.artifact_name || '轨旁AP规划及上线概览.xlsx'
-  downloadingArtifact.value = true
-  try {
-    const result = await downloadBackendResource(
-      tracksideApPlanDownloadRequest(current.artifact_id, suggestedName),
-    )
-    if (result.status === 'saved') ElMessage.success(`已保存 ${suggestedName}`)
-    else if (result.status === 'started') ElMessage.info(`浏览器已开始下载 ${suggestedName}`)
-    else if (result.status === 'failed') ElMessage.error(result.error || '轨旁 AP 规划文件下载失败')
-  } catch (reason) {
-    ElMessage.error(failure(reason, '轨旁 AP 规划文件下载失败'))
-  } finally {
-    downloadingArtifact.value = false
-  }
+function focusIssue(issue: ValidationIssue): void {
+  issuesVisible.value = false
+  activeView.value = 'plan'
+  void nextTick(() => focusCell(issue.row, issue.field))
 }
 
 function exportDate(now = new Date()): string {
@@ -809,29 +762,36 @@ watch(() => props.stations, () => {
     emit('change', deepCopy(rows.value), false)
     return
   }
-  const withMissingStations = appendMissingStationRows(rows.value)
-  if (withMissingStations.length !== rows.value.length) {
-    rows.value = withMissingStations
-    emit('change', deepCopy(rows.value), true)
-  }
   let changed = false
   for (const row of rows.value) {
-    if (!row.station_id) continue
-    const station = props.stations.find((item) => item.id === row.station_id)
-    if (station && (station.name !== row.station_name || row.station_match_status !== 'matched')) {
-      row.station_name = station.name
-      row.station_match_status = 'matched'
-      changed = true
-    }
+    const previous = `${row.station_id}\u0000${row.station_name}\u0000${row.station_match_status}`
+    hydrateStation(row)
+    changed = changed
+      || previous !== `${row.station_id}\u0000${row.station_name}\u0000${row.station_match_status}`
   }
   if (changed) publishDirty()
 }, { deep: true })
 
+watch(
+  () => currentTask.value?.status,
+  (status, previousStatus) => {
+    if (currentTask.value?.type !== 'trackside_ap_optical_update' || !status) return
+    if (!activeStates.has(status)) statusLoading.value = false
+    if (status === 'COMPLETED' && previousStatus !== 'COMPLETED') void loadOnlineStatus()
+  },
+)
+
 defineExpose({ reload })
 onMounted(() => {
-  void Promise.all([reload(true), recoverTasks()])
+  void Promise.all([
+    reload(true),
+    taskStore.refresh().then(() => {
+      currentTaskId.value = taskStore.tasks.find(
+        (item) => planningTaskTypes.has(item.type) && activeStates.has(item.status),
+      )?.id || ''
+    }),
+  ])
 })
-onBeforeUnmount(stopPolling)
 </script>
 
 <template>
@@ -871,7 +831,7 @@ onBeforeUnmount(stopPolling)
           <el-button :icon="Download" :disabled="!isFeatureEnabled('web.rail_trackside_ap_plan_export') || taskRunning" @click="exportPlan(true)">下载模板</el-button>
           <el-button :icon="UploadFilled" :disabled="props.saving || taskRunning" @click="importInput?.click()">导入并预览</el-button>
           <el-button :icon="Download" :disabled="!isFeatureEnabled('web.rail_trackside_ap_plan_export') || taskRunning" @click="exportPlan(false)">导出当前</el-button>
-          <el-button v-if="validationCount" type="danger" plain @click="focusFirstError">有 {{ validationCount }} 项需要修正</el-button>
+          <el-button v-if="validationCount" type="danger" plain @click="issuesVisible = true">有 {{ validationCount }} 项需要修正</el-button>
           <span class="dirty-state">{{ dirty ? '有未保存修改' : `已加载 ${rows.length} 行` }}</span>
         </div>
 
@@ -918,7 +878,13 @@ onBeforeUnmount(stopPolling)
                   @keydown.enter.prevent="focusNextRow(row, 'station_name')"
                   @keydown.esc.prevent="cancelCellEdit(row, 'station_name')"
                 >
-                  <el-option v-for="station in orderedStations" :key="station.id" :label="station.name" :value="station.name" />
+                <el-option
+                  v-for="station in orderedStations"
+                  :key="station.id"
+                  :label="station.name"
+                  :value="station.name"
+                  :disabled="stationOptionDisabled(station, row)"
+                />
                 </el-select>
                 <span v-else>{{ row.station_name }}</span>
                 <el-tag v-if="row.station_match_status === 'unmatched'" type="danger" size="small">未匹配当前站点</el-tag>
@@ -1069,16 +1035,6 @@ onBeforeUnmount(stopPolling)
       </el-tab-pane>
     </el-tabs>
 
-    <el-alert
-      v-if="task"
-      :title="`${task.status} · ${task.message || task.task_id}`"
-      :type="task.error_message ? 'error' : 'info'"
-      :closable="false"
-    >
-      <el-button v-if="task.available && task.artifact_id" link type="primary" :loading="downloadingArtifact" @click="downloadArtifact">下载文件</el-button>
-      <el-button link @click="openTaskWindow">打开任务中心</el-button>
-    </el-alert>
-
     <el-dialog v-model="importPreviewVisible" title="导入预览" width="min(1180px, 94vw)" destroy-on-close>
       <div v-if="importPreview" class="preview">
         <el-alert v-if="importPreview.legacy_schema" :title="importPreview.message" type="warning" :closable="false" show-icon />
@@ -1127,6 +1083,22 @@ onBeforeUnmount(stopPolling)
         <el-button @click="importPreviewVisible = false">取消</el-button>
         <el-button type="primary" :disabled="!canApplyImport || !canWrite" @click="applyImportPreview">应用有效行</el-button>
       </template>
+    </el-dialog>
+
+    <el-dialog v-model="issuesVisible" title="规划问题明细" width="min(1180px, 94vw)">
+      <NcDataTable
+        table-id="rail-base-trackside-ap-plan-issues"
+        route-key="/rail-transit/base-data"
+        :data="validationIssueRows"
+        :columns="issueColumns"
+        border
+        height="460"
+        empty-text="当前没有规划问题"
+      >
+        <template #cell-actions="{ row }">
+          <el-button link type="primary" @click="focusIssue(row.source)">定位</el-button>
+        </template>
+      </NcDataTable>
     </el-dialog>
 
     <el-dialog v-model="unassignedVisible" title="未分配站点 AP" width="min(900px, 92vw)">

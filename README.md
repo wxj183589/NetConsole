@@ -2,7 +2,9 @@
 
 NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，当前重点覆盖 H3C/Comware 设备管理、AC/FIT AP、轨道交通无线与车内通信检测、网络测试、配置采集、文件管理和日志诊断。设备管理保留 SNMP v1/v2c 只读基础识别；不提供 SNMPv3、通用 MIB/OID 平台或 SNMP Center。
 
-当前版本：`v1.4.6`。版本唯一来源为 `src/netconsole/core/version.py`；本文只同步展示该事实源。
+当前版本：`v1.4.6`。版本唯一来源为 `src/netconsole/core/version.py`；本文只同步展示该事实源。`apps/web/package.json` 中的 `0.1.0` 仅是内部 workspace 包版本，不是产品版本。
+
+Windows Server 2012 x64 兼容事实（2026-07-30）：主程序和独立 Agent 均有用户现场运行确认，证据等级为 `USER_FIELD_CONFIRMED`；仓库没有隔离 Windows Server 2012 自动化 VM 记录，自动化证据记为 `AUTOMATION_NOT_RECORDED`。这两项事实不等同于正式安装包 GUI 验收通过，产品不增加按操作系统阻断启动的逻辑。
 
 局点、新建/切换、全局数据根迁移、备份恢复和数据包导入导出由 Python Core 统一管理。设置页支持完整迁移包、脱敏分享包、现场采集包和采集回传包；`full_migration` 是无需迁移密码的普通 ZIP 完整包，直接包含局点数据库及设备用户名、密码、SNMP community 和隧道凭据，界面会明确警告只能保存到可信位置。只有脱敏/现场/回传及旧无凭据包会清除秘密并要求重新录入。回传包按稳定局点 UUID、文件 SHA-256 和可识别记录 UUID 预检合并，绝不以局点名称或本地自增 ID 覆盖数据。Electron 只通过版本化 API 和白名单 Native Bridge 操作。完整约束见 [局点与数据存储](docs/storage/README.md)。
 
@@ -41,7 +43,7 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 | 日志 | `module.logs` | 应用日志查看与导出 |
 | 系统设置 | `module.system_settings` | 局点、主题、工具路径、磁盘清理和版本信息 |
 
-模块、页面、Tab、动作和按钮的真实启用状态以 `src/netconsole/core/feature_registry.py` 为准。新增用户可见能力必须先登记 Feature key，再由页面通过 `FeatureGate` 控制。
+模块、页面、Tab、动作和按钮的真实启用状态以 `src/netconsole/core/feature_registry.py` 为准。新增用户可见能力必须先登记 Feature key，再由页面通过 `FeatureGate` 控制。入口实现、自动化、Electron 人工、真实设备/局点和正式包五个验收维度见[迁移矩阵事实维度表](docs/architecture/MIGRATION_MATRIX.md#事实维度验收矩阵)；`FeatureStatus` 和 Navigation `parity_state` 不替代这些验收结论。
 
 源码开发态继续提供全局运行时功能配置、变更预览和恢复能力；`client_package/internal_only` 只读展示，保存仅写应用数据根中的 `visible/enabled` 覆盖，不修改发布 profile。正式 Electron 包采用不可编辑的固定生产功能集，不显示或调用功能配置入口。打包基线缺失或损坏时回退到 Feature Registry 的稳定生产默认，而不是关闭全部功能。系统设置、局点与数据管理、任务中心和运行日志属于正式包核心能力，不依赖 customer profile 或本地 override；`client_package` 只表达构建选择/发布元数据，不作为正式运行时的通用权限开关。
 

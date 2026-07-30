@@ -1126,7 +1126,12 @@ class RailTransitBaseDataRepository:
                 station_id = str(row.get("station_id") or "")
                 station_name = str(row.get("station_name") or "")
                 sequence_no = int(row.get("sequence_no") or 0)
-                management_vlan = int(row.get("management_vlan") or 0)
+                raw_management_vlan = row.get("management_vlan")
+                management_vlan = (
+                    None
+                    if raw_management_vlan in (None, "")
+                    else int(raw_management_vlan)
+                )
                 created_at = existing_created_at.get(
                     (station_id, station_name.casefold()),
                     now,
@@ -1147,7 +1152,7 @@ class RailTransitBaseDataRepository:
                         row.get("mask_length"),
                         str(row.get("ap_gateway") or ""),
                         management_vlan,
-                        str(management_vlan),
+                        "" if management_vlan is None else str(management_vlan),
                         str(row.get("remark") or ""),
                         sequence_no - 1,
                         created_at,

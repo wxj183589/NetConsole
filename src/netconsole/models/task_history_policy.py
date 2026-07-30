@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass
 from typing import Any
 
 from netconsole.models.task_state import TaskState
@@ -23,9 +25,168 @@ TERMINAL_TASK_STATE_VALUES = frozenset(
 )
 
 
+@dataclass(frozen=True)
+class BusinessResultProjection:
+    """任务结果的只读兼容投影，不改变 Worker 的七状态生命周期。"""
+
+    business_status: str = ""
+    success_count: int = 0
+    failed_count: int = 0
+    skipped_count: int = 0
+    warning_count: int = 0
+    partial_success: bool = False
+    primary_failure_reason: str = ""
+
+
+_BUSINESS_STATUS_ALIASES = {
+    "COMPLETED": "SUCCESS",
+    "DONE": "SUCCESS",
+    "OK": "SUCCESS",
+    "NO_TARGET": "NO_EFFECTIVE_TARGET",
+    "NO_TARGETS": "NO_EFFECTIVE_TARGET",
+    "NO_EFFECTIVE_TARGET": "NO_EFFECTIVE_TARGET",
+    "NO_DATA": "NO_EFFECTIVE_TARGET",
+    "PARTIAL": "PARTIAL_SUCCESS",
+    "PARTIAL_FAILED": "PARTIAL_SUCCESS",
+    "PARTIAL_SUCCESS": "PARTIAL_SUCCESS",
+    "SUCCESS": "SUCCESS",
+    "WARNING": "WARNING",
+    "ERROR": "FAILED",
+    "FAILED": "FAILED",
+    "CANCELLED": "CANCELLED",
+}
+
+
+def project_business_result(
+    result: Mapping[str, Any] | None,
+    *,
+    lifecycle_status: str = "",
+    error_message: str = "",
+) -> BusinessResultProjection:
+    """将历史/异构任务结果投影成稳定的 Job Center 业务字段。
+
+    结果只在查询时读取。特别是旧的 ``NO_TARGET`` 仅映射为
+    ``NO_EFFECTIVE_TARGET``，不会回写任务数据库。
+    """
+
+    source = dict(result or {})
+    nested = _nested_business_result(source)
+    # 顶层字段优先，旧 handler 的 collection/summary 作为兼容回退。
+    merged = {**nested, **source}
+    lifecycle = str(lifecycle_status or "").upper()
+    raw_status = _first_text(
+        merged,
+        "business_status",
+        "business_outcome",
+        "status",
+        "outcome",
+    ).upper()
+    business_status = (
+        _BUSINESS_STATUS_ALIASES.get(raw_status, "UNKNOWN")
+        if raw_status
+        else ""
+    )
+
+    success_count = _count(
+        merged,
+        "success_count",
+        "succeeded_count",
+        "successful_count",
+        "completed_count",
+        "processed_count",
+        "deleted",
+        "success",
+    )
+    failed_count = _count(
+        merged,
+        "failed_count",
+        "failure_count",
+        "failed",
+        "errors_count",
+        "rejected_count",
+    )
+    skipped_count = _count(
+        merged,
+        "skipped_count",
+        "actionable_skipped_count",
+        "skipped",
+        "not_executed_count",
+    )
+    warning_count = _count(
+        merged,
+        "warning_count",
+        "warnings_count",
+        "warnings",
+    )
+    partial_success = bool(merged.get("partial_success") is True)
+
+    if not business_status:
+        if lifecycle == "CANCELLED":
+            business_status = "CANCELLED"
+        elif lifecycle == "FAILED":
+            business_status = "FAILED"
+        elif lifecycle == "COMPLETED":
+            if success_count > 0 and (failed_count > 0 or skipped_count > 0):
+                business_status = "PARTIAL_SUCCESS"
+            elif failed_count > 0:
+                business_status = "FAILED"
+            elif warning_count > 0:
+                business_status = "WARNING"
+            elif skipped_count > 0 and success_count == 0:
+                business_status = "NO_EFFECTIVE_TARGET"
+            elif source:
+                business_status = "SUCCESS"
+            else:
+                business_status = "UNKNOWN"
+        elif lifecycle in ACTIVE_TASK_STATE_VALUES:
+            business_status = ""
+        else:
+            business_status = "UNKNOWN" if source else ""
+
+    if business_status == "PARTIAL_SUCCESS":
+        partial_success = True
+    elif (
+        lifecycle == "COMPLETED"
+        and success_count > 0
+        and (failed_count > 0 or skipped_count > 0)
+    ):
+        partial_success = True
+
+    primary_failure_reason = _first_text(
+        merged,
+        "primary_failure_reason",
+        "failure_reason",
+        "error_code",
+        "error",
+        "error_message",
+        "reason",
+    )
+    if not primary_failure_reason:
+        primary_failure_reason = _dominant_reason(
+            merged.get("failure_reason_counts")
+        )
+    if not primary_failure_reason:
+        primary_failure_reason = _dominant_reason(
+            merged.get("skipped_reason_counts")
+        )
+    if not primary_failure_reason and lifecycle == "FAILED":
+        primary_failure_reason = str(error_message or "").strip()
+
+    return BusinessResultProjection(
+        business_status=business_status,
+        success_count=success_count,
+        failed_count=failed_count,
+        skipped_count=skipped_count,
+        warning_count=warning_count,
+        partial_success=partial_success,
+        primary_failure_reason=primary_failure_reason,
+    )
+
+
 def business_result_has_warning(result: dict[str, Any]) -> bool:
     if not result:
         return False
+    result = {**_nested_business_result(result), **result}
     outcome = str(
         result.get("business_outcome")
         or result.get("status")
@@ -45,6 +206,55 @@ def business_result_has_warning(result: dict[str, Any]) -> bool:
             if _optional_int(summary.get(key)) > 0:
                 return True
     return False
+
+
+def _nested_business_result(source: Mapping[str, Any]) -> dict[str, Any]:
+    for key in ("business_result", "collection", "summary"):
+        value = source.get(key)
+        if isinstance(value, Mapping):
+            return dict(value)
+    return {}
+
+
+def _count(source: Mapping[str, Any], *keys: str) -> int:
+    for key in keys:
+        value = source.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (list, tuple, set)):
+            return len(value)
+        try:
+            if value not in (None, ""):
+                return max(0, int(value))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _first_text(source: Mapping[str, Any], *keys: str) -> str:
+    return next(
+        (
+            str(source[key]).strip()
+            for key in keys
+            if source.get(key) not in (None, "")
+            and not isinstance(source.get(key), (dict, list, tuple, set))
+        ),
+        "",
+    )
+
+
+def _dominant_reason(value: object) -> str:
+    if not isinstance(value, Mapping):
+        return ""
+    candidates: list[tuple[int, str]] = []
+    for key, count in value.items():
+        try:
+            parsed = int(count)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            candidates.append((parsed, str(key)))
+    return max(candidates, key=lambda item: (item[0], item[1]))[1] if candidates else ""
 
 
 def task_requires_attention(
@@ -124,8 +334,10 @@ def _optional_int(value: object) -> int:
 
 __all__ = [
     "ACTIVE_TASK_STATE_VALUES",
+    "BusinessResultProjection",
     "TERMINAL_TASK_STATE_VALUES",
     "business_result_has_warning",
+    "project_business_result",
     "task_expires_at",
     "task_requires_attention",
     "utc_time_reached",

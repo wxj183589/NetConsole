@@ -20,6 +20,10 @@ import {
 import { t } from '../i18n/runtime'
 
 const DESKTOP_SESSION_HEADER = 'X-NetConsole-Session'
+const DEFAULT_QUERY_TIMEOUT_MS = 15_000
+const QUERY_MAX_ATTEMPTS = 2
+const QUERY_RETRY_BASE_DELAY_MS = 150
+const RETRYABLE_QUERY_STATUSES = new Set([502, 503, 504])
 
 export class ApiRequestError extends Error {
   constructor(message: string, readonly status: number, readonly code = '', readonly details: Record<string, unknown> = {}) {
@@ -126,6 +130,103 @@ async function readJsonResponse<T>(
   }
 }
 
+function requestAbortedError(path: string): ApiRequestError {
+  const aborted = new ApiRequestError(
+    t('api.request_cancelled', '请求已取消'),
+    0,
+    'REQUEST_ABORTED',
+    { path },
+  )
+  aborted.name = 'AbortError'
+  return aborted
+}
+
+function requestTimeoutError(path: string): ApiRequestError {
+  return new ApiRequestError(
+    t('api.request_timeout', '请求超时，请重试。'),
+    0,
+    'REQUEST_TIMEOUT',
+    {
+      path,
+      timeout_ms: DEFAULT_QUERY_TIMEOUT_MS,
+      original_message: `Request timed out after ${DEFAULT_QUERY_TIMEOUT_MS}ms`,
+    },
+  )
+}
+
+function networkRequestError(path: string, cause: unknown): ApiRequestError {
+  const networkMessage = cause instanceof Error ? cause.message : String(cause)
+  const code = /backend restart|process exited/i.test(networkMessage)
+    ? 'BACKEND_RESTARTED'
+    : /timeout|timed out/i.test(networkMessage)
+    ? 'RAW_QUERY_TIMEOUT'
+    : /connection reset|econnreset|socket hang up/i.test(networkMessage)
+    ? 'CONNECTION_RESET'
+    : 'BACKEND_CONNECTION_INTERRUPTED'
+  return new ApiRequestError(
+    t('api.backend_connection_interrupted', 'Backend 连接中断，请重试。'),
+    0,
+    code,
+    {
+      path,
+      network_error: networkMessage,
+    },
+  )
+}
+
+async function fetchWithQueryTimeout(
+  url: string,
+  path: string,
+  options: RequestInit,
+  queryRequest: boolean,
+): Promise<Response> {
+  const externalSignal = options.signal
+  if (externalSignal?.aborted) throw requestAbortedError(path)
+
+  const controller = new AbortController()
+  let timedOut = false
+  const abortFromCaller = () => controller.abort(externalSignal?.reason)
+  externalSignal?.addEventListener('abort', abortFromCaller, { once: true })
+  const timeoutId = queryRequest
+    ? setTimeout(() => {
+        timedOut = true
+        controller.abort()
+      }, DEFAULT_QUERY_TIMEOUT_MS)
+    : undefined
+
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    })
+  } catch (cause) {
+    if (externalSignal?.aborted) throw requestAbortedError(path)
+    if (timedOut) throw requestTimeoutError(path)
+    if (cause instanceof Error && cause.name === 'AbortError') throw requestAbortedError(path)
+    throw networkRequestError(path, cause)
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId)
+    externalSignal?.removeEventListener('abort', abortFromCaller)
+  }
+}
+
+function waitForQueryRetry(path: string, attempt: number, signal?: AbortSignal | null): Promise<void> {
+  if (signal?.aborted) return Promise.reject(requestAbortedError(path))
+  const delayMs = QUERY_RETRY_BASE_DELAY_MS * (2 ** (attempt - 1))
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      signal?.removeEventListener('abort', abortFromCaller)
+      resolve()
+    }, delayMs)
+    const abortFromCaller = () => {
+      clearTimeout(timeoutId)
+      signal?.removeEventListener('abort', abortFromCaller)
+      reject(requestAbortedError(path))
+    }
+    signal?.addEventListener('abort', abortFromCaller, { once: true })
+  })
+}
+
 export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers)
   const runtime = getRuntimeConfig()
@@ -133,64 +234,62 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
   if (!formData && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
   if (runtime.apiToken) headers.set(DESKTOP_SESSION_HEADER, runtime.apiToken)
   const url = resolveApiUrl(path)
-  let response: Response
-  try {
-    response = await fetch(url, {
-      ...options,
-      headers,
-      credentials: options.credentials ?? (runtime.hostType === 'electron' ? 'include' : 'same-origin'),
-    })
-  } catch (cause) {
-    if (cause instanceof Error && cause.name === 'AbortError') {
-      const aborted = new ApiRequestError(
-        t('api.request_cancelled', '请求已取消'),
-        0,
-        'REQUEST_ABORTED',
-        { path },
-      )
-      aborted.name = 'AbortError'
-      throw aborted
-    }
-    console.error('API_REQUEST_NETWORK_FAILED', {
-      path,
-      error: cause instanceof Error ? cause.message : String(cause),
-    })
-    const networkMessage = cause instanceof Error ? cause.message : String(cause)
-    const code = /backend restart|process exited/i.test(networkMessage)
-      ? 'BACKEND_RESTARTED'
-      : /timeout|timed out/i.test(networkMessage)
-      ? 'RAW_QUERY_TIMEOUT'
-      : /connection reset|econnreset|socket hang up/i.test(networkMessage)
-      ? 'CONNECTION_RESET'
-      : 'BACKEND_CONNECTION_INTERRUPTED'
-    throw new ApiRequestError(
-      t('api.backend_connection_interrupted', 'Backend 连接中断，请重试。'),
-      0,
-      code,
-      {
-        path,
-        network_error: networkMessage,
-      },
-    )
+  const method = (options.method || 'GET').toUpperCase()
+  const queryRequest = method === 'GET' || method === 'HEAD'
+  const attempts = queryRequest ? QUERY_MAX_ATTEMPTS : 1
+  const requestOptions: RequestInit = {
+    ...options,
+    headers,
+    credentials: options.credentials ?? (runtime.hostType === 'electron' ? 'include' : 'same-origin'),
   }
+  let response: Response | undefined
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      response = await fetchWithQueryTimeout(url, path, requestOptions, queryRequest)
+    } catch (reason) {
+      if (
+        queryRequest
+        && attempt < attempts
+        && reason instanceof ApiRequestError
+        && reason.code !== 'REQUEST_ABORTED'
+      ) {
+        await waitForQueryRetry(path, attempt, options.signal)
+        continue
+      }
+      if (reason instanceof ApiRequestError && !['REQUEST_ABORTED', 'REQUEST_TIMEOUT'].includes(reason.code)) {
+        console.error('API_REQUEST_NETWORK_FAILED', {
+          path,
+          error: String(reason.details.network_error || reason.details.original_message || reason.message),
+        })
+      }
+      throw reason
+    }
+    if (!RETRYABLE_QUERY_STATUSES.has(response.status) || attempt === attempts) break
+    await waitForQueryRetry(path, attempt, options.signal)
+  }
+
+  if (!response) throw networkRequestError(path, 'Request failed without a response')
   if (!response.ok) {
     let message = `${t('api.request_failed', '请求失败')} (${response.status})`
     let code = ''
     let details: Record<string, unknown> = {}
-    try {
-      const body = await readJsonResponse<{
-        detail?: string | { code?: string; message?: string; details?: Record<string, unknown> }
-        error?: { code?: string; message?: string; details?: Record<string, unknown> }
-      }>(response, path, 'HTTP_ERROR')
-      const detail = typeof body.detail === 'string' ? null : body.detail
-      message = typeof body.detail === 'string' ? body.detail : detail?.message || body.error?.message || message
-      code = detail?.code || body.error?.code || ''
-      details = detail?.details || body.error?.details || {}
-    } catch (reason) {
-      if (reason instanceof ApiRequestError) {
-        message = reason.message
-        code = reason.code
-        details = reason.details
+    if (method !== 'HEAD') {
+      try {
+        const body = await readJsonResponse<{
+          detail?: string | { code?: string; message?: string; details?: Record<string, unknown> }
+          error?: { code?: string; message?: string; details?: Record<string, unknown> }
+        }>(response, path, 'HTTP_ERROR')
+        const detail = typeof body.detail === 'string' ? null : body.detail
+        message = typeof body.detail === 'string' ? body.detail : detail?.message || body.error?.message || message
+        code = detail?.code || body.error?.code || ''
+        details = detail?.details || body.error?.details || {}
+      } catch (reason) {
+        if (reason instanceof ApiRequestError) {
+          message = reason.message
+          code = reason.code
+          details = reason.details
+        }
       }
     }
     throw new ApiRequestError(message, response.status, code || 'HTTP_ERROR', {
@@ -200,6 +299,7 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
       original_message: details.original_message || message,
     })
   }
+  if (method === 'HEAD') return undefined as T
   return readJsonResponse<T>(response, path, 'INVALID_JSON_RESPONSE')
 }
 
