@@ -637,6 +637,53 @@ describe('TracksideApPlanningTab behavior', () => {
     wrapper.unmount()
   })
 
+  it('keeps the editable plan when online status loading fails and clears only that error after recovery', async () => {
+    api.getTracksideApPlan.mockResolvedValue({
+      ...emptyPlan(),
+      items: [planRow({ planned_ap_count: 28 })],
+      total: 1,
+    })
+    api.getTracksideApOnlineStatus
+      .mockRejectedValueOnce(new Error('connection reset'))
+      .mockResolvedValueOnce(emptyStatus())
+    api.startTracksideApUpdate.mockResolvedValue(
+      task(
+        'refresh-status',
+        'COMPLETED',
+        false,
+        '',
+        '',
+        'trackside_ap_optical_update',
+      ),
+    )
+    const wrapper = mount(TracksideApPlanningTab, {
+      props: {
+        locked: false,
+        saving: false,
+        stations: [{ id: 'station:1', name: '小洋江站', sort_order: 1 }],
+      },
+      global: { stubs },
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('AP 上线状态刷新失败，已保留最后成功数据。')
+    expect(wrapper.text()).not.toContain('轨旁 AP 规划刷新失败')
+    expect(wrapper.text()).not.toContain('项需要修正')
+    const countInput = wrapper.find('[data-plan-cell="0-planned_ap_count"] input')
+    expect((countInput.element as HTMLInputElement).value).toBe('28')
+    await countInput.setValue('29')
+    expect((countInput.element as HTMLInputElement).value).toBe('29')
+
+    await button(wrapper, '刷新上线状态').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('AP 上线状态刷新失败')
+    expect((countInput.element as HTMLInputElement).value).toBe('29')
+    expect(api.getTracksideApPlan).toHaveBeenCalledTimes(1)
+    expect(api.getTracksideApOnlineStatus).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
   it('renders weighted totals and a normal unassigned AP warning', async () => {
     api.getTracksideApOnlineStatus.mockResolvedValue({
       items: [{

@@ -28,6 +28,44 @@ export class ApiRequestError extends Error {
   }
 }
 
+export interface ApiErrorDetail {
+  path: string
+  code: string
+  status: number
+  requestId: string
+  message: string
+  originalMessage: string
+}
+
+export function apiErrorDetail(reason: unknown, fallbackPath = ''): ApiErrorDetail {
+  if (reason instanceof ApiRequestError) {
+    const path = String(reason.details.path || fallbackPath)
+    const originalMessage = String(
+      reason.details.original_message
+      || reason.details.network_error
+      || reason.details.response_error
+      || reason.message,
+    )
+    return {
+      path,
+      code: reason.code || 'HTTP_ERROR',
+      status: reason.status,
+      requestId: String(reason.details.request_id || ''),
+      message: reason.message,
+      originalMessage,
+    }
+  }
+  const message = reason instanceof Error ? reason.message : String(reason || '未知错误')
+  return {
+    path: fallbackPath,
+    code: 'UNEXPECTED_ERROR',
+    status: 0,
+    requestId: '',
+    message,
+    originalMessage: message,
+  }
+}
+
 async function readJsonResponse<T>(
   response: Response,
   path: string,
@@ -63,7 +101,10 @@ async function readJsonResponse<T>(
       t('api.backend_body_interrupted', 'Backend 返回内容读取中断，请重试。'),
       response.status,
       'RESPONSE_BODY_FAILED',
-      { path },
+      {
+        path,
+        original_message: cause instanceof Error ? cause.message : String(cause),
+      },
     )
   }
   try {
@@ -75,7 +116,12 @@ async function readJsonResponse<T>(
         : `${t('api.request_failed', '请求失败')} (${response.status})`,
       response.status,
       errorCode,
-      { path },
+      {
+        path,
+        original_message: response.ok
+          ? 'Backend 返回内容不是有效 JSON'
+          : `HTTP ${response.status} 响应不是有效 JSON`,
+      },
     )
   }
 }
@@ -149,7 +195,9 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
     }
     throw new ApiRequestError(message, response.status, code || 'HTTP_ERROR', {
       ...details,
+      path: details.path || path,
       request_id: details.request_id || response.headers?.get?.('X-Request-ID') || '',
+      original_message: details.original_message || message,
     })
   }
   return readJsonResponse<T>(response, path, 'INVALID_JSON_RESPONSE')

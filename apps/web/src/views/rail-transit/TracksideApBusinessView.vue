@@ -42,7 +42,8 @@ const initialLoading = ref(false)
 const refreshing = ref(false)
 const taskSubmitting = ref(false)
 const pendingScopeKey = ref('')
-const error = ref('')
+const loadError = ref('')
+const actionError = ref('')
 const taskNotice = ref('')
 const taskNoticeType = ref<'success' | 'info' | 'warning' | 'error'>('info')
 const page = ref<TracksideApBusinessPage | null>(null)
@@ -146,6 +147,23 @@ function summaryCount(summary: Record<string, unknown>, key: string): number {
   const value = Number(summary[key] ?? 0)
   return Number.isFinite(value) ? Math.max(0, value) : 0
 }
+type DataAvailability = 'loaded' | 'partial' | 'failed' | 'unloaded'
+function dataAvailability(sources: string[]): DataAvailability {
+  if (!page.value) return 'unloaded'
+  const statuses = page.value.source_statuses
+  if (!statuses) return 'loaded'
+  const values = sources.map((source) => statuses[source]).filter(Boolean)
+  if (values.includes('failed')) return 'failed'
+  if (values.includes('partial')) return 'partial'
+  return 'loaded'
+}
+function metricValue(value: number | undefined, sources: string[]): string | number {
+  const availability = dataAvailability(sources)
+  if (availability === 'unloaded') return '—'
+  if (availability === 'failed') return '加载失败'
+  if (availability === 'partial') return '部分可用'
+  return Number(value ?? 0)
+}
 function updateReasonLabel(value: string): string {
   const labels: Record<string, string> = {
     connection_incomplete: t('trackside.result.reason.connection_incomplete', '连接信息不完整'),
@@ -233,8 +251,8 @@ function poll(): void {
     return
   }
   pollTimer = window.setTimeout(async () => {
-    try { rememberTask(await getTracksideApTask(task.value!.task_id)); error.value = ''; poll() }
-    catch (reason) { error.value = failure(reason, '轨旁 AP 任务状态读取失败') }
+    try { rememberTask(await getTracksideApTask(task.value!.task_id)); actionError.value = ''; poll() }
+    catch (reason) { actionError.value = failure(reason, '轨旁 AP 任务状态读取失败') }
   }, 1000)
 }
 
@@ -245,7 +263,7 @@ async function loadRows(reset = false): Promise<boolean> {
   const firstLoad = page.value === null
   if (firstLoad) initialLoading.value = true
   else refreshing.value = true
-  error.value = ''
+  loadError.value = ''
   let succeeded = false
   try {
     const nextPage = await listTracksideApBusiness({ ...filters })
@@ -254,7 +272,11 @@ async function loadRows(reset = false): Promise<boolean> {
       succeeded = true
     }
   } catch (reason) {
-    if (generation === loadGeneration) error.value = failure(reason, '轨旁 AP 业务加载失败')
+    if (generation === loadGeneration) {
+      loadError.value = page.value
+        ? '部分数据不可用，已保留最后成功数据。'
+        : failure(reason, '轨旁 AP 业务加载失败')
+    }
   } finally {
     if (generation === loadGeneration) {
       initialLoading.value = false
@@ -272,14 +294,14 @@ async function loadRows(reset = false): Promise<boolean> {
 async function startTask(factory: () => Promise<TracksideApTask>, fallback: string, scopeKey: string, notice = '任务已提交，可通过顶部任务入口查看进度'): Promise<void> {
   if (pendingScopeKey.value === scopeKey) return
   pendingScopeKey.value = scopeKey
-  taskSubmitting.value = true; error.value = ''; clearTaskNotice()
+  taskSubmitting.value = true; actionError.value = ''; clearTaskNotice()
   try {
     const started = await factory()
     rememberTask(started)
     setTaskNotice(notice, 'info')
     poll()
   }
-  catch (reason) { error.value = failure(reason, fallback) }
+  catch (reason) { actionError.value = failure(reason, fallback) }
   finally { taskSubmitting.value = false; pendingScopeKey.value = '' }
 }
 
@@ -287,7 +309,7 @@ function updateAll(): void { void startTask(() => startTracksideApUpdate({}), '�
 function updateStation(row: TracksideApBusinessRow): void { void startTask(() => startTracksideApUpdate({ station: row.site }), '站点更新启动失败', `update:station:${row.site}`) }
 function updateAp(row: TracksideApBusinessRow): void {
   const payload = singleApUpdatePayload(row)
-  if (!payload) { error.value = '缺少 AP 身份，无法定向更新'; return }
+  if (!payload) { actionError.value = '缺少 AP 身份，无法定向更新'; return }
   const target = cleanIdentity(row.ap_name) || cleanIdentity(row.ap_mac) || cleanIdentity(row.ap_uuid)
   const scopeValue = payload.ap_uuid || payload.ap_mac || payload.ap_name || target
   void startTask(
@@ -301,7 +323,7 @@ async function exportBusiness(): Promise<void> {
   if (pendingScopeKey.value === scopeKey) return
   pendingScopeKey.value = scopeKey
   taskSubmitting.value = true
-  error.value = ''
+  actionError.value = ''
   clearTaskNotice()
   try {
     const result = await userSelectedExport.submitExportAfterDestinationSelected({
@@ -314,7 +336,7 @@ async function exportBusiness(): Promise<void> {
     setTaskNotice('导出任务已提交，完成后将写入所选位置', 'info')
     poll()
   } catch (reason) {
-    error.value = failure(reason, '轨旁 AP 业务导出启动失败')
+    actionError.value = failure(reason, '轨旁 AP 业务导出启动失败')
   } finally {
     taskSubmitting.value = false
     pendingScopeKey.value = ''
@@ -339,7 +361,7 @@ async function recoverTasks(): Promise<void> {
     if (recovered) setTaskNotice('检测到正在运行的轨旁 AP 任务，可通过顶部任务入口查看进度', 'info')
     else clearTaskNotice()
     poll()
-  } catch (reason) { error.value = failure(reason, '轨旁 AP 任务恢复失败') }
+  } catch (reason) { actionError.value = failure(reason, '轨旁 AP 任务恢复失败') }
 }
 
 onMounted(() => { void Promise.all([loadRows(), recoverTasks()]) })
@@ -365,7 +387,23 @@ onBeforeUnmount(() => { stopPolling(); clearTaskNotice() })
         >导出表格</el-button>
       </div>
     </header>
-    <el-alert v-if="error" :title="error" type="error" show-icon :closable="true" @close="error = ''"><el-button link @click="recoverTasks">恢复任务</el-button></el-alert>
+    <el-alert v-if="loadError" :title="loadError" type="warning" show-icon :closable="true" @close="loadError = ''" />
+    <el-alert
+      v-if="page?.partial_data"
+      title="部分数据不可用，已展示成功构建的交换机/AP 端口行。"
+      type="warning"
+      show-icon
+      :closable="false"
+      class="source-warning"
+    >
+      <details v-if="page.unavailable_sources?.length">
+        <summary>查看不可用来源</summary>
+        <span v-for="issue in page.unavailable_sources" :key="`${issue.source}:${issue.device_id || ''}`">
+          {{ issue.label }}：{{ issue.code }}<template v-if="issue.device_id">（设备 {{ issue.device_id }}）</template>
+        </span>
+      </details>
+    </el-alert>
+    <el-alert v-if="actionError" :title="actionError" type="error" show-icon :closable="true" @close="actionError = ''"><el-button link @click="recoverTasks">恢复任务</el-button></el-alert>
     <el-alert v-if="taskNotice" :title="taskNotice" :type="taskNoticeType" show-icon :closable="taskNoticeType === 'error'" @close="clearTaskNotice" />
     <div v-if="page" class="scope-summary">
       <strong>统计范围：{{ page.scope_description || '当前项目 · 当前工作范围轨旁 AP' }}</strong>
@@ -375,8 +413,8 @@ onBeforeUnmount(() => { stopPolling(); clearTaskNotice() })
       <el-button v-if="page.fit_ap_unmatched_online_count" link type="warning" @click="unmatchedVisible = true">待关联在线 AP {{ page.fit_ap_unmatched_online_count }}</el-button>
       <el-button v-if="page.excluded_device_count" link type="warning" @click="excludedVisible = true">查看排除项</el-button>
     </div>
-    <div v-if="page" class="summary-grid">
-      <article><span>站点交换机</span><strong>{{ page.device_count }}</strong></article><article><span>候选 AP 端口</span><strong>{{ page.candidate_interface_count }}</strong></article><article><span>已关联 AP</span><strong>{{ page.fit_ap_matched_count ?? page.fit_ap_resource_count }}</strong></article><article><span>待关联在线 AP</span><strong>{{ page.fit_ap_unmatched_online_count ?? 0 }}</strong></article><article><span>光衰异常</span><strong>{{ page.optical_abnormal_count }}</strong></article>
+    <div class="summary-grid">
+      <article><span>站点交换机</span><strong>{{ metricValue(page?.device_count, ['switch_devices']) }}</strong></article><article><span>候选 AP 端口</span><strong>{{ metricValue(page?.candidate_interface_count, ['switch_devices', 'interfaces', 'planning']) }}</strong></article><article><span>已关联 AP</span><strong>{{ metricValue(page?.fit_ap_matched_count ?? page?.fit_ap_resource_count, ['fit_ap_resources']) }}</strong></article><article><span>待关联在线 AP</span><strong>{{ metricValue(page?.fit_ap_unmatched_online_count, ['fit_ap_resources']) }}</strong></article><article><span>光衰异常</span><strong>{{ metricValue(page?.optical_abnormal_count, ['interfaces', 'switch_optical', 'fit_ap_optical']) }}</strong></article>
     </div>
     <div class="content-card">
       <div class="toolbar">
@@ -451,4 +489,5 @@ onBeforeUnmount(() => { stopPolling(); clearTaskNotice() })
 
 <style scoped>
 .trackside-page{display:flex;height:100%;min-height:0;min-width:0;flex-direction:column;gap:16px}.page-heading,.actions,.toolbar,.pagination,.scope-summary{display:flex;align-items:center;gap:12px}.page-heading,.pagination{flex:none;justify-content:space-between}.page-heading h1{margin:2px 0 6px}.page-heading p{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:0}.actions,.toolbar,.scope-summary{flex-wrap:wrap}.scope-summary{color:var(--el-text-color-secondary)}.scope-summary strong{color:var(--el-text-color-primary)}.summary-grid{display:grid;flex:none;grid-template-columns:repeat(5,minmax(130px,1fr));gap:10px}.summary-grid article,.content-card{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:8px}.summary-grid article{padding:13px}.summary-grid span{color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;margin-top:6px;font-size:22px}.content-card{display:flex;min-height:0;min-width:0;flex:1;flex-direction:column;padding:14px 16px;overflow:hidden}.business-table-host{min-height:0;min-width:0;flex:1}.toolbar{flex:none;margin-bottom:12px}.toolbar .el-input{width:230px}.station-select{width:260px}.refresh-indicator{color:var(--el-color-primary);font-size:13px}.work-scope-filter-hint{color:var(--el-text-color-secondary);font-size:12px}.pagination{padding-top:12px}.optical-normal{color:var(--el-color-success)}.optical-notice,.optical-warning{color:var(--el-color-warning)}.optical-alarm,.optical-link-abnormal,.optical-link-down,.optical-no-light,.optical-offline{color:var(--el-color-danger);font-weight:600}.optical-no-module,.optical-missing,.optical-skipped,.optical-not-collected,.optical-unknown{color:var(--el-text-color-secondary)}@media(max-width:1000px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}}
+.source-warning details{display:grid;gap:4px;margin-top:6px}.source-warning summary{cursor:pointer}.source-warning details span{display:block}
 </style>

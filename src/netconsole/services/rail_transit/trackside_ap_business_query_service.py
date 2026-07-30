@@ -147,6 +147,9 @@ class TracksideApBusinessQueryService:
                 if scope is not None
                 else []
             ),
+            partial_data=snapshot.partial_data,
+            source_statuses=snapshot.source_statuses,
+            unavailable_sources=snapshot.unavailable_sources,
         )
 
     @staticmethod

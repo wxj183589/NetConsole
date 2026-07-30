@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
+import { ApiRequestError, getHealth } from '../api/client'
 import { useRailTransitBaseDataStore } from './railTransitBaseData'
 import {
   applyRailTransitImport,
@@ -47,6 +48,10 @@ vi.mock('../api/railTransitBaseData', () => ({
   saveRailTransitBaseDataChanges: vi.fn(),
   validateRailTransitBaseDataChanges: vi.fn(),
 }))
+vi.mock('../api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/client')>()
+  return { ...actual, getHealth: vi.fn() }
+})
 
 const emptyPage = { items: [], total: 0, page: 1, page_size: 50 }
 
@@ -125,7 +130,154 @@ describe('Rail Transit base data polling store', () => {
     vi.mocked(rollbackRailTransitImport).mockReset()
     vi.mocked(saveRailTransitBaseDataChanges).mockReset()
     vi.mocked(validateRailTransitBaseDataChanges).mockReset()
+    vi.mocked(getHealth).mockReset().mockResolvedValue({
+      status: 'ok',
+      version: 'test',
+      build_id: 'test',
+    })
     vi.stubGlobal('window', { setTimeout, clearTimeout })
+  })
+
+  it('updates stations and sections when data quality issues fail', async () => {
+    const station = { id: 'station:1', name: '站点A' }
+    const section = { id: 'section:1', name: '站点A-站点B' }
+    vi.mocked(listStations).mockResolvedValue({
+      ...emptyPage,
+      items: [station],
+      total: 1,
+    } as never)
+    vi.mocked(listSections).mockResolvedValue({
+      ...emptyPage,
+      items: [section],
+      total: 1,
+    } as never)
+    vi.mocked(listDataQualityIssueGroups).mockRejectedValue(
+      new ApiRequestError('数据质量服务不可用', 503, 'ISSUES_UNAVAILABLE'),
+    )
+    const store = useRailTransitBaseDataStore()
+
+    await store.refreshStatic()
+
+    expect(store.stations).toEqual([station])
+    expect(store.sections).toEqual([section])
+    expect(store.staticError.map((item) => item.label)).toEqual(['数据质量问题'])
+    expect(store.error).toBe('部分基础资料刷新失败，已保留最后成功数据。')
+    expect(store.backendOffline).toBe(false)
+  })
+
+  it('updates APs, trains and relations when vehicle MR loading fails', async () => {
+    const ap = { id: 'ap:1', name: 'AP-A' }
+    const train = { id: 'train:1', train_no: 'T001' }
+    const relation = { id: 'relation:1' }
+    vi.mocked(listTracksideAps).mockResolvedValue({
+      ...emptyPage,
+      items: [ap],
+      total: 1,
+    } as never)
+    vi.mocked(listTrains).mockResolvedValue({
+      ...emptyPage,
+      items: [train],
+      total: 1,
+    } as never)
+    vi.mocked(listRelations).mockResolvedValue({
+      ...emptyPage,
+      items: [relation],
+      total: 1,
+    } as never)
+    vi.mocked(listVehicleMrs).mockRejectedValue(new Error('MR 请求失败'))
+    const store = useRailTransitBaseDataStore()
+
+    await store.refreshRuntime()
+
+    expect(store.aps).toEqual([ap])
+    expect(store.trains).toEqual([train])
+    expect(store.relations).toEqual([relation])
+    expect(store.runtimeError.map((item) => item.label)).toEqual(['车载 MR'])
+  })
+
+  it('keeps last successful data and clears only the recovered endpoint error', async () => {
+    const previousMr = { id: 'mr:old', name: 'MR-OLD' }
+    vi.mocked(listVehicleMrs).mockResolvedValueOnce({
+      ...emptyPage,
+      items: [previousMr],
+      total: 1,
+    } as never)
+    const store = useRailTransitBaseDataStore()
+    await store.refreshRuntime()
+
+    vi.mocked(listVehicleMrs).mockRejectedValueOnce(new Error('MR 瞬时失败'))
+    vi.mocked(listRelations).mockRejectedValue(new Error('关系持续失败'))
+    await store.refreshRuntime()
+    expect(store.mrs).toEqual([previousMr])
+    expect(store.runtimeError.map((item) => item.label)).toEqual([
+      '车载 MR',
+      '关联运行状态',
+    ])
+
+    const currentMr = { id: 'mr:new', name: 'MR-NEW' }
+    vi.mocked(listVehicleMrs).mockResolvedValue({
+      ...emptyPage,
+      items: [currentMr],
+      total: 1,
+    } as never)
+    await store.refreshRuntime()
+
+    expect(store.mrs).toEqual([currentMr])
+    expect(store.runtimeError.map((item) => item.label)).toEqual(['关联运行状态'])
+    expect(store.error).toContain('保留最后成功数据')
+  })
+
+  it('keeps Backend online semantics for one failed business endpoint', async () => {
+    vi.mocked(listVehicleMrs).mockRejectedValue(new Error('connection reset'))
+    const store = useRailTransitBaseDataStore()
+
+    await store.manualRefresh()
+
+    expect(store.error).toBe('部分基础资料刷新失败，已保留最后成功数据。')
+    expect(store.error).not.toContain('Backend 连接中断')
+    expect(store.backendOffline).toBe(false)
+    expect(getHealth).not.toHaveBeenCalled()
+  })
+
+  it('reports Backend interruption only after persistent core failures and a failed health probe', async () => {
+    vi.mocked(getRailTransitSummary).mockRejectedValue(new Error('connection reset'))
+    vi.mocked(listStations).mockRejectedValue(new Error('connection reset'))
+    vi.mocked(getHealth).mockRejectedValue(new Error('connection reset'))
+    const store = useRailTransitBaseDataStore()
+
+    await store.manualRefresh()
+    await store.manualRefresh()
+    expect(store.backendOffline).toBe(false)
+    await store.manualRefresh()
+
+    expect(getHealth).toHaveBeenCalledOnce()
+    expect(store.backendOffline).toBe(true)
+    expect(store.error).toBe('Backend 连接中断，请重试。')
+  })
+
+  it('retains structured API error diagnostics', async () => {
+    vi.mocked(listVehicleMrs).mockRejectedValue(new ApiRequestError(
+      '读取车载 MR 失败',
+      503,
+      'CONNECTION_RESET',
+      {
+        path: '/api/custom/mrs',
+        request_id: 'request-123',
+        original_message: 'socket hang up',
+      },
+    ))
+    const store = useRailTransitBaseDataStore()
+
+    await store.refreshRuntime()
+
+    expect(store.runtimeError[0]).toMatchObject({
+      label: '车载 MR',
+      path: '/api/custom/mrs',
+      code: 'CONNECTION_RESET',
+      status: 503,
+      requestId: 'request-123',
+      originalMessage: 'socket hang up',
+    })
   })
 
   it('does not overlap summary requests and retains last data after repeated failures', async () => {

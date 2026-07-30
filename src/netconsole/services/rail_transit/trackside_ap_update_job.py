@@ -10,7 +10,10 @@ from netconsole.services.rail_transit.trackside_optical_collection import (
     classify_trackside_skipped,
     collect_trackside_optical,
 )
-from netconsole.services.trackside_ap_export_service import load_trackside_ap_business_snapshot
+from netconsole.services.trackside_ap_export_service import (
+    load_trackside_ap_business_snapshot,
+    require_complete_trackside_snapshot,
+)
 
 
 def run_trackside_ap_optical_update(context: JobContext) -> dict[str, object]:
@@ -21,6 +24,7 @@ def run_trackside_ap_optical_update(context: JobContext) -> dict[str, object]:
         raise ValueError("轨旁 AP 更新缺少局点")
     repository = DeviceRepository(Database(context.params["db_path"]))
     snapshot = load_trackside_ap_business_snapshot(repository, site_id, generation=0)
+    require_complete_trackside_snapshot(snapshot, "轨旁 AP 光衰更新")
     cancel_event = Event()
 
     def cancelled_progress(current: int, total: int, details: Mapping[str, object] | None = None) -> None:

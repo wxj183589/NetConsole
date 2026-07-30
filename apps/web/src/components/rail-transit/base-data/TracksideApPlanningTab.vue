@@ -23,6 +23,7 @@ import {
   startTracksideApUpdate,
   tracksideApPlanDownloadRequest,
 } from '../../../api/tracksideApBusiness'
+import { apiErrorDetail, type ApiErrorDetail } from '../../../api/client'
 import { useUserSelectedExport } from '../../../composables/useUserSelectedExport'
 import { isFeatureEnabled } from '../../../features'
 import { downloadBackendResource } from '../../../platform/runtime'
@@ -91,6 +92,8 @@ const activeView = ref<'plan' | 'status'>('plan')
 const loading = ref(false)
 const statusLoading = ref(false)
 const error = ref('')
+const planningError = ref<ApiErrorDetail | null>(null)
+const onlineStatusError = ref<ApiErrorDetail | null>(null)
 const dirty = ref(false)
 const task = ref<TracksideApTask | null>(null)
 const importInput = ref<HTMLInputElement | null>(null)
@@ -307,18 +310,20 @@ function appendMissingStationRows(sourceRows: TracksideApPlanRow[]): TracksideAp
 async function loadPlan(force = false): Promise<boolean> {
   if (dirty.value && !force) return false
   loading.value = true
-  error.value = ''
   try {
     const plan = await getTracksideApPlan()
     rows.value = mergePlanRows(plan.items)
     baselineRows.value = deepCopy(rows.value)
     dirty.value = false
     selectedRows.value = []
+    planningError.value = null
     emit('change', deepCopy(rows.value), false)
-    await loadOnlineStatus()
     return true
   } catch (reason) {
-    error.value = failure(reason, '轨旁 AP 规划加载失败')
+    planningError.value = apiErrorDetail(
+      reason,
+      '/api/rail-transit/trackside-ap-business/plan',
+    )
     return false
   } finally {
     loading.value = false
@@ -329,11 +334,23 @@ async function loadOnlineStatus(): Promise<void> {
   statusLoading.value = true
   try {
     onlineStatus.value = await getTracksideApOnlineStatus()
+    onlineStatusError.value = null
   } catch (reason) {
-    error.value = failure(reason, 'AP 上线情况加载失败')
+    onlineStatusError.value = apiErrorDetail(
+      reason,
+      '/api/rail-transit/trackside-ap-business/plan/online-status',
+    )
   } finally {
     statusLoading.value = false
   }
+}
+
+async function reload(force = false): Promise<boolean> {
+  const [planLoaded] = await Promise.all([
+    loadPlan(force),
+    loadOnlineStatus(),
+  ])
+  return planLoaded
 }
 
 function addRow(): void {
@@ -810,9 +827,9 @@ watch(() => props.stations, () => {
   if (changed) publishDirty()
 }, { deep: true })
 
-defineExpose({ reload: loadPlan })
+defineExpose({ reload })
 onMounted(() => {
-  void Promise.all([loadPlan(true), recoverTasks()])
+  void Promise.all([reload(true), recoverTasks()])
 })
 onBeforeUnmount(stopPolling)
 </script>
@@ -823,6 +840,23 @@ onBeforeUnmount(stopPolling)
 
     <el-tabs v-model="activeView" class="plan-tabs">
       <el-tab-pane label="AP 规划维护" name="plan">
+        <el-alert
+          v-if="planningError"
+          title="轨旁 AP 规划刷新失败，已保留最后成功数据。"
+          type="error"
+          show-icon
+          :closable="false"
+          class="local-request-error"
+        >
+          <details>
+            <summary>查看错误详情</summary>
+            <span>错误码：{{ planningError.code }}</span>
+            <span v-if="planningError.status > 0">HTTP {{ planningError.status }}</span>
+            <span v-if="planningError.requestId">request_id：{{ planningError.requestId }}</span>
+            <small>{{ planningError.path }}</small>
+            <small>{{ planningError.originalMessage }}</small>
+          </details>
+        </el-alert>
         <div class="toolbar">
           <el-button :icon="Plus" :disabled="!canWrite" @click="addRow">新增站点</el-button>
           <el-button :icon="Delete" :disabled="!canWrite || !selectedRows.length" @click="removeSelected">删除所选</el-button>
@@ -948,6 +982,23 @@ onBeforeUnmount(stopPolling)
       </el-tab-pane>
 
       <el-tab-pane label="AP 上线情况概览" name="status">
+        <el-alert
+          v-if="onlineStatusError"
+          title="AP 上线状态刷新失败，已保留最后成功数据。"
+          type="warning"
+          show-icon
+          :closable="false"
+          class="local-request-error"
+        >
+          <details>
+            <summary>查看错误详情</summary>
+            <span>错误码：{{ onlineStatusError.code }}</span>
+            <span v-if="onlineStatusError.status > 0">HTTP {{ onlineStatusError.status }}</span>
+            <span v-if="onlineStatusError.requestId">request_id：{{ onlineStatusError.requestId }}</span>
+            <small>{{ onlineStatusError.path }}</small>
+            <small>{{ onlineStatusError.originalMessage }}</small>
+          </details>
+        </el-alert>
         <div class="status-toolbar">
           <el-button type="primary" :icon="Refresh" :loading="statusLoading" :disabled="taskRunning" @click="refreshOnlineStatus">刷新上线状态</el-button>
           <span>状态更新时间：{{ onlineStatus?.updated_at || '--' }}</span>
@@ -1126,6 +1177,26 @@ onBeforeUnmount(stopPolling)
 
 .plan-tabs {
   min-width: 0;
+}
+
+.local-request-error {
+  margin-bottom: 12px;
+}
+
+.local-request-error details {
+  display: grid;
+  gap: 4px 12px;
+  margin-top: 6px;
+}
+
+.local-request-error summary {
+  cursor: pointer;
+}
+
+.local-request-error small {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--nc-text-secondary);
 }
 
 .toolbar,

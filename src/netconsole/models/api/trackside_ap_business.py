@@ -77,6 +77,14 @@ class TracksideApUnmatchedOnlineDTO(ApiModel):
     suggested_action: str = ""
 
 
+class TracksideApDataSourceIssueDTO(ApiModel):
+    source: str
+    label: str
+    code: str
+    message: str
+    device_id: str = ""
+
+
 class TracksideApBusinessPageDTO(ApiModel):
     items: list[TracksideApBusinessRowDTO] = Field(default_factory=list)
     total: int = 0
@@ -103,6 +111,14 @@ class TracksideApBusinessPageDTO(ApiModel):
     excluded_device_count: int = Field(default=0, ge=0)
     excluded_items: list[TracksideApScopeExcludedDTO] = Field(default_factory=list)
     unmatched_online_items: list[TracksideApUnmatchedOnlineDTO] = Field(default_factory=list)
+    partial_data: bool = False
+    source_statuses: dict[
+        str,
+        Literal["loaded", "partial", "failed"],
+    ] = Field(default_factory=dict)
+    unavailable_sources: list[TracksideApDataSourceIssueDTO] = Field(
+        default_factory=list
+    )
 
 
 class TracksideApUpdateRequestDTO(ApiModel):

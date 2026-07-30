@@ -26,6 +26,8 @@ from netconsole.services.trackside_ap_export_service import (
 )
 from netconsole.services.trackside_ap_plan_io import bind_trackside_plan_station
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
+from netconsole.repositories.device_fact_repository import DeviceFactRepository
+from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 
 
@@ -332,6 +334,164 @@ def test_trackside_query_reuses_snapshot_filter_and_optical_status(monkeypatch, 
     assert page.identity_shadow == {"status": "matched"}
 
 
+def _seed_trackside_switch(
+    repository: DeviceRepository,
+    *,
+    name: str,
+    station: str,
+    address: str,
+) -> Device:
+    group = next(
+        (
+            item
+            for item in DeviceGroupRepository(repository.database, "demo").list()
+            if item.name == "车站"
+        ),
+        None,
+    )
+    if group is None:
+        group = DeviceGroupRepository(repository.database, "demo").create("车站")
+    device = repository.create(
+        Device(
+            name=name,
+            station=station,
+            group_id=int(group.id or 0),
+            device_type="SW",
+            device_vendor="H3C",
+            project_phase="phase_1",
+            work_scope_status="included",
+            primary_address=address,
+        )
+    )
+    DeviceFactRepository(repository.database).replace_device_interfaces(
+        str(device.device_uuid),
+        [{
+            "interface_name": "XGE1/0/1",
+            "description": "Trackside AP",
+            "link_status": "UP",
+            "port_status": "access",
+            "pvid": "921",
+        }],
+    )
+    return device
+
+
+def test_trackside_snapshot_keeps_switch_rows_when_fit_ap_resources_fail(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "fit-resource-failure.sqlite")
+    database.initialize()
+    repository = DeviceRepository(database)
+    _seed_trackside_switch(
+        repository,
+        name="SW-A",
+        station="站点A",
+        address="192.0.2.11",
+    )
+    _seed_effective_trackside_scope(
+        AcRepository(database),
+        [("站点A", 1, 1, 1, "")],
+        numbered_display=False,
+    )
+    monkeypatch.setattr(
+        AcRepository,
+        "list_all_fit_ap_resources_with_metadata",
+        lambda _self: (_ for _ in ()).throw(RuntimeError("resource reset")),
+    )
+
+    snapshot = load_trackside_ap_business_snapshot(repository, "demo", 1)
+
+    assert snapshot.partial_data is True
+    assert snapshot.source_statuses["fit_ap_resources"] == "failed"
+    assert snapshot.candidate_ap_interface_count == 1
+    assert snapshot.row_count == 1
+    assert snapshot.rows[0]["device_name"] == "SW-A"
+    assert snapshot.unavailable_sources[0]["code"] == "FIT_AP_RESOURCES_UNAVAILABLE"
+
+
+def test_trackside_snapshot_keeps_other_devices_when_one_interface_source_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "device-fact-failure.sqlite")
+    database.initialize()
+    repository = DeviceRepository(database)
+    failed_device = _seed_trackside_switch(
+        repository,
+        name="SW-A",
+        station="站点A",
+        address="192.0.2.11",
+    )
+    healthy_device = _seed_trackside_switch(
+        repository,
+        name="SW-B",
+        station="站点B",
+        address="192.0.2.12",
+    )
+    _seed_effective_trackside_scope(
+        AcRepository(database),
+        [
+            ("站点A", 1, 1, 1, ""),
+            ("站点B", 1, 1, 1, ""),
+        ],
+        numbered_display=False,
+    )
+    original = DeviceFactRepository.list_device_interfaces
+
+    def list_interfaces(
+        fact_repository: DeviceFactRepository,
+        device_uuid: str,
+    ) -> list[dict[str, object | None]]:
+        if device_uuid == str(failed_device.device_uuid):
+            raise RuntimeError("device reset")
+        return original(fact_repository, device_uuid)
+
+    monkeypatch.setattr(DeviceFactRepository, "list_device_interfaces", list_interfaces)
+
+    snapshot = load_trackside_ap_business_snapshot(repository, "demo", 1)
+
+    assert snapshot.partial_data is True
+    assert snapshot.source_statuses["interfaces"] == "partial"
+    assert snapshot.candidate_ap_interface_count == 1
+    assert {row["device_name"] for row in snapshot.rows} == {healthy_device.name}
+    assert any(
+        item["source"] == "interfaces"
+        and item["device_id"] == str(failed_device.device_uuid)
+        for item in snapshot.unavailable_sources
+    )
+
+
+def test_trackside_query_maps_partial_source_status(monkeypatch, tmp_path: Path) -> None:
+    snapshot = replace(
+        _snapshot(),
+        partial_data=True,
+        source_statuses={"fit_ap_resources": "failed"},
+        unavailable_sources=[{
+            "source": "fit_ap_resources",
+            "label": "FIT-AP 资源",
+            "code": "FIT_AP_RESOURCES_UNAVAILABLE",
+            "message": "FIT-AP 资源暂时不可用。",
+            "device_id": "",
+        }],
+    )
+    monkeypatch.setattr(trackside_ap_business_query_service, "Database", lambda _path: object())
+    monkeypatch.setattr(trackside_ap_business_query_service, "DeviceRepository", lambda _database: object())
+    monkeypatch.setattr(
+        trackside_ap_business_query_service,
+        "load_trackside_ap_business_snapshot",
+        lambda *_args, **_kwargs: snapshot,
+    )
+
+    page = trackside_ap_business_query_service.TracksideApBusinessQueryService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path)
+    ).list_rows("demo")
+
+    assert page.partial_data is True
+    assert page.source_statuses == {"fit_ap_resources": "failed"}
+    assert page.unavailable_sources[0].code == "FIT_AP_RESOURCES_UNAVAILABLE"
+
+
 def test_trackside_query_recalculates_legacy_normal_status_with_business_threshold(
     monkeypatch,
     tmp_path: Path,
@@ -490,6 +650,59 @@ def test_trackside_update_job_calls_existing_collection_service(monkeypatch, tmp
     assert result["requested_concurrency"] == 1000
     assert result["effective_concurrency"] == 2
     assert progress[-1] == ("trackside_ap_optical_update", 1, 2, "正在更新轨旁 AP 光衰")
+
+
+def test_trackside_update_job_rejects_partial_source_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    partial_snapshot = replace(
+        _snapshot(),
+        partial_data=True,
+        source_statuses={"interfaces": "partial"},
+        unavailable_sources=[{
+            "source": "interfaces",
+            "label": "交换机接口事实",
+            "code": "SWITCH_INTERFACES_UNAVAILABLE",
+            "message": "交换机接口事实暂时不可用。",
+            "device_id": "switch-1",
+        }],
+    )
+    collection_called = False
+
+    def unexpected_collection(*_args, **_kwargs):
+        nonlocal collection_called
+        collection_called = True
+        pytest.fail("部分数据快照不得进入采集")
+
+    monkeypatch.setattr(
+        trackside_ap_update_job,
+        "collect_trackside_optical",
+        unexpected_collection,
+    )
+    monkeypatch.setattr(trackside_ap_update_job, "Database", lambda _path: object())
+    monkeypatch.setattr(trackside_ap_update_job, "DeviceRepository", lambda _database: object())
+    monkeypatch.setattr(
+        trackside_ap_update_job,
+        "load_trackside_ap_business_snapshot",
+        lambda *_args, **_kwargs: partial_snapshot,
+    )
+    context = JobContext(
+        "task-partial",
+        "trackside_ap_optical_update",
+        {"site_name": "demo", "db_path": str(tmp_path / "site.sqlite")},
+        lambda *_args: None,
+        None,
+        PathResolver(app_root=tmp_path, data_root=tmp_path),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="轨旁 AP 光衰更新所需数据不完整：交换机接口事实暂时不可用",
+    ):
+        trackside_ap_update_job.run_trackside_ap_optical_update(context)
+
+    assert collection_called is False
 
 
 @pytest.mark.parametrize(

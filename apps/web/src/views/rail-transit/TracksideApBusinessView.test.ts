@@ -271,6 +271,74 @@ describe('TracksideApBusinessView mounted behavior', () => {
     wrapper.unmount()
   })
 
+  it('shows unavailable source status without hiding successful business rows', async () => {
+    api.listTracksideApBusiness.mockResolvedValueOnce({
+      ...page(),
+      partial_data: true,
+      source_statuses: {
+        switch_devices: 'loaded',
+        interfaces: 'loaded',
+        switch_optical: 'loaded',
+        lldp: 'loaded',
+        fit_ap_resources: 'failed',
+        fit_ap_optical: 'loaded',
+      },
+      unavailable_sources: [{
+        source: 'fit_ap_resources',
+        label: 'FIT-AP 资源',
+        code: 'FIT_AP_RESOURCES_UNAVAILABLE',
+        message: 'FIT-AP 资源暂时不可用。',
+      }],
+    })
+    const wrapper = await mountView()
+
+    expect(wrapper.text()).toContain('部分数据不可用，已展示成功构建的交换机/AP 端口行。')
+    expect(wrapper.text()).toContain('FIT-AP 资源：FIT_AP_RESOURCES_UNAVAILABLE')
+    expect(wrapper.getComponent(NcDataTableStub).props('data')).toHaveLength(2)
+    const cards = wrapper.findAll('.summary-grid article').map((item) => item.text())
+    expect(cards).toContain('已关联 AP加载失败')
+    expect(cards).toContain('待关联在线 AP加载失败')
+    expect(cards).toContain('候选 AP 端口2')
+    wrapper.unmount()
+  })
+
+  it('retains the last successful table when a refresh request fails', async () => {
+    const wrapper = await mountView()
+    api.listTracksideApBusiness.mockRejectedValueOnce(new Error('connection reset'))
+
+    await button(wrapper, '刷新').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('部分数据不可用，已保留最后成功数据。')
+    expect(wrapper.getComponent(NcDataTableStub).props('data')).toHaveLength(2)
+    expect(wrapper.text()).not.toContain('Backend 连接中断，请重试。')
+    wrapper.unmount()
+  })
+
+  it('does not render unloaded statistics as zero', async () => {
+    let resolvePage: ((value: TracksideApBusinessPage) => void) | undefined
+    api.listTracksideApBusiness.mockImplementationOnce(() => new Promise((resolve) => {
+      resolvePage = resolve
+    }))
+    const wrapper = mount(TracksideApBusinessView, {
+      global: {
+        directives: { loading: () => undefined },
+        stubs: { ...ElementStubs, NcDataTable: NcDataTableStub },
+      },
+    })
+
+    expect(wrapper.findAll('.summary-grid strong').map((item) => item.text())).toEqual([
+      '—',
+      '—',
+      '—',
+      '—',
+      '—',
+    ])
+    resolvePage?.(page())
+    await flushPromises()
+    wrapper.unmount()
+  })
+
   it('localizes empty reasons and exposes unmatched online counts', async () => {
     api.listTracksideApBusiness.mockResolvedValueOnce({
       ...page([], 1, []),
