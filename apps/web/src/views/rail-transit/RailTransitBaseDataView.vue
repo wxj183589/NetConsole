@@ -2623,6 +2623,9 @@ function sectionSourceLabel(row: Section): string {
             <span>错误码：{{ item.code || 'UNKNOWN_ERROR' }}</span>
             <span v-if="item.status > 0">HTTP {{ item.status }}</span>
             <span v-if="item.requestId">request_id：{{ item.requestId }}</span>
+            <span>连续失败：{{ item.consecutiveFailures }} 次</span>
+            <span>最近成功：{{ item.lastSuccessfulAt || '尚无成功记录' }}</span>
+            <span>{{ item.retainedLastSuccess ? '已保留该项目最后成功数据' : '该项目暂无成功缓存' }}</span>
             <small>{{ item.path }}</small>
             <small>{{ item.originalMessage }}</small>
           </li>

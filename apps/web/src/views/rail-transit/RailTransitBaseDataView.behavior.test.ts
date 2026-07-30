@@ -647,6 +647,9 @@ describe('轨道交通基础资料编辑闭环', () => {
     expect(warning?.attributes('data-type')).toBe('warning')
     expect(warning?.text()).toContain('数据质量问题')
     expect(warning?.text()).toContain('错误码：UNEXPECTED_ERROR')
+    expect(warning?.text()).toContain('连续失败：1 次')
+    expect(warning?.text()).toContain('最近成功：尚无成功记录')
+    expect(warning?.text()).toContain('该项目暂无成功缓存')
     expect(wrapper.text()).not.toContain('Backend 连接中断，请重试。')
     expect(wrapper.get('[data-table-id="rail-base-stations"]').text()).toContain(
       sourceStationWuxiang.name,

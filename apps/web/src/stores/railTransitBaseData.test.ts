@@ -161,6 +161,11 @@ describe('Rail Transit base data polling store', () => {
     expect(store.stations).toEqual([station])
     expect(store.sections).toEqual([section])
     expect(store.staticError.map((item) => item.label)).toEqual(['数据质量问题'])
+    expect(store.staticError[0]).toMatchObject({
+      retainedLastSuccess: false,
+      consecutiveFailures: 1,
+      lastSuccessfulAt: '',
+    })
     expect(store.error).toBe('部分基础资料刷新失败，已保留最后成功数据。')
     expect(store.backendOffline).toBe(false)
   })
@@ -213,6 +218,11 @@ describe('Rail Transit base data polling store', () => {
       '车载 MR',
       '关联运行状态',
     ])
+    expect(store.runtimeError.find((item) => item.key === 'vehicleMrs')).toMatchObject({
+      retainedLastSuccess: true,
+      consecutiveFailures: 1,
+    })
+    expect(store.runtimeError.find((item) => item.key === 'vehicleMrs')?.lastSuccessfulAt).not.toBe('')
 
     const currentMr = { id: 'mr:new', name: 'MR-NEW' }
     vi.mocked(listVehicleMrs).mockResolvedValue({
@@ -224,6 +234,7 @@ describe('Rail Transit base data polling store', () => {
 
     expect(store.mrs).toEqual([currentMr])
     expect(store.runtimeError.map((item) => item.label)).toEqual(['关联运行状态'])
+    expect(store.runtimeError[0].consecutiveFailures).toBe(2)
     expect(store.error).toContain('保留最后成功数据')
   })
 
@@ -277,7 +288,43 @@ describe('Rail Transit base data polling store', () => {
       status: 503,
       requestId: 'request-123',
       originalMessage: 'socket hang up',
+      retainedLastSuccess: false,
+      consecutiveFailures: 1,
+      lastSuccessfulAt: '',
     })
+  })
+
+  it('requires a successful health probe to recover Backend offline state', async () => {
+    vi.mocked(getRailTransitSummary).mockRejectedValue(new Error('connection reset'))
+    vi.mocked(listStations).mockRejectedValue(new Error('connection reset'))
+    vi.mocked(getHealth).mockRejectedValue(new Error('connection reset'))
+    const store = useRailTransitBaseDataStore()
+    await store.manualRefresh()
+    await store.manualRefresh()
+    await store.manualRefresh()
+    expect(store.backendOffline).toBe(true)
+
+    vi.mocked(getRailTransitSummary).mockResolvedValue({
+      site_id: 'demo', site_name: '测试局点', line_name: '测试线', project_type: 'PIS', network_type: 'default',
+      main_path_code: 'MAIN', increasing_direction_name: '上行', decreasing_direction_name: '下行',
+      increasing_direction_line_side: '右线', decreasing_direction_line_side: '左线',
+      increasing_direction_leading_end: 'unknown',
+      station_source_group_name: '车站', station_source_field: 'station',
+      remark: '', created_at: '', updated_at: '', station_count: 0,
+      normal_station_count: 0, special_node_count: 0, source_pending_count: 0, source_conflict_count: 0,
+      source_stale_count: 0, section_count: 0, ap_count: 0,
+      train_count: 0, mr_count: 0, missing_location_ap_count: 0, invalid_mileage_count: 0,
+      duplicate_ap_mac_count: 0, duplicate_static_ip_count: 0, unbound_mr_count: 0, issue_count: 0, message: '',
+    })
+    await store.refreshSummary(false)
+    expect(store.backendOffline).toBe(true)
+    expect(store.refreshErrors.some((item) => item.key === 'health')).toBe(true)
+
+    vi.mocked(getHealth).mockResolvedValue({ status: 'ok', version: 'test', build_id: 'test' })
+    await store.manualRefresh()
+    expect(store.backendOffline).toBe(false)
+    expect(store.refreshErrors.some((item) => item.key === 'health')).toBe(false)
+    expect(store.refreshErrors.some((item) => item.key === 'stations')).toBe(true)
   })
 
   it('does not overlap summary requests and retains last data after repeated failures', async () => {
