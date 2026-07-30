@@ -38,8 +38,9 @@ describe('device detail API client', () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/device-management/devices/device%2F1/interfaces/GigabitEthernet%201%2F0%2F1',
-      expect.objectContaining({ credentials: 'same-origin', signal: controller.signal }),
+      expect.objectContaining({ credentials: 'same-origin', signal: expect.any(AbortSignal) }),
     )
+    expect(fetchMock.mock.calls[0][1].signal).not.toBe(controller.signal)
   })
 
   it('loads the narrow edit profile route', async () => {
@@ -51,8 +52,9 @@ describe('device detail API client', () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/device-management/devices/device%2F1/edit-profile',
-      expect.objectContaining({ credentials: 'same-origin', signal: controller.signal }),
+      expect.objectContaining({ credentials: 'same-origin', signal: expect.any(AbortSignal) }),
     )
+    expect(fetchMock.mock.calls[0][1].signal).not.toBe(controller.signal)
   })
 
   it('keeps optical severity and task status transport enums separate', async () => {
