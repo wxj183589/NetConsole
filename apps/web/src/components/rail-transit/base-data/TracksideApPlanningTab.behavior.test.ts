@@ -290,6 +290,48 @@ describe('TracksideApPlanningTab behavior', () => {
     expect(latest.every((row) => row.planned_ap_count === 0 && row.management_vlan === null)).toBe(true)
     expect(dirty).toBe(false)
     expect(wrapper.text()).not.toContain('有未保存修改')
+    expect(wrapper.text()).not.toContain('项需要修正')
+
+    await wrapper.find('[data-plan-cell="0-remark"] input').setValue('待后续规划')
+    await flushPromises()
+    expect(button(wrapper, '保存').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('requires VLAN only for positive AP counts and rejects invalid values', async () => {
+    const values: Array<Partial<TracksideApPlanRow>> = [
+      { planned_ap_count: 0, management_vlan: null },
+      { planned_ap_count: 0, management_vlan: 71 },
+      { planned_ap_count: 1, management_vlan: null },
+      { planned_ap_count: -1, management_vlan: null },
+      { planned_ap_count: 0, management_vlan: 0 },
+      { planned_ap_count: 0, management_vlan: 4095 },
+      { planned_ap_count: 0, management_vlan: 71.5 },
+    ]
+    const stations = stationOptions(values.length)
+    api.getTracksideApPlan.mockResolvedValue({
+      ...emptyPlan(),
+      items: values.map((value, index) => planRow({
+        station_id: stations[index].id,
+        station_name: stations[index].name,
+        sequence_no: index + 1,
+        ...value,
+      })),
+      total: values.length,
+    })
+    const wrapper = mount(TracksideApPlanningTab, {
+      props: { locked: false, saving: false, stations },
+      global: { stubs },
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('有 5 项需要修正')
+    expect(wrapper.find('[data-plan-cell="2-management_vlan"]').attributes('title'))
+      .toBe('AP数量大于 0 时必须填写 VLAN')
+    expect(wrapper.find('[data-plan-cell="3-planned_ap_count"]').attributes('title'))
+      .toBe('AP数量必须是非负整数')
+    expect(wrapper.find('[data-plan-cell="4-management_vlan"]').attributes('title'))
+      .toBe('VLAN 必须在 1～4094 范围内')
     wrapper.unmount()
   })
 

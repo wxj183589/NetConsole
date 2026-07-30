@@ -157,11 +157,12 @@ def normalize_plan_draft(
         )
         if prefix is not None and not 0 <= prefix <= 32:
             prefix = None
-        management_vlan = _optional_int(
+        raw_management_vlan = (
             group_raw.get("management_vlan")
             if group_raw.get("management_vlan") not in (None, "")
             else group_raw.get("ap_management_vlan")
         )
+        management_vlan = _optional_int(raw_management_vlan)
         network_address = str(
             group_raw.get("network_address") or group_raw.get("subnet") or ""
         ).strip()
@@ -185,6 +186,16 @@ def normalize_plan_draft(
                     else fallback_sequence
                 ),
                 "management_vlan": management_vlan,
+                "management_vlan_input_invalid": (
+                    (
+                        raw_management_vlan not in (None, "")
+                        and management_vlan is None
+                    )
+                    or (
+                        raw_management_vlan in (None, "")
+                        and bool(group_raw.get("management_vlan_input_invalid"))
+                    )
+                ),
                 "legacy_management_vlans": str(
                     group_raw.get("legacy_management_vlans") or ""
                 ).strip(),
@@ -941,11 +952,23 @@ def _validate_group_vlan(group: Mapping[str, Any]) -> list[PlanningIssue]:
     name = str(group["group_name"])
     issues: list[PlanningIssue] = []
     vlan = _optional_int(group.get("management_vlan"))
-    if vlan is None or not 1 <= vlan <= 4094:
+    planned_ap_count = sum(
+        max(0, int(member.get("ap_count") or 0))
+        for member in group.get("members") or []
+        if isinstance(member, Mapping)
+    )
+    vlan_invalid = bool(group.get("management_vlan_input_invalid")) or (
+        vlan is not None and not 1 <= vlan <= 4094
+    )
+    if vlan_invalid or (vlan is None and planned_ap_count > 0):
         issues.append(
             _error(
                 "MANAGEMENT_VLAN_INVALID",
-                f"{name} 的管理 VLAN 必须在 1～4094 范围内",
+                (
+                    f"{name} 的管理 VLAN 必须在 1～4094 范围内"
+                    if vlan_invalid
+                    else f"{name} 的 AP 数量大于 0，必须填写管理 VLAN"
+                ),
                 "management_vlan",
                 group_id=group_id,
             )

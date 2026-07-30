@@ -431,12 +431,19 @@ function validateRows(source: TracksideApPlanRow[]): ValidationIssue[] {
     } else {
       stationIds.set(row.station_id, (stationIds.get(row.station_id) || 0) + 1)
     }
-    if (!Number.isInteger(Number(row.planned_ap_count)) || Number(row.planned_ap_count) < 0) {
+    const plannedApCount = Number(row.planned_ap_count)
+    if (!Number.isInteger(plannedApCount) || plannedApCount < 0) {
       issues.push({ row, field: 'planned_ap_count', message: 'AP数量必须是非负整数' })
     }
-    if (!Number.isInteger(Number(row.management_vlan))
+    const vlanMissing = row.management_vlan === null
+      || row.management_vlan === undefined
+    if (vlanMissing && plannedApCount > 0) {
+      issues.push({ row, field: 'management_vlan', message: 'AP数量大于 0 时必须填写 VLAN' })
+    } else if (!vlanMissing && (
+      !Number.isInteger(Number(row.management_vlan))
       || Number(row.management_vlan) < 1
-      || Number(row.management_vlan) > 4094) {
+      || Number(row.management_vlan) > 4094
+    )) {
       issues.push({ row, field: 'management_vlan', message: 'VLAN 必须在 1～4094 范围内' })
     }
   }

@@ -1034,3 +1034,66 @@ def test_plan_validation_and_save_ignore_ip_reference_conflicts(
     assert response.json()["valid"] is True
     assert not response.json()["issues"]
     assert saved.status_code == 200
+
+
+def test_zero_count_trackside_plan_saves_null_management_vlan(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _enable_copy_write(monkeypatch)
+    paths, database_path = build_rail_transit_base_data_fixture(tmp_path)
+    mark_base_data_copy(paths)
+    with TestClient(_app(paths, tmp_path)) as client:
+        session = client.get("/api/rail-transit/base-data/revision").json()
+        station = client.get(
+            "/api/rail-transit/base-data/stations?page_size=200"
+        ).json()["items"][0]
+        changes = [
+            {
+                "entity_type": "trackside_ap_plan",
+                "action": "replace",
+                "values": {
+                    "rows": [
+                        {
+                            "station_id": station["id"],
+                            "sequence_no": 1,
+                            "station_name": station["name"],
+                            "planned_ap_count": 0,
+                            "management_vlan": None,
+                            "remark": "尚未规划",
+                        }
+                    ]
+                },
+            }
+        ]
+        validation = client.post(
+            "/api/rail-transit/base-data/validate",
+            json={
+                "site_id": "demo",
+                "base_revision": session["base_revision"],
+                "changes": changes,
+            },
+        )
+        saved = client.post(
+            "/api/rail-transit/base-data/changes",
+            json={
+                "site_id": "demo",
+                "base_revision": session["base_revision"],
+                "changes": changes,
+                "explicit_confirmation": True,
+            },
+        )
+
+    with Database(database_path).connect() as connection:
+        row = connection.execute(
+            """
+            SELECT ap_count, management_vlan, ap_management_vlans
+            FROM ac_trackside_ap_plan
+            WHERE mode = 'unified'
+            """
+        ).fetchone()
+
+    assert validation.status_code == 200
+    assert validation.json()["valid"] is True
+    assert saved.status_code == 200
+    assert tuple(row) == (0, None, "")

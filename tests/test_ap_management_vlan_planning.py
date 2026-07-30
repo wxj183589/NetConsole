@@ -326,6 +326,18 @@ def test_management_vlan_is_required_and_range_checked(management_vlan):
     )
 
 
+@pytest.mark.parametrize("management_vlan", [None, 71])
+def test_zero_ap_group_allows_empty_or_valid_management_vlan(management_vlan):
+    draft, stations, aps = _configured([1])
+    stations[0]["ap_count"] = 0
+    draft["groups"][0]["members"][0]["ap_count"] = 0
+    draft["groups"][0]["management_vlan"] = management_vlan
+
+    issues = validate_plan(draft, stations=stations, aps=aps)
+
+    assert not [issue for issue in issues if issue["code"] == "MANAGEMENT_VLAN_INVALID"]
+
+
 def test_new_station_is_unassigned_and_deleted_member_cannot_remain_hidden():
     draft, stations, aps = _configured([1, 1])
     added = [

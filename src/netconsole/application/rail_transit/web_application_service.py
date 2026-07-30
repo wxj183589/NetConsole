@@ -1201,7 +1201,7 @@ class RailTransitWebApplicationService:
                 sequence_no = int(item.get("sort_order") or index) + 1
             raw_vlan = (
                 item.get("management_vlan")
-                if item.get("management_vlan") not in (None, "")
+                if "management_vlan" in item
                 else item.get("ap_management_vlans")
             )
             try:
@@ -1406,7 +1406,7 @@ class RailTransitWebApplicationService:
             ),
             "management_vlan": (
                 row.get("management_vlan")
-                if row.get("management_vlan") not in (None, "")
+                if "management_vlan" in row
                 else row.get("ap_management_vlans")
             ),
             "remark": row.get("remark"),
