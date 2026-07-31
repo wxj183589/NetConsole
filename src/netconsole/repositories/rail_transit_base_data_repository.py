@@ -1240,16 +1240,6 @@ class RailTransitBaseDataRepository:
                         now,
                     ),
                 )
-            connection.execute(
-                """
-                INSERT INTO ac_trackside_ap_plan_settings (key, value, updated_at)
-                VALUES ('current_source', 'station_rows', ?)
-                ON CONFLICT(key) DO UPDATE SET
-                    value = excluded.value,
-                    updated_at = excluded.updated_at
-                """,
-                (now,),
-            )
             return
         planning = values.get("planning")
         if not isinstance(planning, Mapping):

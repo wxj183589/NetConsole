@@ -1,4 +1,4 @@
-# 轨旁 AP 逐站规划与 VLAN 分组兼容
+# 轨旁 AP 逐站规划
 
 ## 当前模型
 
@@ -52,15 +52,15 @@ GET  /api/rail-transit/trackside-ap-business/plan/artifacts/{artifact_id}/downlo
 
 上线概览不是轨旁 AP 业务明细的数据源。页面查询、业务明细导出和上线概览共享同一解析结果，但分为三层：站点/交换机工作范围决定候选端口，AP 基础资料用于身份和站点关联，FIT-AP 运行态用于在线统计。当前局点/项目及显式建设阶段匹配、当前工作状态为 `included` 的站点交换机不因缺少 AP 资料而消失；AP 参考资料按有效 `station_id`、UUID/MAC/受控唯一名称去重。暂不参与、跨项目、明确排除、阶段不匹配、站点关联不唯一才进入排除项；在线但未关联基础资料的资源进入 `unmatched_online_items`。没有显式建设阶段时不按站名猜测一期或延长线。
 
-## 来源与兼容
+## 来源
 
 活动页面不提供轨旁 AP 规划模板导入、模板下载或规划导出。站点来源统一来自设备管理中“车站”分组设备的 `station` 字段：点击“从设备管理生成站点”后先展示候选、匹配和冲突，用户确认后只写入基础资料编辑草稿，最终由统一保存事务提交。这样每条规划行都能绑定正式站点的稳定 `station_id`，不会因为站名文本差异丢失身份。
 
-旧规划 XLSX 解析、导出和对应 API 仅为历史消费者保留，不属于当前活动 UI；不再新增模板格式或兼容字段。轨旁 AP 业务页仍可按自身契约导出业务明细和上线概览，但不改变规划维护来源。
+旧规划 XLSX 解析、导出和对应 API 不属于当前活动 UI，也不参与当前规划读取；不再新增模板格式或兼容字段。轨旁 AP 业务页仍可按自身契约导出业务明细和上线概览，但不改变规划维护来源。
 
-## PVID 与历史兼容层
+## PVID 与历史数据边界
 
-PVID 候选和核验优先读取当前逐站规划的 `management_vlan`。完成 AP 身份解析后，只按 AP 自身的 `station_id` 读取所属站点 VLAN；历史 AP 专属组网络仍可先行兼容。多个站使用相同 VLAN 合法；核验不能把 VLAN 当作唯一站点身份，也不能通过 VLAN 反推 AP 归属。
+PVID 候选和核验只读取当前逐站规划的 `management_vlan`。完成 AP 身份解析后，只按 AP 自身的 `station_id` 读取所属站点 VLAN。多个站使用相同 VLAN 合法；核验不能把 VLAN 当作唯一站点身份，也不能通过 VLAN 反推 AP 归属。
 
 `devices.db` 继续保留以下历史表及数据，不执行破坏性删除：
 
@@ -70,6 +70,6 @@ PVID 候选和核验优先读取当前逐站规划的 `management_vlan`。完成
 - `rail_ap_vlan_assignments`
 - `rail_ap_vlan_allocations`
 
-这些表是旧 VLAN 分组 API、旧点表和回滚的兼容层，不再由活动 UI 编辑。当前逐站事实保存在扩展后的 `ac_trackside_ap_plan(mode='unified')`；无逐站记录时，读取链可把旧 VLAN 组投影为逐站行。用户在新页面保存后只替换逐站记录，不覆盖或删除历史分组数据。
+这些表只作为历史数据留存，不再由活动 UI 编辑，也不参与当前规划、上线概览、PVID 或共享范围查询。当前逐站事实只保存在 `ac_trackside_ap_plan(mode='unified')`；0 行就是明确的空规划，不会把旧 VLAN 组投影成“复活”的规划行。用户在新页面保存后只替换逐站记录，不覆盖或删除历史分组数据。
 
-旧数据库初始化会幂等增加 `station_id`、`sequence_no`、`subnet_mask` 和 `management_vlan`，补齐旧值，并为有效 `station_id` 和正序号建立局部唯一索引。`ap_start_address`、`mask_length`、`subnet_mask`、`ap_gateway` 和 `ap_management_vlans` 等历史列不删除，但活动页面、DTO、模板和导入校验不再使用。旧库序号为零或重复时按既有顺序确定性重排后再建索引。迁移、索引和 schema version 写入位于同一初始化事务，失败整体回滚；验证只能使用临时数据库或真实数据库备份副本。
+数据库初始化会幂等确保 `station_id`、`sequence_no`、`subnet_mask` 和 `management_vlan` 字段以及有效 `station_id`、正序号的局部唯一索引，但不会在逐站规划与历史 VLAN 表之间复制数据。`ap_start_address`、`mask_length`、`subnet_mask`、`ap_gateway` 和 `ap_management_vlans` 等历史列不删除，但活动页面和当前 DTO 不再使用。序号为零或重复时按既有顺序确定性重排后再建索引。字段、索引和 schema version 写入位于同一初始化事务，失败整体回滚；验证只能使用临时数据库或真实数据库备份副本。

@@ -521,7 +521,7 @@ def test_pvid_verification_falls_back_to_ap_station_plan():
     assert mismatched["pvid_plan_status"] == "mismatched"
 
 
-def test_database_migration_is_idempotent_and_preserves_legacy_values(tmp_path):
+def test_database_initialize_does_not_copy_station_plan_to_legacy_vlan_groups(tmp_path):
     database = Database(tmp_path / "site.db")
     database.initialize()
     with database.connect() as connection:
@@ -541,10 +541,11 @@ def test_database_migration_is_idempotent_and_preserves_legacy_values(tmp_path):
     database.initialize()
     draft = ApManagementVlanRepository(database).get_draft()
     assert draft["planning"]["planning_mode"] == STATION_INDEPENDENT
-    assert len(draft["groups"]) == 1
-    assert draft["groups"][0]["management_vlan"] == 71
-    assert draft["groups"][0]["ap_start_ip"] == "10.10.1.10"
-    assert draft["groups"][0]["default_gateway"] == "10.10.1.1"
+    assert draft["groups"] == []
+    rows = AcRepository(database).list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE)
+    assert len(rows) == 1
+    assert rows[0]["station_name"] == "01站"
+    assert rows[0]["ap_management_vlans"] == "71"
 
 
 def test_trackside_station_plan_migration_repairs_duplicate_sequences(tmp_path):

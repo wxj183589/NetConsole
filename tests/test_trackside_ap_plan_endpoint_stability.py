@@ -193,7 +193,7 @@ def test_empty_plan_does_not_generate_station_rows(tmp_path: Path) -> None:
         )
 
 
-def test_plan_endpoint_accepts_persisted_planning_timestamps(
+def test_plan_endpoint_ignores_historical_vlan_groups(
     tmp_path: Path,
 ) -> None:
     _paths, database, app = _fixture(tmp_path)
@@ -217,6 +217,26 @@ def test_plan_endpoint_accepts_persisted_planning_timestamps(
                 stamp,
             ),
         )
+        connection.execute(
+            """
+            INSERT INTO rail_ap_vlan_groups (
+                group_id, line_id, group_code, group_name, sequence,
+                management_vlan, created_at, updated_at
+            )
+            VALUES ('legacy-group', 'current', 'G001', '历史分组', 1, 71, ?, ?)
+            """,
+            (stamp, stamp),
+        )
+        connection.execute(
+            """
+            INSERT INTO rail_ap_vlan_group_members (
+                group_id, station_id, station_name, station_sequence,
+                ap_count, created_at, updated_at
+            )
+            VALUES ('legacy-group', 'legacy-station', '历史站点', 1, 11, ?, ?)
+            """,
+            (stamp, stamp),
+        )
         connection.commit()
 
     with TestClient(app) as client:
@@ -224,8 +244,10 @@ def test_plan_endpoint_accepts_persisted_planning_timestamps(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["planning"]["created_at"] == stamp
-    assert payload["planning"]["updated_at"] == stamp
+    assert payload["items"] == []
+    assert payload["total"] == 0
+    assert payload["planning"]["created_at"] == ""
+    assert payload["planning"]["updated_at"] == ""
 
 
 def test_vlan_planning_dtos_accept_timestamps_and_reject_unknown_fields() -> None:
@@ -261,7 +283,7 @@ def test_vlan_planning_dtos_accept_timestamps_and_reject_unknown_fields() -> Non
         )
 
 
-def test_legacy_plan_is_projected_in_memory_and_get_succeeds_during_write_lock(
+def test_legacy_mode_rows_are_not_projected_during_write_lock(
     tmp_path: Path,
 ) -> None:
     _paths, database, app = _fixture(tmp_path)
@@ -281,7 +303,8 @@ def test_legacy_plan_is_projected_in_memory_and_get_succeeds_during_write_lock(
         writer.close()
 
     assert response.status_code == 200
-    assert response.json()["total"] == 1
+    assert response.json()["items"] == []
+    assert response.json()["total"] == 0
     with database.connect() as connection:
         assert (
             connection.execute(

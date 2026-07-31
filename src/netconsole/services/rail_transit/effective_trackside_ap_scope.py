@@ -450,25 +450,16 @@ def resolve_effective_trackside_ap_scope_from_database(
     detail_limit: int | None = None,
 ) -> EffectiveTracksideApScope:
     repository = AcRepository(database)
-    plans = repository.list_trackside_ap_plan()
+    plans = repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE)
     extension_points = (
         repository.list_trackside_ap_scope_reference_rows()
         if lightweight
         else repository.list_ap_extension_points()
     )
-    selected_plans = [
-        row for row in plans if str(row.get("mode") or "") == TRACKSIDE_AP_PLAN_MODE
-    ]
-    if not selected_plans:
-        selected_plans = [
-            row
-            for row in plans
-            if str(row.get("mode") or "") in {"multi_vlan", "single_vlan"}
-        ]
     return resolve_effective_trackside_ap_scope(
         context=context or TracksideApScopeContext(site_id=site_id, project_id=site_id),
         station_rows=extension_points,
-        plan_rows=selected_plans,
+        plan_rows=plans,
         reference_rows=extension_points,
         resource_rows=(
             resource_rows

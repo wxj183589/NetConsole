@@ -61,9 +61,6 @@ from netconsole.models.api.vehicle_mr_online import (
 )
 from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
-from netconsole.repositories.ap_management_vlan_repository import (
-    ApManagementVlanRepository,
-)
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
@@ -1032,11 +1029,6 @@ class RailTransitWebApplicationService:
                 f"sql_ms={(time.perf_counter() - repository_started) * 1000:.2f}"
             ),
         )
-        draft = ApManagementVlanRepository(database).get_draft()
-        if not station_rows and draft["groups"]:
-            station_rows = project_legacy_station_rows(
-                enrich_plan(draft, stations=stations, aps=aps)
-            )
         bound_rows: list[Mapping[str, object]] = []
         for index, row in enumerate(station_rows, start=2):
             try:
@@ -1052,10 +1044,7 @@ class RailTransitWebApplicationService:
                 )
             except ValueError:
                 bound_rows.append(row)
-        result = self._trackside_plan_dto(
-            {"planning": draft["planning"]},
-            source_rows=bound_rows,
-        )
+        result = self._trackside_plan_dto({}, source_rows=bound_rows)
         result.model_dump(mode="json")
         app_logger.log_info(
             "trackside_ap_plan.dto_validated",
@@ -1096,18 +1085,9 @@ class RailTransitWebApplicationService:
 
         metadata = SiteManager(self.paths).load_site_metadata(site_id)
         planning_started = time.perf_counter()
-        plans = repository.list_trackside_ap_plan()
-        selected_plans = [
-            row
-            for row in plans
-            if str(row.get("mode") or "") == TRACKSIDE_AP_PLAN_MODE
-        ]
-        if not selected_plans:
-            selected_plans = [
-                row
-                for row in plans
-                if str(row.get("mode") or "") in {"multi_vlan", "single_vlan"}
-            ]
+        selected_plans = repository.list_trackside_ap_plan(
+            TRACKSIDE_AP_PLAN_MODE
+        )
         planning_ms = (time.perf_counter() - planning_started) * 1000
         identity_started = time.perf_counter()
         references = repository.list_trackside_ap_scope_reference_rows()

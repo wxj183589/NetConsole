@@ -1000,7 +1000,9 @@ class AcRepository:
                 """
                 SELECT COUNT(*) AS row_count, COALESCE(MAX(updated_at), '') AS updated_at
                 FROM ac_trackside_ap_plan
-                """
+                WHERE mode = ?
+                """,
+                (TRACKSIDE_AP_PLAN_MODE,),
             ).fetchone()
             references = conn.execute(
                 """
@@ -1828,14 +1830,7 @@ class AcRepository:
 
     def list_trackside_ap_plan(self, mode: str | None = None) -> list[dict[str, object | None]]:
         if mode == TRACKSIDE_AP_PLAN_MODE:
-            result = self._list_trackside_ap_plan_by_mode(TRACKSIDE_AP_PLAN_MODE)
-            if result:
-                return result
-            legacy_rows = self._list_legacy_trackside_plan_as_unified()
-            # Historical VLAN rows are a read-only compatibility projection.
-            # Persisting them from a GET races with base-data saves and turns a
-            # harmless read into a DELETE/INSERT transaction.
-            return legacy_rows
+            return self._list_trackside_ap_plan_by_mode(TRACKSIDE_AP_PLAN_MODE)
 
         params: list[object] = []
         where = ""
@@ -1917,131 +1912,37 @@ class AcRepository:
         }
 
     def get_active_trackside_pvid_plan(self) -> dict[str, object]:
-        from netconsole.repositories.ap_management_vlan_repository import (
-            ApManagementVlanRepository,
-        )
-
         mode = TRACKSIDE_AP_PLAN_MODE
         station_rows = self.list_trackside_ap_plan(mode)
-        if station_rows:
-            station_vlans: dict[str, set[int]] = {}
-            station_vlans_by_id: dict[str, set[int]] = {}
-            station_totals: dict[str, int] = {}
-            all_vlans: set[int] = set()
-            for row in station_rows:
-                station = str(row.get("station_name") or "").strip()
-                station_id = str(row.get("station_id") or "").strip()
-                raw_vlan = (
-                    row.get("management_vlan")
-                    if row.get("management_vlan") not in (None, "")
-                    else row.get("ap_management_vlans")
-                )
-                vlans = parse_vlan_set(raw_vlan)
-                if not station or not vlans:
-                    continue
-                station_vlans[station] = vlans
-                if station_id:
-                    station_vlans_by_id[station_id] = vlans
-                all_vlans.update(vlans)
-                station_totals[station] = int(row.get("ap_count") or 0)
-            return {
-                "mode": mode,
-                "planning_mode": "station_rows",
-                "station_vlans": station_vlans,
-                "station_vlans_by_id": station_vlans_by_id,
-                "all_vlans": all_vlans,
-                "station_totals": station_totals,
-                "group_networks": {},
-                "ap_networks_by_mac": {},
-                "ap_networks_by_name": {},
-            }
-        draft = ApManagementVlanRepository(self.database).get_draft()
-        groups = {
-            str(group.get("group_id") or ""): group
-            for group in draft.get("groups") or []
-        }
         station_vlans: dict[str, set[int]] = {}
         station_vlans_by_id: dict[str, set[int]] = {}
         station_totals: dict[str, int] = {}
         all_vlans: set[int] = set()
-        group_networks: dict[str, dict[str, object]] = {}
-        for group_id, group in groups.items():
-            vlan = group.get("management_vlan")
-            if vlan in (None, ""):
+        for row in station_rows:
+            station = str(row.get("station_name") or "").strip()
+            station_id = str(row.get("station_id") or "").strip()
+            raw_vlan = (
+                row.get("management_vlan")
+                if row.get("management_vlan") not in (None, "")
+                else row.get("ap_management_vlans")
+            )
+            vlans = parse_vlan_set(raw_vlan)
+            if not station or not vlans:
                 continue
-            vlan_value = int(vlan)
-            all_vlans.add(vlan_value)
-            group_networks[group_id] = {
-                "vlan_group_id": group_id,
-                "vlan_group_code": str(group.get("group_code") or ""),
-                "vlan_group_name": str(group.get("group_name") or ""),
-                "management_vlan": vlan_value,
-            }
-            for member in group.get("members") or []:
-                station = str(member.get("station_name") or "").strip()
-                station_id = str(member.get("station_id") or "").strip()
-                if not station:
-                    continue
-                station_vlans.setdefault(station, set()).add(vlan_value)
-                if station_id:
-                    station_vlans_by_id.setdefault(station_id, set()).add(
-                        vlan_value
-                    )
-                station_totals[station] = int(member.get("ap_count") or 0)
-        if not groups:
-            for row in self.list_trackside_ap_plan(mode):
-                station = str(row.get("station_name") or "").strip()
-                station_id = str(row.get("station_id") or "").strip()
-                vlans = parse_vlan_set(row.get("ap_management_vlans"))
-                if not station or not vlans:
-                    continue
-                station_vlans[station] = vlans
-                if station_id:
-                    station_vlans_by_id[station_id] = vlans
-                all_vlans.update(vlans)
-                station_totals[station] = int(row.get("ap_count") or 0)
-        group_by_ap_id = {
-            str(row.get("ap_id") or ""): str(row.get("group_id") or "")
-            for row in draft.get("allocations") or []
-        }
-        group_by_ap_id.update(
-            {
-                str(row.get("target_id") or ""): str(row.get("group_id") or "")
-                for row in draft.get("assignments") or []
-                if str(row.get("assignment_type") or "") == "ap_override"
-            }
-        )
-        ap_networks_by_mac: dict[str, dict[str, object]] = {}
-        if group_by_ap_id:
-            with self.database.connect() as conn:
-                point_rows = conn.execute(
-                    """
-                    SELECT id, ap_mac_norm
-                    FROM ap_extension_points
-                    """
-                ).fetchall()
-            for point in point_rows:
-                group_id = group_by_ap_id.get(f"ap:{point['id']}")
-                network = group_networks.get(str(group_id or ""))
-                if network is None:
-                    continue
-                mac = normalize_ap_mac(point["ap_mac_norm"]).normalized
-                if mac:
-                    ap_networks_by_mac[mac] = network
+            station_vlans[station] = vlans
+            if station_id:
+                station_vlans_by_id[station_id] = vlans
+            all_vlans.update(vlans)
+            station_totals[station] = int(row.get("ap_count") or 0)
         return {
             "mode": mode,
-            "planning_mode": str(
-                (draft.get("planning") or {}).get("planning_mode")
-                if isinstance(draft.get("planning"), dict)
-                else ""
-            ),
+            "planning_mode": "station_rows",
             "station_vlans": station_vlans,
             "station_vlans_by_id": station_vlans_by_id,
             "all_vlans": all_vlans,
             "station_totals": station_totals,
-            "group_networks": group_networks,
-            "ap_networks_by_mac": ap_networks_by_mac,
-            # 兼容旧调用方保留字段，但生产身份只允许按规范化 MAC。
+            "group_networks": {},
+            "ap_networks_by_mac": {},
             "ap_networks_by_name": {},
         }
 
@@ -2890,16 +2791,6 @@ class AcRepository:
         payload["created_at"] = row.get("created_at") or now
         payload["updated_at"] = now
         return payload
-
-    def _list_legacy_trackside_plan_as_unified(self) -> list[dict[str, object | None]]:
-        rows = self._list_trackside_ap_plan_by_mode("multi_vlan") or self._list_trackside_ap_plan_by_mode("single_vlan")
-        result = []
-        for index, row in enumerate(rows):
-            item = dict(row)
-            item["mode"] = TRACKSIDE_AP_PLAN_MODE
-            item["sort_order"] = index
-            result.append(item)
-        return result
 
     def _list_trackside_ap_plan_by_mode(self, mode: str) -> list[dict[str, object | None]]:
         mode = self._normalize_trackside_plan_mode(mode)

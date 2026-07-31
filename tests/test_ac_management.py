@@ -1362,7 +1362,7 @@ def test_ap_and_trackside_station_headers_display_ownership_station():
     ] == "归属站点"
 
 
-def test_trackside_ap_plan_unified_listing_falls_back_to_legacy_rows(tmp_path):
+def test_trackside_ap_plan_unified_listing_ignores_legacy_modes(tmp_path):
     repository = AcRepository(make_database(tmp_path))
     repository.replace_trackside_ap_plan_rows(
         "single_vlan",
@@ -1380,15 +1380,19 @@ def test_trackside_ap_plan_unified_listing_falls_back_to_legacy_rows(tmp_path):
     )
 
     unified_rows = repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE)
-    assert [row["station_name"] for row in unified_rows] == ["Station B"]
-    assert unified_rows[0]["mode"] == TRACKSIDE_AP_PLAN_MODE
-    assert unified_rows[0]["ap_count"] == 56
+    assert unified_rows == []
+
+    active_plan = repository.get_active_trackside_pvid_plan()
+    assert active_plan["planning_mode"] == "station_rows"
+    assert active_plan["station_vlans"] == {}
+    assert active_plan["all_vlans"] == set()
 
     repository.upsert_trackside_ap_plan_row(
         TRACKSIDE_AP_PLAN_MODE,
         {"station_name": "Station B", "ap_count": 34, "ap_management_vlans": "922"},
     )
     refreshed_rows = repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE)
+    assert refreshed_rows[0]["mode"] == TRACKSIDE_AP_PLAN_MODE
     assert refreshed_rows[0]["ap_count"] == 34
 
 

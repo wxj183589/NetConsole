@@ -4,7 +4,7 @@
 
 `/rail-transit/base-data` 是站点、区间、轨旁 AP、轨旁 AP 规划、列车和车载 MR 的统一维护入口，Feature key 为 `web.rail_transit_base_data`。页面默认锁定；正常 `persistent` Electron 受管会话可解锁并维护当前局点，`isolated_test` 始终只读并显示明确原因。普通 Server、未认证浏览器和未授权副本仍保持锁定。页面复用现有 Python Core 和当前局点 `devices.db`，不建立第二套基础资料数据库。
 
-原独立 `/rail-transit/trackside-ap-plan` 页面和导航已删除；旧路由只重定向到 `/rail-transit/base-data?tab=trackside-ap-planning`。规划查询和在线状态刷新继续复用现有能力，但活动页面不再提供规划模板导入、模板下载或规划导出；站点来源统一通过设备管理生成并由基础资料统一保存事务提交。轨旁 AP 规划当前是一站一行的直接维护模型，只维护 AP 数量和 AP 管理 VLAN；多个站使用相同管理 VLAN 合法。IP、掩码、网关及旧 VLAN 分组表/API 仅作历史兼容，不再由活动页面编辑。详细边界见 [轨旁 AP 逐站规划与 VLAN 分组兼容](AP_MANAGEMENT_VLAN_GROUPS.md)。
+原独立 `/rail-transit/trackside-ap-plan` 页面和导航已删除；旧路由只重定向到 `/rail-transit/base-data?tab=trackside-ap-planning`。规划查询和在线状态刷新继续复用现有能力，但活动页面不再提供规划模板导入、模板下载或规划导出；站点来源统一通过设备管理生成并由基础资料统一保存事务提交。轨旁 AP 规划当前是一站一行的直接维护模型，只维护 AP 数量和 AP 管理 VLAN；多个站使用相同管理 VLAN 合法。IP、掩码、网关和旧 VLAN 分组数据不参与当前规划读取。详细边界见 [轨旁 AP 逐站规划](AP_MANAGEMENT_VLAN_GROUPS.md)。
 
 基础资料和轨旁 AP 只读查询按接口独立刷新。成功接口立即更新对应数据；失败接口保留最后成功值，不会让站点、区间、AP、列车或规划整组闪空。健康检查在线但业务接口失败时，页面显示局部“部分基础资料刷新失败”提示；只有核心健康和多个核心查询持续失败才显示 Backend 整体不可用。总览在无成功缓存时用 `—` 或“加载失败”表示未知，不把接口失败统计成真实 `0`。
 

@@ -91,12 +91,13 @@ but the active DTO, page, template, import preview, and validation ignore them.
 
 `rail_ap_vlan_plans`, `rail_ap_vlan_groups`,
 `rail_ap_vlan_group_members`, `rail_ap_vlan_assignments`, and
-`rail_ap_vlan_allocations` remain unchanged as a historical compatibility
-layer. When no station plan exists, the read path can project those groups into
-station rows. Saving the current page replaces only station-plan rows and does
-not delete or rewrite the historical group tables. Existing AP, location,
-device, MAC, and runtime IP rows are not rewritten. See
-[Trackside AP station planning and VLAN compatibility](AP_MANAGEMENT_VLAN_GROUPS.md).
+`rail_ap_vlan_allocations` remain unchanged as historical retained data. The
+active read path never projects those rows into the station plan, and database
+initialization no longer generates them from current station rows. An empty
+`ac_trackside_ap_plan(mode='unified')` therefore remains empty. Saving the
+current page replaces only station-plan rows and does not delete or rewrite the
+historical group tables. Existing AP, location, device, MAC, and runtime IP rows
+are not rewritten. See [Trackside AP station planning](AP_MANAGEMENT_VLAN_GROUPS.md).
 
 The 2026-07-31 additive migration adds the site-level AP Identity materialized
 index:
