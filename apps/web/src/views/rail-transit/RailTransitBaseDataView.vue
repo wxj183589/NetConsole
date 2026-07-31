@@ -117,7 +117,10 @@ const planningDraft = ref<TracksideApPlanRow[] | null>(null)
 const planningDirty = ref(false)
 const saveIssues = ref<BaseDataValidationIssue[]>([])
 const fieldErrors = ref<Record<string, string>>({})
-const planningTab = ref<{ reload: (force?: boolean) => Promise<boolean> } | null>(null)
+const planningTab = ref<{
+  reload: (force?: boolean) => Promise<boolean>
+  reloadPlan?: (force?: boolean) => Promise<boolean>
+} | null>(null)
 const allowedTabs = new Set(['overview', 'stations', 'trackside-ap', 'trackside-ap-planning', 'trains', 'quality', 'import-preview', 'import-audit', 'relations'])
 const activeTab = computed({
   get: () => allowedTabs.has(String(route.query.tab || '')) ? String(route.query.tab) : 'overview',
@@ -604,12 +607,19 @@ async function loadConsistentEditSnapshot() {
   let before = await store.refreshEditSession()
   if (!before.can_write) return before
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    await Promise.all([store.manualRefresh(), planningTab.value?.reload(true)])
+    await Promise.all([store.manualRefresh(), reloadPlanningPlan(true)])
     const after = await store.refreshEditSession()
     if (before.base_revision === after.base_revision) return after
     before = after
   }
   throw new Error('基础资料在加载期间持续变化，请稍后重试')
+}
+
+function reloadPlanningPlan(force = false): Promise<boolean> {
+  if (!planningTab.value) return Promise.resolve(true)
+  return planningTab.value.reloadPlan
+    ? planningTab.value.reloadPlan(force)
+    : planningTab.value.reload(force)
 }
 
 function lockClean(): void {
@@ -756,11 +766,15 @@ async function saveAllChanges(successMessage = ''): Promise<boolean> {
     fieldErrors.value = {}
     baselines.clear()
     stationReferencePatches.clear()
-    await Promise.all([store.manualRefresh(), planningTab.value?.reload(true)])
     editState.value = 'LOCKED'
     serverSnapshot.value = null
     editingDraft.value = null
-    store.startPolling()
+    void Promise.all([
+      store.manualRefresh(),
+      planningTab.value?.reload(true),
+    ]).catch(() => undefined).finally(() => {
+      store.startPolling()
+    })
     ElMessage.success(
       successMessage
       || `基础资料已保存：新增 ${result.created_count}，更新 ${result.updated_count}，删除 ${result.deleted_count}${result.warnings.length ? `，提示 ${result.warnings.length}` : ''}`,
@@ -2939,9 +2953,9 @@ function sectionSourceLabel(row: Section): string {
             :locked="locked"
             :saving="saving"
             :stations="stationRows.map((row) => ({ id: row.id, name: row.name, sort_order: row.sort_order }))"
-            :line-name="store.summary?.line_name || store.summary?.site_name || ''"
             @change="handlePlanningChange"
             @save="saveTracksideApPlanning"
+            @generate-stations="openStationSourcePreview"
           />
         </el-tab-pane>
 

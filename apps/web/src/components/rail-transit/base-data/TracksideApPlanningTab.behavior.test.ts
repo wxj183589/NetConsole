@@ -296,6 +296,18 @@ describe('TracksideApPlanningTab behavior', () => {
     downloadBackendResource.mockReset().mockResolvedValue({ status: 'saved' })
   })
 
+  it('delegates station generation to the parent station-source workflow', async () => {
+    const wrapper = mount(TracksideApPlanningTab, {
+      props: { locked: true, saving: false },
+      global: { stubs },
+    })
+    await flushPromises()
+
+    await button(wrapper, '从设备管理生成站点').trigger('click')
+    expect(wrapper.emitted('generate-stations')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
   it('adds a row and pastes an Excel grid with repeated VLAN values', async () => {
     const wrapper = mount(TracksideApPlanningTab, {
       props: {
@@ -561,76 +573,6 @@ describe('TracksideApPlanningTab behavior', () => {
     expect(
       wrapper.find('[data-plan-cell="0-planned_ap_count"]').attributes('title'),
     ).toBe('AP数量必须是非负整数')
-    wrapper.unmount()
-  })
-
-  it('keeps invalid import rows visible and applies valid rows only', async () => {
-    api.previewTracksideApPlan.mockResolvedValue({
-      file_name: 'partial.xlsx',
-      file_sha256: 'sha256',
-      duplicate_strategy: 'replace',
-      can_apply: true,
-      total_count: 2,
-      valid_count: 1,
-      duplicate_count: 0,
-      error_count: 1,
-      rows: [
-        {
-          row_number: 3,
-          status: 'valid',
-          key: '小洋江站',
-          message: '',
-          row: planRow({ planned_ap_count: 28 }),
-        },
-        {
-          row_number: 4,
-          status: 'error',
-          key: '',
-          message: '第4行 AP数量：必须是整数',
-          row: {
-            station_id: '',
-            sequence_no: 2,
-            station_name: '不存在站',
-            planned_ap_count: 'invalid',
-            management_vlan: 922,
-            remark: '错误行',
-          },
-        },
-      ],
-      result_rows: [planRow({ planned_ap_count: 28 })],
-      result_plan: null,
-      legacy_schema: false,
-      message: '',
-    })
-    const wrapper = mount(TracksideApPlanningTab, {
-      props: {
-        locked: false,
-        saving: false,
-        stations: [
-          { id: 'station:1', name: '小洋江站', sort_order: 1 },
-        ],
-      },
-      global: { stubs },
-    })
-    await flushPromises()
-
-    const input = wrapper.find('input[type="file"]')
-    Object.defineProperty(input.element, 'files', {
-      configurable: true,
-      value: [new File(['xlsx'], 'partial.xlsx')],
-    })
-    await input.trigger('change')
-    await flushPromises()
-
-    expect(wrapper.text()).toContain('不存在站')
-    expect(wrapper.text()).toContain('请选择当前基础资料中的站点')
-    await button(wrapper, '应用有效行').trigger('click')
-    await flushPromises()
-
-    const latest = wrapper.emitted('change')?.at(-1)?.[0] as TracksideApPlanRow[]
-    expect(latest).toHaveLength(1)
-    expect(latest[0].station_name).toBe('小洋江站')
-    expect(latest[0].planned_ap_count).toBe(28)
     wrapper.unmount()
   })
 
@@ -900,55 +842,6 @@ describe('TracksideApPlanningTab behavior', () => {
     expect(wrapper.text()).toContain('超规划')
     expect(wrapper.text()).toContain('存在未纳入规划或超规划的在线 AP')
     expect(wrapper.text()).toContain('—')
-    wrapper.unmount()
-  })
-
-  it('recovers an active planning task from the global store without a local task banner', async () => {
-    taskApi.listTasks.mockResolvedValue([
-      globalTask('active-plan-export', 'RUNNING', 'web_export_multi_sheet_xlsx'),
-    ])
-    const wrapper = mount(TracksideApPlanningTab, {
-      props: { locked: false, saving: false },
-      global: { stubs },
-    })
-    await flushPromises()
-
-    expect(button(wrapper, '下载模板').attributes('disabled')).toBeDefined()
-    expect(button(wrapper, '导出当前').attributes('disabled')).toBeDefined()
-    expect(wrapper.text()).not.toContain('打开任务中心')
-    expect(wrapper.text()).not.toContain('下载文件')
-    expect(downloadBackendResource).not.toHaveBeenCalled()
-    wrapper.unmount()
-  })
-
-  it('exports the saved plan with a line-specific overview filename', async () => {
-    api.getTracksideApPlan.mockResolvedValue({
-      ...emptyPlan(),
-      items: [planRow()],
-      total: 1,
-    })
-    api.exportTracksideApPlan.mockResolvedValue(
-      task('current-plan', 'COMPLETED', true, 'artifact-current'),
-    )
-    const wrapper = mount(TracksideApPlanningTab, {
-      props: {
-        locked: false,
-        saving: false,
-        lineName: '宁波地铁12号线',
-      },
-      global: { stubs },
-    })
-    await flushPromises()
-    await wrapper.find('[data-plan-cell="0-remark"] input').setValue('未保存备注')
-
-    await button(wrapper, '导出当前').trigger('click')
-    await flushPromises()
-
-    expect(api.exportTracksideApPlan).toHaveBeenCalledWith(false)
-    expect(sessionStorage.getItem('netconsole.user-selected-exports.v1')).toContain(
-      '宁波地铁12号线_轨旁AP规划及上线概览_',
-    )
-    expect(downloadBackendResource).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 

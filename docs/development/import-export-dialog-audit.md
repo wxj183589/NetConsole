@@ -30,8 +30,7 @@
 | `/rail-transit/base-data` 基础资料 | `RailTransitBaseDataView.vue` | 线路站点/区间模板导入、基础资料导入、轨旁 AP 导入 | 导入 | 保持用户 file input；确认同名重选 | 文件选择 | 用户所选文件只用于预览 | 预览不创建；确认写入按原业务契约 | 每个 change handler 清空 input；后端 schema/字段校验不变 | 静态审计及既有基础资料测试 |
 | `/rail-transit/base-data` 基础资料 | 同上 | 线路站点/区间模板、正式基础资料 | 直接下载 | 保持用户点击时调用受控下载 | 点击时一次“另存为” | 用户路径 | 否 | 现成响应不创建 Export Task；Browser 只报告开始 | 既有页面/API 测试、平台下载测试 |
 | `/rail-transit/base-data` 轨旁 AP 基础资料 | 同上 | 模板、当前资料、重命名命令 | 导出 | 直接提交任务 → 先选路径再提交 | 点击后立即“另存为” | Main 授权的用户路径 | 确认路径后创建 | `rail.trackside_base_*`、`rail.trackside_rename_commands` | 静态审计、协调器测试 |
-| `/rail-transit/base-data?tab=trackside-ap-planning` | `TracksideApPlanningTab.vue` | 规划模板导入 | 导入 | 保持用户选择；补齐同名重选 | 文件选择 | 用户所选文件只用于预览 | 否 | input 清空，后端预览/应用契约不变 | `TracksideApPlanningTab.behavior.test.ts`、静态审计 |
-| 同上 | 同上 | 规划模板、当前规划 | 导出 | 直接提交任务 → 先选路径再提交 | 点击后立即“另存为” | Main 授权的用户路径 | 确认路径后创建 | `rail.trackside_plan_template/current`；移除任务完成自动下载 | 行为测试、静态审计 |
+| `/rail-transit/base-data?tab=trackside-ap-planning` | `TracksideApPlanningTab.vue` | 从设备管理生成站点 | 业务动作 | 原规划模板来源 → 复用站点来源预览并写入基础资料草稿 | 业务预览 | 当前草稿，保存后进入统一事务 | 否 | 规划页不再提供模板导入、模板下载或规划导出；历史 API 仅兼容保留 | `TracksideApPlanningTab.behavior.test.ts`、静态审计 |
 | `/rail-transit/train-online` 列车在线 | `VehicleMrOnlineView.vue` | MR 映射模板导入 | 导入 | 保持用户选择并清空 input | 文件选择 | 用户所选文件只用于预览 | 否 | 取消不调用导入 API | 静态审计及既有页面测试 |
 | `/rail-transit/train-online` 列车在线 | 同上 | 列车经过历史、MR 映射模板 | 导出 | 直接提交任务 → 先选路径再提交 | 点击后立即“另存为” | Main 授权的用户路径 | 确认路径后创建 | `rail.vehicle_history/mapping_template` | 静态审计、协调器测试 |
 | `/rail-transit/ground-unattended` | `GroundUnattendedView.vue` | 已生成摘要/归档下载 | 已有文件 | 保持按用户点击下载 | 点击时一次“另存为” | 用户路径 | 下载动作不新建任务 | 归档是受管业务结果，导出副本仍由用户选择 | 既有地面无人值守测试 |

@@ -21,8 +21,6 @@ export const userSelectedExportDefinitions = {
   'rail.mesh_report': xlsxDefinition('rail', 'MESH 分析报告'),
   'rail.mesh_link_details': xlsxDefinition('rail', 'MESH 链路明细'),
   'rail.trackside_business': xlsxDefinition('rail', '轨旁 AP 业务表'),
-  'rail.trackside_plan_template': xlsxDefinition('rail', '轨旁 AP 规划模板'),
-  'rail.trackside_plan_current': xlsxDefinition('rail', '轨旁 AP 规划资料'),
   'rail.trackside_base_template': xlsxDefinition('rail', '轨旁 AP 基础资料模板'),
   'rail.trackside_base_current': xlsxDefinition('rail', '轨旁 AP 基础资料'),
   'rail.trackside_base_import_issues': xlsxDefinition('rail', '轨旁 AP 导入问题明细'),

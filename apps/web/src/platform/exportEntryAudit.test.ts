@@ -26,9 +26,6 @@ const COORDINATED_EXPORTS: CoordinatedExportEntry[] = [
     ['rail.mesh_report', 'rail.mesh_link_details'],
     ['exportMeshAnalysisReport', 'exportMeshLinkDetails']),
   entry('views/rail-transit/TracksideApBusinessView.vue', ['rail.trackside_business'], ['startTracksideApBusinessExport']),
-  entry('components/rail-transit/base-data/TracksideApPlanningTab.vue',
-    ['rail.trackside_plan_template', 'rail.trackside_plan_current'],
-    ['exportTracksideApPlan']),
   entry('views/rail-transit/RailTransitBaseDataView.vue',
     ['rail.trackside_base_template', 'rail.trackside_base_current', 'rail.trackside_base_import_issues', 'rail.trackside_rename_commands'],
     ['exportTracksideApBase', 'exportTracksideApImportIssues', 'exportTracksideApRenameCommands']),
@@ -80,7 +77,6 @@ const IMPORT_ENTRIES = [
   ['views/rail-transit/RailTransitBaseDataView.vue', 'handleTracksideApFile'],
   ['views/rail-transit/VehicleMrOnlineView.vue', 'chooseMappingImport'],
   ['views/rail-transit/CarNetworkPointTableDialog.vue', 'chooseImport'],
-  ['components/rail-transit/base-data/TracksideApPlanningTab.vue', 'chooseImport'],
 ] as const
 
 const MANAGED_DOWNLOAD_EXCEPTIONS = [

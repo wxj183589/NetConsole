@@ -3,33 +3,25 @@ import { ElMessage } from 'element-plus'
 import {
   Check,
   Delete,
-  Download,
   Plus,
   Refresh,
   RefreshLeft,
-  UploadFilled,
-  View,
 } from '@element-plus/icons-vue'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import {
-  exportTracksideApPlan,
   getTracksideApOnlineStatus,
   getTracksideApPlan,
   listTracksideApOnlineExcluded,
   listTracksideApOnlineUnmatched,
-  previewTracksideApPlan,
   startTracksideApUpdate,
 } from '../../../api/tracksideApBusiness'
 import { apiErrorDetail, type ApiErrorDetail } from '../../../api/client'
-import { useUserSelectedExport } from '../../../composables/useUserSelectedExport'
-import { isFeatureEnabled } from '../../../features'
 import { useTaskStore } from '../../../stores/tasks'
 import type {
   TracksideApOnlineStatus,
   TracksideApOnlineStatusRow,
-  TracksideApPlanPreview,
   TracksideApPlanRow,
   TracksideApScopeExcluded,
   TracksideApUnmatchedOnline,
@@ -54,12 +46,6 @@ type EditableField =
   | 'management_vlan'
   | 'remark'
 
-interface ImportPreviewEditableRow extends TracksideApPlanRow {
-  preview_row_number: number
-  preview_status: 'valid' | 'duplicate' | 'error'
-  preview_message: string
-}
-
 interface ValidationIssue {
   row: TracksideApPlanRow
   field: EditableField
@@ -82,24 +68,20 @@ const props = withDefaults(
     locked: boolean
     saving: boolean
     stations?: StationOption[]
-    lineName?: string
   }>(),
-  { stations: () => [], lineName: '' },
+  { stations: () => [] },
 )
 const emit = defineEmits<{
   change: [rows: TracksideApPlanRow[], dirty: boolean]
   save: []
+  'generate-stations': []
 }>()
 
 const router = useRouter()
 const { confirm } = useConfirm()
-const userSelectedExport = useUserSelectedExport()
 const taskStore = useTaskStore()
 const activeStates = new Set(activeTaskStatuses)
-const planningTaskTypes = new Set([
-  'trackside_ap_optical_update',
-  'web_export_multi_sheet_xlsx',
-])
+const planningTaskTypes = new Set(['trackside_ap_optical_update'])
 const rows = ref<TracksideApPlanRow[]>([])
 const baselineRows = ref<TracksideApPlanRow[]>([])
 const selectedRows = ref<TracksideApPlanRow[]>([])
@@ -111,11 +93,6 @@ const planningError = ref<ApiErrorDetail | null>(null)
 const onlineStatusError = ref<ApiErrorDetail | null>(null)
 const dirty = ref(false)
 const currentTaskId = ref('')
-const importInput = ref<HTMLInputElement | null>(null)
-const duplicateStrategy = ref<'replace' | 'skip' | 'error'>('replace')
-const importPreview = ref<TracksideApPlanPreview | null>(null)
-const importRows = ref<ImportPreviewEditableRow[]>([])
-const importPreviewVisible = ref(false)
 const onlineStatus = ref<TracksideApOnlineStatus | null>(null)
 const unassignedVisible = ref(false)
 const excludedVisible = ref(false)
@@ -141,17 +118,6 @@ const planColumns: NcTableColumn<TracksideApPlanRow>[] = [
   { key: 'management_vlan', label: 'AP管理VLAN', valueType: 'number', width: 140 },
   { key: 'remark', label: '备注', valueType: 'description', minWidth: 240, align: 'left', alignmentReason: 'long-text' },
   { key: 'actions', label: '操作', valueType: 'actions', width: 64, hideable: false },
-]
-
-const previewColumns: NcTableColumn<ImportPreviewEditableRow>[] = [
-  { key: 'preview_row_number', label: 'Excel行', valueType: 'number', width: 82 },
-  { key: 'preview_status', label: '状态', valueType: 'status', width: 88 },
-  { key: 'sequence_no', label: '序号', valueType: 'number', width: 80 },
-  { key: 'station_name', label: '车站名称', valueType: 'name', minWidth: 190 },
-  { key: 'planned_ap_count', label: 'AP数量', valueType: 'number', width: 110 },
-  { key: 'management_vlan', label: 'AP管理VLAN', valueType: 'number', width: 130 },
-  { key: 'remark', label: '备注', valueType: 'description', minWidth: 200, align: 'left', alignmentReason: 'long-text' },
-  { key: 'preview_message', label: '问题', valueType: 'description', minWidth: 240, align: 'left', alignmentReason: 'long-text' },
 ]
 
 const statusColumns: NcTableColumn<TracksideApOnlineStatusRow>[] = [
@@ -231,9 +197,6 @@ const validationIssueRows = computed<ValidationIssueRow[]>(() => validationIssue
     source: issue,
   }),
 ))
-const canApplyImport = computed(
-  () => importRows.value.some((row) => validateRows([row]).length === 0),
-)
 const countAnomalyRows = computed(
   () => onlineStatus.value?.items.filter((row) => row.count_anomaly) || [],
 )
@@ -424,6 +387,10 @@ async function reload(force = false): Promise<boolean> {
     loadOnlineStatus(),
   ])
   return planLoaded
+}
+
+async function reloadPlan(force = false): Promise<boolean> {
+  return loadPlan(force)
 }
 
 function addRow(): void {
@@ -641,141 +608,6 @@ function assignPastedValue(
   }
 }
 
-function previewEditableRow(
-  entry: TracksideApPlanPreview['rows'][number],
-): ImportPreviewEditableRow {
-  const source = entry.row || {}
-  const row = {
-    station_id: String(source.station_id || ''),
-    sequence_no: (source.sequence_no ?? '') as number,
-    station_name: String(source.station_name || ''),
-    planned_ap_count: (source.planned_ap_count ?? '') as number,
-    management_vlan: (source.management_vlan ?? null) as number | null,
-    remark: String(source.remark || ''),
-    preview_row_number: entry.row_number,
-    preview_status: entry.status,
-    preview_message: entry.message,
-  }
-  hydrateStation(row)
-  return row
-}
-
-function previewIssue(row: ImportPreviewEditableRow): string {
-  const localIssue = validateRows([row])[0]?.message
-  if (localIssue) return localIssue
-  if (row.preview_status === 'error') return '已修正，可作为有效行应用'
-  return row.preview_message
-}
-
-function previewStatusLabel(row: ImportPreviewEditableRow): string {
-  if (validateRows([row]).length === 0 && row.preview_status === 'error') return '已修正'
-  if (row.preview_status === 'duplicate') return '重复'
-  if (row.preview_status === 'error') return '错误'
-  return '有效'
-}
-
-function previewStatusType(
-  row: ImportPreviewEditableRow,
-): 'success' | 'warning' | 'danger' {
-  if (validateRows([row]).length === 0 && row.preview_status === 'error') return 'success'
-  if (row.preview_status === 'duplicate') return 'warning'
-  return row.preview_status === 'error' ? 'danger' : 'success'
-}
-
-function planRowKey(row: TracksideApPlanRow): string {
-  return row.station_id
-    ? `id:${row.station_id}`
-    : `name:${row.station_name.trim().toLocaleLowerCase()}`
-}
-
-async function chooseImport(event: Event): Promise<void> {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = ''
-  if (!file || props.saving) return
-  loading.value = true
-  error.value = ''
-  try {
-    importPreview.value = await previewTracksideApPlan(file, duplicateStrategy.value)
-    importRows.value = importPreview.value.rows
-      .filter((entry) => entry.row)
-      .map(previewEditableRow)
-    importPreviewVisible.value = true
-  } catch (reason) {
-    error.value = failure(reason, '轨旁 AP 规划导入预览失败')
-  } finally {
-    loading.value = false
-  }
-}
-
-function applyImportPreview(): void {
-  if (!importPreview.value || !canWrite.value) return
-  const candidates = importRows.value.filter(
-    (row) => validateRows([row]).length === 0,
-  )
-  if (!candidates.length) {
-    ElMessage.error('没有可应用的有效行')
-    return
-  }
-  const merged = deepCopy(rows.value)
-  const rowIndexes = new Map(
-    merged.map((row, index) => [planRowKey(row), index]),
-  )
-  let applied = 0
-  for (const candidate of candidates) {
-    const clean: TracksideApPlanRow = {
-      station_id: candidate.station_id,
-      sequence_no: Number(candidate.sequence_no),
-      station_name: candidate.station_name.trim(),
-      planned_ap_count: Number(candidate.planned_ap_count),
-      management_vlan: Number(candidate.management_vlan),
-      remark: candidate.remark,
-    }
-    const key = planRowKey(clean)
-    const existingIndex = rowIndexes.get(key)
-    if (existingIndex !== undefined) {
-      if (duplicateStrategy.value !== 'replace') continue
-      merged[existingIndex] = clean
-      applied += 1
-      continue
-    }
-    rowIndexes.set(key, merged.length)
-    merged.push(clean)
-    applied += 1
-  }
-  if (!applied) {
-    ElMessage.warning('没有符合当前重复策略的可应用行')
-    return
-  }
-  rows.value = merged.sort(compareRows)
-  importPreviewVisible.value = false
-  publishDirty()
-  ElMessage.success(`已将 ${applied} 行应用到编辑区`)
-}
-
-async function exportPlan(template: boolean): Promise<void> {
-  loading.value = true
-  error.value = ''
-  try {
-    const suggestedName = template
-      ? '轨旁AP逐站规划模板.xlsx'
-      : `${safeFileNamePart(props.lineName || '当前线路')}_轨旁AP规划及上线概览_${exportDate()}.xlsx`
-    const result = await userSelectedExport.submitExportAfterDestinationSelected({
-      action: template ? 'rail.trackside_plan_template' : 'rail.trackside_plan_current',
-      suggestedName,
-      context: { template },
-      submit: () => exportTracksideApPlan(template),
-    })
-    if (result.status === 'cancelled') return
-    currentTaskId.value = result.task.task_id
-    await taskStore.refresh()
-  } catch (reason) {
-    error.value = failure(reason, template ? '规划模板导出启动失败' : '轨旁 AP 规划导出启动失败')
-  } finally {
-    loading.value = false
-  }
-}
-
 async function refreshOnlineStatus(): Promise<void> {
   if (taskRunning.value) return
   statusLoading.value = true
@@ -797,15 +629,6 @@ function focusIssue(issue: ValidationIssue): void {
   issuesVisible.value = false
   activeView.value = 'plan'
   void nextTick(() => focusCell(issue.row, issue.field))
-}
-
-function exportDate(now = new Date()): string {
-  const part = (value: number) => String(value).padStart(2, '0')
-  return `${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}`
-}
-
-function safeFileNamePart(value: string): string {
-  return value.replace(/[\u0000-\u001f<>:"/\\|?*]/g, '_').trim() || '当前线路'
 }
 
 function displayRate(value: number | null): string {
@@ -857,7 +680,7 @@ watch(
   },
 )
 
-defineExpose({ reload })
+defineExpose({ reload, reloadPlan })
 onMounted(() => {
   void Promise.all([
     reload(true),
@@ -898,15 +721,7 @@ onMounted(() => {
           <el-button :icon="Delete" :disabled="!canWrite || !selectedRows.length" @click="removeSelected">删除所选</el-button>
           <el-button type="primary" :icon="Check" :loading="props.saving" :disabled="!canWrite || !dirty || validationCount > 0" @click="requestSave">保存</el-button>
           <el-button :icon="RefreshLeft" :disabled="!canWrite || !dirty" @click="undoChanges">撤销修改</el-button>
-          <el-select v-model="duplicateStrategy" aria-label="重复策略" class="strategy-select">
-            <el-option label="覆盖更新" value="replace" />
-            <el-option label="跳过已有" value="skip" />
-            <el-option label="重复时报错" value="error" />
-          </el-select>
-          <input ref="importInput" class="hidden" type="file" accept=".xlsx,.csv" @change="chooseImport">
-          <el-button :icon="Download" :disabled="!isFeatureEnabled('web.rail_trackside_ap_plan_export') || taskRunning" @click="exportPlan(true)">下载模板</el-button>
-          <el-button :icon="UploadFilled" :disabled="props.saving || taskRunning" @click="importInput?.click()">导入并预览</el-button>
-          <el-button :icon="Download" :disabled="!isFeatureEnabled('web.rail_trackside_ap_plan_export') || taskRunning" @click="exportPlan(false)">导出当前</el-button>
+          <el-button :icon="Refresh" :disabled="props.saving || taskRunning" @click="emit('generate-stations')">从设备管理生成站点</el-button>
           <el-button v-if="validationCount" type="danger" plain @click="issuesVisible = true">有 {{ validationCount }} 项需要修正</el-button>
           <span class="dirty-state">{{ dirty ? '有未保存修改' : `已加载 ${rows.length} 行` }}</span>
         </div>
@@ -1043,7 +858,8 @@ onMounted(() => {
         </el-alert>
         <div class="status-toolbar">
           <el-button type="primary" :icon="Refresh" :loading="statusLoading" :disabled="taskRunning" @click="refreshOnlineStatus">刷新上线状态</el-button>
-          <span>状态更新时间：{{ onlineStatus?.updated_at || '--' }}</span>
+          <span>状态更新时间：{{ onlineStatus?.updated_at || '--' }}（数据采集时间）</span>
+          <span>本次查询：{{ onlineStatus?.generated_at || '--' }}</span>
           <span class="status-definition">规划 AP 总数量由用户维护；实际上线数量来自最新 AC/FIT-AP 状态。</span>
         </div>
         <div v-if="onlineStatus" class="scope-summary">
@@ -1110,56 +926,6 @@ onMounted(() => {
         </div>
       </el-tab-pane>
     </el-tabs>
-
-    <el-dialog v-model="importPreviewVisible" title="导入预览" width="min(1180px, 94vw)" destroy-on-close>
-      <div v-if="importPreview" class="preview">
-        <el-alert v-if="importPreview.legacy_schema" :title="importPreview.message" type="warning" :closable="false" show-icon />
-        <el-descriptions :column="4" border>
-          <el-descriptions-item label="总行数">{{ importPreview.total_count }}</el-descriptions-item>
-          <el-descriptions-item label="有效">{{ importPreview.valid_count }}</el-descriptions-item>
-          <el-descriptions-item label="重复">{{ importPreview.duplicate_count }}</el-descriptions-item>
-          <el-descriptions-item label="错误">{{ importPreview.error_count }}</el-descriptions-item>
-        </el-descriptions>
-        <NcDataTable
-          table-id="rail-base-trackside-ap-plan-import-preview"
-          route-key="/rail-transit/base-data"
-          :data="importRows"
-          :columns="previewColumns"
-          border
-          height="390"
-          :show-column-settings="false"
-        >
-          <template #cell-preview_status="{ row }">
-            <el-tag :type="previewStatusType(row)" size="small">{{ previewStatusLabel(row) }}</el-tag>
-          </template>
-          <template #cell-sequence_no="{ row }"><el-input v-model="row.sequence_no" /></template>
-          <template #cell-station_name="{ row }">
-            <el-select
-              v-model="row.station_name"
-              filterable
-              default-first-option
-              @change="hydrateStation(row)"
-            >
-              <el-option v-for="station in orderedStations" :key="station.id" :label="station.name" :value="station.name" />
-            </el-select>
-          </template>
-          <template #cell-planned_ap_count="{ row }"><el-input v-model="row.planned_ap_count" /></template>
-          <template #cell-management_vlan="{ row }"><el-input v-model="row.management_vlan" /></template>
-          <template #cell-remark="{ row }"><el-input v-model="row.remark" /></template>
-          <template #cell-preview_message="{ row }">{{ previewIssue(row) || '--' }}</template>
-        </NcDataTable>
-        <el-alert
-          v-if="importPreview.error_count"
-          title="错误行会保留在预览中；未修正的错误行不会应用。"
-          type="warning"
-          :closable="false"
-        />
-      </div>
-      <template #footer>
-        <el-button @click="importPreviewVisible = false">取消</el-button>
-        <el-button type="primary" :disabled="!canApplyImport || !canWrite" @click="applyImportPreview">应用有效行</el-button>
-      </template>
-    </el-dialog>
 
     <el-dialog v-model="issuesVisible" title="规划问题明细" width="min(1180px, 94vw)">
       <NcDataTable
@@ -1242,8 +1008,7 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.planning-tab,
-.preview {
+.planning-tab {
   display: flex;
   min-width: 0;
   flex-direction: column;
@@ -1283,10 +1048,6 @@ onMounted(() => {
   margin-bottom: 12px;
 }
 
-.strategy-select {
-  width: 128px;
-}
-
 .status-definition {
   color: var(--nc-text-secondary);
 }
@@ -1307,10 +1068,6 @@ onMounted(() => {
 .dirty-state {
   margin-left: auto;
   color: var(--nc-text-secondary);
-}
-
-.hidden {
-  display: none;
 }
 
 .table-shell {

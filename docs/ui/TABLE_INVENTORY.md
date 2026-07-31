@@ -14,7 +14,6 @@
 | `/network-tools` | `apps/web/src/components/network-tools/WirelessScanPanel.vue:405` | `wireless-scan-runs` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
 | `/network-tools` | `apps/web/src/components/network-tools/WirelessScanPanel.vue:412` | `wireless-scan-results` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
 | `/rail-transit/base-data` | `apps/web/src/components/rail-transit/base-data/TracksideApPlanningTab.vue:183` | `rail-base-trackside-ap-planning` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
-| `/rail-transit/base-data` | `apps/web/src/components/rail-transit/base-data/TracksideApPlanningTab.vue:196` | `rail-base-trackside-ap-plan-import-preview` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
 | `/network-tools/traffic` | `apps/web/src/components/traffic/TrafficRunHistory.vue:54` | `traffic-run-history` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
 | `/ac-management` | `apps/web/src/views/ac-management/AcManagementView.vue:443` | `ac-fit-ap-resources` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
 | `/ac-management` | `apps/web/src/views/ac-management/AcManagementView.vue:482` | `ac-config-snapshots` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |

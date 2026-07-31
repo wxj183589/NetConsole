@@ -6,6 +6,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from netconsole.application.rail_transit.base_data_application_service import (
+    RailTransitBaseDataApplicationService,
+)
 from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
 from netconsole.core.runtime_mode import RuntimeMode
@@ -1053,6 +1056,54 @@ def test_plan_validation_and_save_ignore_ip_reference_conflicts(
     assert response.json()["valid"] is True
     assert not response.json()["issues"]
     assert saved.status_code == 200
+
+
+def test_plan_only_save_does_not_rebuild_ap_identity_index(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _enable_copy_write(monkeypatch)
+    paths, _database = build_rail_transit_base_data_fixture(tmp_path)
+    mark_base_data_copy(paths)
+
+    def fail_rebuild(*_args, **_kwargs):
+        raise AssertionError("规划-only 保存不应触发 AP Identity 索引重建")
+
+    monkeypatch.setattr(
+        RailTransitBaseDataApplicationService,
+        "_ensure_ap_identity_index",
+        fail_rebuild,
+    )
+
+    with TestClient(_app(paths, tmp_path)) as client:
+        session = client.get("/api/rail-transit/base-data/revision").json()
+        station = client.get(
+            "/api/rail-transit/base-data/stations?page_size=200"
+        ).json()["items"][0]
+        response = client.post(
+            "/api/rail-transit/base-data/changes",
+            json={
+                "site_id": "demo",
+                "base_revision": session["base_revision"],
+                "changes": [{
+                    "entity_type": "trackside_ap_plan",
+                    "action": "replace",
+                    "values": {
+                        "rows": [{
+                            "station_id": station["id"],
+                            "sequence_no": 1,
+                            "station_name": station["name"],
+                            "planned_ap_count": 1,
+                            "management_vlan": 71,
+                            "remark": "",
+                        }],
+                    },
+                }],
+                "explicit_confirmation": True,
+            },
+        )
+
+    assert response.status_code == 200
 
 
 def test_zero_count_trackside_plan_saves_null_management_vlan(

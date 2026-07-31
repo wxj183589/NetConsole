@@ -447,7 +447,8 @@ class RailTransitBaseDataApplicationService:
             self.guard.authorize_apply(site_id, explicit_confirmation=explicit_confirmation)
         except BaseDataWriteGuardError as exc:
             raise RailTransitBaseDataApplicationError(exc.code, str(exc)) from exc
-        validation, normalized = self.validate_changes(site_id, base_revision, changes)
+        change_rows = list(changes)
+        validation, normalized = self.validate_changes(site_id, base_revision, change_rows)
         if not validation.valid:
             conflict = next((item for item in validation.issues if item.code == "BASE_DATA_REVISION_CONFLICT"), None)
             if conflict:
@@ -471,7 +472,14 @@ class RailTransitBaseDataApplicationService:
             raise RailTransitBaseDataApplicationError("BASE_DATA_REFERENCE_CONFLICT", "基础资料唯一性或引用关系冲突") from exc
         except (sqlite3.Error, OSError) as exc:
             raise RailTransitBaseDataApplicationError("BASE_DATA_TRANSACTION_FAILED", "基础资料事务保存失败并已回滚") from exc
-        self._ensure_ap_identity_index(site_id, "base_data_changes_saved")
+        # 轨旁 AP 规划只改变站点容量/VLAN，不改变 AP 身份来源；避免每次规划保存都
+        # 同步重建完整 Identity 索引。站点/区间变更可能级联更新 AP 参考资料，仍需校正索引。
+        if any(
+            str(change.entity_type or "")
+            in {"station", "section", "trackside_ap"}
+            for change in change_rows
+        ):
+            self._ensure_ap_identity_index(site_id, "base_data_changes_saved")
         return BaseDataSaveResultDTO(
             revision=str(result["revision"]),
             created_count=int(result["created_count"]),

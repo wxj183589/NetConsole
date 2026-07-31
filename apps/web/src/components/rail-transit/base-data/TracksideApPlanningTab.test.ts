@@ -7,8 +7,6 @@ describe('trackside AP planning base-data tab', () => {
     for (const contract of [
       'getTracksideApPlan',
       'getTracksideApOnlineStatus',
-      'previewTracksideApPlan',
-      'exportTracksideApPlan',
       'useTaskStore',
       'taskStore.refresh()',
       'AP 规划维护',
@@ -17,9 +15,7 @@ describe('trackside AP planning base-data tab', () => {
       '删除所选',
       '保存',
       '撤销修改',
-      '导入并预览',
-      '导出当前',
-      '下载模板',
+      '从设备管理生成站点',
       '刷新上线状态',
       '查看异常 AP 资料',
       "label: '序号'",
@@ -28,18 +24,14 @@ describe('trackside AP planning base-data tab', () => {
       "label: '规划AP总数量'",
       "label: 'AP管理VLAN'",
       "label: '备注'",
-      "label: 'Excel行'",
       "label: '问题'",
       "label: '实际上线'",
       "label: '未上线'",
       "label: '上线率'",
       '规划 AP 总数量由用户维护；实际上线数量来自最新 AC/FIT-AP 状态。',
       '超规划',
-      '重复时报错',
       '有未保存修改',
-      'importPreview.legacy_schema',
-      'importPreview.message',
-      'web.rail_trackside_ap_plan_export',
+      '本次查询：',
     ]) expect(source).toContain(contract)
 
     for (const removed of [
@@ -56,7 +48,6 @@ describe('trackside AP planning base-data tab', () => {
       'VLAN 组视图',
       '按站点查看（继承值）',
       '阻断问题',
-      'revision',
       "key: 'actual_ap_count'",
       "key: 'online_count'",
       "label: 'AP总数量'",
@@ -71,14 +62,9 @@ describe('trackside AP planning base-data tab', () => {
 
     expect(source).toContain("emit('change'")
     expect(source).toContain("emit('save')")
-    expect(source).toContain('if (!file || props.saving) return')
-    expect(source).toContain("input.value = ''")
-    expect(source).toContain(':disabled="!canApplyImport || !canWrite"')
-    expect(source).toContain('轨旁AP逐站规划模板.xlsx')
-    expect(source).toContain('_轨旁AP规划及上线概览_')
+    expect(source).toContain("emit('generate-stations')")
     expect(source).toContain('deepCopy(rows.value)')
     expect(source).toContain('pasteGrid($event')
-    expect(source).toContain('错误行会保留在预览中')
     expect(source).toContain('displayRate(onlineStatus.online_rate)')
     expect(source).toContain('overflow-x: auto')
     expect(source).not.toContain('min-width: 1120px')
