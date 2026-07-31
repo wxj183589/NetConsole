@@ -260,6 +260,37 @@ def test_import_preview_defaults_empty_location_and_normalizes_explicit_special_
     assert depot_row.values["location_class_source"] == "IMPORT_EXPLICIT"
 
 
+def test_standard_template_empty_location_defaults_to_mainline(
+    tmp_path: Path,
+) -> None:
+    paths, _db_path = build_rail_transit_base_data_fixture(tmp_path)
+    service = RailTransitImportPreviewService(
+        RailTransitBaseDataQueryService(paths)
+    )
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "AP扩展信息模板"
+    sheet.append(["AP名称", "AP MAC", "归属站点", "位置类型"])
+    sheet.append(["AP-DEFAULT", "0011-2233-4494", "正线站", ""])
+    content = BytesIO()
+    workbook.save(content)
+
+    result = service.preview(
+        site_id="demo",
+        file_name="trackside-ap-template.xlsx",
+        content=content.getvalue(),
+        content_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+    )
+
+    row = result.rows[0]
+    assert row.values["location_class_original"] == ""
+    assert row.values["location_class"] == "MAINLINE"
+    assert row.values["participates_in_mainline"] is True
+    assert row.values["location_class_source"] == "DEFAULT_MAINLINE"
+
+
 def test_import_preview_blocks_special_location_that_participates_in_mainline(
     tmp_path: Path,
 ) -> None:

@@ -6,6 +6,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from netconsole.application.rail_transit.base_data_application_service import (
+    RailTransitBaseDataApplicationService,
+)
 from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
 from netconsole.core.runtime_mode import RuntimeMode
@@ -39,6 +42,20 @@ def test_trackside_ap_special_location_cannot_participate_in_mainline() -> None:
                 "location_class_source": "MANUAL_EXPLICIT",
             }
         )
+
+
+def test_new_trackside_ap_without_location_defaults_to_mainline() -> None:
+    values = RailTransitBaseDataApplicationService._ap_values(
+        {
+            "ap_name": "AP-NEW",
+            "station_name": "正线站",
+        },
+        "create",
+    )
+
+    assert values["location_class"] == "MAINLINE"
+    assert values["participates_in_mainline"] is True
+    assert values["location_class_source"] == "DEFAULT_MAINLINE"
 
 
 def _app(paths, tmp_path: Path):

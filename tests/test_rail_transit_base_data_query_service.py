@@ -8,6 +8,9 @@ from types import SimpleNamespace
 
 from netconsole.models.api.rail_transit_base_data import SectionDTO
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
+from netconsole.services.rail_transit.trackside_ap_location import (
+    resolve_trackside_ap_location,
+)
 from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
 
 
@@ -117,6 +120,17 @@ def test_trackside_ap_location_read_compatibility_defaults_only_matched_records(
         == ("MAINLINE", True, "DEFAULT_MAINLINE")
         for item in defaults
     )
+
+
+def test_historical_null_trackside_ap_location_defaults_to_mainline() -> None:
+    assert resolve_trackside_ap_location(
+        {
+            "location_class": None,
+            "participates_in_mainline": None,
+            "location_class_source": None,
+            "station_name": "正线站",
+        }
+    ) == ("MAINLINE", True, "DEFAULT_MAINLINE")
 
 
 def test_trackside_ap_query_exposes_historical_location_conflict(

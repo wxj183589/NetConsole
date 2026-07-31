@@ -86,7 +86,9 @@ def test_structured_mainline_exclusions(station, section, metadata, expected) ->
         sections=[section] if section else [],
     )
     assert result.train.eligibility_status == expected
+    assert result.train.mainline_eligible is (expected == "MAINLINE")
     assert result.train.ping_eligible is (expected == "MAINLINE")
+    assert result.train.deep_collection_eligible is (expected == "MAINLINE")
 
 
 def test_unmatched_and_stale_ac_do_not_become_depot() -> None:
@@ -133,11 +135,17 @@ def test_unmatched_ap_mac_stays_unknown_even_when_station_is_special() -> None:
 
     assert depot.train.eligibility_status == "AP_UNMATCHED"
     assert depot.train.location_class == "UNKNOWN"
+    assert not depot.train.mainline_eligible
+    assert not depot.train.ping_eligible
+    assert not depot.train.deep_collection_eligible
     assert depot.train.location_match_level == "STATION_EXACT"
     assert depot.train.exclusion_reason == "当前 AP MAC 未匹配任何轨旁 AP 基础资料"
     assert depot.train.raw_peer_ap_name == "bc5a-3457-bc00"
     assert depot.train.resolved_ap_id == ""
     assert parking.train.eligibility_status == "AP_UNMATCHED"
+    assert not parking.train.mainline_eligible
+    assert not parking.train.ping_eligible
+    assert not parking.train.deep_collection_eligible
     assert parking.train.location_match_level == "STATION_EXACT"
 
 
@@ -208,6 +216,20 @@ def test_ap_registry_matches_mac_but_ap_name_alias_is_not_identity() -> None:
     assert alias.train.location_match_level == "UNMATCHED"
     assert alias.train.eligibility_status == "AP_UNMATCHED"
     assert alias.train.resolved_ap_name == ""
+
+
+def test_primary_ap_mac_match_uses_normalized_format() -> None:
+    result = _classify(
+        ap=_ap("正线站", "", {}),
+        peer_ap_id="missing",
+        peer_ap_mac="0011-2233-4455",
+    )
+
+    assert result.train.location_match_level == "AP_EXACT"
+    assert result.train.resolved_ap_id == "ap-1"
+    assert result.train.location_class == "MAINLINE"
+    assert result.train.mainline_eligible
+    assert result.train.ping_eligible
 
 
 @pytest.mark.parametrize(
