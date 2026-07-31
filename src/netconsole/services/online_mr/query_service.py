@@ -482,8 +482,8 @@ class OnlineMrQueryService:
                     "link_state": str(row["link_state"] or ""),
                     "link_state_normalized": str(row["link_state"] or ""),
                     "updated_at": self._text_or_none(sample["collected_at"]),
-                    "master": peer_mac or "未关联",
-                    "master_ap": peer_mac or "未关联",
+                    "master": peer_name or peer_mac or "未关联",
+                    "master_ap": peer_name or peer_mac or "未关联",
                     "peer_name": peer_name,
                     "peer_mac": peer_mac,
                     "peer_mac_normalized": str(row["peer_mac_normalized"] or ""),
@@ -521,7 +521,7 @@ class OnlineMrQueryService:
             metrics = active.metrics
             peer_name = str(metrics.get("resolved_peer_name") or metrics.get("peer_name") or "")
             peer_mac = str(active.peer_mac_raw or active.peer_mac_normalized or "")
-            master_ap = peer_mac or "未关联"
+            master_ap = peer_name or peer_mac or "未关联"
             rssi = self._preview_rssi_dbm(active.local_signal_dbm, metrics.get("local_rssi_db"))
             message = "已从主链路原始日志尾部识别 ACTIVE 主链路"
             if len(active_records) > 1:

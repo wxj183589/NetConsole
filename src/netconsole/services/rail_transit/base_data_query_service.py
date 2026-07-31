@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable, TypeVar
 from uuid import NAMESPACE_URL, uuid5
 
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.rail_transit_base_data import (
     DataQualityEntityGroupDTO,
@@ -40,7 +41,8 @@ from netconsole.models.device import Device
 from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryService
 from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.ap_extension_import import normalize_ap_mac
-from netconsole.services.ap_identity.normalizers import normalize_mac
+from netconsole.services.ap_identity import ApIdentityQueryService
+from netconsole.services.ap_identity.normalizers import normalize_mac, normalize_mac_key
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.rail_transit.ap_line_side_service import (
     derive_ap_line_side,
@@ -273,8 +275,24 @@ class RailTransitBaseDataQueryService:
         if optical_status:
             items = [item for item in items if item.runtime.optical_status == optical_status]
         if query:
-            needle = query.casefold()
-            items = [item for item in items if needle in f"{item.name} {item.point_code} {item.mac} {item.management_ip}".casefold()]
+            if normalize_mac_key(query):
+                identity_rows = ApIdentityQueryService(
+                    Database(self.paths.site_db_path(site_id))
+                ).search_aps(query)
+                base_ids = {
+                    str(row.get("base_record_id") or "")
+                    for row in identity_rows
+                    if row.get("base_record_id")
+                }
+                items = [item for item in items if str(item.id) in base_ids]
+            else:
+                needle = query.casefold()
+                items = [
+                    item
+                    for item in items
+                    if needle
+                    in f"{item.name} {item.point_code} {item.mac} {item.management_ip}".casefold()
+                ]
         if has_issue is not None:
             items = [item for item in items if (item.issue_count > 0) is has_issue]
         if issue_severity:
@@ -761,7 +779,49 @@ class RailTransitBaseDataQueryService:
         sections = self._sections(points)
         issues.extend(self._station_issues(stations))
         issues.extend(self._section_issues(sections, stations))
+        issues.extend(self._identity_conflict_issues(site_id))
         return issues
+
+    def _identity_conflict_issues(
+        self,
+        site_id: str,
+    ) -> list[DataQualityIssueDTO]:
+        db_path = self.paths.site_db_path(site_id)
+        if not db_path.is_file():
+            return []
+        try:
+            rows = ApIdentityQueryService(Database(db_path)).list_conflicts()
+        except sqlite3.Error:
+            return []
+        result: list[DataQualityIssueDTO] = []
+        for row in rows:
+            conflict_type = str(row.get("conflict_type") or "")
+            field_name = (
+                "mac" if conflict_type == "ap_mac_mismatch" else "name"
+            )
+            ac_value = str(row.get("ac_value") or "")
+            base_value = str(row.get("base_value") or "")
+            result.append(
+                self._issue(
+                    "warning",
+                    "AP_IDENTITY_AC_BASE_CONFLICT",
+                    "ap",
+                    str(
+                        row.get("base_record_id")
+                        or row.get("entity_id")
+                        or ""
+                    ),
+                    str(row.get("effective_ap_name") or ""),
+                    field_name,
+                    base_value,
+                    (
+                        f"AC 与基础资料 AP {field_name.upper()} 不一致；"
+                        f"当前使用 AC 值 {ac_value}"
+                    ),
+                    "核对基础资料并按 AC 现场事实更新；该问题不阻断 MESH 分析",
+                )
+            )
+        return result
 
     def _runtime_ap_issues(self, aps: list[TracksideApDTO]) -> list[DataQualityIssueDTO]:
         return [

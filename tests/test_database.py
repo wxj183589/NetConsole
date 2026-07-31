@@ -535,7 +535,8 @@ def test_fit_ap_resource_update_writes_ap_entity_and_snapshot(tmp_path):
 
     assert len(entities) == 1
     assert entities[0]["ap_uuid"] == "ap-idle"
-    assert entities[0]["ap_mac"] == "30f5-277a-15e0"
+    assert entities[0]["ap_mac"] is None
+    assert entities[0]["ap_name"] == "30f5-277a-15e0"
     assert entities[0]["station"] == "Station A"
     assert entities[0]["state_display"] == "Idle"
     assert entities[0]["is_offline"] == 1

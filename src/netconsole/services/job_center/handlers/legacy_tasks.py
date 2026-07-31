@@ -872,6 +872,8 @@ def _vehicle_mr_history_query(params: dict[str, Any], progress: ProgressCallback
 def _jsonable_vehicle_ap_lookup(ap_lookup: dict[str, object]) -> dict[str, object]:
     result: dict[str, object] = {}
     for key, value in ap_lookup.items():
+        if key == "__ap_identity_query_service__":
+            continue
         if isinstance(value, list):
             result[key] = [asdict(item) if hasattr(item, "__dataclass_fields__") else item for item in value]
         elif hasattr(value, "__dataclass_fields__"):
@@ -1691,22 +1693,36 @@ def _ac_repository(params: dict[str, Any]):
     return AcRepository(Database(Path(str(params.get("db_path") or ""))))
 
 
+def _rebuild_ap_identity_index(params: dict[str, Any], reason: str) -> None:
+    from netconsole.core.database import Database
+    from netconsole.services.ap_identity import ApIdentityQueryService
+
+    database = Database(Path(str(params.get("db_path") or "")))
+    ApIdentityQueryService(database).rebuild_index(reason)
+
+
 def _ac_fit_ap_delete_many(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
     count = _ac_repository(params).delete_fit_aps(str(params.get("ac_uuid") or ""), [str(value) for value in params.get("names") or []])
+    _rebuild_ap_identity_index(params, "ac_fit_ap_deleted")
     return {"count": count}
 
 
 def _ac_ap_extension_save(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
-    return {"row": _ac_repository(params).upsert_ap_extension_point(dict(params.get("row") or {}))}
+    row = _ac_repository(params).upsert_ap_extension_point(dict(params.get("row") or {}))
+    _rebuild_ap_identity_index(params, "base_data_saved")
+    return {"row": row}
 
 
 def _ac_ap_extension_delete(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
     count = _ac_repository(params).delete_ap_extension_points([int(value) for value in params.get("ids") or []])
+    _rebuild_ap_identity_index(params, "base_data_deleted")
     return {"count": count}
 
 
 def _ac_ap_extension_clear(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
-    return {"count": _ac_repository(params).clear_ap_extension_points()}
+    count = _ac_repository(params).clear_ap_extension_points()
+    _rebuild_ap_identity_index(params, "base_data_cleared")
+    return {"count": count}
 
 
 def _ac_station_overview_value_save(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
@@ -1768,7 +1784,11 @@ def _fit_ap_detail_load(params: dict[str, Any], progress: ProgressCallback | Non
 
 
 def _fit_ap_metadata_save(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
-    return {"metadata": _ac_repository(params).upsert_fit_ap_metadata(dict(params.get("metadata") or {}))}
+    metadata = _ac_repository(params).upsert_fit_ap_metadata(
+        dict(params.get("metadata") or {})
+    )
+    _rebuild_ap_identity_index(params, "ac_metadata_saved")
+    return {"metadata": metadata}
 
 
 def _online_mr_collection_devices_refresh(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:

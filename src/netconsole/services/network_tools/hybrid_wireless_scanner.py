@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from netconsole.models.wireless_scan_models import WirelessAdapter, WirelessNetwork
 from netconsole.services.network_tools.netsh_wireless_scanner import NetshWirelessScanner
-from netconsole.services.network_tools.wireless_channel_analyzer import band_from_frequency, normalize_mac
+from netconsole.services.network_tools.wireless_channel_analyzer import (
+    band_from_frequency,
+    normalize_mac,
+)
 from netconsole.services.network_tools.windows_wlan_scanner import SCAN_SOURCE_WLAN_API, WindowsWlanScanner
 
 
@@ -153,7 +156,7 @@ def _merge_same_source(left: WirelessNetwork, right: WirelessNetwork, bssid: str
 
 
 def _mark_source(network: WirelessNetwork, source: str, bssid: str | None = None) -> WirelessNetwork:
-    bssid_value = bssid or normalize_mac(network.bssid) or network.bssid
+    bssid_value = normalize_mac(bssid or network.bssid) or network.bssid
     return WirelessNetwork(
         ssid=network.ssid,
         bssid=bssid_value,

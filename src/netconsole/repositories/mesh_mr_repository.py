@@ -29,6 +29,11 @@ from netconsole.models.mesh_log_models import (
 from netconsole.models.mesh_analysis_params import MeshAnalysisParams, mesh_analysis_params_from_json, normalize_mesh_analysis_params
 from netconsole.services.mesh_link_analyzer import MeshLinkAnalyzer
 from netconsole.repositories.mesh_catalog_repository import dt_text
+from netconsole.services.ap_identity.normalizers import (
+    format_mac,
+    normalize_mac,
+    normalize_mac_key,
+)
 from netconsole.services.mesh_rssi_stats import calc_numeric_stats
 
 
@@ -2400,12 +2405,12 @@ class MeshMrRepository:
         now = dt_text(datetime.now()) or ""
         values = [
             (
-                row.get("peer_mac_normalized"),
+                normalize_mac(row.get("peer_mac_normalized")),
                 row.get("peer_ap_name") or "",
-                row.get("peer_ap_mac") or "",
+                normalize_mac(row.get("peer_ap_mac")) or "",
                 row.get("peer_radio_id"),
                 row.get("peer_radio_label") or "",
-                row.get("peer_radio_mac") or "",
+                normalize_mac(row.get("peer_radio_mac")) or "",
                 row.get("peer_site") or "",
                 row.get("peer_location") or "",
                 row.get("peer_direction") or "",
@@ -2414,7 +2419,7 @@ class MeshMrRepository:
                 now,
             )
             for row in rows
-            if row.get("peer_mac_normalized")
+            if normalize_mac_key(row.get("peer_mac_normalized"))
         ]
         if not values:
             return
@@ -3097,6 +3102,9 @@ def _metrics_from_row(row: dict[str, object]) -> dict[str, object]:
 
 def _with_synthetic_payload(row: sqlite3.Row | dict[str, object]) -> dict[str, object]:
     data = dict(row)
+    for field in ("peer_mac", "peer_ap_mac", "peer_radio_mac"):
+        if data.get(field):
+            data[field] = format_mac(data[field]) or data[field]
     data.setdefault("metrics_json", json.dumps(_metrics_from_row(data), ensure_ascii=False))
     data.setdefault("deltas_json", "{}")
     data.setdefault("metrics", _metrics_from_row(data))

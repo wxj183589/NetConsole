@@ -84,16 +84,17 @@ def test_wireless_frequency_channel_band_and_rssi_level():
 
 
 def test_wireless_mac_normalization():
-    assert normalize_mac("30f5-277a-5a2f") == "30:f5:27:7a:5a:2f"
-    assert normalize_mac("30:f5:27:7a:5a:2f") == "30:f5:27:7a:5a:2f"
-    assert normalize_mac("30F5277A5A2F") == "30:f5:27:7a:5a:2f"
+    assert normalize_mac("30f5-277a-5a2f") == "30f5277a5a2f"
+    assert normalize_mac("30:f5:27:7a:5a:2f") == "30f5277a5a2f"
+    assert normalize_mac("30F5277A5A2F") == "30f5277a5a2f"
     assert normalize_mac("bad") is None
 
 
-def test_trackside_bssid_resolver_requires_explicit_radio_mapping():
+def test_trackside_bssid_resolver_exact_adapter_does_not_derive_h3c_radio():
     resolver = TracksideApBssidResolver([{"ap_name": "AP-1", "ap_mac": "083b-e9ec-da5f", "site_name": "S1", "location_note": "K1", "direction": "up"}])
     radio1 = resolver.resolve("083b-e9ec-da5f")
-    assert radio1.match_status == "unmatched"
+    assert radio1.match_status == "matched"
+    assert radio1.ap_mac == "083b-e9ec-da5f"
     radio2 = TracksideApBssidResolver([{"ap_name": "AP-2", "ap_mac": "083b-e9ec-da40", "site_name": "S2"}]).resolve("083b-e9ec-da5f")
     assert radio2.match_status == "unmatched"
     second_vendor_sample = TracksideApBssidResolver([{"ap_name": "AP-3", "ap_mac": "94a7-482c-1140", "site_name": "S3"}]).resolve("94a7-482c-115f")
@@ -112,16 +113,18 @@ def test_trackside_bssid_resolver_prefers_exact_collected_radio_mac():
     assert match.matched
     assert match.radio_id == 2
     assert match.ap_name == "AP-1"
-    assert match.ap_mac == "08:3b:e9:ec:da:4f"
+    assert match.ap_mac == "083b-e9ec-da4f"
     assert match.match_rule == "radio2_mac"
 
 
-def test_trackside_bssid_resolver_does_not_match_peer_name_to_ap_name():
+def test_trackside_bssid_resolver_uses_peer_name_as_last_compatibility_rule():
     resolver = TracksideApBssidResolver([{"ap_name": "AP-Name-01", "ap_mac": "083b-e9ec-da4f", "site_name": "S1"}])
 
     match = resolver.resolve("1122-3344-5566", peer_name="AP-Name-01")
 
-    assert not match.matched
+    assert match.matched
+    assert match.ap_name == "AP-Name-01"
+    assert match.match_rule == "ap_name_exact"
 
 
 def test_trackside_bssid_resolver_preserves_section_belonging():
@@ -140,7 +143,9 @@ def test_trackside_bssid_resolver_preserves_section_belonging():
 
     match = resolver.resolve("5866-bab3-0a40")
 
-    assert not match.matched
+    assert match.matched
+    assert match.section == "联庄-中医药大学"
+    assert match.belong_type == "section"
 
 
 def test_trackside_bssid_resolver_uses_point_code_for_offline_base_data():
@@ -163,10 +168,14 @@ def test_trackside_bssid_resolver_uses_point_code_for_offline_base_data():
 
     match = resolver.resolve("1c94-6876-8ee0")
 
-    assert not match.matched
+    assert match.matched
+    assert match.ap_name == "AP0127"
+    assert match.station == "高桥西"
+    assert match.section == "高桥西-高桥"
+    assert match.mileage == "ZDK12+300"
 
 
-def test_trackside_bssid_resolver_rejects_name_only_extension_section():
+def test_trackside_bssid_resolver_accepts_unique_name_only_extension_section():
     resolver = TracksideApBssidResolver(
         [
             {
@@ -180,7 +189,10 @@ def test_trackside_bssid_resolver_rejects_name_only_extension_section():
 
     match = resolver.resolve("4ce9-e4f1-b880", peer_name="ap0303_a")
 
-    assert not match.matched
+    assert match.matched
+    assert match.ap_name == "ap0303_a"
+    assert match.section == "联庄-中医药大学"
+    assert match.match_rule == "ap_name_exact"
 
 
 def test_trackside_bssid_resolver_multi_match_uses_status():
@@ -400,7 +412,7 @@ def test_hybrid_wireless_merge_combines_wlan_width_mimo_and_netsh_security():
     rows = merge_wireless_networks([wlan], [netsh])
     assert len(rows) == 1
     merged = rows[0]
-    assert merged.bssid == "da:da:21:ee:8e:54"
+    assert merged.bssid == "dada21ee8e54"
     assert merged.ssid == "TracksideMesh"
     assert merged.rssi_dbm == -45
     assert merged.quality == 67
@@ -428,8 +440,8 @@ def test_hybrid_wireless_merge_keeps_single_source_records_and_deduplicates_bssi
     netsh_named = WirelessNetwork(ssid="VisibleMesh", bssid="1122-3344-5566", auth="WPA3-Personal", encryption="GCMP", scan_source="netsh")
     rows = merge_wireless_networks([wlan_only], [netsh_hidden, netsh_named])
     assert len(rows) == 2
-    wlan_row = next(row for row in rows if row.bssid == "aa:bb:cc:dd:ee:ff")
-    netsh_row = next(row for row in rows if row.bssid == "11:22:33:44:55:66")
+    wlan_row = next(row for row in rows if row.bssid == "aabbccddeeff")
+    netsh_row = next(row for row in rows if row.bssid == "112233445566")
     assert wlan_row.scan_source == "wlan_api"
     assert wlan_row.channel_width_text == "160 MHz"
     assert wlan_row.auth == ""
@@ -488,7 +500,7 @@ def test_wireless_scan_service_resolves_trackside_after_hybrid_merge(tmp_path, m
     monkeypatch.setattr(service, "_trackside_resolver", lambda: Resolver())
     result = service.scan()
     assert len(result.results) == 1
-    assert resolved == ["aa:bb:cc:00:00:02"]
+    assert resolved == ["aabbcc000002"]
     assert result.results[0].network.scan_source == "hybrid"
 
 
@@ -522,7 +534,7 @@ def test_wireless_scan_export_contains_trackside_columns(tmp_path):
     assert "wireless_scan.match_status" not in [cell.value for cell in sheet[1]]
     assert "wireless_scan.match_rule" not in [cell.value for cell in sheet[1]]
     assert sheet["A2"].value == "Hidden"
-    assert sheet["B2"].value == "30:f5:27:7a:5a:2d"
+    assert sheet["B2"].value == "30f5-277a-5a2d"
     assert sheet["D2"].value == "AP-1"
     assert sheet["P2"].value == "40 MHz"
 

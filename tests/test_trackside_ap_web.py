@@ -586,6 +586,33 @@ def test_trackside_query_station_options_use_full_snapshot_before_filters(monkey
     query_filtered = service.list_rows("demo", query="AP-10")
     assert query_filtered.station_options == expected
 
+    class IdentityQuery:
+        def __init__(self, _database: object) -> None:
+            pass
+
+        @staticmethod
+        def search_aps(_query: str):
+            return [
+                {
+                    "ap_name": "AP-YL-01",
+                    "ap_mac": "0011-2233-4401",
+                    "ac_ap_mac": "",
+                    "base_ap_mac": "0011-2233-4401",
+                }
+            ]
+
+    monkeypatch.setattr(
+        trackside_ap_business_query_service,
+        "ApIdentityQueryService",
+        IdentityQuery,
+    )
+    radio_filtered = service.list_rows(
+        "demo",
+        query="0011-2233-4a01",
+    )
+    assert radio_filtered.total == 1
+    assert radio_filtered.items[0].ap_name == "AP-YL-01"
+
 
 def test_trackside_update_job_calls_existing_collection_service(monkeypatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}

@@ -38,13 +38,36 @@ def enrich_fit_ap_optical_rows(
 ) -> list[dict[str, object | None]]:
     resources_by_uuid = {str(row.get("ap_uuid") or ""): row for row in resources if row.get("ap_uuid")}
     resources_by_mac = {normalize_mac(row.get("ap_mac")): row for row in resources if normalize_mac(row.get("ap_mac"))}
+    resources_by_serial = {
+        str(row.get("serial_number") or "").strip().casefold(): row
+        for row in resources
+        if str(row.get("serial_number") or "").strip()
+    }
+    resources_by_name: dict[str, list[dict[str, object | None]]] = {}
+    for resource in resources:
+        name = str(resource.get("ap_name") or "").strip().casefold()
+        if name:
+            resources_by_name.setdefault(name, []).append(resource)
     lookup = device_optical_status_lookup or {}
     result: list[dict[str, object | None]] = []
     for row in rows:
         if should_cancel is not None and should_cancel():
             raise AcOpticalRefreshCancelled("用户已取消更新")
-        resource = resources_by_uuid.get(str(row.get("ap_uuid") or "")) or resources_by_mac.get(normalize_mac(row.get("ap_mac")), {})
-        result.append(_classify_optical_status(row, resource, lookup))
+        ap_uuid = str(row.get("ap_uuid") or "").strip()
+        ap_mac = normalize_mac(row.get("ap_mac"))
+        serial = str(row.get("serial_number") or "").strip().casefold()
+        resource = (
+            resources_by_uuid.get(ap_uuid)
+            or resources_by_mac.get(ap_mac)
+            or resources_by_serial.get(serial)
+        )
+        if resource is None and not any((ap_uuid, ap_mac, serial)):
+            name_matches = resources_by_name.get(
+                str(row.get("ap_name") or "").strip().casefold(),
+                [],
+            )
+            resource = name_matches[0] if len(name_matches) == 1 else None
+        result.append(_classify_optical_status(row, resource or {}, lookup))
     return result
 
 

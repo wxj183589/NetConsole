@@ -300,7 +300,7 @@ def test_trackside_business_keeps_ap_identity_when_ap_optical_missing():
     )
 
     assert rows[0]["ap_name"] == "AP-MISSING-OPTICAL"
-    assert rows[0]["ap_mac"] == "08:3b:e9:ec:da:40"
+    assert rows[0]["ap_mac"] == "083b-e9ec-da40"
     assert rows[0]["serial_number"] == "SN-MISSING-OPTICAL"
     assert rows[0]["ap_rx_power"] is None
 

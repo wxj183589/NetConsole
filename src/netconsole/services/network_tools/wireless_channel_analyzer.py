@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from netconsole.services.ap_identity.normalizers import normalize_mac
+from netconsole.services.ap_identity.normalizers import format_mac, normalize_mac_key
+
+
+normalize_mac = normalize_mac_key
 
 
 def format_h3c_mac(value: object) -> str:
-    mac = normalize_mac(value)
-    if not mac:
-        return ""
-    compact = mac.replace(":", "")
-    return f"{compact[0:4]}-{compact[4:8]}-{compact[8:12]}"
+    return format_mac(value)
 
 
 def band_from_frequency(frequency_mhz: int | None) -> str:

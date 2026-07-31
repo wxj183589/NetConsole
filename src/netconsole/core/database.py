@@ -27,7 +27,7 @@ from netconsole.models.device_address import InvalidDeviceAddressError, normaliz
 
 
 CURRENT_SCHEMA_VERSION = (
-    "2026.07.30.device_work_scope_status"
+    "2026.07.31.ap_identity_index_v1"
 )
 
 DEVICE_CLASSIFICATION_COLUMNS = (
@@ -1089,6 +1089,132 @@ CREATE INDEX IF NOT EXISTS idx_ap_entities_site_ac_name_lookup
     ON ap_entities(site_id, ac_device_uuid, ap_name);
 """
 
+AP_IDENTITY_INDEX_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ap_identity_entities (
+    entity_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL DEFAULT 'current',
+    effective_ap_name TEXT,
+    effective_ap_mac_key TEXT,
+    effective_ap_mac_display TEXT,
+    effective_station TEXT,
+    effective_section TEXT,
+    effective_point_code TEXT,
+    effective_serial_number TEXT,
+    effective_location TEXT,
+    effective_mileage TEXT,
+    effective_direction TEXT,
+    effective_belong_type TEXT,
+    ac_ap_uuid TEXT,
+    ac_device_uuid TEXT,
+    ac_ap_name TEXT,
+    ac_ap_mac_key TEXT,
+    ac_station TEXT,
+    ac_section TEXT,
+    ac_updated_at TEXT,
+    base_record_id TEXT,
+    base_ap_name TEXT,
+    base_ap_mac_key TEXT,
+    base_station TEXT,
+    base_section TEXT,
+    base_updated_at TEXT,
+    effective_source TEXT NOT NULL,
+    identity_status TEXT NOT NULL,
+    data_quality_warning TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ap_identity_entities_site_name
+    ON ap_identity_entities(site_id, effective_ap_name);
+CREATE INDEX IF NOT EXISTS idx_ap_identity_entities_site_mac
+    ON ap_identity_entities(site_id, effective_ap_mac_key);
+CREATE INDEX IF NOT EXISTS idx_ap_identity_entities_site_station
+    ON ap_identity_entities(site_id, effective_station);
+
+CREATE TABLE IF NOT EXISTS ap_identity_mac_aliases (
+    alias_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id TEXT NOT NULL DEFAULT 'current',
+    entity_id TEXT NOT NULL,
+    mac_key TEXT NOT NULL,
+    mac_display TEXT NOT NULL,
+    alias_type TEXT NOT NULL,
+    source TEXT NOT NULL,
+    match_priority INTEGER NOT NULL,
+    confidence INTEGER NOT NULL,
+    radio_id INTEGER,
+    derivation_rule TEXT,
+    is_exact INTEGER NOT NULL DEFAULT 1,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(entity_id) REFERENCES ap_identity_entities(entity_id) ON DELETE CASCADE,
+    UNIQUE(site_id, entity_id, mac_key, alias_type, source)
+);
+CREATE INDEX IF NOT EXISTS idx_ap_identity_mac_alias_lookup
+    ON ap_identity_mac_aliases(site_id, mac_key, is_active, match_priority DESC);
+
+CREATE TABLE IF NOT EXISTS ap_identity_h3c_prefixes (
+    prefix_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id TEXT NOT NULL DEFAULT 'current',
+    entity_id TEXT NOT NULL,
+    base_mac_key TEXT NOT NULL,
+    prefix_key TEXT NOT NULL,
+    prefix_bits INTEGER NOT NULL DEFAULT 36,
+    derivation_rule TEXT NOT NULL,
+    source TEXT NOT NULL,
+    match_priority INTEGER NOT NULL,
+    confidence INTEGER NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(entity_id) REFERENCES ap_identity_entities(entity_id) ON DELETE CASCADE,
+    UNIQUE(site_id, entity_id, base_mac_key, prefix_bits, source)
+);
+CREATE INDEX IF NOT EXISTS idx_ap_identity_h3c_prefix_lookup
+    ON ap_identity_h3c_prefixes(
+        site_id,
+        prefix_bits,
+        prefix_key,
+        is_active,
+        match_priority DESC
+    );
+
+CREATE TABLE IF NOT EXISTS ap_identity_conflicts (
+    conflict_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id TEXT NOT NULL DEFAULT 'current',
+    entity_id TEXT NOT NULL,
+    conflict_type TEXT NOT NULL,
+    ac_value TEXT,
+    base_value TEXT,
+    effective_source TEXT NOT NULL,
+    detected_at TEXT NOT NULL,
+    resolved_at TEXT,
+    details_json TEXT,
+    FOREIGN KEY(entity_id) REFERENCES ap_identity_entities(entity_id) ON DELETE CASCADE,
+    UNIQUE(site_id, entity_id, conflict_type)
+);
+CREATE INDEX IF NOT EXISTS idx_ap_identity_conflicts_site_active
+    ON ap_identity_conflicts(site_id, resolved_at, conflict_type);
+
+CREATE TABLE IF NOT EXISTS ap_identity_index_state (
+    site_id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL DEFAULT 0,
+    base_record_count INTEGER NOT NULL DEFAULT 0,
+    ac_record_count INTEGER NOT NULL DEFAULT 0,
+    entity_count INTEGER NOT NULL DEFAULT 0,
+    alias_count INTEGER NOT NULL DEFAULT 0,
+    prefix_count INTEGER NOT NULL DEFAULT 0,
+    conflict_count INTEGER NOT NULL DEFAULT 0,
+    build_reason TEXT,
+    built_at TEXT NOT NULL
+);
+INSERT OR IGNORE INTO ap_identity_index_state (
+    site_id, revision, base_record_count, ac_record_count,
+    entity_count, alias_count, prefix_count, conflict_count,
+    build_reason, built_at
+)
+VALUES ('current', 0, 0, 0, 0, 0, 0, 0, 'schema_initialized', '');
+"""
+
 AP_RESOURCE_SNAPSHOTS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS ap_resource_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2065,6 +2191,7 @@ class Database:
             AC_FIT_AP_UNAUTHENTICATED_SUMMARY_SCHEMA,
             AC_FIT_AP_OPTICAL_SCHEMA,
             AP_ENTITIES_SCHEMA,
+            AP_IDENTITY_INDEX_SCHEMA,
             AP_RESOURCE_SNAPSHOTS_SCHEMA,
             AP_LLDP_HISTORY_SCHEMA,
             AP_OPTICAL_HISTORY_SCHEMA,

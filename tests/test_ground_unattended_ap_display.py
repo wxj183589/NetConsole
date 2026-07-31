@@ -34,7 +34,8 @@ def test_ap_display_resolver_keeps_peer_radio_and_alias_semantics_distinct() -> 
         }
     )
 
-    assert peer["resolution_status"] == "UNRESOLVED"
+    assert peer["resolution_status"] == "PEER_MAC_EXACT"
+    assert peer["peer_ap_id"] == "ap-1"
     assert radio["resolution_status"] == "RADIO_BSSID"
     assert alias["resolution_status"] == "UNRESOLVED"
     assert enriched["peer_mac"] == "10:11:22:33:44:55"

@@ -9,6 +9,7 @@ from ac_management_web_fixture import build_ac_management_fixture
 from netconsole.core.database import Database
 from netconsole.models.api.ac_management import AcApDTO, AcLldpDTO, AcOpticalDTO
 from netconsole.repositories.ac_repository import AcRepository
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.config_lifecycle_service import extract_h3c_configuration_body
 
@@ -49,6 +50,23 @@ def test_ac_query_service_reads_summary_filters_and_details_without_writes(tmp_p
     assert "serial" not in str(detail.model_dump()).casefold()
     assert "SECRET-SN" not in str(detail.model_dump())
     assert _fingerprint(db_path) == before
+
+
+def test_ac_query_service_searches_actual_radio_mac_via_identity_index(
+    tmp_path: Path,
+) -> None:
+    paths, db_path, _files = build_ac_management_fixture(tmp_path)
+    database = Database(db_path)
+    ApIdentityQueryService(database).rebuild_index("test_fixture_ready")
+
+    page = AcManagementQueryService(paths).list_aps(
+        "demo",
+        query="00:00:00:01:00:01",
+    )
+
+    assert page.total == 1
+    assert page.items[0].id == "ap-online"
+    assert page.items[0].name == "AP-Online"
 
 
 def test_ac_query_service_suggests_station_from_unique_lldp_switch_without_writes(tmp_path: Path) -> None:

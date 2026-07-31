@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.ac_management import AcApDetailDTO, AcRadioDTO
@@ -26,6 +27,9 @@ from netconsole.models.api.ac_mesh_link import (
     AcMeshSnapshotPageDTO,
 )
 from netconsole.services.ac.query_service import AcManagementQueryService
+from netconsole.services.ap_identity import ApIdentityQueryService
+from netconsole.services.ap_identity.normalizers import format_mac
+from netconsole.models.ap_identity_index import ApIdentityMatch
 
 
 _FRESH_SECONDS = 30
@@ -455,6 +459,9 @@ class AcMeshLinkQueryService:
             ).fetchall()
         devices = self._mr_devices(site_id)
         ap_indexes = self._ap_indexes(site_id)
+        identity_query = ApIdentityQueryService(
+            Database(self.paths.site_db_path(site_id))
+        )
         controller_id = snapshot.controller_id
         controller_name = snapshot.controller_name
         result: list[AcMeshLinkRecordDTO] = []
@@ -462,10 +469,22 @@ class AcMeshLinkQueryService:
             raw = dict(row)
             identity = _parse_train_identity(str(raw.get("peer_name") or ""))
             device = self._match_mr_device(raw, devices, identity)
-            candidate, method, warning = self._match_ap(raw, ap_indexes)
+            candidate, identity_match, method, warning = self._match_ap(
+                raw,
+                ap_indexes,
+                identity_query,
+            )
             radio = candidate.radio if candidate else None
             ap = candidate.detail.ap if candidate else None
             optical = candidate.detail.optical if candidate else None
+            identity_matched = bool(identity_match and identity_match.matched)
+            radio_id = (
+                radio.radio_id
+                if radio is not None
+                else identity_match.radio_id
+                if identity_matched
+                else None
+            )
             mr_id = device.uuid if device else _normalize_vehicle_mac(raw.get("peer_mac")) or self._normalize_name(raw.get("peer_name")) or f"link-{raw['id']}"
             link_status = str(raw.get("status") or "")
             result.append(
@@ -478,20 +497,66 @@ class AcMeshLinkQueryService:
                     train_no=device.train_no if device else (identity.train_no if identity else str(raw.get("train_no") or "")),
                     car_end=device.car_end if device else (identity.car_end if identity else str(raw.get("car_end") or "")),
                     mr_name=device.name if device else str(raw.get("peer_name") or ""),
-                    mr_mac=_normalize_vehicle_mac(raw.get("peer_mac")),
+                    mr_mac=format_mac(raw.get("peer_mac")),
                     mr_device_id=device.uuid if device else "",
                     mr_management_ip=device.management_ip if device else "",
                     mr_online_status=("online" if self._is_active(link_status) else "offline") if snapshot.data_status == "fresh" else "stale",
-                    peer_ap_id=ap.id if ap else "",
-                    peer_ap_name=ap.name if ap else str(raw.get("local_ap_name") or raw.get("matched_ap_name") or ""),
-                    peer_ap_mac=ap.mac if ap else "",
-                    peer_radio=f"Mesh Radio {radio.radio_id}" if radio else "",
-                    mesh_interface=f"Mesh Radio {radio.radio_id}" if radio else "",
+                    peer_ap_id=(
+                        ap.id
+                        if ap
+                        else identity_match.matched_entity_id
+                        if identity_matched
+                        else ""
+                    ),
+                    peer_ap_name=(
+                        identity_match.effective_ap_name
+                        if identity_matched
+                        else ap.name
+                        if ap
+                        else str(
+                            raw.get("local_ap_name")
+                            or raw.get("matched_ap_name")
+                            or ""
+                        )
+                    ),
+                    peer_ap_mac=(
+                        identity_match.effective_ap_mac
+                        if identity_matched
+                        else ap.mac
+                        if ap
+                        else ""
+                    ),
+                    peer_radio=f"Mesh Radio {radio_id}" if radio_id else "",
+                    mesh_interface=f"Mesh Radio {radio_id}" if radio_id else "",
                     rssi=self._optional_int(raw.get("rssi")),
-                    station=ap.station if ap else str(raw.get("matched_station") or ""),
-                    section=ap.section if ap else "",
-                    mileage=ap.mileage if ap else "",
-                    line_side=ap.direction if ap else "",
+                    station=(
+                        identity_match.station
+                        if identity_matched
+                        else ap.station
+                        if ap
+                        else str(raw.get("matched_station") or "")
+                    ),
+                    section=(
+                        identity_match.section
+                        if identity_matched
+                        else ap.section
+                        if ap
+                        else ""
+                    ),
+                    mileage=(
+                        identity_match.mileage
+                        if identity_matched
+                        else ap.mileage
+                        if ap
+                        else ""
+                    ),
+                    line_side=(
+                        identity_match.direction
+                        if identity_matched
+                        else ap.direction
+                        if ap
+                        else ""
+                    ),
                     ap_rx_power=optical.rx_power if optical else "",
                     switch_rx_power=optical.switch_rx_power if optical else "",
                     last_seen_at=str(raw.get("ac_time") or raw.get("created_at") or snapshot.collected_at),
@@ -543,13 +608,58 @@ class AcMeshLinkQueryService:
         self,
         row: dict[str, object],
         indexes: dict[str, dict[str, list[_ApCandidate]]],
-    ) -> tuple[_ApCandidate | None, str, str]:
+        identity_query: ApIdentityQueryService,
+    ) -> tuple[_ApCandidate | None, ApIdentityMatch | None, str, str]:
         mac = _normalize_vehicle_mac(row.get("local_mac"))
+        identity_match = identity_query.resolve_mac(
+            mac,
+            peer_name=row.get("local_ap_name") or row.get("matched_ap_name"),
+        )
+        if identity_match.matched:
+            effective_mac = _normalize_vehicle_mac(
+                identity_match.effective_ap_mac
+            )
+            candidate, detail_warning = self._unique(
+                indexes["mac"].get(effective_mac, []),
+                "统一 AP Identity 对应物理 AP",
+            )
+            warnings = [
+                value
+                for value in (
+                    identity_match.data_quality_warning,
+                    detail_warning,
+                )
+                if value
+            ]
+            return (
+                candidate,
+                identity_match,
+                identity_match.match_rule
+                or identity_match.matched_alias_type,
+                "；".join(warnings),
+            )
+        if identity_match.status == "ambiguous":
+            return (
+                None,
+                identity_match,
+                "unmatched",
+                "统一 AP Identity 匹配到多个物理 AP，未自动选择。",
+            )
         if mac:
             candidate, warning = self._unique(indexes["mac"].get(mac, []), "Mesh Radio/BSSID MAC")
             if candidate or warning:
-                return candidate, "peer_mac" if candidate else "unmatched", warning
-        return None, "unmatched", "未与当前 FIT-AP/AP 扩展信息精确匹配。"
+                return (
+                    candidate,
+                    None,
+                    "legacy_exact" if candidate else "unmatched",
+                    warning,
+                )
+        return (
+            None,
+            None,
+            "unmatched",
+            "统一 AP Identity 索引未找到匹配。",
+        )
 
     @staticmethod
     def _unique(candidates: list[_ApCandidate], label: str) -> tuple[_ApCandidate | None, str]:

@@ -18,7 +18,7 @@ from netconsole.models.wireless_scan_models import WirelessAdapter, WirelessNetw
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.wireless_scan_repository import WirelessScanRepository
-from netconsole.services.ap_identity.normalizers import normalize_mac
+from netconsole.services.ap_identity.normalizers import format_mac
 from netconsole.services.network_tools.hybrid_wireless_scanner import HybridWirelessScanner
 from netconsole.services.network_tools.trackside_bssid_resolver import TracksideApBssidResolver
 from netconsole.services.network_tools.windows_wlan_scanner import SCAN_SOURCE_AUTO, SCAN_SOURCE_HYBRID, WindowsWlanScanner
@@ -116,7 +116,9 @@ class WirelessScanService:
 
     def _trackside_resolver(self) -> TracksideApBssidResolver:
         device_repo = DeviceRepository(Database(self.paths.site_db_path(self.site_name)))
-        return TracksideApBssidResolver.from_ac_repository(AcRepository(device_repo.database))
+        return TracksideApBssidResolver.from_site_repository(
+            AcRepository(device_repo.database)
+        )
 
 
 def wireless_scanner_external_path(paths: PathResolver, configured_path: str = "") -> Path | None:
@@ -173,7 +175,7 @@ def result_to_row(result: WirelessScanResult) -> dict[str, object]:
         "matched_direction": match.direction,
         "matched_radio_id": match.radio_id,
         "matched_ap_mac": match.ap_mac,
-        "bssid": normalize_mac(network.bssid) or network.bssid,
+        "bssid": format_mac(network.bssid) or network.bssid,
         "rssi_dbm": network.rssi_dbm,
         "channel": network.channel,
         "frequency_mhz": network.frequency_mhz,
@@ -206,7 +208,7 @@ def result_to_row(result: WirelessScanResult) -> dict[str, object]:
         "raw_ie_hex": network.raw_ie_hex,
         "parse_warnings": list(network.parse_warnings),
         "display_ssid": "Hidden" if network.is_hidden or not network.ssid else network.ssid,
-        "display_mac_address": normalize_mac(network.bssid) or network.bssid or "-",
+        "display_mac_address": format_mac(network.bssid) or network.bssid or "-",
         "display_ap_mac": match.ap_mac or "-",
         "display_ap_name": match.ap_name if match.ap_name and match.ap_name != "-" else "-",
         "display_radio_id": match.radio_id or "-",
@@ -242,7 +244,7 @@ def repository_row_to_display_row(row: Mapping[str, object]) -> dict[str, object
         "matched_trackside_ap": int(row.get("matched_trackside_ap") or 0),
         "matched_location": location,
         "display_ssid": "Hidden" if is_hidden or not row.get("ssid") else row.get("ssid"),
-        "display_mac_address": normalize_mac(row.get("bssid")) or row.get("bssid") or "-",
+        "display_mac_address": format_mac(row.get("bssid")) or row.get("bssid") or "-",
         "display_ap_mac": row.get("matched_ap_mac") or "-",
         "display_ap_name": row.get("matched_ap_name") if row.get("matched_ap_name") and row.get("matched_ap_name") != "-" else "-",
         "display_radio_id": row.get("matched_radio_id") or "-",

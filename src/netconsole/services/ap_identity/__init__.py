@@ -17,18 +17,23 @@ from .models import (
     CanonicalApRadioIdentity,
 )
 from .normalizers import (
+    format_mac,
     is_mac_like,
+    mac_prefix,
     normalize_ap_name,
     normalize_mac,
+    normalize_mac_key,
     normalize_mileage,
     parse_line_direction,
     same_mac,
 )
 from .resolver import ApIdentityResolver
+from .query_service import ApIdentityQueryService
 
 __all__ = [
     "ApIdentityCandidate",
     "ApIdentityResolver",
+    "ApIdentityQueryService",
     "ApMatchEvidence",
     "ApMatchResult",
     "ApMatchStatus",
@@ -39,9 +44,12 @@ __all__ = [
     "candidate_from_ap_entity_row",
     "candidate_from_extension_row",
     "candidate_from_fit_ap_resource_row",
+    "format_mac",
     "is_mac_like",
+    "mac_prefix",
     "normalize_ap_name",
     "normalize_mac",
+    "normalize_mac_key",
     "normalize_mileage",
     "observation_from_mesh_peer",
     "observation_from_online_mr_sample",

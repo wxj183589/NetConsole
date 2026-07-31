@@ -609,7 +609,7 @@ def test_report_and_page_share_ap_location_snapshot_values(tmp_path: Path):
     report_row = report.active_build_order[0]
 
     assert report_row["peer_ap_name"] == page_row.peer_ap_name == "轨旁AP-01"
-    assert report_row["peer_ap_mac"] == page_row.peer_ap_mac == PEER_A
+    assert report_row["peer_ap_mac"] == page_row.peer_ap_mac == "30f5-277a-5a2f"
     assert report_row["station"] == page_row.station == "车站A"
     assert report_row["section"] == page_row.section == "区间A-B"
     assert report_row["mileage"] == page_row.mileage == "K12+300"

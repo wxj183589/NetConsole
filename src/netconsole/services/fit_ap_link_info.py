@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-from netconsole.services.ap_identity.normalizers import normalize_mac
+from netconsole.services.ap_identity.normalizers import normalize_mac_key as normalize_mac
 from netconsole.utils.interface_normalize import normalize_interface_name as display_interface_name
 
 

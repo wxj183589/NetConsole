@@ -61,11 +61,11 @@ def test_row_shadow_preserves_rows_and_matches_uuid_and_mac_only() -> None:
 
     assert rows == before
     assert report.total == 3
-    assert report.matched == 2
-    assert report.identity_unchanged == 2
-    assert report.identity_changed == 1
-    assert report.name_only_matches == 0
-    assert report.unresolved == 1
+    assert report.matched == 3
+    assert report.identity_unchanged == 3
+    assert report.identity_changed == 0
+    assert report.name_only_matches == 1
+    assert report.unresolved == 0
 
 
 def test_row_shadow_reports_cross_ac_mac_as_ambiguous_without_scope() -> None:
@@ -210,7 +210,7 @@ def test_detail_job_preserves_uuid_mac_and_name_fallback_matches(
     assert by_mac.result["detail_identity_shadow"]["identity_unchanged"] == 1
     assert by_name.ok is True
     assert by_name.result["matches"] == []
-    assert by_name.result["detail_identity_shadow"]["unresolved"] == 1
+    assert by_name.result["detail_identity_shadow"]["matched"] == 1
 
 
 def test_detail_shadow_failure_does_not_change_matches_or_finished(

@@ -12,7 +12,7 @@ _MAC_H3C_HYPHEN = re.compile(r"^(?:[0-9a-fA-F]{4}-){2}[0-9a-fA-F]{4}$")
 _MAC_PLAIN = re.compile(r"^[0-9a-fA-F]{12}$")
 
 
-def normalize_mac(value: object) -> str | None:
+def normalize_mac_key(value: object) -> str | None:
     text = _clean_text(value)
     if text is None:
         return None
@@ -23,8 +23,30 @@ def normalize_mac(value: object) -> str | None:
         or _MAC_PLAIN.fullmatch(text)
     ):
         return None
-    compact = re.sub(r"[-:.]", "", text).casefold()
-    return ":".join(compact[index : index + 2] for index in range(0, 12, 2))
+    return re.sub(r"[-:.]", "", text).casefold()
+
+
+def format_mac(value: object) -> str:
+    key = normalize_mac_key(value)
+    if not key:
+        return ""
+    return f"{key[0:4]}-{key[4:8]}-{key[8:12]}"
+
+
+def normalize_mac(value: object) -> str | None:
+    """Return the legacy canonical colon form used by existing domain models."""
+
+    key = normalize_mac_key(value)
+    if not key:
+        return None
+    return ":".join(key[index : index + 2] for index in range(0, 12, 2))
+
+
+def mac_prefix(value: object, bits: int = 36) -> str | None:
+    key = normalize_mac_key(value)
+    if not key or bits <= 0 or bits > 48 or bits % 4:
+        return None
+    return key[: bits // 4]
 
 
 def normalize_ap_name(value: object) -> str | None:
@@ -33,12 +55,12 @@ def normalize_ap_name(value: object) -> str | None:
 
 
 def is_mac_like(value: object) -> bool:
-    return normalize_mac(value) is not None
+    return normalize_mac_key(value) is not None
 
 
 def same_mac(left: object, right: object) -> bool:
-    left_mac = normalize_mac(left)
-    right_mac = normalize_mac(right)
+    left_mac = normalize_mac_key(left)
+    right_mac = normalize_mac_key(right)
     return bool(left_mac and right_mac and left_mac == right_mac)
 
 

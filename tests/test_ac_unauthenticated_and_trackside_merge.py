@@ -237,5 +237,5 @@ def test_trackside_ap_business_current_lldp_neighbor_mac_never_displays_dash():
         {"sw-1": [{"local_interface": "GE2/0/47", "neighbor_mac": "bc5a-3457-cfe0"}]},
     )
 
-    assert rows[0]["ap_mac"] == "bc:5a:34:57:cf:e0"
+    assert rows[0]["ap_mac"] == "bc5a-3457-cfe0"
     assert format_trackside_display_value("ap_mac", rows[0]) != "-"

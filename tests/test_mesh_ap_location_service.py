@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
+from netconsole.core.database import Database
+from netconsole.core.paths import PathResolver
+from netconsole.repositories.ac_repository import AcRepository
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.rail_transit.mesh_ap_location_service import (
     MeshApLocation,
     MeshApLocationService,
@@ -96,22 +101,22 @@ def test_location_snapshot_serialization_round_trip_is_worker_safe() -> None:
         {
             "name": "AP-04",
             "point_code": "",
-                "mac": "00:00:00:00:00:40",
+            "mac": "0000-0000-0040",
             "station": "车站D",
             "section": "",
             "section_start_station": "",
             "section_end_station": "",
             "mileage": "K12+300",
-                "line_side": "上行",
-                "direction": "",
-                "identity_status": "matched",
-                "identity_source": "BASE_DATA_AP_MAC",
-                "identity_reason": "",
+            "line_side": "上行",
+            "direction": "",
+            "identity_status": "matched",
+            "identity_source": "BASE_DATA_AP_MAC",
+            "identity_reason": "",
         }
     ]
     assert restored.resolve({"peer_ap_mac": "000000000040"}) == MeshApLocation(
         name="AP-04",
-        mac="00:00:00:00:00:40",
+        mac="0000-0000-0040",
         station="车站D",
         mileage="K12+300",
         line_side="上行",
@@ -166,3 +171,49 @@ def test_location_service_prefers_the_unpaged_location_source() -> None:
     snapshot = MeshApLocationService(Query()).snapshot("demo")  # type: ignore[arg-type]
 
     assert snapshot.resolve({"peer_ap_mac": "000000000050"}).station == "车站E"
+
+
+def test_location_service_reads_effective_identity_from_site_index(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    repository = AcRepository(database)
+    repository.upsert_ap_extension_point(
+        {
+            "ap_name": "AP0208",
+            "ap_point_code": "AP0208",
+            "ap_mac_display": "4873-97cc-e0e0",
+            "station_name": "基础资料站",
+        }
+    )
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [
+            {
+                "ap_uuid": "ap-0208",
+                "ap_name": "AP0208",
+                "ap_mac": "4873-97cc-e080",
+                "site": "AC运行站",
+            }
+        ],
+    )
+    ApIdentityQueryService(database).rebuild_index("test_sources_saved")
+
+    class Query:
+        def __init__(self, resolver: PathResolver) -> None:
+            self.paths = resolver
+
+        @staticmethod
+        def list_ap_location_items(_site_id: str):
+            raise AssertionError("ready identity index must be the primary source")
+
+    snapshot = MeshApLocationService(Query(paths)).snapshot("demo")  # type: ignore[arg-type]
+    location = snapshot.resolve({"peer_ap_mac": "4873-97cc-e080"})
+
+    assert location.name == "AP0208"
+    assert location.mac == "4873-97cc-e080"
+    assert location.station == "AC运行站"
+    assert location.identity_source == "ac_runtime"
+    assert location.identity_reason == "AP_IDENTITY_AC_BASE_CONFLICT"

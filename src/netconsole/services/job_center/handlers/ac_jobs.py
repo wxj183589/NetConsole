@@ -30,6 +30,7 @@ from netconsole.services.ac.mesh_link_refresh_service import run_ac_mesh_link_re
 from netconsole.services.ac.mesh_link_resident_polling_service import (
     run_ac_mesh_link_resident_poll,
 )
+from netconsole.services.ap_identity import ApIdentityQueryService
 
 
 def _string_list(value: object, fallback: object = None) -> list[str]:
@@ -61,7 +62,9 @@ def ac_fit_ap_delete_many(context: JobContext) -> dict[str, object]:
     if not ac_uuid or not ap_uuids:
         raise ValueError("批量删除 FIT-AP 缺少 AC 或 AP 标识")
     context.progress("ac_fit_ap_delete_many", 0, 1, "正在批量删除 FIT-AP")
-    count = AcRepository(Database(Path(str(params.get("db_path") or "")))).delete_fit_aps(ac_uuid, ap_uuids)
+    database = Database(Path(str(params.get("db_path") or "")))
+    count = AcRepository(database).delete_fit_aps(ac_uuid, ap_uuids)
+    ApIdentityQueryService(database).rebuild_index("ac_fit_ap_deleted")
     context.progress("ac_fit_ap_delete_many", 1, 1, f"FIT-AP 批量删除完成，共删除 {count} 条")
     return {"count": count}
 

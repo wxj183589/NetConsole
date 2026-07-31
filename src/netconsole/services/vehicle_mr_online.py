@@ -13,6 +13,7 @@ from netconsole.models.device import Device
 from netconsole.models.online_mr_models import OnlineMrConnectionConfig
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.online_mr_collector import NetmikoShellConnection
 from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.utils.natural_sort import train_natural_sort_key
@@ -27,6 +28,8 @@ TRAIN_STATUS_ABNORMAL_SINGLE = "异常单端"
 TRAIN_STATUS_UNEXPECTED_END = "非预期端在线"
 TRAIN_STATUS_DUAL_ONLINE = "双端在线"
 UNKNOWN_STATION = "未知车站"
+_AP_IDENTITY_QUERY_KEY = "__ap_identity_query_service__"
+_AP_IDENTITY_ENTITIES_KEY = "__ap_identity_entities__"
 ONLINE_POLICY_AUTO = "auto"
 ONLINE_POLICY_SINGLE_TAIL = "single_tail"
 ONLINE_POLICY_DUAL_ACTIVE = "dual_active"
@@ -679,11 +682,27 @@ def _find_previous_by_train_no(previous: dict[str, VehicleMrTrainState], train_n
 
 
 def match_ap(ap_name: str, ap_lookup: dict[str, object], local_mac: str = "") -> MatchedAp | None:
+    query_service = ap_lookup.get(_AP_IDENTITY_QUERY_KEY)
+    if isinstance(query_service, ApIdentityQueryService):
+        match = query_service.resolve_mac(local_mac, peer_name=ap_name)
+        if match.matched:
+            return MatchedAp(
+                ap_name=match.effective_ap_name or ap_name,
+                station=match.station or UNKNOWN_STATION,
+                match_method=match.match_rule or match.matched_alias_type,
+                match_score=match.match_confidence,
+                ap_mac=match.effective_ap_mac,
+                station_source=match.matched_source,
+            )
     for mac in (local_mac,):
         normalized = normalize_mac(mac)
         if not normalized:
             continue
         value = ap_lookup.get(f"mac:{normalized}") or ap_lookup.get(normalized)
+        if isinstance(value, MatchedAp):
+            return value
+    if not normalize_mac(local_mac):
+        value = ap_lookup.get(f"name:{str(ap_name or '').strip().casefold()}")
         if isinstance(value, MatchedAp):
             return value
     return None
@@ -1414,25 +1433,22 @@ def backfill_fit_ap_resource_station_from_optical(repository: DeviceRepository) 
 
 
 def load_trackside_ap_lookup(repository: DeviceRepository) -> dict[str, object]:
-    lookup: dict[str, object] = {}
-    records: dict[str, dict[str, object]] = {}
-    with repository.database.connect() as conn:
-        _merge_ap_rows(conn, records, "resource", "ac_fit_ap_resources", ("ap_name", "ap_mac", "site", "site_name", "metadata_site", "metadata_site_name"))
-        _merge_ap_rows(conn, records, "optical", "ac_fit_ap_optical", ("ap_name", "ap_mac", "site", "site_name"))
-        _merge_ap_rows(conn, records, "metadata", "ac_fit_ap_metadata", ("ap_name", "site_name", "site", "mileage", "location_note", "direction"))
-        _merge_ap_rows(conn, records, "entity", "ap_entities", ("ap_name", "ap_mac", "station"))
-        _merge_ap_rows(conn, records, "cache", "trackside_ap_view_cache", ("ap_name", "ap_mac", "station"))
-    for record in records.values():
-        ap_name = str(record.get("ap_name") or "").strip()
-        ap_mac = normalize_mac(record.get("ap_mac"))
-        station, station_source = resolve_ap_station(record)
-        station_name = station or UNKNOWN_STATION
-        display_name = ap_name or ap_mac
-        if not display_name:
-            continue
-        if ap_mac:
-            lookup[f"mac:{ap_mac}"] = MatchedAp(display_name, station_name, "mac_exact", 95, ap_mac, station_source)
-    return lookup
+    query_service = ApIdentityQueryService(repository.database)
+    entities = [
+        MatchedAp(
+            ap_name=str(row.get("ap_name") or row.get("point_code") or ""),
+            station=str(row.get("station") or UNKNOWN_STATION),
+            match_method="identity_entity",
+            match_score=100,
+            ap_mac=str(row.get("ap_mac") or ""),
+            station_source=str(row.get("source") or ""),
+        )
+        for row in query_service.list_entities()
+    ]
+    return {
+        _AP_IDENTITY_QUERY_KEY: query_service,
+        _AP_IDENTITY_ENTITIES_KEY: entities,
+    }
 
 
 def _merge_ap_rows(conn: sqlite3.Connection, records: dict[str, dict[str, object]], source: str, table: str, wanted: tuple[str, ...]) -> None:

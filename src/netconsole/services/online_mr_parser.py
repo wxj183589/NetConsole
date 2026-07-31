@@ -4,7 +4,10 @@ import re
 from datetime import datetime, timedelta
 
 from netconsole.models.mesh_log_models import LINK_STATE_ACTIVE, MeshLogRecord
-from netconsole.parsers.mesh_log_parser import normalize_peer_mac, parse_link_state, parse_mesh_link_table
+from netconsole.parsers.mesh_log_parser import parse_link_state, parse_mesh_link_table
+from netconsole.services.ap_identity.normalizers import (
+    normalize_mac_key as normalize_peer_mac,
+)
 
 
 COLLECTOR_RX_PREFIX_RE = re.compile(
@@ -112,6 +115,8 @@ def parse_mesh_link_text(raw_text: str, collected_at: datetime) -> tuple[list[Me
         if table_records:
             return table_records, "OK", ""
     records, issues = parse_mesh_link_table(clean_text, source_label="online", sample_time=collected_at, radio=1)
+    for record in records:
+        record.peer_mac_normalized = normalize_peer_mac(record.peer_mac_raw)
     if not records:
         table_records = _parse_mesh_peer_table(clean_text, collected_at)
         if table_records:

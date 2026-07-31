@@ -40,6 +40,7 @@ from netconsole.services.ac.fit_ap_optical_concurrency import (
 )
 from netconsole.services import command_guard
 from netconsole.services import netmiko_connection
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.device_web_service import matching_https_port_lines, parse_https_port
 from netconsole.services.h3c_collect_service import CommandResult
 from netconsole.services.neighbor_matcher import find_neighbor_optical_module, match_ap_from_device_lldp, match_neighbor_device
@@ -344,6 +345,9 @@ def collect_h3c_fit_ap_resources(
                 repository.upsert_fit_ap_resource(str(ac_device.device_uuid), resources[0])
             else:
                 repository.replace_fit_ap_resources(str(ac_device.device_uuid), resources)
+            ApIdentityQueryService(repository.database).rebuild_index(
+                "ac_fit_ap_refresh_succeeded"
+            )
         unauth_result = next((result for result in command_results if result.command == "display wlan ap unauthenticated"), None)
         unauthenticated_updated = False
         unauthenticated_rows_updated = 0

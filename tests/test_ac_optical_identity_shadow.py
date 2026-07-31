@@ -123,8 +123,9 @@ def test_scope_name_only_and_mac_like_name_diagnostics() -> None:
 
     assert scoped.matched == 1
     assert scoped.ambiguous == 0
-    assert name_only.name_only_matches == 0
-    assert name_only.unresolved == 1
+    assert name_only.name_only_matches == 1
+    assert name_only.matched == 1
+    assert name_only.unresolved == 0
     assert mac_like.mac_like_names == 1
 
 

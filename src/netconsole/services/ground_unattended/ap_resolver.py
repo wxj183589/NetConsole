@@ -151,6 +151,15 @@ class GroundApDisplayResolver:
                 "resolution_confidence": "100",
             }
 
+        value = self._by_ap_mac.get(mac_key)
+        if value is not None:
+            return {
+                **value,
+                "resolution_status": "PEER_MAC_EXACT",
+                "resolution_rule": "base_ap_mac_exact",
+                "resolution_confidence": "92",
+            }
+
         observed_radio_key = radio_mac_key or mac_key
         value = self._resource_by_radio_mac.get(observed_radio_key)
         resolution_status = "RADIO_BSSID"

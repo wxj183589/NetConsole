@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from netconsole.core.database import Database
 from netconsole.core.optical_severity_engine import (
     classify_optical_freshness,
     classify_optical_health,
@@ -38,6 +39,8 @@ from netconsole.models.api.ac_management import (
 )
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.services.ap_extension_import import normalize_ap_mac
+from netconsole.services.ap_identity import ApIdentityQueryService
+from netconsole.services.ap_identity.normalizers import normalize_mac_key
 from netconsole.services.config_text import (
     build_side_by_side_rows,
     compare_config_text,
@@ -516,8 +519,31 @@ class AcManagementQueryService:
         sort_order: str = "asc",
     ) -> list[AcApDTO]:
         records = self._ap_records(site_id, ac_id=ac_id)
+        items = [record[0] for record in records]
+        if normalize_mac_key(query):
+            identity_rows = ApIdentityQueryService(
+                Database(self._db_path(site_id))
+            ).search_aps(query)
+            matched_macs = {
+                mac
+                for row in identity_rows
+                for field in ("ap_mac", "ac_ap_mac", "base_ap_mac")
+                if (mac := normalize_mac_key(row.get(field)))
+            }
+            matched_names = {
+                str(row.get("ap_name") or "").strip().casefold()
+                for row in identity_rows
+                if str(row.get("ap_name") or "").strip()
+            }
+            items = [
+                item
+                for item in items
+                if normalize_mac_key(item.mac) in matched_macs
+                or str(item.name or "").strip().casefold() in matched_names
+            ]
+            query = ""
         return self._filter_ap_items(
-            [record[0] for record in records],
+            items,
             query=query,
             status=status,
             station=station,

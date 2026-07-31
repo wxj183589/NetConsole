@@ -98,7 +98,7 @@ flowchart LR
 - 可再次导入的 XLSX/CSV/JSON/ZIP 正式导出写入 NetConsole 文件契约；导入入口在业务层统一校验扩展名、模块、类型、schema、必要结构和非空数据，不能只依赖文件选择框过滤。
 - `JobRegistry` 按领域 handler 模块分区；能力集合由测试校验，不再在文档和测试中绑定易漂移的任务总数。多数既有领域 handler 仍通过 `legacy_tasks.py` 薄适配，迁移尚未完成。
 - 设备批量连接测试和批量详情采集使用永久后台 Worker/进程链；是否已由统一 Job Center 接管以生产 handler 和测试为准。
-- AP Identity 当前仅为只读 shadow/diagnostics，不参与生产匹配、页面展示或业务结论接管。
+- AP Identity 已由局点级 `devices.db` 统一索引接管 MESH、Online/Vehicle MR、Wireless、AC/基础资料/轨旁业务 MAC 搜索和冲突诊断；普通查询只读，来源写入后显式重建，无 AC 时基础资料仍可独立完成 H3C Radio 反查。
 - Windows Go Agent 仍是独立进程和数据根；`AgentTrafficSupervisor` 已把远端 iPerf/fping 状态、事件和结果映射到 Task Center，Online MR 也提供默认关闭的单 Agent start/status/normal stop、自动包下载和安全导入。Token 始终留在 Controller 进程内，不提供远端强停、包删除或任意命令。
 
 完整说明见 [当前架构](docs/ARCHITECTURE.md)、[永久架构与后续演进](docs/ARCHITECTURE_NEXT.md)、[Electron Desktop](docs/ELECTRON_DESKTOP.md)、[最终迁移矩阵](docs/architecture/MIGRATION_MATRIX.md)、[架构一致性报告](docs/archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md)、[Job Center](docs/JOB_CENTER.md)、[导出进程规范](docs/export_process_policy.md) 和 [重构地图](docs/REFACTOR_MAP.md)。
@@ -170,6 +170,6 @@ Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 
 
 ## 当前规划
 
-Web 演进阶段 4C 已接入 Traffic REST API、独立 Traffic WebSocket 和 `/network-tools/traffic` Vue 页面；阶段 4D 的 Qt Web Shell 仅为历史验收记录，其源码与活动启动入口均已删除。Online MR 已建立纯 Python LOCAL/AGENT Application Service、同局点 Task/Session 映射、Traffic 收口，以及严格 Desktop/`127.0.0.1`/短期会话保护的独立 Web LOCAL/AGENT 页签；AGENT 默认关闭，只提供固定 start/status/normal stop 与自动 package 导入，不提供强停、删除或任意命令。SNMP Center、通用 MIB/OID 平台和无线勘测已删除；AP Identity 继续只读。
+Web 演进阶段 4C 已接入 Traffic REST API、独立 Traffic WebSocket 和 `/network-tools/traffic` Vue 页面；阶段 4D 的 Qt Web Shell 仅为历史验收记录，其源码与活动启动入口均已删除。Online MR 已建立纯 Python LOCAL/AGENT Application Service、同局点 Task/Session 映射、Traffic 收口，以及严格 Desktop/`127.0.0.1`/短期会话保护的独立 Web LOCAL/AGENT 页签；AGENT 默认关闭，只提供固定 start/status/normal stop 与自动 package 导入，不提供强停、删除或任意命令。SNMP Center、通用 MIB/OID 平台和无线勘测已删除；AP Identity 已完成已登记消费者的生产接管，查询仍保持本地只读。
 
 Electron-only E1 已删除 Python 启动壳中的 `auto/qt`、Qt probe、旧 Qt WebShell、Qt 页面、Qt-only 测试与无调用 Qt Native Adapter；打包 Electron 通过内部 `--electron-backend` 协议启动受管 Backend，开发态继续直接运行 `netconsole.backend.electron_runtime`。无参数 `main.py` 是 PyCharm/源码态 Electron 入口，`main.py --mode web|server` 只用于本机开发诊断。源码、依赖和安装包门禁均禁止重新引入 Qt。

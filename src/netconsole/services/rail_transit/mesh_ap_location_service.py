@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
+from netconsole.core.database import Database
+from netconsole.services.ap_identity import ApIdentityQueryService
+from netconsole.services.ap_identity.normalizers import format_mac, normalize_mac_key
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
-from netconsole.services.ap_identity.normalizers import normalize_mac
 
 
 @dataclass(frozen=True)
@@ -27,7 +29,7 @@ class MeshApLocation:
         return {
             "name": self.name,
             "point_code": self.point_code,
-            "mac": normalize_mac(self.mac) or "",
+            "mac": format_mac(self.mac),
             "station": self.station,
             "section": self.section,
             "section_start_station": self.section_start_station,
@@ -46,7 +48,7 @@ class MeshApLocationSnapshot:
         self._locations = tuple(locations)
         self._by_mac: dict[str, MeshApLocation | None] = {}
         for location in self._locations:
-            mac = normalize_mac(location.mac)
+            mac = normalize_mac_key(location.mac)
             if mac:
                 if mac in self._by_mac:
                     self._by_mac[mac] = None  # type: ignore[assignment]
@@ -58,7 +60,7 @@ class MeshApLocationSnapshot:
         locations: list[MeshApLocation] = []
         for item in items:
             mileage = getattr(getattr(item, "mileage", None), "raw", "")
-            mac = normalize_mac(getattr(item, "mac", ""))
+            mac = format_mac(getattr(item, "mac", ""))
             locations.append(
                 MeshApLocation(
                     name=str(
@@ -78,7 +80,7 @@ class MeshApLocationSnapshot:
                     ),
                     mileage=str(mileage or ""),
                     line_side=str(getattr(item, "line_side", "") or ""),
-                direction=str(getattr(item, "direction", "") or ""),
+                    direction=str(getattr(item, "direction", "") or ""),
                     identity_status="matched" if mac else "unresolved",
                     identity_source="BASE_DATA_AP_MAC" if mac else "",
                 )
@@ -86,12 +88,33 @@ class MeshApLocationSnapshot:
         return cls(locations)
 
     @classmethod
+    def from_identity_entities(
+        cls,
+        rows: Iterable[Mapping[str, object]],
+    ) -> MeshApLocationSnapshot:
+        return cls(
+            MeshApLocation(
+                name=str(row.get("ap_name") or row.get("point_code") or ""),
+                point_code=str(row.get("point_code") or ""),
+                mac=format_mac(row.get("ap_mac")),
+                station=str(row.get("station") or ""),
+                section=str(row.get("section") or ""),
+                mileage=str(row.get("mileage") or ""),
+                direction=str(row.get("direction") or ""),
+                identity_status=str(row.get("identity_status") or "matched"),
+                identity_source=str(row.get("source") or ""),
+                identity_reason=str(row.get("data_quality_warning") or ""),
+            )
+            for row in rows
+        )
+
+    @classmethod
     def from_serializable(cls, rows: Iterable[Mapping[str, object]]) -> MeshApLocationSnapshot:
         return cls(
             MeshApLocation(
                 name=str(row.get("name") or row.get("point_code") or ""),
                 point_code=str(row.get("point_code") or ""),
-                mac=normalize_mac(row.get("mac")) or "",
+                mac=format_mac(row.get("mac")),
                 station=str(row.get("station") or ""),
                 section=str(row.get("section") or ""),
                 section_start_station=str(row.get("section_start_station") or ""),
@@ -113,7 +136,7 @@ class MeshApLocationSnapshot:
         return self._locations
 
     def resolve(self, row: Mapping[str, Any]) -> MeshApLocation:
-        mac = normalize_mesh_ap_mac(
+        mac_key = normalize_mac_key(
             row.get("peer_ap_mac")
             or row.get("active_peer_mac")
             or row.get("peer_mac_normalized")
@@ -121,14 +144,14 @@ class MeshApLocationSnapshot:
             or row.get("ap_mac")
         )
         name = str(row.get("peer_ap_name") or row.get("ap_name") or "")
-        location = self._by_mac.get(mac) if mac else None
+        location = self._by_mac.get(mac_key) if mac_key else None
         if location is not None:
             return location
-        reason = "缺少规范 AP MAC" if not mac else "未找到唯一 AP MAC 基础资料"
+        reason = "缺少规范 AP MAC" if not mac_key else "未找到唯一 AP Identity"
         return MeshApLocation(
             name=name,
             point_code=str(row.get("point_code") or row.get("ap_point_code") or ""),
-            mac=mac,
+            mac=format_mac(mac_key),
             station=str(row.get("peer_site") or row.get("station") or row.get("belong_station") or ""),
             section=str(row.get("peer_section") or row.get("section") or row.get("belong_section") or ""),
             section_start_station=str(row.get("section_start_station") or ""),
@@ -136,7 +159,13 @@ class MeshApLocationSnapshot:
             mileage=str(row.get("mileage") or ""),
             line_side=str(row.get("line_side") or ""),
             direction=str(row.get("direction") or ""),
-            identity_status="ambiguous" if mac and mac in self._by_mac and self._by_mac[mac] is None else "unresolved",
+            identity_status=(
+                "ambiguous"
+                if mac_key
+                and mac_key in self._by_mac
+                and self._by_mac[mac_key] is None
+                else "unresolved"
+            ),
             identity_source="",
             identity_reason=reason,
         )
@@ -147,6 +176,16 @@ class MeshApLocationService:
         self.base_query = base_query
 
     def snapshot(self, site_id: str) -> MeshApLocationSnapshot:
+        paths = getattr(self.base_query, "paths", None)
+        if paths is not None:
+            database = Database(paths.site_db_path(site_id))
+            if database.exists():
+                identity_query = ApIdentityQueryService(database)
+                state = identity_query.index_state()
+                if state is not None and int(state.get("revision") or 0) > 0:
+                    return MeshApLocationSnapshot.from_identity_entities(
+                        identity_query.list_entities()
+                    )
         list_location_items = getattr(self.base_query, "list_ap_location_items", None)
         if callable(list_location_items):
             return MeshApLocationSnapshot.from_base_data_items(list_location_items(site_id))
@@ -163,8 +202,9 @@ class MeshApLocationService:
 
 
 def normalize_mesh_ap_mac(value: object) -> str:
-    """兼容旧调用方，统一返回公共规范 MAC；非法值返回空串。"""
-    return normalize_mac(value) or ""
+    """Return the common user-visible H3C MAC form; invalid values are empty."""
+
+    return format_mac(value)
 
 
 __all__ = [
