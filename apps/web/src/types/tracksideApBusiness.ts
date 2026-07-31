@@ -123,7 +123,17 @@ export interface TracksideApOnlineStatus {
   scope_description?: string; scope_station_count?: number; scope_device_count?: number
   scope_ap_reference_count?: number; excluded_device_count?: number; excluded_items?: TracksideApScopeExcluded[]
   fit_ap_resource_total_count?: number; fit_ap_matched_count?: number; fit_ap_unmatched_online_count?: number
+  fit_ap_unresolved_online_count?: number; fit_ap_ambiguous_online_count?: number
   unmatched_online_items?: TracksideApUnmatchedOnline[]
+  generated_at?: string; revision?: string; source_revision?: Record<string, unknown>; cache_hit?: boolean
+}
+
+export interface TracksideApScopeExcludedPage {
+  items: TracksideApScopeExcluded[]; total: number; page: number; page_size: number; revision: string
+}
+
+export interface TracksideApUnmatchedOnlinePage {
+  items: TracksideApUnmatchedOnline[]; total: number; page: number; page_size: number; revision: string
 }
 
 export type ApManagementVlanPlanningMode = 'line_single' | 'station_independent' | 'station_grouped'

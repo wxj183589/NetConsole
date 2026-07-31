@@ -5,6 +5,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 import json
 import sqlite3
+from time import monotonic
 
 from netconsole.core.database import Database
 from netconsole.models.ap_identity_index import (
@@ -30,13 +31,28 @@ class ApIdentityRepository:
         site_id: str = "current",
         reason: str,
     ) -> ApIdentityBuildResult:
+        started = monotonic()
         built_at = _now()
+        with self.database.connect_readonly() as connection:
+            connection.execute("BEGIN")
+            source_revision = self._source_revision(connection, site_id=site_id)
+            base_rows = self._load_base_rows(connection)
+            ac_rows = self._load_ac_rows(connection)
+            connection.commit()
+        build = builder(base_rows, ac_rows, site_id=site_id)
+        diagnostics = _build_diagnostics(build)
+        build_duration_ms = round((monotonic() - started) * 1000, 3)
         with self.database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
-                base_rows = self._load_base_rows(connection)
-                ac_rows = self._load_ac_rows(connection)
-                build = builder(base_rows, ac_rows, site_id=site_id)
+                current_source_revision = self._source_revision(
+                    connection,
+                    site_id=site_id,
+                )
+                if current_source_revision != source_revision:
+                    raise RuntimeError(
+                        "AP Identity sources changed while the index was being built"
+                    )
                 state_row = connection.execute(
                     """
                     SELECT revision
@@ -54,6 +70,9 @@ class ApIdentityRepository:
                     reason=reason,
                     revision=revision,
                     built_at=built_at,
+                    source_revision=source_revision,
+                    diagnostics=diagnostics,
+                    build_duration_ms=build_duration_ms,
                 )
                 connection.commit()
             except Exception:
@@ -70,6 +89,13 @@ class ApIdentityRepository:
             alias_count=len(build.aliases),
             prefix_count=len(build.prefixes),
             conflict_count=len(build.conflicts),
+            source_revision=source_revision,
+            actual_radio_alias_count=diagnostics["actual_radio_alias_count"],
+            actual_bssid_alias_count=diagnostics["actual_bssid_alias_count"],
+            actual_bbssid_alias_count=diagnostics["actual_bbssid_alias_count"],
+            derived_alias_count=diagnostics["derived_alias_count"],
+            ambiguous_alias_count=diagnostics["ambiguous_alias_count"],
+            build_duration_ms=build_duration_ms,
         )
 
     def index_state(self, *, site_id: str = "current") -> dict[str, object] | None:
@@ -79,6 +105,35 @@ class ApIdentityRepository:
                 (site_id,),
             ).fetchone()
         return dict(row) if row is not None else None
+
+    def source_revision(self, *, site_id: str = "current") -> int:
+        with self.database.connect_readonly() as connection:
+            return self._source_revision(connection, site_id=site_id)
+
+    def index_health(
+        self,
+        *,
+        site_id: str = "current",
+    ) -> tuple[dict[str, object] | None, int]:
+        with self.database.connect_readonly() as connection:
+            state = connection.execute(
+                "SELECT * FROM ap_identity_index_state WHERE site_id = ?",
+                (site_id,),
+            ).fetchone()
+            source_revision = self._source_revision(connection, site_id=site_id)
+        return (dict(state) if state is not None else None, source_revision)
+
+    @staticmethod
+    def _source_revision(
+        connection: sqlite3.Connection,
+        *,
+        site_id: str,
+    ) -> int:
+        row = connection.execute(
+            "SELECT revision FROM ap_identity_source_state WHERE site_id = ?",
+            (site_id,),
+        ).fetchone()
+        return int(row["revision"] or 0) if row is not None else 0
 
     def has_source_rows(self) -> bool:
         with self.database.connect_readonly() as connection:
@@ -280,6 +335,9 @@ class ApIdentityRepository:
             for row in connection.execute(
                 """
                 SELECT r.*,
+                       d.device_vendor AS vendor,
+                       f.model AS ac_model,
+                       f.software_version AS ac_software_version,
                        COALESCE(NULLIF(m.site_name, ''), r.site) AS site_name,
                        m.belong_type AS metadata_belong_type,
                        m.belong_section AS metadata_belong_section,
@@ -290,6 +348,8 @@ class ApIdentityRepository:
                        m.direction AS metadata_direction
                 FROM ac_fit_ap_resources r
                 LEFT JOIN ac_fit_ap_metadata m ON m.ap_uuid = r.ap_uuid
+                LEFT JOIN devices d ON d.device_uuid = r.ac_device_uuid
+                LEFT JOIN device_facts f ON f.device_uuid = r.ac_device_uuid
                 ORDER BY r.updated_at DESC, r.id DESC
                 """
             ).fetchall()
@@ -410,6 +470,9 @@ class ApIdentityRepository:
         reason: str,
         revision: int,
         built_at: str,
+        source_revision: int,
+        diagnostics: Mapping[str, int],
+        build_duration_ms: float,
     ) -> None:
         for table in (
             "ap_identity_conflicts",
@@ -508,31 +571,51 @@ class ApIdentityRepository:
         connection.execute(
             """
             INSERT INTO ap_identity_index_state (
-                site_id, revision, base_record_count, ac_record_count,
+                site_id, revision, source_revision,
+                base_record_count, ac_record_count,
                 entity_count, alias_count, prefix_count, conflict_count,
+                actual_radio_alias_count, actual_bssid_alias_count,
+                actual_bbssid_alias_count, derived_alias_count,
+                ambiguous_alias_count, build_duration_ms, diagnostics_json,
                 build_reason, built_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(site_id) DO UPDATE SET
                 revision = excluded.revision,
+                source_revision = excluded.source_revision,
                 base_record_count = excluded.base_record_count,
                 ac_record_count = excluded.ac_record_count,
                 entity_count = excluded.entity_count,
                 alias_count = excluded.alias_count,
                 prefix_count = excluded.prefix_count,
                 conflict_count = excluded.conflict_count,
+                actual_radio_alias_count = excluded.actual_radio_alias_count,
+                actual_bssid_alias_count = excluded.actual_bssid_alias_count,
+                actual_bbssid_alias_count = excluded.actual_bbssid_alias_count,
+                derived_alias_count = excluded.derived_alias_count,
+                ambiguous_alias_count = excluded.ambiguous_alias_count,
+                build_duration_ms = excluded.build_duration_ms,
+                diagnostics_json = excluded.diagnostics_json,
                 build_reason = excluded.build_reason,
                 built_at = excluded.built_at
             """,
             (
                 site_id,
                 revision,
+                source_revision,
                 build.base_record_count,
                 build.ac_record_count,
                 len(build.entities),
                 len(build.aliases),
                 len(build.prefixes),
                 len(build.conflicts),
+                diagnostics["actual_radio_alias_count"],
+                diagnostics["actual_bssid_alias_count"],
+                diagnostics["actual_bbssid_alias_count"],
+                diagnostics["derived_alias_count"],
+                diagnostics["ambiguous_alias_count"],
+                build_duration_ms,
+                json.dumps(diagnostics, ensure_ascii=False, separators=(",", ":")),
                 reason,
                 built_at,
             ),
@@ -597,6 +680,38 @@ def _insert(
         f"INSERT INTO {table} ({names}) VALUES ({placeholders})",
         [values.get(column) for column in columns],
     )
+
+
+def _build_diagnostics(build: ApIdentityIndexBuild) -> dict[str, int]:
+    counts = {
+        "actual_radio_alias_count": 0,
+        "actual_bssid_alias_count": 0,
+        "actual_bbssid_alias_count": 0,
+        "derived_alias_count": 0,
+        "ambiguous_alias_count": 0,
+    }
+    entities_by_mac: dict[str, set[str]] = {}
+    for alias in build.aliases:
+        if alias.alias_type == "ac_radio_mac":
+            counts["actual_radio_alias_count"] += 1
+        elif alias.alias_type == "ac_bssid":
+            counts["actual_bssid_alias_count"] += 1
+        elif alias.alias_type == "ac_bbssid":
+            counts["actual_bbssid_alias_count"] += 1
+        elif alias.alias_type in {"h3c_r1_derived", "h3c_r2_derived"}:
+            counts["derived_alias_count"] += 1
+        if alias.alias_type in {
+            "ac_radio_mac",
+            "ac_bssid",
+            "ac_bbssid",
+            "h3c_r1_derived",
+            "h3c_r2_derived",
+        }:
+            entities_by_mac.setdefault(alias.mac_key, set()).add(alias.entity_id)
+    counts["ambiguous_alias_count"] = sum(
+        1 for entities in entities_by_mac.values() if len(entities) > 1
+    )
+    return counts
 
 
 def _now() -> str:

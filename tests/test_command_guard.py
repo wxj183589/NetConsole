@@ -251,6 +251,7 @@ def test_ac_collect_contexts_are_split_by_purpose():
         "display wlan ap all",
         "display wlan ap all address",
         "display wlan ap all radio",
+        "display wlan ap all radio verbose filter bbssid",
         "display wlan ap all connection-record",
         "display wlan ap all radio type",
         "display wlan ap unauthenticated",
@@ -258,7 +259,7 @@ def test_ac_collect_contexts_are_split_by_purpose():
     ):
         assert is_command_allowed(command, "ac_fit_ap_resource_collect")
         assert not is_command_allowed(command, "ac_info_collect") if command.startswith("display wlan") else True
-    assert not is_command_allowed("display wlan ap all radio verbose filter bbssid", "ac_fit_ap_resource_collect")
+    assert is_command_allowed("display wlan ap all radio verbose filter bbssid", "ac_fit_ap_resource_collect")
     assert is_command_allowed("display wlan ap all radio verbose filter bbssid", "ac_fit_ap_detail_collect")
     assert not is_command_allowed("display wlan ap unauthenticated", "ac_fit_ap_detail_collect")
 

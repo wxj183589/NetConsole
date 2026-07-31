@@ -97,7 +97,12 @@ def test_same_name_different_mac_does_not_report_identity_conflict(
 
 
 def test_base_data_mac_mileage_filters_and_public_dto_have_no_secrets(tmp_path: Path) -> None:
-    paths, _db_path = build_rail_transit_base_data_fixture(tmp_path)
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE ap_extension_points SET ap_vendor = 'H3C' WHERE ap_name = 'AP-Section'"
+        )
+        connection.commit()
     service = RailTransitBaseDataQueryService(paths)
 
     page = service.list_aps("demo", section="A-B", query="AP-Section", has_issue=True, page_size=200)
@@ -106,6 +111,8 @@ def test_base_data_mac_mileage_filters_and_public_dto_have_no_secrets(tmp_path: 
 
     assert page.total == 1
     assert page.items[0].mac == "00:00:00:00:00:02"
+    assert page.items[0].vendor == "H3C"
+    assert page.items[0].base_metadata["ap_vendor"] == "H3C"
     assert page.items[0].mileage.normalized == "YDK1+200"
     assert invalid.items[0].code == "ap_mileage_invalid"
     assert "private-user" not in payload
@@ -179,15 +186,39 @@ def test_trackside_ap_runtime_uses_unique_mac_and_marks_ambiguous_matches(tmp_pa
         )
 
     class FakeAcQuery:
-        def list_all_ap_details(self, _site_id: str) -> list[SimpleNamespace]:
+        @staticmethod
+        def _details() -> list[SimpleNamespace]:
             return [
                 detail("fit-1", "00:00:00:00:00:01", "AC-REAL-1", "ac-1"),
                 detail("fit-2a", "00-00-00-00-00-02", "AC-REAL-2A", "ac-1"),
                 detail("fit-2b", "000000000002", "AC-REAL-2B", "ac-1"),
             ]
 
+        def list_ap_details_for_macs(
+            self,
+            _site_id: str,
+            _macs: list[str],
+        ) -> list[SimpleNamespace]:
+            return self._details()
+
+        def list_all_ap_details(self, _site_id: str) -> list[SimpleNamespace]:
+            return self._details()
+
     class EmptyMeshQuery:
-        def list_current_links(self, _site_id: str, *, page: int, page_size: int) -> SimpleNamespace:
+        def current_link_summaries_for_ap_macs(
+            self,
+            _site_id: str,
+            _macs: list[str],
+        ) -> dict[str, dict[str, object]]:
+            return {}
+
+        def list_current_links(
+            self,
+            _site_id: str,
+            *,
+            page: int,
+            page_size: int,
+        ) -> SimpleNamespace:
             return SimpleNamespace(items=[])
 
     service = RailTransitBaseDataQueryService(paths, ac_query=FakeAcQuery(), mesh_query=EmptyMeshQuery())  # type: ignore[arg-type]
@@ -202,6 +233,136 @@ def test_trackside_ap_runtime_uses_unique_mac_and_marks_ambiguous_matches(tmp_pa
     assert by_point_code["AP002"].runtime.fit_ap_name == ""
     assert by_point_code["AP002"].runtime.fit_ap_match_status == "conflict"
     assert any(issue.code == "fit_ap_mac_ambiguous" for issue in service.get_ap("demo", by_point_code["AP002"].id).issues)
+
+
+def test_ap_list_pages_before_runtime_and_never_calls_full_scans(
+    tmp_path: Path,
+) -> None:
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    rows = []
+    for index in range(4, 975):
+        mac = f"{index:012x}"
+        rows.append(
+            (
+                "station",
+                "车站A",
+                "A-B 区间",
+                "车站A",
+                "车站B",
+                "左线",
+                "下行",
+                f"ZDK{index // 1000}+{index % 1000}",
+                float(index),
+                f"AP{index:04d}",
+                f"AP-{index:04d}",
+                mac,
+                f"{mac[0:4]}-{mac[4:8]}-{mac[8:12]}",
+                "point-table-large.xlsx",
+                index,
+            )
+        )
+    with sqlite3.connect(db_path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO ap_extension_points (
+                site_id, line_name, system_type, network_domain, belong_type,
+                station_name, section_name, section_start_station,
+                section_end_station, line_side, direction, mileage_text,
+                mileage_m, ap_point_code, ap_name, ap_mac_norm,
+                ap_mac_display, source_file, source_sheet, source_row,
+                created_at, updated_at
+            ) VALUES (
+                'demo', '测试线', 'PIS', 'default', ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, 'AP', ?, '2026-07-31', '2026-07-31'
+            )
+            """,
+            rows,
+        )
+        connection.executemany(
+            """
+            INSERT INTO ap_extension_points (
+                site_id, belong_type, source_file, source_sheet, source_row,
+                created_at, updated_at
+            ) VALUES (
+                'demo', 'station', 'placeholder.xlsx', 'AP', ?,
+                '2026-07-31', '2026-07-31'
+            )
+            """,
+            [(index,) for index in range(1, 5)],
+        )
+        connection.commit()
+
+    class PageAcQuery:
+        calls: list[list[str]] = []
+
+        def list_ap_details_for_macs(
+            self,
+            _site_id: str,
+            macs: list[str],
+        ) -> list[SimpleNamespace]:
+            self.calls.append(list(macs))
+            return []
+
+        def list_all_ap_details(self, _site_id: str) -> list[SimpleNamespace]:
+            raise AssertionError("AP 列表不得调用全量 FIT-AP 详情")
+
+    class PageMeshQuery:
+        calls: list[list[str]] = []
+
+        def current_link_summaries_for_ap_macs(
+            self,
+            _site_id: str,
+            macs: list[str],
+        ) -> dict[str, dict[str, object]]:
+            self.calls.append(list(macs))
+            return {}
+
+        def list_current_links(self, *_args, **_kwargs) -> SimpleNamespace:
+            raise AssertionError("AP 列表不得构建全量 MESH 链路")
+
+    ac_query = PageAcQuery()
+    mesh_query = PageMeshQuery()
+    service = RailTransitBaseDataQueryService(
+        paths,
+        ac_query=ac_query,
+        mesh_query=mesh_query,
+    )  # type: ignore[arg-type]
+    service._issues = lambda *_args, **_kwargs: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        AssertionError("AP 列表不得执行全局质量扫描")
+    )
+
+    page = service.list_aps("demo", page=1, page_size=50)
+
+    assert page.total == 974
+    assert len(page.items) == 50
+    assert [len(macs) for macs in ac_query.calls] == [50]
+    assert [len(macs) for macs in mesh_query.calls] == [50]
+
+
+def test_ap_list_mac_query_accepts_exact_h3c_radio_alias(tmp_path: Path) -> None:
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE ap_extension_points
+            SET ap_vendor = 'H3C',
+                ap_mac_norm = '000000000020',
+                ap_mac_display = '0000-0000-0020'
+            WHERE ap_name = 'AP-Online'
+            """
+        )
+        connection.commit()
+    ApIdentityQueryService(Database(db_path)).rebuild_index("test_radio_alias")
+
+    page = RailTransitBaseDataQueryService(paths).list_aps(
+        "demo",
+        query="0000-0000-002f",
+        page_size=50,
+    )
+
+    assert page.total == 1
+    assert page.items[0].name == "AP-Online"
+    assert page.items[0].mac == "00:00:00:00:00:20"
 
 
 def test_section_quality_reports_invalid_physical_mileage_shapes(tmp_path: Path) -> None:

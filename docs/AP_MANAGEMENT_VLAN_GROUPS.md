@@ -22,6 +22,8 @@
 
 规划与上线状态使用独立请求和独立错误状态。规划加载成功后立即展示 Backend 已保存的稀疏规划行并保持可编辑，不等待上线状态；不会按全部站点自动补齐占位规划行。上线状态失败只在概览局部提示并保留最后成功结果。任一请求下次成功只清除自身错误。接口或网络错误不进入规划字段校验，因此“有 N 项需要修正”只统计站点匹配、AP 数量、管理 VLAN、序号和重复项等真实草稿问题。
 
+上线概览只返回站点统计、少量诊断计数、生成时间和来源 revision，不内嵌完整排除项或待关联在线 AP。用户点击对应明细后，页面分别调用 `/plan/online-status/excluded` 和 `/plan/online-status/unmatched` 分页读取；默认页大小为 50，空 MAC 以空字符串返回。概览按规划、FIT-AP、AP Identity 和局点元数据 revision 缓存，来源不变时直接复用，`source_revision=0` 仍是合法 revision。缓存命中状态和阶段耗时进入诊断日志，不改变统计口径。
+
 规划编辑仍属于基础资料编辑会话。Renderer 只维护草稿，保存通过 `POST /api/rail-transit/base-data/changes` 进入 `RailTransitBaseDataApplicationService`，与其他基础资料共享 revision 检查和 SQLite `BEGIN IMMEDIATE` 单事务；失败整体回滚。修改规划不会连接 AC 或自动刷新设备状态。
 
 当前用户接口包括：

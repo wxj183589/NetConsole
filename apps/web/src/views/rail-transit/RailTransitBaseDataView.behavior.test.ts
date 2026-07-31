@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   sectionGenerationPreview: vi.fn(),
   stationsPage: vi.fn(),
   sectionsPage: vi.fn(),
+  tracksideApsPage: vi.fn(),
   download: vi.fn(),
   messageSuccess: vi.fn(),
   messageWarning: vi.fn(),
@@ -42,7 +43,7 @@ vi.mock('../../api/railTransitBaseData', () => ({
   listRelations: mocks.emptyPage,
   listSections: mocks.sectionsPage,
   listStations: mocks.stationsPage,
-  listTracksideAps: mocks.emptyPage,
+  listTracksideAps: mocks.tracksideApsPage,
   listTrains: mocks.emptyPage,
   listVehicleMrs: mocks.emptyPage,
   previewRailTransitImport: mocks.importPreview,
@@ -596,6 +597,7 @@ describe('轨道交通基础资料编辑闭环', () => {
     mocks.emptyPage.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50 })
     mocks.stationsPage.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50 })
     mocks.sectionsPage.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50 })
+    mocks.tracksideApsPage.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50 })
     mocks.issuePage.mockResolvedValue({
       items: [], total: 0, page: 1, page_size: 50, issue_total: 0,
       blocking_total: 0, warning_total: 0, info_total: 0, code_counts: {},
@@ -715,6 +717,77 @@ describe('轨道交通基础资料编辑闭环', () => {
     expect(mocks.save).toHaveBeenCalledOnce()
     expect(wrapper.text()).toContain('当前处于锁定状态')
     expect(wrapper.text()).toContain('宁波地铁12号线 · 宁波地铁12号线 · PIS')
+    wrapper.unmount()
+  })
+
+  it('编辑轨旁 AP 其他字段时保留明确厂商并提交保存', async () => {
+    mocks.tracksideApsPage.mockResolvedValue({
+      items: [{
+        id: 'ap:1',
+        site_id: 'demo',
+        line_name: '宁波地铁12号线',
+        name: 'AP-01',
+        point_code: 'AP001',
+        vendor: 'H3C',
+        mac: '74ad-cb9d-3320',
+        management_ip: '',
+        model: '',
+        station: '五乡',
+        section: '',
+        section_start_station: '',
+        section_end_station: '',
+        mileage: { raw: '', normalized: '', meters: null, line_type: '', valid: false, error: '' },
+        line_side: '',
+        line_side_source: 'unavailable',
+        line_side_derivation_issue_code: '',
+        line_side_derivation_issue_message: '',
+        direction: '',
+        radios: [],
+        remark: '原备注',
+        source_file: '',
+        source_sheet: '',
+        source_row: null,
+        updated_at: '',
+        runtime: {
+          fit_ap_id: '',
+          fit_ap_ac_id: '',
+          fit_ap_name: '',
+          fit_ap_match_status: 'unmatched',
+          fit_ap_status: 'unknown',
+          optical_status: 'no_data',
+          mesh_status: 'unknown',
+          mesh_related_name: '',
+          updated_at: '',
+        },
+        issue_count: 0,
+        highest_issue_severity: '',
+        record_kind: 'station',
+        base_metadata: { ap_vendor: 'H3C', belong_type: 'station' },
+      }],
+      total: 1,
+      page: 1,
+      page_size: 50,
+    })
+    const wrapper = await mountView()
+
+    await button(wrapper, '解锁').trigger('click')
+    await flushPromises()
+    const table = wrapper.get('[data-table-id="rail-base-trackside-aps"]')
+    const remarkInput = table.findAll('input').find(
+      (input) => (input.element as HTMLInputElement).value === '原备注',
+    )
+    if (!remarkInput) throw new Error('未找到轨旁 AP 备注输入框')
+    await remarkInput.setValue('已编辑')
+    await button(wrapper, '保存').trigger('click')
+    await flushPromises()
+
+    const change = mocks.validate.mock.calls.at(-1)?.[0].changes.find(
+      (item: { entity_type: string }) => item.entity_type === 'trackside_ap',
+    )
+    expect(change.values).toEqual(expect.objectContaining({
+      ap_vendor: 'H3C',
+      remark: '已编辑',
+    }))
     wrapper.unmount()
   })
 

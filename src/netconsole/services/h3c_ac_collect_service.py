@@ -54,6 +54,7 @@ FIT_AP_RESOURCE_REQUIRED_COMMANDS = (
     "display wlan ap all radio",
 )
 FIT_AP_RESOURCE_OPTIONAL_COMMANDS = (
+    "display wlan ap all radio verbose filter bbssid",
     "display wlan ap all connection-record",
     "display wlan ap all radio type",
     "display wlan ap unauthenticated",
@@ -69,6 +70,9 @@ AC_OVERVIEW_COMMANDS = (
     "display device manuinfo",
 )
 RESOURCE_COMMANDS = (*FIT_AP_RESOURCE_REQUIRED_COMMANDS, *FIT_AP_RESOURCE_OPTIONAL_COMMANDS)
+FIT_AP_RESOURCE_READ_TIMEOUTS = {
+    "display wlan ap all radio verbose filter bbssid": 120,
+}
 
 HTTPS_PORT_COMMANDS = (
     "display ip https",
@@ -155,6 +159,8 @@ class AcResourceCollectResult:
     unauthenticated_error: str | None = None
     bbssid_rows_parsed: int = 0
     lldp_rows_parsed: int = 0
+    bbssid_collect_status: str = "not_collected"
+    bbssid_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -237,6 +243,8 @@ def collect_h3c_ac_resources(
         unauthenticated_error=resource_result.unauthenticated_error,
         bbssid_rows_parsed=resource_result.bbssid_rows_parsed,
         lldp_rows_parsed=resource_result.lldp_rows_parsed,
+        bbssid_collect_status=resource_result.bbssid_collect_status,
+        bbssid_error=resource_result.bbssid_error,
     )
 
 
@@ -257,7 +265,7 @@ def collect_h3c_fit_ap_resources(
     ac_device.ensure_device_uuid()
     collect_run_uuid = str(uuid4())
     started_at = _now()
-    persist_raw_logs = _persist_raw_logs()
+    persist_raw_logs = True
     run_dir = paths.trackside_ap_raw_dir(site_name) / "ac" / collect_run_uuid
     raw_log_file = run_dir / f"{ac_device.device_uuid}.log"
     commands_file = run_dir / f"{ac_device.device_uuid}_commands.jsonl"
@@ -288,12 +296,28 @@ def collect_h3c_fit_ap_resources(
         message = "AC resource collection only supports H3C AC devices"
         fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
         app_logger.log_error("AC_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
-        _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)
+        _write_raw_files(
+            raw_log_file,
+            commands_file,
+            ac_device,
+            collect_run_uuid,
+            command_results,
+            fatal_error=message,
+            force=True,
+        )
         return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results)
     if deep_refresh and target_resource is None:
         message = "FIT-AP target does not exist in the selected AC"
         fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
-        _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)
+        _write_raw_files(
+            raw_log_file,
+            commands_file,
+            ac_device,
+            collect_run_uuid,
+            command_results,
+            fatal_error=message,
+            force=True,
+        )
         return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results)
 
     try:
@@ -305,8 +329,17 @@ def collect_h3c_fit_ap_resources(
             "ac_fit_ap_detail_collect" if deep_refresh else "ac_fit_ap_resource_collect",
             progress,
             should_cancel,
+            per_command_read_timeout=FIT_AP_RESOURCE_READ_TIMEOUTS,
+            result_sink=command_results,
         )
-        _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results)
+        _write_raw_files(
+            raw_log_file,
+            commands_file,
+            ac_device,
+            collect_run_uuid,
+            command_results,
+            force=True,
+        )
         _raise_if_cancelled(should_cancel)
         progress("正在解析FIT-AP资源...")
         summary, resources = parse_ac_resource_outputs(outputs, str(ac_device.device_uuid), collect_run_uuid, relative_raw_log_path)
@@ -381,6 +414,29 @@ def collect_h3c_fit_ap_resources(
         else:
             bbssid_rows = len(bbssid)
             lldp_rows = len(lldp)
+        bbssid_result = next(
+            (
+                result
+                for result in command_results
+                if result.command
+                == "display wlan ap all radio verbose filter bbssid"
+            ),
+            None,
+        )
+        if bbssid_result is None:
+            bbssid_collect_status = "not_collected"
+            bbssid_error = "BBSSID command was not executed"
+        elif not bbssid_result.success:
+            bbssid_collect_status = "failed"
+            bbssid_error = (
+                bbssid_result.error_message or "BBSSID command execution failed"
+            )
+        elif bbssid_rows:
+            bbssid_collect_status = "success"
+            bbssid_error = None
+        else:
+            bbssid_collect_status = "empty"
+            bbssid_error = "BBSSID command succeeded but no valid rows were parsed"
         status = "success" if (resources_persisted if deep_refresh else dynamic_summary_updated or resources_persisted) else "failed"
         error_message = _command_error_summary([result for result in command_results if result.command not in FIT_AP_RESOURCE_OPTIONAL_COMMANDS])
         if deep_refresh and not resources_persisted and not error_message:
@@ -413,16 +469,35 @@ def collect_h3c_fit_ap_resources(
             unauthenticated_error,
             bbssid_rows,
             lldp_rows,
+            bbssid_collect_status,
+            bbssid_error,
         )
     except CollectionCancelled:
         message = "用户已取消更新"
+        _write_raw_files(
+            raw_log_file,
+            commands_file,
+            ac_device,
+            collect_run_uuid,
+            command_results,
+            fatal_error=message,
+            force=True,
+        )
         fact_repository.update_collect_run_status(collect_run_uuid, "cancelled", error_message=message)
         app_logger.log_warning("AC_COLLECT_CANCELLED", _detail(ac_device, collect_run_uuid))
         progress("已取消")
         return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results)
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), ac_device)
-        _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)
+        _write_raw_files(
+            raw_log_file,
+            commands_file,
+            ac_device,
+            collect_run_uuid,
+            command_results,
+            fatal_error=message,
+            force=True,
+        )
         fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
         app_logger.log_error("AC_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
         app_logger.log_error("REAL_DEVICE_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
@@ -1701,6 +1776,7 @@ def _execute_h3c_ac_command_list(
     read_timeout: int = 30,
     per_command_read_timeout: dict[str, int] | None = None,
     detect_cli_failures: bool = False,
+    result_sink: list[CommandResult] | None = None,
 ) -> tuple[list[CommandResult], dict[str, str]]:
     target = choose_connection_target(ac_device)
     if target is None:
@@ -1708,7 +1784,7 @@ def _execute_h3c_ac_command_list(
     command_guard.validate_command_list(commands, context)
     _raise_if_cancelled(should_cancel)
     connection = None
-    command_results: list[CommandResult] = []
+    command_results = result_sink if result_sink is not None else []
     outputs: dict[str, str] = {}
     try:
         connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
@@ -1926,8 +2002,9 @@ def _write_raw_files(
     collect_run_uuid: str,
     command_results: list[CommandResult],
     fatal_error: str | None = None,
+    force: bool = False,
 ) -> None:
-    if not _persist_raw_logs():
+    if not force and not _persist_raw_logs():
         return
     raw_log_file.parent.mkdir(parents=True, exist_ok=True)
     lines = [

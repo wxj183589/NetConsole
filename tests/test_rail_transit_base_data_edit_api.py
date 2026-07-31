@@ -339,6 +339,7 @@ def test_transactional_save_updates_ap_station_and_plan_with_revision(tmp_path: 
                 "values": {
                     "name": "AP-Online",
                     "point_code": "AP001",
+                    "vendor": "H3C",
                     "mac": "0000-0000-0001",
                     "station": "车站D",
                     "mileage": "ZDK1+100",
@@ -440,6 +441,7 @@ def test_transactional_save_updates_ap_station_and_plan_with_revision(tmp_path: 
     numeric_ap_id = int(ap_id.removeprefix("ap:"))
     with Database(database).connect() as connection:
         assert connection.execute("SELECT remark FROM ap_extension_points WHERE id = ?", (numeric_ap_id,)).fetchone()[0] == "统一保存"
+        assert connection.execute("SELECT ap_vendor FROM ap_extension_points WHERE id = ?", (numeric_ap_id,)).fetchone()[0] == "H3C"
         assert (
             connection.execute(
                 """
@@ -458,6 +460,23 @@ def test_transactional_save_updates_ap_station_and_plan_with_revision(tmp_path: 
                 """
             ).fetchone()
         ) == ("10.10.0.11", "10.10.0.11", "统一维护")
+        identity_state = connection.execute(
+            """
+            SELECT source_revision
+            FROM ap_identity_index_state
+            WHERE site_id = 'current'
+            """
+        ).fetchone()
+        source_revision = connection.execute(
+            """
+            SELECT revision
+            FROM ap_identity_source_state
+            WHERE site_id = 'current'
+            """
+        ).fetchone()
+        assert identity_state is not None
+        assert source_revision is not None
+        assert identity_state["source_revision"] == source_revision["revision"]
 
 
 def test_ap_section_change_recalculates_auto_side_and_mapping_change_preserves_manual_value(

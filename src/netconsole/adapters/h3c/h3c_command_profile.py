@@ -17,6 +17,7 @@ class H3cAcCommandProfile:
             "display wlan ap all",
             "display wlan ap all address",
             "display wlan ap all radio",
+            "display wlan ap all radio verbose filter bbssid",
             "display wlan ap all connection-record",
             "display wlan ap all radio type",
             "display wlan ap unauthenticated",

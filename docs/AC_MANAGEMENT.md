@@ -35,7 +35,7 @@ snapshot revision、`data_persisted` 和 `reload_required`。这使采集回执
 - FIT-AP：后端搜索、筛选、排序和分页，默认按连接交换机自然升序、其次按归一化端口自然升序，缺失项后置；前端通过统一 `NcDataTable` 保存列显隐、顺序、手工列宽和固定位置，物理接口统一显示 `GE/XGE/25GE/40GE/100GE` 简称；FIT-AP、配置、Radio、历史、Mesh-Link、AP 扩展和规划页面不再各自维护列宽算法；
 - FIT-AP 资源导出：Feature `web.ac_fit_ap_resource_export` 提供“当前筛选结果 / 已选择 AP / 当前 AC 全部 AP”三种范围，筛选复用页面 Query Service 且不携带分页。用户点击后先选择最终 `.xlsx` 路径，取消不创建任务；确认后 Export Process 从当前局点只读 SQLite 重新查询，按规范化 MAC 去重。MAC 缺失时使用 `AC ID + AP 名称`，保证“AP资源清单”一台 AP 一行，“Radio明细”一条 Radio 一行，并附“导出说明”。缺失的光衰、LLDP、站点、区间、MAC 或 Radio 保持空白并写入“数据完整性”，单台缺失不阻断整份文件。Artifact 就绪后直接写入预选位置，不再突然弹出第二个保存窗口；失败时保留 Artifact 并允许在任务中心重新选择位置。该导出用于资产核对，不替代设备管理清单或 OmniPeek `.nam` 名称表，也不会在导出时连接 AC、AP 或交换机；
 - AP 详情：基本信息、connection-record、Radio 1/2 状态/模式/频段/信道/带宽/利用率/功率/客户端/BSSID、LLDP/端口、交换机光模块和 AP 侧光衰；
-- 真实更新：AC CPU/内存/型号/版本/HTTPS 端口、FIT-AP 普通资源、所选 AP 深度 BSSID 和 FIT-AP 光衰；FIT-AP 光衰默认共享并发 64，运行时按平台上限和目标 AP 数裁剪，并通过 `tasks.db` resource key 阻止同一 AC 与轨旁更新重复执行；任务进度、取消、失败、部分命令失败、页面重启恢复和完成后结果刷新；业务页只保留紧凑摘要，停止、日志和 Artifact 统一在 Electron 任务窗口处理；
+- 真实更新：AC CPU/内存/型号/版本/HTTPS 端口、FIT-AP 普通资源、批量 Radio BBSSID、所选 AP 深度 BSSID 和 FIT-AP 光衰；FIT-AP 光衰默认共享并发 64，运行时按平台上限和目标 AP 数裁剪，并通过 `tasks.db` resource key 阻止同一 AC 与轨旁更新重复执行；任务进度、取消、失败、部分命令失败、页面重启恢复和完成后结果刷新；业务页只保留紧凑摘要，停止、日志和 Artifact 统一在 Electron 任务窗口处理；
 - 单 AP 定向更新接受 H3C 常见 `xxxx-xxxx-xxxx` MAC，后端统一规范化为标准格式；前端提交时优先使用 `ap_uuid`，其次 `ap_mac`，最后 `ap_name`，避免展示格式差异误拦稳定目标。
 - 真实 AC 写操作：只保留历史产品契约中的“固化新 AP”和“开启 AP 远程登录”两项固定命令；Feature `web.ac_dangerous_actions` 是正式客户版默认功能，仍必须经过命令预览、摘要校验、二次确认、真实后台 Task、取消和持久化审计；不在 AC 页扩展单独 `save force`；
 - OmniPeek 名称表：Feature `ac.omnipeek_name_table_export` 是正式客户版默认功能。窗口提供线路名、输出目录、三类数据源及真实数量、轨旁/车载导出内容、Radio 模式、颜色、结构化逐行预览、状态筛选、搜索、分页、选择和受控强制导出；AP 扩展信息只匹配当前 AC 的 FIT-AP，车载 MR 由用户决定是否加入。预览和 `.nam` 导出分别进入 Job Center 与 Export Process，继续复用共享 MAC 推导、冲突校验、导出日志、Artifact 清单、取消和恢复规则；
@@ -44,7 +44,7 @@ snapshot revision、`data_persisted` 和 `reload_required`。这使采集回执
 - 刷新：总览和详情 15 秒，FIT-AP 与快照历史 30 秒；页面隐藏或卸载后停止，连续失败三次后降为 60 秒并保留最后一次成功数据。
 - Mesh-Link 底层能力：AC 管理只保留受控采集、Parser、结构化快照、raw 和基础设施查询，不再呈现列车监控页面。列车、CT/TC 端点、当前 AP、RSSI、位置、匹配状态和两侧收光统一由“轨道交通 / 列车在线情况”展示。
 
-Radio State/Usage/Clients 来自真实 `display wlan ap all radio` fixture；Mode/Band 只从 H3C `display wlan ap all radio type` 原文提取，缺失时显示“--”，不按 RID 或信道推断。connection-record 与 radio type 已用 H3C 官方样例做契约测试，仍需真实 AC 验收。普通更新不执行全量 `radio verbose`；已有 BSSID 会被保留。单 AP 深度更新执行已迁入 Application Service 的固定 bulk 命令序列并只 upsert 所选 AP，不删除同 AC 的其他 AP，也不猜测尚无事实源的 name 作用域 verbose 命令。Web DTO 不返回 AP/设备序列号，不显示 Radio 3。
+Radio State/Usage/Clients 来自真实 `display wlan ap all radio` fixture；Mode/Band 只从 H3C `display wlan ap all radio type` 原文提取，缺失时显示“--”，不按 RID 或信道推断。connection-record 与 radio type 已用 H3C 官方样例做契约测试，仍需真实 AC 验收。普通批量更新在固定命令序列中执行 `display wlan ap all radio verbose filter bbssid`，该命令使用独立 120 秒读取超时并属于可选增强证据：成功时合并 Radio BBSSID，空结果或失败时记录 `bbssid_collect_status/bbssid_error` 并保留原始命令回显，不得丢弃已经由必需命令采集到的 FIT-AP 资源。已有 BSSID 会被保留。单 AP 深度更新使用同一受控命令并只 upsert 所选 AP，不删除同 AC 的其他 AP，也不猜测尚无事实源的 name 作用域 verbose 命令。Web DTO 不返回 AP/设备序列号，不显示 Radio 3。
 
 Electron 的“打开 AC Web”使用固定 HTTPS URL 规则：优先使用已采集端口，缺失或无效时回退 443；Python DTO 生成受控 URL，Vue 只通过现有 Electron 外部 URL Bridge 打开。
 

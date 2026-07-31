@@ -17,6 +17,8 @@ import {
   exportTracksideApPlan,
   getTracksideApOnlineStatus,
   getTracksideApPlan,
+  listTracksideApOnlineExcluded,
+  listTracksideApOnlineUnmatched,
   previewTracksideApPlan,
   startTracksideApUpdate,
 } from '../../../api/tracksideApBusiness'
@@ -118,6 +120,14 @@ const onlineStatus = ref<TracksideApOnlineStatus | null>(null)
 const unassignedVisible = ref(false)
 const excludedVisible = ref(false)
 const unmatchedVisible = ref(false)
+const excludedItems = ref<TracksideApScopeExcluded[]>([])
+const excludedPage = ref(1)
+const excludedTotal = ref(0)
+const excludedLoading = ref(false)
+const unmatchedItems = ref<TracksideApUnmatchedOnline[]>([])
+const unmatchedPage = ref(1)
+const unmatchedTotal = ref(0)
+const unmatchedLoading = ref(false)
 const issuesVisible = ref(false)
 let editingBaseline:
   | { row: TracksideApPlanRow; field: EditableField; value: unknown }
@@ -227,6 +237,13 @@ const canApplyImport = computed(
 const countAnomalyRows = computed(
   () => onlineStatus.value?.items.filter((row) => row.count_anomaly) || [],
 )
+const unassignedItems = computed<TracksideApUnassigned[]>(() => unmatchedItems.value.map((item) => ({
+  ap_id: item.item_id,
+  ap_name: item.ap_name,
+  point_code: '',
+  mac: item.mac,
+  station_name: item.runtime_station_text,
+})))
 
 function deepCopy<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
@@ -330,7 +347,17 @@ async function loadPlan(force = false): Promise<boolean> {
 async function loadOnlineStatus(): Promise<void> {
   statusLoading.value = true
   try {
-    onlineStatus.value = await getTracksideApOnlineStatus()
+    const previousRevision = onlineStatus.value?.revision || ''
+    const result = await getTracksideApOnlineStatus()
+    onlineStatus.value = result
+    if (previousRevision && previousRevision !== result.revision) {
+      excludedItems.value = []
+      excludedPage.value = 1
+      excludedTotal.value = 0
+      unmatchedItems.value = []
+      unmatchedPage.value = 1
+      unmatchedTotal.value = 0
+    }
     onlineStatusError.value = null
   } catch (reason) {
     onlineStatusError.value = apiErrorDetail(
@@ -340,6 +367,55 @@ async function loadOnlineStatus(): Promise<void> {
   } finally {
     statusLoading.value = false
   }
+}
+
+async function loadExcludedDetails(page = 1): Promise<void> {
+  excludedLoading.value = true
+  try {
+    const result = await listTracksideApOnlineExcluded(page)
+    excludedItems.value = result.items
+    excludedPage.value = result.page
+    excludedTotal.value = result.total
+  } catch (reason) {
+    ElMessage.error(apiErrorDetail(
+      reason,
+      '/api/rail-transit/trackside-ap-business/plan/online-status/excluded',
+    ).message)
+  } finally {
+    excludedLoading.value = false
+  }
+}
+
+async function loadUnmatchedDetails(page = 1): Promise<void> {
+  unmatchedLoading.value = true
+  try {
+    const result = await listTracksideApOnlineUnmatched(page)
+    unmatchedItems.value = result.items
+    unmatchedPage.value = result.page
+    unmatchedTotal.value = result.total
+  } catch (reason) {
+    ElMessage.error(apiErrorDetail(
+      reason,
+      '/api/rail-transit/trackside-ap-business/plan/online-status/unmatched',
+    ).message)
+  } finally {
+    unmatchedLoading.value = false
+  }
+}
+
+function openExcludedDetails(): void {
+  excludedVisible.value = true
+  void loadExcludedDetails(1)
+}
+
+function openUnmatchedDetails(): void {
+  unmatchedVisible.value = true
+  void loadUnmatchedDetails(1)
+}
+
+function openUnassignedDetails(): void {
+  unassignedVisible.value = true
+  void loadUnmatchedDetails(1)
 }
 
 async function reload(force = false): Promise<boolean> {
@@ -975,12 +1051,12 @@ onMounted(() => {
           <span>纳入站点 {{ onlineStatus.scope_station_count || 0 }}</span>
           <span>纳入 AP 资料 {{ onlineStatus.scope_ap_reference_count ?? onlineStatus.scope_device_count ?? 0 }}</span>
           <span>排除设备 {{ onlineStatus.excluded_device_count || 0 }}</span>
-          <el-button v-if="onlineStatus.fit_ap_unmatched_online_count" link type="warning" @click="unmatchedVisible = true">待关联在线 AP {{ onlineStatus.fit_ap_unmatched_online_count }}</el-button>
+          <el-button v-if="onlineStatus.fit_ap_unmatched_online_count" link type="warning" @click="openUnmatchedDetails">待关联在线 AP {{ onlineStatus.fit_ap_unmatched_online_count }}</el-button>
           <el-button
             v-if="onlineStatus.excluded_device_count"
             link
             type="warning"
-            @click="excludedVisible = true"
+            @click="openExcludedDetails"
           >查看排除项</el-button>
         </div>
         <el-alert
@@ -990,9 +1066,9 @@ onMounted(() => {
           :closable="false"
           show-icon
         >
-          <el-button v-if="onlineStatus?.fit_ap_unmatched_online_count" link type="warning" @click="unmatchedVisible = true">待关联在线 AP {{ onlineStatus.fit_ap_unmatched_online_count }}</el-button>
-          <el-button v-if="onlineStatus?.unassigned_count" link type="warning" @click="unassignedVisible = true">查看未分配 AP</el-button>
-          <el-button v-if="onlineStatus?.excluded_device_count" link type="warning" @click="excludedVisible = true">查看排除项</el-button>
+          <el-button v-if="onlineStatus?.fit_ap_unmatched_online_count" link type="warning" @click="openUnmatchedDetails">待关联在线 AP {{ onlineStatus.fit_ap_unmatched_online_count }}</el-button>
+          <el-button v-if="onlineStatus?.unassigned_count" link type="warning" @click="openUnassignedDetails">查看未分配 AP</el-button>
+          <el-button v-if="onlineStatus?.excluded_device_count" link type="warning" @click="openExcludedDetails">查看排除项</el-button>
         </el-alert>
         <el-alert
           v-if="countAnomalyRows.length"
@@ -1103,36 +1179,63 @@ onMounted(() => {
 
     <el-dialog v-model="unassignedVisible" title="未分配站点 AP" width="min(900px, 92vw)">
       <NcDataTable
+        v-loading="unmatchedLoading"
         table-id="rail-base-trackside-ap-unassigned"
         route-key="/rail-transit/base-data"
-        :data="onlineStatus?.unassigned_items || []"
+        :data="unassignedItems"
         :columns="unassignedColumns"
         border
         height="420"
         empty-text="没有未分配 AP"
       />
+      <el-pagination
+        v-if="unmatchedTotal > 50"
+        :current-page="unmatchedPage"
+        :page-size="50"
+        :total="unmatchedTotal"
+        layout="total, prev, pager, next"
+        @current-change="loadUnmatchedDetails"
+      />
     </el-dialog>
 
     <el-dialog v-model="excludedVisible" title="当前统计范围排除项" width="min(1040px, 94vw)">
       <NcDataTable
+        v-loading="excludedLoading"
         table-id="rail-base-trackside-ap-scope-excluded"
         route-key="/rail-transit/base-data"
-        :data="onlineStatus?.excluded_items || []"
+        :data="excludedItems"
         :columns="excludedColumns"
         border
         height="460"
         empty-text="没有排除项"
       />
+      <el-pagination
+        v-if="excludedTotal > 50"
+        :current-page="excludedPage"
+        :page-size="50"
+        :total="excludedTotal"
+        layout="total, prev, pager, next"
+        @current-change="loadExcludedDetails"
+      />
     </el-dialog>
     <el-dialog v-model="unmatchedVisible" title="待关联在线 AP" width="min(1280px, 96vw)">
       <NcDataTable
+        v-loading="unmatchedLoading"
         table-id="rail-base-trackside-ap-unmatched-online"
         route-key="/rail-transit/base-data"
-        :data="onlineStatus?.unmatched_online_items || []"
+        :data="unmatchedItems"
         :columns="unmatchedColumns"
         border
         height="460"
         empty-text="没有待关联在线 AP"
+      />
+      <el-pagination
+        v-if="unmatchedTotal > 50"
+        :current-page="unmatchedPage"
+        :page-size="50"
+        :total="unmatchedTotal"
+        layout="total, prev, pager, next"
+        @current-change="loadUnmatchedDetails"
       />
     </el-dialog>
   </section>

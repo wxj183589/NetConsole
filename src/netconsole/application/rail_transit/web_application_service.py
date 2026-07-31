@@ -49,8 +49,10 @@ from netconsole.models.api.trackside_ap_business import (
     TracksideApPlanRowDTO,
     TracksideApPointTablePreviewDTO,
     TracksideApPointTableRowDTO,
+    TracksideApScopeExcludedDTO,
+    TracksideApScopeExcludedPageDTO,
     TracksideApUnmatchedOnlineDTO,
-    TracksideApUnassignedDTO,
+    TracksideApUnmatchedOnlinePageDTO,
 )
 from netconsole.models.api.vehicle_mr_online import (
     VehicleMrMappingPreviewDTO,
@@ -99,6 +101,7 @@ from netconsole.services.online_mr.session_lifecycle import online_mr_session_re
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.effective_trackside_ap_scope import (
     TracksideApScopeContext,
+    resolve_effective_trackside_ap_scope,
     resolve_effective_trackside_ap_scope_from_database,
 )
 from netconsole.services.rail_transit.car_network_diagnostic import (
@@ -277,6 +280,11 @@ class RailTransitWebApplicationService:
         self.mesh_query_service = mesh_query_service or MeshAnalysisQueryService(paths)
         self.vehicle_mr_online_query_service = vehicle_mr_online_query_service or VehicleMrOnlineQueryService(paths)
         self.artifact_store = artifact_store or WebArtifactStore(paths, task_service)
+        self._trackside_online_cache: dict[
+            str,
+            tuple[str, TracksideApOnlineStatusDTO],
+        ] = {}
+        self._trackside_online_cache_lock = threading.RLock()
 
     def create_mesh_staging(self, site_id: str) -> Path:
         site_id = self._site(site_id)
@@ -1063,43 +1071,78 @@ class RailTransitWebApplicationService:
         self,
         site_id: str,
     ) -> TracksideApOnlineStatusDTO:
+        started = time.perf_counter()
         site_id = self._site(site_id)
-        metadata = SiteManager(self.paths).load_site_metadata(site_id)
-        scope = resolve_effective_trackside_ap_scope_from_database(
-            Database(self.paths.site_db_path(site_id)),
-            site_id=site_id,
-            context=TracksideApScopeContext.from_metadata(site_id, metadata),
+        database = Database(self.paths.site_db_path(site_id))
+        repository = AcRepository(database)
+        revision, source_revision = self._trackside_online_revision(
+            site_id,
+            repository,
         )
+        with self._trackside_online_cache_lock:
+            cached = self._trackside_online_cache.get(site_id)
+        if cached and cached[0] == revision:
+            result = cached[1].model_copy(update={"cache_hit": True})
+            total_ms = (time.perf_counter() - started) * 1000
+            app_logger.log_info(
+                "trackside_ap_online_status.performance",
+                (
+                    "planning_ms=0.0 fit_ap_ms=0.0 identity_ms=0.0 "
+                    "aggregation_ms=0.0 serialization_ms=0.0 "
+                    f"total_ms={total_ms:.1f} revision={revision} cache_hit=true"
+                ),
+            )
+            return result
+
+        metadata = SiteManager(self.paths).load_site_metadata(site_id)
+        planning_started = time.perf_counter()
+        plans = repository.list_trackside_ap_plan()
+        selected_plans = [
+            row
+            for row in plans
+            if str(row.get("mode") or "") == TRACKSIDE_AP_PLAN_MODE
+        ]
+        if not selected_plans:
+            selected_plans = [
+                row
+                for row in plans
+                if str(row.get("mode") or "") in {"multi_vlan", "single_vlan"}
+            ]
+        planning_ms = (time.perf_counter() - planning_started) * 1000
+        identity_started = time.perf_counter()
+        references = repository.list_trackside_ap_scope_reference_rows()
+        identity_ms = (time.perf_counter() - identity_started) * 1000
+        fit_ap_started = time.perf_counter()
+        resources = repository.list_fit_ap_online_scope_rows()
+        fit_ap_ms = (time.perf_counter() - fit_ap_started) * 1000
+        aggregation_started = time.perf_counter()
+        scope = resolve_effective_trackside_ap_scope(
+            context=TracksideApScopeContext.from_metadata(site_id, metadata),
+            station_rows=references,
+            plan_rows=selected_plans,
+            reference_rows=references,
+            resource_rows=resources,
+            detail_limit=0,
+        )
+        aggregation_ms = (time.perf_counter() - aggregation_started) * 1000
+        serialization_started = time.perf_counter()
         result = [
             TracksideApOnlineStatusRowDTO.model_validate(row)
             for row in scope.station_statistics()
         ]
         planned_total = sum(row.planned_ap_count for row in result)
         actual_online_total = sum(row.actual_online_count for row in result)
-        unmatched = [
-            TracksideApUnmatchedOnlineDTO.model_validate(item.to_dict())
-            for item in scope.unmatched_online_items
-        ]
-        unassigned = [
-            TracksideApUnassignedDTO(
-                ap_id=item.item_id,
-                ap_name=item.ap_name,
-                mac=item.mac,
-                station_name=item.runtime_station_text,
-            )
-            for item in scope.unmatched_online_items
-        ]
         anomaly = any(row.count_anomaly for row in result)
         warning_parts = []
-        if unassigned:
+        if scope.fit_ap_unmatched_online_count:
             warning_parts.append(
-                f"当前有 {len(unassigned)} 个待关联在线轨旁 AP。"
+                f"当前有 {scope.fit_ap_unmatched_online_count} 个待关联在线轨旁 AP。"
             )
         if scope.excluded_device_count:
             warning_parts.append(
                 f"已按项目、当前工作状态、站点关联和稳定身份排除 {scope.excluded_device_count} 项。"
             )
-        return TracksideApOnlineStatusDTO(
+        dto = TracksideApOnlineStatusDTO(
             items=result,
             planned_ap_count=planned_total,
             actual_online_count=actual_online_total,
@@ -1109,8 +1152,8 @@ class RailTransitWebApplicationService:
                 if planned_total and not anomaly
                 else None
             ),
-            unassigned_count=len(unassigned),
-            unassigned_items=unassigned,
+            unassigned_count=scope.fit_ap_unmatched_online_count,
+            unassigned_items=[],
             updated_at=scope.updated_at,
             warning=" ".join(warning_parts),
             count_anomaly=anomaly,
@@ -1120,12 +1163,124 @@ class RailTransitWebApplicationService:
             scope_device_count=scope.scope_device_count,
             scope_ap_reference_count=scope.scope_ap_reference_count,
             excluded_device_count=scope.excluded_device_count,
-            excluded_items=[item.to_dict() for item in scope.excluded_items[:200]],
+            excluded_items=[],
             fit_ap_resource_total_count=scope.fit_ap_resource_total_count,
             fit_ap_matched_count=scope.fit_ap_matched_count,
             fit_ap_unmatched_online_count=scope.fit_ap_unmatched_online_count,
-            unmatched_online_items=unmatched,
+            fit_ap_unresolved_online_count=scope.fit_ap_unmatched_online_count,
+            fit_ap_ambiguous_online_count=scope.ambiguous_online_total_count,
+            unmatched_online_items=[],
+            generated_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+            revision=revision,
+            source_revision=source_revision,
+            cache_hit=False,
         )
+        serialization_ms = (time.perf_counter() - serialization_started) * 1000
+        with self._trackside_online_cache_lock:
+            self._trackside_online_cache[site_id] = (revision, dto)
+        total_ms = (time.perf_counter() - started) * 1000
+        detail = (
+            f"planning_ms={planning_ms:.1f} fit_ap_ms={fit_ap_ms:.1f} "
+            f"identity_ms={identity_ms:.1f} aggregation_ms={aggregation_ms:.1f} "
+            f"serialization_ms={serialization_ms:.1f} total_ms={total_ms:.1f} "
+            f"revision={revision} cache_hit=false"
+        )
+        if total_ms > 2000:
+            app_logger.log_warning("trackside_ap_online_status.performance", detail)
+        else:
+            app_logger.log_info("trackside_ap_online_status.performance", detail)
+        return dto
+
+    def list_trackside_ap_online_excluded(
+        self,
+        site_id: str,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> TracksideApScopeExcludedPageDTO:
+        site_id = self._site(site_id)
+        scope, revision = self._trackside_online_scope_with_details(site_id)
+        current = max(1, int(page))
+        size = max(1, min(int(page_size), 200))
+        start = (current - 1) * size
+        items = [
+            TracksideApScopeExcludedDTO.model_validate(item.to_dict())
+            for item in scope.excluded_items[start : start + size]
+        ]
+        return TracksideApScopeExcludedPageDTO(
+            items=items,
+            total=len(scope.excluded_items),
+            page=current,
+            page_size=size,
+            revision=revision,
+        )
+
+    def list_trackside_ap_online_unmatched(
+        self,
+        site_id: str,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> TracksideApUnmatchedOnlinePageDTO:
+        site_id = self._site(site_id)
+        scope, revision = self._trackside_online_scope_with_details(site_id)
+        current = max(1, int(page))
+        size = max(1, min(int(page_size), 200))
+        start = (current - 1) * size
+        items = [
+            TracksideApUnmatchedOnlineDTO.model_validate(item.to_dict())
+            for item in scope.unmatched_online_items[start : start + size]
+        ]
+        return TracksideApUnmatchedOnlinePageDTO(
+            items=items,
+            total=len(scope.unmatched_online_items),
+            page=current,
+            page_size=size,
+            revision=revision,
+        )
+
+    def _trackside_online_scope_with_details(
+        self,
+        site_id: str,
+    ):
+        database = Database(self.paths.site_db_path(site_id))
+        repository = AcRepository(database)
+        revision, _source_revision = self._trackside_online_revision(
+            site_id,
+            repository,
+        )
+        metadata = SiteManager(self.paths).load_site_metadata(site_id)
+        scope = resolve_effective_trackside_ap_scope_from_database(
+            database,
+            site_id=site_id,
+            context=TracksideApScopeContext.from_metadata(site_id, metadata),
+            lightweight=True,
+            detail_limit=None,
+        )
+        return scope, revision
+
+    def _trackside_online_revision(
+        self,
+        site_id: str,
+        repository: AcRepository,
+    ) -> tuple[str, dict[str, object]]:
+        source_revision = repository.trackside_online_status_revision()
+        metadata_path = self.paths.site_dir(site_id) / "site_meta.json"
+        try:
+            stat = metadata_path.stat()
+            source_revision["site_meta_mtime_ns"] = stat.st_mtime_ns
+            source_revision["site_meta_size"] = stat.st_size
+        except OSError:
+            source_revision["site_meta_mtime_ns"] = 0
+            source_revision["site_meta_size"] = 0
+        serialized = json.dumps(
+            source_revision,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        revision = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
+        return revision, source_revision
 
     def preview_trackside_ap_vlan_auto_group(
         self,

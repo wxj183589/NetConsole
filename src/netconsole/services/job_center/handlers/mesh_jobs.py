@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from netconsole.services.job_center.handlers import legacy_tasks
 from netconsole.services.job_center.handlers.common import legacy_handler
-from netconsole.services.job_center.job_context import JobContext
+from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
 from netconsole.services.mesh_parsed_rebuild_service import MeshParsedRebuildService
-from netconsole.services.mesh_source_rebuild_service import MeshSourceRebuildService
+from netconsole.services.mesh_source_rebuild_service import (
+    MeshSourceRebuildCancelled,
+    MeshSourceRebuildService,
+)
 from netconsole.services.mesh_source_delete_service import MeshSourceDeleteService
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 
@@ -31,12 +34,15 @@ def mesh_source_rebuild(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
     site_name = str(context.params.get("site_name") or "")
     session_id = str(context.params.get("session_id") or "")
-    result = MeshSourceRebuildService(context.paths).rebuild_source(
-        site_name,
-        session_id,
-        progress=context.progress,
-        should_cancel=context.should_cancel,
-    )
+    try:
+        result = MeshSourceRebuildService(context.paths).rebuild_source(
+            site_name,
+            session_id,
+            progress=context.progress,
+            should_cancel=context.should_cancel,
+        )
+    except MeshSourceRebuildCancelled as exc:
+        raise BackgroundTaskCancelled(str(exc)) from exc
     MeshCatalogRepository(
         context.paths.mesh_catalog_path(site_name)
     ).mark_session_index_dirty(session_id)

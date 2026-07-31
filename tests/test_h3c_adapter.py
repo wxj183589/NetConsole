@@ -31,13 +31,17 @@ def test_ac_persist_auto_ap_commands_include_save_force_only_in_action_profile()
     )
     assert "save force" not in profile.fit_ap_resource_commands
     assert "save force" not in profile.enable_ap_remote_login_commands
-    assert "display wlan ap all radio verbose filter bbssid" not in profile.fit_ap_resource_commands
-    assert profile.fit_ap_resource_commands[4:6] == (
+    assert "display wlan ap all radio verbose filter bbssid" in profile.fit_ap_resource_commands
+    assert profile.fit_ap_resource_commands[5:7] == (
         "display wlan ap all connection-record",
         "display wlan ap all radio type",
     )
     assert profile.fit_ap_detail_commands[4] == "display wlan ap all radio verbose filter bbssid"
-    assert profile.fit_ap_detail_commands[:4] == profile.fit_ap_resource_commands[:4]
+    assert profile.fit_ap_detail_commands == tuple(
+        command
+        for command in profile.fit_ap_resource_commands
+        if command != "display wlan ap unauthenticated"
+    )
 
 
 def test_parser_interfaces_keep_management_ports_and_chinese_descriptions():

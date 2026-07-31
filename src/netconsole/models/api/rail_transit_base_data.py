@@ -543,6 +543,7 @@ class TracksideApDTO(ApiModel):
     line_name: str = ""
     name: str
     point_code: str = ""
+    vendor: str = ""
     mac: str = ""
     management_ip: str = ""
     model: str = ""

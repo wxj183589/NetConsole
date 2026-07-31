@@ -195,7 +195,7 @@ describe('API client errors', () => {
   it('retries one failed GET transport request and returns the recovered response', async () => {
     const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     const fetchMock = vi.fn()
-      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockRejectedValueOnce(new TypeError('connection reset'))
       .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'ok' }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -208,7 +208,7 @@ describe('API client errors', () => {
     diagnostic.mockRestore()
   })
 
-  it('returns REQUEST_TIMEOUT after the bounded GET attempts expire', async () => {
+  it('returns REQUEST_TIMEOUT without retrying the timed out GET', async () => {
     vi.useFakeTimers()
     const fetchMock = vi.fn((_url: RequestInfo | URL, request?: RequestInit) => new Promise((_resolve, reject) => {
       request?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
@@ -225,11 +225,31 @@ describe('API client errors', () => {
       },
     })
     await vi.advanceTimersByTimeAsync(15_000)
-    await vi.advanceTimersByTimeAsync(150)
-    await vi.advanceTimersByTimeAsync(15_000)
 
     await rejection
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('deduplicates concurrent GET requests for the same path', async () => {
+    let resolveFetch: ((value: Response) => void) | undefined
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => {
+      resolveFetch = resolve
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const first = apiRequest('/api/shared-query')
+    const second = apiRequest('/api/shared-query')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    resolveFetch?.(new Response(JSON.stringify({ value: 1 }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { value: 1 },
+      { value: 1 },
+    ])
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it.each([502, 503, 504])('retries transient HTTP %s once for GET requests', async (status) => {

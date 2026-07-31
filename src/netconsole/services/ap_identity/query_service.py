@@ -35,23 +35,36 @@ class ApIdentityQueryService:
     ) -> None:
         self.repository = ApIdentityRepository(database)
         self.site_id = str(site_id or "current")
+        self._health_cache: tuple[dict[str, object] | None, int] | None = None
+        self._health_pinned = False
 
     def rebuild_index(self, reason: str) -> ApIdentityBuildResult:
-        return self.repository.rebuild_index(
+        result = self.repository.rebuild_index(
             build_ap_identity_index,
             site_id=self.site_id,
             reason=str(reason or "manual"),
         )
+        self._health_cache = None
+        self._health_pinned = False
+        return result
 
     def index_state(self) -> dict[str, object] | None:
         return self.repository.index_state(site_id=self.site_id)
 
     def ensure_index(self, reason: str = "missing_index_compat") -> ApIdentityBuildResult | None:
-        state = self.repository.index_state(site_id=self.site_id)
-        if state is not None and (
-            int(state.get("revision") or 0) > 0
-            or not self.repository.has_source_rows()
+        state, source_revision = self.repository.index_health(site_id=self.site_id)
+        indexed_source_revision = (
+            int(state["source_revision"])
+            if state is not None and state.get("source_revision") is not None
+            else -1
+        )
+        if (
+            state is not None
+            and int(state.get("revision") or 0) > 0
+            and indexed_source_revision == source_revision
         ):
+            return None
+        if not self.repository.has_source_rows() and state is not None:
             return None
         return self.rebuild_index(reason)
 
@@ -71,43 +84,117 @@ class ApIdentityQueryService:
         mac: object,
         *,
         peer_name: object | None = None,
+        ap_role: str | None = None,
     ) -> ApIdentityMatch:
         # A MESH Peer is a Radio/BSSID observation. Even an exact AP base MAC
         # is not sufficient evidence that the observed field represents it.
         del peer_name
-        return self._resolve_exact_aliases(mac, alias_order=_PEER_ALIAS_ORDER)
+        return self._resolve_exact_aliases(
+            mac,
+            alias_order=_PEER_ALIAS_ORDER,
+            ap_role=ap_role,
+        )
 
     def _resolve_exact_aliases(
         self,
         mac: object,
         *,
         alias_order: Sequence[str],
+        ap_role: str | None = None,
     ) -> ApIdentityMatch:
         mac_key = normalize_mac_key(mac) or ""
         query_display = format_mac(mac_key)
+        if not mac_key:
+            return ApIdentityMatch(
+                status="unresolved",
+                query_mac="",
+                query_mac_display="",
+                unresolved_reason="invalid_peer_mac",
+            )
+
+        health_reason = self._index_health_reason()
+        if health_reason:
+            return ApIdentityMatch(
+                status="unresolved",
+                query_mac=mac_key,
+                query_mac_display=query_display,
+                unresolved_reason=health_reason,
+            )
+
         if mac_key:
             exact_rows = self.repository.exact_alias_rows(
                 mac_key,
                 site_id=self.site_id,
             )
-            for alias_type in alias_order:
-                matched = [
-                    row
-                    for row in exact_rows
-                    if str(row.get("alias_type") or "") == alias_type
-                ]
-                if matched:
-                    return self._result(
-                        matched,
-                        query_mac=mac_key,
-                        query_display=query_display,
+            allowed_types = set(alias_order)
+            matched = [
+                row
+                for row in exact_rows
+                if str(row.get("alias_type") or "") in allowed_types
+                and _matches_ap_role(row, ap_role)
+            ]
+            if matched:
+                alias_rank = {
+                    alias_type: index for index, alias_type in enumerate(alias_order)
+                }
+                matched.sort(
+                    key=lambda row: (
+                        alias_rank.get(str(row.get("alias_type") or ""), 999),
+                        -int(row.get("match_priority") or 0),
                     )
+                )
+                return self._result(
+                    matched,
+                    query_mac=mac_key,
+                    query_display=query_display,
+                )
 
+        state = self._cached_health()[0] or {}
+        collected_alias_count = sum(
+            int(state.get(field) or 0)
+            for field in (
+                "actual_radio_alias_count",
+                "actual_bssid_alias_count",
+                "actual_bbssid_alias_count",
+                "derived_alias_count",
+            )
+        )
         return ApIdentityMatch(
-            status="invalid_mac" if not mac_key else "unresolved",
+            status="unresolved",
             query_mac=mac_key,
             query_mac_display=query_display,
+            unresolved_reason=(
+                "exact_alias_not_collected"
+                if collected_alias_count == 0
+                else "exact_alias_not_found"
+            ),
         )
+
+    def _cached_health(self) -> tuple[dict[str, object] | None, int]:
+        if self._health_cache is None or not self._health_pinned:
+            self._health_cache = self.repository.index_health(site_id=self.site_id)
+        return self._health_cache
+
+    def pin_index_health(self) -> None:
+        self._health_cache = self.repository.index_health(site_id=self.site_id)
+        self._health_pinned = True
+
+    def unpin_index_health(self) -> None:
+        self._health_pinned = False
+        self._health_cache = None
+
+    def _index_health_reason(self) -> str:
+        state, source_revision = self._cached_health()
+        if state is None or int(state.get("revision") or 0) <= 0:
+            return "identity_index_missing"
+        indexed_source_revision = (
+            int(state["source_revision"])
+            if state.get("source_revision") is not None
+            else -1
+        )
+        if indexed_source_revision != source_revision:
+            return "identity_index_stale"
+        return ""
 
     def search_aps(
         self,
@@ -172,15 +259,25 @@ class ApIdentityQueryService:
                     _candidate_payload(row, query_display)
                     for row in by_entity.values()
                 ),
+                unresolved_reason="duplicate_exact_alias",
             )
         row = next(iter(by_entity.values()))
+        effective_ap_mac = str(row.get("effective_ap_mac_display") or "")
+        if not normalize_mac_key(effective_ap_mac):
+            return ApIdentityMatch(
+                status="unresolved",
+                query_mac=query_mac,
+                query_mac_display=query_display,
+                candidates=(_candidate_payload(row, query_display),),
+                unresolved_reason="physical_ap_missing",
+            )
         return ApIdentityMatch(
             status="matched",
             query_mac=query_mac,
             query_mac_display=query_display,
             matched_entity_id=str(row.get("entity_id") or ""),
             effective_ap_name=str(row.get("effective_ap_name") or ""),
-            effective_ap_mac=str(row.get("effective_ap_mac_display") or ""),
+            effective_ap_mac=effective_ap_mac,
             station=str(row.get("effective_station") or ""),
             section=str(row.get("effective_section") or ""),
             point_code=str(row.get("effective_point_code") or ""),
@@ -202,6 +299,11 @@ class ApIdentityQueryService:
             has_conflict=bool(row.get("data_quality_warning")),
             data_quality_warning=str(row.get("data_quality_warning") or ""),
             candidates=(_candidate_payload(row, query_display),),
+            unresolved_reason=(
+                "station_topology_missing"
+                if not str(row.get("effective_station") or "").strip()
+                else ""
+            ),
         )
 
 
@@ -279,6 +381,22 @@ def _optional_int(value: object) -> int | None:
     except (TypeError, ValueError):
         return None
     return number or None
+
+
+def _matches_ap_role(row: Mapping[str, object], requested_role: str | None) -> bool:
+    role = str(requested_role or "").strip().casefold()
+    if not role:
+        return True
+    belong_type = str(row.get("effective_belong_type") or "").strip().casefold()
+    if belong_type in {"onboard", "vehicle", "train"}:
+        entity_role = "onboard"
+    elif belong_type in {"trackside", "station", "section", "yard"}:
+        entity_role = "trackside"
+    elif str(row.get("effective_source") or "") == "ac_runtime":
+        entity_role = "trackside"
+    else:
+        entity_role = "unknown"
+    return entity_role == role
 
 
 __all__ = ["ApIdentityQueryService"]

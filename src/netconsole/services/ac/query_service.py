@@ -307,6 +307,43 @@ class AcManagementQueryService:
             for item, raw, optical, lldp in self._ap_records(site_id)
         ]
 
+    def list_ap_details_for_macs(
+        self,
+        site_id: str,
+        macs: list[str],
+    ) -> list[AcApDetailDTO]:
+        """批量读取当前页 AP 的轻量运行态，不展开全局 FIT-AP 资源。"""
+        normalized = sorted({value for value in (normalize_ap_mac(mac).normalized for mac in macs) if value})
+        if not normalized:
+            return []
+        db_path = self._db_path(site_id)
+        if not db_path.is_file():
+            return []
+        repository = AcRepository(_ReadonlyDatabase(db_path))  # type: ignore[arg-type]
+        resources = repository.list_fit_ap_resources_with_metadata_for_macs(normalized)
+        optical_rows = repository.list_fit_ap_optical_for_macs(normalized)
+        optical_by_ap = self._optical_index(optical_rows)
+        with closing(self._connect(db_path)) as conn:
+            context = self._switch_context_for_resources(conn, resources, optical_rows)
+            ac_names = {
+                str(row["device_uuid"]): str(row["name"] or row["device_uuid"])
+                for row in self._safe_devices(conn)
+            }
+        result: list[AcApDetailDTO] = []
+        for row in resources:
+            optical = self._optical_for(row, optical_by_ap, context)
+            lldp = self._lldp_for(row, optical_by_ap, context)
+            result.append(
+                AcApDetailDTO(
+                    ap=self._ap_dto(row, optical, lldp, ac_names, context),
+                    radios=[],
+                    lldp=lldp,
+                    optical=optical,
+                    connection=self._connection(row),
+                )
+            )
+        return result
+
     def list_ap_details_for_export(
         self,
         site_id: str,
@@ -953,6 +990,83 @@ class AcManagementQueryService:
             for row in conn.execute("SELECT * FROM device_optical_modules"):
                 item = dict(row)
                 optical_by_interface[(str(item.get("device_uuid") or ""), normalize_interface_name(item.get("interface_name")).casefold())] = item
+        return {
+            "device_uuid_by_name": uuid_by_name,
+            "device_ip_by_uuid": ip_by_uuid,
+            "switch_device_uuids": switch_uuids,
+            "switch_station_by_uuid": switch_station_by_uuid,
+            "port_by_interface": port_by_interface,
+            "optical_by_interface": optical_by_interface,
+        }
+
+    def _switch_context_for_resources(
+        self,
+        conn: sqlite3.Connection,
+        resources: list[dict[str, object | None]],
+        optical_rows: list[dict[str, object | None]],
+    ) -> dict[str, Any]:
+        """只为页内 AP 涉及的交换机读取端口和光模块上下文。"""
+        devices = self._safe_devices(conn)
+        uuids_by_name: dict[str, set[str]] = {}
+        ip_by_uuid: dict[str, str] = {}
+        switch_uuids: set[str] = set()
+        switch_station_by_uuid: dict[str, str] = {}
+        for row in devices:
+            device_uuid = str(row["device_uuid"])
+            ip_by_uuid[device_uuid] = str(row["primary_address"] or "")
+            if str(row["device_type"] or "").strip().casefold() in {"sw", "switch", "交换机"}:
+                switch_uuids.add(device_uuid)
+                station = self._clean_text(row["station"])
+                if station:
+                    switch_station_by_uuid[device_uuid] = station
+            for value in (row["name"], row["system_name"]):
+                name = str(value or "").strip().casefold()
+                if name:
+                    uuids_by_name.setdefault(name, set()).add(device_uuid)
+        uuid_by_name = {
+            name: next(iter(device_uuids))
+            for name, device_uuids in uuids_by_name.items()
+            if len(device_uuids) == 1
+        }
+        scoped_switch_uuids: set[str] = set()
+        for row in [*resources, *optical_rows]:
+            for field in ("switch_device_uuid", "neighbor_device_uuid", "lldp_neighbor_device_uuid"):
+                value = self._clean_text(row.get(field))
+                if value in switch_uuids:
+                    scoped_switch_uuids.add(value)
+            name = self._clean_text(
+                row.get("neighbor_device_name")
+                or row.get("lldp_neighbor_name")
+                or row.get("lldp_neighbor")
+            )
+            resolved = uuid_by_name.get(name.casefold()) if name else None
+            if resolved in switch_uuids:
+                scoped_switch_uuids.add(str(resolved))
+
+        def scoped_rows(table: str) -> list[dict[str, object]]:
+            if not scoped_switch_uuids or not self._table_exists(conn, table):
+                return []
+            placeholders = ", ".join("?" for _ in scoped_switch_uuids)
+            rows = conn.execute(
+                f"SELECT * FROM {table} WHERE device_uuid IN ({placeholders})",
+                sorted(scoped_switch_uuids),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+        port_by_interface = {
+            (
+                str(row.get("device_uuid") or ""),
+                normalize_interface_name(row.get("interface_name")).casefold(),
+            ): row
+            for row in scoped_rows("device_interfaces")
+        }
+        optical_by_interface = {
+            (
+                str(row.get("device_uuid") or ""),
+                normalize_interface_name(row.get("interface_name")).casefold(),
+            ): row
+            for row in scoped_rows("device_optical_modules")
+        }
         return {
             "device_uuid_by_name": uuid_by_name,
             "device_ip_by_uuid": ip_by_uuid,

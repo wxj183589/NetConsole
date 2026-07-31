@@ -5,6 +5,7 @@ from threading import Event
 
 from netconsole.core.database import Database
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.rail_transit.trackside_optical_collection import (
     classify_trackside_skipped,
@@ -22,7 +23,8 @@ def run_trackside_ap_optical_update(context: JobContext) -> dict[str, object]:
     site_id = str(context.params.get("site_name") or "").strip()
     if not site_id:
         raise ValueError("轨旁 AP 更新缺少局点")
-    repository = DeviceRepository(Database(context.params["db_path"]))
+    database = Database(context.params["db_path"])
+    repository = DeviceRepository(database)
     snapshot = load_trackside_ap_business_snapshot(repository, site_id, generation=0)
     require_complete_trackside_snapshot(snapshot, "轨旁 AP 光衰更新")
     cancel_event = Event()
@@ -63,6 +65,10 @@ def run_trackside_ap_optical_update(context: JobContext) -> dict[str, object]:
         target_ap_mac=str(context.params.get("ap_mac") or "") or None,
         target_ap_name=str(context.params.get("ap_name") or "") or None,
     )
+    if int(result.fit_ap_optical_success_count or 0) > 0:
+        ApIdentityQueryService(database).rebuild_index(
+            "trackside_ap_optical_refresh_succeeded"
+        )
     switch_results = list(getattr(result, "results", []) or [])
     station_switch_total = int(getattr(result, "station_switch_total", len(switch_results)) or 0)
     fit_ap_total = int(getattr(result, "fit_ap_total", getattr(result, "fit_ap_resource_count", 0)) or 0)

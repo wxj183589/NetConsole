@@ -455,6 +455,7 @@ export interface TracksideAp {
   line_name: string
   name: string
   point_code: string
+  vendor: string
   mac: string
   management_ip: string
   model: string

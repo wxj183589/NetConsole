@@ -184,6 +184,7 @@ AP_EXTENSION_POINT_FIELDS = (
     "distance_to_prev_m",
     "ap_point_code",
     "ap_name",
+    "ap_vendor",
     "ap_mac_norm",
     "ap_mac_display",
     "curve_radius_m",
@@ -729,6 +730,45 @@ class AcRepository:
         rows = self._enrich_resources_with_extensions([self._resource_with_metadata(dict(row)) for row in rows])
         return self._enrich_resources_with_unauthenticated_status(rows)
 
+    def list_fit_ap_resources_with_metadata_for_macs(
+        self,
+        macs: list[str],
+    ) -> list[dict[str, object | None]]:
+        """按一页物理 AP MAC 批量读取 FIT-AP 资源，避免全量资源投影。"""
+        normalized = sorted(
+            {
+                mac.replace("-", "")
+                for value in macs
+                if (mac := self._mac_from_text(value))
+            }
+        )
+        if not normalized:
+            return []
+        expression = "replace(replace(replace(lower(COALESCE(r.ap_mac, '')), ':', ''), '-', ''), ' ', '')"
+        placeholders = ", ".join("?" for _ in normalized)
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT r.*,
+                       m_uuid.site_name AS site_name,
+                       m_uuid.belong_type AS metadata_belong_type,
+                       m_uuid.belong_section AS metadata_belong_section,
+                       m_uuid.section_start_station AS metadata_section_start_station,
+                       m_uuid.section_end_station AS metadata_section_end_station,
+                       m_uuid.yard_name AS metadata_yard_name,
+                       m_uuid.area_name AS metadata_area_name,
+                       m_uuid.mileage AS metadata_mileage,
+                       m_uuid.location_note AS metadata_location_note,
+                       m_uuid.direction AS metadata_direction
+                FROM ac_fit_ap_resources r
+                LEFT JOIN ac_fit_ap_metadata m_uuid ON m_uuid.ap_uuid = r.ap_uuid
+                WHERE {expression} IN ({placeholders})
+                ORDER BY r.ap_name, r.id
+                """,
+                normalized,
+            ).fetchall()
+        return [self._resource_with_metadata(dict(row)) for row in rows]
+
     def replace_fit_ap_unauthenticated(
         self,
         ac_device_uuid: str,
@@ -921,6 +961,94 @@ class AcRepository:
         if match_status:
             result = [row for row in result if row.get("match_status") == match_status]
         return result
+
+    def list_trackside_ap_scope_reference_rows(
+        self,
+    ) -> list[dict[str, object | None]]:
+        with self.database.connect_readonly() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, site_id, line_name, belong_type, station_name,
+                       ap_name, ap_mac_norm, ap_mac_display, raw_payload_json,
+                       updated_at
+                FROM ap_extension_points
+                ORDER BY id
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_fit_ap_online_scope_rows(
+        self,
+    ) -> list[dict[str, object | None]]:
+        with self.database.connect_readonly() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, ac_device_uuid, ap_uuid, apid, ap_name, ap_mac,
+                       state, state_raw, state_display, site, collected_at,
+                       updated_at
+                FROM ac_fit_ap_resources
+                ORDER BY id
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def trackside_online_status_revision(
+        self,
+    ) -> dict[str, object]:
+        with self.database.connect_readonly() as conn:
+            plan = conn.execute(
+                """
+                SELECT COUNT(*) AS row_count, COALESCE(MAX(updated_at), '') AS updated_at
+                FROM ac_trackside_ap_plan
+                """
+            ).fetchone()
+            references = conn.execute(
+                """
+                SELECT COUNT(*) AS row_count, COALESCE(MAX(updated_at), '') AS updated_at
+                FROM ap_extension_points
+                """
+            ).fetchone()
+            resources = conn.execute(
+                """
+                SELECT COUNT(*) AS row_count, COALESCE(MAX(updated_at), '') AS updated_at
+                FROM ac_fit_ap_resources
+                """
+            ).fetchone()
+            identity_columns = {
+                str(row[1])
+                for row in conn.execute("PRAGMA table_info(ap_identity_index_state)")
+            }
+            if identity_columns:
+                fields = ["revision"]
+                if "source_revision" in identity_columns:
+                    fields.append("source_revision")
+                identity = conn.execute(
+                    f"""
+                    SELECT {", ".join(fields)}
+                    FROM ap_identity_index_state
+                    WHERE site_id = 'current'
+                    """
+                ).fetchone()
+            else:
+                identity = None
+        return {
+            "plan_count": int(plan["row_count"] or 0),
+            "plan_updated_at": str(plan["updated_at"] or ""),
+            "reference_count": int(references["row_count"] or 0),
+            "reference_updated_at": str(references["updated_at"] or ""),
+            "fit_ap_count": int(resources["row_count"] or 0),
+            "fit_ap_updated_at": str(resources["updated_at"] or ""),
+            "identity_revision": int(identity["revision"] or 0) if identity else 0,
+            "identity_source_revision": (
+                int(identity["source_revision"])
+                if (
+                    identity
+                    and "source_revision" in identity.keys()
+                    and identity["source_revision"] is not None
+                )
+                else -1
+            ),
+        }
 
     def get_ap_extension_point(self, extension_id: int) -> dict[str, object | None] | None:
         with self.database.connect() as conn:
@@ -1186,6 +1314,33 @@ class AcRepository:
             _latest_rows_by_ap_identity([dict(row) for row in rows]),
             key=lambda row: (str(row.get("neighbor_device_name") or ""), str(row.get("neighbor_interface") or ""), str(row.get("ap_name") or "")),
         )
+
+    def list_fit_ap_optical_for_macs(
+        self,
+        macs: list[str],
+    ) -> list[dict[str, object | None]]:
+        normalized = sorted(
+            {
+                mac.replace("-", "")
+                for value in macs
+                if (mac := self._mac_from_text(value))
+            }
+        )
+        if not normalized:
+            return []
+        expression = "replace(replace(replace(lower(COALESCE(ap_mac, '')), ':', ''), '-', ''), ' ', '')"
+        placeholders = ", ".join("?" for _ in normalized)
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM ac_fit_ap_optical
+                WHERE {expression} IN ({placeholders})
+                ORDER BY ap_name, id
+                """,
+                normalized,
+            ).fetchall()
+        return _latest_rows_by_ap_identity([dict(row) for row in rows])
 
     def get_fit_ap_optical_by_uuid(self, ac_device_uuid: str, ap_uuid: str) -> dict[str, object | None] | None:
         with self.database.connect() as conn:

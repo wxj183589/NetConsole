@@ -526,6 +526,29 @@ def test_unmatched_online_resources_are_diagnostics_not_exclusions() -> None:
     assert len(scope.excluded_items) == 0
 
 
+def test_excluded_reference_without_mac_serializes_as_empty_string() -> None:
+    stations = [_station(1, "01站点", "node-1", 1)]
+    scope = _resolve(
+        stations=stations,
+        plans=[{"station_name": "站点", "ap_count": 1, "sequence_no": 1}],
+        references=[
+            {
+                "id": 1,
+                "belong_type": "station",
+                "station_name": "",
+                "ap_name": "",
+                "ap_mac_norm": None,
+                "ap_mac_display": None,
+                "raw_payload_json": "{}",
+            }
+        ],
+        resources=[],
+    )
+
+    assert scope.excluded_items[0].mac == ""
+    assert scope.excluded_items[0].to_dict()["mac"] == ""
+
+
 def test_runtime_resources_with_same_name_but_different_macs_are_not_deduped() -> None:
     station = _station(1, "01站点", "node-1", 1)
     scope = _resolve(

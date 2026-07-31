@@ -364,6 +364,7 @@ const sectionColumns: NcTableColumn<Section>[] = [
 const apColumns: NcTableColumn<TracksideAp>[] = [
   { key: 'name', label: 'AP 名称', valueType: 'name', minWidth: 150, fixed: 'left', displayValue: (row) => row.runtime.fit_ap_name || row.name || row.point_code || '--' },
   { key: 'point_code', label: '点位编号', minWidth: 120, displayValue: (row) => display(row.point_code) },
+  { key: 'vendor', label: 'AP 厂商', minWidth: 100, displayValue: (row) => display(row.vendor) },
   { key: 'mac', label: 'AP MAC', valueType: 'mac', minWidth: 150 },
   { key: 'management_ip', label: '管理 IP', valueType: 'ip', minWidth: 125, displayValue: (row) => display(row.management_ip) },
   { key: 'station', label: '站点', minWidth: 130, displayValue: (row) => display(row.station) },
@@ -1431,7 +1432,7 @@ function addAp(): void {
   editingDraft.value.aps.push(row); markAp(row)
 }
 function newTracksideAp(): TracksideAp {
-  return { id: temporaryId(), site_id: store.editSession?.site_id || '', line_name: store.summary?.line_name || '', name: '', point_code: '', mac: '', management_ip: '', model: '', station: '', section: '', section_start_station: '', section_end_station: '', mileage: { raw: '', normalized: '', meters: null, line_type: '', valid: false, error: '' }, line_side: '', line_side_source: 'unavailable', line_side_derivation_issue_code: '', line_side_derivation_issue_message: '', direction: '', radios: [], remark: '', source_file: '', source_sheet: '', source_row: null, updated_at: '', runtime: emptyRuntime(), issue_count: 0, highest_issue_severity: '', record_kind: 'manual', base_metadata: {} }
+  return { id: temporaryId(), site_id: store.editSession?.site_id || '', line_name: store.summary?.line_name || '', name: '', point_code: '', vendor: '', mac: '', management_ip: '', model: '', station: '', section: '', section_start_station: '', section_end_station: '', mileage: { raw: '', normalized: '', meters: null, line_type: '', valid: false, error: '' }, line_side: '', line_side_source: 'unavailable', line_side_derivation_issue_code: '', line_side_derivation_issue_message: '', direction: '', radios: [], remark: '', source_file: '', source_sheet: '', source_row: null, updated_at: '', runtime: emptyRuntime(), issue_count: 0, highest_issue_severity: '', record_kind: 'manual', base_metadata: {} }
 }
 function addMr(): void {
   if (!editingDraft.value) return
@@ -1515,6 +1516,7 @@ function apValues(row: TracksideAp): Record<string, unknown> {
     line_name: row.line_name,
     ap_name: row.name,
     ap_point_code: row.point_code,
+    ap_vendor: row.vendor,
     ap_mac_display: row.mac,
     station_name: row.station,
     section_name: row.section,
@@ -2283,6 +2285,7 @@ function applyImportedApValue(row: TracksideAp, field: string, value: unknown): 
   if (field === 'line_name') row.line_name = text
   else if (field === 'ap_name') row.name = text
   else if (field === 'ap_point_code') row.point_code = text
+  else if (field === 'ap_vendor') row.vendor = text
   else if (field === 'ap_mac_display') row.mac = text
   else if (field === 'ap_mac_norm' && !row.mac) row.mac = text.replace(/[^0-9a-f]/gi, '').replace(/^(.{4})(.{4})(.{4})$/, '$1-$2-$3')
   else if (field === 'station_name') row.station = text

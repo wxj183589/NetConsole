@@ -16,6 +16,7 @@ CancelCallback = Callable[[], bool]
 TRACKSIDE_AP_BASE_COLUMNS = (
     ("AP名称", "ap_name"),
     ("点位编号", "ap_point_code"),
+    ("AP厂商", "ap_vendor"),
     ("AP MAC", "ap_mac"),
     ("管理 IP", "management_ip"),
     ("型号", "model"),
@@ -65,6 +66,7 @@ TRACKSIDE_AP_IMPORT_ISSUE_COLUMNS = (
 _FIELD_NOTES = (
     ("AP名称", "只读", "AC 当前真实 FIT-AP 名称；未匹配运行态时回退为基础资料中的名称。"),
     ("点位编号", "条件必填", "项目定义的 AP 点位编号，也是重命名命令的目标名称。"),
+    ("AP厂商", "可选", "仅填写明确厂商；H3C 物理 AP MAC 的 Radio alias 派生依赖该事实，不按名称、型号或 MAC 猜测。"),
     ("AP MAC", "条件必填", "首选唯一匹配键，支持常见 MAC 格式，导入后规范化为 xxxx-xxxx-xxxx。"),
     ("管理 IP", "只读", "来自当前 FIT-AP 运行态；重新导入不会覆盖正式基础资料。"),
     ("型号", "只读", "来自当前 FIT-AP 运行态；重新导入不会覆盖正式基础资料。"),
@@ -191,6 +193,7 @@ def _export_row(raw: Mapping[str, Any]) -> dict[str, object]:
             or ""
         ),
         "ap_point_code": raw.get("point_code") or raw.get("ap_point_code") or "",
+        "ap_vendor": raw.get("vendor") or base.get("ap_vendor") or raw.get("ap_vendor") or "",
         "ap_mac": raw.get("mac") or raw.get("ap_mac_display") or raw.get("ap_mac_norm") or "",
         "management_ip": raw.get("management_ip") or "",
         "model": raw.get("model") or "",

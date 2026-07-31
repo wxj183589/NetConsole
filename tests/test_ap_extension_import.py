@@ -71,6 +71,7 @@ def test_preview_pis_left_right_layout_without_mac(tmp_path):
 
 def test_standard_export_row_formats_mileage_with_line_prefix():
     row = {
+        "ap_vendor": "H3C",
         "station_name": "金家渡",
         "line_side": "左线",
         "direction": "下行",
@@ -83,6 +84,28 @@ def test_standard_export_row_formats_mileage_with_line_prefix():
 
     assert values[headers.index("里程原文")] == "ZDK0+035"
     assert values[headers.index("里程米")] == 35
+    assert values[headers.index("AP厂商")] == "H3C"
+
+
+def test_standard_template_import_keeps_explicit_vendor_without_defaulting(
+    tmp_path: Path,
+) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "AP扩展信息模板"
+    sheet.append(["AP名称", "AP厂商", "AP MAC", "归属站点"])
+    sheet.append(["AP-H3C", "H3C", "74ad-cb9d-3320", "金家渡"])
+    sheet.append(["AP-UNKNOWN", "", "74ad-cb9d-3340", "金家渡"])
+    path = tmp_path / "vendor.xlsx"
+    workbook.save(path)
+
+    rows = ApExtensionImportService().preview_file(
+        path,
+        "standard_template",
+    ).standard_rows
+
+    assert rows[0]["ap_vendor"] == "H3C"
+    assert rows[1]["ap_vendor"] == ""
 
 
 def test_preview_signal_ab_network_sheet_recognizes_section_and_yard(tmp_path):

@@ -17,6 +17,8 @@ const api = vi.hoisted(() => ({
   exportTracksideApPlan: vi.fn(),
   getTracksideApOnlineStatus: vi.fn(),
   getTracksideApPlan: vi.fn(),
+  listTracksideApOnlineExcluded: vi.fn(),
+  listTracksideApOnlineUnmatched: vi.fn(),
   previewTracksideApPlan: vi.fn(),
   startTracksideApUpdate: vi.fn(),
 }))
@@ -97,6 +99,7 @@ vi.mock('element-plus', async () => {
     ElInputNumber: InputNumber,
     ElLoadingDirective: {},
     ElOption: defineComponent({ template: '<option><slot /></option>' }),
+    ElPagination: Container,
     ElSelect: Input,
     ElTabPane: Container,
     ElTabs: Container,
@@ -275,6 +278,20 @@ describe('TracksideApPlanningTab behavior', () => {
     for (const method of Object.values(taskApi)) method.mockReset()
     api.getTracksideApPlan.mockResolvedValue(emptyPlan())
     api.getTracksideApOnlineStatus.mockResolvedValue(emptyStatus())
+    api.listTracksideApOnlineExcluded.mockResolvedValue({
+      items: [],
+      total: 0,
+      page: 1,
+      page_size: 200,
+      revision: '',
+    })
+    api.listTracksideApOnlineUnmatched.mockResolvedValue({
+      items: [],
+      total: 0,
+      page: 1,
+      page_size: 200,
+      revision: '',
+    })
     taskApi.listTasks.mockResolvedValue([])
     downloadBackendResource.mockReset().mockResolvedValue({ status: 'saved' })
   })
@@ -773,6 +790,22 @@ describe('TracksideApPlanningTab behavior', () => {
   })
 
   it('renders weighted totals and a normal unassigned AP warning', async () => {
+    api.listTracksideApOnlineUnmatched.mockResolvedValue({
+      items: [{
+        source: 'fit_ap_online',
+        item_id: 'ap:1',
+        ap_name: 'AP-未分配',
+        mac: '',
+        ac_status: 'R',
+        runtime_station_text: '',
+        reason: '未匹配',
+        suggested_action: '补充基础资料',
+      }],
+      total: 1,
+      page: 1,
+      page_size: 200,
+      revision: 'rev-1',
+    })
     api.getTracksideApOnlineStatus.mockResolvedValue({
       items: [{
         station_id: 'station:1',
@@ -813,6 +846,9 @@ describe('TracksideApPlanningTab behavior', () => {
     expect(wrapper.text()).toContain('实际上线 719')
     expect(wrapper.text()).toContain('未上线 226')
     expect(wrapper.text()).toContain('总上线率 76.1%')
+    await button(wrapper, '查看未分配 AP').trigger('click')
+    await flushPromises()
+    expect(api.listTracksideApOnlineUnmatched).toHaveBeenCalledWith(1)
     wrapper.unmount()
   })
 

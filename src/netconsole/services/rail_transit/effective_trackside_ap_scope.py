@@ -143,6 +143,9 @@ class EffectiveTracksideApScope:
         default_factory=list
     )
     fit_ap_resource_total_count: int = 0
+    excluded_device_total_count: int | None = None
+    unmatched_online_total_count: int | None = None
+    ambiguous_online_total_count: int = 0
     updated_at: str = ""
     _reference_by_id: dict[str, EffectiveTracksideApReference] = field(
         default_factory=dict,
@@ -187,10 +190,16 @@ class EffectiveTracksideApScope:
 
     @property
     def fit_ap_unmatched_online_count(self) -> int:
-        return len(self.unmatched_online_items)
+        return (
+            self.unmatched_online_total_count
+            if self.unmatched_online_total_count is not None
+            else len(self.unmatched_online_items)
+        )
 
     @property
     def excluded_device_count(self) -> int:
+        if self.excluded_device_total_count is not None:
+            return self.excluded_device_total_count
         return len(
             {
                 ("mac", item.mac)
@@ -437,10 +446,16 @@ def resolve_effective_trackside_ap_scope_from_database(
     site_id: str,
     context: TracksideApScopeContext | None = None,
     resource_rows: Iterable[Mapping[str, object | None]] | None = None,
+    lightweight: bool = False,
+    detail_limit: int | None = None,
 ) -> EffectiveTracksideApScope:
     repository = AcRepository(database)
     plans = repository.list_trackside_ap_plan()
-    extension_points = repository.list_ap_extension_points()
+    extension_points = (
+        repository.list_trackside_ap_scope_reference_rows()
+        if lightweight
+        else repository.list_ap_extension_points()
+    )
     selected_plans = [
         row for row in plans if str(row.get("mode") or "") == TRACKSIDE_AP_PLAN_MODE
     ]
@@ -456,10 +471,13 @@ def resolve_effective_trackside_ap_scope_from_database(
         plan_rows=selected_plans,
         reference_rows=extension_points,
         resource_rows=(
-            repository.list_all_fit_ap_resources_with_metadata()
-            if resource_rows is None
-            else resource_rows
+            resource_rows
+            if resource_rows is not None
+            else repository.list_fit_ap_online_scope_rows()
+            if lightweight
+            else repository.list_all_fit_ap_resources_with_metadata()
         ),
+        detail_limit=detail_limit,
     )
 
 
@@ -470,6 +488,7 @@ def resolve_effective_trackside_ap_scope(
     plan_rows: Iterable[Mapping[str, object | None]],
     reference_rows: Iterable[Mapping[str, object | None]],
     resource_rows: Iterable[Mapping[str, object | None]],
+    detail_limit: int | None = None,
 ) -> EffectiveTracksideApScope:
     all_station_rows = [dict(row) for row in station_rows]
     plans = [dict(row) for row in plan_rows]
@@ -479,6 +498,30 @@ def resolve_effective_trackside_ap_scope(
     )
     excluded: list[TracksideApScopeExcludedItem] = []
     unmatched_online: list[TracksideApScopeUnmatchedOnlineItem] = []
+    excluded_keys: set[tuple[str, str]] = set()
+    unmatched_online_keys: set[tuple[str, str]] = set()
+    ambiguous_online_keys: set[tuple[str, str]] = set()
+
+    def add_excluded(item: TracksideApScopeExcludedItem) -> None:
+        key = ("mac", item.mac) if item.mac else (item.source, item.item_id)
+        excluded_keys.add(key)
+        if (
+            item.source == "fit_ap_online_excluded"
+            and "多" in item.reason
+        ):
+            ambiguous_online_keys.add(key)
+        if detail_limit is None or len(excluded) < detail_limit:
+            excluded.append(item)
+
+    def add_unmatched(
+        key: tuple[str, str],
+        item: TracksideApScopeUnmatchedOnlineItem,
+    ) -> None:
+        if key in unmatched_online_keys:
+            return
+        unmatched_online_keys.add(key)
+        if detail_limit is None or len(unmatched_online) < detail_limit:
+            unmatched_online.append(item)
     all_references: dict[str, EffectiveTracksideApReference] = {}
     eligible: dict[str, EffectiveTracksideApReference] = {}
 
@@ -507,7 +550,7 @@ def resolve_effective_trackside_ap_scope(
             values.get("ap_mac_norm")
             or values.get("ap_mac_display")
             or metadata.get("ap_mac")
-        )
+        ) or ""
         ap_uuid = str(metadata.get("ap_uuid") or "").strip()
         station_id, station_reason = _resolve_station_id(
             values,
@@ -537,7 +580,7 @@ def resolve_effective_trackside_ap_scope(
             reference,
         )
         if reason:
-            excluded.append(_excluded_reference(reference, reason))
+            add_excluded(_excluded_reference(reference, reason))
         else:
             eligible[reference_id] = reference
 
@@ -553,11 +596,11 @@ def resolve_effective_trackside_ap_scope(
                     continue
                 aliases[duplicate_id] = selected
                 duplicate = eligible.pop(duplicate_id)
-                excluded.append(_excluded_reference(duplicate, "同一 AP 稳定身份重复，已去重。"))
+                add_excluded(_excluded_reference(duplicate, "同一 AP 稳定身份重复，已去重。"))
         else:
             for ambiguous_id in reference_ids:
                 ambiguous = eligible.pop(ambiguous_id)
-                excluded.append(
+                add_excluded(
                     _excluded_reference(
                         ambiguous,
                         "同一 AP 稳定身份关联到多个站点，需人工处理。",
@@ -572,9 +615,6 @@ def resolve_effective_trackside_ap_scope(
     resource_identity_index: dict[tuple[str, str], set[str]] = defaultdict(set)
     runtime_identity_keys: set[tuple[str, str]] = set()
     matched_resources: dict[str, dict[str, object | None]] = {}
-    unmatched_online_by_identity: dict[
-        tuple[str, str], TracksideApScopeUnmatchedOnlineItem
-    ] = {}
     for resource in resources_input:
         runtime_identity_keys.add(_runtime_resource_key(resource))
         reference_id, reason = _match_resource_reference(
@@ -607,7 +647,7 @@ def resolve_effective_trackside_ap_scope(
                     "匹配到的轨旁 AP 资料不在当前有效范围。",
                     "AP 稳定身份匹配到多条资料，需人工处理。",
                 }:
-                    excluded.append(
+                    add_excluded(
                         TracksideApScopeExcludedItem(
                             source="fit_ap_online_excluded",
                             item_id=item_id,
@@ -624,22 +664,23 @@ def resolve_effective_trackside_ap_scope(
                         )
                     )
                 else:
-                    unmatched_online_by_identity[
-                        _runtime_resource_key(resource)
-                    ] = TracksideApScopeUnmatchedOnlineItem(
-                        source="fit_ap_online",
-                        item_id=item_id,
-                        ap_name=str(resource.get("ap_name") or ""),
-                        mac=normalize_mac(resource.get("ap_mac")) or "",
-                        ac_status=str(
-                            resource.get("state_display")
-                            or resource.get("state_raw")
-                            or resource.get("state")
-                            or ""
+                    add_unmatched(
+                        _runtime_resource_key(resource),
+                        TracksideApScopeUnmatchedOnlineItem(
+                            source="fit_ap_online",
+                            item_id=item_id,
+                            ap_name=str(resource.get("ap_name") or ""),
+                            mac=normalize_mac(resource.get("ap_mac")) or "",
+                            ac_status=str(
+                                resource.get("state_display")
+                                or resource.get("state_raw")
+                                or resource.get("state")
+                                or ""
+                            ),
+                            runtime_station_text=runtime_station_text,
+                            reason=reason or "在线 AP 未匹配到当前有效轨旁 AP 资料。",
+                            suggested_action="补充或绑定轨旁 AP 基础资料后重新刷新 FIT-AP。",
                         ),
-                        runtime_station_text=runtime_station_text,
-                        reason=reason or "在线 AP 未匹配到当前有效轨旁 AP 资料。",
-                        suggested_action="补充或绑定轨旁 AP 基础资料后重新刷新 FIT-AP。",
                     )
             continue
         reference = eligible[reference_id]
@@ -659,7 +700,6 @@ def resolve_effective_trackside_ap_scope(
             online_reference_ids.add(reference_id)
 
     resources = list(matched_resources.values())
-    unmatched_online = list(unmatched_online_by_identity.values())
     for key, values in resource_identity_index.items():
         eligible_identity_index.setdefault(key, set()).update(values)
 
@@ -685,6 +725,9 @@ def resolve_effective_trackside_ap_scope(
         excluded_items=excluded,
         unmatched_online_items=unmatched_online,
         fit_ap_resource_total_count=len(runtime_identity_keys),
+        excluded_device_total_count=len(excluded_keys),
+        unmatched_online_total_count=len(unmatched_online_keys),
+        ambiguous_online_total_count=len(ambiguous_online_keys),
         updated_at=updated_at,
         _reference_by_id=eligible,
         _identity_index=eligible_identity_index,

@@ -35,6 +35,7 @@ AP_MERGE_FIELDS = (
     "distance_to_prev_m",
     "ap_point_code",
     "ap_name",
+    "ap_vendor",
     "ap_mac_norm",
     "ap_mac_display",
     "yard_name",

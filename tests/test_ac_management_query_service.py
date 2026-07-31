@@ -29,6 +29,10 @@ def test_ac_query_service_reads_summary_filters_and_details_without_writes(tmp_p
     unauthenticated = service.list_aps("demo", status="unauthenticated")
     section = service.list_aps("demo", section="A-B")
     detail = service.get_ap_detail("demo", "ap-offline")
+    page_details = service.list_ap_details_for_macs(
+        "demo",
+        ["0000-0000-0001"],
+    )
 
     assert summary.ap_total == 3
     assert summary.online_aps == 2
@@ -42,6 +46,8 @@ def test_ac_query_service_reads_summary_filters_and_details_without_writes(tmp_p
     assert unauthenticated.items[0].station_source == "resource"
     assert section.items[0].id == "ap-online"
     assert detail is not None
+    assert [item.ap.id for item in page_details] == ["ap-online"]
+    assert page_details[0].radios == []
     assert [radio.radio_id for radio in detail.radios] == [1, 2]
     assert all(radio.radio_id != 3 for radio in detail.radios)
     assert [radio.clients for radio in detail.radios] == [3, 1]

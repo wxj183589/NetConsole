@@ -44,6 +44,8 @@ class AcResourceRefreshResult:
     unauthenticated_rows_updated: int = 0
     bbssid_rows_parsed: int = 0
     lldp_rows_parsed: int = 0
+    bbssid_collect_status: str = "not_collected"
+    bbssid_error: str = ""
     failed_commands: list[str] = field(default_factory=list)
     summary_updated: bool = False
     https_port: int | None = None
@@ -63,6 +65,8 @@ class AcResourceRefreshResult:
                 "unauthenticated_rows_updated": self.unauthenticated_rows_updated,
                 "bbssid_rows_parsed": self.bbssid_rows_parsed,
                 "lldp_rows_parsed": self.lldp_rows_parsed,
+                "bbssid_collect_status": self.bbssid_collect_status,
+                "bbssid_error": self.bbssid_error,
                 "failed_commands": list(self.failed_commands),
                 "summary_updated": self.summary_updated,
                 "https_port": self.https_port,
@@ -88,6 +92,8 @@ class AcResourceRefreshResult:
             "unauthenticated_rows_updated": int(self.unauthenticated_rows_updated),
             "bbssid_rows_parsed": int(self.bbssid_rows_parsed),
             "lldp_rows_parsed": int(self.lldp_rows_parsed),
+            "bbssid_collect_status": str(self.bbssid_collect_status),
+            "bbssid_error": str(self.bbssid_error),
             "failed_commands": [str(item) for item in self.failed_commands],
             "summary_updated": bool(self.summary_updated),
             "snapshot_revision": str(snapshot_revision),

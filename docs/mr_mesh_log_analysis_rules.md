@@ -21,6 +21,7 @@
 - 导入 UI 选择文件后立即显示逐文件占位、阶段和取消入口；默认支持“一次选择车载 MR”批量派生列车号、CT/CW 和内部 Profile，并只做一次整批确认。逐文件修正保留在高级区，不要求对每行重复输入和勾选。
 - 同一预览批次的业务成员统一使用批次内唯一且可复验的 `member_id`；Vue key、人工映射、批次重复关系、提交 payload、worker 解压定位和来源 provenance 都不得以 `original_name`、`safe_name` 或 `stored_filename` 代替。弹窗内直接显示结构化预览错误并允许保留已选文件重新预览，迟到请求按 generation 丢弃。
 - `source_files` 保存 `raw_relative_path`、`parsed_relative_path`、bundle/archive SHA 与成员 ID/SHA。读取优先使用当前 MR 相对路径，其次安全文件名、SHA、bundle 归档，最后才读旧绝对路径。当前来源重建走 `mesh_source_rebuild`，只恢复/替换一个 detail SQLite；`mesh_schema_rebuild` 是高级 Profile 全量重建，两者不能混用。
+- 当前来源的 detail SQLite 健康且 schema 可用时，“重新解析当前日志”优先执行 identity-only remap：按 distinct Peer MAC 查询当前 AP Identity 索引，在单事务中原子替换 mapping/cache 和链路身份投影，只更新 AP 名称、物理 AP MAC、Radio、站点、区间、来源、状态与原因。原始 Peer MAC、时间戳、RSSI、Busy、ACTIVE/STANDBY、链路状态、样本和事件保持不变；失败回滚旧身份结果。事务提交前可响应取消并完整回滚；提交/checkpoint 后才到达的取消请求不能把已提交结果覆盖成 cancelled，Job 以成功终态收口。detail 库缺失、损坏或 schema 不兼容时才从受保护 raw 走原来源重建。
 - API 来源摘要明确区分三个标识：`source_file_id` 是索引库 `source_files.id` 数字值，用于分析查询、重建和导出；`source_action_id` 是受控 raw tail/来源操作的安全 ID，可以是哈希值；`bundle_member_id` 仅用于 ZIP manifest 成员恢复。旧 `source_id` 仅作为等同 `source_action_id` 的兼容别名，新客户端不得将其转换为导出 ID。
 - 同一 ZIP SHA 默认幂等。真实 12 文件包已在系统临时数据根验证：6 列车/12 MR、353,035 条解析记录、0 个解析问题；最终 353,033 条链路中 ACTIVE 129,524、STANDBY 223,509。重复导入同一 SHA 返回 12 个 duplicate，不重复写入；manifest 不含临时根/staging 路径，退出后无 staging/backup 残留。该结果证明当前样本闭环，不等同于所有 H3C 版本现场兼容。
 - 新导入的通用 `meshlog.log`、`meshlog.txt` 及 `.gz` 复合扩展名按正文首个有效时间戳归档为 `YYYY_MM_DD_<daily_sequence>meshlog.<ext>`；序号作用域是当前局点 + MESH Profile + 日志日期，按目录中最大有效序号递增，跨日期从 1 开始。无有效首时间戳使用 `unknown_date_<sequence>meshlog.<ext>` 并保留 `timestamp_not_found` 告警；已经规范命名或已有业务名称的历史文件不静默重命名。
@@ -39,7 +40,10 @@ Peer 身份解析严格分离观测与物理身份：原始文本、规范化 Pe
 MAC、Radio、链路角色、source file、raw line/offset 始终保留；物理 AP
 名称、基础 MAC、站点、区间和里程只来自精确 Radio/BSSID/BBSSID 或完整
 H3C R1/R2 alias。36/40 位前缀、AP 名称和位置不参与匹配；没有精确
-证据时返回 `unresolved` 并将解析身份字段留空。
+证据时返回 `unresolved` 并将解析身份字段留空。H3C alias 只能由明确
+H3C、合法且末位为 `0` 的物理 AP MAC 预先生成；末位为 `F` 的 Radio
+观测不得再次衍生。一个完整 alias 指向多个物理实体时返回
+`ambiguous`，不得按名称、站点或相似 MAC 消歧。
 
 MR 端位资料与运行结论必须分离：`MR-CT` 固定为 `CT / 1车厢端`，`MR-CW` 固定为 `CW / 6车厢端`，二者都不是固定“车头/车尾”。行程分析接入后，当前运行角色只能由“实际运行方向 + `increasing_direction_leading_end` + `physical_end`”得到 `leading_end / trailing_end / turnback_transition / unknown`；RSSI 不得用于静默交换 CT/CW。届时切换信号模型使用 `LEADING_END_FAST_DROP`（行驶头端型快速衰减）和 `TRAILING_END_SMOOTH_CROSSOVER`（行驶尾端型平滑交叉）等代码，这些模型用于一致性验证而不是覆盖基础资料结论。
 

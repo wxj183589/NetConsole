@@ -29,6 +29,8 @@ from netconsole.models.api.trackside_ap_business import (
     TracksideApPlanDTO,
     TracksideApPlanExportRequestDTO,
     TracksideApOnlineStatusDTO,
+    TracksideApScopeExcludedPageDTO,
+    TracksideApUnmatchedOnlinePageDTO,
     TracksideApPlanPreviewDTO,
     TracksideApPlanWriteRequestDTO,
     TracksideApPointTablePreviewDTO,
@@ -378,6 +380,46 @@ def plan_online_status(request: Request) -> TracksideApOnlineStatusDTO:
     try:
         return _application_service(request).get_trackside_ap_online_status(
             _site_id(request)
+        )
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
+@router.get(
+    "/plan/online-status/excluded",
+    response_model=TracksideApScopeExcludedPageDTO,
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan"))],
+)
+def plan_online_status_excluded(
+    request: Request,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+) -> TracksideApScopeExcludedPageDTO:
+    try:
+        return _application_service(request).list_trackside_ap_online_excluded(
+            _site_id(request),
+            page=page,
+            page_size=page_size,
+        )
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
+@router.get(
+    "/plan/online-status/unmatched",
+    response_model=TracksideApUnmatchedOnlinePageDTO,
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan"))],
+)
+def plan_online_status_unmatched(
+    request: Request,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+) -> TracksideApUnmatchedOnlinePageDTO:
+    try:
+        return _application_service(request).list_trackside_ap_online_unmatched(
+            _site_id(request),
+            page=page,
+            page_size=page_size,
         )
     except RailTransitWebError as exc:
         _raise_error(exc)

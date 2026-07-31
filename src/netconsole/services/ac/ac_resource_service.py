@@ -128,6 +128,10 @@ class AcResourceService:
             fit_ap_resources_updated=result.fit_ap_resources_updated,
             bbssid_rows_parsed=result.bbssid_rows_parsed,
             lldp_rows_parsed=result.lldp_rows_parsed,
+            bbssid_collect_status=str(
+                getattr(result, "bbssid_collect_status", "not_collected")
+            ),
+            bbssid_error=str(getattr(result, "bbssid_error", "") or ""),
             failed_commands=[item.command for item in getattr(result, "command_results", []) if not item.success],
             target_ap_uuid=request.ap_uuid,
             error_message=str(result.error_message or ""),
@@ -163,6 +167,10 @@ class AcResourceService:
             unauthenticated_rows_updated=result.unauthenticated_rows_updated,
             bbssid_rows_parsed=result.bbssid_rows_parsed,
             lldp_rows_parsed=result.lldp_rows_parsed,
+            bbssid_collect_status=str(
+                getattr(result, "bbssid_collect_status", "not_collected")
+            ),
+            bbssid_error=str(getattr(result, "bbssid_error", "") or ""),
             failed_commands=[item.command for item in getattr(result, "command_results", []) if not item.success],
             error_message=str(result.error_message or ""),
         )

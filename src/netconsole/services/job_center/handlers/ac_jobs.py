@@ -293,9 +293,16 @@ def ac_fit_ap_optical_refresh(context: JobContext) -> dict[str, object]:
                 should_cancel=context.should_cancel,
             )
     except AcOpticalRefreshCancelled as exc:
+        ApIdentityQueryService(database).ensure_index(
+            "ac_fit_ap_optical_cancelled_partial"
+        )
         raise BackgroundTaskCancelled(str(exc)) from exc
     if not result.success:
         raise RuntimeError(result.error_message or "FIT-AP 光衰更新失败")
+    if result.optical_rows_updated > 0:
+        ApIdentityQueryService(database).rebuild_index(
+            "ac_fit_ap_optical_refresh_succeeded"
+        )
     return _append_optical_identity_shadow(result.to_payload(), ac_uuid)
 
 

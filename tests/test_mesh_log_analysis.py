@@ -398,6 +398,139 @@ def test_mesh_peer_mapping_keeps_ap_mac_and_radio_mac_separate(tmp_path):
     assert links[0]["peer_radio_mac"] == "30f5-277a-5a2f"
 
 
+def test_mesh_identity_remap_clears_old_identity_and_preserves_raw_metrics(tmp_path):
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    source = tmp_path / "meshlog.log"
+    source.write_text(
+        "[1] 2025/12/03 10:12:33.000\n" + LINE_A + "\n",
+        encoding="utf-8",
+    )
+    MeshImportService("demo", paths).import_files(profile, [source])
+    index_repo = MeshMrRepository(
+        paths.mesh_mr_db_path("demo", profile.safe_folder_name)
+    )
+    repo = index_repo._detail_repos()[0]
+    peer = repo.distinct_peer_macs()[0]
+    original = repo.query_links(10, 0)[1][0]
+    immutable_fields = {
+        key: original[key]
+        for key in (
+            "peer_mac_raw",
+            "peer_mac_normalized",
+            "sample_time",
+            "link_state",
+            "local_rssi_db",
+            "peer_rssi_db",
+            "local_tx_busy",
+            "peer_tx_busy",
+        )
+    }
+    repo.replace_peer_identity_mappings(
+        [
+            {
+                "peer_mac_normalized": peer,
+                "peer_ap_name": "WRONG-AP",
+                "peer_ap_mac": "0011-2233-4450",
+                "peer_radio_id": 1,
+                "peer_radio_label": "radio1",
+                "peer_radio_mac": peer,
+                "peer_site": "WRONG-SITE",
+                "match_rule": "old_wrong_rule",
+                "match_confidence": 90,
+                "identity_status": "matched",
+                "identity_source": "old",
+            }
+        ]
+    )
+
+    summary = repo.replace_peer_identity_mappings(
+        [
+            {
+                "peer_mac_normalized": peer,
+                "peer_radio_mac": peer,
+                "identity_status": "unresolved",
+                "identity_reason": "exact_alias_not_found",
+            }
+        ]
+    )
+    total, links = repo.query_links(10, 0)
+    remapped = links[0]
+
+    assert total == 1
+    assert summary["before"]["matched"] == 1
+    assert summary["after"]["unresolved"] == 1
+    assert remapped["peer_ap_name"] == ""
+    assert remapped["peer_ap_mac"] == ""
+    assert remapped["peer_site"] == ""
+    assert remapped["peer_radio_id"] is None
+    assert remapped["peer_identity_status"] == "unresolved"
+    assert remapped["peer_identity_reason"] == "exact_alias_not_found"
+    assert {key: remapped[key] for key in immutable_fields} == immutable_fields
+
+
+def test_mesh_identity_remap_failure_rolls_back_mapping_and_links(tmp_path):
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    source = tmp_path / "meshlog.log"
+    source.write_text(
+        "[1] 2025/12/03 10:12:33.000\n" + LINE_A + "\n",
+        encoding="utf-8",
+    )
+    MeshImportService("demo", paths).import_files(profile, [source])
+    index_repo = MeshMrRepository(
+        paths.mesh_mr_db_path("demo", profile.safe_folder_name)
+    )
+    repo = index_repo._detail_repos()[0]
+    peer = repo.distinct_peer_macs()[0]
+    repo.replace_peer_identity_mappings(
+        [
+            {
+                "peer_mac_normalized": peer,
+                "peer_ap_name": "OLD-AP",
+                "peer_ap_mac": "0011-2233-4450",
+                "peer_radio_mac": peer,
+                "identity_status": "matched",
+                "identity_source": "old",
+            }
+        ]
+    )
+    with sqlite3.connect(repo.path) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER fail_identity_remap
+            BEFORE UPDATE OF peer_identity_status ON mesh_links
+            BEGIN
+                SELECT RAISE(ABORT, 'forced remap failure');
+            END
+            """
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="forced remap failure"):
+        repo.replace_peer_identity_mappings(
+            [
+                {
+                    "peer_mac_normalized": peer,
+                    "peer_radio_mac": peer,
+                    "identity_status": "unresolved",
+                    "identity_reason": "exact_alias_not_found",
+                }
+            ]
+        )
+
+    with sqlite3.connect(repo.path) as connection:
+        connection.row_factory = sqlite3.Row
+        mapping = connection.execute(
+            "SELECT * FROM mesh_peer_mapping WHERE peer_mac_normalized = ?",
+            (peer,),
+        ).fetchone()
+        link = connection.execute("SELECT * FROM mesh_links LIMIT 1").fetchone()
+    assert mapping["peer_ap_name"] == "OLD-AP"
+    assert mapping["identity_status"] == "matched"
+    assert link["peer_ap_name"] == "OLD-AP"
+    assert link["peer_identity_status"] == "matched"
+
+
 def test_mesh_peer_mapping_service_uses_exact_h3c_alias_without_ac(tmp_path):
     paths = PathResolver(tmp_path)
     database = Database(paths.site_db_path("demo"))
@@ -406,6 +539,7 @@ def test_mesh_peer_mapping_service_uses_exact_h3c_alias_without_ac(tmp_path):
         {
             "ap_name": "AP-01",
             "ap_point_code": "AP-01",
+            "ap_vendor": "H3C",
             "ap_mac_display": "74ad-cb9d-3320",
             "station_name": "S1",
         }
@@ -423,7 +557,7 @@ def test_mesh_peer_mapping_service_uses_exact_h3c_alias_without_ac(tmp_path):
     assert resolved["peer_site"] == "S1"
     assert resolved["peer_radio_label"] == "radio1"
     assert resolved["identity_source"] == "base_data"
-    assert resolved["match_rule"] == "h3c_ap_mac_to_r1_exact"
+    assert resolved["match_rule"] == "h3c_physical_mac_to_r1_exact_v1"
 
 
 def test_mesh_peer_mapping_service_keeps_peer_and_physical_ap_mac_separate(tmp_path):
@@ -434,6 +568,7 @@ def test_mesh_peer_mapping_service_keeps_peer_and_physical_ap_mac_separate(tmp_p
         {
             "ap_name": "AP0208",
             "ap_point_code": "AP0208",
+            "ap_vendor": "H3C",
             "ap_mac_display": "74ad-cb9d-3320",
             "station_name": "03镇驼站",
         }
@@ -459,6 +594,7 @@ def test_mesh_peer_mapping_keeps_unresolved_observation_without_guessing(tmp_pat
         {
             "ap_name": "AP2011",
             "ap_point_code": "AP2011",
+            "ap_vendor": "H3C",
             "ap_mac_display": "64:2f:c7:78:ed:a0",
             "station_name": "现场站点",
         }
@@ -474,6 +610,7 @@ def test_mesh_peer_mapping_keeps_unresolved_observation_without_guessing(tmp_pat
     assert resolved["peer_mac_normalized"] == "642fc778ef5f"
     assert resolved["peer_radio_mac"] == "642fc778ef5f"
     assert resolved["identity_status"] == "unresolved"
+    assert resolved["identity_reason"] == "exact_alias_not_found"
     assert resolved["canonical_ap_mac"] == ""
     assert resolved["peer_ap_name"] == ""
     assert resolved["peer_site"] == ""

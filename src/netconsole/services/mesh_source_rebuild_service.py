@@ -30,6 +30,10 @@ _SESSION_RE = re.compile(r"^(?P<mr_id>[0-9a-fA-F-]{8,64}):(?P<source_id>[1-9][0-
 _MAX_RECOVERY_BYTES = MESH_SINGLE_FILE_MAX_BYTES
 
 
+class MeshSourceRebuildCancelled(RuntimeError):
+    pass
+
+
 class MeshSourceRebuildService:
     def __init__(self, paths: PathResolver) -> None:
         self.paths = paths
@@ -50,6 +54,36 @@ class MeshSourceRebuildService:
         for path in (raw_root, parsed_root):
             self._require_inside(path, profile_root)
             path.mkdir(parents=True, exist_ok=True)
+
+        # Identity changes only affect the projection fields in a healthy detail
+        # database. Reuse the parsed facts even when the original raw file was
+        # removed; raw parsing is reserved for missing, corrupt, or old details.
+        detail_path = self._existing_healthy_detail_path(parsed_root, source)
+        if detail_path is not None:
+            detail = MeshMrRepository(detail_path)
+            before = detail.summary()
+            if progress:
+                progress("mesh_identity_remap", 1, 1, "正在按最新 AP Identity 索引重映射当前 MESH 来源")
+            self._check_cancel(should_cancel)
+            mapping_service = MeshPeerMappingService(site_id, self.paths)
+            mapping_service.refresh_repository(detail)
+            self._checkpoint(detail_path)
+            after = detail.summary()
+            if int(after.get("link_record_count") or 0) != int(before.get("link_record_count") or 0):
+                raise RuntimeError("MESH 身份重映射改变了原始链路记录数量")
+            if progress:
+                progress("mesh_source_done", 1, 1, "当前 MESH 来源身份重映射完成")
+            return {
+                "archive_sha256": str(source.get("archive_sha256") or ""),
+                "raw_archived_count": 0,
+                "parsed_source_count": 1,
+                "parsed_record_count": int(after.get("link_record_count") or 0),
+                "issue_count": int(source.get("issue_count") or 0),
+                "created_session_ids": [session_id],
+                "recovery_source": "identity_only_remap",
+                "identity_remap": dict(mapping_service.last_remap_summary),
+            }
+
         location = self.locator.locate(site_id, profile, source)
         self._check_cancel(should_cancel)
         recovered = False
@@ -259,6 +293,23 @@ class MeshSourceRebuildService:
         MeshSourceRebuildService._require_inside(target, parsed_root)
         return target
 
+    @classmethod
+    def _existing_healthy_detail_path(
+        cls,
+        parsed_root: Path,
+        source: Mapping[str, object],
+    ) -> Path | None:
+        try:
+            target = cls._target_detail_path(parsed_root, source)
+            if not target.is_file() or cls._schema_version(target) != SCHEMA_VERSION:
+                return None
+            # Opening the repository validates the compact schema and catches
+            # malformed databases before the identity transaction starts.
+            MeshMrRepository(target, read_only=True)
+            return target
+        except (OSError, sqlite3.Error, ValueError, RuntimeError):
+            return None
+
     @staticmethod
     def _checkpoint(path: Path) -> None:
         with closing(sqlite3.connect(path)) as connection:
@@ -285,7 +336,7 @@ class MeshSourceRebuildService:
     @staticmethod
     def _check_cancel(callback: CancelCallback | None) -> None:
         if callback and callback():
-            raise RuntimeError("MESH 来源重建任务已取消")
+            raise MeshSourceRebuildCancelled("MESH 来源重建任务已取消")
 
     @staticmethod
     def _require_inside(candidate: Path, root: Path) -> None:
@@ -293,4 +344,4 @@ class MeshSourceRebuildService:
             raise ValueError("MESH 来源路径越过允许目录")
 
 
-__all__ = ["MeshSourceRebuildService"]
+__all__ = ["MeshSourceRebuildCancelled", "MeshSourceRebuildService"]

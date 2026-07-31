@@ -24,6 +24,7 @@ const DEFAULT_QUERY_TIMEOUT_MS = 15_000
 const QUERY_MAX_ATTEMPTS = 2
 const QUERY_RETRY_BASE_DELAY_MS = 150
 const RETRYABLE_QUERY_STATUSES = new Set([502, 503, 504])
+const inflightQueryRequests = new Map<string, Promise<unknown>>()
 
 export class ApiRequestError extends Error {
   constructor(message: string, readonly status: number, readonly code = '', readonly details: Record<string, unknown> = {}) {
@@ -210,6 +211,13 @@ async function fetchWithQueryTimeout(
   }
 }
 
+function isRetryableQueryError(reason: unknown): boolean {
+  return (
+    reason instanceof ApiRequestError
+    && reason.code === 'CONNECTION_RESET'
+  )
+}
+
 function waitForQueryRetry(path: string, attempt: number, signal?: AbortSignal | null): Promise<void> {
   if (signal?.aborted) return Promise.reject(requestAbortedError(path))
   const delayMs = QUERY_RETRY_BASE_DELAY_MS * (2 ** (attempt - 1))
@@ -227,7 +235,7 @@ function waitForQueryRetry(path: string, attempt: number, signal?: AbortSignal |
   })
 }
 
-export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function apiRequestInternal<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers)
   const runtime = getRuntimeConfig()
   const formData = typeof FormData !== 'undefined' && options.body instanceof FormData
@@ -251,8 +259,7 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
       if (
         queryRequest
         && attempt < attempts
-        && reason instanceof ApiRequestError
-        && reason.code !== 'REQUEST_ABORTED'
+        && isRetryableQueryError(reason)
       ) {
         await waitForQueryRetry(path, attempt, options.signal)
         continue
@@ -301,6 +308,24 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
   }
   if (method === 'HEAD') return undefined as T
   return readJsonResponse<T>(response, path, 'INVALID_JSON_RESPONSE')
+}
+
+export function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const method = (options.method || 'GET').toUpperCase()
+  const queryRequest = method === 'GET' || method === 'HEAD'
+  if (!queryRequest || options.signal) {
+    return apiRequestInternal<T>(path, options)
+  }
+  const key = `${method}:${resolveApiUrl(path)}`
+  const existing = inflightQueryRequests.get(key)
+  if (existing) return existing as Promise<T>
+  const request = apiRequestInternal<T>(path, options)
+  inflightQueryRequests.set(key, request)
+  const clear = () => {
+    if (inflightQueryRequests.get(key) === request) inflightQueryRequests.delete(key)
+  }
+  void request.then(clear, clear)
+  return request
 }
 
 export function getHealth(): Promise<HealthResponse> {

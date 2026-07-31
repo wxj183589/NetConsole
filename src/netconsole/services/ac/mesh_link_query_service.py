@@ -28,7 +28,7 @@ from netconsole.models.api.ac_mesh_link import (
 )
 from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.ap_identity import ApIdentityQueryService
-from netconsole.services.ap_identity.normalizers import format_mac
+from netconsole.services.ap_identity.normalizers import format_mac, normalize_mac_key
 from netconsole.models.ap_identity_index import ApIdentityMatch
 
 
@@ -180,6 +180,104 @@ class AcMeshLinkQueryService:
             ]
         items.sort(key=lambda item: self._link_sort_key(item, sort_by), reverse=sort_order == "desc")
         return self._page_links(items, page, page_size)
+
+    def current_link_summaries_for_ap_macs(
+        self,
+        site_id: str,
+        ap_macs: list[str],
+    ) -> dict[str, dict[str, object]]:
+        """按页内物理 AP MAC 返回轻量 MESH 摘要，不构建全量链路 DTO。"""
+        physical_keys = sorted(
+            {
+                key
+                for value in ap_macs
+                if (key := normalize_mac_key(value))
+            }
+        )
+        if not physical_keys:
+            return {}
+        alias_candidates: dict[str, set[str]] = {
+            key: {key}
+            for key in physical_keys
+        }
+        site_db = self.paths.site_db_path(site_id)
+        if site_db.is_file():
+            with closing(self._connect(site_db)) as conn:
+                if self._table_exists(conn, "ap_identity_entities") and self._table_exists(
+                    conn,
+                    "ap_identity_mac_aliases",
+                ):
+                    placeholders = ", ".join("?" for _ in physical_keys)
+                    rows = conn.execute(
+                        f"""
+                        SELECT e.effective_ap_mac_key AS physical_mac_key,
+                               a.mac_key AS alias_mac_key
+                        FROM ap_identity_entities e
+                        JOIN ap_identity_mac_aliases a
+                          ON a.site_id = e.site_id
+                         AND a.entity_id = e.entity_id
+                        WHERE e.site_id = 'current'
+                          AND e.effective_ap_mac_key IN ({placeholders})
+                          AND a.is_active = 1
+                          AND a.is_exact = 1
+                        """,
+                        physical_keys,
+                    ).fetchall()
+                    for row in rows:
+                        physical = normalize_mac_key(row["physical_mac_key"])
+                        alias = normalize_mac_key(row["alias_mac_key"])
+                        if physical in alias_candidates and alias:
+                            alias_candidates[physical].add(alias)
+        physicals_by_alias: dict[str, set[str]] = {}
+        for physical, aliases in alias_candidates.items():
+            for alias in aliases:
+                physicals_by_alias.setdefault(alias, set()).add(physical)
+        unique_aliases = {
+            alias: next(iter(physicals))
+            for alias, physicals in physicals_by_alias.items()
+            if len(physicals) == 1
+        }
+        snapshot = self._latest_snapshot(site_id)
+        snapshot_db = self._snapshot_db_path(site_id)
+        if snapshot is None or not snapshot_db.is_file() or not unique_aliases:
+            return {}
+        aliases = sorted(unique_aliases)
+        placeholders = ", ".join("?" for _ in aliases)
+        expression = "replace(replace(replace(lower(COALESCE(local_mac, '')), ':', ''), '-', ''), ' ', '')"
+        with closing(self._connect(snapshot_db)) as conn:
+            if not self._table_exists(conn, "vehicle_mr_online_links"):
+                return {}
+            rows = conn.execute(
+                f"""
+                SELECT peer_name, local_mac, ac_time, created_at
+                FROM vehicle_mr_online_links
+                WHERE snapshot_id = ?
+                  AND {expression} IN ({placeholders})
+                ORDER BY id
+                """,
+                [snapshot.id, *aliases],
+            ).fetchall()
+        summaries: dict[str, dict[str, object]] = {}
+        for row in rows:
+            alias = normalize_mac_key(row["local_mac"])
+            physical = unique_aliases.get(alias)
+            if not physical:
+                continue
+            summary = summaries.setdefault(
+                physical,
+                {"mr_names": set(), "updated_at": ""},
+            )
+            name = str(row["peer_name"] or "").strip()
+            if name:
+                names = summary["mr_names"]
+                if isinstance(names, set):
+                    names.add(name)
+            updated_at = max(
+                str(summary.get("updated_at") or ""),
+                str(row["ac_time"] or row["created_at"] or snapshot.collected_at),
+            )
+            summary["updated_at"] = updated_at
+        return summaries
 
     def list_unmatched_links(self, site_id: str, **kwargs) -> AcMeshLinkPageDTO:
         return self.list_current_links(site_id, match_status="unmatched", **kwargs)

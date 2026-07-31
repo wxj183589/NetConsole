@@ -63,6 +63,13 @@ AC 绑定。
 比较和查询代码必须显式使用 `normalize_mac_key()`。AP 名称即使外观
 像 MAC，也不会自动写入物理 `ap_mac`。
 
+H3C Radio 衍生只接受明确厂商为 `H3C`、格式合法且末位为 `0` 的物理
+AP MAC。Radio 1 保持前 11 个十六进制字符并将末位改为 `F`；Radio 2
+将倒数第二位加一并将末位改为 `F`。已经以 `F` 结尾的 Radio 观测值、
+厂商不明或非 H3C 的 MAC 都不得再次衍生。索引构建阶段生成的是完整
+48 位 Radio alias，查询仍做规范化后的完整等值匹配，不恢复
+`h3c_radio_block_36` 等前缀规则。
+
 ## 4. 实体合并与冲突
 
 索引构建器只按稳定 AP UUID、完整规范化 AP MAC 或唯一序列号合并来源。
@@ -86,10 +93,11 @@ AC 与基础资料 MAC 或名称不一致时：
 1. AC 实际 Radio MAC；
 2. AC 实际 BSSID；
 3. AC 实际 BBSSID；
-4. 公共 H3C R1/R2 函数生成的完整精确 Radio alias；
-5. AC FIT-AP AP MAC；
-6. 基础资料 AP MAC；
-7. 历史兼容 MAC。
+4. AC FIT-AP 物理 MAC 生成的 H3C R1/R2 完整精确 Radio alias；
+5. 基础资料物理 MAC 生成的 H3C R1/R2 完整精确 Radio alias；
+6. AC FIT-AP AP MAC；
+7. 基础资料 AP MAC；
+8. 历史兼容 MAC。
 
 MESH Peer 使用独立的 `resolve_peer_mac()`。Peer 是 Radio/BSSID 观测，
 生产匹配只允许前三类 AC 实际精确值或完整 H3C R1/R2 精确 alias；
@@ -97,7 +105,9 @@ MESH Peer 使用独立的 `resolve_peer_mac()`。Peer 是 Radio/BSSID 观测，
 
 两条查询都不再使用 36/40 位或 OUI 前缀、名称、MAC-like 名称、位置、
 站点或“唯一候选”推测。没有完整精确证据时返回 `unresolved`；同一
-优先级精确 alias 指向多个实体时返回 `ambiguous`。
+优先级精确 alias 指向多个实体时返回 `ambiguous`。同一完整 alias 由
+实际值和衍生值共同指向同一物理实体时可正常匹配；不同物理实体重复
+占用该 alias 时不得按名称、站点或来源优先级静默消歧。
 
 ## 6. 持久化结构
 
@@ -116,14 +126,32 @@ MESH Peer 使用独立的 `resolve_peer_mac()`。Peer 是 Radio/BSSID 观测，
 
 索引只在明确写事件后刷新：
 
-- Backend 启动发现来源存在且 index revision 为 0；
 - 基础资料导入应用、回滚、保存、删除或清空；
 - AC FIT-AP 刷新、删除、metadata 导入或保存；
+- AC/FIT-AP 或轨旁 AP 光衰任务成功写入身份来源；取消前已经提交部分
+  光衰结果时，仅在检测到 revision 变化后补建；
 - 局点包在 staging 数据库发布前完成初始化和重建。
 
 查询服务不得调用 `ensure_index()` 或 `rebuild_index()`。这保证搜索、
 MESH 分析、历史报告和页面刷新都是只读操作，数据库指纹在普通 GET
 请求期间保持不变。
+
+Backend 启动只保留缺失或过期索引的兼容性收口；正常来源写入不会依赖
+启动时机，也不会把启动修复当作来源写入的替代路径。
+
+来源 revision 监听 `ap_extension_points`、FIT-AP 当前资源、
+Radio/LLDP 历史、FIT-AP metadata、兼容 AP entity/光衰/轨旁缓存，以及
+被 FIT-AP 资源引用 AC 的 `devices.device_uuid/device_vendor`。无关交换机、
+未被 FIT-AP 引用的设备和 `device_facts` 更新不提升 revision，普通设备
+状态采集不会把 AP Identity 误标为 stale。写任务完成全部来源持久化后
+按批次只构建一次，禁止在每台 AP、每条 Radio/LLDP 或 GET 中重建。
+
+`source_revision=0` 是“当前来源 revision 合法为零”，不是缺失或过期。
+只有索引状态不存在/索引 revision 无效时返回 `identity_index_missing`，
+索引记录的来源 revision 与当前来源 revision 不等时返回
+`identity_index_stale`。来源写任务在独立短事务内构建并原子替换实体、
+alias、冲突和状态；构建失败保留旧索引，不在普通 GET 中执行重建、
+checkpoint 或其他补写。
 
 ## 8. 消费端契约
 
@@ -144,6 +172,12 @@ MESH DTO、页面和导出必须同时保留原始 Peer、规范化 Peer Radio �
 解析出的 AP 身份。`unresolved/ambiguous` 时原始 Peer 继续显示，AP
 名称、物理 AP MAC、站点、区间和里程保持空值，并携带状态、规则、
 来源、置信度和原因。
+
+未匹配原因按事实区分为 `invalid_peer_mac`、`identity_index_missing`、
+`identity_index_stale`、`exact_alias_not_collected`、
+`exact_alias_not_found`、`duplicate_exact_alias`、
+`physical_ap_missing` 和 `station_topology_missing`，页面和报告不得把这些
+原因重新折叠成无法诊断的单一“未关联”。
 
 ## 9. 兼容与回滚边界
 

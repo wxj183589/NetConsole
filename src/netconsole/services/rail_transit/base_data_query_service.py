@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import logging
 import sqlite3
+import time
 from collections import Counter, defaultdict
 from contextlib import closing
 from pathlib import Path
@@ -63,6 +65,7 @@ from netconsole.utils.mileage import parse_track_mileage
 
 T = TypeVar("T")
 _SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2, "": 3}
+_LOGGER = logging.getLogger(__name__)
 _AP_FIELDS = (
     "id",
     "belong_type",
@@ -78,6 +81,7 @@ _AP_FIELDS = (
     "distance_to_prev_m",
     "ap_point_code",
     "ap_name",
+    "ap_vendor",
     "ap_mac_norm",
     "ap_mac_display",
     "yard_name",
@@ -261,6 +265,26 @@ class RailTransitBaseDataQueryService:
         sort_by: str = "name",
         sort_order: str = "asc",
     ) -> TracksideApPageDTO:
+        # The list view only needs the current page. Keep detail/export paths on
+        # the existing complete projection, but avoid loading every AP, AC
+        # detail, MESH link, and quality issue before slicing the page.
+        fast_page = self._list_aps_sql_first(
+            site_id,
+            station=station,
+            section=section,
+            line_side=line_side,
+            query=query,
+            has_issue=has_issue,
+            issue_severity=issue_severity,
+            fit_ap_status=fit_ap_status,
+            optical_status=optical_status,
+            page=page,
+            page_size=page_size,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+        if fast_page is not None:
+            return fast_page
         items = self._all_aps(site_id, include_runtime=True)
         issues = self._issues(site_id, aps=self._all_aps(site_id, include_runtime=False), mrs=self._all_mrs(site_id, include_runtime=False))
         issues.extend(self._runtime_ap_issues(items))
@@ -300,6 +324,349 @@ class RailTransitBaseDataQueryService:
         items.sort(key=lambda item: self._ap_sort_key(item, sort_by), reverse=sort_order == "desc")
         selected, current, size = self._page(items, page, page_size)
         return TracksideApPageDTO(items=selected, total=len(items), page=current, page_size=size)
+
+    def _list_aps_sql_first(
+        self,
+        site_id: str,
+        *,
+        station: str,
+        section: str,
+        line_side: str,
+        query: str,
+        has_issue: bool | None,
+        issue_severity: str,
+        fit_ap_status: str,
+        optical_status: str,
+        page: int,
+        page_size: int,
+        sort_by: str,
+        sort_order: str,
+    ) -> TracksideApPageDTO | None:
+        started = time.perf_counter()
+        path = self.paths.site_db_path(site_id)
+        if not path.is_file():
+            return TracksideApPageDTO(items=[], total=0, page=max(1, int(page)), page_size=max(1, min(int(page_size), 200)))
+        current_page = max(1, int(page))
+        size = max(1, min(int(page_size), 200))
+        post_filter = bool(
+            fit_ap_status
+            or optical_status
+            or has_issue is not None
+            or issue_severity
+        )
+        clauses = [
+            "COALESCE(belong_type, '') NOT IN ('__base_station__', '__base_section__')",
+            (
+                "(trim(COALESCE(ap_name, '')) <> '' "
+                "OR trim(COALESCE(ap_mac_norm, '')) <> '' "
+                "OR trim(COALESCE(ap_mac_display, '')) <> '' "
+                "OR trim(COALESCE(ap_point_code, '')) NOT IN ('', '-'))"
+            ),
+        ]
+        params: list[object] = []
+        for field, value in (("station_name", station), ("section_name", section), ("line_side", line_side)):
+            text = str(value or "").strip()
+            if text:
+                clauses.append(f"COALESCE({field}, '') LIKE ? COLLATE NOCASE")
+                params.append(f"%{text}%")
+        keyword = str(query or "").strip()
+        if keyword and not normalize_mac_key(keyword):
+            clauses.append(
+                "(COALESCE(ap_name, '') LIKE ? COLLATE NOCASE OR "
+                "COALESCE(ap_point_code, '') LIKE ? COLLATE NOCASE OR "
+                "COALESCE(ap_mac_display, '') LIKE ? COLLATE NOCASE)"
+            )
+            params.extend([f"%{keyword}%"] * 3)
+        elif keyword:
+            normalized = normalize_mac_key(keyword)
+            identity_rows = ApIdentityQueryService(Database(path)).search_aps(keyword)
+            base_ids = sorted(
+                {
+                    str(row.get("base_record_id") or "").removeprefix("ap:")
+                    for row in identity_rows
+                    if str(row.get("base_record_id") or "").removeprefix("ap:")
+                }
+            )
+            physical_clause = (
+                "replace(replace(replace(lower(COALESCE(ap_mac_norm, ap_mac_display, '')), "
+                "':', ''), '-', ''), ' ', '') = ?"
+            )
+            if base_ids:
+                placeholders = ", ".join("?" for _ in base_ids)
+                clauses.append(
+                    f"({physical_clause} OR CAST(id AS TEXT) IN ({placeholders}))"
+                )
+                params.extend([normalized, *base_ids])
+            else:
+                clauses.append(physical_clause)
+                params.append(normalized)
+        where = " AND ".join(clauses)
+        sort_map = {
+            "name": "COALESCE(ap_name, '')",
+            "station": "COALESCE(station_name, '')",
+            "section": "COALESCE(section_name, '')",
+            "mileage": "mileage_m",
+            "updated_at": "COALESCE(updated_at, '')",
+        }
+        sort_column = sort_map.get(sort_by, sort_map["name"])
+        direction = "DESC" if sort_order == "desc" else "ASC"
+        selected_fields = [field for field in _AP_FIELDS]
+        base_query_started = time.perf_counter()
+        with closing(self._connect(path)) as conn:
+            wal_mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0])
+            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(ap_extension_points)")}
+            selected = [field for field in selected_fields if field in columns]
+            if "id" not in selected:
+                return None
+            sql_fields = ", ".join(f'"{field}"' for field in selected)
+        base_query_ms = (time.perf_counter() - base_query_started) * 1000
+        count_started = time.perf_counter()
+        with closing(self._connect(path)) as conn:
+            total_row = conn.execute(
+                f"SELECT COUNT(*) FROM ap_extension_points WHERE {where}",
+                params,
+            ).fetchone()
+            total = int(total_row[0] if total_row else 0)
+        count_ms = (time.perf_counter() - count_started) * 1000
+        page_sql_ms = 0.0
+        dto_ms = 0.0
+        runtime_join_ms = 0.0
+        issue_join_ms = 0.0
+
+        def project_rows(raw_rows: list[sqlite3.Row]) -> list[TracksideApDTO]:
+            nonlocal dto_ms, runtime_join_ms, issue_join_ms
+            dto_started = time.perf_counter()
+            base_items = self._points_from_rows(site_id, [dict(row) for row in raw_rows])
+            dto_ms += (time.perf_counter() - dto_started) * 1000
+            runtime_started = time.perf_counter()
+            enriched = self._attach_runtime_for_page(site_id, base_items)
+            runtime_join_ms += (time.perf_counter() - runtime_started) * 1000
+            issue_started = time.perf_counter()
+            issues = self._issues_for_page(site_id, enriched)
+            issue_map = self._issue_map(issues, "ap")
+            enriched = [
+                self._with_ap_issues(item, issue_map.get(item.id, []))
+                for item in enriched
+            ]
+            issue_join_ms += (time.perf_counter() - issue_started) * 1000
+            return enriched
+
+        filtered_items: list[TracksideApDTO] = []
+        if post_filter:
+            batch_size = 200
+            offset = 0
+            while offset < total:
+                page_sql_started = time.perf_counter()
+                with closing(self._connect(path)) as conn:
+                    rows = conn.execute(
+                        f"SELECT {sql_fields} FROM ap_extension_points WHERE {where} "
+                        f"ORDER BY {sort_column} {direction}, id ASC LIMIT ? OFFSET ?",
+                        [*params, batch_size, offset],
+                    ).fetchall()
+                page_sql_ms += (time.perf_counter() - page_sql_started) * 1000
+                if not rows:
+                    break
+                batch = project_rows(rows)
+                if fit_ap_status:
+                    batch = [
+                        item
+                        for item in batch
+                        if item.runtime.fit_ap_status == fit_ap_status
+                    ]
+                if optical_status:
+                    batch = [
+                        item
+                        for item in batch
+                        if item.runtime.optical_status == optical_status
+                    ]
+                if has_issue is not None:
+                    batch = [
+                        item
+                        for item in batch
+                        if (item.issue_count > 0) is has_issue
+                    ]
+                if issue_severity:
+                    batch = [
+                        item
+                        for item in batch
+                        if item.highest_issue_severity == issue_severity
+                    ]
+                filtered_items.extend(batch)
+                offset += len(rows)
+            total = len(filtered_items)
+            start = (current_page - 1) * size
+            result_items = filtered_items[start : start + size]
+        else:
+            page_sql_started = time.perf_counter()
+            with closing(self._connect(path)) as conn:
+                rows = conn.execute(
+                    f"SELECT {sql_fields} FROM ap_extension_points WHERE {where} "
+                    f"ORDER BY {sort_column} {direction}, id ASC LIMIT ? OFFSET ?",
+                    [*params, size, (current_page - 1) * size],
+                ).fetchall()
+            page_sql_ms = (time.perf_counter() - page_sql_started) * 1000
+            result_items = project_rows(rows)
+
+        total_ms = (time.perf_counter() - started) * 1000
+        if total_ms > 2000:
+            _LOGGER.warning(
+                "base-data/aps slow query base_query_ms=%.1f count_ms=%.1f "
+                "page_sql_ms=%.1f runtime_join_ms=%.1f issue_join_ms=%.1f "
+                "dto_ms=%.1f total_ms=%.1f returned_rows=%s total_rows=%s "
+                "wal_mode=%s lock_wait_ms=%.1f",
+                base_query_ms,
+                count_ms,
+                page_sql_ms,
+                runtime_join_ms,
+                issue_join_ms,
+                dto_ms,
+                total_ms,
+                len(result_items),
+                total,
+                wal_mode,
+                0.0,
+            )
+        return TracksideApPageDTO(
+            items=result_items,
+            total=total,
+            page=current_page,
+            page_size=size,
+        )
+
+    def _points_from_rows(self, site_id: str, rows: list[dict[str, Any]]) -> list[TracksideApDTO]:
+        # Reuse the canonical DTO construction and line-side derivation with no
+        # runtime readers. This keeps SQL paging separate from identity logic.
+        formal_sections: list[dict[str, Any]] = []
+        path = self.paths.site_db_path(site_id)
+        if path.is_file():
+            with closing(self._connect(path)) as conn:
+                columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(ap_extension_points)")}
+                selected = [field for field in _AP_FIELDS if field in columns]
+                if selected:
+                    sql_fields = ", ".join(f'"{field}"' for field in selected)
+                    formal_sections = [
+                        dict(row)
+                        for row in conn.execute(
+                            f"""
+                            SELECT {sql_fields}
+                            FROM ap_extension_points
+                            WHERE belong_type = '__base_section__'
+                            """
+                        )
+                    ]
+        return [
+            item
+            for item in self._all_points(
+                site_id,
+                include_runtime=False,
+                rows=[*rows, *formal_sections],
+            )
+            if self._is_ap_record(item)
+        ]
+
+    def _attach_runtime_for_page(
+        self,
+        site_id: str,
+        items: list[TracksideApDTO],
+    ) -> list[TracksideApDTO]:
+        macs = [item.mac for item in items if self._mac_key(item.mac)]
+        ac_by_mac: dict[str, list[Any]] = defaultdict(list)
+        try:
+            loader = getattr(self.ac_query, "list_ap_details_for_macs", None)
+            details = loader(site_id, macs) if callable(loader) else []
+            for detail in details:
+                mac_key = self._mac_key(detail.ap.mac)
+                if mac_key:
+                    ac_by_mac[mac_key].append(detail)
+        except (OSError, ValueError, sqlite3.Error):
+            pass
+        mesh_by_mac: dict[str, dict[str, object]] = {}
+        try:
+            loader = getattr(self.mesh_query, "current_link_summaries_for_ap_macs", None)
+            if callable(loader):
+                mesh_by_mac = loader(site_id, macs)
+        except (OSError, ValueError, sqlite3.Error):
+            pass
+        result: list[TracksideApDTO] = []
+        for item in items:
+            mac_key = self._mac_key(item.mac)
+            matches = ac_by_mac.get(mac_key, []) if mac_key else []
+            ac = matches[0] if len(matches) == 1 else None
+            mesh = mesh_by_mac.get(mac_key, {}) if mac_key else {}
+            names_value = mesh.get("mr_names")
+            names = sorted(str(value) for value in names_value) if isinstance(names_value, (set, list, tuple)) else []
+            runtime = RelatedRuntimeStatusDTO(
+                fit_ap_id=ac.ap.id if ac else "",
+                fit_ap_ac_id=ac.ap.ac_id if ac else "",
+                fit_ap_name=ac.ap.name if ac else "",
+                fit_ap_match_status="matched" if ac else "conflict" if len(matches) > 1 else "unmatched",
+                fit_ap_status=ac.ap.status if ac else "unknown",
+                optical_status=ac.optical.optical_status if ac else "no_data",
+                mesh_status="online" if mesh else "unknown",
+                mesh_related_name="、".join(names),
+                updated_at=max(
+                    str(mesh.get("updated_at") or ""),
+                    ac.ap.updated_at if ac else "",
+                ),
+            )
+            result.append(
+                item.model_copy(
+                    update={
+                        "management_ip": ac.ap.ip if ac else "",
+                        "model": ac.ap.model if ac else "",
+                        "radios": [],
+                        "runtime": runtime,
+                    },
+                    deep=True,
+                )
+            )
+        return result
+
+    def _issues_for_page(
+        self,
+        site_id: str,
+        aps: list[TracksideApDTO],
+    ) -> list[DataQualityIssueDTO]:
+        page_macs = {self._mac_key(ap.mac) for ap in aps if self._mac_key(ap.mac)}
+        mac_counts: Counter[str] = Counter()
+        db_path = self.paths.site_db_path(site_id)
+        if page_macs and db_path.is_file():
+            placeholders = ", ".join("?" for _ in page_macs)
+            expression = (
+                "replace(replace(replace(lower(COALESCE(ap_mac_norm, ap_mac_display, '')), "
+                "':', ''), '-', ''), ' ', '')"
+            )
+            with closing(self._connect(db_path)) as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT {expression} AS mac_key, COUNT(*) AS row_count
+                    FROM ap_extension_points
+                    WHERE COALESCE(belong_type, '') NOT IN ('__base_station__', '__base_section__')
+                      AND {expression} IN ({placeholders})
+                    GROUP BY {expression}
+                    """,
+                    sorted(page_macs),
+                ).fetchall()
+            mac_counts.update(
+                {
+                    str(row["mac_key"] or ""): int(row["row_count"] or 0)
+                    for row in rows
+                    if row["mac_key"]
+                }
+            )
+        issues = self._ap_record_issues(aps, mac_counts=mac_counts)
+        page_record_ids = {
+            ap.id.removeprefix("ap:")
+            for ap in aps
+            if ap.id
+        }
+        issues.extend(
+            issue
+            for issue in self._identity_conflict_issues(site_id)
+            if issue.entity_id.removeprefix("ap:") in page_record_ids
+        )
+        issues.extend(self._runtime_ap_issues(aps))
+        return issues
 
     def list_ap_location_items(self, site_id: str) -> list[TracksideApDTO]:
         """一次返回 AP 位置基础字段，不拼接运行态、质量问题或分页结果。"""
@@ -522,8 +889,14 @@ class RailTransitBaseDataQueryService:
     def _all_aps(self, site_id: str, *, include_runtime: bool) -> list[TracksideApDTO]:
         return [item for item in self._all_points(site_id, include_runtime=include_runtime) if self._is_ap_record(item)]
 
-    def _all_points(self, site_id: str, *, include_runtime: bool) -> list[TracksideApDTO]:
-        rows = self._read_rows(site_id, "ap_extension_points", _AP_FIELDS)
+    def _all_points(
+        self,
+        site_id: str,
+        *,
+        include_runtime: bool,
+        rows: list[dict[str, Any]] | None = None,
+    ) -> list[TracksideApDTO]:
+        rows = rows if rows is not None else self._read_rows(site_id, "ap_extension_points", _AP_FIELDS)
         ac_by_mac: dict[str, list[Any]] = defaultdict(list)
         links_by_ap: dict[str, list[Any]] = defaultdict(list)
         if include_runtime:
@@ -552,7 +925,7 @@ class RailTransitBaseDataQueryService:
             record_kind = str(row.get("belong_type") or "")
             base_metadata = self._base_metadata(row.get("raw_payload_json"))
             for field_name in (
-                "belong_type", "system_type", "network_domain", "yard_name", "area_name",
+                "belong_type", "system_type", "network_domain", "ap_vendor", "yard_name", "area_name",
                 "distance_to_prev_m", "curve_radius_m", "curve_start_text", "curve_end_text",
                 "install_scene", "location_desc", "power_station", "power_distribution",
                 "fiber_access_station", "fiber_distribution", "uplink_switch", "uplink_port",
@@ -593,6 +966,7 @@ class RailTransitBaseDataQueryService:
                     line_name=str(row.get("line_name") or ""),
                     name=name,
                     point_code=str(row.get("ap_point_code") or ""),
+                    vendor=str(row.get("ap_vendor") or ""),
                     mac=self._display_mac(row.get("ap_mac_norm") or row.get("ap_mac_display")),
                     management_ip=ac.ap.ip if ac else "",
                     model=ac.ap.model if ac else "",
@@ -725,8 +1099,37 @@ class RailTransitBaseDataQueryService:
     ) -> list[DataQualityIssueDTO]:
         aps = aps if aps is not None else self._all_aps(site_id, include_runtime=False)
         mrs = mrs if mrs is not None else self._all_mrs(site_id, include_runtime=False)
-        issues: list[DataQualityIssueDTO] = []
         ap_macs = Counter(self._mac_key(ap.mac) for ap in aps if self._mac_key(ap.mac))
+        issues = self._ap_record_issues(aps, mac_counts=ap_macs)
+        mr_macs = Counter(self._mac_key(mr.mac) for mr in mrs if self._mac_key(mr.mac))
+        role_counts = Counter((mr.train_id, mr.role) for mr in mrs if mr.train_id and mr.role)
+        for mr in mrs:
+            if not mr.train_id:
+                issues.append(self._issue("error", "mr_train_unbound", "mr", mr.id, mr.name, "train", "", "MR 未关联列车", "核对正式 MR 命名或设备分组"))
+            mac_key = self._mac_key(mr.mac)
+            if not mac_key:
+                issues.append(self._issue("warning", "mr_mac_missing", "mr", mr.id, mr.name, "mac", mr.mac, "MR MAC 为空或格式无效", "补充有效 MR MAC"))
+            elif mr_macs[mac_key] > 1:
+                issues.append(self._issue("error", "mr_mac_duplicate", "mr", mr.id, mr.name, "mac", mr.mac, "同一局点存在重复 MR MAC", "核对车载 MR 资料"))
+            if mr.train_id and mr.role and role_counts[(mr.train_id, mr.role)] > 1:
+                issues.append(self._issue("error", "mr_role_duplicate", "mr", mr.id, mr.name, "role", mr.role, "同一列车存在重复 MR 角色", "核对列车 MR 配置"))
+        issues.extend(self._unbound_mr_issues(site_id))
+        issues.extend(self._static_ip_issues(site_id))
+        points = self._all_points(site_id, include_runtime=False)
+        stations = self._stations(points, site_id=site_id)
+        sections = self._sections(points)
+        issues.extend(self._station_issues(stations))
+        issues.extend(self._section_issues(sections, stations))
+        issues.extend(self._identity_conflict_issues(site_id))
+        return issues
+
+    def _ap_record_issues(
+        self,
+        aps: list[TracksideApDTO],
+        *,
+        mac_counts: Counter[str],
+    ) -> list[DataQualityIssueDTO]:
+        issues: list[DataQualityIssueDTO] = []
         for ap in aps:
             if not ap.name:
                 issues.append(self._issue("warning", "ap_name_missing", "ap", ap.id, ap.name, "name", "", "AP 正式名称为空", "补充正式 AP 名称"))
@@ -735,7 +1138,7 @@ class RailTransitBaseDataQueryService:
                 issues.append(self._issue("warning", "ap_mac_missing", "ap", ap.id, ap.name, "mac", "", "AP MAC 为空", "补充有效 AP MAC"))
             elif not mac_key:
                 issues.append(self._issue("error", "ap_mac_invalid", "ap", ap.id, ap.name, "mac", ap.mac, "AP MAC 格式无效", "补充有效 AP MAC"))
-            elif ap_macs[mac_key] > 1:
+            elif mac_counts[mac_key] > 1:
                 issues.append(self._issue("error", "ap_mac_duplicate", "ap", ap.id, ap.name, "mac", ap.mac, "同一局点存在重复 AP MAC", "核对 AP 点表"))
             if not ap.station and not ap.section:
                 issues.append(self._issue("warning", "ap_location_missing", "ap", ap.id, ap.name, "station/section", "", "AP 未填写站点或区间", "补充位置归属"))
@@ -760,26 +1163,6 @@ class RailTransitBaseDataQueryService:
             expected = self._expected_prefix(ap.line_side, ap.direction)
             if ap.mileage.valid and expected and ap.mileage.line_type and expected != ap.mileage.line_type:
                 issues.append(self._issue("warning", "ap_mileage_direction_mismatch", "ap", ap.id, ap.name, "mileage", ap.mileage.raw, "里程前缀与线路方向不一致", "核对线别和里程前缀"))
-        mr_macs = Counter(self._mac_key(mr.mac) for mr in mrs if self._mac_key(mr.mac))
-        role_counts = Counter((mr.train_id, mr.role) for mr in mrs if mr.train_id and mr.role)
-        for mr in mrs:
-            if not mr.train_id:
-                issues.append(self._issue("error", "mr_train_unbound", "mr", mr.id, mr.name, "train", "", "MR 未关联列车", "核对正式 MR 命名或设备分组"))
-            mac_key = self._mac_key(mr.mac)
-            if not mac_key:
-                issues.append(self._issue("warning", "mr_mac_missing", "mr", mr.id, mr.name, "mac", mr.mac, "MR MAC 为空或格式无效", "补充有效 MR MAC"))
-            elif mr_macs[mac_key] > 1:
-                issues.append(self._issue("error", "mr_mac_duplicate", "mr", mr.id, mr.name, "mac", mr.mac, "同一局点存在重复 MR MAC", "核对车载 MR 资料"))
-            if mr.train_id and mr.role and role_counts[(mr.train_id, mr.role)] > 1:
-                issues.append(self._issue("error", "mr_role_duplicate", "mr", mr.id, mr.name, "role", mr.role, "同一列车存在重复 MR 角色", "核对列车 MR 配置"))
-        issues.extend(self._unbound_mr_issues(site_id))
-        issues.extend(self._static_ip_issues(site_id))
-        points = self._all_points(site_id, include_runtime=False)
-        stations = self._stations(points, site_id=site_id)
-        sections = self._sections(points)
-        issues.extend(self._station_issues(stations))
-        issues.extend(self._section_issues(sections, stations))
-        issues.extend(self._identity_conflict_issues(site_id))
         return issues
 
     def _identity_conflict_issues(
@@ -801,16 +1184,20 @@ class RailTransitBaseDataQueryService:
             )
             ac_value = str(row.get("ac_value") or "")
             base_value = str(row.get("base_value") or "")
+            base_record_id = str(row.get("base_record_id") or "")
+            entity_id = (
+                base_record_id
+                if base_record_id.startswith("ap:")
+                else f"ap:{base_record_id}"
+                if base_record_id
+                else str(row.get("entity_id") or "")
+            )
             result.append(
                 self._issue(
                     "warning",
                     "AP_IDENTITY_AC_BASE_CONFLICT",
                     "ap",
-                    str(
-                        row.get("base_record_id")
-                        or row.get("entity_id")
-                        or ""
-                    ),
+                    entity_id,
                     str(row.get("effective_ap_name") or ""),
                     field_name,
                     base_value,

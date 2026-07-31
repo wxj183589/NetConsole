@@ -517,6 +517,10 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_resources (
     raw_log_path TEXT,
     updated_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_ac_fit_ap_resources_mac_lookup
+    ON ac_fit_ap_resources(
+        replace(replace(replace(lower(COALESCE(ap_mac, '')), ':', ''), '-', ''), ' ', '')
+    );
 """
 
 AC_FIT_AP_METADATA_SCHEMA = """
@@ -581,6 +585,7 @@ CREATE TABLE IF NOT EXISTS ap_extension_points (
     distance_to_prev_m REAL,
     ap_point_code TEXT,
     ap_name TEXT,
+    ap_vendor TEXT,
     ap_mac_norm TEXT,
     ap_mac_display TEXT,
     curve_radius_m REAL,
@@ -614,6 +619,10 @@ CREATE INDEX IF NOT EXISTS idx_ap_extension_points_mac
     ON ap_extension_points(ap_mac_norm);
 CREATE INDEX IF NOT EXISTS idx_ap_extension_points_station
     ON ap_extension_points(station_name, line_side, mileage_m);
+CREATE INDEX IF NOT EXISTS idx_ap_extension_points_section
+    ON ap_extension_points(section_name);
+CREATE INDEX IF NOT EXISTS idx_ap_extension_points_name
+    ON ap_extension_points(ap_name);
 """
 
 AP_EXTENSION_IMPORT_BATCHES_SCHEMA = """
@@ -774,6 +783,10 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_optical (
     raw_log_path TEXT,
     updated_at TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_ac_fit_ap_optical_mac_lookup
+    ON ac_fit_ap_optical(
+        replace(replace(replace(lower(COALESCE(ap_mac, '')), ':', ''), '-', ''), ' ', '')
+    );
 """
 
 AC_STATION_AP_CAPACITY_SCHEMA = """
@@ -1198,12 +1211,20 @@ CREATE INDEX IF NOT EXISTS idx_ap_identity_conflicts_site_active
 CREATE TABLE IF NOT EXISTS ap_identity_index_state (
     site_id TEXT PRIMARY KEY,
     revision INTEGER NOT NULL DEFAULT 0,
+    source_revision INTEGER NOT NULL DEFAULT -1,
     base_record_count INTEGER NOT NULL DEFAULT 0,
     ac_record_count INTEGER NOT NULL DEFAULT 0,
     entity_count INTEGER NOT NULL DEFAULT 0,
     alias_count INTEGER NOT NULL DEFAULT 0,
     prefix_count INTEGER NOT NULL DEFAULT 0,
     conflict_count INTEGER NOT NULL DEFAULT 0,
+    actual_radio_alias_count INTEGER NOT NULL DEFAULT 0,
+    actual_bssid_alias_count INTEGER NOT NULL DEFAULT 0,
+    actual_bbssid_alias_count INTEGER NOT NULL DEFAULT 0,
+    derived_alias_count INTEGER NOT NULL DEFAULT 0,
+    ambiguous_alias_count INTEGER NOT NULL DEFAULT 0,
+    build_duration_ms REAL NOT NULL DEFAULT 0,
+    diagnostics_json TEXT,
     build_reason TEXT,
     built_at TEXT NOT NULL
 );
@@ -1239,6 +1260,98 @@ CREATE TABLE IF NOT EXISTS ap_resource_snapshots (
     created_at TEXT NOT NULL
 );
 """
+
+
+def _ap_identity_source_revision_schema() -> str:
+    tables = (
+        "ap_extension_points",
+        "ac_fit_ap_resources",
+        "ac_fit_ap_radio_history",
+        "ac_fit_ap_lldp_history",
+        "ac_fit_ap_metadata",
+        "ap_entities",
+        "ac_fit_ap_optical",
+        "trackside_ap_view_cache",
+    )
+    statements = [
+        """
+CREATE TABLE IF NOT EXISTS ap_identity_source_state (
+    site_id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+INSERT OR IGNORE INTO ap_identity_source_state(site_id, revision, updated_at)
+VALUES ('current', 0, '');
+"""
+    ]
+    for table in tables:
+        safe_name = table.replace("_", "")
+        for action in ("INSERT", "UPDATE", "DELETE"):
+            statements.append(
+                f"""
+CREATE TRIGGER IF NOT EXISTS trg_ap_identity_source_{safe_name}_{action.lower()}
+AFTER {action} ON {table}
+BEGIN
+    UPDATE ap_identity_source_state
+    SET revision = revision + 1,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE site_id = 'current';
+END;
+"""
+            )
+    statements.append(
+        """
+DROP TRIGGER IF EXISTS trg_ap_identity_source_devices_insert;
+DROP TRIGGER IF EXISTS trg_ap_identity_source_devices_update;
+DROP TRIGGER IF EXISTS trg_ap_identity_source_devices_delete;
+DROP TRIGGER IF EXISTS trg_ap_identity_source_devicefacts_insert;
+DROP TRIGGER IF EXISTS trg_ap_identity_source_devicefacts_update;
+DROP TRIGGER IF EXISTS trg_ap_identity_source_devicefacts_delete;
+
+CREATE TRIGGER trg_ap_identity_source_devices_insert
+AFTER INSERT ON devices
+WHEN EXISTS (
+    SELECT 1
+    FROM ac_fit_ap_resources
+    WHERE ac_device_uuid = NEW.device_uuid
+)
+BEGIN
+    UPDATE ap_identity_source_state
+    SET revision = revision + 1,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE site_id = 'current';
+END;
+
+CREATE TRIGGER trg_ap_identity_source_devices_update
+AFTER UPDATE OF device_uuid, device_vendor ON devices
+WHEN EXISTS (
+    SELECT 1
+    FROM ac_fit_ap_resources
+    WHERE ac_device_uuid IN (OLD.device_uuid, NEW.device_uuid)
+)
+BEGIN
+    UPDATE ap_identity_source_state
+    SET revision = revision + 1,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE site_id = 'current';
+END;
+
+CREATE TRIGGER trg_ap_identity_source_devices_delete
+AFTER DELETE ON devices
+WHEN EXISTS (
+    SELECT 1
+    FROM ac_fit_ap_resources
+    WHERE ac_device_uuid = OLD.device_uuid
+)
+BEGIN
+    UPDATE ap_identity_source_state
+    SET revision = revision + 1,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE site_id = 'current';
+END;
+"""
+    )
+    return "\n".join(statements)
 
 AP_LLDP_HISTORY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS ap_lldp_history (
@@ -1748,6 +1861,7 @@ class Database:
             if self._table_exists(conn, "ac_fit_ap_metadata") and not self._column_exists(conn, "ac_fit_ap_metadata", column):
                 conn.execute(f"ALTER {'TABLE'} ac_fit_ap_metadata ADD COLUMN {column} {column_type}")
         ap_extension_point_columns = {
+            "ap_vendor": "TEXT",
             "belong_type": "TEXT",
             "section_start_station": "TEXT",
             "section_end_station": "TEXT",
@@ -1757,6 +1871,21 @@ class Database:
         for column, column_type in ap_extension_point_columns.items():
             if self._table_exists(conn, "ap_extension_points") and not self._column_exists(conn, "ap_extension_points", column):
                 conn.execute(f"ALTER {'TABLE'} ap_extension_points ADD COLUMN {column} {column_type}")
+        ap_identity_state_columns = {
+            "source_revision": "INTEGER NOT NULL DEFAULT -1",
+            "actual_radio_alias_count": "INTEGER NOT NULL DEFAULT 0",
+            "actual_bssid_alias_count": "INTEGER NOT NULL DEFAULT 0",
+            "actual_bbssid_alias_count": "INTEGER NOT NULL DEFAULT 0",
+            "derived_alias_count": "INTEGER NOT NULL DEFAULT 0",
+            "ambiguous_alias_count": "INTEGER NOT NULL DEFAULT 0",
+            "build_duration_ms": "REAL NOT NULL DEFAULT 0",
+            "diagnostics_json": "TEXT",
+        }
+        for column, column_type in ap_identity_state_columns.items():
+            if self._table_exists(conn, "ap_identity_index_state") and not self._column_exists(conn, "ap_identity_index_state", column):
+                conn.execute(
+                    f"ALTER {'TABLE'} ap_identity_index_state ADD COLUMN {column} {column_type}"
+                )
         fit_ap_optical_columns = {
             "lldp_source": "TEXT",
             "lldp_confidence": "INTEGER",
@@ -2209,6 +2338,7 @@ class Database:
             AC_FIT_AP_LLDP_HISTORY_SCHEMA,
             AC_FIT_AP_RADIO_HISTORY_SCHEMA,
             CONFIG_SNAPSHOTS_SCHEMA,
+            _ap_identity_source_revision_schema(),
         ]
         if include_device_address_index:
             scripts.insert(2, DEVICE_PRIMARY_ADDRESS_INDEX_SCHEMA)

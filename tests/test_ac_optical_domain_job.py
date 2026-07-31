@@ -210,6 +210,7 @@ def test_ac_optical_job_success_partial_single_failed_cancelled_and_clean_stdout
 ) -> None:
     snapshot = AcOpticalSnapshot("ac-001", {"total_aps": 1}, [{"ap_name": "AP-01"}], [{"ap_name": "AP-01"}])
     state = {"mode": "success", "method": "", "max_workers": 0}
+    identity_calls: list[tuple[str, str]] = []
 
     class FakeOpticalService:
         def __init__(self, *_args, **_kwargs) -> None:
@@ -238,6 +239,18 @@ def test_ac_optical_job_success_partial_single_failed_cancelled_and_clean_stdout
             return AcOpticalRefreshResult(True, partial, "cli", request.refresh_scope, snapshot, optical_rows_updated=1, failed_aps=1 if partial else 0)
 
     monkeypatch.setattr(ac_jobs, "AcOpticalService", FakeOpticalService)
+
+    class FakeIdentityService:
+        def __init__(self, _database) -> None:
+            pass
+
+        def rebuild_index(self, reason: str) -> None:
+            identity_calls.append(("rebuild", reason))
+
+        def ensure_index(self, reason: str) -> None:
+            identity_calls.append(("ensure", reason))
+
+    monkeypatch.setattr(ac_jobs, "ApIdentityQueryService", FakeIdentityService)
     base_params = {
         "mode": "collect",
         "device_uuid": "ac-001",
@@ -254,11 +267,13 @@ def test_ac_optical_job_success_partial_single_failed_cancelled_and_clean_stdout
     assert state["max_workers"] == 64
     assert progress == ["ac_fit_ap_optical_collect"]
     assert capsys.readouterr().out == ""
+    assert identity_calls == [("rebuild", "ac_fit_ap_optical_refresh_succeeded")]
 
     state["mode"] = "partial"
     partial = run_job(job)
     assert partial.ok is True
     assert partial.result["collection"]["partial_success"] is True
+    assert identity_calls[-1] == ("rebuild", "ac_fit_ap_optical_refresh_succeeded")
 
     state["mode"] = "success"
     single = run_job(
@@ -270,16 +285,19 @@ def test_ac_optical_job_success_partial_single_failed_cancelled_and_clean_stdout
     )
     assert single.ok is True
     assert state["method"] == "single"
+    assert identity_calls[-1] == ("rebuild", "ac_fit_ap_optical_refresh_succeeded")
 
     state["mode"] = "failed"
     failed = run_job(job)
     assert failed.ok is False
     assert failed.error == "SSH连接失败"
+    assert len(identity_calls) == 3
 
     state["mode"] = "cancel"
     cancelled = run_job(job)
     assert cancelled.cancelled is True
     assert cancelled.error == "用户已取消更新"
+    assert identity_calls[-1] == ("ensure", "ac_fit_ap_optical_cancelled_partial")
 
 
 

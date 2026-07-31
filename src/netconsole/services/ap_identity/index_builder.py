@@ -65,6 +65,9 @@ class _SourceAp:
     mileage: str
     direction: str
     belong_type: str
+    vendor: str
+    model: str
+    software_version: str
     updated_at: str
     radio_aliases: tuple[tuple[str, int | None, str], ...]
     raw: Mapping[str, object]
@@ -260,6 +263,9 @@ def _source_ap(row: Mapping[str, object], *, source: str) -> _SourceAp:
         mileage=_first_text(row, "metadata_mileage", "mileage", "mileage_text"),
         direction=_first_text(row, "metadata_direction", "direction"),
         belong_type=_belong_type(row, station, section),
+        vendor=_first_text(row, "ap_vendor", "vendor", "device_vendor").upper(),
+        model=_first_text(row, "model", "ac_model"),
+        software_version=_first_text(row, "software_version", "ac_software_version"),
         updated_at=_first_text(row, "updated_at", "collected_at"),
         radio_aliases=_radio_aliases(row, ap_mac_key),
         raw=dict(row),
@@ -506,16 +512,6 @@ def _entity_projection(
                 )
             )
             if source.source == "ac_runtime":
-                prefixes.append(
-                    _prefix(
-                        site_id,
-                        entity_id,
-                        source.ap_mac_key,
-                        "ac_runtime",
-                        850,
-                        90,
-                    )
-                )
                 aliases.extend(
                     _h3c_exact_aliases(
                         site_id,
@@ -524,6 +520,7 @@ def _entity_projection(
                         source="ac_runtime",
                         priority=930,
                         confidence=95,
+                        vendor=source.vendor,
                     )
                 )
         if source.source != "ac_runtime":
@@ -558,15 +555,10 @@ def _entity_projection(
                 "base_ap_mac_exact",
             )
         )
-        prefixes.append(
-            _prefix(
-                site_id,
-                entity_id,
-                source.ap_mac_key,
-                "base_data",
-                800,
-                80,
-            )
+        entity_vendor = (
+            (ac.vendor if ac else "")
+            or source.vendor
+            or (base.vendor if base else "")
         )
         aliases.extend(
             _h3c_exact_aliases(
@@ -576,6 +568,7 @@ def _entity_projection(
                 source="base_data",
                 priority=830,
                 confidence=90,
+                vendor=entity_vendor,
             )
         )
     return entity, aliases, prefixes, conflict_rows
@@ -639,11 +632,16 @@ def _h3c_exact_aliases(
     source: str,
     priority: int,
     confidence: int,
+    vendor: str,
 ) -> list[ApIdentityMacAliasRecord]:
+    if str(vendor or "").strip().upper() != "H3C":
+        return []
+    if not base_mac_key or base_mac_key[-1].upper() != "0":
+        return []
     aliases: list[ApIdentityMacAliasRecord] = []
     derivations = (
-        (derive_h3c_r1_mac, 1, "h3c_r1_derived", "h3c_ap_mac_to_r1_exact"),
-        (derive_h3c_r2_mac, 2, "h3c_r2_derived", "h3c_ap_mac_to_r2_exact"),
+        (derive_h3c_r1_mac, 1, "h3c_r1_derived", "h3c_physical_mac_to_r1_exact_v1"),
+        (derive_h3c_r2_mac, 2, "h3c_r2_derived", "h3c_physical_mac_to_r2_exact_v1"),
     )
     for derive, radio_id, alias_type, rule in derivations:
         try:

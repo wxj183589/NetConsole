@@ -2582,6 +2582,132 @@ class MeshMrRepository:
                 """
             )
 
+    def replace_peer_identity_mappings(
+        self,
+        rows: list[dict[str, object]],
+    ) -> dict[str, object]:
+        """Atomically replace only AP identity projections on parsed MESH rows."""
+        if self._is_index_database():
+            by_peer = {
+                normalize_mac_key(row.get("peer_mac_normalized")): row
+                for row in rows
+                if normalize_mac_key(row.get("peer_mac_normalized"))
+            }
+            summaries = []
+            for repo in self._detail_repos():
+                detail_rows = [
+                    by_peer[peer_key]
+                    for peer in repo.distinct_peer_macs()
+                    if (peer_key := normalize_mac_key(peer)) in by_peer
+                ]
+                summaries.append(repo.replace_peer_identity_mappings(detail_rows))
+            return _merge_peer_identity_remap_summaries(summaries)
+
+        now = dt_text(datetime.now()) or ""
+        values = [
+            (
+                normalize_mac(row.get("peer_mac_normalized")),
+                row.get("peer_ap_name") or "",
+                normalize_mac(row.get("peer_ap_mac")) or "",
+                row.get("peer_radio_id"),
+                row.get("peer_radio_label") or "",
+                normalize_mac(row.get("peer_radio_mac")) or "",
+                row.get("peer_site") or "",
+                row.get("peer_location") or "",
+                row.get("peer_direction") or "",
+                row.get("match_rule") or "unresolved",
+                int(row.get("match_confidence") or 0),
+                row.get("identity_status") or "unresolved",
+                row.get("identity_source") or "",
+                row.get("identity_reason") or "",
+                now,
+            )
+            for row in rows
+            if normalize_mac_key(row.get("peer_mac_normalized"))
+        ]
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            before = _peer_identity_counts(conn)
+            conn.execute("DELETE FROM mesh_peer_mapping")
+            conn.execute("DELETE FROM mesh_peer_resolve_cache")
+            conn.executemany(
+                """
+                INSERT INTO mesh_peer_mapping (
+                    peer_mac_normalized, peer_ap_name, peer_ap_mac,
+                    peer_radio_id, peer_radio_label, peer_site, peer_location,
+                    peer_direction, match_rule, match_confidence,
+                    identity_status, identity_source, identity_reason, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        value[0], value[1], value[2], value[3], value[4],
+                        value[6], value[7], value[8], value[9], value[10],
+                        value[11], value[12], value[13], value[14],
+                    )
+                    for value in values
+                ],
+            )
+            conn.executemany(
+                """
+                INSERT INTO mesh_peer_resolve_cache (
+                    peer_mac, peer_ap_name, peer_site, peer_radio,
+                    peer_radio_mac, source, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        value[0], value[1], value[6], value[4], value[5],
+                        value[12] or value[11] or "unresolved", value[14],
+                    )
+                    for value in values
+                ],
+            )
+            conn.execute(
+                """
+                UPDATE mesh_links
+                SET
+                    peer_ap_name = COALESCE((SELECT peer_ap_name FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                    peer_ap_mac = COALESCE((SELECT peer_ap_mac FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                    peer_site = COALESCE((SELECT peer_site FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                    peer_radio_id = (SELECT peer_radio_id FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized),
+                    peer_radio = COALESCE((SELECT peer_radio_label FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                    peer_radio_label = COALESCE((SELECT peer_radio_label FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                    peer_radio_mac = COALESCE((SELECT peer_radio_mac FROM mesh_peer_resolve_cache pc WHERE pc.peer_mac = mesh_links.peer_mac_normalized), peer_mac_normalized, ''),
+                    peer_match_rule = COALESCE((SELECT match_rule FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), 'unresolved'),
+                    peer_match_confidence = COALESCE((SELECT match_confidence FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), 0),
+                    peer_resolve_source = COALESCE((SELECT source FROM mesh_peer_resolve_cache pc WHERE pc.peer_mac = mesh_links.peer_mac_normalized), 'unresolved'),
+                    peer_identity_status = COALESCE((SELECT identity_status FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), 'unresolved'),
+                    peer_identity_source = COALESCE((SELECT identity_source FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                    peer_identity_reason = COALESCE((SELECT identity_reason FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), 'exact_alias_not_found')
+                WHERE peer_mac_normalized IS NOT NULL
+                  AND trim(peer_mac_normalized) != ''
+                """
+            )
+            conn.execute(
+                """
+                UPDATE active_points
+                SET
+                    peer_ap_name = COALESCE((SELECT peer_ap_name FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), ''),
+                    peer_site = COALESCE((SELECT peer_site FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), ''),
+                    peer_radio = COALESCE((SELECT peer_radio_label FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), ''),
+                    peer_radio_label = COALESCE((SELECT peer_radio_label FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), '')
+                WHERE peer_mac_normalized IS NOT NULL
+                  AND trim(peer_mac_normalized) != ''
+                """
+            )
+            after = _peer_identity_counts(conn)
+        source_counts: dict[str, int] = {}
+        for value in values:
+            source = str(value[12] or value[11] or "unresolved")
+            source_counts[source] = source_counts.get(source, 0) + 1
+        return {
+            "before": before,
+            "after": after,
+            "mapping_count": len(values),
+            "source_counts": source_counts,
+        }
+
     def rebuild_link_aggregates(self, bucket_seconds: tuple[int, ...] = (1, 10, 30, 60), should_cancel=None) -> None:
         return None
 
@@ -3727,3 +3853,50 @@ def _minimum(values: list[float | None]) -> float | str:
 def _maximum(values: list[float | None]) -> float | str:
     finite = [value for value in values if value is not None]
     return max(finite) if finite else ""
+
+
+def _peer_identity_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    rows = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(peer_identity_status, ''), 'unresolved') AS status,
+               COUNT(*) AS row_count
+        FROM mesh_links
+        GROUP BY COALESCE(NULLIF(peer_identity_status, ''), 'unresolved')
+        """
+    ).fetchall()
+    counts = {"matched": 0, "unresolved": 0, "ambiguous": 0}
+    for row in rows:
+        status = str(row["status"] or "unresolved")
+        counts[status] = counts.get(status, 0) + int(row["row_count"] or 0)
+    return counts
+
+
+def _merge_peer_identity_remap_summaries(
+    summaries: list[dict[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {
+        "before": {"matched": 0, "unresolved": 0, "ambiguous": 0},
+        "after": {"matched": 0, "unresolved": 0, "ambiguous": 0},
+        "mapping_count": 0,
+        "source_counts": {},
+    }
+    for summary in summaries:
+        for phase in ("before", "after"):
+            target = result[phase]
+            source = summary.get(phase) or {}
+            if isinstance(target, dict) and isinstance(source, dict):
+                for status, count in source.items():
+                    target[str(status)] = int(target.get(str(status), 0)) + int(
+                        count or 0
+                    )
+        result["mapping_count"] = int(result["mapping_count"]) + int(
+            summary.get("mapping_count") or 0
+        )
+        target_sources = result["source_counts"]
+        source_counts = summary.get("source_counts") or {}
+        if isinstance(target_sources, dict) and isinstance(source_counts, dict):
+            for source, count in source_counts.items():
+                target_sources[str(source)] = int(
+                    target_sources.get(str(source), 0)
+                ) + int(count or 0)
+    return result

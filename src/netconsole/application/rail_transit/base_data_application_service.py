@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.device_address import normalize_ip_address
@@ -45,6 +46,7 @@ from netconsole.services.rail_transit.ap_management_vlan_planning import (
     stable_legacy_station_id,
 )
 from netconsole.services.ap_extension_import import normalize_ap_mac
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.base_data_write_guard import BaseDataWriteGuard, BaseDataWriteGuardError
 from netconsole.services.rail_transit.ap_line_side_service import (
@@ -343,6 +345,10 @@ class RailTransitBaseDataApplicationService:
                 "BASE_DATA_TRANSACTION_FAILED",
                 "基础资料清空失败，数据库事务已回滚",
             ) from exc
+        self._ensure_ap_identity_index(
+            site_id,
+            "base_data_station_section_cleared",
+        )
         result["deleted_station_count"] = preview.station_count
         result["deleted_section_count"] = preview.section_count
         return BaseDataClearResultDTO.model_validate(result)
@@ -465,6 +471,7 @@ class RailTransitBaseDataApplicationService:
             raise RailTransitBaseDataApplicationError("BASE_DATA_REFERENCE_CONFLICT", "基础资料唯一性或引用关系冲突") from exc
         except (sqlite3.Error, OSError) as exc:
             raise RailTransitBaseDataApplicationError("BASE_DATA_TRANSACTION_FAILED", "基础资料事务保存失败并已回滚") from exc
+        self._ensure_ap_identity_index(site_id, "base_data_changes_saved")
         return BaseDataSaveResultDTO(
             revision=str(result["revision"]),
             created_count=int(result["created_count"]),
@@ -473,6 +480,17 @@ class RailTransitBaseDataApplicationService:
             warnings=[issue.message for issue in validation.issues if not issue.blocking],
             validation_issues=validation.issues,
         )
+
+    def _ensure_ap_identity_index(self, site_id: str, reason: str) -> None:
+        try:
+            ApIdentityQueryService(
+                Database(self.paths.site_db_path(site_id))
+            ).ensure_index(reason)
+        except (OSError, RuntimeError, sqlite3.Error) as exc:
+            raise RailTransitBaseDataApplicationError(
+                "AP_IDENTITY_REBUILD_FAILED",
+                "基础资料已保存，但 AP Identity 索引重建失败；索引保持过期状态，请重新执行保存。",
+            ) from exc
 
     def _normalize_change(
         self,
@@ -853,6 +871,7 @@ class RailTransitBaseDataApplicationService:
             raise ValueError("轨旁 AP 必须填写归属站点或归属区间")
         values: dict[str, Any] = {
             "line_name": str(raw.get("line_name") or "").strip(),
+            "ap_vendor": str(raw.get("vendor") or raw.get("ap_vendor") or "").strip(),
             "station_name": station,
             "section_name": section,
             "section_start_station": str(raw.get("section_start_station") or "").strip(),

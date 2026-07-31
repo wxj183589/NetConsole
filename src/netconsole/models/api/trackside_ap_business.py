@@ -77,6 +77,22 @@ class TracksideApUnmatchedOnlineDTO(ApiModel):
     suggested_action: str = ""
 
 
+class TracksideApScopeExcludedPageDTO(ApiModel):
+    items: list[TracksideApScopeExcludedDTO] = Field(default_factory=list)
+    total: int = Field(default=0, ge=0)
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=50, ge=1, le=200)
+    revision: str = ""
+
+
+class TracksideApUnmatchedOnlinePageDTO(ApiModel):
+    items: list[TracksideApUnmatchedOnlineDTO] = Field(default_factory=list)
+    total: int = Field(default=0, ge=0)
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=50, ge=1, le=200)
+    revision: str = ""
+
+
 class TracksideApDataSourceIssueDTO(ApiModel):
     source: str
     label: str
@@ -261,7 +277,13 @@ class TracksideApOnlineStatusDTO(ApiModel):
     fit_ap_resource_total_count: int = Field(default=0, ge=0)
     fit_ap_matched_count: int = Field(default=0, ge=0)
     fit_ap_unmatched_online_count: int = Field(default=0, ge=0)
+    fit_ap_unresolved_online_count: int = Field(default=0, ge=0)
+    fit_ap_ambiguous_online_count: int = Field(default=0, ge=0)
     unmatched_online_items: list[TracksideApUnmatchedOnlineDTO] = Field(default_factory=list)
+    generated_at: str = ""
+    revision: str = ""
+    source_revision: dict[str, object] = Field(default_factory=dict)
+    cache_hit: bool = False
 
 
 class ApManagementVlanPlanningDTO(ApiModel):

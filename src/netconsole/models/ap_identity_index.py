@@ -98,6 +98,13 @@ class ApIdentityBuildResult:
     alias_count: int
     prefix_count: int
     conflict_count: int
+    source_revision: int = 0
+    actual_radio_alias_count: int = 0
+    actual_bssid_alias_count: int = 0
+    actual_bbssid_alias_count: int = 0
+    derived_alias_count: int = 0
+    ambiguous_alias_count: int = 0
+    build_duration_ms: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -127,6 +134,7 @@ class ApIdentityMatch:
     has_conflict: bool = False
     data_quality_warning: str = ""
     candidates: tuple[Mapping[str, object], ...] = ()
+    unresolved_reason: str = ""
 
     @property
     def matched(self) -> bool:

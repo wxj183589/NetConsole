@@ -3,6 +3,7 @@ import type { BackendDownloadRequest } from '../../../desktop_electron/src/share
 import type {
   ApManagementVlanPlanningMode, ApManagementVlanPreview, TracksideApBusinessPage,
   TracksideApBusinessExportProposal, TracksideApOnlineStatus, TracksideApPlan, TracksideApPlanDraft, TracksideApPlanPreview, TracksideApPlanRow,
+  TracksideApScopeExcludedPage, TracksideApUnmatchedOnlinePage,
   TracksideApTask, TracksideApUpdateRequest, TracksideSwitchAdapterCatalog,
   TracksideSwitchSampleRequest,
 } from '../types/tracksideApBusiness'
@@ -67,6 +68,14 @@ export function getTracksideApPlan(): Promise<TracksideApPlan> {
 
 export function getTracksideApOnlineStatus(): Promise<TracksideApOnlineStatus> {
   return apiRequest(`${root}/plan/online-status`)
+}
+
+export function listTracksideApOnlineExcluded(page = 1, pageSize = 50): Promise<TracksideApScopeExcludedPage> {
+  return apiRequest(`${root}/plan/online-status/excluded?page=${page}&page_size=${pageSize}`)
+}
+
+export function listTracksideApOnlineUnmatched(page = 1, pageSize = 50): Promise<TracksideApUnmatchedOnlinePage> {
+  return apiRequest(`${root}/plan/online-status/unmatched?page=${page}&page_size=${pageSize}`)
 }
 
 export function previewTracksideApPlan(file: File, duplicateStrategy: 'replace' | 'skip' | 'error'): Promise<TracksideApPlanPreview> {

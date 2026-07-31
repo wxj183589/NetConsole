@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from netconsole.core.database import Database
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.services.ap_identity import (
@@ -30,6 +32,7 @@ def _base_ap(
         {
             "ap_name": name,
             "ap_point_code": name,
+            "ap_vendor": "H3C",
             "ap_mac_display": mac,
             "station_name": station,
             "belong_type": "station",
@@ -63,6 +66,79 @@ def test_database_initializes_identity_index_idempotently(tmp_path: Path) -> Non
     assert initial["revision"] == 0
     assert first.entity_count == 0
     assert second.revision == first.revision + 1
+
+
+def test_zero_source_revision_is_a_valid_current_index(tmp_path: Path) -> None:
+    _database, repository, service = _fixture(tmp_path)
+
+    built = service.rebuild_index("empty_source")
+    match = service.resolve_peer_mac("642f-c778-ef5f")
+
+    assert built.source_revision == 0
+    assert service.index_state()["source_revision"] == 0
+    assert repository.trackside_online_status_revision()["identity_source_revision"] == 0
+    assert match.status == "unresolved"
+    assert match.unresolved_reason == "exact_alias_not_collected"
+
+
+def test_legacy_identity_state_schema_is_upgraded_before_new_columns_are_used(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "devices.db")
+    database.initialize()
+    with database.connect() as connection:
+        connection.execute(
+            "ALTER TABLE ap_identity_index_state DROP COLUMN source_revision"
+        )
+        connection.execute(
+            "ALTER TABLE ap_identity_index_state DROP COLUMN actual_radio_alias_count"
+        )
+        connection.execute(
+            "ALTER TABLE ap_identity_index_state DROP COLUMN actual_bssid_alias_count"
+        )
+        connection.execute(
+            "ALTER TABLE ap_identity_index_state DROP COLUMN actual_bbssid_alias_count"
+        )
+        connection.execute(
+            "ALTER TABLE ap_identity_index_state DROP COLUMN derived_alias_count"
+        )
+        connection.execute(
+            "ALTER TABLE ap_identity_index_state DROP COLUMN ambiguous_alias_count"
+        )
+        connection.execute(
+            "ALTER TABLE ap_identity_index_state DROP COLUMN build_duration_ms"
+        )
+        connection.execute(
+            "ALTER TABLE ap_identity_index_state DROP COLUMN diagnostics_json"
+        )
+        connection.commit()
+
+    database.initialize()
+
+    with database.connect() as connection:
+        columns = {
+            str(row["name"])
+            for row in connection.execute(
+                "PRAGMA table_info(ap_identity_index_state)"
+            ).fetchall()
+        }
+        row = connection.execute(
+            "SELECT source_revision, revision FROM ap_identity_index_state WHERE site_id = 'current'"
+        ).fetchone()
+
+    assert {
+        "source_revision",
+        "actual_radio_alias_count",
+        "actual_bssid_alias_count",
+        "actual_bbssid_alias_count",
+        "derived_alias_count",
+        "ambiguous_alias_count",
+        "build_duration_ms",
+        "diagnostics_json",
+    } <= columns
+    assert row is not None
+    assert row["source_revision"] == -1
+    assert row["revision"] == 0
     with database.connect_readonly() as connection:
         names = {
             str(row["name"])
@@ -83,8 +159,125 @@ def test_database_initializes_identity_index_idempotently(tmp_path: Path) -> Non
     }
 
 
-def test_base_data_alone_resolves_exact_h3c_radio_alias(tmp_path: Path) -> None:
+def test_source_write_marks_index_stale_until_explicit_rebuild(tmp_path: Path) -> None:
     _database, repository, service = _fixture(tmp_path)
+    _base_ap(repository, name="AP-A", mac="74ad-cb9d-3320")
+    first = service.rebuild_index("initial")
+
+    _base_ap(repository, name="AP-B", mac="74ad-cb9d-3340")
+
+    stale = service.resolve_peer_mac("74ad-cb9d-332f")
+    assert stale.status == "unresolved"
+    assert stale.unresolved_reason == "identity_index_stale"
+    assert service.index_state()["revision"] == first.revision
+
+    service.rebuild_index("source_changed")
+    assert service.resolve_peer_mac("74ad-cb9d-332f").status == "matched"
+
+
+def test_source_revision_only_tracks_devices_used_as_fit_ap_controllers(
+    tmp_path: Path,
+) -> None:
+    database, repository, service = _fixture(tmp_path)
+    with database.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO devices (
+                device_uuid, name, device_vendor, device_type, primary_address,
+                created_at, updated_at
+            )
+            VALUES ('switch-1', 'SW', 'H3C', 'Switch', '10.0.0.10', '', '')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO device_facts (
+                device_uuid, model, software_version, collected_at, updated_at
+            )
+            VALUES ('switch-1', 'S5560', 'V7', '', '')
+            """
+        )
+        connection.commit()
+    initial_revision = service.repository.source_revision()
+
+    with database.connect() as connection:
+        connection.execute(
+            "UPDATE devices SET name = 'SW-UPDATED' WHERE device_uuid = 'switch-1'"
+        )
+        connection.execute(
+            "UPDATE device_facts SET model = 'S6520' WHERE device_uuid = 'switch-1'"
+        )
+        connection.commit()
+
+    assert service.repository.source_revision() == initial_revision
+
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [{"ap_uuid": "ap-1", "ap_name": "AP-1", "ap_mac": "74ad-cb9d-3320"}],
+    )
+    with database.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO devices (
+                device_uuid, name, device_vendor, device_type, primary_address,
+                created_at, updated_at
+            )
+            VALUES ('ac-1', 'AC', '', 'AC', '10.0.0.1', '', '')
+            """
+        )
+        connection.commit()
+    before_vendor_update = service.repository.source_revision()
+
+    with database.connect() as connection:
+        connection.execute(
+            "UPDATE devices SET device_vendor = 'H3C' WHERE device_uuid = 'ac-1'"
+        )
+        connection.execute(
+            """
+            INSERT INTO device_facts (
+                device_uuid, model, software_version, collected_at, updated_at
+            )
+            VALUES ('ac-1', 'WX', 'V7', '', '')
+            """
+        )
+        connection.commit()
+
+    assert service.repository.source_revision() == before_vendor_update + 1
+
+
+def test_failed_build_preserves_previous_index(tmp_path: Path) -> None:
+    _database, repository, service = _fixture(tmp_path)
+    _base_ap(repository, name="AP-A", mac="74ad-cb9d-3320")
+    first = service.rebuild_index("initial")
+
+    def fail_builder(*_args, **_kwargs):
+        raise RuntimeError("synthetic build failure")
+
+    with pytest.raises(RuntimeError, match="synthetic build failure"):
+        service.repository.rebuild_index(
+            fail_builder,
+            site_id="current",
+            reason="failure",
+        )
+
+    state = service.index_state()
+    assert state["revision"] == first.revision
+    assert service.resolve_peer_mac("74ad-cb9d-332f").status == "matched"
+
+
+def test_base_data_alone_resolves_exact_h3c_radio_alias(tmp_path: Path) -> None:
+    database, repository, service = _fixture(tmp_path)
+    with database.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO devices (
+                device_uuid, name, device_vendor, device_type, primary_address,
+                created_at, updated_at
+            )
+            VALUES ('ac-h3c', 'AC', 'H3C', 'AC', '10.0.0.1', '', '')
+            """
+        )
+        connection.commit()
     _base_ap(repository, name="AP0208", mac="74ad-cb9d-3320")
 
     built = service.rebuild_index("base_data_saved")
@@ -99,8 +292,96 @@ def test_base_data_alone_resolves_exact_h3c_radio_alias(tmp_path: Path) -> None:
     assert match.station == "明珠广场"
     assert match.matched_alias_type == "h3c_r1_derived"
     assert match.matched_source == "base_data"
-    assert match.match_rule == "h3c_ap_mac_to_r1_exact"
+    assert match.match_rule == "h3c_physical_mac_to_r1_exact_v1"
     assert match.radio_id == 1
+
+
+def test_h3c_alias_requires_explicit_h3c_vendor_and_physical_mac(tmp_path: Path) -> None:
+    database, repository, service = _fixture(tmp_path)
+    base = _base_ap(repository, name="AP-NO-VENDOR", mac="74ad-cb9d-3320")
+    with database.connect() as connection:
+        connection.execute(
+            "UPDATE ap_extension_points SET ap_vendor = '' WHERE id = ?",
+            (base["id"],),
+        )
+        connection.commit()
+    repository.replace_fit_ap_resources(
+        "zte-ac",
+        [{"ap_uuid": "zte-ap", "ap_name": "ZTE-AP", "ap_mac": "0011-2233-4450"}],
+    )
+    repository.replace_fit_ap_resources(
+        "h3c-ac",
+        [
+            {"ap_uuid": "radio-input", "ap_name": "RADIO", "ap_mac": "aabb-ccdd-eeff"},
+            {"ap_uuid": "not-physical", "ap_name": "ODD", "ap_mac": "aabb-ccdd-eee1"},
+        ],
+    )
+    with database.connect() as connection:
+        connection.executemany(
+            """
+            INSERT INTO devices (
+                device_uuid, name, device_vendor, device_type, primary_address,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, 'AC', ?, '', '')
+            """,
+            (
+                ("zte-ac", "ZTE AC", "ZTE", "10.0.0.2"),
+                ("h3c-ac", "H3C AC", "H3C", "10.0.0.3"),
+            ),
+        )
+        connection.commit()
+
+    service.rebuild_index("vendor_and_physical_mac_guard")
+
+    assert service.resolve_peer_mac("74ad-cb9d-332f").status == "unresolved"
+    assert service.resolve_peer_mac("0011-2233-445f").status == "unresolved"
+    assert service.resolve_peer_mac("aabb-ccdd-efff").status == "unresolved"
+    assert service.resolve_peer_mac("aabb-ccdd-eeef").status == "unresolved"
+
+
+def test_peer_resolution_can_be_scoped_to_trackside_role(tmp_path: Path) -> None:
+    database, repository, service = _fixture(tmp_path)
+    with database.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO devices (
+                device_uuid, name, device_vendor, device_type, primary_address,
+                created_at, updated_at
+            )
+            VALUES ('ac-h3c', 'AC', 'H3C', 'AC', '10.0.0.1', '', '')
+            """
+        )
+        connection.commit()
+    repository.replace_fit_ap_resources(
+        "ac-h3c",
+        [
+            {
+                "ap_uuid": "onboard-ap",
+                "ap_name": "ONBOARD-AP",
+                "ap_mac": "74ad-cb9d-3320",
+                "site": "车载",
+            }
+        ],
+    )
+    with database.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO ac_fit_ap_metadata (
+                ap_uuid, ap_name, belong_type, created_at, updated_at
+            )
+            VALUES (
+                'onboard-ap', 'ONBOARD-AP', 'onboard',
+                '2026-07-31T00:00:00', '2026-07-31T00:00:00'
+            )
+            """
+        )
+        connection.commit()
+    service.rebuild_index("role_scope")
+
+    assert service.resolve_peer_mac("74ad-cb9d-332f").status == "matched"
+    assert service.resolve_peer_mac("74ad-cb9d-332f", ap_role="trackside").status == "unresolved"
+    assert service.resolve_peer_mac("74ad-cb9d-332f", ap_role="onboard").status == "matched"
 
 
 def test_same_h3c_prefix_without_exact_alias_is_unresolved(tmp_path: Path) -> None:
@@ -113,15 +394,16 @@ def test_same_h3c_prefix_without_exact_alias_is_unresolved(tmp_path: Path) -> No
 
     assert match.status == "unresolved"
     assert match.candidates == ()
+    assert match.unresolved_reason == "exact_alias_not_found"
 
 
 def test_duplicate_exact_h3c_alias_is_ambiguous(tmp_path: Path) -> None:
     _database, repository, service = _fixture(tmp_path)
     _base_ap(repository, name="AP-A", mac="74ad-cb9d-3320")
-    _base_ap(repository, name="AP-B", mac="74ad-cb9d-3321")
+    _base_ap(repository, name="AP-B", mac="74ad-cb9d-3330")
     service.rebuild_index("base_data_saved")
 
-    match = service.resolve_peer_mac("74ad-cb9d-332f")
+    match = service.resolve_peer_mac("74ad-cb9d-333f")
 
     assert match.status == "ambiguous"
     assert {row["ap_name"] for row in match.candidates} == {"AP-A", "AP-B"}

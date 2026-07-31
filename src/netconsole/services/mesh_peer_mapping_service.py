@@ -16,6 +16,7 @@ class MeshPeerMappingService:
         self.site_name = site_name
         self.paths = paths
         self._query_service: ApIdentityQueryService | None = None
+        self.last_remap_summary: dict[str, object] = {}
 
     def resolve(self, peer_mac: object, peer_name: object | None = None) -> dict[str, object] | None:
         peer = normalize_mac_key(peer_mac)
@@ -24,16 +25,16 @@ class MeshPeerMappingService:
         service = self._get_query_service()
         if service is None:
             return _unresolved(peer)
-        match = service.resolve_peer_mac(peer, peer_name=peer_name)
+        match = service.resolve_peer_mac(
+            peer,
+            peer_name=peer_name,
+            ap_role="trackside",
+        )
         if not match.matched:
             return _unresolved(
                 peer,
                 status=match.status,
-                reason=(
-                    "多个物理 AP 命中同一 MAC 身份规则"
-                    if match.status == "ambiguous"
-                    else "统一 AP Identity 索引未找到匹配"
-                ),
+                reason=match.unresolved_reason or "exact_alias_not_found",
             )
         radio_id = int(match.radio_id or 0) or None
         radio_rule = str(match.match_rule or "")
@@ -65,7 +66,9 @@ class MeshPeerMappingService:
             "match_confidence": int(match.match_confidence or 0),
             "identity_status": "matched",
             "identity_source": match.matched_source,
-            "identity_reason": match.data_quality_warning,
+            "identity_reason": (
+                match.data_quality_warning or match.unresolved_reason
+            ),
             "identity_entity_id": match.matched_entity_id,
             "matched_alias_type": match.matched_alias_type,
             "query_mac_display": match.query_mac_display,
@@ -78,21 +81,27 @@ class MeshPeerMappingService:
     def build_rows(self, peer_macs: list[str]) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []
         seen: set[str] = set()
-        for peer_mac in peer_macs:
-            peer = normalize_mac_key(peer_mac)
-            if not peer or peer in seen:
-                continue
-            seen.add(peer)
-            resolved = self.resolve(peer)
-            if resolved:
-                rows.append(resolved)
+        service = self._get_query_service()
+        if service is not None:
+            service.pin_index_health()
+        try:
+            for peer_mac in peer_macs:
+                peer = normalize_mac_key(peer_mac)
+                if not peer or peer in seen:
+                    continue
+                seen.add(peer)
+                resolved = self.resolve(peer)
+                if resolved:
+                    rows.append(resolved)
+        finally:
+            if service is not None:
+                service.unpin_index_health()
         return rows
 
     def refresh_repository(self, repo) -> int:
         rows = self.build_rows(repo.distinct_peer_macs())
-        repo.upsert_peer_mappings(rows)
-        repo.refresh_peer_mapping_on_links()
-        return len(rows)
+        self.last_remap_summary = repo.replace_peer_identity_mappings(rows)
+        return int(self.last_remap_summary.get("mapping_count") or len(rows))
 
     def _get_query_service(self) -> ApIdentityQueryService | None:
         if self._query_service is not None:

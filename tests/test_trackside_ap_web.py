@@ -617,9 +617,17 @@ def test_trackside_query_station_options_use_full_snapshot_before_filters(monkey
 def test_trackside_update_job_calls_existing_collection_service(monkeypatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
     progress: list[tuple[str, int, int, str]] = []
+    identity_rebuilds: list[str] = []
     monkeypatch.setattr(trackside_ap_update_job, "Database", lambda _path: object())
     monkeypatch.setattr(trackside_ap_update_job, "DeviceRepository", lambda _database: object())
     monkeypatch.setattr(trackside_ap_update_job, "load_trackside_ap_business_snapshot", lambda *_args, **_kwargs: _snapshot())
+    monkeypatch.setattr(
+        trackside_ap_update_job,
+        "ApIdentityQueryService",
+        lambda _database: SimpleNamespace(
+            rebuild_index=lambda reason: identity_rebuilds.append(reason)
+        ),
+    )
 
     class Result:
         session_id = "session-1"
@@ -680,6 +688,7 @@ def test_trackside_update_job_calls_existing_collection_service(monkeypatch, tmp
     assert result["requested_concurrency"] == 1000
     assert result["effective_concurrency"] == 2
     assert progress[-1] == ("trackside_ap_optical_update", 1, 2, "正在更新轨旁 AP 光衰")
+    assert identity_rebuilds == ["trackside_ap_optical_refresh_succeeded"]
 
 
 def test_trackside_update_job_rejects_partial_source_snapshot(
@@ -1915,6 +1924,29 @@ def test_trackside_ap_online_status_uses_planned_targets_and_weighted_total(
     assert status.fit_ap_resource_total_count == 948
     assert status.fit_ap_matched_count == 945
     assert status.fit_ap_unmatched_online_count == 1
+    assert status.cache_hit is False
+    assert status.revision
+    assert status.source_revision["fit_ap_count"] == 948
+    assert status.excluded_items == []
+    assert status.unmatched_online_items == []
+    assert status.unassigned_items == []
+    cached_status = service.get_trackside_ap_online_status("demo")
+    assert cached_status.cache_hit is True
+    assert cached_status.revision == status.revision
+    excluded_page = service.list_trackside_ap_online_excluded(
+        "demo",
+        page=1,
+        page_size=1,
+    )
+    unmatched_page = service.list_trackside_ap_online_unmatched(
+        "demo",
+        page=1,
+        page_size=1,
+    )
+    assert excluded_page.total == 4
+    assert len(excluded_page.items) == 1
+    assert unmatched_page.total == 1
+    assert unmatched_page.items[0].item_id == "ap-unassigned"
     assert "actual_ap_count" not in status.model_dump()
     assert "online_count" not in status.model_dump()
     by_name = {row.station_name: row for row in status.items}
@@ -2058,7 +2090,7 @@ def test_trackside_ap_base_template_and_draft_export_use_controlled_artifacts(tm
     template_path, _name = service.open_trackside_ap_base_export("demo", template_task.artifact_id)
     workbook = load_workbook(template_path)
     assert workbook.sheetnames[:2] == ["轨旁AP", "字段说明"]
-    assert [cell.value for cell in workbook["轨旁AP"][1]][:5] == ["AP名称", "点位编号", "AP MAC", "管理 IP", "型号"]
+    assert [cell.value for cell in workbook["轨旁AP"][1]][:6] == ["AP名称", "点位编号", "AP厂商", "AP MAC", "管理 IP", "型号"]
     assert workbook["字段说明"]["A2"].value == "AP名称"
     workbook.close()
 
@@ -2072,6 +2104,7 @@ def test_trackside_ap_base_template_and_draft_export_use_controlled_artifacts(tm
                 "line_name": "宁波地铁1号线",
                 "name": "",
                 "point_code": "AP0127",
+                "vendor": "H3C",
                 "mac": "1c94-6876-8ee0",
                 "station": "高桥西",
                 "section": "高桥西-高桥-上行",
@@ -2097,6 +2130,7 @@ def test_trackside_ap_base_template_and_draft_export_use_controlled_artifacts(tm
     values = [cell.value for cell in workbook["轨旁AP"][2]]
     row = dict(zip(header, values, strict=True))
     assert row["点位编号"] == "AP0127"
+    assert row["AP厂商"] == "H3C"
     assert row["上联交换机"] == "11-高桥西1"
     assert row["上联端口"] == "GE1/0/1"
     workbook.close()

@@ -227,6 +227,16 @@ def test_optical_job_load_collect_single_adds_shadow_without_changing_result_fie
             return AcOpticalRefreshResult(True, False, "cli", request.refresh_scope, snapshot)
 
     monkeypatch.setattr(ac_jobs, "AcOpticalService", FakeOpticalService)
+
+    class FakeIdentityService:
+        def __init__(self, _database) -> None:
+            pass
+
+        @staticmethod
+        def rebuild_index(_reason: str) -> None:
+            pass
+
+    monkeypatch.setattr(ac_jobs, "ApIdentityQueryService", FakeIdentityService)
     base = {
         "device_uuid": "ac-1",
         "site_name": "demo",

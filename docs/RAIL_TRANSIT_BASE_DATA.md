@@ -48,6 +48,7 @@ revision 校验 + SQLite BEGIN IMMEDIATE 单事务
 - `center_mileage_text` 保留业务原文，`center_mileage_m` 保存安全解析结果；支持 `ZDK12+345`、`YDK12+345`、`K12+345`、`12+345` 和纯米数。本字段用于后续站点定位、区间设计与方向分析，本阶段不作为 MR 方向判断硬条件，也不冒充 AP 实际覆盖里程。
 - `ap_extension_points` 可能包含站点标题、设计起点等定位辅助行。Web 轨旁 AP 列表只纳入具有 `ap_name`、有效 MAC 或非空且非 `-` 的 `ap_point_code` 的记录；站点和区间派生仍读取全部定位行。
 - AP 正式名称与 AP 点位编号分字段保留。AP 名称优先显示 AC 当前真实 FIT-AP 名称，未匹配时才回退基础资料名称；点位编号不写回 AP 名称。
+- `AP厂商`/`ap_vendor` 是轨旁 AP 的正式可选字段，支持模板、导入预览、手工维护、DTO 和当前资料导出。只有明确填写 `H3C` 且物理 MAC 合法、末位为 `0` 时，AP Identity 才生成 H3C Radio 1/2 完整 alias；空值和其他厂商不推导。
 - 列车和车载 MR 来自 `devices` 与 `device_groups`；只读取显式安全字段，不读取账号、密码、Community、Token 或隧道凭据。
 - 车载 MR 的 `mr_position_code`、`physical_end` 和 `car_number` 是独立的固定安装资料：`MR-CT = CT / 1车厢端 / 1`，`MR-CW = CW / 6车厢端 / 6`。兼容字段 `role` 仍返回原名称解析结果，但不再表示运行头尾。当前运行角色只能由“实际运行方向 + `increasing_direction_leading_end` + 物理安装位置”计算为 `leading_end / trailing_end / turnback_transition / unknown`；RSSI 信号模型只做一致性验证，不能静默交换 CT/CW。
 - AP、MR、设备之间不因 MAC 相同而自动合并。运行态关联继续复用现有 AC 和 Mesh-Link 匹配结果，不接管 AP Identity 生产匹配。
@@ -98,7 +99,7 @@ revision 校验 + SQLite BEGIN IMMEDIATE 单事务
 
 ## 轨旁 AP 文件闭环
 
-“轨旁 AP”标签页直接提供“下载模板 / 导入并预览 / 导出当前 / 导出重命名命令 / 新增轨旁 AP”。模板和当前导出均通过独立 Export Process 生成 `轨旁AP` 与 `字段说明` 两个工作表，并经 `source=trackside_ap_base` 的公共 Artifact 完成校验和受控下载。模板包含 AP 名称、点位编号、AP MAC、站点/区间、方向、可选里程、上联交换机/端口、供电和光缆等正式字段；FIT-AP 关联、当前光衰、来源和问题数为只读导出列。冲突和无效行可通过“导出问题明细”生成独立 XLSX Artifact；前端必须先由用户选择保存位置，再提交 Export Process。
+“轨旁 AP”标签页直接提供“下载模板 / 导入并预览 / 导出当前 / 导出重命名命令 / 新增轨旁 AP”。模板和当前导出均通过独立 Export Process 生成 `轨旁AP` 与 `字段说明` 两个工作表，并经 `source=trackside_ap_base` 的公共 Artifact 完成校验和受控下载。模板包含 AP 名称、点位编号、可选 AP 厂商、AP MAC、站点/区间、方向、可选里程、上联交换机/端口、供电和光缆等正式字段；FIT-AP 关联、当前光衰、来源和问题数为只读导出列。冲突和无效行可通过“导出问题明细”生成独立 XLSX Artifact；前端必须先由用户选择保存位置，再提交 Export Process。
 
 锁定状态允许下载、导出和只读预览，不能应用；解锁后“导入 N 条有效数据到草稿”只更新 `editingDraft.aps` 和 `pendingChanges`，不调用独立写库接口，仍由页面右上角“保存并锁定”统一提交 revision 校验与事务。按钮只在没有可导入行、页面锁定或正在保存时禁用，不再要求额外确认勾选，也不因其他行存在冲突、无效或未匹配 FIT-AP 而禁用。导入空值默认 KEEP，不能清除已有里程、位置或上联资料；删除只能通过页面明确操作。
 
@@ -174,6 +175,8 @@ GET /api/rail-transit/base-data/station-template
 GET /api/rail-transit/base-data/station-template-export
 GET /api/rail-transit/trackside-ap-business/plan
 GET /api/rail-transit/trackside-ap-business/plan/online-status
+GET /api/rail-transit/trackside-ap-business/plan/online-status/excluded
+GET /api/rail-transit/trackside-ap-business/plan/online-status/unmatched
 ```
 
 普通维护接口：
@@ -245,7 +248,8 @@ Electron Desktop 受管会话由短期 `desktop_session_token` 显式启用正�
 2. 线路来源字段、站点名称/编码/来源键/路径顺序/折返类型、站点/区间引用、AP MAC、里程、MR 名称/IP/端口和规划 VLAN/站点归属校验通过；轨旁 AP 规划不再接收 IP、掩码或网关字段；
 3. 在一个 `BEGIN IMMEDIATE` 事务内按站点/区间、AP/MR、规划顺序写入；
 4. 任一实体失败时完整回滚并保留前端修改；
-5. 返回新 revision 和新增、更新、删除数量。
+5. 事务提交后仅在 AP Identity 来源 revision 变化时，以独立短事务原子重建索引；
+6. 返回新 revision 和新增、更新、删除数量。
 
 受控导入一次写入固定满足：
 
@@ -269,7 +273,9 @@ AP 点表导入、预览、确认、审计和回滚只在“轨道交通 / 基�
 - 总览、站点、区间、数据质量、轨旁 AP、列车、车载 MR、关联运行状态和导入治理接口分别落值；单个请求失败不阻止同批其他成功结果写入，失败项保留最后成功数据，下一次成功只清除自身错误。手动刷新会并行重试全部数据域。
 - 单个业务接口失败时页面显示“部分基础资料刷新失败”，并可展开查看 API path、错误码、HTTP 状态、`request_id` 和原始消息，不把 `/api/health` 在线的场景描述为 Backend 整体离线。
 - 只有至少两个核心接口连续 3 次发生传输级失败时才额外探测 `/api/health`；健康检查也失败后才显示“Backend 连接中断”。有接口连续失败 3 次时，对应数据域后续刷新降为 120 秒。
-- AP、MR 和问题使用后端分页；AC、Mesh-Link、Online MR 关联按批次读取，禁止逐行查询。
+- AP、MR 和问题使用后端分页；`base-data/aps` 先在 SQLite 完成筛选、排序、计数、`LIMIT/OFFSET`，排除没有 AP 身份字段的空占位行，再只为当前页批量拼接 AC/MESH 轻量运行态和质量问题。普通页不得调用全量 AC AP 明细、逐 AP 查询或扫描全局质量问题；AC、Mesh-Link、Online MR 关联继续按批次读取。
+- `base-data/aps` 和轨旁 AP 上线概览记录分阶段耗时及返回/总行数，超过 2 秒写 warning；诊断不进入普通响应，也不记录凭据或大对象。上线概览只返回统计和少量诊断摘要，排除项与待关联在线 AP 在用户展开时分别分页加载，并按规划、FIT-AP、AP Identity 和局点元数据 revision 使用进程内缓存。
+- API client 的 15 秒查询超时不自动重试；GET 只对 502/503/504 和明确的短暂网络错误重试一次，同一路径并发 GET 复用在途 Promise。页面轮询仍须等待上一请求结束，避免慢查询形成重试或轮询堆积。
 
 副本验收使用 `python -m scripts.maintenance.test_rail_transit_base_data_apply`。脚本复制 `devices.db` 后才预览、应用和可选回滚，并在结束时核对源库 SHA-256 与 mtime；目标副本已存在、目标与源目录重叠或缺少副本开关时直接拒绝。
 
@@ -279,7 +285,7 @@ AP 点表导入、预览、确认、审计和回滚只在“轨道交通 / 基�
 - 本阶段不自动生成停车场/车辆段接轨拓扑，不实现折返事件识别、MR 行驶方向识别、行程区段评分或启动时自动同步站点来源；`mr_end_role_service.py` 已提供运行端位语义与计算规则，但尚未接入 MESH 行程分析、页面或报告；
 - 设备连接、AC 命令、Mesh-Link 刷新和 Online MR 启停；
 - Agent 远程 MR 控制与 `executor=AGENT`；
-- AP Identity 生产接管；
+- 基础资料维护页不执行 AC 采集或 MESH 身份重映射；保存/导入写任务负责在来源提交后收口 AP Identity 索引，普通页面 GET 只读；
 - 离线分析和正式报告 Web 化。
 
 自动测试只在临时局点副本验证保存、导入和回滚；宁波地铁 12 号线等正式局点的内容修改仍须在正常持久化 Electron 中人工确认。自动测试前后应核对正式 `devices.db`、bootstrap 和当前局点未变化。

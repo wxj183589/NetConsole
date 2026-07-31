@@ -97,6 +97,7 @@ def test_base_export_separates_runtime_name_from_point_code() -> None:
         {
             "name": "旧点表名称",
             "point_code": "AP1",
+            "vendor": "H3C",
             "line_side": "右线",
             "runtime": {"fit_ap_name": "AP0127"},
         }
@@ -104,6 +105,7 @@ def test_base_export_separates_runtime_name_from_point_code() -> None:
 
     assert row["ap_name"] == "AP0127"
     assert row["ap_point_code"] == "AP1"
+    assert row["ap_vendor"] == "H3C"
     assert row["line_side"] == "右线"
 
 

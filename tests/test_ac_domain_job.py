@@ -256,6 +256,8 @@ def test_ac_fit_ap_collect_terminal_payload_is_bounded_for_large_snapshot() -> N
         "unauthenticated_rows_updated": 0,
         "bbssid_rows_parsed": 0,
         "lldp_rows_parsed": 758,
+        "bbssid_collect_status": "not_collected",
+        "bbssid_error": "",
         "failed_commands": [],
         "summary_updated": True,
         "snapshot_revision": "r-974",

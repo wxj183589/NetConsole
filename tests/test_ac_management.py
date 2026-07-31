@@ -138,11 +138,13 @@ def ac_fixture(name: str) -> str:
 class FakeConnection:
     def __init__(self, outputs=None):
         self.commands = []
+        self.calls = []
         self.disconnected = False
         self.outputs = outputs or {}
 
     def send_command(self, command, read_timeout=None):
         self.commands.append(command)
+        self.calls.append({"command": command, "read_timeout": read_timeout})
         if command in self.outputs:
             value = self.outputs[command]
             if isinstance(value, Exception):
@@ -1905,8 +1907,17 @@ def test_h3c_ac_collect_service_uses_mock_netmiko(monkeypatch, tmp_path):
     assert result.fit_ap_resources_updated == 2
     assert connection.commands == ["screen-length disable", *RESOURCE_COMMANDS]
     assert connection.disconnected is True
-    assert result.raw_log_path == ""
-    assert not (PathResolver(tmp_path).site_dir("demo") / "raw").exists()
+    assert Path(result.raw_log_path).is_file()
+    assert "display wlan ap all radio verbose filter bbssid" in Path(
+        result.raw_log_path
+    ).read_text(encoding="utf-8")
+    assert next(
+        call["read_timeout"]
+        for call in connection.calls
+        if call["command"] == "display wlan ap all radio verbose filter bbssid"
+    ) == 120
+    assert result.bbssid_collect_status == "success"
+    assert result.bbssid_error is None
     assert (
         repository.get_ac_ap_summary("22222222-2222-4222-8222-222222222222")[
             "total_aps"
@@ -2062,6 +2073,38 @@ def test_h3c_ac_resource_only_collect_skips_overview_commands(monkeypatch, tmp_p
         ]
         == "10.0.0.61"
     )
+
+
+def test_h3c_ac_resource_collect_reports_optional_bbssid_failure_without_losing_resources(
+    monkeypatch, tmp_path
+):
+    command = "display wlan ap all radio verbose filter bbssid"
+    connection = FakeConnection({command: TimeoutError("verbose output timed out")})
+    monkeypatch.setattr(
+        h3c_ac_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
+    repository = AcRepository(make_database(tmp_path))
+
+    result = collect_h3c_fit_ap_resources(
+        make_ac_device(),
+        "demo",
+        repository=repository,
+        paths=PathResolver(tmp_path),
+    )
+
+    assert result.success is True
+    assert result.fit_ap_resources_updated == 2
+    assert result.bbssid_rows_parsed == 0
+    assert result.bbssid_collect_status == "failed"
+    assert "verbose output timed out" in str(result.bbssid_error)
+    assert command in [
+        item.command for item in result.command_results if not item.success
+    ]
+    raw_text = Path(result.raw_log_path).read_text(encoding="utf-8")
+    assert command in raw_text
+    assert "verbose output timed out" in raw_text
 
 
 def test_h3c_fit_ap_deep_refresh_uses_verified_verbose_command_and_only_upserts_target(
