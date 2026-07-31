@@ -517,10 +517,6 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_resources (
     raw_log_path TEXT,
     updated_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_ac_fit_ap_resources_mac_lookup
-    ON ac_fit_ap_resources(
-        replace(replace(replace(lower(COALESCE(ap_mac, '')), ':', ''), '-', ''), ' ', '')
-    );
 """
 
 AC_FIT_AP_METADATA_SCHEMA = """
@@ -1849,6 +1845,15 @@ class Database:
         for column, column_type in fit_ap_resource_columns.items():
             if self._table_exists(conn, "ac_fit_ap_resources") and not self._column_exists(conn, "ac_fit_ap_resources", column):
                 conn.execute(f"ALTER {'TABLE'} ac_fit_ap_resources ADD COLUMN {column} {column_type}")
+        if self._table_exists(conn, "ac_fit_ap_resources") and self._column_exists(conn, "ac_fit_ap_resources", "ap_mac"):
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_ac_fit_ap_resources_mac_lookup
+                    ON ac_fit_ap_resources(
+                        replace(replace(replace(lower(COALESCE(ap_mac, '')), ':', ''), '-', ''), ' ', '')
+                    )
+                """
+            )
         fit_ap_metadata_columns = {
             "belong_type": "TEXT",
             "belong_section": "TEXT",
