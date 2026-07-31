@@ -7,6 +7,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.repositories.rail_transit_base_data_repository import RailTransitBaseDataRepository
 
 
 def test_current_schema_initialize_skips_full_integrity_check(tmp_path, monkeypatch):
@@ -21,6 +22,59 @@ def test_current_schema_initialize_skips_full_integrity_check(tmp_path, monkeypa
     db.initialize()
 
     assert integrity_calls == []
+
+
+def test_base_data_revision_counter_tracks_committed_base_data_only(tmp_path):
+    paths = PathResolver(data_root=tmp_path)
+    database_path = paths.site_db_path("demo")
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    Database(database_path).initialize()
+    repository = RailTransitBaseDataRepository(paths)
+
+    first = repository.base_data_revision("demo")
+    with Database(database_path).connect() as conn:
+        assert conn.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'base_data_revision'"
+        ).fetchone()["value"] == "0"
+        conn.execute(
+            """
+            INSERT INTO ap_extension_points (
+                site_id, ap_name, created_at, updated_at
+            ) VALUES ('demo', 'AP-1', '2026-08-01', '2026-08-01')
+            """
+        )
+        conn.commit()
+    second = repository.base_data_revision("demo")
+    assert second != first
+
+    with Database(database_path).connect() as conn:
+        conn.execute("BEGIN")
+        conn.execute(
+            "UPDATE ap_extension_points SET remark = 'rolled back' WHERE ap_name = 'AP-1'"
+        )
+        conn.rollback()
+    assert repository.base_data_revision("demo") == second
+
+    with Database(database_path).connect() as conn:
+        conn.execute(
+            "UPDATE ap_extension_points SET remark = 'committed' WHERE ap_name = 'AP-1'"
+        )
+        conn.commit()
+    third = repository.base_data_revision("demo")
+    assert third != second
+
+    with Database(database_path).connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO ac_trackside_ap_plan_settings (key, value, updated_at)
+            VALUES ('current_source', 'station_rows', '2026-08-01')
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            """
+        )
+        conn.commit()
+    assert repository.base_data_revision("demo") != third
 
 
 def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_path):

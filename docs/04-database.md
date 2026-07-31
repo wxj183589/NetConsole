@@ -127,6 +127,14 @@ index reports its stale/missing diagnostic until an explicit source-write
 rebuild completes. See
 [AP Identity](AP_IDENTITY.md).
 
+`schema_metadata.base_data_revision` is a small monotonic counter maintained by
+SQLite triggers on the editable base-data tables. The base-data edit-session
+revision hashes this counter together with `site_meta.json`; it does not scan
+historical collection tables. A transaction rollback also rolls back the
+counter, so optimistic-lock conflicts remain stable without making the
+`/base-data/revision` GET path write to the database. Databases predating the
+counter use a bounded SQLite/file-metadata fallback until they are initialized.
+
 Current local tables:
 
 - `devices`

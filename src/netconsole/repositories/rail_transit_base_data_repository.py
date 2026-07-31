@@ -79,6 +79,7 @@ _BASE_DATA_REFERENCE_METADATA_KEYS = {
     "section_start_node_uid",
     "section_end_node_uid",
 }
+_BASE_DATA_REVISION_KEY = "base_data_revision"
 
 
 class RailTransitBaseDataRollbackConflict(RuntimeError):
@@ -110,29 +111,79 @@ class RailTransitBaseDataRepository:
     def _sqlite_database_hash(self, site_id: str) -> str:
         path = self._database_path(site_id)
         with self._read_connection(path) as connection:
-            digest = hashlib.sha256()
-            tables = connection.execute(
+            try:
+                revision = connection.execute(
+                    """
+                    SELECT value
+                    FROM schema_metadata
+                    WHERE key = ?
+                    LIMIT 1
+                    """,
+                    (_BASE_DATA_REVISION_KEY,),
+                ).fetchone()
+            except sqlite3.Error:
+                revision = None
+            if revision is not None:
+                payload = f"base-data-counter-v1\n{str(revision['value'] or '0')}"
+                return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+            # Databases created before the counter schema remain readable.  The
+            # fallback deliberately fingerprints only SQLite metadata and file
+            # state; it never scans the historical rows that caused the timeout.
+            schema_rows = connection.execute(
                 """
-                SELECT name, COALESCE(sql, '')
+                SELECT type, name, COALESCE(sql, '')
                 FROM sqlite_master
-                WHERE type = 'table'
-                  AND name NOT LIKE 'sqlite_%'
-                ORDER BY name
-                """
+                WHERE name NOT LIKE 'sqlite_%'
+                  AND name NOT IN (?, ?, ?, ?, ?)
+                ORDER BY type, name
+                """,
+                tuple(sorted(_AP_IDENTITY_DERIVED_TABLES)),
             ).fetchall()
-            for table_name, schema_sql in tables:
-                name = str(table_name)
-                if name in _AP_IDENTITY_DERIVED_TABLES:
-                    continue
-                digest.update(f"table:{name}\nschema:{schema_sql}\n".encode("utf-8"))
-                safe_name = name.replace('"', '""')
-                rows = connection.execute(
-                    f'SELECT * FROM "{safe_name}" ORDER BY rowid'
-                ).fetchall()
-                for row in rows:
-                    digest.update(repr(tuple(row)).encode("utf-8"))
-                    digest.update(b"\n")
-            return digest.hexdigest()
+            pragmas = {
+                key: connection.execute(f"PRAGMA {key}").fetchone()[0]
+                for key in (
+                    "journal_mode",
+                    "page_count",
+                    "freelist_count",
+                    "schema_version",
+                    "user_version",
+                )
+            }
+        try:
+            database_stat = path.stat()
+        except OSError:
+            database_stat = None
+        wal_path = path.with_name(f"{path.name}-wal")
+        try:
+            wal_stat = wal_path.stat()
+        except OSError:
+            wal_stat = None
+        try:
+            with path.open("rb") as handle:
+                header = handle.read(28).hex()
+        except OSError:
+            header = ""
+        payload = {
+            "schema": [tuple(row) for row in schema_rows],
+            "pragmas": pragmas,
+            "database": (
+                database_stat.st_size,
+                database_stat.st_mtime_ns,
+            )
+            if database_stat
+            else None,
+            "wal": (
+                wal_stat.st_size,
+                wal_stat.st_mtime_ns,
+            )
+            if wal_stat
+            else None,
+            "header": header,
+        }
+        return hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
 
     def base_data_revision(self, site_id: str) -> str:
         """Return a revision covering both the SQLite facts and site metadata."""

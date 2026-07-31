@@ -70,6 +70,269 @@ CREATE TABLE IF NOT EXISTS schema_metadata (
 );
 """
 
+# Base-data optimistic locking must not hash the complete device database.  The
+# counter is changed by SQLite triggers so direct writers and application
+# transactions share the same revision boundary.
+BASE_DATA_REVISION_SCHEMA = """
+INSERT OR IGNORE INTO schema_metadata (key, value, created_at, updated_at)
+VALUES (
+    'base_data_revision',
+    '0',
+    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_ap_extension_points_insert
+AFTER INSERT ON ap_extension_points
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_ap_extension_points_update
+AFTER UPDATE ON ap_extension_points
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_ap_extension_points_delete
+AFTER DELETE ON ap_extension_points
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_devices_insert
+AFTER INSERT ON devices
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_devices_update
+AFTER UPDATE ON devices
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_devices_delete
+AFTER DELETE ON devices
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_device_groups_insert
+AFTER INSERT ON device_groups
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_device_groups_update
+AFTER UPDATE ON device_groups
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_device_groups_delete
+AFTER DELETE ON device_groups
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_ac_trackside_ap_plan_insert
+AFTER INSERT ON ac_trackside_ap_plan
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_ac_trackside_ap_plan_update
+AFTER UPDATE ON ac_trackside_ap_plan
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_ac_trackside_ap_plan_delete
+AFTER DELETE ON ac_trackside_ap_plan
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_ac_trackside_ap_plan_settings_insert
+AFTER INSERT ON ac_trackside_ap_plan_settings
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_ac_trackside_ap_plan_settings_update
+AFTER UPDATE ON ac_trackside_ap_plan_settings
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_ac_trackside_ap_plan_settings_delete
+AFTER DELETE ON ac_trackside_ap_plan_settings
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_ap_vlan_plans_insert
+AFTER INSERT ON rail_ap_vlan_plans
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_ap_vlan_plans_update
+AFTER UPDATE ON rail_ap_vlan_plans
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_ap_vlan_plans_delete
+AFTER DELETE ON rail_ap_vlan_plans
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_ap_vlan_groups_insert
+AFTER INSERT ON rail_ap_vlan_groups
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_ap_vlan_groups_update
+AFTER UPDATE ON rail_ap_vlan_groups
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_ap_vlan_groups_delete
+AFTER DELETE ON rail_ap_vlan_groups
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_ap_vlan_group_members_insert
+AFTER INSERT ON rail_ap_vlan_group_members
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_ap_vlan_group_members_update
+AFTER UPDATE ON rail_ap_vlan_group_members
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_ap_vlan_group_members_delete
+AFTER DELETE ON rail_ap_vlan_group_members
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_ap_vlan_group_assignments_insert
+AFTER INSERT ON rail_ap_vlan_assignments
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_ap_vlan_group_assignments_update
+AFTER UPDATE ON rail_ap_vlan_assignments
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_ap_vlan_group_assignments_delete
+AFTER DELETE ON rail_ap_vlan_assignments
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_ap_vlan_allocations_insert
+AFTER INSERT ON rail_ap_vlan_allocations
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_ap_vlan_allocations_update
+AFTER UPDATE ON rail_ap_vlan_allocations
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_ap_vlan_allocations_delete
+AFTER DELETE ON rail_ap_vlan_allocations
+BEGIN
+    UPDATE schema_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE key = 'base_data_revision';
+END;
+"""
+
 DEVICES_SCHEMA = """
 CREATE TABLE IF NOT EXISTS devices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2377,6 +2640,7 @@ class Database:
             AC_FIT_AP_RADIO_HISTORY_SCHEMA,
             CONFIG_SNAPSHOTS_SCHEMA,
             _ap_identity_source_revision_schema(),
+            BASE_DATA_REVISION_SCHEMA,
         ]
         if include_device_address_index:
             scripts.insert(2, DEVICE_PRIMARY_ADDRESS_INDEX_SCHEMA)
