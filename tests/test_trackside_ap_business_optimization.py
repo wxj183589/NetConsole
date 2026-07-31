@@ -113,7 +113,7 @@ def test_history_change_helpers_only_report_normal_abnormal_transitions():
     assert optical_change_text("failed", "alarm") == "-"
 
 
-def test_multi_ac_same_ap_merge_prefers_online_over_idle():
+def test_multi_ac_rows_without_mac_are_not_merged_by_name_or_serial():
     rows = merge_fit_ap_rows_by_identity(
         [
             {"ac_device_uuid": "standby", "serial_number": "SN-1", "ap_name": "AP1", "state": "Idle", "updated_at": "2026-06-29T10:00:00"},
@@ -121,8 +121,8 @@ def test_multi_ac_same_ap_merge_prefers_online_over_idle():
         ]
     )
 
-    assert len(rows) == 1
-    assert rows[0]["ac_device_uuid"] == "active"
+    assert len(rows) == 2
+    assert {row["ac_device_uuid"] for row in rows} == {"standby", "active"}
 
 
 def test_trackside_business_merges_same_ap_by_identity():
@@ -300,7 +300,7 @@ def test_trackside_business_keeps_ap_identity_when_ap_optical_missing():
     )
 
     assert rows[0]["ap_name"] == "AP-MISSING-OPTICAL"
-    assert rows[0]["ap_mac"] == "083b-e9ec-da40"
+    assert rows[0]["ap_mac"] == "08:3b:e9:ec:da:40"
     assert rows[0]["serial_number"] == "SN-MISSING-OPTICAL"
     assert rows[0]["ap_rx_power"] is None
 
@@ -346,11 +346,11 @@ def test_trackside_optical_change_ignores_same_abnormal_boundary_without_normal(
 
 
 def test_trackside_optical_change_reports_recovery_from_earlier_abnormal():
-    rows = [{"ap_uuid": "ap-1", "ap_name": "AP1", "ap_optical_status": "normal", "updated_at": "2026-01-04"}]
+    rows = [{"ap_uuid": "ap-1", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "ap_optical_status": "normal", "updated_at": "2026-01-04"}]
     history = [
-        {"ap_uuid": "ap-1", "ap_name": "AP1", "optical_alarm_status": "alarm", "collected_at": "2026-01-01", "id": 1},
-        {"ap_uuid": "ap-1", "ap_name": "AP1", "optical_alarm_status": "normal", "collected_at": "2026-01-02", "id": 2},
-        {"ap_uuid": "ap-1", "ap_name": "AP1", "optical_alarm_status": "normal", "collected_at": "2026-01-03", "id": 3},
+        {"ap_uuid": "ap-1", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "optical_alarm_status": "alarm", "collected_at": "2026-01-01", "id": 1},
+        {"ap_uuid": "ap-1", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "optical_alarm_status": "normal", "collected_at": "2026-01-02", "id": 2},
+        {"ap_uuid": "ap-1", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "optical_alarm_status": "normal", "collected_at": "2026-01-03", "id": 3},
     ]
 
     enriched = enrich_trackside_export_rows(rows, ap_optical_history_rows=history)

@@ -1496,7 +1496,7 @@ class MeshAnalysisQueryService:
                 avg_rssi=self._number(data.get("avg_rssi")),
                 min_rssi=self._number(data.get("min_rssi")),
                 anomaly_count=anomaly_counts.get(key, 0),
-                match_status="matched" if location.name else "unresolved",
+                match_status=location.identity_status,
             )
             if not query or query.casefold() in f"{item.peer_ap_name} {item.peer_ap_mac} {item.station} {item.section}".casefold():
                 items.append(item)

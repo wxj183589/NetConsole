@@ -30,7 +30,11 @@ def test_location_snapshot_does_not_guess_when_name_is_duplicated() -> None:
         )
     )
 
-    assert snapshot.resolve({"peer_ap_name": "AP-01"}) == MeshApLocation(name="AP-01")
+    assert snapshot.resolve({"peer_ap_name": "AP-01"}) == MeshApLocation(
+        name="AP-01",
+        identity_status="unresolved",
+        identity_reason="缺少规范 AP MAC",
+    )
 
 
 def test_location_snapshot_uses_active_peer_mac_without_overriding_ap_mac_priority() -> None:
@@ -50,7 +54,7 @@ def test_location_snapshot_uses_active_peer_mac_without_overriding_ap_mac_priori
     assert explicit_ap.station == "车站B"
 
 
-def test_location_snapshot_falls_back_to_name_and_preserves_section_only() -> None:
+def test_location_snapshot_rejects_name_only_and_preserves_observed_section() -> None:
     snapshot = MeshApLocationSnapshot((MeshApLocation(name="AP-02", section="区间A-B"),))
 
     named = snapshot.resolve({"peer_ap_name": "ap-02"})
@@ -58,10 +62,17 @@ def test_location_snapshot_falls_back_to_name_and_preserves_section_only() -> No
         {"peer_ap_name": "AP-03", "peer_section": "区间B-C"}
     )
 
-    assert named.section == "区间A-B"
+    assert named == MeshApLocation(
+        name="ap-02",
+        identity_status="unresolved",
+        identity_reason="缺少规范 AP MAC",
+    )
     assert unresolved.station == ""
     assert unresolved.section == "区间B-C"
-    assert MeshApLocationSnapshot().resolve({}) == MeshApLocation()
+    assert MeshApLocationSnapshot().resolve({}) == MeshApLocation(
+        identity_status="unresolved",
+        identity_reason="缺少规范 AP MAC",
+    )
 
 
 def test_location_snapshot_serialization_round_trip_is_worker_safe() -> None:
@@ -85,22 +96,27 @@ def test_location_snapshot_serialization_round_trip_is_worker_safe() -> None:
         {
             "name": "AP-04",
             "point_code": "",
-            "mac": "0000-0000-0040",
+                "mac": "00:00:00:00:00:40",
             "station": "车站D",
             "section": "",
             "section_start_station": "",
             "section_end_station": "",
             "mileage": "K12+300",
-            "line_side": "上行",
-            "direction": "",
+                "line_side": "上行",
+                "direction": "",
+                "identity_status": "matched",
+                "identity_source": "BASE_DATA_AP_MAC",
+                "identity_reason": "",
         }
     ]
     assert restored.resolve({"peer_ap_mac": "000000000040"}) == MeshApLocation(
         name="AP-04",
-        mac="0000-0000-0040",
+        mac="00:00:00:00:00:40",
         station="车站D",
         mileage="K12+300",
         line_side="上行",
+        identity_status="matched",
+        identity_source="BASE_DATA_AP_MAC",
     )
 
 

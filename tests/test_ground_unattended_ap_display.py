@@ -34,9 +34,9 @@ def test_ap_display_resolver_keeps_peer_radio_and_alias_semantics_distinct() -> 
         }
     )
 
-    assert peer["resolution_status"] == "PEER_MAC_EXACT"
+    assert peer["resolution_status"] == "UNRESOLVED"
     assert radio["resolution_status"] == "RADIO_BSSID"
-    assert alias["resolution_status"] == "AP_ALIAS"
+    assert alias["resolution_status"] == "UNRESOLVED"
     assert enriched["peer_mac"] == "10:11:22:33:44:55"
     assert enriched["details"]["peer_ap_mac"] == "00:11:22:33:44:55"
     assert enriched["details"]["peer_radio_mac"] == "10:11:22:33:44:55"
@@ -70,13 +70,12 @@ def test_ap_display_resolver_uses_ac_detail_h3c_radio_evidence() -> None:
 
     result = resolver.resolve(mac="0011-2233-445f")
 
-    assert result["peer_ap_id"] == "ap-1"
-    assert result["peer_ap_name"] == "Z01-01"
-    assert result["peer_ap_mac"] == "00:11:22:33:44:50"
-    assert result["resolution_status"] == "H3C_RADIO_DERIVED"
-    assert result["resolution_rule"] == "h3c_radio_1_ap_mac_prefix11"
-    assert result["resolution_confidence"] == "90"
-    assert result["display_name_source"] == "TRACKSIDE_AP_NAME"
+    assert result["peer_ap_id"] == ""
+    assert result["peer_ap_name"] == "00:11:22:33:44:5f"
+    assert result["peer_ap_mac"] == ""
+    assert result["resolution_status"] == "UNRESOLVED"
+    assert result["resolution_rule"] == ""
+    assert result["resolution_confidence"] == ""
 
 
 def test_ap_display_resolver_marks_mac_configured_name_source() -> None:
@@ -86,9 +85,9 @@ def test_ap_display_resolver_marks_mac_configured_name_source() -> None:
 
     result = resolver.resolve(mac="0011-2233-445f")
 
-    assert result["peer_ap_name"] == "0011-2233-4450"
-    assert result["display_name_source"] == "AC_AP_NAME"
-    assert result["resolution_status"] == "H3C_RADIO_DERIVED"
+    assert result["peer_ap_name"] == "00:11:22:33:44:5f"
+    assert result["display_name_source"] == "RAW_OBSERVATION"
+    assert result["resolution_status"] == "UNRESOLVED"
 
 
 def test_ap_display_resolver_rejects_ambiguous_h3c_radio_candidates() -> None:
@@ -101,7 +100,7 @@ def test_ap_display_resolver_rejects_ambiguous_h3c_radio_candidates() -> None:
 
     result = resolver.resolve(mac="0011-2233-445f")
 
-    assert result["resolution_status"] == "AMBIGUOUS"
+    assert result["resolution_status"] == "UNRESOLVED"
     assert result["peer_ap_id"] == ""
 
 
@@ -243,18 +242,18 @@ def test_timeline_enriches_link_events_and_no_active_link_switch(tmp_path) -> No
         "0011-2233-4455",
         bssid="1011-2233-4455",
     )
-    ap2 = _ap("ap-2", "横溪站-AP03", "0022-3344-5566")
+    ap2 = _ap("ap-2", "横溪站-AP03", "0022-3344-5566", bssid="1022-3344-5566")
     events = [
         (
             "mesh_linkup",
             "WMESH 链路建立",
-            {"peer_mac": "0011-2233-4455", "rssi": -51},
+                {"peer_mac": "1011-2233-4455", "rssi": -51},
         ),
         (
             "mesh_linkdown",
             "WMESH 链路断开",
             {
-                "peer_mac": "1011-2233-4455",
+                    "peer_mac": "1011-2233-4455",
                 "rssi": -72,
                 "reason_code": "WEAK_RSSI_LOCAL",
                 "reason_label": "弱信号（本端）",
@@ -264,8 +263,8 @@ def test_timeline_enriches_link_events_and_no_active_link_switch(tmp_path) -> No
             "mesh_activelink_switch",
             "WMESH 主链路切换",
             {
-                "old_peer_mac": "0011-2233-4455",
-                "new_peer_mac": "0022-3344-5566",
+                    "old_peer_mac": "1011-2233-4455",
+                    "new_peer_mac": "1022-3344-5566",
             },
         ),
         (
@@ -273,14 +272,14 @@ def test_timeline_enriches_link_events_and_no_active_link_switch(tmp_path) -> No
             "WMESH 主链路切换",
             {
                 "old_active_link_missing": True,
-                "new_peer_mac": "0022-3344-5566",
+                    "new_peer_mac": "1022-3344-5566",
             },
         ),
         (
             "mesh_activelink_switch",
             "WMESH 主链路切换",
             {
-                "old_peer_mac": "0011-2233-4455",
+                    "old_peer_mac": "1011-2233-4455",
                 "new_peer_mac": "",
             },
         ),

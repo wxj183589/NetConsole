@@ -37,6 +37,9 @@ export interface TracksideApDataSourceIssue {
 }
 
 export interface TracksideApUpdateRequest { station?: string; ap_uuid?: string; ap_mac?: string; ap_name?: string }
+export interface TracksideApBusinessExportProposal {
+  site_id: string; site_display_name: string; generated_at: string; suggested_name: string
+}
 export type TracksideApTask = RailTransitTask
 
 export type TracksideSwitchCapabilityStatus =
@@ -126,7 +129,7 @@ export interface TracksideApOnlineStatus {
 export type ApManagementVlanPlanningMode = 'line_single' | 'station_independent' | 'station_grouped'
 export interface ApManagementVlanPlanning {
   line_id: string; planning_mode: ApManagementVlanPlanningMode; auto_group_station_count: number
-  address_allocation_strategy: string; revision: number; updated_at: string
+  address_allocation_strategy: string; revision: number; created_at?: string; updated_at: string
 }
 export interface ApManagementVlanGroupMember {
   station_id: string; station_name: string; station_sequence: number; ap_count: number

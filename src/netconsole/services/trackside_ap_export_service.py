@@ -520,7 +520,19 @@ def export_trackside_ap_business_from_database(
         tmp,
         effective_suffix=output.suffix,
         export_type="trackside_ap_business",
-        payload={"source_module": "rail.trackside_ap_business"},
+        payload={
+            "source_module": "rail.trackside_ap_business",
+            "contract_metadata": {
+                "site_id": site_name,
+                "site_display_name": str(
+                    (scope_context or {}).get("site_display_name")
+                    or (scope_context or {}).get("display_name")
+                    or ""
+                ),
+                "generated_at": str((scope_context or {}).get("generated_at") or ""),
+                "exported_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            },
+        },
     )
     os.replace(tmp, output)
     emit("done", len(rows), len(rows), "完成")

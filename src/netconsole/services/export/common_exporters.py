@@ -775,6 +775,7 @@ def _build_fit_ap_optical_rows(payload: Mapping[str, Any]) -> list[dict[str, obj
     from netconsole.repositories.device_repository import DeviceRepository
     from netconsole.services.fit_ap_optical_export import evaluate_fit_ap_ap_status
     from netconsole.services.offline_ap_ledger import OFFLINE_AP_STATUS_TEXT, is_fit_ap_offline
+    from netconsole.services.ap_identity.normalizers import normalize_mac
     from netconsole.utils.interface_sort import interface_sort_key
 
     ac_uuid = str(payload.get("ac_uuid") or "").strip()
@@ -788,10 +789,10 @@ def _build_fit_ap_optical_rows(payload: Mapping[str, Any]) -> list[dict[str, obj
     optical_by_device = {str(device.device_uuid or ""): fact_repository.list_optical_modules(str(device.device_uuid or "")) for device in devices}
     switch_lookup = build_switch_data_lookup(devices, optical_by_device)
     resources_by_uuid = {str(row.get("ap_uuid") or ""): row for row in resources if row.get("ap_uuid")}
-    resources_by_name = {str(row.get("ap_name") or ""): row for row in resources if row.get("ap_name")}
+    resources_by_mac = {normalize_mac(row.get("ap_mac")): row for row in resources if normalize_mac(row.get("ap_mac"))}
     enriched: list[dict[str, object | None]] = []
     for row in optical_rows:
-        resource = resources_by_uuid.get(str(row.get("ap_uuid") or "")) or resources_by_name.get(str(row.get("ap_name") or ""), {})
+        resource = resources_by_uuid.get(str(row.get("ap_uuid") or "")) or resources_by_mac.get(normalize_mac(row.get("ap_mac")), {})
         neighbor_name = None if _invalid_fit_ap_neighbor_text(row.get("neighbor_device_name")) else row.get("neighbor_device_name")
         is_offline = is_fit_ap_offline(dict(resource)) or bool(row.get("is_ap_offline"))
         enriched.append(

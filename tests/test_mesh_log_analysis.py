@@ -125,8 +125,8 @@ def test_active_switch_observed_window(tmp_path):
     result = MeshLogAnalysisService("demo", tmp_path).analyze([path])
     switches = [event for event in result.switch_events if event.event_type == EVENT_ACTIVE_SWITCH]
     assert len(switches) == 1
-    assert switches[0].from_peer_mac == "30f5-277a-5a2f"
-    assert switches[0].to_peer_mac == "30f5-277a-5a3f"
+    assert switches[0].from_peer_mac == "30:f5:27:7a:5a:2f"
+    assert switches[0].to_peer_mac == "30:f5:27:7a:5a:3f"
     assert switches[0].observed_window_ms == 717
 
 
@@ -377,11 +377,11 @@ def test_mesh_peer_mapping_keeps_ap_mac_and_radio_mac_separate(tmp_path):
 
     repo.upsert_peer_mappings(
         [
-            {
-                "peer_mac_normalized": "30f5277a5a2f",
-                "peer_ap_name": "AP-01",
-                "peer_ap_mac": "30f5277a5a3f",
-                "peer_radio_mac": "30f5277a5a2f",
+                {
+                    "peer_mac_normalized": "30:f5:27:7a:5a:2f",
+                    "peer_ap_name": "AP-01",
+                    "peer_ap_mac": "30:f5:27:7a:5a:3f",
+                    "peer_radio_mac": "30:f5:27:7a:5a:2f",
                 "peer_radio_label": "radio2",
                 "peer_site": "站点",
                 "match_rule": "resolver",
@@ -393,11 +393,11 @@ def test_mesh_peer_mapping_keeps_ap_mac_and_radio_mac_separate(tmp_path):
     _, links = repo.query_links(10, 0)
 
     assert links[0]["peer_mac_raw"] == "30f5-277a-5a2f"
-    assert links[0]["peer_ap_mac"] == "30f5277a5a3f"
-    assert links[0]["peer_radio_mac"] == "30f5277a5a2f"
+    assert links[0]["peer_ap_mac"] == "30:f5:27:7a:5a:3f"
+    assert links[0]["peer_radio_mac"] == "30:f5:27:7a:5a:2f"
 
 
-def test_mesh_peer_mapping_service_uses_h3c_radio_rule_fields(tmp_path):
+def test_mesh_peer_mapping_service_rejects_derived_h3c_radio_fields(tmp_path):
     paths = PathResolver(tmp_path)
     service = MeshPeerMappingService("demo", paths)
     service._resolver = TracksideApBssidResolver([{"ap_name": "AP-01", "ap_mac": "083b-e9ec-da40", "site_name": "S1"}])
@@ -405,15 +405,15 @@ def test_mesh_peer_mapping_service_uses_h3c_radio_rule_fields(tmp_path):
     resolved = service.resolve("083b-e9ec-da5f")
 
     assert resolved is not None
-    assert resolved["peer_mac_normalized"] == "083be9ecda5f"
-    assert resolved["peer_radio_mac"] == "083be9ecda5f"
-    assert resolved["peer_ap_mac"] == "083be9ecda40"
-    assert resolved["peer_ap_name"] == "AP-01"
-    assert resolved["peer_site"] == "S1"
-    assert resolved["peer_radio_label"] == "radio2"
+    assert resolved["peer_mac_normalized"] == "08:3b:e9:ec:da:5f"
+    assert resolved["peer_radio_mac"] == ""
+    assert resolved["peer_ap_mac"] == ""
+    assert resolved["peer_ap_name"] == ""
+    assert resolved["peer_site"] == ""
+    assert resolved["peer_radio_label"] == ""
 
 
-def test_mesh_peer_mapping_service_returns_serial_number_for_h3c_peer_mac(tmp_path):
+def test_mesh_peer_mapping_service_does_not_use_peer_mac_as_physical_ap(tmp_path):
     paths = PathResolver(tmp_path)
     service = MeshPeerMappingService("demo", paths)
     service._resolver = TracksideApBssidResolver(
@@ -423,13 +423,13 @@ def test_mesh_peer_mapping_service_returns_serial_number_for_h3c_peer_mac(tmp_pa
     resolved = service.resolve("bc5a-3457-cbef")
 
     assert resolved is not None
-    assert resolved["peer_ap_name"] == "bc5a-3457-cbe0"
-    assert resolved["peer_ap_mac"] == "bc5a3457cbe0"
-    assert resolved["peer_radio_mac"] == "bc5a3457cbef"
-    assert resolved["peer_site"] == "03镇驼站"
-    assert resolved["peer_serial_number"] == "TEST-SN-001"
-    assert resolved["serial_number"] == "TEST-SN-001"
-    assert resolved["peer_radio_label"] == "radio1"
+    assert resolved["peer_ap_name"] == ""
+    assert resolved["peer_ap_mac"] == ""
+    assert resolved["peer_radio_mac"] == ""
+    assert resolved["peer_site"] == ""
+    assert resolved["peer_serial_number"] == ""
+    assert resolved["serial_number"] == ""
+    assert resolved["peer_radio_label"] == ""
 
 
 def test_multiple_source_files_can_filter_links_and_charts(tmp_path):
@@ -630,10 +630,10 @@ def test_mesh_import_resolves_peer_ap_name_site_and_radio(tmp_path):
         conn.execute(
             """
             INSERT INTO ac_fit_ap_resources (
-                ac_device_uuid, ap_uuid, ap_name, ap_mac, site, collected_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ac_device_uuid, ap_uuid, ap_name, ap_mac, rid2_bbssid, site, collected_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("ac-1", "ap-1", "AP-01", "30f5-277a-5a10", "Ningbo Station", now, now),
+            ("ac-1", "ap-1", "AP-01", "30f5-277a-5a10", "30f5-277a-5a2f", "Ningbo Station", now, now),
         )
     profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
     source = tmp_path / "meshlog.log"
@@ -646,11 +646,11 @@ def test_mesh_import_resolves_peer_ap_name_site_and_radio(tmp_path):
     assert rows[0]["peer_site"] == "Ningbo Station"
     assert rows[0]["peer_radio"] == "radio2"
     assert rows[0]["peer_radio_label"] == "radio2"
-    assert rows[0]["peer_radio_mac"] == "30f5277a5a2f"
-    assert rows[0]["peer_ap_mac"] == "30f5277a5a10"
-    assert rows[0]["peer_resolve_source"] == "h3c_radio_2_ap_mac_nibble_plus_1"
+    assert rows[0]["peer_radio_mac"] == "30:f5:27:7a:5a:2f"
+    assert rows[0]["peer_ap_mac"] == "30:f5:27:7a:5a:10"
+    assert rows[0]["peer_resolve_source"] == "rid2_bbssid"
     cache_rows = repo.export_rows("mesh_peer_resolve_cache")
-    assert cache_rows[0]["peer_mac"] == "30f5277a5a2f"
+    assert cache_rows[0]["peer_mac"] == "30:f5:27:7a:5a:2f"
     assert cache_rows[0]["peer_ap_name"] == "AP-01"
 
 
@@ -818,8 +818,8 @@ def test_peer_chart_run_context_includes_same_time_standby_from_other_session(tm
     payload = build_chart_payload(segments["peer_segment"], segments["run_segment"])
     backups = [items for items in payload["backup_links_by_index"] if items]
     assert backups
-    assert backups[0][0]["peer_mac"] == "30f5277a5a4f"
-    assert payload["main_links_by_index"][0]["peer_mac"] == "30f5277a5a2f"
+    assert backups[0][0]["peer_mac"] == "30:f5:27:7a:5a:4f"
+    assert payload["main_links_by_index"][0]["peer_mac"] == "30:f5:27:7a:5a:2f"
 
 
 
@@ -1189,10 +1189,10 @@ def test_aba_active_switch_events_are_not_merged_and_return_is_rapid_flap(tmp_pa
     _, events = repo.query_events(100, 0)
     switches = [event for event in events if event["event_type"] == EVENT_ACTIVE_SWITCH]
     assert [event["event_time"] for event in switches] == ["2025-12-03 10:00:02.000", "2025-12-03 10:00:03.000"]
-    assert switches[0]["from_peer_mac"] == "30f5-277a-5a2f"
-    assert switches[0]["to_peer_mac"] == "30f5-277a-5a3f"
-    assert switches[1]["from_peer_mac"] == "30f5-277a-5a3f"
-    assert switches[1]["to_peer_mac"] == "30f5-277a-5a2f"
+    assert switches[0]["from_peer_mac"] == "30:f5:27:7a:5a:2f"
+    assert switches[0]["to_peer_mac"] == "30:f5:27:7a:5a:3f"
+    assert switches[1]["from_peer_mac"] == "30:f5:27:7a:5a:3f"
+    assert switches[1]["to_peer_mac"] == "30:f5:27:7a:5a:2f"
     details = json.loads(str(switches[1]["details_json"]))
     assert details["is_rapid_flap"] is True
     assert details["rapid_flap_middle_peer"] == "30f5277a5a3f"

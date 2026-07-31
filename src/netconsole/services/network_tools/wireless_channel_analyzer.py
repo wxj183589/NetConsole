@@ -1,18 +1,14 @@
 from __future__ import annotations
 
-import re
-
-
-def normalize_mac(value: object) -> str | None:
-    text = re.sub(r"[^0-9a-fA-F]", "", str(value or ""))
-    return text.casefold() if len(text) == 12 else None
+from netconsole.services.ap_identity.normalizers import normalize_mac
 
 
 def format_h3c_mac(value: object) -> str:
     mac = normalize_mac(value)
     if not mac:
         return ""
-    return f"{mac[0:4]}-{mac[4:8]}-{mac[8:12]}"
+    compact = mac.replace(":", "")
+    return f"{compact[0:4]}-{compact[4:8]}-{compact[8:12]}"
 
 
 def band_from_frequency(frequency_mhz: int | None) -> str:

@@ -39,6 +39,7 @@ from netconsole.models.api.trackside_ap_business import (
     ApManagementVlanImpactDTO,
     ApManagementVlanPreviewDTO,
     EffectiveManagementNetworkDTO,
+    TracksideApBusinessExportProposalDTO,
     TracksideApPlanDTO,
     TracksideApPlanDraftDTO,
     TracksideApOnlineStatusDTO,
@@ -628,16 +629,58 @@ class RailTransitWebApplicationService:
         artifact_type = "csv" if file_format == "csv" else "xlsx"
         return self._open_artifact(site_id, artifact_id, "car_network_point_table", artifact_type)
 
-    def start_trackside_ap_business_export(self, site_id: str) -> RailTransitTaskDTO:
+    def get_trackside_ap_business_export_proposal(
+        self,
+        site_id: str,
+    ) -> TracksideApBusinessExportProposalDTO:
         site_id = self._site(site_id)
-        created_at = datetime.now()
+        generated_at = datetime.now().astimezone()
+        site_display_name = self._site_display_name(site_id)
+        try:
+            suggested_name = build_trackside_ap_business_export_name(
+                site_display_name,
+                generated_at,
+            )
+        except ValueError as exc:
+            raise RailTransitWebError("SITE_DISPLAY_NAME_INVALID", str(exc)) from exc
+        return TracksideApBusinessExportProposalDTO(
+            site_id=site_id,
+            site_display_name=site_display_name,
+            generated_at=generated_at.isoformat(timespec="seconds"),
+            suggested_name=suggested_name,
+        )
+
+    def start_trackside_ap_business_export(
+        self,
+        site_id: str,
+        *,
+        generated_at: str = "",
+        suggested_name: str = "",
+    ) -> RailTransitTaskDTO:
+        site_id = self._site(site_id)
+        site_display_name = self._site_display_name(site_id)
+        if generated_at:
+            try:
+                created_at = datetime.fromisoformat(generated_at)
+            except ValueError as exc:
+                raise RailTransitWebError(
+                    "TRACKSIDE_AP_EXPORT_PROPOSAL_INVALID",
+                    "轨旁 AP 业务导出时间无效，请重新打开保存对话框",
+                ) from exc
+        else:
+            created_at = datetime.now().astimezone()
         try:
             preferred_name = build_trackside_ap_business_export_name(
-                self._site_display_name(site_id),
+                site_display_name,
                 created_at,
             )
         except ValueError as exc:
             raise RailTransitWebError("SITE_DISPLAY_NAME_INVALID", str(exc)) from exc
+        if suggested_name and suggested_name != preferred_name:
+            raise RailTransitWebError(
+                "TRACKSIDE_AP_EXPORT_NAME_MISMATCH",
+                "导出文件名契约已变化，请重新打开保存对话框",
+            )
         task_id = f"rail-export-{uuid4().hex}"
         try:
             reservation = self.artifact_store.reserve(
@@ -661,7 +704,12 @@ class RailTransitWebApplicationService:
             db_path=str(self.paths.site_db_path(site_id)),
             params={
                 "language": "zh_CN",
-                "scope_context": SiteManager(self.paths).load_site_metadata(site_id),
+                "scope_context": {
+                    **SiteManager(self.paths).load_site_metadata(site_id),
+                    "site_id": site_id,
+                    "site_display_name": site_display_name,
+                    "generated_at": created_at.isoformat(timespec="seconds"),
+                },
             },
         )
         return self._start_export(
@@ -2164,6 +2212,11 @@ class RailTransitWebApplicationService:
         if selected_mac_text and selected_mac is None:
             raise RailTransitWebError("AP_MAC_INVALID", "AP MAC 格式无效，无法定向更新")
         has_ap_identity = bool(selected_uuid or selected_mac or selected_name)
+        if selected_name and not (selected_uuid or selected_mac):
+            raise RailTransitWebError(
+                "TRACKSIDE_UPDATE_AP_NAME_DEPRECATED",
+                "AP 名称仅用于展示兼容，定向更新必须提供 AP UUID 或规范化 MAC",
+            )
         if selected_station and has_ap_identity:
             raise RailTransitWebError("TRACKSIDE_UPDATE_SCOPE_CONFLICT", "站点范围和 AP 身份不能同时提交")
         if not has_ap_identity:
