@@ -20,6 +20,7 @@ from netconsole.models.api.ground_unattended import (
     GroundDeepCollectionPageDTO,
     GroundHealthDTO,
     GroundInventorySummaryDTO,
+    GroundMrRuntimeStatusPageDTO,
     GroundPingSummaryPageDTO,
     GroundPingSamplePageDTO,
     GroundPingSeriesDTO,
@@ -148,6 +149,25 @@ def trains(request: Request) -> GroundUnattendedTrainPageDTO:
     return _call(lambda: _service(request).list_trains(_site_id(request)))
 
 
+@router.get(
+    "/mr-runtime-status", response_model=GroundMrRuntimeStatusPageDTO
+)
+def mr_runtime_status(
+    request: Request,
+    mr_role: str = Query(default="", max_length=10),
+    radio_state: str = Query(default="", max_length=32),
+    snmp_state: str = Query(default="", max_length=32),
+) -> GroundMrRuntimeStatusPageDTO:
+    return _call(
+        lambda: _service(request).mr_runtime_status(
+            _site_id(request),
+            mr_role=mr_role,
+            radio_state=radio_state,
+            snmp_state=snmp_state,
+        )
+    )
+
+
 @router.post(
     "/inventory/sync",
     response_model=GroundInventorySummaryDTO,
@@ -199,6 +219,7 @@ def config_check(
         lambda: _service(request).request_config_check(
             _site_id(request),
             device_uuid=payload.device_uuid,
+            mode=payload.mode,
             allow_target_port_change=payload.allow_target_port_change,
             explicit_confirmation=payload.explicit_confirmation,
         )
@@ -372,6 +393,11 @@ def syslog_records(
     severity: str = Query(default="", max_length=50),
     identity_status: str = Query(default="", max_length=100),
     event_type: str = Query(default="", max_length=100),
+    event_family: str = Query(default="", max_length=20),
+    cfg_command_source: str = Query(default="", max_length=50),
+    physical_state: str = Query(default="", max_length=20),
+    correlation_status: str = Query(default="", max_length=20),
+    correlation_confidence: str = Query(default="", max_length=20),
     peer_name: str = Query(default="", max_length=200),
     data_source: str = Query(default="", max_length=20),
     keyword: str = Query(default="", max_length=500),
@@ -393,6 +419,11 @@ def syslog_records(
         severity,
         identity_status,
         event_type,
+        event_family,
+        cfg_command_source,
+        physical_state,
+        correlation_status,
+        correlation_confidence,
         peer_name,
         data_source,
         keyword,
@@ -432,6 +463,11 @@ def syslog_records(
             severity=severity,
             identity_status=identity_status,
             event_type=event_type,
+            event_family=event_family,
+            cfg_command_source=cfg_command_source,
+            physical_state=physical_state,
+            correlation_status=correlation_status,
+            correlation_confidence=correlation_confidence,
             peer_name=peer_name,
             data_source=data_source,
             keyword=keyword,

@@ -56,6 +56,8 @@ Renderer 初次加载状态、运行列表、必要配置和当前页签；之�
 - 最多 2 辆活动列车、4 台活动 MR、2 台启动中 MR、2 台最终化 MR；
 - `deep_collection_master_enabled=true`；关闭后进入轻量监测模式，只保留 AC、Fleet Ping、
   UDP Syslog、WMESH 解析、位置判断和时间关联，不再启动新的 SSH 深度 MR 采集，已运行任务安全收尾；
+- `syslog_auto_repair_enabled=true`；启动、新 Boot Session、MR 重新上线、手工检查和独立低频检查可补齐
+  临时 Syslog Profile，关闭后检查保持只读；
 - 深度采集最低/建议/最大时长为 10/20/30 分钟；
 - 详细归档保留 30 天，轻量汇总保留 180 天。
 
@@ -176,7 +178,7 @@ MR。设备主体、地址和凭据仍只存在于设备管理；无人值守只
 历史不会被物理删除。
 
 `SyslogUdpReceiver` 的接收线程只负责 `recv -> 本机接收时间/全局与来源序号 -> 有界队列`。独立处理
-线程完成 MR 映射、WMESH/IFNET 关键事件解析、状态聚合、按小时追加和批量入库。原始 NDJSON 保留原始
+线程完成 MR 映射、WMESH/IFNET/CFGMAN 关键事件解析、状态投影、按小时追加和批量入库。原始 NDJSON 保留原始
 字节的安全编码、原文、设备时间、接收时间、两个接收序号、来源 IP/端口、主机名和 facility/severity。
 身份只有在来源 IP 与 hostname 同时指向同一 MR 时才是 `VERIFIED`；清单同步优先将设备 `system_name`
 登记为 Syslog hostname，缺失时才使用显示名。单项唯一匹配仅标记未确认，冲突绝不绑定，未知来源写入独立
@@ -185,20 +187,29 @@ MR。设备主体、地址和凭据仍只存在于设备管理；无人值守只
 运行标成失败。
 
 原始流均由 `RawStreamWriter` 单线程追加并登记：Ping 为
-`active/<run_date>/fleet_ping/<train>/<CT|CW>/<date>/<hour>_<generation>.ndjson`，WMESH Syslog
+`active/<run_date>/fleet_ping/<train>/<CT|CW>/<date>/<hour>_<generation>.ndjson`，MR Syslog
 为 `active/<run_date>/realtime/syslog/<train>/<CT|CW>/<date>/<hour>_<generation>.ndjson`。当前打开
 文件不会被压缩；停止、轮转或重启恢复后才登记为关闭/恢复文件。SQLite 只保存分钟汇总、连续丢包区间、
-WMESH 关键事件、原始文件索引和健康事件，不逐条保存秒级原始 Ping 或 Syslog。
+结构化 Syslog 事件、射频运行状态、SNMP 关联、原始文件索引和健康事件，不保存高频 Ping 原文。
 
 页面新增独立“Syslog 日志”标签，通过 `/syslog-records` 分页查看当前 OPEN、历史
 CLOSED/RECOVERED 和 READY ZIP 中的真实接收内容。当前运行默认最近 30 分钟，历史运行默认完整运行
 时段；每页默认 100、最多 500，支持列车、MR、CT/CW、来源 IP、设备系统名、facility、级别、身份状态、
-WMESH 事件、AP、关键字和 ACTIVE/ARCHIVE 来源过滤。表格填充剩余视口并内部滚动，行详情展示完整原文、
+WMESH/IFNET/CFGMAN 事件族、控制来源、射频状态、关联状态/置信度、AP、关键字和
+ACTIVE/ARCHIVE 来源过滤。表格填充剩余视口并内部滚动，行详情展示完整原文、
 接收序号、原始文件/行号、归档成员、设备/接收时间、时钟差、身份和解析字段。
 
-新 Syslog NDJSON 在写入时携带 WMESH 解析和 AP 展示字段。旧记录缺字段时在查询内存中只读重解析并标记
+新 Syslog NDJSON 在写入时携带 WMESH/AP、IFNET 射频和 CFGMAN 来源字段。旧记录缺字段时在查询内存中只读重解析并标记
 `display_enriched=true`，不会回写原始文件。查询仅解析 Repository 已登记且位于当前无人值守数据根内
 的普通文件或受校验 ZIP 成员，拒绝路径逃逸、符号链接和目录联接。
+
+三个 Syslog 来源严格分工：WMESH 只描述 Mesh 链路，IFNET 以 `WLAN-Radio*` 的真实 UP/DOWN 更新射频
+状态，CFGMAN 只描述配置操作来源。`CommandSource=snmp` 的 CFGMAN 与同一 `device_uuid` 的 IFNET
+事件按设备时间优先、接收时间降级进行双向关联：不超过 3 秒为 `HIGH`，大于 3 秒且不超过 10 秒为
+`MEDIUM`，超过 10 秒不关联。单独 CFGMAN 仅显示“检测到 SNMP 配置变更”，不得推断接口或具体配置；
+单独 IFNET 也不得强行归因于 SNMP。DOWN 到 UP 计算毫秒级中断，60 秒 3 次状态转换投影为
+`FLAPPING`，5 分钟 3 次 SNMP 相关转换生成 `RADIO_SNMP_FLAPPING`。原始报文、去重后的结构化事件和
+可重建状态投影分层保存，页面读取投影表，不扫描全部 NDJSON。
 
 AP 展示解析先使用轨旁基础资料中的稳定 AP MAC、显式 Radio/BSSID 和唯一 Alias，再使用 AC Detail
 中的显式 Radio/BSSID；H3C WMESH Peer MAC 与 AP MAC 的 Radio 前缀派生只能返回
@@ -222,8 +233,9 @@ Ping 稳定成功后，`MrSyslogConfigService` 通过既有设备凭据按
 
 随后将 `display info-center` 作为运行态主检查，并以
 `display current-configuration | include info-center` 补充验证来源规则，过滤不支持时才回退完整运行配置。
-运行态必须确认 Information Center、loghost、实际目标 IP 和端口；`current-configuration` 只确认默认来源
-禁止和 WMESH notification 两条 source 规则。Comware 省略默认 `info-center enable` 或默认 UDP 514 的
+运行态必须确认 Information Center、loghost、实际目标 IP 和端口；`current-configuration` 只确认
+`default deny`、WMESH、IFNET、CFGMAN 四条 source 规则。该固定临时 Profile 的
+`managed_profile_version=2`。Comware 省略默认 `info-center enable` 或默认 UDP 514 的
 显式配置行时，以 `display info-center` 的实际运行态为准，不会重复下发或误报失败。下发缺项后逐条检查
 命令回显，再执行两层复查：完整才为 `CONFIG_SENT` 或 `CONFIG_REPAIRED`，
 复查缺项为 `CONFIG_VERIFY_FAILED`，异常为 `CONFIG_FAILED`。只有双层验证成功后才可进入
@@ -234,6 +246,11 @@ Ping 稳定成功后，`MrSyslogConfigService` 通过既有设备凭据按
 计数增长是日志数据质量告警；overwritten 增长仅表示设备本地环形缓冲覆盖，不等同于 UDP 网络丢包。旧目标的
 `undo` 清理仍需真实设备命令验证后单独实现。
 
+CFGMAN 接收路径不调用 `MrSyslogConfigService`、Supervisor 配置检查、SSH 或任何 info-center 命令。
+Profile 完整性只由启动、新 Boot Session、MR 重新上线、用户手工检查和独立低频机制维护；禁止实现
+`CFGMAN -> display info-center/current-configuration -> 漂移检查/自动修复`。NetConsole 自身配置
+窗口内的非 SNMP CFGMAN 仅标记 `expected_internal_change` 并保留原始证据，SNMP 事件始终按外部变更处理。
+
 运行态可同时返回多个不同 IP 的 loghost，省略端口统一为 514。NetConsole 只管理当前 Profile 指定的
 IP/端口，保留其他 IP 的外部目标，不执行 `undo`。当前现场 H3C 版本以 IP 为 loghost 唯一键：同 IP
 端口一致为 `TARGET_PRESENT`，IP 不存在为可安全补齐的 `TARGET_MISSING`，同 IP 已存在其他端口则为
@@ -241,8 +258,9 @@ IP/端口，保留其他 IP 的外部目标，不执行 `undo`。当前现场 H3
 详情中明确二次确认后才允许改端口，并写入高风险授权与执行审计。配置指纹包含排序后的全部 loghost 和
 当前 managed target，因此设备输出顺序变化不产生伪变更。
 
-`ground_unattended` 索引库的 additive schema v6 包含列车清单/端点绑定/策略、boot session、Syslog
-配置审计、WMESH 事件、原始文件索引、Ping 丢包区间和健康事件表；新增 Profile 外部地址确认字段，以及
+`ground_unattended` 索引库的 additive schema v7 包含列车清单/端点绑定/策略、boot session、Syslog
+配置审计、结构化 Syslog 事件、`radio_interface_states`、`mr_runtime_states`、`radio_correlations`、
+原始文件索引、Ping 丢包区间和健康事件表；新增 Profile 外部地址确认和自动补齐字段，以及
 Boot Session 的前后设备时钟、估算误差、重启原因、设备时区、UTC offset、时间质量和时钟跳变证据。
 本轮新增深采总开关、Ping 预热字段、目标激活表和运行控制操作表；旧 `system` 或空时区迁移为
 `Asia/Shanghai`，其他显式 IANA 时区保持不变。启动迁移为幂等加列与
@@ -342,6 +360,7 @@ GET      /syslog-transport-status
 POST     /start | /pause | /resume | /stop | /stop-and-archive
 POST     /inventory/sync | /config-check
 GET      /health | /raw-files | /syslog-records
+GET      /mr-runtime-status
 GET      /runs
 GET      /trains | /trains/{train_id}
 PUT      /trains/{train_id}/priority

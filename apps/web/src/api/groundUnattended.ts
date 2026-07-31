@@ -3,7 +3,7 @@ import type { BackendDownloadRequest } from '../../../desktop_electron/src/share
 import type {
   GroundActionResponse, GroundArchive, GroundArchiveDetail, GroundDeepCollection, GroundPage, GroundPingTarget,
   GroundProfile, GroundStatus, GroundTimelineEvent, GroundTrain, GroundHealth, GroundInventorySummary, GroundRawFile, GroundTrainPolicy,
-  GroundOperation, GroundPingSeries, GroundPingSample, GroundRun, GroundSyslogRecord, GroundPagedResult,
+  GroundMrRuntimeStatus, GroundOperation, GroundPingSeries, GroundPingSample, GroundRun, GroundSyslogRecord, GroundPagedResult,
   GroundSyslogTransportStatus, LocalIpv4Address, SourceIpRecommendation, UdpPortCheck,
 } from '../types/groundUnattended'
 
@@ -52,6 +52,13 @@ export const resumeGroundRun = (): Promise<GroundActionResponse> => apiRequest(`
 export const stopGroundRun = (): Promise<GroundActionResponse> => apiRequest(`${root}/stop`, { method: 'POST' })
 export const stopAndArchiveGroundRun = (): Promise<GroundActionResponse> => apiRequest(`${root}/stop-and-archive`, { method: 'POST' })
 export const listGroundTrains = (options: RequestInit = {}): Promise<GroundPage<GroundTrain>> => apiRequest(`${root}/trains`, options)
+export function listGroundMrRuntimeStatus(params: {
+  mr_role?: string; radio_state?: string; snmp_state?: string
+} = {}, options: RequestInit = {}): Promise<GroundPage<GroundMrRuntimeStatus>> {
+  const query = new URLSearchParams()
+  Object.entries(params).forEach(([key, value]) => { if (value) query.set(key, String(value)) })
+  return apiRequest(`${root}/mr-runtime-status?${query}`, options)
+}
 export const syncGroundInventory = (): Promise<GroundInventorySummary> => apiRequest(`${root}/inventory/sync`, { method: 'POST' })
 export const getGroundTrain = (trainId: string): Promise<GroundTrain> => apiRequest(`${root}/trains/${encodeURIComponent(trainId)}`)
 export const setGroundTrainPriority = (trainId: string, priority: boolean): Promise<GroundTrain> => apiRequest(`${root}/trains/${encodeURIComponent(trainId)}/priority`, { method: 'PUT', body: JSON.stringify({ priority }) })
@@ -99,6 +106,8 @@ export function listGroundPingSamples(params: {
 export function listGroundSyslogRecords(params: {
   run_id?: string; train_id?: string; mr_id?: string; mr_name?: string; source_ip?: string; system_name?: string
   mr_role?: string; facility?: string; severity?: string; identity_status?: string; event_type?: string; peer_name?: string
+  event_family?: string; cfg_command_source?: string; physical_state?: string
+  correlation_status?: string; correlation_confidence?: string
   data_source?: string; keyword?: string; start_time?: string; end_time?: string; page?: number; page_size?: number
 }, options: RequestInit = {}): Promise<GroundPagedResult<GroundSyslogRecord>> {
   const query = new URLSearchParams()

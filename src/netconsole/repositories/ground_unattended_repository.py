@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS ground_unattended_profiles (
     config_check_cooldown_seconds INTEGER NOT NULL DEFAULT 1800,
     syslog_server_ip TEXT NOT NULL DEFAULT '',
     syslog_server_port INTEGER NOT NULL DEFAULT 514,
+    syslog_auto_repair_enabled INTEGER NOT NULL DEFAULT 1,
     allow_external_syslog_address INTEGER NOT NULL DEFAULT 0,
     ping_raw_retention_days INTEGER NOT NULL DEFAULT 30,
     syslog_raw_retention_days INTEGER NOT NULL DEFAULT 30,
@@ -279,7 +280,8 @@ CREATE TABLE IF NOT EXISTS ground_unattended_events (
     mr_id TEXT NOT NULL DEFAULT '',
     title TEXT NOT NULL DEFAULT '',
     message TEXT NOT NULL DEFAULT '',
-    details_json TEXT NOT NULL DEFAULT '{}'
+    details_json TEXT NOT NULL DEFAULT '{}',
+    dedup_key TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_ground_events_timeline
 ON ground_unattended_events(site_id, run_id, ts DESC, event_type);
@@ -408,6 +410,9 @@ CREATE TABLE IF NOT EXISTS ground_unattended_boot_sessions (
     last_syslog_received_at TEXT NOT NULL DEFAULT '',
     config_fingerprint TEXT NOT NULL DEFAULT '',
     info_center_metrics_json TEXT NOT NULL DEFAULT '{}',
+    expected_change_operation_id TEXT NOT NULL DEFAULT '',
+    expected_change_started_at TEXT NOT NULL DEFAULT '',
+    expected_change_until TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -431,6 +436,7 @@ CREATE TABLE IF NOT EXISTS ground_unattended_syslog_config_audits (
     evidence_sha256 TEXT NOT NULL DEFAULT '',
     error_code TEXT NOT NULL DEFAULT '',
     error_message TEXT NOT NULL DEFAULT '',
+    managed_profile_version INTEGER NOT NULL DEFAULT 2,
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ground_config_audit_device
@@ -460,11 +466,95 @@ CREATE TABLE IF NOT EXISTS ground_unattended_wmesh_events (
     clock_offset_ms REAL,
     raw_file_id TEXT NOT NULL DEFAULT '',
     raw_line_number INTEGER,
+    event_family TEXT NOT NULL DEFAULT '',
+    event_time TEXT NOT NULL DEFAULT '',
+    event_time_source TEXT NOT NULL DEFAULT 'RECEIVE_TIME',
+    dedup_key TEXT NOT NULL DEFAULT '',
+    duplicate_count INTEGER NOT NULL DEFAULT 0,
+    interface_name TEXT NOT NULL DEFAULT '',
+    interface_type TEXT NOT NULL DEFAULT '',
+    physical_state TEXT NOT NULL DEFAULT '',
+    cfg_event_index TEXT NOT NULL DEFAULT '',
+    cfg_command_source TEXT NOT NULL DEFAULT '',
+    cfg_source TEXT NOT NULL DEFAULT '',
+    cfg_destination TEXT NOT NULL DEFAULT '',
+    expected_internal_change INTEGER NOT NULL DEFAULT 0,
     details_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ground_wmesh_timeline
 ON ground_unattended_wmesh_events(site_id, run_id, receive_time DESC, train_id);
+
+CREATE TABLE IF NOT EXISTS ground_unattended_radio_interface_states (
+    site_id TEXT NOT NULL,
+    device_uuid TEXT NOT NULL,
+    train_id TEXT NOT NULL DEFAULT '',
+    mr_role TEXT NOT NULL DEFAULT '',
+    interface_name TEXT NOT NULL,
+    current_state TEXT NOT NULL DEFAULT 'UNKNOWN',
+    stable_state TEXT NOT NULL DEFAULT 'UNKNOWN',
+    previous_state TEXT NOT NULL DEFAULT 'UNKNOWN',
+    last_changed_at TEXT NOT NULL DEFAULT '',
+    down_since TEXT NOT NULL DEFAULT '',
+    last_up_at TEXT NOT NULL DEFAULT '',
+    last_down_at TEXT NOT NULL DEFAULT '',
+    latest_outage_duration_ms INTEGER,
+    transition_count_5m INTEGER NOT NULL DEFAULT 0,
+    snmp_related_transition_count_5m INTEGER NOT NULL DEFAULT 0,
+    transition_times_json TEXT NOT NULL DEFAULT '[]',
+    snmp_transition_times_json TEXT NOT NULL DEFAULT '[]',
+    snmp_transition_event_ids_json TEXT NOT NULL DEFAULT '[]',
+    last_cfg_event_index TEXT NOT NULL DEFAULT '',
+    last_command_source TEXT NOT NULL DEFAULT '',
+    correlation_confidence TEXT NOT NULL DEFAULT 'UNCONFIRMED',
+    last_event_id INTEGER,
+    last_down_event_id INTEGER,
+    last_up_event_id INTEGER,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (site_id, device_uuid, interface_name)
+);
+CREATE INDEX IF NOT EXISTS idx_ground_radio_state_query
+ON ground_unattended_radio_interface_states(site_id, current_state, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS ground_unattended_mr_runtime_states (
+    site_id TEXT NOT NULL,
+    device_uuid TEXT NOT NULL,
+    train_id TEXT NOT NULL DEFAULT '',
+    mr_role TEXT NOT NULL DEFAULT '',
+    radio_overall_state TEXT NOT NULL DEFAULT 'UNKNOWN',
+    snmp_radio_control_state TEXT NOT NULL DEFAULT 'NONE',
+    last_radio_event_at TEXT NOT NULL DEFAULT '',
+    last_cfg_event_at TEXT NOT NULL DEFAULT '',
+    last_cfg_event_index TEXT NOT NULL DEFAULT '',
+    last_command_source TEXT NOT NULL DEFAULT '',
+    last_config_source TEXT NOT NULL DEFAULT '',
+    last_config_destination TEXT NOT NULL DEFAULT '',
+    last_cfg_event_id INTEGER,
+    last_correlation_confidence TEXT NOT NULL DEFAULT 'UNCONFIRMED',
+    last_snmp_control_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (site_id, device_uuid)
+);
+CREATE INDEX IF NOT EXISTS idx_ground_mr_runtime_query
+ON ground_unattended_mr_runtime_states(site_id, radio_overall_state, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS ground_unattended_radio_correlations (
+    correlation_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL,
+    run_id TEXT NOT NULL DEFAULT '',
+    device_uuid TEXT NOT NULL,
+    train_id TEXT NOT NULL DEFAULT '',
+    mr_role TEXT NOT NULL DEFAULT '',
+    interface_name TEXT NOT NULL,
+    cfg_event_id INTEGER NOT NULL,
+    ifnet_event_id INTEGER NOT NULL,
+    delta_ms INTEGER NOT NULL,
+    confidence TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (site_id, cfg_event_id, ifnet_event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ground_radio_correlations_device
+ON ground_unattended_radio_correlations(site_id, device_uuid, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS ground_unattended_ping_loss_intervals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -540,6 +630,7 @@ _PROFILE_MIGRATION_COLUMNS = {
     "config_check_cooldown_seconds": "INTEGER NOT NULL DEFAULT 1800",
     "syslog_server_ip": "TEXT NOT NULL DEFAULT ''",
     "syslog_server_port": "INTEGER NOT NULL DEFAULT 514",
+    "syslog_auto_repair_enabled": "INTEGER NOT NULL DEFAULT 1",
     "allow_external_syslog_address": "INTEGER NOT NULL DEFAULT 0",
     "ping_raw_retention_days": "INTEGER NOT NULL DEFAULT 30",
     "syslog_raw_retention_days": "INTEGER NOT NULL DEFAULT 30",
@@ -576,10 +667,34 @@ _BOOT_SESSION_MIGRATION_COLUMNS = {
     "time_quality": "TEXT NOT NULL DEFAULT 'LOCAL_FALLBACK'",
     "clock_jump_seconds": "REAL",
     "info_center_metrics_json": "TEXT NOT NULL DEFAULT '{}'",
+    "expected_change_operation_id": "TEXT NOT NULL DEFAULT ''",
+    "expected_change_started_at": "TEXT NOT NULL DEFAULT ''",
+    "expected_change_until": "TEXT NOT NULL DEFAULT ''",
 }
 
 _WMESH_EVENT_MIGRATION_COLUMNS = {
     "clock_offset_ms": "REAL",
+    "event_family": "TEXT NOT NULL DEFAULT ''",
+    "event_time": "TEXT NOT NULL DEFAULT ''",
+    "event_time_source": "TEXT NOT NULL DEFAULT 'RECEIVE_TIME'",
+    "dedup_key": "TEXT NOT NULL DEFAULT ''",
+    "duplicate_count": "INTEGER NOT NULL DEFAULT 0",
+    "interface_name": "TEXT NOT NULL DEFAULT ''",
+    "interface_type": "TEXT NOT NULL DEFAULT ''",
+    "physical_state": "TEXT NOT NULL DEFAULT ''",
+    "cfg_event_index": "TEXT NOT NULL DEFAULT ''",
+    "cfg_command_source": "TEXT NOT NULL DEFAULT ''",
+    "cfg_source": "TEXT NOT NULL DEFAULT ''",
+    "cfg_destination": "TEXT NOT NULL DEFAULT ''",
+    "expected_internal_change": "INTEGER NOT NULL DEFAULT 0",
+}
+
+_EVENT_MIGRATION_COLUMNS = {
+    "dedup_key": "TEXT NOT NULL DEFAULT ''",
+}
+
+_CONFIG_AUDIT_MIGRATION_COLUMNS = {
+    "managed_profile_version": "INTEGER NOT NULL DEFAULT 2",
 }
 
 
@@ -616,10 +731,38 @@ class GroundUnattendedRepository:
             self._ensure_columns(conn, "ground_unattended_train_endpoints", _ENDPOINT_MIGRATION_COLUMNS)
             self._ensure_columns(conn, "ground_unattended_boot_sessions", _BOOT_SESSION_MIGRATION_COLUMNS)
             self._ensure_columns(conn, "ground_unattended_wmesh_events", _WMESH_EVENT_MIGRATION_COLUMNS)
+            self._ensure_columns(conn, "ground_unattended_events", _EVENT_MIGRATION_COLUMNS)
+            self._ensure_columns(
+                conn,
+                "ground_unattended_syslog_config_audits",
+                _CONFIG_AUDIT_MIGRATION_COLUMNS,
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_ground_syslog_control_events
+                ON ground_unattended_wmesh_events(
+                    site_id, device_uuid, event_family, event_time DESC
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_ground_syslog_event_dedup
+                ON ground_unattended_wmesh_events(site_id, dedup_key)
+                WHERE dedup_key <> ''
+                """
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_ground_events_dedup
+                ON ground_unattended_events(site_id, dedup_key)
+                WHERE dedup_key <> ''
+                """
+            )
             conn.execute(
                 """
                 INSERT INTO ground_unattended_schema(key, value, updated_at)
-                VALUES('schema_version', '6', ?)
+                VALUES('schema_version', '7', ?)
                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
                 """,
                 (_now(),),
@@ -1475,6 +1618,151 @@ class GroundUnattendedRepository:
             )
             return int(cursor.lastrowid)
 
+    def add_event_once(
+        self,
+        *,
+        dedup_key: str,
+        run_id: str = "",
+        event_type: str,
+        title: str,
+        message: str = "",
+        severity: str = "info",
+        train_id: str = "",
+        mr_id: str = "",
+        details: dict[str, Any] | None = None,
+        ts: str | None = None,
+    ) -> tuple[int, bool]:
+        key = str(dedup_key or "")
+        if not key:
+            raise ValueError("timeline event requires dedup_key")
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO ground_unattended_events(
+                    site_id, run_id, ts, event_type, severity, train_id, mr_id,
+                    title, message, details_json, dedup_key
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(site_id, dedup_key) WHERE dedup_key <> '' DO NOTHING
+                """,
+                (
+                    self.site_id,
+                    run_id,
+                    ts or _now(),
+                    event_type,
+                    severity,
+                    train_id,
+                    mr_id,
+                    title,
+                    message,
+                    json.dumps(details or {}, ensure_ascii=False),
+                    key,
+                ),
+            )
+            row = conn.execute(
+                """
+                SELECT id FROM ground_unattended_events
+                WHERE site_id=? AND dedup_key=?
+                """,
+                (self.site_id, key),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("timeline projection was not saved")
+        return int(row["id"]), bool(cursor.rowcount)
+
+    def radio_runtime_statistics(
+        self, *, run_id: str = "", day_start: str = ""
+    ) -> dict[str, Any]:
+        where = ["site_id=?"]
+        params: list[Any] = [self.site_id]
+        if run_id:
+            where.append("run_id=?")
+            params.append(run_id)
+        if day_start:
+            where.append("ts>=?")
+            params.append(day_start)
+        with self._connection() as conn:
+            radio_down = conn.execute(
+                """
+                SELECT COUNT(DISTINCT device_uuid)
+                FROM ground_unattended_radio_interface_states
+                WHERE site_id=? AND stable_state='DOWN'
+                """,
+                (self.site_id,),
+            ).fetchone()
+            flapping = conn.execute(
+                """
+                SELECT COUNT(DISTINCT device_uuid)
+                FROM ground_unattended_radio_interface_states
+                WHERE site_id=? AND current_state='FLAPPING'
+                """,
+                (self.site_id,),
+            ).fetchone()
+            counts = {
+                str(row["event_type"]): int(row["count"])
+                for row in conn.execute(
+                    f"""
+                    SELECT event_type, COUNT(*) AS count
+                    FROM ground_unattended_events
+                    WHERE {' AND '.join(where)}
+                      AND event_type IN (
+                        'radio_interface_bounce'
+                      )
+                    GROUP BY event_type
+                    """,
+                    params,
+                ).fetchall()
+            }
+            correlation_where = ["c.site_id=?"]
+            correlation_params: list[Any] = [self.site_id]
+            if run_id:
+                correlation_where.append("c.run_id=?")
+                correlation_params.append(run_id)
+            if day_start:
+                correlation_where.append("cfg.event_time>=?")
+                correlation_params.append(day_start)
+            snmp_controls = conn.execute(
+                f"""
+                SELECT COUNT(DISTINCT c.cfg_event_id)
+                FROM ground_unattended_radio_correlations AS c
+                JOIN ground_unattended_wmesh_events AS cfg
+                  ON cfg.id=c.cfg_event_id AND cfg.site_id=c.site_id
+                WHERE {' AND '.join(correlation_where)}
+                """,
+                correlation_params,
+            ).fetchone()
+            unrecovered = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM ground_unattended_mr_runtime_states
+                WHERE site_id=? AND snmp_radio_control_state='RADIO_DOWN'
+                """,
+                (self.site_id,),
+            ).fetchone()
+            latest = conn.execute(
+                """
+                SELECT MAX(last_snmp_control_at)
+                FROM ground_unattended_mr_runtime_states
+                WHERE site_id=?
+                """,
+                (self.site_id,),
+            ).fetchone()
+        return {
+            "radio_down_mr_count": int(radio_down[0] if radio_down else 0),
+            "radio_flapping_mr_count": int(flapping[0] if flapping else 0),
+            "radio_bounce_today_count": counts.get(
+                "radio_interface_bounce", 0
+            ),
+            "snmp_radio_control_today_count": int(
+                snmp_controls[0] if snmp_controls else 0
+            ),
+            "snmp_unrecovered_count": int(
+                unrecovered[0] if unrecovered else 0
+            ),
+            "last_snmp_radio_control_at": str(
+                latest[0] if latest and latest[0] else ""
+            ),
+        }
+
     def list_events(
         self,
         run_id: str,
@@ -1918,6 +2206,19 @@ class GroundUnattendedRepository:
             "clock_offset_ms",
             "raw_file_id",
             "raw_line_number",
+            "event_family",
+            "event_time",
+            "event_time_source",
+            "dedup_key",
+            "duplicate_count",
+            "interface_name",
+            "interface_type",
+            "physical_state",
+            "cfg_event_index",
+            "cfg_command_source",
+            "cfg_source",
+            "cfg_destination",
+            "expected_internal_change",
             "details_json",
             "created_at",
         )
@@ -1930,7 +2231,18 @@ class GroundUnattendedRepository:
                     tuple(
                         json.dumps(row.get("details") or {}, ensure_ascii=False)
                         if field == "details_json"
-                        else row.get(field, self.site_id if field == "site_id" else now if field == "created_at" else "")
+                        else int(bool(row.get(field)))
+                        if field == "expected_internal_change"
+                        else int(row.get(field) or 0)
+                        if field == "duplicate_count"
+                        else row.get(
+                            field,
+                            self.site_id
+                            if field == "site_id"
+                            else now
+                            if field == "created_at"
+                            else "",
+                        )
                         for field in fields
                     )
                     for row in values
@@ -1938,10 +2250,532 @@ class GroundUnattendedRepository:
             )
         return len(values)
 
+    def record_control_syslog_event(
+        self, values: dict[str, Any]
+    ) -> tuple[dict[str, Any], bool]:
+        """Persist one deduplicated IFNET/CFGMAN event.
+
+        Raw NDJSON is written before this call. A duplicate therefore increments
+        only the structured projection counter and never removes source evidence.
+        """
+
+        row = dict(values)
+        dedup_key = str(row.get("dedup_key") or "")
+        if not dedup_key:
+            raise ValueError("structured Syslog event requires dedup_key")
+        now = _now()
+        fields = (
+            "site_id",
+            "run_id",
+            "device_uuid",
+            "device_id",
+            "train_id",
+            "mr_role",
+            "event_type",
+            "device_time",
+            "receive_time",
+            "source_ip",
+            "hostname",
+            "peer_name",
+            "peer_mac",
+            "previous_peer_name",
+            "previous_peer_mac",
+            "station",
+            "section",
+            "data_quality",
+            "receive_delay_ms",
+            "clock_offset_ms",
+            "raw_file_id",
+            "raw_line_number",
+            "event_family",
+            "event_time",
+            "event_time_source",
+            "dedup_key",
+            "duplicate_count",
+            "interface_name",
+            "interface_type",
+            "physical_state",
+            "cfg_event_index",
+            "cfg_command_source",
+            "cfg_source",
+            "cfg_destination",
+            "expected_internal_change",
+            "details_json",
+            "created_at",
+        )
+        row.setdefault("site_id", self.site_id)
+        row.setdefault("created_at", now)
+        row.setdefault("duplicate_count", 0)
+        row["expected_internal_change"] = int(
+            bool(row.get("expected_internal_change"))
+        )
+        row["details_json"] = json.dumps(
+            row.pop("details", row.get("details_json") or {}),
+            ensure_ascii=False,
+        )
+        with self._transaction() as conn:
+            existing = conn.execute(
+                """
+                SELECT * FROM ground_unattended_wmesh_events
+                WHERE site_id=? AND dedup_key=?
+                """,
+                (self.site_id, dedup_key),
+            ).fetchone()
+            if existing is not None:
+                conn.execute(
+                    """
+                    UPDATE ground_unattended_wmesh_events
+                    SET duplicate_count=duplicate_count+1
+                    WHERE id=?
+                    """,
+                    (int(existing["id"]),),
+                )
+                saved = conn.execute(
+                    "SELECT * FROM ground_unattended_wmesh_events WHERE id=?",
+                    (int(existing["id"]),),
+                ).fetchone()
+                if saved is None:
+                    raise RuntimeError("structured Syslog event disappeared")
+                return _decode_row(saved), False
+            cursor = conn.execute(
+                f"INSERT INTO ground_unattended_wmesh_events ({', '.join(fields)}) "
+                f"VALUES ({', '.join('?' for _ in fields)})",
+                tuple(row.get(field, "") for field in fields),
+            )
+            saved = conn.execute(
+                "SELECT * FROM ground_unattended_wmesh_events WHERE id=?",
+                (int(cursor.lastrowid),),
+            ).fetchone()
+        if saved is None:
+            raise RuntimeError("structured Syslog event was not saved")
+        return _decode_row(saved), True
+
+    def get_structured_syslog_event(self, event_id: int) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM ground_unattended_wmesh_events WHERE site_id=? AND id=?",
+                (self.site_id, int(event_id)),
+            ).fetchone()
+        return _decode_row(row) if row else None
+
+    def find_control_events(
+        self,
+        *,
+        device_uuid: str,
+        event_family: str,
+        event_time: str,
+        window_seconds: float,
+        interface_name: str = "",
+        exclude_event_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        where = [
+            "site_id=?",
+            "device_uuid=?",
+            "event_family=?",
+            "event_time<>''",
+            "ABS((julianday(event_time)-julianday(?))*86400.0)<=?",
+        ]
+        params: list[Any] = [
+            self.site_id,
+            device_uuid,
+            event_family,
+            event_time,
+            max(0.0, float(window_seconds)),
+        ]
+        if interface_name:
+            where.append("interface_name=?")
+            params.append(interface_name)
+        if exclude_event_id is not None:
+            where.append("id<>?")
+            params.append(int(exclude_event_id))
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM ground_unattended_wmesh_events
+                WHERE {' AND '.join(where)}
+                ORDER BY ABS((julianday(event_time)-julianday(?))*86400.0), id
+                """,
+                (*params, event_time),
+            ).fetchall()
+        return [_decode_row(row) for row in rows]
+
+    def list_control_events(
+        self, *, device_uuid: str = "", run_id: str = ""
+    ) -> list[dict[str, Any]]:
+        where = ["site_id=?", "event_family IN ('IFNET','CFGMAN')"]
+        params: list[Any] = [self.site_id]
+        if device_uuid:
+            where.append("device_uuid=?")
+            params.append(device_uuid)
+        if run_id:
+            where.append("run_id=?")
+            params.append(run_id)
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM ground_unattended_wmesh_events
+                WHERE {' AND '.join(where)}
+                ORDER BY event_time, receive_time, id
+                """,
+                params,
+            ).fetchall()
+        return [_decode_row(row) for row in rows]
+
+    def insert_radio_correlation(
+        self, values: dict[str, Any]
+    ) -> tuple[dict[str, Any], bool]:
+        row = dict(values)
+        row.setdefault("site_id", self.site_id)
+        row.setdefault("created_at", _now())
+        fields = (
+            "correlation_id",
+            "site_id",
+            "run_id",
+            "device_uuid",
+            "train_id",
+            "mr_role",
+            "interface_name",
+            "cfg_event_id",
+            "ifnet_event_id",
+            "delta_ms",
+            "confidence",
+            "created_at",
+        )
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                f"""
+                INSERT INTO ground_unattended_radio_correlations
+                    ({', '.join(fields)})
+                VALUES ({', '.join('?' for _ in fields)})
+                ON CONFLICT(site_id, cfg_event_id, ifnet_event_id) DO NOTHING
+                """,
+                tuple(row.get(field, "") for field in fields),
+            )
+            saved = conn.execute(
+                """
+                SELECT * FROM ground_unattended_radio_correlations
+                WHERE site_id=? AND cfg_event_id=? AND ifnet_event_id=?
+                """,
+                (
+                    self.site_id,
+                    int(row["cfg_event_id"]),
+                    int(row["ifnet_event_id"]),
+                ),
+            ).fetchone()
+        if saved is None:
+            raise RuntimeError("radio correlation was not saved")
+        return _decode_row(saved), bool(cursor.rowcount)
+
+    def list_radio_correlations(
+        self, *, event_ids: Iterable[int]
+    ) -> list[dict[str, Any]]:
+        values = tuple(sorted({int(value) for value in event_ids}))
+        if not values:
+            return []
+        placeholders = ", ".join("?" for _ in values)
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM ground_unattended_radio_correlations
+                WHERE site_id=?
+                  AND (cfg_event_id IN ({placeholders})
+                       OR ifnet_event_id IN ({placeholders}))
+                ORDER BY created_at, correlation_id
+                """,
+                (self.site_id, *values, *values),
+            ).fetchall()
+        return [_decode_row(row) for row in rows]
+
+    def structured_syslog_events_by_raw_files(
+        self, raw_file_ids: Iterable[str]
+    ) -> list[dict[str, Any]]:
+        values = tuple(sorted({str(value) for value in raw_file_ids if str(value)}))
+        if not values:
+            return []
+        placeholders = ", ".join("?" for _ in values)
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM ground_unattended_wmesh_events
+                WHERE site_id=? AND raw_file_id IN ({placeholders})
+                """,
+                (self.site_id, *values),
+            ).fetchall()
+        return [_decode_row(row) for row in rows]
+
+    def control_event_raw_positions(
+        self,
+        *,
+        correlation_status: str = "",
+        correlation_confidence: str = "",
+    ) -> set[tuple[str, int]]:
+        status = str(correlation_status or "").strip().upper()
+        confidence = str(correlation_confidence or "").strip().upper()
+        if status not in {"", "CORRELATED", "UNCORRELATED"}:
+            return set()
+        if confidence not in {"", "HIGH", "MEDIUM"}:
+            return set()
+        if status == "UNCORRELATED" and confidence:
+            return set()
+        where = [
+            "event.site_id=?",
+            "event.event_family IN ('IFNET','CFGMAN')",
+            "event.raw_file_id<>''",
+            "event.raw_line_number IS NOT NULL",
+        ]
+        params: list[Any] = [self.site_id]
+        correlation_exists = """
+            EXISTS (
+                SELECT 1
+                FROM ground_unattended_radio_correlations AS correlation
+                WHERE correlation.site_id=event.site_id
+                  AND (
+                    correlation.cfg_event_id=event.id
+                    OR correlation.ifnet_event_id=event.id
+                  )
+        """
+        if confidence:
+            correlation_exists += " AND correlation.confidence=?)"
+            params.append(confidence)
+            where.append(correlation_exists)
+        elif status == "CORRELATED":
+            where.append(correlation_exists + ")")
+        elif status == "UNCORRELATED":
+            where.append("NOT " + correlation_exists + ")")
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT event.raw_file_id, event.raw_line_number
+                FROM ground_unattended_wmesh_events AS event
+                WHERE {' AND '.join(where)}
+                """,
+                params,
+            ).fetchall()
+        return {
+            (str(row["raw_file_id"]), int(row["raw_line_number"]))
+            for row in rows
+        }
+
+    def get_radio_interface_state(
+        self, device_uuid: str, interface_name: str
+    ) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM ground_unattended_radio_interface_states
+                WHERE site_id=? AND device_uuid=? AND interface_name=?
+                """,
+                (self.site_id, device_uuid, interface_name),
+            ).fetchone()
+        return _decode_row(row) if row else None
+
+    def upsert_radio_interface_state(self, values: dict[str, Any]) -> dict[str, Any]:
+        row = dict(values)
+        row.setdefault("site_id", self.site_id)
+        row["updated_at"] = _now()
+        for field in (
+            "transition_times_json",
+            "snmp_transition_times_json",
+            "snmp_transition_event_ids_json",
+        ):
+            source = field.removesuffix("_json")
+            if source in row and field not in row:
+                row[field] = json.dumps(row.pop(source), ensure_ascii=False)
+            elif isinstance(row.get(field), (list, dict)):
+                row[field] = json.dumps(row[field], ensure_ascii=False)
+        fields = tuple(row)
+        updates = ", ".join(
+            f"{field}=excluded.{field}"
+            for field in fields
+            if field not in {"site_id", "device_uuid", "interface_name"}
+        )
+        with self._transaction() as conn:
+            conn.execute(
+                f"""
+                INSERT INTO ground_unattended_radio_interface_states
+                    ({', '.join(fields)})
+                VALUES ({', '.join('?' for _ in fields)})
+                ON CONFLICT(site_id, device_uuid, interface_name)
+                DO UPDATE SET {updates}
+                """,
+                tuple(row.values()),
+            )
+        saved = self.get_radio_interface_state(
+            str(row["device_uuid"]), str(row["interface_name"])
+        )
+        if saved is None:
+            raise RuntimeError("radio interface projection was not saved")
+        return saved
+
+    def list_radio_interface_states(
+        self, *, device_uuid: str = ""
+    ) -> list[dict[str, Any]]:
+        where = ["site_id=?"]
+        params: list[Any] = [self.site_id]
+        if device_uuid:
+            where.append("device_uuid=?")
+            params.append(device_uuid)
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM ground_unattended_radio_interface_states
+                WHERE {' AND '.join(where)}
+                ORDER BY device_uuid, interface_name
+                """,
+                params,
+            ).fetchall()
+        return [_decode_row(row) for row in rows]
+
+    def get_mr_runtime_state(self, device_uuid: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM ground_unattended_mr_runtime_states
+                WHERE site_id=? AND device_uuid=?
+                """,
+                (self.site_id, device_uuid),
+            ).fetchone()
+        return _decode_row(row) if row else None
+
+    def upsert_mr_runtime_state(self, values: dict[str, Any]) -> dict[str, Any]:
+        row = dict(values)
+        row.setdefault("site_id", self.site_id)
+        row["updated_at"] = _now()
+        fields = tuple(row)
+        updates = ", ".join(
+            f"{field}=excluded.{field}"
+            for field in fields
+            if field not in {"site_id", "device_uuid"}
+        )
+        with self._transaction() as conn:
+            conn.execute(
+                f"""
+                INSERT INTO ground_unattended_mr_runtime_states
+                    ({', '.join(fields)})
+                VALUES ({', '.join('?' for _ in fields)})
+                ON CONFLICT(site_id, device_uuid)
+                DO UPDATE SET {updates}
+                """,
+                tuple(row.values()),
+            )
+        saved = self.get_mr_runtime_state(str(row["device_uuid"]))
+        if saved is None:
+            raise RuntimeError("MR runtime projection was not saved")
+        return saved
+
+    def list_mr_runtime_states(self) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM ground_unattended_mr_runtime_states
+                WHERE site_id=? ORDER BY train_id, mr_role, device_uuid
+                """,
+                (self.site_id,),
+            ).fetchall()
+        return [_decode_row(row) for row in rows]
+
+    def clear_radio_projections(self, *, device_uuid: str = "") -> None:
+        with self._transaction() as conn:
+            if device_uuid:
+                conn.execute(
+                    """
+                    DELETE FROM ground_unattended_radio_correlations
+                    WHERE site_id=? AND device_uuid=?
+                    """,
+                    (self.site_id, device_uuid),
+                )
+                conn.execute(
+                    """
+                    DELETE FROM ground_unattended_radio_interface_states
+                    WHERE site_id=? AND device_uuid=?
+                    """,
+                    (self.site_id, device_uuid),
+                )
+                conn.execute(
+                    """
+                    DELETE FROM ground_unattended_mr_runtime_states
+                    WHERE site_id=? AND device_uuid=?
+                    """,
+                    (self.site_id, device_uuid),
+                )
+            else:
+                for table in (
+                    "ground_unattended_radio_correlations",
+                    "ground_unattended_radio_interface_states",
+                    "ground_unattended_mr_runtime_states",
+                ):
+                    conn.execute(
+                        f"DELETE FROM {table} WHERE site_id=?", (self.site_id,)
+                    )
+
+    def mark_expected_config_change(
+        self,
+        *,
+        device_uuid: str,
+        operation_id: str,
+        expected_started_at: str = "",
+        expected_until: str,
+    ) -> None:
+        started_at = expected_started_at or _now()
+        with self._transaction() as conn:
+            conn.execute(
+                """
+                UPDATE ground_unattended_boot_sessions
+                SET expected_change_operation_id=?,
+                    expected_change_started_at=?,
+                    expected_change_until=?,
+                    updated_at=?
+                WHERE boot_session_id=(
+                    SELECT boot_session_id
+                    FROM ground_unattended_boot_sessions
+                    WHERE site_id=? AND device_uuid=?
+                    ORDER BY last_checked_at DESC LIMIT 1
+                )
+                """,
+                (
+                    operation_id,
+                    started_at,
+                    expected_until,
+                    started_at,
+                    self.site_id,
+                    device_uuid,
+                ),
+            )
+
+    def expected_config_change_at(
+        self, *, device_uuid: str, event_time: str
+    ) -> bool:
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT expected_change_started_at, expected_change_until
+                FROM ground_unattended_boot_sessions
+                WHERE site_id=? AND device_uuid=?
+                ORDER BY last_checked_at DESC LIMIT 1
+                """,
+                (self.site_id, device_uuid),
+            ).fetchone()
+        if row is None or not str(row["expected_change_until"] or ""):
+            return False
+        event = _parse_datetime(event_time)
+        expected_started_at = _parse_datetime(
+            str(row["expected_change_started_at"] or "")
+        )
+        expected_until = _parse_datetime(str(row["expected_change_until"]))
+        return bool(
+            event
+            and expected_started_at
+            and expected_until
+            and expected_started_at <= event <= expected_until
+        )
+
     def list_wmesh_events(
         self, *, run_id: str = "", train_id: str = "", limit: int = 200, offset: int = 0
     ) -> list[dict[str, Any]]:
-        where = ["site_id=?"]
+        where = [
+            "site_id=?",
+            "(event_family='WMESH' OR (event_family='' AND event_type LIKE 'MESH_%'))",
+        ]
         params: list[Any] = [self.site_id]
         if run_id:
             where.append("run_id=?")
@@ -1961,7 +2795,10 @@ class GroundUnattendedRepository:
         with self._connection() as conn:
             row = conn.execute(
                 "SELECT * FROM ground_unattended_wmesh_events "
-                "WHERE site_id=? AND device_uuid=? ORDER BY receive_time DESC LIMIT 1",
+                "WHERE site_id=? AND device_uuid=? "
+                "AND (event_family='WMESH' "
+                "OR (event_family='' AND event_type LIKE 'MESH_%')) "
+                "ORDER BY receive_time DESC LIMIT 1",
                 (self.site_id, device_uuid),
             ).fetchone()
         return _decode_row(row) if row else None
@@ -2004,6 +2841,9 @@ class GroundUnattendedRepository:
             "last_syslog_received_at",
             "config_fingerprint",
             "info_center_metrics_json",
+            "expected_change_operation_id",
+            "expected_change_started_at",
+            "expected_change_until",
             "created_at",
             "updated_at",
         )
@@ -2051,12 +2891,14 @@ class GroundUnattendedRepository:
             "evidence_sha256",
             "error_code",
             "error_message",
+            "managed_profile_version",
             "created_at",
         )
         row = dict(values)
         now = _now()
         row.setdefault("site_id", self.site_id)
         row.setdefault("created_at", now)
+        row.setdefault("managed_profile_version", 2)
         for field in ("missing_commands_json", "applied_commands_json"):
             if field not in row:
                 row[field] = json.dumps(
@@ -2324,6 +3166,8 @@ def _decode_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         "deep_collection_enabled",
         "deep_collection_master_enabled",
         "monitor_only",
+        "syslog_auto_repair_enabled",
+        "expected_internal_change",
     ):
         if key in result:
             result[key] = bool(result[key])

@@ -24,6 +24,14 @@
 
 ### 轨道交通地面无人值守
 
+- 固定 MR 临时 Syslog Profile 升级为 v2，在 `default deny + WMESH` 基础上增加 IFNET 和 CFGMAN
+  notification；Profile 新增默认开启的自动补齐开关，关闭后启动、新上电和手工配置检查均保持只读。
+  写入仍只补齐白名单缺项、`return` 后执行两条只读复查，不执行 `save/undo/quit`，同 IP 端口冲突继续阻断。
+- UDP Runtime 新增 CFGMAN 通用 `-Key=Value` 解析和 IFNET WLAN-Radio 状态投影；同一 MR 的 SNMP
+  CFGMAN 与 IFNET 按 ±3 秒高置信、±10 秒中置信关联，识别射频关闭、开启、毫秒级短暂中断和频繁切换。
+  原始三条报文全部保留，结构化事件去重，当前状态从可重建投影表读取。
+- CFGMAN 明确只作为配置操作来源，不触发 SSH、`display info-center`、配置漂移检查或 Profile 修复。
+  页面新增 CT/CW 射频与控制来源、运行概览指标、Syslog 事件族/来源/状态/关联筛选和综合事件详情。
 - 当前服务状态不再回退最近一次运行：无活动运行时按 Profile 返回“未启用/等待运行时段”，活动运行、
   最近运行、活动操作和最近终态操作分别查询；运行选择器统一驱动 Ping、Syslog、时间轴和深度采集。
 - 页面移除 5 秒全量刷新，改为按状态、操作、健康和活动页签独立轮询，增加防重入、请求取消、代次丢弃、

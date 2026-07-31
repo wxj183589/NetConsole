@@ -20,11 +20,23 @@ from netconsole.repositories.ground_unattended_repository import (
 from netconsole.services.ground_unattended.ap_resolver import (
     GroundApDisplayResolver,
 )
+from netconsole.services.ground_unattended.radio_control import (
+    GroundRadioControlCorrelationService,
+    control_event_dedup_key,
+)
+
 _WMESH_EVENT_RE = re.compile(
     r"WMESH/\d+/(?P<event>MESH_LINKUP|MESH_LINKDOWN|MESH_ACTIVELINK_SWITCH)\s*:",
     re.IGNORECASE,
 )
 _IFNET_EVENT_RE = re.compile(r"IFNET/\d+/PHY_UPDOWN\s*:", re.IGNORECASE)
+_CFGMAN_EVENT_RE = re.compile(
+    r"CFGMAN/\d+/CFGMAN_CFGCHANGED\s*:", re.IGNORECASE
+)
+_CFGMAN_FIELD_RE = re.compile(
+    r"-(?P<key>[A-Za-z][A-Za-z0-9_]*)=(?P<value>.*?)(?=-[A-Za-z][A-Za-z0-9_]*=|;|$)",
+    re.DOTALL,
+)
 _PRI_RE = re.compile(r"^<(?P<priority>\d{1,3})>")
 _FACILITY_SEVERITY_RE = re.compile(
     r"\b(?P<facility>(?:local\d|kern|user|mail|daemon|auth|syslog|lpr|news|uucp|cron))\.(?P<severity>"
@@ -239,17 +251,24 @@ class WmeshRealtimeParser:
     def parse(self, raw_text: str, *, receive_time: datetime) -> dict[str, Any] | None:
         event_match = _WMESH_EVENT_RE.search(raw_text)
         if event_match:
+            event_family = "WMESH"
             event_type = event_match.group("event").upper()
             payload = self._parse_wmesh_event(event_type, raw_text)
         elif _IFNET_EVENT_RE.search(raw_text):
+            event_family = "IFNET"
             event_type = "IFNET_PHY_UPDOWN"
             payload = self._parse_ifnet_event(raw_text)
+        elif _CFGMAN_EVENT_RE.search(raw_text):
+            event_family = "CFGMAN"
+            event_type = "CFGMAN_CFGCHANGED"
+            payload = self._parse_cfgman_event(raw_text)
         else:
             return None
         if payload is None:
             return None
         return {
             "event_type": event_type,
+            "event_family": event_family,
             "device_time": _parse_device_time(raw_text, receive_time),
             **payload,
         }
@@ -328,9 +347,60 @@ class WmeshRealtimeParser:
             "peer_mac": "",
             "previous_peer_name": "",
             "previous_peer_mac": "",
+            "interface_name": match.group("interface"),
+            "interface_type": (
+                "RADIO"
+                if match.group("interface").casefold().startswith("wlan-radio")
+                else "OTHER"
+            ),
+            "physical_state": match.group("state").upper(),
             "details": {
                 "interface": match.group("interface"),
-                "physical_state": match.group("state").casefold(),
+                "interface_name": match.group("interface"),
+                "interface_type": (
+                    "RADIO"
+                    if match.group("interface")
+                    .casefold()
+                    .startswith("wlan-radio")
+                    else "OTHER"
+                ),
+                "physical_state": match.group("state").upper(),
+            },
+        }
+
+    @staticmethod
+    def _parse_cfgman_event(raw_text: str) -> dict[str, Any] | None:
+        marker = _CFGMAN_EVENT_RE.search(raw_text)
+        if marker is None:
+            return None
+        tail = raw_text[marker.end() :]
+        fields = {
+            match.group("key").casefold(): match.group("value").strip()
+            for match in _CFGMAN_FIELD_RE.finditer(tail)
+        }
+        message = tail.split(";", 1)[1].strip() if ";" in tail else ""
+        return {
+            "peer_name": "",
+            "peer_mac": "",
+            "previous_peer_name": "",
+            "previous_peer_mac": "",
+            "cfg_event_index": fields.get("eventindex", ""),
+            "cfg_command_source": fields.get("commandsource", "").casefold(),
+            "cfg_source": fields.get("configsource", "").casefold(),
+            "cfg_destination": fields.get(
+                "configdestination", ""
+            ).casefold(),
+            "details": {
+                "cfg_fields": fields,
+                "cfg_event_index": fields.get("eventindex", ""),
+                "cfg_command_source": fields.get(
+                    "commandsource", ""
+                ).casefold(),
+                "cfg_source": fields.get("configsource", "").casefold(),
+                "cfg_destination": fields.get(
+                    "configdestination", ""
+                ).casefold(),
+                "message": message.rstrip("."),
             },
         }
 
@@ -348,6 +418,7 @@ class SyslogUdpReceiver:
         self.repository = repository
         self.site_id = site_id
         self.parser = parser or WmeshRealtimeParser()
+        self.radio_control = GroundRadioControlCorrelationService(repository)
         self._queue: queue.Queue[UdpEnvelope] = queue.Queue(maxsize=20_000)
         self._stop = threading.Event()
         self._socket: socket.socket | None = None
@@ -659,6 +730,20 @@ class SyslogUdpReceiver:
         parsed = self.parser.parse(raw_text, receive_time=receive_time)
         if parsed is not None:
             parsed = self._ap_resolver.enrich_parsed(parsed)
+            if (
+                str(parsed.get("event_family") or "") == "CFGMAN"
+                and endpoint
+                and str(parsed.get("cfg_command_source") or "").casefold()
+                != "snmp"
+            ):
+                expected = self.repository.expected_config_change_at(
+                    device_uuid=str(endpoint.get("device_uuid") or ""),
+                    event_time=envelope.receive_time,
+                )
+                parsed["expected_internal_change"] = expected
+                details = dict(parsed.get("details") or {})
+                details["expected_internal_change"] = expected
+                parsed["details"] = details
         quality, clock_offset_ms = self._quality(
             endpoint,
             identity_status,
@@ -697,6 +782,29 @@ class SyslogUdpReceiver:
             "identity_status": identity_status,
             "clock_offset_ms": clock_offset_ms,
             "event_type": str((parsed or {}).get("event_type") or ""),
+            "event_family": str((parsed or {}).get("event_family") or ""),
+            "interface_name": str(
+                (parsed or {}).get("interface_name") or ""
+            ),
+            "interface_type": str(
+                (parsed or {}).get("interface_type") or ""
+            ),
+            "physical_state": str(
+                (parsed or {}).get("physical_state") or ""
+            ),
+            "cfg_event_index": str(
+                (parsed or {}).get("cfg_event_index") or ""
+            ),
+            "cfg_command_source": str(
+                (parsed or {}).get("cfg_command_source") or ""
+            ),
+            "cfg_source": str((parsed or {}).get("cfg_source") or ""),
+            "cfg_destination": str(
+                (parsed or {}).get("cfg_destination") or ""
+            ),
+            "expected_internal_change": bool(
+                (parsed or {}).get("expected_internal_change")
+            ),
             "peer_name": str((parsed or {}).get("peer_name") or ""),
             "peer_mac": str((parsed or {}).get("peer_mac") or ""),
             "previous_peer_name": str(
@@ -762,6 +870,12 @@ class SyslogUdpReceiver:
             "clock_offset_ms": clock_offset_ms,
             "raw_file_id": file_id,
             "raw_line_number": line_number,
+            "event_time": str(
+                parsed.get("device_time") or envelope.receive_time
+            ),
+            "event_time_source": (
+                "DEVICE_TIME" if parsed.get("device_time") else "RECEIVE_TIME"
+            ),
             "details": {
                 **dict(parsed.get("details") or {}),
                 "facility": facility,
@@ -777,31 +891,50 @@ class SyslogUdpReceiver:
                 "section": str(parsed.get("section") or ""),
             }
         )
-        self._event_batch.append(event)
-        self._timeline_batch.append(
-            {
-                "run_id": self._run_id,
-                "ts": envelope.receive_time,
-                "event_type": str(parsed["event_type"]).casefold(),
-                "severity": "warning" if quality != "COMPLETE" else "info",
-                "train_id": record["train_id"],
-                "mr_id": record["device_uuid"],
-                "title": _event_title(str(parsed["event_type"])),
-                "message": _event_message(parsed),
-                "details": {
-                    "data_quality": quality,
-                    "identity_status": identity_status,
-                    "train_no": record["train_no"],
-                    "mr_name": record["mr_name"],
-                    "mr_position_code": record["mr_role"],
-                    "raw_file_id": file_id,
-                    "global_receive_sequence": envelope.global_receive_sequence,
-                    "source_receive_sequence": envelope.source_receive_sequence,
-                    "clock_offset_ms": clock_offset_ms,
-                    **dict(parsed.get("details") or {}),
-                },
-            }
-        )
+        event_family = str(parsed.get("event_family") or "")
+        if (
+            event_family in {"IFNET", "CFGMAN"}
+            and record["device_uuid"]
+        ):
+            event["dedup_key"] = control_event_dedup_key(
+                device_uuid=record["device_uuid"],
+                event_type=str(parsed.get("event_type") or ""),
+                device_time=str(parsed.get("device_time") or ""),
+                raw_text=raw_text,
+                interface_name=str(parsed.get("interface_name") or ""),
+                physical_state=str(parsed.get("physical_state") or ""),
+                cfg_event_index=str(parsed.get("cfg_event_index") or ""),
+                cfg_command_source=str(
+                    parsed.get("cfg_command_source") or ""
+                ),
+            )
+            self.radio_control.process(event)
+        else:
+            self._event_batch.append(event)
+            self._timeline_batch.append(
+                {
+                    "run_id": self._run_id,
+                    "ts": envelope.receive_time,
+                    "event_type": str(parsed["event_type"]).casefold(),
+                    "severity": "warning" if quality != "COMPLETE" else "info",
+                    "train_id": record["train_id"],
+                    "mr_id": record["device_uuid"],
+                    "title": _event_title(str(parsed["event_type"])),
+                    "message": _event_message(parsed),
+                    "details": {
+                        "data_quality": quality,
+                        "identity_status": identity_status,
+                        "train_no": record["train_no"],
+                        "mr_name": record["mr_name"],
+                        "mr_position_code": record["mr_role"],
+                        "raw_file_id": file_id,
+                        "global_receive_sequence": envelope.global_receive_sequence,
+                        "source_receive_sequence": envelope.source_receive_sequence,
+                        "clock_offset_ms": clock_offset_ms,
+                        **dict(parsed.get("details") or {}),
+                    },
+                }
+            )
         if record["device_uuid"] and identity_status == "VERIFIED":
             self.repository.touch_boot_syslog(
                 record["device_uuid"],
@@ -920,7 +1053,11 @@ def _parse_device_time(raw_text: str, receive_time: datetime) -> str:
 
 
 def _extract_hostname(raw_text: str) -> str:
-    event_match = _WMESH_EVENT_RE.search(raw_text) or _IFNET_EVENT_RE.search(raw_text)
+    event_match = (
+        _WMESH_EVENT_RE.search(raw_text)
+        or _IFNET_EVENT_RE.search(raw_text)
+        or _CFGMAN_EVENT_RE.search(raw_text)
+    )
     if not event_match:
         return ""
     prefix = raw_text[: event_match.start()]
@@ -1034,6 +1171,7 @@ def _event_title(event_type: str) -> str:
         "MESH_LINKDOWN": "WMESH 链路断开",
         "MESH_ACTIVELINK_SWITCH": "WMESH 主链路切换",
         "IFNET_PHY_UPDOWN": "接口物理状态变化",
+        "CFGMAN_CFGCHANGED": "设备配置发生变化",
     }.get(event_type, event_type)
 
 
@@ -1053,7 +1191,24 @@ def _event_message(parsed: dict[str, Any]) -> str:
     if event_type == "MESH_LINKDOWN" and details.get("reason_raw"):
         reason = details.get("reason_label") or details["reason_raw"]
         return f"{current or '未知 AP'}；原因：{reason}"
+    if event_type == "IFNET_PHY_UPDOWN":
+        return (
+            f"{details.get('interface_name') or details.get('interface') or '未知接口'} "
+            f"changed to {str(details.get('physical_state') or '').casefold()}"
+        ).strip()
+    if event_type == "CFGMAN_CFGCHANGED":
+        return _cfgman_message(details)
     return current
+
+
+def _cfgman_message(details: dict[str, Any]) -> str:
+    index = str(details.get("cfg_event_index") or "")
+    source = str(details.get("cfg_source") or "")
+    destination = str(details.get("cfg_destination") or "")
+    parts = [f"EventIndex {index}" if index else "配置发生变化"]
+    if source or destination:
+        parts.append(f"{source or '未知'} → {destination or '未知'}")
+    return " · ".join(parts)
 
 
 def _udp_port_is_available(host: str, port: int) -> bool:

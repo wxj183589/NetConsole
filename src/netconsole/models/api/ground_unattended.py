@@ -106,6 +106,7 @@ class GroundUnattendedProfileDTO(ApiModel):
     config_check_cooldown_seconds: int = Field(default=1800, ge=30, le=86_400)
     syslog_server_ip: str = Field(default="", max_length=255)
     syslog_server_port: int = Field(default=514, ge=1, le=65_535)
+    syslog_auto_repair_enabled: bool = True
     allow_external_syslog_address: bool = False
     ping_raw_retention_days: int = Field(default=30, ge=1, le=3650)
     syslog_raw_retention_days: int = Field(default=30, ge=1, le=3650)
@@ -197,6 +198,12 @@ class GroundUnattendedStatusDTO(ApiModel):
     syslog_active_mr_count: int = 0
     config_abnormal_count: int = 0
     data_quality_warning_count: int = 0
+    radio_down_mr_count: int = 0
+    radio_bounce_today_count: int = 0
+    snmp_radio_control_today_count: int = 0
+    snmp_unrecovered_count: int = 0
+    radio_flapping_mr_count: int = 0
+    last_snmp_radio_control_at: str = ""
     disk_used_bytes: int = 0
     disk_free_bytes: int = 0
     disk_status: str = "UNKNOWN"
@@ -286,6 +293,23 @@ class GroundUnattendedEndpointDTO(ApiModel):
     managed_target_port: int | None = None
     managed_target_statuses: list[str] = Field(default_factory=list)
     configured_log_hosts: list[GroundSyslogHostDTO] = Field(default_factory=list)
+    managed_profile_version: int = 2
+    radio_interfaces: list[dict[str, object]] = Field(default_factory=list)
+    radio_overall_state: Literal["UP", "DOWN", "FLAPPING", "UNKNOWN"] = "UNKNOWN"
+    snmp_radio_control_state: Literal[
+        "NONE",
+        "RECENT_CHANGE",
+        "RADIO_DOWN",
+        "RADIO_RECOVERED",
+        "FREQUENT_SWITCHING",
+    ] = "NONE"
+    last_radio_event_at: str = ""
+    last_cfg_event_at: str = ""
+    cfg_command_source: str = ""
+    cfg_event_index: str = ""
+    correlation_confidence: Literal["HIGH", "MEDIUM", "UNCONFIRMED"] = (
+        "UNCONFIRMED"
+    )
 
 
 class GroundUnattendedTrainDTO(ApiModel):
@@ -355,8 +379,42 @@ class GroundTrainPolicyUpdateDTO(ApiModel):
 
 class GroundConfigCheckRequestDTO(ApiModel):
     device_uuid: str = Field(default="", max_length=100)
+    mode: Literal["VERIFY_ONLY", "AUTO_REPAIR"] = "AUTO_REPAIR"
     allow_target_port_change: bool = False
     explicit_confirmation: bool = False
+
+
+class GroundMrRuntimeStatusDTO(ApiModel):
+    device_uuid: str
+    train_id: str = ""
+    mr_role: str = ""
+    mr_name: str = ""
+    radio_interfaces: list[dict[str, object]] = Field(default_factory=list)
+    radio_overall_state: Literal["UP", "DOWN", "FLAPPING", "UNKNOWN"] = "UNKNOWN"
+    snmp_radio_control_state: Literal[
+        "NONE",
+        "RECENT_CHANGE",
+        "RADIO_DOWN",
+        "RADIO_RECOVERED",
+        "FREQUENT_SWITCHING",
+    ] = "NONE"
+    last_radio_event_at: str = ""
+    last_cfg_event_at: str = ""
+    cfg_command_source: str = ""
+    cfg_event_index: str = ""
+    config_source: str = ""
+    config_destination: str = ""
+    correlation_confidence: Literal["HIGH", "MEDIUM", "UNCONFIRMED"] = (
+        "UNCONFIRMED"
+    )
+    managed_config_status: str = "NOT_CHECKED"
+    managed_config_checked_at: str = ""
+    managed_profile_version: int = 2
+
+
+class GroundMrRuntimeStatusPageDTO(ApiModel):
+    items: list[GroundMrRuntimeStatusDTO] = Field(default_factory=list)
+    total: int = 0
 
 
 class GroundInventorySummaryDTO(ApiModel):
@@ -794,6 +852,20 @@ class GroundSyslogRecordDTO(ApiModel):
     data_source: Literal["ACTIVE", "ARCHIVE"] = "ACTIVE"
     display_enriched: bool = False
     event_type: str = ""
+    event_family: str = ""
+    interface_name: str = ""
+    interface_type: str = ""
+    physical_state: str = ""
+    cfg_event_index: str = ""
+    cfg_command_source: str = ""
+    cfg_source: str = ""
+    cfg_destination: str = ""
+    expected_internal_change: bool = False
+    correlation_status: str = "UNCONFIRMED"
+    correlation_confidence: str = "UNCONFIRMED"
+    correlation_delta_ms: int | None = None
+    correlated_event_ids: list[int] = Field(default_factory=list)
+    composite_event_type: str = ""
     peer_ap_id: str = ""
     peer_name: str = ""
     peer_mac: str = ""

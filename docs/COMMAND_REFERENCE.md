@@ -101,8 +101,13 @@ Huawei、ZTE、未知厂商、未知角色、未知平台和未知版本均失�
 | LLDP | `display lldp neighbor-information verbose` | 无 | `screen-length disable` | LLDP 邻居详细信息 | `read_only` | 第二批参考 |
 | 配置采集 | `display current-configuration` | 无 | `screen-length disable` | 运行配置 | `read_only` | 第二批待确认 |
 | 设备时钟 | `display clock` | 无 | `screen-length disable` | 无人值守按前后两次设备时间中点减 uptime 估算上电时间，并记录时区/UTC offset | `read_only` | H3C 北京时区现场格式已适配；解析失败显式降级 |
-| Syslog 运行态检查 | `display info-center` | 无 | `screen-length disable` | 验证车载 MR Information Center、全部 UDP loghost 的 IP/实际端口/facility 和本地缓冲计数；省略端口归一化为 514 | `read_only` | 不同 IP 多目标已适配；同 IP 端口冲突默认只读 |
-| Syslog 配置检查 | `display current-configuration \| include info-center` | 无 | `screen-length disable` | 验证车载 MR 的固定 Syslog 来源规则；过滤失败才回退完整运行配置 | `read_only` | H3C v7/v9 现场验证待完成 |
+| Syslog 运行态检查 | `display info-center` | 无 | `screen-length disable` | 验证车载 MR Information Center、全部 UDP loghost 的 IP/实际端口/facility 和本地缓冲计数；省略端口归一化为 514 | `read_only` | 不同 IP 多目标已适配；同 IP 端口冲突默认只读；CFGMAN 事件不得触发本命令 |
+| Syslog 配置检查 | `display current-configuration \| include info-center` | 无 | `screen-length disable` | 验证 Profile v2 的 `default deny + WMESH + IFNET + CFGMAN` 四条来源规则；过滤失败才回退完整运行配置 | `read_only` | 只由启动、新 Boot Session、重新上线、手工动作和独立低频检查调用；CFGMAN 事件不得触发；H3C v7/v9 现场验证待完成 |
+
+地面无人值守 Profile v2 的写命令仍由 `MrSyslogConfigService` 内部固定白名单和顺序约束：进入
+`system-view` 后只补齐目标和四条来源规则，随后 `return` 并执行上表两条只读复查。不得执行
+`save/undo/quit/shutdown/restart`，也不得从前端接收任意命令文本。`CommandSource=snmp` 的 CFGMAN
+只与 IFNET WLAN-Radio 状态事件关联，不参与配置检查或自动修复调度。
 | 配置采集 | `display saved-configuration` | 无 | `screen-length disable` | 已保存配置 | `read_only` | 第二批待确认 |
 | 配置保存 | `save force` | 无 | 登录设备 | 保存配置 | `config_write` | 第二批待确认 |
 | 诊断信息 | `display diagnostic-information` | 无 | `screen-length disable` | 诊断信息 | `interactive` | 第二批待确认 |

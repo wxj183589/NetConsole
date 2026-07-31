@@ -96,7 +96,7 @@ files/rail_transit/
 │  │  ├─ fleet_ping/<train>/<mr>/<date>/<hour>_<generation>.ndjson
 │  │  │                           # 按 MR/小时顺序追加的 Ping 原始流；含预热标记和采样时 AP/站点/区间快照
 │  │  ├─ realtime/syslog/<train>/<mr>/<date>/<hour>_<generation>.ndjson
-│  │  │                           # UDP WMESH/IFNET 原始流；保留接收序号、时钟偏差和安全编码原始字节；未识别来源写入 _unidentified
+│  │  │                           # UDP WMESH/IFNET/CFGMAN 原始流；保留接收序号、时钟偏差和安全编码原始字节；未识别来源写入 _unidentified
 │  │  ├─ ac_snapshots/           # 按小时 AC 快照 JSONL
 │  │  ├─ timeline/               # AC/Ping 关联 JSONL
 │  │  ├─ scheduler_events.jsonl
@@ -106,7 +106,7 @@ files/rail_transit/
 │  │  ├─ errors.jsonl
 │  │  └─ manifest.json
 │  ├─ archives/<run_date>_ground_unattended.zip
-│  └─ index.sqlite               # 配置、运行/覆盖/事件、Ping 目标激活时间、停止/归档操作、分段索引和汇总；原始文件索引按 run/类型/列车/MR/端位/时间预筛；Boot Session 保存设备前后时钟/uptime/时区/误差，Syslog 仅索引/事件/健康指标，不保存高频原始报文
+│  └─ index.sqlite               # additive schema v7：配置、运行/覆盖/事件、Ping 目标激活时间、停止/归档操作、分段索引和汇总；结构化 Syslog 事件、射频接口/MR 状态投影和 CFGMAN-IFNET 关联；原始文件索引按 run/类型/列车/MR/端位/时间预筛；Boot Session 保存设备前后时钟/uptime/时区/误差，高频原始报文仍只在 NDJSON/READY ZIP
 ├─ base_data_import/             # 仅显式授权的受控基础资料写入产生
 │  ├─ backups/<operation>.sqlite # SQLite Backup API 生成的写前备份
 │  └─ operations/<operation>.json# 脱敏审计与相对备份引用
@@ -126,6 +126,11 @@ files/rail_transit/
 `active/`。`index.sqlite` 只保存相对路径、时间范围、记录数、大小、哈希和状态；同一运行的
 active/archive 并存时返回 `MIXED` 并去重。ZIP 下载只能通过后端按 `archive_id` 解析的 Artifact 端点，
 Renderer 和 Electron Bridge 都不接受数据根物理路径。
+
+Syslog 数据分三层：NDJSON/READY ZIP 是不可变原始证据；`ground_unattended_wmesh_events` 兼容保存去重后的
+WMESH、IFNET 和 CFGMAN 结构化事件；`ground_unattended_radio_interface_states`、
+`ground_unattended_mr_runtime_states` 与 `ground_unattended_radio_correlations` 是可重建投影。
+重复 UDP 报文仍保留在原始流，只增加结构化事件的 `duplicate_count`，不会重复切换接口状态或生成综合事件。
 
 活动长 Ping 首次查询按受控时间范围最多返回 3000 个点，完整运行最多返回 10000 个降采样点；增量游标
 保存已登记 OPEN 文件的稳定 `file_id` 与下一字节偏移，并绑定 run、列车、MR、目标和预热选项。游标只在

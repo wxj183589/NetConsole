@@ -384,7 +384,7 @@
       "comware_command": "display info-center",
       "zte_command": "不适用",
       "parser_status": "H3C 运行态字段解析已实现；跨版本输出差异仍需现场样本复核",
-      "notes": "与 info-center 配置规则复查组合使用；全程不执行 save。"
+      "notes": "与 info-center Profile v2 配置规则复查组合使用；仅由启动、新 Boot Session、重新上线、手工动作和独立低频检查调用，CFGMAN 事件不得触发；全程不执行 save。"
     },
     {
       "id": "ground_unattended_display_current_configuration_info_center",
@@ -396,7 +396,7 @@
       "command_template": "display current-configuration | include info-center",
       "parameters": [],
       "pre_commands": ["screen-length disable"],
-      "purpose": "读取车载 MR 的 info-center 配置规则，用于补充验证固定 UDP Syslog Profile 的来源规则。",
+      "purpose": "读取车载 MR 的 info-center 配置规则，用于补充验证固定 UDP Syslog Profile v2 的 default deny、WMESH、IFNET 和 CFGMAN 来源规则。",
       "output_log": "files/rail_transit/ground_unattended/active/<run>/evidence/<mr>/",
       "parser": "src/netconsole/services/ground_unattended/boot_config.py",
       "consumer": "MrSyslogConfigService",
@@ -408,7 +408,7 @@
       "comware_command": "display current-configuration | include info-center",
       "zte_command": "不适用",
       "parser_status": "固定 info-center 行匹配与默认 UDP 514 端口归一化已实现；跨版本设备验证待完成",
-      "notes": "过滤命令失败时才回退完整运行配置；不单独证明运行态生效；全程不执行 save。"
+      "notes": "过滤命令失败时才回退完整运行配置；不单独证明运行态生效；CFGMAN 事件不得触发配置复查或修复；全程不执行 save。"
     },
     {
       "id": "switch_display_saved_configuration",
