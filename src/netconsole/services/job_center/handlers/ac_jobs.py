@@ -190,7 +190,7 @@ def ac_fit_ap_resources_refresh(context: JobContext) -> dict[str, object]:
         raise BackgroundTaskCancelled(str(exc)) from exc
     if not result.success:
         raise RuntimeError(result.error_message or "FIT-AP 资源更新失败")
-    return result.to_payload()
+    return result.to_terminal_payload()
 
 
 def ac_info_refresh(context: JobContext) -> dict[str, object]:

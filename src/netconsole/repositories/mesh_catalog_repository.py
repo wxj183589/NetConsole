@@ -374,6 +374,99 @@ class MeshCatalogRepository:
                 """
             )
 
+    def delete_source_index(
+        self,
+        *,
+        session_id: str,
+        mr_id: str,
+        source_file_id: int,
+    ) -> dict[str, list[dict[str, object]]]:
+        with self._connect() as conn:
+            session_rows = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM mesh_session_index WHERE session_id = ?",
+                    (session_id,),
+                ).fetchall()
+            ]
+            fingerprint_rows = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM mesh_source_fingerprints WHERE mr_id = ? AND source_file_id = ?",
+                    (mr_id, int(source_file_id)),
+                ).fetchall()
+            ]
+            conn.execute("DELETE FROM mesh_source_fingerprints WHERE mr_id = ? AND source_file_id = ?", (mr_id, int(source_file_id)))
+            conn.execute("DELETE FROM mesh_session_index WHERE session_id = ?", (session_id,))
+        return {"session_index": session_rows, "fingerprints": fingerprint_rows}
+
+    def mark_session_parsed_deleted(
+        self,
+        session_id: str,
+        *,
+        reports_deleted: bool,
+    ) -> dict[str, list[dict[str, object]]]:
+        with self._connect() as conn:
+            session_rows = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM mesh_session_index WHERE session_id = ?",
+                    (session_id,),
+                ).fetchall()
+            ]
+            conn.execute(
+                """
+                UPDATE mesh_session_index
+                SET link_record_count = NULL,
+                    active_link_count = NULL,
+                    standby_link_count = NULL,
+                    event_count = NULL,
+                    link_up_event_count = NULL,
+                    link_down_event_count = NULL,
+                    switch_event_count = NULL,
+                    short_link_count = NULL,
+                    pingpong_count = NULL,
+                    rssi_anomaly_count = NULL,
+                    channel_busy_anomaly_count = NULL,
+                    unmatched_ap_count = NULL,
+                    data_integrity = 'partial',
+                    parsed_status = 'missing',
+                    parsed_message = '结构化分析结果不存在，可重新解析当前来源。',
+                    report_count = CASE WHEN ? THEN 0 ELSE report_count END,
+                    source_revision = '',
+                    detail_indexed = 0,
+                    updated_at = ?
+                WHERE session_id = ?
+                """,
+                (
+                    int(reports_deleted),
+                    datetime.now().isoformat(sep=" ", timespec="milliseconds"),
+                    session_id,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE mesh_catalog_index_state
+                SET status = 'pending', updated_at = ?
+                WHERE singleton = 1
+                """,
+                (datetime.now().isoformat(sep=" ", timespec="milliseconds"),),
+            )
+        return {"session_index": session_rows, "fingerprints": []}
+
+    def restore_source_index(self, snapshot: dict[str, list[dict[str, object]]]) -> None:
+        with self._connect() as conn:
+            for table, rows in (
+                ("mesh_session_index", snapshot.get("session_index") or []),
+                ("mesh_source_fingerprints", snapshot.get("fingerprints") or []),
+            ):
+                for row in rows:
+                    names = list(row)
+                    conn.execute(
+                        f"INSERT OR REPLACE INTO {table} ({', '.join(names)}) VALUES ({', '.join('?' for _ in names)})",
+                        [row[name] for name in names],
+                    )
+
     def session_index_revisions(self) -> dict[str, tuple[str, bool]]:
         with self._connect() as conn:
             rows = conn.execute(

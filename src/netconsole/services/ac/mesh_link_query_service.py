@@ -513,11 +513,7 @@ class AcMeshLinkQueryService:
                         if identity_matched
                         else ap.name
                         if ap
-                        else str(
-                            raw.get("local_ap_name")
-                            or raw.get("matched_ap_name")
-                            or ""
-                        )
+                        else str(raw.get("local_ap_name") or "")
                     ),
                     peer_ap_mac=(
                         identity_match.effective_ap_mac
@@ -534,7 +530,7 @@ class AcMeshLinkQueryService:
                         if identity_matched
                         else ap.station
                         if ap
-                        else str(raw.get("matched_station") or "")
+                        else ""
                     ),
                     section=(
                         identity_match.section
@@ -611,7 +607,7 @@ class AcMeshLinkQueryService:
         identity_query: ApIdentityQueryService,
     ) -> tuple[_ApCandidate | None, ApIdentityMatch | None, str, str]:
         mac = _normalize_vehicle_mac(row.get("local_mac"))
-        identity_match = identity_query.resolve_mac(
+        identity_match = identity_query.resolve_peer_mac(
             mac,
             peer_name=row.get("local_ap_name") or row.get("matched_ap_name"),
         )
@@ -645,18 +641,9 @@ class AcMeshLinkQueryService:
                 "unmatched",
                 "统一 AP Identity 匹配到多个物理 AP，未自动选择。",
             )
-        if mac:
-            candidate, warning = self._unique(indexes["mac"].get(mac, []), "Mesh Radio/BSSID MAC")
-            if candidate or warning:
-                return (
-                    candidate,
-                    None,
-                    "legacy_exact" if candidate else "unmatched",
-                    warning,
-                )
         return (
             None,
-            None,
+            identity_match,
             "unmatched",
             "统一 AP Identity 索引未找到匹配。",
         )

@@ -79,6 +79,14 @@ CAR_NETWORK_POINT_TABLE_GENERATE_RESULT_DETAIL_KEYS = (
     "preview_status",
     "preview_message",
 )
+WORKER_PROTOCOL_RESULT_DETAIL_KEYS = (
+    "reason",
+    "stream",
+    "frame_bytes",
+    "max_frame_bytes",
+    "worker_exit_code",
+    "data_persisted",
+)
 
 
 class JobCenterQueryService:
@@ -771,6 +779,14 @@ class JobCenterQueryService:
             )
             if "nodes_count" not in details and isinstance(result.get("nodes"), list):
                 details["nodes_count"] = len(result["nodes"])
+        details.update(
+            {
+                key: result[key]
+                for key in WORKER_PROTOCOL_RESULT_DETAIL_KEYS
+                if key in result
+                and isinstance(result[key], (str, int, float, bool, type(None)))
+            }
+        )
         return details
 
     @staticmethod

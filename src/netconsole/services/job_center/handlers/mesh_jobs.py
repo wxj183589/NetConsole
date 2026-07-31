@@ -5,6 +5,7 @@ from netconsole.services.job_center.handlers.common import legacy_handler
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.mesh_parsed_rebuild_service import MeshParsedRebuildService
 from netconsole.services.mesh_source_rebuild_service import MeshSourceRebuildService
+from netconsole.services.mesh_source_delete_service import MeshSourceDeleteService
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 
 mesh_log_import = legacy_handler(legacy_tasks._mesh_log_import)
@@ -41,10 +42,25 @@ def mesh_source_rebuild(context: JobContext) -> dict[str, object]:
     ).mark_session_index_dirty(session_id)
     return result
 
+
+def mesh_analysis_source_delete(context: JobContext) -> dict[str, object]:
+    context.check_cancelled()
+    params = dict(context.params)
+    result = MeshSourceDeleteService(context.paths).delete_source(
+        str(params.get("site_name") or ""),
+        str(params.get("session_id") or ""),
+        delete_raw_archive=bool(params.get("delete_raw_archive")),
+        delete_parsed_data=bool(params.get("delete_parsed_data", True)),
+        delete_generated_reports=bool(params.get("delete_generated_reports", True)),
+    )
+    context.progress("mesh_analysis_source_delete", 1, 1, "MESH 来源删除完成")
+    return result
+
 HANDLERS = {
     "mesh_log_import": mesh_log_import,
     "mesh_derived_rebuild": mesh_derived_rebuild,
     "mesh_mr_profiles_refresh": mesh_mr_profiles_refresh,
     "mesh_schema_rebuild": mesh_schema_rebuild,
     "mesh_source_rebuild": mesh_source_rebuild,
+    "mesh_analysis_source_delete": mesh_analysis_source_delete,
 }

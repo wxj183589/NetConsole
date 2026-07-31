@@ -46,6 +46,7 @@ from netconsole.models.api.mesh_analysis import (
     MeshReportArtifactDTO,
     MeshArtifactDeleteRequestDTO,
     MeshArtifactDeleteResultDTO,
+    MeshSourceDeleteRequestDTO,
     MeshRssiDTO,
     MeshSwitchEventPageDTO,
     MeshTracksideSignalChartDTO,
@@ -721,6 +722,44 @@ def raw_tail(
     lines: int = Query(default=100, ge=1, le=200),
 ) -> MeshRawTailDTO:
     return _query(lambda: _service(request).read_raw_tail(_site_id(request, site_id), session_id, source_action_id, lines=lines))
+
+
+@router.delete(
+    "/sources/{source_id}",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="删除 MESH 来源归档副本和解析结果",
+    dependencies=[
+        Depends(require_feature("web.mesh_analysis_import")),
+        Depends(require_feature("web.rail_task_control")),
+    ],
+)
+def delete_source(
+    request: Request,
+    source_id: str,
+    payload: MeshSourceDeleteRequestDTO,
+) -> RailTransitTaskDTO:
+    try:
+        return _rail_service(request).start_mesh_source_delete(
+            _current_site_id(request),
+            source_id,
+            delete_raw_archive=payload.delete_raw_archive,
+            delete_parsed_data=payload.delete_parsed_data,
+            delete_generated_reports=payload.delete_generated_reports,
+            explicit_confirmation=payload.explicit_confirmation,
+        )
+    except RailTransitWebError as exc:
+        status_code = (
+            status.HTTP_404_NOT_FOUND
+            if exc.code.endswith("NOT_FOUND")
+            else status.HTTP_409_CONFLICT
+            if exc.code == "MESH_SOURCE_TASK_RUNNING"
+            else status.HTTP_422_UNPROCESSABLE_ENTITY
+        )
+        raise HTTPException(
+            status_code=status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
 
 
 @router.post(

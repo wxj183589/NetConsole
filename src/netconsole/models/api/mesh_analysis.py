@@ -170,6 +170,13 @@ class MeshArtifactDeleteRequestDTO(ApiModel):
     explicit_confirmation: bool = False
 
 
+class MeshSourceDeleteRequestDTO(ApiModel):
+    delete_raw_archive: bool = False
+    delete_parsed_data: bool = True
+    delete_generated_reports: bool = True
+    explicit_confirmation: bool = False
+
+
 class MeshAnalysisSummaryDTO(ApiModel):
     site_id: str
     index_status: str = "pending"
@@ -283,6 +290,7 @@ class MeshLinkDetailDTO(ApiModel):
     mr_name: str
     mr_role: str = ""
     local_radio: int | None = None
+    peer_mac_raw: str | None = None
     peer_mac: str | None = None
     peer_ap_name: str | None = None
     peer_ap_mac: str | None = None
@@ -346,6 +354,11 @@ class MeshLinkDetailDTO(ApiModel):
     local_tx_mul_join: int | None = None
     peer_rx_mul_join: int | None = None
     match_method: str | None = None
+    identity_status: str = "unresolved"
+    identity_source: str | None = None
+    identity_rule: str | None = None
+    identity_confidence: int = 0
+    identity_reason: str | None = None
     warning: str | None = None
 
 
@@ -361,11 +374,17 @@ class MeshActiveBuildOrderDTO(ApiModel):
     source_file_id: int | None = None
     anchor_link_id: int | None = None
     local_radio: int | None = None
+    peer_mac_raw: str = ""
     active_peer_mac: str = ""
     peer_ap_name: str | None = None
     peer_ap_mac: str | None = None
     peer_radio: str | None = None
     peer_radio_mac: str | None = None
+    identity_status: str = "unresolved"
+    identity_source: str | None = None
+    identity_rule: str | None = None
+    identity_confidence: int = 0
+    identity_reason: str | None = None
     station: str | None = None
     section: str | None = None
     mileage: str | None = None
@@ -432,6 +451,11 @@ class MeshChartBackupLinkDTO(ApiModel):
     peer_ap_mac: str | None = None
     peer_radio: str | None = None
     peer_radio_mac: str | None = None
+    identity_status: str = "unresolved"
+    identity_source: str | None = None
+    identity_rule: str | None = None
+    identity_confidence: int = 0
+    identity_reason: str | None = None
     station: str | None = None
     section: str | None = None
     local_rssi: float | None = None
@@ -456,6 +480,11 @@ class MeshChartPointDTO(ApiModel):
     peer_ap_mac: str | None = None
     peer_radio: str | None = None
     peer_radio_mac: str | None = None
+    identity_status: str = "unresolved"
+    identity_source: str | None = None
+    identity_rule: str | None = None
+    identity_confidence: int = 0
+    identity_reason: str | None = None
     station: str | None = None
     section: str | None = None
     local_rssi: float | None = None
@@ -570,6 +599,11 @@ class MeshTracksideSignalPointDTO(ApiModel):
     peer_ap_mac: str | None = None
     peer_radio: str | None = None
     peer_radio_mac: str | None = None
+    identity_status: str = "unresolved"
+    identity_source: str | None = None
+    identity_rule: str | None = None
+    identity_confidence: int = 0
+    identity_reason: str | None = None
     station: str | None = None
     section: str | None = None
     peer_rssi: float | None = None
@@ -651,6 +685,11 @@ class MeshLinkTimelineDTO(ApiModel):
     duration_seconds: float | None = None
     peer_ap_name: str | None = None
     peer_ap_mac: str | None = None
+    identity_status: str = "unresolved"
+    identity_source: str | None = None
+    identity_rule: str | None = None
+    identity_confidence: int = 0
+    identity_reason: str | None = None
     local_radio: int | None = None
     rssi_min: float | None = None
     rssi_avg: float | None = None
@@ -711,6 +750,11 @@ class MeshRssiPointDTO(ApiModel):
     value: float | None = None
     peer_ap_name: str | None = None
     peer_ap_mac: str | None = None
+    identity_status: str = "unresolved"
+    identity_source: str | None = None
+    identity_rule: str | None = None
+    identity_confidence: int = 0
+    identity_reason: str | None = None
     local_radio: int | None = None
 
 
@@ -746,6 +790,11 @@ class MeshRatePointDTO(ApiModel):
     local_radio: int | None = None
     peer_ap_name: str | None = None
     peer_ap_mac: str | None = None
+    identity_status: str = "unresolved"
+    identity_source: str | None = None
+    identity_rule: str | None = None
+    identity_confidence: int = 0
+    identity_reason: str | None = None
     local_rate_raw: float | None = None
     peer_rate_raw: float | None = None
 
@@ -761,6 +810,11 @@ class MeshCounterDeltaPointDTO(ApiModel):
     local_radio: int | None = None
     peer_ap_name: str | None = None
     peer_ap_mac: str | None = None
+    identity_status: str = "unresolved"
+    identity_source: str | None = None
+    identity_rule: str | None = None
+    identity_confidence: int = 0
+    identity_reason: str | None = None
     local_retry_delta: int | None = None
     peer_retry_delta: int | None = None
     local_error_delta: int | None = None
@@ -813,6 +867,10 @@ class MeshApStatisticsDTO(ApiModel):
     min_rssi: float | None = None
     anomaly_count: int = 0
     match_status: str = "unresolved"
+    identity_source: str | None = None
+    identity_rule: str | None = None
+    identity_confidence: int = 0
+    identity_reason: str | None = None
 
 
 class MeshApStatisticsPageDTO(ApiModel):

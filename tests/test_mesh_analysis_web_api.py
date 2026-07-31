@@ -5,12 +5,14 @@ import io
 import sqlite3
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 
 from netconsole.backend.api.main import create_app
 from netconsole.backend.api.mesh_analysis_router import router as mesh_analysis_router
+from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 from netconsole.models.api.rail_transit_base_data import VehicleMrDTO, VehicleMrPageDTO
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
 from tests.mesh_analysis_test_support import EmptyBaseQuery, create_mesh_analysis_fixture
@@ -131,6 +133,7 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
     generated_report_paths = post_paths | {
         "/rail-transit/mesh-analysis/report-artifacts/{artifact_id}/download",
         "/rail-transit/mesh-analysis/sessions/{session_id}/link-details/export",
+        "/rail-transit/mesh-analysis/sources/{source_id}",
     }
     forbidden = ("analyze", "reparse", "export", "report", "delete", "start", "stop")
     assert not any(
@@ -138,6 +141,57 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
         for route in routes
         if route.path not in generated_report_paths
     )
+
+
+def test_mesh_source_delete_api_submits_confirmed_scope_to_application_service(
+    tmp_path: Path,
+) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
+    calls: list[dict[str, object]] = []
+
+    def start_mesh_source_delete(
+        site_id: str,
+        source_id: str,
+        **scope: object,
+    ) -> RailTransitTaskDTO:
+        calls.append({"site_id": site_id, "source_id": source_id, **scope})
+        return RailTransitTaskDTO(
+            task_id="mesh-delete-api",
+            status="PENDING",
+            action="mesh_analysis_source_delete",
+        )
+
+    app.state.rail_transit_web_application_service = SimpleNamespace(
+        start_mesh_source_delete=start_mesh_source_delete,
+    )
+
+    with TestClient(app) as client:
+        response = client.request(
+            "DELETE",
+            f"/api/rail-transit/mesh-analysis/sources/{quote(session_id, safe='')}",
+            json={
+                "delete_raw_archive": True,
+                "delete_parsed_data": True,
+                "delete_generated_reports": True,
+                "explicit_confirmation": True,
+            },
+        )
+
+    assert response.status_code == 202
+    assert response.json()["task_id"] == "mesh-delete-api"
+    assert calls == [
+        {
+            "site_id": "demo",
+            "source_id": session_id,
+            "delete_raw_archive": True,
+            "delete_parsed_data": True,
+            "delete_generated_reports": True,
+            "explicit_confirmation": True,
+        }
+    ]
 
 
 def test_mesh_profile_api_lists_persisted_profiles_and_creates_real_profile(tmp_path: Path) -> None:

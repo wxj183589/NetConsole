@@ -110,16 +110,10 @@ class MeshCatalogIndexService:
                 with closing(query._connect_readonly(index_db)) as conn:
                     if not query._table_exists(conn, "source_files"):
                         continue
-                    columns = query._table_columns(conn, "source_files")
-                    where = (
-                        "WHERE COALESCE(parsed_deleted_at, '') = ''"
-                        if "parsed_deleted_at" in columns
-                        else ""
-                    )
                     rows = [
                         dict(row)
                         for row in conn.execute(
-                            f"SELECT * FROM source_files {where} ORDER BY id"
+                            "SELECT * FROM source_files ORDER BY id"
                         )
                     ]
             except sqlite3.Error:

@@ -170,6 +170,48 @@ class MeshSourceIndexRepository:
                 [*(snapshot.get(field) for field in fields), int(source_file_id)],
             )
 
+    def mark_parsed_deleted(self, source_file_id: int) -> None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT deleted_at FROM source_files WHERE id = ?",
+                (int(source_file_id),),
+            ).fetchone()
+            if row is None:
+                raise ValueError("MESH 来源不存在")
+            status = "all_deleted" if str(row["deleted_at"] or "") else "parsed_deleted"
+            connection.execute(
+                """
+                UPDATE source_files
+                SET file_status = ?, parsed_deleted_at = datetime('now'),
+                    parsed_delete_error = '', parsed_db_size = 0
+                WHERE id = ?
+                """,
+                (status, int(source_file_id)),
+            )
+
+    def delete_source_file(self, source_file_id: int) -> dict[str, object] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM source_files WHERE id = ?",
+                (int(source_file_id),),
+            ).fetchone()
+            if row is None:
+                return None
+            connection.execute("DELETE FROM source_files WHERE id = ?", (int(source_file_id),))
+            return dict(row)
+
+    def restore_source_file(self, row: dict[str, object]) -> None:
+        with self._connect() as connection:
+            columns = [
+                str(item[1])
+                for item in connection.execute("PRAGMA table_info(source_files)").fetchall()
+            ]
+            names = [name for name in columns if name in row]
+            connection.execute(
+                f"INSERT OR REPLACE INTO source_files ({', '.join(names)}) VALUES ({', '.join('?' for _ in names)})",
+                [row[name] for name in names],
+            )
+
     def aggregate_summary(self) -> dict[str, object]:
         rows = self.list_source_files()
         link_count = 0

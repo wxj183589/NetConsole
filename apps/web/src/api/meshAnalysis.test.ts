@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
-  applyMeshBundleImport, createMeshProfile, deleteMeshArtifact, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisParamsTemplate,
+  applyMeshBundleImport, createMeshProfile, deleteMeshArtifact, deleteMeshSource, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisParamsTemplate,
   getMeshAnalysisSession, getMeshCounterDeltas, getMeshPeerSegmentChart, getMeshRateSeries, getMeshTracksideSignalChart, listMeshActiveBuildOrder, listMeshProfiles, listMeshSwitchEvents,
   previewMeshBundle, saveMeshAnalysisParams,
 } from './meshAnalysis'
@@ -153,5 +153,25 @@ describe('Mesh profile API', () => {
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ params })
     expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: 'DELETE' })
     expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ explicit_confirmation: true })
+  })
+
+  it('submits the explicit MESH source delete scope', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ task_id: 'delete-1' }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await deleteMeshSource('mr-id:7', {
+      deleteRawArchive: true,
+      deleteParsedData: true,
+      deleteGeneratedReports: true,
+    })
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/rail-transit/mesh-analysis/sources/mr-id%3A7')
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'DELETE' })
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      delete_raw_archive: true,
+      delete_parsed_data: true,
+      delete_generated_reports: true,
+      explicit_confirmation: true,
+    })
   })
 })

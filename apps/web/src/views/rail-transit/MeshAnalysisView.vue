@@ -55,7 +55,7 @@ import { useAvailablePanelHeight } from '../../composables/useAvailablePanelHeig
 import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import { ApiRequestError } from '../../api/client'
 import {
-  applyMeshBundleImport, createMeshProfile, deleteMeshArtifact, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisOverview, getMeshAnalysisParamsTemplate, getMeshAnalysisSession, getMeshImportContext, getMeshPeerSegmentChart, getMeshRawTail, getMeshTracksideSignalChart,
+  applyMeshBundleImport, createMeshProfile, deleteMeshArtifact, deleteMeshSource, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisOverview, getMeshAnalysisParamsTemplate, getMeshAnalysisSession, getMeshImportContext, getMeshPeerSegmentChart, getMeshRawTail, getMeshTracksideSignalChart,
   listMeshActiveBuildOrder,
   listMeshArtifacts, listMeshLinks, listMeshSwitchEvents, meshArtifactDownloadRequest, previewMeshImport, rebuildMeshAnalysis,
   prepareMeshImportContext, saveMeshAnalysisParams,
@@ -111,6 +111,11 @@ const summary = ref<MeshAnalysisSummary | null>(null)
 const sessions = ref<MeshAnalysisSession[]>([])
 const total = ref(0)
 const selected = ref<MeshSessionDetail | null>(null)
+const selectedDeleteSessions = ref<MeshAnalysisSession[]>([])
+const sourceDeleteVisible = ref(false)
+const sourceDeleteMode = ref<'parsed' | 'all'>('parsed')
+const sourceDeleteSubmitting = ref(false)
+const sourceDeleteTargets = ref<Array<{ session: MeshAnalysisSession; source: MeshRawSource }>>([])
 const buildOrders = ref<MeshActiveBuildOrder[]>([])
 const buildOrderVisits = ref<MeshActiveBuildOrder[]>([])
 const buildOrderTotal = ref(0)
@@ -365,6 +370,7 @@ const availableChartRadios = computed(() => [...new Set([
 ])].sort((left, right) => left - right))
 const selectedVisitValue = computed(() => allPeerVisits.value ? 'all-visits' : selectedSegment.value?.anchor_link_id)
 const sessionColumns: NcTableColumn<MeshAnalysisSession>[] = [
+  { key: 'selection', label: '', type: 'selection', width: 48, fixed: 'left', hideable: false },
   { key: 'analysis_time', label: '分析时间', valueType: 'datetime', widthMode: 'content', minWidth: 215 },
   { key: 'train_name', label: '列车', minWidth: 100 },
   { key: 'mr_name', label: 'MR', valueType: 'name', minWidth: 145 },
@@ -378,18 +384,21 @@ const sessionColumns: NcTableColumn<MeshAnalysisSession>[] = [
   { key: 'data_integrity', label: '完整性', valueType: 'status', width: 95 },
   { key: 'warnings', label: '告警', valueType: 'status', width: 80 },
   { key: 'report_count', label: '报告', valueType: 'number', width: 75 },
-  { key: 'actions', label: '操作', valueType: 'actions', width: 90, fixed: 'right', hideable: false },
+  { key: 'actions', label: '操作', valueType: 'actions', width: 145, fixed: 'right', hideable: false },
 ]
 const buildOrderColumns: NcTableColumn<MeshActiveBuildOrder>[] = [
   { key: 'sequence', label: '序号', valueType: 'number', width: 75, fixed: 'left', hideable: false },
   { key: 'local_radio', label: 'Radio', valueType: 'number', width: 80, fixed: 'left', hideable: false },
-  { key: 'active_peer_mac', label: 'Active PeerMac', valueType: 'mac', minWidth: 150, fixed: 'left', hideable: false },
-  { key: 'peer_ap_name', label: '当前 PEER AP 名称', valueType: 'name', minWidth: 175, hideable: false },
-  { key: 'peer_ap_mac', label: 'AP MAC', valueType: 'mac', minWidth: 145 },
+  { key: 'peer_mac_raw', label: '原始 Peer MAC', valueType: 'mac', minWidth: 150, fixed: 'left', hideable: false, displayValue: (row) => row.peer_mac_raw || row.active_peer_mac },
+  { key: 'active_peer_mac', label: '规范 Peer MAC', valueType: 'mac', minWidth: 150, visible: false },
+  { key: 'peer_ap_name', label: '解析 AP 名称', valueType: 'name', minWidth: 175, hideable: false, displayValue: (row) => row.peer_ap_name || '未关联' },
+  { key: 'peer_ap_mac', label: '物理 AP MAC', valueType: 'mac', minWidth: 145 },
   { key: 'station', label: '归属站点', minWidth: 120 },
   { key: 'section', label: '归属区间', minWidth: 145 },
   { key: 'peer_radio', label: 'Peer Radio', minWidth: 105 },
   { key: 'peer_radio_mac', label: 'Peer Radio MAC', valueType: 'mac', minWidth: 145 },
+  { key: 'identity_source', label: '身份来源', minWidth: 155 },
+  { key: 'identity_rule', label: '匹配规则', minWidth: 175, visible: false },
   { key: 'build_start_time', label: '建链开始时间', valueType: 'datetime', minWidth: 215, sortable: 'custom', hideable: false },
   { key: 'build_end_time', label: '建链结束时间', valueType: 'datetime', minWidth: 215, hideable: false },
   { key: 'main_link_duration_seconds', label: '主链路持续(s)', valueType: 'duration', minWidth: 125, hideable: false },
@@ -426,15 +435,19 @@ const linkColumns: NcTableColumn<MeshLinkDetail>[] = [
   { key: 'timestamp_tag', label: '采样标识', width: 120 },
   { key: 'local_radio', label: 'Radio', valueType: 'number', width: 80, hideable: false },
   { key: 'link_role', label: '状态', width: 90, hideable: false },
-  { key: 'peer_mac', label: 'PeerMac', valueType: 'mac', minWidth: 145, hideable: false },
-  { key: 'peer_ap_name', label: '当前 PEER AP 名称', valueType: 'name', minWidth: 175 },
+  { key: 'peer_mac_raw', label: '原始 Peer MAC', valueType: 'mac', minWidth: 145, hideable: false, displayValue: (row) => row.peer_mac_raw || row.peer_mac },
+  { key: 'peer_mac', label: '规范 Peer MAC', valueType: 'mac', minWidth: 145, visible: false },
+  { key: 'peer_ap_name', label: '解析 AP 名称', valueType: 'name', minWidth: 175, displayValue: (row) => row.peer_ap_name || '未关联' },
   { key: 'local_rssi_db', label: 'MR 侧 RSSI 差值', valueType: 'number', minWidth: 130 },
   { key: 'peer_rssi_db', label: 'Peer 侧 RSSI 差值', valueType: 'number', minWidth: 140 },
-  { key: 'peer_ap_mac', label: 'AP MAC', valueType: 'mac', minWidth: 145 },
+  { key: 'peer_ap_mac', label: '物理 AP MAC', valueType: 'mac', minWidth: 145 },
   { key: 'station', label: '归属站点', width: 130 },
   { key: 'section', label: '归属区间', width: 190 },
   { key: 'peer_radio', label: 'PEER Radio', minWidth: 105 },
   { key: 'peer_radio_mac', label: 'Peer Radio MAC', valueType: 'mac', minWidth: 145 },
+  { key: 'identity_source', label: '身份来源', minWidth: 155 },
+  { key: 'identity_rule', label: '匹配规则', minWidth: 175, visible: false },
+  { key: 'identity_reason', label: '身份说明', align: 'left', alignmentReason: 'long-text', minWidth: 260, visible: false },
   { key: 'establish_time', label: '建链时间', valueType: 'datetime', width: 210 },
   { key: 'duration_text', label: '链路时长', width: 140 },
   { key: 'link_count', label: 'LinkCnt', valueType: 'number', width: 90 },
@@ -2049,6 +2062,18 @@ async function afterTask(): Promise<void> {
   const preserveCachedView = preserveCachedViewOnTaskCompletion
   preserveCachedViewOnTaskCompletion = false
   await refreshOverview()
+  const resultSummary = task.value.result_summary || {}
+  if (task.value.action === 'mesh_analysis_source_delete') {
+    const deletedSessionId = String(resultSummary.session_id || '')
+    if (selected.value?.session.session_id === deletedSessionId) {
+      if (resultSummary.delete_raw_archive === true) {
+        await closeSelectedMeshSession()
+      } else {
+        await requestMeshAnalysisSession(deletedSessionId, { force: true })
+      }
+    }
+    return
+  }
   if (['mesh_log_import', 'mesh_bundle_import', 'mesh_schema_rebuild', 'mesh_source_rebuild'].includes(task.value.action)) await loadProfiles()
   if (preserveCachedView) {
     if (
@@ -2064,8 +2089,8 @@ async function afterTask(): Promise<void> {
     }
     return
   }
-  const created = Array.isArray(task.value.result_summary.created_session_ids)
-    ? task.value.result_summary.created_session_ids.filter((item): item is string => typeof item === 'string')
+  const created = Array.isArray(resultSummary.created_session_ids)
+    ? resultSummary.created_session_ids.filter((item): item is string => typeof item === 'string')
     : []
   const targetId = created[0]
   if (targetId) {
@@ -2120,6 +2145,91 @@ async function deleteArtifact(artifact: MeshArtifact): Promise<void> {
   } catch (reason) {
     ElMessage.error(reason instanceof Error ? reason.message : '分析报告删除失败')
   }
+}
+
+async function prepareSourceDelete(rows: MeshAnalysisSession[]): Promise<void> {
+  const unique = [...new Map(rows.map((row) => [row.session_id, row])).values()]
+  if (!unique.length || sourceDeleteSubmitting.value) return
+  sourceDeleteSubmitting.value = true
+  try {
+    const details = await Promise.all(unique.map(async (session) => {
+      const current = selected.value?.session.session_id === session.session_id
+        ? selected.value
+        : await getMeshAnalysisSession(session.session_id)
+      const source = current?.sources[0]
+      if (!source) throw new Error(`来源“${session.original_filename}”缺少可删除的归档记录`)
+      return { session, source }
+    }))
+    sourceDeleteTargets.value = details
+    sourceDeleteMode.value = 'parsed'
+    sourceDeleteVisible.value = true
+  } catch (reason) {
+    ElMessage.error(reason instanceof Error ? reason.message : 'MESH 来源删除范围加载失败')
+  } finally {
+    sourceDeleteSubmitting.value = false
+  }
+}
+
+async function confirmSourceDelete(): Promise<void> {
+  if (!sourceDeleteTargets.value.length || sourceDeleteSubmitting.value) return
+  const deleteRawArchive = sourceDeleteMode.value === 'all'
+  const names = sourceDeleteTargets.value.map(({ session }) => session.original_filename).join('、')
+  const accepted = await confirm({
+    type: 'DESTRUCTIVE',
+    title: deleteRawArchive ? '确认删除归档及全部分析结果' : '确认仅删除解析结果',
+    message: deleteRawArchive
+      ? `将删除 ${sourceDeleteTargets.value.length} 个 NetConsole 归档来源、解析数据库、映射缓存和关联报告。\n\n${names}\n\n不会删除用户最初选择的外部文件；完成后同一日志可重新导入。`
+      : `将删除 ${sourceDeleteTargets.value.length} 个来源的解析数据库和映射缓存，归档原始日志保持不变。\n\n${names}\n\n完成后可直接重新解析。`,
+    confirmText: deleteRawArchive ? '确认全部删除' : '确认删除解析结果',
+  })
+  if (!accepted) return
+  sourceDeleteSubmitting.value = true
+  try {
+    const created = await Promise.all(sourceDeleteTargets.value.map(({ session }) => deleteMeshSource(
+      session.session_id,
+      {
+        deleteRawArchive,
+        deleteParsedData: true,
+        deleteGeneratedReports: true,
+      },
+    )))
+    const tracked = created.at(-1) || null
+    sourceDeleteVisible.value = false
+    selectedDeleteSessions.value = []
+    rememberTask(tracked)
+    pollTask()
+    if (tracked) void openTaskWindow(tracked.task_id)
+    ElMessage.success(`已提交 ${created.length} 个 MESH 来源删除任务`)
+  } catch (reason) {
+    ElMessage.error(reason instanceof Error ? reason.message : 'MESH 来源删除任务提交失败')
+  } finally {
+    sourceDeleteSubmitting.value = false
+  }
+}
+
+async function closeSelectedMeshSession(): Promise<void> {
+  activeSessionOpenController?.abort()
+  detailGeneration += 1
+  releaseTracksideResources()
+  selected.value = null
+  buildOrders.value = []
+  buildOrderVisits.value = []
+  buildOrderTotal.value = 0
+  links.value = []
+  linkTotal.value = 0
+  switches.value = []
+  rssiActivePath.value = null
+  busyActivePath.value = null
+  busyPeerPath.value = null
+  artifacts.value = []
+  rawTail.value = null
+  const currentRoute = router.currentRoute?.value
+  if (currentRoute?.query.session_id) {
+    const query = { ...currentRoute.query }
+    delete query.session_id
+    await router.replace({ name: 'mesh-analysis', query })
+  }
+  requestWorkspaceTabTitle('MR 原始 MESH 日志分析')
 }
 async function startBundleImport(): Promise<void> {
   if (!bundlePreview.value || !bundleCanApply.value) return
@@ -2250,7 +2360,7 @@ async function recoverTask(): Promise<void> {
   try {
     const saved = localStorage.getItem(taskStorageKey) || ''
     const rows = await recoverRailTransitTasks()
-    const meshRows = rows.filter((item) => ['mesh_log_import', 'mesh_bundle_import', 'mesh_schema_rebuild', 'mesh_source_rebuild', 'mesh_analysis_report', 'mesh_link_detail_export'].includes(item.action))
+    const meshRows = rows.filter((item) => ['mesh_log_import', 'mesh_bundle_import', 'mesh_schema_rebuild', 'mesh_source_rebuild', 'mesh_analysis_source_delete', 'mesh_analysis_report', 'mesh_link_detail_export'].includes(item.action))
     const savedTask = meshRows.find((item) => item.task_id === saved && restorableTaskStates.has(item.status))
     rememberTask(savedTask || meshRows.find((item) => restorableTaskStates.has(item.status)) || null)
     pollTask()
@@ -2430,6 +2540,29 @@ function exportTimestamp(now = new Date()): string {
       <template #footer><el-button @click="linkExportVisible = false">取消</el-button><el-button @click="saveSiteAnalysisParams(linkExportParams)">保存为局点默认</el-button><el-button type="primary" :loading="taskLoading" @click="exportLinkDetails">开始导出</el-button></template>
     </el-dialog>
 
+    <el-dialog v-model="sourceDeleteVisible" title="删除 MESH 来源" width="min(760px, 94vw)" :close-on-click-modal="false">
+      <div class="source-delete-list">
+        <div v-for="target in sourceDeleteTargets" :key="target.session.session_id" class="source-delete-item">
+          <strong>{{ target.session.original_filename }}</strong>
+          <span>{{ target.session.train_name || '未知列车' }} · {{ target.session.mr_name }}</span>
+          <span>归档大小 {{ formatBytes(target.source.size_bytes) }} · 解析记录 {{ display(target.session.link_record_count) }} · 报告 {{ target.session.report_count }}</span>
+        </div>
+      </div>
+      <el-radio-group v-model="sourceDeleteMode" class="source-delete-options">
+        <el-radio value="parsed">
+          <span><strong>仅删除解析结果</strong><small>保留 NetConsole 归档原始日志，删除解析数据库、映射和缓存，随后可重新解析。</small></span>
+        </el-radio>
+        <el-radio value="all">
+          <span><strong>删除归档原始文件及全部解析结果</strong><small>同时删除归档副本、重复导入指纹和关联报告；不会删除用户最初选择的外部文件。</small></span>
+        </el-radio>
+      </el-radio-group>
+      <el-alert title="删除任务会在任务中心执行；有导入、解析、重建或报告任务运行时将拒绝提交。" type="warning" :closable="false" show-icon />
+      <template #footer>
+        <el-button :disabled="sourceDeleteSubmitting" @click="sourceDeleteVisible = false">取消</el-button>
+        <el-button type="danger" :icon="Delete" :loading="sourceDeleteSubmitting" @click="confirmSourceDelete">继续并二次确认</el-button>
+      </template>
+    </el-dialog>
+
     <section class="content-card sessions-panel">
       <button class="sessions-toggle" type="button" :aria-expanded="sessionDetailsExpanded" @click="toggleSessionDetails">
         <el-icon><ArrowDown v-if="sessionDetailsExpanded" /><ArrowRight v-else /></el-icon>
@@ -2463,10 +2596,11 @@ function exportTimestamp(now = new Date()): string {
           <el-select v-model="filters.mr_role" clearable placeholder="MR 角色"><el-option label="CT" value="CT" /><el-option label="TC" value="TC" /><el-option label="CW" value="CW" /></el-select>
           <el-select v-model="filters.has_warning" clearable placeholder="数据告警"><el-option label="有告警" value="true" /><el-option label="无告警" value="false" /></el-select>
           <el-button type="primary" @click="filters.page = 1; refreshOverview()">查询</el-button>
+          <el-button type="danger" plain :icon="Delete" :loading="sourceDeleteSubmitting" :disabled="!selectedDeleteSessions.length" @click="prepareSourceDelete(selectedDeleteSessions)">删除选中</el-button>
         </div>
-        <NcDataTable table-id="mesh-analysis-sessions:v2" route-key="/rail-transit/mesh-analysis" :data="sessions" :columns="sessionColumns" border height="340" empty-text="暂无已持久化 Mesh 分析来源">
+        <NcDataTable table-id="mesh-analysis-sessions:v3" route-key="/rail-transit/mesh-analysis" :data="sessions" :columns="sessionColumns" row-key="session_id" border height="340" empty-text="暂无已持久化 Mesh 分析来源" @selection-change="(rows: MeshAnalysisSession[]) => selectedDeleteSessions = rows">
           <template #cell-warnings="{ row }"><el-tag :type="row.warning_count ? 'warning' : 'success'">{{ row.warning_count }}</el-tag></template>
-          <template #cell-actions="{ row }"><el-button link type="primary" :loading="openingSessionId === row.session_id" @click.stop="openMeshAnalysisSession(row)">查看</el-button></template>
+          <template #cell-actions="{ row }"><el-button link type="primary" :loading="openingSessionId === row.session_id" @click.stop="openMeshAnalysisSession(row)">查看</el-button><el-button link type="danger" :icon="Delete" :loading="sourceDeleteSubmitting" @click.stop="prepareSourceDelete([row])">删除</el-button></template>
         </NcDataTable>
         <div class="pagination"><span>共 {{ total }} 个来源</span><el-pagination :current-page="filters.page" :page-size="filters.page_size" layout="prev, pager, next" :total="total" @current-change="(page: number) => { filters.page = page; refreshOverview() }" /></div>
       </template>
@@ -2477,6 +2611,7 @@ function exportTimestamp(now = new Date()): string {
         <div><h2>{{ selected.session.mr_name }}</h2><p>{{ selected.session.original_filename }} · {{ selected.session.first_sample_time }} — {{ selected.session.last_sample_time }}</p></div>
         <div class="jump-actions">
           <el-button :loading="taskLoading" :disabled="!selectedSource || ['raw_missing','task_running','unsupported'].includes(selectedSource.rebuild_capability) || !isFeatureEnabled('web.mesh_analysis_import')" @click="rebuildSelected">{{ selectedSource?.rebuild_capability === 'recoverable_from_bundle' ? '恢复原始日志并重新解析' : selected.session.parsed_status === 'ready' ? '重新解析当前日志' : '升级解析结果' }}</el-button>
+          <el-button type="danger" plain :icon="Delete" :loading="sourceDeleteSubmitting" @click="prepareSourceDelete([selected.session])">删除当前来源</el-button>
           <el-button @click="openTaskWindow()">打开任务中心</el-button>
           <el-button @click="router.push({ path: '/rail-transit/train-communication', query: { train: selected?.session.train_name } })">在线列车通信</el-button>
           <el-button @click="router.push('/rail-transit/online-mr')">Online MR</el-button>
@@ -2697,7 +2832,8 @@ function exportTimestamp(now = new Date()): string {
 
 <style scoped>
 .report-params-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 14px}
-@media(max-width:700px){.report-params-grid{grid-template-columns:1fr}}
+.source-delete-list{display:flex;max-height:260px;flex-direction:column;gap:8px;overflow:auto}.source-delete-item{display:grid;grid-template-columns:minmax(180px,1.5fr) minmax(130px,1fr) minmax(260px,1.5fr);gap:12px;padding:9px 0;border-bottom:1px solid var(--nc-border-light)}.source-delete-item span{color:var(--nc-text-secondary)}.source-delete-options{display:flex;margin:16px 0;flex-direction:column;align-items:stretch;gap:10px}.source-delete-options :deep(.el-radio){height:auto;margin-right:0;padding:10px;border:1px solid var(--nc-border-light);border-radius:6px;white-space:normal}.source-delete-options :deep(.el-radio__label span){display:flex;flex-direction:column;gap:4px}.source-delete-options small{color:var(--nc-text-secondary);line-height:1.5}
+@media(max-width:700px){.report-params-grid,.source-delete-item{grid-template-columns:1fr}}
 .selected-switch{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:8px 0;padding:8px 12px;border:1px solid var(--nc-border-light);border-radius:6px;background:var(--nc-bg-page)}
 .rssi-layout-switch{display:inline-flex;align-items:center}.rssi-layout-switch .el-button{margin-left:0;border-radius:0}.rssi-layout-switch .el-button:first-child{border-radius:6px 0 0 6px}.rssi-layout-switch .el-button:last-child{border-radius:0 6px 6px 0}.rssi-layout-switch .el-button+.el-button{margin-left:-1px}.rssi-layout-switch .el-button.is-current{position:relative;z-index:1;color:var(--nc-primary);border-color:var(--nc-primary);background:color-mix(in srgb,var(--nc-primary) 12%,var(--nc-bg-card))}
 .rssi-workspace-host{width:100%;min-width:0;min-height:240px;overflow:hidden}.rssi-pane-content{display:flex;width:100%;height:100%;min-width:0;min-height:0;flex-direction:column;overflow-y:auto}.rssi-pane-heading{display:flex;min-height:36px;flex:none;align-items:center;justify-content:space-between;gap:12px;padding:2px 4px}.rssi-pane-heading h3{margin:0}.rssi-pane-alerts{max-height:104px;flex:none;overflow-y:auto}.rssi-pane-alerts:empty{display:none}.rssi-pane-summary{flex:none;flex-wrap:nowrap!important;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}.rssi-pane-summary span{flex:none;white-space:nowrap}.rssi-pane-chart-host{width:100%;min-width:0;min-height:240px;flex:1 0 240px}

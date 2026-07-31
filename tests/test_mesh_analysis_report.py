@@ -568,7 +568,9 @@ def test_analysis_parameter_rows_show_each_candidate_and_final_source():
     assert by_name["同物理 AP 双射频合并"]["effective_value"] is False
 
 
-def test_report_and_page_share_ap_location_snapshot_values(tmp_path: Path):
+def test_report_and_page_do_not_enrich_unresolved_peer_from_location_snapshot(
+    tmp_path: Path,
+):
     class BaseQuery:
         @staticmethod
         def list_aps(*_args, **_kwargs):
@@ -608,22 +610,29 @@ def test_report_and_page_share_ap_location_snapshot_values(tmp_path: Path):
     )
     report_row = report.active_build_order[0]
 
-    assert report_row["peer_ap_name"] == page_row.peer_ap_name == "轨旁AP-01"
-    assert report_row["peer_ap_mac"] == page_row.peer_ap_mac == "30f5-277a-5a2f"
-    assert report_row["station"] == page_row.station == "车站A"
-    assert report_row["section"] == page_row.section == "区间A-B"
-    assert report_row["mileage"] == page_row.mileage == "K12+300"
-    assert report_row["line_side"] == page_row.line_side == "上行"
+    assert report_row["peer_ap_name"] == ""
+    assert page_row.peer_ap_name is None
+    assert report_row["peer_ap_mac"] == ""
+    assert page_row.peer_ap_mac is None
+    assert report_row["station"] == ""
+    assert page_row.station is None
+    assert report_row["section"] == ""
+    assert page_row.section is None
+    assert report_row["mileage"] == ""
+    assert page_row.mileage is None
+    assert report_row["line_side"] == ""
+    assert page_row.line_side is None
+    assert report_row["identity_status"] == page_row.identity_status == "unresolved"
     for rows in (
         report.link_details,
         report.active_path_rssi,
         report.active_path_busy,
         report.peer_visit_statistics,
     ):
-        assert rows[0]["station"] == "车站A"
-        assert rows[0]["section"] == "区间A-B"
-        assert rows[0]["mileage"] == "K12+300"
-        assert rows[0]["line_side"] == "上行"
+        assert rows[0]["station"] == ""
+        assert rows[0]["section"] == ""
+        assert rows[0]["mileage"] == ""
+        assert rows[0]["line_side"] == ""
 
 
 def test_excel_report_emits_row_progress_for_large_sheets(tmp_path):

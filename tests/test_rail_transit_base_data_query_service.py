@@ -59,7 +59,7 @@ def test_base_data_queries_relations_and_quality_are_read_only(tmp_path: Path) -
     assert _fingerprint(db_path) == before
 
 
-def test_data_quality_reports_ac_base_identity_conflict_without_blocking(
+def test_same_name_different_mac_does_not_report_identity_conflict(
     tmp_path: Path,
 ) -> None:
     paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
@@ -68,7 +68,8 @@ def test_data_quality_reports_ac_base_identity_conflict_without_blocking(
         connection.execute(
             """
             UPDATE ac_fit_ap_resources
-            SET ap_name = 'AP-Section',
+            SET ap_uuid = 'ap-new',
+                ap_name = 'AP-Section',
                 ap_mac = 'aabb-ccdd-eeff',
                 updated_at = '2026-07-31T00:00:00+00:00'
             WHERE ap_uuid = 'ap-offline'
@@ -81,18 +82,18 @@ def test_data_quality_reports_ac_base_identity_conflict_without_blocking(
         "demo",
         page_size=500,
     )
-    conflict = next(
+    section_ap = next(
         item
-        for item in issues.items
-        if item.code == "AP_IDENTITY_AC_BASE_CONFLICT"
-        and item.field_name == "mac"
+        for item in RailTransitBaseDataQueryService(paths)
+        .list_aps("demo", page_size=500)
+        .items
+        if item.name == "AP-Section"
     )
-
-    assert conflict.severity == "warning"
-    assert conflict.blocking is False
-    assert conflict.field_name == "mac"
-    assert conflict.original_value == "0000-0000-0002"
-    assert "aabb-ccdd-eeff" in conflict.message
+    assert not any(
+        item.code == "AP_IDENTITY_AC_BASE_CONFLICT"
+        and (item.entity_id == section_ap.id or item.entity_name == section_ap.name)
+        for item in issues.items
+    )
 
 
 def test_base_data_mac_mileage_filters_and_public_dto_have_no_secrets(tmp_path: Path) -> None:

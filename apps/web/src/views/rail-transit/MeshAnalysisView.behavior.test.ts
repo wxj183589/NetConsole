@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   getCounterDeltas: vi.fn(),
   listAnomalies: vi.fn(),
   exportDetails: vi.fn(),
+  deleteSource: vi.fn(),
   chartApplyViewport: vi.fn(),
   chartResetViewport: vi.fn(),
   chartResize: vi.fn(),
@@ -46,6 +47,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../api/meshAnalysis', () => ({
   applyMeshBundleImport: vi.fn(),
   createMeshProfile: mocks.createProfile,
+  deleteMeshSource: mocks.deleteSource,
   exportMeshLinkDetails: mocks.exportDetails,
   getMeshActivePathChart: mocks.getActivePath,
   getMeshAnalysisSession: mocks.getSession,
@@ -335,6 +337,16 @@ beforeEach(() => {
     include_standby: true,
   })
   mocks.exportDetails.mockResolvedValue({ action: 'mesh_link_detail_export', task_id: 'mesh-export-1', status: 'RUNNING' })
+  mocks.deleteSource.mockResolvedValue({
+    action: 'mesh_analysis_source_delete',
+    task_id: 'mesh-delete-1',
+    status: 'COMPLETED',
+    result_summary: {
+      session_id: 'session-delete',
+      delete_raw_archive: false,
+      delete_parsed_data: true,
+    },
+  })
 })
 
 afterEach(() => vi.unstubAllGlobals())
@@ -963,9 +975,10 @@ describe('Mesh analysis detail behavior', () => {
     const resolvedLinkColumns = linkTable.props('columns') as Array<{ key: string; fixed?: string; width?: number }>
     const linkKeys = resolvedLinkColumns.map((column) => column.key)
     expect(linkKeys.slice(0, 10)).toEqual([
-      'record_id', 'timestamp', 'timestamp_tag', 'local_radio', 'link_role', 'peer_mac', 'peer_ap_name',
-      'local_rssi_db', 'peer_rssi_db', 'peer_ap_mac',
+      'record_id', 'timestamp', 'timestamp_tag', 'local_radio', 'link_role', 'peer_mac_raw', 'peer_mac',
+      'peer_ap_name', 'local_rssi_db', 'peer_rssi_db',
     ])
+    expect(linkKeys).toContain('peer_ap_mac')
     expect(resolvedLinkColumns.filter((column) => column.fixed === 'left').map((column) => column.key)).toEqual(['record_id'])
     expect(resolvedLinkColumns.find((column) => column.key === 'section')?.width).toBe(190)
     const switchTable = tables.find((table) => table.props('tableId') === 'mesh-analysis-switch-events:v3')!
@@ -998,6 +1011,55 @@ describe('Mesh analysis detail behavior', () => {
 
     expect(mocks.exportDetails).toHaveBeenCalledWith('session-1', 1, expect.objectContaining({ link_time_window: 4000, link_hold_rssi: 22, link_establish_threshold: 4 }))
     expect(mocks.routerPush).toHaveBeenCalledWith({ name: 'tasks', query: { module: 'rail', task_id: 'mesh-export-1' } })
+    wrapper.unmount()
+  })
+
+  it('submits parsed-only deletion from a source row after the second confirmation', async () => {
+    const session = {
+      session_id: 'session-delete',
+      mr_name: '列车34-MR-CW',
+      train_name: '列车34',
+      original_filename: '34-CW.log',
+      first_sample_time: '',
+      last_sample_time: '',
+      parsed_status: 'ready',
+      warning_count: 0,
+      report_count: 1,
+      link_record_count: 974,
+    }
+    const source = {
+      source_file_id: 7,
+      source_action_id: 'source-delete-1',
+      source_id: 'source-delete-1',
+      size_bytes: 1024,
+      exists: true,
+      rebuild_capability: 'ready',
+    }
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue({
+      session,
+      analysis_params: {},
+      available_radios: [1],
+      warnings: [],
+      sources: [source],
+    })
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === '删除')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('仅删除解析结果')
+    expect(wrapper.text()).toContain('解析记录 974')
+
+    await wrapper.findAll('button').find((button) => button.text() === '继续并二次确认')!.trigger('click')
+    await flushPromises()
+
+    expect(mocks.deleteSource).toHaveBeenCalledWith('session-delete', {
+      deleteRawArchive: false,
+      deleteParsedData: true,
+      deleteGeneratedReports: true,
+    })
+    expect(mocks.routerPush).toHaveBeenCalledWith({ name: 'tasks', query: { module: 'rail', task_id: 'mesh-delete-1' } })
     wrapper.unmount()
   })
 

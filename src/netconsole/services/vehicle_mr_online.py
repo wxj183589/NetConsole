@@ -684,7 +684,7 @@ def _find_previous_by_train_no(previous: dict[str, VehicleMrTrainState], train_n
 def match_ap(ap_name: str, ap_lookup: dict[str, object], local_mac: str = "") -> MatchedAp | None:
     query_service = ap_lookup.get(_AP_IDENTITY_QUERY_KEY)
     if isinstance(query_service, ApIdentityQueryService):
-        match = query_service.resolve_mac(local_mac, peer_name=ap_name)
+        match = query_service.resolve_peer_mac(local_mac, peer_name=ap_name)
         if match.matched:
             return MatchedAp(
                 ap_name=match.effective_ap_name or ap_name,
@@ -694,17 +694,6 @@ def match_ap(ap_name: str, ap_lookup: dict[str, object], local_mac: str = "") ->
                 ap_mac=match.effective_ap_mac,
                 station_source=match.matched_source,
             )
-    for mac in (local_mac,):
-        normalized = normalize_mac(mac)
-        if not normalized:
-            continue
-        value = ap_lookup.get(f"mac:{normalized}") or ap_lookup.get(normalized)
-        if isinstance(value, MatchedAp):
-            return value
-    if not normalize_mac(local_mac):
-        value = ap_lookup.get(f"name:{str(ap_name or '').strip().casefold()}")
-        if isinstance(value, MatchedAp):
-            return value
     return None
 
 

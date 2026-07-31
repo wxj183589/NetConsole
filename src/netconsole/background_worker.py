@@ -12,7 +12,11 @@ from typing import Any
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.job_events import log_event, progress_event
 from netconsole.services.job_center.job_runner import run_job as run_center_job
-from netconsole.services.job_center.worker_protocol import configure_standard_streams, write_event
+from netconsole.services.job_center.worker_protocol import (
+    WorkerProtocolFrameTooLarge,
+    configure_standard_streams,
+    write_event,
+)
 from netconsole.services.job_center.sensitive_bootstrap import (
     SensitiveBootstrap,
     SensitiveBootstrapError,
@@ -45,7 +49,50 @@ def run_job(job: BackgroundJob, sensitive_bootstrap: SensitiveBootstrap | None =
             should_cancel=lambda: _should_cancel(job),
             sensitive_bootstrap=sensitive_bootstrap,
         )
-    _emit(result.to_event())
+    try:
+        _emit(result.to_event())
+    except WorkerProtocolFrameTooLarge as exc:
+        diagnostics.write(
+            f"worker_protocol_frame_too_large frame_bytes={exc.frame_bytes} "
+            f"max_frame_bytes={exc.max_frame_bytes}\n"
+        )
+        try:
+            _emit(
+                {
+                    "type": "error",
+                    "job_id": job.job_id,
+                    "stage": "worker_protocol",
+                    "message": "Worker 终态结果超过协议帧限制。",
+                    "error": "worker_protocol_frame_too_large",
+                    "error_code": "WORKER_PROTOCOL_CORRUPTED",
+                    "result": {
+                        "error_code": "WORKER_PROTOCOL_CORRUPTED",
+                        "text_integrity_reason": "worker_protocol_frame_too_large",
+                        "frame_bytes": exc.frame_bytes,
+                        "max_frame_bytes": exc.max_frame_bytes,
+                        "worker_exit_code": 1,
+                        "data_persisted": (
+                            result.result.get("data_persisted")
+                            if isinstance(result.result, dict)
+                            else None
+                        ),
+                    },
+                    "reason": "worker_protocol_frame_too_large",
+                    "stream": "stdout",
+                    "frame_bytes": exc.frame_bytes,
+                    "max_frame_bytes": exc.max_frame_bytes,
+                    "worker_exit_code": 1,
+                    "data_persisted": (
+                        result.result.get("data_persisted")
+                        if isinstance(result.result, dict)
+                        else None
+                    ),
+                    "cancelled": False,
+                }
+            )
+        except WorkerProtocolFrameTooLarge:
+            pass
+        return 1
     if result.ok:
         return 0
     if result.cancelled:

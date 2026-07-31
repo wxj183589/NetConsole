@@ -41,7 +41,9 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 
 Worker JSONL 是本程序内部协议，不使用 Windows 当前代码页。Worker 使用 `ensure_ascii=True` 序列化后直接向 `stdout.buffer` 写 ASCII bytes；Electron 启动 Backend、Backend 启动 Worker 时均默认设置 `PYTHONUTF8=1` 和 `PYTHONIOENCODING=utf-8`，Worker 入口同时把标准流重配为 UTF-8。环境变量是附加保护，二进制协议才是代码页无关的主保证。
 
-`TaskRuntime` 对 stdout/stderr 各维护 strict 增量 UTF-8 decoder，汉字即使跨任意 chunk 也能恢复；非法 bytes、无效 JSON、协议 schema 错误、超长 frame、未知消息类型或当前 Worker 事件中的 U+FFFD 不执行 `errors="replace"`，也不写入损坏事件。首次 fatal 协议错误立即把任务持久化为 `FAILED / WORKER_PROTOCOL_CORRUPTED`，停止接受该 Worker 的后续事件并注销 Runtime；Adapter 在独立线程执行有界 `terminate -> kill -> Windows Job Object close`，避免 stdout reader 等待自身退出，同时释放任务资源占用并清理 Job/cancel 临时文件。终止、进程退出、取消和超时并发时仍由幂等 finalize 保证唯一终态。相关日志只记录结构化原因、task id 和生命周期动作，不包含原始协议 payload。
+`TaskRuntime` 对 stdout/stderr 各维护 strict 增量 UTF-8 decoder，汉字即使跨任意 chunk 也能恢复；非法 bytes、无效 JSON、协议 schema 错误、超长 frame、未知消息类型或当前 Worker 事件中的 U+FFFD 不执行 `errors="replace"`，也不写入损坏事件。首次 fatal 协议错误记录受控失败原因并停止接受该 Worker 后续事件；Adapter 在独立线程执行有界 `terminate -> kill -> Windows Job Object close`，避免 stdout reader 等待自身退出。Runtime 必须等进程退出并由 `complete(job_id, exit_code)` 收口后，才发布唯一 `FAILED / WORKER_PROTOCOL_CORRUPTED` 终态并注销，避免提前注销后丢失 exit code、重复终态或完成回调竞态。
+
+Worker 写帧前使用同一 1 MiB 上限执行 JSON 序列化和 UTF-8 字节检查；超大终态改发小型结构化错误帧，不通过提高上限掩盖业务 payload。协议失败详情投影 `reason / stream / frame_bytes / max_frame_bytes / worker_exit_code / data_persisted` 到任务详情；相关日志只记录这些结构化字段、task id 和生命周期动作，不记录原始协议 payload。普通任务终态只返回有界摘要，大列表、原始回显和明细通过 Repository 分页、受管 Artifact 或领域查询接口读取，目标建议小于 64 KiB。
 
 任务快照持久化 `text_integrity / text_integrity_reason / text_integrity_updated_at / text_schema_version / producer_kind / producer_version / producer_commit`。新事件在写入时 O(1) 更新摘要，列表与详情读取同一字段；详情不再扫描完整事件历史，Vue 的 summary 与 `selectedDetail` 分开保存，列表轮询不会覆盖详情。旧 schema 只在迁移时扫描一次已有事件并写回摘要，后续查询复杂度不随事件总数增长。
 
@@ -246,6 +248,7 @@ Vue 只向具名 FastAPI endpoint 提交白名单 DTO；Router 调用对应 Appl
 
 - `ac_fit_ap_resources_refresh` 保持原 task_type；`mode=load` 读取现有资源，`mode=collect` 通过 `AcService / AcResourceService` 执行设备采集，兼容旧调用方。
 - 页面不再创建 `AcResourceCollectThread`。Worker 内加载 AC 设备、创建 repository，并调用已有 `collect_h3c_fit_ap_resources` 完成 AP 列表、状态、地址、Radio、BSSID 和 LLDP 采集解析。
+- `mode=collect` 成功终态只返回 AC、collect run、FIT-AP/未认证/BSSID/LLDP 计数、失败命令摘要、snapshot revision、`data_persisted` 和 `reload_required`，不携带完整 `resources`、LLDP、BSSID 或 raw。页面收到 `reload_required` 后通过正常分页 GET 重新读取 SQLite。旧 `mode=load` 仍返回完整快照，保持兼容查询契约。
 - `source=auto` 只选择已验证的数据策略。当前 H3C AP 资源由 CLI 信息最完整，因此默认继续使用 CLI；不得因架构迁移强制改成 SNMP。
 - AC Domain 只接受现有 H3C CLI 采集；`source=snmp` 必须明确拒绝，不能借设备管理 SNMP v1/v2c 基础识别恢复 AC SNMP 采集。
 - CLI 原始回显、命令 JSONL、collect run、parser 和 repository 写入规则保持原状。命令失败转换为 Job error，用户取消转换为唯一 cancelled 终态。

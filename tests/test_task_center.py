@@ -25,7 +25,12 @@ from netconsole.services.job_center.task_application_service import (
     TaskResourceConflictError,
 )
 from netconsole.services.job_center.query_service import JobCenterQueryService
-from netconsole.services.job_center.worker_protocol import encode_event
+from netconsole.services.job_center.worker_protocol import (
+    WORKER_PROTOCOL_MAX_FRAME_BYTES,
+    WorkerProtocolFrameTooLarge,
+    encode_event,
+    encode_event_bytes,
+)
 
 
 def _service(tmp_path: Path) -> TaskApplicationService:
@@ -298,10 +303,91 @@ def test_task_runtime_fails_every_fatal_protocol_reason(
     assert service.feed_stdout(task_id, payload) is True
 
     snapshot = service.get_task(task_id)
+    assert snapshot is not None and snapshot.status is TaskState.RUNNING
+    assert service.runtime.is_running(task_id)
+    terminal = service.complete(task_id, 17)
+    assert terminal is not None
+    assert terminal["worker_exit_code"] == 17
+    snapshot = service.get_task(task_id)
     assert snapshot is not None and snapshot.status is TaskState.FAILED
     assert snapshot.result["error_code"] == "WORKER_PROTOCOL_CORRUPTED"
     assert snapshot.result["text_integrity_reason"] == reason
+    assert snapshot.result["worker_exit_code"] == 17
+    assert snapshot.result["reason"] == reason
     assert not service.runtime.is_running(task_id)
+
+
+def test_worker_protocol_writer_rejects_oversized_frame() -> None:
+    with pytest.raises(WorkerProtocolFrameTooLarge) as exc_info:
+        encode_event_bytes(
+            {
+                "type": "finished",
+                "job_id": "oversized-writer",
+                "result": {"payload": "x" * WORKER_PROTOCOL_MAX_FRAME_BYTES},
+            }
+        )
+
+    assert exc_info.value.frame_bytes > WORKER_PROTOCOL_MAX_FRAME_BYTES
+    assert exc_info.value.max_frame_bytes == WORKER_PROTOCOL_MAX_FRAME_BYTES
+
+
+def test_worker_error_preserves_structured_result_and_exit_code(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    task_id = "worker-structured-error"
+    service.prepare(BackgroundJob(job_id=task_id, task_type="demo_task"))
+    service.mark_running(task_id)
+
+    service.feed_stdout(
+        task_id,
+        encode_event(
+            {
+                "type": "error",
+                "job_id": task_id,
+                "message": "Worker 已持久化数据后失败",
+                "error": "worker_protocol_frame_too_large",
+                "result": {
+                    "reason": "worker_protocol_frame_too_large",
+                    "stream": "stdout",
+                    "frame_bytes": 2_000_000,
+                    "max_frame_bytes": WORKER_PROTOCOL_MAX_FRAME_BYTES,
+                    "data_persisted": True,
+                },
+                "cancelled": False,
+            }
+        ).encode("utf-8")
+    )
+
+    service.complete(task_id, 1)
+
+    snapshot = service.get_task(task_id)
+    assert snapshot is not None
+    assert snapshot.status is TaskState.FAILED
+    assert snapshot.result["reason"] == "worker_protocol_frame_too_large"
+    assert snapshot.result["frame_bytes"] == 2_000_000
+    assert snapshot.result["data_persisted"] is True
+    assert snapshot.result["worker_exit_code"] == 1
+    detail = JobCenterQueryService(service.paths).get_task("demo", task_id)
+    assert detail is not None
+    assert detail.details["reason"] == "worker_protocol_frame_too_large"
+    assert detail.details["worker_exit_code"] == 1
+    assert detail.details["data_persisted"] is True
+
+
+def test_malformed_worker_keeps_backend_health_online(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    task_id = "worker-health-after-protocol-error"
+    service.prepare(BackgroundJob(job_id=task_id, task_type="demo_task"))
+    service.mark_running(task_id)
+    app = _app_for_service(service, frontend_dist=tmp_path / "missing-dist")
+
+    with TestClient(app) as client:
+        before = client.get("/api/health")
+        assert service.feed_stdout(task_id, b"\xff") is True
+        service.complete(task_id, 1)
+        after = client.get("/api/health")
+
+    assert before.status_code == 200
+    assert after.status_code == 200
 
 
 def test_task_persistence_guard_blocks_corrupted_worker_event(tmp_path: Path) -> None:

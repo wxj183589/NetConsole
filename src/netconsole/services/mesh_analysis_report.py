@@ -1123,6 +1123,11 @@ def _finish_segment(segment: dict[str, object], rows: list[dict[str, object]]) -
         segment["peer_site"] = first.get("peer_site") or segment.get("peer_site") or ""
         segment["peer_radio"] = first.get("peer_radio") or first.get("peer_radio_label") or segment.get("peer_radio") or ""
         segment["peer_radio_mac"] = first.get("peer_radio_mac") or segment.get("peer_radio_mac") or ""
+        segment["identity_status"] = first.get("peer_identity_status") or first.get("identity_status") or "unresolved"
+        segment["identity_source"] = first.get("peer_identity_source") or first.get("identity_source") or ""
+        segment["identity_rule"] = first.get("peer_match_rule") or first.get("identity_rule") or ""
+        segment["identity_confidence"] = first.get("peer_match_confidence") or first.get("identity_confidence") or 0
+        segment["identity_reason"] = first.get("peer_identity_reason") or first.get("identity_reason") or ""
         segment["physical_ap_key"] = _physical_ap_key(first) or segment.get("physical_ap_key") or ""
     mr_values = [_number(row.get("mr_rssi")) for row in rows]
     mr_stats = calc_numeric_stats(mr_values, precision=2)
@@ -1213,13 +1218,11 @@ def _physical_ap_key(row: dict[str, object]) -> str:
     ap_mac = _canonical(row.get("peer_ap_mac"))
     if ap_mac:
         return f"ap_mac:{ap_mac}"
-    ap_name = str(row.get("peer_ap_name") or "").strip().lower()
-    if ap_name:
-        return f"ap_name:{ap_name}"
-    peer_radio_mac = _canonical(row.get("peer_radio_mac"))
-    if peer_radio_mac:
-        return f"peer_radio_mac:{peer_radio_mac}"
-    peer = _peer(row) or _canonical(row.get("active_peer_mac"))
+    peer = (
+        _peer(row)
+        or _canonical(row.get("peer_radio_mac"))
+        or _canonical(row.get("active_peer_mac"))
+    )
     return f"peer_mac:{peer}" if peer else ""
 
 

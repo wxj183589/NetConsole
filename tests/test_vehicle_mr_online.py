@@ -21,6 +21,7 @@ from netconsole.services.vehicle_mr_online import (
     ONLINE_POLICY_SINGLE_TAIL,
     ONLINE_POLICY_SINGLE_TC1,
     ONLINE_POLICY_SINGLE_TC2,
+    UNKNOWN_STATION,
     VehicleMrMeshLink,
     VehicleMrMeshParseResult,
     VehicleMrEndState,
@@ -424,7 +425,7 @@ def test_cleanup_history_keeps_recent_mapping_current_state_and_external_tables(
     assert deleted >= 4
 
 
-def test_fit_ap_resource_station_match_by_ap_name_and_persist_method(tmp_path: Path) -> None:
+def test_vehicle_mr_does_not_match_same_name_or_ap_base_mac(tmp_path: Path) -> None:
     paths = PathResolver(tmp_path)
     database = Database(paths.site_db_path("demo"))
     database.initialize()
@@ -443,17 +444,17 @@ def test_fit_ap_resource_station_match_by_ap_name_and_persist_method(tmp_path: P
     result = VehicleMrMeshParseResult("00:22:05", [VehicleMrMeshLink("bc5a-3457-a740", "列车06-MR-CT", local_mac="bc5a-3457-a740", rssi=46)])
     trains = build_train_states({"列车06": VehicleMrTrainState("列车06", "06", True)}, result, lookup)
 
-    assert trains[0].current_station == "鼓楼站"
-    assert trains[0].tc1.display() == "鼓楼站 / bc5a-3457-a740 / 46"
+    assert trains[0].current_station == UNKNOWN_STATION
+    assert trains[0].tc1.display() == "未知车站 / bc5a-3457-a740 / 46"
     store = VehicleMrOnlineStore(paths, "demo")
     store.persist_snapshot("s1", 1, result, trains, lookup, 10)
     with sqlite3.connect(store.db_path) as conn:
         row = conn.execute("SELECT matched_station, matched_ap_name, match_method, match_score FROM vehicle_mr_online_links").fetchone()
     assert row == (
-        "鼓楼站",
+        UNKNOWN_STATION,
         "bc5a-3457-a740",
-        "ac_ap_mac_exact",
-        98,
+        "unmatched",
+        0,
     )
 
 
@@ -564,11 +565,22 @@ def test_online_vehicle_mr_uses_optical_site_for_station_display(tmp_path: Path)
     database.initialize()
     repository = DeviceRepository(database)
     with database.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO ac_fit_ap_resources (
+                ac_device_uuid, ap_uuid, ap_name, ap_mac, site, rid1_bbssid,
+                collected_at, updated_at
+            ) VALUES (
+                'ac1', 'ap1', '30f5-2787-a560', '30f5-2787-a560', '-',
+                '30f5-2787-a56f', 'now', 'now'
+            )
+            """
+        )
         conn.execute("INSERT INTO ac_fit_ap_optical (ac_device_uuid, ap_uuid, ap_name, ap_mac, site) VALUES ('ac1', 'ap1', '30f5-2787-a560', '30f5-2787-a560', '11云龙车辆段')")
         conn.commit()
     ApIdentityQueryService(database).rebuild_index("test_legacy_optical_loaded")
     lookup = load_trackside_ap_lookup(repository)
-    result = VehicleMrMeshParseResult("00:22:05", [VehicleMrMeshLink("30f5-2787-a560", "NBL12-LC06-MR-CT", local_mac="30f5-2787-a560", rssi=45)])
+    result = VehicleMrMeshParseResult("00:22:05", [VehicleMrMeshLink("30f5-2787-a560", "NBL12-LC06-MR-CT", local_mac="30f5-2787-a56f", rssi=45)])
 
     trains = build_train_states({"列车06": VehicleMrTrainState("列车06", "06", True)}, result, lookup)
 

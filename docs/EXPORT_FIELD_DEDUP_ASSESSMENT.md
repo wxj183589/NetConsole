@@ -6,11 +6,17 @@
 
 本阶段只更新文档。没有修改导出字段、Excel/CSV 表头、报告 SQL、解析逻辑、数据库 schema、页面展示、列宽、样式或 WPS/Excel 本地打开兼容逻辑，也没有让 `services/ap_identity` 接管任何导出结果。
 
+> 2026-07-31 生产更正：MR/MESH 身份修复已调整 MESH 综合报告和独立链路
+> 明细的身份字段，以下阶段 6 的“workbook 零变化”只描述当时的历史边界。
+> 当前表头明确分离“原始 Peer MAC”“Peer Radio MAC”“解析 AP 名称”
+> “物理 AP MAC”“匹配规则”“身份来源”；`unresolved/ambiguous` 不再用
+> Peer 或名称填充物理 AP。diagnostics 仍是只读旁路，不决定身份结果。
+
 ## 2. 当前导出入口清单
 
 | 导出 | 当前入口与任务 | 数据来源与写出器 | 独立 Export Process | 格式 | 当前测试锁定 | AP identity 字段 |
 | --- | --- | --- | --- | --- | --- | --- |
-| MR 原始 MESH 链路明细 | `MeshLogAnalysisPage.export_link_details()` → `ExportJob(job_type="mesh_link_detail")` | `MeshMrRepository.iter_link_details()`、主链路建链顺序和事件表 → `export_mesh_link_details_xlsx()` | 是，`export_worker.py` 专用 handler | XLSX | `test_mesh_link_detail_export_writes_xlsx_with_centered_content` 锁定 Sheet、表头、样式、列宽、临时文件清理 | Peer MAC、对端 AP MAC/名称、站点/区间/类型、对端射频口、主链路与 RSSI/Busy |
+| MR 原始 MESH 链路明细 | `MeshLogAnalysisPage.export_link_details()` → `ExportJob(job_type="mesh_link_detail")` | `MeshMrRepository.iter_link_details()`、主链路建链顺序和事件表 → `export_mesh_link_details_xlsx()` | 是，`export_worker.py` 专用 handler | XLSX | `test_mesh_link_detail_export_writes_xlsx_with_centered_content` 锁定 Sheet、表头、样式、列宽、临时文件清理 | 原始 Peer、Peer Radio、解析 AP 名称、物理 AP MAC、匹配规则/来源、站点/区间、主链路与 RSSI/Busy |
 | MR 原始 MESH 分析报告 | `MeshLogAnalysisPage.generate_report()` → `MeshAnalysisReportWorker` | detail DB → `MeshAnalysisReportService` → `MeshAnalysisExcelReportExporter` | 否；现状是专用 `spawn` 子进程，批量时内部 `ProcessPoolExecutor` | XLSX | `test_excel_report_contains_required_sheets_headers_and_empty_parse_issue_text` 等锁定 Sheet、表头、枚举翻译和取消清理 | Peer/AP/Radio、Active/Standby、备链、RSSI、Busy、短链和乒乓 |
 | Online MR 当前页面分析报告 | `OnlineMrCollectionPage.export_analysis_report()` → `online_mr_report_xlsx_spec` | `parsed/online_diagnosis.sqlite` → `VehicleMrOfflineExcelReportExporter` | 是，通用 Export Process | XLSX | 页面导出、默认诊断 Sheet 顺序和空状态测试 | 默认报告含 Peer 名称/MAC、站点/区间、Active/备链和 RSSI；默认不展开 Mesh 采样明细 |
 | Online MR 兼容/直接详细报告 | `OnlineMrAnalysisReportExporter.export()`；当前页面未调用 | parsed DB + `OnlineMrChartBuilder`，直接查询并生成详细 Sheet/图表 | 直接调用时否；不是当前页面 ExportJob formatter | XLSX | `test_online_mr_chart_builder_active_rssi_switch_empty_link_and_export` 锁定核心 Sheet 集合 | 详细 Sheet 同时包含 PeerMac、AP MAC、Peer Radio MAC、BSSID 和归属来源 |
@@ -31,7 +37,7 @@
 | 字段 | 当前语义和来源 | 可能重复/为空 | 是否参与匹配 | 导出边界 |
 | --- | --- | --- | --- | --- |
 | Peer MAC | MR/Mesh 原始日志观测；Online MR 来自 `main_link_samples.peer_mac` | 可为空；可能与显式 Peer Radio MAC 或映射后的 AP MAC 同值 | 生产 mapping 可把它作为 observation，但不能默认解释为 AP MAC | 原始证据字段，不自动删除或改值 |
-| Peer Radio MAC | mapping/cache 中对 Peer Radio/BSSID 的显式或 H3C 派生结果 | 常与 Peer MAC 相同；Online 兼容详细报告当前直接重复使用 `peer_mac` | 只有候选显式具备 Radio/BSSID 映射时才可支持匹配 | Mesh 链路明细已移除；其他入口只诊断，不自动去重 |
+| Peer Radio MAC | mapping/cache 中对 Peer Radio/BSSID 的显式或完整 H3C R1/R2 alias 结果 | 常与规范化 Peer MAC 相同；Online 兼容详细报告当前直接重复使用 `peer_mac` | 只有完整精确 Radio/BSSID alias 才支持生产匹配 | 当前 MESH 链路明细显式保留，作为与物理 AP MAC 分层的观测证据 |
 | Peer Name | 原始 Peer Name，或 mapping 后的 resolved name | 可为空、可为 MAC-like、可与 AP Name 相同 | 名称只按作用域和唯一性作低置信证据 | 保留原始/解析语义，不用名称覆盖 MAC |
 | AP MAC | FIT-AP 主资源字段，或 Mesh/轨旁 resolver 的 AP 映射结果 | 可为空；可能与 Peer MAC 同值；Online 兼容详细报告目前并非真实 AP MAC，而是再次选择 `peer_mac` | 上游生产 resolver 已使用；导出层只展示 | 不从 Peer/Radio/BSSID 自动生成或回写 |
 | AP Name | FIT-AP/扩展/轨旁映射结果 | 可为空、重名或 MAC-like；Vehicle MR 常只有名称 | 可作为带作用域的降级证据 | name-only 和 MAC-like 只做诊断 |
@@ -45,7 +51,7 @@
 
 ## 4. 当前导出字段差异
 
-1. Mesh 链路明细保留 `Peer MAC`、`对端AP MAC`、`对端AP名称`、归属信息和`对端射频口`，已经移除“归属来源”和“Peer Radio MAC”。
+1. MESH 链路明细和主链路明细分别保留原始 Peer、Peer Radio、解析 AP 名称、物理 AP MAC、归属信息、匹配规则和身份来源；四个行工厂与各自表头长度由契约测试锁定。
 2. MR 原始 MESH 分析报告仍在不同 Sheet 中保留 Peer、AP、Radio、Active、备链、RSSI 和 Busy 的业务语义；这些不是可机械去重的平铺列。
 3. Online MR 当前页面默认报告不展开大体量 Mesh 明细；兼容/直接 `OnlineMrAnalysisReportExporter` 仍包含详细“链路明细”。
 4. 兼容/直接 Online MR“链路明细”的 SQL 将同一个 `peer_mac` 同时填入 `PeerMac`、`AP MAC`、`Peer Radio MAC`，属于明确的重复展示风险；本阶段只记录，不修改 SQL或表头。
@@ -56,8 +62,8 @@
 
 ## 5. 已知要求和保护约束
 
-- Mesh 链路明细不需要“归属来源”。
-- Peer Radio MAC 与 Peer MAC 重复时不应在 Mesh 链路明细重复展示；当前表头已移除 Peer Radio MAC。
+- MESH 链路明细需要保留身份来源和匹配规则，便于区分精确匹配、未解析和歧义。
+- Peer Radio MAC 即使与规范化 Peer 相同也属于观测语义；当前明确展示，不能用物理 AP MAC 覆盖或省略。
 - Online MR 兼容报告存在 PeerMac、AP MAC、Peer Radio MAC 同值风险，但当前页面入口和兼容直接服务必须分开评估。
 - Online MR 主链路兼容报告仍包含“归属来源”，本阶段不移除。
 - “全无备份链路”曾是错误现象；任何字段诊断不得改变 ACTIVE/STANDBY、备链数量或备链判定 SQL/模型。
@@ -150,7 +156,7 @@ samples
 ## 10. 回滚和准入结论
 
 - 阶段 6 本身只有文档，删除本轮文档增量即可回滚。
-- 阶段 6.1 只能以可删除的只读 adapter/wrapper 接入；旧 formatter、SQL、表头和 Export Job 必须保留。
+- 阶段 6.1 diagnostics 仍只能以可删除的只读 adapter/wrapper 接入；2026-07-31 的生产身份字段修复由独立契约测试授权，不代表 diagnostics 可以自行修改 formatter、SQL 或业务结果。
 - 当前可以进入阶段 6.1，但只建议先做 P0 的纯 diagnostics service 和两个 MR/Mesh 接入点。
 - 在真实局点统计稳定、逻辑 golden 完全一致之前，不进入导出字段删除、改名、合并或 SQL修复阶段。
 

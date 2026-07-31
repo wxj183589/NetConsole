@@ -16,8 +16,14 @@ _EXACT_ALIAS_ORDER = (
     "ac_radio_mac",
     "ac_bssid",
     "ac_bbssid",
+    "h3c_r1_derived",
+    "h3c_r2_derived",
     "ac_ap_mac",
+    "base_ap_mac",
+    "legacy_mac",
 )
+
+_PEER_ALIAS_ORDER = _EXACT_ALIAS_ORDER[:5]
 
 
 class ApIdentityQueryService:
@@ -55,6 +61,28 @@ class ApIdentityQueryService:
         *,
         peer_name: object | None = None,
     ) -> ApIdentityMatch:
+        # Kept for call-site compatibility. AP names are display/diagnostic
+        # evidence and must not turn an unresolved MAC into a match.
+        del peer_name
+        return self._resolve_exact_aliases(mac, alias_order=_EXACT_ALIAS_ORDER)
+
+    def resolve_peer_mac(
+        self,
+        mac: object,
+        *,
+        peer_name: object | None = None,
+    ) -> ApIdentityMatch:
+        # A MESH Peer is a Radio/BSSID observation. Even an exact AP base MAC
+        # is not sufficient evidence that the observed field represents it.
+        del peer_name
+        return self._resolve_exact_aliases(mac, alias_order=_PEER_ALIAS_ORDER)
+
+    def _resolve_exact_aliases(
+        self,
+        mac: object,
+        *,
+        alias_order: Sequence[str],
+    ) -> ApIdentityMatch:
         mac_key = normalize_mac_key(mac) or ""
         query_display = format_mac(mac_key)
         if mac_key:
@@ -62,7 +90,7 @@ class ApIdentityQueryService:
                 mac_key,
                 site_id=self.site_id,
             )
-            for alias_type in _EXACT_ALIAS_ORDER:
+            for alias_type in alias_order:
                 matched = [
                     row
                     for row in exact_rows
@@ -74,65 +102,9 @@ class ApIdentityQueryService:
                         query_mac=mac_key,
                         query_display=query_display,
                     )
-
-            prefix_rows = self.repository.prefix_rows(
-                mac_key,
-                site_id=self.site_id,
-            )
-            for source in ("ac_runtime", "base_data"):
-                matched = [
-                    {
-                        **row,
-                        "alias_type": f"{source.split('_', 1)[0]}_h3c_derived",
-                    }
-                    for row in prefix_rows
-                    if str(row.get("source") or "") == source
-                ]
-                if matched:
-                    return self._result(
-                        matched,
-                        query_mac=mac_key,
-                        query_display=query_display,
-                    )
-
-            for alias_type in ("base_ap_mac", "legacy_mac"):
-                matched = [
-                    row
-                    for row in exact_rows
-                    if str(row.get("alias_type") or "") == alias_type
-                ]
-                if matched:
-                    return self._result(
-                        matched,
-                        query_mac=mac_key,
-                        query_display=query_display,
-                    )
-
-        name = str(peer_name or "").strip()
-        if name:
-            name_rows = self.repository.exact_name_rows(
-                name,
-                site_id=self.site_id,
-            )
-            if name_rows:
-                return self._result(
-                    [
-                        {
-                            **row,
-                            "alias_type": "ap_name",
-                            "source": row.get("effective_source"),
-                            "derivation_rule": "ap_name_exact",
-                            "confidence": 60,
-                            "radio_id": None,
-                        }
-                        for row in name_rows
-                    ],
-                    query_mac=mac_key,
-                    query_display=query_display,
-                )
 
         return ApIdentityMatch(
-            status="invalid_mac" if not mac_key and not name else "unresolved",
+            status="invalid_mac" if not mac_key else "unresolved",
             query_mac=mac_key,
             query_mac_display=query_display,
         )

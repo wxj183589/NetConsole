@@ -137,10 +137,8 @@ class MeshApLocationSnapshot:
 
     def resolve(self, row: Mapping[str, Any]) -> MeshApLocation:
         mac_key = normalize_mac_key(
-            row.get("peer_ap_mac")
-            or row.get("active_peer_mac")
-            or row.get("peer_mac_normalized")
-            or row.get("peer_mac")
+            row.get("canonical_ap_mac")
+            or row.get("peer_ap_mac")
             or row.get("ap_mac")
         )
         name = str(row.get("peer_ap_name") or row.get("ap_name") or "")
@@ -151,7 +149,7 @@ class MeshApLocationSnapshot:
         return MeshApLocation(
             name=name,
             point_code=str(row.get("point_code") or row.get("ap_point_code") or ""),
-            mac=format_mac(mac_key),
+            mac=format_mac(mac_key) if mac_key else "",
             station=str(row.get("peer_site") or row.get("station") or row.get("belong_station") or ""),
             section=str(row.get("peer_section") or row.get("section") or row.get("belong_section") or ""),
             section_start_station=str(row.get("section_start_station") or ""),

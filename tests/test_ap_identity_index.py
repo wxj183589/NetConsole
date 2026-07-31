@@ -83,36 +83,70 @@ def test_database_initializes_identity_index_idempotently(tmp_path: Path) -> Non
     }
 
 
-def test_base_data_alone_resolves_real_h3c_radio_block(tmp_path: Path) -> None:
+def test_base_data_alone_resolves_exact_h3c_radio_alias(tmp_path: Path) -> None:
     _database, repository, service = _fixture(tmp_path)
-    _base_ap(repository, name="AP0208", mac="48:73:97:cc:e0:e0")
+    _base_ap(repository, name="AP0208", mac="74ad-cb9d-3320")
 
     built = service.rebuild_index("base_data_saved")
-    match = service.resolve_mac("487397cce9af")
+    match = service.resolve_peer_mac("74:ad:cb:9d:33:2f")
 
     assert built.ac_record_count == 0
     assert match.status == "matched"
-    assert match.query_mac == "487397cce9af"
-    assert match.query_mac_display == "4873-97cc-e9af"
+    assert match.query_mac == "74adcb9d332f"
+    assert match.query_mac_display == "74ad-cb9d-332f"
     assert match.effective_ap_name == "AP0208"
-    assert match.effective_ap_mac == "4873-97cc-e0e0"
+    assert match.effective_ap_mac == "74ad-cb9d-3320"
     assert match.station == "明珠广场"
-    assert match.matched_alias_type == "base_h3c_derived"
+    assert match.matched_alias_type == "h3c_r1_derived"
     assert match.matched_source == "base_data"
-    assert match.match_rule == "h3c_radio_block_36"
-    assert match.radio_id is None
+    assert match.match_rule == "h3c_ap_mac_to_r1_exact"
+    assert match.radio_id == 1
 
 
-def test_same_h3c_prefix_on_multiple_aps_is_ambiguous(tmp_path: Path) -> None:
+def test_same_h3c_prefix_without_exact_alias_is_unresolved(tmp_path: Path) -> None:
     _database, repository, service = _fixture(tmp_path)
     _base_ap(repository, name="AP-A", mac="4873-97cc-e0e0")
     _base_ap(repository, name="AP-B", mac="4873-97cc-e1e0")
     service.rebuild_index("base_data_saved")
 
-    match = service.resolve_mac("4873-97cc-e9af")
+    match = service.resolve_peer_mac("4873-97cc-e9af")
+
+    assert match.status == "unresolved"
+    assert match.candidates == ()
+
+
+def test_duplicate_exact_h3c_alias_is_ambiguous(tmp_path: Path) -> None:
+    _database, repository, service = _fixture(tmp_path)
+    _base_ap(repository, name="AP-A", mac="74ad-cb9d-3320")
+    _base_ap(repository, name="AP-B", mac="74ad-cb9d-3321")
+    service.rebuild_index("base_data_saved")
+
+    match = service.resolve_peer_mac("74ad-cb9d-332f")
 
     assert match.status == "ambiguous"
     assert {row["ap_name"] for row in match.candidates} == {"AP-A", "AP-B"}
+
+
+def test_mesh_peer_does_not_fall_back_to_prefix_name_or_base_ap_mac(
+    tmp_path: Path,
+) -> None:
+    _database, repository, service = _fixture(tmp_path)
+    _base_ap(repository, name="AP2011", mac="64:2f:c7:78:ed:a0")
+    service.rebuild_index("base_data_saved")
+
+    prefix_only = service.resolve_peer_mac(
+        "642f-c778-ef5f",
+        peer_name="AP2011",
+    )
+    exact_base = service.resolve_peer_mac(
+        "642f-c778-eda0",
+        peer_name="AP2011",
+    )
+
+    assert prefix_only.status == "unresolved"
+    assert prefix_only.effective_ap_name == ""
+    assert prefix_only.effective_ap_mac == ""
+    assert exact_base.status == "unresolved"
 
 
 def test_ac_actual_radio_alias_wins_over_derived_prefix(tmp_path: Path) -> None:
@@ -132,7 +166,7 @@ def test_ac_actual_radio_alias_wins_over_derived_prefix(tmp_path: Path) -> None:
     )
     service.rebuild_index("ac_refresh_succeeded")
 
-    match = service.resolve_mac("48:73:97:cc:e9:af")
+    match = service.resolve_peer_mac("48:73:97:cc:e9:af")
 
     assert match.status == "matched"
     assert match.matched_alias_type == "ac_bbssid"
@@ -142,7 +176,7 @@ def test_ac_actual_radio_alias_wins_over_derived_prefix(tmp_path: Path) -> None:
     assert match.effective_ap_mac == "4873-97cc-e0e0"
 
 
-def test_ac_base_mac_conflict_uses_ac_and_keeps_diagnostics(tmp_path: Path) -> None:
+def test_same_name_different_mac_stays_as_two_physical_entities(tmp_path: Path) -> None:
     _database, repository, service = _fixture(tmp_path)
     _base_ap(repository, name="AP0208", mac="4873-97cc-e0e0")
     repository.replace_fit_ap_resources(
@@ -159,19 +193,17 @@ def test_ac_base_mac_conflict_uses_ac_and_keeps_diagnostics(tmp_path: Path) -> N
     )
     service.rebuild_index("ac_refresh_succeeded")
 
-    match = service.resolve_mac("487397cce9af")
+    match = service.resolve_peer_mac("487397cce9af")
     conflicts = service.list_conflicts()
 
     assert match.status == "matched"
     assert match.effective_ap_mac == "4873-97cc-e080"
     assert match.ac_ap_mac == "4873-97cc-e080"
-    assert match.base_ap_mac == "4873-97cc-e0e0"
+    assert match.base_ap_mac == ""
     assert match.matched_source == "ac_runtime"
-    assert match.has_conflict
-    assert match.data_quality_warning == "AP_IDENTITY_AC_BASE_CONFLICT"
-    assert [(row["conflict_type"], row["ac_value"], row["base_value"]) for row in conflicts] == [
-        ("ap_mac_mismatch", "4873-97cc-e080", "4873-97cc-e0e0")
-    ]
+    assert not match.has_conflict
+    assert match.data_quality_warning == ""
+    assert conflicts == []
 
 
 def test_base_data_match_survives_ac_disappearance(tmp_path: Path) -> None:
@@ -197,7 +229,7 @@ def test_base_data_match_survives_ac_disappearance(tmp_path: Path) -> None:
         connection.commit()
 
     service.rebuild_index("ac_resource_disappeared")
-    match = service.resolve_mac("4873-97cc-e9af")
+    match = service.resolve_peer_mac("4873-97cc-e0ef")
 
     assert match.status == "matched"
     assert match.matched_source == "base_data"
@@ -326,7 +358,7 @@ def test_resolve_and_search_do_not_modify_persisted_index(tmp_path: Path) -> Non
     service.rebuild_index("base_data_saved")
     before = hashlib.sha256(database.path.read_bytes()).hexdigest()
 
-    assert service.resolve_mac("487397cce9af").status == "matched"
-    assert service.search_aps("48:73:97:cc:e9:af")[0]["ap_name"] == "AP0208"
+    assert service.resolve_peer_mac("487397cce0ef").status == "matched"
+    assert service.search_aps("48:73:97:cc:e0:ef")[0]["ap_name"] == "AP0208"
 
     assert hashlib.sha256(database.path.read_bytes()).hexdigest() == before

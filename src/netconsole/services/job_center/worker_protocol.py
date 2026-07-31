@@ -7,6 +7,20 @@ from typing import Any, BinaryIO, TextIO
 
 _FALLBACK_STDOUT: BinaryIO | None = None
 WORKER_EVENT_TYPES = frozenset({"progress", "log", "finished", "error", "cancelled"})
+WORKER_PROTOCOL_MAX_FRAME_BYTES = 1_048_576
+
+
+class WorkerProtocolFrameTooLarge(ValueError):
+    def __init__(
+        self,
+        frame_bytes: int,
+        max_frame_bytes: int = WORKER_PROTOCOL_MAX_FRAME_BYTES,
+    ) -> None:
+        self.frame_bytes = int(frame_bytes)
+        self.max_frame_bytes = int(max_frame_bytes)
+        super().__init__(
+            f"Worker 协议帧超过限制：{self.frame_bytes} > {self.max_frame_bytes} bytes"
+        )
 
 
 def encode_event(event: dict[str, Any]) -> str:
@@ -14,7 +28,10 @@ def encode_event(event: dict[str, Any]) -> str:
 
 
 def encode_event_bytes(event: dict[str, Any]) -> bytes:
-    return encode_event(event).encode("ascii", errors="strict")
+    payload = encode_event(event).encode("utf-8", errors="strict")
+    if len(payload) > WORKER_PROTOCOL_MAX_FRAME_BYTES:
+        raise WorkerProtocolFrameTooLarge(len(payload))
+    return payload
 
 
 def write_event(event: dict[str, Any], stream: BinaryIO | TextIO | None = None) -> None:

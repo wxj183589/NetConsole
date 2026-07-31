@@ -398,7 +398,7 @@ def test_mesh_peer_mapping_keeps_ap_mac_and_radio_mac_separate(tmp_path):
     assert links[0]["peer_radio_mac"] == "30f5-277a-5a2f"
 
 
-def test_mesh_peer_mapping_service_uses_base_data_h3c_index_without_ac(tmp_path):
+def test_mesh_peer_mapping_service_uses_exact_h3c_alias_without_ac(tmp_path):
     paths = PathResolver(tmp_path)
     database = Database(paths.site_db_path("demo"))
     database.initialize()
@@ -406,24 +406,24 @@ def test_mesh_peer_mapping_service_uses_base_data_h3c_index_without_ac(tmp_path)
         {
             "ap_name": "AP-01",
             "ap_point_code": "AP-01",
-            "ap_mac_display": "083b-e9ec-da40",
+            "ap_mac_display": "74ad-cb9d-3320",
             "station_name": "S1",
         }
     )
     ApIdentityQueryService(database).rebuild_index("test_base_data_saved")
     service = MeshPeerMappingService("demo", paths)
 
-    resolved = service.resolve("083b-e9ec-da5f")
+    resolved = service.resolve("74ad-cb9d-332f")
 
     assert resolved is not None
-    assert resolved["peer_mac_normalized"] == "083be9ecda5f"
-    assert resolved["peer_radio_mac"] == "083be9ecda5f"
-    assert resolved["peer_ap_mac"] == "083be9ecda40"
+    assert resolved["peer_mac_normalized"] == "74adcb9d332f"
+    assert resolved["peer_radio_mac"] == "74adcb9d332f"
+    assert resolved["peer_ap_mac"] == "74adcb9d3320"
     assert resolved["peer_ap_name"] == "AP-01"
     assert resolved["peer_site"] == "S1"
-    assert resolved["peer_radio_label"] == ""
+    assert resolved["peer_radio_label"] == "radio1"
     assert resolved["identity_source"] == "base_data"
-    assert resolved["match_rule"] == "h3c_radio_block_36"
+    assert resolved["match_rule"] == "h3c_ap_mac_to_r1_exact"
 
 
 def test_mesh_peer_mapping_service_keeps_peer_and_physical_ap_mac_separate(tmp_path):
@@ -434,21 +434,49 @@ def test_mesh_peer_mapping_service_keeps_peer_and_physical_ap_mac_separate(tmp_p
         {
             "ap_name": "AP0208",
             "ap_point_code": "AP0208",
-            "ap_mac_display": "bc5a-3457-cbe0",
+            "ap_mac_display": "74ad-cb9d-3320",
             "station_name": "03镇驼站",
         }
     )
     ApIdentityQueryService(database).rebuild_index("test_base_data_saved")
     service = MeshPeerMappingService("demo", paths)
 
-    resolved = service.resolve("bc5a-3457-cbef")
+    resolved = service.resolve("74ad-cb9d-333f")
 
     assert resolved is not None
     assert resolved["peer_ap_name"] == "AP0208"
-    assert resolved["peer_ap_mac"] == "bc5a3457cbe0"
-    assert resolved["peer_radio_mac"] == "bc5a3457cbef"
+    assert resolved["peer_ap_mac"] == "74adcb9d3320"
+    assert resolved["peer_radio_mac"] == "74adcb9d333f"
     assert resolved["peer_site"] == "03镇驼站"
-    assert resolved["peer_radio_label"] == ""
+    assert resolved["peer_radio_label"] == "radio2"
+
+
+def test_mesh_peer_mapping_keeps_unresolved_observation_without_guessing(tmp_path):
+    paths = PathResolver(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    AcRepository(database).upsert_ap_extension_point(
+        {
+            "ap_name": "AP2011",
+            "ap_point_code": "AP2011",
+            "ap_mac_display": "64:2f:c7:78:ed:a0",
+            "station_name": "现场站点",
+        }
+    )
+    ApIdentityQueryService(database).rebuild_index("test_base_data_saved")
+
+    resolved = MeshPeerMappingService("demo", paths).resolve(
+        "642f-c778-ef5f",
+        peer_name="AP2011",
+    )
+
+    assert resolved is not None
+    assert resolved["peer_mac_normalized"] == "642fc778ef5f"
+    assert resolved["peer_radio_mac"] == "642fc778ef5f"
+    assert resolved["identity_status"] == "unresolved"
+    assert resolved["canonical_ap_mac"] == ""
+    assert resolved["peer_ap_name"] == ""
+    assert resolved["peer_site"] == ""
 
 
 def test_multiple_source_files_can_filter_links_and_charts(tmp_path):
@@ -669,7 +697,8 @@ def test_mesh_import_resolves_peer_ap_name_site_and_radio(tmp_path):
     assert rows[0]["peer_radio_label"] == "radio2"
     assert rows[0]["peer_radio_mac"] == "30f5-277a-5a2f"
     assert rows[0]["peer_ap_mac"] == "30f5-277a-5a10"
-    assert rows[0]["peer_resolve_source"] == "actual_bbssid_exact"
+    assert rows[0]["peer_match_rule"] == "actual_bbssid_exact"
+    assert rows[0]["peer_identity_source"] == "ac_runtime"
     cache_rows = repo.export_rows("mesh_peer_resolve_cache")
     assert cache_rows[0]["peer_mac"] == "30:f5:27:7a:5a:2f"
     assert cache_rows[0]["peer_ap_name"] == "AP-01"

@@ -1393,7 +1393,7 @@ def test_mesh_link_detail_export_binds_selected_source_and_uses_export_process(
 
     artifact = next(item for item in mesh_query.list_report_artifacts("demo", session_id) if item.deletable)
     deleted = service.delete_mesh_artifact("demo", session_id, artifact.artifact_id)
-    assert deleted.deleted_files == 1
+    assert deleted.deleted_files == 2
     assert existing.exists() is False
     assert raw.exists() is True
 

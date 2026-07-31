@@ -77,6 +77,21 @@ export const getMeshAnalysisParamsTemplate = (serviceType: string): Promise<Mesh
 export const saveMeshAnalysisParams = (params: MeshAnalysisParams): Promise<MeshAnalysisParams> => apiRequest(`${root}/analysis-params`, { method: 'PUT', body: JSON.stringify({ params }) })
 export const listMeshRawSources = (id: string): Promise<MeshRawSource[]> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/raw-sources`)
 export const getMeshRawTail = (id: string, sourceActionId: string): Promise<MeshRawTail> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/raw-sources/${encodeURIComponent(sourceActionId)}/tail`)
+export const deleteMeshSource = (
+  id: string,
+  options: { deleteRawArchive: boolean; deleteParsedData?: boolean; deleteGeneratedReports?: boolean },
+): Promise<RailTransitTask> => apiRequest(
+  `${root}/sources/${meshSessionPathSegment(id)}`,
+  {
+    method: 'DELETE',
+    body: JSON.stringify({
+      delete_raw_archive: options.deleteRawArchive,
+      delete_parsed_data: options.deleteParsedData !== false,
+      delete_generated_reports: options.deleteGeneratedReports !== false,
+      explicit_confirmation: true,
+    }),
+  },
+)
 export const meshArtifactDownloadRequest = (
   id: string,
   artifactId: string,

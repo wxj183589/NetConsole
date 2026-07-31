@@ -28,10 +28,18 @@
 - `source_files` 同时保存 `original_filename`、`stored_filename`、`raw_sha256`、解压正文 `content_sha256`、首尾日志时间、`log_date`、`daily_sequence` 和重命名状态。普通文件 raw/content hash 相同；GZ/ZIP 成员的 content hash 来自解压正文，明确 UTF-8 BOM 只在正文 hash 中移除，禁止排序、去空格或修改大小写。
 - 同一 Profile 的正文 hash 是强重复键：重复导入返回已有 source/session/归档名，不增加序号、不复制 raw、不重新解析或生成新分析结果。批次内相同正文只保留一个待导入成员；相同正文映射到其他 Profile 默认阻断并要求检查 MR 映射。预览只提供建议归档名，正式提交在局点导入锁内再次检查 hash 和序号。
 - 2026-07-20 使用同一真实包复验统一入口与来源恢复：12/12 自动匹配，raw/parsed 各 12 份；移走一个 raw 后从 bundle 恢复并重解析 39,160 条，SHA 一致。宁波地铁 1 号线既有 06/34 四个 missing 来源使用现存 raw 原位修复为 ready，合计解析 189,468 条；未移动或删除 raw，也未重建同 MR 其他来源。
+- 来源列表、批量操作和当前详情提供显式来源删除。`mesh_analysis_source_delete` Job 支持两种范围：仅删除 parsed/detail、mapping/cache 与可选关联报告并保留归档 raw，后续走 `mesh_source_rebuild`；或删除当前数据根内归档 raw、全部派生结果、指纹和关联报告，使同一外部文件可以重新导入。删除前必须二次确认，活动导入/解析/重建/报告/同源删除任务会阻断提交。
+- 来源删除只处理当前局点、当前 Profile 允许根内的归档副本、parsed SQLite 及 `-wal/-shm`、受管报告和 manifest；永不读取或删除用户最初选择的外部源文件。文件先移动到同 Profile `.quarantine`，索引更新失败时恢复来源元数据、中央目录和文件；提交后清理隔离目录，重复删除返回 `already_deleted`。删除测试只能使用显式测试数据根。
 
 ## 3. 解析模型
 
 解析器按时间和 Radio 识别 ACTIVE/STANDBY/DOWN 等链路记录，规范化 MAC、RSSI、Tx/Rx Busy、链路计数、建立时间和持续时间。缺失指标写空值/N/A；RSSI 最小值、分位数或抖动只从真实有效样本计算，禁止用 0 或默认值补齐。
+
+Peer 身份解析严格分离观测与物理身份：原始文本、规范化 Peer Radio
+MAC、Radio、链路角色、source file、raw line/offset 始终保留；物理 AP
+名称、基础 MAC、站点、区间和里程只来自精确 Radio/BSSID/BBSSID 或完整
+H3C R1/R2 alias。36/40 位前缀、AP 名称和位置不参与匹配；没有精确
+证据时返回 `unresolved` 并将解析身份字段留空。
 
 MR 端位资料与运行结论必须分离：`MR-CT` 固定为 `CT / 1车厢端`，`MR-CW` 固定为 `CW / 6车厢端`，二者都不是固定“车头/车尾”。行程分析接入后，当前运行角色只能由“实际运行方向 + `increasing_direction_leading_end` + `physical_end`”得到 `leading_end / trailing_end / turnback_transition / unknown`；RSSI 不得用于静默交换 CT/CW。届时切换信号模型使用 `LEADING_END_FAST_DROP`（行驶头端型快速衰减）和 `TRAILING_END_SMOOTH_CROSSOVER`（行驶尾端型平滑交叉）等代码，这些模型用于一致性验证而不是覆盖基础资料结论。
 
@@ -123,7 +131,7 @@ RSSI 数值按规则文件既定口径比较。两套 profile 当前 fping 平�
 
 Electron 的“生成分析报告”和“导出链路明细”都在创建任务前选择最终 `.xlsx` 路径；取消不创建任务。Artifact 就绪后按预选路径、大小和 SHA-256 落盘，不再弹第二次窗口。本地保存失败保留原 Artifact，Task Center 可重新选择位置且不重新分析或生成；历史报告/明细仍由用户点击后另存，页面或任务恢复不得自动打开 Save As。Browser 开发模式只能报告下载已启动，不能报告已保存到具体本地目录。
 
-报告与导出列表可以删除派生 `outputs` 中的报告、sidecar 和临时文件，但必须显式确认；原始导入日志、raw、parsed SQLite、catalog 永远保留。
+报告与导出列表可以删除派生 `outputs` 中的报告、sidecar 和临时文件，但必须显式确认。默认重建、查询和报告删除仍保护 raw、parsed SQLite 与 catalog；只有用户在来源级删除对话框中二次确认后，才按上述受控范围删除当前来源的 parsed 或归档 raw，不能扩大为自动清理。
 
 ## 8. 验证清单
 
@@ -140,3 +148,4 @@ Electron 的“生成分析报告”和“导出链路明细”都在创建任�
 - Rate 原始值、Retry/Error 回退空值、切换前后 RSSI 事件散点以及图表卸载资源释放；
 - 可见窗口、全量下采样、切换锚点保留、请求点数自动提升、安全上限抽样告警和重复加载防抖；
 - 大表导出取消、WPS/Excel 占用、临时文件清理和源证据回溯。
+- 来源级 parsed-only、raw+parsed、外部原文件保护、跨来源隔离、失败补偿、重复删除幂等、活动任务阻断及删除后重新导入。

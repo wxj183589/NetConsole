@@ -19,6 +19,12 @@ from netconsole.services.ap_identity.normalizers import (
     normalize_ap_name,
     normalize_mac_key,
 )
+from netconsole.utils.mac_utils import (
+    H3cMacDeriveError,
+    MacAddressError,
+    derive_h3c_r1_mac,
+    derive_h3c_r2_mac,
+)
 from netconsole.utils.station_normalize import normalize_station_value
 
 
@@ -283,7 +289,6 @@ def _match_groups(
     target_by_uuid: dict[str, list[int]] = defaultdict(list)
     target_by_mac: dict[str, list[int]] = defaultdict(list)
     target_by_serial: dict[str, list[int]] = defaultdict(list)
-    target_by_name: dict[str, list[int]] = defaultdict(list)
     for index, group in enumerate(target_groups):
         for item in group:
             if item.ap_uuid:
@@ -292,9 +297,6 @@ def _match_groups(
                 target_by_mac[item.ap_mac_key].append(index)
             if item.serial_number:
                 target_by_serial[item.serial_number.casefold()].append(index)
-            for name in (item.ap_name, item.point_code):
-                if name:
-                    target_by_name[_name_key(name)].append(index)
 
     result: dict[int, int] = {}
     for source_index, group in enumerate(source_groups):
@@ -316,13 +318,6 @@ def _match_groups(
                     candidates.extend(
                         target_by_serial.get(item.serial_number.casefold(), ())
                     )
-            match = _single_index(candidates)
-        if match is None:
-            candidates = []
-            for item in group:
-                for name in (item.ap_name, item.point_code):
-                    if name:
-                        candidates.extend(target_by_name.get(_name_key(name), ()))
             match = _single_index(candidates)
         if match is not None:
             result[source_index] = match
@@ -521,6 +516,16 @@ def _entity_projection(
                         90,
                     )
                 )
+                aliases.extend(
+                    _h3c_exact_aliases(
+                        site_id,
+                        entity_id,
+                        source.ap_mac_key,
+                        source="ac_runtime",
+                        priority=930,
+                        confidence=95,
+                    )
+                )
         if source.source != "ac_runtime":
             continue
         for mac_key, radio_id, field_name in source.radio_aliases:
@@ -561,6 +566,16 @@ def _entity_projection(
                 "base_data",
                 800,
                 80,
+            )
+        )
+        aliases.extend(
+            _h3c_exact_aliases(
+                site_id,
+                entity_id,
+                source.ap_mac_key,
+                source="base_data",
+                priority=830,
+                confidence=90,
             )
         )
     return entity, aliases, prefixes, conflict_rows
@@ -614,6 +629,43 @@ def _prefix(
         match_priority=priority,
         confidence=confidence,
     )
+
+
+def _h3c_exact_aliases(
+    site_id: str,
+    entity_id: str,
+    base_mac_key: str,
+    *,
+    source: str,
+    priority: int,
+    confidence: int,
+) -> list[ApIdentityMacAliasRecord]:
+    aliases: list[ApIdentityMacAliasRecord] = []
+    derivations = (
+        (derive_h3c_r1_mac, 1, "h3c_r1_derived", "h3c_ap_mac_to_r1_exact"),
+        (derive_h3c_r2_mac, 2, "h3c_r2_derived", "h3c_ap_mac_to_r2_exact"),
+    )
+    for derive, radio_id, alias_type, rule in derivations:
+        try:
+            mac_key = normalize_mac_key(derive(base_mac_key)) or ""
+        except (H3cMacDeriveError, MacAddressError):
+            continue
+        if not mac_key:
+            continue
+        aliases.append(
+            _alias(
+                site_id,
+                entity_id,
+                mac_key,
+                alias_type,
+                source,
+                priority,
+                confidence,
+                rule,
+                radio_id=radio_id,
+            )
+        )
+    return aliases
 
 
 def _conflict(

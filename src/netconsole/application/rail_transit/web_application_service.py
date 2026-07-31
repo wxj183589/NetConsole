@@ -185,6 +185,7 @@ class RailTransitWebApplicationService:
         "mesh_bundle_import": "MESH ZIP 批量导入分析",
         "mesh_schema_rebuild": "MESH 派生数据库重建",
         "mesh_source_rebuild": "MESH 当前来源恢复与重新解析",
+        "mesh_analysis_source_delete": "删除 MESH 来源及解析结果",
         "car_network_diagnostic": "车内通信检测",
         "car_network_generate_point_table": "从设备管理生成车内通信点表",
         "car_network_save_point_table": "保存车内通信点表",
@@ -2858,6 +2859,10 @@ class RailTransitWebApplicationService:
             task_type=self._ARTIFACT_TASK_TYPES["mesh_analysis_report"],
             output_root=output_root,
             preferred_name=f"{context.mr_name}_MESH分析报告.xlsx",
+            context={
+                "kind": "mesh_analysis_session",
+                "session_id": session_id,
+            },
         )
         job = ExportJob(
             job_id=task_id,
@@ -2928,6 +2933,10 @@ class RailTransitWebApplicationService:
             task_type=self._ARTIFACT_TASK_TYPES["mesh_link_detail_export"],
             output_root=output_root,
             preferred_name=f"{context.mr_name}_链路明细_{datetime.now():%Y%m%d_%H%M%S}.xlsx",
+            context={
+                "kind": "mesh_analysis_session",
+                "session_id": session_id,
+            },
         )
         job = ExportJob(
             job_id=task_id,
@@ -2990,7 +2999,82 @@ class RailTransitWebApplicationService:
             {
                 "session_id": session_id,
                 "explicit_confirmation": True,
+                "resource_keys": [f"mesh_source:{session_id}"],
                 "audit": {"source": "electron_mesh_analysis", "action": "rebuild_source"},
+            },
+        )
+
+    def start_mesh_source_delete(
+        self,
+        site_id: str,
+        session_id: str,
+        *,
+        delete_raw_archive: bool,
+        delete_parsed_data: bool,
+        delete_generated_reports: bool,
+        explicit_confirmation: bool,
+    ) -> RailTransitTaskDTO:
+        site_id = self._site(site_id)
+        if not explicit_confirmation:
+            raise RailTransitWebError(
+                "CONFIRMATION_REQUIRED",
+                "删除 MESH 来源前必须显式确认",
+            )
+        if not delete_parsed_data:
+            raise RailTransitWebError(
+                "DELETE_SCOPE_INVALID",
+                "MESH 来源删除必须包含解析结果",
+            )
+        try:
+            self.mesh_query_service._context(site_id, session_id)
+        except MeshAnalysisQueryError as exc:
+            raise RailTransitWebError("MESH_SESSION_NOT_FOUND", str(exc)) from exc
+        active = self.task_service.repository(site_id).list(
+            statuses={
+                TaskState.PENDING,
+                TaskState.STARTING,
+                TaskState.RUNNING,
+                TaskState.STOPPING,
+            },
+            limit=1000,
+        )
+        blocking_types = {
+            "mesh_log_import",
+            "mesh_bundle_import",
+            "mesh_schema_rebuild",
+            "mesh_source_rebuild",
+            "mesh_analysis_source_delete",
+            "web_export_mesh_analysis_report",
+            "web_export_mesh_link_detail_export",
+        }
+        source_key = f"mesh_source:{session_id}"
+        if any(
+            item.task_type in blocking_types
+            and (
+                item.task_type != "mesh_analysis_source_delete"
+                or source_key in item.resource_keys
+            )
+            for item in active
+        ):
+            raise RailTransitWebError(
+                "MESH_SOURCE_TASK_RUNNING",
+                "当前有 MESH 导入、解析、重建、报告或删除任务正在运行",
+            )
+        return self._start_task(
+            site_id,
+            "mesh_analysis_source_delete",
+            {
+                "session_id": session_id,
+                "delete_raw_archive": bool(delete_raw_archive),
+                "delete_parsed_data": True,
+                "delete_generated_reports": bool(delete_generated_reports),
+                "explicit_confirmation": True,
+                "resource_keys": [source_key],
+                "audit": {
+                    "source": "electron_mesh_analysis",
+                    "action": "delete_source",
+                    "delete_raw_archive": bool(delete_raw_archive),
+                },
             },
         )
 
@@ -3299,6 +3383,9 @@ class RailTransitWebApplicationService:
             "session_deleted", "parsed_data_deleted", "artifacts_deleted",
             "managed_files_deleted", "artifact_count", "mapping_records_deleted",
             "task_records_deleted", "error_code", "error_message",
+            "already_deleted", "delete_raw_archive", "delete_parsed_data",
+            "delete_generated_reports", "deleted_files", "deleted_reports",
+            "parsed_links", "parsed_events", "parsed_issues", "source_file_id",
             "scanned_count", "valid_command_count", "blocking_error_count",
         ):
             value = result.get(key)

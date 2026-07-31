@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
@@ -36,6 +38,33 @@ def create_mesh_analysis_fixture(tmp_path: Path) -> tuple[PathResolver, str, Pat
     raw.write_text("[1] 2026/07/14 10:00:00.000\nmesh sample\n", encoding="utf-8")
     report = output_dir / "列车01-MR-CT_分析报告.xlsx"
     report.write_bytes(b"existing-report")
+    artifact_id = str(uuid4())
+    manifest_root = paths.rail_transit_root(site) / "web_artifacts" / "manifests"
+    manifest_root.mkdir(parents=True, exist_ok=True)
+    (manifest_root / f"{artifact_id}.json").write_text(
+        json.dumps(
+            {
+                "artifact_id": artifact_id,
+                "site_id": site,
+                "owner": "web_rail_transit",
+                "source": "mesh_analysis_report",
+                "artifact_type": "xlsx",
+                "task_id": f"rail-export-{uuid4().hex}",
+                "task_type": "web_export_mesh_analysis_report",
+                "task_source": "local",
+                "relative_path": report.relative_to(paths.site_dir(site)).as_posix(),
+                "completed": True,
+                "file_name": report.name,
+                "display_name": report.name,
+                "context": {
+                    "kind": "mesh_analysis_session",
+                    "session_id": f"{mr_id}:1",
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     detail = parsed_dir / "mesh.mesh.sqlite"
     _create_detail(detail)
     index = paths.mesh_mr_db_path(site, mr_name)
@@ -182,6 +211,10 @@ def _create_detail(path: Path) -> None:
             ALTER TABLE mesh_links ADD COLUMN raw_line_end INTEGER DEFAULT 0;
             ALTER TABLE mesh_links ADD COLUMN raw_offset_start INTEGER DEFAULT 0;
             ALTER TABLE mesh_links ADD COLUMN raw_offset_end INTEGER DEFAULT 0;
+            ALTER TABLE mesh_links ADD COLUMN peer_identity_status TEXT DEFAULT 'matched';
+            ALTER TABLE mesh_links ADD COLUMN peer_identity_source TEXT DEFAULT 'mapping';
+            ALTER TABLE mesh_links ADD COLUMN peer_identity_reason TEXT DEFAULT '';
+            ALTER TABLE mesh_links ADD COLUMN peer_match_confidence INTEGER DEFAULT 0;
             UPDATE mesh_links SET source_line_number = record_seq, peer_radio = peer_radio_label,
                 duration_text = '1s', link_count = 1,
                 peer_rssi_db = local_rssi_db + 3,

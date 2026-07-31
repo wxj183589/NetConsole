@@ -963,6 +963,11 @@ def _finish_segment(segment: dict[str, object], samples: list[dict[str, object]]
     segment["peer_site"] = row_matches[0].get("peer_site") if row_matches else ""
     segment["peer_radio"] = row_matches[0].get("peer_radio") or row_matches[0].get("peer_radio_label") if row_matches else ""
     segment["peer_radio_mac"] = row_matches[0].get("peer_radio_mac") if row_matches else ""
+    segment["identity_status"] = row_matches[0].get("peer_identity_status") or row_matches[0].get("identity_status") or "unresolved" if row_matches else "unresolved"
+    segment["identity_source"] = row_matches[0].get("peer_identity_source") or row_matches[0].get("identity_source") or "" if row_matches else ""
+    segment["identity_rule"] = row_matches[0].get("peer_match_rule") or row_matches[0].get("identity_rule") or "" if row_matches else ""
+    segment["identity_confidence"] = row_matches[0].get("peer_match_confidence") or row_matches[0].get("identity_confidence") or 0 if row_matches else 0
+    segment["identity_reason"] = row_matches[0].get("peer_identity_reason") or row_matches[0].get("identity_reason") or "" if row_matches else ""
     segment["physical_ap_key"] = _physical_ap_key(row_matches[0]) if row_matches else f"peer_mac:{peer}"
     base_duration = _seconds_between(segment.get("start_time"), segment.get("end_time")) or 0
     segment["duration_seconds"] = round(base_duration + max(float(segment.get("sample_interval_seconds") or 0), 0.0), 3)
@@ -1318,13 +1323,11 @@ def _physical_ap_key(row: dict[str, object]) -> str:
     ap_mac = _canonical(row.get("peer_ap_mac"))
     if ap_mac:
         return f"ap_mac:{ap_mac}"
-    ap_name = str(row.get("peer_ap_name") or "").strip().lower()
-    if ap_name:
-        return f"ap_name:{ap_name}"
-    peer_radio_mac = _canonical(row.get("peer_radio_mac"))
-    if peer_radio_mac:
-        return f"peer_radio_mac:{peer_radio_mac}"
-    peer = _peer(row) or _canonical(row.get("active_peer_key") or row.get("active_peer_mac"))
+    peer = (
+        _peer(row)
+        or _canonical(row.get("peer_radio_mac"))
+        or _canonical(row.get("active_peer_key") or row.get("active_peer_mac"))
+    )
     return f"peer_mac:{peer}" if peer else ""
 
 

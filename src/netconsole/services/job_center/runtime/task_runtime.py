@@ -12,7 +12,10 @@ from netconsole.core import app_logger
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.runtime.task_event_hub import TaskEventHub
 from netconsole.services.job_center.runtime.task_state import TaskState
-from netconsole.services.job_center.worker_protocol import parse_worker_event_line
+from netconsole.services.job_center.worker_protocol import (
+    WORKER_PROTOCOL_MAX_FRAME_BYTES,
+    parse_worker_event_line,
+)
 from netconsole.utils.text_encoding import Utf8IncrementalTextDecoder
 from netconsole.services.job_center.web_export_event_safety import (
     is_web_export_task,
@@ -20,9 +23,6 @@ from netconsole.services.job_center.web_export_event_safety import (
 )
 
 WORKER_PROTOCOL_ERROR_CODE = "WORKER_PROTOCOL_CORRUPTED"
-WORKER_PROTOCOL_MAX_FRAME_BYTES = 1_048_576
-
-
 @dataclass(frozen=True)
 class TaskLaunch:
     job: BackgroundJob
@@ -51,6 +51,7 @@ class _RuntimeTask:
     encoding_logged: bool = False
     protocol_error_reason: str = ""
     protocol_error_payload: dict[str, object] | None = None
+    protocol_error_frame_bytes: int | None = None
 
 
 class TaskRuntime:
@@ -149,26 +150,37 @@ class TaskRuntime:
         if task is None:
             return None
         self._flush_decoders(task)
-        if task.protocol_error_payload is not None:
-            return task.protocol_error_payload
         if not task.protocol_error_reason and task.stdout_buffer.strip():
             if len(task.stdout_buffer.encode("utf-8")) > WORKER_PROTOCOL_MAX_FRAME_BYTES:
-                self._fail_protocol(task, "worker_protocol_frame_too_large", stream="stdout")
+                self._fail_protocol(
+                    task,
+                    "worker_protocol_frame_too_large",
+                    stream="stdout",
+                    frame_bytes=len(task.stdout_buffer.encode("utf-8")),
+                )
             else:
                 event, reason = parse_worker_event_line(task.stdout_buffer.strip())
                 if reason:
                     self._fail_protocol(task, reason, stream="stdout")
                 elif event is not None:
                     self._accept_worker_event(task, event)
-            if task.protocol_error_payload is not None:
-                return task.protocol_error_payload
-        if task.protocol_error_reason:
-            return task.protocol_error_payload
+        if task.protocol_error_payload is not None:
+            payload = dict(task.protocol_error_payload)
+            self._attach_worker_exit_code(payload, exit_code)
+            terminal_state = TaskState.FAILED
         else:
             event = task.terminal_event or {}
             cancelled = bool(event.get("cancelled")) or task.cancel_requested
-            if exit_code == 0 and str(event.get("type") or "") == "finished":
-                payload = event
+            event_type = str(event.get("type") or "")
+            if event_type == "cancelled":
+                payload = dict(event)
+                terminal_state = TaskState.CANCELLED
+            elif event_type == "error":
+                payload = dict(event)
+                self._attach_worker_exit_code(payload, exit_code)
+                terminal_state = TaskState.FAILED
+            elif exit_code == 0 and event_type == "finished":
+                payload = dict(event)
                 terminal_state = self._finished_terminal_state(event)
             else:
                 message = str(event.get("message") or event.get("error") or task.stderr_buffer.strip() or f"后台任务异常退出，退出码 {exit_code}")
@@ -179,11 +191,12 @@ class TaskRuntime:
                     "current": 0,
                     "total": 0,
                     "message": message,
-                    "result": None,
+                    "result": dict(event.get("result") or {}) if isinstance(event.get("result"), dict) else None,
                     "error": message,
                     "traceback": str(event.get("traceback") or task.stderr_buffer),
                     "cancelled": cancelled,
                 }
+                self._attach_worker_exit_code(payload, exit_code)
                 terminal_state = TaskState.CANCELLED if cancelled else TaskState.FAILED
         if is_web_export_task(task.launch.job.task_type):
             payload = sanitize_web_export_event(payload)
@@ -194,6 +207,11 @@ class TaskRuntime:
         )
         self._set_state(job_id, terminal_state)
         self._finish(job_id)
+        if task.protocol_error_reason:
+            app_logger.log_error(
+                "WORKER_PROTOCOL_RUNTIME_UNREGISTERED",
+                f"job_id={job_id}; worker_exit_code={exit_code}",
+            )
         return payload
 
     def fail_start(self, job_id: str, message: str) -> dict[str, object] | None:
@@ -293,14 +311,24 @@ class TaskRuntime:
         lines = combined.split("\n")
         task.stdout_buffer = lines.pop()
         if len(task.stdout_buffer.encode("utf-8")) > WORKER_PROTOCOL_MAX_FRAME_BYTES:
-            self._fail_protocol(task, "worker_protocol_frame_too_large", stream="stdout")
+            self._fail_protocol(
+                task,
+                "worker_protocol_frame_too_large",
+                stream="stdout",
+                frame_bytes=len(task.stdout_buffer.encode("utf-8")),
+            )
             return True
         for raw_line in lines:
             line = raw_line.rstrip("\r").strip()
             if not line:
                 continue
             if len(line.encode("utf-8")) > WORKER_PROTOCOL_MAX_FRAME_BYTES:
-                self._fail_protocol(task, "worker_protocol_frame_too_large", stream="stdout")
+                self._fail_protocol(
+                    task,
+                    "worker_protocol_frame_too_large",
+                    stream="stdout",
+                    frame_bytes=len(line.encode("utf-8")),
+                )
                 return True
             event, reason = parse_worker_event_line(line)
             if reason:
@@ -322,14 +350,24 @@ class TaskRuntime:
             )
             task.encoding_logged = True
 
-    def _fail_protocol(self, task: _RuntimeTask, reason: str, *, stream: str) -> None:
+    def _fail_protocol(
+        self,
+        task: _RuntimeTask,
+        reason: str,
+        *,
+        stream: str,
+        frame_bytes: int | None = None,
+    ) -> None:
         if task.protocol_error_reason:
             return
         task.protocol_error_reason = str(reason)
+        task.protocol_error_frame_bytes = frame_bytes
         app_logger.log_error(
             "WORKER_PROTOCOL_FATAL_ERROR",
             (
                 f"job_id={task.launch.job.job_id}; reason={reason}; stream={stream}; "
+                f"frame_bytes={frame_bytes if frame_bytes is not None else ''}; "
+                f"max_frame_bytes={WORKER_PROTOCOL_MAX_FRAME_BYTES}; "
                 f"worker_mode={'frozen' if getattr(sys, 'frozen', False) else 'source'}"
             ),
         )
@@ -346,18 +384,36 @@ class TaskRuntime:
                 "error_code": WORKER_PROTOCOL_ERROR_CODE,
                 "text_integrity": "current_corrupted",
                 "text_integrity_reason": reason,
+                "reason": reason,
+                "stream": stream,
+                "frame_bytes": frame_bytes,
+                "max_frame_bytes": WORKER_PROTOCOL_MAX_FRAME_BYTES,
+                "worker_exit_code": None,
+                "data_persisted": None,
             },
             "error": message,
             "error_code": WORKER_PROTOCOL_ERROR_CODE,
+            "reason": reason,
+            "stream": stream,
+            "frame_bytes": frame_bytes,
+            "max_frame_bytes": WORKER_PROTOCOL_MAX_FRAME_BYTES,
             "traceback": "",
             "cancelled": False,
         }
         task.protocol_error_payload = payload
-        self.events.publish(payload)
-        self._set_state(job_id, TaskState.FAILED)
-        self._finish(job_id)
         app_logger.log_error("WORKER_PROTOCOL_TASK_FAILED", f"job_id={job_id}; error_code={WORKER_PROTOCOL_ERROR_CODE}")
-        app_logger.log_info("WORKER_PROTOCOL_RUNTIME_UNREGISTERED", f"job_id={job_id}")
+
+    @staticmethod
+    def _attach_worker_exit_code(payload: dict[str, object], exit_code: int) -> None:
+        payload["worker_exit_code"] = int(exit_code)
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            result = {}
+        else:
+            result = dict(result)
+        result["worker_exit_code"] = int(exit_code)
+        result.setdefault("data_persisted", None)
+        payload["result"] = result
 
     @staticmethod
     def _finished_terminal_state(event: dict[str, object]) -> TaskState:

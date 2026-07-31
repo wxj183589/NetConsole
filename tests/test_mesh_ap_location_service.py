@@ -42,7 +42,7 @@ def test_location_snapshot_does_not_guess_when_name_is_duplicated() -> None:
     )
 
 
-def test_location_snapshot_uses_active_peer_mac_without_overriding_ap_mac_priority() -> None:
+def test_location_snapshot_does_not_treat_active_peer_mac_as_physical_ap_mac() -> None:
     snapshot = MeshApLocationSnapshot(
         (
             MeshApLocation(name="AP-01", mac="0000-0000-0010", station="车站A"),
@@ -55,7 +55,10 @@ def test_location_snapshot_uses_active_peer_mac_without_overriding_ap_mac_priori
         {"peer_ap_mac": "000000000020", "active_peer_mac": "000000000010"}
     )
 
-    assert active_only.station == "车站A"
+    assert active_only == MeshApLocation(
+        identity_status="unresolved",
+        identity_reason="缺少规范 AP MAC",
+    )
     assert explicit_ap.station == "车站B"
 
 
@@ -216,4 +219,7 @@ def test_location_service_reads_effective_identity_from_site_index(
     assert location.mac == "4873-97cc-e080"
     assert location.station == "AC运行站"
     assert location.identity_source == "ac_runtime"
-    assert location.identity_reason == "AP_IDENTITY_AC_BASE_CONFLICT"
+    assert location.identity_reason == ""
+    base_location = snapshot.resolve({"peer_ap_mac": "4873-97cc-e0e0"})
+    assert base_location.station == "基础资料站"
+    assert base_location.identity_source == "base_data"

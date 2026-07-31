@@ -15,6 +15,7 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
@@ -121,6 +122,17 @@ class _SessionContext:
 class _ArtifactCandidate:
     dto: MeshReportArtifactDTO
     path: Path
+    manifest_path: Path | None = None
+
+
+@dataclass(frozen=True)
+class _BoundReportArtifact:
+    artifact_id: str
+    artifact_type: str
+    display_name: str
+    path: Path
+    manifest_path: Path
+    completed: bool
 
 
 class MeshAnalysisQueryService:
@@ -453,7 +465,7 @@ class MeshAnalysisQueryService:
         ap_map = self._ap_map(site_id)
         for column, value in (
             ("ml.peer_ap_name", peer_ap_name),
-            ("COALESCE(NULLIF(ml.peer_ap_mac, ''), ml.peer_mac_normalized)", self._mac_key(peer_ap_mac)),
+            ("ml.peer_ap_mac", self._mac_key(peer_ap_mac)),
             ("ml.link_state", link_role.upper()),
         ):
             if value:
@@ -473,7 +485,7 @@ class MeshAnalysisQueryService:
             location_values: list[Any] = [f"%{value.casefold()}%"] if field in {"station", "section"} else []
             if matching_macs:
                 placeholders = ",".join("?" for _ in matching_macs)
-                location_clause = f"({location_clause} OR LOWER(COALESCE(NULLIF(ml.peer_ap_mac, ''), ml.peer_mac_normalized, '')) IN ({placeholders}))"
+                location_clause = f"({location_clause} OR LOWER(COALESCE(ml.peer_ap_mac, '')) IN ({placeholders}))"
                 location_values.extend(matching_macs)
             clauses.append(location_clause)
             values.extend(location_values)
@@ -498,6 +510,20 @@ class MeshAnalysisQueryService:
         direction = "DESC" if sort_order == "desc" else "ASC"
         sort_column = {"timestamp": "ml.sample_time", "rssi": "ml.local_rssi_db", "peer_ap_name": "ml.peer_ap_name"}.get(sort_by, "ml.sample_time")
         with closing(self._connect_readonly(context.detail_db)) as conn:
+            link_columns = self._table_columns(conn, "mesh_links")
+            identity_select = ", ".join(
+                (
+                    f"ml.{column}"
+                    if column in link_columns
+                    else f"NULL AS {column}"
+                )
+                for column in (
+                    "peer_match_confidence",
+                    "peer_identity_status",
+                    "peer_identity_source",
+                    "peer_identity_reason",
+                )
+            )
             total = int(conn.execute(f"SELECT COUNT(*) FROM mesh_links ml {where}", values).fetchone()[0] or 0)
             rows = conn.execute(
                 f"""
@@ -519,7 +545,7 @@ class MeshAnalysisQueryService:
                        ml.local_tx_garp, ml.peer_rx_garp, ml.local_tx_mul_join, ml.peer_rx_mul_join,
                        ml.source_line_number, ml.record_seq, ml.raw_line_start, ml.raw_line_end,
                        ml.raw_offset_start, ml.raw_offset_end,
-                       ml.peer_match_rule, ml.peer_resolve_source,
+                       ml.peer_match_rule, ml.peer_resolve_source, {identity_select},
                        sf.archived_filename AS source_file,
                        (SELECT event_type FROM switch_events se
                         WHERE se.source_file_id = ml.source_file_id
@@ -540,8 +566,7 @@ class MeshAnalysisQueryService:
         for row in rows:
             data = dict(row)
             location = self._locate_ap(ap_map, data)
-            peer_mac = str(data.get("peer_ap_mac") or data.get("peer_mac_normalized") or data.get("peer_mac_raw") or "") or None
-            peer_name = str(data.get("peer_ap_name") or location.name or "") or None
+            peer_name = self._resolved_ap_name(data, location)
             items.append(
                 MeshLinkDetailDTO(
                     record_id=int(data["id"]),
@@ -552,9 +577,10 @@ class MeshAnalysisQueryService:
                     timestamp_tag=str(data.get("timestamp_tag") or ""),
                     sample_group_index=data.get("sample_group_index"),
                     local_radio=data.get("radio"),
+                    peer_mac_raw=str(data.get("peer_mac_raw") or "") or None,
                     peer_mac=str(data.get("peer_mac_normalized") or data.get("peer_mac_raw") or "") or None,
                     peer_ap_name=peer_name,
-                    peer_ap_mac=peer_mac,
+                    peer_ap_mac=self._resolved_ap_mac(data, location),
                     peer_radio_mac=str(data.get("peer_radio_mac") or "") or None,
                     peer_radio=str(data.get("peer_radio_label") or "") or None,
                     link_role=str(data.get("link_state") or ""),
@@ -581,10 +607,10 @@ class MeshAnalysisQueryService:
                     duration_text=str(data.get("duration_text") or "") or None,
                     duration_seconds=self._number(data.get("duration_seconds")),
                     link_count=data.get("link_count"),
-                    station=location.station or str(data.get("peer_site") or "") or None,
-                    section=location.section or None,
-                    mileage=location.mileage or None,
-                    line_side=location.line_side or None,
+                    station=self._resolved_location_value(data, location, "station"),
+                    section=self._resolved_location_value(data, location, "section"),
+                    mileage=self._resolved_location_value(data, location, "mileage"),
+                    line_side=self._resolved_location_value(data, location, "line_side"),
                     event_type=str(data.get("event_type") or "") or None,
                     duration_ms=self._milliseconds(data.get("duration_seconds")),
                     source_file=str(data.get("source_file") or context.source.get("original_filename") or context.source.get("archived_filename") or ""),
@@ -613,6 +639,7 @@ class MeshAnalysisQueryService:
                     local_tx_mul_join=data.get("local_tx_mul_join"),
                     peer_rx_mul_join=data.get("peer_rx_mul_join"),
                     match_method=str(data.get("peer_match_rule") or data.get("peer_resolve_source") or "") or None,
+                    **self._identity_payload(data, location),
                     warning=None if peer_name else "Peer AP 未匹配",
                 )
             )
@@ -649,7 +676,7 @@ class MeshAnalysisQueryService:
                 str(row.get(key) or "")
                 for key in ("active_peer_mac", "peer_ap_name", "peer_ap_mac", "peer_radio", "peer_radio_mac")
             ).casefold()
-            resolved_station = location.station or str(row.get("peer_site") or "")
+            resolved_station = self._resolved_location_value(row, location, "station") or ""
             start_time = str(row.get("build_start_time") or "")
             end_time = str(row.get("build_end_time") or "")
             if radio is not None and self._int(row.get("radio")) != int(radio):
@@ -672,15 +699,17 @@ class MeshAnalysisQueryService:
                     source_file_id=context.source_id,
                     anchor_link_id=self._int(row.get("anchor_link_id")),
                     local_radio=self._int(row.get("radio")),
+                    peer_mac_raw=str(row.get("peer_mac_raw") or ""),
                     active_peer_mac=str(row.get("active_peer_mac") or ""),
-                    peer_ap_name=str(row.get("peer_ap_name") or location.name or "") or None,
-                    peer_ap_mac=str(row.get("peer_ap_mac") or location.mac or "") or None,
+                    peer_ap_name=self._resolved_ap_name(row, location),
+                    peer_ap_mac=self._resolved_ap_mac(row, location),
                     peer_radio=str(row.get("peer_radio") or "") or None,
                     peer_radio_mac=str(row.get("peer_radio_mac") or "") or None,
+                    **self._identity_payload(row, location),
                     station=resolved_station or None,
-                    section=location.section or None,
-                    mileage=location.mileage or None,
-                    line_side=location.line_side or None,
+                    section=self._resolved_location_value(row, location, "section"),
+                    mileage=self._resolved_location_value(row, location, "mileage"),
+                    line_side=self._resolved_location_value(row, location, "line_side"),
                     build_start_time=start_time,
                     build_end_time=end_time,
                     main_link_duration_seconds=self._number(row.get("main_link_duration_seconds")),
@@ -747,27 +776,67 @@ class MeshAnalysisQueryService:
         with closing(self._connect_readonly(context.detail_db)) as conn:
             total = int(conn.execute(f"SELECT COUNT(*) FROM active_segments {where}", values).fetchone()[0] or 0)
             rows = conn.execute(f"SELECT * FROM active_segments {where} ORDER BY start_time, id LIMIT ?", (*values, min(max(limit, 1), 5_000))).fetchall()
+            link_columns = self._table_columns(conn, "mesh_links")
+            optional_aggregates = ", ".join(
+                (
+                    f"MAX({column}) AS {column}"
+                    if column in link_columns
+                    else f"NULL AS {column}"
+                )
+                for column in (
+                    "peer_match_confidence",
+                    "peer_identity_status",
+                    "peer_identity_source",
+                    "peer_identity_reason",
+                )
+            )
+            peer_rows = conn.execute(
+                f"""
+                SELECT peer_mac_normalized,
+                       MAX(peer_ap_name) AS peer_ap_name,
+                       MAX(peer_ap_mac) AS peer_ap_mac,
+                       MAX(peer_site) AS peer_site,
+                       MAX(peer_match_rule) AS peer_match_rule,
+                       MAX(peer_resolve_source) AS peer_resolve_source,
+                       {optional_aggregates}
+                FROM mesh_links
+                WHERE COALESCE(peer_mac_normalized, '') != ''
+                GROUP BY peer_mac_normalized
+                """
+            ).fetchall()
         ap_map = self._ap_map(site_id)
+        peer_map = {
+            self._mac_key(row["peer_mac_normalized"]): dict(row)
+            for row in peer_rows
+        }
         items = []
         for row in rows:
             data = dict(row)
-            location = self._locate_ap(ap_map, data)
+            mapped = peer_map.get(
+                self._mac_key(
+                    data.get("peer_mac_normalized") or data.get("peer_mac")
+                ),
+                {},
+            )
+            identity_data = {**data, **mapped}
+            location = self._locate_ap(ap_map, identity_data)
             items.append(
                 MeshLinkTimelineDTO(
                     segment_id=int(data["id"]),
                     start_time=str(data.get("start_time") or ""),
                     end_time=str(data.get("end_time") or ""),
                     duration_seconds=self._number(data.get("duration_sec")),
-                    peer_ap_name=str(data.get("peer_ap_name") or location.name or "") or None,
-                    peer_ap_mac=str(data.get("peer_mac_normalized") or data.get("peer_mac") or location.mac or "") or None,
+                    peer_ap_name=self._resolved_ap_name(identity_data, location),
+                    peer_ap_mac=self._resolved_ap_mac(identity_data, location),
+                    **self._identity_payload(identity_data, location),
                     local_radio=data.get("radio"),
                     rssi_min=self._number(data.get("min_rssi")),
                     rssi_avg=self._number(data.get("avg_rssi")),
                     rssi_max=self._number(data.get("max_rssi")),
-                    station=location.station or str(data.get("belong_station") or "") or None,
-                    section=location.section or str(data.get("belong_section") or "") or None,
-                    mileage=location.mileage or None,
-                    line_side=location.line_side or None,
+                    station=self._resolved_location_value(identity_data, location, "station"),
+                    section=self._resolved_location_value(identity_data, location, "section"),
+                    mileage=self._resolved_location_value(identity_data, location, "mileage"),
+                    line_side=self._resolved_location_value(identity_data, location, "line_side"),
                     event_type=str(data.get("event_type") or "") or None,
                 )
             )
@@ -820,8 +889,8 @@ class MeshAnalysisQueryService:
             data = dict(row)
             details = self._json_object(data.get("details_json"))
             build = build_by_start.get(str(data.get("current_sample_time") or data.get("event_time") or ""), {})
-            from_peer = peer_map.get(self._mac_key(data.get("from_peer_mac")), {"peer_ap_mac": data.get("from_peer_mac")})
-            to_peer = peer_map.get(self._mac_key(data.get("to_peer_mac")), {"peer_ap_mac": data.get("to_peer_mac")})
+            from_peer = peer_map.get(self._mac_key(data.get("from_peer_mac")), {})
+            to_peer = peer_map.get(self._mac_key(data.get("to_peer_mac")), {})
             from_location = self._locate_ap(ap_map, from_peer)
             to_location = self._locate_ap(ap_map, to_peer)
             items.append(
@@ -874,12 +943,30 @@ class MeshAnalysisQueryService:
             latest = conn.execute(f"SELECT local_rssi_db FROM active_points {where} ORDER BY sample_time DESC, id DESC LIMIT 1", values).fetchone()
             stat_row = conn.execute("SELECT * FROM rssi_stats WHERE scope_type = 'all' ORDER BY id DESC LIMIT 1").fetchone()
             step = max(1, (total + max_points - 1) // max_points)
+            link_columns = self._table_columns(conn, "mesh_links")
+            identity_select = ", ".join(
+                (
+                    f"(SELECT {column} FROM mesh_links ml WHERE ml.id = ap.link_id) AS {column}"
+                    if column in link_columns
+                    else f"NULL AS {column}"
+                )
+                for column in (
+                    "peer_match_rule",
+                    "peer_match_confidence",
+                    "peer_resolve_source",
+                    "peer_identity_status",
+                    "peer_identity_source",
+                    "peer_identity_reason",
+                )
+            )
             point_rows = conn.execute(
                 f"""
                 WITH ordered AS (
-                    SELECT sample_time, local_rssi_db, peer_ap_name, peer_mac_normalized, radio,
+                    SELECT ap.sample_time, ap.local_rssi_db, ap.peer_ap_name,
+                           (SELECT peer_ap_mac FROM mesh_links ml WHERE ml.id = ap.link_id) AS peer_ap_mac,
+                           ap.radio, {identity_select},
                            ROW_NUMBER() OVER (ORDER BY sample_time, id) AS rn
-                    FROM active_points {where}
+                    FROM active_points ap {where}
                 )
                 SELECT * FROM ordered WHERE ((rn - 1) % ?) = 0 ORDER BY sample_time LIMIT ?
                 """,
@@ -900,9 +987,10 @@ class MeshAnalysisQueryService:
             MeshRssiPointDTO(
                 timestamp=str(row["sample_time"]),
                 value=self._number(row["local_rssi_db"]),
-                peer_ap_name=str(row["peer_ap_name"] or "") or None,
-                peer_ap_mac=str(row["peer_mac_normalized"] or "") or None,
+                peer_ap_name=self._resolved_ap_name(dict(row)),
+                peer_ap_mac=self._resolved_ap_mac(dict(row)),
                 local_radio=row["radio"],
+                **self._identity_payload(dict(row)),
             )
             for row in point_rows
         ]
@@ -1196,12 +1284,15 @@ class MeshAnalysisQueryService:
     @classmethod
     def _build_ap_identity(cls, row: dict[str, Any]) -> str:
         physical = str(row.get("physical_ap_key") or "").strip().casefold()
-        if physical:
+        if physical and not physical.startswith("ap_name:"):
             return f"physical:{physical}"
-        mac = cls._mac_key(row.get("peer_ap_mac") or row.get("active_peer_mac"))
+        mac = cls._mac_key(row.get("peer_ap_mac"))
         if mac:
-            return f"mac:{mac}"
-        return f"name:{str(row.get('peer_ap_name') or '').strip().casefold()}"
+            return f"physical:ap_mac:{mac}"
+        peer = cls._mac_key(
+            row.get("active_peer_mac") or row.get("peer_radio_mac")
+        )
+        return f"observed_peer:{peer}" if peer else ""
 
     def get_rate_series(
         self,
@@ -1225,11 +1316,27 @@ class MeshAnalysisQueryService:
         with closing(self._connect_readonly(context.detail_db)) as conn:
             total = int(conn.execute(f"SELECT COUNT(*) FROM mesh_links {where}", values).fetchone()[0] or 0)
             step = max(1, (total + max_points - 1) // max_points)
+            link_columns = self._table_columns(conn, "mesh_links")
+            identity_select = ", ".join(
+                (
+                    column
+                    if column in link_columns
+                    else f"NULL AS {column}"
+                )
+                for column in (
+                    "peer_match_rule",
+                    "peer_match_confidence",
+                    "peer_resolve_source",
+                    "peer_identity_status",
+                    "peer_identity_source",
+                    "peer_identity_reason",
+                )
+            )
             rows = conn.execute(
                 f"""
                 WITH ordered AS (
                     SELECT sample_time, radio, peer_ap_name,
-                           COALESCE(NULLIF(peer_ap_mac, ''), peer_mac_normalized, peer_mac_raw) AS peer_ap_mac,
+                           peer_ap_mac, {identity_select},
                            local_rate_raw, peer_rate_raw,
                            ROW_NUMBER() OVER (ORDER BY sample_time, timestamp_tag, id) AS rn
                     FROM mesh_links {where}
@@ -1245,8 +1352,9 @@ class MeshAnalysisQueryService:
             MeshRatePointDTO(
                 timestamp=str(row["sample_time"]),
                 local_radio=row["radio"],
-                peer_ap_name=str(row["peer_ap_name"] or "") or None,
-                peer_ap_mac=str(row["peer_ap_mac"] or "") or None,
+                peer_ap_name=self._resolved_ap_name(dict(row)),
+                peer_ap_mac=self._resolved_ap_mac(dict(row)),
+                **self._identity_payload(dict(row)),
                 local_rate_raw=self._number(row["local_rate_raw"]),
                 peer_rate_raw=self._number(row["peer_rate_raw"]),
             )
@@ -1269,10 +1377,27 @@ class MeshAnalysisQueryService:
         max_points = min(max(int(max_points), 10), 2_000)
         time_clauses, time_values = self._time_clauses("sample_time", "sample_time", time_from, time_to)
         time_where = " AND ".join(time_clauses) if time_clauses else "1"
+        with closing(self._connect_readonly(context.detail_db)) as conn:
+            link_columns = self._table_columns(conn, "mesh_links")
+        identity_select = ", ".join(
+            (
+                column
+                if column in link_columns
+                else f"NULL AS {column}"
+            )
+            for column in (
+                "peer_match_rule",
+                "peer_match_confidence",
+                "peer_resolve_source",
+                "peer_identity_status",
+                "peer_identity_source",
+                "peer_identity_reason",
+            )
+        )
         counter_cte = f"""
             WITH ordered AS (
                 SELECT id, source_file_id, sample_time, timestamp_tag, radio, peer_ap_name,
-                       COALESCE(NULLIF(peer_ap_mac, ''), peer_mac_normalized, peer_mac_raw) AS peer_ap_mac,
+                       peer_ap_mac, {identity_select},
                        local_retry, peer_retry, local_err, peer_err,
                        LAG(local_retry) OVER sample_partition AS previous_local_retry,
                        LAG(peer_retry) OVER sample_partition AS previous_peer_retry,
@@ -1327,8 +1452,9 @@ class MeshAnalysisQueryService:
             MeshCounterDeltaPointDTO(
                 timestamp=str(row["sample_time"]),
                 local_radio=row["radio"],
-                peer_ap_name=str(row["peer_ap_name"] or "") or None,
-                peer_ap_mac=str(row["peer_ap_mac"] or "") or None,
+                peer_ap_name=self._resolved_ap_name(dict(row)),
+                peer_ap_mac=self._resolved_ap_mac(dict(row)),
+                **self._identity_payload(dict(row)),
                 local_retry_delta=int(row["local_retry_delta"]) if row["local_retry_delta"] is not None else None,
                 peer_retry_delta=int(row["peer_retry_delta"]) if row["peer_retry_delta"] is not None else None,
                 local_error_delta=int(row["local_error_delta"]) if row["local_error_delta"] is not None else None,
@@ -1364,7 +1490,6 @@ class MeshAnalysisQueryService:
                             start_time=str(data.get("event_time") or "") or None,
                             train_name=train_name,
                             mr_name=context.mr_name,
-                            peer_ap_mac=str(data.get("related_peer_mac") or "") or None,
                             description=str(data.get("detail") or data.get("title") or ""),
                             evidence_reference=str(data.get("evidence") or "") or None,
                         )
@@ -1388,7 +1513,7 @@ class MeshAnalysisQueryService:
                 "train_name": train_name,
                 "mr_name": context.mr_name,
                 "peer_ap_name": str(build.get("peer_ap_name") or "") or None,
-                "peer_ap_mac": str(build.get("active_peer_mac") or "") or None,
+                "peer_ap_mac": str(build.get("peer_ap_mac") or "") or None,
                 "station": str(build.get("peer_site") or "") or None,
                 "start_time": str(build.get("build_start_time") or "") or None,
                 "end_time": str(build.get("build_end_time") or "") or None,
@@ -1435,13 +1560,30 @@ class MeshAnalysisQueryService:
         if context.detail_db is None:
             return MeshApStatisticsPageDTO(page=page, page_size=page_size)
         with closing(self._connect_readonly(context.detail_db)) as conn:
+            link_columns = self._table_columns(conn, "mesh_links")
+            identity_aggregates = ", ".join(
+                (
+                    f"MAX({column}) AS {alias}"
+                    if column in link_columns
+                    else f"NULL AS {alias}"
+                )
+                for column, alias in (
+                    ("peer_match_rule", "identity_rule"),
+                    ("peer_match_confidence", "identity_confidence"),
+                    ("peer_identity_status", "identity_status"),
+                    ("peer_identity_source", "identity_source"),
+                    ("peer_identity_reason", "identity_reason"),
+                )
+            )
             grouped = conn.execute(
-                """
-                SELECT COALESCE(NULLIF(peer_ap_mac, ''), peer_mac_normalized, peer_mac_raw) AS ap_mac,
+                f"""
+                SELECT peer_ap_mac AS ap_mac,
                        MAX(peer_ap_name) AS ap_name, MAX(peer_site) AS peer_site,
+                       {identity_aggregates},
                        AVG(local_rssi_db) AS avg_rssi, MIN(local_rssi_db) AS min_rssi
                 FROM mesh_links
-                GROUP BY COALESCE(NULLIF(peer_ap_mac, ''), peer_mac_normalized, peer_mac_raw)
+                WHERE COALESCE(peer_ap_mac, '') != ''
+                GROUP BY peer_ap_mac
                 ORDER BY ap_name, ap_mac
                 """
             ).fetchall()
@@ -1449,11 +1591,14 @@ class MeshAnalysisQueryService:
             anomalies = [str(row[0] or "") for row in conn.execute("SELECT related_peer_mac FROM diagnosis_events WHERE COALESCE(related_peer_mac, '') != ''")]
             segment_peers = [str(row[0] or "") for row in conn.execute("SELECT peer_mac_normalized FROM active_segments")]
             peer_to_ap = {
-                self._mac_key(row["peer_mac_normalized"]): self._mac_key(row["peer_ap_mac"] or row["peer_mac_normalized"])
+                self._mac_key(row["peer_mac_normalized"]): self._mac_key(row["peer_ap_mac"])
                 for row in conn.execute(
                     """
                     SELECT peer_mac_normalized, MAX(peer_ap_mac) AS peer_ap_mac
-                    FROM mesh_links WHERE COALESCE(peer_mac_normalized, '') != '' GROUP BY peer_mac_normalized
+                    FROM mesh_links
+                    WHERE COALESCE(peer_mac_normalized, '') != ''
+                      AND COALESCE(peer_ap_mac, '') != ''
+                    GROUP BY peer_mac_normalized
                     """
                 )
             }
@@ -1462,19 +1607,25 @@ class MeshAnalysisQueryService:
         for row in switches:
             source_key = self._mac_key(row.get("from_peer_mac"))
             target_key = self._mac_key(row.get("to_peer_mac"))
-            source = peer_to_ap.get(source_key, source_key)
-            target = peer_to_ap.get(target_key, target_key)
+            source = peer_to_ap.get(source_key)
+            target = peer_to_ap.get(target_key)
+            if not source or not target:
+                continue
             switch_out[source] = switch_out.get(source, 0) + 1
             switch_in[target] = switch_in.get(target, 0) + 1
         anomaly_counts: dict[str, int] = {}
         for value in anomalies:
             peer_key = self._mac_key(value)
-            key = peer_to_ap.get(peer_key, peer_key)
+            key = peer_to_ap.get(peer_key)
+            if not key:
+                continue
             anomaly_counts[key] = anomaly_counts.get(key, 0) + 1
         build_counts: dict[str, int] = {}
         for value in segment_peers:
             peer_key = self._mac_key(value)
-            key = peer_to_ap.get(peer_key, peer_key)
+            key = peer_to_ap.get(peer_key)
+            if not key:
+                continue
             build_counts[key] = build_counts.get(key, 0) + 1
         ap_map = self._ap_map(site_id)
         items: list[MeshApStatisticsDTO] = []
@@ -1496,7 +1647,11 @@ class MeshAnalysisQueryService:
                 avg_rssi=self._number(data.get("avg_rssi")),
                 min_rssi=self._number(data.get("min_rssi")),
                 anomaly_count=anomaly_counts.get(key, 0),
-                match_status=location.identity_status,
+                match_status=str(data.get("identity_status") or location.identity_status),
+                identity_source=str(data.get("identity_source") or location.identity_source or "") or None,
+                identity_rule=str(data.get("identity_rule") or "") or None,
+                identity_confidence=int(data.get("identity_confidence") or 0),
+                identity_reason=str(data.get("identity_reason") or location.identity_reason or "") or None,
             )
             if not query or query.casefold() in f"{item.peer_ap_name} {item.peer_ap_mac} {item.station} {item.section}".casefold():
                 items.append(item)
@@ -1521,26 +1676,13 @@ class MeshAnalysisQueryService:
                 continue
             if not candidate.dto.deletable or not self._within(candidate.path, output_root):
                 raise MeshAnalysisQueryError("原始导入日志不允许从报告列表删除")
-            stem = candidate.path.stem
-            related_names = {
-                candidate.path.name,
-                f"{stem}.json",
-                f"{stem}.manifest.json",
-                f"{candidate.path.name}.json",
-                f"{candidate.path.name}.manifest.json",
-                f"{stem}.tmp{candidate.path.suffix}",
-                f".{stem}.tmp{candidate.path.suffix}",
-                f"{candidate.path.name}.part",
-                f"{candidate.path.name}.partial",
-            }
-            targets = [
-                path.resolve()
-                for path in output_root.iterdir()
-                if path.name in related_names
-                and path.is_file()
-                and not path.is_symlink()
-                and self._within(path, output_root)
-            ]
+            targets = [candidate.path.resolve()]
+            if (
+                candidate.manifest_path is not None
+                and candidate.manifest_path.is_file()
+                and not candidate.manifest_path.is_symlink()
+            ):
+                targets.append(candidate.manifest_path.resolve())
             return candidate.dto.name, targets
         raise MeshAnalysisQueryError("文件不存在或不属于当前分析会话")
 
@@ -1633,9 +1775,10 @@ class MeshAnalysisQueryService:
                 with closing(self._connect_readonly(index_db)) as conn:
                     if not self._table_exists(conn, "source_files"):
                         continue
-                    columns = self._table_columns(conn, "source_files")
-                    where = "WHERE COALESCE(parsed_deleted_at, '') = ''" if "parsed_deleted_at" in columns else ""
-                    sources = [dict(row) for row in conn.execute(f"SELECT * FROM source_files {where} ORDER BY id")]
+                    sources = [
+                        dict(row)
+                        for row in conn.execute("SELECT * FROM source_files ORDER BY id")
+                    ]
             except sqlite3.Error:
                 LOGGER.warning("跳过不可读取的 MESH MR 索引：%s", profile.get("display_name"), exc_info=True)
                 continue
@@ -2086,11 +2229,11 @@ class MeshAnalysisQueryService:
             )
             from_location = self._locate_ap(
                 ap_map,
-                {"peer_ap_mac": event.get("from_peer_mac"), "peer_ap_name": event.get("from_peer_ap_name")},
+                {"peer_ap_name": event.get("from_peer_ap_name")},
             )
             to_location = self._locate_ap(
                 ap_map,
-                {"peer_ap_mac": event.get("to_peer_mac"), "peer_ap_name": event.get("to_peer_ap_name")},
+                {"peer_ap_name": event.get("to_peer_ap_name")},
             )
             before_point = prepared.get("before_point")
             after_point = prepared.get("after_point")
@@ -2236,7 +2379,6 @@ class MeshAnalysisQueryService:
             observed_frame_keys.add(frame_key)
             if role not in {LINK_STATE_ACTIVE, LINK_STATE_STANDBY}:
                 continue
-            peer_name = str(row.get("peer_ap_name") or "").strip() or None
             peer_mac = (
                 str(
                     row.get("peer_mac_normalized")
@@ -2246,8 +2388,20 @@ class MeshAnalysisQueryService:
                 ).strip()
                 or None
             )
-            ap_mac = str(row.get("peer_ap_mac") or "").strip() or None
             peer_radio_mac = str(row.get("peer_radio_mac") or "").strip() or None
+            location = self._locate_ap(
+                ap_map,
+                {
+                    **row,
+                    "peer_ap_mac": row.get("peer_ap_mac"),
+                    "peer_ap_name": row.get("peer_ap_name"),
+                    "peer_mac_normalized": peer_mac,
+                    "peer_site": row.get("peer_site"),
+                },
+            )
+            identity_payload = self._identity_payload(row, location)
+            ap_mac = self._resolved_ap_mac(row, location)
+            peer_name = self._resolved_ap_name(row, location)
             identity = self._trackside_link_identity(
                 peer_radio_mac=peer_radio_mac,
                 ap_mac=ap_mac,
@@ -2257,19 +2411,8 @@ class MeshAnalysisQueryService:
             if not identity:
                 skipped_missing_identity += 1
                 continue
-            location = self._locate_ap(
-                ap_map,
-                {
-                    "peer_ap_mac": ap_mac,
-                    "peer_ap_name": peer_name,
-                    "peer_mac_normalized": peer_mac,
-                    "peer_site": row.get("peer_site"),
-                },
-            )
-            peer_name = peer_name or location.name or None
-            ap_mac = ap_mac or location.mac or None
-            station = location.station or str(row.get("peer_site") or "") or None
-            section = location.section or None
+            station = self._resolved_location_value(row, location, "station")
+            section = self._resolved_location_value(row, location, "section")
             series_key = (identity, local_radio)
             peer_rssi = self._number(row.get("peer_rssi_db"))
             peer_signal = self._number(row.get("peer_signal_dbm"))
@@ -2306,6 +2449,7 @@ class MeshAnalysisQueryService:
                     )
                     or None,
                     "peer_radio_mac": peer_radio_mac,
+                    **identity_payload,
                     "station": station,
                     "section": section,
                     "peer_rssi": peer_rssi,
@@ -3100,12 +3244,13 @@ class MeshAnalysisQueryService:
             timestamp_tag=str(row.get("timestamp_tag") or ""),
             local_radio=self._int(row.get("radio")),
             peer_mac=str(row.get("peer_mac") or ""),
-            peer_ap_name=str(row.get("ap_name") or location.name or "") or None,
-            peer_ap_mac=str(row.get("ap_mac") or location.mac or "") or None,
+            peer_ap_name=self._resolved_ap_name(row, location),
+            peer_ap_mac=self._resolved_ap_mac(row, location),
             peer_radio=str(row.get("peer_radio") or "") or None,
             peer_radio_mac=str(row.get("peer_radio_mac") or "") or None,
-            station=location.station or str(row.get("site") or "") or None,
-            section=location.section or None,
+            **self._identity_payload(row, location),
+            station=self._resolved_location_value(row, location, "station"),
+            section=self._resolved_location_value(row, location, "section"),
             local_rssi=self._number(row.get("mr_rssi")),
             peer_rssi=self._number(row.get("ap_rssi")),
             local_signal=self._number(row.get("local_signal")),
@@ -3141,12 +3286,13 @@ class MeshAnalysisQueryService:
             local_radio=self._int(row.get("radio")),
             link_state=str(item.get("status") or ""),
             peer_mac=str(item.get("peer_mac") or ""),
-            peer_ap_name=str(item.get("ap_name") or location.name or "") or None,
-            peer_ap_mac=str(item.get("ap_mac") or location.mac or "") or None,
+            peer_ap_name=self._resolved_ap_name(item, location),
+            peer_ap_mac=self._resolved_ap_mac(item, location),
             peer_radio=str(item.get("peer_radio") or "") or None,
             peer_radio_mac=str(item.get("peer_radio_mac") or "") or None,
-            station=location.station or str(item.get("site") or "") or None,
-            section=location.section or None,
+            **self._identity_payload(item, location),
+            station=self._resolved_location_value(item, location, "station"),
+            section=self._resolved_location_value(item, location, "section"),
             local_rssi=self._number(row.get("local_rssi")),
             peer_rssi=self._number(row.get("peer_rssi")),
             local_signal=self._number(row.get("local_signal")),
@@ -3243,34 +3389,139 @@ class MeshAnalysisQueryService:
         return number if number is not None and math.isfinite(number) else None
 
     def _artifact_candidates(self, context: _SessionContext) -> list[_ArtifactCandidate]:
-        rows: list[tuple[str, Path]] = []
-        if context.raw_path is not None:
-            rows.append(("raw_mesh_log", context.raw_path))
-        output_root = self.paths.mesh_mr_export_dir(context.site_id, context.safe_folder_name).resolve()
-        if output_root.is_dir():
-            for path in output_root.iterdir():
-                if (
-                    path.is_file()
-                    and not path.is_symlink()
-                    and path.suffix.lower() in _ALLOWED_OUTPUT_SUFFIXES
-                    and not self._temporary_artifact_name(path.name)
-                    and self._within(path, output_root)
-                ):
-                    rows.append(("analysis_report" if path.suffix.lower() == ".xlsx" else "package", path.resolve()))
         result: list[_ArtifactCandidate] = []
-        for kind, path in rows:
+        if context.raw_path is not None:
+            path = context.raw_path
             stat = path.stat()
             relative = path.relative_to(context.mr_root).as_posix()
             dto = MeshReportArtifactDTO(
-                artifact_id=self._artifact_id(context.session_id, kind, relative),
-                artifact_type=kind,
+                artifact_id=self._artifact_id(
+                    context.session_id,
+                    "raw_mesh_log",
+                    relative,
+                ),
+                artifact_type="raw_mesh_log",
                 name=path.name,
                 size_bytes=stat.st_size,
                 modified_at=self._mtime(stat.st_mtime),
-                deletable=kind != "raw_mesh_log",
+                deletable=False,
             )
             result.append(_ArtifactCandidate(dto=dto, path=path))
+        for artifact in self._bound_report_artifacts(context):
+            if (
+                not artifact.completed
+                or not artifact.path.is_file()
+                or artifact.path.is_symlink()
+            ):
+                continue
+            stat = artifact.path.stat()
+            kind = (
+                "analysis_report"
+                if artifact.path.suffix.casefold() == ".xlsx"
+                else "package"
+            )
+            result.append(
+                _ArtifactCandidate(
+                    dto=MeshReportArtifactDTO(
+                        artifact_id=artifact.artifact_id,
+                        artifact_type=kind,
+                        name=artifact.display_name,
+                        size_bytes=stat.st_size,
+                        modified_at=self._mtime(stat.st_mtime),
+                        deletable=True,
+                    ),
+                    path=artifact.path,
+                    manifest_path=artifact.manifest_path,
+                )
+            )
         return sorted(result, key=lambda item: (item.dto.artifact_type, item.dto.name))
+
+    def session_report_delete_targets(
+        self,
+        site_id: str,
+        session_id: str,
+    ) -> tuple[list[Path], int]:
+        context = self._context(site_id, session_id)
+        targets: list[Path] = []
+        report_count = 0
+        for artifact in self._bound_report_artifacts(context):
+            report_count += int(artifact.path.is_file())
+            if artifact.path.is_file():
+                targets.append(artifact.path)
+            if artifact.manifest_path.is_file():
+                targets.append(artifact.manifest_path)
+        return list(dict.fromkeys(targets)), report_count
+
+    def _bound_report_artifacts(
+        self,
+        context: _SessionContext,
+    ) -> list[_BoundReportArtifact]:
+        manifest_root = (
+            self.paths.rail_transit_root(context.site_id)
+            / "web_artifacts"
+            / "manifests"
+        ).resolve()
+        if not manifest_root.is_dir():
+            return []
+        site_root = self.paths.site_dir(context.site_id).resolve()
+        output_root = self.paths.mesh_mr_export_dir(
+            context.site_id,
+            context.safe_folder_name,
+        ).resolve()
+        expected_types = {
+            "mesh_analysis_report": "web_export_mesh_analysis_report",
+            "mesh_link_detail_export": "web_export_mesh_link_detail_export",
+        }
+        artifacts: list[_BoundReportArtifact] = []
+        for manifest_path in manifest_root.glob("*.json"):
+            if manifest_path.is_symlink():
+                continue
+            try:
+                data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    continue
+                artifact_id = str(UUID(str(data.get("artifact_id") or "")))
+                if manifest_path.resolve() != (manifest_root / f"{artifact_id}.json").resolve():
+                    continue
+                source = str(data.get("source") or "")
+                context_data = data.get("context")
+                if (
+                    data.get("site_id") != context.site_id
+                    or data.get("owner") != "web_rail_transit"
+                    or data.get("task_source") != "local"
+                    or expected_types.get(source) != data.get("task_type")
+                    or not isinstance(context_data, dict)
+                    or context_data.get("kind") != "mesh_analysis_session"
+                    or context_data.get("session_id") != context.session_id
+                ):
+                    continue
+                relative = Path(str(data.get("relative_path") or ""))
+                if relative.is_absolute():
+                    continue
+                output = (site_root / relative).resolve()
+                if (
+                    not self._within(output, output_root)
+                    or output.suffix.casefold() not in _ALLOWED_OUTPUT_SUFFIXES
+                    or output.name != str(data.get("file_name") or "")
+                ):
+                    continue
+                artifacts.append(
+                    _BoundReportArtifact(
+                        artifact_id=artifact_id,
+                        artifact_type=str(data.get("artifact_type") or ""),
+                        display_name=str(
+                            data.get("display_name")
+                            or data.get("file_name")
+                            or output.name
+                        ),
+                        path=output,
+                        manifest_path=manifest_path.resolve(),
+                        completed=data.get("completed") is True,
+                    )
+                )
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+        return artifacts
 
     def ap_location_snapshot(self, site_id: str) -> MeshApLocationSnapshot:
         try:
@@ -3284,6 +3535,132 @@ class MeshAnalysisQueryService:
     @staticmethod
     def _locate_ap(ap_map: MeshApLocationSnapshot, row: dict[str, Any]) -> MeshApLocation:
         return ap_map.resolve(row)
+
+    @classmethod
+    def _identity_payload(
+        cls,
+        row: dict[str, Any],
+        location: MeshApLocation | None = None,
+    ) -> dict[str, Any]:
+        physical_mac = str(
+            row.get("canonical_ap_mac")
+            or row.get("peer_ap_mac")
+            or row.get("ap_mac")
+            or (location.mac if location is not None else "")
+            or ""
+        ).strip()
+        explicit_status = str(
+            row.get("peer_identity_status")
+            or row.get("identity_status")
+            or ""
+        ).strip().casefold()
+        if explicit_status in {"matched", "unresolved", "ambiguous"}:
+            status = explicit_status
+        elif (
+            location is not None
+            and location.identity_status == "ambiguous"
+        ):
+            status = "ambiguous"
+        else:
+            status = "unresolved"
+        if status == "matched" and not physical_mac:
+            status = "unresolved"
+        source = str(
+            row.get("peer_identity_source")
+            or row.get("identity_source")
+            or row.get("peer_resolve_source")
+            or (location.identity_source if location is not None else "")
+            or ""
+        ).strip()
+        rule = str(
+            row.get("peer_match_rule")
+            or row.get("identity_rule")
+            or row.get("match_rule")
+            or ""
+        ).strip()
+        reason = str(
+            row.get("peer_identity_reason")
+            or row.get("identity_reason")
+            or (location.identity_reason if location is not None else "")
+            or ""
+        ).strip()
+        confidence = cls._int(
+            row.get("peer_match_confidence")
+            if row.get("peer_match_confidence") is not None
+            else row.get("identity_confidence")
+        ) or 0
+        return {
+            "identity_status": status,
+            "identity_source": source or None,
+            "identity_rule": rule or None,
+            "identity_confidence": confidence,
+            "identity_reason": reason or None,
+        }
+
+    @classmethod
+    def _resolved_ap_mac(
+        cls,
+        row: dict[str, Any],
+        location: MeshApLocation | None = None,
+    ) -> str | None:
+        if cls._identity_payload(row, location)["identity_status"] != "matched":
+            return None
+        return (
+            str(
+                row.get("canonical_ap_mac")
+                or row.get("peer_ap_mac")
+                or row.get("ap_mac")
+                or (location.mac if location is not None else "")
+                or ""
+            ).strip()
+            or None
+        )
+
+    @classmethod
+    def _resolved_ap_name(
+        cls,
+        row: dict[str, Any],
+        location: MeshApLocation | None = None,
+    ) -> str | None:
+        if cls._resolved_ap_mac(row, location) is None:
+            return None
+        return (
+            str(
+                row.get("resolved_ap_name")
+                or row.get("peer_ap_name")
+                or row.get("ap_name")
+                or (location.name if location is not None else "")
+                or ""
+            ).strip()
+            or None
+        )
+
+    @classmethod
+    def _resolved_location_value(
+        cls,
+        row: dict[str, Any],
+        location: MeshApLocation | None,
+        field: str,
+    ) -> str | None:
+        if cls._resolved_ap_mac(row, location) is None:
+            return None
+        fallback_fields = {
+            "station": ("peer_site", "station", "belong_station"),
+            "section": ("peer_section", "section", "belong_section"),
+            "mileage": ("mileage",),
+            "line_side": ("line_side",),
+        }
+        location_value = str(getattr(location, field, "") if location is not None else "").strip()
+        if location_value:
+            return location_value
+        return next(
+            (
+                str(row.get(key) or "").strip()
+                for key in fallback_fields.get(field, ())
+                if str(row.get(key) or "").strip()
+            ),
+            None,
+        )
 
     @staticmethod
     def _connect_readonly(path: Path) -> sqlite3.Connection:

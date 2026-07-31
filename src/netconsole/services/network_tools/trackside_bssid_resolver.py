@@ -36,7 +36,7 @@ class TracksideApIdentity:
 
 class TracksideApBssidResolver:
     def __init__(self, aps: list[dict[str, object]] | None = None) -> None:
-        """Create an exact-match-only in-memory adapter for legacy unit callers."""
+        """Create a Radio/BSSID exact-match in-memory adapter for unit callers."""
 
         self._query_service: ApIdentityQueryService | None = None
         self.aps = [
@@ -45,17 +45,7 @@ class TracksideApBssidResolver:
             if normalize_mac_key(ap.ap_mac) or ap.ap_name or ap.point_code
         ]
         self.radio_mac_map: dict[str, list[tuple[TracksideApIdentity, int | None, str]]] = defaultdict(list)
-        self.ap_mac_map: dict[str, list[TracksideApIdentity]] = defaultdict(list)
-        self.peer_name_map: dict[str, list[TracksideApIdentity]] = defaultdict(list)
         for ap in self.aps:
-            for peer_name in ap.peer_names:
-                key = _name_key(peer_name)
-                if key:
-                    self.peer_name_map[key].append(ap)
-            mac = normalize_mac_key(ap.ap_mac)
-            if not mac:
-                continue
-            self.ap_mac_map[mac].append(ap)
             for radio_mac, radio_id, source in ap.radio_macs:
                 self.radio_mac_map[radio_mac].append((ap, radio_id, source))
 
@@ -82,39 +72,16 @@ class TracksideApBssidResolver:
         if not bssid:
             return TracksideBssidMatch(matched=False, match_status="invalid_mac")
         if self._query_service is not None:
-            return _query_match(self._query_service.resolve_mac(bssid, peer_name=peer_name))
+            return _query_match(
+                self._query_service.resolve_peer_mac(
+                    bssid,
+                    peer_name=peer_name,
+                )
+            )
 
         match = self._single_match([(ap, radio_id, source) for ap, radio_id, source in self.radio_mac_map.get(bssid, [])])
         if match is not None:
             return match
-
-        match = self._single_match(
-            [
-                (
-                    ap,
-                    None,
-                    (
-                        "ac_ap_mac_exact"
-                        if ap.belonging_source in {"fit_ap", "ac_runtime"}
-                        else "base_ap_mac_exact"
-                    ),
-                )
-                for ap in self.ap_mac_map.get(bssid, [])
-            ]
-        )
-        if match is not None:
-            return match
-
-        name_key = _name_key(peer_name)
-        if name_key:
-            match = self._single_match(
-                [
-                    (ap, None, "ap_name_exact")
-                    for ap in self.peer_name_map.get(name_key, [])
-                ]
-            )
-            if match is not None:
-                return match
         return TracksideBssidMatch(matched=False, match_status="unmatched")
 
     def _single_match(self, candidates: list[tuple[TracksideApIdentity, int | None, str]]) -> TracksideBssidMatch | None:

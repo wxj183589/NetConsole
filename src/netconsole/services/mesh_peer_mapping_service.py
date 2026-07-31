@@ -24,7 +24,7 @@ class MeshPeerMappingService:
         service = self._get_query_service()
         if service is None:
             return _unresolved(peer)
-        match = service.resolve_mac(peer, peer_name=peer_name)
+        match = service.resolve_peer_mac(peer, peer_name=peer_name)
         if not match.matched:
             return _unresolved(
                 peer,
@@ -42,7 +42,6 @@ class MeshPeerMappingService:
             if radio_id
             or "radio" in radio_rule
             or "bssid" in radio_rule
-            or radio_rule == "h3c_radio_block_36"
             else ""
         )
         ap_mac_key = normalize_mac_key(match.effective_ap_mac) or ""
@@ -121,7 +120,7 @@ def _unresolved(
         "peer_ap_mac": "",
         "peer_radio_id": None,
         "peer_radio_label": "",
-        "peer_radio_mac": "",
+        "peer_radio_mac": peer_mac,
         "peer_site": "",
         "peer_section": "",
         "belong_type": "unknown",

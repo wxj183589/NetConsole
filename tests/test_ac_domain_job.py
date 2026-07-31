@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+import json
 
 import pytest
 
@@ -195,8 +196,12 @@ def test_ac_fit_ap_resource_job_finished_failed_and_cancelled(monkeypatch: pytes
 
     finished = run_job(job, progress_callback=lambda stage, *_args: progress.append(stage))
     assert finished.ok is True
-    assert finished.result["collection"]["source"] == "cli"
-    assert finished.result["resources"][0]["ap_name"] == "AP-01"
+    assert finished.result["ac_uuid"] == "ac-001"
+    assert finished.result["fit_ap_resources_updated"] == 1
+    assert finished.result["data_persisted"] is True
+    assert finished.result["reload_required"] is True
+    assert "resources" not in finished.result
+    assert len(json.dumps(finished.to_event(), ensure_ascii=False).encode("utf-8")) < 64 * 1024
     assert progress == ["ac_fit_ap_collect"]
 
     state["mode"] = "failed"
@@ -208,6 +213,55 @@ def test_ac_fit_ap_resource_job_finished_failed_and_cancelled(monkeypatch: pytes
     cancelled = run_job(job)
     assert cancelled.cancelled is True
     assert cancelled.error == "用户已取消更新"
+
+
+def test_ac_fit_ap_collect_terminal_payload_is_bounded_for_large_snapshot() -> None:
+    resources = [
+        {
+            "ap_uuid": f"ap-{index}",
+            "ap_name": f"轨旁 AP {index:04d} 中文名称",
+            "ap_mac": f"74adcb9d{index // 256:02x}{index % 256:02x}",
+            "lldp_neighbor": "交换机端口",
+            "description": "x" * 120,
+        }
+        for index in range(974)
+    ]
+    result = AcResourceRefreshResult(
+        True,
+        "cli",
+        AcResourceSnapshot("ac-large", {"revision": "r-974"}, resources),
+        collect_run_uuid="run-974",
+        fit_ap_resources_updated=974,
+        lldp_rows_parsed=758,
+        summary_updated=True,
+    )
+
+    payload = result.to_terminal_payload()
+    frame = json.dumps(
+        {
+            "type": "finished",
+            "job_id": "large-terminal",
+            "result": payload,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    assert len(frame) < 64 * 1024
+    assert payload == {
+        "ac_uuid": "ac-large",
+        "collect_run_uuid": "run-974",
+        "success": True,
+        "fit_ap_resources_updated": 974,
+        "unauthenticated_rows_updated": 0,
+        "bbssid_rows_parsed": 0,
+        "lldp_rows_parsed": 758,
+        "failed_commands": [],
+        "summary_updated": True,
+        "snapshot_revision": "r-974",
+        "data_persisted": True,
+        "reload_required": True,
+    }
 
 
 def test_ac_fit_ap_resource_job_keeps_legacy_load_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

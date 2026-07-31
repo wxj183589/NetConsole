@@ -65,9 +65,10 @@ AC 绑定。
 
 ## 4. 实体合并与冲突
 
-索引构建器按 AP UUID、相同 MAC、序列号和唯一名称合并来源。有效身份
-优先使用 AC 运行数据；AC 不存在或暂时没有该 AP 时，基础资料实体继续
-有效。
+索引构建器只按稳定 AP UUID、完整规范化 AP MAC 或唯一序列号合并来源。
+AP 名称和点位码不再作为物理实体合并依据；同名但 MAC 不同的记录必须
+保留为不同物理 AP。有效身份优先使用 AC 运行数据；AC 不存在或暂时
+没有该 AP 时，基础资料实体继续有效。
 
 AC 与基础资料 MAC 或名称不一致时：
 
@@ -80,34 +81,23 @@ AC 与基础资料 MAC 或名称不一致时：
 
 ## 5. 匹配优先级
 
-`ApIdentityQueryService.resolve_mac()` 按层短路，只有当前层没有候选时
-才进入下一层：
+通用 `resolve_mac()` 只查询完整 48 位精确别名，按层短路：
 
 1. AC 实际 Radio MAC；
 2. AC 实际 BSSID；
 3. AC 实际 BBSSID；
-4. AC FIT-AP AP MAC；
-5. AC AP MAC 的 H3C 36 位前缀衍生；
-6. 基础资料 AP MAC 的 H3C 36 位前缀衍生；
-7. 基础资料 AP MAC 精确匹配；
-8. 历史兼容 MAC 精确匹配；
-9. AP 名称兼容匹配。
+4. 公共 H3C R1/R2 函数生成的完整精确 Radio alias；
+5. AC FIT-AP AP MAC；
+6. 基础资料 AP MAC；
+7. 历史兼容 MAC。
 
-名称仅是最后兼容路径。位置、站点、区间和里程用于结果展示和诊断，
-不用于在同层多实体之间强行消歧。
+MESH Peer 使用独立的 `resolve_peer_mac()`。Peer 是 Radio/BSSID 观测，
+生产匹配只允许前三类 AC 实际精确值或完整 H3C R1/R2 精确 alias；
+即使 Peer 恰好命中 AP 基础 MAC，也不能据此认定它代表物理 AP。
 
-真实无 AC 示例：
-
-```text
-基础资料 AP MAC: 4873-97cc-e0e0
-MESH PeerMac:    4873-97cc-e9af
-匹配规则:        h3c_radio_block_36
-来源:            base_data
-```
-
-AC 后续提供同一 Radio MAC 时，结果改用
-`actual_radio_mac_exact`、`actual_bssid_exact` 或
-`actual_bbssid_exact`，有效 AP 身份使用 AC 数据。
+两条查询都不再使用 36/40 位或 OUI 前缀、名称、MAC-like 名称、位置、
+站点或“唯一候选”推测。没有完整精确证据时返回 `unresolved`；同一
+优先级精确 alias 指向多个实体时返回 `ambiguous`。
 
 ## 6. 持久化结构
 
@@ -115,7 +105,7 @@ AC 后续提供同一 Radio MAC 时，结果改用
 
 - `ap_identity_entities`：物理 AP 的有效身份和各来源原值；
 - `ap_identity_mac_aliases`：AP、Radio、BSSID 和兼容 MAC 别名；
-- `ap_identity_h3c_prefixes`：AC 与基础资料 AP MAC 的 36 位前缀；
+- `ap_identity_h3c_prefixes`：保留的历史诊断数据，生产查询不读取；
 - `ap_identity_conflicts`：AC/Base 不一致及可审计上下文；
 - `ap_identity_index_state`：revision、构建原因、来源计数和时间。
 
@@ -146,9 +136,14 @@ MESH 分析、历史报告和页面刷新都是只读操作，数据库指纹在
 - AC AP MAC、基础资料 AP MAC、基础资料记录 ID；
 - 冲突状态和 `AP_IDENTITY_AC_BASE_CONFLICT`。
 
-搜索 Radio/BSSID 或 H3C 衍生 MAC 时，结果返回对应物理 AP，并区分
-“查询/命中 MAC”和“有效 AP MAC”。业务 DTO 可以按现有领域契约裁剪，
-但不得重新实现 H3C 推导或维护第二套 MAC 索引。
+搜索 Radio/BSSID 或完整 H3C R1/R2 衍生 alias 时，结果返回对应物理
+AP，并区分“查询/命中 MAC”和“有效 AP MAC”。业务 DTO 可以按现有
+领域契约裁剪，但不得重新实现 H3C 推导或维护第二套 MAC 索引。
+
+MESH DTO、页面和导出必须同时保留原始 Peer、规范化 Peer Radio 观测与
+解析出的 AP 身份。`unresolved/ambiguous` 时原始 Peer 继续显示，AP
+名称、物理 AP MAC、站点、区间和里程保持空值，并携带状态、规则、
+来源、置信度和原因。
 
 ## 9. 兼容与回滚边界
 

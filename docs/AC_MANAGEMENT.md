@@ -17,11 +17,17 @@ Vue AC 管理 -> POST /api/ac-management/refresh/fit-ap
   -> AcWebApplicationService -> ac_fit_ap_resources_refresh Job
   -> AcResourceService -> H3C CLI collector/parser -> AcRepository
   -> 当前局点 devices.db + raw/commands JSONL
-  -> web-tasks 恢复模块结果 + 全局任务中心抽屉/页面停止、日志与 Artifact
-  -> Vue 刷新结构化结果
+  -> Worker 终态返回有界持久化摘要 + reload_required
+  -> Vue 通过分页 GET 重新读取 SQLite + 全局任务中心展示任务详情
 ```
 
 查询仍通过 SQLite URI `mode=ro` 和 `PRAGMA query_only=ON`；写入只发生在后台采集 Worker 的 `AcRepository`。数据库升级仅对 `ac_fit_ap_resources` 与 Radio history 执行幂等加列，不删除、不重建主库。
+
+`ac_fit_ap_resources_refresh` 的 collect 终态不再携带完整 FIT-AP 资源、
+LLDP、BSSID 或 raw，只返回更新计数、collect run、失败命令摘要、
+snapshot revision、`data_persisted` 和 `reload_required`。这使采集回执
+与资源查询彻底分离，避免大局点结果超过 Worker 1 MiB 单帧限制。
+兼容 `mode=load` 仍可返回完整快照；活动页面使用正式分页接口读取资源。
 
 ## 页面能力
 

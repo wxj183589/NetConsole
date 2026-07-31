@@ -72,12 +72,7 @@ Web 入口 `/rail-transit/base-data` 复用当前局点 `devices.db`，不新增
 Peer Name/Peer MAC = 车载 MR
 ```
 
-Web 对外 DTO 从车载 MR 视角命名为 `peer_ap_*`，但匹配事实仍来自 AC 输出中的本地 AP 字段。匹配顺序为：
-
-1. Local MAC 精确匹配 FIT-AP 基础 MAC 或明确的 Mesh Radio BSSID；
-2. Local AP Name 精确匹配 AP 名称；
-3. 规范化名称唯一匹配；
-4. 无匹配或多匹配时保留原始名称/MAC并返回 warning，不选择第一条、不猜测。
+Web 对外 DTO 从车载 MR 视角命名为 `peer_ap_*`，但匹配事实仍来自 AC 输出中的本地 AP 字段。Local MAC 按 Radio/BSSID 观测处理，只允许统一 AP Identity 索引中的实际 Radio/BSSID/BBSSID 或公共 H3C R1/R2 函数生成的完整精确 alias。即使 Local MAC 命中 AP 基础 MAC，或 Local AP Name 与某台 AP 同名，也不能据此绑定物理 AP；无匹配或多匹配时保留原始名称/MAC并返回 warning，不选择第一条、不猜测。
 
 MR 先按 Peer Name 与设备管理名称精确匹配，再按唯一的列车号和 CT/CW 端匹配。AP 扩展信息只补充站点、区间、里程、方向和两侧收光，不修改原始 Mesh-Link 事实。公开 Mesh-Link 记录不再返回链路状态、信道、带宽、AP 在线状态和光衰状态旧字段；快照中的原始链路状态仅作内部新鲜度/在线计算事实，不构成兼容契约。
 
@@ -101,7 +96,7 @@ Query Service 使用 SQLite `mode=ro` 和 `PRAGMA query_only=ON`，不实例化�
 
 只有 `fresh` 且链路状态属于活动状态时，才计入当前在线和活动链路。列车页由 `VehicleMrOnlineQueryService` 组合现有 `AcMeshLinkQueryService`，每列车一行返回 CT/CW 两个物理端位；Vue 不重新匹配 AP/MR，也不判断双端、单端、离线或过期。缺失字段返回 `null` 并显示“—”。
 
-公开列车状态固定为 `BOTH_ONLINE / ONE_SIDE_ONLINE / BOTH_OFFLINE / STALE / UNKNOWN`。端点状态固定为 `ONLINE / OFFLINE / STALE / UNKNOWN`，匹配状态固定为 `EXACT / NAME_NORMALIZED / MAC_MATCHED / UNMATCHED / UNKNOWN`。Canonical AP Identity 仍只用于 shadow/diagnostics，本轮没有接管生产匹配。
+公开列车状态固定为 `BOTH_ONLINE / ONE_SIDE_ONLINE / BOTH_OFFLINE / STALE / UNKNOWN`。端点状态固定为 `ONLINE / OFFLINE / STALE / UNKNOWN`，匹配状态固定为 `EXACT / NAME_NORMALIZED / MAC_MATCHED / UNMATCHED / UNKNOWN`。AC Mesh-Link、Vehicle MR 和无线扫描的 AP 观测已统一使用 AP Identity 生产索引；名称、AP 基础 MAC、36 位前缀和唯一候选推测不再作为 Radio/BSSID 的生产匹配依据。
 
 旧 AC Mesh-Link 快照没有对应原始回显时，`/raw-tail` 继续返回 `available=false`，不得改用车载侧 Online MR 日志冒充。5C-5A 新任务把完整 UTF-8 回显保存到 `files/rail_transit/ac_mesh_link/snapshots/<session_id>/raw/`，API 只返回局点内相对引用。失败 raw 转入受控 failure 目录，失败任务不覆盖最新成功快照。
 

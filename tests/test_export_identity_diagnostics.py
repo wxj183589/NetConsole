@@ -121,13 +121,15 @@ def test_mesh_export_keeps_workbook_contract_and_returns_diagnostics(tmp_path: P
         "采样标识",
         "Radio",
         "状态",
-        "PeerMac",
-        "当前 PEER AP 名称",
-        "AP MAC",
+        "原始 Peer MAC",
+        "解析 AP 名称",
+        "物理 AP MAC",
         "归属站点",
     ]
     assert "归属来源" not in headers
     assert "Peer Radio MAC" in headers
+    assert "匹配规则" in headers
+    assert "身份来源" in headers
     assert {"MR 侧 RSSI 差值", "Peer 侧 RSSI 差值", "L_TxBusy", "P_RxBusy", "行号"} <= set(headers)
     assert sheet.freeze_panes == "A2"
     assert sheet.auto_filter.ref
@@ -145,6 +147,8 @@ def test_mesh_link_detail_export_includes_analysis_parameters_sheet(tmp_path: Pa
         "belong_section": "区间A",
         "peer_radio": "radio1",
         "peer_radio_mac": "30f5277a5a2f",
+        "identity_rule": "actual_radio_mac_exact",
+        "identity_source": "ac_runtime",
         "build_start_time": "2026-07-11 10:00:00.000",
         "build_end_time": "2026-07-11 10:00:01.000",
         "main_link_duration_seconds": 2.0,
@@ -170,6 +174,11 @@ def test_mesh_link_detail_export_includes_analysis_parameters_sheet(tmp_path: Pa
     assert [cell.value for cell in workbook["主链路明细"][1]] == [header for header, _field in ACTIVE_BUILD_ORDER_EXPORT_COLUMNS]
     assert workbook["链路明细"].max_row == 2
     assert workbook["主链路明细"].max_row == 2
+    active_headers = [cell.value for cell in workbook["主链路明细"][1]]
+    active_values = [cell.value for cell in workbook["主链路明细"][2]]
+    assert active_values[active_headers.index("原始 Peer MAC")] == "30f5-277a-5a2f"
+    assert active_values[active_headers.index("匹配规则")] == "actual_radio_mac_exact"
+    assert active_values[active_headers.index("身份来源")] == "ac_runtime"
     assert workbook["分析参数"]["A5"].value == "基准时间(ms)"
     assert workbook["分析参数"]["B5"].value == 4000
     assert "_netconsole_meta" not in workbook.sheetnames

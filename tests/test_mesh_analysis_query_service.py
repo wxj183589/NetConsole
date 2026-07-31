@@ -134,6 +134,58 @@ def test_reads_persisted_mesh_results_without_modifying_sources(tmp_path: Path) 
     assert before == [_fingerprint(path) for path in protected]
 
 
+def test_real_peer_observation_stays_unresolved_across_mesh_dtos(tmp_path: Path) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    with sqlite3.connect(detail) as conn:
+        conn.execute(
+            """
+            UPDATE mesh_links
+            SET peer_mac_raw = '642f-c778-ef5f',
+                peer_mac_normalized = '642fc778ef5f',
+                peer_mac = '642fc778ef5f',
+                peer_ap_name = 'AP2011',
+                peer_ap_mac = '642fc778eda0',
+                peer_identity_status = 'unresolved',
+                peer_identity_source = '',
+                peer_identity_reason = 'no_exact_radio_or_bssid'
+            WHERE id = 1
+            """
+        )
+        conn.execute(
+            """
+            UPDATE active_points
+            SET peer_mac_raw = '642f-c778-ef5f',
+                peer_mac_normalized = '642fc778ef5f',
+                peer_mac = '642fc778ef5f',
+                peer_ap_name = 'AP2011',
+                peer_site = '现场站点'
+            WHERE id = 1
+            """
+        )
+
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    link = service.list_link_details("demo", session_id, page_size=10).items[0]
+    build = next(
+        item
+        for item in service.list_active_build_order("demo", session_id, page_size=10).items
+        if item.anchor_link_id == 1
+    )
+    chart = service.get_active_path_chart("demo", session_id, radio=1, max_points=10)
+    point = next(item for item in chart.points if item.link_id == 1)
+
+    assert link.peer_mac_raw == "642f-c778-ef5f"
+    assert link.peer_ap_name is None
+    assert link.peer_ap_mac is None
+    assert link.identity_status == "unresolved"
+    assert build.peer_mac_raw == "642f-c778-ef5f"
+    assert build.peer_ap_name is None
+    assert build.peer_ap_mac is None
+    assert point.peer_mac == "642fc778ef5f"
+    assert point.peer_ap_name is None
+    assert point.peer_ap_mac is None
+    assert point.identity_status == "unresolved"
+
+
 def test_catalog_index_serves_summary_and_page_without_opening_detail_databases(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -185,7 +237,15 @@ def test_link_pagination_and_existing_artifact_metadata(tmp_path: Path) -> None:
     sidecar.write_text("{}", encoding="utf-8")
     name, targets = service.artifact_delete_targets("demo", session_id, report_artifact.artifact_id)
     assert name == report_artifact.name
-    assert set(targets) == {_report.resolve(), sidecar.resolve()}
+    manifest = next(
+        (
+            paths.rail_transit_root("demo")
+            / "web_artifacts"
+            / "manifests"
+        ).glob("*.json")
+    )
+    assert set(targets) == {_report.resolve(), manifest.resolve()}
+    assert sidecar.resolve() not in targets
     raw_artifact = next(item for item in artifacts if item.artifact_type == "raw_mesh_log")
     with pytest.raises(MeshAnalysisQueryError, match="原始导入日志不允许"):
         service.artifact_delete_targets("demo", session_id, raw_artifact.artifact_id)
@@ -374,6 +434,33 @@ def test_active_chart_keeps_tagged_gap_and_standby_context_isolated(tmp_path: Pa
     assert tagged.backups[0].local_signal == -56
     assert tagged.backups[0].peer_signal == -54
     assert before == _fingerprint(detail)
+
+
+def test_chart_and_active_order_tolerate_legacy_detail_without_identity_columns(
+    tmp_path: Path,
+) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    with sqlite3.connect(detail) as conn:
+        for column in (
+            "peer_identity_status",
+            "peer_identity_source",
+            "peer_identity_reason",
+            "peer_match_confidence",
+        ):
+            conn.execute(f"ALTER TABLE mesh_links DROP COLUMN {column}")
+
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    chart = service.get_active_path_chart("demo", session_id, radio=1, max_points=10)
+    build_order = service.list_active_build_order("demo", session_id, page_size=10)
+
+    assert chart.points
+    assert chart.points[0].identity_status == "unresolved"
+    assert chart.points[0].peer_ap_name is None
+    assert chart.points[0].peer_ap_mac is None
+    assert build_order.items
+    assert build_order.items[0].identity_status == "unresolved"
+    assert build_order.items[0].peer_ap_name is None
+    assert build_order.items[0].peer_ap_mac is None
 
 
 def test_chart_time_range_filters_peer_payload_and_rejects_invalid_order(tmp_path: Path) -> None:
@@ -904,9 +991,12 @@ def test_trackside_signal_chart_uses_legacy_backup_context_without_duplication(t
     assert chart.total_link_points == 2
     assert chart.active_link_points == 1
     assert chart.standby_link_points == 1
-    assert {point.peer_ap_name for series in chart.series for point in series.points} == {
-        "AP-A",
-        "AP-B",
+    points = [point for series in chart.series for point in series.points]
+    assert {point.peer_ap_name for point in points} == {None}
+    assert {point.identity_status for point in points} == {"unresolved"}
+    assert {point.peer_mac for point in points} == {
+        "00000000000a",
+        "00000000000b",
     }
     assert any("真实备链上下文补充 1 个备用链路点" in warning for warning in chart.warnings)
 

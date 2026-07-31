@@ -72,6 +72,29 @@ class AcResourceRefreshResult:
             },
         }
 
+    def to_terminal_payload(self) -> dict[str, object]:
+        """Worker 终态只回执持久化摘要，资源列表通过分页查询读取。"""
+
+        snapshot_revision = (
+            self.snapshot.summary.get("snapshot_revision")
+            or self.snapshot.summary.get("revision")
+            or ""
+        )
+        return {
+            "ac_uuid": self.snapshot.ac_device_uuid,
+            "collect_run_uuid": self.collect_run_uuid,
+            "success": bool(self.success),
+            "fit_ap_resources_updated": int(self.fit_ap_resources_updated),
+            "unauthenticated_rows_updated": int(self.unauthenticated_rows_updated),
+            "bbssid_rows_parsed": int(self.bbssid_rows_parsed),
+            "lldp_rows_parsed": int(self.lldp_rows_parsed),
+            "failed_commands": [str(item) for item in self.failed_commands],
+            "summary_updated": bool(self.summary_updated),
+            "snapshot_revision": str(snapshot_revision),
+            "data_persisted": bool(self.success),
+            "reload_required": bool(self.success),
+        }
+
 
 @dataclass(frozen=True)
 class AcOpticalRefreshRequest:

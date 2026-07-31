@@ -1,5 +1,18 @@
 # NetConsole 更新日志
 
+## Unreleased - 2026-07-31
+
+### MESH Peer 身份与来源治理
+
+- MR/MESH Peer 生产匹配移除 H3C 36 位前缀和 Peer 名称回退，只接受实际 Radio/BSSID/BBSSID 或公共 R1/R2 函数生成的完整精确 alias；无证据和多候选分别保守返回 `unresolved/ambiguous`。
+- 原始 Peer、Peer Radio 与解析物理 AP 身份在数据库查询、页面、图表、主链路、报告和链路明细中分层展示；同名不同 MAC 不再合并为同一物理 AP，历史 detail 库缺少新身份列时继续只读兼容。
+- 来源列表、批量操作和当前详情新增受控删除：可只删解析结果并从归档 raw 重建，也可删除当前数据根内归档副本、派生结果、指纹和关联报告后重新导入；外部原文件永不删除，失败使用 quarantine 补偿恢复。
+
+### Worker 协议与 FIT-AP 刷新
+
+- FIT-AP collect 终态改为有界持久化摘要，不再携带完整资源列表；974 AP、758 LLDP 规模由任务摘要回执，页面通过分页 GET 重新加载 SQLite。
+- Worker 写帧前执行 1 MiB 字节检查，超大结果改发小型结构化错误；协议失败等待子进程退出后发布唯一终态，并在任务详情展示 reason、stream、frame/max bytes、exit code 和数据是否已落库，不影响 Backend 健康接口。
+
 ## v1.4.6 - 2026-07-30
 
 ### 全局查询部分刷新稳定性

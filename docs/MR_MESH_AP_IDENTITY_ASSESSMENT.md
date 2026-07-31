@@ -11,7 +11,7 @@
 ```text
 基础资料 + AC FIT-AP/Radio + 历史兼容数据
                     ↓
-devices.db AP Identity 实体、MAC 别名、H3C 前缀、冲突
+devices.db AP Identity 实体、精确 MAC/Radio 别名、冲突
                     ↓
 ApIdentityQueryService
                     ↓
@@ -21,12 +21,14 @@ ApIdentityQueryService
 ## 2. 生产边界
 
 `peer_mac`、`peer_radio_mac`、Radio MAC、BSSID 和 BBSSID 仍是空口
-观测，不会写回为物理 AP MAC。统一查询通过实际 Radio/BSSID、AP MAC
-或 H3C 36 位前缀找到物理 AP，并返回命中规则和来源。
+观测，不会写回为物理 AP MAC。MESH Peer 查询只通过实际 Radio、
+BSSID/BBSSID 或公共 H3C R1/R2 函数生成的完整 48 位精确 alias 找到
+物理 AP，并返回命中规则和来源。
 
-无 AC 时，基础资料 AP MAC 可以独立生成 H3C 前缀索引。MESH 导入、
-历史重算、RSSI、主链路、切换事件、图表和报告不得要求 AC 绑定，也
-不得触发 AC 网络访问。
+基础资料 AP MAC 可以在索引构建时生成完整 R1/R2 alias，但生产查询
+不读取 `ap_identity_h3c_prefixes`，也不按名称、位置、站点或 AP 基础
+MAC回退。MESH 导入、历史重算、RSSI、主链路、切换事件、图表和报告
+不得要求 AC 绑定，也不得触发 AC 网络访问。
 
 AC 存在时，实际 Radio/BSSID 和 FIT-AP 数据优先。AC 与基础资料冲突
 不会阻断分析；有效身份使用 AC，基础资料原值和冲突记录继续保留。
@@ -49,22 +51,25 @@ H3C Radio MAC。`ap_entities`、`ac_fit_ap_optical` 和
 
 匹配优先级固定为：
 
-1. AC 实际 Radio/BSSID/BBSSID；
-2. AC FIT-AP AP MAC；
-3. AC AP MAC 的 H3C 衍生；
-4. 基础资料 AP MAC 的 H3C 衍生；
-5. 基础资料 AP MAC；
-6. legacy exact；
-7. 名称兼容。
+1. AC 实际 Radio MAC；
+2. AC 实际 BSSID；
+3. AC 实际 BBSSID；
+4. H3C R1/R2 完整精确衍生 alias；
+5. 没有候选时返回 `unresolved`。
 
-同一优先级命中多个物理 AP 时返回 `ambiguous`。较低优先级候选不会
-推翻已经唯一命中的高优先级结果。名称和位置不能静默消除 MAC 歧义。
+同一优先级命中多个物理 AP 时返回 `ambiguous`。`peer_name` 只保留
+展示和诊断用途，不能把 `unresolved` 变成 `matched`。AP 基础 MAC、
+36/40 位前缀、MAC 范围、位置和站点均不能参与 MESH Peer 生产回退。
 
 ## 5. 原始数据与派生数据
 
 原始 MESH 日志、raw line、文件偏移、采集会话和 source file ID 始终
 是证据源，统一索引不会改写它们。detail DB 中的 mapping/cache、
 Online MR parsed DB 和报告字段是可重算的派生结果。
+
+页面、图表、主链路、链路 DTO 和导出分别携带原始 Peer、解析 AP 名称、
+物理 AP MAC及身份状态/来源/规则/置信度/原因。没有精确证据时仅保留
+原始 Peer，解析身份和位置字段为空。
 
 普通解析和查询只读取统一索引。来源变化后由基础资料写入、AC 刷新、
 Backend 首次启动或局点包 staging 导入负责重建；不能把“刷新 AC”作为
@@ -74,14 +79,18 @@ MESH 匹配的人工前置步骤。
 
 生产接管至少覆盖：
 
-- 无 AC、仅基础资料的 AP0208 H3C PeerMac 匹配；
+- 无 AC、仅基础资料且公共 R1/R2 函数生成完整 alias 时的精确匹配；
 - 空 FIT-AP 表和缺少 `ac_device_uuid` 时保持可匹配；
 - AC 实际 Radio/BSSID 覆盖基础资料衍生结果；
 - AC 暂时消失后基础资料匹配继续有效；
 - 相同 MAC 合并为一个物理 AP；
+- 同名不同 MAC 不合并；
 - AC/Base 冲突使用 AC 并产生非阻断数据质量告警；
 - Radio MAC 搜索反查物理 AP；
-- legacy exact 不生成 H3C 前缀；
+- `642f-c778-ef5f` 在只有 `64:2f:c7:78:ed:a0 / AP2011` 且无完整
+  Radio alias 时必须返回 `unresolved`；
+- `peer_name` 相同仍不得回退匹配；
+- legacy exact 不生成 H3C alias；
 - MESH、Vehicle 和 Wireless 查询不修改数据库、不访问网络；
 - 匹配结果可进入页面和报告，且不会触发光衰采集。
 

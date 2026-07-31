@@ -490,6 +490,14 @@ function handleClosed(): void {
           <el-descriptions-item label="Mapping">{{ store.selected.mapping_state || '--' }}</el-descriptions-item>
           <el-descriptions-item label="错误码">{{ store.selected.error_code || '--' }}</el-descriptions-item>
           <el-descriptions-item label="消息">{{ store.selected.message || '--' }}</el-descriptions-item>
+          <template v-if="selectedDetails.reason || selectedDetails.stream || selectedDetails.frame_bytes !== undefined || selectedDetails.worker_exit_code !== undefined">
+            <el-descriptions-item label="Worker 终止原因">{{ stringDetail('reason') || '--' }}</el-descriptions-item>
+            <el-descriptions-item label="Worker 输出流">{{ stringDetail('stream') || '--' }}</el-descriptions-item>
+            <el-descriptions-item label="协议帧大小">{{ selectedDetails.frame_bytes ?? '--' }}</el-descriptions-item>
+            <el-descriptions-item label="协议帧上限">{{ selectedDetails.max_frame_bytes ?? '--' }}</el-descriptions-item>
+            <el-descriptions-item label="Worker 退出码">{{ selectedDetails.worker_exit_code ?? '--' }}</el-descriptions-item>
+            <el-descriptions-item label="数据是否已持久化">{{ selectedDetails.data_persisted === true ? '是' : selectedDetails.data_persisted === false ? '否' : '未知' }}</el-descriptions-item>
+          </template>
           <el-descriptions-item label="Session ID" :span="2"><code>{{ store.selected.session_id || '--' }}</code></el-descriptions-item>
           <template v-if="store.selected.type === 'ac_mesh_link_refresh'">
             <el-descriptions-item label="Mesh-Link 快照 ID">{{ store.selected.snapshot_id ?? '--' }}</el-descriptions-item>
