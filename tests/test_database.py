@@ -9,6 +9,20 @@ from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 
 
+def test_current_schema_initialize_skips_full_integrity_check(tmp_path, monkeypatch):
+    db = Database(tmp_path / "devices.db")
+    db.initialize()
+    integrity_calls = []
+
+    def record_integrity_call(_connection, _message):
+        integrity_calls.append(True)
+
+    monkeypatch.setattr(Database, "_assert_integrity", staticmethod(record_integrity_call))
+    db.initialize()
+
+    assert integrity_calls == []
+
+
 def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_path):
     db = Database(tmp_path / "devices.db")
     db.initialize()

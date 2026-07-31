@@ -21,7 +21,9 @@ from netconsole.backend.electron_runtime import (
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
+from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.ap_identity import ApIdentityQueryService
 
 
 TOKEN = "electron-test-token-abcdefghijklmnopqrstuvwxyz"
@@ -157,10 +159,15 @@ def test_startup_failure_protocol_is_ascii_and_preserves_chinese(monkeypatch, ca
         stdin=io.StringIO(f'{{"session_token":"{TOKEN}"}}\n'),
     )
     output = capsys.readouterr().out
+    events = [json.loads(line) for line in output.splitlines()]
 
     assert result == 3
     assert output.isascii()
-    assert json.loads(output)["message"] == "数据目录初始化失败"
+    assert [event["stage"] for event in events[:-1]] == [
+        "paths_resolved",
+        "instance_lock_acquired",
+    ]
+    assert events[-1]["message"] == "数据目录初始化失败"
 
 
 def test_exit_command_wait_ignores_unknown_messages_and_eof() -> None:
@@ -286,6 +293,41 @@ def test_electron_backend_initializes_legacy_active_site_before_device_query(
             ).glob("devices-site-*-before-work-scope-status-*.sqlite")
         )
     ) == 1
+
+
+def test_electron_backend_startup_does_not_rebuild_stale_identity_index(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(
+        app_root=tmp_path / "app",
+        data_root=tmp_path / "data",
+    )
+    paths.ensure_site_dirs("demo")
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    AcRepository(database).upsert_ap_extension_point(
+        {
+            "ap_name": "AP-STARTUP-STALE",
+            "ap_point_code": "AP-STARTUP-STALE",
+            "ap_vendor": "H3C",
+            "ap_mac_display": "74ad-cb9d-3320",
+            "station_name": "测试站",
+            "belong_type": "station",
+        }
+    )
+    before = ApIdentityQueryService(database).index_state()
+
+    build_app(
+        ElectronRuntimeOptions("127.0.0.1", 43123),
+        TOKEN,
+        paths=paths,
+    )
+
+    after = ApIdentityQueryService(database).index_state()
+    assert before is not None
+    assert after is not None
+    assert after["revision"] == before["revision"] == 0
+    assert after["source_revision"] == before["source_revision"] == -1
 
 
 def test_electron_runtime_does_not_publish_api_documentation(tmp_path, monkeypatch) -> None:

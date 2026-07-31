@@ -1491,6 +1491,7 @@ class Database:
             schema_version_before = ""
             address_migration = False
             classification_migration = False
+            identity_schema_migration = False
             try:
                 conn = self.connect()
                 stage = "configure"
@@ -1500,6 +1501,9 @@ class Database:
                     schema_version_before = self._safe_schema_version(conn)
                     address_migration = self._requires_device_address_migration(conn)
                     classification_migration = self._requires_device_classification_migration(
+                        conn
+                    )
+                    identity_schema_migration = self._requires_ap_identity_schema_migration(
                         conn
                     )
                     if address_migration or classification_migration:
@@ -1530,7 +1534,15 @@ class Database:
                 stage = "credential_state_repair"
                 repair_device_credential_states(conn)
                 stage = "integrity_check"
-                self._assert_integrity(conn, "设备数据库迁移后完整性校验失败")
+                requires_integrity_check = (
+                    not existed
+                    or address_migration
+                    or classification_migration
+                    or identity_schema_migration
+                    or schema_version_before != CURRENT_SCHEMA_VERSION
+                )
+                if requires_integrity_check:
+                    self._assert_integrity(conn, "设备数据库迁移后完整性校验失败")
                 stage = "schema_version"
                 self._write_schema_version(conn)
                 stage = "commit"
@@ -2087,6 +2099,27 @@ class Database:
             ).fetchone()
             is not None
         )
+
+    def _requires_ap_identity_schema_migration(self, conn: sqlite3.Connection) -> bool:
+        if not self._table_exists(conn, "ap_identity_index_state"):
+            return True
+        required_columns = {
+            "source_revision",
+            "actual_radio_alias_count",
+            "actual_bssid_alias_count",
+            "actual_bbssid_alias_count",
+            "derived_alias_count",
+            "ambiguous_alias_count",
+            "build_duration_ms",
+            "diagnostics_json",
+        }
+        columns = {
+            str(row["name"])
+            for row in conn.execute(
+                "PRAGMA table_info(ap_identity_index_state)"
+            ).fetchall()
+        }
+        return not required_columns <= columns
 
     def _validate_device_classification_migration(
         self, conn: sqlite3.Connection

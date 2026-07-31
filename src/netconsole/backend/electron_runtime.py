@@ -6,6 +6,7 @@ import re
 import socket
 import sys
 import threading
+from time import monotonic
 from dataclasses import dataclass
 from typing import TextIO
 from urllib.parse import urlsplit
@@ -94,14 +95,20 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None) -> int:
     options = parse_options(argv)
     control_stream = stdin or sys.stdin
     session_token = read_session_token(control_stream)
+    started_at = monotonic()
     try:
         paths = PathResolver()
+        _emit_startup_stage("paths_resolved", started_at)
         with BackendInstanceLock(paths):
+            _emit_startup_stage("instance_lock_acquired", started_at)
             prepare_storage_manifest(paths)
+            _emit_startup_stage("storage_manifest_ready", started_at)
             app = build_app(options, session_token, paths=paths)
+            _emit_startup_stage("application_built", started_at)
             listener = socket.create_server((options.host, options.port), family=socket.AF_INET)
             actual_port = int(listener.getsockname()[1])
             try:
+                _emit_startup_stage("listener_ready", started_at)
                 print(
                     json.dumps(
                         {
@@ -148,6 +155,20 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None) -> int:
         )
         return 3
     return 0
+
+
+def _emit_startup_stage(stage: str, started_at: float) -> None:
+    print(
+        json.dumps(
+            {
+                "event": "netconsole.electron_backend.startup_stage",
+                "stage": stage,
+                "elapsed_ms": round((monotonic() - started_at) * 1000, 3),
+            },
+            separators=(",", ":"),
+        ),
+        flush=True,
+    )
 
 
 def watch_control_stream(stream: TextIO, server: uvicorn.Server) -> None:

@@ -84,7 +84,6 @@ from netconsole.services.rail_transit.station_template_service import StationTem
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
 from netconsole.services.rail_transit.train_communication_query_service import TrainCommunicationQueryService
 from netconsole.services.rail_transit.trackside_ap_business_query_service import TracksideApBusinessQueryService
-from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.rail_transit.vehicle_mr_online_query_service import VehicleMrOnlineQueryService
 from netconsole.services.rail_transit.wireless_dashboard_query_service import WirelessDashboardQueryService
 from netconsole.services.traffic.application_service import TrafficTestApplicationService
@@ -816,10 +815,6 @@ def _initialize_active_site_database(paths: PathResolver, site_name: str) -> Non
     if not database.exists():
         raise RuntimeError("当前局点设备数据库不存在，Backend 未启动")
     database.initialize()
-    rebuilt = ApIdentityQueryService(database).ensure_index("backend_startup")
-    if rebuilt is not None:
-        with database.connect() as connection:
-            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
 def _frontend_dist(paths: PathResolver) -> Path:

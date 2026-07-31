@@ -36,7 +36,10 @@ empty defaults, or an interrupted previous migration are repaired idempotently
 before any device Repository is constructed.
 
 Every active site database is initialized during Backend assembly, site
-creation, site activation, and package import staging. Existing databases are
+creation, site activation, and package import staging. A current database
+with the complete schema takes the idempotent fast path and does not run a
+full `PRAGMA integrity_check` on every Backend startup; new databases and
+actual schema migrations still run the integrity check. Existing databases are
 backed up only when a real device schema change is detected. The backup is
 created with SQLite Backup API and must pass `PRAGMA integrity_check`; a
 verified backup with the same database-state fingerprint is reused on a
@@ -116,10 +119,12 @@ remains independently usable when no AC exists. `ap_entities`,
 `ac_fit_ap_optical`, and `trackside_ap_view_cache` are compatibility sources
 for exact matching only.
 
-Backend startup builds the index only when source rows exist and the initialized
-revision is zero. Base-data writes, AC resource writes, and package import
-staging rebuild it explicitly. Ordinary GET, search, MESH, Vehicle MR, and
-Wireless queries are read-only and never rebuild the index. See
+Base-data writes, AC resource writes, and package import staging build or
+rebuild the Identity index explicitly. Ordinary GET, search, MESH, Vehicle MR,
+and Wireless queries are read-only and never rebuild the index. Backend startup
+does not rebuild a missing, stale, or legacy Identity index implicitly; such an
+index reports its stale/missing diagnostic until an explicit source-write
+rebuild completes. See
 [AP Identity](AP_IDENTITY.md).
 
 Current local tables:
