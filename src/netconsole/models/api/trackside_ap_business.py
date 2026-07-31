@@ -331,6 +331,7 @@ class ApManagementVlanAssignmentDTO(ApiModel):
     target_id: str
     group_id: str
     source: str = "ap_override"
+    created_at: str = ""
     updated_at: str = ""
 
 
@@ -348,6 +349,7 @@ class ApManagementVlanAllocationDTO(ApiModel):
     is_locked: bool = False
     source: str = "generated"
     group_source: str = ""
+    created_at: str = ""
     updated_at: str = ""
 
 

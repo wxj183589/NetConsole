@@ -9,12 +9,18 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from netconsole.backend.api.main import create_app
 from netconsole.core import app_logger
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.models.api.trackside_ap_business import (
+    ApManagementVlanAllocationDTO,
+    ApManagementVlanAssignmentDTO,
+    ApManagementVlanPlanningDTO,
+)
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 
 
@@ -184,6 +190,74 @@ def test_empty_plan_does_not_generate_station_rows(tmp_path: Path) -> None:
                 (TRACKSIDE_AP_PLAN_MODE,),
             ).fetchone()[0]
             == 0
+        )
+
+
+def test_plan_endpoint_accepts_persisted_planning_timestamps(
+    tmp_path: Path,
+) -> None:
+    _paths, database, app = _fixture(tmp_path)
+    stamp = "2026-07-30T05:45:23.081241+00:00"
+    with database.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO rail_ap_vlan_plans (
+                line_id, planning_mode, auto_group_station_count,
+                address_allocation_strategy, revision, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "current",
+                "station_independent",
+                1,
+                "station_then_point",
+                1,
+                stamp,
+                stamp,
+            ),
+        )
+        connection.commit()
+
+    with TestClient(app) as client:
+        response = client.get(PLAN_PATH)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["planning"]["created_at"] == stamp
+    assert payload["planning"]["updated_at"] == stamp
+
+
+def test_vlan_planning_dtos_accept_timestamps_and_reject_unknown_fields() -> None:
+    stamp = "2026-07-30T05:45:23+00:00"
+
+    planning = ApManagementVlanPlanningDTO.model_validate(
+        {"line_id": "current", "created_at": stamp, "updated_at": stamp}
+    )
+    assignment = ApManagementVlanAssignmentDTO.model_validate(
+        {
+            "assignment_id": "assignment-1",
+            "target_id": "ap-1",
+            "group_id": "group-1",
+            "created_at": stamp,
+            "updated_at": stamp,
+        }
+    )
+    allocation = ApManagementVlanAllocationDTO.model_validate(
+        {
+            "ap_id": "ap-1",
+            "group_id": "group-1",
+            "created_at": stamp,
+            "updated_at": stamp,
+        }
+    )
+
+    assert planning.created_at == stamp
+    assert assignment.created_at == stamp
+    assert allocation.created_at == stamp
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        ApManagementVlanPlanningDTO.model_validate(
+            {"line_id": "current", "unknown_field": "should-fail"}
         )
 
 
