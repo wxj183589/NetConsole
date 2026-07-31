@@ -43,6 +43,7 @@ from netconsole.services.online_mr.collection_paths import OnlineMrCollectionPat
 from netconsole.services.online_mr.errors import OnlineMrQueryError, OnlineMrQueryErrorCode
 from netconsole.services.online_mr_parser import parse_mesh_link_text
 from netconsole.services.online_mr_session_store import OnlineMrSessionStore
+from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.services.rail_transit.online_mr_diagnosis_parser import PARSER_VERSION
 
 
@@ -481,8 +482,8 @@ class OnlineMrQueryService:
                     "link_state": str(row["link_state"] or ""),
                     "link_state_normalized": str(row["link_state"] or ""),
                     "updated_at": self._text_or_none(sample["collected_at"]),
-                    "master": peer_name,
-                    "master_ap": peer_name,
+                    "master": peer_name or peer_mac or "未关联",
+                    "master_ap": peer_name or peer_mac or "未关联",
                     "peer_name": peer_name,
                     "peer_mac": peer_mac,
                     "peer_mac_normalized": str(row["peer_mac_normalized"] or ""),
@@ -520,7 +521,7 @@ class OnlineMrQueryService:
             metrics = active.metrics
             peer_name = str(metrics.get("resolved_peer_name") or metrics.get("peer_name") or "")
             peer_mac = str(active.peer_mac_raw or active.peer_mac_normalized or "")
-            master_ap = peer_name or peer_mac
+            master_ap = peer_name or peer_mac or "未关联"
             rssi = self._preview_rssi_dbm(active.local_signal_dbm, metrics.get("local_rssi_db"))
             message = "已从主链路原始日志尾部识别 ACTIVE 主链路"
             if len(active_records) > 1:
@@ -600,7 +601,8 @@ class OnlineMrQueryService:
 
     @staticmethod
     def _compact_mac_key(value: object) -> str:
-        return re.sub(r"[^0-9a-f]", "", str(value or "").casefold())
+        normalized = normalize_mac(value)
+        return normalized.replace(":", "") if normalized else ""
 
     @staticmethod
     def _has_value(value: object) -> bool:
@@ -1106,7 +1108,9 @@ class OnlineMrQueryService:
             current_link_state=str(current.get("link_state") or ""),
             current_peer_mac=str(current.get("peer_mac") or ""),
             current_peer_name=str(current.get("peer_name") or ""),
-            current_ap_mac=str(current.get("peer_mac") or current.get("peer_mac_normalized") or ""),
+            current_ap_mac=normalize_mac(
+                current.get("canonical_ap_mac") or current.get("peer_ap_mac")
+            ) or "",
             current_peer_radio_mac=str(current.get("bssid") or ""),
             current_station=str(current.get("belong_station") or ""),
             current_section=str(current.get("belong_section") or ""),
@@ -1170,16 +1174,23 @@ class OnlineMrQueryService:
         def make_item(row_data: dict[str, Any]) -> dict[str, Any]:
             device_time = self._text_or_none(row_data.get("device_time") or row_data.get("device_clock"))
             peer_mac = self._text_or_none(row_data.get("peer_mac") or row_data.get("peer_mac_normalized"))
+            canonical_ap_mac = normalize_mac(
+                row_data.get("canonical_ap_mac") or row_data.get("peer_ap_mac")
+            ) or ""
             peer_name = self._business_peer_name(
-                row_data.get("resolved_peer_name"),
-                row_data.get("peer_name"),
-            )
+                row_data.get("resolved_peer_name") if canonical_ap_mac else "",
+                row_data.get("peer_name") if canonical_ap_mac else "",
+            ) or ("未关联" if not canonical_ap_mac else None)
             return {
                 "device_time": device_time,
                 "radio": row_data.get("radio"),
                 "link_state": self._text_or_none(row_data.get("link_state")) or "ACTIVE",
                 "peer_name": peer_name,
                 "peer_mac": peer_mac,
+                "canonical_ap_mac": canonical_ap_mac,
+                "identity_status": "matched" if canonical_ap_mac else "unresolved",
+                "identity_source": row_data.get("identity_source") or "",
+                "identity_reason": row_data.get("identity_reason") or ("缺少明确 AP MAC 映射" if not canonical_ap_mac else ""),
                 "mr_rssi": row_data.get("mr_rssi"),
                 "bssid": self._text_or_none(row_data.get("bssid")),
                 "belong_station": self._text_or_none(row_data.get("belong_station")),
@@ -1234,7 +1245,13 @@ class OnlineMrQueryService:
             sample_time = self._text_or_none(row_data.get("collector_time"))
             device_time = self._text_or_none(row_data.get("device_time") or row_data.get("device_clock"))
             peer_mac = self._text_or_none(row_data.get("peer_mac") or row_data.get("peer_mac_normalized"))
-            peer_name = self._business_peer_name(row_data.get("resolved_peer_name"), row_data.get("peer_name"))
+            canonical_ap_mac = normalize_mac(
+                row_data.get("canonical_ap_mac") or row_data.get("peer_ap_mac")
+            ) or ""
+            peer_name = self._business_peer_name(
+                row_data.get("resolved_peer_name") if canonical_ap_mac else "",
+                row_data.get("peer_name") if canonical_ap_mac else "",
+            ) or ("未关联" if not canonical_ap_mac else None)
             items.append(
                 {
                     "sample_time": sample_time,
@@ -1243,7 +1260,11 @@ class OnlineMrQueryService:
                     "link_state": self._text_or_none(row_data.get("link_state")),
                     "peer_mac": peer_mac,
                     "peer_name": peer_name,
-                    "ap_mac": peer_mac,
+                    "ap_mac": canonical_ap_mac,
+                    "canonical_ap_mac": canonical_ap_mac,
+                    "identity_status": "matched" if canonical_ap_mac else "unresolved",
+                    "identity_source": row_data.get("identity_source") or "",
+                    "identity_reason": row_data.get("identity_reason") or ("缺少明确 AP MAC 映射" if not canonical_ap_mac else ""),
                     "belong_station": self._text_or_none(row_data.get("belong_station")),
                     "belong_section": self._text_or_none(row_data.get("belong_section")),
                     "mr_rx_signal": row_data.get("mr_rssi") or row_data.get("local_signal_dbm"),

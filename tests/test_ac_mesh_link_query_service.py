@@ -32,11 +32,11 @@ def test_mesh_link_query_reads_latest_snapshot_and_enriches_exact_matches(tmp_pa
     by_mr = {item.mr_name: item for item in links.items}
     assert by_mr["列车01-MR-CT"].peer_ap_name == "AP-Online"
     assert by_mr["列车01-MR-CT"].peer_radio == "Mesh Radio 1"
-    assert by_mr["列车01-MR-CT"].match_method == "peer_mac"
+    assert by_mr["列车01-MR-CT"].match_method == "actual_bbssid_exact"
     assert by_mr["列车01-MR-CT"].ap_rx_power == "-10 dBm"
     assert by_mr["列车01-MR-CT"].switch_rx_power == "-40 dBm"
     assert by_mr["列车02-MR-CT"].peer_ap_name == "AP-Offline"
-    assert by_mr["列车02-MR-CT"].match_method == "peer_name"
+    assert by_mr["列车02-MR-CT"].match_method == "ap_name_exact"
     assert by_mr["列车99-MR-CT"].match_method == "unmatched"
     assert by_mr["列车99-MR-CT"].peer_ap_name == "AP-Unknown"
     assert by_mr["列车99-MR-CT"].ap_rx_power == ""

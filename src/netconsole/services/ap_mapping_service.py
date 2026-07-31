@@ -1,12 +1,7 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
-
-
-def normalize_mac(value: object) -> str:
-    text = re.sub(r"[^0-9a-fA-F]", "", str(value or "")).casefold()
-    return text if len(text) == 12 else ""
+from netconsole.services.ap_identity.normalizers import normalize_mac
 
 
 @dataclass(frozen=True)
@@ -57,7 +52,7 @@ class ApMappingService:
         peer = normalize_mac(peer_mac)
         peer_record = self.peer_table.get(peer)
         radio = self.radio_table.get(peer)
-        ap_mac = peer_record.ap_mac if peer_record else (radio.ap_mac if radio else peer)
+        ap_mac = peer_record.ap_mac if peer_record else (radio.ap_mac if radio else "")
         ap = self.ap_table.get(ap_mac)
         if ap is None:
             return {"ap_name": "", "site": "", "site_id": "", "radio": radio.radio_id if radio else None, "ap_mac": ap_mac}

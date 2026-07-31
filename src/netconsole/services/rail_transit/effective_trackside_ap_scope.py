@@ -11,6 +11,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from netconsole.core.database import Database
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
+from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.services.ap_online_overview import is_fit_ap_online
 from netconsole.services.rail_transit.station_source_utils import canonical_station_name
 
@@ -502,7 +503,7 @@ def resolve_effective_trackside_ap_scope(
             or ""
         ).strip()
         ap_name = str(values.get("ap_name") or metadata.get("ap_name") or "").strip()
-        ap_mac = _normalize_mac(
+        ap_mac = normalize_mac(
             values.get("ap_mac_norm")
             or values.get("ap_mac_display")
             or metadata.get("ap_mac")
@@ -619,7 +620,7 @@ def resolve_effective_trackside_ap_scope(
                                 or ""
                             ),
                             reason=reason,
-                            mac=_normalize_mac(resource.get("ap_mac")),
+                            mac=normalize_mac(resource.get("ap_mac")) or "",
                         )
                     )
                 else:
@@ -629,7 +630,7 @@ def resolve_effective_trackside_ap_scope(
                         source="fit_ap_online",
                         item_id=item_id,
                         ap_name=str(resource.get("ap_name") or ""),
-                        mac=_normalize_mac(resource.get("ap_mac")),
+                        mac=normalize_mac(resource.get("ap_mac")) or "",
                         ac_status=str(
                             resource.get("state_display")
                             or resource.get("state_raw")
@@ -760,7 +761,10 @@ def _resolve_station_id(
     direct = str(
         metadata.get("station_id")
         or metadata.get("station_node_uid")
+        or metadata.get("station_uid")
         or row.get("station_id")
+        or row.get("station_node_uid")
+        or row.get("station_uid")
         or ""
     ).strip()
     if direct:
@@ -769,7 +773,14 @@ def _resolve_station_id(
         if mapped in known:
             return mapped, ""
         return "", "关联的 station_id 不属于当前有效站点。"
-    key = _station_key(row.get("station_name"))
+    key = _station_key(
+        row.get("station_name")
+        or row.get("belong_station")
+        or row.get("station")
+        or metadata.get("station_name")
+        or metadata.get("belong_station")
+        or metadata.get("station")
+    )
     candidates = station_aliases.get(key, set())
     if len(candidates) == 1:
         return next(iter(candidates)), ""
@@ -833,7 +844,7 @@ def _reference_exclusion_reason(
             return "建设阶段与当前项目不一致。"
     if station_reason:
         return station_reason
-    if not (reference.ap_uuid or reference.ap_mac or _name_key(reference.ap_name)):
+    if not reference.ap_mac:
         return "缺少可用于关联的稳定 AP 身份。"
     return ""
 
@@ -863,12 +874,7 @@ def _group_reference_identities(
             for key in _reference_identity_keys(reference)
             if key[0] in {"uuid", "mac"}
         ]
-        keys = stable_keys or [
-            key
-            for key in _reference_identity_keys(reference)
-            if key[0] == "name"
-        ]
-        for key in keys:
+        for key in stable_keys:
             owner = identity_owner.setdefault(key, reference.reference_id)
             union(owner, reference.reference_id)
 
@@ -934,34 +940,19 @@ def _excluded_reference(
 def _reference_identity_keys(
     reference: EffectiveTracksideApReference,
 ) -> list[tuple[str, str]]:
-    return [
-        key
-        for key in (
-            ("uuid", _text_key(reference.ap_uuid)),
-            ("mac", reference.ap_mac),
-            ("name", _name_key(reference.ap_name)),
-        )
-        if key[1]
-    ]
+    return [("mac", reference.ap_mac)] if reference.ap_mac else []
 
 
 def _identity_keys(row: Mapping[str, object | None]) -> list[tuple[str, str]]:
-    return [
-        key
-        for key in (
-            ("uuid", _text_key(row.get("ap_uuid") or row.get("uuid"))),
-            ("mac", _normalize_mac(row.get("ap_mac") or row.get("mac"))),
-            ("name", _name_key(row.get("ap_name") or row.get("name"))),
-        )
-        if key[1]
-    ]
+    mac = normalize_mac(row.get("ap_mac") or row.get("mac"))
+    return [("mac", mac)] if mac else []
 
 
 def _runtime_resource_key(row: Mapping[str, object | None]) -> tuple[str, str]:
     """Return one stable key for de-duplicating the same AP reported by ACs."""
 
     for key in _identity_keys(row):
-        if key[0] in {"uuid", "mac"}:
+        if key[0] == "mac":
             return key
     ac_uuid = _text_key(row.get("ac_device_uuid") or row.get("device_uuid"))
     ap_id = _text_key(row.get("ap_id") or row.get("apid"))
@@ -1022,11 +1013,6 @@ def _text_key(value: object) -> str:
 def _name_key(value: object) -> str:
     text = _scope_token(value)
     return re.sub(r"[\s_\-:./\\|,;，。；、]+", "", text)
-
-
-def _normalize_mac(value: object) -> str:
-    text = re.sub(r"[^0-9a-fA-F]", "", str(value or ""))
-    return text.casefold() if len(text) == 12 else ""
 
 
 def _is_false(value: object) -> bool:

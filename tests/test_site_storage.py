@@ -11,6 +11,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.database import Database
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.backend.api.main import _current_site_name
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.site_storage import (
     DataRootApplicationService,
     SiteApplicationService,
@@ -284,10 +285,15 @@ def test_full_migration_package_plainly_copies_and_restores_credentials(
     restored = DeviceRepository(
         Database(target_paths.site_db_path("restored-site"))
     ).get_by_uuid("device-full")
+    identity_state = ApIdentityQueryService(
+        Database(target_paths.site_db_path("restored-site"))
+    ).index_state()
 
     assert imported["requires_credentials"] is False
     assert imported["credential_reentry_count"] == 0
     assert restored is not None
+    assert identity_state is not None
+    assert int(identity_state["revision"]) > 0
     assert restored.ssh_password == secret
     assert restored.snmp_ro_community == community
     assert restored.tunnel1_password == tunnel_secret

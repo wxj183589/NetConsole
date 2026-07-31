@@ -44,6 +44,7 @@ class ApManagementVlanRepository:
                     "auto_group_station_count": 1,
                     "address_allocation_strategy": DEFAULT_ALLOCATION_STRATEGY,
                     "revision": 0,
+                    "created_at": "",
                     "updated_at": "",
                 },
                 "groups": [],

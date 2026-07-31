@@ -134,7 +134,7 @@ AP name: AP-Online
 
     assert result["records_count"] == 1
     assert links[0].mr_device_id == "mr-12"
-    assert links[0].mr_mac == "100000000012"
+    assert links[0].mr_mac == "1000-0000-0012"
 
 
 def test_valid_empty_response_creates_zero_link_snapshot(tmp_path: Path) -> None:

@@ -40,6 +40,7 @@ from netconsole.services.ac.fit_ap_optical_concurrency import (
 )
 from netconsole.services import command_guard
 from netconsole.services import netmiko_connection
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.device_web_service import matching_https_port_lines, parse_https_port
 from netconsole.services.h3c_collect_service import CommandResult
 from netconsole.services.neighbor_matcher import find_neighbor_optical_module, match_ap_from_device_lldp, match_neighbor_device
@@ -312,6 +313,11 @@ def collect_h3c_fit_ap_resources(
         if target_resource is not None:
             target_name = str(target_resource.get("ap_name") or "").strip().casefold()
             resources = [row for row in resources if str(row.get("ap_name") or "").strip().casefold() == target_name]
+            if len(resources) == 1:
+                # 深度刷新由内部 UUID 定向，回显缺少 UUID 时仍写回已选实体；
+                # 这不是按名称跨模块匹配，名称仅用于限定本次命令回显行。
+                resources[0]["ap_uuid"] = target_resource.get("ap_uuid")
+                resources[0]["ap_mac"] = resources[0].get("ap_mac") or target_resource.get("ap_mac")
         dynamic_summary_updated = _can_update_dynamic_summary(command_results, summary)
         progress("正在写入数据库...")
         if dynamic_summary_updated:
@@ -339,6 +345,9 @@ def collect_h3c_fit_ap_resources(
                 repository.upsert_fit_ap_resource(str(ac_device.device_uuid), resources[0])
             else:
                 repository.replace_fit_ap_resources(str(ac_device.device_uuid), resources)
+            ApIdentityQueryService(repository.database).rebuild_index(
+                "ac_fit_ap_refresh_succeeded"
+            )
         unauth_result = next((result for result in command_results if result.command == "display wlan ap unauthenticated"), None)
         unauthenticated_updated = False
         unauthenticated_rows_updated = 0
@@ -1017,9 +1026,6 @@ def _filter_fit_ap_optical_targets(
             result.append(row)
             continue
         if mac_set and _normalize_mac_text(row.get("ap_mac")) in mac_set:
-            result.append(row)
-            continue
-        if name_set and str(row.get("ap_name") or "").strip().casefold() in name_set:
             result.append(row)
             continue
         row_station = str(row.get("site") or row.get("site_name") or row.get("station") or "").strip().casefold()

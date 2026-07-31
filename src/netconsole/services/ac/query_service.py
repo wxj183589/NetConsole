@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from netconsole.core.database import Database
 from netconsole.core.optical_severity_engine import (
     classify_optical_freshness,
     classify_optical_health,
@@ -38,6 +39,8 @@ from netconsole.models.api.ac_management import (
 )
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.services.ap_extension_import import normalize_ap_mac
+from netconsole.services.ap_identity import ApIdentityQueryService
+from netconsole.services.ap_identity.normalizers import normalize_mac_key
 from netconsole.services.config_text import (
     build_side_by_side_rows,
     compare_config_text,
@@ -516,8 +519,31 @@ class AcManagementQueryService:
         sort_order: str = "asc",
     ) -> list[AcApDTO]:
         records = self._ap_records(site_id, ac_id=ac_id)
+        items = [record[0] for record in records]
+        if normalize_mac_key(query):
+            identity_rows = ApIdentityQueryService(
+                Database(self._db_path(site_id))
+            ).search_aps(query)
+            matched_macs = {
+                mac
+                for row in identity_rows
+                for field in ("ap_mac", "ac_ap_mac", "base_ap_mac")
+                if (mac := normalize_mac_key(row.get(field)))
+            }
+            matched_names = {
+                str(row.get("ap_name") or "").strip().casefold()
+                for row in identity_rows
+                if str(row.get("ap_name") or "").strip()
+            }
+            items = [
+                item
+                for item in items
+                if normalize_mac_key(item.mac) in matched_macs
+                or str(item.name or "").strip().casefold() in matched_names
+            ]
+            query = ""
         return self._filter_ap_items(
-            [record[0] for record in records],
+            items,
             query=query,
             status=status,
             station=station,
@@ -1013,8 +1039,9 @@ class AcManagementQueryService:
             ac_id = str(row.get("ac_device_uuid") or "")
             if row.get("ap_uuid"):
                 result[(ac_id, f"uuid:{row['ap_uuid']}")] = row
-            if row.get("ap_name"):
-                result[(ac_id, f"name:{str(row['ap_name']).strip().casefold()}")] = row
+            mac = normalize_ap_mac(row.get("ap_mac")).normalized
+            if mac:
+                result[(ac_id, f"mac:{mac}")] = row
         return result
 
     @staticmethod
@@ -1027,20 +1054,19 @@ class AcManagementQueryService:
             found = index.get((ac_id, f"uuid:{resource['ap_uuid']}"))
             if found:
                 return found
-        return index.get((ac_id, f"name:{str(resource.get('ap_name') or '').strip().casefold()}"))
+        mac = normalize_ap_mac(resource.get("ap_mac")).normalized
+        return index.get((ac_id, f"mac:{mac}")) if mac else None
 
     @staticmethod
     def _append_unmatched_unauthenticated(
         resources: list[dict[str, object | None]],
         unauthenticated: list[dict[str, object | None]],
     ) -> list[dict[str, object | None]]:
-        names = {str(row.get("ap_name") or "").strip().casefold() for row in resources}
         macs = {normalize_ap_mac(row.get("ap_mac")).normalized for row in resources if row.get("ap_mac")}
         result = [dict(row) for row in resources]
         for row in unauthenticated:
-            name = str(row.get("ap_name") or "").strip().casefold()
             mac = normalize_ap_mac(row.get("inferred_ap_mac")).normalized
-            if (name and name in names) or (mac and mac in macs):
+            if mac and mac in macs:
                 continue
             result.append(
                 {

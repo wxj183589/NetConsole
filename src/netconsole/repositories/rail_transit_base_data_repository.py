@@ -57,6 +57,13 @@ AP_MERGE_FIELDS = (
     "source_row",
     "raw_payload_json",
 )
+_AP_IDENTITY_DERIVED_TABLES = {
+    "ap_identity_entities",
+    "ap_identity_mac_aliases",
+    "ap_identity_h3c_prefixes",
+    "ap_identity_conflicts",
+    "ap_identity_index_state",
+}
 
 _BASE_DATA_REFERENCE_METADATA_KEYS = {
     "line_side_source",
@@ -102,7 +109,29 @@ class RailTransitBaseDataRepository:
     def _sqlite_database_hash(self, site_id: str) -> str:
         path = self._database_path(site_id)
         with self._read_connection(path) as connection:
-            return hashlib.sha256(connection.serialize()).hexdigest()
+            digest = hashlib.sha256()
+            tables = connection.execute(
+                """
+                SELECT name, COALESCE(sql, '')
+                FROM sqlite_master
+                WHERE type = 'table'
+                  AND name NOT LIKE 'sqlite_%'
+                ORDER BY name
+                """
+            ).fetchall()
+            for table_name, schema_sql in tables:
+                name = str(table_name)
+                if name in _AP_IDENTITY_DERIVED_TABLES:
+                    continue
+                digest.update(f"table:{name}\nschema:{schema_sql}\n".encode("utf-8"))
+                safe_name = name.replace('"', '""')
+                rows = connection.execute(
+                    f'SELECT * FROM "{safe_name}" ORDER BY rowid'
+                ).fetchall()
+                for row in rows:
+                    digest.update(repr(tuple(row)).encode("utf-8"))
+                    digest.update(b"\n")
+            return digest.hexdigest()
 
     def base_data_revision(self, site_id: str) -> str:
         """Return a revision covering both the SQLite facts and site metadata."""

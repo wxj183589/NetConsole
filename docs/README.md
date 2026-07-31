@@ -95,7 +95,7 @@
 | [Online MR Agent Fake 验收](ONLINE_MR_AGENT_FAKE_ACCEPTANCE.md) | Web Agent 控制与回环 Fake Agent 的全链路验收、冻结项和复现步骤 | Online MR Web/Agent 联调 | Agent Web Router/Service、Fake Agent、正式 Client/Importer 测试 | Web Agent 契约、Fake 状态机或验收边界变化 |
 | [Web 本地 Online MR 受控启停](ONLINE_MR_WEB_CONTROL.md) | Desktop WebHost 的 LOCAL 启停、安全开关、请求白名单和幂等 | Online MR Web 控制开发 | `web_control_service.py`、控制 Router/Vue、ApplicationService | Web 控制路由、安全条件、DTO 或状态变化 |
 | [MR/Mesh 日志分析](mr_mesh_log_analysis_rules.md) | 导入、解析、阈值、切换/乒乓、报表 | Mesh 分析开发 | `mesh_*`、规则 JSON、页面/测试 | parser、阈值、图表或报告变化 |
-| [AP Identity 总览](AP_IDENTITY.md) | Canonical 模型、resolver、只读接入边界 | AP Identity/接入域开发 | `ap_identity*`、domain handlers、测试 | 模型、优先级、接入点或接管结论变化 |
+| [AP Identity 总览](AP_IDENTITY.md) | 局点统一索引、AC/Base 优先级、H3C 反查、只读查询与写事件刷新 | AP Identity/接入域开发 | `ap_identity*`、MESH/Vehicle/Wireless/搜索消费者、测试 | schema、来源、优先级、刷新边界或接管入口变化 |
 | [AP Identity 展示评估](AP_IDENTITY_DISPLAY_ASSESSMENT.md) | 允许字段、风险、flag 和不可用状态 | 诊断展示评估 | diagnostics ViewModel、评估测试 | ViewModel、flag、脱敏或展示准入变化 |
 | [AP Identity Job 宿主评估（冻结历史）](AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md) | 旧 Qt 宿主评估与否决边界，只作历史证据 | 历史维护 | Git 历史、当前全局任务中心与诊断模型 | 不再作为新增 Qt 宿主授权 |
 | [设备版本兼容性基线](DEVICE_COMPATIBILITY.md) | 代码内置兼容基线、确定性解析、开发期脱敏候选扫描和 Dashboard 适配范围来源 | 设备兼容/命令/parser 开发 | `resources/device_compatibility_profiles.json`、`src/netconsole/services/device_compatibility/`、定向测试 | 新增型号、平台大版本、Release、命令 Profile 或 parser Profile 映射 |
@@ -106,7 +106,7 @@
 
 - `01`～`08` 编号文档保留中英文项目约束和历史兼容要求；新增实现优先遵守本索引中的核心文档。
 - 同一主题只维护一个主文档：数据路径用 `DATA_LAYOUT.md`，导出用 `export_process_policy.md`，Mesh 用 `mr_mesh_log_analysis_rules.md`，变更记录用 `CHANGELOG.md`。
-- 评估类文档不等于上线授权；尤其 AP Identity 阶段推进不得解释为生产接管许可。
+- 评估类文档本身不等于上线授权；AP Identity 当前生产接管范围以 [AP Identity 总览](AP_IDENTITY.md) 列出的代码入口和测试为准。
 
 ## 文档维护检查
 

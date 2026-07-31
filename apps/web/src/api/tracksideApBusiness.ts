@@ -2,7 +2,7 @@ import { apiRequest } from './client'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 import type {
   ApManagementVlanPlanningMode, ApManagementVlanPreview, TracksideApBusinessPage,
-  TracksideApOnlineStatus, TracksideApPlan, TracksideApPlanDraft, TracksideApPlanPreview, TracksideApPlanRow,
+  TracksideApBusinessExportProposal, TracksideApOnlineStatus, TracksideApPlan, TracksideApPlanDraft, TracksideApPlanPreview, TracksideApPlanRow,
   TracksideApTask, TracksideApUpdateRequest, TracksideSwitchAdapterCatalog,
   TracksideSwitchSampleRequest,
 } from '../types/tracksideApBusiness'
@@ -25,8 +25,17 @@ export function startTracksideApUpdate(payload: TracksideApUpdateRequest = {}): 
   return apiRequest(`${root}/update`, { method: 'POST', body: JSON.stringify(payload) })
 }
 
-export function startTracksideApBusinessExport(): Promise<TracksideApTask> {
-  return apiRequest(`${root}/export`, { method: 'POST' })
+export function getTracksideApBusinessExportProposal(): Promise<TracksideApBusinessExportProposal> {
+  return apiRequest(`${root}/export/proposal`)
+}
+
+export function startTracksideApBusinessExport(
+  proposal?: Pick<TracksideApBusinessExportProposal, 'generated_at' | 'suggested_name'>,
+): Promise<TracksideApTask> {
+  return apiRequest(`${root}/export`, {
+    method: 'POST',
+    ...(proposal ? { body: JSON.stringify(proposal) } : {}),
+  })
 }
 
 export function listTracksideSwitchAdapters(): Promise<TracksideSwitchAdapterCatalog> {

@@ -30,11 +30,11 @@ class ApIdentityResolver:
             self._match_scoped_ap_id,
             self._match_scoped_ap_mac,
             self._match_ap_mac,
-            self._match_scoped_ap_name,
-            self._match_ap_name,
             self._match_radio_mac,
             self._match_bssid,
             self._match_peer_radio,
+            self._match_scoped_ap_name,
+            self._match_ap_name,
         )
         for strategy in strategies:
             matched, evidence = strategy(observation, candidate_rows)
@@ -42,7 +42,10 @@ class ApIdentityResolver:
                 continue
             return _result_for_matches(matched, (*base_evidence, *evidence), warnings, observation)
 
-        peer_candidates, peer_evidence = self._peer_ap_mac_fallback(observation, candidate_rows)
+        peer_candidates, peer_evidence = self._peer_ap_mac_fallback(
+            observation,
+            candidate_rows,
+        )
         if peer_candidates:
             return ApMatchResult(
                 status=ApMatchStatus.UNRESOLVED,
@@ -156,7 +159,6 @@ class ApIdentityResolver:
             if matched:
                 return matched, evidence
         return (), ()
-
 
 def _result_for_matches(
     matches: tuple[ApIdentityCandidate, ...],

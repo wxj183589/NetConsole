@@ -23,6 +23,8 @@ from netconsole.models.api.trackside_ap_business import (
     ApManagementVlanPreviewRequestDTO,
     EffectiveManagementNetworkDTO,
     TracksideApBaseExportRequestDTO,
+    TracksideApBusinessExportProposalDTO,
+    TracksideApBusinessExportRequestDTO,
     TracksideApBusinessPageDTO,
     TracksideApPlanDTO,
     TracksideApPlanExportRequestDTO,
@@ -159,9 +161,31 @@ def download_switch_adapter_sample(
         Depends(require_feature("web.rail_task_control")),
     ],
 )
-def export_business(request: Request) -> RailTransitTaskDTO:
+def export_business(
+    request: Request,
+    payload: TracksideApBusinessExportRequestDTO | None = None,
+) -> RailTransitTaskDTO:
     try:
         return _application_service(request).start_trackside_ap_business_export(
+            _site_id(request),
+            generated_at=payload.generated_at if payload else "",
+            suggested_name=payload.suggested_name if payload else "",
+        )
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
+@router.get(
+    "/export/proposal",
+    response_model=TracksideApBusinessExportProposalDTO,
+    summary="获取轨旁 AP 业务导出建议文件名",
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_business_export"))],
+)
+def export_business_proposal(
+    request: Request,
+) -> TracksideApBusinessExportProposalDTO:
+    try:
+        return _application_service(request).get_trackside_ap_business_export_proposal(
             _site_id(request)
         )
     except RailTransitWebError as exc:

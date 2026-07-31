@@ -872,6 +872,8 @@ def _vehicle_mr_history_query(params: dict[str, Any], progress: ProgressCallback
 def _jsonable_vehicle_ap_lookup(ap_lookup: dict[str, object]) -> dict[str, object]:
     result: dict[str, object] = {}
     for key, value in ap_lookup.items():
+        if key == "__ap_identity_query_service__":
+            continue
         if isinstance(value, list):
             result[key] = [asdict(item) if hasattr(item, "__dataclass_fields__") else item for item in value]
         elif hasattr(value, "__dataclass_fields__"):
@@ -999,6 +1001,7 @@ def _ac_fit_ap_optical_refresh(params: dict[str, Any], progress: ProgressCallbac
     from netconsole.repositories.device_fact_repository import DeviceFactRepository
     from netconsole.repositories.device_repository import DeviceRepository
     from netconsole.services.offline_ap_ledger import OFFLINE_AP_STATUS_TEXT, is_fit_ap_offline
+    from netconsole.services.ap_identity.normalizers import normalize_mac
     from netconsole.utils.interface_sort import interface_sort_key
 
     _emit(progress, "ac_fit_ap_optical_refresh", 0, 3, "正在读取 FIT-AP 资源和光衰")
@@ -1018,11 +1021,11 @@ def _ac_fit_ap_optical_refresh(params: dict[str, Any], progress: ProgressCallbac
     }
     lookup = build_switch_data_lookup(devices, optical_by_device)
     resources_by_uuid = {str(row.get("ap_uuid") or ""): row for row in resources if row.get("ap_uuid")}
-    resources_by_name = {str(row.get("ap_name") or ""): row for row in resources if row.get("ap_name")}
+    resources_by_mac = {normalize_mac(row.get("ap_mac")): row for row in resources if normalize_mac(row.get("ap_mac"))}
     enriched: list[dict[str, object | None]] = []
     for row in optical_rows:
         _check_cancel(should_cancel)
-        resource = resources_by_uuid.get(str(row.get("ap_uuid") or "")) or resources_by_name.get(str(row.get("ap_name") or ""), {})
+        resource = resources_by_uuid.get(str(row.get("ap_uuid") or "")) or resources_by_mac.get(normalize_mac(row.get("ap_mac")), {})
         neighbor_name = row.get("neighbor_device_name")
         lowered = str(neighbor_name or "").casefold()
         if any(token.casefold() in lowered for token in ("Nearest", "Chassis ID", "Default", "customer bridge", "nontpmr")):
@@ -1690,22 +1693,36 @@ def _ac_repository(params: dict[str, Any]):
     return AcRepository(Database(Path(str(params.get("db_path") or ""))))
 
 
+def _rebuild_ap_identity_index(params: dict[str, Any], reason: str) -> None:
+    from netconsole.core.database import Database
+    from netconsole.services.ap_identity import ApIdentityQueryService
+
+    database = Database(Path(str(params.get("db_path") or "")))
+    ApIdentityQueryService(database).rebuild_index(reason)
+
+
 def _ac_fit_ap_delete_many(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
     count = _ac_repository(params).delete_fit_aps(str(params.get("ac_uuid") or ""), [str(value) for value in params.get("names") or []])
+    _rebuild_ap_identity_index(params, "ac_fit_ap_deleted")
     return {"count": count}
 
 
 def _ac_ap_extension_save(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
-    return {"row": _ac_repository(params).upsert_ap_extension_point(dict(params.get("row") or {}))}
+    row = _ac_repository(params).upsert_ap_extension_point(dict(params.get("row") or {}))
+    _rebuild_ap_identity_index(params, "base_data_saved")
+    return {"row": row}
 
 
 def _ac_ap_extension_delete(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
     count = _ac_repository(params).delete_ap_extension_points([int(value) for value in params.get("ids") or []])
+    _rebuild_ap_identity_index(params, "base_data_deleted")
     return {"count": count}
 
 
 def _ac_ap_extension_clear(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
-    return {"count": _ac_repository(params).clear_ap_extension_points()}
+    count = _ac_repository(params).clear_ap_extension_points()
+    _rebuild_ap_identity_index(params, "base_data_cleared")
+    return {"count": count}
 
 
 def _ac_station_overview_value_save(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
@@ -1767,7 +1784,11 @@ def _fit_ap_detail_load(params: dict[str, Any], progress: ProgressCallback | Non
 
 
 def _fit_ap_metadata_save(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
-    return {"metadata": _ac_repository(params).upsert_fit_ap_metadata(dict(params.get("metadata") or {}))}
+    metadata = _ac_repository(params).upsert_fit_ap_metadata(
+        dict(params.get("metadata") or {})
+    )
+    _rebuild_ap_identity_index(params, "ac_metadata_saved")
+    return {"metadata": metadata}
 
 
 def _online_mr_collection_devices_refresh(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
@@ -1953,10 +1974,7 @@ def _trackside_device_detail_resolve(params: dict[str, Any], progress: ProgressC
 def _trackside_fit_ap_detail_resolve(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
     from netconsole.core.database import Database
     from netconsole.repositories.ac_repository import AcRepository
-
-    def normalize_mac(value: object) -> str:
-        hex_text = "".join(char for char in str(value or "") if char in "0123456789abcdefABCDEF")
-        return hex_text.casefold() if len(hex_text) == 12 else ""
+    from netconsole.services.ap_identity.normalizers import normalize_mac
 
     repository = AcRepository(Database(Path(str(params.get("db_path") or ""))))
     ac_uuid = str(params.get("ac_device_uuid") or "").strip()
@@ -1971,8 +1989,6 @@ def _trackside_fit_ap_detail_resolve(params: dict[str, Any], progress: ProgressC
         matches = []
         if ap_mac:
             matches = [item for item in resources if normalize_mac(item.get("ap_mac")) == ap_mac]
-        if not matches and ap_name:
-            matches = [item for item in resources if str(item.get("ap_name") or "").strip().casefold() == ap_name.casefold()]
     try:
         from netconsole.services.rail_transit.trackside_ap_identity_shadow import TracksideApIdentityShadowService
 

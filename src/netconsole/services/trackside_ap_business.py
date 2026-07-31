@@ -29,6 +29,7 @@ from netconsole.services.offline_ap_ledger import (
     write_offline_ap_ledger_sheet,
     write_offline_ap_stats_sheet,
 )
+from netconsole.services.ap_identity.normalizers import format_mac, normalize_mac_key
 from netconsole.utils.interface_normalize import display_interface_name, normalize_interface_name
 from netconsole.utils.interface_sort import interface_sort_key
 from netconsole.utils.natural_sort import natural_text_key
@@ -62,6 +63,12 @@ _TRACKSIDE_NATIVE_PVID_SEGMENT_RE = re.compile(
     r"^native\s*/\s*pvid\s*[:=]?\s*\d{1,4}$",
     re.IGNORECASE,
 )
+
+
+def normalize_mac(value: object) -> str | None:
+    """Compatibility display helper for trackside AP user-facing rows."""
+
+    return format_mac(value) or None
 
 
 TRACKSIDE_AP_BUSINESS_INTERNAL_FIELDS = {
@@ -381,11 +388,8 @@ def effective_pvid_plan(
 ) -> dict[str, object]:
     if not isinstance(active_plan, dict):
         return {"pvid_plan_status": "unresolved"}
-    mac = re.sub(r"[^0-9a-f]", "", normalize_mac(ap_mac))
+    mac = normalize_mac_key(ap_mac) or ""
     network = (active_plan.get("ap_networks_by_mac") or {}).get(mac) if mac else None
-    if network is None:
-        name = _normalize_name(ap_name)
-        network = (active_plan.get("ap_networks_by_name") or {}).get(name)
     if network is None:
         station_key = str(station_id or "").strip()
         station_vlans = (
@@ -523,9 +527,9 @@ def build_trackside_ap_business_rows(
     lldp_indexes = {device_uuid: _latest_rows_by_normalized_interface(rows, "local_interface") for device_uuid, rows in (lldp_by_device or {}).items()}
     fit_ap_optical_rows = merge_fit_ap_rows_by_identity(fit_ap_optical_rows)
     fit_ap_resource_rows = merge_fit_ap_rows_by_identity(fit_ap_resource_rows or [])
-    fit_ap_index: dict[tuple[str, str], dict[str, object | None]] = {}
     fit_ap_optical_by_mac: dict[str, dict[str, object | None]] = {}
     fit_ap_optical_by_identity: dict[tuple[str, str], dict[str, object | None]] = {}
+    fit_ap_optical_by_switch_interface: dict[tuple[str, str], dict[str, object | None]] = {}
     fit_ap_optical_by_name_mac: dict[str, dict[str, object | None]] = {}
     fit_ap_resource_by_mac: dict[str, dict[str, object | None]] = {}
     fit_ap_resource_by_identity: dict[tuple[str, str], dict[str, object | None]] = {}
@@ -533,20 +537,23 @@ def build_trackside_ap_business_rows(
     fit_ap_resources_by_mac: dict[str, list[dict[str, object | None]]] = {}
     fit_ap_resources_by_name: dict[str, list[dict[str, object | None]]] = {}
     for row in fit_ap_optical_rows:
-        key = (_normalize_name(row.get("neighbor_device_name")), normalize_interface_name(row.get("neighbor_interface")).casefold())
-        if key[0] and key[1]:
-            fit_ap_index[key] = row
-        mac = normalize_mac(row.get("ap_mac"))
+        mac = normalize_mac_key(row.get("ap_mac"))
         if mac:
             fit_ap_optical_by_mac[mac] = row
+        switch_key = (
+            _normalize_name(row.get("neighbor_device_name")),
+            normalize_interface_name(row.get("neighbor_interface")).casefold(),
+        )
+        if all(switch_key):
+            fit_ap_optical_by_switch_interface[switch_key] = row
+        name_as_mac = normalize_mac_key(row.get("ap_name"))
+        if name_as_mac:
+            fit_ap_optical_by_name_mac[name_as_mac] = row
         identity = ap_identity_key(row)
         if identity:
             fit_ap_optical_by_identity[identity] = row
-        name_as_mac = normalize_mac(row.get("ap_name"))
-        if name_as_mac:
-            fit_ap_optical_by_name_mac[name_as_mac] = row
     for row in fit_ap_resource_rows or []:
-        mac = normalize_mac(row.get("ap_mac"))
+        mac = normalize_mac_key(row.get("ap_mac"))
         if mac:
             fit_ap_resource_by_mac[mac] = row
             fit_ap_resources_by_mac.setdefault(mac, []).append(row)
@@ -592,7 +599,7 @@ def build_trackside_ap_business_rows(
             optical = optical_index.get(normalized_interface, {})
             lldp = lldp_index.get(normalized_interface, {})
             historical_lldp = _find_historical_lldp_row(historical_lldp_index, device_names, interface_name)
-            neighbor_mac = normalize_mac(lldp.get("neighbor_mac"))
+            neighbor_mac = normalize_mac_key(lldp.get("neighbor_mac"))
             (
                 resource_from_current_lldp,
                 ap_match_source,
@@ -606,8 +613,15 @@ def build_trackside_ap_business_rows(
             )
             historical_lldp_used = False
             if not neighbor_mac and historical_lldp:
-                neighbor_mac = normalize_mac(historical_lldp.get("ap_mac") or historical_lldp.get("neighbor_mac"))
-                historical_lldp_used = bool(neighbor_mac or historical_lldp.get("ap_name") or historical_lldp.get("ap_uuid"))
+                neighbor_mac = normalize_mac_key(
+                    historical_lldp.get("ap_mac")
+                    or historical_lldp.get("neighbor_mac")
+                )
+                historical_lldp_used = bool(
+                    neighbor_mac
+                    or historical_lldp.get("ap_name")
+                    or historical_lldp.get("ap_uuid")
+                )
             resource_from_neighbor = (
                 None
                 if lldp_match_status == "AMBIGUOUS"
@@ -643,8 +657,33 @@ def build_trackside_ap_business_rows(
                     _merge_resource_with_optical(resource_from_neighbor, fit_ap_optical_by_mac)
                     or resource_from_identity
                     or fit_ap_optical_by_name_mac.get(neighbor_mac)
-                    or _find_fit_ap_row(fit_ap_index, device_names, interface_name)
+                    or {}
                 )
+                if not fit_ap:
+                    interface_resource = next(
+                        (
+                            fit_ap_optical_by_switch_interface.get((name, normalized_interface))
+                            for name in device_names
+                            if fit_ap_optical_by_switch_interface.get((name, normalized_interface))
+                        ),
+                        None,
+                    )
+                    if interface_resource:
+                        fit_ap = (
+                            _merge_resource_with_optical(
+                                fit_ap_resource_by_mac.get(
+                                    normalize_mac_key(interface_resource.get("ap_mac"))
+                                ),
+                                fit_ap_optical_by_mac,
+                            )
+                            or interface_resource
+                        )
+                        neighbor_mac = (
+                            normalize_mac_key(interface_resource.get("ap_mac")) or ""
+                        )
+                        ap_match_source = "FIT_AP_INTERFACE_MAC"
+                        ap_match_confidence = 80
+                        lldp_match_status = "MATCHED"
             switch_collection_status = _switch_collection_status(device, interface, optical)
             if str(device.device_vendor or "").strip().casefold() == "zte":
                 optical = normalize_zte_optical_record(optical)
@@ -672,7 +711,7 @@ def build_trackside_ap_business_rows(
             if _should_mark_switch_link_abnormal(link_state, switch_result, optical, switch_collection_status):
                 switch_status = "link_abnormal"
             ap_candidate = {
-                "ap_mac": normalize_mac(fit_ap.get("ap_mac")) or neighbor_mac,
+                "ap_mac": format_mac(fit_ap.get("ap_mac") or neighbor_mac),
                 "ap_name": fit_ap.get("ap_name") or (historical_lldp or {}).get("ap_name"),
                 "ap_rx_power": fit_ap.get("rx_power"),
                 "ap_tx_power": fit_ap.get("tx_power"),
@@ -910,7 +949,12 @@ def _log_trackside_identity_coverage(
         for interface in interfaces_by_device.get(str(device.device_uuid or ""), [])
         if is_trackside_ap_interface(device, interface)[0]
     )
-    rows_with_ap_identity = sum(1 for row in rows if normalize_mac(row.get("ap_mac")) or str(row.get("ap_name") or "").strip())
+    rows_with_ap_identity = sum(
+        1
+        for row in rows
+        if normalize_mac_key(row.get("ap_mac"))
+        or str(row.get("ap_name") or "").strip()
+    )
     rows_without_ap_identity = max(len(rows) - rows_with_ap_identity, 0)
     current_lldp_port_count = sum(len(items) for items in lldp_by_device.values())
     preserved_lldp_port_count = sum(1 for row in rows if row.get("data_source") == "historical_lldp")
@@ -940,15 +984,9 @@ def _log_trackside_identity_coverage(
 def ap_identity_key(row: dict[str, object | None] | None) -> tuple[str, str] | None:
     if not row:
         return None
-    serial = str(row.get("serial_number") or row.get("serial") or "").strip()
-    if serial and serial not in {"-", "N/A", "n/a"}:
-        return ("serial", serial.casefold())
-    mac = normalize_mac(row.get("ap_mac") or row.get("mac"))
+    mac = normalize_mac_key(row.get("ap_mac") or row.get("mac"))
     if mac:
         return ("mac", mac.casefold())
-    name = str(row.get("ap_name") or "").strip()
-    if name and name not in {"-", "N/A", "n/a"}:
-        return ("name", name.casefold())
     return None
 
 
@@ -1068,7 +1106,7 @@ def build_new_online_ap_overview_rows(
                 "vlan": trackside.get("vlan") or "-",
                 "switch_rx_power": trackside.get("switch_rx_power") or "-",
                 "switch_optical_status": trackside.get("switch_optical_status") or "-",
-                "ap_mac": normalize_mac(resource.get("ap_mac")) or "-",
+                "ap_mac": format_mac(resource.get("ap_mac")) or "-",
                 "ap_name": resource.get("ap_name") or "-",
                 "ap_rx_power": trackside.get("ap_rx_power") or "-",
                 "ap_optical_status": trackside.get("ap_optical_status") or "-",
@@ -1125,7 +1163,11 @@ def _build_unauthenticated_new_online_rows(
                 "vlan": trackside.get("vlan") or "-",
                 "switch_rx_power": trackside.get("switch_rx_power") or "-",
                 "switch_optical_status": trackside.get("switch_optical_status") or "-",
-                "ap_mac": normalize_mac((resource or {}).get("ap_mac")) or normalize_mac(source.get("inferred_ap_mac") or source.get("ap_name")) or "-",
+                "ap_mac": (
+                    format_mac((resource or {}).get("ap_mac"))
+                    or format_mac(source.get("inferred_ap_mac"))
+                    or "-"
+                ),
                 "ap_name": source.get("ap_name") or (resource or {}).get("ap_name") or "-",
                 "ap_rx_power": trackside.get("ap_rx_power") or "-",
                 "ap_optical_status": trackside.get("ap_optical_status") or "-",
@@ -1160,7 +1202,12 @@ def _new_online_identity_keys(row: dict[str, object | None]) -> list[tuple[str, 
     serial = str(row.get("serial_number") or row.get("serial") or "").strip()
     if serial and serial not in {"-", "N/A", "n/a"}:
         keys.append(("serial", serial.casefold()))
-    mac = normalize_mac(row.get("inferred_ap_mac") or row.get("ap_mac") or row.get("mac") or row.get("ap_name"))
+    mac = normalize_mac_key(
+        row.get("inferred_ap_mac")
+        or row.get("ap_mac")
+        or row.get("mac")
+        or row.get("ap_name")
+    )
     if mac:
         keys.append(("mac", mac.casefold()))
     ap_name = str(row.get("ap_name") or "").strip()
@@ -1345,8 +1392,8 @@ def _ap_optical_history_matches_trackside(row: dict[str, object | None], tracksi
     current_serial = str(trackside.get("serial_number") or "").strip()
     if row_serial and current_serial:
         return row_serial == current_serial
-    row_mac = normalize_mac(row.get("ap_mac"))
-    current_mac = normalize_mac(trackside.get("ap_mac"))
+    row_mac = normalize_mac_key(row.get("ap_mac"))
+    current_mac = normalize_mac_key(trackside.get("ap_mac"))
     if row_mac and current_mac:
         return row_mac == current_mac
     row_name = str(row.get("ap_name") or "").strip().casefold()
@@ -1380,11 +1427,9 @@ def _ap_identity_lookup_with_sources(
 
 def _ap_identity_payload(row: dict[str, object | None], source: str = "") -> dict[str, object | None]:
     ap_name = row.get("ap_name")
-    ap_mac = normalize_mac(row.get("ap_mac"))
-    if _is_missing_display(ap_mac):
-        name_as_mac = normalize_mac(ap_name)
-        if _is_mac_like(name_as_mac):
-            ap_mac = name_as_mac
+    ap_mac = format_mac(row.get("ap_mac"))
+    if not ap_mac:
+        ap_mac = format_mac(ap_name)
     return {
         "ap_uuid": row.get("ap_uuid"),
         "ap_name": ap_name,
@@ -1457,23 +1502,19 @@ def _ap_identity_keys(row: dict[str, object | None]) -> list[tuple[str, str]]:
     serial = str(row.get("serial_number") or row.get("serial") or "").strip()
     if serial and serial not in {"-", "N/A", "n/a"}:
         keys.append(("serial", serial.casefold()))
-    mac = normalize_mac(row.get("ap_mac") or row.get("mac"))
+    mac = normalize_mac_key(row.get("ap_mac") or row.get("mac"))
     if mac:
         keys.append(("mac", mac.casefold()))
     name = str(row.get("ap_name") or "").strip()
     if name and name not in {"-", "N/A", "n/a"}:
         keys.append(("name", name.casefold()))
-        name_as_mac = normalize_mac(name)
-        if not mac and _is_mac_like(name_as_mac):
+        name_as_mac = normalize_mac_key(name)
+        if not mac and name_as_mac:
             keys.append(("mac", name_as_mac.casefold()))
     ap_uuid = str(row.get("ap_uuid") or "").strip()
     if ap_uuid:
         keys.append(("uuid", ap_uuid.casefold()))
     return keys
-
-
-def _is_mac_like(value: object) -> bool:
-    return bool(re.fullmatch(r"[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}", str(value or "").strip().casefold()))
 
 
 def _merge_ap_identity_payload(
@@ -1504,8 +1545,8 @@ def _complete_treatment_record_ap_identity(
         if _is_missing_display(record.get(field)) and not _is_missing_display(matched.get(field)):
             record[field] = matched.get(field)
     if _is_missing_display(record.get("ap_mac")):
-        name_as_mac = normalize_mac(record.get("ap_name"))
-        if _is_mac_like(name_as_mac):
+        name_as_mac = format_mac(record.get("ap_name"))
+        if name_as_mac:
             record["ap_mac"] = name_as_mac
 
 
@@ -1537,8 +1578,8 @@ def enrich_treatment_record_ap_identity(
                 _fill_treatment_record_identity(record, _ap_identity_payload(matched, "offline_ledger"))
                 source = "offline_ledger_interface"
     if _is_missing_display(record.get("ap_mac")):
-        name_as_mac = normalize_mac(record.get("ap_name"))
-        if _is_mac_like(name_as_mac):
+        name_as_mac = format_mac(record.get("ap_name"))
+        if name_as_mac:
             record["ap_mac"] = name_as_mac
             if source == "not_found":
                 source = "ap_name_mac_fallback"
@@ -1585,7 +1626,11 @@ def _fill_treatment_record_identity(record: dict[str, object | None], source: di
 
 
 def _record_identity_missing(record: dict[str, object | None]) -> bool:
-    return _is_missing_display(record.get("ap_name")) or _is_missing_display(record.get("ap_mac")) or _is_missing_display(record.get("serial_number"))
+    return (
+        _is_missing_display(record.get("ap_name"))
+        or _is_missing_display(record.get("ap_mac"))
+        or _is_missing_display(record.get("serial_number"))
+    )
 
 
 def _trackside_rows_by_ap_identity(rows: list[dict[str, object | None]]) -> dict[tuple[str, str], dict[str, object | None]]:
@@ -1995,19 +2040,10 @@ def export_trackside_ap_business_xlsx(
 # Legacy aliases removed — status is now computed real-time from raw data.
 
 
-def _find_fit_ap_row(fit_ap_index: dict[tuple[str, str], dict[str, object | None]], device_names: set[str], interface_name: object) -> dict[str, object | None]:
-    interface_key = normalize_interface_name(interface_name).casefold()
-    for device_name in device_names:
-        row = fit_ap_index.get((device_name, interface_key))
-        if row:
-            return row
-    return {}
-
-
 def _merge_resource_with_optical(resource: dict[str, object | None] | None, optical_by_mac: dict[str, dict[str, object | None]]) -> dict[str, object | None]:
     if not resource:
         return {}
-    optical = optical_by_mac.get(normalize_mac(resource.get("ap_mac")), {})
+    optical = optical_by_mac.get(normalize_mac_key(resource.get("ap_mac")), {})
     return {**resource, **optical}
 
 
@@ -2019,7 +2055,7 @@ def _match_fit_ap_resource_from_lldp(
 ) -> tuple[dict[str, object | None] | None, str, int, str]:
     if not lldp:
         return None, "", 0, ""
-    candidates = (
+    exact_candidates = (
         (
             "LLDP_IP",
             96,
@@ -2033,21 +2069,11 @@ def _match_fit_ap_resource_from_lldp(
         (
             "LLDP_MAC",
             92,
-            normalize_mac(lldp.get("neighbor_mac") or lldp.get("chassis_id")),
+            normalize_mac_key(lldp.get("neighbor_mac") or lldp.get("chassis_id")),
             resources_by_mac,
         ),
-        (
-            "LLDP_SYSTEM_NAME",
-            75,
-            _normalize_name(
-                lldp.get("neighbor_sysname")
-                or lldp.get("remote_system_name")
-                or lldp.get("neighbor_device_name")
-            ),
-            resources_by_name,
-        ),
     )
-    for source, confidence, key, index in candidates:
+    for source, confidence, key, index in exact_candidates:
         if not key:
             continue
         matches = index.get(key, [])
@@ -2055,6 +2081,20 @@ def _match_fit_ap_resource_from_lldp(
             return matches[0], source, confidence, "MATCHED"
         if len(matches) > 1:
             return None, source, 0, "AMBIGUOUS"
+    observed_mac = normalize_mac_key(lldp.get("neighbor_mac") or lldp.get("chassis_id"))
+    if observed_mac:
+        return None, "LLDP_MAC", 0, "UNRESOLVED"
+    observed_name = _normalize_name(
+        lldp.get("neighbor_sysname")
+        or lldp.get("remote_system_name")
+        or lldp.get("neighbor_device_name")
+    )
+    if observed_name:
+        matches = resources_by_name.get(observed_name, [])
+        if len(matches) == 1:
+            return matches[0], "LLDP_SYSTEM_NAME", 75, "MATCHED"
+        if len(matches) > 1:
+            return None, "LLDP_SYSTEM_NAME", 0, "AMBIGUOUS"
     return None, "", 0, "UNRESOLVED"
 
 
@@ -2259,7 +2299,15 @@ def summarize_trackside_ap_online_counts(rows: list[dict[str, object | None]]) -
     offline = 0
     seen: set[str] = set()
     for row in rows:
-        key = str(row.get("ap_uuid") or row.get("ap_mac") or row.get("ap_name") or "").strip()
+        key = str(
+            row.get("ap_uuid")
+            or normalize_mac_key(row.get("ap_mac"))
+            or row.get("serial_number")
+            or row.get("ap_name")
+            or ""
+        ).strip()
+        if not key:
+            continue
         if key and key in seen:
             continue
         if key:
@@ -2292,16 +2340,6 @@ def normalize_link_state(value: object) -> str:
     if "UP" in text:
         return "UP"
     return "-"
-
-
-def normalize_mac(value: object) -> str:
-    import re
-
-    hex_text = re.sub(r"[^0-9a-fA-F]", "", str(value or ""))
-    if len(hex_text) != 12:
-        return str(value or "").strip().casefold()
-    hex_text = hex_text.casefold()
-    return f"{hex_text[0:4]}-{hex_text[4:8]}-{hex_text[8:12]}"
 
 
 def _switch_collection_status(device: Device, interface: dict[str, object | None], optical: dict[str, object | None]) -> str:
@@ -2470,7 +2508,7 @@ def ap_identity_filter(row: dict[str, object | None]) -> dict[str, str]:
     return {
         "ap_uuid": str(row.get("ap_uuid") or "").strip(),
         "serial_number": str(row.get("serial_number") or "").strip(),
-        "ap_mac": normalize_mac(row.get("ap_mac")),
+        "ap_mac": normalize_mac_key(row.get("ap_mac")) or "",
         "ap_name": str(row.get("ap_name") or "").strip(),
     }
 

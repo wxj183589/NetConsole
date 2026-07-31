@@ -1,0 +1,133 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Mapping
+
+
+@dataclass(frozen=True)
+class ApIdentityEntityRecord:
+    entity_id: str
+    site_id: str
+    effective_ap_name: str = ""
+    effective_ap_mac_key: str = ""
+    effective_ap_mac_display: str = ""
+    effective_station: str = ""
+    effective_section: str = ""
+    effective_point_code: str = ""
+    effective_serial_number: str = ""
+    effective_location: str = ""
+    effective_mileage: str = ""
+    effective_direction: str = ""
+    effective_belong_type: str = "unknown"
+    ac_ap_uuid: str = ""
+    ac_device_uuid: str = ""
+    ac_ap_name: str = ""
+    ac_ap_mac_key: str = ""
+    ac_station: str = ""
+    ac_section: str = ""
+    ac_updated_at: str = ""
+    base_record_id: str = ""
+    base_ap_name: str = ""
+    base_ap_mac_key: str = ""
+    base_station: str = ""
+    base_section: str = ""
+    base_updated_at: str = ""
+    effective_source: str = ""
+    identity_status: str = "matched"
+    data_quality_warning: str = ""
+
+
+@dataclass(frozen=True)
+class ApIdentityMacAliasRecord:
+    entity_id: str
+    site_id: str
+    mac_key: str
+    mac_display: str
+    alias_type: str
+    source: str
+    match_priority: int
+    confidence: int
+    radio_id: int | None = None
+    derivation_rule: str = ""
+    is_exact: bool = True
+
+
+@dataclass(frozen=True)
+class ApIdentityH3cPrefixRecord:
+    entity_id: str
+    site_id: str
+    base_mac_key: str
+    prefix_key: str
+    prefix_bits: int
+    derivation_rule: str
+    source: str
+    match_priority: int
+    confidence: int
+
+
+@dataclass(frozen=True)
+class ApIdentityConflictRecord:
+    entity_id: str
+    site_id: str
+    conflict_type: str
+    ac_value: str = ""
+    base_value: str = ""
+    effective_source: str = "ac_runtime"
+    details: Mapping[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ApIdentityIndexBuild:
+    entities: tuple[ApIdentityEntityRecord, ...] = ()
+    aliases: tuple[ApIdentityMacAliasRecord, ...] = ()
+    prefixes: tuple[ApIdentityH3cPrefixRecord, ...] = ()
+    conflicts: tuple[ApIdentityConflictRecord, ...] = ()
+    base_record_count: int = 0
+    ac_record_count: int = 0
+
+
+@dataclass(frozen=True)
+class ApIdentityBuildResult:
+    site_id: str
+    revision: int
+    reason: str
+    built_at: str
+    base_record_count: int
+    ac_record_count: int
+    entity_count: int
+    alias_count: int
+    prefix_count: int
+    conflict_count: int
+
+
+@dataclass(frozen=True)
+class ApIdentityMatch:
+    status: str
+    query_mac: str = ""
+    query_mac_display: str = ""
+    matched_entity_id: str = ""
+    effective_ap_name: str = ""
+    effective_ap_mac: str = ""
+    station: str = ""
+    section: str = ""
+    point_code: str = ""
+    serial_number: str = ""
+    location: str = ""
+    mileage: str = ""
+    direction: str = ""
+    belong_type: str = "unknown"
+    matched_alias_type: str = ""
+    matched_source: str = ""
+    match_rule: str = ""
+    match_confidence: int = 0
+    radio_id: int | None = None
+    ac_ap_mac: str = ""
+    base_ap_mac: str = ""
+    base_record_id: str = ""
+    has_conflict: bool = False
+    data_quality_warning: str = ""
+    candidates: tuple[Mapping[str, object], ...] = ()
+
+    @property
+    def matched(self) -> bool:
+        return self.status == "matched"

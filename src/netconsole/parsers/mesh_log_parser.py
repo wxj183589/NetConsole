@@ -17,6 +17,7 @@ from netconsole.models.mesh_log_models import (
     MeshLogRecord,
     ParseIssue,
 )
+from netconsole.services.ap_identity.normalizers import normalize_mac as canonical_normalize_mac
 from netconsole.utils.text_encoding import decode_bytes_with_fallback
 
 
@@ -281,10 +282,7 @@ def infer_source_label(path: Path) -> str:
 
 
 def normalize_mac(value: str) -> str | None:
-    compact = re.sub(r"[-:\s.]", "", value).lower()
-    if re.fullmatch(r"[0-9a-f]{12}", compact):
-        return compact
-    return None
+    return canonical_normalize_mac(value)
 
 
 def normalize_peer_mac(value: str) -> str | None:

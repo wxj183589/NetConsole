@@ -14,7 +14,7 @@ The built-in demonstration site is `demo`. If `sites/demo/db/devices.db` does no
 
 If the database already exists, `Database.initialize()` applies only additive, idempotent schema updates and records `schema_metadata`; it does not backfill demo facts or delete existing rows. The current migration adds the non-secret device credential state table without rewriting existing device credentials. Never delete a user database to apply an upgrade. Development fixtures must use a temporary data root.
 
-Current schema version: `2026.07.30.device_work_scope_status`. The prior query-plan evidence and rollback boundaries remain recorded in [the E6 database archive](archive/migrations/electron-only/E6-2026-07-18.md).
+Current schema version: `2026.07.31.ap_identity_index_v1`. The prior query-plan evidence and rollback boundaries remain recorded in [the E6 database archive](archive/migrations/electron-only/E6-2026-07-18.md).
 
 The 2026-07-30 device classification migration uses `project_phase` only for
 the construction phase and adds the following work-scope fields to `devices`:
@@ -95,6 +95,33 @@ not delete or rewrite the historical group tables. Existing AP, location,
 device, MAC, and runtime IP rows are not rewritten. See
 [Trackside AP station planning and VLAN compatibility](AP_MANAGEMENT_VLAN_GROUPS.md).
 
+The 2026-07-31 additive migration adds the site-level AP Identity materialized
+index:
+
+- `ap_identity_entities` stores one effective physical AP identity plus AC,
+  base-data, and compatibility source references.
+- `ap_identity_mac_aliases` stores normalized AP, Radio, BSSID, BBSSID, and
+  legacy exact aliases.
+- `ap_identity_h3c_prefixes` stores the 36-bit H3C Radio block derived only
+  from current AC and base-data AP MAC values.
+- `ap_identity_conflicts` records AC/base MAC or name differences without
+  blocking production matching.
+- `ap_identity_index_state` stores revision, rebuild reason, source counts, and
+  completion time.
+
+All internal MAC keys are 12 lowercase hexadecimal digits without separators.
+New user-visible Identity output uses lowercase H3C `xxxx-xxxx-xxxx`. AC
+runtime Radio/BSSID and AP facts take precedence over base data; base data
+remains independently usable when no AC exists. `ap_entities`,
+`ac_fit_ap_optical`, and `trackside_ap_view_cache` are compatibility sources
+for exact matching only.
+
+Backend startup builds the index only when source rows exist and the initialized
+revision is zero. Base-data writes, AC resource writes, and package import
+staging rebuild it explicitly. Ordinary GET, search, MESH, Vehicle MR, and
+Wireless queries are read-only and never rebuild the index. See
+[AP Identity](AP_IDENTITY.md).
+
 Current local tables:
 
 - `devices`
@@ -109,6 +136,11 @@ Current local tables:
 - `rail_ap_vlan_group_members`
 - `rail_ap_vlan_assignments`
 - `rail_ap_vlan_allocations`
+- `ap_identity_entities`
+- `ap_identity_mac_aliases`
+- `ap_identity_h3c_prefixes`
+- `ap_identity_conflicts`
+- `ap_identity_index_state`
 
 ## Device Identity
 

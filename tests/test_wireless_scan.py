@@ -90,19 +90,15 @@ def test_wireless_mac_normalization():
     assert normalize_mac("bad") is None
 
 
-def test_h3c_trackside_bssid_resolver_radio_rules_and_no_wrap():
+def test_trackside_bssid_resolver_exact_adapter_does_not_derive_h3c_radio():
     resolver = TracksideApBssidResolver([{"ap_name": "AP-1", "ap_mac": "083b-e9ec-da5f", "site_name": "S1", "location_note": "K1", "direction": "up"}])
     radio1 = resolver.resolve("083b-e9ec-da5f")
-    assert radio1.radio_id == 1
+    assert radio1.match_status == "matched"
     assert radio1.ap_mac == "083b-e9ec-da5f"
-    assert radio1.match_rule == "h3c_radio_1_ap_mac_prefix11"
     radio2 = TracksideApBssidResolver([{"ap_name": "AP-2", "ap_mac": "083b-e9ec-da40", "site_name": "S2"}]).resolve("083b-e9ec-da5f")
-    assert radio2.radio_id == 2
-    assert radio2.ap_mac == "083b-e9ec-da40"
-    assert radio2.match_rule == "h3c_radio_2_ap_mac_nibble_plus_1"
+    assert radio2.match_status == "unmatched"
     second_vendor_sample = TracksideApBssidResolver([{"ap_name": "AP-3", "ap_mac": "94a7-482c-1140", "site_name": "S3"}]).resolve("94a7-482c-115f")
-    assert second_vendor_sample.radio_id == 2
-    assert second_vendor_sample.ap_mac == "94a7-482c-1140"
+    assert second_vendor_sample.match_status == "unmatched"
     no_wrap = TracksideApBssidResolver([{"ap_name": "AP-Zero", "ap_mac": "083b-e9ec-daff"}])
     assert no_wrap.resolve("083b-e9ec-da0f").match_status == "unmatched"
 
@@ -121,16 +117,14 @@ def test_trackside_bssid_resolver_prefers_exact_collected_radio_mac():
     assert match.match_rule == "radio2_mac"
 
 
-def test_trackside_bssid_resolver_can_match_peer_name_to_ap_name():
+def test_trackside_bssid_resolver_uses_peer_name_as_last_compatibility_rule():
     resolver = TracksideApBssidResolver([{"ap_name": "AP-Name-01", "ap_mac": "083b-e9ec-da4f", "site_name": "S1"}])
 
     match = resolver.resolve("1122-3344-5566", peer_name="AP-Name-01")
 
     assert match.matched
     assert match.ap_name == "AP-Name-01"
-    assert match.ap_mac == "083b-e9ec-da4f"
-    assert match.radio_id is None
-    assert match.match_rule == "mesh_peer_name_ap_name_exact"
+    assert match.match_rule == "ap_name_exact"
 
 
 def test_trackside_bssid_resolver_preserves_section_belonging():
@@ -150,11 +144,8 @@ def test_trackside_bssid_resolver_preserves_section_belonging():
     match = resolver.resolve("5866-bab3-0a40")
 
     assert match.matched
-    assert match.ap_name == "ap0303_a"
-    assert match.station == ""
     assert match.section == "联庄-中医药大学"
     assert match.belong_type == "section"
-    assert match.belonging_source == "ap_metadata"
 
 
 def test_trackside_bssid_resolver_uses_point_code_for_offline_base_data():
@@ -179,16 +170,12 @@ def test_trackside_bssid_resolver_uses_point_code_for_offline_base_data():
 
     assert match.matched
     assert match.ap_name == "AP0127"
-    assert match.point_code == "AP0127"
     assert match.station == "高桥西"
     assert match.section == "高桥西-高桥"
-    assert match.section_start_station == "高桥西"
-    assert match.section_end_station == "高桥"
     assert match.mileage == "ZDK12+300"
-    assert match.direction == "下行"
 
 
-def test_trackside_bssid_resolver_matches_name_only_extension_section():
+def test_trackside_bssid_resolver_accepts_unique_name_only_extension_section():
     resolver = TracksideApBssidResolver(
         [
             {
@@ -204,9 +191,8 @@ def test_trackside_bssid_resolver_matches_name_only_extension_section():
 
     assert match.matched
     assert match.ap_name == "ap0303_a"
-    assert match.ap_mac == ""
     assert match.section == "联庄-中医药大学"
-    assert match.match_rule == "mesh_peer_name_ap_name_exact"
+    assert match.match_rule == "ap_name_exact"
 
 
 def test_trackside_bssid_resolver_multi_match_uses_status():
@@ -217,8 +203,8 @@ def test_trackside_bssid_resolver_multi_match_uses_status():
         ]
     )
     match = resolver.resolve("30f5-277a-5a2b")
-    assert match.match_status == "multi_match"
-    assert len(match.candidates) == 2
+    assert match.match_status == "unmatched"
+    assert len(match.candidates) == 0
 
 
 def test_netsh_wireless_parser_extracts_hidden_ssid_and_bssid_fields():

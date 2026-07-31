@@ -17,7 +17,6 @@ class GroundApDisplayResolver:
         *,
         resources: Iterable[Any] = (),
     ) -> None:
-        by_name: dict[str, list[dict[str, str]]] = defaultdict(list)
         by_ap_mac: dict[str, list[dict[str, str]]] = defaultdict(list)
         by_radio_mac: dict[str, list[dict[str, str]]] = defaultdict(list)
         by_alias_mac: dict[str, list[dict[str, str]]] = defaultdict(list)
@@ -39,23 +38,7 @@ class GroundApDisplayResolver:
                     else "MAC_FALLBACK"
                 ),
             }
-            names = {
-                name,
-                point_code,
-            }
             metadata = getattr(row, "base_metadata", {}) or {}
-            if isinstance(metadata, dict):
-                for key in (
-                    "alias",
-                    "aliases",
-                    "alias_names",
-                    "legacy_names",
-                ):
-                    names.update(_text_values(metadata.get(key)))
-            for name in names:
-                normalized = name.strip().casefold()
-                if normalized:
-                    by_name[normalized].append(value)
             if ap_mac:
                 by_ap_mac[ap_mac].append(value)
             for radio in getattr(row, "radios", []) or []:
@@ -78,16 +61,10 @@ class GroundApDisplayResolver:
         self._by_alias_mac, self._ambiguous_alias_macs = _unique_index(
             by_alias_mac
         )
-        self._by_name, self._ambiguous_names = _unique_index(by_name)
-
-        resource_by_name: dict[str, list[dict[str, str]]] = defaultdict(list)
         resource_by_ap_mac: dict[str, list[dict[str, str]]] = defaultdict(list)
         resource_by_radio_mac: dict[str, list[dict[str, str]]] = defaultdict(
             list
         )
-        resource_by_h3c_prefix: dict[
-            str, list[dict[str, str]]
-        ] = defaultdict(list)
         for detail in resources:
             ap = getattr(detail, "ap", detail)
             ap_mac = _mac_key(getattr(ap, "mac", ""))
@@ -118,38 +95,8 @@ class GroundApDisplayResolver:
                     else "MAC_FALLBACK"
                 ),
             }
-            for candidate_name in (
-                trackside_name,
-                point_code,
-                configured_name,
-            ):
-                if candidate_name:
-                    resource_by_name[candidate_name.casefold()].append(value)
             if ap_mac:
                 resource_by_ap_mac[ap_mac].append(value)
-                compact = _mac_compact(ap_mac)
-                resource_by_h3c_prefix[compact[:11]].append(
-                    {
-                        **value,
-                        "resolved_radio_id": "1",
-                        "resolution_rule": "h3c_radio_1_ap_mac_prefix11",
-                        "resolution_confidence": "90",
-                    }
-                )
-                if compact[10] != "f":
-                    radio2_prefix = (
-                        f"{compact[:10]}{int(compact[10], 16) + 1:x}"
-                    )
-                    resource_by_h3c_prefix[radio2_prefix].append(
-                        {
-                            **value,
-                            "resolved_radio_id": "2",
-                            "resolution_rule": (
-                                "h3c_radio_2_ap_mac_nibble_plus_1"
-                            ),
-                            "resolution_confidence": "90",
-                        }
-                    )
             for radio in getattr(detail, "radios", []) or []:
                 radio_mac = _mac_key(getattr(radio, "bssid", ""))
                 if radio_mac:
@@ -164,10 +111,6 @@ class GroundApDisplayResolver:
                         }
                     )
         (
-            self._resource_by_name,
-            self._ambiguous_resource_names,
-        ) = _unique_index(resource_by_name)
-        (
             self._resource_by_ap_mac,
             self._ambiguous_resource_ap_macs,
         ) = _unique_index(resource_by_ap_mac)
@@ -175,10 +118,6 @@ class GroundApDisplayResolver:
             self._resource_by_radio_mac,
             self._ambiguous_resource_radio_macs,
         ) = _unique_index(resource_by_radio_mac)
-        (
-            self._resource_by_h3c_prefix,
-            self._ambiguous_resource_h3c_prefixes,
-        ) = _unique_index(resource_by_h3c_prefix)
 
     def resolve(
         self,
@@ -190,37 +129,17 @@ class GroundApDisplayResolver:
         name_text = str(name or "").strip()
         mac_key = _mac_key(mac)
         radio_mac_key = _mac_key(radio_mac)
-        value = self._by_ap_mac.get(mac_key)
-        resolution_status = "PEER_MAC_EXACT"
-        resolution_rule = "base_ap_mac_exact"
-        if value is None and mac_key in self._ambiguous_ap_macs:
+        observed_base_radio_key = radio_mac_key or mac_key
+        value = self._by_radio_mac.get(observed_base_radio_key)
+        resolution_status = "RADIO_BSSID"
+        resolution_rule = "base_radio_bssid_exact"
+        if value is None and observed_base_radio_key in self._ambiguous_radio_macs:
             return _unresolved_result(name_text, mac, radio_mac, ambiguous=True)
-        if value is None:
-            observed_base_radio_key = radio_mac_key or mac_key
-            value = self._by_radio_mac.get(observed_base_radio_key)
-            resolution_status = "RADIO_BSSID"
-            resolution_rule = "base_radio_bssid_exact"
-            if (
-                value is None
-                and observed_base_radio_key in self._ambiguous_radio_macs
-            ):
-                return _unresolved_result(
-                    name_text, mac, radio_mac, ambiguous=True
-                )
         if value is None:
             value = self._by_alias_mac.get(mac_key)
             resolution_status = "AP_ALIAS"
             resolution_rule = "base_ap_mac_alias"
             if value is None and mac_key in self._ambiguous_alias_macs:
-                return _unresolved_result(
-                    name_text, mac, radio_mac, ambiguous=True
-                )
-        if value is None and name_text:
-            name_key = name_text.casefold()
-            value = self._by_name.get(name_key)
-            resolution_status = "AP_ALIAS"
-            resolution_rule = "base_ap_name_alias"
-            if value is None and name_key in self._ambiguous_names:
                 return _unresolved_result(
                     name_text, mac, radio_mac, ambiguous=True
                 )
@@ -232,6 +151,15 @@ class GroundApDisplayResolver:
                 "resolution_confidence": "100",
             }
 
+        value = self._by_ap_mac.get(mac_key)
+        if value is not None:
+            return {
+                **value,
+                "resolution_status": "PEER_MAC_EXACT",
+                "resolution_rule": "base_ap_mac_exact",
+                "resolution_confidence": "92",
+            }
+
         observed_radio_key = radio_mac_key or mac_key
         value = self._resource_by_radio_mac.get(observed_radio_key)
         resolution_status = "RADIO_BSSID"
@@ -240,50 +168,11 @@ class GroundApDisplayResolver:
             and observed_radio_key in self._ambiguous_resource_radio_macs
         ):
             return _unresolved_result(name_text, mac, radio_mac, ambiguous=True)
-        if value is None:
-            compact = _mac_compact(observed_radio_key)
-            h3c_prefix = compact[:11]
-            value = self._resource_by_h3c_prefix.get(h3c_prefix)
-            resolution_status = "H3C_RADIO_DERIVED"
-            if (
-                value is None
-                and h3c_prefix in self._ambiguous_resource_h3c_prefixes
-            ):
-                return _unresolved_result(
-                    name_text, mac, radio_mac, ambiguous=True
-                )
-        if value is None:
-            value = self._resource_by_ap_mac.get(mac_key)
-            resolution_status = "AP_MAC_FALLBACK"
-            if value is None and mac_key in self._ambiguous_resource_ap_macs:
-                return _unresolved_result(
-                    name_text, mac, radio_mac, ambiguous=True
-                )
-            if value is not None:
-                value = {
-                    **value,
-                    "resolution_rule": "fit_ap_ap_mac_fallback",
-                    "resolution_confidence": "90",
-                }
-        if value is None and name_text:
-            resource_name_key = name_text.casefold()
-            value = self._resource_by_name.get(resource_name_key)
-            resolution_status = "AC_AP_NAME_EXACT"
-            if (
-                value is None
-                and resource_name_key in self._ambiguous_resource_names
-            ):
-                return _unresolved_result(
-                    name_text, mac, radio_mac, ambiguous=True
-                )
-            if value is not None:
-                value = {
-                    **value,
-                    "resolution_rule": "ac_ap_name_exact",
-                    "resolution_confidence": "100",
-                }
         if value is not None:
             return {**value, "resolution_status": resolution_status}
+
+        if mac_key in self._ambiguous_ap_macs or mac_key in self._ambiguous_resource_ap_macs:
+            return _unresolved_result(name_text, mac, radio_mac, ambiguous=True)
 
         return _unresolved_result(name_text, mac, radio_mac, ambiguous=False)
 
@@ -382,7 +271,7 @@ class GroundApDisplayResolver:
 
 
 def normalize_mac(value: object) -> str:
-    return canonical_normalize_mac(value) or str(value or "").strip()
+    return canonical_normalize_mac(value) or ""
 
 
 def _unresolved_result(
@@ -398,11 +287,15 @@ def _unresolved_result(
         or normalize_mac(mac)
         or normalize_mac(radio_mac),
         "peer_ap_mac": "",
+        "canonical_ap_mac": "",
         "station": "",
         "section": "",
         "resolution_status": "AMBIGUOUS" if ambiguous else "UNRESOLVED",
         "resolution_rule": "",
         "resolution_confidence": "",
+        "identity_status": "ambiguous" if ambiguous else "unresolved",
+        "identity_source": "",
+        "identity_reason": "MAC 关联到多个候选" if ambiguous else "缺少明确 Radio/BSSID 映射",
         "display_name_source": "RAW_OBSERVATION",
         "resolved_radio_id": "",
     }

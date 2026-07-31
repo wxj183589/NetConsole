@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from netconsole.models.api.rail_transit_base_data import SectionDTO
+from netconsole.core.database import Database
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
 
@@ -55,6 +57,42 @@ def test_base_data_queries_relations_and_quality_are_read_only(tmp_path: Path) -
     codes = {item.code for item in issues.items}
     assert {"ap_mac_duplicate", "ap_mileage_invalid", "mr_train_unbound", "section_mileage_unavailable"} <= codes
     assert _fingerprint(db_path) == before
+
+
+def test_data_quality_reports_ac_base_identity_conflict_without_blocking(
+    tmp_path: Path,
+) -> None:
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    database = Database(db_path)
+    with database.connect() as connection:
+        connection.execute(
+            """
+            UPDATE ac_fit_ap_resources
+            SET ap_name = 'AP-Section',
+                ap_mac = 'aabb-ccdd-eeff',
+                updated_at = '2026-07-31T00:00:00+00:00'
+            WHERE ap_uuid = 'ap-offline'
+            """
+        )
+        connection.commit()
+    ApIdentityQueryService(database).rebuild_index("test_sources_saved")
+
+    issues = RailTransitBaseDataQueryService(paths).list_issues(
+        "demo",
+        page_size=500,
+    )
+    conflict = next(
+        item
+        for item in issues.items
+        if item.code == "AP_IDENTITY_AC_BASE_CONFLICT"
+        and item.field_name == "mac"
+    )
+
+    assert conflict.severity == "warning"
+    assert conflict.blocking is False
+    assert conflict.field_name == "mac"
+    assert conflict.original_value == "0000-0000-0002"
+    assert "aabb-ccdd-eeff" in conflict.message
 
 
 def test_base_data_mac_mileage_filters_and_public_dto_have_no_secrets(tmp_path: Path) -> None:

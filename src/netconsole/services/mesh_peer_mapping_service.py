@@ -5,54 +5,82 @@ from pathlib import Path
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
-from netconsole.repositories.ac_repository import AcRepository
-from netconsole.services.network_tools.trackside_bssid_resolver import TracksideApBssidResolver
-from netconsole.services.network_tools.wireless_channel_analyzer import normalize_mac
+from netconsole.services.ap_identity import (
+    ApIdentityQueryService,
+    normalize_mac_key,
+)
 
 
 class MeshPeerMappingService:
     def __init__(self, site_name: str, paths: PathResolver) -> None:
         self.site_name = site_name
         self.paths = paths
-        self._resolver: TracksideApBssidResolver | None = None
+        self._query_service: ApIdentityQueryService | None = None
 
     def resolve(self, peer_mac: object, peer_name: object | None = None) -> dict[str, object] | None:
-        peer = normalize_mac(peer_mac)
+        peer = normalize_mac_key(peer_mac)
         if not peer:
             return None
-        resolver = self._get_resolver()
-        if resolver is None:
+        service = self._get_query_service()
+        if service is None:
             return _unresolved(peer)
-        match = resolver.resolve(peer, peer_name=peer_name)
+        match = service.resolve_mac(peer, peer_name=peer_name)
         if not match.matched:
-            return _unresolved(peer)
+            return _unresolved(
+                peer,
+                status=match.status,
+                reason=(
+                    "多个物理 AP 命中同一 MAC 身份规则"
+                    if match.status == "ambiguous"
+                    else "统一 AP Identity 索引未找到匹配"
+                ),
+            )
         radio_id = int(match.radio_id or 0) or None
         radio_rule = str(match.match_rule or "")
-        peer_radio_mac = peer if radio_id or "radio" in radio_rule or "bssid" in radio_rule else ""
+        peer_radio_mac = (
+            peer
+            if radio_id
+            or "radio" in radio_rule
+            or "bssid" in radio_rule
+            or radio_rule == "h3c_radio_block_36"
+            else ""
+        )
+        ap_mac_key = normalize_mac_key(match.effective_ap_mac) or ""
         return {
             "peer_mac_normalized": peer,
-            "peer_ap_name": match.ap_name if match.ap_name != "-" else "",
-            "peer_ap_mac": normalize_mac(match.ap_mac) or match.ap_mac,
+            "peer_ap_name": match.effective_ap_name,
+            "peer_ap_mac": ap_mac_key,
+            "canonical_ap_mac": ap_mac_key,
             "peer_radio_id": radio_id,
             "peer_radio_label": f"radio{radio_id}" if radio_id else "",
             "peer_radio_mac": peer_radio_mac,
             "peer_site": match.station,
             "peer_section": match.section,
             "belong_type": match.belong_type,
-            "belonging_source": match.belonging_source,
+            "belonging_source": match.matched_source,
             "peer_serial_number": match.serial_number,
             "serial_number": match.serial_number,
             "peer_location": match.location,
             "peer_direction": match.direction,
             "match_rule": radio_rule or "resolved",
-            "match_confidence": int(match.confidence or 0),
+            "match_confidence": int(match.match_confidence or 0),
+            "identity_status": "matched",
+            "identity_source": match.matched_source,
+            "identity_reason": match.data_quality_warning,
+            "identity_entity_id": match.matched_entity_id,
+            "matched_alias_type": match.matched_alias_type,
+            "query_mac_display": match.query_mac_display,
+            "effective_ap_mac_display": match.effective_ap_mac,
+            "ac_ap_mac": match.ac_ap_mac,
+            "base_ap_mac": match.base_ap_mac,
+            "data_quality_warning": match.data_quality_warning,
         }
 
     def build_rows(self, peer_macs: list[str]) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []
         seen: set[str] = set()
         for peer_mac in peer_macs:
-            peer = normalize_mac(peer_mac)
+            peer = normalize_mac_key(peer_mac)
             if not peer or peer in seen:
                 continue
             seen.add(peer)
@@ -67,21 +95,26 @@ class MeshPeerMappingService:
         repo.refresh_peer_mapping_on_links()
         return len(rows)
 
-    def _get_resolver(self) -> TracksideApBssidResolver | None:
-        if self._resolver is not None:
-            return self._resolver
+    def _get_query_service(self) -> ApIdentityQueryService | None:
+        if self._query_service is not None:
+            return self._query_service
         db_path = Path(self.paths.site_db_path(self.site_name))
         if not db_path.exists():
             return None
         try:
-            repository = AcRepository(Database(db_path))
-            self._resolver = TracksideApBssidResolver.from_ac_repository(repository)
+            database = Database(db_path)
+            self._query_service = ApIdentityQueryService(database)
         except (sqlite3.Error, RuntimeError, OSError):
             return None
-        return self._resolver
+        return self._query_service
 
 
-def _unresolved(peer_mac: str) -> dict[str, object]:
+def _unresolved(
+    peer_mac: str,
+    *,
+    status: str = "unresolved",
+    reason: str = "统一 AP Identity 索引未找到匹配",
+) -> dict[str, object]:
     return {
         "peer_mac_normalized": peer_mac,
         "peer_ap_name": "",
@@ -99,4 +132,8 @@ def _unresolved(peer_mac: str) -> dict[str, object]:
         "peer_direction": "",
         "match_rule": "unresolved",
         "match_confidence": 0,
+        "canonical_ap_mac": "",
+        "identity_status": status,
+        "identity_source": "",
+        "identity_reason": reason,
     }

@@ -1336,7 +1336,7 @@ def test_mesh_report_uses_existing_context_and_artifact_manifest(
         {
             "name": "AP-01",
             "point_code": "",
-            "mac": "000000000010",
+            "mac": "0000-0000-0010",
             "station": "车站A",
             "section": "区间A-B",
             "section_start_station": "",
@@ -1344,6 +1344,9 @@ def test_mesh_report_uses_existing_context_and_artifact_manifest(
             "mileage": "K12+300",
             "line_side": "上行",
             "direction": "",
+            "identity_status": "unresolved",
+            "identity_source": "",
+            "identity_reason": "",
         }
     ]
 

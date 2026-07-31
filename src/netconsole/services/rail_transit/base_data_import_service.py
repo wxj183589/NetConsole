@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 from uuid import UUID, uuid4
 
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.services.ap_extension_import import normalize_ap_mac
@@ -46,6 +47,7 @@ from netconsole.services.rail_transit.base_data_write_guard import (
     BaseDataWriteGuard,
     BaseDataWriteGuardError,
 )
+from netconsole.services.ap_identity import ApIdentityQueryService
 
 
 PREVIEW_TTL_MINUTES = 15
@@ -334,6 +336,7 @@ class RailTransitBaseDataImportService:
                 operations,
             )
             self.repository.assert_integrity(plan.site_id)
+            self._rebuild_ap_identity_index(plan.site_id, "base_data_import_applied")
             database_hash_after = self.repository.database_hash(plan.site_id)
             created_rows = sum(change.get("kind") == "create" for change in changes)
             updated_rows = sum(change.get("kind") == "update" for change in changes)
@@ -385,6 +388,10 @@ class RailTransitBaseDataImportService:
             if "changes" in locals() and changes:
                 try:
                     self.repository.rollback_changes(plan.site_id, changes)
+                    self._rebuild_ap_identity_index(
+                        plan.site_id,
+                        "base_data_import_failed_rollback",
+                    )
                 except Exception:
                     pass
             audit.update(
@@ -419,6 +426,7 @@ class RailTransitBaseDataImportService:
             raise BaseDataImportError("BASE_DATA_ROLLBACK_CONFLICT", "数据库在导入后已变化，禁止覆盖后续合法修改")
         try:
             self.repository.rollback_changes(site_id, audit.get("changes") or [])
+            self._rebuild_ap_identity_index(site_id, "base_data_import_rolled_back")
             audit.update(
                 status="ROLLED_BACK",
                 rolled_back_at=datetime.now(timezone.utc).isoformat(),
@@ -435,6 +443,11 @@ class RailTransitBaseDataImportService:
             ) from exc
         except Exception as exc:
             raise BaseDataImportError("BASE_DATA_TRANSACTION_FAILED", "基础资料回滚事务失败") from exc
+
+    def _rebuild_ap_identity_index(self, site_id: str, reason: str) -> None:
+        ApIdentityQueryService(
+            Database(self.paths.site_db_path(site_id))
+        ).rebuild_index(reason)
 
     def list_operations(self, site_id: str) -> list[ImportOperationDTO]:
         site_id = SiteManager(self.paths).validate_site_name(site_id)

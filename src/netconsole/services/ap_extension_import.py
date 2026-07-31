@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
+from netconsole.services.ap_identity.normalizers import format_mac, normalize_mac_key
 from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
 from netconsole.utils.mileage import format_track_mileage, parse_track_mileage
 
@@ -203,11 +204,14 @@ def normalize_ap_mac(value: object) -> MacNormalizeResult:
     raw = "" if value is None else str(value).strip()
     if not raw:
         return MacNormalizeResult(raw=raw)
-    hex_text = re.sub(r"[-:.\s]", "", raw)
-    if not re.fullmatch(r"[0-9a-fA-F]{12}", hex_text or ""):
+    canonical = normalize_mac_key(raw)
+    if not canonical:
         return MacNormalizeResult(raw=raw, error="MAC格式无效")
-    normalized = hex_text.casefold()
-    return MacNormalizeResult(raw=raw, normalized=normalized, display=f"{normalized[0:4]}-{normalized[4:8]}-{normalized[8:12]}")
+    return MacNormalizeResult(
+        raw=raw,
+        normalized=canonical,
+        display=format_mac(canonical),
+    )
 
 
 def parse_mileage(value: object) -> MileageParseResult:

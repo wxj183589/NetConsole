@@ -6,6 +6,7 @@ from pathlib import Path
 from ac_management_web_fixture import build_ac_management_fixture
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.vehicle_mr_online import VehicleMrOnlineStore
 
 
@@ -140,6 +141,7 @@ def build_ac_mesh_link_fixture(tmp_path: Path) -> tuple[PathResolver, Path, Path
             (now, now),
         )
         conn.commit()
+    ApIdentityQueryService(database).rebuild_index("test_fixture_ready")
     return paths, devices_db, store.db_path
 
 

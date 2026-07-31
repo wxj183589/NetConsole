@@ -17,6 +17,7 @@ import type { TaskItem } from '../../types/task'
 
 const api = vi.hoisted(() => ({
   listTracksideApBusiness: vi.fn(),
+  getTracksideApBusinessExportProposal: vi.fn(),
   startTracksideApBusinessExport: vi.fn(),
   startTracksideApUpdate: vi.fn(),
   tracksideApBusinessDownloadRequest: vi.fn(),
@@ -275,6 +276,12 @@ describe('TracksideApBusinessView mounted behavior', () => {
       'rail.zte_trackside_switch_adapter': { visible: true, enabled: true },
     })
     api.listTracksideApBusiness.mockResolvedValue(page())
+    api.getTracksideApBusinessExportProposal.mockResolvedValue({
+      site_id: 'demo',
+      site_display_name: '宁波地铁12号线',
+      generated_at: '2026-07-21T23:45:01+08:00',
+      suggested_name: '宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx',
+    })
     for (const method of Object.values(taskApi)) method.mockReset()
     taskApi.listTasks.mockResolvedValue([])
     api.startTracksideApBusinessExport.mockResolvedValue(task('export-task', 'RUNNING', 'trackside_ap_business_export'))

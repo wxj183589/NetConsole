@@ -103,6 +103,7 @@ def normalize_plan_draft(
         ).strip()
         or DEFAULT_ALLOCATION_STRATEGY,
         "revision": revision,
+        "created_at": str((planning_raw or {}).get("created_at") or ""),
         "updated_at": str((planning_raw or {}).get("updated_at") or ""),
     }
     normalized_groups: list[dict[str, object]] = []

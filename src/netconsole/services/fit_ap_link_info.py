@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
+import re
 
+from netconsole.services.ap_identity.normalizers import normalize_mac_key as normalize_mac
 from netconsole.utils.interface_normalize import normalize_interface_name as display_interface_name
 
 
@@ -78,14 +79,10 @@ def normalize_interface_key(value: object) -> str:
     return lower
 
 
-def normalize_mac(value: object) -> str:
-    text = re.sub(r"[^0-9a-fA-F]", "", str(value or ""))
-    return text.casefold() if len(text) == 12 else ""
-
-
 def format_h3c_mac(value: object) -> str:
     mac = normalize_mac(value)
-    return f"{mac[0:4]}-{mac[4:8]}-{mac[8:12]}" if mac else ""
+    compact = mac.replace(":", "") if mac else ""
+    return f"{compact[0:4]}-{compact[4:8]}-{compact[8:12]}" if compact else ""
 
 
 def lldp_source_label(value: object) -> str:

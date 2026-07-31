@@ -586,6 +586,33 @@ def test_trackside_query_station_options_use_full_snapshot_before_filters(monkey
     query_filtered = service.list_rows("demo", query="AP-10")
     assert query_filtered.station_options == expected
 
+    class IdentityQuery:
+        def __init__(self, _database: object) -> None:
+            pass
+
+        @staticmethod
+        def search_aps(_query: str):
+            return [
+                {
+                    "ap_name": "AP-YL-01",
+                    "ap_mac": "0011-2233-4401",
+                    "ac_ap_mac": "",
+                    "base_ap_mac": "0011-2233-4401",
+                }
+            ]
+
+    monkeypatch.setattr(
+        trackside_ap_business_query_service,
+        "ApIdentityQueryService",
+        IdentityQuery,
+    )
+    radio_filtered = service.list_rows(
+        "demo",
+        query="0011-2233-4a01",
+    )
+    assert radio_filtered.total == 1
+    assert radio_filtered.items[0].ap_name == "AP-YL-01"
+
 
 def test_trackside_update_job_calls_existing_collection_service(monkeypatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
@@ -1016,9 +1043,6 @@ def test_trackside_application_validates_update_scope_and_ap_identity(tmp_path: 
     mac_update = service.start_trackside_ap_update("demo", ap_mac="BC5A-3457-8CC0")
     mac_job = process.jobs[mac_update.task_id]
     process.complete(mac_update.task_id, {"success_count": 1})
-    name_update = service.start_trackside_ap_update("demo", ap_name="AP-A")
-    name_job = process.jobs[name_update.task_id]
-    process.complete(name_update.task_id, {"success_count": 1})
     ap_update = service.start_trackside_ap_update("demo", ap_uuid="ap-1", ap_mac="bc5a-3457-8cc0", ap_name="AP-A")
     ap_job = process.jobs[ap_update.task_id]
     process.complete(ap_update.task_id, {"success_count": 1})
@@ -1036,7 +1060,7 @@ def test_trackside_application_validates_update_scope_and_ap_identity(tmp_path: 
         f"site:demo|ac:{ac_uuid_1}|fit_ap_optical",
         "site:demo|trackside_ap_optical|scope:station:站点a",
     ]
-    for job in (uuid_job, mac_job, name_job, ap_job):
+    for job in (uuid_job, mac_job, ap_job):
         assert job.params["station"] == ""
         assert job.params["ap_uuid"] == "ap-1"
         assert job.params["ap_mac"] == "bc:5a:34:57:8c:c0"
@@ -1050,6 +1074,10 @@ def test_trackside_application_validates_update_scope_and_ap_identity(tmp_path: 
                 "ap_uuid:ap-1|ap_mac:bc:5a:34:57:8c:c0|ap_name:ap-a"
             ),
         ]
+
+    with pytest.raises(RailTransitWebError) as name_deprecated:
+        service.start_trackside_ap_update("demo", ap_name="AP-A")
+    assert name_deprecated.value.code == "TRACKSIDE_UPDATE_AP_NAME_DEPRECATED"
 
     with pytest.raises(RailTransitWebError) as scope_conflict:
         service.start_trackside_ap_update("demo", station="站点A", ap_uuid="ap-1")

@@ -11,6 +11,8 @@ from netconsole.models.api.trackside_ap_business import (
 )
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.adapters.trackside_switch import resolve_trackside_switch_adapter
+from netconsole.services.ap_identity import ApIdentityQueryService
+from netconsole.services.ap_identity.normalizers import normalize_mac_key
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.trackside_ap_business import (
     count_current_optical_abnormal_aps,
@@ -93,7 +95,34 @@ class TracksideApBusinessQueryService:
             for row in snapshot.rows
         ]
         station_options = trackside_station_options(business_rows)
-        rows = filter_trackside_ap_business_rows(business_rows, station, query)
+        if normalize_mac_key(query):
+            identity_rows = ApIdentityQueryService(
+                Database(self.paths.site_db_path(site_id))
+            ).search_aps(query)
+            matched_macs = {
+                mac
+                for item in identity_rows
+                for field in ("ap_mac", "ac_ap_mac", "base_ap_mac")
+                if (mac := normalize_mac_key(item.get(field)))
+            }
+            matched_names = {
+                str(item.get("ap_name") or "").strip().casefold()
+                for item in identity_rows
+                if str(item.get("ap_name") or "").strip()
+            }
+            rows = [
+                row
+                for row in filter_trackside_ap_business_rows(
+                    business_rows, station, ""
+                )
+                if normalize_mac_key(row.get("ap_mac")) in matched_macs
+                or str(row.get("ap_name") or "").strip().casefold()
+                in matched_names
+            ]
+        else:
+            rows = filter_trackside_ap_business_rows(
+                business_rows, station, query
+            )
         enriched = [(row, trackside_row_status(row)) for row in rows]
         if optical_anomaly_only:
             enriched = [(row, severity) for row, severity in enriched if is_current_optical_abnormal_row(row)]

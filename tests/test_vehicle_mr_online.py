@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.export.export_handlers import run_generic_export_handler
 from netconsole.services.export.export_task_builders import vehicle_mr_history_xlsx_spec
 from netconsole.services.export_task_models import ExportJob
@@ -39,6 +41,9 @@ from netconsole.services.vehicle_mr_online import (
     parse_ac_clock_line,
     parse_train_identity,
     resolve_ap_station,
+)
+from netconsole.services.job_center.handlers.legacy_tasks import (
+    _jsonable_vehicle_ap_lookup,
 )
 
 
@@ -433,6 +438,7 @@ def test_fit_ap_resource_station_match_by_ap_name_and_persist_method(tmp_path: P
             """
         )
         conn.commit()
+    ApIdentityQueryService(database).rebuild_index("test_ac_refresh_succeeded")
     lookup = load_trackside_ap_lookup(repository)
     result = VehicleMrMeshParseResult("00:22:05", [VehicleMrMeshLink("bc5a-3457-a740", "列车06-MR-CT", local_mac="bc5a-3457-a740", rssi=46)])
     trains = build_train_states({"列车06": VehicleMrTrainState("列车06", "06", True)}, result, lookup)
@@ -443,7 +449,12 @@ def test_fit_ap_resource_station_match_by_ap_name_and_persist_method(tmp_path: P
     store.persist_snapshot("s1", 1, result, trains, lookup, 10)
     with sqlite3.connect(store.db_path) as conn:
         row = conn.execute("SELECT matched_station, matched_ap_name, match_method, match_score FROM vehicle_mr_online_links").fetchone()
-    assert row == ("鼓楼站", "bc5a-3457-a740", "ap_name_exact", 100)
+    assert row == (
+        "鼓楼站",
+        "bc5a-3457-a740",
+        "ac_ap_mac_exact",
+        98,
+    )
 
 
 def test_resolve_ap_station_prefers_optical_site() -> None:
@@ -489,6 +500,64 @@ def test_optical_site_backfills_empty_fit_ap_resource_site(tmp_path: Path) -> No
         assert conn.execute("SELECT site FROM ac_fit_ap_resources WHERE ap_name='30f5-2787-a560'").fetchone()[0] == "11云龙车辆段"
 
 
+def test_optical_site_backfill_does_not_match_same_name_with_different_mac(tmp_path: Path) -> None:
+    paths = PathResolver(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    repository = DeviceRepository(database)
+    with database.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO ac_fit_ap_resources (
+                ac_device_uuid, ap_uuid, ap_name, ap_mac, site, collected_at, updated_at
+            ) VALUES ('ac1', 'resource-ap', 'same-name', '0011-2233-4455', '-', 'now', 'now')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO ac_fit_ap_optical (
+                ac_device_uuid, ap_uuid, ap_name, ap_mac, site
+            ) VALUES ('ac1', 'optical-ap', 'same-name', '0011-2233-5566', 'Station A')
+            """
+        )
+        conn.commit()
+
+    assert backfill_fit_ap_resource_station_from_optical(repository) == 0
+    with database.connect() as conn:
+        assert conn.execute("SELECT site FROM ac_fit_ap_resources WHERE ap_uuid='resource-ap'").fetchone()[0] == "-"
+
+
+def test_optical_site_backfill_skips_ambiguous_mac_sites(tmp_path: Path) -> None:
+    paths = PathResolver(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    repository = DeviceRepository(database)
+    with database.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO ac_fit_ap_resources (
+                ac_device_uuid, ap_uuid, ap_name, ap_mac, site, collected_at, updated_at
+            ) VALUES ('ac1', 'resource-ap', 'ap-a', '0011-2233-4455', '-', 'now', 'now')
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO ac_fit_ap_optical (
+                ac_device_uuid, ap_uuid, ap_name, ap_mac, site
+            ) VALUES ('ac1', ?, ?, ?, ?)
+            """,
+            [
+                ("optical-a", "renamed-a", "0011-2233-4455", "Station A"),
+                ("optical-b", "renamed-b", "0011-2233-4455", "Station B"),
+            ],
+        )
+        conn.commit()
+
+    assert backfill_fit_ap_resource_station_from_optical(repository) == 0
+    with database.connect() as conn:
+        assert conn.execute("SELECT site FROM ac_fit_ap_resources WHERE ap_uuid='resource-ap'").fetchone()[0] == "-"
+
+
 def test_online_vehicle_mr_uses_optical_site_for_station_display(tmp_path: Path) -> None:
     paths = PathResolver(tmp_path)
     database = Database(paths.site_db_path("demo"))
@@ -497,6 +566,7 @@ def test_online_vehicle_mr_uses_optical_site_for_station_display(tmp_path: Path)
     with database.connect() as conn:
         conn.execute("INSERT INTO ac_fit_ap_optical (ac_device_uuid, ap_uuid, ap_name, ap_mac, site) VALUES ('ac1', 'ap1', '30f5-2787-a560', '30f5-2787-a560', '11云龙车辆段')")
         conn.commit()
+    ApIdentityQueryService(database).rebuild_index("test_legacy_optical_loaded")
     lookup = load_trackside_ap_lookup(repository)
     result = VehicleMrMeshParseResult("00:22:05", [VehicleMrMeshLink("30f5-2787-a560", "NBL12-LC06-MR-CT", local_mac="30f5-2787-a560", rssi=45)])
 
@@ -506,19 +576,40 @@ def test_online_vehicle_mr_uses_optical_site_for_station_display(tmp_path: Path)
     assert trains[0].tc1.display() == "11云龙车辆段 / 30f5-2787-a560 / 45"
 
 
-def test_h3c_radio_mac_tolerant_match_returns_station() -> None:
+def test_vehicle_mr_lookup_job_payload_is_json_safe(tmp_path: Path) -> None:
+    paths = PathResolver(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    with database.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO ac_fit_ap_optical (
+                ac_device_uuid, ap_uuid, ap_name, ap_mac, site
+            ) VALUES ('ac1', 'ap1', 'AP-1', '30f5-2787-a560', '鼓楼站')
+            """
+        )
+        conn.commit()
+    ApIdentityQueryService(database).rebuild_index("test_legacy_optical_loaded")
+
+    payload = _jsonable_vehicle_ap_lookup(
+        load_trackside_ap_lookup(DeviceRepository(database))
+    )
+
+    assert "__ap_identity_query_service__" not in payload
+    assert payload["__ap_identity_entities__"][0]["station"] == "鼓楼站"
+    json.dumps(payload, ensure_ascii=False)
+
+
+def test_radio_mac_different_from_canonical_mac_stays_unresolved() -> None:
     lookup = {
         "__resources__": [MatchedAp("Y01-02", "鼓楼站", "resource", 0, "bc5a3457a740")],
     }
 
     matched = match_ap("unknown-ap", lookup, "bc5a-3457-a750")
 
-    assert normalize_mac("BC5A-3457-A740") == "bc5a3457a740"
-    assert is_same_or_h3c_radio_mac("bc5a-3457-a740", "bc5a-3457-a750")
-    assert matched is not None
-    assert matched.station == "鼓楼站"
-    assert matched.match_method == "h3c_radio_mac"
-    assert matched.match_score == 80
+    assert normalize_mac("BC5A-3457-A740") == "bc:5a:34:57:a7:40"
+    assert not is_same_or_h3c_radio_mac("bc5a-3457-a740", "bc5a-3457-a750")
+    assert matched is None
 
 
 

@@ -99,6 +99,7 @@ def test_wlan_ap_unauthenticated_parser_extracts_summary_and_rows():
     assert rows[0]["serial_number"] == "219801A4588256E0002X"
     assert rows[0]["dev_type"] == "COMMON"
     assert rows[0]["work_mode"] == "FitAP"
+    assert rows[0]["inferred_ap_mac"] is None
     assert all(row["ap_name"] != "C" for row in rows)
     assert all(row["apid"] != "=" for row in rows)
     assert all(row["model"] != "DC" for row in rows)

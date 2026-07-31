@@ -403,7 +403,8 @@ def test_ac_repository_summary_upsert_and_replace_lists(tmp_path):
         repository.list_fit_ap_optical("ac-1")[0]["neighbor_interface"]
         == "GigabitEthernet1/0/1"
     )
-    assert repository.get_fit_ap_optical_by_ap("ac-1", "ap-c")["rx_power"] == "-7.55"
+    # 名称只用于展示/兼容查询，缺少 MAC/UUID 时不得把光衰行关联到资源。
+    assert repository.get_fit_ap_optical_by_ap("ac-1", "ap-c") is None
     assert repository.get_fit_ap_resource("ac-1", "ap-c")["ap_name"] == "ap-c"
 
 
@@ -457,9 +458,11 @@ def test_single_fit_ap_upsert_keeps_other_resources(tmp_path):
             {"ap_name": "AP2", "rid1_channel": "6"},
         ],
     )
+    ap1_uuid = repository.get_fit_ap_resource("ac-1", "AP1")["ap_uuid"]
 
     repository.upsert_fit_ap_resource(
-        "ac-1", {"ap_name": "AP1", "rid1_channel": "153", "rid1_bbssid": "new-bssid"}
+        "ac-1",
+        {"ap_uuid": ap1_uuid, "ap_name": "AP1", "rid1_channel": "153", "rid1_bbssid": "new-bssid"},
     )
 
     rows = repository.list_fit_ap_resources("ac-1")
@@ -567,7 +570,34 @@ def test_fit_ap_resources_do_not_merge_different_identity_with_same_apid(tmp_pat
     assert len(repository.list_ap_entities("ac-1")) == 2
 
 
-def test_fit_ap_resources_same_name_hardware_replacement_inherits_business_fields(
+def test_fit_ap_resources_same_name_different_macs_are_distinct(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [
+            {"ap_name": "same-name", "ap_mac": "0011-2233-4455"},
+            {"ap_name": "same-name", "ap_mac": "0011-2233-5566"},
+        ],
+    )
+
+    rows = repository.list_fit_ap_resources("ac-1")
+    assert len(rows) == 2
+    assert {row["ap_mac"] for row in rows} == {"0011-2233-4455", "0011-2233-5566"}
+
+
+def test_fit_ap_resources_same_name_without_identity_are_not_deduplicated(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [{"ap_name": "same-name"}, {"ap_name": "same-name"}],
+    )
+
+    rows = repository.list_fit_ap_resources("ac-1")
+    assert len(rows) == 2
+    assert len({row["ap_uuid"] for row in rows}) == 2
+
+
+def test_fit_ap_resources_same_name_hardware_replacement_creates_new_identity(
     tmp_path,
 ):
     database = make_database(tmp_path)
@@ -613,21 +643,21 @@ def test_fit_ap_resources_same_name_hardware_replacement_inherits_business_field
         ],
     )
     second = repository.list_fit_ap_resources("ac-1")[0]
-    entity = repository.list_ap_entities("ac-1")[0]
+    entities = {row["ap_uuid"]: row for row in repository.list_ap_entities("ac-1")}
     history = repository.list_fit_ap_resource_history("ac-1")
 
-    assert second["ap_uuid"] == first["ap_uuid"]
-    assert entity["ap_uuid"] == first["ap_uuid"]
-    assert entity["ap_mac"] == "0011-2233-9999"
-    assert entity["serial_number"] == "SN-NEW"
-    assert entity["model"] == "new-model"
-    assert entity["ap_ip"] == "10.0.0.99"
-    assert entity["ap_id"] == "2001"
-    assert entity["state"] == "R/M"
-    assert entity["station"] == "Station A"
-    assert entity["milestone"] == "K1+100"
-    assert entity["direction"] == "up"
-    assert entity["location_note"] == "old note"
+    assert second["ap_uuid"] != first["ap_uuid"]
+    assert len(entities) == 2
+    assert entities[second["ap_uuid"]]["ap_mac"] == "0011-2233-9999"
+    assert entities[second["ap_uuid"]]["serial_number"] == "SN-NEW"
+    assert entities[second["ap_uuid"]]["model"] == "new-model"
+    assert entities[second["ap_uuid"]]["ap_ip"] == "10.0.0.99"
+    assert entities[second["ap_uuid"]]["ap_id"] == "2001"
+    assert entities[second["ap_uuid"]]["state"] == "R/M"
+    assert entities[second["ap_uuid"]]["station"] in (None, "")
+    assert entities[second["ap_uuid"]]["milestone"] in (None, "")
+    assert entities[second["ap_uuid"]]["direction"] in (None, "")
+    assert entities[second["ap_uuid"]]["location_note"] in (None, "")
     assert {row["serial_number"] for row in history} == {"SN-OLD", "SN-NEW"}
 
 
@@ -1411,7 +1441,7 @@ def test_station_ap_capacity_overrides_incomplete_planned_total(tmp_path):
     repository = AcRepository(make_database(tmp_path))
     repository.upsert_station_ap_capacity("Station A", 56)
 
-    rows = [{"ap_name": "AP-A", "site_name": "Station A", "state": "R/M"}]
+    rows = [{"ap_name": "AP-A", "ap_mac": "0011-2233-4455", "site_name": "Station A", "state": "R/M"}]
     overview = build_ap_online_overview_rows(
         planned_aps=rows,
         fit_ap_resources=rows,
@@ -5406,8 +5436,8 @@ def test_neighbor_matcher_reverse_matches_ap_sysname_from_device_lldp(tmp_path):
         "demo", ap_name="bc5a-3457-cbe1", paths=paths
     )
 
-    assert match.device_uuid == device.device_uuid
-    assert match.local_interface == "GE2/0/23"
+    assert match.device_uuid is None
+    assert match.local_interface is None
 
 
 def test_neighbor_optical_module_matches_interface_alias(tmp_path):

@@ -31,6 +31,7 @@ from netconsole.core.version import APP_VERSION
 from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.site_sync import (
     COLLECTION_RETURN,
     FIELD_COLLECTION,
@@ -1375,6 +1376,9 @@ class SitePackageService:
                             )
                         connection.commit()
                     Database(imported_database).initialize()
+                    ApIdentityQueryService(
+                        Database(imported_database)
+                    ).rebuild_index("site_package_import_staging")
                 _quick_check_site(imported_root)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 if target.exists():

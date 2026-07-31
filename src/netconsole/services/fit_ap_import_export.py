@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from netconsole.repositories.ac_repository import AcRepository
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.ap_extension_import import (
     ApExtensionImportService,
     ImportPreview,
@@ -128,12 +129,16 @@ class FitApImportExportService:
         preview: ImportPreview,
         duplicate_strategy: str = "update_by_priority",
     ) -> dict[str, int | str]:
-        return self.repository.import_ap_extension_points(
+        result = self.repository.import_ap_extension_points(
             preview.standard_rows,
             source_file=preview.file_name,
             template_type=preview.template_type,
             duplicate_strategy=duplicate_strategy,
         )
+        ApIdentityQueryService(self.repository.database).rebuild_index(
+            "base_data_import_completed"
+        )
+        return result
 
     def import_metadata_csv(self, path: Path) -> ApMetadataImportResult:
         validate_csv_import(path, expected_module="ac.ap_extension", required_headers=("AP_MAC",), allow_legacy=True)
@@ -210,6 +215,10 @@ class FitApImportExportService:
             if metadata_payload.get("ap_uuid") or metadata_payload.get("ap_name"):
                 self.repository.upsert_fit_ap_metadata(metadata_payload)
             updated += 1
+        if updated:
+            ApIdentityQueryService(self.repository.database).rebuild_index(
+                "ac_metadata_import_completed"
+            )
         return ApMetadataImportResult(updated, skipped, errors)
 
     def export_ap_csv(self, path: Path, rows: list[dict[str, object | None]]) -> None:

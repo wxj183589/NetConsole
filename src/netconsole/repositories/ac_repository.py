@@ -711,21 +711,18 @@ class AcRepository:
             rows = conn.execute(
                 """
                 SELECT r.*,
-                       COALESCE(m_uuid.site_name, m_name.site_name) AS site_name,
-                       COALESCE(m_uuid.belong_type, m_name.belong_type) AS metadata_belong_type,
-                       COALESCE(m_uuid.belong_section, m_name.belong_section) AS metadata_belong_section,
-                       COALESCE(m_uuid.section_start_station, m_name.section_start_station) AS metadata_section_start_station,
-                       COALESCE(m_uuid.section_end_station, m_name.section_end_station) AS metadata_section_end_station,
-                       COALESCE(m_uuid.yard_name, m_name.yard_name) AS metadata_yard_name,
-                       COALESCE(m_uuid.area_name, m_name.area_name) AS metadata_area_name,
-                       COALESCE(m_uuid.mileage, m_name.mileage) AS metadata_mileage,
-                       COALESCE(m_uuid.location_note, m_name.location_note) AS metadata_location_note,
-                       COALESCE(m_uuid.direction, m_name.direction) AS metadata_direction
+                       m_uuid.site_name AS site_name,
+                       m_uuid.belong_type AS metadata_belong_type,
+                       m_uuid.belong_section AS metadata_belong_section,
+                       m_uuid.section_start_station AS metadata_section_start_station,
+                       m_uuid.section_end_station AS metadata_section_end_station,
+                       m_uuid.yard_name AS metadata_yard_name,
+                       m_uuid.area_name AS metadata_area_name,
+                       m_uuid.mileage AS metadata_mileage,
+                       m_uuid.location_note AS metadata_location_note,
+                       m_uuid.direction AS metadata_direction
                 FROM ac_fit_ap_resources r
                 LEFT JOIN ac_fit_ap_metadata m_uuid ON m_uuid.ap_uuid = r.ap_uuid
-                LEFT JOIN ac_fit_ap_metadata m_name
-                    ON lower(trim(m_name.ap_name)) = lower(trim(r.ap_name))
-                   AND (m_uuid.ap_uuid IS NULL OR m_name.ap_uuid = m_uuid.ap_uuid)
                 ORDER BY r.ap_name, r.id
                 """
             ).fetchall()
@@ -757,7 +754,7 @@ class AcRepository:
             conn.execute("DELETE FROM ac_fit_ap_unauthenticated WHERE ac_device_uuid = ?", (ac_device_uuid,))
             for row in rows:
                 payload = self._payload(FIT_AP_UNAUTHENTICATED_FIELDS, {**row, "ac_device_uuid": ac_device_uuid})
-                payload["inferred_ap_mac"] = self._mac_from_text(payload.get("inferred_ap_mac") or payload.get("ap_name")) or None
+                payload["inferred_ap_mac"] = self._mac_from_text(payload.get("inferred_ap_mac")) or None
                 payload["collected_at"] = payload.get("collected_at") or summary_payload["collected_at"] or now
                 payload["updated_at"] = payload.get("updated_at") or now
                 self._insert(conn, "ac_fit_ap_unauthenticated", FIT_AP_UNAUTHENTICATED_FIELDS, payload)
@@ -920,8 +917,7 @@ class AcRepository:
             ).fetchall()
             resources = conn.execute("SELECT ap_name, ap_mac FROM ac_fit_ap_resources").fetchall()
         matched_macs = {self._extension_mac_norm(row["ap_mac"]) for row in resources if self._extension_mac_norm(row["ap_mac"])}
-        matched_names = {str(row["ap_name"] or "").strip().casefold() for row in resources if str(row["ap_name"] or "").strip()}
-        result = [self._extension_with_match_status(dict(row), matched_macs, matched_names) for row in rows]
+        result = [self._extension_with_match_status(dict(row), matched_macs) for row in rows]
         if match_status:
             result = [row for row in result if row.get("match_status") == match_status]
         return result
@@ -1332,7 +1328,7 @@ class AcRepository:
                 ).fetchone()
                 if row is not None:
                     return dict(row)
-            clauses, params = self._ap_identity_clauses(identity, allowed=("ap_uuid", "ap_mac", "ap_name"))
+            clauses, params = self._ap_identity_clauses(identity, allowed=("ap_uuid", "ap_mac"))
             if not clauses:
                 return None
             before_clause = ""
@@ -1359,7 +1355,7 @@ class AcRepository:
         identity: dict[str, str],
         before_collected_at: str | None = None,
     ) -> dict[str, object | None] | None:
-        clauses, params = self._ap_identity_clauses(identity, allowed=("ap_uuid", "ap_mac", "ap_name", "serial_number"))
+        clauses, params = self._ap_identity_clauses(identity, allowed=("ap_uuid", "ap_mac", "serial_number"))
         if not clauses:
             return None
         before_clause = ""
@@ -1380,7 +1376,7 @@ class AcRepository:
             ).fetchone()
             if row is not None:
                 return dict(row)
-            clauses, params = self._ap_identity_clauses(identity, allowed=("ap_uuid", "ap_mac", "ap_name"))
+            clauses, params = self._ap_identity_clauses(identity, allowed=("ap_uuid", "ap_mac"))
             before_clause = ""
             if before_collected_at:
                 before_clause = "AND collected_at < ?"
@@ -1861,13 +1857,11 @@ class AcRepository:
             }
         )
         ap_networks_by_mac: dict[str, dict[str, object]] = {}
-        ap_networks_by_name: dict[str, dict[str, object]] = {}
-        duplicate_names: set[str] = set()
         if group_by_ap_id:
             with self.database.connect() as conn:
                 point_rows = conn.execute(
                     """
-                    SELECT id, ap_name, ap_mac_norm
+                    SELECT id, ap_mac_norm
                     FROM ap_extension_points
                     """
                 ).fetchall()
@@ -1879,14 +1873,6 @@ class AcRepository:
                 mac = normalize_ap_mac(point["ap_mac_norm"]).normalized
                 if mac:
                     ap_networks_by_mac[mac] = network
-                name = str(point["ap_name"] or "").strip().casefold()
-                if name:
-                    if name in ap_networks_by_name:
-                        duplicate_names.add(name)
-                    else:
-                        ap_networks_by_name[name] = network
-        for name in duplicate_names:
-            ap_networks_by_name.pop(name, None)
         return {
             "mode": mode,
             "planning_mode": str(
@@ -1900,7 +1886,8 @@ class AcRepository:
             "station_totals": station_totals,
             "group_networks": group_networks,
             "ap_networks_by_mac": ap_networks_by_mac,
-            "ap_networks_by_name": ap_networks_by_name,
+            # 兼容旧调用方保留字段，但生产身份只允许按规范化 MAC。
+            "ap_networks_by_name": {},
         }
 
     def save_station_online_summary_history(self, rows: list[dict[str, object | None]], collected_at: str | None = None) -> int:
@@ -1988,8 +1975,18 @@ class AcRepository:
             for row in rows:
                 payload = self._payload(fields, {**row, "ac_device_uuid": ac_device_uuid})
                 if "ap_uuid" in fields and not payload.get("ap_uuid"):
-                    resource = self.get_fit_ap_resource(ac_device_uuid, str(row.get("ap_name") or ""))
-                    payload["ap_uuid"] = resource.get("ap_uuid") if resource else str(uuid4())
+                    mac = self._mac_from_text(row.get("ap_mac"))
+                    resources = []
+                    if mac:
+                        resources = [
+                            candidate
+                            for candidate in conn.execute(
+                                "SELECT ap_uuid, ap_mac FROM ac_fit_ap_resources WHERE ac_device_uuid = ?",
+                                (ac_device_uuid,),
+                            ).fetchall()
+                            if self._mac_from_text(candidate["ap_mac"]) == mac
+                        ]
+                    payload["ap_uuid"] = resources[0]["ap_uuid"] if len(resources) == 1 else str(uuid4())
                 payload["collected_at"] = payload.get("collected_at") or now
                 payload["updated_at"] = payload.get("updated_at") or now
                 columns = ", ".join(fields)
@@ -2188,38 +2185,30 @@ class AcRepository:
 
         serial_number = self._clean_identity_value(row.get("serial_number"))
         if serial_number:
-            found = conn.execute(
-                "SELECT ap_uuid FROM ap_entities WHERE site_id = ? AND serial_number = ? ORDER BY id DESC LIMIT 1",
-                (site_id, serial_number),
-            ).fetchone()
-            if found and found["ap_uuid"]:
-                return str(found["ap_uuid"])
-
-        normalized_mac = self._normalized_explicit_ap_mac(row)
-        if normalized_mac:
-            found = conn.execute(
-                "SELECT ap_uuid FROM ap_entities WHERE site_id = ? AND ap_mac = ? ORDER BY id DESC LIMIT 1",
-                (site_id, normalized_mac),
-            ).fetchone()
-            if found and found["ap_uuid"]:
-                return str(found["ap_uuid"])
-
-        ap_name = str(row.get("ap_name") or "").strip()
-        if ap_name:
             matches = conn.execute(
-                """
-                SELECT ap_uuid FROM ap_entities
-                WHERE site_id = ? AND ac_device_uuid = ? AND ap_name = ?
-                ORDER BY id DESC
-                """,
-                (site_id, ac_device_uuid, ap_name),
+                "SELECT ap_uuid FROM ap_entities WHERE site_id = ? AND serial_number = ? ORDER BY id DESC",
+                (site_id, serial_number),
             ).fetchall()
             if len(matches) == 1 and matches[0]["ap_uuid"]:
                 return str(matches[0]["ap_uuid"])
             if len(matches) > 1:
                 app_logger.log_warning(
-                    "FIT_AP_ENTITY_NAME_AMBIGUOUS",
-                    f"ac_device_uuid={ac_device_uuid}, site_id={site_id}, ap_name={ap_name}, count={len(matches)}",
+                    "FIT_AP_ENTITY_SERIAL_AMBIGUOUS",
+                    f"ac_device_uuid={ac_device_uuid}, site_id={site_id}, serial_number={serial_number}, count={len(matches)}",
+                )
+
+        normalized_mac = self._normalized_explicit_ap_mac(row)
+        if normalized_mac:
+            matches = conn.execute(
+                "SELECT ap_uuid FROM ap_entities WHERE site_id = ? AND ap_mac = ? ORDER BY id DESC",
+                (site_id, normalized_mac),
+            ).fetchall()
+            if len(matches) == 1 and matches[0]["ap_uuid"]:
+                return str(matches[0]["ap_uuid"])
+            if len(matches) > 1:
+                app_logger.log_warning(
+                    "FIT_AP_ENTITY_MAC_AMBIGUOUS",
+                    f"ac_device_uuid={ac_device_uuid}, site_id={site_id}, ap_mac={normalized_mac}, count={len(matches)}",
                 )
 
         if requested_uuid:
@@ -2302,14 +2291,11 @@ class AcRepository:
         for row in rows:
             normalized_mac = self._normalized_explicit_ap_mac(row)
             serial_number = self._clean_identity_value(row.get("serial_number"))
-            ap_name = str(row.get("ap_name") or "").strip()
             key: tuple[str, str] | None = None
             if normalized_mac:
                 key = ("mac", normalized_mac)
             elif serial_number:
                 key = ("serial", serial_number)
-            elif ap_name:
-                key = ("name", ap_name)
             if key is None:
                 passthrough.append(dict(row))
             else:
@@ -2397,13 +2383,18 @@ class AcRepository:
             ).fetchone()
             if found:
                 return dict(found)
-        if row.get("ap_name"):
-            found = conn.execute(
-                "SELECT r.*, m.site_name FROM ac_fit_ap_resources r LEFT JOIN ac_fit_ap_metadata m ON m.ap_uuid = r.ap_uuid WHERE r.ac_device_uuid = ? AND r.ap_name = ? ORDER BY r.id DESC LIMIT 1",
-                (ac_device_uuid, row.get("ap_name")),
-            ).fetchone()
-            if found:
-                return dict(found)
+        mac = self._mac_from_text(row.get("ap_mac"))
+        if mac:
+            matches = [
+                dict(candidate)
+                for candidate in conn.execute(
+                    "SELECT r.*, m.site_name FROM ac_fit_ap_resources r LEFT JOIN ac_fit_ap_metadata m ON m.ap_uuid = r.ap_uuid WHERE r.ac_device_uuid = ?",
+                    (ac_device_uuid,),
+                ).fetchall()
+                if self._mac_from_text(candidate["ap_mac"]) == mac
+            ]
+            if len(matches) == 1:
+                return matches[0]
         return {}
 
     def _list_rows(self, table: str, ac_device_uuid: str, order_by: str) -> list[dict[str, object | None]]:
@@ -2421,21 +2412,18 @@ class AcRepository:
             rows = conn.execute(
                 """
                 SELECT r.*,
-                       COALESCE(m_uuid.site_name, m_name.site_name) AS site_name,
-                       COALESCE(m_uuid.belong_type, m_name.belong_type) AS metadata_belong_type,
-                       COALESCE(m_uuid.belong_section, m_name.belong_section) AS metadata_belong_section,
-                       COALESCE(m_uuid.section_start_station, m_name.section_start_station) AS metadata_section_start_station,
-                       COALESCE(m_uuid.section_end_station, m_name.section_end_station) AS metadata_section_end_station,
-                       COALESCE(m_uuid.yard_name, m_name.yard_name) AS metadata_yard_name,
-                       COALESCE(m_uuid.area_name, m_name.area_name) AS metadata_area_name,
-                       COALESCE(m_uuid.mileage, m_name.mileage) AS metadata_mileage,
-                       COALESCE(m_uuid.location_note, m_name.location_note) AS metadata_location_note,
-                       COALESCE(m_uuid.direction, m_name.direction) AS metadata_direction
+                       m_uuid.site_name AS site_name,
+                       m_uuid.belong_type AS metadata_belong_type,
+                       m_uuid.belong_section AS metadata_belong_section,
+                       m_uuid.section_start_station AS metadata_section_start_station,
+                       m_uuid.section_end_station AS metadata_section_end_station,
+                       m_uuid.yard_name AS metadata_yard_name,
+                       m_uuid.area_name AS metadata_area_name,
+                       m_uuid.mileage AS metadata_mileage,
+                       m_uuid.location_note AS metadata_location_note,
+                       m_uuid.direction AS metadata_direction
                 FROM ac_fit_ap_resources r
                 LEFT JOIN ac_fit_ap_metadata m_uuid ON m_uuid.ap_uuid = r.ap_uuid
-                LEFT JOIN ac_fit_ap_metadata m_name
-                    ON lower(trim(m_name.ap_name)) = lower(trim(r.ap_name))
-                   AND (m_uuid.ap_uuid IS NULL OR m_name.ap_uuid = m_uuid.ap_uuid)
                 WHERE r.ac_device_uuid = ?
                 ORDER BY r.ap_name, r.id
                 """,
@@ -2455,20 +2443,12 @@ class AcRepository:
             for row in extensions
             if str(row.get("ap_mac_norm") or "").strip()
         }
-        by_name = {
-            str(row.get("ap_name") or "").strip().casefold(): row
-            for row in extensions
-            if str(row.get("ap_name") or "").strip()
-        }
         enriched: list[dict[str, object | None]] = []
         for row in rows:
             item = dict(row)
             mac = self._extension_mac_norm(item.get("ap_mac"))
             extension = by_mac.get(mac)
             match_status = "matched_by_mac" if extension else ""
-            if extension is None and str(item.get("ap_name") or "").strip():
-                extension = by_name.get(str(item.get("ap_name") or "").strip().casefold())
-                match_status = "matched_by_name" if extension else ""
             if extension:
                 for field in (
                     "ap_name",
@@ -2560,16 +2540,12 @@ class AcRepository:
     def _extension_with_match_status(
         row: dict[str, object | None],
         matched_macs: set[str],
-        matched_names: set[str],
     ) -> dict[str, object | None]:
         mac = str(row.get("ap_mac_norm") or "").strip()
-        name = str(row.get("ap_name") or "").strip().casefold()
         if mac and mac in matched_macs:
             row["match_status"] = "matched_by_mac"
         elif mac:
             row["match_status"] = "extension_not_online"
-        elif name and name in matched_names:
-            row["match_status"] = "matched_by_name"
         else:
             row["match_status"] = "unbound_no_mac"
         return row
@@ -2655,7 +2631,7 @@ class AcRepository:
 
     @classmethod
     def _normalized_ap_mac(cls, data: dict[str, object | None]) -> str:
-        for field in ("ap_mac", "mac", "ap_name"):
+        for field in ("ap_mac", "mac"):
             mac = cls._mac_from_text(data.get(field))
             if mac:
                 return mac
@@ -2834,12 +2810,9 @@ def _unauthenticated_identity_keys(row: dict[str, object | None]) -> list[tuple[
     serial = str(row.get("serial_number") or row.get("serial") or "").strip()
     if serial and serial not in {"-", "N/A", "n/a"}:
         keys.append(("serial", serial.casefold()))
-    mac = AcRepository._mac_from_text(row.get("inferred_ap_mac") or row.get("ap_mac") or row.get("mac") or row.get("ap_name"))
+    mac = AcRepository._mac_from_text(row.get("inferred_ap_mac") or row.get("ap_mac") or row.get("mac"))
     if mac:
         keys.append(("mac", mac.casefold()))
-    ap_name = str(row.get("ap_name") or "").strip()
-    if ap_name and ap_name not in {"-", "N/A", "n/a"}:
-        keys.append(("name", ap_name.casefold()))
     ac_device_uuid = str(row.get("ac_device_uuid") or "").strip()
     apid = str(row.get("apid") or row.get("ap_id") or "").strip()
     if ac_device_uuid and apid:
@@ -2848,7 +2821,7 @@ def _unauthenticated_identity_keys(row: dict[str, object | None]) -> list[tuple[
 
 
 def _ap_identity_key(row: dict[str, object | None]) -> tuple[str, str] | None:
-    for field in ("ap_uuid", "serial_number", "ap_mac", "ap_name"):
+    for field in ("ap_uuid", "serial_number", "ap_mac"):
         value = str(row.get(field) or "").strip()
         if value and value not in {"-", "N/A", "n/a"}:
             return field, value.casefold()
@@ -2869,9 +2842,6 @@ def _fit_ap_optical_merge_key(row: dict[str, object | None]) -> tuple[str, str] 
     value = str(row.get("serial_number") or "").strip()
     if value and value not in {"-", "N/A", "n/a"}:
         return "serial_number", value.casefold()
-    value = str(row.get("ap_name") or "").strip()
-    if value and value not in {"-", "N/A", "n/a"}:
-        return "ap_name", value.casefold()
     return None
 
 

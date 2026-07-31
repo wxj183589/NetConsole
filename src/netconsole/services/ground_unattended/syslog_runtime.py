@@ -447,8 +447,6 @@ class SyslogUdpReceiver:
         self._source_receive_sequences: dict[tuple[str, int], int] = {}
         self._batch_duration_ms = 0.0
         self._reported_dropped_count = 0
-        self._ap_by_name: dict[str, dict[str, str]] = {}
-        self._ap_by_mac: dict[str, dict[str, str]] = {}
         self._ap_resolver = GroundApDisplayResolver()
 
     def start(
@@ -613,21 +611,6 @@ class SyslogUdpReceiver:
 
     def update_ap_locations(self, rows: list[Any]) -> None:
         self._ap_resolver = GroundApDisplayResolver(rows)
-        by_name: dict[str, dict[str, str]] = {}
-        by_mac: dict[str, dict[str, str]] = {}
-        for row in rows:
-            value = {
-                "station": str(getattr(row, "station", "") or ""),
-                "section": str(getattr(row, "section", "") or ""),
-            }
-            name = str(getattr(row, "name", "") or "").strip().casefold()
-            mac = _normalize_mac(getattr(row, "mac", ""))
-            if name:
-                by_name[name] = value
-            if mac:
-                by_mac[mac] = value
-        self._ap_by_name = by_name
-        self._ap_by_mac = by_mac
 
     def health_snapshot(self) -> dict[str, Any]:
         elapsed = max(0.001, time.monotonic() - self._started_monotonic) if self._started_monotonic else 1.0
@@ -1159,10 +1142,6 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _normalize_mac(value: object) -> str:
-    return re.sub(r"[^0-9A-Fa-f]", "", str(value or "")).casefold()
 
 
 def _event_title(event_type: str) -> str:

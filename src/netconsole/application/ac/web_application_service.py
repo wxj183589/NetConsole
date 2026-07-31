@@ -53,6 +53,8 @@ from netconsole.services.external_terminal import (
     available_external_terminal_configs,
     build_external_terminal_command,
 )
+from netconsole.services.ap_identity import ApIdentityQueryService
+from netconsole.services.ap_identity.normalizers import normalize_mac_key
 from netconsole.services.fit_ap_import_export import normalize_ap_direction
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter, LocalProcessCompletion
 from netconsole.services.job_center.task_application_service import TaskApplicationService, TaskResourceConflictError
@@ -153,7 +155,23 @@ class AcWebApplicationService:
 
     def list_extensions(self, site_id: str, *, search: str = "", page: int = 1, page_size: int = 50) -> AcExtensionPageDTO:
         site_id = self._site(site_id)
-        rows = self._repository(site_id).list_ap_extension_points(search=search)
+        repository = self._repository(site_id)
+        if normalize_mac_key(search):
+            identity_rows = ApIdentityQueryService(
+                repository.database
+            ).search_aps(search)
+            base_ids = {
+                str(row.get("base_record_id") or "")
+                for row in identity_rows
+                if row.get("base_record_id")
+            }
+            rows = [
+                row
+                for row in repository.list_ap_extension_points()
+                if str(row.get("id") or "") in base_ids
+            ]
+        else:
+            rows = repository.list_ap_extension_points(search=search)
         items = [self._extension_dto(row) for row in rows]
         page = max(1, int(page))
         page_size = max(1, min(int(page_size), 200))

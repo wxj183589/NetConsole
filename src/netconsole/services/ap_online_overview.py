@@ -6,6 +6,7 @@ import re
 import unicodedata
 
 from netconsole.core import app_logger
+from netconsole.services.ap_identity.normalizers import normalize_mac_key
 from netconsole.utils.station_normalize import normalize_station_value
 
 
@@ -135,7 +136,12 @@ def build_plan_index(planned_aps: list[dict[str, object | None]]) -> dict[str, o
 
 
 def build_optical_index(optical_rows: list[dict[str, object | None]]) -> dict[str, object]:
-    indexes: dict[str, object] = {"by_uuid": {}, "by_mac": {}, "by_name": {}, "by_name_compact": {}}
+    indexes: dict[str, object] = {
+        "by_uuid": {},
+        "by_mac": {},
+        "by_name": {},
+        "by_name_compact": {},
+    }
     for row in optical_rows:
         if not str(row.get("_station") or "").strip():
             continue
@@ -153,10 +159,10 @@ def match_resource_to_plan(
     checks = (
         ("uuid", resource.get("_match_uuid"), "by_uuid"),
         ("mac", resource.get("_match_mac"), "by_mac"),
-        ("name", resource.get("_match_name"), "by_name"),
-        ("name", resource.get("_match_name_compact"), "by_name_compact"),
         ("serial", resource.get("_match_serial"), "by_serial"),
         ("apid", resource.get("_match_apid"), "by_apid"),
+        ("name", resource.get("_match_name"), "by_name"),
+        ("name", resource.get("_match_name_compact"), "by_name_compact"),
     )
     for method, value, index_name in checks:
         index = indexes.get(index_name)
@@ -237,12 +243,12 @@ def build_online_counts(
         optical, optical_method = match_resource_to_optical(resource, optical_indexes)
         metadata, _metadata_method = match_resource_to_plan(resource, metadata_indexes)
         resource_site = str(resource.get("_resource_site") or "").strip()
-        if optical:
-            site = str(optical.get("_station") or UNASSIGNED_SITE_LABEL)
+        if optical and str(optical.get("_station") or "").strip():
+            site = str(optical.get("_station") or "")
             online_key = _resource_unique_key(resource)
             stats[f"matched_by_{optical_method}"] = int(stats.get(f"matched_by_{optical_method}") or 0) + 1
         elif metadata and str(metadata.get("_station") or "").strip():
-            site = str(metadata.get("_station") or UNASSIGNED_SITE_LABEL)
+            site = str(metadata.get("_station") or "")
             online_key = _resource_unique_key(resource)
             stats["matched_by_metadata"] = int(stats["matched_by_metadata"] or 0) + 1
         elif resource_site and resource_site in capacity_sites:
@@ -253,7 +259,7 @@ def build_online_counts(
             stats["unmatched_online"] = int(stats["unmatched_online"] or 0) + 1
             _append_unmatched_sample(stats, resource)
             continue
-        if online_key in seen_online:
+        if not online_key or online_key in seen_online:
             continue
         seen_online.add(online_key)
         item = grouped.setdefault(site, {"site": site, "total": 0, "online": 0, "offline": 0, "remark": ""})
@@ -435,7 +441,7 @@ def _resource_site(row: dict[str, object | None]) -> str:
 
 def _row_mac(row: dict[str, object | None]) -> str:
     for field in ("ap_mac", "AP_MAC", "mac", "MAC", "MAC地址"):
-        mac = _normalize_mac(row.get(field))
+        mac = normalize_mac_key(row.get(field)) or ""
         if mac:
             return mac
     return ""
@@ -460,11 +466,6 @@ def _normalize_name(value: object, *, compact: bool = False) -> str:
     if compact:
         return re.sub(r"[\s_\-:./\\|,;，。；、]+", "", text)
     return text
-
-
-def _normalize_mac(value: object) -> str:
-    text = re.sub(r"[^0-9a-fA-F]", "", str(value or ""))
-    return text.casefold() if len(text) == 12 else ""
 
 
 def _plan_unique_key(row: dict[str, object | None]) -> str:
@@ -519,7 +520,11 @@ def _capacity_total_remark(value: object) -> tuple[int, str]:
 def _with_online_rate(row: dict[str, object | None]) -> dict[str, object | None]:
     total = int(row.get("total") or 0)
     online = int(row.get("online") or 0)
-    row["online_rate"] = f"{online / total:.1%}" if total else "0.0%"
+    row["online_rate"] = (
+        f"{online / total:.1%}"
+        if total > 0 and online <= total
+        else "—"
+    )
     return row
 
 

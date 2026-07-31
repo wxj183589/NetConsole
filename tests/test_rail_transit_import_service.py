@@ -9,6 +9,8 @@ import pytest
 from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture, mark_base_data_copy
 from netconsole.models.api.rail_transit_base_data import ImportPreviewRowDTO
 from netconsole.repositories.rail_transit_base_data_repository import RailTransitBaseDataRepository
+from netconsole.core.database import Database
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.rail_transit.base_data_import_service import (
     BaseDataImportError,
     RailTransitBaseDataImportService,
@@ -82,7 +84,7 @@ def test_import_policy_encapsulates_guard_status_and_source_rules(tmp_path: Path
 
 
 def test_temp_database_apply_audit_and_rollback_are_atomic(tmp_path: Path) -> None:
-    paths, _db_path = build_rail_transit_base_data_fixture(tmp_path)
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
     mark_base_data_copy(paths)
     service = _service(paths)
     plan = _plan(service, _create_row(1, "12"))
@@ -94,6 +96,8 @@ def test_temp_database_apply_audit_and_rollback_are_atomic(tmp_path: Path) -> No
     assert str(tmp_path) not in serialized
     assert "password" not in serialized.casefold()
     assert any(row["ap_name"] == "AP-New-12" for row in service.repository.list_ap_records("demo"))
+    identity = ApIdentityQueryService(Database(db_path))
+    assert identity.resolve_mac("0011-2233-4412").effective_ap_name == "AP-New-12"
 
     rolled_back = service.rollback_import(
         site_id="demo",
@@ -102,6 +106,7 @@ def test_temp_database_apply_audit_and_rollback_are_atomic(tmp_path: Path) -> No
     )
     assert rolled_back["status"] == "ROLLED_BACK"
     assert not any(row["ap_name"] == "AP-New-12" for row in service.repository.list_ap_records("demo"))
+    assert identity.resolve_mac("0011-2233-4412").status == "unresolved"
 
 
 def test_audit_drops_sensitive_owner_text(tmp_path: Path) -> None:

@@ -23,7 +23,18 @@ DEMO_MAX_BYTES = 50 * 1024 * 1024
 _SQLITE_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
 _TRANSIENT_SUFFIXES = {"-wal", "-shm", "-journal"}
 _DEMO_MANIFEST_NAME = "demo_seed_manifest.json"
-_DEFAULT_TABLES = {"schema_metadata", "task_schema_meta", "online_mr_task_session_schema", "agent_schema_meta", "device_groups"}
+_DEFAULT_TABLES = {
+    "schema_metadata",
+    "task_schema_meta",
+    "online_mr_task_session_schema",
+    "agent_schema_meta",
+    "device_groups",
+    "ap_identity_entities",
+    "ap_identity_mac_aliases",
+    "ap_identity_h3c_prefixes",
+    "ap_identity_conflicts",
+    "ap_identity_index_state",
+}
 _DEFAULT_DEVICE_GROUP_NAMES = {"COCC", "BOCC", "车站", "车载-MR", "车载-3SW"}
 _REFERENCE_TEXT_SUFFIXES = {".json", ".jsonl", ".toml", ".yaml", ".yml"}
 _KNOWN_DEMO_DEVICE_NAMES = frozenset(

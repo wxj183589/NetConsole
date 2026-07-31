@@ -13,7 +13,9 @@ from netconsole.models.device import Device
 from netconsole.models.online_mr_models import OnlineMrConnectionConfig
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.online_mr_collector import NetmikoShellConnection
+from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.utils.natural_sort import train_natural_sort_key
 
 
@@ -26,6 +28,8 @@ TRAIN_STATUS_ABNORMAL_SINGLE = "异常单端"
 TRAIN_STATUS_UNEXPECTED_END = "非预期端在线"
 TRAIN_STATUS_DUAL_ONLINE = "双端在线"
 UNKNOWN_STATION = "未知车站"
+_AP_IDENTITY_QUERY_KEY = "__ap_identity_query_service__"
+_AP_IDENTITY_ENTITIES_KEY = "__ap_identity_entities__"
 ONLINE_POLICY_AUTO = "auto"
 ONLINE_POLICY_SINGLE_TAIL = "single_tail"
 ONLINE_POLICY_DUAL_ACTIVE = "dual_active"
@@ -322,11 +326,6 @@ def build_canonical_train_key(value: object) -> str:
     return f"train:{train_no}" if train_no else ""
 
 
-def normalize_mac(mac: object) -> str:
-    text = re.sub(r"[^0-9a-fA-F]", "", str(mac or "")).casefold()
-    return text if len(text) == 12 else ""
-
-
 def is_empty_station(value: object) -> bool:
     return str(value or "").strip().casefold() in EMPTY_STATION_VALUES
 
@@ -336,20 +335,12 @@ def is_same_or_h3c_radio_mac(mac_a: object, mac_b: object) -> bool:
 
 
 def h3c_radio_mac_match_method(mac_a: object, mac_b: object) -> str:
-    left = normalize_mac(mac_a)
-    right = normalize_mac(mac_b)
+    left = normalize_mac(mac_a) or ""
+    right = normalize_mac(mac_b) or ""
     if not left or not right:
         return ""
     if left == right:
         return "exact_mac"
-    if left[:10] == right[:10]:
-        try:
-            if abs(int(left[10], 16) - int(right[10], 16)) <= 1:
-                return "h3c_radio_mac"
-        except ValueError:
-            pass
-    if left[:11] == right[:11]:
-        return "h3c_radio_bssid"
     return ""
 
 
@@ -691,32 +682,29 @@ def _find_previous_by_train_no(previous: dict[str, VehicleMrTrainState], train_n
 
 
 def match_ap(ap_name: str, ap_lookup: dict[str, object], local_mac: str = "") -> MatchedAp | None:
-    name_key = str(ap_name or "").strip().casefold()
-    if name_key:
-        value = ap_lookup.get(f"name:{name_key}") or ap_lookup.get(name_key)
-        if isinstance(value, MatchedAp):
-            return value
-    for mac in (ap_name, local_mac):
+    query_service = ap_lookup.get(_AP_IDENTITY_QUERY_KEY)
+    if isinstance(query_service, ApIdentityQueryService):
+        match = query_service.resolve_mac(local_mac, peer_name=ap_name)
+        if match.matched:
+            return MatchedAp(
+                ap_name=match.effective_ap_name or ap_name,
+                station=match.station or UNKNOWN_STATION,
+                match_method=match.match_rule or match.matched_alias_type,
+                match_score=match.match_confidence,
+                ap_mac=match.effective_ap_mac,
+                station_source=match.matched_source,
+            )
+    for mac in (local_mac,):
         normalized = normalize_mac(mac)
         if not normalized:
             continue
         value = ap_lookup.get(f"mac:{normalized}") or ap_lookup.get(normalized)
         if isinstance(value, MatchedAp):
             return value
-    resources = ap_lookup.get("__resources__")
-    if isinstance(resources, list):
-        candidates: list[MatchedAp] = []
-        for resource in resources:
-            if not isinstance(resource, MatchedAp) or not resource.ap_mac:
-                continue
-            for mac in (local_mac, ap_name):
-                method = h3c_radio_mac_match_method(mac, resource.ap_mac)
-                if method and method != "exact_mac":
-                    score = 80 if method == "h3c_radio_mac" else 78
-                    candidates.append(MatchedAp(resource.ap_name, resource.station, method, score, resource.ap_mac, resource.station_source))
-                    break
-        if candidates:
-            return sorted(candidates, key=lambda item: (-item.match_score, item.ap_name))[0]
+    if not normalize_mac(local_mac):
+        value = ap_lookup.get(f"name:{str(ap_name or '').strip().casefold()}")
+        if isinstance(value, MatchedAp):
+            return value
     return None
 
 
@@ -1421,21 +1409,23 @@ def backfill_fit_ap_resource_station_from_optical(repository: DeviceRepository) 
     with repository.database.connect() as conn:
         if not _table_exists(conn, "ac_fit_ap_resources") or not _table_exists(conn, "ac_fit_ap_optical"):
             return 0
-        rows = conn.execute(
-            """
-            SELECT r.id AS resource_id, r.site AS resource_site, r.ap_name AS resource_ap_name, r.ap_mac AS resource_ap_mac,
-                   o.site AS optical_site
-            FROM ac_fit_ap_resources r
-            JOIN ac_fit_ap_optical o
-              ON (LOWER(COALESCE(r.ap_name, '')) = LOWER(COALESCE(o.ap_name, '')) AND COALESCE(r.ap_name, '') <> '')
-              OR (LOWER(REPLACE(REPLACE(COALESCE(r.ap_mac, ''), '-', ''), ':', '')) =
-                  LOWER(REPLACE(REPLACE(COALESCE(o.ap_mac, ''), '-', ''), ':', '')) AND COALESCE(r.ap_mac, '') <> '')
-            """
+        resources = conn.execute(
+            "SELECT id AS resource_id, site AS resource_site, ap_mac AS resource_ap_mac FROM ac_fit_ap_resources"
         ).fetchall()
+        optical_rows = conn.execute("SELECT ap_mac, site FROM ac_fit_ap_optical").fetchall()
+        sites_by_mac: dict[str, set[str]] = {}
+        for row in optical_rows:
+            ap_mac = normalize_mac(row["ap_mac"])
+            site = str(row["site"] or "").strip()
+            if not ap_mac or is_empty_station(site):
+                continue
+            sites_by_mac.setdefault(ap_mac, set()).add(site)
         updates: list[tuple[str, int]] = []
-        for row in rows:
-            if is_empty_station(row["resource_site"]) and not is_empty_station(row["optical_site"]):
-                updates.append((str(row["optical_site"]).strip(), int(row["resource_id"])))
+        for row in resources:
+            resource_mac = normalize_mac(row["resource_ap_mac"])
+            sites = sites_by_mac.get(resource_mac, set()) if resource_mac else set()
+            if is_empty_station(row["resource_site"]) and len(sites) == 1:
+                updates.append((next(iter(sites)), int(row["resource_id"])))
         if updates:
             conn.executemany("UPDATE ac_fit_ap_resources SET site = ?, updated_at = COALESCE(updated_at, datetime('now')) WHERE id = ?", updates)
             conn.commit()
@@ -1443,35 +1433,22 @@ def backfill_fit_ap_resource_station_from_optical(repository: DeviceRepository) 
 
 
 def load_trackside_ap_lookup(repository: DeviceRepository) -> dict[str, object]:
-    backfill_fit_ap_resource_station_from_optical(repository)
-    lookup: dict[str, object] = {"__resources__": []}
-    records: dict[str, dict[str, object]] = {}
-    with repository.database.connect() as conn:
-        _merge_ap_rows(conn, records, "resource", "ac_fit_ap_resources", ("ap_name", "ap_mac", "site", "site_name", "metadata_site", "metadata_site_name"))
-        _merge_ap_rows(conn, records, "optical", "ac_fit_ap_optical", ("ap_name", "ap_mac", "site", "site_name"))
-        _merge_ap_rows(conn, records, "metadata", "ac_fit_ap_metadata", ("ap_name", "site_name", "site", "mileage", "location_note", "direction"))
-        _merge_ap_rows(conn, records, "entity", "ap_entities", ("ap_name", "ap_mac", "station"))
-        _merge_ap_rows(conn, records, "cache", "trackside_ap_view_cache", ("ap_name", "ap_mac", "station"))
-    for record in records.values():
-        ap_name = str(record.get("ap_name") or "").strip()
-        ap_mac = normalize_mac(record.get("ap_mac"))
-        station, station_source = resolve_ap_station(record)
-        station_name = station or UNKNOWN_STATION
-        display_name = ap_name or ap_mac
-        if not display_name:
-            continue
-        resource = MatchedAp(display_name, station_name, "resource", 0, ap_mac, station_source)
-        resources = lookup.get("__resources__")
-        if isinstance(resources, list):
-            resources.append(resource)
-        if ap_name:
-            lookup[f"name:{ap_name.casefold()}"] = MatchedAp(display_name, station_name, "ap_name_exact", 100, ap_mac, station_source)
-            name_as_mac = normalize_mac(ap_name)
-            if name_as_mac:
-                lookup[f"mac:{name_as_mac}"] = MatchedAp(display_name, station_name, "mac_exact", 95, ap_mac, station_source)
-        if ap_mac:
-            lookup[f"mac:{ap_mac}"] = MatchedAp(display_name, station_name, "mac_exact", 95, ap_mac, station_source)
-    return lookup
+    query_service = ApIdentityQueryService(repository.database)
+    entities = [
+        MatchedAp(
+            ap_name=str(row.get("ap_name") or row.get("point_code") or ""),
+            station=str(row.get("station") or UNKNOWN_STATION),
+            match_method="identity_entity",
+            match_score=100,
+            ap_mac=str(row.get("ap_mac") or ""),
+            station_source=str(row.get("source") or ""),
+        )
+        for row in query_service.list_entities()
+    ]
+    return {
+        _AP_IDENTITY_QUERY_KEY: query_service,
+        _AP_IDENTITY_ENTITIES_KEY: entities,
+    }
 
 
 def _merge_ap_rows(conn: sqlite3.Connection, records: dict[str, dict[str, object]], source: str, table: str, wanted: tuple[str, ...]) -> None:
@@ -1485,7 +1462,7 @@ def _merge_ap_rows(conn: sqlite3.Connection, records: dict[str, dict[str, object
         row_data = dict(row)
         ap_name = str(row_data.get("ap_name") or "").strip()
         ap_mac = normalize_mac(row_data.get("ap_mac"))
-        key = ap_mac or ap_name.casefold()
+        key = ap_mac or f"{source}:{len(records)}"
         if not key:
             continue
         record = records.setdefault(key, {})

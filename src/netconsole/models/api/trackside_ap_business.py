@@ -128,6 +128,18 @@ class TracksideApUpdateRequestDTO(ApiModel):
     ap_name: str = ""
 
 
+class TracksideApBusinessExportProposalDTO(ApiModel):
+    site_id: str
+    site_display_name: str
+    generated_at: str
+    suggested_name: str
+
+
+class TracksideApBusinessExportRequestDTO(ApiModel):
+    generated_at: str = ""
+    suggested_name: str = Field(default="", max_length=180)
+
+
 class TracksideSwitchCommandProfileDTO(ApiModel):
     profile_id: str
     vendor: str
@@ -260,6 +272,7 @@ class ApManagementVlanPlanningDTO(ApiModel):
     auto_group_station_count: int = Field(default=1, ge=1, le=4)
     address_allocation_strategy: str = "station_then_point"
     revision: int = Field(default=0, ge=0)
+    created_at: str = ""
     updated_at: str = ""
 
 
@@ -318,6 +331,7 @@ class ApManagementVlanAssignmentDTO(ApiModel):
     target_id: str
     group_id: str
     source: str = "ap_override"
+    created_at: str = ""
     updated_at: str = ""
 
 
@@ -335,6 +349,7 @@ class ApManagementVlanAllocationDTO(ApiModel):
     is_locked: bool = False
     source: str = "generated"
     group_source: str = ""
+    created_at: str = ""
     updated_at: str = ""
 
 

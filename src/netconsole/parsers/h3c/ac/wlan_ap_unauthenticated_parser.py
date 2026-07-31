@@ -72,7 +72,8 @@ def parse_wlan_ap_unauthenticated_rows(output: str) -> list[dict[str, object | N
                 "serial_number": serial_number,
                 "dev_type": dev_type,
                 "work_mode": work_mode,
-                "inferred_ap_mac": _mac_from_text(ap_name),
+                # AP name may look like a MAC, but it is not a physical MAC observation.
+                "inferred_ap_mac": None,
                 "raw_line": stripped,
             }
         )
@@ -101,11 +102,3 @@ def _is_valid_unauthenticated_ap_row(parts: list[str]) -> bool:
     if work_mode.strip().casefold().rstrip(",") in bad_tokens:
         return False
     return True
-
-
-def _mac_from_text(value: object) -> str:
-    hex_text = re.sub(r"[^0-9a-fA-F]", "", str(value or ""))
-    if len(hex_text) != 12:
-        return ""
-    hex_text = hex_text.casefold()
-    return f"{hex_text[0:4]}-{hex_text[4:8]}-{hex_text[8:12]}"

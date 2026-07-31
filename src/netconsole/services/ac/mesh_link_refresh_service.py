@@ -400,10 +400,6 @@ class AcMeshLinkRefreshWorkerService:
             resources = lookup["__resources__"]
             if isinstance(resources, list):
                 resources.append(resource)
-            if ap.name:
-                lookup[f"name:{ap.name.casefold()}"] = MatchedAp(
-                    ap.name, station, "ap_name_exact", 100, normalize_mac(ap.mac), "ac_web_query"
-                )
             for value in (ap.mac, *(radio.bssid for radio in detail.radios)):
                 mac = normalize_mac(value)
                 if mac:
