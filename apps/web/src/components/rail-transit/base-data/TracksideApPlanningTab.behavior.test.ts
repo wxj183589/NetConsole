@@ -2,7 +2,7 @@
 
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
-import { defineComponent } from 'vue'
+import { defineComponent, h, nextTick, ref, watch } from 'vue'
 
 import type { TracksideApPlanRow } from '../../../types/tracksideApBusiness'
 import TracksideApPlanningTab from './TracksideApPlanningTab.vue'
@@ -18,15 +18,48 @@ const ButtonStub = defineComponent({
   template: '<button :disabled="disabled" @click="$emit(\'click\')"><slot /></button>',
 })
 
+const InputNumberStub = defineComponent({
+  props: {
+    modelValue: { type: Number, default: null },
+    disabled: Boolean,
+  },
+  emits: ['update:modelValue'],
+  setup(props, { emit }) {
+    const draft = ref(props.modelValue == null ? '' : String(props.modelValue))
+    watch(() => props.modelValue, (value) => {
+      draft.value = value == null ? '' : String(value)
+    })
+    return {
+      draft,
+      publish: (value: string) => {
+        draft.value = value
+        emit('update:modelValue', value === '' ? undefined : Number(value))
+      },
+    }
+  },
+  template: '<input class="input-number" type="number" :value="draft" :disabled="disabled" @input="publish($event.target.value)">',
+})
+
+const DataTableStub = defineComponent({
+  props: { data: { type: Array, default: () => [] } },
+  setup(props, { slots }) {
+    return () => h('div', { class: 'data-table' }, (props.data as TracksideApPlanRow[]).map((row, index) =>
+      h('div', { class: 'table-row', key: row.station_id }, [
+        h('div', { class: 'count-cell' }, slots['cell-planned_ap_count']?.({ row, $index: index })),
+        h('div', { class: 'vlan-cell' }, slots['cell-management_vlan']?.({ row, $index: index })),
+      ])))
+  },
+})
+
 const stubs = {
   ElButton: ButtonStub,
   ElAlert: true,
   ElInput: true,
-  ElInputNumber: true,
+  ElInputNumber: InputNumberStub,
   ElOption: true,
   ElSelect: true,
   ElTag: true,
-  NcDataTable: defineComponent({ template: '<div class="data-table"><slot /></div>' }),
+  NcDataTable: DataTableStub,
 }
 
 function station(id: string, name: string, order: number, overrides: Partial<PlanningStation> = {}): PlanningStation {
@@ -157,6 +190,32 @@ describe('trackside AP planning controlled draft', () => {
     ])
     expect(wrapper.emitted('validation-change')?.[0]).toEqual([true, []])
     expect(wrapper.text()).not.toContain('保存')
+  })
+
+  it('keeps a typed VLAN after focus moves to another row', async () => {
+    const draft = ref([
+      plan('station:1', '一站'),
+      plan('station:2', '二站'),
+    ])
+    draft.value[0].management_vlan = null
+    draft.value[1].management_vlan = null
+    const Host = defineComponent({
+      components: { TracksideApPlanningTab },
+      setup: () => ({
+        draft,
+        stations: [station('station:1', '一站', 1), station('station:2', '二站', 2)],
+      }),
+      template: '<TracksideApPlanningTab v-model="draft" :stations="stations" editing :readonly="false" :saving="false" />',
+    })
+    const wrapper = mount(Host, { global: { stubs } })
+    const inputs = wrapper.findAll('.vlan-cell input')
+
+    await inputs[0].setValue('921')
+    await inputs[1].trigger('focus')
+    await nextTick()
+
+    expect(draft.value[0].management_vlan).toBe(921)
+    expect((wrapper.findAll('.vlan-cell input')[0].element as HTMLInputElement).value).toBe('921')
   })
 
   it('uses pure display mode by default and only exposes draft actions while editing', async () => {

@@ -63,18 +63,30 @@ function publish(next: TracksideApPlanRow[]): void {
   emit('validation-change', issues.length === 0, issues)
 }
 
-function updateRow(index: number, patch: Partial<TracksideApPlanRow>): void {
+function updateRow(row: TracksideApPlanRow, patch: Partial<TracksideApPlanRow>): void {
+  const index = props.modelValue.indexOf(row)
+  if (index < 0) return
   const next = copyRows()
   next[index] = { ...next[index], ...patch }
   publish(next)
 }
 
-function selectStation(index: number, stationId: string): void {
+function updateRequiredNumber(
+  row: TracksideApPlanRow,
+  field: 'sequence_no' | 'planned_ap_count',
+  value: number | undefined,
+): void {
+  const normalized = Number(value)
+  if (!Number.isFinite(normalized)) return
+  updateRow(row, { [field]: normalized })
+}
+
+function selectStation(row: TracksideApPlanRow, stationId: string): void {
   const station = props.stations.find((item) => item.id === stationId)
-  updateRow(index, {
+  updateRow(row, {
     station_id: stationId,
     station_name: station?.name ?? '',
-    sequence_no: station?.sort_order ?? rows.value[index].sequence_no,
+    sequence_no: station?.sort_order ?? row.sequence_no,
     relation_status: station ? 'resolved' : 'missing',
     candidate_station_ids: [],
   })
@@ -101,7 +113,9 @@ function removeRows(targets: TracksideApPlanRow[]): void {
   selectedRows.value = []
 }
 
-function removeRow(index: number): void {
+function removeRow(row: TracksideApPlanRow): void {
+  const index = props.modelValue.indexOf(row)
+  if (index < 0) return
   const next = copyRows()
   next.splice(index, 1)
   publish(next)
@@ -176,33 +190,33 @@ const validationIssues = computed(() => validate(rows.value))
         route-key="/rail-transit/base-data"
         @selection-change="selectionChange"
       >
-        <template #cell-sequence_no="{ row, rowIndex }">
-          <el-input-number v-if="editing" :model-value="row.sequence_no" :min="1" :disabled="!editable" @change="updateRow(rowIndex, { sequence_no: Number($event) })" />
+        <template #cell-sequence_no="{ row }">
+          <el-input-number v-if="editing" :model-value="row.sequence_no" :min="1" :disabled="!editable" @update:model-value="updateRequiredNumber(row, 'sequence_no', $event)" />
           <span v-else>{{ row.sequence_no }}</span>
         </template>
-        <template #cell-station_name="{ row, rowIndex }">
-          <el-select v-if="editing" :model-value="row.station_id" :disabled="!editable" @change="selectStation(rowIndex, String($event))">
+        <template #cell-station_name="{ row }">
+          <el-select v-if="editing" :model-value="row.station_id" :disabled="!editable" @change="selectStation(row, String($event))">
             <el-option v-for="station in orderedStations" :key="station.id" :label="station.name" :value="station.id" />
           </el-select>
           <span v-else>{{ row.station_name || '--' }}</span>
         </template>
-        <template #cell-planned_ap_count="{ row, rowIndex }">
-          <el-input-number v-if="editing" :model-value="row.planned_ap_count" :min="0" :disabled="!editable" @change="updateRow(rowIndex, { planned_ap_count: Number($event) })" />
+        <template #cell-planned_ap_count="{ row }">
+          <el-input-number v-if="editing" :model-value="row.planned_ap_count" :min="0" :disabled="!editable" @update:model-value="updateRequiredNumber(row, 'planned_ap_count', $event)" />
           <span v-else>{{ row.planned_ap_count }}</span>
         </template>
-        <template #cell-management_vlan="{ row, rowIndex }">
-          <el-input-number v-if="editing" :model-value="row.management_vlan" :min="1" :max="4094" :disabled="!editable" @change="updateRow(rowIndex, { management_vlan: $event == null ? null : Number($event) })" />
+        <template #cell-management_vlan="{ row }">
+          <el-input-number v-if="editing" :model-value="row.management_vlan" :min="1" :max="4094" :disabled="!editable" @update:model-value="updateRow(row, { management_vlan: $event == null ? null : Number($event) })" />
           <span v-else>{{ row.management_vlan ?? '--' }}</span>
         </template>
-        <template #cell-remark="{ row, rowIndex }">
-          <el-input v-if="editing" :model-value="row.remark" :disabled="!editable" @update:model-value="updateRow(rowIndex, { remark: String($event) })" />
+        <template #cell-remark="{ row }">
+          <el-input v-if="editing" :model-value="row.remark" :disabled="!editable" @update:model-value="updateRow(row, { remark: String($event) })" />
           <span v-else>{{ row.remark || '--' }}</span>
         </template>
         <template #cell-relation_status="{ row }">
           <el-tag :type="row.relation_status === 'resolved' ? 'success' : 'warning'">{{ row.relation_status || 'missing' }}</el-tag>
         </template>
-        <template #cell-actions="{ rowIndex }">
-          <el-button text :icon="Delete" :disabled="!editable" title="删除" @click="removeRow(rowIndex)" />
+        <template #cell-actions="{ row }">
+          <el-button text :icon="Delete" :disabled="!editable" title="删除" @click="removeRow(row)" />
         </template>
       </NcDataTable>
     </div>
