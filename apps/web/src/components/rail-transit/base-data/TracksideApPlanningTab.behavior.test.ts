@@ -117,6 +117,7 @@ describe('trackside AP planning controlled draft', () => {
       props: {
         modelValue: [],
         stations: [station('station:1', '一站', 1)],
+        editing: true,
         readonly: false,
         saving: false,
       },
@@ -134,11 +135,16 @@ describe('trackside AP planning controlled draft', () => {
     expect(wrapper.text()).not.toContain('保存')
   })
 
-  it('disables draft actions in read-only mode and delegates station generation', async () => {
+  it('uses pure display mode by default and only exposes draft actions while editing', async () => {
     const wrapper = mount(TracksideApPlanningTab, {
-      props: { modelValue: [], stations: [], readonly: true, saving: false },
+      props: { modelValue: [plan('station:1', '一站')], stations: [station('station:1', '一站', 1)], editing: false, readonly: false, saving: false },
       global: { stubs },
     })
+    expect(wrapper.text()).toContain('当前显示已保存的 AP 规划')
+    expect(wrapper.text()).not.toContain('从设备管理生成站点')
+    expect(wrapper.text()).not.toContain('新增规划行')
+
+    await wrapper.setProps({ editing: true, readonly: true })
     const generate = wrapper.findAll('button').find((button) => button.text().includes('从设备管理生成站点'))!
     expect(generate.attributes('disabled')).toBeDefined()
 

@@ -16,6 +16,7 @@ interface ValidationIssue {
 const props = withDefaults(defineProps<{
   modelValue: TracksideApPlanRow[]
   stations: PlanningStation[]
+  editing: boolean
   readonly: boolean
   saving: boolean
 }>(), {
@@ -31,23 +32,26 @@ const emit = defineEmits<{
 
 const selectedRows = ref<TracksideApPlanRow[]>([])
 const rows = computed(() => props.modelValue)
-const editable = computed(() => !props.readonly && !props.saving)
+const editable = computed(() => props.editing && !props.readonly && !props.saving)
 const orderedStations = computed(() => [...props.stations].sort((left, right) =>
   (left.sort_order ?? Number.MAX_SAFE_INTEGER) - (right.sort_order ?? Number.MAX_SAFE_INTEGER)
   || left.id.localeCompare(right.id)))
 const linkedRows = computed(() => rows.value.filter((row) => row.relation_status === 'resolved'))
 const pendingRows = computed(() => rows.value.filter((row) => row.relation_status !== 'resolved'))
 
-const columns: NcTableColumn<TracksideApPlanRow>[] = [
-  { key: 'selection', label: '', type: 'selection', valueType: 'selection', width: 44, hideable: false },
+const baseColumns: NcTableColumn<TracksideApPlanRow>[] = [
   { key: 'sequence_no', label: '序号', valueType: 'number', width: 90 },
   { key: 'station_name', label: '车站名称', valueType: 'name', minWidth: 210 },
   { key: 'planned_ap_count', label: 'AP数量', valueType: 'number', width: 120 },
   { key: 'management_vlan', label: 'AP管理VLAN', valueType: 'number', width: 140 },
   { key: 'remark', label: '备注', valueType: 'description', minWidth: 220 },
   { key: 'relation_status', label: '关联状态', valueType: 'status', width: 120 },
-  { key: 'actions', label: '操作', valueType: 'actions', width: 68, hideable: false },
 ]
+const columns = computed<NcTableColumn<TracksideApPlanRow>[]>(() => [
+  ...(props.editing ? [{ key: 'selection', label: '', type: 'selection', valueType: 'selection', width: 44, hideable: false } as NcTableColumn<TracksideApPlanRow>] : []),
+  ...baseColumns,
+  ...(props.editing ? [{ key: 'actions', label: '操作', valueType: 'actions', width: 68, hideable: false } as NcTableColumn<TracksideApPlanRow>] : []),
+])
 
 function copyRows(): TracksideApPlanRow[] {
   return JSON.parse(JSON.stringify(props.modelValue)) as TracksideApPlanRow[]
@@ -141,10 +145,10 @@ const validationIssues = computed(() => validate(rows.value))
   <section class="planning-tab">
     <div class="planning-toolbar">
       <div>
-        <h3>AP 规划维护</h3>
-        <p>规划只写入页面统一草稿，正式关联使用 station_id。</p>
+        <h3>{{ editing ? 'AP 规划维护' : 'AP 规划' }}</h3>
+        <p>{{ editing ? '规划只写入页面统一草稿，正式关联使用 station_id。' : '当前显示已保存的 AP 规划，正式关联使用 station_id。' }}</p>
       </div>
-      <div class="toolbar-actions">
+      <div v-if="editing" class="toolbar-actions">
         <el-button :disabled="!editable" @click="emit('request-generate-stations')">
           从设备管理生成站点
         </el-button>
@@ -156,7 +160,7 @@ const validationIssues = computed(() => validate(rows.value))
     </div>
 
     <el-alert
-      v-if="validationIssues.length"
+      v-if="editing && validationIssues.length"
       type="warning"
       :closable="false"
       :title="`有 ${validationIssues.length} 项需要修正，页面统一保存已禁用。`"
@@ -173,21 +177,26 @@ const validationIssues = computed(() => validate(rows.value))
         @selection-change="selectionChange"
       >
         <template #cell-sequence_no="{ row, rowIndex }">
-          <el-input-number :model-value="row.sequence_no" :min="1" :disabled="!editable" @change="updateRow(rowIndex, { sequence_no: Number($event) })" />
+          <el-input-number v-if="editing" :model-value="row.sequence_no" :min="1" :disabled="!editable" @change="updateRow(rowIndex, { sequence_no: Number($event) })" />
+          <span v-else>{{ row.sequence_no }}</span>
         </template>
         <template #cell-station_name="{ row, rowIndex }">
-          <el-select :model-value="row.station_id" :disabled="!editable" @change="selectStation(rowIndex, String($event))">
+          <el-select v-if="editing" :model-value="row.station_id" :disabled="!editable" @change="selectStation(rowIndex, String($event))">
             <el-option v-for="station in orderedStations" :key="station.id" :label="station.name" :value="station.id" />
           </el-select>
+          <span v-else>{{ row.station_name || '--' }}</span>
         </template>
         <template #cell-planned_ap_count="{ row, rowIndex }">
-          <el-input-number :model-value="row.planned_ap_count" :min="0" :disabled="!editable" @change="updateRow(rowIndex, { planned_ap_count: Number($event) })" />
+          <el-input-number v-if="editing" :model-value="row.planned_ap_count" :min="0" :disabled="!editable" @change="updateRow(rowIndex, { planned_ap_count: Number($event) })" />
+          <span v-else>{{ row.planned_ap_count }}</span>
         </template>
         <template #cell-management_vlan="{ row, rowIndex }">
-          <el-input-number :model-value="row.management_vlan" :min="1" :max="4094" :disabled="!editable" @change="updateRow(rowIndex, { management_vlan: $event == null ? null : Number($event) })" />
+          <el-input-number v-if="editing" :model-value="row.management_vlan" :min="1" :max="4094" :disabled="!editable" @change="updateRow(rowIndex, { management_vlan: $event == null ? null : Number($event) })" />
+          <span v-else>{{ row.management_vlan ?? '--' }}</span>
         </template>
         <template #cell-remark="{ row, rowIndex }">
-          <el-input :model-value="row.remark" :disabled="!editable" @update:model-value="updateRow(rowIndex, { remark: String($event) })" />
+          <el-input v-if="editing" :model-value="row.remark" :disabled="!editable" @update:model-value="updateRow(rowIndex, { remark: String($event) })" />
+          <span v-else>{{ row.remark || '--' }}</span>
         </template>
         <template #cell-relation_status="{ row }">
           <el-tag :type="row.relation_status === 'resolved' ? 'success' : 'warning'">{{ row.relation_status || 'missing' }}</el-tag>

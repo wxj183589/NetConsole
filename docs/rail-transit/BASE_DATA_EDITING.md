@@ -1,6 +1,6 @@
 # 轨道交通基础资料编辑生命周期
 
-`/rail-transit/base-data` 是轨道交通基础资料的唯一 Web 维护入口。获得写授权时页面直接建立统一草稿；无授权时进入 `READ_ONLY`。查询、导入预览、质量问题、导入审计和关联运行状态保持只读。
+`/rail-transit/base-data` 是轨道交通基础资料的唯一 Web 维护入口。获得写授权时页面默认进入 `VIEW`，只展示已保存数据；用户点击“编辑”并再次通过会话、写范围、Backend 与 revision 检查后才建立统一草稿。无授权时进入 `READ_ONLY`。查询、质量问题、导入审计和关联运行状态保持只读。
 
 ## 可编辑范围
 
@@ -15,15 +15,15 @@
 页面使用以下状态：
 
 ```text
-CLEAN -> DIRTY -> VALIDATING -> SAVING -> CLEAN
-                    |             |
-                    +-------> SAVE_FAILED
+VIEW -> EDITING_CLEAN -> EDITING_DIRTY -> VALIDATING -> SAVING -> VIEW
+                            ^              |             |
+                            +--------------+------ SAVE_FAILED
 READ_ONLY
 ```
 
-页面加载时读取 `site_id`、`base_revision` 和写入范围，并建立完整服务端基线与 Renderer 草稿。站点、设备绑定、区间、轨旁 AP、规划和 MR 共享一个草稿，轮询或刷新不会覆盖 dirty 草稿。新增记录使用稳定领域 ID或临时记录 ID并显示“新增”；正式记录删除先标记“待删除”，可在提交前撤销。
+页面加载时读取 `site_id`、`base_revision` 和写入范围，只建立服务端快照，不创建 `editingDraft`。`VIEW` 使用文本和状态标签展示，右上角只有“刷新、编辑”；`READ_ONLY` 只有“刷新”并显示原因。点击“编辑”后才从最新服务端快照复制 `editingDraft`，站点、设备绑定、区间、轨旁 AP、规划和 MR 共享这一份草稿；右上角切换为“取消修改、保存”，无改动时保存禁用。新增记录使用稳定领域 ID 或临时记录 ID并显示“新增”；正式记录删除先标记“待删除”，可在提交前撤销。
 
-刷新、路由离开或关闭窗口时，存在未保存修改必须通过统一 Confirm Service 选择保存、放弃或取消。切换页面内部标签不销毁草稿。保存失败保留完整草稿和字段错误，不能用重新加载覆盖用户输入。
+`VIEW` 刷新后更新服务端快照并保持 `VIEW`；编辑状态不显示普通刷新按钮，受控重新加载必须确认放弃草稿后返回 `VIEW`。编辑期间暂停会覆盖静态草稿的数据轮询，切换页面内部标签不销毁草稿。有未保存修改离开路由时只允许“继续编辑”或“放弃修改并离开”，不自动保存。保存成功和取消修改都销毁草稿并返回 `VIEW`；保存失败保留完整草稿和字段错误。
 
 ## 设备站点来源
 
@@ -43,7 +43,7 @@ Vue 草稿
   -> SQLite BEGIN IMMEDIATE 单事务
 ```
 
-局点元数据、站点、设备 `station_id` 绑定、区间、轨旁 AP、轨旁 AP 规划和车载 MR 在同一个 changes 请求中按依赖顺序提交。revision 同时覆盖 SQLite 和 `site_meta.json`；任意稳定 ID、引用、唯一性、metadata 原子写入或 SQLite 错误都会整体回滚；返回新 revision 后页面以服务端事实重建 `CLEAN` 基线。
+局点元数据、站点、设备 `station_id` 绑定、区间、轨旁 AP、轨旁 AP 规划和车载 MR 在同一个 changes 请求中按依赖顺序提交。revision 同时覆盖 SQLite 和 `site_meta.json`；任意稳定 ID、引用、唯一性、metadata 原子写入或 SQLite 错误都会整体回滚；返回新 revision 后页面刷新服务端事实、销毁草稿并回到 `VIEW`。
 
 后端业务校验负责 IP、MAC、里程、站点引用、MR 历史和逐站规划唯一性等规则；规划中的 AP 起始地址、掩码和网关只作参考，不触发地址分配或网段容量计算。Vue 只做输入展示、轻量状态和字段错误定位。Router 不执行 SQL、设备连接或命令拼接。
 
@@ -66,7 +66,7 @@ NETCONSOLE_ALLOW_BASE_DATA_COPY_WRITE=1  # copy_validation 局点
 NETCONSOLE_ALLOW_REAL_BASE_DATA_WRITE=1  # 正式局点的额外授权
 ```
 
-未获得写权限时，页面始终为 `READ_ONLY`，后端也拒绝越权写入。Electron 写入必须同时通过短期 `desktop_session_token`；导入预览只把确认结果应用到统一草稿。`site_meta.json` 写入只允许当前受控局点，使用临时文件和 `os.replace()`，并保留未知安全字段。
+未获得写权限时，页面始终为 `READ_ONLY`，不显示“编辑”、生成站点、导入或增删入口，后端也拒绝越权写入。Electron 写入必须同时通过短期 `desktop_session_token`；导入预览只在编辑状态进入，确认结果仅应用到统一草稿。`site_meta.json` 写入只允许当前受控局点，使用临时文件和 `os.replace()`，并保留未知安全字段。
 
 稳定 ID、规划 reconcile、事务顺序、业务投影和迁移规则见 [轨旁 AP 主数据与关联模型](TRACKSIDE_AP_DOMAIN_MODEL.md)。
 

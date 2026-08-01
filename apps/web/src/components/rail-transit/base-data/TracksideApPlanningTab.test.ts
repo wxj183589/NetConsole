@@ -7,6 +7,7 @@ describe('trackside AP planning base-data tab source contract', () => {
     for (const contract of [
       'modelValue: TracksideApPlanRow[]',
       'stations: PlanningStation[]',
+      'editing: boolean',
       'readonly: boolean',
       'saving: boolean',
       "'update:modelValue'",
@@ -16,6 +17,8 @@ describe('trackside AP planning base-data tab source contract', () => {
       '待关联历史规划',
       'overflow-x: auto',
       'route-key="/rail-transit/base-data"',
+      'v-if="editing"',
+      'v-else>{{ row.station_name || \'--\' }}</span>',
     ]) expect(source).toContain(contract)
 
     for (const forbidden of [

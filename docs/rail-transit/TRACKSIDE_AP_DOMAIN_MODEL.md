@@ -2,7 +2,7 @@
 
 ## 1. 权威边界
 
-`/rail-transit/base-data` 的页面草稿是站点、设备站点绑定、区间、轨旁 AP、逐站规划和车载 MR 的唯一编辑聚合。`TracksideApPlanningTab.vue` 是受控编辑组件，只接收 `modelValue / stations / readonly / saving`，只发出草稿、校验和“从设备管理生成站点”意图；它不加载基线、不维护锁、不保存、不轮询任务。
+`/rail-transit/base-data` 的页面草稿是站点、设备站点绑定、区间、轨旁 AP、逐站规划和车载 MR 的唯一编辑聚合。`TracksideApPlanningTab.vue` 是受控双态组件，只接收 `modelValue / stations / editing / readonly / saving`：`editing=false` 时只渲染文本与状态标签，`editing=true` 时才发出草稿、校验和“从设备管理生成站点”意图；它不加载基线、不维护锁、不保存、不轮询任务。
 
 站名、区间名和 VLAN 都是展示或业务属性，不能作为关系主键。活动关系使用：
 
@@ -43,16 +43,16 @@ flowchart LR
 
 ## 2. 页面草稿与状态
 
-父页面持有一个 `BaseDataDraft`：线路 metadata、stations、deviceStationBindings、sections、aps、tracksideApPlans 和 mrs。状态只有：
+父页面只在用户明确点击“编辑”后持有一个 `BaseDataDraft`：线路 metadata、stations、deviceStationBindings、sections、aps、tracksideApPlans 和 mrs。状态为：
 
 ```text
-CLEAN -> DIRTY -> VALIDATING -> SAVING -> CLEAN
-                    |             |
-                    +-------> SAVE_FAILED
+VIEW -> EDITING_CLEAN -> EDITING_DIRTY -> VALIDATING -> SAVING -> VIEW
+                            ^              |             |
+                            +--------------+------ SAVE_FAILED
 READ_ONLY（无写授权）
 ```
 
-切换标签不销毁草稿；刷新、离开路由和关闭窗口统一保护未保存修改。保存失败保留原草稿和字段错误。规划按 `station_id` 纯函数 reconcile：重命名保留 AP 数、VLAN 和备注；消失的历史行标记 `stale` 并保留；仅为本次确认生成且符合条件的普通启用站追加默认行。
+`VIEW` 和 `READ_ONLY` 读取正式数据，不创建草稿；进入编辑时以最新 revision 和服务端快照创建草稿并暂停静态轮询。切换标签不销毁草稿；离开路由和关闭窗口保护未保存修改，保存或取消后销毁草稿并返回 `VIEW`，保存失败保留原草稿和字段错误。规划按 `station_id` 纯函数 reconcile：重命名保留 AP 数、VLAN 和备注；消失的历史行标记 `stale` 并保留；仅为本次确认生成且符合条件的普通启用站追加默认行。
 
 ## 3. 单事务保存
 
@@ -80,7 +80,7 @@ LLDP 关联 FIT-AP 只接受规范化后的精确邻居/Chassis MAC。邻居 IP�
 
 ## 6. 验证基线
 
-- 前端：受控组件、纯 reconcile、跨标签草稿、只读禁用、统一保存和路由离开保护。
+- 前端：显式查看/编辑双态、受控组件、纯 reconcile、跨标签草稿、只读禁用、统一保存和路由离开保护。
 - 后端：物理 schema 迁移、26 台设备/11 站来源候选、稳定绑定、事务回滚、AP Identity 单次刷新、GET 文件指纹只读、LLDP 精确 MAC、迁移脚本幂等与哈希确认。
 - 所有数据库写入测试仅使用临时目录或明确的数据库副本。
 
