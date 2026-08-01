@@ -33,6 +33,17 @@ GroundEligibilityStatus = Literal[
     "AP_UNMATCHED",
     "OFFLINE",
 ]
+GroundLocationClass = Literal[
+    "MAINLINE",
+    "DEPOT",
+    "PARKING_YARD",
+    "STABLING",
+    "DEPOT_CONNECTION",
+    "TEST_TRACK",
+    "NON_MAINLINE",
+    "OFFLINE",
+    "UNKNOWN",
+]
 GroundCoverageStatus = Literal[
     "NOT_SEEN",
     "WAITING",
@@ -95,6 +106,7 @@ class GroundUnattendedProfileDTO(ApiModel):
     fleet_ping_packet_size: int = Field(default=64, ge=1, le=65_507)
     fleet_ping_shard_size: int = Field(default=12, ge=2, le=32)
     fleet_ping_warmup_seconds: int = Field(default=10, ge=0, le=300)
+    ping_depot_trains_enabled: bool = False
     udp_listen_host: str = Field(default="0.0.0.0", min_length=1, max_length=255)
     udp_listen_port: int = Field(default=514, ge=1, le=65_535)
     udp_queue_capacity: int = Field(default=20_000, ge=100, le=500_000)
@@ -189,6 +201,8 @@ class GroundUnattendedStatusDTO(ApiModel):
     ac_last_updated_at: str = ""
     ac_freshness_status: str = "NO_DATA"
     mainline_train_count: int = 0
+    mainline_ping_target_count: int = 0
+    depot_ping_target_count: int = 0
     ping_target_count: int = 0
     active_deep_train_count: int = 0
     covered_train_count: int = 0
@@ -261,6 +275,8 @@ class GroundUnattendedEndpointDTO(ApiModel):
     device_id: int | None = None
     management_ip: str = ""
     online_status: str = "UNKNOWN"
+    ping_target_eligible: bool = False
+    ping_exclusion_reason: str = ""
     ping_active: bool = False
     ping_sent_count: int = 0
     ping_success_count: int = 0
@@ -292,8 +308,13 @@ class GroundUnattendedTrainDTO(ApiModel):
     train_id: str
     train_no: str = ""
     train_name: str = ""
+    location_class: GroundLocationClass = "UNKNOWN"
+    mainline_eligible: bool = False
     ping_eligible: bool = False
     deep_collection_eligible: bool = False
+    ping_inclusion_reason: str = ""
+    ping_exclusion_reason: str = ""
+    deep_exclusion_reason: str = ""
     eligibility_status: GroundEligibilityStatus = "AC_UNKNOWN"
     exclusion_reason: str = ""
     location_match_level: Literal[
@@ -488,6 +509,10 @@ class GroundPingTargetDTO(ApiModel):
     mr_id: str = ""
     mr_name: str = ""
     mr_position_code: str = ""
+    location_class: GroundLocationClass = "UNKNOWN"
+    ping_inclusion_reason: str = ""
+    mainline_eligible: bool = False
+    deep_collection_eligible: bool = False
     started_at: str = ""
     updated_at: str = ""
     shard_id: str = ""
@@ -510,10 +535,17 @@ class GroundPingTargetDTO(ApiModel):
     last_sample_at: str = ""
     active_raw_file_count: int = 0
     archived_raw_file_count: int = 0
+    raw_file_count: int = 0
+    raw_record_count: int = 0
+    raw_file_ids: list[str] = Field(default_factory=list)
     raw_file_available: bool = False
     archive_available: bool = False
+    archive_id: str = ""
     data_source: Literal["ACTIVE", "ARCHIVE", "MIXED", "NONE"] = "NONE"
+    source_kind: Literal["ACTIVE", "ARCHIVE", "MIXED", "NONE"] = "NONE"
     data_availability: GroundDataAvailability = "MISSING"
+    availability_reason: str = ""
+    query_identity: str = ""
 
 
 class GroundPingSummaryPageDTO(ApiModel):
@@ -585,6 +617,9 @@ class GroundTimelineEventDTO(ApiModel):
 class GroundTimelinePageDTO(ApiModel):
     items: list[GroundTimelineEventDTO] = Field(default_factory=list)
     total: int = 0
+    page: int = 1
+    page_size: int = 100
+    total_exact: bool = True
 
 
 class GroundArchiveDTO(ApiModel):
@@ -708,6 +743,7 @@ class GroundPingSampleDTO(ApiModel):
 
 
 class GroundQueryDiagnosticsDTO(ApiModel):
+    request_id: str = ""
     requested_run_id: str = ""
     resolved_start_time: str = ""
     resolved_end_time: str = ""
@@ -724,6 +760,10 @@ class GroundQueryDiagnosticsDTO(ApiModel):
     optimized_latest_page: bool = False
     legacy_archive: bool = False
     no_data_reason: str = ""
+    resolved_train_ids: list[str] = Field(default_factory=list)
+    resolved_mr_ids: list[str] = Field(default_factory=list)
+    raw_file_registry_hit_count: int = 0
+    matched_count: int = 0
 
 
 class GroundPingSamplePageDTO(ApiModel):
@@ -734,6 +774,7 @@ class GroundPingSamplePageDTO(ApiModel):
     raw_sample_count: int = 0
     effective_sample_count: int = 0
     ignored_sample_count: int = 0
+    query_identity: str = ""
     diagnostics: GroundQueryDiagnosticsDTO = Field(
         default_factory=GroundQueryDiagnosticsDTO
     )
@@ -764,6 +805,7 @@ class GroundPingSeriesDTO(ApiModel):
     active: bool = False
     target_state: str = ""
     has_more: bool = False
+    query_identity: str = ""
 
 
 class GroundSyslogRecordDTO(ApiModel):
@@ -823,6 +865,101 @@ class GroundSyslogRecordPageDTO(ApiModel):
     diagnostics: GroundQueryDiagnosticsDTO = Field(
         default_factory=GroundQueryDiagnosticsDTO
     )
+
+
+class GroundSyslogRecordKeyDTO(ApiModel):
+    raw_file_id: str = Field(min_length=1, max_length=200)
+    global_receive_sequence: int | None = Field(default=None, ge=0)
+    source_receive_sequence: int | None = Field(default=None, ge=0)
+    raw_line_number: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_stable_identity(self) -> "GroundSyslogRecordKeyDTO":
+        if (
+            self.global_receive_sequence is None
+            and self.source_receive_sequence is None
+            and self.raw_line_number is None
+        ):
+            raise ValueError("Syslog 记录身份缺少接收序号或原始行号")
+        return self
+
+
+class GroundSyslogDeleteFiltersDTO(ApiModel):
+    train_id: str = Field(default="", max_length=100)
+    mr_id: str = Field(default="", max_length=100)
+    mr_name: str = Field(default="", max_length=200)
+    mr_role: str = Field(default="", max_length=20)
+    source_ip: str = Field(default="", max_length=100)
+    system_name: str = Field(default="", max_length=200)
+    facility: str = Field(default="", max_length=50)
+    severity: str = Field(default="", max_length=50)
+    identity_status: str = Field(default="", max_length=100)
+    event_type: str = Field(default="", max_length=100)
+    peer_name: str = Field(default="", max_length=200)
+    data_source: str = Field(default="", max_length=20)
+    keyword: str = Field(default="", max_length=500)
+    start_time: str = Field(default="", max_length=100)
+    end_time: str = Field(default="", max_length=100)
+
+
+class GroundSyslogDeletePreviewRequestDTO(ApiModel):
+    run_id: str = Field(min_length=1, max_length=100)
+    mode: Literal["SELECTED", "FILTERED", "RUN_ALL"]
+    record_keys: list[GroundSyslogRecordKeyDTO] = Field(
+        default_factory=list,
+        max_length=5000,
+    )
+    filters: GroundSyslogDeleteFiltersDTO = Field(
+        default_factory=GroundSyslogDeleteFiltersDTO
+    )
+    include_derived_events: bool = True
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> "GroundSyslogDeletePreviewRequestDTO":
+        if self.mode == "SELECTED" and not self.record_keys:
+            raise ValueError("删除选中记录必须提供稳定记录身份")
+        if self.mode != "SELECTED" and self.record_keys:
+            raise ValueError("非选中删除模式不得携带记录身份")
+        if self.mode == "FILTERED" and not any(
+            str(value or "").strip()
+            for value in self.filters.model_dump().values()
+        ):
+            raise ValueError("筛选范围删除至少需要一个筛选条件")
+        return self
+
+
+class GroundSyslogDeletePreviewDTO(ApiModel):
+    run_id: str
+    run_date: str = ""
+    mode: Literal["SELECTED", "FILTERED", "RUN_ALL"]
+    matched_record_count: int = 0
+    affected_file_count: int = 0
+    affected_event_count: int = 0
+    affected_timeline_count: int = 0
+    total_bytes: int = 0
+    file_statuses: list[dict[str, object]] = Field(default_factory=list)
+    archive_status: str = ""
+    blocked_reasons: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    preview_token: str = ""
+    expires_at: str = ""
+    confirmation_hint: str = ""
+
+
+class GroundSyslogDeleteRequestDTO(ApiModel):
+    preview_token: str = Field(min_length=20, max_length=200)
+    explicit_confirmation: bool
+    confirmation_text: str = Field(min_length=1, max_length=200)
+    include_derived_events: bool = True
+
+
+class GroundSyslogDeleteAcceptedDTO(ApiModel):
+    accepted: bool = True
+    operation_id: str
+    task_id: str
+    run_id: str
+    status: str = "PENDING"
+    message: str
 
 
 class GroundArchiveDeleteRequestDTO(ApiModel):

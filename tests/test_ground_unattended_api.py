@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import inspect
 import json
 from contextlib import contextmanager
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -104,6 +107,261 @@ def test_ground_unattended_rejects_invalid_profile_and_archive_delete_without_co
             json={"explicit_confirmation": False},
         )
         assert missing.status_code in {404, 409}
+
+
+def test_syslog_delete_api_previews_blocks_and_queues_one_scoped_job(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    repository = app.state.ground_unattended_repository
+    run_id = "run-syslog-delete-api"
+    run_date = "2026-07-29"
+    repository.create_or_get_run(
+        run_id=run_id,
+        run_date=run_date,
+        scheduled_start_at="2026-07-29T09:00:00+08:00",
+        scheduled_end_at="2026-07-29T10:00:00+08:00",
+    )
+    repository.update_run(
+        run_id,
+        state="COMPLETED",
+        actual_started_at="2026-07-29T09:00:00+08:00",
+        actual_ended_at="2026-07-29T09:10:00+08:00",
+    )
+    raw_path = (
+        paths.ground_unattended_active_dir("demo", run_date)
+        / "realtime"
+        / "syslog"
+        / "events.ndjson"
+    )
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "receive_time": "2026-07-29T09:00:01+08:00",
+        "global_receive_sequence": 1,
+        "source_receive_sequence": 1,
+        "source_ip": "192.0.2.3",
+        "train_id": "_03",
+        "device_uuid": "mr-ct",
+        "mr_role": "CT",
+        "raw_text": "WMESH LINKUP peer=AP01",
+    }
+    raw_path.write_text(
+        json.dumps(record, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    repository.upsert_raw_file(
+        {
+            "file_id": "raw-syslog-api",
+            "run_id": run_id,
+            "train_id": "_03",
+            "device_uuid": "mr-ct",
+            "mr_role": "CT",
+            "data_type": "syslog",
+            "relative_path": raw_path.relative_to(
+                repository.db_path.parent
+            ).as_posix(),
+            "start_time": record["receive_time"],
+            "end_time": record["receive_time"],
+            "record_count": 1,
+            "size_bytes": raw_path.stat().st_size,
+            "sha256": hashlib.sha256(raw_path.read_bytes()).hexdigest(),
+            "status": "CLOSED",
+            "archive_status": "PENDING",
+        }
+    )
+
+    class CapturingProcessAdapter:
+        def __init__(self) -> None:
+            self.jobs = []
+
+        def start_job(self, job, **_kwargs):
+            self.jobs.append(job)
+            return job.job_id
+
+    process = CapturingProcessAdapter()
+    app.state.ground_unattended_application_service.raw_deletion.process_adapter = (
+        process
+    )
+    selected = {
+        "run_id": run_id,
+        "mode": "SELECTED",
+        "record_keys": [
+            {
+                "raw_file_id": "raw-syslog-api",
+                "global_receive_sequence": 1,
+                "source_receive_sequence": 1,
+                "raw_line_number": 1,
+            }
+        ],
+        "filters": {},
+        "include_derived_events": True,
+    }
+
+    with TestClient(app) as client:
+        preview = client.post(
+            "/api/rail-transit/ground-unattended/syslog-delete-preview",
+            json=selected,
+        )
+        assert preview.status_code == 200
+        preview_payload = preview.json()
+        assert preview_payload["matched_record_count"] == 1
+        assert preview_payload["affected_file_count"] == 1
+        assert preview_payload["blocked_reasons"] == []
+        assert preview_payload["preview_token"]
+
+        submitted = client.post(
+            "/api/rail-transit/ground-unattended/syslog-delete",
+            json={
+                "preview_token": preview_payload["preview_token"],
+                "explicit_confirmation": True,
+                "confirmation_text": f"DELETE {run_date}",
+                "include_derived_events": True,
+            },
+        )
+        assert submitted.status_code == 202
+        assert submitted.json()["status"] == "PENDING"
+        assert len(process.jobs) == 1
+        assert process.jobs[0].task_type == "ground_syslog_delete"
+
+        invalid_key = client.post(
+            "/api/rail-transit/ground-unattended/syslog-delete-preview",
+            json={
+                **selected,
+                "record_keys": [{"raw_file_id": "raw-syslog-api"}],
+            },
+        )
+        assert invalid_key.status_code == 422
+
+        repository.update_run(run_id, state="RUNNING")
+        registered = repository.get_raw_file("raw-syslog-api")
+        assert registered is not None
+        repository.upsert_raw_file({**registered, "status": "OPEN"})
+        active = client.post(
+            "/api/rail-transit/ground-unattended/syslog-delete-preview",
+            json={
+                "run_id": run_id,
+                "mode": "RUN_ALL",
+                "record_keys": [],
+                "filters": {},
+                "include_derived_events": True,
+            },
+        )
+        assert active.status_code == 200
+        assert any(
+            "RUN_ACTIVE" in reason
+            for reason in active.json()["blocked_reasons"]
+        )
+        assert any(
+            "RAW_FILE_OPEN" in reason
+            for reason in active.json()["blocked_reasons"]
+        )
+
+        repository.update_run(
+            run_id,
+            state="COMPLETED",
+            actual_ended_at="2026-07-29T09:10:00+08:00",
+        )
+        repository.upsert_raw_file({**registered, "status": "CLOSED"})
+        repository.upsert_archive(
+            {
+                "archive_id": "archive-ready-api",
+                "site_id": repository.site_id,
+                "run_id": run_id,
+                "run_date": run_date,
+                "relative_path": "archives/ready.zip",
+                "archive_status": "READY",
+                "archive_size_bytes": 10,
+                "sha256": "a" * 64,
+                "manifest_sha256": "b" * 64,
+                "retention_until": "2099-01-01",
+                "active_cleanup_pending": 0,
+                "summary_json": "{}",
+                "message": "ready",
+                "created_at": "2026-07-29T09:10:00+08:00",
+                "updated_at": "2026-07-29T09:10:00+08:00",
+            }
+        )
+        ready = client.post(
+            "/api/rail-transit/ground-unattended/syslog-delete-preview",
+            json={
+                "run_id": run_id,
+                "mode": "RUN_ALL",
+                "record_keys": [],
+                "filters": {},
+                "include_derived_events": True,
+            },
+        )
+        assert ready.status_code == 200
+        assert any(
+            "READY_ARCHIVE_IMMUTABLE" in reason
+            for reason in ready.json()["blocked_reasons"]
+        )
+
+
+def test_syslog_delete_router_keeps_file_and_sql_work_in_services() -> None:
+    source = "\n".join(
+        (
+            inspect.getsource(
+                ground_unattended_router.preview_syslog_delete
+            ),
+            inspect.getsource(
+                ground_unattended_router.submit_syslog_delete
+            ),
+        )
+    )
+
+    for forbidden in ("Path(", "open(", "sqlite3", ".execute(", "os.replace"):
+        assert forbidden not in source
+
+
+def test_timeline_api_returns_exact_server_page_and_search_total(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    repository = app.state.ground_unattended_repository
+    run_id = "run-timeline-page"
+    repository.create_or_get_run(
+        run_id=run_id,
+        run_date="2026-07-29",
+        scheduled_start_at="2026-07-29T09:00:00+08:00",
+        scheduled_end_at="2026-07-29T10:00:00+08:00",
+    )
+    for sequence in range(1, 4):
+        repository.add_event(
+            run_id=run_id,
+            event_type="mesh_linkup",
+            title=f"AP01 第 {sequence} 次建链",
+            details={"peer_name": "AP01", "sequence": sequence},
+            ts=f"2026-07-29T09:00:0{sequence}+08:00",
+        )
+    repository.add_event(
+        run_id=run_id,
+        event_type="run_started",
+        title="运行开始",
+        ts="2026-07-29T09:00:00+08:00",
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/rail-transit/ground-unattended/timeline",
+            params={
+                "run_id": run_id,
+                "query": "AP01",
+                "page": 2,
+                "page_size": 1,
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 3
+    assert payload["page"] == 2
+    assert payload["page_size"] == 1
+    assert payload["total_exact"] is True
+    assert len(payload["items"]) == 1
+    assert "AP01" in payload["items"][0]["title"]
 
 
 def test_ground_profile_requires_local_address_or_confirmed_external_nat(

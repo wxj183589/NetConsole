@@ -22,6 +22,12 @@ from netconsole.services.rail_transit.ap_line_side_service import (
     line_side_metadata,
 )
 from netconsole.services.rail_transit.source_policy import is_blocking_issue
+from netconsole.services.rail_transit.trackside_ap_location import (
+    default_participates_in_mainline,
+    normalize_location_class,
+    parse_participates_in_mainline,
+    validate_location_participation,
+)
 from netconsole.utils.mileage import parse_track_mileage
 
 
@@ -40,6 +46,8 @@ _SAFE_FIELDS = (
     "system_type",
     "network_domain",
     "belong_type",
+    "location_class",
+    "participates_in_mainline",
     "station_name",
     "section_name",
     "section_start_station",
@@ -288,12 +296,41 @@ class RailTransitImportPreviewService:
         values["ap_mac_display"] = mac.display or mac.raw
         mileage = parse_track_mileage(values.get("mileage_text") or values.get("mileage_m"))
         values["mileage_m"] = mileage.meters
-        source_station_name = cls._source_station_name(row)
-        if source_station_name:
-            values["raw_payload_json"] = json.dumps(
-                {"import_source": {"station_name": source_station_name}},
-                ensure_ascii=False,
+        raw_location_class = str(values.get("location_class") or "").strip()
+        values["location_class_original"] = raw_location_class
+        try:
+            location_class = normalize_location_class(raw_location_class)
+            values["_location_class_error"] = ""
+        except ValueError as exc:
+            location_class = "UNKNOWN"
+            values["_location_class_error"] = str(exc)
+        try:
+            participates = parse_participates_in_mainline(
+                values.get("participates_in_mainline"),
+                default=default_participates_in_mainline(location_class),
             )
+            validate_location_participation(location_class, participates)
+            values["_participation_error"] = ""
+        except ValueError as exc:
+            participates = default_participates_in_mainline(location_class)
+            values["_participation_error"] = str(exc)
+        values["location_class"] = location_class
+        values["participates_in_mainline"] = participates
+        values["location_class_source"] = (
+            "IMPORT_EXPLICIT"
+            if raw_location_class
+            else "DEFAULT_MAINLINE"
+        )
+        source_station_name = cls._source_station_name(row)
+        metadata: dict[str, Any] = {
+            "location_class_source": values["location_class_source"]
+        }
+        if source_station_name:
+            metadata["import_source"] = {"station_name": source_station_name}
+        values["raw_payload_json"] = json.dumps(
+            metadata,
+            ensure_ascii=False,
+        )
         return values
 
     def _all_sections(self, site_id: str) -> list[Any]:
@@ -343,6 +380,30 @@ class RailTransitImportPreviewService:
         fit_ap_macs: set[str] | None = None,
     ) -> list[DataQualityIssueDTO]:
         issues: list[DataQualityIssueDTO] = []
+        if values.get("_location_class_error"):
+            issues.append(
+                cls._issue(
+                    "error",
+                    "ap_location_class_invalid",
+                    row_number,
+                    "location_class",
+                    str(values.get("location_class_original") or ""),
+                    str(values["_location_class_error"]),
+                    "使用正线、车辆段、停车场、存车线、出入段线、试车线或非正线",
+                )
+            )
+        if values.get("_participation_error"):
+            issues.append(
+                cls._issue(
+                    "error",
+                    "ap_mainline_participation_conflict",
+                    row_number,
+                    "participates_in_mainline",
+                    str(values.get("participates_in_mainline") or ""),
+                    str(values["_participation_error"]),
+                    "特殊位置必须设置为不参与正线判断",
+                )
+            )
         name = str(values.get("ap_name") or "").strip()
         point_code = str(values.get("ap_point_code") or "").strip()
         mac = normalize_ap_mac(values.get("ap_mac_norm") or values.get("ap_mac_display"))

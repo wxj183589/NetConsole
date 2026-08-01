@@ -17,6 +17,10 @@
 - 页面、弹窗和子窗口内容超出时提供纵向和必要的横向滚动；操作区始终可达。
 - 允许用户手工调整列宽；固定列只用于确有操作必要的首尾列。
 
+日志控制台型页面使用 `NcLogWorkspace + NcDataTable.fillRemainingHeight`：筛选、摘要、动作和分页
+`flex: none`，表格区 `flex: 1; min-height: 0`，纵向只滚动 table body。普通资料表使用
+`autoHeight`；`fillRemainingHeight` 启用时不得再叠加 `autoHeight`、`maxHeight` 或页面级主滚动。
+
 ## 密度与状态
 
 - 默认使用 `NcDataTable` 的 40px 行高和 14px 字体；仅在信息密集页面显式启用 `compact`。

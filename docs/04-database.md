@@ -14,7 +14,7 @@ The built-in demonstration site is `demo`. If `sites/demo/db/devices.db` does no
 
 If the database already exists, `Database.initialize()` applies only additive, idempotent schema updates and records `schema_metadata`; it does not backfill demo facts or delete existing rows. The current migration adds the non-secret device credential state table without rewriting existing device credentials. Never delete a user database to apply an upgrade. Development fixtures must use a temporary data root.
 
-Current schema version: `2026.07.31.ap_identity_index_v1`. The prior query-plan evidence and rollback boundaries remain recorded in [the E6 database archive](archive/migrations/electron-only/E6-2026-07-18.md).
+Current schema version: `2026.08.01.ap_identity_and_trackside_ap_location`. The prior query-plan evidence and rollback boundaries remain recorded in [the E6 database archive](archive/migrations/electron-only/E6-2026-07-18.md).
 
 The 2026-07-30 device classification migration uses `project_phase` only for
 the construction phase and adds the following work-scope fields to `devices`:

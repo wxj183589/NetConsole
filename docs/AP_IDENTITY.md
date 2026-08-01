@@ -119,7 +119,7 @@ MESH Peer 使用独立的 `resolve_peer_mac()`。Peer 是 Radio/BSSID 观测，
 - `ap_identity_conflicts`：AC/Base 不一致及可审计上下文；
 - `ap_identity_index_state`：revision、构建原因、来源计数和时间。
 
-当前 schema 版本为 `2026.07.31.ap_identity_index_v1`。初始化是增量且
+当前 schema 版本为 `2026.08.01.ap_identity_and_trackside_ap_location`。初始化是增量且
 幂等的，不删除现有 AP、日志、规划或缓存数据。
 
 ## 7. 索引刷新边界

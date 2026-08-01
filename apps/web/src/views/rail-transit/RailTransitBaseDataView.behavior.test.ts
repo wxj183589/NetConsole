@@ -260,6 +260,53 @@ const baseSummary = {
   train_count: 0, mr_count: 0, missing_location_ap_count: 0, invalid_mileage_count: 0,
   duplicate_ap_mac_count: 0, duplicate_static_ip_count: 0, unbound_mr_count: 0, issue_count: 0, message: '',
 }
+const tracksideApRow = (id: string, locationClass: 'MAINLINE' | 'DEPOT') => ({
+  id,
+  site_id: 'demo',
+  line_name: '宁波地铁12号线',
+  name: id,
+  point_code: id,
+  mac: id === 'ap-1' ? '00:11:22:33:44:51' : '00:11:22:33:44:52',
+  management_ip: '',
+  model: '',
+  station: '正线站',
+  section: '',
+  section_start_station: '',
+  section_end_station: '',
+  mileage: { raw: '', normalized: '', meters: null, line_type: '', valid: true, error: '' },
+  line_side: '',
+  line_side_source: 'unavailable' as const,
+  line_side_derivation_issue_code: '',
+  line_side_derivation_issue_message: '',
+  direction: '',
+  location_class: locationClass,
+  participates_in_mainline: locationClass === 'MAINLINE',
+  location_class_source: 'MANUAL_EXPLICIT',
+  location_class_conflict: false,
+  radios: [],
+  remark: '',
+  source_file: '',
+  source_sheet: '',
+  source_row: null,
+  updated_at: '',
+  runtime: {
+    fit_ap_id: '',
+    fit_ap_ac_id: '',
+    fit_ap_name: '',
+    fit_ap_match_status: 'unmatched',
+    fit_ap_status: 'unknown',
+    optical_status: 'no_data',
+    mesh_status: 'unknown',
+    mesh_related_name: '',
+    latest_session_id: '',
+    latest_session_status: '',
+    updated_at: '',
+  },
+  issue_count: 0,
+  highest_issue_severity: '',
+  record_kind: 'manual',
+  base_metadata: {},
+})
 const writableSession = {
   site_id: 'demo', base_revision: 'a'.repeat(64), loaded_at: '', can_write: true, write_scope: 'real' as const,
   storage_mode: 'persistent' as const, write_denial_code: '', write_denial_reason: '',
@@ -790,6 +837,93 @@ describe('轨道交通基础资料编辑闭环', () => {
     }))
     wrapper.unmount()
   })
+
+  it('手工新增轨旁 AP 未选择位置类型时默认按正线保存', async () => {
+    const wrapper = await mountView()
+    await button(wrapper, '解锁').trigger('click')
+    await flushPromises()
+
+    await button(wrapper, '新增轨旁 AP').trigger('click')
+    await button(wrapper, '保存').trigger('click')
+    await flushPromises()
+
+    const apChange = mocks.validate.mock.calls.at(-1)?.[0].changes.find(
+      (change: { entity_type: string }) => change.entity_type === 'trackside_ap',
+    )
+    expect(apChange).toMatchObject({
+      action: 'create',
+      values: {
+        location_class: 'MAINLINE',
+        participates_in_mainline: true,
+        location_class_source: 'DEFAULT_MAINLINE',
+      },
+    })
+    wrapper.unmount()
+  })
+
+  it.each([
+    {
+      targetClass: 'MAINLINE',
+      targetLabel: '正线',
+      sourceClass: 'DEPOT',
+      participates: true,
+    },
+    {
+      targetClass: 'DEPOT',
+      targetLabel: '车辆段',
+      sourceClass: 'MAINLINE',
+      participates: false,
+    },
+  ] as const)(
+    '批量设置轨旁 AP 为$targetLabel时同步正线资格',
+    async ({ targetClass, targetLabel, sourceClass, participates }) => {
+      mocks.tracksideApsPage.mockResolvedValue({
+        items: [
+          tracksideApRow('ap-1', sourceClass),
+          tracksideApRow('ap-2', sourceClass),
+        ],
+        total: 2,
+        page: 1,
+        page_size: 50,
+      })
+      const wrapper = await mountView()
+      await button(wrapper, '解锁').trigger('click')
+      await flushPromises()
+
+      const table = wrapper.get('[data-table-id="rail-base-trackside-aps"]')
+      for (const selection of table.findAll('input.row-selection')) {
+        await selection.setValue(true)
+      }
+      await wrapper
+        .get('select[placeholder="批量位置类型"]')
+        .setValue(targetClass)
+      await button(wrapper, '批量设置位置类型').trigger('click')
+      await button(wrapper, '保存').trigger('click')
+      await flushPromises()
+
+      const apChanges = mocks.validate.mock.calls
+        .at(-1)?.[0].changes.filter(
+          (change: { entity_type: string }) =>
+            change.entity_type === 'trackside_ap',
+        )
+      expect(apChanges).toHaveLength(2)
+      expect(apChanges.map((change: { entity_id: string }) => change.entity_id)).toEqual([
+        'ap-1',
+        'ap-2',
+      ])
+      for (const change of apChanges) {
+        expect(change.values).toMatchObject({
+          location_class: targetClass,
+          participates_in_mainline: participates,
+          location_class_source: 'MANUAL_EXPLICIT',
+        })
+      }
+      expect(mocks.messageSuccess).toHaveBeenCalledWith(
+        `已将 2 条轨旁 AP 设为${targetLabel}`,
+      )
+      wrapper.unmount()
+    },
+  )
 
   it('保存失败时保留编辑草稿和可重试状态', async () => {
     mocks.save.mockRejectedValueOnce(new Error('SAVE_FAILED'))

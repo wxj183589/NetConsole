@@ -16,6 +16,12 @@ from netconsole.repositories.ap_management_vlan_repository import (
     ApManagementVlanRepository,
 )
 from netconsole.services.ap_extension_import import normalize_ap_mac
+from netconsole.services.rail_transit.trackside_ap_location import (
+    default_participates_in_mainline,
+    normalize_location_class,
+    parse_participates_in_mainline,
+    validate_location_participation,
+)
 from netconsole.utils.mileage import parse_track_mileage
 
 
@@ -30,6 +36,9 @@ AP_MERGE_FIELDS = (
     "section_end_station",
     "line_side",
     "direction",
+    "location_class",
+    "participates_in_mainline",
+    "location_class_source",
     "mileage_text",
     "mileage_m",
     "distance_to_prev_m",
@@ -1454,6 +1463,40 @@ class RailTransitBaseDataRepository:
             values["mileage_m"] = mileage.meters
         if "source_file" in values:
             values["source_file"] = Path(str(values["source_file"] or "")).name
+        if (
+            "location_class" in values
+            or "participates_in_mainline" in values
+            or "location_class_source" in values
+        ):
+            if "location_class" not in values:
+                raise RailTransitBaseDataConstraintError(
+                    "设置正线参与状态时必须同时提供位置类型"
+                )
+            try:
+                location_class = normalize_location_class(
+                    values.get("location_class")
+                )
+                participates = parse_participates_in_mainline(
+                    values.get("participates_in_mainline"),
+                    default=default_participates_in_mainline(location_class),
+                )
+                validate_location_participation(location_class, participates)
+            except ValueError as exc:
+                raise RailTransitBaseDataConstraintError(str(exc)) from exc
+            source = str(
+                values.get("location_class_source") or "EXPLICIT"
+            ).strip().upper()
+            if source not in {
+                "DEFAULT_MAINLINE",
+                "IMPORT_EXPLICIT",
+                "MANUAL_EXPLICIT",
+                "LEGACY_INFERRED",
+                "EXPLICIT",
+            }:
+                source = "EXPLICIT"
+            values["location_class"] = location_class
+            values["participates_in_mainline"] = int(participates)
+            values["location_class_source"] = source
         return values
 
     def _database_path(self, site_id: str) -> Path:

@@ -557,6 +557,19 @@ class TracksideApDTO(ApiModel):
     line_side_derivation_issue_code: str = ""
     line_side_derivation_issue_message: str = ""
     direction: str = ""
+    location_class: Literal[
+        "MAINLINE",
+        "DEPOT",
+        "PARKING_YARD",
+        "STABLING",
+        "DEPOT_CONNECTION",
+        "TEST_TRACK",
+        "NON_MAINLINE",
+        "UNKNOWN",
+    ] = "MAINLINE"
+    participates_in_mainline: bool = True
+    location_class_source: str = "DEFAULT_MAINLINE"
+    location_class_conflict: bool = False
     radios: list[MeshRadioDTO] = Field(default_factory=list)
     remark: str = ""
     source_file: str = ""

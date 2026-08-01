@@ -88,14 +88,19 @@ const series = {
   ap_transitions: [],
   position_segments: [],
   diagnostics: {
+    request_id: 'request-1',
     requested_run_id: 'run-1',
+    resolved_train_ids: ['train-1'],
+    resolved_mr_ids: ['mr-ct'],
     resolved_start_time: '2026-07-28T07:00:00+08:00',
     resolved_end_time: '2026-07-28T23:00:00+08:00',
     source_kind: 'ACTIVE',
     data_availability: 'ACTIVE_RAW',
+    raw_file_registry_hit_count: 1,
     files_considered: 1,
     files_scanned: 1,
     records_scanned: 1,
+    matched_count: 1,
     bytes_scanned: 100,
     malformed_record_count: 0,
     duplicate_record_count: 0,
@@ -110,6 +115,7 @@ const series = {
   active: true,
   target_state: 'RUNNING',
   has_more: false,
+  query_identity: 'gpq1.stable-target',
 } satisfies GroundPingSeries
 
 beforeEach(() => {

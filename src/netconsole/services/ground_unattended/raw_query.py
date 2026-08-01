@@ -18,6 +18,11 @@ from netconsole.services.ground_unattended.archive_reader import (
     GroundArchiveReadError,
     GroundArchiveReader,
 )
+from netconsole.services.ground_unattended.identity import (
+    GroundDeviceIdentityResolver,
+    GroundIdentityResolutionError,
+    GroundResolvedPingIdentity,
+)
 from netconsole.services.ground_unattended.syslog_runtime import (
     WmeshRealtimeParser,
 )
@@ -53,6 +58,7 @@ class GroundRawStreamQueryService:
         self.repository = repository
         self.root = repository.db_path.parent.resolve()
         self.archive_reader = GroundArchiveReader(repository)
+        self.identity_resolver = GroundDeviceIdentityResolver(repository)
 
     def ping_series(
         self,
@@ -61,21 +67,23 @@ class GroundRawStreamQueryService:
         train_id: str = "",
         mr_id: str = "",
         target_ip: str = "",
+        query_identity: str = "",
         start_time: str = "",
         end_time: str = "",
         include_warmup: bool = False,
         max_points: int = 3000,
     ) -> dict[str, Any]:
-        registered_train_id = self._registered_train_id(
-            run_id,
-            train_id,
-            data_type="ping",
-        )
-        cursor_state = self._initial_ping_cursor(
+        identity = self._resolve_ping_identity(
             run_id=run_id,
-            train_id=registered_train_id,
+            train_id=train_id,
             mr_id=mr_id,
             target_ip=target_ip,
+            query_identity=query_identity,
+        )
+        run_id = identity.run_id
+        target_ip = identity.target_ip
+        cursor_state = self._initial_ping_cursor(
+            identity=identity,
             include_warmup=include_warmup,
         )
         start, end = self._time_range(
@@ -83,10 +91,12 @@ class GroundRawStreamQueryService:
             start_time,
             end_time,
             data_type="ping",
-            train_id=registered_train_id,
-            mr_id=mr_id,
+            train_id=identity.registry_train_id,
+            mr_id=identity.registry_device_uuid,
+            mr_role=identity.registry_mr_role,
         )
         diagnostics = _new_diagnostics(run_id, start, end)
+        _attach_identity_diagnostics(diagnostics, identity)
         max_points = max(10, min(int(max_points), 10_000))
         duration = max(1.0, (end - start).total_seconds())
         bucket_seconds = max(0.001, duration / max_points)
@@ -109,24 +119,26 @@ class GroundRawStreamQueryService:
         ap_transitions: list[dict[str, Any]] = []
         position_segments: list[dict[str, Any]] = []
         last_position: dict[str, tuple[str, str, str, str]] = {}
+        observed_signatures: set[tuple[str, str]] = set()
 
         for item in self._records(
             data_type="ping",
             run_id=run_id,
-            train_id=registered_train_id,
-            mr_id=mr_id,
+            train_id=identity.registry_train_id,
+            mr_id=identity.registry_device_uuid,
             start=start,
             end=end,
             time_key="ts",
             diagnostics=diagnostics,
+            mr_role=identity.registry_mr_role,
         ):
-            if not _matches(
-                item,
-                train_id=train_id,
-                mr_id=mr_id,
-                target_ip=target_ip,
-            ):
+            if not identity.matches_record(item):
                 continue
+            self._assert_target_identity(
+                identity,
+                item,
+                observed_signatures,
+            )
             counts["raw"] += 1
             ignored = bool(item.get("warmup_ignored"))
             if ignored:
@@ -262,9 +274,10 @@ class GroundRawStreamQueryService:
             run_id=run_id,
             data_type="ping",
         )
+        diagnostics["matched_count"] = counts["raw"]
         if counts["raw"] == 0 and diagnostics["files_scanned"]:
             diagnostics["no_data_reason"] = (
-                "TARGET_NOT_FOUND" if target_ip else "NO_SAMPLES"
+                "PING_TARGET_NOT_FOUND" if target_ip else "NO_SAMPLES"
             )
         result = {
             "raw_sample_count": counts["raw"],
@@ -286,6 +299,7 @@ class GroundRawStreamQueryService:
             "ap_transitions": ap_transitions[:max_points],
             "position_segments": position_segments[:max_points],
             "diagnostics": diagnostics,
+            "query_identity": identity.query_identity,
         }
         self._attach_ping_runtime(
             result,
@@ -301,6 +315,7 @@ class GroundRawStreamQueryService:
         train_id: str = "",
         mr_id: str = "",
         target_ip: str = "",
+        query_identity: str = "",
         cursor: str = "",
         after_sequence: int | None = None,
         after_timestamp: str = "",
@@ -309,16 +324,19 @@ class GroundRawStreamQueryService:
     ) -> dict[str, Any]:
         if not run_id:
             raise GroundRawQueryError("增量 Ping 查询必须指定运行")
-        registered_train_id = self._registered_train_id(
-            run_id,
-            train_id,
-            data_type="ping",
+        identity = self._resolve_ping_identity(
+            run_id=run_id,
+            train_id=train_id,
+            mr_id=mr_id,
+            target_ip=target_ip,
+            query_identity=query_identity,
         )
+        run_id = identity.run_id
+        target_ip = identity.target_ip
         context = {
             "run_id": run_id,
-            "train_id": registered_train_id,
-            "mr_id": mr_id,
             "target_ip": target_ip,
+            "query_identity": identity.query_identity,
             "include_warmup": bool(include_warmup),
         }
         cursor_state = _decode_ping_cursor(cursor) if cursor else {}
@@ -353,14 +371,16 @@ class GroundRawStreamQueryService:
         if start > now:
             start = now
         diagnostics = _new_diagnostics(run_id, start, now)
+        _attach_identity_diagnostics(diagnostics, identity)
         limit = max(1, min(int(max_points), MAX_INCREMENTAL_POINTS))
         files = self.repository.list_raw_files_for_query(
             data_type="ping",
             start_time=start.isoformat(),
             end_time=now.isoformat(),
             run_id=run_id,
-            train_id=registered_train_id,
-            device_uuid=mr_id,
+            train_id=identity.registry_train_id,
+            device_uuid=identity.registry_device_uuid,
+            mr_role=identity.registry_mr_role,
             limit=MAX_QUERY_FILES,
         )
         diagnostics["files_considered"] = len(files)
@@ -372,6 +392,7 @@ class GroundRawStreamQueryService:
         started = time.monotonic()
         original_offset_ids = set(offsets)
         processed_files: list[dict[str, Any]] = []
+        observed_signatures: set[tuple[str, str]] = set()
         for registered in files:
             path = self._registered_path(str(registered.get("relative_path") or ""))
             if not path.is_file():
@@ -423,13 +444,13 @@ class GroundRawStreamQueryService:
                     if not isinstance(item, dict):
                         diagnostics["malformed_record_count"] += 1
                         continue
-                    if not _matches(
-                        item,
-                        train_id=train_id,
-                        mr_id=mr_id,
-                        target_ip=target_ip,
-                    ):
+                    if not identity.matches_record(item):
                         continue
+                    self._assert_target_identity(
+                        identity,
+                        item,
+                        observed_signatures,
+                    )
                     sample_time = _parse_time(str(item.get("ts") or ""))
                     if sample_time is None:
                         continue
@@ -460,6 +481,7 @@ class GroundRawStreamQueryService:
             run_id=run_id,
             data_type="ping",
         )
+        diagnostics["matched_count"] = int(result["raw_sample_count"])
         if not records and diagnostics["files_scanned"]:
             diagnostics["no_data_reason"] = "NEW_SAMPLES_PENDING"
         cursor_state = {
@@ -477,6 +499,7 @@ class GroundRawStreamQueryService:
             ),
         }
         result["has_more"] = has_more
+        result["query_identity"] = identity.query_identity
         self._attach_ping_runtime(
             result,
             run_id=run_id,
@@ -491,49 +514,58 @@ class GroundRawStreamQueryService:
         train_id: str = "",
         mr_id: str = "",
         target_ip: str = "",
+        query_identity: str = "",
         start_time: str = "",
         end_time: str = "",
         include_warmup: bool = False,
         page: int = 1,
         page_size: int = 100,
     ) -> dict[str, Any]:
-        registered_train_id = self._registered_train_id(
-            run_id,
-            train_id,
-            data_type="ping",
+        identity = self._resolve_ping_identity(
+            run_id=run_id,
+            train_id=train_id,
+            mr_id=mr_id,
+            target_ip=target_ip,
+            query_identity=query_identity,
         )
+        run_id = identity.run_id
+        target_ip = identity.target_ip
         start, end = self._time_range(
             run_id,
             start_time,
             end_time,
             data_type="ping",
-            train_id=registered_train_id,
-            mr_id=mr_id,
+            train_id=identity.registry_train_id,
+            mr_id=identity.registry_device_uuid,
+            mr_role=identity.registry_mr_role,
         )
         diagnostics = _new_diagnostics(run_id, start, end)
+        _attach_identity_diagnostics(diagnostics, identity)
         page = max(1, min(int(page), 200))
         page_size = max(1, min(int(page_size), 500))
         keep_count = page * page_size
         matched: list[tuple[float, int, dict[str, Any]]] = []
         counts = {"raw": 0, "effective": 0, "ignored": 0}
         serial = 0
+        observed_signatures: set[tuple[str, str]] = set()
         for item in self._records(
             data_type="ping",
             run_id=run_id,
-            train_id=registered_train_id,
-            mr_id=mr_id,
+            train_id=identity.registry_train_id,
+            mr_id=identity.registry_device_uuid,
             start=start,
             end=end,
             time_key="ts",
             diagnostics=diagnostics,
+            mr_role=identity.registry_mr_role,
         ):
-            if not _matches(
-                item,
-                train_id=train_id,
-                mr_id=mr_id,
-                target_ip=target_ip,
-            ):
+            if not identity.matches_record(item):
                 continue
+            self._assert_target_identity(
+                identity,
+                item,
+                observed_signatures,
+            )
             counts["raw"] += 1
             ignored = bool(item.get("warmup_ignored"))
             counts["ignored" if ignored else "effective"] += 1
@@ -565,6 +597,7 @@ class GroundRawStreamQueryService:
             run_id=run_id,
             data_type="ping",
         )
+        diagnostics["matched_count"] = counts["raw"]
         return {
             "items": matched_items[offset : offset + page_size],
             "total": total,
@@ -574,6 +607,7 @@ class GroundRawStreamQueryService:
             "effective_sample_count": counts["effective"],
             "ignored_sample_count": counts["ignored"],
             "diagnostics": diagnostics,
+            "query_identity": identity.query_identity,
         }
 
     def syslog_records(
@@ -762,20 +796,34 @@ class GroundRawStreamQueryService:
     def _initial_ping_cursor(
         self,
         *,
-        run_id: str,
-        train_id: str,
-        mr_id: str,
-        target_ip: str,
+        identity: GroundResolvedPingIdentity,
         include_warmup: bool,
     ) -> dict[str, Any]:
         offsets: dict[str, int] = {}
-        files = self.repository.list_raw_files_for_run(run_id) if run_id else []
+        files = (
+            self.repository.list_raw_files_for_run(identity.run_id)
+            if identity.run_id
+            else []
+        )
         candidates = [
             row
             for row in files
             if str(row.get("data_type") or "") == "ping"
-            and (not train_id or str(row.get("train_id") or "") == train_id)
-            and (not mr_id or str(row.get("device_uuid") or "") == mr_id)
+            and (
+                not identity.registry_train_id
+                or str(row.get("train_id") or "")
+                == identity.registry_train_id
+            )
+            and (
+                not identity.registry_device_uuid
+                or str(row.get("device_uuid") or "")
+                == identity.registry_device_uuid
+            )
+            and (
+                not identity.registry_mr_role
+                or str(row.get("mr_role") or "").upper()
+                == identity.registry_mr_role
+            )
             and str(row.get("status") or "") == "OPEN"
         ][-MAX_CURSOR_FILES:]
         for row in candidates:
@@ -783,15 +831,48 @@ class GroundRawStreamQueryService:
             if path.is_file():
                 offsets[str(row.get("file_id") or "")] = path.stat().st_size
         return {
-            "run_id": run_id,
-            "train_id": train_id,
-            "mr_id": mr_id,
-            "target_ip": target_ip,
+            "run_id": identity.run_id,
+            "target_ip": identity.target_ip,
+            "query_identity": identity.query_identity,
             "include_warmup": bool(include_warmup),
             "offsets": offsets,
             "after_timestamp": "",
             "after_sequence": None,
         }
+
+    def _resolve_ping_identity(
+        self,
+        *,
+        run_id: str,
+        train_id: str,
+        mr_id: str,
+        target_ip: str,
+        query_identity: str,
+    ) -> GroundResolvedPingIdentity:
+        try:
+            return self.identity_resolver.resolve_ping(
+                run_id=run_id,
+                train_id=train_id,
+                mr_id=mr_id,
+                target_ip=target_ip,
+                query_identity=query_identity,
+            )
+        except GroundIdentityResolutionError as exc:
+            raise GroundRawQueryError(str(exc), code=exc.code) from exc
+
+    @staticmethod
+    def _assert_target_identity(
+        identity: GroundResolvedPingIdentity,
+        item: Mapping[str, Any],
+        observed: set[tuple[str, str]],
+    ) -> None:
+        try:
+            identity.assert_target_signature(
+                identity.target_signature(item),
+                observed,
+            )
+        except GroundIdentityResolutionError as exc:
+            raise GroundRawQueryError(str(exc), code=exc.code) from exc
 
     def _attach_ping_runtime(
         self,
@@ -844,6 +925,7 @@ class GroundRawStreamQueryService:
             diagnostics["data_availability"] == "MISSING"
             and run_id
             and self._has_summary(run_id, data_type)
+            and diagnostics["no_data_reason"] == "NO_REGISTERED_FILES"
         ):
             diagnostics["data_availability"] = "SUMMARY_ONLY"
             diagnostics["no_data_reason"] = "SUMMARY_ONLY"
@@ -1150,7 +1232,21 @@ def _new_diagnostics(
         "optimized_latest_page": False,
         "legacy_archive": False,
         "no_data_reason": "",
+        "resolved_train_ids": [],
+        "resolved_mr_ids": [],
+        "raw_file_registry_hit_count": 0,
+        "matched_count": 0,
     }
+
+
+def _attach_identity_diagnostics(
+    diagnostics: dict[str, Any],
+    identity: GroundResolvedPingIdentity,
+) -> None:
+    diagnostics["resolved_train_ids"] = list(
+        identity.registered_train_ids
+    )
+    diagnostics["resolved_mr_ids"] = list(identity.registered_mr_ids)
 
 
 def _finish_diagnostics(
@@ -1197,6 +1293,10 @@ def _finish_diagnostics(
         )
     elif matched_count == 0 and diagnostics["files_scanned"]:
         diagnostics["no_data_reason"] = "FILTER_NO_MATCH"
+    diagnostics["raw_file_registry_hit_count"] = int(
+        diagnostics["files_considered"]
+    )
+    diagnostics["matched_count"] = int(matched_count)
 
 
 def _budget_exhausted(

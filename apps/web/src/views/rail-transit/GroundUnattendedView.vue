@@ -11,17 +11,19 @@ import {
   stopAndArchiveGroundRun, stopGroundRun, saveGroundTrainPolicy, syncGroundInventory,
   checkGroundUdpPort, listLocalIpv4Addresses, recommendLocalSourceIp,
   getActiveGroundOperation, getGroundOperation, getGroundPingSeries, getGroundPingSeriesIncremental, getGroundSyslogTransportStatus,
-  listGroundRuns, listGroundSyslogRecords, probeGroundSyslogTransportState, verifyGroundArchive,
+  listGroundRuns, listGroundSyslogRecords, previewGroundSyslogDelete, probeGroundRawQueryTransportState, probeGroundSyslogTransportState, submitGroundSyslogDelete, verifyGroundArchive,
 } from '../../api/groundUnattended'
 import GroundPingChart from '../../components/ground-unattended/GroundPingChart.vue'
 import { NcDataTable, type NcTableColumn } from '../../components/table'
 import NcFloatingWindow from '../../components/workspace/NcFloatingWindow.vue'
+import NcLogWorkspace from '../../components/workspace/NcLogWorkspace.vue'
 import { useAdaptiveTableHeight } from '../../composables/useAdaptiveTableHeight'
 import { t } from '../../i18n/runtime'
 import { downloadBackendResource } from '../../platform/runtime'
 import type {
   GroundActionResponse, GroundArchive, GroundArchiveDetail, GroundDeepCollection, GroundPingSeries, GroundPingTarget, GroundProfile, GroundStatus,
   GroundHealth, GroundOperation, GroundPingSample, GroundQueryDiagnostics, GroundRun, GroundSyslogRecord,
+  GroundSyslogDeleteFilters, GroundSyslogDeletePreview,
   GroundSyslogTransportStatus, GroundTimelineEvent, GroundTrain, LocalIpv4Address, SourceIpRecommendation, UdpPortCheck,
 } from '../../types/groundUnattended'
 import {
@@ -58,6 +60,11 @@ const pingAutoRefresh = ref(true)
 const pingPaused = ref(false)
 const pingFollowLatest = ref(true)
 const pingCursor = ref('')
+const pingInitialLoadSucceeded = ref(false)
+const pingBackendState = ref<'ONLINE' | 'OFFLINE' | 'UNKNOWN'>('UNKNOWN')
+const pingRequestId = ref('')
+const pingErrorCode = ref('')
+const pingLastAttemptAt = ref('')
 const pingSeenSamples = new Set<string>()
 const syslogRecords = ref<GroundSyslogRecord[]>([])
 const syslogTotal = ref(0)
@@ -71,7 +78,12 @@ const syslogLastAttemptAt = ref('')
 const syslogFailureCount = ref(0)
 const syslogErrorCode = ref('')
 const selectedSyslogRecord = ref<GroundSyslogRecord | null>(null)
+const selectedSyslogRecords = ref<GroundSyslogRecord[]>([])
 const syslogDetailDrawer = ref(false)
+const syslogAdvancedFiltersOpen = ref(false)
+const syslogDeleteDerived = ref(true)
+const syslogDeleteLoading = ref(false)
+const syslogDeletePreview = ref<GroundSyslogDeletePreview | null>(null)
 const syslogTimeRange = ref<[Date, Date] | null>(null)
 const syslogFilter = reactive({
   trainId: '', mrName: '', mrRole: '', sourceIp: '', systemName: '', facility: '', severity: '',
@@ -93,6 +105,9 @@ const trainDialog = ref(false)
 const trainFilter = ref('')
 const pingFilter = reactive({ query: '', endpoint: '', station: '', section: '', minLoss: 0 })
 const timelineFilter = reactive({ query: '', eventType: '' })
+const timelinePage = ref(1)
+const timelinePageSize = ref(100)
+const timelineTotal = ref(0)
 let pollTimer: number | undefined
 let disposed = false
 const requestControllers = new Map<string, AbortController>()
@@ -116,8 +131,11 @@ interface LoadIssue {
 }
 
 const loadIssues = ref<LoadIssue[]>([])
-const generalLoadIssues = computed(() => loadIssues.value.filter((item) => item.key !== 'syslog'))
+const generalLoadIssues = computed(() => loadIssues.value.filter((item) => (
+  item.key !== 'syslog' && !item.key.startsWith('ping-series')
+)))
 const syslogIssue = computed(() => loadIssues.value.find((item) => item.key === 'syslog') ?? null)
+const pingIssue = computed(() => loadIssues.value.find((item) => item.key.startsWith('ping-series')) ?? null)
 const loadIssueDescription = computed(() => generalLoadIssues.value.map((item) => `${item.label}：${item.message}`).join('；'))
 const profileLoadError = computed(() => loadIssues.value.find((item) => item.key === 'profile')?.message || '')
 
@@ -127,6 +145,21 @@ const visibleOperation = computed(() => activeOperation.value ?? latestTerminalO
 const selectedRun = computed(() => runs.value.find((row) => row.run_id === selectedRunId.value) ?? null)
 const historicalRun = computed(() => Boolean(selectedRunId.value && selectedRunId.value !== status.value?.active_run_id))
 const selectedPingHistorical = computed(() => Boolean(selectedPingTarget.value?.run_id && selectedPingTarget.value.run_id !== status.value?.active_run_id))
+const syslogDeleteBlocked = computed(() => (
+  !selectedRun.value
+  || ['STARTING', 'RUNNING', 'PAUSED', 'STOPPING', 'FINALIZING', 'ARCHIVING', 'ERROR'].includes(selectedRun.value.state)
+))
+const syslogAdvancedFilterCount = computed(() => [
+  syslogFilter.systemName,
+  syslogFilter.facility,
+  syslogFilter.severity,
+  syslogFilter.identityStatus,
+  syslogFilter.dataSource,
+  syslogFilter.keyword,
+].filter(Boolean).length)
+const syslogHasActiveFilters = computed(() => Object.values(
+  currentSyslogDeleteFilters(),
+).some(Boolean))
 const runScopedTab = computed(() => ['ping', 'deep', 'timeline', 'syslog'].includes(activeTab.value))
 const archiveRecordCount = computed(() => selectedArchive.value?.files.reduce((total, row) => total + row.record_count, 0) ?? 0)
 const filteredTrains = computed(() => {
@@ -154,23 +187,15 @@ const filteredTimeline = computed(() => {
 const trainTableHost = ref<HTMLElement | null>(null)
 const pingTableHost = ref<HTMLElement | null>(null)
 const deepTableHost = ref<HTMLElement | null>(null)
-const timelineTableHost = ref<HTMLElement | null>(null)
-const syslogTableHost = ref<HTMLElement | null>(null)
 const archiveTableHost = ref<HTMLElement | null>(null)
 const trainTableHeight = useAdaptiveTableHeight(trainTableHost, computed(() => filteredTrains.value.length), { maxVisibleRows: 18 })
 const pingTableHeight = useAdaptiveTableHeight(pingTableHost, computed(() => filteredPing.value.length), { maxVisibleRows: 20 })
 const deepTableHeight = useAdaptiveTableHeight(deepTableHost, computed(() => deepCollections.value.length), { maxVisibleRows: 18 })
-const timelineTableHeight = useAdaptiveTableHeight(timelineTableHost, computed(() => filteredTimeline.value.length), { maxVisibleRows: 18, emptyHeight: 190 })
-const syslogTableHeight = useAdaptiveTableHeight(syslogTableHost, computed(() => syslogRecords.value.length), { maxVisibleRows: 100, bottomGap: 76, emptyHeight: 190 })
 const archiveTableHeight = useAdaptiveTableHeight(archiveTableHost, computed(() => archives.value.length), { maxVisibleRows: 18 })
 const trainTableMaxHeight = trainTableHeight.maxHeight
 const pingTableMaxHeight = pingTableHeight.maxHeight
 const deepTableMaxHeight = deepTableHeight.maxHeight
-const timelineTableMaxHeight = timelineTableHeight.maxHeight
-const syslogTableMaxHeight = syslogTableHeight.maxHeight
 const archiveTableMaxHeight = archiveTableHeight.maxHeight
-const timelineTableEmptyHeight = computed(() => filteredTimeline.value.length ? undefined : timelineTableHeight.contentHeight.value)
-const syslogTableEmptyHeight = computed(() => syslogRecords.value.length ? undefined : syslogTableHeight.contentHeight.value)
 const visibleIpv4Addresses = computed(() => localIpv4Addresses.value.filter((row) => showAllAddresses.value || !row.is_virtual))
 const localIpv4Values = computed(() => new Set(localIpv4Addresses.value.map((row) => row.ipv4)))
 const returnAddressIsLocal = computed(() => Boolean(profile.value?.syslog_server_ip && localIpv4Values.value.has(profile.value.syslog_server_ip)))
@@ -192,6 +217,7 @@ const pingAvailability = computed(() => (
   || 'MISSING'
 ))
 const pingEmptyDescription = computed(() => {
+  if (pingIssue.value) return pingIssue.value.message
   if (pingAvailability.value === 'SUMMARY_ONLY') return '本次运行仅保留汇总，无法生成逐包曲线。'
   if (pingAvailability.value === 'CORRUPT') return '逐包原始文件或 READY 归档损坏，已停止读取曲线数据。'
   if (pingAvailability.value === 'MISSING') return '本次运行缺少逐包原始数据，请查看文件诊断。'
@@ -221,13 +247,17 @@ const pingLiveStats = computed(() => {
 const locationStats = computed(() => ({
   ap: trains.value.filter((row) => String(row.location_match_level || '').startsWith('AP_')).length,
   station: trains.value.filter((row) => String(row.location_match_level || '').startsWith('STATION_')).length,
-  unmatched: trains.value.filter((row) => row.location_match_level === 'UNMATCHED').length,
+  unmatched: trains.value.filter((row) => row.eligibility_status === 'AP_UNMATCHED').length,
   excluded: trains.value.filter((row) => ['DEPOT', 'PARKING_LOT', 'STORAGE_TRACK'].includes(row.eligibility_status)).length,
 }))
 
 const trainColumns: NcTableColumn<GroundTrain>[] = [
   { key: 'train_no', label: t('ground.train', '列车'), valueType: 'name', fixed: 'left' },
+  { key: 'location_class', label: '位置类型', valueType: 'status', displayValue: (row) => groundStatusLabel(row.location_class) },
   { key: 'eligibility_status', label: t('ground.eligibility', '正线判断'), valueType: 'status', displayValue: (row) => groundStatusLabel(row.eligibility_status) },
+  { key: 'mainline_eligible', label: '是否正线', valueType: 'status', displayValue: (row) => row.mainline_eligible ? '是' : '否' },
+  { key: 'ping_reason', label: 'Ping 纳入原因', valueType: 'description', minWidth: 220, displayValue: (row) => row.ping_inclusion_reason || row.ping_exclusion_reason || '—' },
+  { key: 'deep_state', label: '深度采集状态', valueType: 'status', minWidth: 150, displayValue: (row) => row.deep_collection_eligible ? '参与' : row.deep_exclusion_reason || '不参与' },
   { key: 'location_match_level', label: '匹配等级', valueType: 'status', width: 130, displayValue: (row) => groundStatusLabel(row.location_match_level) },
   { key: 'exclusion_reason', label: t('ground.exclusion_reason', '排除原因'), valueType: 'description', minWidth: 220 },
   { key: 'raw_peer_ap_name', label: '原始 AP', valueType: 'name' },
@@ -249,6 +279,10 @@ const pingColumns: NcTableColumn<GroundPingTarget>[] = [
   { key: 'train_no', label: t('ground.train', '列车'), valueType: 'name', fixed: 'left' },
   { key: 'mr_position_code', label: t('ground.mr_endpoint', 'MR 端点'), valueType: 'status' },
   { key: 'target_ip', label: t('ground.management_ip', '管理 IP'), valueType: 'ip' },
+  { key: 'location_class', label: '位置类型', valueType: 'status', displayValue: (row) => groundStatusLabel(row.location_class) },
+  { key: 'ping_inclusion_reason', label: 'Ping 纳入原因', valueType: 'description', minWidth: 190 },
+  { key: 'mainline_eligible', label: '正线', valueType: 'status', displayValue: (row) => row.mainline_eligible ? '是' : '否' },
+  { key: 'deep_collection_eligible', label: '深度采集', valueType: 'status', displayValue: (row) => row.deep_collection_eligible ? '参与' : '不参与' },
   { key: 'started_at', label: t('ground.started_at', '开始时间'), valueType: 'datetime' },
   { key: 'raw_sample_count', label: '原始发送', valueType: 'number' },
   { key: 'effective_sample_count', label: '有效发送', valueType: 'number' },
@@ -305,6 +339,7 @@ const archiveColumns: NcTableColumn<GroundArchive>[] = [
   { key: 'actions', label: t('ground.actions', '操作'), valueType: 'actions', fixed: 'right', width: 230, hideable: false },
 ]
 const syslogColumns: NcTableColumn<GroundSyslogRecord>[] = [
+  { key: 'selection', label: '', type: 'selection', valueType: 'selection', width: 48, fixed: 'left', hideable: false },
   { key: 'receive_time', label: '接收时间', valueType: 'datetime', fixed: 'left', width: 180 },
   { key: 'device_time', label: '设备时间', valueType: 'datetime', width: 180 },
   { key: 'train_no', label: '列车', valueType: 'name', displayValue: (row) => row.train_no || '未识别' },
@@ -322,9 +357,9 @@ const syslogColumns: NcTableColumn<GroundSyslogRecord>[] = [
   { key: 'reason_text', label: '原因', valueType: 'description', minWidth: 180 },
   { key: 'data_source', label: '数据来源', valueType: 'status', displayValue: (row) => groundSourceLabel(row.data_source) },
   { key: 'identity_status', label: '身份状态', valueType: 'status', displayValue: (row) => groundStatusLabel(row.identity_status) },
-  { key: 'resolution_status', label: 'AP 解析', valueType: 'status', displayValue: (row) => groundStatusLabel(row.resolution_status) },
-  { key: 'clock_offset_ms', label: '时间差', valueType: 'number', displayValue: (row) => metric(row.clock_offset_ms, 'ms') },
-  { key: 'raw_file_status', label: '文件状态', valueType: 'status', displayValue: (row) => groundStatusLabel(row.raw_file_status) },
+  { key: 'resolution_status', label: 'AP 解析', valueType: 'status', visible: false, displayValue: (row) => groundStatusLabel(row.resolution_status) },
+  { key: 'clock_offset_ms', label: '时间差', valueType: 'number', visible: false, displayValue: (row) => metric(row.clock_offset_ms, 'ms') },
+  { key: 'raw_file_status', label: '文件状态', valueType: 'status', visible: false, displayValue: (row) => groundStatusLabel(row.raw_file_status) },
   { key: 'raw_text', label: '原始内容', valueType: 'description', minWidth: 420 },
   { key: 'actions', label: '操作', valueType: 'actions', fixed: 'right', width: 90, hideable: false },
 ]
@@ -385,6 +420,10 @@ async function latestRequest<T>(
         syslogRequestId.value = issue.requestId ?? ''
         syslogErrorCode.value = issue.code ?? 'UNKNOWN_ERROR'
         syslogFailureCount.value += 1
+      } else if (key.startsWith('ping-series')) {
+        pingBackendState.value = issue.backendState ?? 'UNKNOWN'
+        pingRequestId.value = issue.requestId ?? ''
+        pingErrorCode.value = issue.code ?? 'UNKNOWN_ERROR'
       }
       loadIssues.value = [...loadIssues.value.filter((item) => item.key !== key), issue]
       if (!silent || requestNotifySequences.get(key) === sequence) {
@@ -422,7 +461,24 @@ const loadRuns = (silent = true) => latestRequest('runs', '运行历史', (signa
 const loadTrains = (silent = true) => latestRequest('trains', '正线车辆', (signal) => listGroundTrains({ signal }), (value) => { trains.value = value.items }, silent)
 const loadPingTargets = (silent = true) => latestRequest('ping', '长 Ping', (signal) => listGroundPingTargets(selectedRunId.value, { signal }), (value) => { pingTargets.value = value.items }, silent)
 const loadDeep = (silent = true) => latestRequest('deep', '深度采集', (signal) => listGroundDeepCollections(selectedRunId.value, { signal }), (value) => { deepCollections.value = value.items }, silent)
-const loadTimelineData = (silent = true) => latestRequest('timeline', '时间轴', (signal) => listGroundTimeline('', timelineFilter.eventType, selectedRunId.value, { signal }), (value) => { timeline.value = value.items }, silent)
+const loadTimelineData = (silent = true) => latestRequest(
+  'timeline',
+  '时间轴',
+  (signal) => listGroundTimeline(
+    '',
+    timelineFilter.eventType,
+    selectedRunId.value,
+    { signal },
+    timelinePage.value,
+    timelinePageSize.value,
+    timelineFilter.query,
+  ),
+  (value) => {
+    timeline.value = value.items
+    timelineTotal.value = value.total
+  },
+  silent,
+)
 const loadArchives = (silent = true) => latestRequest('archives', '历史归档', (signal) => listGroundArchives({ signal }), (value) => { archives.value = value.items }, silent)
 const loadHealth = (silent = true) => latestRequest('health', '系统健康', (signal) => getGroundHealth({ signal }), (value) => { health.value = value }, silent)
 const loadSyslogTransport = async (silent = true) => {
@@ -552,6 +608,8 @@ function schedulePoll(): void {
       if (
         pingWindowOpen.value
         && selectedPingTarget.value
+        && pingSeries.value
+        && pingInitialLoadSucceeded.value
         && pingAutoRefresh.value
         && !pingPaused.value
         && !selectedPingHistorical.value
@@ -669,26 +727,38 @@ async function submitStop(archive: boolean): Promise<void> {
   })
   await runAction(archive ? 'archive' : 'stop', archive ? stopAndArchiveGroundRun : stopGroundRun)
 }
-async function showPingSeries(row: GroundPingTarget, silent = false): Promise<void> {
+async function showPingSeries(row: GroundPingTarget, notifyFailure = false): Promise<void> {
   const targetRunId = row.run_id || selectedRunId.value
-  if (!silent && !pingWindowOpen.value) {
+  if (!pingWindowOpen.value) {
     pingRange.value = targetRunId && targetRunId !== status.value?.active_run_id ? 'run' : '30m'
     pingWindowOpen.value = true
   }
   const range = pingTimeRange(row, targetRunId)
   if (pingRange.value === 'custom' && !range.start_time) {
-    if (!silent) ElMessage.warning('请选择自定义开始和结束时间')
+    if (notifyFailure) ElMessage.warning('请选择自定义开始和结束时间')
     return
+  }
+  const previousIdentity = selectedPingTarget.value?.query_identity
+  if (previousIdentity !== row.query_identity) {
+    pingSeries.value = null
+    pingSeenSamples.clear()
   }
   selectedPingTarget.value = row
   pingPaused.value = false
   pingFollowLatest.value = true
+  pingInitialLoadSucceeded.value = false
+  pingCursor.value = ''
+  pingRequestId.value = ''
+  pingErrorCode.value = ''
+  pingBackendState.value = 'UNKNOWN'
+  pingLastAttemptAt.value = new Date().toISOString()
   pingSeriesLoading.value = true
-  await latestRequest(
+  const succeeded = await latestRequest(
     'ping-series',
     '长 Ping 逐包数据',
     (signal) => getGroundPingSeries({
       run_id: targetRunId || undefined,
+      query_identity: row.query_identity || undefined,
       train_id: row.train_id || undefined,
       mr_id: row.mr_id || undefined,
       target_ip: row.target_ip,
@@ -698,9 +768,22 @@ async function showPingSeries(row: GroundPingTarget, silent = false): Promise<vo
     }, { signal }),
     (value) => {
       mergePingSeries(value, true)
+      pingInitialLoadSucceeded.value = true
+      pingBackendState.value = 'ONLINE'
+      pingRequestId.value = value.diagnostics.request_id
+      pingErrorCode.value = ''
     },
-    silent,
+    !notifyFailure,
+    JSON.stringify({
+      query_identity: row.query_identity,
+      run_id: targetRunId,
+      target_ip: row.target_ip,
+      ...range,
+      include_warmup: includeWarmup.value,
+    }),
+    mapPingLoadIssue,
   )
+  if (!succeeded) pingInitialLoadSucceeded.value = false
   if (!requestControllers.has('ping-series')) pingSeriesLoading.value = false
 }
 
@@ -824,12 +907,44 @@ function mergePingSeries(value: GroundPingSeries, reset: boolean): void {
   pingCursor.value = value.next_cursor
 }
 
+async function mapPingLoadIssue(reason: unknown, key = 'ping-series'): Promise<LoadIssue> {
+  const transport = await probeGroundRawQueryTransportState(reason)
+  const messages: Record<string, string> = {
+    BACKEND_UNREACHABLE: '无法连接本机 Backend，请重试或查看 Backend 日志。',
+    BACKEND_CONNECTION_INTERRUPTED: '长 Ping 查询连接中断，Backend 仍在线，请重试。',
+    CONNECTION_RESET: '长 Ping 查询连接中断，Backend 仍在线，请重试。',
+    BACKEND_RESTARTED: '长 Ping 查询期间 Backend 发生重启，当前已恢复在线，请重试。',
+    RAW_QUERY_TIMEOUT: '长 Ping 查询超时，请缩小时间范围后重试。',
+    PING_TARGET_NOT_FOUND: '未找到该目标的逐包 Ping 记录。',
+    PING_IDENTITY_MISMATCH: '汇总目标与稳定查询身份不一致，请刷新汇总列表后重试。',
+    PING_TARGET_IDENTITY_CONFLICT: '同一运行内该目标 IP 对应多个列车或 MR 端位，已拒绝任意选取。',
+    RAW_FILE_MISSING: '原始文件已有登记，但物理文件缺失。',
+    RAW_ARCHIVE_CORRUPT: 'READY 归档损坏，已停止读取。',
+    SUMMARY_ONLY: '本次运行仅保留汇总，无法生成逐包曲线。',
+  }
+  const message = messages[transport.code]
+    || (transport.backendState === 'ONLINE'
+      ? errorText(reason, '长 Ping 查询失败，Backend 仍在线。')
+      : errorText(reason, '长 Ping 查询失败。'))
+  return {
+    key,
+    label: '长 Ping 逐包数据',
+    message,
+    code: transport.code,
+    requestId: transport.requestId,
+    attemptedAt: pingLastAttemptAt.value,
+    backendState: transport.backendState,
+  }
+}
+
 async function loadPingIncremental(): Promise<void> {
   const row = selectedPingTarget.value
   const runId = row?.run_id || selectedRunId.value
   if (
     !row
     || !runId
+    || !pingSeries.value
+    || !pingInitialLoadSucceeded.value
     || !pingWindowOpen.value
     || !pingAutoRefresh.value
     || pingPaused.value
@@ -842,6 +957,7 @@ async function loadPingIncremental(): Promise<void> {
     '长 Ping 实时增量',
     (signal) => getGroundPingSeriesIncremental({
       run_id: runId,
+      query_identity: row.query_identity || pingSeries.value?.query_identity || undefined,
       train_id: row.train_id || undefined,
       mr_id: row.mr_id || undefined,
       target_ip: row.target_ip,
@@ -851,30 +967,43 @@ async function loadPingIncremental(): Promise<void> {
       include_warmup: includeWarmup.value,
       max_points: 200,
     }, { signal }),
-    (value) => mergePingSeries(value, false),
+    (value) => {
+      mergePingSeries(value, false)
+      pingBackendState.value = 'ONLINE'
+      pingRequestId.value = value.diagnostics.request_id || pingRequestId.value
+      pingErrorCode.value = ''
+    },
     true,
+    '',
+    (reason) => mapPingLoadIssue(reason, 'ping-series-incremental'),
   )
   pingIncrementalLoading.value = false
 }
+function currentSyslogDeleteFilters(): GroundSyslogDeleteFilters {
+  const [startValue, endValue] = syslogTimeRange.value || []
+  return {
+    train_id: syslogFilter.trainId,
+    mr_name: syslogFilter.mrName,
+    mr_role: syslogFilter.mrRole,
+    source_ip: syslogFilter.sourceIp,
+    system_name: syslogFilter.systemName,
+    facility: syslogFilter.facility,
+    severity: syslogFilter.severity,
+    identity_status: syslogFilter.identityStatus,
+    event_type: syslogFilter.eventType,
+    peer_name: syslogFilter.peerName,
+    data_source: syslogFilter.dataSource,
+    keyword: syslogFilter.keyword,
+    start_time: startValue?.toISOString(),
+    end_time: endValue?.toISOString(),
+  }
+}
 async function loadSyslog(silent = false): Promise<void> {
   if (!silent) syslogLoading.value = true
-  const [startValue, endValue] = syslogTimeRange.value || []
+  const filters = currentSyslogDeleteFilters()
   const params = {
       run_id: selectedRunId.value || undefined,
-      train_id: syslogFilter.trainId,
-      mr_name: syslogFilter.mrName,
-      mr_role: syslogFilter.mrRole,
-      source_ip: syslogFilter.sourceIp,
-      system_name: syslogFilter.systemName,
-      facility: syslogFilter.facility,
-      severity: syslogFilter.severity,
-      identity_status: syslogFilter.identityStatus,
-      event_type: syslogFilter.eventType,
-      peer_name: syslogFilter.peerName,
-      data_source: syslogFilter.dataSource,
-      keyword: syslogFilter.keyword,
-      start_time: startValue?.toISOString(),
-      end_time: endValue?.toISOString(),
+      ...filters,
       page: syslogFilter.page,
       page_size: syslogFilter.pageSize,
     }
@@ -923,9 +1052,104 @@ async function mapSyslogLoadIssue(reason: unknown): Promise<LoadIssue> {
 function openBackendLogs(): void {
   void router.push({ name: 'logs', query: { keyword: syslogRequestId.value || 'GROUND_SYSLOG_QUERY' } })
 }
+function openPingBackendLogs(): void {
+  void router.push({ name: 'logs', query: { keyword: pingRequestId.value || 'GROUND_PING_QUERY' } })
+}
 function showSyslogRecord(row: GroundSyslogRecord): void {
   selectedSyslogRecord.value = row
   syslogDetailDrawer.value = true
+}
+function syslogRowKey(row: GroundSyslogRecord): string {
+  return [
+    row.raw_file_id,
+    row.global_receive_sequence ?? '',
+    row.source_receive_sequence ?? '',
+    row.raw_line_number ?? '',
+  ].join(':')
+}
+function handleSyslogSelection(rows: GroundSyslogRecord[]): void {
+  selectedSyslogRecords.value = rows
+}
+async function deleteSyslog(
+  mode: 'SELECTED' | 'FILTERED' | 'RUN_ALL',
+): Promise<void> {
+  if (!selectedRunId.value) {
+    ElMessage.warning('请先选择需要清理的运行')
+    return
+  }
+  const recordKeys = mode === 'SELECTED'
+    ? selectedSyslogRecords.value.map((row) => ({
+      raw_file_id: row.raw_file_id,
+      global_receive_sequence: row.global_receive_sequence,
+      source_receive_sequence: row.source_receive_sequence,
+      raw_line_number: row.raw_line_number,
+    }))
+    : []
+  syslogDeleteLoading.value = true
+  try {
+    const preview = await previewGroundSyslogDelete({
+      run_id: selectedRunId.value,
+      mode,
+      record_keys: recordKeys,
+      filters: mode === 'FILTERED' ? currentSyslogDeleteFilters() : {},
+      include_derived_events: syslogDeleteDerived.value,
+    })
+    syslogDeletePreview.value = preview
+    if (preview.blocked_reasons.length) {
+      await ElMessageBox.alert(
+        preview.blocked_reasons.join('\n'),
+        '当前范围禁止记录级删除',
+        { type: 'warning', confirmButtonText: '知道了' },
+      )
+      return
+    }
+    if (!preview.preview_token || !preview.matched_record_count) {
+      ElMessage.info(preview.warnings[0] || '当前范围没有可删除的 Syslog 记录')
+      return
+    }
+    const eventDescription = syslogDeleteDerived.value
+      ? `同时删除 ${preview.affected_event_count} 个 WMESH 事件和 ${preview.affected_timeline_count} 个 Syslog 时间轴事件`
+      : `保留 ${preview.affected_event_count + preview.affected_timeline_count} 个派生事件，并标记原始来源已删除`
+    const result = await ElMessageBox.prompt(
+      [
+        `将删除 ${preview.matched_record_count} 条 Syslog 原始记录，影响 ${preview.affected_file_count} 个文件（${bytes(preview.total_bytes)}）。`,
+        eventDescription,
+        '该操作不可恢复；READY 归档不会被修改。',
+        `请输入：${preview.confirmation_hint}`,
+      ].join('\n'),
+      '确认删除 Syslog 日志',
+      {
+        type: 'warning',
+        confirmButtonText: '提交删除任务',
+        cancelButtonText: '取消',
+        inputPlaceholder: preview.confirmation_hint,
+        inputValidator: (value) => (
+          value === preview.confirmation_hint
+          || value === status.value?.site_id
+          || '确认文本不匹配'
+        ),
+      },
+    )
+    const accepted = await submitGroundSyslogDelete({
+      preview_token: preview.preview_token,
+      explicit_confirmation: true,
+      confirmation_text: result.value,
+      include_derived_events: syslogDeleteDerived.value,
+    })
+    selectedSyslogRecords.value = []
+    ElMessage.success(`${accepted.message}（任务 ${accepted.task_id}）`)
+    await loadSyslog(true)
+  } catch (reason) {
+    if (!isDialogCancellation(reason)) {
+      ElMessage.error(errorText(reason, 'Syslog 删除任务提交失败'))
+    }
+  } finally {
+    syslogDeleteLoading.value = false
+  }
+}
+function isDialogCancellation(reason: unknown): boolean {
+  const text = reason instanceof Error ? reason.message : String(reason || '')
+  return ['cancel', 'close'].includes(text.toLocaleLowerCase())
 }
 async function togglePriority(row: GroundTrain): Promise<void> {
   try { await setGroundTrainPriority(row.train_id, !row.priority); await loadAll(true) }
@@ -1070,7 +1294,11 @@ function handleVisibilityChange(): void {
   else {
     lastPollAt.clear()
     void loadAll(true)
-    if (pingWindowOpen.value && selectedPingTarget.value) void loadPingIncremental()
+    if (
+      pingWindowOpen.value
+      && selectedPingTarget.value
+      && pingInitialLoadSucceeded.value
+    ) void loadPingIncremental()
   }
 }
 function useFullPingRange(): void {
@@ -1080,7 +1308,7 @@ function useFullPingRange(): void {
 }
 function togglePingPaused(): void {
   pingPaused.value = !pingPaused.value
-  if (!pingPaused.value) {
+  if (!pingPaused.value && pingInitialLoadSucceeded.value) {
     lastPollAt.delete('ping-series-incremental')
     void loadPingIncremental()
   }
@@ -1088,13 +1316,26 @@ function togglePingPaused(): void {
 function returnPingToLive(): void {
   pingFollowLatest.value = true
   pingPaused.value = false
+  if (!pingInitialLoadSucceeded.value) return
   lastPollAt.delete('ping-series-incremental')
   void loadPingIncremental()
 }
 async function copyPingDiagnostics(): Promise<void> {
-  if (!pingSeries.value) return
   try {
-    await navigator.clipboard.writeText(JSON.stringify(pingSeries.value.diagnostics, null, 2))
+    await navigator.clipboard.writeText(JSON.stringify({
+      query: {
+        run_id: selectedPingTarget.value?.run_id || selectedRunId.value,
+        target_ip: selectedPingTarget.value?.target_ip,
+        mr_name: selectedPingTarget.value?.mr_name,
+        mr_position_code: selectedPingTarget.value?.mr_position_code,
+        query_identity: selectedPingTarget.value?.query_identity || pingSeries.value?.query_identity,
+      },
+      request_id: pingRequestId.value,
+      error_code: pingErrorCode.value,
+      backend_state: pingBackendState.value,
+      attempted_at: pingLastAttemptAt.value,
+      diagnostics: pingSeries.value?.diagnostics ?? null,
+    }, null, 2))
     ElMessage.success('Ping 文件诊断已复制')
   } catch {
     ElMessage.error('无法访问剪贴板')
@@ -1106,6 +1347,12 @@ function handlePingWindowClosed(): void {
   selectedPingTarget.value = null
   pingSeries.value = null
   pingCursor.value = ''
+  pingInitialLoadSucceeded.value = false
+  pingBackendState.value = 'UNKNOWN'
+  pingRequestId.value = ''
+  pingErrorCode.value = ''
+  pingLastAttemptAt.value = ''
+  loadIssues.value = loadIssues.value.filter((item) => !item.key.startsWith('ping-series'))
   pingSeenSamples.clear()
   pingSeriesLoading.value = false
   pingIncrementalLoading.value = false
@@ -1135,7 +1382,9 @@ watch(selectedRunId, () => {
     handlePingWindowClosed()
   }
   syslogRecords.value = []
+  selectedSyslogRecords.value = []
   syslogFilter.page = 1
+  timelinePage.value = 1
   if (historicalRun.value) syslogAutoRefresh.value = false
   if (runScopedTab.value) void loadActiveTab(true)
 })
@@ -1243,7 +1492,9 @@ onBeforeUnmount(() => {
             <article><span>{{ t('ground.next_end', '下一次结束') }}</span><strong>{{ status?.next_end_at || '—' }}</strong></article>
             <article><span>{{ t('ground.ac_updated', 'AC 最近更新') }}</span><strong>{{ status?.ac_last_updated_at || '—' }}</strong></article>
             <article><span>{{ t('ground.mainline_trains', '正线列车') }}</span><strong>{{ status?.mainline_train_count ?? 0 }}</strong></article>
-            <article><span>{{ t('ground.ping_mrs', 'Ping 中 MR') }}</span><strong>{{ status?.ping_target_count ?? 0 }}</strong></article>
+            <article><span>正线 Ping MR</span><strong>{{ status?.mainline_ping_target_count ?? 0 }}</strong></article>
+            <article><span>车辆段 Ping MR</span><strong>{{ status?.depot_ping_target_count ?? 0 }}</strong></article>
+            <article><span>{{ t('ground.ping_mrs', 'Ping 总目标') }}</span><strong>{{ status?.ping_target_count ?? 0 }}</strong></article>
             <article><span>{{ t('ground.active_deep', '当前深度采集车辆') }}</span><strong>{{ status?.active_deep_train_count ?? 0 }}</strong></article>
             <article><span>{{ t('ground.covered_today', '今日已完成 / 未完成') }}</span><strong>{{ status?.covered_train_count ?? 0 }} / {{ status?.incomplete_train_count ?? 0 }}</strong></article>
             <article><span>{{ t('ground.disk_usage', '当前占用 / 磁盘剩余') }}</span><strong>{{ bytes(status?.disk_used_bytes ?? 0) }} / {{ bytes(status?.disk_free_bytes ?? 0) }}</strong><el-tag size="small" :type="statusType(status?.disk_status || '')">{{ groundStatusLabel(status?.disk_status) }}</el-tag></article>
@@ -1335,9 +1586,9 @@ onBeforeUnmount(() => {
         <div class="toolbar"><el-input v-model="trainFilter" clearable :placeholder="t('ground.train_filter', '筛选列车、AP、站点或区间')" /></div>
         <div class="coverage-strip">
           <span>轨旁 AP 匹配 <b>{{ locationStats.ap }}</b></span>
-          <span>站点级匹配 <b>{{ locationStats.station }}</b></span>
-          <span>未匹配 <b>{{ locationStats.unmatched }}</b></span>
-          <span>车辆段 / 停车场 / 存车线排除 <b>{{ locationStats.excluded }}</b></span>
+          <span>站点文本诊断 <b>{{ locationStats.station }}</b></span>
+          <span>AP 未匹配 <b>{{ locationStats.unmatched }}</b></span>
+          <span>车辆段 / 停车场 / 存车线 <b>{{ locationStats.excluded }}</b></span>
         </div>
         <div ref="trainTableHost" class="table-frame"><NcDataTable :data="filteredTrains" :columns="trainColumns" table-id="ground-trains" route-key="rail-ground-unattended" row-key="train_id" :max-height="trainTableMaxHeight" auto-height compact>
           <template #cell-eligibility_status="{ row }"><el-tag size="small" :type="statusType(row.eligibility_status)">{{ groundStatusLabel(row.eligibility_status) }}</el-tag></template>
@@ -1375,44 +1626,78 @@ onBeforeUnmount(() => {
         </NcDataTable></div>
       </el-tab-pane>
 
-      <el-tab-pane :label="t('ground.timeline', '时间轴')" name="timeline">
-        <div class="toolbar">
-          <el-input v-model="timelineFilter.query" clearable placeholder="设备名称、列车号或 CT/CW" />
-          <el-select v-model="timelineFilter.eventType" clearable placeholder="事件类型">
-            <el-option v-for="value in ['ap_transition', 'mesh_linkup', 'mesh_linkdown', 'mesh_activelink_switch', 'ifnet_phy_updown', 'ping_loss_pattern', 'run_started', 'run_completed', 'stop_failed']" :key="value" :label="groundEventLabel(value)" :value="value" />
-          </el-select>
-          <el-button :icon="Refresh" @click="loadAll()">{{ t('common.query', '查询') }}</el-button>
-        </div>
-        <div ref="timelineTableHost" class="table-frame"><NcDataTable :data="filteredTimeline" :columns="timelineColumns" table-id="ground-timeline" route-key="rail-ground-unattended" row-key="event_id" :height="timelineTableEmptyHeight" :max-height="timelineTableMaxHeight" auto-height compact /></div>
+      <el-tab-pane :label="t('ground.timeline', '时间轴')" name="timeline" class="log-console-pane">
+        <NcLogWorkspace>
+          <template #header>
+            <div class="toolbar log-filter-grid timeline-filter-grid">
+              <el-input v-model="timelineFilter.query" clearable placeholder="设备名称、列车号或 CT/CW" />
+              <el-select v-model="timelineFilter.eventType" clearable placeholder="事件类型">
+                <el-option v-for="value in ['ap_transition', 'mesh_linkup', 'mesh_linkdown', 'mesh_activelink_switch', 'ifnet_phy_updown', 'ping_loss_pattern', 'run_started', 'run_completed', 'stop_failed']" :key="value" :label="groundEventLabel(value)" :value="value" />
+              </el-select>
+              <el-button :icon="Refresh" @click="timelinePage = 1; loadTimelineData(false)">{{ t('common.query', '查询') }}</el-button>
+            </div>
+          </template>
+          <NcDataTable
+            :data="filteredTimeline"
+            :columns="timelineColumns"
+            table-id="ground-timeline"
+            route-key="rail-ground-unattended"
+            row-key="event_id"
+            fill-remaining-height
+            compact
+          />
+          <template #pagination>
+            <el-pagination
+              v-model:current-page="timelinePage"
+              v-model:page-size="timelinePageSize"
+              :total="timelineTotal"
+              :page-sizes="[50, 100, 200, 500]"
+              layout="total, sizes, prev, pager, next"
+              @current-change="loadTimelineData(false)"
+              @size-change="timelinePage = 1; loadTimelineData(false)"
+            />
+          </template>
+        </NcLogWorkspace>
       </el-tab-pane>
 
-      <el-tab-pane label="Syslog 日志" name="syslog">
-        <div class="toolbar">
-          <el-input v-model="syslogFilter.trainId" clearable placeholder="列车 ID" />
-          <el-input v-model="syslogFilter.mrName" clearable placeholder="MR 设备名称" />
-          <el-select v-model="syslogFilter.mrRole" clearable placeholder="CT/CW"><el-option label="CT" value="CT" /><el-option label="CW" value="CW" /></el-select>
-          <el-input v-model="syslogFilter.sourceIp" clearable placeholder="来源 IP" />
-          <el-input v-model="syslogFilter.systemName" clearable placeholder="system_name" />
-          <el-input v-model="syslogFilter.facility" clearable placeholder="Facility" />
-          <el-select v-model="syslogFilter.severity" clearable placeholder="严重级别">
-            <el-option label="提示" value="info" /><el-option label="警告" value="warning" /><el-option label="错误" value="error" />
-          </el-select>
-          <el-select v-model="syslogFilter.identityStatus" clearable placeholder="身份状态">
-            <el-option label="身份已确认" value="VERIFIED" /><el-option label="来源未识别" value="UNIDENTIFIED" /><el-option label="身份冲突" value="IDENTITY_CONFLICT" />
-          </el-select>
-          <el-select v-model="syslogFilter.eventType" clearable placeholder="WMESH 事件">
-            <el-option v-for="value in ['MESH_LINKUP', 'MESH_LINKDOWN', 'MESH_ACTIVELINK_SWITCH', 'IFNET_PHY_UPDOWN']" :key="value" :label="groundEventLabel(value)" :value="value" />
-          </el-select>
-          <el-input v-model="syslogFilter.peerName" clearable placeholder="AP 名称或 MAC" />
-          <el-select v-model="syslogFilter.dataSource" clearable placeholder="数据来源">
-            <el-option label="活动原始文件" value="ACTIVE" /><el-option label="READY 归档" value="ARCHIVE" />
-          </el-select>
-          <el-input v-model="syslogFilter.keyword" clearable placeholder="原始内容关键字" />
-          <el-date-picker v-model="syslogTimeRange" type="datetimerange" start-placeholder="开始时间" end-placeholder="结束时间" />
-          <el-checkbox v-model="syslogAutoRefresh">自动刷新{{ historicalRun ? t('ground.syslog.auto_refresh_30', '（30 秒）') : '' }}</el-checkbox>
-          <el-button :icon="Refresh" :loading="syslogLoading" @click="syslogFilter.page = 1; loadSyslog()">查询</el-button>
-        </div>
-        <section v-if="syslogIssue" class="syslog-failure">
+      <el-tab-pane label="Syslog 日志" name="syslog" class="log-console-pane">
+        <NcLogWorkspace :loading="syslogLoading">
+          <template #header>
+            <div class="toolbar log-filter-grid syslog-common-filters">
+              <el-input v-model="syslogFilter.trainId" clearable placeholder="列车 ID" />
+              <el-input v-model="syslogFilter.mrName" clearable placeholder="MR 设备名称" />
+              <el-select v-model="syslogFilter.mrRole" clearable placeholder="CT/CW"><el-option label="CT" value="CT" /><el-option label="CW" value="CW" /></el-select>
+              <el-input v-model="syslogFilter.sourceIp" clearable placeholder="来源 IP" />
+              <el-select v-model="syslogFilter.eventType" clearable placeholder="WMESH 事件">
+                <el-option v-for="value in ['MESH_LINKUP', 'MESH_LINKDOWN', 'MESH_ACTIVELINK_SWITCH', 'IFNET_PHY_UPDOWN']" :key="value" :label="groundEventLabel(value)" :value="value" />
+              </el-select>
+              <el-input v-model="syslogFilter.peerName" clearable placeholder="AP 名称或 MAC" />
+              <el-date-picker v-model="syslogTimeRange" type="datetimerange" start-placeholder="开始时间" end-placeholder="结束时间" />
+              <el-button @click="syslogAdvancedFiltersOpen = !syslogAdvancedFiltersOpen">
+                高级筛选（{{ syslogAdvancedFilterCount }} 个条件）
+              </el-button>
+              <el-checkbox v-model="syslogAutoRefresh">自动刷新{{ historicalRun ? t('ground.syslog.auto_refresh_30', '（30 秒）') : '' }}</el-checkbox>
+              <el-button type="primary" :icon="Refresh" :loading="syslogLoading" @click="syslogFilter.page = 1; loadSyslog()">查询</el-button>
+            </div>
+            <el-collapse-transition>
+              <div v-show="syslogAdvancedFiltersOpen" class="toolbar log-filter-grid syslog-advanced-filters">
+                <el-input v-model="syslogFilter.systemName" clearable placeholder="system_name" />
+                <el-input v-model="syslogFilter.facility" clearable placeholder="Facility" />
+                <el-select v-model="syslogFilter.severity" clearable placeholder="严重级别">
+                  <el-option label="提示" value="info" /><el-option label="警告" value="warning" /><el-option label="错误" value="error" />
+                </el-select>
+                <el-select v-model="syslogFilter.identityStatus" clearable placeholder="身份状态">
+                  <el-option label="身份已确认" value="VERIFIED" /><el-option label="来源未识别" value="UNIDENTIFIED" /><el-option label="身份冲突" value="IDENTITY_CONFLICT" />
+                </el-select>
+                <el-select v-model="syslogFilter.dataSource" clearable placeholder="数据来源">
+                  <el-option label="活动原始文件" value="ACTIVE" /><el-option label="READY 归档" value="ARCHIVE" />
+                </el-select>
+                <el-input v-model="syslogFilter.keyword" clearable placeholder="原始内容关键字" />
+              </div>
+            </el-collapse-transition>
+          </template>
+          <template #summary>
+            <section v-if="syslogIssue" class="syslog-failure">
           <el-alert
             :title="t('ground.syslog.failure_title', 'Syslog 日志暂时无法加载')"
             :description="syslogIssue.message"
@@ -1431,37 +1716,58 @@ onBeforeUnmount(() => {
             <el-button :icon="Refresh" :loading="syslogLoading" type="primary" @click="loadSyslog()">{{ t('ground.syslog.retry', '重新查询') }}</el-button>
             <el-button @click="openBackendLogs">{{ t('ground.syslog.open_backend_logs', '查看 Backend 日志') }}</el-button>
           </div>
-        </section>
-        <el-alert
-          v-else-if="syslogDiagnostics?.truncated"
-          :title="t('ground.syslog.truncated', '日志量较大，本次已返回最近的数据。请设置时间范围或增加筛选条件。')"
-          type="warning"
-          :closable="false"
-          show-icon
-        />
-        <div v-if="syslogDiagnostics" class="coverage-strip">
-          <span>数据来源 <b>{{ groundSourceLabel(syslogDiagnostics.source_kind) }}</b></span>
-          <span>可用性 <b>{{ groundStatusLabel(syslogDiagnostics.data_availability) }}</b></span>
-          <span>扫描文件 <b>{{ syslogDiagnostics.files_scanned }}</b></span>
-          <span>扫描记录 <b>{{ syslogDiagnostics.records_scanned }}</b></span>
-          <span>匹配记录 <b>{{ syslogTotal }}{{ syslogTotalExact ? '' : '+' }}</b></span>
-          <span>接收器 <b>{{ health?.udp_running ? '正在监听' : '未监听' }}</b></span>
-          <span v-if="syslogDiagnostics.truncated">查询预算已截断</span>
-          <span v-if="syslogDiagnostics.optimized_latest_page">首屏最新优先</span>
-          <span v-if="syslogDiagnostics.no_data_reason">{{ groundStatusLabel(syslogDiagnostics.no_data_reason) }}</span>
-        </div>
-        <div ref="syslogTableHost" class="table-frame"><NcDataTable :data="syslogRecords" :columns="syslogColumns" table-id="ground-syslog" route-key="rail-ground-unattended" row-key="global_receive_sequence" :height="syslogTableEmptyHeight" :max-height="syslogTableMaxHeight" auto-height compact>
+            </section>
+            <el-alert
+              v-else-if="syslogDiagnostics?.truncated"
+              :title="t('ground.syslog.truncated', '日志量较大，本次已返回最近的数据。请设置时间范围或增加筛选条件。')"
+              type="warning"
+              :closable="false"
+              show-icon
+            />
+            <div v-if="syslogDiagnostics" class="coverage-strip">
+              <span>数据来源 <b>{{ groundSourceLabel(syslogDiagnostics.source_kind) }}</b></span>
+              <span>可用性 <b>{{ groundStatusLabel(syslogDiagnostics.data_availability) }}</b></span>
+              <span>扫描文件 <b>{{ syslogDiagnostics.files_scanned }}</b></span>
+              <span>扫描记录 <b>{{ syslogDiagnostics.records_scanned }}</b></span>
+              <span>匹配记录 <b>{{ syslogTotal }}{{ syslogTotalExact ? '' : '+' }}</b></span>
+              <span>接收器 <b>{{ health?.udp_running ? '正在监听' : '未监听' }}</b></span>
+              <span v-if="syslogDiagnostics.no_data_reason">{{ groundStatusLabel(syslogDiagnostics.no_data_reason) }}</span>
+            </div>
+          </template>
+          <template #actions>
+            <div class="syslog-bulk-actions">
+              <span>已选择 {{ selectedSyslogRecords.length }} 条（表头复选框可全选当前页）</span>
+              <el-checkbox v-model="syslogDeleteDerived">同时删除派生 WMESH/时间轴事件</el-checkbox>
+              <el-button :icon="Delete" :loading="syslogDeleteLoading" :disabled="syslogDeleteBlocked || !selectedSyslogRecords.length" @click="deleteSyslog('SELECTED')">删除选中日志</el-button>
+              <el-button :icon="Delete" :loading="syslogDeleteLoading" :disabled="syslogDeleteBlocked || !syslogHasActiveFilters" @click="deleteSyslog('FILTERED')">删除当前筛选范围</el-button>
+              <el-button type="danger" plain :icon="Delete" :loading="syslogDeleteLoading" :disabled="syslogDeleteBlocked" @click="deleteSyslog('RUN_ALL')">删除当前运行全部 Syslog</el-button>
+              <span v-if="syslogDeleteBlocked" class="muted">活动运行、ERROR 状态、OPEN 文件与最终化阶段禁止删除</span>
+            </div>
+          </template>
+          <NcDataTable
+            :data="syslogRecords"
+            :columns="syslogColumns"
+            table-id="ground-syslog"
+            route-key="rail-ground-unattended"
+            :row-key="syslogRowKey"
+            fill-remaining-height
+            compact
+            @selection-change="handleSyslogSelection"
+          >
           <template #cell-actions="{ row }"><el-button size="small" text type="primary" @click="showSyslogRecord(row)">详情</el-button></template>
-        </NcDataTable></div>
-        <el-pagination class="table-pagination"
-          v-model:current-page="syslogFilter.page"
-          v-model:page-size="syslogFilter.pageSize"
-          :total="syslogTotal"
-          :page-sizes="[50, 100, 200, 500]"
-          layout="total, sizes, prev, pager, next"
-          @current-change="loadSyslog"
-          @size-change="syslogFilter.page = 1; loadSyslog()"
-        />
+          </NcDataTable>
+          <template #pagination>
+            <el-pagination
+              v-model:current-page="syslogFilter.page"
+              v-model:page-size="syslogFilter.pageSize"
+              :total="syslogTotal"
+              :page-sizes="[50, 100, 200, 500]"
+              layout="total, sizes, prev, pager, next"
+              @current-change="loadSyslog"
+              @size-change="syslogFilter.page = 1; loadSyslog()"
+            />
+          </template>
+        </NcLogWorkspace>
       </el-tab-pane>
 
       <el-tab-pane label="系统健康" name="health">
@@ -1542,6 +1848,12 @@ onBeforeUnmount(() => {
             <el-form-item :label="t('ground.packet_size', '包大小（字节）')"><el-input-number v-model="profile.fleet_ping_packet_size" :min="1" :max="65507" /></el-form-item>
             <el-form-item :label="t('ground.shard_size', '每个 fping 分片目标数')"><el-input-number v-model="profile.fleet_ping_shard_size" :min="2" :max="32" /></el-form-item>
             <el-form-item label="启动预热忽略时间（秒）"><el-input-number v-model="profile.fleet_ping_warmup_seconds" :min="0" :max="300" /></el-form-item>
+            <el-form-item label="Ping 车辆段/停车场列车">
+              <div class="switch-with-description">
+                <el-switch v-model="profile.ping_depot_trains_enabled" />
+                <span>启用后，对当前位于车辆段、停车场或存车线的在线列车执行 CT/CW 长 Ping。该设置不会将车辆计入正线，也不会自动启动深度 MR 采集。</span>
+              </div>
+            </el-form-item>
             <el-form-item :label="t('ground.detail_retention', '详细数据保留天数')"><el-select v-model="profile.detail_retention_days"><el-option v-for="day in [7,15,30,60,90,180]" :key="day" :label="`${day} 天`" :value="day" /></el-select></el-form-item>
             <el-form-item :label="t('ground.summary_retention', '汇总保留天数')"><el-input-number v-model="profile.summary_retention_days" :min="profile.detail_retention_days" :max="3650" /></el-form-item>
             <el-form-item :label="t('ground.warning_space', '空间预警阈值（GB）')"><el-input-number v-model="profile.storage_warning_free_gb" :min="0.1" :max="1024" /></el-form-item>
@@ -1593,7 +1905,7 @@ onBeforeUnmount(() => {
     <NcFloatingWindow
       v-model="pingWindowOpen"
       :title="selectedPingTarget ? `${selectedPingTarget.train_no || selectedPingTarget.train_id} · ${selectedPingTarget.mr_name || selectedPingTarget.mr_position_code} · ${selectedPingTarget.target_ip}` : '长 Ping 逐包曲线'"
-      :subtitle="selectedPingTarget ? `运行日期 ${selectedPingTarget.run_date || selectedRun?.run_date || '—'} · ${selectedPingHistorical ? '历史静态数据' : pingPaused ? '实时刷新已暂停' : '实时增量'} · ${groundStatusLabel(pingAvailability)}` : ''"
+      :subtitle="selectedPingTarget ? `运行日期 ${selectedPingTarget.run_date || selectedRun?.run_date || '—'} · ${selectedPingHistorical ? '历史静态数据' : !pingInitialLoadSucceeded ? '首次查询未完成' : pingPaused ? '实时刷新已暂停' : '实时增量'} · ${groundStatusLabel(pingAvailability)}` : ''"
       window-id="ground-ping-series"
       route-key="rail-ground-unattended"
       @close="handlePingDialogClosed"
@@ -1616,12 +1928,18 @@ onBeforeUnmount(() => {
             @change="showPingSeries(selectedPingTarget)"
           />
           <el-checkbox v-model="includeWarmup" @change="showPingSeries(selectedPingTarget)">显示预热样本</el-checkbox>
-          <el-checkbox v-model="pingAutoRefresh" :disabled="selectedPingHistorical">实时增量</el-checkbox>
+          <el-checkbox v-model="pingAutoRefresh" :disabled="selectedPingHistorical || !pingInitialLoadSucceeded">实时增量</el-checkbox>
           <el-checkbox v-model="pingFollowLatest">跟随最新</el-checkbox>
           <el-button v-if="!selectedPingHistorical" :icon="pingPaused ? VideoPlay : VideoPause" @click="togglePingPaused">{{ pingPaused ? '继续' : '暂停' }}</el-button>
           <el-button v-if="!pingFollowLatest" type="primary" plain @click="returnPingToLive">回到实时</el-button>
           <el-button @click="useFullPingRange">完整运行</el-button>
-          <el-button :icon="Refresh" :loading="pingSeriesLoading || pingIncrementalLoading" @click="showPingSeries(selectedPingTarget)">刷新</el-button>
+          <el-button :icon="Refresh" :loading="pingSeriesLoading || pingIncrementalLoading" @click="showPingSeries(selectedPingTarget, true)">刷新</el-button>
+        </div>
+        <div class="coverage-strip ping-query-identity">
+          <span>运行 <b>{{ selectedPingTarget.run_id || selectedRunId }}</b></span>
+          <span>目标 IP <b>{{ selectedPingTarget.target_ip }}</b></span>
+          <span>MR <b>{{ selectedPingTarget.mr_name || selectedPingTarget.mr_id || '未知' }}</b></span>
+          <span>端位 <b>{{ selectedPingTarget.mr_position_code || '未知' }}</b></span>
         </div>
         <div class="coverage-strip">
           <span>原始样本 <b>{{ pingSeries?.raw_sample_count ?? 0 }}</b></span>
@@ -1635,6 +1953,10 @@ onBeforeUnmount(() => {
           <span v-if="pingSeries">可用性 <b>{{ groundStatusLabel(pingSeries.diagnostics.data_availability) }}</b></span>
         </div>
         <div class="coverage-strip">
+          <span>Registry 文件 <b>{{ pingSeries?.diagnostics.raw_file_registry_hit_count ?? selectedPingTarget.raw_file_count ?? 0 }}</b></span>
+          <span>扫描文件 <b>{{ pingSeries?.diagnostics.files_scanned ?? 0 }}</b></span>
+          <span>扫描记录 <b>{{ pingSeries?.diagnostics.records_scanned ?? 0 }}</b></span>
+          <span>匹配记录 <b>{{ pingSeries?.diagnostics.matched_count ?? 0 }}</b></span>
           <span>当前状态 <b>{{ groundStatusLabel(pingSeries?.target_state || selectedPingTarget.data_availability) }}</b></span>
           <span>当前 AP <b>{{ pingLiveStats.currentAp || '未知' }}</b></span>
           <span>站点 / 区间 <b>{{ pingLiveStats.station || '未知' }} / {{ pingLiveStats.section || '未知' }}</b></span>
@@ -1642,6 +1964,28 @@ onBeforeUnmount(() => {
           <span v-if="pingSeries?.diagnostics.truncated">查询预算已截断</span>
           <span v-if="pingIncrementalLoading">正在补拉增量</span>
         </div>
+        <el-alert
+          v-if="pingIssue"
+          class="ping-query-error"
+          type="error"
+          :closable="false"
+          show-icon
+          :title="pingIssue.message"
+        >
+          <template #default>
+            <div class="coverage-strip">
+              <span>错误码 <b>{{ pingErrorCode || 'UNKNOWN_ERROR' }}</b></span>
+              <span>Backend <b>{{ pingBackendState }}</b></span>
+              <span v-if="pingRequestId">request_id <b>{{ pingRequestId }}</b></span>
+              <span v-if="pingSeries?.diagnostics.no_data_reason">原因 <b>{{ pingSeries.diagnostics.no_data_reason }}</b></span>
+            </div>
+            <div class="row-actions">
+              <el-button type="primary" plain @click="showPingSeries(selectedPingTarget, true)">重试</el-button>
+              <el-button :icon="CopyDocument" @click="copyPingDiagnostics">复制诊断信息</el-button>
+              <el-button @click="openPingBackendLogs">查看 Backend 日志</el-button>
+            </div>
+          </template>
+        </el-alert>
         <el-skeleton v-if="pingSeriesLoading && !pingSeries" :rows="8" animated />
         <el-empty
           v-else-if="!pingSeries?.points.length"
@@ -1650,7 +1994,8 @@ onBeforeUnmount(() => {
         >
           <div class="row-actions">
             <el-button v-if="pingRange !== 'run'" @click="useFullPingRange">切换到完整运行时段</el-button>
-            <el-button v-if="pingSeries" :icon="CopyDocument" @click="copyPingDiagnostics">复制文件诊断</el-button>
+            <el-button :icon="CopyDocument" @click="copyPingDiagnostics">复制文件诊断</el-button>
+            <el-button @click="openPingBackendLogs">查看 Backend 日志</el-button>
           </div>
         </el-empty>
         <GroundPingChart
@@ -1787,6 +2132,10 @@ onBeforeUnmount(() => {
         <el-descriptions :column="2" border>
           <el-descriptions-item :label="t('ground.train', '列车')">{{ selectedTrain.train_no || selectedTrain.train_name }}</el-descriptions-item>
           <el-descriptions-item :label="t('ground.eligibility', '正线判断')"><el-tag :type="statusType(selectedTrain.eligibility_status)">{{ groundStatusLabel(selectedTrain.eligibility_status) }}</el-tag></el-descriptions-item>
+          <el-descriptions-item label="位置类型">{{ groundStatusLabel(selectedTrain.location_class) }}</el-descriptions-item>
+          <el-descriptions-item label="是否正线">{{ selectedTrain.mainline_eligible ? '是' : '否' }}</el-descriptions-item>
+          <el-descriptions-item label="Ping 纳入原因">{{ selectedTrain.ping_inclusion_reason || selectedTrain.ping_exclusion_reason || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="深度采集">{{ selectedTrain.deep_collection_eligible ? '参与' : selectedTrain.deep_exclusion_reason || '不参与' }}</el-descriptions-item>
           <el-descriptions-item :label="t('ground.current_ap', '当前 AP')">{{ selectedTrain.current_ap_name || '—' }}</el-descriptions-item>
           <el-descriptions-item label="位置匹配等级">{{ groundStatusLabel(selectedTrain.location_match_level) }}</el-descriptions-item>
           <el-descriptions-item label="原始 AP 名称">{{ selectedTrain.raw_peer_ap_name || '—' }}</el-descriptions-item>
@@ -1852,4 +2201,21 @@ onBeforeUnmount(() => {
 .ac-poller-health{margin-top:14px}.ac-poller-grid{display:grid;grid-template-columns:repeat(2,minmax(280px,1fr));gap:10px}.ac-poller-grid article{padding:12px;border:1px solid var(--el-border-color);border-radius:6px;background:var(--el-fill-color-extra-light)}.ac-poller-grid header{display:flex;align-items:center;justify-content:space-between;gap:12px}.ac-poller-grid p{margin:8px 0}.ac-poller-grid small{display:block;margin-top:5px;color:var(--el-text-color-secondary);overflow-wrap:anywhere}.ac-poller-grid .health-error{color:var(--el-color-danger)}@media(max-width:900px){.ac-poller-grid{grid-template-columns:1fr}}
 .run-context-bar{display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:10px 12px;border:1px solid var(--el-border-color-lighter);background:var(--el-fill-color-extra-light)}.run-context-bar>div{display:flex;flex-direction:column;min-width:240px}.run-context-bar>div span{font-size:12px;color:var(--el-text-color-secondary)}.run-context-bar .el-select{width:min(440px,100%)}.ping-floating-content{min-width:720px}.ping-floating-content h3,.detail-heading h2{margin:12px 0 8px}.ping-empty-state{height:210px}.raw-record{max-height:320px;overflow:auto;padding:12px;border:1px solid var(--el-border-color-lighter);background:var(--el-fill-color-extra-light);white-space:pre-wrap;overflow-wrap:anywhere}
 .syslog-transport-band{margin-top:14px;padding:14px;border:1px solid var(--el-border-color);background:var(--el-bg-color)}.transport-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}.transport-heading h2{margin:0;font-size:16px;letter-spacing:0}.transport-heading p{margin:4px 0 0;color:var(--el-text-color-secondary);font-size:12px}.syslog-transport-band>.el-alert{margin-top:12px}.transport-grid{display:grid;grid-template-columns:repeat(3,minmax(190px,1fr));gap:1px;margin-top:12px;background:var(--el-border-color-lighter);border:1px solid var(--el-border-color-lighter)}.transport-grid article{min-width:0;padding:11px;background:var(--el-bg-color)}.transport-grid span,.transport-grid small{display:block;color:var(--el-text-color-secondary);font-size:12px}.transport-grid strong{display:block;margin:5px 0;overflow-wrap:anywhere;font-size:15px;letter-spacing:0}@media(max-width:1000px){.transport-grid{grid-template-columns:repeat(2,minmax(180px,1fr))}}@media(max-width:620px){.transport-grid{grid-template-columns:1fr}}
+.ground-page{height:100%;max-height:100%;overflow:hidden}
+.ground-tabs{display:flex;flex:1;flex-direction:column;min-height:0;overflow:hidden}
+.ground-tabs :deep(.el-tabs__header){flex:none}
+.ground-tabs :deep(.el-tabs__content){flex:1;height:100%;min-height:0;overflow:hidden}
+.ground-tabs :deep(.el-tab-pane){height:100%;min-height:0;overflow:auto;overscroll-behavior:contain}
+.ground-tabs :deep(.el-tab-pane.log-console-pane){display:flex;overflow:hidden}
+.log-filter-grid{display:grid;grid-template-columns:repeat(6,minmax(120px,1fr));gap:8px;padding-bottom:8px}
+.log-filter-grid :deep(.el-input),.log-filter-grid :deep(.el-select),.log-filter-grid :deep(.el-date-editor){width:100%}
+.timeline-filter-grid{grid-template-columns:minmax(240px,2fr) minmax(160px,1fr) auto}
+.syslog-common-filters :deep(.el-date-editor){grid-column:span 2}
+.syslog-advanced-filters{padding:8px;background:var(--el-fill-color-extra-light);border:1px solid var(--el-border-color-lighter)}
+.syslog-failure{padding-bottom:8px}
+.syslog-bulk-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px;min-height:42px;padding:6px 0;border-top:1px solid var(--el-border-color-lighter)}
+.ping-query-error{margin-bottom:10px}
+.switch-with-description{display:flex;align-items:flex-start;gap:10px}.switch-with-description span{color:var(--el-text-color-secondary);font-size:12px;line-height:1.5}
+@media(max-width:1366px){.log-filter-grid{grid-template-columns:repeat(4,minmax(120px,1fr))}.syslog-common-filters :deep(.el-date-editor){grid-column:span 2}}
+@media(max-width:900px){.log-filter-grid{grid-template-columns:repeat(2,minmax(140px,1fr))}.timeline-filter-grid{grid-template-columns:1fr 1fr}.timeline-filter-grid .el-button{grid-column:span 2}}
 </style>

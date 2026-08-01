@@ -524,11 +524,34 @@ class GroundUnattendedSupervisor:
             return
         if run["state"] == "PAUSED" or run.get("paused"):
             self._poll_if_due(
-                run, self._active_profile or profile, now, scheduling_paused=True
+                run,
+                self._runtime_profile(profile),
+                now,
+                scheduling_paused=True,
             )
             return
         self._poll_if_due(
-            run, self._active_profile or profile, now, scheduling_paused=False
+            run,
+            self._runtime_profile(profile),
+            now,
+            scheduling_paused=False,
+        )
+
+    def _runtime_profile(
+        self, latest: GroundUnattendedProfileDTO
+    ) -> GroundUnattendedProfileDTO:
+        active = self._active_profile or latest
+        if (
+            active.ping_depot_trains_enabled
+            == latest.ping_depot_trains_enabled
+        ):
+            return active
+        return active.model_copy(
+            update={
+                "ping_depot_trains_enabled": (
+                    latest.ping_depot_trains_enabled
+                )
+            }
         )
 
     def _network_profile_error(
@@ -799,31 +822,19 @@ class GroundUnattendedSupervisor:
             trackers=trackers,
             stationary_exclusion_minutes=profile.stationary_exclusion_minutes,
             now=now,
+            ping_depot_trains_enabled=profile.ping_depot_trains_enabled,
         )
         fresh = False
         valid_ping_targets: dict[str, FleetPingTarget] = {}
+        config_check_targets: dict[str, FleetPingTarget] = {}
         for result in results:
             train = result.train
             policy = policies.get(train.train_id) or {}
-            train.priority = train.train_id in priorities
-            train.enabled = bool(policy.get("enabled", True))
-            train.scheduling_priority = int(policy.get("scheduling_priority") or 0)
-            train.deep_collection_enabled = bool(
-                policy.get("deep_collection_enabled", True)
+            self._apply_train_policy(
+                train,
+                policy,
+                priority=train.train_id in priorities,
             )
-            train.monitor_only = bool(policy.get("monitor_only", False))
-            train.remark = str(policy.get("remark") or "")
-            train.inventory_status = str(policy.get("inventory_status") or "ACTIVE")
-            if not train.enabled:
-                train.ping_eligible = False
-                train.deep_collection_eligible = False
-                train.exclusion_reason = "列车已在无人值守策略中停用"
-            elif train.monitor_only or not train.deep_collection_enabled:
-                train.deep_collection_eligible = False
-                train.exclusion_reason = (
-                    train.exclusion_reason
-                    or "当前策略仅执行基础监测，不进入深度采集"
-                )
             train.coverage_status = self._coverage_status_for_classification(
                 previous_rows.get(train.train_id), train
             )
@@ -866,7 +877,7 @@ class GroundUnattendedSupervisor:
             )
             if train.ping_eligible:
                 for endpoint in train.endpoints:
-                    if endpoint.online_status != "ONLINE" or not endpoint.management_ip:
+                    if not endpoint.ping_target_eligible:
                         continue
                     target = FleetPingTarget(
                         target_ip=endpoint.management_ip,
@@ -887,12 +898,24 @@ class GroundUnattendedSupervisor:
                         rssi=train.rssi,
                         same_ap_since=result.tracker.since,
                     )
+                    if target.target_ip in valid_ping_targets:
+                        self.repository.add_event(
+                            run_id=str(run["run_id"]),
+                            event_type="ping_target_duplicate_skipped",
+                            severity="warning",
+                            train_id=train.train_id,
+                            mr_id=endpoint.mr_id,
+                            title="重复长 Ping 目标已跳过",
+                            details={"target_ip": target.target_ip},
+                        )
+                        continue
                     valid_ping_targets[target.target_ip] = target
                     self._last_valid_ping_targets[target.target_ip] = (target, now)
-            fresh = fresh or train.eligibility_status in {
-                "MAINLINE",
-                "MAINLINE_STATIONARY",
-                "OFFLINE",
+                    if train.mainline_eligible:
+                        config_check_targets[target.target_ip] = target
+            fresh = fresh or train.eligibility_status not in {
+                "AC_STALE",
+                "AC_UNKNOWN",
             }
         grace_statuses = {"AC_STALE", "AC_UNKNOWN", "AP_UNMATCHED"}
         abnormal_trains = {
@@ -934,7 +957,7 @@ class GroundUnattendedSupervisor:
         self.syslog_receiver.update_ap_locations(
             self.base_query.list_ap_location_items(self.site_id)
         )
-        self._schedule_config_checks(run, profile, valid_ping_targets)
+        self._schedule_config_checks(run, profile, config_check_targets)
         current_trains = self.repository.list_train_runs(str(run["run_id"]))
         disk_free = shutil.disk_usage(
             self.paths.ground_unattended_root(self.site_id).parent
@@ -992,6 +1015,35 @@ class GroundUnattendedSupervisor:
         self.repository.update_run(
             str(run["run_id"]), summary_json=summary
         )
+
+    @staticmethod
+    def _apply_train_policy(train, policy, *, priority: bool) -> None:
+        train.priority = priority
+        train.enabled = bool(policy.get("enabled", True))
+        train.scheduling_priority = int(
+            policy.get("scheduling_priority") or 0
+        )
+        train.deep_collection_enabled = bool(
+            policy.get("deep_collection_enabled", True)
+        )
+        train.monitor_only = bool(policy.get("monitor_only", False))
+        train.remark = str(policy.get("remark") or "")
+        train.inventory_status = str(
+            policy.get("inventory_status") or "ACTIVE"
+        )
+        if not train.enabled:
+            train.mainline_eligible = False
+            train.ping_eligible = False
+            train.deep_collection_eligible = False
+            train.exclusion_reason = "列车已在无人值守策略中停用"
+            train.ping_inclusion_reason = ""
+            train.ping_exclusion_reason = "列车已在无人值守策略中停用"
+            train.deep_exclusion_reason = "列车已在无人值守策略中停用"
+        elif train.monitor_only or not train.deep_collection_enabled:
+            train.deep_collection_eligible = False
+            train.deep_exclusion_reason = (
+                "当前策略仅执行基础监测，不进入深度采集"
+            )
 
     @staticmethod
     def _coverage_status_for_classification(previous, train) -> str:

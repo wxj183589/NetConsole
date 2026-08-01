@@ -94,25 +94,71 @@ def _seed_lock_file(handle) -> None:
     handle.seek(0)
 
 
-def _acquire_os_lock(handle) -> None:
+def _acquire_os_lock(
+    handle,
+    timeout_seconds: float | None = None,
+) -> None:
+    deadline = (
+        time.monotonic() + max(0.0, float(timeout_seconds))
+        if timeout_seconds is not None
+        else None
+    )
     if os.name == "nt":
         import msvcrt
 
         handle.seek(0)
-        attempts = 50
-        for attempt in range(attempts):
+        mode = msvcrt.LK_NBLCK if deadline is not None else msvcrt.LK_LOCK
+        attempts = 50 if deadline is None else None
+        attempt = 0
+        while True:
             try:
-                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                msvcrt.locking(handle.fileno(), mode, 1)
             except OSError as exc:
-                if getattr(exc, "errno", None) == errno.EDEADLK and attempt < attempts - 1:
+                attempt += 1
+                retry_deadlock = (
+                    deadline is None
+                    and getattr(exc, "errno", None) == errno.EDEADLK
+                    and attempt < int(attempts or 0)
+                )
+                retry_busy = (
+                    deadline is not None
+                    and getattr(exc, "errno", None)
+                    in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}
+                    and time.monotonic() < deadline
+                )
+                if retry_deadlock:
                     time.sleep(0.002)
                     continue
+                if retry_busy:
+                    time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
+                    continue
+                if deadline is not None and getattr(exc, "errno", None) in {
+                    errno.EACCES,
+                    errno.EAGAIN,
+                    errno.EDEADLK,
+                }:
+                    raise TimeoutError("interprocess lock timeout") from exc
                 raise
             return
-        return
     import fcntl
 
-    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    if deadline is None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        return
+    while True:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except OSError as exc:
+            if (
+                getattr(exc, "errno", None) in {errno.EACCES, errno.EAGAIN}
+                and time.monotonic() < deadline
+            ):
+                time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
+                continue
+            if getattr(exc, "errno", None) in {errno.EACCES, errno.EAGAIN}:
+                raise TimeoutError("interprocess lock timeout") from exc
+            raise
 
 
 def _release_os_lock(handle) -> None:
@@ -128,12 +174,26 @@ def _release_os_lock(handle) -> None:
 
 
 @contextmanager
-def interprocess_file_lock(path: Path) -> Iterator[None]:
+def interprocess_file_lock(
+    path: Path,
+    *,
+    timeout_seconds: float | None = None,
+) -> Iterator[None]:
     lock_path = Path(path).resolve()
     lock_key = _canonical_lock_key(lock_path)
     state = _register_local_state(lock_key)
     local_lock = state.lock
-    local_lock.acquire()
+    started = time.monotonic()
+    if timeout_seconds is None:
+        local_lock.acquire()
+        local_acquired = True
+    else:
+        local_acquired = local_lock.acquire(
+            timeout=max(0.0, float(timeout_seconds))
+        )
+    if not local_acquired:
+        _unregister_local_state(lock_key, state)
+        raise TimeoutError("interprocess lock timeout")
     depths = _thread_depths()
     depth = int(depths.get(lock_key, 0))
     depths[lock_key] = depth + 1
@@ -141,7 +201,14 @@ def interprocess_file_lock(path: Path) -> Iterator[None]:
     try:
         handle = _os_lock_handle_for(state, lock_path)
         if depth == 0:
-            _acquire_os_lock(handle)
+            if timeout_seconds is None:
+                _acquire_os_lock(handle)
+            else:
+                remaining = max(
+                    0.0,
+                    float(timeout_seconds) - (time.monotonic() - started),
+                )
+                _acquire_os_lock(handle, remaining)
             os_locked = True
         try:
             yield

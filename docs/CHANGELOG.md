@@ -48,6 +48,16 @@
 
 ### 轨道交通地面无人值守
 
+- 修复 2026-07-29 真实长 Ping 查询的 DTO 500：内部 raw point 字段不再直接进入公开响应，Backend
+  生成 `run_id + target_ip` 稳定查询身份；目标 IP 唯一时不再被历史 MR UUID 漂移排除，冲突和身份
+  不一致返回结构化错误。首次成功后才增量，历史运行保持静态；失败展示 request ID、Backend 健康和
+  Registry/扫描/匹配诊断。
+- Syslog 新增选中、当前筛选和当前运行三种安全删除。删除先预览再输入运行日期/局点名确认，仅对已完成
+  run 的 CLOSED/RECOVERED/PENDING active NDJSON 创建一个 Job；活动/OPEN/READY/路径/锁/revision
+  异常全部阻断。文件使用 `.part + fsync + os.replace`，Registry/派生事件按 provenance 单事务更新并
+  写前后 revision 审计，READY ZIP 不可变。
+- 时间轴和 Syslog 改用公共 `NcLogWorkspace` 与 `NcDataTable.fillRemainingHeight`，表格填满剩余区域且
+  只有 table body 纵向滚动；时间轴增加精确服务端分页和搜索，Syslog 筛选分常用/高级两级。
 - 当前服务状态不再回退最近一次运行：无活动运行时按 Profile 返回“未启用/等待运行时段”，活动运行、
   最近运行、活动操作和最近终态操作分别查询；运行选择器统一驱动 Ping、Syslog、时间轴和深度采集。
 - 页面移除 5 秒全量刷新，改为按状态、操作、健康和活动页签独立轮询，增加防重入、请求取消、代次丢弃、
@@ -240,6 +250,16 @@
 
 ### 轨道交通地面无人值守
 
+- 无人值守资格拆分为 `mainline_eligible/ping_eligible/deep_collection_eligible`：车辆段、停车场和存车线
+  始终排除正线统计与深度采集，但可由默认关闭的 `ping_depot_trains_enabled` 在下一调度周期增量加入
+  CT/CW 长 Ping；运行中关闭会平滑移除目标并保留历史数据。`enabled=false` 取消全部任务，
+  `monitor_only/deep_collection_enabled=false` 不再误停 Ping，priority 只影响深采。场段 Ping 复用既有
+  fping 分片与 10 秒预热，不启动 iPerf、Online MR SSH 或 Syslog 配置下发；无人值守索引 schema 8
+  对历史列车运行按既有资格状态兼容回填位置和正线资格。
+- 轨旁 AP 新增统一位置类型与正线参与字段。新增、导入和无特殊证据的历史正式 AP 默认
+  `MAINLINE`，明确车辆段、停车场、存车线、出入段线、试车线和非正线保持特殊分类；迁移为加法、
+  幂等并在写入前备份数据库。无人值守位置身份只接受规范化 AP MAC、Radio/BSSID Registry MAC 或稳定
+  AP ID，AP 名称、alias 和站点文本不再把完全未匹配 AP 误判为正线。
 - AC Mesh-Link 轮询改为每台控制器一个 `ac_mesh_link_resident_poll` 常驻 Worker Task 和一个复用的
   SSH 会话；首次连接立即采集，间隔热更新不重连，连接异常在同一 Task 内有界退避重连，任务中心不再
   每约 10 秒新增一次性刷新记录，并展示轮询、失败、重连、心跳和最近快照健康状态。
@@ -263,7 +283,7 @@
 - 深度采集页复用生产调度器排序展示持久每日队列位置、当前调度优先级和选择原因；首次 AP 接入不再误记为切换，超出 AC/Ping 关联容差的丢包明确归为位置未知。
 - 每日 ZIP 补齐完整 Ping 汇总和固定目录契约，成员哈希改为流式校验；活动 run 的立即开始保持幂等，READY 归档重复调用保持幂等且同一运行日封账后拒绝再次启动，损坏归档且无 active 原始数据时保留现场文件。保留期按局点配置时区计算。
 - 无人值守设置新增 Windows 本机 IPv4 枚举、系统路由推荐和 UDP 端口占用检查，严格区分本机监听地址与 MR 日志回传地址；回传地址必须是当前本机单播地址，外部 NAT 只能经高级开关和二次确认保存，启动恢复也会重新校验。
-- 站点来源支持 `-/_/.、:空格` 编号分隔符和可审计的两位无分隔符批量推断，按“规范站名 + 节点类型 + 路径”匹配既有正式站点；预览公开解析可信度与匹配依据，同名异号、同号异名及顺序冲突不再静默合并。正线分类优先使用正式站点/区间排除车辆段、停车场和非主路径，再处理 AP 未匹配，并持久化 AP/Registry/Alias/站点级匹配证据。
+- 站点来源支持 `-/_/.、:空格` 编号分隔符和可审计的两位无分隔符批量推断，按“规范站名 + 节点类型 + 路径”匹配既有正式站点；预览公开解析可信度与匹配依据，同名异号、同号异名及顺序冲突不再静默合并。站点和区间继续提供已匹配 AP 的特殊区域证据，但不能替代 AP MAC/Registry/稳定 ID 完成位置身份匹配。
 - H3C 上电检查改为 `display clock -> display version -> display clock`，以设备时钟中点减 uptime 估算上电时间并保存时区、误差和重启原因；uptime 连续时 NTP 调时只记录 `CLOCK_JUMP`，解析失败明确标记 `LOCAL_FALLBACK`。
 - `display info-center` 解析并展示全部日志主机。其他 IP 目标始终保留；同 IP 端口不一致标记 `TARGET_PORT_CONFLICT` 且自动检查保持只读，只有单台 MR 二次确认才允许修改并记录高风险审计。配置指纹包含排序后的全部目标和当前 managed target。
 

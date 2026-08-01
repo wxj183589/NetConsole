@@ -27,6 +27,10 @@ from netconsole.models.api.ground_unattended import (
     GroundRawFilePageDTO,
     GroundRunPageDTO,
     GroundSyslogRecordPageDTO,
+    GroundSyslogDeleteAcceptedDTO,
+    GroundSyslogDeletePreviewDTO,
+    GroundSyslogDeletePreviewRequestDTO,
+    GroundSyslogDeleteRequestDTO,
     GroundSyslogTransportStatusDTO,
     GroundTrainPolicyUpdateDTO,
     GroundTimelinePageDTO,
@@ -275,56 +279,76 @@ def ping_summary(
 @router.get("/ping-series", response_model=GroundPingSeriesDTO)
 def ping_series(
     request: Request,
+    response: Response,
     run_id: str = Query(default="", max_length=100),
     train_id: str = Query(default="", max_length=100),
     mr_id: str = Query(default="", max_length=100),
     target_ip: str = Query(default="", max_length=100),
+    query_identity: str = Query(default="", max_length=1000),
     start_time: str = Query(default="", max_length=100),
     end_time: str = Query(default="", max_length=100),
     include_warmup: bool = False,
     max_points: int = Query(default=3000, ge=10, le=10_000),
 ) -> GroundPingSeriesDTO:
-    return _call(
-        lambda: _service(request).ping_series(
-            _site_id(request),
+    return _ping_query_call(
+        request,
+        response,
+        query_kind="INITIAL",
+        run_id=run_id,
+        train_id=train_id,
+        mr_id=mr_id,
+        target_ip=target_ip,
+        callback=lambda service, site_id: service.ping_series(
+            site_id,
             run_id=run_id,
             train_id=train_id,
             mr_id=mr_id,
             target_ip=target_ip,
+            query_identity=query_identity,
             start_time=start_time,
             end_time=end_time,
             include_warmup=include_warmup,
             max_points=max_points,
-        )
+        ),
     )
 
 
 @router.get("/ping-series/incremental", response_model=GroundPingSeriesDTO)
 def ping_series_incremental(
     request: Request,
+    response: Response,
     run_id: str = Query(min_length=1, max_length=100),
     train_id: str = Query(default="", max_length=100),
     mr_id: str = Query(default="", max_length=100),
     target_ip: str = Query(default="", max_length=100),
+    query_identity: str = Query(default="", max_length=1000),
     cursor: str = Query(default="", max_length=20_000),
     after_sequence: int | None = Query(default=None, ge=0),
     after_timestamp: str = Query(default="", max_length=100),
     include_warmup: bool = False,
     max_points: int = Query(default=200, ge=1, le=500),
 ) -> GroundPingSeriesDTO:
-    return _call(
-        lambda: _service(request).ping_series_incremental(
-            _site_id(request),
+    return _ping_query_call(
+        request,
+        response,
+        query_kind="INCREMENTAL",
+        run_id=run_id,
+        train_id=train_id,
+        mr_id=mr_id,
+        target_ip=target_ip,
+        callback=lambda service, site_id: service.ping_series_incremental(
+            site_id,
             run_id=run_id,
             train_id=train_id,
             mr_id=mr_id,
             target_ip=target_ip,
+            query_identity=query_identity,
             cursor=cursor,
             after_sequence=after_sequence,
             after_timestamp=after_timestamp,
             include_warmup=include_warmup,
             max_points=max_points,
-        )
+        ),
     )
 
 
@@ -335,6 +359,7 @@ def ping_samples(
     train_id: str = Query(default="", max_length=100),
     mr_id: str = Query(default="", max_length=100),
     target_ip: str = Query(default="", max_length=100),
+    query_identity: str = Query(default="", max_length=1000),
     start_time: str = Query(default="", max_length=100),
     end_time: str = Query(default="", max_length=100),
     include_warmup: bool = False,
@@ -348,6 +373,7 @@ def ping_samples(
             train_id=train_id,
             mr_id=mr_id,
             target_ip=target_ip,
+            query_identity=query_identity,
             start_time=start_time,
             end_time=end_time,
             include_warmup=include_warmup,
@@ -552,14 +578,48 @@ def syslog_records(
         ) from exc
 
 
+@router.post(
+    "/syslog-delete-preview",
+    response_model=GroundSyslogDeletePreviewDTO,
+)
+def preview_syslog_delete(
+    request: Request,
+    payload: GroundSyslogDeletePreviewRequestDTO,
+) -> GroundSyslogDeletePreviewDTO:
+    return _call(
+        lambda: _service(request).preview_syslog_delete(
+            _site_id(request),
+            payload,
+        )
+    )
+
+
+@router.post(
+    "/syslog-delete",
+    response_model=GroundSyslogDeleteAcceptedDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def submit_syslog_delete(
+    request: Request,
+    payload: GroundSyslogDeleteRequestDTO,
+) -> GroundSyslogDeleteAcceptedDTO:
+    return _call(
+        lambda: _service(request).submit_syslog_delete(
+            _site_id(request),
+            payload,
+        )
+    )
+
+
 @router.get("/timeline", response_model=GroundTimelinePageDTO)
 def timeline(
     request: Request,
     run_id: str = Query(default="", max_length=100),
     train_id: str = Query(default="", max_length=100),
     event_type: str = Query(default="", max_length=100),
-    limit: int = Query(default=200, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
+    query: str = Query(default="", max_length=500),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=500),
 ) -> GroundTimelinePageDTO:
     return _call(
         lambda: _service(request).timeline(
@@ -567,8 +627,9 @@ def timeline(
             run_id=run_id,
             train_id=train_id,
             event_type=event_type,
-            limit=limit,
-            offset=offset,
+            query=query,
+            page=page,
+            page_size=page_size,
         )
     )
 
@@ -718,6 +779,161 @@ def delete_archive(
             confirmed=payload.explicit_confirmation,
         )
     )
+
+
+def _ping_query_call(
+    request: Request,
+    response: Response,
+    *,
+    query_kind: str,
+    run_id: str,
+    train_id: str,
+    mr_id: str,
+    target_ip: str,
+    callback,
+) -> GroundPingSeriesDTO:
+    request_id = uuid.uuid4().hex
+    started = time.monotonic()
+    bound_service = getattr(
+        request.app.state,
+        "ground_unattended_application_service",
+        None,
+    )
+    site_id = str(getattr(bound_service, "site_id", "") or "")
+    base_detail = {
+        "request_id": request_id,
+        "query_kind": query_kind,
+        "site_id": site_id,
+        "run_id": run_id,
+        "train_id": train_id,
+        "mr_id": mr_id,
+        "target_ip": target_ip,
+    }
+    app_logger.log_info(
+        "GROUND_PING_QUERY_STARTED",
+        _syslog_log_detail(**base_detail),
+    )
+    try:
+        service = _service(request)
+        site_id = service.current_site_id()
+        result = callback(service, site_id)
+        diagnostics = result.diagnostics
+        diagnostics.request_id = request_id
+        response.headers["X-Request-ID"] = request_id
+        app_logger.log_info(
+            "GROUND_PING_QUERY_COMPLETED",
+            _syslog_log_detail(
+                **{
+                    **base_detail,
+                    "site_id": site_id,
+                    "resolved_train_ids": ",".join(
+                        diagnostics.resolved_train_ids
+                    ),
+                    "resolved_mr_ids": ",".join(
+                        diagnostics.resolved_mr_ids
+                    ),
+                    "files_considered": diagnostics.files_considered,
+                    "files_scanned": diagnostics.files_scanned,
+                    "records_scanned": diagnostics.records_scanned,
+                    "matched_count": result.raw_sample_count,
+                    "bytes_scanned": diagnostics.bytes_scanned,
+                    "source_kind": diagnostics.source_kind,
+                    "data_availability": diagnostics.data_availability,
+                    "no_data_reason": diagnostics.no_data_reason,
+                    "elapsed_ms": round(
+                        (time.monotonic() - started) * 1000,
+                        3,
+                    ),
+                }
+            ),
+        )
+        return result
+    except GroundUnattendedError as exc:
+        app_logger.log_error(
+            "GROUND_PING_QUERY_FAILED",
+            _syslog_log_detail(
+                **{
+                    **base_detail,
+                    "site_id": site_id,
+                    "elapsed_ms": round(
+                        (time.monotonic() - started) * 1000,
+                        3,
+                    ),
+                    "exception_type": type(exc).__name__,
+                    "failure_code": exc.code,
+                    "traceback": traceback.format_exc(),
+                }
+            ),
+        )
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={
+                "code": exc.code,
+                "message": exc.message,
+                "details": {"request_id": request_id},
+            },
+            headers={"X-Request-ID": request_id},
+        ) from exc
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        app_logger.log_error(
+            "GROUND_PING_QUERY_FAILED",
+            _syslog_log_detail(
+                **{
+                    **base_detail,
+                    "site_id": site_id,
+                    "elapsed_ms": round(
+                        (time.monotonic() - started) * 1000,
+                        3,
+                    ),
+                    "exception_type": type(exc).__name__,
+                    "failure_code": str(
+                        detail.get("code") or "GROUND_PING_UNAVAILABLE"
+                    ),
+                    "traceback": traceback.format_exc(),
+                }
+            ),
+        )
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={
+                "code": str(
+                    detail.get("code") or "GROUND_PING_UNAVAILABLE"
+                ),
+                "message": str(
+                    detail.get("message")
+                    or "长 Ping 查询服务暂时不可用"
+                ),
+                "details": {"request_id": request_id},
+            },
+            headers={"X-Request-ID": request_id},
+        ) from exc
+    except Exception as exc:
+        app_logger.log_error(
+            "GROUND_PING_QUERY_FAILED",
+            _syslog_log_detail(
+                **{
+                    **base_detail,
+                    "site_id": site_id,
+                    "elapsed_ms": round(
+                        (time.monotonic() - started) * 1000,
+                        3,
+                    ),
+                    "exception_type": type(exc).__name__,
+                    "failure_code": "GROUND_PING_QUERY_FAILED",
+                    "traceback": traceback.format_exc(),
+                }
+            ),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "GROUND_PING_QUERY_FAILED",
+                "message": "长 Ping 查询失败，请使用请求编号查看 Backend 日志",
+                "details": {"request_id": request_id},
+            },
+            headers={"X-Request-ID": request_id},
+        ) from exc
 
 
 def _call(callback):

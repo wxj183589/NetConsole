@@ -23,6 +23,7 @@ from netconsole.models.api.ground_unattended import (
     GroundDeepCollectionDTO,
     GroundDeepCollectionPageDTO,
     GroundPingSummaryPageDTO,
+    GroundPingSampleDTO,
     GroundPingSamplePageDTO,
     GroundPingSeriesDTO,
     GroundPingTargetDTO,
@@ -36,6 +37,10 @@ from netconsole.models.api.ground_unattended import (
     GroundSyslogHostDTO,
     GroundSyslogRecordDTO,
     GroundSyslogRecordPageDTO,
+    GroundSyslogDeleteAcceptedDTO,
+    GroundSyslogDeletePreviewDTO,
+    GroundSyslogDeletePreviewRequestDTO,
+    GroundSyslogDeleteRequestDTO,
     GroundSyslogTransportStatusDTO,
     GroundTrainPolicyUpdateDTO,
     GroundTimelineEventDTO,
@@ -58,9 +63,19 @@ from netconsole.services.ground_unattended.ap_resolver import (
     GroundApDisplayResolver,
 )
 from netconsole.services.ground_unattended.inventory import TrainInventorySyncService
+from netconsole.services.ground_unattended.identity import (
+    GroundIdentityResolutionError,
+)
 from netconsole.services.ground_unattended.raw_query import (
     GroundRawQueryError,
     GroundRawStreamQueryService,
+)
+from netconsole.services.ground_unattended.raw_deletion import (
+    GroundDeletionProcessPort,
+    GroundRawDataDeletionApplicationService,
+)
+from netconsole.services.ground_unattended.raw_lifecycle import (
+    GroundRawLifecycleError,
 )
 from netconsole.services.ground_unattended.schedule import schedule_window
 from netconsole.services.ground_unattended.supervisor import GroundUnattendedSupervisor
@@ -113,6 +128,7 @@ class GroundUnattendedApplicationService:
         base_query: RailTransitBaseDataQueryService | None = None,
         desktop_action_service: DesktopActionPort | None = None,
         network_service: SystemNetworkApplicationService | None = None,
+        process_adapter: GroundDeletionProcessPort | None = None,
     ) -> None:
         self.paths = paths
         self.site_id = site_id
@@ -122,6 +138,12 @@ class GroundUnattendedApplicationService:
         self.desktop_action_service = desktop_action_service
         self.network_service = network_service or SystemNetworkApplicationService()
         self.raw_query = GroundRawStreamQueryService(repository)
+        self.raw_deletion = GroundRawDataDeletionApplicationService(
+            repository,
+            process_adapter=process_adapter,
+            app_root=str(paths.app_root),
+            data_root=str(paths.data_root),
+        )
         self._ap_display_cache = GroundApDisplayResolver()
         self._ap_display_base_rows: list[Any] = []
         self._ap_display_resource_rows: list[Any] = []
@@ -268,6 +290,20 @@ class GroundUnattendedApplicationService:
             else None
         )
         latest_operation = self.repository.latest_terminal_operation()
+        eligible_ping_endpoints = [
+            (row, endpoint)
+            for row in trains
+            if row.get("ping_eligible")
+            for endpoint in row.get("endpoints", [])
+            if isinstance(endpoint, dict)
+            and (
+                bool(endpoint.get("ping_target_eligible"))
+                or (
+                    endpoint.get("online_status") == "ONLINE"
+                    and bool(endpoint.get("management_ip"))
+                )
+            )
+        ]
         return GroundUnattendedStatusDTO(
             site_id=site_id,
             enabled=profile.enabled,
@@ -291,18 +327,19 @@ class GroundUnattendedApplicationService:
             ac_last_updated_at=str(run.get("ac_last_updated_at") or ""),
             ac_freshness_status=str(run.get("ac_freshness_status") or "NO_DATA"),
             mainline_train_count=sum(
-                row.get("eligibility_status") in {"MAINLINE", "MAINLINE_STATIONARY"}
-                for row in trains
+                bool(row.get("mainline_eligible")) for row in trains
+            ),
+            mainline_ping_target_count=sum(
+                bool(row.get("mainline_eligible"))
+                for row, _endpoint in eligible_ping_endpoints
+            ),
+            depot_ping_target_count=sum(
+                str(row.get("location_class") or "")
+                in {"DEPOT", "PARKING_YARD", "STABLING"}
+                for row, _endpoint in eligible_ping_endpoints
             ),
             ping_target_count=self.supervisor.fleet_ping.target_count
-            or sum(
-                bool(endpoint.get("management_ip"))
-                and endpoint.get("online_status") == "ONLINE"
-                for row in trains
-                if row.get("ping_eligible")
-                for endpoint in row.get("endpoints", [])
-                if isinstance(endpoint, dict)
-            ),
+            or len(eligible_ping_endpoints),
             active_deep_train_count=sum(
                 row.get("coverage_status") == "COLLECTING" for row in trains
             ),
@@ -972,26 +1009,42 @@ class GroundUnattendedApplicationService:
             for train in self.repository.list_inventory(include_removed=True)
             for endpoint in train.get("endpoints", [])
         }
+        train_states = {
+            str(item.get("train_id") or ""): item
+            for item in (
+                self.repository.list_train_runs(str(run["run_id"]))
+                if run
+                else []
+            )
+        }
         for row in rows:
-            matching_files = [
-                item
-                for item in raw_files
-                if (
-                    not row.get("train_id")
-                    or str(item.get("train_id") or "")
-                    == str(row.get("train_id") or "")
+            train_state = train_states.get(str(row.get("train_id") or ""), {})
+            identity_error = ""
+            try:
+                identity = self.raw_query.identity_resolver.resolve_ping(
+                    run_id=str((run or {}).get("run_id") or ""),
+                    train_id=str(row.get("train_id") or ""),
+                    mr_id=str(row.get("mr_id") or ""),
+                    target_ip=str(row.get("target_ip") or ""),
                 )
-                and (
-                    not row.get("mr_id")
-                    or str(item.get("device_uuid") or "")
-                    == str(row.get("mr_id") or "")
-                )
-                and (
-                    not row.get("mr_position_code")
-                    or str(item.get("mr_role") or "")
-                    == str(row.get("mr_position_code") or "")
-                )
-            ]
+                matching_files = [
+                    item
+                    for item in raw_files
+                    if (
+                        not identity.registered_train_ids
+                        or str(item.get("train_id") or "")
+                        in identity.registered_train_ids
+                    )
+                    and (
+                        not identity.mr_roles
+                        or str(item.get("mr_role") or "").upper()
+                        in identity.mr_roles
+                    )
+                ]
+            except GroundIdentityResolutionError as exc:
+                identity = None
+                identity_error = exc.code
+                matching_files = []
             active_raw_count = sum(
                 self._registered_raw_file_exists(raw_root, item)
                 for item in matching_files
@@ -1021,12 +1074,62 @@ class GroundUnattendedApplicationService:
             )
             row.setdefault("run_id", str((run or {}).get("run_id") or ""))
             row.setdefault("run_date", str((run or {}).get("run_date") or ""))
+            row.setdefault(
+                "location_class",
+                str(train_state.get("location_class") or "UNKNOWN"),
+            )
+            row.setdefault(
+                "ping_inclusion_reason",
+                str(train_state.get("ping_inclusion_reason") or ""),
+            )
+            row.setdefault(
+                "mainline_eligible",
+                bool(train_state.get("mainline_eligible")),
+            )
+            row.setdefault(
+                "deep_collection_eligible",
+                bool(train_state.get("deep_collection_eligible")),
+            )
             row.setdefault("data_availability", target_availability)
             row.setdefault("data_source", target_source)
             row.setdefault("active_raw_file_count", active_raw_count)
             row.setdefault("archived_raw_file_count", archived_raw_count)
             row.setdefault("raw_file_available", bool(active_raw_count))
             row.setdefault("archive_available", bool(archived_raw_count))
+            row.setdefault("raw_file_count", len(matching_files))
+            row.setdefault(
+                "raw_record_count",
+                sum(
+                    max(0, int(item.get("record_count") or 0))
+                    for item in matching_files
+                ),
+            )
+            row.setdefault(
+                "raw_file_ids",
+                [
+                    str(item.get("file_id") or "")
+                    for item in matching_files
+                    if str(item.get("file_id") or "")
+                ],
+            )
+            row.setdefault("archive_id", str((archive or {}).get("archive_id") or ""))
+            row.setdefault("source_kind", target_source)
+            row.setdefault(
+                "availability_reason",
+                identity_error
+                or (
+                    ""
+                    if target_availability
+                    in {"ACTIVE_RAW", "ARCHIVED_RAW", "MIXED"}
+                    else "RAW_FILE_MISSING"
+                    if matching_files
+                    else "SUMMARY_ONLY"
+                ),
+            )
+            row.setdefault(
+                "query_identity",
+                identity.query_identity if identity is not None else "",
+            )
             starts = [
                 str(item.get("start_time") or "")
                 for item in matching_files
@@ -1073,12 +1176,20 @@ class GroundUnattendedApplicationService:
     ) -> GroundPingSeriesDTO:
         self._require_site(site_id)
         try:
-            return GroundPingSeriesDTO.model_validate(
-                self.raw_query.ping_series(**filters)
+            result = self.raw_query.ping_series(**filters)
+            result["points"] = self._project_ping_samples(
+                list(result.get("points") or [])
             )
+            return GroundPingSeriesDTO.model_validate(result)
         except GroundRawQueryError as exc:
             raise GroundUnattendedError(
-                "RAW_QUERY_REJECTED", str(exc), status_code=422
+                exc.code,
+                str(exc),
+                status_code=(
+                    409
+                    if exc.code == "PING_TARGET_IDENTITY_CONFLICT"
+                    else 422
+                ),
             ) from exc
 
     def ping_series_incremental(
@@ -1088,12 +1199,20 @@ class GroundUnattendedApplicationService:
     ) -> GroundPingSeriesDTO:
         self._require_site(site_id)
         try:
-            return GroundPingSeriesDTO.model_validate(
-                self.raw_query.ping_series_incremental(**filters)
+            result = self.raw_query.ping_series_incremental(**filters)
+            result["points"] = self._project_ping_samples(
+                list(result.get("points") or [])
             )
+            return GroundPingSeriesDTO.model_validate(result)
         except GroundRawQueryError as exc:
             raise GroundUnattendedError(
-                exc.code, str(exc), status_code=422
+                exc.code,
+                str(exc),
+                status_code=(
+                    409
+                    if exc.code == "PING_TARGET_IDENTITY_CONFLICT"
+                    else 422
+                ),
             ) from exc
 
     def ping_samples(
@@ -1103,13 +1222,33 @@ class GroundUnattendedApplicationService:
     ) -> GroundPingSamplePageDTO:
         self._require_site(site_id)
         try:
-            return GroundPingSamplePageDTO.model_validate(
-                self.raw_query.ping_samples(**filters)
+            result = self.raw_query.ping_samples(**filters)
+            result["items"] = self._project_ping_samples(
+                list(result.get("items") or [])
             )
+            return GroundPingSamplePageDTO.model_validate(result)
         except GroundRawQueryError as exc:
             raise GroundUnattendedError(
-                "RAW_QUERY_REJECTED", str(exc), status_code=422
+                exc.code,
+                str(exc),
+                status_code=(
+                    409
+                    if exc.code == "PING_TARGET_IDENTITY_CONFLICT"
+                    else 422
+                ),
             ) from exc
+
+    @staticmethod
+    def _project_ping_samples(
+        rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        fields = GroundPingSampleDTO.model_fields
+        return [
+            GroundPingSampleDTO.model_validate(
+                {key: value for key, value in row.items() if key in fields}
+            ).model_dump(mode="json")
+            for row in rows
+        ]
 
     def syslog_records(
         self,
@@ -1201,6 +1340,42 @@ class GroundUnattendedApplicationService:
                 exc.code, str(exc), status_code=422
             ) from exc
 
+    def preview_syslog_delete(
+        self,
+        site_id: str,
+        request: GroundSyslogDeletePreviewRequestDTO,
+    ) -> GroundSyslogDeletePreviewDTO:
+        self._require_site(site_id)
+        try:
+            return self.raw_deletion.preview(request)
+        except GroundRawLifecycleError as exc:
+            raise GroundUnattendedError(
+                exc.code,
+                str(exc),
+                status_code=409,
+            ) from exc
+
+    def submit_syslog_delete(
+        self,
+        site_id: str,
+        request: GroundSyslogDeleteRequestDTO,
+    ) -> GroundSyslogDeleteAcceptedDTO:
+        self._require_site(site_id)
+        try:
+            return self.raw_deletion.submit(request)
+        except GroundRawLifecycleError as exc:
+            raise GroundUnattendedError(
+                exc.code,
+                str(exc),
+                status_code=(
+                    410
+                    if exc.code == "DELETE_PREVIEW_EXPIRED"
+                    else 503
+                    if exc.code == "JOB_CENTER_UNAVAILABLE"
+                    else 409
+                ),
+            ) from exc
+
     def deep_collections(
         self, site_id: str, *, run_id: str = ""
     ) -> GroundDeepCollectionPageDTO:
@@ -1289,17 +1464,22 @@ class GroundUnattendedApplicationService:
         *,
         train_id: str = "",
         event_type: str = "",
+        query: str = "",
         run_id: str = "",
-        limit: int = 200,
-        offset: int = 0,
+        page: int = 1,
+        page_size: int = 100,
     ) -> GroundTimelinePageDTO:
+        page = max(1, int(page))
+        page_size = max(1, min(int(page_size), 500))
+        offset = (page - 1) * page_size
         run = self._resolve_run(run_id)
         rows = (
             self.repository.list_events(
                 str(run["run_id"]),
                 train_id=train_id,
                 event_type=event_type,
-                limit=limit,
+                query=query,
+                limit=page_size,
                 offset=offset,
             )
             if run
@@ -1450,10 +1630,16 @@ class GroundUnattendedApplicationService:
         return GroundTimelinePageDTO(
             items=items,
             total=self.repository.count_events(
-                str(run["run_id"]), train_id=train_id, event_type=event_type
+                str(run["run_id"]),
+                train_id=train_id,
+                event_type=event_type,
+                query=query,
             )
             if run
             else 0,
+            page=page,
+            page_size=page_size,
+            total_exact=True,
         )
 
     def operation(

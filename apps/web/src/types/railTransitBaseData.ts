@@ -449,6 +449,8 @@ export interface MeshRadio {
   bssid: string
 }
 
+export type TracksideApLocationClass = 'MAINLINE' | 'DEPOT' | 'PARKING_YARD' | 'STABLING' | 'DEPOT_CONNECTION' | 'TEST_TRACK' | 'NON_MAINLINE' | 'UNKNOWN'
+
 export interface TracksideAp {
   id: string
   site_id: string
@@ -469,6 +471,10 @@ export interface TracksideAp {
   line_side_derivation_issue_code: string
   line_side_derivation_issue_message: string
   direction: string
+  location_class: TracksideApLocationClass
+  participates_in_mainline: boolean
+  location_class_source: string
+  location_class_conflict: boolean
   radios: MeshRadio[]
   remark: string
   source_file: string

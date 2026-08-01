@@ -18,7 +18,10 @@ import { ApiRequestError } from './client'
 import {
   getGroundPingSeriesIncremental,
   getGroundSyslogTransportStatus,
+  listGroundTimeline,
+  previewGroundSyslogDelete,
   probeGroundSyslogTransportState,
+  submitGroundSyslogDelete,
 } from './groundUnattended'
 
 describe('ground unattended Syslog failure classification', () => {
@@ -117,6 +120,7 @@ describe('ground unattended Syslog failure classification', () => {
       train_id: '列车07',
       mr_id: 'mr-ct',
       target_ip: '10.122.7.249',
+      query_identity: 'gpq1.stable-target',
       cursor: 'cursor-1',
       max_points: 200,
     })
@@ -128,6 +132,76 @@ describe('ground unattended Syslog failure classification', () => {
     )
     expect(String(client.apiRequest.mock.calls[1][0])).toContain('/ping-series/incremental?')
     expect(String(client.apiRequest.mock.calls[1][0])).toContain('cursor=cursor-1')
+    expect(String(client.apiRequest.mock.calls[1][0])).toContain('query_identity=gpq1.stable-target')
     expect(String(client.apiRequest.mock.calls[1][0])).toContain('max_points=200')
+  })
+
+  it('posts deletion preview and confirmation as one scoped operation', async () => {
+    client.apiRequest.mockResolvedValue({})
+    const preview = {
+      run_id: 'run-1',
+      mode: 'SELECTED' as const,
+      record_keys: [{
+        raw_file_id: 'raw-1',
+        global_receive_sequence: 9,
+        source_receive_sequence: 3,
+        raw_line_number: 12,
+      }],
+      include_derived_events: true,
+    }
+
+    await previewGroundSyslogDelete(preview)
+    await submitGroundSyslogDelete({
+      preview_token: 'preview-token-with-safe-length',
+      explicit_confirmation: true,
+      confirmation_text: 'DELETE 2026-07-29',
+      include_derived_events: true,
+    })
+
+    expect(client.apiRequest).toHaveBeenNthCalledWith(
+      1,
+      '/api/rail-transit/ground-unattended/syslog-delete-preview',
+      {
+        method: 'POST',
+        body: JSON.stringify({ ...preview, filters: {} }),
+      },
+    )
+    expect(client.apiRequest).toHaveBeenNthCalledWith(
+      2,
+      '/api/rail-transit/ground-unattended/syslog-delete',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          preview_token: 'preview-token-with-safe-length',
+          explicit_confirmation: true,
+          confirmation_text: 'DELETE 2026-07-29',
+          include_derived_events: true,
+        }),
+      },
+    )
+  })
+
+  it('requests timeline search with exact server pagination', async () => {
+    client.apiRequest.mockResolvedValue({})
+
+    await listGroundTimeline(
+      '_03',
+      'mesh_linkup',
+      'run-1',
+      { signal: new AbortController().signal },
+      3,
+      100,
+      'AP01',
+    )
+
+    const [url, options] = client.apiRequest.mock.calls[0]
+    expect(String(url)).toContain('/timeline?')
+    expect(String(url)).toContain('train_id=_03')
+    expect(String(url)).toContain('event_type=mesh_linkup')
+    expect(String(url)).toContain('run_id=run-1')
+    expect(String(url)).toContain('query=AP01')
+    expect(String(url)).toContain('page=3')
+    expect(String(url)).toContain('page_size=100')
+    expect(options).toEqual(expect.objectContaining({ signal: expect.any(AbortSignal) }))
   })
 })

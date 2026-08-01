@@ -47,6 +47,12 @@ from netconsole.services.rail_transit.ap_management_vlan_planning import (
 )
 from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.services.ap_identity import ApIdentityQueryService
+from netconsole.services.rail_transit.trackside_ap_location import (
+    default_participates_in_mainline,
+    normalize_location_class,
+    parse_participates_in_mainline,
+    validate_location_participation,
+)
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.base_data_write_guard import BaseDataWriteGuard, BaseDataWriteGuardError
 from netconsole.services.rail_transit.ap_line_side_service import (
@@ -894,6 +900,37 @@ class RailTransitBaseDataApplicationService:
             "ap_mac_display": mac.display or mac.raw,
             "remark": str(raw.get("remark") or "").strip(),
         }
+        if action == "create" or any(
+            field in raw
+            for field in (
+                "location_class",
+                "participates_in_mainline",
+                "location_class_source",
+            )
+        ):
+            location_class = normalize_location_class(
+                raw.get("location_class")
+            )
+            participates = parse_participates_in_mainline(
+                raw.get("participates_in_mainline"),
+                default=default_participates_in_mainline(location_class),
+            )
+            validate_location_participation(location_class, participates)
+            source = str(
+                raw.get("location_class_source")
+                or (
+                    "DEFAULT_MAINLINE"
+                    if location_class == "MAINLINE"
+                    else "MANUAL_EXPLICIT"
+                )
+            ).strip().upper()
+            values.update(
+                {
+                    "location_class": location_class,
+                    "participates_in_mainline": participates,
+                    "location_class_source": source,
+                }
+            )
         for field_name in (
             "system_type",
             "network_domain",

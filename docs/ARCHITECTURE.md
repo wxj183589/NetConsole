@@ -46,6 +46,12 @@ Vue 标准业务表格通过 `apps/web/src/components/table/NcDataTable.vue` 和
 
 预计超过 300ms 的网络、磁盘、解析、批量和 CPU 工作进入 Job Center。`TaskApplicationService/TaskRuntime` 维护七状态、JSONL 事件、协作取消和 `tasks.db`；`LocalProcessAdapter` 负责 Worker 进程和 Windows 进程树回收。所有正式导出进入独立 Export Process，先写临时文件，成功后原子替换。
 
+原始业务数据的破坏性生命周期操作遵循
+`Vue -> API -> ApplicationService -> Raw Data Lifecycle Service -> Repository/File Adapter`。
+Router 不接触 SQL、物理路径或文件 API；Application Service 负责 preview token、确认、审计和 Job 投递；
+Lifecycle Service 负责锁、revision、原子重写和回滚；Repository 在单事务中更新 Registry 与 provenance
+派生记录。地面无人值守 Syslog 是首个接入场景，READY 归档保持不可变。
+
 页面关闭不等于停止任务。任务取消、重试、Artifact 下载和打开能力必须由任务 owner 明确授权，不能由前端伪造状态。
 
 ## 全局主题运行链

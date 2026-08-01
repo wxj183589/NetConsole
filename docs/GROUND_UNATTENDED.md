@@ -12,8 +12,10 @@
 Vue 独立页面
   -> /api/rail-transit/ground-unattended
   -> GroundUnattendedApplicationService
-  -> GroundUnattendedSupervisor（FastAPI lifespan）
-  -> AC/基础资料/Online MR/fping/Repository
+  -> Identity / Raw Query / Raw Data Lifecycle Service
+  -> GroundUnattendedRepository / 受管文件 Adapter
+  -> GroundUnattendedSupervisor（FastAPI lifespan，运行态编排）
+  -> AC/基础资料/Online MR/fping
 ```
 
 页面卸载只停止 Renderer 增量轮询。Electron 主窗口隐藏到通知区域时 Backend、AC 常驻轮询、全车长
@@ -41,10 +43,12 @@ Renderer 初次加载状态、运行列表、必要配置和当前页签；之�
 取消请求、定时器和图表资源。活动长 Ping 浮窗另按约 1.8 秒调用增量接口，每次最多读取 200 个新点；
 页面隐藏、用户暂停或历史运行不会继续轮询，恢复后使用原游标补拉缺失样本。
 
-正线车辆、长 Ping、深度采集、时间轴、Syslog 和历史归档表统一按容器顶部、视口高度、行高和行数计算
-最大高度。少量行按真实内容结束，超过 18 行（长 Ping 为 20 行）后表体内部滚动；时间轴和 Syslog 空态
-主体固定为 190px，包含表格边框和表头的完整区域约为 231px。工具栏、统计条和分页保持紧邻表格，页签不再用固定
-`height: clamp(...)` 或 `100vh` 撑出空白；设置页继续使用正常纵向页面滚动。
+普通资料表继续使用 `NcDataTable.autoHeight`。时间轴和 Syslog 属于日志控制台，统一使用
+`NcLogWorkspace + NcDataTable.fillRemainingHeight`：筛选、诊断、批量动作和分页固定占用自身高度，表格
+区域使用 `flex: 1; min-height: 0` 填满余下空间，唯一主纵向滚动区为 `el-table` body。日志页不再叠加
+`autoHeight/maxHeight/flex:1` 三套高度策略，也不硬编码单一分辨率高度。时间轴通过服务端
+`page/page_size/query` 返回精确总数，默认每页 100；Syslog 常用筛选常驻，高级筛选折叠并显示条件数量。
+设置页和其他普通内容页继续使用正常纵向页面滚动。
 
 ## 配置和时间窗口
 
@@ -53,6 +57,8 @@ Renderer 初次加载状态、运行列表、必要配置和当前页签；之�
 - `schedule_start_time=07:00`、`schedule_end_time=23:00`、`timezone=Asia/Shanghai`；
 - AC 轮询 10 秒，同 AP 静止阈值 10 分钟，AC 异常 Ping 宽限 120 秒；
 - Ping 间隔 1000 ms、超时 4000 ms、包大小 64、每分片 12 个目标，每个目标激活后预热 10 秒；
+- `ping_depot_trains_enabled=false`；默认不为车辆段、停车场或存车线列车增加 Ping 目标，避免升级后
+  自动扩大目标范围；
 - 最多 2 辆活动列车、4 台活动 MR、2 台启动中 MR、2 台最终化 MR；
 - `deep_collection_master_enabled=true`；关闭后进入轻量监测模式，只保留 AC、Fleet Ping、
   UDP Syslog、WMESH 解析、位置判断和时间关联，不再启动新的 SSH 深度 MR 采集，已运行任务安全收尾；
@@ -76,8 +82,9 @@ Renderer 初次加载状态、运行列表、必要配置和当前页签；之�
 
 开始和结束时间不能相同，支持 `22:00-06:00` 跨午夜窗口，运行日期取窗口开始日期。运行中保存
 配置不会重启当前 fping 或 SSH 任务；`ac_poll_interval_seconds` 通过 Poller 控制文件热更新，
-下一轮即使用新间隔且不重新登录 AC，其他配置从下一次调度周期生效。状态接口同时返回下一次开始和
-结束时间。
+下一轮即使用新间隔且不重新登录 AC。`ping_depot_trains_enabled` 也在下一调度周期热更新：
+`false -> true` 增量加入符合条件的场段 CT/CW，`true -> false` 平滑移除场段目标并保留已写入的
+Ping 原始文件和汇总。其他配置保持当前 run 的既有冻结语义。状态接口同时返回下一次开始和结束时间。
 
 首次运行前，“正线车辆”接口会从当前局点轨道交通基础资料聚合列车及 CT/CW 端点，因此无需先创建
 无人值守 run 即可设置置顶。基础资料候选只表示“等待 AC 状态”，不会提前伪造正线资格或在线状态。
@@ -89,20 +96,35 @@ Renderer 初次加载状态、运行列表、必要配置和当前页签；之�
 - `main_path_code`；
 - 站点 `node_type/path_code/participates_in_direction/track_facilities`；
 - 区间 `section_kind/path_code`；
-- 轨旁 AP 的稳定 ID、规范化 MAC、唯一精确名称、站点、区间和结构化 metadata；
+- 轨旁 AP 的稳定 ID、规范化 MAC、位置类型、站点、区间和结构化 metadata；
 - `AcMeshLinkQueryService` 的 fresh/online、当前 AP 和本机接收时间。
 
-位置解析分别保存原始 AP、解析后 AP、规范站点、匹配依据和
-`AP_EXACT/AP_REGISTRY/AP_ALIAS/STATION_EXACT/STATION_ALIAS/UNMATCHED` 等级。AP 只按稳定 ID、
-规范化 MAC、Radio/BSSID Registry、唯一精确名称或基础资料中明确保存的 alias 匹配，不使用模糊名称。
-若 AP 未匹配但 AC 站点可与正式站点或来源别名匹配，先按站点判断车辆段、停车场、存车线、非主路径和
-方向参与状态，再决定正线资格，不能先误判为 `AP_UNMATCHED`。正式站点精确匹配可继续正线 Ping 和深采；
-来源别名匹配只继续 Ping，待 AP 或正式站点精确确认后才启动深采。`UNKNOWN/STALE`、查询失败或 AP/站点
-均无法匹配不会伪装为入段；这些状态暂停新深采，已有深采保持运行，已有 Ping 在
-`ac_stale_grace_seconds` 内继续。
+位置解析分别保存原始 AP、解析后 AP、规范站点和匹配依据。AP 身份结论只有
+`AP_EXACT/AP_REGISTRY/UNMATCHED`；`STATION_EXACT/STATION_ALIAS` 仅保留为站点文本诊断，不能授予
+正线、Ping 或深采资格。身份匹配顺序为规范化 AP MAC、Radio/BSSID Registry MAC、稳定 AP ID；
+AP 名称、显示别名和站点名称都不参与位置身份匹配。AC 上报的 AP MAC 完全未匹配轨旁 AP 资料时必须
+返回 `UNKNOWN/AP_UNMATCHED`，即使名称或站点文本看起来属于正线或场段也不能获得资格。
+
+已匹配的正式轨旁 AP 使用统一 `location_class`。AP 明确标记为
+`DEPOT/PARKING_YARD/STABLING/DEPOT_CONNECTION/TEST_TRACK/NON_MAINLINE` 时按该特殊位置处理；
+历史记录缺少 `location_class` 且没有特殊区域证据时兼容为 `MAINLINE`。这条默认值仅适用于已经匹配的
+轨旁 AP，不得扩展到未匹配 MAC。特殊位置与 `participates_in_mainline=true` 的冲突会在基础资料保存时
+阻断，历史冲突只读可见并保持失败关闭。
+
+分类结果不再用单一 `eligibility_status` 同时控制全部业务，而是独立返回：
+
+- `mainline_eligible`：只控制正线车辆数量和覆盖率；
+- `ping_eligible`：只控制 CT/CW 长 Ping 目标；
+- `deep_collection_eligible`：只控制新的 Online MR SSH 深度采集。
+
+正线 AP 对应列车计入正线并允许 Ping，深采继续受全局和单列车策略控制。车辆段、停车场和存车线列车
+永不计入正线、永不深采；仅在 `ping_depot_trains_enabled=true` 时允许长 Ping。出入段线、试车线和
+其他非正线目前不受该开关放行。`UNKNOWN/STALE`、查询失败和离线状态不启动新目标；已有 Ping 仍按
+AC/离线宽限和下一轮调度平滑退出。
 
 同一正线 AP 达到 `stationary_exclusion_minutes` 后返回 `MAINLINE_STATIONARY`：长 Ping 保持，
 不启动新深采，已有自动深采走正常停止和既有最终化；AP 改变后计时清零并恢复深采资格。
+存车线或其他位置切换也不会在分类瞬间直接杀死 Worker，目标增删统一交给下一调度周期处理。
 
 ## AC 轮询与长 Ping
 
@@ -133,6 +155,16 @@ Poller 时，AC 管理或列车在线的“立即刷新”只写入立即轮询�
 不可用时，每个分片降级为一个有界单目标轮询进程，不会为每台 MR 无上限创建进程；页面和事件表会
 显示降级警告。
 
+目标生成按列车策略和端点事实逐项执行：`enabled=false` 取消全部资格；`monitor_only=true` 或
+`deep_collection_enabled=false` 只取消深采，不影响 Ping；`priority` 只影响深采排序。CT、CW 分别按
+在线状态和有效管理 IP 建立独立目标，缺少或非法 IP 返回明确原因；相同 `target_ip` 在同一目标集只加入
+一次。场段 Ping 复用同一 `FleetPingSupervisor`、分片和 10 秒预热规则，不启动 iPerf、Online MR SSH
+或 MR Syslog 配置下发，也不影响 AC 常驻会话。
+
+运行概览分别返回 `mainline_ping_target_count`、`depot_ping_target_count` 和 `ping_target_count`；
+列车/Ping 列表显示位置类型、Ping 纳入原因、是否正线和深采状态。场段目标只出现在长 Ping 视图，
+不能伪装为正线车辆。
+
 Ping 样本使用毫秒时间戳，按小时写入 `fleet_ping/*.jsonl`。索引库只保存分段元数据和 1 分钟、
 5 分钟、AC 轮询窗口、AP 停留段、每日 MR/列车汇总。首次获得 AP 只建立当前位置基线，不伪装成
 一次 AP 切换；后续真实 AP identity 变化才建立切换前后窗口。`GroundUnattendedTimelineCorrelator`
@@ -159,6 +191,17 @@ ECharts、`ResizeObserver`、pointer/resize/visibility 监听和请求资源。
 文件字节偏移增量读取，单次最多 200 点，服务端硬上限 500。前端按 `sample_id` 或
 `target_ip + timestamp + sequence` 去重，按时间和序号重排，并维护 3000/10000 点环形缓存；丢包与
 AP 切换标记优先保留。用户缩放后停止跟随最新，“回到实时”恢复滚动；ECharts 实例不因每批数据重建。
+
+Ping 汇总同时返回 Backend 生成的 `query_identity`，其稳定身份为 `run_id + target_ip`。首次和增量查询
+优先使用该身份；`target_ip` 在同一 run 内唯一时作为目标级强身份，历史 `train_id/mr_id/device_uuid`
+别名只用于解析和诊断，不能再把目标 IP 已精确命中的样本排除。同一 run 内目标 IP 冲突明确返回
+`PING_TARGET_IDENTITY_CONFLICT`，查询身份与参数不一致返回 `PING_IDENTITY_MISMATCH`。
+
+2026-07-29 现场故障并非 ECharts 或 Backend 进程退出：原始点查询已经命中，但 raw point 中的
+`site_id/automation_run_id/device_uuid/backend/raw_file_id` 等内部字段直接进入
+`GroundPingSeriesDTO`，触发数千条 `extra_forbidden` 校验错误并返回 500。Application Service 现逐点
+显式投影 `GroundPingSampleDTO`；Router 记录 `GROUND_PING_QUERY_STARTED/COMPLETED/FAILED`、
+`request_id`、扫描/Registry/匹配量和完整 traceback，未知错误仍返回稳定 500 且不泄露物理路径。
 
 后端先按 `run_id/data_type/train_id/device_uuid/mr_role/start_time/end_time` 在 Repository 预筛文件，
 再逐行读取并优先保留丢包点。Ping 原始查询沿用最多 256 个文件、1,000,000 条扫描记录、256 MiB
@@ -195,6 +238,20 @@ CLOSED/RECOVERED 和 READY ZIP 中的真实接收内容。当前运行默认最�
 时段；每页默认 100、最多 500，支持列车、MR、CT/CW、来源 IP、设备系统名、facility、级别、身份状态、
 WMESH 事件、AP、关键字和 ACTIVE/ARCHIVE 来源过滤。表格填充剩余视口并内部滚动，行详情展示完整原文、
 接收序号、原始文件/行号、归档成员、设备/接收时间、时钟差、身份和解析字段。
+
+已完成运行的 active Syslog 支持 `SELECTED/FILTERED/RUN_ALL` 三种服务端删除范围。页面只提交稳定记录
+身份或筛选条件，先调用 `/syslog-delete-preview` 取得匹配数量、影响文件/派生事件、revision、阻断原因
+和短期 token，再要求输入 `DELETE <run_date>` 或当前局点名；确认后只创建一个
+`ground_syslog_delete` Job。活动/ERROR/停止/最终化/归档 run、OPEN 文件、READY/校验/下载归档、路径
+不安全、文件缺失、锁超时和 revision 变化均阻断。READY ZIP 永不做记录级改写，只能使用既有整包归档
+删除入口。
+
+`GroundRawDataLifecycleService` 只对 Registry 登记且位于当前局点根内的
+`CLOSED/RECOVERED/PENDING` NDJSON 工作：同目录写受控 `.part`，flush/fsync 后重算行数、大小、
+SHA-256、起止时间，再用 `os.replace` 原子替换并在单一 SQLite 事务中更新 revision 和 provenance
+派生数据。Registry 事务失败时由同目录备份恢复原文件；损坏单行原样保留。默认删除对应 WMESH 与
+Syslog 时间轴事件；取消该选项时保留事件并标记 `source_deleted=true`。操作审计保存范围、数量、
+前后 revision、阶段、任务号和失败码，不保存原始报文或凭据。
 
 新 Syslog NDJSON 在写入时携带 WMESH 解析和 AP 展示字段。旧记录缺字段时在查询内存中只读重解析并标记
 `display_enriched=true`，不会回写原始文件。查询仅解析 Repository 已登记且位于当前无人值守数据根内
@@ -241,10 +298,11 @@ IP/端口，保留其他 IP 的外部目标，不执行 `undo`。当前现场 H3
 详情中明确二次确认后才允许改端口，并写入高风险授权与执行审计。配置指纹包含排序后的全部 loghost 和
 当前 managed target，因此设备输出顺序变化不产生伪变更。
 
-`ground_unattended` 索引库的 additive schema v6 包含列车清单/端点绑定/策略、boot session、Syslog
+`ground_unattended` 索引库的 additive schema v7 包含列车清单/端点绑定/策略、boot session、Syslog
 配置审计、WMESH 事件、原始文件索引、Ping 丢包区间和健康事件表；新增 Profile 外部地址确认字段，以及
 Boot Session 的前后设备时钟、估算误差、重启原因、设备时区、UTC offset、时间质量和时钟跳变证据。
-本轮新增深采总开关、Ping 预热字段、目标激活表和运行控制操作表；旧 `system` 或空时区迁移为
+本轮新增深采总开关、Ping 预热字段、目标激活表、运行控制操作表、raw file `revision` 和
+`ground_unattended_delete_operations` 删除审计表；旧 `system` 或空时区迁移为
 `Asia/Shanghai`，其他显式 IANA 时区保持不变。启动迁移为幂等加列与
 `CREATE TABLE IF NOT EXISTS`，不重建既有局点数据库。
 
@@ -378,10 +436,15 @@ ZIP 失败保留、Repository 故障隔离、API 空态和前端七页签。第�
 多 MR UDP 分流与未知来源隔离、设备时钟中点减 uptime、NTP 跳变保持 Session、本机地址校验、多 loghost
 解析、历史 Syslog 分页、活动/最近操作分离、READY ZIP/混合来源查询、ZIP 路径/CRC/压缩比防护、时间轴
 AP 展示、持久化停止操作、同 IP 端口冲突只读保护，以及不执行 `save/undo` 的 Syslog Profile。
+场段 Ping 回归另覆盖开关默认值与持久化、运行期仅热更新该开关、车辆段/停车场/存车线三类位置、
+正线/场段/未知三资格矩阵、CT/CW 独立在线和管理地址、单列车策略边界，以及 AP 名称和站点诊断不得
+替代规范化 AP MAC 身份。
 规模门覆盖 50,000 条 READY ZIP Ping、500,000 条 active Ping、100,000 条 Syslog、36 台 MR/30 天
 Registry；前端假时钟覆盖 30 分钟页面轮询、10 分钟 Syslog 自动刷新和 100 次图表开关。
-本轮另覆盖表格少量/空态/超限高度、非模态浮窗拖动与八向缩放、位置恢复、单窗口目标复用、3000 点
-环形缓存、重复与乱序增量样本、Windows 只读 UDP endpoint 检查，以及 Receiver 自身监听不误判占用。
+本轮另覆盖 `NcLogWorkspace`、日志表格填充剩余高度、时间轴服务端分页、非模态浮窗拖动与八向缩放、
+位置恢复、单窗口目标复用、3000 点环形缓存、重复与乱序增量样本、Windows 只读 UDP endpoint 检查，
+以及 Receiver 自身监听不误判占用。Syslog 删除测试覆盖选中/筛选/运行范围、活动/OPEN/READY 阻断、
+路径穿越、锁超时、revision 冲突、原子重写/回滚、损坏行保留、派生 provenance 与 Job 审计。
 
 Syslog 列表使用独立交互预算：最多 128 个候选文件、250,000 条记录、128MB 和 8 秒。无记录级筛选的
 首屏按 Registry 结束时间从新到旧读取；当已取得所需页且下一个文件可证明更旧时提前结束，返回
@@ -412,13 +475,23 @@ Boot Session 进入 `LOG_ACTIVE`，停止后原始文件已关闭登记。该结
 形式，轨旁基础资料虽有点位编号但没有 AP/Radio MAC，因此本次只验证到唯一物理 AP；工程点位名称仍需
 导入可信的 MAC 映射后验收。
 
-2026-07-29 活动运行的只读核对还确认了另一类空曲线根因：页面列车身份为“列车07”，原始文件 Registry
-保存为 `_07`，逐包 OPEN NDJSON 实际存在且可读取，并非真正的 `SUMMARY_ONLY`。查询现已在文件预筛和
-记录匹配两层复用列车身份规范化；该样本恢复为 `ACTIVE_RAW`，419 条原始记录中 409 条有效、27 条
-丢包可形成真实曲线。该核对未修改 Profile、SQLite、NDJSON 或 ZIP，也未启动无人值守或 UDP Receiver。
+2026-07-29 已完成运行的真实根只读核对确认：原请求实际命中原始点，DTO 对内部字段执行
+`extra_forbidden` 才是 500 的直接原因；请求前后 Backend PID 未变化。隔离副本修复后，
+列车03-CW/`10.122.3.250` 返回 420 条原始、410 条有效、0 条丢包，平均 RTT 约 43.162 ms；
+列车07-CT/`10.122.7.249` 返回 419/409 条、27 条丢包，平均约 46.411 ms；
+列车11-CW/`10.122.11.250` 返回 407/397 条、110 条丢包，平均约 50.030 ms。故意传入历史错误 MR UUID
+时列车03-CW 仍由稳定目标身份返回相同结果。该核对未修改真实 Profile、SQLite、NDJSON 或 ZIP，也未
+启动无人值守或 UDP Receiver；正式 Syslog 删除只在隔离副本执行。
+
+同一来源复制到 `D:\NetConsoleTestData\ground-ping-log-layout-20260731-a1` 后，选中
+`raw_41c8...` 的第 4 行完成一次正式删除：preview 命中 1 条原始记录、1 个 WMESH 和 1 个 Syslog
+时间轴事件；Job 完成后文件记录数 264→263、revision 0→1，SHA-256/大小与 Registry 一致，
+`integrity_check=ok`，4 个运行生命周期事件保留且无 `.part/.bak` 残留。真实根仅通过 SQLite
+`mode=ro&immutable=1` 执行相同 preview；前后真实 index/NDJSON 的 SHA-256、大小和修改时间完全一致。
 
 以下仍是人工现场门禁，不得由 fake 或本机回环测试提升为已验证：主备 AC 真实切换与设备时钟偏差、
-十几小时持续多目标 fping、真实列车 AP 漫游、2 车/4 MR 并发 SSH、Session 现场 ZIP、低磁盘故障注入、
-Electron 隐藏到通知区域后的整窗运行，以及退出后的 fping/Worker/SSH 进程核对。
+十几小时持续多目标 fping、当前活动 run 的真实增量曲线、真实列车 AP 漫游、2 车/4 MR 并发 SSH、
+Session 现场 ZIP、低磁盘故障注入、1366×768 与 Windows 125%/150% 缩放截图、Electron 隐藏到通知
+区域后的整窗运行，以及退出后的 fping/Worker/SSH 进程核对。
 
 逐项风险状态和剩余验证见 [地面无人值守风险审计](GROUND_UNATTENDED_RISK_AUDIT.md)。

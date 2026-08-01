@@ -10,6 +10,8 @@ import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
+
 import netconsole.core.interprocess_lock as lock_module
 from netconsole.core.interprocess_lock import interprocess_file_lock
 
@@ -98,6 +100,31 @@ def test_interprocess_file_lock_releases_after_exception(tmp_path: Path) -> None
 
     with interprocess_file_lock(lock_path):
         assert lock_path.exists()
+
+
+def test_interprocess_file_lock_can_fail_fast_when_the_local_lock_is_busy(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "timeout.lock"
+    entered = threading.Event()
+    release = threading.Event()
+
+    def holder() -> None:
+        with interprocess_file_lock(lock_path):
+            entered.set()
+            release.wait(timeout=2)
+
+    thread = threading.Thread(target=holder)
+    thread.start()
+    assert entered.wait(timeout=1)
+    try:
+        with pytest.raises(TimeoutError, match="lock timeout"):
+            with interprocess_file_lock(lock_path, timeout_seconds=0.02):
+                pass
+    finally:
+        release.set()
+        thread.join(timeout=1)
+    assert not thread.is_alive()
 
 
 def test_interprocess_file_lock_nested_windows_lock_calls_os_lock_once(
