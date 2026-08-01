@@ -71,7 +71,6 @@ from netconsole.services.rail_transit.station_source_utils import (
     station_structure_defaults,
 )
 from netconsole.services.trackside_ap_plan_io import (
-    bind_trackside_plan_station,
     normalize_trackside_plan_row,
     normalize_trackside_plan_rows,
 )
@@ -166,7 +165,11 @@ class RailTransitBaseDataApplicationService:
                 )
                 continue
             references = StationReferenceSummaryDTO(
-                **self.repository.station_reference_summary(site_id, station.name)
+                **self.repository.station_reference_summary(
+                    site_id,
+                    station.name,
+                    station_id=station.id,
+                )
             )
             if station.is_line_terminal:
                 preflight_status = "BLOCKED"
@@ -480,31 +483,50 @@ class RailTransitBaseDataApplicationService:
             raise RailTransitBaseDataApplicationError("BASE_DATA_TRANSACTION_FAILED", "基础资料事务保存失败并已回滚") from exc
         # 轨旁 AP 规划只改变站点容量/VLAN，不改变 AP 身份来源；避免每次规划保存都
         # 同步重建完整 Identity 索引。站点/区间变更可能级联更新 AP 参考资料，仍需校正索引。
+        identity_refreshed = False
         if any(
             str(change.entity_type or "")
             in {"station", "section", "trackside_ap"}
             for change in change_rows
         ):
-            self._ensure_ap_identity_index(site_id, "base_data_changes_saved")
+            identity_refreshed = self._ensure_ap_identity_index(
+                site_id, "base_data_changes_saved"
+            )
+        self._checkpoint_site_database(site_id)
         return BaseDataSaveResultDTO(
             revision=str(result["revision"]),
             created_count=int(result["created_count"]),
             updated_count=int(result["updated_count"]),
             deleted_count=int(result["deleted_count"]),
+            device_binding_count=int(result.get("device_binding_count") or 0),
+            planning_row_count=int(result.get("planning_row_count") or 0),
+            station_id_repaired_count=int(
+                result.get("station_id_repaired_count") or 0
+            ),
+            ap_identity_refreshed=identity_refreshed,
             warnings=[issue.message for issue in validation.issues if not issue.blocking],
             validation_issues=validation.issues,
         )
 
-    def _ensure_ap_identity_index(self, site_id: str, reason: str) -> None:
+    def _ensure_ap_identity_index(self, site_id: str, reason: str) -> bool:
         try:
-            ApIdentityQueryService(
+            result = ApIdentityQueryService(
                 Database(self.paths.site_db_path(site_id))
             ).ensure_index(reason)
+            return result is not None
         except (OSError, RuntimeError, sqlite3.Error) as exc:
             raise RailTransitBaseDataApplicationError(
                 "AP_IDENTITY_REBUILD_FAILED",
                 "基础资料已保存，但 AP Identity 索引重建失败；索引保持过期状态，请重新执行保存。",
             ) from exc
+
+    def _checkpoint_site_database(self, site_id: str) -> None:
+        try:
+            with Database(self.paths.site_db_path(site_id)).connect() as connection:
+                connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.OperationalError:
+            # checkpoint 只用于在响应前收敛已提交 WAL；忙碌时不改变保存结果。
+            return
 
     def _normalize_change(
         self,
@@ -521,6 +543,7 @@ class RailTransitBaseDataApplicationService:
         allowed_actions = {
             "site_metadata": {"update"},
             "station": {"create", "update", "delete", "replace"},
+            "device_station_binding": {"replace"},
             "section": {"create", "update", "delete"},
             "trackside_ap": {"create", "update", "delete"},
             "vehicle_mr": {"create", "update", "delete"},
@@ -536,8 +559,45 @@ class RailTransitBaseDataApplicationService:
                 action,
                 main_path_code=main_path_code,
             )
+            node_uid = str(values.get("node_uid") or "")
+            requested_station_id = str(change.entity_id or "").strip()
+            values["station_id"] = (
+                requested_station_id
+                if requested_station_id and not requested_station_id.startswith("new:")
+                else (
+                f"station:{hashlib.sha1(node_uid.encode('utf-8')).hexdigest()[:12]}"
+                if node_uid
+                else ""
+                )
+            )
+        elif entity_type == "device_station_binding":
+            bindings = raw.get("bindings")
+            if not isinstance(bindings, list):
+                raise ValueError("设备站点绑定格式无效")
+            values = {
+                "bindings": [
+                    {
+                        "device_id": str(row.get("device_id") or "").strip(),
+                        "station_id": str(row.get("station_id") or "").strip(),
+                        "source": str(row.get("source") or "manual").strip(),
+                    }
+                    for row in bindings
+                    if isinstance(row, Mapping)
+                ]
+            }
         elif entity_type == "section":
             values = self._section_values(raw, action)
+            identity = str(values.get("generation_key") or change.entity_id or "")
+            requested_section_id = str(change.entity_id or "").strip()
+            values["section_id"] = (
+                requested_section_id
+                if requested_section_id and not requested_section_id.startswith("new:")
+                else (
+                f"section:{hashlib.sha1(identity.encode('utf-8')).hexdigest()[:12]}"
+                if identity
+                else ""
+                )
+            )
         elif entity_type == "trackside_ap":
             values = self._ap_values(raw, action)
         elif entity_type == "vehicle_mr":
@@ -572,15 +632,26 @@ class RailTransitBaseDataApplicationService:
                 ]
             else:
                 raise ValueError("轨旁 AP 规划数据格式无效")
-            bound_rows = [
-                bind_trackside_plan_station(
-                    normalize_trackside_plan_row(row, row_number=index),
-                    stations,
-                    row_number=index,
-                )
+            normalized_input_rows = [
+                normalize_trackside_plan_row(row, row_number=index)
                 for index, row in enumerate(raw_rows, start=2)
             ]
-            normalized_rows = normalize_trackside_plan_rows(bound_rows)
+            station_by_id = {
+                str(row.get("id") or row.get("station_id") or ""): row
+                for row in stations
+            }
+            for index, row in enumerate(normalized_input_rows, start=2):
+                station_id = str(row.get("station_id") or "")
+                if not station_id or station_id not in station_by_id:
+                    raise ValueError(
+                        f"第{index}行 车站：必须选择有效的正式 station_id"
+                    )
+                row["station_name"] = str(
+                    station_by_id[station_id].get("name")
+                    or station_by_id[station_id].get("station_name")
+                    or ""
+                )
+            normalized_rows = normalize_trackside_plan_rows(normalized_input_rows)
             values = {"rows": normalized_rows, "validation_issues": []}
         return {
             "entity_type": entity_type,
@@ -678,10 +749,13 @@ class RailTransitBaseDataApplicationService:
         terminal_mileage_text = str(raw.get("terminal_endpoint_mileage_text") or "").strip()
         merge_source_names = raw.get("merge_source_names") or []
         merge_source_node_uids = raw.get("merge_source_node_uids") or []
+        merge_source_ids = raw.get("merge_source_ids") or []
         if action == "replace" and not isinstance(merge_source_names, list):
             raise ValueError("合并来源站点格式无效")
         if action == "replace" and not isinstance(merge_source_node_uids, list):
             raise ValueError("合并来源节点格式无效")
+        if action == "replace" and not isinstance(merge_source_ids, list):
+            raise ValueError("合并来源站点 ID 格式无效")
         source_station_value = str(raw.get("source_station_value") or "")
         parsed_source = parse_station_source_value(source_station_value)
         parsed_name = parse_station_source_value(name)
@@ -734,6 +808,13 @@ class RailTransitBaseDataApplicationService:
             "merge_source_node_uids": [
                 str(value).strip()
                 for value in merge_source_node_uids
+                if str(value).strip()
+            ]
+            if action == "replace"
+            else [],
+            "merge_source_ids": [
+                str(value).strip()
+                for value in merge_source_ids
                 if str(value).strip()
             ]
             if action == "replace"
@@ -886,7 +967,9 @@ class RailTransitBaseDataApplicationService:
         values: dict[str, Any] = {
             "line_name": str(raw.get("line_name") or "").strip(),
             "ap_vendor": str(raw.get("vendor") or raw.get("ap_vendor") or "").strip(),
+            "station_id": str(raw.get("station_id") or "").strip(),
             "station_name": station,
+            "section_id": str(raw.get("section_id") or "").strip(),
             "section_name": section,
             "section_start_station": str(raw.get("section_start_station") or "").strip(),
             "section_end_station": str(raw.get("section_end_station") or "").strip(),
@@ -1036,6 +1119,28 @@ class RailTransitBaseDataApplicationService:
             if not owners:
                 mapping.pop(key, None)
         existing_sections = self._all_sections(site_id)
+        projected_station_ids = {item.id for item in existing_stations}
+        projected_section_ids = {item.id for item in existing_sections}
+        for change in changes:
+            values = change["values"]
+            if change["entity_type"] == "station":
+                station_id = str(values.get("station_id") or change.get("entity_id") or "")
+                if change["action"] == "delete":
+                    projected_station_ids.discard(station_id)
+                elif station_id:
+                    projected_station_ids.add(station_id)
+                    if change["action"] == "replace":
+                        projected_station_ids.difference_update(
+                            str(value).strip()
+                            for value in values.get("merge_source_ids") or []
+                            if str(value).strip()
+                        )
+            elif change["entity_type"] == "section":
+                section_id = str(values.get("section_id") or change.get("entity_id") or "")
+                if change["action"] == "delete":
+                    projected_section_ids.discard(section_id)
+                elif section_id:
+                    projected_section_ids.add(section_id)
         section_names = {item.name.casefold(): item.id for item in existing_sections if item.name}
         generation_keys = {
             item.generation_key: item.id
@@ -1051,19 +1156,50 @@ class RailTransitBaseDataApplicationService:
             values = change["values"]
             if change["entity_type"] == "site_metadata":
                 continue
+            if change["entity_type"] == "device_station_binding":
+                seen_devices: set[str] = set()
+                for binding in values.get("bindings") or []:
+                    device_id = str(binding.get("device_id") or "")
+                    station_id = str(binding.get("station_id") or "")
+                    if not device_id or device_id in seen_devices:
+                        issues.append(self._issue(index, "DEVICE_STATION_BINDING_INVALID", "设备绑定缺少唯一设备 ID", "device_id"))
+                    elif station_id not in projected_station_ids:
+                        issues.append(self._issue(index, "STATION_ID_INVALID", "设备绑定引用的 station_id 不存在", "station_id"))
+                    seen_devices.add(device_id)
+                continue
             if change["entity_type"] == "station":
                 old_name = values.get("old_name")
-                old_station = next((item for item in existing_stations if item.name == old_name), None)
+                target_station_id = str(change.get("entity_id") or "").strip()
+                old_station = next(
+                    (
+                        item
+                        for item in existing_stations
+                        if item.id == target_station_id
+                    ),
+                    None,
+                ) or next(
+                    (item for item in existing_stations if item.name == old_name),
+                    None,
+                )
                 merge_source_names = {
                     str(value).strip()
                     for value in values.get("merge_source_names") or []
                     if str(value).strip() and str(value).strip() != old_name
                 }
-                merge_sources = [
-                    item
-                    for item in existing_stations
-                    if item.name in merge_source_names
-                ]
+                merge_source_ids = {
+                    str(value).strip()
+                    for value in values.get("merge_source_ids") or []
+                    if str(value).strip() and str(value).strip() != target_station_id
+                }
+                merge_sources = (
+                    [item for item in existing_stations if item.id in merge_source_ids]
+                    if merge_source_ids
+                    else [
+                        item
+                        for item in existing_stations
+                        if item.name in merge_source_names
+                    ]
+                )
                 if change["action"] == "replace":
                     if old_station is None:
                         issues.append(
@@ -1074,13 +1210,16 @@ class RailTransitBaseDataApplicationService:
                                 "old_name",
                             )
                         )
-                    if len(merge_sources) != len(merge_source_names):
+                    expected_source_count = len(
+                        merge_source_ids or merge_source_names
+                    )
+                    if len(merge_sources) != expected_source_count:
                         issues.append(
                             self._issue(
                                 index,
                                 "STATION_MERGE_SOURCE_MISSING",
                                 "一个或多个合并来源站点不存在",
-                                "merge_source_names",
+                                "merge_source_ids" if merge_source_ids else "merge_source_names",
                             )
                         )
                     for source in merge_sources:
@@ -1213,7 +1352,9 @@ class RailTransitBaseDataApplicationService:
                 if change["action"] == "delete":
                     if old_station:
                         references = self.repository.station_reference_summary(
-                            site_id, old_station.name
+                            site_id,
+                            old_station.name,
+                            station_id=old_station.id,
                         )
                         if (
                             old_station.source_kind != "legacy_ap_derived"
@@ -1392,6 +1533,12 @@ class RailTransitBaseDataApplicationService:
                 if change["action"] in {"update", "delete"}:
                     ap_macs = {mac: entity for mac, entity in ap_macs.items() if entity != change.get("entity_id")}
                 if change["action"] != "delete":
+                    station_id = str(values.get("station_id") or "")
+                    section_id = str(values.get("section_id") or "")
+                    if values.get("station_name") and station_id not in projected_station_ids:
+                        issues.append(self._issue(index, "STATION_ID_INVALID", "轨旁 AP 必须关联有效 station_id", "station_id"))
+                    if values.get("section_name") and section_id not in projected_section_ids:
+                        issues.append(self._issue(index, "SECTION_ID_INVALID", "轨旁 AP 必须关联有效 section_id", "section_id"))
                     mac = str(values.get("ap_mac_norm") or "")
                     if mac and mac in ap_macs:
                         issues.append(self._issue(index, "AP_MAC_DUPLICATE", "同一局点存在重复 AP MAC", "mac"))
@@ -1445,7 +1592,7 @@ class RailTransitBaseDataApplicationService:
             raw = dict(change.values)
             entity_id = str(change.entity_id or "")
             old_name = str(raw.get("old_name") or "").strip().casefold()
-            matched_id = entity_id
+            matched_id = "" if entity_id.startswith("new:") else entity_id
             if not matched_id and old_name:
                 matched_id = next(
                     (

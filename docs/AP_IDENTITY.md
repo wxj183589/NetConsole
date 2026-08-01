@@ -20,6 +20,12 @@ SSH、SNMP 或采集，不要求 `ac_device_uuid`，也不在请求期间重建�
 光衰更新、AC 深度采集和远程配置仍由 AC 业务服务控制，继续要求有效
 AC 绑定。
 
+轨旁 AP 基础资料统一事务提交后，Application Service 只调用一次
+`ensure_index`：来源 revision 未变化时不写索引，变化时在事务提交后重建。
+基础资料 GET、轨旁 AP 业务查询和逐行 MAC 解析只固定并读取当前索引健康
+状态；不得把 `ensure/rebuild` 放进 GET。LLDP 生产绑定只接受完整规范化邻居
+MAC/Chassis MAC，IP、系统名、AP 名称和相似度仅进入诊断字段。
+
 ## 2. 数据来源
 
 身份来源分为：

@@ -1029,22 +1029,20 @@ class RailTransitWebApplicationService:
                 f"sql_ms={(time.perf_counter() - repository_started) * 1000:.2f}"
             ),
         )
-        bound_rows: list[Mapping[str, object]] = []
+        source_rows: list[Mapping[str, object]] = []
         for index, row in enumerate(station_rows, start=2):
             try:
-                bound_rows.append(
-                    bind_trackside_plan_station(
-                        normalize_trackside_plan_row(
-                            dict(row),
-                            row_number=index,
-                        ),
-                        stations,
+                source_rows.append(
+                    normalize_trackside_plan_row(
+                        dict(row),
                         row_number=index,
                     )
                 )
             except ValueError:
-                bound_rows.append(row)
-        result = self._trackside_plan_dto({}, source_rows=bound_rows)
+                source_rows.append(row)
+        result = self._trackside_plan_dto(
+            {}, source_rows=source_rows, stations=stations
+        )
         result.model_dump(mode="json")
         app_logger.log_info(
             "trackside_ap_plan.dto_validated",
@@ -1411,6 +1409,7 @@ class RailTransitWebApplicationService:
         view: Mapping[str, object],
         *,
         source_rows: list[Mapping[str, object]] | None = None,
+        stations: list[Mapping[str, object]] | None = None,
     ) -> TracksideApPlanDTO:
         legacy_rows = (
             source_rows
@@ -1418,6 +1417,16 @@ class RailTransitWebApplicationService:
             else project_legacy_station_rows(view)
         )
         items = []
+        station_by_id = {
+            str(row.get("id") or row.get("station_id") or "").strip(): row
+            for row in stations or []
+        }
+        station_ids_by_name: dict[str, list[str]] = {}
+        for row in stations or []:
+            station_name = str(row.get("name") or row.get("station_name") or "").strip()
+            station_id = str(row.get("id") or row.get("station_id") or "").strip()
+            if station_name and station_id:
+                station_ids_by_name.setdefault(station_name, []).append(station_id)
         for index, row in enumerate(legacy_rows):
             item = dict(row)
             sequence_no = int(item.get("sequence_no") or 0)
@@ -1432,11 +1441,26 @@ class RailTransitWebApplicationService:
                 management_vlan = int(str(raw_vlan).strip())
             except (TypeError, ValueError):
                 management_vlan = None
+            station_id = str(item.get("station_id") or "").strip()
+            station_name = str(item.get("station_name") or "").strip()
+            candidates = station_ids_by_name.get(station_name, [])
+            if station_id and station_id in station_by_id:
+                relation_status = "resolved"
+                current = station_by_id[station_id]
+                station_name = str(
+                    current.get("name") or current.get("station_name") or station_name
+                )
+            elif station_id:
+                relation_status = "stale"
+            elif len(candidates) > 1:
+                relation_status = "ambiguous"
+            else:
+                relation_status = "missing"
             items.append(
                 TracksideApPlanRowDTO(
-                    station_id=str(item.get("station_id") or "").strip(),
+                    station_id=station_id,
                     sequence_no=sequence_no,
-                    station_name=str(item.get("station_name") or "").strip(),
+                    station_name=station_name,
                     planned_ap_count=int(
                         item.get("planned_ap_count")
                         if item.get("planned_ap_count") not in (None, "")
@@ -1445,6 +1469,8 @@ class RailTransitWebApplicationService:
                     ),
                     management_vlan=management_vlan,
                     remark=str(item.get("remark") or "").strip(),
+                    relation_status=relation_status,
+                    candidate_station_ids=candidates,
                 )
             )
         return TracksideApPlanDTO.model_validate(
@@ -2120,7 +2146,7 @@ class RailTransitWebApplicationService:
                     "source_module": "ac.trackside_ap_plan",
                     "contract_metadata": {
                         "template_type": "trackside_ap_station_plan",
-                        "schema_version": 3,
+                        "schema_version": 4,
                         "generated_at": generated_at.isoformat(timespec="seconds"),
                         "project_id": site_id,
                         "line_id": "current",

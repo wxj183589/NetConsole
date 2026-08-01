@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unicodedata
 from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
@@ -11,16 +12,13 @@ from netconsole.services.file_contract import (
     read_validated_csv_rows,
     validate_optional_contract_metadata,
 )
-from netconsole.services.rail_transit.station_source_utils import (
-    canonical_station_name,
-    normalize_station_source_value,
-)
 from netconsole.utils.excel_workbook import (
     load_workbook_without_unsupported_image_warning,
 )
 
 TRACKSIDE_PLAN_COLUMNS = (
     ("ac.trackside_plan.sequence_no", "sequence_no"),
+    ("ac.trackside_plan.station_id", "station_id"),
     ("ac.trackside_plan.station_name", "station_name"),
     ("ac.trackside_plan.ap_count", "ap_count"),
     ("ac.trackside_plan.ap_management_vlan", "management_vlan"),
@@ -30,6 +28,7 @@ TRACKSIDE_PLAN_SHEET = "AP规划"
 LEGACY_TRACKSIDE_PLAN_SHEET = "轨旁AP规划"
 TRACKSIDE_PLAN_HEADERS = [
     "序号",
+    "车站ID",
     "车站名称",
     "AP数量",
     "AP管理VLAN",
@@ -37,6 +36,7 @@ TRACKSIDE_PLAN_HEADERS = [
 ]
 TRACKSIDE_PLAN_COLUMN_WIDTHS = {
     "sequence_no": 10,
+    "station_id": 26,
     "station_name": 30,
     "ap_count": 14,
     "management_vlan": 16,
@@ -47,6 +47,11 @@ TRACKSIDE_PLAN_FIELD_NOTES = (
         "field": "序号",
         "requirement": "必填",
         "description": "当前局点内唯一的正整数，保存后按序号升序显示。",
+    },
+    {
+        "field": "车站ID",
+        "requirement": "必填",
+        "description": "当前基础资料中的稳定 station_id；站名仅用于展示，不能代替该字段。",
     },
     {
         "field": "车站名称",
@@ -79,6 +84,7 @@ TRACKSIDE_PLAN_FIELD_NOTE_COLUMNS = (
 
 _HEADER_ALIASES = {
     "sequence_no": ("序号", "顺序", "排序号"),
+    "station_id": ("车站ID", "车站 ID", "station_id"),
     "station_name": ("车站名称", "站点名称", "站点", "车站"),
     "ap_count": (
         "AP数量",
@@ -216,6 +222,8 @@ def _read_plan_rows(
                 row[field] = value
         if row.get("management_vlan") in (None, ""):
             row["management_vlan"] = row.get("group_management_vlan", "")
+        if row.get("station_id") in (None, ""):
+            row["station_id"] = _legacy_member_station_id(row)
         if row.get("sequence_no") in (None, ""):
             row["sequence_no"] = len(output) + 1
         row["__source_row_number__"] = source_row_number
@@ -224,6 +232,26 @@ def _read_plan_rows(
     if not output:
         raise ImportValidationError("文件为空：没有可导入的数据")
     return output
+
+
+def _legacy_member_station_id(row: Mapping[str, object]) -> str:
+    """Read a stable ID from legacy grouped columns without consulting names in master data."""
+    member_ids = [
+        value.strip()
+        for value in re.split(r"[,，、;；\s]+", str(row.get("station_ids") or ""))
+        if value.strip()
+    ]
+    if len(member_ids) == 1:
+        return member_ids[0]
+    member_names = [
+        value.strip()
+        for value in re.split(r"[,，、;；]+", str(row.get("station_names") or ""))
+        if value.strip()
+    ]
+    station_name = str(row.get("station_name") or "").strip()
+    if len(member_ids) == len(member_names) and station_name in member_names:
+        return member_ids[member_names.index(station_name)]
+    return ""
 
 
 def _find_plan_header(
@@ -381,34 +409,10 @@ def bind_trackside_plan_station(
             result["station_name"] = _station_name(direct[0])
             return result
 
-    requested_name = str(result.get("station_name") or "").strip()
-    exact_key = normalize_station_source_value(requested_name)[1]
-    exact = [
-        station
-        for station in stations
-        if normalize_station_source_value(_station_name(station))[1] == exact_key
-    ]
-    if len(exact) == 1:
-        result["station_id"] = _station_id(exact[0])
-        result["station_name"] = _station_name(exact[0])
-        return result
-    if len(exact) > 1:
-        raise ValueError(f"第{row_number}行 车站名称：匹配到多个当前站点")
-
-    canonical_key = canonical_station_name(requested_name).casefold()
-    compatible = [
-        station
-        for station in stations
-        if canonical_station_name(_station_name(station)).casefold()
-        == canonical_key
-    ]
-    if len(compatible) == 1:
-        result["station_id"] = _station_id(compatible[0])
-        result["station_name"] = _station_name(compatible[0])
-        return result
-    if len(compatible) > 1:
-        raise ValueError(f"第{row_number}行 车站名称：去除序号后匹配到多个当前站点")
-    raise ValueError(f"第{row_number}行 车站名称：未匹配到当前站点")
+        raise ValueError(f"第{row_number}行 车站ID：不属于当前正式站点")
+    raise ValueError(
+        f"第{row_number}行 车站ID：必填；历史站名仅供诊断，不能建立正式关联"
+    )
 
 
 def normalize_trackside_plan_rows(
@@ -418,11 +422,9 @@ def normalize_trackside_plan_rows(
         normalize_trackside_plan_row(row, row_number=index)
         for index, row in enumerate(rows, start=2)
     ]
-    station_keys = [
-        str(row.get("station_id") or "").strip()
-        or canonical_station_name(row["station_name"]).casefold()
-        for row in normalized
-    ]
+    station_keys = [str(row.get("station_id") or "").strip() for row in normalized]
+    if any(not station_id for station_id in station_keys):
+        raise ValueError("轨旁 AP 规划必须关联正式 station_id")
     if len(station_keys) != len(set(station_keys)):
         raise ValueError("轨旁 AP 规划存在重复车站")
     sequence_numbers = [int(row["sequence_no"]) for row in normalized]

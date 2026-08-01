@@ -62,6 +62,77 @@ def test_base_data_queries_relations_and_quality_are_read_only(tmp_path: Path) -
     assert _fingerprint(db_path) == before
 
 
+def test_trackside_ap_lldp_station_suggestion_uses_exact_identity_without_write(
+    tmp_path: Path,
+) -> None:
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    database = Database(db_path)
+    now = "2026-08-01T10:00:00+00:00"
+    with database.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO ap_extension_points (
+                site_id, belong_type, station_id, station_name, ap_point_code,
+                source_file, created_at, updated_at
+            ) VALUES ('demo', '__base_station__', 'station:lldp', 'LLDP 建议站', '-',
+                      'manual-base-data', ?, ?)
+            """,
+            (now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO ap_extension_points (
+                site_id, belong_type, ap_name, ap_point_code, ap_mac_norm,
+                ap_mac_display, source_file, created_at, updated_at
+            ) VALUES ('demo', 'station', 'AP-LLDP-SUGGEST', 'AP099',
+                      '001122334455', '0011-2233-4455', 'point-table.xlsx', ?, ?)
+            """,
+            (now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO devices (
+                device_uuid, name, station, station_id, device_type,
+                primary_address, created_at, updated_at
+            ) VALUES ('switch-lldp', 'SW-LLDP', '旧展示站名', 'station:lldp', 'SWITCH',
+                      '10.99.0.1', ?, ?)
+            """,
+            (now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO device_lldp_neighbors (
+                device_uuid, local_interface, neighbor_mac, collected_at,
+                collect_run_uuid, updated_at
+            ) VALUES ('switch-lldp', 'GigabitEthernet1/0/9', '0011-2233-4455', ?,
+                      'run-lldp', ?)
+            """,
+            (now, now),
+        )
+        connection.commit()
+    ApIdentityQueryService(database).rebuild_index("test_lldp_suggestion")
+    with database.connect() as connection:
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    before = _fingerprint(db_path)
+
+    item = next(
+        row
+        for row in RailTransitBaseDataQueryService(paths)
+        .list_aps("demo", page_size=200)
+        .items
+        if row.name == "AP-LLDP-SUGGEST"
+    )
+
+    assert item.identity_match_status == "matched"
+    assert item.lldp_suggestion_status == "suggested"
+    assert item.lldp_suggested_station_id == "station:lldp"
+    assert item.lldp_suggested_station_name == "LLDP 建议站"
+    assert item.lldp_suggestion_switch_device_id == "switch-lldp"
+    assert item.lldp_suggestion_interface == "GigabitEthernet1/0/9"
+    assert item.lldp_observed_neighbor_mac == "0011-2233-4455"
+    assert _fingerprint(db_path) == before
+
+
 def test_same_name_different_mac_does_not_report_identity_conflict(
     tmp_path: Path,
 ) -> None:

@@ -309,19 +309,44 @@ class StationSourceDiscoveryService:
                 row_issues.append(self._issue("error", "station_source_name_conflict", "相同站名对应不同节点编码", "name", blocking=True))
             if parsed.participates_in_direction and parsed.sort_order is not None and len(order_keys[(parsed.path_code.casefold(), parsed.sort_order)]) > 1:
                 row_issues.append(self._issue("error", "station_order_duplicate", "同一路径内候选主线顺序重复", "sort_order", blocking=True))
-            (
-                match_status,
-                matched_station_id,
-                match_basis,
-                match_issues,
-            ) = self._match_existing(
-                parsed,
-                existing_source_key,
-                existing_canonical_name,
-                existing_canonical_name_type,
-                existing_alias,
-                existing_code_name,
-            )
+            bound_station_ids = {
+                str(row.get("station_id") or "").strip()
+                for row in rows
+                if str(row.get("station_id") or "").strip()
+            }
+            valid_bound_ids = bound_station_ids & existing_by_id.keys()
+            if len(valid_bound_ids) == 1 and bound_station_ids == valid_bound_ids:
+                matched_station_id = next(iter(valid_bound_ids))
+                match_status = "exact_source_key"
+                match_basis = "device_station_id"
+                match_issues = []
+            elif bound_station_ids:
+                matched_station_id = ""
+                match_status = "conflict"
+                match_basis = "device_station_id_conflict"
+                match_issues = [
+                    self._issue(
+                        "error",
+                        "station_source_device_binding_conflict",
+                        "同一来源候选包含冲突或失效的 device.station_id，必须人工选择正式站点",
+                        "station_id",
+                        blocking=True,
+                    )
+                ]
+            else:
+                (
+                    match_status,
+                    matched_station_id,
+                    match_basis,
+                    match_issues,
+                ) = self._match_existing(
+                    parsed,
+                    existing_source_key,
+                    existing_canonical_name,
+                    existing_canonical_name_type,
+                    existing_alias,
+                    existing_code_name,
+                )
             row_issues.extend(match_issues)
             possible_matches = self._candidate_matches(
                 parsed,
@@ -398,12 +423,20 @@ class StationSourceDiscoveryService:
                 matches=possible_matches,
                 parsed=parsed,
             )
+            proposed_node_uid = (
+                matched_station.node_uid
+                if matched_station
+                else str(uuid5(NAMESPACE_URL, f"netconsole:{site_id}:station-source:{key}"))
+            )
+            proposed_station_id = matched_station_id or (
+                f"station:{hashlib.sha1(proposed_node_uid.encode('utf-8')).hexdigest()[:12]}"
+            )
             proposed = StationDTO(
-                id=matched_station_id or f"new:{self._candidate_digest(key)}",
+                id=proposed_station_id,
                 node_uid=(
                     matched_station.node_uid
                     if matched_station
-                    else str(uuid5(NAMESPACE_URL, f"netconsole:{site_id}:station-source:{key}"))
+                    else proposed_node_uid
                 ),
                 name=candidate_name,
                 code=candidate_code,
@@ -428,6 +461,13 @@ class StationSourceDiscoveryService:
             candidates.append(
                 StationSourceCandidateDTO(
                     candidate_id=f"station-source:{self._candidate_digest(key)}",
+                    source_device_ids=sorted(
+                        {
+                            str(row.get("device_uuid") or row.get("id") or "")
+                            for row in rows
+                            if str(row.get("device_uuid") or row.get("id") or "")
+                        }
+                    ),
                     source_station_value=parsed.source_station_value,
                     source_station_key=parsed.source_station_key,
                     source_order_text=candidate_code,
@@ -701,7 +741,7 @@ class StationSourceDiscoveryService:
         if not ids:
             return []
         columns = {str(row[1]) for row in conn.execute('PRAGMA table_info("devices")')}
-        selected = [field for field in ("id", "device_uuid", "station", "group_id", "updated_at") if field in columns]
+        selected = [field for field in ("id", "device_uuid", "station", "station_id", "group_id", "updated_at") if field in columns]
         if "station" not in selected or "group_id" not in selected:
             return []
         placeholders = ", ".join("?" for _ in ids)

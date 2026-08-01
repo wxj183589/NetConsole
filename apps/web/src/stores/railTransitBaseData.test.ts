@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 import { ApiRequestError, getHealth } from '../api/client'
+import { getTracksideApPlan } from '../api/tracksideApBusiness'
 import { useRailTransitBaseDataStore } from './railTransitBaseData'
 import {
   applyRailTransitImport,
@@ -52,6 +53,9 @@ vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>()
   return { ...actual, getHealth: vi.fn() }
 })
+vi.mock('../api/tracksideApBusiness', () => ({
+  getTracksideApPlan: vi.fn(),
+}))
 
 const emptyPage = { items: [], total: 0, page: 1, page_size: 50 }
 
@@ -73,6 +77,7 @@ describe('Rail Transit base data polling store', () => {
     for (const mock of [listStations, listSections, listTracksideAps, listTrains, listVehicleMrs, listRelations]) {
       vi.mocked(mock).mockReset().mockResolvedValue(emptyPage)
     }
+    vi.mocked(getTracksideApPlan).mockReset().mockResolvedValue({ items: [] } as never)
     vi.mocked(listDataQualityIssueGroups).mockReset().mockResolvedValue({
       ...emptyPage, issue_total: 0, blocking_total: 0, warning_total: 0, info_total: 0, code_counts: {},
     })
@@ -420,6 +425,7 @@ describe('Rail Transit base data polling store', () => {
       warning_count: 0,
       candidates: [{
         candidate_id: 'station-source:wuxiang',
+        source_device_ids: ['device:1', 'device:2'],
         source_station_value: '32-五乡',
         source_station_key: '五乡',
         source_order_text: '32',

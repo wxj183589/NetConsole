@@ -100,7 +100,7 @@ def _remote_dom(
     }
 
 
-def test_trackside_lldp_match_prefers_management_ip_over_mac() -> None:
+def test_trackside_lldp_match_uses_exact_mac_and_ignores_management_ip() -> None:
     ap_by_ip = _resource("ap-ip", "AP-IP", "0011-2233-4455", "10.10.1.10")
     ap_by_mac = _resource("ap-mac", "AP-MAC", "0011-2233-4466", "10.10.1.11")
 
@@ -124,13 +124,13 @@ def test_trackside_lldp_match_prefers_management_ip_over_mac() -> None:
         [ap_by_ip, ap_by_mac],
     )
 
-    assert rows[0]["ap_uuid"] == "ap-ip"
-    assert rows[0]["ap_match_source"] == "LLDP_IP"
-    assert rows[0]["ap_match_confidence"] == 96
+    assert rows[0]["ap_uuid"] == "ap-mac"
+    assert rows[0]["ap_match_source"] == "LLDP_MAC"
+    assert rows[0]["ap_match_confidence"] == 100
     assert rows[0]["lldp_match_status"] == "MATCHED"
 
 
-def test_trackside_lldp_name_requires_one_exact_candidate() -> None:
+def test_trackside_lldp_name_is_diagnostic_only_without_mac_evidence() -> None:
     resources = [
         _resource("ap-1", "DUPLICATE-AP", "0011-2233-4455", "10.10.1.10"),
         _resource("ap-2", "DUPLICATE-AP", "0011-2233-4466", "10.10.1.11"),
@@ -152,14 +152,14 @@ def test_trackside_lldp_name_requires_one_exact_candidate() -> None:
         resources,
     )
 
-    assert rows[0]["lldp_match_status"] == "AMBIGUOUS"
-    assert rows[0]["ap_match_source"] == "LLDP_SYSTEM_NAME"
+    assert rows[0]["lldp_match_status"] == "NO_MAC_EVIDENCE"
+    assert rows[0]["ap_match_source"] == ""
     assert rows[0]["ap_uuid"] is None
     assert rows[0]["calculation_status"] == "NOT_VERIFIED"
     assert rows[0]["calculation_reason"] == "REAL_DEVICE_SAMPLE_REQUIRED"
 
 
-def test_ambiguous_current_lldp_does_not_rebind_through_legacy_interface_fallback() -> None:
+def test_name_only_current_lldp_does_not_rebind_through_legacy_fallbacks() -> None:
     resources = [
         _resource("ap-1", "DUPLICATE-AP", "0011-2233-4455", "10.10.1.10"),
         _resource("ap-2", "DUPLICATE-AP", "0011-2233-4466", "10.10.1.11"),
@@ -199,7 +199,7 @@ def test_ambiguous_current_lldp_does_not_rebind_through_legacy_interface_fallbac
         ],
     )[0]
 
-    assert row["lldp_match_status"] == "AMBIGUOUS"
+    assert row["lldp_match_status"] == "NO_MAC_EVIDENCE"
     assert row["ap_uuid"] is None
     assert row["ap_name"] is None
     assert row["ap_mac"] == ""

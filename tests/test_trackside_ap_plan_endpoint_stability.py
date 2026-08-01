@@ -315,7 +315,7 @@ def test_legacy_mode_rows_are_not_projected_during_write_lock(
         )
 
 
-def test_old_station_name_is_bound_in_memory_without_persisting_station_id(
+def test_old_station_name_is_not_bound_without_stable_station_id(
     tmp_path: Path,
 ) -> None:
     _paths, database, app = _fixture(tmp_path)
@@ -330,8 +330,11 @@ def test_old_station_name_is_bound_in_memory_without_persisting_station_id(
         response = client.get(PLAN_PATH)
 
     assert response.status_code == 200
-    assert response.json()["items"][0]["station_id"].startswith("station:")
-    assert response.json()["items"][0]["station_name"] == "舞阳车辆段"
+    item = response.json()["items"][0]
+    assert item["station_id"] == ""
+    assert item["station_name"] == "15-舞阳车辆段"
+    assert item["relation_status"] == "missing"
+    assert item["candidate_station_ids"] == []
     with database.connect() as connection:
         stored = connection.execute(
             """

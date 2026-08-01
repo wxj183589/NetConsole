@@ -2,6 +2,7 @@ import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
 
 import { apiErrorDetail, getHealth, type ApiErrorDetail } from '../api/client'
+import { getTracksideApPlan } from '../api/tracksideApBusiness'
 import {
   applyRailTransitImport,
   clearRailTransitBaseData,
@@ -51,12 +52,14 @@ import type {
   Train,
   VehicleMr,
 } from '../types/railTransitBaseData'
+import type { TracksideApPlanRow } from '../types/tracksideApBusiness'
 
 type RefreshDomain = 'summary' | 'static' | 'runtime' | 'governance' | 'health'
 type RefreshEndpointKey =
   | 'summary'
   | 'stations'
   | 'sections'
+  | 'tracksideApPlan'
   | 'issueGroups'
   | 'tracksideAps'
   | 'trains'
@@ -85,6 +88,7 @@ const REFRESH_ENDPOINTS: Record<RefreshEndpointKey, {
   summary: { domain: 'summary', label: '基础资料总览', path: '/api/rail-transit/base-data/summary' },
   stations: { domain: 'static', label: '站点资料', path: '/api/rail-transit/base-data/stations' },
   sections: { domain: 'static', label: '区间资料', path: '/api/rail-transit/base-data/sections' },
+  tracksideApPlan: { domain: 'static', label: '轨旁 AP 规划', path: '/api/rail-transit/trackside-ap-business/plan' },
   issueGroups: { domain: 'static', label: '数据质量问题', path: '/api/rail-transit/base-data/issues/groups' },
   tracksideAps: { domain: 'runtime', label: '轨旁 AP', path: '/api/rail-transit/base-data/aps' },
   trains: { domain: 'runtime', label: '列车资料', path: '/api/rail-transit/base-data/trains' },
@@ -96,16 +100,17 @@ const REFRESH_ENDPOINTS: Record<RefreshEndpointKey, {
   health: { domain: 'health', label: 'Backend 健康检查', path: '/api/health' },
 }
 const SUMMARY_ENDPOINTS: RefreshEndpointKey[] = ['summary']
-const STATIC_ENDPOINTS: RefreshEndpointKey[] = ['stations', 'sections', 'issueGroups']
+const STATIC_ENDPOINTS: RefreshEndpointKey[] = ['stations', 'sections', 'tracksideApPlan', 'issueGroups']
 const RUNTIME_ENDPOINTS: RefreshEndpointKey[] = ['tracksideAps', 'trains', 'vehicleMrs', 'relations']
 const GOVERNANCE_ENDPOINTS: RefreshEndpointKey[] = ['importPolicies', 'importOperations', 'editSession']
-const CORE_ENDPOINTS: RefreshEndpointKey[] = ['summary', 'stations', 'sections', 'tracksideAps', 'trains', 'vehicleMrs', 'relations']
+const CORE_ENDPOINTS: RefreshEndpointKey[] = ['summary', 'stations', 'sections', 'tracksideApPlan', 'tracksideAps', 'trains', 'vehicleMrs', 'relations']
 
 export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data', () => {
   const summary = ref<RailTransitSummary | null>(null)
   const editSession = ref<BaseDataEditSession | null>(null)
   const stations = ref<Station[]>([])
   const sections = ref<Section[]>([])
+  const tracksideApPlans = ref<TracksideApPlanRow[]>([])
   const aps = ref<TracksideAp[]>([])
   const trains = ref<Train[]>([])
   const mrs = ref<VehicleMr[]>([])
@@ -212,6 +217,9 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
         }),
         refreshEndpoint('sections', () => listSections({ page: 1, page_size: 200 }), (page) => {
           sections.value = page.items
+        }),
+        refreshEndpoint('tracksideApPlan', getTracksideApPlan, (plan) => {
+          tracksideApPlans.value = plan.items
         }),
         refreshEndpoint('issueGroups', () => listDataQualityIssueGroups(issueFilters), (page) => {
           issueGroups.value = page.items
@@ -503,7 +511,7 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
   }
 
   return {
-    summary, editSession, stations, sections, aps, trains, mrs, issues, issueGroups, relations,
+    summary, editSession, stations, sections, tracksideApPlans, aps, trains, mrs, issues, issueGroups, relations,
     apTotal, trainTotal, mrTotal, issueTotal, issueGroupTotal, issueCodeCounts, importPreview, stationSourcePreview, stationTemplatePreview, sectionGenerationPreview, importPolicies,
     importOperations, importChanges, selectedOperationId, selectedFileName,
     loading, previewLoading, stationSourceLoading, sectionGenerationLoading, applyLoading,

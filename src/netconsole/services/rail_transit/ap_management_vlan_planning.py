@@ -870,6 +870,7 @@ def project_legacy_station_rows(draft: Mapping[str, Any]) -> list[dict[str, obje
         for member in group["members"]:
             rows.append(
                 {
+                    "station_id": member["station_id"],
                     "station_name": member["station_name"],
                     "ap_count": member["ap_count"],
                     "ap_start_address": group["ap_start_ip"],
@@ -918,6 +919,7 @@ def export_rows(draft: Mapping[str, Any]) -> list[dict[str, object]]:
                         str(item["station_name"]) for item in members
                     ),
                     "station_name": str(member.get("station_name") or ""),
+                    "station_id": station_id,
                     "ap_count": int(member.get("ap_count") or 0),
                     "management_vlan": group["management_vlan"],
                     "network_address": group["network_address"],

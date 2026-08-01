@@ -6,7 +6,7 @@ import os
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterable, Mapping
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.sqlite_utils import configure_sqlite_connection
@@ -30,7 +30,9 @@ AP_MERGE_FIELDS = (
     "system_type",
     "network_domain",
     "belong_type",
+    "station_id",
     "station_name",
+    "section_id",
     "section_name",
     "section_start_station",
     "section_end_station",
@@ -211,13 +213,24 @@ class RailTransitBaseDataRepository:
             sql = ", ".join(f'"{field}"' for field in selected)
             return [dict(row) for row in connection.execute(f"SELECT {sql} FROM ap_extension_points")]
 
-    def station_reference_summary(self, site_id: str, station_name: str) -> dict[str, int]:
+    def station_reference_summary(
+        self,
+        site_id: str,
+        station_name: str,
+        *,
+        station_id: str = "",
+    ) -> dict[str, int]:
         """Return a read-only, explainable station dependency summary."""
         name = str(station_name or "").strip()
+        stable_id = str(station_id or "").strip()
         path = self._database_path(site_id)
         with self._read_connection(path) as connection:
             self._require_table(connection)
-            return self._station_reference_summary(connection, name)
+            return self._station_reference_summary(
+                connection,
+                name,
+                station_id=stable_id,
+            )
 
     def preview_clear_station_section_base_data(self, site_id: str) -> dict[str, int | str]:
         site_id = SiteManager(self.paths).validate_site_name(site_id)
@@ -270,7 +283,6 @@ class RailTransitBaseDataRepository:
             connection.execute("DELETE FROM ap_extension_points WHERE belong_type = '__base_section__'")
             connection.execute("DELETE FROM ap_extension_points WHERE belong_type = '__base_station__'")
             plan_cursor = connection.execute("DELETE FROM ac_trackside_ap_plan")
-            connection.execute("DELETE FROM rail_ap_vlan_plans")
             plan_deleted_count = max(0, int(plan_cursor.rowcount))
             remaining = connection.execute(
                 """
@@ -410,7 +422,14 @@ class RailTransitBaseDataRepository:
         connection = sqlite3.connect(path, timeout=30.0)
         connection.row_factory = sqlite3.Row
         configure_sqlite_connection(connection, foreign_keys=True)
-        counts = {"created_count": 0, "updated_count": 0, "deleted_count": 0}
+        counts = {
+            "created_count": 0,
+            "updated_count": 0,
+            "deleted_count": 0,
+            "device_binding_count": 0,
+            "planning_row_count": 0,
+            "station_id_repaired_count": 0,
+        }
         try:
             self._require_table(connection)
             connection.execute("BEGIN IMMEDIATE")
@@ -424,15 +443,29 @@ class RailTransitBaseDataRepository:
                     if action != "update":
                         raise ValueError("unsupported site metadata action")
                 elif entity_type == "station":
-                    self._apply_station_change(connection, site_id, action, values)
+                    self._apply_station_change(
+                        connection, site_id, action, change.get("entity_id"), values
+                    )
+                elif entity_type == "device_station_binding":
+                    counts["device_binding_count"] += self._replace_device_station_bindings(
+                        connection, values
+                    )
                 elif entity_type == "section":
-                    self._apply_section_change(connection, site_id, action, values)
+                    self._apply_section_change(
+                        connection, site_id, action, change.get("entity_id"), values
+                    )
                 elif entity_type == "trackside_ap":
                     self._apply_ap_change(connection, site_id, action, change.get("entity_id"), values)
                 elif entity_type == "vehicle_mr":
                     self._apply_mr_change(connection, action, change.get("entity_id"), values)
                 elif entity_type == "trackside_ap_plan":
-                    self._replace_trackside_ap_plan(connection, values)
+                    plan_result = self._replace_trackside_ap_plan(
+                        connection, site_id, values
+                    )
+                    counts["planning_row_count"] = plan_result["row_count"]
+                    counts["station_id_repaired_count"] += plan_result[
+                        "station_id_repaired_count"
+                    ]
                 else:
                     raise ValueError("unsupported base data entity")
                 key = {"create": "created_count", "update": "updated_count", "delete": "deleted_count", "replace": "updated_count"}.get(action)
@@ -446,21 +479,6 @@ class RailTransitBaseDataRepository:
                             if str(value).strip()
                         }
                     )
-            has_station_change = any(
-                str(change.get("entity_type") or "") == "station" for change in changes
-            )
-            has_plan_change = any(
-                str(change.get("entity_type") or "") == "trackside_ap_plan"
-                for change in changes
-            )
-            if has_station_change and not has_plan_change:
-                connection.execute(
-                    """
-                    UPDATE rail_ap_vlan_plans
-                    SET revision = revision + 1, updated_at = ?
-                    """,
-                    (self._now(),),
-                )
             self._assert_integrity(connection)
             if metadata_changes:
                 metadata = dict(current_metadata)
@@ -563,39 +581,60 @@ class RailTransitBaseDataRepository:
         connection: sqlite3.Connection,
         site_id: str,
         action: str,
+        entity_id: Any,
         values: Mapping[str, Any],
     ) -> None:
+        station_id = str(values.get("station_id") or entity_id or "").strip()
         old_name = str(values.get("old_name") or values.get("name") or "").strip()
         name = str(values.get("name") or "").strip()
         if action == "delete":
             formal_station = connection.execute(
                 """
                 SELECT 1 FROM ap_extension_points
-                WHERE belong_type = '__base_station__' AND station_name = ?
+                WHERE belong_type = '__base_station__'
+                  AND ((? != '' AND station_id = ?) OR (? = '' AND station_name = ?))
                 LIMIT 1
                 """,
-                (old_name,),
+                (station_id, station_id, station_id, old_name),
             ).fetchone()
             if formal_station is None:
                 self._delete_station_and_unlink_references(connection, old_name)
                 return
-            if self._station_reference_count(connection, old_name):
+            if self._station_reference_count(
+                connection,
+                old_name,
+                station_id=station_id,
+            ):
                 raise RailTransitBaseDataConstraintError("站点仍被区间、轨旁 AP、关系或规划引用")
-            connection.execute(
-                "DELETE FROM rail_ap_vlan_group_members WHERE station_name = ?",
-                (old_name,),
-            )
-            connection.execute(
-                "DELETE FROM ac_trackside_ap_plan WHERE station_name = ?",
-                (old_name,),
-            )
-            connection.execute(
-                "DELETE FROM ap_extension_points WHERE belong_type = '__base_station__' AND station_name = ?",
-                (old_name,),
-            )
+            if station_id:
+                connection.execute(
+                    "DELETE FROM ac_trackside_ap_plan WHERE station_id = ?",
+                    (station_id,),
+                )
+                connection.execute(
+                    "DELETE FROM ap_extension_points "
+                    "WHERE belong_type = '__base_station__' AND station_id = ?",
+                    (station_id,),
+                )
+            else:
+                connection.execute(
+                    "DELETE FROM ac_trackside_ap_plan WHERE station_name = ?",
+                    (old_name,),
+                )
+                connection.execute(
+                    "DELETE FROM ap_extension_points "
+                    "WHERE belong_type = '__base_station__' AND station_name = ?",
+                    (old_name,),
+                )
             return
         if action in {"update", "replace"} and old_name != name:
-            self._migrate_station_name_references(connection, old_name, name)
+            self._migrate_station_name_references(
+                connection,
+                old_name,
+                name,
+                source_station_id=station_id,
+                target_station_id=station_id,
+            )
         if action == "replace":
             source_names = [
                 str(value).strip()
@@ -608,13 +647,35 @@ class RailTransitBaseDataRepository:
                 for value in values.get("merge_source_node_uids") or []
                 if str(value).strip() and str(value).strip() != target_uid
             ]
-            for source_name in dict.fromkeys(source_names):
-                self._migrate_station_name_references(connection, source_name, name)
-            self._coalesce_station_vlan_members(
-                connection,
-                station_name=name,
-                target_node_uid=target_uid,
-            )
+            source_ids = [
+                str(value).strip()
+                for value in values.get("merge_source_ids") or []
+                if str(value).strip() and str(value).strip() != station_id
+            ]
+            source_rows: list[tuple[str, str]] = []
+            if source_ids:
+                placeholders = ", ".join("?" for _ in source_ids)
+                source_rows = [
+                    (str(row["station_id"] or ""), str(row["station_name"] or ""))
+                    for row in connection.execute(
+                        f"""
+                        SELECT station_id, station_name FROM ap_extension_points
+                        WHERE belong_type = '__base_station__'
+                          AND station_id IN ({placeholders})
+                        """,
+                        list(dict.fromkeys(source_ids)),
+                    ).fetchall()
+                ]
+            else:
+                source_rows = [("", source_name) for source_name in dict.fromkeys(source_names)]
+            for source_id, source_name in source_rows:
+                self._migrate_station_name_references(
+                    connection,
+                    source_name,
+                    name,
+                    source_station_id=source_id,
+                    target_station_id=station_id,
+                )
             if source_uids:
                 self._migrate_section_node_uids(
                     connection,
@@ -622,7 +683,17 @@ class RailTransitBaseDataRepository:
                     target_uid=target_uid,
                 )
             self._assert_no_section_self_loops(connection)
-            if source_names:
+            if source_ids:
+                placeholders = ", ".join("?" for _ in source_ids)
+                connection.execute(
+                    f"""
+                    DELETE FROM ap_extension_points
+                    WHERE belong_type = '__base_station__'
+                      AND station_id IN ({placeholders})
+                    """,
+                    list(dict.fromkeys(source_ids)),
+                )
+            elif source_names:
                 placeholders = ", ".join("?" for _ in source_names)
                 connection.execute(
                     f"""
@@ -632,53 +703,12 @@ class RailTransitBaseDataRepository:
                     """,
                     list(dict.fromkeys(source_names)),
                 )
-        self._replace_metadata_row(connection, site_id, "station", old_name, values)
-
-    @staticmethod
-    def _coalesce_station_vlan_members(
-        connection: sqlite3.Connection,
-        *,
-        station_name: str,
-        target_node_uid: str,
-    ) -> None:
-        rows = connection.execute(
-            """
-            SELECT group_id, station_id
-            FROM rail_ap_vlan_group_members
-            WHERE station_name = ?
-            ORDER BY station_sequence, group_id, station_id
-            """,
-            (station_name,),
-        ).fetchall()
-        if not rows:
-            return
-        keep = rows[0]
-        for row in rows[1:]:
-            connection.execute(
-                """
-                DELETE FROM rail_ap_vlan_group_members
-                WHERE group_id = ? AND station_id = ?
-                """,
-                (str(row["group_id"]), str(row["station_id"])),
-            )
-        identity_source = target_node_uid or station_name.casefold()
-        prefix = "station" if target_node_uid else "legacy-station"
-        target_station_id = (
-            f"{prefix}:{hashlib.sha1(identity_source.encode('utf-8')).hexdigest()[:12]}"
-        )
-        connection.execute(
-            """
-            UPDATE rail_ap_vlan_group_members
-            SET station_id = ?, station_name = ?, updated_at = ?
-            WHERE group_id = ? AND station_id = ?
-            """,
-            (
-                target_station_id,
-                station_name,
-                RailTransitBaseDataRepository._now(),
-                str(keep["group_id"]),
-                str(keep["station_id"]),
-            ),
+        self._replace_metadata_row(
+            connection,
+            site_id,
+            "station",
+            old_name,
+            {**dict(values), "station_id": station_id},
         )
 
     def _migrate_station_name_references(
@@ -686,17 +716,59 @@ class RailTransitBaseDataRepository:
         connection: sqlite3.Connection,
         old_name: str,
         new_name: str,
+        *,
+        source_station_id: str = "",
+        target_station_id: str = "",
     ) -> None:
-        if not old_name or old_name == new_name:
+        if not old_name:
+            return
+        if old_name == new_name and (
+            not target_station_id or source_station_id == target_station_id
+        ):
             return
         now = self._now()
-        connection.execute(
-            """
-            UPDATE ap_extension_points SET station_name = ?, updated_at = ?
-            WHERE station_name = ? AND belong_type != '__base_station__'
-            """,
-            (new_name, now, old_name),
-        )
+        if source_station_id:
+            connection.execute(
+                """
+                UPDATE ap_extension_points
+                SET station_id = ?, station_name = ?, updated_at = ?
+                WHERE belong_type != '__base_station__'
+                  AND (station_id = ? OR (station_id = '' AND station_name = ?))
+                """,
+                (
+                    target_station_id or source_station_id,
+                    new_name,
+                    now,
+                    source_station_id,
+                    old_name,
+                ),
+            )
+            connection.execute(
+                "UPDATE devices SET station_id = ?, station = ?, updated_at = ? "
+                "WHERE station_id = ? OR (station_id = '' AND station = ?)",
+                (
+                    target_station_id or source_station_id,
+                    new_name,
+                    now,
+                    source_station_id,
+                    old_name,
+                ),
+            )
+        else:
+            connection.execute(
+                """
+                UPDATE ap_extension_points
+                SET station_id = ?, station_name = ?, updated_at = ?
+                WHERE station_name = ? AND belong_type != '__base_station__'
+                """,
+                (target_station_id, new_name, now, old_name),
+            )
+            if target_station_id:
+                connection.execute(
+                    "UPDATE devices SET station_id = ?, station = ?, updated_at = ? "
+                    "WHERE station_id = '' AND station = ?",
+                    (target_station_id, new_name, now, old_name),
+                )
         connection.execute(
             "UPDATE ap_extension_points SET section_start_station = ?, updated_at = ? WHERE section_start_station = ?",
             (new_name, now, old_name),
@@ -705,18 +777,59 @@ class RailTransitBaseDataRepository:
             "UPDATE ap_extension_points SET section_end_station = ?, updated_at = ? WHERE section_end_station = ?",
             (new_name, now, old_name),
         )
-        connection.execute(
-            "UPDATE ac_trackside_ap_plan SET station_name = ?, updated_at = ? WHERE station_name = ?",
-            (new_name, now, old_name),
-        )
-        connection.execute(
-            """
-            UPDATE rail_ap_vlan_group_members
-            SET station_name = ?, updated_at = ?
-            WHERE station_name = ?
-            """,
-            (new_name, now, old_name),
-        )
+        if source_station_id:
+            effective_target_id = target_station_id or source_station_id
+            target_plan_exists = (
+                effective_target_id != source_station_id
+                and connection.execute(
+                    "SELECT 1 FROM ac_trackside_ap_plan "
+                    "WHERE mode = 'unified' AND station_id = ? LIMIT 1",
+                    (effective_target_id,),
+                ).fetchone()
+                is not None
+            )
+            if target_plan_exists:
+                connection.execute(
+                    "DELETE FROM ac_trackside_ap_plan "
+                    "WHERE mode = 'unified' "
+                    "AND (station_id = ? OR (station_id = '' AND station_name = ?))",
+                    (source_station_id, old_name),
+                )
+            else:
+                connection.execute(
+                    "UPDATE ac_trackside_ap_plan "
+                    "SET station_id = ?, station_name = ?, updated_at = ? "
+                    "WHERE station_id = ? OR (station_id = '' AND station_name = ?)",
+                    (
+                        effective_target_id,
+                        new_name,
+                        now,
+                        source_station_id,
+                        old_name,
+                    ),
+                )
+        else:
+            target_plan_exists = bool(
+                target_station_id
+                and connection.execute(
+                    "SELECT 1 FROM ac_trackside_ap_plan "
+                    "WHERE mode = 'unified' AND station_id = ? LIMIT 1",
+                    (target_station_id,),
+                ).fetchone()
+            )
+            if target_plan_exists:
+                connection.execute(
+                    "DELETE FROM ac_trackside_ap_plan "
+                    "WHERE mode = 'unified' AND station_id = '' AND station_name = ?",
+                    (old_name,),
+                )
+            else:
+                connection.execute(
+                    "UPDATE ac_trackside_ap_plan "
+                    "SET station_id = ?, station_name = ?, updated_at = ? "
+                    "WHERE station_name = ?",
+                    (target_station_id, new_name, now, old_name),
+                )
 
     def _migrate_section_node_uids(
         self,
@@ -791,37 +904,57 @@ class RailTransitBaseDataRepository:
         connection: sqlite3.Connection,
         site_id: str,
         action: str,
+        entity_id: Any,
         values: Mapping[str, Any],
     ) -> None:
+        section_id = str(values.get("section_id") or entity_id or "").strip()
         old_name = str(values.get("old_name") or values.get("name") or "").strip()
         old_start = str(values.get("old_start_station") or values.get("start_station") or "").strip()
         old_end = str(values.get("old_end_station") or values.get("end_station") or "").strip()
         old_side = str(values.get("old_line_side") or values.get("line_side") or "").strip()
         if action == "delete":
             self._delete_section_and_unlink_references(
-                connection, old_name, old_start, old_end, old_side
+                connection, old_name, old_start, old_end, old_side, section_id
             )
             return
         if action == "update":
             new_name = str(values.get("name") or "").strip()
             now = self._now()
-            connection.execute(
-                """
-                UPDATE ap_extension_points
-                SET section_name = ?, section_start_station = ?, section_end_station = ?, updated_at = ?
-                WHERE section_name = ? AND section_start_station = ? AND section_end_station = ?
-                  AND COALESCE(belong_type, '') NOT IN ('__base_station__', '__base_section__')
-                """,
-                (
-                    new_name,
-                    str(values.get("start_station") or "").strip(),
-                    str(values.get("end_station") or "").strip(),
-                    now,
-                    old_name,
-                    old_start,
-                    old_end,
-                ),
-            )
+            if section_id:
+                connection.execute(
+                    """
+                    UPDATE ap_extension_points
+                    SET section_name = ?, section_start_station = ?,
+                        section_end_station = ?, updated_at = ?
+                    WHERE section_id = ?
+                      AND COALESCE(belong_type, '') NOT IN ('__base_station__', '__base_section__')
+                    """,
+                    (
+                        new_name,
+                        str(values.get("start_station") or "").strip(),
+                        str(values.get("end_station") or "").strip(),
+                        now,
+                        section_id,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE ap_extension_points
+                    SET section_name = ?, section_start_station = ?, section_end_station = ?, updated_at = ?
+                    WHERE section_name = ? AND section_start_station = ? AND section_end_station = ?
+                      AND COALESCE(belong_type, '') NOT IN ('__base_station__', '__base_section__')
+                    """,
+                    (
+                        new_name,
+                        str(values.get("start_station") or "").strip(),
+                        str(values.get("end_station") or "").strip(),
+                        now,
+                        old_name,
+                        old_start,
+                        old_end,
+                    ),
+                )
             if new_name != old_name:
                 connection.execute(
                     """
@@ -832,7 +965,13 @@ class RailTransitBaseDataRepository:
                     """,
                     (new_name, now, old_name),
                 )
-        self._replace_metadata_row(connection, site_id, "section", old_name, values)
+        self._replace_metadata_row(
+            connection,
+            site_id,
+            "section",
+            old_name,
+            {**dict(values), "section_id": section_id},
+        )
 
     def _delete_station_and_unlink_references(
         self, connection: sqlite3.Connection, station_name: str
@@ -912,10 +1051,6 @@ class RailTransitBaseDataRepository:
             "DELETE FROM ac_trackside_ap_plan WHERE station_name = ?",
             (station_name,),
         )
-        connection.execute(
-            "DELETE FROM rail_ap_vlan_group_members WHERE station_name = ?",
-            (station_name,),
-        )
 
     def _delete_section_and_unlink_references(
         self,
@@ -924,6 +1059,7 @@ class RailTransitBaseDataRepository:
         start_station: str,
         end_station: str,
         line_side: str,
+        section_id: str = "",
     ) -> None:
         if not section_name:
             raise RailTransitBaseDataConstraintError("区间名称为空，无法删除")
@@ -932,15 +1068,15 @@ class RailTransitBaseDataRepository:
             """
             SELECT id, raw_payload_json FROM ap_extension_points
             WHERE COALESCE(belong_type, '') NOT IN ('__base_station__', '__base_section__')
-              AND section_name = ?
+              AND ((? != '' AND section_id = ?) OR (? = '' AND section_name = ?))
             """,
-            (section_name,),
+            (section_id, section_id, section_id, section_name),
         ).fetchall()
         for row in rows:
             connection.execute(
                 """
                 UPDATE ap_extension_points
-                SET section_name = '', section_start_station = '', section_end_station = '',
+                SET section_id = '', section_name = '', section_start_station = '', section_end_station = '',
                     line_side = '', direction = '', raw_payload_json = ?, updated_at = ?
                 WHERE id = ?
                 """,
@@ -953,10 +1089,19 @@ class RailTransitBaseDataRepository:
         connection.execute(
             """
             DELETE FROM ap_extension_points
-            WHERE belong_type = '__base_section__' AND section_name = ?
-              AND section_start_station = ? AND section_end_station = ? AND line_side = ?
+            WHERE belong_type = '__base_section__'
+              AND ((? != '' AND section_id = ?) OR (? = '' AND section_name = ?
+              AND section_start_station = ? AND section_end_station = ? AND line_side = ?))
             """,
-            (section_name, start_station, end_station, line_side),
+            (
+                section_id,
+                section_id,
+                section_id,
+                section_name,
+                start_station,
+                end_station,
+                line_side,
+            ),
         )
 
     def _replace_metadata_row(
@@ -1022,7 +1167,17 @@ class RailTransitBaseDataRepository:
         payload = {
             "site_id": site_id,
             "belong_type": marker,
+            "station_id": (
+                str(values.get("station_id") or "").strip()
+                if kind == "station"
+                else ""
+            ),
             "station_name": str(values.get("name") or "").strip() if kind == "station" else "",
+            "section_id": (
+                str(values.get("section_id") or "").strip()
+                if kind == "section"
+                else ""
+            ),
             "section_name": str(values.get("name") or "").strip() if kind == "section" else "",
             "section_start_station": str(values.get("start_station") or "").strip(),
             "section_end_station": str(values.get("end_station") or "").strip(),
@@ -1035,10 +1190,23 @@ class RailTransitBaseDataRepository:
             "created_at": now,
             "updated_at": now,
         }
-        existing = connection.execute(
-            f"SELECT id FROM ap_extension_points WHERE belong_type = ? AND {name_field} = ? ORDER BY id LIMIT 1",
-            (marker, old_name),
-        ).fetchone()
+        identity_field = "station_id" if kind == "station" else "section_id"
+        identity_value = str(values.get(identity_field) or "").strip()
+        if identity_value:
+            existing = connection.execute(
+                f"SELECT id FROM ap_extension_points WHERE belong_type = ? AND {identity_field} = ? ORDER BY id LIMIT 1",
+                (marker, identity_value),
+            ).fetchone()
+            if existing is None and old_name:
+                existing = connection.execute(
+                    f"SELECT id FROM ap_extension_points WHERE belong_type = ? AND {name_field} = ? ORDER BY id LIMIT 1",
+                    (marker, old_name),
+                ).fetchone()
+        else:
+            existing = connection.execute(
+                f"SELECT id FROM ap_extension_points WHERE belong_type = ? AND {name_field} = ? ORDER BY id LIMIT 1",
+                (marker, old_name),
+            ).fetchone()
         if existing is None:
             columns = list(payload)
             connection.execute(
@@ -1068,6 +1236,41 @@ class RailTransitBaseDataRepository:
                 raise RailTransitBaseDataConstraintError("轨旁 AP 不存在")
             return
         values = self._manual_ap_values(raw_values)
+        station_id = str(values.get("station_id") or "").strip()
+        section_id = str(values.get("section_id") or "").strip()
+        if station_id:
+            station = connection.execute(
+                """
+                SELECT station_name FROM ap_extension_points
+                WHERE belong_type = '__base_station__' AND station_id = ?
+                LIMIT 1
+                """,
+                (station_id,),
+            ).fetchone()
+            if station is None:
+                raise RailTransitBaseDataConstraintError(
+                    "轨旁 AP 引用的 station_id 不存在"
+                )
+            values["station_name"] = str(station["station_name"] or "")
+        if section_id:
+            section = connection.execute(
+                """
+                SELECT section_name, section_start_station, section_end_station
+                FROM ap_extension_points
+                WHERE belong_type = '__base_section__' AND section_id = ?
+                LIMIT 1
+                """,
+                (section_id,),
+            ).fetchone()
+            if section is None:
+                raise RailTransitBaseDataConstraintError(
+                    "轨旁 AP 引用的 section_id 不存在"
+                )
+            values.update(
+                section_name=str(section["section_name"] or ""),
+                section_start_station=str(section["section_start_station"] or ""),
+                section_end_station=str(section["section_end_station"] or ""),
+            )
         values.update(site_id=site_id, updated_at=self._now())
         if action == "create":
             values.setdefault("belong_type", "station" if values.get("station_name") else "section")
@@ -1086,6 +1289,57 @@ class RailTransitBaseDataRepository:
         )
         if cursor.rowcount != 1:
             raise RailTransitBaseDataConstraintError("轨旁 AP 不存在")
+
+    def _replace_device_station_bindings(
+        self,
+        connection: sqlite3.Connection,
+        values: Mapping[str, Any],
+    ) -> int:
+        bindings = values.get("bindings")
+        if not isinstance(bindings, list):
+            raise RailTransitBaseDataConstraintError("设备站点绑定格式无效")
+        updated = 0
+        seen: set[str] = set()
+        for raw in bindings:
+            if not isinstance(raw, Mapping):
+                raise RailTransitBaseDataConstraintError("设备站点绑定格式无效")
+            device_id = str(raw.get("device_id") or "").strip()
+            station_id = str(raw.get("station_id") or "").strip()
+            if not device_id or device_id in seen:
+                raise RailTransitBaseDataConstraintError("设备站点绑定包含重复或空设备 ID")
+            seen.add(device_id)
+            station = connection.execute(
+                """
+                SELECT station_name FROM ap_extension_points
+                WHERE belong_type = '__base_station__' AND station_id = ?
+                LIMIT 1
+                """,
+                (station_id,),
+            ).fetchone()
+            if station is None:
+                raise RailTransitBaseDataConstraintError(
+                    "设备绑定引用的 station_id 不存在"
+                )
+            cursor = connection.execute(
+                """
+                UPDATE devices
+                SET station_id = ?, station = ?, updated_at = ?
+                WHERE device_uuid = ? OR CAST(id AS TEXT) = ?
+                """,
+                (
+                    station_id,
+                    str(station["station_name"] or ""),
+                    self._now(),
+                    device_id,
+                    device_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise RailTransitBaseDataConstraintError(
+                    f"来源设备不存在: {device_id}"
+                )
+            updated += 1
+        return updated
 
     def _apply_mr_change(
         self,
@@ -1170,8 +1424,9 @@ class RailTransitBaseDataRepository:
     def _replace_trackside_ap_plan(
         self,
         connection: sqlite3.Connection,
+        site_id: str,
         values: Mapping[str, Any],
-    ) -> None:
+    ) -> dict[str, int]:
         rows = values.get("rows")
         if isinstance(rows, list):
             now = self._now()
@@ -1208,13 +1463,26 @@ class RailTransitBaseDataRepository:
                 "created_at",
                 "updated_at",
             )
+            repaired_count = 0
             for row in rows:
                 if not isinstance(row, Mapping):
                     raise RailTransitBaseDataConstraintError(
                         "轨旁 AP 规划行格式无效"
                     )
                 station_id = str(row.get("station_id") or "")
-                station_name = str(row.get("station_name") or "")
+                station, repaired = self._resolve_plan_station(
+                    connection,
+                    site_id=site_id,
+                    station_id=station_id,
+                    station_name=str(row.get("station_name") or ""),
+                )
+                repaired_count += int(repaired)
+                if station is None:
+                    raise RailTransitBaseDataConstraintError(
+                        "轨旁 AP 规划引用的 station_id 不存在："
+                        f"{station_id or '<empty>'}（展示名：{str(row.get('station_name') or '<empty>')}）"
+                    )
+                station_name = str(station["station_name"] or "")
                 sequence_no = int(row.get("sequence_no") or 0)
                 raw_management_vlan = row.get("management_vlan")
                 management_vlan = (
@@ -1249,7 +1517,10 @@ class RailTransitBaseDataRepository:
                         now,
                     ),
                 )
-            return
+            return {
+                "row_count": len(rows),
+                "station_id_repaired_count": repaired_count,
+            }
         planning = values.get("planning")
         if not isinstance(planning, Mapping):
             raise RailTransitBaseDataConstraintError(
@@ -1261,6 +1532,81 @@ class RailTransitBaseDataRepository:
             values,
             expected_revision=expected_revision,
         )
+        return {"row_count": 0, "station_id_repaired_count": 0}
+
+    def _resolve_plan_station(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        site_id: str,
+        station_id: str,
+        station_name: str,
+    ) -> tuple[sqlite3.Row | None, bool]:
+        row = connection.execute(
+            """
+            SELECT station_name FROM ap_extension_points
+            WHERE belong_type = '__base_station__' AND station_id = ?
+            LIMIT 1
+            """,
+            (station_id,),
+        ).fetchone()
+        if row is not None:
+            return row, False
+        name = str(station_name or "").strip()
+        if not station_id or not name:
+            return None, False
+        references = connection.execute(
+            """
+            SELECT COUNT(*) FROM ap_extension_points
+            WHERE station_name = ? OR section_start_station = ? OR section_end_station = ?
+            """,
+            (name, name, name),
+        ).fetchone()
+        if references is None or int(references[0] or 0) <= 0:
+            return None, False
+        node_uid = str(
+            uuid5(
+                NAMESPACE_URL,
+                f"netconsole:{site_id}:station:legacy:{name}",
+            )
+        )
+        expected_id = f"station:{hashlib.sha1(node_uid.encode('utf-8')).hexdigest()[:12]}"
+        if station_id != expected_id:
+            return None, False
+        now = self._now()
+        metadata = {
+            "node_uid": node_uid,
+            "canonical_station_name": name,
+            "node_type": "station",
+            "path_code": "MAIN",
+            "participates_in_direction": True,
+            "enabled": True,
+            "source_kind": "legacy_ap_derived",
+        }
+        connection.execute(
+            """
+            INSERT INTO ap_extension_points (
+                site_id, belong_type, station_id, station_name, ap_point_code,
+                source_file, raw_payload_json, created_at, updated_at
+            ) VALUES (?, '__base_station__', ?, ?, '-', 'legacy-plan-repair', ?, ?, ?)
+            """,
+            (
+                site_id,
+                station_id,
+                name,
+                json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+                now,
+                now,
+            ),
+        )
+        return connection.execute(
+            """
+            SELECT station_name FROM ap_extension_points
+            WHERE belong_type = '__base_station__' AND station_id = ?
+            LIMIT 1
+            """,
+            (station_id,),
+        ).fetchone(), True
 
     @classmethod
     def _manual_ap_values(cls, raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -1271,15 +1617,24 @@ class RailTransitBaseDataRepository:
         return values
 
     @staticmethod
-    def _station_reference_count(connection: sqlite3.Connection, name: str) -> int:
+    def _station_reference_count(
+        connection: sqlite3.Connection,
+        name: str,
+        *,
+        station_id: str = "",
+    ) -> int:
         return RailTransitBaseDataRepository._station_reference_summary(
-            connection, name
+            connection,
+            name,
+            station_id=station_id,
         )["total_count"]
 
     @staticmethod
     def _station_reference_summary(
         connection: sqlite3.Connection,
         name: str,
+        *,
+        station_id: str = "",
     ) -> dict[str, int]:
         rows = connection.execute(
             """
@@ -1319,11 +1674,41 @@ class RailTransitBaseDataRepository:
         }
         section_start_count = len(section_start_refs)
         section_end_count = len(section_end_refs)
-        ap_count = sum(
-            row["belong_type"] not in {"__base_station__", "__base_section__"}
-            and str(row["station_name"] or "") == name
-            for row in rows
-        )
+        if station_id:
+            ap_row = connection.execute(
+                """
+                SELECT COUNT(*) FROM ap_extension_points
+                WHERE belong_type NOT IN ('__base_station__', '__base_section__')
+                  AND (
+                    station_id = ?
+                    OR (station_id = '' AND station_name = ?)
+                  )
+                """,
+                (station_id, name),
+            ).fetchone()
+            ap_count = int(ap_row[0] if ap_row else 0)
+            device_row = connection.execute(
+                "SELECT COUNT(*) FROM devices WHERE station_id = ?",
+                (station_id,),
+            ).fetchone()
+            device_count = int(device_row[0] if device_row else 0)
+            plan_row = connection.execute(
+                "SELECT COUNT(*) FROM ac_trackside_ap_plan "
+                "WHERE mode = 'unified' AND station_id = ?",
+                (station_id,),
+            ).fetchone()
+        else:
+            ap_count = sum(
+                row["belong_type"] not in {"__base_station__", "__base_section__"}
+                and str(row["station_name"] or "") == name
+                for row in rows
+            )
+            device_count = 0
+            plan_row = connection.execute(
+                "SELECT COUNT(*) FROM ac_trackside_ap_plan "
+                "WHERE mode = 'unified' AND station_name = ? AND station_id = ''",
+                (name,),
+            ).fetchone()
         endpoint_extension_refs: set[tuple[str, str, str, str]] = set()
         for row in rows:
             if row["belong_type"] != "__base_section__":
@@ -1349,19 +1734,21 @@ class RailTransitBaseDataRepository:
                     )
                 )
         endpoint_extension_count = len(endpoint_extension_refs)
-        plan_row = connection.execute(
-            "SELECT COUNT(*) FROM rail_ap_vlan_group_members WHERE station_name = ?",
-            (name,),
-        ).fetchone()
         plan_count = int(plan_row[0] if plan_row else 0)
         relation_count = 0
         total_count = (
-            section_start_count + section_end_count + ap_count + relation_count
+            section_start_count
+            + section_end_count
+            + ap_count
+            + device_count
+            + plan_count
+            + relation_count
         )
         return {
             "section_start_count": section_start_count,
             "section_end_count": section_end_count,
             "ap_count": ap_count,
+            "device_count": device_count,
             "relation_count": relation_count,
             "endpoint_extension_count": endpoint_extension_count,
             "plan_count": plan_count,
@@ -1431,15 +1818,21 @@ class RailTransitBaseDataRepository:
         action = str(change.get("action") or "")
         if entity_type == "station" and action != "delete":
             return 10
+        if entity_type == "device_station_binding":
+            return 15
         if entity_type == "section" and action != "delete":
             return 20
         if entity_type == "trackside_ap":
             return 30
-        if entity_type == "section" and action == "delete":
+        if entity_type == "trackside_ap_plan":
             return 40
-        if entity_type == "station" and action == "delete":
+        if entity_type == "vehicle_mr":
             return 50
-        return 25
+        if entity_type == "section" and action == "delete":
+            return 60
+        if entity_type == "station" and action == "delete":
+            return 70
+        return 5
 
     @staticmethod
     def _connection_hash(connection: sqlite3.Connection) -> str:

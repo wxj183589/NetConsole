@@ -17,7 +17,15 @@ MergeResult = Literal[
     "INVALID",
     "NEEDS_CONFIRMATION",
 ]
-BaseDataEntityType = Literal["site_metadata", "station", "section", "trackside_ap", "vehicle_mr", "trackside_ap_plan"]
+BaseDataEntityType = Literal[
+    "site_metadata",
+    "station",
+    "device_station_binding",
+    "section",
+    "trackside_ap",
+    "vehicle_mr",
+    "trackside_ap_plan",
+]
 BaseDataChangeAction = Literal["create", "update", "delete", "replace"]
 StationNodeType = Literal["station", "parking_lot", "depot", "connection_point", "other", "unknown"]
 StationStructureType = Literal["underground", "elevated", "at_grade", "cutting", "mixed", "unknown"]
@@ -112,6 +120,10 @@ class BaseDataSaveResultDTO(ApiModel):
     created_count: int = 0
     updated_count: int = 0
     deleted_count: int = 0
+    device_binding_count: int = 0
+    planning_row_count: int = 0
+    station_id_repaired_count: int = 0
+    ap_identity_refreshed: bool = False
     warnings: list[str] = Field(default_factory=list)
     validation_issues: list[BaseDataValidationIssueDTO] = Field(default_factory=list)
 
@@ -289,6 +301,7 @@ class StationSourceIssueDTO(ApiModel):
 
 class StationSourceCandidateDTO(ApiModel):
     candidate_id: str
+    source_device_ids: list[str] = Field(default_factory=list)
     source_station_value: str
     source_station_key: str
     source_order_text: str = ""
@@ -347,6 +360,7 @@ class StationReferenceSummaryDTO(ApiModel):
     section_start_count: int = 0
     section_end_count: int = 0
     ap_count: int = 0
+    device_count: int = 0
     relation_count: int = 0
     endpoint_extension_count: int = 0
     plan_count: int = 0
@@ -547,8 +561,25 @@ class TracksideApDTO(ApiModel):
     mac: str = ""
     management_ip: str = ""
     model: str = ""
+    station_id: str = ""
     station: str = ""
+    section_id: str = ""
     section: str = ""
+    station_relation_status: Literal["resolved", "missing", "ambiguous", "stale"] = "missing"
+    section_relation_status: Literal["resolved", "missing", "ambiguous", "stale"] = "missing"
+    candidate_station_ids: list[str] = Field(default_factory=list)
+    candidate_section_ids: list[str] = Field(default_factory=list)
+    identity_entity_id: str = ""
+    identity_match_status: str = "unresolved"
+    identity_match_source: str = ""
+    lldp_suggestion_status: Literal["none", "suggested", "ambiguous"] = "none"
+    lldp_suggested_station_id: str = ""
+    lldp_suggested_station_name: str = ""
+    lldp_suggestion_switch_device_id: str = ""
+    lldp_suggestion_switch_name: str = ""
+    lldp_suggestion_interface: str = ""
+    lldp_observed_neighbor_mac: str = ""
+    lldp_observed_at: str = ""
     section_start_station: str = ""
     section_end_station: str = ""
     mileage: MileageDTO

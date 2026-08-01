@@ -22,6 +22,7 @@ import { isFeatureEnabled } from '../../features'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import TracksideApPlanningTab from '../../components/rail-transit/base-data/TracksideApPlanningTab.vue'
+import { reconcileTracksideApPlans } from '../../components/rail-transit/base-data/tracksideApPlanDraft'
 import { useRailTransitBaseDataStore } from '../../stores/railTransitBaseData'
 import { useTaskStore } from '../../stores/tasks'
 import type {
@@ -75,7 +76,7 @@ const apBaseTaskTypes = new Set([
   'web_export_trackside_ap_base_xlsx',
   'web_export_trackside_ap_rename_commands',
 ])
-type BaseDataEditState = 'LOCKED' | 'UNLOCKED_CLEAN' | 'UNLOCKED_DIRTY' | 'VALIDATING' | 'SAVING' | 'SAVE_FAILED'
+type BaseDataEditState = 'CLEAN' | 'DIRTY' | 'VALIDATING' | 'SAVING' | 'SAVE_FAILED' | 'READ_ONLY'
 interface BaseDataDraft {
   metadata: {
     line_name: string
@@ -94,6 +95,12 @@ interface BaseDataDraft {
   stations: Station[]
   sections: Section[]
   aps: TracksideAp[]
+  tracksideApPlans: TracksideApPlanRow[]
+  deviceStationBindings: Array<{
+    device_id: string
+    station_id: string
+    source: 'station_source_preview' | 'manual' | 'migration'
+  }>
   mrs: VehicleMr[]
 }
 interface StationReferencePatch {
@@ -108,34 +115,31 @@ interface StationCombinationDiff {
   current: unknown
   proposed: unknown
 }
-const editState = ref<BaseDataEditState>('LOCKED')
+const editState = ref<BaseDataEditState>('READ_ONLY')
 const pendingChanges = ref<Record<string, BaseDataChange>>({})
 const baselines = new Map<string, Record<string, unknown>>()
 const stationReferencePatches = new Map<string, StationReferencePatch[]>()
 const serverSnapshot = ref<BaseDataDraft | null>(null)
 const editingDraft = ref<BaseDataDraft | null>(null)
-const planningDraft = ref<TracksideApPlanRow[] | null>(null)
-const planningDirty = ref(false)
+const planningValid = ref(true)
 const saveIssues = ref<BaseDataValidationIssue[]>([])
 const fieldErrors = ref<Record<string, string>>({})
-const planningTab = ref<{
-  reload: (force?: boolean) => Promise<boolean>
-  reloadPlan?: (force?: boolean) => Promise<boolean>
-} | null>(null)
 const allowedTabs = new Set(['overview', 'stations', 'trackside-ap', 'trackside-ap-planning', 'trains', 'quality', 'import-preview', 'import-audit', 'relations'])
 const activeTab = computed({
   get: () => allowedTabs.has(String(route.query.tab || '')) ? String(route.query.tab) : 'overview',
   set: (value: string) => { void router.replace({ query: { ...route.query, tab: value } }) },
 })
-const locked = computed(() => editState.value === 'LOCKED')
+const readOnly = computed(() => editState.value === 'READ_ONLY')
 const saving = computed(() => editState.value === 'VALIDATING' || editState.value === 'SAVING')
-const editing = computed(() => !locked.value)
+const editing = computed(() => !readOnly.value)
 const stationRows = computed(() => editingDraft.value?.stations ?? store.stations)
 const sectionRows = computed(() => editingDraft.value?.sections ?? store.sections)
 const apRows = computed(() => editingDraft.value?.aps ?? store.aps)
 const mrRows = computed(() => editingDraft.value?.mrs ?? store.mrs)
+const planningRows = computed(() => editingDraft.value?.tracksideApPlans ?? store.tracksideApPlans)
+const planningDirty = computed(() => JSON.stringify(editingDraft.value?.tracksideApPlans ?? [])
+  !== JSON.stringify(serverSnapshot.value?.tracksideApPlans ?? []))
 const dirty = computed(() => Object.keys(pendingChanges.value).length > 0 || planningDirty.value)
-const canUnlock = computed(() => Boolean(store.editSession?.can_write))
 const writeDeniedReason = computed(() => store.editSession?.write_denial_reason || '')
 const locationTab = ref('stations')
 const vehicleTab = ref('trains')
@@ -390,7 +394,11 @@ const apColumns: NcTableColumn<TracksideAp>[] = [
   { key: 'mac', label: 'AP MAC', valueType: 'mac', minWidth: 150 },
   { key: 'management_ip', label: '管理 IP', valueType: 'ip', minWidth: 125, displayValue: (row) => display(row.management_ip) },
   { key: 'station', label: '站点', minWidth: 130, displayValue: (row) => display(row.station) },
+  { key: 'station_relation_status', label: '站点关联', valueType: 'status', width: 110 },
   { key: 'section', label: '区间', minWidth: 170, displayValue: (row) => display(row.section) },
+  { key: 'section_relation_status', label: '区间关联', valueType: 'status', width: 110 },
+  { key: 'identity_match_status', label: 'AP Identity', valueType: 'status', width: 125 },
+  { key: 'lldp_suggested_station_id', label: 'LLDP 建议站点', minWidth: 210 },
   { key: 'location_class', label: '位置类型', valueType: 'status', minWidth: 135, displayValue: (row) => apLocationLabel(row) },
   { key: 'participates_in_mainline', label: '参与正线', valueType: 'status', width: 110, displayValue: (row) => row.participates_in_mainline ? '是' : '否' },
   { key: 'mileage', label: '里程', valueType: 'mileage', minWidth: 120, displayValue: (row) => row.mileage.normalized || row.mileage.raw || '--' },
@@ -548,7 +556,7 @@ const relationColumns: NcTableColumn<Relation>[] = [
 ]
 
 const stationEditColumns = computed<NcTableColumn<Station>[]>(() => [
-  ...(locked.value ? [] : [{ key: 'selection', label: '选择', type: 'selection', width: 48, hideable: false } as NcTableColumn<Station>]),
+  ...(readOnly.value ? [] : [{ key: 'selection', label: '选择', type: 'selection', width: 48, hideable: false } as NcTableColumn<Station>]),
   ...stationColumns,
   { key: 'edit_actions', label: '操作', valueType: 'actions', width: 90, fixed: 'right', hideable: false },
 ])
@@ -572,15 +580,10 @@ watch(stationRows, async (rows) => {
   }
 })
 
-watch(locked, (value) => {
-  if (value) clearStationSelection()
-})
-
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibility)
   window.addEventListener('beforeunload', beforeUnload)
-  store.startPolling()
-  void store.refreshImportGovernance().catch(() => undefined)
+  void initializeEditing()
   void taskStore.refresh().then(() => {
     apBaseTaskId.value = taskStore.tasks.find(
       (item) => apBaseTaskTypes.has(item.type) && activeTaskStateSet.has(item.status),
@@ -596,7 +599,7 @@ onBeforeRouteLeave(async () => !dirty.value || confirmUnsavedChanges())
 
 function handleVisibility(): void {
   if (document.hidden) store.stopPolling()
-  else if (locked.value) store.startPolling()
+  else if (readOnly.value) store.startPolling()
 }
 
 function beforeUnload(event: BeforeUnloadEvent): void {
@@ -605,26 +608,21 @@ function beforeUnload(event: BeforeUnloadEvent): void {
   event.returnValue = ''
 }
 
-async function toggleLock(): Promise<void> {
-  if (locked.value) {
-    try {
-      const session = await loadConsistentEditSnapshot()
-      if (!session.can_write) {
-        store.startPolling()
-        ElMessage.warning(session.write_denial_reason || '当前局点基础资料写入未授权')
-        return
-      }
-      captureBaselines()
-      editState.value = 'UNLOCKED_CLEAN'
-    } catch (cause) {
-      editState.value = 'LOCKED'
+async function initializeEditing(): Promise<void> {
+  try {
+    const session = await loadConsistentEditSnapshot()
+    if (!session.can_write) {
+      editState.value = 'READ_ONLY'
       store.startPolling()
-      ElMessage.error(message(cause, '基础资料编辑会话加载失败'))
+      return
     }
-    return
+    captureBaselines()
+    editState.value = 'CLEAN'
+  } catch (cause) {
+    editState.value = 'READ_ONLY'
+    store.startPolling()
+    ElMessage.error(message(cause, '基础资料编辑会话加载失败'))
   }
-  if (dirty.value) await confirmUnsavedChanges()
-  else lockClean()
 }
 
 async function loadConsistentEditSnapshot() {
@@ -632,7 +630,7 @@ async function loadConsistentEditSnapshot() {
   let before = await store.refreshEditSession()
   if (!before.can_write) return before
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    await Promise.all([store.manualRefresh(), reloadPlanningPlan(true)])
+    await store.manualRefresh()
     const after = await store.refreshEditSession()
     if (before.base_revision === after.base_revision) return after
     before = after
@@ -640,31 +638,13 @@ async function loadConsistentEditSnapshot() {
   throw new Error('基础资料在加载期间持续变化，请稍后重试')
 }
 
-function reloadPlanningPlan(force = false): Promise<boolean> {
-  if (!planningTab.value) return Promise.resolve(true)
-  return planningTab.value.reloadPlan
-    ? planningTab.value.reloadPlan(force)
-    : planningTab.value.reload(force)
-}
-
-function lockClean(): void {
-  editState.value = 'LOCKED'
-  baselines.clear()
-  stationReferencePatches.clear()
-  fieldErrors.value = {}
-  serverSnapshot.value = null
-  editingDraft.value = null
-  clearStationSelection()
-  store.startPolling()
-}
-
 async function confirmUnsavedChanges(): Promise<boolean> {
   const choice = await confirmChoice({
     type: 'WARNING',
     title: '存在未保存的修改',
-    message: '当前基础资料存在尚未保存的修改。锁定或离开前请选择如何处理。',
-    confirmText: '保存并锁定',
-    secondaryText: '放弃修改并锁定',
+    message: '当前基础资料存在尚未保存的修改，请选择保存、放弃或继续编辑。',
+    confirmText: '保存',
+    secondaryText: '放弃修改',
     cancelText: '取消',
   })
   if (choice === 'cancel') return false
@@ -675,38 +655,42 @@ async function confirmUnsavedChanges(): Promise<boolean> {
 
 async function discardChanges(): Promise<void> {
   pendingChanges.value = {}
-  planningDirty.value = false
   saveIssues.value = []
   fieldErrors.value = {}
-  editState.value = 'LOCKED'
-  baselines.clear()
   stationReferencePatches.clear()
-  serverSnapshot.value = null
-  editingDraft.value = null
+  editingDraft.value = serverSnapshot.value ? cloneDto(serverSnapshot.value) : null
+  editState.value = readOnly.value ? 'READ_ONLY' : 'CLEAN'
   clearStationSelection()
-  await Promise.all([
-    store.manualRefresh(),
-    store.refreshEditSession(),
-    planningTab.value?.reload(true),
-  ])
-  store.startPolling()
 }
 
 async function refreshPage(): Promise<void> {
-  if (dirty.value && !(await confirmUnsavedChanges())) return
+  if (dirty.value) {
+    const accepted = await confirm({
+      type: 'WARNING',
+      title: '放弃未保存修改并刷新',
+      message: '刷新会放弃全部标签页中的当前草稿，是否继续？',
+      confirmText: '放弃并刷新',
+    })
+    if (!accepted) return
+  }
   try {
-    await Promise.all([
-      store.manualRefresh(),
-      store.refreshEditSession(),
-      planningTab.value?.reload(true),
-    ])
-    if (!locked.value) captureBaselines()
+    const session = await loadConsistentEditSnapshot()
+    pendingChanges.value = {}
+    if (session.can_write) {
+      captureBaselines()
+      editState.value = 'CLEAN'
+    } else {
+      editState.value = 'READ_ONLY'
+      editingDraft.value = null
+      serverSnapshot.value = null
+      store.startPolling()
+    }
   } catch (cause) { ElMessage.error(message(cause, '基础资料刷新失败')) }
 }
 
 async function openClearAllDialog(): Promise<void> {
-  if (locked.value) {
-    ElMessage.warning('请先解锁基础资料，再执行清空全部')
+  if (readOnly.value) {
+    ElMessage.warning(writeDeniedReason.value || '当前环境只读')
     return
   }
   if (dirty.value) {
@@ -725,26 +709,20 @@ async function openClearAllDialog(): Promise<void> {
 }
 
 async function executeClearAll(): Promise<void> {
-  if (!clearAllPreview.value || locked.value || dirty.value || saving.value) return
+  if (!clearAllPreview.value || readOnly.value || dirty.value || saving.value) return
   clearAllLoading.value = true
   try {
     const result = await store.clearAll(clearAllPreview.value)
     pendingChanges.value = {}
-    planningDirty.value = false
-    planningDraft.value = null
     saveIssues.value = []
     fieldErrors.value = {}
     baselines.clear()
     serverSnapshot.value = null
     editingDraft.value = null
     clearAllDialogVisible.value = false
-    editState.value = 'LOCKED'
-    await Promise.all([
-      store.manualRefresh(),
-      store.refreshEditSession(),
-      planningTab.value?.reload(true),
-    ])
-    store.startPolling()
+    await loadConsistentEditSnapshot()
+    captureBaselines()
+    editState.value = 'CLEAN'
     ElMessage.success(`已清空 ${result.deleted_station_count} 个站点、${result.deleted_section_count} 个区间，并解除 ${result.unlinked_trackside_ap_count} 条轨旁 AP 关联`)
   } catch (cause) {
     ElMessage.error(message(cause, '清空失败，数据库事务已回滚'))
@@ -754,19 +732,21 @@ async function executeClearAll(): Promise<void> {
 }
 
 async function beforeTabLeave(next: string, current: string): Promise<boolean> {
-  if (next === current) return true
-  if (saving.value) return false
-  return !dirty.value || confirmUnsavedChanges()
+  return next === current || !saving.value
 }
 
 async function saveAllChanges(successMessage = ''): Promise<boolean> {
   if (!store.editSession || saving.value || !dirty.value) return !dirty.value
   const changes = Object.values(pendingChanges.value)
-  if (planningDirty.value && planningDraft.value) {
+  if (!planningValid.value) {
+    ElMessage.error('轨旁 AP 规划存在阻断问题，请先修正')
+    return false
+  }
+  if (planningDirty.value && editingDraft.value) {
     changes.push({
       entity_type: 'trackside_ap_plan',
       action: 'replace',
-      values: { rows: planningDraft.value },
+      values: { rows: editingDraft.value.tracksideApPlans },
     })
   }
   editState.value = 'VALIDATING'
@@ -786,23 +766,16 @@ async function saveAllChanges(successMessage = ''): Promise<boolean> {
     editState.value = 'SAVING'
     const result = await store.saveChanges(changes)
     pendingChanges.value = {}
-    planningDirty.value = false
     saveIssues.value = []
     fieldErrors.value = {}
     baselines.clear()
     stationReferencePatches.clear()
-    editState.value = 'LOCKED'
-    serverSnapshot.value = null
-    editingDraft.value = null
-    void Promise.all([
-      store.manualRefresh(),
-      planningTab.value?.reload(true),
-    ]).catch(() => undefined).finally(() => {
-      store.startPolling()
-    })
+    await loadConsistentEditSnapshot()
+    captureBaselines()
+    editState.value = 'CLEAN'
     ElMessage.success(
       successMessage
-      || `基础资料已保存：新增 ${result.created_count}，更新 ${result.updated_count}，删除 ${result.deleted_count}${result.warnings.length ? `，提示 ${result.warnings.length}` : ''}`,
+      || `基础资料已保存：新增 ${result.created_count}，更新 ${result.updated_count}，删除 ${result.deleted_count}，规划 ${result.planning_row_count} 行，station_id 修复 ${result.station_id_repaired_count}，AP Identity ${result.ap_identity_refreshed ? '已刷新' : '无需刷新'}${result.warnings.length ? `，提示 ${result.warnings.length}` : ''}`,
     )
     return true
   } catch (cause) {
@@ -812,15 +785,8 @@ async function saveAllChanges(successMessage = ''): Promise<boolean> {
   }
 }
 
-async function saveTracksideApPlanning(): Promise<void> {
-  await saveAllChanges('轨旁 AP 规划已保存。')
-}
-
 async function cancelEditing(): Promise<void> {
-  if (!dirty.value) {
-    lockClean()
-    return
-  }
+  if (!dirty.value) return
   const accepted = await confirm({
     type: 'WARNING',
     title: '放弃基础资料修改',
@@ -851,6 +817,8 @@ function captureBaselines(): void {
     stations: cloneDto(store.stations),
     sections: cloneDto(store.sections.map((section) => defaultSection(section))),
     aps: cloneDto(store.aps),
+    tracksideApPlans: cloneDto(store.tracksideApPlans),
+    deviceStationBindings: [],
     mrs: cloneDto(store.mrs),
   }
   serverSnapshot.value = snapshot
@@ -863,19 +831,23 @@ function captureBaselines(): void {
   clearStationSelection()
 }
 
-function handlePlanningChange(rows: TracksideApPlanRow[], changed: boolean): void {
-  planningDraft.value = rows
-  planningDirty.value = changed
+function handlePlanningChange(rows: TracksideApPlanRow[]): void {
+  if (!editingDraft.value) return
+  editingDraft.value.tracksideApPlans = cloneDto(rows)
   updateEditState()
 }
 
+function handlePlanningValidation(valid: boolean): void {
+  planningValid.value = valid
+}
+
 function markMetadata(): void {
-  if (!editingDraft.value || locked.value) return
+  if (!editingDraft.value || readOnly.value) return
   recordChange('site_metadata', 'current', metadataValues(editingDraft.value.metadata))
 }
 
 function handleLineSideMappingChange(): void {
-  if (!editingDraft.value || locked.value) return
+  if (!editingDraft.value || readOnly.value) return
   markMetadata()
   for (const section of editingDraft.value.sections) {
     if (section.manual_override_fields?.includes('line_side')) continue
@@ -925,17 +897,13 @@ function markAp(row: TracksideAp): void { recordChange('trackside_ap', row.id, a
 function markMr(row: VehicleMr): void { recordChange('vehicle_mr', row.id, mrValues(row)) }
 
 function recordChange(entityType: BaseDataChange['entity_type'], entityId: string, values: Record<string, unknown>): void {
-  if (locked.value) return
+  if (readOnly.value) return
   clearFieldErrors(entityType, entityId)
   const key = changeKey(entityType, entityId)
   const baseline = baselines.get(key)
-  if (!baseline) {
-    baselines.set(key, cloneDto(values))
-    if (!entityId.startsWith('new:')) return
-  }
-  const action = entityId.startsWith('new:') ? 'create' : 'update'
-  const payload = action === 'update' ? withOriginalIdentity(entityType, values, baselines.get(key) || {}) : values
-  if (action === 'update' && JSON.stringify(values) === JSON.stringify(baselines.get(key))) delete pendingChanges.value[key]
+  const action = baseline ? 'update' : 'create'
+  const payload = baseline ? withOriginalIdentity(entityType, values, baseline) : values
+  if (action === 'update' && JSON.stringify(values) === JSON.stringify(baseline)) delete pendingChanges.value[key]
   else pendingChanges.value[key] = { entity_type: entityType, action, entity_id: entityId, values: payload }
   pendingChanges.value = { ...pendingChanges.value }
   updateEditState()
@@ -961,9 +929,9 @@ function clearFieldErrors(entityType: BaseDataChange['entity_type'], entityId: s
 }
 
 async function deleteEntity(entityType: BaseDataChange['entity_type'], row: Station | Section | TracksideAp | VehicleMr): Promise<void> {
-  if (locked.value) return
+  if (readOnly.value) return
   const key = changeKey(entityType, row.id)
-  if (row.id.startsWith('new:')) {
+  if (pendingChanges.value[key]?.action === 'create') {
     delete pendingChanges.value[key]
     baselines.delete(key)
     removeDraftRow(entityType, row.id)
@@ -984,7 +952,7 @@ async function deleteEntity(entityType: BaseDataChange['entity_type'], row: Stat
 }
 
 function handleStationSelection(rows: Station[]): void {
-  if (locked.value) {
+  if (readOnly.value) {
     selectedStationIds.value = []
     return
   }
@@ -997,7 +965,7 @@ function clearStationSelection(): void {
 }
 
 async function selectConflictStations(): Promise<void> {
-  if (locked.value) return
+  if (readOnly.value) return
   const ids = new Set(localStationConflictGroups.value.flatMap((group) => group.stations.map((station) => station.station_id)))
   selectedStationIds.value = [...ids]
   await nextTick()
@@ -1008,22 +976,25 @@ async function selectConflictStations(): Promise<void> {
 }
 
 async function deleteSelectedStations(): Promise<void> {
-  if (locked.value || !selectedStationIds.value.length) return
+  if (readOnly.value || !selectedStationIds.value.length) return
   await openStationDeletePreflight(selectedStationIds.value)
 }
 
 async function openStationDeletePreflight(stationIds: string[]): Promise<void> {
-  if (locked.value || !editingDraft.value || !store.editSession) return
+  if (readOnly.value || !editingDraft.value || !store.editSession) return
   const selected = stationRows.value.filter((row) => stationIds.includes(row.id))
-  const newRows = selected.filter((row) => row.id.startsWith('new:'))
+  const newRows = selected.filter((row) => pendingChanges.value[changeKey('station', row.id)]?.action === 'create')
   const localItems: StationDeletePreflightItem[] = newRows.map((row) => {
     const sectionStartCount = editingDraft.value?.sections.filter((item) => item.start_station === row.name).length || 0
     const sectionEndCount = editingDraft.value?.sections.filter((item) => item.end_station === row.name).length || 0
-    const apCount = editingDraft.value?.aps.filter((item) => item.station === row.name).length || 0
-    const planCount = planningDraft.value?.filter(
-      (item) => item.station_id === row.id || item.station_name === row.name,
+    const apCount = editingDraft.value?.aps.filter((item) => item.station_id === row.id).length || 0
+    const deviceCount = editingDraft.value?.deviceStationBindings.filter(
+      (item) => item.station_id === row.id,
     ).length || 0
-    const totalCount = sectionStartCount + sectionEndCount + apCount + planCount
+    const planCount = planningRows.value.filter(
+      (item) => item.station_id === row.id,
+    ).length || 0
+    const totalCount = sectionStartCount + sectionEndCount + apCount + deviceCount + planCount
     const status: StationDeletePreflightItem['status'] = row.is_line_terminal ? 'BLOCKED' : totalCount ? 'REQUIRES_MERGE' : 'SAFE_DELETE'
     return {
       station_id: row.id,
@@ -1043,6 +1014,7 @@ async function openStationDeletePreflight(stationIds: string[]): Promise<void> {
         section_start_count: sectionStartCount,
         section_end_count: sectionEndCount,
         ap_count: apCount,
+        device_count: deviceCount,
         relation_count: 0,
         endpoint_extension_count: editingDraft.value?.sections.filter((item) => item.section_kind === 'terminal_extension' && [item.start_station, item.end_station].includes(row.name)).length || 0,
         plan_count: planCount,
@@ -1050,7 +1022,8 @@ async function openStationDeletePreflight(stationIds: string[]): Promise<void> {
       },
     }
   })
-  const persistedIds = selected.filter((row) => !row.id.startsWith('new:')).map((row) => row.id)
+  const createdIds = new Set(newRows.map((row) => row.id))
+  const persistedIds = selected.filter((row) => !createdIds.has(row.id)).map((row) => row.id)
   if (!persistedIds.length) {
     stationDeletePreflightItems.value = localItems
     stationDeletePreflightVisible.value = true
@@ -1107,7 +1080,7 @@ function applySafeStationDeletes(): void {
 }
 
 function undoSelectedStationChanges(): void {
-  if (!editingDraft.value || locked.value) return
+  if (!editingDraft.value || readOnly.value) return
   const ids = new Set(selectedStationIds.value)
   for (const id of ids) {
     const key = changeKey('station', id)
@@ -1181,7 +1154,7 @@ function restoreStationReferencePatches(stationId: string): void {
 }
 
 function openStationCombination(memberIds = selectedStationIds.value): void {
-  if (locked.value) return
+  if (readOnly.value) return
   const members = stationRows.value.filter((station) => memberIds.includes(station.id))
   if (members.length < 2) {
     ElMessage.warning('至少选择两个站点才能合并')
@@ -1265,6 +1238,7 @@ function applyStationCombination(): void {
 function applyStationCombinationDraft(target: Station, sources: Station[], merged: Station): void {
   if (!editingDraft.value) return
   const sourceNames = new Set(sources.map((source) => source.name))
+  const sourceIds = new Set(sources.map((source) => source.id))
   if (target.name !== merged.name) sourceNames.add(target.name)
   const sourceUids = new Set(sources.map((source) => source.node_uid).filter(Boolean))
   for (const section of editingDraft.value.sections) {
@@ -1277,11 +1251,35 @@ function applyStationCombinationDraft(target: Station, sources: Station[], merge
   }
   for (const ap of editingDraft.value.aps) {
     const row = ap as unknown as Record<string, unknown>
+    if (sourceIds.has(ap.station_id)) {
+      recordStationReferencePatch(target.id, 'trackside_ap', ap.id, row, 'station_id', target.id)
+      recordStationReferencePatch(target.id, 'trackside_ap', ap.id, row, 'station', merged.name)
+      ap.station_relation_status = 'resolved'
+    }
     if (sourceNames.has(ap.station)) recordStationReferencePatch(target.id, 'trackside_ap', ap.id, row, 'station', merged.name)
     if (sourceNames.has(ap.section_start_station)) recordStationReferencePatch(target.id, 'trackside_ap', ap.id, row, 'section_start_station', merged.name)
     if (sourceNames.has(ap.section_end_station)) recordStationReferencePatch(target.id, 'trackside_ap', ap.id, row, 'section_end_station', merged.name)
     if (pendingChanges.value[changeKey('trackside_ap', ap.id)]) markAp(ap)
   }
+  for (const binding of editingDraft.value.deviceStationBindings) {
+    if (sourceIds.has(binding.station_id)) binding.station_id = target.id
+  }
+  const targetPlan = editingDraft.value.tracksideApPlans.find((row) => row.station_id === target.id)
+  const sourcePlan = editingDraft.value.tracksideApPlans.find((row) => sourceIds.has(row.station_id))
+  if (targetPlan) {
+    targetPlan.station_name = merged.name
+    targetPlan.sequence_no = merged.sort_order ?? targetPlan.sequence_no
+  }
+  if (!targetPlan && sourcePlan) {
+    sourcePlan.station_id = target.id
+    sourcePlan.station_name = merged.name
+    sourcePlan.sequence_no = merged.sort_order ?? sourcePlan.sequence_no
+    sourcePlan.relation_status = 'resolved'
+    sourcePlan.candidate_station_ids = []
+  }
+  editingDraft.value.tracksideApPlans = editingDraft.value.tracksideApPlans.filter(
+    (row) => !sourceIds.has(row.station_id),
+  )
   const targetIndex = editingDraft.value.stations.findIndex((row) => row.id === target.id)
   editingDraft.value.stations.splice(targetIndex, 1, merged)
   editingDraft.value.stations = editingDraft.value.stations.filter((row) => !sources.some((source) => source.id === row.id))
@@ -1320,7 +1318,7 @@ function applyStationCombinationDraft(target: Station, sources: Station[], merge
 }
 
 function openStationTableOverwrite(): void {
-  if (locked.value || selectedStations.value.length !== 2) {
+  if (readOnly.value || selectedStations.value.length !== 2) {
     ElMessage.warning('覆盖更新需要选择一个设备来源站点和一个正式目标站点')
     return
   }
@@ -1443,9 +1441,10 @@ function undoDelete(entityType: BaseDataChange['entity_type'], row: Station | Se
 
 function addStation(): void {
   if (!editingDraft.value) return
+  const nodeUid = newNodeUid()
   const row: Station = defaultStation({
-    id: temporaryId(),
-    node_uid: newNodeUid(),
+    id: `station:${nodeUid}`,
+    node_uid: nodeUid,
     line_name: store.summary?.line_name || '',
     path_code: editingDraft.value.metadata.main_path_code || 'MAIN',
     sort_order: editingDraft.value.stations.length + 1,
@@ -1459,7 +1458,7 @@ function addStation(): void {
 function addSection(): void {
   if (!editingDraft.value) return
   const row = defaultSection({
-    id: temporaryId(),
+    id: `section:${newNodeUid()}`,
     path_code: editingDraft.value.metadata.main_path_code || 'MAIN',
     source_kind: 'manual',
   })
@@ -1471,7 +1470,7 @@ function addAp(): void {
   editingDraft.value.aps.push(row); markAp(row)
 }
 function newTracksideAp(): TracksideAp {
-  return { id: temporaryId(), site_id: store.editSession?.site_id || '', line_name: store.summary?.line_name || '', name: '', point_code: '', vendor: '', mac: '', management_ip: '', model: '', station: '', section: '', section_start_station: '', section_end_station: '', mileage: { raw: '', normalized: '', meters: null, line_type: '', valid: false, error: '' }, line_side: '', line_side_source: 'unavailable', line_side_derivation_issue_code: '', line_side_derivation_issue_message: '', direction: '', location_class: 'MAINLINE', participates_in_mainline: true, location_class_source: 'DEFAULT_MAINLINE', location_class_conflict: false, radios: [], remark: '', source_file: '', source_sheet: '', source_row: null, updated_at: '', runtime: emptyRuntime(), issue_count: 0, highest_issue_severity: '', record_kind: 'manual', base_metadata: {} }
+  return { id: temporaryId(), site_id: store.editSession?.site_id || '', line_name: store.summary?.line_name || '', name: '', point_code: '', vendor: '', mac: '', management_ip: '', model: '', station_id: '', station: '', section_id: '', section: '', station_relation_status: 'missing', section_relation_status: 'missing', candidate_station_ids: [], candidate_section_ids: [], identity_entity_id: '', identity_match_status: 'unresolved', identity_match_source: '', lldp_suggestion_status: 'none', lldp_suggested_station_id: '', lldp_suggested_station_name: '', lldp_suggestion_switch_device_id: '', lldp_suggestion_switch_name: '', lldp_suggestion_interface: '', lldp_observed_neighbor_mac: '', lldp_observed_at: '', section_start_station: '', section_end_station: '', mileage: { raw: '', normalized: '', meters: null, line_type: '', valid: false, error: '' }, line_side: '', line_side_source: 'unavailable', line_side_derivation_issue_code: '', line_side_derivation_issue_message: '', direction: '', location_class: 'MAINLINE', participates_in_mainline: true, location_class_source: 'DEFAULT_MAINLINE', location_class_conflict: false, radios: [], remark: '', source_file: '', source_sheet: '', source_row: null, updated_at: '', runtime: emptyRuntime(), issue_count: 0, highest_issue_severity: '', record_kind: 'manual', base_metadata: {} }
 }
 function addMr(): void {
   if (!editingDraft.value) return
@@ -1480,7 +1479,7 @@ function addMr(): void {
 }
 
 function updateEditState(): void {
-  if (!locked.value && !saving.value) editState.value = dirty.value ? 'UNLOCKED_DIRTY' : 'UNLOCKED_CLEAN'
+  if (!readOnly.value && !saving.value) editState.value = dirty.value ? 'DIRTY' : 'CLEAN'
 }
 function changeKey(type: string, id: string): string { return `${type}:${id}` }
 function temporaryId(): string { return `new:${Date.now()}:${Math.random().toString(16).slice(2)}` }
@@ -1557,7 +1556,9 @@ function apValues(row: TracksideAp): Record<string, unknown> {
     ap_point_code: row.point_code,
     ap_vendor: row.vendor,
     ap_mac_display: row.mac,
+    station_id: row.station_id,
     station_name: row.station,
+    section_id: row.section_id,
     section_name: row.section,
     section_start_station: row.section_start_station,
     section_end_station: row.section_end_station,
@@ -1640,7 +1641,7 @@ function isStationTemplateSectionRowDisabled(row: StationTemplateSectionPreviewR
 }
 
 function canApplyStationTemplatePreview(): boolean {
-  return !locked.value
+  return !readOnly.value
     && (selectedTemplateRows.value.length > 0 || selectedTemplateSectionRows.value.length > 0)
     && !store.stationTemplatePreview?.blocking_count
 }
@@ -1720,6 +1721,8 @@ function syncAutomaticApLineSide(row: TracksideAp): boolean {
   row.line_side_derivation_issue_code = ''
   row.line_side_derivation_issue_message = ''
   row.section = section.name
+  row.section_id = section.id
+  row.section_relation_status = 'resolved'
   row.section_start_station = section.start_station
   row.section_end_station = section.end_station
   row.base_metadata = {
@@ -1747,7 +1750,32 @@ function syncAllAutomaticApLineSides(): void {
   for (const row of editingDraft.value.aps) syncAutomaticApLineSide(row)
 }
 
-function handleApSectionChange(row: TracksideAp): void {
+function handleApStationChange(row: TracksideAp, stationId: string): void {
+  const station = stationRows.value.find((item) => item.id === stationId)
+  row.station_id = stationId
+  row.station = station?.name || ''
+  row.station_relation_status = station ? 'resolved' : 'missing'
+  row.candidate_station_ids = []
+  markAp(row)
+}
+
+function applyLldpStationSuggestion(row: TracksideAp): void {
+  if (row.lldp_suggestion_status !== 'suggested' || !row.lldp_suggested_station_id) return
+  const station = stationRows.value.find((item) => item.id === row.lldp_suggested_station_id)
+  if (!station) {
+    ElMessage.warning('LLDP 建议引用的正式站点已不存在，请刷新后复核')
+    return
+  }
+  handleApStationChange(row, station.id)
+  ElMessage.success(`已将 LLDP 建议“${station.name}”应用到当前草稿，保存后才会写入数据库`)
+}
+
+function handleApSectionChange(row: TracksideAp, sectionId: string): void {
+  const section = sectionRows.value.find((item) => item.id === sectionId)
+  row.section_id = sectionId
+  row.section = section?.name || ''
+  row.section_relation_status = section ? 'resolved' : 'missing'
+  row.candidate_section_ids = []
   if (!syncAutomaticApLineSide(row)) markAp(row)
 }
 
@@ -1758,7 +1786,7 @@ async function openStationSourcePreview(): Promise<void> {
       preview.candidates.map((candidate) => [candidate.candidate_id, candidate.processing_strategy || (candidate.matched_station_id ? 'overwrite_existing' : candidate.match_status === 'create' ? 'create' : 'manual_target')]),
     )
     stationSourceTargets.value = Object.fromEntries(
-      preview.candidates.map((candidate) => [candidate.candidate_id, candidate.matched_station_id || candidate.matched_station_ids?.[0] || '']),
+      preview.candidates.map((candidate) => [candidate.candidate_id, candidate.matched_station_id || '']),
     )
     selectedStationSourceIds.value = preview.candidates
       .filter((candidate) => !isStationSourceCandidateDisabled(candidate) && stationSourceStrategies.value[candidate.candidate_id] !== 'ignore')
@@ -1818,8 +1846,8 @@ function toggleStationSourceCandidate(candidate: StationSourceCandidate, checked
 }
 
 function applyStationSourceToDraft(): void {
-  if (locked.value || !editingDraft.value) {
-    ElMessage.warning('请先解锁基础资料')
+  if (readOnly.value || !editingDraft.value) {
+    ElMessage.warning(writeDeniedReason.value || '当前环境只读')
     return
   }
   const selected = new Set(selectedStationSourceIds.value)
@@ -1829,6 +1857,20 @@ function applyStationSourceToDraft(): void {
     return
   }
   let applied = 0
+  const generatedStationIds = new Set<string>()
+  const bindSourceDevices = (candidate: StationSourceCandidate, stationId: string) => {
+    if (!stationId) return
+    generatedStationIds.add(stationId)
+    const deviceIds = new Set(candidate.source_device_ids || [])
+    editingDraft.value!.deviceStationBindings = [
+      ...editingDraft.value!.deviceStationBindings.filter((binding) => !deviceIds.has(binding.device_id)),
+      ...[...deviceIds].map((deviceId) => ({
+        device_id: deviceId,
+        station_id: stationId,
+        source: 'station_source_preview' as const,
+      })),
+    ]
+  }
   for (const candidate of candidates) {
     const strategy = stationSourceStrategy(candidate)
     if (strategy === 'ignore') continue
@@ -1849,6 +1891,7 @@ function applyStationSourceToDraft(): void {
       if (stationCombinationErrors(target, sources).length || stationCombinationSelfLoopError(target, sources)) continue
       const overwritten = overwriteStationFromSource(target, candidate)
       applyStationCombinationDraft(target, sources, overwritten)
+      bindSourceDevices(candidate, target.id)
       applied += 1
       continue
     }
@@ -1859,6 +1902,7 @@ function applyStationSourceToDraft(): void {
         if (overwritten.structure_type === 'unknown') overwritten.structure_type = 'underground'
         if (overwritten.platform_layout === 'unknown') overwritten.platform_layout = 'island'
       }
+      bindSourceDevices(candidate, matched.id)
       applied += 1
       continue
     }
@@ -1869,12 +1913,26 @@ function applyStationSourceToDraft(): void {
     proposed.source_sync_status = 'matched'
     editingDraft.value.stations.push(proposed)
     markStation(proposed)
+    bindSourceDevices(candidate, proposed.id)
     applied += 1
   }
   if (!applied) {
     ElMessage.warning('所选候选没有可应用的安全目标，请调整处理方式或目标站点')
     return
   }
+  editingDraft.value.tracksideApPlans = reconcileTracksideApPlans(
+    editingDraft.value.tracksideApPlans,
+    editingDraft.value.stations,
+    generatedStationIds,
+  )
+  pendingChanges.value[changeKey('device_station_binding', 'current')] = {
+    entity_type: 'device_station_binding',
+    action: 'replace',
+    entity_id: 'current',
+    values: { bindings: cloneDto(editingDraft.value.deviceStationBindings) },
+  }
+  pendingChanges.value = { ...pendingChanges.value }
+  updateEditState()
   stationSourceDialogVisible.value = false
   ElMessage.success(`已应用 ${applied} 个候选到当前草稿，保存后才会写入数据库`)
 }
@@ -1892,7 +1950,7 @@ async function downloadStationTemplate(): Promise<void> {
 
 async function startApBaseExport(template: boolean): Promise<void> {
   let draftRows: TracksideAp[] | undefined
-  if (!template && !locked.value && dirty.value) {
+  if (!template && !readOnly.value && dirty.value) {
     const choice = await confirmChoice({
       type: 'WARNING',
       title: '选择导出数据',
@@ -1944,7 +2002,7 @@ async function exportImportIssues(): Promise<void> {
 
 async function startApRenameCommandExport(): Promise<void> {
   let draftRows: TracksideAp[] | undefined
-  if (!locked.value && dirty.value) {
+  if (!readOnly.value && dirty.value) {
     const choice = await confirmChoice({
       type: 'WARNING',
       title: '选择导出数据',
@@ -2025,8 +2083,8 @@ function toggleTemplateSectionRow(row: StationTemplateSectionPreviewRow, checked
 }
 
 function applyStationTemplateToDraft(): void {
-  if (locked.value || !editingDraft.value) {
-    ElMessage.warning('请先解锁基础资料')
+  if (readOnly.value || !editingDraft.value) {
+    ElMessage.warning(writeDeniedReason.value || '当前环境只读')
     return
   }
   const selected = new Set(selectedTemplateRows.value)
@@ -2153,8 +2211,8 @@ function markSectionForDeletion(row: Section): void {
 }
 
 function applySectionGenerationToDraft(): void {
-  if (locked.value || !editingDraft.value) {
-    ElMessage.warning('请先解锁基础资料')
+  if (readOnly.value || !editingDraft.value) {
+    ElMessage.warning(writeDeniedReason.value || '当前环境只读')
     return
   }
   const selected = new Set(selectedSectionGenerationIds.value)
@@ -2201,7 +2259,7 @@ function applySectionGenerationToDraft(): void {
 }
 
 async function restoreSectionAutomaticValues(row: Section): Promise<void> {
-  if (locked.value || !editingDraft.value || !row.auto_generated || !row.generation_key) return
+  if (readOnly.value || !editingDraft.value || !row.auto_generated || !row.generation_key) return
   try {
     const preview = await store.previewSectionsFromDraft(
       cloneDto(editingDraft.value.metadata),
@@ -2275,7 +2333,7 @@ function manualDecisions(): MergeFieldDecision[] {
 }
 
 async function handleApply(): Promise<void> {
-  if (locked.value || !editingDraft.value || previewImportableCount.value <= 0) return
+  if (readOnly.value || !editingDraft.value || previewImportableCount.value <= 0) return
   try {
     const decisions = new Map(
       manualDecisions().map((item) => [decisionKey(item.row_number, item.field_name), item.action]),
@@ -2315,7 +2373,7 @@ async function handleApply(): Promise<void> {
       `有效数据已加入编辑草稿：新增 ${summary?.create_count || 0} 条，更新 ${summary?.update_count || 0} 条，不变 ${summary?.unchanged_count || 0} 条；`
       + `跳过冲突 ${summary?.conflict_count || 0} 条，无效 ${summary?.invalid_count || 0} 条。`
       + `${unmatched ? `${unmatched} 条记录暂未匹配 FIT-AP，不影响 MR 日志识别。` : ''}`
-      + `本次草稿应用 ${applied} 条，请点击页面顶部“保存并锁定”使其生效。`,
+      + `本次草稿应用 ${applied} 条，请点击页面顶部“保存”使其生效。`,
     )
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '导入应用失败')
@@ -2364,7 +2422,7 @@ function setApLocationClass(row: TracksideAp, locationClass: TracksideApLocation
 }
 
 function batchSetApLocationClass(): void {
-  if (locked.value || !selectedTracksideAps.value.length) return
+  if (readOnly.value || !selectedTracksideAps.value.length) return
   for (const row of selectedTracksideAps.value) {
     setApLocationClass(row, batchApLocationClass.value)
   }
@@ -2583,14 +2641,6 @@ function sectionSourceLabel(row: Section): string {
 
 <template>
   <section class="rail-base-data" v-loading="store.loading">
-    <el-alert
-      title="轨道交通基础资料"
-      :description="locked ? '当前处于锁定状态，数据仅可查看。点击“解锁”后可编辑。' : '当前处于编辑状态。修改不会自动生效，请点击“保存”提交。'"
-      :type="locked ? 'info' : 'warning'"
-      :closable="false"
-      show-icon
-    />
-
     <div class="page-toolbar">
       <div>
         <h2>轨道交通基础资料</h2>
@@ -2600,9 +2650,8 @@ function sectionSourceLabel(row: Section): string {
       <div class="toolbar-actions">
         <el-tag v-if="dirty" type="warning">未保存修改</el-tag>
         <el-button :icon="Refresh" :loading="store.loading" :disabled="saving" @click="refreshPage">刷新</el-button>
-        <el-button :type="locked ? 'primary' : 'warning'" :disabled="saving || (locked && !canUnlock)" @click="toggleLock">{{ locked ? '解锁' : '锁定' }}</el-button>
-        <el-button v-if="editing" :disabled="saving" @click="cancelEditing">取消修改</el-button>
-        <el-button type="primary" :loading="saving" :disabled="locked || !dirty" @click="saveAllChanges()">保存</el-button>
+        <el-button :disabled="saving || !dirty || readOnly" @click="cancelEditing">取消修改</el-button>
+        <el-button type="primary" :loading="saving" :disabled="readOnly || !dirty || !planningValid" @click="saveAllChanges()">保存</el-button>
       </div>
     </div>
     <el-alert
@@ -2630,7 +2679,7 @@ function sectionSourceLabel(row: Section): string {
         </ul>
       </details>
     </el-alert>
-    <el-alert v-if="locked && writeDeniedReason" :title="writeDeniedReason" type="warning" :closable="false" show-icon class="page-error" />
+    <el-alert v-if="readOnly" :title="`当前环境只读：${writeDeniedReason || '后端未授权写入'}`" type="warning" :closable="false" show-icon class="page-error" />
     <el-alert v-if="saveIssues.length || localStationConflictGroups.length" title="基础资料校验失败" type="error" :closable="false" show-icon class="page-error">
       <div v-if="localStationConflictGroups.length" class="conflict-summary">
         <strong>{{ localStationConflictGroups[0].path_code }} 路径存在 {{ localStationConflictGroups.length }} 组主线顺序冲突</strong>
@@ -2800,15 +2849,15 @@ function sectionSourceLabel(row: Section): string {
                   <input type="file" accept=".xlsx" @change="handleStationTemplateFile" />
                 </label>
                 <el-button :icon="Download" @click="exportCurrentStations">导出当前</el-button>
-                <el-button :icon="Plus" :disabled="locked || saving" @click="addStation">新增节点</el-button>
+                <el-button :icon="Plus" :disabled="readOnly || saving" @click="addStation">新增节点</el-button>
                 <span class="selection-count">已选择 {{ selectedStationIds.length }} 项</span>
-                <el-button :disabled="locked || saving || !selectedStationIds.length" @click="deleteSelectedStations">删除选中</el-button>
-                <el-button :disabled="locked || saving || selectedStationIds.length < 2" @click="openStationCombination()">合并重复项</el-button>
-                <el-button :disabled="locked || saving || selectedStationIds.length !== 2" @click="openStationTableOverwrite">覆盖更新</el-button>
-                <el-button :disabled="locked || saving || !selectedStationIds.length" @click="undoSelectedStationChanges">撤销选中变更</el-button>
-                <el-button :disabled="locked || saving || !localStationConflictGroups.length" @click="selectConflictStations">选择全部冲突项</el-button>
-                <el-button :disabled="locked || !selectedStationIds.length" @click="clearStationSelection">清空选择</el-button>
-                <el-button type="danger" plain :loading="clearAllLoading" :disabled="locked || dirty || saving" @click="openClearAllDialog">清空全部</el-button>
+                <el-button :disabled="readOnly || saving || !selectedStationIds.length" @click="deleteSelectedStations">删除选中</el-button>
+                <el-button :disabled="readOnly || saving || selectedStationIds.length < 2" @click="openStationCombination()">合并重复项</el-button>
+                <el-button :disabled="readOnly || saving || selectedStationIds.length !== 2" @click="openStationTableOverwrite">覆盖更新</el-button>
+                <el-button :disabled="readOnly || saving || !selectedStationIds.length" @click="undoSelectedStationChanges">撤销选中变更</el-button>
+                <el-button :disabled="readOnly || saving || !localStationConflictGroups.length" @click="selectConflictStations">选择全部冲突项</el-button>
+                <el-button :disabled="readOnly || !selectedStationIds.length" @click="clearStationSelection">清空选择</el-button>
+                <el-button type="danger" plain :loading="clearAllLoading" :disabled="readOnly || dirty || saving" @click="openClearAllDialog">清空全部</el-button>
               </div>
               <el-alert v-if="stationRows.length === 0 && sectionRows.length === 0" title="当前局点尚未配置站点与区间，可从设备管理重新生成或手动新增。" type="info" :closable="false" show-icon />
               <NcDataTable ref="stationTable" table-id="rail-base-stations" route-key="/rail-transit/base-data" :data="stationRows" :columns="stationEditColumns" row-key="id" height="calc(100vh - 410px)" empty-text="当前局点尚未配置站点与区间，可从设备管理重新生成或手动新增。" @selection-change="handleStationSelection">
@@ -2891,7 +2940,7 @@ function sectionSourceLabel(row: Section): string {
                 </template>
                 <template #cell-source_sync_status="{ row }"><el-tag :type="stateType(row.source_sync_status)">{{ sourceSyncLabel(row.source_sync_status) }}</el-tag></template>
                 <template #cell-remark="{ row }"><el-input v-if="canEditRow('station', row.id)" v-model="row.remark" @input="markStation(row)" /><span v-else>{{ display(row.remark) }}</span></template>
-                <template #cell-edit_actions="{ row }"><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('station', row)">移除</el-button><template v-if="isPendingDelete('station', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('station', row)">撤销</el-button></template><el-button v-else-if="!row.id.startsWith('new:')" link type="danger" :disabled="locked || saving" @click="deleteEntity('station', row)">删除</el-button></template>
+                <template #cell-edit_actions="{ row }"><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('station', row)">移除</el-button><template v-if="isPendingDelete('station', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('station', row)">撤销</el-button></template><el-button v-else-if="!row.id.startsWith('new:')" link type="danger" :disabled="readOnly || saving" @click="deleteEntity('station', row)">删除</el-button></template>
               </NcDataTable>
             </el-tab-pane>
             <el-tab-pane label="区间" name="sections">
@@ -2902,7 +2951,7 @@ function sectionSourceLabel(row: Section): string {
                   <input type="file" accept=".xlsx" @change="handleStationTemplateFile" />
                 </label>
                 <el-button :icon="Download" @click="exportCurrentStations">导出当前</el-button>
-                <el-button :icon="Plus" :disabled="locked || saving" @click="addSection">新增区间</el-button>
+                <el-button :icon="Plus" :disabled="readOnly || saving" @click="addSection">新增区间</el-button>
               </div>
               <NcDataTable table-id="rail-base-sections" route-key="/rail-transit/base-data" :data="sectionRows" :columns="sectionEditColumns" height="calc(100vh - 410px)" empty-text="当前局点尚未配置站点与区间，可从设备管理重新生成或手动新增。">
                 <template #cell-name="{ row }"><el-input v-if="canEditRow('section', row.id)" v-model="row.name" data-field="section-name" :class="{ 'field-error': fieldError('section', row.id, 'name') }" @input="markSectionField(row, 'name')" /><span v-else>{{ display(row.name) }}</span></template>
@@ -2942,7 +2991,7 @@ function sectionSourceLabel(row: Section): string {
                 <template #cell-source_kind="{ row }"><el-tag :type="row.auto_generated ? 'success' : row.source_kind === 'legacy_ap_derived' ? 'warning' : 'info'">{{ sectionSourceLabel(row) }}</el-tag></template>
                 <template #cell-enabled="{ row }"><el-switch v-if="canEditRow('section', row.id)" v-model="row.enabled" @change="markSectionField(row, 'enabled')" /><el-tag v-else :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag></template>
                 <template #cell-remark="{ row }"><el-input v-if="canEditRow('section', row.id)" v-model="row.remark" @input="markSection(row)" /><span v-else>{{ display(row.remark) }}</span></template>
-                <template #cell-edit_actions="{ row }"><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.auto_generated && !locked && !saving" link type="primary" @click="restoreSectionAutomaticValues(row)">恢复自动值</el-button><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('section', row)">移除</el-button><template v-if="isPendingDelete('section', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('section', row)">撤销</el-button></template><el-button v-else-if="!row.id.startsWith('new:')" link type="danger" :disabled="locked || saving" @click="deleteEntity('section', row)">删除</el-button></template>
+                <template #cell-edit_actions="{ row }"><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.auto_generated && !readOnly && !saving" link type="primary" @click="restoreSectionAutomaticValues(row)">恢复自动值</el-button><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('section', row)">移除</el-button><template v-if="isPendingDelete('section', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('section', row)">撤销</el-button></template><el-button v-else-if="!row.id.startsWith('new:')" link type="danger" :disabled="readOnly || saving" @click="deleteEntity('section', row)">删除</el-button></template>
               </NcDataTable>
             </el-tab-pane>
           </el-tabs>
@@ -2954,24 +3003,25 @@ function sectionSourceLabel(row: Section): string {
             <el-input v-model="store.apFilters.station" clearable placeholder="归属站点" />
             <el-input v-model="store.apFilters.section" clearable placeholder="归属区间" />
             <el-select v-model="store.apFilters.has_issue" clearable placeholder="数据质量"><el-option label="只看异常" :value="true" /><el-option label="只看正常" :value="false" /></el-select>
-            <el-button type="primary" :disabled="!locked" @click="store.applyApFilters">应用筛选</el-button>
+            <el-button type="primary" :disabled="!readOnly" @click="store.applyApFilters">应用筛选</el-button>
             <input ref="tracksideApImportInput" type="file" accept=".xlsx,.csv,.json" hidden @change="handleTracksideApFile">
             <el-button v-if="isFeatureEnabled('web.rail_trackside_ap_base_io')" :icon="Download" :disabled="apBaseTaskRunning" @click="startApBaseExport(true)">下载模板</el-button>
             <el-button v-if="isFeatureEnabled('web.rail_trackside_ap_base_io')" :icon="UploadFilled" :loading="store.previewLoading" :disabled="saving" @click="tracksideApImportInput?.click()">导入并预览</el-button>
             <el-button v-if="isFeatureEnabled('web.rail_trackside_ap_base_io')" :icon="Download" :disabled="apBaseTaskRunning" @click="startApBaseExport(false)">导出当前</el-button>
             <el-button v-if="isFeatureEnabled('web.rail_trackside_ap_base_io')" :icon="Download" :disabled="apBaseTaskRunning" @click="startApRenameCommandExport">导出重命名命令</el-button>
-            <el-select v-if="!locked" v-model="batchApLocationClass" placeholder="批量位置类型" style="width: 150px">
+            <el-select v-if="!readOnly" v-model="batchApLocationClass" placeholder="批量位置类型" style="width: 150px">
               <el-option v-for="option in apLocationOptions" :key="option.value" :label="option.label" :value="option.value" />
             </el-select>
-            <el-button v-if="!locked" :disabled="!selectedTracksideAps.length" @click="batchSetApLocationClass">批量设置位置类型</el-button>
-            <el-button :icon="Plus" :disabled="locked || saving" @click="addAp">新增轨旁 AP</el-button>
+            <el-button v-if="!readOnly" :disabled="!selectedTracksideAps.length" @click="batchSetApLocationClass">批量设置位置类型</el-button>
+            <el-button :icon="Plus" :disabled="readOnly || saving" @click="addAp">新增轨旁 AP</el-button>
           </div>
           <NcDataTable table-id="rail-base-trackside-aps" route-key="/rail-transit/base-data" :data="apRows" :columns="apColumns" row-key="id" height="calc(100vh - 430px)" empty-text="暂无轨旁 AP 扩展资料" @selection-change="(rows: TracksideAp[]) => selectedTracksideAps = rows">
             <template #cell-name="{ row }"><span>{{ row.runtime.fit_ap_name || row.name || row.point_code || '--' }}</span></template>
             <template #cell-point_code="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.point_code" :class="{ 'field-error': fieldError('trackside_ap', row.id, 'point_code') }" @input="markAp(row)" /><span v-else>{{ display(row.point_code) }}</span></template>
             <template #cell-mac="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.mac" :class="{ 'field-error': fieldError('trackside_ap', row.id, 'mac') }" @input="markAp(row)" /><span v-else>{{ display(row.mac) }}</span></template>
-            <template #cell-station="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.station" @input="markAp(row)" /><span v-else>{{ display(row.station) }}</span></template>
-            <template #cell-section="{ row }"><el-select v-if="canEditRow('trackside_ap', row.id)" v-model="row.section" filterable allow-create default-first-option @change="handleApSectionChange(row)"><el-option v-for="section in sectionRows" :key="section.id" :label="section.name" :value="section.name" /></el-select><span v-else>{{ display(row.section) }}</span></template>
+            <template #cell-station="{ row }"><el-select v-if="canEditRow('trackside_ap', row.id)" :model-value="row.station_id" filterable @change="handleApStationChange(row, String($event))"><el-option v-for="station in stationRows" :key="station.id" :label="station.name" :value="station.id" /></el-select><span v-else>{{ display(row.station) }}</span></template>
+            <template #cell-section="{ row }"><el-select v-if="canEditRow('trackside_ap', row.id)" :model-value="row.section_id" filterable @change="handleApSectionChange(row, String($event))"><el-option v-for="section in sectionRows" :key="section.id" :label="section.name" :value="section.id" /></el-select><span v-else>{{ display(row.section) }}</span></template>
+            <template #cell-lldp_suggested_station_id="{ row }"><el-tooltip v-if="row.lldp_suggestion_status !== 'none'" :content="`${row.lldp_suggestion_switch_name || row.lldp_suggestion_switch_device_id} / ${row.lldp_suggestion_interface} / ${row.lldp_observed_neighbor_mac} / ${row.lldp_observed_at}`"><span><el-tag :type="row.lldp_suggestion_status === 'suggested' ? 'success' : 'warning'">{{ row.lldp_suggestion_status === 'suggested' ? (row.lldp_suggested_station_name || row.lldp_suggested_station_id) : '多个站点证据' }}</el-tag><el-button v-if="row.lldp_suggestion_status === 'suggested' && row.station_id !== row.lldp_suggested_station_id" link type="primary" :disabled="!canEditRow('trackside_ap', row.id)" @click="applyLldpStationSuggestion(row)">应用到草稿</el-button></span></el-tooltip><span v-else>--</span></template>
             <template #cell-location_class="{ row }"><el-select v-if="canEditRow('trackside_ap', row.id)" :model-value="row.location_class" @change="setApLocationClass(row, $event as TracksideApLocationClass)"><el-option v-for="option in apLocationOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select><el-tag v-else :type="row.location_class_conflict ? 'danger' : row.location_class === 'MAINLINE' ? 'success' : 'warning'">{{ apLocationLabel(row) }}</el-tag></template>
             <template #cell-participates_in_mainline="{ row }"><el-switch v-if="canEditRow('trackside_ap', row.id)" v-model="row.participates_in_mainline" :disabled="row.location_class !== 'MAINLINE'" active-text="是" inactive-text="否" @change="() => { row.location_class_source = 'MANUAL_EXPLICIT'; markAp(row) }" /><el-tag v-else :type="row.location_class_conflict ? 'danger' : row.participates_in_mainline ? 'success' : 'info'">{{ row.participates_in_mainline ? '是' : '否' }}</el-tag></template>
             <template #cell-mileage="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.mileage.raw" @input="markAp(row)" /><span v-else>{{ row.mileage.normalized || row.mileage.raw || '--' }}</span></template>
@@ -2980,9 +3030,9 @@ function sectionSourceLabel(row: Section): string {
             <template #cell-fit_ap_status="{ row }"><el-tag :type="stateType(row.runtime.fit_ap_status)">{{ row.runtime.fit_ap_status }}</el-tag></template>
             <template #cell-optical_status="{ row }"><el-tag :type="stateType(row.runtime.optical_status)">{{ row.runtime.optical_status }}</el-tag></template>
             <template #cell-issues="{ row }"><el-tag v-if="row.issue_count" :type="issueType(row.highest_issue_severity)">{{ row.issue_count }}</el-tag><span v-else>--</span></template>
-            <template #cell-actions="{ row }"><el-button link type="primary" @click="openApAc(row)">FIT-AP</el-button><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('trackside_ap', row)">移除</el-button><template v-if="isPendingDelete('trackside_ap', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('trackside_ap', row)">撤销</el-button></template><el-button v-else-if="!row.id.startsWith('new:')" link type="danger" :disabled="locked || saving" @click="deleteEntity('trackside_ap', row)">删除</el-button></template>
+            <template #cell-actions="{ row }"><el-button link type="primary" @click="openApAc(row)">FIT-AP</el-button><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('trackside_ap', row)">移除</el-button><template v-if="isPendingDelete('trackside_ap', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('trackside_ap', row)">撤销</el-button></template><el-button v-else-if="!row.id.startsWith('new:')" link type="danger" :disabled="readOnly || saving" @click="deleteEntity('trackside_ap', row)">删除</el-button></template>
           </NcDataTable>
-          <el-pagination background :disabled="!locked" layout="total, prev, pager, next, sizes" :total="store.apTotal" :current-page="store.apFilters.page" :page-size="store.apFilters.page_size" :page-sizes="[20, 50, 100, 200]" @current-change="store.setApPage" @size-change="(size: number) => { store.apFilters.page_size = size; store.applyApFilters() }" />
+          <el-pagination background :disabled="!readOnly" layout="total, prev, pager, next, sizes" :total="store.apTotal" :current-page="store.apFilters.page" :page-size="store.apFilters.page_size" :page-sizes="[20, 50, 100, 200]" @current-change="store.setApPage" @size-change="(size: number) => { store.apFilters.page_size = size; store.applyApFilters() }" />
           <el-dialog v-model="apImportDialogVisible" title="轨旁 AP 导入预览" width="min(1400px, 94vw)" destroy-on-close>
             <template v-if="store.importPreview">
               <el-descriptions :column="5" border>
@@ -2996,19 +3046,19 @@ function sectionSourceLabel(row: Section): string {
                 <template #cell-result="{ row }"><el-tag :type="mergeType(row.result)">{{ row.result }}</el-tag></template>
               </NcDataTable>
             </template>
-            <template #footer><el-button @click="apImportDialogVisible = false">关闭</el-button><el-button :icon="Download" :disabled="!previewProblemRows.length" @click="exportImportIssues">导出问题明细</el-button><el-button type="primary" :disabled="locked || saving || previewImportableCount <= 0" @click="handleApply">导入 {{ previewImportableCount }} 条有效数据到草稿</el-button></template>
+            <template #footer><el-button @click="apImportDialogVisible = false">关闭</el-button><el-button :icon="Download" :disabled="!previewProblemRows.length" @click="exportImportIssues">导出问题明细</el-button><el-button type="primary" :disabled="readOnly || saving || previewImportableCount <= 0" @click="handleApply">导入 {{ previewImportableCount }} 条有效数据到草稿</el-button></template>
           </el-dialog>
         </el-tab-pane>
 
         <el-tab-pane label="轨旁 AP 规划" name="trackside-ap-planning">
           <TracksideApPlanningTab
-            ref="planningTab"
-            :locked="locked"
+            :model-value="planningRows"
+            :readonly="readOnly"
             :saving="saving"
-            :stations="stationRows.map((row) => ({ id: row.id, name: row.name, sort_order: row.sort_order }))"
-            @change="handlePlanningChange"
-            @save="saveTracksideApPlanning"
-            @generate-stations="openStationSourcePreview"
+            :stations="stationRows"
+            @update:model-value="handlePlanningChange"
+            @validation-change="handlePlanningValidation"
+            @request-generate-stations="openStationSourcePreview"
           />
         </el-tab-pane>
 
@@ -3024,8 +3074,8 @@ function sectionSourceLabel(row: Section): string {
                 <el-input v-model="store.mrFilters.query" clearable placeholder="MR 名称 / IP / MAC / 设备 ID" @keyup.enter="store.applyMrFilters" />
                 <el-input v-model="store.mrFilters.train" clearable placeholder="列车编号" />
                 <el-select v-model="store.mrFilters.mr_role" clearable placeholder="MR 端位代码"><el-option label="CT" value="CT" /><el-option label="CW" value="CW" /></el-select>
-                <el-button type="primary" :disabled="!locked" @click="store.applyMrFilters">应用筛选</el-button>
-                <el-button :disabled="locked || saving" @click="addMr">新增车载 MR</el-button>
+                <el-button type="primary" :disabled="!readOnly" @click="store.applyMrFilters">应用筛选</el-button>
+                <el-button :disabled="readOnly || saving" @click="addMr">新增车载 MR</el-button>
               </div>
               <NcDataTable table-id="rail-base-vehicle-mrs" route-key="/rail-transit/base-data" :data="mrRows" :columns="mrEditColumns" height="calc(100vh - 430px)" empty-text="暂无车载 MR 资料">
                 <template #cell-name="{ row }"><el-input v-if="canEditRow('vehicle_mr', row.id)" v-model="row.name" :class="{ 'field-error': fieldError('vehicle_mr', row.id, 'name') }" @input="markMr(row)" /><span v-else>{{ display(row.name) }}</span></template>
@@ -3035,9 +3085,9 @@ function sectionSourceLabel(row: Section): string {
                 <template #cell-remark="{ row }"><el-input v-if="canEditRow('vehicle_mr', row.id)" v-model="row.remark" @input="markMr(row)" /><span v-else>{{ display(row.remark) }}</span></template>
                 <template #cell-mesh_status="{ row }"><el-tag :type="stateType(row.runtime.mesh_status)">{{ row.runtime.mesh_status }}</el-tag></template>
                 <template #cell-actions="{ row }"><el-button link type="primary" @click="openMrMesh(row)">Mesh-Link</el-button><el-button link type="primary" @click="openMrSession(row)">Online MR</el-button></template>
-                <template #cell-edit_actions="{ row }"><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('vehicle_mr', row)">移除</el-button><template v-if="isPendingDelete('vehicle_mr', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('vehicle_mr', row)">撤销</el-button></template><el-button v-else-if="!row.id.startsWith('new:')" link type="danger" :disabled="locked || saving" @click="deleteEntity('vehicle_mr', row)">删除</el-button></template>
+                <template #cell-edit_actions="{ row }"><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('vehicle_mr', row)">移除</el-button><template v-if="isPendingDelete('vehicle_mr', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('vehicle_mr', row)">撤销</el-button></template><el-button v-else-if="!row.id.startsWith('new:')" link type="danger" :disabled="readOnly || saving" @click="deleteEntity('vehicle_mr', row)">删除</el-button></template>
               </NcDataTable>
-              <el-pagination background :disabled="!locked" layout="total, prev, pager, next, sizes" :total="store.mrTotal" :current-page="store.mrFilters.page" :page-size="store.mrFilters.page_size" :page-sizes="[20, 50, 100, 200]" @current-change="store.setMrPage" @size-change="(size: number) => { store.mrFilters.page_size = size; store.applyMrFilters() }" />
+              <el-pagination background :disabled="!readOnly" layout="total, prev, pager, next, sizes" :total="store.mrTotal" :current-page="store.mrFilters.page" :page-size="store.mrFilters.page_size" :page-sizes="[20, 50, 100, 200]" @current-change="store.setMrPage" @size-change="(size: number) => { store.mrFilters.page_size = size; store.applyMrFilters() }" />
             </el-tab-pane>
           </el-tabs>
         </el-tab-pane>
@@ -3084,11 +3134,11 @@ function sectionSourceLabel(row: Section): string {
           </div>
           <div v-if="store.importPreview" class="preview-actions">
             <el-radio-group v-model="previewFilter" class="preview-filter"><el-radio-button value="all">全部</el-radio-button><el-radio-button value="CREATE">新增</el-radio-button><el-radio-button value="UPDATE">更新</el-radio-button><el-radio-button value="UNCHANGED">不变</el-radio-button><el-radio-button value="WARNING">警告</el-radio-button><el-radio-button value="CONFLICT">仅显示冲突</el-radio-button><el-radio-button value="INVALID">仅显示无效</el-radio-button></el-radio-group>
-            <div v-if="!locked" class="apply-controls">
+            <div v-if="!readOnly" class="apply-controls">
               <el-button :icon="Download" :disabled="!previewProblemRows.length" @click="exportImportIssues">导出问题明细</el-button>
               <el-button type="primary" :disabled="saving || previewImportableCount <= 0" @click="handleApply">导入 {{ previewImportableCount }} 条有效数据到草稿</el-button>
             </div>
-            <div v-else class="apply-controls"><el-button :icon="Download" :disabled="!previewProblemRows.length" @click="exportImportIssues">导出问题明细</el-button><el-tag type="info">解锁后可导入有效数据到草稿</el-tag></div>
+            <div v-else class="apply-controls"><el-button :icon="Download" :disabled="!previewProblemRows.length" @click="exportImportIssues">导出问题明细</el-button><el-tag type="info">当前环境只读，不能导入到草稿</el-tag></div>
           </div>
           <NcDataTable v-loading="store.previewLoading" table-id="rail-base-merge-plan" route-key="/rail-transit/base-data" :data="mergeRows" :columns="mergeColumns" height="calc(100vh - 520px)" empty-text="请选择文件生成合并预览">
             <template #cell-expand="{ row }">
@@ -3112,7 +3162,7 @@ function sectionSourceLabel(row: Section): string {
             <template #cell-actions="{ row }">
                 <el-button link type="primary" @click="store.selectImportOperation(row.operation_id)">查看变更</el-button>
                 <el-button
-                  v-if="!locked && store.importPolicies?.rollback_enabled && store.canApplyImport() && row.status === 'APPLIED'"
+                  v-if="!readOnly && store.importPolicies?.rollback_enabled && store.canApplyImport() && row.status === 'APPLIED'"
                   link type="danger" @click="handleRollback(row.operation_id)"
                 >回滚</el-button>
             </template>
@@ -3153,9 +3203,9 @@ function sectionSourceLabel(row: Section): string {
     <el-dialog v-model="stationSourceDialogVisible" title="设备管理站点来源预览" width="min(1280px, 96vw)" append-to-body destroy-on-close>
       <div v-if="store.stationSourcePreview" class="preview-dialog">
         <el-alert
-          v-if="locked"
-          title="请先解锁基础资料"
-          description="锁定状态可以预览设备管理站点字段，但不能应用到当前草稿。"
+          v-if="readOnly"
+          title="当前环境只读"
+          :description="writeDeniedReason || '可以预览设备管理站点字段，但不能应用到当前草稿。'"
           type="warning"
           :closable="false"
           show-icon
@@ -3213,7 +3263,7 @@ function sectionSourceLabel(row: Section): string {
             <div class="source-strategy">
               <el-select
                 :model-value="stationSourceStrategy(row)"
-                :disabled="locked"
+                :disabled="readOnly"
                 @change="(value: StationSourceProcessingStrategy) => updateStationSourceStrategy(row, value)"
               >
                 <el-option
@@ -3227,7 +3277,7 @@ function sectionSourceLabel(row: Section): string {
                 v-if="['overwrite_existing', 'manual_target', 'merge_duplicates'].includes(stationSourceStrategy(row))"
                 v-model="stationSourceTargets[row.candidate_id]"
                 placeholder="选择正式目标"
-                :disabled="locked"
+                :disabled="readOnly"
               >
                 <el-option
                   v-for="station in stationSourceTargetOptions(row)"
@@ -3249,12 +3299,12 @@ function sectionSourceLabel(row: Section): string {
       </div>
       <template #footer>
         <el-button @click="stationSourceDialogVisible = false">关闭</el-button>
-        <el-button :disabled="locked" @click="selectSuggestedStationSources">全选建议项</el-button>
-        <el-button :disabled="locked" @click="selectStationSourcesByStrategy('overwrite_existing')">全部覆盖匹配项</el-button>
-        <el-button :disabled="locked" @click="selectStationSourcesByStrategy('create')">仅新增未匹配项</el-button>
+        <el-button :disabled="readOnly" @click="selectSuggestedStationSources">全选建议项</el-button>
+        <el-button :disabled="readOnly" @click="selectStationSourcesByStrategy('overwrite_existing')">全部覆盖匹配项</el-button>
+        <el-button :disabled="readOnly" @click="selectStationSourcesByStrategy('create')">仅新增未匹配项</el-button>
         <el-button
           type="primary"
-          :disabled="locked || saving || selectedStationSourceIds.length === 0"
+          :disabled="readOnly || saving || selectedStationSourceIds.length === 0"
           @click="applyStationSourceToDraft"
         >应用到当前草稿</el-button>
       </template>
@@ -3279,6 +3329,7 @@ function sectionSourceLabel(row: Section): string {
           <p>
             引用区间 {{ item.references.section_start_count + item.references.section_end_count }}；
             轨旁 AP {{ item.references.ap_count }}；
+            来源设备 {{ item.references.device_count }}；
             其他关系 {{ item.references.relation_count }}；
             端点延伸 {{ item.references.endpoint_extension_count }}；
             AP 规划 {{ item.references.plan_count }}
@@ -3383,9 +3434,9 @@ function sectionSourceLabel(row: Section): string {
     <el-dialog v-model="stationTemplateDialogVisible" title="基础资料模板导入预览" width="min(1280px, 96vw)" append-to-body destroy-on-close>
       <div v-if="store.stationTemplatePreview" class="preview-dialog">
         <el-alert
-          v-if="locked"
-          title="请先解锁基础资料"
-          description="模板预览不会写入数据库；解锁后才能应用到当前草稿。"
+          v-if="readOnly"
+          title="当前环境只读"
+          :description="writeDeniedReason || '模板预览不会写入数据库，当前不能应用到草稿。'"
           type="warning"
           :closable="false"
           show-icon
@@ -3497,9 +3548,9 @@ function sectionSourceLabel(row: Section): string {
     <el-dialog v-model="sectionGenerationDialogVisible" title="根据站点生成区间" width="min(1380px, 96vw)" append-to-body destroy-on-close>
       <div v-if="store.sectionGenerationPreview" class="preview-dialog">
         <el-alert
-          v-if="locked"
-          title="请先解锁基础资料"
-          description="锁定状态可以查看生成预览，但不能应用到当前草稿。"
+          v-if="readOnly"
+          title="当前环境只读"
+          :description="writeDeniedReason || '可以查看生成预览，但不能应用到当前草稿。'"
           type="warning"
           :closable="false"
           show-icon
@@ -3551,7 +3602,7 @@ function sectionSourceLabel(row: Section): string {
         <el-button @click="sectionGenerationDialogVisible = false">关闭</el-button>
         <el-button
           type="primary"
-          :disabled="locked || saving || selectedSectionGenerationIds.length === 0 || Boolean(store.sectionGenerationPreview?.blocking_count)"
+          :disabled="readOnly || saving || selectedSectionGenerationIds.length === 0 || Boolean(store.sectionGenerationPreview?.blocking_count)"
           @click="applySectionGenerationToDraft"
         >应用到当前草稿</el-button>
       </template>

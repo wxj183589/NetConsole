@@ -171,7 +171,9 @@ AP_EXTENSION_POINT_FIELDS = (
     "system_type",
     "network_domain",
     "belong_type",
+    "station_id",
     "station_name",
+    "section_id",
     "section_name",
     "section_start_station",
     "section_end_station",
@@ -968,7 +970,8 @@ class AcRepository:
         with self.database.connect_readonly() as conn:
             rows = conn.execute(
                 """
-                SELECT id, site_id, line_name, belong_type, station_name,
+                  SELECT id, site_id, line_name, belong_type, station_id,
+                         section_id, station_name,
                        ap_name, ap_mac_norm, ap_mac_display, raw_payload_json,
                        updated_at
                 FROM ap_extension_points
@@ -1060,6 +1063,8 @@ class AcRepository:
     def upsert_ap_extension_point(self, data: dict[str, object | None]) -> dict[str, object | None]:
         now = self._now()
         payload = self._payload(AP_EXTENSION_POINT_FIELDS, data)
+        payload["station_id"] = str(payload.get("station_id") or "").strip()
+        payload["section_id"] = str(payload.get("section_id") or "").strip()
         mac = normalize_ap_mac(payload.get("ap_mac_display") or payload.get("ap_mac_norm"))
         payload["ap_mac_norm"] = mac.normalized or str(payload.get("ap_mac_norm") or "").strip().casefold()
         payload["ap_mac_display"] = mac.display or str(payload.get("ap_mac_display") or "").strip()
@@ -1116,6 +1121,8 @@ class AcRepository:
         with self.database.connect() as conn:
             for row in rows:
                 payload = self._payload(AP_EXTENSION_POINT_FIELDS, {**row, "import_batch_id": import_batch_id})
+                payload["station_id"] = str(payload.get("station_id") or "").strip()
+                payload["section_id"] = str(payload.get("section_id") or "").strip()
                 mac = normalize_ap_mac(payload.get("ap_mac_display") or payload.get("ap_mac_norm"))
                 if payload.get("ap_mac_display") and not mac.valid:
                     stats["error_rows"] += 1
@@ -2508,6 +2515,8 @@ class AcRepository:
             if extension:
                 for field in (
                     "ap_name",
+                    "station_id",
+                    "section_id",
                     "belong_type",
                     "station_name",
                     "section_name",
@@ -2534,6 +2543,8 @@ class AcRepository:
                 ):
                     item[f"extension_{field}"] = extension.get(field)
                 item["belong_type"] = item.get("belong_type") or extension.get("belong_type")
+                item["station_id"] = item.get("station_id") or extension.get("station_id")
+                item["section_id"] = item.get("section_id") or extension.get("section_id")
                 item["section_name"] = item.get("section_name") or extension.get("section_name")
                 item["section_start_station"] = item.get("section_start_station") or extension.get("section_start_station")
                 item["section_end_station"] = item.get("section_end_station") or extension.get("section_end_station")

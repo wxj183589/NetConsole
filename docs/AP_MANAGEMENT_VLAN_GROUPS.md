@@ -13,9 +13,9 @@
 
 ## 页面与保存
 
-`/rail-transit/base-data?tab=trackside-ap-planning` 提供两个子页：
+`/rail-transit/base-data?tab=trackside-ap-planning` 是基础资料统一草稿中的受控页签：
 
-- “AP 规划维护”：直接编辑逐站表，支持从设备管理生成站点、手工维护规划行、单行或批量删除、保存、撤销和多行多列粘贴；当前页面不提供规划模板导入、模板下载或规划导出；
+- “AP 规划维护”：直接编辑逐站表，支持从设备管理生成站点、手工维护规划行、单行或批量删除；组件不拥有加载、保存、锁或 dirty 基线，当前页面不提供规划模板导入、模板下载或规划导出；
 - “AP 上线情况概览”：只读展示规划 AP 总数量、实际上线、未上线、上线率和备注，并显示按数量汇总的线路合计。
 
 页面不再展示规划方式、VLAN 组、组边界、拆分合并、IP 地址字段、revision 或全局阻断问题。车站名称必须匹配当前基础资料，不能在规划表中临时创建任意站名。字段错误定位到单元格；未分配站点 AP 只显示普通警告和明细入口，不阻止规划维护，也不计入线路合计。
@@ -24,7 +24,7 @@
 
 上线概览只返回站点统计、少量诊断计数、生成时间和来源 revision，不内嵌完整排除项或待关联在线 AP。用户点击对应明细后，页面分别调用 `/plan/online-status/excluded` 和 `/plan/online-status/unmatched` 分页读取；默认页大小为 50，空 MAC 以空字符串返回。概览按规划、FIT-AP、AP Identity 和局点元数据 revision 缓存，来源不变时直接复用，`source_revision=0` 仍是合法 revision。缓存命中状态和阶段耗时进入诊断日志，不改变统计口径。
 
-规划编辑仍属于基础资料编辑会话。Renderer 只维护草稿，保存通过 `POST /api/rail-transit/base-data/changes` 进入 `RailTransitBaseDataApplicationService`，与其他基础资料共享 revision 检查和 SQLite `BEGIN IMMEDIATE` 单事务；失败整体回滚。修改规划不会连接 AC 或自动刷新设备状态。
+规划编辑仍属于基础资料统一草稿。父页面按 `station_id` reconcile 规划：站名修改保留用户值，来源消失的历史行保留为 `stale`，只为本次确认生成的合格站点追加默认行。保存通过 `POST /api/rail-transit/base-data/changes` 进入 `RailTransitBaseDataApplicationService`，与其他基础资料共享 revision 检查和 SQLite `BEGIN IMMEDIATE` 单事务；失败整体回滚。修改规划不会连接 AC 或自动刷新设备状态。
 
 当前用户接口包括（规划模板预览/导出接口仅为历史兼容，不由活动页面调用）：
 
@@ -56,7 +56,9 @@ GET  /api/rail-transit/trackside-ap-business/plan/artifacts/{artifact_id}/downlo
 
 活动页面不提供轨旁 AP 规划模板导入、模板下载或规划导出。站点来源统一来自设备管理中“车站”分组设备的 `station` 字段：点击“从设备管理生成站点”后先展示候选、匹配和冲突，用户确认后只写入基础资料编辑草稿，最终由统一保存事务提交。这样每条规划行都能绑定正式站点的稳定 `station_id`，不会因为站名文本差异丢失身份。
 
-旧规划 XLSX 解析、导出和对应 API 不属于当前活动 UI，也不参与当前规划读取；不再新增模板格式或兼容字段。轨旁 AP 业务页仍可按自身契约导出业务明细和上线概览，但不改变规划维护来源。
+旧规划 XLSX 解析、导出和对应 API 不属于当前活动 UI，也不参与当前规划读取。兼容格式 schema v4 增加必填“车站ID”；旧分组模板只有在文件本身携带可一一对应的“组成员站点ID”时才可转换，只有站名必须报错。轨旁 AP 业务页仍可按自身契约导出业务明细和上线概览，但不改变规划维护来源。
+
+完整主数据边界见 [轨旁 AP 主数据与关联模型](rail-transit/TRACKSIDE_AP_DOMAIN_MODEL.md)。
 
 ## PVID 与历史数据边界
 

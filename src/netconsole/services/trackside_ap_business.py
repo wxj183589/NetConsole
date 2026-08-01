@@ -386,6 +386,7 @@ def effective_pvid_plan(
     pvid: object,
     active_plan: dict | None,
 ) -> dict[str, object]:
+    del ap_name, station_name
     if not isinstance(active_plan, dict):
         return {"pvid_plan_status": "unresolved"}
     mac = normalize_mac_key(ap_mac) or ""
@@ -397,18 +398,14 @@ def effective_pvid_plan(
             if station_key
             else None
         )
-        if station_vlans is None:
-            station_label = str(station_name or "").strip()
-            station_vlans = (
-                (active_plan.get("station_vlans") or {}).get(station_label)
-                if station_label
-                else None
-            )
         vlan_values = sorted(
             int(value) for value in (station_vlans or set())
         )
         if len(vlan_values) == 1:
-            network = {"management_vlan": vlan_values[0]}
+            network = {
+                "management_vlan": vlan_values[0],
+                "planning_station_id": station_key,
+            }
     if not isinstance(network, dict):
         return {"pvid_plan_status": "unresolved"}
     try:
@@ -418,8 +415,61 @@ def effective_pvid_plan(
         return {**network, "pvid_plan_status": "unresolved"}
     return {
         **network,
+        "planning_station_id": str(
+            network.get("planning_station_id")
+            or network.get("station_id")
+            or station_id
+            or ""
+        ).strip(),
         "planned_management_vlan": planned,
         "pvid_plan_status": "matched" if actual == planned else "mismatched",
+    }
+
+
+def _station_consistency_projection(
+    switch_station_id: object,
+    ap_station_id: object,
+    planning_station_id: object,
+) -> dict[str, str]:
+    switch_id = str(switch_station_id or "").strip()
+    ap_id = str(ap_station_id or "").strip()
+    planning_id = str(planning_station_id or "").strip()
+    authoritative = [value for value in (switch_id, ap_id) if value]
+    if len(set(authoritative)) > 1:
+        return {
+            "switch_station_id": switch_id,
+            "ap_station_id": ap_id,
+            "planning_station_id": planning_id,
+            "effective_station_id": "",
+            "station_consistency_status": "conflict",
+            "station_consistency_reason": "SWITCH_AP_STATION_CONFLICT",
+        }
+    effective_id = ap_id or switch_id
+    if planning_id and effective_id and planning_id != effective_id:
+        return {
+            "switch_station_id": switch_id,
+            "ap_station_id": ap_id,
+            "planning_station_id": planning_id,
+            "effective_station_id": "",
+            "station_consistency_status": "conflict",
+            "station_consistency_reason": "PLANNING_STATION_CONFLICT",
+        }
+    if effective_id:
+        return {
+            "switch_station_id": switch_id,
+            "ap_station_id": ap_id,
+            "planning_station_id": planning_id,
+            "effective_station_id": effective_id,
+            "station_consistency_status": "consistent" if switch_id and ap_id else "partial",
+            "station_consistency_reason": "" if switch_id and ap_id else "ONE_SIDE_STATION_ID_MISSING",
+        }
+    return {
+        "switch_station_id": "",
+        "ap_station_id": "",
+        "planning_station_id": planning_id,
+        "effective_station_id": planning_id,
+        "station_consistency_status": "planning_only" if planning_id else "unresolved",
+        "station_consistency_reason": "ONLY_PLANNING_STATION_ID" if planning_id else "STATION_ID_MISSING",
     }
 
 
@@ -612,7 +662,7 @@ def build_trackside_ap_business_rows(
                 fit_ap_resources_by_name,
             )
             historical_lldp_used = False
-            if not neighbor_mac and historical_lldp:
+            if not lldp and not neighbor_mac and historical_lldp:
                 neighbor_mac = normalize_mac_key(
                     historical_lldp.get("ap_mac")
                     or historical_lldp.get("neighbor_mac")
@@ -659,7 +709,7 @@ def build_trackside_ap_business_rows(
                     or fit_ap_optical_by_name_mac.get(neighbor_mac)
                     or {}
                 )
-                if not fit_ap:
+                if not fit_ap and not lldp:
                     interface_resource = next(
                         (
                             fit_ap_optical_by_switch_interface.get((name, normalized_interface))
@@ -765,9 +815,7 @@ def build_trackside_ap_business_rows(
                 local_status=switch_status,
                 remote_status=ap_status,
                 association_reliable=ap_match_source in {
-                    "LLDP_IP",
                     "LLDP_MAC",
-                    "LLDP_SYSTEM_NAME",
                     "MANUAL",
                     "IMPORTED",
                 },
@@ -791,8 +839,22 @@ def build_trackside_ap_business_rows(
                     lldp_match_status = "SAMPLE_REQUIRED"
                 else:
                     lldp_match_status = "NO_NEIGHBOR"
+            pvid_projection = effective_pvid_plan(
+                ap_mac=ap_candidate["ap_mac"],
+                ap_name=ap_candidate["ap_name"],
+                station_id=fit_ap.get("station_id"),
+                station_name=normalize_station_value(fit_ap),
+                pvid=interface.get("pvid"),
+                active_plan=trackside_ap_plan,
+            )
+            station_projection = _station_consistency_projection(
+                getattr(device, "station_id", ""),
+                fit_ap.get("station_id"),
+                pvid_projection.get("planning_station_id"),
+            )
             row = {
-                    "station_id": str(fit_ap.get("station_id") or "").strip(),
+                    "station_id": station_projection["effective_station_id"],
+                    **station_projection,
                     "site": device.station or normalize_station_value(fit_ap) or "",
                     "ac_device_uuid": fit_ap.get("ac_device_uuid"),
                     "ap_uuid": fit_ap.get("ap_uuid") or (historical_lldp or {}).get("ap_uuid"),
@@ -841,19 +903,15 @@ def build_trackside_ap_business_rows(
                     "ap_match_source": ap_match_source,
                     "ap_match_confidence": ap_match_confidence,
                     "lldp_match_status": lldp_match_status,
+                    "lldp_observed_neighbor_mac": format_mac(
+                        lldp.get("neighbor_mac") or lldp.get("chassis_id")
+                    ),
                     "has_current_lldp": bool(lldp),
                     "has_historical_lldp": bool(historical_lldp),
                     "has_fit_ap_resource": bool(resource_from_neighbor or resource_from_identity),
                     "is_ap_offline": bool(offline_reason),
                     **attenuation,
-                    **effective_pvid_plan(
-                        ap_mac=ap_candidate["ap_mac"],
-                        ap_name=ap_candidate["ap_name"],
-                        station_id=fit_ap.get("station_id"),
-                        station_name=normalize_station_value(fit_ap),
-                        pvid=interface.get("pvid"),
-                        active_plan=trackside_ap_plan,
-                    ),
+                    **pvid_projection,
                 }
             _ensure_ap_optical_status(row)
             result.append(row)
@@ -2053,49 +2111,18 @@ def _match_fit_ap_resource_from_lldp(
     resources_by_mac: dict[str, list[dict[str, object | None]]],
     resources_by_name: dict[str, list[dict[str, object | None]]],
 ) -> tuple[dict[str, object | None] | None, str, int, str]:
+    del resources_by_ip, resources_by_name
     if not lldp:
         return None, "", 0, ""
-    exact_candidates = (
-        (
-            "LLDP_IP",
-            96,
-            _normalize_ip(
-                lldp.get("neighbor_ip")
-                or lldp.get("management_address")
-                or lldp.get("remote_management_address")
-            ),
-            resources_by_ip,
-        ),
-        (
-            "LLDP_MAC",
-            92,
-            normalize_mac_key(lldp.get("neighbor_mac") or lldp.get("chassis_id")),
-            resources_by_mac,
-        ),
-    )
-    for source, confidence, key, index in exact_candidates:
-        if not key:
-            continue
-        matches = index.get(key, [])
-        if len(matches) == 1:
-            return matches[0], source, confidence, "MATCHED"
-        if len(matches) > 1:
-            return None, source, 0, "AMBIGUOUS"
     observed_mac = normalize_mac_key(lldp.get("neighbor_mac") or lldp.get("chassis_id"))
     if observed_mac:
-        return None, "LLDP_MAC", 0, "UNRESOLVED"
-    observed_name = _normalize_name(
-        lldp.get("neighbor_sysname")
-        or lldp.get("remote_system_name")
-        or lldp.get("neighbor_device_name")
-    )
-    if observed_name:
-        matches = resources_by_name.get(observed_name, [])
+        matches = resources_by_mac.get(observed_mac, [])
         if len(matches) == 1:
-            return matches[0], "LLDP_SYSTEM_NAME", 75, "MATCHED"
+            return matches[0], "LLDP_MAC", 100, "MATCHED"
         if len(matches) > 1:
-            return None, "LLDP_SYSTEM_NAME", 0, "AMBIGUOUS"
-    return None, "", 0, "UNRESOLVED"
+            return None, "LLDP_MAC", 0, "AMBIGUOUS"
+        return None, "LLDP_MAC", 0, "UNRESOLVED"
+    return None, "", 0, "NO_MAC_EVIDENCE"
 
 
 def _build_bidirectional_attenuation(

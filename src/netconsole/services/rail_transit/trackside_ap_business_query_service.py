@@ -81,8 +81,9 @@ class TracksideApBusinessQueryService:
         page: int = 1,
         page_size: int = 50,
     ) -> TracksideApBusinessPageDTO:
+        database = Database(self.paths.site_db_path(site_id))
         snapshot = load_trackside_ap_business_snapshot(
-            DeviceRepository(Database(self.paths.site_db_path(site_id))),
+            DeviceRepository(database),
             site_id,
             generation=0,
             scope_context=TracksideApScopeContext.from_metadata(
@@ -96,9 +97,7 @@ class TracksideApBusinessQueryService:
         ]
         station_options = trackside_station_options(business_rows)
         if normalize_mac_key(query):
-            identity_rows = ApIdentityQueryService(
-                Database(self.paths.site_db_path(site_id))
-            ).search_aps(query)
+            identity_rows = ApIdentityQueryService(database).search_aps(query)
             matched_macs = {
                 mac
                 for item in identity_rows
@@ -129,7 +128,15 @@ class TracksideApBusinessQueryService:
         current_page = max(1, int(page))
         size = max(1, min(int(page_size), 200))
         start = (current_page - 1) * size
-        items = [self._row(row, severity) for row, severity in enriched[start : start + size]]
+        try:
+            identity_query: ApIdentityQueryService | None = ApIdentityQueryService(database)
+            identity_query.pin_index_health()
+        except (AttributeError, OSError):
+            identity_query = None
+        items = [
+            self._row(row, severity, identity_query)
+            for row, severity in enriched[start : start + size]
+        ]
         scope = snapshot.scope
         return TracksideApBusinessPageDTO(
             items=items,
@@ -182,9 +189,34 @@ class TracksideApBusinessQueryService:
         )
 
     @staticmethod
-    def _row(row: dict[str, object | None], severity: str) -> TracksideApBusinessRowDTO:
+    def _row(
+        row: dict[str, object | None],
+        severity: str,
+        identity_query: ApIdentityQueryService | None,
+    ) -> TracksideApBusinessRowDTO:
+        observed_neighbor_mac = str(row.get("lldp_observed_neighbor_mac") or "")
+        identity_mac = observed_neighbor_mac or str(row.get("ap_mac") or "")
+        identity_match = identity_query.resolve_mac(identity_mac) if identity_query else None
+        lldp_match_status = str(row.get("lldp_match_status") or "")
+        if observed_neighbor_mac:
+            lldp_match_status = (
+                identity_match.status.upper() if identity_match else "UNAVAILABLE"
+            )
+        effective_station_id = str(
+            row.get("effective_station_id") or row.get("station_id") or ""
+        )
         return TracksideApBusinessRowDTO(
-            station_id=str(row.get("station_id") or ""),
+            station_id=effective_station_id,
+            switch_station_id=str(row.get("switch_station_id") or ""),
+            ap_station_id=str(row.get("ap_station_id") or ""),
+            planning_station_id=str(row.get("planning_station_id") or ""),
+            effective_station_id=effective_station_id,
+            station_consistency_status=str(
+                row.get("station_consistency_status") or "unresolved"
+            ),
+            station_consistency_reason=str(
+                row.get("station_consistency_reason") or "STATION_ID_MISSING"
+            ),
             site=str(row.get("site") or ""),
             device_name=str(row.get("device_name") or ""),
             switch_vendor=str(row.get("switch_vendor") or ""),
@@ -194,6 +226,11 @@ class TracksideApBusinessQueryService:
             description=str(row.get("description") or ""),
             pvid=row.get("pvid"),
             vlan=row.get("vlan"),
+            planned_management_vlan=row.get("planned_management_vlan"),
+            vlan_group_id=str(row.get("vlan_group_id") or ""),
+            vlan_group_code=str(row.get("vlan_group_code") or ""),
+            vlan_group_name=str(row.get("vlan_group_name") or ""),
+            pvid_plan_status=str(row.get("pvid_plan_status") or "unresolved"),
             switch_rx_power=row.get("switch_rx_power"),
             switch_tx_power=row.get("switch_tx_power"),
             switch_rx_low_alarm=row.get("switch_rx_low_alarm"),
@@ -209,7 +246,19 @@ class TracksideApBusinessQueryService:
             ap_optical_status=str(row.get("ap_optical_status") or ""),
             ap_match_source=str(row.get("ap_match_source") or ""),
             ap_match_confidence=int(row.get("ap_match_confidence") or 0),
-            lldp_match_status=str(row.get("lldp_match_status") or ""),
+            ap_identity_entity_id=(identity_match.matched_entity_id if identity_match else ""),
+            identity_match_status=(identity_match.status if identity_match else "unavailable"),
+            identity_match_rule=(
+                (
+                    identity_match.match_rule
+                    or identity_match.matched_alias_type
+                    or identity_match.unresolved_reason
+                )
+                if identity_match
+                else "IDENTITY_INDEX_UNAVAILABLE"
+            ),
+            lldp_observed_neighbor_mac=observed_neighbor_mac,
+            lldp_match_status=lldp_match_status,
             local_rx_power_dbm=row.get("local_rx_power_dbm"),
             local_tx_power_dbm=row.get("local_tx_power_dbm"),
             remote_rx_power_dbm=row.get("remote_rx_power_dbm"),

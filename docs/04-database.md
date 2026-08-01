@@ -89,6 +89,20 @@ name, AP count, `management_vlan`, and remark. Historical address, mask,
 gateway, and multi-VLAN columns remain in the table for backward compatibility,
 but the active DTO, page, template, import preview, and validation ignore them.
 
+The 2026-08-01 additive migration establishes physical rail-base relations:
+
+- `devices.station_id` binds a source device to the formal station master;
+- `ap_extension_points.station_id/section_id` bind AP and auxiliary records;
+- existing `ac_trackside_ap_plan.station_id` is the only active planning relation.
+
+Initialization adds non-unique lookup indexes and deterministically fills blank
+IDs on formal `__base_station__` and `__base_section__` master rows. It does not
+guess cross-table relations from similar names. Those relations are audited and
+backfilled only on a database copy by
+`scripts/maintenance/backfill_trackside_ap_station_identity.py`, whose apply mode
+requires the dry-run hash and explicit confirmation. See
+[Trackside AP domain model](rail-transit/TRACKSIDE_AP_DOMAIN_MODEL.md).
+
 `rail_ap_vlan_plans`, `rail_ap_vlan_groups`,
 `rail_ap_vlan_group_members`, `rail_ap_vlan_assignments`, and
 `rail_ap_vlan_allocations` remain unchanged as historical retained data. The

@@ -160,6 +160,7 @@ class Device:
     system_name: str | None = None
     mac_address: str | None = None
     station: str | None = None
+    station_id: str = ""
     location: str | None = None
     group_id: int | None = None
     device_vendor: str = "H3C"

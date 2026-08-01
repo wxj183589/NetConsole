@@ -24,7 +24,7 @@ from netconsole.core.sqlite_utils import (
 from netconsole.models.device_address import InvalidDeviceAddressError, normalize_ip_address
 
 
-CURRENT_SCHEMA_VERSION = "2026.08.01.ap_identity_and_trackside_ap_location"
+CURRENT_SCHEMA_VERSION = "2026.08.01.rail_base_identity_relations"
 
 DEVICE_CLASSIFICATION_COLUMNS = (
     "project_phase",
@@ -352,6 +352,7 @@ CREATE TABLE IF NOT EXISTS devices (
     system_name TEXT,
     mac_address TEXT,
     station TEXT,
+    station_id TEXT NOT NULL DEFAULT '',
     location TEXT,
     group_id INTEGER,
     device_vendor TEXT NOT NULL DEFAULT 'H3C',
@@ -842,7 +843,9 @@ CREATE TABLE IF NOT EXISTS ap_extension_points (
     system_type TEXT,
     network_domain TEXT,
     belong_type TEXT,
+    station_id TEXT NOT NULL DEFAULT '',
     station_name TEXT,
+    section_id TEXT NOT NULL DEFAULT '',
     section_name TEXT,
     section_start_station TEXT,
     section_end_station TEXT,
@@ -1839,6 +1842,7 @@ class Database:
             classification_migration = False
             identity_schema_migration = False
             trackside_ap_location_migration = False
+            rail_base_identity_migration = False
             try:
                 conn = self.connect()
                 stage = "configure"
@@ -1856,10 +1860,14 @@ class Database:
                     trackside_ap_location_migration = (
                         self._requires_trackside_ap_location_migration(conn)
                     )
+                    rail_base_identity_migration = (
+                        self._requires_rail_base_identity_migration(conn)
+                    )
                     if (
                         address_migration
                         or classification_migration
                         or trackside_ap_location_migration
+                        or rail_base_identity_migration
                     ):
                         stage = "backup"
                         backup_path = self._backup_before_device_migration(
@@ -1868,7 +1876,9 @@ class Database:
                             if address_migration
                             else "work-scope-status"
                             if classification_migration
-                            else "trackside-ap-location",
+                            else "trackside-ap-location"
+                            if trackside_ap_location_migration
+                            else "rail-base-identity-relations",
                         )
                 stage = "schema"
                 schema_scripts = (
@@ -1881,10 +1891,14 @@ class Database:
                 )
                 stage = "additive_updates"
                 self._apply_additive_schema_updates(conn)
+                stage = "rail_base_master_identity_backfill"
+                self._backfill_rail_base_master_ids(conn)
                 stage = "classification_validation"
                 self._validate_device_classification_migration(conn)
                 stage = "trackside_ap_location_validation"
                 self._validate_trackside_ap_location_migration(conn)
+                stage = "rail_base_identity_validation"
+                self._validate_rail_base_identity_migration(conn)
                 stage = "ap_vlan_reference_migration"
                 self._migrate_trackside_ap_vlan_allocation_references(conn)
                 stage = "credential_state_repair"
@@ -1896,6 +1910,7 @@ class Database:
                     or classification_migration
                     or identity_schema_migration
                     or trackside_ap_location_migration
+                    or rail_base_identity_migration
                     or schema_version_before != CURRENT_SCHEMA_VERSION
                 )
                 if requires_integrity_check:
@@ -1904,10 +1919,15 @@ class Database:
                 self._write_schema_version(conn)
                 stage = "commit"
                 conn.commit()
+                # 初始化阶段产生的 WAL 必须在 Backend 对外提供只读 API 前落盘；
+                # 否则首个 GET 关闭连接时可能触发延迟 checkpoint，表现为只读请求改写数据库文件。
+                stage = "checkpoint"
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 if existed and (
                     address_migration
                     or classification_migration
                     or trackside_ap_location_migration
+                    or rail_base_identity_migration
                 ):
                     self._log_migration_completed(
                         schema_version_before=schema_version_before,
@@ -1917,6 +1937,7 @@ class Database:
                         trackside_ap_location_migration=(
                             trackside_ap_location_migration
                         ),
+                        rail_base_identity_migration=rail_base_identity_migration,
                         legacy_operation_status_counts=(
                             self._legacy_operation_status_counts(conn)
                             if classification_migration
@@ -1971,6 +1992,43 @@ class Database:
     def _apply_additive_schema_updates(self, conn: sqlite3.Connection) -> None:
         if self._requires_device_address_migration(conn):
             self._apply_device_address_migration(conn)
+
+        if self._table_exists(conn, "devices") and not self._column_exists(
+            conn, "devices", "station_id"
+        ):
+            conn.execute(
+                "ALTER TABLE devices ADD COLUMN station_id TEXT NOT NULL DEFAULT ''"
+            )
+        if self._table_exists(conn, "devices"):
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_devices_station_id ON devices(station_id)"
+            )
+
+        if self._table_exists(conn, "ap_extension_points"):
+            for column in ("station_id", "section_id"):
+                if not self._column_exists(conn, "ap_extension_points", column):
+                    conn.execute(
+                        f"ALTER TABLE ap_extension_points ADD COLUMN {column} "
+                        "TEXT NOT NULL DEFAULT ''"
+                    )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ap_extension_points_station_id "
+                "ON ap_extension_points(station_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ap_extension_points_section_id "
+                "ON ap_extension_points(section_id)"
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_base_station_id_unique "
+                "ON ap_extension_points(station_id) "
+                "WHERE belong_type = '__base_station__' AND station_id != ''"
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_base_section_id_unique "
+                "ON ap_extension_points(section_id) "
+                "WHERE belong_type = '__base_section__' AND section_id != ''"
+            )
 
         optical_columns = {
             "device_vendor": "TEXT",
@@ -2536,6 +2594,129 @@ class Database:
             is not None
         )
 
+    def _requires_rail_base_identity_migration(
+        self, conn: sqlite3.Connection
+    ) -> bool:
+        required = (
+            ("devices", "station_id"),
+            ("ap_extension_points", "station_id"),
+            ("ap_extension_points", "section_id"),
+        )
+        if any(
+            self._table_exists(conn, table)
+            and not self._column_exists(conn, table, column)
+            for table, column in required
+        ):
+            return True
+        if not self._table_exists(conn, "ap_extension_points"):
+            return False
+        return conn.execute(
+            """
+            SELECT 1 FROM ap_extension_points
+            WHERE belong_type IN ('__base_station__', '__base_section__')
+              AND (
+                (belong_type = '__base_station__' AND TRIM(COALESCE(station_id, '')) = '')
+                OR
+                (belong_type = '__base_section__' AND TRIM(COALESCE(section_id, '')) = '')
+              )
+            LIMIT 1
+            """
+        ).fetchone() is not None
+
+    @staticmethod
+    def _backfill_rail_base_master_ids(conn: sqlite3.Connection) -> None:
+        if not Database._table_exists(conn, "ap_extension_points"):
+            return
+        rows = conn.execute(
+            """
+            SELECT id, site_id, belong_type, station_id, section_id, raw_payload_json
+            FROM ap_extension_points
+            WHERE belong_type IN ('__base_station__', '__base_section__')
+            """
+        ).fetchall()
+        for row in rows:
+            try:
+                metadata = json.loads(str(row["raw_payload_json"] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                metadata = {}
+            if row["belong_type"] == "__base_station__" and not str(
+                row["station_id"] or ""
+            ).strip():
+                node_uid = str(metadata.get("node_uid") or "").strip() or str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"netconsole:{row['site_id']}:station:ap:{row['id']}",
+                    )
+                )
+                station_id = (
+                    "station:"
+                    + hashlib.sha1(node_uid.encode("utf-8")).hexdigest()[:12]
+                )
+                conn.execute(
+                    "UPDATE ap_extension_points SET station_id = ? WHERE id = ?",
+                    (station_id, int(row["id"])),
+                )
+            elif row["belong_type"] == "__base_section__" and not str(
+                row["section_id"] or ""
+            ).strip():
+                identity = str(metadata.get("generation_key") or f"ap:{row['id']}")
+                section_id = (
+                    "section:"
+                    + hashlib.sha1(identity.encode("utf-8")).hexdigest()[:12]
+                )
+                conn.execute(
+                    "UPDATE ap_extension_points SET section_id = ? WHERE id = ?",
+                    (section_id, int(row["id"])),
+                )
+
+    def _validate_rail_base_identity_migration(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        required = (
+            ("devices", "station_id"),
+            ("ap_extension_points", "station_id"),
+            ("ap_extension_points", "section_id"),
+        )
+        missing = [
+            f"{table}.{column}"
+            for table, column in required
+            if not self._table_exists(conn, table)
+            or not self._column_exists(conn, table, column)
+        ]
+        if missing:
+            raise sqlite3.DatabaseError(
+                "轨道基础资料稳定关联字段迁移不完整: " + ",".join(missing)
+            )
+        blank_master = conn.execute(
+            """
+            SELECT belong_type FROM ap_extension_points
+            WHERE (belong_type = '__base_station__' AND TRIM(station_id) = '')
+               OR (belong_type = '__base_section__' AND TRIM(section_id) = '')
+            LIMIT 1
+            """
+        ).fetchone()
+        if blank_master is not None:
+            raise sqlite3.DatabaseError("轨道基础资料主记录稳定 ID 迁移不完整")
+        expected_indexes = {
+            "devices": {"idx_devices_station_id"},
+            "ap_extension_points": {
+                "idx_ap_extension_points_station_id",
+                "idx_ap_extension_points_section_id",
+                "idx_base_station_id_unique",
+                "idx_base_section_id_unique",
+            },
+        }
+        for table, names in expected_indexes.items():
+            actual = {
+                str(row["name"])
+                for row in conn.execute(f"PRAGMA index_list({table})").fetchall()
+            }
+            if not names <= actual:
+                raise sqlite3.DatabaseError(
+                    "轨道基础资料稳定关联索引迁移不完整: "
+                    + ",".join(sorted(names - actual))
+                )
+
     def _migrate_trackside_ap_locations(
         self,
         conn: sqlite3.Connection,
@@ -2981,6 +3162,7 @@ class Database:
             ON CONFLICT(key) DO UPDATE SET
                 value = excluded.value,
                 updated_at = excluded.updated_at
+            WHERE schema_metadata.value != excluded.value
             """,
             (CURRENT_SCHEMA_VERSION, now, now),
         )
@@ -3012,6 +3194,7 @@ class Database:
         address_migration: bool,
         classification_migration: bool,
         trackside_ap_location_migration: bool,
+        rail_base_identity_migration: bool,
         legacy_operation_status_counts: dict[str, int],
     ) -> None:
         try:
@@ -3027,6 +3210,8 @@ class Database:
                     f"classification_migration={classification_migration} "
                     "trackside_ap_location_migration="
                     f"{trackside_ap_location_migration} "
+                    "rail_base_identity_migration="
+                    f"{rail_base_identity_migration} "
                     "legacy_operation_status_counts="
                     f"{json.dumps(legacy_operation_status_counts, ensure_ascii=True, sort_keys=True)} "
                     f"backup_path={backup_path or '<none>'}"

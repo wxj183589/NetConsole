@@ -294,8 +294,6 @@ class EffectiveTracksideApScope:
                     or ""
                 ).strip()
                 if not station_id:
-                    station_id = self._resolve_scope_station_id("", station_name)
-                if not station_id:
                     continue
                 if station_id in self.station_scope_ids:
                     enriched["station_id"] = station_id
@@ -330,15 +328,10 @@ class EffectiveTracksideApScope:
         return False
 
     def _resolve_scope_station_id(self, station_id: str, station_name: str) -> str:
+        del station_name
         if station_id in self.station_scope_ids:
             return station_id
-        key = _station_key(station_name)
-        candidates = {
-            candidate
-            for candidate, name in self.station_names.items()
-            if _station_key(name) == key
-        }
-        return next(iter(candidates)) if len(candidates) == 1 else ""
+        return ""
 
     def station_statistics(self) -> list[dict[str, object | None]]:
         online_by_station: dict[str, int] = defaultdict(int)
@@ -751,7 +744,9 @@ def _build_station_index(
                     f"netconsole:{site_id}:station:{identity}",
                 )
             )
-        station_id = _derived_station_id(node_uid)
+        station_id = str(
+            row.get("station_id") or metadata.get("station_id") or ""
+        ).strip() or _derived_station_id(node_uid)
         station_names[station_id] = name
         station_sort_orders[station_id] = _integer(metadata.get("sort_order"), 2**31 - 1)
         station_node_uids[node_uid] = station_id
@@ -764,23 +759,16 @@ def _build_station_index(
             if key:
                 station_aliases[key].add(station_id)
 
-    formal_aliases = {key: next(iter(values)) for key, values in station_aliases.items() if len(values) == 1}
     for index, plan in enumerate(plans):
-        name = str(plan.get("station_name") or "").strip()
-        key = _station_key(name)
-        station_id = formal_aliases.get(key, "")
         raw_station_id = str(plan.get("station_id") or "").strip()
-        if not station_id:
-            station_id = station_node_uids.get(raw_station_id, raw_station_id)
+        station_id = station_node_uids.get(raw_station_id, raw_station_id)
         if not station_id:
             continue
-        station_names.setdefault(station_id, name)
-        station_sort_orders.setdefault(
-            station_id,
-            _integer(plan.get("sequence_no"), index + 1),
-        )
-        if key:
-            station_aliases[key].add(station_id)
+        if station_id in station_names:
+            station_sort_orders.setdefault(
+                station_id,
+                _integer(plan.get("sequence_no"), index + 1),
+            )
         if raw_station_id and raw_station_id != station_id:
             station_node_uids[raw_station_id] = station_id
     return station_names, station_sort_orders, station_aliases, station_node_uids
@@ -807,20 +795,8 @@ def _resolve_station_id(
         if mapped in known:
             return mapped, ""
         return "", "关联的 station_id 不属于当前有效站点。"
-    key = _station_key(
-        row.get("station_name")
-        or row.get("belong_station")
-        or row.get("station")
-        or metadata.get("station_name")
-        or metadata.get("belong_station")
-        or metadata.get("station")
-    )
-    candidates = station_aliases.get(key, set())
-    if len(candidates) == 1:
-        return next(iter(candidates)), ""
-    if len(candidates) > 1:
-        return "", "历史站名匹配到多个 station_id，需人工处理。"
-    return "", "缺少有效 station_id，且历史站名无法唯一匹配。"
+    del station_aliases
+    return "", "缺少有效 station_id；历史站名仅供诊断，不能建立正式关联。"
 
 
 def _resolve_plan_station_id(
@@ -828,17 +804,13 @@ def _resolve_plan_station_id(
     station_aliases: Mapping[str, set[str]],
     station_node_uids: Mapping[str, str],
 ) -> tuple[str, str]:
-    key = _station_key(plan.get("station_name"))
-    candidates = station_aliases.get(key, set())
     direct = str(plan.get("station_id") or "").strip()
     if direct:
         mapped = station_node_uids.get(direct, direct)
         known = {value for values in station_aliases.values() for value in values}
         if mapped in known:
             return mapped, ""
-    if len(candidates) == 1:
-        return next(iter(candidates)), ""
-    return "", "规划站点无法唯一关联当前有效 station_id。"
+    return "", "规划缺少当前有效 station_id；站名不参与正式关联。"
 
 
 def _reference_exclusion_reason(

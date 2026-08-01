@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 
 from netconsole.services.rail_transit.effective_trackside_ap_scope import (
     TracksideApScopeContext,
@@ -12,6 +13,7 @@ def _station(row_id: int, name: str, node_uid: str, sort_order: int) -> dict[str
     return {
         "id": row_id,
         "belong_type": "__base_station__",
+        "station_id": f"station:{hashlib.sha1(node_uid.encode('utf-8')).hexdigest()[:12]}",
         "station_name": name,
         "raw_payload_json": json.dumps(
             {
@@ -68,6 +70,28 @@ def _resolve(
     references: list[dict[str, object]],
     resources: list[dict[str, object]],
 ):
+    station_ids_by_name: dict[str, list[str]] = {}
+    station_ids_by_node_uid: dict[str, str] = {}
+    for station in stations:
+        metadata = json.loads(str(station.get("raw_payload_json") or "{}"))
+        station_id = str(station.get("station_id") or "")
+        station_ids_by_node_uid[str(metadata.get("node_uid") or "")] = station_id
+        for name in (
+            str(station.get("station_name") or ""),
+            str(metadata.get("canonical_station_name") or ""),
+        ):
+            station_ids_by_name.setdefault(name, []).append(station_id)
+    for row in [*plans, *references]:
+        if row.get("station_id"):
+            continue
+        metadata = json.loads(str(row.get("raw_payload_json") or "{}"))
+        node_uid = str(metadata.get("station_node_uid") or "")
+        candidates = station_ids_by_name.get(str(row.get("station_name") or ""), [])
+        station_id = station_ids_by_node_uid.get(node_uid, "")
+        if not station_id and len(candidates) == 1:
+            station_id = candidates[0]
+        if station_id:
+            row["station_id"] = station_id
     return resolve_effective_trackside_ap_scope(
         context=TracksideApScopeContext(
             site_id="extension",
@@ -299,7 +323,7 @@ def test_scope_excludes_non_service_cross_project_and_ambiguous_station_rows() -
     assert "当前工作状态不是参与当前调试。" in reasons
     assert "不属于当前项目。" in reasons
     assert "缺少当前项目要求的建设阶段。" in reasons
-    assert "历史站名匹配到多个 station_id，需人工处理。" in reasons
+    assert "缺少有效 station_id；历史站名仅供诊断，不能建立正式关联。" in reasons
     assert "在线 AP 未匹配到当前有效轨旁 AP 资料。" in {
         item.reason for item in scope.unmatched_online_items
     }
@@ -366,15 +390,16 @@ def test_business_rows_are_filtered_and_station_name_is_canonicalized() -> None:
 
     rows = scope.filter_business_rows(
         [
-            {
-                "site": "双陈站",
+                {
+                    "site": "双陈站",
+                    "station_id": stations[0]["station_id"],
                 "device_uuid": "sw-1",
                 "interface_name": "XGE1/0/1",
                 "ap_uuid": "resource-uuid",
                 "ap_name": "AP-SC-01",
                 "ap_mac": "0011-2233-4455",
             },
-            {
+                {
                 "site": "一期既有站",
                 "device_uuid": "sw-old",
                 "interface_name": "XGE1/0/2",
@@ -396,7 +421,7 @@ def test_planned_station_scope_survives_without_references_or_resources() -> Non
     ]
     plans = [
         {
-            "station_id": "",
+            "station_id": stations[index - 1]["station_id"],
             "station_name": f"站点{index}",
             "sequence_no": index,
             "ap_count": index + 1,
@@ -430,8 +455,9 @@ def test_switch_scope_keeps_candidate_ports_without_ap_references() -> None:
 
     rows = scope.filter_switch_scope_rows(
         [
-            {
-                "device_uuid": "switch-a",
+                {
+                    "device_uuid": "switch-a",
+                    "station_id": scope.station_scope_ids.pop(),
                 "device_name": "SW-A",
                 "site": "站点A",
                 "interface_name": "XGE1/0/1",
@@ -610,8 +636,9 @@ def test_site_equivalent_fixture_keeps_switch_ports_and_unmatched_online_resourc
         ],
     )
     candidate_rows = [
-        {
-            "device_uuid": f"switch-{station_index}",
+            {
+                "device_uuid": f"switch-{station_index}",
+                "station_id": stations[station_index - 1]["station_id"],
             "site": f"站点{station_index}",
             "interface_name": f"XGE1/0/{port_index}",
             "ap_name": "",
@@ -621,8 +648,9 @@ def test_site_equivalent_fixture_keeps_switch_ports_and_unmatched_online_resourc
         for port_index in range(1, 51)
     ]
     candidate_rows.extend(
-        {
-            "device_uuid": "switch-1",
+            {
+                "device_uuid": "switch-1",
+                "station_id": stations[0]["station_id"],
             "site": "站点1",
             "interface_name": f"XGE1/0/{port_index}",
             "ap_name": "",

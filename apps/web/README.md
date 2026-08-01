@@ -20,6 +20,11 @@
 
 API 响应和用户交互状态由 `src/api/`、`src/stores/` 和类型契约承载；持久业务数据仍由 Python PathResolver/Repository 管理。
 
+轨道基础资料页面由父 View 持有一个统一草稿和
+`CLEAN / DIRTY / VALIDATING / SAVING / SAVE_FAILED / READ_ONLY` 状态。
+轨旁 AP 规划组件是纯受控编辑器，不得直接请求规划、保存、轮询任务或
+维护第二份 baseline/dirty/lock；关联选项的 value 必须是稳定领域 ID。
+
 ## 测试与修改
 
 在此目录执行 `pnpm test` 与 `pnpm build`。新增页面、Tab 或动作前更新 Feature Registry、路由、导航、i18n、Store/API 类型和测试。

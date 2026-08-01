@@ -21,7 +21,7 @@ META_SHEET = "_netconsole_meta"
 ZIP_MANIFEST = "_netconsole_manifest.json"
 CSV_META_MARKER = "#NETCONSOLE_META"
 CONTRACT_SCHEMA_VERSION = 1
-SUPPORTED_SCHEMA_VERSIONS = {1, 2, 3}
+SUPPORTED_SCHEMA_VERSIONS = {1, 2, 3, 4}
 _ARTIFACT_MEDIA_TYPES = {
     ".cfg": "text/plain",
     ".conf": "text/plain",

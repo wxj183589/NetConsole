@@ -1,6 +1,13 @@
 # NetConsole 更新日志
 
-## Unreleased - 2026-07-31
+## Unreleased - 2026-08-01
+
+### 轨旁 AP 主数据边界
+
+- 基础资料父页面统一持有站点、设备绑定、区间、轨旁 AP、逐站规划和 MR 草稿，删除规划组件的独立加载、保存、锁定、任务恢复和基线；内部标签切换不再丢失未保存规划。
+- 新增物理 `devices.station_id`、`ap_extension_points.station_id/section_id` 及稳定 ID 迁移，统一事务按依赖顺序保存并在来源变化时只刷新一次 AP Identity；普通 GET 保持文件指纹只读。
+- 轨旁 AP 业务显式返回交换机/AP/规划/最终站点身份和一致性原因；LLDP 生产关联只接受精确 MAC，IP、系统名和名称相似度降为诊断。
+- 旧规划兼容模板升级 schema v4 并要求车站 ID；迁移脚本默认 dry-run，apply 需副本哈希和显式确认，分域报告安全、歧义和未解析关系。
 
 ### MESH Peer 身份与来源治理
 

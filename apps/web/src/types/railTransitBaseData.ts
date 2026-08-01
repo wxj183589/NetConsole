@@ -21,7 +21,7 @@ export interface RuntimeStatus {
   updated_at: string
 }
 
-export type BaseDataEntityType = 'site_metadata' | 'station' | 'section' | 'trackside_ap' | 'vehicle_mr' | 'trackside_ap_plan'
+export type BaseDataEntityType = 'site_metadata' | 'station' | 'device_station_binding' | 'section' | 'trackside_ap' | 'vehicle_mr' | 'trackside_ap_plan'
 export type BaseDataChangeAction = 'create' | 'update' | 'delete' | 'replace'
 
 export interface BaseDataEditSession {
@@ -60,6 +60,10 @@ export interface BaseDataSaveResult {
   created_count: number
   updated_count: number
   deleted_count: number
+  device_binding_count: number
+  planning_row_count: number
+  station_id_repaired_count: number
+  ap_identity_refreshed: boolean
   warnings: string[]
   validation_issues: BaseDataValidationIssue[]
 }
@@ -213,6 +217,7 @@ export interface StationSourceIssue {
 
 export interface StationSourceCandidate {
   candidate_id: string
+  source_device_ids: string[]
   source_station_value: string
   source_station_key: string
   source_order_text: string
@@ -274,6 +279,7 @@ export interface StationReferenceSummary {
   section_start_count: number
   section_end_count: number
   ap_count: number
+  device_count: number
   relation_count: number
   endpoint_extension_count: number
   plan_count: number
@@ -461,8 +467,25 @@ export interface TracksideAp {
   mac: string
   management_ip: string
   model: string
+  station_id: string
   station: string
+  section_id: string
   section: string
+  station_relation_status: 'resolved' | 'missing' | 'ambiguous' | 'stale'
+  section_relation_status: 'resolved' | 'missing' | 'ambiguous' | 'stale'
+  candidate_station_ids: string[]
+  candidate_section_ids: string[]
+  identity_entity_id: string
+  identity_match_status: string
+  identity_match_source: string
+  lldp_suggestion_status: 'none' | 'suggested' | 'ambiguous'
+  lldp_suggested_station_id: string
+  lldp_suggested_station_name: string
+  lldp_suggestion_switch_device_id: string
+  lldp_suggestion_switch_name: string
+  lldp_suggestion_interface: string
+  lldp_observed_neighbor_mac: string
+  lldp_observed_at: string
   section_start_station: string
   section_end_station: string
   mileage: Mileage
@@ -486,6 +509,22 @@ export interface TracksideAp {
   highest_issue_severity: string
   record_kind: string
   base_metadata: Record<string, unknown>
+}
+
+export interface DeviceStationBindingDraft {
+  device_id: string
+  station_id: string
+  source: 'station_source_preview' | 'manual' | 'migration'
+}
+
+export interface RailTransitBaseDataDraft {
+  metadata: RailTransitSummary | null
+  stations: Station[]
+  sections: Section[]
+  tracksideAps: TracksideAp[]
+  tracksideApPlans: import('./tracksideApBusiness').TracksideApPlanRow[]
+  deviceStationBindings: DeviceStationBindingDraft[]
+  vehicleMrs: VehicleMr[]
 }
 
 export interface VehicleMr {

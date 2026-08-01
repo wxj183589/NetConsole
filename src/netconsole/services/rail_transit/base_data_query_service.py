@@ -76,7 +76,9 @@ _AP_FIELDS = (
     "line_name",
     "system_type",
     "network_domain",
+    "station_id",
     "station_name",
+    "section_id",
     "section_name",
     "line_side",
     "direction",
@@ -121,6 +123,7 @@ _DEVICE_FIELDS = (
     "system_name",
     "mac_address",
     "station",
+    "station_id",
     "location",
     "group_id",
     "device_vendor",
@@ -594,6 +597,14 @@ class RailTransitBaseDataQueryService:
                 mesh_by_mac = loader(site_id, macs)
         except (OSError, ValueError, sqlite3.Error):
             pass
+        identity_query: ApIdentityQueryService | None = None
+        try:
+            identity_query = ApIdentityQueryService(
+                Database(self.paths.site_db_path(site_id)),
+            )
+            identity_query.pin_index_health()
+        except (OSError, sqlite3.Error):
+            identity_query = None
         result: list[TracksideApDTO] = []
         for item in items:
             mac_key = self._mac_key(item.mac)
@@ -616,6 +627,11 @@ class RailTransitBaseDataQueryService:
                     ac.ap.updated_at if ac else "",
                 ),
             )
+            identity_match = (
+                identity_query.resolve_mac(item.mac)
+                if identity_query is not None and mac_key
+                else None
+            )
             result.append(
                 item.model_copy(
                     update={
@@ -623,10 +639,151 @@ class RailTransitBaseDataQueryService:
                         "model": ac.ap.model if ac else "",
                         "radios": [],
                         "runtime": runtime,
+                        "identity_entity_id": (
+                            identity_match.matched_entity_id if identity_match else ""
+                        ),
+                        "identity_match_status": (
+                            identity_match.status if identity_match else "unresolved"
+                        ),
+                        "identity_match_source": (
+                            identity_match.matched_alias_type if identity_match else ""
+                        ),
                     },
                     deep=True,
                 )
             )
+        return self._with_lldp_station_suggestions(
+            site_id,
+            result,
+            identity_query=identity_query,
+        )
+
+    def _with_lldp_station_suggestions(
+        self,
+        site_id: str,
+        items: list[TracksideApDTO],
+        *,
+        identity_query: ApIdentityQueryService | None,
+    ) -> list[TracksideApDTO]:
+        entity_ids = sorted(
+            {
+                item.identity_entity_id
+                for item in items
+                if item.identity_match_status == "matched" and item.identity_entity_id
+            }
+        )
+        path = self.paths.site_db_path(site_id)
+        if identity_query is None or not entity_ids or not path.is_file():
+            return items
+        placeholders = ", ".join("?" for _ in entity_ids)
+        neighbor_mac_key = (
+            "replace(replace(replace(replace(lower(COALESCE(n.neighbor_mac, '')), "
+            "':', ''), '-', ''), '.', ''), ' ', '')"
+        )
+        try:
+            with closing(self._connect(path)) as conn:
+                required_tables = {
+                    "device_lldp_neighbors",
+                    "devices",
+                    "ap_identity_mac_aliases",
+                    "ap_extension_points",
+                }
+                existing_tables = {
+                    str(row[0])
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
+                if not required_tables <= existing_tables:
+                    return items
+                rows = conn.execute(
+                    f"""
+                    SELECT DISTINCT a.entity_id,
+                           n.device_uuid,
+                           d.name AS switch_name,
+                           d.station_id,
+                           COALESCE(s.station_name, d.station, '') AS station_name,
+                           n.local_interface,
+                           n.neighbor_mac,
+                           n.collected_at
+                    FROM device_lldp_neighbors AS n
+                    JOIN ap_identity_mac_aliases AS a
+                      ON a.site_id = ?
+                     AND a.mac_key = {neighbor_mac_key}
+                     AND a.is_active = 1
+                     AND a.is_exact = 1
+                    JOIN devices AS d ON d.device_uuid = n.device_uuid
+                    LEFT JOIN ap_extension_points AS s
+                      ON s.belong_type = '__base_station__'
+                     AND s.station_id = d.station_id
+                    WHERE a.entity_id IN ({placeholders})
+                      AND TRIM(COALESCE(d.station_id, '')) != ''
+                    ORDER BY n.collected_at DESC, n.device_uuid, n.local_interface
+                    """,
+                    [identity_query.site_id, *entity_ids],
+                ).fetchall()
+        except (OSError, sqlite3.Error):
+            return items
+
+        evidence_by_entity: dict[str, list[dict[str, str]]] = defaultdict(list)
+        seen_evidence: set[tuple[str, str, str, str]] = set()
+        for row in rows:
+            neighbor_mac = str(row["neighbor_mac"] or "").strip()
+            match = identity_query.resolve_mac(neighbor_mac)
+            entity_id = str(row["entity_id"] or "")
+            if match.status != "matched" or match.matched_entity_id != entity_id:
+                continue
+            evidence_key = (
+                entity_id,
+                str(row["device_uuid"] or ""),
+                str(row["local_interface"] or ""),
+                normalize_mac_key(neighbor_mac) or "",
+            )
+            if evidence_key in seen_evidence:
+                continue
+            seen_evidence.add(evidence_key)
+            evidence_by_entity[entity_id].append(
+                {
+                    "station_id": str(row["station_id"] or ""),
+                    "station_name": str(row["station_name"] or ""),
+                    "switch_device_id": str(row["device_uuid"] or ""),
+                    "switch_name": str(row["switch_name"] or ""),
+                    "interface": str(row["local_interface"] or ""),
+                    "neighbor_mac": neighbor_mac,
+                    "observed_at": str(row["collected_at"] or ""),
+                }
+            )
+
+        result: list[TracksideApDTO] = []
+        for item in items:
+            evidence = evidence_by_entity.get(item.identity_entity_id, [])
+            station_ids = {row["station_id"] for row in evidence if row["station_id"]}
+            if len(station_ids) == 1:
+                selected = evidence[0]
+                update = {
+                    "lldp_suggestion_status": "suggested",
+                    "lldp_suggested_station_id": selected["station_id"],
+                    "lldp_suggested_station_name": selected["station_name"],
+                    "lldp_suggestion_switch_device_id": selected["switch_device_id"],
+                    "lldp_suggestion_switch_name": selected["switch_name"],
+                    "lldp_suggestion_interface": selected["interface"],
+                    "lldp_observed_neighbor_mac": selected["neighbor_mac"],
+                    "lldp_observed_at": selected["observed_at"],
+                }
+            elif len(station_ids) > 1:
+                selected = evidence[0]
+                update = {
+                    "lldp_suggestion_status": "ambiguous",
+                    "lldp_suggestion_switch_device_id": selected["switch_device_id"],
+                    "lldp_suggestion_switch_name": selected["switch_name"],
+                    "lldp_suggestion_interface": selected["interface"],
+                    "lldp_observed_neighbor_mac": selected["neighbor_mac"],
+                    "lldp_observed_at": selected["observed_at"],
+                }
+            else:
+                result.append(item)
+                continue
+            result.append(item.model_copy(update=update, deep=True))
         return result
 
     def _issues_for_page(
@@ -922,6 +1079,15 @@ class RailTransitBaseDataQueryService:
             except (OSError, ValueError, sqlite3.Error):
                 pass
         result: list[TracksideApDTO] = []
+        identity_query: ApIdentityQueryService | None = None
+        if include_runtime:
+            try:
+                identity_query = ApIdentityQueryService(
+                    Database(self.paths.site_db_path(site_id)),
+                )
+                identity_query.pin_index_health()
+            except (OSError, sqlite3.Error):
+                identity_query = None
         for row in rows:
             name = str(row.get("ap_name") or "")
             mac_key = self._mac_key(row.get("ap_mac_norm") or row.get("ap_mac_display"))
@@ -971,6 +1137,11 @@ class RailTransitBaseDataQueryService:
                     if radio.radio_id <= 2
                 ]
             related_names = sorted({link.mr_name for link in links if link.mr_name})
+            identity_match = (
+                identity_query.resolve_mac(row.get("ap_mac_norm") or row.get("ap_mac_display"))
+                if identity_query is not None and mac_key
+                else None
+            )
             runtime = RelatedRuntimeStatusDTO(
                 fit_ap_id=ac.ap.id if ac else "",
                 fit_ap_ac_id=ac.ap.ac_id if ac else "",
@@ -993,8 +1164,19 @@ class RailTransitBaseDataQueryService:
                     mac=self._display_mac(row.get("ap_mac_norm") or row.get("ap_mac_display")),
                     management_ip=ac.ap.ip if ac else "",
                     model=ac.ap.model if ac else "",
+                    station_id=str(row.get("station_id") or base_metadata.get("station_id") or ""),
                     station=str(row.get("station_name") or ""),
+                    section_id=str(row.get("section_id") or base_metadata.get("section_id") or ""),
                     section=str(row.get("section_name") or ""),
+                    identity_entity_id=(
+                        identity_match.matched_entity_id if identity_match else ""
+                    ),
+                    identity_match_status=(
+                        identity_match.status if identity_match else "unresolved"
+                    ),
+                    identity_match_source=(
+                        identity_match.matched_alias_type if identity_match else ""
+                    ),
                     section_start_station=str(row.get("section_start_station") or ""),
                     section_end_station=str(row.get("section_end_station") or ""),
                     mileage=parsed,
@@ -1020,9 +1202,50 @@ class RailTransitBaseDataQueryService:
             for section in self._sections(result)
             if section.source_kind != "legacy_ap_derived"
         ]
+        station_rows = self._stations(result, site_id=site_id)
+        station_by_id = {row.id: row for row in station_rows}
+        station_ids_by_name: dict[str, list[str]] = defaultdict(list)
+        for row in station_rows:
+            station_ids_by_name[row.name].append(row.id)
+        section_rows = self._sections(result)
+        section_by_id = {row.id: row for row in section_rows}
+        section_ids_by_name: dict[str, list[str]] = defaultdict(list)
+        for row in section_rows:
+            section_ids_by_name[row.name].append(row.id)
         site_metadata = self._site_meta(site_id)
         derived_result: list[TracksideApDTO] = []
         for item in result:
+            station_candidates = station_ids_by_name.get(item.station, [])
+            section_candidates = section_ids_by_name.get(item.section, [])
+            if item.station_id and item.station_id in station_by_id:
+                station_status = "resolved"
+                station_name = station_by_id[item.station_id].name
+            elif item.station_id:
+                station_status = "stale"
+                station_name = item.station
+            else:
+                station_status = "ambiguous" if len(station_candidates) > 1 else "missing"
+                station_name = item.station
+            if item.section_id and item.section_id in section_by_id:
+                section_status = "resolved"
+                section_name = section_by_id[item.section_id].name
+            elif item.section_id:
+                section_status = "stale"
+                section_name = item.section
+            else:
+                section_status = "ambiguous" if len(section_candidates) > 1 else "missing"
+                section_name = item.section
+            item = item.model_copy(
+                update={
+                    "station": station_name,
+                    "section": section_name,
+                    "station_relation_status": station_status,
+                    "section_relation_status": section_status,
+                    "candidate_station_ids": station_candidates,
+                    "candidate_section_ids": section_candidates,
+                },
+                deep=True,
+            )
             if not self._is_ap_record(item):
                 derived_result.append(item)
                 continue
@@ -1042,6 +1265,12 @@ class RailTransitBaseDataQueryService:
                     },
                     deep=True,
                 )
+            )
+        if include_runtime:
+            return self._with_lldp_station_suggestions(
+                site_id,
+                derived_result,
+                identity_query=identity_query,
             )
         return derived_result
 
@@ -1586,7 +1815,11 @@ class RailTransitBaseDataQueryService:
             mileages = [ap.mileage.meters for ap in related if ap.mileage.meters is not None]
             result.append(
                 StationDTO(
-                    id=self._derived_id("station", node_uid),
+                    id=(
+                        metadata_row.station_id
+                        if metadata_row and metadata_row.station_id
+                        else self._derived_id("station", node_uid)
+                    ),
                     node_uid=node_uid,
                     name=name,
                     code=str(metadata.get("code") or ""),
@@ -1652,7 +1885,11 @@ class RailTransitBaseDataQueryService:
             line_direction = str(metadata.get("line_direction") or metadata_row.line_side)
             result.append(
                 SectionDTO(
-                    id=self._derived_id("section", identity),
+                    id=(
+                        metadata_row.section_id
+                        if metadata_row.section_id
+                        else self._derived_id("section", identity)
+                    ),
                     name=metadata_row.section,
                     section_code=str(metadata.get("section_code") or ""),
                     section_kind=str(metadata.get("section_kind") or "manual"),  # type: ignore[arg-type]

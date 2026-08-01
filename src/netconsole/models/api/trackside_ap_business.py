@@ -10,6 +10,12 @@ from netconsole.models.api.rail_transit_base_data import TracksideApDTO
 
 class TracksideApBusinessRowDTO(ApiModel):
     station_id: str = ""
+    switch_station_id: str = ""
+    ap_station_id: str = ""
+    planning_station_id: str = ""
+    effective_station_id: str = ""
+    station_consistency_status: str = "unresolved"
+    station_consistency_reason: str = ""
     site: str = ""
     device_name: str = ""
     switch_vendor: str = ""
@@ -39,6 +45,10 @@ class TracksideApBusinessRowDTO(ApiModel):
     ap_optical_status: str = ""
     ap_match_source: str = ""
     ap_match_confidence: int = 0
+    ap_identity_entity_id: str = ""
+    identity_match_status: str = "unresolved"
+    identity_match_rule: str = ""
+    lldp_observed_neighbor_mac: str = ""
     lldp_match_status: str = ""
     local_rx_power_dbm: Any = None
     local_tx_power_dbm: Any = None
@@ -227,6 +237,8 @@ class TracksideApPlanRowDTO(ApiModel):
     )
     management_vlan: int | None = Field(default=None, ge=1, le=4094)
     remark: str = ""
+    relation_status: Literal["resolved", "missing", "ambiguous", "stale"] = "missing"
+    candidate_station_ids: list[str] = Field(default_factory=list)
 
 
 class TracksideApOnlineStatusRowDTO(ApiModel):

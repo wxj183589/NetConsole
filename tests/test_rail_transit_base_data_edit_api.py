@@ -114,6 +114,15 @@ def test_clear_all_removes_formal_and_legacy_locations_but_preserves_assets(
             ) VALUES ('unified', '正式站', 1, '101', '2026-07-28', '2026-07-28')
             """
         )
+        connection.execute(
+            """
+            INSERT INTO rail_ap_vlan_plans (
+                line_id, planning_mode, auto_group_station_count,
+                address_allocation_strategy, revision, created_at, updated_at
+            ) VALUES ('legacy-retained', 'line_single', 1,
+                      'station_then_point', 7, '2026-07-28', '2026-07-28')
+            """
+        )
         connection.commit()
     with TestClient(_app(paths, tmp_path)) as client:
         preview = client.get("/api/rail-transit/base-data/clear-preview")
@@ -166,6 +175,9 @@ def test_clear_all_removes_formal_and_legacy_locations_but_preserves_assets(
     with Database(database).connect() as connection:
         assert connection.execute("SELECT COUNT(*) FROM devices").fetchone()[0] >= 3
         assert connection.execute("SELECT COUNT(*) FROM ac_trackside_ap_plan").fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT revision FROM rail_ap_vlan_plans WHERE line_id = 'legacy-retained'"
+        ).fetchone()[0] == 7
         rows = connection.execute(
             """
             SELECT station_name, section_name, section_start_station, section_end_station,
@@ -276,7 +288,7 @@ def test_electron_session_can_update_site_metadata_and_preserve_unknown_fields(t
         )
         summary = client.get("/api/rail-transit/base-data/summary").json()
     assert session_response.status_code == 303
-    assert saved.status_code == 200
+    assert saved.status_code == 200, saved.text
     assert summary["line_name"] == "新线路"
     assert summary["project_type"] == "信号"
     assert summary["increasing_direction_leading_end"] == "car_1_end"
@@ -355,12 +367,21 @@ def test_transactional_save_updates_ap_station_and_plan_with_revision(tmp_path: 
     mark_base_data_copy(paths)
     with TestClient(_app(paths, tmp_path)) as client:
         session = client.get("/api/rail-transit/base-data/revision").json()
-        ap_id = client.get("/api/rail-transit/base-data/aps?page_size=1").json()["items"][0]["id"]
+        ap_id = next(
+            row["id"]
+            for row in client.get("/api/rail-transit/base-data/aps?page_size=200").json()["items"]
+            if row["name"] == "AP-Online"
+        )
+        station_ids = {
+            row["name"]: row["id"]
+            for row in client.get("/api/rail-transit/base-data/stations?page_size=200").json()["items"]
+        }
+        new_station_id = "station:test-transaction-d"
         changes = [
             {
                 "entity_type": "station",
                 "action": "create",
-                "entity_id": "station:new",
+                "entity_id": new_station_id,
                 "values": {"name": "车站D", "code": "D", "sort_order": 4, "remark": "人工维护"},
             },
             {
@@ -371,7 +392,8 @@ def test_transactional_save_updates_ap_station_and_plan_with_revision(tmp_path: 
                     "name": "AP-Online",
                     "point_code": "AP001",
                     "vendor": "H3C",
-                    "mac": "0000-0000-0001",
+                    "mac": "0000-0000-0099",
+                    "station_id": new_station_id,
                     "station": "车站D",
                     "mileage": "ZDK1+100",
                     "line_side": "左线",
@@ -385,6 +407,7 @@ def test_transactional_save_updates_ap_station_and_plan_with_revision(tmp_path: 
                 "values": {
                     "rows": [
                         {
+                            "station_id": station_ids["车站A"],
                             "station_name": "车站A",
                             "ap_count": 1,
                             "ap_start_address": "10.1.10.10",
@@ -394,6 +417,7 @@ def test_transactional_save_updates_ap_station_and_plan_with_revision(tmp_path: 
                             "remark": "兼容现有站点",
                         },
                         {
+                            "station_id": station_ids["车站B"],
                             "station_name": "车站B",
                             "ap_count": 1,
                             "ap_start_address": "10.1.11.10",
@@ -403,6 +427,7 @@ def test_transactional_save_updates_ap_station_and_plan_with_revision(tmp_path: 
                             "remark": "兼容现有站点",
                         },
                         {
+                            "station_id": station_ids["车站C"],
                             "station_name": "车站C",
                             "ap_count": 1,
                             "ap_start_address": "10.1.12.10",
@@ -412,6 +437,7 @@ def test_transactional_save_updates_ap_station_and_plan_with_revision(tmp_path: 
                             "remark": "兼容现有站点",
                         },
                         {
+                            "station_id": new_station_id,
                             "station_name": "车站D",
                             "ap_count": 1,
                             "ap_start_address": "10.1.1.10",
@@ -463,8 +489,8 @@ def test_transactional_save_updates_ap_station_and_plan_with_revision(tmp_path: 
         stations = client.get("/api/rail-transit/base-data/stations?page_size=200").json()["items"]
 
     assert validation.status_code == 200
-    assert validation.json()["valid"] is True
-    assert saved.status_code == 200
+    assert validation.json()["valid"] is True, validation.text
+    assert saved.status_code == 200, saved.text
     assert saved.json()["revision"] != session["base_revision"]
     assert stale.status_code == 409
     assert stale.json()["detail"]["code"] == "BASE_DATA_REVISION_CONFLICT"
@@ -553,20 +579,33 @@ def test_ap_section_change_recalculates_auto_side_and_mapping_change_preserves_m
         ],
     )
     with Database(database).connect() as connection:
+        section_ids = {
+            str(row["section_name"]): str(row["section_id"])
+            for row in connection.execute(
+                """
+                SELECT section_id, section_name
+                FROM ap_extension_points
+                WHERE belong_type = '__base_section__' AND section_name IN (?, ?)
+                """,
+                ("高桥西-高桥-上行", "高桥西-高桥-下行"),
+            )
+        }
         connection.execute(
             """
             UPDATE ap_extension_points
-            SET section_name = '高桥西-高桥-上行', line_side = '', raw_payload_json = '{}'
+            SET section_id = ?, section_name = '高桥西-高桥-上行', line_side = '', raw_payload_json = '{}'
             WHERE ap_name = 'AP-Section'
-            """
+            """,
+            (section_ids["高桥西-高桥-上行"],),
         )
         connection.execute(
             """
             UPDATE ap_extension_points
-            SET section_name = '高桥西-高桥-上行', line_side = '右线',
+            SET section_id = ?, section_name = '高桥西-高桥-上行', line_side = '右线',
                 raw_payload_json = '{"line_side_source":"manual"}'
             WHERE ap_name = 'AP-Online'
-            """
+            """,
+            (section_ids["高桥西-高桥-上行"],),
         )
         connection.commit()
     mark_base_data_copy(paths)
@@ -593,6 +632,7 @@ def test_ap_section_change_recalculates_auto_side_and_mapping_change_preserves_m
                             "ap_name": ap["name"],
                             "ap_point_code": ap["point_code"],
                             "ap_mac_display": ap["mac"],
+                            "section_id": section_ids["高桥西-高桥-下行"],
                             "section_name": "高桥西-高桥-下行",
                             "line_side": ap["line_side"],
                             "direction": "下行",
@@ -655,6 +695,172 @@ def test_ap_section_change_recalculates_auto_side_and_mapping_change_preserves_m
         issue.code == "ap_line_side_section_conflict"
         for issue in query_service.get_ap("demo", manual_ap.id).issues
     )
+
+
+def test_twenty_six_source_devices_create_eleven_stable_station_relations(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _enable_copy_write(monkeypatch)
+    paths, database = build_rail_transit_base_data_fixture(tmp_path)
+    now = "2026-08-01T08:00:00+08:00"
+    with Database(database).connect() as connection:
+        group_id = connection.execute(
+            """
+            INSERT INTO device_groups (site_id, name, sort_order, created_at, updated_at)
+            VALUES ('demo', '车站', 2, ?, ?)
+            """,
+            (now, now),
+        ).lastrowid
+        connection.executemany(
+            """
+            INSERT INTO devices (
+                device_uuid, name, system_name, station, station_id, group_id,
+                primary_address, device_vendor, device_type, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, '', ?, ?, 'H3C', 'SWITCH', ?, ?)
+            """,
+            [
+                (
+                    f"source-device-{index:02d}",
+                    f"来源设备{index:02d}",
+                    f"SOURCE-{index:02d}",
+                    f"{station_index + 20:02d}-验收站{station_index:02d}",
+                    group_id,
+                    f"10.88.0.{index}",
+                    now,
+                    now,
+                )
+                for index, station_index in (
+                    (index, ((index - 1) % 11) + 1)
+                    for index in range(1, 27)
+                )
+            ],
+        )
+        connection.commit()
+    mark_base_data_copy(paths)
+
+    with TestClient(_app(paths, tmp_path)) as client:
+        preview = client.get(
+            "/api/rail-transit/base-data/station-source-preview"
+        ).json()
+        assert preview["scanned_device_count"] == 26
+        assert len(preview["candidates"]) == 11
+        assert sum(
+            len(candidate["source_device_ids"])
+            for candidate in preview["candidates"]
+        ) == 26
+        revision = client.get(
+            "/api/rail-transit/base-data/revision"
+        ).json()["base_revision"]
+        station_changes = []
+        bindings = []
+        plan_rows = []
+        for sequence_no, candidate in enumerate(preview["candidates"], start=1):
+            proposed = candidate["proposed_station"]
+            stable_id = proposed["id"]
+            assert stable_id.startswith("station:")
+            station_changes.append(
+                {
+                    "entity_type": "station",
+                    "action": "create",
+                    "entity_id": stable_id,
+                    "values": proposed,
+                }
+            )
+            bindings.extend(
+                {
+                    "device_id": device_id,
+                    "station_id": stable_id,
+                    "source": "station_source_preview",
+                }
+                for device_id in candidate["source_device_ids"]
+            )
+            plan_rows.append(
+                {
+                    "station_id": stable_id,
+                    "station_name": proposed["name"],
+                    "sequence_no": sequence_no,
+                    "planned_ap_count": 0,
+                    "management_vlan": None,
+                    "remark": "来源生成",
+                }
+            )
+        changes = [
+            *station_changes,
+            {
+                "entity_type": "device_station_binding",
+                "action": "replace",
+                "entity_id": "current",
+                "values": {"bindings": bindings},
+            },
+            {
+                "entity_type": "trackside_ap_plan",
+                "action": "replace",
+                "entity_id": "current",
+                "values": {"rows": plan_rows},
+            },
+        ]
+        validation = client.post(
+            "/api/rail-transit/base-data/validate",
+            json={"site_id": "demo", "base_revision": revision, "changes": changes},
+        )
+        assert validation.status_code == 200, validation.text
+        assert validation.json()["valid"] is True, validation.text
+        saved = client.post(
+            "/api/rail-transit/base-data/changes",
+            json={
+                "site_id": "demo",
+                "base_revision": revision,
+                "changes": changes,
+                "explicit_confirmation": True,
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["device_binding_count"] == 26
+        assert saved.json()["planning_row_count"] == 11
+        current_revision = client.get(
+            "/api/rail-transit/base-data/revision"
+        ).json()["base_revision"]
+        preflight = client.post(
+            "/api/rail-transit/base-data/stations/delete-preflight",
+            json={
+                "site_id": "demo",
+                "base_revision": current_revision,
+                "station_ids": [plan_rows[0]["station_id"]],
+            },
+        )
+        assert preflight.status_code == 200, preflight.text
+        preflight_item = preflight.json()["items"][0]
+        assert preflight_item["status"] == "REQUIRES_MERGE"
+        assert preflight_item["references"]["device_count"] == 3
+        assert preflight_item["references"]["plan_count"] == 1
+
+    expected_ids = {row["station_id"] for row in plan_rows}
+    with Database(database).connect_readonly() as connection:
+        device_ids = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT station_id FROM devices WHERE device_uuid LIKE 'source-device-%'"
+            )
+        }
+        master_ids = {
+            str(row[0])
+            for row in connection.execute(
+                """
+                SELECT station_id FROM ap_extension_points
+                WHERE belong_type = '__base_station__' AND station_name LIKE '验收站%'
+                """
+            )
+        }
+        plan_ids = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT station_id FROM ac_trackside_ap_plan WHERE mode = 'unified'"
+            )
+        }
+    assert device_ids == expected_ids
+    assert master_ids == expected_ids
+    assert plan_ids == expected_ids
 
 
 def test_generated_section_edit_persists_overrides_and_cascades_all_named_ap_references(tmp_path: Path) -> None:
@@ -1132,6 +1338,73 @@ def test_plan_only_save_does_not_rebuild_ap_identity_index(
         )
 
     assert response.status_code == 200
+
+
+def test_identity_refresh_is_invoked_once_after_multi_domain_commit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _enable_copy_write(monkeypatch)
+    paths, _database = build_rail_transit_base_data_fixture(tmp_path)
+    mark_base_data_copy(paths)
+    calls: list[tuple[str, str]] = []
+
+    def record_refresh(_self, site_id: str, reason: str) -> bool:
+        calls.append((site_id, reason))
+        return True
+
+    monkeypatch.setattr(
+        RailTransitBaseDataApplicationService,
+        "_ensure_ap_identity_index",
+        record_refresh,
+    )
+
+    with TestClient(_app(paths, tmp_path)) as client:
+        session = client.get("/api/rail-transit/base-data/revision").json()
+        station = client.get(
+            "/api/rail-transit/base-data/stations?page_size=200"
+        ).json()["items"][0]
+        response = client.post(
+            "/api/rail-transit/base-data/changes",
+            json={
+                "site_id": "demo",
+                "base_revision": session["base_revision"],
+                "changes": [
+                    {
+                        "entity_type": "station",
+                        "action": "update",
+                        "entity_id": station["id"],
+                        "values": {
+                            **station,
+                            "old_name": station["name"],
+                            "remark": "统一事务刷新一次",
+                        },
+                    },
+                    {
+                        "entity_type": "trackside_ap_plan",
+                        "action": "replace",
+                        "entity_id": "current",
+                        "values": {
+                            "rows": [
+                                {
+                                    "station_id": station["id"],
+                                    "sequence_no": 1,
+                                    "station_name": station["name"],
+                                    "planned_ap_count": 0,
+                                    "management_vlan": None,
+                                    "remark": "",
+                                }
+                            ]
+                        },
+                    },
+                ],
+                "explicit_confirmation": True,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ap_identity_refreshed"] is True
+    assert calls == [("demo", "base_data_changes_saved")]
 
 
 def test_zero_count_trackside_plan_saves_null_management_vlan(

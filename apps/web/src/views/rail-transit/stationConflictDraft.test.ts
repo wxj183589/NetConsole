@@ -54,6 +54,7 @@ function station(overrides: Partial<Station> = {}): Station {
 function candidate(source: Station): StationSourceCandidate {
   return {
     candidate_id: 'source:01',
+    source_device_ids: ['device:1'],
     source_station_value: '01小洋江站',
     source_station_key: '01小洋江站',
     source_order_text: '01',

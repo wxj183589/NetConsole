@@ -2,6 +2,8 @@ import type { RailTransitTask } from './railTransitWeb'
 
 export interface TracksideApBusinessRow {
   station_id?: string; site: string; device_name: string; switch_vendor: string; interface_name: string; link_status: string; port_type: string
+    switch_station_id?: string; ap_station_id?: string; planning_station_id?: string; effective_station_id?: string
+    station_consistency_status?: string; station_consistency_reason?: string
   description: string; pvid: unknown; vlan: unknown
   planned_management_vlan: number | null; vlan_group_id: string; vlan_group_code: string; vlan_group_name: string
   pvid_plan_status: 'matched' | 'mismatched' | 'unresolved'
@@ -10,6 +12,7 @@ export interface TracksideApBusinessRow {
   switch_optical_status: string
   ap_uuid: string; ap_mac: string; ap_name: string; ap_rx_power: unknown; ap_tx_power: unknown; ap_optical_status: string
   ap_match_source: string; ap_match_confidence: number; lldp_match_status: string
+    ap_identity_entity_id?: string; identity_match_status?: string; identity_match_rule?: string; lldp_observed_neighbor_mac?: string
   local_rx_power_dbm: unknown; local_tx_power_dbm: unknown; remote_rx_power_dbm: unknown; remote_tx_power_dbm: unknown
   forward_loss_db: unknown; reverse_loss_db: unknown; calculation_status: string; calculation_reason: string
   local_sample_time: string; remote_sample_time: string; sample_time_delta_seconds: number | null; updated_at: string
@@ -89,7 +92,9 @@ export interface TracksideSwitchSampleRequest {
 
 export interface TracksideApPlanRow {
   station_id: string; sequence_no: number; station_name: string; planned_ap_count: number
-  management_vlan: number | null; remark: string; station_match_status?: 'matched' | 'unmatched'
+  management_vlan: number | null; remark: string
+  relation_status?: 'resolved' | 'missing' | 'ambiguous' | 'stale'
+  candidate_station_ids?: string[]
 }
 
 export interface TracksideApOnlineStatusRow {
