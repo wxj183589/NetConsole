@@ -87,7 +87,8 @@ const syslogDeletePreview = ref<GroundSyslogDeletePreview | null>(null)
 const syslogTimeRange = ref<[Date, Date] | null>(null)
 const syslogFilter = reactive({
   trainId: '', mrName: '', mrRole: '', sourceIp: '', systemName: '', facility: '', severity: '',
-  identityStatus: '', eventType: '', peerName: '', dataSource: '', keyword: '',
+  identityStatus: '', eventType: '', eventFamily: '', commandSource: '', physicalState: '',
+  correlationStatus: '', correlationConfidence: '', peerName: '', dataSource: '', keyword: '',
   startTime: '', endTime: '', page: 1, pageSize: 100,
 })
 const localIpv4Addresses = ref<LocalIpv4Address[]>([])
@@ -154,6 +155,11 @@ const syslogAdvancedFilterCount = computed(() => [
   syslogFilter.facility,
   syslogFilter.severity,
   syslogFilter.identityStatus,
+  syslogFilter.eventFamily,
+  syslogFilter.commandSource,
+  syslogFilter.physicalState,
+  syslogFilter.correlationStatus,
+  syslogFilter.correlationConfidence,
   syslogFilter.dataSource,
   syslogFilter.keyword,
 ].filter(Boolean).length)
@@ -269,6 +275,10 @@ const trainColumns: NcTableColumn<GroundTrain>[] = [
   { key: 'cw_status', label: 'CW 在线', valueType: 'status', displayValue: (row) => groundStatusLabel(endpoint(row, 'CW')?.online_status) },
   { key: 'ct_ping', label: 'CT Ping', valueType: 'status', displayValue: (row) => groundStatusLabel(endpoint(row, 'CT')?.ping_active ? 'PINGING' : 'STOPPED') },
   { key: 'cw_ping', label: 'CW Ping', valueType: 'status', displayValue: (row) => groundStatusLabel(endpoint(row, 'CW')?.ping_active ? 'PINGING' : 'STOPPED') },
+  { key: 'ct_radio', label: 'CT 射频', valueType: 'status', displayValue: (row) => groundStatusLabel(endpoint(row, 'CT')?.radio_overall_state || 'UNKNOWN') },
+  { key: 'cw_radio', label: 'CW 射频', valueType: 'status', displayValue: (row) => groundStatusLabel(endpoint(row, 'CW')?.radio_overall_state || 'UNKNOWN') },
+  { key: 'ct_control', label: 'CT 控制来源', valueType: 'status', displayValue: (row) => groundControlSourceLabel(endpoint(row, 'CT')?.cfg_command_source) },
+  { key: 'cw_control', label: 'CW 控制来源', valueType: 'status', displayValue: (row) => groundControlSourceLabel(endpoint(row, 'CW')?.cfg_command_source) },
   { key: 'coverage_status', label: t('ground.coverage', '今日深度采集'), valueType: 'status', displayValue: (row) => groundStatusLabel(row.coverage_status) },
   { key: 'enabled', label: t('ground.enabled', '启用'), valueType: 'status', displayValue: (row) => groundStatusLabel(row.enabled ? 'ENABLED' : 'DISABLED') },
   { key: 'syslog', label: 'WMESH Syslog', valueType: 'status', displayValue: (row) => `${groundStatusLabel(endpoint(row, 'CT')?.syslog_status || 'WAITING')} / ${groundStatusLabel(endpoint(row, 'CW')?.syslog_status || 'WAITING')}` },
@@ -349,7 +359,15 @@ const syslogColumns: NcTableColumn<GroundSyslogRecord>[] = [
   { key: 'system_name', label: '设备系统名', valueType: 'text' },
   { key: 'facility', label: 'Facility', valueType: 'text' },
   { key: 'severity', label: '级别', valueType: 'status', displayValue: (row) => groundSeverityLabel(row.severity) },
-  { key: 'event_type', label: 'WMESH 事件', valueType: 'status', displayValue: (row) => groundEventLabel(row.event_type) },
+  { key: 'event_family', label: '事件族', valueType: 'status' },
+  { key: 'event_type', label: '事件', valueType: 'status', displayValue: (row) => groundEventLabel(row.event_type) },
+  { key: 'interface_name', label: '射频接口', valueType: 'text' },
+  { key: 'physical_state', label: '接口状态', valueType: 'status', displayValue: (row) => groundStatusLabel(row.physical_state) },
+  { key: 'cfg_event_index', label: 'CFG EventIndex', valueType: 'text' },
+  { key: 'cfg_command_source', label: '命令来源', valueType: 'status', displayValue: (row) => groundControlSourceLabel(row.cfg_command_source) },
+  { key: 'correlation_confidence', label: '关联置信度', valueType: 'status', displayValue: (row) => groundStatusLabel(row.correlation_confidence) },
+  { key: 'correlation_delta_ms', label: '关联时间差', valueType: 'number', displayValue: (row) => metric(row.correlation_delta_ms, 'ms') },
+  { key: 'composite_event_type', label: '综合事件', valueType: 'status', displayValue: (row) => row.composite_event_type ? groundEventLabel(row.composite_event_type) : '—' },
   { key: 'peer_name', label: '当前 AP', valueType: 'name', displayValue: (row) => row.peer_name || row.peer_mac || '—' },
   { key: 'peer_mac', label: 'Peer MAC', valueType: 'mac' },
   { key: 'previous_peer_name', label: '原 AP', valueType: 'name', displayValue: (row) => row.previous_peer_name || row.previous_peer_mac || '—' },
@@ -991,6 +1009,11 @@ function currentSyslogDeleteFilters(): GroundSyslogDeleteFilters {
     severity: syslogFilter.severity,
     identity_status: syslogFilter.identityStatus,
     event_type: syslogFilter.eventType,
+    event_family: syslogFilter.eventFamily,
+    cfg_command_source: syslogFilter.commandSource,
+    physical_state: syslogFilter.physicalState,
+    correlation_status: syslogFilter.correlationStatus,
+    correlation_confidence: syslogFilter.correlationConfidence,
     peer_name: syslogFilter.peerName,
     data_source: syslogFilter.dataSource,
     keyword: syslogFilter.keyword,
@@ -1250,6 +1273,27 @@ async function openArchiveDirectory(): Promise<void> {
   catch (reason) { ElMessage.error(errorText(reason, t('ground.archive_open_failed', '归档目录打开失败'))) }
 }
 function endpoint(row: GroundTrain, code: 'CT' | 'CW') { return row.endpoints.find((item) => item.endpoint === code) }
+function groundControlSourceLabel(value: unknown): string {
+  const source = String(value || '').trim().toLocaleLowerCase()
+  if (source === 'snmp') return 'SNMP'
+  if (source === 'cli') return 'CLI'
+  if (source === 'netconf') return 'NETCONF'
+  return source ? source.toLocaleUpperCase() : '未知'
+}
+function endpointRadioTooltip(row: GroundTrain, code: 'CT' | 'CW'): string {
+  const target = endpoint(row, code)
+  const radio = target?.radio_interfaces?.[0]
+  return [
+    `接口：${radio?.interface_name || '未知'}`,
+    `最近变化：${radio?.last_changed_at || target?.last_radio_event_at || '—'}`,
+    `DOWN：${radio?.last_down_at || '—'}`,
+    `UP：${radio?.last_up_at || '—'}`,
+    `中断：${radio?.latest_outage_duration_ms == null ? '—' : `${radio.latest_outage_duration_ms} ms`}`,
+    `CFG EventIndex：${target?.cfg_event_index || radio?.last_cfg_event_index || '—'}`,
+    `控制来源：${groundControlSourceLabel(target?.cfg_command_source || radio?.last_command_source)}`,
+    `关联：${groundStatusLabel(target?.correlation_confidence || radio?.correlation_confidence || 'UNCONFIRMED')}`,
+  ].join('\n')
+}
 function pingTimeRange(row: GroundPingTarget, runId: string): { start_time?: string; end_time?: string } {
   if (pingRange.value === 'run') {
     const run = runs.value.find((item) => item.run_id === runId)
@@ -1278,9 +1322,9 @@ function isActionResponse(value: unknown): value is GroundActionResponse {
   return Boolean(value && typeof value === 'object' && 'accepted' in value && 'message' in value)
 }
 function statusType(value: string): 'success' | 'warning' | 'danger' | 'info' | 'primary' {
-  if (['RUNNING', 'COVERED', 'READY', 'FRESH', 'MAINLINE', 'LOCAL_ADDRESS', 'LISTENING', 'NETCONSOLE_LISTENING', 'AVAILABLE'].includes(value)) return 'success'
-  if (['PAUSED', 'PARTIAL', 'STALE', 'MAINLINE_STATIONARY', 'WARNING', 'EXTERNAL_CONFIRMED', 'STARTING'].includes(value)) return 'warning'
-  if (['ERROR', 'FAILED', 'CRITICAL', 'NOT_LOCAL', 'INVALID', 'OCCUPIED_BY_OTHER', 'ADDRESS_NOT_LOCAL'].includes(value)) return 'danger'
+  if (['RUNNING', 'COVERED', 'READY', 'FRESH', 'MAINLINE', 'LOCAL_ADDRESS', 'LISTENING', 'NETCONSOLE_LISTENING', 'AVAILABLE', 'UP', 'RADIO_RECOVERED', 'HIGH', 'CORRELATED'].includes(value)) return 'success'
+  if (['PAUSED', 'PARTIAL', 'STALE', 'MAINLINE_STATIONARY', 'WARNING', 'EXTERNAL_CONFIRMED', 'STARTING', 'FLAPPING', 'FREQUENT_SWITCHING', 'MEDIUM'].includes(value)) return 'warning'
+  if (['ERROR', 'FAILED', 'CRITICAL', 'NOT_LOCAL', 'INVALID', 'OCCUPIED_BY_OTHER', 'ADDRESS_NOT_LOCAL', 'DOWN', 'RADIO_DOWN'].includes(value)) return 'danger'
   return 'info'
 }
 function abortRequests(): void {
@@ -1500,6 +1544,12 @@ onBeforeUnmount(() => {
             <article><span>{{ t('ground.disk_usage', '当前占用 / 磁盘剩余') }}</span><strong>{{ bytes(status?.disk_used_bytes ?? 0) }} / {{ bytes(status?.disk_free_bytes ?? 0) }}</strong><el-tag size="small" :type="statusType(status?.disk_status || '')">{{ groundStatusLabel(status?.disk_status) }}</el-tag></article>
             <article><span>{{ t('ground.latest_archive', '最近归档') }}</span><strong>{{ status?.latest_archive_status ? groundStatusLabel(status.latest_archive_status) : '—' }}</strong><small>{{ status?.latest_archive_message }}</small></article>
             <article><span>Syslog 活跃 / 配置异常</span><strong>{{ status?.syslog_active_mr_count ?? 0 }} / {{ status?.config_abnormal_count ?? 0 }}</strong></article>
+            <article><span>射频口关闭 MR</span><strong>{{ status?.radio_down_mr_count ?? 0 }}</strong></article>
+            <article><span>今日射频短暂中断</span><strong>{{ status?.radio_bounce_today_count ?? 0 }}</strong></article>
+            <article><span>今日 SNMP 射频控制</span><strong>{{ status?.snmp_radio_control_today_count ?? 0 }}</strong></article>
+            <article><span>SNMP 控制后未恢复</span><strong>{{ status?.snmp_unrecovered_count ?? 0 }}</strong></article>
+            <article><span>射频频繁切换 MR</span><strong>{{ status?.radio_flapping_mr_count ?? 0 }}</strong></article>
+            <article><span>最近 SNMP 射频操作</span><strong>{{ status?.last_snmp_radio_control_at || '—' }}</strong></article>
             <article><span>UDP 队列 / 丢弃</span><strong>{{ health?.udp_queue_length ?? 0 }} / {{ health?.udp_dropped_count ?? 0 }}</strong><small>{{ health?.udp_listen_address || '未监听' }}</small></article>
           </div>
           <section class="syslog-transport-band" v-loading="syslogTransportLoading">
@@ -1593,6 +1643,10 @@ onBeforeUnmount(() => {
         <div ref="trainTableHost" class="table-frame"><NcDataTable :data="filteredTrains" :columns="trainColumns" table-id="ground-trains" route-key="rail-ground-unattended" row-key="train_id" :max-height="trainTableMaxHeight" auto-height compact>
           <template #cell-eligibility_status="{ row }"><el-tag size="small" :type="statusType(row.eligibility_status)">{{ groundStatusLabel(row.eligibility_status) }}</el-tag></template>
           <template #cell-coverage_status="{ row }"><el-tag size="small" :type="statusType(row.coverage_status)">{{ groundStatusLabel(row.coverage_status) }}</el-tag></template>
+          <template #cell-ct_radio="{ row }"><el-tooltip :content="endpointRadioTooltip(row, 'CT')" placement="top"><el-tag size="small" :type="statusType(endpoint(row, 'CT')?.radio_overall_state || 'UNKNOWN')">{{ groundStatusLabel(endpoint(row, 'CT')?.radio_overall_state || 'UNKNOWN') }}</el-tag></el-tooltip></template>
+          <template #cell-cw_radio="{ row }"><el-tooltip :content="endpointRadioTooltip(row, 'CW')" placement="top"><el-tag size="small" :type="statusType(endpoint(row, 'CW')?.radio_overall_state || 'UNKNOWN')">{{ groundStatusLabel(endpoint(row, 'CW')?.radio_overall_state || 'UNKNOWN') }}</el-tag></el-tooltip></template>
+          <template #cell-ct_control="{ row }"><el-tooltip :content="endpointRadioTooltip(row, 'CT')" placement="top"><span>{{ groundControlSourceLabel(endpoint(row, 'CT')?.cfg_command_source) }}</span></el-tooltip></template>
+          <template #cell-cw_control="{ row }"><el-tooltip :content="endpointRadioTooltip(row, 'CW')" placement="top"><span>{{ groundControlSourceLabel(endpoint(row, 'CW')?.cfg_command_source) }}</span></el-tooltip></template>
           <template #cell-actions="{ row }"><div class="row-actions"><el-button size="small" text type="primary" @click="showTrain(row)">{{ t('common.view', '查看') }}</el-button><el-button size="small" text type="primary" @click="togglePriority(row)">{{ row.priority ? t('ground.unpin', '取消置顶') : t('ground.pin', '置顶') }}</el-button><el-button size="small" text @click="updatePolicy(row, { enabled: !row.enabled })">{{ row.enabled ? '停用' : '启用' }}</el-button></div></template>
         </NcDataTable></div>
       </el-tab-pane>
@@ -1632,7 +1686,7 @@ onBeforeUnmount(() => {
             <div class="toolbar log-filter-grid timeline-filter-grid">
               <el-input v-model="timelineFilter.query" clearable placeholder="设备名称、列车号或 CT/CW" />
               <el-select v-model="timelineFilter.eventType" clearable placeholder="事件类型">
-                <el-option v-for="value in ['ap_transition', 'mesh_linkup', 'mesh_linkdown', 'mesh_activelink_switch', 'ifnet_phy_updown', 'ping_loss_pattern', 'run_started', 'run_completed', 'stop_failed']" :key="value" :label="groundEventLabel(value)" :value="value" />
+                <el-option v-for="value in ['ap_transition', 'mesh_linkup', 'mesh_linkdown', 'mesh_activelink_switch', 'ifnet_phy_updown', 'radio_interface_down', 'radio_interface_up', 'radio_interface_recovered', 'radio_interface_bounce', 'radio_interface_flapping', 'cfgman_snmp_change', 'radio_snmp_down', 'radio_snmp_up', 'radio_snmp_bounce', 'radio_snmp_flapping', 'ping_loss_pattern', 'run_started', 'run_completed', 'stop_failed']" :key="value" :label="groundEventLabel(value)" :value="value" />
               </el-select>
               <el-button :icon="Refresh" @click="timelinePage = 1; loadTimelineData(false)">{{ t('common.query', '查询') }}</el-button>
             </div>
@@ -1668,8 +1722,8 @@ onBeforeUnmount(() => {
               <el-input v-model="syslogFilter.mrName" clearable placeholder="MR 设备名称" />
               <el-select v-model="syslogFilter.mrRole" clearable placeholder="CT/CW"><el-option label="CT" value="CT" /><el-option label="CW" value="CW" /></el-select>
               <el-input v-model="syslogFilter.sourceIp" clearable placeholder="来源 IP" />
-              <el-select v-model="syslogFilter.eventType" clearable placeholder="WMESH 事件">
-                <el-option v-for="value in ['MESH_LINKUP', 'MESH_LINKDOWN', 'MESH_ACTIVELINK_SWITCH', 'IFNET_PHY_UPDOWN']" :key="value" :label="groundEventLabel(value)" :value="value" />
+              <el-select v-model="syslogFilter.eventType" clearable placeholder="原始事件">
+                <el-option v-for="value in ['MESH_LINKUP', 'MESH_LINKDOWN', 'MESH_ACTIVELINK_SWITCH', 'IFNET_PHY_UPDOWN', 'CFGMAN_CFGCHANGED']" :key="value" :label="groundEventLabel(value)" :value="value" />
               </el-select>
               <el-input v-model="syslogFilter.peerName" clearable placeholder="AP 名称或 MAC" />
               <el-date-picker v-model="syslogTimeRange" type="datetimerange" start-placeholder="开始时间" end-placeholder="结束时间" />
@@ -1688,6 +1742,21 @@ onBeforeUnmount(() => {
                 </el-select>
                 <el-select v-model="syslogFilter.identityStatus" clearable placeholder="身份状态">
                   <el-option label="身份已确认" value="VERIFIED" /><el-option label="来源未识别" value="UNIDENTIFIED" /><el-option label="身份冲突" value="IDENTITY_CONFLICT" />
+                </el-select>
+                <el-select v-model="syslogFilter.eventFamily" clearable placeholder="事件族">
+                  <el-option label="WMESH" value="WMESH" /><el-option label="IFNET" value="IFNET" /><el-option label="CFGMAN" value="CFGMAN" />
+                </el-select>
+                <el-select v-model="syslogFilter.commandSource" clearable placeholder="控制来源">
+                  <el-option label="SNMP" value="snmp" /><el-option label="CLI" value="cli" /><el-option label="NETCONF" value="netconf" />
+                </el-select>
+                <el-select v-model="syslogFilter.physicalState" clearable placeholder="射频状态">
+                  <el-option label="开启" value="UP" /><el-option label="关闭" value="DOWN" />
+                </el-select>
+                <el-select v-model="syslogFilter.correlationStatus" clearable placeholder="关联状态">
+                  <el-option label="已关联" value="CORRELATED" /><el-option label="未关联" value="UNCORRELATED" />
+                </el-select>
+                <el-select v-model="syslogFilter.correlationConfidence" clearable placeholder="关联置信度">
+                  <el-option label="高置信度" value="HIGH" /><el-option label="中置信度" value="MEDIUM" />
                 </el-select>
                 <el-select v-model="syslogFilter.dataSource" clearable placeholder="数据来源">
                   <el-option label="活动原始文件" value="ACTIVE" /><el-option label="READY 归档" value="ARCHIVE" />
@@ -1887,6 +1956,10 @@ onBeforeUnmount(() => {
             <el-form-item label="批量事件数"><el-input-number v-model="profile.event_batch_size" :min="1" :max="5000" /></el-form-item>
             <el-form-item label="配置检查冷却（秒）"><el-input-number v-model="profile.config_check_cooldown_seconds" :min="30" :max="86400" /></el-form-item>
             <el-form-item label="上电时间误差（秒）"><el-input-number v-model="profile.boot_time_tolerance_seconds" :min="10" :max="900" /></el-form-item>
+            <el-form-item label="自动补齐 MR Syslog 临时配置">
+              <el-switch v-model="profile.syslog_auto_repair_enabled" />
+              <small>无人值守启动或检测到 MR 新上电周期时，自动检查并补齐 Profile v2 临时配置；不会保存设备配置，也不会由 CFGMAN 事件触发。</small>
+            </el-form-item>
           </div>
           <div v-if="sourceRecommendation" class="network-status">
             <span>系统路由推荐：<b>{{ sourceRecommendation.recommended_ip || '无可靠推荐' }}</b></span>
@@ -2111,7 +2184,14 @@ onBeforeUnmount(() => {
           <el-descriptions-item label="列车 / MR">{{ selectedSyslogRecord.train_no || '未识别' }}（{{ selectedSyslogRecord.train_id || '—' }}）/ {{ selectedSyslogRecord.mr_name || selectedSyslogRecord.source_ip }}（{{ selectedSyslogRecord.device_uuid || '—' }}）</el-descriptions-item>
           <el-descriptions-item label="来源 / system_name">{{ selectedSyslogRecord.source_ip }}:{{ selectedSyslogRecord.source_port || '—' }} / {{ selectedSyslogRecord.system_name || '—' }}</el-descriptions-item>
           <el-descriptions-item label="Facility / 级别">{{ selectedSyslogRecord.facility || '—' }} / {{ groundSeverityLabel(selectedSyslogRecord.severity) }}</el-descriptions-item>
-          <el-descriptions-item label="WMESH 事件">{{ groundEventLabel(selectedSyslogRecord.event_type) }}</el-descriptions-item>
+          <el-descriptions-item label="事件族 / 事件">{{ selectedSyslogRecord.event_family || '—' }} / {{ groundEventLabel(selectedSyslogRecord.event_type) }}</el-descriptions-item>
+          <el-descriptions-item label="射频接口 / 状态">{{ selectedSyslogRecord.interface_name || '—' }} / {{ groundStatusLabel(selectedSyslogRecord.physical_state) }}</el-descriptions-item>
+          <el-descriptions-item label="CFG EventIndex / 来源">{{ selectedSyslogRecord.cfg_event_index || '—' }} / {{ groundControlSourceLabel(selectedSyslogRecord.cfg_command_source) }}</el-descriptions-item>
+          <el-descriptions-item label="配置来源 / 目标">{{ selectedSyslogRecord.cfg_source || '—' }} / {{ selectedSyslogRecord.cfg_destination || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="预期内部变更">{{ selectedSyslogRecord.expected_internal_change ? '是' : '否' }}</el-descriptions-item>
+          <el-descriptions-item label="关联状态">{{ groundStatusLabel(selectedSyslogRecord.correlation_status) }} / {{ groundStatusLabel(selectedSyslogRecord.correlation_confidence) }} / {{ selectedSyslogRecord.correlation_delta_ms == null ? '—' : `${selectedSyslogRecord.correlation_delta_ms} ms` }}</el-descriptions-item>
+          <el-descriptions-item label="综合事件">{{ selectedSyslogRecord.composite_event_type ? groundEventLabel(selectedSyslogRecord.composite_event_type) : '—' }}</el-descriptions-item>
+          <el-descriptions-item label="关联结构化事件 ID">{{ selectedSyslogRecord.correlated_event_ids.length ? selectedSyslogRecord.correlated_event_ids.join(', ') : '—' }}</el-descriptions-item>
           <el-descriptions-item label="AP 切换">{{ selectedSyslogRecord.previous_peer_name || selectedSyslogRecord.previous_peer_mac || '—' }} → {{ selectedSyslogRecord.peer_name || selectedSyslogRecord.peer_mac || '—' }}</el-descriptions-item>
           <el-descriptions-item label="站点 / 区间">{{ selectedSyslogRecord.station || '—' }} / {{ selectedSyslogRecord.section || '—' }}</el-descriptions-item>
           <el-descriptions-item label="AP 解析 / 名称来源">{{ groundStatusLabel(selectedSyslogRecord.resolution_status) }} / {{ groundDisplayNameSourceLabel(selectedSyslogRecord.parsed_details.display_name_source) }}</el-descriptions-item>
@@ -2149,6 +2229,8 @@ onBeforeUnmount(() => {
           <el-descriptions-item label="CW 会话">{{ selectedTrainCollection?.cw_session_id || '—' }}</el-descriptions-item>
           <el-descriptions-item label="CT Syslog">{{ groundStatusLabel(endpoint(selectedTrain, 'CT')?.syslog_status) }}</el-descriptions-item>
           <el-descriptions-item label="CW Syslog">{{ groundStatusLabel(endpoint(selectedTrain, 'CW')?.syslog_status) }}</el-descriptions-item>
+          <el-descriptions-item label="CT 射频 / 控制来源">{{ groundStatusLabel(endpoint(selectedTrain, 'CT')?.radio_overall_state || 'UNKNOWN') }} / {{ groundControlSourceLabel(endpoint(selectedTrain, 'CT')?.cfg_command_source) }}</el-descriptions-item>
+          <el-descriptions-item label="CW 射频 / 控制来源">{{ groundStatusLabel(endpoint(selectedTrain, 'CW')?.radio_overall_state || 'UNKNOWN') }} / {{ groundControlSourceLabel(endpoint(selectedTrain, 'CW')?.cfg_command_source) }}</el-descriptions-item>
         </el-descriptions>
         <section v-for="mrEndpoint in selectedTrain.endpoints" :key="`loghost:${mrEndpoint.mr_id || mrEndpoint.endpoint}`" class="loghost-section">
           <div class="network-status">

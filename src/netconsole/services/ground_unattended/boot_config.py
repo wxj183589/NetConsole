@@ -51,7 +51,10 @@ CONFIG_FAILURE_MARKERS = (
 SOURCE_RULE_COMMANDS = (
     "info-center source default loghost deny",
     "info-center source wmesh loghost level notification",
+    "info-center source ifnet loghost level notification",
+    "info-center source cfgman loghost level notification",
 )
+MANAGED_PROFILE_VERSION = 2
 RUNTIME_REQUIREMENTS = (
     "information_center_enabled",
     "loghost_enabled",
@@ -287,6 +290,7 @@ class MrSyslogConfigService:
         target_ip: str,
         target_port: int,
         boot_tolerance_seconds: int,
+        repair_enabled: bool = True,
         allow_target_port_change: bool = False,
     ) -> MrConfigCheckResult:
         target_ip = str(ipaddress.ip_address(str(target_ip).strip()))
@@ -330,6 +334,8 @@ class MrSyslogConfigService:
             "checked_at": checked_at.isoformat(timespec="milliseconds"),
             "verified_at": "",
             "allow_target_port_change": bool(allow_target_port_change),
+            "syslog_auto_repair_enabled": bool(repair_enabled),
+            "managed_profile_version": MANAGED_PROFILE_VERSION,
         }
         applied: tuple[str, ...] = ()
         boot: dict[str, Any] | None = None
@@ -459,11 +465,27 @@ class MrSyslogConfigService:
                 and not allow_target_port_change
             ):
                 status = "TARGET_PORT_CONFLICT"
+            elif not repair_enabled:
+                status = "AUTO_REPAIR_DISABLED"
             else:
                 applied = build_syslog_config_commands(before.repair_commands)
                 evidence["applied_commands"] = list(applied)
                 if applied:
                     _validate_syslog_write_commands(applied, target_ip=target_ip, target_port=target_port)
+                    expected_until = self.now_provider() + timedelta(seconds=15)
+                    self.repository.mark_expected_config_change(
+                        device_uuid=device_uuid,
+                        operation_id=audit_id,
+                        expected_started_at=self.now_provider().isoformat(
+                            timespec="milliseconds"
+                        ),
+                        expected_until=expected_until.isoformat(
+                            timespec="milliseconds"
+                        ),
+                    )
+                    evidence["expected_change_until"] = (
+                        expected_until.isoformat(timespec="milliseconds")
+                    )
                     for command in applied:
                         output = str(connection.send_command(command, config.command_timeout) or "")
                         command_result = {
@@ -558,6 +580,7 @@ class MrSyslogConfigService:
                     "applied_commands": list(applied),
                     "evidence_path": evidence_path,
                     "evidence_sha256": _sha256(self.repository.db_path.parent / evidence_path),
+                    "managed_profile_version": MANAGED_PROFILE_VERSION,
                 }
             )
             if status == "CONFIG_VERIFY_FAILED":
@@ -651,6 +674,7 @@ class MrSyslogConfigService:
                     "evidence_path": evidence_path,
                     "error_code": exc.__class__.__name__,
                     "error_message": str(exc),
+                    "managed_profile_version": MANAGED_PROFILE_VERSION,
                 }
             )
             self.repository.add_event(
@@ -858,6 +882,7 @@ def _syslog_config_fingerprint(
 ) -> str:
     runtime = verification.runtime
     payload = {
+        "managed_profile_version": MANAGED_PROFILE_VERSION,
         "target": {"ip": target_ip, "port": target_port},
         "runtime": {
             "information_center_enabled": runtime.information_center_enabled,
@@ -911,12 +936,21 @@ def _validate_syslog_write_commands(
         f"info-center loghost {target_ip} port {target_port}",
         "info-center source default loghost deny",
         "info-center source wmesh loghost level notification",
+        "info-center source ifnet loghost level notification",
+        "info-center source cfgman loghost level notification",
     }
     if not commands or commands[0] != "system-view" or commands[-1] != "return":
         raise ValueError("Syslog 写入 Profile 缺少受控视图边界")
     if any(_normalize(command) not in allowed for command in commands):
         raise ValueError("Syslog 写入命令不在固定 Profile 白名单中")
-    if any(re.search(r"\b(?:save|reboot|delete|reset|undo)\b", command, re.I) for command in commands):
+    if any(
+        re.search(
+            r"\b(?:save|reboot|delete|reset|undo|shutdown|restart|startup|copy|format)\b",
+            command,
+            re.I,
+        )
+        for command in commands
+    ):
         raise ValueError("Syslog 写入 Profile 包含禁止命令")
 
 
@@ -995,6 +1029,7 @@ __all__ = [
     "MrBootSessionService",
     "MrConfigCheckResult",
     "MrSyslogConfigService",
+    "MANAGED_PROFILE_VERSION",
     "SyslogConfigDiff",
     "SyslogProfileVerification",
     "analyze_syslog_config",

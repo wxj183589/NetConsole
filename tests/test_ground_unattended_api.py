@@ -918,7 +918,7 @@ def test_target_port_change_requires_single_mr_confirmation_and_is_audited(
         explicit_confirmation=True,
     )
 
-    assert supervisor.config_checks == [("mr-ct", True)]
+    assert supervisor.config_checks == [("mr-ct", True, True)]
     events = repository.list_events(
         "run-port-change",
         event_type="mr_loghost_port_change_authorized",
@@ -1054,9 +1054,15 @@ class _Supervisor:
         return None
 
     def request_config_check(
-        self, device_uuid="", *, allow_target_port_change=False
+        self,
+        device_uuid="",
+        *,
+        repair_enabled=True,
+        allow_target_port_change=False,
     ):
-        self.config_checks.append((device_uuid, allow_target_port_change))
+        self.config_checks.append(
+            (device_uuid, repair_enabled, allow_target_port_change)
+        )
 
 
 class _BaseQuery:

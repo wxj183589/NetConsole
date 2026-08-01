@@ -34,6 +34,7 @@ _DEFAULT_TABLES = {
     "ap_identity_h3c_prefixes",
     "ap_identity_conflicts",
     "ap_identity_index_state",
+    "ap_identity_source_state",
 }
 _DEFAULT_DEVICE_GROUP_NAMES = {"COCC", "BOCC", "车站", "车载-MR", "车载-3SW"}
 _REFERENCE_TEXT_SUFFIXES = {".json", ".jsonl", ".toml", ".yaml", ".yml"}

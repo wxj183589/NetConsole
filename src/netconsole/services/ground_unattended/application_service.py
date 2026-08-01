@@ -32,6 +32,8 @@ from netconsole.models.api.ground_unattended import (
     GroundAcPollerHealthDTO,
     GroundHealthDTO,
     GroundInventorySummaryDTO,
+    GroundMrRuntimeStatusDTO,
+    GroundMrRuntimeStatusPageDTO,
     GroundRawFileDTO,
     GroundRawFilePageDTO,
     GroundSyslogHostDTO,
@@ -245,6 +247,12 @@ class GroundUnattendedApplicationService:
         archives = self.repository.list_archives()
         inventory = self.repository.list_inventory(include_removed=False)
         syslog_health = self._syslog_health()
+        radio_stats = self.repository.radio_runtime_statistics(
+            run_id=run_id,
+            day_start=now.replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ).isoformat(timespec="seconds"),
+        )
         config_abnormal = 0
         syslog_active = 0
         for train in inventory:
@@ -357,6 +365,24 @@ class GroundUnattendedApplicationService:
                 syslog_health.get("udp_unidentified_count") or 0
             )
             + int(syslog_health.get("udp_dropped_count") or 0),
+            radio_down_mr_count=int(
+                radio_stats.get("radio_down_mr_count") or 0
+            ),
+            radio_bounce_today_count=int(
+                radio_stats.get("radio_bounce_today_count") or 0
+            ),
+            snmp_radio_control_today_count=int(
+                radio_stats.get("snmp_radio_control_today_count") or 0
+            ),
+            snmp_unrecovered_count=int(
+                radio_stats.get("snmp_unrecovered_count") or 0
+            ),
+            radio_flapping_mr_count=int(
+                radio_stats.get("radio_flapping_mr_count") or 0
+            ),
+            last_snmp_radio_control_at=str(
+                radio_stats.get("last_snmp_radio_control_at") or ""
+            ),
             disk_used_bytes=int(run_summary.get("disk_used_bytes") or 0),
             disk_free_bytes=disk.free,
             disk_status=(
@@ -523,6 +549,92 @@ class GroundUnattendedApplicationService:
         items = self._enrich_train_endpoints(items, run)
         return GroundUnattendedTrainPageDTO(items=items, total=len(items))
 
+    def mr_runtime_status(
+        self,
+        site_id: str,
+        *,
+        mr_role: str = "",
+        radio_state: str = "",
+        snmp_state: str = "",
+    ) -> GroundMrRuntimeStatusPageDTO:
+        self._require_site(site_id)
+        inventory = self.repository.list_inventory(include_removed=True)
+        endpoint_by_id = {
+            str(endpoint.get("device_uuid") or ""): endpoint
+            for train in inventory
+            for endpoint in train.get("endpoints", [])
+        }
+        items: list[GroundMrRuntimeStatusDTO] = []
+        for row in self.repository.list_mr_runtime_states():
+            if mr_role and str(row.get("mr_role") or "") != mr_role:
+                continue
+            if (
+                radio_state
+                and str(row.get("radio_overall_state") or "") != radio_state
+            ):
+                continue
+            if (
+                snmp_state
+                and str(row.get("snmp_radio_control_state") or "")
+                != snmp_state
+            ):
+                continue
+            device_uuid = str(row.get("device_uuid") or "")
+            endpoint = endpoint_by_id.get(device_uuid) or {}
+            boot = self.repository.latest_boot_session(device_uuid) or {}
+            audit = self.repository.latest_syslog_config_audit(device_uuid) or {}
+            interfaces = [
+                _radio_interface_projection(item)
+                for item in self.repository.list_radio_interface_states(
+                    device_uuid=device_uuid
+                )
+            ]
+            items.append(
+                GroundMrRuntimeStatusDTO(
+                    device_uuid=device_uuid,
+                    train_id=str(row.get("train_id") or ""),
+                    mr_role=str(row.get("mr_role") or ""),
+                    mr_name=str(endpoint.get("device_name") or ""),
+                    radio_interfaces=interfaces,
+                    radio_overall_state=str(
+                        row.get("radio_overall_state") or "UNKNOWN"
+                    ),  # type: ignore[arg-type]
+                    snmp_radio_control_state=str(
+                        row.get("snmp_radio_control_state") or "NONE"
+                    ),  # type: ignore[arg-type]
+                    last_radio_event_at=str(
+                        row.get("last_radio_event_at") or ""
+                    ),
+                    last_cfg_event_at=str(row.get("last_cfg_event_at") or ""),
+                    cfg_command_source=str(
+                        row.get("last_command_source") or ""
+                    ),
+                    cfg_event_index=str(
+                        row.get("last_cfg_event_index") or ""
+                    ),
+                    config_source=str(
+                        row.get("last_config_source") or ""
+                    ),
+                    config_destination=str(
+                        row.get("last_config_destination") or ""
+                    ),
+                    correlation_confidence=str(
+                        row.get("last_correlation_confidence")
+                        or "UNCONFIRMED"
+                    ),  # type: ignore[arg-type]
+                    managed_config_status=str(
+                        boot.get("config_status") or "NOT_CHECKED"
+                    ),
+                    managed_config_checked_at=str(
+                        boot.get("config_checked_at") or ""
+                    ),
+                    managed_profile_version=int(
+                        audit.get("managed_profile_version") or 2
+                    ),
+                )
+            )
+        return GroundMrRuntimeStatusPageDTO(items=items, total=len(items))
+
     def sync_inventory(self, site_id: str) -> GroundInventorySummaryDTO:
         self._require_site(site_id)
         if self.inventory_sync is None:
@@ -598,6 +710,7 @@ class GroundUnattendedApplicationService:
         site_id: str,
         *,
         device_uuid: str = "",
+        mode: str = "AUTO_REPAIR",
         allow_target_port_change: bool = False,
         explicit_confirmation: bool = False,
     ) -> GroundActionResponseDTO:
@@ -628,6 +741,9 @@ class GroundUnattendedApplicationService:
             )
         self.supervisor.request_config_check(
             device_uuid,
+            repair_enabled=(
+                mode == "AUTO_REPAIR" and profile.syslog_auto_repair_enabled
+            ),
             allow_target_port_change=allow_target_port_change,
         )
         return GroundActionResponseDTO(
@@ -1325,6 +1441,146 @@ class GroundUnattendedApplicationService:
                             details.get("resolution_status") or ""
                         ),
                         "parsed_details": details,
+                    }
+                )
+            raw_file_ids = {
+                str(item.get("raw_file_id") or "")
+                for item in result.get("items", [])
+                if item.get("raw_file_id")
+            }
+            structured_events = (
+                self.repository.structured_syslog_events_by_raw_files(
+                    raw_file_ids
+                )
+            )
+            structured_by_position = {
+                (
+                    str(event.get("raw_file_id") or ""),
+                    int(event.get("raw_line_number") or 0),
+                ): event
+                for event in structured_events
+            }
+            event_by_id = {
+                int(event["id"]): event
+                for event in structured_events
+                if event.get("id") is not None
+            }
+            correlations = self.repository.list_radio_correlations(
+                event_ids=event_by_id
+            )
+            correlations_by_event: dict[int, list[dict[str, Any]]] = {}
+            correlations_by_cfg: dict[int, list[dict[str, Any]]] = {}
+            for correlation in correlations:
+                cfg_event_id = int(correlation["cfg_event_id"])
+                ifnet_event_id = int(correlation["ifnet_event_id"])
+                correlations_by_event.setdefault(cfg_event_id, []).append(
+                    correlation
+                )
+                correlations_by_event.setdefault(ifnet_event_id, []).append(
+                    correlation
+                )
+                correlations_by_cfg.setdefault(cfg_event_id, []).append(
+                    correlation
+                )
+            composite_by_cfg = {
+                cfg_event_id: _radio_composite_event_type(
+                    grouped, event_by_id, self._parse_datetime
+                )
+                for cfg_event_id, grouped in correlations_by_cfg.items()
+            }
+            for item in result.get("items", []):
+                structured = structured_by_position.get(
+                    (
+                        str(item.get("raw_file_id") or ""),
+                        int(item.get("raw_line_number") or 0),
+                    )
+                )
+                if structured is None:
+                    continue
+                structured_id = int(structured["id"])
+                details = dict(item.get("parsed_details") or {})
+                details.update(structured.get("details") or {})
+                item.update(
+                    {
+                        "event_type": str(
+                            structured.get("event_type")
+                            or item.get("event_type")
+                            or ""
+                        ),
+                        "event_family": str(
+                            structured.get("event_family")
+                            or item.get("event_family")
+                            or ""
+                        ),
+                        "interface_name": str(
+                            structured.get("interface_name") or ""
+                        ),
+                        "interface_type": str(
+                            structured.get("interface_type") or ""
+                        ),
+                        "physical_state": str(
+                            structured.get("physical_state") or ""
+                        ),
+                        "cfg_event_index": str(
+                            structured.get("cfg_event_index") or ""
+                        ),
+                        "cfg_command_source": str(
+                            structured.get("cfg_command_source") or ""
+                        ),
+                        "cfg_source": str(
+                            structured.get("cfg_source") or ""
+                        ),
+                        "cfg_destination": str(
+                            structured.get("cfg_destination") or ""
+                        ),
+                        "expected_internal_change": bool(
+                            structured.get("expected_internal_change")
+                        ),
+                        "parsed_details": details,
+                    }
+                )
+                related = correlations_by_event.get(structured_id, [])
+                if not related:
+                    continue
+                confidence = (
+                    "HIGH"
+                    if any(
+                        str(row.get("confidence") or "") == "HIGH"
+                        for row in related
+                    )
+                    else "MEDIUM"
+                )
+                related_cfg_ids = {
+                    int(row["cfg_event_id"]) for row in related
+                }
+                expanded = [
+                    row
+                    for cfg_event_id in related_cfg_ids
+                    for row in correlations_by_cfg.get(cfg_event_id, [])
+                ]
+                correlated_event_ids = {
+                    int(row["cfg_event_id"]) for row in expanded
+                } | {
+                    int(row["ifnet_event_id"]) for row in expanded
+                }
+                composite_types = {
+                    composite_by_cfg.get(cfg_event_id, "")
+                    for cfg_event_id in related_cfg_ids
+                }
+                item.update(
+                    {
+                        "correlation_status": "CORRELATED",
+                        "correlation_confidence": confidence,
+                        "correlation_delta_ms": min(
+                            int(row.get("delta_ms") or 0)
+                            for row in related
+                        ),
+                        "correlated_event_ids": sorted(
+                            correlated_event_ids
+                        ),
+                        "composite_event_type": _preferred_composite_type(
+                            composite_types
+                        ),
                     }
                 )
             dto_fields = GroundSyslogRecordDTO.model_fields
@@ -2059,6 +2315,26 @@ class GroundUnattendedApplicationService:
                 operation = operations.get((train.train_id, endpoint.endpoint)) or {}
                 boot = self.repository.latest_boot_session(endpoint.mr_id) if endpoint.mr_id else None
                 wmesh = self.repository.latest_wmesh_event(endpoint.mr_id) if endpoint.mr_id else None
+                radio_runtime = (
+                    self.repository.get_mr_runtime_state(endpoint.mr_id)
+                    if endpoint.mr_id
+                    else None
+                )
+                radio_interfaces = (
+                    [
+                        _radio_interface_projection(item)
+                        for item in self.repository.list_radio_interface_states(
+                            device_uuid=endpoint.mr_id
+                        )
+                    ]
+                    if endpoint.mr_id
+                    else []
+                )
+                config_audit = (
+                    self.repository.latest_syslog_config_audit(endpoint.mr_id)
+                    if endpoint.mr_id
+                    else None
+                )
                 info_center = dict((boot or {}).get("info_center_metrics") or {})
                 managed_ip = str(profile.syslog_server_ip or "")
                 managed_port = int(profile.syslog_server_port)
@@ -2177,6 +2453,55 @@ class GroundUnattendedApplicationService:
                             "managed_target_port": managed_port,
                             "managed_target_statuses": managed_statuses,
                             "configured_log_hosts": configured_hosts,
+                            "managed_profile_version": int(
+                                (config_audit or {}).get(
+                                    "managed_profile_version"
+                                )
+                                or 2
+                            ),
+                            "radio_interfaces": radio_interfaces,
+                            "radio_overall_state": str(
+                                (radio_runtime or {}).get(
+                                    "radio_overall_state"
+                                )
+                                or "UNKNOWN"
+                            ),
+                            "snmp_radio_control_state": str(
+                                (radio_runtime or {}).get(
+                                    "snmp_radio_control_state"
+                                )
+                                or "NONE"
+                            ),
+                            "last_radio_event_at": str(
+                                (radio_runtime or {}).get(
+                                    "last_radio_event_at"
+                                )
+                                or ""
+                            ),
+                            "last_cfg_event_at": str(
+                                (radio_runtime or {}).get(
+                                    "last_cfg_event_at"
+                                )
+                                or ""
+                            ),
+                            "cfg_command_source": str(
+                                (radio_runtime or {}).get(
+                                    "last_command_source"
+                                )
+                                or ""
+                            ),
+                            "cfg_event_index": str(
+                                (radio_runtime or {}).get(
+                                    "last_cfg_event_index"
+                                )
+                                or ""
+                            ),
+                            "correlation_confidence": str(
+                                (radio_runtime or {}).get(
+                                    "last_correlation_confidence"
+                                )
+                                or "UNCONFIRMED"
+                            ),
                         }
                     )
                 )
@@ -2461,6 +2786,94 @@ def _listen_address_matches(actual: str, configured_host: str, configured_port: 
         )
     except (TypeError, ValueError):
         return False
+
+
+def _radio_interface_projection(row: dict[str, Any]) -> dict[str, object]:
+    return {
+        "interface_name": str(row.get("interface_name") or ""),
+        "current_state": str(row.get("current_state") or "UNKNOWN"),
+        "previous_state": str(row.get("previous_state") or "UNKNOWN"),
+        "last_changed_at": str(row.get("last_changed_at") or ""),
+        "down_since": str(row.get("down_since") or ""),
+        "last_up_at": str(row.get("last_up_at") or ""),
+        "last_down_at": str(row.get("last_down_at") or ""),
+        "latest_outage_duration_ms": row.get("latest_outage_duration_ms"),
+        "transition_count_5m": int(row.get("transition_count_5m") or 0),
+        "snmp_related_transition_count_5m": int(
+            row.get("snmp_related_transition_count_5m") or 0
+        ),
+        "last_cfg_event_index": str(row.get("last_cfg_event_index") or ""),
+        "last_command_source": str(row.get("last_command_source") or ""),
+        "correlation_confidence": str(
+            row.get("correlation_confidence") or "UNCONFIRMED"
+        ),
+        "last_event_id": row.get("last_event_id"),
+    }
+
+
+def _radio_composite_event_type(
+    correlations: list[dict[str, Any]],
+    event_by_id: dict[int, dict[str, Any]],
+    parse_datetime: Any,
+) -> str:
+    ifnet_events = [
+        event_by_id.get(int(row["ifnet_event_id"]))
+        for row in correlations
+    ]
+    ifnet_events = [event for event in ifnet_events if event is not None]
+    by_interface: dict[str, list[dict[str, Any]]] = {}
+    for event in ifnet_events:
+        by_interface.setdefault(
+            str(event.get("interface_name") or ""), []
+        ).append(event)
+    for events in by_interface.values():
+        ordered = sorted(
+            events,
+            key=lambda event: str(
+                event.get("event_time") or event.get("receive_time") or ""
+            ),
+        )
+        for index, down_event in enumerate(ordered):
+            if str(down_event.get("physical_state") or "").upper() != "DOWN":
+                continue
+            down_time = parse_datetime(
+                down_event.get("event_time")
+                or down_event.get("receive_time")
+            )
+            if down_time is None:
+                continue
+            for up_event in ordered[index + 1 :]:
+                if str(up_event.get("physical_state") or "").upper() != "UP":
+                    continue
+                up_time = parse_datetime(
+                    up_event.get("event_time")
+                    or up_event.get("receive_time")
+                )
+                if (
+                    up_time is not None
+                    and 0 <= (up_time - down_time).total_seconds() <= 5
+                ):
+                    return "RADIO_SNMP_BOUNCE"
+    states = {
+        str(event.get("physical_state") or "").upper()
+        for event in ifnet_events
+    }
+    if "DOWN" in states:
+        return "RADIO_SNMP_DOWN"
+    if "UP" in states:
+        return "RADIO_SNMP_UP"
+    return ""
+
+
+def _preferred_composite_type(values: set[str]) -> str:
+    for event_type in (
+        "RADIO_SNMP_BOUNCE",
+        "RADIO_SNMP_DOWN",
+        "RADIO_SNMP_UP",
+    ):
+        if event_type in values:
+            return event_type
+    return ""
 
 
 __all__ = ["GroundUnattendedApplicationService", "GroundUnattendedError"]

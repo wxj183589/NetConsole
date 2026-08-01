@@ -369,10 +369,12 @@ def test_boot_session_and_fixed_syslog_profile_do_not_save(tmp_path: Path) -> No
         config="",
         config_after=(
             "info-center enable\n"
-            "info-center loghost 192.0.2.100 port 5514\n"
-            "info-center source default loghost deny\n"
-            "info-center source WMESH loghost level notification\n"
-        ),
+                "info-center loghost 192.0.2.100 port 5514\n"
+                "info-center source default loghost deny\n"
+                "info-center source WMESH loghost level notification\n"
+                "info-center source IFNET loghost level notification\n"
+                "info-center source CFGMAN loghost level notification\n"
+            ),
         info_after=(
             "Information Center: Enabled\n"
             "Log host: Enabled\n"

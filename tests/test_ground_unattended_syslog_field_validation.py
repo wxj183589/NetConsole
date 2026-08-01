@@ -37,12 +37,16 @@ FULL_CONFIG_514 = "\n".join(
         f"info-center loghost {TARGET_IP}",
         "info-center source default loghost deny",
         "info-center source WMESH loghost level notification",
+        "info-center source IFNET loghost level notification",
+        "info-center source CFGMAN loghost level notification",
     )
 )
 SOURCE_RULES_CONFIG = "\n".join(
     (
         "info-center source default loghost deny",
         "info-center source WMESH loghost level notification",
+        "info-center source IFNET loghost level notification",
+        "info-center source CFGMAN loghost level notification",
     )
 )
 DEFAULT_OMITTED_CONFIG_514 = "\n".join(
@@ -205,9 +209,13 @@ def test_runtime_target_and_source_rules_are_both_required() -> None:
     assert verification.runtime_missing == ()
     assert verification.source_rule_missing == (
         "info-center source wmesh loghost level notification",
+        "info-center source ifnet loghost level notification",
+        "info-center source cfgman loghost level notification",
     )
     assert verification.repair_commands == (
         "info-center source wmesh loghost level notification",
+        "info-center source ifnet loghost level notification",
+        "info-center source cfgman loghost level notification",
     )
 
 
@@ -249,11 +257,23 @@ def test_runtime_without_target_repairs_only_loghost() -> None:
     ("configuration", "expected_command"),
     (
         (
-            "info-center source WMESH loghost level notification",
+            "\n".join(
+                (
+                    "info-center source WMESH loghost level notification",
+                    "info-center source IFNET loghost level notification",
+                    "info-center source CFGMAN loghost level notification",
+                )
+            ),
             "info-center source default loghost deny",
         ),
         (
-            "info-center source default loghost deny",
+            "\n".join(
+                (
+                    "info-center source default loghost deny",
+                    "info-center source IFNET loghost level notification",
+                    "info-center source CFGMAN loghost level notification",
+                )
+            ),
             "info-center source wmesh loghost level notification",
         ),
     ),
@@ -315,7 +335,10 @@ def test_config_check_verifies_after_writes_and_records_evidence(tmp_path: Path)
     assert result.config_status == "CONFIG_SENT"
     assert connection.commands.count("display info-center") == 2
     assert connection.commands.count("display current-configuration | include info-center") == 2
-    assert all(word not in " ".join(connection.commands).casefold() for word in ("save", "undo", "reboot", "reset", "delete"))
+    assert all(
+        word not in " ".join(connection.commands).casefold()
+        for word in ("save", "undo", "quit", "reboot", "reset", "delete")
+    )
     audit = repository.latest_syslog_config_audit(device_uuid)
     assert audit is not None and audit["status"] == "CONFIG_SENT"
     evidence = json.loads((repository.db_path.parent / audit["evidence_path"]).read_text(encoding="utf-8"))
@@ -343,6 +366,8 @@ def test_config_check_verifies_after_writes_and_records_evidence(tmp_path: Path)
         "source_rules": [
             "info-center source default loghost deny",
             "info-center source wmesh loghost level notification",
+            "info-center source ifnet loghost level notification",
+            "info-center source cfgman loghost level notification",
         ],
         "target_statuses": ["TARGET_MISSING"],
     }
@@ -351,6 +376,8 @@ def test_config_check_verifies_after_writes_and_records_evidence(tmp_path: Path)
         f"info-center loghost {TARGET_IP} port 514",
         "info-center source default loghost deny",
         "info-center source wmesh loghost level notification",
+        "info-center source ifnet loghost level notification",
+        "info-center source cfgman loghost level notification",
     ]
     assert evidence["applied_commands"] == [
         "system-view",
@@ -369,6 +396,82 @@ def test_config_check_verifies_after_writes_and_records_evidence(tmp_path: Path)
     fingerprint = repository.latest_boot_session(device_uuid)["config_fingerprint"]
     assert len(fingerprint) == 64
     assert fingerprint != raw_config_fingerprint
+
+
+def test_auto_repair_disabled_keeps_incomplete_profile_read_only(
+    tmp_path: Path,
+) -> None:
+    paths, repository, device_uuid = _context(tmp_path)
+    connection = _ConfigConnection(
+        config_before="info-center source default loghost deny",
+        config_after=FULL_CONFIG_514,
+        info_before=FULL_RUNTIME_514,
+        info_after=FULL_RUNTIME_514,
+    )
+
+    result = _service(paths, repository, connection).check(
+        run_id="run-1",
+        run_date="2026-07-26",
+        device_uuid=device_uuid,
+        target_ip=TARGET_IP,
+        target_port=514,
+        boot_tolerance_seconds=120,
+        repair_enabled=False,
+    )
+
+    assert result.config_status == "AUTO_REPAIR_DISABLED"
+    assert result.applied_commands == ()
+    assert "system-view" not in connection.commands
+    assert connection.commands.count("display info-center") == 1
+    assert (
+        connection.commands.count(
+            "display current-configuration | include info-center"
+        )
+        == 1
+    )
+    audit = repository.latest_syslog_config_audit(device_uuid)
+    assert audit is not None
+    evidence = json.loads(
+        (repository.db_path.parent / audit["evidence_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert evidence["syslog_auto_repair_enabled"] is False
+    assert evidence["managed_profile_version"] == 2
+
+
+def test_expected_internal_change_uses_a_bounded_window(
+    tmp_path: Path,
+) -> None:
+    _paths, repository, device_uuid = _context(tmp_path)
+    _waiting_boot(repository, device_uuid)
+    started_at = datetime.now().astimezone()
+    expected_until = started_at.replace(
+        microsecond=min(999_999, started_at.microsecond + 500_000)
+    )
+    repository.mark_expected_config_change(
+        device_uuid=device_uuid,
+        operation_id="operation-1",
+        expected_started_at=started_at.isoformat(timespec="milliseconds"),
+        expected_until=expected_until.isoformat(timespec="milliseconds"),
+    )
+
+    assert repository.expected_config_change_at(
+        device_uuid=device_uuid,
+        event_time=started_at.isoformat(timespec="milliseconds"),
+    )
+    assert not repository.expected_config_change_at(
+        device_uuid=device_uuid,
+        event_time=(
+            started_at.replace(year=started_at.year - 1)
+        ).isoformat(timespec="milliseconds"),
+    )
+    assert not repository.expected_config_change_at(
+        device_uuid=device_uuid,
+        event_time=(
+            expected_until.replace(year=expected_until.year + 1)
+        ).isoformat(timespec="milliseconds"),
+    )
 
 
 def test_device_clock_parse_failure_is_an_explicit_local_time_fallback(
@@ -498,7 +601,11 @@ def test_source_rule_verification_failure_never_reports_success(tmp_path: Path) 
     )
     assert evidence["missing_after"] == {
         "runtime": [],
-        "source_rules": ["info-center source wmesh loghost level notification"],
+        "source_rules": [
+            "info-center source wmesh loghost level notification",
+            "info-center source ifnet loghost level notification",
+            "info-center source cfgman loghost level notification",
+        ],
         "target_statuses": ["TARGET_PRESENT"],
     }
     repository.touch_boot_syslog(
@@ -763,14 +870,28 @@ def test_repository_additively_migrates_syslog_runtime_columns(tmp_path: Path) -
         "timezone_name",
         "utc_offset_seconds",
         "time_quality",
-        "clock_jump_seconds",
-    } <= boot_columns
+            "clock_jump_seconds",
+            "expected_change_started_at",
+        } <= boot_columns
     assert "clock_offset_ms" in event_columns
     assert {
         "ground_unattended_ping_target_activations",
         "ground_unattended_operations",
     } <= table_names
-    assert schema_version == "8"
+    assert {
+        "ground_unattended_radio_interface_states",
+        "ground_unattended_mr_runtime_states",
+        "ground_unattended_radio_correlations",
+    } <= table_names
+    assert {
+        "event_family",
+        "interface_name",
+        "physical_state",
+        "cfg_event_index",
+        "cfg_command_source",
+        "expected_internal_change",
+    } <= event_columns
+    assert schema_version == "9"
 
 
 def test_real_syslog_shapes_keep_parser_fields_and_clock_semantics(tmp_path: Path) -> None:
@@ -782,7 +903,12 @@ def test_real_syslog_shapes_keep_parser_fields_and_clock_semantics(tmp_path: Pat
     assert [row["event_type"] for row in rows if row] == [
         "IFNET_PHY_UPDOWN", "MESH_LINKUP", "MESH_ACTIVELINK_SWITCH", "MESH_LINKDOWN", "MESH_ACTIVELINK_SWITCH",
     ]
-    assert rows[0]["details"] == {"interface": "WLAN-Radio1/0/1", "physical_state": "up"}
+    assert rows[0]["details"] == {
+        "interface": "WLAN-Radio1/0/1",
+        "interface_name": "WLAN-Radio1/0/1",
+        "interface_type": "RADIO",
+        "physical_state": "UP",
+    }
     assert rows[1]["details"]["peer_radio_mode"] == 3
     assert rows[1]["details"]["rssi"] == 25
     assert rows[2]["details"]["old_active_link_missing"] is True

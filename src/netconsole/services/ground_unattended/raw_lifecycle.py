@@ -703,7 +703,15 @@ def _matches_delete_scope(
             "Syslog 删除模式无效",
         )
     if (
-        (filters.get("event_type") or filters.get("peer_name"))
+        (
+            filters.get("event_type")
+            or filters.get("event_family")
+            or filters.get("cfg_command_source")
+            or filters.get("physical_state")
+            or filters.get("correlation_status")
+            or filters.get("correlation_confidence")
+            or filters.get("peer_name")
+        )
         and not record.get("event_type")
         and record.get("raw_text")
     ):
@@ -725,6 +733,11 @@ def _matches_delete_scope(
         "severity",
         "identity_status",
         "event_type",
+        "event_family",
+        "cfg_command_source",
+        "physical_state",
+        "correlation_status",
+        "correlation_confidence",
         "peer_name",
         "data_source",
     ):

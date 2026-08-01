@@ -144,7 +144,7 @@ class GroundUnattendedSupervisor:
             thread_name_prefix="ground-syslog-config",
         )
         self._config_futures: dict[str, Future] = {}
-        self._manual_config_checks: dict[str, bool] = {}
+        self._manual_config_checks: dict[str, tuple[bool, bool]] = {}
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -215,11 +215,15 @@ class GroundUnattendedSupervisor:
         self,
         device_uuid: str = "",
         *,
+        repair_enabled: bool = True,
         allow_target_port_change: bool = False,
     ) -> None:
         with self._lock:
             key = str(device_uuid or "*")
-            self._manual_config_checks[key] = bool(allow_target_port_change)
+            self._manual_config_checks[key] = (
+                bool(allow_target_port_change),
+                bool(repair_enabled),
+            )
         self._wake_event.set()
 
     @property
@@ -1604,7 +1608,7 @@ class GroundUnattendedSupervisor:
         }
         if "*" in manual:
             for device_uuid in endpoints:
-                manual.setdefault(device_uuid, False)
+                manual.setdefault(device_uuid, manual["*"])
         now = self._now()
         ordered = sorted(
             endpoints.items(),
@@ -1643,7 +1647,16 @@ class GroundUnattendedSupervisor:
                 target_ip=target_ip,
                 target_port=profile.syslog_server_port,
                 boot_tolerance_seconds=profile.boot_time_tolerance_seconds,
-                allow_target_port_change=bool(manual.get(device_uuid, False)),
+                repair_enabled=(
+                    bool(manual[device_uuid][1])
+                    if device_uuid in manual
+                    else bool(profile.syslog_auto_repair_enabled)
+                ),
+                allow_target_port_change=(
+                    bool(manual[device_uuid][0])
+                    if device_uuid in manual
+                    else False
+                ),
             )
 
     def _collect_config_checks(self) -> None:

@@ -73,6 +73,11 @@ WMESH 时间轴和 Vue 页面生命周期。结论基于代码、自动测试、
 | 已归档日志无法查看 | 本轮修复 | READY ZIP 流式查询、分页、过滤和 archive entry 诊断。 |
 | 100k 记录加载到前端 | 本轮修复 | 后端有界 heap 只保留所需页，默认每页 100；100k 测试覆盖。 |
 | 旧记录内部字段触发响应 DTO 校验失败 | 本轮修复 | Application Service 显式投影公开 Syslog DTO；内部原始字节、局点 ID 和设备数据库 ID 不下发。 |
+| CFGMAN 被误用为 Profile 漂移/修复触发器 | 本轮修复 | CFGMAN 路径只保存来源并与 IFNET 关联，不依赖配置 Service、Supervisor 或 SSH；Profile 检查仅由独立调度和手工动作触发。 |
+| 单独 CFGMAN 被误判为射频控制 | 本轮修复 | 只有同一 `device_uuid`、SNMP 来源和 ±10 秒内 WLAN-Radio IFNET 才关联；无关联只显示普通 SNMP 配置变更。 |
+| 重复 UDP 造成重复状态切换或综合事件 | 本轮修复 | 原始 NDJSON 全保留；结构化 dedup key 增加 `duplicate_count`，投影与时间轴使用唯一键幂等写入。 |
+| Backend 重启后射频状态丢失或重建不一致 | 本轮修复 | schema v7 保存接口/MR 投影和 CFGMAN-IFNET 关联；按事件时间重建时只关联已重放事件，定向测试验证结果与事件数不变。 |
+| 射频短时 DOWN/UP 丢失毫秒精度 | 本轮修复 | 设备时间优先、接收时间降级，持续时间保存整数毫秒；359 ms 用例覆盖。 |
 | 无筛选首屏重复解析全部旧 WMESH | 本轮修复 | 最新文件优先；取得页面后可按 Registry 时间提前停止，旧字段只对返回页做展示解析。 |
 | Syslog 交互查询占用过大 | 本轮修复 | 独立限制 128 文件、250,000 条、128MB、8 秒；达到预算返回部分结果与 `truncated`。 |
 | 单一来源建立无界去重集合 | 本轮修复 | ACTIVE/ARCHIVE 单一来源不做全局去重；MIXED 稳定键上限 250,000。 |
@@ -142,6 +147,7 @@ WMESH 时间轴和 Vue 页面生命周期。结论基于代码、自动测试、
 | Syslog 请求并发、取消和恢复 | 本轮修复 | 稳定 fingerprint 复用同参在途请求；参数变化才取消；Abort 不报错，恢复只提示一次。 |
 | fetch 错误统一显示 Backend 离线 | 本轮修复 | 连接、响应体、JSON 与 HTTP 错误分开；Syslog 复核健康接口后才判定离线。 |
 | Syslog Toast 与页内错误重复 | 本轮修复 | 初次/自动加载仅页内错误，手动失败一次 Toast；页内显示状态、错误码、时间、次数和请求编号。 |
+| 射频/SNMP 状态每次扫描全部 NDJSON | 本轮修复 | 正线车辆、MR Runtime API 和概览只读取 SQLite 投影；原始文件仅用于用户查询与证据展开。 |
 
 500,000 条门禁默认跳过，需显式设置 `NETCONSOLE_RUN_SCALE_TESTS=1`；本轮交付前已实际执行。测试数据只
 位于 `D:\NetConsoleTestData\<run-id>`，未写入真实局点。
@@ -167,6 +173,10 @@ WMESH 时间轴和 Vue 页面生命周期。结论基于代码、自动测试、
 
 真实根的相同 Syslog 范围仅以 `mode=ro&immutable=1` 做 preview，命中 1/1/1；执行前后
 `index.sqlite` 与目标 NDJSON 的 SHA-256、大小和修改时间均一致，没有执行真实删除。
+
+Profile v2、IFNET/CFGMAN 解析和关联已在隔离测试根通过自动测试；本轮未连接真实 MR，未主动切换
+WLAN-Radio，未执行 SNMP SET，也未修改真实 SQLite/NDJSON/ZIP。真实现场关联率、设备时钟质量和
+不同 Comware 版本 CFGMAN 字段仍需在只读接收条件下验收。
 
 ## 剩余验收
 

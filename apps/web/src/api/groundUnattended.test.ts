@@ -20,6 +20,8 @@ import {
   getGroundSyslogTransportStatus,
   listGroundTimeline,
   previewGroundSyslogDelete,
+  listGroundMrRuntimeStatus,
+  listGroundSyslogRecords,
   probeGroundSyslogTransportState,
   submitGroundSyslogDelete,
 } from './groundUnattended'
@@ -203,5 +205,31 @@ describe('ground unattended Syslog failure classification', () => {
     expect(String(url)).toContain('page=3')
     expect(String(url)).toContain('page_size=100')
     expect(options).toEqual(expect.objectContaining({ signal: expect.any(AbortSignal) }))
+  })
+  it('serializes radio-control filters without sending empty values', async () => {
+    client.apiRequest.mockResolvedValue({})
+
+    await listGroundSyslogRecords({
+      event_family: 'CFGMAN',
+      cfg_command_source: 'snmp',
+      physical_state: '',
+      correlation_status: 'CORRELATED',
+      correlation_confidence: 'HIGH',
+    })
+    await listGroundMrRuntimeStatus({
+      mr_role: 'CT',
+      radio_state: 'DOWN',
+      snmp_state: 'RADIO_DOWN',
+    })
+
+    const syslogUrl = String(client.apiRequest.mock.calls[0][0])
+    expect(syslogUrl).toContain('event_family=CFGMAN')
+    expect(syslogUrl).toContain('cfg_command_source=snmp')
+    expect(syslogUrl).toContain('correlation_status=CORRELATED')
+    expect(syslogUrl).toContain('correlation_confidence=HIGH')
+    expect(syslogUrl).not.toContain('physical_state=')
+    expect(String(client.apiRequest.mock.calls[1][0])).toContain(
+      '/mr-runtime-status?mr_role=CT&radio_state=DOWN&snmp_state=RADIO_DOWN',
+    )
   })
 })

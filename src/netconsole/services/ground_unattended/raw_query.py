@@ -624,6 +624,11 @@ class GroundRawStreamQueryService:
         severity: str = "",
         identity_status: str = "",
         event_type: str = "",
+        event_family: str = "",
+        cfg_command_source: str = "",
+        physical_state: str = "",
+        correlation_status: str = "",
+        correlation_confidence: str = "",
         peer_name: str = "",
         data_source: str = "",
         keyword: str = "",
@@ -664,12 +669,35 @@ class GroundRawStreamQueryService:
             "severity": severity.casefold(),
             "identity_status": identity_status.casefold(),
             "event_type": event_type.casefold(),
+            "event_family": event_family.casefold(),
+            "cfg_command_source": cfg_command_source.casefold(),
+            "physical_state": physical_state.casefold(),
             "peer_name": peer_name.casefold(),
             "data_source": data_source.casefold(),
         }
         keyword_value = keyword.casefold()
         parser = WmeshRealtimeParser()
-        requires_parsed_fields = bool(filters["event_type"] or filters["peer_name"])
+        requires_parsed_fields = any(
+            filters[field]
+            for field in (
+                "event_type",
+                "event_family",
+                "cfg_command_source",
+                "physical_state",
+                "peer_name",
+            )
+        )
+        correlation_filter_active = bool(
+            correlation_status or correlation_confidence
+        )
+        correlated_positions = (
+            self.repository.control_event_raw_positions(
+                correlation_status=correlation_status,
+                correlation_confidence=correlation_confidence,
+            )
+            if correlation_filter_active
+            else set()
+        )
         record_level_filters = (
             mr_name,
             source_ip,
@@ -678,6 +706,11 @@ class GroundRawStreamQueryService:
             severity,
             identity_status,
             event_type,
+            event_family,
+            cfg_command_source,
+            physical_state,
+            correlation_status,
+            correlation_confidence,
             peer_name,
             data_source,
             keyword,
@@ -716,6 +749,11 @@ class GroundRawStreamQueryService:
         ):
             if requires_parsed_fields:
                 _enrich_legacy_syslog(item, parser)
+            if correlation_filter_active and (
+                str(item.get("raw_file_id") or ""),
+                int(item.get("raw_line_number") or 0),
+            ) not in correlated_positions:
+                continue
             if any(
                 expected
                 and expected not in _syslog_filter_value(item, field)
@@ -1636,6 +1674,14 @@ def _enrich_legacy_syslog(
         {
             "display_enriched": True,
             "event_type": parsed.get("event_type", ""),
+            "event_family": parsed.get("event_family", ""),
+            "interface_name": parsed.get("interface_name", ""),
+            "interface_type": parsed.get("interface_type", ""),
+            "physical_state": parsed.get("physical_state", ""),
+            "cfg_event_index": parsed.get("cfg_event_index", ""),
+            "cfg_command_source": parsed.get("cfg_command_source", ""),
+            "cfg_source": parsed.get("cfg_source", ""),
+            "cfg_destination": parsed.get("cfg_destination", ""),
             "peer_name": parsed.get("peer_name", ""),
             "peer_mac": parsed.get("peer_mac", ""),
             "previous_peer_name": parsed.get("previous_peer_name", ""),

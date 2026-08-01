@@ -13,7 +13,7 @@ export interface GroundProfile {
   udp_listen_host: string; udp_listen_port: number; udp_queue_capacity: number; raw_flush_interval_seconds: number; raw_flush_record_count: number
   event_batch_size: number; event_batch_interval_seconds: number; boot_time_tolerance_seconds: number; config_check_cooldown_seconds: number
   syslog_server_ip: string; syslog_server_port: number; ping_raw_retention_days: number; syslog_raw_retention_days: number
-  allow_external_syslog_address: boolean
+  allow_external_syslog_address: boolean; syslog_auto_repair_enabled: boolean
   minimum_valid_collection_minutes: number; preferred_collection_minutes: number; maximum_collection_minutes: number
   start_jitter_seconds: number; start_batch_size: number; detail_retention_days: number; summary_retention_days: number
   storage_warning_free_gb: number; storage_critical_free_gb: number; created_at: string; updated_at: string
@@ -26,6 +26,8 @@ export interface GroundStatus {
   mainline_train_count: number; mainline_ping_target_count: number; depot_ping_target_count: number; ping_target_count: number; active_deep_train_count: number; covered_train_count: number
   incomplete_train_count: number; disk_used_bytes: number; disk_free_bytes: number; disk_status: string
   inventory_train_count: number; syslog_active_mr_count: number; config_abnormal_count: number; data_quality_warning_count: number
+  radio_down_mr_count: number; radio_bounce_today_count: number; snmp_radio_control_today_count: number
+  snmp_unrecovered_count: number; radio_flapping_mr_count: number; last_snmp_radio_control_at: string
   latest_archive_status: string; latest_archive_message: string
   active_run_id: string; active_run_state: string; active_run_date: string; active_run_started_at: string
   latest_run_id: string; latest_run_state: string; latest_run_date: string; latest_run_started_at: string; latest_run_ended_at: string
@@ -48,6 +50,25 @@ export interface GroundEndpoint {
   reboot_reason: string; timezone_name: string; utc_offset_seconds: number | null; device_time_quality: string
   config_status: string; config_checked_at: string; managed_target_ip: string; managed_target_port: number | null
   managed_target_statuses: string[]; configured_log_hosts: GroundSyslogHost[]
+  managed_profile_version: number; radio_interfaces: GroundRadioInterfaceState[]
+  radio_overall_state: 'UP' | 'DOWN' | 'FLAPPING' | 'UNKNOWN'
+  snmp_radio_control_state: 'NONE' | 'RECENT_CHANGE' | 'RADIO_DOWN' | 'RADIO_RECOVERED' | 'FREQUENT_SWITCHING'
+  last_radio_event_at: string; last_cfg_event_at: string; cfg_command_source: string; cfg_event_index: string
+  correlation_confidence: 'HIGH' | 'MEDIUM' | 'UNCONFIRMED'
+}
+export interface GroundRadioInterfaceState {
+  interface_name: string; current_state: string; previous_state: string; last_changed_at: string; down_since: string
+  last_up_at: string; last_down_at: string; latest_outage_duration_ms: number | null; transition_count_5m: number
+  snmp_related_transition_count_5m: number; last_cfg_event_index: string; last_command_source: string
+  correlation_confidence: string; last_event_id: number | null
+}
+export interface GroundMrRuntimeStatus {
+  device_uuid: string; train_id: string; mr_role: string; mr_name: string; radio_interfaces: GroundRadioInterfaceState[]
+  radio_overall_state: 'UP' | 'DOWN' | 'FLAPPING' | 'UNKNOWN'
+  snmp_radio_control_state: 'NONE' | 'RECENT_CHANGE' | 'RADIO_DOWN' | 'RADIO_RECOVERED' | 'FREQUENT_SWITCHING'
+  last_radio_event_at: string; last_cfg_event_at: string; cfg_command_source: string; cfg_event_index: string
+  config_source: string; config_destination: string; correlation_confidence: 'HIGH' | 'MEDIUM' | 'UNCONFIRMED'
+  managed_config_status: string; managed_config_checked_at: string; managed_profile_version: number
 }
 export interface GroundSyslogHost {
   ip: string; port: number; facility: string; is_managed_target: boolean; same_ip_different_port: boolean
@@ -151,7 +172,11 @@ export interface GroundSyslogRecord {
   identity_status: string; parse_status: string; data_quality: string; clock_offset_ms: number | null; raw_text: string
   global_receive_sequence: number | null; source_receive_sequence: number | null; raw_file_id: string; raw_file_status: string
   raw_line_number: number | null; archive_entry: string; data_source: 'ACTIVE' | 'ARCHIVE'; display_enriched: boolean
-  event_type: string; peer_ap_id: string; peer_name: string; peer_mac: string; peer_radio_mac: string
+  event_type: string; event_family: string; interface_name: string; interface_type: string; physical_state: string
+  cfg_event_index: string; cfg_command_source: string; cfg_source: string; cfg_destination: string; expected_internal_change: boolean
+  correlation_status: string; correlation_confidence: string; correlation_delta_ms: number | null
+  correlated_event_ids: number[]; composite_event_type: string
+  peer_ap_id: string; peer_name: string; peer_mac: string; peer_radio_mac: string
   previous_peer_ap_id: string; previous_peer_name: string; previous_peer_mac: string; previous_peer_radio_mac: string
   station: string; section: string; previous_station: string; previous_section: string; rssi: number | null
   previous_rssi: number | null; reason_code: string; reason_text: string; resolution_status: string
@@ -166,7 +191,9 @@ export interface GroundSyslogRecordKey {
 export interface GroundSyslogDeleteFilters {
   train_id?: string; mr_id?: string; mr_name?: string; mr_role?: string; source_ip?: string
   system_name?: string; facility?: string; severity?: string; identity_status?: string
-  event_type?: string; peer_name?: string; data_source?: string; keyword?: string
+  event_type?: string; event_family?: string; cfg_command_source?: string; physical_state?: string
+  correlation_status?: string; correlation_confidence?: string
+  peer_name?: string; data_source?: string; keyword?: string
   start_time?: string; end_time?: string
 }
 export interface GroundSyslogDeletePreviewRequest {

@@ -2590,6 +2590,14 @@ class Database:
                 and row["participates_in_mainline"] is not None
                 else normalized == "MAINLINE"
             )
+            if (
+                raw_class == normalized
+                and raw_source == source
+                and participation_column_existed
+                and row["participates_in_mainline"] is not None
+                and bool(row["participates_in_mainline"]) == participates
+            ):
+                continue
             conn.execute(
                 """
                 UPDATE ap_extension_points
