@@ -30,6 +30,7 @@ import type {
   DataQualityIssue,
   BaseDataClearPreview,
   BaseDataChange,
+  BaseDataEditSnapshot,
   BaseDataValidationIssue,
   ImportChange,
   ImportOperation,
@@ -618,14 +619,12 @@ function beforeUnload(event: BeforeUnloadEvent): void {
 
 async function initializeEditing(): Promise<void> {
   try {
-    const session = await loadConsistentEditSnapshot()
+    const session = await store.refreshEditSession()
     if (!session.can_write) {
       editState.value = 'READ_ONLY'
       store.startPolling()
       return
     }
-    captureBaselines()
-    editingDraft.value = null
     editState.value = 'VIEW'
     store.startPolling()
   } catch (cause) {
@@ -635,17 +634,9 @@ async function initializeEditing(): Promise<void> {
   }
 }
 
-async function loadConsistentEditSnapshot() {
+async function loadConsistentEditSnapshot(): Promise<BaseDataEditSnapshot> {
   store.stopPolling()
-  let before = await store.refreshEditSession()
-  if (!before.can_write) return before
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    await store.manualRefresh()
-    const after = await store.refreshEditSession()
-    if (before.base_revision === after.base_revision) return after
-    before = after
-  }
-  throw new Error('基础资料在加载期间持续变化，请稍后重试')
+  return store.refreshEditSnapshot()
 }
 
 async function confirmDiscardOnLeave(): Promise<boolean> {
@@ -666,6 +657,7 @@ async function discardChanges(resumePolling = true): Promise<void> {
   fieldErrors.value = {}
   stationReferencePatches.clear()
   editingDraft.value = null
+  serverSnapshot.value = null
   editState.value = writable.value ? 'VIEW' : 'READ_ONLY'
   clearStationSelection()
   if (resumePolling) store.startPolling()
@@ -674,20 +666,25 @@ async function discardChanges(resumePolling = true): Promise<void> {
 async function startEditing(): Promise<void> {
   if (editing.value || saving.value) return
   try {
-    const session = await loadConsistentEditSnapshot()
-    if (!session.can_write) {
+    const snapshot = await loadConsistentEditSnapshot()
+    if (!snapshot.can_write) {
       editState.value = 'READ_ONLY'
       store.startPolling()
-      ElMessage.warning(session.write_denial_reason || '当前环境只读')
+      ElMessage.warning(snapshot.write_denial_reason || '当前环境只读')
       return
     }
-    captureBaselines()
+    if (!snapshot.base_revision) throw new Error('编辑快照缺少 base_revision')
+    captureBaselines(snapshot)
     editingDraft.value = serverSnapshot.value ? cloneDto(serverSnapshot.value) : null
     pendingChanges.value = {}
     saveIssues.value = []
     fieldErrors.value = {}
     editState.value = 'EDITING_CLEAN'
   } catch (cause) {
+    baselines.clear()
+    stationReferencePatches.clear()
+    serverSnapshot.value = null
+    editingDraft.value = null
     editState.value = writable.value ? 'VIEW' : 'READ_ONLY'
     store.startPolling()
     ElMessage.error(message(cause, '进入编辑状态失败'))
@@ -706,11 +703,12 @@ async function refreshPage(): Promise<void> {
     if (!accepted) return
   }
   try {
-    const session = await loadConsistentEditSnapshot()
+    await store.manualRefresh()
+    const session = await store.refreshEditSession()
     pendingChanges.value = {}
     if (session.can_write) {
-      captureBaselines()
       editingDraft.value = null
+      serverSnapshot.value = null
       editState.value = 'VIEW'
       store.startPolling()
     } else {
@@ -754,9 +752,10 @@ async function executeClearAll(): Promise<void> {
     serverSnapshot.value = null
     editingDraft.value = null
     clearAllDialogVisible.value = false
-    await loadConsistentEditSnapshot()
-    captureBaselines()
+    await store.manualRefresh()
+    await store.refreshEditSession()
     editingDraft.value = null
+    serverSnapshot.value = null
     editState.value = 'VIEW'
     store.startPolling()
     ElMessage.success(`已清空 ${result.deleted_station_count} 个站点、${result.deleted_section_count} 个区间，并解除 ${result.unlinked_trackside_ap_count} 条轨旁 AP 关联`)
@@ -806,9 +805,10 @@ async function saveAllChanges(successMessage = ''): Promise<boolean> {
     fieldErrors.value = {}
     baselines.clear()
     stationReferencePatches.clear()
-    await loadConsistentEditSnapshot()
-    captureBaselines()
+    await store.manualRefresh()
+    await store.refreshEditSession()
     editingDraft.value = null
+    serverSnapshot.value = null
     editState.value = 'VIEW'
     store.startPolling()
     ElMessage.success(
@@ -838,30 +838,30 @@ async function cancelEditing(): Promise<void> {
   if (accepted) await discardChanges()
 }
 
-function captureBaselines(): void {
+function captureBaselines(editSnapshot: BaseDataEditSnapshot): void {
   baselines.clear()
   stationReferencePatches.clear()
   const snapshot: BaseDataDraft = {
     metadata: {
-      line_name: store.summary?.line_name || '',
-      system_type: store.summary?.project_type || '',
-      network_domain: store.summary?.network_type || 'default',
-      main_path_code: store.summary?.main_path_code || 'MAIN',
-      increasing_direction_name: store.summary?.increasing_direction_name || '上行',
-      decreasing_direction_name: store.summary?.decreasing_direction_name || '下行',
-      increasing_direction_line_side: store.summary?.increasing_direction_line_side || '右线',
-      decreasing_direction_line_side: store.summary?.decreasing_direction_line_side || '左线',
-      increasing_direction_leading_end: store.summary?.increasing_direction_leading_end || 'unknown',
-      station_source_group_name: store.summary?.station_source_group_name || '车站',
-      station_source_field: store.summary?.station_source_field || 'station',
-      remark: store.summary?.remark || '',
+      line_name: editSnapshot.metadata.line_name || '',
+      system_type: editSnapshot.metadata.project_type || '',
+      network_domain: editSnapshot.metadata.network_type || 'default',
+      main_path_code: editSnapshot.metadata.main_path_code || 'MAIN',
+      increasing_direction_name: editSnapshot.metadata.increasing_direction_name || '上行',
+      decreasing_direction_name: editSnapshot.metadata.decreasing_direction_name || '下行',
+      increasing_direction_line_side: editSnapshot.metadata.increasing_direction_line_side || '右线',
+      decreasing_direction_line_side: editSnapshot.metadata.decreasing_direction_line_side || '左线',
+      increasing_direction_leading_end: editSnapshot.metadata.increasing_direction_leading_end || 'unknown',
+      station_source_group_name: editSnapshot.metadata.station_source_group_name || '车站',
+      station_source_field: editSnapshot.metadata.station_source_field || 'station',
+      remark: editSnapshot.metadata.remark || '',
     },
-    stations: cloneDto(store.stations),
-    sections: cloneDto(store.sections.map((section) => defaultSection(section))),
-    aps: cloneDto(store.aps),
-    tracksideApPlans: cloneDto(store.tracksideApPlans),
-    deviceStationBindings: [],
-    mrs: cloneDto(store.mrs),
+    stations: cloneDto(editSnapshot.stations),
+    sections: cloneDto(editSnapshot.sections.map((section) => defaultSection(section))),
+    aps: cloneDto(editSnapshot.trackside_aps),
+    tracksideApPlans: cloneDto(editSnapshot.trackside_ap_plans),
+    deviceStationBindings: cloneDto(editSnapshot.device_station_bindings),
+    mrs: cloneDto(editSnapshot.vehicle_mrs),
   }
   serverSnapshot.value = snapshot
   baselines.set(changeKey('site_metadata', 'current'), metadataValues(snapshot.metadata))
@@ -2490,9 +2490,10 @@ async function handleRollback(operationId: string): Promise<void> {
   try {
     if (!await confirm({ type: 'DESTRUCTIVE', title: '回滚确认', message: '仅当数据库未发生后续变化时才能回滚。确认回滚该次导入？', confirmText: '确认回滚' })) return
     await store.rollbackImport(operationId)
-    await loadConsistentEditSnapshot()
-    captureBaselines()
+    await store.manualRefresh()
+    await store.refreshEditSession()
     editingDraft.value = null
+    serverSnapshot.value = null
     editState.value = 'VIEW'
     store.startPolling()
     ElMessage.success('导入操作已回滚')

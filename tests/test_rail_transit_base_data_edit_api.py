@@ -724,7 +724,11 @@ def test_twenty_six_source_devices_create_eleven_stable_station_relations(
                     f"source-device-{index:02d}",
                     f"来源设备{index:02d}",
                     f"SOURCE-{index:02d}",
-                    f"{station_index + 20:02d}-验收站{station_index:02d}",
+                    (
+                        f"{station_index + 20:02d}-验收站{station_index:02d}"
+                        if station_index < 11
+                        else "31-验收车辆段"
+                    ),
                     group_id,
                     f"10.88.0.{index}",
                     now,
@@ -745,6 +749,13 @@ def test_twenty_six_source_devices_create_eleven_stable_station_relations(
         ).json()
         assert preview["scanned_device_count"] == 26
         assert len(preview["candidates"]) == 11
+        assert preview["normal_station_count"] == 10
+        assert preview["special_node_count"] == 1
+        depot_candidate = next(
+            item for item in preview["candidates"]
+            if item["proposed_station"]["node_type"] == "depot"
+        )
+        assert depot_candidate["proposed_station"]["participates_in_direction"] is False
         assert sum(
             len(candidate["source_device_ids"])
             for candidate in preview["candidates"]
@@ -818,6 +829,56 @@ def test_twenty_six_source_devices_create_eleven_stable_station_relations(
         assert saved.status_code == 200, saved.text
         assert saved.json()["device_binding_count"] == 26
         assert saved.json()["planning_row_count"] == 11
+        snapshot = client.get("/api/rail-transit/base-data/edit-snapshot")
+        assert snapshot.status_code == 200, snapshot.text
+        snapshot_payload = snapshot.json()
+        generated_stations = [
+            item for item in snapshot_payload["stations"]
+            if item["name"].startswith("验收")
+        ]
+        assert len(generated_stations) == 11
+        assert len(snapshot_payload["trackside_ap_plans"]) == 11
+        depot = next(
+            item for item in generated_stations
+            if item["node_type"] == "depot"
+        )
+        depot_plan = next(
+            item for item in snapshot_payload["trackside_ap_plans"]
+            if item["station_id"] == depot["id"]
+        )
+        assert depot["participates_in_direction"] is False
+        assert depot_plan["relation_status"] == "resolved"
+        assert depot_plan["planned_ap_count"] == 0
+        assert depot_plan["management_vlan"] is None
+        section_preview = client.post(
+            "/api/rail-transit/base-data/section-generation-preview",
+            json={
+                "site_id": "demo",
+                "base_revision": snapshot_payload["base_revision"],
+                "line_metadata": {
+                    "main_path_code": "MAIN",
+                    "increasing_direction_name": "上行",
+                    "decreasing_direction_name": "下行",
+                    "increasing_direction_line_side": "右线",
+                    "decreasing_direction_line_side": "左线",
+                },
+                "stations": generated_stations,
+                "current_sections": [],
+            },
+        )
+        assert section_preview.status_code == 200, section_preview.text
+        generated_sections = [
+            item["proposed_section"]
+            for item in section_preview.json()["generated_sections"]
+            if item["proposed_section"] is not None
+        ]
+        assert all(
+            depot["node_uid"] not in {
+                section["start_node_uid"],
+                section["end_node_uid"],
+            }
+            for section in generated_sections
+        )
         current_revision = client.get(
             "/api/rail-transit/base-data/revision"
         ).json()["base_revision"]
@@ -848,7 +909,7 @@ def test_twenty_six_source_devices_create_eleven_stable_station_relations(
             for row in connection.execute(
                 """
                 SELECT station_id FROM ap_extension_points
-                WHERE belong_type = '__base_station__' AND station_name LIKE '验收站%'
+                WHERE belong_type = '__base_station__' AND station_name LIKE '验收%'
                 """
             )
         }

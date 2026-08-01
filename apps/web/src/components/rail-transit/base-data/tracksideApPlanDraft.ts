@@ -6,10 +6,15 @@ export type PlanningStation = Pick<Station, 'id' | 'name' | 'sort_order'>
 
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
 
-function participatesInAutomaticPlan(station: PlanningStation): boolean {
+export function participatesInMainlineTopology(station: PlanningStation): boolean {
   return station.enabled === true
     && station.node_type === 'station'
     && station.participates_in_direction === true
+}
+
+export function participatesInTracksideApPlanning(station: PlanningStation): boolean {
+  return station.enabled === true
+    && ['station', 'depot', 'parking_lot'].includes(station.node_type || '')
 }
 
 export function reconcileTracksideApPlans(
@@ -22,7 +27,9 @@ export function reconcileTracksideApPlans(
   const rows = currentPlans.map((source) => {
     const row = copy(source)
     const station = stationById.get(row.station_id)
-    if (!station || !station.enabled) return { ...row, relation_status: 'stale' as const }
+    if (!station || !station.enabled) {
+      return { ...row, relation_status: 'stale' as const }
+    }
     return {
       ...row,
       station_name: station.name,
@@ -35,7 +42,7 @@ export function reconcileTracksideApPlans(
   for (const station of currentStations) {
     if (!generated.has(station.id)
       || existingIds.has(station.id)
-      || !participatesInAutomaticPlan(station)) continue
+      || !participatesInTracksideApPlanning(station)) continue
     rows.push({
       station_id: station.id,
       station_name: station.name,
@@ -48,6 +55,23 @@ export function reconcileTracksideApPlans(
     })
     existingIds.add(station.id)
   }
-  return rows.sort((left, right) => left.sequence_no - right.sequence_no
-    || left.station_id.localeCompare(right.station_id))
+  const stationClass = (row: TracksideApPlanRow): number => {
+    const nodeType = stationById.get(row.station_id)?.node_type
+    if (nodeType === 'station') return 0
+    if (nodeType === 'depot') return 1
+    if (nodeType === 'parking_lot') return 2
+    return 3
+  }
+  return rows.sort((left, right) => {
+    const classDelta = stationClass(left) - stationClass(right)
+    if (classDelta) return classDelta
+    if (stationClass(left) === 0) {
+      const leftOrder = stationById.get(left.station_id)?.sort_order
+      const rightOrder = stationById.get(right.station_id)?.sort_order
+      const orderDelta = (leftOrder ?? Number.MAX_SAFE_INTEGER)
+        - (rightOrder ?? Number.MAX_SAFE_INTEGER)
+      if (orderDelta) return orderDelta
+    }
+    return left.station_id.localeCompare(right.station_id)
+  })
 }

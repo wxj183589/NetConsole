@@ -213,6 +213,128 @@ class RailTransitBaseDataRepository:
             sql = ", ".join(f'"{field}"' for field in selected)
             return [dict(row) for row in connection.execute(f"SELECT {sql} FROM ap_extension_points")]
 
+    def read_edit_snapshot(self, site_id: str) -> dict[str, Any]:
+        """Read every editable base-data row from one read-only SQLite snapshot."""
+
+        site_id = SiteManager(self.paths).validate_site_name(site_id)
+        path = self._database_path(site_id)
+        site_manager = SiteManager(self.paths)
+        ap_fields = ("id", *AP_MERGE_FIELDS, "created_at", "updated_at")
+        device_fields = (
+            "id",
+            "device_uuid",
+            "name",
+            "system_name",
+            "mac_address",
+            "station",
+            "station_id",
+            "location",
+            "group_id",
+            "device_vendor",
+            "device_type",
+            "primary_address",
+            "backup_address",
+            "protocol",
+            "port",
+            "remark",
+            "created_at",
+            "updated_at",
+        )
+        plan_fields = (
+            "station_id",
+            "sequence_no",
+            "station_name",
+            "ap_count",
+            "management_vlan",
+            "remark",
+            "sort_order",
+        )
+
+        for _attempt in range(3):
+            metadata_before = site_manager.load_site_metadata(site_id)
+            with self._read_connection(path) as connection:
+                connection.execute("BEGIN")
+                revision_row = connection.execute(
+                    "SELECT value FROM schema_metadata WHERE key = ? LIMIT 1",
+                    (_BASE_DATA_REVISION_KEY,),
+                ).fetchone()
+                if revision_row is None:
+                    raise sqlite3.DatabaseError("base_data_revision metadata missing")
+                database_counter = str(revision_row["value"] or "0")
+                ap_rows = self._select_existing_columns(connection, "ap_extension_points", ap_fields)
+                device_rows = self._select_existing_columns(connection, "devices", device_fields)
+                group_rows = self._select_existing_columns(connection, "device_groups", ("id", "name"))
+                plan_rows = self._select_existing_columns(
+                    connection,
+                    "ac_trackside_ap_plan",
+                    plan_fields,
+                    where="mode = ?",
+                    parameters=("unified",),
+                )
+                connection.commit()
+            metadata_after = site_manager.load_site_metadata(site_id)
+            metadata_payload = json.dumps(
+                metadata_before,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if metadata_payload != json.dumps(
+                metadata_after,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ):
+                continue
+            database_revision = hashlib.sha256(
+                f"base-data-counter-v1\n{database_counter}".encode("utf-8")
+            ).hexdigest()
+            snapshot_revision = hashlib.sha256(
+                f"{database_revision}\n{metadata_payload}".encode("utf-8")
+            ).hexdigest()
+            if self.base_data_revision(site_id) != snapshot_revision:
+                continue
+            return {
+                "site_id": site_id,
+                "base_revision": snapshot_revision,
+                "metadata": metadata_before,
+                "ap_rows": ap_rows,
+                "device_rows": device_rows,
+                "group_rows": group_rows,
+                "plan_rows": plan_rows,
+            }
+        raise RailTransitBaseDataRevisionConflict(
+            "site metadata changed while the edit snapshot was loading"
+        )
+
+    @staticmethod
+    def _select_existing_columns(
+        connection: sqlite3.Connection,
+        table: str,
+        fields: Iterable[str],
+        *,
+        where: str = "",
+        parameters: tuple[Any, ...] = (),
+    ) -> list[dict[str, Any]]:
+        exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        if exists is None:
+            return []
+        columns = {
+            str(row[1])
+            for row in connection.execute(f'PRAGMA table_info("{table}")')
+        }
+        selected = [field for field in fields if field in columns]
+        if not selected:
+            return []
+        selected_sql = ", ".join(f'"{field}"' for field in selected)
+        sql = f'SELECT {selected_sql} FROM "{table}"'
+        if where:
+            sql = f"{sql} WHERE {where}"
+        return [dict(row) for row in connection.execute(sql, parameters)]
+
     def station_reference_summary(
         self,
         site_id: str,

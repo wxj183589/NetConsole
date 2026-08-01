@@ -6,7 +6,11 @@ import { defineComponent } from 'vue'
 
 import type { TracksideApPlanRow } from '../../../types/tracksideApBusiness'
 import TracksideApPlanningTab from './TracksideApPlanningTab.vue'
-import { reconcileTracksideApPlans, type PlanningStation } from './tracksideApPlanDraft'
+import {
+  participatesInMainlineTopology,
+  reconcileTracksideApPlans,
+  type PlanningStation,
+} from './tracksideApPlanDraft'
 
 const ButtonStub = defineComponent({
   props: { disabled: Boolean },
@@ -80,7 +84,7 @@ describe('trackside AP planning controlled draft', () => {
       ['station:1', 'station:2', 'station:3'],
     )
 
-    expect(rows).toHaveLength(2)
+    expect(rows).toHaveLength(3)
     expect(rows.find((row) => row.station_id === 'station:legacy')).toEqual(
       expect.objectContaining({ relation_status: 'stale' }),
     )
@@ -90,16 +94,36 @@ describe('trackside AP planning controlled draft', () => {
       management_vlan: null,
       remark: '',
     }))
+    expect(rows.find((row) => row.station_id === 'station:2')).toEqual(expect.objectContaining({
+      station_name: '停车场',
+      relation_status: 'resolved',
+    }))
   })
 
-  it('immediately creates eleven stable-ID rows for eleven generated ordinary stations', () => {
-    const stations = Array.from({ length: 11 }, (_, index) =>
-      station(`station:${index + 1}`, `验收站${index + 1}`, index + 1))
+  it('creates eleven planning rows for ten ordinary stations and one depot without changing topology eligibility', () => {
+    const stations = [
+      ...Array.from({ length: 10 }, (_, index) =>
+        station(`station:${index + 1}`, `验收站${index + 1}`, index + 1)),
+      station('station:depot', '车辆段', 0, {
+        node_type: 'depot',
+        sort_order: null,
+        participates_in_direction: false,
+      }),
+    ]
     const rows = reconcileTracksideApPlans([], stations, stations.map((item) => item.id))
 
     expect(rows).toHaveLength(11)
-    expect(rows.every((row) => row.station_id.startsWith('station:'))).toBe(true)
+    expect(new Set(rows.map((row) => row.station_id)).size).toBe(11)
     expect(rows.every((row) => row.relation_status === 'resolved')).toBe(true)
+    expect(rows.at(-1)).toEqual(expect.objectContaining({
+      station_id: 'station:depot',
+      station_name: '车辆段',
+      planned_ap_count: 0,
+      management_vlan: null,
+    }))
+    expect(stations.at(-1)?.node_type).toBe('depot')
+    expect(stations.at(-1)?.participates_in_direction).toBe(false)
+    expect(participatesInMainlineTopology(stations.at(-1)!)).toBe(false)
   })
 
   it('does not merge two formal stations that share the same display name', () => {

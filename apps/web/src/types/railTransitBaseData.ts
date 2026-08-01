@@ -527,6 +527,16 @@ export interface RailTransitBaseDataDraft {
   vehicleMrs: VehicleMr[]
 }
 
+export interface BaseDataEditSnapshot extends BaseDataEditSession {
+  metadata: RailTransitSummary
+  stations: Station[]
+  sections: Section[]
+  trackside_aps: TracksideAp[]
+  trackside_ap_plans: import('./tracksideApBusiness').TracksideApPlanRow[]
+  device_station_bindings: DeviceStationBindingDraft[]
+  vehicle_mrs: VehicleMr[]
+}
+
 export interface VehicleMr {
   id: string
   device_id: number | null

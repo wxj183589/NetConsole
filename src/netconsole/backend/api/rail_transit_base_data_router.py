@@ -19,6 +19,7 @@ from netconsole.models.api.rail_transit_base_data import (
     BaseDataClearRequestDTO,
     BaseDataClearResultDTO,
     BaseDataEditSessionDTO,
+    BaseDataEditSnapshotDTO,
     BaseDataSaveRequestDTO,
     BaseDataSaveResultDTO,
     BaseDataValidateRequestDTO,
@@ -105,6 +106,22 @@ def summary(request: Request, site_id: str = Query(default="", max_length=100)) 
 @router.get("/revision", response_model=BaseDataEditSessionDTO, summary="获取基础资料编辑会话")
 def revision(request: Request, site_id: str = Query(default="", max_length=100)) -> BaseDataEditSessionDTO:
     return _query(lambda: _application_service(request).get_edit_session(_site_id(request, site_id)))
+
+
+@router.get(
+    "/edit-snapshot",
+    response_model=BaseDataEditSnapshotDTO,
+    summary="获取完整且一致的基础资料编辑快照",
+)
+def edit_snapshot(
+    request: Request,
+    site_id: str = Query(default="", max_length=100),
+) -> BaseDataEditSnapshotDTO:
+    return _query(
+        lambda: _application_service(request).get_edit_snapshot(
+            _site_id(request, site_id)
+        )
+    )
 
 
 @router.get("/clear-preview", response_model=BaseDataClearPreviewDTO, summary="预览清空站点与区间的影响")

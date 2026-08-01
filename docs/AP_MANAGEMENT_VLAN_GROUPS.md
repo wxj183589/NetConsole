@@ -24,7 +24,7 @@
 
 上线概览只返回站点统计、少量诊断计数、生成时间和来源 revision，不内嵌完整排除项或待关联在线 AP。用户点击对应明细后，页面分别调用 `/plan/online-status/excluded` 和 `/plan/online-status/unmatched` 分页读取；默认页大小为 50，空 MAC 以空字符串返回。概览按规划、FIT-AP、AP Identity 和局点元数据 revision 缓存，来源不变时直接复用，`source_revision=0` 仍是合法 revision。缓存命中状态和阶段耗时进入诊断日志，不改变统计口径。
 
-规划编辑仍属于基础资料统一草稿。父页面按 `station_id` reconcile 规划：站名修改保留用户值，来源消失的历史行保留为 `stale`，只为本次确认生成的合格站点追加默认行。保存通过 `POST /api/rail-transit/base-data/changes` 进入 `RailTransitBaseDataApplicationService`，与其他基础资料共享 revision 检查和 SQLite `BEGIN IMMEDIATE` 单事务；失败整体回滚。修改规划不会连接 AC 或自动刷新设备状态。
+规划编辑仍属于基础资料统一草稿。父页面只从基础资料专用完整编辑快照建立基线，并按 `station_id` reconcile 规划：站名修改保留用户值，来源消失或禁用的历史行保留为 `stale`；启用的普通站、车辆段和停车场都生成规划行，资格不依赖 `participates_in_direction`。普通站按正式站序排列，随后是车辆段、停车场和其他历史手工行；特殊节点保持原 `node_type`，新增行默认 AP 数为 `0`、管理 VLAN 为空。主线区间仍只使用符合方向参与条件的普通站，不为车辆段或停车场生成区间。保存通过 `POST /api/rail-transit/base-data/changes` 进入 `RailTransitBaseDataApplicationService`，与其他基础资料共享 revision 检查和 SQLite `BEGIN IMMEDIATE` 单事务；失败整体回滚。修改规划不会连接 AC 或自动刷新设备状态。
 
 当前用户接口包括（规划模板预览/导出接口仅为历史兼容，不由活动页面调用）：
 

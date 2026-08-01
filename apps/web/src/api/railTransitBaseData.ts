@@ -5,6 +5,7 @@ import type {
   BaseDataClearPreview,
   BaseDataClearResult,
   BaseDataEditSession,
+  BaseDataEditSnapshot,
   BaseDataSaveResult,
   BaseDataValidationResult,
   DataQualityIssue,
@@ -44,6 +45,7 @@ function queryString(values: PageQuery = {}): string {
 
 export const getRailTransitSummary = (): Promise<RailTransitSummary> => apiRequest(`${root}/summary`)
 export const getRailTransitBaseDataEditSession = (): Promise<BaseDataEditSession> => apiRequest(`${root}/revision`)
+export const getRailTransitBaseDataEditSnapshot = (): Promise<BaseDataEditSnapshot> => apiRequest(`${root}/edit-snapshot`)
 export const getRailTransitBaseDataClearPreview = (): Promise<BaseDataClearPreview> => apiRequest(`${root}/clear-preview`)
 export const clearRailTransitBaseData = (payload: { site_id: string; base_revision: string; explicit_confirmation: boolean }): Promise<BaseDataClearResult> => apiRequest(`${root}/clear-all`, { method: 'POST', body: JSON.stringify(payload) })
 export const validateRailTransitBaseDataChanges = (payload: { site_id: string; base_revision: string; changes: BaseDataChange[] }): Promise<BaseDataValidationResult> => apiRequest(`${root}/validate`, { method: 'POST', body: JSON.stringify(payload) })

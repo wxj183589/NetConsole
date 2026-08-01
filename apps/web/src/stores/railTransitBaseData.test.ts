@@ -6,6 +6,7 @@ import { getTracksideApPlan } from '../api/tracksideApBusiness'
 import { useRailTransitBaseDataStore } from './railTransitBaseData'
 import {
   applyRailTransitImport,
+  getRailTransitBaseDataEditSnapshot,
   getRailTransitBaseDataEditSession,
   getRailTransitImportPolicies,
   getRailTransitSummary,
@@ -29,6 +30,7 @@ import {
 
 vi.mock('../api/railTransitBaseData', () => ({
   applyRailTransitImport: vi.fn(),
+  getRailTransitBaseDataEditSnapshot: vi.fn(),
   getRailTransitBaseDataEditSession: vi.fn(),
   getRailTransitImportPolicies: vi.fn(),
   getRailTransitSummary: vi.fn(),
@@ -78,6 +80,7 @@ describe('Rail Transit base data polling store', () => {
       vi.mocked(mock).mockReset().mockResolvedValue(emptyPage)
     }
     vi.mocked(getTracksideApPlan).mockReset().mockResolvedValue({ items: [] } as never)
+    vi.mocked(getRailTransitBaseDataEditSnapshot).mockReset()
     vi.mocked(listDataQualityIssueGroups).mockReset().mockResolvedValue({
       ...emptyPage, issue_total: 0, blocking_total: 0, warning_total: 0, info_total: 0, code_counts: {},
     })
@@ -344,6 +347,63 @@ describe('Rail Transit base data polling store', () => {
     vi.mocked(getRailTransitSummary).mockRejectedValue(new Error('offline'))
     await store.refreshSummary(); await store.refreshSummary()
     expect(store.error).toContain('保留最后成功数据')
+  })
+
+  it('returns the actual in-flight promise for summary, static, and runtime refreshes', async () => {
+    let resolveSummary: ((value: Awaited<ReturnType<typeof getRailTransitSummary>>) => void) | undefined
+    vi.mocked(getRailTransitSummary).mockImplementation(
+      () => new Promise((resolve) => { resolveSummary = resolve }),
+    )
+    const store = useRailTransitBaseDataStore()
+    const firstSummary = store.refreshSummary(false)
+    const secondSummary = store.refreshSummary(false)
+    let summaryFinished = false
+    void secondSummary.then(() => { summaryFinished = true })
+    await Promise.resolve()
+    expect(summaryFinished).toBe(false)
+    resolveSummary?.({
+      site_id: 'demo', site_name: '测试局点', line_name: '测试线', project_type: 'PIS', network_type: 'default',
+      main_path_code: 'MAIN', increasing_direction_name: '上行', decreasing_direction_name: '下行',
+      increasing_direction_line_side: '右线', decreasing_direction_line_side: '左线', increasing_direction_leading_end: 'unknown',
+      station_source_group_name: '车站', station_source_field: 'station', remark: '', created_at: '', updated_at: '',
+      station_count: 0, normal_station_count: 0, special_node_count: 0, source_pending_count: 0,
+      source_conflict_count: 0, source_stale_count: 0, section_count: 0, ap_count: 0, train_count: 0,
+      mr_count: 0, missing_location_ap_count: 0, invalid_mileage_count: 0, duplicate_ap_mac_count: 0,
+      duplicate_static_ip_count: 0, unbound_mr_count: 0, issue_count: 0, message: '',
+    })
+    await Promise.all([firstSummary, secondSummary])
+    expect(summaryFinished).toBe(true)
+    expect(getRailTransitSummary).toHaveBeenCalledOnce()
+
+    let resolveStations: ((value: typeof emptyPage) => void) | undefined
+    vi.mocked(listStations).mockImplementation(
+      () => new Promise((resolve) => { resolveStations = resolve }),
+    )
+    const firstStatic = store.refreshStatic(false)
+    const secondStatic = store.refreshStatic(false)
+    let staticFinished = false
+    void secondStatic.then(() => { staticFinished = true })
+    await Promise.resolve()
+    expect(staticFinished).toBe(false)
+    resolveStations?.(emptyPage)
+    await Promise.all([firstStatic, secondStatic])
+    expect(staticFinished).toBe(true)
+    expect(listStations).toHaveBeenCalledOnce()
+
+    let resolveAps: ((value: typeof emptyPage) => void) | undefined
+    vi.mocked(listTracksideAps).mockImplementation(
+      () => new Promise((resolve) => { resolveAps = resolve }),
+    )
+    const firstRuntime = store.refreshRuntime(false)
+    const secondRuntime = store.refreshRuntime(false)
+    let runtimeFinished = false
+    void secondRuntime.then(() => { runtimeFinished = true })
+    await Promise.resolve()
+    expect(runtimeFinished).toBe(false)
+    resolveAps?.(emptyPage)
+    await Promise.all([firstRuntime, secondRuntime])
+    expect(runtimeFinished).toBe(true)
+    expect(listTracksideAps).toHaveBeenCalledOnce()
   })
 
   it('stops all polling timers and keeps persistence unauthorized by default', async () => {

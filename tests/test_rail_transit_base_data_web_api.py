@@ -19,6 +19,7 @@ from netconsole.application.rail_transit.base_data_application_service import (
 from netconsole.repositories.rail_transit_base_data_repository import (
     RailTransitBaseDataRepository,
 )
+from netconsole.services.ap_identity import ApIdentityQueryService
 
 
 class _NoopAsyncService:
@@ -133,6 +134,7 @@ def test_base_data_api_defaults_to_locked_and_redacts_credentials(tmp_path: Path
             client.get("/api/rail-transit/base-data/issues/groups"),
             client.get("/api/rail-transit/base-data/import-policies"),
             client.get("/api/rail-transit/base-data/relations"),
+            client.get("/api/rail-transit/base-data/edit-snapshot"),
         ]
         ap_id = responses[3].json()["items"][0]["id"]
         train_id = responses[4].json()["items"][0]["id"]
@@ -158,12 +160,28 @@ def test_base_data_api_defaults_to_locked_and_redacts_credentials(tmp_path: Path
             },
         )
         responses.append(preview)
+        edit_revision = client.get(
+            "/api/rail-transit/base-data/revision"
+        ).json()["base_revision"]
     assert all(response.status_code == 200 for response in responses)
     text = "".join(response.text for response in responses).casefold()
     assert "private-user" not in text
     assert "private-pass" not in text
     assert "password" not in text
     assert _fingerprint(db_path) == before
+    snapshot = responses[10].json()
+    assert len(responses[3].json()["items"]) == 2
+    assert len(snapshot["trackside_aps"]) == 3
+    assert {item["id"] for item in snapshot["trackside_aps"]} == {
+        "ap:1",
+        "ap:2",
+        "ap:3",
+    }
+    assert {item["id"] for item in snapshot["vehicle_mrs"]} == {
+        "mr-01-ct",
+        "mr-01-cw",
+    }
+    assert snapshot["base_revision"] == edit_revision
 
     routes = {
         (path, method.upper())
@@ -184,6 +202,35 @@ def test_base_data_api_defaults_to_locked_and_redacts_credentials(tmp_path: Path
     }
     assert not any(method in {"PUT", "PATCH", "DELETE"} for _path, method in routes)
     assert responses[8].json()["write_enabled"] is False
+
+
+def test_edit_snapshot_does_not_load_runtime_sources_or_rebuild_identity(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    app = _app(paths, tmp_path)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("edit snapshot must not touch runtime or identity rebuild paths")
+
+    monkeypatch.setattr(ApIdentityQueryService, "rebuild_index", forbidden)
+    monkeypatch.setattr(
+        app.state.rail_transit_base_data_query_service.ac_query,
+        "list_all_ap_details",
+        forbidden,
+    )
+    monkeypatch.setattr(
+        app.state.rail_transit_base_data_query_service.mesh_query,
+        "list_current_links",
+        forbidden,
+    )
+    before = _fingerprint(db_path)
+    with TestClient(app) as client:
+        response = client.get("/api/rail-transit/base-data/edit-snapshot")
+
+    assert response.status_code == 200, response.text
+    assert _fingerprint(db_path) == before
 
 
 def test_station_source_preview_uses_station_field_only_and_is_read_only(tmp_path: Path) -> None:

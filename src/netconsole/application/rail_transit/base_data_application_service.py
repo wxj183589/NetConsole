@@ -17,6 +17,7 @@ from netconsole.models.api.rail_transit_base_data import (
     BaseDataClearPreviewDTO,
     BaseDataClearResultDTO,
     BaseDataEditSessionDTO,
+    BaseDataEditSnapshotDTO,
     BaseDataSaveResultDTO,
     BaseDataValidationIssueDTO,
     BaseDataValidationResultDTO,
@@ -134,6 +135,26 @@ class RailTransitBaseDataApplicationService:
         return BaseDataEditSessionDTO(
             site_id=site_id,
             base_revision=self.repository.base_data_revision(site_id),
+            loaded_at=datetime.now(timezone.utc).isoformat(),
+            can_write=can_write,
+            write_scope=status.scope,
+            storage_mode=status.storage_mode,
+            write_denial_code=denial_code,
+            write_denial_reason=denial_reason,
+        )
+
+    def get_edit_snapshot(self, site_id: str) -> BaseDataEditSnapshotDTO:
+        site_id = SiteManager(self.paths).validate_site_name(site_id)
+        snapshot = self.query_service.get_edit_snapshot(site_id)
+        status = self.guard.status(site_id)
+        can_write = (
+            status.copy_write_authorized
+            if status.scope == "copy_validation"
+            else status.real_write_authorized
+        )
+        denial_code, denial_reason = self.guard.write_denial(status)
+        return BaseDataEditSnapshotDTO(
+            **snapshot,
             loaded_at=datetime.now(timezone.utc).isoformat(),
             can_write=can_write,
             write_scope=status.scope,

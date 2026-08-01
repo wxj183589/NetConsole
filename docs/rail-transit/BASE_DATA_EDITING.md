@@ -21,15 +21,19 @@ VIEW -> EDITING_CLEAN -> EDITING_DIRTY -> VALIDATING -> SAVING -> VIEW
 READ_ONLY
 ```
 
-页面加载时读取 `site_id`、`base_revision` 和写入范围，只建立服务端快照，不创建 `editingDraft`。`VIEW` 使用文本和状态标签展示，右上角只有“刷新、编辑”；`READ_ONLY` 只有“刷新”并显示原因。点击“编辑”后才从最新服务端快照复制 `editingDraft`，站点、设备绑定、区间、轨旁 AP、规划和 MR 共享这一份草稿；右上角切换为“取消修改、保存”，无改动时保存禁用。新增记录使用稳定领域 ID 或临时记录 ID并显示“新增”；正式记录删除先标记“待删除”，可在提交前撤销。
+页面加载时只读取 `site_id`、`base_revision` 和写入范围，不创建 `editingDraft`。`VIEW` 使用文本和状态标签展示，右上角只有“刷新、编辑”；`READ_ONLY` 只有“刷新”并显示原因。用户点击“编辑”后，页面调用 `GET /api/rail-transit/base-data/edit-snapshot`，在同一 revision 边界取得 metadata、全部站点、设备绑定、区间、轨旁 AP、逐站规划和 MR；编辑基线只来自该完整快照，不使用带分页、搜索或当前筛选的查看列表拼接。快照成功且写权限仍有效时才复制 `editingDraft`；失败则保持 `VIEW` 或 `READ_ONLY`，不会建立部分草稿。右上角随后切换为“取消修改、保存”，无改动时保存禁用。新增记录使用稳定领域 ID 或临时记录 ID 并显示“新增”；正式记录删除先标记“待删除”，可在提交前撤销。
 
 `VIEW` 刷新后更新服务端快照并保持 `VIEW`；编辑状态不显示普通刷新按钮，受控重新加载必须确认放弃草稿后返回 `VIEW`。编辑期间暂停会覆盖静态草稿的数据轮询，切换页面内部标签不销毁草稿。有未保存修改离开路由时只允许“继续编辑”或“放弃修改并离开”，不自动保存。保存成功和取消修改都销毁草稿并返回 `VIEW`；保存失败保留完整草稿和字段错误。
+
+编辑快照遵循 `Router -> Application Service -> Query Service -> Repository`。Repository 使用 SQLite `mode=ro`、`PRAGMA query_only` 和只读事务读取全部可编辑实体，并在读取前后核对局点 metadata；接口不初始化或迁移 schema，不写 revision/缓存，不连接设备，不加载 AC/MESH 运行态，也不触发 AP Identity rebuild。查看态同类刷新若已有请求在途，会复用并等待同一个 Promise，调用方不会因“正在刷新”而提前成功返回。
 
 ## 设备站点来源
 
 “从设备管理生成”只读取“车站”分组的 `station` 字段。字段开头 1～3 位数字确定来源顺序，分隔符可省略；正式名称始终去掉数字与分隔符，无数字前缀也可进入草稿。来源预览按“规范站名 + 节点类型”匹配既有资料，匹配项默认建议覆盖现有记录并保留 `id/node_uid`、引用和人工维护字段。车辆段与停车场保留来源编号，但不占用主线 `sort_order`。
 
 只有数字、同名不同类型、同顺序不同站名和同站名不同顺序属于阻断项。来源应用仍只是草稿变更，不会自动保存；既有带编号名称会在用户应用并保存后规范为无编号正式站名。
+
+轨旁 AP 规划资格与主线区间拓扑资格分离。启用的普通站、车辆段和停车场都可生成逐站规划；`participates_in_direction` 只决定普通站是否参与主线区间生成，不过滤车辆段或停车场规划。新增规划行默认 `planned_ap_count=0`、`management_vlan=null`，并按“普通站正式顺序、车辆段、停车场、其他历史手工行”稳定排序。车辆段和停车场保持自身 `node_type`，不会因此生成主线区间。
 
 ## 保存链路
 
@@ -73,6 +77,6 @@ NETCONSOLE_ALLOW_REAL_BASE_DATA_WRITE=1  # 正式局点的额外授权
 ## 定向验证
 
 ```text
-pnpm exec vitest run src/views/rail-transit/RailTransitBaseDataView.test.ts src/components/rail-transit/base-data/TracksideApPlanningTab.test.ts src/stores/railTransitBaseData.test.ts
+pnpm exec vitest run src/views/rail-transit/RailTransitBaseDataView.behavior.test.ts src/components/rail-transit/base-data/TracksideApPlanningTab.behavior.test.ts src/stores/railTransitBaseData.test.ts
 .venv/Scripts/python.exe -m pytest tests/test_rail_transit_base_data_edit_api.py tests/test_rail_transit_write_guard.py -q
 ```

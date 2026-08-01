@@ -11,6 +11,7 @@ import RailTransitBaseDataView from './RailTransitBaseDataView.vue'
 const mocks = vi.hoisted(() => ({
   summary: vi.fn(),
   editSession: vi.fn(),
+  editSnapshot: vi.fn(),
   validate: vi.fn(),
   save: vi.fn(),
   emptyPage: vi.fn(),
@@ -35,6 +36,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../api/railTransitBaseData', () => ({
   applyRailTransitImport: vi.fn(),
   getRailTransitBaseDataEditSession: mocks.editSession,
+  getRailTransitBaseDataEditSnapshot: mocks.editSnapshot,
   getTracksideApPlan: vi.fn(async () => ({ site_id: 'demo', revision: 'a'.repeat(64), items: [], diagnostics: [] })),
   getRailTransitImportPolicies: mocks.importPolicies,
   getRailTransitSummary: mocks.summary,
@@ -674,6 +676,25 @@ describe('轨道交通基础资料编辑闭环', () => {
     mocks.stationTemplatePreview.mockResolvedValue(stationTemplatePreviewPayload)
     mocks.sectionGenerationPreview.mockResolvedValue(sectionGenerationPreviewPayload)
     mocks.download.mockResolvedValue({ status: 'saved' })
+    mocks.editSnapshot.mockImplementation(async () => {
+      const [metadata, stations, sections, tracksideAps, vehicleMrs] = await Promise.all([
+        mocks.summary(),
+        mocks.stationsPage(),
+        mocks.sectionsPage(),
+        mocks.tracksideApsPage(),
+        mocks.emptyPage(),
+      ])
+      return {
+        ...writableSession,
+        metadata,
+        stations: stations.items,
+        sections: sections.items,
+        trackside_aps: tracksideAps.items,
+        trackside_ap_plans: [],
+        device_station_bindings: [],
+        vehicle_mrs: vehicleMrs.items,
+      }
+    })
   })
 
   it('单个业务接口失败时显示部分刷新失败并保留已加载站点', async () => {
@@ -738,6 +759,81 @@ describe('轨道交通基础资料编辑闭环', () => {
     expect(wrapper.get('[data-table-id="rail-base-sections"]').find('input, select').exists()).toBe(true)
     expect(wrapper.findComponent(PlanningStub).props('editing')).toBe(true)
     expect(wrapper.text()).toContain('从设备管理生成')
+    wrapper.unmount()
+  })
+
+  it('uses the complete edit snapshot independently from AP filters and page, and preserves one draft across tab switches', async () => {
+    const stations = [
+      sourceStationWuxiang,
+      { ...sourceStationWuxiang, id: 'station:depot', node_uid: 'node:depot', name: '车辆段', node_type: 'depot' as const, sort_order: null, participates_in_direction: false },
+    ]
+    const aps = [
+      tracksideApRow('ap:full-1', 'MAINLINE'),
+      tracksideApRow('ap:full-2', 'MAINLINE'),
+      tracksideApRow('ap:full-3', 'DEPOT'),
+    ]
+    const mrs = ['mr:ct', 'mr:cw'].map((id, index) => ({
+      id, device_id: index + 1, name: id, train_id: 'train:1', train_no: '01', role: '',
+      mr_position_code: index === 0 ? 'CT' : 'CW', physical_end: index === 0 ? 'car_1_end' : 'car_6_end',
+      car_number: index === 0 ? 1 : 6, management_ip: `10.0.0.${index + 1}`, station: '', mac: '',
+      protocol: 'ssh', port: 22, remark: '', runtime: {}, issue_count: 0, highest_issue_severity: '',
+    }))
+    const plans = [{
+      station_id: 'station:depot', station_name: '车辆段', sequence_no: 11,
+      planned_ap_count: 0, management_vlan: null, remark: '', relation_status: 'resolved', candidate_station_ids: [],
+    }]
+    mocks.tracksideApsPage.mockResolvedValue({ items: [tracksideApRow('ap:page-2', 'MAINLINE')], total: 101, page: 2, page_size: 50 })
+    mocks.editSnapshot.mockResolvedValue({
+      ...writableSession,
+      metadata: { ...baseSummary, station_count: 2, normal_station_count: 1, special_node_count: 1, ap_count: 3, mr_count: 2 },
+      stations,
+      sections: [generatedIncreasingSection],
+      trackside_aps: aps,
+      trackside_ap_plans: plans,
+      device_station_bindings: [{ device_id: 'device:depot', station_id: 'station:depot', source: 'migration' }],
+      vehicle_mrs: mrs,
+    })
+    const wrapper = await mountView(false)
+    await wrapper.get('input[placeholder="AP 名称 / 点位 / MAC / IP"]').setValue('当前页筛选')
+    await button(wrapper, '应用筛选').trigger('click')
+    await button(wrapper, '编辑').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-table-id="rail-base-trackside-aps"]').findAll('.table-row')).toHaveLength(3)
+    expect(wrapper.get('[data-table-id="rail-base-stations"]').findAll('.table-row')).toHaveLength(2)
+    expect(wrapper.get('[data-table-id="rail-base-sections"]').findAll('.table-row')).toHaveLength(1)
+    expect(wrapper.get('[data-table-id="rail-base-vehicle-mrs"]').findAll('.table-row')).toHaveLength(2)
+    expect(wrapper.findComponent(PlanningStub).props('modelValue')).toEqual(plans)
+
+    const stationName = wrapper.get('[data-table-id="rail-base-stations"]').findAll('input')
+      .find((input) => (input.element as HTMLInputElement).value === '五乡')!
+    await stationName.setValue('五乡新名')
+    wrapper.findComponent(PlanningStub).vm.$emit('update:modelValue', [{ ...plans[0], management_vlan: 321 }])
+    for (const tab of ['overview', 'stations', 'trackside-ap', 'trackside-ap-planning', 'trains', 'quality', 'relations']) {
+      await wrapper.vm.$router.replace({ query: { tab } })
+      await flushPromises()
+      expect(wrapper.get('[data-table-id="rail-base-trackside-aps"]').findAll('.table-row')).toHaveLength(3)
+    }
+    expect((stationName.element as HTMLInputElement).value).toBe('五乡新名')
+    expect(wrapper.findComponent(PlanningStub).props('modelValue')).toEqual([
+      expect.objectContaining({ station_id: 'station:depot', management_vlan: 321 }),
+    ])
+    expect(mocks.editSnapshot).toHaveBeenCalledOnce()
+    expect(mocks.save).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('keeps VIEW and creates no partial draft when edit-snapshot fails', async () => {
+    mocks.editSnapshot.mockRejectedValue(new Error('sections snapshot failed'))
+    const wrapper = await mountView(false)
+
+    await button(wrapper, '编辑').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.page-toolbar').findAll('button').map((item) => item.text().trim())).toEqual(['刷新', '编辑'])
+    expect(wrapper.findAll('button').some((item) => item.text().trim() === '保存')).toBe(false)
+    expect(mocks.messageError).toHaveBeenCalledWith('sections snapshot failed')
+    expect(mocks.editSnapshot).toHaveBeenCalledOnce()
     wrapper.unmount()
   })
 

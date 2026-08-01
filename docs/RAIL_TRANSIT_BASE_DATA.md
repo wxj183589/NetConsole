@@ -32,7 +32,7 @@ revision 校验 + SQLite BEGIN IMMEDIATE 单事务
 
 - 页面状态为 `VIEW / EDITING_CLEAN / EDITING_DIRTY / VALIDATING / SAVING / SAVE_FAILED / READ_ONLY`；只有编辑状态存在父级草稿，所有标签共享同一草稿和基线。
 - 编辑会话记录 `site_id`、`base_revision` 和 `loaded_at`；`base_revision` 同时覆盖当前 SQLite 逻辑内容和 `site_meta.json` 的规范化内容。
-- 页面加载时只把 Pinia 查询结果记录为服务端快照，不创建编辑草稿。点击“编辑”时重新核对写会话和 revision，再从最新快照复制纯 DTO 草稿，禁止直接克隆或修改 Vue reactive proxy；修改只保存在 Renderer 编辑区，不自动写库。保存前先调用校验接口，保存时后端在 `BEGIN IMMEDIATE` 后再次核对 revision。
+- 页面加载时不创建编辑草稿。点击“编辑”时调用专用 `GET /api/rail-transit/base-data/edit-snapshot`，在同一 revision 边界读取 metadata、全部站点、设备绑定、区间、轨旁 AP、逐站规划和 MR；编辑基线不得由 Pinia 中当前分页、搜索或筛选后的查看列表拼接。完整快照和写会话均有效后才复制纯 DTO 草稿，禁止直接克隆或修改 Vue reactive proxy；快照失败保持查看态，不建立部分草稿。修改只保存在 Renderer 编辑区，不自动写库。保存前先调用校验接口，保存时后端在 `BEGIN IMMEDIATE` 后再次核对 revision。
 - revision 不一致返回 `BASE_DATA_REVISION_CONFLICT`，不得以后提交静默覆盖先提交。
 - `VIEW` 可正常刷新并保持查看态；编辑状态隐藏普通刷新，受控重新加载必须确认放弃草稿。离开路由和关闭窗口保护未保存修改；内部页签切换不销毁草稿。离页确认只提供“继续编辑”和“放弃修改并离开”，不自动保存。
 - 保存失败保留编辑区和 dirty 状态；成功或取消修改后销毁草稿并返回 `VIEW`。
@@ -52,6 +52,15 @@ revision 校验 + SQLite BEGIN IMMEDIATE 单事务
 - 列车和车载 MR 来自 `devices` 与 `device_groups`；只读取显式安全字段，不读取账号、密码、Community、Token 或隧道凭据。
 - 车载 MR 的 `mr_position_code`、`physical_end` 和 `car_number` 是独立的固定安装资料：`MR-CT = CT / 1车厢端 / 1`，`MR-CW = CW / 6车厢端 / 6`。兼容字段 `role` 仍返回原名称解析结果，但不再表示运行头尾。当前运行角色只能由“实际运行方向 + `increasing_direction_leading_end` + 物理安装位置”计算为 `leading_end / trailing_end / turnback_transition / unknown`；RSSI 信号模型只做一致性验证，不能静默交换 CT/CW。
 - AP、MR、设备之间不因 MAC 相同而自动合并。运行态关联继续复用现有 AC 和 Mesh-Link 匹配结果，不接管 AP Identity 生产匹配。
+- 逐站 AP 规划资格独立于主线区间拓扑资格：启用的普通站、车辆段和停车场都属于规划节点；只有启用、`node_type=station` 且 `participates_in_direction=true` 的普通站参与主线区间生成。车辆段和停车场保持自身节点类型，不因规划生成进入主线区间。
+
+## 编辑快照 API
+
+```text
+GET /api/rail-transit/base-data/edit-snapshot?site_id=...
+```
+
+接口通过 `Router -> Application Service -> Query Service -> Repository` 返回完整、只读的编辑聚合以及与其一致的 `base_revision`。Repository 使用 SQLite `mode=ro`、`PRAGMA query_only` 和只读事务读取可编辑表，并在事务前后核对 `site_meta.json`；不执行 schema 初始化、migration、缓存或 revision 写入，不连接设备，不读取 AC/MESH 运行态，也不触发 AP Identity rebuild。分页查看接口继续服务页面展示，不承担编辑基线职责。
 
 ## 站点来源与模板
 
@@ -288,7 +297,7 @@ AP 点表导入、预览、确认、审计和回滚只在“轨道交通 / 基�
 ## 刷新与性能
 
 - 总览 30 秒、AP/MR/关联运行态 15 秒、站点/区间/数据质量 60 秒。
-- 页面隐藏或卸载时停止全部计时器；同类请求未结束时不重复发起。
+- 页面隐藏或卸载时停止全部计时器；同类请求未结束时复用并等待同一个在途 Promise，不重复发起，也不会让后续调用方提前返回。
 - 页面处于 `EDITING_CLEAN / EDITING_DIRTY / VALIDATING / SAVING / SAVE_FAILED` 时停止会覆盖草稿的数据轮询；保存成功或放弃并恢复到 `VIEW` 后再恢复。
 - 总览、站点、区间、数据质量、轨旁 AP、列车、车载 MR、关联运行状态和导入治理接口分别落值；单个请求失败不阻止同批其他成功结果写入，失败项保留最后成功数据，下一次成功只清除自身错误。手动刷新会并行重试全部数据域。
 - 单个业务接口失败时页面显示“部分基础资料刷新失败”，并可展开查看 API path、错误码、HTTP 状态、`request_id` 和原始消息，不把 `/api/health` 在线的场景描述为 Backend 整体离线。

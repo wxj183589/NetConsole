@@ -15,6 +15,7 @@ from uuid import NAMESPACE_URL, uuid5
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.rail_transit_base_data import (
+    BaseDataTracksideApPlanRowDTO,
     DataQualityEntityGroupDTO,
     DataQualityEntityGroupPageDTO,
     DataQualityIssueDTO,
@@ -38,6 +39,9 @@ from netconsole.models.api.rail_transit_base_data import (
     VehicleMrDTO,
     VehicleMrDetailDTO,
     VehicleMrPageDTO,
+)
+from netconsole.repositories.rail_transit_base_data_repository import (
+    RailTransitBaseDataRepository,
 )
 from netconsole.models.device import Device
 from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryService
@@ -154,14 +158,132 @@ class RailTransitBaseDataQueryService:
         ac_query: AcManagementQueryService | None = None,
         mesh_query: AcMeshLinkQueryService | None = None,
         online_mr_query: OnlineMrQueryService | None = None,
+        repository: RailTransitBaseDataRepository | None = None,
     ) -> None:
         self.paths = paths
         self.ac_query = ac_query or AcManagementQueryService(paths)
         self.mesh_query = mesh_query or AcMeshLinkQueryService(paths)
         self.online_mr_query = online_mr_query or OnlineMrQueryService(paths)
+        self.repository = repository or RailTransitBaseDataRepository(paths)
 
     def current_site_id(self) -> str:
         return self.ac_query.current_site_id()
+
+    def get_edit_snapshot(self, site_id: str) -> dict[str, Any]:
+        raw = self.repository.read_edit_snapshot(site_id)
+        metadata = dict(raw["metadata"])
+        device_rows = list(raw["device_rows"])
+        group_rows = list(raw["group_rows"])
+        source_group = str(
+            metadata.get("station_source_group_name") or DEFAULT_STATION_SOURCE_GROUP
+        )
+        source_counts = self._station_source_counts_from_rows(
+            device_rows,
+            group_rows,
+            source_group,
+        )
+        points = self._all_points(
+            site_id,
+            include_runtime=False,
+            rows=list(raw["ap_rows"]),
+            site_metadata=metadata,
+            source_counts=source_counts,
+        )
+        stations = self._stations(
+            points,
+            site_id=site_id,
+            site_metadata=metadata,
+            source_counts=source_counts,
+        )
+        sections = self._sections(points)
+        trackside_aps = [item for item in points if self._is_ap_record(item)]
+        vehicle_mrs = self._all_mrs(
+            site_id,
+            include_runtime=False,
+            device_rows=device_rows,
+            group_rows=group_rows,
+        )
+        station_by_id = {station.id: station for station in stations}
+        station_ids_by_name: dict[str, list[str]] = defaultdict(list)
+        for station in stations:
+            station_ids_by_name[station.name].append(station.id)
+        plans: list[BaseDataTracksideApPlanRowDTO] = []
+        for row in raw["plan_rows"]:
+            station_id = str(row.get("station_id") or "")
+            stored_name = str(row.get("station_name") or "")
+            station = station_by_id.get(station_id)
+            candidates = station_ids_by_name.get(stored_name, [])
+            if station is not None:
+                relation_status = "resolved"
+                station_name = station.name
+                candidates = []
+            elif station_id:
+                relation_status = "stale"
+                station_name = stored_name
+            else:
+                relation_status = "ambiguous" if len(candidates) > 1 else "missing"
+                station_name = stored_name
+            plans.append(
+                BaseDataTracksideApPlanRowDTO(
+                    station_id=station_id,
+                    sequence_no=int(row.get("sequence_no") or 0),
+                    station_name=station_name,
+                    planned_ap_count=int(row.get("ap_count") or 0),
+                    management_vlan=self._int_or_none(row.get("management_vlan")),
+                    remark=str(row.get("remark") or ""),
+                    relation_status=relation_status,
+                    candidate_station_ids=candidates,
+                )
+            )
+        plans.sort(key=lambda item: (item.sequence_no, item.station_id))
+        leading_end = str(metadata.get("increasing_direction_leading_end") or "unknown")
+        if leading_end not in {"car_1_end", "car_6_end", "unknown"}:
+            leading_end = "unknown"
+        summary = RailTransitSummaryDTO(
+            site_id=site_id,
+            site_name=str(metadata.get("display_name") or site_id),
+            line_name=str(metadata.get("line_name") or self._first(trackside_aps, "line_name") or ""),
+            project_type=str(metadata.get("system_type") or ""),
+            network_type=str(metadata.get("network_domain") or ""),
+            main_path_code=str(metadata.get("main_path_code") or DEFAULT_MAIN_PATH_CODE),
+            increasing_direction_name=str(metadata.get("increasing_direction_name") or "上行"),
+            decreasing_direction_name=str(metadata.get("decreasing_direction_name") or "下行"),
+            increasing_direction_line_side=str(metadata.get("increasing_direction_line_side") or "右线"),
+            decreasing_direction_line_side=str(metadata.get("decreasing_direction_line_side") or "左线"),
+            increasing_direction_leading_end=leading_end,
+            station_source_group_name=source_group,
+            station_source_field=STATION_SOURCE_FIELD,
+            remark=str(metadata.get("remark") or ""),
+            created_at=str(metadata.get("created_at") or ""),
+            updated_at=str(metadata.get("updated_at") or ""),
+            station_count=len(stations),
+            normal_station_count=sum(item.node_type == "station" for item in stations),
+            special_node_count=sum(item.node_type != "station" for item in stations),
+            section_count=len(sections),
+            ap_count=len(trackside_aps),
+            train_count=len(self._trains(vehicle_mrs, [])),
+            mr_count=len(vehicle_mrs),
+        )
+        return {
+            "site_id": site_id,
+            "base_revision": str(raw["base_revision"]),
+            "metadata": summary,
+            "stations": stations,
+            "sections": sections,
+            "trackside_aps": trackside_aps,
+            "trackside_ap_plans": plans,
+            "device_station_bindings": [
+                {
+                    "device_id": str(row.get("device_uuid") or row.get("id") or ""),
+                    "station_id": str(row.get("station_id") or ""),
+                    "source": "migration",
+                }
+                for row in device_rows
+                if str(row.get("device_uuid") or row.get("id") or "")
+                and str(row.get("station_id") or "")
+            ],
+            "vehicle_mrs": vehicle_mrs,
+        }
 
     def get_summary(self, site_id: str) -> RailTransitSummaryDTO:
         meta = self._site_meta(site_id)
@@ -1059,6 +1181,8 @@ class RailTransitBaseDataQueryService:
         *,
         include_runtime: bool,
         rows: list[dict[str, Any]] | None = None,
+        site_metadata: dict[str, Any] | None = None,
+        source_counts: dict[str, tuple[int, str]] | None = None,
     ) -> list[TracksideApDTO]:
         rows = rows if rows is not None else self._read_rows(site_id, "ap_extension_points", _AP_FIELDS)
         ac_by_mac: dict[str, list[Any]] = defaultdict(list)
@@ -1202,7 +1326,12 @@ class RailTransitBaseDataQueryService:
             for section in self._sections(result)
             if section.source_kind != "legacy_ap_derived"
         ]
-        station_rows = self._stations(result, site_id=site_id)
+        station_rows = self._stations(
+            result,
+            site_id=site_id,
+            site_metadata=site_metadata,
+            source_counts=source_counts,
+        )
         station_by_id = {row.id: row for row in station_rows}
         station_ids_by_name: dict[str, list[str]] = defaultdict(list)
         for row in station_rows:
@@ -1212,7 +1341,7 @@ class RailTransitBaseDataQueryService:
         section_ids_by_name: dict[str, list[str]] = defaultdict(list)
         for row in section_rows:
             section_ids_by_name[row.name].append(row.id)
-        site_metadata = self._site_meta(site_id)
+        site_metadata = site_metadata if site_metadata is not None else self._site_meta(site_id)
         derived_result: list[TracksideApDTO] = []
         for item in result:
             station_candidates = station_ids_by_name.get(item.station, [])
@@ -1274,15 +1403,30 @@ class RailTransitBaseDataQueryService:
             )
         return derived_result
 
-    def _all_mrs(self, site_id: str, *, include_runtime: bool) -> list[VehicleMrDTO]:
+    def _all_mrs(
+        self,
+        site_id: str,
+        *,
+        include_runtime: bool,
+        device_rows: list[dict[str, Any]] | None = None,
+        group_rows: list[dict[str, Any]] | None = None,
+    ) -> list[VehicleMrDTO]:
         db_path = self.paths.site_db_path(site_id)
         if not db_path.is_file():
             return []
-        with closing(self._connect(db_path)) as conn:
-            rows = self._select_rows(conn, "devices", _DEVICE_FIELDS)
+        if device_rows is None or group_rows is None:
+            with closing(self._connect(db_path)) as conn:
+                rows = self._select_rows(conn, "devices", _DEVICE_FIELDS)
+                groups = {
+                    int(row["id"]): str(row["name"] or "")
+                    for row in self._select_rows(conn, "device_groups", ("id", "name"))
+                    if row.get("id") is not None
+                }
+        else:
+            rows = device_rows
             groups = {
                 int(row["id"]): str(row["name"] or "")
-                for row in self._select_rows(conn, "device_groups", ("id", "name"))
+                for row in group_rows
                 if row.get("id") is not None
             }
         has_mr_group = any("车载-MR" in name for name in groups.values())
@@ -1589,6 +1733,31 @@ class RailTransitBaseDataQueryService:
             for key, items in grouped.items()
         }
 
+    @staticmethod
+    def _station_source_counts_from_rows(
+        device_rows: list[dict[str, Any]],
+        group_rows: list[dict[str, Any]],
+        group_name: str,
+    ) -> dict[str, tuple[int, str]]:
+        target_key = normalize_station_source_value(group_name)[1]
+        group_ids = {
+            int(row["id"])
+            for row in group_rows
+            if row.get("id") is not None
+            and normalize_station_source_value(row.get("name"))[1] == target_key
+        }
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in device_rows:
+            if int(row.get("group_id") or 0) not in group_ids:
+                continue
+            key = parse_station_source_value(row.get("station")).source_station_key
+            if key:
+                grouped[key].append(row)
+        return {
+            key: (len(items), max(str(item.get("updated_at") or "") for item in items))
+            for key, items in grouped.items()
+        }
+
     def _station_issues(self, stations: list[StationDTO]) -> list[DataQualityIssueDTO]:
         issues: list[DataQualityIssueDTO] = []
         names = Counter(station.name.casefold() for station in stations if station.name)
@@ -1728,7 +1897,14 @@ class RailTransitBaseDataQueryService:
                 issues.append(self._issue("warning", "section_ap_reference_unresolved", "section", section.id, section.name, "ap_count", "0", "区间没有关联轨旁 AP", "核对轨旁 AP 正式区间归属"))
         return issues
 
-    def _stations(self, aps: list[TracksideApDTO], *, site_id: str = "") -> list[StationDTO]:
+    def _stations(
+        self,
+        aps: list[TracksideApDTO],
+        *,
+        site_id: str = "",
+        site_metadata: dict[str, Any] | None = None,
+        source_counts: dict[str, tuple[int, str]] | None = None,
+    ) -> list[StationDTO]:
         endpoint_names: set[str] = set()
         for ap in aps:
             if ap.record_kind != "__base_section__":
@@ -1748,10 +1924,18 @@ class RailTransitBaseDataQueryService:
             for ap in aps
             if ap.section_end_station and ap.section_end_station not in endpoint_names
         )
-        site_meta = self._site_meta(site_id) if site_id else {}
+        site_meta = (
+            site_metadata
+            if site_metadata is not None
+            else self._site_meta(site_id) if site_id else {}
+        )
         main_path_code = str(site_meta.get("main_path_code") or DEFAULT_MAIN_PATH_CODE)
         source_group = str(site_meta.get("station_source_group_name") or DEFAULT_STATION_SOURCE_GROUP)
-        source_counts = self._station_source_counts(site_id, source_group) if site_id else {}
+        source_counts = (
+            source_counts
+            if source_counts is not None
+            else self._station_source_counts(site_id, source_group) if site_id else {}
+        )
         result = []
         for index, name in enumerate(sorted(names, key=self._natural_key), 1):
             metadata_row = next(

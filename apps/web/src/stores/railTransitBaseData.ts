@@ -7,6 +7,7 @@ import {
   applyRailTransitImport,
   clearRailTransitBaseData,
   getRailTransitBaseDataClearPreview,
+  getRailTransitBaseDataEditSnapshot,
   getRailTransitBaseDataEditSession,
   getRailTransitSummary,
   getRailTransitImportPolicies,
@@ -32,6 +33,7 @@ import type {
   BaseDataClearPreview,
   BaseDataClearResult,
   BaseDataEditSession,
+  BaseDataEditSnapshot,
   BaseDataSaveResult,
   BaseDataValidationResult,
   DataQualityIssue,
@@ -68,6 +70,7 @@ type RefreshEndpointKey =
   | 'importPolicies'
   | 'importOperations'
   | 'editSession'
+  | 'editSnapshot'
   | 'health'
 
 export interface BaseDataRefreshError extends ApiErrorDetail {
@@ -97,17 +100,19 @@ const REFRESH_ENDPOINTS: Record<RefreshEndpointKey, {
   importPolicies: { domain: 'governance', label: '导入策略', path: '/api/rail-transit/base-data/import-policies' },
   importOperations: { domain: 'governance', label: '导入审计', path: '/api/rail-transit/base-data/import-operations' },
   editSession: { domain: 'governance', label: '编辑会话', path: '/api/rail-transit/base-data/revision' },
+  editSnapshot: { domain: 'governance', label: '完整编辑快照', path: '/api/rail-transit/base-data/edit-snapshot' },
   health: { domain: 'health', label: 'Backend 健康检查', path: '/api/health' },
 }
 const SUMMARY_ENDPOINTS: RefreshEndpointKey[] = ['summary']
 const STATIC_ENDPOINTS: RefreshEndpointKey[] = ['stations', 'sections', 'tracksideApPlan', 'issueGroups']
 const RUNTIME_ENDPOINTS: RefreshEndpointKey[] = ['tracksideAps', 'trains', 'vehicleMrs', 'relations']
-const GOVERNANCE_ENDPOINTS: RefreshEndpointKey[] = ['importPolicies', 'importOperations', 'editSession']
+const GOVERNANCE_ENDPOINTS: RefreshEndpointKey[] = ['importPolicies', 'importOperations', 'editSession', 'editSnapshot']
 const CORE_ENDPOINTS: RefreshEndpointKey[] = ['summary', 'stations', 'sections', 'tracksideApPlan', 'tracksideAps', 'trains', 'vehicleMrs', 'relations']
 
 export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data', () => {
   const summary = ref<RailTransitSummary | null>(null)
   const editSession = ref<BaseDataEditSession | null>(null)
+  const editSnapshot = ref<BaseDataEditSnapshot | null>(null)
   const stations = ref<Station[]>([])
   const sections = ref<Section[]>([])
   const tracksideApPlans = ref<TracksideApPlanRow[]>([])
@@ -167,25 +172,24 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
   let summaryTimer: number | null = null
   let runtimeTimer: number | null = null
   let staticTimer: number | null = null
-  let summaryBusy = false
-  let runtimeBusy = false
-  let staticBusy = false
+  let summaryRequest: Promise<void> | null = null
+  let runtimeRequest: Promise<void> | null = null
+  let staticRequest: Promise<void> | null = null
   let polling = false
   let healthProbe: Promise<void> | null = null
 
-  async function refreshSummary(probeBackend = true): Promise<void> {
-    if (summaryBusy) return
-    summaryBusy = true
-    try {
+  function refreshSummary(probeBackend = true): Promise<void> {
+    if (summaryRequest) return summaryRequest
+    summaryRequest = (async () => {
       await refreshEndpoint('summary', getRailTransitSummary, (value) => { summary.value = value })
       if (probeBackend) await evaluateBackendReachability()
-    } finally { summaryBusy = false }
+    })().finally(() => { summaryRequest = null })
+    return summaryRequest
   }
 
-  async function refreshRuntime(probeBackend = true): Promise<void> {
-    if (runtimeBusy) return
-    runtimeBusy = true
-    try {
+  function refreshRuntime(probeBackend = true): Promise<void> {
+    if (runtimeRequest) return runtimeRequest
+    runtimeRequest = (async () => {
       await Promise.all([
         refreshEndpoint('tracksideAps', () => listTracksideAps(apFilters), (page) => {
           aps.value = page.items
@@ -204,13 +208,13 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
         }),
       ])
       if (probeBackend) await evaluateBackendReachability()
-    } finally { runtimeBusy = false }
+    })().finally(() => { runtimeRequest = null })
+    return runtimeRequest
   }
 
-  async function refreshStatic(probeBackend = true): Promise<void> {
-    if (staticBusy) return
-    staticBusy = true
-    try {
+  function refreshStatic(probeBackend = true): Promise<void> {
+    if (staticRequest) return staticRequest
+    staticRequest = (async () => {
       await Promise.all([
         refreshEndpoint('stations', () => listStations({ page: 1, page_size: 200 }), (page) => {
           stations.value = page.items
@@ -230,7 +234,8 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
         }),
       ])
       if (probeBackend) await evaluateBackendReachability()
-    } finally { staticBusy = false }
+    })().finally(() => { staticRequest = null })
+    return staticRequest
   }
 
   async function manualRefresh(): Promise<void> {
@@ -319,6 +324,29 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
       return value
     } catch (cause) {
       recordEndpointFailure('editSession', cause)
+      await evaluateBackendReachability()
+      throw cause
+    }
+  }
+
+  async function refreshEditSnapshot(): Promise<BaseDataEditSnapshot> {
+    try {
+      const value = await getRailTransitBaseDataEditSnapshot()
+      editSnapshot.value = value
+      editSession.value = {
+        site_id: value.site_id,
+        base_revision: value.base_revision,
+        loaded_at: value.loaded_at,
+        can_write: value.can_write,
+        write_scope: value.write_scope,
+        storage_mode: value.storage_mode,
+        write_denial_code: value.write_denial_code,
+        write_denial_reason: value.write_denial_reason,
+      }
+      recordEndpointSuccess('editSnapshot')
+      return value
+    } catch (cause) {
+      recordEndpointFailure('editSnapshot', cause)
       await evaluateBackendReachability()
       throw cause
     }
@@ -511,14 +539,14 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
   }
 
   return {
-    summary, editSession, stations, sections, tracksideApPlans, aps, trains, mrs, issues, issueGroups, relations,
+    summary, editSession, editSnapshot, stations, sections, tracksideApPlans, aps, trains, mrs, issues, issueGroups, relations,
     apTotal, trainTotal, mrTotal, issueTotal, issueGroupTotal, issueCodeCounts, importPreview, stationSourcePreview, stationTemplatePreview, sectionGenerationPreview, importPolicies,
     importOperations, importChanges, selectedOperationId, selectedFileName,
     loading, previewLoading, stationSourceLoading, sectionGenerationLoading, applyLoading,
     failures, error, summaryError, staticError, runtimeError, governanceError, refreshErrors, backendOffline,
     apFilters, mrFilters, issueFilters,
     refreshSummary, refreshRuntime, refreshStatic, manualRefresh, previewImport, refreshStationSourcePreview, previewStationTemplateFile, previewSectionsFromDraft,
-    refreshImportGovernance, refreshEditSession, previewClearAll, clearAll, validateChanges, saveChanges, canApplyImport, applyImport, selectImportOperation, rollbackImport,
+    refreshImportGovernance, refreshEditSession, refreshEditSnapshot, previewClearAll, clearAll, validateChanges, saveChanges, canApplyImport, applyImport, selectImportOperation, rollbackImport,
     applyApFilters, setApPage, applyMrFilters, setMrPage, applyIssueFilters, setIssuePage,
     startPolling, stopPolling,
   }

@@ -85,6 +85,12 @@ class BaseDataEditSessionDTO(ApiModel):
     write_denial_reason: str = ""
 
 
+class DeviceStationBindingDTO(ApiModel):
+    device_id: str
+    station_id: str
+    source: Literal["station_source_preview", "manual", "migration"] = "migration"
+
+
 class BaseDataChangeDTO(ApiModel):
     entity_type: BaseDataEntityType
     action: BaseDataChangeAction
@@ -638,6 +644,27 @@ class VehicleMrDTO(ApiModel):
     runtime: RelatedRuntimeStatusDTO = Field(default_factory=RelatedRuntimeStatusDTO)
     issue_count: int = 0
     highest_issue_severity: str = ""
+
+
+class BaseDataTracksideApPlanRowDTO(ApiModel):
+    station_id: str = ""
+    sequence_no: int = 0
+    station_name: str = ""
+    planned_ap_count: int = Field(default=0, ge=0)
+    management_vlan: int | None = Field(default=None, ge=1, le=4094)
+    remark: str = ""
+    relation_status: Literal["resolved", "missing", "ambiguous", "stale"] = "missing"
+    candidate_station_ids: list[str] = Field(default_factory=list)
+
+
+class BaseDataEditSnapshotDTO(BaseDataEditSessionDTO):
+    metadata: RailTransitSummaryDTO
+    stations: list[StationDTO] = Field(default_factory=list)
+    sections: list[SectionDTO] = Field(default_factory=list)
+    trackside_aps: list[TracksideApDTO] = Field(default_factory=list)
+    trackside_ap_plans: list[BaseDataTracksideApPlanRowDTO] = Field(default_factory=list)
+    device_station_bindings: list[DeviceStationBindingDTO] = Field(default_factory=list)
+    vehicle_mrs: list[VehicleMrDTO] = Field(default_factory=list)
 
 
 class VehicleMrDetailDTO(ApiModel):
