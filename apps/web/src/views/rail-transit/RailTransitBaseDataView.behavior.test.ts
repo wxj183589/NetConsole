@@ -144,6 +144,16 @@ const InputNumberStub = defineComponent({
   },
   template: '<input v-bind="$attrs" type="number" :value="modelValue ?? \'\'" @input="update">',
 })
+const PaginationStub = defineComponent({
+  props: {
+    total: { type: Number, default: 0 },
+    currentPage: { type: Number, default: 1 },
+    pageSize: { type: Number, default: 50 },
+    disabled: Boolean,
+  },
+  emits: ['current-change', 'size-change'],
+  template: '<div class="pagination-stub" :data-total="total" :data-current-page="currentPage" :data-page-size="pageSize" />',
+})
 const CheckboxStub = defineComponent({
   inheritAttrs: false,
   props: { modelValue: { type: Boolean, default: false }, disabled: Boolean },
@@ -239,7 +249,7 @@ const elementStubs = {
   ElInput: InputStub,
   ElInputNumber: InputNumberStub,
   ElOption: OptionStub,
-  ElPagination: Passthrough,
+  ElPagination: PaginationStub,
   ElSelect: SelectStub,
   ElTabPane: Passthrough,
   ElTabs: Passthrough,
@@ -820,6 +830,46 @@ describe('轨道交通基础资料编辑闭环', () => {
     ])
     expect(mocks.editSnapshot).toHaveBeenCalledOnce()
     expect(mocks.save).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('进入编辑时保留完整 AP 草稿但每次最多渲染当前页，避免大局点阻塞 Renderer', async () => {
+    const aps = Array.from({ length: 993 }, (_, index) => ({
+      ...tracksideApRow(`ap:${String(index + 1).padStart(4, '0')}`, 'MAINLINE'),
+      remark: `备注-${index + 1}`,
+    }))
+    mocks.editSnapshot.mockResolvedValue({
+      ...writableSession,
+      metadata: { ...baseSummary, ap_count: aps.length },
+      stations: [],
+      sections: [],
+      trackside_aps: aps,
+      trackside_ap_plans: [],
+      device_station_bindings: [],
+      vehicle_mrs: [],
+    })
+    const wrapper = await mountView(false)
+
+    await button(wrapper, '编辑').trigger('click')
+    await flushPromises()
+
+    const apTable = wrapper.get('[data-table-id="rail-base-trackside-aps"]')
+    expect(apTable.findAll('.table-row')).toHaveLength(50)
+    expect(apTable.text()).toContain('ap:0001')
+    expect(apTable.text()).not.toContain('ap:0051')
+
+    const apPagination = wrapper.findAllComponents(PaginationStub).find(
+      (item) => item.props('total') === aps.length,
+    )
+    if (!apPagination) throw new Error('未找到轨旁 AP 编辑分页器')
+    expect(apPagination.props()).toMatchObject({ currentPage: 1, pageSize: 50, disabled: false })
+
+    apPagination.vm.$emit('current-change', 20)
+    await nextTick()
+    expect(apTable.findAll('.table-row')).toHaveLength(43)
+    expect(apTable.text()).toContain('ap:0951')
+    expect(apTable.text()).toContain('ap:0993')
+    expect(apTable.text()).not.toContain('ap:0001')
     wrapper.unmount()
   })
 

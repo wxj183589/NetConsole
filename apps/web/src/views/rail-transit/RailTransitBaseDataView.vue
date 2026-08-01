@@ -122,6 +122,10 @@ const baselines = new Map<string, Record<string, unknown>>()
 const stationReferencePatches = new Map<string, StationReferencePatch[]>()
 const serverSnapshot = ref<BaseDataDraft | null>(null)
 const editingDraft = ref<BaseDataDraft | null>(null)
+const editApPage = ref(1)
+const editApPageSize = ref(50)
+const editMrPage = ref(1)
+const editMrPageSize = ref(50)
 const planningValid = ref(true)
 const saveIssues = ref<BaseDataValidationIssue[]>([])
 const fieldErrors = ref<Record<string, string>>({})
@@ -137,8 +141,18 @@ const viewing = computed(() => editState.value === 'VIEW')
 const writable = computed(() => Boolean(store.editSession?.can_write))
 const stationRows = computed(() => editingDraft.value?.stations ?? store.stations)
 const sectionRows = computed(() => editingDraft.value?.sections ?? store.sections)
-const apRows = computed(() => editingDraft.value?.aps ?? store.aps)
-const mrRows = computed(() => editingDraft.value?.mrs ?? store.mrs)
+const apRows = computed(() => editingDraft.value
+  ? pageRows(editingDraft.value.aps, editApPage.value, editApPageSize.value)
+  : store.aps)
+const mrRows = computed(() => editingDraft.value
+  ? pageRows(editingDraft.value.mrs, editMrPage.value, editMrPageSize.value)
+  : store.mrs)
+const apPageTotal = computed(() => editingDraft.value?.aps.length ?? store.apTotal)
+const apPageCurrent = computed(() => editingDraft.value ? editApPage.value : store.apFilters.page)
+const apPageSize = computed(() => editingDraft.value ? editApPageSize.value : store.apFilters.page_size)
+const mrPageTotal = computed(() => editingDraft.value?.mrs.length ?? store.mrTotal)
+const mrPageCurrent = computed(() => editingDraft.value ? editMrPage.value : store.mrFilters.page)
+const mrPageSize = computed(() => editingDraft.value ? editMrPageSize.value : store.mrFilters.page_size)
 const planningRows = computed(() => editingDraft.value?.tracksideApPlans ?? store.tracksideApPlans)
 const planningDirty = computed(() => JSON.stringify(editingDraft.value?.tracksideApPlans ?? [])
   !== JSON.stringify(serverSnapshot.value?.tracksideApPlans ?? []))
@@ -168,6 +182,41 @@ const stationTable = ref<{ clearSelection: () => void; toggleRowSelection: (row:
 const selectedStationIds = ref<string[]>([])
 const stationDeletePreflightVisible = ref(false)
 const stationDeletePreflightItems = ref<StationDeletePreflightItem[]>([])
+
+function pageRows<T>(rows: T[], page: number, pageSize: number): T[] {
+  const start = Math.max(0, page - 1) * pageSize
+  return rows.slice(start, start + pageSize)
+}
+
+function changeApPage(page: number): void {
+  if (editingDraft.value) editApPage.value = page
+  else store.setApPage(page)
+}
+
+function changeApPageSize(pageSize: number): void {
+  if (editingDraft.value) {
+    editApPageSize.value = pageSize
+    editApPage.value = 1
+    return
+  }
+  store.apFilters.page_size = pageSize
+  store.applyApFilters()
+}
+
+function changeMrPage(page: number): void {
+  if (editingDraft.value) editMrPage.value = page
+  else store.setMrPage(page)
+}
+
+function changeMrPageSize(pageSize: number): void {
+  if (editingDraft.value) {
+    editMrPageSize.value = pageSize
+    editMrPage.value = 1
+    return
+  }
+  store.mrFilters.page_size = pageSize
+  store.applyMrFilters()
+}
 const stationDeletePreflightLoading = ref(false)
 const stationConflictDrawerVisible = ref(false)
 const stationConflictLoading = ref(false)
@@ -658,6 +707,8 @@ async function discardChanges(resumePolling = true): Promise<void> {
   stationReferencePatches.clear()
   editingDraft.value = null
   serverSnapshot.value = null
+  editApPage.value = 1
+  editMrPage.value = 1
   editState.value = writable.value ? 'VIEW' : 'READ_ONLY'
   clearStationSelection()
   if (resumePolling) store.startPolling()
@@ -675,6 +726,8 @@ async function startEditing(): Promise<void> {
     }
     if (!snapshot.base_revision) throw new Error('编辑快照缺少 base_revision')
     captureBaselines(snapshot)
+    editApPage.value = 1
+    editMrPage.value = 1
     editingDraft.value = serverSnapshot.value ? cloneDto(serverSnapshot.value) : null
     pendingChanges.value = {}
     saveIssues.value = []
@@ -1510,6 +1563,7 @@ function addAp(): void {
   if (!editing.value || !editingDraft.value) return
   const row = newTracksideAp()
   editingDraft.value.aps.push(row); markAp(row)
+  editApPage.value = Math.max(1, Math.ceil(editingDraft.value.aps.length / editApPageSize.value))
 }
 function newTracksideAp(): TracksideAp {
   return { id: temporaryId(), site_id: store.editSession?.site_id || '', line_name: store.summary?.line_name || '', name: '', point_code: '', vendor: '', mac: '', management_ip: '', model: '', station_id: '', station: '', section_id: '', section: '', station_relation_status: 'missing', section_relation_status: 'missing', candidate_station_ids: [], candidate_section_ids: [], identity_entity_id: '', identity_match_status: 'unresolved', identity_match_source: '', lldp_suggestion_status: 'none', lldp_suggested_station_id: '', lldp_suggested_station_name: '', lldp_suggestion_switch_device_id: '', lldp_suggestion_switch_name: '', lldp_suggestion_interface: '', lldp_observed_neighbor_mac: '', lldp_observed_at: '', section_start_station: '', section_end_station: '', mileage: { raw: '', normalized: '', meters: null, line_type: '', valid: false, error: '' }, line_side: '', line_side_source: 'unavailable', line_side_derivation_issue_code: '', line_side_derivation_issue_message: '', direction: '', location_class: 'MAINLINE', participates_in_mainline: true, location_class_source: 'DEFAULT_MAINLINE', location_class_conflict: false, radios: [], remark: '', source_file: '', source_sheet: '', source_row: null, updated_at: '', runtime: emptyRuntime(), issue_count: 0, highest_issue_severity: '', record_kind: 'manual', base_metadata: {} }
@@ -1518,6 +1572,7 @@ function addMr(): void {
   if (!editing.value || !editingDraft.value) return
   const row: VehicleMr = { id: temporaryId(), device_id: null, name: '', train_id: '', train_no: '', role: '', mr_position_code: 'unknown', physical_end: 'unknown', car_number: null, management_ip: '', station: '', mac: '', protocol: 'SSH', port: 22, remark: '', runtime: emptyRuntime(), issue_count: 0, highest_issue_severity: '' }
   editingDraft.value.mrs.push(row); markMr(row)
+  editMrPage.value = Math.max(1, Math.ceil(editingDraft.value.mrs.length / editMrPageSize.value))
 }
 
 function updateEditState(): void {
@@ -2003,7 +2058,7 @@ async function startApBaseExport(template: boolean): Promise<void> {
       cancelText: '取消',
     })
     if (choice === 'cancel') return
-    if (choice === 'confirm') draftRows = cloneDto(apRows.value)
+    if (choice === 'confirm') draftRows = cloneDto(editingDraft.value?.aps ?? [])
   }
   try {
     const result = await userSelectedExport.submitExportAfterDestinationSelected({
@@ -2055,7 +2110,7 @@ async function startApRenameCommandExport(): Promise<void> {
       cancelText: '取消',
     })
     if (choice === 'cancel') return
-    if (choice === 'confirm') draftRows = cloneDto(apRows.value)
+    if (choice === 'confirm') draftRows = cloneDto(editingDraft.value?.aps ?? [])
   }
   try {
     const result = await userSelectedExport.submitExportAfterDestinationSelected({
@@ -2762,7 +2817,7 @@ function sectionSourceLabel(row: Section): string {
 
     <div class="content-card">
       <el-tabs v-model="activeTab" :before-leave="beforeTabLeave">
-        <el-tab-pane label="基础资料总览" name="overview">
+        <el-tab-pane label="基础资料总览" name="overview" lazy>
           <div class="summary-grid">
             <article v-for="card in summaryCards" :key="String(card[0])" :class="String(card[2])">
               <span>{{ card[0] }}</span><strong>{{ card[1] }}</strong>
@@ -2915,9 +2970,9 @@ function sectionSourceLabel(row: Section): string {
           </el-descriptions>
         </el-tab-pane>
 
-        <el-tab-pane label="站点与区间" name="stations">
+        <el-tab-pane label="站点与区间" name="stations" lazy>
           <el-tabs v-model="locationTab" type="card">
-            <el-tab-pane label="站点" name="stations">
+            <el-tab-pane label="站点" name="stations" lazy>
               <el-alert class="station-source-note" title="车站初稿来自设备管理中分组为“车站”的设备的“站点”字段。设备名称、系统名和地址不参与站点识别。" type="info" :closable="false" show-icon />
               <div class="edit-toolbar">
                 <el-button v-if="editing" :loading="store.stationSourceLoading" @click="openStationSourcePreview">从设备管理生成</el-button>
@@ -3023,7 +3078,7 @@ function sectionSourceLabel(row: Section): string {
                 <template #cell-edit_actions="{ row }"><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('station', row)">移除</el-button><template v-if="isPendingDelete('station', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('station', row)">撤销</el-button></template><el-button v-else-if="!row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('station', row)">删除</el-button></template>
               </NcDataTable>
             </el-tab-pane>
-            <el-tab-pane label="区间" name="sections">
+            <el-tab-pane label="区间" name="sections" lazy>
               <div class="edit-toolbar">
                 <el-button v-if="editing" :icon="Connection" :loading="store.sectionGenerationLoading" @click="openSectionGenerationPreview">根据站点生成区间</el-button>
                 <label v-if="editing" class="inline-file-button">
@@ -3077,7 +3132,7 @@ function sectionSourceLabel(row: Section): string {
           </el-tabs>
         </el-tab-pane>
 
-        <el-tab-pane label="轨旁 AP" name="trackside-ap">
+        <el-tab-pane label="轨旁 AP" name="trackside-ap" lazy>
           <div class="filter-bar">
             <el-input v-model="store.apFilters.query" clearable placeholder="AP 名称 / 点位 / MAC / IP" @keyup.enter="store.applyApFilters" />
             <el-input v-model="store.apFilters.station" clearable placeholder="归属站点" />
@@ -3112,7 +3167,7 @@ function sectionSourceLabel(row: Section): string {
             <template #cell-issues="{ row }"><el-tag v-if="row.issue_count" :type="issueType(row.highest_issue_severity)">{{ row.issue_count }}</el-tag><span v-else>--</span></template>
             <template #cell-actions="{ row }"><el-button link type="primary" @click="openApAc(row)">FIT-AP</el-button><template v-if="editing"><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('trackside_ap', row)">移除</el-button><template v-if="isPendingDelete('trackside_ap', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('trackside_ap', row)">撤销</el-button></template><el-button v-else-if="!row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('trackside_ap', row)">删除</el-button></template></template>
           </NcDataTable>
-          <el-pagination background :disabled="editing" layout="total, prev, pager, next, sizes" :total="store.apTotal" :current-page="store.apFilters.page" :page-size="store.apFilters.page_size" :page-sizes="[20, 50, 100, 200]" @current-change="store.setApPage" @size-change="(size: number) => { store.apFilters.page_size = size; store.applyApFilters() }" />
+          <el-pagination background :disabled="saving" layout="total, prev, pager, next, sizes" :total="apPageTotal" :current-page="apPageCurrent" :page-size="apPageSize" :page-sizes="[20, 50, 100, 200]" @current-change="changeApPage" @size-change="changeApPageSize" />
           <el-dialog v-model="apImportDialogVisible" title="轨旁 AP 导入预览" width="min(1400px, 94vw)" destroy-on-close>
             <template v-if="store.importPreview">
               <el-descriptions :column="5" border>
@@ -3130,7 +3185,7 @@ function sectionSourceLabel(row: Section): string {
           </el-dialog>
         </el-tab-pane>
 
-        <el-tab-pane label="轨旁 AP 规划" name="trackside-ap-planning">
+        <el-tab-pane label="轨旁 AP 规划" name="trackside-ap-planning" lazy>
           <TracksideApPlanningTab
             :model-value="planningRows"
             :editing="editing"
@@ -3143,14 +3198,14 @@ function sectionSourceLabel(row: Section): string {
           />
         </el-tab-pane>
 
-        <el-tab-pane label="列车与车载 MR" name="trains">
+        <el-tab-pane label="列车与车载 MR" name="trains" lazy>
           <el-tabs v-model="vehicleTab" type="card">
-            <el-tab-pane label="列车" name="trains">
+            <el-tab-pane label="列车" name="trains" lazy>
               <NcDataTable table-id="rail-base-trains" route-key="/rail-transit/base-data" :data="store.trains" :columns="trainColumns" height="calc(100vh - 365px)" empty-text="暂无列车资料">
                 <template #cell-latest_mesh_status="{ row }"><el-tag :type="stateType(row.latest_mesh_status)">{{ row.latest_mesh_status }}</el-tag></template>
               </NcDataTable>
             </el-tab-pane>
-            <el-tab-pane label="车载 MR" name="mrs">
+            <el-tab-pane label="车载 MR" name="mrs" lazy>
               <div class="filter-bar">
                 <el-input v-model="store.mrFilters.query" clearable placeholder="MR 名称 / IP / MAC / 设备 ID" @keyup.enter="store.applyMrFilters" />
                 <el-input v-model="store.mrFilters.train" clearable placeholder="列车编号" />
@@ -3168,12 +3223,12 @@ function sectionSourceLabel(row: Section): string {
                 <template #cell-actions="{ row }"><el-button link type="primary" @click="openMrMesh(row)">Mesh-Link</el-button><el-button link type="primary" @click="openMrSession(row)">Online MR</el-button></template>
                 <template #cell-edit_actions="{ row }"><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('vehicle_mr', row)">移除</el-button><template v-if="isPendingDelete('vehicle_mr', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('vehicle_mr', row)">撤销</el-button></template><el-button v-else-if="!row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('vehicle_mr', row)">删除</el-button></template>
               </NcDataTable>
-              <el-pagination background :disabled="editing" layout="total, prev, pager, next, sizes" :total="store.mrTotal" :current-page="store.mrFilters.page" :page-size="store.mrFilters.page_size" :page-sizes="[20, 50, 100, 200]" @current-change="store.setMrPage" @size-change="(size: number) => { store.mrFilters.page_size = size; store.applyMrFilters() }" />
+              <el-pagination background :disabled="saving" layout="total, prev, pager, next, sizes" :total="mrPageTotal" :current-page="mrPageCurrent" :page-size="mrPageSize" :page-sizes="[20, 50, 100, 200]" @current-change="changeMrPage" @size-change="changeMrPageSize" />
             </el-tab-pane>
           </el-tabs>
         </el-tab-pane>
 
-        <el-tab-pane label="数据质量问题" name="quality">
+        <el-tab-pane label="数据质量问题" name="quality" lazy>
           <div class="filter-bar">
             <el-input v-model="store.issueFilters.query" clearable placeholder="实体 / 错误码 / 说明" @keyup.enter="store.applyIssueFilters" />
             <el-select v-model="store.issueFilters.blocking_only" clearable placeholder="阻断状态"><el-option label="只看阻断问题" :value="true" /><el-option label="排除阻断问题" :value="false" /></el-select>
@@ -3190,7 +3245,7 @@ function sectionSourceLabel(row: Section): string {
           <el-pagination background layout="total, prev, pager, next" :total="store.issueGroupTotal" :current-page="store.issueFilters.page" :page-size="store.issueFilters.page_size" @current-change="store.setIssuePage" />
         </el-tab-pane>
 
-        <el-tab-pane label="导入预览" name="import-preview">
+        <el-tab-pane label="导入预览" name="import-preview" lazy>
           <el-alert title="逐行校验并导入有效数据" description="支持 XLSX、CSV、JSON；冲突和无效行会跳过，未匹配 FIT-AP 仅提示且不影响基础资料导入。" type="info" :closable="false" show-icon />
           <div class="preview-toolbar">
              <label v-if="editing" class="file-picker"><el-icon><UploadFilled /></el-icon><span>{{ store.selectedFileName || '选择预览文件' }}</span><input type="file" accept=".xlsx,.csv,.json" @change="handleFile" /></label>
@@ -3237,7 +3292,7 @@ function sectionSourceLabel(row: Section): string {
           </NcDataTable>
         </el-tab-pane>
 
-        <el-tab-pane label="导入审计" name="import-audit">
+        <el-tab-pane label="导入审计" name="import-audit" lazy>
           <el-alert title="审计记录只保存文件摘要、字段差异和操作结果，不保存上传原文件。" type="info" :closable="false" show-icon />
           <NcDataTable table-id="rail-base-import-operations" route-key="/rail-transit/base-data" :data="store.importOperations" :columns="operationColumns" class="operation-table" empty-text="暂无导入操作">
             <template #cell-actions="{ row }">
@@ -3251,7 +3306,7 @@ function sectionSourceLabel(row: Section): string {
           <NcDataTable v-if="store.selectedOperationId" table-id="rail-base-import-changes" route-key="/rail-transit/base-data" :preference-scope="store.selectedOperationId" :data="store.importChanges" :columns="changeColumns" class="change-table" empty-text="该操作没有字段变更" />
         </el-tab-pane>
 
-        <el-tab-pane label="关联运行状态" name="relations">
+        <el-tab-pane label="关联运行状态" name="relations" lazy>
           <NcDataTable table-id="rail-base-relations" route-key="/rail-transit/base-data" :data="store.relations" :columns="relationColumns" height="calc(100vh - 330px)" empty-text="暂无 Mesh-Link 关联快照">
             <template #cell-status="{ row }"><el-tag :type="stateType(row.status)">{{ row.status }}</el-tag></template>
           </NcDataTable>

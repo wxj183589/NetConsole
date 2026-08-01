@@ -12,6 +12,15 @@ describe('Rail Transit base data maintenance view', () => {
     expect(source).not.toContain('max-width: 1760px')
   })
 
+  it('lazy-mounts tab content and pages complete edit snapshots before rendering large AP and MR tables', () => {
+    expect(source).not.toMatch(/<el-tab-pane(?![^>]*\slazy)[^>]*>/)
+    expect(source).toContain('pageRows(editingDraft.value.aps, editApPage.value, editApPageSize.value)')
+    expect(source).toContain('pageRows(editingDraft.value.mrs, editMrPage.value, editMrPageSize.value)')
+    expect(source).toContain(':total="apPageTotal"')
+    expect(source).toContain(':total="mrPageTotal"')
+    expect(source).toContain('cloneDto(editingDraft.value?.aps ?? [])')
+  })
+
   it('provides one unified draft workspace with guarded import workflow', () => {
     expect(source).toContain('基础资料总览')
     expect(source).toContain('站点与区间')
