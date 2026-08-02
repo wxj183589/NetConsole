@@ -26,6 +26,11 @@ const QUERY_RETRY_BASE_DELAY_MS = 150
 const RETRYABLE_QUERY_STATUSES = new Set([502, 503, 504])
 const inflightQueryRequests = new Map<string, Promise<unknown>>()
 
+export interface ApiRequestOptions extends RequestInit {
+  /** Only heavy read-only queries may opt into a longer client-side timeout. */
+  queryTimeoutMs?: number
+}
+
 export class ApiRequestError extends Error {
   constructor(message: string, readonly status: number, readonly code = '', readonly details: Record<string, unknown> = {}) {
     super(message)
@@ -142,15 +147,15 @@ function requestAbortedError(path: string): ApiRequestError {
   return aborted
 }
 
-function requestTimeoutError(path: string): ApiRequestError {
+function requestTimeoutError(path: string, timeoutMs: number): ApiRequestError {
   return new ApiRequestError(
     t('api.request_timeout', '请求超时，请重试。'),
     0,
     'REQUEST_TIMEOUT',
     {
       path,
-      timeout_ms: DEFAULT_QUERY_TIMEOUT_MS,
-      original_message: `Request timed out after ${DEFAULT_QUERY_TIMEOUT_MS}ms`,
+      timeout_ms: timeoutMs,
+      original_message: `Request timed out after ${timeoutMs}ms`,
     },
   )
 }
@@ -178,10 +183,14 @@ function networkRequestError(path: string, cause: unknown): ApiRequestError {
 async function fetchWithQueryTimeout(
   url: string,
   path: string,
-  options: RequestInit,
+  options: ApiRequestOptions,
   queryRequest: boolean,
 ): Promise<Response> {
-  const externalSignal = options.signal
+  const timeoutMs = queryRequest
+    ? normalizeQueryTimeout(options.queryTimeoutMs)
+    : undefined
+  const { queryTimeoutMs: _queryTimeoutMs, ...fetchOptions } = options
+  const externalSignal = fetchOptions.signal
   if (externalSignal?.aborted) throw requestAbortedError(path)
 
   const controller = new AbortController()
@@ -192,23 +201,28 @@ async function fetchWithQueryTimeout(
     ? setTimeout(() => {
         timedOut = true
         controller.abort()
-      }, DEFAULT_QUERY_TIMEOUT_MS)
+      }, timeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS)
     : undefined
 
   try {
     return await fetch(url, {
-      ...options,
+      ...fetchOptions,
       signal: controller.signal,
     })
   } catch (cause) {
     if (externalSignal?.aborted) throw requestAbortedError(path)
-    if (timedOut) throw requestTimeoutError(path)
+    if (timedOut) throw requestTimeoutError(path, timeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS)
     if (cause instanceof Error && cause.name === 'AbortError') throw requestAbortedError(path)
     throw networkRequestError(path, cause)
   } finally {
     if (timeoutId !== undefined) clearTimeout(timeoutId)
     externalSignal?.removeEventListener('abort', abortFromCaller)
   }
+}
+
+function normalizeQueryTimeout(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value) || value <= 0) return DEFAULT_QUERY_TIMEOUT_MS
+  return Math.max(1, Math.round(value))
 }
 
 function isRetryableQueryError(reason: unknown): boolean {
@@ -235,7 +249,7 @@ function waitForQueryRetry(path: string, attempt: number, signal?: AbortSignal |
   })
 }
 
-async function apiRequestInternal<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function apiRequestInternal<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
   const headers = new Headers(options.headers)
   const runtime = getRuntimeConfig()
   const formData = typeof FormData !== 'undefined' && options.body instanceof FormData
@@ -310,13 +324,13 @@ async function apiRequestInternal<T>(path: string, options: RequestInit = {}): P
   return readJsonResponse<T>(response, path, 'INVALID_JSON_RESPONSE')
 }
 
-export function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+export function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
   const method = (options.method || 'GET').toUpperCase()
   const queryRequest = method === 'GET' || method === 'HEAD'
   if (!queryRequest || options.signal) {
     return apiRequestInternal<T>(path, options)
   }
-  const key = `${method}:${resolveApiUrl(path)}`
+  const key = `${method}:${resolveApiUrl(path)}:${normalizeQueryTimeout(options.queryTimeoutMs)}`
   const existing = inflightQueryRequests.get(key)
   if (existing) return existing as Promise<T>
   const request = apiRequestInternal<T>(path, options)

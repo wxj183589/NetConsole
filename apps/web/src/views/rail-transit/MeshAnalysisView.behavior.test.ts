@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   previewImport: vi.fn(),
   recoverTasks: vi.fn(),
   getTask: vi.fn(),
+  getOverview: vi.fn(),
   getSession: vi.fn(),
   listSessions: vi.fn(),
   listBuildOrder: vi.fn(),
@@ -29,11 +30,21 @@ const mocks = vi.hoisted(() => ({
   listAnomalies: vi.fn(),
   exportDetails: vi.fn(),
   deleteSource: vi.fn(),
+  rebuildAnalysis: vi.fn(),
   chartApplyViewport: vi.fn(),
   chartResetViewport: vi.fn(),
   chartResize: vi.fn(),
   routerPush: vi.fn(),
   routerReplace: vi.fn(),
+  taskStore: null as null | {
+    tasks: Array<Record<string, unknown>>
+    refresh: ReturnType<typeof vi.fn>
+    acquirePolling: ReturnType<typeof vi.fn>
+    releasePolling: ReturnType<typeof vi.fn>
+  },
+  taskStoreRefresh: vi.fn(),
+  taskStoreAcquirePolling: vi.fn(),
+  taskStoreReleasePolling: vi.fn(),
   currentRoute: {
     value: {
       name: 'mesh-analysis',
@@ -51,19 +62,7 @@ vi.mock('../../api/meshAnalysis', () => ({
   exportMeshLinkDetails: mocks.exportDetails,
   getMeshActivePathChart: mocks.getActivePath,
   getMeshAnalysisSession: mocks.getSession,
-  getMeshAnalysisOverview: vi.fn(async (values) => ({
-    summary: {
-      site_id: 'demo',
-      index_status: 'ready',
-      indexed_session_count: 0,
-      pending_session_count: 0,
-      index_updated_at: null,
-      session_count: 0,
-      train_count: 0,
-      mr_count: 0,
-    },
-    sessions: await mocks.listSessions(values),
-  })),
+  getMeshAnalysisOverview: mocks.getOverview,
   getMeshAnalysisSummary: vi.fn().mockResolvedValue({ session_count: 0, train_count: 0, mr_count: 0 }),
   getMeshImportContext: mocks.getImportContext,
   getMeshPeerSegmentChart: mocks.getPeerPath,
@@ -80,7 +79,7 @@ vi.mock('../../api/meshAnalysis', () => ({
   listMeshSwitchEvents: vi.fn(),
   meshArtifactDownloadRequest: vi.fn(),
   previewMeshImport: mocks.previewImport,
-  rebuildMeshAnalysis: vi.fn(),
+  rebuildMeshAnalysis: mocks.rebuildAnalysis,
   prepareMeshImportContext: mocks.prepareContext,
 }))
 vi.mock('../../api/railTransitBaseData', () => ({ listVehicleMrs: mocks.listVehicleMrs }))
@@ -95,6 +94,17 @@ vi.mock('../../platform/runtime', () => ({
   downloadBackendResource: vi.fn(),
   getPlatformAdapter: () => ({ hostType: 'browser' }),
 }))
+vi.mock('../../stores/tasks', async () => {
+  const { reactive } = await import('vue')
+  const store = reactive({
+    tasks: [] as Array<Record<string, unknown>>,
+    refresh: mocks.taskStoreRefresh,
+    acquirePolling: mocks.taskStoreAcquirePolling,
+    releasePolling: mocks.taskStoreReleasePolling,
+  })
+  mocks.taskStore = store
+  return { useTaskStore: () => store }
+})
 vi.mock('vue-router', () => ({
   useRouter: () => ({
     push: mocks.routerPush,
@@ -162,6 +172,7 @@ const selectStub = defineComponent({
 const dataTableStub = defineComponent({
   inheritAttrs: false,
   props: { data: { type: Array, default: () => [] }, columns: { type: Array, default: () => [] }, tableId: { type: String, default: '' } },
+  emits: ['row-click', 'row-dblclick', 'sort-change'],
   setup(props, { attrs, slots }) {
     return () => h('div', { ...attrs, 'data-table-id': props.tableId }, props.data.flatMap((row) => [
       slots.default?.({ row }),
@@ -240,6 +251,10 @@ const stubs: Record<string, Component | boolean> = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mocks.getOverview.mockReset()
+  mocks.listSessions.mockReset()
+  mocks.taskStore?.tasks.splice(0)
+  vi.stubGlobal('IntersectionObserver', undefined)
   sessionStorage.clear()
   localStorage.clear()
   mocks.currentRoute.value = {
@@ -298,6 +313,22 @@ beforeEach(() => {
   mocks.recoverTasks.mockResolvedValue([])
   mocks.getTask.mockResolvedValue(null)
   mocks.listSessions.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50 })
+  mocks.getOverview.mockImplementation(async (values) => {
+    const sessions = await mocks.listSessions(values)
+    return {
+      summary: {
+        site_id: 'demo',
+        index_status: 'ready',
+        indexed_session_count: sessions.total,
+        pending_session_count: 0,
+        index_updated_at: null,
+        session_count: sessions.total,
+        train_count: sessions.total ? 1 : 0,
+        mr_count: sessions.total ? 1 : 0,
+      },
+      sessions,
+    }
+  })
   mocks.listBuildOrder.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 100 })
   mocks.listLinks.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 100 })
   mocks.getActivePath.mockResolvedValue({ mode: 'active_path', anchor: null, points: [], events: [], total_points: 0, downsampled: false, summary: {}, time_from: null, time_to: null })
@@ -346,6 +377,12 @@ beforeEach(() => {
       delete_raw_archive: false,
       delete_parsed_data: true,
     },
+  })
+  mocks.rebuildAnalysis.mockResolvedValue({
+    action: 'mesh_source_rebuild',
+    task_id: 'mesh-identity-remap-1',
+    status: 'RUNNING',
+    result_summary: {},
   })
 })
 
@@ -1035,7 +1072,7 @@ describe('Mesh analysis detail behavior', () => {
       exists: true,
       rebuild_capability: 'ready',
     }
-    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.listSessions.mockResolvedValueOnce({ items: [session], total: 1, page: 1, page_size: 50 })
     mocks.getSession.mockResolvedValue({
       session,
       analysis_params: {},
@@ -1046,7 +1083,9 @@ describe('Mesh analysis detail behavior', () => {
     const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
     await flushPromises()
 
-    await wrapper.findAll('button').find((button) => button.text() === '删除')!.trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '删除当前来源')!.trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('仅删除解析结果')
     expect(wrapper.text()).toContain('解析记录 974')
@@ -1060,6 +1099,169 @@ describe('Mesh analysis detail behavior', () => {
       deleteGeneratedReports: true,
     })
     expect(mocks.routerPush).toHaveBeenCalledWith({ name: 'tasks', query: { module: 'rail', task_id: 'mesh-delete-1' } })
+    expect(wrapper.text()).toContain('分析会话 · 0 个来源 · 0 列车 / 0 MR')
+    expect(wrapper.text()).toContain('共 0 个来源')
+    expect(wrapper.find('.detail-card').exists()).toBe(false)
+    wrapper.unmount()
+  })
+  it('removes the local MESH task card when the global task store dismisses it', async () => {
+    mocks.recoverTasks.mockResolvedValueOnce([{
+      task_id: 'mesh-failed-dismissed',
+      action: 'mesh_link_detail_export',
+      status: 'FAILED',
+      message: '历史导出失败',
+      error_message: '历史导出失败',
+      result_summary: {},
+    }])
+    mocks.taskStore?.tasks.push({
+      id: 'mesh-failed-dismissed',
+      type: 'mesh_link_detail_export',
+      name: 'MESH 链路明细导出',
+      status: 'FAILED',
+      progress: 100,
+      message: '历史导出失败',
+      error_summary: '历史导出失败',
+    })
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('mesh-failed-dismissed')
+    mocks.taskStore?.tasks.splice(0)
+    await nextTick()
+
+    expect(wrapper.text()).not.toContain('mesh-failed-dismissed')
+    wrapper.unmount()
+    expect(mocks.taskStoreAcquirePolling).toHaveBeenCalledWith('mesh-analysis-view')
+    expect(mocks.taskStoreReleasePolling).toHaveBeenCalledWith('mesh-analysis-view')
+  })
+
+  it('submits one identity-only remap task when a healthy source revision is stale', async () => {
+    const session = {
+      session_id: 'session-identity-stale',
+      mr_name: '列车07-MR-CT',
+      train_name: '列车07',
+      original_filename: '7CTmeshlog.log',
+      first_sample_time: '',
+      last_sample_time: '',
+      parsed_status: 'ready',
+      warning_count: 1,
+      report_count: 0,
+    }
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue({
+      session,
+      analysis_params: {},
+      available_radios: [1],
+      warnings: [{ code: 'identity_mapping_stale', message: '身份映射需要刷新', severity: 'warning' }],
+      sources: [{
+        source_file_id: 7,
+        source_action_id: 'source-stale-1',
+        source_id: 'source-stale-1',
+        identity_mapping_status: 'identity_stale',
+      }],
+    })
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+
+    expect(mocks.rebuildAnalysis).toHaveBeenCalledOnce()
+    expect(mocks.rebuildAnalysis).toHaveBeenCalledWith('session-identity-stale')
+    expect(mocks.taskStoreRefresh).toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('does not restore a deleted source when an older overview request finishes later', async () => {
+    const session = {
+      session_id: 'session-delete',
+      mr_name: '列车34-MR-CW',
+      train_name: '列车34',
+      original_filename: '34-CW.log',
+      first_sample_time: '',
+      last_sample_time: '',
+      parsed_status: 'ready',
+      warning_count: 0,
+      report_count: 0,
+      link_record_count: 10,
+    }
+    const source = {
+      source_file_id: 7,
+      source_action_id: 'source-delete-1',
+      source_id: 'source-delete-1',
+      size_bytes: 1024,
+      exists: true,
+      rebuild_capability: 'ready',
+    }
+    let resolveStaleOverview!: (value: unknown) => void
+    const staleOverview = new Promise((resolve) => { resolveStaleOverview = resolve })
+    mocks.getOverview
+      .mockResolvedValueOnce({
+        summary: {
+          site_id: 'demo', index_status: 'ready', indexed_session_count: 1,
+          pending_session_count: 0, index_updated_at: null, session_count: 1,
+          train_count: 1, mr_count: 1,
+        },
+        sessions: { items: [session], total: 1, page: 1, page_size: 50 },
+      })
+      .mockImplementationOnce(() => staleOverview)
+      .mockResolvedValue({
+        summary: {
+          site_id: 'demo', index_status: 'ready', indexed_session_count: 0,
+          pending_session_count: 0, index_updated_at: null, session_count: 0,
+          train_count: 0, mr_count: 0,
+        },
+        sessions: { items: [], total: 0, page: 1, page_size: 50 },
+      })
+    mocks.getSession.mockResolvedValue({
+      session,
+      analysis_params: {},
+      available_radios: [],
+      warnings: [],
+      sources: [source],
+    })
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === '刷新结果')!.trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === '删除')!.trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '继续并二次确认')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('共 0 个来源')
+
+    resolveStaleOverview({
+      summary: {
+        site_id: 'demo', index_status: 'ready', indexed_session_count: 1,
+        pending_session_count: 0, index_updated_at: null, session_count: 1,
+        train_count: 1, mr_count: 1,
+      },
+      sessions: { items: [session], total: 1, page: 1, page_size: 50 },
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('共 0 个来源')
+    expect(wrapper.text()).not.toContain('34-CW.log')
+    wrapper.unmount()
+  })
+
+  it('shows the normal empty state when a missing MESH directory returns an empty overview', async () => {
+    mocks.getOverview.mockResolvedValueOnce({
+      summary: {
+        site_id: 'demo', index_status: 'ready', indexed_session_count: 0,
+        pending_session_count: 0, index_updated_at: null, session_count: 0,
+        train_count: 0, mr_count: 0,
+      },
+      sessions: { items: [], total: 0, page: 1, page_size: 50 },
+    })
+
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('分析会话 · 0 个来源 · 0 列车 / 0 MR')
+    expect(wrapper.text()).toContain('共 0 个来源')
+    expect(wrapper.text()).not.toContain('请求失败')
+    expect(wrapper.text()).not.toContain('(500)')
     wrapper.unmount()
   })
 
@@ -1095,9 +1297,7 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getActivePath).toHaveBeenLastCalledWith('session-locked', {
       max_points: 600,
       radio: 1,
-      time_from: undefined,
-      time_to: undefined,
-    })
+    }, expect.any(AbortSignal))
     expect(mocks.getTracksideSignal).toHaveBeenLastCalledWith('session-locked', {
       max_points: 600,
       radio: 1,
@@ -1250,14 +1450,9 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getActivePath).toHaveBeenCalledWith('session-1', {
       max_points: 600,
       radio: 1,
-    })
+    }, expect.any(AbortSignal))
 
-    expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-1', {
-      max_points: 600,
-      radio: 1,
-      time_from: undefined,
-      time_to: undefined,
-    }, expect.anything())
+    expect(mocks.getTracksideSignal).not.toHaveBeenCalled()
     const activeRssiChart = wrapper.findAllComponents(meshChartStub).find((chart) => (
       chart.props('scope') === 'active' && (chart.props('points') as unknown[]).length > 0
     ))
@@ -1267,12 +1462,17 @@ describe('Mesh analysis detail behavior', () => {
       full_start_time: fullStart,
       full_end_time: fullEnd,
     })
+    intersectionCallbacks[0]?.([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver)
+    await flushPromises()
+    expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-1', {
+      max_points: 600,
+      radio: 1,
+      time_from: undefined,
+      time_to: undefined,
+    }, expect.anything())
     const tracksideChart = wrapper.findAllComponents(meshChartStub).find((chart) => (
       ((chart.props('seriesCache') as { series?: unknown[] } | null)?.series?.length ?? 0) > 0
     ))
-    expect(tracksideChart?.props('active')).toBe(false)
-    intersectionCallbacks[0]?.([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver)
-    await flushPromises()
     expect(tracksideChart?.props('active')).toBe(true)
     expect(wrapper.text()).toContain(`最早 ${fullStart}`)
     expect(wrapper.text()).toContain(`最新 ${fullEnd}`)
@@ -1327,7 +1527,7 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getActivePath).toHaveBeenCalledWith('session-1', {
       max_points: 1200,
       radio: 1,
-    })
+    }, expect.any(AbortSignal))
     expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-1', {
       max_points: 1200,
       radio: 1,
@@ -1357,6 +1557,254 @@ describe('Mesh analysis detail behavior', () => {
     await flushPromises()
     expect(wrapper.find('.sessions-toggle').attributes('aria-expanded')).toBe('true')
     wrapper.unmount()
+  })
+
+  it('does not open RSSI for build-order row click or double click', async () => {
+    const session = {
+      session_id: 'session-row-click',
+      mr_name: '列车07-MR-CT',
+      original_filename: '7CTmeshlog.log',
+      first_sample_time: '2026-07-20 10:00:00.000',
+      last_sample_time: '2026-07-20 10:01:00.000',
+      parsed_status: 'ready',
+      warning_count: 0,
+      report_count: 0,
+    }
+    const row = {
+      sequence: 1,
+      anchor_link_id: 88,
+      source_file_id: 7,
+      local_radio: 1,
+      peer_ap_name: '轨旁AP-1',
+      active_peer_mac: 'bc5a-3457-9c8f',
+      build_start_time: '2026-07-20 10:00:10.000',
+      build_end_time: '2026-07-20 10:00:20.000',
+      build_result: 'normal',
+    }
+    mocks.listSessions.mockResolvedValueOnce({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue({ session, analysis_params: {}, available_radios: [1], warnings: [], sources: [{ source_file_id: 7 }] })
+    mocks.listBuildOrder.mockResolvedValue({ items: [row], total: 1, page: 1, page_size: 100 })
+
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+
+    const table = wrapper.findAllComponents(dataTableStub).find((item) => item.props('tableId') === 'mesh-analysis-active-build-order:v2')!
+    await table.vm.$emit('row-click', row, { property: 'peer_ap_name' }, new MouseEvent('click'))
+    await flushPromises()
+
+    expect(wrapper.find('.detail-tabs').attributes('modelvalue')).toBe('build-order')
+    expect((wrapper.vm as unknown as { selectedSegment: unknown }).selectedSegment).toEqual(row)
+    expect(mocks.getActivePath).not.toHaveBeenCalled()
+    expect(mocks.getTracksideSignal).not.toHaveBeenCalled()
+
+    await table.vm.$emit('row-dblclick', row)
+    await flushPromises()
+    expect(wrapper.find('.detail-tabs').attributes('modelvalue')).toBe('build-order')
+    expect(mocks.getActivePath).not.toHaveBeenCalled()
+    expect(mocks.getTracksideSignal).not.toHaveBeenCalled()
+
+    await wrapper.findAll('button').find((button) => button.text() === '查看动态图')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.detail-tabs').attributes('modelvalue')).toBe('rssi')
+    expect(mocks.getActivePath).toHaveBeenCalledWith(
+      'session-row-click',
+      { max_points: 600, radio: 1 },
+      expect.any(AbortSignal),
+    )
+    wrapper.unmount()
+  })
+
+  it('keeps the active RSSI chart when trackside loading fails and retries only trackside', async () => {
+    vi.stubGlobal('IntersectionObserver', undefined)
+    const session = {
+      session_id: 'session-rssi-isolated',
+      mr_name: '列车07-MR-CT',
+      original_filename: '7CTmeshlog.log',
+      first_sample_time: '2026-07-20 10:00:00.000',
+      last_sample_time: '2026-07-20 10:01:00.000',
+      parsed_status: 'ready',
+      warning_count: 0,
+      report_count: 0,
+    }
+    const row = {
+      sequence: 1,
+      anchor_link_id: 88,
+      source_file_id: 7,
+      local_radio: 1,
+      peer_ap_name: '轨旁AP-1',
+      active_peer_mac: 'bc5a-3457-9c8f',
+      build_start_time: '2026-07-20 10:00:10.000',
+      build_end_time: '2026-07-20 10:00:20.000',
+      build_result: 'normal',
+    }
+    mocks.listSessions.mockResolvedValueOnce({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue({ session, analysis_params: {}, available_radios: [1], warnings: [], sources: [{ source_file_id: 7 }] })
+    mocks.listBuildOrder.mockResolvedValue({ items: [row], total: 1, page: 1, page_size: 100 })
+    mocks.getActivePath.mockResolvedValue({
+      mode: 'active_path',
+      anchor: null,
+      points: [{ timestamp: session.first_sample_time, local_radio: 1, local_rssi: 30 }],
+      events: [],
+      location_segments: [],
+      total_points: 1,
+      returned_points: 1,
+      downsampled: false,
+      summary: { sample_count: 1, active_count: 1, standby_context_count: 0, switch_count: 0 },
+      time_from: null,
+      time_to: null,
+    })
+    mocks.getTracksideSignal.mockRejectedValueOnce(new Error('请求超时，请重试。')).mockResolvedValueOnce({
+      source_id: session.session_id,
+      radio: 1,
+      time_range: { start: session.first_sample_time, end: session.last_sample_time },
+      series: [],
+      events: [],
+      warnings: [],
+      estimated_interval_seconds: null,
+      continuity_gap_seconds: null,
+      total_series: 0,
+      returned_series: 0,
+      total_frames: 0,
+      returned_frames: 0,
+      total_link_points: 0,
+      returned_link_points: 0,
+      total_link_runs: 0,
+      active_link_points: 0,
+      standby_link_points: 0,
+      returned_active_link_points: 0,
+      returned_standby_link_points: 0,
+      role_switch_count: 0,
+      skipped_missing_signal_points: 0,
+      skipped_missing_identity_points: 0,
+      total_points: 0,
+      returned_points: 0,
+      downsampled: false,
+      requested_max_frames: 600,
+      effective_max_frames: 600,
+      requested_max_points: 600,
+      effective_max_points: 600,
+      top_n: 0,
+      included_roles: ['ACTIVE', 'STANDBY'],
+      include_standby: true,
+    })
+
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看动态图')!.trigger('click')
+    await flushPromises()
+
+    const activeChart = wrapper.findAllComponents(meshChartStub).find((chart) => chart.props('scope') === 'active')
+    expect(activeChart?.props('points')).toHaveLength(1)
+    expect(wrapper.text()).toContain('轨旁信号图加载失败：请求超时，请重试。')
+    const activeCalls = mocks.getActivePath.mock.calls.length
+    await wrapper.findAll('button').find((button) => button.text() === '重新加载轨旁信号图')!.trigger('click')
+    await flushPromises()
+    expect(mocks.getActivePath).toHaveBeenCalledTimes(activeCalls)
+    expect(mocks.getTracksideSignal).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
+  it('shows an active RSSI timeout as an error instead of a zero-point success summary', async () => {
+    vi.stubGlobal('IntersectionObserver', undefined)
+    const session = {
+      session_id: 'session-rssi-timeout',
+      mr_name: '列车07-MR-CT',
+      original_filename: '7CTmeshlog.log',
+      first_sample_time: '2026-07-20 10:00:00.000',
+      last_sample_time: '2026-07-20 10:01:00.000',
+      parsed_status: 'ready',
+      warning_count: 0,
+      report_count: 0,
+    }
+    const row = {
+      sequence: 1,
+      anchor_link_id: 88,
+      source_file_id: 7,
+      local_radio: 1,
+      peer_ap_name: '轨旁AP-1',
+      active_peer_mac: 'bc5a-3457-9c8f',
+      build_start_time: '2026-07-20 10:00:10.000',
+      build_end_time: '2026-07-20 10:00:20.000',
+      build_result: 'normal',
+    }
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue({ session, analysis_params: {}, available_radios: [1], warnings: [], sources: [{ source_file_id: 7 }] })
+    mocks.listBuildOrder.mockResolvedValue({ items: [row], total: 1, page: 1, page_size: 100 })
+    mocks.getActivePath.mockRejectedValue(new Error('请求超时，请重试。'))
+
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看动态图')!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('主链 RSSI 数据加载失败：请求超时，请重试。')
+    expect(wrapper.text()).not.toContain('采样点 0')
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
+  it('aborts the previous active RSSI request when the Radio changes', async () => {
+    vi.stubGlobal('IntersectionObserver', undefined)
+    const session = {
+      session_id: 'session-rssi-radio-abort',
+      mr_name: '列车07-MR-CT',
+      original_filename: '7CTmeshlog.log',
+      first_sample_time: '2026-07-20 10:00:00.000',
+      last_sample_time: '2026-07-20 10:01:00.000',
+      parsed_status: 'ready',
+      warning_count: 0,
+      report_count: 0,
+    }
+    const row = {
+      sequence: 1,
+      anchor_link_id: 88,
+      source_file_id: 7,
+      local_radio: 1,
+      peer_ap_name: '轨旁AP-1',
+      active_peer_mac: 'bc5a-3457-9c8f',
+      build_start_time: '2026-07-20 10:00:10.000',
+      build_end_time: '2026-07-20 10:00:20.000',
+      build_result: 'normal',
+    }
+    const signals: AbortSignal[] = []
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue({ session, analysis_params: {}, available_radios: [1, 2], warnings: [], sources: [{ source_file_id: 7 }] })
+    mocks.listBuildOrder.mockResolvedValue({ items: [row], total: 1, page: 1, page_size: 100 })
+    mocks.getActivePath.mockImplementation((_id: string, _values: Record<string, unknown>, signal?: AbortSignal) => new Promise((_resolve, reject) => {
+      if (signal) {
+        signals.push(signal)
+        signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+      }
+    }))
+
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看动态图')!.trigger('click')
+    await flushPromises()
+    expect(signals).toHaveLength(1)
+
+    const radioSelect = wrapper.findAllComponents(selectStub).find((select) => (
+      select.props('modelValue') === 1
+      &&
+      select.findAll('[data-option-label]').some((option) => option.text() === 'Radio 2')
+    ))!
+    await radioSelect.vm.$emit('update:modelValue', 2)
+    await radioSelect.vm.$emit('change', 2)
+    await flushPromises()
+
+    expect(signals[0].aborted).toBe(true)
+    expect(signals).toHaveLength(2)
+    wrapper.unmount()
+    vi.unstubAllGlobals()
   })
 
   it('opens link detail RSSI view with full-log API requests and only applies the row window to charts', async () => {
@@ -1407,7 +1855,7 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getActivePath).toHaveBeenCalledWith('session-link', {
       max_points: 600,
       radio: 1,
-    })
+    }, expect.any(AbortSignal))
     expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-link', {
       max_points: 600,
       radio: 1,

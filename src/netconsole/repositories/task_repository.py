@@ -965,8 +965,9 @@ class TaskRepository:
                 result_path, error_message, result_json, source, site_name, owner_pid,
                 resource_keys_json, text_integrity, text_integrity_reason,
                 text_integrity_updated_at, text_schema_version, producer_kind,
-                producer_version, producer_commit, expires_at, updated_time
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                producer_version, producer_commit, expires_at, acknowledged_at,
+                dismissed_at, dismissed_by, dismiss_reason, updated_time
+            ) VALUES ({", ".join("?" for _ in range(35))})
             ON CONFLICT(task_id) DO UPDATE SET
                 task_type=excluded.task_type,
                 task_name=excluded.task_name,
@@ -995,7 +996,10 @@ class TaskRepository:
                 producer_kind=excluded.producer_kind,
                 producer_version=excluded.producer_version,
                 producer_commit=excluded.producer_commit,
-                expires_at=excluded.expires_at,
+                expires_at=CASE
+                    WHEN task_snapshots.expires_at <> '' THEN task_snapshots.expires_at
+                    ELSE excluded.expires_at
+                END,
                 updated_time=excluded.updated_time
             {transition_guard}
             """,
@@ -1031,13 +1035,18 @@ class TaskRepository:
                 snapshot.producer_kind,
                 snapshot.producer_version,
                 snapshot.producer_commit,
-                task_expires_at(
+                snapshot.expires_at
+                or task_expires_at(
                     snapshot.status,
                     finished_time=snapshot.finished_time,
                     updated_time=snapshot.updated_time,
                     error_message=snapshot.error_message,
                     result=snapshot.result,
                 ),
+                snapshot.acknowledged_at,
+                snapshot.dismissed_at,
+                snapshot.dismissed_by,
+                snapshot.dismiss_reason,
                 snapshot.updated_time,
                 *(allowed_values or ()),
             ),
@@ -1080,6 +1089,11 @@ class TaskRepository:
             producer_kind=str(row.get("producer_kind") or "legacy"),
             producer_version=str(row.get("producer_version") or "unknown"),
             producer_commit=str(row.get("producer_commit") or "unknown"),
+            expires_at=str(row.get("expires_at") or ""),
+            acknowledged_at=str(row.get("acknowledged_at") or ""),
+            dismissed_at=str(row.get("dismissed_at") or ""),
+            dismissed_by=str(row.get("dismissed_by") or ""),
+            dismiss_reason=str(row.get("dismiss_reason") or ""),
             updated_time=str(row["updated_time"]),
         )
 

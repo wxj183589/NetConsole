@@ -37,7 +37,14 @@ class MeshSourceDeleteService:
             profile, source, index = MeshSourceRebuildService(self.paths)._source(site_id, session_id)
         except ValueError as exc:
             if "不存在" in str(exc):
-                return {"session_id": session_id, "already_deleted": True, "deleted_files": 0}
+                return {
+                    "session_id": session_id,
+                    "already_deleted": True,
+                    "already_deleted_count": 1,
+                    "deleted_files": 0,
+                    "deleted_file_count": 0,
+                    "missing_file_count": 0,
+                }
             raise
 
         profile_root = self._inside(
@@ -54,10 +61,14 @@ class MeshSourceDeleteService:
         )
         source_id = int(source["id"])
         raw_path = MeshSourceLocator(self.paths).locate(site_id, profile, source).raw_path
+        if raw_path is None:
+            archived_name = Path(str(source.get("archived_filename") or "")).name
+            if archived_name:
+                raw_path = raw_root / archived_name
         parsed_value = str(source.get("parsed_db_path") or "").strip().strip("'\"")
         parsed_path = Path(parsed_value).resolve() if parsed_value else None
-        if parsed_path is not None and parsed_path.exists():
-            self._inside(parsed_path, parsed_root)
+        if parsed_path is not None:
+            parsed_path = self._inside(parsed_path, parsed_root)
 
         report_paths, report_count = (
             self._report_paths(site_id, session_id, profile_root)
@@ -65,19 +76,25 @@ class MeshSourceDeleteService:
             else ([], 0)
         )
         targets: list[Path] = []
-        if delete_raw_archive and raw_path is not None and raw_path.exists():
-            targets.append(self._inside(raw_path.resolve(), raw_root))
-        if parsed_path is not None and parsed_path.exists():
-            targets.append(parsed_path)
-            targets.extend(
-                sidecar for sidecar in (
-                    parsed_path.with_name(parsed_path.name + "-wal"),
-                    parsed_path.with_name(parsed_path.name + "-shm"),
-                )
-                if sidecar.exists()
-            )
+        candidate_paths: list[Path] = []
+        if delete_raw_archive and raw_path is not None:
+            raw_target = self._inside(raw_path.resolve(), raw_root)
+            candidate_paths.append(raw_target)
+            if raw_target.exists():
+                targets.append(raw_target)
+        if parsed_path is not None:
+            candidate_paths.append(parsed_path)
+            if parsed_path.exists():
+                targets.append(parsed_path)
+            for sidecar in (
+                parsed_path.with_name(parsed_path.name + "-wal"),
+                parsed_path.with_name(parsed_path.name + "-shm"),
+            ):
+                if sidecar.exists():
+                    targets.append(sidecar)
         targets.extend(report_paths)
         targets = list(dict.fromkeys(targets))
+        missing_file_count = sum(1 for path in [*candidate_paths, *report_paths] if not path.exists())
         counts = self._parsed_counts(index, source_id)
         quarantine = profile_root / ".quarantine" / uuid4().hex
         quarantine.mkdir(parents=True, exist_ok=False)
@@ -167,10 +184,13 @@ class MeshSourceDeleteService:
         return {
             "session_id": session_id,
             "already_deleted": False,
+            "already_deleted_count": 0,
             "delete_raw_archive": bool(delete_raw_archive),
             "delete_parsed_data": True,
             "delete_generated_reports": delete_generated_reports,
             "deleted_files": len(moved),
+            "deleted_file_count": len(moved),
+            "missing_file_count": missing_file_count,
             "deleted_reports": report_count,
             "parsed_links": counts["links"],
             "parsed_events": counts["events"],

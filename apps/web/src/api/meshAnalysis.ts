@@ -18,7 +18,13 @@ function qs(values: Record<string, string | number | boolean | null | undefined>
 }
 
 export const getMeshAnalysisSummary = (): Promise<MeshAnalysisSummary> => apiRequest(`${root}/summary`)
-export const getMeshAnalysisOverview = (values: Record<string, string | number | boolean | null | undefined>): Promise<MeshAnalysisOverview> => apiRequest(`${root}/overview${qs(values)}`)
+export const getMeshAnalysisOverview = (
+  values: Record<string, string | number | boolean | null | undefined>,
+  signal?: AbortSignal,
+): Promise<MeshAnalysisOverview> => apiRequest(
+  `${root}/overview${qs(values)}`,
+  signal ? { signal } : undefined,
+)
 export const listMeshProfiles = (): Promise<MeshProfile[]> => apiRequest(`${root}/profiles`)
 export const getMeshImportContext = (): Promise<MeshImportContext> => apiRequest(`${root}/import-context`)
 export const prepareMeshImportContext = (): Promise<MeshImportContextPrepare> => apiRequest(`${root}/import-context/prepare`, { method: 'POST' })
@@ -53,14 +59,23 @@ export const listMeshActiveBuildOrder = (
   `${root}/sessions/${meshSessionPathSegment(id)}/active-build-order${qs(values)}`,
   signal ? { signal } : undefined,
 )
-export const getMeshActivePathChart = (id: string, values: Record<string, string | number | boolean | null | undefined> = {}): Promise<MeshPathChart> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/charts/active-path${qs(values)}`)
+export const MESH_ACTIVE_PATH_QUERY_TIMEOUT_MS = 30_000
+export const MESH_TRACKSIDE_SIGNAL_QUERY_TIMEOUT_MS = 60_000
+export const getMeshActivePathChart = (
+  id: string,
+  values: Record<string, string | number | boolean | null | undefined> = {},
+  signal?: AbortSignal,
+): Promise<MeshPathChart> => apiRequest(
+  `${root}/sessions/${meshSessionPathSegment(id)}/charts/active-path${qs(values)}`,
+  { queryTimeoutMs: MESH_ACTIVE_PATH_QUERY_TIMEOUT_MS, ...(signal ? { signal } : {}) },
+)
 export const getMeshTracksideSignalChart = (
   id: string,
   values: Record<string, string | number | boolean | null | undefined> = {},
   signal?: AbortSignal,
 ): Promise<MeshTracksideSignalChartData> => apiRequest(
   `${root}/sessions/${meshSessionPathSegment(id)}/charts/trackside-signal${qs(values)}`,
-  signal ? { signal } : undefined,
+  { queryTimeoutMs: MESH_TRACKSIDE_SIGNAL_QUERY_TIMEOUT_MS, ...(signal ? { signal } : {}) },
 )
 export const getMeshPeerSegmentChart = (id: string, values: Record<string, string | number | boolean | null | undefined>): Promise<MeshPathChart> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/charts/peer-segment${qs(values)}`)
 export const getMeshTimeline = (id: string): Promise<{ items: MeshTimelineItem[]; total: number }> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/timeline`)
