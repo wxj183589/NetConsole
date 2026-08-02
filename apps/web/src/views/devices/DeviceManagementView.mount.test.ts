@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   getDeviceExportTask: vi.fn(),
   updateDevice: vi.fn(),
   startBatchRefreshDetails: vi.fn(),
+  startBatchConnectionTests: vi.fn(),
   getBatchRefresh: vi.fn(),
   startDeviceFormConnectionTest: vi.fn(),
   startDeviceCsvExport: vi.fn(),
@@ -42,6 +43,7 @@ vi.mock('../../api/deviceManagement', async (importOriginal) => ({
   getDeviceExportTask: mocks.getDeviceExportTask,
   updateDevice: mocks.updateDevice,
   startBatchRefreshDetails: mocks.startBatchRefreshDetails,
+  startBatchConnectionTests: mocks.startBatchConnectionTests,
   getBatchRefresh: mocks.getBatchRefresh,
   startDeviceFormConnectionTest: mocks.startDeviceFormConnectionTest,
   startDeviceCsvExport: mocks.startDeviceCsvExport,
@@ -352,6 +354,25 @@ beforeEach(() => {
     finished_at: '',
     terminal: true,
     summary: { total: 0, accepted: 0, reused: 0, rejected: 0, running: 0, completed: 0, partial_success: 0, failed: 0, cancelled: 0 },
+    items: [],
+  })
+  mocks.startBatchConnectionTests.mockResolvedValue({
+    action: 'batch_connection_test',
+    tasks: [{
+      task_id: 'connection-test-1',
+      task_status: 'PENDING',
+      action: 'connection_test',
+      artifact_id: '',
+      available: false,
+      sha256: '',
+      size_bytes: 0,
+      message: '等待执行',
+    }],
+    batch_id: '',
+    created_at: '',
+    finished_at: '',
+    terminal: false,
+    summary: { total: 1, accepted: 1, reused: 0, rejected: 0, running: 1, completed: 0, partial_success: 0, failed: 0, cancelled: 0 },
     items: [],
   })
   mocks.getBatchRefresh.mockReset()
@@ -679,6 +700,51 @@ describe('DeviceManagementView mounted interactions', () => {
     expect(mocks.messages.error).not.toHaveBeenCalledWith('表单连接测试任务提交失败')
     expect(mocks.messages.success).not.toHaveBeenCalledWith('SSH 表单连接测试任务已提交')
     expect(mocks.openTaskWindow).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('reloads the current page and preserves selection when a connection test reaches terminal state', async () => {
+    const testableListItem = { ...listItem, credential_status: 'available', credential_message: '' }
+    const reachableListItem = {
+      ...testableListItem,
+      connection_status: 'REACHABLE',
+      last_test_task_id: 'connection-test-1',
+      last_test_time: '2026-08-03T00:00:00Z',
+    }
+    const page = (item: Record<string, unknown>) => ({
+      items: [item],
+      groups: [{ id: 1, name: '车载 MR' }],
+      site_name: '测试局点',
+      total: 1,
+      page: 1,
+      page_size: 50,
+      total_pages: 1,
+    })
+    mocks.listDevices
+      .mockResolvedValueOnce(page(testableListItem))
+      .mockResolvedValue(page(reachableListItem))
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="select-first-device"]').trigger('click')
+    await flushPromises()
+
+    const testButton = wrapper.findAll('button').find((button) => button.text() === '测试连接')
+    expect(testButton).toBeTruthy()
+    await testButton!.trigger('click')
+    await flushPromises()
+
+    expect(mocks.startBatchConnectionTests).toHaveBeenCalledWith(['device-1'])
+    expect(mocks.listDevices).toHaveBeenCalledTimes(1)
+
+    mocks.taskStore!.tasks = [task({ id: 'connection-test-1', status: 'RUNNING', updated_time: 'running' })]
+    await flushPromises()
+    expect(mocks.listDevices).toHaveBeenCalledTimes(1)
+
+    mocks.taskStore!.tasks = [task({ id: 'connection-test-1', status: 'COMPLETED', updated_time: 'done' })]
+    await flushPromises()
+
+    expect(mocks.listDevices).toHaveBeenCalledTimes(2)
+    expect(wrapper.findComponent(tableStub).props('data')).toEqual([reachableListItem])
+    expect((testButton!.element as HTMLButtonElement).disabled).toBe(false)
     wrapper.unmount()
   })
 

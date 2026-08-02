@@ -158,6 +158,9 @@ const secureCrtTemplateFile = ref<File | null>(null)
 const secureCrtTemplateInput = ref<HTMLInputElement | null>(null)
 const lastSubmittedTask = ref<DeviceTaskReference | null>(null)
 const savedArtifactCapability = ref('')
+const connectionTestRefreshTaskIds = ref<string[]>([])
+let connectionTestRefreshRunning = false
+let connectionTestRefreshQueued = false
 let batchRefreshPollTimer: ReturnType<typeof setTimeout> | null = null
 let batchRefreshGeneration = 0
 let activeBatchRefreshId = ''
@@ -281,6 +284,7 @@ const detailDrawerWidth = computed(() => `${clampDrawerWidth(detailDrawerWidthPx
 
 const isEmpty = computed(() => !loading.value && !error.value && pageData.value.items.length === 0)
 const activeTaskStatuses = new Set<TaskStatus>(['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'CREATED', 'QUEUED'])
+const connectionTestTerminalStatuses = new Set<TaskStatus>(['COMPLETED', 'FAILED', 'CANCELLED', 'ABORTED', 'STOPPED'])
 const publicDeviceTasks = computed(() => (taskStore.tasks as DevicePublicTask[]).filter((task) => (
   task.module === 'devices'
   || task.owner === 'web_device_management'
@@ -327,6 +331,14 @@ const writeConnectionTask = computed(() => {
   return taskId ? publicDeviceTasks.value.find((item) => item.id === taskId) || null : null
 })
 const writeConnectionBusy = computed(() => writeConnectionLoading.value || writeTestActive.value)
+const terminalConnectionTestTaskIds = computed(() => {
+  const tracked = new Set(connectionTestRefreshTaskIds.value)
+  if (!tracked.size) return []
+  return publicDeviceTasks.value
+    .filter((task) => tracked.has(task.id) && connectionTestTerminalStatuses.has(task.status))
+    .map((task) => task.id)
+    .sort()
+})
 
 function hasUsableWriteSecret(field: DeviceSecretField, configured: boolean): boolean {
   if (String(writeForm[field] || '').length > 0) return true
@@ -384,6 +396,15 @@ watch(
     }
   },
 )
+watch(
+  () => terminalConnectionTestTaskIds.value.join('|'),
+  (terminalKey) => {
+    if (!terminalKey) return
+    const terminalIds = new Set(terminalConnectionTestTaskIds.value)
+    connectionTestRefreshTaskIds.value = connectionTestRefreshTaskIds.value.filter((taskId) => !terminalIds.has(taskId))
+    void refreshConnectionTestRows()
+  },
+)
 const desktopHost = computed(() => getRuntimeConfig().hostType === 'electron')
 const batchRefreshProgressText = computed(() => {
   const current = batchRefresh.value
@@ -403,6 +424,8 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   componentActive = false
+  connectionTestRefreshTaskIds.value = []
+  connectionTestRefreshQueued = false
   stopBatchRefreshPolling(true)
   clearEditingProfileState()
   savedArtifactCapability.value = ''
@@ -447,6 +470,38 @@ async function loadDevices(resetPage = false, preserveSelection = false): Promis
     pageData.value = emptyPage()
   } finally {
     loading.value = false
+  }
+}
+
+function trackConnectionTestTasks(tasks: DeviceTaskReference[]): void {
+  const taskIds = tasks.map((task) => task.task_id.trim()).filter(Boolean)
+  if (!taskIds.length) return
+  connectionTestRefreshTaskIds.value = [...new Set([...connectionTestRefreshTaskIds.value, ...taskIds])]
+  if (tasks.some((task) => connectionTestTerminalStatuses.has(task.task_status as TaskStatus))) {
+    const terminalIds = new Set(
+      tasks
+        .filter((task) => connectionTestTerminalStatuses.has(task.task_status as TaskStatus))
+        .map((task) => task.task_id),
+    )
+    connectionTestRefreshTaskIds.value = connectionTestRefreshTaskIds.value.filter((taskId) => !terminalIds.has(taskId))
+    void refreshConnectionTestRows()
+  }
+}
+
+async function refreshConnectionTestRows(): Promise<void> {
+  if (!componentActive) return
+  if (connectionTestRefreshRunning) {
+    connectionTestRefreshQueued = true
+    return
+  }
+  connectionTestRefreshRunning = true
+  try {
+    do {
+      connectionTestRefreshQueued = false
+      await loadDevices(false, true)
+    } while (componentActive && connectionTestRefreshQueued)
+  } finally {
+    connectionTestRefreshRunning = false
   }
 }
 
@@ -1105,6 +1160,7 @@ async function startSelectedConnectionTests(): Promise<void> {
   }
   try {
     const result = await startBatchConnectionTests(selectedUuids.value)
+    trackConnectionTestTasks(result.tasks)
     await presentTasks(result.tasks, `已提交 ${result.tasks.length} 个连接测试任务`)
   } catch (cause) {
     ElMessage.error(errorMessage(cause, '连接测试任务提交失败'))
