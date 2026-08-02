@@ -88,7 +88,7 @@ def _verify_release_contract() -> None:
     from netconsole.core.resources import runtime_base_dir
     from netconsole.core.version import APP_TITLE_DISPLAY, REPOSITORY_WEB_URLS
 
-    if APP_TITLE_DISPLAY != "NetConsole v1.4.6 by WXJ":
+    if APP_TITLE_DISPLAY != "NetConsole v1.4.7 by WXJ":
         raise RuntimeError(f"发布标题不正确：{APP_TITLE_DISPLAY}")
     if not REPOSITORY_WEB_URLS or any(not url.startswith("https://") for url in REPOSITORY_WEB_URLS):
         raise RuntimeError(f"关于页仓库地址必须全部使用 HTTPS：{REPOSITORY_WEB_URLS}")

@@ -1,6 +1,6 @@
 # NetConsole 更新日志
 
-## Unreleased - 2026-08-01
+## v1.4.7 - 2026-08-03
 
 ### 轨旁 AP 主数据边界
 
@@ -11,6 +11,7 @@
 - 新增物理 `devices.station_id`、`ap_extension_points.station_id/section_id` 及稳定 ID 迁移，统一事务按依赖顺序保存并在来源变化时只刷新一次 AP Identity；普通 GET 保持文件指纹只读。
 - 轨旁 AP 业务显式返回交换机/AP/规划/最终站点身份和一致性原因；LLDP 生产关联只接受精确 MAC，IP、系统名和名称相似度降为诊断。
 - 修复缺少基础 AP MAC 时轨旁 AP 业务无法显示规划归属站点：当前车站交换机 LLDP 的完整 AP MAC 与 FIT-AP 唯一精确匹配后，只读投影交换机稳定 `station_id`；多站点或无证据仍保持待关联，并在交换机绑定或 LLDP 更新后失效上线概览缓存。
+- 站点名称统一保留基础资料中的显式编号并显示为 `01-站名`；设备来源生成兼容编号站点，轨旁 AP 业务按车站交换机、接口逻辑顺序升序展示，不再依赖设备管理中的站点名称排序。
 - 旧规划兼容模板升级 schema v4 并要求车站 ID；迁移脚本默认 dry-run，apply 需副本哈希和显式确认，分域报告安全、歧义和未解析关系。
 
 ### MESH Peer 身份与来源治理
@@ -25,6 +26,7 @@
 ### Worker 协议与 FIT-AP 刷新
 
 - 修复轨旁 AP 业务 XLSX 导出请求把 proposal 展示字段误发给严格 DTO 导致 422；前端现在只发送 `generated_at/suggested_name`，继续复用用户预选保存位置与 Export Process。
+- 设备管理连接测试完成后主动重新加载设备列表，测试结果、连接状态和更新时间无需手工刷新即可显示。
 - AC 总览、轨旁 AP 业务、AP 扩展、FIT-AP 资源读取和光衰读取的 Worker 终态改为计数、摘要和有界 Identity 聚合；配置正文/Diff 与旧无线扫描结果按 JSON 编码字节预算返回有界预览，完整配置和差异继续通过受管 Artifact 获取。
 - 轨旁 AP 关联诊断明确区分 AC 侧 LLDP `conflict/multiple` 与唯一车站交换机 AP MAC 证据；冲突时保持待关联并提示重新采集 LLDP 或补充基础资料 MAC，不使用名称、IP 或运行状态强行归站。
 - 修复 758 台 FIT-AP 光衰全部采集并入库后，完整资源、光衰和 Identity 明细形成约 4.81 MB（4,813,638 bytes）Worker 终态帧而导致任务失败；collect 终态改为有界持久化摘要，单 AP 日志耗时改为不含线程池排队时间，Windows 64 并发上限和设备命令保持不变。

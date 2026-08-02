@@ -2,7 +2,7 @@
 
 NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，当前重点覆盖 H3C/Comware 设备管理、AC/FIT AP、轨道交通无线与车内通信检测、网络测试、配置采集、文件管理和日志诊断。设备管理保留 SNMP v1/v2c 只读基础识别；不提供 SNMPv3、通用 MIB/OID 平台或 SNMP Center。
 
-当前版本：`v1.4.6`。版本唯一来源为 `src/netconsole/core/version.py`；本文只同步展示该事实源。`apps/web/package.json` 中的 `0.1.0` 仅是内部 workspace 包版本，不是产品版本。
+当前版本：`v1.4.7`。版本唯一来源为 `src/netconsole/core/version.py`；本文只同步展示该事实源。`apps/web/package.json` 中的 `0.1.0` 仅是内部 workspace 包版本，不是产品版本。
 
 Windows Server 2012 x64 兼容事实（2026-07-30）：主程序和独立 Agent 均有用户现场运行确认，证据等级为 `USER_FIELD_CONFIRMED`；仓库没有隔离 Windows Server 2012 自动化 VM 记录，自动化证据记为 `AUTOMATION_NOT_RECORDED`。这两项事实不等同于正式安装包 GUI 验收通过，产品不增加按操作系统阻断启动的逻辑。
 
