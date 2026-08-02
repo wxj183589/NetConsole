@@ -214,7 +214,7 @@ def ac_info_refresh(context: JobContext) -> dict[str, object]:
         raise BackgroundTaskCancelled(str(exc)) from exc
     if not result.success:
         raise RuntimeError(result.error_message or "AC 信息更新失败")
-    return result.to_payload()
+    return result.to_terminal_payload()
 
 
 def ac_fit_ap_detail_refresh(context: JobContext) -> dict[str, object]:
@@ -238,7 +238,7 @@ def ac_fit_ap_detail_refresh(context: JobContext) -> dict[str, object]:
         raise BackgroundTaskCancelled(str(exc)) from exc
     if not result.success:
         raise RuntimeError(result.error_message or "FIT-AP 深度更新失败")
-    return result.to_payload()
+    return result.to_terminal_payload()
 
 
 def ac_fit_ap_optical_refresh(context: JobContext) -> dict[str, object]:

@@ -84,6 +84,24 @@ class AcResourceRefreshResult:
             or self.snapshot.summary.get("revision")
             or ""
         )
+        failed_commands = [str(item) for item in self.failed_commands]
+        collection = {
+            "success": bool(self.success),
+            "source": str(self.source),
+            "collect_run_uuid": self.collect_run_uuid,
+            "fit_ap_resources_updated": int(self.fit_ap_resources_updated),
+            "unauthenticated_rows_updated": int(self.unauthenticated_rows_updated),
+            "bbssid_rows_parsed": int(self.bbssid_rows_parsed),
+            "lldp_rows_parsed": int(self.lldp_rows_parsed),
+            "bbssid_collect_status": str(self.bbssid_collect_status),
+            "bbssid_error": str(self.bbssid_error),
+            "failed_commands": failed_commands,
+            "summary_updated": bool(self.summary_updated),
+            "https_port": self.https_port,
+            "https_port_persisted": bool(self.https_port_persisted),
+            "target_ap_uuid": str(self.target_ap_uuid),
+            "error_message": str(self.error_message),
+        }
         return {
             "ac_uuid": self.snapshot.ac_device_uuid,
             "collect_run_uuid": self.collect_run_uuid,
@@ -94,11 +112,12 @@ class AcResourceRefreshResult:
             "lldp_rows_parsed": int(self.lldp_rows_parsed),
             "bbssid_collect_status": str(self.bbssid_collect_status),
             "bbssid_error": str(self.bbssid_error),
-            "failed_commands": [str(item) for item in self.failed_commands],
+            "failed_commands": failed_commands,
             "summary_updated": bool(self.summary_updated),
             "snapshot_revision": str(snapshot_revision),
             "data_persisted": bool(self.success),
             "reload_required": bool(self.success),
+            "collection": collection,
         }
 
 

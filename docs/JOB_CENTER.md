@@ -259,7 +259,7 @@ Vue 只向具名 FastAPI endpoint 提交白名单 DTO；Router 调用对应 Appl
 
 - `ac_fit_ap_resources_refresh` 保持原 task_type；`mode=load` 读取现有资源，`mode=collect` 通过 `AcService / AcResourceService` 执行设备采集，兼容旧调用方。
 - 页面不再创建 `AcResourceCollectThread`。Worker 内加载 AC 设备、创建 repository，并调用已有 `collect_h3c_fit_ap_resources` 完成 AP 列表、状态、地址、Radio、BSSID 和 LLDP 采集解析。
-- `mode=collect` 成功终态只返回 AC、collect run、FIT-AP/未认证/BSSID/LLDP 计数、失败命令摘要、snapshot revision、`data_persisted` 和 `reload_required`，不携带完整 `resources`、LLDP、BSSID 或 raw。页面收到 `reload_required` 后通过正常分页 GET 重新读取 SQLite。旧 `mode=load` 仍返回完整快照，保持兼容查询契约。
+- `ac_info_refresh`、`ac_fit_ap_detail_refresh` 与 `ac_fit_ap_resources_refresh(mode=collect)` 的成功终态只返回 AC、collect run、FIT-AP/未认证/BSSID/LLDP 计数、失败命令摘要、snapshot revision、`data_persisted`、`reload_required` 及页面所需的小型 collection 摘要，不携带完整 `resources`、LLDP、BSSID 或 raw。页面收到 `reload_required` 后通过正常分页 GET 重新读取 SQLite。旧 `mode=load` 仍返回完整快照，保持兼容查询契约。
 - `source=auto` 只选择已验证的数据策略。当前 H3C AP 资源由 CLI 信息最完整，因此默认继续使用 CLI；不得因架构迁移强制改成 SNMP。
 - AC Domain 只接受现有 H3C CLI 采集；`source=snmp` 必须明确拒绝，不能借设备管理 SNMP v1/v2c 基础识别恢复 AC SNMP 采集。
 - CLI 原始回显、命令 JSONL、collect run、parser 和 repository 写入规则保持原状。命令失败转换为 Job error，用户取消转换为唯一 cancelled 终态。

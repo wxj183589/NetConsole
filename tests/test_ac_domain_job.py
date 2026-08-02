@@ -263,6 +263,23 @@ def test_ac_fit_ap_collect_terminal_payload_is_bounded_for_large_snapshot() -> N
         "snapshot_revision": "r-974",
         "data_persisted": True,
         "reload_required": True,
+        "collection": {
+            "success": True,
+            "source": "cli",
+            "collect_run_uuid": "run-974",
+            "fit_ap_resources_updated": 974,
+            "unauthenticated_rows_updated": 0,
+            "bbssid_rows_parsed": 0,
+            "lldp_rows_parsed": 758,
+            "bbssid_collect_status": "not_collected",
+            "bbssid_error": "",
+            "failed_commands": [],
+            "summary_updated": True,
+            "https_port": None,
+            "https_port_persisted": False,
+            "target_ap_uuid": "",
+            "error_message": "",
+        },
     }
 
 
@@ -328,5 +345,9 @@ def test_ac_info_and_fit_ap_detail_jobs_deliver_collection_results(monkeypatch: 
 
     assert info.ok is True
     assert info.result["collection"]["https_port"] == 10443
+    assert info.result["data_persisted"] is True
+    assert "resources" not in info.result
     assert detail.ok is True
     assert detail.result["collection"]["target_ap_uuid"] == "ap-1"
+    assert detail.result["reload_required"] is True
+    assert "resources" not in detail.result
