@@ -10,6 +10,7 @@
 - 轨旁 AP 规划表移除数字输入步进控件及其占位，统一列宽来源，支持 Excel 多行粘贴、Enter 下移、Esc 恢复和滚轮防误改；规划页从设备管理生成时只接受正式 `matched_station_id`，不创建、解锁或保存站点。
 - 新增物理 `devices.station_id`、`ap_extension_points.station_id/section_id` 及稳定 ID 迁移，统一事务按依赖顺序保存并在来源变化时只刷新一次 AP Identity；普通 GET 保持文件指纹只读。
 - 轨旁 AP 业务显式返回交换机/AP/规划/最终站点身份和一致性原因；LLDP 生产关联只接受精确 MAC，IP、系统名和名称相似度降为诊断。
+- 修复缺少基础 AP MAC 时轨旁 AP 业务无法显示规划归属站点：当前车站交换机 LLDP 的完整 AP MAC 与 FIT-AP 唯一精确匹配后，只读投影交换机稳定 `station_id`；多站点或无证据仍保持待关联，并在交换机绑定或 LLDP 更新后失效上线概览缓存。
 - 旧规划兼容模板升级 schema v4 并要求车站 ID；迁移脚本默认 dry-run，apply 需副本哈希和显式确认，分域报告安全、歧义和未解析关系。
 
 ### MESH Peer 身份与来源治理

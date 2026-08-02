@@ -22,7 +22,7 @@
 
 规划与上线状态使用独立请求和独立错误状态。规划加载成功后立即展示 Backend 已保存的稀疏规划行并保持可编辑，不等待上线状态；不会按全部站点自动补齐占位规划行。上线状态失败只在概览局部提示并保留最后成功结果。任一请求下次成功只清除自身错误。接口或网络错误不进入规划字段校验，因此“有 N 项需要修正”只统计站点匹配、AP 数量、管理 VLAN、序号和重复项等真实草稿问题。
 
-上线概览只返回站点统计、少量诊断计数、生成时间和来源 revision，不内嵌完整排除项或待关联在线 AP。用户点击对应明细后，页面分别调用 `/plan/online-status/excluded` 和 `/plan/online-status/unmatched` 分页读取；默认页大小为 50，空 MAC 以空字符串返回。概览按规划、FIT-AP、AP Identity 和局点元数据 revision 缓存，来源不变时直接复用，`source_revision=0` 仍是合法 revision。缓存命中状态和阶段耗时进入诊断日志，不改变统计口径。
+上线概览只返回站点统计、少量诊断计数、生成时间和来源 revision，不内嵌完整排除项或待关联在线 AP。用户点击对应明细后，页面分别调用 `/plan/online-status/excluded` 和 `/plan/online-status/unmatched` 分页读取；默认页大小为 50，空 MAC 以空字符串返回。概览按规划、FIT-AP、AP Identity、站点交换机绑定、当前 LLDP 和局点元数据 revision 缓存，来源不变时直接复用，`source_revision=0` 仍是合法 revision。缓存命中状态和阶段耗时进入诊断日志，不改变统计口径。
 
 规划编辑只属于规划子页草稿。解锁时以 `scope=trackside_ap_planning` 获取包含正式站点依赖和规划行的编辑快照，并按 `station_id` reconcile：站名修改保留用户值，来源消失或禁用的历史行保留为 `stale`；启用的普通站、车辆段和停车场都可生成规划行，资格不依赖 `participates_in_direction`。保存通过 `POST /api/rail-transit/base-data/changes` 进入 `RailTransitBaseDataApplicationService`，载荷只允许 `trackside_ap_plan`；后端继续执行 revision 检查和 SQLite `BEGIN IMMEDIATE` 单事务，失败整体回滚。修改规划不会保存站点、区间、AP、MR，不连接 AC，也不自动刷新设备状态。
 
@@ -40,7 +40,7 @@ GET  /api/rail-transit/trackside-ap-business/plan/artifacts/{artifact_id}/downlo
 
 ## 上线统计
 
-实际上线数量复用现有 FIT-AP 在线状态，并通过轨旁 AP 参考资料映射到稳定 `station_id`。站点范围来自当前有效站点与逐站规划，不依赖 AP 参考资料或 FIT-AP 资源是否已经导入。参考资料记录数本身不作为统计字段或上线率分母：
+实际上线数量复用现有 FIT-AP 在线状态。基础 AP 资料中的完整 MAC 与稳定 `station_id` 是首选关联；没有任何基础 AP 资料命中时，允许使用“当前车站交换机 LLDP 完整邻居 MAC = FIT-AP 完整 MAC，且交换机已有稳定 `station_id`”的唯一精确证据进行只读运行态站点投影。站点范围来自当前有效站点与逐站规划，不依赖 AP 参考资料或 FIT-AP 资源是否已经导入。参考资料记录数本身不作为统计字段或上线率分母：
 
 ```text
 未上线 = max(规划 AP 总数量 - 实际上线数量, 0)
@@ -50,7 +50,7 @@ GET  /api/rail-transit/trackside-ap-business/plan/artifacts/{artifact_id}/downlo
 
 规划 AP 总数量为 `0` 时上线率为空，由页面显示为 `—`。实际上线超过规划值时保留真实数量、未上线仍为 `0`，状态显示“超规划”，上线率显示 `—`，不得导出 `1200.0%`、`5200.0%` 等误导性比例。缺少规划的有效站点仍显示为 `planning_missing`，而有规划但没有匹配 FIT-AP 时实际为 `0`、未上线等于规划数量。参考资料数量与规划值不同只作为轻量数据质量信息，不修改规划、不阻断保存；未匹配有效资料的在线 AP 进入独立“待关联在线 AP”诊断，不计入站点，也不计入真正排除项。统计更新时间来自当前 AP/FIT-AP 数据的最新时间；用户点击“刷新上线状态”时复用现有轨旁 AP 后台任务，只刷新实际上线结果，不修改页面规划草稿。
 
-上线概览不是轨旁 AP 业务明细的数据源。页面查询、业务明细导出和上线概览共享同一解析结果，但分为三层：站点/交换机工作范围决定候选端口，AP 基础资料用于身份和站点关联，FIT-AP 运行态用于在线统计。当前局点/项目及显式建设阶段匹配、当前工作状态为 `included` 的站点交换机不因缺少 AP 资料而消失；AP 参考资料按有效 `station_id`、UUID/MAC/受控唯一名称去重。暂不参与、跨项目、明确排除、阶段不匹配、站点关联不唯一才进入排除项；在线但未关联基础资料的资源进入 `unmatched_online_items`。没有显式建设阶段时不按站名猜测一期或延长线。
+上线概览不是轨旁 AP 业务明细的数据源。页面查询、业务明细导出和上线概览共享同一解析结果，但分为三层：站点/交换机工作范围决定候选端口，AP 基础资料优先提供身份和站点关联，FIT-AP 运行态用于在线统计；基础 AP 缺失时，上述唯一 LLDP 证据只补充业务作用域中的运行态站点投影。该投影不新增或修改 AP 基础资料、规划及 AP Identity，也不把交换机接口当作 AP 身份。当前局点/项目及显式建设阶段匹配、当前工作状态为 `included` 的站点交换机不因缺少 AP 资料而消失。暂不参与、跨项目、明确排除、阶段不匹配、站点关联不唯一才进入排除项；LLDP 同一完整 AP MAC 指向多个站点或完全无精确证据时保持 `unmatched_online_items`，不按 VLAN、站名、AP 名称或邻居 IP 猜测归属。
 
 ## 来源
 

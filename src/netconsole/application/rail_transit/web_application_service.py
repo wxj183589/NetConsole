@@ -1089,6 +1089,9 @@ class RailTransitWebApplicationService:
         planning_ms = (time.perf_counter() - planning_started) * 1000
         identity_started = time.perf_counter()
         references = repository.list_trackside_ap_scope_reference_rows()
+        runtime_station_rows = (
+            repository.list_trackside_ap_runtime_station_evidence_rows()
+        )
         identity_ms = (time.perf_counter() - identity_started) * 1000
         fit_ap_started = time.perf_counter()
         resources = repository.list_fit_ap_online_scope_rows()
@@ -1100,6 +1103,7 @@ class RailTransitWebApplicationService:
             plan_rows=selected_plans,
             reference_rows=references,
             resource_rows=resources,
+            runtime_station_rows=runtime_station_rows,
             detail_limit=0,
         )
         aggregation_ms = (time.perf_counter() - aggregation_started) * 1000

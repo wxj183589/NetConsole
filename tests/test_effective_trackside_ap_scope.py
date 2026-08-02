@@ -69,6 +69,7 @@ def _resolve(
     plans: list[dict[str, object]],
     references: list[dict[str, object]],
     resources: list[dict[str, object]],
+    runtime_station_rows: list[dict[str, object]] | None = None,
 ):
     station_ids_by_name: dict[str, list[str]] = {}
     station_ids_by_node_uid: dict[str, str] = {}
@@ -103,6 +104,7 @@ def _resolve(
         plan_rows=plans,
         reference_rows=references,
         resource_rows=resources,
+        runtime_station_rows=runtime_station_rows,
     )
 
 
@@ -550,6 +552,143 @@ def test_unmatched_online_resources_are_diagnostics_not_exclusions() -> None:
     assert scope.fit_ap_unmatched_online_count == 3
     assert scope.excluded_device_count == 0
     assert len(scope.excluded_items) == 0
+
+
+def test_unique_lldp_station_evidence_projects_runtime_ap_into_station() -> None:
+    station = _station(1, "01站点", "node-1", 1)
+    station_id = str(station["station_id"])
+    scope = _resolve(
+        stations=[station],
+        plans=[{"station_name": "站点", "ap_count": 1, "sequence_no": 1}],
+        references=[],
+        resources=[
+            _resource(
+                None,
+                "AP-LLDP-01",
+                "0011-2233-4455",
+                ap_uuid="ap-lldp-01",
+            )
+        ],
+        runtime_station_rows=[
+            {
+                "ap_mac": "00:11:22:33:44:55",
+                "station_id": station_id,
+                "project_phase": "phase_2",
+            }
+        ],
+    )
+
+    assert scope.scope_ap_reference_count == 0
+    assert scope.fit_ap_matched_count == 1
+    assert scope.fit_ap_unmatched_online_count == 0
+    assert scope.resources[0]["station_id"] == station_id
+    assert scope.resources[0]["site"] == "01站点"
+    assert scope.resources[0]["_scope_binding_source"] == "switch_lldp_exact"
+    assert scope.station_statistics()[0]["actual_online_count"] == 1
+
+
+def test_lldp_station_evidence_does_not_choose_between_multiple_stations() -> None:
+    stations = [
+        _station(1, "01站点A", "node-a", 1),
+        _station(2, "02站点B", "node-b", 2),
+    ]
+    scope = _resolve(
+        stations=stations,
+        plans=[
+            {"station_name": "站点A", "ap_count": 1, "sequence_no": 1},
+            {"station_name": "站点B", "ap_count": 1, "sequence_no": 2},
+        ],
+        references=[],
+        resources=[
+            _resource(None, "AP-AMBIGUOUS", "001122334455", ap_uuid="ap-ambiguous")
+        ],
+        runtime_station_rows=[
+            {
+                "ap_mac": "0011-2233-4455",
+                "station_id": station["station_id"],
+                "project_phase": "phase_2",
+            }
+            for station in stations
+        ],
+    )
+
+    assert scope.fit_ap_matched_count == 0
+    assert scope.fit_ap_unmatched_online_count == 1
+    assert scope.ambiguous_online_total_count == 1
+    assert "多个站点" in scope.unmatched_online_items[0].reason
+
+
+def test_excluded_base_reference_blocks_lldp_station_fallback() -> None:
+    station = _station(1, "01站点", "node-1", 1)
+    scope = _resolve(
+        stations=[station],
+        plans=[{"station_name": "站点", "ap_count": 1, "sequence_no": 1}],
+        references=[
+            _reference(
+                1,
+                "暂停 AP",
+                "站点",
+                "001122334455",
+                station_node_uid="node-1",
+                operation_status="suspended",
+                project_id="extension",
+                construction_phase_id="phase_2",
+            )
+        ],
+        resources=[
+            _resource(None, "暂停 AP", "001122334455", ap_uuid="ap-suspended")
+        ],
+        runtime_station_rows=[
+            {
+                "ap_mac": "0011-2233-4455",
+                "station_id": station["station_id"],
+                "project_phase": "phase_2",
+            }
+        ],
+    )
+
+    assert scope.fit_ap_matched_count == 0
+    assert scope.fit_ap_unmatched_online_count == 0
+    assert scope.excluded_device_count == 1
+    assert any(item.source == "fit_ap_online_excluded" for item in scope.excluded_items)
+
+
+def test_valid_base_reference_takes_precedence_over_lldp_station_evidence() -> None:
+    stations = [
+        _station(1, "01站点A", "node-a", 1),
+        _station(2, "02站点B", "node-b", 2),
+    ]
+    scope = _resolve(
+        stations=stations,
+        plans=[
+            {"station_name": "站点A", "ap_count": 1, "sequence_no": 1},
+            {"station_name": "站点B", "ap_count": 1, "sequence_no": 2},
+        ],
+        references=[
+            _reference(
+                1,
+                "AP-BASE",
+                "站点A",
+                "001122334455",
+                station_node_uid="node-a",
+                operation_status="in_service",
+                project_id="extension",
+                construction_phase_id="phase_2",
+            )
+        ],
+        resources=[_resource(None, "AP-BASE", "001122334455", ap_uuid="ap-base")],
+        runtime_station_rows=[
+            {
+                "ap_mac": "0011-2233-4455",
+                "station_id": stations[1]["station_id"],
+                "project_phase": "phase_2",
+            }
+        ],
+    )
+
+    assert scope.fit_ap_matched_count == 1
+    assert scope.resources[0]["station_id"] == stations[0]["station_id"]
+    assert scope.resources[0]["_scope_binding_source"] == "base_data"
 
 
 def test_excluded_reference_without_mac_serializes_as_empty_string() -> None:

@@ -439,6 +439,7 @@ def resolve_effective_trackside_ap_scope_from_database(
     site_id: str,
     context: TracksideApScopeContext | None = None,
     resource_rows: Iterable[Mapping[str, object | None]] | None = None,
+    runtime_station_rows: Iterable[Mapping[str, object | None]] | None = None,
     lightweight: bool = False,
     detail_limit: int | None = None,
 ) -> EffectiveTracksideApScope:
@@ -461,6 +462,11 @@ def resolve_effective_trackside_ap_scope_from_database(
             if lightweight
             else repository.list_all_fit_ap_resources_with_metadata()
         ),
+        runtime_station_rows=(
+            runtime_station_rows
+            if runtime_station_rows is not None
+            else repository.list_trackside_ap_runtime_station_evidence_rows()
+        ),
         detail_limit=detail_limit,
     )
 
@@ -472,6 +478,7 @@ def resolve_effective_trackside_ap_scope(
     plan_rows: Iterable[Mapping[str, object | None]],
     reference_rows: Iterable[Mapping[str, object | None]],
     resource_rows: Iterable[Mapping[str, object | None]],
+    runtime_station_rows: Iterable[Mapping[str, object | None]] | None = None,
     detail_limit: int | None = None,
 ) -> EffectiveTracksideApScope:
     all_station_rows = [dict(row) for row in station_rows]
@@ -479,6 +486,11 @@ def resolve_effective_trackside_ap_scope(
     resources_input = [dict(row) for row in resource_rows]
     station_names, station_sort_orders, station_aliases, station_node_uids = (
         _build_station_index(context.site_id, all_station_rows, plans)
+    )
+    runtime_station_index = _build_runtime_station_index(
+        context,
+        station_names,
+        runtime_station_rows or (),
     )
     excluded: list[TracksideApScopeExcludedItem] = []
     unmatched_online: list[TracksideApScopeUnmatchedOnlineItem] = []
@@ -593,6 +605,7 @@ def resolve_effective_trackside_ap_scope(
 
     all_identity_index = _build_identity_index(all_references.values(), aliases)
     eligible_identity_index = _build_identity_index(eligible.values())
+    scope_references = dict(eligible)
     resources: list[dict[str, object | None]] = []
     online_reference_ids: set[str] = set()
     updated_at = ""
@@ -608,6 +621,33 @@ def resolve_effective_trackside_ap_scope(
             eligible,
             aliases,
         )
+        binding_source = "base_data"
+        if not reference_id and reason == "在线 AP 未匹配到当前有效轨旁 AP 资料。":
+            mac = normalize_mac(resource.get("ap_mac")) or ""
+            station_ids = runtime_station_index.get(mac, set())
+            if len(station_ids) == 1:
+                station_id = next(iter(station_ids))
+                reference_id = f"runtime-lldp:{mac}"
+                if reference_id not in scope_references:
+                    runtime_reference = EffectiveTracksideApReference(
+                        reference_id=reference_id,
+                        station_id=station_id,
+                        station_name=station_names[station_id],
+                        ap_name=str(resource.get("ap_name") or "").strip(),
+                        ap_mac=mac,
+                        ap_uuid=str(resource.get("ap_uuid") or "").strip(),
+                        operation_status="included",
+                        project_phase=context.project_phase,
+                        row={"_scope_binding_source": "switch_lldp_exact"},
+                    )
+                    scope_references[reference_id] = runtime_reference
+                    eligible_identity_index.setdefault(("mac", mac), set()).add(
+                        reference_id
+                    )
+                binding_source = "switch_lldp_exact"
+                reason = ""
+            elif len(station_ids) > 1:
+                reason = "交换机 LLDP 精确证据关联到多个站点，需人工处理。"
         online = is_fit_ap_online(resource)
         updated_at = max(
             updated_at,
@@ -648,6 +688,13 @@ def resolve_effective_trackside_ap_scope(
                         )
                     )
                 else:
+                    if "多个站点" in reason:
+                        ambiguous_online_keys.add(_runtime_resource_key(resource))
+                    suggested_action = (
+                        "检查车站交换机 station_id 与 LLDP 邻居 MAC 后重新刷新。"
+                        if "多个站点" in reason
+                        else "补充或绑定轨旁 AP 基础资料后重新刷新 FIT-AP。"
+                    )
                     add_unmatched(
                         _runtime_resource_key(resource),
                         TracksideApScopeUnmatchedOnlineItem(
@@ -663,14 +710,15 @@ def resolve_effective_trackside_ap_scope(
                             ),
                             runtime_station_text=runtime_station_text,
                             reason=reason or "在线 AP 未匹配到当前有效轨旁 AP 资料。",
-                            suggested_action="补充或绑定轨旁 AP 基础资料后重新刷新 FIT-AP。",
+                            suggested_action=suggested_action,
                         ),
                     )
             continue
-        reference = eligible[reference_id]
+        reference = scope_references[reference_id]
         enriched = {
             **resource,
             "_scope_reference_id": reference_id,
+            "_scope_binding_source": binding_source,
             "station_id": reference.station_id,
             "site": reference.station_name,
             "site_name": reference.station_name,
@@ -713,11 +761,32 @@ def resolve_effective_trackside_ap_scope(
         unmatched_online_total_count=len(unmatched_online_keys),
         ambiguous_online_total_count=len(ambiguous_online_keys),
         updated_at=updated_at,
-        _reference_by_id=eligible,
+        _reference_by_id=scope_references,
         _identity_index=eligible_identity_index,
         _all_reference_by_id=all_references,
         _all_identity_index=all_identity_index,
     )
+
+
+def _build_runtime_station_index(
+    context: TracksideApScopeContext,
+    station_names: Mapping[str, str],
+    rows: Iterable[Mapping[str, object | None]],
+) -> dict[str, set[str]]:
+    result: dict[str, set[str]] = defaultdict(set)
+    for row in rows:
+        station_id = str(row.get("station_id") or "").strip()
+        mac = normalize_mac(row.get("ap_mac") or row.get("observed_ap_mac")) or ""
+        if not station_id or station_id not in station_names or not mac:
+            continue
+        project_phase = str(row.get("project_phase") or "").strip()
+        if context.project_phase and (
+            not project_phase
+            or _scope_token(project_phase) != _scope_token(context.project_phase)
+        ):
+            continue
+        result[mac].add(station_id)
+    return result
 
 
 def _build_station_index(

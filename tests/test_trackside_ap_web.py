@@ -2041,6 +2041,93 @@ def test_trackside_ap_online_status_uses_planned_targets_and_weighted_total(
     workbook.close()
 
 
+def test_trackside_online_status_refreshes_from_exact_switch_lldp_station_evidence(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.ensure_site_dirs("demo")
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    repository = AcRepository(database)
+    station_ids = _seed_base_stations(repository, ["站点A"])
+    repository.replace_trackside_ap_plan_rows(
+        TRACKSIDE_AP_PLAN_MODE,
+        [
+            {
+                "station_id": station_ids["站点A"],
+                "station_name": "站点A",
+                "ap_count": 1,
+                "ap_management_vlans": "921",
+            }
+        ],
+    )
+    repository.replace_fit_ap_resources(
+        "ac-fixture",
+        [
+            {
+                "ap_uuid": "ap-runtime-1",
+                "ap_name": "AP-RUNTIME-1",
+                "ap_mac": "0011-2233-4455",
+                "state": "R/M",
+            }
+        ],
+    )
+    group = DeviceGroupRepository(database, "demo").create("车站")
+    switch = DeviceRepository(database).create(
+        Device(
+            name="SW-A",
+            primary_address="192.0.2.10",
+            device_type="SW",
+            group_id=group.id,
+            station="站点A",
+            station_id=station_ids["站点A"],
+            project_phase="phase_1",
+            work_scope_status="included",
+        )
+    )
+    tasks = TaskApplicationService(paths=paths, site_name="demo")
+    service = RailTransitWebApplicationService(
+        paths,
+        tasks,
+        process_adapter=FakeLocalProcessAdapter(tasks),  # type: ignore[arg-type]
+        export_adapter=FakeExportProcessAdapter(tasks),  # type: ignore[arg-type]
+    )
+
+    before = service.get_trackside_ap_online_status("demo")
+    assert before.actual_online_count == 0
+    assert before.fit_ap_unmatched_online_count == 1
+
+    DeviceFactRepository(database).replace_lldp_neighbors(
+        str(switch.device_uuid),
+        [
+            {
+                "local_interface": "XGE1/0/1",
+                "neighbor_mac": "00:11:22:33:44:55",
+                "collected_at": "2026-08-02T12:00:00+08:00",
+            }
+        ],
+        preserve_existing=False,
+    )
+
+    after = service.get_trackside_ap_online_status("demo")
+    assert after.cache_hit is False
+    assert after.revision != before.revision
+    assert after.actual_online_count == 1
+    assert after.fit_ap_matched_count == 1
+    assert after.fit_ap_unmatched_online_count == 0
+    assert after.scope_ap_reference_count == 0
+    assert after.source_revision["station_switch_lldp_count"] == 1
+
+    snapshot = load_trackside_ap_business_snapshot(
+        DeviceRepository(database),
+        "demo",
+        generation=1,
+    )
+    assert snapshot.scope is not None
+    assert snapshot.scope.resources[0]["station_id"] == station_ids["站点A"]
+    assert snapshot.scope.resources[0]["site"] == "站点A"
+
+
 def test_trackside_ap_online_status_ignores_reference_count_and_flags_excess(
     tmp_path: Path,
 ) -> None:

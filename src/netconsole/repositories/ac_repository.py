@@ -995,6 +995,51 @@ class AcRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_trackside_ap_runtime_station_evidence_rows(
+        self,
+    ) -> list[dict[str, object | None]]:
+        with self.database.connect_readonly() as conn:
+            rows = conn.execute(
+                """
+                WITH normalized_lldp AS (
+                    SELECT l.*,
+                           LOWER(
+                               REPLACE(
+                                   REPLACE(REPLACE(TRIM(l.neighbor_mac), '-', ''), ':', ''),
+                                   '.', ''
+                               )
+                           ) AS ap_mac_key
+                    FROM device_lldp_neighbors l
+                )
+                SELECT l.neighbor_mac AS ap_mac,
+                       d.station_id,
+                       station.station_name,
+                       d.device_uuid AS switch_device_uuid,
+                       d.name AS switch_name,
+                       l.local_interface AS switch_interface,
+                       l.neighbor_mac AS observed_ap_mac,
+                       l.collected_at AS observed_at,
+                       d.device_type,
+                       g.name AS group_name,
+                       d.work_scope_status,
+                       d.project_phase
+                FROM normalized_lldp l
+                JOIN devices d ON d.device_uuid = l.device_uuid
+                JOIN device_groups g ON g.id = d.group_id
+                JOIN ap_extension_points station
+                  ON station.belong_type = '__base_station__'
+                 AND station.station_id = d.station_id
+                WHERE LENGTH(l.ap_mac_key) = 12
+                  AND l.ap_mac_key NOT GLOB '*[^0-9a-f]*'
+                  AND LOWER(TRIM(d.device_type)) IN ('sw', 'switch', '交换机')
+                  AND TRIM(g.name) = '车站'
+                  AND d.work_scope_status = 'included'
+                  AND TRIM(d.station_id) != ''
+                ORDER BY l.ap_mac_key, d.station_id, d.device_uuid, l.local_interface
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def trackside_online_status_revision(
         self,
     ) -> dict[str, object]:
@@ -1017,6 +1062,25 @@ class AcRepository:
                 """
                 SELECT COUNT(*) AS row_count, COALESCE(MAX(updated_at), '') AS updated_at
                 FROM ac_fit_ap_resources
+                """
+            ).fetchone()
+            station_switches = conn.execute(
+                """
+                SELECT COUNT(*) AS row_count, COALESCE(MAX(d.updated_at), '') AS updated_at
+                FROM devices d
+                JOIN device_groups g ON g.id = d.group_id
+                WHERE LOWER(TRIM(d.device_type)) IN ('sw', 'switch', '交换机')
+                  AND TRIM(g.name) = '车站'
+                """
+            ).fetchone()
+            lldp = conn.execute(
+                """
+                SELECT COUNT(*) AS row_count, COALESCE(MAX(l.updated_at), '') AS updated_at
+                FROM device_lldp_neighbors l
+                JOIN devices d ON d.device_uuid = l.device_uuid
+                JOIN device_groups g ON g.id = d.group_id
+                WHERE LOWER(TRIM(d.device_type)) IN ('sw', 'switch', '交换机')
+                  AND TRIM(g.name) = '车站'
                 """
             ).fetchone()
             identity_columns = {
@@ -1043,6 +1107,10 @@ class AcRepository:
             "reference_updated_at": str(references["updated_at"] or ""),
             "fit_ap_count": int(resources["row_count"] or 0),
             "fit_ap_updated_at": str(resources["updated_at"] or ""),
+            "station_switch_count": int(station_switches["row_count"] or 0),
+            "station_switch_updated_at": str(station_switches["updated_at"] or ""),
+            "station_switch_lldp_count": int(lldp["row_count"] or 0),
+            "station_switch_lldp_updated_at": str(lldp["updated_at"] or ""),
             "identity_revision": int(identity["revision"] or 0) if identity else 0,
             "identity_source_revision": (
                 int(identity["source_revision"])
