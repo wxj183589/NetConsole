@@ -305,7 +305,31 @@ def test_ac_fit_ap_resource_job_keeps_legacy_load_mode(monkeypatch: pytest.Monke
 
     assert result.ok is True
     assert result.result["summary"]["total_aps"] == 2
-    assert len(result.result["resources"]) == 2
+    assert result.result["resource_count"] == 2
+    assert "resources" not in result.result
+    assert len(json.dumps(result.to_event(), ensure_ascii=False).encode("utf-8")) < 64 * 1024
+
+
+def test_local_overview_terminal_payload_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        ac_jobs.legacy_tasks,
+        "_ac_overview_refresh",
+        lambda *_args: {
+            "overview_rows": [
+                {"site": f"站点-{index}", "total": 30, "online": 20, "offline": 10}
+                for index in range(2000)
+            ],
+            "offline_ap_ledger_rows": [{"ap_name": "AP"} for _ in range(2000)],
+            "uses_trackside_plan": True,
+        },
+    )
+
+    result = run_job(BackgroundJob(job_id="overview-load", task_type="ac_overview_refresh"))
+
+    assert result.ok is True
+    assert result.result["overview_row_count"] == 2000
+    assert result.result["offline_ap_ledger_row_count"] == 2000
+    assert len(json.dumps(result.to_event(), ensure_ascii=False).encode("utf-8")) < 64 * 1024
 
 
 def test_ac_info_and_fit_ap_detail_jobs_deliver_collection_results(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

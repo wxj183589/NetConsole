@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from netconsole.core.database import Database
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.background_job import BackgroundJob
+from netconsole.services.job_center.handlers import ac_jobs
 from netconsole.services.job_center.job_runner import run_job
 from netconsole.services.rail_transit.trackside_ap_identity_shadow import (
     TracksideApIdentityShadowService,
@@ -272,8 +274,10 @@ def test_snapshot_and_compatibility_job_append_shadow_after_old_rows(
     assert snapshot.identity_shadow["available"] is True
     assert snapshot.identity_shadow["total"] == 0
     assert job.ok is True
-    assert job.result["rows"] == []
+    assert job.result["row_count"] == 0
+    assert "rows" not in job.result
     assert job.result["identity_shadow"]["available"] is True
+    assert len(json.dumps(job.to_event(), ensure_ascii=False).encode("utf-8")) < 64 * 1024
 
 
 def test_aggregate_shadow_failure_does_not_change_rows_or_finished(
@@ -304,8 +308,40 @@ def test_aggregate_shadow_failure_does_not_change_rows_or_finished(
     assert snapshot.rows == []
     assert snapshot.identity_shadow["available"] is False
     assert job.ok is True
-    assert job.result["rows"] == []
+    assert job.result["row_count"] == 0
+    assert "rows" not in job.result
     assert job.result["identity_shadow"]["available"] is False
+
+
+def test_trackside_refresh_terminal_payload_omits_business_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        ac_jobs.legacy_tasks,
+        "_ac_trackside_business_refresh",
+        lambda *_args: {
+            "rows": [{"ap_name": f"AP-{index}"} for index in range(3000)],
+            "identity_shadow": {
+                "available": True,
+                "total": 3000,
+                "matched": 3000,
+                "items": [{"row_ref": str(index)} for index in range(3000)],
+            },
+        },
+    )
+
+    result = run_job(
+        BackgroundJob(
+            job_id="trackside-large-terminal",
+            task_type="ac_trackside_business_refresh",
+        )
+    )
+
+    assert result.ok is True
+    assert result.result["row_count"] == 3000
+    assert result.result["identity_shadow"]["items"] == []
+    assert result.result["identity_shadow"]["items_omitted"] == 3000
+    assert len(json.dumps(result.to_event(), ensure_ascii=False).encode("utf-8")) < 64 * 1024
 
 
 def test_trackside_shadow_static_boundaries_remain_pure() -> None:

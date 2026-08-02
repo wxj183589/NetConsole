@@ -35,7 +35,14 @@ export function startTracksideApBusinessExport(
 ): Promise<TracksideApTask> {
   return apiRequest(`${root}/export`, {
     method: 'POST',
-    ...(proposal ? { body: JSON.stringify(proposal) } : {}),
+    ...(proposal
+      ? {
+          body: JSON.stringify({
+            generated_at: proposal.generated_at,
+            suggested_name: proposal.suggested_name,
+          }),
+        }
+      : {}),
   })
 }
 

@@ -28,6 +28,7 @@ from netconsole.services.job_center.job_registry import (
     register_handler,
     registered_task_types,
 )
+from netconsole.services.job_center.handlers import legacy_tasks
 from netconsole.services.job_center.job_runner import run_job
 from netconsole.services.job_center.worker_protocol import (
     encode_event,
@@ -63,6 +64,51 @@ def test_registry_contains_all_existing_task_types() -> None:
         "wireless_scan_history_refresh",
         "wireless_scan_result_load",
     } <= tasks
+
+
+def test_legacy_wireless_scan_result_terminal_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from netconsole.repositories import wireless_scan_repository
+    from netconsole.services.network_tools import wireless_scan_service
+
+    class FakeRepository:
+        def __init__(self, _path: Path) -> None:
+            pass
+
+        def list_results(self, _scan_id: str) -> list[dict[str, object]]:
+            return [
+                {"index": index, "ssid": "现场无线网络" * 20}
+                for index in range(2_000)
+            ]
+
+    monkeypatch.setattr(wireless_scan_repository, "WirelessScanRepository", FakeRepository)
+    monkeypatch.setattr(
+        wireless_scan_service,
+        "repository_row_to_display_row",
+        lambda row: dict(row),
+    )
+    raw_file = tmp_path / "wireless-scan.txt"
+    raw_file.write_text("无线扫描原始回显\n" * 50_000, encoding="utf-8")
+
+    result = legacy_tasks._wireless_scan_result_load(
+        {
+            "db_path": str(tmp_path / "wireless.db"),
+            "scan_id": "scan-large",
+            "raw_file": str(raw_file),
+            "limit": 2_000,
+        },
+        None,
+        None,
+    )
+    frame = encode_event_bytes(finished_event("wireless-large", result))
+
+    assert len(frame) < 64 * 1024
+    assert result["total_items"] == 2_000
+    assert result["rows_omitted"] > 0
+    assert result["raw_text_truncated"] is True
+    assert result["raw_text_original_length"] > len(str(result["raw_text"]))
 
 
 def test_legacy_run_background_task_dispatches_registry(tmp_path: Path) -> None:

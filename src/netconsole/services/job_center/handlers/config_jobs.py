@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import datetime
+import json
 from pathlib import Path
 
 from netconsole.core.database import Database
@@ -22,6 +23,14 @@ from netconsole.services.config_lifecycle_service import (
 from netconsole.services.job_center.job_context import JobContext
 
 
+_CONTENT_TEXT_BUDGET_BYTES = 48 * 1024
+_PAIR_TEXT_BUDGET_BYTES = 18 * 1024
+_PAIR_DIFF_BUDGET_BYTES = 8 * 1024
+_COMPARE_TEXT_BUDGET_BYTES = 8 * 1024
+_COMPARE_ROWS_BUDGET_BYTES = 20 * 1024
+_STRUCTURE_DIFF_BUDGET_BYTES = 4 * 1024
+
+
 def config_compare_latest_running_between_devices(context: JobContext) -> dict[str, object]:
     context.progress("config_compare", 0, 1, "正在比较两台设备最新 running 配置")
     context.check_cancelled()
@@ -37,9 +46,14 @@ def config_compare_latest_running_between_devices(context: JobContext) -> dict[s
     right_text = service.snapshot_text(right_snapshots[0])
     left_label = service.snapshot_label(left_snapshots[0])
     right_label = service.snapshot_label(right_snapshots[0])
-    result = _diff_payload("two_devices", left_label, right_label, left_text, right_text)
-    result["structure_diff"] = structure_diff(left_text, right_text)
-    result["diff_file"] = str(_write_diff_file(context, "two_devices_diff", str(result["raw_diff"])))
+    result, raw_diff = _diff_payload("two_devices", left_label, right_label, left_text, right_text)
+    bounded_structure, omitted = _bounded_structure_diff(
+        structure_diff(left_text, right_text),
+        _STRUCTURE_DIFF_BUDGET_BYTES,
+    )
+    result["structure_diff"] = bounded_structure
+    result["structure_diff_items_omitted"] = omitted
+    result["diff_file"] = str(_write_diff_file(context, "two_devices_diff", raw_diff))
     context.progress("config_compare", 1, 1, "配置比较完成")
     return result
 
@@ -53,8 +67,8 @@ def config_compare_latest_snapshots(context: JobContext) -> dict[str, object]:
     saved = service.list_device_snapshots(device, "saved")
     if not running or not saved:
         raise ValueError("需要先采集 running 和 saved 配置。")
-    result = _snapshot_diff_payload(service, running[0], saved[0], "latest_snapshots")
-    result["diff_file"] = str(_write_diff_file(context, "latest_snapshots_diff", str(result["raw_diff"])))
+    result, raw_diff = _snapshot_diff_payload(service, running[0], saved[0], "latest_snapshots")
+    result["diff_file"] = str(_write_diff_file(context, "latest_snapshots_diff", raw_diff))
     context.progress("config_compare", 1, 1, "配置比较完成")
     return result
 
@@ -65,8 +79,8 @@ def config_compare_snapshot_pair(context: JobContext) -> dict[str, object]:
     repository, service, _database = _snapshot_context(context)
     left = repository.get(int(context.params.get("left_snapshot_id") or 0))
     right = repository.get(int(context.params.get("right_snapshot_id") or 0))
-    result = _snapshot_diff_payload(service, left, right, "snapshot_pair")
-    result["diff_file"] = str(_write_diff_file(context, "snapshot_pair_diff", str(result["raw_diff"])))
+    result, raw_diff = _snapshot_diff_payload(service, left, right, "snapshot_pair")
+    result["diff_file"] = str(_write_diff_file(context, "snapshot_pair_diff", raw_diff))
     context.progress("config_compare", 1, 1, "配置比较完成")
     return result
 
@@ -76,9 +90,11 @@ def config_snapshot_load_content(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
     repository, service, _database = _snapshot_context(context)
     snapshot = repository.get(int(context.params.get("snapshot_id") or 0))
+    full_text = service.snapshot_text(snapshot)
     text, truncated, original_length = _limited_snapshot_text(
-        service.snapshot_text(snapshot),
+        full_text,
         int(context.params.get("max_chars") or 2_000_000),
+        max_json_bytes=_CONTENT_TEXT_BUDGET_BYTES,
     )
     result: dict[str, object] = {
         "snapshot_id": snapshot.id,
@@ -88,7 +104,9 @@ def config_snapshot_load_content(context: JobContext) -> dict[str, object]:
         "original_length": original_length,
     }
     if snapshot.type == "diff":
-        result["diff_file"] = str(_write_diff_file(context, "snapshot_diff", text))
+        result["diff_file"] = str(
+            _write_diff_file(context, "snapshot_diff", full_text)
+        )
     context.progress("config_snapshot_load_content", 1, 1, "配置快照读取完成")
     return result
 
@@ -123,7 +141,11 @@ def config_snapshot_pair_load_content(context: JobContext) -> dict[str, object]:
     for snapshot_id in snapshot_ids:
         context.check_cancelled()
         snapshot = repository.get(snapshot_id)
-        text, truncated, original_length = _limited_snapshot_text(service.snapshot_text(snapshot), max_chars)
+        text, truncated, original_length = _limited_snapshot_text(
+            service.snapshot_text(snapshot),
+            max_chars,
+            max_json_bytes=_PAIR_TEXT_BUDGET_BYTES,
+        )
         rows.append(
             {
                 "snapshot_id": snapshot.id,
@@ -133,10 +155,22 @@ def config_snapshot_pair_load_content(context: JobContext) -> dict[str, object]:
                 "original_length": original_length,
             }
         )
-    raw_diff = str(context.params.get("raw_diff") or "")
-    result: dict[str, object] = {"snapshots": rows, "raw_diff": raw_diff}
-    if raw_diff:
-        result["diff_file"] = str(_write_diff_file(context, "snapshot_pair_content_diff", raw_diff))
+    full_raw_diff = str(context.params.get("raw_diff") or "")
+    raw_diff, raw_diff_truncated, raw_diff_original_length = _limited_snapshot_text(
+        full_raw_diff,
+        len(full_raw_diff),
+        max_json_bytes=_PAIR_DIFF_BUDGET_BYTES,
+    )
+    result: dict[str, object] = {
+        "snapshots": rows,
+        "raw_diff": raw_diff,
+        "raw_diff_truncated": raw_diff_truncated,
+        "raw_diff_original_length": raw_diff_original_length,
+    }
+    if full_raw_diff:
+        result["diff_file"] = str(
+            _write_diff_file(context, "snapshot_pair_content_diff", full_raw_diff)
+        )
     context.progress("config_snapshot_pair_load_content", 2, 2, "配置快照读取完成")
     return result
 
@@ -294,7 +328,7 @@ def _snapshot_diff_payload(
     left: ConfigSnapshot,
     right: ConfigSnapshot,
     kind: str,
-) -> dict[str, object]:
+) -> tuple[dict[str, object], str]:
     return _diff_payload(
         kind,
         service.snapshot_label(left),
@@ -310,26 +344,55 @@ def _diff_payload(
     right_label: str,
     left_text: str,
     right_text: str,
-) -> dict[str, object]:
+) -> tuple[dict[str, object], str]:
     diff = compare_named_config_text(left_text, right_text, left_label, right_label)
     rows, added, removed, modified = build_side_by_side_rows(
         clean_config_for_diff(left_text).splitlines(),
         clean_config_for_diff(right_text).splitlines(),
     )
-    return {
+    bounded_left, left_truncated, left_original_length = _limited_snapshot_text(
+        left_text,
+        len(left_text),
+        max_json_bytes=_COMPARE_TEXT_BUDGET_BYTES,
+    )
+    bounded_right, right_truncated, right_original_length = _limited_snapshot_text(
+        right_text,
+        len(right_text),
+        max_json_bytes=_COMPARE_TEXT_BUDGET_BYTES,
+    )
+    bounded_diff, raw_diff_truncated, raw_diff_original_length = _limited_snapshot_text(
+        diff.raw_diff,
+        len(diff.raw_diff),
+        max_json_bytes=_COMPARE_TEXT_BUDGET_BYTES,
+    )
+    serialized_rows = [asdict(row) for row in rows]
+    bounded_rows, rows_omitted = _bounded_json_items(
+        serialized_rows,
+        _COMPARE_ROWS_BUDGET_BYTES,
+    )
+    result = {
         "kind": kind,
         "left_label": left_label,
         "right_label": right_label,
-        "left_text": left_text,
-        "right_text": right_text,
-        "raw_diff": diff.raw_diff,
-        "diff_rows": [asdict(row) for row in rows],
+        "left_text": bounded_left,
+        "right_text": bounded_right,
+        "raw_diff": bounded_diff,
+        "diff_rows": bounded_rows,
         "diff_summary": {
             "added": added,
             "removed": removed,
             "modified": modified,
         },
+        "left_text_truncated": left_truncated,
+        "left_text_original_length": left_original_length,
+        "right_text_truncated": right_truncated,
+        "right_text_original_length": right_original_length,
+        "raw_diff_truncated": raw_diff_truncated,
+        "raw_diff_original_length": raw_diff_original_length,
+        "diff_row_count": len(serialized_rows),
+        "diff_rows_omitted": rows_omitted,
     }
+    return result, diff.raw_diff
 
 
 def _write_diff_file(context: JobContext, prefix: str, text: str) -> Path:
@@ -340,12 +403,75 @@ def _write_diff_file(context: JobContext, prefix: str, text: str) -> Path:
     return path
 
 
-def _limited_snapshot_text(text: str, max_chars: int) -> tuple[str, bool, int]:
+def _limited_snapshot_text(
+    text: str,
+    max_chars: int,
+    *,
+    max_json_bytes: int = _CONTENT_TEXT_BUDGET_BYTES,
+) -> tuple[str, bool, int]:
     original_length = len(text)
-    if max_chars > 0 and original_length > max_chars:
-        notice = f"\n\n[内容过长，仅显示前 {max_chars} 个字符；完整内容请下载快照查看。]"
-        return text[:max_chars] + notice, True, original_length
-    return text, False, original_length
+    requested_length = min(original_length, max_chars) if max_chars > 0 else original_length
+    candidate = text[:requested_length]
+    if requested_length == original_length and _json_size(candidate) <= max_json_bytes:
+        return candidate, False, original_length
+
+    low = 0
+    high = requested_length
+    selected = ""
+    while low <= high:
+        current = (low + high) // 2
+        value = _truncated_text(text, current)
+        if _json_size(value) <= max_json_bytes:
+            selected = value
+            low = current + 1
+        else:
+            high = current - 1
+    return selected, True, original_length
+
+
+def _bounded_json_items(
+    items: list[dict[str, object]],
+    max_json_bytes: int,
+) -> tuple[list[dict[str, object]], int]:
+    selected: list[dict[str, object]] = []
+    used = 2
+    for item in items:
+        encoded = json.dumps(item, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+        next_size = used + len(encoded) + (1 if selected else 0)
+        if next_size > max_json_bytes:
+            break
+        selected.append(item)
+        used = next_size
+    return selected, len(items) - len(selected)
+
+
+def _bounded_structure_diff(
+    value: dict[str, list[str]],
+    max_json_bytes: int,
+) -> tuple[dict[str, list[str]], int]:
+    flattened = [
+        {"group": str(group), "value": str(item)}
+        for group, items in value.items()
+        for item in items
+    ]
+    selected, omitted = _bounded_json_items(flattened, max_json_bytes)
+    result = {str(group): [] for group in value}
+    for item in selected:
+        result.setdefault(str(item["group"]), []).append(str(item["value"]))
+    return result, omitted
+
+
+def _truncated_text(text: str, length: int) -> str:
+    return (
+        text[:length]
+        + f"\n\n[内容过长，仅显示前 {length} 个字符；完整内容请下载快照或差异 Artifact 查看。]"
+    )
+
+
+def _json_size(value: object) -> int:
+    return len(
+        json.dumps(value, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    )
 
 
 def _write_delete_checkpoint(

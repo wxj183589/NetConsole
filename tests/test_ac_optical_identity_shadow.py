@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+import json
 
 import pytest
 
@@ -270,9 +271,14 @@ def test_optical_job_load_collect_single_adds_shadow_without_changing_result_fie
     assert load.ok is True
     assert load.result["ac_uuid"] == "ac-1"
     assert load.result["summary"] == {"total_aps": 1}
-    assert load.result["resources"][0]["ap_uuid"] == "ap-1"
-    assert load.result["optical_rows"][0]["optical_alarm_status"] == "normal"
-    assert load.result["identity_shadow"]["items"][0]["new_status"] == "matched"
+    assert load.result["resource_count"] == 1
+    assert load.result["optical_row_count"] == 1
+    assert "resources" not in load.result
+    assert "optical_rows" not in load.result
+    assert load.result["identity_shadow"]["matched"] == 1
+    assert load.result["identity_shadow"]["items"] == []
+    assert load.result["identity_shadow"]["items_omitted"] == 1
+    assert len(json.dumps(load.to_event(), ensure_ascii=False).encode("utf-8")) < 64 * 1024
 
     for result in (collect, single):
         assert result.ok is True

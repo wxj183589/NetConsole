@@ -688,13 +688,12 @@ def resolve_effective_trackside_ap_scope(
                         )
                     )
                 else:
-                    if "多个站点" in reason:
-                        ambiguous_online_keys.add(_runtime_resource_key(resource))
-                    suggested_action = (
-                        "检查车站交换机 station_id 与 LLDP 邻居 MAC 后重新刷新。"
-                        if "多个站点" in reason
-                        else "补充或绑定轨旁 AP 基础资料后重新刷新 FIT-AP。"
+                    diagnostic_reason, suggested_action = _unmatched_online_diagnostics(
+                        resource,
+                        reason,
                     )
+                    if "多个站点" in diagnostic_reason:
+                        ambiguous_online_keys.add(_runtime_resource_key(resource))
                     add_unmatched(
                         _runtime_resource_key(resource),
                         TracksideApScopeUnmatchedOnlineItem(
@@ -709,7 +708,7 @@ def resolve_effective_trackside_ap_scope(
                                 or ""
                             ),
                             runtime_station_text=runtime_station_text,
-                            reason=reason or "在线 AP 未匹配到当前有效轨旁 AP 资料。",
+                            reason=diagnostic_reason,
                             suggested_action=suggested_action,
                         ),
                     )
@@ -994,6 +993,34 @@ def _match_resource_reference(
         if len(candidates) > 1:
             return "", "AP 稳定身份匹配到多条资料，需人工处理。"
     return "", "在线 AP 未匹配到当前有效轨旁 AP 资料。"
+
+
+def _unmatched_online_diagnostics(
+    resource: Mapping[str, object | None],
+    reason: str,
+) -> tuple[str, str]:
+    """Explain why an online AP stays unresolved without weakening identity rules."""
+
+    lldp_status = _scope_token(resource.get("lldp_match_status"))
+    if lldp_status == "conflict":
+        return (
+            "AC 侧 LLDP 结果冲突，且未发现当前车站交换机的精确 AP MAC 证据。",
+            "重新采集对应车站交换机 LLDP，确认 AP MAC 唯一归属；或补充轨旁 AP 基础资料 MAC 后重新刷新。",
+        )
+    if lldp_status in {"ambiguous", "multiple"}:
+        return (
+            "AC 侧 LLDP 结果关联到多个候选，且未发现唯一车站交换机 AP MAC 证据，需人工处理。",
+            "核对车站交换机 station_id 与 LLDP 邻居 MAC，消除多候选后重新刷新。",
+        )
+    if "多个站点" in reason:
+        return (
+            reason,
+            "检查车站交换机 station_id 与 LLDP 邻居 MAC 后重新刷新。",
+        )
+    return (
+        reason or "在线 AP 未匹配到当前有效轨旁 AP 资料。",
+        "补充或绑定轨旁 AP 基础资料 MAC 后重新刷新 FIT-AP。",
+    )
 
 
 def _excluded_reference(

@@ -24,6 +24,9 @@
 
 ### Worker 协议与 FIT-AP 刷新
 
+- 修复轨旁 AP 业务 XLSX 导出请求把 proposal 展示字段误发给严格 DTO 导致 422；前端现在只发送 `generated_at/suggested_name`，继续复用用户预选保存位置与 Export Process。
+- AC 总览、轨旁 AP 业务、AP 扩展、FIT-AP 资源读取和光衰读取的 Worker 终态改为计数、摘要和有界 Identity 聚合；配置正文/Diff 与旧无线扫描结果按 JSON 编码字节预算返回有界预览，完整配置和差异继续通过受管 Artifact 获取。
+- 轨旁 AP 关联诊断明确区分 AC 侧 LLDP `conflict/multiple` 与唯一车站交换机 AP MAC 证据；冲突时保持待关联并提示重新采集 LLDP 或补充基础资料 MAC，不使用名称、IP 或运行状态强行归站。
 - 修复 758 台 FIT-AP 光衰全部采集并入库后，完整资源、光衰和 Identity 明细形成约 4.81 MB（4,813,638 bytes）Worker 终态帧而导致任务失败；collect 终态改为有界持久化摘要，单 AP 日志耗时改为不含线程池排队时间，Windows 64 并发上限和设备命令保持不变。
 - 修复大局点“更新 AC 信息”和单 AP“深度更新”在数据已成功入库后仍因完整资源快照超过 Worker 1 MiB 单帧限制而失败；两类任务改为返回有界持久化摘要，页面按 `reload_required` 重新读取 SQLite。
 - FIT-AP collect 终态改为有界持久化摘要，不再携带完整资源列表；974 AP、758 LLDP 规模由任务摘要回执，页面通过分页 GET 重新加载 SQLite。

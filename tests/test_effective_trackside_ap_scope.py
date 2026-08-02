@@ -554,6 +554,30 @@ def test_unmatched_online_resources_are_diagnostics_not_exclusions() -> None:
     assert len(scope.excluded_items) == 0
 
 
+def test_conflicting_ac_lldp_reports_evidence_gap_without_name_or_ip_fallback() -> None:
+    resource = _resource(
+        None,
+        "AP-CONFLICT",
+        "001122334455",
+        ap_uuid="ap-conflict",
+    )
+    resource["lldp_match_status"] = "conflict"
+    scope = _resolve(
+        stations=[_station(1, "01站点", "node-1", 1)],
+        plans=[{"station_name": "站点", "ap_count": 1, "sequence_no": 1}],
+        references=[],
+        resources=[resource],
+    )
+
+    assert scope.fit_ap_matched_count == 0
+    assert scope.fit_ap_unmatched_online_count == 1
+    item = scope.unmatched_online_items[0]
+    assert "AC 侧 LLDP 结果冲突" in item.reason
+    assert "精确 AP MAC" in item.reason
+    assert "名称" not in item.suggested_action
+    assert "补充轨旁 AP 基础资料 MAC" in item.suggested_action
+
+
 def test_unique_lldp_station_evidence_projects_runtime_ap_into_station() -> None:
     station = _station(1, "01站点", "node-1", 1)
     station_id = str(station["station_id"])

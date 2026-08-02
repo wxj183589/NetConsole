@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +13,12 @@ from netconsole.services.job_center.job_context import BackgroundTaskCancelled a
 
 ProgressCallback = Callable[[str, int, int, str], None]
 CancelCallback = Callable[[], bool]
+
+_CONTENT_TEXT_BUDGET_BYTES = 48 * 1024
+_PAIR_TEXT_BUDGET_BYTES = 18 * 1024
+_PAIR_DIFF_BUDGET_BYTES = 8 * 1024
+_WIRELESS_ROWS_BUDGET_BYTES = 28 * 1024
+_WIRELESS_RAW_TEXT_BUDGET_BYTES = 16 * 1024
 
 
 class BackgroundTaskCancelled(JobCenterTaskCancelled):
@@ -264,11 +271,29 @@ def _wireless_scan_result_load(params: dict[str, Any], progress: ProgressCallbac
     repository = WirelessScanRepository(Path(str(params.get("db_path") or "")))
     all_rows = repository.list_results(str(params.get("scan_id") or ""))
     limit = max(1, min(int(params.get("limit") or 500), 2000))
-    rows = [repository_row_to_display_row(row) for row in all_rows[:limit]]
+    all_display_rows = [repository_row_to_display_row(row) for row in all_rows[:limit]]
+    rows, rows_omitted = _bounded_json_items(
+        all_display_rows,
+        _WIRELESS_ROWS_BUDGET_BYTES,
+    )
     raw_file = Path(str(params.get("raw_file") or ""))
-    raw_text = read_text_with_fallback(raw_file) if raw_file.is_file() else ""
+    full_raw_text = read_text_with_fallback(raw_file) if raw_file.is_file() else ""
+    raw_text, raw_text_truncated, raw_text_original_length = _limited_terminal_text(
+        full_raw_text,
+        int(params.get("raw_max_chars") or len(full_raw_text)),
+        max_json_bytes=_WIRELESS_RAW_TEXT_BUDGET_BYTES,
+    )
     _emit(progress, "wireless_scan_result_load", 2, 2, "无线扫描结果加载完成")
-    return {"rows": rows, "total_items": len(all_rows), "raw_text": raw_text, "scan_id": str(params.get("scan_id") or "")}
+    return {
+        "rows": rows,
+        "total_items": len(all_rows),
+        "returned_items": len(rows),
+        "rows_omitted": rows_omitted,
+        "raw_text": raw_text,
+        "raw_text_truncated": raw_text_truncated,
+        "raw_text_original_length": raw_text_original_length,
+        "scan_id": str(params.get("scan_id") or ""),
+    }
 
 
 def _device_csv_import(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
@@ -1393,12 +1418,17 @@ def _config_snapshot_service(params: dict[str, Any]) -> tuple[Any, Any]:
     return repository, service
 
 
-def _limited_snapshot_text(text: str, max_chars: int) -> tuple[str, bool, int]:
-    original_length = len(text)
-    if max_chars > 0 and original_length > max_chars:
-        notice = f"\n\n[内容过长，仅显示前 {max_chars} 个字符；完整内容请下载快照查看。]"
-        return text[:max_chars] + notice, True, original_length
-    return text, False, original_length
+def _limited_snapshot_text(
+    text: str,
+    max_chars: int,
+    *,
+    max_json_bytes: int = _CONTENT_TEXT_BUDGET_BYTES,
+) -> tuple[str, bool, int]:
+    return _limited_terminal_text(
+        text,
+        max_chars,
+        max_json_bytes=max_json_bytes,
+    )
 
 
 def _config_snapshot_load_content(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
@@ -1406,7 +1436,11 @@ def _config_snapshot_load_content(params: dict[str, Any], progress: ProgressCall
     _check_cancel(should_cancel)
     repository, service = _config_snapshot_service(params)
     snapshot = repository.get(int(params.get("snapshot_id") or 0))
-    text, truncated, original_length = _limited_snapshot_text(service.snapshot_text(snapshot), int(params.get("max_chars") or 2_000_000))
+    full_text = service.snapshot_text(snapshot)
+    text, truncated, original_length = _limited_snapshot_text(
+        full_text,
+        int(params.get("max_chars") or 2_000_000),
+    )
     _emit(progress, "config_snapshot_load_content", 1, 1, "配置快照读取完成")
     result = {
         "snapshot_id": snapshot.id,
@@ -1416,7 +1450,14 @@ def _config_snapshot_load_content(params: dict[str, Any], progress: ProgressCall
         "original_length": original_length,
     }
     if snapshot.type == "diff":
-        result["diff_file"] = str(_write_background_text_artifact(params, "config_diff", "snapshot_diff", text))
+        result["diff_file"] = str(
+            _write_background_text_artifact(
+                params,
+                "config_diff",
+                "snapshot_diff",
+                full_text,
+            )
+        )
     return result
 
 
@@ -1445,7 +1486,11 @@ def _config_snapshot_pair_load_content(params: dict[str, Any], progress: Progres
     max_chars = int(params.get("max_chars") or 2_000_000)
     rows: list[dict[str, Any]] = []
     for snapshot in snapshots:
-        text, truncated, original_length = _limited_snapshot_text(service.snapshot_text(snapshot), max_chars)
+        text, truncated, original_length = _limited_snapshot_text(
+            service.snapshot_text(snapshot),
+            max_chars,
+            max_json_bytes=_PAIR_TEXT_BUDGET_BYTES,
+        )
         rows.append(
             {
                 "snapshot_id": snapshot.id,
@@ -1455,10 +1500,27 @@ def _config_snapshot_pair_load_content(params: dict[str, Any], progress: Progres
                 "original_length": original_length,
             }
         )
-    raw_diff = str(params.get("raw_diff") or "")
-    result: dict[str, Any] = {"snapshots": rows, "raw_diff": raw_diff}
-    if raw_diff:
-        result["diff_file"] = str(_write_background_text_artifact(params, "config_diff", "snapshot_pair_content_diff", raw_diff))
+    full_raw_diff = str(params.get("raw_diff") or "")
+    raw_diff, raw_diff_truncated, raw_diff_original_length = _limited_terminal_text(
+        full_raw_diff,
+        len(full_raw_diff),
+        max_json_bytes=_PAIR_DIFF_BUDGET_BYTES,
+    )
+    result: dict[str, Any] = {
+        "snapshots": rows,
+        "raw_diff": raw_diff,
+        "raw_diff_truncated": raw_diff_truncated,
+        "raw_diff_original_length": raw_diff_original_length,
+    }
+    if full_raw_diff:
+        result["diff_file"] = str(
+            _write_background_text_artifact(
+                params,
+                "config_diff",
+                "snapshot_pair_content_diff",
+                full_raw_diff,
+            )
+        )
     _emit(progress, "config_snapshot_pair_load_content", 2, 2, "配置快照读取完成")
     return result
 
@@ -2062,6 +2124,57 @@ def _read_named_table_file(
 def _emit(progress: ProgressCallback | None, stage: str, current: int, total: int, message: str) -> None:
     if progress:
         progress(stage, current, total, message)
+
+
+def _limited_terminal_text(
+    text: str,
+    max_chars: int,
+    *,
+    max_json_bytes: int,
+) -> tuple[str, bool, int]:
+    original_length = len(text)
+    requested_length = min(original_length, max_chars) if max_chars > 0 else original_length
+    candidate = text[:requested_length]
+    if requested_length == original_length and _json_size(candidate) <= max_json_bytes:
+        return candidate, False, original_length
+
+    low = 0
+    high = requested_length
+    selected = ""
+    while low <= high:
+        current = (low + high) // 2
+        value = (
+            text[:current]
+            + f"\n\n[内容过长，仅显示前 {current} 个字符；完整内容请从原始文件或受管 Artifact 查看。]"
+        )
+        if _json_size(value) <= max_json_bytes:
+            selected = value
+            low = current + 1
+        else:
+            high = current - 1
+    return selected, True, original_length
+
+
+def _bounded_json_items(
+    items: list[dict[str, Any]],
+    max_json_bytes: int,
+) -> tuple[list[dict[str, Any]], int]:
+    selected: list[dict[str, Any]] = []
+    used = 2
+    for item in items:
+        encoded = json.dumps(item, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+        next_size = used + len(encoded) + (1 if selected else 0)
+        if next_size > max_json_bytes:
+            break
+        selected.append(item)
+        used = next_size
+    return selected, len(items) - len(selected)
+
+
+def _json_size(value: object) -> int:
+    return len(
+        json.dumps(value, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    )
 
 
 def _check_cancel(should_cancel: CancelCallback | None) -> None:

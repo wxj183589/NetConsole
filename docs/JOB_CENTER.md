@@ -43,7 +43,9 @@ Worker JSONL 是本程序内部协议，不使用 Windows 当前代码页。Work
 
 `TaskRuntime` 对 stdout/stderr 各维护 strict 增量 UTF-8 decoder，汉字即使跨任意 chunk 也能恢复；非法 bytes、无效 JSON、协议 schema 错误、超长 frame、未知消息类型或当前 Worker 事件中的 U+FFFD 不执行 `errors="replace"`，也不写入损坏事件。首次 fatal 协议错误记录受控失败原因并停止接受该 Worker 后续事件；Adapter 在独立线程执行有界 `terminate -> kill -> Windows Job Object close`，避免 stdout reader 等待自身退出。Runtime 必须等进程退出并由 `complete(job_id, exit_code)` 收口后，才发布唯一 `FAILED / WORKER_PROTOCOL_CORRUPTED` 终态并注销，避免提前注销后丢失 exit code、重复终态或完成回调竞态。
 
-Worker 写帧前使用同一 1 MiB 上限执行 JSON 序列化和 UTF-8 字节检查；超大终态改发小型结构化错误帧，不通过提高上限掩盖业务 payload。协议失败详情投影 `reason / stream / frame_bytes / max_frame_bytes / worker_exit_code / data_persisted` 到任务详情；相关日志只记录这些结构化字段、task id 和生命周期动作，不记录原始协议 payload。普通任务终态只返回有界摘要，大列表、原始回显和明细通过 Repository 分页、受管 Artifact 或领域查询接口读取，目标建议小于 64 KiB。
+Worker 写帧前使用固定的 `1,048,576 bytes`（1 MiB）上限执行 JSON 序列化和 UTF-8 字节检查；超大终态改发小型结构化错误帧，不通过提高上限掩盖业务 payload。协议失败详情投影 `reason / stream / frame_bytes / max_frame_bytes / worker_exit_code / data_persisted` 到任务详情；相关日志只记录这些结构化字段、task id 和生命周期动作，不记录原始协议 payload。普通任务终态只返回有界摘要，大列表、原始回显和明细通过 Repository 分页、受管 Artifact 或领域查询接口读取，目标建议小于 64 KiB。后续即使调整协议硬上限，领域 handler 的有界终态和查询/Artifact 分离规则仍保持不变。
+
+配置正文、双快照内容、左右配置、原始 Diff、结构化 Diff 行和旧无线扫描原始文本均按 JSON ASCII 转义后的实际字节预算截断，而不是只按 Python 字符数估算。配置任务保留完整快照下载和完整 `.diff` Artifact；终态返回完整计数、原始长度、截断/省略标记和有界预览。旧无线扫描兼容 handler 同样返回总数、返回数、省略数和有界 raw 预览，不再把整份原始文件写入单个 Worker 帧。
 
 任务快照持久化 `text_integrity / text_integrity_reason / text_integrity_updated_at / text_schema_version / producer_kind / producer_version / producer_commit`。新事件在写入时 O(1) 更新摘要，列表与详情读取同一字段；详情不再扫描完整事件历史，Vue 的 summary 与 `selectedDetail` 分开保存，列表轮询不会覆盖详情。旧 schema 只在迁移时扫描一次已有事件并写回摘要，后续查询复杂度不随事件总数增长。
 
@@ -259,7 +261,8 @@ Vue 只向具名 FastAPI endpoint 提交白名单 DTO；Router 调用对应 Appl
 
 - `ac_fit_ap_resources_refresh` 保持原 task_type；`mode=load` 读取现有资源，`mode=collect` 通过 `AcService / AcResourceService` 执行设备采集，兼容旧调用方。
 - 页面不再创建 `AcResourceCollectThread`。Worker 内加载 AC 设备、创建 repository，并调用已有 `collect_h3c_fit_ap_resources` 完成 AP 列表、状态、地址、Radio、BSSID 和 LLDP 采集解析。
-- `ac_info_refresh`、`ac_fit_ap_detail_refresh` 与 `ac_fit_ap_resources_refresh(mode=collect)` 的成功终态只返回 AC、collect run、FIT-AP/未认证/BSSID/LLDP 计数、失败命令摘要、snapshot revision、`data_persisted`、`reload_required` 及页面所需的小型 collection 摘要，不携带完整 `resources`、LLDP、BSSID 或 raw。页面收到 `reload_required` 后通过正常分页 GET 重新读取 SQLite。旧 `mode=load` 仍返回完整快照，保持兼容查询契约。
+- `ac_info_refresh`、`ac_fit_ap_detail_refresh` 与 `ac_fit_ap_resources_refresh(mode=collect)` 的成功终态只返回 AC、collect run、FIT-AP/未认证/BSSID/LLDP 计数、失败命令摘要、snapshot revision、`data_persisted`、`reload_required` 及页面所需的小型 collection 摘要，不携带完整 `resources`、LLDP、BSSID 或 raw。`ac_fit_ap_resources_refresh(mode=load)` 也只返回 AC、summary、资源数量和 `loaded`，页面通过正常分页 GET 读取 SQLite。
+- `ac_overview_refresh`、`ac_trackside_business_refresh` 和 `ac_ap_extensions_refresh` 的本地重建终态只返回行数、总览统计和有界 AP Identity 聚合，不返回完整总览、离线台账、轨旁业务行、扩展行或逐项 Identity 明细。
 - `source=auto` 只选择已验证的数据策略。当前 H3C AP 资源由 CLI 信息最完整，因此默认继续使用 CLI；不得因架构迁移强制改成 SNMP。
 - AC Domain 只接受现有 H3C CLI 采集；`source=snmp` 必须明确拒绝，不能借设备管理 SNMP v1/v2c 基础识别恢复 AC SNMP 采集。
 - CLI 原始回显、命令 JSONL、collect run、parser 和 repository 写入规则保持原状。命令失败转换为 Job error，用户取消转换为唯一 cancelled 终态。
@@ -270,7 +273,7 @@ Vue 只向具名 FastAPI endpoint 提交白名单 DTO；Router 调用对应 Appl
 - `ac_fit_ap_optical_refresh` 保持原 task_type；`mode=load` 读取并关联现有光衰，`mode=collect` 在 Worker 内调用 `AcOpticalService`。`refresh_scope=all/single` 分别承载全量和单 AP 刷新，不增加平行 task_type。
 - 页面不再创建 `FitApOpticalCollectThread`，只提交 device/AP 标识、并发、来源和取消宽限期，并在 finished/failed/cancelled 后恢复按钮。未显式传入并发时默认使用共享 FIT-AP 光衰并发 64；旧设置或旧调用传入 1000/200 时，Worker 仍按目标 AP 数、用户请求值和当前平台安全上限裁剪实际 worker 数。
 - `AcOpticalService` 继续调用既有 `collect_h3c_fit_ap_optical`；AP 控制台启用、Telnet 命令、解析、重试、历史合并、raw log 和 repository 写入语义均不改变。
-- `mode=collect` 成功终态只返回成功/失败数量、collect run、并发裁剪、轮次、`data_persisted`、`reload_required` 和 AP Identity 聚合，不携带完整 FIT-AP 资源、光衰行或逐项 Identity 明细；页面在终态后通过正常查询重新读取 SQLite。`mode=load` 继续返回完整快照。
+- `mode=collect` 成功终态只返回成功/失败数量、collect run、并发裁剪、轮次、`data_persisted`、`reload_required` 和 AP Identity 聚合，不携带完整 FIT-AP 资源、光衰行或逐项 Identity 明细；页面在终态后通过正常查询重新读取 SQLite。`mode=load` 同样只返回 AC、summary、资源/光衰行数量、有界 Identity 聚合和 `loaded`。
 - 单 AP 完成事件的 `elapsed_ms` 从线程实际开始执行时计算，不包含等待线程池槽位的排队时间；Windows 平台安全并发上限仍为 64，不通过虚增并发或缩短设备命令超时掩盖现场耗时。
 - AP 在线/离线关联和交换机侧光模块状态在 Domain 层合并。交换机侧无光不直接改写在线 AP 的 AP 侧异常；AP 离线仍按现有状态映射为历史光衰展示。
 - 采集取消转换为唯一 cancelled 终态；全部失败转换为结构化 error；部分失败以 finished 返回 `partial_success/failed_aps`，便于 UI 保留现有结果并提示。

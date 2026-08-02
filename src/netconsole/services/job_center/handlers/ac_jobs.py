@@ -42,16 +42,83 @@ def _string_list(value: object, fallback: object = None) -> list[str]:
 
 
 fit_ap_metadata_import = legacy_handler(legacy_tasks._fit_ap_metadata_import)
-ac_overview_refresh = legacy_handler(legacy_tasks._ac_overview_refresh)
 omnipeek_name_table_preview = legacy_handler(legacy_tasks._omnipeek_name_table_preview)
 ac_overview_history_snapshot = legacy_handler(legacy_tasks._ac_overview_history_snapshot)
 ac_station_online_history_page = legacy_handler(legacy_tasks._ac_station_online_history_page)
 ac_ap_history_page = legacy_handler(legacy_tasks._ac_ap_history_page)
-ac_trackside_business_refresh = legacy_handler(legacy_tasks._ac_trackside_business_refresh)
 ac_devices_refresh = legacy_handler(legacy_tasks._ac_devices_refresh)
 ac_ap_extension_delete = legacy_handler(legacy_tasks._ac_ap_extension_delete)
 ac_ap_extension_clear = legacy_handler(legacy_tasks._ac_ap_extension_clear)
 ac_station_overview_value_save = legacy_handler(legacy_tasks._ac_station_overview_value_save)
+
+
+def _bounded_identity_shadow_payload(payload: object) -> dict[str, object]:
+    result = dict(payload) if isinstance(payload, dict) else {}
+    items = result.get("items")
+    if isinstance(items, list):
+        result["items"] = []
+        result["items_omitted"] = len(items)
+    return result
+
+
+def _integer(value: object) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _overview_terminal_payload(result: dict[str, object]) -> dict[str, object]:
+    overview_rows = [
+        dict(row)
+        for row in result.get("overview_rows") or []
+        if isinstance(row, dict)
+    ]
+    total_row = next(
+        (row for row in overview_rows if str(row.get("site") or "") == "合计"),
+        {},
+    )
+    if not total_row:
+        total_row = {
+            "total": sum(_integer(row.get("total")) for row in overview_rows),
+            "online": sum(_integer(row.get("online")) for row in overview_rows),
+            "offline": sum(_integer(row.get("offline")) for row in overview_rows),
+        }
+    ledger_rows = result.get("offline_ap_ledger_rows") or []
+    return {
+        "overview_row_count": len(overview_rows),
+        "offline_ap_ledger_row_count": len(ledger_rows) if isinstance(ledger_rows, list) else 0,
+        "overview_summary": {
+            "total": _integer(total_row.get("total")),
+            "online": _integer(total_row.get("online")),
+            "offline": _integer(total_row.get("offline")),
+        },
+        "uses_trackside_plan": bool(result.get("uses_trackside_plan")),
+        "loaded": True,
+    }
+
+
+def ac_overview_refresh(context: JobContext) -> dict[str, object]:
+    result = legacy_tasks._ac_overview_refresh(
+        context.params,
+        context.progress_callback,
+        context.should_cancel,
+    )
+    return _overview_terminal_payload(result)
+
+
+def ac_trackside_business_refresh(context: JobContext) -> dict[str, object]:
+    result = legacy_tasks._ac_trackside_business_refresh(
+        context.params,
+        context.progress_callback,
+        context.should_cancel,
+    )
+    rows = result.get("rows") or []
+    return {
+        "row_count": len(rows) if isinstance(rows, list) else 0,
+        "identity_shadow": _bounded_identity_shadow_payload(result.get("identity_shadow")),
+        "loaded": True,
+    }
 
 
 def ac_fit_ap_delete_many(context: JobContext) -> dict[str, object]:
@@ -121,7 +188,13 @@ def ac_ap_extensions_refresh(context: JobContext) -> dict[str, object]:
     result = legacy_tasks._ac_ap_extensions_refresh(context.params, context.progress_callback, context.should_cancel)
     rows = [dict(row) for row in result.get("rows") or [] if isinstance(row, dict)]
     repository = AcRepository(Database(Path(str(context.params.get("db_path") or ""))))
-    return {**result, "identity_shadow": _identity_shadow_payload(repository, rows, context.params)}
+    return {
+        "row_count": len(rows),
+        "identity_shadow": _bounded_identity_shadow_payload(
+            _identity_shadow_payload(repository, rows, context.params)
+        ),
+        "loaded": True,
+    }
 
 
 def ac_ap_extension_save(context: JobContext) -> dict[str, object]:
@@ -171,9 +244,14 @@ def ac_fit_ap_resources_refresh(context: JobContext) -> dict[str, object]:
     ac_uuid = str(params.get("device_uuid") or params.get("ac_uuid") or params.get("device_id") or params.get("ac_id") or "")
     if str(params.get("mode") or "load").lower() != "collect":
         context.progress("ac_fit_ap_resources_refresh", 0, 1, "正在读取 FIT-AP 资源")
-        payload = resource_service.load_snapshot(ac_uuid).to_payload()
+        snapshot = resource_service.load_snapshot(ac_uuid)
         context.progress("ac_fit_ap_resources_refresh", 1, 1, "FIT-AP 资源刷新完成")
-        return payload
+        return {
+            "ac_uuid": snapshot.ac_device_uuid,
+            "summary": dict(snapshot.summary),
+            "resource_count": len(snapshot.resources),
+            "loaded": True,
+        }
 
     request = AcResourceRefreshRequest(
         device_uuid=ac_uuid,
@@ -255,12 +333,26 @@ def ac_fit_ap_optical_refresh(context: JobContext) -> dict[str, object]:
     )
     ac_uuid = str(params.get("device_uuid") or params.get("ac_uuid") or params.get("device_id") or params.get("ac_id") or "")
     if str(params.get("mode") or "load").lower() != "collect":
-        payload = service.load_optical_snapshot(
+        snapshot = service.load_optical_snapshot(
             ac_uuid,
             progress_callback=context.progress,
             should_cancel=context.should_cancel,
-        ).to_payload()
-        return _append_optical_identity_shadow(payload, ac_uuid)
+        )
+        payload = _append_optical_identity_shadow(
+            snapshot.to_payload(),
+            ac_uuid,
+            optical_rows=snapshot.optical_rows,
+            fit_ap_rows=snapshot.resources,
+            include_items=False,
+        )
+        return {
+            "ac_uuid": snapshot.ac_device_uuid,
+            "summary": dict(snapshot.summary),
+            "resource_count": len(snapshot.resources),
+            "optical_row_count": len(snapshot.optical_rows),
+            "identity_shadow": payload["identity_shadow"],
+            "loaded": True,
+        }
 
     refresh_scope = str(params.get("refresh_scope") or "all").lower()
     request = AcOpticalRefreshRequest(

@@ -27,16 +27,21 @@ Vue AC 管理 -> POST /api/ac-management/refresh/fit-ap
 的 collect 终态均不携带完整 FIT-AP 资源、LLDP、BSSID 或 raw，只返回
 更新计数、collect run、失败命令摘要、snapshot revision、
 `data_persisted`、`reload_required` 及页面所需的小型 collection 摘要。
-这使采集回执与资源查询彻底分离，避免大局点结果超过 Worker 1 MiB
-单帧限制。兼容 `mode=load` 仍可返回完整快照；活动页面使用正式分页接口
-读取资源。
+`ac_fit_ap_resources_refresh(mode=load)` 也只返回 AC、summary、资源数量
+和 `loaded`。这使任务回执与资源查询彻底分离，避免大局点结果超过 Worker
+1 MiB 单帧限制；活动页面使用正式分页接口读取资源。
 
 `ac_fit_ap_optical_refresh` 的 collect 终态同样只返回成功/失败数量、
 collect run、并发与重试轮次、持久化状态和 AP Identity 聚合，不返回完整
-FIT-AP 资源、光衰行或逐项 Identity 明细。页面在任务完成后重新查询
-SQLite；兼容 `mode=load` 仍返回完整光衰快照。单 AP 日志耗时从线程实际
-执行开始计算，不再包含等待线程池槽位的时间；Windows 并发上限保持 64，
-AP 控制台启用、三条 Telnet 采集命令和超时不变。
+FIT-AP 资源、光衰行或逐项 Identity 明细。`mode=load` 只返回 AC、summary、
+资源/光衰行数量、有界 Identity 聚合和 `loaded`。页面在任务完成后重新查询
+SQLite。单 AP 日志耗时从线程实际执行时计算，不再包含等待线程池槽位的
+时间；Windows 并发上限保持 64，AP 控制台启用、三条 Telnet 采集命令和
+超时不变。
+
+AC 总览、轨旁 AP 业务和 AP 扩展的本地重建终态也只保留行数、总览统计和
+有界 AP Identity 聚合；完整总览、离线台账、业务行和扩展行由现有查询接口
+读取。终态完成不再等价于把页面明细复制进任务结果。
 
 ## 页面能力
 

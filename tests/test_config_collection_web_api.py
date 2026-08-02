@@ -29,6 +29,7 @@ from netconsole.services.config_collection_web_service import CONFIG_WEB_OWNER, 
 from netconsole.services import config_collection_job_handlers
 from netconsole.services.config_lifecycle_service import ConfigLifecycleService
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
+from netconsole.services.job_center.handlers import config_jobs
 from netconsole.services.job_center.job_events import cancelled_event, error_event, finished_event, progress_event
 from netconsole.services.job_center.job_models import JobSpec
 from netconsole.services.job_center.job_registry import dispatch_job, registered_task_types
@@ -36,7 +37,7 @@ from netconsole.services.job_center.local_process_adapter import LocalProcessCom
 from netconsole.services.job_center.query_service import JobCenterQueryService
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
-from netconsole.services.job_center.worker_protocol import encode_event
+from netconsole.services.job_center.worker_protocol import encode_event, encode_event_bytes
 
 
 class _NoopAsyncService:
@@ -466,6 +467,83 @@ def test_config_web_compare_adapter_reuses_lifecycle_service_and_hides_absolute_
     assert "vlan 10" in artifact.text
     assert "artifact_id" not in pending_status.json()["result"]
     assert pending_artifact.status_code == 404
+
+
+def test_config_terminal_previews_stay_below_normal_frame_budget() -> None:
+    left_text = "\n".join(f"interface GigabitEthernet1/0/{index} 配置" for index in range(20_000))
+    right_text = "\n".join(f"interface GigabitEthernet1/0/{index} 修改" for index in range(20_000))
+
+    result, full_raw_diff = config_jobs._diff_payload(
+        "snapshot_pair",
+        "左侧配置",
+        "右侧配置",
+        left_text,
+        right_text,
+    )
+    frame = encode_event_bytes(finished_event("large-config-diff", result))
+    content, truncated, original_length = config_jobs._limited_snapshot_text(
+        "配置正文" * 500_000,
+        2_000_000,
+    )
+    content_frame = encode_event_bytes(
+        finished_event(
+            "large-config-content",
+            {
+                "text": content,
+                "truncated": truncated,
+                "original_length": original_length,
+            },
+        )
+    )
+
+    assert len(frame) < 64 * 1024
+    assert len(content_frame) < 64 * 1024
+    assert result["left_text_truncated"] is True
+    assert result["right_text_truncated"] is True
+    assert result["raw_diff_truncated"] is True
+    assert result["diff_rows_omitted"] > 0
+    assert len(full_raw_diff) > len(str(result["raw_diff"]))
+    assert truncated is True
+    assert original_length == 2_000_000
+
+
+def test_large_diff_snapshot_keeps_full_artifact_and_bounded_preview(
+    tmp_path: Path,
+) -> None:
+    _app, paths, device, _running, _saved, _adapter = _fixture(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    lifecycle = ConfigLifecycleService("demo", database, paths)
+    full_text = "\n".join(
+        f"-interface GigabitEthernet1/0/{index} 原配置"
+        for index in range(30_000)
+    )
+    snapshot = lifecycle._write_snapshot(
+        device,
+        "diff",
+        "20260802_180000",
+        full_text,
+    )
+
+    result = dispatch_job(
+        JobSpec(
+            job_id="large-diff-snapshot",
+            task_type="config_snapshot_load_content",
+            params={
+                "site_name": "demo",
+                "db_path": str(paths.site_db_path("demo")),
+                "app_root": str(paths.app_root),
+                "data_root": str(paths.data_root),
+                "snapshot_id": snapshot.id,
+            },
+        )
+    )
+    artifact_text = Path(str(result["diff_file"])).read_text(encoding="utf-8")
+    frame = encode_event_bytes(finished_event("large-diff-snapshot", result))
+
+    assert result["truncated"] is True
+    assert len(str(result["text"])) < len(full_text)
+    assert artifact_text == full_text
+    assert len(frame) < 64 * 1024
 
 
 def test_config_collection_delete_requires_scoped_one_time_confirmation(
