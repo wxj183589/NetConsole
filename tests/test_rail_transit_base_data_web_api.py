@@ -543,6 +543,83 @@ def test_station_source_preview_matches_real_style_numbered_batch_without_duplic
     )
 
 
+def test_station_source_preview_recovers_single_stale_device_binding(
+    tmp_path: Path,
+) -> None:
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    now = "2026-08-01T08:00:00"
+    with Database(db_path).connect() as conn:
+        group_id = conn.execute(
+            "INSERT INTO device_groups (site_id, name, sort_order, created_at, updated_at) VALUES ('demo', '车站', 2, ?, ?)",
+            (now, now),
+        ).lastrowid
+        conn.execute(
+            """
+            INSERT INTO devices (
+                device_uuid, name, system_name, station, station_id, group_id,
+                primary_address, device_vendor, device_type, created_at, updated_at
+            ) VALUES ('station-stale', '设备A', 'SYS-A', '01-新站', 'station:deleted', ?, '10.25.0.1', 'H3C', 'SWITCH', ?, ?)
+            """,
+            (group_id, now, now),
+        )
+        conn.commit()
+
+    with TestClient(_app(paths, tmp_path)) as client:
+        before = _fingerprint(db_path)
+        payload = client.get("/api/rail-transit/base-data/station-source-preview").json()
+
+    assert _fingerprint(db_path) == before
+    candidate = next(item for item in payload["candidates"] if item["name"] == "新站")
+    assert candidate["match_status"] == "create"
+    assert candidate["processing_strategy"] == "create"
+    stale_issue = next(
+        issue
+        for issue in candidate["issues"]
+        if issue["code"] == "station_source_device_binding_stale"
+    )
+    assert stale_issue["severity"] == "warning"
+    assert stale_issue["blocking"] is False
+    assert payload["conflict_count"] == 0
+
+
+def test_station_source_preview_keeps_multiple_stale_bindings_blocking(
+    tmp_path: Path,
+) -> None:
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    now = "2026-08-01T08:00:00"
+    with Database(db_path).connect() as conn:
+        group_id = conn.execute(
+            "INSERT INTO device_groups (site_id, name, sort_order, created_at, updated_at) VALUES ('demo', '车站', 2, ?, ?)",
+            (now, now),
+        ).lastrowid
+        conn.executemany(
+            """
+            INSERT INTO devices (
+                device_uuid, name, system_name, station, station_id, group_id,
+                primary_address, device_vendor, device_type, created_at, updated_at
+            ) VALUES (?, ?, ?, '02-多ID站', ?, ?, ?, 'H3C', 'SWITCH', ?, ?)
+            """,
+            [
+                ("station-stale-a", "设备A", "SYS-A", "station:deleted-a", group_id, "10.26.0.1", now, now),
+                ("station-stale-b", "设备B", "SYS-B", "station:deleted-b", group_id, "10.26.0.2", now, now),
+            ],
+        )
+        conn.commit()
+
+    with TestClient(_app(paths, tmp_path)) as client:
+        payload = client.get("/api/rail-transit/base-data/station-source-preview").json()
+
+    candidate = next(item for item in payload["candidates"] if item["name"] == "多ID站")
+    assert candidate["match_status"] == "conflict"
+    issue = next(
+        issue
+        for issue in candidate["issues"]
+        if issue["code"] == "station_source_device_binding_conflict"
+    )
+    assert issue["blocking"] is True
+    assert payload["conflict_count"] == 1
+
+
 def test_station_template_download_preview_and_export_are_structured_xlsx(tmp_path: Path) -> None:
     paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
     _insert_station_source_devices(db_path)

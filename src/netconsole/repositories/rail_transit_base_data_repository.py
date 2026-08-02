@@ -403,7 +403,8 @@ class RailTransitBaseDataRepository:
                   AND (
                     COALESCE(station_name, '') != '' OR COALESCE(section_name, '') != '' OR
                     COALESCE(section_start_station, '') != '' OR COALESCE(section_end_station, '') != '' OR
-                    COALESCE(line_side, '') != '' OR COALESCE(direction, '') != ''
+                    COALESCE(line_side, '') != '' OR COALESCE(direction, '') != '' OR
+                    COALESCE(station_id, '') != '' OR COALESCE(section_id, '') != ''
                   )
                 """
             ).fetchall()
@@ -411,7 +412,7 @@ class RailTransitBaseDataRepository:
                 connection.execute(
                     """
                     UPDATE ap_extension_points
-                    SET station_name = '', section_name = '', section_start_station = '',
+                    SET station_id = '', section_id = '', station_name = '', section_name = '', section_start_station = '',
                         section_end_station = '', line_side = '', direction = '',
                         raw_payload_json = ?, updated_at = ?
                     WHERE id = ?
@@ -422,6 +423,14 @@ class RailTransitBaseDataRepository:
                         int(row["id"]),
                     ),
                 )
+            connection.execute(
+                """
+                UPDATE devices
+                SET station_id = '', updated_at = ?
+                WHERE COALESCE(station_id, '') != ''
+                """,
+                (now,),
+            )
             connection.execute("DELETE FROM ap_extension_points WHERE belong_type = '__base_section__'")
             connection.execute("DELETE FROM ap_extension_points WHERE belong_type = '__base_station__'")
             plan_cursor = connection.execute("DELETE FROM ac_trackside_ap_plan")
@@ -432,6 +441,7 @@ class RailTransitBaseDataRepository:
                 WHERE (
                   belong_type IN ('__base_station__', '__base_section__') OR
                   (COALESCE(belong_type, '') NOT IN ('__base_station__', '__base_section__') AND (
+                    COALESCE(station_id, '') != '' OR COALESCE(section_id, '') != '' OR
                     COALESCE(station_name, '') != '' OR COALESCE(section_name, '') != '' OR
                     COALESCE(section_start_station, '') != '' OR COALESCE(section_end_station, '') != '' OR
                     COALESCE(line_side, '') != '' OR COALESCE(direction, '') != ''
@@ -441,6 +451,11 @@ class RailTransitBaseDataRepository:
             ).fetchone()
             if remaining is None or int(remaining[0]) != 0:
                 raise sqlite3.DatabaseError("base data clear verification failed")
+            dangling_device_bindings = connection.execute(
+                "SELECT COUNT(*) FROM devices WHERE COALESCE(station_id, '') != ''"
+            ).fetchone()
+            if dangling_device_bindings is None or int(dangling_device_bindings[0]) != 0:
+                raise sqlite3.DatabaseError("device station binding clear verification failed")
             self._assert_integrity(connection)
             connection.commit()
         except Exception:
@@ -1906,6 +1921,7 @@ class RailTransitBaseDataRepository:
               SUM(CASE WHEN belong_type = '__base_section__' THEN 1 ELSE 0 END),
               SUM(CASE WHEN COALESCE(belong_type, '') NOT IN ('__base_station__', '__base_section__')
                 AND (
+                  COALESCE(station_id, '') != '' OR COALESCE(section_id, '') != '' OR
                   COALESCE(station_name, '') != '' OR COALESCE(section_name, '') != '' OR
                   COALESCE(section_start_station, '') != '' OR COALESCE(section_end_station, '') != '' OR
                   COALESCE(line_side, '') != '' OR COALESCE(direction, '') != ''

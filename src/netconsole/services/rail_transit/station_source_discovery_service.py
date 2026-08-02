@@ -320,6 +320,31 @@ class StationSourceDiscoveryService:
                 match_status = "exact_source_key"
                 match_basis = "device_station_id"
                 match_issues = []
+            elif len(bound_station_ids) == 1 and not valid_bound_ids:
+                # 清空重建可能删除正式行但遗留设备旧绑定；同一候选全部指向
+                # 同一个失效 ID 时可安全恢复，混合有效/失效或多个失效 ID 仍冲突。
+                (
+                    match_status,
+                    matched_station_id,
+                    match_basis,
+                    match_issues,
+                ) = self._match_existing(
+                    parsed,
+                    existing_source_key,
+                    existing_canonical_name,
+                    existing_canonical_name_type,
+                    existing_alias,
+                    existing_code_name,
+                )
+                match_issues.insert(
+                    0,
+                    self._issue(
+                        "warning",
+                        "station_source_device_binding_stale",
+                        "设备绑定的正式站点已不存在，保存后将按当前候选重新建立绑定",
+                        "station_id",
+                    ),
+                )
             elif bound_station_ids:
                 matched_station_id = ""
                 match_status = "conflict"

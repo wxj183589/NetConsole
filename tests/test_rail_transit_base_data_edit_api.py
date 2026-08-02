@@ -99,6 +99,12 @@ def test_clear_all_removes_formal_and_legacy_locations_but_preserves_assets(
     with Database(database).connect() as connection:
         connection.execute("UPDATE ap_extension_points SET site_id = NULL")
         connection.execute(
+            "UPDATE devices SET station = '01-保留来源文本', station_id = 'station:orphan' WHERE device_uuid = 'mr-temp'"
+        )
+        connection.execute(
+            "UPDATE ap_extension_points SET station_id = 'station:orphan', section_id = 'section:orphan' WHERE ap_point_code IN ('AP001', 'AP002', 'AP003')"
+        )
+        connection.execute(
             """
             INSERT INTO ap_extension_points (
                 site_id, belong_type, station_name, ap_point_code, raw_payload_json,
@@ -174,6 +180,19 @@ def test_clear_all_removes_formal_and_legacy_locations_but_preserves_assets(
     assert stale.json()["detail"]["code"] == "BASE_DATA_REVISION_CONFLICT"
     with Database(database).connect() as connection:
         assert connection.execute("SELECT COUNT(*) FROM devices").fetchone()[0] >= 3
+        assert connection.execute(
+            "SELECT station FROM devices WHERE device_uuid = 'mr-temp'"
+        ).fetchone()[0] == "01-保留来源文本"
+        assert connection.execute(
+            "SELECT COUNT(*) FROM devices WHERE COALESCE(station_id, '') != ''"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            """
+            SELECT COUNT(*) FROM ap_extension_points
+            WHERE COALESCE(belong_type, '') NOT IN ('__base_station__', '__base_section__')
+              AND (COALESCE(station_id, '') != '' OR COALESCE(section_id, '') != '')
+            """
+        ).fetchone()[0] == 0
         assert connection.execute("SELECT COUNT(*) FROM ac_trackside_ap_plan").fetchone()[0] == 0
         assert connection.execute(
             "SELECT revision FROM rail_ap_vlan_plans WHERE line_id = 'legacy-retained'"
