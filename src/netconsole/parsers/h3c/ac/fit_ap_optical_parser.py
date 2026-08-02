@@ -3,7 +3,10 @@ from __future__ import annotations
 import re
 
 from netconsole.parsers.h3c.transceiver_parser import merge_transceiver_data, parse_transceiver_diagnosis, parse_transceiver_manuinfo, parse_transceivers
-from netconsole.parsers.h3c.ac.fit_ap_lldp_neighbor_parser import parse_fit_ap_lldp_neighbor
+from netconsole.parsers.h3c.ac.fit_ap_lldp_neighbor_parser import (
+    has_fit_ap_lldp_table_header,
+    parse_fit_ap_lldp_neighbor,
+)
 from netconsole.services.fit_ap_link_info import normalize_interface_key, resolve_optical_match_status
 from netconsole.utils.interface_normalize import normalize_interface_name
 
@@ -39,7 +42,15 @@ def parse_fit_ap_optical(
 
 def parse_fit_ap_lldp(output: str) -> dict[str, object | None]:
     direct = parse_fit_ap_lldp_neighbor(output)
-    if any(direct.get(field) for field in ("lldp_neighbor_name", "lldp_local_interface", "lldp_neighbor_mac", "lldp_neighbor_interface")):
+    if has_fit_ap_lldp_table_header(output) or any(
+        direct.get(field)
+        for field in (
+            "lldp_neighbor_name",
+            "lldp_local_interface",
+            "lldp_neighbor_mac",
+            "lldp_neighbor_interface",
+        )
+    ):
         return {
             **direct,
             "lldp_neighbor": direct.get("lldp_neighbor_name"),

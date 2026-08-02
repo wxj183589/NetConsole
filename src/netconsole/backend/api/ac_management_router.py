@@ -29,6 +29,7 @@ from netconsole.models.api.ac_management import (
     AcExtensionRollbackResultDTO,
     AcFitApDeleteRequestDTO,
     AcFitApMetadataSaveRequestDTO,
+    AcFitApVerboseRequestDTO,
     AcFitApResourceExportRequestDTO,
     AcLocalRebuildRequestDTO,
     AcOmniPeekPreviewDTO,
@@ -368,6 +369,24 @@ def refresh_resources(request: Request, refresh_kind: str, payload: AcRefreshReq
 
 
 @router.post(
+    "/fit-aps/verbose",
+    response_model=AcWebTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("web.ac_refresh"))],
+)
+def refresh_fit_ap_verbose(request: Request, payload: AcFitApVerboseRequestDTO) -> AcWebTaskDTO:
+    try:
+        return _web_service(request).start_fit_ap_verbose(
+            _web_site_id(request),
+            ac_id=payload.ac_id,
+            scope=payload.scope,
+            ap_ids=payload.ap_ids,
+        )
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+
+
+@router.post(
     "/fit-aps/delete",
     response_model=AcWebTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
@@ -426,7 +445,7 @@ def save_fit_ap_metadata(request: Request, ap_id: str, payload: AcFitApMetadataS
             _web_site_id(request),
             ac_id=payload.ac_id,
             ap_id=ap_id,
-            metadata=payload.model_dump(exclude={"ac_id"}),
+            metadata=payload.model_dump(exclude={"ac_id"}, exclude_unset=True),
         )
     except AcWebActionError as exc:
         _raise_web_error(exc)

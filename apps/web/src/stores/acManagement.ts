@@ -9,7 +9,7 @@ import {
   listAcAps,
   listAcConfigSnapshots,
 } from '../api/acManagement'
-import { cancelAcWebTask, deleteAcFitAps, getAcWebTask, importAcFitApMetadata, recoverAcWebTasks, saveAcFitApMetadata, startAcResourceRefresh } from '../api/acWebParity'
+import { cancelAcWebTask, deleteAcFitAps, getAcWebTask, importAcFitApMetadata, recoverAcWebTasks, saveAcFitApMetadata, startAcFitApVerbose, startAcResourceRefresh } from '../api/acWebParity'
 import type {
   AcAp,
   AcApDetail,
@@ -23,7 +23,7 @@ import type { AcWebTask } from '../types/acWebParity'
 const ACTIVE_TASK_KEY = 'netconsole.ac.active-task'
 const ACTIVE_ACTION_TASK_KEY = 'netconsole.ac.active-action-task'
 const TERMINAL_TASKS = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
-const REFRESH_ACTIONS = new Set(['ac_info_refresh', 'ac_fit_ap_resources_refresh', 'ac_fit_ap_detail_refresh', 'ac_fit_ap_optical_refresh', 'ac_fit_ap_delete_many', 'fit_ap_metadata_import', 'fit_ap_metadata_save'])
+const REFRESH_ACTIONS = new Set(['ac_info_refresh', 'ac_fit_ap_resources_refresh', 'ac_fit_ap_detail_refresh', 'ac_fit_ap_verbose_all_refresh', 'ac_fit_ap_verbose_selected_refresh', 'ac_fit_ap_optical_refresh', 'ac_fit_ap_delete_many', 'fit_ap_metadata_import', 'fit_ap_metadata_save'])
 type RefreshDomain = 'summary' | 'aps' | 'detail' | 'snapshots' | 'config'
 
 export const useAcManagementStore = defineStore('ac-management', () => {
@@ -254,7 +254,9 @@ export const useAcManagementStore = defineStore('ac-management', () => {
   }
 
   async function startFitApMetadataSave(metadata: {
-    site_name: string
+    station_id?: string
+    station_override_enabled?: boolean
+    site_name?: string
     mileage: string
     location_note: string
     direction: string
@@ -268,6 +270,22 @@ export const useAcManagementStore = defineStore('ac-management', () => {
       scheduleTask()
     } catch (cause) {
       operationError.value = cause instanceof Error ? cause.message : 'FIT-AP 元数据保存启动失败'
+    } finally {
+      refreshStarting.value = false
+    }
+  }
+
+  async function startFitApVerbose(scope: 'all' | 'selected', apIds: string[] = []): Promise<void> {
+    if (!filters.ac_id || refreshStarting.value || (refreshTask.value && !TERMINAL_TASKS.has(refreshTask.value.status))) return
+    if (scope === 'selected' && !apIds.length) return
+    refreshStarting.value = true
+    operationError.value = ''
+    try {
+      refreshTask.value = await startAcFitApVerbose(filters.ac_id, scope, apIds)
+      window.localStorage?.setItem(ACTIVE_TASK_KEY, refreshTask.value.task_id)
+      scheduleTask()
+    } catch (cause) {
+      operationError.value = cause instanceof Error ? cause.message : 'FIT-AP 详细信息更新启动失败'
     } finally {
       refreshStarting.value = false
     }
@@ -475,6 +493,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     startFitApDelete,
     startFitApMetadataImport,
     startFitApMetadataSave,
+    startFitApVerbose,
     cancelRefreshTask,
     recoverRefreshTask,
     trackActionTask,

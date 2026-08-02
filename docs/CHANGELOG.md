@@ -33,6 +33,10 @@
 - 修复大局点“更新 AC 信息”和单 AP“深度更新”在数据已成功入库后仍因完整资源快照超过 Worker 1 MiB 单帧限制而失败；两类任务改为返回有界持久化摘要，页面按 `reload_required` 重新读取 SQLite。
 - FIT-AP collect 终态改为有界持久化摘要，不再携带完整资源列表；974 AP、758 LLDP 规模由任务摘要回执，页面通过分页 GET 重新加载 SQLite。
 - FIT-AP 批量刷新加入 `display wlan ap all radio verbose filter bbssid`，使用独立 120 秒读取超时；该命令失败或空结果会保留 raw 并返回明确 BBSSID 状态，但不丢弃必需命令已采集的 AP 资源。
+- FIT-AP 详细采集新增全量/选中两种受控范围，使用 `display wlan ap name <name> verbose` 写入 AP 与 Radio 详细表；目标由当前 AC 资源校验，任务终态只返回有界摘要，raw/命令记录仍保留。
+- 修复 FIT-AP 直连 LLDP 两种动态表头的字段定位，支持 `System Name` 位于表首或表尾；邻居 MAC 优先匹配，泛化邻居名 `H3C/Comware/Switch` 不再单独绑定设备，多候选保留 `ambiguous`。
+- 自动关联站点与手工元数据覆盖分离：基础资料 AP MAC、LLDP 交换机站点和 AC 原始站点仅作为只读证据，只有显式保存 `station_id` 才写入正式元数据。新增受控 LLDP 派生投影修复，默认 dry-run，显式 apply 才清理当前投影，历史与 raw 保持不变。
+- 受控现场样本验证通过：H3C AC 资源刷新 974 台 FIT-AP、758 条 LLDP/Radio 证据；WA6522 与 WA6624X 直连 LLDP 两种表头各完成单台 raw 采集与解析。现场验证仍不等同于 Electron 全量人工验收。
 - Worker 写帧前执行 1 MiB 字节检查，超大结果改发小型结构化错误；协议失败等待子进程退出后发布唯一终态，并在任务详情展示 reason、stream、frame/max bytes、exit code 和数据是否已落库，不影响 Backend 健康接口。
 
 ### 轨旁 AP 查询性能

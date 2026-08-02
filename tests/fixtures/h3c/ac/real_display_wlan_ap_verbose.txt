@@ -1,0 +1,34 @@
+<AC-NB12>display wlan ap all verbose
+AP name : AP-NB12-01
+AP ID : 101
+AP group name : Line12
+Hardware version : Ver.A
+Software version : Version 7.1.064, Release 2619P08
+Boot version : 7.1.064
+Serial ID : 219801A3L68257P005M3
+MAC address : 28c9-7a3e-5da0
+Description : 宁波地铁12号线
+  一号站厅 AP
+Radio 1:
+  Radio type : 802.11ax(5GHz)
+  State : Up
+  Channel : 0
+  Max power : 0 dBm
+  Base BSSID : 28c9-7a3e-5da1
+Radio ID : 2
+  Radio type : 802.11ax(2.4GHz)
+  State : Down
+  Channel : 6
+  Max power : 17 dBm
+
+AP name : AP-NB12-02
+AP ID : 102
+Hardware version : Ver.B
+Software version : Version 7.1.064, Release 2484
+Boot version : 7.1.060
+Serial Number : 219801A4588256E0002X
+MAC address : 30f5-277a-0ea0
+Radio 1:
+  State : Up
+  Channel : 149(auto)
+  Noise floor : -95 dBm

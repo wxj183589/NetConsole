@@ -20,7 +20,10 @@ FIXTURES = Path(__file__).parent / "fixtures" / "h3c"
 
 
 def fixture(name: str) -> str:
-    return (FIXTURES / name).read_text(encoding="utf-8")
+    path = FIXTURES / name
+    if not path.is_file():
+        path = FIXTURES / "ac" / name
+    return path.read_text(encoding="utf-8")
 
 
 def test_version_parser_extracts_sysname_version_and_uptime():
@@ -672,3 +675,41 @@ XGE0/0/28       2c4c-7d30-4e00  Ten-GigabitEthernet1/2/0/48     COCC-12-CORE
     assert parsed[2]["local_interface"] == "Ten-GigabitEthernet0/0/28"
     assert parsed[2]["neighbor_interface"] == "Ten-GigabitEthernet1/2/0/48"
     assert parsed[2]["neighbor_sysname"] == "COCC-12-CORE"
+
+
+def test_lldp_list_parser_supports_wa6522_header_order():
+    parsed = parse_lldp_neighbors(fixture("real_fit_ap_lldp_neighbor_wa6522.txt"), "")
+
+    assert parsed == [
+        {
+            "local_interface": "GigabitEthernet1/0/1",
+            "neighbor_mac": "2c4c-7d66-c492",
+            "neighbor_interface": "GigabitEthernet1/0/4",
+            "neighbor_sysname": "H3C",
+        }
+    ]
+
+
+def test_lldp_list_parser_supports_wa6624x_header_order():
+    parsed = parse_lldp_neighbors(fixture("real_fit_ap_lldp_neighbor_wa6624x.txt"), "")
+
+    assert parsed == [
+        {
+            "local_interface": "GigabitEthernet1/0/2",
+            "neighbor_mac": "903f-8645-b600",
+            "neighbor_interface": "GigabitEthernet2/0/7",
+            "neighbor_sysname": "HX_2",
+        }
+    ]
+
+
+def test_lldp_list_parser_does_not_fallback_after_header_row_validation_fails():
+    parsed = parse_lldp_neighbors(
+        """
+System Name          Local Interface Chassis ID      Port ID
+HX_2                 not-an-interface 903f-8645-b600 GigabitEthernet2/0/7
+""",
+        "",
+    )
+
+    assert parsed == []

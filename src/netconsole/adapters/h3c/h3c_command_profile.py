@@ -26,7 +26,7 @@ class H3cAcCommandProfile:
 
     @property
     def fit_ap_detail_commands(self) -> tuple[str, ...]:
-        """Verified bulk commands used for one selected AP's deep refresh."""
+        """Legacy bulk sequence retained for callers outside the Web detail path."""
         return (
             "screen-length disable",
             "display wlan ap all",
@@ -37,6 +37,16 @@ class H3cAcCommandProfile:
             "display wlan ap all radio type",
             "display wlan ap all lldp",
         )
+
+    @property
+    def fit_ap_verbose_all_commands(self) -> tuple[str, ...]:
+        return ("screen-length disable", "display wlan ap all verbose")
+
+    def fit_ap_verbose_commands(self, ap_name: str) -> tuple[str, ...]:
+        name = str(ap_name or "").strip()
+        if not name:
+            return ("screen-length disable",)
+        return ("screen-length disable", f"display wlan ap name {name} verbose")
 
     @property
     def ac_info_commands(self) -> tuple[str, ...]:

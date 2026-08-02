@@ -51,10 +51,31 @@ export interface AcAp {
   radio2_power: string
   station: string
   station_source: string
+  station_source_detail: string
+  effective_station_id: string
+  effective_station_name: string
+  station_confidence: number
+  manual_station_id: string
+  manual_station_name: string
+  manual_override_enabled: boolean
+  auto_station_id: string
+  auto_station_name: string
+  auto_match_basis: string
+  lldp_suggested_station_id: string
+  lldp_suggested_station_name: string
+  resource_station_text: string
+  software_version: string
+  hardware_version: string
+  boot_version: string
+  detail_updated_at: string
+  detail_available: boolean
   section: string
   mileage: string
   direction: string
   location_note: string
+  point_code: string
+  trackside_ap_name: string
+  remark: string
   switch_name: string
   switch_interface: string
   lldp_status: string
@@ -91,6 +112,9 @@ export interface AcLldp {
   switch_name: string
   switch_ip: string
   interface_name: string
+  lldp_local_interface: string
+  lldp_neighbor_mac: string
+  lldp_neighbor_interface: string
   lldp_neighbor: string
   port_status: string
   vlan: string

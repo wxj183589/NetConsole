@@ -52,6 +52,10 @@ AP_COLUMNS = (
     ("ap_model", "AP型号"),
     ("serial_number", "AP序列号"),
     ("ap_state", "AP状态"),
+    ("ap_hardware_version", "AP硬件版本"),
+    ("ap_software_version", "AP软件版本"),
+    ("ap_boot_version", "AP Boot版本"),
+    ("detail_updated_at", "详细信息更新时间"),
     ("online_status", "在线状态"),
     ("radio_count", "Radio数量"),
     ("radio1_status", "Mesh Radio 1状态"),
@@ -177,6 +181,10 @@ def export_fit_ap_resource_xlsx(
                 "ap_mac": mac,
                 "ap_model": ap.model,
                 "serial_number": ap.serial_number,
+                "ap_hardware_version": ap.hardware_version,
+                "ap_software_version": ap.software_version,
+                "ap_boot_version": ap.boot_version,
+                "detail_updated_at": _format_time(ap.detail_updated_at),
                 "ap_state": ap.state_display,
                 "online_status": _status_label(ap.status),
                 "radio_count": len(detail.radios),
@@ -264,7 +272,8 @@ def export_fit_ap_resource_xlsx(
     radio_sheet = _write_sheet(workbook, "Radio明细", RADIO_COLUMNS, radio_rows)
     instruction_sheet = _write_sheet(workbook, "导出说明", (("field", "字段"), ("value", "值")), instructions)
     text_headers = {
-        "AC管理地址", "AC软件版本", "AP名称", "AP IP", "AP MAC", "AP序列号", "点位编号",
+        "AC管理地址", "AC软件版本", "AP名称", "AP IP", "AP MAC", "AP序列号", "AP硬件版本",
+        "AP软件版本", "AP Boot版本", "详细信息更新时间", "点位编号",
         "连接端口", "端口PVID", "BSSID", "Radio MAC", "信道",
     }
     for sheet in (ap_sheet, radio_sheet):
@@ -380,6 +389,8 @@ def _instruction_rows(
 
 def _integrity_issues(detail, mac: str) -> list[str]:
     issues: list[str] = []
+    if not detail.ap.detail_available:
+        issues.append("未采集AP详细信息")
     if detail.optical.optical_status == "no_data":
         issues.append("缺少光衰")
     if not detail.lldp.switch_name and not detail.lldp.interface_name:

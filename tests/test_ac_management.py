@@ -49,6 +49,7 @@ from netconsole.services.fit_ap_link_info import (
     merge_lldp_payload,
     normalize_interface_key,
     normalize_mac as normalize_link_mac,
+    normalize_lldp_payload,
     resolve_fit_ap_link_info,
     resolve_optical_match_status,
 )
@@ -72,6 +73,7 @@ from netconsole.services.h3c_ac_collect_service import (
     collect_h3c_fit_ap_resources,
 )
 from netconsole.services.h3c_ac_collect_service import FitApOpticalCollectResult
+from netconsole.services.h3c_ac_collect_service import _select_fit_ap_neighbor_match
 from netconsole.services.rail_transit import trackside_optical_collection
 from netconsole.services.rail_transit.trackside_optical_collection import (
     DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY,
@@ -85,6 +87,7 @@ from netconsole.services.rail_transit.trackside_optical_collection import (
 )
 from netconsole.services.netmiko_connection import normalize_command_output
 from netconsole.services.neighbor_matcher import (
+    NeighborMatchResult,
     find_neighbor_optical_module,
     find_neighbor_rx_power,
     match_ap_from_device_lldp,
@@ -1677,6 +1680,20 @@ HX_1                 GE1/0/2         903f-8645-6e00  GigabitEthernet2/0/19
     assert parsed["neighbor_interface"] == "GigabitEthernet2/0/19"
 
 
+def test_fit_ap_lldp_parser_does_not_fallback_after_invalid_supported_table_row():
+    parsed = parse_fit_ap_lldp(
+        """
+Local Interface Chassis ID Port ID System Name
+GE1/0/1 H3C H3C H3C
+"""
+    )
+
+    assert parsed["lldp_neighbor"] is None
+    assert parsed["interface_name"] is None
+    assert parsed["neighbor_interface"] is None
+    assert parsed["neighbor_mac"] is None
+
+
 def test_fit_ap_transceiver_parser_extracts_diagnosis_interface_and_manuinfo():
     parsed = parse_fit_ap_transceiver(
         """
@@ -1808,6 +1825,42 @@ HX_1                 GE1/0/2          903f-8645-6e00   GigabitEthernet2/0/19
     assert parsed["lldp_neighbor_mac"] == "903f-8645-6e00"
     assert parsed["lldp_neighbor_mac_normalized"] == "903f86456e00"
     assert parsed["lldp_neighbor_interface"] == "GigabitEthernet2/0/19"
+
+
+def test_fit_ap_direct_lldp_parser_supports_wa6522_and_keeps_generic_name_as_raw_evidence():
+    parsed = parse_fit_ap_lldp_neighbor(
+        """
+Local Interface Chassis ID      Port ID                         System Name
+GE1/0/1         2c4c-7d66-c492  GigabitEthernet1/0/4            H3C
+"""
+    )
+
+    assert parsed["lldp_local_interface_normalized"] == "ge1/0/1"
+    assert parsed["lldp_neighbor_mac_normalized"] == "2c4c7d66c492"
+    assert parsed["lldp_neighbor_interface"] == "GigabitEthernet1/0/4"
+    assert parsed["lldp_neighbor_name"] == "H3C"
+
+
+def test_lldp_normalization_preserves_explicit_partial_and_unknown_statuses():
+    partial = normalize_lldp_payload(
+        {
+            "lldp_local_interface": "GE1/0/1",
+            "lldp_neighbor_mac": "2c4c-7d66-c492",
+            "lldp_neighbor_interface": "GigabitEthernet1/0/4",
+            "lldp_match_status": "partial",
+        },
+        "ap_direct_lldp",
+    )
+    unknown = normalize_lldp_payload(
+        {
+            "lldp_neighbor_mac": "2c4c-7d66-c492",
+            "lldp_match_status": "unknown",
+        },
+        "ap_direct_lldp",
+    )
+
+    assert partial["lldp_match_status"] == "partial"
+    assert unknown["lldp_match_status"] == "unknown"
 
 
 def test_fit_ap_transceiver_snapshot_parser_marks_optical_interface():
@@ -2154,6 +2207,50 @@ def test_h3c_fit_ap_deep_refresh_uses_verified_verbose_command_and_only_upserts_
         repository.get_fit_ap_resource(ac_uuid, "4c6f-d608-0400")["rid1_bbssid"]
         == "0011-2233-4455"
     )
+    assert repository.get_fit_ap_resource(ac_uuid, "AP-KEEP")["rid1_channel"] == "6"
+
+
+def test_h3c_fit_ap_single_detail_uses_name_verbose_command(monkeypatch, tmp_path):
+    output = ac_fixture("real_display_wlan_ap_verbose.txt").split("AP name : AP-NB12-02", 1)[0]
+    connection = FakeConnection(
+        {"display wlan ap name AP-NB12-01 verbose": output}
+    )
+    monkeypatch.setattr(
+        h3c_ac_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
+    repository = AcRepository(make_database(tmp_path))
+    ac_uuid = "22222222-2222-4222-8222-222222222222"
+    repository.replace_fit_ap_resources(
+        ac_uuid,
+        [
+            {
+                "ap_name": "AP-NB12-01",
+                "ap_mac": "28c9-7a3e-5da0",
+                "serial_number": "219801A3L68257P005M3",
+            },
+            {"ap_name": "AP-KEEP", "rid1_channel": "6"},
+        ],
+    )
+    target = repository.get_fit_ap_resource(ac_uuid, "AP-NB12-01")
+
+    result = collect_h3c_fit_ap_resources(
+        make_ac_device(),
+        "demo",
+        repository=repository,
+        paths=PathResolver(tmp_path),
+        target_ap_uuid=str(target["ap_uuid"]),
+    )
+
+    assert result.success is True
+    assert connection.commands == [
+        "screen-length disable",
+        "display wlan ap name AP-NB12-01 verbose",
+    ]
+    detail = repository.get_fit_ap_detail(str(target["ap_uuid"]))
+    assert detail is not None
+    assert detail["software_version"] == "Version 7.1.064, Release 2619P08"
     assert repository.get_fit_ap_resource(ac_uuid, "AP-KEEP")["rid1_channel"] == "6"
 
 
@@ -5539,6 +5636,103 @@ def test_neighbor_matcher_matches_sysname_mac_and_rx_power(tmp_path):
         )
         == "-6.66 dBm"
     )
+
+
+def test_neighbor_matcher_ignores_generic_h3c_neighbor_name(tmp_path):
+    paths = PathResolver(tmp_path)
+    database = make_database(paths.site_db_path("demo").parent)
+    DeviceRepository(database).create(
+        Device(name="H3C", sysname="H3C", station="Station A", ip_address="10.0.0.2")
+    )
+
+    result = match_neighbor_device("demo", neighbor_sysname="H3C", paths=paths)
+
+    assert result.match_status == "unresolved"
+    assert result.device_uuid is None
+
+
+def test_neighbor_matcher_reports_ambiguous_chassis_mac(tmp_path):
+    paths = PathResolver(tmp_path)
+    database = make_database(paths.site_db_path("demo").parent)
+    device_repository = DeviceRepository(database)
+    first = device_repository.create(Device(name="SW-1", ip_address="10.0.0.2"))
+    second = device_repository.create(Device(name="SW-2", ip_address="10.0.0.3"))
+    facts = DeviceFactRepository(database)
+    for device in (first, second):
+        facts.replace_device_interfaces(
+            device.device_uuid,
+            [{"interface_name": "GE1/0/1", "mac_address": "903f-8645-6e00"}],
+        )
+
+    result = match_neighbor_device("demo", neighbor_mac="903f-8645-6e00", paths=paths)
+
+    assert result.match_status == "ambiguous"
+    assert result.candidate_count == 2
+    assert result.device_uuid is None
+
+
+def test_fit_ap_neighbor_evidence_prefers_direct_mac_and_marks_port_conflict():
+    direct = NeighborMatchResult(
+        device_uuid="switch-direct",
+        device_name="SW-direct",
+        matched_by="mac",
+        match_status="matched",
+    )
+    reverse = NeighborMatchResult(
+        device_uuid="switch-direct",
+        device_name="SW-direct",
+        local_interface="GigabitEthernet1/0/9",
+        matched_by="device_lldp",
+        match_status="matched",
+    )
+
+    selected, conflict = _select_fit_ap_neighbor_match(
+        direct,
+        reverse,
+        "GigabitEthernet1/0/4",
+    )
+
+    assert selected is direct
+    assert conflict is True
+
+
+def test_fit_ap_association_repair_is_dry_run_by_default_and_keeps_history(tmp_path):
+    paths = PathResolver(tmp_path)
+    database = make_database(paths.site_db_path("demo").parent)
+    repository = AcRepository(database)
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [{"ap_uuid": "ap-1", "ap_name": "AP-1", "ap_mac": "28c9-7a3e-5da0"}],
+    )
+    repository.replace_fit_ap_optical(
+        "ac-1",
+        [
+            {
+                "ap_uuid": "ap-1",
+                "ap_name": "AP-1",
+                "ap_mac": "28c9-7a3e-5da0",
+                "status": "success",
+                "rx_power": "-7.1",
+                "neighbor_device_name": "GE1/0/1",
+                "neighbor_interface": "H3C",
+                "lldp_neighbor_name": "H3C",
+                "lldp_neighbor_interface": "GigabitEthernet1/0/4",
+            }
+        ],
+    )
+    before_history = len(repository.list_fit_ap_optical_history_by_ap("ap-1"))
+
+    preview = repository.repair_invalid_fit_ap_association_projection("ac-1")
+    assert preview["applied"] is False
+    assert preview["candidate_count"] == 1
+    assert repository.list_fit_ap_optical("ac-1")[0]["neighbor_interface"] == "H3C"
+
+    result = repository.repair_invalid_fit_ap_association_projection("ac-1", apply=True)
+    assert result["applied"] is True
+    assert result["cleared_optical_rows"] == 1
+    assert repository.list_fit_ap_optical("ac-1")[0]["neighbor_interface"] == ""
+    assert repository.get_fit_ap_resource_by_uuid("ac-1", "ap-1")["lldp_neighbor_interface"] == ""
+    assert len(repository.list_fit_ap_optical_history_by_ap("ap-1")) == before_history
 
 
 def test_neighbor_matcher_reverse_matches_ap_mac_from_device_lldp(tmp_path):

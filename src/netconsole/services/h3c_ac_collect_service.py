@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 import traceback
@@ -30,6 +31,7 @@ from netconsole.parsers.h3c.ac.wlan_ap_radio_parser import parse_wlan_ap_radios
 from netconsole.parsers.h3c.ac.wlan_ap_radio_type_parser import parse_wlan_ap_radio_types
 from netconsole.parsers.h3c.ac.wlan_ap_radio_verbose_parser import parse_wlan_ap_radio_verbose_bbssid
 from netconsole.parsers.h3c.ac.wlan_ap_unauthenticated_parser import parse_wlan_ap_unauthenticated_rows, parse_wlan_ap_unauthenticated_summary
+from netconsole.parsers.h3c.ac.wlan_ap_verbose_parser import parse_wlan_ap_verbose
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
@@ -43,7 +45,13 @@ from netconsole.services import netmiko_connection
 from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.device_web_service import matching_https_port_lines, parse_https_port
 from netconsole.services.h3c_collect_service import CommandResult
-from netconsole.services.neighbor_matcher import find_neighbor_optical_module, match_ap_from_device_lldp, match_neighbor_device
+from netconsole.services.fit_ap_link_info import normalize_interface_key
+from netconsole.services.neighbor_matcher import (
+    NeighborMatchResult,
+    find_neighbor_optical_module,
+    match_ap_from_device_lldp,
+    match_neighbor_device,
+)
 from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, sanitize_sensitive_text
 from netconsole.services.offline_ap_ledger import is_fit_ap_offline
 
@@ -72,6 +80,9 @@ AC_OVERVIEW_COMMANDS = (
 RESOURCE_COMMANDS = (*FIT_AP_RESOURCE_REQUIRED_COMMANDS, *FIT_AP_RESOURCE_OPTIONAL_COMMANDS)
 FIT_AP_RESOURCE_READ_TIMEOUTS = {
     "display wlan ap all radio verbose filter bbssid": 120,
+}
+FIT_AP_VERBOSE_READ_TIMEOUTS = {
+    "display wlan ap all verbose": 1800,
 }
 
 HTTPS_PORT_COMMANDS = (
@@ -161,6 +172,9 @@ class AcResourceCollectResult:
     lldp_rows_parsed: int = 0
     bbssid_collect_status: str = "not_collected"
     bbssid_error: str | None = None
+    detail_rows_updated: int = 0
+    detail_failed_count: int = 0
+    detail_mode: str = ""
 
 
 @dataclass(frozen=True)
@@ -322,6 +336,81 @@ def collect_h3c_fit_ap_resources(
 
     try:
         profile = H3cAcCommandProfile(ac_device)
+        if deep_refresh:
+            target_name = str(target_resource.get("ap_name") or "").strip()
+            if not _is_safe_ap_name(target_name):
+                raise RuntimeError("FIT-AP 名称不符合受控命令规则")
+            commands = profile.fit_ap_verbose_commands(target_name)
+            command_results, outputs = _execute_h3c_ac_command_list(
+                ac_device,
+                collect_run_uuid,
+                commands,
+                "ac_fit_ap_detail_collect",
+                progress,
+                should_cancel,
+                per_command_read_timeout={commands[-1]: 180},
+                result_sink=command_results,
+            )
+            _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, force=True)
+            _raise_if_cancelled(should_cancel)
+            progress("正在解析 FIT-AP 详细信息...")
+            parsed_rows = parse_wlan_ap_verbose(outputs.get(commands[-1], ""))
+            if not parsed_rows:
+                # A few legacy AC builds accept the command but return no
+                # detail block. Keep the old BSSID refresh as a narrow
+                # compatibility fallback; normal verbose-capable ACs never
+                # execute this branch.
+                legacy_command = "display wlan ap all radio verbose filter bbssid"
+                _legacy_results, legacy_outputs = _execute_h3c_ac_command_list(
+                    ac_device,
+                    collect_run_uuid,
+                    (legacy_command,),
+                    "ac_fit_ap_detail_collect",
+                    progress,
+                    should_cancel,
+                    per_command_read_timeout={legacy_command: 120},
+                    result_sink=command_results,
+                )
+                legacy_rows = parse_wlan_ap_radio_verbose_bbssid(legacy_outputs.get(legacy_command, ""))
+                legacy_row = legacy_rows.get(str(target_resource.get("ap_name") or ""))
+                if legacy_row:
+                    repository.upsert_fit_ap_resource(
+                        str(ac_device.device_uuid),
+                        {**target_resource, **legacy_row, "ap_uuid": target_resource.get("ap_uuid")},
+                    )
+                    fact_repository.update_collect_run_status(collect_run_uuid, "success")
+                    return AcResourceCollectResult(True, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 1, None, False, False, None, None, command_results)
+            parsed = _select_verified_verbose_ap(parsed_rows, target_resource)
+            if parsed is None:
+                message = "详细回显未通过 AP 名称、MAC 或序列号校验"
+                fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
+                return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results)
+            detail_payload, radio_payloads = _verbose_detail_payload(
+                parsed,
+                target_resource,
+                str(ac_device.device_uuid),
+                collect_run_uuid,
+                relative_raw_log_path,
+            )
+            progress("正在保存 FIT-AP 详细信息...")
+            repository.upsert_fit_ap_detail(detail_payload)
+            repository.replace_fit_ap_radio_details(str(target_resource.get("ap_uuid") or ""), radio_payloads)
+            fact_repository.update_collect_run_status(collect_run_uuid, "success")
+            progress("FIT-AP 详细信息已持久化")
+            return AcResourceCollectResult(
+                True,
+                str(ac_device.device_uuid),
+                collect_run_uuid,
+                result_raw_log_path,
+                False,
+                0,
+                None,
+                False,
+                False,
+                None,
+                None,
+                command_results,
+            )
         command_results, outputs = _execute_h3c_ac_command_list(
             ac_device,
             collect_run_uuid,
@@ -502,6 +591,153 @@ def collect_h3c_fit_ap_resources(
         app_logger.log_error("AC_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
         app_logger.log_error("REAL_DEVICE_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
         return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results)
+
+
+def collect_h3c_fit_ap_verbose(
+    ac_device: Device,
+    site_name: str,
+    repository: AcRepository | None = None,
+    paths: PathResolver | None = None,
+    progress: ProgressCallback | None = None,
+    should_cancel: CancelCheck | None = None,
+    target_ap_uuids: list[str] | None = None,
+) -> AcResourceCollectResult:
+    """Collect latest AP verbose details without touching the resource snapshot."""
+    progress = progress or (lambda _message: None)
+    should_cancel = should_cancel or (lambda: False)
+    paths = paths or PathResolver()
+    repository = repository or AcRepository(Database(paths.site_db_path(site_name)))
+    fact_repository = DeviceFactRepository(repository.database)
+    ac_device.ensure_device_uuid()
+    collect_run_uuid = str(uuid4())
+    started_at = _now()
+    run_dir = paths.trackside_ap_raw_dir(site_name) / "ac" / collect_run_uuid
+    raw_log_file = run_dir / f"{ac_device.device_uuid}_verbose.log"
+    commands_file = run_dir / f"{ac_device.device_uuid}_verbose_commands.jsonl"
+    relative_raw_log_path = f"files/rail_transit/trackside_ap/raw/ac/{collect_run_uuid}/{ac_device.device_uuid}_verbose.log"
+    command_results: list[CommandResult] = []
+    selected_ids = {str(value or "").strip() for value in target_ap_uuids or [] if str(value or "").strip()}
+    mode = "selected" if selected_ids else "all"
+    resources = repository.list_fit_ap_resources(str(ac_device.device_uuid))
+    if selected_ids:
+        resources = [row for row in resources if str(row.get("ap_uuid") or "") in selected_ids]
+    fact_repository.create_collect_run(
+        {
+            "collect_run_uuid": collect_run_uuid,
+            "collect_type": f"fit_ap_verbose_{mode}",
+            "status": "running",
+            "started_at": started_at,
+            "raw_log_dir": f"files/rail_transit/trackside_ap/raw/ac/{collect_run_uuid}",
+            "created_at": started_at,
+        }
+    )
+    if str(ac_device.device_type or "").upper() != "AC" or str(ac_device.device_vendor or "").upper() != "H3C":
+        message = "AP verbose collection only supports H3C AC devices"
+        fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
+        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, str(raw_log_file), False, 0, None, False, False, None, message, command_results, detail_mode=mode)
+    if selected_ids and len(resources) != len(selected_ids):
+        message = "部分 FIT-AP 不属于当前 AC"
+    else:
+        message = ""
+    try:
+        profile = H3cAcCommandProfile(ac_device)
+        progress("正在连接 AC 获取 FIT-AP 详细信息...")
+        outputs_by_ap: dict[str, str] = {}
+        if not selected_ids:
+            commands = profile.fit_ap_verbose_all_commands
+            command_results, outputs = _execute_h3c_ac_command_list(
+                ac_device,
+                collect_run_uuid,
+                commands,
+                "ac_fit_ap_verbose_all_collect",
+                progress,
+                should_cancel,
+                per_command_read_timeout={commands[-1]: 1800},
+                result_sink=command_results,
+            )
+            output = outputs.get(commands[-1], "")
+            for row in parse_wlan_ap_verbose(output):
+                outputs_by_ap[str(row.get("ap_name") or "").strip().casefold()] = json.dumps(row, ensure_ascii=False)
+        else:
+            target = choose_connection_target(ac_device)
+            if target is None:
+                raise RuntimeError("未启用连接方式")
+            command_guard.validate_command_list(("screen-length disable",), "ac_fit_ap_verbose_selected_collect")
+            connection = None
+            try:
+                connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
+                init = _run_command(connection, "screen-length disable", ac_device, collect_run_uuid, read_timeout=15, context="ac_fit_ap_verbose_selected_collect", preserve_echo=True)
+                command_results.append(init)
+                for resource in resources:
+                    _raise_if_cancelled(should_cancel)
+                    ap_name = str(resource.get("ap_name") or "").strip()
+                    if not _is_safe_ap_name(ap_name):
+                        command_results.append(CommandResult(command=f"display wlan ap name {ap_name} verbose", success=False, error_message="AP 名称不符合受控命令规则"))
+                        continue
+                    command = profile.fit_ap_verbose_commands(ap_name)[-1]
+                    command_guard.validate_command_list((command,), "ac_fit_ap_verbose_selected_collect")
+                    progress(f"正在获取 {ap_name} 详细信息...")
+                    result = _run_command(connection, command, ac_device, collect_run_uuid, read_timeout=180, context="ac_fit_ap_verbose_selected_collect", preserve_echo=True)
+                    command_results.append(result)
+                    if result.success:
+                        rows = parse_wlan_ap_verbose(result.output)
+                        if rows:
+                            outputs_by_ap[ap_name.casefold()] = json.dumps(rows[0], ensure_ascii=False)
+            finally:
+                if connection is not None:
+                    _disconnect(connection)
+        _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, force=True)
+        _raise_if_cancelled(should_cancel)
+        updated = 0
+        failed = 0
+        for resource in resources:
+            ap_name = str(resource.get("ap_name") or "").strip()
+            raw_json = outputs_by_ap.get(ap_name.casefold(), "")
+            try:
+                parsed = json.loads(raw_json) if raw_json else None
+            except json.JSONDecodeError:
+                parsed = None
+            if not isinstance(parsed, dict):
+                failed += 1
+                continue
+            verified = _select_verified_verbose_ap([parsed], resource)
+            if verified is None:
+                failed += 1
+                continue
+            detail, radios = _verbose_detail_payload(verified, resource, str(ac_device.device_uuid), collect_run_uuid, relative_raw_log_path)
+            repository.upsert_fit_ap_detail(detail)
+            repository.replace_fit_ap_radio_details(str(resource.get("ap_uuid") or ""), radios)
+            updated += 1
+        success = updated > 0 and (not resources or failed < len(resources))
+        error_message = message or (_command_error_summary(command_results) if not success else "")
+        fact_repository.update_collect_run_status(collect_run_uuid, "success" if success else "failed", error_message=error_message or None)
+        progress(f"FIT-AP 详细信息完成：成功 {updated}，失败 {failed}")
+        return AcResourceCollectResult(
+            success,
+            str(ac_device.device_uuid),
+            collect_run_uuid,
+            str(raw_log_file),
+            False,
+            0,
+            None,
+            False,
+            False,
+            None,
+            error_message or None,
+            command_results,
+            detail_rows_updated=updated,
+            detail_failed_count=failed,
+            detail_mode=mode,
+        )
+    except CollectionCancelled:
+        fact_repository.update_collect_run_status(collect_run_uuid, "cancelled", error_message="用户已取消更新")
+        _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error="用户已取消更新", force=True)
+        raise
+    except Exception as exc:
+        message = sanitize_sensitive_text(str(exc), ac_device)
+        fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
+        _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message, force=True)
+        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, str(raw_log_file), False, 0, None, False, False, None, message, command_results, detail_mode=mode)
 
 
 def collect_h3c_ac_info(
@@ -1910,26 +2146,42 @@ def _collect_single_fit_ap_optical(
         if _is_invalid_lldp_neighbor(parsed.get("lldp_neighbor")):
             parsed["lldp_neighbor"] = None
             parsed["neighbor_device_name"] = None
-        reverse_match = match_ap_from_device_lldp(site_name, ap_mac=str(ap_row.get("ap_mac") or ""), ap_name=ap_name, paths=paths)
-        match = reverse_match if reverse_match.device_uuid else match_neighbor_device(
+        direct_match = match_neighbor_device(
             site_name,
             neighbor_mac=str(parsed.get("neighbor_mac") or ""),
             neighbor_sysname=str(parsed.get("lldp_neighbor") or ""),
             neighbor_interface=str(parsed.get("neighbor_interface") or ""),
             paths=paths,
         )
+        reverse_match = match_ap_from_device_lldp(
+            site_name,
+            ap_mac=str(ap_row.get("ap_mac") or ""),
+            ap_name=ap_name,
+            paths=paths,
+        )
+        match, evidence_conflict = _select_fit_ap_neighbor_match(
+            direct_match,
+            reverse_match,
+            str(parsed.get("neighbor_interface") or ""),
+        )
         if match.device_uuid:
             _safe_log_info("FIT_AP_OPTICAL_NEIGHBOR_MATCHED", _detail(ac_device, collect_run_uuid, ap=ap_name, error=f"matched_by={match.matched_by}"))
         else:
             _safe_log_warning("FIT_AP_OPTICAL_NEIGHBOR_MATCH_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name))
-        if match.station:
-            base["site"] = match.station
         if match.matched_by == "device_lldp":
             parsed["neighbor_device_name"] = match.device_name
             parsed["neighbor_interface"] = match.local_interface
             parsed["interface_name"] = match.ap_interface or parsed.get("interface_name")
         else:
             parsed["neighbor_device_name"] = match.device_name or parsed.get("lldp_neighbor")
+        if evidence_conflict:
+            parsed["lldp_match_status"] = "conflict"
+        elif match.device_uuid:
+            parsed["lldp_match_status"] = "matched"
+        elif parsed.get("neighbor_mac") or parsed.get("neighbor_interface") or parsed.get("lldp_neighbor"):
+            parsed["lldp_match_status"] = "partial"
+        else:
+            parsed["lldp_match_status"] = "unknown"
         if _is_invalid_lldp_neighbor(parsed.get("neighbor_device_name")):
             parsed["neighbor_device_name"] = None
         neighbor_optical = find_neighbor_optical_module(site_name, match.device_uuid, str(parsed.get("neighbor_interface") or ""), paths=paths)
@@ -1956,6 +2208,34 @@ def _collect_single_fit_ap_optical(
     finally:
         if connection is not None:
             _disconnect(connection)
+
+
+def _select_fit_ap_neighbor_match(
+    direct_match: NeighborMatchResult,
+    reverse_match: NeighborMatchResult,
+    direct_interface: str,
+) -> tuple[NeighborMatchResult, bool]:
+    """Select direct-LLDP evidence before reverse evidence and report conflicts."""
+
+    direct_is_match = bool(direct_match.device_uuid and direct_match.match_status == "matched")
+    reverse_is_match = bool(reverse_match.device_uuid and reverse_match.match_status == "matched")
+    conflict = False
+    if direct_is_match and reverse_is_match:
+        conflict = direct_match.device_uuid != reverse_match.device_uuid
+        if not conflict and direct_interface and reverse_match.local_interface:
+            conflict = normalize_interface_key(direct_interface) != normalize_interface_key(reverse_match.local_interface)
+
+    if direct_is_match and direct_match.matched_by == "mac":
+        return direct_match, conflict
+    if reverse_is_match:
+        return reverse_match, conflict
+    if direct_is_match:
+        return direct_match, conflict
+    if direct_match.match_status == "ambiguous":
+        return direct_match, conflict
+    if reverse_match.match_status == "ambiguous":
+        return reverse_match, conflict
+    return direct_match, conflict
 
 
 def _run_command(
@@ -2077,6 +2357,80 @@ def _raise_if_cancelled(should_cancel: CancelCheck) -> None:
 
 def _command_error_summary(command_results: list[CommandResult]) -> str:
     return "; ".join(f"{item.command}: {item.error_message}" for item in command_results if not item.success)
+
+
+_SAFE_AP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
+
+
+def _is_safe_ap_name(value: object) -> bool:
+    return bool(_SAFE_AP_NAME_RE.fullmatch(str(value or "").strip()))
+
+
+def _compact_mac(value: object) -> str:
+    text = re.sub(r"[^0-9a-fA-F]", "", str(value or ""))
+    return text.casefold() if len(text) == 12 else ""
+
+
+def _select_verified_verbose_ap(
+    rows: list[dict[str, object]],
+    target_resource: dict[str, object | None],
+) -> dict[str, object] | None:
+    target_name = str(target_resource.get("ap_name") or "").strip().casefold()
+    candidates = [row for row in rows if str(row.get("ap_name") or "").strip().casefold() == target_name]
+    if len(candidates) != 1:
+        return None
+    row = candidates[0]
+    target_mac = _compact_mac(target_resource.get("ap_mac"))
+    returned_mac = _compact_mac(row.get("mac_address"))
+    if target_mac and returned_mac and target_mac != returned_mac:
+        return None
+    target_serial = str(target_resource.get("serial_number") or "").strip()
+    returned_serial = str(row.get("serial_id") or "").strip()
+    if target_serial and returned_serial and target_serial.casefold() != returned_serial.casefold():
+        return None
+    return row
+
+
+def _verbose_detail_payload(
+    row: dict[str, object],
+    target_resource: dict[str, object | None],
+    ac_device_uuid: str,
+    collect_run_uuid: str,
+    raw_log_path: str,
+) -> tuple[dict[str, object | None], list[dict[str, object | None]]]:
+    detail_fields = (
+        "ap_name", "ap_group_name", "backup_type", "ready_for_switchover", "system_uptime",
+        "region_code", "region_code_lock", "hardware_version", "software_version", "boot_version",
+        "map_file", "forwarding_mode", "power_level", "power_info", "capwap_data_tunnel_status",
+        "discovery_type", "last_reboot_reason", "latest_ip_address", "current_ac_ip", "tunnel_down_reason",
+        "connection_count", "control_tunnel_encryption_state", "data_tunnel_encryption_state",
+        "remote_configuration", "energy_saving_level", "ap_type",
+    )
+    now = _now()
+    ap_uuid = str(target_resource.get("ap_uuid") or "")
+    detail: dict[str, object | None] = {
+        "ap_uuid": ap_uuid,
+        "ac_device_uuid": ac_device_uuid,
+        "ap_name": str(row.get("ap_name") or target_resource.get("ap_name") or ""),
+        "collected_at": now,
+        "collect_run_uuid": collect_run_uuid,
+        "raw_log_path": raw_log_path,
+        "updated_at": now,
+    }
+    for detail_field in detail_fields:
+        detail[detail_field] = row.get(detail_field)
+    detail["ap_name"] = detail["ap_name"] or target_resource.get("ap_name")
+    detail["latest_ip_address"] = detail.get("latest_ip_address") or row.get("ip_address")
+    detail["extra_fields_json"] = json.dumps(row.get("extra_fields") or {}, ensure_ascii=False, sort_keys=True)
+    radio_rows: list[dict[str, object | None]] = []
+    for radio in row.get("radio_details") or []:
+        if not isinstance(radio, dict) or radio.get("radio_id") in (None, ""):
+            continue
+        payload = dict(radio)
+        payload["extra_fields_json"] = json.dumps(payload.get("extra_fields") or {}, ensure_ascii=False, sort_keys=True)
+        payload.update({"ap_uuid": ap_uuid, "collected_at": now, "collect_run_uuid": collect_run_uuid, "updated_at": now})
+        radio_rows.append(payload)
+    return detail, radio_rows
 
 
 def _disconnect(connection) -> None:
