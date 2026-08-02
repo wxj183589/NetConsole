@@ -13,7 +13,7 @@
 
 ## 页面与保存
 
-`/rail-transit/base-data?tab=trackside-ap-planning` 是基础资料统一草稿中的受控页签：
+`/rail-transit/base-data?tab=trackside-ap-planning` 是拥有独立锁定、草稿、校验和保存边界的受控子页：
 
 - “AP 规划维护”：直接编辑逐站表，支持从设备管理生成站点、手工维护规划行、单行或批量删除；组件不拥有加载、保存、锁或 dirty 基线，当前页面不提供规划模板导入、模板下载或规划导出；
 - “AP 上线情况概览”：只读展示规划 AP 总数量、实际上线、未上线、上线率和备注，并显示按数量汇总的线路合计。
@@ -24,7 +24,7 @@
 
 上线概览只返回站点统计、少量诊断计数、生成时间和来源 revision，不内嵌完整排除项或待关联在线 AP。用户点击对应明细后，页面分别调用 `/plan/online-status/excluded` 和 `/plan/online-status/unmatched` 分页读取；默认页大小为 50，空 MAC 以空字符串返回。概览按规划、FIT-AP、AP Identity 和局点元数据 revision 缓存，来源不变时直接复用，`source_revision=0` 仍是合法 revision。缓存命中状态和阶段耗时进入诊断日志，不改变统计口径。
 
-规划编辑仍属于基础资料统一草稿。父页面只从基础资料专用完整编辑快照建立基线，并按 `station_id` reconcile 规划：站名修改保留用户值，来源消失或禁用的历史行保留为 `stale`；启用的普通站、车辆段和停车场都生成规划行，资格不依赖 `participates_in_direction`。普通站按正式站序排列，随后是车辆段、停车场和其他历史手工行；特殊节点保持原 `node_type`，新增行默认 AP 数为 `0`、管理 VLAN 为空。主线区间仍只使用符合方向参与条件的普通站，不为车辆段或停车场生成区间。保存通过 `POST /api/rail-transit/base-data/changes` 进入 `RailTransitBaseDataApplicationService`，与其他基础资料共享 revision 检查和 SQLite `BEGIN IMMEDIATE` 单事务；失败整体回滚。修改规划不会连接 AC 或自动刷新设备状态。
+规划编辑只属于规划子页草稿。解锁时以 `scope=trackside_ap_planning` 获取包含正式站点依赖和规划行的编辑快照，并按 `station_id` reconcile：站名修改保留用户值，来源消失或禁用的历史行保留为 `stale`；启用的普通站、车辆段和停车场都可生成规划行，资格不依赖 `participates_in_direction`。保存通过 `POST /api/rail-transit/base-data/changes` 进入 `RailTransitBaseDataApplicationService`，载荷只允许 `trackside_ap_plan`；后端继续执行 revision 检查和 SQLite `BEGIN IMMEDIATE` 单事务，失败整体回滚。修改规划不会保存站点、区间、AP、MR，不连接 AC，也不自动刷新设备状态。
 
 当前用户接口包括（规划模板预览/导出接口仅为历史兼容，不由活动页面调用）：
 
@@ -54,7 +54,7 @@ GET  /api/rail-transit/trackside-ap-business/plan/artifacts/{artifact_id}/downlo
 
 ## 来源
 
-活动页面不提供轨旁 AP 规划模板导入、模板下载或规划导出。站点来源统一来自设备管理中“车站”分组设备的 `station` 字段：点击“从设备管理生成站点”后先展示候选、匹配和冲突，用户确认后只写入基础资料编辑草稿，最终由统一保存事务提交。这样每条规划行都能绑定正式站点的稳定 `station_id`，不会因为站名文本差异丢失身份。
+活动页面不提供轨旁 AP 规划模板导入、模板下载或规划导出。站点来源来自设备管理中“车站”分组设备的 `station` 字段：点击“从设备管理匹配正式站点”后先展示候选，但只允许选择已有 `matched_station_id` 的候选。缺少正式 ID 的候选必须前往“站点与区间”子页维护；规划页不创建、不解锁、也不保存站点。这样每条新规划行从进入草稿开始就绑定正式站点的稳定 `station_id`。
 
 旧规划 XLSX 解析、导出和对应 API 不属于当前活动 UI，也不参与当前规划读取。兼容格式 schema v4 增加必填“车站ID”；旧分组模板只有在文件本身携带可一一对应的“组成员站点ID”时才可转换，只有站名必须报错。轨旁 AP 业务页仍可按自身契约导出业务明细和上线概览，但不改变规划维护来源。
 

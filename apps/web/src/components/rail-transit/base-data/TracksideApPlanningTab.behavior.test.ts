@@ -218,17 +218,53 @@ describe('trackside AP planning controlled draft', () => {
     expect((wrapper.findAll('.vlan-cell input')[0].element as HTMLInputElement).value).toBe('921')
   })
 
+  it('pastes multiple Excel VLAN rows and keeps empty VLAN cells nullable', async () => {
+    const draft = ref([plan('station:1', '一站'), plan('station:2', '二站')])
+    const Host = defineComponent({
+      components: { TracksideApPlanningTab },
+      setup: () => ({ draft, stations: [station('station:1', '一站', 1), station('station:2', '二站', 2)] }),
+      template: '<TracksideApPlanningTab v-model="draft" :stations="stations" editing :readonly="false" :saving="false" />',
+    })
+    const wrapper = mount(Host, { global: { stubs } })
+    const firstVlan = wrapper.findAll('.vlan-cell input')[0]
+
+    await firstVlan.trigger('paste', {
+      clipboardData: { getData: () => '921\n\t' },
+    })
+    await nextTick()
+
+    expect(draft.value.map((row) => row.management_vlan)).toEqual([921, null])
+  })
+
+  it('restores the focused cell baseline on Escape', async () => {
+    const draft = ref([plan('station:1', '一站')])
+    const Host = defineComponent({
+      components: { TracksideApPlanningTab },
+      setup: () => ({ draft, stations: [station('station:1', '一站', 1)] }),
+      template: '<TracksideApPlanningTab v-model="draft" :stations="stations" editing :readonly="false" :saving="false" />',
+    })
+    const wrapper = mount(Host, { global: { stubs } })
+    const vlan = wrapper.get('.vlan-cell input')
+
+    await vlan.trigger('focus')
+    await vlan.setValue('921')
+    await vlan.trigger('keydown', { key: 'Escape' })
+    await nextTick()
+
+    expect(draft.value[0].management_vlan).toBe(120)
+  })
+
   it('uses pure display mode by default and only exposes draft actions while editing', async () => {
     const wrapper = mount(TracksideApPlanningTab, {
       props: { modelValue: [plan('station:1', '一站')], stations: [station('station:1', '一站', 1)], editing: false, readonly: false, saving: false },
       global: { stubs },
     })
     expect(wrapper.text()).toContain('当前显示已保存的 AP 规划')
-    expect(wrapper.text()).not.toContain('从设备管理生成站点')
+    expect(wrapper.text()).not.toContain('从设备管理匹配正式站点')
     expect(wrapper.text()).not.toContain('新增规划行')
 
     await wrapper.setProps({ editing: true, readonly: true })
-    const generate = wrapper.findAll('button').find((button) => button.text().includes('从设备管理生成站点'))!
+    const generate = wrapper.findAll('button').find((button) => button.text().includes('从设备管理匹配正式站点'))!
     expect(generate.attributes('disabled')).toBeDefined()
 
     await wrapper.setProps({ readonly: false })

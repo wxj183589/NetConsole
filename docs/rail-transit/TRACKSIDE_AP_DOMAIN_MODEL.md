@@ -11,7 +11,7 @@
 - `ap_extension_points.section_id -> __base_section__.section_id`
 - `ac_trackside_ap_plan.station_id -> __base_station__.station_id`
 
-新站点 ID 从稳定 `node_uid` 生成；设备来源候选返回 `source_device_ids`，用户应用候选时，新增站点、设备绑定和新增规划行立即共享同一个最终 `station_id`。站名修改只更新展示字段，不改变关系身份。
+新站点 ID 从稳定 `node_uid` 生成；设备来源候选返回 `source_device_ids`。站点与区间子页可以创建站点并绑定设备；轨旁 AP 规划子页只能消费候选已匹配的正式 `station_id`，不能同时创建站点。站名修改只更新展示字段，不改变关系身份。
 
 ### 数据所有权矩阵
 
@@ -52,7 +52,7 @@ VIEW -> EDITING_CLEAN -> EDITING_DIRTY -> VALIDATING -> SAVING -> VIEW
 READ_ONLY（无写授权）
 ```
 
-`VIEW` 和 `READ_ONLY` 读取正式数据，不创建草稿；进入编辑时只使用 `GET /api/rail-transit/base-data/edit-snapshot` 返回的完整聚合和同一 `base_revision` 创建草稿，不从分页或筛选后的查看列表拼接。该只读接口不加载运行态、不触发 Identity rebuild，也不执行任何数据库写入；失败时保持查看态。编辑期间暂停静态轮询，切换标签不销毁草稿；离开路由和关闭窗口保护未保存修改，保存或取消后销毁草稿并返回 `VIEW`，保存失败保留原草稿和字段错误。
+`LOCKED` 和 `READ_ONLY` 读取正式数据，不创建草稿；每个可编辑子页进入编辑时，只使用 `GET /api/rail-transit/base-data/edit-snapshot?scope=...` 返回的作用域实体、必要依赖和同一 `base_revision` 创建自己的草稿，不从分页或筛选后的查看列表拼接。该只读接口不加载运行态、不触发 Identity rebuild，也不执行任何数据库写入；失败时保持锁定态。切换标签时仅对当前脏子页执行保存、放弃或取消切换，其他子页上下文不受影响；离开路由和关闭窗口保护所有未保存修改。保存或取消只销毁当前子页草稿并返回 `LOCKED`，保存失败保留原草稿和字段错误。
 
 规划按 `station_id` 纯函数 reconcile：重命名保留 AP 数、VLAN 和备注；消失或禁用的历史行标记 `stale` 并保留；启用的普通站、车辆段和停车场都可追加默认规划行。规划资格不复用区间拓扑资格：`participates_in_direction` 只约束普通站参加主线区间生成。自动行按普通站正式顺序、车辆段、停车场稳定排列，同类按稳定 ID 排列；特殊节点保持原 `node_type`，默认 AP 数为 `0`、VLAN 为空。
 
@@ -82,7 +82,7 @@ LLDP 关联 FIT-AP 只接受规范化后的精确邻居/Chassis MAC。邻居 IP�
 
 ## 6. 验证基线
 
-- 前端：显式查看/编辑双态、完整编辑快照、受控组件、纯 reconcile、10 个普通站加 1 个车辆段生成 11 行规划、跨标签草稿、只读禁用、统一保存和路由离开保护。
+- 前端：各子页独立锁定/解锁、作用域编辑快照、受控组件、纯 reconcile、10 个普通站加 1 个车辆段生成 11 行规划、跨标签隔离草稿、三选项切页保护、只读禁用和作用域保存。
 - 后端：物理 schema 迁移、26 台设备/11 站来源候选、完整只读快照与同 revision、稳定绑定、事务回滚、AP Identity 单次刷新、GET 文件指纹只读且不加载运行态、LLDP 精确 MAC、迁移脚本幂等与哈希确认。
 - 所有数据库写入测试仅使用临时目录或明确的数据库副本。
 

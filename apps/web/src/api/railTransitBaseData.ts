@@ -5,6 +5,7 @@ import type {
   BaseDataClearPreview,
   BaseDataClearResult,
   BaseDataEditSession,
+  BaseDataEditScope,
   BaseDataEditSnapshot,
   BaseDataSaveResult,
   BaseDataValidationResult,
@@ -45,11 +46,11 @@ function queryString(values: PageQuery = {}): string {
 
 export const getRailTransitSummary = (): Promise<RailTransitSummary> => apiRequest(`${root}/summary`)
 export const getRailTransitBaseDataEditSession = (): Promise<BaseDataEditSession> => apiRequest(`${root}/revision`)
-export const getRailTransitBaseDataEditSnapshot = (): Promise<BaseDataEditSnapshot> => apiRequest(`${root}/edit-snapshot`)
+export const getRailTransitBaseDataEditSnapshot = (scope: BaseDataEditScope = 'all'): Promise<BaseDataEditSnapshot> => apiRequest(`${root}/edit-snapshot${queryString({ scope })}`)
 export const getRailTransitBaseDataClearPreview = (): Promise<BaseDataClearPreview> => apiRequest(`${root}/clear-preview`)
 export const clearRailTransitBaseData = (payload: { site_id: string; base_revision: string; explicit_confirmation: boolean }): Promise<BaseDataClearResult> => apiRequest(`${root}/clear-all`, { method: 'POST', body: JSON.stringify(payload) })
-export const validateRailTransitBaseDataChanges = (payload: { site_id: string; base_revision: string; changes: BaseDataChange[] }): Promise<BaseDataValidationResult> => apiRequest(`${root}/validate`, { method: 'POST', body: JSON.stringify(payload) })
-export const saveRailTransitBaseDataChanges = (payload: { site_id: string; base_revision: string; changes: BaseDataChange[]; explicit_confirmation: boolean }): Promise<BaseDataSaveResult> => apiRequest(`${root}/changes`, { method: 'POST', body: JSON.stringify(payload) })
+export const validateRailTransitBaseDataChanges = (payload: { site_id: string; base_revision: string; scope?: BaseDataEditScope; changes: BaseDataChange[] }): Promise<BaseDataValidationResult> => apiRequest(`${root}/validate`, { method: 'POST', body: JSON.stringify(payload) })
+export const saveRailTransitBaseDataChanges = (payload: { site_id: string; base_revision: string; scope?: BaseDataEditScope; changes: BaseDataChange[]; explicit_confirmation: boolean }): Promise<BaseDataSaveResult> => apiRequest(`${root}/changes`, { method: 'POST', body: JSON.stringify(payload) })
 export const listStations = (values: PageQuery = {}): Promise<Page<Station>> => apiRequest(`${root}/stations${queryString(values)}`)
 export const getStationSourcePreview = (): Promise<StationSourcePreview> => apiRequest(`${root}/station-source-preview`)
 export const preflightStationDeletion = (payload: { site_id: string; base_revision: string; station_ids: string[] }): Promise<StationDeletePreflight> => apiRequest(`${root}/stations/delete-preflight`, { method: 'POST', body: JSON.stringify(payload) })

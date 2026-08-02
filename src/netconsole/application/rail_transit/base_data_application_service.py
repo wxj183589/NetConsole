@@ -18,6 +18,7 @@ from netconsole.models.api.rail_transit_base_data import (
     BaseDataClearResultDTO,
     BaseDataEditSessionDTO,
     BaseDataEditSnapshotDTO,
+    BaseDataEditScope,
     BaseDataSaveResultDTO,
     BaseDataValidationIssueDTO,
     BaseDataValidationResultDTO,
@@ -96,6 +97,17 @@ _SECTION_NODE_TYPES = {"station", "terminal_endpoint", "legacy", "unknown"}
 _SECTION_SOURCE_KINDS = {"generated", "manual", "template", "legacy_ap_derived"}
 _SECTION_MILEAGE_SOURCES = {"generated", "manual", "unavailable"}
 _STATION_MERGE_MILEAGE_TOLERANCE_M = 250.0
+_SCOPE_ENTITY_TYPES: dict[BaseDataEditScope, frozenset[str]] = {
+    "all": frozenset({
+        "site_metadata", "station", "device_station_binding", "section",
+        "trackside_ap", "vehicle_mr", "trackside_ap_plan",
+    }),
+    "overview": frozenset({"site_metadata"}),
+    "stations": frozenset({"station", "device_station_binding", "section"}),
+    "trackside_ap": frozenset({"trackside_ap"}),
+    "trackside_ap_planning": frozenset({"trackside_ap_plan"}),
+    "vehicles": frozenset({"vehicle_mr"}),
+}
 
 
 class RailTransitBaseDataApplicationError(RuntimeError):
@@ -143,9 +155,14 @@ class RailTransitBaseDataApplicationService:
             write_denial_reason=denial_reason,
         )
 
-    def get_edit_snapshot(self, site_id: str) -> BaseDataEditSnapshotDTO:
+    def get_edit_snapshot(
+        self,
+        site_id: str,
+        *,
+        scope: BaseDataEditScope = "all",
+    ) -> BaseDataEditSnapshotDTO:
         site_id = SiteManager(self.paths).validate_site_name(site_id)
-        snapshot = self.query_service.get_edit_snapshot(site_id)
+        snapshot = self.query_service.get_edit_snapshot(site_id, scope=scope)
         status = self.guard.status(site_id)
         can_write = (
             status.copy_write_authorized
@@ -155,6 +172,7 @@ class RailTransitBaseDataApplicationService:
         denial_code, denial_reason = self.guard.write_denial(status)
         return BaseDataEditSnapshotDTO(
             **snapshot,
+            scope=scope,
             loaded_at=datetime.now(timezone.utc).isoformat(),
             can_write=can_write,
             write_scope=status.scope,
@@ -388,6 +406,8 @@ class RailTransitBaseDataApplicationService:
         site_id: str,
         base_revision: str,
         changes: Iterable[BaseDataChangeDTO],
+        *,
+        scope: BaseDataEditScope = "all",
     ) -> tuple[BaseDataValidationResultDTO, list[dict[str, Any]]]:
         site_id = SiteManager(self.paths).validate_site_name(site_id)
         change_rows = list(changes)
@@ -406,6 +426,16 @@ class RailTransitBaseDataApplicationService:
         issues: list[BaseDataValidationIssueDTO] = []
         if self.repository.base_data_revision(site_id) != base_revision:
             issues.append(self._issue(0, "BASE_DATA_REVISION_CONFLICT", "基础资料已被其他操作更新，请重新加载"))
+        allowed_entity_types = _SCOPE_ENTITY_TYPES[scope]
+        for index, change in enumerate(change_rows):
+            if change.entity_type not in allowed_entity_types:
+                issues.append(self._issue(
+                    index,
+                    "BASE_DATA_SCOPE_VIOLATION",
+                    f"{scope} 子页不能提交 {change.entity_type} 修改",
+                ))
+        if any(issue.code == "BASE_DATA_SCOPE_VIOLATION" for issue in issues):
+            return BaseDataValidationResultDTO(valid=False, issues=issues), []
         for change in change_rows:
             if (
                 change.entity_type == "station"
@@ -470,6 +500,7 @@ class RailTransitBaseDataApplicationService:
         base_revision: str,
         changes: Iterable[BaseDataChangeDTO],
         *,
+        scope: BaseDataEditScope = "all",
         explicit_confirmation: bool,
     ) -> BaseDataSaveResultDTO:
         site_id = SiteManager(self.paths).validate_site_name(site_id)
@@ -478,11 +509,29 @@ class RailTransitBaseDataApplicationService:
         except BaseDataWriteGuardError as exc:
             raise RailTransitBaseDataApplicationError(exc.code, str(exc)) from exc
         change_rows = list(changes)
-        validation, normalized = self.validate_changes(site_id, base_revision, change_rows)
+        validation, normalized = self.validate_changes(
+            site_id,
+            base_revision,
+            change_rows,
+            scope=scope,
+        )
         if not validation.valid:
             conflict = next((item for item in validation.issues if item.code == "BASE_DATA_REVISION_CONFLICT"), None)
             if conflict:
                 raise RailTransitBaseDataApplicationError(conflict.code, conflict.message)
+            scope_violation = next(
+                (
+                    item
+                    for item in validation.issues
+                    if item.code == "BASE_DATA_SCOPE_VIOLATION"
+                ),
+                None,
+            )
+            if scope_violation:
+                raise RailTransitBaseDataApplicationError(
+                    scope_violation.code,
+                    scope_violation.message,
+                )
             raise RailTransitBaseDataApplicationError("BASE_DATA_VALIDATION_FAILED", "基础资料校验失败")
         try:
             result = self.repository.apply_base_data_changes(site_id, base_revision, normalized)

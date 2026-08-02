@@ -15,6 +15,7 @@ from uuid import NAMESPACE_URL, uuid5
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.rail_transit_base_data import (
+    BaseDataEditScope,
     BaseDataTracksideApPlanRowDTO,
     DataQualityEntityGroupDTO,
     DataQualityEntityGroupPageDTO,
@@ -169,8 +170,13 @@ class RailTransitBaseDataQueryService:
     def current_site_id(self) -> str:
         return self.ac_query.current_site_id()
 
-    def get_edit_snapshot(self, site_id: str) -> dict[str, Any]:
-        raw = self.repository.read_edit_snapshot(site_id)
+    def get_edit_snapshot(
+        self,
+        site_id: str,
+        *,
+        scope: BaseDataEditScope = "all",
+    ) -> dict[str, Any]:
+        raw = self.repository.read_edit_snapshot(site_id, scope=scope)
         metadata = dict(raw["metadata"])
         device_rows = list(raw["device_rows"])
         group_rows = list(raw["group_rows"])
@@ -264,14 +270,20 @@ class RailTransitBaseDataQueryService:
             train_count=len(self._trains(vehicle_mrs, [])),
             mr_count=len(vehicle_mrs),
         )
+        include_stations = scope in {"all", "stations", "trackside_ap", "trackside_ap_planning"}
+        include_sections = scope in {"all", "stations", "trackside_ap"}
+        include_aps = scope in {"all", "trackside_ap"}
+        include_plans = scope in {"all", "trackside_ap_planning"}
+        include_bindings = scope in {"all", "stations"}
+        include_mrs = scope in {"all", "vehicles"}
         return {
             "site_id": site_id,
             "base_revision": str(raw["base_revision"]),
             "metadata": summary,
-            "stations": stations,
-            "sections": sections,
-            "trackside_aps": trackside_aps,
-            "trackside_ap_plans": plans,
+            "stations": stations if include_stations else [],
+            "sections": sections if include_sections else [],
+            "trackside_aps": trackside_aps if include_aps else [],
+            "trackside_ap_plans": plans if include_plans else [],
             "device_station_bindings": [
                 {
                     "device_id": str(row.get("device_uuid") or row.get("id") or ""),
@@ -279,10 +291,11 @@ class RailTransitBaseDataQueryService:
                     "source": "migration",
                 }
                 for row in device_rows
-                if str(row.get("device_uuid") or row.get("id") or "")
+                if include_bindings
+                and str(row.get("device_uuid") or row.get("id") or "")
                 and str(row.get("station_id") or "")
             ],
-            "vehicle_mrs": vehicle_mrs,
+            "vehicle_mrs": vehicle_mrs if include_mrs else [],
         }
 
     def get_summary(self, site_id: str) -> RailTransitSummaryDTO:

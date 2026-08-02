@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Delete, Plus } from '@element-plus/icons-vue'
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 
 import type { TracksideApPlanRow } from '../../../types/tracksideApBusiness'
 import NcDataTable from '../../table/NcDataTable.vue'
@@ -12,6 +12,7 @@ interface ValidationIssue {
   field: 'station_id' | 'sequence_no' | 'planned_ap_count' | 'management_vlan'
   message: string
 }
+type EditableField = 'sequence_no' | 'station_name' | 'planned_ap_count' | 'management_vlan' | 'remark'
 
 const props = withDefaults(defineProps<{
   modelValue: TracksideApPlanRow[]
@@ -31,6 +32,7 @@ const emit = defineEmits<{
 }>()
 
 const selectedRows = ref<TracksideApPlanRow[]>([])
+let editingBaseline: { rowIndex: number; field: EditableField; value: unknown } | null = null
 const rows = computed(() => props.modelValue)
 const editable = computed(() => props.editing && !props.readonly && !props.saving)
 const orderedStations = computed(() => [...props.stations].sort((left, right) =>
@@ -39,18 +41,16 @@ const orderedStations = computed(() => [...props.stations].sort((left, right) =>
 const linkedRows = computed(() => rows.value.filter((row) => row.relation_status === 'resolved'))
 const pendingRows = computed(() => rows.value.filter((row) => row.relation_status !== 'resolved'))
 
-const baseColumns: NcTableColumn<TracksideApPlanRow>[] = [
-  { key: 'sequence_no', label: '序号', valueType: 'number', width: 90 },
-  { key: 'station_name', label: '车站名称', valueType: 'name', minWidth: 210 },
-  { key: 'planned_ap_count', label: 'AP数量', valueType: 'number', width: 120 },
-  { key: 'management_vlan', label: 'AP管理VLAN', valueType: 'number', width: 140 },
-  { key: 'remark', label: '备注', valueType: 'description', minWidth: 220 },
-  { key: 'relation_status', label: '关联状态', valueType: 'status', width: 120 },
-]
-const columns = computed<NcTableColumn<TracksideApPlanRow>[]>(() => [
-  ...(props.editing ? [{ key: 'selection', label: '', type: 'selection', valueType: 'selection', width: 44, hideable: false } as NcTableColumn<TracksideApPlanRow>] : []),
-  ...baseColumns,
-  ...(props.editing ? [{ key: 'actions', label: '操作', valueType: 'actions', width: 68, hideable: false } as NcTableColumn<TracksideApPlanRow>] : []),
+const editableFields: EditableField[] = ['sequence_no', 'station_name', 'planned_ap_count', 'management_vlan', 'remark']
+const planColumns = computed<NcTableColumn<TracksideApPlanRow>[]>(() => [
+  { key: 'sequence_no', label: '序号', valueType: 'number', width: 72, align: 'center', hideable: false },
+  { key: 'station_name', label: '车站名称', valueType: 'name', minWidth: 260, align: 'left', hideable: false },
+  { key: 'planned_ap_count', label: 'AP数量', valueType: 'number', width: 110, align: 'center' },
+  { key: 'management_vlan', label: 'AP管理VLAN', valueType: 'number', width: 130, align: 'center' },
+  { key: 'remark', label: '备注', valueType: 'description', minWidth: 360, align: 'left', alignmentReason: 'long-text' },
+  { key: 'relation_status', label: '关联状态', valueType: 'status', width: 120, align: 'center' },
+  ...(props.editing ? [{ key: 'selection', label: '', type: 'selection', valueType: 'selection', width: 48, align: 'center', hideable: false } as NcTableColumn<TracksideApPlanRow>] : []),
+  ...(props.editing ? [{ key: 'actions', label: '操作', valueType: 'actions', width: 64, align: 'center', fixed: 'right', hideable: false } as NcTableColumn<TracksideApPlanRow>] : []),
 ])
 
 function copyRows(): TracksideApPlanRow[] {
@@ -79,6 +79,83 @@ function updateRequiredNumber(
   const normalized = Number(value)
   if (!Number.isFinite(normalized)) return
   updateRow(row, { [field]: normalized })
+}
+
+function rowIndex(row: TracksideApPlanRow): number {
+  return props.modelValue.indexOf(row)
+}
+
+function beginCellEdit(row: TracksideApPlanRow, field: EditableField): void {
+  const index = rowIndex(row)
+  if (index >= 0) editingBaseline = { rowIndex: index, field, value: field === 'station_name' ? { ...row } : row[field] }
+}
+
+function cancelCellEdit(row: TracksideApPlanRow, field: EditableField): void {
+  const index = rowIndex(row)
+  if (editingBaseline && editingBaseline.rowIndex === index && editingBaseline.field === field) {
+    const next = copyRows()
+    if (field === 'station_name') {
+      next[index] = editingBaseline.value as TracksideApPlanRow
+    } else {
+      ;(next[index][field] as unknown) = editingBaseline.value
+    }
+    publish(next)
+  }
+  editingBaseline = null
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+}
+
+function cellId(row: TracksideApPlanRow, field: EditableField): string {
+  return `${rowIndex(row)}-${field}`
+}
+
+function focusNextRow(row: TracksideApPlanRow, field: EditableField): void {
+  const nextIndex = rowIndex(row) + 1
+  if (nextIndex >= rows.value.length) return
+  void nextTick(() => document.querySelector<HTMLInputElement>(`[data-plan-cell="${nextIndex}-${field}"] input`)?.focus())
+}
+
+function assignPastedValue(row: TracksideApPlanRow, field: EditableField, value: string): void {
+  const text = value.trim()
+  if (field === 'sequence_no' || field === 'planned_ap_count') row[field] = Number(text)
+  else if (field === 'management_vlan') row.management_vlan = text ? Number(text) : null
+  else if (field === 'station_name') {
+    const station = props.stations.find((item) => item.name.trim() === text)
+    row.station_name = station?.name ?? text
+    row.station_id = station?.id ?? ''
+    row.sequence_no = station?.sort_order ?? row.sequence_no
+    row.relation_status = station ? 'resolved' : 'missing'
+    row.candidate_station_ids = []
+  } else row.remark = value
+}
+
+function blankRow(source: TracksideApPlanRow[] = rows.value): TracksideApPlanRow {
+  return {
+    station_id: '', station_name: '', sequence_no: Math.max(0, ...source.map((row) => Number(row.sequence_no) || 0)) + 1,
+    planned_ap_count: 0, management_vlan: null, remark: '', relation_status: 'missing', candidate_station_ids: [],
+  }
+}
+
+function pasteGrid(event: ClipboardEvent, startRow: TracksideApPlanRow, startField: EditableField): void {
+  if (!editable.value) return
+  const text = event.clipboardData?.getData('text/plain') ?? ''
+  if (!text) return
+  event.preventDefault()
+  const grid = text.replace(/\r/g, '').split('\n')
+    .filter((line, index, all) => line.length > 0 || index < all.length - 1)
+    .map((line) => line.split('\t'))
+  const next = copyRows()
+  const startRowIndex = Math.max(rowIndex(startRow), 0)
+  const startColumnIndex = editableFields.indexOf(startField)
+  for (let y = 0; y < grid.length; y += 1) {
+    if (!next[startRowIndex + y]) next.push(blankRow(next))
+    for (let x = 0; x < grid[y].length; x += 1) {
+      const field = editableFields[startColumnIndex + x]
+      if (!field) break
+      assignPastedValue(next[startRowIndex + y], field, grid[y][x])
+    }
+  }
+  publish(next)
 }
 
 function selectStation(row: TracksideApPlanRow, stationId: string): void {
@@ -153,6 +230,12 @@ function validate(source: TracksideApPlanRow[]): ValidationIssue[] {
 }
 
 const validationIssues = computed(() => validate(rows.value))
+watch(validationIssues, (issues) => emit('validation-change', issues.length === 0, issues), { immediate: true })
+
+function cellError(row: TracksideApPlanRow, field: ValidationIssue['field']): string {
+  const index = rowIndex(row)
+  return validationIssues.value.find((issue) => issue.rowIndex === index && issue.field === field)?.message ?? ''
+}
 </script>
 
 <template>
@@ -160,11 +243,11 @@ const validationIssues = computed(() => validate(rows.value))
     <div class="planning-toolbar">
       <div>
         <h3>{{ editing ? 'AP 规划维护' : 'AP 规划' }}</h3>
-        <p>{{ editing ? '规划只写入页面统一草稿，正式关联使用 station_id。' : '当前显示已保存的 AP 规划，正式关联使用 station_id。' }}</p>
+        <p>{{ editing ? '规划只写入当前子页草稿，正式关联使用 station_id。' : '当前显示已保存的 AP 规划，正式关联使用 station_id。' }}</p>
       </div>
       <div v-if="editing" class="toolbar-actions">
         <el-button :disabled="!editable" @click="emit('request-generate-stations')">
-          从设备管理生成站点
+          从设备管理匹配正式站点
         </el-button>
         <el-button :icon="Plus" :disabled="!editable" @click="addRow">新增规划行</el-button>
         <el-button :icon="Delete" :disabled="!editable || !selectedRows.length" @click="removeRows(selectedRows)">
@@ -177,40 +260,50 @@ const validationIssues = computed(() => validate(rows.value))
       v-if="editing && validationIssues.length"
       type="warning"
       :closable="false"
-      :title="`有 ${validationIssues.length} 项需要修正，页面统一保存已禁用。`"
+      :title="`有 ${validationIssues.length} 项需要修正，当前子页保存已禁用。`"
     />
 
     <h4>已关联规划（{{ linkedRows.length }}）</h4>
     <div class="table-scroll">
       <NcDataTable
         table-id="rail-base-trackside-ap-planning"
-        :columns="columns"
+        :columns="planColumns"
         :data="rows"
         row-key="station_id"
         route-key="/rail-transit/base-data"
         @selection-change="selectionChange"
       >
         <template #cell-sequence_no="{ row }">
-          <el-input-number v-if="editing" :model-value="row.sequence_no" :min="1" :disabled="!editable" @update:model-value="updateRequiredNumber(row, 'sequence_no', $event)" />
-          <span v-else>{{ row.sequence_no }}</span>
+          <div class="plan-cell numeric-plan-cell" :data-plan-cell="cellId(row, 'sequence_no')" :title="cellError(row, 'sequence_no')">
+            <el-input-number v-if="editing" :model-value="row.sequence_no" :min="1" :controls="false" :disabled="!editable" :class="{ 'field-error': cellError(row, 'sequence_no') }" @focus="beginCellEdit(row, 'sequence_no')" @update:model-value="updateRequiredNumber(row, 'sequence_no', $event)" @paste="pasteGrid($event, row, 'sequence_no')" @keydown.enter.prevent="focusNextRow(row, 'sequence_no')" @keydown.esc.prevent="cancelCellEdit(row, 'sequence_no')" @wheel.prevent.stop />
+            <span v-else>{{ row.sequence_no }}</span>
+          </div>
         </template>
         <template #cell-station_name="{ row }">
-          <el-select v-if="editing" :model-value="row.station_id" :disabled="!editable" @change="selectStation(row, String($event))">
-            <el-option v-for="station in orderedStations" :key="station.id" :label="station.name" :value="station.id" />
-          </el-select>
-          <span v-else>{{ row.station_name || '--' }}</span>
+          <div class="plan-cell" :data-plan-cell="cellId(row, 'station_name')" :title="cellError(row, 'station_id')">
+            <el-select v-if="editing" :model-value="row.station_id" filterable :disabled="!editable" :class="{ 'field-error': cellError(row, 'station_id') }" @focus="beginCellEdit(row, 'station_name')" @change="selectStation(row, String($event))" @paste="pasteGrid($event, row, 'station_name')" @keydown.enter.prevent="focusNextRow(row, 'station_name')" @keydown.esc.prevent="cancelCellEdit(row, 'station_name')">
+              <el-option v-for="station in orderedStations" :key="station.id" :label="station.name" :value="station.id" />
+            </el-select>
+            <span v-else>{{ row.station_name || '--' }}</span>
+          </div>
         </template>
         <template #cell-planned_ap_count="{ row }">
-          <el-input-number v-if="editing" :model-value="row.planned_ap_count" :min="0" :disabled="!editable" @update:model-value="updateRequiredNumber(row, 'planned_ap_count', $event)" />
-          <span v-else>{{ row.planned_ap_count }}</span>
+          <div class="plan-cell numeric-plan-cell" :data-plan-cell="cellId(row, 'planned_ap_count')" :title="cellError(row, 'planned_ap_count')">
+            <el-input-number v-if="editing" :model-value="row.planned_ap_count" :min="0" :controls="false" :disabled="!editable" :class="{ 'field-error': cellError(row, 'planned_ap_count') }" @focus="beginCellEdit(row, 'planned_ap_count')" @update:model-value="updateRequiredNumber(row, 'planned_ap_count', $event)" @paste="pasteGrid($event, row, 'planned_ap_count')" @keydown.enter.prevent="focusNextRow(row, 'planned_ap_count')" @keydown.esc.prevent="cancelCellEdit(row, 'planned_ap_count')" @wheel.prevent.stop />
+            <span v-else>{{ row.planned_ap_count }}</span>
+          </div>
         </template>
         <template #cell-management_vlan="{ row }">
-          <el-input-number v-if="editing" :model-value="row.management_vlan" :min="1" :max="4094" :disabled="!editable" @update:model-value="updateRow(row, { management_vlan: $event == null ? null : Number($event) })" />
-          <span v-else>{{ row.management_vlan ?? '--' }}</span>
+          <div class="plan-cell numeric-plan-cell" :data-plan-cell="cellId(row, 'management_vlan')" :title="cellError(row, 'management_vlan')">
+            <el-input-number v-if="editing" :model-value="row.management_vlan" :min="1" :max="4094" :controls="false" :disabled="!editable" :class="{ 'field-error': cellError(row, 'management_vlan') }" @focus="beginCellEdit(row, 'management_vlan')" @update:model-value="updateRow(row, { management_vlan: $event == null ? null : Number($event) })" @paste="pasteGrid($event, row, 'management_vlan')" @keydown.enter.prevent="focusNextRow(row, 'management_vlan')" @keydown.esc.prevent="cancelCellEdit(row, 'management_vlan')" @wheel.prevent.stop />
+            <span v-else>{{ row.management_vlan ?? '--' }}</span>
+          </div>
         </template>
         <template #cell-remark="{ row }">
-          <el-input v-if="editing" :model-value="row.remark" :disabled="!editable" @update:model-value="updateRow(row, { remark: String($event) })" />
-          <span v-else>{{ row.remark || '--' }}</span>
+          <div class="plan-cell" :data-plan-cell="cellId(row, 'remark')">
+            <el-input v-if="editing" :model-value="row.remark" :disabled="!editable" @focus="beginCellEdit(row, 'remark')" @update:model-value="updateRow(row, { remark: String($event) })" @paste="pasteGrid($event, row, 'remark')" @keydown.enter.prevent="focusNextRow(row, 'remark')" @keydown.esc.prevent="cancelCellEdit(row, 'remark')" />
+            <span v-else>{{ row.remark || '--' }}</span>
+          </div>
         </template>
         <template #cell-relation_status="{ row }">
           <el-tag :type="row.relation_status === 'resolved' ? 'success' : 'warning'">{{ row.relation_status || 'missing' }}</el-tag>
@@ -235,6 +328,13 @@ const validationIssues = computed(() => validate(rows.value))
 .planning-toolbar p, .pending-panel p { margin-top: 6px; color: var(--el-text-color-secondary); }
 .toolbar-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .table-scroll { width: 100%; overflow-x: auto; }
+.plan-cell { width: 100%; min-width: 0; box-sizing: border-box; }
+.plan-cell :deep(.el-input-number),
+.plan-cell :deep(.el-select),
+.plan-cell :deep(.el-input) { width: 100%; min-width: 0; box-sizing: border-box; }
+.numeric-plan-cell :deep(.el-input__inner) { text-align: center; }
+.plan-cell :deep(.el-input-number .el-input__wrapper) { padding-inline: 8px; }
+.plan-cell :deep(.field-error .el-input__wrapper) { box-shadow: 0 0 0 1px var(--el-color-danger) inset; }
 .pending-panel { padding: 12px; border: 1px solid var(--el-color-warning-light-5); border-radius: 8px; }
 @media (max-width: 900px) { .planning-toolbar { flex-direction: column; } .toolbar-actions { justify-content: flex-start; } }
 </style>

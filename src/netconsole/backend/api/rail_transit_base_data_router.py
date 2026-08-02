@@ -20,6 +20,7 @@ from netconsole.models.api.rail_transit_base_data import (
     BaseDataClearResultDTO,
     BaseDataEditSessionDTO,
     BaseDataEditSnapshotDTO,
+    BaseDataEditScope,
     BaseDataSaveRequestDTO,
     BaseDataSaveResultDTO,
     BaseDataValidateRequestDTO,
@@ -116,10 +117,12 @@ def revision(request: Request, site_id: str = Query(default="", max_length=100))
 def edit_snapshot(
     request: Request,
     site_id: str = Query(default="", max_length=100),
+    scope: BaseDataEditScope = Query(default="all"),
 ) -> BaseDataEditSnapshotDTO:
     return _query(
         lambda: _application_service(request).get_edit_snapshot(
-            _site_id(request, site_id)
+            _site_id(request, site_id),
+            scope=scope,
         )
     )
 
@@ -158,6 +161,7 @@ def validate_changes(request: Request, payload: BaseDataValidateRequestDTO) -> B
         _site_id(request, payload.site_id),
         payload.base_revision,
         payload.changes,
+        scope=payload.scope,
     )
     return result
 
@@ -179,6 +183,7 @@ def save_changes(request: Request, payload: BaseDataSaveRequestDTO) -> BaseDataS
             _site_id(request, payload.site_id),
             payload.base_revision,
             payload.changes,
+            scope=payload.scope,
             explicit_confirmation=payload.explicit_confirmation,
         )
     except RailTransitBaseDataApplicationError as exc:

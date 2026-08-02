@@ -23,6 +23,7 @@ export interface RuntimeStatus {
 
 export type BaseDataEntityType = 'site_metadata' | 'station' | 'device_station_binding' | 'section' | 'trackside_ap' | 'vehicle_mr' | 'trackside_ap_plan'
 export type BaseDataChangeAction = 'create' | 'update' | 'delete' | 'replace'
+export type BaseDataEditScope = 'all' | 'overview' | 'stations' | 'trackside_ap' | 'trackside_ap_planning' | 'vehicles'
 
 export interface BaseDataEditSession {
   site_id: string
@@ -528,6 +529,7 @@ export interface RailTransitBaseDataDraft {
 }
 
 export interface BaseDataEditSnapshot extends BaseDataEditSession {
+  scope: BaseDataEditScope
   metadata: RailTransitSummary
   stations: Station[]
   sections: Section[]

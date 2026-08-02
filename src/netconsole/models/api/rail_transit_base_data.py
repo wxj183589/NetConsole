@@ -27,6 +27,14 @@ BaseDataEntityType = Literal[
     "trackside_ap_plan",
 ]
 BaseDataChangeAction = Literal["create", "update", "delete", "replace"]
+BaseDataEditScope = Literal[
+    "all",
+    "overview",
+    "stations",
+    "trackside_ap",
+    "trackside_ap_planning",
+    "vehicles",
+]
 StationNodeType = Literal["station", "parking_lot", "depot", "connection_point", "other", "unknown"]
 StationStructureType = Literal["underground", "elevated", "at_grade", "cutting", "mixed", "unknown"]
 StationPlatformLayout = Literal["island", "side", "mixed", "stacked_island", "stacked_side", "separated", "unknown"]
@@ -109,6 +117,7 @@ class BaseDataValidationIssueDTO(ApiModel):
 class BaseDataValidateRequestDTO(ApiModel):
     site_id: str
     base_revision: str
+    scope: BaseDataEditScope = "all"
     changes: list[BaseDataChangeDTO] = Field(default_factory=list, max_length=2000)
 
 
@@ -658,6 +667,7 @@ class BaseDataTracksideApPlanRowDTO(ApiModel):
 
 
 class BaseDataEditSnapshotDTO(BaseDataEditSessionDTO):
+    scope: BaseDataEditScope = "all"
     metadata: RailTransitSummaryDTO
     stations: list[StationDTO] = Field(default_factory=list)
     sections: list[SectionDTO] = Field(default_factory=list)

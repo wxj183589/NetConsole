@@ -33,6 +33,7 @@ import type {
   BaseDataClearPreview,
   BaseDataClearResult,
   BaseDataEditSession,
+  BaseDataEditScope,
   BaseDataEditSnapshot,
   BaseDataSaveResult,
   BaseDataValidationResult,
@@ -329,9 +330,9 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
     }
   }
 
-  async function refreshEditSnapshot(): Promise<BaseDataEditSnapshot> {
+  async function refreshEditSnapshot(scope: BaseDataEditScope = 'all'): Promise<BaseDataEditSnapshot> {
     try {
-      const value = await getRailTransitBaseDataEditSnapshot()
+      const value = await getRailTransitBaseDataEditSnapshot(scope)
       editSnapshot.value = value
       editSession.value = {
         site_id: value.site_id,
@@ -368,20 +369,63 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
     return result
   }
 
-  async function validateChanges(changes: BaseDataChange[]): Promise<BaseDataValidationResult> {
+  async function validateChanges(scope: BaseDataEditScope, baseRevision: string, changes: BaseDataChange[]): Promise<BaseDataValidationResult> {
     if (!editSession.value) await refreshEditSession()
     return validateRailTransitBaseDataChanges({
       site_id: editSession.value!.site_id,
-      base_revision: editSession.value!.base_revision,
+      base_revision: baseRevision,
+      scope,
       changes,
     })
   }
 
-  async function saveChanges(changes: BaseDataChange[]): Promise<BaseDataSaveResult> {
+  async function refreshStationBaseData(): Promise<void> {
+    await Promise.all([
+      refreshEndpoint('stations', () => listStations({ page: 1, page_size: 200 }), (page) => {
+        stations.value = page.items
+      }),
+      refreshEndpoint('sections', () => listSections({ page: 1, page_size: 200 }), (page) => {
+        sections.value = page.items
+      }),
+    ])
+    await evaluateBackendReachability()
+  }
+
+  async function refreshTracksideApBaseData(): Promise<void> {
+    await refreshEndpoint('tracksideAps', () => listTracksideAps(apFilters), (page) => {
+      aps.value = page.items
+      apTotal.value = page.total
+    })
+    await evaluateBackendReachability()
+  }
+
+  async function refreshTracksideApPlanningData(): Promise<void> {
+    await refreshEndpoint('tracksideApPlan', getTracksideApPlan, (plan) => {
+      tracksideApPlans.value = plan.items
+    })
+    await evaluateBackendReachability()
+  }
+
+  async function refreshVehicleBaseData(): Promise<void> {
+    await Promise.all([
+      refreshEndpoint('trains', () => listTrains({ page: 1, page_size: 100 }), (page) => {
+        trains.value = page.items
+        trainTotal.value = page.total
+      }),
+      refreshEndpoint('vehicleMrs', () => listVehicleMrs(mrFilters), (page) => {
+        mrs.value = page.items
+        mrTotal.value = page.total
+      }),
+    ])
+    await evaluateBackendReachability()
+  }
+
+  async function saveChanges(scope: BaseDataEditScope, baseRevision: string, changes: BaseDataChange[]): Promise<BaseDataSaveResult> {
     if (!editSession.value) await refreshEditSession()
     const result = await saveRailTransitBaseDataChanges({
       site_id: editSession.value!.site_id,
-      base_revision: editSession.value!.base_revision,
+      base_revision: baseRevision,
+      scope,
       changes,
       explicit_confirmation: true,
     })
@@ -545,7 +589,9 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
     loading, previewLoading, stationSourceLoading, sectionGenerationLoading, applyLoading,
     failures, error, summaryError, staticError, runtimeError, governanceError, refreshErrors, backendOffline,
     apFilters, mrFilters, issueFilters,
-    refreshSummary, refreshRuntime, refreshStatic, manualRefresh, previewImport, refreshStationSourcePreview, previewStationTemplateFile, previewSectionsFromDraft,
+    refreshSummary, refreshRuntime, refreshStatic, manualRefresh,
+    refreshStationBaseData, refreshTracksideApBaseData, refreshTracksideApPlanningData, refreshVehicleBaseData,
+    previewImport, refreshStationSourcePreview, previewStationTemplateFile, previewSectionsFromDraft,
     refreshImportGovernance, refreshEditSession, refreshEditSnapshot, previewClearAll, clearAll, validateChanges, saveChanges, canApplyImport, applyImport, selectImportOperation, rollbackImport,
     applyApFilters, setApPage, applyMrFilters, setMrPage, applyIssueFilters, setIssuePage,
     startPolling, stopPolling,

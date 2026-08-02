@@ -749,12 +749,12 @@ describe('轨道交通基础资料编辑闭环', () => {
     wrapper.unmount()
   })
 
-  it('初次打开为纯查看态，点击编辑后才渲染统一草稿控件', async () => {
+  it('初次打开各子页为锁定态，解锁当前子页后才渲染其草稿控件', async () => {
     mocks.stationsPage.mockResolvedValue({ items: [sourceStationWuxiang], total: 1, page: 1, page_size: 50 })
     mocks.sectionsPage.mockResolvedValue({ items: [generatedIncreasingSection], total: 1, page: 1, page_size: 50 })
     const wrapper = await mountView(false)
 
-    expect(wrapper.get('.page-toolbar').findAll('button').map((item) => item.text().trim())).toEqual(['刷新', '编辑'])
+    expect(wrapper.get('.page-toolbar').findAll('button')).toHaveLength(0)
     expect(wrapper.get('[data-table-id="rail-base-stations"]').find('input, select').exists()).toBe(false)
     expect(wrapper.get('[data-table-id="rail-base-sections"]').find('input, select').exists()).toBe(false)
     expect(wrapper.findComponent(PlanningStub).props('editing')).toBe(false)
@@ -763,7 +763,7 @@ describe('轨道交通基础资料编辑闭环', () => {
     await button(wrapper, '编辑').trigger('click')
     await flushPromises()
 
-    expect(wrapper.get('.page-toolbar').findAll('button').map((item) => item.text().trim())).toEqual(['取消修改', '保存'])
+    expect(wrapper.get('.page-toolbar').findAll('button')).toHaveLength(0)
     expect(button(wrapper, '保存').attributes('disabled')).toBeDefined()
     expect(wrapper.get('[data-table-id="rail-base-stations"]').find('input, select').exists()).toBe(true)
     expect(wrapper.get('[data-table-id="rail-base-sections"]').find('input, select').exists()).toBe(true)
@@ -772,7 +772,7 @@ describe('轨道交通基础资料编辑闭环', () => {
     wrapper.unmount()
   })
 
-  it('uses the complete edit snapshot independently from AP filters and page, and preserves one draft across tab switches', async () => {
+  it('keeps an unlocked subpage draft isolated when the active tab changes', async () => {
     const stations = [
       sourceStationWuxiang,
       { ...sourceStationWuxiang, id: 'station:depot', node_uid: 'node:depot', name: '车辆段', node_type: 'depot' as const, sort_order: null, participates_in_direction: false },
@@ -822,13 +822,11 @@ describe('轨道交通基础资料编辑闭环', () => {
     for (const tab of ['overview', 'stations', 'trackside-ap', 'trackside-ap-planning', 'trains', 'quality', 'relations']) {
       await wrapper.vm.$router.replace({ query: { tab } })
       await flushPromises()
-      expect(wrapper.get('[data-table-id="rail-base-trackside-aps"]').findAll('.table-row')).toHaveLength(3)
+      expect(wrapper.get('[data-table-id="rail-base-trackside-aps"]').findAll('.table-row')).toHaveLength(tab === 'overview' ? 3 : 1)
     }
     expect((stationName.element as HTMLInputElement).value).toBe('五乡新名')
-    expect(wrapper.findComponent(PlanningStub).props('modelValue')).toEqual([
-      expect.objectContaining({ station_id: 'station:depot', management_vlan: 321 }),
-    ])
-    expect(mocks.editSnapshot).toHaveBeenCalledOnce()
+    expect(wrapper.findComponent(PlanningStub).props('editing')).toBe(false)
+    expect(mocks.editSnapshot).toHaveBeenCalledWith('overview')
     expect(mocks.save).not.toHaveBeenCalled()
     wrapper.unmount()
   })
@@ -880,7 +878,7 @@ describe('轨道交通基础资料编辑闭环', () => {
     await button(wrapper, '编辑').trigger('click')
     await flushPromises()
 
-    expect(wrapper.get('.page-toolbar').findAll('button').map((item) => item.text().trim())).toEqual(['刷新', '编辑'])
+    expect(wrapper.get('.page-toolbar').findAll('button')).toHaveLength(0)
     expect(wrapper.findAll('button').some((item) => item.text().trim() === '保存')).toBe(false)
     expect(mocks.messageError).toHaveBeenCalledWith('sections snapshot failed')
     expect(mocks.editSnapshot).toHaveBeenCalledOnce()
@@ -918,7 +916,7 @@ describe('轨道交通基础资料编辑闭环', () => {
     wrapper.unmount()
   })
 
-  it('保存过程中禁用重复提交并只调用一次统一保存', async () => {
+  it('当前子页保存过程中禁用重复提交并只调用一次作用域保存', async () => {
     let finishSave: ((value: {
       revision: string
       created_count: number
@@ -968,9 +966,9 @@ describe('轨道交通基础资料编辑闭环', () => {
     })
     const wrapper = await mountView(false)
 
-    expect(wrapper.text()).not.toContain('解锁')
+    expect(wrapper.text()).toContain('解锁当前子页')
     expect(wrapper.find('input[placeholder="请输入线路名称"]').exists()).toBe(false)
-    expect(wrapper.findAll('button').some((item) => item.text().trim() === '保存')).toBe(false)
+    expect(wrapper.findAll('button').some((item) => item.text().trim() === '保存当前子页')).toBe(false)
     await button(wrapper, '编辑').trigger('click')
     await flushPromises()
     const lineInput = wrapper.find('input[placeholder="请输入线路名称"]')
@@ -986,6 +984,7 @@ describe('轨道交通基础资料编辑闭环', () => {
 
     expect(mocks.validate).toHaveBeenCalledWith(expect.objectContaining({
       site_id: 'demo',
+      scope: 'overview',
       changes: [expect.objectContaining({
         entity_type: 'site_metadata',
         values: expect.objectContaining({ line_name: '宁波地铁12号线', system_type: 'PIS' }),
@@ -2015,7 +2014,7 @@ async function mountView(enterEditing = true): Promise<VueWrapper> {
   })
   await flushPromises()
   if (enterEditing) {
-    const edit = wrapper.findAll('button').find((item) => item.text().trim() === '编辑')
+    const edit = wrapper.findAll('button').find((item) => item.text().trim() === '解锁当前子页')
     if (edit) {
       await edit.trigger('click')
       await flushPromises()
@@ -2025,7 +2024,13 @@ async function mountView(enterEditing = true): Promise<VueWrapper> {
 }
 
 function button(wrapper: VueWrapper, label: string) {
-  const candidate = wrapper.findAll('button').find((item) => item.text().trim() === label)
+  const aliases: Record<string, string> = {
+    编辑: '解锁当前子页',
+    保存: '保存当前子页',
+  }
+  const expected = aliases[label] || label
+  const matches = wrapper.findAll('button').filter((item) => item.text().trim() === expected)
+  const candidate = matches.find((item) => item.attributes('disabled') === undefined) || matches[0]
   if (!candidate) throw new Error(`未找到按钮：${label}`)
   return candidate
 }

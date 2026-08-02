@@ -1278,6 +1278,96 @@ def test_validation_rejects_sensitive_fields(tmp_path: Path, monkeypatch) -> Non
     assert response.json()["issues"][0]["code"] == "BASE_DATA_VALIDATION_FAILED"
 
 
+def test_edit_snapshot_is_scoped_to_current_subpage_dependencies(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _enable_copy_write(monkeypatch)
+    paths, _database = build_rail_transit_base_data_fixture(tmp_path)
+    mark_base_data_copy(paths)
+    with TestClient(_app(paths, tmp_path)) as client:
+        planning = client.get(
+            "/api/rail-transit/base-data/edit-snapshot",
+            params={"scope": "trackside_ap_planning"},
+        )
+        vehicles = client.get(
+            "/api/rail-transit/base-data/edit-snapshot",
+            params={"scope": "vehicles"},
+        )
+
+    assert planning.status_code == 200, planning.text
+    planning_payload = planning.json()
+    assert planning_payload["scope"] == "trackside_ap_planning"
+    assert planning_payload["stations"]
+    assert planning_payload["trackside_aps"] == []
+    assert planning_payload["sections"] == []
+    assert planning_payload["device_station_bindings"] == []
+    assert planning_payload["vehicle_mrs"] == []
+
+    assert vehicles.status_code == 200, vehicles.text
+    vehicles_payload = vehicles.json()
+    assert vehicles_payload["scope"] == "vehicles"
+    assert vehicles_payload["vehicle_mrs"]
+    assert vehicles_payload["stations"] == []
+    assert vehicles_payload["trackside_ap_plans"] == []
+
+
+def test_planning_scope_rejects_station_changes_without_writing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _enable_copy_write(monkeypatch)
+    paths, _database = build_rail_transit_base_data_fixture(tmp_path)
+    mark_base_data_copy(paths)
+    with TestClient(_app(paths, tmp_path)) as client:
+        snapshot = client.get(
+            "/api/rail-transit/base-data/edit-snapshot",
+            params={"scope": "trackside_ap_planning"},
+        ).json()
+        revision = snapshot["base_revision"]
+        changes = [
+            {
+                "entity_type": "station",
+                "action": "delete",
+                "entity_id": snapshot["stations"][0]["id"],
+                "values": {},
+            }
+        ]
+        validation = client.post(
+            "/api/rail-transit/base-data/validate",
+            json={
+                "site_id": "demo",
+                "base_revision": revision,
+                "scope": "trackside_ap_planning",
+                "changes": changes,
+            },
+        )
+        saved = client.post(
+            "/api/rail-transit/base-data/changes",
+            json={
+                "site_id": "demo",
+                "base_revision": revision,
+                "scope": "trackside_ap_planning",
+                "changes": changes,
+                "explicit_confirmation": True,
+            },
+        )
+        current_revision = client.get(
+            "/api/rail-transit/base-data/revision"
+        ).json()["base_revision"]
+
+    assert validation.status_code == 200, validation.text
+    assert validation.json()["valid"] is False
+    assert len(validation.json()["issues"]) == 1
+    issue = validation.json()["issues"][0]
+    assert issue["change_index"] == 0
+    assert issue["code"] == "BASE_DATA_SCOPE_VIOLATION"
+    assert issue["blocking"] is True
+    assert saved.status_code == 422, saved.text
+    assert saved.json()["detail"]["code"] == "BASE_DATA_SCOPE_VIOLATION"
+    assert current_revision == revision
+
+
 def test_plan_validation_and_save_ignore_ip_reference_conflicts(
     tmp_path: Path,
     monkeypatch,

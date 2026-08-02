@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Connection, Download, Plus, Refresh, UploadFilled } from '@element-plus/icons-vue'
+import { Connection, Download, Plus, UploadFilled } from '@element-plus/icons-vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
@@ -21,6 +21,7 @@ import { isFeatureEnabled } from '../../features'
 
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
+import SubPageEditToolbar from '../../components/rail-transit/base-data/SubPageEditToolbar.vue'
 import TracksideApPlanningTab from '../../components/rail-transit/base-data/TracksideApPlanningTab.vue'
 import { reconcileTracksideApPlans } from '../../components/rail-transit/base-data/tracksideApPlanDraft'
 import { useRailTransitBaseDataStore } from '../../stores/railTransitBaseData'
@@ -31,6 +32,7 @@ import type {
   BaseDataClearPreview,
   BaseDataChange,
   BaseDataEditSnapshot,
+  BaseDataEditScope,
   BaseDataValidationIssue,
   ImportChange,
   ImportOperation,
@@ -77,7 +79,8 @@ const apBaseTaskTypes = new Set([
   'web_export_trackside_ap_base_xlsx',
   'web_export_trackside_ap_rename_commands',
 ])
-type BaseDataEditState = 'VIEW' | 'EDITING_CLEAN' | 'EDITING_DIRTY' | 'VALIDATING' | 'SAVING' | 'SAVE_FAILED' | 'READ_ONLY'
+type EditableSubPage = Exclude<BaseDataEditScope, 'all'>
+type SubPageEditState = 'LOCKED' | 'UNLOCKED_CLEAN' | 'UNLOCKED_DIRTY' | 'VALIDATING' | 'SAVING' | 'SAVE_FAILED' | 'READ_ONLY'
 interface BaseDataDraft {
   metadata: {
     line_name: string
@@ -116,52 +119,135 @@ interface StationCombinationDiff {
   current: unknown
   proposed: unknown
 }
-const editState = ref<BaseDataEditState>('READ_ONLY')
-const pendingChanges = ref<Record<string, BaseDataChange>>({})
-const baselines = new Map<string, Record<string, unknown>>()
-const stationReferencePatches = new Map<string, StationReferencePatch[]>()
-const serverSnapshot = ref<BaseDataDraft | null>(null)
-const editingDraft = ref<BaseDataDraft | null>(null)
+interface SubPageEditContext {
+  state: SubPageEditState
+  snapshot: BaseDataDraft | null
+  draft: BaseDataDraft | null
+  baseRevision: string
+  pendingChanges: Record<string, BaseDataChange>
+  baselines: Map<string, Record<string, unknown>>
+  stationReferencePatches: Map<string, StationReferencePatch[]>
+  planningValid: boolean
+  saveIssues: BaseDataValidationIssue[]
+  fieldErrors: Record<string, string>
+}
+const editableSubPages: EditableSubPage[] = ['overview', 'stations', 'trackside_ap', 'trackside_ap_planning', 'vehicles']
+function createSubPageContext(): SubPageEditContext {
+  return {
+    state: 'READ_ONLY', snapshot: null, draft: null, baseRevision: '', pendingChanges: {},
+    baselines: new Map(), stationReferencePatches: new Map(), planningValid: true,
+    saveIssues: [], fieldErrors: {},
+  }
+}
+const subPageEditContexts = reactive<Record<EditableSubPage, SubPageEditContext>>({
+  overview: createSubPageContext(),
+  stations: createSubPageContext(),
+  trackside_ap: createSubPageContext(),
+  trackside_ap_planning: createSubPageContext(),
+  vehicles: createSubPageContext(),
+})
 const editApPage = ref(1)
 const editApPageSize = ref(50)
 const editMrPage = ref(1)
 const editMrPageSize = ref(50)
-const planningValid = ref(true)
-const saveIssues = ref<BaseDataValidationIssue[]>([])
-const fieldErrors = ref<Record<string, string>>({})
 const allowedTabs = new Set(['overview', 'stations', 'trackside-ap', 'trackside-ap-planning', 'trains', 'quality', 'import-preview', 'import-audit', 'relations'])
 const activeTab = computed({
   get: () => allowedTabs.has(String(route.query.tab || '')) ? String(route.query.tab) : 'overview',
   set: (value: string) => { void router.replace({ query: { ...route.query, tab: value } }) },
 })
-const readOnly = computed(() => editState.value === 'READ_ONLY')
+function editScopeForTab(tab: string): EditableSubPage | null {
+  return ({
+    overview: 'overview',
+    stations: 'stations',
+    'trackside-ap': 'trackside_ap',
+    'trackside-ap-planning': 'trackside_ap_planning',
+    trains: 'vehicles',
+  } as Record<string, EditableSubPage>)[tab] || null
+}
+const activeEditScope = computed(() => editScopeForTab(activeTab.value))
+const activeEditContext = computed(() => activeEditScope.value ? subPageEditContexts[activeEditScope.value] : null)
+const editState = computed({
+  get: () => activeEditContext.value?.state ?? 'READ_ONLY',
+  set: (value: SubPageEditState) => { if (activeEditContext.value) activeEditContext.value.state = value },
+})
+const currentPageDraft = computed({
+  get: () => activeEditContext.value?.draft ?? null,
+  set: (value: BaseDataDraft | null) => { if (activeEditContext.value) activeEditContext.value.draft = value },
+})
+const currentPageSnapshot = computed({
+  get: () => activeEditContext.value?.snapshot ?? null,
+  set: (value: BaseDataDraft | null) => { if (activeEditContext.value) activeEditContext.value.snapshot = value },
+})
+const currentPageChanges = computed({
+  get: () => activeEditContext.value?.pendingChanges ?? {},
+  set: (value: Record<string, BaseDataChange>) => { if (activeEditContext.value) activeEditContext.value.pendingChanges = value },
+})
+const currentPageBaselines = computed(() => activeEditContext.value?.baselines ?? new Map<string, Record<string, unknown>>())
+const currentPageReferencePatches = computed(() => activeEditContext.value?.stationReferencePatches ?? new Map<string, StationReferencePatch[]>())
+const currentPagePlanningValid = computed({
+  get: () => activeEditContext.value?.planningValid ?? true,
+  set: (value: boolean) => { if (activeEditContext.value) activeEditContext.value.planningValid = value },
+})
+const currentPageSaveIssues = computed({
+  get: () => activeEditContext.value?.saveIssues ?? [],
+  set: (value: BaseDataValidationIssue[]) => { if (activeEditContext.value) activeEditContext.value.saveIssues = value },
+})
+const currentPageFieldErrors = computed({
+  get: () => activeEditContext.value?.fieldErrors ?? {},
+  set: (value: Record<string, string>) => { if (activeEditContext.value) activeEditContext.value.fieldErrors = value },
+})
+// Existing row editors intentionally keep working against the active subpage.
+// These aliases avoid duplicating the mature station/section/AP edit helpers while
+// the actual state is isolated in subPageEditContexts.
+const editingDraft = currentPageDraft
+const serverSnapshot = currentPageSnapshot
+const pendingChanges = currentPageChanges
+const planningValid = currentPagePlanningValid
+const saveIssues = currentPageSaveIssues
+const fieldErrors = currentPageFieldErrors
+const baselines = {
+  clear: () => currentPageBaselines.value.clear(),
+  get: (key: string) => currentPageBaselines.value.get(key),
+  set: (key: string, value: Record<string, unknown>) => currentPageBaselines.value.set(key, value),
+  delete: (key: string) => currentPageBaselines.value.delete(key),
+}
+const stationReferencePatches = {
+  clear: () => currentPageReferencePatches.value.clear(),
+  get: (key: string) => currentPageReferencePatches.value.get(key),
+  set: (key: string, value: StationReferencePatch[]) => currentPageReferencePatches.value.set(key, value),
+  delete: (key: string) => currentPageReferencePatches.value.delete(key),
+}
+const readOnly = computed(() => Boolean(activeEditScope.value) && editState.value === 'READ_ONLY')
 const saving = computed(() => editState.value === 'VALIDATING' || editState.value === 'SAVING')
-const editing = computed(() => ['EDITING_CLEAN', 'EDITING_DIRTY', 'VALIDATING', 'SAVING', 'SAVE_FAILED'].includes(editState.value))
-const viewing = computed(() => editState.value === 'VIEW')
+const editing = computed(() => ['UNLOCKED_CLEAN', 'UNLOCKED_DIRTY', 'VALIDATING', 'SAVING', 'SAVE_FAILED'].includes(editState.value))
 const writable = computed(() => Boolean(store.editSession?.can_write))
-const stationRows = computed(() => editingDraft.value?.stations ?? store.stations)
-const sectionRows = computed(() => editingDraft.value?.sections ?? store.sections)
-const apRows = computed(() => editingDraft.value
-  ? pageRows(editingDraft.value.aps, editApPage.value, editApPageSize.value)
+const stationRows = computed(() => currentPageDraft.value?.stations ?? store.stations)
+const sectionRows = computed(() => currentPageDraft.value?.sections ?? store.sections)
+const apRows = computed(() => currentPageDraft.value
+  ? pageRows(currentPageDraft.value.aps, editApPage.value, editApPageSize.value)
   : store.aps)
-const mrRows = computed(() => editingDraft.value
-  ? pageRows(editingDraft.value.mrs, editMrPage.value, editMrPageSize.value)
+const mrRows = computed(() => currentPageDraft.value
+  ? pageRows(currentPageDraft.value.mrs, editMrPage.value, editMrPageSize.value)
   : store.mrs)
-const apPageTotal = computed(() => editingDraft.value?.aps.length ?? store.apTotal)
-const apPageCurrent = computed(() => editingDraft.value ? editApPage.value : store.apFilters.page)
-const apPageSize = computed(() => editingDraft.value ? editApPageSize.value : store.apFilters.page_size)
-const mrPageTotal = computed(() => editingDraft.value?.mrs.length ?? store.mrTotal)
-const mrPageCurrent = computed(() => editingDraft.value ? editMrPage.value : store.mrFilters.page)
-const mrPageSize = computed(() => editingDraft.value ? editMrPageSize.value : store.mrFilters.page_size)
-const planningRows = computed(() => editingDraft.value?.tracksideApPlans ?? store.tracksideApPlans)
-const planningDirty = computed(() => JSON.stringify(editingDraft.value?.tracksideApPlans ?? [])
-  !== JSON.stringify(serverSnapshot.value?.tracksideApPlans ?? []))
-const dirty = computed(() => Object.keys(pendingChanges.value).length > 0 || planningDirty.value)
+const apPageTotal = computed(() => currentPageDraft.value?.aps.length ?? store.apTotal)
+const apPageCurrent = computed(() => currentPageDraft.value ? editApPage.value : store.apFilters.page)
+const apPageSize = computed(() => currentPageDraft.value ? editApPageSize.value : store.apFilters.page_size)
+const mrPageTotal = computed(() => currentPageDraft.value?.mrs.length ?? store.mrTotal)
+const mrPageCurrent = computed(() => currentPageDraft.value ? editMrPage.value : store.mrFilters.page)
+const mrPageSize = computed(() => currentPageDraft.value ? editMrPageSize.value : store.mrFilters.page_size)
+const planningRows = computed(() => currentPageDraft.value?.tracksideApPlans ?? store.tracksideApPlans)
+const planningDirty = computed(() => activeEditScope.value === 'trackside_ap_planning'
+  && JSON.stringify(currentPageDraft.value?.tracksideApPlans ?? [])
+  !== JSON.stringify(currentPageSnapshot.value?.tracksideApPlans ?? []))
+const dirty = computed(() => Object.keys(currentPageChanges.value).length > 0 || planningDirty.value)
+const anyDirty = computed(() => editableSubPages.some((scope) => pageIsDirty(scope)))
+const anySaving = computed(() => editableSubPages.some((scope) => ['VALIDATING', 'SAVING'].includes(subPageEditContexts[scope].state)))
 const writeDeniedReason = computed(() => store.editSession?.write_denial_reason || '')
 const locationTab = ref('stations')
 const vehicleTab = ref('trains')
 const previewFilter = ref('all')
 const stationSourceDialogVisible = ref(false)
+const stationSourcePlanningMode = computed(() => activeEditScope.value === 'trackside_ap_planning')
 const clearAllDialogVisible = ref(false)
 const clearAllPreview = ref<BaseDataClearPreview | null>(null)
 const clearAllLoading = ref(false)
@@ -651,17 +737,17 @@ onBeforeUnmount(() => {
   store.stopPolling()
 })
 onBeforeRouteLeave(async () => {
-  if (saving.value) return false
-  return !dirty.value || confirmDiscardOnLeave()
+  if (anySaving.value) return false
+  return !anyDirty.value || confirmDiscardOnLeave()
 })
 
 function handleVisibility(): void {
   if (document.hidden) store.stopPolling()
-  else if (!editing.value) store.startPolling()
+  else store.startPolling()
 }
 
 function beforeUnload(event: BeforeUnloadEvent): void {
-  if (!dirty.value) return
+  if (!anyDirty.value) return
   event.preventDefault()
   event.returnValue = ''
 }
@@ -669,107 +755,111 @@ function beforeUnload(event: BeforeUnloadEvent): void {
 async function initializeEditing(): Promise<void> {
   try {
     const session = await store.refreshEditSession()
-    if (!session.can_write) {
-      editState.value = 'READ_ONLY'
-      store.startPolling()
-      return
-    }
-    editState.value = 'VIEW'
+    for (const scope of editableSubPages) subPageEditContexts[scope].state = session.can_write ? 'LOCKED' : 'READ_ONLY'
     store.startPolling()
   } catch (cause) {
-    editState.value = 'READ_ONLY'
+    for (const scope of editableSubPages) subPageEditContexts[scope].state = 'READ_ONLY'
     store.startPolling()
     ElMessage.error(message(cause, '基础资料编辑会话加载失败'))
   }
 }
 
-async function loadConsistentEditSnapshot(): Promise<BaseDataEditSnapshot> {
-  store.stopPolling()
-  return store.refreshEditSnapshot()
+function pageIsDirty(scope: EditableSubPage): boolean {
+  const context = subPageEditContexts[scope]
+  if (Object.keys(context.pendingChanges).length) return true
+  return scope === 'trackside_ap_planning'
+    && JSON.stringify(context.draft?.tracksideApPlans ?? []) !== JSON.stringify(context.snapshot?.tracksideApPlans ?? [])
+}
+
+function scopeIsEditing(scope: EditableSubPage): boolean {
+  return ['UNLOCKED_CLEAN', 'UNLOCKED_DIRTY', 'VALIDATING', 'SAVING', 'SAVE_FAILED'].includes(subPageEditContexts[scope].state)
+}
+
+async function loadConsistentEditSnapshot(scope: EditableSubPage): Promise<BaseDataEditSnapshot> {
+  return store.refreshEditSnapshot(scope)
 }
 
 async function confirmDiscardOnLeave(): Promise<boolean> {
   const accepted = await confirm({
     type: 'WARNING',
     title: '存在未保存的修改',
-    message: '当前基础资料存在未保存修改，离开后修改将丢失。',
-    confirmText: '放弃修改并离开',
+    message: '一个或多个子页存在未保存修改，离开后这些草稿将丢失。',
+    confirmText: '放弃全部草稿并离开',
     cancelText: '继续编辑',
   })
-  if (accepted) await discardChanges(false)
+  if (accepted) {
+    for (const scope of editableSubPages) discardChanges(scope)
+  }
   return accepted
 }
 
-async function discardChanges(resumePolling = true): Promise<void> {
-  pendingChanges.value = {}
-  saveIssues.value = []
-  fieldErrors.value = {}
-  stationReferencePatches.clear()
-  editingDraft.value = null
-  serverSnapshot.value = null
-  editApPage.value = 1
-  editMrPage.value = 1
-  editState.value = writable.value ? 'VIEW' : 'READ_ONLY'
-  clearStationSelection()
-  if (resumePolling) store.startPolling()
+function discardChanges(scope: EditableSubPage): void {
+  const context = subPageEditContexts[scope]
+  context.pendingChanges = {}
+  context.saveIssues = []
+  context.fieldErrors = {}
+  context.stationReferencePatches.clear()
+  context.baselines.clear()
+  context.draft = null
+  context.snapshot = null
+  context.baseRevision = ''
+  context.planningValid = true
+  context.state = writable.value ? 'LOCKED' : 'READ_ONLY'
+  if (scope === 'trackside_ap') editApPage.value = 1
+  if (scope === 'vehicles') editMrPage.value = 1
+  if (scope === 'stations') clearStationSelection()
 }
 
-async function startEditing(): Promise<void> {
-  if (editing.value || saving.value) return
+async function startEditing(scope: EditableSubPage = activeEditScope.value!): Promise<void> {
+  if (!scope || scopeIsEditing(scope)) return
+  const context = subPageEditContexts[scope]
   try {
-    const snapshot = await loadConsistentEditSnapshot()
+    const snapshot = await loadConsistentEditSnapshot(scope)
     if (!snapshot.can_write) {
-      editState.value = 'READ_ONLY'
-      store.startPolling()
+      context.state = 'READ_ONLY'
       ElMessage.warning(snapshot.write_denial_reason || '当前环境只读')
       return
     }
     if (!snapshot.base_revision) throw new Error('编辑快照缺少 base_revision')
-    captureBaselines(snapshot)
-    editApPage.value = 1
-    editMrPage.value = 1
-    editingDraft.value = serverSnapshot.value ? cloneDto(serverSnapshot.value) : null
-    pendingChanges.value = {}
-    saveIssues.value = []
-    fieldErrors.value = {}
-    editState.value = 'EDITING_CLEAN'
+    captureBaselines(snapshot, context)
+    if (scope === 'trackside_ap') editApPage.value = 1
+    if (scope === 'vehicles') editMrPage.value = 1
+    context.draft = context.snapshot ? cloneDto(context.snapshot) : null
+    context.pendingChanges = {}
+    context.saveIssues = []
+    context.fieldErrors = {}
+    context.state = 'UNLOCKED_CLEAN'
   } catch (cause) {
-    baselines.clear()
-    stationReferencePatches.clear()
-    serverSnapshot.value = null
-    editingDraft.value = null
-    editState.value = writable.value ? 'VIEW' : 'READ_ONLY'
-    store.startPolling()
+    discardChanges(scope)
     ElMessage.error(message(cause, '进入编辑状态失败'))
   }
 }
 
-async function refreshPage(): Promise<void> {
-  if (editing.value) {
+async function refreshScopeData(scope: EditableSubPage): Promise<void> {
+  if (scope === 'overview') await store.refreshSummary()
+  else if (scope === 'stations') await store.refreshStationBaseData()
+  else if (scope === 'trackside_ap') await store.refreshTracksideApBaseData()
+  else if (scope === 'trackside_ap_planning') await store.refreshTracksideApPlanningData()
+  else await store.refreshVehicleBaseData()
+}
+
+async function refreshPage(scope: EditableSubPage = activeEditScope.value!): Promise<void> {
+  if (!scope) return
+  if (scopeIsEditing(scope)) {
     const accepted = await confirm({
       type: 'WARNING',
-      title: '重新加载基础资料',
-      message: '重新加载将放弃当前编辑草稿，是否继续？',
+      title: '重新加载当前子页',
+      message: '重新加载只会放弃当前子页草稿，其他子页不受影响。是否继续？',
       confirmText: '放弃草稿并重新加载',
       cancelText: '继续编辑',
     })
     if (!accepted) return
+    discardChanges(scope)
   }
   try {
-    await store.manualRefresh()
+    await refreshScopeData(scope)
     const session = await store.refreshEditSession()
-    pendingChanges.value = {}
-    if (session.can_write) {
-      editingDraft.value = null
-      serverSnapshot.value = null
-      editState.value = 'VIEW'
-      store.startPolling()
-    } else {
-      editState.value = 'READ_ONLY'
-      editingDraft.value = null
-      serverSnapshot.value = null
-      store.startPolling()
-    }
+    subPageEditContexts[scope].state = session.can_write ? 'LOCKED' : 'READ_ONLY'
   } catch (cause) { ElMessage.error(message(cause, '基础资料刷新失败')) }
 }
 
@@ -778,8 +868,8 @@ async function openClearAllDialog(): Promise<void> {
     ElMessage.warning(readOnly.value ? (writeDeniedReason.value || '当前环境只读') : '请先进入编辑状态')
     return
   }
-  if (dirty.value) {
-    ElMessage.warning('请先保存或放弃当前未保存修改，再执行清空全部')
+  if (anyDirty.value) {
+    ElMessage.warning('请先保存或放弃所有子页的未保存修改，再执行清空全部')
     return
   }
   clearAllLoading.value = true
@@ -794,23 +884,14 @@ async function openClearAllDialog(): Promise<void> {
 }
 
 async function executeClearAll(): Promise<void> {
-  if (!clearAllPreview.value || !editing.value || dirty.value || saving.value) return
+  if (!clearAllPreview.value || activeEditScope.value !== 'stations' || anyDirty.value || anySaving.value) return
   clearAllLoading.value = true
   try {
     const result = await store.clearAll(clearAllPreview.value)
-    pendingChanges.value = {}
-    saveIssues.value = []
-    fieldErrors.value = {}
-    baselines.clear()
-    serverSnapshot.value = null
-    editingDraft.value = null
     clearAllDialogVisible.value = false
     await store.manualRefresh()
     await store.refreshEditSession()
-    editingDraft.value = null
-    serverSnapshot.value = null
-    editState.value = 'VIEW'
-    store.startPolling()
+    for (const scope of editableSubPages) discardChanges(scope)
     ElMessage.success(`已清空 ${result.deleted_station_count} 个站点、${result.deleted_section_count} 个区间，并解除 ${result.unlinked_trackside_ap_count} 条轨旁 AP 关联`)
   } catch (cause) {
     ElMessage.error(message(cause, '清空失败，数据库事务已回滚'))
@@ -820,80 +901,93 @@ async function executeClearAll(): Promise<void> {
 }
 
 async function beforeTabLeave(next: string, current: string): Promise<boolean> {
-  return next === current || !saving.value
+  if (next === current) return true
+  const currentScope = editScopeForTab(current)
+  if (!currentScope) return true
+  const context = subPageEditContexts[currentScope]
+  if (['VALIDATING', 'SAVING'].includes(context.state)) return false
+  if (!pageIsDirty(currentScope)) return true
+  const choice = await confirmChoice({
+    type: 'WARNING',
+    title: '当前子页存在未保存修改',
+    message: '请选择保存当前子页、放弃当前子页草稿，或取消切换。其他子页状态不会改变。',
+    confirmText: '保存并切换',
+    secondaryText: '放弃并切换',
+    cancelText: '取消切换',
+  })
+  if (choice === 'confirm') return saveAllChanges('', currentScope)
+  if (choice === 'secondary') {
+    discardChanges(currentScope)
+    return true
+  }
+  return false
 }
 
-async function saveAllChanges(successMessage = ''): Promise<boolean> {
-  if (!editing.value || !editingDraft.value || !store.editSession || saving.value || !dirty.value) return !dirty.value
-  const changes = Object.values(pendingChanges.value)
-  if (!planningValid.value) {
+async function saveAllChanges(successMessage = '', scope: EditableSubPage = activeEditScope.value!): Promise<boolean> {
+  if (!scope) return false
+  const context = subPageEditContexts[scope]
+  if (!scopeIsEditing(scope) || !context.draft || !store.editSession || ['VALIDATING', 'SAVING'].includes(context.state) || !pageIsDirty(scope)) return !pageIsDirty(scope)
+  const changes = Object.values(context.pendingChanges)
+  if (scope === 'trackside_ap_planning' && !context.planningValid) {
     ElMessage.error('轨旁 AP 规划存在阻断问题，请先修正')
     return false
   }
-  if (planningDirty.value && editingDraft.value) {
+  if (scope === 'trackside_ap_planning' && pageIsDirty(scope)) {
     changes.push({
       entity_type: 'trackside_ap_plan',
       action: 'replace',
-      values: { rows: editingDraft.value.tracksideApPlans },
+      values: { rows: context.draft.tracksideApPlans },
     })
   }
-  editState.value = 'VALIDATING'
-  saveIssues.value = []
-  fieldErrors.value = {}
+  context.state = 'VALIDATING'
+  context.saveIssues = []
+  context.fieldErrors = {}
   try {
-    const validation = await store.validateChanges(changes)
+    const validation = await store.validateChanges(scope, context.baseRevision, changes)
     if (!validation.valid) {
-      saveIssues.value = validation.issues
-      setFieldErrors(changes, validation.issues)
-      editState.value = 'SAVE_FAILED'
+      context.saveIssues = validation.issues
+      if (scope === activeEditScope.value) setFieldErrors(changes, validation.issues)
+      context.state = 'SAVE_FAILED'
       ElMessage.error(validation.issues[0]?.message || '基础资料校验失败')
       return false
     }
     const validationWarnings = validation.issues.filter((issue) => !issue.blocking)
     if (validationWarnings.length) ElMessage.warning(`存在 ${validationWarnings.length} 条非阻断提示，将继续保存`)
-    editState.value = 'SAVING'
-    const result = await store.saveChanges(changes)
-    pendingChanges.value = {}
-    saveIssues.value = []
-    fieldErrors.value = {}
-    baselines.clear()
-    stationReferencePatches.clear()
-    await store.manualRefresh()
+    context.state = 'SAVING'
+    const result = await store.saveChanges(scope, context.baseRevision, changes)
+    await refreshScopeData(scope)
     await store.refreshEditSession()
-    editingDraft.value = null
-    serverSnapshot.value = null
-    editState.value = 'VIEW'
-    store.startPolling()
+    discardChanges(scope)
     ElMessage.success(
       successMessage
-      || `基础资料已保存：新增 ${result.created_count}，更新 ${result.updated_count}，删除 ${result.deleted_count}，规划 ${result.planning_row_count} 行，station_id 修复 ${result.station_id_repaired_count}，AP Identity ${result.ap_identity_refreshed ? '已刷新' : '无需刷新'}${result.warnings.length ? `，提示 ${result.warnings.length}` : ''}`,
+      || `当前子页已保存：新增 ${result.created_count}，更新 ${result.updated_count}，删除 ${result.deleted_count}，规划 ${result.planning_row_count} 行${result.warnings.length ? `，提示 ${result.warnings.length}` : ''}`,
     )
     return true
   } catch (cause) {
-    editState.value = 'SAVE_FAILED'
-    ElMessage.error(message(cause, '基础资料保存失败，修改已保留'))
+    context.state = 'SAVE_FAILED'
+    ElMessage.error(message(cause, '当前子页保存失败，草稿已保留'))
     return false
   }
 }
 
-async function cancelEditing(): Promise<void> {
-  if (!editing.value || saving.value) return
-  if (!dirty.value) {
-    await discardChanges()
+async function cancelEditing(scope: EditableSubPage = activeEditScope.value!): Promise<void> {
+  if (!scope || !scopeIsEditing(scope) || ['VALIDATING', 'SAVING'].includes(subPageEditContexts[scope].state)) return
+  if (!pageIsDirty(scope)) {
+    discardChanges(scope)
     return
   }
   const accepted = await confirm({
     type: 'WARNING',
-    title: '放弃基础资料修改',
-    message: '当前新增、修改和删除记录都尚未保存。确认放弃并恢复最近一次服务端数据？',
+    title: '放弃当前子页修改',
+    message: '只会放弃当前子页尚未保存的修改，其他子页草稿不受影响。',
     confirmText: '放弃修改',
   })
-  if (accepted) await discardChanges()
+  if (accepted) discardChanges(scope)
 }
 
-function captureBaselines(editSnapshot: BaseDataEditSnapshot): void {
-  baselines.clear()
-  stationReferencePatches.clear()
+function captureBaselines(editSnapshot: BaseDataEditSnapshot, context: SubPageEditContext): void {
+  context.baselines.clear()
+  context.stationReferencePatches.clear()
   const snapshot: BaseDataDraft = {
     metadata: {
       line_name: editSnapshot.metadata.line_name || '',
@@ -916,13 +1010,14 @@ function captureBaselines(editSnapshot: BaseDataEditSnapshot): void {
     deviceStationBindings: cloneDto(editSnapshot.device_station_bindings),
     mrs: cloneDto(editSnapshot.vehicle_mrs),
   }
-  serverSnapshot.value = snapshot
-  baselines.set(changeKey('site_metadata', 'current'), metadataValues(snapshot.metadata))
-  for (const row of serverSnapshot.value.stations) baselines.set(changeKey('station', row.id), stationValues(row))
-  for (const row of serverSnapshot.value.sections) baselines.set(changeKey('section', row.id), sectionValues(row))
-  for (const row of serverSnapshot.value.aps) baselines.set(changeKey('trackside_ap', row.id), apValues(row))
-  for (const row of serverSnapshot.value.mrs) baselines.set(changeKey('vehicle_mr', row.id), mrValues(row))
-  clearStationSelection()
+  context.snapshot = snapshot
+  context.baseRevision = editSnapshot.base_revision
+  context.baselines.set(changeKey('site_metadata', 'current'), metadataValues(snapshot.metadata))
+  for (const row of snapshot.stations) context.baselines.set(changeKey('station', row.id), stationValues(row))
+  for (const row of snapshot.sections) context.baselines.set(changeKey('section', row.id), sectionValues(row))
+  for (const row of snapshot.aps) context.baselines.set(changeKey('trackside_ap', row.id), apValues(row))
+  for (const row of snapshot.mrs) context.baselines.set(changeKey('vehicle_mr', row.id), mrValues(row))
+  if (editSnapshot.scope === 'stations') clearStationSelection()
 }
 
 function handlePlanningChange(rows: TracksideApPlanRow[]): void {
@@ -1576,7 +1671,7 @@ function addMr(): void {
 }
 
 function updateEditState(): void {
-  if (editing.value && !saving.value) editState.value = dirty.value ? 'EDITING_DIRTY' : 'EDITING_CLEAN'
+  if (editing.value && !saving.value) editState.value = dirty.value ? 'UNLOCKED_DIRTY' : 'UNLOCKED_CLEAN'
 }
 function changeKey(type: string, id: string): string { return `${type}:${id}` }
 function temporaryId(): string { return `new:${Date.now()}:${Math.random().toString(16).slice(2)}` }
@@ -1711,6 +1806,10 @@ function isStationSourceCandidateSelected(candidate: StationSourceCandidate): bo
 }
 
 function isStationSourceCandidateDisabled(candidate: StationSourceCandidate): boolean {
+  if (stationSourcePlanningMode.value) {
+    return !candidate.matched_station_id
+      || !stationRows.value.some((station) => station.id === candidate.matched_station_id && !station.id.startsWith('new:'))
+  }
   const strategy = stationSourceStrategies.value[candidate.candidate_id] || candidate.processing_strategy
   if (strategy === 'merge_duplicates' && (candidate.matched_station_ids?.length || 0) > 1) {
     return candidate.issues.some((issue) => issue.blocking && issue.code !== 'station_source_ambiguous_match')
@@ -1887,7 +1986,8 @@ async function openStationSourcePreview(): Promise<void> {
       preview.candidates.map((candidate) => [candidate.candidate_id, candidate.matched_station_id || '']),
     )
     selectedStationSourceIds.value = preview.candidates
-      .filter((candidate) => !isStationSourceCandidateDisabled(candidate) && stationSourceStrategies.value[candidate.candidate_id] !== 'ignore')
+      .filter((candidate) => !isStationSourceCandidateDisabled(candidate)
+        && (stationSourcePlanningMode.value || stationSourceStrategies.value[candidate.candidate_id] !== 'ignore'))
       .map((candidate) => candidate.candidate_id)
     stationSourceDialogVisible.value = true
   } catch (cause) {
@@ -1926,7 +2026,8 @@ function stationSourceTargetOptions(candidate: StationSourceCandidate): Station[
 
 function selectSuggestedStationSources(): void {
   selectedStationSourceIds.value = stationSourceCandidates.value
-    .filter((candidate) => !isStationSourceCandidateDisabled(candidate) && stationSourceStrategy(candidate) !== 'ignore')
+    .filter((candidate) => !isStationSourceCandidateDisabled(candidate)
+      && (stationSourcePlanningMode.value || stationSourceStrategy(candidate) !== 'ignore'))
     .map((candidate) => candidate.candidate_id)
 }
 
@@ -1952,6 +2053,22 @@ function applyStationSourceToDraft(): void {
   const candidates = stationSourceCandidates.value.filter((candidate) => selected.has(candidate.candidate_id) && !isStationSourceCandidateDisabled(candidate))
   if (!candidates.length) {
     ElMessage.warning('没有可应用的站点来源候选')
+    return
+  }
+  if (stationSourcePlanningMode.value) {
+    const formalStationIds = new Set(
+      candidates
+        .map((candidate) => candidate.matched_station_id)
+        .filter((stationId) => stationId && editingDraft.value!.stations.some((station) => station.id === stationId && !station.id.startsWith('new:'))),
+    )
+    editingDraft.value.tracksideApPlans = reconcileTracksideApPlans(
+      editingDraft.value.tracksideApPlans,
+      editingDraft.value.stations,
+      formalStationIds,
+    )
+    updateEditState()
+    stationSourceDialogVisible.value = false
+    ElMessage.success(`已将 ${formalStationIds.size} 个正式站点加入规划草稿；未匹配项未创建站点`)
     return
   }
   let applied = 0
@@ -2033,6 +2150,11 @@ function applyStationSourceToDraft(): void {
   updateEditState()
   stationSourceDialogVisible.value = false
   ElMessage.success(`已应用 ${applied} 个候选到当前草稿，保存后才会写入数据库`)
+}
+
+function goToStationMaintenance(): void {
+  stationSourceDialogVisible.value = false
+  activeTab.value = 'stations'
 }
 
 async function downloadStationTemplate(): Promise<void> {
@@ -2547,10 +2669,7 @@ async function handleRollback(operationId: string): Promise<void> {
     await store.rollbackImport(operationId)
     await store.manualRefresh()
     await store.refreshEditSession()
-    editingDraft.value = null
-    serverSnapshot.value = null
-    editState.value = 'VIEW'
-    store.startPolling()
+    for (const scope of editableSubPages) discardChanges(scope)
     ElMessage.success('导入操作已回滚')
   } catch (cause) {
     if (cause === 'cancel' || cause === 'close') return
@@ -2761,19 +2880,8 @@ function sectionSourceLabel(row: Section): string {
     <div class="page-toolbar">
       <div>
         <h2>轨道交通基础资料</h2>
-        <p>统一维护站点、区间、轨旁 AP、AP 规划、列车和车载 MR 等基础数据。</p>
+        <p>按子页独立维护站点、区间、轨旁 AP、AP 规划、列车和车载 MR 等基础数据。</p>
         <p>{{ store.summary?.site_name || '当前局点' }} · {{ store.summary?.line_name || '线路未填写' }} · {{ store.summary?.project_type || '项目类型未填写' }}</p>
-      </div>
-      <div class="toolbar-actions">
-        <el-tag v-if="dirty" type="warning">未保存修改</el-tag>
-        <template v-if="!editing">
-          <el-button :icon="Refresh" :loading="store.loading" @click="refreshPage">刷新</el-button>
-          <el-button v-if="viewing && writable" type="primary" :disabled="store.loading" @click="startEditing">编辑</el-button>
-        </template>
-        <template v-else>
-          <el-button :disabled="saving" @click="cancelEditing">取消修改</el-button>
-          <el-button type="primary" :loading="saving" :disabled="!dirty || !planningValid" @click="saveAllChanges()">保存</el-button>
-        </template>
       </div>
     </div>
     <el-alert
@@ -2818,6 +2926,16 @@ function sectionSourceLabel(row: Section): string {
     <div class="content-card">
       <el-tabs v-model="activeTab" :before-leave="beforeTabLeave">
         <el-tab-pane label="基础资料总览" name="overview" lazy>
+          <SubPageEditToolbar
+            :state="subPageEditContexts.overview.state"
+            :writable="writable"
+            :dirty="pageIsDirty('overview')"
+            :loading="store.loading"
+            @refresh="refreshPage('overview')"
+            @unlock="startEditing('overview')"
+            @cancel="cancelEditing('overview')"
+            @save="saveAllChanges('', 'overview')"
+          />
           <div class="summary-grid">
             <article v-for="card in summaryCards" :key="String(card[0])" :class="String(card[2])">
               <span>{{ card[0] }}</span><strong>{{ card[1] }}</strong>
@@ -2971,6 +3089,16 @@ function sectionSourceLabel(row: Section): string {
         </el-tab-pane>
 
         <el-tab-pane label="站点与区间" name="stations" lazy>
+          <SubPageEditToolbar
+            :state="subPageEditContexts.stations.state"
+            :writable="writable"
+            :dirty="pageIsDirty('stations')"
+            :loading="store.loading"
+            @refresh="refreshPage('stations')"
+            @unlock="startEditing('stations')"
+            @cancel="cancelEditing('stations')"
+            @save="saveAllChanges('', 'stations')"
+          />
           <el-tabs v-model="locationTab" type="card">
             <el-tab-pane label="站点" name="stations" lazy>
               <el-alert class="station-source-note" title="车站初稿来自设备管理中分组为“车站”的设备的“站点”字段。设备名称、系统名和地址不参与站点识别。" type="info" :closable="false" show-icon />
@@ -3133,6 +3261,16 @@ function sectionSourceLabel(row: Section): string {
         </el-tab-pane>
 
         <el-tab-pane label="轨旁 AP" name="trackside-ap" lazy>
+          <SubPageEditToolbar
+            :state="subPageEditContexts.trackside_ap.state"
+            :writable="writable"
+            :dirty="pageIsDirty('trackside_ap')"
+            :loading="store.loading"
+            @refresh="refreshPage('trackside_ap')"
+            @unlock="startEditing('trackside_ap')"
+            @cancel="cancelEditing('trackside_ap')"
+            @save="saveAllChanges('', 'trackside_ap')"
+          />
           <div class="filter-bar">
             <el-input v-model="store.apFilters.query" clearable placeholder="AP 名称 / 点位 / MAC / IP" @keyup.enter="store.applyApFilters" />
             <el-input v-model="store.apFilters.station" clearable placeholder="归属站点" />
@@ -3186,6 +3324,17 @@ function sectionSourceLabel(row: Section): string {
         </el-tab-pane>
 
         <el-tab-pane label="轨旁 AP 规划" name="trackside-ap-planning" lazy>
+          <SubPageEditToolbar
+            :state="subPageEditContexts.trackside_ap_planning.state"
+            :writable="writable"
+            :dirty="pageIsDirty('trackside_ap_planning')"
+            :loading="store.loading"
+            :valid="subPageEditContexts.trackside_ap_planning.planningValid"
+            @refresh="refreshPage('trackside_ap_planning')"
+            @unlock="startEditing('trackside_ap_planning')"
+            @cancel="cancelEditing('trackside_ap_planning')"
+            @save="saveAllChanges('', 'trackside_ap_planning')"
+          />
           <TracksideApPlanningTab
             :model-value="planningRows"
             :editing="editing"
@@ -3199,6 +3348,16 @@ function sectionSourceLabel(row: Section): string {
         </el-tab-pane>
 
         <el-tab-pane label="列车与车载 MR" name="trains" lazy>
+          <SubPageEditToolbar
+            :state="subPageEditContexts.vehicles.state"
+            :writable="writable"
+            :dirty="pageIsDirty('vehicles')"
+            :loading="store.loading"
+            @refresh="refreshPage('vehicles')"
+            @unlock="startEditing('vehicles')"
+            @cancel="cancelEditing('vehicles')"
+            @save="saveAllChanges('', 'vehicles')"
+          />
           <el-tabs v-model="vehicleTab" type="card">
             <el-tab-pane label="列车" name="trains" lazy>
               <NcDataTable table-id="rail-base-trains" route-key="/rail-transit/base-data" :data="store.trains" :columns="trainColumns" height="calc(100vh - 365px)" empty-text="暂无列车资料">
@@ -3336,8 +3495,16 @@ function sectionSourceLabel(row: Section): string {
       </template>
     </el-dialog>
 
-    <el-dialog v-model="stationSourceDialogVisible" title="设备管理站点来源预览" width="min(1280px, 96vw)" append-to-body destroy-on-close>
+    <el-dialog v-model="stationSourceDialogVisible" :title="stationSourcePlanningMode ? '从设备管理匹配正式站点' : '设备管理站点来源预览'" width="min(1280px, 96vw)" append-to-body destroy-on-close>
       <div v-if="store.stationSourcePreview" class="preview-dialog">
+        <el-alert
+          v-if="stationSourcePlanningMode"
+          title="规划页只引用已存在的正式 station_id"
+          description="未匹配候选不会在这里创建站点，也不会解锁或保存站点子页；请先前往“站点与区间”完成维护。"
+          type="info"
+          :closable="false"
+          show-icon
+        />
         <el-alert
           v-if="readOnly"
           title="当前环境只读"
@@ -3396,7 +3563,10 @@ function sectionSourceLabel(row: Section): string {
           <template #cell-node_type="{ row }"><el-tag :type="stationNodeTypeTag(row.node_type)">{{ stationNodeTypeLabel(row.node_type) }}</el-tag></template>
           <template #cell-match_status="{ row }"><el-tag :type="row.match_status === 'conflict' ? 'danger' : ['exact_source_key', 'canonical_name', 'canonical_name_and_type', 'alias'].includes(row.match_status) ? 'success' : 'info'">{{ sourceMatchLabel(row.match_status) }}</el-tag></template>
           <template #cell-processing_strategy="{ row }">
-            <div class="source-strategy">
+            <el-tag v-if="stationSourcePlanningMode" :type="row.matched_station_id ? 'success' : 'warning'">
+              {{ row.matched_station_id ? `正式站点：${row.matched_station_name || row.matched_station_id}` : '缺少正式 station_id' }}
+            </el-tag>
+            <div v-else class="source-strategy">
               <el-select
                 :model-value="stationSourceStrategy(row)"
                 :disabled="readOnly"
@@ -3435,14 +3605,15 @@ function sectionSourceLabel(row: Section): string {
       </div>
       <template #footer>
         <el-button @click="stationSourceDialogVisible = false">关闭</el-button>
+        <el-button v-if="stationSourcePlanningMode" @click="goToStationMaintenance">前往站点与区间维护</el-button>
         <el-button :disabled="!editing" @click="selectSuggestedStationSources">全选建议项</el-button>
-        <el-button :disabled="!editing" @click="selectStationSourcesByStrategy('overwrite_existing')">全部覆盖匹配项</el-button>
-        <el-button :disabled="!editing" @click="selectStationSourcesByStrategy('create')">仅新增未匹配项</el-button>
+        <el-button v-if="!stationSourcePlanningMode" :disabled="!editing" @click="selectStationSourcesByStrategy('overwrite_existing')">全部覆盖匹配项</el-button>
+        <el-button v-if="!stationSourcePlanningMode" :disabled="!editing" @click="selectStationSourcesByStrategy('create')">仅新增未匹配项</el-button>
         <el-button
           type="primary"
           :disabled="!editing || saving || selectedStationSourceIds.length === 0"
           @click="applyStationSourceToDraft"
-        >应用到当前草稿</el-button>
+        >{{ stationSourcePlanningMode ? '加入规划草稿' : '应用到当前草稿' }}</el-button>
       </template>
     </el-dialog>
 

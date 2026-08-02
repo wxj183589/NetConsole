@@ -213,8 +213,13 @@ class RailTransitBaseDataRepository:
             sql = ", ".join(f'"{field}"' for field in selected)
             return [dict(row) for row in connection.execute(f"SELECT {sql} FROM ap_extension_points")]
 
-    def read_edit_snapshot(self, site_id: str) -> dict[str, Any]:
-        """Read every editable base-data row from one read-only SQLite snapshot."""
+    def read_edit_snapshot(
+        self,
+        site_id: str,
+        *,
+        scope: str = "all",
+    ) -> dict[str, Any]:
+        """Read one subpage's editable rows from one read-only SQLite snapshot."""
 
         site_id = SiteManager(self.paths).validate_site_name(site_id)
         path = self._database_path(site_id)
@@ -249,6 +254,9 @@ class RailTransitBaseDataRepository:
             "remark",
             "sort_order",
         )
+        needs_ap_rows = scope in {"all", "stations", "trackside_ap", "trackside_ap_planning"}
+        needs_device_rows = scope in {"all", "stations", "vehicles"}
+        needs_plan_rows = scope in {"all", "trackside_ap_planning"}
 
         for _attempt in range(3):
             metadata_before = site_manager.load_site_metadata(site_id)
@@ -261,15 +269,27 @@ class RailTransitBaseDataRepository:
                 if revision_row is None:
                     raise sqlite3.DatabaseError("base_data_revision metadata missing")
                 database_counter = str(revision_row["value"] or "0")
-                ap_rows = self._select_existing_columns(connection, "ap_extension_points", ap_fields)
-                device_rows = self._select_existing_columns(connection, "devices", device_fields)
-                group_rows = self._select_existing_columns(connection, "device_groups", ("id", "name"))
-                plan_rows = self._select_existing_columns(
-                    connection,
-                    "ac_trackside_ap_plan",
-                    plan_fields,
-                    where="mode = ?",
-                    parameters=("unified",),
+                ap_rows = (
+                    self._select_existing_columns(connection, "ap_extension_points", ap_fields)
+                    if needs_ap_rows else []
+                )
+                device_rows = (
+                    self._select_existing_columns(connection, "devices", device_fields)
+                    if needs_device_rows else []
+                )
+                group_rows = (
+                    self._select_existing_columns(connection, "device_groups", ("id", "name"))
+                    if needs_device_rows else []
+                )
+                plan_rows = (
+                    self._select_existing_columns(
+                        connection,
+                        "ac_trackside_ap_plan",
+                        plan_fields,
+                        where="mode = ?",
+                        parameters=("unified",),
+                    )
+                    if needs_plan_rows else []
                 )
                 connection.commit()
             metadata_after = site_manager.load_site_metadata(site_id)
