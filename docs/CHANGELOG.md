@@ -24,7 +24,7 @@
 
 ### Worker 协议与 FIT-AP 刷新
 
-- 修复 758 台 FIT-AP 光衰全部采集并入库后，完整资源、光衰和 Identity 明细形成约 4.81 MiB Worker 终态帧而导致任务失败；collect 终态改为有界持久化摘要，单 AP 日志耗时改为不含线程池排队时间，Windows 64 并发上限和设备命令保持不变。
+- 修复 758 台 FIT-AP 光衰全部采集并入库后，完整资源、光衰和 Identity 明细形成约 4.81 MB（4,813,638 bytes）Worker 终态帧而导致任务失败；collect 终态改为有界持久化摘要，单 AP 日志耗时改为不含线程池排队时间，Windows 64 并发上限和设备命令保持不变。
 - 修复大局点“更新 AC 信息”和单 AP“深度更新”在数据已成功入库后仍因完整资源快照超过 Worker 1 MiB 单帧限制而失败；两类任务改为返回有界持久化摘要，页面按 `reload_required` 重新读取 SQLite。
 - FIT-AP collect 终态改为有界持久化摘要，不再携带完整资源列表；974 AP、758 LLDP 规模由任务摘要回执，页面通过分页 GET 重新加载 SQLite。
 - FIT-AP 批量刷新加入 `display wlan ap all radio verbose filter bbssid`，使用独立 120 秒读取超时；该命令失败或空结果会保留 raw 并返回明确 BBSSID 状态，但不丢弃必需命令已采集的 AP 资源。
