@@ -230,6 +230,26 @@ describe('API client errors', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
+  it('supports a local heavy-query timeout without changing the 15 second default', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn((_url: RequestInfo | URL, request?: RequestInit) => new Promise((_resolve, reject) => {
+      request?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const rejection = expect(apiRequest('/api/heavy-query', { queryTimeoutMs: 30_000 })).rejects.toMatchObject({
+      code: 'REQUEST_TIMEOUT',
+      details: {
+        path: '/api/heavy-query',
+        timeout_ms: 30_000,
+      },
+    })
+    await vi.advanceTimersByTimeAsync(29_999)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    await rejection
+  })
+
   it('deduplicates concurrent GET requests for the same path', async () => {
     let resolveFetch: ((value: Response) => void) | undefined
     const fetchMock = vi.fn(() => new Promise<Response>((resolve) => {

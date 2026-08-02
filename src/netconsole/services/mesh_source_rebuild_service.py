@@ -67,6 +67,18 @@ class MeshSourceRebuildService:
             self._check_cancel(should_cancel)
             mapping_service = MeshPeerMappingService(site_id, self.paths)
             mapping_service.refresh_repository(detail)
+            remap = mapping_service.last_remap_summary
+            detail.update_identity_mapping_metadata(
+                identity_index_revision=int(remap.get("identity_index_revision") or 0),
+                identity_mapped_at=str(remap.get("identity_mapped_at") or ""),
+                identity_mapping_status=str(remap.get("identity_mapping_status") or "unknown"),
+            )
+            repository.update_identity_mapping(
+                int(source["id"]),
+                identity_index_revision=int(remap.get("identity_index_revision") or 0),
+                identity_mapped_at=str(remap.get("identity_mapped_at") or ""),
+                identity_mapping_status=str(remap.get("identity_mapping_status") or "unknown"),
+            )
             self._checkpoint(detail_path)
             after = detail.summary()
             if int(after.get("link_record_count") or 0) != int(before.get("link_record_count") or 0):
@@ -145,7 +157,14 @@ class MeshSourceRebuildService:
             issues,
             mesh_analysis_params_to_json(load_site_mesh_analysis_params(self.paths, site_id)),
         )
-        MeshPeerMappingService(site_id, self.paths).refresh_repository(detail)
+        mapping_service = MeshPeerMappingService(site_id, self.paths)
+        mapping_service.refresh_repository(detail)
+        remap = mapping_service.last_remap_summary
+        detail.update_identity_mapping_metadata(
+            identity_index_revision=int(remap.get("identity_index_revision") or 0),
+            identity_mapped_at=str(remap.get("identity_mapped_at") or ""),
+            identity_mapping_status=str(remap.get("identity_mapping_status") or "unknown"),
+        )
         detail.rebuild_derived_analysis(should_cancel=should_cancel)
         self._checkpoint(temporary)
         self._check_cancel(should_cancel)
@@ -186,6 +205,12 @@ class MeshSourceRebuildService:
                 archive_sha256=location.archive_sha256,
                 bundle_member_id=location.bundle_member_id,
                 bundle_member_sha256=location.bundle_member_sha256,
+            )
+            repository.update_identity_mapping(
+                int(source["id"]),
+                identity_index_revision=int(remap.get("identity_index_revision") or 0),
+                identity_mapped_at=str(remap.get("identity_mapped_at") or ""),
+                identity_mapping_status=str(remap.get("identity_mapping_status") or "unknown"),
             )
             MeshCatalogRepository(self.paths.mesh_catalog_path(site_id)).update_summary(
                 profile.mr_id,

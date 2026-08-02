@@ -271,6 +271,10 @@ class MeshDataSourceDTO(ApiModel):
     package_name: str = ""
     package_sha256: str = ""
     bundle_member_id: str = ""
+    identity_index_revision: int = 0
+    identity_current_revision: int = 0
+    identity_mapped_at: str = ""
+    identity_mapping_status: str = "unknown"
 
 
 class MeshAnalysisSessionDetailDTO(ApiModel):

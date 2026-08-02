@@ -106,6 +106,7 @@ export interface MeshRawSource {
   compressed: boolean; tail_available: boolean; recoverable: boolean; recovery_source: string; missing_reason: string
   rebuild_capability: 'ready' | 'recoverable_from_bundle' | 'raw_missing' | 'task_running' | 'unsupported'
   package_name: string; package_sha256: string; bundle_member_id: string
+  identity_index_revision: number; identity_current_revision: number; identity_mapped_at: string; identity_mapping_status: string
 }
 export interface MeshAnalysisParams {
   link_time_window: number; link_switch_threshold: number; link_hold_rssi: number; link_establish_threshold: number

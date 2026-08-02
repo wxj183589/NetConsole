@@ -14,6 +14,8 @@ class RailTransitTaskDTO(ApiModel):
     artifact_id: str = ""
     artifact_name: str = ""
     available: bool = False
+    artifact_state: str = ""
+    artifact_message: str = ""
     sha256: str = ""
     size_bytes: int = 0
     message: str = ""

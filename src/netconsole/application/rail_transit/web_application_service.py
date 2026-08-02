@@ -3270,21 +3270,36 @@ class RailTransitWebApplicationService:
         repository = self.task_service.repository(site_id)
         self._reconcile_owned_orphans(site_id)
         for item in repository.list(statuses=TERMINAL_TASK_STATES, limit=1000):
-            if item.site_name != site_id or not self._authorized(item):
+            if (
+                item.site_name != site_id
+                or not self._authorized(item)
+                or item.dismissed_at
+            ):
                 continue
             self._cleanup_recovered_task(site_id, item)
             if item.task_type in self._ARTIFACT_TASK_TYPES.values():
-                self.artifact_store.recover_task(
-                    site_id,
-                    item.task_id,
-                    owner=self._OWNER,
-                    source_task_types=self._ARTIFACT_TASK_TYPES,
-                    succeeded=item.status == TaskState.COMPLETED,
-                )
+                if item.status is TaskState.COMPLETED:
+                    self.artifact_store.reconcile_completed_task(
+                        site_id,
+                        item.task_id,
+                        owner=self._OWNER,
+                        source_task_types=self._ARTIFACT_TASK_TYPES,
+                    )
+                else:
+                    self.artifact_store.discard_incomplete_terminal_task(
+                        site_id,
+                        item.task_id,
+                        owner=self._OWNER,
+                        source_task_types=self._ARTIFACT_TASK_TYPES,
+                    )
         return [
             self._task_dto(site_id, item)
             for item in repository.list(limit=200)
-            if item.site_name == site_id and self._authorized(item)
+            if (
+                item.site_name == site_id
+                and self._authorized(item)
+                and not item.dismissed_at
+            )
         ]
 
     def open_online_mr_report(self, site_id: str, artifact_id: str) -> tuple[Path, str]:
@@ -3510,21 +3525,34 @@ class RailTransitWebApplicationService:
 
     def _task_dto(self, site_id: str, snapshot) -> RailTransitTaskDTO:
         snapshot = sanitize_web_export_snapshot(snapshot)
-        metadata = self.artifact_store.task_metadata(
+        artifact = self.artifact_store.artifact_status(
             site_id,
             snapshot.task_id,
             owner=self._OWNER,
             source_task_types=self._ARTIFACT_TASK_TYPES,
         )
-        artifact_source = str((metadata or {}).get("source") or "")
+        metadata = artifact if artifact and artifact.get("artifact_state") == "AVAILABLE" else None
+        artifact_source = str((artifact or {}).get("source") or "")
         action = self._ARTIFACT_ACTIONS.get(artifact_source, self._ACTIONS.get(snapshot.task_type, snapshot.task_type))
+        artifact_task = snapshot.task_type in self._ARTIFACT_TASK_TYPES.values()
+        artifact_state = str((artifact or {}).get("artifact_state") or "")
+        if artifact_task and snapshot.status is TaskState.COMPLETED and not artifact_state:
+            artifact_state = "MISSING"
+        artifact_id = str((artifact or {}).get("artifact_id") or "")
+        artifact_name = str((artifact or {}).get("display_name") or "")
+        if not artifact_id:
+            artifact_id = str(snapshot.result.get("artifact_id") or "")
+        if not artifact_name:
+            artifact_name = str(snapshot.result.get("artifact_name") or "")
         return RailTransitTaskDTO(
             task_id=snapshot.task_id,
             status=snapshot.status.value,
             action=action,
-            artifact_id=str((metadata or {}).get("artifact_id") or ""),
-            artifact_name=str((metadata or {}).get("display_name") or ""),
+            artifact_id=artifact_id,
+            artifact_name=artifact_name,
             available=bool(metadata and metadata.get("completed") is True),
+            artifact_state=artifact_state,
+            artifact_message=str((artifact or {}).get("artifact_message") or ("导出文件已不存在" if artifact_state == "MISSING" else "")),
             sha256=str((metadata or {}).get("sha256") or ""),
             size_bytes=int((metadata or {}).get("size_bytes") or 0),
             message=redact_web_task_text(snapshot.message),
@@ -3549,7 +3577,8 @@ class RailTransitWebApplicationService:
             "managed_files_deleted", "artifact_count", "mapping_records_deleted",
             "task_records_deleted", "error_code", "error_message",
             "already_deleted", "delete_raw_archive", "delete_parsed_data",
-            "delete_generated_reports", "deleted_files", "deleted_reports",
+            "already_deleted_count", "delete_generated_reports", "deleted_files",
+            "deleted_file_count", "missing_file_count", "deleted_reports",
             "parsed_links", "parsed_events", "parsed_issues", "source_file_id",
             "scanned_count", "valid_command_count", "blocking_error_count",
         ):

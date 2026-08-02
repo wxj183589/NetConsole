@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 from netconsole.core.database import Database
@@ -101,7 +102,20 @@ class MeshPeerMappingService:
     def refresh_repository(self, repo) -> int:
         rows = self.build_rows(repo.distinct_peer_macs())
         self.last_remap_summary = repo.replace_peer_identity_mappings(rows)
+        revision = self.current_identity_revision()
+        self.last_remap_summary.update(
+            identity_index_revision=revision,
+            identity_mapping_status="ready" if revision > 0 else "unavailable",
+            identity_mapped_at=datetime.now().isoformat(timespec="seconds"),
+        )
         return int(self.last_remap_summary.get("mapping_count") or len(rows))
+
+    def current_identity_revision(self) -> int:
+        service = self._get_query_service()
+        if service is None:
+            return 0
+        state = service.index_state() or {}
+        return int(state.get("revision") or 0)
 
     def _get_query_service(self) -> ApIdentityQueryService | None:
         if self._query_service is not None:
