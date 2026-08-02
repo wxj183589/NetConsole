@@ -114,6 +114,7 @@ from netconsole.services.trackside_ap_business import (
     normalize_link_state,
     normalize_vlan_text,
     parse_vlan_set,
+    sort_trackside_ap_business_rows,
     _optical_status_from_history,
     normalize_interface_name as normalize_trackside_interface_name,
     normalize_mac,
@@ -2871,6 +2872,35 @@ def test_trackside_export_omits_ap_port_change_columns_and_sheet(tmp_path):
         assert forbidden not in headers
 
 
+def test_trackside_export_sorts_main_sheet_by_station_ascending(tmp_path):
+    from openpyxl import load_workbook
+
+    export_path = tmp_path / "trackside_station_order.xlsx"
+    i18n = I18n("zh_CN")
+    rows = [
+        {"site": "", "device_name": "SW-0", "interface_name": "GE1/0/1"},
+        {"site": "10站", "device_name": "SW-1", "interface_name": "GE1/0/1"},
+        {"site": "2站", "device_name": "SW-1", "interface_name": "GE1/0/1"},
+        {"site": "01站", "device_name": "SW-1", "interface_name": "GE1/0/1"},
+    ]
+
+    export_trackside_ap_business_xlsx(
+        export_path,
+        rows,
+        TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
+        [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS],
+    )
+
+    workbook = load_workbook(export_path, read_only=True)
+    sheet = workbook["轨旁AP业务"]
+    assert [row[0] for row in sheet.iter_rows(min_row=2, values_only=True)] == [
+        "01站",
+        "2站",
+        "10站",
+        "-",
+    ]
+
+
 def test_trackside_ap_business_export_adds_current_optical_abnormal_sheet(tmp_path):
     from openpyxl import load_workbook
 
@@ -4342,6 +4372,22 @@ def test_trackside_ap_business_filter_by_site_and_search():
         row["ap_name"]
         for row in filter_trackside_ap_business_rows(rows, "Station B", "1/0/2")
     ] == ["AP-B"]
+
+
+def test_trackside_ap_business_sort_uses_natural_station_order_and_places_blank_last():
+    rows = [
+        {"site": "", "device_name": "SW-0", "interface_name": "GE1/0/1"},
+        {"site": "10站", "device_name": "SW-1", "interface_name": "GE1/0/1"},
+        {"site": "2站", "device_name": "SW-1", "interface_name": "GE1/0/1"},
+        {"site": "01站", "device_name": "SW-1", "interface_name": "GE1/0/1"},
+    ]
+
+    assert [row["site"] for row in sort_trackside_ap_business_rows(rows)] == [
+        "01站",
+        "2站",
+        "10站",
+        "",
+    ]
 
 
 def test_trackside_ap_i18n_zh_cn_keys_are_translated():

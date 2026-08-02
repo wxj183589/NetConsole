@@ -928,7 +928,7 @@ def build_trackside_ap_business_rows(
         fit_ap_resource_rows,
         fit_ap_optical_rows,
     )
-    return sorted(result, key=lambda row: (str(row.get("site") or ""), str(row.get("device_name") or ""), interface_sort_key(row.get("interface_name"))))
+    return sort_trackside_ap_business_rows(result)
 
 
 def merge_fit_ap_rows_by_identity(rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:
@@ -1879,6 +1879,37 @@ def filter_trackside_ap_business_rows(rows: list[dict[str, object | None]], site
     return result
 
 
+def sort_trackside_ap_business_rows(rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:
+    """Keep page and export rows in the same natural station order."""
+
+    return sorted(
+        (dict(row) for row in rows or []),
+        key=_trackside_ap_business_sort_key,
+    )
+
+
+def _trackside_ap_business_sort_key(row: dict[str, object | None]) -> tuple[object, ...]:
+    return (
+        _trackside_sort_text_key(row.get("site") or row.get("station") or row.get("归属站点")),
+        _trackside_sort_text_key(
+            row.get("device_name")
+            or row.get("switch_name")
+            or row.get("indoor_switch")
+            or row.get("室内交换机")
+        ),
+        interface_sort_key(row.get("interface_name") or row.get("接口名称")),
+        _trackside_sort_text_key(row.get("ap_name") or row.get("AP名称")),
+        _trackside_sort_text_key(row.get("ap_mac") or row.get("AP MAC")),
+    )
+
+
+def _trackside_sort_text_key(value: object) -> tuple[object, ...]:
+    text = str(value or "").strip()
+    if not text or text == "-":
+        return (1, ())
+    return (0, natural_text_key(text), text.casefold())
+
+
 def trackside_station_options(rows: list[dict[str, object | None]]) -> list[str]:
     return sorted(
         {site for site in (str(row.get("site") or "").strip() for row in rows) if site},
@@ -1940,6 +1971,7 @@ def export_trackside_ap_business_xlsx(
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "\u8f68\u65c1AP\u4e1a\u52a1"
+    rows = sort_trackside_ap_business_rows(rows)
     def log_write_phase(phase: str, start: float, **values: object) -> None:
         elapsed_ms = int((perf_counter() - start) * 1000)
         details = " ".join(f"{key}={value}" for key, value in values.items())
@@ -3004,19 +3036,8 @@ def _append_export_rows_sheet(
 def _sort_ap_optical_treatment_rows(rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:
     return sorted(
         [dict(row) for row in rows],
-        key=lambda row: (
-            _blank_last_text_sort_key(row.get("site") or row.get("station") or row.get("归属站点")),
-            _blank_last_text_sort_key(row.get("device_name") or row.get("switch_name") or row.get("indoor_switch") or row.get("室内交换机")),
-            interface_sort_key(row.get("interface_name") or row.get("接口名称")),
-        ),
+        key=_trackside_ap_business_sort_key,
     )
-
-
-def _blank_last_text_sort_key(value: object) -> tuple[int, str]:
-    text = str(value or "").strip()
-    if not text or text == "-":
-        return (1, "")
-    return (0, text.casefold())
 
 
 def _ap_optical_treatment_row_fill_status(row: dict[str, object | None]) -> str:
