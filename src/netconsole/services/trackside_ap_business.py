@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from ipaddress import ip_address
 from pathlib import Path
@@ -572,6 +573,7 @@ def build_trackside_ap_business_rows(
     trackside_ap_plan: dict | None = None,
     offline_ap_ledger_rows: list[dict[str, object | None]] | None = None,
     historical_lldp_rows: list[dict[str, object | None]] | None = None,
+    station_names: Mapping[str, str] | None = None,
 ) -> list[dict[str, object | None]]:
     optical_indexes = {device_uuid: _latest_rows_by_normalized_interface(rows, "interface_name") for device_uuid, rows in optical_by_device.items()}
     lldp_indexes = {device_uuid: _latest_rows_by_normalized_interface(rows, "local_interface") for device_uuid, rows in (lldp_by_device or {}).items()}
@@ -852,10 +854,20 @@ def build_trackside_ap_business_rows(
                 fit_ap.get("station_id"),
                 pvid_projection.get("planning_station_id"),
             )
+            effective_station_id = station_projection["effective_station_id"]
+            base_station_name = (
+                (
+                    str((station_names or {}).get(effective_station_id) or "").strip()
+                    if effective_station_id
+                    else ""
+                )
+                if station_names is not None
+                else device.station or normalize_station_value(fit_ap) or ""
+            )
             row = {
-                    "station_id": station_projection["effective_station_id"],
+                    "station_id": effective_station_id,
                     **station_projection,
-                    "site": device.station or normalize_station_value(fit_ap) or "",
+                    "site": base_station_name,
                     "ac_device_uuid": fit_ap.get("ac_device_uuid"),
                     "ap_uuid": fit_ap.get("ap_uuid") or (historical_lldp or {}).get("ap_uuid"),
                     "serial_number": fit_ap.get("serial_number") or fit_ap_resource_by_identity.get(ap_identity_key(fit_ap) or ("", ""), {}).get("serial_number"),
@@ -1880,7 +1892,7 @@ def filter_trackside_ap_business_rows(rows: list[dict[str, object | None]], site
 
 
 def sort_trackside_ap_business_rows(rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:
-    """Keep page and export rows in the same natural station order."""
+    """Keep page and export rows in the same switch/interface order."""
 
     return sorted(
         (dict(row) for row in rows or []),
@@ -1890,7 +1902,6 @@ def sort_trackside_ap_business_rows(rows: list[dict[str, object | None]]) -> lis
 
 def _trackside_ap_business_sort_key(row: dict[str, object | None]) -> tuple[object, ...]:
     return (
-        _trackside_sort_text_key(row.get("site") or row.get("station") or row.get("归属站点")),
         _trackside_sort_text_key(
             row.get("device_name")
             or row.get("switch_name")
@@ -1898,6 +1909,7 @@ def _trackside_ap_business_sort_key(row: dict[str, object | None]) -> tuple[obje
             or row.get("室内交换机")
         ),
         interface_sort_key(row.get("interface_name") or row.get("接口名称")),
+        _trackside_sort_text_key(row.get("site") or row.get("station") or row.get("归属站点")),
         _trackside_sort_text_key(row.get("ap_name") or row.get("AP名称")),
         _trackside_sort_text_key(row.get("ap_mac") or row.get("AP MAC")),
     )

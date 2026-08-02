@@ -80,6 +80,9 @@ GET /api/rail-transit/base-data/edit-snapshot?site_id=...
 识别为特殊节点，保留 `source_order`，但默认 `path_code=UNASSIGNED`、`sort_order=null`、
 `participates_in_direction=false`，不会因为编码较大被排入主线。
 
+站点名称的稳定关联使用 `station_id`，展示层保留来源编号并统一为 `01-站名` 形式；旧资料中的
+`01站名`、`10站名` 等无分隔符写法只做兼容展示规范化，不覆盖规范站名或来源元数据。
+
 候选身份使用“规范站名 + 节点类型 + 路径”稳定键，不把编号前缀写入正式站名。编号写法不同但规范身份和
 数值编号一致时合并来源设备数；同编号不同站名、同站名不同编号或同路径顺序重复时返回阻断冲突。一个来源
 匹配多个同类型、同路径、同规范站名的正式站点时，预览改为建议 `merge_duplicates`，但仍须由用户选择保留

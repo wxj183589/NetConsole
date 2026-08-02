@@ -13,7 +13,10 @@ from netconsole.core.database import Database
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.services.ap_online_overview import is_fit_ap_online
-from netconsole.services.rail_transit.station_source_utils import canonical_station_name
+from netconsole.services.rail_transit.station_source_utils import (
+    canonical_station_name,
+    format_station_display_name,
+)
 
 
 _BASE_STATION = "__base_station__"
@@ -802,7 +805,13 @@ def _build_station_index(
         if str(row.get("belong_type") or "") != _BASE_STATION:
             continue
         metadata = _metadata(row.get("raw_payload_json"))
-        name = str(row.get("station_name") or "").strip()
+        name = format_station_display_name(
+            row.get("station_name"),
+            source_station_value=metadata.get("source_station_value"),
+            source_order_text=metadata.get("source_order_text"),
+            sort_order=metadata.get("sort_order"),
+            source_kind=metadata.get("source_kind"),
+        )
         node_uid = str(metadata.get("node_uid") or "").strip()
         if not node_uid:
             identity = f"ap:{row.get('id')}"

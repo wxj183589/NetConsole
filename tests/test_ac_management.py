@@ -2872,15 +2872,15 @@ def test_trackside_export_omits_ap_port_change_columns_and_sheet(tmp_path):
         assert forbidden not in headers
 
 
-def test_trackside_export_sorts_main_sheet_by_station_ascending(tmp_path):
+def test_trackside_export_sorts_main_sheet_by_switch_then_interface(tmp_path):
     from openpyxl import load_workbook
 
     export_path = tmp_path / "trackside_station_order.xlsx"
     i18n = I18n("zh_CN")
     rows = [
-        {"site": "", "device_name": "SW-0", "interface_name": "GE1/0/1"},
-        {"site": "10站", "device_name": "SW-1", "interface_name": "GE1/0/1"},
-        {"site": "2站", "device_name": "SW-1", "interface_name": "GE1/0/1"},
+        {"site": "10站", "device_name": "SW-10", "interface_name": "GE1/0/2"},
+        {"site": "2站", "device_name": "SW-2", "interface_name": "GE1/0/10"},
+        {"site": "2站", "device_name": "SW-2", "interface_name": "GE1/0/2"},
         {"site": "01站", "device_name": "SW-1", "interface_name": "GE1/0/1"},
     ]
 
@@ -2893,11 +2893,14 @@ def test_trackside_export_sorts_main_sheet_by_station_ascending(tmp_path):
 
     workbook = load_workbook(export_path, read_only=True)
     sheet = workbook["轨旁AP业务"]
-    assert [row[0] for row in sheet.iter_rows(min_row=2, values_only=True)] == [
-        "01站",
-        "2站",
-        "10站",
-        "-",
+    assert [
+        (row[1], row[2])
+        for row in sheet.iter_rows(min_row=2, values_only=True)
+    ] == [
+        ("SW-1", "GE1/0/1"),
+        ("SW-2", "GE1/0/2"),
+        ("SW-2", "GE1/0/10"),
+        ("SW-10", "GE1/0/2"),
     ]
 
 
@@ -3879,6 +3882,33 @@ def test_trackside_ap_business_rows_include_pvid_match_source():
     assert format_trackside_display_value("match_source", rows[0]) == "PVID匹配"
 
 
+def test_trackside_ap_business_rows_use_base_station_display_name():
+    switch = Device(
+        name="SW-1",
+        station="设备管理旧站名",
+        station_id="station:01",
+        device_uuid="sw-1",
+    )
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {
+            "sw-1": [
+                {
+                    "interface_name": "GigabitEthernet1/0/1",
+                    "description": "to AP",
+                    "pvid": "921",
+                }
+            ]
+        },
+        {"sw-1": []},
+        [],
+        station_names={"station:01": "01-基础资料站"},
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["site"] == "01-基础资料站"
+
+
 def test_trackside_ap_business_rows_join_interface_optical_and_fit_ap_data():
     switch = Device(
         name="HX_1", sysname="HX_SYS", station="Station A", device_uuid="sw-1"
@@ -4374,19 +4404,22 @@ def test_trackside_ap_business_filter_by_site_and_search():
     ] == ["AP-B"]
 
 
-def test_trackside_ap_business_sort_uses_natural_station_order_and_places_blank_last():
+def test_trackside_ap_business_sort_uses_natural_switch_and_interface_order():
     rows = [
-        {"site": "", "device_name": "SW-0", "interface_name": "GE1/0/1"},
-        {"site": "10站", "device_name": "SW-1", "interface_name": "GE1/0/1"},
-        {"site": "2站", "device_name": "SW-1", "interface_name": "GE1/0/1"},
+        {"site": "10站", "device_name": "SW-10", "interface_name": "GE1/0/2"},
+        {"site": "2站", "device_name": "SW-2", "interface_name": "GE1/0/10"},
+        {"site": "2站", "device_name": "SW-2", "interface_name": "GE1/0/2"},
         {"site": "01站", "device_name": "SW-1", "interface_name": "GE1/0/1"},
     ]
 
-    assert [row["site"] for row in sort_trackside_ap_business_rows(rows)] == [
-        "01站",
-        "2站",
-        "10站",
-        "",
+    assert [
+        (row["device_name"], row["interface_name"])
+        for row in sort_trackside_ap_business_rows(rows)
+    ] == [
+        ("SW-1", "GE1/0/1"),
+        ("SW-2", "GE1/0/2"),
+        ("SW-2", "GE1/0/10"),
+        ("SW-10", "GE1/0/2"),
     ]
 
 
@@ -4523,6 +4556,43 @@ def test_trackside_station_switch_target_filter_can_scope_station(tmp_path):
 
     targets, skipped = build_station_switch_targets(
         repository, "demo", station="Station A"
+    )
+
+    assert [target.device_id for target in targets] == [station_a.id]
+    assert skipped == []
+
+
+def test_trackside_station_switch_target_filter_matches_numbered_display_name(tmp_path):
+    database = make_database(tmp_path)
+    repository = DeviceRepository(database)
+    station_group = DeviceGroupRepository(database, "demo").create("车站")
+    station_a = repository.create(
+        Device(
+            name="A",
+            station="01Station A",
+            group_id=station_group.id,
+            device_type="SW",
+            device_vendor="H3C",
+            ip_address="10.0.0.1",
+            ssh_username="u",
+            ssh_password="p",
+        )
+    )
+    repository.create(
+        Device(
+            name="B",
+            station="02Station B",
+            group_id=station_group.id,
+            device_type="SW",
+            device_vendor="H3C",
+            ip_address="10.0.0.2",
+            ssh_username="u",
+            ssh_password="p",
+        )
+    )
+
+    targets, skipped = build_station_switch_targets(
+        repository, "demo", station="01-Station A"
     )
 
     assert [target.device_id for target in targets] == [station_a.id]

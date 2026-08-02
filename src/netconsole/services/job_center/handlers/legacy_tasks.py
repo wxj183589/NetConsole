@@ -1279,6 +1279,7 @@ def _ac_trackside_business_refresh(params: dict[str, Any], progress: ProgressCal
     from netconsole.repositories.device_repository import DeviceRepository
     from netconsole.services.offline_ap_ledger import build_device_lookup_by_name, build_latest_ap_history_indexes, build_offline_ap_ledger
     from netconsole.services.trackside_ap_business import build_trackside_ap_business_rows, filter_station_switch_devices
+    from netconsole.services.rail_transit.effective_trackside_ap_scope import resolve_effective_trackside_ap_scope_from_database
 
     _emit(progress, "ac_trackside_business_refresh", 0, 5, "正在读取设备和接口数据")
     _check_cancel(should_cancel)
@@ -1312,6 +1313,11 @@ def _ac_trackside_business_refresh(params: dict[str, Any], progress: ProgressCal
     _emit(progress, "ac_trackside_business_refresh", 4, 5, "正在构建轨旁 AP 业务行")
     _check_cancel(should_cancel)
     all_resources = ac_repository.list_all_fit_ap_resources_with_metadata()
+    scope = resolve_effective_trackside_ap_scope_from_database(
+        database,
+        site_id=site_name,
+        resource_rows=all_resources,
+    )
     rows = build_trackside_ap_business_rows(
         devices,
         interfaces_by_device,
@@ -1322,6 +1328,7 @@ def _ac_trackside_business_refresh(params: dict[str, Any], progress: ProgressCal
         lookup,
         ac_repository.get_active_trackside_pvid_plan(),
         ledger,
+        station_names=scope.station_names,
     )
     try:
         from netconsole.services.rail_transit.trackside_ap_identity_shadow import TracksideApIdentityShadowService
@@ -1807,6 +1814,7 @@ def _device_detail_load_all(params: dict[str, Any], progress: ProgressCallback |
     from netconsole.repositories.ac_repository import AcRepository
     from netconsole.repositories.device_fact_repository import DeviceFactRepository
     from netconsole.services.trackside_ap_business import build_trackside_ap_business_rows
+    from netconsole.services.rail_transit.effective_trackside_ap_scope import resolve_effective_trackside_ap_scope_from_database
 
     database = Database(Path(str(params.get("db_path") or "")))
     repository = DeviceFactRepository(database)
@@ -1819,14 +1827,21 @@ def _device_detail_load_all(params: dict[str, Any], progress: ProgressCallback |
     _check_cancel(should_cancel)
     ac_repository = AcRepository(database)
     lookup = build_switch_data_lookup([device], {device_uuid: optical_modules})
+    resources = ac_repository.list_all_fit_ap_resources_with_metadata()
+    scope = resolve_effective_trackside_ap_scope_from_database(
+        database,
+        site_id=str(params.get("site_name") or ""),
+        resource_rows=resources,
+    )
     trackside = build_trackside_ap_business_rows(
         [device],
         {device_uuid: interfaces},
         {device_uuid: optical_modules},
         ac_repository.list_all_fit_ap_optical(),
         {device_uuid: lldp},
-        ac_repository.list_all_fit_ap_resources_with_metadata(),
+        resources,
         lookup,
+        station_names=scope.station_names,
     )
     return {"fact": fact, "interfaces": interfaces, "optical_modules": optical_modules, "lldp": lldp, "trackside": trackside}
 

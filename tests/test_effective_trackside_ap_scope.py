@@ -148,6 +148,28 @@ def test_numbered_station_aliases_group_by_one_station_id_and_dedupe_ac_rows() -
     assert scope.scope_device_count == 1
 
 
+def test_scope_restores_numbered_station_display_from_source_metadata() -> None:
+    station = _station(100, "小洋江站", "node-xiaoyangjiang", 1)
+    station["raw_payload_json"] = json.dumps(
+        {
+            "node_uid": "node-xiaoyangjiang",
+            "canonical_station_name": "小洋江站",
+            "source_station_value": "01小洋江站",
+            "source_kind": "device_station_field",
+            "sort_order": 1,
+        },
+        ensure_ascii=False,
+    )
+    scope = _resolve(
+        stations=[station],
+        plans=[{"station_name": "小洋江站", "ap_count": 1, "sequence_no": 1}],
+        references=[],
+        resources=[],
+    )
+
+    assert scope.station_statistics()[0]["station_name"] == "01-小洋江站"
+
+
 def test_plan_uses_stable_station_node_id_when_display_name_has_changed() -> None:
     stations = [_station(100, "16-双陈站", "node-shuangchen", 16)]
     scope = _resolve(
@@ -606,7 +628,7 @@ def test_unique_lldp_station_evidence_projects_runtime_ap_into_station() -> None
     assert scope.fit_ap_matched_count == 1
     assert scope.fit_ap_unmatched_online_count == 0
     assert scope.resources[0]["station_id"] == station_id
-    assert scope.resources[0]["site"] == "01站点"
+    assert scope.resources[0]["site"] == "01-站点"
     assert scope.resources[0]["_scope_binding_source"] == "switch_lldp_exact"
     assert scope.station_statistics()[0]["actual_online_count"] == 1
 

@@ -387,6 +387,7 @@ class DeviceManagementWebService:
         group_names = {
             int(group.id): group.name for group in groups if group.id is not None
         }
+        station_display_names = self._base_station_display_names(site)
         tasks = self._owned_web_tasks(
             self.task_service.repository(site).list(limit=1000),
             site,
@@ -411,6 +412,7 @@ class DeviceManagementWebService:
                 self._latest_test(tasks, device),
                 latest_collect=self._latest_collect(tasks, device),
                 fact=facts.get(str(device.device_uuid or "")),
+                station_display_names=station_display_names,
             )
             for device in devices
         ]
@@ -1983,20 +1985,34 @@ class DeviceManagementWebService:
         from netconsole.services.trackside_ap_business import (
             build_trackside_ap_business_rows,
         )
+        from netconsole.services.rail_transit.effective_trackside_ap_scope import (
+            resolve_effective_trackside_ap_scope_from_database,
+        )
 
         site = self.current_site_id()
         database = Database(self.paths.site_db_path(site))
         device_uuid = str(device.device_uuid or "")
         lookup = build_switch_data_lookup([device], {device_uuid: optical_modules})
         ac_repository = AcRepository(database)
+        resources = ac_repository.list_all_fit_ap_resources_with_metadata()
+        try:
+            scope = resolve_effective_trackside_ap_scope_from_database(
+                database,
+                site_id=site,
+                resource_rows=resources,
+            )
+            station_names = scope.station_names
+        except Exception:
+            station_names = {}
         return build_trackside_ap_business_rows(
             [device],
             {device_uuid: interfaces},
             {device_uuid: optical_modules},
             ac_repository.list_all_fit_ap_optical(),
             {device_uuid: lldp_neighbors},
-            ac_repository.list_all_fit_ap_resources_with_metadata(),
+            resources,
             lookup,
+            station_names=station_names,
         )
 
     @staticmethod
@@ -3481,6 +3497,33 @@ class DeviceManagementWebService:
             else None,
         )
 
+    def _base_station_display_names(self, site: str) -> dict[str, str]:
+        try:
+            from netconsole.services.rail_transit.base_data_query_service import (
+                RailTransitBaseDataQueryService,
+            )
+            from netconsole.services.rail_transit.station_source_utils import (
+                format_station_display_name,
+            )
+
+            stations = RailTransitBaseDataQueryService(self.paths).list_stations(
+                site,
+                page_size=5000,
+            ).items
+        except Exception:
+            return {}
+        return {
+            str(station.id): format_station_display_name(
+                station.name,
+                source_station_value=station.source_station_value,
+                source_order_text=station.source_order_text,
+                sort_order=station.sort_order,
+                source_kind=station.source_kind,
+            )
+            for station in stations
+            if str(station.id or "").strip()
+        }
+
     def _list_item(
         self,
         device: Device,
@@ -3489,14 +3532,20 @@ class DeviceManagementWebService:
         *,
         latest_collect: TaskSnapshot | None = None,
         fact: dict[str, object | None] | None = None,
+        station_display_names: dict[str, str] | None = None,
     ) -> DeviceListItemDTO:
         collect_status = self._last_collect_status(latest_collect, fact)
+        station_id = str(getattr(device, "station_id", "") or "").strip()
         return DeviceListItemDTO(
             id=int(device.id or 0),
             device_uuid=str(device.device_uuid or ""),
             name=str(device.name or ""),
             system_name=str(device.system_name or ""),
-            station=str(device.station or ""),
+            station=str(
+                (station_display_names or {}).get(station_id)
+                or device.station
+                or ""
+            ),
             group_id=int(device.group_id) if device.group_id is not None else None,
             group_name=group_names.get(int(device.group_id), "未分组")
             if device.group_id is not None

@@ -292,10 +292,10 @@ def test_business_snapshot_and_online_overview_share_effective_scope(
     )
 
     assert len(snapshot.rows) == 1
-    assert snapshot.rows[0]["site"] == "01双陈站"
+    assert snapshot.rows[0]["site"] == "01-双陈站"
     assert snapshot.scope is not None
     overview = snapshot.scope.overview_export_rows()
-    assert [row["site"] for row in overview] == ["01双陈站", "合计"]
+    assert [row["site"] for row in overview] == ["01-双陈站", "合计"]
     assert overview[0]["online"] == 1
     assert snapshot.scope.excluded_device_count == 1
 
@@ -1989,18 +1989,18 @@ def test_trackside_ap_online_status_uses_planned_targets_and_weighted_total(
     assert "actual_ap_count" not in status.model_dump()
     assert "online_count" not in status.model_dump()
     by_name = {row.station_name: row for row in status.items}
-    assert by_name["01小洋江站"].planned_ap_count == 28
-    assert by_name["01小洋江站"].actual_online_count == 28
-    assert by_name["01小洋江站"].offline_count == 0
-    assert by_name["01小洋江站"].online_rate == 100.0
-    assert by_name["03横溪站"].online_rate == 61.1
-    assert by_name["04塘溪站"].online_rate == 96.4
-    assert by_name["06象山贤庠"].online_rate == 97.8
-    assert by_name["10大目湾站"].planned_ap_count == 34
-    assert by_name["10大目湾站"].actual_online_count == 0
-    assert by_name["10大目湾站"].offline_count == 34
-    assert by_name["10大目湾站"].online_rate == 0.0
-    assert by_name["11云龙车辆段"].online_rate == 98.5
+    assert by_name["01-小洋江站"].planned_ap_count == 28
+    assert by_name["01-小洋江站"].actual_online_count == 28
+    assert by_name["01-小洋江站"].offline_count == 0
+    assert by_name["01-小洋江站"].online_rate == 100.0
+    assert by_name["03-横溪站"].online_rate == 61.1
+    assert by_name["04-塘溪站"].online_rate == 96.4
+    assert by_name["06-象山贤庠"].online_rate == 97.8
+    assert by_name["10-大目湾站"].planned_ap_count == 34
+    assert by_name["10-大目湾站"].actual_online_count == 0
+    assert by_name["10-大目湾站"].offline_count == 34
+    assert by_name["10-大目湾站"].online_rate == 0.0
+    assert by_name["11-云龙车辆段"].online_rate == 98.5
     assert all(row.count_anomaly is False for row in status.items)
 
     current = service.start_trackside_ap_plan_export("demo", template=False)
@@ -2009,21 +2009,21 @@ def test_trackside_ap_online_status_uses_planned_targets_and_weighted_total(
     workbook = load_workbook(current_job.output_path)
     overview = workbook["AP上线情况概览"]
     assert [overview.cell(2, column).value for column in range(1, 6)] == [
-        "01小洋江站",
+        "01-小洋江站",
         28,
         28,
         0,
         1,
     ]
     assert [overview.cell(4, column).value for column in range(1, 6)] == [
-        "03横溪站",
+        "03-横溪站",
         126,
         77,
         49,
         0.611,
     ]
     assert [overview.cell(11, column).value for column in range(1, 6)] == [
-        "10大目湾站",
+        "10-大目湾站",
         34,
         0,
         34,

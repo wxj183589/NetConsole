@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from netconsole.services.rail_transit.station_source_utils import (
+    format_station_display_name,
     parse_station_source_value,
     station_identity_key,
 )
@@ -48,6 +49,34 @@ def test_station_without_numeric_prefix_remains_valid() -> None:
     assert parsed.name == "小洋江站"
     assert parsed.parse_warning == ""
     assert parsed.parse_error == ""
+
+
+@pytest.mark.parametrize(
+    ("value", "source", "expected"),
+    [
+        ("小洋江站", "01小洋江站", "01-小洋江站"),
+        ("小洋江站", "01-小洋江站", "01-小洋江站"),
+        ("01小洋江站", "", "01-小洋江站"),
+        ("10大目湾站", "", "10-大目湾站"),
+    ],
+)
+def test_station_display_name_preserves_numeric_source_prefix(
+    value: str,
+    source: str,
+    expected: str,
+) -> None:
+    assert format_station_display_name(value, source_station_value=source) == expected
+
+
+def test_device_station_source_can_restore_prefix_from_order_metadata() -> None:
+    assert (
+        format_station_display_name(
+            "小洋江站",
+            sort_order=1,
+            source_kind="device_station_field",
+        )
+        == "01-小洋江站"
+    )
 
 
 @pytest.mark.parametrize(

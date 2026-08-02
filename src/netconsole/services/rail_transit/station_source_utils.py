@@ -86,6 +86,47 @@ _DIGITS_ONLY_RE = re.compile(r"^\s*\d+\s*$")
 _TOO_LONG_PREFIX_RE = re.compile(r"^\s*\d{4,}")
 
 
+def format_station_display_name(
+    value: Any,
+    *,
+    source_station_value: Any = "",
+    source_order_text: Any = "",
+    sort_order: Any = None,
+    source_kind: Any = "",
+) -> str:
+    """保留设备来源的站点编号，同时统一为 ``01-站名`` 展示格式。"""
+
+    raw_name = normalize_station_source_value(value)[0]
+    if not raw_name:
+        return ""
+
+    for candidate in (source_station_value, raw_name):
+        parsed = parse_station_source_value(candidate)
+        if parsed.code and parsed.name:
+            return f"{int(parsed.code):02d}-{parsed.name}"
+
+    # 兼容旧版基础资料中常见的 ``10大目湾站`` 形式。解析器对无分隔符
+    # 的普通车站编号保持谨慎，但展示层应保留用户已有的数字辅助信息。
+    legacy_prefix = _BATCH_CODE_RE.match(raw_name)
+    if legacy_prefix and not legacy_prefix.group(2).strip().startswith("号"):
+        return f"{int(legacy_prefix.group(1)):02d}-{legacy_prefix.group(2).strip()}"
+
+    source_order = str(source_order_text or "").strip()
+    if (
+        not source_order
+        and str(source_kind or "").strip().casefold()
+        in {"device_station_field", "legacy_ap_derived"}
+        and sort_order not in (None, "")
+    ):
+        try:
+            source_order = str(int(sort_order))
+        except (TypeError, ValueError):
+            source_order = ""
+    if source_order.isdigit() and raw_name:
+        return f"{int(source_order):02d}-{canonical_station_name(raw_name, allow_inferred_two_digit_prefix=False)}"
+    return raw_name
+
+
 @dataclass(frozen=True)
 class ParsedStationSource:
     source_station_value: str

@@ -46,6 +46,7 @@ from netconsole.services.netmiko_connection import (
 from netconsole.services.offline_ap_ledger import is_fit_ap_offline
 from netconsole.services.trackside_ap_business import build_trackside_ap_business_rows, is_trackside_ap_interface
 from netconsole.utils.interface_normalize import normalize_interface_name
+from netconsole.services.rail_transit.station_source_utils import canonical_station_name
 
 
 TRACKSIDE_OPTICAL_COMMANDS = (
@@ -465,7 +466,10 @@ def build_station_switch_targets(repository: DeviceRepository, site_name: str, s
     skipped: list[TracksideSkippedTarget] = []
     for device in sorted(repository.list(), key=lambda item: str(item.name or "").casefold()):
         group_name = groups.get(device.group_id or -1, "")
-        if station_text and str(device.station or "").strip() != station_text:
+        if station_text and (
+            canonical_station_name(device.station).casefold()
+            != canonical_station_name(station_text).casefold()
+        ):
             continue
         if group_name != "车站" or not is_switch_device_type(device.device_type):
             continue

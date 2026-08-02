@@ -319,6 +319,7 @@ def load_trackside_ap_business_snapshot(
             active_plan,
             offline_ledger_rows,
             historical_lldp_rows,
+            station_names=scope.station_names,
         ),
         switch_device_ids={str(device.device_uuid or "") for device in devices},
     )

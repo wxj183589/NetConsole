@@ -22,6 +22,9 @@ from netconsole.services.rail_transit.trackside_ap_location import (
     parse_participates_in_mainline,
     validate_location_participation,
 )
+from netconsole.services.rail_transit.station_source_utils import (
+    format_station_display_name,
+)
 from netconsole.utils.mileage import parse_track_mileage
 
 
@@ -90,6 +93,16 @@ _BASE_DATA_REFERENCE_METADATA_KEYS = {
     "section_start_node_uid",
     "section_end_node_uid",
 }
+
+
+def _metadata_value(raw: Any, key: str) -> Any:
+    try:
+        payload = json.loads(str(raw or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return ""
+    return payload.get(key, "") if isinstance(payload, dict) else ""
+
+
 _BASE_DATA_REVISION_KEY = "base_data_revision"
 
 
@@ -1467,7 +1480,7 @@ class RailTransitBaseDataRepository:
             seen.add(device_id)
             station = connection.execute(
                 """
-                SELECT station_name FROM ap_extension_points
+                SELECT station_name, raw_payload_json FROM ap_extension_points
                 WHERE belong_type = '__base_station__' AND station_id = ?
                 LIMIT 1
                 """,
@@ -1485,7 +1498,21 @@ class RailTransitBaseDataRepository:
                 """,
                 (
                     station_id,
-                    str(station["station_name"] or ""),
+                    format_station_display_name(
+                        station["station_name"],
+                        source_station_value=_metadata_value(
+                            station["raw_payload_json"], "source_station_value"
+                        ),
+                        source_order_text=_metadata_value(
+                            station["raw_payload_json"], "source_order_text"
+                        ),
+                        sort_order=_metadata_value(
+                            station["raw_payload_json"], "sort_order"
+                        ),
+                        source_kind=_metadata_value(
+                            station["raw_payload_json"], "source_kind"
+                        ),
+                    ),
                     self._now(),
                     device_id,
                     device_id,
