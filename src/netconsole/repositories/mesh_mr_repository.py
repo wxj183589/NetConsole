@@ -238,6 +238,9 @@ class MeshMrRepository:
                     parsed_delete_error TEXT DEFAULT '',
                     source_file_order INTEGER DEFAULT 0,
                     analysis_params_json TEXT DEFAULT '',
+                    identity_index_revision INTEGER DEFAULT 0,
+                    identity_mapped_at TEXT DEFAULT '',
+                    identity_mapping_status TEXT DEFAULT 'unknown',
                     raw_relative_path TEXT DEFAULT '',
                     parsed_relative_path TEXT DEFAULT '',
                     archive_sha256 TEXT DEFAULT '',
@@ -556,6 +559,9 @@ class MeshMrRepository:
             self._ensure_column(conn, "source_files", "parsed_db_size", "INTEGER DEFAULT 0")
             self._ensure_column(conn, "source_files", "db_schema_version", "TEXT DEFAULT ''")
             self._ensure_column(conn, "source_files", "analysis_params_json", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "source_files", "identity_index_revision", "INTEGER DEFAULT 0")
+            self._ensure_column(conn, "source_files", "identity_mapped_at", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "source_files", "identity_mapping_status", "TEXT DEFAULT 'unknown'")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_links_peer_ap ON mesh_links(peer_ap_name)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_links_peer_site ON mesh_links(peer_site)")
             self._ensure_performance_indexes(conn)
@@ -2707,6 +2713,36 @@ class MeshMrRepository:
             "mapping_count": len(values),
             "source_counts": source_counts,
         }
+
+    def update_identity_mapping_metadata(
+        self,
+        *,
+        identity_index_revision: int,
+        identity_mapped_at: str,
+        identity_mapping_status: str,
+    ) -> None:
+        """Persist remap provenance without changing parsed MESH facts."""
+        if self._is_index_database():
+            for repo in self._detail_repos():
+                repo.update_identity_mapping_metadata(
+                    identity_index_revision=identity_index_revision,
+                    identity_mapped_at=identity_mapped_at,
+                    identity_mapping_status=identity_mapping_status,
+                )
+            return
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE source_files
+                SET identity_index_revision = ?, identity_mapped_at = ?,
+                    identity_mapping_status = ?
+                """,
+                (
+                    int(identity_index_revision),
+                    str(identity_mapped_at or ""),
+                    str(identity_mapping_status or "unknown"),
+                ),
+            )
 
     def rebuild_link_aggregates(self, bucket_seconds: tuple[int, ...] = (1, 10, 30, 60), should_cancel=None) -> None:
         return None

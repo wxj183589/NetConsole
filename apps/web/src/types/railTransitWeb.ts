@@ -5,6 +5,8 @@ export interface RailTransitTask {
   artifact_id: string
   artifact_name: string
   available: boolean
+  artifact_state?: string
+  artifact_message?: string
   sha256: string
   size_bytes: number
   message: string

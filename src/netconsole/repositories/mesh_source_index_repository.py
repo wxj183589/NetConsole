@@ -23,6 +23,9 @@ _SOURCE_COLUMNS = {
     "file_status": "TEXT DEFAULT 'ok'",
     "parsed_deleted_at": "TEXT DEFAULT ''",
     "parsed_delete_error": "TEXT DEFAULT ''",
+    "identity_index_revision": "INTEGER DEFAULT 0",
+    "identity_mapped_at": "TEXT DEFAULT ''",
+    "identity_mapping_status": "TEXT DEFAULT 'unknown'",
 }
 
 
@@ -129,6 +132,30 @@ class MeshSourceIndexRepository:
                     int(records_parsed),
                     int(records_skipped),
                     int(issue_count),
+                    int(source_file_id),
+                ),
+            )
+
+    def update_identity_mapping(
+        self,
+        source_file_id: int,
+        *,
+        identity_index_revision: int,
+        identity_mapped_at: str,
+        identity_mapping_status: str,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE source_files
+                SET identity_index_revision = ?, identity_mapped_at = ?,
+                    identity_mapping_status = ?
+                WHERE id = ?
+                """,
+                (
+                    int(identity_index_revision),
+                    str(identity_mapped_at or ""),
+                    str(identity_mapping_status or "unknown"),
                     int(source_file_id),
                 ),
             )

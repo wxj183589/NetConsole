@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
-from netconsole.models.task_state import TaskState
+from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 
 
@@ -189,7 +189,12 @@ class WebArtifactStore:
             reverse=True,
         )
 
-    def complete(self, reservation: ReservedWebArtifact) -> dict[str, object]:
+    def complete(
+        self,
+        reservation: ReservedWebArtifact,
+        *,
+        reject_on_error: bool = True,
+    ) -> dict[str, object]:
         try:
             manifest = self._read_manifest(reservation.site_id, reservation.artifact_id)
             self._validate_reservation(manifest, reservation)
@@ -234,13 +239,47 @@ class WebArtifactStore:
             )
             return manifest
         except WebArtifactError as exc:
-            self._reject_task(reservation, str(exc))
+            if reject_on_error:
+                self._reject_task(reservation, str(exc))
             raise
         except (KeyError, OSError, TypeError, ValueError) as exc:
-            self._reject_task(reservation, str(exc))
+            if reject_on_error:
+                self._reject_task(reservation, str(exc))
             raise WebArtifactError("报告完整性最终化失败") from exc
 
     def fail(self, reservation: ReservedWebArtifact, error_message: str = "报告不可用") -> None:
+        self._discard_artifact_files(reservation)
+        self._reject_task(reservation, error_message)
+
+    def discard_incomplete_terminal_task(
+        self,
+        site_id: str,
+        task_id: str,
+        *,
+        owner: str,
+        source_task_types: dict[str, str],
+    ) -> bool:
+        """Remove partial files for a terminal task without changing its status."""
+
+        data = self._find_task_manifest(
+            site_id,
+            task_id,
+            owner=owner,
+            source_task_types=source_task_types,
+        )
+        if data is None:
+            return False
+        try:
+            task = self._trusted_task(data)
+            if task.status not in TERMINAL_TASK_STATES or task.status is TaskState.COMPLETED:
+                return False
+            reservation = self._reservation(data)
+        except (OSError, TypeError, ValueError, WebArtifactError):
+            return False
+        self._discard_artifact_files(reservation)
+        return True
+
+    def _discard_artifact_files(self, reservation: ReservedWebArtifact) -> None:
         for path in (
             reservation.output_path,
             reservation.output_path.with_name(f"{reservation.output_path.name}.tmp"),
@@ -256,7 +295,6 @@ class WebArtifactStore:
             self._manifest_path(reservation.site_id, reservation.artifact_id).unlink(missing_ok=True)
         except OSError:
             pass
-        self._reject_task(reservation, error_message)
 
     def task_metadata(
         self,
@@ -281,6 +319,83 @@ class WebArtifactStore:
         except (OSError, TypeError, ValueError, WebArtifactError):
             return None
         return data
+
+    def artifact_status(
+        self,
+        site_id: str,
+        task_id: str,
+        *,
+        owner: str,
+        source_task_types: dict[str, str],
+    ) -> dict[str, object] | None:
+        """Return a read-only artifact state without changing task lifecycle."""
+
+        data = self._find_task_manifest(
+            site_id,
+            task_id,
+            owner=owner,
+            source_task_types=source_task_types,
+        )
+        if data is None:
+            return None
+        try:
+            task = self._trusted_task(data)
+            if data.get("completed") is not True:
+                path = self._validated_output(data)
+                if task.status is TaskState.COMPLETED and (
+                    not path.is_file() or path.is_symlink()
+                ):
+                    return {
+                        **data,
+                        "artifact_state": "MISSING",
+                        "artifact_message": "导出文件已不存在",
+                    }
+                return {**data, "artifact_state": "PENDING", "artifact_message": "导出文件尚未完成"}
+            path = self._validated_output(data)
+            if not path.is_file() or path.is_symlink():
+                return {
+                    **data,
+                    "artifact_state": "MISSING",
+                    "artifact_message": "导出文件已不存在",
+                }
+            self._validate_completed(data, task_result=task.result)
+        except (OSError, TypeError, ValueError, WebArtifactError) as exc:
+            return {
+                **data,
+                "artifact_state": "INVALID",
+                "artifact_message": str(exc) or "导出 Artifact 校验失败",
+            }
+        return {**data, "artifact_state": "AVAILABLE", "artifact_message": ""}
+
+    def reconcile_completed_task(
+        self,
+        site_id: str,
+        task_id: str,
+        *,
+        owner: str,
+        source_task_types: dict[str, str],
+    ) -> bool:
+        """Finalize a completed export only when its output is still present."""
+
+        data = self._find_task_manifest(
+            site_id,
+            task_id,
+            owner=owner,
+            source_task_types=source_task_types,
+        )
+        if data is None or data.get("completed") is True:
+            return False
+        try:
+            task = self._trusted_task(data)
+            if task.status is not TaskState.COMPLETED:
+                return False
+            path = self._validated_output(data)
+            if not path.is_file() or path.is_symlink():
+                return False
+            self.complete(self._reservation(data), reject_on_error=False)
+            return True
+        except (OSError, TypeError, ValueError, WebArtifactError):
+            return False
 
     def recover_task(
         self,

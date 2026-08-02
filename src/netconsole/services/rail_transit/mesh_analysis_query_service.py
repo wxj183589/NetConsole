@@ -181,17 +181,27 @@ class MeshAnalysisQueryService:
         ]
 
     def get_summary(self, site_id: str) -> MeshAnalysisSummaryDTO:
-        self._schedule_catalog_backfill(site_id)
         catalog = self.paths.mesh_catalog_path(site_id)
         if not catalog.is_file():
             return MeshAnalysisSummaryDTO(site_id=site_id)
+        self._schedule_catalog_backfill(site_id)
         try:
             with closing(self._connect_readonly(catalog)) as conn:
                 if not self._table_exists(conn, "mesh_session_index"):
                     return MeshAnalysisSummaryDTO(site_id=site_id)
                 state = self._catalog_index_state(conn)
+                valid_session_ids = self._valid_catalog_session_ids(conn, site_id)
+                storage_clause = ""
+                if valid_session_ids is not None:
+                    conn.create_function(
+                        "mesh_storage_available",
+                        1,
+                        lambda value: int(str(value or "") in valid_session_ids),
+                        deterministic=True,
+                    )
+                    storage_clause = "WHERE mesh_storage_available(session_id) = 1"
                 row = conn.execute(
-                    """
+                    f"""
                     SELECT COUNT(*) AS session_count,
                            COUNT(DISTINCT NULLIF(train_name, '')) AS train_count,
                            COUNT(DISTINCT mr_id) AS mr_count,
@@ -210,7 +220,8 @@ class MeshAnalysisQueryService:
                                AS warning_session_count,
                            MAX(analysis_time) AS latest_analysis_time
                     FROM mesh_session_index
-                    """
+                    {storage_clause}
+                    """,
                 ).fetchone()
         except sqlite3.Error:
             LOGGER.warning("MESH 目录摘要读取失败", exc_info=True)
@@ -247,11 +258,11 @@ class MeshAnalysisQueryService:
         sort_by: str = "analysis_time",
         sort_order: str = "desc",
     ) -> MeshAnalysisSessionPageDTO:
-        self._schedule_catalog_backfill(site_id)
         current, size = self._page(page, page_size)
         catalog = self.paths.mesh_catalog_path(site_id)
         if not catalog.is_file():
             return MeshAnalysisSessionPageDTO(page=current, page_size=size)
+        self._schedule_catalog_backfill(site_id)
         where: list[str] = []
         values: list[Any] = []
         for field, value in (
@@ -294,6 +305,16 @@ class MeshAnalysisQueryService:
                 if not self._table_exists(conn, "mesh_session_index"):
                     return MeshAnalysisSessionPageDTO(page=current, page_size=size)
                 state = self._catalog_index_state(conn)
+                valid_session_ids = self._valid_catalog_session_ids(conn, site_id)
+                if valid_session_ids is not None:
+                    conn.create_function(
+                        "mesh_storage_available",
+                        1,
+                        lambda value: int(str(value or "") in valid_session_ids),
+                        deterministic=True,
+                    )
+                    where.append("mesh_storage_available(session_id) = 1")
+                clause = f"WHERE {' AND '.join(where)}" if where else ""
                 total = int(
                     conn.execute(
                         f"SELECT COUNT(*) FROM mesh_session_index {clause}",
@@ -371,6 +392,142 @@ class MeshAnalysisQueryService:
         ).fetchone()
         return dict(row) if row else {}
 
+    def _valid_catalog_session_ids(
+        self,
+        conn: sqlite3.Connection,
+        site_id: str,
+    ) -> set[str] | None:
+        """Return sessions whose registered storage is still usable."""
+
+        if not self._table_exists(conn, "mr_profiles"):
+            return None
+        result: set[str] = set()
+        for row in conn.execute("SELECT mr_id, safe_folder_name FROM mr_profiles"):
+            mr_id = str(row["mr_id"] or "")
+            try:
+                safe_name = str(row["safe_folder_name"] or "")
+                root = self._validated_mr_root(site_id, safe_name)
+                index_db = root / "mesh.sqlite"
+                if not index_db.is_file():
+                    continue
+                with closing(self._connect_readonly(index_db)) as index_conn:
+                    if not self._table_exists(index_conn, "source_files"):
+                        continue
+                    columns = self._table_columns(index_conn, "source_files")
+                    selected = ["id"]
+                    selected.extend(
+                        field
+                        for field in (
+                            "parsed_db_path",
+                            "parsed_relative_path",
+                            "parsed_deleted_at",
+                        )
+                        if field in columns
+                    )
+                    sources = [
+                        dict(source)
+                        for source in index_conn.execute(
+                            f"SELECT {', '.join(selected)} FROM source_files"
+                        )
+                    ]
+                for source in sources:
+                    if self._registered_source_storage_available(
+                        site_id,
+                        safe_name,
+                        source,
+                    ):
+                        result.add(f"{mr_id}:{int(source['id'])}")
+            except (
+                MeshAnalysisQueryError,
+                OSError,
+                sqlite3.Error,
+                TypeError,
+                ValueError,
+            ):
+                LOGGER.warning(
+                    "跳过存储失效的 MESH MR 来源索引：site=%s mr_id=%s",
+                    site_id,
+                    mr_id,
+                    exc_info=True,
+                )
+        return result
+
+    def _registered_source_storage_available(
+        self,
+        site_id: str,
+        safe_name: str,
+        source: dict[str, Any],
+    ) -> bool:
+        if str(source.get("parsed_deleted_at") or "").strip():
+            return True
+        recorded_value = str(source.get("parsed_db_path") or "").strip().strip("'\"")
+        relative_value = str(source.get("parsed_relative_path") or "").strip().strip("'\"")
+        if not recorded_value and not relative_value:
+            return True
+        parsed_root = self.paths.mesh_mr_parsed_dir(site_id, safe_name).resolve()
+        candidates: list[Path] = []
+        if recorded_value:
+            recorded = Path(recorded_value)
+            candidates.append(recorded)
+            if recorded.name:
+                candidates.append(parsed_root / recorded.name)
+        if relative_value:
+            relative = Path(relative_value)
+            candidates.append(parsed_root / relative.name)
+        for candidate in dict.fromkeys(candidates):
+            try:
+                resolved = candidate.resolve()
+                if self._within(resolved, parsed_root) and resolved.is_file():
+                    return True
+            except OSError:
+                continue
+        return False
+
+    def _current_identity_revision(self, site_id: str) -> int:
+        """Read the AP Identity index revision without mutating the site database."""
+        path = Path(self.paths.site_db_path(site_id))
+        if not path.is_file():
+            return 0
+        try:
+            with closing(self._connect_readonly(path)) as conn:
+                if not self._table_exists(conn, "ap_identity_index_state"):
+                    return 0
+                columns = self._table_columns(conn, "ap_identity_index_state")
+                if "revision" not in columns:
+                    return 0
+                if "site_id" in columns:
+                    row = conn.execute(
+                        """
+                        SELECT revision
+                        FROM ap_identity_index_state
+                        WHERE site_id IN (?, 'current')
+                        ORDER BY CASE WHEN site_id = 'current' THEN 0 ELSE 1 END
+                        LIMIT 1
+                        """,
+                        (str(site_id),),
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        "SELECT revision FROM ap_identity_index_state LIMIT 1"
+                    ).fetchone()
+            return max(0, self._int(row[0]) or 0) if row is not None else 0
+        except (OSError, sqlite3.Error, TypeError, ValueError):
+            LOGGER.debug("读取 AP Identity revision 失败：%s", site_id, exc_info=True)
+            return 0
+
+    def _identity_mapping_state(self, context: _SessionContext) -> dict[str, Any]:
+        saved_revision = self._int(context.source.get("identity_index_revision")) or 0
+        current_revision = self._current_identity_revision(context.site_id)
+        status = str(context.source.get("identity_mapping_status") or "unknown").strip() or "unknown"
+        if current_revision > 0 and saved_revision != current_revision:
+            status = "identity_stale"
+        return {
+            "identity_index_revision": saved_revision,
+            "identity_current_revision": current_revision,
+            "identity_mapped_at": str(context.source.get("identity_mapped_at") or ""),
+            "identity_mapping_status": status,
+        }
+
     @staticmethod
     def _json_array(value: Any) -> list[str]:
         try:
@@ -386,6 +543,7 @@ class MeshAnalysisQueryService:
     def get_analysis_session(self, site_id: str, session_id: str) -> MeshAnalysisSessionDetailDTO:
         context = self._context(site_id, session_id)
         stats = self._stats(context)
+        identity_state = self._identity_mapping_state(context)
         warnings: list[MeshAnalysisWarningDTO] = []
         if stats["parsed_status"] == "missing":
             warnings.append(MeshAnalysisWarningDTO(code="parsed_result_missing", message="结构化分析结果不存在，Web 不会自动重解析。", severity="error"))
@@ -399,6 +557,14 @@ class MeshAnalysisQueryService:
             warnings.append(MeshAnalysisWarningDTO(code="parsed_path_relocated", message="索引中的旧数据根路径不可用，已只读使用当前 MR parsed 目录的同名结果。"))
         if int(context.source.get("issue_count") or 0):
             warnings.append(MeshAnalysisWarningDTO(code="parse_issues", message="该来源存在既有解析告警，请查看异常摘要。"))
+        if identity_state["identity_mapping_status"] == "identity_stale":
+            warnings.append(
+                MeshAnalysisWarningDTO(
+                    code="identity_mapping_stale",
+                    message="AP 身份索引已更新；打开健康来源后将通过任务中心轻量刷新身份映射。",
+                    severity="warning",
+                )
+            )
         return MeshAnalysisSessionDetailDTO(
             session=self._session_dto(context, stats),
             analysis_params=self._effective_analysis_params(context),
@@ -1688,6 +1854,7 @@ class MeshAnalysisQueryService:
 
     def get_raw_source_summary(self, site_id: str, session_id: str) -> list[MeshDataSourceDTO]:
         context = self._context(site_id, session_id)
+        identity_state = self._identity_mapping_state(context)
         location = MeshSourceLocator(self.paths).locate(site_id, context.source | {"safe_folder_name": context.safe_folder_name, "mr_id": context.mr_id}, context.source)
         if context.raw_path is None:
             source_action_id = self._artifact_id(session_id, "raw", str(context.source.get("archived_filename") or "missing"))
@@ -1705,6 +1872,7 @@ class MeshAnalysisQueryService:
                     package_name="source.zip" if location.recoverable else "",
                     package_sha256=location.archive_sha256,
                     bundle_member_id=location.bundle_member_id,
+                    **identity_state,
                 )
             ]
         path = context.raw_path
@@ -1727,6 +1895,7 @@ class MeshAnalysisQueryService:
                 package_name="source.zip" if location.archive_sha256 else "",
                 package_sha256=location.archive_sha256,
                 bundle_member_id=location.bundle_member_id,
+                **identity_state,
             )
         ]
 
@@ -3446,10 +3615,8 @@ class MeshAnalysisQueryService:
         report_count = 0
         for artifact in self._bound_report_artifacts(context):
             report_count += int(artifact.path.is_file())
-            if artifact.path.is_file():
-                targets.append(artifact.path)
-            if artifact.manifest_path.is_file():
-                targets.append(artifact.manifest_path)
+            targets.append(artifact.path)
+            targets.append(artifact.manifest_path)
         return list(dict.fromkeys(targets)), report_count
 
     def _bound_report_artifacts(

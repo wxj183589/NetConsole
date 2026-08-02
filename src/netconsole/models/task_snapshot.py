@@ -49,6 +49,11 @@ class TaskSnapshot:
     producer_kind: str = "local_backend"
     producer_version: str = "unknown"
     producer_commit: str = "unknown"
+    expires_at: str = ""
+    acknowledged_at: str = ""
+    dismissed_at: str = ""
+    dismissed_by: str = ""
+    dismiss_reason: str = ""
 
 
 @dataclass(frozen=True)

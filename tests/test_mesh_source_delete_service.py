@@ -230,6 +230,8 @@ def test_delete_complete_tolerates_missing_raw_and_parsed_files(
 
     assert result["already_deleted"] is False
     assert result["deleted_files"] == 0
+    assert result["deleted_file_count"] == 0
+    assert result["missing_file_count"] == 2
     assert external.is_file()
     assert repository.get_source_file(int(source["id"])) is None
 

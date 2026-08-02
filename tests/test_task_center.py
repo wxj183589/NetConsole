@@ -5,6 +5,7 @@ import queue
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -795,6 +796,47 @@ def test_task_repository_handles_concurrent_event_writes(tmp_path: Path) -> None
 
     logs = [event for event in service.list_events("concurrent", limit=100) if event["type"] == "log"]
     assert len(logs) == 40
+
+
+def test_snapshot_upsert_preserves_history_management_fields(tmp_path: Path) -> None:
+    repository = TaskRepository(PathResolver(tmp_path).site_tasks_db_path("demo"))
+    now = utc_now_iso()
+    original = TaskSnapshot(
+        task_id="dismissed-history",
+        task_type="demo_task",
+        task_name="已移除任务",
+        status=TaskState.FAILED,
+        created_time=now,
+        updated_time=now,
+        expires_at="2099-01-01T00:00:00.000Z",
+        acknowledged_at="2026-08-03T01:00:00.000Z",
+        dismissed_at="2026-08-03T01:01:00.000Z",
+        dismissed_by="tester",
+        dismiss_reason="single",
+    )
+    repository.save(original)
+
+    repository.save(
+        replace(
+            original,
+            message="普通状态刷新",
+            expires_at="",
+            acknowledged_at="",
+            dismissed_at="",
+            dismissed_by="",
+            dismiss_reason="",
+            updated_time="2026-08-03T01:02:00.000Z",
+        )
+    )
+
+    restored = repository.get(original.task_id)
+    assert restored is not None
+    assert restored.message == "普通状态刷新"
+    assert restored.expires_at == original.expires_at
+    assert restored.acknowledged_at == original.acknowledged_at
+    assert restored.dismissed_at == original.dismissed_at
+    assert restored.dismissed_by == original.dismissed_by
+    assert restored.dismiss_reason == original.dismiss_reason
 
 
 def test_orphaned_local_task_is_reconciled_as_failed(tmp_path: Path) -> None:

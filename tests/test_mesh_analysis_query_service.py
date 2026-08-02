@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 import sqlite3
 from collections import defaultdict
 from pathlib import Path
@@ -211,7 +212,74 @@ def test_catalog_index_serves_summary_and_page_without_opening_detail_databases(
     assert summary.session_count == 1
     assert page.total == 1
     assert all(not path.name.endswith(".mesh.sqlite") for path in opened)
-    assert len(opened) == 2
+    assert len(opened) == 4
+
+
+def test_catalog_filters_source_whose_registered_detail_database_was_removed(
+    tmp_path: Path,
+) -> None:
+    paths, session_id, detail, raw, _report = create_mesh_analysis_fixture(tmp_path)
+    second_detail = detail.with_name("mesh-second.mesh.sqlite")
+    second_raw = raw.with_name("mesh-second.log")
+    shutil.copyfile(detail, second_detail)
+    second_raw.write_text("[1] 2026/07/14 11:00:00.000\nmesh sample\n", encoding="utf-8")
+    index = paths.mesh_mr_db_path("demo", "列车01-MR-CT")
+    with sqlite3.connect(index) as conn:
+        conn.row_factory = sqlite3.Row
+        source = dict(conn.execute("SELECT * FROM source_files WHERE id = 1").fetchone())
+        source.update(
+            id=2,
+            original_path=str(second_raw),
+            archived_path=str(second_raw),
+            parsed_db_path=str(second_detail),
+            original_filename=second_raw.name,
+            archived_filename=second_raw.name,
+            sha256="second-source",
+            first_sample_time="2026-07-14 11:00:00.000",
+            last_sample_time="2026-07-14 11:00:02.000",
+        )
+        columns = list(source)
+        conn.execute(
+            f"INSERT INTO source_files ({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' for _ in columns)})",
+            [source[column] for column in columns],
+        )
+    MeshCatalogIndexService(paths).rebuild_now("demo")
+    detail.unlink()
+    service = MeshAnalysisQueryService(
+        paths,
+        base_query=EmptyBaseQuery(),  # type: ignore[arg-type]
+        schedule_catalog_index=False,
+    )
+
+    summary = service.get_summary("demo")
+    page = service.list_analysis_sessions("demo")
+
+    assert session_id not in [item.session_id for item in page.items]
+    assert [item.session_id for item in page.items] == [f"{session_id.rsplit(':', 1)[0]}:2"]
+    assert page.total == 1
+    assert summary.session_count == 1
+
+
+def test_missing_mesh_root_returns_empty_without_recreating_storage(tmp_path: Path) -> None:
+    paths, _session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    mesh_root = paths.site_mesh_root("demo")
+    shutil.rmtree(mesh_root)
+    service = MeshAnalysisQueryService(
+        paths,
+        base_query=EmptyBaseQuery(),  # type: ignore[arg-type]
+        schedule_catalog_index=False,
+    )
+
+    summary = service.get_summary("demo")
+    page = service.list_analysis_sessions("demo")
+
+    assert summary.session_count == 0
+    assert summary.train_count == 0
+    assert summary.mr_count == 0
+    assert page.total == 0
+    assert page.items == []
+    assert not mesh_root.exists()
 
 
 def test_link_pagination_and_existing_artifact_metadata(tmp_path: Path) -> None:
@@ -322,6 +390,32 @@ def test_relocated_detail_path_uses_current_parsed_file_without_writing(tmp_path
     assert _fingerprint(detail) == before
 
 
+def test_identity_revision_staleness_is_read_only_and_exposed_on_source_summary(tmp_path: Path) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    index = paths.mesh_mr_db_path("demo", "列车01-MR-CT")
+    with sqlite3.connect(index) as conn:
+        conn.execute("ALTER TABLE source_files ADD COLUMN identity_index_revision INTEGER DEFAULT 0")
+        conn.execute("ALTER TABLE source_files ADD COLUMN identity_mapped_at TEXT DEFAULT ''")
+        conn.execute("ALTER TABLE source_files ADD COLUMN identity_mapping_status TEXT DEFAULT 'unknown'")
+        conn.execute(
+            "UPDATE source_files SET identity_index_revision = 1, identity_mapped_at = '2026-07-14 10:11:00', identity_mapping_status = 'ready' WHERE id = 1"
+        )
+    with sqlite3.connect(paths.site_db_path("demo")) as conn:
+        conn.execute(
+            "UPDATE ap_identity_index_state SET revision = 2 WHERE site_id = 'current'"
+        )
+
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    result = service.get_analysis_session("demo", session_id)
+    source = result.sources[0]
+
+    assert source.identity_index_revision == 1
+    assert source.identity_current_revision == 2
+    assert source.identity_mapping_status == "identity_stale"
+    assert source.identity_mapped_at == "2026-07-14 10:11:00"
+    assert any(warning.code == "identity_mapping_stale" for warning in result.warnings)
+
+
 def test_missing_relocated_detail_query_does_not_create_database(tmp_path: Path) -> None:
     paths, _session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
     index = paths.mesh_mr_db_path("demo", "列车01-MR-CT")
@@ -332,7 +426,8 @@ def test_missing_relocated_detail_query_does_not_create_database(tmp_path: Path)
 
     sessions = service.list_analysis_sessions("demo")
 
-    assert sessions.items[0].parsed_status == "missing"
+    assert sessions.total == 0
+    assert sessions.items == []
     assert not missing.exists()
 
 

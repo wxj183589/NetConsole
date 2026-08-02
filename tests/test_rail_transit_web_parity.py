@@ -727,12 +727,14 @@ def test_mesh_upload_uses_controlled_staging_derived_profile_and_cancel_cleanup(
     assert started.action == "mesh_log_import"
     assert set(started.model_dump()) == {
         "task_id",
-            "status",
-            "action",
-            "artifact_id",
-            "artifact_name",
-            "available",
-            "sha256",
+        "status",
+        "action",
+        "artifact_id",
+        "artifact_name",
+        "available",
+        "artifact_state",
+        "artifact_message",
+        "sha256",
         "size_bytes",
         "message",
         "error_message",
@@ -1083,6 +1085,89 @@ def test_completed_export_manifest_is_recovered_after_callback_loss(
     assert not cancelled_temp.exists()
     with pytest.raises(RailTransitWebError):
         service.open_online_mr_report("demo", cancelled.artifact_id)
+
+
+def test_completed_export_with_deleted_output_stays_completed_and_marks_artifact_missing(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    service, _normal, export, tasks = _service(paths)
+    session_dir = paths.online_mr_session_dir("demo", "MR-01", "session-missing-output")
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "session_meta.json").write_text(
+        json.dumps(
+            {
+                "session_id": "session-missing-output",
+                "site": "demo",
+                "mr_name": "MR-01",
+                "status": "COMPLETED",
+            }
+        ),
+        encoding="utf-8",
+    )
+    _mark_online_mr_parsed_ready(session_dir, "session-missing-output")
+    started = service.start_online_mr_report(
+        "demo",
+        "session-missing-output",
+        "missing-output.xlsx",
+    )
+    output = export.complete(started.task_id, b"completed-report")
+    output.unlink()
+
+    service.recover_tasks("demo")
+    stored = tasks.repository("demo").get(started.task_id)
+    public = service.get_task("demo", started.task_id)
+
+    assert stored is not None and stored.status is TaskState.COMPLETED
+    assert "报告恢复校验失败" not in stored.error_message
+    assert public.status == TaskState.COMPLETED.value
+    assert public.available is False
+    assert public.artifact_state == "MISSING"
+    assert public.artifact_message == "导出文件已不存在"
+
+
+def test_dismissed_failed_export_is_skipped_during_recovery(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    service, _normal, export, tasks = _service(paths)
+    session_dir = paths.online_mr_session_dir("demo", "MR-01", "session-dismissed")
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "session_meta.json").write_text(
+        json.dumps(
+            {
+                "session_id": "session-dismissed",
+                "site": "demo",
+                "mr_name": "MR-01",
+                "status": "COMPLETED",
+            }
+        ),
+        encoding="utf-8",
+    )
+    _mark_online_mr_parsed_ready(session_dir, "session-dismissed")
+    started = service.start_online_mr_report(
+        "demo",
+        "session-dismissed",
+        "dismissed.xlsx",
+    )
+    partial = Path(export.jobs[started.task_id].output_path).with_name(
+        f"dismissed.xlsx.{started.task_id}.tmp"
+    )
+    partial.write_bytes(b"partial")
+    export.callbacks.pop(started.task_id)
+    completion = tasks.complete(started.task_id, 1)
+    export._finish(started.task_id, 1, completion, False)
+    repository = tasks.repository("demo")
+    repository.acknowledge_attention_tasks(task_ids=[started.task_id])
+    repository.dismiss_task(started.task_id, dismissed_by="tester")
+    event_count = len(tasks.list_events(started.task_id, limit=100))
+
+    recovered = service.recover_tasks("demo")
+    stored = repository.get(started.task_id)
+
+    assert started.task_id not in [item.task_id for item in recovered]
+    assert stored is not None and stored.status is TaskState.FAILED
+    assert stored.dismissed_at
+    assert partial.is_file()
+    assert len(tasks.list_events(started.task_id, limit=100)) == event_count
 
 
 def test_task_public_boundary_sanitizes_legacy_web_export_paths(tmp_path: Path) -> None:
