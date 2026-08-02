@@ -215,6 +215,30 @@ def test_catalog_index_serves_summary_and_page_without_opening_detail_databases(
     assert len(opened) == 4
 
 
+def test_empty_catalog_index_returns_zero_summary_without_validation_error(
+    tmp_path: Path,
+) -> None:
+    paths, _session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    MeshCatalogIndexService(paths).rebuild_now("demo")
+    with sqlite3.connect(paths.mesh_catalog_path("demo")) as connection:
+        connection.execute("DELETE FROM mesh_session_index")
+        connection.commit()
+
+    summary = MeshAnalysisQueryService(
+        paths,
+        base_query=EmptyBaseQuery(),  # type: ignore[arg-type]
+        schedule_catalog_index=False,
+    ).get_summary("demo")
+
+    assert summary.session_count == 0
+    assert summary.train_count == 0
+    assert summary.mr_count == 0
+    assert summary.link_record_count == 0
+    assert summary.active_link_count == 0
+    assert summary.standby_link_count == 0
+    assert summary.warning_session_count == 0
+
+
 def test_catalog_filters_source_whose_registered_detail_database_was_removed(
     tmp_path: Path,
 ) -> None:

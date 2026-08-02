@@ -10,9 +10,12 @@ from pathlib import Path
 
 import pytest
 
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
+from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.mesh_mr_repository import SCHEMA_VERSION, MeshMrRepository
 from netconsole.services import mesh_bundle_import_service as bundle_module
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.mesh_bundle_import_service import (
     MeshBundleImportError,
     MeshBundleImportService,
@@ -310,6 +313,87 @@ def test_successful_worker_commit_rewrites_staging_paths_and_finalizes_manifest(
     )
     assert duplicate["idempotent"] is True
     assert repository.summary()["source_file_count"] == 1
+
+
+def test_bundle_import_refreshes_stale_base_only_identity_before_staging_snapshot(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    AcRepository(database).upsert_ap_extension_point(
+        {
+            "ap_name": "AP-BASE-01",
+            "ap_point_code": "P-001",
+            "ap_vendor": "",
+            "ap_mac_display": "30f5-277a-5a20",
+            "belong_type": "section",
+            "station_name": "站点A",
+            "section_name": "站点A-站点B",
+        }
+    )
+    identity = ApIdentityQueryService(database)
+    identity.rebuild_index("legacy_base_only_fixture")
+    with database.connect() as connection:
+        connection.execute(
+            "DELETE FROM ap_identity_mac_aliases WHERE alias_type LIKE 'h3c_%_derived'"
+        )
+        connection.execute(
+            """
+            UPDATE ap_identity_index_state
+            SET source_revision = -1, alias_count = 1, derived_alias_count = 0
+            WHERE site_id = 'current'
+            """
+        )
+        connection.commit()
+
+    profile = MeshStorageService("demo", paths).create_mr_profile("01-MR-CT")
+    archive = tmp_path / "bundle.zip"
+    _zip(archive, {"01CTmeshlog.log": VALID_LOG})
+    service = MeshBundleImportService("demo", paths)
+    with archive.open("rb") as source:
+        preview = service.create_preview(archive.name, source, [profile])
+    mappings = [
+        {
+            "member_id": preview["items"][0]["member_id"],
+            "train_number": "01",
+            "role": "CT",
+            "profile_id": profile.mr_id,
+        }
+    ]
+    service.approve_preview(str(preview["preview_id"]), mappings, [profile.mr_id])
+
+    result = service.import_approved_preview(
+        str(preview["preview_id"]),
+        mappings,
+        job_id="stale-base-identity-import",
+    )
+
+    assert result["imported_count"] == 1
+    state = identity.index_state()
+    assert state is not None
+    assert state["revision"] == 2
+    assert state["source_revision"] == identity.repository.source_revision()
+    assert state["alias_count"] == 3
+    assert state["derived_alias_count"] == 2
+    source_row = MeshMrRepository(
+        paths.mesh_mr_db_path("demo", profile.safe_folder_name)
+    ).list_source_files()[0]
+    with closing(sqlite3.connect(source_row["parsed_db_path"])) as connection:
+        mapped = connection.execute(
+            """
+            SELECT peer_ap_name, peer_ap_mac, peer_radio_id,
+                   peer_identity_status, peer_identity_source
+            FROM mesh_links LIMIT 1
+            """
+        ).fetchone()
+    assert mapped == (
+        "AP-BASE-01",
+        "30:f5:27:7a:5a:20",
+        1,
+        "matched",
+        "base_data",
+    )
 
 
 def test_worker_commit_keeps_catalog_file_when_another_process_has_open_reader(

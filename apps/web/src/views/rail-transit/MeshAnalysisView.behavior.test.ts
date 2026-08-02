@@ -1385,6 +1385,67 @@ describe('Mesh analysis detail behavior', () => {
     wrapper.unmount()
   })
 
+  it('keeps the last successful overview and distinguishes an HTTP failure from a backend outage', async () => {
+    const session = {
+      session_id: 'session-existing', mr_name: '列车35-MR-CT', train_name: '列车35',
+      original_filename: '2026_07_24_1meshlog.log', first_sample_time: '', last_sample_time: '',
+      parsed_status: 'ready', warning_count: 0, report_count: 0,
+    }
+    mocks.getOverview
+      .mockResolvedValueOnce({
+        summary: {
+          site_id: 'demo', index_status: 'ready', indexed_session_count: 1,
+          pending_session_count: 0, index_updated_at: null, session_count: 1,
+          train_count: 1, mr_count: 1,
+        },
+        sessions: { items: [session], total: 1, page: 1, page_size: 50 },
+      })
+      .mockRejectedValueOnce(new ApiRequestError(
+        '目录摘要读取失败',
+        500,
+        'MESH_ANALYSIS_OVERVIEW_FAILED',
+        { request_id: 'request-mesh-500' },
+      ))
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === '刷新结果')!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('共 1 个来源')
+    expect(wrapper.text()).toContain('MESH 来源查询失败，Backend 仍在线')
+    expect(wrapper.text()).toContain('MESH_ANALYSIS_OVERVIEW_FAILED')
+    expect(wrapper.text()).toContain('request-mesh-500')
+    expect(wrapper.text()).not.toContain('Backend 连接中断')
+    wrapper.unmount()
+  })
+
+  it('does not show an error when an overview request is aborted', async () => {
+    mocks.getOverview
+      .mockResolvedValueOnce({
+        summary: {
+          site_id: 'demo', index_status: 'ready', indexed_session_count: 0,
+          pending_session_count: 0, index_updated_at: null, session_count: 0,
+          train_count: 0, mr_count: 0,
+        },
+        sessions: { items: [], total: 0, page: 1, page_size: 50 },
+      })
+      .mockRejectedValueOnce(new ApiRequestError(
+        '请求已取消',
+        0,
+        'REQUEST_ABORTED',
+      ))
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === '刷新结果')!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('请求已取消')
+    expect(wrapper.text()).not.toContain('Backend 已停止')
+    wrapper.unmount()
+  })
+
   it('locks the real RSSI viewport and requeries Busy with the same peer context', async () => {
     const session = {
       session_id: 'session-locked', mr_name: '列车06-MR-CT', original_filename: '6CTmeshlog.log', first_sample_time: '', last_sample_time: '',

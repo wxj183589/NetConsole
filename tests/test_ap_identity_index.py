@@ -351,7 +351,9 @@ def test_offline_fit_ap_keeps_exact_h3c_radio2_alias(tmp_path: Path) -> None:
     assert match.radio_id == 2
 
 
-def test_h3c_alias_requires_explicit_h3c_vendor_and_physical_mac(tmp_path: Path) -> None:
+def test_base_data_h3c_alias_allows_unknown_vendor_but_rejects_non_h3c_and_non_physical_mac(
+    tmp_path: Path,
+) -> None:
     database, repository, service = _fixture(tmp_path)
     base = _base_ap(repository, name="AP-NO-VENDOR", mac="74ad-cb9d-3320")
     with database.connect() as connection:
@@ -389,7 +391,10 @@ def test_h3c_alias_requires_explicit_h3c_vendor_and_physical_mac(tmp_path: Path)
 
     service.rebuild_index("vendor_and_physical_mac_guard")
 
-    assert service.resolve_peer_mac("74ad-cb9d-332f").status == "unresolved"
+    base_match = service.resolve_peer_mac("74ad-cb9d-332f")
+    assert base_match.status == "matched"
+    assert base_match.matched_source == "base_data"
+    assert base_match.radio_id == 1
     assert service.resolve_peer_mac("0011-2233-445f").status == "unresolved"
     assert service.resolve_peer_mac("aabb-ccdd-efff").status == "unresolved"
     assert service.resolve_peer_mac("aabb-ccdd-eeef").status == "unresolved"

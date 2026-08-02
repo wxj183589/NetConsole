@@ -920,7 +920,29 @@ function routeRequestedSessionId(): string | null {
 }
 
 function isAbortError(reason: unknown): boolean {
-  return reason instanceof Error && reason.name === 'AbortError'
+  return (reason instanceof Error && reason.name === 'AbortError')
+    || (reason instanceof ApiRequestError && reason.code === 'REQUEST_ABORTED')
+}
+
+function meshOverviewErrorMessage(reason: unknown): string {
+  if (!(reason instanceof ApiRequestError)) {
+    return reason instanceof Error ? reason.message : 'MESH 来源查询失败'
+  }
+  if (reason.code === 'REQUEST_TIMEOUT') {
+    const timeoutMs = Number(reason.details.timeout_ms || 0)
+    return timeoutMs > 0
+      ? `MESH 来源查询超时（${timeoutMs} ms）。`
+      : 'MESH 来源查询超时。'
+  }
+  if (reason.status > 0) {
+    const diagnostics = [
+      reason.code || 'HTTP_ERROR',
+      reason.details.request_id ? `request_id：${String(reason.details.request_id)}` : '',
+    ].filter(Boolean).join('；')
+    return `MESH 来源查询失败，Backend 仍在线：${reason.message}${diagnostics ? `（${diagnostics}）` : ''}`
+  }
+  if (reason.code === 'BACKEND_RESTARTED') return 'Backend 正在恢复，请稍后重试。'
+  return 'Backend 已停止或当前不可达，正在尝试恢复。'
 }
 
 async function restoreRendererRecovery(): Promise<void> {
@@ -1193,7 +1215,7 @@ async function refreshOverview(silent = false, force = false): Promise<void> {
     failureCount = 0
   } catch (reason) {
     if (isAbortError(reason) || controller.signal.aborted || generation !== overviewGeneration) return
-    error.value = reason instanceof Error ? reason.message : 'Mesh 分析结果加载失败'
+    error.value = meshOverviewErrorMessage(reason)
     failureCount += 1
   } finally {
     if (overviewAbortController === controller) overviewAbortController = null

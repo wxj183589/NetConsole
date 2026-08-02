@@ -205,18 +205,30 @@ class MeshAnalysisQueryService:
                     SELECT COUNT(*) AS session_count,
                            COUNT(DISTINCT NULLIF(train_name, '')) AS train_count,
                            COUNT(DISTINCT mr_id) AS mr_count,
-                           SUM(link_record_count) AS link_record_count,
-                           SUM(active_link_count) AS active_link_count,
-                           SUM(standby_link_count) AS standby_link_count,
-                           SUM(link_up_event_count) AS link_up_event_count,
-                           SUM(link_down_event_count) AS link_down_event_count,
-                           SUM(switch_event_count) AS switch_event_count,
-                           SUM(short_link_count) AS short_link_count,
-                           SUM(pingpong_count) AS pingpong_count,
-                           SUM(rssi_anomaly_count) AS rssi_anomaly_count,
-                           SUM(channel_busy_anomaly_count) AS channel_busy_anomaly_count,
-                           SUM(unmatched_ap_count) AS unmatched_ap_count,
-                           SUM(CASE WHEN warning_count > 0 THEN 1 ELSE 0 END)
+                           CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(link_record_count) END
+                               AS link_record_count,
+                           CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(active_link_count) END
+                               AS active_link_count,
+                           CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(standby_link_count) END
+                               AS standby_link_count,
+                           CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(link_up_event_count) END
+                               AS link_up_event_count,
+                           CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(link_down_event_count) END
+                               AS link_down_event_count,
+                           CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(switch_event_count) END
+                               AS switch_event_count,
+                           CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(short_link_count) END
+                               AS short_link_count,
+                           CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(pingpong_count) END
+                               AS pingpong_count,
+                           CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(rssi_anomaly_count) END
+                               AS rssi_anomaly_count,
+                           CASE WHEN COUNT(*) = 0 THEN 0
+                                ELSE SUM(channel_busy_anomaly_count) END
+                               AS channel_busy_anomaly_count,
+                           CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(unmatched_ap_count) END
+                               AS unmatched_ap_count,
+                           COALESCE(SUM(CASE WHEN warning_count > 0 THEN 1 ELSE 0 END), 0)
                                AS warning_session_count,
                            MAX(analysis_time) AS latest_analysis_time
                     FROM mesh_session_index

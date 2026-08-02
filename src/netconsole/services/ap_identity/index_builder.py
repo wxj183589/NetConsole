@@ -569,6 +569,7 @@ def _entity_projection(
                 priority=830,
                 confidence=90,
                 vendor=entity_vendor,
+                allow_unknown_vendor=True,
             )
         )
     return entity, aliases, prefixes, conflict_rows
@@ -633,8 +634,12 @@ def _h3c_exact_aliases(
     priority: int,
     confidence: int,
     vendor: str,
+    allow_unknown_vendor: bool = False,
 ) -> list[ApIdentityMacAliasRecord]:
-    if str(vendor or "").strip().upper() != "H3C":
+    normalized_vendor = str(vendor or "").strip().upper()
+    if normalized_vendor != "H3C" and not (
+        allow_unknown_vendor and not normalized_vendor
+    ):
         return []
     if not base_mac_key or base_mac_key[-1].upper() != "0":
         return []
