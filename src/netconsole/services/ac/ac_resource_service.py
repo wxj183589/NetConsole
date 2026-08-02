@@ -16,6 +16,7 @@ from netconsole.services.h3c_ac_collect_service import (
     AcResourceCollectResult,
     collect_h3c_ac_info,
     collect_h3c_fit_ap_resources,
+    collect_h3c_fit_ap_verbose,
 )
 
 
@@ -134,6 +135,42 @@ class AcResourceService:
             bbssid_error=str(getattr(result, "bbssid_error", "") or ""),
             failed_commands=[item.command for item in getattr(result, "command_results", []) if not item.success],
             target_ap_uuid=request.ap_uuid,
+            error_message=str(result.error_message or ""),
+            detail_rows_updated=int(getattr(result, "detail_rows_updated", 0)),
+            detail_failed_count=int(getattr(result, "detail_failed_count", 0)),
+            detail_mode=str(getattr(result, "detail_mode", "") or ""),
+        )
+
+    def refresh_fit_ap_verbose(
+        self,
+        request: AcResourceRefreshRequest,
+        *,
+        target_ap_uuids: list[str] | None = None,
+        progress_callback: ProgressCallback | None = None,
+        should_cancel: CancelCallback | None = None,
+    ) -> AcResourceRefreshResult:
+        device = self._load_device(request.device_uuid)
+        result = collect_h3c_fit_ap_verbose(
+            device,
+            request.site_name,
+            repository=self.ac_repository,
+            paths=self.paths,
+            progress=lambda message: self._progress(progress_callback, "ac_fit_ap_verbose_collect", 1, 2, message),
+            should_cancel=should_cancel,
+            target_ap_uuids=target_ap_uuids,
+        )
+        if self._cancelled(should_cancel) or result.error_message == "用户已取消更新":
+            raise AcResourceRefreshCancelled("用户已取消更新")
+        return AcResourceRefreshResult(
+            success=result.success,
+            source="cli",
+            snapshot=self.load_snapshot(request.device_uuid),
+            collect_run_uuid=result.collect_run_uuid,
+            raw_log_path=result.raw_log_path,
+            failed_commands=[item.command for item in result.command_results if not item.success],
+            detail_rows_updated=result.detail_rows_updated,
+            detail_failed_count=result.detail_failed_count,
+            detail_mode=result.detail_mode,
             error_message=str(result.error_message or ""),
         )
 

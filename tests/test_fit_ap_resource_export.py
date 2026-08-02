@@ -47,7 +47,7 @@ def test_fit_ap_resource_export_keeps_one_ap_per_row_and_radio_details(tmp_path:
     output, result = _export(tmp_path, scope="all")
     workbook = load_workbook(output, data_only=True)
 
-    assert result == {"row_count": 3, "ap_count": 3, "radio_count": 6, "warning_count": 1}
+    assert result == {"row_count": 3, "ap_count": 3, "radio_count": 6, "warning_count": 3}
     assert workbook.sheetnames == ["AP资源清单", "Radio明细", "导出说明"]
     ap_sheet = workbook["AP资源清单"]
     radio_sheet = workbook["Radio明细"]
@@ -64,6 +64,10 @@ def test_fit_ap_resource_export_keeps_one_ap_per_row_and_radio_details(tmp_path:
     assert "线路名称" not in header_values
     assert header_values.index("AP序列号") == header_values.index("AP型号") + 1
     assert header_values.index("AP序列号") + 1 == header_values.index("AP状态")
+    assert header_values.index("AP硬件版本") > header_values.index("AP序列号")
+    assert header_values.index("AP软件版本") > header_values.index("AP硬件版本")
+    assert header_values.index("AP Boot版本") > header_values.index("AP软件版本")
+    assert header_values.index("详细信息更新时间") > header_values.index("AP Boot版本")
     ap_names = [ap_sheet.cell(row, headers["AP名称"]).value for row in range(2, ap_sheet.max_row + 1)]
     assert len(ap_names) == len(set(ap_names)) == 3
     topology_rows = [
@@ -92,6 +96,7 @@ def test_fit_ap_resource_export_keeps_one_ap_per_row_and_radio_details(tmp_path:
     assert instruction_sheet.cell(2, 2).alignment.wrap_text is True
     unauth_row = next(row for row in range(2, ap_sheet.max_row + 1) if ap_sheet.cell(row, headers["AP名称"]).value == "AP-Unauth")
     assert "缺少光衰" in str(ap_sheet.cell(unauth_row, headers["数据完整性"]).value)
+    assert "未采集AP详细信息" in str(ap_sheet.cell(unauth_row, headers["数据完整性"]).value)
 
 
 def test_fit_ap_resource_export_scopes_are_not_limited_by_page(tmp_path: Path) -> None:

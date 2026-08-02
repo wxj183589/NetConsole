@@ -24,7 +24,7 @@ from netconsole.core.sqlite_utils import (
 from netconsole.models.device_address import InvalidDeviceAddressError, normalize_ip_address
 
 
-CURRENT_SCHEMA_VERSION = "2026.08.01.rail_base_identity_relations"
+CURRENT_SCHEMA_VERSION = "2026.08.03.fit_ap_association_verbose"
 
 DEVICE_CLASSIFICATION_COLUMNS = (
     "project_phase",
@@ -800,6 +800,9 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_metadata (
     ap_uuid TEXT NOT NULL UNIQUE,
     ap_name TEXT,
     site_name TEXT,
+    station_id TEXT NOT NULL DEFAULT '',
+    station_override_enabled INTEGER NOT NULL DEFAULT 0,
+    station_override_source TEXT NOT NULL DEFAULT '',
     belong_type TEXT,
     belong_section TEXT,
     section_start_station TEXT,
@@ -812,6 +815,78 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_metadata (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+"""
+
+AC_FIT_AP_DETAILS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ac_fit_ap_details (
+    ap_uuid TEXT PRIMARY KEY,
+    ac_device_uuid TEXT NOT NULL,
+    ap_name TEXT,
+    ap_group_name TEXT,
+    backup_type TEXT,
+    ready_for_switchover TEXT,
+    system_uptime TEXT,
+    region_code TEXT,
+    region_code_lock TEXT,
+    hardware_version TEXT,
+    software_version TEXT,
+    boot_version TEXT,
+    map_file TEXT,
+    forwarding_mode TEXT,
+    power_level TEXT,
+    power_info TEXT,
+    capwap_data_tunnel_status TEXT,
+    discovery_type TEXT,
+    last_reboot_reason TEXT,
+    latest_ip_address TEXT,
+    current_ac_ip TEXT,
+    tunnel_down_reason TEXT,
+    connection_count TEXT,
+    control_tunnel_encryption_state TEXT,
+    data_tunnel_encryption_state TEXT,
+    remote_configuration TEXT,
+    energy_saving_level TEXT,
+    ap_type TEXT,
+    extra_fields_json TEXT,
+    collected_at TEXT NOT NULL,
+    collect_run_uuid TEXT,
+    raw_log_path TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ac_fit_ap_details_ac ON ac_fit_ap_details(ac_device_uuid, updated_at DESC);
+"""
+
+AC_FIT_AP_RADIO_DETAILS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ac_fit_ap_radio_details (
+    ap_uuid TEXT NOT NULL,
+    radio_id INTEGER NOT NULL,
+    base_bssid TEXT,
+    state TEXT,
+    radio_type TEXT,
+    antenna_type TEXT,
+    channel_bandwidth TEXT,
+    operating_bandwidth TEXT,
+    secondary_channel_mode TEXT,
+    mimo TEXT,
+    channel TEXT,
+    channel_mode TEXT,
+    channel_usage TEXT,
+    max_power TEXT,
+    noise_floor TEXT,
+    distance TEXT,
+    beacon_interval TEXT,
+    protection_mode TEXT,
+    twt_negotiation TEXT,
+    radar_detect TEXT,
+    extra_fields_json TEXT,
+    collected_at TEXT NOT NULL,
+    collect_run_uuid TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(ap_uuid, radio_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ac_fit_ap_radio_details_ap ON ac_fit_ap_radio_details(ap_uuid, radio_id);
 """
 
 AC_FIT_AP_RESOURCE_HISTORY_SCHEMA = """
@@ -1993,6 +2068,33 @@ class Database:
         if self._requires_device_address_migration(conn):
             self._apply_device_address_migration(conn)
 
+        if self._table_exists(conn, "ac_fit_ap_metadata"):
+            metadata_columns = {
+                "station_id": "TEXT NOT NULL DEFAULT ''",
+                "station_override_enabled": "INTEGER NOT NULL DEFAULT 0",
+                "station_override_source": "TEXT NOT NULL DEFAULT ''",
+            }
+            for column, definition in metadata_columns.items():
+                if not self._column_exists(conn, "ac_fit_ap_metadata", column):
+                    conn.execute(
+                        f"ALTER TABLE ac_fit_ap_metadata ADD COLUMN {column} {definition}"
+                    )
+            # Historical values came through the old free-text editor. Keep them
+            # as explicit legacy manual data; never reinterpret them as auto links.
+            conn.execute(
+                """
+                UPDATE ac_fit_ap_metadata
+                SET station_override_enabled = 1,
+                    station_override_source = 'legacy_manual'
+                WHERE COALESCE(TRIM(site_name), '') != ''
+                  AND COALESCE(TRIM(station_override_source), '') = ''
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ac_fit_ap_metadata_station_id "
+                "ON ac_fit_ap_metadata(station_id)"
+            )
+
         if self._table_exists(conn, "devices") and not self._column_exists(
             conn, "devices", "station_id"
         ):
@@ -3049,6 +3151,8 @@ class Database:
             AC_AP_SUMMARY_SCHEMA,
             AC_FIT_AP_RESOURCES_SCHEMA,
             AC_FIT_AP_METADATA_SCHEMA,
+            AC_FIT_AP_DETAILS_SCHEMA,
+            AC_FIT_AP_RADIO_DETAILS_SCHEMA,
             AP_EXTENSION_POINTS_SCHEMA,
             AP_EXTENSION_IMPORT_BATCHES_SCHEMA,
             AC_FIT_AP_RESOURCE_HISTORY_SCHEMA,

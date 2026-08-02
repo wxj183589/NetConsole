@@ -48,6 +48,7 @@ from netconsole.services.config_text import (
 )
 from netconsole.services.device_web_service import build_https_url, effective_https_port
 from netconsole.services.fit_ap_link_info import lldp_display_status
+from netconsole.services.neighbor_matcher import is_generic_neighbor_name
 from netconsole.services.offline_ap_ledger import is_fit_ap_offline
 from netconsole.utils.interface_normalize import normalize_interface_name
 from netconsole.utils.mileage import format_track_mileage, parse_mileage_to_meters
@@ -275,7 +276,18 @@ class AcManagementQueryService:
         if record is None:
             return None
         item, raw, optical, lldp = record
-        return AcApDetailDTO(ap=item, radios=self._radios(raw), lldp=lldp, optical=optical, connection=self._connection(raw))
+        repository = AcRepository(_ReadonlyDatabase(self._db_path(site_id)))  # type: ignore[arg-type]
+        detail = repository.get_fit_ap_detail(item.id) or {}
+        radio_details = repository.list_fit_ap_radio_details(item.id)
+        return AcApDetailDTO(
+            ap=item,
+            radios=self._radios(raw),
+            lldp=lldp,
+            optical=optical,
+            connection=self._connection(raw),
+            detail=detail,
+            radio_details=radio_details,
+        )
 
     def get_ap_history(
         self,
@@ -316,8 +328,26 @@ class AcManagementQueryService:
         )
 
     def list_all_ap_details(self, site_id: str) -> list[AcApDetailDTO]:
+        repository = AcRepository(_ReadonlyDatabase(self._db_path(site_id)))  # type: ignore[arg-type]
+        details = {str(row.get("ap_uuid") or ""): row for row in repository.list_fit_ap_details("")}
+        # list_fit_ap_details is AC-scoped; use a direct latest index for the cross-AC export path.
+        if not details:
+            with closing(self._connect(self._db_path(site_id))) as conn:
+                if self._table_exists(conn, "ac_fit_ap_details"):
+                    details = {
+                        str(row["ap_uuid"]): dict(row)
+                        for row in conn.execute("SELECT * FROM ac_fit_ap_details")
+                    }
         return [
-            AcApDetailDTO(ap=item, radios=self._radios(raw), lldp=lldp, optical=optical, connection=self._connection(raw))
+            AcApDetailDTO(
+                ap=item,
+                radios=self._radios(raw),
+                lldp=lldp,
+                optical=optical,
+                connection=self._connection(raw),
+                detail=details.get(item.id, {}),
+                radio_details=repository.list_fit_ap_radio_details(item.id),
+            )
             for item, raw, optical, lldp in self._ap_records(site_id)
         ]
 
@@ -343,6 +373,10 @@ class AcManagementQueryService:
                 str(row["device_uuid"]): str(row["name"] or row["device_uuid"])
                 for row in self._safe_devices(conn)
             }
+        context["fit_ap_details_by_uuid"] = {
+            str(row.get("ap_uuid") or ""): row
+            for row in repository.list_fit_ap_details_for_macs(normalized)
+        } if hasattr(repository, "list_fit_ap_details_for_macs") else {}
         result: list[AcApDetailDTO] = []
         for row in resources:
             optical = self._optical_for(row, optical_by_ap, context)
@@ -354,6 +388,8 @@ class AcManagementQueryService:
                     lldp=lldp,
                     optical=optical,
                     connection=self._connection(row),
+                    detail=context["fit_ap_details_by_uuid"].get(str(row.get("ap_uuid") or ""), {}),
+                    radio_details=repository.list_fit_ap_radio_details(str(row.get("ap_uuid") or "")),
                 )
             )
         return result
@@ -391,6 +427,8 @@ class AcManagementQueryService:
                 lldp=by_id[item.id][3],
                 optical=by_id[item.id][2],
                 connection=self._connection(by_id[item.id][1]),
+                detail=self._detail_for_ap(site_id, item.id),
+                radio_details=self._radio_details_for_ap(site_id, item.id),
             )
             for item in items
         ]
@@ -667,12 +705,34 @@ class AcManagementQueryService:
         with closing(self._connect(db_path)) as conn:
             context = self._switch_context(conn)
             ac_names = {str(row["device_uuid"]): str(row["name"] or row["device_uuid"]) for row in self._safe_devices(conn)}
+        context["fit_ap_details_by_uuid"] = {
+            str(row.get("ap_uuid") or ""): row
+            for row in repository.list_fit_ap_details(ac_id)
+        } if ac_id else {
+            str(row.get("ap_uuid") or ""): row
+            for row in self._list_all_fit_ap_details(repository)
+        }
         records = []
         for row in resources:
             optical = self._optical_for(row, optical_by_ap, context)
             lldp = self._lldp_for(row, optical_by_ap, context)
             records.append((self._ap_dto(row, optical, lldp, ac_names, context), row, optical, lldp))
         return records
+
+    @staticmethod
+    def _list_all_fit_ap_details(repository: AcRepository) -> list[dict[str, object | None]]:
+        with repository.database.connect() as conn:
+            if not AcManagementQueryService._table_exists(conn, "ac_fit_ap_details"):
+                return []
+            return [dict(row) for row in conn.execute("SELECT * FROM ac_fit_ap_details")]
+
+    def _detail_for_ap(self, site_id: str, ap_id: str) -> dict[str, object | None]:
+        repository = AcRepository(_ReadonlyDatabase(self._db_path(site_id)))  # type: ignore[arg-type]
+        return repository.get_fit_ap_detail(ap_id) or {}
+
+    def _radio_details_for_ap(self, site_id: str, ap_id: str) -> list[dict[str, object | None]]:
+        repository = AcRepository(_ReadonlyDatabase(self._db_path(site_id)))  # type: ignore[arg-type]
+        return repository.list_fit_ap_radio_details(ap_id)
 
     def _find_ap(
         self,
@@ -693,7 +753,15 @@ class AcManagementQueryService:
         unauthenticated = bool(row.get("is_new_online_ap") or row.get("_web_unauthenticated"))
         status = "unauthenticated" if unauthenticated else "offline" if is_fit_ap_offline(row) else self._online_status(row)
         mileage = format_track_mileage(row.get("mileage"), direction=str(row.get("direction") or ""))
-        station, station_source = self._station(row, lldp, context)
+        station_info = self._station(row, lldp, context)
+        station = str(station_info["effective_station_name"] or "")
+        station_source_detail = str(station_info["station_source"] or "empty")
+        station_source = {
+            "manual_override": "metadata",
+            "base_ap_mac": "metadata",
+            "ac_resource": "resource",
+        }.get(station_source_detail, station_source_detail)
+        detail = context.get("fit_ap_details_by_uuid", {}).get(str(row.get("ap_uuid") or ""), {})
         return AcApDTO(
             id=str(row.get("ap_uuid") or f"unauth-{row.get('id') or row.get('ap_name') or 'unknown'}"),
             ac_id=ac_id,
@@ -715,6 +783,24 @@ class AcManagementQueryService:
             radio2_power=str(row.get("rid2_tx_power") or ""),
             station=station,
             station_source=station_source,
+            station_source_detail=station_source_detail,
+            effective_station_id=str(station_info["effective_station_id"] or ""),
+            effective_station_name=station,
+            station_confidence=float(station_info["station_confidence"] or 0.0),
+            manual_station_id=str(station_info["manual_station_id"] or ""),
+            manual_station_name=str(station_info["manual_station_name"] or ""),
+            manual_override_enabled=bool(station_info["manual_override_enabled"]),
+            auto_station_id=str(station_info["auto_station_id"] or ""),
+            auto_station_name=str(station_info["auto_station_name"] or ""),
+            auto_match_basis=str(station_info["auto_match_basis"] or ""),
+            lldp_suggested_station_id=str(station_info["lldp_suggested_station_id"] or ""),
+            lldp_suggested_station_name=str(station_info["lldp_suggested_station_name"] or ""),
+            resource_station_text=str(station_info["resource_station_text"] or ""),
+            software_version=str(detail.get("software_version") or ""),
+            hardware_version=str(detail.get("hardware_version") or ""),
+            boot_version=str(detail.get("boot_version") or ""),
+            detail_updated_at=str(detail.get("updated_at") or ""),
+            detail_available=bool(detail),
             section=str(row.get("section_name") or row.get("metadata_belong_section") or ""),
             mileage=mileage if mileage != "-" else "",
             direction=str(row.get("direction") or row.get("extension_line_side") or ""),
@@ -936,9 +1022,12 @@ class AcManagementQueryService:
         context: dict[str, Any],
     ) -> AcLldpDTO:
         row = self._indexed_row(resource, optical_by_ap) or {}
-        switch_name = str(row.get("neighbor_device_name") or row.get("lldp_neighbor_name") or resource.get("lldp_neighbor_name") or resource.get("lldp_neighbor") or "")
+        raw_neighbor_name = str(row.get("lldp_neighbor_name") or resource.get("lldp_neighbor_name") or resource.get("lldp_neighbor") or "")
         interface = str(row.get("neighbor_interface") or row.get("lldp_neighbor_interface") or resource.get("lldp_neighbor_interface") or "")
-        switch_uuid = self._switch_uuid(resource, row, switch_name, context)
+        switch_uuid = self._switch_uuid(resource, row, str(row.get("neighbor_device_name") or raw_neighbor_name), context)
+        switch_name = str(context.get("device_name_by_uuid", {}).get(switch_uuid, "")) if switch_uuid else ""
+        local_interface = str(row.get("lldp_local_interface") or resource.get("lldp_local_interface") or "")
+        neighbor_mac = str(row.get("lldp_neighbor_mac") or resource.get("lldp_neighbor_mac") or row.get("neighbor_mac") or resource.get("neighbor_mac") or "")
         key = (switch_uuid, normalize_interface_name(interface).casefold())
         port = context["port_by_interface"].get(key, {})
         module = context["optical_by_interface"].get(key, {})
@@ -962,7 +1051,10 @@ class AcManagementQueryService:
             switch_name=switch_name,
             switch_ip=str(context["device_ip_by_uuid"].get(switch_uuid, "")),
             interface_name=interface,
-            lldp_neighbor=str(row.get("lldp_neighbor") or resource.get("lldp_neighbor") or switch_name),
+            lldp_neighbor=raw_neighbor_name,
+            lldp_local_interface=local_interface,
+            lldp_neighbor_mac=neighbor_mac,
+            lldp_neighbor_interface=interface,
             port_status=str(port.get("port_status") or port.get("link_status") or ""),
             vlan=str(port.get("vlan") or port.get("pvid") or ""),
             optical_module_status=module_status,
@@ -978,14 +1070,21 @@ class AcManagementQueryService:
         ip_by_uuid: dict[str, str] = {}
         switch_uuids: set[str] = set()
         switch_station_by_uuid: dict[str, str] = {}
+        switch_station_id_by_uuid: dict[str, str] = {}
+        device_name_by_uuid: dict[str, str] = {}
+        station_name_by_id, station_id_by_name = self._station_reference_context(conn)
         for row in devices:
             device_uuid = str(row["device_uuid"])
+            device_name_by_uuid[device_uuid] = str(row["name"] or device_uuid)
             ip_by_uuid[device_uuid] = str(row["primary_address"] or "")
             if str(row["device_type"] or "").strip().casefold() in {"sw", "switch", "交换机"}:
                 switch_uuids.add(device_uuid)
                 station = self._clean_text(row["station"])
                 if station:
                     switch_station_by_uuid[device_uuid] = station
+                station_id = self._clean_text(row["station_id"])
+                if station_id:
+                    switch_station_id_by_uuid[device_uuid] = station_id
             for value in (row["name"], row["system_name"]):
                 name = str(value or "").strip().casefold()
                 if name:
@@ -1010,6 +1109,10 @@ class AcManagementQueryService:
             "device_ip_by_uuid": ip_by_uuid,
             "switch_device_uuids": switch_uuids,
             "switch_station_by_uuid": switch_station_by_uuid,
+            "switch_station_id_by_uuid": switch_station_id_by_uuid,
+            "device_name_by_uuid": device_name_by_uuid,
+            "station_name_by_id": station_name_by_id,
+            "station_id_by_name": station_id_by_name,
             "port_by_interface": port_by_interface,
             "optical_by_interface": optical_by_interface,
         }
@@ -1026,14 +1129,21 @@ class AcManagementQueryService:
         ip_by_uuid: dict[str, str] = {}
         switch_uuids: set[str] = set()
         switch_station_by_uuid: dict[str, str] = {}
+        switch_station_id_by_uuid: dict[str, str] = {}
+        device_name_by_uuid: dict[str, str] = {}
+        station_name_by_id, station_id_by_name = self._station_reference_context(conn)
         for row in devices:
             device_uuid = str(row["device_uuid"])
+            device_name_by_uuid[device_uuid] = str(row["name"] or device_uuid)
             ip_by_uuid[device_uuid] = str(row["primary_address"] or "")
             if str(row["device_type"] or "").strip().casefold() in {"sw", "switch", "交换机"}:
                 switch_uuids.add(device_uuid)
                 station = self._clean_text(row["station"])
                 if station:
                     switch_station_by_uuid[device_uuid] = station
+                station_id = self._clean_text(row["station_id"])
+                if station_id:
+                    switch_station_id_by_uuid[device_uuid] = station_id
             for value in (row["name"], row["system_name"]):
                 name = str(value or "").strip().casefold()
                 if name:
@@ -1087,6 +1197,10 @@ class AcManagementQueryService:
             "device_ip_by_uuid": ip_by_uuid,
             "switch_device_uuids": switch_uuids,
             "switch_station_by_uuid": switch_station_by_uuid,
+            "switch_station_id_by_uuid": switch_station_id_by_uuid,
+            "device_name_by_uuid": device_name_by_uuid,
+            "station_name_by_id": station_name_by_id,
+            "station_id_by_name": station_id_by_name,
             "port_by_interface": port_by_interface,
             "optical_by_interface": optical_by_interface,
         }
@@ -1103,6 +1217,8 @@ class AcManagementQueryService:
             explicit_uuid = cls._clean_text(lldp_row.get(field) or resource.get(field))
             if explicit_uuid:
                 return explicit_uuid if explicit_uuid in context["switch_device_uuids"] else ""
+        if is_generic_neighbor_name(switch_name):
+            return ""
         return str(context["device_uuid_by_name"].get(switch_name.strip().casefold(), ""))
 
     @classmethod
@@ -1111,20 +1227,129 @@ class AcManagementQueryService:
         row: dict[str, object | None],
         lldp: AcLldpDTO,
         context: dict[str, Any],
-    ) -> tuple[str, str]:
-        metadata_station = cls._clean_text(row.get("site_name"))
-        resource_station = cls._clean_text(row.get("site"))
-        extension_station = cls._clean_text(row.get("extension_station_name"))
-        if metadata_station:
-            return metadata_station, "metadata"
+    ) -> dict[str, object]:
+        manual_id = cls._clean_text(row.get("manual_station_id"))
+        manual_name = cls._clean_text(row.get("manual_station_name"))
+        manual_enabled = bool(row.get("manual_override_enabled"))
+        station_names = context.get("station_name_by_id", {})
+        if manual_enabled and (manual_id or manual_name):
+            effective_name = str(station_names.get(manual_id) or manual_name)
+            return {
+                "effective_station_id": manual_id,
+                "effective_station_name": effective_name,
+                "station_source": "manual_override",
+                "station_confidence": 1.0,
+                "manual_station_id": manual_id,
+                "manual_station_name": manual_name or effective_name,
+                "manual_override_enabled": True,
+                "auto_station_id": "",
+                "auto_station_name": "",
+                "auto_match_basis": "",
+                "lldp_suggested_station_id": "",
+                "lldp_suggested_station_name": "",
+                "resource_station_text": cls._clean_text(row.get("resource_station_text")),
+            }
+
+        auto_id = cls._clean_text(row.get("extension_station_id") or row.get("station_id"))
+        auto_name = cls._clean_text(row.get("extension_station_name") or row.get("extension_station"))
+        extension_status = str(row.get("extension_match_status") or "")
+        if extension_status == "matched_by_mac" and (auto_id or auto_name):
+            effective_name = str(station_names.get(auto_id) or auto_name)
+            return {
+                "effective_station_id": auto_id,
+                "effective_station_name": effective_name,
+                "station_source": "base_ap_mac",
+                "station_confidence": 1.0,
+                "manual_station_id": "",
+                "manual_station_name": "",
+                "manual_override_enabled": False,
+                "auto_station_id": auto_id,
+                "auto_station_name": effective_name,
+                "auto_match_basis": "ap_mac",
+                "lldp_suggested_station_id": "",
+                "lldp_suggested_station_name": "",
+                "resource_station_text": cls._clean_text(row.get("resource_station_text")),
+            }
+
+        lldp_station_id = str(context.get("switch_station_id_by_uuid", {}).get(lldp.switch_device_uuid, ""))
+        lldp_station_name = str(
+            station_names.get(lldp_station_id)
+            or context.get("switch_station_by_uuid", {}).get(lldp.switch_device_uuid, "")
+        )
+        resource_station = cls._clean_text(row.get("resource_station_text"))
+        if lldp.raw_match_status in {"matched", "partial"} and lldp_station_name:
+            return {
+                "effective_station_id": lldp_station_id,
+                "effective_station_name": lldp_station_name,
+                "station_source": "lldp_switch_suggestion",
+                "station_confidence": 0.75,
+                "manual_station_id": "",
+                "manual_station_name": "",
+                "manual_override_enabled": False,
+                "auto_station_id": "",
+                "auto_station_name": "",
+                "auto_match_basis": "",
+                "lldp_suggested_station_id": lldp_station_id,
+                "lldp_suggested_station_name": lldp_station_name,
+                "resource_station_text": resource_station,
+            }
         if resource_station:
-            return resource_station, "resource"
-        if extension_station:
-            return extension_station, "metadata"
-        if lldp.raw_match_status not in {"matched", "partial"}:
-            return "", "empty"
-        station = str(context["switch_station_by_uuid"].get(lldp.switch_device_uuid, ""))
-        return (station, "lldp_switch_suggestion") if station else ("", "empty")
+            return {
+                "effective_station_id": "",
+                "effective_station_name": resource_station,
+                "station_source": "ac_resource",
+                "station_confidence": 0.35,
+                "manual_station_id": "",
+                "manual_station_name": "",
+                "manual_override_enabled": False,
+                "auto_station_id": "",
+                "auto_station_name": "",
+                "auto_match_basis": "",
+                "lldp_suggested_station_id": lldp_station_id,
+                "lldp_suggested_station_name": lldp_station_name,
+                "resource_station_text": resource_station,
+            }
+        source = "conflict" if extension_status == "ambiguous_mac" else "empty"
+        return {
+            "effective_station_id": "",
+            "effective_station_name": "",
+            "station_source": source,
+            "station_confidence": 0.0,
+            "manual_station_id": "",
+            "manual_station_name": "",
+            "manual_override_enabled": False,
+            "auto_station_id": "",
+            "auto_station_name": "",
+            "auto_match_basis": "",
+            "lldp_suggested_station_id": lldp_station_id,
+            "lldp_suggested_station_name": lldp_station_name,
+            "resource_station_text": resource_station,
+        }
+
+    @staticmethod
+    def _station_reference_context(conn: sqlite3.Connection) -> tuple[dict[str, str], dict[str, str]]:
+        if not AcManagementQueryService._table_exists(conn, "ap_extension_points"):
+            return {}, {}
+        rows = conn.execute(
+            """
+            SELECT station_id, station_name
+            FROM ap_extension_points
+            WHERE belong_type = '__base_station__' AND TRIM(COALESCE(station_id, '')) != ''
+            ORDER BY id
+            """
+        ).fetchall()
+        by_id: dict[str, str] = {}
+        by_name: dict[str, str] = {}
+        for row in rows:
+            station_id = str(row["station_id"] or "").strip()
+            station_name = str(row["station_name"] or "").strip()
+            if station_id and station_id not in by_id:
+                by_id[station_id] = station_name
+            if station_name and station_name.casefold() not in by_name:
+                by_name[station_name.casefold()] = station_id
+            elif station_name and by_name.get(station_name.casefold()) != station_id:
+                by_name[station_name.casefold()] = ""
+        return by_id, {key: value for key, value in by_name.items() if value}
 
     @staticmethod
     def _clean_text(value: object) -> str:
@@ -1158,7 +1383,7 @@ class AcManagementQueryService:
     @staticmethod
     def _safe_devices(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         return conn.execute(
-            "SELECT device_uuid, name, system_name, station, primary_address, https_port, device_type FROM devices ORDER BY name"
+            "SELECT device_uuid, name, system_name, station, station_id, primary_address, https_port, device_type FROM devices ORDER BY name"
         ).fetchall()
 
     @staticmethod

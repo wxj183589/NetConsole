@@ -8,6 +8,25 @@ from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.utils.interface_normalize import normalize_interface_name
 
 
+GENERIC_NEIGHBOR_NAMES = frozenset(
+    {
+        "",
+        "h3c",
+        "comware",
+        "switch",
+        "ethernet switch",
+        "unknown",
+        "n/a",
+        "na",
+        "none",
+        "null",
+        "-",
+        "--",
+        "未知",
+    }
+)
+
+
 @dataclass(frozen=True)
 class NeighborMatchResult:
     device_uuid: str | None = None
@@ -17,6 +36,13 @@ class NeighborMatchResult:
     ap_interface: str | None = None
     matched_by: str | None = None
     confidence: float = 0.0
+    match_status: str = "unresolved"
+    candidate_count: int = 0
+    reason: str | None = None
+
+
+def is_generic_neighbor_name(value: object) -> bool:
+    return str(value or "").strip().casefold() in GENERIC_NEIGHBOR_NAMES
 
 
 def match_neighbor_device(
@@ -27,60 +53,65 @@ def match_neighbor_device(
     paths: PathResolver | None = None,
 ) -> NeighborMatchResult:
     database = Database((paths or PathResolver()).site_db_path(site_name))
-    sysname = (neighbor_sysname or "").strip()
-    if sysname:
-        with database.connect() as conn:
-            row = conn.execute(
-                """
-                SELECT d.device_uuid, d.name, d.station
-                FROM device_facts f
-                JOIN devices d ON d.device_uuid = f.device_uuid
-                WHERE f.sysname = ?
-                LIMIT 1
-                """,
-                (sysname,),
-            ).fetchone()
-            if row is None:
-                row = conn.execute(
-                    """
-                    SELECT d.device_uuid, d.name, d.station
-                    FROM devices d
-                    WHERE d.system_name = ?
-                    LIMIT 1
-                    """,
-                    (sysname,),
-                ).fetchone()
-            if row is None:
-                row = conn.execute(
-                    """
-                    SELECT d.device_uuid, d.name, d.station
-                    FROM devices d
-                    WHERE d.name = ?
-                    LIMIT 1
-                    """,
-                    (sysname,),
-                ).fetchone()
-        if row:
-            return NeighborMatchResult(device_uuid=str(row["device_uuid"]), device_name=str(row["name"]), station=row["station"], matched_by="sysname", confidence=1.0)
-
     mac = normalize_mac(neighbor_mac)
     if mac:
         compact_mac = mac.replace(":", "")
         with database.connect() as conn:
-            row = conn.execute(
+            rows = conn.execute(
                 """
-                SELECT d.device_uuid, d.name, d.station
-                FROM device_interfaces i
-                JOIN devices d ON d.device_uuid = i.device_uuid
-                WHERE lower(
-                    replace(replace(replace(i.mac_address, ':', ''), '-', ''), '.', '')
-                ) = ?
-                LIMIT 1
+                SELECT DISTINCT d.device_uuid, d.name, d.station,
+                       COALESCE(i.interface_name, '') AS interface_name
+                FROM devices d
+                LEFT JOIN device_interfaces i ON i.device_uuid = d.device_uuid
+                LEFT JOIN device_facts f ON f.device_uuid = d.device_uuid
+                WHERE lower(replace(replace(replace(replace(COALESCE(d.mac_address, ''), ':', ''), '-', ''), '.', ''), ' ', '')) = ?
+                   OR lower(replace(replace(replace(replace(COALESCE(i.mac_address, ''), ':', ''), '-', ''), '.', ''), ' ', '')) = ?
+                   OR lower(replace(replace(replace(replace(COALESCE(f.mac_address, ''), ':', ''), '-', ''), '.', ''), ' ', '')) = ?
+                ORDER BY d.name, i.interface_name
                 """,
-                (compact_mac,),
-            ).fetchone()
-        if row:
-            return NeighborMatchResult(device_uuid=str(row["device_uuid"]), device_name=str(row["name"]), station=row["station"], matched_by="mac", confidence=0.9)
+                (compact_mac, compact_mac, compact_mac),
+            ).fetchall()
+        candidates = {str(row["device_uuid"]): row for row in rows}
+        if len(candidates) == 1:
+            row = next(iter(candidates.values()))
+            return NeighborMatchResult(
+                device_uuid=str(row["device_uuid"]),
+                device_name=str(row["name"]),
+                station=row["station"],
+                local_interface=str(row["interface_name"] or "") or None,
+                matched_by="mac",
+                confidence=1.0,
+                match_status="matched",
+            )
+        if len(candidates) > 1:
+            return NeighborMatchResult(match_status="ambiguous", candidate_count=len(candidates), reason="邻居 Chassis MAC 对应多个设备")
+
+    sysname = (neighbor_sysname or "").strip()
+    if sysname and not is_generic_neighbor_name(sysname):
+        with database.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT d.device_uuid, d.name, d.station
+                FROM devices d
+                LEFT JOIN device_facts f ON f.device_uuid = d.device_uuid
+                WHERE f.sysname = ? OR d.system_name = ? OR d.name = ?
+                ORDER BY d.name
+                """,
+                (sysname, sysname, sysname),
+            ).fetchall()
+        candidates = {str(row["device_uuid"]): row for row in rows}
+        if len(candidates) == 1:
+            row = next(iter(candidates.values()))
+            return NeighborMatchResult(
+                device_uuid=str(row["device_uuid"]),
+                device_name=str(row["name"]),
+                station=row["station"],
+                matched_by="sysname",
+                confidence=0.9,
+                match_status="matched",
+            )
+        if len(candidates) > 1:
+            return NeighborMatchResult(match_status="ambiguous", candidate_count=len(candidates), reason="邻居 System Name 对应多个设备")
 
     return NeighborMatchResult()
 
@@ -110,8 +141,9 @@ def match_ap_from_device_lldp(
             """,
             (compact_mac,),
         ).fetchall()
-    if len(rows) == 1:
-        row = rows[0]
+    candidates = {(str(row["device_uuid"]), normalize_interface_name(row["local_interface"])): row for row in rows}
+    if len(candidates) == 1:
+        row = next(iter(candidates.values()))
         return NeighborMatchResult(
             device_uuid=str(row["device_uuid"]),
             device_name=str(row["name"]),
@@ -120,7 +152,10 @@ def match_ap_from_device_lldp(
             ap_interface=row["neighbor_interface"],
             matched_by="device_lldp",
             confidence=1.0,
+            match_status="matched",
         )
+    if len(candidates) > 1:
+        return NeighborMatchResult(match_status="ambiguous", candidate_count=len(candidates), reason="交换机侧 LLDP 按 AP MAC 对应多个端口")
     return NeighborMatchResult()
 
 

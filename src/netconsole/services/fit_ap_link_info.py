@@ -143,6 +143,7 @@ def resolve_fit_ap_link_info(row: dict[str, object | None]) -> dict[str, object 
 
 
 def normalize_lldp_payload(data: dict[str, object | None], source: str) -> dict[str, object | None]:
+    explicit_status = _explicit_lldp_status(data.get("lldp_match_status"))
     local_interface = data.get("lldp_local_interface") or data.get("local_interface") or data.get("interface_name")
     neighbor_name = data.get("lldp_neighbor_name") or data.get("neighbor_name") or data.get("lldp_neighbor") or data.get("neighbor_device_name")
     neighbor_mac = data.get("lldp_neighbor_mac") or data.get("neighbor_mac")
@@ -158,7 +159,7 @@ def normalize_lldp_payload(data: dict[str, object | None], source: str) -> dict[
         "lldp_neighbor_mac_normalized": normalize_mac(neighbor_mac),
         "lldp_neighbor_interface": display_interface_name(neighbor_interface) if _has_value(neighbor_interface) else "",
     }
-    result["lldp_match_status"] = _resolve_lldp_match_status(result)
+    result["lldp_match_status"] = explicit_status or _resolve_lldp_match_status(result)
     return result
 
 
@@ -220,6 +221,13 @@ def _compact_interface_text(value: object) -> str:
 
 
 def _has_lldp_conflict(current: dict[str, object | None], new: dict[str, object | None]) -> bool:
+    current_source = str(current.get("lldp_source") or "").strip().casefold()
+    new_source = str(new.get("lldp_source") or "").strip().casefold()
+    # A previous projection or a repeated sample is not an independent
+    # observation. Only distinct, trusted sources can establish a conflict.
+    trusted_sources = {"ap_direct_lldp", "ac_bulk_lldp", "device_lldp"}
+    if current_source == new_source or current_source not in trusted_sources or new_source not in trusted_sources:
+        return False
     for field in ("lldp_neighbor_mac_normalized", "lldp_local_interface_normalized"):
         if _has_value(current.get(field)) and _has_value(new.get(field)) and current.get(field) != new.get(field):
             return True
@@ -280,14 +288,19 @@ def _resolve_lldp_source(data: dict[str, object | None]) -> str:
 
 
 def _resolve_lldp_match_status(data: dict[str, object | None]) -> str:
-    existing = str(data.get("lldp_match_status") or "").strip().casefold()
-    if existing == "conflict":
-        return "conflict"
+    explicit = _explicit_lldp_status(data.get("lldp_match_status"))
+    if explicit:
+        return explicit
     if _has_value(data.get("lldp_neighbor_mac_normalized")) or _has_value(data.get("lldp_neighbor_mac")) or _has_value(data.get("lldp_neighbor_interface")):
         return "matched"
     if _has_value(data.get("lldp_neighbor_name")):
         return "partial"
     return "unknown"
+
+
+def _explicit_lldp_status(value: object) -> str:
+    status = str(value or "").strip().casefold()
+    return status if status in {"partial", "unknown", "unmatched", "parse_error", "conflict"} else ""
 
 
 def _resolve_optical_power_status(data: dict[str, object | None]) -> str:

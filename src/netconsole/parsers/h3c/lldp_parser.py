@@ -5,6 +5,19 @@ import re
 from netconsole.adapters.h3c.h3c_interface_parser import normalize_interface
 
 
+_LLDP_COLUMNS = (
+    ("system_name", re.compile(r"(?i)system\s+name")),
+    ("local_interface", re.compile(r"(?i)local\s+interface")),
+    ("chassis_id", re.compile(r"(?i)chassis\s+id")),
+    ("port_id", re.compile(r"(?i)port\s+id")),
+)
+_INTERFACE_RE = re.compile(
+    r"(?i)^(?:ge|gigabitethernet|xge|xgigabitethernet|"
+    r"ten-gigabitethernet|tengigabitethernet|sge|"
+    r"fortygigabitethernet|hundredgigabitethernet)\s*\d+(?:/\d+){1,3}$"
+)
+
+
 def parse_lldp_neighbors(list_output: str, verbose_output: str = "") -> list[dict[str, object | None]]:
     neighbors = _parse_verbose(verbose_output)
     if not _has_chassis_table_header(list_output):
@@ -26,7 +39,7 @@ def parse_lldp_neighbors(list_output: str, verbose_output: str = "") -> list[dic
 
 def _parse_list(output: str) -> list[dict[str, object | None]]:
     rows: list[dict[str, object | None]] = []
-    header_positions: tuple[int, int, int, int] | None = None
+    header_positions: list[tuple[str, int]] | None = None
     legacy_header_positions: tuple[int, int, int, int] | None = None
     lines = (output or "").splitlines()
     has_table_header = _has_chassis_table_header(output)
@@ -35,13 +48,8 @@ def _parse_list(output: str) -> list[dict[str, object | None]]:
         for line in lines
     )
     for line in lines:
-        if "Local Interface" in line and "Chassis ID" in line and "Port ID" in line and "System Name" in line:
-            header_positions = (
-                line.index("Local Interface"),
-                line.index("Chassis ID"),
-                line.index("Port ID"),
-                line.index("System Name"),
-            )
+        if _has_chassis_table_header(line):
+            header_positions = _scan_lldp_header(line)
             continue
         if "Local Interface" in line and "Neighbor Sysname" in line and "Neighbor Interface" in line and "Management Address" in line:
             legacy_header_positions = (
@@ -60,7 +68,11 @@ def _parse_list(output: str) -> list[dict[str, object | None]]:
             continue
         row = _parse_list_row_by_header(line, header_positions) if header_positions else None
         row = row or (_parse_legacy_list_row_by_header(line, legacy_header_positions) if legacy_header_positions else None)
-        row = row or _parse_list_row_fallback(stripped)
+        # Once a semantic table header is present, a malformed row must not be
+        # reinterpreted by the legacy positional fallback.  That fallback is
+        # only safe for genuinely headerless historical output.
+        if row is None and not has_table_header and not has_legacy_header:
+            row = _parse_list_row_fallback(stripped)
         if row:
             rows.append(row)
     return rows
@@ -68,29 +80,47 @@ def _parse_list(output: str) -> list[dict[str, object | None]]:
 
 def _has_chassis_table_header(output: str) -> bool:
     return any(
-        "Local Interface" in line and "Chassis ID" in line and "Port ID" in line and "System Name" in line
+        _scan_lldp_header(line) and {field for field, _ in _scan_lldp_header(line)} >= {"local_interface", "chassis_id", "port_id"}
         for line in (output or "").splitlines()
     )
 
 
-def _parse_list_row_by_header(line: str, positions: tuple[int, int, int, int] | None) -> dict[str, object | None] | None:
+def _parse_list_row_by_header(line: str, positions: list[tuple[str, int]] | None) -> dict[str, object | None] | None:
     if positions is None:
         return None
-    local_start, chassis_start, port_start, system_start = positions
-    if len(line) < port_start:
-        return None
-    local_interface = line[local_start:chassis_start].strip()
-    neighbor_mac = line[chassis_start:port_start].strip()
-    neighbor_interface = line[port_start:system_start].strip()
-    neighbor_sysname = line[system_start:].strip()
-    if not local_interface or not neighbor_mac or not neighbor_interface:
+    values: dict[str, str] = {}
+    for index, (field, start) in enumerate(positions):
+        end = positions[index + 1][1] if index + 1 < len(positions) else len(line)
+        values[field] = line[start:end].strip()
+    local_interface = values.get("local_interface", "")
+    neighbor_mac = values.get("chassis_id", "")
+    neighbor_interface = values.get("port_id", "")
+    if not _is_interface(local_interface) or not _is_mac(neighbor_mac) or not neighbor_interface:
         return None
     return {
         "local_interface": normalize_interface(local_interface),
         "neighbor_mac": neighbor_mac,
         "neighbor_interface": normalize_interface(neighbor_interface),
-        "neighbor_sysname": neighbor_sysname or None,
+        "neighbor_sysname": values.get("system_name") or None,
     }
+
+
+def _scan_lldp_header(line: str) -> list[tuple[str, int]]:
+    columns: list[tuple[str, int]] = []
+    for field, pattern in _LLDP_COLUMNS:
+        match = pattern.search(line)
+        if match:
+            columns.append((field, match.start()))
+    return sorted(columns, key=lambda item: item[1])
+
+
+def _is_interface(value: object) -> bool:
+    return bool(_INTERFACE_RE.fullmatch(re.sub(r"\s+", "", str(value or "").strip())))
+
+
+def _is_mac(value: object) -> bool:
+    compact = re.sub(r"[^0-9a-fA-F]", "", str(value or ""))
+    return len(compact) == 12 and bool(re.fullmatch(r"[0-9a-fA-F]{12}", compact))
 
 
 def _parse_legacy_list_row_by_header(line: str, positions: tuple[int, int, int, int] | None) -> dict[str, object | None] | None:
@@ -115,10 +145,15 @@ def _parse_list_row_fallback(line: str) -> dict[str, object | None] | None:
     match = re.match(r"^(\S+)\s+(\S+)\s+(.+?)(?:\s{2,}(.+))?$", line)
     if not match:
         return None
+    local_interface = match.group(1)
+    neighbor_mac = match.group(2)
+    neighbor_interface = match.group(3).strip().split()[0]
+    if not _is_interface(local_interface) or not _is_mac(neighbor_mac) or not _is_interface(neighbor_interface):
+        return None
     return {
-        "local_interface": normalize_interface(match.group(1)),
-        "neighbor_mac": match.group(2),
-        "neighbor_interface": normalize_interface(match.group(3).strip()),
+        "local_interface": normalize_interface(local_interface),
+        "neighbor_mac": neighbor_mac,
+        "neighbor_interface": normalize_interface(neighbor_interface),
         "neighbor_sysname": (match.group(4) or "").strip() or None,
     }
 

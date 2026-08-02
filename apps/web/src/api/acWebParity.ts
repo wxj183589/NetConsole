@@ -55,6 +55,13 @@ export function startAcResourceRefresh(kind: 'ac' | 'fit-ap' | 'ap-detail' | 'op
   })
 }
 
+export function startAcFitApVerbose(acId: string, scope: 'all' | 'selected', apIds: string[] = []): Promise<AcWebTask> {
+  return apiRequest<AcWebTask>(`${root}/fit-aps/verbose`, {
+    method: 'POST',
+    body: JSON.stringify({ ac_id: acId, scope, ap_ids: apIds }),
+  })
+}
+
 export function deleteAcFitAps(acId: string, apIds: string[]): Promise<AcWebTask> {
   return apiRequest<AcWebTask>(`${root}/fit-aps/delete`, {
     method: 'POST',
@@ -71,7 +78,14 @@ export function importAcFitApMetadata(file: File): Promise<AcWebTask> {
 export function saveAcFitApMetadata(
   acId: string,
   apId: string,
-  metadata: { site_name: string; mileage: string; location_note: string; direction: string },
+  metadata: {
+    station_id?: string
+    station_override_enabled?: boolean
+    site_name?: string
+    mileage: string
+    location_note: string
+    direction: string
+  },
 ): Promise<AcWebTask> {
   return apiRequest<AcWebTask>(`${root}/aps/${encodeURIComponent(apId)}/metadata`, {
     method: 'POST',

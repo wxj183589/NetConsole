@@ -319,6 +319,39 @@ def ac_fit_ap_detail_refresh(context: JobContext) -> dict[str, object]:
     return result.to_terminal_payload()
 
 
+def _ac_fit_ap_verbose_refresh(context: JobContext, *, selected: bool) -> dict[str, object]:
+    context.check_cancelled()
+    params = dict(context.params)
+    site_name = str(params.get("site_name") or "demo")
+    database = Database(Path(str(params.get("db_path") or context.paths.site_db_path(site_name))))
+    service = AcResourceService(DeviceRepository(database), AcRepository(database), context.paths)
+    request = AcResourceRefreshRequest(
+        device_uuid=str(params.get("device_uuid") or params.get("ac_uuid") or ""),
+        site_name=site_name,
+        source="cli",
+    )
+    try:
+        result = service.refresh_fit_ap_verbose(
+            request,
+            target_ap_uuids=_string_list(params.get("target_ap_uuids")) if selected else None,
+            progress_callback=context.progress,
+            should_cancel=context.should_cancel,
+        )
+    except AcResourceRefreshCancelled as exc:
+        raise BackgroundTaskCancelled(str(exc)) from exc
+    if not result.success:
+        raise RuntimeError(result.error_message or "FIT-AP 详细信息更新失败")
+    return result.to_terminal_payload()
+
+
+def ac_fit_ap_verbose_all_refresh(context: JobContext) -> dict[str, object]:
+    return _ac_fit_ap_verbose_refresh(context, selected=False)
+
+
+def ac_fit_ap_verbose_selected_refresh(context: JobContext) -> dict[str, object]:
+    return _ac_fit_ap_verbose_refresh(context, selected=True)
+
+
 def ac_fit_ap_optical_refresh(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
     params = dict(context.params)
@@ -500,6 +533,8 @@ HANDLERS = {
         "ac_fit_ap_resources_refresh",
         "ac_info_refresh",
         "ac_fit_ap_detail_refresh",
+        "ac_fit_ap_verbose_all_refresh",
+        "ac_fit_ap_verbose_selected_refresh",
         "ac_fit_ap_optical_refresh",
         "ac_command_action_execute",
         "ac_mesh_link_refresh",
