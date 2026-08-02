@@ -44,7 +44,7 @@ const pendingRows = computed(() => rows.value.filter((row) => row.relation_statu
 const editableFields: EditableField[] = ['sequence_no', 'station_name', 'planned_ap_count', 'management_vlan', 'remark']
 const planColumns = computed<NcTableColumn<TracksideApPlanRow>[]>(() => [
   { key: 'sequence_no', label: '序号', valueType: 'number', width: 72, align: 'center', hideable: false },
-  { key: 'station_name', label: '车站名称', valueType: 'name', minWidth: 260, align: 'left', hideable: false },
+  { key: 'station_name', label: '车站名称', valueType: 'name', minWidth: 260, align: 'left', alignmentReason: 'long-text', hideable: false },
   { key: 'planned_ap_count', label: 'AP数量', valueType: 'number', width: 110, align: 'center' },
   { key: 'management_vlan', label: 'AP管理VLAN', valueType: 'number', width: 130, align: 'center' },
   { key: 'remark', label: '备注', valueType: 'description', minWidth: 360, align: 'left', alignmentReason: 'long-text' },

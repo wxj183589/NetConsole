@@ -88,6 +88,23 @@ function plan(stationId: string, name: string): TracksideApPlanRow {
 }
 
 describe('trackside AP planning controlled draft', () => {
+  it('mounts with the real NcDataTable column contract', () => {
+    const { NcDataTable: _ncDataTable, ...controlStubs } = stubs
+    const wrapper = mount(TracksideApPlanningTab, {
+      props: {
+        modelValue: [plan('station:1', '一站')],
+        stations: [station('station:1', '一站', 1)],
+        editing: false,
+        readonly: false,
+        saving: false,
+      },
+      global: { stubs: controlStubs },
+    })
+
+    expect(wrapper.text()).toContain('AP 规划')
+    expect(wrapper.find('.planning-tab').exists()).toBe(true)
+  })
+
   it('reconciles by station_id and preserves user planning values after a rename', () => {
     const rows = reconcileTracksideApPlans(
       [plan('station:1', '旧站名')],
