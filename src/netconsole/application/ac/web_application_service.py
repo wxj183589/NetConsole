@@ -105,6 +105,8 @@ class AcWebApplicationService:
         "ac": ("ac_info_refresh", "更新 AC 信息"),
         "fit-ap": ("ac_fit_ap_resources_refresh", "更新 FIT-AP 资源"),
         "ap-detail": ("ac_fit_ap_detail_refresh", "深度更新 FIT-AP"),
+        "verbose-all": ("ac_fit_ap_verbose_all_refresh", "获取当前 AC 全部 AP 详细信息"),
+        "verbose-selected": ("ac_fit_ap_verbose_selected_refresh", "获取已选择 AP 详细信息"),
         "optical": ("ac_fit_ap_optical_refresh", "更新 FIT-AP 光衰"),
     }
     _TASK_ACTIONS = {
@@ -239,13 +241,62 @@ class AcWebApplicationService:
             params["ap_uuid"] = ap_uuid
         if refresh_kind == "optical":
             params.update(source="auto", refresh_scope="single" if ap_uuid else "all")
+        if refresh_kind in {"fit-ap", "ap-detail", "optical"}:
             resource_key = fit_ap_optical_resource_key(site_id, device_uuid)
             if resource_key:
                 params["resource_keys"] = [resource_key]
         try:
             self.process_adapter.start_job(BackgroundJob(job_id=task_id, task_type=task_type, params=params))
         except TaskResourceConflictError as exc:
-            raise AcWebActionError("FIT_AP_OPTICAL_UPDATE_RUNNING", str(exc)) from exc
+            code = "FIT_AP_OPTICAL_UPDATE_RUNNING" if refresh_kind == "optical" else "FIT_AP_UPDATE_RUNNING"
+            raise AcWebActionError(code, str(exc)) from exc
+        return self._task_dto(site_id, task_id)
+
+    def start_fit_ap_verbose(
+        self,
+        site_id: str,
+        *,
+        ac_id: str,
+        scope: str,
+        ap_ids: list[str] | None = None,
+    ) -> AcWebTaskDTO:
+        site_id = self._site(site_id)
+        normalized_scope = str(scope or "").strip().casefold()
+        if normalized_scope not in {"all", "selected"}:
+            raise AcWebActionError("TASK_NOT_ALLOWED", "不支持的 FIT-AP 详细信息范围")
+        device_uuid = str(self._target(site_id, ac_id).device_uuid)
+        selected = list(dict.fromkeys(str(value or "").strip() for value in ap_ids or [] if str(value or "").strip()))
+        if normalized_scope == "selected":
+            if not selected:
+                raise AcWebActionError("AP_TARGET_REQUIRED", "未选择要获取详细信息的 FIT-AP")
+            repository = self._repository(site_id)
+            if any(repository.get_fit_ap_resource_by_uuid(device_uuid, ap_uuid) is None for ap_uuid in selected):
+                raise AcWebActionError("AP_TARGET_NOT_AUTHORIZED", "目标 FIT-AP 不属于当前 AC")
+        task_id = f"ac-web-{uuid4().hex}"
+        task_type = "ac_fit_ap_verbose_selected_refresh" if normalized_scope == "selected" else "ac_fit_ap_verbose_all_refresh"
+        params = {
+            "site_name": site_id,
+            "db_path": str(self.paths.site_db_path(site_id)),
+            "app_root": str(self.paths.app_root),
+            "data_root": str(self.paths.data_root),
+            "task_name": self._REFRESH_TASKS[f"verbose-{normalized_scope}"][1],
+            "owner": self._OWNER,
+            "task_source": "local",
+            "device_uuid": device_uuid,
+            "ac_uuid": device_uuid,
+            "target_ap_uuids": selected,
+            "mode": "collect",
+            "source": "cli",
+        }
+        resource_key = fit_ap_optical_resource_key(site_id, device_uuid)
+        if resource_key:
+            params["resource_keys"] = [resource_key]
+        try:
+            self.process_adapter.start_job(
+                BackgroundJob(job_id=task_id, task_type=task_type, params=params)
+            )
+        except TaskResourceConflictError as exc:
+            raise AcWebActionError("FIT_AP_UPDATE_RUNNING", str(exc)) from exc
         return self._task_dto(site_id, task_id)
 
     def get_task(self, site_id: str, task_id: str) -> AcWebTaskDTO:
@@ -355,14 +406,44 @@ class AcWebApplicationService:
         resource = self._repository(site_id).get_fit_ap_resource_by_uuid(device_uuid, ap_uuid)
         if resource is None:
             raise AcWebActionError("AP_TARGET_NOT_AUTHORIZED", "目标 FIT-AP 不属于当前 AC")
+        repository = self._repository(site_id)
+        has_station_contract = "station_id" in metadata or "station_override_enabled" in metadata
+        station_id = str(metadata.get("station_id") or "").strip()
+        station_enabled = bool(metadata.get("station_override_enabled"))
+        station_name = ""
+        if has_station_contract and station_enabled:
+            with repository.database.connect() as conn:
+                station = conn.execute(
+                    """
+                    SELECT station_name
+                    FROM ap_extension_points
+                    WHERE belong_type = '__base_station__' AND station_id = ?
+                    ORDER BY id
+                    LIMIT 2
+                    """,
+                    (station_id,),
+                ).fetchall()
+            if len(station) != 1 or not str(station[0]["station_name"] or "").strip():
+                raise AcWebActionError("STATION_NOT_FOUND", "手工覆盖站点必须选择正式站点")
+            station_name = str(station[0]["station_name"] or "").strip()
         payload = {
             "ap_uuid": ap_uuid,
             "ap_name": str(resource.get("ap_name") or ""),
-            "site_name": str(metadata.get("site_name") or "").strip(),
             "mileage": mileage_storage_text(metadata.get("mileage")),
             "location_note": str(metadata.get("location_note") or "").strip(),
             "direction": normalize_ap_direction(str(metadata.get("direction") or "")),
         }
+        if has_station_contract:
+            payload.update(
+                {
+                    "station_id": station_id if station_enabled else "",
+                    "station_override_enabled": station_enabled,
+                    "site_name": station_name if station_enabled else "",
+                }
+            )
+        else:
+            # Legacy clients are kept readable; the Vue path always uses station_id.
+            payload["site_name"] = str(metadata.get("site_name") or "").strip()
         task_id = f"ac-web-metadata-save-{uuid4().hex}"
         self.process_adapter.start_job(
             BackgroundJob(
@@ -1219,6 +1300,9 @@ class AcWebApplicationService:
             "ap_count",
             "radio_count",
             "warning_count",
+            "detail_rows_updated",
+            "detail_failed_count",
+            "detail_mode",
         ):
             value = result.get(key)
             if isinstance(value, (bool, int, float, str, dict)):
@@ -1244,6 +1328,9 @@ class AcWebApplicationService:
                     "https_port",
                     "https_port_persisted",
                     "target_ap_uuid",
+                    "detail_rows_updated",
+                    "detail_failed_count",
+                    "detail_mode",
                     "partial_success",
                     "refresh_scope",
                     "optical_rows_updated",

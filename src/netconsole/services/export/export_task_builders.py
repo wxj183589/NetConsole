@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from netconsole.services.ac.fit_ap_export_contract import FIT_AP_RESOURCE_EXPORT_SCHEMA_VERSION
 from netconsole.services.export.export_job import ExportJob
 
 INLINE_ROW_LIMIT = 5000
@@ -448,6 +449,10 @@ def fit_ap_resource_xlsx_spec(
             "selected_ap_ids": [str(value) for value in selected_ap_ids or [] if str(value)],
             "filters": dict(filters or {}),
             "requested_at": requested_at,
+            "contract_metadata": {
+                "template_type": "ac_fit_ap_resource",
+                "schema_version": FIT_AP_RESOURCE_EXPORT_SCHEMA_VERSION,
+            },
             "app_root": str(app_root) if app_root is not None else "",
             "data_root": str(data_root) if data_root is not None else "",
         },

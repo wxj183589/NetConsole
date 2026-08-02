@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-Electron AC/FIT-AP 处于 `PARTIAL / IMPLEMENTED_UNVERIFIED`。`/ac-management/fit-aps` 已不再是数据库只读页：Feature `web.ac_refresh` 的“更新 AC 信息”“更新 FIT-AP 资源”和 AP 详情“深度更新”都会创建持久化后台任务，经共享 Python Application Service 连接所选 H3C AC、保存 raw/命令记录并更新当前局点数据库。页面也已接入两项受控 AC 写动作、FIT-AP 资源 XLSX、当前 AC 范围的 OmniPeek 名称表导出和桌面版单 AP 外部终端；这些闭环仍待 Electron 人工和真实 AC/AP 验收，全部缺口完成前不得标记 `COMPLETE`。
+Electron AC/FIT-AP 处于 `PARTIAL / IMPLEMENTED_UNVERIFIED`。`/ac-management/fit-aps` 已不再是数据库只读页：Feature `web.ac_refresh` 的“更新 AC 信息”“更新 FIT-AP 资源”、AP 详情“更新当前 AP 详细信息”和“获取 AP 详细信息”都会创建持久化后台任务，经共享 Python Application Service 连接所选 H3C AC、保存 raw/命令记录并更新当前局点数据库。页面也已接入两项受控 AC 写动作、FIT-AP 资源 XLSX、当前 AC 范围的 OmniPeek 名称表导出和桌面版单 AP 外部终端；受控真实 AC/FIT-AP 采集已完成小范围现场验证，但 Electron 人工验收和全量现场验收仍待完成，全部缺口完成前不得标记 `COMPLETE`。
 
 `web.ac_dangerous_actions` 与 `web.ac_fit_ap_external_terminal` 已从开发隐藏项转为正式客户版默认功能。Feature Profile schema v2 会在升级首次加载时把 schema v1 中这两项的旧默认关闭状态迁移为正式默认值；用户在 v2 及以后主动关闭的选择保持不变，不要求删除 AppData。
 
@@ -47,9 +47,9 @@ AC 总览、轨旁 AP 业务和 AP 扩展的本地重建终态也只保留行数
 
 - AC 总览：管理 IP、型号、软件版本、AP 总数、在线/离线/未认证、Radio 数量、关联光衰异常和数据更新时间；
 - FIT-AP：后端搜索、筛选、排序和分页，默认按连接交换机自然升序、其次按归一化端口自然升序，缺失项后置；前端通过统一 `NcDataTable` 保存列显隐、顺序、手工列宽和固定位置，物理接口统一显示 `GE/XGE/25GE/40GE/100GE` 简称；FIT-AP、配置、Radio、历史、Mesh-Link、AP 扩展和规划页面不再各自维护列宽算法；
-- FIT-AP 资源导出：Feature `web.ac_fit_ap_resource_export` 提供“当前筛选结果 / 已选择 AP / 当前 AC 全部 AP”三种范围，筛选复用页面 Query Service 且不携带分页。用户点击后先选择最终 `.xlsx` 路径，取消不创建任务；确认后 Export Process 从当前局点只读 SQLite 重新查询，按规范化 MAC 去重。MAC 缺失时使用 `AC ID + AP 名称`，保证“AP资源清单”一台 AP 一行，“Radio明细”一条 Radio 一行，并附“导出说明”。缺失的光衰、LLDP、站点、区间、MAC 或 Radio 保持空白并写入“数据完整性”，单台缺失不阻断整份文件。Artifact 就绪后直接写入预选位置，不再突然弹出第二个保存窗口；失败时保留 Artifact 并允许在任务中心重新选择位置。该导出用于资产核对，不替代设备管理清单或 OmniPeek `.nam` 名称表，也不会在导出时连接 AC、AP 或交换机；
+- FIT-AP 资源导出：Feature `web.ac_fit_ap_resource_export` 提供“当前筛选结果 / 已选择 AP / 当前 AC 全部 AP”三种范围，筛选复用页面 Query Service 且不携带分页。用户点击后先选择最终 `.xlsx` 路径，取消不创建任务；确认后 Export Process 从当前局点只读 SQLite 重新查询，按规范化 MAC 去重。MAC 缺失时使用 `AC ID + AP 名称`，保证“AP资源清单”一台 AP 一行，“Radio明细”一条 Radio 一行，并附“导出说明”。主表删除无实际数据的“项目名称”“线路名称”，在“AP型号”后增加“AP序列号”；序列号只读取已持久化的 `ac_fit_ap_resources.serial_number` 或未认证 AP 资源的同名字段，不新增采集命令、不连接现场设备。AP 主表最终按连接交换机、规范化连接端口自然升序，缺失交换机/端口后置；缺失的光衰、LLDP、站点、区间、MAC、序列号或 Radio 保持空白并写入“数据完整性”，单台缺失不阻断整份文件。该字段契约使用 FIT-AP 资源 XLSX schema v2；Radio 时间、Radio MAC、AP 序列号、连接端口和 AC 软件版本使用具体列宽规则，长备注/说明列启用换行。Artifact 就绪后直接写入预选位置，不再突然弹出第二个保存窗口；失败时保留 Artifact 并允许在任务中心重新选择位置。该导出用于资产核对，不替代设备管理清单或 OmniPeek `.nam` 名称表，也不会在导出时连接 AC、AP 或交换机；
 - AP 详情：基本信息、connection-record、Radio 1/2 状态/模式/频段/信道/带宽/利用率/功率/客户端/BSSID、LLDP/端口、交换机光模块和 AP 侧光衰；
-- 真实更新：AC CPU/内存/型号/版本/HTTPS 端口、FIT-AP 普通资源、批量 Radio BBSSID、所选 AP 深度 BSSID 和 FIT-AP 光衰；FIT-AP 光衰默认共享并发 64，运行时按平台上限和目标 AP 数裁剪，并通过 `tasks.db` resource key 阻止同一 AC 与轨旁更新重复执行；任务进度、取消、失败、部分命令失败、页面重启恢复和完成后结果刷新；业务页只保留紧凑摘要，停止、日志和 Artifact 统一在 Electron 任务窗口处理；
+- 真实更新：AC CPU/内存/型号/版本/HTTPS 端口、FIT-AP 普通资源、批量 Radio BBSSID、所选 AP 深度 BSSID、FIT-AP 详细信息和 FIT-AP 光衰；FIT-AP 光衰默认共享并发 64，运行时按平台上限和目标 AP 数裁剪，并通过 `tasks.db` resource key 阻止同一 AC 与轨旁更新重复执行；任务进度、取消、失败、部分命令失败、页面重启恢复和完成后结果刷新；业务页只保留紧凑摘要，停止、日志和 Artifact 统一在 Electron 任务窗口处理；
 - 单 AP 定向更新接受 H3C 常见 `xxxx-xxxx-xxxx` MAC，后端统一规范化为标准格式；前端提交时优先使用 `ap_uuid`，其次 `ap_mac`，最后 `ap_name`，避免展示格式差异误拦稳定目标。
 - 真实 AC 写操作：只保留历史产品契约中的“固化新 AP”和“开启 AP 远程登录”两项固定命令；Feature `web.ac_dangerous_actions` 是正式客户版默认功能，仍必须经过命令预览、摘要校验、二次确认、真实后台 Task、取消和持久化审计；不在 AC 页扩展单独 `save force`；
 - OmniPeek 名称表：Feature `ac.omnipeek_name_table_export` 是正式客户版默认功能。窗口提供线路名、输出目录、三类数据源及真实数量、轨旁/车载导出内容、Radio 模式、颜色、结构化逐行预览、状态筛选、搜索、分页、选择和受控强制导出；AP 扩展信息只匹配当前 AC 的 FIT-AP，车载 MR 由用户决定是否加入。预览和 `.nam` 导出分别进入 Job Center 与 Export Process，继续复用共享 MAC 推导、冲突校验、导出日志、Artifact 清单、取消和恢复规则；
@@ -60,9 +60,17 @@ AC 总览、轨旁 AP 业务和 AP 扩展的本地重建终态也只保留行数
 
 Radio State/Usage/Clients 来自真实 `display wlan ap all radio` fixture；Mode/Band 只从 H3C `display wlan ap all radio type` 原文提取，缺失时显示“--”，不按 RID 或信道推断。connection-record 与 radio type 已用 H3C 官方样例做契约测试，仍需真实 AC 验收。普通批量更新在固定命令序列中执行 `display wlan ap all radio verbose filter bbssid`，该命令使用独立 120 秒读取超时并属于可选增强证据：成功时合并 Radio BBSSID，空结果或失败时记录 `bbssid_collect_status/bbssid_error` 并保留原始命令回显，不得丢弃已经由必需命令采集到的 FIT-AP 资源。已有 BSSID 会被保留。单 AP 深度更新使用同一受控命令并只 upsert 所选 AP，不删除同 AC 的其他 AP，也不猜测尚无事实源的 name 作用域 verbose 命令。Web DTO 不返回 AP/设备序列号，不显示 Radio 3。
 
+## AP 详细采集、LLDP 与站点边界
+
+- AP 详细信息使用固定 `display wlan ap name <AP 名称> verbose` 命令，支持当前 AC 全量或页面选中 AP；只写入 `ac_fit_ap_details`、Radio 详细表和相应 raw/命令记录，不覆盖其他 FIT-AP 资源。目标 AP 必须属于当前 AC，名称只由后端从已持久化资源生成，Renderer 不提交任意命令文本。
+- FIT-AP 直连 LLDP 支持两种动态表头：`Local Interface / Chassis ID / Port ID / System Name` 和 `System Name / Local Interface / Chassis ID / Port ID`。解析先按表头字段位置切片，位置错位时再按 MAC、接口语义回退；缺少合法邻居 MAC 或邻居端口时不生成精确关系。通用邻居名 `H3C`、`Comware`、`Switch` 等只作为原始展示证据，不参与设备匹配；匹配优先级为邻居 MAC 精确匹配，其次反向设备 LLDP，名称/IP 不作为唯一设备证据，多候选返回 `ambiguous`。
+- AC 批量 LLDP 的邻居名称与直连 LLDP 分开保存。即使 AC 回显使用通用 `H3C`，只要 MAC/端口可验证，仍保留 LLDP 观测；无法把 MAC 解析到当前局点唯一交换机时显示 `partial/unresolved`，不得按 `H3C` 绑定错误设备。
+- 自动关联与手工元数据互不写穿。基础资料 AP MAC 匹配、LLDP 交换机站点和 AC 原始站点分别作为只读证据；当前有效站点只有用户保存的 `station_id` 手工覆盖才进入正式元数据。页面“采用自动关联结果”只是把建议带入编辑表单，必须点击“保存手工覆盖”后才写库；清除覆盖不会删除自动证据。
+- 已知错误 LLDP 派生投影由 `AcRepository.repair_invalid_fit_ap_association_projection()` 维护，默认 dry-run；只有显式 `apply=True` 才清除当前光衰/资源表的错误派生字段。该操作不删除 `ac_fit_ap_optical_history`、`ac_fit_ap_lldp_history`、采集 raw 或命令记录，下一次光衰采集可重新生成投影。
+
 Electron 的“打开 AC Web”使用固定 HTTPS URL 规则：优先使用已采集端口，缺失或无效时回退 443；Python DTO 生成受控 URL，Vue 只通过现有 Electron 外部 URL Bridge 打开。
 
-FIT-AP 详情已提供站点、里程、点位说明和方向保存入口；保存通过受控后台任务写入现有元数据表。归属站点缺失时，Query Service 只在 LLDP 已匹配/部分匹配且邻居唯一对应有站点的交换机时返回建议；页面明确标记“保存后才写入”，不自动修改元数据。Radio、LLDP、光衰历史按 AP UUID 分页读取，仅返回展示白名单字段，不向 Web 暴露 `raw_log_path`，并继续遵守 Web 既有序列号脱敏边界。
+FIT-AP 详情已提供站点、里程、点位说明和方向保存入口；保存通过受控后台任务写入现有元数据表。归属站点缺失时，Query Service 只在 LLDP 已匹配/部分匹配且邻居唯一对应有站点的交换机时返回建议；页面明确标记“保存后才写入”，不自动修改元数据。Radio、LLDP、光衰历史按 AP UUID 分页读取，仅返回展示白名单字段，不向 Web 暴露 `raw_log_path`，并继续遵守 Web 既有序列号脱敏边界。受控现场采集已覆盖一台 WA6522、一台 WA6624X 和同一 H3C AC 的 974 台 FIT-AP 资源刷新；该证据不替代 Electron 全量人工验收。
 
 ## FIT-AP 离线身份连续性
 

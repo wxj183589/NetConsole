@@ -5,6 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 
 import { getAcApHistory } from '../../api/acManagement'
+import { listStations } from '../../api/railTransitBaseData'
 import {
   confirmAcActionPlan,
   createAcActionPlan,
@@ -30,6 +31,7 @@ import type { NcDataTableContextMenuItem } from '../../components/table/NcDataTa
 import type { NcColumnValueType, NcTableColumn } from '../../components/table/NcTableColumn'
 import AcOmniPeekExportDialog from './AcOmniPeekExportDialog.vue'
 import type { AcAp, AcApHistoryPage, AcConfigSnapshot, AcOptical, AcRadio } from '../../types/acManagement'
+import type { Station } from '../../types/railTransitBaseData'
 import type {
   AcActionAudit,
   AcActionPlan,
@@ -54,7 +56,8 @@ const currentMatch = ref(-1)
 const selectedApIds = ref(new Set<string>())
 const desktopHost = computed(() => getRuntimeConfig().hostType === 'electron')
 const pollingConsumer = 'ac-management-view'
-const metadataForm = reactive({ site_name: '', mileage: '', location_note: '', direction: '' })
+const metadataForm = reactive({ station_id: '', station_override_enabled: false, site_name: '', mileage: '', location_note: '', direction: '' })
+const stations = ref<Station[]>([])
 const historyVisible = ref(false)
 const historyLoading = ref(false)
 const historyError = ref('')
@@ -208,6 +211,7 @@ onMounted(() => {
   taskStore.acquirePolling(pollingConsumer)
   void openRouteApDetail()
   void recoverActionPlan()
+  void loadStations()
 })
 
 onBeforeUnmount(() => {
@@ -364,6 +368,45 @@ async function saveMetadata(): Promise<void> {
   await store.startFitApMetadataSave({ ...metadataForm })
 }
 
+async function startVerboseRefresh(scope: 'all' | 'selected'): Promise<void> {
+  const ids = scope === 'selected' ? [...selectedApIds.value] : []
+  if (scope === 'selected' && !ids.length) {
+    ElMessage.warning('请先选择要获取详细信息的 FIT-AP')
+    return
+  }
+  if (scope === 'all') {
+    try {
+      if (!await confirm({ type: 'WARNING', title: '获取全部 AP 详细信息', message: `当前 AC 约有 ${store.activeAc?.ap_total || store.total} 台 AP，详细回显较大且可能耗时较长，确认继续？`, confirmText: '开始获取' })) return
+    } catch {
+      return
+    }
+  }
+  await store.startFitApVerbose(scope, ids)
+}
+
+async function loadStations(): Promise<void> {
+  try {
+    const result = await listStations({ page: 1, page_size: 500, sort_order: 'asc' })
+    stations.value = result.items.filter((item) => item.enabled !== false)
+  } catch {
+    stations.value = []
+  }
+}
+
+function adoptAutomaticStation(): void {
+  const ap = store.selected?.ap
+  if (!ap?.auto_station_id) return
+  metadataForm.station_id = ap.auto_station_id
+  metadataForm.station_override_enabled = true
+  metadataForm.site_name = ap.auto_station_name
+}
+
+function clearManualStationOverride(): void {
+  metadataForm.station_id = ''
+  metadataForm.station_override_enabled = false
+  metadataForm.site_name = ''
+}
+
 async function openHistory(kind: 'radio' | 'lldp' | 'optical', page = 1): Promise<void> {
   if (!store.selected) return
   historyKind.value = kind
@@ -405,7 +448,9 @@ async function openDetailById(apId: string): Promise<void> {
   await store.selectAp(apId)
   const ap = store.selected?.ap
   if (ap) Object.assign(metadataForm, {
-    site_name: ap.station || '',
+    station_id: ap.manual_station_id || '',
+    station_override_enabled: ap.manual_override_enabled,
+    site_name: ap.manual_station_name || '',
     mileage: ap.mileage || '',
     location_note: ap.location_note || '',
     direction: ap.direction || '',
@@ -669,6 +714,8 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
         <el-button :icon="Refresh" :loading="store.loading" @click="store.manualRefresh">刷新已有数据</el-button>
         <el-button :icon="Refresh" :loading="store.refreshStarting" :disabled="!store.filters.ac_id || taskActive" @click="store.startAcInfoRefresh">更新 AC 信息</el-button>
         <el-button type="primary" :icon="Refresh" :loading="store.refreshStarting" :disabled="!store.filters.ac_id || taskActive" @click="store.startFitApRefresh">更新 FIT-AP 资源</el-button>
+        <el-button :icon="Refresh" :loading="store.refreshStarting" :disabled="!store.filters.ac_id || taskActive" @click="startVerboseRefresh('all')">获取全部 AP 详细信息</el-button>
+        <el-button :icon="Refresh" :loading="store.refreshStarting" :disabled="!selectedApIds.size || taskActive" @click="startVerboseRefresh('selected')">获取已选择 AP 详细信息</el-button>
         <el-button :icon="Refresh" :loading="store.refreshStarting" :disabled="!store.filters.ac_id || taskActive" @click="store.startOpticalRefresh">更新光衰</el-button>
         <span v-if="isFeatureEnabled('web.ac_dangerous_actions')" class="toolbar-separator" aria-hidden="true" />
         <el-button
@@ -856,26 +903,40 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
             <div><h2>{{ store.selected.ap.name }}</h2><p>{{ store.selected.ap.ip || '--' }} · {{ store.selected.ap.mac || '--' }}</p></div>
             <div class="toolbar-actions">
               <el-tag :type="statusType(store.selected.ap.status)" size="large">{{ statusLabel(store.selected.ap.status) }}</el-tag>
-              <el-button type="primary" :icon="Refresh" :loading="store.refreshStarting" :disabled="taskActive" @click="store.startFitApDetailRefresh">深度更新</el-button>
+              <el-button type="primary" :icon="Refresh" :loading="store.refreshStarting" :disabled="taskActive" @click="store.startFitApDetailRefresh">更新当前 AP 详细信息</el-button>
             </div>
           </div>
           <el-descriptions :column="2" border>
             <el-descriptions-item label="型号">{{ display(store.selected.ap.model) }}</el-descriptions-item>
+            <el-descriptions-item label="软件版本">{{ display(store.selected.ap.software_version) }}</el-descriptions-item>
+            <el-descriptions-item label="硬件版本">{{ display(store.selected.ap.hardware_version) }}</el-descriptions-item>
+            <el-descriptions-item label="Boot 版本">{{ display(store.selected.ap.boot_version) }}</el-descriptions-item>
+            <el-descriptions-item label="详细信息更新时间">{{ formatTime(store.selected.ap.detail_updated_at) }}</el-descriptions-item>
             <el-descriptions-item label="上线时长">{{ display(store.selected.ap.online_time) }}</el-descriptions-item>
-            <el-descriptions-item label="归属站点">{{ display(store.selected.ap.station) }}</el-descriptions-item>
+            <el-descriptions-item label="当前有效归属站点">{{ display(store.selected.ap.effective_station_name || store.selected.ap.station) }}</el-descriptions-item>
+            <el-descriptions-item label="关联来源">{{ display(store.selected.ap.station_source_detail || store.selected.ap.station_source) }}</el-descriptions-item>
             <el-descriptions-item label="归属区间">{{ display(store.selected.ap.section) }}</el-descriptions-item>
             <el-descriptions-item label="里程">{{ display(store.selected.ap.mileage) }}</el-descriptions-item>
             <el-descriptions-item label="线路方向">{{ display(store.selected.ap.direction) }}</el-descriptions-item>
           </el-descriptions>
 
           <div class="metadata-editor">
-            <div class="section-heading"><h3>AP 扩展元数据</h3><el-button v-if="isFeatureEnabled('web.ac_fit_ap_metadata_write')" type="primary" :loading="store.refreshStarting" :disabled="taskActive" @click="saveMetadata">保存元数据</el-button></div>
+            <div class="section-heading"><h3>自动关联信息（只读）</h3></div>
+            <el-descriptions :column="2" border>
+              <el-descriptions-item label="基础资料站点">{{ display(store.selected.ap.auto_station_name) }}</el-descriptions-item>
+              <el-descriptions-item label="基础资料 AP">{{ display(store.selected.ap.trackside_ap_name) }}</el-descriptions-item>
+              <el-descriptions-item label="LLDP 建议站点">{{ display(store.selected.ap.lldp_suggested_station_name) }}</el-descriptions-item>
+              <el-descriptions-item label="AC 原始站点">{{ display(store.selected.ap.resource_station_text) }}</el-descriptions-item>
+            </el-descriptions>
+            <div class="section-heading"><h3>手工站点覆盖</h3><div class="toolbar-actions"><el-button link type="primary" @click="adoptAutomaticStation" :disabled="!store.selected.ap.auto_station_id">采用自动关联结果</el-button><el-button link type="warning" @click="clearManualStationOverride" :disabled="!metadataForm.station_override_enabled">清除手工覆盖</el-button><el-button v-if="isFeatureEnabled('web.ac_fit_ap_metadata_write')" type="primary" :loading="store.refreshStarting" :disabled="taskActive" @click="saveMetadata">保存手工覆盖</el-button></div></div>
             <el-form :model="metadataForm" label-width="88px" :disabled="!isFeatureEnabled('web.ac_fit_ap_metadata_write')">
               <div class="metadata-grid">
                 <el-form-item label="归属站点">
                   <div class="metadata-field">
-                    <el-input v-model="metadataForm.site_name" maxlength="100" />
-                    <small v-if="store.selected.ap.station_source === 'lldp_switch_suggestion'">根据 LLDP 邻居交换机站点建议，保存后才写入</small>
+                    <el-select v-model="metadataForm.station_id" clearable filterable placeholder="选择正式站点" @change="metadataForm.station_override_enabled = Boolean(metadataForm.station_id)">
+                      <el-option v-for="station in stations" :key="station.id" :label="`${station.code || '--'}-${station.name}`" :value="station.id" />
+                    </el-select>
+                    <small>保存时只提交正式 station_id；自动关联、LLDP 建议和 AC 原始站点不会自动写入。</small>
                   </div>
                 </el-form-item>
                 <el-form-item label="里程"><el-input v-model="metadataForm.mileage" maxlength="100" placeholder="例如 ZDK1+200" /></el-form-item>

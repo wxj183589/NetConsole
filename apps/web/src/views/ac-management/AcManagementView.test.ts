@@ -15,11 +15,11 @@ describe('AC Management resource view', () => {
     expect(source).toContain('打开 AC Web')
     expect(source).toContain('getPlatformAdapter().openExternalUrl')
     expect(source).toContain("getRuntimeConfig().hostType === 'electron'")
-    expect(source).toContain('深度更新')
+    expect(source).toContain('更新当前 AP 详细信息')
     expect(source).toContain('更新光衰')
     expect(source).toContain('批量删除')
     expect(source).not.toContain('导入 AP 元数据')
-    expect(source).toContain('保存元数据')
+    expect(source).toContain('保存手工覆盖')
     expect(source).toContain("openHistory('radio')")
     expect(source).toContain("openHistory('lldp')")
     expect(source).toContain("openHistory('optical')")
@@ -145,8 +145,8 @@ describe('AC Management resource view', () => {
   it('uses topology ordering, short interface display, and keeps LLDP station inference advisory', () => {
     expect(source).toContain("sort_by: 'topology'")
     expect(source).toContain('displayInterfaceName')
-    expect(source).toContain("station_source === 'lldp_switch_suggestion'")
-    expect(source).toContain('根据 LLDP 邻居交换机站点建议，保存后才写入')
+    expect(source).toContain('自动关联信息（只读）')
+    expect(source).toContain('保存时只提交正式 station_id；自动关联、LLDP 建议和 AC 原始站点不会自动写入。')
   })
 
   it('stops polling when hidden and exposes no unapproved device write action', () => {

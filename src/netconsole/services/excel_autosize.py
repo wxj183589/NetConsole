@@ -19,23 +19,33 @@ def excel_column_width(value: object, minimum: float = 8.0, maximum: float = 60.
 
 
 def excel_column_width_bounds(field: str | None = None, header: str | None = None) -> tuple[float, float]:
-    text = f"{field or ''} {header or ''}".casefold()
+    field_text = str(field or "").casefold()
+    header_text = str(header or "").casefold()
+    text = f"{field_text} {header_text}"
     if any(token in text for token in ("序号", "source_line_number", "line_number", "record_seq")):
         return 8.0, 12.0
-    if "radio" in text:
-        return 8.0, 12.0
-    if any(token in text for token in ("状态", "state", "result", "结果")):
-        return 10.0, 18.0
-    if any(token in text for token in ("rssi", "busy", "采样点数", "sample_count", "链路数", "link_count")):
-        return 10.0, 14.0
     if any(token in text for token in ("mac", "peermac")):
         return 18.0, 22.0
-    if any(token in text for token in ("time", "时间", "duration", "时长")):
+    if any(token in text for token in ("time", "时间", "duration", "时长", "updated_at", "created_at", "collected_at", "timestamp", "datetime")):
         return 18.0, 26.0
-    if any(token in text for token in ("ap名称", "ap name", "peer_ap_name", "站点", "station", "peer_site")):
-        return 18.0, 32.0
     if any(token in text for token in ("source_file", "archived_filename", "file", "文件", "路径", "path")):
         return 30.0, 80.0
+    if any(token in text for token in ("状态", "state", "result", "结果")):
+        return 10.0, 18.0
+    if any(token in text for token in ("序列号", "serial_number", "serial no", "serialno")):
+        return 14.0, 32.0
+    if any(token in text for token in ("连接端口", "邻居端口", "interface", "端口", "port")):
+        return 18.0, 48.0
+    if any(token in text for token in ("软件版本", "software_version", "version")):
+        return 18.0, 48.0
+    if any(token in text for token in ("数据完整性", "备注", "说明", "description", "remark", "note")):
+        return 18.0, 40.0
+    if any(token in text for token in ("rssi", "busy", "采样点数", "sample_count", "链路数", "link_count")):
+        return 10.0, 14.0
+    if field_text in {"radio_id", "radio_count"} or header_text in {"radio id", "radio数量"}:
+        return 8.0, 12.0
+    if any(token in text for token in ("ap名称", "ap name", "peer_ap_name", "站点", "station", "peer_site")):
+        return 18.0, 32.0
     return 8.0, 40.0
 
 

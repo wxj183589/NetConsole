@@ -69,6 +69,7 @@ SAFE_AC_COMMANDS = SAFE_DEVICE_COMMANDS | {
     "display wlan ap all radio type",
     "display wlan ap unauthenticated",
     "display wlan ap all lldp",
+    "display wlan ap all verbose",
     "display cpu-usage",
     "display memory",
     "display ip https | include port",
@@ -89,14 +90,13 @@ SAFE_AC_FIT_AP_RESOURCE_COLLECT_COMMANDS = {
 
 SAFE_AC_FIT_AP_DETAIL_COLLECT_COMMANDS = {
     "screen-length disable",
-    "display wlan ap all",
-    "display wlan ap all address",
-    "display wlan ap all radio",
+    "display wlan ap all verbose",
+    # Compatibility fallback for older AC firmware that returns an empty
+    # response to the single-AP verbose command.
     "display wlan ap all radio verbose filter bbssid",
-    "display wlan ap all connection-record",
-    "display wlan ap all radio type",
-    "display wlan ap all lldp",
 }
+SAFE_AC_FIT_AP_VERBOSE_ALL_COLLECT_COMMANDS = SAFE_AC_FIT_AP_DETAIL_COLLECT_COMMANDS
+SAFE_AC_FIT_AP_VERBOSE_SELECTED_COLLECT_COMMANDS = {"screen-length disable"}
 
 SAFE_AC_INFO_COLLECT_COMMANDS = {
     "screen-length disable",
@@ -217,6 +217,8 @@ CONTEXT_COMMANDS = {
     "ac_collect": SAFE_AC_COMMANDS,
     "ac_fit_ap_resource_collect": SAFE_AC_FIT_AP_RESOURCE_COLLECT_COMMANDS,
     "ac_fit_ap_detail_collect": SAFE_AC_FIT_AP_DETAIL_COLLECT_COMMANDS,
+    "ac_fit_ap_verbose_all_collect": SAFE_AC_FIT_AP_VERBOSE_ALL_COLLECT_COMMANDS,
+    "ac_fit_ap_verbose_selected_collect": SAFE_AC_FIT_AP_VERBOSE_SELECTED_COLLECT_COMMANDS,
     "ac_info_collect": SAFE_AC_INFO_COLLECT_COMMANDS,
     "fit_ap_collect": SAFE_FIT_AP_COMMANDS,
     "fit_ap_optical_collect": SAFE_FIT_AP_OPTICAL_COMMANDS,
@@ -296,6 +298,16 @@ DANGEROUS_ALLOWLIST_EXCEPTIONS = {
     "show vlan",
 }
 READ_ONLY_DYNAMIC_PATTERNS = {
+    "ac_fit_ap_detail_collect": (
+        re.compile(r"display wlan ap all verbose"),
+        re.compile(r"display wlan ap name [a-z0-9][a-z0-9_.:-]{0,63} verbose"),
+    ),
+    "ac_fit_ap_verbose_all_collect": (
+        re.compile(r"display wlan ap all verbose"),
+    ),
+    "ac_fit_ap_verbose_selected_collect": (
+        re.compile(r"display wlan ap name [a-z0-9][a-z0-9_.:-]{0,63} verbose"),
+    ),
     "device.inventory.collect": (
         re.compile(r"show opticalinfo [a-z][a-z0-9./:_-]{0,79}"),
     ),

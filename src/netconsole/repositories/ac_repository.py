@@ -137,6 +137,9 @@ FIT_AP_METADATA_FIELDS = (
     "ap_uuid",
     "ap_name",
     "site_name",
+    "station_id",
+    "station_override_enabled",
+    "station_override_source",
     "belong_type",
     "belong_section",
     "section_start_station",
@@ -146,6 +149,71 @@ FIT_AP_METADATA_FIELDS = (
     "mileage",
     "location_note",
     "direction",
+    "created_at",
+    "updated_at",
+)
+
+FIT_AP_DETAIL_FIELDS = (
+    "ap_uuid",
+    "ac_device_uuid",
+    "ap_name",
+    "ap_group_name",
+    "backup_type",
+    "ready_for_switchover",
+    "system_uptime",
+    "region_code",
+    "region_code_lock",
+    "hardware_version",
+    "software_version",
+    "boot_version",
+    "map_file",
+    "forwarding_mode",
+    "power_level",
+    "power_info",
+    "capwap_data_tunnel_status",
+    "discovery_type",
+    "last_reboot_reason",
+    "latest_ip_address",
+    "current_ac_ip",
+    "tunnel_down_reason",
+    "connection_count",
+    "control_tunnel_encryption_state",
+    "data_tunnel_encryption_state",
+    "remote_configuration",
+    "energy_saving_level",
+    "ap_type",
+    "extra_fields_json",
+    "collected_at",
+    "collect_run_uuid",
+    "raw_log_path",
+    "created_at",
+    "updated_at",
+)
+
+FIT_AP_RADIO_DETAIL_FIELDS = (
+    "ap_uuid",
+    "radio_id",
+    "base_bssid",
+    "state",
+    "radio_type",
+    "antenna_type",
+    "channel_bandwidth",
+    "operating_bandwidth",
+    "secondary_channel_mode",
+    "mimo",
+    "channel",
+    "channel_mode",
+    "channel_usage",
+    "max_power",
+    "noise_floor",
+    "distance",
+    "beacon_interval",
+    "protection_mode",
+    "twt_negotiation",
+    "radar_detect",
+    "extra_fields_json",
+    "collected_at",
+    "collect_run_uuid",
     "created_at",
     "updated_at",
 )
@@ -793,6 +861,9 @@ class AcRepository:
                 """
                 SELECT r.*,
                        m_uuid.site_name AS site_name,
+                       m_uuid.station_id AS metadata_station_id,
+                       m_uuid.station_override_enabled AS metadata_station_override_enabled,
+                       m_uuid.station_override_source AS metadata_station_override_source,
                        m_uuid.belong_type AS metadata_belong_type,
                        m_uuid.belong_section AS metadata_belong_section,
                        m_uuid.section_start_station AS metadata_section_start_station,
@@ -831,6 +902,9 @@ class AcRepository:
                 f"""
                 SELECT r.*,
                        m_uuid.site_name AS site_name,
+                       m_uuid.station_id AS metadata_station_id,
+                       m_uuid.station_override_enabled AS metadata_station_override_enabled,
+                       m_uuid.station_override_source AS metadata_station_override_source,
                        m_uuid.belong_type AS metadata_belong_type,
                        m_uuid.belong_section AS metadata_belong_section,
                        m_uuid.section_start_station AS metadata_section_start_station,
@@ -1462,6 +1536,94 @@ class AcRepository:
             key=lambda row: (str(row.get("ap_name") or ""), _int_value(row.get("id"))),
         )
 
+    def repair_invalid_fit_ap_association_projection(
+        self,
+        ac_device_uuid: str,
+        ap_uuids: list[str] | None = None,
+        *,
+        apply: bool = False,
+    ) -> dict[str, object]:
+        """Preview or clear known-invalid LLDP association projections.
+
+        This deliberately leaves AP resources, history and raw collection files
+        untouched. ``apply`` must be explicitly enabled by a maintenance caller.
+        A subsequent optical refresh repopulates the cleared projection.
+        """
+
+        requested = {str(value or "").strip() for value in ap_uuids or [] if str(value or "").strip()}
+        with self.database.connect() as conn:
+            optical_rows = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM ac_fit_ap_optical WHERE ac_device_uuid = ?",
+                    (str(ac_device_uuid),),
+                ).fetchall()
+            ]
+            if requested:
+                optical_rows = [row for row in optical_rows if str(row.get("ap_uuid") or "") in requested]
+            candidates = [row for row in optical_rows if _is_invalid_fit_ap_association_projection(row)]
+            candidate_ids = [int(row["id"]) for row in candidates if row.get("id") is not None]
+            candidate_ap_uuids = sorted(
+                {str(row.get("ap_uuid") or "") for row in candidates if str(row.get("ap_uuid") or "")}
+            )
+            result: dict[str, object] = {
+                "applied": False,
+                "candidate_count": len(candidates),
+                "cleared_optical_rows": 0,
+                "cleared_resource_rows": 0,
+                "ap_uuids": candidate_ap_uuids,
+                "raw_logs_preserved": True,
+            }
+            if not apply or not candidates:
+                return result
+
+            now = self._now()
+            projection = {
+                "lldp_neighbor": "",
+                "lldp_source": "",
+                "lldp_confidence": 0,
+                "lldp_collected_at": None,
+                "lldp_local_interface": "",
+                "lldp_local_interface_normalized": "",
+                "lldp_neighbor_name": "",
+                "lldp_neighbor_mac": "",
+                "lldp_neighbor_mac_normalized": "",
+                "lldp_neighbor_interface": "",
+                "lldp_match_status": "unknown",
+                "neighbor_interface": "",
+                "neighbor_mac": "",
+                "neighbor_device_name": "",
+                "neighbor_rx_power": None,
+                "link_match_status": "unknown",
+                "optical_match_status": "unknown",
+                "optical_alarm_status": None,
+                "updated_at": now,
+            }
+            optical_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(ac_fit_ap_optical)")}
+            optical_updates = {key: value for key, value in projection.items() if key in optical_columns}
+            assignments = ", ".join(f"{key} = ?" for key in optical_updates)
+            for row_id in candidate_ids:
+                conn.execute(
+                    f"UPDATE ac_fit_ap_optical SET {assignments} WHERE id = ? AND ac_device_uuid = ?",
+                    [*optical_updates.values(), row_id, str(ac_device_uuid)],
+                )
+            result["cleared_optical_rows"] = len(candidate_ids)
+
+            resource_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(ac_fit_ap_resources)")}
+            resource_updates = {key: value for key, value in projection.items() if key in resource_columns}
+            resource_assignments = ", ".join(f"{key} = ?" for key in resource_updates)
+            if candidate_ap_uuids and resource_assignments:
+                placeholders = ", ".join("?" for _ in candidate_ap_uuids)
+                cursor = conn.execute(
+                    f"UPDATE ac_fit_ap_resources SET {resource_assignments} "
+                    f"WHERE ac_device_uuid = ? AND ap_uuid IN ({placeholders})",
+                    [*resource_updates.values(), str(ac_device_uuid), *candidate_ap_uuids],
+                )
+                result["cleared_resource_rows"] = int(cursor.rowcount or 0)
+            conn.commit()
+            result["applied"] = True
+            return result
+
     def list_all_fit_ap_optical(self) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
             rows = conn.execute("SELECT * FROM ac_fit_ap_optical ORDER BY neighbor_device_name, neighbor_interface, ap_name, id").fetchall()
@@ -1815,12 +1977,25 @@ class AcRepository:
         if not normalized_data.get("belong_section"):
             normalized_data["belong_section"] = normalized_data.get("section_name")
         payload = self._payload(FIT_AP_METADATA_FIELDS, normalized_data)
+        payload["station_id"] = str(payload.get("station_id") or "")
+        payload["station_override_enabled"] = bool(payload.get("station_override_enabled"))
+        payload["station_override_source"] = str(payload.get("station_override_source") or "")
         if not payload.get("ap_uuid") and payload.get("ap_name"):
             resource = self.get_fit_ap_resource_by_name_any_ac(str(payload["ap_name"]))
             if resource:
                 payload["ap_uuid"] = resource.get("ap_uuid")
         if not payload.get("ap_uuid"):
             payload["ap_uuid"] = str(uuid4())
+        if "station_override_enabled" not in normalized_data:
+            payload["station_override_enabled"] = int(bool(payload.get("station_id") or payload.get("site_name")))
+        else:
+            payload["station_override_enabled"] = int(bool(payload.get("station_override_enabled")))
+        if payload["station_override_enabled"] and not payload.get("station_override_source"):
+            payload["station_override_source"] = "manual"
+        if not payload["station_override_enabled"]:
+            payload["station_id"] = ""
+            payload["site_name"] = ""
+            payload["station_override_source"] = ""
         now = self._now()
         payload["created_at"] = payload.get("created_at") or now
         payload["updated_at"] = payload.get("updated_at") or now
@@ -1863,11 +2038,21 @@ class AcRepository:
         return [dict(row) for row in rows]
 
     def update_fit_ap_site(self, ap_uuids: list[str], site_name: str) -> int:
-        return self.update_fit_ap_metadata_fields(ap_uuids, {"site_name": site_name})
+        return self.update_fit_ap_metadata_fields(
+            ap_uuids,
+            {
+                "site_name": site_name,
+                "station_override_enabled": bool(str(site_name or "").strip()),
+                "station_override_source": "manual" if str(site_name or "").strip() else "",
+            },
+        )
 
     def update_fit_ap_metadata_fields(self, ap_uuids: list[str], fields: dict[str, object | None]) -> int:
         allowed = {
             "site_name",
+            "station_id",
+            "station_override_enabled",
+            "station_override_source",
             "belong_type",
             "belong_section",
             "section_start_station",
@@ -1879,6 +2064,10 @@ class AcRepository:
             "direction",
         }
         values = {key: value for key, value in fields.items() if key in allowed}
+        if "station_override_enabled" in values:
+            values["station_override_enabled"] = int(bool(values["station_override_enabled"]))
+        if not values.get("station_override_enabled", 1):
+            values.update(station_id="", site_name="", station_override_source="")
         count = 0
         now = self._now()
         for value in ap_uuids:
@@ -1889,6 +2078,106 @@ class AcRepository:
             self.upsert_fit_ap_metadata(payload)
             count += 1
         return count
+
+    def upsert_fit_ap_detail(self, data: dict[str, object | None]) -> dict[str, object | None]:
+        payload = self._payload(FIT_AP_DETAIL_FIELDS, data)
+        now = self._now()
+        payload["collected_at"] = payload.get("collected_at") or now
+        payload["created_at"] = payload.get("created_at") or now
+        payload["updated_at"] = payload.get("updated_at") or now
+        if not payload.get("ap_uuid") or not payload.get("ac_device_uuid"):
+            raise ValueError("FIT-AP 详细信息缺少 AP 或 AC 身份")
+        columns = ", ".join(FIT_AP_DETAIL_FIELDS)
+        placeholders = ", ".join("?" for _ in FIT_AP_DETAIL_FIELDS)
+        updates = ", ".join(
+            f"{field} = excluded.{field}"
+            for field in FIT_AP_DETAIL_FIELDS
+            if field not in {"ap_uuid", "created_at"}
+        )
+        with self.database.connect() as conn:
+            conn.execute(
+                f"""
+                INSERT INTO ac_fit_ap_details ({columns})
+                VALUES ({placeholders})
+                ON CONFLICT(ap_uuid) DO UPDATE SET {updates}
+                """,
+                [payload[field] for field in FIT_AP_DETAIL_FIELDS],
+            )
+            conn.commit()
+        return self.get_fit_ap_detail(str(payload["ap_uuid"])) or payload
+
+    def get_fit_ap_detail(self, ap_uuid: str) -> dict[str, object | None] | None:
+        with self.database.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM ac_fit_ap_details WHERE ap_uuid = ?",
+                (str(ap_uuid),),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def list_fit_ap_details(self, ac_device_uuid: str) -> list[dict[str, object | None]]:
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM ac_fit_ap_details WHERE ac_device_uuid = ? ORDER BY ap_name, ap_uuid",
+                (str(ac_device_uuid),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_fit_ap_details_for_macs(self, macs: list[str]) -> list[dict[str, object | None]]:
+        """按当前页 AP MAC 批量读取详细信息索引，避免列表页逐 AP 查询。"""
+        normalized = sorted(
+            {
+                self._mac_from_text(value).replace("-", "")
+                for value in macs
+                if self._mac_from_text(value)
+            }
+        )
+        if not normalized:
+            return []
+        placeholders = ", ".join("?" for _ in normalized)
+        expression = "replace(replace(replace(replace(lower(COALESCE(r.ap_mac, '')), ':', ''), '-', ''), '.', ''), ' ', '')"
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT d.*
+                FROM ac_fit_ap_details d
+                JOIN ac_fit_ap_resources r ON r.ap_uuid = d.ap_uuid
+                WHERE {expression} IN ({placeholders})
+                """,
+                normalized,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def replace_fit_ap_radio_details(
+        self,
+        ap_uuid: str,
+        rows: list[dict[str, object | None]],
+    ) -> None:
+        now = self._now()
+        with self.database.connect() as conn:
+            conn.execute("DELETE FROM ac_fit_ap_radio_details WHERE ap_uuid = ?", (str(ap_uuid),))
+            for row in rows:
+                payload = self._payload(
+                    FIT_AP_RADIO_DETAIL_FIELDS,
+                    {**row, "ap_uuid": str(ap_uuid)},
+                )
+                payload["collected_at"] = payload.get("collected_at") or now
+                payload["created_at"] = payload.get("created_at") or now
+                payload["updated_at"] = payload.get("updated_at") or now
+                columns = ", ".join(FIT_AP_RADIO_DETAIL_FIELDS)
+                placeholders = ", ".join("?" for _ in FIT_AP_RADIO_DETAIL_FIELDS)
+                conn.execute(
+                    f"INSERT INTO ac_fit_ap_radio_details ({columns}) VALUES ({placeholders})",
+                    [payload[field] for field in FIT_AP_RADIO_DETAIL_FIELDS],
+                )
+            conn.commit()
+
+    def list_fit_ap_radio_details(self, ap_uuid: str) -> list[dict[str, object | None]]:
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM ac_fit_ap_radio_details WHERE ap_uuid = ? ORDER BY radio_id",
+                (str(ap_uuid),),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def delete_fit_aps(self, ac_device_uuid: str, ap_uuids: list[str]) -> int:
         if not ap_uuids:
@@ -1901,6 +2190,8 @@ class AcRepository:
                 [ac_device_uuid, *ap_uuids],
             ).rowcount
             conn.execute(f"DELETE FROM ac_fit_ap_optical WHERE ac_device_uuid = ? AND ap_uuid IN ({placeholders})", [ac_device_uuid, *ap_uuids])
+            conn.execute(f"DELETE FROM ac_fit_ap_details WHERE ap_uuid IN ({placeholders})", ap_uuids)
+            conn.execute(f"DELETE FROM ac_fit_ap_radio_details WHERE ap_uuid IN ({placeholders})", ap_uuids)
             conn.execute(f"DELETE FROM ac_fit_ap_metadata WHERE ap_uuid IN ({placeholders})", ap_uuids)
             conn.commit()
         return int(count or 0)
@@ -2817,6 +3108,9 @@ class AcRepository:
                 """
                 SELECT r.*,
                        m_uuid.site_name AS site_name,
+                       m_uuid.station_id AS metadata_station_id,
+                       m_uuid.station_override_enabled AS metadata_station_override_enabled,
+                       m_uuid.station_override_source AS metadata_station_override_source,
                        m_uuid.belong_type AS metadata_belong_type,
                        m_uuid.belong_section AS metadata_belong_section,
                        m_uuid.section_start_station AS metadata_section_start_station,
@@ -2842,17 +3136,18 @@ class AcRepository:
         if not rows:
             return rows
         extensions = self.list_ap_extension_points()
-        by_mac = {
-            str(row.get("ap_mac_norm") or ""): row
-            for row in extensions
-            if str(row.get("ap_mac_norm") or "").strip()
-        }
+        by_mac: dict[str, list[dict[str, object | None]]] = {}
+        for extension in extensions:
+            key = str(extension.get("ap_mac_norm") or "").strip().casefold()
+            if key:
+                by_mac.setdefault(key, []).append(extension)
         enriched: list[dict[str, object | None]] = []
         for row in rows:
             item = dict(row)
             mac = self._extension_mac_norm(item.get("ap_mac"))
-            extension = by_mac.get(mac)
-            match_status = "matched_by_mac" if extension else ""
+            candidates = by_mac.get(mac, [])
+            extension = candidates[0] if len(candidates) == 1 else None
+            match_status = "matched_by_mac" if extension else "ambiguous_mac" if len(candidates) > 1 else ""
             if extension:
                 for field in (
                     "ap_name",
@@ -2900,6 +3195,13 @@ class AcRepository:
 
     @staticmethod
     def _resource_with_metadata(item: dict[str, object | None]) -> dict[str, object | None]:
+        item["resource_station_text"] = item.get("site")
+        item["manual_station_id"] = item.get("metadata_station_id") or ""
+        item["manual_station_name"] = item.get("site_name") or ""
+        item["manual_override_enabled"] = bool(item.get("metadata_station_override_enabled")) or bool(
+            item.get("site_name") and not item.get("metadata_station_override_source")
+        )
+        item["manual_override_source"] = item.get("metadata_station_override_source") or ""
         item["site"] = item.get("site_name") or item.get("site")
         item["belong_type"] = item.get("metadata_belong_type") or item.get("belong_type")
         item["section_name"] = item.get("metadata_belong_section") or item.get("section_name")
@@ -3308,6 +3610,33 @@ def _has_lldp_payload(row: dict[str, object | None]) -> bool:
             "lldp_neighbor_name",
             "lldp_neighbor_mac",
             "lldp_neighbor_interface",
+        )
+    )
+
+
+_GENERIC_ASSOCIATION_VALUES = {"h3c", "comware", "switch", "ethernet switch", "unknown", "n/a", "na", "-"}
+_INTERFACE_VALUE_RE = re.compile(
+    r"(?i)^(?:ge|gigabitethernet|xge|xgigabitethernet|ten-gigabitethernet|"
+    r"tengigabitethernet|sge|fortygigabitethernet|hundredgigabitethernet)\s*\d+(?:/\d+){1,3}$"
+)
+
+
+def _is_invalid_fit_ap_association_projection(row: dict[str, object | None]) -> bool:
+    def text(field: str) -> str:
+        return str(row.get(field) or "").strip()
+
+    def is_generic(value: str) -> bool:
+        return value.casefold() in _GENERIC_ASSOCIATION_VALUES
+
+    def is_interface(value: str) -> bool:
+        return bool(_INTERFACE_VALUE_RE.fullmatch(value))
+
+    return any(
+        (
+            is_interface(text("neighbor_device_name")),
+            is_interface(text("lldp_neighbor_name")),
+            is_generic(text("neighbor_interface")),
+            is_generic(text("lldp_neighbor_interface")),
         )
     )
 

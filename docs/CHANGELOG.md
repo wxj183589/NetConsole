@@ -33,6 +33,10 @@
 - 修复大局点“更新 AC 信息”和单 AP“深度更新”在数据已成功入库后仍因完整资源快照超过 Worker 1 MiB 单帧限制而失败；两类任务改为返回有界持久化摘要，页面按 `reload_required` 重新读取 SQLite。
 - FIT-AP collect 终态改为有界持久化摘要，不再携带完整资源列表；974 AP、758 LLDP 规模由任务摘要回执，页面通过分页 GET 重新加载 SQLite。
 - FIT-AP 批量刷新加入 `display wlan ap all radio verbose filter bbssid`，使用独立 120 秒读取超时；该命令失败或空结果会保留 raw 并返回明确 BBSSID 状态，但不丢弃必需命令已采集的 AP 资源。
+- FIT-AP 详细采集新增全量/选中两种受控范围，使用 `display wlan ap name <name> verbose` 写入 AP 与 Radio 详细表；目标由当前 AC 资源校验，任务终态只返回有界摘要，raw/命令记录仍保留。
+- 修复 FIT-AP 直连 LLDP 两种动态表头的字段定位，支持 `System Name` 位于表首或表尾；邻居 MAC 优先匹配，泛化邻居名 `H3C/Comware/Switch` 不再单独绑定设备，多候选保留 `ambiguous`。
+- 自动关联站点与手工元数据覆盖分离：基础资料 AP MAC、LLDP 交换机站点和 AC 原始站点仅作为只读证据，只有显式保存 `station_id` 才写入正式元数据。新增受控 LLDP 派生投影修复，默认 dry-run，显式 apply 才清理当前投影，历史与 raw 保持不变。
+- 受控现场样本验证通过：H3C AC 资源刷新 974 台 FIT-AP、758 条 LLDP/Radio 证据；WA6522 与 WA6624X 直连 LLDP 两种表头各完成单台 raw 采集与解析。现场验证仍不等同于 Electron 全量人工验收。
 - Worker 写帧前执行 1 MiB 字节检查，超大结果改发小型结构化错误；协议失败等待子进程退出后发布唯一终态，并在任务详情展示 reason、stream、frame/max bytes、exit code 和数据是否已落库，不影响 Backend 健康接口。
 
 ### 轨旁 AP 查询性能
@@ -184,6 +188,8 @@
 
 - AC 管理新增独立 FIT-AP 资源 XLSX 导出，支持当前筛选、已选择和当前 AC 全部三种范围；页面筛选与导出复用同一 Query Service，导出不受当前分页限制，也不连接 AC、AP 或交换机。
 - 工作簿固定包含“AP资源清单”“Radio明细”“导出说明”：AP 主表按规范化 MAC 去重并保持一 AP 一行，Radio 单独逐行展开；光衰、LLDP、站点、区间、MAC 或 Radio 缺失时保留其他 AP 并在数据完整性列标识。
+- 修复 FIT-AP 资源 XLSX 字段契约：移除无实际数据的“项目名称”“线路名称”，增加来自已持久化资源/未认证资源的“AP序列号”，并将该导出 metadata schema 升级为 v2；缺失序列号仅计入数据完整性告警，不阻断导出。
+- 修复 FIT-AP 资源导出排序和列宽：AP 按连接交换机、连接端口自然升序且缺失项后置，Radio 序号在最终排序后连续重排；Radio 更新时间/MAC、AP 序列号、连接端口和 AC 软件版本不再被泛化 Radio 窄列规则截断，长文本列启用换行。
 - 导出复用 Export Process、任务中心和 `WebArtifactStore`。Electron 另存为校验大小与 SHA-256，浏览器走 Artifact 下载；取消或保存失败后 Artifact 保留，可再次保存。
 - FIT-AP 资源页面移除旧版“AC任务”常驻状态条及页面内“打开任务中心”入口；AC、FIT-AP、光衰和 AP 操作任务继续统一进入顶部全局任务中心，不再创建页面级任务窗口或保留空白占位。
 

@@ -92,6 +92,9 @@ class AcLldpDTO(ApiModel):
     switch_ip: str = ""
     interface_name: str = ""
     lldp_neighbor: str = ""
+    lldp_local_interface: str = ""
+    lldp_neighbor_mac: str = ""
+    lldp_neighbor_interface: str = ""
     port_status: str = ""
     vlan: str = ""
     optical_module_status: str = ""
@@ -111,6 +114,7 @@ class AcApDTO(ApiModel):
     status: str = "unknown"
     state_display: str = ""
     model: str = ""
+    serial_number: str = Field(default="", exclude=True)
     online_time: str = ""
     is_unauthenticated: bool = False
     radio1_status: str = ""
@@ -121,6 +125,24 @@ class AcApDTO(ApiModel):
     radio2_power: str = ""
     station: str = ""
     station_source: str = "empty"
+    station_source_detail: str = "empty"
+    effective_station_id: str = ""
+    effective_station_name: str = ""
+    station_confidence: float = 0.0
+    manual_station_id: str = ""
+    manual_station_name: str = ""
+    manual_override_enabled: bool = False
+    auto_station_id: str = ""
+    auto_station_name: str = ""
+    auto_match_basis: str = ""
+    lldp_suggested_station_id: str = ""
+    lldp_suggested_station_name: str = ""
+    resource_station_text: str = ""
+    software_version: str = ""
+    hardware_version: str = ""
+    boot_version: str = ""
+    detail_updated_at: str = ""
+    detail_available: bool = False
     section: str = ""
     mileage: str = ""
     direction: str = ""
@@ -161,6 +183,8 @@ class AcApDetailDTO(ApiModel):
     lldp: AcLldpDTO
     optical: AcOpticalDTO
     connection: AcConnectionRecordDTO = Field(default_factory=AcConnectionRecordDTO)
+    detail: dict[str, object | None] = Field(default_factory=dict)
+    radio_details: list[dict[str, object | None]] = Field(default_factory=list)
 
 
 class AcConfigSnapshotDTO(ApiModel):
@@ -338,6 +362,12 @@ class AcRefreshRequestDTO(ApiModel):
     ap_id: str = Field(default="", max_length=100)
 
 
+class AcFitApVerboseRequestDTO(ApiModel):
+    ac_id: str = Field(min_length=1, max_length=100)
+    scope: Literal["all", "selected"] = "all"
+    ap_ids: list[str] = Field(default_factory=list, max_length=2000)
+
+
 class AcFitApDeleteRequestDTO(ApiModel):
     ac_id: str = Field(min_length=1, max_length=100)
     ap_ids: list[str] = Field(min_length=1, max_length=2000)
@@ -346,6 +376,8 @@ class AcFitApDeleteRequestDTO(ApiModel):
 
 class AcFitApMetadataSaveRequestDTO(ApiModel):
     ac_id: str = Field(min_length=1, max_length=100)
+    station_id: str = Field(default="", max_length=200)
+    station_override_enabled: bool = False
     site_name: str = Field(default="", max_length=100)
     mileage: str = Field(default="", max_length=100)
     location_note: str = Field(default="", max_length=500)
@@ -504,5 +536,6 @@ __all__ = [
     "AcExternalTerminalActionDTO",
     "AcLocalRebuildRequestDTO",
     "AcRefreshRequestDTO",
+    "AcFitApVerboseRequestDTO",
     "AcWebTaskDTO",
 ]
