@@ -270,6 +270,8 @@ Vue 只向具名 FastAPI endpoint 提交白名单 DTO；Router 调用对应 Appl
 - `ac_fit_ap_optical_refresh` 保持原 task_type；`mode=load` 读取并关联现有光衰，`mode=collect` 在 Worker 内调用 `AcOpticalService`。`refresh_scope=all/single` 分别承载全量和单 AP 刷新，不增加平行 task_type。
 - 页面不再创建 `FitApOpticalCollectThread`，只提交 device/AP 标识、并发、来源和取消宽限期，并在 finished/failed/cancelled 后恢复按钮。未显式传入并发时默认使用共享 FIT-AP 光衰并发 64；旧设置或旧调用传入 1000/200 时，Worker 仍按目标 AP 数、用户请求值和当前平台安全上限裁剪实际 worker 数。
 - `AcOpticalService` 继续调用既有 `collect_h3c_fit_ap_optical`；AP 控制台启用、Telnet 命令、解析、重试、历史合并、raw log 和 repository 写入语义均不改变。
+- `mode=collect` 成功终态只返回成功/失败数量、collect run、并发裁剪、轮次、`data_persisted`、`reload_required` 和 AP Identity 聚合，不携带完整 FIT-AP 资源、光衰行或逐项 Identity 明细；页面在终态后通过正常查询重新读取 SQLite。`mode=load` 继续返回完整快照。
+- 单 AP 完成事件的 `elapsed_ms` 从线程实际开始执行时计算，不包含等待线程池槽位的排队时间；Windows 平台安全并发上限仍为 64，不通过虚增并发或缩短设备命令超时掩盖现场耗时。
 - AP 在线/离线关联和交换机侧光模块状态在 Domain 层合并。交换机侧无光不直接改写在线 AP 的 AP 侧异常；AP 离线仍按现有状态映射为历史光衰展示。
 - 采集取消转换为唯一 cancelled 终态；全部失败转换为结构化 error；部分失败以 finished 返回 `partial_success/failed_aps`，便于 UI 保留现有结果并提示。
 - `ac_fit_ap_optical_refresh` 与轨旁 `trackside_ap_optical_update` 对同一 `site_id + ac_device_uuid + fit_ap_optical` 写入 `resource_keys`，`TaskApplicationService` 通过所属局点 `tasks.db` 的 `BEGIN IMMEDIATE` 原子检查和保存阻止同一 AC 重复光衰任务；任务进入 completed/failed/cancelled 或重启 orphan reconcile 后即释放占用，不使用永久文件锁。

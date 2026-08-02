@@ -186,6 +186,46 @@ class AcOpticalRefreshResult:
             },
         }
 
+    def to_terminal_payload(self) -> dict[str, object]:
+        """Worker 终态只回执持久化摘要，光衰明细通过查询接口读取。"""
+
+        updated = max(0, int(self.optical_rows_updated))
+        failed = max(0, int(self.failed_aps))
+        succeeded = max(0, updated - failed)
+        data_persisted = succeeded > 0
+        round_summaries = [dict(row) for row in self.round_summaries]
+        collection = {
+            "success": bool(self.success),
+            "partial_success": bool(self.partial_success),
+            "source": str(self.source),
+            "refresh_scope": str(self.refresh_scope),
+            "collect_run_uuid": str(self.collect_run_uuid),
+            "optical_rows_updated": updated,
+            "success_count": succeeded,
+            "failed_aps": failed,
+            "failed_count": failed,
+            "error_message": str(self.error_message),
+            "requested_concurrency": int(self.requested_concurrency),
+            "effective_concurrency": int(self.effective_concurrency),
+            "platform_concurrency_limit": int(self.platform_concurrency_limit),
+            "round_summaries": round_summaries,
+        }
+        return {
+            "ac_uuid": str(self.snapshot.ac_device_uuid),
+            "collect_run_uuid": str(self.collect_run_uuid),
+            "success": bool(self.success),
+            "partial_success": bool(self.partial_success),
+            "refresh_scope": str(self.refresh_scope),
+            "optical_rows_updated": updated,
+            "success_count": succeeded,
+            "failed_aps": failed,
+            "failed_count": failed,
+            "error_message": str(self.error_message),
+            "data_persisted": data_persisted,
+            "reload_required": data_persisted,
+            "collection": collection,
+        }
+
 
 @dataclass(frozen=True)
 class AcCommandRequest:

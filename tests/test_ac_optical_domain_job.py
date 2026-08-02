@@ -13,6 +13,7 @@ from netconsole.models.device import Device
 from netconsole.services.ac.ac_models import AcOpticalRefreshRequest, AcOpticalRefreshResult, AcOpticalSnapshot
 from netconsole.services.ac.ac_optical_service import AcOpticalRefreshCancelled, AcOpticalService
 from netconsole.services.background_job import BackgroundJob
+from netconsole.services import h3c_ac_collect_service
 from netconsole.services.h3c_ac_collect_service import FitApOpticalCollectResult
 from netconsole.services.job_center.handlers import ac_jobs
 from netconsole.services.job_center.job_runner import run_job
@@ -184,6 +185,86 @@ def test_ac_optical_service_preserves_offline_association_and_does_not_map_switc
     assert rows["AP-02"]["data_source"] == "historical"
 
 
+def test_ac_optical_terminal_payload_is_bounded_for_large_snapshot() -> None:
+    resources = [
+        {
+            "ap_uuid": f"ap-{index}",
+            "ap_name": f"轨旁 AP {index:04d}",
+            "description": "x" * 160,
+        }
+        for index in range(758)
+    ]
+    optical_rows = [
+        {
+            "ap_uuid": f"ap-{index}",
+            "ap_name": f"轨旁 AP {index:04d}",
+            "rx_power": "-10.25",
+            "raw_log_path": "files/" + "y" * 180,
+        }
+        for index in range(758)
+    ]
+    result = AcOpticalRefreshResult(
+        True,
+        False,
+        "cli",
+        "all",
+        AcOpticalSnapshot("ac-large", {"total_aps": 974}, resources, optical_rows),
+        collect_run_uuid="run-758",
+        optical_rows_updated=758,
+        failed_aps=0,
+        requested_concurrency=64,
+        effective_concurrency=64,
+        platform_concurrency_limit=64,
+        round_summaries=[{"round_index": 1, "planned": 758, "success": 758, "failed": 0}],
+    )
+
+    payload = ac_jobs._append_optical_identity_shadow(
+        result.to_terminal_payload(),
+        "ac-large",
+        optical_rows=optical_rows,
+        fit_ap_rows=resources,
+        include_items=False,
+    )
+    frame = json.dumps(
+        {"type": "finished", "job_id": "large-optical-terminal", "result": payload},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    assert len(frame) < 64 * 1024
+    assert "resources" not in payload
+    assert "optical_rows" not in payload
+    assert payload["success_count"] == 758
+    assert payload["failed_count"] == 0
+    assert payload["data_persisted"] is True
+    assert payload["reload_required"] is True
+    assert payload["identity_shadow"]["matched"] == 758
+    assert payload["identity_shadow"]["items"] == []
+    assert payload["identity_shadow"]["items_omitted"] == 758
+
+
+def test_fit_ap_optical_elapsed_starts_when_worker_executes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    clock = iter((100.0, 101.25))
+    monkeypatch.setattr(h3c_ac_collect_service.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(
+        h3c_ac_collect_service,
+        "_collect_single_fit_ap_optical",
+        lambda *_args, **_kwargs: {"status": "success", "ap_name": "AP-01"},
+    )
+
+    row, elapsed_ms = h3c_ac_collect_service._collect_single_fit_ap_optical_timed(
+        _device(),
+        {"ap_name": "AP-01"},
+        "demo",
+        "run-001",
+        tmp_path,
+        PathResolver(tmp_path),
+    )
+
+    assert row["status"] == "success"
+    assert elapsed_ms == 1250
+
+
 def test_ac_optical_service_returns_structured_failure_and_checks_cancel(tmp_path: Path) -> None:
     service, _repository = _service(
         tmp_path,
@@ -236,7 +317,15 @@ def test_ac_optical_job_success_partial_single_failed_cancelled_and_clean_stdout
             if state["mode"] == "failed":
                 return AcOpticalRefreshResult(False, False, "cli", request.refresh_scope, snapshot, error_message="SSH连接失败")
             partial = state["mode"] == "partial"
-            return AcOpticalRefreshResult(True, partial, "cli", request.refresh_scope, snapshot, optical_rows_updated=1, failed_aps=1 if partial else 0)
+            return AcOpticalRefreshResult(
+                True,
+                partial,
+                "cli",
+                request.refresh_scope,
+                snapshot,
+                optical_rows_updated=2 if partial else 1,
+                failed_aps=1 if partial else 0,
+            )
 
     monkeypatch.setattr(ac_jobs, "AcOpticalService", FakeOpticalService)
 
@@ -264,6 +353,10 @@ def test_ac_optical_job_success_partial_single_failed_cancelled_and_clean_stdout
     success = run_job(job, progress_callback=lambda stage, *_args: progress.append(stage))
     assert success.ok is True
     assert success.result["collection"]["optical_rows_updated"] == 1
+    assert success.result["data_persisted"] is True
+    assert success.result["reload_required"] is True
+    assert "resources" not in success.result
+    assert "optical_rows" not in success.result
     assert state["max_workers"] == 64
     assert progress == ["ac_fit_ap_optical_collect"]
     assert capsys.readouterr().out == ""

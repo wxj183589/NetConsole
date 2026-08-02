@@ -31,6 +31,13 @@ Vue AC 管理 -> POST /api/ac-management/refresh/fit-ap
 单帧限制。兼容 `mode=load` 仍可返回完整快照；活动页面使用正式分页接口
 读取资源。
 
+`ac_fit_ap_optical_refresh` 的 collect 终态同样只返回成功/失败数量、
+collect run、并发与重试轮次、持久化状态和 AP Identity 聚合，不返回完整
+FIT-AP 资源、光衰行或逐项 Identity 明细。页面在任务完成后重新查询
+SQLite；兼容 `mode=load` 仍返回完整光衰快照。单 AP 日志耗时从线程实际
+执行开始计算，不再包含等待线程池槽位的时间；Windows 并发上限保持 64，
+AP 控制台启用、三条 Telnet 采集命令和超时不变。
+
 ## 页面能力
 
 - AC 总览：管理 IP、型号、软件版本、AP 总数、在线/离线/未认证、Radio 数量、关联光衰异常和数据更新时间；

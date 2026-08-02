@@ -1282,7 +1282,7 @@ def _collect_fit_ap_optical_round(
     worker_count = max(1, min(total, int(concurrency or 1)))
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = {}
-        started_at: dict[object, float] = {}
+        submitted_at: dict[object, float] = {}
         for index, row in enumerate(resources, start=1):
             _emit_fit_ap_optical_progress(
                 item_progress,
@@ -1297,17 +1297,31 @@ def _collect_fit_ap_optical_round(
                     effective_concurrency=worker_count,
                 ),
             )
-            future = executor.submit(_collect_single_fit_ap_optical, ac_device, row, site_name, collect_run_uuid, fit_ap_dir, paths)
+            future = executor.submit(
+                _collect_single_fit_ap_optical_timed,
+                ac_device,
+                row,
+                site_name,
+                collect_run_uuid,
+                fit_ap_dir,
+                paths,
+            )
             futures[future] = row
-            started_at[future] = time.monotonic()
+            submitted_at[future] = time.monotonic()
         for future in as_completed(futures):
             if should_cancel():
                 for pending in futures:
                     pending.cancel()
                 raise CollectionCancelled(completed_rows=rows)
             resource = futures[future]
+            queued_at = submitted_at.get(future)
+            elapsed_ms = (
+                max(0, int((time.monotonic() - queued_at) * 1000))
+                if queued_at is not None
+                else 0
+            )
             try:
-                row = future.result()
+                row, elapsed_ms = future.result()
             except CollectionCancelled as exc:
                 for pending in futures:
                     pending.cancel()
@@ -1328,7 +1342,6 @@ def _collect_fit_ap_optical_round(
                 row = _failed_fit_ap_optical_row(ac_device, resource, collect_run_uuid, category, message)
             rows.append(row)
             completed += 1
-            elapsed_ms = max(0, int((time.monotonic() - started_at.get(future, time.monotonic())) * 1000))
             if str(row.get("status") or "").casefold() == "success":
                 success_count += 1
             else:
@@ -1351,6 +1364,27 @@ def _collect_fit_ap_optical_round(
             )
             progress_round(completed, total)
     return rows
+
+
+def _collect_single_fit_ap_optical_timed(
+    ac_device: Device,
+    ap_row: dict[str, object | None],
+    site_name: str,
+    collect_run_uuid: str,
+    fit_ap_dir: Path,
+    paths: PathResolver,
+) -> tuple[dict[str, object | None], int]:
+    started_at = time.monotonic()
+    row = _collect_single_fit_ap_optical(
+        ac_device,
+        ap_row,
+        site_name,
+        collect_run_uuid,
+        fit_ap_dir,
+        paths,
+    )
+    elapsed_ms = max(0, int((time.monotonic() - started_at) * 1000))
+    return row, elapsed_ms
 
 
 def _failed_fit_ap_optical_row(

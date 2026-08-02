@@ -303,13 +303,34 @@ def ac_fit_ap_optical_refresh(context: JobContext) -> dict[str, object]:
         ApIdentityQueryService(database).rebuild_index(
             "ac_fit_ap_optical_refresh_succeeded"
         )
-    return _append_optical_identity_shadow(result.to_payload(), ac_uuid)
+    return _append_optical_identity_shadow(
+        result.to_terminal_payload(),
+        ac_uuid,
+        optical_rows=result.snapshot.optical_rows,
+        fit_ap_rows=result.snapshot.resources,
+        include_items=False,
+    )
 
 
-def _append_optical_identity_shadow(payload: dict[str, object], ac_uuid: str) -> dict[str, object]:
+def _append_optical_identity_shadow(
+    payload: dict[str, object],
+    ac_uuid: str,
+    *,
+    optical_rows: list[dict[str, object | None]] | None = None,
+    fit_ap_rows: list[dict[str, object | None]] | None = None,
+    include_items: bool = True,
+) -> dict[str, object]:
     result = dict(payload)
-    optical_rows = [dict(row) for row in payload.get("optical_rows") or [] if isinstance(row, dict)]
-    fit_ap_rows = [dict(row) for row in payload.get("resources") or [] if isinstance(row, dict)]
+    optical_rows = [
+        dict(row)
+        for row in (optical_rows if optical_rows is not None else payload.get("optical_rows") or [])
+        if isinstance(row, dict)
+    ]
+    fit_ap_rows = [
+        dict(row)
+        for row in (fit_ap_rows if fit_ap_rows is not None else payload.get("resources") or [])
+        if isinstance(row, dict)
+    ]
     try:
         shadow = AcOpticalIdentityAdapter().shadow_compare_optical_binding(
             optical_rows,
@@ -322,7 +343,11 @@ def _append_optical_identity_shadow(payload: dict[str, object], ac_uuid: str) ->
             available=False,
             warnings=(f"optical identity shadow 不可用：{type(exc).__name__}: {exc}",),
         )
-    result["identity_shadow"] = shadow.to_payload()
+    shadow_payload = shadow.to_payload()
+    if not include_items:
+        shadow_payload["items"] = []
+        shadow_payload["items_omitted"] = len(shadow.items)
+    result["identity_shadow"] = shadow_payload
     return result
 
 

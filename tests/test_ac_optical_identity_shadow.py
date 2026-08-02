@@ -220,11 +220,25 @@ def test_optical_job_load_collect_single_adds_shadow_without_changing_result_fie
 
         def refresh_fit_ap_optical(self, request, **_kwargs):
             calls.append("collect")
-            return AcOpticalRefreshResult(True, False, "cli", request.refresh_scope, snapshot)
+            return AcOpticalRefreshResult(
+                True,
+                False,
+                "cli",
+                request.refresh_scope,
+                snapshot,
+                optical_rows_updated=1,
+            )
 
         def refresh_single_ap_optical(self, request, **_kwargs):
             calls.append("single")
-            return AcOpticalRefreshResult(True, False, "cli", request.refresh_scope, snapshot)
+            return AcOpticalRefreshResult(
+                True,
+                False,
+                "cli",
+                request.refresh_scope,
+                snapshot,
+                optical_rows_updated=1,
+            )
 
     monkeypatch.setattr(ac_jobs, "AcOpticalService", FakeOpticalService)
 
@@ -253,14 +267,25 @@ def test_optical_job_load_collect_single_adds_shadow_without_changing_result_fie
         )
     )
 
-    for result in (load, collect, single):
+    assert load.ok is True
+    assert load.result["ac_uuid"] == "ac-1"
+    assert load.result["summary"] == {"total_aps": 1}
+    assert load.result["resources"][0]["ap_uuid"] == "ap-1"
+    assert load.result["optical_rows"][0]["optical_alarm_status"] == "normal"
+    assert load.result["identity_shadow"]["items"][0]["new_status"] == "matched"
+
+    for result in (collect, single):
         assert result.ok is True
         assert result.result["ac_uuid"] == "ac-1"
-        assert result.result["summary"] == {"total_aps": 1}
-        assert result.result["resources"][0]["ap_uuid"] == "ap-1"
-        assert result.result["optical_rows"][0]["optical_alarm_status"] == "normal"
+        assert result.result["data_persisted"] is True
+        assert result.result["reload_required"] is True
+        assert "summary" not in result.result
+        assert "resources" not in result.result
+        assert "optical_rows" not in result.result
         assert result.result["identity_shadow"]["available"] is True
         assert result.result["identity_shadow"]["matched"] == 1
+        assert result.result["identity_shadow"]["items"] == []
+        assert result.result["identity_shadow"]["items_omitted"] == 1
     assert calls == ["load", "collect", "single"]
 
 
