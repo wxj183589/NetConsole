@@ -64,6 +64,14 @@ Electron 的“打开 AC Web”使用固定 HTTPS URL 规则：优先使用已�
 
 FIT-AP 详情已提供站点、里程、点位说明和方向保存入口；保存通过受控后台任务写入现有元数据表。归属站点缺失时，Query Service 只在 LLDP 已匹配/部分匹配且邻居唯一对应有站点的交换机时返回建议；页面明确标记“保存后才写入”，不自动修改元数据。Radio、LLDP、光衰历史按 AP UUID 分页读取，仅返回展示白名单字段，不向 Web 暴露 `raw_log_path`，并继续遵守 Web 既有序列号脱敏边界。
 
+## FIT-AP 离线身份连续性
+
+FIT-AP 刷新将 `ap_uuid`、合法完整的 `ap_mac`、`serial_number`、`ap_name` 和 `model` 视为稳定身份字段。本次采集明确返回的有效值优先；本次值为空时，Repository 按当前 FIT-AP 资源、相同 `ap_uuid` 的 `ap_entities`、资源历史和资源快照顺序恢复最后有效值。恢复会记录 `FIT_AP_STATIC_IDENTITY_PRESERVED`，但不会把历史值伪装成本次 AC 命令的新观测，也不会从外观像 MAC 的 AP 名称推导物理 MAC。
+
+当离线行同时缺少 UUID、序列号和 MAC 时，名称连续性只用于同一 `ac_device_uuid` 的本次 FIT-AP 资源写回：本批次名称和历史候选都必须唯一，双方都有 APID 时还必须一致。同名歧义或 APID 冲突会保留为新身份并记录诊断，不选择第一条候选；该规则不进入 AP Identity 查询或 MESH Peer 匹配。
+
+运行态字段仍以本次事实为准。离线 AP 的 `ap_ip` 清空，已有 Radio 状态落为 `Down`，不保留旧信道、带宽、功率或客户端数；物理 AP MAC 和 UUID 保持稳定。已有“当前资源 MAC 为空但 entity/history/snapshot 仍有证据”的记录，会在下一次成功 FIT-AP 刷新中幂等恢复，不删除历史、光衰、LLDP 或 metadata。
+
 ## 光衰关联规则
 
 光衰阈值继续复用 `compute_ap_status`、`compute_switch_status` 与 `classify_optical_health()`，Vue 不重复计算。AP 在线状态和光模块健康状态是两个独立维度：在线 AP 的一般/严重光功率告警同样进入当前异常、概览和轨旁 AP 导出；离线 AP 的正常光功率不会伪造为光衰异常。Web 展示状态为：

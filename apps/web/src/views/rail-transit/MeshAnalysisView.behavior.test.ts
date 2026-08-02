@@ -255,6 +255,28 @@ beforeEach(() => {
   mocks.listSessions.mockReset()
   mocks.taskStore?.tasks.splice(0)
   vi.stubGlobal('IntersectionObserver', undefined)
+  let frameId = 0
+  const cancelledFrames = new Set<number>()
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    const id = ++frameId
+    queueMicrotask(() => {
+      if (!cancelledFrames.has(id)) callback(performance.now())
+    })
+    return id
+  })
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => { cancelledFrames.add(id) })
+  let idleId = 0
+  const cancelledIdleCallbacks = new Set<number>()
+  vi.stubGlobal('requestIdleCallback', (callback: IdleRequestCallback) => {
+    const id = ++idleId
+    queueMicrotask(() => {
+      if (!cancelledIdleCallbacks.has(id)) {
+        callback({ didTimeout: false, timeRemaining: () => 50 } as IdleDeadline)
+      }
+    })
+    return id
+  })
+  vi.stubGlobal('cancelIdleCallback', (id: number) => { cancelledIdleCallbacks.add(id) })
   sessionStorage.clear()
   localStorage.clear()
   mocks.currentRoute.value = {
@@ -889,6 +911,104 @@ describe('Mesh analysis detail behavior', () => {
     expect(initialCache.disposed).toBe(true)
   })
 
+  it('restarts an aborted active RSSI request after KeepAlive resumes the page', async () => {
+    const session = {
+      session_id: 'session-resume-active-request',
+      mr_name: '列车07-MR-CT',
+      original_filename: '7CTmeshlog.log',
+      first_sample_time: chartViewport.full_start_time,
+      last_sample_time: chartViewport.full_end_time,
+      parsed_status: 'ready',
+      warning_count: 0,
+      report_count: 0,
+    }
+    const requestSignals: AbortSignal[] = []
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue({
+      session,
+      analysis_params: {},
+      available_radios: [1],
+      warnings: [],
+      sources: [{ source_file_id: 7, source_action_id: 'source-resume' }],
+    })
+    mocks.listBuildOrder.mockResolvedValue({
+      items: [{
+        sequence: 1,
+        anchor_link_id: 10,
+        local_radio: 1,
+        peer_ap_name: 'AP-1',
+        active_peer_mac: '0000-0000-0010',
+        build_start_time: session.first_sample_time,
+        build_end_time: session.last_sample_time,
+        build_result: 'normal',
+      }],
+      total: 1,
+      page: 1,
+      page_size: 100,
+    })
+    mocks.getActivePath.mockImplementation((_id, _values, signal: AbortSignal) => {
+      requestSignals.push(signal)
+      if (requestSignals.length === 1) {
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            'abort',
+            () => reject(new DOMException('aborted', 'AbortError')),
+            { once: true },
+          )
+        })
+      }
+      return Promise.resolve({
+        mode: 'active_path',
+        anchor: null,
+        points: [{ timestamp: session.first_sample_time, local_radio: 1, local_rssi: 30 }],
+        events: [],
+        location_segments: [],
+        total_points: 1,
+        returned_points: 1,
+        downsampled: false,
+        summary: { sample_count: 1 },
+        time_from: null,
+        time_to: null,
+      })
+    })
+
+    const meshVisible = ref(true)
+    const RouteHost = defineComponent({
+      setup() {
+        return () => h('main', { class: 'app-main' }, [
+          h(KeepAlive, { max: 1 }, {
+            default: () => meshVisible.value
+              ? h(MeshAnalysisView, { key: 'mesh-analysis' })
+              : null,
+          }),
+          meshVisible.value ? null : h('div', { 'data-ordinary-page': '' }),
+        ])
+      },
+    })
+    const wrapper = mount(RouteHost, {
+      attachTo: document.body,
+      global: { stubs, directives: { loading: () => undefined } },
+    })
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看动态图')!.trigger('click')
+    await flushPromises()
+    expect(mocks.getActivePath).toHaveBeenCalledTimes(1)
+
+    meshVisible.value = false
+    await nextTick()
+    await flushPromises()
+    expect(requestSignals[0]?.aborted).toBe(true)
+
+    meshVisible.value = true
+    await nextTick()
+    await flushPromises()
+    expect(mocks.getActivePath).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).not.toContain('主链 RSSI 数据尚未加载')
+    wrapper.unmount()
+  })
+
   it('pauses task polling and keeps cached analysis until a background rebuild is explicitly refreshed', async () => {
     vi.useFakeTimers()
     let frameId = 0
@@ -1326,6 +1446,167 @@ describe('Mesh analysis detail behavior', () => {
     await flushPromises()
     expect(wrapper.text()).not.toContain('已锁定 2026-07-20 10:00:01.123')
     expect(wrapper.findAll('button').some((button) => button.text() === '锁定当前时间范围')).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('waits for two active chart frames and an idle turn before requesting trackside data', async () => {
+    const frameCallbacks = new Map<number, FrameRequestCallback>()
+    const idleCallbacks = new Map<number, IdleRequestCallback>()
+    let frameId = 0
+    let idleId = 0
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      const id = ++frameId
+      frameCallbacks.set(id, callback)
+      return id
+    })
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => { frameCallbacks.delete(id) })
+    vi.stubGlobal('requestIdleCallback', (callback: IdleRequestCallback) => {
+      const id = ++idleId
+      idleCallbacks.set(id, callback)
+      return id
+    })
+    vi.stubGlobal('cancelIdleCallback', (id: number) => { idleCallbacks.delete(id) })
+    vi.stubGlobal('IntersectionObserver', undefined)
+
+    const session = {
+      session_id: 'session-staged-rssi',
+      mr_name: '列车07-MR-CT',
+      original_filename: '7CTmeshlog.log',
+      first_sample_time: '2026-07-20 10:00:00.000',
+      last_sample_time: '2026-07-20 10:01:00.000',
+      parsed_status: 'ready',
+      warning_count: 0,
+      report_count: 0,
+    }
+    let resolveActive!: (value: Record<string, unknown>) => void
+    let activeRunning = false
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue({
+      session,
+      analysis_params: {},
+      available_radios: [1],
+      warnings: [],
+      sources: [{
+        source_file_id: 7,
+        source_action_id: 'source-staged',
+        raw_sha256: 'sha-staged',
+        identity_index_revision: 4,
+        identity_current_revision: 4,
+        identity_mapped_at: '2026-07-20T10:02:00',
+      }],
+    })
+    mocks.listBuildOrder.mockResolvedValue({
+      items: [{
+        sequence: 1,
+        anchor_link_id: 10,
+        local_radio: 1,
+        peer_ap_name: 'AP-1',
+        active_peer_mac: '0000-0000-0010',
+        build_start_time: session.first_sample_time,
+        build_end_time: session.last_sample_time,
+        build_result: 'normal',
+      }],
+      total: 1,
+      page: 1,
+      page_size: 100,
+    })
+    mocks.getActivePath.mockImplementation(() => {
+      activeRunning = true
+      return new Promise((resolve) => { resolveActive = resolve })
+    })
+    mocks.getTracksideSignal.mockImplementation(async () => {
+      expect(activeRunning).toBe(false)
+      return {
+        source_id: session.session_id,
+        radio: 1,
+        time_range: { start: session.first_sample_time, end: session.last_sample_time },
+        series: [],
+        events: [],
+        warnings: [],
+        total_series: 0,
+        returned_series: 0,
+        total_frames: 0,
+        returned_frames: 0,
+        total_link_points: 0,
+        returned_link_points: 0,
+      }
+    })
+
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+    const chartButton = wrapper.findAll('button').find((button) => button.text() === '查看动态图')!
+    await chartButton.trigger('click')
+    await chartButton.trigger('click')
+    await flushPromises()
+
+    expect(mocks.getActivePath).toHaveBeenCalledTimes(1)
+    expect(mocks.getTracksideSignal).not.toHaveBeenCalled()
+    resolveActive({
+      mode: 'active_path',
+      anchor: null,
+      points: [{ timestamp: session.first_sample_time, local_radio: 1, local_rssi: 30 }],
+      events: [],
+      location_segments: [],
+      total_points: 1,
+      returned_points: 1,
+      downsampled: false,
+      summary: { sample_count: 1 },
+      time_from: null,
+      time_to: null,
+    })
+    activeRunning = false
+    await flushPromises()
+
+    expect(mocks.getTracksideSignal).not.toHaveBeenCalled()
+    expect(frameCallbacks.size).toBeGreaterThan(0)
+    const firstFrameTurn = [...frameCallbacks.values()]
+    frameCallbacks.clear()
+    firstFrameTurn.forEach((callback) => callback(performance.now()))
+    await flushPromises()
+    expect(mocks.getTracksideSignal).not.toHaveBeenCalled()
+    expect(frameCallbacks.size).toBeGreaterThan(0)
+    const secondFrameTurn = [...frameCallbacks.values()]
+    frameCallbacks.clear()
+    secondFrameTurn.forEach((callback) => callback(performance.now()))
+    await flushPromises()
+    expect(mocks.getTracksideSignal).not.toHaveBeenCalled()
+    expect(idleCallbacks.size).toBe(1)
+    const idle = idleCallbacks.entries().next().value as [number, IdleRequestCallback]
+    idleCallbacks.delete(idle[0])
+    idle[1]({ didTimeout: false, timeRemaining: () => 50 } as IdleDeadline)
+    await flushPromises()
+
+    expect(mocks.getTracksideSignal).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('does not automatically request trackside data when the active RSSI request fails', async () => {
+    const session = {
+      session_id: 'session-active-failed',
+      mr_name: '列车07-MR-CW',
+      original_filename: '7CWmeshlog.log',
+      parsed_status: 'ready',
+      warning_count: 0,
+      report_count: 0,
+    }
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue({ session, analysis_params: {}, available_radios: [1], warnings: [], sources: [{ source_file_id: 8 }] })
+    mocks.listBuildOrder.mockResolvedValue({ items: [{ sequence: 1, anchor_link_id: 11, local_radio: 1, build_result: 'normal' }], total: 1, page: 1, page_size: 100 })
+    mocks.getActivePath.mockRejectedValue(new Error('主链查询失败'))
+
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看动态图')!.trigger('click')
+    await flushPromises()
+
+    expect(mocks.getActivePath).toHaveBeenCalledTimes(1)
+    expect(mocks.getTracksideSignal).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('主链 RSSI 数据加载失败：主链查询失败')
+    expect(wrapper.text()).toContain('等待主链 RSSI 图加载完成')
     wrapper.unmount()
   })
 

@@ -296,6 +296,61 @@ def test_base_data_alone_resolves_exact_h3c_radio_alias(tmp_path: Path) -> None:
     assert match.radio_id == 1
 
 
+def test_offline_fit_ap_keeps_exact_h3c_radio2_alias(tmp_path: Path) -> None:
+    database, repository, service = _fixture(tmp_path)
+    with database.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO devices (
+                device_uuid, name, device_vendor, device_type, primary_address,
+                created_at, updated_at
+            )
+            VALUES ('ac-h3c', 'AC', 'H3C', 'AC', '10.0.0.1', '', '')
+            """
+        )
+        connection.commit()
+    repository.replace_fit_ap_resources(
+        "ac-h3c",
+        [
+            {
+                "ap_uuid": "offline-ap",
+                "ap_name": "AP-OFFLINE",
+                "apid": "11",
+                "ap_mac": "bc5a-3457-b5e0",
+                "serial_number": "SN-OFFLINE",
+                "ap_ip": "10.1.1.11",
+                "state": "R/M",
+            }
+        ],
+    )
+    repository.replace_fit_ap_resources(
+        "ac-h3c",
+        [
+            {
+                "ap_name": "AP-OFFLINE",
+                "apid": "11",
+                "ap_mac": None,
+                "serial_number": None,
+                "ap_ip": None,
+                "state": "I",
+            }
+        ],
+    )
+
+    service.rebuild_index("offline_fit_ap_refresh")
+    match = service.resolve_peer_mac("bc5a-3457-b5ff")
+    current = repository.list_fit_ap_resources("ac-h3c")[0]
+
+    assert current["ap_uuid"] == "offline-ap"
+    assert current["ap_mac"] == "bc5a-3457-b5e0"
+    assert current["ap_ip"] is None
+    assert match.status == "matched"
+    assert match.effective_ap_name == "AP-OFFLINE"
+    assert match.effective_ap_mac == "bc5a-3457-b5e0"
+    assert match.matched_alias_type == "h3c_r2_derived"
+    assert match.radio_id == 2
+
+
 def test_h3c_alias_requires_explicit_h3c_vendor_and_physical_mac(tmp_path: Path) -> None:
     database, repository, service = _fixture(tmp_path)
     base = _base_ap(repository, name="AP-NO-VENDOR", mac="74ad-cb9d-3320")
