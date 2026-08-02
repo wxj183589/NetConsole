@@ -111,6 +111,7 @@ class AcApDTO(ApiModel):
     status: str = "unknown"
     state_display: str = ""
     model: str = ""
+    serial_number: str = Field(default="", exclude=True)
     online_time: str = ""
     is_unauthenticated: bool = False
     radio1_status: str = ""

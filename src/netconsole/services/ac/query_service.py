@@ -109,6 +109,20 @@ _AP_HISTORY_FIELDS = {
 }
 
 
+def fit_ap_topology_sort_key(item: AcApDTO) -> tuple[object, ...]:
+    """按连接交换机和规范化端口自然升序排列 FIT-AP。"""
+    switch_name = str(item.switch_name or "").strip()
+    interface_name = normalize_interface_name(item.switch_interface)
+    return (
+        0 if switch_name else 1,
+        natural_text_key(switch_name),
+        0 if interface_name else 1,
+        natural_text_key(interface_name),
+        natural_text_key(item.name),
+        natural_text_key(item.id),
+    )
+
+
 class _ReadonlyDatabase:
     """供现有 Repository 复用的 SQLite 只读连接门面。"""
 
@@ -690,6 +704,7 @@ class AcManagementQueryService:
             status=status,
             state_display=str(row.get("state_display") or row.get("state_raw") or row.get("state") or ""),
             model=str(row.get("model") or ""),
+            serial_number=str(row.get("serial_number") or ""),
             online_time=str(row.get("online_time") or ""),
             is_unauthenticated=unauthenticated,
             radio1_status=str(row.get("rid1_status") or ""),
@@ -1325,16 +1340,7 @@ class AcManagementQueryService:
     @staticmethod
     def _ap_sort_key(item: AcApDTO, sort_by: str) -> object:
         if sort_by == "topology":
-            switch_name = str(item.switch_name or "").strip()
-            interface_name = normalize_interface_name(item.switch_interface)
-            return (
-                0 if switch_name else 1,
-                natural_text_key(switch_name),
-                0 if interface_name else 1,
-                natural_text_key(interface_name),
-                natural_text_key(item.name),
-                natural_text_key(item.id),
-            )
+            return fit_ap_topology_sort_key(item)
         if sort_by == "ip":
             try:
                 return (0, int(ipaddress.ip_address(item.ip)))

@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 
 from ac_management_web_fixture import build_ac_management_fixture
 from netconsole.core.database import Database
+from netconsole.repositories.ac_repository import AcRepository
 from netconsole.services.ac.fit_ap_resource_export import (
     export_fit_ap_resource_xlsx,
     make_fit_ap_resource_filename,
 )
+from netconsole.services.export.export_handlers import run_generic_export_handler
+from netconsole.services.export.export_task_builders import fit_ap_resource_xlsx_spec
 
 
 def _export(
@@ -54,19 +59,37 @@ def test_fit_ap_resource_export_keeps_one_ap_per_row_and_radio_details(tmp_path:
     assert not ap_sheet.merged_cells.ranges
 
     headers = {cell.value: cell.column for cell in ap_sheet[1]}
+    header_values = [cell.value for cell in ap_sheet[1]]
+    assert "项目名称" not in header_values
+    assert "线路名称" not in header_values
+    assert header_values.index("AP序列号") == header_values.index("AP型号") + 1
+    assert header_values.index("AP序列号") + 1 == header_values.index("AP状态")
     ap_names = [ap_sheet.cell(row, headers["AP名称"]).value for row in range(2, ap_sheet.max_row + 1)]
     assert len(ap_names) == len(set(ap_names)) == 3
-    sort_rows = [
-        tuple(str(ap_sheet.cell(row, headers[name]).value or "") for name in ("归属站点", "归属区间", "点位编号", "AP名称", "AP MAC"))
+    topology_rows = [
+        tuple(str(ap_sheet.cell(row, headers[name]).value or "") for name in ("连接交换机", "连接端口", "AP名称"))
         for row in range(2, ap_sheet.max_row + 1)
     ]
-    assert sort_rows == sorted(
-        sort_rows,
-        key=lambda row: tuple((not bool(value), value.casefold()) for value in row[:3]) + (row[3].casefold(), row[4].casefold()),
-    )
+    assert [row[1] for row in topology_rows] == [
+        "GigabitEthernet1/0/1",
+        "GigabitEthernet1/0/2",
+        "GigabitEthernet1/0/3",
+    ]
     assert ap_sheet.cell(2, headers["AP IP"]).number_format == "@"
     assert ap_sheet.cell(2, headers["AP MAC"]).number_format == "@"
     assert ap_sheet.cell(2, headers["AC软件版本"]).number_format == "@"
+    assert ap_sheet.cell(2, headers["AP序列号"]).number_format == "@"
+    assert 14 <= ap_sheet.column_dimensions[get_column_letter(headers["AP序列号"])].width <= 32
+    assert 18 <= ap_sheet.column_dimensions[get_column_letter(headers["Radio更新时间"])].width <= 26
+    radio_headers = {cell.value: cell.column for cell in radio_sheet[1]}
+    assert 18 <= radio_sheet.column_dimensions[get_column_letter(radio_headers["Radio MAC"])].width <= 22
+    assert ap_sheet.cell(2, headers["数据完整性"]).alignment.wrap_text is True
+    assert ap_sheet.cell(2, headers["备注"]).alignment.wrap_text is True
+    instruction_sheet = workbook["导出说明"]
+    instruction_fields = [instruction_sheet.cell(row, 1).value for row in range(2, instruction_sheet.max_row + 1)]
+    assert "项目名称" not in instruction_fields
+    assert "线路名称" not in instruction_fields
+    assert instruction_sheet.cell(2, 2).alignment.wrap_text is True
     unauth_row = next(row for row in range(2, ap_sheet.max_row + 1) if ap_sheet.cell(row, headers["AP名称"]).value == "AP-Unauth")
     assert "缺少光衰" in str(ap_sheet.cell(unauth_row, headers["数据完整性"]).value)
 
@@ -141,6 +164,158 @@ def test_fit_ap_resource_export_deduplicates_by_normalized_mac(tmp_path: Path) -
     workbook = load_workbook(output, read_only=True, data_only=True)
     assert result["ap_count"] == 3
     assert workbook["AP资源清单"].max_row == 4
+
+
+def test_fit_ap_resource_export_keeps_serial_text_and_reports_missing(tmp_path: Path) -> None:
+    paths, db_path, _files = build_ac_management_fixture(tmp_path)
+    with Database(db_path).connect() as conn:
+        conn.execute("UPDATE ac_fit_ap_resources SET serial_number = ? WHERE ap_uuid = 'ap-online'", ("SN-A1B2",))
+        conn.execute("UPDATE ac_fit_ap_resources SET serial_number = ? WHERE ap_uuid = 'ap-offline'", ("001234567890",))
+        conn.execute("DELETE FROM ac_fit_ap_resources WHERE ap_uuid = 'ap-unauth'")
+        conn.execute("UPDATE ac_fit_ap_unauthenticated SET serial_number = '' WHERE ap_name = 'AP-Unauth'")
+        conn.commit()
+    output = tmp_path / "serials.xlsx"
+    result = export_fit_ap_resource_xlsx(
+        output,
+        {
+            "app_root": str(paths.app_root),
+            "data_root": str(paths.data_root),
+            "site_name": "demo",
+            "ac_uuid": "ac-1",
+            "scope": "all",
+            "filters": {},
+        },
+    )
+    workbook = load_workbook(output, data_only=True)
+    sheet = workbook["AP资源清单"]
+    headers = {cell.value: cell.column for cell in sheet[1]}
+    values = {
+        sheet.cell(row, headers["AP名称"]).value: sheet.cell(row, headers["AP序列号"])
+        for row in range(2, sheet.max_row + 1)
+    }
+    assert result["ap_count"] == 3
+    assert values["AP-Online"].value == "SN-A1B2"
+    assert values["AP-Offline"].value == "001234567890"
+    assert values["AP-Offline"].data_type == "s"
+    assert values["AP-Offline"].number_format == "@"
+    unauth_row = next(row for row in range(2, sheet.max_row + 1) if sheet.cell(row, headers["AP名称"]).value == "AP-Unauth")
+    assert sheet.cell(unauth_row, headers["AP序列号"]).value in (None, "")
+    assert "缺少AP序列号" in str(sheet.cell(unauth_row, headers["数据完整性"]).value)
+
+
+def test_fit_ap_resource_export_uses_topology_natural_sort_and_resequences(tmp_path: Path) -> None:
+    paths, db_path, _files = build_ac_management_fixture(tmp_path)
+    repository = AcRepository(Database(db_path))
+    for port in (20, 6, 18, 1):
+        repository.upsert_fit_ap_resource(
+            "ac-1",
+            {
+                "ap_uuid": f"sort-{port}",
+                "ap_name": f"SORT-{port}",
+                "ap_ip": f"10.0.2.{port}",
+                "ap_mac": f"0000-0002-{port:04d}",
+                "model": "WA-Sort",
+                "serial_number": f"SORT-SN-{port}",
+                "state": "R/M",
+                "state_display": "运行(主)",
+                "rid1_status": "Up",
+                "rid1_mode": "802.11n",
+                "rid1_band": "5GHz",
+                "rid1_channel": "1",
+                "rid1_clients": 1,
+                "lldp_neighbor_name": "SW-A",
+                "lldp_neighbor_interface": f"GigabitEthernet2/0/{port}",
+                "lldp_match_status": "matched",
+            },
+        )
+    repository.upsert_fit_ap_resource(
+        "ac-1",
+        {
+            "ap_uuid": "sort-missing-port",
+            "ap_name": "SORT-MISSING-PORT",
+            "ap_mac": "0000-0002-0090",
+            "model": "WA-Sort",
+            "serial_number": "SORT-SN-PORT",
+            "state": "R/M",
+            "state_display": "运行(主)",
+            "lldp_neighbor_name": "SW-A",
+            "lldp_match_status": "matched",
+        },
+    )
+    repository.upsert_fit_ap_resource(
+        "ac-1",
+        {
+            "ap_uuid": "sort-missing-switch",
+            "ap_name": "SORT-MISSING-SWITCH",
+            "ap_mac": "0000-0002-0091",
+            "model": "WA-Sort",
+            "serial_number": "SORT-SN-SWITCH",
+            "state": "R/M",
+            "state_display": "运行(主)",
+        },
+    )
+    output = tmp_path / "topology.xlsx"
+    export_fit_ap_resource_xlsx(
+        output,
+        {
+            "app_root": str(paths.app_root),
+            "data_root": str(paths.data_root),
+            "site_name": "demo",
+            "ac_uuid": "ac-1",
+            "scope": "filtered",
+            "filters": {"query": "SORT-"},
+        },
+    )
+    workbook = load_workbook(output, data_only=True)
+    sheet = workbook["AP资源清单"]
+    headers = {cell.value: cell.column for cell in sheet[1]}
+    rows = [
+        (
+            sheet.cell(row, headers["连接交换机"]).value or "",
+            sheet.cell(row, headers["连接端口"]).value or "",
+            sheet.cell(row, headers["AP名称"]).value,
+        )
+        for row in range(2, sheet.max_row + 1)
+    ]
+    assert [row[1] for row in rows[:4]] == [
+        "GigabitEthernet2/0/1",
+        "GigabitEthernet2/0/6",
+        "GigabitEthernet2/0/18",
+        "GigabitEthernet2/0/20",
+    ]
+    assert rows[4][2] == "SORT-MISSING-PORT"
+    assert rows[5][2] == "SORT-MISSING-SWITCH"
+    assert [sheet.cell(row, headers["序号"]).value for row in range(2, sheet.max_row + 1)] == list(range(1, 7))
+    radio_sheet = workbook["Radio明细"]
+    radio_seq = [radio_sheet.cell(row, 1).value for row in range(2, radio_sheet.max_row + 1)]
+    assert radio_seq == list(range(1, len(radio_seq) + 1))
+
+
+def test_fit_ap_resource_export_metadata_uses_schema_v2_and_new_columns(tmp_path: Path) -> None:
+    paths, db_path, _files = build_ac_management_fixture(tmp_path)
+    output = tmp_path / "metadata.xlsx"
+    spec = fit_ap_resource_xlsx_spec(
+        output,
+        db_path=db_path,
+        site_name="demo",
+        ac_uuid="ac-1",
+        scope="all",
+        app_root=paths.app_root,
+        data_root=paths.data_root,
+    )
+    job = spec.to_job("fit-ap-metadata").with_runtime_paths(tmp_path=str(tmp_path / "metadata.tmp"), cancel_path=str(tmp_path / "cancel"))
+    run_generic_export_handler(job)
+    workbook = load_workbook(output, data_only=True)
+    assert workbook["_netconsole_meta"].sheet_state == "hidden"
+    metadata = json.loads(workbook["_netconsole_meta"]["B1"].value)
+    assert metadata["schema_version"] == 2
+    ap_columns = metadata["required_columns"]["AP资源清单"]
+    instruction_columns = metadata["required_columns"]["导出说明"]
+    assert "项目名称" not in ap_columns
+    assert "线路名称" not in ap_columns
+    assert "AP序列号" in ap_columns
+    assert "项目名称" not in instruction_columns
+    assert "线路名称" not in instruction_columns
 
 
 def test_fit_ap_resource_filename_is_windows_safe_and_keeps_chinese() -> None:

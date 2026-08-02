@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from copy import copy as copy_style
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
@@ -8,12 +9,12 @@ from typing import Any
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.version import APP_VERSION_DISPLAY
-from netconsole.services.ac.query_service import AcManagementQueryService
+from netconsole.services.ac.fit_ap_export_contract import FIT_AP_RESOURCE_EXPORT_SCHEMA_VERSION
+from netconsole.services.ac.query_service import AcManagementQueryService, fit_ap_topology_sort_key
 from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.services.excel_autosize import apply_worksheet_column_widths
 from netconsole.services.export.common_exporters import ExportCancelled
 from netconsole.services.export.xlsx_style import apply_basic_sheet_style
-from netconsole.utils.natural_sort import natural_text_key
 
 ProgressCallback = Callable[[str, int, int, str], None]
 CancelCallback = Callable[[], bool]
@@ -40,8 +41,6 @@ _STATUS_LABELS = {
 
 AP_COLUMNS = (
     ("seq", "序号"),
-    ("project_name", "项目名称"),
-    ("line_name", "线路名称"),
     ("site_name", "局点名称"),
     ("ac_name", "AC名称"),
     ("ac_ip", "AC管理地址"),
@@ -51,6 +50,7 @@ AP_COLUMNS = (
     ("ap_ip", "AP IP"),
     ("ap_mac", "AP MAC"),
     ("ap_model", "AP型号"),
+    ("serial_number", "AP序列号"),
     ("ap_state", "AP状态"),
     ("online_status", "在线状态"),
     ("radio_count", "Radio数量"),
@@ -150,7 +150,7 @@ def export_fit_ap_resource_xlsx(
     if not details:
         raise ValueError("当前范围内没有可导出的 FIT AP")
     details = _deduplicate_details(details, ac_id)
-    details.sort(key=_detail_sort_key)
+    details.sort(key=lambda detail: fit_ap_topology_sort_key(detail.ap))
 
     _emit(progress, "build_rows", 0, len(details), "正在整理 AP 与 Radio 数据")
     ap_rows: list[dict[str, object]] = []
@@ -167,8 +167,6 @@ def export_fit_ap_resource_xlsx(
         ap_rows.append(
             {
                 "seq": index,
-                "project_name": "",
-                "line_name": "",
                 "site_name": site_name,
                 "ac_name": ac.name,
                 "ac_ip": ac.management_ip,
@@ -178,6 +176,7 @@ def export_fit_ap_resource_xlsx(
                 "ap_ip": ap.ip,
                 "ap_mac": mac,
                 "ap_model": ap.model,
+                "serial_number": ap.serial_number,
                 "ap_state": ap.state_display,
                 "online_status": _status_label(ap.status),
                 "radio_count": len(detail.radios),
@@ -212,6 +211,7 @@ def export_fit_ap_resource_xlsx(
         for radio in detail.radios:
             radio_rows.append(
                 {
+                    "_ap_order": index,
                     "seq": len(radio_rows) + 1,
                     "ac_name": ac.name,
                     "ac_ip": ac.management_ip,
@@ -238,7 +238,10 @@ def export_fit_ap_resource_xlsx(
             )
         _emit(progress, "build_rows", index, len(details), f"正在整理 AP {index}/{len(details)}")
 
-    radio_rows.sort(key=lambda row: (str(row["ap_name"]).casefold(), int(row["radio_id"])))
+    radio_rows.sort(key=lambda row: (int(row.get("_ap_order") or 0), int(row["radio_id"])))
+    for index, row in enumerate(radio_rows, start=1):
+        row["seq"] = index
+        row.pop("_ap_order", None)
     export_time = _format_time(str(payload.get("requested_at") or "")) or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     scope_text = _scope_text(str(payload.get("scope") or "all"), len(ap_rows))
     data_times = [str(row["ap_updated_at"]) for row in ap_rows if row["ap_updated_at"]]
@@ -259,9 +262,9 @@ def export_fit_ap_resource_xlsx(
     workbook.remove(workbook.active)
     ap_sheet = _write_sheet(workbook, "AP资源清单", AP_COLUMNS, ap_rows)
     radio_sheet = _write_sheet(workbook, "Radio明细", RADIO_COLUMNS, radio_rows)
-    _write_sheet(workbook, "导出说明", (("field", "字段"), ("value", "值")), instructions)
+    instruction_sheet = _write_sheet(workbook, "导出说明", (("field", "字段"), ("value", "值")), instructions)
     text_headers = {
-        "AC管理地址", "AC软件版本", "AP名称", "AP IP", "AP MAC", "点位编号",
+        "AC管理地址", "AC软件版本", "AP名称", "AP IP", "AP MAC", "AP序列号", "点位编号",
         "连接端口", "端口PVID", "BSSID", "Radio MAC", "信道",
     }
     for sheet in (ap_sheet, radio_sheet):
@@ -272,6 +275,22 @@ def export_fit_ap_resource_xlsx(
                 for cell in sheet.iter_cols(min_col=column, max_col=column, min_row=2):
                     for value in cell:
                         value.number_format = "@"
+    for sheet, headers in (
+        (ap_sheet, {"数据完整性", "备注"}),
+        (radio_sheet, {"备注"}),
+        (instruction_sheet, {"值"}),
+    ):
+        header_index = {cell.value: cell.column for cell in sheet[1]}
+        for header in headers:
+            column = header_index.get(header)
+            if not column:
+                continue
+            for row in sheet.iter_rows(min_row=2, min_col=column, max_col=column):
+                cell = row[0]
+                alignment = copy_style(cell.alignment)
+                alignment.wrap_text = True
+                alignment.vertical = alignment.vertical or "top"
+                cell.alignment = alignment
     status_fills = {
         "正常": "E2F0D9",
         "一般告警": "FFF2CC",
@@ -337,8 +356,6 @@ def _instruction_rows(
     rows = [
         ("文件名称", file_name),
         ("导出时间", export_time),
-        ("项目名称", ""),
-        ("线路名称", ""),
         ("局点名称", site_name),
         ("AC名称", ac_name),
         ("AC管理地址", ac_ip),
@@ -373,6 +390,8 @@ def _integrity_issues(detail, mac: str) -> list[str]:
         issues.append("未关联区间")
     if not mac:
         issues.append("缺少AP MAC")
+    if not detail.ap.serial_number:
+        issues.append("缺少AP序列号")
     if not detail.radios:
         issues.append("缺少Radio信息")
     return issues
@@ -403,6 +422,7 @@ def _detail_score(detail) -> int:
         for value in (
             detail.ap.ip,
             detail.ap.model,
+            detail.ap.serial_number,
             detail.ap.station,
             detail.ap.section,
             detail.lldp.switch_name,
@@ -410,20 +430,6 @@ def _detail_score(detail) -> int:
             detail.optical.updated_at,
         )
     ) + len(detail.radios)
-
-
-def _detail_sort_key(detail) -> tuple[object, ...]:
-    ap = detail.ap
-    return (
-        0 if ap.station else 1,
-        natural_text_key(ap.station),
-        0 if ap.section else 1,
-        natural_text_key(ap.section),
-        0 if ap.point_code else 1,
-        natural_text_key(ap.point_code),
-        natural_text_key(ap.name),
-        natural_text_key(_display_mac(ap.mac)),
-    )
 
 
 def _radio_value(radios, radio_id: int, field: str) -> str:
@@ -498,6 +504,7 @@ def _check_cancel(should_cancel: CancelCallback | None) -> None:
 
 __all__ = [
     "AP_COLUMNS",
+    "FIT_AP_RESOURCE_EXPORT_SCHEMA_VERSION",
     "RADIO_COLUMNS",
     "export_fit_ap_resource_xlsx",
     "make_fit_ap_resource_filename",
