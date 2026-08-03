@@ -22,6 +22,9 @@ it('uses Backend text integrity instead of guessing from replacement characters'
 it('describes task logs as expanded by default and keeps the manual toggle', () => {
   expect(detailSource).toContain('默认展开；每秒读取最后 300 条结构化事件。')
   expect(detailSource).toContain("store.logsExpanded ? '隐藏日志' : '显示日志'")
+  expect(detailSource).toContain('businessLogSummaryLines')
+  expect(detailSource).toContain('未执行摘要')
+  expect(detailSource).toContain('flex: 1 1 auto')
 })
 
 it('renders the controlled point-table preview summary instead of a generic empty record count', () => {
@@ -683,6 +686,8 @@ describe('Job Center saved artifact capability lifecycle', () => {
     expect(text).toContain('connection_incomplete')
     expect(text).toContain('745')
     expect(text).toContain('未执行')
+    expect(text).toContain('未执行摘要')
+    expect(text).toContain('未执行 1：连接信息不完整 1')
     expect(text).toContain('连接信息不完整')
     app.unmount()
   })

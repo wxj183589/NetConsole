@@ -146,6 +146,51 @@ const businessReasonRows = computed(() => {
   }
   return rows
 })
+const businessLogSummaryLines = computed(() => {
+  if (!showTracksideBusinessResult.value) return []
+  const lines: Array<{ key: string; label: string; value: string; tone: 'warning' | 'error' | 'info' }> = []
+  const status = businessStatusLabel.value
+  const success = numberDetail('success_count')
+  const failed = numberDetail('failed_count')
+  const actionableSkipped = numberDetail('actionable_skipped_count', numberDetail('skipped_count'))
+  const ignoredSkipped = numberDetail('ignored_skipped_count')
+  const warning = numberDetail('warning_count')
+  lines.push({
+    key: 'business-summary',
+    label: '业务结果',
+    value: `${status}：成功 ${success} / 失败 ${failed} / 未执行 ${actionableSkipped} / 不适用 ${ignoredSkipped} / 告警 ${warning}`,
+    tone: selectedBusinessStatus.value === 'PARTIAL_SUCCESS' || actionableSkipped > 0 || warning > 0
+      ? 'warning'
+      : selectedBusinessStatus.value === 'FAILED'
+        ? 'error'
+        : 'info',
+  })
+  const skippedReasons = businessReasonRows.value.filter((row) => row.category === t('job_center.business_result.skipped_reason', '跳过'))
+  if (actionableSkipped > 0 || skippedReasons.length) {
+    const reasonText = skippedReasons.length
+      ? skippedReasons.map((row) => `${row.label} ${row.count}`).join(' / ')
+      : '--'
+    lines.push({
+      key: 'not-executed-summary',
+      label: '未执行摘要',
+      value: `未执行 ${actionableSkipped}：${reasonText}`,
+      tone: 'warning',
+    })
+  }
+  const failureReasons = businessReasonRows.value.filter((row) => row.category === t('job_center.business_result.failure_reason', '失败'))
+  if (failed > 0 || failureReasons.length) {
+    const reasonText = failureReasons.length
+      ? failureReasons.map((row) => `${row.label} ${row.count}`).join(' / ')
+      : selectedPrimaryFailureReason.value || '--'
+    lines.push({
+      key: 'failure-summary',
+      label: '失败摘要',
+      value: `失败 ${failed}：${reasonText}`,
+      tone: 'error',
+    })
+  }
+  return lines
+})
 function isResidentTask(task: TaskItem | null | undefined): boolean {
   return task?.task_mode === 'resident' || task?.type === 'ac_mesh_link_resident_poll'
 }
@@ -431,6 +476,7 @@ function handleClosed(): void {
     :data-source="props.source"
     @closed="handleClosed"
   >
+    <div class="task-detail-content">
       <div
         v-if="store.detailLoading"
         v-loading="true"
@@ -623,6 +669,9 @@ function handleClosed(): void {
               <div v-for="line in store.logs" :key="line.sequence" :class="['log-line', logLineClass(line)]">
                 <time>{{ formatTime(line.time) }}</time><span>{{ logStatusLabel(line) }}</span><p>{{ line.message }}<small v-if="line.details?.reason_code"> · {{ reasonLabel(line.details.reason_code) }}</small></p>
               </div>
+              <div v-for="line in businessLogSummaryLines" :key="line.key" :class="['log-line', 'business-log-summary', line.tone]">
+                <time>{{ store.selected.finished_time ? formatTime(store.selected.finished_time) : '--' }}</time><span>{{ line.label }}</span><p>{{ line.value }}</p>
+              </div>
               <el-empty v-if="!store.logs.length && !store.logError" description="暂无日志" :image-size="68" />
             </div>
           </template>
@@ -635,10 +684,23 @@ function handleClosed(): void {
         :sub-title="store.detailError"
       />
       <el-empty v-else description="未找到任务详情" />
+    </div>
   </el-drawer>
 </template>
 
 <style scoped>
+:global(.task-detail-drawer .el-drawer__body) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+.task-detail-content {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 100%;
+}
 .task-detail-loading { display: grid; min-height: 180px; place-items: center; color: var(--nc-text-secondary); }
 .detail-heading h2, .log-heading h3 { margin: 0; }
 .detail-heading p, .log-heading p { margin: 5px 0 0; color: var(--nc-text-secondary); font-size: 12px; }
@@ -660,10 +722,11 @@ function handleClosed(): void {
 .business-reasons span { color: var(--nc-text-secondary); font-size: 12px; }
 .association-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
 .native-action-error { margin-top: 12px; }
-.log-section { margin-top: 22px; }
+.log-section { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; margin-top: 22px; }
 .log-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
-.task-log { min-height: 150px; max-height: 360px; padding: 12px; overflow: auto; color: var(--nc-text-code); background: var(--nc-bg-code); border-radius: 8px; font: 12px/1.55 Consolas, "Microsoft YaHei", monospace; }
+.task-log { flex: 1 1 auto; min-height: 260px; padding: 12px; overflow: auto; color: var(--nc-text-code); background: var(--nc-bg-code); border-radius: 8px; font: 12px/1.55 Consolas, "Microsoft YaHei", monospace; }
 .log-line { display: grid; grid-template-columns: 155px 90px 1fr; gap: 10px; padding: 4px 2px; border-bottom: 1px solid var(--nc-border-code); }
+.business-log-summary { margin-top: 6px; border-top: 1px solid var(--nc-border-code); }
 .log-line time, .log-line span { color: var(--nc-text-code-muted); }
 .log-line p { margin: 0; overflow-wrap: anywhere; }
 .log-line small { color: var(--nc-text-code-muted); }
