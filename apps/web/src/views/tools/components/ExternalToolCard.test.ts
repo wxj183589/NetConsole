@@ -47,6 +47,15 @@ describe('ExternalToolCard', () => {
     expect(wrapper.emitted('launch-admin')?.[0]?.[0]).toMatchObject({ name: 'SecureCRT' })
   })
 
+  it('does not launch the tool when opening the more menu', async () => {
+    const wrapper = mount(ExternalToolCard, {
+      props: { tool: tool() },
+      global: { plugins: [ElementPlus] },
+    })
+    await wrapper.find('button[aria-label="更多操作"]').trigger('click')
+    expect(wrapper.emitted('launch')).toBeUndefined()
+  })
+
   it('routes an unavailable system reference to settings instead of relocation', async () => {
     const wrapper = mount(ExternalToolCard, {
       props: {

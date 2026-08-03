@@ -73,7 +73,7 @@ function handleCommand(command: string): void {
         <el-button v-else-if="tool.source_type === 'system_setting'" type="primary" link @click.stop="emit('configure', tool)">配置路径</el-button>
         <el-button v-else type="primary" link @click.stop="emit('relocate', tool)">重新定位程序</el-button>
         <el-dropdown trigger="click" @command="handleCommand" @click.stop>
-          <el-button text circle aria-label="更多操作"><el-icon><MoreFilled /></el-icon></el-button>
+          <el-button text circle aria-label="更多操作" @click.stop><el-icon><MoreFilled /></el-icon></el-button>
           <template #dropdown>
             <el-dropdown-menu>
               <el-dropdown-item command="launch-admin" :disabled="!available">
