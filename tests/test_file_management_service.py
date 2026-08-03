@@ -1394,6 +1394,10 @@ def test_remote_download_target_keeps_qt_mr_and_regular_device_semantics(tmp_pat
     profile = MeshStorageService("demo", paths).catalog.get_by_linked_device_id(int(mr.id))
     assert profile is not None
     assert profile.linked_device_uuid == mr.device_uuid
+    mr_target.write_text("mesh", encoding="utf-8")
+    mr_local = service.list_local_files("demo", device_id=mr.device_uuid)
+    assert mr_local.current_label == "raw"
+    assert mr_target.name in {item.name for item in mr_local.items}
 
 
 def test_remote_mesh_download_target_does_not_open_incompatible_parsed_db(tmp_path: Path) -> None:

@@ -353,7 +353,7 @@ class FileManagementApplicationService:
         site = self._site_id(site_id)
         with self._queue_lock:
             self._queue_sites.add(site)
-        root = self._local_root(site)
+        root = self._local_root(site, device_id=device_id)
         root.mkdir(parents=True, exist_ok=True)
         root_id = self._remember_local_entry(site, root, root)
         default_path = self._default_local_path(site, device_id) if str(device_id or "").strip() else root
@@ -418,7 +418,7 @@ class FileManagementApplicationService:
         name: str,
     ) -> LocalFilePageDTO:
         site = self._site_id(site_id)
-        root = self._local_root(site)
+        root = self._local_root(site, device_id=device_id)
         root.mkdir(parents=True, exist_ok=True)
         default_path = self._default_local_path(site, device_id) if str(device_id or "").strip() else root
         default_path.mkdir(parents=True, exist_ok=True)
@@ -1827,11 +1827,21 @@ class FileManagementApplicationService:
     def _new_remote_entry_id() -> str:
         return f"fe1_{uuid4().hex}"
 
-    def _local_root(self, site: str) -> Path:
+    def _local_root(self, site: str, *, device_id: str = "") -> Path:
+        if str(device_id or "").strip():
+            try:
+                profile = self._existing_vehicle_mr_profile(site, self._resolve_device(site, device_id))
+            except FileManagementError:
+                profile = None
+            if profile is not None:
+                return self.paths.mesh_mr_raw_dir(site, profile.safe_folder_name).resolve()
         return self.paths.file_downloads_root(site).resolve()
 
     def _default_local_path(self, site: str, device_id: str) -> Path:
         device = self._resolve_device(site, device_id)
+        profile = self._existing_vehicle_mr_profile(site, device)
+        if profile is not None:
+            return self.paths.mesh_mr_raw_dir(site, profile.safe_folder_name).resolve()
         return self.paths.device_file_download_dir(
             site,
             safe_device_name(device.name or device.system_name or "device"),
@@ -1934,6 +1944,22 @@ class FileManagementApplicationService:
         if str(group.name or "").strip() != "车载-MR":
             return None
         return MeshStorageService(site, self.paths).ensure_mr_profile_identity_for_device(device)
+
+    def _existing_vehicle_mr_profile(self, site: str, device: Device) -> MeshMrProfile | None:
+        """本地浏览只复用已存在的 MR Profile，避免只读目录请求创建业务身份。"""
+
+        if device.id is None or device.group_id is None or not self.paths.site_db_path(site).is_file():
+            return None
+        database = Database(self.paths.site_db_path(site))
+        try:
+            group = DeviceGroupRepository(database, site).get(int(device.group_id))
+        except (KeyError, TypeError, ValueError):
+            return None
+        if str(group.name or "").strip() != "车载-MR":
+            return None
+        catalog = MeshStorageService(site, self.paths).catalog
+        device_uuid = str(device.device_uuid or "").strip()
+        return catalog.get_by_linked_device_id(int(device.id)) or catalog.get_by_linked_device_uuid(device_uuid)
 
     @staticmethod
     def _remote_file_from_descriptor(descriptor: dict[str, object]) -> RemoteDeviceFile:

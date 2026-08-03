@@ -123,6 +123,11 @@ describe('file management API contract', () => {
     expect(source).not.toContain("deliverTask(row, 'save')")
   })
 
+  it('refreshes completed MESH raw downloads from the MR raw root', () => {
+    expect(source).toContain("latest.result?.target_kind === 'mr_raw'")
+    expect(source).toContain("loadLocal(refreshFromRoot ? '' : localPage.value.current_entry_id, refreshFromRoot ? 1 : localPageNumber.value, latest.result?.name || '')")
+  })
+
   it('prevents duplicate desktop directory actions while the bridge request is active', () => {
     expect(source).toContain('const desktopActionBusy = ref(false)')
     expect(source).toContain('if (desktopActionBusy.value) return')

@@ -496,7 +496,8 @@ async function refreshTasks(): Promise<void> {
     const completed = incoming.filter((task) => task.status === 'COMPLETED' && before.get(task.task_id) !== 'COMPLETED')
     if (completed.length && localPage.value) {
       const latest = [...completed].reverse().find((task) => task.result?.name) || completed[completed.length - 1]
-      await loadLocal(localPage.value.current_entry_id, localPageNumber.value, latest.result?.name || '')
+      const refreshFromRoot = latest.result?.target_kind === 'mr_raw'
+      await loadLocal(refreshFromRoot ? '' : localPage.value.current_entry_id, refreshFromRoot ? 1 : localPageNumber.value, latest.result?.name || '')
     }
   } catch (reason) {
     queueError.value = messageOf(reason, '下载队列刷新失败')
