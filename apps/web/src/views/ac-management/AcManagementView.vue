@@ -609,10 +609,10 @@ async function launchExternalTerminal(): Promise<void> {
 
 async function promptExternalTerminalSettings(): Promise<void> {
   try {
-    await ElMessageBox.confirm('尚未配置可用的外部终端程序。请先到系统设置配置 SecureCRT、PuTTY 或 Xshell。', '外部终端未配置', {
-      confirmButtonText: '打开系统设置', cancelButtonText: '取消', type: 'warning',
+    await ElMessageBox.confirm('尚未配置可用的外部终端程序。请先到工具集配置 SecureCRT、PuTTY 或 Xshell。', '外部终端未配置', {
+      confirmButtonText: '打开工具集', cancelButtonText: '取消', type: 'warning',
     })
-    await router.push({ name: 'system-settings' })
+    await router.push({ name: 'tool-collection', query: { section: 'external-terminal' } })
   } catch {
     // 用户取消。
   }

@@ -101,7 +101,7 @@ async function mounted(): Promise<{ wrapper: VueWrapper; router: ReturnType<type
   vi.mocked(api.getSystemSettings).mockResolvedValue(snapshot())
   vi.mocked(api.getFeatureSettings).mockResolvedValue(featureSnapshot())
   vi.mocked(api.getRuntimeSelfCheck).mockResolvedValue(selfCheckSnapshot())
-  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/settings', component: SystemSettingsView }, { path: '/other', component: defineComponent({ template: '<div>other</div>' }) }] })
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/settings', component: SystemSettingsView }, { path: '/tools', component: defineComponent({ template: '<div>tools</div>' }) }, { path: '/other', component: defineComponent({ template: '<div>other</div>' }) }] })
   await router.push('/settings'); await router.isReady()
   const wrapper = mount(defineComponent({ template: '<RouterView />' }), {
     global: { plugins: [router], stubs: { SiteStoragePanel: SiteStoragePanelStub } },
@@ -207,45 +207,21 @@ describe('SystemSettingsView mounted behavior', () => {
     wrapper.unmount()
   })
 
-  it('keeps the three terminal paths independent and saves with the current version', async () => {
+  it('hides external terminal controls while preserving their values on save', async () => {
     const { wrapper } = await mounted()
-    const pathInput = () => wrapper.findAllComponents({ name: 'ElInput' })[2]!
-    expect(pathInput().props('modelValue')).toBe('C:\\tools\\SecureCRT.exe')
-    await change(wrapper, 'terminal-type', 'xshell')
-    expect(pathInput().props('modelValue')).toBe('C:\\tools\\Xshell.exe')
-    pathInput().vm.$emit('update:modelValue', 'D:\\Xshell\\Xshell.exe'); await nextTick()
-    await change(wrapper, 'terminal-type', 'putty')
-    expect(pathInput().props('modelValue')).toBe('C:\\tools\\putty.exe')
+    await change(wrapper, 'theme', 'dark')
 
     vi.mocked(api.saveSystemSettings).mockImplementationOnce(async (values) => ({ ...snapshot(), values, version: 'next' }))
     await wrapper.find('[data-testid="save"]').trigger('click'); await flushPromises()
-    expect(api.saveSystemSettings).toHaveBeenCalledWith(expect.objectContaining({ terminal_paths: { securecrt: 'C:\\tools\\SecureCRT.exe', xshell: 'D:\\Xshell\\Xshell.exe', putty: 'C:\\tools\\putty.exe' } }), 'missing')
-    wrapper.unmount()
-  })
-
-  it('accepts PuTTY64.exe and shows field-level executable feedback', async () => {
-    const { wrapper } = await mounted()
-    await change(wrapper, 'terminal-type', 'putty')
-    settingsBridge.selectSettingsTool.mockResolvedValueOnce({ cancelled: false, path: 'D:\\PuTTY\\PuTTY64.exe' })
-
-    await wrapper.find('[data-testid="select-terminal-tool"]').trigger('click'); await flushPromises()
-
-    const pathInput = wrapper.findAllComponents({ name: 'ElInput' })[2]!
-    expect(pathInput.props('modelValue')).toBe('D:\\PuTTY\\PuTTY64.exe')
-    expect(wrapper.text()).toContain('已识别为 PuTTY 程序')
-    expect(wrapper.text()).not.toContain('所选程序与 PuTTY 类型不匹配')
-    wrapper.unmount()
-  })
-
-  it('blocks save and keeps a PuTTY executable mismatch beside the field', async () => {
-    const { wrapper } = await mounted()
-    await change(wrapper, 'terminal-type', 'putty')
-    const field = wrapper.findAllComponents({ name: 'NcExecutablePathField' })[2]!
-
-    field.vm.$emit('update:modelValue', 'D:\\PuTTY\\plink.exe'); await nextTick()
-
-    expect(wrapper.text()).toContain('所选程序与 PuTTY 类型不匹配。请选择 putty.exe 或 putty64.exe。')
-    expect(wrapper.find('[data-testid="save"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).not.toContain('外部终端')
+    expect(api.saveSystemSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        terminal_type: 'securecrt',
+        terminal_paths: { securecrt: 'C:\\tools\\SecureCRT.exe', xshell: 'C:\\tools\\Xshell.exe', putty: 'C:\\tools\\putty.exe' },
+        securecrt_sessions_root: 'C:\\sessions',
+      }),
+      'missing',
+    )
     wrapper.unmount()
   })
 
@@ -375,18 +351,27 @@ describe('SystemSettingsView mounted behavior', () => {
   it('shows controlled errors for rejected native bridge operations', async () => {
     const { wrapper } = await mounted()
     settingsBridge.selectSettingsTool.mockRejectedValueOnce(new Error('tool bridge failed'))
-    settingsBridge.selectSettingsDirectory.mockRejectedValueOnce(new Error('directory bridge failed'))
     settingsBridge.selectSettingsColor.mockRejectedValueOnce(new Error('color bridge failed'))
     settingsBridge.executeSettingsAction.mockRejectedValueOnce(new Error('action bridge failed'))
 
-    await wrapper.find('[data-testid="select-terminal-tool"]').trigger('click'); await flushPromises()
+    wrapper.findAllComponents({ name: 'NcExecutablePathField' })[0]!.vm.$emit('select')
+    await flushPromises()
     expect(wrapper.text()).toContain('tool bridge failed')
-    await wrapper.find('[data-testid="select-sessions"]').trigger('click'); await flushPromises()
-    expect(wrapper.text()).toContain('directory bridge failed')
     await wrapper.find('[data-testid="select-color"]').trigger('click'); await flushPromises()
     expect(wrapper.text()).toContain('color bridge failed')
     await wrapper.find('[data-testid="open-settings-config"]').trigger('click'); await flushPromises()
     expect(wrapper.text()).toContain('action bridge failed')
+    wrapper.unmount()
+  })
+
+  it('redirects legacy external terminal focus links to the tool collection', async () => {
+    const { wrapper, router } = await mounted()
+
+    await router.push({ path: '/settings', query: { section: 'external-terminal' } })
+    await flushPromises()
+
+    expect(router.currentRoute.value.path).toBe('/tools')
+    expect(router.currentRoute.value.query.section).toBe('external-terminal')
     wrapper.unmount()
   })
 

@@ -227,7 +227,7 @@ Renderer 当前只能调用：
 
 没有通用 `invoke(channel)`、`send(channel)`、文件读写、环境变量读取、Python 路径设置或命令执行接口。详细路径规则见 [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md)。
 
-工具集使用独立 `userData/external-tools.json` schema v2 Store，不进入 UI Preference 或局点数据。iperf3/fping 留在系统设置；SecureCRT/Xshell/PuTTY 卡片只保存系统设置引用；旧 IPOP 路径幂等迁移为独立工具。Renderer 启动只传工具 UUID 与普通/管理员模式，Main 重新取已登记记录并复验。普通启动固定 `shell:false / detached:true / stdio:"ignore"`；管理员启动通过打包的最小 Go helper 调用 `ShellExecuteExW(runas)`，禁止提升 NetConsole 自身，UAC 取消不增加统计。自定义图标源路径留在 Main 的短期选择表，Renderer 只收到 `selectionId` 和 data URL。真实 UAC 和正式包 helper 状态为 `IMPLEMENTED_UNVERIFIED`，完整契约见[工具集](EXTERNAL_TOOL_COLLECTION.md)。
+工具集使用独立 `userData/external-tools.json` schema v2 Store，不进入 UI Preference 或局点数据。iperf3/fping 留在系统设置；SecureCRT/Xshell/PuTTY 的用户可见配置入口位于工具集，卡片只保存系统终端引用；旧 IPOP 路径幂等迁移为独立工具。Renderer 启动只传工具 UUID 与普通/管理员模式，Main 重新取已登记记录并复验。普通启动固定 `shell:false / detached:true / stdio:"ignore"`；管理员启动通过打包的最小 Go helper 调用 `ShellExecuteExW(runas)`，禁止提升 NetConsole 自身，UAC 取消不增加统计。自定义图标源路径留在 Main 的短期选择表，Renderer 只收到 `selectionId` 和 data URL。真实 UAC 和正式包 helper 状态为 `IMPLEMENTED_UNVERIFIED`，完整契约见[工具集](EXTERNAL_TOOL_COLLECTION.md)。
 
 ## 文件选择与导出边界
 

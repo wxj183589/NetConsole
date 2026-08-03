@@ -72,11 +72,11 @@ const anyDirty = computed(() => dirty.value || featuresDirty.value)
 const pathErrors = computed<Record<SettingsToolId, string>>(() => ({
   iperf3: toolPathError('iperf3', form.iperf_path),
   fping: toolPathError('fping', form.fping_path),
-  securecrt: toolPathError('securecrt', form.terminal_paths.securecrt),
-  xshell: toolPathError('xshell', form.terminal_paths.xshell),
-  putty: toolPathError('putty', form.terminal_paths.putty),
+  securecrt: '',
+  xshell: '',
+  putty: '',
 }))
-const hasBlockingPathError = computed(() => Object.values(pathErrors.value).some(Boolean))
+const hasBlockingPathError = computed(() => Boolean(pathErrors.value.iperf3 || pathErrors.value.fping))
 const featureSwitchAvailable = computed(() => featureConfigurationAllowed.value && isFeatureEnabled('web.feature_switch'))
 const featureColumns: NcTableColumn<FeatureSetting>[] = [
   { key: 'title', label: '功能', valueType: 'name', align: 'left', alignmentReason: 'description', fixed: 'left' },
@@ -376,8 +376,7 @@ async function focusSiteStorage(): Promise<void> {
 
 async function focusExternalTerminal(): Promise<void> {
   if (route.query.section !== 'external-terminal') return
-  await nextTick()
-  document.getElementById('external-terminal-settings')?.scrollIntoView({ block: 'start' })
+  await router.replace({ path: '/tools', query: { section: 'external-terminal' } })
 }
 
 async function processTraySiteSwitch(): Promise<void> {
@@ -421,7 +420,7 @@ async function selectTool(toolId: SettingsToolId, field?: 'iperf_path' | 'fping_
   try {
     const result = await getPlatformAdapter().selectSettingsTool(toolId)
     if (result.cancelled || !result.path) return
-    if (field) form[field] = result.path; else form.terminal_paths[form.terminal_type] = result.path
+    if (field) form[field] = result.path
     clearToolError(toolId)
   } catch (cause) {
     runtimeToolErrors[toolId] = message(cause, '工具路径选择失败')
@@ -446,12 +445,6 @@ function assignToolError(cause: unknown): void {
       return
     }
   }
-}
-async function selectSessions(): Promise<void> {
-  try {
-    const result = await getPlatformAdapter().selectSettingsDirectory('securecrt_sessions_root')
-    if (result.path) form.securecrt_sessions_root = result.path
-  } catch (cause) { showError(cause, '会话目录选择失败') }
 }
 async function selectColor(): Promise<void> {
   try {
@@ -650,17 +643,6 @@ function message(cause: unknown, fallback: string): string { return cause instan
       <el-form label-position="top">
         <el-form-item :label="SETTINGS_TOOL_DEFINITIONS.iperf3.fieldLabel"><NcExecutablePathField v-model="form.iperf_path" :error="pathErrors.iperf3" :success="toolPathSuccess('iperf3', form.iperf_path)" @select="selectTool('iperf3','iperf_path')" @clear="clearToolError('iperf3')" /></el-form-item>
         <el-form-item :label="SETTINGS_TOOL_DEFINITIONS.fping.fieldLabel"><NcExecutablePathField v-model="form.fping_path" :error="pathErrors.fping" :success="toolPathSuccess('fping', form.fping_path)" @select="selectTool('fping','fping_path')" @clear="clearToolError('fping')" /></el-form-item>
-      </el-form>
-    </section>
-
-    <section id="external-terminal-settings" class="settings-band"><h2>{{ t('settings.terminal', '外部终端') }}</h2>
-      <el-form class="settings-grid" label-position="top">
-        <el-form-item label="终端类型"><el-select v-model="form.terminal_type" data-testid="terminal-type"><el-option label="SecureCRT" value="securecrt"/><el-option label="Xshell" value="xshell"/><el-option label="PuTTY" value="putty"/></el-select></el-form-item>
-        <el-form-item class="wide" :label="SETTINGS_TOOL_DEFINITIONS[form.terminal_type].fieldLabel"><NcExecutablePathField v-model="form.terminal_paths[form.terminal_type]" data-testid="terminal-path" select-test-id="select-terminal-tool" clear-test-id="clear-terminal-tool" :error="pathErrors[form.terminal_type]" :success="toolPathSuccess(form.terminal_type, form.terminal_paths[form.terminal_type])" @select="selectTool(form.terminal_type)" @clear="clearToolError(form.terminal_type)" /></el-form-item>
-        <el-form-item class="wide" label="SecureCRT 会话根目录"><el-input v-model="form.securecrt_sessions_root" readonly><template #append><el-button data-testid="select-sessions" @click="selectSessions">选择</el-button></template></el-input></el-form-item>
-        <el-form-item label="默认 SSH 端口"><el-input-number v-model="form.ssh_port" :min="1" :max="65535"/></el-form-item>
-        <el-form-item label="默认 Telnet 端口"><el-input-number v-model="form.telnet_port" :min="1" :max="65535"/></el-form-item>
-        <el-form-item label="CRT 编码"><el-select v-model="form.crt_encoding"><el-option label="UTF-8" value="UTF-8"/><el-option label="GBK" value="GBK"/></el-select></el-form-item>
       </el-form>
     </section>
 

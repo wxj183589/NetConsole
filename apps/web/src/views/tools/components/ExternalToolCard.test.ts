@@ -54,7 +54,7 @@ describe('ExternalToolCard', () => {
           executable_path: '',
           working_directory: '',
           status: 'INVALID',
-          status_message: '请先在系统设置 → 外部终端中配置路径',
+          status_message: '请先在工具集 → 外部终端中配置路径',
         }),
       },
       global: { plugins: [ElementPlus] },

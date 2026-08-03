@@ -244,7 +244,7 @@ defineExpose({ markSaved, chooseExecutable, submit, form })
         <el-input v-model="form.executablePath" readonly data-testid="tool-executable">
           <template v-if="!isSystemReference" #append><el-button @click="chooseExecutable">选择程序</el-button></template>
         </el-input>
-        <div v-if="isSystemReference" class="field-help">路径来自“系统设置 → 外部终端”，在此只读。</div>
+        <div v-if="isSystemReference" class="field-help">路径来自工具集的外部终端配置，在此只读。</div>
       </el-form-item>
       <div class="editor-grid">
         <el-form-item label="分类" required>

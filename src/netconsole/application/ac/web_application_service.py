@@ -809,7 +809,7 @@ class AcWebApplicationService:
         }
         config = configs.get(str(terminal_type or "").casefold())
         if config is None:
-            raise AcWebActionError("TERMINAL_NOT_CONFIGURED", "未配置所选外部终端，请先到系统设置配置")
+            raise AcWebActionError("TERMINAL_NOT_CONFIGURED", "未配置所选外部终端，请先到工具集配置")
         temporary_device = Device(
             device_uuid=detail.ap.id,
             name=detail.ap.name,

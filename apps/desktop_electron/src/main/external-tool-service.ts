@@ -417,7 +417,7 @@ function resolveTool(
     return {
       executablePath: '',
       workingDirectory: '',
-      resolutionError: '无法读取系统设置中的外部终端路径',
+      resolutionError: '无法读取外部终端配置',
     }
   }
   const sourceKey = tool.source_key as ExternalToolSystemSettingKey
@@ -426,14 +426,14 @@ function resolveTool(
     return {
       executablePath: '',
       workingDirectory: '',
-      resolutionError: '请先在系统设置 → 外部终端中配置路径',
+      resolutionError: '请先在工具集 → 外部终端中配置路径',
     }
   }
   if (!win32.isAbsolute(executablePath) || !settingsToolNameMatches(sourceKey, executablePath)) {
     return {
       executablePath,
       workingDirectory: '',
-      resolutionError: '系统设置中的外部终端路径无效',
+      resolutionError: '外部终端配置中的路径无效',
     }
   }
   return {

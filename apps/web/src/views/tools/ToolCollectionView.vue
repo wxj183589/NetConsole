@@ -1,11 +1,18 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onActivated, onMounted, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import { useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Connection, Plus, Refresh, Search, Setting } from '@element-plus/icons-vue'
+import {
+  SETTINGS_TOOL_DEFINITIONS,
+  settingsToolMismatchMessage,
+  settingsToolNameMatches,
+} from '../../../../desktop_electron/src/shared/bridge'
 
 import { useExternalToolsStore } from '../../stores/externalTools'
+import { getSystemSettings, saveSystemSettings } from '../../api/systemSettings'
+import { getPlatformAdapter } from '../../platform/runtime'
 import type {
   ExternalToolCategory,
   ExternalToolCreateRequest,
@@ -14,12 +21,14 @@ import type {
   ExternalToolUpdateRequest,
   ExternalToolView,
 } from '../../types/externalTools'
+import type { ExternalTerminalType, SystemSettingsSnapshot, SystemSettingsValues } from '../../types/systemSettings'
+import NcExecutablePathField from '../../components/settings/NcExecutablePathField.vue'
 import ExternalToolCard from './components/ExternalToolCard.vue'
 import ExternalToolCategoryDialog from './components/ExternalToolCategoryDialog.vue'
 import ExternalToolEditorDialog from './components/ExternalToolEditorDialog.vue'
 
 const store = useExternalToolsStore()
-const router = useRouter()
+const route = useRoute()
 const { categories, tools, loading, error, launchingIds, favoriteTools, commonTools } = storeToRefs(store)
 const activeTab = ref<'all' | 'favorites'>('all')
 const search = ref('')
@@ -29,6 +38,26 @@ const editingTool = ref<ExternalToolView | null>(null)
 const relocateOnOpen = ref(false)
 const editor = ref<InstanceType<typeof ExternalToolEditorDialog>>()
 const isDesktop = typeof window !== 'undefined' && Boolean(window.netconsoleDesktop)
+const terminalSection = ref<HTMLElement | null>(null)
+const terminalSnapshot = ref<SystemSettingsSnapshot | null>(null)
+const terminalBaseline = ref<SystemSettingsValues | null>(null)
+const terminalForm = reactive<SystemSettingsValues>(emptySystemSettingsValues())
+const terminalLoading = ref(false)
+const terminalSaving = ref(false)
+const terminalError = ref('')
+const terminalToolErrors = reactive<Partial<Record<ExternalTerminalType, string>>>({})
+const terminalTypes = ['securecrt', 'xshell', 'putty'] as const
+const terminalDirty = computed(() => Boolean(terminalBaseline.value && JSON.stringify(terminalForm) !== JSON.stringify(terminalBaseline.value)))
+const terminalPathErrors = computed<Record<ExternalTerminalType, string>>(() => ({
+  securecrt: terminalPathError('securecrt', terminalForm.terminal_paths.securecrt),
+  xshell: terminalPathError('xshell', terminalForm.terminal_paths.xshell),
+  putty: terminalPathError('putty', terminalForm.terminal_paths.putty),
+}))
+const terminalSaveDisabled = computed(() => (
+  !terminalDirty.value
+  || terminalSaving.value
+  || terminalTypes.some((type) => Boolean(terminalPathErrors.value[type]))
+))
 
 const filteredTools = computed(() => {
   const keyword = search.value.trim().toLocaleLowerCase()
@@ -54,8 +83,18 @@ const visibleFavoriteTools = computed(() => favoriteTools.value.filter((tool) =>
 const visibleCommonTools = computed(() => commonTools.value.filter((tool) => filteredIds.value.has(tool.id)))
 
 onMounted(() => {
-  if (isDesktop) void store.refresh()
+  if (isDesktop) {
+    void store.refresh()
+    void loadTerminalSettings()
+    void focusTerminalSection()
+  }
 })
+onActivated(() => { void focusTerminalSection() })
+
+watch(
+  () => route.query.section,
+  () => { void focusTerminalSection() },
+)
 
 function openEditor(tool: ExternalToolView | null = null, relocate = false): void {
   editingTool.value = tool
@@ -134,7 +173,13 @@ async function addSystemReference(value: string | number | object): Promise<void
 }
 
 async function configureSystemTool(): Promise<void> {
-  await router.push({ path: '/system-settings', query: { section: 'external-terminal' } })
+  terminalSection.value?.scrollIntoView({ block: 'start' })
+}
+
+async function focusTerminalSection(): Promise<void> {
+  if (route.query.section !== 'external-terminal') return
+  await nextTick()
+  terminalSection.value?.scrollIntoView({ block: 'start' })
 }
 
 async function toggleFavorite(tool: ExternalToolView): Promise<void> {
@@ -154,7 +199,7 @@ async function removeTool(tool: ExternalToolView): Promise<void> {
   try {
     await ElMessageBox.confirm(
       tool.source_type === 'system_setting'
-        ? '仅删除工具集快捷入口，不会清除系统设置中的外部终端路径。'
+        ? '仅删除工具集快捷入口，不会清除外部终端配置。'
         : '仅删除 NetConsole 中的工具记录，不会删除本机程序文件。',
       '删除工具',
       { confirmButtonText: '删除记录', cancelButtonText: '取消', type: 'warning' },
@@ -231,6 +276,151 @@ async function reorderCategories(ids: string[]): Promise<void> {
   const result = await store.reorderCategories(ids)
   if (!result.success) ElMessage.error(result.error || '分类排序失败')
 }
+
+async function loadTerminalSettings(): Promise<void> {
+  terminalLoading.value = true
+  terminalError.value = ''
+  try {
+    acceptTerminalSnapshot(await getSystemSettings())
+  } catch (cause) {
+    showTerminalError(cause, '外部终端配置加载失败')
+  } finally {
+    terminalLoading.value = false
+  }
+}
+
+async function chooseTerminalExecutable(terminalType: ExternalTerminalType): Promise<void> {
+  try {
+    const result = await getPlatformAdapter().selectSettingsTool(terminalType)
+    if (result.cancelled || !result.path) return
+    terminalForm.terminal_paths[terminalType] = result.path
+    clearTerminalToolError(terminalType)
+  } catch (cause) {
+    terminalToolErrors[terminalType] = terminalMessage(cause, '终端程序选择失败')
+    showTerminalError(cause, '终端程序选择失败')
+  }
+}
+
+async function chooseSecureCrtSessions(): Promise<void> {
+  try {
+    const result = await getPlatformAdapter().selectSettingsDirectory('securecrt_sessions_root')
+    if (result.path) terminalForm.securecrt_sessions_root = result.path
+  } catch (cause) {
+    showTerminalError(cause, '会话目录选择失败')
+  }
+}
+
+async function saveTerminalSettings(): Promise<void> {
+  if (!terminalSnapshot.value || terminalSaveDisabled.value) return
+  terminalSaving.value = true
+  terminalError.value = ''
+  try {
+    acceptTerminalSnapshot(await saveSystemSettings(cloneSystemSettingsValues(terminalForm), terminalSnapshot.value.version))
+    await store.refresh(true)
+    ElMessage.success('外部终端配置已保存')
+  } catch (cause) {
+    assignTerminalToolError(cause)
+    showTerminalError(cause, '外部终端配置保存失败')
+  } finally {
+    terminalSaving.value = false
+  }
+}
+
+async function resetTerminalSettings(): Promise<void> {
+  if (terminalBaseline.value) {
+    Object.assign(terminalForm, cloneSystemSettingsValues(terminalBaseline.value))
+    clearTerminalToolErrors()
+    terminalError.value = ''
+  }
+}
+
+async function launchSystemTerminal(terminalType: ExternalTerminalType): Promise<void> {
+  if (terminalDirty.value) return void ElMessage.warning('请先保存外部终端配置')
+  if (terminalPathErrors.value[terminalType] || !terminalForm.terminal_paths[terminalType]) {
+    return void ElMessage.warning('请先配置可用的终端程序路径')
+  }
+  const existing = systemTerminalTool(terminalType)
+  if (existing) return launchTool(existing)
+  const result = await store.addSystemReference(terminalType)
+  if (!result.success && !result.existingTool) return void ElMessage.error(result.error || '外部终端快捷入口创建失败')
+  const tool = result.tool ?? (result.existingTool ? tools.value.find((item) => item.id === result.existingTool!.id) : undefined)
+  if (tool) await launchTool(tool)
+}
+
+function acceptTerminalSnapshot(value: SystemSettingsSnapshot): void {
+  terminalSnapshot.value = value
+  terminalBaseline.value = cloneSystemSettingsValues(value.values)
+  Object.assign(terminalForm, cloneSystemSettingsValues(value.values))
+  clearTerminalToolErrors()
+}
+
+function terminalPathError(terminalType: ExternalTerminalType, value: string): string {
+  if (terminalToolErrors[terminalType]) return terminalToolErrors[terminalType] ?? ''
+  return settingsToolNameMatches(terminalType, value) ? '' : settingsToolMismatchMessage(terminalType)
+}
+
+function terminalPathSuccess(terminalType: ExternalTerminalType, value: string): string {
+  return value && !terminalPathErrors.value[terminalType]
+    ? `已识别为 ${SETTINGS_TOOL_DEFINITIONS[terminalType].displayName} 程序`
+    : ''
+}
+
+function clearTerminalToolError(terminalType: ExternalTerminalType): void {
+  delete terminalToolErrors[terminalType]
+  terminalError.value = ''
+}
+
+function clearTerminalToolErrors(): void {
+  for (const terminalType of Object.keys(terminalToolErrors) as ExternalTerminalType[]) {
+    delete terminalToolErrors[terminalType]
+  }
+}
+
+function assignTerminalToolError(cause: unknown): void {
+  const detail = terminalMessage(cause, '')
+  const normalized = detail.toLowerCase()
+  for (const terminalType of terminalTypes) {
+    const definition = SETTINGS_TOOL_DEFINITIONS[terminalType]
+    if (normalized.includes(terminalType) || normalized.includes(definition.displayName.toLowerCase())) {
+      terminalToolErrors[terminalType] = detail
+      return
+    }
+  }
+}
+
+function systemTerminalTool(terminalType: ExternalTerminalType): ExternalToolView | undefined {
+  return tools.value.find((tool) => tool.source_type === 'system_setting' && tool.source_key === terminalType)
+}
+
+function showTerminalError(cause: unknown, fallback: string): void {
+  terminalError.value = terminalMessage(cause, fallback)
+  ElMessage.error(terminalError.value)
+}
+
+function terminalMessage(cause: unknown, fallback: string): string {
+  return cause instanceof Error && cause.message ? cause.message : fallback
+}
+
+function emptySystemSettingsValues(): SystemSettingsValues {
+  return {
+    theme: 'light',
+    language: 'zh_CN',
+    theme_color: '#0078D4',
+    iperf_path: '',
+    fping_path: '',
+    ipop_path: '',
+    terminal_type: 'securecrt',
+    terminal_paths: { putty: '', securecrt: '', xshell: '' },
+    securecrt_sessions_root: '',
+    ssh_port: 22,
+    telnet_port: 23,
+    crt_encoding: 'UTF-8',
+  }
+}
+
+function cloneSystemSettingsValues(value: SystemSettingsValues): SystemSettingsValues {
+  return { ...value, terminal_paths: { ...value.terminal_paths } }
+}
 </script>
 
 <template>
@@ -266,6 +456,61 @@ async function reorderCategories(ids: string[]): Promise<void> {
       </header>
 
       <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" />
+
+      <section ref="terminalSection" class="terminal-settings-panel" v-loading="terminalLoading">
+        <div class="terminal-settings-heading">
+          <div>
+            <h2>外部终端</h2>
+            <p>SecureCRT、Xshell 和 PuTTY 的程序路径保存在系统配置，快捷入口在工具集中启动。</p>
+          </div>
+          <div class="terminal-settings-actions">
+            <el-tag v-if="terminalDirty" type="warning">未保存</el-tag>
+            <el-button :disabled="terminalLoading" @click="loadTerminalSettings">重载</el-button>
+            <el-button :disabled="!terminalDirty || terminalSaving" @click="resetTerminalSettings">取消修改</el-button>
+            <el-button data-testid="save-terminal-settings" type="primary" :loading="terminalSaving" :disabled="terminalSaveDisabled" @click="saveTerminalSettings">保存配置</el-button>
+          </div>
+        </div>
+        <el-alert v-if="terminalError" :title="terminalError" type="error" show-icon :closable="false" />
+        <el-form class="terminal-settings-grid" label-position="top">
+          <el-form-item label="默认终端">
+            <el-select v-model="terminalForm.terminal_type" data-testid="tool-terminal-type">
+              <el-option label="SecureCRT" value="securecrt" />
+              <el-option label="Xshell" value="xshell" />
+              <el-option label="PuTTY" value="putty" />
+            </el-select>
+          </el-form-item>
+          <el-form-item
+            v-for="terminalType in terminalTypes"
+            :key="terminalType"
+            :label="SETTINGS_TOOL_DEFINITIONS[terminalType].fieldLabel"
+            class="wide"
+          >
+            <NcExecutablePathField
+              v-model="terminalForm.terminal_paths[terminalType]"
+              :select-test-id="`select-${terminalType}-tool`"
+              :clear-test-id="`clear-${terminalType}-tool`"
+              :test-test-id="`launch-${terminalType}-tool`"
+              :testable="true"
+              :loading="launchingIds.has(systemTerminalTool(terminalType)?.id || '')"
+              :error="terminalPathErrors[terminalType]"
+              :success="terminalPathSuccess(terminalType, terminalForm.terminal_paths[terminalType])"
+              @select="chooseTerminalExecutable(terminalType)"
+              @clear="clearTerminalToolError(terminalType)"
+              @test="launchSystemTerminal(terminalType)"
+            />
+          </el-form-item>
+          <el-form-item class="wide" label="SecureCRT 会话根目录">
+            <el-input v-model="terminalForm.securecrt_sessions_root" readonly>
+              <template #append><el-button data-testid="select-terminal-sessions" @click="chooseSecureCrtSessions">选择</el-button></template>
+            </el-input>
+          </el-form-item>
+          <el-form-item label="默认 SSH 端口"><el-input-number v-model="terminalForm.ssh_port" :min="1" :max="65535" /></el-form-item>
+          <el-form-item label="默认 Telnet 端口"><el-input-number v-model="terminalForm.telnet_port" :min="1" :max="65535" /></el-form-item>
+          <el-form-item label="CRT 编码">
+            <el-select v-model="terminalForm.crt_encoding"><el-option label="UTF-8" value="UTF-8" /><el-option label="GBK" value="GBK" /></el-select>
+          </el-form-item>
+        </el-form>
+      </section>
 
       <div class="collection-controls">
         <el-tabs v-model="activeTab">
@@ -371,6 +616,14 @@ async function reorderCategories(ids: string[]): Promise<void> {
 .collection-header h1 { margin: 0 0 6px; font-size: 24px; }
 .collection-header p { margin: 0; color: var(--el-text-color-secondary); }
 .header-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; }
+.terminal-settings-panel { margin: 16px 0 18px; padding: 18px 20px; border: 1px solid var(--el-border-color-light); border-radius: 8px; background: var(--el-bg-color); }
+.terminal-settings-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.terminal-settings-heading h2 { margin: 0 0 6px; font-size: 17px; }
+.terminal-settings-heading p { margin: 0; color: var(--el-text-color-secondary); }
+.terminal-settings-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.terminal-settings-grid { display: grid; grid-template-columns: repeat(3, minmax(210px, 1fr)); gap: 0 18px; }
+.terminal-settings-grid .wide { grid-column: span 2; }
+.terminal-settings-grid .el-select, .terminal-settings-grid .el-input-number { width: 100%; }
 .collection-controls { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(280px, 420px); align-items: end; gap: 24px; margin-top: 16px; }
 .collection-controls :deep(.el-tabs__header) { margin-bottom: 0; }
 .collection-content { min-height: 320px; padding-top: 20px; }
@@ -382,6 +635,9 @@ async function reorderCategories(ids: string[]): Promise<void> {
 @media (max-width: 900px) {
   .collection-header { flex-direction: column; }
   .header-actions { justify-content: flex-start; }
-  .collection-controls { grid-template-columns: 1fr; }
+  .terminal-settings-heading { flex-direction: column; }
+  .terminal-settings-actions { justify-content: flex-start; }
+  .terminal-settings-grid, .collection-controls { grid-template-columns: 1fr; }
+  .terminal-settings-grid .wide { grid-column: auto; }
 }
 </style>

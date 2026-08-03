@@ -6,10 +6,21 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as api from '../../api/externalTools'
+import * as settingsApi from '../../api/systemSettings'
 import type { ExternalToolListResult, ExternalToolView } from '../../types/externalTools'
+import type { SystemSettingsSnapshot } from '../../types/systemSettings'
 import ToolCollectionView from './ToolCollectionView.vue'
 
 vi.mock('../../api/externalTools')
+vi.mock('../../api/systemSettings')
+vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }))
+const settingsBridge = {
+  selectSettingsTool: vi.fn(async () => ({ cancelled: false, path: 'D:\\PuTTY\\PuTTY64.exe' })),
+  selectSettingsDirectory: vi.fn(async () => ({ cancelled: false, path: 'D:\\Sessions' })),
+}
+vi.mock('../../platform/runtime', () => ({
+  getPlatformAdapter: () => settingsBridge,
+}))
 
 const category = {
   id: 'e5057ec4-03c5-4c17-b24d-b8111ee8f942',
@@ -48,8 +59,34 @@ function tool(overrides: Partial<ExternalToolView> = {}): ExternalToolView {
   }
 }
 
+function settingsSnapshot(): SystemSettingsSnapshot {
+  const values = {
+    theme: 'light' as const,
+    language: 'zh_CN' as const,
+    theme_color: '#0078D4' as const,
+    iperf_path: '',
+    fping_path: '',
+    ipop_path: '',
+    terminal_type: 'securecrt' as const,
+    terminal_paths: { securecrt: 'C:\\Tools\\SecureCRT.exe', xshell: '', putty: '' },
+    securecrt_sessions_root: 'C:\\Sessions',
+    ssh_port: 22,
+    telnet_port: 23,
+    crt_encoding: 'UTF-8' as const,
+  }
+  return {
+    version: 'version-1',
+    values,
+    defaults: { ...values, terminal_paths: { securecrt: '', xshell: '', putty: '' } },
+    current_site_name: 'demo',
+    current_site_path: 'D:\\NetConsoleData\\sites\\demo',
+    language_status: 'BLOCKED_ON_GLOBAL_I18N',
+  }
+}
+
 async function mounted(list: ExternalToolListResult) {
   vi.mocked(api.listExternalTools).mockResolvedValue(list)
+  vi.mocked(settingsApi.getSystemSettings).mockResolvedValue(settingsSnapshot())
   Object.defineProperty(window, 'netconsoleDesktop', { configurable: true, value: {} })
   const wrapper = mount(ToolCollectionView, {
     global: { plugins: [createPinia(), ElementPlus] },
@@ -58,7 +95,11 @@ async function mounted(list: ExternalToolListResult) {
   return wrapper
 }
 
-beforeEach(() => vi.clearAllMocks())
+beforeEach(() => {
+  vi.clearAllMocks()
+  settingsBridge.selectSettingsTool.mockResolvedValue({ cancelled: false, path: 'D:\\PuTTY\\PuTTY64.exe' })
+  settingsBridge.selectSettingsDirectory.mockResolvedValue({ cancelled: false, path: 'D:\\Sessions' })
+})
 afterEach(() => Reflect.deleteProperty(window, 'netconsoleDesktop'))
 
 describe('ToolCollectionView', () => {
@@ -78,6 +119,48 @@ describe('ToolCollectionView', () => {
     wrapper.findComponent({ name: 'ElDropdown' }).vm.$emit('command', 'securecrt')
     await flushPromises()
     expect(api.createExternalToolSystemReference).toHaveBeenCalledWith('securecrt')
+  })
+
+  it('moves external terminal configuration into the tool collection', async () => {
+    vi.mocked(settingsApi.saveSystemSettings).mockImplementationOnce(async (values) => ({
+      ...settingsSnapshot(),
+      values,
+      version: 'version-2',
+    }))
+    const wrapper = await mounted({ schema_version: 2, categories: [category], tools: [] })
+
+    expect(wrapper.text()).toContain('外部终端')
+    await wrapper.find('[data-testid="select-putty-tool"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('已识别为 PuTTY 程序')
+
+    await wrapper.find('[data-testid="save-terminal-settings"]').trigger('click')
+    await flushPromises()
+
+    expect(settingsApi.saveSystemSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        terminal_paths: expect.objectContaining({ putty: 'D:\\PuTTY\\PuTTY64.exe' }),
+      }),
+      'version-1',
+    )
+  })
+
+  it('creates or reuses a system terminal shortcut before launching from the terminal panel', async () => {
+    const securecrt = tool({
+      source_type: 'system_setting',
+      source_key: 'securecrt',
+      name: 'SecureCRT',
+      executable_path: 'C:\\Tools\\SecureCRT.exe',
+      executable_name: 'SecureCRT.exe',
+    })
+    vi.mocked(api.launchExternalTool).mockResolvedValueOnce({ success: true, toolId: securecrt.id })
+    const wrapper = await mounted({ schema_version: 2, categories: [category], tools: [securecrt] })
+
+    await wrapper.find('[data-testid="launch-securecrt-tool"]').trigger('click')
+    await flushPromises()
+
+    expect(api.createExternalToolSystemReference).not.toHaveBeenCalled()
+    expect(api.launchExternalTool).toHaveBeenCalledWith(securecrt.id, 'normal')
   })
 
   it('searches name, category and executable name', async () => {
