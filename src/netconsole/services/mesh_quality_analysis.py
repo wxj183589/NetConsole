@@ -298,7 +298,15 @@ def build_quality_report(
     progress = progress or (lambda _value, _stage: None)
     should_cancel = should_cancel or (lambda: False)
     normalized = mark_excluded_rows(normalize_samples(rows), excluded_region_keywords)
-    analysis_rows = [row for row in normalized if not row.get("excluded")]
+    analysis_rows = []
+    for source_row in normalized:
+        if source_row.get("excluded"):
+            continue
+        row = dict(source_row)
+        for metric_field in ("mr_rssi", "peer_rssi"):
+            if _num(row.get(metric_field)) == 0:
+                row[metric_field] = None
+        analysis_rows.append(row)
     excluded_source_files = mark_excluded_source_files(source_files, normalized)
     _cancel(should_cancel)
     progress(12, "normalize_samples")

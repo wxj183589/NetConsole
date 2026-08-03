@@ -18,6 +18,7 @@ const entries: TracksideTooltipEntry[] = [
     section: null,
     activeDurationSeconds: 12.5,
     color: '#27ae60',
+    rssiZeroRun: null,
   },
   {
     seriesId: 'series-a',
@@ -31,6 +32,7 @@ const entries: TracksideTooltipEntry[] = [
     section: '区间甲',
     activeDurationSeconds: 7.574,
     color: '#2f80ed',
+    rssiZeroRun: null,
   },
 ]
 
@@ -111,5 +113,31 @@ describe('TracksideExternalTooltip', () => {
 
     expect(parentWheel).not.toHaveBeenCalled()
     wrapper.unmount()
+  })
+
+  it('shows sustained-zero timing instead of a normal RSSI 0 row', () => {
+    const wrapper = mount(TracksideExternalTooltip, {
+      props: {
+        visible: true,
+        timestamp: '2026-07-24 20:41:21.000',
+        entries: [{
+          ...entries[1],
+          tracksideRssi: 0,
+          rssiZeroRun: {
+            state: 'sustained',
+            boundary: 'start',
+            start_time: '2026-07-24 20:41:21.000',
+            end_time: '2026-07-24 20:41:25.000',
+            duration_ms: 4_000,
+            sample_count: 4,
+            estimated_end: false,
+          },
+        }],
+      },
+    })
+
+    expect(wrapper.text()).toContain('状态：持续无有效 RSSI')
+    expect(wrapper.text()).toContain('持续时间：4.000 s')
+    expect(wrapper.text()).not.toContain('轨旁 / MR RSSI：0')
   })
 })

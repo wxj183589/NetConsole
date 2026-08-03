@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { MeshChartEvent, MeshChartPoint } from '../../types/meshAnalysis'
-import { buildMeshRssiTooltip, buildMeshSwitchPointTooltip } from './meshRssiTooltip'
+import { buildMeshRssiTooltip, buildMeshRssiZeroRunTooltip, buildMeshSwitchPointTooltip } from './meshRssiTooltip'
 
 const point: MeshChartPoint = {
   link_id: 1,
@@ -148,5 +148,23 @@ describe('MESH RSSI tooltip', () => {
     expect(html).toContain(`采样时间：${pointerTime}`)
     expect(html).toContain('当前时刻无有效采样')
     expect(html).not.toContain(point.timestamp)
+  })
+
+  it('describes a sustained zero run without presenting RSSI 0 as a normal sample', () => {
+    const html = buildMeshRssiZeroRunTooltip({ ...point, local_rssi: 0 }, {
+      state: 'sustained',
+      boundary: 'start',
+      start_time: '2026-07-24 20:41:21.000',
+      end_time: '2026-07-24 20:41:25.000',
+      duration_ms: 4_000,
+      sample_count: 4,
+      estimated_end: false,
+    }, '2026-07-24 20:41:21.000', '当前 ACTIVE MR 侧 RSSI')
+
+    expect(html).toContain('状态：持续无有效 RSSI')
+    expect(html).toContain('开始时间：2026-07-24 20:41:21.000')
+    expect(html).toContain('结束时间：2026-07-24 20:41:25.000')
+    expect(html).toContain('持续时间：4.000 s')
+    expect(html).not.toContain('接收信号：0')
   })
 })

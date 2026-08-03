@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { Close } from '@element-plus/icons-vue'
+import { t } from '../../i18n/runtime'
 
 import {
   displayTracksideTooltipMetric,
+  displayTracksideZeroDuration,
   sortTracksideTooltipEntries,
   tracksideTooltipApLabel,
   type PinnedTracksideFrame,
@@ -84,7 +86,13 @@ function hasActiveDuration(entry: TracksideTooltipEntry): boolean {
         >
           AP：{{ tracksideTooltipApLabel(entry) }} · Radio {{ displayTracksideTooltipMetric(entry.radio) }}
         </button>
-        <div>
+        <div v-if="entry.rssiZeroRun?.state === 'sustained'" class="trackside-frame-detail-entry__zero-run">
+          <strong>{{ t('mesh.rssi.zero.status', '状态：持续无有效 RSSI') }}</strong><br>
+          {{ t('mesh.rssi.zero.start', '开始时间') }}：{{ entry.rssiZeroRun.start_time }}<br>
+          {{ t('mesh.rssi.zero.end', '结束时间') }}：{{ entry.rssiZeroRun.end_time }}<br>
+          {{ t('mesh.rssi.zero.duration', '持续时间') }}：{{ displayTracksideZeroDuration(entry.rssiZeroRun.duration_ms) }}
+        </div>
+        <div v-else>
           轨旁 / MR RSSI：{{ displayTracksideTooltipMetric(entry.tracksideRssi) }} / {{ displayTracksideTooltipMetric(entry.mrRssi) }}
         </div>
         <div>
@@ -164,6 +172,7 @@ function hasActiveDuration(entry: TracksideTooltipEntry): boolean {
 .trackside-frame-detail-entry__role.is-active { color: var(--nc-success); }
 .trackside-frame-detail-entry__role.is-standby { color: var(--nc-text-secondary); }
 .trackside-frame-detail-entry__role span { display: inline-block; width: 1em; }
+.trackside-frame-detail-entry__zero-run { margin-top: 4px; color: var(--nc-warning); }
 .trackside-frame-detail-entry__ap {
   display: block;
   max-width: 100%;

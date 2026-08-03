@@ -177,6 +177,7 @@ export function createMultiSeriesTimeChartBaseOption(
 }
 
 export function createTimeChartLinePresentation(pointCount: number): {
+  smooth: false
   showSymbol: boolean
   symbol: 'circle' | 'none'
   symbolSize: number
@@ -186,6 +187,7 @@ export function createTimeChartLinePresentation(pointCount: number): {
   const largeMode = isLargeTimeChart(pointCount)
   const showSymbol = !largeMode && pointCount < TIME_CHART_SYMBOL_THRESHOLD
   return {
+    smooth: false,
     showSymbol,
     symbol: showSymbol ? 'circle' : 'none',
     symbolSize: 5,

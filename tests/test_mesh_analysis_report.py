@@ -126,10 +126,10 @@ def test_report_active_segments_rssi_stats_are_complete_and_consistent():
     ]
     segment = build_active_segments(rows)[0]
 
-    assert segment["avg_mr_rssi"] == 30
-    assert segment["min_mr_rssi"] == 0
+    assert segment["avg_mr_rssi"] == 45
+    assert segment["min_mr_rssi"] == 40
     assert segment["max_mr_rssi"] == 50
-    assert segment["p10_mr_rssi"] == 8
+    assert segment["p10_mr_rssi"] == 41
     assert segment["min_mr_rssi"] <= segment["avg_mr_rssi"] <= segment["max_mr_rssi"]
 
 

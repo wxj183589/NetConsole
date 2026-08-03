@@ -1,4 +1,5 @@
-import type { MeshChartBackupLink, MeshChartEvent, MeshChartPoint, MeshSwitchEvent } from '../../types/meshAnalysis'
+import type { MeshChartBackupLink, MeshChartEvent, MeshChartPoint, MeshRssiZeroRun, MeshSwitchEvent } from '../../types/meshAnalysis'
+import { t } from '../../i18n/runtime'
 
 const TOOLTIP_STYLE = 'min-width:280px;max-width:420px;white-space:normal;overflow-wrap:anywhere;line-height:1.6'
 const DIVIDER_STYLE = 'margin:8px 0;border:0;border-top:1px solid currentColor;opacity:.35'
@@ -61,6 +62,31 @@ export function buildMeshRssiTooltip(point?: MeshChartPoint, event?: MeshChartEv
     `建链持续时间：${metric(point.segment_duration_seconds, ' s')}`,
     buildBackupSection(point.backups || []),
     buildSwitchSection(event),
+    '</div>',
+  ].join('<br>')
+}
+
+export function buildMeshRssiZeroRunTooltip(
+  point: MeshChartPoint,
+  zeroRun: MeshRssiZeroRun,
+  pointerTime?: string,
+  seriesName?: string,
+): string {
+  return [
+    `<div class="mesh-rssi-tooltip" style="${TOOLTIP_STYLE}">`,
+    `采样时间：${escapeMeshTooltipHtml(pointerTime || point.timestamp)}`,
+    divider(),
+    `<strong>${t('mesh.rssi.zero.heading', 'RSSI 状态')}</strong>`,
+    `${t('mesh.rssi.zero.status', '状态：持续无有效 RSSI')}`,
+    `${t('mesh.rssi.zero.metric', '指标')}：${escapeMeshTooltipHtml(seriesName)}`,
+    `${t('mesh.rssi.zero.start', '开始时间')}：${escapeMeshTooltipHtml(zeroRun.start_time)}`,
+    `${t('mesh.rssi.zero.end', '结束时间')}：${escapeMeshTooltipHtml(zeroRun.end_time)}`,
+    `${t('mesh.rssi.zero.duration', '持续时间')}：${(zeroRun.duration_ms / 1_000).toFixed(3)} s`,
+    `链路角色：${escapeMeshTooltipHtml(point.link_state)}`,
+    `当前轨旁 AP：${escapeMeshTooltipHtml(point.peer_ap_name)}`,
+    `当前轨旁 AP MAC：${escapeMeshTooltipHtml(point.peer_ap_mac)}`,
+    `Radio：${point.local_radio == null ? '—' : escapeMeshTooltipHtml(point.local_radio)}`,
+    `归属站点 / 区间：${escapeMeshTooltipHtml(point.station)} / ${escapeMeshTooltipHtml(point.section)}`,
     '</div>',
   ].join('<br>')
 }

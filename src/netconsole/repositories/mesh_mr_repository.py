@@ -2889,7 +2889,7 @@ class MeshMrRepository:
             first = current[0]
             last = current[-1]
             rssi_values = [_int_or_none(row["local_rssi_db"]) for row in current]
-            finite_rssi = [value for value in rssi_values if value is not None]
+            finite_rssi = [value for value in rssi_values if value not in (None, 0)]
             avg_rssi = round(sum(finite_rssi) / len(finite_rssi), 3) if finite_rssi else None
             duration = _seconds_between(str(first["sample_time"]), str(last["sample_time"]))
             segment_rows.append(
@@ -2951,7 +2951,7 @@ class MeshMrRepository:
         rows = conn.execute("SELECT radio, peer_mac_normalized, peer_site, local_rssi_db FROM active_points").fetchall()
         for row in rows:
             rssi = _int_or_none(row["local_rssi_db"])
-            if rssi is None:
+            if rssi in (None, 0):
                 continue
             scopes[("all", "all")].append(rssi)
             scopes[("radio", f"radio:{row['radio']}")].append(rssi)

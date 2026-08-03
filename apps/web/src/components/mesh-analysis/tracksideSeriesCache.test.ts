@@ -124,6 +124,82 @@ describe('trackside compact series cache', () => {
     expect(cache.series[0].data.some((item) => item[1] === null)).toBe(false)
   })
 
+  it('suppresses short zeros and compresses sustained zeros independently per series', () => {
+    const shortStart = '2026-07-20 10:00:01.000'
+    const shortEnd = '2026-07-20 10:00:02.000'
+    const sustainedStart = '2026-07-20 10:00:01.000'
+    const sustainedEnd = '2026-07-20 10:00:04.000'
+    const shortSeries = {
+      ...series([
+        point('2026-07-20 10:00:00.000', 1),
+        {
+          ...point(shortStart, 1),
+          peer_rssi: 0,
+          rssi_zero_run: {
+            state: 'suppressed' as const,
+            boundary: 'single' as const,
+            start_time: shortStart,
+            end_time: shortEnd,
+            duration_ms: 1_000,
+            sample_count: 1,
+            estimated_end: false,
+          },
+        },
+        point(shortEnd, 1),
+      ]),
+      series_id: 'short-series',
+    }
+    const sustainedSeries = {
+      ...series([
+        point('2026-07-20 10:00:00.000', 2),
+        {
+          ...point(sustainedStart, 2),
+          peer_rssi: 0,
+          rssi_zero_run: {
+            state: 'sustained' as const,
+            boundary: 'start' as const,
+            start_time: sustainedStart,
+            end_time: sustainedEnd,
+            duration_ms: 3_000,
+            sample_count: 2,
+            estimated_end: false,
+          },
+        },
+        {
+          ...point('2026-07-20 10:00:03.000', 2),
+          peer_rssi: 0,
+          rssi_zero_run: {
+            state: 'sustained' as const,
+            boundary: 'end' as const,
+            start_time: sustainedStart,
+            end_time: sustainedEnd,
+            duration_ms: 3_000,
+            sample_count: 2,
+            estimated_end: false,
+          },
+        },
+        point(sustainedEnd, 2),
+      ]),
+      series_id: 'sustained-series',
+    }
+
+    const cache = buildTracksideSeriesCache([shortSeries, sustainedSeries])
+
+    expect(cache.series[0].data.map((item) => item[1])).toEqual([41, 41])
+    expect(cache.series[1].data.map((item) => [item[0], item[1]])).toEqual([
+      [Date.parse('2026-07-20 10:00:00.000'), 42],
+      [Date.parse(sustainedStart), 0],
+      [Date.parse(sustainedEnd), 0],
+      [Date.parse(sustainedEnd), 42],
+    ])
+    expect(cache.pointMetaById.size).toBe(6)
+    const sustainedEndPoint = cache.series[1].data[2]
+    expect(tracksidePointMeta(cache, sustainedEndPoint[2])?.rssiZeroRun).toMatchObject({
+      state: 'sustained',
+      duration_ms: 3_000,
+    })
+  })
+
   it('restores every ACTIVE and STANDBY point in one frame through the external index', () => {
     const timestamp = '2026-07-20 10:00:00.000'
     const active = point(timestamp, 1)

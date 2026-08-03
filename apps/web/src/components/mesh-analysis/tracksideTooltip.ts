@@ -1,3 +1,5 @@
+import type { MeshRssiZeroRun } from '../../types/meshAnalysis'
+
 export interface TracksideTooltipEntry {
   seriesId: string
   metaId: number
@@ -10,6 +12,7 @@ export interface TracksideTooltipEntry {
   section: string | null
   activeDurationSeconds: number | null
   color: string
+  rssiZeroRun?: MeshRssiZeroRun | null
 }
 
 export interface PinnedTracksideFrame {
@@ -20,6 +23,10 @@ export interface PinnedTracksideFrame {
 
 export function displayTracksideTooltipMetric(value: number | null): string {
   return value == null || !Number.isFinite(value) ? '—' : String(value)
+}
+
+export function displayTracksideZeroDuration(durationMs: number): string {
+  return `${(Math.max(durationMs, 0) / 1_000).toFixed(3)} s`
 }
 
 export function tracksideTooltipApLabel(entry: TracksideTooltipEntry): string {

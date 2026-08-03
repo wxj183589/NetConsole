@@ -166,12 +166,23 @@ export interface MeshChartBackupLink extends MeshIdentityMetadata {
   local_rx_busy: number | null; peer_rx_busy: number | null
 }
 
+export interface MeshRssiZeroRun {
+  state: 'suppressed' | 'sustained'
+  start_time: string
+  end_time: string
+  duration_ms: number
+  sample_count: number
+  boundary: 'start' | 'middle' | 'end' | 'single'
+  estimated_end: boolean
+}
+
 export interface MeshChartPoint extends MeshIdentityMetadata {
   link_id: number | null; timestamp: string; timestamp_tag: string | null; source_file_id: number | null; segment_sequence?: number | null
   local_radio: number | null; link_state: string; peer_mac: string | null; peer_ap_name: string | null; peer_ap_mac: string | null
   peer_radio: string | null; peer_radio_mac: string | null; station: string | null; section?: string | null
   establish_time?: string | null; segment_start?: string | null; segment_end?: string | null; segment_duration_seconds?: number | null
   local_rssi: number | null; peer_rssi: number | null; local_signal: number | null; peer_signal: number | null
+  local_rssi_zero_run?: MeshRssiZeroRun | null; peer_rssi_zero_run?: MeshRssiZeroRun | null
   local_tx_busy: number | null; peer_tx_busy: number | null; local_rx_busy: number | null; peer_rx_busy: number | null
   is_switch: boolean; is_anomaly: boolean; gap_before: boolean; backups: MeshChartBackupLink[]
 }
@@ -196,6 +207,8 @@ export interface MeshPathChartSummary {
   current_peer_mac: string | null; current_peer_ap_name: string | null; current_radio: number | null
   earliest_sample_time?: string | null; latest_sample_time?: string | null; first_sample_time: string | null; last_sample_time: string | null; sample_count: number; active_count: number
   standby_context_count: number; switch_count: number; estimated_interval_seconds: number | null; continuity_gap_seconds: number | null
+  suppressed_zero_sample_count: number; suppressed_zero_run_count: number; sustained_zero_run_count: number
+  sustained_zero_total_duration_ms: number; sustained_zero_longest_duration_ms: number
 }
 
 export interface MeshPathChart {
@@ -215,6 +228,7 @@ export interface MeshTracksideSignalPointData extends MeshIdentityMetadata {
   run_id?: string | null; run_sequence?: number | null
   segment_sequence?: number | null; segment_start?: string | null; segment_end?: string | null
   segment_duration_seconds: number | null; break_before?: boolean; data_source: string
+  rssi_zero_run?: MeshRssiZeroRun | null
 }
 
 export interface MeshTracksideSignalSeriesData {
@@ -232,6 +246,8 @@ export interface MeshTracksideSignalChartData {
   total_frames: number; returned_frames: number; total_link_points: number; returned_link_points: number; total_link_runs: number
   active_link_points: number; standby_link_points: number; returned_active_link_points: number; returned_standby_link_points: number
   role_switch_count: number; skipped_missing_signal_points: number; skipped_missing_identity_points: number
+  suppressed_zero_sample_count: number; suppressed_zero_run_count: number; sustained_zero_run_count: number
+  sustained_zero_total_duration_ms: number; sustained_zero_longest_duration_ms: number
   downsampled: boolean; requested_max_frames: number; effective_max_frames: number
   requested_max_points: number; effective_max_points?: number; top_n: number
   included_roles: Array<'ACTIVE' | 'STANDBY'>; include_standby: boolean
@@ -240,7 +256,7 @@ export interface MeshTracksideSignalChartData {
 export interface MeshTimelineItem extends MeshIdentityMetadata { segment_id: number; start_time: string; end_time: string; duration_seconds: number | null; peer_ap_name: string | null; peer_ap_mac: string | null; local_radio: number | null; rssi_min: number | null; rssi_avg: number | null; rssi_max: number | null; station: string | null; section: string | null; mileage: string | null; line_side: string | null; event_type: string | null; warning: string | null }
 export interface MeshSwitchEvent { event_id: number; timestamp: string | null; event_type: string; mr_name: string; local_radio: number | null; from_peer_mac: string | null; to_peer_mac: string | null; from_ap_name: string | null; to_ap_name: string | null; before_rssi: number | null; after_rssi: number | null; duration_ms: number | null; is_short_link: boolean; is_pingpong: boolean; station: string | null; section: string | null; warning: string | null }
 export interface MeshRssiPoint extends MeshIdentityMetadata { timestamp: string; value: number | null; peer_ap_name: string | null; peer_ap_mac: string | null; local_radio: number | null }
-export interface MeshRssi { statistics: { min_rssi: number | null; max_rssi: number | null; avg_rssi: number | null; latest_rssi: number | null; sample_count: number; missing_sample_count: number; low_rssi_count: number; severe_low_rssi_count: number }; points: MeshRssiPoint[]; downsampled: boolean; total_points: number }
+export interface MeshRssi { statistics: { min_rssi: number | null; max_rssi: number | null; avg_rssi: number | null; latest_rssi: number | null; sample_count: number; missing_sample_count: number; zero_sample_count: number; low_rssi_count: number; severe_low_rssi_count: number }; points: MeshRssiPoint[]; downsampled: boolean; total_points: number }
 export interface MeshChannelBusy { timestamp: string; local_radio: number | null; ctl_busy: number | null; tx_busy: number | null; rx_busy: number | null; total_busy: number | null; peer_ap_name: string | null; station: string | null; section: string | null; source_type: string; warning: string | null }
 export interface MeshRatePoint extends MeshIdentityMetadata { timestamp: string; local_radio: number | null; peer_ap_name: string | null; peer_ap_mac: string | null; local_rate_raw: number | null; peer_rate_raw: number | null }
 export interface MeshRatePage { items: MeshRatePoint[]; total: number; downsampled: boolean }

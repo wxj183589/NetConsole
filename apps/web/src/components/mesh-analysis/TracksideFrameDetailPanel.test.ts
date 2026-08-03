@@ -18,6 +18,7 @@ function entry(index: number): TracksideTooltipEntry {
     section: null,
     activeDurationSeconds: index === 0 ? 5.856 : null,
     color: `rgb(${index}, 100, 200)`,
+    rssiZeroRun: null,
   }
 }
 
@@ -63,5 +64,28 @@ describe('TracksideFrameDetailPanel', () => {
     await wrapper.trigger('wheel')
     expect(parentWheel).not.toHaveBeenCalled()
     wrapper.unmount()
+  })
+
+  it('shows sustained-zero timing in a pinned frame without a normal RSSI 0 row', () => {
+    const zeroEntry = {
+      ...entry(0),
+      tracksideRssi: 0,
+      rssiZeroRun: {
+        state: 'sustained' as const,
+        boundary: 'single' as const,
+        start_time: '2026-07-24 20:41:21.000',
+        end_time: '2026-07-24 20:41:25.000',
+        duration_ms: 4_000,
+        sample_count: 1,
+        estimated_end: false,
+      },
+    }
+    const wrapper = mount(TracksideFrameDetailPanel, {
+      props: { frame: { ...frame(1), entries: [zeroEntry] } },
+    })
+
+    expect(wrapper.text()).toContain('状态：持续无有效 RSSI')
+    expect(wrapper.text()).toContain('结束时间：2026-07-24 20:41:25.000')
+    expect(wrapper.text()).not.toContain('轨旁 / MR RSSI：0')
   })
 })

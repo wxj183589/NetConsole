@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 
 def calc_numeric_stats(values, *, p10_ratio: float = 0.1, precision: int = 3) -> dict[str, object]:
     valid: list[float] = []
@@ -7,9 +9,11 @@ def calc_numeric_stats(values, *, p10_ratio: float = 0.1, precision: int = 3) ->
         if value is None or value == "":
             continue
         try:
-            valid.append(float(value))
+            number = float(value)
         except (TypeError, ValueError):
             continue
+        if math.isfinite(number) and number != 0:
+            valid.append(number)
     if not valid:
         return {"avg": None, "min": None, "max": None, "p10": None, "count": 0}
     ordered = sorted(valid)

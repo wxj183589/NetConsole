@@ -54,6 +54,7 @@ from netconsole.models.api.mesh_analysis import (
     MeshRssiDTO,
     MeshRssiPointDTO,
     MeshRssiStatisticsDTO,
+    MeshRssiZeroRunDTO,
     MeshSwitchEventDTO,
     MeshSwitchEventPageDTO,
     MeshTracksideSignalChartDTO,
@@ -67,6 +68,7 @@ from netconsole.models.mesh_log_models import LINK_STATE_ACTIVE, LINK_STATE_STAN
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository, MeshSchemaRebuildRequired, SCHEMA_VERSION
 from netconsole.services.mesh_analysis_params_service import load_site_mesh_analysis_params
 from netconsole.services.mesh_chart_payload import build_chart_payload, render_indices
+from netconsole.services.mesh_rssi_zero_runs import analyze_rssi_zero_runs
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.mesh_ap_location_service import (
     MeshApLocation,
@@ -1118,8 +1120,21 @@ class MeshAnalysisQueryService:
         with closing(self._connect_readonly(context.detail_db)) as conn:
             total = int(conn.execute(f"SELECT COUNT(*) FROM active_points {where}", values).fetchone()[0] or 0)
             missing = int(conn.execute(f"SELECT COUNT(*) FROM active_points {where} {'AND' if where else 'WHERE'} local_rssi_db IS NULL", values).fetchone()[0] or 0)
-            latest = conn.execute(f"SELECT local_rssi_db FROM active_points {where} ORDER BY sample_time DESC, id DESC LIMIT 1", values).fetchone()
-            stat_row = conn.execute("SELECT * FROM rssi_stats WHERE scope_type = 'all' ORDER BY id DESC LIMIT 1").fetchone()
+            zero_count = int(conn.execute(f"SELECT COUNT(*) FROM active_points {where} {'AND' if where else 'WHERE'} local_rssi_db = 0", values).fetchone()[0] or 0)
+            valid_where = f"{where} {'AND' if where else 'WHERE'} local_rssi_db IS NOT NULL AND local_rssi_db != 0"
+            latest = conn.execute(f"SELECT local_rssi_db FROM active_points {valid_where} ORDER BY sample_time DESC, id DESC LIMIT 1", values).fetchone()
+            stat_row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS sample_count,
+                       AVG(local_rssi_db) AS avg_rssi,
+                       MIN(local_rssi_db) AS min_rssi,
+                       MAX(local_rssi_db) AS max_rssi,
+                       SUM(CASE WHEN local_rssi_db < 25 THEN 1 ELSE 0 END) AS low_rssi_count,
+                       SUM(CASE WHEN local_rssi_db < 20 THEN 1 ELSE 0 END) AS severe_low_rssi_count
+                FROM active_points {valid_where}
+                """,
+                values,
+            ).fetchone()
             step = max(1, (total + max_points - 1) // max_points)
             link_columns = self._table_columns(conn, "mesh_links")
             identity_select = ", ".join(
@@ -1156,8 +1171,9 @@ class MeshAnalysisQueryService:
             max_rssi=self._number(data.get("max_rssi")),
             avg_rssi=self._number(data.get("avg_rssi")),
             latest_rssi=self._number(latest[0]) if latest else None,
-            sample_count=int(data.get("sample_count") or max(total - missing, 0)),
+            sample_count=int(data.get("sample_count") or 0),
             missing_sample_count=missing,
+            zero_sample_count=zero_count,
             low_rssi_count=int(data.get("low_rssi_count") or 0),
             severe_low_rssi_count=int(data.get("severe_low_rssi_count") or 0),
         )
@@ -2291,7 +2307,8 @@ class MeshAnalysisQueryService:
         events_by_index = dict(chart.get("events_by_index") or {})
         segment_index = self._chart_segment_index(self._build_rows(context))
         ap_map = self._ap_map(site_id)
-        continuity_gap = self._number(dict(chart.get("metadata") or {}).get("continuity_gap_seconds"))
+        metadata = dict(chart.get("metadata") or {})
+        continuity_gap = self._number(metadata.get("continuity_gap_seconds"))
         point_rows: list[dict[str, Any]] = []
         previous_time: datetime | None = None
         previous_source = ""
@@ -2359,6 +2376,33 @@ class MeshAnalysisQueryService:
             previous_source = source
             previous_time = current_time or previous_time
             previous_segment_sequence = segment_sequence
+        estimated_interval = self._number(metadata.get("estimated_interval_seconds"))
+        fallback_interval_ms = estimated_interval * 1_000 if estimated_interval is not None else None
+        maximum_gap_ms = continuity_gap * 1_000 if continuity_gap is not None else None
+        local_zero_analysis = analyze_rssi_zero_runs(
+            point_rows,
+            timestamp_selector=lambda row: row.get("timestamp"),
+            value_selector=lambda row: row.get("local_rssi"),
+            boundary_before_selector=lambda row: bool(row.get("gap_before")),
+            fallback_sample_interval_ms=fallback_interval_ms,
+            maximum_continuous_gap_ms=maximum_gap_ms,
+        )
+        peer_zero_analysis = analyze_rssi_zero_runs(
+            point_rows,
+            timestamp_selector=lambda row: row.get("timestamp"),
+            value_selector=lambda row: row.get("peer_rssi"),
+            boundary_before_selector=lambda row: bool(row.get("gap_before")),
+            fallback_sample_interval_ms=fallback_interval_ms,
+            maximum_continuous_gap_ms=maximum_gap_ms,
+        )
+        for index, zero_run in local_zero_analysis.metadata_by_index.items():
+            point_rows[index]["local_rssi_zero_run"] = zero_run.to_payload()
+        for index, zero_run in peer_zero_analysis.metadata_by_index.items():
+            point_rows[index]["peer_rssi_zero_run"] = zero_run.to_payload()
+        sustained_zero_boundaries = {
+            *local_zero_analysis.sustained_boundary_indices,
+            *peer_zero_analysis.sustained_boundary_indices,
+        }
         total_points = len(point_rows)
         prepared_events = self._prepare_chart_events(point_rows, events_by_index)
         valid_switch_indices = {
@@ -2368,12 +2412,35 @@ class MeshAnalysisQueryService:
             if str(row["event"].get("event_type") or "") == "ACTIVE_SWITCH"
             and index is not None
         }
-        requested_max_points, effective_max_points, rendered_switch_indices, downsample_warning = (
-            self._chart_render_budget(total_points, max_points, valid_switch_indices)
-        )
         important_values = chart.get("important_indices")
         important = {int(value) for value in (important_values if important_values is not None else [])}
         important.update(self._important_chart_row_indices(point_rows))
+        important.update(sustained_zero_boundaries)
+        requested_max_points, effective_max_points, rendered_switch_indices, downsample_warning = (
+            self._chart_render_budget(total_points, max_points, valid_switch_indices)
+        )
+        required_display_indices = {
+            *important,
+            *rendered_switch_indices,
+            *sustained_zero_boundaries,
+            *({0, total_points - 1} if total_points else set()),
+        }
+        if len(required_display_indices) > effective_max_points:
+            if len(required_display_indices) <= _MAX_CHART_RENDER_POINTS:
+                previous_effective = effective_max_points
+                effective_max_points = len(required_display_indices)
+                zero_warning = (
+                    "为保留持续无 RSSI 区间边界和现有关键点，"
+                    f"图表目标点数已从 {previous_effective} 提升到 {effective_max_points}。"
+                )
+            else:
+                zero_warning = (
+                    f"持续无 RSSI 区间和其他关键点共 {len(required_display_indices)} 个，"
+                    f"超过安全渲染上限 {_MAX_CHART_RENDER_POINTS}，已按时间保留代表性边界。"
+                )
+            downsample_warning = " ".join(
+                item for item in (downsample_warning, zero_warning) if item
+            )
         indices = [
             int(index)
             for index in render_indices(
@@ -2382,7 +2449,7 @@ class MeshAnalysisQueryService:
                 0,
                 important,
                 effective_max_points,
-                pinned_indices=rendered_switch_indices,
+                pinned_indices={*rendered_switch_indices, *sustained_zero_boundaries},
             )
         ]
         returned_indices = set(indices)
@@ -2472,7 +2539,7 @@ class MeshAnalysisQueryService:
         current = self._materialize_chart_point(ap_map, context, current_row) if current_row else None
         first_time = str(point_rows[0]["timestamp"]) if point_rows else None
         last_time = str(point_rows[-1]["timestamp"]) if point_rows else None
-        metadata = dict(chart.get("metadata") or {})
+        zero_summary = local_zero_analysis.summary
         return MeshPathChartDTO(
             mode="active_path" if mode == "active_path" else "peer_segment",
             anchor=anchor,
@@ -2493,6 +2560,11 @@ class MeshAnalysisQueryService:
                 last_sample_time=last_time,
                 estimated_interval_seconds=self._number(metadata.get("estimated_interval_seconds")),
                 continuity_gap_seconds=continuity_gap,
+                suppressed_zero_sample_count=zero_summary.suppressed_sample_count,
+                suppressed_zero_run_count=zero_summary.suppressed_run_count,
+                sustained_zero_run_count=zero_summary.sustained_run_count,
+                sustained_zero_total_duration_ms=zero_summary.sustained_total_duration_ms,
+                sustained_zero_longest_duration_ms=zero_summary.sustained_longest_duration_ms,
             ),
             total_points=total_points,
             returned_points=len(returned),
@@ -2839,12 +2911,49 @@ class MeshAnalysisQueryService:
                 "time": frame_time,
             }
 
+        fallback_interval_ms = estimated_interval * 1_000 if estimated_interval is not None else None
+        maximum_gap_ms = continuity_gap * 1_000 if continuity_gap is not None else None
+        sustained_zero_boundary_frames: set[int] = set()
+        suppressed_zero_sample_count = 0
+        suppressed_zero_run_count = 0
+        sustained_zero_run_count = 0
+        sustained_zero_total_duration_ms = 0
+        sustained_zero_longest_duration_ms = 0
+        for run in runs.values():
+            run_items = list(run["items"])
+            zero_analysis = analyze_rssi_zero_runs(
+                run_items,
+                timestamp_selector=lambda item: item["point_values"].get("timestamp"),
+                value_selector=lambda item: item.get("value"),
+                fallback_sample_interval_ms=fallback_interval_ms,
+                maximum_continuous_gap_ms=maximum_gap_ms,
+            )
+            for item_index, zero_run in zero_analysis.metadata_by_index.items():
+                item = run_items[item_index]
+                item["point"] = item["point"].model_copy(
+                    update={"rssi_zero_run": MeshRssiZeroRunDTO(**zero_run.to_payload())}
+                )
+            for item_index in zero_analysis.sustained_boundary_indices:
+                sustained_zero_boundary_frames.add(int(run_items[item_index]["frame_index"]))
+            summary = zero_analysis.summary
+            suppressed_zero_sample_count += summary.suppressed_sample_count
+            suppressed_zero_run_count += summary.suppressed_run_count
+            sustained_zero_run_count += summary.sustained_run_count
+            sustained_zero_total_duration_ms += summary.sustained_total_duration_ms
+            sustained_zero_longest_duration_ms = max(
+                sustained_zero_longest_duration_ms,
+                summary.sustained_longest_duration_ms,
+            )
+
         total_frames = len(ordered_frames)
         total_link_points = len(materialized)
         requested_max_frames = max(int(max_points), 10)
         effective_max_frames = requested_max_frames
         required_frames: set[int] = set(
-            transition_frames | active_switch_frames | anomaly_frames
+            transition_frames
+            | active_switch_frames
+            | anomaly_frames
+            | sustained_zero_boundary_frames
         )
         if total_frames:
             required_frames.update({0, total_frames - 1})
@@ -2861,7 +2970,11 @@ class MeshAnalysisQueryService:
             required_frames.update(
                 {int(items[0]["frame_index"]), int(items[-1]["frame_index"])}
             )
-            valued = [item for item in items if item.get("value") is not None]
+            valued = [
+                item
+                for item in items
+                if item.get("value") is not None and item.get("value") != 0
+            ]
             if valued:
                 required_frames.add(
                     int(min(valued, key=lambda item: item["value"])["frame_index"])
@@ -2998,6 +3111,11 @@ class MeshAnalysisQueryService:
             role_switch_count=role_switch_count,
             skipped_missing_signal_points=skipped_missing_signal,
             skipped_missing_identity_points=skipped_missing_identity,
+            suppressed_zero_sample_count=suppressed_zero_sample_count,
+            suppressed_zero_run_count=suppressed_zero_run_count,
+            sustained_zero_run_count=sustained_zero_run_count,
+            sustained_zero_total_duration_ms=sustained_zero_total_duration_ms,
+            sustained_zero_longest_duration_ms=sustained_zero_longest_duration_ms,
             total_points=total_link_points,
             returned_points=returned_link_points,
             downsampled=downsampled,
@@ -3476,6 +3594,8 @@ class MeshAnalysisQueryService:
             section=self._resolved_location_value(item, location, "section"),
             local_rssi=self._number(row.get("local_rssi")),
             peer_rssi=self._number(row.get("peer_rssi")),
+            local_rssi_zero_run=row.get("local_rssi_zero_run"),
+            peer_rssi_zero_run=row.get("peer_rssi_zero_run"),
             local_signal=self._number(row.get("local_signal")),
             peer_signal=self._number(row.get("peer_signal")),
             local_tx_busy=self._number(row.get("local_tx_busy")),
@@ -3553,7 +3673,12 @@ class MeshAnalysisQueryService:
             if points[index].get("segment_sequence") != points[index - 1].get("segment_sequence"):
                 important.update((index - 1, index))
         for field in ("local_rssi", "peer_rssi", "local_tx_busy", "local_rx_busy", "peer_tx_busy", "peer_rx_busy"):
-            values = [(index, point.get(field)) for index, point in enumerate(points) if point.get(field) is not None]
+            values = [
+                (index, point.get(field))
+                for index, point in enumerate(points)
+                if point.get(field) is not None
+                and (field not in {"local_rssi", "peer_rssi"} or point.get(field) != 0)
+            ]
             if values:
                 important.add(min(values, key=lambda item: item[1])[0])
                 important.add(max(values, key=lambda item: item[1])[0])

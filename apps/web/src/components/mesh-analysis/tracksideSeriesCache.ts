@@ -1,8 +1,10 @@
 import type {
+  MeshRssiZeroRun,
   MeshTracksideSignalPointData,
   MeshTracksideSignalSeriesData,
 } from '../../types/meshAnalysis'
 import { meshTimestampMillis } from './meshChartViewport'
+import { buildRssiDisplayPoints } from './rssiZeroRuns'
 
 export type TracksideRoleCode = -1 | 0 | 1
 export type CompactTracksideChartPoint = [
@@ -36,6 +38,7 @@ export interface CompactTracksidePointMeta {
   runId: string | null
   segmentDurationSeconds: number | null
   dataSource: string
+  rssiZeroRun: MeshRssiZeroRun | null
 }
 
 export interface CompactTracksideSeriesMeta {
@@ -137,8 +140,6 @@ export function buildTracksideSeriesCache(
     }
     seriesMetaById.set(item.series_id, compactSeries)
     let previousRunId: string | null = null
-    let previousTimestampMillis: number | null = null
-    let previousTimestampTag = ''
     let coverageStartMillis: number | null = null
     let coverageEndMillis: number | null = null
     let previousCoverageRunId: string | null = null
@@ -156,35 +157,63 @@ export function buildTracksideSeriesCache(
       previousCoverageRunId = null
       previousCoverageTimestampMillis = null
     }
+    let previousSourceTimestampMillis: number | null = null
+    let previousSourceTimestampTag = ''
     for (const point of item.points) {
       const timestampMillis = meshTimestampMillis(point.timestamp)
+      if (timestampMillis === null) continue
+      if (
+        previousSourceTimestampMillis !== null
+        && (
+          timestampMillis < previousSourceTimestampMillis
+          || (timestampMillis === previousSourceTimestampMillis && point.timestamp_tag < previousSourceTimestampTag)
+        )
+      ) ordered = false
+      firstTimestampMillis = firstTimestampMillis === null
+        ? timestampMillis
+        : Math.min(firstTimestampMillis, timestampMillis)
+      lastTimestampMillis = lastTimestampMillis === null
+        ? timestampMillis
+        : Math.max(lastTimestampMillis, timestampMillis)
+      seriesFirstTimestampMillis = seriesFirstTimestampMillis === null
+        ? timestampMillis
+        : Math.min(seriesFirstTimestampMillis, timestampMillis)
+      seriesLastTimestampMillis = seriesLastTimestampMillis === null
+        ? timestampMillis
+        : Math.max(seriesLastTimestampMillis, timestampMillis)
+      previousSourceTimestampMillis = timestampMillis
+      previousSourceTimestampTag = point.timestamp_tag
+    }
+    const displayPoints = buildRssiDisplayPoints(item.points.map((point) => ({
+      timestamp: point.timestamp,
+      value: tracksidePointValue(point),
+      meta: point,
+      zeroRun: point.rssi_zero_run,
+      breakBefore: point.break_before,
+    })))
+    for (const displayPoint of displayPoints) {
+      const point = displayPoint.meta
+      const timestampMillis = meshTimestampMillis(displayPoint.timestamp)
       if (timestampMillis === null) {
         flushCoverage()
         continue
       }
-      if (
-        previousTimestampMillis !== null
-        && (
-          timestampMillis < previousTimestampMillis
-          || (timestampMillis === previousTimestampMillis && point.timestamp_tag < previousTimestampTag)
-        )
-      ) ordered = false
       const currentRunId = point.run_id
         ?? (point.run_sequence == null ? null : `${item.series_id}:${point.run_sequence}`)
       if (
         rendered.length
-        && point.break_before
+        && displayPoint.breakBefore
         && (currentRunId == null || currentRunId !== previousRunId)
       ) {
         rendered.push([timestampMillis, null, -1, -1])
         metaIds.push(-1)
       }
       const metaId = nextMetaId++
-      const value = tracksidePointValue(point)
+      const value = displayPoint.value
       const continuesCoverage = value !== null
         && previousCoverageTimestampMillis !== null
         && timestampMillis >= previousCoverageTimestampMillis
-        && !point.break_before
+        && !displayPoint.breakBefore
         && currentRunId === previousCoverageRunId
       if (value === null) {
         flushCoverage()
@@ -226,25 +255,12 @@ export function buildTracksideSeriesCache(
         runId: currentRunId,
         segmentDurationSeconds: point.segment_duration_seconds,
         dataSource: point.data_source,
+        rssiZeroRun: displayPoint.zeroRun,
       })
       const frame = frameMetaIds.get(timestampMillis)
       if (frame) frame.push(metaId)
       else frameMetaIds.set(timestampMillis, [metaId])
-      firstTimestampMillis = firstTimestampMillis === null
-        ? timestampMillis
-        : Math.min(firstTimestampMillis, timestampMillis)
-      lastTimestampMillis = lastTimestampMillis === null
-        ? timestampMillis
-        : Math.max(lastTimestampMillis, timestampMillis)
-      seriesFirstTimestampMillis = seriesFirstTimestampMillis === null
-        ? timestampMillis
-        : Math.min(seriesFirstTimestampMillis, timestampMillis)
-      seriesLastTimestampMillis = seriesLastTimestampMillis === null
-        ? timestampMillis
-        : Math.max(seriesLastTimestampMillis, timestampMillis)
       previousRunId = currentRunId
-      previousTimestampMillis = timestampMillis
-      previousTimestampTag = point.timestamp_tag
       totalRenderedPoints += 1
     }
     flushCoverage()

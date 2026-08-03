@@ -472,6 +472,16 @@ class MeshChartBackupLinkDTO(ApiModel):
     peer_rx_busy: float | None = None
 
 
+class MeshRssiZeroRunDTO(ApiModel):
+    state: Literal["suppressed", "sustained"]
+    start_time: str
+    end_time: str
+    duration_ms: int = Field(ge=0)
+    sample_count: int = Field(ge=1)
+    boundary: Literal["start", "middle", "end", "single"]
+    estimated_end: bool = False
+
+
 class MeshChartPointDTO(ApiModel):
     link_id: int | None = None
     source_file_id: int | None = None
@@ -493,6 +503,8 @@ class MeshChartPointDTO(ApiModel):
     section: str | None = None
     local_rssi: float | None = None
     peer_rssi: float | None = None
+    local_rssi_zero_run: MeshRssiZeroRunDTO | None = None
+    peer_rssi_zero_run: MeshRssiZeroRunDTO | None = None
     local_signal: float | None = None
     peer_signal: float | None = None
     local_tx_busy: float | None = None
@@ -564,6 +576,11 @@ class MeshPathChartSummaryDTO(ApiModel):
     last_sample_time: str | None = None
     estimated_interval_seconds: float | None = None
     continuity_gap_seconds: float | None = None
+    suppressed_zero_sample_count: int = 0
+    suppressed_zero_run_count: int = 0
+    sustained_zero_run_count: int = 0
+    sustained_zero_total_duration_ms: int = 0
+    sustained_zero_longest_duration_ms: int = 0
 
 
 class MeshPathChartDTO(ApiModel):
@@ -614,6 +631,7 @@ class MeshTracksideSignalPointDTO(ApiModel):
     local_rssi: float | None = None
     peer_signal: float | None = None
     local_signal: float | None = None
+    rssi_zero_run: MeshRssiZeroRunDTO | None = None
     run_id: str | None = None
     run_sequence: int | None = None
     segment_sequence: int | None = None
@@ -668,6 +686,11 @@ class MeshTracksideSignalChartDTO(ApiModel):
     role_switch_count: int = 0
     skipped_missing_signal_points: int = 0
     skipped_missing_identity_points: int = 0
+    suppressed_zero_sample_count: int = 0
+    suppressed_zero_run_count: int = 0
+    sustained_zero_run_count: int = 0
+    sustained_zero_total_duration_ms: int = 0
+    sustained_zero_longest_duration_ms: int = 0
     total_points: int = 0
     returned_points: int = 0
     downsampled: bool = False
@@ -745,6 +768,7 @@ class MeshRssiStatisticsDTO(ApiModel):
     latest_rssi: float | None = None
     sample_count: int = 0
     missing_sample_count: int = 0
+    zero_sample_count: int = 0
     low_rssi_count: int = 0
     severe_low_rssi_count: int = 0
 

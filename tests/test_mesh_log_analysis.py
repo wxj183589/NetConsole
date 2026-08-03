@@ -936,8 +936,8 @@ def test_active_build_order_rssi_stats_use_same_valid_samples():
     result = _active_build_order_rows_from_points(rows, {"main_link_switch_time_ms": 2500, "pingpong_tolerance_ms": 500})
 
     segment = result[0]
-    assert segment["avg_mr_rssi"] == 30
-    assert segment["min_mr_rssi"] == 0
+    assert segment["avg_mr_rssi"] == 45
+    assert segment["min_mr_rssi"] == 40
     assert segment["max_mr_rssi"] == 50
     assert segment["min_mr_rssi"] <= segment["avg_mr_rssi"] <= segment["max_mr_rssi"]
 

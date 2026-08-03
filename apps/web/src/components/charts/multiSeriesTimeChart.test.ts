@@ -114,6 +114,7 @@ describe('shared multi-series time chart core', () => {
 
   it('disables symbols and emphasis in large mode and keeps AP/Radio colors stable', () => {
     expect(createTimeChartLinePresentation(14_581)).toMatchObject({
+      smooth: false,
       showSymbol: false,
       symbol: 'none',
       emphasis: { disabled: true },

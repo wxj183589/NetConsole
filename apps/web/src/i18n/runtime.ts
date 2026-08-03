@@ -152,6 +152,12 @@ const en: Record<string, string> = {
   'ground.syslog.truncated': 'The log volume is large. Recent data was returned. Set a time range or add filters.',
   'ground.syslog.auto_refresh_30': ' (30 seconds)',
   'mesh.import.backend_interrupted': 'The Backend connection was interrupted before the import context was ready. Existing internal ownership remains available. Try again or view the Backend logs.',
+  'mesh.rssi.zero.heading': 'RSSI status',
+  'mesh.rssi.zero.status': 'Sustained unavailable RSSI',
+  'mesh.rssi.zero.metric': 'Metric',
+  'mesh.rssi.zero.start': 'Start time',
+  'mesh.rssi.zero.end': 'End time',
+  'mesh.rssi.zero.duration': 'Duration',
 }
 export function setAppLocale(value: SystemLanguage): void { locale.value = value }
 export function currentAppLocale(): SystemLanguage { return locale.value }

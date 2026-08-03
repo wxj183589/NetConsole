@@ -135,6 +135,40 @@ def test_reads_persisted_mesh_results_without_modifying_sources(tmp_path: Path) 
     assert before == [_fingerprint(path) for path in protected]
 
 
+def test_rssi_statistics_exclude_zero_and_report_it_separately(tmp_path: Path) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    with sqlite3.connect(detail) as conn:
+        conn.execute("UPDATE active_points SET local_rssi_db = 0 WHERE id = 1")
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+
+    result = service.get_rssi_statistics("demo", session_id, max_points=10)
+
+    assert result.statistics.sample_count == 1
+    assert result.statistics.missing_sample_count == 1
+    assert result.statistics.zero_sample_count == 1
+    assert result.statistics.avg_rssi == 43
+    assert result.statistics.min_rssi == 43
+    assert result.statistics.max_rssi == 43
+
+
+def test_active_chart_marks_short_zero_before_render_sampling(tmp_path: Path) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    with sqlite3.connect(detail) as conn:
+        conn.execute("UPDATE active_points SET local_rssi_db = 0 WHERE id = 2")
+        conn.execute("UPDATE mesh_links SET local_rssi_db = 0 WHERE id = 2")
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+
+    chart = service.get_active_path_chart("demo", session_id, radio=1, max_points=10)
+
+    zero_point = next(point for point in chart.points if point.timestamp == "2026-07-14 10:00:01.000")
+    assert zero_point.local_rssi == 0
+    assert zero_point.local_rssi_zero_run is not None
+    assert zero_point.local_rssi_zero_run.state == "suppressed"
+    assert zero_point.local_rssi_zero_run.duration_ms == 1_000
+    assert chart.summary.suppressed_zero_sample_count == 1
+    assert chart.summary.suppressed_zero_run_count == 1
+
+
 def test_real_peer_observation_stays_unresolved_across_mesh_dtos(tmp_path: Path) -> None:
     paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
     with sqlite3.connect(detail) as conn:
@@ -1228,6 +1262,40 @@ def test_trackside_signal_chart_keeps_interleaved_radios_continuous(tmp_path: Pa
     assert [point.peer_rssi for point in ap_b.points] == [45, 46, 47]
     assert [point.break_before for point in ap_b.points] == [False, False, False]
     assert len({point.run_id for point in ap_b.points}) == 1
+
+
+def test_trackside_signal_chart_preserves_sustained_zero_boundaries_before_sampling(
+    tmp_path: Path,
+) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    with sqlite3.connect(detail) as conn:
+        _clear_mesh_chart_rows(conn)
+        for row_id, peer_rssi in enumerate((35, 0, 0, 0, 38), start=1):
+            _insert_active_mesh_link(
+                conn,
+                row_id=row_id,
+                sample_time=f"2026-07-15 10:00:0{row_id - 1}.000",
+                radio=1,
+                peer_name="AP-A",
+                peer_mac="00000000000a",
+                peer_rssi=peer_rssi,
+            )
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+
+    chart = service.get_trackside_signal_chart("demo", session_id, radio=1, max_points=3)
+
+    ap_a = next(item for item in chart.series if item.peer_name == "AP-A")
+    zero_points = [point for point in ap_a.points if point.peer_rssi == 0]
+    assert [point.rssi_zero_run.boundary for point in zero_points] == [
+        "start",
+        "middle",
+        "end",
+    ]
+    assert all(point.rssi_zero_run.state == "sustained" for point in zero_points)
+    assert zero_points[0].rssi_zero_run.duration_ms == 3_000
+    assert chart.sustained_zero_run_count == 1
+    assert chart.sustained_zero_total_duration_ms == 3_000
+    assert chart.effective_max_frames >= 5
 
 
 def test_trackside_signal_chart_breaks_when_link_disappears_from_radio_frames(tmp_path: Path) -> None:

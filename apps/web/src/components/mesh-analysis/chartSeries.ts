@@ -1,9 +1,10 @@
-import type { MeshChartPoint, MeshCounterDeltaPoint, MeshLocationSegment, MeshRatePoint, MeshSwitchEvent } from '../../types/meshAnalysis'
+import type { MeshChartPoint, MeshCounterDeltaPoint, MeshLocationSegment, MeshRatePoint, MeshRssiZeroRun, MeshSwitchEvent } from '../../types/meshAnalysis'
+import { buildRssiDisplayPoints } from './rssiZeroRuns'
 
 export interface MeshRssiSeries {
   name: string
   metric: 'local_rssi' | 'peer_rssi'
-  data: Array<{ value: [string, number | null]; meta: MeshChartPoint }>
+  data: Array<{ value: [string, number | null]; meta: MeshChartPoint; zeroRun: MeshRssiZeroRun | null }>
 }
 
 export interface MeshBusySeries {
@@ -57,17 +58,37 @@ function metricData(
   ])
 }
 
+function rssiMetricData(
+  points: MeshChartPoint[],
+  metric: 'local_rssi' | 'peer_rssi',
+): MeshRssiSeries['data'] {
+  const zeroRunField = metric === 'local_rssi' ? 'local_rssi_zero_run' : 'peer_rssi_zero_run'
+  const displayPoints = buildRssiDisplayPoints(points.map((point) => ({
+    timestamp: point.timestamp,
+    value: point[metric],
+    meta: point,
+    zeroRun: point[zeroRunField],
+    breakBefore: point.gap_before,
+  })))
+  return displayPoints.flatMap((point, index) => [
+    ...(index > 0 && point.breakBefore
+      ? [{ value: [point.timestamp, null] as [string, number | null], meta: point.meta, zeroRun: null }]
+      : []),
+    { value: [point.timestamp, point.value] as [string, number | null], meta: point.meta, zeroRun: point.zeroRun },
+  ])
+}
+
 export function buildMeshRssiSeries(points: MeshChartPoint[], showPeer = false, scope: 'active' | 'peer' = 'active'): MeshRssiSeries[] {
   const prefix = scope === 'peer' ? '选中 AP' : '当前 ACTIVE'
   const series: MeshRssiSeries[] = [{
     name: `${prefix} MR 侧 RSSI`,
     metric: 'local_rssi',
-    data: metricData(points, (point) => point.local_rssi),
+    data: rssiMetricData(points, 'local_rssi'),
   }]
   if (showPeer) series.push({
     name: `${prefix} Peer 侧 RSSI`,
     metric: 'peer_rssi',
-    data: metricData(points, (point) => point.peer_rssi),
+    data: rssiMetricData(points, 'peer_rssi'),
   })
   return series
 }

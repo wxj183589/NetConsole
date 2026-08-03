@@ -1083,7 +1083,11 @@ def _metric_statistics(rows: list[dict[str, object]], fields: tuple[str, ...], m
         item: dict[str, object] = {"metric_group": metric_group, "radio": radio, "peer_mac": peer, "peer": format_mac_h3c(peer), "sample_count": len(peer_rows)}
         for field_name in fields:
             values = [_number(row.get(field_name)) for row in peer_rows]
-            values = [value for value in values if value is not None]
+            values = [
+                value
+                for value in values
+                if value is not None and (metric_group != "rssi" or value != 0)
+            ]
             item[f"{field_name}_avg"] = round(mean(values), 2) if values else ""
             item[f"{field_name}_min"] = min(values) if values else ""
             item[f"{field_name}_max"] = max(values) if values else ""
@@ -1142,7 +1146,11 @@ def _finish_segment(segment: dict[str, object], rows: list[dict[str, object]]) -
         ("rate_raw", "local_rate_raw"),
     ):
         values = [_number(row.get(input_key)) for row in rows]
-        values = [value for value in values if value is not None]
+        values = [
+            value
+            for value in values
+            if value is not None and (input_key != "peer_rssi" or value != 0)
+        ]
         segment[f"avg_{output_key}"] = round(mean(values), 2) if values else ""
         segment[f"min_{output_key}"] = min(values) if values else ""
         segment[f"max_{output_key}"] = max(values) if values else ""

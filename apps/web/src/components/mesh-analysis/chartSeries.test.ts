@@ -65,6 +65,33 @@ describe('mesh ACTIVE chart series', () => {
     ])
     expect(busy[1].value).toEqual([secondVisit.timestamp, null])
   })
+
+  it('suppresses short zeros while preserving a backend gap before the next visible sample', () => {
+    const first = point(1)
+    const hidden = {
+      ...point(2),
+      local_rssi: 0,
+      gap_before: true,
+      local_rssi_zero_run: {
+        state: 'suppressed' as const,
+        boundary: 'single' as const,
+        start_time: point(2).timestamp,
+        end_time: point(3).timestamp,
+        duration_ms: 1_000,
+        sample_count: 1,
+        estimated_end: false,
+      },
+    }
+    const recovered = point(3)
+
+    const rssi = buildMeshRssiSeries([first, hidden, recovered])[0].data
+
+    expect(rssi.map((item) => item.value)).toEqual([
+      [first.timestamp, first.local_rssi],
+      [recovered.timestamp, null],
+      [recovered.timestamp, recovered.local_rssi],
+    ])
+  })
 })
 
 describe('mesh rate and counter chart series', () => {
