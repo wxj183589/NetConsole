@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   startBatchConnectionTests: vi.fn(),
   getBatchRefresh: vi.fn(),
   startDeviceFormConnectionTest: vi.fn(),
+  startDeviceDiagnosticDownload: vi.fn(),
   startDeviceCsvExport: vi.fn(),
   startDeviceTemplateExport: vi.fn(),
   chooseSavePath: vi.fn(),
@@ -47,6 +48,7 @@ vi.mock('../../api/deviceManagement', async (importOriginal) => ({
   startBatchConnectionTests: mocks.startBatchConnectionTests,
   getBatchRefresh: mocks.getBatchRefresh,
   startDeviceFormConnectionTest: mocks.startDeviceFormConnectionTest,
+  startDeviceDiagnosticDownload: mocks.startDeviceDiagnosticDownload,
   startDeviceCsvExport: mocks.startDeviceCsvExport,
   startDeviceTemplateExport: mocks.startDeviceTemplateExport,
 }))
@@ -395,6 +397,16 @@ beforeEach(() => {
     task_id: 'form-test-1', task_status: 'PENDING', device_uuid: 'device-1', protocol: 'SSH', success: null,
     result_status: '', failure_category: '', message: '等待执行', safe_message: '等待执行', method: '', host: '', port: null, latency_ms: null, elapsed_ms: null, tested_at: '', system_name: '',
     model: '', os_family: '', interface_count: null, error_type: '', suggestion: '', created_time: '', updated_time: '',
+  })
+  mocks.startDeviceDiagnosticDownload.mockResolvedValue({
+    task_id: 'diagnostic-1',
+    task_status: 'PENDING',
+    action: 'device_diagnostic_download',
+    artifact_id: '',
+    available: false,
+    sha256: '',
+    size_bytes: 0,
+    message: '等待生成诊断包',
   })
   mocks.startDeviceCsvExport.mockResolvedValue({
     task_id: 'device-csv-export-1',
@@ -857,6 +869,18 @@ describe('DeviceManagementView mounted interactions', () => {
   })
 
   it('consumes the public diagnostic artifact capability for save, open and reveal', async () => {
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="select-first-device"]').trigger('click')
+    const downloadButton = wrapper.findAll('button').find((button) => button.text() === '下载诊断')
+    expect(downloadButton).toBeTruthy()
+    mocks.chooseSavePath.mockResolvedValueOnce({
+      cancelled: false,
+      path: 'D:\\exports\\设备诊断信息.zip',
+    })
+    await downloadButton!.trigger('click')
+    await flushPromises()
+    expect(mocks.startDeviceDiagnosticDownload).toHaveBeenCalledWith(['device-1'])
+
     mocks.taskStore!.tasks = [task({
       id: 'diagnostic-1',
       type: 'device_diagnostic_download',
@@ -867,11 +891,14 @@ describe('DeviceManagementView mounted interactions', () => {
         api_path: '/api/device-management/diagnostics/diagnostic-1/download',
         query: { artifact_id: 'artifact-1' },
         display_name: '设备诊断信息.zip',
+        size_bytes: 512,
+        sha256: 'b'.repeat(64),
+        media_type: 'application/zip',
       },
     })]
-    const wrapper = await renderView()
+    await flushPromises()
     const notification = notificationOptions('设备任务文件已生成')
-    expect(notification.message.props?.['data-description']).toContain('设备诊断')
+    expect(notification.message.props?.['data-description']).toBe('设备诊断信息 · 测试局点 · 设备诊断信息生成完成')
     const buttons = notificationButtons('设备任务文件已生成')
     expect(buttons).toHaveLength(3)
     await buttons[0].props?.onClick?.()
@@ -881,12 +908,35 @@ describe('DeviceManagementView mounted interactions', () => {
       apiPath: '/api/device-management/diagnostics/diagnostic-1/download',
       query: { artifact_id: 'artifact-1' },
       suggestedName: '设备诊断信息.zip',
+      destinationPath: 'D:\\exports\\设备诊断信息.zip',
+      expectedSizeBytes: 512,
+      expectedSha256: 'b'.repeat(64),
     })
     await buttons[1].props?.onClick?.()
     await buttons[2].props?.onClick?.()
     expect(mocks.openPath).toHaveBeenCalledWith('8a02d34f-ec8f-4c17-9a8a-b266bdf9e137')
     expect(mocks.showItemInFolder).toHaveBeenCalledWith('8a02d34f-ec8f-4c17-9a8a-b266bdf9e137')
     expect(wrapper.find('[title="设备任务文件已生成"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('does not repeat a historical artifact notification when opening device management', async () => {
+    mocks.taskStore!.tasks = [task({
+      id: 'historical-1',
+      type: 'device_diagnostic_download',
+      status: 'COMPLETED',
+      artifact_download: {
+        artifact_id: 'historical-artifact',
+        api_path: '/api/device-management/diagnostics/historical-1/download',
+        query: { artifact_id: 'historical-artifact' },
+        display_name: '历史设备诊断信息.zip',
+        size_bytes: 512,
+        sha256: 'c'.repeat(64),
+        media_type: 'application/zip',
+      },
+    })]
+    const wrapper = await renderView()
+    expect(mocks.notifications).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
@@ -947,7 +997,7 @@ describe('DeviceManagementView mounted interactions', () => {
       expectedSha256: 'a'.repeat(64),
     })
     const notification = notificationOptions('设备任务文件已生成')
-    expect(notification.message.props?.['data-description']).toContain('目标：全部设备.csv')
+    expect(notification.message.props?.['data-description']).toBe('设备表格 · 测试局点 · 设备表格生成完成')
     wrapper.unmount()
   })
 

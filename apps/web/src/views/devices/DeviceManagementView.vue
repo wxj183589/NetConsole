@@ -38,8 +38,6 @@ import {
 } from '../../api/deviceManagement'
 import {
   useUserSelectedExport,
-  type PendingUserSelectedExport,
-  type UserSelectedExportState,
 } from '../../composables/useUserSelectedExport'
 import { downloadBackendResource, getPlatformAdapter, getRuntimeConfig } from '../../platform/runtime'
 import { useTaskStore } from '../../stores/tasks'
@@ -158,10 +156,11 @@ const secureCrtTemplateFile = ref<File | null>(null)
 const secureCrtTemplateInput = ref<HTMLInputElement | null>(null)
 const lastSubmittedTask = ref<DeviceTaskReference | null>(null)
 const savedArtifactCapability = ref('')
-let artifactNotificationKey = ''
 let artifactNotificationHandle: { close: () => void } | null = null
 let batchRefreshNotificationKey = ''
 let batchRefreshNotificationHandle: { close: () => void } | null = null
+const deviceTaskArtifactIds = new Map<string, string>()
+let deviceTaskSnapshotInitialized = false
 const connectionTestRefreshTaskIds = ref<string[]>([])
 let connectionTestRefreshRunning = false
 let connectionTestRefreshQueued = false
@@ -302,13 +301,6 @@ const latestDeviceTask = computed(() => {
     || publicDeviceTasks.value[0]
     || null
 })
-const latestDeviceArtifactKey = computed(() => {
-  const task = latestDeviceTask.value
-  const artifact = task?.artifact_download
-  const saveState = task ? userSelectedExport.bindingForTask(task.id)?.state : ''
-  const notificationState = saveState === 'save_failed' ? saveState : ''
-  return task && artifact ? `${task.id}:${artifact.artifact_id}:${notificationState}` : ''
-})
 const testActive = computed(() => {
   const taskId = connectionTest.value?.task_id
   const task = taskId ? publicDeviceTasks.value.find((item) => item.id === taskId) : null
@@ -409,20 +401,35 @@ watch(
 const desktopHost = computed(() => getRuntimeConfig().hostType === 'electron')
 
 watch(
-  latestDeviceArtifactKey,
-  (key) => {
-    if (!key) {
-      artifactNotificationKey = ''
-      artifactNotificationHandle?.close()
-      artifactNotificationHandle = null
+  () => JSON.stringify(publicDeviceTasks.value.map((task) => [
+    task.id,
+    task.status,
+    task.artifact_download?.artifact_id || '',
+  ]).sort(([left], [right]) => left.localeCompare(right))),
+  () => {
+    const currentTasks = publicDeviceTasks.value
+    const submittedTaskId = lastSubmittedTask.value?.task_id || ''
+    if (!deviceTaskSnapshotInitialized) {
+      deviceTaskSnapshotInitialized = true
+      currentTasks.forEach((task) => {
+        const artifactId = task.artifact_download?.artifact_id || ''
+        deviceTaskArtifactIds.set(task.id, artifactId)
+        if (task.id === submittedTaskId && artifactId) showDeviceArtifactNotification(task)
+      })
       return
     }
-    if (key === artifactNotificationKey) return
-    artifactNotificationKey = key
-    const task = latestDeviceTask.value
-    if (task?.artifact_download) showDeviceArtifactNotification(task)
+    currentTasks.forEach((task) => {
+      const artifactId = task.artifact_download?.artifact_id || ''
+      const previousArtifactId = deviceTaskArtifactIds.get(task.id) || ''
+      if (artifactId && artifactId !== previousArtifactId) {
+        showDeviceArtifactNotification(task)
+      }
+      deviceTaskArtifactIds.set(task.id, artifactId)
+    })
+    for (const taskId of deviceTaskArtifactIds.keys()) {
+      if (!currentTasks.some((task) => task.id === taskId)) deviceTaskArtifactIds.delete(taskId)
+    }
   },
-  { immediate: true },
 )
 
 watch(
@@ -687,12 +694,19 @@ function deviceTaskById(taskId = ''): DevicePublicTask | null {
     || (latestDeviceTask.value?.id === taskId ? latestDeviceTask.value : null)
 }
 
+function deviceArtifactLabel(task: DevicePublicTask): string {
+  const action = userSelectedExport.bindingForTask(task.id)?.action
+  if (action === 'devices.template' || task.type.includes('template')) return '设备导入模板'
+  if (action === 'devices.csv' || task.type.includes('device_csv')) return '设备表格'
+  if (action === 'devices.diagnostics' || task.type.includes('diagnostic')) return '设备诊断信息'
+  if (action === 'devices.securecrt' || task.type.includes('securecrt')) return 'SecureCRT 会话'
+  return task.name || '设备任务文件'
+}
+
 function deviceArtifactNotificationDescription(task: DevicePublicTask): string {
-  const pending = userSelectedExport.bindingForTask(task.id)
-  if (pending) {
-    return `${deviceExportScopeLabel(pending)} · 目标：${pending.fileName} · ${localSaveStatusLabel(pending.state)}`
-  }
-  return `${task.name || task.type} · ${task.message || task.id}`
+  const label = deviceArtifactLabel(task)
+  const siteName = pageData.value.site_name || task.site_name || '当前局点'
+  return `${label} · ${siteName} · ${label}生成完成`
 }
 
 function deviceArtifactActionLabel(taskId: string): string {
@@ -823,27 +837,6 @@ async function downloadLatestArtifact(taskId = ''): Promise<void> {
     savedArtifactCapability.value = capabilityId
     ElMessage.success('Artifact 已保存')
   }
-}
-
-function localSaveStatusLabel(status: UserSelectedExportState | 'manual_ready' | ''): string {
-  if (status === 'task_running') return '正在生成 Artifact'
-  if (status === 'artifact_ready') return 'Artifact 已生成，等待写入所选位置'
-  if (status === 'saving') return '正在写入并校验本地文件'
-  if (status === 'saved') return '已保存到本地'
-  if (status === 'save_failed') return '本地保存失败，可重新选择位置'
-  if (status === 'browser_started') return '已交由浏览器下载，无法验证本地路径'
-  if (status === 'task_failed') return '导出任务失败'
-  if (status === 'task_cancelled') return '导出任务已取消'
-  if (status === 'manual_ready') return 'Artifact 可另存'
-  return ''
-}
-
-function deviceExportScopeLabel(pending: PendingUserSelectedExport): string {
-  const scope = String(pending.context.scope || '')
-  const requestedRowCount = Number(pending.context.requestedRowCount || 0)
-  if (scope === 'selected') return `已选择 ${requestedRowCount} 台`
-  if (scope === 'filtered_all') return `当前筛选结果全部 ${requestedRowCount} 台`
-  return '设备导入模板'
 }
 
 async function useSavedArtifact(reveal: boolean, taskId = ''): Promise<void> {
