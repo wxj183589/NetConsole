@@ -79,6 +79,7 @@ export const getGroundHealth = (options: RequestInit = {}): Promise<GroundHealth
 export const getGroundSyslogTransportStatus = (options: RequestInit = {}): Promise<GroundSyslogTransportStatus> => apiRequest(`${root}/syslog-transport-status`, options)
 export const listGroundRawFiles = (options: RequestInit = {}): Promise<GroundPage<GroundRawFile>> => apiRequest(`${root}/raw-files?limit=100`, options)
 export const listGroundRuns = (options: RequestInit = {}): Promise<GroundPage<GroundRun>> => apiRequest(`${root}/runs?limit=200`, options)
+export const deleteGroundRunHistory = (runId: string): Promise<GroundActionResponse> => apiRequest(`${root}/runs/${encodeURIComponent(runId)}`, { method: 'DELETE', body: JSON.stringify({ explicit_confirmation: true }) })
 export const listGroundPingTargets = (runId = '', options: RequestInit = {}): Promise<GroundPage<GroundPingTarget>> => {
   const query = runId ? `?run_id=${encodeURIComponent(runId)}` : ''
   return apiRequest(`${root}/ping-targets${query}`, options)

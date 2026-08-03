@@ -266,6 +266,10 @@ class GroundRunPageDTO(ApiModel):
     offset: int = 0
 
 
+class GroundRunDeleteRequestDTO(ApiModel):
+    explicit_confirmation: bool = False
+
+
 class GroundSyslogHostDTO(ApiModel):
     ip: str
     port: int = Field(ge=1, le=65_535)

@@ -16,6 +16,7 @@ vi.mock('./client', async (importOriginal) => {
 
 import { ApiRequestError } from './client'
 import {
+  deleteGroundRunHistory,
   getGroundPingSeriesIncremental,
   getGroundSyslogTransportStatus,
   listGroundTimeline,
@@ -179,6 +180,20 @@ describe('ground unattended Syslog failure classification', () => {
           confirmation_text: 'DELETE 2026-07-29',
           include_derived_events: true,
         }),
+      },
+    )
+  })
+
+  it('deletes ground run history with explicit confirmation', async () => {
+    client.apiRequest.mockResolvedValue({})
+
+    await deleteGroundRunHistory('run-1')
+
+    expect(client.apiRequest).toHaveBeenCalledWith(
+      '/api/rail-transit/ground-unattended/runs/run-1',
+      {
+        method: 'DELETE',
+        body: JSON.stringify({ explicit_confirmation: true }),
       },
     )
   })

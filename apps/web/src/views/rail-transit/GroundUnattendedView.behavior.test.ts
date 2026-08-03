@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const api = vi.hoisted(() => ({
   deleteGroundArchive: vi.fn(),
+  deleteGroundRunHistory: vi.fn(),
   getGroundArchive: vi.fn(),
   getGroundProfile: vi.fn(),
   getGroundStatus: vi.fn(),
@@ -308,6 +309,12 @@ function mountPage() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  api.deleteGroundRunHistory.mockResolvedValue({
+    accepted: true,
+    state: 'WAITING_WINDOW',
+    run_id: 'run-history',
+    message: '运行历史已删除',
+  })
   api.getGroundStatus.mockResolvedValue(status())
   api.getGroundProfile.mockResolvedValue(profile())
   api.listGroundTrains.mockResolvedValue({ items: [], total: 0 })

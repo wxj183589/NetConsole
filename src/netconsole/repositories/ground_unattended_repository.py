@@ -1303,6 +1303,39 @@ class GroundUnattendedRepository:
             ).fetchone()
         return int(row[0] if row else 0)
 
+    def delete_run_history(self, run_id: str) -> dict[str, int]:
+        tables = (
+            "ground_unattended_train_runs",
+            "ground_unattended_daily_queues",
+            "ground_unattended_ac_snapshots",
+            "ground_unattended_ping_segments",
+            "ground_unattended_ping_target_activations",
+            "ground_unattended_ping_summaries",
+            "ground_unattended_deep_operations",
+            "ground_unattended_events",
+            "ground_unattended_operations",
+            "ground_unattended_wmesh_events",
+            "ground_unattended_radio_correlations",
+            "ground_unattended_ping_loss_intervals",
+            "ground_unattended_raw_files",
+            "ground_unattended_delete_operations",
+            "ground_unattended_health_events",
+        )
+        deleted: dict[str, int] = {}
+        with self._transaction() as conn:
+            for table in tables:
+                cursor = conn.execute(
+                    f"DELETE FROM {table} WHERE site_id=? AND run_id=?",
+                    (self.site_id, run_id),
+                )
+                deleted[table] = int(cursor.rowcount or 0)
+            cursor = conn.execute(
+                "DELETE FROM ground_unattended_runs WHERE site_id=? AND run_id=?",
+                (self.site_id, run_id),
+            )
+            deleted["ground_unattended_runs"] = int(cursor.rowcount or 0)
+        return deleted
+
     def update_run(self, run_id: str, **values: Any) -> None:
         allowed = {
             "state",

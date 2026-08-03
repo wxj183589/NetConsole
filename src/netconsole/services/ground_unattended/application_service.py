@@ -29,6 +29,7 @@ from netconsole.models.api.ground_unattended import (
     GroundPingTargetDTO,
     GroundRunDTO,
     GroundRunPageDTO,
+    GroundRunDeleteRequestDTO,
     GroundAcPollerHealthDTO,
     GroundHealthDTO,
     GroundInventorySummaryDTO,
@@ -1077,6 +1078,45 @@ class GroundUnattendedApplicationService:
             total=self.repository.count_runs(),
             limit=max(1, min(int(limit), 500)),
             offset=max(0, int(offset)),
+        )
+
+    def delete_run_history(
+        self,
+        site_id: str,
+        run_id: str,
+        payload: GroundRunDeleteRequestDTO,
+    ) -> GroundActionResponseDTO:
+        self._require_site(site_id)
+        if not payload.explicit_confirmation:
+            raise GroundUnattendedError(
+                "CONFIRMATION_REQUIRED", "删除运行历史需要明确确认", status_code=409
+            )
+        run = self.repository.get_run(run_id)
+        if run is None:
+            raise GroundUnattendedError(
+                "RUN_NOT_FOUND", "指定的无人值守运行不存在", status_code=404
+            )
+        active = self.repository.get_active_run()
+        if active and str(active.get("run_id") or "") == run_id:
+            raise GroundUnattendedError(
+                "RUN_IN_USE", "不能删除正在使用的无人值守运行", status_code=409
+            )
+        deleted = self.repository.delete_run_history(run_id)
+        self.repository.add_event(
+            event_type="run_history_deleted",
+            title="运行历史已删除",
+            message=f"{run.get('run_date') or run_id} 的运行历史已从索引移除",
+            details={
+                "run_id": run_id,
+                "run_date": str(run.get("run_date") or ""),
+                "deleted": deleted,
+                "archive_preserved": bool(run.get("archive_id")),
+            },
+        )
+        return GroundActionResponseDTO(
+            state="WAITING_WINDOW",
+            run_id=run_id,
+            message="运行历史已删除",
         )
 
     def ping_summary(

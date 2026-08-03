@@ -109,6 +109,115 @@ def test_ground_unattended_rejects_invalid_profile_and_archive_delete_without_co
         assert missing.status_code in {404, 409}
 
 
+def test_ground_unattended_run_history_delete_removes_run_records_and_keeps_archive(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    repository = app.state.ground_unattended_repository
+    run_id = "run-history-delete"
+    run_date = "2026-07-29"
+    repository.create_or_get_run(
+        run_id=run_id,
+        run_date=run_date,
+        scheduled_start_at="2026-07-29T09:00:00+08:00",
+        scheduled_end_at="2026-07-29T10:00:00+08:00",
+    )
+    repository.upsert_raw_file(
+        {
+            "file_id": "raw-history-delete",
+            "run_id": run_id,
+            "data_type": "ping",
+            "relative_path": "rail_transit/ground_unattended/active/2026-07-29/fleet_ping/01/01/2026-07-29/09_1.ndjson",
+            "start_time": "2026-07-29T09:00:00+08:00",
+            "end_time": "2026-07-29T09:00:10+08:00",
+            "record_count": 1,
+            "size_bytes": 10,
+            "sha256": "a" * 64,
+            "status": "CLOSED",
+            "archive_status": "PENDING",
+        }
+    )
+    repository.upsert_ping_summary(
+        {
+            "site_id": repository.site_id,
+            "run_id": run_id,
+            "bucket_kind": "daily",
+            "bucket_start": "2026-07-29T00:00:00+08:00",
+            "bucket_end": "2026-07-30T00:00:00+08:00",
+            "target_ip": "192.0.2.10",
+            "train_id": "train-01",
+            "train_no": "01",
+            "mr_id": "mr-ct",
+            "mr_position_code": "CT",
+            "ac_snapshot_id": None,
+            "ap_identity": "",
+            "raw_sample_count": 1,
+            "warmup_ignored_count": 0,
+            "sent_count": 1,
+            "success_count": 1,
+            "loss_count": 0,
+            "loss_rate_percent": 0.0,
+            "min_rtt_ms": 1.0,
+            "avg_rtt_ms": 1.0,
+            "max_rtt_ms": 1.0,
+            "continuous_loss_max_count": 0,
+            "continuous_loss_max_seconds": 0.0,
+            "created_at": "2026-07-29T09:00:00+08:00",
+        }
+    )
+    repository.add_event(
+        run_id=run_id,
+        event_type="run_started",
+        title="运行开始",
+        message="history delete test",
+    )
+
+    with TestClient(app) as client:
+        rejected = client.request(
+            "DELETE",
+            f"/api/rail-transit/ground-unattended/runs/{run_id}",
+            json={"explicit_confirmation": False},
+        )
+        assert rejected.status_code == 409
+        assert rejected.json()["detail"]["code"] == "CONFIRMATION_REQUIRED"
+
+        blocked = client.request(
+            "DELETE",
+            f"/api/rail-transit/ground-unattended/runs/{run_id}",
+            json={"explicit_confirmation": True},
+        )
+        assert blocked.status_code == 409
+        assert blocked.json()["detail"]["code"] == "RUN_IN_USE"
+
+        repository.update_run(
+            run_id,
+            state="COMPLETED",
+            actual_started_at="2026-07-29T09:00:00+08:00",
+            actual_ended_at="2026-07-29T09:10:00+08:00",
+        )
+        response = client.request(
+            "DELETE",
+            f"/api/rail-transit/ground-unattended/runs/{run_id}",
+            json={"explicit_confirmation": True},
+        )
+        runs = client.get("/api/rail-transit/ground-unattended/runs")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_id"] == run_id
+    assert payload["state"] == "WAITING_WINDOW"
+    assert repository.get_run(run_id) is None
+    assert repository.list_raw_files_for_run(run_id) == []
+    assert repository.list_ping_summaries(run_id) == []
+    assert repository.list_events(run_id) == []
+    deleted_events = repository.list_events("", event_type="run_history_deleted")
+    assert len(deleted_events) == 1
+    assert deleted_events[0]["details"]["run_id"] == run_id
+    assert deleted_events[0]["details"]["archive_preserved"] is False
+    assert all(item["run_id"] != run_id for item in runs.json()["items"])
+
+
 def test_syslog_delete_api_previews_blocks_and_queues_one_scoped_job(
     tmp_path: Path,
 ) -> None:

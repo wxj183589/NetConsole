@@ -42,6 +42,15 @@ describe('Ground unattended page', () => {
     expect(apiSource).toContain("explicit_confirmation: true")
   })
 
+  it('exposes confirmed deletion for selected historical runs', () => {
+    expect(apiSource).toContain('deleteGroundRunHistory')
+    expect(apiSource).toContain('method: \'DELETE\'')
+    expect(apiSource).toContain('/runs/${encodeURIComponent(runId)}')
+    expect(source).toContain('deleteSelectedRunHistory')
+    expect(source).toContain('runHistoryDeleteBlocked')
+    expect(source).toContain('删除历史记录')
+  })
+
   it('links train details to ping, timeline and existing session analysis', () => {
     expect(source).toContain('getGroundTrain')
     expect(source).toContain('查看长 Ping')

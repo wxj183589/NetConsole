@@ -5,7 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Box, CopyDocument, Delete, Download, FolderOpened, Refresh, SwitchButton, VideoPause, VideoPlay } from '@element-plus/icons-vue'
 
 import {
-  deleteGroundArchive, getGroundArchiveDetail, getGroundProfile, getGroundStatus, getGroundTrain, groundArchiveSummaryDownloadRequest, groundArchiveZipDownloadRequest, listGroundArchives,
+  deleteGroundArchive, deleteGroundRunHistory, getGroundArchiveDetail, getGroundProfile, getGroundStatus, getGroundTrain, groundArchiveSummaryDownloadRequest, groundArchiveZipDownloadRequest, listGroundArchives,
   getGroundHealth, listGroundDeepCollections, listGroundPingTargets, listGroundTimeline, listGroundTrains, requestGroundConfigCheck,
   openGroundArchiveDirectory, pauseGroundRun, resumeGroundRun, saveGroundProfile, setGroundTrainPriority, startGroundRun,
   stopAndArchiveGroundRun, stopGroundRun, saveGroundTrainPolicy, syncGroundInventory,
@@ -48,6 +48,7 @@ const activeOperation = ref<GroundOperation | null>(null)
 const latestTerminalOperation = ref<GroundOperation | null>(null)
 const runs = ref<GroundRun[]>([])
 const selectedRunId = ref('')
+const runHistoryDeleteLoading = ref(false)
 const pingSeries = ref<GroundPingSeries | null>(null)
 const selectedPingTarget = ref<GroundPingTarget | null>(null)
 const pingWindowOpen = ref(false)
@@ -145,6 +146,11 @@ const operationActive = computed(() => Boolean(activeOperation.value && ['PENDIN
 const visibleOperation = computed(() => activeOperation.value ?? latestTerminalOperation.value)
 const selectedRun = computed(() => runs.value.find((row) => row.run_id === selectedRunId.value) ?? null)
 const historicalRun = computed(() => Boolean(selectedRunId.value && selectedRunId.value !== status.value?.active_run_id))
+const runHistoryDeleteBlocked = computed(() => (
+  !selectedRun.value
+  || !historicalRun.value
+  || ['STARTING', 'RUNNING', 'PAUSED', 'STOPPING', 'FINALIZING', 'ARCHIVING'].includes(selectedRun.value.state)
+))
 const selectedPingHistorical = computed(() => Boolean(selectedPingTarget.value?.run_id && selectedPingTarget.value.run_id !== status.value?.active_run_id))
 const syslogDeleteBlocked = computed(() => (
   !selectedRun.value
@@ -1241,6 +1247,44 @@ async function removeArchive(row: GroundArchive): Promise<void> {
   try { await deleteGroundArchive(row.archive_id); ElMessage.success(t('ground.archive_delete_queued', '归档删除请求已提交')); await loadAll(true) }
   catch (reason) { ElMessage.error(errorText(reason, t('ground.archive_delete_failed', '归档删除失败'))) }
 }
+async function deleteSelectedRunHistory(): Promise<void> {
+  const row = selectedRun.value
+  if (!row) {
+    ElMessage.warning('请先选择需要删除的运行历史')
+    return
+  }
+  if (runHistoryDeleteBlocked.value) {
+    ElMessage.warning('只能删除非活动的历史运行')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确认删除 ${row.run_date || row.run_id} 的运行历史？该操作会移除长 Ping、时间轴、Syslog 等查询索引；正式归档 ZIP 仍在“历史归档”中管理。`,
+      '删除运行历史',
+      { type: 'warning', confirmButtonText: t('common.delete', '删除'), cancelButtonText: t('common.cancel', '取消') },
+    )
+    runHistoryDeleteLoading.value = true
+    await deleteGroundRunHistory(row.run_id)
+    if (selectedPingTarget.value?.run_id === row.run_id) {
+      pingWindowOpen.value = false
+      handlePingWindowClosed()
+    }
+    selectedSyslogRecords.value = []
+    syslogRecords.value = []
+    pingTargets.value = []
+    deepCollections.value = []
+    timeline.value = []
+    ElMessage.success('运行历史已删除')
+    await Promise.allSettled([loadStatus(true), loadRuns(true)])
+    await loadActiveTab(true)
+  } catch (reason) {
+    if (!isDialogCancellation(reason)) {
+      ElMessage.error(errorText(reason, '运行历史删除失败'))
+    }
+  } finally {
+    runHistoryDeleteLoading.value = false
+  }
+}
 async function downloadArchiveSummary(row: GroundArchive): Promise<void> {
   try {
     const result = await downloadBackendResource(groundArchiveSummaryDownloadRequest(row))
@@ -1515,6 +1559,14 @@ onBeforeUnmount(() => {
         />
       </el-select>
       <el-tag :type="historicalRun ? 'info' : 'success'">{{ historicalRun ? '历史运行' : '当前活动运行' }}</el-tag>
+      <el-button
+        :icon="Delete"
+        type="danger"
+        plain
+        :loading="runHistoryDeleteLoading"
+        :disabled="runHistoryDeleteBlocked"
+        @click="deleteSelectedRunHistory"
+      >删除历史记录</el-button>
       <span class="muted">{{ selectedRun?.actual_started_at || selectedRun?.scheduled_start_at || '—' }} 至 {{ selectedRun?.actual_ended_at || '进行中' }}</span>
     </section>
 

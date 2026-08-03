@@ -27,6 +27,7 @@ from netconsole.models.api.ground_unattended import (
     GroundPriorityUpdateDTO,
     GroundRawFilePageDTO,
     GroundRunPageDTO,
+    GroundRunDeleteRequestDTO,
     GroundSyslogRecordPageDTO,
     GroundSyslogDeleteAcceptedDTO,
     GroundSyslogDeletePreviewDTO,
@@ -273,6 +274,24 @@ def runs(
     return _call(
         lambda: _service(request).runs(
             _site_id(request), limit=limit, offset=offset
+        )
+    )
+
+
+@router.delete(
+    "/runs/{run_id}",
+    response_model=GroundActionResponseDTO,
+)
+def delete_run_history(
+    request: Request,
+    run_id: str,
+    payload: GroundRunDeleteRequestDTO,
+) -> GroundActionResponseDTO:
+    return _call(
+        lambda: _service(request).delete_run_history(
+            _site_id(request),
+            run_id,
+            payload,
         )
     )
 
