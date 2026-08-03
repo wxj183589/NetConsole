@@ -274,7 +274,7 @@ def parse_interfaces(raw: str) -> ZteParseResult[list[dict[str, object | None]]]
         )
     if not header_seen:
         warnings.append("未找到 show interface brief 表头")
-    status = "OK" if rows else "EMPTY"
+    status = "PARSE_FAILED" if not header_seen else ("OK" if rows else "EMPTY")
     return ZteParseResult(rows, tuple(warnings), status)
 
 
@@ -445,7 +445,8 @@ def parse_optical_summary(raw: str) -> ZteParseResult[list[dict[str, object | No
         )
     if not header_seen:
         warnings.append("未找到 show opticalinfo brief 表头")
-    return ZteParseResult(rows, tuple(warnings), "OK" if rows else "EMPTY")
+    status = "PARSE_FAILED" if not header_seen else ("OK" if rows else "EMPTY")
+    return ZteParseResult(rows, tuple(warnings), status)
 
 
 def parse_interface_switchport_config(

@@ -117,6 +117,20 @@ def test_parse_zte_interface_brief_handles_types_descriptions_and_pager() -> Non
     assert by_name["mgmt_eth"]["trackside_candidate"] is False
 
 
+def test_parse_zte_interface_brief_rejects_missing_header_and_empty_snapshot() -> None:
+    missing_header = parse_interfaces(
+        "gei-0/3/0/1 optical Duplex/full 1G up up up Trackside-AP"
+    )
+    empty = parse_interfaces(
+        "Interface Attribute Mode BW Admin Phy Prot Description\nZXR10#"
+    )
+
+    assert missing_header.status == "PARSE_FAILED"
+    assert missing_header.value
+    assert empty.status == "EMPTY"
+    assert empty.value == []
+
+
 def test_parse_real_c89e_interface_brief_redacts_description_but_keeps_shape() -> None:
     parsed = parse_interfaces(
         _fixture("real_c89e4_show_interface_brief_redacted.txt")

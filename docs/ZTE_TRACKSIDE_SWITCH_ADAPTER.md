@@ -1,6 +1,6 @@
 # ZTE 轨旁交换机 Adapter
 
-> 2026-07-29 补充：设备详情 Profile v3 保持七条固定只读命令，普通刷新不再按端口追加光模块 detail；轨旁光衰更新使用每设备一次 SSH 会话、一次 `show version` 和一次 `show opticalinfo brief` 的快速路径。当前实机验证声明仅覆盖 C89E-4 Release，不外推到整个 ZXR10/5960X 系列。
+> 2026-08-03 补充：设备详情 Profile v3 保持七条固定只读命令，普通刷新不再按端口追加光模块 detail；轨旁光衰更新使用每设备一次 SSH 会话，固定执行一次 `show version`、`show interface brief` 和 `show opticalinfo brief`。当前实机验证声明仅覆盖 C89E-4 Release，不外推到整个 ZXR10/5960X 系列。
 
 ## 当前范围
 
@@ -46,7 +46,9 @@ brief 刷新可在模块仍存在时保留既有 detail 的稳定身份字段；
 ## 采集路径与任务边界
 
 - 普通 `device.inventory.collect` 固定执行 Profile v3 的七条只读命令：版本、接口摘要、交换 VLAN 配置、VLAN、光模块摘要和两条 LLDP。默认不追加 `show opticalinfo <interface>`。
-- 轨旁光衰更新对每台 ZTE 设备只建立一个会话，只执行 `show version` 和一次 `show opticalinfo brief`；接口和 LLDP 关系读取数据库已有快照，不在逐行查询时连接设备。
+- 轨旁光衰更新对每台 ZTE 设备只建立一个会话，固定执行 `show version`、`show interface brief` 和 `show opticalinfo brief`；不增加逐端口 detail，LLDP 关系仍读取数据库已有快照。
+- 接口摘要和光模块摘要分别做强校验：无表头、空结果或本轮条数少于上一份时拒绝覆盖，并让任务以结构化告警和 `PARTIAL_SUCCESS` 收口。历史快照继续保留在事实历史中，但轨旁业务只接受与设备本轮 `collect_run_uuid` 一致的接口和光模块作为当前状态；不一致时链路、RX/TX 和模块告警显示为未采集/历史数据，不参与当前综合判断。
+- 端口 `DOWN` 与模块健康分开表达：链路列显示 `DOWN`，模块列保留正常、功率异常、无光或无模块，综合列显示“链路断开”；整台交换机离线仍优先显示离线。
 - 同一局点、同一更新范围的活动任务复用已有 Task ID；设备列表先去重并受控并发，取消任务时关闭当前设备会话。
 - 轨旁列表、统计、筛选项、导出和自动任务目标只包含 `work_scope_status=included` 的设备。Worker 在建立 SSH 前再次读取设备状态；若期间变为 `excluded`，记录“设备当前工作状态为暂不参与，已自动排除”并按跳过处理。建设分期不直接决定工作范围，改回 `included` 后自动重新进入候选；用户明确发起的手动只读设备操作不受此自动过滤限制。
 

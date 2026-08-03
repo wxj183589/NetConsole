@@ -4770,7 +4770,7 @@ def test_trackside_optical_command_adapter_supports_h3c_and_zte_aliases_and_reje
     for vendor in ("ZTE", "\u4e2d\u5174"):
         assert OpticalCommandAdapter.get_optical_diagnosis_commands(
             vendor, "SW"
-        ) == ("show version", "show opticalinfo brief")
+        ) == ("show version", "show interface brief", "show opticalinfo brief")
     for vendor in ("Huawei", "\u534e\u4e3a"):
         with pytest.raises(UnsupportedVendor):
             OpticalCommandAdapter.get_optical_diagnosis_commands(vendor, "SW")

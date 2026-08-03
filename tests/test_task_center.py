@@ -547,6 +547,7 @@ def test_trackside_business_result_is_exposed_in_task_detail_without_raw_result_
         "target_count": 746,
         "skipped_reason_counts": {"connection_incomplete": 1},
         "failure_reason_counts": {},
+        "warning_reason_counts": {"switch_interface_snapshot_invalid": 1},
         "skipped": [{"name": "AP-A", "host": "10.0.0.1", "reason": "connection_incomplete"}],
     }
     service.feed_stdout(task_id, encode_event(finished_event(task_id, result)).encode("utf-8"))
@@ -589,6 +590,7 @@ def test_trackside_business_result_is_exposed_in_task_detail_without_raw_result_
         "target_count": 746,
         "skipped_reason_counts": {"connection_incomplete": 1},
         "failure_reason_counts": {},
+        "warning_reason_counts": {"switch_interface_snapshot_invalid": 1},
     }
     assert "skipped" not in detail.details
 

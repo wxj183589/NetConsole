@@ -311,6 +311,20 @@ def normalize_trackside_ap_business_row(
 
     normalized = dict(row)
     normalized["vlan"] = normalize_trackside_vlan_display(normalized.get("vlan"))
+    if normalized.get("switch_interface_data_status") in {"stale", "missing"}:
+        normalized["link_status"] = "-"
+        normalized["protocol_status"] = None
+    if normalized.get("switch_optical_data_status") in {"stale", "missing"}:
+        for field in (
+            "switch_rx_power",
+            "switch_tx_power",
+            "switch_rx_low_alarm",
+            "switch_rx_high_alarm",
+            "switch_tx_low_alarm",
+            "switch_tx_high_alarm",
+        ):
+            normalized[field] = None
+        normalized["switch_optical_status"] = "not_collected"
     normalized["switch_optical_status"] = compute_trackside_rx_business_status(
         normalized.get("switch_optical_status"),
         normalized.get("switch_rx_power"),
@@ -580,6 +594,7 @@ def build_trackside_ap_business_rows(
     offline_ap_ledger_rows: list[dict[str, object | None]] | None = None,
     historical_lldp_rows: list[dict[str, object | None]] | None = None,
     station_names: Mapping[str, str] | None = None,
+    latest_switch_collect_runs: Mapping[str, str] | None = None,
 ) -> list[dict[str, object | None]]:
     optical_indexes = {device_uuid: _latest_rows_by_normalized_interface(rows, "interface_name") for device_uuid, rows in optical_by_device.items()}
     lldp_indexes = {device_uuid: _latest_rows_by_normalized_interface(rows, "local_interface") for device_uuid, rows in (lldp_by_device or {}).items()}
@@ -630,6 +645,9 @@ def build_trackside_ap_business_rows(
     result: list[dict[str, object | None]] = []
     for device in devices:
         device_uuid = str(device.device_uuid or "")
+        latest_switch_collect_run = str(
+            (latest_switch_collect_runs or {}).get(device_uuid) or ""
+        )
         lldp_snapshot_present = device_uuid in (lldp_by_device or {})
         try:
             adapter = resolve_trackside_switch_adapter(device)
@@ -654,8 +672,22 @@ def build_trackside_ap_business_rows(
                 continue
             interface_name = str(interface.get("interface_name") or "")
             normalized_interface = normalize_interface_name(interface_name).casefold()
-            link_state = normalize_link_state(interface.get("link_status") or interface.get("link"))
-            optical = optical_index.get(normalized_interface, {})
+            interface_data_status = _snapshot_data_status(
+                interface,
+                latest_switch_collect_run,
+            )
+            current_interface = (
+                interface if interface_data_status == "current" else {}
+            )
+            link_state = normalize_link_state(
+                current_interface.get("link_status") or current_interface.get("link")
+            )
+            stored_optical = optical_index.get(normalized_interface, {})
+            optical_data_status = _snapshot_data_status(
+                stored_optical,
+                latest_switch_collect_run,
+            )
+            optical = stored_optical if optical_data_status == "current" else {}
             lldp = lldp_index.get(normalized_interface, {})
             historical_lldp = _find_historical_lldp_row(historical_lldp_index, device_names, interface_name)
             neighbor_mac = normalize_mac_key(lldp.get("neighbor_mac"))
@@ -743,7 +775,11 @@ def build_trackside_ap_business_rows(
                         ap_match_source = "FIT_AP_INTERFACE_MAC"
                         ap_match_confidence = 80
                         lldp_match_status = "MATCHED"
-            switch_collection_status = _switch_collection_status(device, interface, optical)
+            switch_collection_status = _switch_collection_status(
+                device,
+                current_interface,
+                optical,
+            )
             if str(device.device_vendor or "").strip().casefold() == "zte":
                 optical = normalize_zte_optical_record(optical)
                 switch_result = compute_zte_optical_severity(optical)
@@ -767,8 +803,6 @@ def build_trackside_ap_business_rows(
                 else switch_result.severity
             )
             switch_offline = _is_switch_collection_offline(switch_collection_status)
-            if _should_mark_switch_link_abnormal(link_state, switch_result, optical, switch_collection_status):
-                switch_status = "link_abnormal"
             ap_candidate = {
                 "ap_mac": format_mac(fit_ap.get("ap_mac") or neighbor_mac),
                 "ap_name": fit_ap.get("ap_name") or (historical_lldp or {}).get("ap_name"),
@@ -813,8 +847,8 @@ def build_trackside_ap_business_rows(
             local_sample_time = (
                 optical.get("updated_at")
                 or optical.get("collected_at")
-                or interface.get("updated_at")
-                or interface.get("collected_at")
+                or current_interface.get("updated_at")
+                or current_interface.get("collected_at")
             )
             remote_sample_time = fit_ap.get("updated_at") or fit_ap.get("collected_at")
             attenuation = _build_bidirectional_attenuation(
@@ -898,6 +932,10 @@ def build_trackside_ap_business_rows(
                     "switch_tx_low_alarm": optical.get("tx_low_alarm"),
                     "switch_tx_high_alarm": optical.get("tx_high_alarm"),
                     "switch_optical_status": switch_status,
+                    "switch_interface_updated_at": interface.get("updated_at") or interface.get("collected_at"),
+                    "switch_optical_updated_at": stored_optical.get("updated_at") or stored_optical.get("collected_at"),
+                    "switch_interface_data_status": interface_data_status,
+                    "switch_optical_data_status": optical_data_status,
                     "ap_mac": ap_candidate["ap_mac"],
                     "ap_name": ap_candidate["ap_name"],
                     "ap_ip": fit_ap.get("ap_ip"),
@@ -931,7 +969,14 @@ def build_trackside_ap_business_rows(
                 }
             _ensure_ap_optical_status(row)
             result.append(row)
-    result.extend(_offline_ledger_to_trackside_rows(offline_ap_ledger_rows or [], interfaces_by_device, optical_by_device))
+    result.extend(
+        _offline_ledger_to_trackside_rows(
+            offline_ap_ledger_rows or [],
+            interfaces_by_device,
+            optical_by_device,
+            latest_switch_collect_runs,
+        )
+    )
     result = [
         normalize_trackside_ap_business_row(row)
         for row in _merge_duplicate_trackside_rows(result)
@@ -1727,6 +1772,13 @@ def _trackside_rows_by_switch_interface(rows: list[dict[str, object | None]]) ->
 
 
 def trackside_row_status(row: dict[str, object | None]) -> str:
+    if (
+        row.get("offline_reason") == "switch_offline"
+        or _is_switch_collection_offline(row.get("switch_collection_status"))
+    ):
+        return "offline"
+    if normalize_link_state(row.get("link_status")) == "DOWN":
+        return "link_down"
     switch_status = compute_trackside_rx_business_status(
         row.get("switch_optical_status"),
         row.get("switch_rx_power"),
@@ -1803,29 +1855,6 @@ def _compute_ap_optical_status_from_row(row: dict[str, object | None]) -> str:
             "device_type": "ap",
         }
     ).severity
-
-
-def _switch_has_valid_light(optical: dict[str, object | None]) -> bool:
-    rx_power = _float_value((optical or {}).get("rx_power"))
-    return rx_power is not None and rx_power > -35
-
-
-def _should_mark_switch_link_abnormal(
-    link_state: object,
-    switch_result: object,
-    optical: dict[str, object | None],
-    switch_collection_status: object,
-) -> bool:
-    if normalize_link_state(link_state) != "DOWN":
-        return False
-    if _is_switch_collection_offline(switch_collection_status):
-        return False
-    severity = str(getattr(switch_result, "severity", "") or "").strip().casefold()
-    if severity in {"no_module", "no_light"}:
-        return False
-    if _explicit_no_module(optical):
-        return False
-    return _switch_has_valid_light(optical or {})
 
 
 def _has_valid_rx_power(value: object) -> bool:
@@ -2301,6 +2330,7 @@ def _offline_ledger_to_trackside_rows(
     rows: list[dict[str, object | None]],
     interfaces_by_device: dict[str, list[dict[str, object | None]]] | None = None,
     optical_by_device: dict[str, list[dict[str, object | None]]] | None = None,
+    latest_switch_collect_runs: Mapping[str, str] | None = None,
 ) -> list[dict[str, object | None]]:
     result: list[dict[str, object | None]] = []
     interface_indexes = {device_uuid: _latest_rows_by_normalized_interface(items, "interface_name") for device_uuid, items in (interfaces_by_device or {}).items()}
@@ -2309,9 +2339,28 @@ def _offline_ledger_to_trackside_rows(
         device_uuid = str(row.get("device_uuid") or "")
         interface_key = normalize_interface_name(row.get("historical_switch_interface")).casefold()
         interface = interface_indexes.get(device_uuid, {}).get(interface_key, {})
-        optical = optical_indexes.get(device_uuid, {}).get(interface_key, {})
-        link_state = normalize_link_state(interface.get("link_status") or interface.get("link"))
-        switch_collection_status = row.get("switch_collection_status") or interface.get("switch_collection_status") or interface.get("collection_status")
+        latest_switch_collect_run = str(
+            (latest_switch_collect_runs or {}).get(device_uuid) or ""
+        )
+        interface_data_status = _snapshot_data_status(
+            interface,
+            latest_switch_collect_run,
+        )
+        current_interface = interface if interface_data_status == "current" else {}
+        stored_optical = optical_indexes.get(device_uuid, {}).get(interface_key, {})
+        optical_data_status = _snapshot_data_status(
+            stored_optical,
+            latest_switch_collect_run,
+        )
+        optical = stored_optical if optical_data_status == "current" else {}
+        link_state = normalize_link_state(
+            current_interface.get("link_status") or current_interface.get("link")
+        )
+        switch_collection_status = (
+            row.get("switch_collection_status")
+            or current_interface.get("switch_collection_status")
+            or current_interface.get("collection_status")
+        )
         switch_result = compute_optical_severity(
             {
                 "module_present": bool(_has_optical_module_data(optical)),
@@ -2325,8 +2374,6 @@ def _offline_ledger_to_trackside_rows(
             }
         )
         switch_status = switch_result.severity
-        if _should_mark_switch_link_abnormal(link_state, switch_result, optical, switch_collection_status):
-            switch_status = "link_abnormal"
         result.append(
             {
                 "site": row.get("site"),
@@ -2346,6 +2393,10 @@ def _offline_ledger_to_trackside_rows(
                 "switch_rx_power": optical.get("rx_power"),
                 "switch_tx_power": optical.get("tx_power"),
                 "switch_optical_status": switch_status,
+                "switch_interface_updated_at": interface.get("updated_at") or interface.get("collected_at"),
+                "switch_optical_updated_at": stored_optical.get("updated_at") or stored_optical.get("collected_at"),
+                "switch_interface_data_status": interface_data_status,
+                "switch_optical_data_status": optical_data_status,
                 "ap_mac": row.get("ap_mac"),
                 "ap_name": row.get("ap_name"),
                 "ap_ip": row.get("ap_ip"),
@@ -2415,6 +2466,19 @@ def normalize_link_state(value: object) -> str:
     if "UP" in text:
         return "UP"
     return "-"
+
+
+def _snapshot_data_status(
+    row: Mapping[str, object | None],
+    latest_collect_run: str,
+) -> str:
+    if not row:
+        return "missing"
+    expected = str(latest_collect_run or "").strip()
+    if not expected:
+        return "current"
+    actual = str(row.get("collect_run_uuid") or "").strip()
+    return "current" if actual == expected else "stale"
 
 
 def _switch_collection_status(device: Device, interface: dict[str, object | None], optical: dict[str, object | None]) -> str:

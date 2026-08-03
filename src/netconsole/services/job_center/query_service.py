@@ -70,6 +70,7 @@ TRACKSIDE_AP_RESULT_DETAIL_KEYS = (
     "target_count",
     "skipped_reason_counts",
     "failure_reason_counts",
+    "warning_reason_counts",
 )
 CAR_NETWORK_POINT_TABLE_GENERATE_RESULT_DETAIL_KEYS = (
     "nodes_count",

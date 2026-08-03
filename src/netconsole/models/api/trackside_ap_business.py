@@ -37,6 +37,10 @@ class TracksideApBusinessRowDTO(ApiModel):
     switch_tx_low_alarm: Any = None
     switch_tx_high_alarm: Any = None
     switch_optical_status: str = ""
+    switch_interface_updated_at: str = ""
+    switch_optical_updated_at: str = ""
+    switch_interface_data_status: Literal["current", "stale", "missing", "unknown"] = "unknown"
+    switch_optical_data_status: Literal["current", "stale", "missing", "unknown"] = "unknown"
     ap_uuid: str = ""
     ap_mac: str = ""
     ap_name: str = ""

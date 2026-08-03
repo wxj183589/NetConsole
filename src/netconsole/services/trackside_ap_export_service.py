@@ -121,6 +121,7 @@ def load_trackside_ap_business_snapshot(
     ac_repository = AcRepository(repository.database)
     source_statuses: dict[str, str] = {
         "switch_devices": "loaded",
+        "switch_collection_attempts": "loaded",
         "interfaces": "loaded",
         "switch_optical": "loaded",
         "lldp": "loaded",
@@ -189,6 +190,24 @@ def load_trackside_ap_business_snapshot(
             "switch_devices",
             "站点交换机",
             "SWITCH_DEVICES_UNAVAILABLE",
+            exc,
+        )
+
+    try:
+        latest_switch_collect_runs = {
+            str(row.get("device_uuid") or ""): str(
+                row.get("collect_run_uuid") or ""
+            )
+            for row in fact_repository.list_device_facts()
+            if row.get("device_uuid") and row.get("collect_run_uuid")
+        }
+    except Exception as exc:
+        latest_switch_collect_runs = {}
+        source_statuses["switch_collection_attempts"] = "failed"
+        source_failure(
+            "switch_collection_attempts",
+            "交换机本轮采集标记",
+            "SWITCH_COLLECTION_ATTEMPTS_UNAVAILABLE",
             exc,
         )
 
@@ -320,6 +339,7 @@ def load_trackside_ap_business_snapshot(
             offline_ledger_rows,
             historical_lldp_rows,
             station_names=scope.station_names,
+            latest_switch_collect_runs=latest_switch_collect_runs,
         ),
         switch_device_ids={str(device.device_uuid or "") for device in devices},
     )

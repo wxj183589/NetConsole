@@ -1993,6 +1993,7 @@ class DeviceManagementWebService:
         database = Database(self.paths.site_db_path(site))
         device_uuid = str(device.device_uuid or "")
         lookup = build_switch_data_lookup([device], {device_uuid: optical_modules})
+        latest_fact = DeviceFactRepository(database).get_device_fact(device_uuid)
         ac_repository = AcRepository(database)
         resources = ac_repository.list_all_fit_ap_resources_with_metadata()
         try:
@@ -2013,6 +2014,9 @@ class DeviceManagementWebService:
             resources,
             lookup,
             station_names=station_names,
+            latest_switch_collect_runs={
+                device_uuid: str((latest_fact or {}).get("collect_run_uuid") or "")
+            },
         )
 
     @staticmethod

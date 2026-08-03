@@ -93,6 +93,9 @@ def run_trackside_ap_optical_update(context: JobContext) -> dict[str, object]:
         if value > 0
     }
     warning_count = int(getattr(result, "warning_count", 0) or 0)
+    warning_reason_counts = dict(
+        getattr(result, "warning_reason_counts", {}) or {}
+    )
     warnings = [str(value) for value in (getattr(result, "warnings", []) or [])]
     port_errors = [
         dict(value)
@@ -122,6 +125,7 @@ def run_trackside_ap_optical_update(context: JobContext) -> dict[str, object]:
         "fit_ap_skipped_count": fit_ap_skipped_count,
         "failure_reason_counts": failure_reason_counts,
         "warning_count": warning_count,
+        "warning_reason_counts": warning_reason_counts,
         "has_warning": warning_count > 0,
         "warnings": warnings,
         "port_errors": port_errors,

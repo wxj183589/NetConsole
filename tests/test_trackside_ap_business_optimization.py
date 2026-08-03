@@ -213,7 +213,7 @@ def test_trackside_business_uses_latest_current_fact_for_same_interface():
     assert rows[0]["ap_optical_status"] == "normal"
 
 
-def test_trackside_business_marks_link_down_with_light_as_link_abnormal():
+def test_trackside_business_keeps_module_state_and_marks_combined_link_down():
     switch = Device(device_uuid="sw-1", name="SW1", station="Station A", device_type="SW")
     rows = build_trackside_ap_business_rows(
         [switch],
@@ -222,9 +222,10 @@ def test_trackside_business_marks_link_down_with_light_as_link_abnormal():
         [],
     )
 
-    assert rows[0]["switch_optical_status"] == "link_abnormal"
-    assert format_trackside_display_value("switch_optical_status", rows[0]) == "链路异常"
-    assert trackside_row_status(rows[0]) == "link_abnormal"
+    assert rows[0]["switch_optical_status"] == "normal"
+    assert format_trackside_display_value("switch_optical_status", rows[0]) == "正常"
+    assert trackside_row_status(rows[0]) == "link_down"
+    assert rows[0]["optical_severity"] == "link_down"
 
 
 def test_trackside_business_keeps_link_up_with_light_normal():
@@ -257,6 +258,7 @@ def test_trackside_business_does_not_mark_link_down_without_valid_light(optical,
     )
 
     assert rows[0]["switch_optical_status"] == expected
+    assert rows[0]["optical_severity"] == "link_down"
 
 
 def test_trackside_business_keeps_switch_offline_over_link_abnormal():

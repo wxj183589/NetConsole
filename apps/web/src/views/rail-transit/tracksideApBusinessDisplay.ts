@@ -1,4 +1,5 @@
 import { normalizedOpticalStatus, opticalStatusPresentation } from '../../utils/opticalPresentation'
+import { t } from '../../i18n/runtime'
 
 export type TracksideOpticalTagType = 'success' | 'warning' | 'danger' | 'info'
 
@@ -60,6 +61,15 @@ export function displayPowerThreshold(low: unknown, high: unknown): string {
   const highText = displayTracksideValue(high)
   if (lowText === '—' && highText === '—') return '—'
   return `${lowText} ~ ${highText} dBm`
+}
+
+export function displayTracksideSnapshotTime(value: unknown, status: unknown): string {
+  const timestamp = displayTracksideValue(value)
+  if (timestamp === '—') return timestamp
+  if (String(status || '').trim().toLowerCase() === 'stale') {
+    return `${t('trackside.snapshot.stale', '历史数据')} · ${timestamp}`
+  }
+  return timestamp
 }
 
 export function displayLldpStatus(value: unknown): string {

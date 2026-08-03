@@ -135,6 +135,7 @@ const businessReasonRows = computed(() => {
   for (const [field, category] of [
     ['failure_reason_counts', t('job_center.business_result.failure_reason', '失败')],
     ['skipped_reason_counts', t('job_center.business_result.skipped_reason', '跳过')],
+    ['warning_reason_counts', t('job_center.business_result.warning', '告警')],
   ] as const) {
     const counts = selectedDetails.value[field]
     if (!counts || typeof counts !== 'object' || Array.isArray(counts)) continue
@@ -347,6 +348,8 @@ function reasonLabel(value: unknown): string {
     no_station_switches: t('trackside.result.reason.no_station_switches', '本次无车站交换机采集目标'),
     device_collection_failed: t('trackside.result.reason.device_collection_failed', '交换机采集失败'),
     fit_ap_collection_failed: t('trackside.result.reason.fit_ap_collection_failed', 'AP 光衰采集失败'),
+    switch_interface_snapshot_invalid: t('trackside.result.reason.switch_interface_snapshot_invalid', '交换机接口状态未获得本轮有效快照'),
+    switch_optical_snapshot_invalid: t('trackside.result.reason.switch_optical_snapshot_invalid', '交换机光模块未获得本轮有效快照'),
   }
   return labels[code] || code
 }

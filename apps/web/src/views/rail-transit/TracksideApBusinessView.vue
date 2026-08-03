@@ -29,6 +29,7 @@ import {
   displayLldpStatus,
   displayPowerThreshold,
   displaySwitchVendor,
+  displayTracksideSnapshotTime,
   displayTracksideValue,
   tracksideOpticalPresentation,
 } from './tracksideApBusinessDisplay'
@@ -60,6 +61,7 @@ const businessColumns: NcTableColumn<TracksideApBusinessRow>[] = [
   { key: 'interface_name', label: '接口', valueType: 'port', displayValue: (row) => displayTracksideValue(displayInterfaceName(row.interface_name)) },
   { key: 'lldp_match_status', label: 'LLDP 状态', valueType: 'status', displayValue: (row) => displayLldpStatus(row.lldp_match_status) },
   { key: 'link_status', label: '链路', valueType: 'status' },
+  { key: 'switch_interface_updated_at', label: t('trackside.snapshot.interface_time', '接口采集时间'), valueType: 'datetime', displayValue: (row) => displayTracksideSnapshotTime(row.switch_interface_updated_at, row.switch_interface_data_status) },
   { key: 'port_type', label: '端口类型', valueType: 'status', width: 100 },
   { key: 'description', label: '描述', valueType: 'description', width: 90, maxWidth: 120, align: 'center', headerAlign: 'center', stretch: 'none', showOverflowTooltip: true },
   { key: 'pvid', label: 'PVID', valueType: 'number', displayValue: (row) => displayTracksideValue(row.pvid) },
@@ -69,13 +71,14 @@ const businessColumns: NcTableColumn<TracksideApBusinessRow>[] = [
   { key: 'switch_rx_low_alarm', label: 'Rx 门限', displayValue: (row) => displayPowerThreshold(row.switch_rx_low_alarm, row.switch_rx_high_alarm) },
   { key: 'switch_tx_low_alarm', label: 'Tx 门限', displayValue: (row) => displayPowerThreshold(row.switch_tx_low_alarm, row.switch_tx_high_alarm) },
   { key: 'switch_optical_status', label: '模块状态', valueType: 'status', cellKind: 'tag' },
+  { key: 'switch_optical_updated_at', label: t('trackside.snapshot.optical_time', '模块采集时间'), valueType: 'datetime', displayValue: (row) => displayTracksideSnapshotTime(row.switch_optical_updated_at, row.switch_optical_data_status) },
   { key: 'ap_mac', label: 'AP MAC', valueType: 'mac', stretch: 'priority' },
   { key: 'ap_name', label: '当前轨旁 AP', valueType: 'name' },
   { key: 'ap_rx_power', label: '对端 Rx (dBm)', valueType: 'number' },
   { key: 'ap_tx_power', label: '对端 Tx (dBm)', valueType: 'number' },
   { key: 'ap_optical_status', label: 'AP 模块状态', valueType: 'status', cellKind: 'tag' },
   { key: 'optical_severity', label: '综合', valueType: 'status', cellKind: 'tag' },
-  { key: 'updated_at', label: '更新时间', valueType: 'datetime' },
+  { key: 'updated_at', label: t('trackside.snapshot.business_time', '业务更新时间'), valueType: 'datetime' },
   { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['更新站点', '更新 AP'] },
 ]
 

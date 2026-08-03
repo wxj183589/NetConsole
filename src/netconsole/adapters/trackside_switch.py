@@ -142,6 +142,22 @@ class TracksideSwitchCollection:
     warnings: list[str] = field(default_factory=list)
     port_errors: list[TracksidePortError] = field(default_factory=list)
     lldp_status: str = ""
+    interface_snapshot_status: str = ""
+    optical_snapshot_status: str = ""
+
+
+def _append_snapshot_warning(
+    result: TracksideSwitchCollection,
+    label: str,
+    status: object,
+    retained_message: str,
+) -> None:
+    normalized = str(status or "").strip().upper()
+    if normalized == "OK":
+        return
+    result.warnings.append(
+        f"ZTE {label}状态为 {normalized or 'UNKNOWN'}，{retained_message}"
+    )
 
 
 class TracksideSwitchAdapter(ABC):
@@ -642,8 +658,15 @@ class ZteZxr10TracksideSwitchAdapter(TracksideSwitchAdapter):
             result.command_pages["interface-brief"] = interface_output.page_count
             interface_parse = self.parse_interfaces(interface_output.output)
             result.interfaces = interface_parse.value
+            result.interface_snapshot_status = interface_parse.status
             _annotate_raw_output_refs(result.interfaces, "interface-brief.txt")
             result.warnings.extend(interface_parse.warnings)
+            _append_snapshot_warning(
+                result,
+                "接口摘要",
+                interface_parse.status,
+                "上一份接口状态快照已保留",
+            )
 
             optical_output = self.collect_optical_summary(connection, cancel_check)
             commands["optical-brief"] = self.optical_summary_command()
@@ -651,8 +674,15 @@ class ZteZxr10TracksideSwitchAdapter(TracksideSwitchAdapter):
             result.command_pages["optical-brief"] = optical_output.page_count
             optical_parse = self.parse_optical_summary(optical_output.output)
             result.optical_modules = optical_parse.value
+            result.optical_snapshot_status = optical_parse.status
             _annotate_raw_output_refs(result.optical_modules, "optical-brief.txt")
             result.warnings.extend(optical_parse.warnings)
+            _append_snapshot_warning(
+                result,
+                "光模块摘要",
+                optical_parse.status,
+                "上一份光模块快照已保留",
+            )
             self._write_artifacts(artifact_dir, result, commands)
             return result
 
@@ -662,8 +692,15 @@ class ZteZxr10TracksideSwitchAdapter(TracksideSwitchAdapter):
         result.command_pages["interface-brief"] = interface_output.page_count
         interface_parse = self.parse_interfaces(interface_output.output)
         result.interfaces = interface_parse.value
+        result.interface_snapshot_status = interface_parse.status
         _annotate_raw_output_refs(result.interfaces, "interface-brief.txt")
         result.warnings.extend(interface_parse.warnings)
+        _append_snapshot_warning(
+            result,
+            "接口摘要",
+            interface_parse.status,
+            "上一份接口状态快照已保留",
+        )
 
         optical_output = self.collect_optical_summary(connection, cancel_check)
         commands["optical-brief"] = self.optical_summary_command()
@@ -671,8 +708,15 @@ class ZteZxr10TracksideSwitchAdapter(TracksideSwitchAdapter):
         result.command_pages["optical-brief"] = optical_output.page_count
         optical_parse = self.parse_optical_summary(optical_output.output)
         result.optical_modules = optical_parse.value
+        result.optical_snapshot_status = optical_parse.status
         _annotate_raw_output_refs(result.optical_modules, "optical-brief.txt")
         result.warnings.extend(optical_parse.warnings)
+        _append_snapshot_warning(
+            result,
+            "光模块摘要",
+            optical_parse.status,
+            "上一份光模块快照已保留",
+        )
 
         interface_index = {
             str(item.get("interface_name") or "").casefold(): item

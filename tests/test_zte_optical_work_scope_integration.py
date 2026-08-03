@@ -12,8 +12,10 @@ from netconsole.repositories.ac_repository import AcRepository
 from netconsole.services.rail_transit import trackside_optical_collection
 from netconsole.services.rail_transit.trackside_optical_collection import (
     EXCLUDED_WORK_SCOPE_REASON,
+    TracksideDeviceCollectionResult,
     _collect_one_target,
     _persist_result,
+    _snapshot_can_replace,
     build_station_switch_targets,
 )
 from netconsole.services.trackside_ap_export_service import (
@@ -276,7 +278,7 @@ def test_zte_trackside_update_replaces_stale_down_interface_snapshot(
         [
             {
                 "interface_name": "gei-0/3/0/1",
-                "description": "To-AP",
+                "description": "Trackside AP",
                 "link_status": "PHYSICAL_DOWN",
                 "admin_status": "up",
                 "physical_status": "down",
@@ -347,6 +349,255 @@ def test_zte_trackside_update_replaces_stale_down_interface_snapshot(
     assert current["tagged_vlans"] == '["201"]'
     snapshot = load_trackside_ap_business_snapshot(repository, "demo", generation=1)
     assert snapshot.rows[0]["link_status"] == "UP"
+    assert snapshot.rows[0]["switch_interface_data_status"] == "current"
+    assert snapshot.rows[0]["switch_optical_data_status"] == "current"
+
+
+def test_zte_invalid_interface_snapshot_is_not_presented_as_current(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repository = _repository(tmp_path)
+    station = DeviceGroupRepository(repository.database, "demo").create("车站")
+    device = _create_switch(
+        repository,
+        group_id=int(station.id or 0),
+        name="接口摘要失败",
+        address="192.0.2.32",
+    )
+    _seed_effective_trackside_aps(repository, [device])
+    facts = DeviceFactRepository(repository.database)
+    device_uuid = str(device.device_uuid)
+    facts.mark_device_collection_attempt(device_uuid, "old-run")
+    facts.replace_device_interfaces(
+        device_uuid,
+        [
+            {
+                "interface_name": "gei-0/3/0/1",
+                "description": "Trackside AP",
+                "link_status": "PHYSICAL_DOWN",
+                "admin_status": "up",
+                "physical_status": "down",
+                "protocol_status": "down",
+                "port_status": "hybrid",
+                "collect_run_uuid": "old-run",
+                "collected_at": "2026-08-02T10:00:00+08:00",
+                "updated_at": "2026-08-02T10:00:00+08:00",
+            }
+        ],
+    )
+    facts.replace_optical_modules(
+        device_uuid,
+        [
+            {
+                "interface_name": "gei-0/3/0/1",
+                "device_vendor": "ZTE",
+                "rx_power": "-7.10",
+                "tx_power": "-4.90",
+                "status": "normal",
+                "collect_run_uuid": "old-run",
+                "collected_at": "2026-08-02T10:00:00+08:00",
+                "updated_at": "2026-08-02T10:00:00+08:00",
+            }
+        ],
+    )
+
+    class FakeZteConnection:
+        def send_command_timing(self, command: str, **_kwargs) -> str:
+            outputs = {
+                "show version": (
+                    Path(__file__).parent
+                    / "fixtures"
+                    / "zte"
+                    / "zte_5960x_show_version.txt"
+                ).read_text(encoding="utf-8"),
+                "show interface brief": "ZXR10#show interface brief\nZXR10#",
+                "show opticalinfo brief": "\n".join(
+                    [
+                        "Interface Type Wavelength RxPower(dBm) TxPower(dBm) Status",
+                        "gei-0/3/0/1 1G-10km-SFP 1310nm "
+                        "-11.7/[-28.2,0.0] -5.0/[-10.0,-0.5] Normal",
+                    ]
+                ),
+            }
+            return outputs[command]
+
+        def disconnect(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        trackside_optical_collection.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: FakeZteConnection(),
+    )
+    targets, _ = build_station_switch_targets(repository, "demo")
+
+    result = _collect_one_target(
+        targets[0],
+        artifact_dir=tmp_path / "raw" / "invalid-interface",
+        repository=repository,
+    )
+    _persist_result(
+        repository,
+        AcRepository(repository.database),
+        result,
+        tmp_path / "parsed" / "trackside_update_results.sqlite",
+    )
+
+    snapshot = load_trackside_ap_business_snapshot(repository, "demo", generation=1)
+    assert snapshot.rows, {
+        "empty_reason": snapshot.empty_reason,
+        "interface_count": snapshot.interface_count,
+        "candidate_count": snapshot.candidate_ap_interface_count,
+        "fact": facts.get_device_fact(device_uuid),
+        "interfaces": facts.list_device_interfaces(device_uuid),
+        "optical": facts.list_optical_modules(device_uuid),
+    }
+    row = snapshot.rows[0]
+    assert result.success is True
+    assert result.interface_snapshot_status == "PARSE_FAILED"
+    assert result.optical_snapshot_status == "OK"
+    assert any("接口摘要状态" in warning for warning in result.warnings)
+    assert row["switch_interface_data_status"] == "stale"
+    assert row["link_status"] == "-"
+    assert row["switch_optical_data_status"] == "current"
+    assert row["switch_rx_power"] == "-11.7"
+    assert row["switch_interface_updated_at"] == "2026-08-02T10:00:00+08:00"
+
+
+def test_zte_connection_failure_does_not_present_old_realtime_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repository = _repository(tmp_path)
+    station = DeviceGroupRepository(repository.database, "demo").create("车站")
+    device = _create_switch(
+        repository,
+        group_id=int(station.id or 0),
+        name="连接失败",
+        address="192.0.2.33",
+    )
+    _seed_effective_trackside_aps(repository, [device])
+    facts = DeviceFactRepository(repository.database)
+    device_uuid = str(device.device_uuid)
+    facts.mark_device_collection_attempt(
+        device_uuid,
+        "old-run",
+        "files/rail_transit/trackside_ap/raw/old-run",
+    )
+    facts.replace_device_interfaces(
+        device_uuid,
+        [
+            {
+                "interface_name": "gei-0/3/0/1",
+                "description": "Trackside AP",
+                "link_status": "UP",
+                "protocol_status": "up",
+                "port_status": "hybrid",
+                "collect_run_uuid": "old-run",
+                "collected_at": "2026-08-02T10:00:00+08:00",
+                "updated_at": "2026-08-02T10:00:00+08:00",
+            }
+        ],
+    )
+    facts.replace_optical_modules(
+        device_uuid,
+        [
+            {
+                "interface_name": "gei-0/3/0/1",
+                "device_vendor": "ZTE",
+                "rx_power": "-7.10",
+                "tx_power": "-4.90",
+                "status": "normal",
+                "collect_run_uuid": "old-run",
+                "collected_at": "2026-08-02T10:00:00+08:00",
+                "updated_at": "2026-08-02T10:00:00+08:00",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        trackside_optical_collection.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("connection failed")),
+    )
+    targets, _ = build_station_switch_targets(repository, "demo")
+
+    result = _collect_one_target(
+        targets[0],
+        artifact_dir=tmp_path / "raw" / "connection-failed",
+        repository=repository,
+    )
+    _persist_result(
+        repository,
+        AcRepository(repository.database),
+        result,
+        tmp_path / "parsed" / "trackside_update_results.sqlite",
+    )
+
+    snapshot = load_trackside_ap_business_snapshot(repository, "demo", generation=1)
+    row = snapshot.rows[0]
+    assert result.success is False
+    latest_fact = facts.get_device_fact(device_uuid)
+    assert latest_fact["collect_run_uuid"] == result.collect_run_uuid
+    assert latest_fact["raw_log_path"] == (
+        "files/rail_transit/trackside_ap/raw/old-run"
+    )
+    assert row["switch_interface_data_status"] == "stale"
+    assert row["link_status"] == "-"
+    assert row["protocol_status"] is None
+    assert row["switch_optical_data_status"] == "stale"
+    assert row["switch_rx_power"] is None
+    assert row["switch_tx_power"] is None
+    assert row["switch_optical_status"] == "not_collected"
+    assert row["switch_interface_updated_at"] == "2026-08-02T10:00:00+08:00"
+    assert row["switch_optical_updated_at"] == "2026-08-02T10:00:00+08:00"
+
+
+def test_zte_snapshot_rejects_count_regression_without_changing_h3c_behavior(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    station = DeviceGroupRepository(repository.database, "demo").create("车站")
+    _create_switch(
+        repository,
+        group_id=int(station.id or 0),
+        name="条数保护",
+        address="192.0.2.34",
+    )
+    target = build_station_switch_targets(repository, "demo")[0][0]
+    current_rows = [{"interface_name": "gei-0/3/0/1"}]
+    existing_rows = [
+        {"interface_name": "gei-0/3/0/1"},
+        {"interface_name": "gei-0/3/0/2"},
+    ]
+    zte_result = TracksideDeviceCollectionResult(
+        target=target,
+        success=True,
+        vendor="ZTE",
+        interface_snapshot_status="OK",
+    )
+    h3c_result = TracksideDeviceCollectionResult(
+        target=target,
+        success=True,
+        vendor="H3C",
+        interface_snapshot_status="OK",
+    )
+
+    assert _snapshot_can_replace(
+        zte_result,
+        "interface",
+        current_rows,
+        existing_rows,
+    ) is False
+    assert zte_result.interface_snapshot_status == "INCOMPLETE"
+    assert any("少于上一份 2 条" in warning for warning in zte_result.warnings)
+    assert _snapshot_can_replace(
+        h3c_result,
+        "interface",
+        current_rows,
+        existing_rows,
+    ) is True
+    assert h3c_result.interface_snapshot_status == "OK"
 
 
 def test_old_zte_database_rows_are_normalized_on_read(tmp_path: Path) -> None:

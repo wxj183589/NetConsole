@@ -117,6 +117,7 @@ class OpticalCommandAdapter:
         if normalized == "ZTE":
             return (
                 "show version",
+                "show interface brief",
                 "show opticalinfo brief",
             )
         raise UnsupportedVendor(UNSUPPORTED_VENDOR_REASON)
@@ -170,6 +171,9 @@ class TracksideDeviceCollectionResult:
     port_errors: list[TracksidePortError] = field(default_factory=list)
     lldp_status: str = ""
     skipped_reason: str = ""
+    collect_run_uuid: str = field(default_factory=lambda: uuid4().hex)
+    interface_snapshot_status: str = ""
+    optical_snapshot_status: str = ""
 
 
 @dataclass
@@ -212,6 +216,7 @@ class TracksideOpticalSessionResult:
     warning_count: int = 0
     warnings: list[str] = field(default_factory=list)
     port_errors: list[dict[str, str]] = field(default_factory=list)
+    warning_reason_counts: dict[str, int] = field(default_factory=dict)
 
 
 ProgressCallback = Callable[..., None]
@@ -784,6 +789,7 @@ def collect_trackside_optical(
         for item in result.port_errors
     ]
     warning_count = len(switch_warnings) + len(switch_port_errors)
+    warning_reason_counts = _snapshot_warning_reason_counts(results)
     actionable_skipped_count, ignored_skipped_count, skipped_reason_counts = classify_trackside_skipped(skipped)
     status = _trackside_update_status(
         success_count=success_count,
@@ -819,6 +825,7 @@ def collect_trackside_optical(
             "success_count": success_count,
             "failed_count": failed_count,
             "warning_count": warning_count,
+            "warning_reason_counts": warning_reason_counts,
             "warnings": switch_warnings,
             "port_errors": switch_port_errors,
             "skipped_count": len(skipped),
@@ -884,6 +891,7 @@ def collect_trackside_optical(
         warning_count=warning_count,
         warnings=switch_warnings,
         port_errors=switch_port_errors,
+        warning_reason_counts=warning_reason_counts,
     )
 
 
@@ -902,6 +910,11 @@ def _trackside_update_coverage(
     fit_ap_resource_rows = ac_repository.list_all_fit_ap_resources_with_metadata()
     active_plan = ac_repository.get_active_trackside_pvid_plan()
     historical_lldp_rows = ac_repository.list_latest_ap_lldp_histories()
+    latest_switch_collect_runs = {
+        str(row.get("device_uuid") or ""): str(row.get("collect_run_uuid") or "")
+        for row in fact_repository.list_device_facts()
+        if row.get("device_uuid") and row.get("collect_run_uuid")
+    }
     rows = build_trackside_ap_business_rows(
         devices,
         interfaces_by_device,
@@ -913,6 +926,7 @@ def _trackside_update_coverage(
         active_plan,
         [],
         historical_lldp_rows,
+        latest_switch_collect_runs=latest_switch_collect_runs,
     )
     candidate_ap_interface_count = sum(
         1
@@ -988,6 +1002,23 @@ def _trackside_update_status(
             return "PARTIAL_SUCCESS"
         return "SUCCESS"
     return "FAILED"
+
+
+def _snapshot_warning_reason_counts(
+    results: list[TracksideDeviceCollectionResult],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for result in results:
+        for status_field, reason in (
+            ("interface_snapshot_status", "switch_interface_snapshot_invalid"),
+            ("optical_snapshot_status", "switch_optical_snapshot_invalid"),
+        ):
+            status = str(
+                getattr(result, status_field, "") or ""
+            ).strip().upper()
+            if status and status != "OK":
+                counts[reason] = counts.get(reason, 0) + 1
+    return counts
 
 
 def classify_trackside_skipped(
@@ -1392,6 +1423,29 @@ def _collect_one_target(
             _result_row(target, row, raw_log_path=raw_log_path)
             for row in collected.optical_modules
         ]
+        interface_snapshot_status = (
+            collected.interface_snapshot_status
+            or ("OK" if collected.interfaces else "EMPTY")
+        )
+        optical_snapshot_status = (
+            collected.optical_snapshot_status
+            or ("OK" if rows else "EMPTY")
+        )
+        warnings = list(collected.warnings)
+        if interface_snapshot_status != "OK" and not any(
+            "接口摘要状态" in warning for warning in warnings
+        ):
+            warnings.append(
+                f"{collected.vendor or '交换机'} 接口摘要状态为 "
+                f"{interface_snapshot_status}，上一份接口状态快照已保留"
+            )
+        if optical_snapshot_status != "OK" and not any(
+            "光模块摘要状态" in warning for warning in warnings
+        ):
+            warnings.append(
+                f"{collected.vendor or '交换机'} 光模块摘要状态为 "
+                f"{optical_snapshot_status}，上一份光模块快照已保留"
+            )
         return TracksideDeviceCollectionResult(
             target=target,
             success=True,
@@ -1403,9 +1457,11 @@ def _collect_one_target(
             identity=collected.identity,
             vendor=collected.vendor,
             profile_id=collected.profile_id,
-            warnings=collected.warnings,
+            warnings=warnings,
             port_errors=collected.port_errors,
             lldp_status=collected.lldp_status,
+            interface_snapshot_status=interface_snapshot_status,
+            optical_snapshot_status=optical_snapshot_status,
         )
     except CommandCancelled:
         if cancel_event is not None:
@@ -1434,16 +1490,55 @@ def _collect_one_target(
                 pass
 
 
+def _snapshot_can_replace(
+    result: TracksideDeviceCollectionResult,
+    snapshot_type: str,
+    current_rows: list[dict[str, object | None]],
+    existing_rows: list[dict[str, object | None]],
+) -> bool:
+    status_field = f"{snapshot_type}_snapshot_status"
+    status = str(getattr(result, status_field, "") or "").strip().upper()
+    if status != "OK" or not current_rows:
+        return False
+    if (
+        str(result.vendor or "").strip().casefold() == "zte"
+        and existing_rows
+        and len(current_rows) < len(existing_rows)
+    ):
+        setattr(result, status_field, "INCOMPLETE")
+        label = "接口" if snapshot_type == "interface" else "光模块"
+        warning = (
+            f"{result.target.name}：本轮{label}摘要仅解析 {len(current_rows)} 条，"
+            f"少于上一份 {len(existing_rows)} 条，已拒绝覆盖当前快照"
+        )
+        if warning not in result.warnings:
+            result.warnings.append(warning)
+        return False
+    return True
+
+
 def _persist_result(repository: DeviceRepository, ac_repository: AcRepository, result: TracksideDeviceCollectionResult, db_path: Path) -> None:
     _write_sqlite_rows(db_path, result)
+    if result.target.target_type == "SWITCH":
+        fact_repository = DeviceFactRepository(repository.database)
+        device_uuid = str(result.target.device_uuid or "")
+        fact_repository.mark_device_collection_attempt(
+            device_uuid,
+            result.collect_run_uuid,
+            (
+                result.raw_log_path
+                if result.raw_log_path and Path(result.raw_log_path).exists()
+                else ""
+            ),
+        )
     if not result.success:
         return
     if result.target.target_type == "SWITCH":
-        fact_repository = DeviceFactRepository(repository.database)
+        collected_at = _now()
         metadata = {
-            "collected_at": _now(),
-            "updated_at": _now(),
-            "collect_run_uuid": "",
+            "collected_at": collected_at,
+            "updated_at": collected_at,
+            "collect_run_uuid": result.collect_run_uuid,
             "raw_log_path": result.raw_log_path,
         }
         if result.identity:
@@ -1457,44 +1552,55 @@ def _persist_result(repository: DeviceRepository, ac_repository: AcRepository, r
                     **metadata,
                 }
             )
-        if result.interfaces:
-            device_uuid = str(result.target.device_uuid or "")
+        existing_interfaces = fact_repository.list_device_interfaces(device_uuid)
+        if _snapshot_can_replace(
+            result,
+            "interface",
+            result.interfaces,
+            existing_interfaces,
+        ):
             interfaces = [{**row, **metadata} for row in result.interfaces]
             if result.vendor == "ZTE":
                 interfaces = merge_interface_vlan_facts(
                     interfaces,
                     None,
                     None,
-                    fact_repository.list_device_interfaces(device_uuid),
+                    existing_interfaces,
                 ).interfaces
             fact_repository.replace_device_interfaces(device_uuid, interfaces)
-        existing = fact_repository.list_optical_modules(str(result.target.device_uuid or ""))
+        existing = fact_repository.list_optical_modules(device_uuid)
         diagnostics = result.rows
-        if result.vendor == "ZTE":
-            diagnostics = merge_zte_optical_snapshot(
-                existing,
-                [
-                {
-                    **row,
-                    "device_vendor": "ZTE",
-                    "status": row.get("module_status")
-                    or row.get("optical_alarm_status")
-                    or row.get("status"),
-                }
-                for row in result.rows
-                ],
-            )
-            modules = [{**row, **metadata} for row in diagnostics]
-        else:
-            modules = merge_existing_optical_modules(
-                existing,
-                diagnostics,
-                [],
-                metadata,
-            )
-        fact_repository.replace_optical_modules(str(result.target.device_uuid or ""), modules)
+        if _snapshot_can_replace(
+            result,
+            "optical",
+            diagnostics,
+            existing,
+        ):
+            if result.vendor == "ZTE":
+                diagnostics = merge_zte_optical_snapshot(
+                    existing,
+                    [
+                    {
+                        **row,
+                        "device_vendor": "ZTE",
+                        "status": row.get("module_status")
+                        or row.get("optical_alarm_status")
+                        or row.get("status"),
+                    }
+                    for row in result.rows
+                    ],
+                )
+                modules = [{**row, **metadata} for row in diagnostics]
+            else:
+                modules = merge_existing_optical_modules(
+                    existing,
+                    diagnostics,
+                    [],
+                    metadata,
+                )
+            fact_repository.replace_optical_modules(device_uuid, modules)
         if result.lldp_rows:
-            fact_repository.replace_lldp_neighbors(str(result.target.device_uuid or ""), [{**row, **metadata} for row in result.lldp_rows])
+            fact_repository.replace_lldp_neighbors(device_uuid, [{**row, **metadata} for row in result.lldp_rows])
         return
     if result.target.ac_device_uuid:
         existing = ac_repository.list_fit_ap_optical(result.target.ac_device_uuid)

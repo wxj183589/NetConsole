@@ -256,6 +256,31 @@ class DeviceFactRepository:
             )
             conn.commit()
 
+    def mark_device_collection_attempt(
+        self,
+        device_uuid: str,
+        collect_run_uuid: str,
+        raw_log_path: str = "",
+    ) -> None:
+        now = self._now()
+        with self.database.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO device_facts (
+                    device_uuid, collect_run_uuid, raw_log_path, collected_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(device_uuid) DO UPDATE SET
+                    collect_run_uuid = excluded.collect_run_uuid,
+                    raw_log_path = CASE
+                        WHEN excluded.raw_log_path = '' THEN device_facts.raw_log_path
+                        ELSE excluded.raw_log_path
+                    END,
+                    updated_at = excluded.updated_at
+                """,
+                (device_uuid, collect_run_uuid, raw_log_path, now, now),
+            )
+            conn.commit()
+
     def list_device_facts(self) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
             rows = conn.execute("SELECT * FROM device_facts ORDER BY sysname, device_uuid").fetchall()

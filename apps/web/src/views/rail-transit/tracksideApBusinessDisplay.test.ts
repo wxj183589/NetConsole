@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   displayLldpStatus,
   displaySwitchVendor,
+  displayTracksideSnapshotTime,
   displayTracksideValue,
   tracksideOpticalPresentation,
 } from './tracksideApBusinessDisplay'
@@ -38,5 +39,14 @@ describe('trackside AP business display', () => {
   it('formats ZTE vendor and LLDP verification semantics', () => {
     expect(displaySwitchVendor('ZTE')).toBe('中兴 ZTE')
     expect(displayLldpStatus('SAMPLE_REQUIRED')).toBe('待真实样本验证')
+  })
+
+  it('marks stale switch snapshots without presenting them as current', () => {
+    expect(displayTracksideSnapshotTime('2026-08-03T10:00:00+08:00', 'stale')).toBe(
+      '历史数据 · 2026-08-03T10:00:00+08:00',
+    )
+    expect(displayTracksideSnapshotTime('2026-08-03T10:00:00+08:00', 'current')).toBe(
+      '2026-08-03T10:00:00+08:00',
+    )
   })
 })

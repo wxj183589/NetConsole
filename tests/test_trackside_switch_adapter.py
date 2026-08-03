@@ -215,6 +215,8 @@ def test_zte_optical_fast_path_uses_one_brief_for_many_modules(
     assert len(result.optical_modules) == 30
     assert len(result.interfaces) == 30
     assert result.interfaces[0]["link_status"] == "UP"
+    assert result.interface_snapshot_status == "OK"
+    assert result.optical_snapshot_status == "OK"
     assert result.lldp_neighbors == []
 
 

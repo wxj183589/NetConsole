@@ -707,7 +707,7 @@ def test_trackside_update_job_calls_existing_collection_service(monkeypatch, tmp
 
     class Result:
         session_id = "session-1"
-        status = "SUCCESS"
+        status = "PARTIAL_SUCCESS"
         scope = "station"
         target_label = "站点A"
         success_count = 746
@@ -730,6 +730,10 @@ def test_trackside_update_job_calls_existing_collection_service(monkeypatch, tmp
         candidate_ap_interface_count = 2
         current_lldp_port_count = 2
         preserved_lldp_port_count = 0
+        warning_count = 1
+        warning_reason_counts = {"switch_interface_snapshot_invalid": 1}
+        warnings = ["接口摘要无效"]
+        port_errors = []
 
     def collect(repository, site_id, paths, rows, **kwargs):
         captured.update(repository=repository, site_id=site_id, paths=paths, rows=rows, **kwargs)
@@ -752,7 +756,7 @@ def test_trackside_update_job_calls_existing_collection_service(monkeypatch, tmp
     assert captured["target_station"] == "站点A"
     assert captured["rows"] == _snapshot().rows
     assert result["session_id"] == "session-1"
-    assert result["status"] == "SUCCESS"
+    assert result["status"] == "PARTIAL_SUCCESS"
     assert result["terminal_state"] == "COMPLETED"
     assert result["success_count"] == 746
     assert result["failed_count"] == 0
@@ -763,6 +767,11 @@ def test_trackside_update_job_calls_existing_collection_service(monkeypatch, tmp
     assert result["skipped"][0]["reason"] == "no_station_switches"
     assert result["requested_concurrency"] == 1000
     assert result["effective_concurrency"] == 2
+    assert result["warning_count"] == 1
+    assert result["warning_reason_counts"] == {
+        "switch_interface_snapshot_invalid": 1
+    }
+    assert result["has_warning"] is True
     assert progress[-1] == ("trackside_ap_optical_update", 1, 2, "正在更新轨旁 AP 光衰")
     assert identity_rebuilds == ["trackside_ap_optical_refresh_succeeded"]
 
