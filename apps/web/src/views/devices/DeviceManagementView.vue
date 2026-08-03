@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { ElButton, ElMessage, ElNotification } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { Connection, CopyDocument, Delete, Download, Edit, FolderOpened, Hide, Plus, Refresh, Upload, View } from '@element-plus/icons-vue'
 
@@ -158,6 +158,10 @@ const secureCrtTemplateFile = ref<File | null>(null)
 const secureCrtTemplateInput = ref<HTMLInputElement | null>(null)
 const lastSubmittedTask = ref<DeviceTaskReference | null>(null)
 const savedArtifactCapability = ref('')
+let artifactNotificationKey = ''
+let artifactNotificationHandle: { close: () => void } | null = null
+let batchRefreshNotificationKey = ''
+let batchRefreshNotificationHandle: { close: () => void } | null = null
 const connectionTestRefreshTaskIds = ref<string[]>([])
 let connectionTestRefreshRunning = false
 let connectionTestRefreshQueued = false
@@ -298,16 +302,13 @@ const latestDeviceTask = computed(() => {
     || publicDeviceTasks.value[0]
     || null
 })
-const latestPendingExport = computed(() => {
-  const taskId = latestDeviceTask.value?.id
-  return taskId ? userSelectedExport.bindingForTask(taskId) : null
-})
-const latestArtifactSaveStatus = computed<UserSelectedExportState | 'manual_ready' | ''>(() => {
+const latestDeviceArtifactKey = computed(() => {
   const task = latestDeviceTask.value
-  if (!task?.artifact_download) return ''
-  return userSelectedExport.bindingForTask(task.id)?.state || 'manual_ready'
+  const artifact = task?.artifact_download
+  const saveState = task ? userSelectedExport.bindingForTask(task.id)?.state : ''
+  const notificationState = saveState === 'save_failed' ? saveState : ''
+  return task && artifact ? `${task.id}:${artifact.artifact_id}:${notificationState}` : ''
 })
-const latestSavedArtifactCapability = computed(() => latestPendingExport.value?.capabilityId || savedArtifactCapability.value)
 const testActive = computed(() => {
   const taskId = connectionTest.value?.task_id
   const task = taskId ? publicDeviceTasks.value.find((item) => item.id === taskId) : null
@@ -406,6 +407,43 @@ watch(
   },
 )
 const desktopHost = computed(() => getRuntimeConfig().hostType === 'electron')
+
+watch(
+  latestDeviceArtifactKey,
+  (key) => {
+    if (!key) {
+      artifactNotificationKey = ''
+      artifactNotificationHandle?.close()
+      artifactNotificationHandle = null
+      return
+    }
+    if (key === artifactNotificationKey) return
+    artifactNotificationKey = key
+    const task = latestDeviceTask.value
+    if (task?.artifact_download) showDeviceArtifactNotification(task)
+  },
+  { immediate: true },
+)
+
+watch(
+  () => {
+    const current = batchRefresh.value
+    return current ? `${current.batch_id}:${current.terminal ? 'terminal' : 'running'}` : ''
+  },
+  (key) => {
+    if (!key) {
+      batchRefreshNotificationKey = ''
+      batchRefreshNotificationHandle?.close()
+      batchRefreshNotificationHandle = null
+      return
+    }
+    if (key === batchRefreshNotificationKey) return
+    batchRefreshNotificationKey = key
+    if (batchRefresh.value) showBatchRefreshNotification(batchRefresh.value)
+  },
+  { immediate: true },
+)
+
 const batchRefreshProgressText = computed(() => {
   const current = batchRefresh.value
   if (!current) return ''
@@ -424,6 +462,10 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   componentActive = false
+  artifactNotificationHandle?.close()
+  artifactNotificationHandle = null
+  batchRefreshNotificationHandle?.close()
+  batchRefreshNotificationHandle = null
   connectionTestRefreshTaskIds.value = []
   connectionTestRefreshQueued = false
   stopBatchRefreshPolling(true)
@@ -639,8 +681,108 @@ async function presentTasks(
   ElMessage.warning(`任务已提交，但${failedSteps}`)
 }
 
-async function downloadLatestArtifact(): Promise<void> {
-  const latestTask = latestDeviceTask.value
+function deviceTaskById(taskId = ''): DevicePublicTask | null {
+  if (!taskId) return latestDeviceTask.value
+  return publicDeviceTasks.value.find((task) => task.id === taskId)
+    || (latestDeviceTask.value?.id === taskId ? latestDeviceTask.value : null)
+}
+
+function deviceArtifactNotificationDescription(task: DevicePublicTask): string {
+  const pending = userSelectedExport.bindingForTask(task.id)
+  if (pending) {
+    return `${deviceExportScopeLabel(pending)} · 目标：${pending.fileName} · ${localSaveStatusLabel(pending.state)}`
+  }
+  return `${task.name || task.type} · ${task.message || task.id}`
+}
+
+function deviceArtifactActionLabel(taskId: string): string {
+  const state = userSelectedExport.bindingForTask(taskId)?.state
+  if (state === 'save_failed') return '重新保存'
+  if (state === 'saved') return '再次另存为'
+  return '另存 Artifact'
+}
+
+function showDeviceArtifactNotification(task: DevicePublicTask): void {
+  const artifact = task.artifact_download
+  if (!artifact) return
+  const description = deviceArtifactNotificationDescription(task)
+  artifactNotificationHandle?.close()
+  artifactNotificationHandle = ElNotification({
+    title: '设备任务文件已生成',
+    type: userSelectedExport.bindingForTask(task.id)?.state === 'save_failed' ? 'warning' : 'success',
+    duration: 0,
+    showClose: true,
+    message: h('div', {
+      class: 'device-task-notification',
+      'data-testid': `device-task-notification-${task.id}`,
+      'data-description': description,
+      style: { display: 'grid', gap: '8px', minWidth: '240px' },
+    }, [
+      h('div', description),
+      h('div', {
+        class: 'device-task-notification-actions',
+        style: { display: 'flex', flexWrap: 'wrap', gap: '4px' },
+      }, [
+        h(ElButton, {
+          link: true,
+          type: 'primary',
+          'data-testid': `device-task-save-${task.id}`,
+          onClick: () => {
+            artifactNotificationHandle?.close()
+            void downloadLatestArtifact(task.id)
+          },
+        }, { default: () => deviceArtifactActionLabel(task.id) }),
+        ...(desktopHost.value
+          ? [
+              h(ElButton, {
+                link: true,
+                type: 'primary',
+                'data-testid': `device-task-open-${task.id}`,
+                onClick: () => void useSavedArtifact(false, task.id),
+              }, { default: () => '打开文件' }),
+              h(ElButton, {
+                link: true,
+                type: 'primary',
+                'data-testid': `device-task-reveal-${task.id}`,
+                onClick: () => void useSavedArtifact(true, task.id),
+              }, { default: () => '所在目录' }),
+            ]
+          : []),
+      ]),
+    ]),
+  })
+}
+
+function showBatchRefreshNotification(current: DeviceTaskBatch): void {
+  const hasProblems = Boolean(current.summary.failed || current.summary.rejected)
+  batchRefreshNotificationHandle?.close()
+  batchRefreshNotificationHandle = ElNotification({
+    title: current.terminal ? '批量更新详情已结束' : '批量更新详情运行中',
+    type: current.terminal ? (hasProblems ? 'warning' : 'success') : 'info',
+    duration: 0,
+    showClose: true,
+    message: h('div', {
+      class: 'device-task-notification',
+      'data-testid': 'batch-refresh-notification',
+      'data-description': batchRefreshProgressText.value,
+      style: { display: 'grid', gap: '8px', minWidth: '240px' },
+    }, [
+      h('div', batchRefreshProgressText.value),
+      h(ElButton, {
+        link: true,
+        type: 'primary',
+        'data-testid': 'batch-refresh-details-notification',
+        onClick: () => {
+          batchRefreshNotificationHandle?.close()
+          batchRefreshDetailsVisible.value = true
+        },
+      }, { default: () => '查看结果明细' }),
+    ]),
+  })
+}
+
+async function downloadLatestArtifact(taskId = ''): Promise<void> {
+  const latestTask = deviceTaskById(taskId)
   const artifact = latestTask?.artifact_download
   if (!artifact) return
   const pending = userSelectedExport.bindingForTask(latestTask.id)
@@ -704,11 +846,20 @@ function deviceExportScopeLabel(pending: PendingUserSelectedExport): string {
   return '设备导入模板'
 }
 
-async function useSavedArtifact(reveal: boolean): Promise<void> {
-  if (!desktopHost.value || !latestSavedArtifactCapability.value) return
+async function useSavedArtifact(reveal: boolean, taskId = ''): Promise<void> {
+  if (!desktopHost.value) return
+  const targetTask = deviceTaskById(taskId)
+  const capabilityId = targetTask
+    ? userSelectedExport.bindingForTask(targetTask.id)?.capabilityId
+      || (targetTask.id === latestDeviceTask.value?.id ? savedArtifactCapability.value : '')
+    : ''
+  if (!capabilityId) {
+    ElMessage.info('文件尚未保存到本地')
+    return
+  }
   const result = reveal
-    ? await getPlatformAdapter().showItemInFolder(latestSavedArtifactCapability.value)
-    : await getPlatformAdapter().openPath(latestSavedArtifactCapability.value)
+    ? await getPlatformAdapter().showItemInFolder(capabilityId)
+    : await getPlatformAdapter().openPath(capabilityId)
   if (!result.success) {
     ElMessage.error(result.error || (reveal ? '定位文件失败' : '打开文件失败'))
   }
@@ -1828,37 +1979,6 @@ function errorMessage(cause: unknown, fallback: string): string {
       class="task-summary"
     />
 
-    <el-alert
-      v-if="latestDeviceTask?.artifact_download"
-      title="设备任务文件已生成"
-      :description="latestPendingExport
-        ? `${deviceExportScopeLabel(latestPendingExport)} · 目标：${latestPendingExport.fileName} · ${localSaveStatusLabel(latestPendingExport.state)}`
-        : `${latestDeviceTask.name || latestDeviceTask.type} · ${latestDeviceTask.message || latestDeviceTask.id}`"
-      :type="latestPendingExport?.state === 'save_failed' ? 'warning' : 'success'"
-      :closable="false"
-      show-icon
-      class="task-summary"
-    >
-      <el-button
-        link
-        type="primary"
-        :disabled="latestArtifactSaveStatus === 'saving'"
-        @click="downloadLatestArtifact"
-      >{{ latestPendingExport?.state === 'save_failed' ? '重新保存' : latestPendingExport?.state === 'saved' ? '再次另存为' : '另存 Artifact' }}</el-button>
-      <el-button v-if="desktopHost && latestSavedArtifactCapability" link type="primary" @click="useSavedArtifact(false)">打开文件</el-button>
-      <el-button v-if="desktopHost && latestSavedArtifactCapability" link type="primary" @click="useSavedArtifact(true)">所在目录</el-button>
-    </el-alert>
-    <el-alert
-      v-if="batchRefresh"
-      :title="batchRefresh.terminal ? '批量更新详情已结束' : '批量更新详情运行中'"
-      :description="batchRefreshProgressText"
-      :type="batchRefresh.terminal && (batchRefresh.summary.failed || batchRefresh.summary.rejected) ? 'warning' : batchRefresh.terminal ? 'success' : 'info'"
-      :closable="false"
-      show-icon
-      class="task-summary"
-    >
-      <el-button link type="primary" @click="batchRefreshDetailsVisible = true">查看结果明细</el-button>
-    </el-alert>
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" class="state-alert" />
     <div v-loading="loading" class="content-card table-card" :data-state="isEmpty ? 'empty' : 'success'">
       <div class="device-table-host">

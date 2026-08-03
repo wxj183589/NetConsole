@@ -88,6 +88,8 @@ describe('Device Management Web view', () => {
     expect(source).toContain('startBatchRefreshDetails(targets)')
     expect(source).toContain('getBatchRefresh(batchId)')
     expect(source).toContain('await loadDevices(false, true)')
+    expect(source).toContain('showBatchRefreshNotification')
+    expect(source).toContain('batch-refresh-details-notification')
     expect(source).toContain('查看结果明细')
   })
 
@@ -202,10 +204,11 @@ describe('Device Management Web view', () => {
     expect(source).toContain('taskStore.releasePolling(pollingConsumer)')
     expect(source).toContain('openTaskWindow')
     expect(source).toContain('downloadBackendResource')
-    expect(source).toContain('latestPendingExport.value?.capabilityId')
+    expect(source).toContain('showDeviceArtifactNotification')
+    expect(source).toContain('device-task-notification')
     expect(source).not.toContain('savedPath')
-    expect(source).toContain('getPlatformAdapter().openPath(latestSavedArtifactCapability.value)')
-    expect(source).toContain('getPlatformAdapter().showItemInFolder(latestSavedArtifactCapability.value)')
+    expect(source).toContain('getPlatformAdapter().openPath(capabilityId)')
+    expect(source).toContain('getPlatformAdapter().showItemInFolder(capabilityId)')
     expect(source).not.toContain('window.location.assign')
   })
 

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { defineComponent, h, reactive, useAttrs, type Component } from 'vue'
+import { defineComponent, h, reactive, useAttrs, type Component, type VNode } from 'vue'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   clipboardWrite: vi.fn(),
   featureEnabled: vi.fn(() => true),
   messages: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },
+  notifications: vi.fn((_options: Record<string, unknown>) => ({ close: vi.fn() })),
   taskStore: null as null | {
     tasks: Array<Record<string, unknown>>
     refresh: ReturnType<typeof vi.fn>
@@ -68,6 +69,7 @@ vi.mock('../../platform/runtime', () => ({
 vi.mock('element-plus', async (importOriginal) => ({
   ...await importOriginal<typeof import('element-plus')>(),
   ElMessage: mocks.messages,
+  ElNotification: mocks.notifications,
   ElMessageBox: { confirm: vi.fn(async () => undefined) },
 }))
 
@@ -329,6 +331,19 @@ const elementStubs: Record<string, Component | boolean> = {
   ElTableColumn: true,
   ElTag: passthrough,
   ElTooltip: passthrough,
+}
+
+function notificationOptions(title: string): { message: VNode; [key: string]: unknown } {
+  const call = [...mocks.notifications.mock.calls].reverse().find(([options]) => options?.title === title)
+  expect(call).toBeTruthy()
+  return call![0] as { message: VNode; [key: string]: unknown }
+}
+
+function notificationButtons(title: string): VNode[] {
+  const message = notificationOptions(title).message
+  const children = Array.isArray(message.children) ? message.children as VNode[] : []
+  const actions = children.find((child) => child.props?.class === 'device-task-notification-actions')
+  return actions && Array.isArray(actions.children) ? actions.children as VNode[] : []
 }
 
 beforeEach(() => {
@@ -803,6 +818,8 @@ describe('DeviceManagementView mounted interactions', () => {
     expect(mocks.getBatchRefresh).toHaveBeenCalledWith('batch-1')
     expect(mocks.messages.success).toHaveBeenCalledWith('批量更新完成：成功 1，部分成功 0，失败 0，取消 0，拒绝 0')
     expect(mocks.messages.success).toHaveBeenCalledTimes(1)
+    const batchNotification = notificationOptions('批量更新详情已结束')
+    expect(batchNotification.message.props?.['data-description']).toContain('批量更新完成')
     expect(mocks.listDevices).toHaveBeenCalledTimes(2)
     await vi.advanceTimersByTimeAsync(2000)
     await flushPromises()
@@ -853,9 +870,11 @@ describe('DeviceManagementView mounted interactions', () => {
       },
     })]
     const wrapper = await renderView()
-    const save = wrapper.findAll('button').find((button) => button.text() === '另存 Artifact')
-    expect(save).toBeTruthy()
-    await save!.trigger('click')
+    const notification = notificationOptions('设备任务文件已生成')
+    expect(notification.message.props?.['data-description']).toContain('设备诊断')
+    const buttons = notificationButtons('设备任务文件已生成')
+    expect(buttons).toHaveLength(3)
+    await buttons[0].props?.onClick?.()
     await flushPromises()
 
     expect(mocks.downloadBackendResource).toHaveBeenCalledWith({
@@ -863,10 +882,11 @@ describe('DeviceManagementView mounted interactions', () => {
       query: { artifact_id: 'artifact-1' },
       suggestedName: '设备诊断信息.zip',
     })
-    await wrapper.findAll('button').find((button) => button.text() === '打开文件')!.trigger('click')
-    await wrapper.findAll('button').find((button) => button.text() === '所在目录')!.trigger('click')
+    await buttons[1].props?.onClick?.()
+    await buttons[2].props?.onClick?.()
     expect(mocks.openPath).toHaveBeenCalledWith('8a02d34f-ec8f-4c17-9a8a-b266bdf9e137')
     expect(mocks.showItemInFolder).toHaveBeenCalledWith('8a02d34f-ec8f-4c17-9a8a-b266bdf9e137')
+    expect(wrapper.find('[title="设备任务文件已生成"]').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -926,7 +946,8 @@ describe('DeviceManagementView mounted interactions', () => {
       expectedSizeBytes: 128,
       expectedSha256: 'a'.repeat(64),
     })
-    expect(wrapper.get('[title="设备任务文件已生成"]').attributes('description')).toContain('目标：全部设备.csv')
+    const notification = notificationOptions('设备任务文件已生成')
+    expect(notification.message.props?.['data-description']).toContain('目标：全部设备.csv')
     wrapper.unmount()
   })
 
@@ -1075,9 +1096,9 @@ describe('DeviceManagementView mounted interactions', () => {
     )
     await flushPromises()
     expect(mocks.messages.error).toHaveBeenCalledWith(expect.stringContaining('无法写入所选目录。'))
-    expect(wrapper.findAll('button').some((button) => button.text() === '重新保存')).toBe(true)
-
-    await wrapper.findAll('button').find((button) => button.text() === '重新保存')!.trigger('click')
+    const retryButtons = notificationButtons('设备任务文件已生成')
+    expect(retryButtons[0].props?.['data-testid']).toBe('device-task-save-device-csv-export-1')
+    await retryButtons[0].props?.onClick?.()
     await flushPromises()
     expect(mocks.startDeviceCsvExport).toHaveBeenCalledOnce()
     expect(mocks.downloadBackendResource).toHaveBeenCalledTimes(2)
