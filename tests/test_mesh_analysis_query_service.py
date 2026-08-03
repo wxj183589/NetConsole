@@ -279,14 +279,9 @@ def test_active_chart_keeps_representative_points_when_key_points_fill_budget(
         time_to="",
     )
 
-    stable_points = [
-        point
-        for point in chart.points
-        if point.timestamp >= "2026-07-24 20:02:40.000"
-    ]
-    assert len(stable_points) > 2
-    assert chart.effective_max_points > 160
-    assert "丢失连续趋势" in str(chart.downsample_warning)
+    assert chart.total_points == 240
+    assert chart.returned_points == 240
+    assert chart.downsampled is False
 
 
 def test_real_peer_observation_stays_unresolved_across_mesh_dtos(tmp_path: Path) -> None:
@@ -1467,11 +1462,12 @@ def test_trackside_signal_chart_preserves_short_zero_recovery_and_trend_samples(
         if point.timestamp >= "2026-07-15 11:00:40.000"
     ]
     assert recovery_time in returned_times
-    assert len(later_trend_points) > 4
+    assert len(later_trend_points) == 40
     assert chart.suppressed_zero_sample_count == 1
     assert chart.suppressed_zero_run_count == 1
-    assert chart.effective_max_frames > 20
-    assert any("丢失连续趋势" in warning for warning in chart.warnings)
+    assert chart.total_frames == 80
+    assert chart.returned_frames == 80
+    assert chart.downsampled is False
 
 
 def test_trackside_signal_chart_breaks_when_link_disappears_from_radio_frames(tmp_path: Path) -> None:
@@ -1592,7 +1588,9 @@ def test_trackside_signal_chart_run_sampling_is_not_capped_at_legacy_2000(tmp_pa
     assert chart.effective_max_points >= minimum_required_points
     assert chart.returned_points >= minimum_required_points
     assert chart.returned_points > 2_000
-    assert all("安全渲染上限" not in warning for warning in chart.warnings)
+    assert chart.effective_max_points == 20_000
+    assert chart.returned_frames <= 20_000
+    assert any("安全渲染上限" in warning for warning in chart.warnings)
 
 
 def test_chart_budget_preserves_switch_points_and_expands_requested_limit() -> None:
@@ -1622,19 +1620,33 @@ def test_chart_budget_preserves_switch_points_and_expands_requested_limit() -> N
     assert warning == "为保留全部 708 个有效切换节点，图表目标点数已从 600 提升到 710。"
 
 
+def test_natural_second_sampling_prefers_a_real_nonzero_rssi_point() -> None:
+    points = [
+        {"timestamp": "2026-07-24 20:00:00.100", "local_rssi": 0},
+        {"timestamp": "2026-07-24 20:00:00.900", "local_rssi": 38},
+        {"timestamp": "2026-07-24 20:00:01.100", "local_rssi": None},
+        {"timestamp": "2026-07-24 20:00:02.100", "local_rssi": 42},
+    ]
+
+    assert MeshAnalysisQueryService._natural_second_indices(
+        points,
+        value_key="local_rssi",
+    ) == {1, 2, 3}
+
+
 def test_chart_budget_reports_uniform_sampling_when_valid_switches_exceed_safe_cap() -> None:
-    switch_indices = set(range(1, 2_501))
+    switch_indices = set(range(1, 25_001))
     requested, effective, rendered_switches, warning = MeshAnalysisQueryService._chart_render_budget(
-        10_000,
+        30_000,
         600,
         switch_indices,
     )
 
     assert requested == 600
-    assert effective == 2_000
-    assert len(rendered_switches) == 1_998
+    assert effective == 20_000
+    assert len(rendered_switches) == 19_998
     assert rendered_switches <= switch_indices
-    assert warning == "切换事件过多，已按时间均匀抽样显示 1998/2500 个有效切换节点。"
+    assert warning == "切换事件过多，已按时间均匀抽样显示 19998/25000 个有效切换节点。"
 
 
 def test_chart_does_not_render_zero_rssi_switch_anchor(tmp_path: Path) -> None:
@@ -1677,6 +1689,35 @@ def test_peer_chart_can_return_all_visits_with_explicit_gaps(tmp_path: Path) -> 
     }
     assert matching_sequences <= {point.segment_sequence for point in chart.points}
     assert any(point.gap_before for point in chart.points[1:])
+
+
+def test_peer_chart_initial_window_supports_twenty_thousand_samples(tmp_path: Path) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    with sqlite3.connect(detail) as conn:
+        _clear_mesh_chart_rows(conn)
+        for row_id in range(1, 2_501):
+            minute, second = divmod(row_id - 1, 60)
+            _insert_active_mesh_link(
+                conn,
+                row_id=row_id,
+                sample_time=f"2026-07-15 11:{minute:02d}:{second:02d}.000",
+                radio=1,
+                peer_name="AP-A",
+                peer_mac="00000000000a",
+                peer_rssi=40 + row_id % 4,
+            )
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+
+    chart = service.get_peer_segment_chart(
+        "demo",
+        session_id,
+        anchor_link_id=1,
+        max_points=20_000,
+    )
+
+    assert chart.total_points == 2_500
+    assert chart.returned_points == 2_500
+    assert chart.downsampled is False
 
 
 def test_chart_segment_index_finds_the_latest_matching_visit(tmp_path: Path) -> None:

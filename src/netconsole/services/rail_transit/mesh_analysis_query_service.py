@@ -82,7 +82,7 @@ _SESSION_ID_RE = re.compile(r"^(?P<mr_id>[0-9a-fA-F-]{8,64}):(?P<source_id>[1-9]
 _MR_IDENTITY_RE = re.compile(r"^(?P<train>.+?)[-_ ]*MR[-_ ]*(?P<role>CT|TC|CW)$", re.IGNORECASE)
 _ALLOWED_OUTPUT_SUFFIXES = {".xlsx", ".zip", ".csv", ".json", ".md"}
 _MAX_PAGE_SIZE = 1_000
-_MAX_CHART_RENDER_POINTS = 2_000
+_MAX_CHART_RENDER_POINTS = 20_000
 LOGGER = logging.getLogger(__name__)
 _DETAIL_CAPABILITY_TABLES = {
     "links": frozenset({"mesh_links"}),
@@ -1363,7 +1363,7 @@ class MeshAnalysisQueryService:
         else:
             payload = repository.query_peer_chart_initial_segments(
                 anchor_link_id,
-                visible_samples=min(max(int(max_points), 10), 2_000),
+                visible_samples=min(max(int(max_points), 10), _MAX_CHART_RENDER_POINTS),
                 margin_samples=60,
                 source_file_id=context.detail_source_id,
             )
@@ -2426,6 +2426,11 @@ class MeshAnalysisQueryService:
         important_values = chart.get("important_indices")
         important = {int(value) for value in (important_values if important_values is not None else [])}
         important.update(self._important_chart_row_indices(point_rows))
+        natural_second_indices = self._natural_second_indices(
+            point_rows,
+            value_key="local_rssi",
+        )
+        important.update(natural_second_indices)
         important.update(sustained_zero_boundaries)
         important.update(suppressed_zero_recoveries)
         important.difference_update(ambiguous_active_bridge_indices)
@@ -2476,6 +2481,7 @@ class MeshAnalysisQueryService:
                 effective_max_points,
                 pinned_indices={
                     *rendered_switch_indices,
+                    *natural_second_indices,
                     *sustained_zero_boundaries,
                     *suppressed_zero_recoveries,
                 },
@@ -2979,7 +2985,7 @@ class MeshAnalysisQueryService:
 
         total_frames = len(ordered_frames)
         total_link_points = len(materialized)
-        requested_max_frames = max(int(max_points), 10)
+        requested_max_frames = min(max(int(max_points), 10), _MAX_CHART_RENDER_POINTS)
         effective_max_frames = requested_max_frames
         required_frames: set[int] = set(
             transition_frames
@@ -2987,6 +2993,9 @@ class MeshAnalysisQueryService:
             | anomaly_frames
             | sustained_zero_boundary_frames
             | suppressed_zero_recovery_frames
+        )
+        required_frames.update(
+            self._natural_second_indices(ordered_frames)
         )
         if total_frames:
             required_frames.update({0, total_frames - 1})
@@ -3017,14 +3026,22 @@ class MeshAnalysisQueryService:
                 )
 
         if len(required_frames) > effective_max_frames:
-            effective_max_frames = len(required_frames)
-            warnings.append(
-                "为保留链路出现、消失、角色切换、短时 0 恢复点和 RSSI 极值，"
-                f"轨旁图目标采样时刻已从 {requested_max_frames} 提升到 "
-                f"{effective_max_frames}。"
-            )
+            previous_effective = effective_max_frames
+            effective_max_frames = min(len(required_frames), _MAX_CHART_RENDER_POINTS)
+            if effective_max_frames > previous_effective:
+                warnings.append(
+                    "为保留链路出现、消失、角色切换、短时 0 恢复点和 RSSI 极值，"
+                    f"轨旁图目标采样时刻已从 {requested_max_frames} 提升到 "
+                    f"{effective_max_frames}。"
+                )
+            if len(required_frames) > _MAX_CHART_RENDER_POINTS:
+                warnings.append(
+                    f"自然秒和其他关键帧共 {len(required_frames)} 个，"
+                    f"超过安全渲染上限 {_MAX_CHART_RENDER_POINTS}，已按时间抽样。"
+                )
         representative_effective = min(
             total_frames,
+            _MAX_CHART_RENDER_POINTS,
             len(required_frames) + requested_max_frames,
         )
         if representative_effective > effective_max_frames:
@@ -3707,6 +3724,27 @@ class MeshAnalysisQueryService:
                 ordered,
             )
         return result
+
+    @staticmethod
+    def _natural_second_indices(
+        points: list[dict[str, Any]],
+        *,
+        value_key: str | None = None,
+    ) -> set[int]:
+        selected: dict[datetime, tuple[int, int]] = {}
+        for index, point in enumerate(points):
+            timestamp = MeshAnalysisQueryService._parse_time(point.get("timestamp"))
+            if timestamp is None:
+                continue
+            priority = 0
+            if value_key is not None:
+                value = MeshAnalysisQueryService._number(point.get(value_key))
+                priority = 1 if value is not None and value != 0 else 0
+            second = timestamp.replace(microsecond=0)
+            previous = selected.get(second)
+            if previous is None or (priority, index) >= previous:
+                selected[second] = (priority, index)
+        return {index for _priority, index in selected.values()}
 
     @staticmethod
     def _ambiguous_active_bridge_indices(

@@ -553,7 +553,7 @@ def active_path_chart(
     radio: int | None = Query(default=None, ge=1, le=64),
     time_from: str = Query(default="", max_length=40),
     time_to: str = Query(default="", max_length=40),
-    max_points: int = Query(default=1_000, ge=10, le=2_000),
+    max_points: int = Query(default=1_000, ge=10, le=20_000),
 ) -> MeshPathChartDTO:
     return _query(
         lambda: _service(request).get_active_path_chart(
@@ -580,7 +580,7 @@ def trackside_signal_chart(
     radio: int | None = Query(default=None, ge=1, le=64),
     time_from: str = Query(default="", max_length=40),
     time_to: str = Query(default="", max_length=40),
-    max_points: int = Query(default=1_000, ge=10, le=2_000),
+    max_points: int = Query(default=1_000, ge=10, le=20_000),
     include_standby: bool = Query(default=True),
     top_n: int = Query(default=0, ge=0, le=50),
 ) -> MeshTracksideSignalChartDTO:
@@ -611,7 +611,7 @@ def peer_segment_chart(
     site_id: str = Query(default="", max_length=100),
     time_from: str = Query(default="", max_length=40),
     time_to: str = Query(default="", max_length=40),
-    max_points: int = Query(default=1_000, ge=10, le=2_000),
+    max_points: int = Query(default=1_000, ge=10, le=20_000),
     all_visits: bool = Query(default=False),
 ) -> MeshPathChartDTO:
     return _query(
