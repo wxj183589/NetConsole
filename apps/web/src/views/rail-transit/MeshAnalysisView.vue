@@ -14,7 +14,7 @@ import {
 } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowDown, ArrowRight, Delete, Document, Download, FullScreen, Hide, Lock, Refresh, Unlock, View } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowRight, Delete, Document, Download, FullScreen, Hide, Lock, Refresh, Unlock, View, WarningFilled } from '@element-plus/icons-vue'
 import { t } from '../../i18n/runtime'
 
 import MeshChannelBusyChart from '../../components/mesh-analysis/MeshChannelBusyChart.vue'
@@ -235,7 +235,6 @@ const lockedAnalysisRange = ref<MeshLockedAnalysisRange | null>(null)
 const sessionExpandedKey = 'netconsole.mesh-analysis.session-expanded'
 const sessionExpanded = ref(true)
 const loadedTabs = reactive<Record<string, boolean>>({})
-const warningsExpanded = ref(false)
 const bundlePreview = ref<MeshBundlePreview | null>(null)
 const bundleMappings = reactive<Record<string, Omit<MeshBundleMapping, 'role'> & { role: '' | 'CT' | 'CW'; confirmed: boolean }>>({})
 const batchLinkedMrId = ref('')
@@ -243,6 +242,11 @@ const batchMappingConfirmed = ref(false)
 const bundlePreviewLoading = ref(false)
 const importPreviewStage = ref('')
 const filters = reactive({ query: '', mr_role: '', has_warning: '' as '' | 'true' | 'false', page: 1, page_size: 50 })
+const warningPopoverWidth = computed(() => (
+  typeof window === 'undefined'
+    ? 420
+    : Math.min(420, Math.max(240, window.innerWidth - 32))
+))
 const buildOrderFilters = reactive({ page: 1, page_size: 100, sort_order: 'desc', radio: '', peer: '', station: '', build_result: '', pingpong_only: false })
 const linkFilters = reactive({ query: '', link_role: '', page: 1, page_size: 100, sort_order: 'asc' })
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
@@ -3154,7 +3158,39 @@ function exportTimestamp(now = new Date()): string {
 
     <div v-if="selected" class="content-card detail-card" v-loading="detailLoading">
       <div class="detail-heading">
-        <div><h2>{{ selected.session.mr_name }}</h2><p>{{ selected.session.original_filename }} · {{ selected.session.first_sample_time }} — {{ selected.session.last_sample_time }}</p></div>
+        <div class="detail-heading__copy">
+          <div class="detail-title-line">
+            <h2>{{ selected.session.mr_name }}</h2>
+            <el-popover
+              v-if="selected.warnings.length"
+              placement="bottom-start"
+              :width="warningPopoverWidth"
+              trigger="click"
+            >
+              <template #reference>
+                <el-button
+                  class="warning-summary-trigger"
+                  link
+                  type="warning"
+                  :aria-label="`查看 ${selected.warnings.length} 条数据告警`"
+                >
+                  <el-icon aria-hidden="true"><WarningFilled /></el-icon>
+                  <span>数据告警 {{ selected.warnings.length }}</span>
+                </el-button>
+              </template>
+              <div class="warning-popover-content">
+                <div class="warning-popover-heading">
+                  <span>数据告警</span>
+                  <strong>{{ selected.warnings.length }} 条</strong>
+                </div>
+                <div class="warning-list">
+                  <el-alert v-for="warning in selected.warnings" :key="warning.code" :title="warning.message" :type="severityType(warning.severity)" :closable="false" show-icon />
+                </div>
+              </div>
+            </el-popover>
+          </div>
+          <p>{{ selected.session.original_filename }} · {{ selected.session.first_sample_time }} — {{ selected.session.last_sample_time }}</p>
+        </div>
         <div class="jump-actions">
           <el-button :loading="taskLoading" :disabled="!selectedSource || ['raw_missing','task_running','unsupported'].includes(selectedSource.rebuild_capability) || !isFeatureEnabled('web.mesh_analysis_import')" @click="rebuildSelected">{{ selectedSource?.rebuild_capability === 'recoverable_from_bundle' ? '恢复原始日志并重新解析' : selected.session.parsed_status === 'ready' ? '重新解析当前日志' : '升级解析结果' }}</el-button>
           <el-button type="danger" plain :icon="Delete" :loading="sourceDeleteSubmitting" @click="prepareSourceDelete([selected.session])">删除当前来源</el-button>
@@ -3163,12 +3199,6 @@ function exportTimestamp(now = new Date()): string {
           <el-button @click="router.push('/rail-transit/online-mr')">Online MR</el-button>
           <el-button @click="router.push('/rail-transit/train-online')">列车在线情况</el-button>
         </div>
-      </div>
-      <div v-if="selected.warnings.length" class="warning-summary">
-        <el-alert :title="`数据告警 ${selected.warnings.length} 条`" :type="severityType(selected.warnings[0]?.severity || 'warning')" :closable="false" show-icon>
-          <template #default><el-button link type="primary" @click="warningsExpanded = !warningsExpanded">{{ warningsExpanded ? '收起详情' : '查看全部' }}</el-button></template>
-        </el-alert>
-        <div v-if="warningsExpanded" class="warning-list"><el-alert v-for="warning in selected.warnings" :key="warning.code" :title="warning.message" :type="severityType(warning.severity)" :closable="false" show-icon /></div>
       </div>
       <el-alert v-if="selectedSource && !selectedSource.exists" :title="selectedSource.missing_reason" :type="selectedSource.recoverable ? 'warning' : 'error'" :closable="false" show-icon />
       <el-alert
@@ -3440,4 +3470,16 @@ function exportTimestamp(now = new Date()): string {
 .is-rssi-immersive .detail-tabs{display:none}
 .is-rssi-immersive .detail-card{padding:4px 8px;border-radius:0}
 .is-rssi-immersive .rssi-chart-toolbar{padding-top:0}
+.detail-heading__copy{display:flex;min-width:0;flex:1;flex-direction:column}
+.detail-title-line{display:flex;min-width:0;align-items:center;gap:10px}
+.detail-title-line h2{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.warning-summary-trigger{flex:none;margin-left:2px;padding:4px 8px!important}
+.warning-summary-trigger .el-icon{margin-right:4px}
+.warning-popover-content{display:flex;max-height:min(360px,calc(100vh - 180px));flex-direction:column;gap:10px;overflow:auto}
+.warning-popover-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--nc-text-primary);font-size:13px}
+.warning-popover-heading strong{color:var(--nc-warning);font-weight:600}
+.warning-popover-content .warning-list{gap:6px}
+.warning-popover-content .el-alert{margin:0}
+.is-rssi-workspace .detail-title-line{gap:8px}
+.is-rssi-workspace .warning-summary-trigger{padding:2px 6px!important;font-size:12px}
 </style>

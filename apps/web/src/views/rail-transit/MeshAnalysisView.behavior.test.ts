@@ -1361,6 +1361,8 @@ describe('Mesh analysis detail behavior', () => {
     await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
     await flushPromises()
 
+    expect(wrapper.find('.detail-heading .warning-summary-trigger').exists()).toBe(true)
+    expect(wrapper.find('.warning-summary').exists()).toBe(false)
     expect(mocks.rebuildAnalysis).toHaveBeenCalledOnce()
     expect(mocks.rebuildAnalysis).toHaveBeenCalledWith('session-identity-stale')
     expect(mocks.taskStoreRefresh).toHaveBeenCalled()
