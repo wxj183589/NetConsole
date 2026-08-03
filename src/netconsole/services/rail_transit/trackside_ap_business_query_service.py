@@ -238,6 +238,18 @@ class TracksideApBusinessQueryService:
             switch_tx_low_alarm=row.get("switch_tx_low_alarm"),
             switch_tx_high_alarm=row.get("switch_tx_high_alarm"),
             switch_optical_status=str(row.get("switch_optical_status") or ""),
+            switch_interface_updated_at=str(
+                row.get("switch_interface_updated_at") or ""
+            ),
+            switch_optical_updated_at=str(
+                row.get("switch_optical_updated_at") or ""
+            ),
+            switch_interface_data_status=str(
+                row.get("switch_interface_data_status") or "unknown"
+            ),
+            switch_optical_data_status=str(
+                row.get("switch_optical_data_status") or "unknown"
+            ),
             ap_uuid=str(row.get("ap_uuid") or ""),
             ap_mac=str(row.get("ap_mac") or ""),
             ap_name=str(row.get("ap_name") or ""),

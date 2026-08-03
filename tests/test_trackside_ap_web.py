@@ -353,6 +353,46 @@ def test_trackside_query_reuses_snapshot_filter_and_optical_status(monkeypatch, 
     assert page.identity_shadow == {"status": "matched"}
 
 
+def test_trackside_query_maps_switch_snapshot_times_and_statuses(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    snapshot = _snapshot()
+    snapshot.rows[0].update(
+        {
+            "switch_interface_updated_at": "2026-08-03T18:04:29",
+            "switch_optical_updated_at": "2026-08-03T18:04:30",
+            "switch_interface_data_status": "current",
+            "switch_optical_data_status": "stale",
+        }
+    )
+    monkeypatch.setattr(
+        trackside_ap_business_query_service,
+        "Database",
+        lambda _path: object(),
+    )
+    monkeypatch.setattr(
+        trackside_ap_business_query_service,
+        "DeviceRepository",
+        lambda _database: object(),
+    )
+    monkeypatch.setattr(
+        trackside_ap_business_query_service,
+        "load_trackside_ap_business_snapshot",
+        lambda *_args, **_kwargs: snapshot,
+    )
+
+    page = trackside_ap_business_query_service.TracksideApBusinessQueryService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path)
+    ).list_rows("demo", station="站点A")
+
+    assert page.total == 1
+    assert page.items[0].switch_interface_updated_at == "2026-08-03T18:04:29"
+    assert page.items[0].switch_optical_updated_at == "2026-08-03T18:04:30"
+    assert page.items[0].switch_interface_data_status == "current"
+    assert page.items[0].switch_optical_data_status == "stale"
+
+
 def _seed_trackside_switch(
     repository: DeviceRepository,
     *,
