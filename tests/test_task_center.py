@@ -374,6 +374,27 @@ def test_worker_error_preserves_structured_result_and_exit_code(tmp_path: Path) 
     assert detail.details["data_persisted"] is True
 
 
+def test_cancel_requested_nonzero_exit_is_reported_as_cancelled_without_warning(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    task_id = "cancel-nonzero-exit"
+    service.prepare(BackgroundJob(job_id=task_id, task_type="demo_task"))
+    service.mark_running(task_id)
+    service.request_cancel(task_id)
+
+    service.complete(task_id, 1)
+
+    snapshot = service.get_task(task_id)
+    assert snapshot is not None
+    assert snapshot.status is TaskState.CANCELLED
+    assert snapshot.error_message == "后台任务已取消"
+    assert snapshot.result["worker_exit_code"] == 1
+    detail = JobCenterQueryService(service.paths).get_task("demo", task_id)
+    assert detail is not None
+    assert detail.message == "后台任务已取消"
+    assert detail.error_summary == "后台任务已取消"
+    assert detail.has_warning is False
+
+
 def test_malformed_worker_keeps_backend_health_online(tmp_path: Path) -> None:
     service = _service(tmp_path)
     task_id = "worker-health-after-protocol-error"

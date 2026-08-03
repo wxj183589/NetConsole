@@ -183,7 +183,16 @@ class TaskRuntime:
                 payload = dict(event)
                 terminal_state = self._finished_terminal_state(event)
             else:
-                message = str(event.get("message") or event.get("error") or task.stderr_buffer.strip() or f"后台任务异常退出，退出码 {exit_code}")
+                message = (
+                    "后台任务已取消"
+                    if cancelled
+                    else str(
+                        event.get("message")
+                        or event.get("error")
+                        or task.stderr_buffer.strip()
+                        or f"后台任务异常退出，退出码 {exit_code}"
+                    )
+                )
                 payload = {
                     "type": "cancelled" if cancelled else "error",
                     "job_id": job_id,

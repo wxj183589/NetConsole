@@ -459,7 +459,7 @@ class JobCenterQueryService:
             error_code=redact_web_task_text(error_code),
             error_summary=error_summary,
             has_warning=bool(
-                (error_summary and status != "FAILED")
+                (error_summary and status not in {"FAILED", "CANCELLED"})
                 or business.business_status in {"PARTIAL_SUCCESS", "WARNING"}
                 or business_result_has_warning(business_result)
             ),

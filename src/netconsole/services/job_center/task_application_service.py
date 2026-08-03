@@ -673,11 +673,13 @@ class TaskApplicationService:
                 }
             )
         elif event_type == "cancelled":
+            result = payload.get("result")
             values.update(
                 {
                     "status": TaskState.CANCELLED,
                     "finished_time": event_time,
                     "error_message": str(payload.get("error") or payload.get("message") or "任务已取消"),
+                    **({"result": dict(result)} if isinstance(result, dict) else {}),
                 }
             )
         elif event_type == "artifact_finalized":
