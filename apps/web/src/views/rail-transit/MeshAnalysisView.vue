@@ -249,6 +249,8 @@ let refreshTimer: ReturnType<typeof setTimeout> | null = null
 let failureCount = 0
 let overviewGeneration = 0
 let overviewAbortController: AbortController | null = null
+let catalogRefreshTimer: ReturnType<typeof setTimeout> | null = null
+let catalogRefreshGeneration = 0
 let taskTimer: ReturnType<typeof setTimeout> | null = null
 let detailGeneration = 0
 let activeSessionOpenController: AbortController | null = null
@@ -292,6 +294,8 @@ const reportedWorkloadPhases = new Set<string>()
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const restorableTaskStates = new Set(['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'FAILED'])
 const taskStorageKey = 'netconsole.mesh-analysis.last-task'
+const meshCatalogRefreshIntervalMs = 500
+const meshCatalogRefreshTimeoutMs = 30_000
 const buildOrderPanel = useAvailablePanelHeight(buildOrderTableHost, { minHeight: 420, bottomGap: 72 })
 const linkPanel = useAvailablePanelHeight(linkTableHost, { minHeight: 420, bottomGap: 72 })
 const rssiPanel = useAvailablePanelHeight(rssiWorkspaceHost, { minHeight: 320, bottomGap: 16 })
@@ -998,6 +1002,44 @@ const tracksidePaneAlertSummary = computed(() => {
 function stopOverviewRefresh(): void {
   if (refreshTimer) clearTimeout(refreshTimer)
   refreshTimer = null
+  stopCatalogRefresh()
+}
+
+function stopCatalogRefresh(): void {
+  catalogRefreshGeneration += 1
+  if (catalogRefreshTimer) clearTimeout(catalogRefreshTimer)
+  catalogRefreshTimer = null
+}
+
+function catalogIndexNeedsRefresh(): boolean {
+  return ['pending', 'discovering', 'enriching'].includes(summary.value?.index_status || '')
+}
+
+function scheduleCatalogRefresh(): void {
+  stopCatalogRefresh()
+  if (!pageActive.value || !catalogIndexNeedsRefresh()) return
+  const generation = ++catalogRefreshGeneration
+  const deadline = Date.now() + meshCatalogRefreshTimeoutMs
+  const refresh = async (): Promise<void> => {
+    catalogRefreshTimer = null
+    if (generation !== catalogRefreshGeneration || !pageActive.value) return
+    await refreshOverview(true, true)
+    if (
+      generation !== catalogRefreshGeneration
+      || !pageActive.value
+      || !catalogIndexNeedsRefresh()
+      || Date.now() >= deadline
+    ) return
+    catalogRefreshTimer = setTimeout(() => { void refresh() }, meshCatalogRefreshIntervalMs)
+  }
+  catalogRefreshTimer = setTimeout(() => { void refresh() }, 0)
+}
+
+function scheduleCatalogRefreshIfIdle(): void {
+  if (
+    catalogIndexNeedsRefresh()
+    && (!task.value || terminalStates.has(task.value.status))
+  ) scheduleCatalogRefresh()
 }
 
 function cancelScrollRestore(): void {
@@ -1077,7 +1119,7 @@ async function resumeMeshAnalysisPage(): Promise<void> {
   restorePageScrollPosition()
   scheduleRefresh()
   if (task.value && !terminalStates.has(task.value.status)) pollTask()
-  void refreshOverview(true)
+  void refreshOverview(true, true).then(scheduleCatalogRefreshIfIdle)
 }
 
 function disposeMeshAnalysisPage(): void {
@@ -1128,7 +1170,10 @@ onMounted(async () => {
   if (requestedSessionId) await applyRequestedSession(requestedSessionId)
   if (!pageActive.value) return
   await restoreRendererRecoveryOnce()
-  if (pageActive.value) scheduleRefresh()
+  if (pageActive.value) {
+    scheduleRefresh()
+    scheduleCatalogRefreshIfIdle()
+  }
 })
 onActivated(() => {
   if (!pageActivatedOnce.value) {
@@ -2548,7 +2593,10 @@ async function afterTask(): Promise<void> {
   }
   const preserveCachedView = preserveCachedViewOnTaskCompletion
   preserveCachedViewOnTaskCompletion = false
-  await refreshOverview()
+  await refreshOverview(true, true)
+  if (['mesh_log_import', 'mesh_bundle_import', 'mesh_schema_rebuild', 'mesh_source_rebuild'].includes(task.value.action)) {
+    scheduleCatalogRefresh()
+  }
   const resultSummary = task.value.result_summary || {}
   if (task.value.action === 'mesh_analysis_source_delete') {
     const deletedSessionId = String(resultSummary.session_id || '')

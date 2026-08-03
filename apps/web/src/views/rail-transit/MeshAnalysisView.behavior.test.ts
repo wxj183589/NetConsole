@@ -1094,6 +1094,81 @@ describe('Mesh analysis detail behavior', () => {
     }
   })
 
+  it('refreshes imported sources after the catalog index catches up', async () => {
+    vi.useFakeTimers()
+    const session = {
+      session_id: 'profile-1:7',
+      mr_name: '列车34-MR-CT',
+      train_name: '列车34',
+      original_filename: '2026_07_28_1meshlog.log',
+      first_sample_time: '2026-07-28 10:00:00.000',
+      last_sample_time: '2026-07-28 10:00:01.000',
+      parsed_status: 'ready',
+      warning_count: 0,
+      report_count: 0,
+    }
+    const pendingOverview = {
+      summary: {
+        site_id: 'demo', index_status: 'pending', indexed_session_count: 0,
+        pending_session_count: 1, index_updated_at: null, session_count: 0,
+        train_count: 0, mr_count: 0, link_record_count: 0, active_link_count: 0,
+        standby_link_count: 0, switch_event_count: 0, short_link_count: 0,
+        pingpong_count: 0, rssi_anomaly_count: 0, channel_busy_anomaly_count: 0,
+        unmatched_ap_count: 0, warning_session_count: 0, latest_analysis_time: null,
+      },
+      sessions: { items: [], total: 0, page: 1, page_size: 50 },
+    }
+    const readyOverview = {
+      summary: {
+        ...pendingOverview.summary, index_status: 'ready', indexed_session_count: 1,
+        pending_session_count: 0, session_count: 1, train_count: 1, mr_count: 1,
+        link_record_count: 10, active_link_count: 8, standby_link_count: 2,
+      },
+      sessions: { items: [session], total: 1, page: 1, page_size: 50 },
+    }
+    mocks.getOverview
+      .mockResolvedValueOnce(pendingOverview)
+      .mockResolvedValueOnce(pendingOverview)
+      .mockResolvedValue(readyOverview)
+    const runningTask = {
+      task_id: 'mesh-bundle-refresh-1',
+      action: 'mesh_bundle_import',
+      status: 'RUNNING',
+      message: '',
+      error_message: '',
+      result_summary: {},
+    }
+    mocks.recoverTasks.mockResolvedValueOnce([runningTask])
+    mocks.getTask.mockResolvedValueOnce({
+      ...runningTask,
+      status: 'COMPLETED',
+      result_summary: { created_session_ids: [session.session_id] },
+    })
+    mocks.getSession.mockResolvedValue({
+      session,
+      analysis_params: {},
+      available_radios: [1],
+      warnings: [],
+      sources: [],
+    })
+
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    try {
+      await flushPromises()
+      await vi.advanceTimersByTimeAsync(1000)
+      await flushPromises()
+      await vi.advanceTimersByTimeAsync(500)
+      await flushPromises()
+
+      expect(mocks.getOverview.mock.calls.length).toBeGreaterThanOrEqual(3)
+      expect(wrapper.text()).toContain('分析会话 · 1 个来源 · 1 列车 / 1 MR')
+      expect(wrapper.text()).toContain('列车34-MR-CT')
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps the large trackside payload outside Vue deep reactivity', () => {
     expect(meshAnalysisViewSource).toContain('const tracksideSignal = shallowRef<MeshTracksideSignalChartData | null>(null)')
     expect(meshAnalysisViewSource).toContain('markRaw(await getMeshTracksideSignalChart(')
