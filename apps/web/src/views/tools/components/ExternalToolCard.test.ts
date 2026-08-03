@@ -61,6 +61,7 @@ describe('ExternalToolCard', () => {
     })
     expect(wrapper.text()).toContain('配置路径')
     expect(wrapper.text()).not.toContain('重新定位程序')
+    expect(wrapper.text()).not.toContain('删除')
     await wrapper.findAll('button').find((button) => button.text() === '配置路径')?.trigger('click')
     expect(wrapper.emitted('configure')).toHaveLength(1)
   })

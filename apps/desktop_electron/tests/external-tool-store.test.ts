@@ -9,6 +9,7 @@ import {
   ExternalToolStore,
   ExternalToolStoreError,
   OTHER_TOOLS_CATEGORY_ID,
+  TERMINAL_TOOLS_CATEGORY_ID,
   windowsPathKey,
 } from '../src/main/external-tool-store'
 import { ExternalToolService } from '../src/main/external-tool-service'
@@ -51,6 +52,7 @@ describe('ExternalToolStore', () => {
     expect(snapshot.categories.map((item) => item.name)).toEqual([
       '网络工具', '终端工具', '分析工具', '厂商工具', '其他工具',
     ])
+    expect(snapshot.tools.map((item) => item.source_key)).toEqual(['securecrt', 'xshell', 'putty'])
     expect(JSON.parse(await fs.readFile(store.path, 'utf8')).schema_version).toBe(2)
   })
 
@@ -63,7 +65,7 @@ describe('ExternalToolStore', () => {
     expect(updated.name).toBe('IPOP 维护版')
     await store.delete(created.id)
     await expect(fs.stat(executable)).resolves.toBeDefined()
-    expect((await store.list()).tools).toEqual([])
+    expect((await store.list()).tools.every((tool) => tool.source_type === 'system_setting')).toBe(true)
   })
 
   it('compares normalized Windows paths without case sensitivity', async () => {
@@ -83,7 +85,7 @@ describe('ExternalToolStore', () => {
       store.recordLaunch(created.id, 'normal'),
     ])
     const snapshot = await store.list()
-    expect(snapshot.tools[0]).toMatchObject({ favorite: true, launch_count: 1 })
+    expect(snapshot.tools.find((item) => item.id === created.id)).toMatchObject({ favorite: true, launch_count: 1 })
     expect(snapshot.categories.some((item) => item.name === '现场工具')).toBe(true)
     expect((await fs.readdir(join(store.path, '..'))).some((name) => name.includes('.tmp-'))).toBe(false)
   })
@@ -127,7 +129,7 @@ describe('ExternalToolStore', () => {
     const { store, request } = await fixture()
     const created = await store.create(request)
     const persisted = JSON.parse(await fs.readFile(store.path, 'utf8'))
-    const legacyTool = { ...persisted.tools[0] }
+    const legacyTool = { ...persisted.tools.find((item: { id: string }) => item.id === created.id) }
     for (const key of [
       'source_type', 'source_key', 'launch_privilege', 'administrator_launch_count',
       'last_launch_mode',
@@ -141,8 +143,8 @@ describe('ExternalToolStore', () => {
     const upgraded = await new ExternalToolStore(dirname(store.path)).list()
 
     expect(upgraded.schema_version).toBe(2)
-    expect(upgraded.tools).toHaveLength(1)
-    expect(upgraded.tools[0]).toMatchObject({
+    expect(upgraded.tools).toHaveLength(4)
+    expect(upgraded.tools.find((tool) => tool.id === created.id)).toMatchObject({
       id: created.id,
       source_type: 'independent',
       source_key: null,
@@ -159,39 +161,41 @@ describe('ExternalToolStore', () => {
     await migrated.store.migrateLegacyIpop(migrated.executable.toUpperCase())
     const snapshot = await migrated.store.list()
     expect(snapshot.migrations.legacy_ipop_v1).toBe(true)
-    expect(snapshot.tools).toHaveLength(1)
-    expect(snapshot.tools[0]).toMatchObject({
+    const ipop = snapshot.tools.find((tool) => tool.name === 'IPOP')
+    expect(snapshot.tools).toHaveLength(4)
+    expect(ipop).toMatchObject({
       name: 'IPOP',
       favorite: true,
       launch_privilege: 'normal',
       source_type: 'independent',
     })
-    expect(snapshot.categories.find((item) => item.id === snapshot.tools[0]?.category_id)?.name).toBe('网络工具')
+    expect(snapshot.categories.find((item) => item.id === ipop?.category_id)?.name).toBe('网络工具')
 
     const failed = await fixture()
     const missing = join(failed.root, 'missing', 'IPOP.EXE')
     await expect(failed.store.migrateLegacyIpop(missing)).rejects.toMatchObject({ code: 'INVALID_REQUEST' })
     expect((await failed.store.list()).migrations.legacy_ipop_v1).toBe(false)
-    expect((await failed.store.list()).tools).toEqual([])
+    expect((await failed.store.list()).tools.every((tool) => tool.source_type === 'system_setting')).toBe(true)
   })
 
-  it('persists system terminal references without copying their executable paths', async () => {
+  it('preloads system terminal references without copying executable paths', async () => {
     const { store } = await fixture()
-    const reference = await store.createSystemReference('securecrt')
+    const reference = (await store.list()).tools.find((tool) => tool.source_key === 'securecrt')
     const persisted = JSON.parse(await fs.readFile(store.path, 'utf8'))
+    expect(reference?.category_id).toBe(TERMINAL_TOOLS_CATEGORY_ID)
     expect(reference).toMatchObject({
       source_type: 'system_setting',
       source_key: 'securecrt',
       executable_path: null,
       working_directory: null,
     })
-    expect(persisted.tools[0].executable_path).toBeNull()
+    expect(persisted.tools.find((item: { source_key: string }) => item.source_key === 'securecrt').executable_path).toBeNull()
     await expect(store.createSystemReference('securecrt')).rejects.toMatchObject({
       code: 'DUPLICATE_SOURCE',
-      existingToolId: reference.id,
+      existingToolId: reference?.id,
     })
-    await store.delete(reference.id)
-    expect((await store.list()).tools).toEqual([])
+    await expect(store.delete(reference!.id)).rejects.toMatchObject({ code: 'INVALID_REQUEST' })
+    expect((await store.list()).tools.find((tool) => tool.source_key === 'securecrt')).toBeTruthy()
   })
 })
 
@@ -269,7 +273,7 @@ describe('ExternalToolService launcher', () => {
     await fs.mkdir(join(root, 'Terminals2'), { recursive: true })
     await fs.writeFile(first, 'first')
     await fs.writeFile(second, 'second')
-    const reference = await store.createSystemReference('securecrt')
+    const reference = (await store.list()).tools.find((tool) => tool.source_key === 'securecrt')!
     let configuredPath = first
     const service = new ExternalToolService({
       store,

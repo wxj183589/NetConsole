@@ -15,13 +15,15 @@ import type {
 export const EXTERNAL_TOOL_SCHEMA_VERSION = 2
 export const EXTERNAL_TOOL_MAX_ICON_BYTES = 5 * 1024 * 1024
 export const OTHER_TOOLS_CATEGORY_ID = 'e5057ec4-03c5-4c17-b24d-b8111ee8f942'
+export const TERMINAL_TOOLS_CATEGORY_ID = '5efeea9e-b3e9-44f4-9ba6-f3f6871f2a52'
 const EXTERNAL_TOOL_STORE_MAX_BYTES = 4 * 1024 * 1024
 const EXTERNAL_TOOL_MAX_CATEGORIES = 200
 const EXTERNAL_TOOL_MAX_RECORDS = 2_000
+const PRESET_SYSTEM_SETTING_KEYS: readonly ExternalToolSystemSettingKey[] = ['securecrt', 'xshell', 'putty']
 
 const DEFAULT_CATEGORIES: readonly ExternalToolCategory[] = [
   { id: '38a94eef-e708-4144-8be4-a7f9e519b216', name: '网络工具', sort_order: 10, builtin: true },
-  { id: '5efeea9e-b3e9-44f4-9ba6-f3f6871f2a52', name: '终端工具', sort_order: 20, builtin: true },
+  { id: TERMINAL_TOOLS_CATEGORY_ID, name: '终端工具', sort_order: 20, builtin: true },
   { id: 'b0889d74-7b5c-41e8-9e90-d50fbfa9f5f0', name: '分析工具', sort_order: 30, builtin: true },
   { id: '36cf418e-6438-43b5-a35c-d738e6f1c9dc', name: '厂商工具', sort_order: 40, builtin: true },
   { id: OTHER_TOOLS_CATEGORY_ID, name: '其他工具', sort_order: 50, builtin: true },
@@ -315,6 +317,10 @@ export class ExternalToolStore {
       const index = state.tools.findIndex((tool) => tool.id === toolId)
       if (index < 0) throw new ExternalToolStoreError('NOT_FOUND', '工具记录不存在。')
       const [removed] = state.tools.splice(index, 1)
+      if (removed.source_type === 'system_setting') {
+        state.tools.splice(index, 0, removed)
+        throw new ExternalToolStoreError('INVALID_REQUEST', '预制外部终端入口不能删除。')
+      }
       await this.writeWithRollback(before)
       if (removed.custom_icon_path) await fs.unlink(removed.custom_icon_path).catch(() => undefined)
     })
@@ -453,7 +459,8 @@ export class ExternalToolStore {
       return
     }
     this.state = loaded.state
-    if (loaded.upgraded) await this.writeState()
+    const presetChanged = ensurePresetSystemReferences(this.state)
+    if (loaded.upgraded || presetChanged) await this.writeState()
   }
 
   private async recoverDamagedFile(cause: unknown): Promise<void> {
@@ -599,12 +606,14 @@ function assertSameIds(value: string[], expected: string[], label: string): void
 }
 
 function defaultState(): ExternalToolState {
-  return {
+  const state: ExternalToolState = {
     schema_version: EXTERNAL_TOOL_SCHEMA_VERSION,
     categories: DEFAULT_CATEGORIES.map((category) => ({ ...category })),
     tools: [],
     migrations: { legacy_ipop_v1: false },
   }
+  ensurePresetSystemReferences(state)
+  return state
 }
 
 function cloneState(state: ExternalToolState): ExternalToolStoreSnapshot {
@@ -809,6 +818,43 @@ function validateMigrations(value: unknown): ExternalToolState['migrations'] {
 
 function systemSettingToolName(sourceKey: ExternalToolSystemSettingKey): string {
   return sourceKey === 'securecrt' ? 'SecureCRT' : sourceKey === 'xshell' ? 'Xshell' : 'PuTTY'
+}
+
+function ensurePresetSystemReferences(state: ExternalToolState): boolean {
+  let changed = false
+  if (!state.categories.some((category) => category.id === TERMINAL_TOOLS_CATEGORY_ID)) {
+    state.categories.push({ ...DEFAULT_CATEGORIES.find((category) => category.id === TERMINAL_TOOLS_CATEGORY_ID)! })
+    changed = true
+  }
+  for (const sourceKey of PRESET_SYSTEM_SETTING_KEYS) {
+    if (state.tools.some((tool) => tool.source_type === 'system_setting' && tool.source_key === sourceKey)) {
+      continue
+    }
+    const now = new Date().toISOString()
+    state.tools.push({
+      id: randomUUID(),
+      name: systemSettingToolName(sourceKey),
+      source_type: 'system_setting',
+      source_key: sourceKey,
+      executable_path: null,
+      arguments: [],
+      working_directory: null,
+      category_id: TERMINAL_TOOLS_CATEGORY_ID,
+      favorite: true,
+      sort_order: nextToolOrder(state, TERMINAL_TOOLS_CATEGORY_ID),
+      icon_mode: 'auto',
+      custom_icon_path: null,
+      launch_privilege: 'normal',
+      launch_count: 0,
+      administrator_launch_count: 0,
+      last_launched_at: null,
+      last_launch_mode: null,
+      created_at: now,
+      updated_at: now,
+    })
+    changed = true
+  }
+  return changed
 }
 
 function strictRecord(value: unknown, allowed: readonly string[], label: string): Record<string, any> {

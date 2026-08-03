@@ -28,6 +28,12 @@ const category = {
   sort_order: 10,
   builtin: true,
 }
+const terminalCategory = {
+  id: '5efeea9e-b3e9-44f4-9ba6-f3f6871f2a52',
+  name: '终端工具',
+  sort_order: 20,
+  builtin: true,
+}
 
 function tool(overrides: Partial<ExternalToolView> = {}): ExternalToolView {
   return {
@@ -57,6 +63,25 @@ function tool(overrides: Partial<ExternalToolView> = {}): ExternalToolView {
     updated_at: '2026-07-30T00:00:00.000Z',
     ...overrides,
   }
+}
+
+function terminalTool(sourceKey: 'securecrt' | 'xshell' | 'putty', executablePath = ''): ExternalToolView {
+  const name = sourceKey === 'securecrt' ? 'SecureCRT' : sourceKey === 'xshell' ? 'Xshell' : 'PuTTY'
+  const executableName = executablePath ? executablePath.split(/[\\/]/).pop() ?? name : name
+  return tool({
+    id: `00000000-0000-4000-8000-0000000000${sourceKey === 'securecrt' ? '01' : sourceKey === 'xshell' ? '02' : '03'}`,
+    name,
+    source_type: 'system_setting',
+    source_key: sourceKey,
+    executable_path: executablePath,
+    executable_name: executableName,
+    working_directory: executablePath ? 'C:\\Tools' : '',
+    category_id: terminalCategory.id,
+    category_name: terminalCategory.name,
+    favorite: true,
+    status: executablePath ? 'AVAILABLE' : 'INVALID',
+    status_message: executablePath ? '可用' : '请先在工具集 → 外部终端中配置路径',
+  })
 }
 
 function settingsSnapshot(): SystemSettingsSnapshot {
@@ -90,6 +115,7 @@ async function mounted(list: ExternalToolListResult) {
   Object.defineProperty(window, 'netconsoleDesktop', { configurable: true, value: {} })
   const wrapper = mount(ToolCollectionView, {
     global: { plugins: [createPinia(), ElementPlus] },
+    attachTo: document.body,
   })
   await flushPromises()
   return wrapper
@@ -101,24 +127,31 @@ beforeEach(() => {
   settingsBridge.selectSettingsDirectory.mockResolvedValue({ cancelled: false, path: 'D:\\Sessions' })
 })
 afterEach(() => Reflect.deleteProperty(window, 'netconsoleDesktop'))
+afterEach(() => { document.body.innerHTML = '' })
 
 describe('ToolCollectionView', () => {
   it('shows a compact empty state with the first-tool action', async () => {
     const wrapper = await mounted({ schema_version: 2, categories: [category], tools: [] })
     expect(wrapper.text()).toContain('尚未添加第三方工具')
     expect(wrapper.text()).toContain('添加第一个工具')
-    expect(wrapper.text()).toContain('添加系统已配置工具')
+    expect(wrapper.text()).toContain('外部终端配置')
   })
 
-  it('adds a terminal shortcut through a semantic system setting key', async () => {
-    vi.mocked(api.createExternalToolSystemReference).mockResolvedValueOnce({
-      success: true,
-      list: { schema_version: 2, categories: [category], tools: [] },
+  it('shows preset terminal cards even when their configured paths are empty', async () => {
+    const wrapper = await mounted({
+      schema_version: 2,
+      categories: [terminalCategory],
+      tools: [
+        terminalTool('securecrt', 'C:\\Tools\\SecureCRT.exe'),
+        terminalTool('xshell'),
+        terminalTool('putty'),
+      ],
     })
-    const wrapper = await mounted({ schema_version: 2, categories: [category], tools: [] })
-    wrapper.findComponent({ name: 'ElDropdown' }).vm.$emit('command', 'securecrt')
-    await flushPromises()
-    expect(api.createExternalToolSystemReference).toHaveBeenCalledWith('securecrt')
+    expect(wrapper.text()).toContain('SecureCRT')
+    expect(wrapper.text()).toContain('Xshell')
+    expect(wrapper.text()).toContain('PuTTY')
+    expect(wrapper.text()).toContain('配置路径')
+    expect(api.createExternalToolSystemReference).not.toHaveBeenCalled()
   })
 
   it('moves external terminal configuration into the tool collection', async () => {
@@ -127,9 +160,10 @@ describe('ToolCollectionView', () => {
       values,
       version: 'version-2',
     }))
-    const wrapper = await mounted({ schema_version: 2, categories: [category], tools: [] })
+    const wrapper = await mounted({ schema_version: 2, categories: [terminalCategory], tools: [terminalTool('securecrt'), terminalTool('xshell'), terminalTool('putty')] })
 
-    expect(wrapper.text()).toContain('外部终端')
+    await wrapper.find('[data-testid="open-terminal-settings"]').trigger('click')
+    await flushPromises()
     await wrapper.find('[data-testid="select-putty-tool"]').trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('已识别为 PuTTY 程序')
@@ -154,8 +188,10 @@ describe('ToolCollectionView', () => {
       executable_name: 'SecureCRT.exe',
     })
     vi.mocked(api.launchExternalTool).mockResolvedValueOnce({ success: true, toolId: securecrt.id })
-    const wrapper = await mounted({ schema_version: 2, categories: [category], tools: [securecrt] })
+    const wrapper = await mounted({ schema_version: 2, categories: [terminalCategory], tools: [securecrt] })
 
+    await wrapper.find('[data-testid="open-terminal-settings"]').trigger('click')
+    await flushPromises()
     await wrapper.find('[data-testid="launch-securecrt-tool"]').trigger('click')
     await flushPromises()
 

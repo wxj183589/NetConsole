@@ -82,7 +82,7 @@ function handleCommand(command: string): void {
               <el-dropdown-item command="edit">编辑</el-dropdown-item>
               <el-dropdown-item v-if="tool.source_type === 'system_setting'" command="configure">配置路径</el-dropdown-item>
               <el-dropdown-item command="reveal" :disabled="!available">在资源管理器中显示</el-dropdown-item>
-              <el-dropdown-item command="remove" divided>删除</el-dropdown-item>
+              <el-dropdown-item v-if="tool.source_type !== 'system_setting'" command="remove" divided>删除</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>

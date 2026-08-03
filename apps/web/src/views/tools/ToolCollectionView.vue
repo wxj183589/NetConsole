@@ -3,7 +3,7 @@ import { computed, nextTick, onActivated, onMounted, reactive, ref, watch } from
 import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Connection, Plus, Refresh, Search, Setting } from '@element-plus/icons-vue'
+import { Plus, Refresh, Search, Setting } from '@element-plus/icons-vue'
 import {
   SETTINGS_TOOL_DEFINITIONS,
   settingsToolMismatchMessage,
@@ -17,7 +17,6 @@ import type {
   ExternalToolCategory,
   ExternalToolCreateRequest,
   ExternalToolLaunchMode,
-  ExternalToolSystemSettingKey,
   ExternalToolUpdateRequest,
   ExternalToolView,
 } from '../../types/externalTools'
@@ -38,7 +37,8 @@ const editingTool = ref<ExternalToolView | null>(null)
 const relocateOnOpen = ref(false)
 const editor = ref<InstanceType<typeof ExternalToolEditorDialog>>()
 const isDesktop = typeof window !== 'undefined' && Boolean(window.netconsoleDesktop)
-const terminalSection = ref<HTMLElement | null>(null)
+const terminalDialogVisible = ref(false)
+const configuringTerminalType = ref<ExternalTerminalType>('securecrt')
 const terminalSnapshot = ref<SystemSettingsSnapshot | null>(null)
 const terminalBaseline = ref<SystemSettingsValues | null>(null)
 const terminalForm = reactive<SystemSettingsValues>(emptySystemSettingsValues())
@@ -163,23 +163,20 @@ async function launchTool(
   }
 }
 
-async function addSystemReference(value: string | number | object): Promise<void> {
-  const sourceKey = String(value)
-  if (!['securecrt', 'xshell', 'putty'].includes(sourceKey)) return
-  const result = await store.addSystemReference(sourceKey as ExternalToolSystemSettingKey)
-  if (result.success) ElMessage.success('系统已配置工具已添加')
-  else if (result.existingTool) await openExisting(result.existingTool.id)
-  else ElMessage.error(result.error || '系统已配置工具添加失败')
-}
-
-async function configureSystemTool(): Promise<void> {
-  terminalSection.value?.scrollIntoView({ block: 'start' })
+async function configureSystemTool(tool?: ExternalToolView): Promise<void> {
+  const sourceKey = tool?.source_type === 'system_setting' && tool.source_key
+    ? tool.source_key
+    : terminalForm.terminal_type
+  terminalDialogVisible.value = true
+  if (!terminalSnapshot.value && !terminalLoading.value) await loadTerminalSettings()
+  configuringTerminalType.value = sourceKey
+  terminalForm.terminal_type = sourceKey
 }
 
 async function focusTerminalSection(): Promise<void> {
   if (route.query.section !== 'external-terminal') return
   await nextTick()
-  terminalSection.value?.scrollIntoView({ block: 'start' })
+  await configureSystemTool()
 }
 
 async function toggleFavorite(tool: ExternalToolView): Promise<void> {
@@ -440,77 +437,13 @@ function cloneSystemSettingsValues(value: SystemSettingsValues): SystemSettingsV
         </div>
         <div class="header-actions">
           <el-button type="primary" :icon="Plus" @click="openEditor()">添加工具</el-button>
-          <el-dropdown @command="addSystemReference">
-            <el-button :icon="Connection">添加系统已配置工具</el-button>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item command="securecrt">SecureCRT</el-dropdown-item>
-                <el-dropdown-item command="xshell">Xshell</el-dropdown-item>
-                <el-dropdown-item command="putty">PuTTY</el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
+          <el-button data-testid="open-terminal-settings" @click="configureSystemTool()">外部终端配置</el-button>
           <el-button :icon="Setting" @click="categoryVisible = true">管理分类</el-button>
           <el-button :icon="Refresh" :loading="loading" @click="store.refresh(true)">刷新状态</el-button>
         </div>
       </header>
 
       <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" />
-
-      <section ref="terminalSection" class="terminal-settings-panel" v-loading="terminalLoading">
-        <div class="terminal-settings-heading">
-          <div>
-            <h2>外部终端</h2>
-            <p>SecureCRT、Xshell 和 PuTTY 的程序路径保存在系统配置，快捷入口在工具集中启动。</p>
-          </div>
-          <div class="terminal-settings-actions">
-            <el-tag v-if="terminalDirty" type="warning">未保存</el-tag>
-            <el-button :disabled="terminalLoading" @click="loadTerminalSettings">重载</el-button>
-            <el-button :disabled="!terminalDirty || terminalSaving" @click="resetTerminalSettings">取消修改</el-button>
-            <el-button data-testid="save-terminal-settings" type="primary" :loading="terminalSaving" :disabled="terminalSaveDisabled" @click="saveTerminalSettings">保存配置</el-button>
-          </div>
-        </div>
-        <el-alert v-if="terminalError" :title="terminalError" type="error" show-icon :closable="false" />
-        <el-form class="terminal-settings-grid" label-position="top">
-          <el-form-item label="默认终端">
-            <el-select v-model="terminalForm.terminal_type" data-testid="tool-terminal-type">
-              <el-option label="SecureCRT" value="securecrt" />
-              <el-option label="Xshell" value="xshell" />
-              <el-option label="PuTTY" value="putty" />
-            </el-select>
-          </el-form-item>
-          <el-form-item
-            v-for="terminalType in terminalTypes"
-            :key="terminalType"
-            :label="SETTINGS_TOOL_DEFINITIONS[terminalType].fieldLabel"
-            class="wide"
-          >
-            <NcExecutablePathField
-              v-model="terminalForm.terminal_paths[terminalType]"
-              :select-test-id="`select-${terminalType}-tool`"
-              :clear-test-id="`clear-${terminalType}-tool`"
-              :test-test-id="`launch-${terminalType}-tool`"
-              :testable="true"
-              :loading="launchingIds.has(systemTerminalTool(terminalType)?.id || '')"
-              :error="terminalPathErrors[terminalType]"
-              :success="terminalPathSuccess(terminalType, terminalForm.terminal_paths[terminalType])"
-              @select="chooseTerminalExecutable(terminalType)"
-              @clear="clearTerminalToolError(terminalType)"
-              @test="launchSystemTerminal(terminalType)"
-            />
-          </el-form-item>
-          <el-form-item class="wide" label="SecureCRT 会话根目录">
-            <el-input v-model="terminalForm.securecrt_sessions_root" readonly>
-              <template #append><el-button data-testid="select-terminal-sessions" @click="chooseSecureCrtSessions">选择</el-button></template>
-            </el-input>
-          </el-form-item>
-          <el-form-item label="默认 SSH 端口"><el-input-number v-model="terminalForm.ssh_port" :min="1" :max="65535" /></el-form-item>
-          <el-form-item label="默认 Telnet 端口"><el-input-number v-model="terminalForm.telnet_port" :min="1" :max="65535" /></el-form-item>
-          <el-form-item label="CRT 编码">
-            <el-select v-model="terminalForm.crt_encoding"><el-option label="UTF-8" value="UTF-8" /><el-option label="GBK" value="GBK" /></el-select>
-          </el-form-item>
-        </el-form>
-      </section>
 
       <div class="collection-controls">
         <el-tabs v-model="activeTab">
@@ -606,6 +539,68 @@ function cloneSystemSettingsValues(value: SystemSettingsValues): SystemSettingsV
         @remove="removeCategory"
         @reorder="reorderCategories"
       />
+      <el-dialog
+        v-model="terminalDialogVisible"
+        title="外部终端配置"
+        width="980px"
+        class="terminal-settings-dialog"
+        :teleported="false"
+      >
+        <section class="terminal-settings-panel" v-loading="terminalLoading">
+          <div class="terminal-settings-heading">
+            <div>
+              <h2>{{ SETTINGS_TOOL_DEFINITIONS[configuringTerminalType].displayName }}</h2>
+              <p>SecureCRT、Xshell 和 PuTTY 作为预制工具保留在工具集中；路径为空时卡片仍显示，但不会启动。</p>
+            </div>
+            <div class="terminal-settings-actions">
+              <el-tag v-if="terminalDirty" type="warning">未保存</el-tag>
+              <el-button :disabled="terminalLoading" @click="loadTerminalSettings">重载</el-button>
+              <el-button :disabled="!terminalDirty || terminalSaving" @click="resetTerminalSettings">取消修改</el-button>
+              <el-button data-testid="save-terminal-settings" type="primary" :loading="terminalSaving" :disabled="terminalSaveDisabled" @click="saveTerminalSettings">保存配置</el-button>
+            </div>
+          </div>
+          <el-alert v-if="terminalError" :title="terminalError" type="error" show-icon :closable="false" />
+          <el-form class="terminal-settings-grid" label-position="top">
+            <el-form-item label="默认终端">
+              <el-select v-model="terminalForm.terminal_type" data-testid="tool-terminal-type">
+                <el-option label="SecureCRT" value="securecrt" />
+                <el-option label="Xshell" value="xshell" />
+                <el-option label="PuTTY" value="putty" />
+              </el-select>
+            </el-form-item>
+            <el-form-item
+              v-for="terminalType in terminalTypes"
+              :key="terminalType"
+              :label="SETTINGS_TOOL_DEFINITIONS[terminalType].fieldLabel"
+              class="wide"
+            >
+              <NcExecutablePathField
+                v-model="terminalForm.terminal_paths[terminalType]"
+                :select-test-id="`select-${terminalType}-tool`"
+                :clear-test-id="`clear-${terminalType}-tool`"
+                :test-test-id="`launch-${terminalType}-tool`"
+                :testable="true"
+                :loading="launchingIds.has(systemTerminalTool(terminalType)?.id || '')"
+                :error="terminalPathErrors[terminalType]"
+                :success="terminalPathSuccess(terminalType, terminalForm.terminal_paths[terminalType])"
+                @select="chooseTerminalExecutable(terminalType)"
+                @clear="clearTerminalToolError(terminalType)"
+                @test="launchSystemTerminal(terminalType)"
+              />
+            </el-form-item>
+            <el-form-item class="wide" label="SecureCRT 会话根目录">
+              <el-input v-model="terminalForm.securecrt_sessions_root" readonly>
+                <template #append><el-button data-testid="select-terminal-sessions" @click="chooseSecureCrtSessions">选择</el-button></template>
+              </el-input>
+            </el-form-item>
+            <el-form-item label="默认 SSH 端口"><el-input-number v-model="terminalForm.ssh_port" :min="1" :max="65535" /></el-form-item>
+            <el-form-item label="默认 Telnet 端口"><el-input-number v-model="terminalForm.telnet_port" :min="1" :max="65535" /></el-form-item>
+            <el-form-item label="CRT 编码">
+              <el-select v-model="terminalForm.crt_encoding"><el-option label="UTF-8" value="UTF-8" /><el-option label="GBK" value="GBK" /></el-select>
+            </el-form-item>
+          </el-form>
+        </section>
+      </el-dialog>
     </template>
   </section>
 </template>
@@ -616,7 +611,7 @@ function cloneSystemSettingsValues(value: SystemSettingsValues): SystemSettingsV
 .collection-header h1 { margin: 0 0 6px; font-size: 24px; }
 .collection-header p { margin: 0; color: var(--el-text-color-secondary); }
 .header-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; }
-.terminal-settings-panel { margin: 16px 0 18px; padding: 18px 20px; border: 1px solid var(--el-border-color-light); border-radius: 8px; background: var(--el-bg-color); }
+.terminal-settings-panel { min-height: 360px; }
 .terminal-settings-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
 .terminal-settings-heading h2 { margin: 0 0 6px; font-size: 17px; }
 .terminal-settings-heading p { margin: 0; color: var(--el-text-color-secondary); }
