@@ -13,6 +13,7 @@
 - 页面与报告通过 `MeshApLocationSnapshot` 共享 AP 名称、MAC、站点、区间、里程和线路方向解析；Export Job 只携带该快照的受控字符串字段。Excel 工作表保留完整业务数据，嵌入图表使用关键点和极值降采样，空 ACTIVE 不创建空图。
 - 正式报告继续由 Export Process 生成：Worker 写临时文件，完成后原子替换目标 Artifact；Renderer 不读取全量链路，也不生成 Excel。
 - 图表请求按 Radio/时间窗口使用 generation 防止迟到响应串回旧会话；单 AP 支持单次经过和全部经过时段，后者以 `gap_before` 强制断线。
+- RSSI `0` 在后端按自然秒分类：同一自然秒内的一条或多条 0 都隐藏，连续覆盖多个自然秒才绘制持续 0；降采样固定保留隐藏 0 后的首个有效恢复点，并在关键点之外保留时间分布代表点。主用链路信号只跳过前后均为唯一有效 ACTIVE、且没有真实缺口的单个 `MULTI_ACTIVE` 歧义帧；`NO_ACTIVE`、连续歧义和真实缺口仍断线。
 - 图表的 data/display/theme/resize/viewport/reset 更新分开处理：显示 Peer、切换时刻线、切换节点、站点区间带、主题和容器尺寸变化都保留真实毫秒视口，不把 `dataZoom` 重置到全日志。主用链路信号与轨旁AP信号图由父级提供同一个会话绝对时间域和带来源/revision 的 viewport，不按各自采样点吸附；程序化镜像更新使用静默 `dispatchAction`，组件通过 `getViewport/applyViewport/resetViewport/getVisibleTimeRange` 暴露同一契约。
 - RSSI 工作区以宿主元素的真实顶部位置计算剩余视口高度。对比模式默认 50/50，分隔比例限制为 35%～65%；2K 可用空间下每个 pane 至少 400px，较矮窗口至少 320px，不足时只滚动工作区。标题、告警和统计保持单行，图表组件自身不再声明固定最小高度。页面内“沉浸对比”仅收起非必要顶部区域，左侧导航、共享 viewport、缓存和两个 ECharts 实例保持不变；布局与分隔拖动只 resize。
 - 共享二维时间序列内核位于 `apps/web/src/components/charts/multiSeriesTimeChart.ts`。Online MR、离线主用链路信号与轨旁AP信号图统一 Canvas `useDirtyRect`、DPR 上限、图例/网格/dataZoom/toolbox/Tooltip 基础样式；轨旁大 payload 使用 `shallowRef + markRaw`，ECharts 点固定为 `[timestampMillis, rssi, metaId, roleCode]`，业务元数据只保存在外部 Map，不允许点引用完整 `meta`、`seriesMeta` 或原始 `points`。视口、位置带、主题和 resize 不重复排序或复制数万点。小数据用实心/空心圆区分主备点，大数据隐藏 symbol，禁止为角色生成额外 scatter 或 markLine。

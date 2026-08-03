@@ -63,13 +63,15 @@ function rssiMetricData(
   metric: 'local_rssi' | 'peer_rssi',
 ): MeshRssiSeries['data'] {
   const zeroRunField = metric === 'local_rssi' ? 'local_rssi_zero_run' : 'peer_rssi_zero_run'
-  const displayPoints = buildRssiDisplayPoints(points.map((point) => ({
-    timestamp: point.timestamp,
-    value: point[metric],
-    meta: point,
-    zeroRun: point[zeroRunField],
-    breakBefore: point.gap_before,
-  })))
+  const displayPoints = buildRssiDisplayPoints(points
+    .filter((point) => !point.bridge_ambiguous_active)
+    .map((point) => ({
+      timestamp: point.timestamp,
+      value: point[metric],
+      meta: point,
+      zeroRun: point[zeroRunField],
+      breakBefore: point.gap_before,
+    })))
   return displayPoints.flatMap((point, index) => [
     ...(index > 0 && point.breakBefore
       ? [{ value: [point.timestamp, null] as [string, number | null], meta: point.meta, zeroRun: null }]

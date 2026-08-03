@@ -30,9 +30,10 @@ def test_single_natural_interval_zero_is_suppressed() -> None:
     assert result.summary.suppressed_sample_count == 1
     assert result.summary.suppressed_run_count == 1
     assert result.sustained_boundary_indices == frozenset()
+    assert result.suppressed_recovery_indices == frozenset({2})
 
 
-def test_two_consecutive_zero_samples_are_sustained_even_below_previous_time_threshold() -> None:
+def test_two_consecutive_zero_samples_in_distinct_natural_seconds_are_sustained() -> None:
     rows = [
         {"timestamp": "2026-07-24 20:41:20.000", "rssi": 35},
         {"timestamp": "2026-07-24 20:41:20.984", "rssi": "0.0"},
@@ -52,6 +53,26 @@ def test_two_consecutive_zero_samples_are_sustained_even_below_previous_time_thr
     assert result.sustained_boundary_indices == frozenset({1, 2})
     assert result.summary.sustained_run_count == 1
     assert result.summary.sustained_total_duration_ms == 1_968
+    assert result.suppressed_recovery_indices == frozenset()
+
+
+def test_duplicate_zero_samples_within_one_natural_second_are_suppressed() -> None:
+    rows = [
+        {"timestamp": "2026-07-24 20:48:47.195", "rssi": 31},
+        {"timestamp": "2026-07-24 20:48:48.189", "rssi": 0},
+        {"timestamp": "2026-07-24 20:48:48.195", "rssi": 0},
+        {"timestamp": "2026-07-24 20:48:49.195", "rssi": 47},
+    ]
+
+    result = _analyze(rows)
+
+    assert {value.state for value in result.metadata_by_index.values()} == {"suppressed"}
+    assert {value.sample_count for value in result.metadata_by_index.values()} == {2}
+    assert result.summary.suppressed_sample_count == 2
+    assert result.summary.suppressed_run_count == 1
+    assert result.summary.sustained_run_count == 0
+    assert result.sustained_boundary_indices == frozenset()
+    assert result.suppressed_recovery_indices == frozenset({3})
 
 
 def test_single_zero_is_suppressed_even_when_the_time_gap_is_long() -> None:

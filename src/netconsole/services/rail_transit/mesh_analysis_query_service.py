@@ -2376,6 +2376,13 @@ class MeshAnalysisQueryService:
             previous_source = source
             previous_time = current_time or previous_time
             previous_segment_sequence = segment_sequence
+        ambiguous_active_bridge_indices = (
+            self._ambiguous_active_bridge_indices(point_rows, multi_active)
+            if mode == "active_path"
+            else set()
+        )
+        for index in ambiguous_active_bridge_indices:
+            point_rows[index]["bridge_ambiguous_active"] = True
         estimated_interval = self._number(metadata.get("estimated_interval_seconds"))
         fallback_interval_ms = estimated_interval * 1_000 if estimated_interval is not None else None
         maximum_gap_ms = continuity_gap * 1_000 if continuity_gap is not None else None
@@ -2403,6 +2410,10 @@ class MeshAnalysisQueryService:
             *local_zero_analysis.sustained_boundary_indices,
             *peer_zero_analysis.sustained_boundary_indices,
         }
+        suppressed_zero_recoveries = {
+            *local_zero_analysis.suppressed_recovery_indices,
+            *peer_zero_analysis.suppressed_recovery_indices,
+        }
         total_points = len(point_rows)
         prepared_events = self._prepare_chart_events(point_rows, events_by_index)
         valid_switch_indices = {
@@ -2416,6 +2427,8 @@ class MeshAnalysisQueryService:
         important = {int(value) for value in (important_values if important_values is not None else [])}
         important.update(self._important_chart_row_indices(point_rows))
         important.update(sustained_zero_boundaries)
+        important.update(suppressed_zero_recoveries)
+        important.difference_update(ambiguous_active_bridge_indices)
         requested_max_points, effective_max_points, rendered_switch_indices, downsample_warning = (
             self._chart_render_budget(total_points, max_points, valid_switch_indices)
         )
@@ -2423,24 +2436,36 @@ class MeshAnalysisQueryService:
             *important,
             *rendered_switch_indices,
             *sustained_zero_boundaries,
+            *suppressed_zero_recoveries,
             *({0, total_points - 1} if total_points else set()),
         }
+        budget_warnings = [downsample_warning] if downsample_warning else []
         if len(required_display_indices) > effective_max_points:
             if len(required_display_indices) <= _MAX_CHART_RENDER_POINTS:
                 previous_effective = effective_max_points
                 effective_max_points = len(required_display_indices)
-                zero_warning = (
-                    "为保留持续无 RSSI 区间边界和现有关键点，"
+                budget_warnings.append(
+                    "为保留持续无 RSSI 区间边界、短时 0 恢复点和现有关键点，"
                     f"图表目标点数已从 {previous_effective} 提升到 {effective_max_points}。"
                 )
             else:
-                zero_warning = (
+                budget_warnings.append(
                     f"持续无 RSSI 区间和其他关键点共 {len(required_display_indices)} 个，"
                     f"超过安全渲染上限 {_MAX_CHART_RENDER_POINTS}，已按时间保留代表性边界。"
                 )
-            downsample_warning = " ".join(
-                item for item in (downsample_warning, zero_warning) if item
+        representative_effective = min(
+            total_points,
+            _MAX_CHART_RENDER_POINTS,
+            len(required_display_indices) + requested_max_points,
+        )
+        if representative_effective > effective_max_points:
+            previous_effective = effective_max_points
+            effective_max_points = representative_effective
+            budget_warnings.append(
+                "为避免关键点占满预算后丢失连续趋势，"
+                f"图表目标点数已从 {previous_effective} 提升到 {effective_max_points}。"
             )
+        downsample_warning = " ".join(budget_warnings) or None
         indices = [
             int(index)
             for index in render_indices(
@@ -2449,7 +2474,11 @@ class MeshAnalysisQueryService:
                 0,
                 important,
                 effective_max_points,
-                pinned_indices={*rendered_switch_indices, *sustained_zero_boundaries},
+                pinned_indices={
+                    *rendered_switch_indices,
+                    *sustained_zero_boundaries,
+                    *suppressed_zero_recoveries,
+                },
             )
         ]
         returned_indices = set(indices)
@@ -2914,6 +2943,7 @@ class MeshAnalysisQueryService:
         fallback_interval_ms = estimated_interval * 1_000 if estimated_interval is not None else None
         maximum_gap_ms = continuity_gap * 1_000 if continuity_gap is not None else None
         sustained_zero_boundary_frames: set[int] = set()
+        suppressed_zero_recovery_frames: set[int] = set()
         suppressed_zero_sample_count = 0
         suppressed_zero_run_count = 0
         sustained_zero_run_count = 0
@@ -2935,6 +2965,8 @@ class MeshAnalysisQueryService:
                 )
             for item_index in zero_analysis.sustained_boundary_indices:
                 sustained_zero_boundary_frames.add(int(run_items[item_index]["frame_index"]))
+            for item_index in zero_analysis.suppressed_recovery_indices:
+                suppressed_zero_recovery_frames.add(int(run_items[item_index]["frame_index"]))
             summary = zero_analysis.summary
             suppressed_zero_sample_count += summary.suppressed_sample_count
             suppressed_zero_run_count += summary.suppressed_run_count
@@ -2954,6 +2986,7 @@ class MeshAnalysisQueryService:
             | active_switch_frames
             | anomaly_frames
             | sustained_zero_boundary_frames
+            | suppressed_zero_recovery_frames
         )
         if total_frames:
             required_frames.update({0, total_frames - 1})
@@ -2986,8 +3019,20 @@ class MeshAnalysisQueryService:
         if len(required_frames) > effective_max_frames:
             effective_max_frames = len(required_frames)
             warnings.append(
-                "为保留链路出现、消失、角色切换和 RSSI 极值，"
+                "为保留链路出现、消失、角色切换、短时 0 恢复点和 RSSI 极值，"
                 f"轨旁图目标采样时刻已从 {requested_max_frames} 提升到 "
+                f"{effective_max_frames}。"
+            )
+        representative_effective = min(
+            total_frames,
+            len(required_frames) + requested_max_frames,
+        )
+        if representative_effective > effective_max_frames:
+            previous_effective = effective_max_frames
+            effective_max_frames = representative_effective
+            warnings.append(
+                "为避免关键帧占满预算后丢失连续趋势，"
+                f"轨旁图目标采样时刻已从 {previous_effective} 提升到 "
                 f"{effective_max_frames}。"
             )
         if total_frames == 0:
@@ -3609,6 +3654,7 @@ class MeshAnalysisQueryService:
             segment_duration_seconds=self._number(segment.get("main_link_duration_seconds")),
             is_switch=bool(row.get("is_switch")),
             is_anomaly=bool(row.get("is_anomaly")),
+            bridge_ambiguous_active=bool(row.get("bridge_ambiguous_active")),
             gap_before=bool(row.get("gap_before")),
             backups=[
                 self._chart_backup_from_summary(ap_map, dict(backup), context.source_id)
@@ -3661,6 +3707,26 @@ class MeshAnalysisQueryService:
                 ordered,
             )
         return result
+
+    @staticmethod
+    def _ambiguous_active_bridge_indices(
+        points: list[dict[str, Any]],
+        multi_active_indices: set[int],
+    ) -> set[int]:
+        bridged: set[int] = set()
+        for index in multi_active_indices:
+            if index <= 0 or index >= len(points) - 1:
+                continue
+            if index - 1 in multi_active_indices or index + 1 in multi_active_indices:
+                continue
+            current = points[index]
+            following = points[index + 1]
+            if current.get("gap_before") or following.get("gap_before"):
+                continue
+            if not points[index - 1].get("item") or not following.get("item"):
+                continue
+            bridged.add(index)
+        return bridged
 
     @staticmethod
     def _important_chart_row_indices(points: list[dict[str, Any]]) -> set[int]:

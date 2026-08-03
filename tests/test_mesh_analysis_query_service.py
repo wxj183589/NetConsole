@@ -77,6 +77,32 @@ def _insert_active_mesh_link(
     )
 
 
+def _active_chart_row(
+    row_id: int,
+    sample_time: str,
+    peer_mac: str,
+    *,
+    local_rssi: int = 40,
+    link_state: str = "ACTIVE",
+) -> dict[str, object]:
+    return {
+        "id": row_id,
+        "source_file_id": 1,
+        "sample_time": sample_time,
+        "timestamp_tag": "",
+        "radio": 1,
+        "link_state": link_state,
+        "peer_mac_raw": peer_mac,
+        "peer_mac_normalized": peer_mac,
+        "peer_mac": peer_mac,
+        "peer_ap_name": f"AP-{peer_mac[-2:]}",
+        "peer_ap_mac": peer_mac,
+        "peer_radio_mac": peer_mac,
+        "local_rssi_db": local_rssi,
+        "peer_rssi_db": local_rssi - 5,
+    }
+
+
 def test_reads_persisted_mesh_results_without_modifying_sources(tmp_path: Path) -> None:
     paths, session_id, detail, raw, report = create_mesh_analysis_fixture(tmp_path)
     service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
@@ -167,6 +193,100 @@ def test_active_chart_marks_short_zero_before_render_sampling(tmp_path: Path) ->
     assert zero_point.local_rssi_zero_run.duration_ms == 1_000
     assert chart.summary.suppressed_zero_sample_count == 1
     assert chart.summary.suppressed_zero_run_count == 1
+
+
+def test_active_chart_bridges_only_an_isolated_multi_active_frame(tmp_path: Path) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    context = service._context("demo", session_id)
+    payload = {
+        "peer_segment": {"rows": []},
+        "run_segment": {
+            "rows": [
+                _active_chart_row(1, "2026-07-24 20:49:14.104", "000000001618"),
+                _active_chart_row(2, "2026-07-24 20:49:15.104", "000000001618"),
+                _active_chart_row(3, "2026-07-24 20:49:15.104", "000000001620"),
+                _active_chart_row(4, "2026-07-24 20:49:16.104", "000000001624"),
+                _active_chart_row(
+                    5,
+                    "2026-07-24 20:49:17.104",
+                    "000000001626",
+                    link_state="STANDBY",
+                ),
+            ],
+            "events": [],
+            "estimated_interval_seconds": 1,
+            "continuity_gap_seconds": 5,
+        },
+    }
+
+    chart = service._chart_dto(
+        "demo",
+        context,
+        payload,
+        mode="active_path",
+        max_points=10,
+        time_from="",
+        time_to="",
+    )
+
+    ambiguous = next(point for point in chart.points if point.timestamp == "2026-07-24 20:49:15.104")
+    no_active = next(point for point in chart.points if point.timestamp == "2026-07-24 20:49:17.104")
+    assert ambiguous.is_anomaly is True
+    assert ambiguous.bridge_ambiguous_active is True
+    assert ambiguous.local_rssi is None
+    assert no_active.is_anomaly is True
+    assert no_active.bridge_ambiguous_active is False
+
+
+def test_active_chart_keeps_representative_points_when_key_points_fill_budget(
+    tmp_path: Path,
+) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    context = service._context("demo", session_id)
+    rows = []
+    for index in range(240):
+        minute, second = divmod(index, 60)
+        peer_mac = (
+            "0000000000a1" if index % 2 == 0 else "0000000000b1"
+        ) if index < 160 else "0000000000c1"
+        rows.append(
+            _active_chart_row(
+                index + 1,
+                f"2026-07-24 20:{minute:02d}:{second:02d}.000",
+                peer_mac,
+                local_rssi=35 + index % 5,
+            )
+        )
+    payload = {
+        "peer_segment": {"rows": []},
+        "run_segment": {
+            "rows": rows,
+            "events": [],
+            "estimated_interval_seconds": 1,
+            "continuity_gap_seconds": 5,
+        },
+    }
+
+    chart = service._chart_dto(
+        "demo",
+        context,
+        payload,
+        mode="active_path",
+        max_points=10,
+        time_from="",
+        time_to="",
+    )
+
+    stable_points = [
+        point
+        for point in chart.points
+        if point.timestamp >= "2026-07-24 20:02:40.000"
+    ]
+    assert len(stable_points) > 2
+    assert chart.effective_max_points > 160
+    assert "丢失连续趋势" in str(chart.downsample_warning)
 
 
 def test_real_peer_observation_stays_unresolved_across_mesh_dtos(tmp_path: Path) -> None:
@@ -1292,6 +1412,66 @@ def test_trackside_signal_chart_preserves_sustained_zero_boundaries_before_sampl
     assert chart.sustained_zero_run_count == 1
     assert chart.sustained_zero_total_duration_ms == 2_000
     assert chart.effective_max_frames >= 4
+
+
+def test_trackside_signal_chart_preserves_short_zero_recovery_and_trend_samples(
+    tmp_path: Path,
+) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    recovery_time = "2026-07-15 11:01:01.000"
+    with sqlite3.connect(detail) as conn:
+        _clear_mesh_chart_rows(conn)
+        row_id = 1
+        for frame in range(80):
+            minute, second = divmod(frame, 60)
+            timestamp = f"2026-07-15 11:{minute:02d}:{second:02d}.000"
+            if frame == 60:
+                peer_rssi = 0
+            elif frame == 50:
+                peer_rssi = 20
+            elif frame == 70:
+                peer_rssi = 60
+            else:
+                peer_rssi = 40 + frame % 4
+            _insert_active_mesh_link(
+                conn,
+                row_id=row_id,
+                sample_time=timestamp,
+                radio=1,
+                peer_name="AP-A",
+                peer_mac="00000000000a",
+                peer_rssi=peer_rssi,
+            )
+            row_id += 1
+            if frame <= 20 and frame % 2 == 0:
+                _insert_active_mesh_link(
+                    conn,
+                    row_id=row_id,
+                    sample_time=timestamp,
+                    radio=1,
+                    peer_name="AP-B",
+                    peer_mac="00000000000b",
+                    peer_rssi=30 + frame,
+                    link_state="STANDBY",
+                )
+                row_id += 1
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+
+    chart = service.get_trackside_signal_chart("demo", session_id, radio=1, max_points=10)
+
+    ap_a = next(item for item in chart.series if item.peer_name == "AP-A")
+    returned_times = {point.timestamp for point in ap_a.points}
+    later_trend_points = [
+        point
+        for point in ap_a.points
+        if point.timestamp >= "2026-07-15 11:00:40.000"
+    ]
+    assert recovery_time in returned_times
+    assert len(later_trend_points) > 4
+    assert chart.suppressed_zero_sample_count == 1
+    assert chart.suppressed_zero_run_count == 1
+    assert chart.effective_max_frames > 20
+    assert any("丢失连续趋势" in warning for warning in chart.warnings)
 
 
 def test_trackside_signal_chart_breaks_when_link_disappears_from_radio_frames(tmp_path: Path) -> None:

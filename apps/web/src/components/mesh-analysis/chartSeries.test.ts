@@ -92,6 +92,33 @@ describe('mesh ACTIVE chart series', () => {
       [recovered.timestamp, recovered.local_rssi],
     ])
   })
+
+  it('bridges an isolated ambiguous ACTIVE point but keeps ordinary missing samples as breaks', () => {
+    const first = point(1)
+    const ambiguous = {
+      ...point(2),
+      local_rssi: null,
+      is_anomaly: true,
+      bridge_ambiguous_active: true,
+    }
+    const recovered = point(3)
+    const noActive = {
+      ...point(4),
+      local_rssi: null,
+      is_anomaly: true,
+      bridge_ambiguous_active: false,
+    }
+    const afterNoActive = point(5)
+
+    const rssi = buildMeshRssiSeries([first, ambiguous, recovered, noActive, afterNoActive])[0].data
+
+    expect(rssi.map((item) => item.value)).toEqual([
+      [first.timestamp, first.local_rssi],
+      [recovered.timestamp, recovered.local_rssi],
+      [noActive.timestamp, null],
+      [afterNoActive.timestamp, afterNoActive.local_rssi],
+    ])
+  })
 })
 
 describe('mesh rate and counter chart series', () => {

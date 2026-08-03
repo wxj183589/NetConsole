@@ -184,7 +184,7 @@ export interface MeshChartPoint extends MeshIdentityMetadata {
   local_rssi: number | null; peer_rssi: number | null; local_signal: number | null; peer_signal: number | null
   local_rssi_zero_run?: MeshRssiZeroRun | null; peer_rssi_zero_run?: MeshRssiZeroRun | null
   local_tx_busy: number | null; peer_tx_busy: number | null; local_rx_busy: number | null; peer_rx_busy: number | null
-  is_switch: boolean; is_anomaly: boolean; gap_before: boolean; backups: MeshChartBackupLink[]
+  is_switch: boolean; is_anomaly: boolean; bridge_ambiguous_active?: boolean; gap_before: boolean; backups: MeshChartBackupLink[]
 }
 
 export interface MeshChartEvent {

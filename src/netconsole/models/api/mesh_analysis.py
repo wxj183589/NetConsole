@@ -518,6 +518,7 @@ class MeshChartPointDTO(ApiModel):
     segment_duration_seconds: float | None = None
     is_switch: bool = False
     is_anomaly: bool = False
+    bridge_ambiguous_active: bool = False
     gap_before: bool = False
     backups: list[MeshChartBackupLinkDTO] = Field(default_factory=list)
 

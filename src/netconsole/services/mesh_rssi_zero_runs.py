@@ -7,7 +7,7 @@ from statistics import median
 from typing import Callable, Literal, Sequence, TypeVar
 
 
-SUSTAINED_ZERO_MINIMUM_SAMPLE_COUNT = 2
+SUSTAINED_ZERO_MINIMUM_NATURAL_SECOND_COUNT = 2
 MINIMUM_SAMPLE_INTERVAL_MS = 100
 MAXIMUM_SAMPLE_INTERVAL_MS = 5_000
 DEFAULT_SAMPLE_INTERVAL_MS = 1_000
@@ -54,6 +54,7 @@ class RssiZeroRunSummary:
 class RssiZeroRunAnalysis:
     metadata_by_index: dict[int, RssiZeroRunMetadata]
     sustained_boundary_indices: frozenset[int]
+    suppressed_recovery_indices: frozenset[int]
     sample_interval_ms: int
     maximum_continuous_gap_ms: int
     summary: RssiZeroRunSummary
@@ -67,7 +68,7 @@ def analyze_rssi_zero_runs(
     boundary_before_selector: Callable[[T], bool] | None = None,
     fallback_sample_interval_ms: object = None,
     maximum_continuous_gap_ms: object = None,
-    sustained_zero_minimum_sample_count: int = SUSTAINED_ZERO_MINIMUM_SAMPLE_COUNT,
+    sustained_zero_minimum_natural_second_count: int = SUSTAINED_ZERO_MINIMUM_NATURAL_SECOND_COUNT,
 ) -> RssiZeroRunAnalysis:
     """Classify explicit zero runs without changing the source rows."""
 
@@ -85,6 +86,7 @@ def analyze_rssi_zero_runs(
     )
     metadata_by_index: dict[int, RssiZeroRunMetadata] = {}
     sustained_boundaries: set[int] = set()
+    suppressed_recoveries: set[int] = set()
     suppressed_sample_count = 0
     suppressed_run_count = 0
     sustained_run_count = 0
@@ -93,27 +95,35 @@ def analyze_rssi_zero_runs(
     zero_indices: list[int] = []
     previous_time: datetime | None = None
 
-    def flush(next_valid_time: datetime | None = None) -> None:
+    def flush(next_valid_time: datetime | None = None) -> RssiZeroState | None:
         nonlocal zero_indices
         nonlocal suppressed_sample_count, suppressed_run_count
         nonlocal sustained_run_count, sustained_total_duration_ms
         nonlocal sustained_longest_duration_ms
         if not zero_indices:
-            return
+            return None
         first_index = zero_indices[0]
         last_index = zero_indices[-1]
         start = timestamps[first_index]
         last = timestamps[last_index]
         if start is None or last is None:
             zero_indices = []
-            return
+            return None
         estimated_end = next_valid_time is None
         end = next_valid_time or (last + timedelta(milliseconds=sample_interval_ms))
         duration_ms = max(int(round((end - start).total_seconds() * 1_000)), 0)
         sample_count = len(zero_indices)
+        natural_second_count = len(
+            {
+                timestamp.replace(microsecond=0)
+                for index in zero_indices
+                if (timestamp := timestamps[index]) is not None
+            }
+        )
         state: RssiZeroState = (
             "sustained"
-            if sample_count >= max(int(sustained_zero_minimum_sample_count), 1)
+            if natural_second_count
+            >= max(int(sustained_zero_minimum_natural_second_count), 1)
             else "suppressed"
         )
         if state == "suppressed":
@@ -148,6 +158,7 @@ def analyze_rssi_zero_runs(
             if state == "sustained" and boundary in {"start", "end", "single"}:
                 sustained_boundaries.add(index)
         zero_indices = []
+        return state
 
     for index, row in enumerate(rows):
         timestamp = timestamps[index]
@@ -172,7 +183,8 @@ def analyze_rssi_zero_runs(
             previous_time = timestamp
             continue
         if value is not None:
-            flush(timestamp)
+            if flush(timestamp) == "suppressed":
+                suppressed_recoveries.add(index)
             previous_time = timestamp
             continue
         flush()
@@ -182,6 +194,7 @@ def analyze_rssi_zero_runs(
     return RssiZeroRunAnalysis(
         metadata_by_index=metadata_by_index,
         sustained_boundary_indices=frozenset(sustained_boundaries),
+        suppressed_recovery_indices=frozenset(suppressed_recoveries),
         sample_interval_ms=sample_interval_ms,
         maximum_continuous_gap_ms=continuous_gap_ms,
         summary=RssiZeroRunSummary(
