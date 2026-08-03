@@ -8,7 +8,7 @@ import {
   createMemoryHistory,
   createRouter,
 } from 'vue-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useWorkspaceStore } from '../stores/workspace'
 
@@ -515,7 +515,24 @@ beforeEach(() => {
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1920 })
   Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get: () => 960 })
   Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => 420 })
+  vi.stubGlobal('IntersectionObserver', undefined)
+  let frameId = 0
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    const id = ++frameId
+    queueMicrotask(() => callback(performance.now()))
+    return id
+  })
+  vi.stubGlobal('cancelAnimationFrame', () => undefined)
+  let idleId = 0
+  vi.stubGlobal('requestIdleCallback', (callback: IdleRequestCallback) => {
+    const id = ++idleId
+    queueMicrotask(() => callback({ didTimeout: false, timeRemaining: () => 50 } as IdleDeadline))
+    return id
+  })
+  vi.stubGlobal('cancelIdleCallback', () => undefined)
 })
+
+afterEach(() => vi.unstubAllGlobals())
 
 describe('AppLayout workspace tabs with real async routes', () => {
   it('keeps the real async MESH view and its loaded charts across 20 tab round trips', async () => {

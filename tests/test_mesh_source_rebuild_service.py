@@ -8,8 +8,10 @@ from pathlib import Path
 
 import pytest
 
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.parsers.mesh_log_parser import sha256_file
+from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.job_runner import run_job
@@ -19,6 +21,9 @@ from netconsole.services.mesh_source_rebuild_service import (
     MeshSourceRebuildService,
 )
 from netconsole.services.mesh_storage_service import MeshStorageService
+from netconsole.services.rail_transit.mesh_analysis_query_service import (
+    MeshAnalysisQueryService,
+)
 
 
 LINE = (
@@ -132,6 +137,90 @@ def test_source_rebuild_prefers_identity_only_remap_for_healthy_detail(
         ).fetchall()
         assert connection.execute("SELECT COUNT(*) FROM mesh_links").fetchone()[0] == link_count_before
     assert facts_after == facts_before
+
+
+def test_identity_only_remap_rebuilds_stale_base_only_index_and_projects_location(
+    tmp_path: Path,
+) -> None:
+    paths, profile, _result = _preview(tmp_path)
+    repository = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    source = repository.list_source_files()[0]
+    detail = Path(str(source["parsed_db_path"]))
+    raw = Path(str(source["archived_path"]))
+    raw_before = sha256_file(raw)
+    with sqlite3.connect(detail) as connection:
+        facts_before = connection.execute(
+            """
+            SELECT peer_mac_raw, sample_time, local_rssi_db, peer_rssi_db,
+                   local_tx_busy, peer_tx_busy, link_state, record_fingerprint
+            FROM mesh_links ORDER BY id
+            """
+        ).fetchall()
+        assert connection.execute(
+            "SELECT COUNT(*) FROM mesh_links WHERE peer_identity_status = 'matched'"
+        ).fetchone()[0] == 0
+
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    AcRepository(database).upsert_ap_extension_point(
+        {
+            "ap_name": "AP-BASE-01",
+            "ap_point_code": "P-001",
+            "ap_vendor": "",
+            "ap_mac_display": "30f5-277a-5a20",
+            "belong_type": "section",
+            "station_name": "站点A",
+            "section_name": "站点A-站点B",
+            "section_start_station": "站点A",
+            "section_end_station": "站点B",
+            "line_side": "上行",
+            "direction": "正向",
+            "mileage_text": "K12+300",
+        }
+    )
+
+    rebuilt = MeshSourceRebuildService(paths).rebuild_source(
+        "demo",
+        f"{profile.mr_id}:{source['id']}",
+    )
+
+    assert rebuilt["recovery_source"] == "identity_only_remap"
+    assert rebuilt["identity_remap"]["after"]["matched"] == 1
+    assert sha256_file(raw) == raw_before
+    with sqlite3.connect(detail) as connection:
+        facts_after = connection.execute(
+            """
+            SELECT peer_mac_raw, sample_time, local_rssi_db, peer_rssi_db,
+                   local_tx_busy, peer_tx_busy, link_state, record_fingerprint
+            FROM mesh_links ORDER BY id
+            """
+        ).fetchall()
+        identity = connection.execute(
+            """
+            SELECT peer_ap_name, peer_ap_mac, peer_site, peer_radio_id,
+                   peer_identity_status, peer_identity_source
+            FROM mesh_links ORDER BY id LIMIT 1
+            """
+        ).fetchone()
+    assert facts_after == facts_before
+    assert identity == (
+        "AP-BASE-01",
+        "30:f5:27:7a:5a:20",
+        "站点A",
+        1,
+        "matched",
+        "base_data",
+    )
+    link = MeshAnalysisQueryService(paths).list_link_details(
+        "demo",
+        f"{profile.mr_id}:{source['id']}",
+    ).items[0]
+    assert link.peer_ap_name == "AP-BASE-01"
+    assert link.peer_ap_mac == "30:f5:27:7a:5a:20"
+    assert link.station == "站点A"
+    assert link.section == "站点A-站点B"
+    assert link.mileage == "K12+300"
+    assert link.line_side == "上行"
 
 
 def test_identity_remap_finishes_successfully_when_cancel_arrives_after_commit(

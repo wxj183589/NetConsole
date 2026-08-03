@@ -176,7 +176,7 @@ def test_location_service_prefers_the_unpaged_location_source() -> None:
     assert snapshot.resolve({"peer_ap_mac": "000000000050"}).station == "车站E"
 
 
-def test_location_service_reads_effective_identity_from_site_index(
+def test_location_service_keeps_complete_base_location_and_supplements_identity_only_aps(
     tmp_path: Path,
 ) -> None:
     paths = PathResolver(tmp_path)
@@ -210,7 +210,20 @@ def test_location_service_reads_effective_identity_from_site_index(
 
         @staticmethod
         def list_ap_location_items(_site_id: str):
-            raise AssertionError("ready identity index must be the primary source")
+            return [
+                SimpleNamespace(
+                    name="AP0208",
+                    point_code="AP0208",
+                    mac="4873-97cc-e0e0",
+                    station="基础资料站",
+                    section="基础资料区间",
+                    section_start_station="起点站",
+                    section_end_station="终点站",
+                    mileage=SimpleNamespace(raw="K12+300"),
+                    line_side="",
+                    direction="上行",
+                )
+            ]
 
     snapshot = MeshApLocationService(Query(paths)).snapshot("demo")  # type: ignore[arg-type]
     location = snapshot.resolve({"peer_ap_mac": "4873-97cc-e080"})
@@ -222,4 +235,10 @@ def test_location_service_reads_effective_identity_from_site_index(
     assert location.identity_reason == ""
     base_location = snapshot.resolve({"peer_ap_mac": "4873-97cc-e0e0"})
     assert base_location.station == "基础资料站"
-    assert base_location.identity_source == "base_data"
+    assert base_location.section == "基础资料区间"
+    assert base_location.section_start_station == "起点站"
+    assert base_location.section_end_station == "终点站"
+    assert base_location.mileage == "K12+300"
+    assert base_location.line_side == "上行"
+    assert base_location.direction == "上行"
+    assert base_location.identity_source == "BASE_DATA_AP_MAC"

@@ -378,6 +378,20 @@ describe('AC Management optical detail behavior', () => {
     wrapper.unmount()
   })
 
+  it('shows a preserved AP MAC independently from an offline AP address', async () => {
+    const wrapper = mountView()
+    Object.assign((mocks.store!.selected as Record<string, Record<string, unknown>>).ap, {
+      ip: '',
+      mac: 'bc5a-3457-b5e0',
+      status: 'offline',
+    })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('.detail-heading p').text()).toBe('-- · bc5a-3457-b5e0')
+    expect(wrapper.find('.detail-heading .el-tag').text()).toBe('离线')
+    wrapper.unmount()
+  })
+
   it('keeps external terminal enabled in Electron and disabled with a reason in Browser mode', () => {
     const wrapper = mountView()
     const menu = wrapper.findComponent(dataTableStub).props('contextMenuItems') as Array<Record<string, unknown>>

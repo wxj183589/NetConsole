@@ -76,6 +76,12 @@ AP MAC。Radio 1 保持前 11 个十六进制字符并将末位改为 `F`；Radi
 48 位 Radio alias，查询仍做规范化后的完整等值匹配，不恢复
 `h3c_radio_block_36` 等前缀规则。
 
+FIT-AP 离线不改变物理身份。AC 资源写入会在本次 address 输出缺少该 AP
+时保留已有合法 `ap_mac` 和稳定 `ap_uuid`，同时允许 `ap_ip` 清空、Radio
+状态变为 `Down`。离线状态、空 IP 或 Radio Down 都不会排除 Identity entity
+或删除完整 R1/R2 derived alias。名称只可在同一 AC 的 FIT-AP 刷新中作为
+唯一连续性证据，不进入索引实体合并、`resolve_peer_mac()` 或 MESH 生产匹配。
+
 ## 4. 实体合并与冲突
 
 索引构建器只按稳定 AP UUID、完整规范化 AP MAC 或唯一序列号合并来源。
@@ -178,6 +184,11 @@ MESH DTO、页面和导出必须同时保留原始 Peer、规范化 Peer Radio �
 解析出的 AP 身份。`unresolved/ambiguous` 时原始 Peer 继续显示，AP
 名称、物理 AP MAC、站点、区间和里程保持空值，并携带状态、规则、
 来源、置信度和原因。
+
+例如离线物理 AP `bc5a-3457-b5e0` 的合法 H3C Radio 2 alias
+`bc5a-3457-b5ff` 仍通过完整 MAC 等值解析。来源 revision 改变后继续复用
+现有 identity-only remap：更新 distinct Peer 的身份投影，不重新解析或
+修改 raw MESH 日志。
 
 未匹配原因按事实区分为 `invalid_peer_mac`、`identity_index_missing`、
 `identity_index_stale`、`exact_alias_not_collected`、

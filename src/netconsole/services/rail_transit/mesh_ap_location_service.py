@@ -61,6 +61,7 @@ class MeshApLocationSnapshot:
         for item in items:
             mileage = getattr(getattr(item, "mileage", None), "raw", "")
             mac = format_mac(getattr(item, "mac", ""))
+            direction = str(getattr(item, "direction", "") or "")
             locations.append(
                 MeshApLocation(
                     name=str(
@@ -79,8 +80,8 @@ class MeshApLocationSnapshot:
                         getattr(item, "section_end_station", "") or ""
                     ),
                     mileage=str(mileage or ""),
-                    line_side=str(getattr(item, "line_side", "") or ""),
-                    direction=str(getattr(item, "direction", "") or ""),
+                    line_side=str(getattr(item, "line_side", "") or direction),
+                    direction=direction,
                     identity_status="matched" if mac else "unresolved",
                     identity_source="BASE_DATA_AP_MAC" if mac else "",
                 )
@@ -120,7 +121,7 @@ class MeshApLocationSnapshot:
                 section_start_station=str(row.get("section_start_station") or ""),
                 section_end_station=str(row.get("section_end_station") or ""),
                 mileage=str(row.get("mileage") or ""),
-                line_side=str(row.get("line_side") or ""),
+                line_side=str(row.get("line_side") or row.get("direction") or ""),
                 direction=str(row.get("direction") or ""),
                 identity_status=str(row.get("identity_status") or "unresolved"),
                 identity_source=str(row.get("identity_source") or ""),
@@ -134,6 +135,27 @@ class MeshApLocationSnapshot:
 
     def values(self) -> tuple[MeshApLocation, ...]:
         return self._locations
+
+    def with_identity_entities(
+        self,
+        rows: Iterable[Mapping[str, object]],
+    ) -> MeshApLocationSnapshot:
+        base_mac_keys = {
+            mac_key
+            for location in self._locations
+            if (mac_key := normalize_mac_key(location.mac))
+        }
+        identity_locations = self.from_identity_entities(rows).values()
+        return MeshApLocationSnapshot(
+            (
+                *self._locations,
+                *(
+                    location
+                    for location in identity_locations
+                    if normalize_mac_key(location.mac) not in base_mac_keys
+                ),
+            )
+        )
 
     def resolve(self, row: Mapping[str, Any]) -> MeshApLocation:
         mac_key = normalize_mac_key(
@@ -155,7 +177,7 @@ class MeshApLocationSnapshot:
             section_start_station=str(row.get("section_start_station") or ""),
             section_end_station=str(row.get("section_end_station") or ""),
             mileage=str(row.get("mileage") or ""),
-            line_side=str(row.get("line_side") or ""),
+            line_side=str(row.get("line_side") or row.get("direction") or ""),
             direction=str(row.get("direction") or ""),
             identity_status=(
                 "ambiguous"
@@ -174,6 +196,22 @@ class MeshApLocationService:
         self.base_query = base_query
 
     def snapshot(self, site_id: str) -> MeshApLocationSnapshot:
+        list_location_items = getattr(self.base_query, "list_ap_location_items", None)
+        if callable(list_location_items):
+            snapshot = MeshApLocationSnapshot.from_base_data_items(
+                list_location_items(site_id)
+            )
+        else:
+            first = self.base_query.list_aps(site_id, page=1, page_size=500)
+            items = list(first.items)
+            page = 2
+            while len(items) < first.total:
+                part = self.base_query.list_aps(site_id, page=page, page_size=500)
+                if not part.items:
+                    break
+                items.extend(part.items)
+                page += 1
+            snapshot = MeshApLocationSnapshot.from_base_data_items(items)
         paths = getattr(self.base_query, "paths", None)
         if paths is not None:
             database = Database(paths.site_db_path(site_id))
@@ -181,22 +219,10 @@ class MeshApLocationService:
                 identity_query = ApIdentityQueryService(database)
                 state = identity_query.index_state()
                 if state is not None and int(state.get("revision") or 0) > 0:
-                    return MeshApLocationSnapshot.from_identity_entities(
+                    return snapshot.with_identity_entities(
                         identity_query.list_entities()
                     )
-        list_location_items = getattr(self.base_query, "list_ap_location_items", None)
-        if callable(list_location_items):
-            return MeshApLocationSnapshot.from_base_data_items(list_location_items(site_id))
-        first = self.base_query.list_aps(site_id, page=1, page_size=500)
-        items = list(first.items)
-        page = 2
-        while len(items) < first.total:
-            part = self.base_query.list_aps(site_id, page=page, page_size=500)
-            if not part.items:
-                break
-            items.extend(part.items)
-            page += 1
-        return MeshApLocationSnapshot.from_base_data_items(items)
+        return snapshot
 
 
 def normalize_mesh_ap_mac(value: object) -> str:

@@ -100,6 +100,9 @@ class MeshPeerMappingService:
         return rows
 
     def refresh_repository(self, repo) -> int:
+        service = self._get_query_service()
+        if service is not None:
+            service.ensure_index("mesh_peer_mapping_refresh")
         rows = self.build_rows(repo.distinct_peer_macs())
         self.last_remap_summary = repo.replace_peer_identity_mappings(rows)
         revision = self.current_identity_revision()

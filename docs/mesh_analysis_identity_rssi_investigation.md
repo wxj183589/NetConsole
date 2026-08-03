@@ -3,6 +3,7 @@
 ## 基线与范围
 
 - 基线 SHA：`108cc0ba6eb6640e0a0d27bf3d6019628a0e0f9a`
+- RSSI 首次加载追加修复基线：`5dba2745ff326c3b75c1e445085961a6241c4126`
 - 产品版本：`v1.4.7`
 - 调查对象：轨道交通 → MR 原始 MESH 日志分析
 - 真实数据状态：仓库不包含列车07-MR-CT 的原始日志、parsed SQLite 或对应局点数据库。本记录不连接 AC/MR，也不访问或修改 `D:\NetConsoleData`。
@@ -22,6 +23,10 @@ Element Plus 的 `row-click` 参数为 `(row, column, event)`，旧方法把第�
 ### 问题 3：两个重型图表请求互相拖累
 
 旧实现使用 `Promise.all` 加载 active-path 与 trackside-signal，任一请求失败都会使整体失败；普通 GET 默认 15 秒也会误中止重型查询。现改为先加载 active-path，再按轨旁区域可见性懒加载 trackside-signal；两者拥有独立 loading/error/retry 状态，失败状态不再显示“采样点 0”。仅两个图表 API 使用局部超时（active 30 秒、轨旁 60 秒），普通 GET 默认仍为 15 秒，外部 AbortSignal 继续生效。
+
+在 `5dba2745` 后的追加修复中，轨旁可见性不再直接触发请求。主链响应写入后必须经过 `nextTick` 和两个 `requestAnimationFrame`，再通过 `requestIdleCallback(timeout=750)` 调度轨旁；不支持 idle callback 时使用 `setTimeout + requestAnimationFrame`。IntersectionObserver 只决定轨旁是否需要加载，不能越过主链首帧门。主链失败时轨旁不自动加载，轨旁重试也不重新请求主链。
+
+页面级协调器以 endpoint、session、来源文件/revision、Identity revision、Radio、目标点数、时间范围和 include flags 组成请求 key。同 key 的并发调用复用同一个 Promise；新 key、页面暂停、Radio/session 变化会取消旧请求，generation 和 AbortSignal 共同阻止旧响应覆盖新状态。KeepAlive 返回时 revision 未变化直接复用已完成缓存；若暂停时请求仍在途，则恢复后只重启被取消的阶段。
 
 ### 问题 4：外部删除目录后的三层状态不一致
 
@@ -68,6 +73,8 @@ MESH catalog、每个 MR 的 `mesh.sqlite` 和 detail SQLite 分别保存会话�
 - `switch_events(source_file_id, radio, event_time, id)`
 
 查询仍保持完整的时间戳、ACTIVE/STANDBY、切换、断点和统计语义；显示层只在受控行集上降采样。仓库没有目标现场数据，因此本次不能报告真实 SQL 耗时、读取行数、响应字节数、点数或 `EXPLAIN QUERY PLAN` 结果，不能声称已完成现场性能验收。
+
+本次追加修复没有修改后端 SQL、索引、DTO、既有关键点下采样或 30/60 秒局部超时，也没有在 GET 中增加缓存写入。现有 600 点有界查询与图表缓存继续使用；是否需要持久图表缓存、300 点预览层或新的可选字段协议，必须在显式测试数据副本完成 profile 后再决定，不能以缺少现场证据为由改变 MESH 业务语义。
 
 ## 证据缺口与禁止事项
 

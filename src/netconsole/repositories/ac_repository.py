@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime
 import re
 from uuid import uuid4
@@ -498,6 +499,13 @@ FIT_AP_OPTIONAL_DETAIL_FIELDS = (
     *(f"rid{rid}_{field}" for rid in (1, 2, 3) for field in ("status", "mode", "band", "usage", "clients", "bbssid")),
 )
 
+FIT_AP_STABLE_IDENTITY_FIELDS = (
+    "ap_name",
+    "ap_mac",
+    "serial_number",
+    "model",
+)
+
 AP_ENTITY_FIELDS = (
     "ap_uuid",
     "site_id",
@@ -693,9 +701,36 @@ class AcRepository:
         rows = self._dedupe_fit_ap_resource_rows(rows)
         self._warn_duplicate_apid_identities(ac_device_uuid, rows)
         with self.database.connect() as conn:
+            continuity_resources = [
+                dict(item)
+                for item in conn.execute(
+                    "SELECT * FROM ac_fit_ap_resources WHERE ac_device_uuid = ? ORDER BY id DESC",
+                    (ac_device_uuid,),
+                ).fetchall()
+            ]
+            continuity_entities = [
+                dict(item)
+                for item in conn.execute(
+                    "SELECT * FROM ap_entities WHERE ac_device_uuid = ? ORDER BY id DESC",
+                    (ac_device_uuid,),
+                ).fetchall()
+            ]
+            incoming_name_counts = Counter(
+                name.casefold()
+                for row in rows
+                if (name := self._clean_identity_value(row.get("ap_name")))
+            )
             current_uuids: list[str] = []
             for row in rows:
-                payload = self._upsert_fit_ap_resource(conn, ac_device_uuid, row, now)
+                payload = self._upsert_fit_ap_resource(
+                    conn,
+                    ac_device_uuid,
+                    row,
+                    now,
+                    continuity_resources=continuity_resources,
+                    continuity_entities=continuity_entities,
+                    incoming_name_counts=incoming_name_counts,
+                )
                 current_uuids.append(str(payload["ap_uuid"]))
             if current_uuids:
                 placeholders = ", ".join("?" for _ in current_uuids)
@@ -721,9 +756,25 @@ class AcRepository:
         ac_device_uuid: str,
         row: dict[str, object | None],
         now: str,
+        *,
+        continuity_resources: list[dict[str, object | None]] | None = None,
+        continuity_entities: list[dict[str, object | None]] | None = None,
+        incoming_name_counts: Counter[str] | None = None,
     ) -> dict[str, object | None]:
-        ap_uuid = self._resolve_fit_ap_entity_uuid(conn, ac_device_uuid, row)
+        ap_uuid = self._resolve_fit_ap_entity_uuid(
+            conn,
+            ac_device_uuid,
+            row,
+            continuity_resources=continuity_resources,
+            continuity_entities=continuity_entities,
+            incoming_name_counts=incoming_name_counts,
+        )
         resource_data = {**row, "ac_device_uuid": ac_device_uuid, "ap_uuid": ap_uuid}
+        resource_data, preserved_fields = self._merge_fit_ap_resource_identity(
+            conn,
+            resource_data,
+            ap_uuid,
+        )
         station = normalize_station_value(resource_data)
         if station and not str(resource_data.get("site") or "").strip():
             resource_data["site"] = station
@@ -731,11 +782,28 @@ class AcRepository:
             "SELECT * FROM ac_fit_ap_resources WHERE ap_uuid = ? ORDER BY id DESC LIMIT 1",
             (ap_uuid,),
         ).fetchone()
-        if existing_resource is not None:
+        is_offline = self._is_ap_offline(
+            resource_data.get("state")
+            or resource_data.get("state_raw")
+            or resource_data.get("state_display")
+        )
+        if existing_resource is not None and not is_offline:
             existing_data = dict(existing_resource)
             for field in FIT_AP_OPTIONAL_DETAIL_FIELDS:
                 if resource_data.get(field) in (None, "") and existing_data.get(field) not in (None, ""):
                     resource_data[field] = existing_data[field]
+        elif existing_resource is not None and is_offline:
+            existing_data = dict(existing_resource)
+            for rid in (1, 2, 3):
+                status_field = f"rid{rid}_status"
+                radio_fields = tuple(
+                    field for field in FIT_AP_RESOURCE_FIELDS if field.startswith(f"rid{rid}_")
+                )
+                if (
+                    self._clean_identity_value(resource_data.get(status_field)) == ""
+                    and any(existing_data.get(field) not in (None, "") for field in radio_fields)
+                ):
+                    resource_data[status_field] = "Down"
         if _has_lldp_payload(resource_data):
             source = resource_data.get("lldp_source") or resource_data.get("source") or "ac_bulk_lldp"
             lldp_data = normalize_lldp_payload({**resource_data, "lldp_source": source}, str(source))
@@ -767,6 +835,16 @@ class AcRepository:
         self._append_ap_resource_snapshot(conn, payload)
         self._append_radio_history(conn, payload)
         self._append_resource_lldp_history(conn, payload)
+        if preserved_fields:
+            app_logger.log_info(
+                "FIT_AP_STATIC_IDENTITY_PRESERVED",
+                (
+                    f"ac_device_uuid={ac_device_uuid}, ap_uuid={ap_uuid}, "
+                    f"ap_name={payload.get('ap_name') or ''}, "
+                    f"preserved_fields={','.join(preserved_fields)}, "
+                    f"collect_run_uuid={payload.get('collect_run_uuid') or ''}"
+                ),
+            )
         return payload
 
     def list_fit_ap_resources(self, ac_device_uuid: str) -> list[dict[str, object | None]]:
@@ -2597,7 +2675,16 @@ class AcRepository:
         placeholders = ", ".join("?" for _ in FIT_AP_RESOURCE_HISTORY_FIELDS)
         conn.execute(f"INSERT INTO ac_fit_ap_resource_history ({columns}) VALUES ({placeholders})", [row[field] for field in FIT_AP_RESOURCE_HISTORY_FIELDS])
 
-    def _resolve_fit_ap_entity_uuid(self, conn, ac_device_uuid: str, row: dict[str, object | None]) -> str:
+    def _resolve_fit_ap_entity_uuid(
+        self,
+        conn,
+        ac_device_uuid: str,
+        row: dict[str, object | None],
+        *,
+        continuity_resources: list[dict[str, object | None]] | None = None,
+        continuity_entities: list[dict[str, object | None]] | None = None,
+        incoming_name_counts: Counter[str] | None = None,
+    ) -> str:
         site_id = str(row.get("site_id") or "demo")
         requested_uuid = str(row.get("ap_uuid") or "").strip()
         if requested_uuid:
@@ -2633,9 +2720,195 @@ class AcRepository:
                     f"ac_device_uuid={ac_device_uuid}, site_id={site_id}, ap_mac={normalized_mac}, count={len(matches)}",
                 )
 
+        continuity_uuid = self._resolve_fit_ap_resource_continuity_uuid(
+            conn,
+            ac_device_uuid,
+            row,
+            continuity_resources=continuity_resources,
+            continuity_entities=continuity_entities,
+            incoming_name_counts=incoming_name_counts,
+        )
+        if continuity_uuid:
+            return continuity_uuid
         if requested_uuid:
             return requested_uuid
         return str(uuid4())
+
+    def _resolve_fit_ap_resource_continuity_uuid(
+        self,
+        conn,
+        ac_device_uuid: str,
+        row: dict[str, object | None],
+        *,
+        continuity_resources: list[dict[str, object | None]] | None,
+        continuity_entities: list[dict[str, object | None]] | None,
+        incoming_name_counts: Counter[str] | None,
+    ) -> str:
+        if self._clean_identity_value(row.get("serial_number")) or self._normalized_explicit_ap_mac(row):
+            return ""
+        ap_name = self._clean_identity_value(row.get("ap_name"))
+        if not ap_name:
+            return ""
+        name_key = ap_name.casefold()
+        if incoming_name_counts is not None and incoming_name_counts.get(name_key, 0) != 1:
+            app_logger.log_warning(
+                "FIT_AP_RESOURCE_CONTINUITY_AMBIGUOUS",
+                f"ac_device_uuid={ac_device_uuid}, ap_name={ap_name}, reason=incoming_name_not_unique",
+            )
+            return ""
+
+        resources = continuity_resources
+        if resources is None:
+            resources = [
+                dict(item)
+                for item in conn.execute(
+                    "SELECT * FROM ac_fit_ap_resources WHERE ac_device_uuid = ? ORDER BY id DESC",
+                    (ac_device_uuid,),
+                ).fetchall()
+            ]
+        resource_candidates = [
+            item
+            for item in resources
+            if self._clean_identity_value(item.get("ap_name")).casefold() == name_key
+        ]
+        entities = continuity_entities
+        if entities is None:
+            entities = [
+                dict(item)
+                for item in conn.execute(
+                    "SELECT * FROM ap_entities WHERE ac_device_uuid = ? ORDER BY id DESC",
+                    (ac_device_uuid,),
+                ).fetchall()
+            ]
+        entity_candidates = [
+            item
+            for item in entities
+            if self._clean_identity_value(item.get("ap_name")).casefold() == name_key
+        ]
+        incoming_apid = self._clean_identity_value(row.get("apid") or row.get("ap_id"))
+
+        def compatible(candidate: dict[str, object | None]) -> bool:
+            candidate_apid = self._clean_identity_value(candidate.get("apid") or candidate.get("ap_id"))
+            return not (incoming_apid and candidate_apid and incoming_apid != candidate_apid)
+
+        candidates = [
+            item
+            for item in (*resource_candidates, *entity_candidates)
+            if compatible(item) and self._clean_identity_value(item.get("ap_uuid"))
+        ]
+        if not candidates:
+            if resource_candidates or entity_candidates:
+                app_logger.log_warning(
+                    "FIT_AP_RESOURCE_CONTINUITY_CONFLICT",
+                    (
+                        f"ac_device_uuid={ac_device_uuid}, ap_name={ap_name}, "
+                        f"apid={incoming_apid}, reason=apid_mismatch"
+                    ),
+                )
+            return ""
+
+        stable_uuids = {
+            str(item["ap_uuid"])
+            for item in candidates
+            if self._normalized_explicit_ap_mac(item)
+            or self._clean_identity_value(item.get("serial_number"))
+        }
+        candidate_uuids = stable_uuids or {str(item["ap_uuid"]) for item in candidates}
+        if len(candidate_uuids) == 1:
+            return next(iter(candidate_uuids))
+        app_logger.log_warning(
+            "FIT_AP_RESOURCE_CONTINUITY_AMBIGUOUS",
+            (
+                f"ac_device_uuid={ac_device_uuid}, ap_name={ap_name}, "
+                f"apid={incoming_apid}, candidate_count={len(candidate_uuids)}"
+            ),
+        )
+        return ""
+
+    def _merge_fit_ap_resource_identity(
+        self,
+        conn,
+        incoming: dict[str, object | None],
+        ap_uuid: str,
+    ) -> tuple[dict[str, object | None], list[str]]:
+        merged = dict(incoming)
+        sources: list[dict[str, object | None]] = []
+        for table in ("ac_fit_ap_resources", "ap_entities"):
+            item = conn.execute(
+                f"SELECT * FROM {table} WHERE ap_uuid = ? ORDER BY id DESC LIMIT 1",
+                (ap_uuid,),
+            ).fetchone()
+            if item is not None:
+                sources.append(dict(item))
+
+        preserved_fields: list[str] = []
+        for field in FIT_AP_STABLE_IDENTITY_FIELDS:
+            if field == "ap_mac":
+                incoming_value = self._normalized_explicit_ap_mac(merged)
+                fallback = next(
+                    (self._normalized_explicit_ap_mac(source) for source in sources if self._normalized_explicit_ap_mac(source)),
+                    "",
+                )
+            else:
+                incoming_value = self._clean_identity_value(merged.get(field))
+                fallback = next(
+                    (
+                        self._clean_identity_value(source.get(field))
+                        for source in sources
+                        if self._clean_identity_value(source.get(field))
+                    ),
+                    "",
+                )
+            if not incoming_value and not fallback:
+                fallback = self._latest_fit_ap_identity_history_value(
+                    conn,
+                    ap_uuid,
+                    field,
+                )
+            if incoming_value:
+                merged[field] = incoming_value
+            elif fallback:
+                merged[field] = fallback
+                preserved_fields.append(field)
+            else:
+                merged[field] = None
+        return merged, preserved_fields
+
+    def _latest_fit_ap_identity_history_value(
+        self,
+        conn,
+        ap_uuid: str,
+        field: str,
+    ) -> str:
+        if field not in FIT_AP_STABLE_IDENTITY_FIELDS:
+            return ""
+        history_tables = (
+            ("ac_fit_ap_resource_history", FIT_AP_RESOURCE_HISTORY_FIELDS),
+            ("ap_resource_snapshots", AP_RESOURCE_SNAPSHOT_FIELDS),
+        )
+        for table, fields in history_tables:
+            if field not in fields:
+                continue
+            rows = conn.execute(
+                f"""
+                SELECT {field}
+                FROM {table}
+                WHERE ap_uuid = ?
+                  AND {field} IS NOT NULL
+                  AND lower(trim({field})) NOT IN ('', '-', 'n/a', 'na', 'null')
+                ORDER BY id DESC
+                """,
+                (ap_uuid,),
+            ).fetchall()
+            for row in rows:
+                value = (
+                    self._mac_from_text(row[field])
+                    if field == "ap_mac"
+                    else self._clean_identity_value(row[field])
+                )
+                if value:
+                    return value
+        return ""
 
     def _upsert_ap_entity(self, conn, payload: dict[str, object | None]) -> None:
         now = self._now()
@@ -2654,7 +2927,7 @@ class AcRepository:
                 "ap_name": self._non_empty(payload.get("ap_name"), existing_data.get("ap_name")),
                 "ap_mac": self._non_empty(self._normalized_ap_mac(payload), existing_data.get("ap_mac")),
                 "ap_id": self._non_empty(payload.get("apid") or payload.get("ap_id"), existing_data.get("ap_id")),
-                "ap_ip": self._non_empty(payload.get("ap_ip"), existing_data.get("ap_ip")),
+                "ap_ip": self._clean_identity_value(payload.get("ap_ip")) or None,
                 "serial_number": self._non_empty(payload.get("serial_number"), existing_data.get("serial_number")),
                 "model": self._non_empty(payload.get("model"), existing_data.get("model")),
                 "group_name": self._non_empty(payload.get("group_name"), existing_data.get("group_name")),
@@ -3093,14 +3366,14 @@ class AcRepository:
     @staticmethod
     def _non_empty(primary: object, fallback: object = None) -> object:
         text = str(primary or "").strip()
-        if text and text not in {"-", "N/A", "n/a"}:
+        if text and text.casefold() not in {"-", "n/a", "na", "null"}:
             return primary
         return fallback
 
     @staticmethod
     def _clean_identity_value(value: object) -> str:
         text = str(value or "").strip()
-        if text and text not in {"-", "N/A", "n/a"}:
+        if text and text.casefold() not in {"-", "n/a", "na", "null"}:
             return text
         return ""
 

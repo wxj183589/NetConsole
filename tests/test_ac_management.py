@@ -550,6 +550,139 @@ def test_fit_ap_resources_reuse_ap_uuid_when_apid_changes(tmp_path):
     assert entity["ap_id"] == "2001"
 
 
+def test_fit_ap_resource_offline_refresh_preserves_identity_and_clears_runtime_state(
+    tmp_path,
+):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [
+            {
+                "ap_name": "bc5a-3457-b5e0",
+                "apid": "1346",
+                "ap_mac": "bc5a-3457-b5e0",
+                "serial_number": "SN-OFFLINE-1",
+                "ap_ip": "10.122.0.10",
+                "state": "R/M",
+                "rid1_status": "Up",
+                "rid1_channel": "149",
+                "rid2_status": "Up",
+                "rid2_channel": "153",
+            }
+        ],
+    )
+    first = repository.list_fit_ap_resources("ac-1")[0]
+
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [
+            {
+                "ap_name": "bc5a-3457-b5e0",
+                "apid": "1346",
+                "ap_mac": None,
+                "serial_number": None,
+                "ap_ip": None,
+                "state": "I",
+            }
+        ],
+    )
+
+    current = repository.list_fit_ap_resources("ac-1")[0]
+    entities = repository.list_ap_entities("ac-1")
+    assert current["ap_uuid"] == first["ap_uuid"]
+    assert current["ap_mac"] == "bc5a-3457-b5e0"
+    assert current["serial_number"] == "SN-OFFLINE-1"
+    assert current["ap_ip"] is None
+    assert current["state"] == "I"
+    assert current["rid1_status"] == "Down"
+    assert current["rid2_status"] == "Down"
+    assert current["rid1_channel"] is None
+    assert len(entities) == 1
+    assert entities[0]["ap_uuid"] == first["ap_uuid"]
+    assert entities[0]["ap_mac"] == "bc5a-3457-b5e0"
+    assert entities[0]["ap_ip"] is None
+    assert entities[0]["is_offline"] == 1
+
+
+def test_fit_ap_resource_refresh_restores_identity_from_snapshot_when_current_rows_are_empty(
+    tmp_path,
+):
+    database = make_database(tmp_path)
+    repository = AcRepository(database)
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [
+            {
+                "ap_name": "AP-HISTORY",
+                "apid": "88",
+                "ap_mac": "0011-2233-4455",
+                "serial_number": "SN-HISTORY",
+            }
+        ],
+    )
+    first = repository.list_fit_ap_resources("ac-1")[0]
+    with database.connect() as connection:
+        connection.execute(
+            "UPDATE ac_fit_ap_resources SET ap_mac = NULL, serial_number = NULL WHERE ap_uuid = ?",
+            (first["ap_uuid"],),
+        )
+        connection.execute(
+            "UPDATE ap_entities SET ap_mac = NULL, serial_number = NULL WHERE ap_uuid = ?",
+            (first["ap_uuid"],),
+        )
+        connection.execute(
+            "UPDATE ac_fit_ap_resource_history SET ap_mac = NULL, serial_number = NULL WHERE ap_uuid = ?",
+            (first["ap_uuid"],),
+        )
+        connection.commit()
+
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [{"ap_name": "AP-HISTORY", "apid": "88", "state": "I"}],
+    )
+    recovered = repository.list_fit_ap_resources("ac-1")[0]
+
+    assert recovered["ap_uuid"] == first["ap_uuid"]
+    assert recovered["ap_mac"] == "0011-2233-4455"
+    assert recovered["serial_number"] == "SN-HISTORY"
+
+
+def test_fit_ap_resource_name_continuity_does_not_guess_when_existing_name_is_ambiguous(
+    tmp_path,
+):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [
+            {"ap_name": "DUPLICATE", "ap_mac": "0011-2233-4455", "serial_number": "SN-1"},
+            {"ap_name": "DUPLICATE", "ap_mac": "0011-2233-5566", "serial_number": "SN-2"},
+        ],
+    )
+    previous_uuids = {row["ap_uuid"] for row in repository.list_fit_ap_resources("ac-1")}
+
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [{"ap_name": "DUPLICATE", "ap_mac": None, "serial_number": None, "state": "I"}],
+    )
+    current = repository.list_fit_ap_resources("ac-1")[0]
+
+    assert current["ap_uuid"] not in previous_uuids
+    assert current["ap_mac"] is None
+    assert current["serial_number"] is None
+
+
+def test_fit_ap_resource_does_not_derive_mac_from_mac_like_name(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [{"ap_name": "bc5a-3457-b5e0", "apid": "99", "state": "I"}],
+    )
+
+    current = repository.list_fit_ap_resources("ac-1")[0]
+    assert current["ap_mac"] is None
+
+
 def test_fit_ap_resources_do_not_merge_different_identity_with_same_apid(tmp_path):
     repository = AcRepository(make_database(tmp_path))
     repository.replace_fit_ap_resources(
@@ -752,7 +885,14 @@ def test_fit_ap_optical_and_metadata_use_ap_uuid_association(tmp_path):
 def test_fit_ap_optical_history_is_appended_and_sorted(tmp_path):
     repository = AcRepository(make_database(tmp_path))
     repository.replace_fit_ap_resources(
-        "ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001", "ap_mac": "0011"}]
+        "ac-1",
+        [
+            {
+                "ap_name": "ap-a",
+                "serial_number": "SN-001",
+                "ap_mac": "0011-2233-4455",
+            }
+        ],
     )
     ap_uuid = repository.list_fit_ap_resources("ac-1")[0]["ap_uuid"]
 
@@ -799,7 +939,7 @@ def test_fit_ap_optical_history_is_appended_and_sorted(tmp_path):
 
     history = repository.list_fit_ap_optical_history_by_ap(ap_uuid)
     assert [row["rx_power"] for row in history[:2]] == ["-7", "-8"]
-    assert history[0]["ap_mac"] == "0011"
+    assert history[0]["ap_mac"] == "0011-2233-4455"
     assert history[0]["voltage"] == "3.31"
     assert history[0]["bias_current"] == "5.10"
     assert history[0]["rx_low_alarm"] == "-19.00"
@@ -1583,6 +1723,48 @@ AP name                  RID State Channel          BW    Usage TxPower Clients
     assert resources[0]["ap_mac"] == "10b6-5e92-d3e0"
     assert resources[0]["rid1_channel"] == "149"
     assert resources[0]["rid2_tx_power"] == "17"
+
+
+def test_address_output_missing_offline_ap_keeps_persisted_mac(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [
+            {
+                "ap_name": "AP-OFFLINE",
+                "apid": "11",
+                "ap_mac": "bc5a-3457-b5e0",
+                "serial_number": "SN-OFFLINE",
+                "ap_ip": "10.1.1.11",
+                "state": "R/M",
+            }
+        ],
+    )
+    previous_uuid = repository.list_fit_ap_resources("ac-1")[0]["ap_uuid"]
+    _summary, resources = h3c_ac_collect_service.parse_ac_resource_outputs(
+        {
+            "display wlan ap all": """
+AP name             APID State Model      Serial ID     Group name       Online time
+AP-ONLINE           10   R/M   WA6624X    SN-ONLINE    default-group    1:02:03:04
+AP-OFFLINE          11   I     WA6624X    N/A          default-group    0:00:00:00
+""",
+            "display wlan ap all address": """
+AP name             IP address       MAC address
+AP-ONLINE           10.1.1.10       bc5a-3457-b520
+""",
+        },
+        "ac-1",
+        "run-offline",
+        "files/rail_transit/trackside_ap/raw/ac/run-offline/ac.log",
+    )
+
+    repository.replace_fit_ap_resources("ac-1", resources)
+    by_name = {row["ap_name"]: row for row in repository.list_fit_ap_resources("ac-1")}
+    assert by_name["AP-ONLINE"]["ap_mac"] == "bc5a-3457-b520"
+    assert by_name["AP-OFFLINE"]["ap_uuid"] == previous_uuid
+    assert by_name["AP-OFFLINE"]["ap_mac"] == "bc5a-3457-b5e0"
+    assert by_name["AP-OFFLINE"]["ap_ip"] is None
+    assert by_name["AP-OFFLINE"]["state"] == "I"
 
 
 def test_state_cpu_and_memory_parsers():

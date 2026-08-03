@@ -19,6 +19,7 @@ from typing import BinaryIO
 from uuid import uuid4
 
 from netconsole.core import app_logger
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.mesh_log_models import MeshMrProfile
 from netconsole.parsers.mesh_log_parser import (
@@ -30,6 +31,7 @@ from netconsole.parsers.mesh_log_parser import (
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 from netconsole.repositories.mesh_mr_repository import SCHEMA_VERSION, MeshMrRepository, MeshSchemaRebuildRequired
 from netconsole.repositories.mesh_source_index_repository import MeshSourceIndexRepository
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.mesh_import_limits import (
     MESH_SINGLE_FILE_MAX_BYTES,
@@ -802,6 +804,7 @@ class MeshBundleImportService:
                         f"日志正文已归属于其他 MR：{other['profile_name']}，请检查映射",
                     )
             profiles = self._profiles_for_mappings(approved)
+            self._ensure_identity_snapshot_current()
             self._prepare_transaction(transaction, profiles)
             staging_paths = PathResolver(
                 app_root=self.paths.app_root,
@@ -1072,6 +1075,30 @@ class MeshBundleImportService:
             _copy_tree_snapshot(source, target)
             if MeshMrRepository._is_compact_schema(target / "mesh.sqlite"):
                 self._rewrite_snapshot_paths_to_staging(source, target)
+
+    def _ensure_identity_snapshot_current(self) -> None:
+        database_path = self.paths.site_db_path(self.site_name)
+        if not database_path.is_file():
+            return
+        result = ApIdentityQueryService(Database(database_path)).ensure_index(
+            "mesh_bundle_import_snapshot"
+        )
+        if result is None:
+            return
+        event = (
+            "AP_IDENTITY_BASE_ONLY_BUILD_COMPLETED"
+            if result.ac_record_count == 0
+            else "AP_IDENTITY_INDEX_BUILD_COMPLETED"
+        )
+        app_logger.log_info(
+            event,
+            (
+                f"site={self.site_name} revision={result.revision} "
+                f"source_revision={result.source_revision} "
+                f"base_records={result.base_record_count} "
+                f"derived_aliases={result.derived_alias_count}"
+            ),
+        )
 
     def _rewrite_snapshot_paths_to_staging(
         self,

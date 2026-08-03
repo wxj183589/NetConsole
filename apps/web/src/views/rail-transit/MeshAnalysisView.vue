@@ -130,6 +130,7 @@ const rssiActivePath = ref<MeshPathChart | null>(null)
 const rssiActiveLoading = ref(false)
 const rssiActiveLoaded = ref(false)
 const rssiActiveError = ref('')
+const rssiActivePaintReady = ref(false)
 const tracksideSignal = shallowRef<MeshTracksideSignalChartData | null>(null)
 const tracksideSeriesCache = shallowRef<TracksideSeriesCache | null>(null)
 const tracksideLoading = ref(false)
@@ -261,6 +262,14 @@ let rssiViewportRevision = 0
 let tracksideObserver: IntersectionObserver | null = null
 let tracksideAbortController: AbortController | null = null
 let rssiActiveAbortController: AbortController | null = null
+let rssiActiveRequestKey = ''
+let rssiActiveLoadedKey = ''
+let rssiActiveRequestPromise: Promise<void> | null = null
+let tracksideRequestKey = ''
+let tracksideLoadedKey = ''
+let tracksideRequestPromise: Promise<void> | null = null
+let cancelActivePaintWait: (() => void) | null = null
+let cancelTracksideIdleSchedule: (() => void) | null = null
 let tracksideRequestGeneration = 0
 let tracksideWorkloadCycle = 0
 let rendererWorkloadRevision = 0
@@ -648,6 +657,158 @@ function resizeVisibleRssiCharts(): void {
   })
 }
 
+function meshChartRevisionKey(): string {
+  const source = selectedSource.value
+  if (!source) return 'no-source'
+  return [
+    source.source_file_id,
+    source.raw_sha256,
+    source.modified_at,
+    source.identity_index_revision,
+    source.identity_current_revision,
+    source.identity_mapped_at,
+  ].join(':')
+}
+
+function meshChartRequestKey(
+  endpoint: 'active-path' | 'trackside-signal',
+  sessionId: string,
+  values: Record<string, string | number | boolean | null | undefined>,
+): string {
+  return JSON.stringify([
+    endpoint,
+    sessionId,
+    meshChartRevisionKey(),
+    values.radio ?? null,
+    values.max_points ?? null,
+    values.time_from ?? null,
+    values.time_to ?? null,
+    values.include_peer ?? null,
+    values.include_events ?? null,
+    values.include_station_band ?? null,
+    values.include_standby ?? null,
+  ])
+}
+
+function cancelDeferredRssiChartWork(): void {
+  cancelActivePaintWait?.()
+  cancelActivePaintWait = null
+  cancelTracksideIdleSchedule?.()
+  cancelTracksideIdleSchedule = null
+}
+
+function cancelInFlightRssiChartRequests(): void {
+  rssiActiveAbortController?.abort()
+  rssiActiveAbortController = null
+  rssiActiveRequestPromise = null
+  rssiActiveRequestKey = ''
+  rssiActiveLoading.value = false
+  tracksideAbortController?.abort()
+  tracksideAbortController = null
+  tracksideRequestPromise = null
+  tracksideRequestKey = ''
+  tracksideLoading.value = false
+}
+
+async function waitForActiveRssiFirstPaint(generation: number): Promise<boolean> {
+  cancelActivePaintWait?.()
+  await nextTick()
+  if (
+    generation !== detailGeneration
+    || !pageActive.value
+    || activeTab.value !== 'rssi'
+    || !rssiActiveLoaded.value
+    || rssiActiveError.value
+  ) return false
+
+  return new Promise<boolean>((resolve) => {
+    let firstFrame: number | null = null
+    let secondFrame: number | null = null
+    let settled = false
+    const finish = (painted: boolean) => {
+      if (settled) return
+      settled = true
+      cancelActivePaintWait = null
+      resolve(painted)
+    }
+    cancelActivePaintWait = () => {
+      if (firstFrame !== null) cancelAnimationFrame(firstFrame)
+      if (secondFrame !== null) cancelAnimationFrame(secondFrame)
+      finish(false)
+    }
+    firstFrame = requestAnimationFrame(() => {
+      firstFrame = null
+      if (generation !== detailGeneration || !pageActive.value || activeTab.value !== 'rssi') {
+        finish(false)
+        return
+      }
+      secondFrame = requestAnimationFrame(() => {
+        secondFrame = null
+        finish(
+          generation === detailGeneration
+          && pageActive.value
+          && activeTab.value === 'rssi'
+          && rssiActiveLoaded.value
+          && !rssiActiveError.value,
+        )
+      })
+    })
+  })
+}
+
+function scheduleTracksideAfterActivePaint(
+  generation = detailGeneration,
+  force = false,
+): void {
+  cancelTracksideIdleSchedule?.()
+  cancelTracksideIdleSchedule = null
+  if (
+    generation !== detailGeneration
+    || !pageActive.value
+    || activeTab.value !== 'rssi'
+    || !rssiActivePaintReady.value
+    || !rssiActiveLoaded.value
+    || Boolean(rssiActiveError.value)
+    || !tracksideChartVisible.value
+    || tracksideRecoveryBlocked.value
+  ) return
+
+  let active = true
+  let idleHandle: number | null = null
+  let timerHandle: number | null = null
+  let frameHandle: number | null = null
+  const run = () => {
+    if (!active) return
+    active = false
+    cancelTracksideIdleSchedule = null
+    if (
+      generation === detailGeneration
+      && pageActive.value
+      && activeTab.value === 'rssi'
+      && rssiActivePaintReady.value
+      && !rssiActiveError.value
+    ) void loadTracksideSignal(generation, force)
+  }
+  const idleWindow = window as Window & {
+    requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number
+    cancelIdleCallback?: (handle: number) => void
+  }
+  cancelTracksideIdleSchedule = () => {
+    active = false
+    if (idleHandle !== null) idleWindow.cancelIdleCallback?.(idleHandle)
+    if (timerHandle !== null) window.clearTimeout(timerHandle)
+    if (frameHandle !== null) cancelAnimationFrame(frameHandle)
+  }
+  if (idleWindow.requestIdleCallback) {
+    idleHandle = idleWindow.requestIdleCallback(run, { timeout: 750 })
+    return
+  }
+  timerHandle = window.setTimeout(() => {
+    timerHandle = null
+    frameHandle = requestAnimationFrame(run)
+  }, 0)
+}
+
 function observeTracksideChart(): void {
   if (!pageActive.value || tracksideChartVisible.value || activeTab.value !== 'rssi') return
   if (typeof IntersectionObserver === 'undefined') {
@@ -732,8 +893,13 @@ function reportRendererWorkload(phase: RendererWorkloadPhase): void {
 }
 
 function releaseTracksideResources(reportDisposed = true): void {
+  cancelTracksideIdleSchedule?.()
+  cancelTracksideIdleSchedule = null
   tracksideAbortController?.abort()
   tracksideAbortController = null
+  tracksideRequestKey = ''
+  tracksideLoadedKey = ''
+  tracksideRequestPromise = null
   tracksideRequestGeneration += 1
   const hadTracksideResources = Boolean(tracksideSeriesCache.value || tracksideSignal.value)
   disposeTracksideSeriesCache(tracksideSeriesCache.value)
@@ -754,7 +920,29 @@ function routeRequestedSessionId(): string | null {
 }
 
 function isAbortError(reason: unknown): boolean {
-  return reason instanceof Error && reason.name === 'AbortError'
+  return (reason instanceof Error && reason.name === 'AbortError')
+    || (reason instanceof ApiRequestError && reason.code === 'REQUEST_ABORTED')
+}
+
+function meshOverviewErrorMessage(reason: unknown): string {
+  if (!(reason instanceof ApiRequestError)) {
+    return reason instanceof Error ? reason.message : 'MESH 来源查询失败'
+  }
+  if (reason.code === 'REQUEST_TIMEOUT') {
+    const timeoutMs = Number(reason.details.timeout_ms || 0)
+    return timeoutMs > 0
+      ? `MESH 来源查询超时（${timeoutMs} ms）。`
+      : 'MESH 来源查询超时。'
+  }
+  if (reason.status > 0) {
+    const diagnostics = [
+      reason.code || 'HTTP_ERROR',
+      reason.details.request_id ? `request_id：${String(reason.details.request_id)}` : '',
+    ].filter(Boolean).join('；')
+    return `MESH 来源查询失败，Backend 仍在线：${reason.message}${diagnostics ? `（${diagnostics}）` : ''}`
+  }
+  if (reason.code === 'BACKEND_RESTARTED') return 'Backend 正在恢复，请稍后重试。'
+  return 'Backend 已停止或当前不可达，正在尝试恢复。'
 }
 
 async function restoreRendererRecovery(): Promise<void> {
@@ -800,6 +988,7 @@ const tracksidePaneAlertSummary = computed(() => {
   if (tracksideRecoveryBlocked.value) return tracksideRecoveryMessage.value
   if (tracksideError.value) return `轨旁信号图加载失败：${tracksideError.value}`
   if (tracksideLoading.value) return '正在加载轨旁信号图…'
+  if (!rssiActivePaintReady.value) return '等待主链 RSSI 图完成首帧绘制'
   if (!tracksideLoaded.value) return tracksideChartVisible.value ? '轨旁信号图尚未加载' : '轨旁信号图将在滚动到可见区域后加载'
   const data = tracksideSignal.value
   if (!data || !data.warnings.length) return ''
@@ -843,6 +1032,8 @@ function pauseMeshAnalysisPage(): void {
   overviewGeneration += 1
   rssiActiveAbortController?.abort()
   rssiActiveAbortController = null
+  cancelDeferredRssiChartWork()
+  cancelInFlightRssiChartRequests()
   rssiActiveLoading.value = false
   if (activeSessionOpenId) {
     pendingRequestedSessionId.value = activeSessionOpenId
@@ -872,6 +1063,14 @@ async function resumeMeshAnalysisPage(): Promise<void> {
   if (requestedSessionId) await applyRequestedSession(requestedSessionId)
   await restoreRendererRecoveryOnce()
   if (!pageActive.value) return
+  if (activeTab.value === 'rssi' && selected.value) {
+    if (!rssiActiveLoaded.value || !rssiActivePaintReady.value) {
+      await loadFullRssiCharts(detailGeneration)
+    } else {
+      observeTracksideChart()
+      scheduleTracksideAfterActivePaint()
+    }
+  }
   refreshDetailPanels()
   resizeVisibleRssiCharts()
   observeTracksideChart()
@@ -894,6 +1093,8 @@ function disposeMeshAnalysisPage(): void {
   activeSessionIntentPromise = null
   rssiActiveAbortController?.abort()
   rssiActiveAbortController = null
+  cancelDeferredRssiChartWork()
+  cancelInFlightRssiChartRequests()
   detailGeneration += 1
   window.removeEventListener('keydown', handleRssiLayoutKeydown)
   window.removeEventListener(BEFORE_SITE_SWITCH_EVENT, disposeMeshAnalysisPage)
@@ -942,8 +1143,11 @@ watch(activeTab, (tab) => {
   if (selected.value) void loadTab(tab)
   if (tab === 'rssi') {
     void nextTick(observeTracksideChart)
+    scheduleTracksideAfterActivePaint()
     resizeVisibleRssiCharts()
   } else {
+    cancelDeferredRssiChartWork()
+    cancelInFlightRssiChartRequests()
     rssiImmersive.value = false
   }
   refreshDetailPanels()
@@ -966,7 +1170,7 @@ watch(tracksideChartVisible, (visible) => {
     && !tracksideSignal.value
     && !tracksideLoading.value
     && !tracksideRecoveryBlocked.value
-  ) void loadTracksideSignal()
+  ) scheduleTracksideAfterActivePaint()
 })
 watch(sessionExpanded, refreshDetailPanels)
 watch([linkedMrId, baseMrs], applyLinkedMrProfileName)
@@ -1011,7 +1215,7 @@ async function refreshOverview(silent = false, force = false): Promise<void> {
     failureCount = 0
   } catch (reason) {
     if (isAbortError(reason) || controller.signal.aborted || generation !== overviewGeneration) return
-    error.value = reason instanceof Error ? reason.message : 'Mesh 分析结果加载失败'
+    error.value = meshOverviewErrorMessage(reason)
     failureCount += 1
   } finally {
     if (overviewAbortController === controller) overviewAbortController = null
@@ -1128,8 +1332,13 @@ async function openSessionById(
   detailLoading.value = true
   analysisResultUpdatePending.value = false
   preserveCachedViewOnTaskCompletion = false
+  cancelDeferredRssiChartWork()
   rssiActiveAbortController?.abort()
   rssiActiveAbortController = null
+  rssiActiveRequestKey = ''
+  rssiActiveLoadedKey = ''
+  rssiActiveRequestPromise = null
+  rssiActivePaintReady.value = false
   releaseTracksideResources()
   tracksideWorkloadCycle += 1
   reportedWorkloadPhases.clear()
@@ -1300,77 +1509,100 @@ function isLatestChartRequest(metric: MeshChartMetric, generation: number): bool
   return generation === (metric === 'rssi' ? rssiChartGeneration : busyChartGeneration)
 }
 
-async function loadTracksideSignal(generation = detailGeneration, force = false): Promise<void> {
-  if (!selected.value) return
-  if (!force && (tracksideLoading.value || tracksideLoaded.value)) return
+function loadTracksideSignal(generation = detailGeneration, force = false): Promise<void> {
+  if (!selected.value) return Promise.resolve()
+  const sessionId = selected.value.session.session_id
+  const values = {
+    max_points: visiblePoints.value,
+    radio: chartRadio.value,
+    time_from: undefined,
+    time_to: undefined,
+  }
+  const requestKey = meshChartRequestKey(
+    'trackside-signal',
+    sessionId,
+    { ...values, include_standby: true },
+  )
+  if (tracksideRequestPromise && tracksideRequestKey === requestKey) {
+    return tracksideRequestPromise
+  }
+  if (!force && tracksideLoaded.value && tracksideLoadedKey === requestKey) {
+    return Promise.resolve()
+  }
   releaseTracksideResources()
   if (!reserveTracksideCache(meshRuntimeToken, 2)) {
     ElMessage.warning('当前已有 2 个轨旁图处于加载或缓存状态，请先关闭一个 MESH 标签或释放其图表。')
-    return
+    return Promise.resolve()
   }
-  await nextTick()
   const requestGeneration = ++tracksideRequestGeneration
   const controller = new AbortController()
   tracksideAbortController = controller
+  tracksideRequestKey = requestKey
   tracksideWorkloadCycle += 1
   tracksideLoading.value = true
   reportRendererWorkload('trackside-request-started')
-  try {
-    const result = markRaw(await getMeshTracksideSignalChart(
-      selected.value.session.session_id,
-      {
-        max_points: visiblePoints.value,
-        radio: chartRadio.value,
-        time_from: undefined,
-        time_to: undefined,
-      },
-      controller.signal,
-    ))
-    if (
-      generation !== detailGeneration
-      || requestGeneration !== tracksideRequestGeneration
-      || controller.signal.aborted
-    ) return
-    tracksideSignal.value = result
-    reportRendererWorkload('trackside-response-received')
-    reportRendererWorkload('trackside-cache-building')
-    const cache = markRaw(buildTracksideSeriesCache(result.series))
-    if (
-      generation !== detailGeneration
-      || requestGeneration !== tracksideRequestGeneration
-      || controller.signal.aborted
-    ) {
-      disposeTracksideSeriesCache(cache)
-      return
-    }
-    tracksideSignal.value = markRaw({ ...result, series: [] })
-    tracksideSeriesCache.value = cache
-    tracksideLoaded.value = true
-    tracksideError.value = ''
-    setTracksideCacheActive(meshRuntimeToken, true)
-    reportRendererWorkload('trackside-cache-ready')
+  let requestPromise!: Promise<void>
+  requestPromise = (async () => {
     await nextTick()
-    observeTracksideChart()
-  } catch (reason) {
-    if (isAbortError(reason) || controller.signal.aborted || generation !== detailGeneration) return
-    if (
-      reason instanceof DOMException
-      && reason.name === 'AbortError'
-    ) return
-    if (
-      controller.signal.aborted
-      || generation !== detailGeneration
-      || requestGeneration !== tracksideRequestGeneration
-    ) return
-    tracksideLoaded.value = false
-    tracksideError.value = reason instanceof Error ? reason.message : '轨旁信号图加载失败，请重试'
-  } finally {
-    if (!tracksideSeriesCache.value) releaseTracksideReservation(meshRuntimeToken)
-    if (requestGeneration === tracksideRequestGeneration) {
-      tracksideAbortController = null
-      tracksideLoading.value = false
+    try {
+      const result = markRaw(await getMeshTracksideSignalChart(
+        sessionId,
+        values,
+        controller.signal,
+      ))
+      if (
+        generation !== detailGeneration
+        || requestGeneration !== tracksideRequestGeneration
+        || controller.signal.aborted
+      ) return
+      tracksideSignal.value = result
+      reportRendererWorkload('trackside-response-received')
+      reportRendererWorkload('trackside-cache-building')
+      const cache = markRaw(buildTracksideSeriesCache(result.series))
+      if (
+        generation !== detailGeneration
+        || requestGeneration !== tracksideRequestGeneration
+        || controller.signal.aborted
+      ) {
+        disposeTracksideSeriesCache(cache)
+        return
+      }
+      tracksideSignal.value = markRaw({ ...result, series: [] })
+      tracksideSeriesCache.value = cache
+      tracksideLoaded.value = true
+      tracksideLoadedKey = requestKey
+      tracksideError.value = ''
+      setTracksideCacheActive(meshRuntimeToken, true)
+      reportRendererWorkload('trackside-cache-ready')
+      await nextTick()
+      observeTracksideChart()
+    } catch (reason) {
+      if (isAbortError(reason) || controller.signal.aborted || generation !== detailGeneration) return
+      if (
+        reason instanceof DOMException
+        && reason.name === 'AbortError'
+      ) return
+      if (
+        controller.signal.aborted
+        || generation !== detailGeneration
+        || requestGeneration !== tracksideRequestGeneration
+      ) return
+      tracksideLoaded.value = false
+      tracksideError.value = reason instanceof Error ? reason.message : '轨旁信号图加载失败，请重试'
+    } finally {
+      if (!tracksideSeriesCache.value) releaseTracksideReservation(meshRuntimeToken)
+      if (tracksideRequestPromise === requestPromise) {
+        tracksideRequestPromise = null
+        tracksideRequestKey = ''
+      }
+      if (requestGeneration === tracksideRequestGeneration) {
+        tracksideAbortController = null
+        tracksideLoading.value = false
+      }
     }
-  }
+  })()
+  tracksideRequestPromise = requestPromise
+  return requestPromise
 }
 
 async function loadTracksideAfterRecovery(): Promise<void> {
@@ -1394,16 +1626,9 @@ async function loadActivePath(
   metric: MeshChartMetric,
   range: MeshChartWindowRange | null = null,
   generation = detailGeneration,
+  force = false,
 ): Promise<void> {
   if (!selected.value) return
-  const requestGeneration = nextChartGeneration(metric)
-  const controller = metric === 'rssi' ? new AbortController() : null
-  if (controller) {
-    rssiActiveAbortController?.abort()
-    rssiActiveAbortController = controller
-    rssiActiveLoading.value = true
-    rssiActiveError.value = ''
-  }
   const effectiveRange = range ?? (metric === 'busy' ? defaultChartWindowRange(metric) : null)
   const values: Record<string, string | number | null | undefined> = {
     max_points: visiblePoints.value,
@@ -1413,52 +1638,103 @@ async function loadActivePath(
     values.time_from = effectiveRange?.start_time
     values.time_to = effectiveRange?.end_time
   }
-  try {
-    const result = controller
-      ? await getMeshActivePathChart(selected.value.session.session_id, values, controller.signal)
-      : await getMeshActivePathChart(selected.value.session.session_id, values)
-    if (generation !== detailGeneration || !isLatestChartRequest(metric, requestGeneration)) return
-    if (metric === 'rssi') {
-      rssiActivePath.value = result
-      rssiActiveLoaded.value = true
-      rssiActiveError.value = ''
-    } else {
+  if (metric === 'busy') {
+    const requestGeneration = nextChartGeneration(metric)
+    const result = await getMeshActivePathChart(selected.value.session.session_id, values)
+    if (generation === detailGeneration && isLatestChartRequest(metric, requestGeneration)) {
       busyActivePath.value = result
     }
-  } catch (reason) {
-    if (metric !== 'rssi') throw reason
-    if (
-      controller?.signal.aborted
-      || isAbortError(reason)
-      || generation !== detailGeneration
-      || !isLatestChartRequest(metric, requestGeneration)
-    ) return
-    rssiActiveError.value = reason instanceof Error ? reason.message : '主链 RSSI 数据加载失败，请重试'
-    rssiActiveLoaded.value = false
-  } finally {
-    if (controller && rssiActiveAbortController === controller) {
-      rssiActiveAbortController = null
-      rssiActiveLoading.value = false
-    }
+    return
   }
+
+  const sessionId = selected.value.session.session_id
+  const requestKey = meshChartRequestKey('active-path', sessionId, {
+    ...values,
+    include_peer: true,
+    include_events: true,
+    include_station_band: true,
+  })
+  if (rssiActiveRequestPromise && rssiActiveRequestKey === requestKey) {
+    await rssiActiveRequestPromise
+    return
+  }
+  if (
+    !force
+    && rssiActiveLoaded.value
+    && rssiActivePath.value
+    && rssiActiveLoadedKey === requestKey
+  ) return
+
+  cancelDeferredRssiChartWork()
+  rssiActivePaintReady.value = false
+  releaseTracksideResources()
+  rssiActiveAbortController?.abort()
+  const requestGeneration = nextChartGeneration(metric)
+  const controller = new AbortController()
+  rssiActiveAbortController = controller
+  rssiActiveRequestKey = requestKey
+  rssiActiveLoading.value = true
+  rssiActiveError.value = ''
+  let requestPromise!: Promise<void>
+  requestPromise = (async () => {
+    try {
+      const result = await getMeshActivePathChart(sessionId, values, controller.signal)
+      if (
+        generation !== detailGeneration
+        || !isLatestChartRequest(metric, requestGeneration)
+        || controller.signal.aborted
+      ) return
+      rssiActivePath.value = result
+      rssiActiveLoaded.value = true
+      rssiActiveLoadedKey = requestKey
+      rssiActiveError.value = ''
+    } catch (reason) {
+      if (
+        controller.signal.aborted
+        || isAbortError(reason)
+        || generation !== detailGeneration
+        || !isLatestChartRequest(metric, requestGeneration)
+      ) return
+      rssiActiveError.value = reason instanceof Error ? reason.message : '主链 RSSI 数据加载失败，请重试'
+      rssiActiveLoaded.value = false
+      rssiActivePaintReady.value = false
+      cancelTracksideIdleSchedule?.()
+      cancelTracksideIdleSchedule = null
+    } finally {
+      if (rssiActiveRequestPromise === requestPromise) {
+        rssiActiveRequestPromise = null
+        rssiActiveRequestKey = ''
+      }
+      if (rssiActiveAbortController === controller) {
+        rssiActiveAbortController = null
+        rssiActiveLoading.value = false
+      }
+    }
+  })()
+  rssiActiveRequestPromise = requestPromise
+  await requestPromise
 }
 
-async function loadFullRssiCharts(generation = detailGeneration, refreshTrackside = false): Promise<void> {
-  await loadActivePath('rssi', null, generation)
+async function loadFullRssiCharts(generation = detailGeneration, forceRefresh = false): Promise<void> {
+  await loadActivePath('rssi', null, generation, forceRefresh)
+  if (generation === detailGeneration) ensureSharedRssiViewport()
   if (
     generation === detailGeneration
+    && rssiActiveLoaded.value
+    && !rssiActiveError.value
     && !tracksideRecoveryBlocked.value
   ) {
-    await nextTick()
+    if (!rssiActivePaintReady.value) {
+      rssiActivePaintReady.value = await waitForActiveRssiFirstPaint(generation)
+    }
+    if (!rssiActivePaintReady.value) return
     observeTracksideChart()
-    if (tracksideChartVisible.value) void loadTracksideSignal(generation, refreshTrackside)
+    scheduleTracksideAfterActivePaint(generation, forceRefresh)
   }
-  if (generation === detailGeneration) ensureSharedRssiViewport()
 }
 
 async function retryRssiActivePath(): Promise<void> {
-  await loadActivePath('rssi', null, detailGeneration)
-  ensureSharedRssiViewport()
+  await loadFullRssiCharts(detailGeneration, true)
 }
 
 function ensureSharedRssiViewport(): void {
@@ -1751,6 +2027,8 @@ async function changeBusyMode(value: string | number): Promise<void> {
 }
 
 async function changeChartRadio(): Promise<void> {
+  cancelDeferredRssiChartWork()
+  cancelInFlightRssiChartRequests()
   clearTimeLock()
   rssiViewport.value = null
   sharedPointerTime.value = null
@@ -1758,6 +2036,8 @@ async function changeChartRadio(): Promise<void> {
   busyViewport.value = null
   rssiActivePath.value = null
   rssiActiveLoaded.value = false
+  rssiActiveLoadedKey = ''
+  rssiActivePaintReady.value = false
   rssiActiveError.value = ''
   releaseTracksideResources()
   busyActivePath.value = null
@@ -2417,6 +2697,8 @@ async function confirmSourceDelete(): Promise<void> {
 }
 
 async function closeSelectedMeshSession(): Promise<void> {
+  cancelDeferredRssiChartWork()
+  cancelInFlightRssiChartRequests()
   activeSessionOpenController?.abort()
   rssiActiveAbortController?.abort()
   rssiActiveAbortController = null
@@ -2432,6 +2714,8 @@ async function closeSelectedMeshSession(): Promise<void> {
   rssiActivePath.value = null
   rssiActiveLoading.value = false
   rssiActiveLoaded.value = false
+  rssiActiveLoadedKey = ''
+  rssiActivePaintReady.value = false
   rssiActiveError.value = ''
   busyActivePath.value = null
   busyPeerPath.value = null
@@ -3005,7 +3289,7 @@ function exportTimestamp(now = new Date()): string {
                   <div ref="tracksideChartHost" class="rssi-pane-chart-host">
                     <MeshTracksideSignalChart v-if="tracksideSeriesCache" ref="tracksideChartRef" :series-cache="tracksideSeriesCache" :events="chartData?.events || []" :location-segments="chartData?.location_segments || []" :continuity-gap-seconds="tracksideSignal?.continuity_gap_seconds" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" :active="pageActive && activeTab === 'rssi' && tracksideChartVisible && rssiLayoutMode !== 'active-focus'" :workspace-visible="activeTab === 'rssi'" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime" :sync-pointer-source="sharedPointerSource" @viewport-change="updateRssiViewport" @pointer-change="updateSharedPointer" @select-switch="selectChartSwitch" @workload-phase="handleTracksideWorkloadPhase" @workload-profile="handleTracksideWorkloadProfile" />
                     <el-empty v-else-if="tracksideLoaded && !tracksideLoading" description="当前范围没有轨旁信号数据" :image-size="60" />
-                    <el-empty v-else-if="!tracksideRecoveryBlocked && !tracksideLoading" description="轨旁信号图尚未加载" :image-size="60" />
+                    <el-empty v-else-if="!tracksideRecoveryBlocked && !tracksideLoading" :description="rssiActivePaintReady ? '轨旁信号图尚未加载' : '等待主链 RSSI 图加载完成'" :image-size="60" />
                   </div>
                 </div>
               </template>
