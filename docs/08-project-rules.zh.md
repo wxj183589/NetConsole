@@ -45,6 +45,7 @@
 
 - 新用户可见模块、页面、Tab、动作或按钮必须进入 Feature Registry；页面通过 FeatureGate/配置控制可见性，Feature 状态不替代后端鉴权和安全校验。
 - 用户可见文本进入 i18n；凭据、Token、community、私钥、设备密码和未脱敏身份样本不得进入 API 响应、任务结果、localStorage 或普通日志。
+- 工具集是 Electron Desktop 专用的本机第三方 `.exe` 启动器，使用 `module.tools` / `web.tool_collection` 和 Electron `userData` 独立存储；不得写入 Python Backend、局点数据库、数据根、`.ncsite` 或 `.ncresult`，启动和定位只传工具 ID。
 - 新表格默认使用 `NcDataTable + NcTableColumn`，缺失值显示为 `—`，事实零值保留 `0`。不得新建直接 `el-table` 页面；新增或迁移表格要同步更新 `docs/ui/TABLE_INVENTORY.md` 并补定向测试。
 - 表格列宽由公共组件按表头、抽样内容、图标/Tag/按钮 chrome 和可视区二阶段计算；容器不足时横向滚动，不压缩表头，不用字符串长度乘固定像素。
 - 状态色、主题、侧栏、Element Plus 和 ECharts 使用 Design Token；自动测试不能替代 Electron 多尺寸、多缩放、浅色/深色/跟随系统的视觉验收。
@@ -52,6 +53,9 @@
 ## 任务、Artifact 与 Native Bridge
 
 - 任务 DTO 和结果不得泄露本机绝对路径、任务秘密、设备凭据或后端 Token。任务窗口只接受受控 `taskId/module/status`。
+- Worker JSONL 帧硬上限为 `1,048,576 bytes`；普通任务终态只返回有界摘要，完整大列表、原始回显、Diff、配置正文和明细必须通过 Repository 分页、受管 Artifact 或领域查询接口读取，不得通过提高协议上限掩盖业务 payload。
+- 用户最终导出副本必须先在 `exportActionRegistry.ts` 登记固定动作，再复用 `useUserSelectedExport`；用户取消保存路径时不创建任务、不生成 Artifact、不提示成功，保存失败时复用同一 Artifact 重新选择路径。
+- 用户可见导入只能使用 Browser `File/FileList` 或 Electron Main 专用选择器；取消不调用后端，处理后清空 file input，前端扩展名过滤不能替代 Backend 文件契约、schema、非空和 ZIP 路径穿越校验。
 - Electron Native Bridge 只允许白名单动作：选择文件/目录/保存路径、下载受控 Artifact、打开临时 capability、外链 HTTPS、设置页工具选择和受控设置动作；不得提供通用命令、任意路径、任意 URL/Header、完整 `ipcRenderer` 或 shell 参数。
 - Renderer 不能自行打开本机路径。Artifact 下载由 Electron Main 注入内存令牌、流式写入 `.part`、成功后原子替换，再按类型签发短期 capability；保存型文件可不签发打开/定位能力。
 - 导出、设备文件、配置快照、MESH、Online MR 和网络工具等下载只能复用正式 Artifact endpoint，Electron Main/Preload 不读取数据库、不生成报告、不解释业务文件。
@@ -63,6 +67,7 @@
 - 当前稳定 Profile 包含只读 `device.inventory.collect` 和受控写操作 `device.sftp.enable`。除明确 Profile 外，不得从页面、Router 或通用 Service 执行任意 CLI。
 - SNMP 只作为设备管理 v1/v2c 只读基础识别存在；禁止 SNMPv3、RW community、SET、Trap、通用 MIB/OID 字典、通用采集平台和 SNMP Center。
 - 设备文件页面保持只读 SFTP：连接、断开、目录浏览、刷新、选择和下载。自动启用 SFTP 是独立受控 `config_write` 设备操作，必须有用户授权、明确不可用事实和精确 `device.sftp.enable` Profile，不能作为文件浏览的隐式副作用。
+- ZTE 轨旁交换机 Adapter 当前只把 C89E-4 Release 的只读采集声明为真实验证；不得外推到 ZXR10/5960X 全系列。普通详情使用固定七条只读 Profile，轨旁光衰快速路径每设备只执行 `show version` 和一次 `show opticalinfo brief`，配置下发、逐端口 detail 和未复核型号必须失败关闭或保持待验证。
 
 ## 轨道交通业务边界
 
@@ -70,10 +75,11 @@
 - 基础资料不建立第二套数据库；站点/区间、轨旁 AP、车载 MR 和规划写入复用当前局点 `devices.db`，失败必须完整回滚并保留前端编辑区。
 - `/rail-transit/train-communication` 是固定车载 TC1/TC2 六节点通信检测页，不是无线综合看板；不得聚合轨旁 AP、RSSI、fping、iPerf、Online MR、Agent 或 Mesh-Link。
 - 车内通信点表每列车只能包含 `TC1-MR/TC1-SW/TC1-SRV/TC2-MR/TC2-SW/TC2-SRV` 六节点；保存使用 SHA-256 revision。生成点表任务只返回编辑区预览，固定 `save_result=false`，`COMPLETED` 不等于预览可用，缺失或无效节点必须保留当前编辑内容。
+- 轨旁 AP 逐站规划以“一座车站一行”为活动模型，只维护序号、稳定 `station_id`、AP 数量、管理 VLAN 和备注；管理 VLAN 是业务属性不是身份键，允许多站共享和 AP 数量为 `0`，旧 VLAN 组表只兼容留存，空逐站规划不得被历史数据“复活”。
 - 地面无人值守是独立 `/rail-transit/ground-unattended` 页面和 `web.ground_unattended` Feature，不复用人工 Online MR 页面状态，也不把全天无人值守塞入单一 Online MR Session；页面卸载只停止轮询，托盘隐藏时 Backend、AC 轮询、全车 Ping 和深度采集继续。
 - 轨旁 AP 已按规范化 MAC/Registry/稳定 ID 匹配且没有特殊区域标记时默认正线；完全未匹配 AP 必须保持 `UNKNOWN/AP_UNMATCHED`，名称、alias 和站点文本不能绕过身份边界。
 - 地面无人值守调度必须独立计算正线、Ping 和深采资格，使用多目标 fping 分片、Online MR 强类型请求、并发预算、覆盖轮次、ZIP 原子归档和启动恢复；车辆段、停车场和存车线只可由默认关闭的全局开关加入长 Ping，仍排除正线统计与深采。真实 AC/MR、长时 fping、托盘隐藏持续运行和进程残留仍是人工现场门禁。
-- AP Identity 当前仍是只读 shadow/diagnostics，不接管生产匹配、页面展示、导出字段或数据库写入；unavailable/failed 不能改变原 Job/Export 终态。
+- AP Identity 统一索引已接管已登记的 MESH、Online/Vehicle MR、无线扫描、基础资料、AC/FIT-AP、轨旁 AP 业务和 AC Mesh-Link 生产查询；普通查询只读 `devices.db` 已生成索引，不连接 AC、不执行 SSH/SNMP、不在 GET 中 `ensure/rebuild`，`unresolved/ambiguous` 必须保留原始观测和诊断原因。
 
 ## 验证与发布
 
@@ -83,6 +89,16 @@
 - 正式 NSIS 构建必须从已提交、工作区 clean 且 `HEAD` 已推送到 upstream 的状态开始；最终安装包文件名包含 Git short commit，PE 身份、内嵌 installer manifest、数据根 include 哈希、Backend/Frontend commit 和两次 SHA-256 必须与本轮输入一致。
 - 自动发布清单中的 `real_windows_install_status` 在隔离 Windows GUI 完成不存在目录、空目录、含普通文件目录和合法旧数据根等安装验收前必须保持 `PENDING`；单元测试、Backend smoke 或 unpacked Electron smoke 不能推断为 `PASS`。
 - 架构例外必须精确到 `rule_id + path`，含理由、责任域、创建时间、到期时间和测试；禁止目录级通配、陈旧例外或删除测试换通过。
+
+## 本周新增高置信沉淀（2026-07-27 至 2026-08-03）
+
+- 用户文件交互统一收口为固定动作注册表、共享导出协调器和专用导入选择器；页面不得再私建导出状态机、自动弹保存窗口或取消后创建任务。
+- Worker 协议的 1 MiB 帧上限成为领域 handler 设计边界：终态只放摘要，明细、大文本和 raw 通过分页查询或 Artifact 暴露。
+- AP Identity 已从 shadow 评估升级为生产统一索引接管已登记消费者，但索引刷新只能由明确写事件触发，普通 GET 和搜索保持只读。
+- 轨旁 AP 基础资料和逐站规划以稳定 ID 为唯一关系边界；站名、VLAN、AP 名称、邻居 IP、系统名和相似度都不能绕过 `station_id`、完整 MAC 与 AP Identity 精确证据。
+- ZTE C89E-4 只读 Adapter 已形成首批实机边界；该验证不自动授权 ZXR10 全系列、配置下发或逐端口重采集。
+- 桌面工具集成为独立 Electron 模块；第三方 EXE、图标、启动权限和管理员 helper 都只在 Electron userData/Native Bridge 内受控，不进入局点数据或 Python Backend。
+- 正式发布门禁继续按构建身份、installer manifest、SHA-256、包内 Backend/Frontend commit 和 `real_windows_install_status=PENDING` 分层记录；Windows Server 2012 现场兼容事实不能替代隔离 GUI 安装验收。
 
 ## 本周新增高置信沉淀（2026-07-20 至 2026-07-27）
 

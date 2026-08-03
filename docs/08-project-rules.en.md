@@ -45,6 +45,7 @@ Read the version only from `src/netconsole/core/version.py`, user-visible featur
 
 - New user-visible modules, pages, tabs, actions, or buttons must be registered in Feature Registry. Pages use FeatureGate/config for visibility, but Feature state never replaces backend auth or safety checks.
 - User-facing text belongs in i18n. Credentials, tokens, communities, private keys, device passwords, and unsanitized identity samples must not enter API responses, task results, localStorage, or normal logs.
+- Tool Collection is an Electron Desktop-only launcher for user-selected third-party `.exe` files. It uses `module.tools` / `web.tool_collection` and independent Electron `userData` storage; it must not write into the Python Backend, site databases, the data root, `.ncsite`, or `.ncresult`, and launch/reveal requests pass only tool IDs.
 - New tables default to `NcDataTable + NcTableColumn`. Missing values display as `—`, while real zero values remain `0`. Do not add direct `el-table` pages; new or migrated tables must update `docs/ui/TABLE_INVENTORY.md` and include focused tests.
 - Column widths are calculated by shared components from headers, sampled content, icon/tag/button chrome, and the visible area in two phases. If the container is too narrow, use horizontal scrolling; never compress headers or multiply string length by a fixed pixel value.
 - Status colors, themes, the sidebar, Element Plus, and ECharts use Design Tokens. Automated tests do not replace Electron visual checks across sizes, scaling, light, dark, and system modes.
@@ -52,6 +53,9 @@ Read the version only from `src/netconsole/core/version.py`, user-visible featur
 ## Tasks, Artifacts, and Native Bridge
 
 - Task DTOs and results must not leak local absolute paths, task secrets, device credentials, or backend tokens. The task window accepts only controlled `taskId/module/status`.
+- Worker JSONL frames have a hard `1,048,576 bytes` limit. Normal task terminal results return bounded summaries only; full large lists, raw echoes, diffs, config text, and detail rows must be read through Repository pagination, managed Artifacts, or domain query APIs instead of raising the protocol limit.
+- User-final export copies must first register a fixed action in `exportActionRegistry.ts` and then reuse `useUserSelectedExport`. If the user cancels the save-path dialog, no task is created, no Artifact is generated, and no success message is shown; save retry reuses the same Artifact.
+- User-visible imports must use Browser `File/FileList` or Electron Main-specific pickers. Cancellation does not call the backend, file inputs are cleared after processing, and frontend extension filters never replace backend file-contract, schema, non-empty-data, and ZIP traversal validation.
 - Electron Native Bridge is limited to allowlisted actions: file/directory/save-path pickers, controlled artifact downloads, temporary capability opening, HTTPS external links, settings tool selection, and controlled settings actions. It must not provide generic commands, arbitrary paths, arbitrary URLs/headers, full `ipcRenderer`, or shell arguments.
 - The Renderer cannot open local paths directly. Artifact downloads are handled by Electron Main with an in-memory token, streamed `.part` output, atomic replacement, and short-lived type-specific capabilities. Save-only files may receive no open/reveal capability.
 - Export, device-file, config snapshot, MESH, Online MR, and network-tool downloads must reuse formal Artifact endpoints. Electron Main/Preload must not read databases, generate reports, or interpret business files.
@@ -63,6 +67,7 @@ Read the version only from `src/netconsole/core/version.py`, user-visible featur
 - Stable profiles currently include read-only `device.inventory.collect` and controlled-write `device.sftp.enable`. Except for explicit profiles, pages, routers, and generic services must not execute arbitrary CLI.
 - SNMP only exists as device-management v1/v2c read-only basic identification. SNMPv3, RW community, SET, Trap, generic MIB/OID dictionaries, generic collection platforms, and SNMP Center remain forbidden.
 - The device-file page stays read-only SFTP: connect, disconnect, browse, refresh, select, and download. Auto-enabling SFTP is a separate controlled `config_write` device operation requiring user authorization, a confirmed unavailable SFTP subsystem, and an exact `device.sftp.enable` profile. It must not be an implicit side effect of file browsing.
+- The ZTE trackside-switch Adapter currently declares real-device validation only for C89E-4 Release read-only collection; do not generalize it to all ZXR10/5960X models. Normal detail collection uses the fixed seven-command read-only Profile, while the trackside optical fast path runs only `show version` and one `show opticalinfo brief` per device. Config writes, per-port detail collection, and unverified models must fail closed or remain pending validation.
 
 ## Rail-Transit Boundaries
 
@@ -70,9 +75,10 @@ Read the version only from `src/netconsole/core/version.py`, user-visible featur
 - Base data does not create a second database. Stations/sections, trackside APs, onboard MRs, and planning data reuse the current site's `devices.db`; failures must fully roll back and preserve the frontend edit buffer.
 - `/rail-transit/train-communication` is the fixed onboard TC1/TC2 six-node communication page, not the wireless dashboard. It must not aggregate trackside AP, RSSI, fping, iPerf, Online MR, Agent, or Mesh-Link data.
 - Each train-communication point table may contain only the six nodes `TC1-MR/TC1-SW/TC1-SRV/TC2-MR/TC2-SW/TC2-SRV`; saves use a SHA-256 revision. The generation task returns an edit-buffer preview only, always with `save_result=false`. `COMPLETED` does not mean the preview is usable; missing or invalid nodes must leave the current edit buffer unchanged.
+- Trackside AP per-station planning uses "one station, one row" as the active model. It maintains only sequence, stable `station_id`, AP count, management VLAN, and notes. Management VLAN is a business property, not an identity key; shared VLANs and AP count `0` are valid, legacy VLAN-group tables are retained only for compatibility, and an empty per-station plan must not be revived from historical data.
 - Ground Unattended is an independent `/rail-transit/ground-unattended` page and `web.ground_unattended` Feature. It does not reuse the manual Online MR page state and does not compress all-day unattended operation into one Online MR Session. Page unload stops only polling; when the Electron main window hides to the tray, the Backend, AC polling, fleet ping, and deep collection continue.
 - Ground Unattended scheduling must use structured mainline classification, multi-target fping sharding, typed Online MR requests, concurrency budgets, coverage rounds, atomic ZIP archiving, and startup recovery. Real AC/MR, long-running fping, tray-hidden execution, and leftover-process checks remain manual field gates.
-- AP Identity remains read-only shadow/diagnostics. It must not take over production matching, page display, export fields, or database writes. Unavailable or failed diagnostics must not change the original Job/Export terminal state.
+- The unified AP Identity index has taken over registered production consumers for MESH, Online/Vehicle MR, wireless scan, base data, AC/FIT-AP, trackside AP business, and AC Mesh-Link queries. Normal queries only read the existing index in `devices.db`; they do not connect to AC, run SSH/SNMP, or call `ensure/rebuild` during GET. `unresolved/ambiguous` results must keep the original observation and diagnostic reason.
 
 ## Validation and Release
 
@@ -82,6 +88,16 @@ Read the version only from `src/netconsole/core/version.py`, user-visible featur
 - Formal NSIS builds must start from a committed, clean worktree whose `HEAD` has been pushed to the current upstream. The final installer name contains the Git short commit, and the PE identity, embedded installer manifest, data-root include hash, Backend/Frontend commits, and two SHA-256 reads must match the current build inputs.
 - The automated release manifest must keep `real_windows_install_status=PENDING` until isolated Windows GUI validation covers non-existent directories, empty directories, ordinary-file directories, and valid existing roots. Unit tests, Backend smoke, and unpacked Electron smoke cannot infer `PASS`.
 - Architecture exceptions must be exact to `rule_id + path` and include reason, owner domain, creation time, expiry time, and test. Directory wildcards, stale exceptions, and deleting tests to pass are forbidden.
+
+## High-Confidence Additions This Week (2026-07-27 to 2026-08-03)
+
+- User file interactions have converged on fixed export actions, the shared export coordinator, and dedicated import pickers. Pages must not create private export state machines, auto-open save dialogs, or create tasks after cancellation.
+- The Worker protocol's 1 MiB frame limit is now a handler design boundary: terminal events carry summaries only, while details, large text, and raw data are exposed through paged queries or Artifacts.
+- AP Identity has moved from shadow assessment to the production unified index for registered consumers, but index refreshes are triggered only by explicit write events; normal GET and search paths stay read-only.
+- Trackside AP base data and per-station planning use stable IDs as the relationship boundary. Station names, VLANs, AP names, neighbor IPs, system names, and similarity must not bypass `station_id`, exact MAC, and AP Identity evidence.
+- The ZTE C89E-4 read-only Adapter now has an initial real-device boundary. That validation does not authorize all ZXR10 models, config writes, or per-port recapture.
+- Tool Collection is an independent Electron module. Third-party EXEs, icons, launch permissions, and the administrator helper stay within Electron userData/Native Bridge control and do not enter site data or the Python Backend.
+- Formal release gates continue to record build identity, installer manifest, SHA-256, packaged Backend/Frontend commits, and `real_windows_install_status=PENDING` separately. Windows Server 2012 field compatibility does not replace isolated GUI installer validation.
 
 ## High-Confidence Additions This Week (2026-07-20 to 2026-07-27)
 
