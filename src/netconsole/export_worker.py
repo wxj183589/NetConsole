@@ -32,6 +32,10 @@ from netconsole.services.job_center.web_export_event_safety import (
 )
 from netconsole.services.job_center.worker_protocol import configure_standard_streams, write_event
 from netconsole.services.mesh_analysis_report import MeshReportOptions
+from netconsole.services.rail_transit.mesh_ap_location_service import (
+    MeshApLocationSnapshot,
+    enrich_mesh_ap_location_row,
+)
 from netconsole.services.mesh_report_process import MeshReportProcessRequest, run_mesh_report_process
 from netconsole.services.trackside_ap_business import TracksideApExportCancelled
 from netconsole.services.trackside_ap_export_service import export_trackside_ap_business_from_database
@@ -166,6 +170,10 @@ def _run_mesh_link_detail_export(job: ExportJob) -> None:
     radio = context.get("radio")
     analysis_params = params.get("analysis_params") if isinstance(params.get("analysis_params"), dict) else None
     fallback_analysis_params = params.get("fallback_analysis_params") if isinstance(params.get("fallback_analysis_params"), dict) else None
+    raw_location_snapshot = params.get("ap_location_snapshot")
+    location_snapshot = MeshApLocationSnapshot.from_serializable(
+        row for row in raw_location_snapshot if isinstance(row, dict)
+    ) if isinstance(raw_location_snapshot, list) else MeshApLocationSnapshot()
 
     _emit_progress(job, 0, 0, "mesh_analysis.export_progress_query_links", "正在统计链路明细")
     total = repo.count_link_details(filters)
@@ -176,17 +184,23 @@ def _run_mesh_link_detail_export(job: ExportJob) -> None:
         raise MeshLinkDetailExportCancelled("导出已取消")
 
     _emit_progress(job, 0, total, "mesh_analysis.export_progress_query_build_order", "正在生成主链路建链顺序")
-    active_build_order_rows = repo.query_active_link_build_order(
-        source_file_id,
-        radio,
-        analysis_params,
-        fallback_analysis_params,
-    )
+    active_build_order_rows = [
+        enrich_mesh_ap_location_row(row, location_snapshot)
+        for row in repo.query_active_link_build_order(
+            source_file_id,
+            radio,
+            analysis_params,
+            fallback_analysis_params,
+        )
+    ]
     if _should_cancel(job):
         raise MeshLinkDetailExportCancelled("导出已取消")
 
     _emit_progress(job, 0, total, "mesh_analysis.export_progress_write_links", f"正在导出链路明细：0 / {total}")
-    rows = repo.iter_link_details(filters, batch_size=2000)
+    rows = (
+        enrich_mesh_ap_location_row(row, location_snapshot)
+        for row in repo.iter_link_details(filters, batch_size=2000)
+    )
     source_params: dict[str, object] = {}
     if source_file_id not in (None, ""):
         get_source_file = getattr(repo, "get_source_file", None)

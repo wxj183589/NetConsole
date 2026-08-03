@@ -32,43 +32,40 @@ def test_single_natural_interval_zero_is_suppressed() -> None:
     assert result.sustained_boundary_indices == frozenset()
 
 
-def test_zero_run_at_exact_threshold_is_sustained() -> None:
+def test_two_consecutive_zero_samples_are_sustained_even_below_previous_time_threshold() -> None:
     rows = [
         {"timestamp": "2026-07-24 20:41:20.000", "rssi": 35},
-        {"timestamp": "2026-07-24 20:41:21.000", "rssi": "0.0"},
-        {"timestamp": "2026-07-24 20:41:22.000", "rssi": 0},
-        {"timestamp": "2026-07-24 20:41:23.000", "rssi": "0"},
-        {"timestamp": "2026-07-24 20:41:24.000", "rssi": -38},
+        {"timestamp": "2026-07-24 20:41:20.984", "rssi": "0.0"},
+        {"timestamp": "2026-07-24 20:41:21.968", "rssi": 0},
+        {"timestamp": "2026-07-24 20:41:22.952", "rssi": -38},
     ]
 
     result = _analyze(rows)
 
     assert {index: value.boundary for index, value in result.metadata_by_index.items()} == {
         1: "start",
-        2: "middle",
-        3: "end",
+        2: "end",
     }
     assert {value.state for value in result.metadata_by_index.values()} == {"sustained"}
-    assert result.metadata_by_index[1].duration_ms == 3_000
-    assert result.metadata_by_index[1].end_time == "2026-07-24 20:41:24.000"
-    assert result.sustained_boundary_indices == frozenset({1, 3})
+    assert result.metadata_by_index[1].duration_ms == 1_968
+    assert result.metadata_by_index[1].end_time == "2026-07-24 20:41:22.952"
+    assert result.sustained_boundary_indices == frozenset({1, 2})
     assert result.summary.sustained_run_count == 1
-    assert result.summary.sustained_total_duration_ms == 3_000
+    assert result.summary.sustained_total_duration_ms == 1_968
 
 
-def test_two_zero_samples_below_threshold_are_suppressed() -> None:
+def test_single_zero_is_suppressed_even_when_the_time_gap_is_long() -> None:
     rows = [
         {"timestamp": "2026-07-24 20:41:20.000", "rssi": 35},
-        {"timestamp": "2026-07-24 20:41:20.984", "rssi": 0},
-        {"timestamp": "2026-07-24 20:41:21.968", "rssi": 0},
-        {"timestamp": "2026-07-24 20:41:22.952", "rssi": 38},
+        {"timestamp": "2026-07-24 20:41:21.000", "rssi": 0},
+        {"timestamp": "2026-07-24 20:41:24.000", "rssi": 38},
     ]
 
-    result = _analyze(rows)
+    result = _analyze(rows, maximum_continuous_gap_ms=5_000)
 
-    assert result.metadata_by_index[1].duration_ms == 1_968
-    assert all(value.state == "suppressed" for value in result.metadata_by_index.values())
-    assert result.summary.suppressed_sample_count == 2
+    assert result.metadata_by_index[1].duration_ms == 3_000
+    assert result.metadata_by_index[1].state == "suppressed"
+    assert result.summary.suppressed_sample_count == 1
 
 
 def test_tail_zero_run_uses_bounded_estimated_interval() -> None:

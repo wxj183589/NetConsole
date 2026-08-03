@@ -989,15 +989,15 @@ const tracksideRecoveryMessage = computed(() => (
 ))
 const tracksidePaneAlertMessages = computed(() => [
   tracksideRecoveryBlocked.value ? tracksideRecoveryMessage.value : '',
-  tracksideError.value ? `轨旁信号图加载失败：${tracksideError.value}` : '',
+  tracksideError.value ? `轨旁AP信号图加载失败：${tracksideError.value}` : '',
   ...(tracksideSignal.value?.warnings || []),
 ].filter(Boolean))
 const tracksidePaneAlertSummary = computed(() => {
   if (tracksideRecoveryBlocked.value) return tracksideRecoveryMessage.value
-  if (tracksideError.value) return `轨旁信号图加载失败：${tracksideError.value}`
-  if (tracksideLoading.value) return '正在加载轨旁信号图…'
+  if (tracksideError.value) return `轨旁AP信号图加载失败：${tracksideError.value}`
+  if (tracksideLoading.value) return '正在加载轨旁AP信号图…'
   if (!rssiActivePaintReady.value) return '等待主链 RSSI 图完成首帧绘制'
-  if (!tracksideLoaded.value) return tracksideChartVisible.value ? '轨旁信号图尚未加载' : '轨旁信号图将在滚动到可见区域后加载'
+  if (!tracksideLoaded.value) return tracksideChartVisible.value ? '轨旁AP信号图尚未加载' : '轨旁AP信号图将在滚动到可见区域后加载'
   const data = tracksideSignal.value
   if (!data || !data.warnings.length) return ''
   return `轨旁图已保留关键采样：${data.returned_frames}/${data.total_frames} 时刻，${data.returned_link_points}/${data.total_link_points} 链路点`
@@ -1637,7 +1637,7 @@ function loadTracksideSignal(generation = detailGeneration, force = false): Prom
         || requestGeneration !== tracksideRequestGeneration
       ) return
       tracksideLoaded.value = false
-      tracksideError.value = reason instanceof Error ? reason.message : '轨旁信号图加载失败，请重试'
+      tracksideError.value = reason instanceof Error ? reason.message : '轨旁AP信号图加载失败，请重试'
     } finally {
       if (!tracksideSeriesCache.value) releaseTracksideReservation(meshRuntimeToken)
       if (tracksideRequestPromise === requestPromise) {
@@ -3260,14 +3260,14 @@ function exportTimestamp(now = new Date()): string {
                 </el-button>
                 <el-button
                   :class="{ 'is-current': rssiLayoutMode === 'active-focus' }"
-                  title="仅看全部 ACTIVE 主链路"
+                  title="仅看主用链路信号"
                   @click="setRssiLayoutMode('active-focus')"
                 >
                   主链
                 </el-button>
                 <el-button
                   :class="{ 'is-current': rssiLayoutMode === 'trackside-focus' }"
-                  title="仅看轨旁信号图"
+                  title="仅看轨旁AP信号图"
                   @click="setRssiLayoutMode('trackside-focus')"
                 >
                   轨旁
@@ -3308,7 +3308,7 @@ function exportTimestamp(now = new Date()): string {
               <template #active>
                 <div class="rssi-pane-content">
                   <header class="rssi-pane-heading">
-                    <h3>全部 ACTIVE 主链路</h3>
+                    <h3>主用链路信号</h3>
                     <el-button link type="primary" @click="toggleRssiFocus('active-focus')">
                       {{ rssiLayoutMode === 'active-focus' ? '返回对比' : '专注' }}
                     </el-button>
@@ -3339,14 +3339,14 @@ function exportTimestamp(now = new Date()): string {
               <template #trackside>
                 <div class="rssi-pane-content">
                   <header class="rssi-pane-heading">
-                    <h3>轨旁信号图</h3>
+                    <h3>轨旁AP信号图</h3>
                     <el-button link type="primary" @click="toggleRssiFocus('trackside-focus')">
                       {{ rssiLayoutMode === 'trackside-focus' ? '返回对比' : '专注' }}
                     </el-button>
                   </header>
                   <div v-if="tracksidePaneAlertSummary" class="rssi-pane-alert">
                     <span class="rssi-pane-alert__text" :title="tracksidePaneAlertSummary">提示：{{ tracksidePaneAlertSummary }}</span>
-                    <el-button v-if="tracksideRecoveryBlocked || tracksideError" link type="warning" :loading="tracksideLoading" @click="tracksideRecoveryBlocked ? loadTracksideAfterRecovery() : loadTracksideSignal(detailGeneration, true)">重新加载轨旁信号图</el-button>
+                    <el-button v-if="tracksideRecoveryBlocked || tracksideError" link type="warning" :loading="tracksideLoading" @click="tracksideRecoveryBlocked ? loadTracksideAfterRecovery() : loadTracksideSignal(detailGeneration, true)">重新加载轨旁AP信号图</el-button>
                     <el-popover placement="bottom-start" :width="520" trigger="click">
                       <template #reference><el-button link type="primary">详情</el-button></template>
                       <div class="rssi-pane-alert__details">
@@ -3366,8 +3366,8 @@ function exportTimestamp(now = new Date()): string {
                   </div>
                   <div ref="tracksideChartHost" class="rssi-pane-chart-host">
                     <MeshTracksideSignalChart v-if="tracksideSeriesCache" ref="tracksideChartRef" :series-cache="tracksideSeriesCache" :events="chartData?.events || []" :location-segments="chartData?.location_segments || []" :continuity-gap-seconds="tracksideSignal?.continuity_gap_seconds" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" :active="pageActive && activeTab === 'rssi' && tracksideChartVisible && rssiLayoutMode !== 'active-focus'" :workspace-visible="activeTab === 'rssi'" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime" :sync-pointer-source="sharedPointerSource" @viewport-change="updateRssiViewport" @pointer-change="updateSharedPointer" @select-switch="selectChartSwitch" @workload-phase="handleTracksideWorkloadPhase" @workload-profile="handleTracksideWorkloadProfile" />
-                    <el-empty v-else-if="tracksideLoaded && !tracksideLoading" description="当前范围没有轨旁信号数据" :image-size="60" />
-                    <el-empty v-else-if="!tracksideRecoveryBlocked && !tracksideLoading" :description="rssiActivePaintReady ? '轨旁信号图尚未加载' : '等待主链 RSSI 图加载完成'" :image-size="60" />
+                    <el-empty v-else-if="tracksideLoaded && !tracksideLoading" description="当前范围没有轨旁AP信号数据" :image-size="60" />
+                    <el-empty v-else-if="!tracksideRecoveryBlocked && !tracksideLoading" :description="rssiActivePaintReady ? '轨旁AP信号图尚未加载' : '等待主链 RSSI 图加载完成'" :image-size="60" />
                   </div>
                 </div>
               </template>

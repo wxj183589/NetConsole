@@ -3086,6 +3086,7 @@ class RailTransitWebApplicationService:
             site_analysis_params = load_site_mesh_analysis_params(self.paths, site_id).to_dict()
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
             site_analysis_params = {}
+        ap_location_snapshot = self.mesh_query_service.ap_location_snapshot(site_id).to_serializable()
         output_root = self.paths.mesh_mr_export_dir(site_id, context.safe_folder_name).resolve()
         self._require_within(output_root, self.paths.site_mesh_root(site_id).resolve())
         task_id = f"rail-export-{uuid4().hex}"
@@ -3113,6 +3114,7 @@ class RailTransitWebApplicationService:
             params={
                 "analysis_params": analysis_params_override,
                 "fallback_analysis_params": site_analysis_params,
+                "ap_location_snapshot": ap_location_snapshot,
             },
             context={
                 "session_id": session_id,

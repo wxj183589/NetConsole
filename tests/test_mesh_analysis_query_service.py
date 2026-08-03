@@ -1270,7 +1270,7 @@ def test_trackside_signal_chart_preserves_sustained_zero_boundaries_before_sampl
     paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
     with sqlite3.connect(detail) as conn:
         _clear_mesh_chart_rows(conn)
-        for row_id, peer_rssi in enumerate((35, 0, 0, 0, 38), start=1):
+        for row_id, peer_rssi in enumerate((35, 0, 0, 38), start=1):
             _insert_active_mesh_link(
                 conn,
                 row_id=row_id,
@@ -1286,16 +1286,12 @@ def test_trackside_signal_chart_preserves_sustained_zero_boundaries_before_sampl
 
     ap_a = next(item for item in chart.series if item.peer_name == "AP-A")
     zero_points = [point for point in ap_a.points if point.peer_rssi == 0]
-    assert [point.rssi_zero_run.boundary for point in zero_points] == [
-        "start",
-        "middle",
-        "end",
-    ]
+    assert [point.rssi_zero_run.boundary for point in zero_points] == ["start", "end"]
     assert all(point.rssi_zero_run.state == "sustained" for point in zero_points)
-    assert zero_points[0].rssi_zero_run.duration_ms == 3_000
+    assert zero_points[0].rssi_zero_run.duration_ms == 2_000
     assert chart.sustained_zero_run_count == 1
-    assert chart.sustained_zero_total_duration_ms == 3_000
-    assert chart.effective_max_frames >= 5
+    assert chart.sustained_zero_total_duration_ms == 2_000
+    assert chart.effective_max_frames >= 4
 
 
 def test_trackside_signal_chart_breaks_when_link_disappears_from_radio_frames(tmp_path: Path) -> None:

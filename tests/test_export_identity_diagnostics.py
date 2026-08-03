@@ -250,6 +250,76 @@ def test_mesh_export_worker_finished_result_contains_diagnostics(tmp_path: Path,
     assert not list(tmp_path.glob("*.diagnostics.json"))
 
 
+def test_mesh_export_worker_applies_ap_location_snapshot_to_both_sheets(tmp_path: Path, monkeypatch) -> None:
+    from netconsole import export_worker
+
+    location_snapshot = [{
+        "name": "AP-01",
+        "mac": "30f5-277a-5a2f",
+        "station": "快照站点",
+        "section": "快照区间",
+        "mileage": "K22+567",
+        "line_side": "下行",
+        "identity_status": "matched",
+    }]
+    link_row = _mesh_row()
+    for field in ("peer_site", "belong_section", "peer_section", "peer_location", "mileage", "peer_direction", "direction", "line_side"):
+        link_row.pop(field, None)
+    active_row = {
+        "sequence": 1,
+        "radio": 1,
+        "active_peer_mac": "30f5-277a-5a2f",
+        "peer_ap_mac": "30f5-277a-5a2f",
+        "build_result": "normal",
+    }
+
+    class FakeRepository:
+        def __init__(self, _path: Path, *, read_only: bool = False) -> None:
+            assert read_only is True
+
+        def count_link_details(self, _filters: dict[str, object]) -> int:
+            return 1
+
+        def query_active_link_build_order(self, *_args) -> list[dict[str, object]]:
+            return [active_row]
+
+        def iter_link_details(self, _filters: dict[str, object], *, batch_size: int):
+            assert batch_size == 2000
+            yield link_row
+
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(export_worker, "MeshMrRepository", FakeRepository)
+    monkeypatch.setattr(export_worker, "_emit", events.append)
+    output_path = tmp_path / "worker-location.xlsx"
+    tmp_output = tmp_path / "worker-location.xlsx.tmp"
+    job = ExportJob(
+        job_id="mesh-location",
+        job_type="mesh_link_detail_export",
+        db_path=str(tmp_path / "mesh.sqlite"),
+        output_path=str(output_path),
+        tmp_path=str(tmp_output),
+        filters={"source_file_id": 7},
+        params={"ap_location_snapshot": location_snapshot},
+        context={"source_file_id": 7},
+    )
+
+    export_worker._run_mesh_link_detail(job)
+
+    workbook = load_workbook(output_path)
+    link_sheet = workbook["链路明细"]
+    link_headers = [cell.value for cell in link_sheet[1]]
+    link_values = [cell.value for cell in link_sheet[2]]
+    assert link_values[link_headers.index("归属区间")] == "快照区间"
+    assert link_values[link_headers.index("里程")] == "K22+567"
+    assert link_values[link_headers.index("方向")] == "下行"
+    active_sheet = workbook["主链路明细"]
+    active_headers = [cell.value for cell in active_sheet[1]]
+    active_values = [cell.value for cell in active_sheet[2]]
+    assert active_values[active_headers.index("归属区间")] == "快照区间"
+    workbook.close()
+    assert events[-1]["type"] == "finished"
+
+
 def test_online_mr_compat_export_keeps_detail_columns_and_exposes_diagnostics(tmp_path: Path) -> None:
     session_dir, db_path = _online_mr_database(tmp_path)
     workbook = Workbook()

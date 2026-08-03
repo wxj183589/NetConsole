@@ -7,7 +7,7 @@ from statistics import median
 from typing import Callable, Literal, Sequence, TypeVar
 
 
-SUSTAINED_ZERO_DISPLAY_MS = 3_000
+SUSTAINED_ZERO_MINIMUM_SAMPLE_COUNT = 2
 MINIMUM_SAMPLE_INTERVAL_MS = 100
 MAXIMUM_SAMPLE_INTERVAL_MS = 5_000
 DEFAULT_SAMPLE_INTERVAL_MS = 1_000
@@ -67,7 +67,7 @@ def analyze_rssi_zero_runs(
     boundary_before_selector: Callable[[T], bool] | None = None,
     fallback_sample_interval_ms: object = None,
     maximum_continuous_gap_ms: object = None,
-    sustained_zero_display_ms: int = SUSTAINED_ZERO_DISPLAY_MS,
+    sustained_zero_minimum_sample_count: int = SUSTAINED_ZERO_MINIMUM_SAMPLE_COUNT,
 ) -> RssiZeroRunAnalysis:
     """Classify explicit zero runs without changing the source rows."""
 
@@ -110,12 +110,12 @@ def analyze_rssi_zero_runs(
         estimated_end = next_valid_time is None
         end = next_valid_time or (last + timedelta(milliseconds=sample_interval_ms))
         duration_ms = max(int(round((end - start).total_seconds() * 1_000)), 0)
+        sample_count = len(zero_indices)
         state: RssiZeroState = (
             "sustained"
-            if duration_ms >= max(int(sustained_zero_display_ms), 0)
+            if sample_count >= max(int(sustained_zero_minimum_sample_count), 1)
             else "suppressed"
         )
-        sample_count = len(zero_indices)
         if state == "suppressed":
             suppressed_sample_count += sample_count
             suppressed_run_count += 1

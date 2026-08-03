@@ -2118,9 +2118,9 @@ describe('Mesh analysis detail behavior', () => {
 
     const activeChart = wrapper.findAllComponents(meshChartStub).find((chart) => chart.props('scope') === 'active')
     expect(activeChart?.props('points')).toHaveLength(1)
-    expect(wrapper.text()).toContain('轨旁信号图加载失败：请求超时，请重试。')
+    expect(wrapper.text()).toContain('轨旁AP信号图加载失败：请求超时，请重试。')
     const activeCalls = mocks.getActivePath.mock.calls.length
-    await wrapper.findAll('button').find((button) => button.text() === '重新加载轨旁信号图')!.trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === '重新加载轨旁AP信号图')!.trigger('click')
     await flushPromises()
     expect(mocks.getActivePath).toHaveBeenCalledTimes(activeCalls)
     expect(mocks.getTracksideSignal).toHaveBeenCalledTimes(2)
@@ -2389,7 +2389,7 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getActivePath).toHaveBeenCalled()
     expect(mocks.getTracksideSignal).not.toHaveBeenCalled()
 
-    await wrapper.findAll('button').find((button) => button.text() === '重新加载轨旁信号图')!.trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === '重新加载轨旁AP信号图')!.trigger('click')
     await flushPromises()
     expect(mocks.getTracksideSignal).toHaveBeenCalledOnce()
     expect(reportRendererWorkload).toHaveBeenCalledWith(expect.objectContaining({

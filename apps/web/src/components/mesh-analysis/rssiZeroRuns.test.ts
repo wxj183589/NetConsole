@@ -46,15 +46,14 @@ describe('RSSI zero-run display points', () => {
     expect(source[1].value).toBe(0)
   })
 
-  it('compresses a sustained zero run to its exact start and end times', () => {
+  it('draws multiple consecutive zeros at their exact start and end times', () => {
     const start = '2026-07-24 20:41:21.000'
-    const end = '2026-07-24 20:41:24.000'
+    const end = '2026-07-24 20:41:23.000'
     const source = [
       point(1, '2026-07-24 20:41:20.000', 35),
-      { ...point(2, start, 0), zeroRun: zeroRun('sustained', 'start', start, end, 3_000, 3) },
-      { ...point(3, '2026-07-24 20:41:22.000', 0), zeroRun: zeroRun('sustained', 'middle', start, end, 3_000, 3) },
-      { ...point(4, '2026-07-24 20:41:23.000', 0), zeroRun: zeroRun('sustained', 'end', start, end, 3_000, 3) },
-      point(5, end, 38),
+      { ...point(2, start, 0), zeroRun: zeroRun('sustained', 'start', start, end, 2_000, 2) },
+      { ...point(3, '2026-07-24 20:41:22.000', 0), zeroRun: zeroRun('sustained', 'end', start, end, 2_000, 2) },
+      point(4, end, 38),
     ]
 
     const result = buildRssiDisplayPoints(source)

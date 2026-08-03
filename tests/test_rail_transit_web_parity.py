@@ -1469,6 +1469,7 @@ def test_mesh_link_detail_export_binds_selected_source_and_uses_export_process(
     assert Path(job.db_path) == detail_db
     assert job.filters == {"source_file_id": 1}
     assert job.params["analysis_params"] == override
+    assert job.params["ap_location_snapshot"] == []
     assert "链路明细" in Path(job.output_path).name
 
     saved = service.save_mesh_analysis_params("demo", override)

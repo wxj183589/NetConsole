@@ -21,7 +21,10 @@ from netconsole.services.mesh_quality_analysis import (
     get_threshold_template,
     load_default_rules,
 )
-from netconsole.services.rail_transit.mesh_ap_location_service import MeshApLocationSnapshot
+from netconsole.services.rail_transit.mesh_ap_location_service import (
+    MeshApLocationSnapshot,
+    enrich_mesh_ap_location_row,
+)
 
 
 ProgressCallback = Callable[[int, str], None]
@@ -1038,20 +1041,7 @@ def _with_ap_location(
     row: dict[str, object],
     snapshot: MeshApLocationSnapshot,
 ) -> dict[str, object]:
-    location = snapshot.resolve(row)
-    result = dict(row)
-    result["peer_ap_name"] = str(result.get("peer_ap_name") or location.name or "")
-    result["peer_ap_mac"] = str(result.get("peer_ap_mac") or location.mac or "")
-    result["peer_site"] = location.station or str(result.get("peer_site") or "")
-    result["station"] = location.station or str(result.get("station") or result.get("peer_site") or "")
-    result["belong_section"] = location.section or str(result.get("belong_section") or result.get("peer_section") or "")
-    result["peer_section"] = result["belong_section"]
-    result["section"] = result["belong_section"]
-    result["peer_location"] = location.mileage or str(result.get("peer_location") or result.get("mileage") or "")
-    result["mileage"] = result["peer_location"]
-    result["peer_direction"] = location.line_side or str(result.get("peer_direction") or result.get("line_side") or "")
-    result["line_side"] = result["peer_direction"]
-    return result
+    return enrich_mesh_ap_location_row(row, snapshot)
 
 
 def _at(values: list[object], index: int) -> object:
