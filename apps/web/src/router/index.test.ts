@@ -39,6 +39,9 @@ describe('Web route ownership', () => {
     expect(routes.find((route) => route.path === 'rail-transit/trackside-ap-plan')?.redirect).toEqual({
       name: 'rail-transit-base-data', query: { tab: 'trackside-ap-planning' },
     })
+    expect(routes.find((route) => route.path === 'config-center')?.meta?.navigationId).toBe('files.config-collection')
+    expect(routes.find((route) => route.path === 'device-files')?.meta?.navigationId).toBe('files.downloads')
+    expect(routes.find((route) => route.path === 'device-files/diagnostics')?.meta?.navigationId).toBe('files.device-diagnostics')
   })
 
   it('registers the standalone device detail route with list navigation context', () => {

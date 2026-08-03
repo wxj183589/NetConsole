@@ -35,7 +35,7 @@
 | [设备管理对等规格（历史兼容）](development/parity/device-management.md) | 已冻结的逐字段/逐操作规格兼容指针 | 历史维护 | Git 历史与最终迁移矩阵 | 不再作为当前状态源 |
 | [设备管理与设备详情](../apps/web/src/views/devices/README.md) | 设备列表、快速详情抽屉、完整详情页、数据来源、Command Profile 与验收边界 | Device/Application/API/Vue 开发 | Device Detail Application/Query Service、DTO/API、版本化 Profile 和 Vue | 设备字段、能力、刷新任务、页签或验收状态变化 |
 | [文件管理对等规格（历史兼容）](development/parity/file-management.md) | 已冻结的双栏/SFTP/下载队列规格兼容指针 | 历史维护 | Git 历史与最终迁移矩阵 | 不再作为当前状态源 |
-| [设备文件下载](device-files/README.md) | Electron 设备文件只读浏览、SFTP、主机密钥和下载任务 | File Service/Task Center/Web | 当前代码、历史取证和定向测试 | SFTP、主机密钥、下载或安全边界变化 |
+| [设备文件下载](device-files/README.md) | Electron 设备文件只读浏览、SFTP、主机密钥、下载任务，以及同模块下的配置采集中心和设备诊断下载入口 | File Service/Task Center/Web | 当前代码、历史取证和定向测试 | SFTP、主机密钥、下载或安全边界变化 |
 | [配置采集与快照对比](CONFIG_COLLECTION.md) | 配置采集、快照选择、双栏 Diff、裁剪、导出和恢复 | Config Service/Task Center/Web | 配置 handler、API、Vue 与定向测试 | 快照、对比、裁剪、导出或恢复语义变化 |
 | [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md) | Electron 本机选择器、受控目录/Artifact、终端与通知的严格白名单 | Electron 桌面外壳与本机动作开发 | RuntimeMode、Desktop session、Feature Gate、PathResolver | 新增或修改任一本机 Bridge 动作前 |
 | [工具集](EXTERNAL_TOOL_COLLECTION.md) | 本机第三方 EXE 注册、分类、图标、状态、仅 ID 启动和独立 userData 存储 | Electron/Vue 桌面工具开发 | ExternalToolStore、ExternalToolService、专用 IPC 与工具集页面 | 工具模型、持久化、选择器、启动或安全边界变化 |

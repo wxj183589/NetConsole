@@ -1,6 +1,6 @@
 # 设备文件下载
 
-设备文件下载是 Electron/Vue 的只读 SFTP 页面。业务链路为 `Vue -> FastAPI Router -> FileManagementApplicationService -> FileTransferService`，下载使用现有 Task Center，不创建第二套下载数据库。
+设备文件下载是 Electron/Vue 的只读 SFTP 页面。当前在同一“设备文件下载”模块下还挂载配置采集中心与设备诊断下载入口；业务链路为 `Vue -> FastAPI Router -> FileManagementApplicationService -> FileTransferService`，下载使用现有 Task Center，不创建第二套下载数据库。
 
 ## 当前边界
 
