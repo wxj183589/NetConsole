@@ -91,13 +91,7 @@ const trainColumns: NcTableColumn<VehicleMrTrainState>[] = [
   vehicleColumn('actions', '操作', 'actions', { width: 100, cellKind: 'actions', actionLabels: ['通信详情'] }),
 ]
 
-type TaskResultRow = { name: string; value: string }
 type VehicleMrEventRow = Record<string, unknown>
-
-const taskResultColumns: NcTableColumn<TaskResultRow>[] = [
-  vehicleColumn('name', '结果项', 'name', { width: 220 }),
-  vehicleColumn('value', '值', 'description', { align: 'left', alignmentReason: 'long-text' }),
-]
 
 const eventColumns: NcTableColumn<VehicleMrEventRow>[] = [
   vehicleColumn('event_time', '时间', 'datetime', { width: 180 }),
@@ -127,7 +121,6 @@ const previewColumns: NcTableColumn<VehicleMrMappingPreviewRow>[] = [
   vehicleColumn('message', '说明', 'description', { minWidth: 260, align: 'left', alignmentReason: 'long-text' }),
 ]
 
-const taskRows = computed(() => Object.entries(task.value?.result_summary || {}).map(([name, value]) => ({ name, value: typeof value === 'string' ? value : JSON.stringify(value) })))
 const taskRunning = computed(() => Boolean(task.value && !terminalStates.has(task.value.status)))
 const collectionRunning = computed(() => Boolean(task.value?.action === 'vehicle_mr_online_collection_start' && !terminalStates.has(task.value.status)))
 function failure(reason: unknown, fallback: string): string { return reason instanceof Error ? reason.message : fallback }
@@ -351,7 +344,6 @@ onBeforeUnmount(stopPolling)
         <template #cell-actions="{ row }"><el-button link type="primary" @click="openDetail(row)">通信详情</el-button></template>
       </NcDataTable><div class="pagination"><span>共 {{ page?.total || 0 }} 列车</span><el-pagination :current-page="filters.page" :page-size="filters.page_size" layout="prev, pager, next" :total="page?.total || 0" @current-change="(value: number) => { filters.page = value; loadTrains() }" /></div>
     </div>
-    <div v-if="task" class="content-card task-card"><div class="task-heading"><div><h2>列车在线处理结果</h2><p>{{ task.task_id }}</p></div><el-tag>{{ task.status }}</el-tag></div><el-alert v-if="task.error_message" :title="task.error_message" type="error" :closable="false" /><p v-else>{{ task.message }}</p><NcDataTable v-if="taskRows.length" table-id="rail-vehicle-mr-online-task-results" route-key="/rail-transit/train-online" :preference-scope="task.action" :data="taskRows" :columns="taskResultColumns" :show-column-settings="false" :stripe="false" max-height="260" /><el-alert title="停止、日志、恢复和导出文件保存统一在任务中心处理" type="info" :closable="false"><el-button link @click="openTaskWindow">打开任务中心</el-button></el-alert></div>
     <el-drawer v-model="detailVisible" :title="`${selectedTrain?.train_name || ''} 通信详情`" size="min(1180px, 96vw)">
       <div v-if="selectedTrain" class="train-detail-summary">
         <el-descriptions :column="4" border>
@@ -388,5 +380,5 @@ onBeforeUnmount(stopPolling)
 </template>
 
 <style scoped>
-.vehicle-page{display:flex;flex-direction:column;gap:16px;min-width:0}.page-heading,.actions,.toolbar,.pagination,.task-heading,.collection-bar,.history-toolbar,.mapping-toolbar{display:flex;align-items:center;gap:12px}.page-heading,.pagination,.task-heading{justify-content:space-between}.page-heading h1,.task-heading h2{margin:2px 0 6px}.page-heading p,.task-heading p,.task-card p,.collection-bar span{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.actions,.toolbar,.history-toolbar,.collection-bar,.mapping-toolbar{flex-wrap:wrap}.summary-grid{display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));gap:10px}.summary-grid article,.content-card,.endpoint-card{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:8px}.summary-grid article{padding:13px}.summary-grid span{color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;margin-top:6px;font-size:24px}.content-card{padding:14px 16px;overflow:hidden}.toolbar{margin-bottom:12px}.toolbar .el-input{width:190px}.toolbar .el-select{width:140px}.history-toolbar,.mapping-toolbar{margin-bottom:12px}.history-toolbar .el-input{width:130px}.history-toolbar .el-select{width:125px}.pagination{padding-top:12px}.task-card,.preview,.train-detail-summary{display:flex;flex-direction:column;gap:12px}.endpoint-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.endpoint-card{padding:12px}.endpoint-card header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}.hidden{display:none}@media(max-width:1000px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}.endpoint-grid{grid-template-columns:1fr}}@media(max-width:720px){.summary-grid{grid-template-columns:1fr}}
+.vehicle-page{display:flex;flex-direction:column;gap:16px;min-width:0}.page-heading,.actions,.toolbar,.pagination,.collection-bar,.history-toolbar,.mapping-toolbar{display:flex;align-items:center;gap:12px}.page-heading,.pagination{justify-content:space-between}.page-heading h1{margin:2px 0 6px}.page-heading p,.collection-bar span{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.actions,.toolbar,.history-toolbar,.collection-bar,.mapping-toolbar{flex-wrap:wrap}.summary-grid{display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));gap:10px}.summary-grid article,.content-card,.endpoint-card{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:8px}.summary-grid article{padding:13px}.summary-grid span{color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;margin-top:6px;font-size:24px}.content-card{padding:14px 16px;overflow:hidden}.toolbar{margin-bottom:12px}.toolbar .el-input{width:190px}.toolbar .el-select{width:140px}.history-toolbar,.mapping-toolbar{margin-bottom:12px}.history-toolbar .el-input{width:130px}.history-toolbar .el-select{width:125px}.pagination{padding-top:12px}.preview,.train-detail-summary{display:flex;flex-direction:column;gap:12px}.endpoint-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.endpoint-card{padding:12px}.endpoint-card header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}.hidden{display:none}@media(max-width:1000px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}.endpoint-grid{grid-template-columns:1fr}}@media(max-width:720px){.summary-grid{grid-template-columns:1fr}}
 </style>
