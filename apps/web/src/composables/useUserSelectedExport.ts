@@ -1,6 +1,7 @@
 import { computed, reactive, readonly } from 'vue'
 import { ElMessage } from 'element-plus'
 
+import { getActiveSite } from '../api/siteStorage'
 import { getTask } from '../api/tasks'
 import { downloadBackendResource, getPlatformAdapter } from '../platform/runtime'
 import {
@@ -95,8 +96,13 @@ export async function prepareExportDestination(
   directoryPath?: string,
 ): Promise<UserSelectedExportDestination | null> {
   const definition = exportDefinition(action)
-  const safeSuggestedName = validateSuggestedName(suggestedName, definition.artifactExtensions)
   const adapter = getPlatformAdapter()
+  const safeSuggestedName = validateSuggestedName(
+    adapter.hostType === 'electron'
+      ? await withActiveSitePrefix(suggestedName, definition.artifactExtensions)
+      : suggestedName,
+    definition.artifactExtensions,
+  )
   if (adapter.hostType === 'browser') {
     return {
       mode: 'browser',
@@ -473,6 +479,46 @@ function validateSuggestedName(value: string, extensions: string[]): string {
     throw new TypeError('导出建议文件名无效')
   }
   return name
+}
+
+async function withActiveSitePrefix(suggestedName: string, extensions: string[]): Promise<string> {
+  try {
+    const site = await getActiveSite()
+    const siteName = sanitizeFilePart(String(site.display_name || site.site_id || ''))
+    if (!siteName) return suggestedName
+    return addFileNamePrefix(suggestedName, siteName, extensions)
+  } catch {
+    return suggestedName
+  }
+}
+
+function addFileNamePrefix(fileName: string, prefix: string, extensions: string[]): string {
+  const name = selectedFileName(fileName.trim())
+  const lowerName = name.toLocaleLowerCase()
+  const extension = extensions.find((item) => lowerName.endsWith(`.${item.toLocaleLowerCase()}`))
+  if (!name || !extension) return fileName
+  const normalizedPrefix = trimFileStem(sanitizeFilePart(prefix), 80)
+  if (!normalizedPrefix) return name
+  if (
+    name.startsWith(`${normalizedPrefix}-`)
+    || name.startsWith(`${normalizedPrefix}_`)
+  ) return name
+  const suffixLength = extension.length + 1
+  const stem = name.slice(0, -suffixLength)
+  const maxStemLength = 180 - normalizedPrefix.length - suffixLength - 1
+  const safeStem = trimFileStem(stem, maxStemLength)
+  return `${normalizedPrefix}-${safeStem}.${extension}`
+}
+
+function sanitizeFilePart(value: string): string {
+  return value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim()
+}
+
+function trimFileStem(value: string, maxLength: number): string {
+  const trimmed = value.trim()
+  if (maxLength <= 0) return '导出'
+  if (trimmed.length <= maxLength) return trimmed || '导出'
+  return trimmed.slice(0, maxLength).trim() || '导出'
 }
 
 function selectedFileName(path: string): string {

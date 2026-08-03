@@ -7,8 +7,13 @@ import type { TaskItem } from '../types/task'
 const mocks = vi.hoisted(() => ({
   chooseSavePath: vi.fn(),
   downloadBackendResource: vi.fn(),
+  getActiveSite: vi.fn(),
   getTask: vi.fn(),
   getPlatformAdapter: vi.fn(),
+}))
+
+vi.mock('../api/siteStorage', () => ({
+  getActiveSite: mocks.getActiveSite,
 }))
 
 vi.mock('../platform/runtime', () => ({
@@ -55,13 +60,17 @@ beforeEach(() => {
   resetUserSelectedExportForTests()
   vi.clearAllMocks()
   mocks.getPlatformAdapter.mockReturnValue(electronAdapter())
+  mocks.getActiveSite.mockResolvedValue({
+    site_id: 'site-a',
+    display_name: '测试局点',
+  })
   mocks.chooseSavePath.mockResolvedValue({
     cancelled: false,
-    path: 'D:\\operator\\设备表.csv',
+    path: 'D:\\operator\\测试局点-设备表.csv',
   })
   mocks.downloadBackendResource.mockResolvedValue({
     status: 'saved',
-    fileName: '设备表.csv',
+    fileName: '测试局点-设备表.csv',
     directoryLabel: 'D:\\operator',
     capabilityId: 'capability-1',
   })
@@ -84,6 +93,37 @@ describe('useUserSelectedExport', () => {
     expect(sessionStorage.getItem('netconsole.user-selected-exports.v1')).toBeNull()
   })
 
+  it('adds the current site display name to the desktop Save As suggestion', async () => {
+    await submitExportAfterDestinationSelected({
+      action: 'devices.csv',
+      suggestedName: '设备表.csv',
+      submit: vi.fn().mockResolvedValue({ task_id: 'task-1' }),
+    })
+
+    expect(mocks.chooseSavePath).toHaveBeenCalledWith({
+      suggestedName: '测试局点-设备表.csv',
+      filters: [{ name: 'CSV 文件', extensions: ['csv'] }],
+    })
+    expect(bindingForTask('task-1')?.fileName).toBe('测试局点-设备表.csv')
+  })
+
+  it('does not duplicate the current site prefix when the page already supplies it', async () => {
+    mocks.chooseSavePath.mockResolvedValueOnce({
+      cancelled: false,
+      path: 'D:\\operator\\测试局点-设备表.csv',
+    })
+
+    await submitExportAfterDestinationSelected({
+      action: 'devices.csv',
+      suggestedName: '测试局点-设备表.csv',
+      submit: vi.fn().mockResolvedValue({ task_id: 'task-1' }),
+    })
+
+    expect(mocks.chooseSavePath).toHaveBeenCalledWith(expect.objectContaining({
+      suggestedName: '测试局点-设备表.csv',
+    }))
+  })
+
   it('binds the authorized target before saving once without a second dialog', async () => {
     const submit = vi.fn().mockResolvedValue({ task_id: 'task-1' })
     const submitted = await submitExportAfterDestinationSelected({
@@ -103,8 +143,8 @@ describe('useUserSelectedExport', () => {
     expect(mocks.downloadBackendResource).toHaveBeenCalledWith({
       apiPath: '/api/device-management/exports/task-1/download',
       query: { artifact_id: 'artifact-1' },
-      suggestedName: '设备表.csv',
-      destinationPath: 'D:\\operator\\设备表.csv',
+      suggestedName: '测试局点-设备表.csv',
+      destinationPath: 'D:\\operator\\测试局点-设备表.csv',
       expectedSizeBytes: 128,
       expectedSha256: SHA256,
     })
@@ -163,6 +203,7 @@ describe('useUserSelectedExport', () => {
       destinationPath: expect.anything(),
     }))
     expect(bindingForTask('task-browser')?.state).toBe('browser_started')
+    expect(mocks.getActiveSite).not.toHaveBeenCalled()
   })
 
   it('restores only explicitly bound tasks and never prompts for unrelated history', async () => {
