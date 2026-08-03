@@ -506,6 +506,7 @@ def resolve_effective_trackside_ap_scope(
     runtime_station_index = _build_runtime_station_index(
         context,
         station_names,
+        station_aliases,
         runtime_station_rows or (),
     )
     excluded: list[TracksideApScopeExcludedItem] = []
@@ -786,19 +787,30 @@ def resolve_effective_trackside_ap_scope(
 def _build_runtime_station_index(
     context: TracksideApScopeContext,
     station_names: Mapping[str, str],
+    station_aliases: Mapping[str, set[str]],
     rows: Iterable[Mapping[str, object | None]],
 ) -> dict[str, set[str]]:
     result: dict[str, set[str]] = defaultdict(set)
     for row in rows:
         station_id = str(row.get("station_id") or "").strip()
         mac = normalize_mac(row.get("ap_mac") or row.get("observed_ap_mac")) or ""
-        if not station_id or station_id not in station_names or not mac:
+        if not mac:
             continue
         project_phase = str(row.get("project_phase") or "").strip()
         if context.project_phase and (
             not project_phase
             or _scope_token(project_phase) != _scope_token(context.project_phase)
         ):
+            continue
+        if station_id not in station_names:
+            station_key = _station_key(
+                row.get("device_station")
+                or row.get("formal_station_name")
+                or row.get("station_name")
+            )
+            candidates = station_aliases.get(station_key, set())
+            station_id = next(iter(candidates)) if len(candidates) == 1 else ""
+        if not station_id:
             continue
         result[mac].add(station_id)
     return result

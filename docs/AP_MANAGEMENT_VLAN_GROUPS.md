@@ -40,7 +40,7 @@ GET  /api/rail-transit/trackside-ap-business/plan/artifacts/{artifact_id}/downlo
 
 ## 上线统计
 
-实际上线数量复用现有 FIT-AP 在线状态。基础 AP 资料中的完整 MAC 与稳定 `station_id` 是首选关联；没有任何基础 AP 资料命中时，允许使用“当前车站交换机 LLDP 完整邻居 MAC = FIT-AP 完整 MAC，且交换机已有稳定 `station_id`”的唯一精确证据进行只读运行态站点投影。站点范围来自当前有效站点与逐站规划，不依赖 AP 参考资料或 FIT-AP 资源是否已经导入。参考资料记录数本身不作为统计字段或上线率分母：
+实际上线数量复用现有 FIT-AP 在线状态。基础 AP 资料中的完整 MAC 与稳定 `station_id` 是首选关联；没有任何基础 AP 资料命中时，允许使用“当前车站交换机 LLDP 完整邻居 MAC = FIT-AP 完整 MAC”的唯一精确证据进行只读运行态站点投影。交换机已有有效 `station_id` 时直接使用；缺失时，设备管理 `station` 必须与当前正式站点规范化后唯一对应，多候选或空值不得投影。站点范围来自当前有效站点与逐站规划，不依赖 AP 参考资料或 FIT-AP 资源是否已经导入。参考资料记录数本身不作为统计字段或上线率分母：
 
 ```text
 未上线 = max(规划 AP 总数量 - 实际上线数量, 0)

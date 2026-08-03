@@ -662,6 +662,69 @@ def test_unique_lldp_station_evidence_projects_runtime_ap_into_station() -> None
     assert scope.station_statistics()[0]["actual_online_count"] == 1
 
 
+def test_unique_device_station_text_projects_runtime_ap_without_station_id() -> None:
+    station = _station(1, "16-双陈站", "node-1", 16)
+    station_id = str(station["station_id"])
+    scope = _resolve(
+        stations=[station],
+        plans=[{"station_name": "双陈站", "ap_count": 1, "sequence_no": 16}],
+        references=[],
+        resources=[
+            _resource(
+                None,
+                "AP-LLDP-01",
+                "0011-2233-4455",
+                ap_uuid="ap-lldp-01",
+            )
+        ],
+        runtime_station_rows=[
+            {
+                "ap_mac": "00:11:22:33:44:55",
+                "station_id": "",
+                "device_station": "双陈站",
+                "project_phase": "phase_2",
+            }
+        ],
+    )
+
+    assert scope.fit_ap_matched_count == 1
+    assert scope.fit_ap_unmatched_online_count == 0
+    assert scope.resources[0]["station_id"] == station_id
+    assert scope.resources[0]["site"] == "16-双陈站"
+    assert scope.station_statistics()[0]["actual_online_count"] == 1
+
+
+def test_ambiguous_device_station_text_does_not_project_runtime_ap() -> None:
+    stations = [
+        _station(1, "16-双陈站", "node-a", 16),
+        _station(2, "双陈站", "node-b", 17),
+    ]
+    scope = _resolve(
+        stations=stations,
+        plans=[],
+        references=[],
+        resources=[
+            _resource(
+                None,
+                "AP-AMBIGUOUS",
+                "0011-2233-4455",
+                ap_uuid="ap-ambiguous",
+            )
+        ],
+        runtime_station_rows=[
+            {
+                "ap_mac": "0011-2233-4455",
+                "station_id": "",
+                "device_station": "双陈站",
+                "project_phase": "phase_2",
+            }
+        ],
+    )
+
+    assert scope.fit_ap_matched_count == 0
+    assert scope.fit_ap_unmatched_online_count == 1
+
+
 def test_lldp_station_evidence_does_not_choose_between_multiple_stations() -> None:
     stations = [
         _station(1, "01站点A", "node-a", 1),

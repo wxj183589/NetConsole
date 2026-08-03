@@ -2127,7 +2127,7 @@ def test_trackside_online_status_refreshes_from_exact_switch_lldp_station_eviden
             device_type="SW",
             group_id=group.id,
             station="站点A",
-            station_id=station_ids["站点A"],
+            station_id="",
             project_phase="phase_1",
             work_scope_status="included",
         )

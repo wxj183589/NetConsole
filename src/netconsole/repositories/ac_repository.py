@@ -1165,7 +1165,8 @@ class AcRepository:
                 )
                 SELECT l.neighbor_mac AS ap_mac,
                        d.station_id,
-                       station.station_name,
+                       d.station AS device_station,
+                       station.station_name AS formal_station_name,
                        d.device_uuid AS switch_device_uuid,
                        d.name AS switch_name,
                        l.local_interface AS switch_interface,
@@ -1178,7 +1179,7 @@ class AcRepository:
                 FROM normalized_lldp l
                 JOIN devices d ON d.device_uuid = l.device_uuid
                 JOIN device_groups g ON g.id = d.group_id
-                JOIN ap_extension_points station
+                LEFT JOIN ap_extension_points station
                   ON station.belong_type = '__base_station__'
                  AND station.station_id = d.station_id
                 WHERE LENGTH(l.ap_mac_key) = 12
@@ -1186,8 +1187,8 @@ class AcRepository:
                   AND LOWER(TRIM(d.device_type)) IN ('sw', 'switch', '交换机')
                   AND TRIM(g.name) = '车站'
                   AND d.work_scope_status = 'included'
-                  AND TRIM(d.station_id) != ''
-                ORDER BY l.ap_mac_key, d.station_id, d.device_uuid, l.local_interface
+                ORDER BY l.ap_mac_key, d.station_id, d.station,
+                         d.device_uuid, l.local_interface
                 """
             ).fetchall()
         return [dict(row) for row in rows]
