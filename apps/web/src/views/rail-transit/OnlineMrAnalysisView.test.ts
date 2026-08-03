@@ -97,16 +97,19 @@ const tableStub = defineComponent({
     currentRowKey: { type: String, default: '' },
   },
   emits: ['row-click'],
-  setup(props, { emit }) {
+  setup(props, { emit, slots }) {
     return () => h('div', { 'data-current-row-key': props.currentRowKey }, [
       h('div', props.columns.map((column: any) => column.label).join('|')),
       h('div', props.data.length ? `${props.data.length} rows` : props.emptyText),
       ...props.data
         .filter((row: any) => typeof row?.session_id === 'string')
-        .map((row: any) => h('button', {
-          'data-testid': `table-row-${row.session_id}`,
-          onClick: () => emit('row-click', row),
-        }, row.session_id)),
+        .map((row: any, index: number) => h('div', { 'data-testid': `table-row-shell-${row.session_id}` }, [
+          h('button', {
+            'data-testid': `table-row-${row.session_id}`,
+            onClick: () => emit('row-click', row),
+          }, row.session_id),
+          ...(slots['cell-actions']?.({ row, column: { key: 'actions' }, index }) || []),
+        ])),
     ])
   },
 })
@@ -188,6 +191,9 @@ describe('Online MR analysis view behavior', () => {
     expect(wrapper.get('[data-testid="open-session-location"]').text()).toContain('打开本地目录')
     expect(wrapper.get('[data-testid="generate-report"]').text()).toContain('生成 XLSX 报告')
     expect(wrapper.get('[data-testid="delete-session"]').text()).toBe('删除')
+    expect(wrapper.text()).toContain('打开本地目录')
+    expect(wrapper.text()).toContain('操作')
+    expect(wrapper.text()).not.toContain('打开任务中心')
     wrapper.unmount()
   })
 
@@ -262,6 +268,29 @@ describe('Online MR analysis view behavior', () => {
     await flushPromises()
 
     expect(openLocation).toHaveBeenCalledWith('session-1')
+    wrapper.unmount()
+  })
+
+  it('opens and deletes sessions from the history row action column', async () => {
+    const openLocation = vi.fn().mockResolvedValue({ success: true })
+    Object.defineProperty(window, 'netconsoleDesktop', {
+      configurable: true,
+      value: { openOnlineMrSessionLocation: openLocation, openTaskWindow: vi.fn() },
+    })
+    mocks.listRecentOnlineMrSessions.mockResolvedValueOnce([
+      { session_id: 'session-1', device_name: 'MR-1', mr_name: 'MR-1', status: 'STOPPED', started_at: '2026-07-20 10:00:00' },
+      { session_id: 'session-2', device_name: 'MR-2', mr_name: 'MR-2', status: 'STOPPED', started_at: '2026-07-20 11:00:00' },
+    ])
+    const wrapper = await renderView()
+
+    await wrapper.get('[data-testid="row-open-session-location-session-2"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="row-delete-session-session-2"]').trigger('click')
+    await flushPromises()
+
+    expect(openLocation).toHaveBeenCalledWith('session-2')
+    expect(mocks.deleteOnlineMrSession).toHaveBeenCalledWith('session-2')
+    expect(mocks.getOnlineMrSession).toHaveBeenCalledWith('session-1', expect.any(AbortSignal))
     wrapper.unmount()
   })
 

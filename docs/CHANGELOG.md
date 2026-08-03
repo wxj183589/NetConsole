@@ -496,7 +496,7 @@
 ### Online MR 实时收集
 
 - Online MR 分析页业务表改为 `main_link`、`link_detail`、`channel_busy`、`switch_history`、`switch_realtime`、`interface_rate`、`fping_1s`、`iperf` 和 `diagnostics` 固定 key；旧 `mesh_link`、`mesh_detail` 仅作为短期 API 入参兼容别名，`radio_statistics` 不再作为独立业务表公开。
-- 新生成的 Online MR 解析业务库使用 `online_mr_business_tables_v9_no_source_fields` schema，业务表、指标维度和切换 RSSI API 不再返回 raw/source 文件路径或行号字段；原始日志仍保留在会话 `raw/` 目录并通过原始日志页查看。
+- 新生成的 Online MR 解析业务库使用 `online_mr_business_tables_v10_peer_identity_fields` schema，主链路样本持久化统一 AP Identity 对 Peer MAC/BSSID 的精确解析结果，包括 AP MAC、Peer Radio、状态、来源、规则和原因；业务表、指标维度和切换 RSSI API 仍不返回 raw/source 文件路径或行号字段，原始日志继续保留在会话 `raw/` 目录并通过原始日志页查看。
 - 分析页页签和列名同步为主链路信息、链路明细、主链路切换历史、主链路切换日志、接口速率、fping 1s 聚合和打流测试，前端类型改为按业务表 key 约束返回行结构。
 
 ## v1.4.0 - 2026-07-21

@@ -8,7 +8,6 @@ from datetime import datetime, timedelta, time as dt_time
 from pathlib import Path
 from typing import Callable
 
-from netconsole.core.paths import PathResolver
 from netconsole.core.ping.fping_v5_parser import parse_fping_v5_json_line
 from netconsole.repositories.online_mr_diagnosis_repository import (
     OnlineMrDatabaseError,
@@ -32,7 +31,7 @@ RX_COMMAND_RE = re.compile(
     re.IGNORECASE,
 )
 DEVICE_CLOCK_RE = re.compile(r"\b\d{2}:\d{2}:\d{2}\s+\S+\s+\w+\s+\d{1,2}/\d{1,2}/\d{4}\b", re.IGNORECASE)
-PARSER_VERSION = "online_mr_business_tables_v9_no_source_fields"
+PARSER_VERSION = "online_mr_business_tables_v10_peer_identity_fields"
 ProgressCallback = Callable[[str, int, int, str], None]
 CancelCallback = Callable[[], bool]
 
@@ -480,14 +479,42 @@ class OnlineMrDiagnosisParser:
             metrics = record.metrics
             peer_name = str(metrics.get("peer_name") or "").strip()
             peer_mac = record.peer_mac_raw or record.peer_mac_normalized or ""
-            resolved = resolver.resolve(peer_mac, peer_name=peer_name) if resolver is not None else None
+            bssid = str(metrics.get("bssid") or "").strip()
+            resolved = self._resolve_peer_identity(resolver, peer_mac, bssid, peer_name)
             resolved = resolved or {}
-            resolved_name = peer_name or str(resolved.get("peer_ap_name") or "").strip() or peer_mac
+            resolved_name = str(resolved.get("peer_ap_name") or "").strip() or peer_name or peer_mac
             metrics["resolved_peer_name"] = resolved_name
+            metrics["peer_ap_mac"] = resolved.get("peer_ap_mac") or ""
+            metrics["canonical_ap_mac"] = resolved.get("canonical_ap_mac") or resolved.get("peer_ap_mac") or ""
+            metrics["peer_radio_mac"] = resolved.get("peer_radio_mac") or (bssid if resolved.get("identity_status") == "matched" else "")
+            metrics["identity_status"] = resolved.get("identity_status") or "unresolved"
+            metrics["identity_source"] = resolved.get("identity_source") or ""
+            metrics["identity_reason"] = resolved.get("identity_reason") or ""
+            metrics["identity_match_rule"] = resolved.get("match_rule") or ""
+            metrics["identity_match_confidence"] = resolved.get("match_confidence") or 0
             metrics["belong_station"] = resolved.get("peer_site") or metrics.get("peer_station") or metrics.get("peer_site") or ""
             metrics["belong_section"] = resolved.get("peer_section") or metrics.get("belong_section") or ""
             metrics["belong_type"] = resolved.get("belong_type") or metrics.get("belong_type") or "unknown"
             metrics["belonging_source"] = resolved.get("belonging_source") or resolved.get("match_rule") or metrics.get("belonging_source") or ""
+
+    @staticmethod
+    def _resolve_peer_identity(
+        resolver: MeshPeerMappingService | None,
+        peer_mac: str,
+        bssid: str,
+        peer_name: str,
+    ) -> dict[str, object] | None:
+        if resolver is None:
+            return None
+        resolved = resolver.resolve(peer_mac, peer_name=peer_name) if peer_mac else None
+        if resolved and resolved.get("identity_status") == "matched":
+            return resolved
+        bssid_resolved = None
+        if bssid and bssid != peer_mac:
+            bssid_resolved = resolver.resolve(bssid, peer_name=peer_name)
+            if bssid_resolved and bssid_resolved.get("identity_status") == "matched":
+                return bssid_resolved
+        return resolved or bssid_resolved
 
     def _get_peer_resolver(self) -> MeshPeerMappingService | None:
         if self._peer_resolver is not None:
@@ -495,7 +522,7 @@ class OnlineMrDiagnosisParser:
         site = str(getattr(self.meta, "site", "") or "")
         if not site:
             return None
-        self._peer_resolver = MeshPeerMappingService(site, PathResolver())
+        self._peer_resolver = MeshPeerMappingService(site, self._path_resolver())
         return self._peer_resolver
 
     @staticmethod
@@ -580,6 +607,14 @@ class OnlineMrDiagnosisParser:
                     record.peer_mac_normalized,
                     str(metrics.get("resolved_peer_name") or metrics.get("peer_name") or record.peer_mac_raw or ""),
                     metrics.get("local_rssi_db"),
+                    metrics.get("peer_ap_mac") or "",
+                    metrics.get("canonical_ap_mac") or "",
+                    metrics.get("peer_radio_mac") or "",
+                    metrics.get("identity_status") or "unresolved",
+                    metrics.get("identity_source") or "",
+                    metrics.get("identity_reason") or "",
+                    metrics.get("identity_match_rule") or "",
+                    metrics.get("identity_match_confidence") or 0,
                     metrics.get("bssid") or "",
                     metrics.get("interface") or "",
                     metrics.get("belong_station") or "",
@@ -896,10 +931,16 @@ class OnlineMrDiagnosisParser:
 
         resolved = self.session_dir.resolve()
         parts = resolved.parts
+        if "sites" in parts:
+            sites_index = parts.index("sites")
+            if sites_index > 0:
+                root = Path(*parts[:sites_index])
+                return PathResolver(app_root=root, data_root=root)
         if "data" in parts:
             data_index = parts.index("data")
             if data_index > 0:
-                return PathResolver(Path(*parts[:data_index]))
+                root = Path(*parts[:data_index])
+                return PathResolver(app_root=root, data_root=root)
         return PathResolver()
 
     def _find_switch_history_file(self) -> Path:
