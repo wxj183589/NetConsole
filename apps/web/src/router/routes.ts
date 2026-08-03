@@ -38,7 +38,7 @@ export const appRoutes: RouteRecordRaw[] = [
       { path: 'tasks', name: 'tasks', component: () => import('../views/job-center/JobCenterView.vue'), meta: { navigationId: 'tasks', featureId: 'web.job_center', moduleId: 'tasks', title: '任务中心', tabTitle: '任务中心', desktopOnly: false } },
       { path: 'agents', name: 'agents', component: () => import('../views/agents/AgentListView.vue'), meta: { navigationId: 'agents', featureId: 'web.agent_management', moduleId: 'agents', title: 'Agent 管理', tabTitle: 'Agent 管理', desktopOnly: false } },
       { path: 'settings', name: 'system-settings', component: () => import('../views/settings/SystemSettingsView.vue'), meta: { navigationId: 'settings', featureId: 'web.system_settings', moduleId: 'settings', title: '系统设置', tabTitle: '系统设置', desktopOnly: true, workspace: { cache: false, allowDuplicate: false } } },
-      { path: 'command-reference', name: 'command-reference', component: () => import('../views/command-reference/CommandReferenceView.vue'), meta: { navigationId: 'command-reference', featureId: 'web.command_reference', moduleId: 'command-reference', title: '命令说明', tabTitle: '命令说明', desktopOnly: false } },
+      { path: 'command-reference', name: 'command-reference', redirect: { name: 'logs', query: { tab: 'command-reference' } }, meta: { navigationId: 'logs', featureId: 'web.command_reference', moduleId: 'logs', title: '日志中心 / 命令说明', desktopOnly: false, hiddenRoute: true } },
       { path: 'logs', name: 'logs', component: () => import('../views/system/SystemMaintenanceView.vue'), meta: { navigationId: 'logs', featureId: 'web.logs', moduleId: 'logs', title: '应用日志与安全维护', tabTitle: '应用日志', desktopOnly: false } },
     ],
   },

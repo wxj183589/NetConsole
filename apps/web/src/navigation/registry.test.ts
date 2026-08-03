@@ -24,7 +24,6 @@ describe('Web navigation registry', () => {
       '工具集',
       '任务中心',
       'Agent 管理',
-      '命令说明',
       '日志中心',
       '系统设置',
       '功能开关配置',
@@ -61,7 +60,7 @@ describe('Web navigation registry', () => {
     const visible = flattenNavigation(visibleNavigation(() => true))
     expect(visible.every((item) => item.children.length > 0 || Boolean(item.route_name && item.route_path))).toBe(true)
     expect(visible.some((item) => item.navigation_id === 'network.wireless-scan')).toBe(true)
-    expect(visible.some((item) => item.navigation_id === 'command-reference')).toBe(true)
+    expect(visible.some((item) => item.navigation_id === 'command-reference')).toBe(false)
   })
 
   it('shows the desktop-only tool collection in Electron between network tools and tasks', () => {

@@ -41,7 +41,13 @@ vi.mock('../../platform/runtime', () => ({
   downloadBackendResource,
   getPlatformAdapter: () => ({ hostType: 'browser', openExternalUrl: vi.fn(), openTaskWindow }),
 }))
+vi.mock('vue-router', () => ({
+  useRoute: () => ({ query: {} }),
+}))
 vi.mock('../../components/feedback/useConfirm', () => ({ useConfirm: () => ({ confirm: confirmDialog }) }))
+vi.mock('../command-reference/CommandReferenceView.vue', () => ({
+  default: { name: 'CommandReferenceView', template: '<div data-test="command-reference-tab">命令说明</div>' },
+}))
 vi.mock('element-plus', async (importOriginal) => ({
   ...await importOriginal<typeof import('element-plus')>(),
   ElMessage: messages,

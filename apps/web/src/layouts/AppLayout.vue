@@ -121,6 +121,10 @@ function closeGroup(groupId: string): void {
   persistOpenGroups()
 }
 
+async function openChangelog(): Promise<void> {
+  await workspace.openOrActivateRoute('/logs?tab=changelog')
+}
+
 function updateViewport(): void {
   viewportWidth.value = window.innerWidth
   if (!mobile.value) drawerOpen.value = false
@@ -262,7 +266,7 @@ onBeforeUnmount(() => {
           <span :class="['status-dot', backendOnline ? 'online' : 'offline']"></span>
           <span>{{ backendOnline ? t('shell.backend_online', 'Backend Online') : t('shell.backend_offline', 'Backend Offline') }}</span>
           <el-divider direction="vertical" />
-          <span>v{{ version || '--' }}</span>
+          <el-button text title="双击打开版本更新日志" @dblclick="openChangelog">v{{ version || '--' }}</el-button>
         </div>
       </el-header>
       <WorkspaceTabBar />

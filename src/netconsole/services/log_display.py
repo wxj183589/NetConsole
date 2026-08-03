@@ -56,6 +56,17 @@ LOG_EVENT_ZH_MAP = {
     "LOGS_EXPORTED": "日志已导出",
     "LOGS_CURRENT_PAGE_EXPORTED": "当前页日志已导出",
     "LOGS_EXPORT_FAILED": "日志导出失败",
+    "API_REQUEST": "接口请求",
+    "API_REQUEST_COMPLETED": "接口请求完成",
+    "API_REQUEST_FAILED": "接口请求失败",
+    "DESKTOP_ACTION": "桌面动作",
+    "DESKTOP_ACTION_COMPLETED": "桌面动作完成",
+    "DESKTOP_ACTION_FAILED": "桌面动作失败",
+    "MAINTENANCE_TASK": "系统维护任务",
+    "SYSTEM_MAINTENANCE_TASK": "系统维护任务",
+    "WEB_EXPORT_STARTED": "Web 导出开始",
+    "WEB_EXPORT_COMPLETED": "Web 导出完成",
+    "WEB_EXPORT_FAILED": "Web 导出失败",
 }
 
 DETAIL_KEY_ZH_MAP = {
@@ -86,6 +97,24 @@ DETAIL_KEY_ZH_MAP = {
     "freed_bytes": "释放字节数",
     "retention_days": "保留天数",
     "cutoff": "截止时间",
+    "request_id": "请求ID",
+    "path": "接口路径",
+    "action": "动作",
+    "target": "目标",
+    "code": "结果码",
+    "job_id": "任务ID",
+    "task_id": "任务ID",
+    "site_id": "局点",
+    "site_name": "局点",
+    "current_site": "当前局点",
+    "scanned_count": "扫描数量",
+    "migrated_count": "迁移数量",
+    "skipped_count": "跳过数量",
+    "candidate_ap_interface_count": "候选AP接口数",
+    "station_switch_total": "车站交换机数",
+    "missing_count": "缺失数量",
+    "trackside_rows_total": "轨旁AP记录数",
+    "current_lldp_port_count": "当前LLDP端口数",
 }
 
 DETAIL_VALUE_ZH_MAP = {

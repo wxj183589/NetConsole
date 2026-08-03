@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
 import { isFeatureEnabled } from '../../features'
@@ -32,11 +33,14 @@ import {
   type MaintenanceTask,
   type OpenSourceComponent,
 } from '../../api/systemMaintenance'
+import CommandReferenceView from '../command-reference/CommandReferenceView.vue'
 
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
+const tabNames = new Set(['logs', 'cleanup', 'changelog', 'command-reference', 'open-source', 'about'])
+const route = useRoute()
 const { confirm } = useConfirm()
 const userSelectedExport = useUserSelectedExport()
-const activeTab = ref('logs')
+const activeTab = ref(tabFromQuery(route.query.tab))
 const loading = ref(false)
 const logs = ref<LogEntry[]>([])
 const keyword = ref('')
@@ -346,6 +350,18 @@ function exportTimestamp(now = new Date()): string {
   return `${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}_${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}`
 }
 
+function tabFromQuery(value: unknown): string {
+  const tab = typeof value === 'string' ? value : ''
+  return tabNames.has(tab) ? tab : 'logs'
+}
+
+watch(
+  () => route.query.tab,
+  (value) => {
+    activeTab.value = tabFromQuery(value)
+  },
+)
+
 onMounted(async () => {
   const results = await Promise.allSettled([loadLogs(), getChangelog(), getAbout(), recoverMaintenanceTasks()])
   if (results[1].status === 'fulfilled') changelog.value = results[1].value
@@ -435,6 +451,10 @@ onBeforeUnmount(() => {
         <pre class="document">{{ changelog?.content || '更新日志暂不可用' }}</pre>
       </el-tab-pane>
 
+      <el-tab-pane label="命令说明" name="command-reference" class="maintenance-tab-pane command-reference-tab-pane">
+        <CommandReferenceView />
+      </el-tab-pane>
+
       <el-tab-pane label="开源许可" name="open-source" class="maintenance-tab-pane">
         <div class="toolbar"><el-button :loading="taskBusy" :disabled="!isFeatureEnabled('system.open_source')" @click="scanOpenSource">刷新组件列表</el-button><el-button :disabled="taskBusy || !isFeatureEnabled('system.open_source')" @click="runOpenSourceExport('txt')">导出 TXT</el-button><el-button :disabled="taskBusy || !isFeatureEnabled('system.open_source')" @click="runOpenSourceExport('xlsx')">导出 XLSX</el-button></div>
         <div class="maintenance-table-host">
@@ -474,6 +494,7 @@ onBeforeUnmount(() => {
 .maintenance-tabs :deep(.el-tab-pane) { position: absolute; inset: 0; display: flex; min-height: 0; flex-direction: column; overflow: hidden; }
 .maintenance-tabs :deep(.maintenance-tab-pane--scroll) { overflow: auto; }
 .maintenance-tabs :deep(.log-tab-pane) { display: flex; min-height: 0; flex-direction: column; overflow: hidden; }
+.maintenance-tabs :deep(.command-reference-tab-pane) { overflow: hidden; }
 .toolbar, .actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .toolbar .el-input { width: min(360px, 100%); }
 .toolbar .el-select { width: 140px; }

@@ -130,12 +130,13 @@ describe('Dashboard home page', () => {
     expect(wrapper.text()).toContain('任务中心暂时无法打开')
   })
 
-  it('keeps command reference registered once and leaves no direct CLI input surface on the dashboard', () => {
+  it('keeps the command reference compatibility route and leaves no direct CLI input surface on the dashboard', () => {
     const commandReferenceRoutes = appRoutes
       .flatMap((route) => route.children ?? [])
       .filter((route) => route.name === 'command-reference')
     expect(commandReferenceRoutes).toHaveLength(1)
-    expect(flattenNavigation().filter((item) => item.navigation_id === 'command-reference')).toHaveLength(1)
+    expect(commandReferenceRoutes[0]?.redirect).toEqual({ name: 'logs', query: { tab: 'command-reference' } })
+    expect(flattenNavigation().filter((item) => item.navigation_id === 'command-reference')).toHaveLength(0)
     expect(source).not.toContain('命令输入框')
     expect(source).not.toContain('CLI')
   })
