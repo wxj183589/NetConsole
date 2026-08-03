@@ -81,6 +81,9 @@ TEMPLATE_EXAMPLE_ROWS = [
     ["无线控制器-示例", "192.168.1.10", "192.168.2.10", "SSH", "22", "admin", "Admin@123", "H3C", "AC", "COCC", "控制中心", "是", "10.0.0.10", "22", "jump", "Jump@123", "", "", "", "", "是", "是", "是", "161", "public", "2000", "1", "主备地址+隧道示例", "", "", "二期", "暂不参与", "示例：设备仍可由用户明确发起手动调试"],
     ["列车01-MR-CT", "10.122.1.249", "10.122.89.101", "SSH", "22", "admin", "Admin@123", "H3C", "MR", "车载-MR", "01车车头", "否", "", "", "", "", "", "", "", "", "是", "否", "是", "161", "public", "2000", "1", "车载 MR 示例", "", "", "未指定", "参与当前调试", ""],
 ]
+TEMPLATE_REFERENCE_ROW_KEYS = {
+    tuple(str(value).strip() for value in row) for row in TEMPLATE_EXAMPLE_ROWS
+}
 
 TEMPLATE_FIELD_MAP = {
     "设备名称": "name",
@@ -266,7 +269,10 @@ class DeviceImportExportService:
         mapped_rows = [
             (line_number, self._map_row(headers, values, mode))
             for line_number, values in enumerate(rows[1:], start=2)
+            if not self._is_template_reference_row(values)
         ]
+        if not mapped_rows:
+            return ImportResult(created=0, skipped=0, errors=[])
         self._validate_all_rows(mapped_rows)
         if check_cancelled is not None:
             check_cancelled()
@@ -385,7 +391,23 @@ class DeviceImportExportService:
             (line, values)
             for line, values in enumerate(rows[1:], start=2)
             if any(str(value).strip() for value in values)
+            and not self._is_template_reference_row(values)
         ]
+        if not source_rows:
+            return ImportPreviewResult(
+                total_rows=0,
+                valid_rows=0,
+                invalid_rows=0,
+                vendor_summary={},
+                device_type_summary={},
+                create_count=0,
+                update_count=0,
+                conflict_count=0,
+                errors=(),
+                columns=columns,
+                duplicate_rows=(),
+                detected_encoding=detected_encoding,
+            )
         existing_addresses = {
             str(device.normalized_primary_address or "")
             for device in self.repository.list()
@@ -565,6 +587,7 @@ class DeviceImportExportService:
         with Path(path).open("w", newline="", encoding="utf-8-sig") as file:
             writer = csv.writer(file)
             writer.writerow(DEVICE_CSV_COLUMNS)
+            writer.writerows(TEMPLATE_EXAMPLE_ROWS)
 
     def _group_names_by_id(self) -> dict[int, str]:
         if self.group_repository is None:
@@ -759,3 +782,10 @@ class DeviceImportExportService:
             text = value.strip()
             return text if text else None
         return value
+
+    @staticmethod
+    def _is_template_reference_row(values: list[object]) -> bool:
+        return (
+            tuple(str(value).strip() for value in values)
+            in TEMPLATE_REFERENCE_ROW_KEYS
+        )

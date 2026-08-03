@@ -73,7 +73,10 @@ from netconsole.services.device_operation_service import (
     DeviceOperationService,
 )
 from netconsole.services.job_center.job_runner import JobRunner
-from netconsole.services.device_import_export import TEMPLATE_FIELDS
+from netconsole.services.device_import_export import (
+    TEMPLATE_EXAMPLE_ROWS,
+    TEMPLATE_FIELDS,
+)
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.task_application_service import (
     TaskApplicationService,
@@ -2649,7 +2652,7 @@ def test_device_template_export_uses_managed_worker_and_empty_import_contract(
         csv.reader(downloaded.content.decode("utf-8-sig").splitlines())
     )
     assert downloaded_rows[0][0] == "#NETCONSOLE_META"
-    assert downloaded_rows[1:] == [TEMPLATE_FIELDS]
+    assert downloaded_rows[1:] == [TEMPLATE_FIELDS, *TEMPLATE_EXAMPLE_ROWS]
     assert "demo-%E8%AE%BE%E5%A4%87%E5%AF%BC%E5%85%A5%E6%A8%A1%E6%9D%BF.csv" in downloaded.headers[
         "content-disposition"
     ]

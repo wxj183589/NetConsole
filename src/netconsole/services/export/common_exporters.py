@@ -492,7 +492,10 @@ def export_device_csv(path: Path, payload: Mapping[str, Any], progress: Progress
 
 
 def export_device_template_csv(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> int:
-    from netconsole.services.device_import_export import DEVICE_CSV_COLUMNS
+    from netconsole.services.device_import_export import (
+        DEVICE_CSV_COLUMNS,
+        TEMPLATE_EXAMPLE_ROWS,
+    )
 
     _emit(progress, "prepare_device_template", 10, 100, "正在读取设备模板定义")
     _check_cancel(should_cancel)
@@ -502,13 +505,14 @@ def export_device_template_csv(path: Path, payload: Mapping[str, Any], progress:
     with path.open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.writer(handle)
         writer.writerow(DEVICE_CSV_COLUMNS)
+        writer.writerows(TEMPLATE_EXAMPLE_ROWS)
     _emit(progress, "verify_device_template", 65, 100, "正在校验设备导入模板")
     _check_cancel(should_cancel)
     if not path.read_bytes().startswith(b"\xef\xbb\xbf"):
         raise RuntimeError("设备导入模板缺少 UTF-8 BOM")
     with path.open("r", newline="", encoding="utf-8-sig") as handle:
         rows = list(csv.reader(handle))
-    if rows != [DEVICE_CSV_COLUMNS]:
+    if rows != [DEVICE_CSV_COLUMNS, *TEMPLATE_EXAMPLE_ROWS]:
         raise RuntimeError("设备导入模板字段校验失败")
     _emit(progress, "register_device_template", 85, 100, "正在注册模板 Artifact")
     return 0

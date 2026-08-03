@@ -104,7 +104,7 @@ def template_row(**overrides):
     return [row[field] for field in TEMPLATE_FIELDS]
 
 
-def test_template_csv_is_header_only_and_round_trips_as_empty_import(tmp_path):
+def test_template_csv_includes_reference_rows_and_round_trips_as_empty_import(tmp_path):
     repository, service = make_service(tmp_path)
     path = tmp_path / "template.csv"
 
@@ -115,7 +115,7 @@ def test_template_csv_is_header_only_and_round_trips_as_empty_import(tmp_path):
     devices = repository.list()
 
     assert path.read_bytes().startswith(b"\xef\xbb\xbf")
-    assert rows == [TEMPLATE_FIELDS]
+    assert rows == [TEMPLATE_FIELDS, *TEMPLATE_EXAMPLE_ROWS]
     assert preview.total_rows == 0
     assert preview.valid_rows == 0
     assert preview.invalid_rows == 0
@@ -137,7 +137,7 @@ def test_template_csv_is_header_only_and_round_trips_as_empty_import(tmp_path):
         "ip_address",
     }
     assert hidden.isdisjoint(TEMPLATE_FIELDS)
-    assert len(TEMPLATE_FIELDS) == len(TEMPLATE_EXAMPLE_ROWS[0])
+    assert all(len(TEMPLATE_FIELDS) == len(row) for row in TEMPLATE_EXAMPLE_ROWS)
     assert result.created == 0
     assert devices == []
 
