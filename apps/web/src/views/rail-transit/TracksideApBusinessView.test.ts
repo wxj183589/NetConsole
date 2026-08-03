@@ -261,9 +261,16 @@ const ElementStubs = {
     template: '<input :placeholder="placeholder" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
   }),
   ElPagination: defineComponent({
-    props: { currentPage: Number },
-    emits: ['current-change'],
-    template: '<button class="pagination-next" @click="$emit(\'current-change\', Number(currentPage || 1) + 1)">下一页</button>',
+    props: { currentPage: Number, pageSize: Number, pageSizes: { type: Array, default: () => [] } },
+    emits: ['current-change', 'size-change'],
+    template: `
+      <div class="el-pagination-stub" :data-current-page="currentPage" :data-page-size="pageSize" :data-page-sizes="JSON.stringify(pageSizes)">
+        <button class="pagination-next" @click="$emit('current-change', Number(currentPage || 1) + 1)">下一页</button>
+        <select class="pagination-size" @change="$emit('size-change', Number($event.target.value))">
+          <option v-for="size in pageSizes" :key="size" :value="size">{{ size }}</option>
+        </select>
+      </div>
+    `,
   }),
   ElTag: defineComponent({ template: '<span class="el-tag"><slot /></span>' }),
 }
@@ -545,6 +552,27 @@ describe('TracksideApBusinessView mounted behavior', () => {
       optical_anomaly_only: false,
       page: 1,
       page_size: 50,
+    })
+    wrapper.unmount()
+  })
+
+  it('renders page size options and reloads from the first page when changed', async () => {
+    const wrapper = await mountView()
+    const pagination = wrapper.get('.el-pagination-stub')
+
+    expect(pagination.attributes('data-page-sizes')).toBe('[20,50,100,200]')
+    api.listTracksideApBusiness.mockClear()
+    ;(wrapper.vm as unknown as { filters: { page: number } }).filters.page = 4
+
+    await wrapper.get('.pagination-size').setValue('100')
+    await flushPromises()
+
+    expect(api.listTracksideApBusiness).toHaveBeenLastCalledWith({
+      station: '',
+      query: '',
+      optical_anomaly_only: false,
+      page: 1,
+      page_size: 100,
     })
     wrapper.unmount()
   })
