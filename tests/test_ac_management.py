@@ -22,7 +22,10 @@ from netconsole.parsers.h3c.ac.fit_ap_optical_parser import (
     parse_fit_ap_transceiver,
     parse_fit_ap_transceiver_diagnosis_snapshots,
 )
-from netconsole.parsers.h3c.ac.state_mapper import map_fit_ap_state
+from netconsole.parsers.h3c.ac.state_mapper import (
+    classify_fit_ap_state,
+    map_fit_ap_state,
+)
 from netconsole.parsers.h3c.ac.system_usage_parser import parse_cpu_usage, parse_memory
 from netconsole.parsers.h3c.ac.wlan_ap_address_parser import parse_wlan_ap_addresses
 from netconsole.parsers.h3c.ac.wlan_ap_connection_record_parser import (
@@ -1662,6 +1665,21 @@ AP name                        APID  State Model           Serial ID
     assert rows[0]["serial_number"] == "H3C_4C-6F-D6-08-04-00"
 
 
+def test_wlan_ap_summary_counts_only_running_master_and_backup_as_online():
+    summary = parse_wlan_ap_summary(
+        """
+Total number of APs: 3
+AP name APID State Model Serial ID Group name Online time
+AP-MASTER 1 R/M WA6624X SN-1 default-group 1:00:00
+AP-BACKUP 2 R/B WA6624X SN-2 default-group 1:00:00
+AP-JOIN 3 JA WA6624X SN-3 default-group 0:00:01
+"""
+    )
+
+    assert summary["online_aps"] == 2
+    assert summary["offline_aps"] == 1
+
+
 def test_wlan_ap_parser_handles_v9_states_and_chinese_gb2312_output():
     output = """
  State : I = Idle,      J  = Join,       JA = JoinAck,    IL = ImageLoad
@@ -1771,6 +1789,10 @@ def test_state_cpu_and_memory_parsers():
     assert map_fit_ap_state("R/M") == "\u8fd0\u884c(\u4e3b)"
     assert map_fit_ap_state("R/B") == "\u8fd0\u884c(\u5907)"
     assert map_fit_ap_state("JA") == "JoinAck"
+    assert classify_fit_ap_state("R/M") == "online"
+    assert classify_fit_ap_state("R/B") == "online"
+    assert classify_fit_ap_state("JA") == "offline"
+    assert classify_fit_ap_state("") == "unknown"
     assert parse_cpu_usage(fixture("display_cpu_usage.txt")) == {
         "cpu_5s": 16,
         "cpu_1m": 18,
@@ -2775,7 +2797,7 @@ def test_build_new_online_ap_overview_rows_uses_current_online_without_prior_res
             "ap_name": "AP-Old-Apid-Changed",
             "ap_mac": "0011-2233-4477",
             "serial_number": "SN-OLD",
-            "state": "Run",
+            "state": "R/M",
             "apid": "999",
         },
     ]
@@ -3208,6 +3230,7 @@ def test_trackside_ap_business_export_adds_current_optical_abnormal_sheet(tmp_pa
             "switch_rx_power": "-24",
             "switch_optical_status": "warning",
             "ap_name": "AP-Warning",
+            "ap_state": "R/M",
             "ap_rx_power": "-8",
             "ap_optical_status": "normal",
         },
@@ -3219,6 +3242,7 @@ def test_trackside_ap_business_export_adds_current_optical_abnormal_sheet(tmp_pa
             "switch_rx_power": "-8",
             "switch_optical_status": "normal",
             "ap_name": "AP-NoLight",
+            "ap_state": "R/B",
             "ap_rx_power": "-40",
             "ap_optical_status": "no_light",
             "ap_side_has_data": True,
@@ -3279,6 +3303,11 @@ def test_trackside_ap_business_export_adds_current_optical_abnormal_sheet(tmp_pa
     reason_column = abnormal_headers.index("异常原因") + 1
     assert abnormal_sheet.cell(row=3, column=reason_column).value == "AP侧光衰告警"
     assert abnormal_sheet.cell(row=4, column=reason_column).value == "交换机侧光衰告警"
+    online_status_column = abnormal_headers.index("AP 在线状态") + 1
+    assert [
+        abnormal_sheet.cell(row=row, column=online_status_column).value
+        for row in range(2, abnormal_sheet.max_row + 1)
+    ] == ["在线", "在线", "离线"]
     assert (
         abnormal_sheet["A2"].fill.fgColor.rgb
         == source_sheet["A3"].fill.fgColor.rgb
@@ -3438,7 +3467,7 @@ def test_ap_online_overview_rows_count_states_and_total_bottom():
         {"ap_name": "AP-2-2", "site": "02云龙火车站站", "state": "R/B"},
         {"ap_name": "AP-1-1", "site": "01小洋江站", "state": "I"},
         {"ap_name": "AP-1-2", "site": "01小洋江站", "state": "JA"},
-        {"ap_name": "AP-1-3", "site": "01小洋江站", "state": "R"},
+        {"ap_name": "AP-1-3", "site": "01小洋江站", "state": "R/M"},
     ]
 
     overview = build_ap_online_overview_rows(planned_aps=rows, fit_ap_resources=rows)
@@ -3492,7 +3521,7 @@ def test_ap_online_overview_uses_fit_ap_resource_site_capacity_and_unassigned():
 
 def test_ap_online_overview_matches_dirty_resource_site_back_to_plan():
     resources = [
-        {"ap_mac": "0011-2233-4455", "ap_name": "AP-A", "site": "Demo", "state": "R"}
+        {"ap_mac": "0011-2233-4455", "ap_name": "AP-A", "site": "Demo", "state": "R/M"}
     ]
     plans = [{"AP_MAC": "0011.2233.4455", "ap_name": "AP-A", "station": "01小洋江站"}]
 
@@ -3586,7 +3615,7 @@ def test_ap_online_overview_uses_ap_metadata_as_total_baseline():
                 "ap_uuid": f"s2-plan-{index}",
                 "ap_name": f"S2-AP-{index}",
                 "site": "\u672a\u5f52\u5c5e",
-                "state": "R",
+                "state": "R/M",
             }
             for index in range(48)
         ),
@@ -3594,7 +3623,7 @@ def test_ap_online_overview_uses_ap_metadata_as_total_baseline():
             "ap_uuid": "unknown-plan-0",
             "ap_name": "UNKNOWN-AP-0",
             "site": "\u672a\u5f52\u5c5e",
-            "state": "online",
+            "state": "R/M",
         },
     ]
 
@@ -3687,11 +3716,11 @@ def test_ap_online_overview_capacity_total_takes_priority_over_incomplete_plan()
 def test_ap_online_overview_matches_by_known_resource_station_when_metadata_key_missing():
     resources = [
         *(
-            {"ap_name": f"UNKNOWN-A-{index}", "site_name": "01小洋江站", "state": "R"}
+            {"ap_name": f"UNKNOWN-A-{index}", "site_name": "01小洋江站", "state": "R/M"}
             for index in range(26)
         ),
         *(
-            {"ap_name": f"UNKNOWN-B-{index}", "site_name": "02云龙火车站", "state": "R"}
+            {"ap_name": f"UNKNOWN-B-{index}", "site_name": "02云龙火车站", "state": "R/M"}
             for index in range(48)
         ),
     ]
@@ -3725,11 +3754,11 @@ def test_ap_online_overview_matches_online_by_metadata_name_even_when_resource_s
     ]
     resources = [
         *(
-            {"ap_name": f" STA-A-{index} ", "site_name": "Demo", "state": "R"}
+            {"ap_name": f" STA-A-{index} ", "site_name": "Demo", "state": "R/M"}
             for index in range(26)
         ),
         *(
-            {"ap_name": f"STA-B-{index}", "site": "体育中心站", "state": "R"}
+            {"ap_name": f"STA-B-{index}", "site": "体育中心站", "state": "R/M"}
             for index in range(48)
         ),
     ]
@@ -3758,7 +3787,7 @@ def test_ap_online_overview_metadata_empty_uses_optical_site_by_uuid():
                 "ap_uuid": "A",
                 "ap_name": "AP001",
                 "ap_mac": "30f5-277a-82c0",
-                "state": "R",
+                "state": "R/M",
             }
         ],
         optical_rows=[
@@ -3781,7 +3810,7 @@ def test_ap_online_overview_matches_optical_site_by_mac_without_uuid():
     rows = build_ap_online_overview_rows(
         metadata_rows=[],
         fit_ap_resources=[
-            {"ap_name": "AP001", "ap_mac": "30:f5:27:7a:82:c0", "state": "ONLINE"}
+            {"ap_name": "AP001", "ap_mac": "30:f5:27:7a:82:c0", "state": "R/M"}
         ],
         optical_rows=[
             {"ap_name": "OTHER", "ap_mac": "30f5-277a-82c0", "site": "01小洋江站"}
@@ -3806,7 +3835,7 @@ def test_ap_online_overview_matches_optical_site_by_name_without_uuid_or_mac():
 def test_ap_online_overview_resource_dirty_site_does_not_override_optical_site():
     rows = build_ap_online_overview_rows(
         metadata_rows=[],
-        fit_ap_resources=[{"ap_mac": "30f5-277a-82c0", "site": "Demo", "state": "R"}],
+        fit_ap_resources=[{"ap_mac": "30f5-277a-82c0", "site": "Demo", "state": "R/M"}],
         optical_rows=[{"ap_mac": "30f5-277a-82c0", "site": "01小洋江站"}],
         capacity_details={"01小洋江站": {"ap_total": 30, "remark": ""}},
     )
@@ -3819,7 +3848,7 @@ def test_ap_online_overview_resource_dirty_site_does_not_override_optical_site()
 def test_ap_online_overview_falls_back_to_known_resource_site_when_no_optical_match():
     rows = build_ap_online_overview_rows(
         metadata_rows=[],
-        fit_ap_resources=[{"ap_name": "UNKNOWN", "site": "01小洋江站", "state": "R"}],
+        fit_ap_resources=[{"ap_name": "UNKNOWN", "site": "01小洋江站", "state": "R/M"}],
         optical_rows=[],
         capacity_details={"01小洋江站": {"ap_total": 30, "remark": ""}},
     )
@@ -3832,7 +3861,7 @@ def test_ap_online_overview_falls_back_to_known_resource_site_when_no_optical_ma
 def test_ap_online_overview_unknown_dirty_resource_site_is_excluded_from_unassigned():
     rows = build_ap_online_overview_rows(
         metadata_rows=[],
-        fit_ap_resources=[{"ap_name": "UNKNOWN", "site": "体育中心站", "state": "R"}],
+        fit_ap_resources=[{"ap_name": "UNKNOWN", "site": "体育中心站", "state": "R/M"}],
         optical_rows=[],
         capacity_details={"01小洋江站": {"ap_total": 30, "remark": ""}},
     )
@@ -3845,7 +3874,7 @@ def test_ap_online_overview_unknown_dirty_resource_site_is_excluded_from_unassig
 def test_ap_online_overview_dirty_unknown_station_does_not_create_station_row():
     rows = build_ap_online_overview_rows(
         planned_aps=[],
-        fit_ap_resources=[{"ap_name": "UNKNOWN", "site": "Demo", "state": "R"}],
+        fit_ap_resources=[{"ap_name": "UNKNOWN", "site": "Demo", "state": "R/M"}],
         capacity_details={"01小洋江站": {"ap_total": 30, "remark": ""}},
     )
     by_site = {row["site"]: row for row in rows}
@@ -3964,8 +3993,8 @@ def test_ap_online_overview_standard_large_sample_matches_expected_totals():
 def test_ap_online_overview_name_match_without_mac_and_unmatched_is_excluded():
     planned_aps = [{"ap_name": " AP - 001 ", "site_name": "01小洋江站"}]
     resources = [
-        {"ap_name": "AP-001", "site": "Demo", "state": "ONLINE"},
-        {"ap_name": "AP-Z", "site": "体育中心站", "state": "R"},
+        {"ap_name": "AP-001", "site": "Demo", "state": "R/M"},
+        {"ap_name": "AP-Z", "site": "体育中心站", "state": "R/B"},
     ]
     rows = build_ap_online_overview_rows(
         planned_aps=planned_aps, fit_ap_resources=resources
@@ -3984,7 +4013,7 @@ def test_ap_online_overview_unassigned_only_comes_from_metadata_rows():
         {"ap_mac": "30f5-277a-1e00", "site_name": "未归属", "state": "I"},
     ]
     resources = [
-        {"ap_mac": f"30f5-277a-{index:04x}", "site": "", "state": "R"}
+        {"ap_mac": f"30f5-277a-{index:04x}", "site": "", "state": "R/M"}
         for index in range(13)
     ]
 
@@ -4039,7 +4068,7 @@ def test_export_ap_online_overview_xlsx_contains_colors_and_alignment(tmp_path):
         {"ap_name": "AP-2", "site_name": "02云龙火车站站"},
     ]
     resource_rows = [
-        {"ap_name": "AP-1", "site": "01小洋江站", "state": "R"},
+        {"ap_name": "AP-1", "site": "01小洋江站", "state": "R/M"},
         {"ap_name": "AP-2", "site": "02云龙火车站站", "state": "I"},
     ]
     rows = build_ap_online_overview_rows(
@@ -5269,7 +5298,7 @@ def test_trackside_ap_update_scopes_switch_to_target_ap_and_reports_offline(
                 "ap_mac": "bc5a-3457-cbe0",
                 "ap_ip": "10.0.0.21",
                 "site": "Station A",
-                "state": "R",
+                "state": "R/M",
             },
             {
                 "ap_uuid": "ap-2",
@@ -5277,7 +5306,7 @@ def test_trackside_ap_update_scopes_switch_to_target_ap_and_reports_offline(
                 "ap_mac": "bc5a-3457-cbe1",
                 "ap_ip": "10.0.0.22",
                 "site": "Station A",
-                "state": "R",
+                "state": "R/M",
             },
         ],
     )
@@ -5305,7 +5334,7 @@ def test_trackside_ap_update_scopes_switch_to_target_ap_and_reports_offline(
                     "ap_mac": "bc5a-3457-cbe1",
                     "ap_ip": "10.0.0.22",
                     "site": "Station A",
-                    "state": "R",
+                    "state": "R/M",
                     "state_display": "Online",
                 },
             ],

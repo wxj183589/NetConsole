@@ -37,6 +37,7 @@ from netconsole.models.api.ac_management import (
     AcOverviewDTO,
     AcRadioDTO,
 )
+from netconsole.parsers.h3c.ac.state_mapper import classify_fit_ap_state
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.services.ac.fit_ap_resource_identity import coalesce_fit_ap_resource_rows
 from netconsole.services.ap_extension_import import normalize_ap_mac
@@ -178,8 +179,14 @@ class AcManagementQueryService:
                     identity = self._clean_text(row.get("ap_uuid") or row.get("ap_mac") or row.get("ap_name"))
                     if identity:
                         anomalous_ap_ids.add(identity.casefold())
-            online = self._int(summary.get("online_aps"), sum(not is_fit_ap_offline(row) for row in resources))
-            offline = self._int(summary.get("offline_aps"), sum(is_fit_ap_offline(row) for row in resources))
+            online = self._int(
+                summary.get("online_aps"),
+                sum(self._online_status(row) == "online" for row in resources),
+            )
+            offline = self._int(
+                summary.get("offline_aps"),
+                sum(self._online_status(row) == "offline" for row in resources),
+            )
             total = self._int(summary.get("total_aps"), len(resources))
             updated_at = self._latest_text(
                 summary.get("updated_at"),
@@ -1555,8 +1562,11 @@ class AcManagementQueryService:
 
     @staticmethod
     def _online_status(row: dict[str, object | None]) -> str:
-        text = " ".join(str(row.get(field) or "") for field in ("state", "state_raw", "state_display")).upper()
-        return "online" if any(token in text for token in ("R/M", "运行", "ONLINE", " UP", "RUN")) else "unknown"
+        return classify_fit_ap_state(
+            row.get("state"),
+            row.get("state_raw"),
+            row.get("state_display"),
+        )
 
     @staticmethod
     def _page(items: list[AcApDTO], page: int, page_size: int) -> AcApPageDTO:

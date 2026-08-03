@@ -43,9 +43,9 @@ def test_trackside_vlan_display_removes_native_pvid_fragment(
 @pytest.mark.parametrize(
     ("rx_power", "expected"),
     [
-        (-12.9, "normal"),
-        (-13.0, "normal"),
-        (-13.1, "abnormal"),
+        (-13.89, "normal"),
+        (-13.90, "normal"),
+        (-13.91, "abnormal"),
         (-24.7, "abnormal"),
         (-26.8, "abnormal"),
     ],
@@ -54,7 +54,7 @@ def test_trackside_rx_maintenance_boundary(
     rx_power: float,
     expected: str,
 ) -> None:
-    assert TRACKSIDE_RX_NORMAL_MIN_DBM == -13.0
+    assert TRACKSIDE_RX_NORMAL_MIN_DBM == -13.90
     assert compute_trackside_rx_business_status("normal", rx_power) == expected
 
 

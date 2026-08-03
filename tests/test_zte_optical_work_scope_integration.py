@@ -13,6 +13,7 @@ from netconsole.services.rail_transit import trackside_optical_collection
 from netconsole.services.rail_transit.trackside_optical_collection import (
     EXCLUDED_WORK_SCOPE_REASON,
     _collect_one_target,
+    _persist_result,
     build_station_switch_targets,
 )
 from netconsole.services.trackside_ap_export_service import (
@@ -135,7 +136,7 @@ def _seed_effective_trackside_aps(
                 "ap_uuid": ap_uuid,
                 "ap_name": ap_name,
                 "ap_mac": ap_mac,
-                "state": "R",
+                "state": "R/M",
             }
         )
         facts.replace_lldp_neighbors(
@@ -254,6 +255,98 @@ def test_trackside_execute_time_recheck_skips_excluded_before_ssh(
     assert connected is False
     assert result.success is True
     assert result.skipped_reason == EXCLUDED_WORK_SCOPE_REASON
+
+
+def test_zte_trackside_update_replaces_stale_down_interface_snapshot(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repository = _repository(tmp_path)
+    station = DeviceGroupRepository(repository.database, "demo").create("车站")
+    device = _create_switch(
+        repository,
+        group_id=int(station.id or 0),
+        name="状态刷新",
+        address="192.0.2.31",
+    )
+    _seed_effective_trackside_aps(repository, [device])
+    facts = DeviceFactRepository(repository.database)
+    facts.replace_device_interfaces(
+        str(device.device_uuid),
+        [
+            {
+                "interface_name": "gei-0/3/0/1",
+                "description": "To-AP",
+                "link_status": "PHYSICAL_DOWN",
+                "admin_status": "up",
+                "physical_status": "down",
+                "protocol_status": "down",
+                "port_status": "hybrid",
+                "port_mode": "hybrid",
+                "pvid": "71",
+                "native_vlan": "71",
+                "tagged_vlans": ["201"],
+            }
+        ],
+    )
+
+    class FakeZteConnection:
+        def send_command_timing(self, command: str, **_kwargs) -> str:
+            outputs = {
+                "show version": (
+                    Path(__file__).parent
+                    / "fixtures"
+                    / "zte"
+                    / "zte_5960x_show_version.txt"
+                ).read_text(encoding="utf-8"),
+                "show interface brief": "\n".join(
+                    [
+                        "Interface Attribute Mode BW Admin Phy Prot Description",
+                        "gei-0/3/0/1 optical Duplex/full 1G up up up To-AP",
+                    ]
+                ),
+                "show opticalinfo brief": "\n".join(
+                    [
+                        "Interface Type Wavelength RxPower(dBm) TxPower(dBm) Status",
+                        "gei-0/3/0/1 1G-10km-SFP 1310nm "
+                        "-11.7/[-28.2,0.0] -5.0/[-10.0,-0.5] Normal",
+                    ]
+                ),
+            }
+            return outputs[command]
+
+        def disconnect(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        trackside_optical_collection.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: FakeZteConnection(),
+    )
+    targets, _ = build_station_switch_targets(repository, "demo")
+
+    result = _collect_one_target(
+        targets[0],
+        artifact_dir=tmp_path / "raw" / "status-refresh",
+        repository=repository,
+    )
+    _persist_result(
+        repository,
+        AcRepository(repository.database),
+        result,
+        tmp_path / "parsed" / "trackside_update_results.sqlite",
+    )
+
+    current = facts.list_device_interfaces(str(device.device_uuid))[0]
+    assert result.success is True
+    assert current["link_status"] == "UP"
+    assert current["physical_status"] == "up"
+    assert current["protocol_status"] == "up"
+    assert current["port_status"] == "hybrid"
+    assert current["pvid"] == "71"
+    assert current["tagged_vlans"] == '["201"]'
+    snapshot = load_trackside_ap_business_snapshot(repository, "demo", generation=1)
+    assert snapshot.rows[0]["link_status"] == "UP"
 
 
 def test_old_zte_database_rows_are_normalized_on_read(tmp_path: Path) -> None:

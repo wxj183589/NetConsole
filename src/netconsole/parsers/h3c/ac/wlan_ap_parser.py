@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import re
 
-from netconsole.parsers.h3c.ac.state_mapper import map_fit_ap_state
+from netconsole.parsers.h3c.ac.state_mapper import (
+    classify_fit_ap_state,
+    map_fit_ap_state,
+)
 
 
 def parse_wlan_ap_summary(output: str) -> dict[str, object | None]:
@@ -12,7 +15,16 @@ def parse_wlan_ap_summary(output: str) -> dict[str, object | None]:
     local_licenses = _int_after(output, r"Local\s+AP\s+licenses\s*:\s*(\d+)")
     remaining_licenses = _int_after(output, r"Remaining\s+local\s+AP\s+licenses\s*:\s*(\d+)")
     ap_rows = parse_wlan_ap_list(output)
-    offline_from_rows = sum(1 for row in ap_rows if _is_idle_state(row.get("state") or row.get("state_display")))
+    offline_from_rows = sum(
+        1
+        for row in ap_rows
+        if classify_fit_ap_state(
+            row.get("state"),
+            row.get("state_raw"),
+            row.get("state_display"),
+        )
+        == "offline"
+    )
     if online_aps is None and total_aps is not None:
         online_aps = max(total_aps - offline_from_rows, 0)
     if total_aps is not None and online_aps is not None:
@@ -146,10 +158,6 @@ def _state_token(value: object) -> str:
     if not text:
         return ""
     return text.split("=", 1)[0].strip().upper()
-
-
-def _is_idle_state(value: object) -> bool:
-    return _state_token(value) in {"I", "IDLE"}
 
 
 def _empty_if_na(value: object) -> object | None:

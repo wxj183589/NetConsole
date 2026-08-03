@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import re
 
+from netconsole.parsers.h3c.ac.state_mapper import classify_fit_ap_state
 from netconsole.utils.station_normalize import normalize_station_value
 
 
@@ -281,19 +282,19 @@ def save_offline_ap_cache(
 
 
 def is_fit_ap_offline(row: dict[str, object | None]) -> bool:
-    for field in ("state", "state_raw", "state_display"):
-        token = _state_token(row.get(field))
-        if token in {"I", "IDLE", "OFFLINE", "DOWN", "D"}:
-            return True
-    return False
+    return fit_ap_online_status(row) == "offline"
+
+
+def fit_ap_online_status(row: dict[str, object | None]) -> str:
+    return classify_fit_ap_state(
+        row.get("state"),
+        row.get("state_raw"),
+        row.get("state_display"),
+    )
 
 
 def _is_fit_ap_online(row: dict[str, object | None]) -> bool:
-    for field in ("state", "state_raw", "state_display"):
-        token = _state_token(row.get(field))
-        if token in {"R", "R/M", "RUN", "ONLINE", "UP"}:
-            return True
-    return False
+    return fit_ap_online_status(row) == "online"
 
 
 def _offline_at_index(history_rows: list[dict[str, object | None]]) -> dict[tuple[str, str], str]:
@@ -352,14 +353,6 @@ def _ap_identity_keys(row: dict[str, object | None]) -> list[tuple[str, str]]:
 
 def _cache_safe_row(row: dict[str, object | None]) -> dict[str, object | None]:
     return {key: value for key, value in row.items() if not str(key).startswith("_")}
-
-
-def _state_token(value: object) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    text = text.split("=", 1)[0].strip()
-    return text.upper()
 
 
 def _ap_key(row: dict[str, object | None]) -> str:

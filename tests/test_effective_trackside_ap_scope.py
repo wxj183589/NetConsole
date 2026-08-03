@@ -51,7 +51,7 @@ def _resource(
     mac: str,
     *,
     ap_uuid: str,
-    state: str = "R",
+    state: str = "R/M",
 ) -> dict[str, object]:
     return {
         "extension_id": extension_id,

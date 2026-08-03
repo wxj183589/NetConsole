@@ -753,12 +753,12 @@ def _filter_fit_ap_rows(rows: list[dict[str, Any]], filters: Mapping[str, Any]) 
 
 
 def _fit_ap_state_matches(row: Mapping[str, Any], selected: str) -> bool:
-    from netconsole.services.offline_ap_ledger import is_fit_ap_offline
+    from netconsole.services.offline_ap_ledger import fit_ap_online_status
 
     if selected == "__offline__":
-        return is_fit_ap_offline(dict(row))
+        return fit_ap_online_status(dict(row)) == "offline"
     if selected == "__online__":
-        return not is_fit_ap_offline(dict(row))
+        return fit_ap_online_status(dict(row)) == "online"
     values = {
         str(row.get(field) or "").strip().casefold()
         for field in ("state", "state_raw", "state_display")

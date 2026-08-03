@@ -50,7 +50,7 @@ class _FakeDeviceRepository:
 class _FakeAcRepository:
     def __init__(self) -> None:
         self.summary: dict[str, object | None] = {"total_aps": 1, "online_aps": 1, "offline_aps": 0}
-        self.resources: list[dict[str, object | None]] = [{"ap_name": "AP-01", "state": "Run"}]
+        self.resources: list[dict[str, object | None]] = [{"ap_name": "AP-01", "state": "R/M"}]
 
     def get_ac_ap_summary(self, _device_uuid: str):
         return dict(self.summary)

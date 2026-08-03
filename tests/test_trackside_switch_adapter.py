@@ -179,9 +179,19 @@ def test_zte_optical_fast_path_uses_one_brief_for_many_modules(
         )
         for index in range(1, 31)
     ]
+    interface_rows = [
+        f"xgei-0/1/1/{index} optical Duplex/full 10G up up up Trackside-AP"
+        for index in range(1, 31)
+    ]
     connection = _FakeConnection(
         {
             "show version": _fixture("zte_5960x_show_version.txt"),
+            "show interface brief": "\n".join(
+                [
+                    "Interface Attribute Mode BW Admin Phy Prot Description",
+                    *interface_rows,
+                ]
+            ),
             "show opticalinfo brief": "\n".join(
                 [
                     "Interface Type Wavelength RxPower(dBm) TxPower(dBm) Status",
@@ -197,9 +207,14 @@ def test_zte_optical_fast_path_uses_one_brief_for_many_modules(
         optical_fast_only=True,
     )
 
-    assert connection.commands == ["show version", "show opticalinfo brief"]
+    assert connection.commands == [
+        "show version",
+        "show interface brief",
+        "show opticalinfo brief",
+    ]
     assert len(result.optical_modules) == 30
-    assert result.interfaces == []
+    assert len(result.interfaces) == 30
+    assert result.interfaces[0]["link_status"] == "UP"
     assert result.lldp_neighbors == []
 
 

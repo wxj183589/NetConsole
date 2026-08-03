@@ -7,6 +7,7 @@ from netconsole.services.offline_ap_ledger import (
     build_device_lookup_by_name,
     build_latest_ap_history_indexes,
     build_offline_ap_ledger,
+    fit_ap_online_status,
     is_fit_ap_offline,
 )
 from netconsole.services.trackside_ap_business import (
@@ -32,11 +33,17 @@ def _ac_device():
     )
 
 
-def test_offline_state_accepts_i_idle_and_i_equals_idle():
+def test_fit_ap_state_uses_only_running_master_and_backup_as_online():
+    assert fit_ap_online_status({"state": "R/M"}) == "online"
+    assert fit_ap_online_status({"state": "R/B"}) == "online"
+    assert fit_ap_online_status({"state_display": "运行(主)"}) == "online"
     assert is_fit_ap_offline({"state": "I"}) is True
     assert is_fit_ap_offline({"state": "Idle"}) is True
     assert is_fit_ap_offline({"state": "I = Idle"}) is True
-    assert is_fit_ap_offline({"state": "IL"}) is False
+    assert is_fit_ap_offline({"state": "IL"}) is True
+    assert is_fit_ap_offline({"state": "JA"}) is True
+    assert fit_ap_online_status({}) == "unknown"
+    assert is_fit_ap_offline({}) is False
 
 
 def test_offline_ledger_is_simplified_and_prefers_device_station(tmp_path):
@@ -341,7 +348,7 @@ def test_trackside_switch_offline_forces_downstream_ap_offline_even_when_ac_run(
         {},
         [],
         {},
-        [{"ap_name": "AP-RUN", "ap_mac": "0011-2233-4455", "state": "Run"}],
+        [{"ap_name": "AP-RUN", "ap_mac": "0011-2233-4455", "state": "R/M"}],
         {},
         None,
         [

@@ -51,7 +51,7 @@ class _AcRepository:
     def __init__(self) -> None:
         self.summary = {"total_aps": 2, "online_aps": 1, "offline_aps": 1}
         self.resources = [
-            {"ap_uuid": "ap-1", "ap_name": "AP-01", "ap_mac": "0011-2233-4455", "state": "Run", "site": "A站"},
+            {"ap_uuid": "ap-1", "ap_name": "AP-01", "ap_mac": "0011-2233-4455", "state": "R/M", "site": "A站"},
             {"ap_uuid": "ap-2", "ap_name": "AP-02", "ap_mac": "0011-2233-4466", "state": "Offline", "site": "A站"},
         ]
         self.optical_rows = [

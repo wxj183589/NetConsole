@@ -22,12 +22,13 @@ from netconsole.core.optical_severity_engine import (
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
 from netconsole.models.device import Device
+from netconsole.parsers.zte.vlan import merge_interface_vlan_facts
+from netconsole.parsers.zte.zxr10 import merge_optical_snapshot as merge_zte_optical_snapshot
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.trackside_optical_result_repository import TracksideOpticalResultRepository
-from netconsole.parsers.zte.zxr10 import merge_optical_snapshot as merge_zte_optical_snapshot
 from netconsole.services import netmiko_connection
 from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.services.ac.fit_ap_optical_concurrency import (
@@ -1457,7 +1458,16 @@ def _persist_result(repository: DeviceRepository, ac_repository: AcRepository, r
                 }
             )
         if result.interfaces:
-            fact_repository.replace_device_interfaces(str(result.target.device_uuid or ""), [{**row, **metadata} for row in result.interfaces])
+            device_uuid = str(result.target.device_uuid or "")
+            interfaces = [{**row, **metadata} for row in result.interfaces]
+            if result.vendor == "ZTE":
+                interfaces = merge_interface_vlan_facts(
+                    interfaces,
+                    None,
+                    None,
+                    fact_repository.list_device_interfaces(device_uuid),
+                ).interfaces
+            fact_repository.replace_device_interfaces(device_uuid, interfaces)
         existing = fact_repository.list_optical_modules(str(result.target.device_uuid or ""))
         diagnostics = result.rows
         if result.vendor == "ZTE":

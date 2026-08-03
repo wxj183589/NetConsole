@@ -6,6 +6,7 @@ import re
 import unicodedata
 
 from netconsole.core import app_logger
+from netconsole.parsers.h3c.ac.state_mapper import classify_fit_ap_state
 from netconsole.services.ap_identity.normalizers import normalize_mac_key
 from netconsole.utils.station_normalize import normalize_station_value
 
@@ -22,7 +23,6 @@ AP_ONLINE_OVERVIEW_COLUMNS = (
 TOTAL_SITE_LABEL = "合计"
 UNASSIGNED_SITE_LABEL = "未归属"
 DIRTY_RESOURCE_SITES = {"Demo", "体育中心站"}
-ONLINE_STATES = {"R", "R/M", "R/B", "RUN", "RUNNING", "ONLINE", "NORMAL", "UP", "CONNECTED", "1", "在线"}
 
 
 class ApOnlineOverviewService:
@@ -293,8 +293,14 @@ def build_rows(grouped: dict[str, dict[str, object | None]]) -> list[dict[str, o
 
 
 def is_fit_ap_online(row: dict[str, object | None]) -> bool:
-    state = str(row.get("state") or row.get("state_raw") or row.get("state_display") or "").strip()
-    return state.upper() in ONLINE_STATES or state in ONLINE_STATES
+    return (
+        classify_fit_ap_state(
+            row.get("state"),
+            row.get("state_raw"),
+            row.get("state_display"),
+        )
+        == "online"
+    )
 
 
 def export_ap_online_overview_xlsx(

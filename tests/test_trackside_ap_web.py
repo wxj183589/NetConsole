@@ -155,7 +155,7 @@ def _seed_effective_trackside_scope(
                     "ap_uuid": ap_uuid,
                     "ap_name": ap_name,
                     "ap_mac": ap_mac,
-                    "state": "R" if ap_index < online_count else "I",
+                    "state": "R/M" if ap_index < online_count else "I",
                     "updated_at": "2026-07-30T11:30:25+08:00",
                 }
             )
@@ -259,7 +259,7 @@ def test_business_snapshot_and_online_overview_share_effective_scope(
                 "ap_uuid": "ap-suspended",
                 "ap_name": "暂停 AP",
                 "ap_mac": "aabbccdde001",
-                "state": "R",
+                "state": "R/M",
             }
         ],
     )
@@ -1978,21 +1978,21 @@ def test_trackside_ap_online_status_uses_planned_targets_and_weighted_total(
                 "ap_uuid": "ap-suspended",
                 "ap_name": "暂停 AP",
                 "ap_mac": "aabbccdde001",
-                "state": "R",
+                    "state": "R/M",
                 "updated_at": "2026-07-30T11:30:25+08:00",
             },
             {
                 "ap_uuid": "ap-retired",
                 "ap_name": "退役 AP",
                 "ap_mac": "aabbccdde002",
-                "state": "R",
+                    "state": "R/M",
                 "updated_at": "2026-07-30T11:30:25+08:00",
             },
             {
                 "ap_uuid": "ap-unassigned",
                 "ap_name": "未分配 AP",
                 "ap_mac": "aabbccdde003",
-                "state": "R",
+                    "state": "R/M",
                 "updated_at": "2026-07-30T11:30:25+08:00",
             },
         ],

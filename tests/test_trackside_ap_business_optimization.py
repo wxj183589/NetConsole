@@ -117,7 +117,7 @@ def test_multi_ac_rows_without_mac_are_not_merged_by_name_or_serial():
     rows = merge_fit_ap_rows_by_identity(
         [
             {"ac_device_uuid": "standby", "serial_number": "SN-1", "ap_name": "AP1", "state": "Idle", "updated_at": "2026-06-29T10:00:00"},
-            {"ac_device_uuid": "active", "serial_number": "SN-1", "ap_name": "AP1", "state": "Run", "ap_ip": "10.0.0.10", "updated_at": "2026-06-29T09:00:00"},
+            {"ac_device_uuid": "active", "serial_number": "SN-1", "ap_name": "AP1", "state": "R/M", "ap_ip": "10.0.0.10", "updated_at": "2026-06-29T09:00:00"},
         ]
     )
 
@@ -133,11 +133,11 @@ def test_trackside_business_merges_same_ap_by_identity():
         {"sw-1": [{"interface_name": "GigabitEthernet1/0/1", "rx_power": "-8", "rx_low_warning": "-20"}]},
         [
             {"ac_device_uuid": "standby", "serial_number": "SN-1", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "state": "Idle", "neighbor_device_name": "SW1", "neighbor_interface": "GigabitEthernet1/0/1"},
-            {"ac_device_uuid": "active", "serial_number": "SN-1", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "state": "Run", "ap_ip": "10.0.0.10", "neighbor_device_name": "SW1", "neighbor_interface": "GigabitEthernet1/0/1"},
+            {"ac_device_uuid": "active", "serial_number": "SN-1", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "state": "R/M", "ap_ip": "10.0.0.10", "neighbor_device_name": "SW1", "neighbor_interface": "GigabitEthernet1/0/1"},
         ],
         fit_ap_resource_rows=[
             {"ac_device_uuid": "standby", "serial_number": "SN-1", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "state": "Idle"},
-            {"ac_device_uuid": "active", "serial_number": "SN-1", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "state": "Run", "ap_ip": "10.0.0.10"},
+            {"ac_device_uuid": "active", "serial_number": "SN-1", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "state": "R/M", "ap_ip": "10.0.0.10"},
         ],
     )
 
@@ -186,7 +186,7 @@ def test_trackside_business_uses_latest_current_fact_for_same_interface():
                 "id": 1,
                 "ap_name": "AP1",
                 "ap_mac": "0011-2233-4455",
-                "state": "Run",
+                "state": "R/M",
                 "rx_power": "-30",
                 "rx_low_warning": "-20",
                 "updated_at": "2026-06-29T09:00:00",
@@ -197,7 +197,7 @@ def test_trackside_business_uses_latest_current_fact_for_same_interface():
                 "id": 2,
                 "ap_name": "AP1",
                 "ap_mac": "0011-2233-4455",
-                "state": "Run",
+                "state": "R/M",
                 "rx_power": "-7",
                 "rx_low_warning": "-20",
                 "updated_at": "2026-06-29T10:00:00",
@@ -292,7 +292,7 @@ def test_trackside_business_keeps_ap_identity_when_ap_optical_missing():
                 "ap_name": "AP-MISSING-OPTICAL",
                 "ap_mac": "083b.e9ec.da40",
                 "serial_number": "SN-MISSING-OPTICAL",
-                "state": "Run",
+                "state": "R/M",
                 "neighbor_device_name": "SW1",
                 "neighbor_interface": "GigabitEthernet1/0/1",
             }

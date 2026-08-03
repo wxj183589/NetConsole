@@ -636,6 +636,15 @@ class ZteZxr10TracksideSwitchAdapter(TracksideSwitchAdapter):
             raise ValueError("ZTE_DEVICE_NOT_RECOGNIZED")
 
         if optical_fast_only:
+            interface_output = self.collect_interfaces(connection, cancel_check)
+            commands["interface-brief"] = self.interface_summary_command()
+            result.raw_outputs["interface-brief"] = interface_output.raw_output
+            result.command_pages["interface-brief"] = interface_output.page_count
+            interface_parse = self.parse_interfaces(interface_output.output)
+            result.interfaces = interface_parse.value
+            _annotate_raw_output_refs(result.interfaces, "interface-brief.txt")
+            result.warnings.extend(interface_parse.warnings)
+
             optical_output = self.collect_optical_summary(connection, cancel_check)
             commands["optical-brief"] = self.optical_summary_command()
             result.raw_outputs["optical-brief"] = optical_output.raw_output

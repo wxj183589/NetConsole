@@ -6,6 +6,7 @@ import re
 from uuid import uuid4
 
 from netconsole.core import app_logger
+from netconsole.parsers.h3c.ac.state_mapper import classify_fit_ap_state
 from netconsole.services.fit_ap_link_info import merge_lldp_payload, normalize_interface_key, normalize_lldp_payload, optical_payload_from_row, resolve_fit_ap_link_info, resolve_optical_match_status
 from netconsole.utils.station_normalize import normalize_station_value
 
@@ -3395,8 +3396,7 @@ class AcRepository:
 
     @staticmethod
     def _is_ap_offline(value: object) -> bool:
-        token = str(value or "").split("=", 1)[0].strip().upper()
-        return token in {"I", "IDLE"}
+        return classify_fit_ap_state(value) == "offline"
 
     @staticmethod
     def _normalize_trackside_plan_mode(mode: str) -> str:

@@ -82,6 +82,8 @@ FIT-AP 刷新将 `ap_uuid`、合法完整的 `ap_mac`、`serial_number`、`ap_na
 
 运行态字段仍以本次事实为准。离线 AP 的 `ap_ip` 清空，已有 Radio 状态落为 `Down`，不保留旧信道、带宽、功率或客户端数；物理 AP MAC 和 UUID 保持稳定。已有“当前资源 MAC 为空但 entity/history/snapshot 仍有证据”的记录，会在下一次成功 FIT-AP 刷新中幂等恢复，不删除历史、光衰、LLDP 或 metadata。
 
+FIT-AP 在线状态统一使用 AC 返回的明确运行态：`R/M`（运行/主）和 `R/B`（运行/备）为在线，其余非空状态为离线；`state`、`state_raw`、`state_display` 全部缺失时才显示未知。该判定由 Parser/Service 共享，AC 总览、FIT-AP 列表、轨旁逐站统计、离线台账和导出不得分别维护另一套状态集合；原始状态和 raw 回显继续保留，不因展示映射被覆盖。
+
 ## 光衰关联规则
 
 光衰阈值继续复用 `compute_ap_status`、`compute_switch_status` 与 `classify_optical_health()`，Vue 不重复计算。AP 在线状态和光模块健康状态是两个独立维度：在线 AP 的一般/严重光功率告警同样进入当前异常、概览和轨旁 AP 导出；离线 AP 的正常光功率不会伪造为光衰异常。Web 展示状态为：

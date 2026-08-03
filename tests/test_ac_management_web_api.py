@@ -49,6 +49,7 @@ def test_ac_management_get_api_is_read_only_and_redacts_serial_number(tmp_path: 
         before_config = _fingerprint(files["running"])
         summary = client.get("/api/ac-management/summary")
         aps = client.get("/api/ac-management/aps?page=1&page_size=2&status=offline")
+        online_aps = client.get("/api/ac-management/aps?page=1&page_size=2&status=online")
         detail = client.get("/api/ac-management/aps/ap-offline")
         optical_anomalies = client.get("/api/ac-management/optical-anomalies")
         radio_history = client.get("/api/ac-management/aps/ap-online/history/radio")
@@ -67,6 +68,8 @@ def test_ac_management_get_api_is_read_only_and_redacts_serial_number(tmp_path: 
     assert summary.json()["acs"][0]["https_port"] == 10443
     assert summary.json()["optical_anomalies"] == 2
     assert aps.json()["items"][0]["id"] == "ap-offline"
+    assert [item["id"] for item in online_aps.json()["items"]] == ["ap-online"]
+    assert online_aps.json()["items"][0]["state_display"] == "运行(备)"
     assert detail.status_code == 200
     assert radio_history.status_code == 200
     assert radio_history.json()["total"] == 2

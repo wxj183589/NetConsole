@@ -21,6 +21,10 @@ from netconsole.core.optical_severity_engine import (
 from netconsole.core.sources.switch_source import build_switch_data_lookup
 from netconsole.models.device import Device, is_device_eligible_for_automatic_collection
 from netconsole.models.trackside_switch import CommandCapabilityState
+from netconsole.parsers.h3c.ac.state_mapper import (
+    classify_fit_ap_state,
+    normalize_fit_ap_state_token,
+)
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.services.ap_online_overview import AP_ONLINE_OVERVIEW_COLUMNS, write_ap_online_overview_sheet
 from netconsole.services.offline_ap_ledger import (
@@ -39,7 +43,8 @@ from netconsole.utils.station_normalize import normalize_station_value
 
 
 TRACKSIDE_ATTENUATION_SAMPLE_WINDOW = timedelta(minutes=30)
-TRACKSIDE_RX_NORMAL_MIN_DBM = -13.0
+TRACKSIDE_RX_NORMAL_MIN_DBM = -13.90
+_AP_OFFLINE_REASONS = frozenset({"switch_offline", "ac_idle", "ac_offline"})
 _PRESERVED_SWITCH_MODULE_STATUSES = {
     "abnormal",
     "unverified",
@@ -771,8 +776,9 @@ def build_trackside_ap_business_rows(
                 "ap_tx_power": fit_ap.get("tx_power"),
             }
             ac_idle = _is_ac_idle(fit_ap)
+            ac_offline = _is_ac_offline(fit_ap)
             ap_identity_known = any(ap_candidate.get(field) for field in ("ap_mac", "ap_name"))
-            ap_side_has_data = _has_ap_side_optical_data(fit_ap, ap_candidate) or ac_idle or (switch_offline and ap_identity_known)
+            ap_side_has_data = _has_ap_side_optical_data(fit_ap, ap_candidate) or ac_offline or (switch_offline and ap_identity_known)
             ap_status = ""
             offline_reason = ""
             status_reason = ""
@@ -786,10 +792,10 @@ def build_trackside_ap_business_rows(
                 offline_reason = "switch_offline"
                 status_reason = "室内交换机离线，轨旁AP跟随离线"
                 data_source = "mixed" if ap_identity_known else "stale"
-            elif ac_idle:
+            elif ac_offline:
                 ap_status = "offline"
-                offline_reason = "ac_idle"
-                status_reason = "AC FIT-AP状态为Idle，轨旁AP离线"
+                offline_reason = "ac_idle" if ac_idle else "ac_offline"
+                status_reason = _ac_offline_status_reason(fit_ap)
             elif ap_side_has_data:
                 ap_result = compute_optical_severity(
                     {
@@ -1107,7 +1113,7 @@ def _merge_duplicate_ap_rows(rows: list[dict[str, object | None]]) -> list[dict[
 
 def _trackside_ap_row_prefer_score(row: dict[str, object | None]) -> tuple[int, int, int, str]:
     return (
-        0 if bool(row.get("is_ap_offline")) or row.get("offline_reason") in {"ac_idle", "switch_offline"} else 1,
+        0 if bool(row.get("is_ap_offline")) or row.get("offline_reason") in _AP_OFFLINE_REASONS else 1,
         1 if _ap_state(row) == "online" else 0,
         1 if str(row.get("ap_ip") or "").strip() else 0,
         str(row.get("updated_at") or ""),
@@ -1767,7 +1773,7 @@ def format_ap_side_alarm(row: dict[str, object | None], language: str = "zh") ->
 
 
 def _ensure_ap_optical_status(row: dict[str, object | None]) -> None:
-    if bool(row.get("is_ap_offline")) or row.get("offline_reason") in {"switch_offline", "ac_idle"}:
+    if bool(row.get("is_ap_offline")) or row.get("offline_reason") in _AP_OFFLINE_REASONS:
         return
     status = str(row.get("ap_optical_status") or "").strip().casefold()
     if status not in {"", "unknown"} or not _has_valid_rx_power(row.get("ap_rx_power")):
@@ -1777,7 +1783,7 @@ def _ensure_ap_optical_status(row: dict[str, object | None]) -> None:
 
 
 def _ap_optical_status_for_display(row: dict[str, object | None]) -> str:
-    if bool(row.get("is_ap_offline")) or row.get("offline_reason") in {"switch_offline", "ac_idle"}:
+    if bool(row.get("is_ap_offline")) or row.get("offline_reason") in _AP_OFFLINE_REASONS:
         return "offline"
     status = str(row.get("ap_optical_status") or "").strip().casefold()
     if status in {"", "unknown"} and _has_valid_rx_power(row.get("ap_rx_power")):
@@ -1850,7 +1856,7 @@ def format_trackside_display_value(field: str, row: dict[str, object | None], la
     if field == "vlan":
         return normalize_trackside_vlan_display(row.get("vlan"))
     if field == "ap_optical_status":
-        if bool(row.get("is_ap_offline")) or row.get("offline_reason") in {"switch_offline", "ac_idle"}:
+        if bool(row.get("is_ap_offline")) or row.get("offline_reason") in _AP_OFFLINE_REASONS:
             return OFFLINE_AP_STATUS_TEXT
         return format_ap_side_alarm(row, language)
     if field in AP_SIDE_DISPLAY_FIELDS and not has_ap_side_optical_data(row):
@@ -2629,11 +2635,27 @@ def _previous_lldp_interface(row: dict[str, object | None]) -> object:
 
 
 def _is_ac_idle(row: dict[str, object | None]) -> bool:
-    state = " ".join(str(row.get(field) or "") for field in ("state", "state_raw", "state_display", "ap_state", "ap_state_display")).strip().casefold()
-    if not state:
-        return False
-    token = state.split("=", 1)[0].strip()
-    return token in {"i", "idle"} or "idle" in state
+    for field in ("state", "state_raw", "ap_state", "state_display", "ap_state_display"):
+        value = row.get(field)
+        if str(value or "").strip():
+            return normalize_fit_ap_state_token(value) in {"I", "IDLE"}
+    return False
+
+
+def _is_ac_offline(row: dict[str, object | None]) -> bool:
+    return _ap_state(row) == "offline"
+
+
+def _ac_offline_status_reason(row: dict[str, object | None]) -> str:
+    state = next(
+        (
+            str(row.get(field) or "").strip()
+            for field in ("state_display", "state", "state_raw", "ap_state_display", "ap_state")
+            if str(row.get(field) or "").strip()
+        ),
+        "非运行态",
+    )
+    return f"AC FIT-AP状态为{state}，轨旁AP离线"
 
 
 def _trackside_merge_key(row: dict[str, object | None]) -> tuple[str, str, str]:
@@ -2697,7 +2719,7 @@ def _merge_trackside_row(target: dict[str, object | None], source: dict[str, obj
 
 def _apply_trackside_offline_priority(row: dict[str, object | None]) -> None:
     switch_offline = row.get("offline_reason") == "switch_offline" or _is_switch_collection_offline(row.get("switch_collection_status"))
-    ac_idle = _is_ac_idle(row) or row.get("offline_reason") == "ac_idle"
+    ac_offline = _is_ac_offline(row) or row.get("offline_reason") in {"ac_idle", "ac_offline"}
     if switch_offline:
         row["link_status"] = "DOWN"
         row["switch_optical_status"] = "offline"
@@ -2707,12 +2729,14 @@ def _apply_trackside_offline_priority(row: dict[str, object | None]) -> None:
         row["offline_reason"] = "switch_offline"
         row["status_reason"] = "室内交换机离线，轨旁AP跟随离线"
         row["data_source"] = row.get("data_source") or "mixed"
-    elif ac_idle:
+    elif ac_offline:
         row["ap_optical_status"] = "offline"
         row["ap_side_has_data"] = True
         row["is_ap_offline"] = True
-        row["offline_reason"] = "ac_idle"
-        row["status_reason"] = row.get("status_reason") or "AC FIT-AP状态为Idle，轨旁AP离线"
+        row["offline_reason"] = row.get("offline_reason") or (
+            "ac_idle" if _is_ac_idle(row) else "ac_offline"
+        )
+        row["status_reason"] = row.get("status_reason") or _ac_offline_status_reason(row)
     else:
         _ensure_ap_optical_status(row)
     row["port_type"] = _port_type(row.get("port_type") or row.get("port_status"))
@@ -2854,7 +2878,7 @@ def _is_ap_offline_abnormal(row: dict[str, object | None]) -> bool:
     if not has_valid_ap_binding(row):
         return False
     status = _normalized_optical_status(row.get("ap_optical_status") or row.get("optical_alarm_status") or row.get("alarm_status"))
-    return bool(row.get("is_ap_offline")) or row.get("offline_reason") in {"switch_offline", "ac_idle"} or status == "offline"
+    return bool(row.get("is_ap_offline")) or row.get("offline_reason") in _AP_OFFLINE_REASONS or status == "offline"
 
 
 def _is_ap_side_current_abnormal(row: dict[str, object | None]) -> bool:
@@ -3127,17 +3151,14 @@ def _set_switch_optical_summary_widths(workbook) -> None:
 
 
 def _ap_state(row: dict[str, object | None]) -> str:
-    text = " ".join(str(row.get(field) or "") for field in ("ap_state", "ap_state_display", "state", "state_display")).strip().casefold()
-    if not text:
-        return ""
-    token = text.split("=", 1)[0].strip()
-    if "idle" in text or "offline" in text or "离线" in text:
-        return "offline"
-    if token in {"r", "r/m", "run"} or any(value in text for value in ("online", "run", "up", "normal", "在线")):
-        return "online"
-    if any(token in text for token in ("offline", "down", "fault", "离线")):
-        return "offline"
-    return ""
+    status = classify_fit_ap_state(
+        row.get("ap_state"),
+        row.get("state"),
+        row.get("state_raw"),
+        row.get("ap_state_display"),
+        row.get("state_display"),
+    )
+    return "" if status == "unknown" else status
 
 
 def _short_interface_name(value: object) -> str:
