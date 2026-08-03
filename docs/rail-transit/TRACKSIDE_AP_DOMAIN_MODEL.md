@@ -70,7 +70,7 @@ SQLite 使用一个 `BEGIN IMMEDIATE`；任何稳定 ID、引用、唯一性或�
 
 业务行分别公开 `switch_station_id`、`ap_station_id`、`planning_station_id` 和 `effective_station_id`，并返回 `station_consistency_status/reason`。三个来源一致时使用该 ID；存在冲突时不按名称或 VLAN 选边；只有规划有 ID 时可作为规划口径的有效站点，并保留原因诊断。
 
-LLDP 关联 FIT-AP 只接受规范化后的完整邻居/Chassis MAC 精确等值。基础 AP 资料命中时始终优先，明确排除或多条基础资料不能被 LLDP 覆盖；基础 AP 完全未命中时，当前车站交换机的稳定 `station_id` 可作为轨旁业务作用域的只读运行态站点投影，但同一 MAC 必须只指向一个当前有效站点。多站点、无证据和建设阶段不一致均保持未解析；邻居 IP、系统名、AP 名称、VLAN 和历史接口名称不参与绑定。该投影不写入基础资料、规划或 AP Identity，也不把交换机接口提升为 AP 身份。每个业务请求固定一次 AP Identity 健康状态，逐行解析只读索引且不触发 rebuild。
+LLDP 关联 FIT-AP 只接受规范化后的完整邻居/Chassis MAC 精确等值。设备管理中的当前车站交换机候选端口和 AC FIT-AP 运行态构成业务行主来源；交换机缺少正式 `station_id` 时仍保留设备管理站点文本和候选端口，基础 AP 资料只在精确命中时补充稳定关系。明确排除或多条基础资料不能被 LLDP 覆盖；基础 AP 完全未命中但交换机已有稳定 `station_id` 时，该 ID 可作为只读运行态站点投影。多站点、无证据和建设阶段不一致均保持稳定关系未解析，但不删除当前交换机候选端口；邻居 IP、系统名、AP 名称、VLAN 和历史接口名称不参与绑定。该投影不写入基础资料、规划或 AP Identity，也不把交换机接口提升为 AP 身份。每个业务请求固定一次 AP Identity 健康状态，逐行解析只读索引且不触发 rebuild。
 
 ## 5. 迁移与兼容
 

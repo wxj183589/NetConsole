@@ -429,6 +429,53 @@ def test_trackside_snapshot_keeps_switch_rows_when_fit_ap_resources_fail(
     assert snapshot.unavailable_sources[0]["code"] == "FIT_AP_RESOURCES_UNAVAILABLE"
 
 
+def test_trackside_snapshot_uses_device_and_ac_without_base_data(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "device-ac-primary.sqlite")
+    database.initialize()
+    repository = DeviceRepository(database)
+    switch = _seed_trackside_switch(
+        repository,
+        name="SW-A",
+        station="设备管理站点A",
+        address="192.0.2.11",
+    )
+    AcRepository(database).replace_fit_ap_resources(
+        "ac-fixture",
+        [
+            {
+                "ap_uuid": "ap-runtime-1",
+                "ap_name": "AP-RUNTIME-1",
+                "ap_mac": "0011-2233-4455",
+                "state": "R/M",
+            }
+        ],
+    )
+    DeviceFactRepository(database).replace_lldp_neighbors(
+        str(switch.device_uuid),
+        [
+            {
+                "local_interface": "XGE1/0/1",
+                "neighbor_mac": "00:11:22:33:44:55",
+            }
+        ],
+        preserve_existing=False,
+    )
+
+    snapshot = load_trackside_ap_business_snapshot(repository, "demo", 1)
+
+    assert snapshot.scope is not None
+    assert snapshot.scope.scope_ap_reference_count == 0
+    assert snapshot.fit_ap_resource_count == 1
+    assert snapshot.fit_ap_unmatched_online_count == 1
+    assert snapshot.row_count == 1
+    assert snapshot.rows[0]["site"] == "设备管理站点A"
+    assert snapshot.rows[0]["station_id"] == ""
+    assert snapshot.rows[0]["ap_uuid"] == "ap-runtime-1"
+    assert snapshot.rows[0]["ap_mac"] == "0011-2233-4455"
+
+
 def test_trackside_snapshot_keeps_other_devices_when_one_interface_source_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

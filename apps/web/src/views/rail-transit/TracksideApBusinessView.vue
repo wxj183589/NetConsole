@@ -91,7 +91,7 @@ const unmatchedColumns: NcTableColumn<TracksideApUnmatchedOnline>[] = [
   { key: 'mac', label: 'AP MAC', valueType: 'mac', width: 170 },
   { key: 'ac_status', label: 'AC状态', valueType: 'status', width: 130 },
   { key: 'runtime_station_text', label: '运行态站点', valueType: 'name', minWidth: 170 },
-  { key: 'reason', label: '未关联原因', valueType: 'description', minWidth: 280, align: 'left', alignmentReason: 'long-text' },
+  { key: 'reason', label: '资料状态', valueType: 'description', minWidth: 280, align: 'left', alignmentReason: 'long-text' },
   { key: 'suggested_action', label: '建议处理', valueType: 'description', minWidth: 300, align: 'left', alignmentReason: 'long-text' },
 ]
 const currentTask = computed<TaskItem | null>(() => (
@@ -302,13 +302,13 @@ onMounted(() => {
     <div v-if="page" class="scope-summary">
       <strong>统计范围：{{ page.scope_description || '当前项目 · 当前工作范围轨旁 AP' }}</strong>
       <span>纳入站点 {{ page.scope_station_count || 0 }}</span>
-      <span>纳入 AP 资料 {{ page.scope_ap_reference_count ?? page.scope_device_count ?? 0 }}</span>
+      <span>基础 AP 资料 {{ page.scope_ap_reference_count ?? page.scope_device_count ?? 0 }}</span>
       <span>排除设备 {{ page.excluded_device_count || 0 }}</span>
-      <el-button v-if="page.fit_ap_unmatched_online_count" link type="warning" @click="unmatchedVisible = true">待关联在线 AP {{ page.fit_ap_unmatched_online_count }}</el-button>
+      <el-button v-if="page.fit_ap_unmatched_online_count" link type="warning" @click="unmatchedVisible = true">基础资料待补充 {{ page.fit_ap_unmatched_online_count }}</el-button>
       <el-button v-if="page.excluded_device_count" link type="warning" @click="excludedVisible = true">查看排除项</el-button>
     </div>
     <div class="summary-grid">
-      <article><span>站点交换机</span><strong>{{ metricValue(page?.device_count, ['switch_devices']) }}</strong></article><article><span>候选 AP 端口</span><strong>{{ metricValue(page?.candidate_interface_count, ['switch_devices', 'interfaces', 'planning']) }}</strong></article><article><span>已关联 AP</span><strong>{{ metricValue(page?.fit_ap_matched_count ?? page?.fit_ap_resource_count, ['fit_ap_resources']) }}</strong></article><article><span>待关联在线 AP</span><strong>{{ metricValue(page?.fit_ap_unmatched_online_count, ['fit_ap_resources']) }}</strong></article><article><span>光衰异常</span><strong>{{ metricValue(page?.optical_abnormal_count, ['interfaces', 'switch_optical', 'fit_ap_optical']) }}</strong></article>
+      <article><span>站点交换机</span><strong>{{ metricValue(page?.device_count, ['switch_devices']) }}</strong></article><article><span>候选 AP 端口</span><strong>{{ metricValue(page?.candidate_interface_count, ['switch_devices', 'interfaces', 'planning']) }}</strong></article><article><span>AC AP 资源</span><strong>{{ metricValue(page?.fit_ap_resource_count, ['fit_ap_resources']) }}</strong></article><article><span>基础资料待补充</span><strong>{{ metricValue(page?.fit_ap_unmatched_online_count, ['fit_ap_resources']) }}</strong></article><article><span>光衰异常</span><strong>{{ metricValue(page?.optical_abnormal_count, ['interfaces', 'switch_optical', 'fit_ap_optical']) }}</strong></article>
     </div>
     <div class="content-card">
       <div class="toolbar">
@@ -333,7 +333,7 @@ onMounted(() => {
         <el-checkbox v-model="filters.optical_anomaly_only">仅光衰异常</el-checkbox>
         <el-button type="primary" :loading="refreshing" :disabled="initialLoading" @click="loadRows(true)">查询</el-button>
         <span v-if="refreshing" class="refresh-indicator">正在刷新，当前数据保持显示</span>
-        <span class="work-scope-filter-hint">已按当前项目、建设阶段、当前工作状态和站点交换机工作范围过滤；AP 身份仅用于关联</span>
+        <span class="work-scope-filter-hint">设备管理与 AC 生成业务行；基础资料仅补充站点和工程属性</span>
       </div>
       <div class="business-table-host">
         <NcDataTable
@@ -368,14 +368,14 @@ onMounted(() => {
         empty-text="没有排除项"
       />
     </el-dialog>
-    <el-dialog v-model="unmatchedVisible" title="待关联在线 AP" width="min(1280px, 96vw)">
+    <el-dialog v-model="unmatchedVisible" title="基础资料待补充的在线 AP" width="min(1280px, 96vw)">
       <NcDataTable
         table-id="trackside-ap-business-unmatched-online"
         route-key="/rail-transit/trackside-ap-business"
         :data="page?.unmatched_online_items || []"
         :columns="unmatchedColumns"
         height="460"
-        empty-text="没有待关联在线 AP"
+        empty-text="没有待补充基础资料的在线 AP"
       />
     </el-dialog>
   </section>

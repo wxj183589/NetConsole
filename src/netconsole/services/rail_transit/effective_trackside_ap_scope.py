@@ -42,6 +42,9 @@ _EXCLUDED_SCOPE_STATES = {
     "未纳入当前项目",
 }
 _FALSE_VALUES = {"0", "false", "no", "off", "disabled", "否"}
+_BASE_DATA_MISSING_REASON = (
+    "在线 AP 尚未匹配轨旁 AP 基础资料；基础资料仅作补充，不影响业务生成。"
+)
 
 
 @dataclass(frozen=True)
@@ -297,8 +300,18 @@ class EffectiveTracksideApScope:
                     or ""
                 ).strip()
                 if not station_id:
-                    continue
-                if station_id in self.station_scope_ids:
+                    # Device management defines the switch-port business
+                    # skeleton. A formal base-data station ID is optional
+                    # enrichment and must not suppress that runtime row.
+                    if switch_device_ids is None or not station_name:
+                        continue
+                    enriched["site"] = station_name
+                    enriched["site_name"] = station_name
+                    enriched["station_id"] = ""
+                    enriched["effective_station_id"] = ""
+                    enriched["station_consistency_status"] = "unresolved"
+                    enriched["station_consistency_reason"] = "STATION_ID_MISSING"
+                elif station_id in self.station_scope_ids:
                     enriched["station_id"] = station_id
                     enriched["site"] = self.station_names.get(station_id, station_name)
                     enriched["site_name"] = enriched["site"]
@@ -625,7 +638,7 @@ def resolve_effective_trackside_ap_scope(
             aliases,
         )
         binding_source = "base_data"
-        if not reference_id and reason == "在线 AP 未匹配到当前有效轨旁 AP 资料。":
+        if not reference_id and reason == _BASE_DATA_MISSING_REASON:
             mac = normalize_mac(resource.get("ap_mac")) or ""
             station_ids = runtime_station_index.get(mac, set())
             if len(station_ids) == 1:
@@ -1001,7 +1014,7 @@ def _match_resource_reference(
             return "", "匹配到的轨旁 AP 资料不在当前有效范围。"
         if len(candidates) > 1:
             return "", "AP 稳定身份匹配到多条资料，需人工处理。"
-    return "", "在线 AP 未匹配到当前有效轨旁 AP 资料。"
+    return "", _BASE_DATA_MISSING_REASON
 
 
 def _unmatched_online_diagnostics(
@@ -1027,8 +1040,8 @@ def _unmatched_online_diagnostics(
             "检查车站交换机 station_id 与 LLDP 邻居 MAC 后重新刷新。",
         )
     return (
-        reason or "在线 AP 未匹配到当前有效轨旁 AP 资料。",
-        "补充或绑定轨旁 AP 基础资料 MAC 后重新刷新 FIT-AP。",
+        reason or _BASE_DATA_MISSING_REASON,
+        "可按需补充轨旁 AP 基础资料 MAC，以完善站点和工程属性。",
     )
 
 

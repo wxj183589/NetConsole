@@ -352,8 +352,8 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(wrapper.text()).toContain('FIT-AP 资源：FIT_AP_RESOURCES_UNAVAILABLE')
     expect(wrapper.getComponent(NcDataTableStub).props('data')).toHaveLength(2)
     const cards = wrapper.findAll('.summary-grid article').map((item) => item.text())
-    expect(cards).toContain('已关联 AP加载失败')
-    expect(cards).toContain('待关联在线 AP加载失败')
+    expect(cards).toContain('AC AP 资源加载失败')
+    expect(cards).toContain('基础资料待补充加载失败')
     expect(cards).toContain('候选 AP 端口2')
     wrapper.unmount()
   })
@@ -400,7 +400,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
       ...page([], 1, []),
       device_count: 15,
       candidate_interface_count: 756,
-      fit_ap_resource_count: 0,
+      fit_ap_resource_count: 188,
       fit_ap_matched_count: 0,
       fit_ap_unmatched_online_count: 188,
       empty_reason: 'trackside.empty.no_fit_ap_resource',
@@ -411,7 +411,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
         mac: '0011-2233-4455',
         ac_status: 'R',
         runtime_station_text: '站点A',
-        reason: '在线 AP 未匹配到当前有效轨旁 AP 资料。',
+        reason: '在线 AP 尚未匹配轨旁 AP 基础资料；基础资料仅作补充，不影响业务生成。',
         suggested_action: '补充基础资料',
       }],
     })
@@ -421,7 +421,9 @@ describe('TracksideApBusinessView mounted behavior', () => {
       '已发现候选 AP 端口，部分端口尚未关联 AP 运行态资料。',
     )
     expect(wrapper.text()).not.toContain('trackside.empty.no_fit_ap_resource')
-    expect(wrapper.text()).toContain('待关联在线 AP 188')
+    expect(wrapper.text()).toContain('AC AP 资源188')
+    expect(wrapper.text()).toContain('基础资料待补充 188')
+    expect(wrapper.text()).toContain('设备管理与 AC 生成业务行；基础资料仅补充站点和工程属性')
     wrapper.unmount()
   })
 
@@ -485,7 +487,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
       '下载原始输出 ZIP',
     ]) expect(wrapper.text()).not.toContain(removed)
     expect(wrapper.find('.adapter-section').exists()).toBe(false)
-    expect(wrapper.text()).toContain('已按当前项目、建设阶段、当前工作状态和站点交换机工作范围过滤；AP 身份仅用于关联')
+    expect(wrapper.text()).toContain('设备管理与 AC 生成业务行；基础资料仅补充站点和工程属性')
     wrapper.unmount()
   })
 

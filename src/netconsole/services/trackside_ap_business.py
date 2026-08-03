@@ -858,13 +858,9 @@ def build_trackside_ap_business_rows(
             )
             effective_station_id = station_projection["effective_station_id"]
             base_station_name = (
-                (
-                    str((station_names or {}).get(effective_station_id) or "").strip()
-                    if effective_station_id
-                    else ""
-                )
-                if station_names is not None
-                else device.station or normalize_station_value(fit_ap) or ""
+                str((station_names or {}).get(effective_station_id) or "").strip()
+                if effective_station_id and station_names is not None
+                else str(device.station or normalize_station_value(fit_ap) or "").strip()
             )
             row = {
                     "station_id": effective_station_id,

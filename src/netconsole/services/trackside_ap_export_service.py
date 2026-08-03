@@ -239,9 +239,9 @@ def load_trackside_ap_business_snapshot(
         fact_repository.list_lldp_neighbors,
     )
     try:
-        fit_ap_optical_rows = scope.filter_identity_rows(
-            ac_repository.list_all_fit_ap_optical()
-        )
+        # AC runtime facts are a primary business source. Base-data scope only
+        # enriches or excludes the final switch-port projection.
+        fit_ap_optical_rows = ac_repository.list_all_fit_ap_optical()
     except Exception as exc:
         fit_ap_optical_rows = []
         source_statuses["fit_ap_optical"] = "failed"
@@ -251,7 +251,7 @@ def load_trackside_ap_business_snapshot(
             "FIT_AP_OPTICAL_UNAVAILABLE",
             exc,
         )
-    fit_ap_resource_rows = scope.resources
+    fit_ap_resource_rows = fit_ap_resource_input
     try:
         historical_lldp_rows = ac_repository.list_latest_ap_lldp_histories()
     except Exception as exc:

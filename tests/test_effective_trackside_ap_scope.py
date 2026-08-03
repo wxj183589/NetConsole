@@ -348,7 +348,7 @@ def test_scope_excludes_non_service_cross_project_and_ambiguous_station_rows() -
     assert "不属于当前项目。" in reasons
     assert "缺少当前项目要求的建设阶段。" in reasons
     assert "缺少有效 station_id；历史站名仅供诊断，不能建立正式关联。" in reasons
-    assert "在线 AP 未匹配到当前有效轨旁 AP 资料。" in {
+    assert "在线 AP 尚未匹配轨旁 AP 基础资料；基础资料仅作补充，不影响业务生成。" in {
         item.reason for item in scope.unmatched_online_items
     }
 
@@ -499,6 +499,35 @@ def test_switch_scope_keeps_candidate_ports_without_ap_references() -> None:
     assert rows[0]["site"] == "01-站点A"
     assert rows[0]["interface_name"] == "XGE1/0/1"
     assert rows[0]["ap_name"] == ""
+
+
+def test_switch_scope_keeps_device_station_row_without_base_station_id() -> None:
+    scope = _resolve(
+        stations=[_station(1, "01-站点A", "node-a", 1)],
+        plans=[],
+        references=[],
+        resources=[],
+    )
+
+    rows = scope.filter_switch_scope_rows(
+        [
+            {
+                "device_uuid": "switch-a",
+                "station_id": "",
+                "device_name": "SW-A",
+                "site": "设备管理站点A",
+                "interface_name": "XGE1/0/1",
+                "ap_name": "",
+                "ap_mac": "",
+            }
+        ],
+        switch_device_ids={"switch-a"},
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["site"] == "设备管理站点A"
+    assert rows[0]["station_id"] == ""
+    assert rows[0]["station_consistency_reason"] == "STATION_ID_MISSING"
 
 
 def test_ambiguous_stable_identity_is_excluded_from_switch_scope() -> None:
