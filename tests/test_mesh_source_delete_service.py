@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import json
+import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
@@ -234,6 +235,37 @@ def test_delete_complete_tolerates_missing_raw_and_parsed_files(
     assert result["missing_file_count"] == 2
     assert external.is_file()
     assert repository.get_source_file(int(source["id"])) is None
+
+
+def test_delete_parsed_tolerates_old_schema_index(tmp_path: Path) -> None:
+    paths, profile, external, repository, source, session_id, _result = _import_source(tmp_path)
+    index_path = paths.mesh_mr_db_path("demo", profile.safe_folder_name)
+    with sqlite3.connect(index_path) as connection:
+        connection.execute(
+            "UPDATE schema_meta SET value = 'meshlog_compact_v2_single_log' WHERE key = 'schema_version'"
+        )
+        connection.execute(
+            "UPDATE meta SET value = 'meshlog_compact_v2_single_log' WHERE key = 'schema_version'"
+        )
+        connection.commit()
+
+    raw = Path(str(source["archived_path"]))
+    parsed = Path(str(source["parsed_db_path"]))
+
+    result = MeshSourceDeleteService(paths).delete_source(
+        "demo",
+        session_id,
+        delete_raw_archive=False,
+        delete_parsed_data=True,
+        delete_generated_reports=False,
+    )
+
+    refreshed = repository.get_source_file(int(source["id"]))
+    assert result["deleted_file_count"] >= 1
+    assert raw.is_file()
+    assert not parsed.exists()
+    assert refreshed is not None
+    assert str(refreshed["parsed_deleted_at"])
 
 
 def test_delete_catalog_failure_restores_files_and_metadata(

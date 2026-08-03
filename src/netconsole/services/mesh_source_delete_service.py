@@ -8,7 +8,6 @@ from uuid import uuid4
 
 from netconsole.core.paths import PathResolver
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
-from netconsole.repositories.mesh_source_index_repository import MeshSourceIndexRepository
 from netconsole.services.mesh_source_locator import MeshSourceLocator
 from netconsole.services.mesh_source_rebuild_service import MeshSourceRebuildService
 
@@ -95,7 +94,7 @@ class MeshSourceDeleteService:
         targets.extend(report_paths)
         targets = list(dict.fromkeys(targets))
         missing_file_count = sum(1 for path in [*candidate_paths, *report_paths] if not path.exists())
-        counts = self._parsed_counts(index, source_id)
+        counts = index.count_parsed_data_by_source_file(source_id)
         quarantine = profile_root / ".quarantine" / uuid4().hex
         quarantine.mkdir(parents=True, exist_ok=False)
         moved: list[tuple[Path, Path]] = []
@@ -199,13 +198,6 @@ class MeshSourceDeleteService:
             "cleanup_pending": cleanup_pending,
             "cleanup_warning": cleanup_warning,
         }
-
-    @staticmethod
-    def _parsed_counts(index: MeshSourceIndexRepository, source_id: int) -> dict[str, int]:
-        # The index repository delegates count queries to the compact detail DB.
-        from netconsole.repositories.mesh_mr_repository import MeshMrRepository
-
-        return MeshMrRepository(index.path).count_parsed_data_by_source_file(source_id)
 
     def _report_paths(
         self,

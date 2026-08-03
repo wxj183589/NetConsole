@@ -60,6 +60,29 @@ class MeshSourceIndexRepository:
             rows = connection.execute("SELECT * FROM source_files ORDER BY id").fetchall()
         return [dict(row) for row in rows]
 
+    def count_parsed_data_by_source_file(self, source_file_id: int | str) -> dict[str, int]:
+        if source_file_id in (None, ""):
+            return {"links": 0, "events": 0, "issues": 0, "caches": 0}
+        value = int(source_file_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM source_files WHERE id = ?",
+                (value,),
+            ).fetchone()
+            if row is None:
+                return {"links": 0, "events": 0, "issues": 0, "caches": 0}
+            parsed_db_path = Path(str(row["parsed_db_path"] or "").strip().strip("'\""))
+            if parsed_db_path.is_file():
+                counts = self._count_parsed_data_from_detail(parsed_db_path)
+                if any(counts.values()):
+                    return counts
+            counts = self._count_rows_by_source_file(connection, value)
+            if not any(counts.values()):
+                counts["links"] = int(row["records_parsed"] or 0) if "records_parsed" in row.keys() else 0
+                counts["events"] = int(row["event_count"] or 0) if "event_count" in row.keys() else 0
+                counts["issues"] = int(row["issue_count"] or 0) if "issue_count" in row.keys() else 0
+            return counts
+
     def update_source_provenance(
         self,
         source_file_id: int,
@@ -271,6 +294,53 @@ class MeshSourceIndexRepository:
 
     def _connect(self) -> sqlite3.Connection:
         return connect_sqlite(self.path, foreign_keys=True)
+
+    @staticmethod
+    def _count_parsed_data_from_detail(path: Path) -> dict[str, int]:
+        try:
+            uri = f"{path.resolve().as_uri()}?mode=ro"
+            with sqlite3.connect(uri, uri=True) as connection:
+                return {
+                    "links": MeshSourceIndexRepository._count_table_rows(connection, "mesh_links"),
+                    "events": MeshSourceIndexRepository._count_table_rows(connection, "switch_events"),
+                    "issues": MeshSourceIndexRepository._count_table_rows(connection, "parse_issues"),
+                    "caches": 0,
+                }
+        except sqlite3.Error:
+            return {"links": 0, "events": 0, "issues": 0, "caches": 0}
+
+    @staticmethod
+    def _count_rows_by_source_file(connection: sqlite3.Connection, source_file_id: int) -> dict[str, int]:
+        return {
+            "links": MeshSourceIndexRepository._count_table_rows(connection, "mesh_links", source_file_id),
+            "events": MeshSourceIndexRepository._count_table_rows(connection, "switch_events", source_file_id),
+            "issues": MeshSourceIndexRepository._count_table_rows(connection, "parse_issues", source_file_id),
+            "caches": 0,
+        }
+
+    @staticmethod
+    def _count_table_rows(
+        connection: sqlite3.Connection,
+        table: str,
+        source_file_id: int | None = None,
+    ) -> int:
+        table_row = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        if table_row is None:
+            return 0
+        if source_file_id is None:
+            query = f"SELECT COUNT(*) AS count FROM {table}"
+            params: tuple[object, ...] = ()
+        else:
+            columns = {str(item[1]) for item in connection.execute(f"PRAGMA table_info({table})")}
+            if "source_file_id" not in columns:
+                return 0
+            query = f"SELECT COUNT(*) AS count FROM {table} WHERE source_file_id = ?"
+            params = (int(source_file_id),)
+        row = connection.execute(query, params).fetchone()
+        return int(row[0] if row else 0)
 
     @staticmethod
     def _count(connection: sqlite3.Connection, table: str) -> int:
