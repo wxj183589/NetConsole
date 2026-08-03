@@ -16,7 +16,7 @@ Electron 页面 `/config-center` 负责 H3C/Comware 配置采集、保存配置�
 
 ## 对比流程
 
-`config_compare_snapshot_pair` Job 按快照 ID 在当前数据根内解析安全文件引用，读取文本并计算完整差异。Worker 终态返回有界的 `left_text`、`right_text`、`diff_rows`、`raw_diff` 预览，以及完整 `diff_summary`、原始长度、行总数、截断/省略标记和左右标签；完整统一 Diff 写入受管 `.diff` Artifact，左右完整配置仍通过各自快照 Artifact 下载。页面默认使用只读 Monaco Diff Editor 展示终态预览；“差异明细”保留当前预览内的左行号、左文本、状态、右行号和右文本，并支持全部/新增/删除/修改过滤。上一处、下一处由当前返回的 `diff_rows` 生成目标，不使用 Monaco 内部命令作为业务事实。
+`config_compare_snapshot_pair` Job 按快照 ID 在当前数据根内解析安全文件引用，读取文本并计算完整差异。Worker 终态事件仍返回有界的 `left_text`、`right_text`、`diff_rows`、`raw_diff` 预览、完整 `diff_summary`、原始长度、行总数、截断/省略标记、左右标签和左右快照 ID；完整统一 Diff 写入受管 `.diff` Artifact。配置任务单条详情 API 会按左右快照 ID 重新读取受管快照并展开完整 `left_text`、`right_text`、`diff_rows` 和 `raw_diff`，页面展示 focused 终态差异时使用该完整详情。页面默认使用只读 Monaco Diff Editor 展示完整任务详情；“差异明细”保留完整详情内的左行号、左文本、状态、右行号和右文本，并支持全部/新增/删除/修改过滤。上一处、下一处由当前返回的 `diff_rows` 生成目标，不使用 Monaco 内部命令作为业务事实。
 
 结果使用显式的内容/差异状态，不以非空字符串判断任务是否有效。空文件作为真实空内容处理；两个相同文件返回零处差异并仍显示只读对比器；跨设备文件保持各自标签。文件缺失、引用越界、读取失败或快照不属于当前局点时任务失败，不回退到任意本机路径。
 
@@ -30,8 +30,8 @@ Electron 页面 `/config-center` 负责 H3C/Comware 配置采集、保存配置�
 - Monaco 和 Worker 加载器按需分块；没有合法差异结果时不加载、不创建 Editor。配置 Model 使用可追踪且不冲突的 `netconsole://config-diff/...` URI，语言固定为 `plaintext`。
 - 编辑器固定 `readOnly` 和 `originalEditable: false`，支持并排/内联、自动换行、浅色/深色主题即时切换；主题更新不重建任务、全文或 Model。
 - 新结果只在左右文本或比较身份变化时更新/替换 Model。清空结果、组件卸载和路由退出会释放 Editor、Model、差异订阅、主题监听和 `ResizeObserver`；KeepAlive 停用时暂停环境监听，激活后重新布局。
-- Monaco 初始化或 Worker 加载失败时自动切到结构化差异明细，保留后台摘要、导航和 Artifact。Worker 预览按 JSON ASCII 转义后的字节预算截断，不能用提高 1 MiB 协议上限代替完整 Artifact；预览正文带截断说明，结果字段保留原始长度和省略数量。
-- `diff_summary`、有界 `diff_rows/raw_diff` 预览和完整 Artifact 继续以 Python Job 结果为准；Monaco 自身的渲染差异不回写业务摘要，也不参与配置合规、保存、合并或下发。
+- Monaco 初始化或 Worker 加载失败时自动切到结构化差异明细，保留后台摘要、导航和 Artifact。Worker 终态事件按 JSON ASCII 转义后的字节预算截断，不能用提高 1 MiB 协议上限代替单任务详情展开；预览正文带截断说明，结果字段保留原始长度和省略数量。
+- `diff_summary`、单任务详情展开后的 `diff_rows/raw_diff` 和完整 Artifact 继续以 Python Job/Service 结果为准；Monaco 自身的渲染差异不回写业务摘要，也不参与配置合规、保存、合并或下发。
 
 ## 安全、恢复与导出
 

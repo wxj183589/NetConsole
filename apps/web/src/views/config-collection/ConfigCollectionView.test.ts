@@ -17,6 +17,7 @@ const api = vi.hoisted(() => ({
   confirmSaveForce: vi.fn(),
   confirmSnapshotDelete: vi.fn(),
   getConfigDirectory: vi.fn(),
+  getConfigTask: vi.fn(),
   issueSnapshotDelete: vi.fn(),
   listConfigDevices: vi.fn(),
   listConfigSnapshots: vi.fn(),
@@ -189,6 +190,7 @@ describe('ConfigCollectionView mounted workflow', () => {
       deviceId === deviceA.id ? [snapshotA, snapshotASaved] : [snapshotB],
     ))
     api.listConfigTasks.mockResolvedValue([])
+    api.getConfigTask.mockRejectedValue(new Error('detail unavailable'))
     api.submitConfigCollection.mockResolvedValue([taskReference('collect-task', 'config_web_snapshot_fetch')])
     api.submitSnapshotContent.mockResolvedValue(taskReference('content-task', 'config_snapshot_load_content'))
     api.previewSaveForce.mockResolvedValue(confirmation('save_force'))
@@ -356,6 +358,47 @@ describe('ConfigCollectionView mounted workflow', () => {
     await flushPromises()
     expect(openTaskWindow).toHaveBeenCalledWith({ module: 'config' })
     expect(routerPush).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('loads the focused terminal diff detail before rendering the comparison', async () => {
+    const wrapper = await mountView()
+    wrapper.findAllComponents(TableStub)[1].vm.$emit('selection-change', [snapshotA, snapshotASaved])
+    await wrapper.vm.$nextTick()
+    await button(wrapper, '比较左右快照').trigger('click')
+    await flushPromises()
+
+    api.listConfigTasks.mockResolvedValue([
+      terminalTask('diff-task', 'config_compare_snapshot_pair', {
+        raw_diff: '--- truncated',
+        left_label: 'left',
+        right_label: 'right',
+        left_text: 'truncated-left',
+        right_text: 'truncated-right',
+        diff_rows: [],
+        diff_summary: { added: 0, removed: 0, modified: 0 },
+      }),
+    ])
+    api.getConfigTask.mockResolvedValue(terminalTask('diff-task', 'config_compare_snapshot_pair', {
+      raw_diff: '--- full',
+      left_label: 'left',
+      right_label: 'right',
+      left_text: 'full-left\nline-2',
+      right_text: 'full-right\nline-2',
+      diff_rows: [
+        { left_line: 1, left_text: 'full-left', status: '~', right_line: 1, right_text: 'full-right' },
+      ],
+      diff_summary: { added: 0, removed: 0, modified: 1 },
+    }))
+
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushPromises()
+
+    expect(api.getConfigTask).toHaveBeenCalledWith('diff-task')
+    expect(wrapper.getComponent(MonacoDiffStub).props()).toEqual(expect.objectContaining({
+      originalText: 'full-left\nline-2',
+      modifiedText: 'full-right\nline-2',
+    }))
     wrapper.unmount()
   })
 

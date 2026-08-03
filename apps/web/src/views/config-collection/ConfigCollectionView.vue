@@ -12,6 +12,7 @@ import {
   confirmSaveForce,
   confirmSnapshotDelete,
   getConfigDirectory,
+  getConfigTask,
   issueSnapshotDelete,
   listConfigDevices,
   listConfigSnapshots,
@@ -232,7 +233,7 @@ async function pollTasks(): Promise<void> {
       if (isTerminal(task.status) && !handledTerminalTasks.has(task.id)) {
         handledTerminalTasks.add(task.id)
         if (['config_web_snapshot_fetch', 'config_web_save_force', 'config_snapshot_delete_many'].includes(task.type)) await loadSnapshots()
-        if (task.id === focusedTaskId.value) showTaskResult(task)
+        if (task.id === focusedTaskId.value) await showFocusedTerminalTask(task)
       }
     }
     activeTaskIds.value = active
@@ -570,6 +571,14 @@ function showTaskResult(task: ConfigTaskStatus): void {
     resultText.value = 'Artifact 已生成，可下载。'
     resetDiffResult()
     resultKind.value = 'content'
+  }
+}
+
+async function showFocusedTerminalTask(task: ConfigTaskStatus): Promise<void> {
+  try {
+    showTaskResult(await getConfigTask(task.id))
+  } catch {
+    showTaskResult(task)
   }
 }
 

@@ -47,6 +47,8 @@ def config_compare_latest_running_between_devices(context: JobContext) -> dict[s
     left_label = service.snapshot_label(left_snapshots[0])
     right_label = service.snapshot_label(right_snapshots[0])
     result, raw_diff = _diff_payload("two_devices", left_label, right_label, left_text, right_text)
+    result["left_snapshot_id"] = int(left_snapshots[0].id or 0)
+    result["right_snapshot_id"] = int(right_snapshots[0].id or 0)
     bounded_structure, omitted = _bounded_structure_diff(
         structure_diff(left_text, right_text),
         _STRUCTURE_DIFF_BUDGET_BYTES,
@@ -329,13 +331,16 @@ def _snapshot_diff_payload(
     right: ConfigSnapshot,
     kind: str,
 ) -> tuple[dict[str, object], str]:
-    return _diff_payload(
+    result, raw_diff = _diff_payload(
         kind,
         service.snapshot_label(left),
         service.snapshot_label(right),
         service.snapshot_text(left),
         service.snapshot_text(right),
     )
+    result["left_snapshot_id"] = int(left.id or 0)
+    result["right_snapshot_id"] = int(right.id or 0)
+    return result, raw_diff
 
 
 def _diff_payload(

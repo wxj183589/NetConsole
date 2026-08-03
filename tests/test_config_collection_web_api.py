@@ -469,6 +469,62 @@ def test_config_web_compare_adapter_reuses_lifecycle_service_and_hides_absolute_
     assert pending_artifact.status_code == 404
 
 
+def test_config_task_detail_expands_completed_diff_from_safe_snapshot_refs(tmp_path: Path) -> None:
+    app, paths, device, _running, _saved, _adapter = _fixture(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    lifecycle = ConfigLifecycleService("demo", database, paths)
+    left_text = "\n".join(f"interface GigabitEthernet1/0/{index}" for index in range(2_000))
+    right_text = "\n".join(f"interface GigabitEthernet1/0/{index} updated" for index in range(2_000))
+    left = lifecycle._write_snapshot(device, "running", "20260803_010000", left_text)
+    right = lifecycle._write_snapshot(device, "saved", "20260803_010000", right_text)
+    result = dispatch_job(
+        JobSpec(
+            job_id="large-config-detail",
+            task_type="config_compare_snapshot_pair",
+            params={
+                "site_name": "demo",
+                "db_path": str(paths.site_db_path("demo")),
+                "app_root": str(paths.app_root),
+                "data_root": str(paths.data_root),
+                "left_snapshot_id": left.id,
+                "right_snapshot_id": right.id,
+            },
+        )
+    )
+    frame = encode_event_bytes(finished_event("large-config-detail", result))
+    app.state.config_collection_service.task_service.repository("demo").save(
+        TaskSnapshot(
+            task_id="large-config-detail",
+            task_type="config_compare_snapshot_pair",
+            task_name="比较配置快照",
+            status=TaskState.COMPLETED,
+            created_time="2026-08-03T01:00:00Z",
+            updated_time="2026-08-03T01:00:01Z",
+            result=result,
+            owner="web_config_collection",
+            source="local",
+            site_name="demo",
+        )
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/api/config-collection/tasks/large-config-detail")
+
+    expanded = response.json()["result"]
+    assert len(frame) < 64 * 1024
+    assert result["left_text_truncated"] is True
+    assert result["diff_rows_omitted"] > 0
+    assert response.status_code == 200
+    assert expanded["left_text_truncated"] is False
+    assert expanded["right_text_truncated"] is False
+    assert expanded["raw_diff_truncated"] is False
+    assert expanded["diff_rows_omitted"] == 0
+    assert "interface GigabitEthernet1/0/1999" in expanded["left_text"]
+    assert "interface GigabitEthernet1/0/1999 updated" in expanded["right_text"]
+    assert expanded["diff_row_count"] == len(expanded["diff_rows"])
+    assert "[内容过长" not in expanded["left_text"]
+
+
 def test_config_terminal_previews_stay_below_normal_frame_budget() -> None:
     left_text = "\n".join(f"interface GigabitEthernet1/0/{index} 配置" for index in range(20_000))
     right_text = "\n".join(f"interface GigabitEthernet1/0/{index} 修改" for index in range(20_000))

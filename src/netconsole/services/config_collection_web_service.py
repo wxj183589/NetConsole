@@ -43,7 +43,14 @@ from netconsole.services.config_collection_job_handlers import (
     read_irreversible_checkpoint,
     remove_irreversible_checkpoint,
 )
-from netconsole.services.config_lifecycle_service import safe_artifact_display_name, safe_device_name
+from netconsole.services.config_lifecycle_service import (
+    ConfigLifecycleService,
+    build_side_by_side_rows,
+    clean_config_for_diff,
+    compare_named_config_text,
+    safe_artifact_display_name,
+    safe_device_name,
+)
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 
@@ -421,7 +428,7 @@ class ConfigCollectionApplicationService:
         if not self._is_web_task(snapshot, site_name):
             return None
         snapshot = self._recover_irreversible_snapshot(site_name, snapshot)
-        return self._task_dto(snapshot, diff_filter=diff_filter, site_name=site_name)
+        return self._task_dto(snapshot, diff_filter=diff_filter, site_name=site_name, expand_diff=True)
 
     def open_artifact(self, site_name: str, artifact_id: str) -> tuple[Path, str]:
         value = str(artifact_id or "")
@@ -876,6 +883,61 @@ class ConfigCollectionApplicationService:
             error_message=_sanitize_text(str(snapshot.error_message or "")),
         )
 
+    def _expanded_compare_result(
+        self,
+        site_name: str,
+        snapshot: TaskSnapshot,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        left_id = _positive_int(result.get("left_snapshot_id"))
+        right_id = _positive_int(result.get("right_snapshot_id"))
+        if left_id is None or right_id is None:
+            return result
+        try:
+            database = self._database(site_name)
+            repository = ConfigSnapshotRepository(database, ensure_schema=False)
+            left = repository.get(left_id)
+            right = repository.get(right_id)
+            if self._safe_snapshot_path(site_name, left) is None or self._safe_snapshot_path(site_name, right) is None:
+                return result
+            service = ConfigLifecycleService(site_name, database, self.paths, repository)
+            left_text = service.snapshot_text(left)
+            right_text = service.snapshot_text(right)
+            left_label = service.snapshot_label(left)
+            right_label = service.snapshot_label(right)
+            diff = compare_named_config_text(left_text, right_text, left_label, right_label)
+            rows, added, removed, modified = build_side_by_side_rows(
+                clean_config_for_diff(left_text).splitlines(),
+                clean_config_for_diff(right_text).splitlines(),
+            )
+        except (FileNotFoundError, KeyError, OSError, TypeError, UnicodeError, ValueError) as exc:
+            app_logger.log_warning(
+                "CONFIG_DIFF_EXPAND_FAILED",
+                f"task_id={snapshot.task_id} site={site_name} error={exc}",
+            )
+            return result
+        result.update(
+            {
+                "left_label": left_label,
+                "right_label": right_label,
+                "left_text": _sanitize_text(left_text),
+                "right_text": _sanitize_text(right_text),
+                "raw_diff": _sanitize_text(diff.raw_diff),
+                "diff_rows": [_safe_value(asdict(row)) for row in rows],
+                "diff_summary": {"added": added, "removed": removed, "modified": modified},
+                "left_text_truncated": False,
+                "left_text_original_length": len(left_text),
+                "right_text_truncated": False,
+                "right_text_original_length": len(right_text),
+                "raw_diff_truncated": False,
+                "raw_diff_original_length": len(diff.raw_diff),
+                "diff_row_count": len(rows),
+                "diff_rows_omitted": 0,
+                "expanded": True,
+            }
+        )
+        return result
+
     def _snapshot_path(self, site_name: str, snapshot: ConfigSnapshot) -> Path:
         return self._safe_snapshot_path(site_name, snapshot) or Path()
 
@@ -905,11 +967,14 @@ class ConfigCollectionApplicationService:
         *,
         diff_filter: str = "all",
         site_name: str = "",
+        expand_diff: bool = False,
     ) -> ConfigTaskStatusDTO:
         if site_name and not self._is_web_task(snapshot, site_name):
             raise ValueError("配置任务不属于当前局点")
         result = _safe_result(snapshot.result)
         if snapshot.task_type in CONFIG_WEB_COMPARE_TASK_TYPES and snapshot.status is TaskState.COMPLETED:
+            if expand_diff:
+                result = self._expanded_compare_result(site_name, snapshot, result)
             path = self._safe_diff_path(snapshot)
             if path is not None:
                 result.update(
@@ -938,6 +1003,14 @@ class ConfigCollectionApplicationService:
             error_message=_sanitize_text(snapshot.error_message),
             result=result,
         )
+
+
+def _positive_int(value: object) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _safe_result(value: object) -> dict[str, Any]:
