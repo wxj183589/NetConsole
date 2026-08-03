@@ -58,6 +58,29 @@ describe('AC Management polling store', () => {
     expect(store.filters.sort_order).toBe('asc')
   })
 
+  it('stores backend-generated FIT-AP filter options', async () => {
+    vi.mocked(listAcAps).mockResolvedValueOnce({
+      items: [],
+      total: 0,
+      page: 1,
+      page_size: 50,
+      filter_options: {
+        stations: ['小洋江站'],
+        sections: ['小洋江-下一站'],
+        models: ['WA6522'],
+        switches: ['01-小洋江站1'],
+      },
+    })
+    const store = useAcManagementStore()
+
+    await store.refreshAps()
+
+    expect(store.filterOptions.stations).toEqual(['小洋江站'])
+    expect(store.filterOptions.sections).toEqual(['小洋江-下一站'])
+    expect(store.filterOptions.models).toEqual(['WA6522'])
+    expect(store.filterOptions.switches).toEqual(['01-小洋江站1'])
+  })
+
   it('does not overlap AP requests and reports after three failures', async () => {
     let rejectRequest: ((reason?: unknown) => void) | undefined
     vi.mocked(listAcAps).mockImplementation(() => new Promise((_, reject) => { rejectRequest = reject }))

@@ -92,6 +92,14 @@ export interface AcApPage {
   total: number
   page: number
   page_size: number
+  filter_options?: AcApFilterOptions
+}
+
+export interface AcApFilterOptions {
+  stations: string[]
+  sections: string[]
+  models: string[]
+  switches: string[]
 }
 
 export interface AcRadio {

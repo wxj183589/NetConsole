@@ -13,6 +13,7 @@ import { cancelAcWebTask, deleteAcFitAps, getAcWebTask, importAcFitApMetadata, r
 import type {
   AcAp,
   AcApDetail,
+  AcApFilterOptions,
   AcConfigContent,
   AcConfigDiff,
   AcConfigSnapshot,
@@ -25,10 +26,12 @@ const ACTIVE_ACTION_TASK_KEY = 'netconsole.ac.active-action-task'
 const TERMINAL_TASKS = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const REFRESH_ACTIONS = new Set(['ac_info_refresh', 'ac_fit_ap_resources_refresh', 'ac_fit_ap_detail_refresh', 'ac_fit_ap_verbose_all_refresh', 'ac_fit_ap_verbose_selected_refresh', 'ac_fit_ap_optical_refresh', 'ac_fit_ap_delete_many', 'fit_ap_metadata_import', 'fit_ap_metadata_save'])
 type RefreshDomain = 'summary' | 'aps' | 'detail' | 'snapshots' | 'config'
+const emptyFilterOptions = (): AcApFilterOptions => ({ stations: [], sections: [], models: [], switches: [] })
 
 export const useAcManagementStore = defineStore('ac-management', () => {
   const summary = ref<AcManagementSummary | null>(null)
   const aps = ref<AcAp[]>([])
+  const filterOptions = ref<AcApFilterOptions>(emptyFilterOptions())
   const total = ref(0)
   const selected = ref<AcApDetail | null>(null)
   const snapshots = ref<AcConfigSnapshot[]>([])
@@ -99,6 +102,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     try {
       const result = await listAcAps(filters)
       aps.value = result.items
+      filterOptions.value = result.filter_options || emptyFilterOptions()
       total.value = result.total
       recordSuccess('aps')
     } catch (cause) {
@@ -458,6 +462,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
   return {
     summary,
     aps,
+    filterOptions,
     total,
     selected,
     snapshots,

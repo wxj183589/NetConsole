@@ -42,6 +42,10 @@ def test_ac_query_service_reads_summary_filters_and_details_without_writes(tmp_p
     assert online.total == 1
     assert offline.total == 1
     assert unauthenticated.total == 1
+    assert online.filter_options.stations == ["车站A", "车站B"]
+    assert online.filter_options.sections == ["A-B 区间", "B-C 区间"]
+    assert online.filter_options.models == ["WA-Test"]
+    assert online.filter_options.switches == ["接入交换机"]
     assert unauthenticated.items[0].station == "车站A"
     assert unauthenticated.items[0].station_source == "resource"
     assert section.items[0].id == "ap-online"

@@ -766,10 +766,18 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
               <el-option label="正常" value="normal" /><el-option label="一般告警" value="warning" /><el-option label="严重告警" value="critical" />
               <el-option label="无数据" value="no_data" />
             </el-select>
-            <el-input v-model="store.filters.station" clearable placeholder="归属站点" />
-            <el-input v-model="store.filters.section" clearable placeholder="归属区间" />
-            <el-input v-model="store.filters.model" clearable placeholder="型号" />
-            <el-input v-model="store.filters.switch" clearable placeholder="交换机" />
+            <el-select v-model="store.filters.station" clearable filterable allow-create default-first-option placeholder="归属站点">
+              <el-option v-for="option in store.filterOptions.stations" :key="option" :label="option" :value="option" />
+            </el-select>
+            <el-select v-model="store.filters.section" clearable filterable allow-create default-first-option placeholder="归属区间">
+              <el-option v-for="option in store.filterOptions.sections" :key="option" :label="option" :value="option" />
+            </el-select>
+            <el-select v-model="store.filters.model" clearable filterable allow-create default-first-option placeholder="型号">
+              <el-option v-for="option in store.filterOptions.models" :key="option" :label="option" :value="option" />
+            </el-select>
+            <el-select v-model="store.filters.switch" clearable filterable allow-create default-first-option placeholder="交换机">
+              <el-option v-for="option in store.filterOptions.switches" :key="option" :label="option" :value="option" />
+            </el-select>
             <el-button type="primary" @click="store.applyFilters">应用筛选</el-button>
             <el-button @click="clearFilters">清除</el-button>
             <el-button @click="selectCurrentPage">选择本页</el-button>

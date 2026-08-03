@@ -103,6 +103,18 @@ describe('AC Management resource view', () => {
     expect(source).toContain('导出文件仍保留在任务中心')
   })
 
+  it('uses generated selectable options for FIT-AP resource metadata filters', () => {
+    expect(source).toContain('store.filterOptions.stations')
+    expect(source).toContain('store.filterOptions.sections')
+    expect(source).toContain('store.filterOptions.models')
+    expect(source).toContain('store.filterOptions.switches')
+    expect(source).toContain('allow-create default-first-option placeholder="归属站点"')
+    expect(source).not.toContain('<el-input v-model="store.filters.station"')
+    expect(source).not.toContain('<el-input v-model="store.filters.section"')
+    expect(source).not.toContain('<el-input v-model="store.filters.model"')
+    expect(source).not.toContain('<el-input v-model="store.filters.switch"')
+  })
+
   it('adds a bounded row context menu while retaining detail and copy actions', () => {
     expect(source).toContain(':context-menu-items="fitApContextMenuItems"')
     expect(source).toContain('NcDataTableContextMenuItem')

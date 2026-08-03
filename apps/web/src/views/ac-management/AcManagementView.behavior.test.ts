@@ -227,6 +227,12 @@ function makeStore(selectedOptical = optical()) {
       sort_by: 'topology',
       sort_order: 'asc',
     },
+    filterOptions: {
+      stations: ['小洋江站'],
+      sections: ['小洋江-鄞州大道'],
+      models: ['WA6522'],
+      switches: ['01-小洋江站1'],
+    },
     aps: [],
     total: 0,
     selected: {
@@ -375,6 +381,16 @@ describe('AC Management optical detail behavior', () => {
 
     expect(mocks.store!.startAcInfoRefresh).toHaveBeenCalledOnce()
     expect(mocks.store!.startFitApRefresh).toHaveBeenCalledOnce()
+    wrapper.unmount()
+  })
+
+  it('renders generated FIT-AP resource filter options', () => {
+    const wrapper = mountView()
+
+    expect(wrapper.text()).toContain('小洋江站')
+    expect(wrapper.text()).toContain('小洋江-鄞州大道')
+    expect(wrapper.text()).toContain('WA6522')
+    expect(wrapper.text()).toContain('01-小洋江站1')
     wrapper.unmount()
   })
 

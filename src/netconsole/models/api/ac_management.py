@@ -161,11 +161,19 @@ class AcApDTO(ApiModel):
     updated_at: str = ""
 
 
+class AcApFilterOptionsDTO(ApiModel):
+    stations: list[str] = Field(default_factory=list)
+    sections: list[str] = Field(default_factory=list)
+    models: list[str] = Field(default_factory=list)
+    switches: list[str] = Field(default_factory=list)
+
+
 class AcApPageDTO(ApiModel):
     items: list[AcApDTO] = Field(default_factory=list)
     total: int = 0
     page: int = 1
     page_size: int = 50
+    filter_options: AcApFilterOptionsDTO = Field(default_factory=AcApFilterOptionsDTO)
 
 
 class AcApHistoryPageDTO(ApiModel):
@@ -501,6 +509,7 @@ class AcExternalTerminalActionDTO(ApiModel):
 __all__ = [
     "AcApDTO",
     "AcApDetailDTO",
+    "AcApFilterOptionsDTO",
     "AcApHistoryPageDTO",
     "AcApPageDTO",
     "AcConfigContentDTO",

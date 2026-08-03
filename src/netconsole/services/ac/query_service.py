@@ -24,6 +24,7 @@ from netconsole.core.sources.switch_source import compute_switch_status
 from netconsole.models.api.ac_management import (
     AcApDTO,
     AcApDetailDTO,
+    AcApFilterOptionsDTO,
     AcApHistoryPageDTO,
     AcApPageDTO,
     AcConfigContentDTO,
@@ -245,9 +246,13 @@ class AcManagementQueryService:
         sort_by: str = "topology",
         sort_order: str = "asc",
     ) -> AcApPageDTO:
-        items = self._filtered_aps(
-            site_id,
-            ac_id=ac_id,
+        records = self._ap_records(site_id, ac_id=ac_id)
+        all_items = [record[0] for record in records]
+        items = self._apply_identity_query(site_id, all_items, query)
+        if items is not all_items:
+            query = ""
+        items = self._filter_ap_items(
+            items,
             query=query,
             status=status,
             station=station,
@@ -258,7 +263,84 @@ class AcManagementQueryService:
             sort_by=sort_by,
             sort_order=sort_order,
         )
-        return self._page(items, page, page_size)
+        return self._page(
+            items,
+            page,
+            page_size,
+            filter_options=self._ap_filter_options(all_items),
+        )
+
+    def _apply_identity_query(self, site_id: str, items: list[AcApDTO], query: str) -> list[AcApDTO]:
+        if not normalize_mac_key(query):
+            return items
+        identity_rows = ApIdentityQueryService(
+            Database(self._db_path(site_id))
+        ).search_aps(query)
+        matched_macs = {
+            mac
+            for row in identity_rows
+            for field in ("ap_mac", "ac_ap_mac", "base_ap_mac")
+            if (mac := normalize_mac_key(row.get(field)))
+        }
+        matched_names = {
+            str(row.get("ap_name") or "").strip().casefold()
+            for row in identity_rows
+            if str(row.get("ap_name") or "").strip()
+        }
+        return [
+            item
+            for item in items
+            if normalize_mac_key(item.mac) in matched_macs
+            or str(item.name or "").strip().casefold() in matched_names
+        ]
+
+    def _filtered_aps(
+        self,
+        site_id: str,
+        *,
+        ac_id: str = "",
+        query: str = "",
+        status: str = "",
+        station: str = "",
+        section: str = "",
+        model: str = "",
+        switch: str = "",
+        optical_statuses: set[str] | None = None,
+        current_optical_only: bool = False,
+        sort_by: str = "topology",
+        sort_order: str = "asc",
+    ) -> list[AcApDTO]:
+        records = self._ap_records(site_id, ac_id=ac_id)
+        items = self._apply_identity_query(site_id, [record[0] for record in records], query)
+        if items:
+            query = "" if normalize_mac_key(query) else query
+        return self._filter_ap_items(
+            items,
+            query=query,
+            status=status,
+            station=station,
+            section=section,
+            model=model,
+            switch=switch,
+            optical_statuses=optical_statuses,
+            current_optical_only=current_optical_only,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+
+    @staticmethod
+    def _option_values(items: list[AcApDTO], field: str) -> list[str]:
+        values = {text for item in items if (text := AcManagementQueryService._clean_text(getattr(item, field, "")))}
+        return sorted(values, key=natural_text_key)
+
+    @classmethod
+    def _ap_filter_options(cls, items: list[AcApDTO]) -> AcApFilterOptionsDTO:
+        return AcApFilterOptionsDTO(
+            stations=cls._option_values(items, "station"),
+            sections=cls._option_values(items, "section"),
+            models=cls._option_values(items, "model"),
+            switches=cls._option_values(items, "switch_name"),
+        )
 
     def list_optical_anomalies(
         self,
@@ -599,60 +681,6 @@ class AcManagementQueryService:
         snapshot_type = str(row.get("type") or "config")
         timestamp = str(row.get("timestamp") or "")
         return f"{snapshot_type} · {timestamp}" if timestamp else snapshot_type
-
-    def _filtered_aps(
-        self,
-        site_id: str,
-        *,
-        ac_id: str = "",
-        query: str = "",
-        status: str = "",
-        station: str = "",
-        section: str = "",
-        model: str = "",
-        switch: str = "",
-        optical_statuses: set[str] | None = None,
-        current_optical_only: bool = False,
-        sort_by: str = "topology",
-        sort_order: str = "asc",
-    ) -> list[AcApDTO]:
-        records = self._ap_records(site_id, ac_id=ac_id)
-        items = [record[0] for record in records]
-        if normalize_mac_key(query):
-            identity_rows = ApIdentityQueryService(
-                Database(self._db_path(site_id))
-            ).search_aps(query)
-            matched_macs = {
-                mac
-                for row in identity_rows
-                for field in ("ap_mac", "ac_ap_mac", "base_ap_mac")
-                if (mac := normalize_mac_key(row.get(field)))
-            }
-            matched_names = {
-                str(row.get("ap_name") or "").strip().casefold()
-                for row in identity_rows
-                if str(row.get("ap_name") or "").strip()
-            }
-            items = [
-                item
-                for item in items
-                if normalize_mac_key(item.mac) in matched_macs
-                or str(item.name or "").strip().casefold() in matched_names
-            ]
-            query = ""
-        return self._filter_ap_items(
-            items,
-            query=query,
-            status=status,
-            station=station,
-            section=section,
-            model=model,
-            switch=switch,
-            optical_statuses=optical_statuses,
-            current_optical_only=current_optical_only,
-            sort_by=sort_by,
-            sort_order=sort_order,
-        )
 
     def _filter_ap_items(
         self,
@@ -1569,11 +1597,23 @@ class AcManagementQueryService:
         )
 
     @staticmethod
-    def _page(items: list[AcApDTO], page: int, page_size: int) -> AcApPageDTO:
+    def _page(
+        items: list[AcApDTO],
+        page: int,
+        page_size: int,
+        *,
+        filter_options: AcApFilterOptionsDTO | None = None,
+    ) -> AcApPageDTO:
         current_page = max(1, int(page))
         size = max(1, min(int(page_size), 200))
         start = (current_page - 1) * size
-        return AcApPageDTO(items=items[start : start + size], total=len(items), page=current_page, page_size=size)
+        return AcApPageDTO(
+            items=items[start : start + size],
+            total=len(items),
+            page=current_page,
+            page_size=size,
+            filter_options=filter_options or AcApFilterOptionsDTO(),
+        )
 
     @staticmethod
     def _ap_sort_key(item: AcApDTO, sort_by: str) -> object:

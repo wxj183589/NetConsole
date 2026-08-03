@@ -68,6 +68,12 @@ def test_ac_management_get_api_is_read_only_and_redacts_serial_number(tmp_path: 
     assert summary.json()["acs"][0]["https_port"] == 10443
     assert summary.json()["optical_anomalies"] == 2
     assert aps.json()["items"][0]["id"] == "ap-offline"
+    assert aps.json()["filter_options"] == {
+        "stations": ["车站A", "车站B"],
+        "sections": ["A-B 区间", "B-C 区间"],
+        "models": ["WA-Test"],
+        "switches": ["接入交换机"],
+    }
     assert [item["id"] for item in online_aps.json()["items"]] == ["ap-online"]
     assert online_aps.json()["items"][0]["state_display"] == "运行(备)"
     assert detail.status_code == 200
