@@ -58,6 +58,37 @@ def test_ac_query_service_reads_summary_filters_and_details_without_writes(tmp_p
     assert _fingerprint(db_path) == before
 
 
+def test_ac_query_service_coalesces_unmatched_unauthenticated_duplicate_by_serial(
+    tmp_path: Path,
+) -> None:
+    paths, db_path, _files = build_ac_management_fixture(tmp_path)
+    with Database(db_path).connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO ac_fit_ap_unauthenticated (
+                ac_device_uuid, ap_name, apid, state, state_display, model,
+                serial_number, collected_at, updated_at
+            ) VALUES (
+                'ac-1', 'AP-Online', '1', 'R/M', '运行(主)', 'WA-Test',
+                'SECRET-SN-1', '2026-07-29T00:42:15+08:00',
+                '2026-07-29T00:42:15+08:00'
+            )
+            """
+        )
+        conn.commit()
+
+    page = AcManagementQueryService(paths).list_aps(
+        "demo",
+        ac_id="ac-1",
+        query="AP-Online",
+        page_size=20,
+    )
+
+    assert page.total == 1
+    assert page.items[0].id == "ap-online"
+    assert page.items[0].mac == "0000-0000-0001"
+
+
 def test_ac_query_service_searches_actual_radio_mac_via_identity_index(
     tmp_path: Path,
 ) -> None:

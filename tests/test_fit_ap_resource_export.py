@@ -14,6 +14,7 @@ from netconsole.services.ac.fit_ap_resource_export import (
     export_fit_ap_resource_xlsx,
     make_fit_ap_resource_filename,
 )
+from netconsole.services.ac.fit_ap_resource_identity import coalesce_fit_ap_resource_rows
 from netconsole.services.export.export_handlers import run_generic_export_handler
 from netconsole.services.export.export_task_builders import fit_ap_resource_xlsx_spec
 
@@ -169,6 +170,73 @@ def test_fit_ap_resource_export_deduplicates_by_normalized_mac(tmp_path: Path) -
     workbook = load_workbook(output, read_only=True, data_only=True)
     assert result["ap_count"] == 3
     assert workbook["AP资源清单"].max_row == 4
+
+
+def test_fit_ap_resource_export_coalesces_duplicate_unauthenticated_row_by_serial(
+    tmp_path: Path,
+) -> None:
+    paths, db_path, _files = build_ac_management_fixture(tmp_path)
+    with Database(db_path).connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO ac_fit_ap_unauthenticated (
+                ac_device_uuid, ap_name, apid, state, state_display, model,
+                serial_number, collected_at, updated_at
+            ) VALUES (
+                'ac-1', 'AP-Online', '1', 'R/M', '运行(主)', 'WA-Test',
+                'SECRET-SN-1', '2026-07-29T00:42:15+08:00',
+                '2026-07-29T00:42:15+08:00'
+            )
+            """
+        )
+        conn.commit()
+
+    output = tmp_path / "serial-duplicate.xlsx"
+    result = export_fit_ap_resource_xlsx(
+        output,
+        {
+            "app_root": str(paths.app_root),
+            "data_root": str(paths.data_root),
+            "site_name": "demo",
+            "ac_uuid": "ac-1",
+            "scope": "all",
+            "filters": {},
+        },
+    )
+    workbook = load_workbook(output, data_only=True)
+    sheet = workbook["AP资源清单"]
+    headers = {cell.value: cell.column for cell in sheet[1]}
+    ap_rows = [
+        {
+            "name": sheet.cell(row, headers["AP名称"]).value,
+            "mac": sheet.cell(row, headers["AP MAC"]).value,
+            "status": sheet.cell(row, headers["在线状态"]).value,
+        }
+        for row in range(2, sheet.max_row + 1)
+    ]
+
+    assert result["ap_count"] == 3
+    assert [row for row in ap_rows if row["name"] == "AP-Online"] == [
+        {"name": "AP-Online", "mac": "0000-0000-0001", "status": "未认证"}
+    ]
+
+
+def test_fit_ap_resource_coalescing_preserves_distinct_or_ambiguous_same_names() -> None:
+    distinct = coalesce_fit_ap_resource_rows(
+        [
+            {"ac_device_uuid": "ac-1", "ap_name": "same", "ap_mac": "0011-2233-4455"},
+            {"ac_device_uuid": "ac-1", "ap_name": "same", "ap_mac": "0011-2233-5566"},
+        ]
+    )
+    ambiguous = coalesce_fit_ap_resource_rows(
+        [
+            {"ac_device_uuid": "ac-1", "ap_name": "same"},
+            {"ac_device_uuid": "ac-1", "ap_name": "same"},
+        ]
+    )
+
+    assert len(distinct) == 2
+    assert len(ambiguous) == 2
 
 
 def test_fit_ap_resource_export_keeps_serial_text_and_reports_missing(tmp_path: Path) -> None:

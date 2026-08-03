@@ -47,7 +47,7 @@ AC 总览、轨旁 AP 业务和 AP 扩展的本地重建终态也只保留行数
 
 - AC 总览：管理 IP、型号、软件版本、AP 总数、在线/离线/未认证、Radio 数量、关联光衰异常和数据更新时间；
 - FIT-AP：后端搜索、筛选、排序和分页，默认按连接交换机自然升序、其次按归一化端口自然升序，缺失项后置；前端通过统一 `NcDataTable` 保存列显隐、顺序、手工列宽和固定位置，物理接口统一显示 `GE/XGE/25GE/40GE/100GE` 简称；FIT-AP、配置、Radio、历史、Mesh-Link、AP 扩展和规划页面不再各自维护列宽算法；
-- FIT-AP 资源导出：Feature `web.ac_fit_ap_resource_export` 提供“当前筛选结果 / 已选择 AP / 当前 AC 全部 AP”三种范围，筛选复用页面 Query Service 且不携带分页。用户点击后先选择最终 `.xlsx` 路径，取消不创建任务；确认后 Export Process 从当前局点只读 SQLite 重新查询，按规范化 MAC 去重。MAC 缺失时使用 `AC ID + AP 名称`，保证“AP资源清单”一台 AP 一行，“Radio明细”一条 Radio 一行，并附“导出说明”。主表删除无实际数据的“项目名称”“线路名称”，在“AP型号”后增加“AP序列号”；序列号只读取已持久化的 `ac_fit_ap_resources.serial_number` 或未认证 AP 资源的同名字段，不新增采集命令、不连接现场设备。AP 主表最终按连接交换机、规范化连接端口自然升序，缺失交换机/端口后置；缺失的光衰、LLDP、站点、区间、MAC、序列号或 Radio 保持空白并写入“数据完整性”，单台缺失不阻断整份文件。该字段契约使用 FIT-AP 资源 XLSX schema v2；Radio 时间、Radio MAC、AP 序列号、连接端口和 AC 软件版本使用具体列宽规则，长备注/说明列启用换行。Artifact 就绪后直接写入预选位置，不再突然弹出第二个保存窗口；失败时保留 Artifact 并允许在任务中心重新选择位置。该导出用于资产核对，不替代设备管理清单或 OmniPeek `.nam` 名称表，也不会在导出时连接 AC、AP 或交换机；
+- FIT-AP 资源导出：Feature `web.ac_fit_ap_resource_export` 提供“当前筛选结果 / 已选择 AP / 当前 AC 全部 AP”三种范围，筛选复用页面 Query Service 且不携带分页。用户点击后先选择最终 `.xlsx` 路径，取消不创建任务；确认后 Export Process 从当前局点只读 SQLite 重新查询。展示投影按同一 AC 下的规范化 MAC 或序列号合并重复记录；仅有空身份的弱记录在同名且只有一个强身份候选时并入强记录，同名但 MAC/序列号不同或同名均无身份的记录保持独立，不删除数据库历史。这样“AP资源清单”一台 AP 一行，“Radio明细”一条 Radio 一行，并附“导出说明”。主表删除无实际数据的“项目名称”“线路名称”，在“AP型号”后增加“AP序列号”；序列号只读取已持久化的 `ac_fit_ap_resources.serial_number` 或未认证 AP 资源的同名字段，不新增采集命令、不连接现场设备。AP 主表最终按连接交换机、规范化连接端口自然升序，缺失交换机/端口后置；缺失的光衰、LLDP、站点、区间、MAC、序列号或 Radio 保持空白并写入“数据完整性”，单台缺失不阻断整份文件。该字段契约使用 FIT-AP 资源 XLSX schema v2；Radio 时间、Radio MAC、AP 序列号、连接端口和 AC 软件版本使用具体列宽规则，长备注/说明列启用换行。Artifact 就绪后直接写入预选位置，不再突然弹出第二个保存窗口；失败时保留 Artifact 并允许在任务中心重新选择位置。该导出用于资产核对，不替代设备管理清单或 OmniPeek `.nam` 名称表，也不会在导出时连接 AC、AP 或交换机；
 - AP 详情：基本信息、connection-record、Radio 1/2 状态/模式/频段/信道/带宽/利用率/功率/客户端/BSSID、LLDP/端口、交换机光模块和 AP 侧光衰；
 - 真实更新：AC CPU/内存/型号/版本/HTTPS 端口、FIT-AP 普通资源、批量 Radio BBSSID、所选 AP 深度 BSSID、FIT-AP 详细信息和 FIT-AP 光衰；FIT-AP 光衰默认共享并发 64，运行时按平台上限和目标 AP 数裁剪，并通过 `tasks.db` resource key 阻止同一 AC 与轨旁更新重复执行；任务进度、取消、失败、部分命令失败、页面重启恢复和完成后结果刷新；业务页只保留紧凑摘要，停止、日志和 Artifact 统一在 Electron 任务窗口处理；
 - 单 AP 定向更新接受 H3C 常见 `xxxx-xxxx-xxxx` MAC，后端统一规范化为标准格式；前端提交时优先使用 `ap_uuid`，其次 `ap_mac`，最后 `ap_name`，避免展示格式差异误拦稳定目标。
@@ -77,6 +77,8 @@ FIT-AP 详情已提供站点、里程、点位说明和方向保存入口；保�
 FIT-AP 刷新将 `ap_uuid`、合法完整的 `ap_mac`、`serial_number`、`ap_name` 和 `model` 视为稳定身份字段。本次采集明确返回的有效值优先；本次值为空时，Repository 按当前 FIT-AP 资源、相同 `ap_uuid` 的 `ap_entities`、资源历史和资源快照顺序恢复最后有效值。恢复会记录 `FIT_AP_STATIC_IDENTITY_PRESERVED`，但不会把历史值伪装成本次 AC 命令的新观测，也不会从外观像 MAC 的 AP 名称推导物理 MAC。
 
 当离线行同时缺少 UUID、序列号和 MAC 时，名称连续性只用于同一 `ac_device_uuid` 的本次 FIT-AP 资源写回：本批次名称和历史候选都必须唯一，双方都有 APID 时还必须一致。同名歧义或 APID 冲突会保留为新身份并记录诊断，不选择第一条候选；该规则不进入 AP Identity 查询或 MESH Peer 匹配。
+
+页面与导出使用只读的重复记录投影：同一 AC 内 MAC 或序列号明确相同的资源，以及唯一强身份记录对应的同名空身份记录，会合并为一条展示记录，并优先保留完整运行态、Radio、LLDP 和光衰字段。该投影不删除 `ac_fit_ap_resources`、未认证快照、历史或 raw；同名但存在不同合法 MAC/序列号，或多个同名空身份记录，仍分别展示并等待身份事实补齐。
 
 运行态字段仍以本次事实为准。离线 AP 的 `ap_ip` 清空，已有 Radio 状态落为 `Down`，不保留旧信道、带宽、功率或客户端数；物理 AP MAC 和 UUID 保持稳定。已有“当前资源 MAC 为空但 entity/history/snapshot 仍有证据”的记录，会在下一次成功 FIT-AP 刷新中幂等恢复，不删除历史、光衰、LLDP 或 metadata。
 

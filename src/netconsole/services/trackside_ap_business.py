@@ -30,6 +30,7 @@ from netconsole.services.offline_ap_ledger import (
     write_offline_ap_ledger_sheet,
     write_offline_ap_stats_sheet,
 )
+from netconsole.services.ac.fit_ap_resource_identity import coalesce_fit_ap_resource_rows
 from netconsole.services.ap_identity.normalizers import format_mac, normalize_mac_key
 from netconsole.utils.interface_normalize import display_interface_name, normalize_interface_name
 from netconsole.utils.interface_sort import interface_sort_key
@@ -578,7 +579,8 @@ def build_trackside_ap_business_rows(
     optical_indexes = {device_uuid: _latest_rows_by_normalized_interface(rows, "interface_name") for device_uuid, rows in optical_by_device.items()}
     lldp_indexes = {device_uuid: _latest_rows_by_normalized_interface(rows, "local_interface") for device_uuid, rows in (lldp_by_device or {}).items()}
     fit_ap_optical_rows = merge_fit_ap_rows_by_identity(fit_ap_optical_rows)
-    fit_ap_resource_rows = merge_fit_ap_rows_by_identity(fit_ap_resource_rows or [])
+    fit_ap_resource_rows = coalesce_fit_ap_resource_rows(fit_ap_resource_rows or [])
+    fit_ap_resource_rows = merge_fit_ap_rows_by_identity(fit_ap_resource_rows)
     fit_ap_optical_by_mac: dict[str, dict[str, object | None]] = {}
     fit_ap_optical_by_identity: dict[tuple[str, str], dict[str, object | None]] = {}
     fit_ap_optical_by_switch_interface: dict[tuple[str, str], dict[str, object | None]] = {}

@@ -10,6 +10,7 @@ from typing import Any
 from netconsole.core.paths import PathResolver
 from netconsole.core.version import APP_VERSION_DISPLAY
 from netconsole.services.ac.fit_ap_export_contract import FIT_AP_RESOURCE_EXPORT_SCHEMA_VERSION
+from netconsole.services.ac.fit_ap_resource_identity import coalesce_fit_ap_resource_rows
 from netconsole.services.ac.query_service import AcManagementQueryService, fit_ap_topology_sort_key
 from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.services.excel_autosize import apply_worksheet_column_widths
@@ -409,38 +410,30 @@ def _integrity_issues(detail, mac: str) -> list[str]:
 
 
 def _deduplicate_details(details, ac_id: str):
-    unique: dict[str, Any] = {}
-    order: list[str] = []
-    for detail in details:
-        normalized = normalize_ap_mac(detail.ap.mac)
-        identity = (
-            f"mac:{normalized.normalized}"
-            if normalized.valid
-            else f"name:{ac_id}:{detail.ap.name.strip().casefold()}"
+    projected = []
+    for index, detail in enumerate(details):
+        projected.append(
+            {
+                "ac_device_uuid": ac_id,
+                "ap_name": detail.ap.name,
+                "ap_ip": detail.ap.ip,
+                "ap_mac": detail.ap.mac,
+                "serial_number": detail.ap.serial_number,
+                "model": detail.ap.model,
+                "state": detail.ap.status,
+                "state_display": detail.ap.state_display,
+                "lldp_neighbor_name": detail.lldp.switch_name,
+                "lldp_neighbor_interface": detail.lldp.interface_name,
+                "optical_updated_at": detail.optical.updated_at,
+                **{
+                    f"rid{radio.radio_id}_status": radio.status
+                    for radio in detail.radios
+                },
+                "_detail_index": index,
+            }
         )
-        if identity not in unique:
-            order.append(identity)
-            unique[identity] = detail
-            continue
-        if _detail_score(detail) > _detail_score(unique[identity]):
-            unique[identity] = detail
-    return [unique[identity] for identity in order]
-
-
-def _detail_score(detail) -> int:
-    return sum(
-        bool(value)
-        for value in (
-            detail.ap.ip,
-            detail.ap.model,
-            detail.ap.serial_number,
-            detail.ap.station,
-            detail.ap.section,
-            detail.lldp.switch_name,
-            detail.lldp.interface_name,
-            detail.optical.updated_at,
-        )
-    ) + len(detail.radios)
+    deduplicated = coalesce_fit_ap_resource_rows(projected)
+    return [details[int(item["_detail_index"])] for item in deduplicated]
 
 
 def _radio_value(radios, radio_id: int, field: str) -> str:

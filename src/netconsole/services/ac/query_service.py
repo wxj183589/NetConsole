@@ -38,6 +38,7 @@ from netconsole.models.api.ac_management import (
     AcRadioDTO,
 )
 from netconsole.repositories.ac_repository import AcRepository
+from netconsole.services.ac.fit_ap_resource_identity import coalesce_fit_ap_resource_rows
 from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.ap_identity.normalizers import normalize_mac_key
@@ -166,6 +167,7 @@ class AcManagementQueryService:
         for ac in ac_rows:
             ac_id = str(ac["device_uuid"])
             resources = repository.list_fit_ap_resources_with_metadata(ac_id)
+            resources = coalesce_fit_ap_resource_rows(resources)
             unauthenticated = repository.list_fit_ap_unauthenticated(ac_id)
             optical_by_ap = self._optical_index(repository.list_fit_ap_optical(ac_id))
             summary = dict(ac.get("summary") or {})
@@ -700,6 +702,7 @@ class AcManagementQueryService:
             else repository.list_all_fit_ap_unauthenticated()
         )
         resources = self._append_unmatched_unauthenticated(resources, unauthenticated)
+        resources = coalesce_fit_ap_resource_rows(resources)
         optical_rows = repository.list_fit_ap_optical(ac_id) if ac_id else repository.list_all_fit_ap_optical()
         optical_by_ap = self._optical_index(optical_rows)
         with closing(self._connect(db_path)) as conn:
