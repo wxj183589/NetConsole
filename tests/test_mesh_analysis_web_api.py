@@ -14,6 +14,7 @@ from netconsole.backend.api.main import create_app
 from netconsole.backend.api.mesh_analysis_router import router as mesh_analysis_router
 from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 from netconsole.models.api.rail_transit_base_data import VehicleMrDTO, VehicleMrPageDTO
+from netconsole.services.mesh_chart_payload import MeshChartSelectionLimitError
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
 from tests.mesh_analysis_test_support import EmptyBaseQuery, create_mesh_analysis_fixture
 
@@ -74,6 +75,8 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
     assert active_chart["requested_max_points"] == 10
     assert active_chart["effective_max_points"] == 10
     assert active_chart["downsample_warning"] is None
+    assert active_chart["payload_bytes"] > 0
+    assert active_chart["query_duration_ms"] >= 0
     trackside_chart = responses[6].json()
     assert trackside_chart["included_roles"] == ["ACTIVE", "STANDBY"]
     assert trackside_chart["include_standby"] is True
@@ -83,6 +86,8 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
     )
     assert trackside_chart["returned_link_points"] == trackside_chart["returned_points"]
     assert trackside_chart["requested_max_frames"] == trackside_chart["requested_max_points"] == 10
+    assert trackside_chart["payload_bytes"] > 0
+    assert trackside_chart["query_duration_ms"] >= 0
     returned_points = {
         (point["timestamp"], point["link_id"], point["timestamp_tag"], point["local_radio"]): point["local_rssi"]
         for point in active_chart["points"]
@@ -141,6 +146,27 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
         for route in routes
         if route.path not in generated_report_paths
     )
+
+
+def test_mesh_chart_safety_limit_maps_to_http_413(tmp_path: Path) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
+
+    def reject_oversized_chart(*_args: object, **_kwargs: object) -> None:
+        raise MeshChartSelectionLimitError(critical_count=20_001, max_points=20_000)
+
+    app.state.mesh_analysis_query_service = SimpleNamespace(
+        get_active_path_chart=reject_oversized_chart,
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            f"/api/rail-transit/mesh-analysis/sessions/{quote(session_id, safe='')}"
+            "/charts/active-path?site_id=demo&max_points=600"
+        )
+
+    assert response.status_code == 413
+    assert "关键业务点超过安全渲染上限" in response.json()["detail"]
 
 
 def test_mesh_source_delete_api_submits_confirmed_scope_to_application_service(

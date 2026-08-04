@@ -274,6 +274,8 @@ let rssiActiveRequestPromise: Promise<void> | null = null
 let tracksideRequestKey = ''
 let tracksideLoadedKey = ''
 let tracksideRequestPromise: Promise<void> | null = null
+let rssiWindowReloadTimer: number | null = null
+let rssiWindowReloadGeneration = 0
 let cancelActivePaintWait: (() => void) | null = null
 let cancelTracksideIdleSchedule: (() => void) | null = null
 let tracksideRequestGeneration = 0
@@ -703,6 +705,8 @@ function cancelDeferredRssiChartWork(): void {
   cancelActivePaintWait = null
   cancelTracksideIdleSchedule?.()
   cancelTracksideIdleSchedule = null
+  if (rssiWindowReloadTimer !== null) window.clearTimeout(rssiWindowReloadTimer)
+  rssiWindowReloadTimer = null
 }
 
 function cancelInFlightRssiChartRequests(): void {
@@ -1558,14 +1562,18 @@ function isLatestChartRequest(metric: MeshChartMetric, generation: number): bool
   return generation === (metric === 'rssi' ? rssiChartGeneration : busyChartGeneration)
 }
 
-function loadTracksideSignal(generation = detailGeneration, force = false): Promise<void> {
+function loadTracksideSignal(
+  generation = detailGeneration,
+  force = false,
+  range: MeshChartWindowRange | null = null,
+): Promise<void> {
   if (!selected.value) return Promise.resolve()
   const sessionId = selected.value.session.session_id
   const values = {
     max_points: visiblePoints.value,
     radio: chartRadio.value,
-    time_from: undefined,
-    time_to: undefined,
+    time_from: range?.start_time,
+    time_to: range?.end_time,
   }
   const requestKey = meshChartRequestKey(
     'trackside-signal',
@@ -1686,6 +1694,10 @@ async function loadActivePath(
   if (metric === 'busy') {
     values.time_from = effectiveRange?.start_time
     values.time_to = effectiveRange?.end_time
+  }
+  if (metric === 'rssi' && effectiveRange?.start_time && effectiveRange?.end_time) {
+    values.time_from = effectiveRange.start_time
+    values.time_to = effectiveRange.end_time
   }
   if (metric === 'busy') {
     const requestGeneration = nextChartGeneration(metric)
@@ -1949,9 +1961,53 @@ function updateRssiViewport(viewport: MeshChartViewport): void {
     domain,
     rssiViewportRevision + 1,
   )
-  if (accepted === rssiViewport.value) return
+  if (!accepted || accepted === rssiViewport.value) return
   rssiViewportRevision += 1
   rssiViewport.value = accepted
+  if (accepted.source === 'user_zoom' && accepted.start_time && accepted.end_time) {
+    scheduleRssiWindowReload(accepted)
+  }
+}
+
+function scheduleRssiWindowReload(viewport: MeshChartViewport): void {
+  if (rssiWindowReloadTimer !== null) window.clearTimeout(rssiWindowReloadTimer)
+  const range: MeshChartWindowRange = {
+    ...viewport,
+    radio: chartRadio.value,
+    mode: 'active',
+  }
+  const windowGeneration = ++rssiWindowReloadGeneration
+  rssiWindowReloadTimer = window.setTimeout(() => {
+    rssiWindowReloadTimer = null
+    const generation = detailGeneration
+    const sessionId = selected.value?.session.session_id
+    if (!sessionId) return
+    const activeRequestKey = meshChartRequestKey('active-path', sessionId, {
+      max_points: visiblePoints.value,
+      radio: range.radio,
+      time_from: range.start_time,
+      time_to: range.end_time,
+      include_peer: true,
+      include_events: true,
+      include_station_band: true,
+    })
+    void (async () => {
+      await loadActivePath('rssi', range, generation, true)
+      if (
+        windowGeneration === rssiWindowReloadGeneration
+        && generation === detailGeneration
+        && rssiActiveLoadedKey === activeRequestKey
+        && rssiActiveLoaded.value
+        && !rssiActiveError.value
+      ) {
+        rssiActivePaintReady.value = await waitForActiveRssiFirstPaint(generation)
+        if (
+          windowGeneration === rssiWindowReloadGeneration
+          && rssiActivePaintReady.value
+        ) await loadTracksideSignal(generation, true, range)
+      }
+    })()
+  }, 250)
 }
 
 function updateSharedPointer(pointer: MeshSharedPointerChange): void {
@@ -3374,7 +3430,7 @@ function exportTimestamp(now = new Date()): string {
             </MeshRssiChartWorkspace>
           </div>
           <div v-if="selectedChartEvent" class="selected-switch"><span>切换：{{ selectedChartEvent.from_ap_name || selectedChartEvent.from_peer_mac || '—' }} → {{ selectedChartEvent.to_ap_name || selectedChartEvent.to_peer_mac || '—' }} · {{ selectedChartEvent.timestamp }}</span><el-button link type="primary" @click="showSwitchInBuildOrder">查看建链顺序</el-button></div>
-          <p class="hint">{{ chartData?.downsampled ? `主图从 ${chartData.total_points} 点按自然秒与关键点优先返回 ${chartData.returned_points} 点（请求 ${chartData.requested_max_points}，有效上限 ${chartData.effective_max_points}）` : `主图展示后端返回的 ${chartData?.returned_points ?? 0} 个真实结构化样本，优先逐秒保留` }}；轨旁图按内部物理链路身份与本地 Radio 建立稳定序列，ACTIVE 与 STANDBY 是点级角色；目标点数表示目标采样时刻，服务端优先每自然秒保留一个真实 frame，保留某个时刻时会返回该 frame 的全部有效链路。</p>
+          <p class="hint">{{ chartData?.downsampled ? `主图从 ${chartData.total_points} 点按业务边界、趋势、普通代表三级预算返回 ${chartData.returned_points} 点（目标 ${chartData.requested_max_points}）` : `主图展示 ${chartData?.returned_points ?? 0} 个真实结构化样本` }}；轨旁图按完整 frame 返回主备链路，缩放后自动加载当前时间窗口。</p>
         </div>
 
         <div v-show="activeTab === 'busy'" id="pane-busy" class="chart-pane">
