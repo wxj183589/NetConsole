@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { Refresh } from '@element-plus/icons-vue'
 
-type EditState = 'LOCKED' | 'UNLOCKED_CLEAN' | 'UNLOCKED_DIRTY' | 'VALIDATING' | 'SAVING' | 'SAVE_FAILED' | 'READ_ONLY'
+type DraftState = 'READY' | 'DIRTY' | 'VALIDATING' | 'SAVING' | 'SAVE_FAILED' | 'READ_ONLY'
 
 const props = withDefaults(defineProps<{
-  state: EditState
-  writable: boolean
+  state: DraftState
   loading?: boolean
   valid?: boolean
   dirty?: boolean
@@ -17,14 +16,9 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   refresh: []
-  unlock: []
-  cancel: []
+  discard: []
   save: []
 }>()
-
-function isEditing(): boolean {
-  return ['UNLOCKED_CLEAN', 'UNLOCKED_DIRTY', 'VALIDATING', 'SAVING', 'SAVE_FAILED'].includes(props.state)
-}
 
 function isSaving(): boolean {
   return props.state === 'VALIDATING' || props.state === 'SAVING'
@@ -34,17 +28,19 @@ function isSaving(): boolean {
 <template>
   <div class="subpage-edit-toolbar">
     <div class="subpage-edit-status">
-      <el-tag v-if="dirty || state === 'UNLOCKED_DIRTY' || state === 'SAVE_FAILED'" type="warning">当前子页有未保存修改</el-tag>
-      <el-tag v-else-if="isEditing()" type="success">当前子页已解锁</el-tag>
+      <el-tag v-if="loading" type="info">正在加载草稿</el-tag>
+      <el-tag v-else-if="state === 'VALIDATING'" type="info">正在校验</el-tag>
+      <el-tag v-else-if="state === 'SAVING'" type="info">正在保存</el-tag>
+      <el-tag v-else-if="state === 'SAVE_FAILED'" type="danger">保存失败，草稿已保留</el-tag>
+      <el-tag v-else-if="dirty || state === 'DIRTY'" type="warning">当前子页有未保存修改</el-tag>
       <el-tag v-else-if="state === 'READ_ONLY'" type="info">只读</el-tag>
-      <el-tag v-else type="info">当前子页已锁定</el-tag>
+      <el-tag v-else type="success">当前子页已保存</el-tag>
     </div>
     <div class="subpage-edit-actions">
       <el-button :icon="Refresh" :loading="loading" :disabled="isSaving()" @click="emit('refresh')">刷新</el-button>
-      <el-button v-if="state === 'LOCKED' && writable" type="primary" :disabled="loading" @click="emit('unlock')">解锁当前子页</el-button>
-      <template v-else-if="isEditing()">
-        <el-button :disabled="isSaving()" @click="emit('cancel')">{{ dirty ? '取消修改' : '锁定当前子页' }}</el-button>
-        <el-button type="primary" :loading="isSaving()" :disabled="!dirty || valid === false" @click="emit('save')">保存当前子页</el-button>
+      <template v-if="state !== 'READ_ONLY'">
+        <el-button :disabled="loading || isSaving() || !dirty" @click="emit('discard')">放弃修改</el-button>
+        <el-button type="primary" :loading="isSaving()" :disabled="loading || !dirty || valid === false" @click="emit('save')">保存当前子页</el-button>
       </template>
     </div>
   </div>

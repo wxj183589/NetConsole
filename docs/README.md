@@ -86,7 +86,7 @@
 | [轨道交通地面无人值守](GROUND_UNATTENDED.md) / [风险审计](GROUND_UNATTENDED_RISK_AUDIT.md) | 独立运行窗口、正线分类、全车长 Ping、历史 Syslog、READY ZIP 查询、归档和恢复 | 地面无人值守开发、风险与验收 | `src/netconsole/services/ground_unattended/`、独立 API/Vue | 配置、分类、Ping、Syslog、调度、归档、风险或人工验收状态变化 |
 | [轨道交通无线综合看板](RAIL_TRANSIT_WIRELESS_DASHBOARD.md) | 基础设施、列车、任务、Agent 与 Mesh 分析只读聚合 | 轨道交通综合监控开发 | `src/netconsole/services/rail_transit/wireless_dashboard_query_service.py`、对应 API/Vue | 聚合来源、告警映射、刷新或只读边界变化 |
 | [车内通信检测](TRAIN_COMMUNICATION_MONITORING.md) | TC1/TC2 固定六节点拓扑、VRRP 虚拟 IP 静态配置、跨端状态和车内通信检测 Task | 轨道交通车内通信开发 | `src/netconsole/services/rail_transit/train_communication_query_service.py`、对应 API/Vue | 节点关联、状态、检测任务或刷新边界变化 |
-| [轨道交通基础资料](RAIL_TRANSIT_BASE_DATA.md) | 子页独立锁定/草稿/保存、revision 事务、线路参数、设备 station 来源预览、站点模板、站点/区间、轨旁 AP、逐站规划与上线统计、列车/MR 及受控导入 | 轨道交通基础资料开发 | `src/netconsole/application/rail_transit/base_data_application_service.py`、Repository、API/Vue | 字段、校验、编辑会话、来源预览、模板、规划页签或写入边界变化 |
+| [轨道交通基础资料](RAIL_TRANSIT_BASE_DATA.md) | 子页独立快照/草稿/保存、revision 事务、线路参数、设备 station 来源预览、站点模板、站点/区间、轨旁 AP、逐站规划与上线统计、列车/MR 及受控导入 | 轨道交通基础资料开发 | `src/netconsole/application/rail_transit/base_data_application_service.py`、Repository、API/Vue | 字段、校验、编辑会话、来源预览、模板、规划页签或写入边界变化 |
 | [变更记录](CHANGELOG.md) | 用户可见与架构变更摘要 | 发布/模块维护者 | Git 提交、发行版本 | 每次发布及重要未发布变更 |
 
 ## 业务专题

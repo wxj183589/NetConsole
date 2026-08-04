@@ -3,9 +3,10 @@
 import { defineComponent, nextTick } from 'vue'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia } from 'pinia'
-import { createMemoryHistory, createRouter } from 'vue-router'
+import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import SubPageEditToolbar from '../../components/rail-transit/base-data/SubPageEditToolbar.vue'
 import RailTransitBaseDataView from './RailTransitBaseDataView.vue'
 
 const mocks = vi.hoisted(() => ({
@@ -31,6 +32,8 @@ const mocks = vi.hoisted(() => ({
   messageSuccess: vi.fn(),
   messageWarning: vi.fn(),
   messageError: vi.fn(),
+  confirm: vi.fn(async () => true),
+  confirmChoice: vi.fn(async () => 'secondary'),
 }))
 
 vi.mock('../../api/railTransitBaseData', () => ({
@@ -80,8 +83,8 @@ vi.mock('element-plus', async (importOriginal) => {
 
 vi.mock('../../components/feedback/useConfirm', () => ({
   useConfirm: () => ({
-    confirm: vi.fn(async () => true),
-    confirmChoice: vi.fn(async () => 'secondary'),
+    confirm: mocks.confirm,
+    confirmChoice: mocks.confirmChoice,
   }),
 }))
 
@@ -749,30 +752,23 @@ describe('轨道交通基础资料编辑闭环', () => {
     wrapper.unmount()
   })
 
-  it('初次打开各子页为锁定态，解锁当前子页后才渲染其草稿控件', async () => {
+  it('可写局点打开后直接建立草稿并渲染编辑控件', async () => {
     mocks.stationsPage.mockResolvedValue({ items: [sourceStationWuxiang], total: 1, page: 1, page_size: 50 })
     mocks.sectionsPage.mockResolvedValue({ items: [generatedIncreasingSection], total: 1, page: 1, page_size: 50 })
     const wrapper = await mountView(false)
 
     expect(wrapper.get('.page-toolbar').findAll('button')).toHaveLength(0)
-    expect(wrapper.get('[data-table-id="rail-base-stations"]').find('input, select').exists()).toBe(false)
-    expect(wrapper.get('[data-table-id="rail-base-sections"]').find('input, select').exists()).toBe(false)
-    expect(wrapper.findComponent(PlanningStub).props('editing')).toBe(false)
-    expect(wrapper.text()).not.toContain('从设备管理生成')
-
-    await button(wrapper, '编辑').trigger('click')
-    await flushPromises()
-
-    expect(wrapper.get('.page-toolbar').findAll('button')).toHaveLength(0)
-    expect(button(wrapper, '保存').attributes('disabled')).toBeDefined()
     expect(wrapper.get('[data-table-id="rail-base-stations"]').find('input, select').exists()).toBe(true)
     expect(wrapper.get('[data-table-id="rail-base-sections"]').find('input, select').exists()).toBe(true)
     expect(wrapper.findComponent(PlanningStub).props('editing')).toBe(true)
+    expect(wrapper.text()).not.toContain('解锁')
+    expect(wrapper.text()).not.toContain('锁定')
+    expect(button(wrapper, '保存').attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toContain('从设备管理生成')
     wrapper.unmount()
   })
 
-  it('keeps an unlocked subpage draft isolated when the active tab changes', async () => {
+  it('切换子页保留多个独立草稿，保存当前页不清除其他草稿', async () => {
     const stations = [
       sourceStationWuxiang,
       { ...sourceStationWuxiang, id: 'station:depot', node_uid: 'node:depot', name: '车辆段', node_type: 'depot' as const, sort_order: null, participates_in_direction: false },
@@ -804,31 +800,113 @@ describe('轨道交通基础资料编辑闭环', () => {
       vehicle_mrs: mrs,
     })
     const wrapper = await mountView(false)
-    await wrapper.get('input[placeholder="AP 名称 / 点位 / MAC / IP"]').setValue('当前页筛选')
-    await button(wrapper, '应用筛选').trigger('click')
-    await button(wrapper, '编辑').trigger('click')
+    await wrapper.vm.$router.replace({ query: { tab: 'stations' } })
     await flushPromises()
-
-    expect(wrapper.get('[data-table-id="rail-base-trackside-aps"]').findAll('.table-row')).toHaveLength(3)
-    expect(wrapper.get('[data-table-id="rail-base-stations"]').findAll('.table-row')).toHaveLength(2)
-    expect(wrapper.get('[data-table-id="rail-base-sections"]').findAll('.table-row')).toHaveLength(1)
-    expect(wrapper.get('[data-table-id="rail-base-vehicle-mrs"]').findAll('.table-row')).toHaveLength(2)
-    expect(wrapper.findComponent(PlanningStub).props('modelValue')).toEqual(plans)
-
     const stationName = wrapper.get('[data-table-id="rail-base-stations"]').findAll('input')
       .find((input) => (input.element as HTMLInputElement).value === '五乡')!
     await stationName.setValue('五乡新名')
-    wrapper.findComponent(PlanningStub).vm.$emit('update:modelValue', [{ ...plans[0], management_vlan: 321 }])
-    for (const tab of ['overview', 'stations', 'trackside-ap', 'trackside-ap-planning', 'trains', 'quality', 'relations']) {
-      await wrapper.vm.$router.replace({ query: { tab } })
-      await flushPromises()
-      expect(wrapper.get('[data-table-id="rail-base-trackside-aps"]').findAll('.table-row')).toHaveLength(tab === 'overview' ? 3 : 1)
-    }
-    expect((stationName.element as HTMLInputElement).value).toBe('五乡新名')
-    expect(wrapper.findComponent(PlanningStub).props('editing')).toBe(false)
-    expect(mocks.editSnapshot).toHaveBeenCalledWith('overview')
+
+    await wrapper.vm.$router.replace({ query: { tab: 'trackside-ap' } })
+    await flushPromises()
+    const apRemark = wrapper.get('[data-table-id="rail-base-trackside-aps"]').findAll('input')
+      .find((input) => (input.element as HTMLInputElement).value === '')!
+    await apRemark.setValue('AP 独立草稿')
+    await nextTick()
+
+    expect(wrapper.text()).toContain('当前有 2 个子页存在未保存修改')
     expect(mocks.save).not.toHaveBeenCalled()
+    const toolbars = wrapper.findAllComponents(SubPageEditToolbar)
+    await toolbars[2].findAll('button').find((item) => item.text().trim() === '保存当前子页')!.trigger('click')
+    await flushPromises()
+
+    expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({ scope: 'trackside_ap' }))
+    expect(wrapper.text()).toContain('当前有 1 个子页存在未保存修改')
+    await wrapper.vm.$router.replace({ query: { tab: 'stations' } })
+    await flushPromises()
+    expect(wrapper.get('[data-table-id="rail-base-stations"]').findAll('input').some(
+      (input) => (input.element as HTMLInputElement).value === '五乡新名',
+    )).toBe(true)
+    expect(mocks.editSnapshot).toHaveBeenCalledWith('stations')
+    expect(mocks.editSnapshot).toHaveBeenCalledWith('trackside_ap')
     wrapper.unmount()
+  })
+
+  it('存在未保存草稿时确认路由离开，保存过程中阻止离开', async () => {
+    const wrapper = await mountView()
+    await wrapper.find('input[placeholder="请输入线路名称"]').setValue('待确认离开线路')
+    mocks.confirm.mockResolvedValueOnce(false)
+
+    await wrapper.vm.$router.push('/other')
+    await flushPromises()
+    expect(wrapper.vm.$route.path).toBe('/rail-transit/base-data')
+    expect(mocks.confirm).toHaveBeenCalledWith(expect.objectContaining({
+      title: '存在未保存的修改',
+      confirmText: '放弃全部草稿并离开',
+    }))
+    expect(wrapper.find('input[placeholder="请输入线路名称"]').element).toHaveProperty('value', '待确认离开线路')
+
+    let finishSave: ((value: {
+      revision: string
+      created_count: number
+      updated_count: number
+      deleted_count: number
+      warnings: never[]
+      validation_issues: never[]
+    }) => void) | undefined
+    mocks.save.mockImplementationOnce(() => new Promise((resolve) => { finishSave = resolve }))
+    await button(wrapper, '保存').trigger('click')
+    await vi.waitFor(() => expect(mocks.save).toHaveBeenCalledOnce())
+    await wrapper.vm.$router.push('/other')
+    await flushPromises()
+    expect(wrapper.vm.$route.path).toBe('/rail-transit/base-data')
+
+    finishSave?.({
+      revision: 'b'.repeat(64), created_count: 0, updated_count: 1, deleted_count: 0,
+      warnings: [], validation_issues: [],
+    })
+    await flushPromises()
+    await wrapper.vm.$router.push('/other')
+    await flushPromises()
+    expect(wrapper.vm.$route.path).toBe('/other')
+    wrapper.unmount()
+  })
+
+  it('局点切换事件会确认脏草稿并阻止保存中的切换', async () => {
+    const wrapper = await mountView()
+    await wrapper.find('input[placeholder="请输入线路名称"]').setValue('待确认局点切换线路')
+    const originalConfirm = window.confirm
+    const nativeConfirm = vi.fn()
+    Object.defineProperty(window, 'confirm', { configurable: true, value: nativeConfirm })
+    nativeConfirm.mockReturnValueOnce(false)
+    const cancelled = new CustomEvent('netconsole:before-site-switch', { cancelable: true, detail: { targetSiteId: 'line-b' } })
+    expect(window.dispatchEvent(cancelled)).toBe(false)
+    expect(wrapper.find('input[placeholder="请输入线路名称"]').element).toHaveProperty('value', '待确认局点切换线路')
+
+    nativeConfirm.mockReturnValueOnce(true)
+    const accepted = new CustomEvent('netconsole:before-site-switch', { cancelable: true, detail: { targetSiteId: 'line-b' } })
+    expect(window.dispatchEvent(accepted)).toBe(true)
+    await nextTick()
+    expect(wrapper.text()).not.toContain('当前有 1 个子页存在未保存修改')
+
+    let finishSave: ((value: {
+      revision: string
+      created_count: number
+      updated_count: number
+      deleted_count: number
+      warnings: never[]
+      validation_issues: never[]
+    }) => void) | undefined
+    mocks.save.mockImplementationOnce(() => new Promise((resolve) => { finishSave = resolve }))
+    await wrapper.find('input[placeholder="请输入线路名称"]').setValue('保存中局点切换线路')
+    await button(wrapper, '保存').trigger('click')
+    await vi.waitFor(() => expect(mocks.save).toHaveBeenCalledOnce())
+    const saving = new CustomEvent('netconsole:before-site-switch', { cancelable: true, detail: { targetSiteId: 'line-c' } })
+    expect(window.dispatchEvent(saving)).toBe(false)
+    finishSave?.({ revision: 'c'.repeat(64), created_count: 0, updated_count: 1, deleted_count: 0, warnings: [], validation_issues: [] })
+    await flushPromises()
+    wrapper.unmount()
+    if (originalConfirm) Object.defineProperty(window, 'confirm', { configurable: true, value: originalConfirm })
+    else Reflect.deleteProperty(window, 'confirm')
   })
 
   it('进入编辑时保留完整 AP 草稿但每次最多渲染当前页，避免大局点阻塞 Renderer', async () => {
@@ -847,9 +925,6 @@ describe('轨道交通基础资料编辑闭环', () => {
       vehicle_mrs: [],
     })
     const wrapper = await mountView(false)
-
-    await button(wrapper, '编辑').trigger('click')
-    await flushPromises()
 
     const apTable = wrapper.get('[data-table-id="rail-base-trackside-aps"]')
     expect(apTable.findAll('.table-row')).toHaveLength(50)
@@ -875,9 +950,6 @@ describe('轨道交通基础资料编辑闭环', () => {
     mocks.editSnapshot.mockRejectedValue(new Error('sections snapshot failed'))
     const wrapper = await mountView(false)
 
-    await button(wrapper, '编辑').trigger('click')
-    await flushPromises()
-
     expect(wrapper.get('.page-toolbar').findAll('button')).toHaveLength(0)
     expect(wrapper.findAll('button').some((item) => item.text().trim() === '保存')).toBe(false)
     expect(mocks.messageError).toHaveBeenCalledWith('sections snapshot failed')
@@ -885,7 +957,7 @@ describe('轨道交通基础资料编辑闭环', () => {
     wrapper.unmount()
   })
 
-  it('修改不会自动保存，取消修改会恢复整页草稿基线', async () => {
+  it('修改不会自动保存，放弃修改会恢复整页草稿基线', async () => {
     mocks.tracksideApsPage.mockResolvedValue({
       items: [{ ...tracksideApRow('ap-1', 'MAINLINE'), remark: 'AP 原备注' }],
       total: 1,
@@ -906,13 +978,13 @@ describe('轨道交通基础资料编辑闭环', () => {
 
     expect(wrapper.text()).toContain('未保存修改')
     expect(mocks.save).not.toHaveBeenCalled()
-    await button(wrapper, '取消修改').trigger('click')
+    await button(wrapper, '放弃修改').trigger('click')
     await flushPromises()
 
-    expect(wrapper.find('input[placeholder="请输入线路名称"]').exists()).toBe(false)
+    expect(wrapper.find('input[placeholder="请输入线路名称"]').exists()).toBe(true)
     expect(wrapper.get('[data-table-id="rail-base-trackside-aps"]').text()).toContain('AP 原备注')
     expect(wrapper.text()).not.toContain('未保存修改')
-    expect(button(wrapper, '编辑').exists()).toBe(true)
+    expect(button(wrapper, '保存').attributes('disabled')).toBeDefined()
     wrapper.unmount()
   })
 
@@ -950,7 +1022,7 @@ describe('轨道交通基础资料编辑闭环', () => {
     wrapper.unmount()
   })
 
-  it('可写会话默认查看，点击编辑后才建立草稿并保存线路和项目类型', async () => {
+  it('可写会话直接建立草稿并保存线路和项目类型', async () => {
     let saved = false
     mocks.summary.mockImplementation(async () => ({
       ...baseSummary,
@@ -966,11 +1038,6 @@ describe('轨道交通基础资料编辑闭环', () => {
     })
     const wrapper = await mountView(false)
 
-    expect(wrapper.text()).toContain('解锁当前子页')
-    expect(wrapper.find('input[placeholder="请输入线路名称"]').exists()).toBe(false)
-    expect(wrapper.findAll('button').some((item) => item.text().trim() === '保存当前子页')).toBe(false)
-    await button(wrapper, '编辑').trigger('click')
-    await flushPromises()
     const lineInput = wrapper.find('input[placeholder="请输入线路名称"]')
     expect(lineInput.exists()).toBe(true)
     await lineInput.setValue('宁波地铁12号线')
@@ -992,8 +1059,8 @@ describe('轨道交通基础资料编辑闭环', () => {
     }))
     expect(mocks.save).toHaveBeenCalledOnce()
     expect(wrapper.text()).not.toContain('未保存修改')
-    expect(wrapper.find('input[placeholder="请输入线路名称"]').exists()).toBe(false)
-    expect(button(wrapper, '编辑').exists()).toBe(true)
+    expect(wrapper.find('input[placeholder="请输入线路名称"]').exists()).toBe(true)
+    expect(button(wrapper, '保存').attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toContain('宁波地铁12号线 · 宁波地铁12号线 · PIS')
     wrapper.unmount()
   })
@@ -1162,6 +1229,88 @@ describe('轨道交通基础资料编辑闭环', () => {
     expect(wrapper.text()).toContain('未保存修改')
     expect(wrapper.find('input[placeholder="请输入线路名称"]').element).toHaveProperty('value', '待重试线路')
     expect(button(wrapper, '保存').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('revision 冲突保留草稿，并只在无重叠时基于最新 revision 重新应用', async () => {
+    const snapshot = (revision: string, lineName: string) => ({
+      ...writableSession,
+      base_revision: revision,
+      scope: 'overview' as const,
+      metadata: { ...baseSummary, line_name: lineName },
+      stations: [],
+      sections: [],
+      trackside_aps: [],
+      trackside_ap_plans: [],
+      device_station_bindings: [],
+      vehicle_mrs: [],
+    })
+    mocks.editSnapshot
+      .mockResolvedValueOnce(snapshot('a'.repeat(64), ''))
+      .mockResolvedValueOnce(snapshot('b'.repeat(64), ''))
+      .mockResolvedValueOnce(snapshot('c'.repeat(64), '本地线路'))
+    mocks.validate.mockResolvedValueOnce({
+      valid: false,
+      issues: [{
+        change_index: 0,
+        code: 'BASE_DATA_REVISION_CONFLICT',
+        message: '基础资料已被其他操作更新，请重新加载',
+        field_name: '',
+        blocking: true,
+      }],
+    })
+    const wrapper = await mountView()
+    await wrapper.find('input[placeholder="请输入线路名称"]').setValue('本地线路')
+    await button(wrapper, '保存').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('基础资料已被其他操作更新，当前草稿已保留')
+    expect(wrapper.find('input[placeholder="请输入线路名称"]').element).toHaveProperty('value', '本地线路')
+    await button(wrapper, '查看冲突详情').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('可安全重放')
+    await button(wrapper, '重新应用无重叠修改').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('input[placeholder="请输入线路名称"]').element).toHaveProperty('value', '本地线路')
+
+    await button(wrapper, '保存').trigger('click')
+    await flushPromises()
+    expect(mocks.validate.mock.calls.at(-1)?.[0]).toMatchObject({
+      base_revision: 'b'.repeat(64),
+      scope: 'overview',
+    })
+    expect(wrapper.text()).not.toContain('未保存修改')
+    wrapper.unmount()
+  })
+
+  it('revision 冲突存在服务器重叠时阻止自动覆盖，并可明确采用服务器版本', async () => {
+    const initial = {
+      ...writableSession,
+      scope: 'overview' as const,
+      metadata: { ...baseSummary, line_name: '' },
+      stations: [], sections: [], trackside_aps: [], trackside_ap_plans: [], device_station_bindings: [], vehicle_mrs: [],
+    }
+    mocks.editSnapshot
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce({ ...initial, base_revision: 'b'.repeat(64), metadata: { ...baseSummary, line_name: '服务器线路' } })
+    mocks.validate.mockResolvedValueOnce({
+      valid: false,
+      issues: [{ change_index: 0, code: 'BASE_DATA_REVISION_CONFLICT', message: 'revision conflict', field_name: '', blocking: true }],
+    })
+    const wrapper = await mountView()
+    await wrapper.find('input[placeholder="请输入线路名称"]').setValue('本地线路')
+    await button(wrapper, '保存').trigger('click')
+    await flushPromises()
+    await button(wrapper, '查看冲突详情').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('存在重叠')
+    expect(button(wrapper, '重新应用无重叠修改').attributes('disabled')).toBeDefined()
+    await button(wrapper, '使用服务器最新数据').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('input[placeholder="请输入线路名称"]').element).toHaveProperty('value', '服务器线路')
+    expect(wrapper.text()).not.toContain('未保存修改')
+    expect(mocks.save).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
@@ -1993,19 +2142,23 @@ describe('轨道交通基础资料编辑闭环', () => {
   })
 })
 
-async function mountView(enterEditing = true): Promise<VueWrapper> {
+async function mountView(_enterEditing = true): Promise<VueWrapper> {
+  const OtherView = defineComponent({ template: '<div data-testid="other-view">其他页面</div>' })
   const router = createRouter({
     history: createMemoryHistory(),
-    routes: [{
-      path: '/rail-transit/base-data',
-      name: 'rail-transit-base-data',
-      component: RailTransitBaseDataView,
-      meta: { title: '轨道交通 / 基础资料' },
-    }],
+    routes: [
+      {
+        path: '/rail-transit/base-data',
+        name: 'rail-transit-base-data',
+        component: RailTransitBaseDataView,
+        meta: { title: '轨道交通 / 基础资料' },
+      },
+      { path: '/other', component: OtherView },
+    ],
   })
   await router.push('/rail-transit/base-data')
   await router.isReady()
-  const wrapper = mount(RailTransitBaseDataView, {
+  const wrapper = mount(defineComponent({ components: { RouterView }, template: '<RouterView />' }), {
     global: {
       plugins: [createPinia(), router],
       directives: { loading: () => undefined },
@@ -2013,19 +2166,11 @@ async function mountView(enterEditing = true): Promise<VueWrapper> {
     },
   })
   await flushPromises()
-  if (enterEditing) {
-    const edit = wrapper.findAll('button').find((item) => item.text().trim() === '解锁当前子页')
-    if (edit) {
-      await edit.trigger('click')
-      await flushPromises()
-    }
-  }
   return wrapper
 }
 
 function button(wrapper: VueWrapper, label: string) {
   const aliases: Record<string, string> = {
-    编辑: '解锁当前子页',
     保存: '保存当前子页',
   }
   const expected = aliases[label] || label

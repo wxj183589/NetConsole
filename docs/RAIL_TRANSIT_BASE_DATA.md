@@ -2,9 +2,9 @@
 
 ## 当前状态
 
-`/rail-transit/base-data` 是站点、设备站点绑定、区间、轨旁 AP、轨旁 AP 规划、列车和车载 MR 的统一入口，Feature key 为 `web.rail_transit_base_data`。总览、站点与区间、轨旁 AP、轨旁 AP 规划、列车与车载 MR 各自维护锁定状态、编辑快照、草稿、脏状态、校验和保存；页面顶部不提供全局解锁或全局保存。正常 `persistent` Electron 受管会话加载后每个子页默认锁定，用户明确解锁当前子页且写权限与 revision 检查通过后，才加载该子页编辑快照。`isolated_test`、普通 Server、未认证浏览器和未授权副本进入 `READ_ONLY` 并显示明确原因。页面复用现有 Python Core 和当前局点 `devices.db`，不建立第二套基础资料数据库。
+`/rail-transit/base-data` 是站点、设备站点绑定、区间、轨旁 AP、轨旁 AP 规划、列车和车载 MR 的统一入口，Feature key 为 `web.rail_transit_base_data`。总览、站点与区间、轨旁 AP、轨旁 AP 规划、列车与车载 MR 各自维护编辑快照、草稿、脏状态、校验和保存；页面顶部不提供全局保存。正常 `persistent` Electron 受管会话确认当前局点可写后，活动子页自动建立服务器快照和草稿并直接允许编辑，其他子页在首次进入时按同样方式懒加载。`isolated_test`、普通 Server、未认证浏览器和未授权副本进入 `READ_ONLY` 并显示明确原因。页面复用现有 Python Core 和当前局点 `devices.db`，不建立第二套基础资料数据库。
 
-原独立 `/rail-transit/trackside-ap-plan` 页面和导航已删除；旧路由只重定向到 `/rail-transit/base-data?tab=trackside-ap-planning`。规划查询和在线状态刷新继续复用现有能力，但活动页面不再提供规划模板导入、模板下载或规划导出。规划页从设备管理生成时只能采用已经匹配正式站点的 `station_id`；未匹配候选必须先到“站点与区间”维护，规划页不得创建、解锁或保存站点。轨旁 AP 规划当前是一站一行的直接维护模型，只维护 AP 数量和 AP 管理 VLAN；多个站使用相同管理 VLAN 合法。IP、掩码、网关和旧 VLAN 分组数据不参与当前规划读取。详细边界见 [轨旁 AP 逐站规划](AP_MANAGEMENT_VLAN_GROUPS.md)。
+原独立 `/rail-transit/trackside-ap-plan` 页面和导航已删除；旧路由只重定向到 `/rail-transit/base-data?tab=trackside-ap-planning`。规划查询和在线状态刷新继续复用现有能力，但活动页面不再提供规划模板导入、模板下载或规划导出。规划页从设备管理生成时只能采用已经匹配正式站点的 `station_id`；未匹配候选必须先到“站点与区间”维护，规划页不得创建或保存站点。轨旁 AP 规划当前是一站一行的直接维护模型，只维护 AP 数量和 AP 管理 VLAN；多个站使用相同管理 VLAN 合法。IP、掩码、网关和旧 VLAN 分组数据不参与当前规划读取。详细边界见 [轨旁 AP 逐站规划](AP_MANAGEMENT_VLAN_GROUPS.md)。
 
 基础资料和轨旁 AP 只读查询按接口独立刷新。成功接口立即更新对应数据；失败接口保留最后成功值，不会让站点、区间、AP、列车或规划整组闪空。健康检查在线但业务接口失败时，页面显示局部“部分基础资料刷新失败”提示；只有核心健康和多个核心查询持续失败才显示 Backend 整体不可用。总览在无成功缓存时用 `—` 或“加载失败”表示未知，不把接口失败统计成真实 `0`。
 
@@ -30,12 +30,12 @@ revision 校验 + SQLite BEGIN IMMEDIATE 单事务
 
 ## 编辑会话
 
-- 每个可编辑子页独立使用 `LOCKED / UNLOCKED_CLEAN / UNLOCKED_DIRTY / VALIDATING / SAVING / SAVE_FAILED / READ_ONLY`，各自持有草稿和基线；任一子页解锁不会改变其他子页状态。
+- 每个可编辑子页独立使用 `READY / DIRTY / VALIDATING / SAVING / SAVE_FAILED / READ_ONLY`，各自持有服务器快照、草稿、revision 和变更集；不再存在人为锁定或解锁状态。
 - 子页编辑会话记录 `site_id`、`scope`、`base_revision` 和 `loaded_at`；`base_revision` 同时覆盖当前 SQLite 逻辑内容和 `site_meta.json` 的规范化内容。
-- 页面加载时不创建编辑草稿。点击“解锁当前子页”时调用 `GET /api/rail-transit/base-data/edit-snapshot?scope=...`，在同一 revision 边界只读取该子页实体及必要只读依赖；编辑基线不得由 Pinia 中当前分页、搜索或筛选后的查看列表拼接。快照和写会话均有效后才复制纯 DTO 草稿，禁止直接克隆或修改 Vue reactive proxy；快照失败保持锁定态，不建立部分草稿。修改只保存在当前 Renderer 子页，不自动写库。保存前先调用带相同 `scope` 的校验接口，保存时后端在 `BEGIN IMMEDIATE` 前拒绝跨作用域实体，并再次核对 revision。
-- revision 不一致返回 `BASE_DATA_REVISION_CONFLICT`，不得以后提交静默覆盖先提交。
-- `LOCKED` 可正常刷新并保持锁定；解锁态重新加载必须确认仅放弃当前子页草稿。切换内部页签时，脏子页提供“保存并切换 / 放弃并切换 / 取消切换”；其他已解锁子页及草稿不受影响，目标子页不自动解锁。离开路由和关闭窗口继续保护所有未保存草稿。
-- 保存失败保留当前子页编辑区和 dirty 状态；成功、取消或锁定当前子页只销毁该子页草稿并返回 `LOCKED`。
+- 可写会话加载后，活动子页立即调用 `GET /api/rail-transit/base-data/edit-snapshot?scope=...`；其他子页首次进入时懒加载。在同一 revision 边界只读取该子页实体及必要只读依赖；编辑基线不得由 Pinia 中当前分页、搜索或筛选后的查看列表拼接。快照和写会话均有效后才复制纯 DTO 草稿，禁止直接克隆或修改 Vue reactive proxy；快照失败进入真实 `READ_ONLY`，不建立部分草稿。修改只保存在当前 Renderer 子页，不自动写库。保存前先调用带相同 `scope` 的校验接口，保存时后端在 `BEGIN IMMEDIATE` 前拒绝跨作用域实体，并再次核对 revision。
+- revision 不一致返回 `BASE_DATA_REVISION_CONFLICT`，不得以后提交静默覆盖先提交。页面保留当前草稿并提供冲突详情、采用服务器最新数据，以及仅在服务器未修改相同实体时基于最新 revision 安全重放本地变更。
+- 切换内部页签不保存也不放弃当前草稿；返回原子页时继续使用该子页草稿。刷新当前子页需要确认只放弃当前草稿，保存当前子页和放弃修改都不影响其他子页。离开路由和关闭窗口继续保护所有未保存草稿，工作区切换局点也会在切换前确认并可放弃全部草稿；任一子页正在校验或保存时阻止离开或切换。
+- 保存失败进入 `SAVE_FAILED` 并保留当前子页草稿；保存成功后重新加载该 scope 的服务器快照并返回 `READY`。如果提交已成功但最新快照无法可靠建立，则该子页进入 `READ_ONLY`，不把已提交成功误报为保存失败。
 
 ## 领域模型
 
@@ -115,7 +115,7 @@ GET /api/rail-transit/base-data/edit-snapshot?site_id=...
 
 “轨旁 AP”标签页直接提供“下载模板 / 导入并预览 / 导出当前 / 导出重命名命令 / 新增轨旁 AP”。模板和当前导出均通过独立 Export Process 生成 `轨旁AP` 与 `字段说明` 两个工作表，并经 `source=trackside_ap_base` 的公共 Artifact 完成校验和受控下载。模板包含 AP 名称、点位编号、可选 AP 厂商、AP MAC、站点/区间、方向、位置类型、是否参与正线判断、可选里程、上联交换机/端口、供电和光缆等正式字段；FIT-AP 关联、当前光衰、来源和问题数为只读导出列。冲突和无效行可通过“导出问题明细”生成独立 XLSX Artifact；前端必须先由用户选择保存位置，再提交 Export Process。
 
-`VIEW` 和 `READ_ONLY` 允许下载、导出，但不显示导入、生成、增删或应用到草稿入口；进入编辑状态后，“导入 N 条有效数据到草稿”只更新 `editingDraft.aps` 和 `pendingChanges`，不调用独立写库接口，仍由页面右上角“保存”统一提交 revision 校验与事务。按钮只在没有可导入行或正在保存时禁用，不再要求额外确认勾选，也不因其他行存在冲突、无效或未匹配 FIT-AP 而禁用。导入空值默认 KEEP，不能清除已有里程、位置或上联资料；删除只能通过页面明确操作。
+`READ_ONLY` 允许下载、导出，但不显示导入、生成、增删或应用到草稿入口；可写子页建立草稿后，“导入 N 条有效数据到草稿”只更新 `editingDraft.aps` 和 `pendingChanges`，不调用独立写库接口，仍由当前子页“保存”统一提交 revision 校验与事务。按钮只在没有可导入行或正在保存时禁用，不再要求额外确认勾选，也不因其他行存在冲突、无效或未匹配 FIT-AP 而禁用。导入空值默认 KEEP，不能清除已有里程、位置或上联资料；删除只能通过页面明确操作。
 
 稳定 ID、规划 reconcile、业务关联、事务顺序和迁移细节见 [轨旁 AP 主数据与关联模型](rail-transit/TRACKSIDE_AP_DOMAIN_MODEL.md)。
 
@@ -145,7 +145,7 @@ UNKNOWN` 与 `participates_in_mainline=true` 属于阻断冲突，导入预览�
 
 “导出重命名命令”只读取当前局点的结构化轨旁 AP 资料或用户明确选择的未保存草稿，通过 Export Process 生成 UTF-8 BOM、Windows CRLF 的 TXT Artifact。每条命令使用唯一 MAC 和 `point_code` 生成 `wlan rename-ap <AP_MAC> <点位编号>`，空值、无效 MAC、名称已一致和不安全目标名称记录为跳过；同一 MAC 多目标或同一目标多 MAC 直接阻断。该功能只导出命令，不连接 AC、不执行命令，也不附加保存、重启、删除等高风险命令。FIT-AP 详情联动只接受按规范化 MAC 唯一匹配出的 `fit_ap_id`；未匹配或重复匹配不会打开错误详情。
 
-“轨旁 AP 规划”标签页默认锁定，使用纯文本和状态标签；解锁当前子页后才显示选择、输入、增删和匹配正式站点入口，并由该子页自己的取消与保存按钮收口。站点基础资料不再从规划模板导入，也不在规划页临时创建；点击“从设备管理匹配正式站点”后，只能把已有、唯一匹配的正式 `station_id` 加入规划草稿，缺少正式 ID 的候选引导到“站点与区间”维护。规划保存使用 `scope=trackside_ap_planning`，载荷只允许 `trackside_ap_plan`，后端拒绝混入站点、区间、AP 或 MR 修改。维护表固定为序号、车站名称、AP 数量、AP 管理 VLAN、备注、关联状态、选择和操作列；数字输入不显示步进按钮，支持 Excel 多行粘贴、Enter 下移、Esc 恢复，滚轮不改变值。AP 数量为 `0` 时管理 VLAN 可空；大于 `0` 时 VLAN 必须为 `1–4094`。同 VLAN 跨站合法，AC 状态、轨旁 AP 参考资料记录数和 VLAN 兼容模型均不覆盖规划值。当前活动页面不提供轨旁 AP 规划模板导入、模板下载或规划导出，旧 API 仅作为历史消费者兼容入口保留。
+“轨旁 AP 规划”标签页在可写会话下首次进入即建立独立草稿，并显示选择、输入、增删和匹配正式站点入口；只读会话使用纯文本和状态标签。该子页自己的放弃修改与保存按钮负责收口，不影响其他子页草稿。站点基础资料不再从规划模板导入，也不在规划页临时创建；点击“从设备管理匹配正式站点”后，只能把已有、唯一匹配的正式 `station_id` 加入规划草稿，缺少正式 ID 的候选引导到“站点与区间”维护。规划保存使用 `scope=trackside_ap_planning`，载荷只允许 `trackside_ap_plan`，后端拒绝混入站点、区间、AP 或 MR 修改。维护表固定为序号、车站名称、AP 数量、AP 管理 VLAN、备注、关联状态、选择和操作列；数字输入不显示步进按钮，支持 Excel 多行粘贴、Enter 下移、Esc 恢复，滚轮不改变值。AP 数量为 `0` 时管理 VLAN 可空；大于 `0` 时 VLAN 必须为 `1–4094`。同 VLAN 跨站合法，AC 状态、轨旁 AP 参考资料记录数和 VLAN 兼容模型均不覆盖规划值。当前活动页面不提供轨旁 AP 规划模板导入、模板下载或规划导出，旧 API 仅作为历史消费者兼容入口保留。
 
 轨旁 AP 业务页面和业务导出以设备管理中的车站交换机候选端口为骨架，直接使用 AC FIT-AP 资源与光衰运行态补充 AP 侧事实；基础资料只补充稳定站点和工程属性，不是业务行生成门槛。当前项目/建设阶段且 `work_scope_status=included` 的车站交换机即使尚未绑定基础资料 `station_id`，也按设备管理 `station` 保留候选端口；基础 AP 完整 MAC 精确命中时仍优先补充正式关系。上线概览仍以正式站点 ID 汇总，但当交换机 `station_id` 缺失时，可将设备管理 `station` 与当前正式站点做唯一规范化匹配，随后只用交换机 LLDP 完整 AP MAC 精确关联 AC FIT-AP；站名只解析交换机归站，不参与 AP 身份匹配。未匹配基础资料且没有唯一运行态证据的在线 AP 进入“基础资料待补充”诊断，不计入站点合计。运行态组合不写回基础资料、设备绑定、规划或 AP Identity；同一 MAC 跨站、站名歧义、无证据、阶段不符时不猜测稳定归属，VLAN、AP 名称和邻居 IP 均不参与身份推断。业务页面按交换机、接口、交换机光模块、LLDP、FIT-AP 资源和 FIT-AP 光衰分别记录 `loaded / partial / failed`；附加来源失败时仍返回已成功构建的候选端口行，并明确显示不可用来源。统计卡把真实 `0`、首次未加载、加载失败和部分可用分开表达。页面刷新失败时保留最后成功表格；来源不完整的快照不允许进入轨旁 AP 光衰更新或正式业务导出，避免遗漏目标或生成误导文件。
 
@@ -264,7 +264,7 @@ POST /api/rail-transit/base-data/import-operations/{operation_id}/rollback
 
 ## 受控写入
 
-普通维护由 `RailTransitBaseDataApplicationService` 编排，受控导入仍由 `RailTransitBaseDataImportService` 编排；两者复用同一 `RailTransitBaseDataRepository` 和写入 Guard，不新增主数据库。每个可编辑子页独立使用 `LOCKED / UNLOCKED_CLEAN / UNLOCKED_DIRTY / VALIDATING / SAVING / SAVE_FAILED / READ_ONLY`；切换离开脏子页时必须明确选择“保存并切换 / 放弃并切换 / 取消切换”，目标子页恢复自身状态且不会自动解锁。后端 `scope` 同时限制编辑快照内容和允许提交的实体类型，未提供 `scope` 的旧调用按 `all` 兼容；后端写入仍必须通过以下能力开关：
+普通维护由 `RailTransitBaseDataApplicationService` 编排，受控导入仍由 `RailTransitBaseDataImportService` 编排；两者复用同一 `RailTransitBaseDataRepository` 和写入 Guard，不新增主数据库。每个可编辑子页独立使用 `READY / DIRTY / VALIDATING / SAVING / SAVE_FAILED / READ_ONLY`；切换子页保留原子页草稿，保存或放弃只作用于明确 scope。后端 `scope` 同时限制编辑快照内容和允许提交的实体类型，未提供 `scope` 的旧调用按 `all` 兼容；后端写入仍必须通过以下能力开关：
 
 ```text
 Feature Registry: web.rail_transit_base_data_write
@@ -303,7 +303,7 @@ AP 点表导入、预览、确认、审计和回滚只在“轨道交通 / 基�
 
 - 总览 30 秒、AP/MR/关联运行态 15 秒、站点/区间/数据质量 60 秒。
 - 页面隐藏或卸载时停止全部计时器；同类请求未结束时复用并等待同一个在途 Promise，不重复发起，也不会让后续调用方提前返回。
-- 页面处于 `EDITING_CLEAN / EDITING_DIRTY / VALIDATING / SAVING / SAVE_FAILED` 时停止会覆盖草稿的数据轮询；保存成功或放弃并恢复到 `VIEW` 后再恢复。
+- 查看数据继续按上述周期轮询，但各子页草稿来自独立编辑快照，不直接绑定 Pinia 查看列表；轮询成功不会覆盖 `DIRTY / VALIDATING / SAVING / SAVE_FAILED` 草稿。手工刷新当前脏子页前必须确认放弃该 scope 草稿。
 - 总览、站点、区间、数据质量、轨旁 AP、列车、车载 MR、关联运行状态和导入治理接口分别落值；单个请求失败不阻止同批其他成功结果写入，失败项保留最后成功数据，下一次成功只清除自身错误。手动刷新会并行重试全部数据域。
 - 单个业务接口失败时页面显示“部分基础资料刷新失败”，并可展开查看 API path、错误码、HTTP 状态、`request_id` 和原始消息，不把 `/api/health` 在线的场景描述为 Backend 整体离线。
 - 只有至少两个核心接口连续 3 次发生传输级失败时才额外探测 `/api/health`；健康检查也失败后才显示“Backend 连接中断”。有接口连续失败 3 次时，对应数据域后续刷新降为 120 秒。
