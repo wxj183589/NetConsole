@@ -49,6 +49,7 @@ from netconsole.services.ac.mesh_link_resident_polling_service import (
     AcMeshLinkResidentPollingApplicationService,
 )
 from netconsole.services.ac.query_service import AcManagementQueryService
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.agent.controller import AgentControllerError, AgentControllerService
 from netconsole.services.config_collection_web_service import ConfigCollectionApplicationService
 from netconsole.services.command_reference_application_service import CommandReferenceApplicationService
@@ -648,6 +649,9 @@ def create_app(
                 paths.ground_unattended_db_path(site_name),
                 site_id=site_name,
             )
+            ground_ap_identity_query = ApIdentityQueryService(
+                Database(paths.site_db_path(site_name))
+            )
             ground_unattended_supervisor = GroundUnattendedSupervisor(
                 paths,
                 site_id=site_name,
@@ -660,6 +664,7 @@ def create_app(
                 online_mr_application_service=online_mr_application_service,
                 online_mr_query_service=online_mr_query_service,
                 network_service=app.state.system_network_application_service,
+                ap_identity_query_service=ground_ap_identity_query,
             )
             app.state.ground_unattended_repository = ground_unattended_repository
             app.state.ground_unattended_supervisor = ground_unattended_supervisor
@@ -673,6 +678,7 @@ def create_app(
                     desktop_action_service=desktop_action_service,
                     network_service=app.state.system_network_application_service,
                     process_adapter=web_process_adapter,
+                    ap_identity_query_service=ground_ap_identity_query,
                 )
             )
         except Exception as exc:

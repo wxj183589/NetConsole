@@ -29,6 +29,10 @@
 
 ### MESH Peer 身份与来源治理
 
+- AP Identity 新增物理 AP 单值/批量入口和 Peer 批量入口；批量查询在同一只读事务内固定 index/source revision 并集合读取 alias，每个结果携带本批 revision。
+- MESH distinct Peer 映射改为一次 `resolve_peer_macs()`，identity-only remap 直接发布该批 revision，不在解析完成后重新读取版本。
+- 地面无人值守移除基础资料、AC Radio 和 Alias 私有字典，历史页按 distinct Peer 批量解析，实时 Syslog 使用 revision-aware 缓存；物理 AP MAC 不再被当作 Peer Radio 证据，身份 entity/revision/status/source/reason 随既有事件详情持久化。
+- 新增 AP Identity 消费者审计矩阵和架构门禁；AC Mesh-Link、Vehicle/Online MR、无线扫描及基础资料直查等遗留旁路列为显式后续项，不宣称已全部接管。
 - MR/MESH Peer 生产匹配移除 H3C 36 位前缀和 Peer 名称回退，只接受实际 Radio/BSSID/BBSSID 或公共 R1/R2 函数生成的完整精确 alias；无证据和多候选分别保守返回 `unresolved/ambiguous`。
 - H3C Radio alias 仅由明确 H3C、合法且末位为 `0` 的物理 AP MAC 生成；末位为 `F` 的 Radio 观测和非 H3C 数据不再二次衍生。合法 `source_revision=0` 不再误报索引过期，缺索引、过期、未采集精确 alias、未命中和重复 alias 分别返回可诊断原因。
 - Identity source revision 只监听 AP 身份来源和被 FIT-AP 引用 AC 的厂商字段；无关设备与 `device_facts` 更新不再使索引过期。基础资料和光衰写任务在来源提交后按批次收口索引。

@@ -31,9 +31,9 @@
 - `archive_reader.py`：READY ZIP 的受管路径、大小、SHA-256、manifest、成员哈希、CRC、路径和压缩预算
   校验；普通原始列表只做路径、READY、登记大小、ZIP/manifest/成员边界检查，并在读取目标成员时校验
   CRC，完整 ZIP 与成员 SHA-256 保留给详情和显式重新校验。只读流式访问登记成员，不解压或重写归档。
-- `ap_resolver.py`：按 Peer AP MAC、显式 Radio/BSSID、带证据等级的 H3C Radio 派生规则和唯一
-  Alias 补全 WMESH 展示字段；AC Detail 使用 30 秒查询缓存，名称来源保持可见，歧义保持未绑定，
-  不写 AP Identity 主数据。
+- `ap_resolver.py`：作为 `ApIdentityQueryService` 的薄适配器，按页/批次解析 distinct Peer、
+  Radio/BSSID，缓存以 Identity revision 为失效边界；物理 AP MAC 不作为 Peer 证据，歧义保持未绑定，
+  不读取或写入 AP Identity 内部表，也不维护第二套 Alias 索引。
 - `deep_scheduler.py`：每日覆盖队列、置顶和并发预算。
 - `archive_service.py`：manifest、ZIP 校验、原子发布和保留清理。
 

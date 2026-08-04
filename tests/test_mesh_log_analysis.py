@@ -11,6 +11,7 @@ import pytest
 from matplotlib.dates import date2num
 
 from netconsole.core.database import Database
+from netconsole.models.ap_identity_index import ApIdentityMatch
 from netconsole.models.mesh_log_models import EVENT_ACTIVE_SWITCH, EVENT_MULTI_ACTIVE, EVENT_NO_ACTIVE
 from netconsole.parsers.mesh_log_parser import MeshLogParser, calculate_signal
 from netconsole.core.paths import PathResolver
@@ -617,6 +618,88 @@ def test_mesh_peer_mapping_service_uses_exact_h3c_alias_without_ac(tmp_path):
     assert resolved["peer_radio_label"] == "radio1"
     assert resolved["identity_source"] == "base_data"
     assert resolved["match_rule"] == "h3c_physical_mac_to_r1_exact_v1"
+
+
+def test_mesh_peer_mapping_batches_distinct_peers_and_persists_batch_revision(
+    tmp_path,
+):
+    class BatchOnlyIdentityQuery:
+        def __init__(self) -> None:
+            self.calls: list[tuple[tuple[str, ...], str | None]] = []
+
+        def ensure_index(self, _reason: str) -> None:
+            return None
+
+        def index_state(self) -> dict[str, object]:
+            return {"revision": 8}
+
+        def resolve_peer_macs(self, macs, *, ap_role=None):
+            keys = tuple(macs)
+            self.calls.append((keys, ap_role))
+            return {
+                keys[0]: ApIdentityMatch(
+                    status="matched",
+                    identity_revision=9,
+                    query_mac=keys[0],
+                    matched_entity_id="entity-1",
+                    effective_ap_name="AP-01",
+                    effective_ap_mac="0011-2233-4450",
+                    station="S1",
+                    matched_alias_type="ac_bssid",
+                    matched_source="ac_runtime",
+                    match_rule="actual_bssid_exact",
+                    match_confidence=100,
+                    radio_id=1,
+                ),
+                keys[1]: ApIdentityMatch(
+                    status="unresolved",
+                    identity_revision=9,
+                    query_mac=keys[1],
+                    unresolved_reason="exact_alias_not_found",
+                ),
+            }
+
+        def resolve_peer_mac(self, *_args, **_kwargs):
+            pytest.fail("build_rows must use the batch query contract")
+
+    class MappingRepository:
+        def __init__(self) -> None:
+            self.revision = -1
+
+        @staticmethod
+        def distinct_peer_macs() -> list[str]:
+            return [
+                "1011-2233-4455",
+                "1011-2233-4455",
+                "1022-3344-5566",
+            ]
+
+        def replace_peer_identity_mappings(
+            self,
+            rows,
+            *,
+            identity_index_revision,
+        ):
+            self.revision = identity_index_revision
+            return {
+                "mapping_count": len(rows),
+                "validation_status": "passed",
+                "facts_unchanged": True,
+            }
+
+    service = MeshPeerMappingService("demo", PathResolver(tmp_path))
+    identity_query = BatchOnlyIdentityQuery()
+    service._query_service = identity_query
+    repository = MappingRepository()
+
+    count = service.refresh_repository(repository)
+
+    assert identity_query.calls == [
+        (("101122334455", "102233445566"), "trackside")
+    ]
+    assert count == 2
+    assert repository.revision == 9
+    assert service.last_remap_summary["identity_index_revision"] == 9
 
 
 def test_mesh_peer_mapping_service_keeps_peer_and_physical_ap_mac_separate(tmp_path):

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable
 
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.ground_unattended import GroundUnattendedProfileDTO
 from netconsole.repositories.ground_unattended_repository import (
@@ -22,6 +23,7 @@ from netconsole.services.ac.mesh_link_refresh_service import (
 from netconsole.services.ac.mesh_link_resident_polling_service import (
     AcMeshLinkResidentPollingApplicationService,
 )
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.ground_unattended.eligibility import (
     GroundUnattendedEligibilityClassifier,
     StationaryTracker,
@@ -91,6 +93,7 @@ class GroundUnattendedSupervisor:
         network_service: SystemNetworkApplicationService | None = None,
         now_provider: Callable[[], datetime] | None = None,
         tick_seconds: float = 1.0,
+        ap_identity_query_service: ApIdentityQueryService | None = None,
     ) -> None:
         self.paths = paths
         self.site_id = site_id
@@ -130,9 +133,14 @@ class GroundUnattendedSupervisor:
             repository=repository,
             base_query=base_query,
         )
+        self.ap_identity_query_service = (
+            ap_identity_query_service
+            or ApIdentityQueryService(Database(paths.site_db_path(site_id)))
+        )
         self.syslog_receiver = SyslogUdpReceiver(
             repository=repository,
             site_id=site_id,
+            ap_identity_query_service=self.ap_identity_query_service,
         )
         self.config_service = MrSyslogConfigService(
             paths,
@@ -958,9 +966,7 @@ class GroundUnattendedSupervisor:
         self.fleet_ping.update_targets(list(valid_ping_targets.values()))
         self.fleet_ping.flush_summaries()
         self.syslog_receiver.refresh_inventory()
-        self.syslog_receiver.update_ap_locations(
-            self.base_query.list_ap_location_items(self.site_id)
-        )
+        self.syslog_receiver.refresh_ap_identity()
         self._schedule_config_checks(run, profile, config_check_targets)
         current_trains = self.repository.list_train_runs(str(run["run_id"]))
         disk_free = shutil.disk_usage(
@@ -1566,9 +1572,7 @@ class GroundUnattendedSupervisor:
                 event_batch_size=profile.event_batch_size,
                 event_batch_interval_seconds=profile.event_batch_interval_seconds,
             )
-            self.syslog_receiver.update_ap_locations(
-                self.base_query.list_ap_location_items(self.site_id)
-            )
+            self.syslog_receiver.refresh_ap_identity()
         except Exception as exc:
             self.repository.add_health_event(
                 run_id=str(run["run_id"]),

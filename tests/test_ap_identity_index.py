@@ -76,7 +76,9 @@ def test_zero_source_revision_is_a_valid_current_index(tmp_path: Path) -> None:
 
     assert built.source_revision == 0
     assert service.index_state()["source_revision"] == 0
-    assert repository.trackside_online_status_revision()["identity_source_revision"] == 0
+    assert (
+        repository.trackside_online_status_revision()["identity_source_revision"] == 0
+    )
     assert match.status == "unresolved"
     assert match.unresolved_reason == "exact_alias_not_collected"
 
@@ -167,8 +169,14 @@ def test_source_write_marks_index_stale_until_explicit_rebuild(tmp_path: Path) -
     _base_ap(repository, name="AP-B", mac="74ad-cb9d-3340")
 
     stale = service.resolve_peer_mac("74ad-cb9d-332f")
+    stale_batch = service.resolve_peer_macs(["74ad-cb9d-332f", "invalid"])
     assert stale.status == "unresolved"
     assert stale.unresolved_reason == "identity_index_stale"
+    assert stale_batch.revision == first.revision
+    assert stale_batch.index_status == "identity_index_stale"
+    assert stale_batch.unresolved_count == 1
+    assert stale_batch.invalid_count == 1
+    assert stale_batch["74adcb9d332f"].identity_revision == first.revision
     assert service.index_state()["revision"] == first.revision
 
     service.rebuild_index("source_changed")
@@ -440,8 +448,28 @@ def test_peer_resolution_can_be_scoped_to_trackside_role(tmp_path: Path) -> None
     service.rebuild_index("role_scope")
 
     assert service.resolve_peer_mac("74ad-cb9d-332f").status == "matched"
-    assert service.resolve_peer_mac("74ad-cb9d-332f", ap_role="trackside").status == "unresolved"
-    assert service.resolve_peer_mac("74ad-cb9d-332f", ap_role="onboard").status == "matched"
+    assert (
+        service.resolve_peer_mac("74ad-cb9d-332f", ap_role="trackside").status
+        == "unresolved"
+    )
+    assert (
+        service.resolve_peer_mac("74ad-cb9d-332f", ap_role="onboard").status
+        == "matched"
+    )
+    assert (
+        service.resolve_peer_macs(
+            ["74ad-cb9d-332f"],
+            ap_role="trackside",
+        )["74adcb9d332f"].status
+        == "unresolved"
+    )
+    assert (
+        service.resolve_peer_macs(
+            ["74ad-cb9d-332f"],
+            ap_role="onboard",
+        )["74adcb9d332f"].status
+        == "matched"
+    )
 
 
 def test_same_h3c_prefix_without_exact_alias_is_unresolved(tmp_path: Path) -> None:
@@ -489,6 +517,153 @@ def test_mesh_peer_does_not_fall_back_to_prefix_name_or_base_ap_mac(
     assert prefix_only.effective_ap_name == ""
     assert prefix_only.effective_ap_mac == ""
     assert exact_base.status == "unresolved"
+
+
+def test_batch_query_preserves_peer_and_ap_semantics_with_one_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _database, repository, service = _fixture(tmp_path)
+    _base_ap(repository, name="AP-A", mac="74ad-cb9d-3320")
+    _base_ap(repository, name="AP-B", mac="74ad-cb9d-3330")
+    built = service.rebuild_index("base_data_saved")
+    single_ap_match = service.resolve_ap_mac("74ad-cb9d-3320")
+    snapshot_calls = 0
+    original_snapshot = service.repository.exact_alias_snapshot
+
+    def counted_snapshot(*args, **kwargs):
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        return original_snapshot(*args, **kwargs)
+
+    monkeypatch.setattr(
+        service.repository,
+        "exact_alias_snapshot",
+        counted_snapshot,
+    )
+    monkeypatch.setattr(
+        service.repository,
+        "exact_alias_rows",
+        lambda *_args, **_kwargs: pytest.fail(
+            "batch query must not issue one alias query per MAC"
+        ),
+    )
+    monkeypatch.setattr(
+        service.repository,
+        "index_health",
+        lambda **_kwargs: pytest.fail(
+            "batch query must read health from the same snapshot"
+        ),
+    )
+
+    peer_matches = service.resolve_peer_macs(
+        [
+            "74ad-cb9d-332f",
+            "74ad-cb9d-333f",
+            "74ad-cb9d-3320",
+            "74:ad:cb:9d:33:2f",
+            "invalid",
+        ],
+        ap_role="trackside",
+    )
+    ap_matches = service.resolve_ap_macs(["74ad-cb9d-3320", "74ad-cb9d-3320"])
+
+    assert snapshot_calls == 2
+    assert set(peer_matches) == {
+        "74adcb9d332f",
+        "74adcb9d333f",
+        "74adcb9d3320",
+    }
+    assert peer_matches["74adcb9d332f"].status == "matched"
+    assert peer_matches["74adcb9d333f"].status == "ambiguous"
+    assert peer_matches["74adcb9d3320"].status == "unresolved"
+    assert ap_matches["74adcb9d3320"].status == "matched"
+    assert peer_matches.revision == built.revision
+    assert peer_matches.index_status == "ready"
+    assert peer_matches.requested_count == 5
+    assert peer_matches.normalized_count == 4
+    assert peer_matches.distinct_count == 3
+    assert peer_matches.matched_count == 1
+    assert peer_matches.unresolved_count == 1
+    assert peer_matches.ambiguous_count == 1
+    assert peer_matches.invalid_count == 1
+    assert ap_matches.requested_count == 2
+    assert ap_matches.normalized_count == 2
+    assert ap_matches.distinct_count == 1
+    assert ap_matches.matched_count == 1
+    assert ap_matches["74adcb9d3320"] == single_ap_match
+    assert {
+        match.identity_revision
+        for match in (*peer_matches.values(), *ap_matches.values())
+    } == {built.revision}
+
+
+def test_batch_query_counts_empty_and_invalid_input_without_database_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _database, _repository, service = _fixture(tmp_path)
+    monkeypatch.setattr(
+        service.repository,
+        "exact_alias_snapshot",
+        lambda *_args, **_kwargs: pytest.fail(
+            "empty or invalid batches must not query SQLite"
+        ),
+    )
+
+    empty = service.resolve_peer_macs([])
+    invalid = service.resolve_peer_macs([None, "", "not-a-mac"])
+
+    assert dict(empty) == {}
+    assert empty.index_status == "not_checked"
+    assert empty.requested_count == 0
+    assert empty.normalized_count == 0
+    assert empty.distinct_count == 0
+    assert empty.invalid_count == 0
+    assert dict(invalid) == {}
+    assert invalid.index_status == "not_checked"
+    assert invalid.requested_count == 3
+    assert invalid.normalized_count == 0
+    assert invalid.distinct_count == 0
+    assert invalid.invalid_count == 3
+
+
+def test_large_batch_uses_one_repository_snapshot_instead_of_n_plus_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _database, _repository, service = _fixture(tmp_path)
+    service.rebuild_index("empty_source")
+    snapshot_calls = 0
+    original_snapshot = service.repository.exact_alias_snapshot
+
+    def counted_snapshot(*args, **kwargs):
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        return original_snapshot(*args, **kwargs)
+
+    monkeypatch.setattr(
+        service.repository,
+        "exact_alias_snapshot",
+        counted_snapshot,
+    )
+    monkeypatch.setattr(
+        service.repository,
+        "exact_alias_rows",
+        lambda *_args, **_kwargs: pytest.fail(
+            "large batch must not issue one alias query per MAC"
+        ),
+    )
+    macs = [f"{index:012x}" for index in range(1, 1002)]
+
+    result = service.resolve_peer_macs(macs)
+
+    assert snapshot_calls == 1
+    assert result.requested_count == 1001
+    assert result.normalized_count == 1001
+    assert result.distinct_count == 1001
+    assert result.unresolved_count == 1001
+    assert result.index_status == "ready"
 
 
 def test_ac_actual_radio_alias_wins_over_derived_prefix(tmp_path: Path) -> None:

@@ -10,11 +10,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from netconsole.backend.api.main import create_app
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.ground_unattended import GroundPingSeriesDTO
 from netconsole.repositories.ground_unattended_repository import (
     GroundUnattendedRepository,
 )
+from netconsole.repositories.ac_repository import AcRepository
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.ground_unattended.archive_reader import (
     GroundArchiveReadError,
     GroundArchiveReader,
@@ -590,24 +593,26 @@ def test_legacy_syslog_is_enriched_at_read_time_without_modifying_ndjson(
             "archive_status": "PENDING",
         }
     )
-    ap = SimpleNamespace(
-        id="ap-1",
-        name="站点A-AP01",
-        point_code="",
-        mac="0200-0000-0001",
-        station="站点A",
-        section="站点A-站点B",
-        radios=[],
-        base_metadata={},
+    identity_database = Database(paths.site_db_path("site-a"))
+    identity_database.initialize()
+    AcRepository(identity_database).replace_fit_ap_resources(
+        "ac-1",
+        [
+            {
+                "ap_uuid": "ap-1",
+                "ap_name": "站点A-AP01",
+                "ap_mac": "0100-0000-0001",
+                "site": "站点A",
+                "rid1_bbssid": "0200-0000-0001",
+            }
+        ],
     )
+    ApIdentityQueryService(identity_database).rebuild_index("test_ac_refresh")
     service = GroundUnattendedApplicationService(
         paths,
         site_id="site-a",
         repository=repository,
         supervisor=SimpleNamespace(),
-        base_query=SimpleNamespace(
-            list_ap_location_items=lambda _site_id: [ap]
-        ),
     )
 
     result = service.syslog_records("site-a", run_id=run_id)
@@ -618,7 +623,9 @@ def test_legacy_syslog_is_enriched_at_read_time_without_modifying_ndjson(
     assert item.event_type == "MESH_LINKUP"
     assert item.peer_name == "站点A-AP01"
     assert item.peer_mac == "02:00:00:00:00:01"
-    assert item.resolution_status == "PEER_MAC_EXACT"
+    assert item.resolution_status == "RADIO_BSSID"
+    assert item.parsed_details["identity_entity_id"]
+    assert item.parsed_details["identity_revision"] == 1
     assert item.raw_file_id == "raw-syslog-legacy"
     assert item.raw_line_number == 1
     assert item.data_source == "ACTIVE"

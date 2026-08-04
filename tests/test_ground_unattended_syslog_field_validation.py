@@ -14,8 +14,10 @@ from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.parsers.h3c.info_center_parser import parse_info_center_runtime
+from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.ground_unattended_repository import GroundUnattendedRepository
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.ground_unattended.boot_config import (
     MrBootSessionService,
     MrSyslogConfigService,
@@ -930,6 +932,22 @@ def test_real_syslog_shapes_keep_parser_fields_and_clock_semantics(tmp_path: Pat
 
 def test_udp_receiver_preserves_sequences_facility_and_identity_states(tmp_path: Path) -> None:
     repository = GroundUnattendedRepository(tmp_path / "ground" / "index.sqlite", site_id="site-a")
+    identity_database = Database(tmp_path / "devices.sqlite")
+    identity_database.initialize()
+    AcRepository(identity_database).replace_fit_ap_resources(
+        "ac-1",
+        [
+            {
+                "ap_uuid": "ap-1",
+                "ap_name": "AP-01",
+                "ap_mac": "0100-0000-0001",
+                "site": "站点A",
+                "rid1_bbssid": "0200-0000-0001",
+            }
+        ],
+    )
+    identity_query = ApIdentityQueryService(identity_database)
+    identity_query.rebuild_index("test_ac_refresh")
     repository.sync_inventory(
         trains=[{"train_id": "train-01", "train_no": "01", "train_name": "T01"}],
         endpoints=[{
@@ -938,7 +956,11 @@ def test_udp_receiver_preserves_sequences_facility_and_identity_states(tmp_path:
         }],
     )
     _waiting_boot(repository, "mr-ct-01")
-    receiver = SyslogUdpReceiver(repository=repository, site_id="site-a")
+    receiver = SyslogUdpReceiver(
+        repository=repository,
+        site_id="site-a",
+        ap_identity_query_service=identity_query,
+    )
     receiver.start(
         run_id="run-1", run_date="2026-07-26", active_dir=tmp_path / "ground" / "active" / "2026-07-26",
         listen_host="127.0.0.1", listen_port=0, queue_capacity=20, flush_records=1,
@@ -960,6 +982,9 @@ def test_udp_receiver_preserves_sequences_facility_and_identity_states(tmp_path:
     assert [row["source_receive_sequence"] for row in raw_rows] == [1, 2]
     assert raw_rows[0]["facility"] == "local7" and raw_rows[0]["severity"] == "notice"
     assert raw_rows[0]["identity_status"] == "VERIFIED"
+    assert raw_rows[0]["resolved_ap_name"] == "AP-01"
+    assert raw_rows[0]["parsed_details"]["identity_entity_id"]
+    assert raw_rows[0]["parsed_details"]["identity_revision"] == 1
     assert raw_rows[0]["raw_bytes_base64"]
     assert repository.latest_boot_session("mr-ct-01")["config_status"] == "LOG_ACTIVE"
     assert receiver._resolve_identity("127.0.0.1", "other-host")[1] == "UNCONFIRMED_SOURCE_IP"
