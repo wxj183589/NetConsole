@@ -35,7 +35,7 @@
 .\.venv\Scripts\python.exe -m scripts.maintenance.remap_mesh_identity --site <局点> --profile <MR Profile> --apply
 ```
 
-dry-run 不写 parsed DB、raw 或 catalog；apply 逐来源执行，单来源失败会记录并继续其他来源。
+dry-run 不写 parsed DB、raw 或 catalog，并兼容缺少后续可选身份投影列的历史 parsed DB；apply 逐来源执行，现有 Repository 会幂等补齐这些列，单来源失败会记录并继续其他来源。
 
 该命令对局点业务数据只读，但会写审计报告。报告中的 `can_delete` 仍不是单阶段删除授权；正式回收必须经过 Application Service 的 prepare/apply、文件哈希复核和受控回收区。
 

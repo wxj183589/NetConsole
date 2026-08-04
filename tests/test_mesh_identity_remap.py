@@ -10,6 +10,7 @@ from netconsole.repositories.mesh_mr_repository import (
     MeshIdentityRemapValidationError,
     MeshMrRepository,
 )
+from scripts.maintenance.remap_mesh_identity import _expected_projection
 
 
 def _create_detail(
@@ -346,6 +347,31 @@ def test_parser_keeps_display_format_while_repository_keys_are_compact() -> None
     assert normalize_mesh_mac("08:3b:e9:ec:a2:ff") == "08:3b:e9:ec:a2:ff"
     assert normalize_mesh_mac("083b-e9ec-a2ff") == "08:3b:e9:ec:a2:ff"
     assert normalize_mesh_mac("083b.e9ec.a2ff") == "08:3b:e9:ec:a2:ff"
+
+
+def test_dry_run_accepts_historical_detail_without_peer_section(
+    tmp_path: Path,
+) -> None:
+    repo = _create_detail(tmp_path, ["083be9eca2ff"])
+    legacy_path = repo.path.with_name("legacy.mesh.sqlite")
+    with sqlite3.connect(repo.path) as source, sqlite3.connect(legacy_path) as target:
+        source.backup(target)
+    with sqlite3.connect(legacy_path) as connection:
+        connection.execute("ALTER TABLE mesh_links DROP COLUMN peer_section")
+
+    expected, changed = _expected_projection(
+        legacy_path,
+        [_mapping("08:3b:e9:ec:a2:ff")],
+    )
+
+    assert expected == {"matched": 1, "unresolved": 0, "ambiguous": 0}
+    assert changed == 1
+    with sqlite3.connect(legacy_path) as connection:
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(mesh_links)")
+        }
+    assert "peer_section" not in columns
 
 
 def test_remap_uses_bounded_set_operations_for_fifty_thousand_links(

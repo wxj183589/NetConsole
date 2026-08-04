@@ -32,6 +32,7 @@ class MeshIdentityRemapPlanEntry:
     expected_ambiguous: int
     expected_changed_link_rows: int
     identity_index_revision: int
+    peer_keys: frozenset[str]
 
 
 def build_plan(
@@ -85,6 +86,7 @@ def build_plan(
                         expected_ambiguous=0,
                         expected_changed_link_rows=0,
                         identity_index_revision=revision,
+                        peer_keys=frozenset(),
                     )
                 )
                 continue
@@ -112,6 +114,7 @@ def build_plan(
                         expected_ambiguous=0,
                         expected_changed_link_rows=0,
                         identity_index_revision=revision,
+                        peer_keys=frozenset(),
                     )
                 )
                 continue
@@ -138,6 +141,11 @@ def build_plan(
                     expected_ambiguous=expected["ambiguous"],
                     expected_changed_link_rows=changed,
                     identity_index_revision=revision,
+                    peer_keys=frozenset(
+                        key
+                        for peer in peers
+                        if (key := normalize_mac_key(peer))
+                    ),
                 )
             )
     return entries
@@ -198,12 +206,20 @@ def manifest(
     *,
     site_name: str,
 ) -> dict[str, object]:
+    distinct_peer_keys = {
+        peer
+        for entry in entries
+        for peer in entry.peer_keys
+    }
     return {
         "mode": "dry-run",
         "site": site_name,
         "sources_scanned": len(entries),
         "eligible_sources": sum(1 for entry in entries if entry.eligible),
-        "distinct_peers": sum(entry.distinct_peers for entry in entries),
+        "distinct_peers": len(distinct_peer_keys),
+        "distinct_peer_occurrences": sum(
+            entry.distinct_peers for entry in entries
+        ),
         "current": {
             "matched": sum(entry.current_matched for entry in entries),
             "unresolved": sum(entry.current_unresolved for entry in entries),
@@ -217,7 +233,14 @@ def manifest(
                 entry.expected_changed_link_rows for entry in entries
             ),
         },
-        "entries": [asdict(entry) for entry in entries],
+        "entries": [
+            {
+                key: value
+                for key, value in asdict(entry).items()
+                if key != "peer_keys"
+            }
+            for entry in entries
+        ],
     }
 
 
@@ -294,10 +317,18 @@ def _expected_projection(
     counts = {"matched": 0, "unresolved": 0, "ambiguous": 0}
     changed = 0
     with _readonly_connection(path) as connection:
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(mesh_links)")
+        }
+
+        def projection(column: str) -> str:
+            return column if column in columns else f"NULL AS {column}"
+
         rows = connection.execute(
-            """
+            f"""
             SELECT peer_mac_normalized, peer_ap_name, peer_ap_mac, peer_site,
-                   peer_section, peer_radio_id, peer_match_rule,
+                   {projection("peer_section")}, peer_radio_id, peer_match_rule,
                    peer_identity_status, peer_identity_source,
                    peer_identity_reason
             FROM mesh_links

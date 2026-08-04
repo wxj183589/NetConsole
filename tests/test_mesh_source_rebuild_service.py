@@ -339,6 +339,9 @@ def test_identity_remap_maintenance_plan_is_read_only_and_apply_reuses_service(
     assert dry_run["mode"] == "dry-run"
     assert dry_run["sources_scanned"] == 2
     assert dry_run["eligible_sources"] == 2
+    assert dry_run["distinct_peers"] == 1
+    assert dry_run["distinct_peer_occurrences"] == 2
+    assert "30f5277a5a2f" not in json.dumps(dry_run)
     assert before == {
         path: sha256_file(path) for path in protected if path.is_file()
     }
