@@ -51,6 +51,7 @@ function createHarness(overrides: {
   externalToolService?: ExternalToolServiceLike
   artifactLstat?: (path: string) => Promise<{
     isFile(): boolean
+    isDirectory?(): boolean
     isSymbolicLink(): boolean
   }>
 } = {}) {
@@ -101,6 +102,7 @@ function createHarness(overrides: {
     externalToolService: overrides.externalToolService,
     artifactLstat: overrides.artifactLstat ?? (async () => ({
       isFile: () => true,
+      isDirectory: () => true,
       isSymbolicLink: () => false,
     })),
   })
@@ -689,7 +691,7 @@ describe('desktop IPC', () => {
     const { ipcMain, sender, shell } = createHarness({ fetchImpl: fetchMock })
     const handler = ipcMain.handlers.get(DESKTOP_IPC.openOnlineMrSessionLocation)!
 
-    await expect(handler({ sender }, '20260721_155004_ea78c0')).resolves.toEqual({ success: true })
+    await expect(handler({ sender }, '20260721_155004_ea78c0')).resolves.toEqual({ success: true, availability: 'AVAILABLE' })
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
       'http://127.0.0.1:43123/api/online-mr/sessions/20260721_155004_ea78c0/desktop-location',
     )
@@ -719,10 +721,47 @@ describe('desktop IPC', () => {
 
     await expect(handler({ sender }, 'session-1')).resolves.toEqual({
       success: false,
+      availability: 'MISSING',
       error: '该会话的本地文件已不存在。',
     })
     expect(shell.showItemInFolder).not.toHaveBeenCalled()
     expect(shell.openPath).not.toHaveBeenCalled()
+  })
+
+  it('returns structured missing and invalid states when an Online MR target changes externally', async () => {
+    const managedDirectory = resolve('managed-online-mr', 'session-1')
+    const response = () => new Response(
+      JSON.stringify({ target_type: 'directory', path: managedDirectory }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )
+    const missing = Object.assign(new Error('missing'), { code: 'ENOENT' })
+    let harness = createHarness({
+      fetchImpl: vi.fn<typeof fetch>(async () => response()),
+      artifactLstat: vi.fn(async () => { throw missing }),
+    })
+    let handler = harness.ipcMain.handlers.get(DESKTOP_IPC.openOnlineMrSessionLocation)!
+    await expect(handler({ sender: harness.sender }, 'session-1')).resolves.toEqual({
+      success: false,
+      availability: 'MISSING',
+      error: '该会话的本地文件已不存在。',
+    })
+    expect(harness.shell.openPath).not.toHaveBeenCalled()
+
+    harness = createHarness({
+      fetchImpl: vi.fn<typeof fetch>(async () => response()),
+      artifactLstat: vi.fn(async () => ({
+        isFile: () => true,
+        isDirectory: () => false,
+        isSymbolicLink: () => false,
+      })),
+    })
+    handler = harness.ipcMain.handlers.get(DESKTOP_IPC.openOnlineMrSessionLocation)!
+    await expect(handler({ sender: harness.sender }, 'session-1')).resolves.toEqual({
+      success: false,
+      availability: 'INVALID',
+      error: '该会话的本地路径无效或不是受管普通路径。',
+    })
+    expect(harness.shell.openPath).not.toHaveBeenCalled()
   })
 
   it('rejects arbitrary backend download URLs at the main-process boundary', async () => {

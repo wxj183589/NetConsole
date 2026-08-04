@@ -152,9 +152,19 @@ python -m scripts.maintenance.check_online_mr_session_state --task-id "<controll
 
 `/rail-transit/online-mr-analysis` 的会话动作统一收敛到当前会话顶部动作和会话记录行操作：顶部保留刷新、解析/强制解析、打开当前会话位置、生成 XLSX 和删除当前会话；会话记录表末列提供“打开本地目录”和“删除”。报告按钮只提交一次 Export Process 任务，进度、错误和 Artifact 继续在全局任务中心查看；会话记录表与顶部选择器共享 `session_id`，切换任一入口都同步当前行高亮。底部不再保留第二套报告卡片。
 
+分析页将详情选择与行级动作目标严格分离：`selectedSessionId` 只表示当前详情，打开和删除分别使用目标 `session_id`。打开未选中行不会切换详情或路由；删除非当前行只移除目标行，删除当前行优先选择原列表后一项、否则前一项，并同步 `query.session_id`。列表刷新保留仍存在的当前选择，不再每次无条件选择第一项。
+
+历史会话列表和详情请求使用独立 generation、AbortController、局点 generation 与删除 tombstone。删除成功后先本地移除，再用服务器列表校正；旧列表和迟到详情不能重新发布已删除会话。页面卸载或 `netconsole:before-site-switch` 触发时立即使旧请求失效并清理旧局点选择；已提交的删除 Job 可在 Backend 继续完成，但旧页面不再写入 Store。
+
+页面恢复删除任务时只接受任务公开结果中的 `session_id`；Backend 在删除任务尚未产出终态结果时从受控 `online_mr_session:<site_id>:<session_id>` 资源键补齐该字段，不以当前 selection 猜测操作目标。
+
 “打开会话位置”是 Electron 专用语义动作。Renderer 只向白名单 IPC 提交稳定 `session_id`，Electron Main 用受管回环 Origin 和内存会话令牌调用固定 FastAPI 端点；Application Service 在 `PathResolver` 管理根内按正式包、MESH/终端 raw、raw 目录、会话目录、parsed、关联报告的顺序解析目标。绝对路径不返回 Renderer，Browser/Server Mode 显式禁用该动作。
 
+Electron Main 在调用 Shell 前再次检查目标存在、类型匹配且不是符号链接，并以 `AVAILABLE / MISSING / INVALID` 返回结构化可用性。目录或文件被外部删除时，页面只提示目标行不可用并清理该行 loading，不清空当前详情或改变 selection。
+
 “删除会话”使用 `online_mr_session_delete` Background Job，并与同一会话的解析和报告共享 `online_mr_session:<site_id>:<session_id>` 资源键。页面在二次确认中固定展示 MR、会话 ID、开始时间、时长和完整性；后端再次核对稳定 ID、采集/停止状态和活动任务。删除范围只包括该 Session 目录、明确关联的 parsed/cache/报告 Artifact 及 `tasks.db` 中的关联映射/任务记录，不删除 Agent 远端包、用户导入源 ZIP、仓库外文件或其他会话。文件先原子隔离，再事务删除数据库记录；数据库失败会恢复原目录，后续 Artifact 或物理文件清理失败则返回 `PARTIAL_SUCCESS` 和具体失败项。任务开始受控提交后不可取消，避免 Worker 在目录与数据库提交之间被强制终止。符号链接、junction、路径穿越、管理根目录及根外目标全部拒绝。
+
+前端提前禁止删除活动采集、停止、最终化、解析、打包、归档和恢复中的会话；Backend 仍根据 Session 状态/阶段、Task、Mapping 与资源键做最终校验，分别返回采集中、归档中或资源使用中的业务错误，不允许删除接口中断采集。
 
 ## 8. 验证清单
 
@@ -169,7 +179,9 @@ python -m scripts.maintenance.check_online_mr_session_state --task-id "<controll
 - 实时视图、离线解析和报告三条路径不互相越权。
 - 顶部报告动作单次提交、任务窗口查看进度、选择器与当前表格行同步；
 - Electron 打开位置只提交 Session ID，Browser 降级禁用；
-- 删除确认取消不改数据；活动采集/解析/报告拒绝删除；数据库失败恢复、文件失败部分成功；删除后自动选中相邻会话。
+- 打开未选中行只显示目标行 loading；`MISSING / INVALID` 不改变当前详情和路由；
+- 删除确认取消不改数据；活动采集/停止/最终化/解析/报告拒绝删除；数据库失败恢复、文件失败部分成功；删除当前行选择相邻会话，删除其他行保持详情；
+- 迟到详情、旧列表、删除 tombstone、快速切换和局点切换 generation 不得复活或串入旧会话。
 
 ## 9. Windows Agent sidecar 边界
 

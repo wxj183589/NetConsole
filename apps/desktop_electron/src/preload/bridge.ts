@@ -233,7 +233,7 @@ export function createDesktopBridge(ipcRenderer: IpcRendererLike): NetConsoleDes
     openOnlineMrSessionLocation: (sessionId) => ipcRenderer.invoke(
       DESKTOP_IPC.openOnlineMrSessionLocation,
       validateOnlineMrSessionId(sessionId),
-    ) as Promise<{ success: boolean; error?: string }>,
+    ) as ReturnType<NonNullable<NetConsoleDesktopBridge['openOnlineMrSessionLocation']>>,
     openPath: (capabilityId) => ipcRenderer.invoke(
       DESKTOP_IPC.openPath,
       validateCapabilityId(capabilityId),

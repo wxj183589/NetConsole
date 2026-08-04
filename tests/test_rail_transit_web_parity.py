@@ -370,6 +370,7 @@ def test_online_mr_location_report_and_delete_share_session_resource(
     )
     job = normal.jobs[deletion.task_id]
     assert deletion.action == "online_mr_session_delete"
+    assert deletion.result_summary["session_id"] == "session-actions"
     assert job.params["resource_keys"] == [resource_key]
     assert job.params["session_dir"] == str(session.resolve())
     assert all(
@@ -379,6 +380,47 @@ def test_online_mr_location_report_and_delete_share_session_resource(
     with pytest.raises(RailTransitWebError) as cancel_rejected:
         service.cancel_task("demo", deletion.task_id)
     assert cancel_rejected.value.code == "TASK_NOT_CANCELLABLE"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_code", "expected_message"),
+    [
+        ("status", "RUNNING", "ONLINE_MR_SESSION_RUNNING", "采集或停止处理中"),
+        ("status", "STOPPING", "ONLINE_MR_SESSION_RUNNING", "采集或停止处理中"),
+        ("phase", "STOPPING_TRAFFIC", "ONLINE_MR_SESSION_RUNNING", "采集或停止处理中"),
+        ("phase", "PACKAGING", "ONLINE_MR_SESSION_FINALIZING", "归档、解析或打包"),
+        ("phase", "ARCHIVING", "ONLINE_MR_SESSION_FINALIZING", "归档、解析或打包"),
+        ("phase", "RECOVERING", "ONLINE_MR_SESSION_FINALIZING", "归档、解析或打包"),
+    ],
+)
+def test_online_mr_delete_rejects_active_collection_and_finalization_states(
+    tmp_path: Path,
+    field: str,
+    value: str,
+    expected_code: str,
+    expected_message: str,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    service, _normal, _export, _tasks = _service(paths)
+    session = _online_mr_session(paths, f"session-{field}")
+    metadata = json.loads((session / "session_meta.json").read_text(encoding="utf-8"))
+    metadata[field] = value
+    (session / "session_meta.json").write_text(
+        json.dumps(metadata, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RailTransitWebError) as raised:
+        service.start_online_mr_delete(
+            "demo",
+            f"session-{field}",
+            expected_session_id=f"session-{field}",
+            explicit_confirmation=True,
+        )
+
+    assert raised.value.code == expected_code
+    assert expected_message in str(raised.value)
+    assert session.is_dir()
 
 
 def test_online_mr_session_action_api_rejects_browser_location_and_confirms_delete(

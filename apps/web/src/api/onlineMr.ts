@@ -24,8 +24,8 @@ export async function getCurrentOnlineMrSession(): Promise<OnlineMrSessionDetail
   return (await apiRequest<ApiResponse<OnlineMrSessionDetail | null>>(`${root}/current`)).data
 }
 
-export async function listRecentOnlineMrSessions(limit = 20): Promise<OnlineMrSessionSummary[]> {
-  return (await apiRequest<ApiResponse<OnlineMrSessionSummary[]>>(`${root}/recent?limit=${limit}`)).data
+export async function listRecentOnlineMrSessions(limit = 20, signal?: AbortSignal): Promise<OnlineMrSessionSummary[]> {
+  return (await apiRequest<ApiResponse<OnlineMrSessionSummary[]>>(`${root}/recent?limit=${limit}`, { signal })).data
 }
 
 export async function getOnlineMrSession(sessionId: string, signal?: AbortSignal): Promise<OnlineMrSessionDetail> {

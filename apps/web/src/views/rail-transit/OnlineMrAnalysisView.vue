@@ -2,15 +2,14 @@
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { Delete, Download, Files, FolderOpened, Refresh, Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 
 import { ApiRequestError } from '../../api/client'
 import {
   getOnlineMrBusinessSummary,
   getOnlineMrRawTail,
-  getOnlineMrSession,
   listOnlineMrRawFiles,
-  listRecentOnlineMrSessions,
   queryOnlineMrBusinessTable,
   queryOnlineMrMetrics,
   queryOnlineMrSwitchRssiWindows,
@@ -23,6 +22,10 @@ import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { isFeatureEnabled } from '../../features'
+import {
+  onlineMrSessionDeleteBlockReason,
+  useOnlineMrAnalysisStore,
+} from '../../stores/onlineMrAnalysis'
 import type {
   OnlineMrBusinessSummary,
   OnlineMrBusinessRow,
@@ -36,14 +39,22 @@ import type {
   OnlineMrSwitchRssiWindow,
 } from '../../types/onlineMr'
 import type { RailTransitTask } from '../../types/railTransitWeb'
+import { BEFORE_SITE_SWITCH_EVENT } from '../../workspace/site-switch'
 
 const route = useRoute()
 const router = useRouter()
 const { confirm } = useConfirm()
 const userSelectedExport = useUserSelectedExport()
+const analysisStore = useOnlineMrAnalysisStore()
+const {
+  sessions,
+  selectedSessionId: sessionId,
+  selectedSessionDetail: detail,
+  loading: sessionsLoading,
+} = storeToRefs(analysisStore)
 
 type BusinessRow = OnlineMrBusinessRow
-type RequestContext = { sessionId: string; generation: number; signal: AbortSignal }
+type RequestContext = { siteKey: string; sessionId: string; generation: number; signal: AbortSignal }
 type ChartDefinition = { key: string; title: string; unit: string; metric?: readonly string[]; switchSource?: OnlineMrSwitchRssiSource }
 
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
@@ -82,9 +93,6 @@ const businessTableLabels: Record<OnlineMrBusinessTable, string> = {
   diagnostics: '诊断',
 }
 
-const sessions = ref<OnlineMrSessionSummary[]>([])
-const sessionId = ref('')
-const detail = ref<OnlineMrSessionDetail | null>(null)
 const businessSummary = ref<OnlineMrBusinessSummary | null>(null)
 const activeTab = ref('session-history')
 const chartTab = ref('rssi')
@@ -131,11 +139,11 @@ const rawFiles = ref<OnlineMrRawFile[]>([])
 const rawTail = ref<string[]>([])
 const rawName = ref('')
 const task = ref<RailTransitTask | null>(null)
-const loading = ref(false)
+const detailLoading = ref(false)
 const parseSubmitting = ref(false)
 const reportSubmitting = ref(false)
-const deleting = ref(false)
-const openingLocation = ref(false)
+const deletingSessionId = ref<string | null>(null)
+const openingSessionId = ref<string | null>(null)
 const error = ref('')
 const analysisError = ref('')
 const startTime = ref('')
@@ -143,7 +151,11 @@ const endTime = ref('')
 const downsample = ref<'NONE' | 'BUCKET_AVG' | 'MIN_MAX' | 'LATEST_PER_BUCKET'>('LATEST_PER_BUCKET')
 const bucketSeconds = ref(1)
 const analysisTabsHost = ref<HTMLElement | null>(null)
-const pendingDeleteTarget = ref<{ sessionId: string; index: number } | null>(null)
+const pendingDeleteTarget = ref<{
+  sessionId: string
+  previousSessionId: string | null
+  nextSessionId: string | null
+} | null>(null)
 const panel = useAvailablePanelHeight(analysisTabsHost, { minHeight: 420, bottomGap: 40 })
 
 const metricLimit = 1_000
@@ -153,6 +165,9 @@ const timelineLimit = 200
 let pollTimer: number | undefined
 let requestGeneration = 0
 let requestController: AbortController | null = null
+let viewGeneration = 0
+let viewActive = true
+const deleteRequests = new Set<string>()
 
 const mainLinkRows = computed(() => businessRows.value.main_link)
 const linkDetailRows = computed(() => businessRows.value.link_detail)
@@ -180,8 +195,9 @@ const reportDisabled = computed(() => !parsedReady.value || !isFeatureEnabled('w
 const taskActive = computed(() => Boolean(task.value && !terminalStates.has(task.value.status)))
 const parseBusy = computed(() => parseSubmitting.value || (taskActive.value && task.value?.action === 'online_mr_parse'))
 const reportBusy = computed(() => reportSubmitting.value || (taskActive.value && task.value?.action === 'online_mr_report'))
-const deleteBusy = computed(() => deleting.value || (taskActive.value && task.value?.action === 'online_mr_session_delete'))
+const deleteBusy = computed(() => Boolean(deletingSessionId.value))
 const sessionResourceBusy = computed(() => parseBusy.value || reportBusy.value || deleteBusy.value)
+const loading = computed(() => sessionsLoading.value || detailLoading.value)
 const tableHeight = computed(() => Math.max(360, panel.height.value - 58))
 const desktopLocationAvailable = computed(() => Boolean(
   window.netconsoleDesktop?.openOnlineMrSessionLocation
@@ -189,6 +205,7 @@ const desktopLocationAvailable = computed(() => Boolean(
   && isFeatureEnabled('web.online_mr_session_open_location'),
 ))
 const sessionActionsDisabled = computed(() => !detail.value || deleteBusy.value)
+const selectedDeleteBlockReason = computed(() => onlineMrSessionDeleteBlockReason(detail.value))
 const openLocationTitle = computed(() => desktopLocationAvailable.value
   ? ''
   : '该功能仅在 NetConsole Electron 桌面端可用。')
@@ -438,12 +455,14 @@ function stopPolling(): void {
   if (pollTimer !== undefined) window.clearTimeout(pollTimer)
   pollTimer = undefined
 }
-function poll(): void {
+function poll(expectedViewGeneration = viewGeneration): void {
   stopPolling()
   if (!task.value || terminalStates.has(task.value.status)) return
   pollTimer = window.setTimeout(async () => {
+    if (!viewActive || expectedViewGeneration !== viewGeneration || !task.value) return
     try {
       const updated = await getRailTransitTask(task.value!.task_id)
+      if (!viewActive || expectedViewGeneration !== viewGeneration) return
       rememberTask(updated)
       if (terminalStates.has(updated.status)) {
         if (updated.action === 'online_mr_parse') {
@@ -456,9 +475,12 @@ function poll(): void {
         }
         return
       }
-      poll()
+      poll(expectedViewGeneration)
     } catch (cause) {
-      error.value = message(cause, '任务状态读取失败')
+      if (viewActive && expectedViewGeneration === viewGeneration) {
+        error.value = message(cause, '任务状态读取失败')
+        poll(expectedViewGeneration)
+      }
     }
   }, 1000)
 }
@@ -504,66 +526,106 @@ function nextRequestContext(): RequestContext {
   requestController?.abort()
   requestController = new AbortController()
   requestGeneration += 1
-  return { sessionId: sessionId.value, generation: requestGeneration, signal: requestController.signal }
+  return { siteKey: currentSiteKey(), sessionId: sessionId.value || '', generation: requestGeneration, signal: requestController.signal }
 }
 function currentRequestContext(): RequestContext {
   if (!requestController) requestController = new AbortController()
-  return { sessionId: sessionId.value, generation: requestGeneration, signal: requestController.signal }
+  return { siteKey: currentSiteKey(), sessionId: sessionId.value || '', generation: requestGeneration, signal: requestController.signal }
 }
 function isCurrent(context: RequestContext): boolean {
-  return context.generation === requestGeneration && context.sessionId === sessionId.value && !context.signal.aborted
+  return viewActive
+    && context.siteKey === currentSiteKey()
+    && context.generation === requestGeneration
+    && context.sessionId === sessionId.value
+    && !analysisStore.isDeleted(context.sessionId)
+    && !context.signal.aborted
 }
 function isAbort(cause: unknown): boolean {
   return cause instanceof DOMException && cause.name === 'AbortError'
 }
+function currentSiteKey(): string {
+  return typeof route.query.site_id === 'string' ? route.query.site_id : '__current_site__'
+}
+function disposeForSiteSwitch(): void {
+  viewActive = false
+  viewGeneration += 1
+  requestController?.abort()
+  analysisStore.dispose()
+  detailLoading.value = false
+  clearSessionData()
+  openingSessionId.value = null
+  deletingSessionId.value = null
+  pendingDeleteTarget.value = null
+  deleteRequests.clear()
+  stopPolling()
+}
+function requestedRouteSessionId(): string | null {
+  return typeof route.query.session_id === 'string' && route.query.session_id ? route.query.session_id : null
+}
+async function syncRouteSessionId(targetSessionId: string | null): Promise<void> {
+  const current = requestedRouteSessionId()
+  if (current === targetSessionId) return
+  const query = { ...route.query }
+  if (targetSessionId) query.session_id = targetSessionId
+  else delete query.session_id
+  await router.replace({ query })
+}
 
-async function loadSessions(options: { preferredIndex?: number } = {}): Promise<void> {
-  loading.value = true
+async function loadSessions(options: {
+  preferredSessionId?: string | null
+  selectFirstWhenEmpty?: boolean
+  preserveDetail?: boolean
+} = {}): Promise<boolean> {
   error.value = ''
   try {
-    sessions.value = await listRecentOnlineMrSessions(100)
-    const requested = typeof route.query.session_id === 'string' ? route.query.session_id : ''
-    const retained = sessions.value.find((item) => item.session_id === sessionId.value)?.session_id
-    const requestedSession = sessions.value.find((item) => item.session_id === requested)?.session_id
-    const preferred = options.preferredIndex == null
-      ? ''
-      : sessions.value[Math.min(options.preferredIndex, Math.max(0, sessions.value.length - 1))]?.session_id || ''
-    sessionId.value = retained || preferred || requestedSession || sessions.value[0]?.session_id || ''
-    if (sessionId.value) {
-      await loadAnalysis()
-    } else {
+    const previousSessionId = sessionId.value
+    const result = await analysisStore.refreshSessions({
+      siteKey: currentSiteKey(),
+      requestedSessionId: requestedRouteSessionId(),
+      preferredSessionId: options.preferredSessionId,
+      selectFirstWhenEmpty: options.selectFirstWhenEmpty ?? previousSessionId == null,
+    })
+    if (!result.applied) return false
+    await syncRouteSessionId(result.selectedSessionId)
+    if (!result.selectedSessionId) {
       detail.value = null
+      detailLoading.value = false
       clearSessionData()
+    } else if (result.selectionChanged || !detail.value || !options.preserveDetail) {
+      await loadAnalysis()
     }
+    return true
   } catch (cause) {
-    error.value = message(cause, 'Online MR 会话列表加载失败')
-  } finally {
-    loading.value = false
+    if (!isAbort(cause)) error.value = message(cause, 'Online MR 会话列表加载失败')
+    return false
   }
 }
 async function loadAnalysis(): Promise<void> {
   if (!sessionId.value) return
   const context = nextRequestContext()
-  stopPolling()
-  task.value = null
+  const deletingTaskActive = taskActive.value && task.value?.action === 'online_mr_session_delete'
+  if (!deletingTaskActive) {
+    stopPolling()
+    task.value = null
+  }
   detail.value = null
   clearSessionData()
-  loading.value = true
+  detailLoading.value = true
   error.value = ''
   try {
-    const nextDetail = await getOnlineMrSession(context.sessionId, context.signal)
+    const nextDetail = await analysisStore.loadSelectedSession(context.siteKey)
     if (!isCurrent(context)) return
-    detail.value = nextDetail
-    await loadActiveTab(activeTab.value, context)
+    if (nextDetail) await loadActiveTab(activeTab.value, context)
   } catch (cause) {
     if (!isAbort(cause) && isCurrent(context)) error.value = message(cause, 'Online MR 会话详情加载失败')
   } finally {
-    if (isCurrent(context)) loading.value = false
+    if (isCurrent(context)) detailLoading.value = false
   }
 }
 async function loadBusinessSummary(context = currentRequestContext()): Promise<void> {
   if (!context.sessionId || !isCurrent(context) || businessSummary.value) return
-  businessSummary.value = await getOnlineMrBusinessSummary(context.sessionId)
+  const value = await getOnlineMrBusinessSummary(context.sessionId)
+  if (isCurrent(context)) businessSummary.value = value
 }
 async function loadBusinessTable(table: OnlineMrBusinessTable, append = false, context = currentRequestContext()): Promise<void> {
   if (!context.sessionId || !isCurrent(context) || (!append && businessRows.value[table].length)) return
@@ -646,26 +708,43 @@ function openTaskWindow(): void {
   void router.push({ name: 'tasks', query: { module: 'rail', ...(taskId ? { task_id: taskId } : {}) } })
 }
 function selectSession(row: OnlineMrSessionSummary): void {
-  if (deleteBusy.value || row.session_id === sessionId.value) return
-  sessionId.value = row.session_id
+  if (row.session_id === deletingSessionId.value || row.session_id === sessionId.value) return
+  analysisStore.selectSession(row.session_id)
+  void syncRouteSessionId(row.session_id)
+  void loadAnalysis()
+}
+function selectSessionId(value: string): void {
+  if (!value || value === deletingSessionId.value || value === sessionId.value || !analysisStore.sessionById(value)) return
+  analysisStore.selectSession(value)
+  void syncRouteSessionId(value)
   void loadAnalysis()
 }
 async function openSessionLocation(row?: OnlineMrSessionSummary | OnlineMrSessionDetail): Promise<void> {
   const selected = row || detail.value
-  if (!selected || deleteBusy.value) return
+  if (!selected || deletingSessionId.value === selected.session_id || openingSessionId.value) return
   const bridge = window.netconsoleDesktop?.openOnlineMrSessionLocation
   if (!bridge || !desktopLocationAvailable.value) {
     ElMessage.warning('该功能仅在 NetConsole Electron 桌面端可用。')
     return
   }
-  openingLocation.value = true
+  const targetSessionId = selected.session_id
+  openingSessionId.value = targetSessionId
   try {
-    const result = await bridge(selected.session_id)
-    if (!result.success) ElMessage.error(result.error || '打开会话位置失败')
+    const result = await bridge(targetSessionId)
+    if (!result.success) {
+      const fallback = result.availability === 'MISSING'
+        ? '该会话的本地文件已不存在。'
+        : result.availability === 'INVALID'
+          ? '该会话的本地路径无效或不可访问。'
+          : '打开会话位置失败'
+      const notice = `${selected.device_name || selected.mr_name || targetSessionId}：${result.error || fallback}`
+      if (result.availability === 'MISSING') ElMessage.warning(notice)
+      else ElMessage.error(notice)
+    }
   } catch (cause) {
-    ElMessage.error(message(cause, '打开会话位置失败'))
+    ElMessage.error(`${selected.device_name || selected.mr_name || targetSessionId}：${message(cause, '打开会话位置失败')}`)
   } finally {
-    openingLocation.value = false
+    if (openingSessionId.value === targetSessionId) openingSessionId.value = null
   }
 }
 async function startParse(forceReparse: boolean): Promise<void> {
@@ -728,66 +807,117 @@ function sessionIntegrityLabel(selected: OnlineMrSessionSummary | OnlineMrSessio
 async function finishDeleteTask(updated: RailTransitTask): Promise<void> {
   const target = pendingDeleteTarget.value
   pendingDeleteTarget.value = null
-  if (!target) return
-  if (updated.status === 'FAILED' || !taskResultBoolean(updated, 'session_deleted')) {
-    ElMessage.error(updated.error_message || updated.message || '会话删除失败，原会话已保留。')
+  const targetSessionId = target?.sessionId || deletingSessionId.value
+  if (!targetSessionId) return
+  try {
+    if (updated.status === 'FAILED' || !taskResultBoolean(updated, 'session_deleted')) {
+      ElMessage.error(updated.error_message || updated.message || '会话删除失败，原会话已保留。')
+      return
+    }
+    const issues = [...taskResultStrings(updated, 'failed_items'), ...taskResultStrings(updated, 'warnings')]
+    const deletingCurrent = sessionId.value === targetSessionId
+    analysisStore.removeSessionLocally(targetSessionId)
+    if (deletingCurrent) {
+      requestController?.abort()
+      detailLoading.value = false
+      detail.value = null
+      clearSessionData()
+      const adjacent = target?.nextSessionId && analysisStore.sessionById(target.nextSessionId)
+        ? target.nextSessionId
+        : target?.previousSessionId && analysisStore.sessionById(target.previousSessionId)
+          ? target.previousSessionId
+          : null
+      analysisStore.selectSession(adjacent)
+      await syncRouteSessionId(adjacent)
+      if (adjacent) await loadAnalysis()
+    }
+    const refreshed = await loadSessions({ preserveDetail: true, selectFirstWhenEmpty: false })
+    if (!refreshed) {
+      ElMessage.warning('会话已删除，但会话列表刷新失败，可手动刷新。')
+    } else if (updated.status === 'COMPLETED' && issues.length === 0) {
+      ElMessage.success('会话及其受管本地数据已删除。')
+    } else {
+      ElMessage.warning(`会话主体已删除，部分关联项处理失败：${issues.join('；') || updated.message || '请在任务中心查看详情。'}`)
+    }
+  } finally {
+    deleteRequests.delete(targetSessionId)
+    if (deletingSessionId.value === targetSessionId) deletingSessionId.value = null
+  }
+}
+async function deleteSession(targetSessionId: string): Promise<void> {
+  if (!targetSessionId || deleteRequests.size > 0 || deletingSessionId.value) return
+  const selected = analysisStore.sessionById(targetSessionId) || (detail.value?.session_id === targetSessionId ? detail.value : null)
+  if (!selected || !isFeatureEnabled('web.online_mr_session_delete')) return
+  const blockReason = onlineMrSessionDeleteBlockReason(selected)
+  if (blockReason) {
+    ElMessage.warning(`${selected.device_name || selected.mr_name || targetSessionId}：${blockReason}`)
     return
   }
-  const issues = [...taskResultStrings(updated, 'failed_items'), ...taskResultStrings(updated, 'warnings')]
-  if (sessionId.value === target.sessionId) {
-    requestController?.abort()
-    sessionId.value = ''
-    detail.value = null
-    clearSessionData()
-  }
-  await loadSessions({ preferredIndex: target.index })
-  if (updated.status === 'COMPLETED' && issues.length === 0) {
-    ElMessage.success('会话及其受管本地数据已删除。')
-  } else {
-    ElMessage.warning(`会话主体已删除，部分关联项处理失败：${issues.join('；') || updated.message || '请在任务中心查看详情。'}`)
+  if (parseBusy.value || reportBusy.value) return
+  deleteRequests.add(targetSessionId)
+  const selectedIndex = sessions.value.findIndex((item) => item.session_id === targetSessionId)
+  const previousSessionId = selectedIndex > 0 ? sessions.value[selectedIndex - 1]?.session_id || null : null
+  const nextSessionId = selectedIndex >= 0 ? sessions.value[selectedIndex + 1]?.session_id || null : null
+  const duration = selected.duration_minutes == null ? '无数据' : `${formatNumber(selected.duration_minutes, 3)} min`
+  let submitted = false
+  try {
+    const accepted = await confirm({
+      type: 'DESTRUCTIVE',
+      title: '删除 Online MR 会话',
+      message: [
+        `MR：${selected.device_name || selected.mr_name || '无数据'}`,
+        `会话 ID：${targetSessionId}`,
+        `开始时间：${selected.started_at || '无数据'}`,
+        `会话状态：${selected.status || '无数据'}`,
+        `采集时长：${duration}`,
+        `数据完整性：${sessionIntegrityLabel(selected)}`,
+        `原始日志：${selected.has_raw_data ? '有' : '无'}；归档文件：${selected.has_package ? '有' : '无'}`,
+        '',
+        '删除后将移除该会话的解析数据、缓存、报告记录及 NetConsole 管理的本地会话文件，此操作不可撤销。',
+      ].join('\n'),
+      confirmText: '确认删除',
+    })
+    if (!accepted) return
+    deletingSessionId.value = targetSessionId
+    error.value = ''
+    const submittedTask = await deleteOnlineMrSession(targetSessionId)
+    submitted = true
+    pendingDeleteTarget.value = { sessionId: targetSessionId, previousSessionId, nextSessionId }
+    rememberTask(submittedTask)
+    if (terminalStates.has(submittedTask.status)) await finishDeleteTask(submittedTask)
+    else poll(viewGeneration)
+  } catch (cause) {
+    error.value = message(cause, 'Online MR 会话删除启动失败')
+  } finally {
+    if (!submitted) {
+      deleteRequests.delete(targetSessionId)
+      if (deletingSessionId.value === targetSessionId) deletingSessionId.value = null
+    }
   }
 }
 async function deleteCurrentSession(row?: OnlineMrSessionSummary | OnlineMrSessionDetail): Promise<void> {
   const selected = row || detail.value
-  if (!selected || sessionResourceBusy.value || !isFeatureEnabled('web.online_mr_session_delete')) return
-  const selectedIndex = Math.max(0, sessions.value.findIndex((item) => item.session_id === selected.session_id))
-  const duration = selected.duration_minutes == null ? '无数据' : `${formatNumber(selected.duration_minutes, 3)} min`
-  const accepted = await confirm({
-    type: 'DESTRUCTIVE',
-    title: '删除 Online MR 会话',
-    message: [
-      `MR：${selected.device_name || selected.mr_name || '无数据'}`,
-      `会话 ID：${selected.session_id}`,
-      `开始时间：${selected.started_at || '无数据'}`,
-      `采集时长：${duration}`,
-      `数据完整性：${sessionIntegrityLabel(selected)}`,
-      '',
-      '删除后将移除该会话的解析数据、缓存、报告记录及 NetConsole 管理的本地会话文件，此操作不可撤销。',
-    ].join('\n'),
-    confirmText: '确认删除',
-  })
-  if (!accepted) return
-  deleting.value = true
-  error.value = ''
-  try {
-    const submitted = await deleteOnlineMrSession(selected.session_id)
-    pendingDeleteTarget.value = { sessionId: selected.session_id, index: selectedIndex }
-    rememberTask(submitted)
-    poll()
-  } catch (cause) {
-    error.value = message(cause, 'Online MR 会话删除启动失败')
-  } finally {
-    deleting.value = false
-  }
+  if (selected) await deleteSession(selected.session_id)
 }
 async function recoverTask(): Promise<void> {
   try {
     const saved = localStorage.getItem('netconsole.online-mr-analysis.last-task') || ''
     const rows = await recoverRailTransitTasks()
     rememberTask(rows.find((item) => item.task_id === saved) || rows.find((item) => ['online_mr_parse', 'online_mr_report', 'online_mr_session_delete'].includes(item.action)) || null)
-    if (task.value?.action === 'online_mr_session_delete' && task.value.status !== 'COMPLETED') {
-      const deletingSession = String(task.value.result_summary.session_id || sessionId.value)
-      pendingDeleteTarget.value = { sessionId: deletingSession, index: Math.max(0, sessions.value.findIndex((item) => item.session_id === deletingSession)) }
+    if (task.value?.action === 'online_mr_session_delete') {
+      const deletingSession = String(task.value.result_summary.session_id || '')
+      const index = sessions.value.findIndex((item) => item.session_id === deletingSession)
+      deletingSessionId.value = deletingSession || null
+      if (deletingSession) deleteRequests.add(deletingSession)
+      pendingDeleteTarget.value = deletingSession ? {
+        sessionId: deletingSession,
+        previousSessionId: index > 0 ? sessions.value[index - 1]?.session_id || null : null,
+        nextSessionId: index >= 0 ? sessions.value[index + 1]?.session_id || null : null,
+      } : null
+      if (terminalStates.has(task.value.status)) {
+        await finishDeleteTask(task.value)
+        return
+      }
     }
     poll()
   } catch (cause) {
@@ -828,26 +958,66 @@ watch([downsample, bucketSeconds], () => {
   void loadActiveTab('charts', context)
 })
 watch(() => route.query.site_id, () => {
+  viewGeneration += 1
+  stopPolling()
+  requestController?.abort()
+  analysisStore.resetForSite(currentSiteKey())
   detail.value = null
+  detailLoading.value = false
   businessSummary.value = null
-  sessionId.value = ''
-  sessions.value = []
   clearSessionData()
   nextRequestContext()
-  void loadSessions()
+  openingSessionId.value = null
+  deletingSessionId.value = null
+  pendingDeleteTarget.value = null
+  deleteRequests.clear()
+  void loadSessions({ selectFirstWhenEmpty: true })
+})
+watch(() => route.query.session_id, (next) => {
+  const target = typeof next === 'string' && next ? next : null
+  if (target === sessionId.value) return
+  if (target && analysisStore.sessionById(target) && !analysisStore.isDeleted(target)) {
+    analysisStore.selectSession(target)
+    void loadAnalysis()
+    return
+  }
+  analysisStore.clearSelectedSession()
+  detail.value = null
+  detailLoading.value = false
+  clearSessionData()
+  if (target) void syncRouteSessionId(null)
 })
 
 onMounted(async () => {
-  await loadSessions()
+  viewActive = true
+  window.addEventListener(BEFORE_SITE_SWITCH_EVENT, disposeForSiteSwitch)
+  await loadSessions({ selectFirstWhenEmpty: true })
   await recoverTask()
 })
 onActivated(() => {
+  viewActive = true
   if (task.value && !terminalStates.has(task.value.status)) poll()
 })
-onDeactivated(stopPolling)
-onBeforeUnmount(() => {
+onDeactivated(() => {
+  viewActive = false
+  viewGeneration += 1
   requestController?.abort()
+  analysisStore.invalidateRequests()
+  detailLoading.value = false
+  openingSessionId.value = null
+  deletingSessionId.value = null
   stopPolling()
+})
+onBeforeUnmount(() => {
+  viewActive = false
+  viewGeneration += 1
+  requestController?.abort()
+  analysisStore.dispose()
+  detailLoading.value = false
+  openingSessionId.value = null
+  deletingSessionId.value = null
+  stopPolling()
+  window.removeEventListener(BEFORE_SITE_SWITCH_EVENT, disposeForSiteSwitch)
 })
 
 function businessRowsFor(table: OnlineMrBusinessTable): BusinessRow[] {
@@ -870,15 +1040,15 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
         <p>会话、原始日志与采集记录不依赖 parsed 数据库；业务表按解析结果结构化展示，动态图继续复用现有指标接口。</p>
       </div>
       <div class="actions">
-        <el-select v-model="sessionId" class="session-selector" filterable placeholder="选择 Online MR 会话" :disabled="deleteBusy" @change="loadAnalysis">
+        <el-select :model-value="sessionId || ''" class="session-selector" filterable placeholder="选择 Online MR 会话" @change="selectSessionId">
           <el-option v-for="item in sessions" :key="item.session_id" :label="`${item.device_name || item.mr_name} · ${item.status} · ${item.started_at || item.session_id}`" :value="item.session_id" />
         </el-select>
         <el-button :icon="Refresh" :loading="loading" :disabled="deleteBusy" @click="loadSessions()">刷新</el-button>
         <el-button data-testid="parse-session" :disabled="!canParse || parsedStatus === 'parsing' || sessionActionsDisabled || reportBusy || parseBusy" :loading="parseBusy" @click="startParse(false)">{{ parsedStatus === 'missing' ? '解析当前会话' : '重新解析' }}</el-button>
         <el-button data-testid="force-reparse-session" :disabled="!canParse || parsedStatus === 'parsing' || sessionActionsDisabled || reportBusy || parseBusy" :loading="parseBusy" @click="startParse(true)">强制重新解析</el-button>
-        <el-button data-testid="open-session-location" :icon="FolderOpened" :loading="openingLocation" :disabled="sessionActionsDisabled || openingLocation || !desktopLocationAvailable" :title="openLocationTitle" @click="openSessionLocation()">打开本地目录</el-button>
+        <el-button data-testid="open-session-location" :icon="FolderOpened" :loading="openingSessionId === sessionId" :disabled="sessionActionsDisabled || Boolean(openingSessionId) || !desktopLocationAvailable" :title="openLocationTitle" @click="openSessionLocation()">打开本地目录</el-button>
         <el-button data-testid="generate-report" type="primary" :icon="Download" :loading="reportBusy" :disabled="reportDisabled || sessionActionsDisabled || sessionResourceBusy" :title="reportDisabled ? parsedMessage : ''" @click="startReport">生成 XLSX 报告</el-button>
-        <el-button data-testid="delete-session" type="danger" plain :icon="Delete" :loading="deleteBusy" :disabled="sessionActionsDisabled || sessionResourceBusy || !isFeatureEnabled('web.online_mr_session_delete')" @click="deleteCurrentSession()">删除</el-button>
+        <el-button data-testid="delete-session" type="danger" plain :icon="Delete" :loading="deletingSessionId === sessionId" :disabled="sessionActionsDisabled || sessionResourceBusy || Boolean(selectedDeleteBlockReason) || !isFeatureEnabled('web.online_mr_session_delete')" :title="selectedDeleteBlockReason" @click="deleteCurrentSession()">删除</el-button>
       </div>
     </header>
 
@@ -920,10 +1090,10 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
       <div ref="analysisTabsHost" class="analysis-tabs-host">
       <el-tabs :model-value="activeTab" class="analysis-tabs" @tab-change="changeTab">
         <el-tab-pane name="session-history" label="会话记录">
-          <NcDataTable table-id="online-mr-analysis-session-history" route-key="/rail-transit/online-mr-analysis" :data="sessions" :columns="sessionColumns" row-key="session_id" :current-row-key="sessionId" highlight-current-row border :height="tableHeight" empty-text="暂无会话" @row-click="selectSession">
+          <NcDataTable table-id="online-mr-analysis-session-history" route-key="/rail-transit/online-mr-analysis" :data="sessions" :columns="sessionColumns" row-key="session_id" :current-row-key="sessionId || ''" highlight-current-row border :height="tableHeight" empty-text="暂无会话" @row-click="selectSession">
             <template #cell-actions="{ row }">
-              <el-button :data-testid="`row-open-session-location-${row.session_id}`" link type="primary" :icon="FolderOpened" :loading="openingLocation && row.session_id === sessionId" :disabled="deleteBusy || !desktopLocationAvailable" :title="openLocationTitle" @click.stop="openSessionLocation(row)">打开本地目录</el-button>
-              <el-button :data-testid="`row-delete-session-${row.session_id}`" link type="danger" :icon="Delete" :loading="deleteBusy && row.session_id === sessionId" :disabled="sessionResourceBusy || !isFeatureEnabled('web.online_mr_session_delete')" @click.stop="deleteCurrentSession(row)">删除</el-button>
+              <el-button :data-testid="`row-open-session-location-${row.session_id}`" link type="primary" :icon="FolderOpened" :loading="openingSessionId === row.session_id" :disabled="Boolean(openingSessionId) || deletingSessionId === row.session_id || !desktopLocationAvailable" :title="openLocationTitle" @click.stop="openSessionLocation(row)">打开本地目录</el-button>
+              <el-button :data-testid="`row-delete-session-${row.session_id}`" link type="danger" :icon="Delete" :loading="deletingSessionId === row.session_id" :disabled="sessionResourceBusy || openingSessionId === row.session_id || Boolean(onlineMrSessionDeleteBlockReason(row)) || !isFeatureEnabled('web.online_mr_session_delete')" :title="onlineMrSessionDeleteBlockReason(row)" @click.stop="deleteSession(row.session_id)">删除</el-button>
             </template>
           </NcDataTable>
         </el-tab-pane>

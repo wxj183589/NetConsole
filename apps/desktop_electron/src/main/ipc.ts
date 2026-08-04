@@ -88,6 +88,7 @@ interface ShellLike {
 
 interface FileStatusLike {
   isFile(): boolean
+  isDirectory?(): boolean
   isSymbolicLink(): boolean
 }
 
@@ -539,6 +540,7 @@ export function registerDesktopIpc(
       validateOnlineMrSessionId(value),
       dependencies.fetchImpl ?? fetch,
       dependencies.logger,
+      dependencies.artifactLstat,
     )),
   )
   dependencies.ipcMain.handle(
@@ -821,7 +823,8 @@ async function openOnlineMrSessionLocation(
   sessionId: string,
   fetchImpl: typeof fetch,
   logger: DesktopLogger = () => undefined,
-): Promise<{ success: boolean; error?: string }> {
+  inspect: (path: string) => Promise<FileStatusLike> = lstat,
+): Promise<NativeActionResult> {
   try {
     const runtime = backend.getRuntimeInfo()
     const base = new URL(runtime.baseUrl)
@@ -847,6 +850,7 @@ async function openOnlineMrSessionLocation(
     if (!response.ok) {
       return {
         success: false,
+        availability: response.status === 404 ? 'MISSING' : 'INVALID',
         error: await safeBackendActionError(
           response,
           '当前会话没有可打开的本地目录。',
@@ -862,17 +866,45 @@ async function openOnlineMrSessionLocation(
     ) {
       throw new Error('invalid managed target')
     }
+    const unavailable = await onlineMrLocationUnavailable(body.path, body.target_type, inspect)
+    if (unavailable) return unavailable
     if (body.target_type === 'file') {
       shell.showItemInFolder(body.path)
     } else {
       const error = await shell.openPath(body.path)
-      if (error) throw new Error('open directory failed')
+      if (error) {
+        return await onlineMrLocationUnavailable(body.path, body.target_type, inspect)
+          ?? { success: false, availability: 'INVALID', error: '系统未能打开该会话目录。' }
+      }
     }
     logger('ELECTRON_ONLINE_MR_LOCATION_OPENED')
-    return { success: true }
+    return { success: true, availability: 'AVAILABLE' }
   } catch {
     logger('ELECTRON_ONLINE_MR_LOCATION_FAILED')
-    return { success: false, error: '打开会话本地目录失败，请检查文件是否仍存在。' }
+    return { success: false, availability: 'INVALID', error: '打开会话本地目录失败，请检查文件是否仍存在。' }
+  }
+}
+
+async function onlineMrLocationUnavailable(
+  path: string,
+  targetType: 'file' | 'directory',
+  inspect: (path: string) => Promise<FileStatusLike> = lstat,
+): Promise<NativeActionResult | null> {
+  try {
+    const status = await inspect(path)
+    const validType = targetType === 'file'
+      ? status.isFile()
+      : typeof status.isDirectory === 'function' && status.isDirectory()
+    if (status.isSymbolicLink() || !validType) {
+      return { success: false, availability: 'INVALID', error: '该会话的本地路径无效或不是受管普通路径。' }
+    }
+    return null
+  } catch (cause) {
+    const code = String((cause as { code?: unknown } | null)?.code || '')
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return { success: false, availability: 'MISSING', error: '该会话的本地文件已不存在。' }
+    }
+    return { success: false, availability: 'INVALID', error: '该会话的本地路径当前不可访问。' }
   }
 }
 
