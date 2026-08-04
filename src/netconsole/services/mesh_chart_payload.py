@@ -482,7 +482,7 @@ def _link_context_summary(row: dict[str, object]) -> dict[str, object]:
     metrics = _metrics(row)
     return {
         "link_id": row.get("id") or row.get("link_id"),
-        "peer_mac": row.get("peer_mac_normalized") or row.get("peer_mac_raw") or "",
+        "peer_mac": row.get("peer_mac_display") or row.get("peer_mac_normalized") or row.get("peer_mac_raw") or "",
         "ap_mac": row.get("peer_ap_mac") or "",
         "ap_name": row.get("peer_ap_name") or "",
         "site": row.get("peer_site") or "",

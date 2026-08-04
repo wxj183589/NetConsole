@@ -279,3 +279,48 @@ CSV 仅包含要求的 Peer、候选数量、alias/Resolver 结果和匹配后�
 建议进入修复阶段。证据已将问题收敛到一个可重复、可在 disposable 副本上 100% 修复的 key 规范契约错误，不需要继续连接现场设备或猜测 Identity builder。
 
 修复应在基于最新 `main` 的独立 worktree/分支完成，并保留对运行版本 `97a0ac43` 生成的历史 compact parsed DB 的兼容。推荐分支 `fix/ningbo-line6-mesh-ap-identity`，推荐 worktree `D:\study\NetConsole-worktrees\fix-ningbo-line6-mesh-ap-identity`。
+
+## 11. 修复结果
+
+本节记录调查结论落地后的实现和验证，前文真实数据证据保持不变。
+
+### 11.1 实现边界
+
+- 修复提交：`94122238`（Codex task `019fccf2-1476-7852-a2a8-633050307b14`）；本节文档修订随后单独提交。
+- `mesh_peer_mapping.peer_mac_normalized`、`mesh_peer_resolve_cache.peer_mac` 和新写入 `mesh_links.peer_mac_normalized` 统一采用 `normalize_mac_key()` 的 12 位小写紧凑格式；parser 内存模型和既有展示列继续保留显示格式。
+- remap 在 `BEGIN IMMEDIATE` 事务内覆盖 mapping/cache、集合式更新 `mesh_links` 和 `active_points`，然后从数据库回读校验 key、覆盖、状态、行数及 `mesh_links`/`switch_events` 事实指纹；任一校验失败回滚并抛出结构化错误，不发布 `ready`。
+- 健康 parsed DB 继续走 identity-only remap；失败不会静默回退 raw 重解析。`MeshSourceRebuildService` 只在 Identity revision 有效、事务提交且验证通过后写入 detail/source metadata。
+- 增加 `scripts/maintenance/remap_mesh_identity.py`，默认 dry-run；`--apply` 逐来源复用正式 Service，单来源失败隔离，重复执行幂等。
+
+### 11.2 自动测试
+
+- MESH 分析、查询 Web API、identity remap 和来源重建定向组合：`131 passed, 2 warnings`；相关筛选集 `tests -k "mesh and (identity or remap or rebuild)"`：`64 passed, 3365 deselected, 1 warning`。
+- 改动范围 Ruff check、`py_compile` 和 `pnpm --dir apps/web exec vue-tsc -b` 通过；Web 定向命令实际完成 `150 files / 917 tests`。
+- `ruff format --check` 报告仓库现有 9 个文件需要重排，本次未引入无关全文件格式化；该项待项目统一格式化基线处理，不能记作本次通过。
+
+### 11.3 disposable 副本验收
+
+仅在 `D:\NetConsoleDiagnostic\mesh-ap-identity-20260804\codex-fix-validation-019fccf2` 的复制数据库执行，未访问 `D:\NetConsoleData`，未连接 AC/MR，未改写原始日志或调查快照：
+
+| 指标 | remap 前 | remap 后 |
+| --- | ---: | ---: |
+| source 1 parsed `mesh_links` | 77,182 | 77,182 |
+| distinct Peer | 254 | 254 |
+| identity 状态 | 77,182 unresolved | 77,182 matched |
+| ACTIVE / STANDBY | 35,200 / 41,982 | 35,200 / 41,982 |
+| `switch_events` | 1,648 | 1,648 |
+| `active_points` | 35,200 | 35,200 |
+| 事实指纹 | `5aa77384a68f8aeaed916957ada531a7e01f8eda5095654f09aa01ae9c47be62` | 同前 |
+
+Repository 回读摘要为 mapping/matched/covered `254/254/254`、updated link rows `77,182`、updated active points `35,200`、Identity revision `1`、`validation_status=passed`；第二次执行结果一致。
+
+### 11.4 历史恢复
+
+部署修复版本后，在 NetConsole 完全退出或通过任务中心逐来源执行“重新解析当前日志”；健康 detail DB 不读取 raw，仅重映射身份投影。批量恢复先运行：
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.maintenance.remap_mesh_identity --site <局点> --dry-run
+.\.venv\Scripts\python.exe -m scripts.maintenance.remap_mesh_identity --site <局点> --profile <MR Profile> --apply
+```
+
+无需 schema 迁移、无需删除/重新导入 raw，不改变 MESH 事实。source 1 disposable 验收已证明历史 unresolved 投影可恢复；宁波 6 号线其余来源应按 dry-run 输出逐来源确认后再 apply，本文不把未复制验收的来源数字写成已验证结果。

@@ -34,6 +34,7 @@
 - Identity source revision 只监听 AP 身份来源和被 FIT-AP 引用 AC 的厂商字段；无关设备与 `device_facts` 更新不再使索引过期。基础资料和光衰写任务在来源提交后按批次收口索引。
 - 原始 Peer、Peer Radio 与解析物理 AP 身份在数据库查询、页面、图表、主链路、报告和链路明细中分层展示；同名不同 MAC 不再合并为同一物理 AP，历史 detail 库缺少新身份列时继续只读兼容。
 - 健康的 MESH detail 库重新解析时只原子重映射 AP Identity 投影，保持原始 Peer、时间、RSSI、Busy、主备链、链路状态、样本和事件不变；detail 缺失、损坏或 schema 不兼容时才回退到受保护 raw 重建。
+- 修复历史 MESH identity-only remap 的持久化键契约：mapping、resolve cache 和新写入链路键统一使用 12 位紧凑 MAC；单事务完成后回读校验覆盖、状态、行数和事实指纹，零写回不得发布 `ready`。健康 parsed 来源可通过维护脚本幂等恢复，无需改 schema 或重解析 raw。
 - 来源列表、批量操作和当前详情新增受控删除：可只删解析结果并从归档 raw 重建，也可删除当前数据根内归档副本、派生结果、指纹和关联报告后重新导入；外部原文件永不删除，失败使用 quarantine 补偿恢复。
 
 ### MESH 图表与导出

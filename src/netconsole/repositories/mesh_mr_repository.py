@@ -47,6 +47,7 @@ _METRIC_COLUMNS = tuple(dict.fromkeys(column for _name, left, right in PAIRED_ME
 _METRIC_SELECT_COLUMNS = ", ".join(_METRIC_COLUMNS)
 _MESH_LINK_CHART_COLUMNS = (
     "id, source_file_id, session_id, sample_time, radio, link_state, peer_mac_raw, peer_mac_normalized, "
+    "peer_mac AS peer_mac_display, "
     "peer_ap_name, peer_ap_mac, peer_site, peer_radio, peer_radio_label, peer_radio_mac, establish_time, "
     "local_signal_dbm, peer_signal_dbm, "
     "(SELECT s.timestamp_tag FROM samples s WHERE s.id = mesh_links.sample_id) AS timestamp_tag, "
@@ -59,6 +60,24 @@ _MESH_LINK_CHART_IDENTITY_COLUMNS = (
     "peer_match_rule",
     "peer_match_confidence",
 )
+_MESH_LINK_IDENTITY_PROJECTION_COLUMNS = {
+    "peer_ap_name",
+    "peer_ap_mac",
+    "peer_site",
+    "peer_section",
+    "peer_location",
+    "peer_direction",
+    "peer_radio_id",
+    "peer_radio",
+    "peer_radio_label",
+    "peer_radio_mac",
+    "peer_match_rule",
+    "peer_match_confidence",
+    "peer_resolve_source",
+    "peer_identity_status",
+    "peer_identity_source",
+    "peer_identity_reason",
+}
 _MESH_EVENT_CHART_COLUMNS = (
     "id, source_file_id, event_time, event_type, radio, from_peer_mac, to_peer_mac, "
     "current_sample_time, observed_window_ms, details_json"
@@ -154,6 +173,14 @@ class DeleteParsedDataResult:
 
 class MeshSchemaRebuildRequired(RuntimeError):
     pass
+
+
+class MeshIdentityRemapValidationError(RuntimeError):
+    def __init__(self, code: str, details: dict[str, object]) -> None:
+        self.code = code
+        self.details = details
+        fields = ", ".join(f"{key}={value}" for key, value in details.items())
+        super().__init__(f"{code}: {fields}")
 
 
 class _ReadOnlyConnection(sqlite3.Connection):
@@ -1037,7 +1064,7 @@ class MeshMrRepository:
                         record.link_state_raw,
                         record.link_state,
                         record.peer_mac_raw,
-                        record.peer_mac_normalized,
+                        normalize_mac_key(record.peer_mac_normalized),
                         record.peer_mac_normalized or "",
                         "",
                         "",
@@ -2506,7 +2533,7 @@ class MeshMrRepository:
         now = dt_text(datetime.now()) or ""
         values = [
             (
-                normalize_mac(row.get("peer_mac_normalized")),
+                normalize_mac_key(row.get("peer_mac_normalized")),
                 row.get("peer_ap_name") or "",
                 normalize_mac(row.get("peer_ap_mac")) or "",
                 row.get("peer_radio_id"),
@@ -2637,6 +2664,8 @@ class MeshMrRepository:
     def replace_peer_identity_mappings(
         self,
         rows: list[dict[str, object]],
+        *,
+        identity_index_revision: int = 0,
     ) -> dict[str, object]:
         """Atomically replace only AP identity projections on parsed MESH rows."""
         if self._is_index_database():
@@ -2652,13 +2681,22 @@ class MeshMrRepository:
                     for peer in repo.distinct_peer_macs()
                     if (peer_key := normalize_mac_key(peer)) in by_peer
                 ]
-                summaries.append(repo.replace_peer_identity_mappings(detail_rows))
+                summaries.append(
+                    repo.replace_peer_identity_mappings(
+                        detail_rows,
+                        identity_index_revision=identity_index_revision,
+                    )
+                )
             return _merge_peer_identity_remap_summaries(summaries)
 
         now = dt_text(datetime.now()) or ""
-        values = [
-            (
-                normalize_mac(row.get("peer_mac_normalized")),
+        values_by_key: dict[str, tuple[object, ...]] = {}
+        for row in rows:
+            peer_key = normalize_mac_key(row.get("peer_mac_normalized"))
+            if not peer_key:
+                continue
+            values_by_key[peer_key] = (
+                peer_key,
                 row.get("peer_ap_name") or "",
                 normalize_mac(row.get("peer_ap_mac")) or "",
                 row.get("peer_radio_id"),
@@ -2675,12 +2713,14 @@ class MeshMrRepository:
                 row.get("identity_reason") or "",
                 now,
             )
-            for row in rows
-            if normalize_mac_key(row.get("peer_mac_normalized"))
-        ]
+        values = list(values_by_key.values())
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             before = _peer_identity_counts(conn)
+            link_row_count_before = _table_row_count(conn, "mesh_links")
+            active_point_row_count_before = _table_row_count(conn, "active_points")
+            switch_event_row_count_before = _table_row_count(conn, "switch_events")
+            fact_fingerprint_before = _mesh_fact_fingerprint(conn)
             conn.execute("DELETE FROM mesh_peer_mapping")
             conn.execute("DELETE FROM mesh_peer_resolve_cache")
             conn.executemany(
@@ -2717,56 +2757,74 @@ class MeshMrRepository:
                     for value in values
                 ],
             )
-            conn.execute(
-                """
-                UPDATE mesh_links
-                SET
-                    peer_ap_name = COALESCE((SELECT peer_ap_name FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
-                    peer_ap_mac = COALESCE((SELECT peer_ap_mac FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
-                    peer_site = COALESCE((SELECT peer_site FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
-                    peer_section = COALESCE((SELECT peer_section FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
-                    peer_location = COALESCE((SELECT peer_location FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
-                    peer_direction = COALESCE((SELECT peer_direction FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
-                    peer_radio_id = (SELECT peer_radio_id FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized),
-                    peer_radio = COALESCE((SELECT peer_radio_label FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
-                    peer_radio_label = COALESCE((SELECT peer_radio_label FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
-                    peer_radio_mac = COALESCE((SELECT peer_radio_mac FROM mesh_peer_resolve_cache pc WHERE pc.peer_mac = mesh_links.peer_mac_normalized), peer_mac_normalized, ''),
-                    peer_match_rule = COALESCE((SELECT match_rule FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), 'unresolved'),
-                    peer_match_confidence = COALESCE((SELECT match_confidence FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), 0),
-                    peer_resolve_source = COALESCE((SELECT source FROM mesh_peer_resolve_cache pc WHERE pc.peer_mac = mesh_links.peer_mac_normalized), 'unresolved'),
-                    peer_identity_status = COALESCE((SELECT identity_status FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), 'unresolved'),
-                    peer_identity_source = COALESCE((SELECT identity_source FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
-                    peer_identity_reason = COALESCE((SELECT identity_reason FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), 'exact_alias_not_found')
-                WHERE peer_mac_normalized IS NOT NULL
-                  AND trim(peer_mac_normalized) != ''
-                """
-            )
-            conn.execute(
-                """
-                UPDATE active_points
-                SET
-                    peer_ap_name = COALESCE((SELECT peer_ap_name FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), ''),
-                    peer_site = COALESCE((SELECT peer_site FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), ''),
-                    peer_section = COALESCE((SELECT peer_section FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), ''),
-                    peer_location = COALESCE((SELECT peer_location FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), ''),
-                    peer_direction = COALESCE((SELECT peer_direction FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), ''),
-                    peer_radio = COALESCE((SELECT peer_radio_label FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), ''),
-                    peer_radio_label = COALESCE((SELECT peer_radio_label FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), '')
-                WHERE peer_mac_normalized IS NOT NULL
-                  AND trim(peer_mac_normalized) != ''
-                """
-            )
+            self._update_mesh_link_identity_projection(conn)
+            self._update_active_point_identity_projection(conn)
             after = _peer_identity_counts(conn)
+            fact_fingerprint_after = _mesh_fact_fingerprint(conn)
+            summary = _peer_identity_remap_summary(
+                conn,
+                before=before,
+                after=after,
+                mapping_count=len(values),
+                identity_index_revision=identity_index_revision,
+                link_row_count_before=link_row_count_before,
+                active_point_row_count_before=active_point_row_count_before,
+                switch_event_row_count_before=switch_event_row_count_before,
+                fact_fingerprint_before=fact_fingerprint_before,
+                fact_fingerprint_after=fact_fingerprint_after,
+            )
+            _validate_peer_identity_remap(summary)
         source_counts: dict[str, int] = {}
         for value in values:
             source = str(value[13] or value[12] or "unresolved")
             source_counts[source] = source_counts.get(source, 0) + 1
-        return {
-            "before": before,
-            "after": after,
-            "mapping_count": len(values),
-            "source_counts": source_counts,
-        }
+        summary["source_counts"] = source_counts
+        return summary
+
+    @staticmethod
+    def _update_mesh_link_identity_projection(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            UPDATE mesh_links
+            SET
+                peer_ap_name = COALESCE((SELECT peer_ap_name FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                peer_ap_mac = COALESCE((SELECT peer_ap_mac FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                peer_site = COALESCE((SELECT peer_site FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                peer_section = COALESCE((SELECT peer_section FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                peer_location = COALESCE((SELECT peer_location FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                peer_direction = COALESCE((SELECT peer_direction FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                peer_radio_id = (SELECT peer_radio_id FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized),
+                peer_radio = COALESCE((SELECT peer_radio_label FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                peer_radio_label = COALESCE((SELECT peer_radio_label FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                peer_radio_mac = COALESCE((SELECT peer_radio_mac FROM mesh_peer_resolve_cache pc WHERE pc.peer_mac = mesh_links.peer_mac_normalized), peer_mac_normalized, ''),
+                peer_match_rule = COALESCE((SELECT match_rule FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), 'unresolved'),
+                peer_match_confidence = COALESCE((SELECT match_confidence FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), 0),
+                peer_resolve_source = COALESCE((SELECT source FROM mesh_peer_resolve_cache pc WHERE pc.peer_mac = mesh_links.peer_mac_normalized), 'unresolved'),
+                peer_identity_status = COALESCE((SELECT identity_status FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), 'unresolved'),
+                peer_identity_source = COALESCE((SELECT identity_source FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                peer_identity_reason = COALESCE((SELECT identity_reason FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), 'exact_alias_not_found')
+            WHERE peer_mac_normalized IS NOT NULL
+              AND trim(peer_mac_normalized) != ''
+            """
+        )
+
+    @staticmethod
+    def _update_active_point_identity_projection(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            UPDATE active_points
+            SET
+                peer_ap_name = COALESCE((SELECT peer_ap_name FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), ''),
+                peer_site = COALESCE((SELECT peer_site FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), ''),
+                peer_section = COALESCE((SELECT peer_section FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), ''),
+                peer_location = COALESCE((SELECT peer_location FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), ''),
+                peer_direction = COALESCE((SELECT peer_direction FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), ''),
+                peer_radio = COALESCE((SELECT peer_radio_label FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), ''),
+                peer_radio_label = COALESCE((SELECT peer_radio_label FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), '')
+            WHERE peer_mac_normalized IS NOT NULL
+              AND trim(peer_mac_normalized) != ''
+            """
+        )
 
     def update_identity_mapping_metadata(
         self,
@@ -3290,8 +3348,8 @@ class MeshMrRepository:
                             previous["sample_time"],
                             row["sample_time"],
                             observed,
-                            format_mac_h3c(previous["peer_mac_normalized"]) if previous["peer_mac_normalized"] else previous["peer_mac_raw"],
-                            format_mac_h3c(row["peer_mac_normalized"]) if row["peer_mac_normalized"] else row["peer_mac_raw"],
+                            normalize_mac(previous["peer_mac_normalized"]) if previous["peer_mac_normalized"] else previous["peer_mac_raw"],
+                            normalize_mac(row["peer_mac_normalized"]) if row["peer_mac_normalized"] else row["peer_mac_raw"],
                             json.dumps(details, ensure_ascii=False),
                             row["source_file_id"],
                             row["source_line_number"],
@@ -3373,8 +3431,8 @@ class MeshMrRepository:
                     dt_text(event.previous_sample_time),
                     dt_text(event.current_sample_time),
                     event.observed_window_ms,
-                    event.from_peer_mac,
-                    event.to_peer_mac,
+                    normalize_mac(event.from_peer_mac) or event.from_peer_mac,
+                    normalize_mac(event.to_peer_mac) or event.to_peer_mac,
                     json.dumps(event.__dict__, default=str, ensure_ascii=False),
                     source_file_id,
                     event.source_line_number,
@@ -3986,6 +4044,295 @@ def _peer_identity_counts(conn: sqlite3.Connection) -> dict[str, int]:
     return counts
 
 
+def _table_row_count(conn: sqlite3.Connection, table: str) -> int:
+    if table not in {"mesh_links", "active_points", "switch_events"}:
+        raise ValueError(f"Unsupported MESH count table: {table}")
+    return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+
+def _mesh_fact_fingerprint(conn: sqlite3.Connection) -> str:
+    digest = hashlib.sha256()
+    table_columns = {
+        "mesh_links": [
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(mesh_links)").fetchall()
+            if str(row[1]) not in _MESH_LINK_IDENTITY_PROJECTION_COLUMNS
+        ],
+        "switch_events": [
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(switch_events)").fetchall()
+        ],
+    }
+    for table, columns in table_columns.items():
+        digest.update(table.encode("ascii"))
+        digest.update(json.dumps(columns, separators=(",", ":")).encode("utf-8"))
+        cursor = conn.execute(
+            f"SELECT {', '.join(columns)} FROM {table} ORDER BY id"
+        )
+        while batch := cursor.fetchmany(2048):
+            for row in batch:
+                digest.update(
+                    json.dumps(
+                        list(row),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        default=str,
+                    ).encode("utf-8")
+                )
+                digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _query_status_counts(
+    conn: sqlite3.Connection,
+    sql: str,
+) -> dict[str, int]:
+    counts = {"matched": 0, "unresolved": 0, "ambiguous": 0}
+    for row in conn.execute(sql).fetchall():
+        status = str(row["status"] or "unresolved")
+        counts[status] = counts.get(status, 0) + int(row["row_count"] or 0)
+    return counts
+
+
+_VERIFIED_LINK_PROJECTION = """
+    COALESCE(l.peer_ap_name, '') = COALESCE(pm.peer_ap_name, '')
+    AND COALESCE(l.peer_ap_mac, '') = COALESCE(pm.peer_ap_mac, '')
+    AND COALESCE(l.peer_site, '') = COALESCE(pm.peer_site, '')
+    AND COALESCE(l.peer_section, '') = COALESCE(pm.peer_section, '')
+    AND COALESCE(l.peer_location, '') = COALESCE(pm.peer_location, '')
+    AND COALESCE(l.peer_direction, '') = COALESCE(pm.peer_direction, '')
+    AND l.peer_radio_id IS pm.peer_radio_id
+    AND COALESCE(l.peer_radio, '') = COALESCE(pm.peer_radio_label, '')
+    AND COALESCE(l.peer_radio_label, '') = COALESCE(pm.peer_radio_label, '')
+    AND COALESCE(l.peer_radio_mac, '') = COALESCE(pc.peer_radio_mac, l.peer_mac_normalized, '')
+    AND COALESCE(l.peer_match_rule, '') = COALESCE(pm.match_rule, 'unresolved')
+    AND COALESCE(l.peer_match_confidence, 0) = COALESCE(pm.match_confidence, 0)
+    AND COALESCE(l.peer_resolve_source, '') = COALESCE(pc.source, 'unresolved')
+    AND COALESCE(l.peer_identity_status, 'unresolved') = COALESCE(pm.identity_status, 'unresolved')
+    AND COALESCE(l.peer_identity_source, '') = COALESCE(pm.identity_source, '')
+    AND COALESCE(l.peer_identity_reason, '') = COALESCE(pm.identity_reason, 'exact_alias_not_found')
+"""
+
+_VERIFIED_ACTIVE_POINT_PROJECTION = """
+    COALESCE(a.peer_ap_name, '') = COALESCE(pm.peer_ap_name, '')
+    AND COALESCE(a.peer_site, '') = COALESCE(pm.peer_site, '')
+    AND COALESCE(a.peer_section, '') = COALESCE(pm.peer_section, '')
+    AND COALESCE(a.peer_location, '') = COALESCE(pm.peer_location, '')
+    AND COALESCE(a.peer_direction, '') = COALESCE(pm.peer_direction, '')
+    AND COALESCE(a.peer_radio, '') = COALESCE(pm.peer_radio_label, '')
+    AND COALESCE(a.peer_radio_label, '') = COALESCE(pm.peer_radio_label, '')
+"""
+
+
+def _peer_identity_remap_summary(
+    conn: sqlite3.Connection,
+    *,
+    before: dict[str, int],
+    after: dict[str, int],
+    mapping_count: int,
+    identity_index_revision: int,
+    link_row_count_before: int,
+    active_point_row_count_before: int,
+    switch_event_row_count_before: int,
+    fact_fingerprint_before: str,
+    fact_fingerprint_after: str,
+) -> dict[str, object]:
+    mapping_status = _query_status_counts(
+        conn,
+        """
+        SELECT COALESCE(NULLIF(identity_status, ''), 'unresolved') AS status,
+               COUNT(*) AS row_count
+        FROM mesh_peer_mapping
+        GROUP BY COALESCE(NULLIF(identity_status, ''), 'unresolved')
+        """,
+    )
+    target_link_status = _query_status_counts(
+        conn,
+        """
+        SELECT COALESCE(NULLIF(pm.identity_status, ''), 'unresolved') AS status,
+               COUNT(*) AS row_count
+        FROM mesh_links l
+        JOIN mesh_peer_mapping pm ON pm.peer_mac_normalized = l.peer_mac_normalized
+        GROUP BY COALESCE(NULLIF(pm.identity_status, ''), 'unresolved')
+        """,
+    )
+    persisted_link_status = _query_status_counts(
+        conn,
+        f"""
+        SELECT COALESCE(NULLIF(pm.identity_status, ''), 'unresolved') AS status,
+               COUNT(*) AS row_count
+        FROM mesh_links l
+        JOIN mesh_peer_mapping pm ON pm.peer_mac_normalized = l.peer_mac_normalized
+        LEFT JOIN mesh_peer_resolve_cache pc ON pc.peer_mac = l.peer_mac_normalized
+        WHERE {_VERIFIED_LINK_PROJECTION}
+        GROUP BY COALESCE(NULLIF(pm.identity_status, ''), 'unresolved')
+        """,
+    )
+    active_point_status = _query_status_counts(
+        conn,
+        """
+        SELECT COALESCE(NULLIF(pm.identity_status, ''), 'unresolved') AS status,
+               COUNT(*) AS row_count
+        FROM active_points a
+        JOIN mesh_peer_mapping pm ON pm.peer_mac_normalized = a.peer_mac_normalized
+        GROUP BY COALESCE(NULLIF(pm.identity_status, ''), 'unresolved')
+        """,
+    )
+    source_ids = str(
+        conn.execute(
+            """
+            SELECT COALESCE(GROUP_CONCAT(source_file_id), '')
+            FROM (SELECT DISTINCT source_file_id FROM mesh_links ORDER BY source_file_id)
+            """
+        ).fetchone()[0]
+        or ""
+    )
+    distinct_link_peer_count = int(
+        conn.execute(
+            """
+            SELECT COUNT(DISTINCT peer_mac_normalized)
+            FROM mesh_links
+            WHERE length(peer_mac_normalized) = 12
+              AND lower(peer_mac_normalized) = peer_mac_normalized
+              AND peer_mac_normalized NOT GLOB '*[^0-9a-f]*'
+            """
+        ).fetchone()[0]
+    )
+    covered_link_peer_count = int(
+        conn.execute(
+            """
+            SELECT COUNT(DISTINCT l.peer_mac_normalized)
+            FROM mesh_links l
+            JOIN mesh_peer_mapping pm ON pm.peer_mac_normalized = l.peer_mac_normalized
+            """
+        ).fetchone()[0]
+    )
+    covered_link_row_count = sum(target_link_status.values())
+    updated_link_row_count = sum(persisted_link_status.values())
+    covered_active_point_row_count = sum(active_point_status.values())
+    updated_active_point_row_count = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM active_points a
+            JOIN mesh_peer_mapping pm ON pm.peer_mac_normalized = a.peer_mac_normalized
+            WHERE {_VERIFIED_ACTIVE_POINT_PROJECTION}
+            """
+        ).fetchone()[0]
+    )
+    link_row_count = _table_row_count(conn, "mesh_links")
+    active_point_row_count = _table_row_count(conn, "active_points")
+    switch_event_row_count = _table_row_count(conn, "switch_events")
+    persisted_mapping_count = _table_row_count_for_mapping(conn)
+    invalid_mapping_key_count = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) FROM mesh_peer_mapping
+            WHERE length(peer_mac_normalized) != 12
+               OR lower(peer_mac_normalized) != peer_mac_normalized
+               OR peer_mac_normalized GLOB '*[^0-9a-f]*'
+            """
+        ).fetchone()[0]
+    )
+    return {
+        "before": before,
+        "after": after,
+        "mapping_count": mapping_count,
+        "persisted_mapping_count": persisted_mapping_count,
+        "matched_mapping_count": mapping_status.get("matched", 0),
+        "unresolved_mapping_count": mapping_status.get("unresolved", 0),
+        "ambiguous_mapping_count": mapping_status.get("ambiguous", 0),
+        "invalid_mapping_key_count": invalid_mapping_key_count,
+        "distinct_link_peer_count": distinct_link_peer_count,
+        "covered_peer_count": covered_link_peer_count,
+        "unmatched_link_peer_count": max(
+            distinct_link_peer_count - covered_link_peer_count,
+            0,
+        ),
+        "link_row_count_before": link_row_count_before,
+        "link_row_count": link_row_count,
+        "covered_link_row_count": covered_link_row_count,
+        "updated_link_row_count": updated_link_row_count,
+        "target_matched_link_row_count": target_link_status.get("matched", 0),
+        "persisted_matched_link_row_count": persisted_link_status.get("matched", 0),
+        "matched_link_row_count": after.get("matched", 0),
+        "unresolved_link_row_count": after.get("unresolved", 0),
+        "ambiguous_link_row_count": after.get("ambiguous", 0),
+        "active_point_row_count_before": active_point_row_count_before,
+        "active_point_row_count": active_point_row_count,
+        "covered_active_point_row_count": covered_active_point_row_count,
+        "updated_active_point_row_count": updated_active_point_row_count,
+        "matched_active_point_row_count": active_point_status.get("matched", 0),
+        "unresolved_active_point_row_count": active_point_status.get("unresolved", 0),
+        "ambiguous_active_point_row_count": active_point_status.get("ambiguous", 0),
+        "switch_event_row_count_before": switch_event_row_count_before,
+        "switch_event_row_count": switch_event_row_count,
+        "fact_fingerprint_before": fact_fingerprint_before,
+        "fact_fingerprint_after": fact_fingerprint_after,
+        "facts_unchanged": fact_fingerprint_before == fact_fingerprint_after,
+        "identity_index_revision": int(identity_index_revision),
+        "source_file_id": source_ids,
+        "validation_status": "passed",
+    }
+
+
+def _table_row_count_for_mapping(conn: sqlite3.Connection) -> int:
+    return int(conn.execute("SELECT COUNT(*) FROM mesh_peer_mapping").fetchone()[0])
+
+
+def _validate_peer_identity_remap(summary: dict[str, object]) -> None:
+    details = {
+        "source_file_id": summary.get("source_file_id", ""),
+        "mapping_count": summary.get("mapping_count", 0),
+        "matched_mapping_count": summary.get("matched_mapping_count", 0),
+        "covered_peer_count": summary.get("covered_peer_count", 0),
+        "target_link_rows": summary.get("target_matched_link_row_count", 0),
+        "persisted_matched_rows": summary.get("persisted_matched_link_row_count", 0),
+        "identity_revision": summary.get("identity_index_revision", 0),
+    }
+    if (
+        int(summary.get("persisted_mapping_count") or 0)
+        != int(summary.get("mapping_count") or 0)
+        or int(summary.get("invalid_mapping_key_count") or 0) != 0
+        or int(summary.get("unmatched_link_peer_count") or 0) != 0
+    ):
+        raise MeshIdentityRemapValidationError(
+            "MESH_IDENTITY_REMAP_COVERAGE_MISMATCH",
+            details,
+        )
+    if (
+        int(summary.get("link_row_count_before") or 0)
+        != int(summary.get("link_row_count") or 0)
+        or int(summary.get("active_point_row_count_before") or 0)
+        != int(summary.get("active_point_row_count") or 0)
+        or int(summary.get("switch_event_row_count_before") or 0)
+        != int(summary.get("switch_event_row_count") or 0)
+        or not bool(summary.get("facts_unchanged"))
+    ):
+        raise MeshIdentityRemapValidationError(
+            "MESH_IDENTITY_REMAP_FACT_MISMATCH",
+            details,
+        )
+    target_matched = int(summary.get("target_matched_link_row_count") or 0)
+    persisted_matched = int(summary.get("persisted_matched_link_row_count") or 0)
+    if target_matched > 0 and persisted_matched == 0:
+        raise MeshIdentityRemapValidationError(
+            "MESH_IDENTITY_REMAP_ZERO_PERSISTED_MATCH",
+            details,
+        )
+    if (
+        int(summary.get("covered_link_row_count") or 0)
+        != int(summary.get("updated_link_row_count") or 0)
+        or int(summary.get("covered_active_point_row_count") or 0)
+        != int(summary.get("updated_active_point_row_count") or 0)
+        or target_matched != persisted_matched
+    ):
+        raise MeshIdentityRemapValidationError(
+            "MESH_IDENTITY_REMAP_STATUS_MISMATCH",
+            details,
+        )
+
+
 def _merge_peer_identity_remap_summaries(
     summaries: list[dict[str, object]],
 ) -> dict[str, object]:
@@ -3994,7 +4341,40 @@ def _merge_peer_identity_remap_summaries(
         "after": {"matched": 0, "unresolved": 0, "ambiguous": 0},
         "mapping_count": 0,
         "source_counts": {},
+        "facts_unchanged": True,
+        "validation_status": "passed",
     }
+    additive_fields = (
+        "persisted_mapping_count",
+        "matched_mapping_count",
+        "unresolved_mapping_count",
+        "ambiguous_mapping_count",
+        "invalid_mapping_key_count",
+        "distinct_link_peer_count",
+        "covered_peer_count",
+        "unmatched_link_peer_count",
+        "link_row_count_before",
+        "link_row_count",
+        "covered_link_row_count",
+        "updated_link_row_count",
+        "target_matched_link_row_count",
+        "persisted_matched_link_row_count",
+        "matched_link_row_count",
+        "unresolved_link_row_count",
+        "ambiguous_link_row_count",
+        "active_point_row_count_before",
+        "active_point_row_count",
+        "covered_active_point_row_count",
+        "updated_active_point_row_count",
+        "matched_active_point_row_count",
+        "unresolved_active_point_row_count",
+        "ambiguous_active_point_row_count",
+        "switch_event_row_count_before",
+        "switch_event_row_count",
+    )
+    before_fingerprints: list[str] = []
+    after_fingerprints: list[str] = []
+    source_file_ids: list[str] = []
     for summary in summaries:
         for phase in ("before", "after"):
             target = result[phase]
@@ -4007,6 +4387,21 @@ def _merge_peer_identity_remap_summaries(
         result["mapping_count"] = int(result["mapping_count"]) + int(
             summary.get("mapping_count") or 0
         )
+        for field in additive_fields:
+            result[field] = int(result.get(field) or 0) + int(
+                summary.get(field) or 0
+            )
+        result["facts_unchanged"] = bool(result["facts_unchanged"]) and bool(
+            summary.get("facts_unchanged")
+        )
+        result["identity_index_revision"] = max(
+            int(result.get("identity_index_revision") or 0),
+            int(summary.get("identity_index_revision") or 0),
+        )
+        before_fingerprints.append(str(summary.get("fact_fingerprint_before") or ""))
+        after_fingerprints.append(str(summary.get("fact_fingerprint_after") or ""))
+        if summary.get("source_file_id") not in (None, ""):
+            source_file_ids.append(str(summary["source_file_id"]))
         target_sources = result["source_counts"]
         source_counts = summary.get("source_counts") or {}
         if isinstance(target_sources, dict) and isinstance(source_counts, dict):
@@ -4014,4 +4409,11 @@ def _merge_peer_identity_remap_summaries(
                 target_sources[str(source)] = int(
                     target_sources.get(str(source), 0)
                 ) + int(count or 0)
+    result["fact_fingerprint_before"] = hashlib.sha256(
+        "\n".join(before_fingerprints).encode("ascii")
+    ).hexdigest()
+    result["fact_fingerprint_after"] = hashlib.sha256(
+        "\n".join(after_fingerprints).encode("ascii")
+    ).hexdigest()
+    result["source_file_id"] = ",".join(source_file_ids)
     return result

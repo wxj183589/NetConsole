@@ -18,6 +18,7 @@
 - `check_desktop_bootstrap.py`：只读检查 Electron bootstrap；`--repair` 先备份并原子修复临时/失效的数据根和局点引用，不移动业务数据。
 - `audit_sites.py`：只读扫描局点文件、SQLite 完整性、业务记录和 Registry/bootstrap 引用，并把审计 manifest 写入当前数据根；不移动或删除局点。
 - `rebuild_mesh_parsed_data.py`：在 schema 变更后从受保护 raw 日志重建 MESH 派生 SQLite；默认仅输出计划，`--apply` 必须在 NetConsole 完全退出后执行。
+- `remap_mesh_identity.py`：扫描健康的 MESH parsed 来源并规划/执行 identity-only remap；默认 dry-run，只有显式 `--apply` 才逐来源复用 `MeshSourceRebuildService` 写入，经数据库回读验证后才发布 ready。
 
 局点审计从仓库根运行，默认使用源码开发数据根；`--site-id` 可限制为一个稳定 ID 或目录名，`--output` 可指定 manifest 文件：
 
@@ -26,6 +27,15 @@
 .\.venv\Scripts\python.exe -m scripts.maintenance.audit_sites --site-id demo
 .\.venv\Scripts\python.exe -m scripts.maintenance.audit_sites --data-root "D:\NetConsoleData" --output "D:\NetConsoleData\migrations\site-audit.json"
 ```
+
+历史 MESH 身份恢复默认只读扫描；`--profile` 可限制 Profile，`--source` 必须同时指定 Profile：
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.maintenance.remap_mesh_identity --site <局点> --dry-run
+.\.venv\Scripts\python.exe -m scripts.maintenance.remap_mesh_identity --site <局点> --profile <MR Profile> --apply
+```
+
+dry-run 不写 parsed DB、raw 或 catalog；apply 逐来源执行，单来源失败会记录并继续其他来源。
 
 该命令对局点业务数据只读，但会写审计报告。报告中的 `can_delete` 仍不是单阶段删除授权；正式回收必须经过 Application Service 的 prepare/apply、文件哈希复核和受控回收区。
 
