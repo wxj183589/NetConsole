@@ -294,6 +294,9 @@ class MeshMrRepository:
                     peer_ap_name TEXT DEFAULT '',
                     peer_ap_mac TEXT DEFAULT '',
                     peer_site TEXT DEFAULT '',
+                    peer_section TEXT DEFAULT '',
+                    peer_location TEXT DEFAULT '',
+                    peer_direction TEXT DEFAULT '',
                     peer_radio_id INTEGER NULL,
                     peer_radio TEXT DEFAULT '',
                     peer_radio_label TEXT DEFAULT '',
@@ -359,6 +362,9 @@ class MeshMrRepository:
                     peer_mac TEXT DEFAULT '',
                     peer_ap_name TEXT DEFAULT '',
                     peer_site TEXT DEFAULT '',
+                    peer_section TEXT DEFAULT '',
+                    peer_location TEXT DEFAULT '',
+                    peer_direction TEXT DEFAULT '',
                     peer_radio TEXT DEFAULT '',
                     peer_radio_label TEXT DEFAULT '',
                     establish_time TEXT NULL,
@@ -464,6 +470,7 @@ class MeshMrRepository:
                     peer_radio_id INTEGER NULL,
                     peer_radio_label TEXT DEFAULT '',
                     peer_site TEXT DEFAULT '',
+                    peer_section TEXT DEFAULT '',
                     peer_location TEXT DEFAULT '',
                     peer_direction TEXT DEFAULT '',
                     match_rule TEXT DEFAULT '',
@@ -532,6 +539,9 @@ class MeshMrRepository:
             self._ensure_column(conn, "mesh_links", "peer_ap_name", "TEXT DEFAULT ''")
             self._ensure_column(conn, "mesh_links", "peer_ap_mac", "TEXT DEFAULT ''")
             self._ensure_column(conn, "mesh_links", "peer_site", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "mesh_links", "peer_section", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "mesh_links", "peer_location", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "mesh_links", "peer_direction", "TEXT DEFAULT ''")
             self._ensure_column(conn, "mesh_links", "peer_mac", "TEXT DEFAULT ''")
             self._ensure_column(conn, "mesh_links", "peer_radio_id", "INTEGER NULL")
             self._ensure_column(conn, "mesh_links", "peer_radio", "TEXT DEFAULT ''")
@@ -543,6 +553,12 @@ class MeshMrRepository:
             self._ensure_column(conn, "mesh_links", "peer_identity_status", "TEXT DEFAULT 'unresolved'")
             self._ensure_column(conn, "mesh_links", "peer_identity_source", "TEXT DEFAULT ''")
             self._ensure_column(conn, "mesh_links", "peer_identity_reason", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "active_points", "peer_section", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "active_points", "peer_location", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "active_points", "peer_direction", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "mesh_peer_mapping", "peer_section", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "mesh_peer_mapping", "peer_location", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "mesh_peer_mapping", "peer_direction", "TEXT DEFAULT ''")
             self._ensure_column(conn, "mesh_peer_mapping", "identity_status", "TEXT DEFAULT 'unresolved'")
             self._ensure_column(conn, "mesh_peer_mapping", "identity_source", "TEXT DEFAULT ''")
             self._ensure_column(conn, "mesh_peer_mapping", "identity_reason", "TEXT DEFAULT ''")
@@ -1991,6 +2007,27 @@ class MeshMrRepository:
                 conn,
                 table_alias="ml",
             )
+            link_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(mesh_links)").fetchall()
+            }
+            active_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(active_points)").fetchall()
+            }
+
+            def optional_location_column(column: str) -> str:
+                candidates: list[str] = []
+                if column in link_columns:
+                    candidates.append(f"NULLIF(ml.{column}, '')")
+                if column in active_columns:
+                    candidates.append(f"NULLIF(ap.{column}, '')")
+                return (
+                    f"COALESCE({', '.join(candidates)}, '') AS {column}"
+                    if candidates
+                    else f"'' AS {column}"
+                )
+
             rows = [
                 dict(row)
                 for row in conn.execute(
@@ -1999,6 +2036,9 @@ class MeshMrRepository:
                            ap.peer_mac_raw, ap.peer_mac_normalized, ap.peer_mac,
                            ap.peer_ap_name, ap.peer_site, ap.peer_radio, ap.peer_radio_label,
                            ml.peer_ap_mac, ml.peer_radio_mac,
+                           {optional_location_column("peer_section")},
+                           {optional_location_column("peer_location")},
+                           {optional_location_column("peer_direction")},
                            {identity_columns},
                            ap.duration_text, ap.duration_seconds,
                            ap.local_rssi_db, ap.peer_rssi_db,
@@ -2473,8 +2513,9 @@ class MeshMrRepository:
                 row.get("peer_radio_label") or "",
                 normalize_mac(row.get("peer_radio_mac")) or "",
                 row.get("peer_site") or "",
+                row.get("peer_section") or row.get("belong_section") or "",
                 row.get("peer_location") or "",
-                row.get("peer_direction") or "",
+                row.get("peer_direction") or row.get("line_side") or "",
                 row.get("match_rule") or "",
                 int(row.get("match_confidence") or 0),
                 row.get("identity_status") or "unresolved",
@@ -2492,15 +2533,16 @@ class MeshMrRepository:
                 """
                 INSERT INTO mesh_peer_mapping (
                     peer_mac_normalized, peer_ap_name, peer_ap_mac, peer_radio_id, peer_radio_label,
-                    peer_site, peer_location, peer_direction, match_rule, match_confidence,
+                    peer_site, peer_section, peer_location, peer_direction, match_rule, match_confidence,
                     identity_status, identity_source, identity_reason, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(peer_mac_normalized) DO UPDATE SET
                     peer_ap_name = excluded.peer_ap_name,
                     peer_ap_mac = excluded.peer_ap_mac,
                     peer_radio_id = excluded.peer_radio_id,
                     peer_radio_label = excluded.peer_radio_label,
                     peer_site = excluded.peer_site,
+                    peer_section = excluded.peer_section,
                     peer_location = excluded.peer_location,
                     peer_direction = excluded.peer_direction,
                     match_rule = excluded.match_rule,
@@ -2526,6 +2568,7 @@ class MeshMrRepository:
                         value[12],
                         value[13],
                         value[14],
+                        value[15],
                     )
                     for value in values
                 ],
@@ -2550,8 +2593,8 @@ class MeshMrRepository:
                         value[6],
                         value[4],
                         value[5],
-                        value[12] or value[11] or "unresolved",
-                        value[14],
+                        value[13] or value[12] or "unresolved",
+                        value[15],
                     )
                     for value in values
                 ],
@@ -2574,6 +2617,9 @@ class MeshMrRepository:
                     peer_ap_name = COALESCE((SELECT peer_ap_name FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
                     peer_ap_mac = COALESCE((SELECT peer_ap_mac FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
                     peer_site = COALESCE((SELECT peer_site FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                    peer_section = COALESCE((SELECT peer_section FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                    peer_location = COALESCE((SELECT peer_location FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                    peer_direction = COALESCE((SELECT peer_direction FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
                     peer_radio_id = (SELECT peer_radio_id FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized),
                     peer_radio = COALESCE((SELECT peer_radio_label FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
                     peer_radio_label = COALESCE((SELECT peer_radio_label FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
@@ -2619,8 +2665,9 @@ class MeshMrRepository:
                 row.get("peer_radio_label") or "",
                 normalize_mac(row.get("peer_radio_mac")) or "",
                 row.get("peer_site") or "",
+                row.get("peer_section") or row.get("belong_section") or "",
                 row.get("peer_location") or "",
-                row.get("peer_direction") or "",
+                row.get("peer_direction") or row.get("line_side") or "",
                 row.get("match_rule") or "unresolved",
                 int(row.get("match_confidence") or 0),
                 row.get("identity_status") or "unresolved",
@@ -2640,16 +2687,17 @@ class MeshMrRepository:
                 """
                 INSERT INTO mesh_peer_mapping (
                     peer_mac_normalized, peer_ap_name, peer_ap_mac,
-                    peer_radio_id, peer_radio_label, peer_site, peer_location,
-                    peer_direction, match_rule, match_confidence,
+                    peer_radio_id, peer_radio_label, peer_site, peer_section,
+                    peer_location, peer_direction, match_rule, match_confidence,
                     identity_status, identity_source, identity_reason, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
                         value[0], value[1], value[2], value[3], value[4],
                         value[6], value[7], value[8], value[9], value[10],
                         value[11], value[12], value[13], value[14],
+                        value[15],
                     )
                     for value in values
                 ],
@@ -2664,7 +2712,7 @@ class MeshMrRepository:
                 [
                     (
                         value[0], value[1], value[6], value[4], value[5],
-                        value[12] or value[11] or "unresolved", value[14],
+                        value[13] or value[12] or "unresolved", value[15],
                     )
                     for value in values
                 ],
@@ -2676,6 +2724,9 @@ class MeshMrRepository:
                     peer_ap_name = COALESCE((SELECT peer_ap_name FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
                     peer_ap_mac = COALESCE((SELECT peer_ap_mac FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
                     peer_site = COALESCE((SELECT peer_site FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                    peer_section = COALESCE((SELECT peer_section FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                    peer_location = COALESCE((SELECT peer_location FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
+                    peer_direction = COALESCE((SELECT peer_direction FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
                     peer_radio_id = (SELECT peer_radio_id FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized),
                     peer_radio = COALESCE((SELECT peer_radio_label FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
                     peer_radio_label = COALESCE((SELECT peer_radio_label FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''),
@@ -2696,6 +2747,9 @@ class MeshMrRepository:
                 SET
                     peer_ap_name = COALESCE((SELECT peer_ap_name FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), ''),
                     peer_site = COALESCE((SELECT peer_site FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), ''),
+                    peer_section = COALESCE((SELECT peer_section FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), ''),
+                    peer_location = COALESCE((SELECT peer_location FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), ''),
+                    peer_direction = COALESCE((SELECT peer_direction FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), ''),
                     peer_radio = COALESCE((SELECT peer_radio_label FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), ''),
                     peer_radio_label = COALESCE((SELECT peer_radio_label FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = active_points.peer_mac_normalized), '')
                 WHERE peer_mac_normalized IS NOT NULL
@@ -2705,7 +2759,7 @@ class MeshMrRepository:
             after = _peer_identity_counts(conn)
         source_counts: dict[str, int] = {}
         for value in values:
-            source = str(value[12] or value[11] or "unresolved")
+            source = str(value[13] or value[12] or "unresolved")
             source_counts[source] = source_counts.get(source, 0) + 1
         return {
             "before": before,
@@ -2826,6 +2880,9 @@ class MeshMrRepository:
                 peer_ap_name = COALESCE(NULLIF((SELECT peer_ap_name FROM mesh_peer_resolve_cache pc WHERE pc.peer_mac = mesh_links.peer_mac_normalized), ''), peer_ap_name, ''),
                 peer_ap_mac = COALESCE(NULLIF((SELECT peer_ap_mac FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''), peer_ap_mac, ''),
                 peer_site = COALESCE(NULLIF((SELECT peer_site FROM mesh_peer_resolve_cache pc WHERE pc.peer_mac = mesh_links.peer_mac_normalized), ''), peer_site, ''),
+                peer_section = COALESCE(NULLIF((SELECT peer_section FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''), peer_section, ''),
+                peer_location = COALESCE(NULLIF((SELECT peer_location FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''), peer_location, ''),
+                peer_direction = COALESCE(NULLIF((SELECT peer_direction FROM mesh_peer_mapping pm WHERE pm.peer_mac_normalized = mesh_links.peer_mac_normalized), ''), peer_direction, ''),
                 peer_radio = COALESCE(NULLIF((SELECT peer_radio FROM mesh_peer_resolve_cache pc WHERE pc.peer_mac = mesh_links.peer_mac_normalized), ''), peer_radio, peer_radio_label, ''),
                 peer_radio_label = COALESCE(NULLIF(peer_radio_label, ''), peer_radio, ''),
                 peer_radio_mac = COALESCE(NULLIF((SELECT peer_radio_mac FROM mesh_peer_resolve_cache pc WHERE pc.peer_mac = mesh_links.peer_mac_normalized), ''), peer_radio_mac, ''),
@@ -2838,6 +2895,16 @@ class MeshMrRepository:
             WHERE peer_mac_normalized IS NOT NULL AND trim(peer_mac_normalized) != ''
             """
         )
+        conn.execute(
+            """
+            UPDATE active_points
+            SET
+                peer_section = COALESCE(NULLIF((SELECT peer_section FROM mesh_links ml WHERE ml.id = active_points.link_id), ''), peer_section, ''),
+                peer_location = COALESCE(NULLIF((SELECT peer_location FROM mesh_links ml WHERE ml.id = active_points.link_id), ''), peer_location, ''),
+                peer_direction = COALESCE(NULLIF((SELECT peer_direction FROM mesh_links ml WHERE ml.id = active_points.link_id), ''), peer_direction, '')
+            WHERE link_id IS NOT NULL
+            """
+        )
 
     def _rebuild_link_aggregates(self, conn: sqlite3.Connection, should_cancel=None, bucket_seconds: tuple[int, ...] = (1, 10, 30, 60)) -> None:
         return None
@@ -2847,7 +2914,8 @@ class MeshMrRepository:
             """
             INSERT INTO active_points (
                 link_id, sample_id, source_file_id, session_id, sample_time, device_time, radio,
-                peer_mac_raw, peer_mac_normalized, peer_mac, peer_ap_name, peer_site, peer_radio,
+                peer_mac_raw, peer_mac_normalized, peer_mac, peer_ap_name, peer_site,
+                peer_section, peer_location, peer_direction, peer_radio,
                 peer_radio_label, establish_time, duration_text, duration_seconds, link_count,
                 local_rssi_db, peer_rssi_db, local_tx_busy, peer_tx_busy, local_rx_busy, peer_rx_busy,
                 local_noise_dbm, peer_noise_dbm, local_signal_dbm, peer_signal_dbm,
@@ -2856,7 +2924,9 @@ class MeshMrRepository:
             SELECT
                 ml.id, ml.sample_id, ml.source_file_id, COALESCE(ml.session_id, ''), ml.sample_time, s.device_time, ml.radio,
                 ml.peer_mac_raw, COALESCE(ml.peer_mac_normalized, ''), COALESCE(ml.peer_mac, ''),
-                COALESCE(ml.peer_ap_name, ''), COALESCE(ml.peer_site, ''), COALESCE(ml.peer_radio, ''),
+                COALESCE(ml.peer_ap_name, ''), COALESCE(ml.peer_site, ''),
+                COALESCE(ml.peer_section, ''), COALESCE(ml.peer_location, ''),
+                COALESCE(ml.peer_direction, ''), COALESCE(ml.peer_radio, ''),
                 COALESCE(ml.peer_radio_label, ''), ml.establish_time, ml.duration_text, ml.duration_seconds, ml.link_count,
                 ml.local_rssi_db, ml.peer_rssi_db, ml.local_tx_busy, ml.peer_tx_busy, ml.local_rx_busy, ml.peer_rx_busy,
                 ml.local_noise_dbm, ml.peer_noise_dbm, ml.local_signal_dbm, ml.peer_signal_dbm,
@@ -2871,7 +2941,7 @@ class MeshMrRepository:
         rows = conn.execute(
             """
             SELECT id, source_file_id, radio, sample_time, peer_mac_normalized, peer_mac_raw,
-                   peer_ap_name, peer_site, peer_radio_label, local_rssi_db
+                   peer_ap_name, peer_site, peer_section, peer_radio_label, local_rssi_db
             FROM active_points
             ORDER BY source_file_id ASC, radio ASC, sample_time ASC, id ASC
             """
@@ -2899,7 +2969,7 @@ class MeshMrRepository:
                     first["peer_mac_normalized"] or "",
                     first["peer_ap_name"] or "",
                     first["peer_site"] or "",
-                    "",
+                    first["peer_section"] or "",
                     "",
                     first["sample_time"],
                     last["sample_time"],
@@ -3353,6 +3423,9 @@ def _with_synthetic_payload(row: sqlite3.Row | dict[str, object]) -> dict[str, o
     for field in ("peer_mac", "peer_ap_mac", "peer_radio_mac"):
         if data.get(field):
             data[field] = format_mac(data[field]) or data[field]
+    data.setdefault("belong_section", data.get("peer_section") or "")
+    data.setdefault("mileage", data.get("peer_location") or "")
+    data.setdefault("line_side", data.get("peer_direction") or "")
     data.setdefault("metrics_json", json.dumps(_metrics_from_row(data), ensure_ascii=False))
     data.setdefault("deltas_json", "{}")
     data.setdefault("metrics", _metrics_from_row(data))
@@ -3608,6 +3681,12 @@ def _active_build_order_row(sequence: int, rows: list[dict[str, object]], sample
         "peer_ap_name": first.get("peer_ap_name") or "",
         "peer_ap_mac": first.get("peer_ap_mac") or "",
         "peer_site": first.get("peer_site") or "",
+        "peer_section": first.get("peer_section") or "",
+        "belong_section": first.get("peer_section") or "",
+        "mileage": first.get("peer_location") or "",
+        "peer_location": first.get("peer_location") or "",
+        "line_side": first.get("peer_direction") or "",
+        "peer_direction": first.get("peer_direction") or "",
         "peer_radio": peer_radio,
         "peer_radio_mac": first.get("peer_radio_mac") or "",
         "identity_status": first.get("peer_identity_status") or first.get("identity_status") or "unresolved",

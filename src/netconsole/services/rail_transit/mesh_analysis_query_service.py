@@ -704,6 +704,14 @@ class MeshAnalysisQueryService:
                     "peer_identity_reason",
                 )
             )
+            location_select = ", ".join(
+                (
+                    f"ml.{column}"
+                    if column in link_columns
+                    else f"NULL AS {column}"
+                )
+                for column in ("peer_section", "peer_location", "peer_direction")
+            )
             total = int(conn.execute(f"SELECT COUNT(*) FROM mesh_links ml {where}", values).fetchone()[0] or 0)
             rows = conn.execute(
                 f"""
@@ -713,6 +721,7 @@ class MeshAnalysisQueryService:
                        ) - 1 AS sample_group_index,
                        ml.radio, ml.link_state, ml.peer_mac_raw, ml.peer_mac_normalized,
                        ml.peer_ap_name, ml.peer_ap_mac, ml.peer_site, ml.peer_radio_mac,
+                       {location_select},
                        ml.peer_radio_label, ml.establish_time, ml.duration_text, ml.duration_seconds,
                        ml.link_count, ml.local_rssi_db, ml.peer_rssi_db,
                        ml.local_noise_dbm, ml.peer_noise_dbm, ml.local_signal_dbm, ml.peer_signal_dbm,
@@ -4055,8 +4064,8 @@ class MeshAnalysisQueryService:
         fallback_fields = {
             "station": ("peer_site", "station", "belong_station"),
             "section": ("peer_section", "section", "belong_section"),
-            "mileage": ("mileage",),
-            "line_side": ("line_side",),
+            "mileage": ("mileage", "peer_location"),
+            "line_side": ("line_side", "peer_direction", "direction"),
         }
         location_value = str(getattr(location, field, "") if location is not None else "").strip()
         if location_value:

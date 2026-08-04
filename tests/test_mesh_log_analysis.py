@@ -469,6 +469,59 @@ def test_mesh_identity_remap_clears_old_identity_and_preserves_raw_metrics(tmp_p
     assert {key: remapped[key] for key in immutable_fields} == immutable_fields
 
 
+def test_mesh_identity_remap_projects_location_fields_to_links_and_build_order(tmp_path):
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    source = tmp_path / "meshlog.log"
+    source.write_text(
+        "[1] 2025/12/03 10:12:33.000\n" + LINE_A + "\n",
+        encoding="utf-8",
+    )
+    MeshImportService("demo", paths).import_files(profile, [source])
+    index_repo = MeshMrRepository(
+        paths.mesh_mr_db_path("demo", profile.safe_folder_name)
+    )
+    repo = index_repo._detail_repos()[0]
+    peer = repo.distinct_peer_macs()[0]
+
+    repo.replace_peer_identity_mappings(
+        [
+            {
+                "peer_mac_normalized": peer,
+                "peer_ap_name": "AP-TRACK-01",
+                "peer_ap_mac": "0011-2233-4450",
+                "peer_radio_id": 1,
+                "peer_radio_label": "radio1",
+                "peer_radio_mac": peer,
+                "peer_site": "S1站",
+                "peer_section": "S1-S2区间",
+                "peer_location": "YDK12+345",
+                "peer_direction": "右线",
+                "match_rule": "h3c_physical_mac_to_r1_exact_v1",
+                "match_confidence": 95,
+                "identity_status": "matched",
+                "identity_source": "base_data",
+            }
+        ]
+    )
+
+    _total, links = repo.query_links(10, 0)
+    build_rows = repo.query_active_link_build_order()
+
+    assert links[0]["peer_ap_name"] == "AP-TRACK-01"
+    assert links[0]["peer_ap_mac"] == "0011-2233-4450"
+    assert links[0]["peer_site"] == "S1站"
+    assert links[0]["belong_section"] == "S1-S2区间"
+    assert links[0]["mileage"] == "YDK12+345"
+    assert links[0]["line_side"] == "右线"
+    assert build_rows[0]["peer_ap_name"] == "AP-TRACK-01"
+    assert build_rows[0]["peer_ap_mac"] == "00:11:22:33:44:50"
+    assert build_rows[0]["peer_site"] == "S1站"
+    assert build_rows[0]["peer_section"] == "S1-S2区间"
+    assert build_rows[0]["mileage"] == "YDK12+345"
+    assert build_rows[0]["line_side"] == "右线"
+
+
 def test_mesh_identity_remap_failure_rolls_back_mapping_and_links(tmp_path):
     paths = PathResolver(tmp_path)
     profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
@@ -542,6 +595,9 @@ def test_mesh_peer_mapping_service_uses_exact_h3c_alias_without_ac(tmp_path):
             "ap_vendor": "H3C",
             "ap_mac_display": "74ad-cb9d-3320",
             "station_name": "S1",
+            "section_name": "S1-S2区间",
+            "mileage_text": "!Y!D!K12+345",
+            "direction": "右线",
         }
     )
     ApIdentityQueryService(database).rebuild_index("test_base_data_saved")
@@ -555,6 +611,9 @@ def test_mesh_peer_mapping_service_uses_exact_h3c_alias_without_ac(tmp_path):
     assert resolved["peer_ap_mac"] == "74adcb9d3320"
     assert resolved["peer_ap_name"] == "AP-01"
     assert resolved["peer_site"] == "S1"
+    assert resolved["peer_section"] == "S1-S2区间"
+    assert resolved["peer_location"]
+    assert resolved["peer_direction"] == "右线"
     assert resolved["peer_radio_label"] == "radio1"
     assert resolved["identity_source"] == "base_data"
     assert resolved["match_rule"] == "h3c_physical_mac_to_r1_exact_v1"

@@ -61,7 +61,7 @@ class MeshPeerMappingService:
             "belonging_source": match.matched_source,
             "peer_serial_number": match.serial_number,
             "serial_number": match.serial_number,
-            "peer_location": match.location,
+            "peer_location": match.mileage or match.location,
             "peer_direction": match.direction,
             "match_rule": radio_rule or "resolved",
             "match_confidence": int(match.match_confidence or 0),
