@@ -25,11 +25,12 @@ jobs:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: |
+            constraints.txt
             requirements-runtime.txt
             requirements-test.txt
             requirements-dev.txt
       - name: Install development dependencies
-        run: python -m pip install -r requirements-dev.txt
+        run: python -m pip install -c constraints.txt -r requirements-dev.txt
       - name: Ruff
         run: python -m ruff check src tests scripts
       - name: Compile Python sources
@@ -66,7 +67,8 @@ jobs:
           cache: pnpm
           cache-dependency-path: apps/web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test
+      - name: Run complete Web test suite
+        run: pnpm exec vitest run --maxWorkers=2 --testTimeout=20000 --hookTimeout=20000
       - run: pnpm build
 
   electron:
@@ -86,8 +88,13 @@ jobs:
         with:
           node-version: "24"
           cache: pnpm
-          cache-dependency-path: apps/desktop_electron/pnpm-lock.yaml
+          cache-dependency-path: |
+            apps/desktop_electron/pnpm-lock.yaml
+            apps/web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      - name: Install Web contract dependencies
+        working-directory: apps/web
+        run: pnpm install --frozen-lockfile
       - run: pnpm test
       - run: pnpm run typecheck
       - run: pnpm run build:main
