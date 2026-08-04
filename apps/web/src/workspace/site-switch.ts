@@ -1,8 +1,16 @@
 export const BEFORE_SITE_SWITCH_EVENT = 'netconsole:before-site-switch'
 
-export function notifyBeforeSiteSwitch(targetSiteId: string): void {
-  window.dispatchEvent(new CustomEvent(BEFORE_SITE_SWITCH_EVENT, {
+export class SiteSwitchCancelled extends Error {
+  constructor() {
+    super('SITE_SWITCH_CANCELLED')
+    this.name = 'SiteSwitchCancelled'
+  }
+}
+
+export function notifyBeforeSiteSwitch(targetSiteId: string): boolean {
+  return window.dispatchEvent(new CustomEvent(BEFORE_SITE_SWITCH_EVENT, {
     detail: { targetSiteId },
+    cancelable: true,
   }))
 }
 
@@ -51,6 +59,7 @@ export async function coordinateSiteSwitch(
     await coordinator.restart(target.siteId)
     return 'completed'
   } catch (cause) {
+    if (cause instanceof SiteSwitchCancelled) return 'cancelled'
     if (checkpoint) {
       try {
         await coordinator.restoreWorkspace(checkpoint)

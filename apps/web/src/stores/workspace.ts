@@ -22,7 +22,7 @@ import type {
   WorkspaceTab,
   WorkspaceWindowState,
 } from '../workspace/types'
-import { notifyBeforeSiteSwitch } from '../workspace/site-switch'
+import { notifyBeforeSiteSwitch, SiteSwitchCancelled } from '../workspace/site-switch'
 
 const SAVE_DEBOUNCE_MS = 250
 
@@ -250,7 +250,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   ): Promise<WorkspaceWindowState> {
     const checkpoint = createSnapshot()
     try {
-      notifyBeforeSiteSwitch(targetSiteId)
+      if (!notifyBeforeSiteSwitch(targetSiteId)) throw new SiteSwitchCancelled()
 
       const dashboardCanonical = safeCanonical(WORKSPACE_DEFAULT_ROUTE)
       const settingsCanonical = safeCanonical(settingsRouteFullPath)

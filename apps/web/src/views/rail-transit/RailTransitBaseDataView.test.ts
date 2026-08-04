@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import source from './RailTransitBaseDataView.vue?raw'
+import toolbarSource from '../../components/rail-transit/base-data/SubPageEditToolbar.vue?raw'
 
 describe('Rail Transit base data maintenance view', () => {
   it('fills the available route width and height while keeping tab content scrollable', () => {
@@ -21,7 +22,7 @@ describe('Rail Transit base data maintenance view', () => {
     expect(source).toContain('cloneDto(editingDraft.value?.aps ?? [])')
   })
 
-  it('owns independent subpage drafts, save scopes and switch guards', () => {
+  it('owns independent draft scopes and keeps drafts while switching tabs', () => {
     expect(source).toContain("type EditableSubPage = Exclude<BaseDataEditScope, 'all'>")
     expect(source).toContain('const subPageEditContexts = reactive')
     expect(source).toContain("overview: createSubPageContext()")
@@ -29,17 +30,16 @@ describe('Rail Transit base data maintenance view', () => {
     expect(source).toContain('store.refreshEditSnapshot(scope)')
     expect(source).toContain('store.validateChanges(scope, context.baseRevision, changes)')
     expect(source).toContain('store.saveChanges(scope, context.baseRevision, changes)')
-    expect(source).toContain("confirmText: '保存并切换'")
-    expect(source).toContain("secondaryText: '放弃并切换'")
-    expect(source).toContain("cancelText: '取消切换'")
-    expect(source).toContain("@unlock=\"startEditing('overview')\"")
-    expect(source).toContain("@unlock=\"startEditing('stations')\"")
-    expect(source).toContain("@unlock=\"startEditing('trackside_ap')\"")
-    expect(source).toContain("@unlock=\"startEditing('trackside_ap_planning')\"")
-    expect(source).toContain("@unlock=\"startEditing('vehicles')\"")
-    expect(source).not.toContain('@click="startEditing">编辑</el-button>')
-    expect(source).not.toContain('@click="saveAllChanges()">保存</el-button>')
+    expect(source).toContain('async function ensureDraftSession(scope: EditableSubPage)')
+    expect(source).toContain('resetDraftContext(scope, session.can_write, session.write_denial_reason)')
+    expect(source).toContain("return !['VALIDATING', 'SAVING'].includes(subPageEditContexts[currentScope].state)")
     expect(source).toContain('一个或多个子页存在未保存修改')
+    expect(source).toContain('dirtyScopeCount')
+    expect(source).not.toMatch(/['"]LOCKED['"]/)
+    expect(source).not.toMatch(/['"]UNLOCKED_CLEAN['"]/)
+    expect(source).not.toMatch(/['"]UNLOCKED_DIRTY['"]/)
+    expect(source).not.toContain('解锁')
+    expect(source).not.toContain('锁定')
     expect(source).toContain('anyDirty')
   })
 
@@ -156,6 +156,7 @@ describe('Rail Transit base data maintenance view', () => {
   })
 
   it('does not expose credentials, lock mode or unguarded persistence', () => {
+    const formalSources = `${source}\n${toolbarSource}`
     expect(source).toContain("deleteEntity('trackside_ap', row)")
     expect(source).not.toContain('v-if="!locked"')
     expect(source).not.toContain('locked.value')
@@ -163,6 +164,7 @@ describe('Rail Transit base data maintenance view', () => {
     expect(source).not.toContain('密码')
     expect(source).not.toContain('username')
     expect(source).not.toContain('client_count')
+    expect(formalSources).not.toMatch(/['"]LOCKED['"]|['"]UNLOCKED_CLEAN['"]|['"]UNLOCKED_DIRTY['"]|解锁编辑|锁定编辑|解锁当前子页|锁定当前子页/)
   })
 
   it('uses formal station IDs when generating planning rows and never creates stations there', () => {

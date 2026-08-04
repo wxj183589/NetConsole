@@ -197,4 +197,19 @@ describe('workspace store', () => {
     expect(router.currentRoute.value.query.session_id).toBe('mr-id:1')
     window.removeEventListener('netconsole:before-site-switch', event)
   })
+
+  it('aborts site preparation when a mounted page cancels the switch', async () => {
+    const router = await createTestRouter('/mesh')
+    const store = useWorkspaceStore()
+    await store.initialize(router)
+    const blocker = (event: Event) => event.preventDefault()
+    window.addEventListener('netconsole:before-site-switch', blocker)
+
+    await expect(store.prepareForSiteSwitch(
+      'line-b',
+      '/settings?section=site-storage&site_focus=site-switch-cancelled',
+    )).rejects.toMatchObject({ name: 'SiteSwitchCancelled' })
+    expect(router.currentRoute.value.path).toBe('/mesh')
+    window.removeEventListener('netconsole:before-site-switch', blocker)
+  })
 })
