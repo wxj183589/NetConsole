@@ -896,7 +896,7 @@ def test_mesh_import_resolves_peer_ap_name_site_and_radio(tmp_path):
     assert rows[0]["peer_match_rule"] == "actual_bbssid_exact"
     assert rows[0]["peer_identity_source"] == "ac_runtime"
     cache_rows = repo.export_rows("mesh_peer_resolve_cache")
-    assert cache_rows[0]["peer_mac"] == "30:f5:27:7a:5a:2f"
+    assert cache_rows[0]["peer_mac"] == "30f5277a5a2f"
     assert cache_rows[0]["peer_ap_name"] == "AP-01"
 
 

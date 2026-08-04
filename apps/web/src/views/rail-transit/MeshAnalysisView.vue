@@ -105,6 +105,7 @@ const taskPollingConsumer = 'mesh-analysis-view'
 const pageActive = ref(true)
 const pageActivatedOnce = ref(false)
 const analysisResultUpdatePending = ref(false)
+const analysisResultRefreshError = ref('')
 const loading = ref(false)
 const detailLoading = ref(false)
 const openingSessionId = ref<string | null>(null)
@@ -276,7 +277,7 @@ let activeSessionOpenController: AbortController | null = null
 let activeSessionOpenId: string | null = null
 let activeSessionOpenPromise: Promise<void> | null = null
 let activeSessionIntentId: string | null = null
-let activeSessionIntentPromise: Promise<void> | null = null
+let activeSessionIntentPromise: Promise<boolean> | null = null
 let rssiChartGeneration = 0
 let busyChartGeneration = 0
 let rssiViewportRevision = 0
@@ -304,7 +305,8 @@ let rssiLayoutBeforeFocus: MeshRssiLayoutMode = DEFAULT_MESH_RSSI_LAYOUT_MODE
 let rssiSplitPreferenceTimer: ReturnType<typeof setTimeout> | null = null
 let savedAppMainScrollTop = 0
 let scrollRestoreFrame: number | null = null
-let preserveCachedViewOnTaskCompletion = false
+let pendingCompletedTaskId: string | null = null
+let pendingAffectedSessionId: string | null = null
 let rendererRecoveryRestored = false
 let rendererRecoveryPromise: Promise<void> | null = null
 let importContextPromise: Promise<void> | null = null
@@ -316,6 +318,7 @@ let importPreviewController: AbortController | null = null
 let profileNameManuallyEdited = false
 const scheduledIdentityRemaps = new Set<string>()
 const reportedWorkloadPhases = new Set<string>()
+const processedTerminalTaskIds = new Set<string>()
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const restorableTaskStates = new Set(['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'FAILED'])
 const taskStorageKey = 'netconsole.mesh-analysis.last-task'
@@ -1122,9 +1125,6 @@ function restorePageScrollPosition(): void {
 
 function pauseMeshAnalysisPage(): void {
   savePageScrollPosition()
-  preserveCachedViewOnTaskCompletion = Boolean(
-    task.value && !terminalStates.has(task.value.status),
-  )
   pageActive.value = false
   rssiViewportInteracting.value = false
   pendingRssiQueryViewport.value = null
@@ -1162,6 +1162,14 @@ async function resumeMeshAnalysisPage(): Promise<void> {
   await nextTick()
   const requestedSessionId = pendingRequestedSessionId.value || routeRequestedSessionId()
   if (requestedSessionId) await applyRequestedSession(requestedSessionId)
+  if (task.value && !terminalStates.has(task.value.status)) {
+    try {
+      rememberTask(await getRailTransitTask(task.value.task_id))
+    } catch (reason) {
+      error.value = reason instanceof Error ? reason.message : 'MESH 任务状态读取失败'
+    }
+  }
+  if (task.value && terminalStates.has(task.value.status)) await afterTask()
   await restoreRendererRecoveryOnce()
   if (!pageActive.value) return
   if (activeTab.value === 'rssi' && selected.value) {
@@ -1337,6 +1345,7 @@ interface SessionRequestOptions {
   force?: boolean
   navigate?: boolean
   preserveRecovery?: boolean
+  preserveView?: boolean
 }
 
 async function openMeshAnalysisSession(row: MeshAnalysisSession): Promise<void> {
@@ -1367,7 +1376,7 @@ async function openMeshAnalysisSession(row: MeshAnalysisSession): Promise<void> 
 async function requestMeshAnalysisSession(
   id: string,
   options: SessionRequestOptions = {},
-): Promise<void> {
+): Promise<boolean> {
   pendingRequestedSessionId.value = id
   const currentRoute = router.currentRoute?.value
   if (options.navigate !== false && currentRoute?.query.session_id !== id) {
@@ -1376,27 +1385,27 @@ async function requestMeshAnalysisSession(
       query: { ...(currentRoute?.query || {}), session_id: id },
     })
   }
-  if (options.navigate !== false && routeRequestedSessionId() !== id) return
-  await applyRequestedSession(id, options)
+  if (options.navigate !== false && routeRequestedSessionId() !== id) return false
+  return applyRequestedSession(id, options)
 }
 
 async function applyRequestedSession(
   requestedSessionId: string | null,
   options: SessionRequestOptions = {},
-): Promise<void> {
+): Promise<boolean> {
   const id = normalizeMeshSessionIdentifier(requestedSessionId)
-  if (!id) return
+  if (!id) return false
   const routedSessionId = routeRequestedSessionId()
-  if (options.navigate !== false && routedSessionId && routedSessionId !== id) return
+  if (options.navigate !== false && routedSessionId && routedSessionId !== id) return false
   pendingRequestedSessionId.value = id
-  if (!pageActive.value) return
+  if (!pageActive.value) return false
   if (!options.force && selected.value?.session.session_id === id) {
     if (pendingRequestedSessionId.value === id) pendingRequestedSessionId.value = null
-    return
+    return true
   }
   if (!options.force && activeSessionOpenId === id && activeSessionOpenPromise) {
     await activeSessionOpenPromise
-    return
+    return selected.value?.session.session_id === id && pendingRequestedSessionId.value !== id
   }
 
   activeSessionOpenController?.abort()
@@ -1409,8 +1418,18 @@ async function applyRequestedSession(
     generation,
     signal: controller.signal,
     preserveRecovery: options.preserveRecovery === true,
+    preserveView: options.preserveView === true,
   }).catch(async (reason: unknown) => {
     if (isAbortError(reason) || controller.signal.aborted || generation !== detailGeneration) return
+    if (
+      reason instanceof ApiRequestError
+      && reason.status === 404
+      && selected.value?.session.session_id === id
+    ) {
+      await closeSelectedMeshSession()
+      error.value = '当前 MESH 分析来源已不存在，已关闭详情并刷新来源列表'
+      return
+    }
     error.value = reason instanceof Error ? reason.message : '分析详情加载失败'
     if (selected.value?.session.session_id !== id) {
       pendingRequestedSessionId.value = null
@@ -1432,16 +1451,27 @@ async function applyRequestedSession(
   })
   activeSessionOpenPromise = promise
   await promise
+  return Boolean(
+    generation === detailGeneration
+    && !controller.signal.aborted
+    && selected.value?.session.session_id === id
+    && pendingRequestedSessionId.value !== id
+    && !detailSectionError.value,
+  )
 }
 
-async function openSessionById(
-  id: string,
-  options: { generation: number; signal: AbortSignal; preserveRecovery: boolean },
-): Promise<void> {
-  const { generation, signal, preserveRecovery } = options
-  detailLoading.value = true
-  analysisResultUpdatePending.value = false
-  preserveCachedViewOnTaskCompletion = false
+interface PreservedSessionView {
+  activeTab: string
+  chartRadio: number | null
+  buildOrderPage: number
+  linkPage: number
+}
+
+function resetSessionDetailState(
+  activeTabValue: string,
+  chartRadioValue: number | null,
+  preserveRecovery: boolean,
+): void {
   cancelDeferredRssiChartWork()
   rssiActiveAbortController?.abort()
   rssiActiveAbortController = null
@@ -1458,25 +1488,63 @@ async function openSessionById(
   }
   selected.value = null; buildOrders.value = []; buildOrderVisits.value = []; buildOrderTotal.value = 0; links.value = []; linkTotal.value = 0; switches.value = []
   rssiActivePath.value = null; rssiActiveLoading.value = false; rssiActiveLoaded.value = false; rssiActiveError.value = ''; busyActivePath.value = null; busyPeerPath.value = null
-  selectedSegment.value = null; focusTimestamp.value = ''; rssiFocusLabel.value = ''; chartRadio.value = null; rssiViewport.value = null; busyViewport.value = null
+  selectedSegment.value = null; focusTimestamp.value = ''; rssiFocusLabel.value = ''; chartRadio.value = chartRadioValue; rssiViewport.value = null; busyViewport.value = null
   committedRssiViewport.value = null; pendingRssiQueryViewport.value = null; rssiViewportInteracting.value = false
   sharedPointerTime.value = null; sharedPointerSource.value = null; rssiViewportRevision = 0; tracksideChartVisible.value = typeof IntersectionObserver === 'undefined'
   tracksideObserver?.disconnect(); tracksideObserver = null
   lockedAnalysisRange.value = null; allPeerVisits.value = false; selectedChartEvent.value = null; rssiChartGeneration += 1; busyChartGeneration += 1
   artifacts.value = []; rawTail.value = null; detailSectionError.value = ''
   for (const key of Object.keys(loadedTabs)) delete loadedTabs[key]
-  activeTab.value = 'build-order'
-  await nextTick()
+  activeTab.value = activeTabValue
+}
+
+async function openSessionById(
+  id: string,
+  options: { generation: number; signal: AbortSignal; preserveRecovery: boolean; preserveView: boolean },
+): Promise<void> {
+  const { generation, signal, preserveRecovery, preserveView } = options
+  const preservedView: PreservedSessionView | null = preserveView ? {
+    activeTab: activeTab.value,
+    chartRadio: chartRadio.value,
+    buildOrderPage: buildOrderFilters.page,
+    linkPage: linkFilters.page,
+  } : null
+  detailLoading.value = true
+  if (!preservedView) {
+    analysisResultUpdatePending.value = false
+    analysisResultRefreshError.value = ''
+    pendingAffectedSessionId = null
+    resetSessionDetailState('build-order', null, preserveRecovery)
+    await nextTick()
+  }
   const detail = await getMeshAnalysisSession(id, signal)
   if (generation !== detailGeneration || signal.aborted || pendingRequestedSessionId.value !== id) return
+  if (preservedView) {
+    const preservedRadio = preservedView.chartRadio !== null
+      && (detail.available_radios || []).includes(preservedView.chartRadio)
+      ? preservedView.chartRadio
+      : null
+    resetSessionDetailState(preservedView.activeTab, preservedRadio, preserveRecovery)
+    await nextTick()
+    if (generation !== detailGeneration || signal.aborted || pendingRequestedSessionId.value !== id) return
+  }
   selected.value = detail
   requestWorkspaceTabTitle(`MESH：${detail.session.mr_name || detail.session.train_name}`)
   reportRendererWorkload('session-selected')
   ensureSharedRssiViewport()
   restoreSessionExpansionForDetail()
-  await loadBuildOrders(generation, 1, signal)
+  await loadBuildOrders(generation, preservedView?.buildOrderPage ?? 1, signal)
   if (generation !== detailGeneration || signal.aborted || pendingRequestedSessionId.value !== id) return
+  if (preservedView && preservedView.activeTab !== 'build-order') {
+    await loadTab(preservedView.activeTab, { linkPage: preservedView.linkPage })
+    if (generation !== detailGeneration || signal.aborted || pendingRequestedSessionId.value !== id) return
+  }
   pendingRequestedSessionId.value = null
+  if (!detailSectionError.value) {
+    analysisResultUpdatePending.value = false
+    analysisResultRefreshError.value = ''
+    if (pendingAffectedSessionId === id) pendingAffectedSessionId = null
+  }
   refreshDetailPanels()
   error.value = ''
   void scheduleStaleIdentityRemap(detail)
@@ -1567,7 +1635,7 @@ function sortBuildOrders(payload: { order: 'ascending' | 'descending' | null }):
   void loadBuildOrders(detailGeneration, 1)
 }
 
-async function loadTab(tab: string): Promise<void> {
+async function loadTab(tab: string, options: { linkPage?: number } = {}): Promise<void> {
   if (tab === 'busy' && selected.value && lockedAnalysisRange.value) {
     applyLockedBusyContext(lockedAnalysisRange.value)
     await loadCurrentMetricChart('busy', lockedAnalysisRange.value)
@@ -1588,7 +1656,7 @@ async function loadTab(tab: string): Promise<void> {
   try {
     const id = selected.value.session.session_id
     if (tab === 'build-order') await loadBuildOrders(generation)
-    else if (tab === 'links') await reloadLinks(1, generation)
+    else if (tab === 'links') await reloadLinks(options.linkPage ?? 1, generation)
     else if (tab === 'rssi') {
       if (tracksideRecoveryBlocked.value) await loadActivePath('rssi', null, generation)
       else await loadCurrentMetricChart('rssi', null, generation)
@@ -2859,11 +2927,100 @@ function clearImportSelection(): void {
 function rememberTask(value: RailTransitTask | null): void {
   const previousTaskId = task.value?.task_id || ''
   task.value = value
+  if (value && value.task_id !== previousTaskId) processedTerminalTaskIds.clear()
   if (value && !terminalStates.has(value.status)) localStorage.setItem(taskStorageKey, value.task_id)
   else localStorage.removeItem(taskStorageKey)
   if (value && value.task_id !== previousTaskId) void taskStore.refresh()
 }
 function stopTaskPolling(): void { if (taskTimer) clearTimeout(taskTimer); taskTimer = null }
+
+function normalizedTaskSessionId(value: unknown): string | null {
+  return normalizeMeshSessionIdentifier(typeof value === 'string' ? value : '')
+}
+
+function affectedSessionId(completedTask: RailTransitTask): string | null {
+  const resultSummary = completedTask.result_summary || {}
+  const direct = normalizedTaskSessionId(resultSummary.session_id)
+  if (direct) return direct
+  const created = Array.isArray(resultSummary.created_session_ids)
+    ? resultSummary.created_session_ids
+      .map(normalizedTaskSessionId)
+      .filter((item): item is string => Boolean(item))
+    : []
+  const selectedId = selected.value?.session.session_id || ''
+  if (selectedId && created.includes(selectedId)) return selectedId
+  if (created.length === 1) return created[0]
+  if (created.length > 1) return null
+  return normalizedTaskSessionId(selectedId)
+}
+
+function queuePendingTaskCompletion(completedTask: RailTransitTask): void {
+  if (completedTask.status !== 'COMPLETED') return
+  pendingCompletedTaskId = completedTask.task_id
+  pendingAffectedSessionId = affectedSessionId(completedTask)
+  if (
+    pendingAffectedSessionId
+    && selected.value?.session.session_id === pendingAffectedSessionId
+    && ['mesh_schema_rebuild', 'mesh_source_rebuild'].includes(completedTask.action)
+  ) analysisResultUpdatePending.value = true
+}
+
+function identityRemapCompletionMessage(resultSummary: Record<string, unknown>): string {
+  const remap = resultSummary.identity_remap
+  if (!remap || typeof remap !== 'object' || Array.isArray(remap)) {
+    return 'AP 身份映射已更新，当前分析结果已刷新'
+  }
+  const values = remap as Record<string, unknown>
+  const mapped = Number(values.matched_mapping_count)
+  const projected = Number(values.updated_link_row_count)
+  if (
+    'matched_mapping_count' in values
+    && 'updated_link_row_count' in values
+    && Number.isFinite(mapped)
+    && Number.isFinite(projected)
+  ) {
+    return `${mapped} 个 Peer 已映射，${projected} 条链路身份投影已更新`
+  }
+  return 'AP 身份映射已更新，当前分析结果已刷新'
+}
+
+async function refreshAnalysisResults(options: {
+  sessionId?: string | null
+  notify?: boolean
+} = {}): Promise<boolean> {
+  const selectedAtStart = selected.value?.session.session_id || null
+  const sessionId = normalizedTaskSessionId(options.sessionId ?? selectedAtStart)
+  savePageScrollPosition()
+  await refreshOverview(true, true)
+  if (!sessionId || !selectedAtStart) {
+    restorePageScrollPosition()
+    return true
+  }
+  if (selected.value?.session.session_id !== selectedAtStart || selectedAtStart !== sessionId) {
+    restorePageScrollPosition()
+    return true
+  }
+  const refreshed = await requestMeshAnalysisSession(sessionId, {
+    force: true,
+    navigate: false,
+    preserveView: true,
+  })
+  if (selected.value?.session.session_id === sessionId) {
+    if (refreshed) {
+      analysisResultUpdatePending.value = false
+      analysisResultRefreshError.value = ''
+      if (pendingAffectedSessionId === sessionId) pendingAffectedSessionId = null
+      if (options.notify) ElMessage.success('AP 身份映射已更新，当前分析结果已刷新')
+    } else {
+      analysisResultUpdatePending.value = true
+      pendingAffectedSessionId = sessionId
+      analysisResultRefreshError.value = 'AP 身份映射已完成，但当前页面刷新失败，请点击“刷新结果”重试'
+    }
+  }
+  restorePageScrollPosition()
+  return refreshed
+}
+
 async function applyDeletedSessionsImmediately(sessionIds: string[]): Promise<void> {
   const deleted = new Set(sessionIds.map((value) => String(value || '').trim()).filter(Boolean))
   if (!deleted.size) return
@@ -2905,19 +3062,22 @@ async function applyDeletedSessionsImmediately(sessionIds: string[]): Promise<vo
   }
 }
 async function afterTask(): Promise<void> {
-  if (!task.value) return
-  if (task.value.status !== 'COMPLETED') {
-    if (task.value.action === 'mesh_analysis_source_delete') await refreshOverview(true, true)
+  const completedTask = task.value
+  if (!completedTask || !terminalStates.has(completedTask.status)) return
+  if (!pageActive.value) {
+    queuePendingTaskCompletion(completedTask)
     return
   }
-  const preserveCachedView = preserveCachedViewOnTaskCompletion
-  preserveCachedViewOnTaskCompletion = false
-  await refreshOverview(true, true)
-  if (['mesh_log_import', 'mesh_bundle_import', 'mesh_schema_rebuild', 'mesh_source_rebuild'].includes(task.value.action)) {
-    scheduleCatalogRefresh()
+  if (processedTerminalTaskIds.has(completedTask.task_id)) return
+  processedTerminalTaskIds.add(completedTask.task_id)
+  if (pendingCompletedTaskId === completedTask.task_id) pendingCompletedTaskId = null
+  if (completedTask.status !== 'COMPLETED') {
+    if (completedTask.action === 'mesh_analysis_source_delete') await refreshOverview(true, true)
+    return
   }
-  const resultSummary = task.value.result_summary || {}
-  if (task.value.action === 'mesh_analysis_source_delete') {
+  const resultSummary = completedTask.result_summary || {}
+  if (completedTask.action === 'mesh_analysis_source_delete') {
+    await refreshOverview(true, true)
     const deletedSessionId = String(resultSummary.session_id || '')
     if (selected.value?.session.session_id === deletedSessionId) {
       if (resultSummary.delete_raw_archive === true) {
@@ -2928,20 +3088,24 @@ async function afterTask(): Promise<void> {
     }
     return
   }
-  if (['mesh_log_import', 'mesh_bundle_import', 'mesh_schema_rebuild', 'mesh_source_rebuild'].includes(task.value.action)) await loadProfiles()
-  if (preserveCachedView) {
-    if (
-      selected.value
-      && ['mesh_schema_rebuild', 'mesh_source_rebuild'].includes(task.value.action)
-    ) {
+  if (['mesh_schema_rebuild', 'mesh_source_rebuild'].includes(completedTask.action)) {
+    const affectedId = affectedSessionId(completedTask)
+    if (affectedId && selected.value?.session.session_id === affectedId) {
+      pendingAffectedSessionId = affectedId
       analysisResultUpdatePending.value = true
-    } else if (
-      selected.value
-      && ['mesh_analysis_report', 'mesh_link_detail_export'].includes(task.value.action)
-    ) {
-      artifacts.value = await listMeshArtifacts(selected.value.session.session_id)
+      const refreshed = await refreshAnalysisResults({ sessionId: affectedId })
+      if (refreshed) ElMessage.success(identityRemapCompletionMessage(resultSummary))
+    } else {
+      await refreshOverview(true, true)
     }
+    scheduleCatalogRefresh()
+    await loadProfiles()
     return
+  }
+  await refreshOverview(true, true)
+  if (['mesh_log_import', 'mesh_bundle_import'].includes(completedTask.action)) {
+    scheduleCatalogRefresh()
+    await loadProfiles()
   }
   const created = Array.isArray(resultSummary.created_session_ids)
     ? resultSummary.created_session_ids.filter((item): item is string => typeof item === 'string')
@@ -2955,10 +3119,7 @@ async function afterTask(): Promise<void> {
   }
   if (selected.value) {
     const selectedId = selected.value.session.session_id
-    if (['mesh_schema_rebuild', 'mesh_source_rebuild'].includes(task.value.action)) {
-      await requestMeshAnalysisSession(selectedId, { force: true })
-    }
-    else artifacts.value = await listMeshArtifacts(selectedId)
+    artifacts.value = await listMeshArtifacts(selectedId)
   }
 }
 function pollTask(): void {
@@ -2966,7 +3127,15 @@ function pollTask(): void {
   if (!pageActive.value) return
   if (!task.value || terminalStates.has(task.value.status)) { void afterTask(); return }
   taskTimer = setTimeout(async () => {
-    try { rememberTask(await getRailTransitTask(task.value!.task_id)); pollTask() }
+    try {
+      const updated = await getRailTransitTask(task.value!.task_id)
+      rememberTask(updated)
+      if (!pageActive.value && terminalStates.has(updated.status)) {
+        queuePendingTaskCompletion(updated)
+        return
+      }
+      pollTask()
+    }
     catch (reason) { error.value = reason instanceof Error ? reason.message : 'MESH 任务状态读取失败' }
   }, 1000)
 }
@@ -3067,6 +3236,12 @@ async function closeSelectedMeshSession(): Promise<void> {
   cancelDeferredRssiChartWork()
   cancelInFlightRssiChartRequests()
   activeSessionOpenController?.abort()
+  activeSessionOpenController = null
+  activeSessionOpenId = null
+  activeSessionOpenPromise = null
+  pendingRequestedSessionId.value = null
+  detailLoading.value = false
+  setMeshDetailRequestActive(meshRuntimeToken, false)
   rssiActiveAbortController?.abort()
   rssiActiveAbortController = null
   detailGeneration += 1
@@ -3220,11 +3395,6 @@ async function rebuildSelected(): Promise<void> {
   if (!accepted) return
   void startTask(() => rebuildMeshAnalysis(selected.value!.session.session_id), 'MESH 派生数据库重建启动失败')
 }
-async function refreshCachedAnalysisResult(): Promise<void> {
-  if (!selected.value) return
-  const sessionId = selected.value.session.session_id
-  await requestMeshAnalysisSession(sessionId, { force: true })
-}
 async function recoverTask(): Promise<void> {
   try {
     const saved = localStorage.getItem(taskStorageKey) || ''
@@ -3303,7 +3473,7 @@ function exportTimestamp(now = new Date()): string {
           当前日志：{{ selected.session.mr_name }} · Radio {{ chartRadio ?? '全部' }} · {{ selected.session.original_filename }}
         </p>
       </div>
-      <div class="jump-actions"><el-button :loading="importContextLoading" :disabled="!isFeatureEnabled('web.mesh_analysis_import')" @click="openImportDialog">导入原始 MESH 日志</el-button><el-button :icon="Download" :loading="taskLoading" :disabled="!selected || !selectedSource || selected.session.parsed_status !== 'ready' || !isFeatureEnabled('web.mesh_analysis_report_export')" @click="openLinkExportDialog">导出链路明细</el-button><el-button :icon="Document" type="primary" :loading="taskLoading" :disabled="!selected || ['missing','unreadable'].includes(selected.session.parsed_status) || !isFeatureEnabled('web.mesh_analysis_report_export')" @click="openReportDialog">生成分析报告</el-button><el-button :loading="loading" @click="refreshOverview()">刷新结果</el-button></div>
+      <div class="jump-actions"><el-button :loading="importContextLoading" :disabled="!isFeatureEnabled('web.mesh_analysis_import')" @click="openImportDialog">导入原始 MESH 日志</el-button><el-button :icon="Download" :loading="taskLoading" :disabled="!selected || !selectedSource || selected.session.parsed_status !== 'ready' || !isFeatureEnabled('web.mesh_analysis_report_export')" @click="openLinkExportDialog">导出链路明细</el-button><el-button :icon="Document" type="primary" :loading="taskLoading" :disabled="!selected || ['missing','unreadable'].includes(selected.session.parsed_status) || !isFeatureEnabled('web.mesh_analysis_report_export')" @click="openReportDialog">生成分析报告</el-button><el-button :loading="loading || detailLoading" @click="refreshAnalysisResults()">刷新结果</el-button></div>
     </header>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
 
@@ -3522,12 +3692,12 @@ function exportTimestamp(now = new Date()): string {
       <el-alert v-if="selectedSource && !selectedSource.exists" :title="selectedSource.missing_reason" :type="selectedSource.recoverable ? 'warning' : 'error'" :closable="false" show-icon />
       <el-alert
         v-if="analysisResultUpdatePending"
-        title="分析结果已在后台更新，当前仍显示离开页面前的结果。"
+        :title="analysisResultRefreshError || '分析结果已在后台更新，正在刷新当前会话。'"
         type="warning"
         :closable="false"
         show-icon
       >
-        <template #default><el-button link type="primary" @click="refreshCachedAnalysisResult">刷新结果</el-button></template>
+        <template #default><el-button link type="primary" @click="refreshAnalysisResults()">立即重试</el-button></template>
       </el-alert>
       <el-alert v-if="detailSectionError" :title="detailSectionError" type="warning" :closable="false" show-icon />
 
