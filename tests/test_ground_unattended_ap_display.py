@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.ap_identity_index import ApIdentityMatch
+from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.ground_unattended_repository import (
     GroundUnattendedRepository,
 )
-from netconsole.services.ap_identity import normalize_mac_key
+from netconsole.services.ap_identity import ApIdentityQueryService, normalize_mac_key
 from netconsole.services.ground_unattended.ap_resolver import (
     GroundApDisplayResolver,
 )
@@ -29,11 +31,7 @@ class FakeIdentityQuery:
         self.state_calls = 0
 
     def resolve_peer_macs(self, macs, *, ap_role=None):
-        keys = tuple(
-            key
-            for mac in macs
-            if (key := normalize_mac_key(mac)) is not None
-        )
+        keys = tuple(key for mac in macs if (key := normalize_mac_key(mac)) is not None)
         self.batch_calls.append((keys, ap_role))
         return {
             key: self.matches.get(key)
@@ -82,6 +80,38 @@ def test_ap_display_resolver_uses_strict_peer_semantics_and_identity_fields() ->
     assert radio["identity_source"] == "ac_runtime"
 
 
+def test_ap_display_resolver_uses_real_base_identity_for_yard_radio_alias(
+    tmp_path,
+) -> None:
+    database = Database(tmp_path / "devices.db")
+    database.initialize()
+    repository = AcRepository(database)
+    repository.upsert_ap_extension_point(
+        {
+            "ap_name": "车辆段-AP01",
+            "ap_point_code": "YARD-AP01",
+            "ap_vendor": "H3C",
+            "ap_mac_display": "74ad-cb9d-3320",
+            "station_name": "车辆段",
+            "belong_type": "yard",
+        }
+    )
+    query = ApIdentityQueryService(database)
+    query.rebuild_index("ground_yard_base_data")
+    resolver = GroundApDisplayResolver(query)
+
+    radio = resolver.resolve(mac="74ad-cb9d-332f")
+    physical = resolver.resolve(mac="74ad-cb9d-3320")
+
+    assert radio["resolution_status"] == "RADIO_BSSID"
+    assert radio["peer_ap_name"] == "车辆段-AP01"
+    assert radio["peer_ap_mac"] == "74:ad:cb:9d:33:20"
+    assert radio["station"] == "车辆段"
+    assert radio["identity_source"] == "base_data"
+    assert physical["resolution_status"] == "UNRESOLVED"
+    assert physical["peer_ap_id"] == ""
+
+
 def test_ap_display_resolver_batches_distinct_current_and_previous_peers() -> None:
     first = "101122334455"
     second = "102233445566"
@@ -104,9 +134,7 @@ def test_ap_display_resolver_batches_distinct_current_and_previous_peers() -> No
     resolver.preload_parsed(parsed_rows)
     enriched = resolver.enrich_parsed(parsed_rows[0])
 
-    assert query.batch_calls == [
-        (("101122334455", "102233445566"), "trackside")
-    ]
+    assert query.batch_calls == [(("101122334455", "102233445566"), "trackside")]
     assert enriched["peer_name"] == "AP-01"
     assert enriched["previous_peer_name"] == "AP-02"
     assert enriched["details"]["identity_entity_id"] == "entity-1"
@@ -143,9 +171,7 @@ def test_ap_display_resolver_keeps_ambiguous_result_unbound() -> None:
 def test_ap_display_resolver_invalidates_cache_only_when_revision_changes() -> None:
     now = [0.0]
     key = "101122334455"
-    query = FakeIdentityQuery(
-        {key: _match(key, entity_id="entity-1", name="AP-OLD")}
-    )
+    query = FakeIdentityQuery({key: _match(key, entity_id="entity-1", name="AP-OLD")})
     resolver = GroundApDisplayResolver(
         query,
         revision_check_interval_seconds=30,
@@ -286,9 +312,7 @@ def test_timeline_enriches_link_events_and_no_active_link_switch(tmp_path) -> No
     no_active = rows[4]
     lost_active = rows[5]
 
-    assert query.batch_calls == [
-        (("101122334455", "102233445566"), "trackside")
-    ]
+    assert query.batch_calls == [(("101122334455", "102233445566"), "trackside")]
     assert linkup.resolved_ap_name == "横溪站-AP02"
     assert "RSSI -51 dBm" in linkup.message
     assert linkdown.resolved_ap_name == "横溪站-AP02"

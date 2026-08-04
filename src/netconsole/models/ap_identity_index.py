@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Mapping
 
 
 @dataclass(frozen=True)
@@ -140,3 +140,26 @@ class ApIdentityMatch:
     @property
     def matched(self) -> bool:
         return self.status == "matched"
+
+
+@dataclass(frozen=True)
+class ApIdentityBatchResult(Mapping[str, ApIdentityMatch]):
+    revision: int
+    index_status: str
+    requested_count: int
+    normalized_count: int
+    distinct_count: int
+    matched_count: int
+    unresolved_count: int
+    ambiguous_count: int
+    invalid_count: int
+    matches: Mapping[str, ApIdentityMatch] = field(default_factory=dict)
+
+    def __getitem__(self, key: str) -> ApIdentityMatch:
+        return self.matches[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.matches)
+
+    def __len__(self) -> int:
+        return len(self.matches)

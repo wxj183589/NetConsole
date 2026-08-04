@@ -53,14 +53,12 @@ class GroundApDisplayResolver:
             keys.extend(
                 _observed_keys(
                     parsed.get("peer_mac") or details.get("new_peer_mac"),
-                    details.get("peer_radio_mac")
-                    or details.get("new_peer_radio_mac"),
+                    details.get("peer_radio_mac") or details.get("new_peer_radio_mac"),
                 )
             )
             keys.extend(
                 _observed_keys(
-                    parsed.get("previous_peer_mac")
-                    or details.get("old_peer_mac"),
+                    parsed.get("previous_peer_mac") or details.get("old_peer_mac"),
                     details.get("previous_peer_radio_mac")
                     or details.get("old_peer_radio_mac"),
                 )
@@ -109,9 +107,7 @@ class GroundApDisplayResolver:
             radio_mac=current_radio_mac,
         )
         previous_name = result.get("previous_peer_name")
-        previous_mac = result.get("previous_peer_mac") or details.get(
-            "old_peer_mac"
-        )
+        previous_mac = result.get("previous_peer_mac") or details.get("old_peer_mac")
         previous_radio_mac = details.get("previous_peer_radio_mac") or details.get(
             "old_peer_radio_mac"
         )
@@ -136,8 +132,7 @@ class GroundApDisplayResolver:
                 ),
                 "previous_peer_name": previous["peer_ap_name"],
                 "previous_peer_mac": normalize_mac(
-                    result.get("previous_peer_mac")
-                    or details.get("old_peer_mac")
+                    result.get("previous_peer_mac") or details.get("old_peer_mac")
                 ),
                 "station": current["station"],
                 "section": current["section"],
@@ -162,8 +157,7 @@ class GroundApDisplayResolver:
                 "previous_identity_source": previous["identity_source"],
                 "previous_identity_reason": previous["identity_reason"],
                 "peer_radio_mac": normalize_mac(
-                    details.get("peer_radio_mac")
-                    or details.get("new_peer_radio_mac")
+                    details.get("peer_radio_mac") or details.get("new_peer_radio_mac")
                 ),
                 "previous_peer_radio_mac": normalize_mac(
                     details.get("previous_peer_radio_mac")
@@ -178,12 +172,8 @@ class GroundApDisplayResolver:
                 "resolved_radio_id": current["resolved_radio_id"],
                 "previous_resolution_status": previous["resolution_status"],
                 "previous_resolution_rule": previous["resolution_rule"],
-                "previous_resolution_confidence": previous[
-                    "resolution_confidence"
-                ],
-                "previous_display_name_source": previous[
-                    "display_name_source"
-                ],
+                "previous_resolution_confidence": previous["resolution_confidence"],
+                "previous_display_name_source": previous["display_name_source"],
                 "previous_resolved_radio_id": previous["resolved_radio_id"],
             }
         )
@@ -193,9 +183,7 @@ class GroundApDisplayResolver:
     def _resolve_keys(self, keys: Iterable[str]) -> dict[str, ApIdentityMatch]:
         compact_keys = tuple(
             dict.fromkeys(
-                key
-                for value in keys
-                if (key := normalize_mac_key(value)) is not None
+                key for value in keys if (key := normalize_mac_key(value)) is not None
             )
         )
         if not compact_keys:
@@ -205,9 +193,7 @@ class GroundApDisplayResolver:
             missing = [key for key in compact_keys if key not in self._matches]
             if missing:
                 matches = self._query_missing(missing)
-                revisions = {
-                    match.identity_revision for match in matches.values()
-                }
+                revisions = {match.identity_revision for match in matches.values()}
                 batch_revision = (
                     next(iter(revisions))
                     if len(revisions) == 1
@@ -222,12 +208,10 @@ class GroundApDisplayResolver:
                 self._last_revision_checked_at = self._monotonic()
                 self._matches.update(matches)
             return {
-                key: self._matches[key]
-                for key in compact_keys
-                if key in self._matches
+                key: self._matches[key] for key in compact_keys if key in self._matches
             }
 
-    def _query_missing(self, keys: list[str]) -> dict[str, ApIdentityMatch]:
+    def _query_missing(self, keys: list[str]) -> Mapping[str, ApIdentityMatch]:
         if self.query_service is None:
             return _unavailable_matches(
                 keys,
@@ -249,8 +233,7 @@ class GroundApDisplayResolver:
             return
         now = self._monotonic()
         if not force and (
-            now - self._last_revision_checked_at
-            < self._revision_check_interval_seconds
+            now - self._last_revision_checked_at < self._revision_check_interval_seconds
         ):
             return
         try:
@@ -323,9 +306,7 @@ def _unresolved_result(
 ) -> dict[str, object]:
     return {
         "peer_ap_id": "",
-        "peer_ap_name": name_text
-        or normalize_mac(mac)
-        or normalize_mac(radio_mac),
+        "peer_ap_name": name_text or normalize_mac(mac) or normalize_mac(radio_mac),
         "peer_ap_mac": "",
         "canonical_ap_mac": "",
         "station": "",

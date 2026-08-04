@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 
 from netconsole.core.database import Database
 from netconsole.models.ap_identity_index import (
+    ApIdentityBatchResult,
     ApIdentityBuildResult,
     ApIdentityMatch,
 )
@@ -51,7 +52,9 @@ class ApIdentityQueryService:
     def index_state(self) -> dict[str, object] | None:
         return self.repository.index_state(site_id=self.site_id)
 
-    def ensure_index(self, reason: str = "missing_index_compat") -> ApIdentityBuildResult | None:
+    def ensure_index(
+        self, reason: str = "missing_index_compat"
+    ) -> ApIdentityBuildResult | None:
         state, source_revision = self.repository.index_health(site_id=self.site_id)
         indexed_source_revision = (
             int(state["source_revision"])
@@ -85,7 +88,7 @@ class ApIdentityQueryService:
     def resolve_ap_macs(
         self,
         macs: Sequence[object],
-    ) -> dict[str, ApIdentityMatch]:
+    ) -> ApIdentityBatchResult:
         return self._resolve_exact_alias_batch(
             macs,
             alias_order=_EXACT_ALIAS_ORDER,
@@ -112,7 +115,7 @@ class ApIdentityQueryService:
         macs: Sequence[object],
         *,
         ap_role: str | None = None,
-    ) -> dict[str, ApIdentityMatch]:
+    ) -> ApIdentityBatchResult:
         return self._resolve_exact_alias_batch(
             macs,
             alias_order=_PEER_ALIAS_ORDER,
@@ -196,16 +199,23 @@ class ApIdentityQueryService:
         *,
         alias_order: Sequence[str],
         ap_role: str | None = None,
-    ) -> dict[str, ApIdentityMatch]:
-        mac_keys = tuple(
-            dict.fromkeys(
-                mac_key
-                for mac in macs
-                if (mac_key := normalize_mac_key(mac)) is not None
-            )
-        )
+    ) -> ApIdentityBatchResult:
+        normalized_keys = [
+            mac_key for mac in macs if (mac_key := normalize_mac_key(mac)) is not None
+        ]
+        mac_keys = tuple(dict.fromkeys(normalized_keys))
         if not mac_keys:
-            return {}
+            return ApIdentityBatchResult(
+                revision=0,
+                index_status="not_checked",
+                requested_count=len(macs),
+                normalized_count=len(normalized_keys),
+                distinct_count=0,
+                matched_count=0,
+                unresolved_count=0,
+                ambiguous_count=0,
+                invalid_count=len(macs) - len(normalized_keys),
+            )
 
         state, source_revision, exact_rows = self.repository.exact_alias_snapshot(
             mac_keys,
@@ -214,7 +224,7 @@ class ApIdentityQueryService:
         identity_revision = int((state or {}).get("revision") or 0)
         health_reason = _index_health_reason(state, source_revision)
         if health_reason:
-            return {
+            matches = {
                 mac_key: ApIdentityMatch(
                     status="unresolved",
                     identity_revision=identity_revision,
@@ -224,6 +234,13 @@ class ApIdentityQueryService:
                 )
                 for mac_key in mac_keys
             }
+            return _batch_result(
+                matches,
+                revision=identity_revision,
+                index_status=health_reason,
+                requested_count=len(macs),
+                normalized_count=len(normalized_keys),
+            )
 
         rows_by_mac: dict[str, list[Mapping[str, object]]] = {
             mac_key: [] for mac_key in mac_keys
@@ -238,9 +255,7 @@ class ApIdentityQueryService:
             ):
                 rows_by_mac[mac_key].append(row)
 
-        alias_rank = {
-            alias_type: index for index, alias_type in enumerate(alias_order)
-        }
+        alias_rank = {alias_type: index for index, alias_type in enumerate(alias_order)}
         unresolved_reason = (
             "exact_alias_not_collected"
             if _collected_alias_count(state or {}) == 0
@@ -271,7 +286,13 @@ class ApIdentityQueryService:
                 query_mac=mac_key,
                 query_display=query_display,
             )
-        return results
+        return _batch_result(
+            results,
+            revision=identity_revision,
+            index_status="ready",
+            requested_count=len(macs),
+            normalized_count=len(normalized_keys),
+        )
 
     def _cached_health(self) -> tuple[dict[str, object] | None, int]:
         if self._health_cache is None or not self._health_pinned:
@@ -352,8 +373,7 @@ class ApIdentityQueryService:
                 query_mac=query_mac,
                 query_mac_display=query_display,
                 candidates=tuple(
-                    _candidate_payload(row, query_display)
-                    for row in by_entity.values()
+                    _candidate_payload(row, query_display) for row in by_entity.values()
                 ),
                 unresolved_reason="duplicate_exact_alias",
             )
@@ -385,9 +405,7 @@ class ApIdentityQueryService:
             direction=str(row.get("effective_direction") or ""),
             belong_type=str(row.get("effective_belong_type") or "unknown"),
             matched_alias_type=str(row.get("alias_type") or ""),
-            matched_source=str(
-                row.get("source") or row.get("effective_source") or ""
-            ),
+            matched_source=str(row.get("source") or row.get("effective_source") or ""),
             match_rule=str(row.get("derivation_rule") or ""),
             match_confidence=int(row.get("confidence") or 0),
             radio_id=_optional_int(row.get("radio_id")),
@@ -506,6 +524,29 @@ def _collected_alias_count(state: Mapping[str, object]) -> int:
             "actual_bbssid_alias_count",
             "derived_alias_count",
         )
+    )
+
+
+def _batch_result(
+    matches: Mapping[str, ApIdentityMatch],
+    *,
+    revision: int,
+    index_status: str,
+    requested_count: int,
+    normalized_count: int,
+) -> ApIdentityBatchResult:
+    statuses = [match.status for match in matches.values()]
+    return ApIdentityBatchResult(
+        revision=revision,
+        index_status=index_status,
+        requested_count=requested_count,
+        normalized_count=normalized_count,
+        distinct_count=len(matches),
+        matched_count=statuses.count("matched"),
+        unresolved_count=statuses.count("unresolved"),
+        ambiguous_count=statuses.count("ambiguous"),
+        invalid_count=requested_count - normalized_count,
+        matches=dict(matches),
     )
 
 

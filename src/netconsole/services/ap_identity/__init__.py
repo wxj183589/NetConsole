@@ -1,3 +1,5 @@
+from netconsole.models.ap_identity_index import ApIdentityBatchResult
+
 from .adapters import (
     candidate_from_ap_entity_row,
     candidate_from_extension_row,
@@ -32,6 +34,7 @@ from .query_service import ApIdentityQueryService
 
 __all__ = [
     "ApIdentityCandidate",
+    "ApIdentityBatchResult",
     "ApIdentityResolver",
     "ApIdentityQueryService",
     "ApMatchEvidence",

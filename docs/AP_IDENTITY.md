@@ -130,6 +130,24 @@ MESH Peer 使用独立的 `resolve_peer_mac()`。Peer 是 Radio/BSSID 观测，
 返回以 12 位紧凑 MAC 为键的结果。单批健康检查只执行一次，每个
 `ApIdentityMatch` 携带同一 `identity_revision`；不得再按原始事实逐行查询。
 
+批量入口返回 `ApIdentityBatchResult`。它实现只读 `Mapping[str,
+ApIdentityMatch]`，现有按 key、`values()` 或 `dict.update()` 消费方式保持兼容，
+同时提供以下批次元数据：
+
+- `revision`：本批固定的 Identity revision；
+- `index_status`：`ready`、`identity_index_missing`、
+  `identity_index_stale` 或未访问数据库时的 `not_checked`；
+- `requested_count`：原始输入数量；
+- `normalized_count`：可规范化输入数量，包含重复格式；
+- `distinct_count`：规范化去重后的查询数量；
+- `matched_count`、`unresolved_count`、`ambiguous_count`：有效 distinct
+  查询的结果统计；
+- `invalid_count`：无法规范化的输入数量；
+- `matches`：以紧凑 MAC 为键的结果映射。
+
+空输入或全无效输入不访问 SQLite，`index_status=not_checked`。批量查询中的
+无效值只进入统计，不伪造结果 key；歧义仍保留为 `ambiguous`，不得选择第一条。
+
 ## 6. 持久化结构
 
 统一索引位于每个局点的 `devices.db`：
