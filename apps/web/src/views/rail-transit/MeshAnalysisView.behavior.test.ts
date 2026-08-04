@@ -187,6 +187,14 @@ const dialogStub = defineComponent({
 const popoverStub = defineComponent({
   setup(_props, { slots }) { return () => h('div', [slots.reference?.(), slots.default?.()]) },
 })
+const tabsStub = defineComponent({
+  inheritAttrs: false,
+  props: { modelValue: { type: String, default: '' } },
+  emits: ['update:modelValue'],
+  setup(props, { attrs, slots }) {
+    return () => h('div', { ...attrs, modelvalue: props.modelValue }, slots.default?.())
+  },
+})
 const chartViewport = {
   start_time: '2026-07-20 10:00:01.123',
   end_time: '2026-07-20 10:00:03.456',
@@ -240,7 +248,7 @@ const stubs: Record<string, Component | boolean> = {
   ElPopover: popoverStub,
   ElSelect: selectStub,
   ElTabPane: passthrough,
-  ElTabs: passthrough,
+  ElTabs: tabsStub,
   ElTag: passthrough,
   MeshChannelBusyChart: meshChartStub,
   MeshRssiChart: meshChartStub,
@@ -418,6 +426,62 @@ function deferred<T>() {
     reject = rejectPromise
   })
   return { promise, resolve, reject }
+}
+
+function refreshTestSession(sessionId: string, mrName = '列车24-MR-CT') {
+  return {
+    session_id: sessionId,
+    mr_name: mrName,
+    train_name: '列车24',
+    original_filename: '2026_07_24_1meshlog.log',
+    first_sample_time: '2026-07-24 10:00:00.000',
+    last_sample_time: '2026-07-24 10:01:00.000',
+    parsed_status: 'ready',
+    warning_count: 0,
+    report_count: 0,
+  }
+}
+
+function refreshTestDetail(session: ReturnType<typeof refreshTestSession>) {
+  return {
+    session,
+    analysis_params: {},
+    available_radios: [1],
+    warnings: [],
+    sources: [{
+      source_file_id: 24,
+      source_action_id: 'source-refresh-test',
+      exists: true,
+      rebuild_capability: 'ready',
+      identity_mapping_status: 'ready',
+    }],
+  }
+}
+
+function refreshTestBuildOrder(peerApName: string) {
+  return {
+    items: [{
+      sequence: 1,
+      anchor_link_id: 24,
+      source_file_id: 24,
+      local_radio: 1,
+      peer_ap_name: peerApName,
+      active_peer_mac: '642f-c778-ef5f',
+      build_start_time: '2026-07-24 10:00:00.000',
+      build_end_time: '2026-07-24 10:00:10.000',
+      build_result: 'normal',
+      identity_status: peerApName ? 'matched' : 'unresolved',
+    }],
+    total: 1,
+    page: 1,
+    page_size: 100,
+  }
+}
+
+function mountRefreshTestView() {
+  return mount(MeshAnalysisView, {
+    global: { stubs, directives: { loading: () => undefined } },
+  })
 }
 
 function hotfixActivePayload(
@@ -1187,7 +1251,7 @@ describe('Mesh analysis detail behavior', () => {
     wrapper.unmount()
   })
 
-  it('pauses task polling and keeps cached analysis until a background rebuild is explicitly refreshed', async () => {
+  it('resumes task polling and automatically refreshes the current session after a background rebuild', async () => {
     vi.useFakeTimers()
     let frameId = 0
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
@@ -1224,7 +1288,24 @@ describe('Mesh analysis detail behavior', () => {
       sources: [{ source_file_id: 8, source_action_id: 'source-2', source_id: 'source-2' }],
     })
     mocks.recoverTasks.mockResolvedValue([runningTask])
-    mocks.getTask.mockResolvedValue({ ...runningTask, status: 'COMPLETED' })
+    mocks.getTask.mockResolvedValue({
+      ...runningTask,
+      status: 'COMPLETED',
+      result_summary: { session_id: session.session_id },
+    })
+    mocks.listBuildOrder
+      .mockResolvedValueOnce({
+        items: [{ sequence: 1, peer_ap_name: '', identity_status: 'unresolved' }],
+        total: 1,
+        page: 1,
+        page_size: 100,
+      })
+      .mockResolvedValue({
+        items: [{ sequence: 1, peer_ap_name: '轨旁AP-24', identity_status: 'matched' }],
+        total: 1,
+        page: 1,
+        page_size: 100,
+      })
 
     const meshVisible = ref(true)
     const RouteHost = defineComponent({
@@ -1262,14 +1343,392 @@ describe('Mesh analysis detail behavior', () => {
       await flushPromises()
 
       expect(mocks.getTask).toHaveBeenCalledTimes(1)
-      expect(mocks.getSession).toHaveBeenCalledTimes(1)
-      expect(wrapper.text()).toContain('分析结果已在后台更新，当前仍显示离开页面前的结果。')
-      expect(wrapper.findAll('button').some((button) => button.text() === '刷新结果')).toBe(true)
+      expect(mocks.getSession).toHaveBeenCalledTimes(2)
+      expect(wrapper.text()).not.toContain('当前仍显示离开页面前的结果')
+      expect(wrapper.text()).not.toContain('立即重试')
+      const buildOrderTable = wrapper.findAllComponents(dataTableStub).find(
+        (table) => table.props('tableId') === 'mesh-analysis-active-build-order:v2',
+      )!
+      expect(buildOrderTable.props('data')).toEqual([
+        expect.objectContaining({ peer_ap_name: '轨旁AP-24', identity_status: 'matched' }),
+      ])
       expect(wrapper.getComponent(MeshAnalysisView).find('.detail-tabs').attributes('modelvalue')).toBe('build-order')
     } finally {
       wrapper.unmount()
       vi.useRealTimers()
     }
+  })
+
+  it('automatically refreshes the selected session when a rebuild completes on the active page', async () => {
+    vi.useFakeTimers()
+    const session = refreshTestSession('session-active-completion')
+    const runningTask = {
+      task_id: 'mesh-active-completion',
+      action: 'mesh_source_rebuild',
+      status: 'RUNNING',
+      message: '',
+      error_message: '',
+      result_summary: {},
+    }
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue(refreshTestDetail(session))
+    mocks.listBuildOrder
+      .mockResolvedValueOnce(refreshTestBuildOrder(''))
+      .mockResolvedValue(refreshTestBuildOrder('轨旁AP-24'))
+    mocks.recoverTasks.mockResolvedValue([runningTask])
+    mocks.getTask.mockResolvedValue({
+      ...runningTask,
+      status: 'COMPLETED',
+      result_summary: {
+        session_id: session.session_id,
+        identity_remap: { matched_mapping_count: 2, updated_link_row_count: 6473 },
+      },
+    })
+
+    const wrapper = mountRefreshTestView()
+    try {
+      await flushPromises()
+      await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+      await flushPromises()
+      await vi.advanceTimersByTimeAsync(1000)
+      await flushPromises()
+
+      expect(mocks.getSession).toHaveBeenCalledTimes(2)
+      const buildOrderTable = wrapper.findAllComponents(dataTableStub).find(
+        (table) => table.props('tableId') === 'mesh-analysis-active-build-order:v2',
+      )!
+      expect(buildOrderTable.props('data')).toEqual([
+        expect.objectContaining({ peer_ap_name: '轨旁AP-24', identity_status: 'matched' }),
+      ])
+      expect(wrapper.text()).not.toContain('立即重试')
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it('queues a completed rebuild received while inactive and consumes it on activation', async () => {
+    vi.useFakeTimers()
+    const session = refreshTestSession('session-inactive-completion')
+    const runningTask = {
+      task_id: 'mesh-inactive-completion',
+      action: 'mesh_source_rebuild',
+      status: 'RUNNING',
+      message: '',
+      error_message: '',
+      result_summary: {},
+    }
+    const taskRequest = deferred<Record<string, unknown>>()
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue(refreshTestDetail(session))
+    mocks.listBuildOrder
+      .mockResolvedValueOnce(refreshTestBuildOrder(''))
+      .mockResolvedValue(refreshTestBuildOrder('轨旁AP-24'))
+    mocks.recoverTasks.mockResolvedValue([runningTask])
+    mocks.getTask.mockImplementation(() => taskRequest.promise)
+
+    const meshVisible = ref(true)
+    const RouteHost = defineComponent({
+      setup() {
+        return () => h(KeepAlive, { max: 1 }, {
+          default: () => meshVisible.value ? h(MeshAnalysisView, { key: 'mesh-analysis' }) : null,
+        })
+      },
+    })
+    const wrapper = mount(RouteHost, {
+      global: { stubs, directives: { loading: () => undefined } },
+    })
+    try {
+      await flushPromises()
+      await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+      await flushPromises()
+      await vi.advanceTimersByTimeAsync(1000)
+      meshVisible.value = false
+      await nextTick()
+      taskRequest.resolve({
+        ...runningTask,
+        status: 'COMPLETED',
+        result_summary: { session_id: session.session_id },
+      })
+      await flushPromises()
+      expect(mocks.getSession).toHaveBeenCalledTimes(1)
+
+      meshVisible.value = true
+      await nextTick()
+      await flushPromises()
+
+      expect(mocks.getSession).toHaveBeenCalledTimes(2)
+      expect(wrapper.text()).not.toContain('立即重试')
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it('uses the top refresh action for both overview and the current session detail', async () => {
+    const session = refreshTestSession('session-manual-refresh')
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue(refreshTestDetail(session))
+    mocks.listBuildOrder
+      .mockResolvedValueOnce(refreshTestBuildOrder(''))
+      .mockResolvedValue(refreshTestBuildOrder('轨旁AP-24'))
+    const wrapper = mountRefreshTestView()
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+    mocks.getOverview.mockClear()
+    mocks.getSession.mockClear()
+    mocks.listBuildOrder.mockClear()
+    mocks.listBuildOrder.mockResolvedValue(refreshTestBuildOrder('轨旁AP-24'))
+
+    await wrapper.findAll('button').find((button) => button.text() === '刷新结果')!.trigger('click')
+    await flushPromises()
+
+    expect(mocks.getOverview).toHaveBeenCalledTimes(1)
+    expect(mocks.getSession).toHaveBeenCalledWith(session.session_id, expect.any(AbortSignal))
+    expect(mocks.listBuildOrder).toHaveBeenCalledWith(
+      session.session_id,
+      expect.objectContaining({ page: 1 }),
+      expect.any(AbortSignal),
+    )
+    const buildOrderTable = wrapper.findAllComponents(dataTableStub).find(
+      (table) => table.props('tableId') === 'mesh-analysis-active-build-order:v2',
+    )!
+    expect(buildOrderTable.props('data')).toEqual([
+      expect.objectContaining({ peer_ap_name: '轨旁AP-24' }),
+    ])
+    wrapper.unmount()
+  })
+
+  it('refreshes only the overview when no session is selected', async () => {
+    const wrapper = mountRefreshTestView()
+    await flushPromises()
+    mocks.getOverview.mockClear()
+    mocks.getSession.mockClear()
+
+    await wrapper.findAll('button').find((button) => button.text() === '刷新结果')!.trigger('click')
+    await flushPromises()
+
+    expect(mocks.getOverview).toHaveBeenCalledTimes(1)
+    expect(mocks.getSession).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('does not interrupt the current session when another session rebuild completes', async () => {
+    vi.useFakeTimers()
+    const current = refreshTestSession('session-current')
+    const other = refreshTestSession('session-other', '列车24-MR-CW')
+    const runningTask = {
+      task_id: 'mesh-other-session',
+      action: 'mesh_source_rebuild',
+      status: 'RUNNING',
+      message: '',
+      error_message: '',
+      result_summary: {},
+    }
+    mocks.listSessions.mockResolvedValue({ items: [current, other], total: 2, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue(refreshTestDetail(current))
+    mocks.listBuildOrder.mockResolvedValue(refreshTestBuildOrder('轨旁AP-24'))
+    mocks.recoverTasks.mockResolvedValue([runningTask])
+    mocks.getTask.mockResolvedValue({
+      ...runningTask,
+      status: 'COMPLETED',
+      result_summary: { session_id: other.session_id },
+    })
+    const wrapper = mountRefreshTestView()
+    try {
+      await flushPromises()
+      await wrapper.findAll('button').filter((button) => button.text() === '查看')[0].trigger('click')
+      await flushPromises()
+      await vi.advanceTimersByTimeAsync(1000)
+      await flushPromises()
+
+      expect(mocks.getSession).toHaveBeenCalledTimes(1)
+      expect(wrapper.text()).toContain(current.mr_name)
+      expect(wrapper.find('.detail-tabs').attributes('modelvalue')).toBe('build-order')
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it('processes one terminal task only once across repeated activations', async () => {
+    vi.useFakeTimers()
+    const session = refreshTestSession('session-terminal-once')
+    const runningTask = {
+      task_id: 'mesh-terminal-once',
+      action: 'mesh_source_rebuild',
+      status: 'RUNNING',
+      message: '',
+      error_message: '',
+      result_summary: {},
+    }
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue(refreshTestDetail(session))
+    mocks.listBuildOrder.mockResolvedValue(refreshTestBuildOrder('轨旁AP-24'))
+    mocks.recoverTasks.mockResolvedValue([runningTask])
+    mocks.getTask.mockResolvedValue({
+      ...runningTask,
+      status: 'COMPLETED',
+      result_summary: { session_id: session.session_id },
+    })
+    const meshVisible = ref(true)
+    const RouteHost = defineComponent({
+      setup() {
+        return () => h(KeepAlive, { max: 1 }, {
+          default: () => meshVisible.value ? h(MeshAnalysisView, { key: 'mesh-analysis' }) : null,
+        })
+      },
+    })
+    const wrapper = mount(RouteHost, { global: { stubs, directives: { loading: () => undefined } } })
+    try {
+      await flushPromises()
+      await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+      await flushPromises()
+      await vi.advanceTimersByTimeAsync(1000)
+      await flushPromises()
+      expect(mocks.getSession).toHaveBeenCalledTimes(2)
+
+      for (let index = 0; index < 2; index += 1) {
+        meshVisible.value = false
+        await nextTick()
+        meshVisible.value = true
+        await nextTick()
+        await flushPromises()
+      }
+
+      expect(mocks.getSession).toHaveBeenCalledTimes(2)
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps links and RSSI active while refreshing their latest data', async () => {
+    const session = refreshTestSession('session-tab-refresh')
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue(refreshTestDetail(session))
+    mocks.listBuildOrder.mockResolvedValue(refreshTestBuildOrder('轨旁AP-24'))
+    mocks.listLinks
+      .mockResolvedValueOnce({ items: [{ record_id: 1, peer_ap_name: '' }], total: 1, page: 1, page_size: 100 })
+      .mockResolvedValue({ items: [{ record_id: 1, peer_ap_name: '轨旁AP-24' }], total: 1, page: 1, page_size: 100 })
+    const wrapper = mountRefreshTestView()
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+    const detailTabs = wrapper.findAllComponents(tabsStub).find((tabs) => tabs.classes().includes('detail-tabs'))!
+    const linkTable = wrapper.findAllComponents(dataTableStub).find(
+      (table) => table.props('tableId') === 'mesh-analysis-link-details:v3',
+    )!
+    detailTabs.vm.$emit('update:modelValue', 'links')
+    await flushPromises()
+    await vi.waitFor(() => expect(mocks.listLinks).toHaveBeenCalledTimes(1))
+    mocks.listLinks.mockClear()
+
+    await wrapper.findAll('button').find((button) => button.text() === '刷新结果')!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.detail-tabs').attributes('modelvalue')).toBe('links')
+    expect(mocks.listLinks).toHaveBeenCalledTimes(1)
+    const refreshedLinkTable = wrapper.findAllComponents(dataTableStub).find(
+      (table) => table.props('tableId') === 'mesh-analysis-link-details:v3',
+    )!
+    expect(refreshedLinkTable.props('data')).toEqual([
+      expect.objectContaining({ peer_ap_name: '轨旁AP-24' }),
+    ])
+
+    detailTabs.vm.$emit('update:modelValue', 'build-order')
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看动态图')!.trigger('click')
+    await flushPromises()
+    mocks.getActivePath.mockClear()
+    await wrapper.findAll('button').find((button) => button.text() === '刷新结果')!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.detail-tabs').attributes('modelvalue')).toBe('rssi')
+    expect(mocks.getActivePath).toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('prevents a late refresh response from replacing a newly selected session', async () => {
+    const first = refreshTestSession('session-refresh-race-a')
+    const second = refreshTestSession('session-refresh-race-b', '列车24-MR-CW')
+    const lateRefresh = deferred<ReturnType<typeof refreshTestDetail>>()
+    let firstRequestCount = 0
+    mocks.listSessions.mockResolvedValue({ items: [first, second], total: 2, page: 1, page_size: 50 })
+    mocks.getSession.mockImplementation((id: string) => {
+      if (id === first.session_id) {
+        firstRequestCount += 1
+        if (firstRequestCount === 2) return lateRefresh.promise
+        return Promise.resolve(refreshTestDetail(first))
+      }
+      return Promise.resolve(refreshTestDetail(second))
+    })
+    mocks.listBuildOrder.mockResolvedValue(refreshTestBuildOrder('轨旁AP-24'))
+    const wrapper = mountRefreshTestView()
+    await flushPromises()
+    const viewButtons = wrapper.findAll('button').filter((button) => button.text() === '查看')
+    await viewButtons[0].trigger('click')
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === '刷新结果')!.trigger('click')
+    await flushPromises()
+    await viewButtons[1].trigger('click')
+    await flushPromises()
+    lateRefresh.resolve(refreshTestDetail(first))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain(second.mr_name)
+    expect(wrapper.text()).not.toContain('当前：列车24-MR-CT')
+    expect(mocks.currentRoute.value.query.session_id).toBe(second.session_id)
+    wrapper.unmount()
+  })
+
+  it('keeps a failed result refresh retryable and clears the warning after retry succeeds', async () => {
+    const session = refreshTestSession('session-refresh-retry')
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession
+      .mockResolvedValueOnce(refreshTestDetail(session))
+      .mockRejectedValueOnce(new Error('当前详情请求失败'))
+      .mockResolvedValue(refreshTestDetail(session))
+    mocks.listBuildOrder.mockResolvedValue(refreshTestBuildOrder('轨旁AP-24'))
+    const wrapper = mountRefreshTestView()
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === '刷新结果')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('AP 身份映射已完成，但当前页面刷新失败')
+    expect(wrapper.text()).toContain('立即重试')
+
+    await wrapper.findAll('button').find((button) => button.text() === '刷新结果')!.trigger('click')
+    await flushPromises()
+    expect(mocks.getSession).toHaveBeenCalledTimes(3)
+    expect(wrapper.text()).not.toContain('AP 身份映射已完成，但当前页面刷新失败')
+    expect(wrapper.text()).not.toContain('立即重试')
+    wrapper.unmount()
+  })
+
+  it('closes a selected session that no longer exists during a result refresh', async () => {
+    const session = refreshTestSession('session-refresh-deleted')
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession
+      .mockResolvedValueOnce(refreshTestDetail(session))
+      .mockRejectedValueOnce(new ApiRequestError('来源不存在', 404, 'MESH_SESSION_NOT_FOUND'))
+    mocks.listBuildOrder.mockResolvedValue(refreshTestBuildOrder('轨旁AP-24'))
+    const wrapper = mountRefreshTestView()
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === '刷新结果')!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('当前 MESH 分析来源已不存在')
+    expect(wrapper.find('.detail-card').exists()).toBe(false)
+    expect(mocks.currentRoute.value.query.session_id).toBeUndefined()
+    wrapper.unmount()
   })
 
   it('refreshes imported sources after the catalog index catches up', async () => {
