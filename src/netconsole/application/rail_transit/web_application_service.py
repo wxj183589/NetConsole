@@ -1114,7 +1114,10 @@ class RailTransitWebApplicationService:
             for row in scope.station_statistics()
         ]
         planned_total = sum(row.planned_ap_count for row in result)
-        actual_online_total = sum(row.actual_online_count for row in result)
+        matched_online_total = sum(row.actual_online_count for row in result)
+        actual_online_total = (
+            matched_online_total + scope.fit_ap_unmatched_online_count
+        )
         anomaly = any(row.count_anomaly for row in result)
         warning_parts = []
         if scope.fit_ap_unmatched_online_count:
@@ -2085,6 +2088,18 @@ class RailTransitWebApplicationService:
                 }
                 for row in status.items
             ]
+            if status.unassigned_count:
+                status_rows.append(
+                    {
+                        "station_name": "基础资料待补充",
+                        "planned_ap_count": None,
+                        "actual_online_count": status.unassigned_count,
+                        "offline_count": None,
+                        "online_rate": None,
+                        "remark": "在线 AP 尚未关联有效站点，已计入合计实际上线数。",
+                        "__row_kind": "unassigned",
+                    }
+                )
             status_rows.append(
                 {
                     "station_name": "合计",

@@ -603,6 +603,18 @@ def test_unmatched_online_resources_are_diagnostics_not_exclusions() -> None:
     assert scope.fit_ap_unmatched_online_count == 3
     assert scope.excluded_device_count == 0
     assert len(scope.excluded_items) == 0
+    overview = scope.overview_export_rows()
+    assert [row["site"] for row in overview] == [
+        "01-站点",
+        "基础资料待补充",
+        "合计",
+    ]
+    assert overview[-2]["online"] == 3
+    assert overview[-1]["online"] == 3
+    assert overview[-1]["offline"] == 0
+    assert "AC AP 资源 3 个" in str(overview[-1]["remark"])
+    assert "已关联上线 0 个" in str(overview[-1]["remark"])
+    assert "基础资料待补充 3 个" in str(overview[-1]["remark"])
 
 
 def test_conflicting_ac_lldp_reports_evidence_gap_without_name_or_ip_fallback() -> None:

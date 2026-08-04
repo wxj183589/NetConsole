@@ -429,8 +429,31 @@ class EffectiveTracksideApScope:
                 }
             )
         planned_total = sum(int(row["planned_ap_count"] or 0) for row in station_rows)
-        online_total = sum(int(row["actual_online_count"] or 0) for row in station_rows)
+        matched_online_total = sum(
+            int(row["actual_online_count"] or 0) for row in station_rows
+        )
+        unmatched_online_total = self.fit_ap_unmatched_online_count
+        if unmatched_online_total:
+            result.append(
+                {
+                    "site": "基础资料待补充",
+                    "total": None,
+                    "online": unmatched_online_total,
+                    "offline": None,
+                    "online_rate": "—",
+                    "remark": "在线 AP 尚未关联有效站点，已计入合计实际上线数。",
+                    "status": "unassigned",
+                }
+            )
+        online_total = matched_online_total + unmatched_online_total
         total_anomaly = any(bool(row.get("count_anomaly")) for row in station_rows)
+        total_remark = (
+            f"AC AP 资源 {self.fit_ap_resource_total_count} 个；"
+            f"已关联上线 {matched_online_total} 个；"
+            f"基础资料待补充 {unmatched_online_total} 个。"
+        )
+        if total_anomaly:
+            total_remark = f"{total_remark} 统计范围存在数量异常，请查看分站状态。"
         result.append(
             {
                 "site": "合计",
@@ -442,7 +465,7 @@ class EffectiveTracksideApScope:
                     if planned_total > 0 and not total_anomaly
                     else "—"
                 ),
-                "remark": "统计范围存在数量异常，请查看分站状态。" if total_anomaly else "",
+                "remark": total_remark,
                 "status": "anomaly" if total_anomaly else "normal",
             }
         )

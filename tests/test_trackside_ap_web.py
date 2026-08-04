@@ -2053,9 +2053,9 @@ def test_trackside_ap_online_status_uses_planned_targets_and_weighted_total(
     status = service.get_trackside_ap_online_status("demo")
 
     assert status.planned_ap_count == 945
-    assert status.actual_online_count == 719
-    assert status.offline_count == 226
-    assert status.online_rate == 76.1
+    assert status.actual_online_count == 720
+    assert status.offline_count == 225
+    assert status.online_rate == 76.2
     assert status.unassigned_count == 1
     assert "当前有 1 个待关联在线轨旁 AP。" in status.warning
     assert status.excluded_device_count == 2
@@ -2129,14 +2129,20 @@ def test_trackside_ap_online_status_uses_planned_targets_and_weighted_total(
         0,
     ]
     assert [overview.cell(13, column).value for column in range(1, 5)] == [
+        "基础资料待补充",
+        None,
+        1,
+        None,
+    ]
+    assert [overview.cell(14, column).value for column in range(1, 5)] == [
         "合计",
         945,
-        719,
-        226,
+        720,
+        225,
     ]
-    assert overview["E13"].value == pytest.approx(0.761)
-    assert overview["E13"].number_format == "0.0%"
-    assert overview["E13"].font.bold is True
+    assert overview["E14"].value == pytest.approx(0.762)
+    assert overview["E14"].number_format == "0.0%"
+    assert overview["E14"].font.bold is True
     workbook.close()
 
 
@@ -2193,7 +2199,7 @@ def test_trackside_online_status_refreshes_from_exact_switch_lldp_station_eviden
     )
 
     before = service.get_trackside_ap_online_status("demo")
-    assert before.actual_online_count == 0
+    assert before.actual_online_count == 1
     assert before.fit_ap_unmatched_online_count == 1
 
     DeviceFactRepository(database).replace_lldp_neighbors(
