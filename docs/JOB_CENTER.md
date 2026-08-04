@@ -6,6 +6,10 @@ Electron 不再创建任务专用 `BrowserWindow`，`/desktop/tasks`、`TaskWind
 
 停止、重试、Artifact 下载和本机打开动作必须由任务 owner capability 明确授权，未支持能力不得假成功。统一取消只调用对应 owner 的既有 Application Service，owner 未接线时禁用；`STOPPING` 只在 owner 已确认停止请求后返回。设备数据与设备模板分别以 `web_export_device_csv`、`web_export_device_template_csv` 进入同一受管 Export Adapter；Worker 运行时丢失时收敛为 `FAILED / WORKER_RUNTIME_LOST`，不会遗留长期 `RUNNING 0%`。统一任务的 `message/error/error_summary/phase/stage` 等文本，以及日志的嵌套 `message/error/traceback/diagnostic/state/stage`，在 DTO 输出前统一脱敏 Windows/UNC 绝对路径；Artifact DTO 固定为安全 ID、显示名、大小、可用时的 SHA-256、类型和受控 endpoint。Task Center 的 Artifact 动作分为两类：当前 Renderer 会话中已有用户预选目标绑定的任务，Artifact 就绪后直接写入该授权位置，失败时显示“重新选择保存位置”并复用原 Artifact；没有绑定的历史任务继续显示“另存 Artifact/保存导出表格”，只在用户点击时打开一次 Electron Save As 或浏览器下载。取消或失败不改写服务端任务终态、不删除 Artifact，页面加载和历史恢复不自动弹保存窗口。关闭抽屉、完整任务中心页面或业务标签不改变后台任务生命周期。
 
+任务执行结果、Artifact 当前可用性和原始 Source 当前可用性是三套独立语义。`Task status` 只记录执行结果；`Artifact availability` 固定为 `AVAILABLE / MISSING / INVALID / NOT_APPLICABLE`；Source 是否仍存在由各领域查询独立报告。`COMPLETED` 任务的输出被用户从资源管理器删除后仍保持 `COMPLETED`，列表和详情按磁盘现状返回 `artifact_available=false`、`artifact_availability=MISSING`，并移除下载能力。受管文件恢复且完整性锚点匹配后，下次只读刷新会重新返回 `AVAILABLE`。路径越界、符号链接、归属或完整性锚点不符返回 `INVALID`，Renderer 不获得绝对路径。
+
+`ArtifactReconciliationService` 是任务元数据与受管磁盘文件之间的只读协调边界，支持单任务、单局点和多局点批量核对，不写 `tasks.db`、不新增事件，也不持久化临时 MISSING 状态。列表只校验路径、普通文件、大小和锚点，详情与明确打开下载继续执行 SHA-256 校验，避免轮询期间反复哈希大文件。启动兼容恢复只允许为仍存在输出的 `COMPLETED` 任务补做一次最终化；输出已删除时不恢复、不改 FAILED、不写“报告恢复校验失败”。`FAILED / CANCELLED` 只清理该任务明确登记的临时输出，不覆盖真实失败原因。该协调无需数据库迁移，旧任务库直接按现有 result 与 Manifest 动态判定。
+
 Job Center 是普通后台任务的统一调度层；Export Process 是共享同一事件协议的专用导出通道。
 
 > 2026-07-14 代码核对：Registry 当前注册 88 个 task type，分布于 11 个领域 handler 模块。新增三个本地 Traffic handler及两个 Online MR Agent 包同步/导入 handler；注册与进程协议已统一，但多数既有 handler 仍经 `legacy_tasks.py` 薄适配，领域迁移未完成。设备批量连接测试和批量详情采集仍是专用线程路径，不属于 Job Center。

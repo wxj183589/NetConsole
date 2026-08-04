@@ -61,6 +61,16 @@ const artifactDownloadLabel = computed(() => {
 const artifactDownloadDisabled = computed(() => (
   !store.selected?.artifact_download || selectedExportBinding.value?.state === 'saving'
 ))
+const artifactUnavailable = computed(() => (
+  store.selected?.artifact_availability === 'MISSING'
+  || store.selected?.artifact_availability === 'INVALID'
+))
+const artifactUnavailableMessage = computed(() => (
+  store.selected?.missing_reason
+  || (store.selected?.artifact_availability === 'INVALID'
+    ? '输出文件校验失败，当前不可下载。'
+    : '输出文件已不存在，可能已在资源管理器中删除。')
+))
 const selectedDetails = computed<Record<string, unknown>>(() => store.selected?.details || {})
 const selectedResident = computed(() => isResidentTask(store.selected))
 const historicalTextDamaged = computed(() => store.selected?.text_integrity === 'historical_corrupted')
@@ -312,7 +322,14 @@ async function downloadArtifact(): Promise<void> {
     ElMessage.warning('Artifact 已生成，但尚未保存到本地。')
   } else if (result.status === 'started' && !tracksideArtifact) {
     ElMessage.info('文件已交由浏览器下载，请在浏览器下载记录中查看。')
-  } else if (result.status === 'failed' && !tracksideArtifact) ElMessage.error(result.error || 'Artifact 下载失败')
+  } else if (result.status === 'failed' && !tracksideArtifact) {
+    if (result.errorCode === 'ARTIFACT_NOT_FOUND') {
+      ElMessage.warning('输出文件已不存在，可能已在资源管理器中删除。')
+      await store.refreshSelected()
+    } else {
+      ElMessage.error(result.error || 'Artifact 下载失败')
+    }
+  }
 }
 
 async function acknowledgeSelected(): Promise<void> {
@@ -447,6 +464,12 @@ async function runSavedAction(action: 'open' | 'reveal'): Promise<void> {
     if (generation !== downloadGeneration || capabilityId !== lastSavedCapability.value) return
     if (result.success) {
       ElMessage.success(action === 'open' ? '已请求系统打开文件' : '已在文件夹中定位')
+      return
+    }
+    if (result.availability === 'MISSING') {
+      clearSavedCapability()
+      nativeActionError.value = '已保存的文件已不存在，请重新下载后再试'
+      ElMessage.warning(nativeActionError.value)
       return
     }
     nativeActionError.value = nativeFailureMessage(action, result.error)
@@ -630,7 +653,7 @@ function handleClosed(): void {
         <div class="association-actions">
           <el-tooltip :content="store.selected.cancel_reason" :disabled="store.selected.cancellable"><span><el-button type="danger" :disabled="!store.selected.cancellable" @click="cancelSelected">停止 / 取消</el-button></span></el-tooltip>
           <el-tooltip :content="store.selected.retry_reason" :disabled="store.selected.retryable"><span><el-button :disabled="!store.selected.retryable">重试</el-button></span></el-tooltip>
-          <el-tooltip :content="store.selected.artifact_reason" :disabled="Boolean(store.selected.artifact_download)"><span><el-button :disabled="artifactDownloadDisabled" @click="downloadArtifact">{{ artifactDownloadLabel }}</el-button></span></el-tooltip>
+          <el-tooltip v-if="!artifactUnavailable" :content="store.selected.artifact_reason" :disabled="Boolean(store.selected.artifact_download)"><span><el-button data-testid="artifact-download-button" :disabled="artifactDownloadDisabled" @click="downloadArtifact">{{ artifactDownloadLabel }}</el-button></span></el-tooltip>
           <el-button
             v-if="selectedNeedsAcknowledgement"
             :icon="Check"
@@ -653,6 +676,15 @@ function handleClosed(): void {
             <el-button @click="revealSaved">打开所在目录</el-button>
           </template>
         </div>
+        <el-alert
+          v-if="artifactUnavailable"
+          data-testid="artifact-unavailable-alert"
+          :title="artifactUnavailableMessage"
+          :type="store.selected.artifact_availability === 'INVALID' ? 'error' : 'warning'"
+          :closable="false"
+          show-icon
+          class="native-action-error"
+        />
         <el-alert v-if="nativeActionError" :title="nativeActionError" type="error" :closable="false" show-icon class="native-action-error" />
 
         <section class="log-section">

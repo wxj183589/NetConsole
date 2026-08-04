@@ -1,4 +1,5 @@
 import { isAbsolute, resolve } from 'node:path'
+import { lstat } from 'node:fs/promises'
 
 import type { AppInfo, BackendStatus, CloseToTrayState, DesktopResolvedTheme, DesktopRuntimeConfig, NativeActionResult, RendererHostReport, RendererRecoveryState, RendererWorkloadReport, SettingsThemeColor, SiteStorageRestartRequest, TaskNotificationPayload, TaskTrayStatus, TaskWindowContext, WorkspaceWindowOpenRequest, WorkspaceWindowSnapshot, WorkspaceWindowStateResult } from '../shared/bridge'
 import {
@@ -85,6 +86,11 @@ interface ShellLike {
   openExternal(url: string): Promise<void>
 }
 
+interface FileStatusLike {
+  isFile(): boolean
+  isSymbolicLink(): boolean
+}
+
 interface ExternalWindowLike {
   isDestroyed?(): boolean
   isFocused?(): boolean
@@ -128,6 +134,7 @@ export interface DesktopIpcDependencies {
   fetchImpl?: typeof fetch
   uiPreferenceStore?: UiPreferenceStoreLike
   externalToolService?: ExternalToolServiceLike
+  artifactLstat?: (path: string) => Promise<FileStatusLike>
 }
 
 export interface DesktopIpcRegistration {
@@ -541,10 +548,16 @@ export function registerDesktopIpc(
       const handoff = prepareExternalWindowHandoff(sourceWindow)
       try {
         const path = registry.requireCapability(value, 'artifact-download', 'open')
+        const unavailable = await artifactPathUnavailable(path, dependencies.artifactLstat)
+        if (unavailable) {
+          restoreExternalWindowState(sourceWindow, handoff)
+          return unavailable
+        }
         const error = await dependencies.shell.openPath(path)
         if (error) {
           restoreExternalWindowState(sourceWindow, handoff)
-          return { success: false, error: '系统未能打开所选路径' }
+          return await artifactPathUnavailable(path, dependencies.artifactLstat)
+            ?? { success: false, error: '系统未能打开所选路径' }
         }
         scheduleExternalWindowHandoff(sourceWindow)
         return { success: true }
@@ -556,11 +569,17 @@ export function registerDesktopIpc(
   )
   dependencies.ipcMain.handle(
     DESKTOP_IPC.showItemInFolder,
-    trusted((value, event) => {
+    trusted(async (value, event) => {
       const sourceWindow = dependencies.windowForEvent?.(event) ?? dependencies.window
       const handoff = prepareExternalWindowHandoff(sourceWindow)
       try {
-        dependencies.shell.showItemInFolder(registry.requireCapability(value, 'artifact-download', 'reveal'))
+        const path = registry.requireCapability(value, 'artifact-download', 'reveal')
+        const unavailable = await artifactPathUnavailable(path, dependencies.artifactLstat)
+        if (unavailable) {
+          restoreExternalWindowState(sourceWindow, handoff)
+          return unavailable
+        }
+        dependencies.shell.showItemInFolder(path)
         scheduleExternalWindowHandoff(sourceWindow)
         return { success: true }
       } catch (cause) {
@@ -657,6 +676,37 @@ function hasThemeBackground(value: unknown): value is ThemeWindowLike {
 }
 
 const SETTINGS_COLORS: readonly SettingsThemeColor[] = ['#0078D4', '#2563EB', '#0891B2', '#16A34A']
+
+async function artifactPathUnavailable(
+  path: string,
+  inspect: (path: string) => Promise<FileStatusLike> = lstat,
+): Promise<NativeActionResult | null> {
+  try {
+    const status = await inspect(path)
+    if (status.isSymbolicLink() || !status.isFile()) {
+      return {
+        success: false,
+        availability: 'INVALID',
+        error: '已保存的文件不是可打开的普通文件',
+      }
+    }
+    return null
+  } catch (cause) {
+    const code = String((cause as { code?: unknown } | null)?.code || '')
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return {
+        success: false,
+        availability: 'MISSING',
+        error: '已保存的文件不存在，请重新下载后再试',
+      }
+    }
+    return {
+      success: false,
+      availability: 'INVALID',
+      error: '已保存的文件当前不可访问',
+    }
+  }
+}
 
 function safeActionError(cause: unknown): string {
   if (cause instanceof Error && /文件授权|桌面桥接只允许/.test(cause.message)) {

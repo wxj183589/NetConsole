@@ -76,6 +76,14 @@ class JobCenterTaskDTO(ApiModel):
     retry_reason: str = "当前任务 owner 未提供统一重试能力"
     artifact_download: JobCenterArtifactDTO | None = None
     artifact_reason: str = "当前任务 owner 未提供可下载 Artifact"
+    artifact_available: bool = False
+    artifact_availability: Literal[
+        "AVAILABLE", "MISSING", "INVALID", "NOT_APPLICABLE"
+    ] = "NOT_APPLICABLE"
+    missing_reason: str | None = None
+    downloadable: bool = False
+    openable: bool = False
+    parent_directory_openable: bool = False
     details: dict[str, object] = Field(default_factory=dict)
 
 
