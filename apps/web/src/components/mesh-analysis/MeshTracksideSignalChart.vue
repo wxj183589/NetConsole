@@ -102,6 +102,8 @@ const emit = defineEmits<{
   'viewport-change': [viewport: MeshChartViewport]
   'viewport-ready': [viewport: MeshChartViewport]
   'pointer-change': [pointer: MeshSharedPointerChange]
+  'viewport-interaction-start': []
+  'viewport-interaction-end': []
   'workload-phase': [phase: 'echarts-init' | 'echarts-set-option' | 'echarts-interactive' | 'chart-disposed']
   'workload-profile': [profile: { conflictEdgeCount: number }]
 }>()
@@ -115,6 +117,9 @@ let resizeFrame: number | null = null
 let pendingRenderReason: 'data' | 'display' | 'theme' | 'reset' | null = null
 let disposed = false
 let currentViewport: MeshChartViewport | null = null
+let appliedViewport: MeshChartViewport | null = null
+let chartRenderEpoch = 0
+let appliedViewportEpoch = -1
 let viewportReady = false
 let viewportFrame: number | null = null
 let pendingViewport: MeshChartViewport | null = null
@@ -146,6 +151,17 @@ const tracksideTooltip = shallowRef<TracksideTooltipState>({
 })
 let lastViewportListComputeMs = 0
 let lastSelectionStyleUpdateMs = 0
+
+function invalidateAppliedViewport(): void {
+  chartRenderEpoch += 1
+  appliedViewport = null
+  appliedViewportEpoch = -1
+}
+
+function markViewportApplied(viewport: MeshChartViewport): void {
+  appliedViewport = { ...viewport }
+  appliedViewportEpoch = chartRenderEpoch
+}
 
 interface SelectedTracksideAp {
   seriesId: string
@@ -403,7 +419,6 @@ function rebuildSeriesCache(): void {
     hideTracksideTooltip()
     closePinnedTracksideFrame()
     clearTracksideSelection(false)
-    chart?.clear?.()
     disposeTracksideSeriesCache(seriesCache)
     seriesCache = markRaw(next)
     rebuildSeriesColors()
@@ -634,6 +649,7 @@ async function ensureChart(): Promise<boolean> {
     chart = core.init(container.value, undefined, createTimeChartInitOptions(seriesCache.totalRenderedPoints, {
       useDirtyRect: false,
     }))
+    invalidateAppliedViewport()
     chart.on('click', handleChartClick)
     chart.on('datazoom', handleDataZoom)
     chart.on('restore', handleRestore)
@@ -751,6 +767,7 @@ onBeforeUnmount(() => {
   closePinnedTracksideFrame()
   chart?.dispose()
   chart = null
+  invalidateAppliedViewport()
   disposeTracksideSeriesColorAssignment(seriesColors)
   disposeTracksideSeriesCache(seriesCache)
   reportWorkloadPhase('chart-disposed')
@@ -781,7 +798,7 @@ watch(() => props.lockedViewport, (viewport, previous) => {
 }, { deep: true })
 watch(() => props.initialViewport, (viewport) => { if (viewport && !currentViewport) void nextTick(() => applyViewport(viewport)) }, { deep: true })
 watch(() => props.syncViewport, (viewport, previous) => {
-  if (props.active && viewport && !meshViewportRangeEquals(currentViewport, viewport)) void nextTick(() => applyViewport(viewport))
+  if (props.active && viewport) void nextTick(() => applyViewport(viewport))
   else if (!viewport && previous) { currentViewport = null; scheduleChartUpdate('reset') }
   scheduleViewportSeriesUpdate()
 }, { deep: true })
@@ -842,6 +859,7 @@ function handleDataZoom(raw: unknown): void {
     }, { silent: true })
   }
   currentViewport = viewport
+  markViewportApplied(viewport)
   updateSelectedRangeStatus()
   scheduleViewportSeriesUpdate()
   pendingViewport = viewport
@@ -861,9 +879,19 @@ function handleRestore(): void {
   const viewport = fullViewport('user_zoom')
   if (!viewport) return
   currentViewport = { ...viewport, revision: (currentViewport?.revision ?? 0) + 1 }
+  markViewportApplied(currentViewport)
   updateSelectedRangeStatus()
   scheduleViewportSeriesUpdate()
   emit('viewport-change', { ...currentViewport })
+}
+
+function beginViewportInteraction(): void {
+  if (!props.active) return
+  emit('viewport-interaction-start')
+}
+
+function endViewportInteraction(): void {
+  emit('viewport-interaction-end')
 }
 
 function handleAxisPointer(raw: unknown): void {
@@ -916,15 +944,20 @@ function applyViewport(viewport: MeshChartViewport): void {
     revision: viewport.revision,
   })
   if (!normalized) return
-  if (meshViewportRangeEquals(currentViewport, normalized) && currentViewport?.revision === normalized.revision) return
   currentViewport = normalized
   updateSelectedRangeStatus()
   scheduleViewportSeriesUpdate()
   if (!chart) return
+  if (
+    appliedViewportEpoch === chartRenderEpoch
+    && meshViewportRangeEquals(appliedViewport, normalized)
+    && appliedViewport?.revision === normalized.revision
+  ) return
   chart.dispatchAction({
     type: 'dataZoom',
     batch: [0, 1].map((dataZoomIndex) => ({ dataZoomIndex, startValue: normalized.start_time, endValue: normalized.end_time })),
   }, { silent: true })
+  markViewportApplied(normalized)
 }
 
 function resetViewport(): void {
@@ -1021,7 +1054,9 @@ function tracksideDataSeries(theme: ReturnType<typeof readNetConsoleChartTokens>
 
 function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
   if (!chart) return
-  const previous = reason !== 'reset' && props.preserveViewport ? getViewport() : null
+  const previous = reason !== 'reset' && props.preserveViewport && currentViewport
+    ? { ...currentViewport }
+    : null
   const theme = readNetConsoleChartTokens()
   const target = props.lockedViewport || previous || props.syncViewport || props.initialViewport || fullViewport()
   const baseOption = createMultiSeriesTimeChartBaseOption(theme, {
@@ -1042,6 +1077,7 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
   if (reason === 'display') {
     chart.setOption({ series: tracksideOverlaySeries(theme, true) }, { lazyUpdate: true })
   } else if (reason === 'theme') {
+    invalidateAppliedViewport()
     chart.setOption({
       ...baseOption,
       tooltip,
@@ -1055,6 +1091,7 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
     }, { lazyUpdate: true })
   } else {
     reportWorkloadPhase('echarts-set-option')
+    invalidateAppliedViewport()
     chart.clear?.()
     chart.setOption({
       ...baseOption,
@@ -1121,6 +1158,12 @@ defineExpose({
       ref="container"
       class="chart"
       @pointermove.capture="handleLocalPointerMove"
+      @pointerdown.capture="beginViewportInteraction"
+      @pointerup.capture="endViewportInteraction"
+      @pointercancel.capture="endViewportInteraction"
+      @touchstart.passive="beginViewportInteraction"
+      @touchend.passive="endViewportInteraction"
+      @touchcancel.passive="endViewportInteraction"
     ></div>
     <TracksideExternalTooltip
       :visible="tracksideTooltip.visible"

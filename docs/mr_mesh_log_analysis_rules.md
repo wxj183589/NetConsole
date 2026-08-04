@@ -117,7 +117,9 @@ RSSI 数值按规则文件既定口径比较。两套 profile 当前 fping 平�
 - 切换会话、来源、Radio 或重新请求轨旁数据时，前端先 Abort 旧请求、推进 generation、卸载旧图、清空外部 Map 和 payload 引用，下一次 tick 才安装新 payload；迟到响应不得重新挂回页面。组件卸载必须 dispose ECharts、解绑 ECharts/ZRender/Window/Resize 监听并取消 RAF/计时器。
 - 每个 Renderer 同时处于加载或缓存状态的轨旁图最多两份，第 3 份请求必须在构建 cache/ECharts 前拒绝并提示先释放现有图表。会话切换和组件卸载按顺序释放 ECharts/Canvas、轨旁 series cache、颜色表及其冲突 Map/Set，并断开 metadata、frame、Tooltip 和选择状态引用；运行时同时统计 MESH 实例、活动详情请求、cache/chart 当前数与累计 build/dispose、series/point/metadata/conflict edge/Canvas/ECharts 数量。Electron 将该快照以 `MESH_MEMORY_PROFILE` 记录，并补充 `app.getAppMetrics()` 可获得的 Renderer private bytes 和 working set；当前 bridge 无法可靠取得 array buffer 时必须明确记录 unavailable，不得用 heap 或其他值代替。
 - Peer、切换线、切换节点、位置带、主题和 resize 属于纯展示更新，必须保持当前视口。页面内锁定范围不持久化，切换会话、来源、Radio、ACTIVE/Peer 模式或 AP 经过区段时解除。
-- `active-path` 和 `trackside-signal` 首次打开按完整日志域请求 600 帧概览；用户真实缩放稳定 250 ms 后，两个图使用同一绝对 `time_from/time_to` 窗口重新请求逐窗口 LOD。程序化同步、布局切换、Resize、共享 pointer 和 KeepAlive 恢复不得触发查询。会话 `first_sample_time/last_sample_time` 始终作为完整时间域，窗口响应不能缩短共享 dataZoom 边界。锁定范围后的同期空口负载查询继续使用相同窗口语义。
+- `active-path` 和 `trackside-signal` 首次打开按完整日志域请求 600 帧概览。RSSI 父页明确分离完整日志 `fullDomain`、本地实时 `previewViewport`、最近成组发布成功的 `committedViewport` 和待查询 `queryRange`：用户拖动期间只把 preview 静默同步到上下图，不清空或替换已有 series；pointer/touch 结束 200 ms 后只提交最终窗口，滚轮和框选等无可靠 pointerup 的交互在 450 ms idle 后提交。新的交互会取消待提交 timer、Abort 旧窗口批次并推进 generation，旧响应不得发布。程序化镜像同步、布局切换、Resize、共享 pointer 和 KeepAlive 恢复不得触发查询。
+- 同一窗口批次的主链与轨旁请求并行使用完全相同的 session、Radio、`time_from/time_to` 和 generation；查询期间保留上一组可用图表，只显示非阻塞加载状态。两个结果和新轨旁 cache 全部就绪后才在同一 Vue 提交阶段替换上下图，并在 `nextTick` 后对两图强制应用同一个 viewport；任一请求失败、413 或 Abort 时不得单独发布另一张图、清空旧 cache 或把 viewport 重置到完整日志域。页面“重置视图”同样先查询完整域，两个结果齐备后再成组恢复，避免把局部数据临时压缩到全局轴上。
+- 两个 RSSI 图表分别维护逻辑 viewport、最后真实应用到当前 ECharts render epoch 的 applied viewport。ECharts init、`clear()` 或包含 DataZoom 的全量 `setOption` 会使 applied 状态失效；即使逻辑范围和 revision 未变化，数据全量替换后也必须对 inside/slider 两个 DataZoom 执行 silent `dispatchAction` 恢复 `startValue/endValue`。会话 `first_sample_time/last_sample_time` 始终作为完整时间域，窗口响应不能缩短共享 xAxis/DataZoom 边界。锁定范围后的同期空口负载查询继续使用相同窗口语义。
 - 固定规模转换回归由 `tracksideSeriesCache.test.ts` 覆盖 770 个主备混合序列、44,251 个返回链路点和 18,188 个 frame，并验证十次 cache 释放。真实 Chromium Canvas 的 API payload、浅层安装、cache/option 构建、首次 `setOption`、首次可交互、当前 frame Tooltip 100 次构建耗时、两批共 40 次纯 resize 布局切换、long task、heap、十次会话残留 heap、Renderer/GPU 退出和 GPU feature status 可在 `apps/desktop_electron` 运行 `pnpm run profile:mesh-chart` 复验；设置 `NETCONSOLE_MESH_PROFILE_SOFTWARE=1` 时只在画像进程中验证软件渲染。脚本默认使用上述真实规模和显式 GC，不访问现场日志或设备，正式应用不增加 V8 内存参数也不关闭硬件加速。
 - 锁定 RSSI 后进入空口负载，必须使用相同来源、Radio、ACTIVE/Peer 模式、锚点、全部经过标记和 `time_from/time_to` 重新查询，不得只筛选前端降采样数组。响应分别报告 requested、effective、首末实际采样、范围内总点数和返回点数；无 Busy 样本时不扩大范围或伪造 `0`。
 - 表格分页/按需读取，详情导出在独立进程中流式/分批查询完整数据；屏幕行数上限不能被误当成导出上限。
@@ -155,5 +157,7 @@ Electron 的“生成分析报告”和“导出链路明细”都在创建任�
 - Rate 原始值、Retry/Error 回退空值、切换前后 RSSI 事件散点以及图表卸载资源释放；
 - 连续 RSSI `0` 的 3,000 ms 临界值、短段桥接、长段端点/Tooltip、尾部采样周期估算、普通缺失/大缺口断线、按 series 隔离和直线配置；
 - 可见窗口、全量下采样、切换及持续 0 边界锚点保留、请求点数自动提升、安全上限抽样告警和重复加载防抖；
+- RSSI 双图在相同 viewport 下替换数据或执行 `clear/setOption` 后重新应用 inside/slider DataZoom，完整时间域保持不变；
+- RSSI 拖动期间上下图只同步 preview 且不发查询，结束后只提交最后窗口；窗口请求并行、成组发布、Abort/乱序 last-wins，失败和 413 保留旧图与当前 viewport；
 - 大表导出取消、WPS/Excel 占用、临时文件清理和源证据回溯。
 - 来源级 parsed-only、raw+parsed、外部原文件保护、跨来源隔离、失败补偿、重复删除幂等、活动任务阻断及删除后重新导入。

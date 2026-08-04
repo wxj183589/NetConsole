@@ -410,6 +410,184 @@ beforeEach(() => {
 
 afterEach(() => vi.unstubAllGlobals())
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
+function hotfixActivePayload(
+  sessionId: string,
+  marker: number,
+  timeFrom: string | null = null,
+  timeTo: string | null = null,
+) {
+  const timestamp = timeFrom || '2026-07-24 10:00:00.000'
+  return {
+    mode: 'active_path',
+    anchor: null,
+    points: [{ timestamp, local_radio: 2, local_rssi: marker }],
+    events: [],
+    location_segments: [],
+    total_points: 1,
+    returned_points: 1,
+    requested_max_points: 600,
+    effective_max_points: 600,
+    downsampled: false,
+    downsample_warning: null,
+    summary: {
+      sample_count: 1,
+      active_count: 1,
+      standby_context_count: 0,
+      switch_count: 0,
+      current_radio: 2,
+      first_sample_time: timestamp,
+      last_sample_time: timeTo || timestamp,
+    },
+    time_from: timeFrom,
+    time_to: timeTo,
+    source_id: sessionId,
+  }
+}
+
+function hotfixTracksidePayload(
+  sessionId: string,
+  marker: number,
+  timeFrom = '2026-07-24 10:00:00.000',
+  timeTo = '2026-07-24 11:00:00.000',
+) {
+  return {
+    source_id: sessionId,
+    radio: 2,
+    time_range: { start: timeFrom, end: timeTo },
+    series: [{
+      series_id: `ap-${marker}:radio:2`,
+      peer_name: `AP-${marker}`,
+      peer_mac: `0000-0000-${String(marker).padStart(4, '0')}`,
+      ap_mac: null,
+      peer_radio_mac: null,
+      radio: 2,
+      station: null,
+      section: null,
+      roles_present: ['ACTIVE'],
+      data_source: 'peer_rssi_db',
+      total_points: 1,
+      returned_points: 1,
+      points: [{
+        timestamp: timeFrom,
+        timestamp_tag: '',
+        source_file_id: 35,
+        link_id: marker,
+        sample_id: marker,
+        local_radio: 2,
+        role: 'ACTIVE',
+        peer_mac: `0000-0000-${String(marker).padStart(4, '0')}`,
+        peer_ap_name: `AP-${marker}`,
+        peer_ap_mac: null,
+        peer_radio: null,
+        peer_radio_mac: null,
+        station: null,
+        section: null,
+        peer_rssi: marker,
+        local_rssi: marker - 2,
+        peer_signal: null,
+        local_signal: null,
+        segment_duration_seconds: 10,
+        data_source: 'peer_rssi_db',
+      }],
+    }],
+    events: [],
+    warnings: [],
+    estimated_interval_seconds: 1,
+    continuity_gap_seconds: 5,
+    total_series: 1,
+    returned_series: 1,
+    total_frames: 1,
+    returned_frames: 1,
+    total_link_points: 1,
+    returned_link_points: 1,
+    total_link_runs: 1,
+    active_link_points: 1,
+    standby_link_points: 0,
+    returned_active_link_points: 1,
+    returned_standby_link_points: 0,
+    role_switch_count: 0,
+    skipped_missing_signal_points: 0,
+    skipped_missing_identity_points: 0,
+    total_points: 1,
+    returned_points: 1,
+    downsampled: false,
+    requested_max_frames: 600,
+    effective_max_frames: 600,
+    requested_max_points: 600,
+    effective_max_points: 600,
+    top_n: 0,
+    included_roles: ['ACTIVE', 'STANDBY'],
+    include_standby: true,
+    payload_bytes: 1,
+    query_duration_ms: 1,
+  }
+}
+
+async function mountHotfixRssiSession(sessionId: string) {
+  const session = {
+    session_id: sessionId,
+    mr_name: '列车35-MR-CT',
+    original_filename: '2026_07_24_1meshlog.log',
+    first_sample_time: '2026-07-24 10:00:00.000',
+    last_sample_time: '2026-07-24 11:00:00.000',
+    parsed_status: 'ready',
+    warning_count: 0,
+    report_count: 0,
+  }
+  mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+  mocks.getSession.mockResolvedValue({
+    session,
+    analysis_params: {},
+    available_radios: [2],
+    warnings: [],
+    sources: [{ source_file_id: 35, raw_sha256: 'hotfix-source' }],
+  })
+  mocks.listBuildOrder.mockResolvedValue({
+    items: [{
+      sequence: 1,
+      anchor_link_id: 35,
+      local_radio: 2,
+      peer_ap_name: 'AP1608',
+      active_peer_mac: '0000-0000-1608',
+      build_start_time: session.first_sample_time,
+      build_end_time: session.last_sample_time,
+      build_result: 'normal',
+    }],
+    total: 1,
+    page: 1,
+    page_size: 100,
+  })
+  mocks.getActivePath.mockResolvedValue(hotfixActivePayload(sessionId, 30))
+  mocks.getTracksideSignal.mockResolvedValue(hotfixTracksidePayload(sessionId, 28))
+
+  const wrapper = mount(MeshAnalysisView, {
+    global: { stubs, directives: { loading: () => undefined } },
+  })
+  await flushPromises()
+  await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+  await flushPromises()
+  await wrapper.findAll('button').find((button) => button.text() === '查看动态图')!.trigger('click')
+  await vi.waitFor(() => expect(mocks.getTracksideSignal).toHaveBeenCalledTimes(1))
+  await flushPromises()
+  await vi.waitFor(() => expect(
+    wrapper.findAllComponents(meshChartStub).some((chart) => chart.props('scope') === ''),
+  ).toBe(true))
+
+  const activeChart = wrapper.findAllComponents(meshChartStub).find((chart) => chart.props('scope') === 'active')!
+  const tracksideChart = wrapper.findAllComponents(meshChartStub).find((chart) => chart.props('scope') === '')!
+  return { wrapper, session, activeChart, tracksideChart }
+}
+
 describe('Mesh analysis import context behavior', () => {
   it('keeps four duplicate basenames as independent member mappings', async () => {
     mocks.listProfiles.mockResolvedValueOnce([{
@@ -1748,6 +1926,250 @@ describe('Mesh analysis detail behavior', () => {
     wrapper.unmount()
   })
 
+  it('publishes a zoom window only after both RSSI responses are ready', async () => {
+    const { wrapper, session, activeChart, tracksideChart } = await mountHotfixRssiSession('session-window-atomic')
+    const previousPoints = activeChart.props('points')
+    const previousCache = tracksideChart.props('seriesCache')
+    const activeWindow = deferred<ReturnType<typeof hotfixActivePayload>>()
+    const tracksideWindow = deferred<ReturnType<typeof hotfixTracksidePayload>>()
+    mocks.getActivePath.mockClear()
+    mocks.getTracksideSignal.mockClear()
+    mocks.getActivePath.mockImplementationOnce(() => activeWindow.promise)
+    mocks.getTracksideSignal.mockImplementationOnce(() => tracksideWindow.promise)
+    vi.useFakeTimers()
+    const viewport = {
+      start_time: '2026-07-24 10:10:00.000',
+      end_time: '2026-07-24 10:13:00.000',
+      start_percent: 16,
+      end_percent: 22,
+      full_start_time: session.first_sample_time,
+      full_end_time: session.last_sample_time,
+      source: 'user_zoom' as const,
+      source_chart: 'active-rssi' as const,
+      revision: 31,
+    }
+
+    try {
+      await activeChart.vm.$emit('viewport-change', viewport)
+      await vi.advanceTimersByTimeAsync(500)
+      expect(mocks.getActivePath).toHaveBeenCalledWith(session.session_id, {
+        max_points: 600,
+        radio: 2,
+        time_from: viewport.start_time,
+        time_to: viewport.end_time,
+      }, expect.any(AbortSignal))
+      expect(mocks.getTracksideSignal).toHaveBeenCalledWith(session.session_id, {
+        max_points: 600,
+        radio: 2,
+        time_from: viewport.start_time,
+        time_to: viewport.end_time,
+      }, expect.any(AbortSignal))
+
+      activeWindow.resolve(hotfixActivePayload(session.session_id, 41, viewport.start_time, viewport.end_time))
+      await flushPromises()
+      expect(activeChart.props('points')).toBe(previousPoints)
+      expect(tracksideChart.props('seriesCache')).toBe(previousCache)
+      expect(wrapper.findAllComponents(meshChartStub).some((chart) => chart.props('scope') === '')).toBe(true)
+
+      tracksideWindow.resolve(hotfixTracksidePayload(session.session_id, 39, viewport.start_time, viewport.end_time))
+      await flushPromises()
+      expect(activeChart.props('points')).not.toBe(previousPoints)
+      expect((activeChart.props('points') as Array<{ local_rssi: number }>)[0].local_rssi).toBe(41)
+      expect(tracksideChart.props('seriesCache')).not.toBe(previousCache)
+      expect(activeChart.props('syncViewport')).toMatchObject({
+        start_time: viewport.start_time,
+        end_time: viewport.end_time,
+        full_start_time: viewport.full_start_time,
+        full_end_time: viewport.full_end_time,
+      })
+      expect(tracksideChart.props('syncViewport')).toEqual(activeChart.props('syncViewport'))
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it('previews every drag viewport but submits only the final window after pointer release', async () => {
+    const { wrapper, session, activeChart, tracksideChart } = await mountHotfixRssiSession('session-window-drag')
+    mocks.getActivePath.mockClear()
+    mocks.getTracksideSignal.mockClear()
+    mocks.getActivePath.mockResolvedValue(hotfixActivePayload(session.session_id, 45))
+    mocks.getTracksideSignal.mockResolvedValue(hotfixTracksidePayload(session.session_id, 43))
+    vi.useFakeTimers()
+    const viewports = [0, 1, 2].map((index) => ({
+      start_time: `2026-07-24 10:2${index}:00.000`,
+      end_time: `2026-07-24 10:2${index}:30.000`,
+      start_percent: 30 + index,
+      end_percent: 31 + index,
+      full_start_time: session.first_sample_time,
+      full_end_time: session.last_sample_time,
+      source: 'user_zoom' as const,
+      source_chart: 'trackside-rssi' as const,
+      revision: 40 + index,
+    }))
+
+    try {
+      await tracksideChart.vm.$emit('viewport-interaction-start')
+      for (const viewport of viewports) {
+        await tracksideChart.vm.$emit('viewport-change', viewport)
+        await nextTick()
+      }
+      expect(activeChart.props('syncViewport')).toMatchObject({
+        start_time: viewports[2].start_time,
+        end_time: viewports[2].end_time,
+      })
+      expect(tracksideChart.props('syncViewport')).toMatchObject({
+        start_time: viewports[2].start_time,
+        end_time: viewports[2].end_time,
+      })
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(mocks.getActivePath).not.toHaveBeenCalled()
+      expect(mocks.getTracksideSignal).not.toHaveBeenCalled()
+
+      await tracksideChart.vm.$emit('viewport-interaction-end')
+      await vi.advanceTimersByTimeAsync(250)
+      await flushPromises()
+      expect(mocks.getActivePath).toHaveBeenCalledTimes(1)
+      expect(mocks.getTracksideSignal).toHaveBeenCalledTimes(1)
+      expect(mocks.getActivePath).toHaveBeenCalledWith(session.session_id, expect.objectContaining({
+        time_from: viewports[2].start_time,
+        time_to: viewports[2].end_time,
+      }), expect.any(AbortSignal))
+      expect(mocks.getTracksideSignal).toHaveBeenCalledWith(session.session_id, expect.objectContaining({
+        time_from: viewports[2].start_time,
+        time_to: viewports[2].end_time,
+      }), expect.any(AbortSignal))
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it('aborts an obsolete RSSI window batch and rejects its late responses', async () => {
+    const { wrapper, session, activeChart } = await mountHotfixRssiSession('session-window-race')
+    const requests = new Map<string, {
+      active: ReturnType<typeof deferred<ReturnType<typeof hotfixActivePayload>>>
+      trackside: ReturnType<typeof deferred<ReturnType<typeof hotfixTracksidePayload>>>
+      signals: AbortSignal[]
+    }>()
+    const requestFor = (start: string) => {
+      let request = requests.get(start)
+      if (!request) {
+        request = { active: deferred(), trackside: deferred(), signals: [] }
+        requests.set(start, request)
+      }
+      return request
+    }
+    mocks.getActivePath.mockClear()
+    mocks.getTracksideSignal.mockClear()
+    mocks.getActivePath.mockImplementation((_id, values, signal: AbortSignal) => {
+      const request = requestFor(String(values.time_from))
+      request.signals.push(signal)
+      return request.active.promise
+    })
+    mocks.getTracksideSignal.mockImplementation((_id, values, signal: AbortSignal) => {
+      const request = requestFor(String(values.time_from))
+      request.signals.push(signal)
+      return request.trackside.promise
+    })
+    vi.useFakeTimers()
+    const viewportA = {
+      ...chartViewport,
+      start_time: '2026-07-24 10:30:00.000',
+      end_time: '2026-07-24 10:32:00.000',
+      full_start_time: session.first_sample_time,
+      full_end_time: session.last_sample_time,
+      source_chart: 'active-rssi' as const,
+      revision: 51,
+    }
+    const viewportB = {
+      ...viewportA,
+      start_time: '2026-07-24 10:40:00.000',
+      end_time: '2026-07-24 10:42:00.000',
+      revision: 52,
+    }
+
+    try {
+      await activeChart.vm.$emit('viewport-change', viewportA)
+      await vi.advanceTimersByTimeAsync(500)
+      expect(requests.get(viewportA.start_time)?.signals).toHaveLength(2)
+
+      await activeChart.vm.$emit('viewport-interaction-start')
+      await activeChart.vm.$emit('viewport-change', viewportB)
+      await activeChart.vm.$emit('viewport-interaction-end')
+      expect(requests.get(viewportA.start_time)?.signals.every((signal) => signal.aborted)).toBe(true)
+      await vi.advanceTimersByTimeAsync(250)
+      expect(requests.get(viewportB.start_time)?.signals).toHaveLength(2)
+
+      requests.get(viewportB.start_time)!.active.resolve(hotfixActivePayload(session.session_id, 52, viewportB.start_time, viewportB.end_time))
+      requests.get(viewportB.start_time)!.trackside.resolve(hotfixTracksidePayload(session.session_id, 50, viewportB.start_time, viewportB.end_time))
+      await flushPromises()
+      expect((activeChart.props('points') as Array<{ local_rssi: number }>)[0].local_rssi).toBe(52)
+
+      requests.get(viewportA.start_time)!.active.resolve(hotfixActivePayload(session.session_id, 31, viewportA.start_time, viewportA.end_time))
+      requests.get(viewportA.start_time)!.trackside.resolve(hotfixTracksidePayload(session.session_id, 29, viewportA.start_time, viewportA.end_time))
+      await flushPromises()
+      expect((activeChart.props('points') as Array<{ local_rssi: number }>)[0].local_rssi).toBe(52)
+      expect(activeChart.props('syncViewport')).toMatchObject({
+        start_time: viewportB.start_time,
+        end_time: viewportB.end_time,
+      })
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the previous RSSI snapshot and viewport when a window request fails', async () => {
+    const { wrapper, session, activeChart, tracksideChart } = await mountHotfixRssiSession('session-window-failure')
+    const previousPoints = activeChart.props('points')
+    const previousCache = tracksideChart.props('seriesCache')
+    mocks.getActivePath.mockClear()
+    mocks.getTracksideSignal.mockClear()
+    mocks.getActivePath.mockRejectedValueOnce(new ApiRequestError('当前窗口关键帧超过安全上限', 413, 'MESH_CHART_LIMIT'))
+    mocks.getTracksideSignal.mockResolvedValueOnce(hotfixTracksidePayload(session.session_id, 48))
+    vi.useFakeTimers()
+    const viewport = {
+      ...chartViewport,
+      start_time: '2026-07-24 10:50:00.000',
+      end_time: '2026-07-24 10:53:00.000',
+      full_start_time: session.first_sample_time,
+      full_end_time: session.last_sample_time,
+      source_chart: 'active-rssi' as const,
+      revision: 61,
+    }
+
+    try {
+      await activeChart.vm.$emit('viewport-change', viewport)
+      await vi.advanceTimersByTimeAsync(500)
+      await flushPromises()
+      expect(activeChart.props('points')).toBe(previousPoints)
+      expect(tracksideChart.props('seriesCache')).toBe(previousCache)
+      expect(activeChart.props('syncViewport')).toMatchObject({
+        start_time: viewport.start_time,
+        end_time: viewport.end_time,
+      })
+      expect(tracksideChart.props('syncViewport')).toMatchObject({
+        start_time: viewport.start_time,
+        end_time: viewport.end_time,
+      })
+      expect(wrapper.text()).toContain('当前窗口关键帧超过安全上限')
+      expect(wrapper.findAllComponents(meshChartStub).some((chart) => chart.props('scope') === '')).toBe(true)
+
+      mocks.getActivePath.mockResolvedValueOnce(hotfixActivePayload(session.session_id, 49))
+      mocks.getTracksideSignal.mockRejectedValueOnce(new Error('Backend 临时断开'))
+      await activeChart.vm.$emit('viewport-change', { ...viewport, start_time: '2026-07-24 10:54:00.000', end_time: '2026-07-24 10:57:00.000', revision: 62 })
+      await vi.advanceTimersByTimeAsync(500)
+      await flushPromises()
+      expect(activeChart.props('points')).toBe(previousPoints)
+      expect(tracksideChart.props('seriesCache')).toBe(previousCache)
+      expect(wrapper.text()).toContain('Backend 临时断开')
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
   it('collapses sessions after opening a source, defaults to build order and lazily keeps charts unloaded', async () => {
     const intersectionCallbacks: IntersectionObserverCallback[] = []
     vi.stubGlobal('IntersectionObserver', class {
@@ -1987,6 +2409,20 @@ describe('Mesh analysis detail behavior', () => {
     })
 
     await wrapper.findAll('button').find((button) => button.text() === '重置视图')!.trigger('click')
+    await vi.waitFor(() => {
+      expect(mocks.getActivePath).toHaveBeenCalledWith('session-1', {
+        max_points: 1200,
+        radio: 1,
+        time_from: fullStart,
+        time_to: fullEnd,
+      }, expect.any(AbortSignal))
+      expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-1', {
+        max_points: 1200,
+        radio: 1,
+        time_from: fullStart,
+        time_to: fullEnd,
+      }, expect.any(AbortSignal))
+    })
     await flushPromises()
     expect(mocks.chartResetViewport).not.toHaveBeenCalled()
     const rssiChart = wrapper.findAllComponents(meshChartStub).find((chart) => (
