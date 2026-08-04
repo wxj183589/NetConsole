@@ -2958,6 +2958,19 @@ class RailTransitWebApplicationService:
             "STARTING",
             "RUNNING",
             "STOPPING",
+            "VALIDATING",
+            "PREPARING_TASK",
+            "PREPARING_SESSION",
+            "STARTING_COLLECTION",
+            "STOPPING_TRAFFIC",
+            "STOPPING_COLLECTION",
+        }
+        finalizing_session_states = {
+            "FINALIZING",
+            "PARSING",
+            "PACKAGING",
+            "ARCHIVING",
+            "RECOVERING",
         }
         active_task_states = {
             TaskState.PENDING.value,
@@ -2965,14 +2978,28 @@ class RailTransitWebApplicationService:
             TaskState.RUNNING.value,
             TaskState.STOPPING.value,
         }
+        session_status = str(detail.status or "").upper()
+        session_phase = str(detail.phase or "").upper()
         if (
-            str(detail.status or "").upper() in active_session_states
-            or str(detail.task_status or "").upper() in active_task_states
-            or str(detail.mapping_state or "").upper() in {"PENDING_SESSION", "LINKED"}
+            session_status in finalizing_session_states
+            or session_phase in finalizing_session_states
         ):
+            raise RailTransitWebError(
+                "ONLINE_MR_SESSION_FINALIZING",
+                "当前会话正在归档、解析或打包，请等待任务完成。",
+            )
+        if session_status in active_session_states or session_phase in active_session_states:
             raise RailTransitWebError(
                 "ONLINE_MR_SESSION_RUNNING",
                 "当前会话仍在采集或停止处理中，请先停止并等待任务完成。",
+            )
+        if (
+            str(detail.task_status or "").upper() in active_task_states
+            or str(detail.mapping_state or "").upper() in {"PENDING_SESSION", "LINKED"}
+        ):
+            raise RailTransitWebError(
+                "ONLINE_MR_SESSION_RESOURCE_ACTIVE",
+                "当前会话资源正在使用，请等待关联任务完成。",
             )
         resource_key = online_mr_session_resource_key(site_id, session_id)
         artifacts = self.artifact_store.online_mr_session_artifacts(
@@ -3578,6 +3605,16 @@ class RailTransitWebApplicationService:
             artifact_id = str(snapshot.result.get("artifact_id") or "")
         if not artifact_name:
             artifact_name = str(snapshot.result.get("artifact_name") or "")
+        result_summary = self._result_summary(snapshot.task_type, snapshot.result)
+        if snapshot.task_type == "online_mr_session_delete" and not result_summary.get("session_id"):
+            resource_prefix = f"online_mr_session:{site_id}:"
+            session_ids = [
+                value.removeprefix(resource_prefix)
+                for value in snapshot.resource_keys
+                if value.startswith(resource_prefix) and value.removeprefix(resource_prefix)
+            ]
+            if len(session_ids) == 1:
+                result_summary["session_id"] = session_ids[0]
         return RailTransitTaskDTO(
             task_id=snapshot.task_id,
             status=snapshot.status.value,
@@ -3591,7 +3628,7 @@ class RailTransitWebApplicationService:
             size_bytes=int((metadata or {}).get("size_bytes") or 0),
             message=redact_web_task_text(snapshot.message),
             error_message=redact_web_task_text(snapshot.error_message),
-            result_summary=self._result_summary(snapshot.task_type, snapshot.result),
+            result_summary=result_summary,
         )
 
     @staticmethod

@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { flushPromises, mount } from '@vue/test-utils'
+import { createPinia } from 'pinia'
 import { defineComponent, h, useAttrs, type Component } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -22,6 +23,8 @@ const mocks = vi.hoisted(() => ({
   messageWarning: vi.fn(),
   messageError: vi.fn(),
   routerPush: vi.fn(),
+  routerReplace: vi.fn(),
+  routeQuery: {} as Record<string, string>,
 }))
 
 vi.mock('../../api/onlineMr', () => ({
@@ -59,8 +62,8 @@ vi.mock('element-plus', async (importOriginal) => {
   }
 })
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ query: {} }),
-  useRouter: () => ({ push: mocks.routerPush }),
+  useRoute: () => ({ query: mocks.routeQuery }),
+  useRouter: () => ({ push: mocks.routerPush, replace: mocks.routerReplace }),
 }))
 
 import OnlineMrAnalysisView from './OnlineMrAnalysisView.vue'
@@ -140,6 +143,7 @@ const stubs: Record<string, Component | boolean> = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  for (const key of Object.keys(mocks.routeQuery)) delete mocks.routeQuery[key]
   Reflect.deleteProperty(window, 'netconsoleDesktop')
   mocks.confirm.mockResolvedValue(true)
   mocks.listRecentOnlineMrSessions.mockResolvedValue([{ session_id: 'session-1', device_name: 'MR-1', mr_name: 'MR-1', status: 'COMPLETED', started_at: '2026-07-20 10:00:00' }])
@@ -153,6 +157,11 @@ beforeEach(() => {
   mocks.parseOnlineMrSession.mockResolvedValue({ task_id: 'parse-1', action: 'online_mr_parse', status: 'COMPLETED' })
   mocks.exportOnlineMrReport.mockResolvedValue({ task_id: 'report-1', action: 'online_mr_report', status: 'PENDING', result_summary: {} })
   mocks.deleteOnlineMrSession.mockResolvedValue({ task_id: 'delete-1', action: 'online_mr_session_delete', status: 'PENDING', result_summary: {} })
+  mocks.routerPush.mockResolvedValue(undefined)
+  mocks.routerReplace.mockImplementation(async (target: { query?: Record<string, string> }) => {
+    for (const key of Object.keys(mocks.routeQuery)) delete mocks.routeQuery[key]
+    Object.assign(mocks.routeQuery, target.query || {})
+  })
 })
 
 afterEach(() => {
@@ -161,9 +170,49 @@ afterEach(() => {
 })
 
 async function renderView() {
-  const wrapper = mount(OnlineMrAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+  const wrapper = mount(OnlineMrAnalysisView, { global: { plugins: [createPinia()], stubs, directives: { loading: () => undefined } } })
   await flushPromises()
   return wrapper
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail })
+  return { promise, resolve, reject }
+}
+
+function sessionRow(sessionId: string, status = 'STOPPED') {
+  return {
+    session_id: sessionId,
+    device_name: `MR-${sessionId}`,
+    mr_name: `MR-${sessionId}`,
+    status,
+    phase: status === 'STOPPED' ? 'TERMINAL' : status,
+    started_at: `2026-07-20 ${sessionId === 'A' ? '10' : sessionId === 'B' ? '11' : '12'}:00:00`,
+    task_status: status === 'STOPPED' ? 'COMPLETED' : 'RUNNING',
+    mapping_state: status === 'STOPPED' ? 'TERMINAL' : 'LINKED',
+    has_raw_data: true,
+    has_package: true,
+    finalization_complete: true,
+  }
+}
+
+function sessionDetail(sessionId: string) {
+  return {
+    ...sessionRow(sessionId),
+    data_integrity: 'complete',
+    database_summary: { status: 'ready', compatible: true, parser_version: 'v9', missing_capabilities: [], message: '解析数据库可用。' },
+  }
+}
+
+function completedDeleteTask(sessionId: string) {
+  return {
+    task_id: 'delete-1',
+    action: 'online_mr_session_delete',
+    status: 'COMPLETED',
+    result_summary: { session_id: sessionId, session_deleted: true, warnings: [], failed_items: [] },
+  }
 }
 
 describe('Online MR analysis view behavior', () => {
@@ -291,6 +340,215 @@ describe('Online MR analysis view behavior', () => {
     expect(openLocation).toHaveBeenCalledWith('session-2')
     expect(mocks.deleteOnlineMrSession).toHaveBeenCalledWith('session-2')
     expect(mocks.getOnlineMrSession).toHaveBeenCalledWith('session-1', expect.any(AbortSignal))
+    wrapper.unmount()
+  })
+
+  it('opens an unselected row with target-only loading and preserves the selected detail', async () => {
+    const opening = deferred<{ success: boolean }>()
+    const openLocation = vi.fn(() => opening.promise)
+    Object.defineProperty(window, 'netconsoleDesktop', {
+      configurable: true,
+      value: { openOnlineMrSessionLocation: openLocation, openTaskWindow: vi.fn() },
+    })
+    mocks.listRecentOnlineMrSessions.mockResolvedValueOnce([sessionRow('A'), sessionRow('B')])
+    mocks.getOnlineMrSession.mockImplementation(async (sessionId: string) => sessionDetail(sessionId))
+    const wrapper = await renderView()
+    mocks.getOnlineMrSession.mockClear()
+    mocks.routerReplace.mockClear()
+
+    await wrapper.get('[data-testid="row-open-session-location-B"]').trigger('click')
+    await wrapper.vm.$nextTick()
+
+    expect(openLocation).toHaveBeenCalledWith('B')
+    expect(wrapper.get('[data-testid="row-open-session-location-B"]').attributes('loading')).toBe('true')
+    expect(wrapper.get('[data-testid="row-open-session-location-A"]').attributes('loading')).toBe('false')
+    expect(wrapper.find('[data-current-row-key="A"]').exists()).toBe(true)
+    expect(mocks.getOnlineMrSession).not.toHaveBeenCalled()
+    expect(mocks.routerReplace).not.toHaveBeenCalled()
+
+    opening.resolve({ success: true })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="row-open-session-location-B"]').attributes('loading')).toBe('false')
+    wrapper.unmount()
+  })
+
+  it('reports a missing unselected row location without changing selection', async () => {
+    const openLocation = vi.fn().mockResolvedValue({ success: false, availability: 'MISSING' as const, error: '该会话的本地文件已不存在。' })
+    Object.defineProperty(window, 'netconsoleDesktop', {
+      configurable: true,
+      value: { openOnlineMrSessionLocation: openLocation, openTaskWindow: vi.fn() },
+    })
+    mocks.listRecentOnlineMrSessions.mockResolvedValueOnce([sessionRow('A'), sessionRow('B')])
+    mocks.getOnlineMrSession.mockImplementation(async (sessionId: string) => sessionDetail(sessionId))
+    const wrapper = await renderView()
+    mocks.getOnlineMrSession.mockClear()
+
+    await wrapper.get('[data-testid="row-open-session-location-B"]').trigger('click')
+    await flushPromises()
+
+    expect(mocks.messageWarning).toHaveBeenCalledWith('MR-B：该会话的本地文件已不存在。')
+    expect(wrapper.find('[data-current-row-key="A"]').exists()).toBe(true)
+    expect(mocks.getOnlineMrSession).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="row-open-session-location-B"]').attributes('loading')).toBe('false')
+    wrapper.unmount()
+  })
+
+  it('removes an unselected session without reloading or changing the selected detail', async () => {
+    vi.useFakeTimers()
+    mocks.listRecentOnlineMrSessions
+      .mockResolvedValueOnce([sessionRow('A'), sessionRow('B'), sessionRow('C')])
+      .mockResolvedValueOnce([sessionRow('A'), sessionRow('C')])
+    mocks.getOnlineMrSession.mockImplementation(async (sessionId: string) => sessionDetail(sessionId))
+    mocks.getRailTransitTask.mockResolvedValue(completedDeleteTask('B'))
+    const wrapper = await renderView()
+    mocks.getOnlineMrSession.mockClear()
+    mocks.routerReplace.mockClear()
+
+    await wrapper.get('[data-testid="row-delete-session-B"]').trigger('click')
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(1_000)
+    await flushPromises()
+
+    expect(mocks.deleteOnlineMrSession).toHaveBeenCalledOnce()
+    expect(mocks.deleteOnlineMrSession).toHaveBeenCalledWith('B')
+    expect(wrapper.find('[data-testid="table-row-B"]').exists()).toBe(false)
+    expect(wrapper.find('[data-current-row-key="A"]').exists()).toBe(true)
+    expect(mocks.getOnlineMrSession).not.toHaveBeenCalled()
+    expect(mocks.routerReplace).not.toHaveBeenCalledWith(expect.objectContaining({ query: expect.objectContaining({ session_id: 'B' }) }))
+    wrapper.unmount()
+  })
+
+  it('selects the next session after deleting the current row, then falls back to the previous row', async () => {
+    vi.useFakeTimers()
+    mocks.listRecentOnlineMrSessions
+      .mockResolvedValueOnce([sessionRow('A'), sessionRow('B'), sessionRow('C')])
+      .mockResolvedValueOnce([sessionRow('A'), sessionRow('C')])
+    mocks.getOnlineMrSession.mockImplementation(async (sessionId: string) => sessionDetail(sessionId))
+    mocks.getRailTransitTask.mockResolvedValue(completedDeleteTask('B'))
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="table-row-B"]').trigger('click')
+    await flushPromises()
+    mocks.getOnlineMrSession.mockClear()
+
+    await wrapper.get('[data-testid="delete-session"]').trigger('click')
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(1_000)
+    await flushPromises()
+
+    expect(wrapper.find('[data-current-row-key="C"]').exists()).toBe(true)
+    expect(mocks.getOnlineMrSession).toHaveBeenCalledWith('C', expect.any(AbortSignal))
+    expect(mocks.routerReplace).toHaveBeenCalledWith(expect.objectContaining({ query: expect.objectContaining({ session_id: 'C' }) }))
+    wrapper.unmount()
+  })
+
+  it('clears selection and route after deleting the final session', async () => {
+    vi.useFakeTimers()
+    mocks.listRecentOnlineMrSessions.mockResolvedValueOnce([sessionRow('A')]).mockResolvedValueOnce([])
+    mocks.getOnlineMrSession.mockResolvedValue(sessionDetail('A'))
+    mocks.getRailTransitTask.mockResolvedValue(completedDeleteTask('A'))
+    const wrapper = await renderView()
+    mocks.routerReplace.mockClear()
+
+    await wrapper.get('[data-testid="delete-session"]').trigger('click')
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(1_000)
+    await flushPromises()
+
+    expect(wrapper.find('[description="当前局点暂无 Online MR 会话"]').exists()).toBe(true)
+    expect(mocks.routerReplace).toHaveBeenCalledWith({ query: {} })
+    wrapper.unmount()
+  })
+
+  it('ignores duplicate deletion clicks while confirmation is pending', async () => {
+    const confirmation = deferred<boolean>()
+    mocks.confirm.mockReturnValue(confirmation.promise)
+    mocks.listRecentOnlineMrSessions.mockResolvedValueOnce([sessionRow('A')])
+    mocks.getOnlineMrSession.mockResolvedValue(sessionDetail('A'))
+    const wrapper = await renderView()
+
+    await wrapper.get('[data-testid="delete-session"]').trigger('click')
+    await wrapper.get('[data-testid="delete-session"]').trigger('click')
+    expect(mocks.confirm).toHaveBeenCalledOnce()
+    confirmation.resolve(false)
+    await flushPromises()
+    expect(mocks.deleteOnlineMrSession).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('keeps the row and selection when deletion submission fails', async () => {
+    mocks.listRecentOnlineMrSessions.mockResolvedValueOnce([sessionRow('A')])
+    mocks.getOnlineMrSession.mockResolvedValue(sessionDetail('A'))
+    mocks.deleteOnlineMrSession.mockRejectedValueOnce(new Error('会话资源正在使用，无法删除'))
+    const wrapper = await renderView()
+
+    await wrapper.get('[data-testid="delete-session"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="table-row-A"]').exists()).toBe(true)
+    expect(wrapper.find('[data-current-row-key="A"]').exists()).toBe(true)
+    expect(wrapper.find('[title="会话资源正在使用，无法删除"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="delete-session"]').attributes('loading')).toBe('false')
+    wrapper.unmount()
+  })
+
+  it('keeps a successful deletion local when the server refresh fails', async () => {
+    vi.useFakeTimers()
+    mocks.listRecentOnlineMrSessions
+      .mockResolvedValueOnce([sessionRow('A'), sessionRow('B')])
+      .mockRejectedValueOnce(new Error('list offline'))
+    mocks.getOnlineMrSession.mockImplementation(async (sessionId: string) => sessionDetail(sessionId))
+    mocks.getRailTransitTask.mockResolvedValue(completedDeleteTask('B'))
+    const wrapper = await renderView()
+
+    await wrapper.get('[data-testid="row-delete-session-B"]').trigger('click')
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(1_000)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="table-row-B"]').exists()).toBe(false)
+    expect(wrapper.find('[data-current-row-key="A"]').exists()).toBe(true)
+    expect(mocks.messageWarning).toHaveBeenCalledWith('会话已删除，但会话列表刷新失败，可手动刷新。')
+    expect(mocks.messageError).not.toHaveBeenCalledWith(expect.stringContaining('删除失败'))
+    wrapper.unmount()
+  })
+
+  it('uses target IDs instead of page booleans for row action loading', () => {
+    expect(source).toContain('const openingSessionId = ref<string | null>(null)')
+    expect(source).toContain('const deletingSessionId = ref<string | null>(null)')
+    expect(source).not.toMatch(/const\s+openingLocation\s*=\s*ref\(false\)/)
+    expect(source).not.toMatch(/const\s+deleting\s*=\s*ref\(false\)/)
+  })
+
+  it('restores deletion loading on the task target without changing selection', async () => {
+    mocks.listRecentOnlineMrSessions.mockResolvedValueOnce([sessionRow('A'), sessionRow('B')])
+    mocks.getOnlineMrSession.mockImplementation(async (sessionId: string) => sessionDetail(sessionId))
+    mocks.recoverRailTransitTasks.mockResolvedValueOnce([{
+      task_id: 'delete-B',
+      action: 'online_mr_session_delete',
+      status: 'RUNNING',
+      result_summary: { session_id: 'B' },
+    }])
+
+    const wrapper = await renderView()
+
+    expect(wrapper.find('[data-current-row-key="A"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="row-delete-session-A"]').attributes('loading')).toBe('false')
+    expect(wrapper.get('[data-testid="row-delete-session-B"]').attributes('loading')).toBe('true')
+    wrapper.unmount()
+  })
+
+  it('invalidates selection and late requests before a site switch', async () => {
+    const loading = deferred<ReturnType<typeof sessionDetail>>()
+    mocks.listRecentOnlineMrSessions.mockResolvedValueOnce([sessionRow('A')])
+    mocks.getOnlineMrSession.mockReturnValueOnce(loading.promise)
+    const wrapper = await renderView()
+
+    window.dispatchEvent(new CustomEvent('netconsole:before-site-switch', { detail: { targetSiteId: 'site-b' } }))
+    loading.resolve(sessionDetail('A'))
+    await flushPromises()
+
+    expect(wrapper.find('[data-current-row-key="A"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="table-row-A"]').exists()).toBe(false)
     wrapper.unmount()
   })
 
