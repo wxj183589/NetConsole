@@ -2607,6 +2607,56 @@ def test_online_mr_diagnosis_parser_splits_prompted_mesh_stream_into_samples(tmp
     assert row_counts["analysis_end"] == "2026-07-06 21:00:01.200"
 
 
+def test_online_mr_diagnosis_parser_enriches_peer_identity_from_bssid(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    parser = OnlineMrDiagnosisParser(session.session_dir)
+
+    class FakeResolver:
+        def resolve(self, peer_mac: object, peer_name: object | None = None) -> dict[str, object]:
+            del peer_name
+            if peer_mac == "74ad-cb9d-318f":
+                return {
+                    "peer_ap_name": "轨旁AP-01",
+                    "peer_ap_mac": "30f5277a1680",
+                    "canonical_ap_mac": "30f5277a1680",
+                    "peer_radio_mac": "74adcb9d318f",
+                    "peer_site": "站点A",
+                    "peer_section": "区间A",
+                    "belong_type": "station",
+                    "belonging_source": "ac_runtime",
+                    "identity_status": "matched",
+                    "identity_source": "ac_runtime",
+                    "identity_reason": "",
+                    "match_rule": "ac_bssid",
+                    "match_confidence": 100,
+                }
+            return {
+                "identity_status": "unresolved",
+                "identity_reason": "exact_alias_not_found",
+                "match_rule": "unresolved",
+                "match_confidence": 0,
+            }
+
+    parser._peer_resolver = FakeResolver()  # type: ignore[assignment]
+    record = SimpleNamespace(
+        peer_mac_raw="30f5-277a-1680",
+        peer_mac_normalized="30f5277a1680",
+        metrics={"peer_name": "30f5-277a-1680", "bssid": "74ad-cb9d-318f"},
+    )
+
+    parser._enrich_mesh_records([record])
+
+    assert parser._path_resolver().data_root == paths.data_root
+    assert record.metrics["resolved_peer_name"] == "轨旁AP-01"
+    assert record.metrics["canonical_ap_mac"] == "30f5277a1680"
+    assert record.metrics["peer_radio_mac"] == "74adcb9d318f"
+    assert record.metrics["identity_status"] == "matched"
+    assert record.metrics["identity_source"] == "ac_runtime"
+    assert record.metrics["identity_match_rule"] == "ac_bssid"
+    assert record.metrics["belong_station"] == "站点A"
+
+
 def test_online_mr_cached_summary_rejects_collapsed_mesh_sample_parse(tmp_path: Path) -> None:
     paths, config = _config(tmp_path)
     session = OnlineMrSessionStore(paths).create_session(config)

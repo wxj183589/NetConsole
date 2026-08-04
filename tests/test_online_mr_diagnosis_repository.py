@@ -90,6 +90,49 @@ def test_online_mr_diagnosis_repository_initializes_existing_schema_and_indexes(
             assert columns.isdisjoint(forbidden), table
 
 
+def test_online_mr_diagnosis_repository_additively_upgrades_main_link_identity_columns(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "session" / "parsed" / "online_diagnosis.sqlite"
+    db_path.parent.mkdir(parents=True)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE main_link_samples (
+                id INTEGER PRIMARY KEY,
+                session_id TEXT,
+                collector_time TEXT,
+                link_state TEXT,
+                peer_mac TEXT
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO main_link_samples (session_id, collector_time, link_state, peer_mac) VALUES (?, ?, ?, ?)",
+            ("session-1", "2026-07-19 10:00:00.000", "ACTIVE", "30f5-277a-169f"),
+        )
+
+    OnlineMrDiagnosisRepository(db_path).initialize()
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(main_link_samples)")}
+        count = conn.execute("SELECT COUNT(*) FROM main_link_samples").fetchone()[0]
+        schema_version = conn.execute("SELECT value FROM online_schema_meta WHERE key = 'schema_version'").fetchone()[0]
+
+    assert {
+        "peer_ap_mac",
+        "canonical_ap_mac",
+        "peer_radio_mac",
+        "identity_status",
+        "identity_source",
+        "identity_reason",
+        "identity_match_rule",
+        "identity_match_confidence",
+    }.issubset(columns)
+    assert count == 1
+    assert schema_version == "online_mr_business_tables_v10_peer_identity_fields"
+
+
 def test_online_mr_diagnosis_repository_preserves_write_query_and_reset_contract(
     tmp_path: Path,
 ) -> None:
@@ -112,6 +155,14 @@ def test_online_mr_diagnosis_repository_preserves_write_query_and_reset_contract
                 "1111-2222-3333",
                 "AP-1",
                 -42,
+                "111122223333",
+                "111122223333",
+                "11112222333f",
+                "matched",
+                "ac_runtime",
+                "",
+                "ac_radio_mac",
+                100,
                 "",
                 "WLAN-MeshLink1",
                 "站点A",
@@ -216,6 +267,14 @@ def test_online_mr_diagnosis_repository_reads_bounded_identity_shadow_rows(
                 f"1111-2222-333{index}",
                 f"AP-{index}",
                 -40 - index,
+                f"11112222333{index}",
+                f"11112222333{index}",
+                f"11112222333{index}",
+                "matched",
+                "ac_runtime",
+                "",
+                "ac_radio_mac",
+                100,
                 "",
                 "WLAN-MeshLink1",
                 "站点A",
@@ -238,6 +297,14 @@ def test_online_mr_diagnosis_repository_reads_bounded_identity_shadow_rows(
         "peer_mac",
         "peer_mac_normalized",
         "resolved_peer_name",
+        "peer_ap_mac",
+        "canonical_ap_mac",
+        "peer_radio_mac",
+        "identity_status",
+        "identity_source",
+        "identity_reason",
+        "identity_match_rule",
+        "identity_match_confidence",
         "bssid",
         "mesh_interface",
         "belong_station",

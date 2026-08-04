@@ -11,7 +11,7 @@ from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal, 
 
 
 OnlineMrDatabaseError = sqlite3.Error
-ONLINE_MR_DIAGNOSIS_SCHEMA_VERSION = "online_mr_business_tables_v9_no_source_fields"
+ONLINE_MR_DIAGNOSIS_SCHEMA_VERSION = "online_mr_business_tables_v10_peer_identity_fields"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS main_link_samples (
@@ -27,6 +27,14 @@ CREATE TABLE IF NOT EXISTS main_link_samples (
     peer_mac TEXT,
     peer_mac_normalized TEXT,
     resolved_peer_name TEXT,
+    peer_ap_mac TEXT,
+    canonical_ap_mac TEXT,
+    peer_radio_mac TEXT,
+    identity_status TEXT,
+    identity_source TEXT,
+    identity_reason TEXT,
+    identity_match_rule TEXT,
+    identity_match_confidence INTEGER,
     mr_rssi INTEGER,
     bssid TEXT,
     mesh_interface TEXT,
@@ -379,9 +387,10 @@ INSERT_SQL = {
         INSERT INTO main_link_samples (
             session_id, collector_time, device_time, device_clock, time_source, radio, link_state,
             peer_name, peer_mac, peer_mac_normalized, resolved_peer_name, mr_rssi,
-            bssid, mesh_interface, belong_station, belong_section, belong_type,
-            belonging_source, online_time
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            peer_ap_mac, canonical_ap_mac, peer_radio_mac, identity_status, identity_source,
+            identity_reason, identity_match_rule, identity_match_confidence, bssid, mesh_interface,
+            belong_station, belong_section, belong_type, belonging_source, online_time
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """,
     "channel_busy_records": """
         INSERT INTO channel_busy_records (
@@ -432,6 +441,7 @@ class OnlineMrDiagnosisRepository:
     def initialize(self) -> None:
         with self._connect() as conn:
             conn.executescript(SCHEMA)
+            self._ensure_main_link_identity_columns(conn)
             conn.execute(
                 "INSERT OR REPLACE INTO online_schema_meta (key, value) VALUES ('schema_version', ?)",
                 (ONLINE_MR_DIAGNOSIS_SCHEMA_VERSION,),
@@ -585,6 +595,25 @@ class OnlineMrDiagnosisRepository:
             return
         with self._connect() as conn:
             conn.executemany(statement, values)
+
+    @staticmethod
+    def _ensure_main_link_identity_columns(conn: sqlite3.Connection) -> None:
+        columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(main_link_samples)").fetchall()
+        }
+        for column, definition in {
+            "peer_ap_mac": "TEXT",
+            "canonical_ap_mac": "TEXT",
+            "peer_radio_mac": "TEXT",
+            "identity_status": "TEXT",
+            "identity_source": "TEXT",
+            "identity_reason": "TEXT",
+            "identity_match_rule": "TEXT",
+            "identity_match_confidence": "INTEGER",
+        }.items():
+            if column not in columns:
+                conn.execute(f"ALTER TABLE main_link_samples ADD COLUMN {column} {definition}")
 
     def replace_switch_realtime_events(
         self,
@@ -830,12 +859,44 @@ class OnlineMrDiagnosisRepository:
         uri = f"{self.db_path.resolve().as_uri()}?mode=ro"
         with sqlite3.connect(uri, uri=True) as conn:
             conn.row_factory = sqlite3.Row
+            columns = {
+                str(row[1])
+                for row in conn.execute("PRAGMA table_info(main_link_samples)").fetchall()
+            }
+            if not columns:
+                return []
+            select_fields = [
+                "session_id",
+                "radio",
+                "peer_name",
+                "peer_mac",
+                "peer_mac_normalized",
+                "resolved_peer_name",
+                *(
+                    column
+                    if column in columns
+                    else ("NULL AS " + column if column == "identity_match_confidence" else "'' AS " + column)
+                    for column in (
+                        "peer_ap_mac",
+                        "canonical_ap_mac",
+                        "peer_radio_mac",
+                        "identity_status",
+                        "identity_source",
+                        "identity_reason",
+                        "identity_match_rule",
+                        "identity_match_confidence",
+                    )
+                ),
+                "bssid",
+                "mesh_interface",
+                "belong_station",
+                "belong_section",
+                "belong_type",
+                "belonging_source",
+            ]
             rows = conn.execute(
-                """
-                SELECT DISTINCT
-                    session_id, radio, peer_name, peer_mac, peer_mac_normalized,
-                    resolved_peer_name, bssid, mesh_interface, belong_station,
-                    belong_section, belong_type, belonging_source
+                f"""
+                SELECT DISTINCT {', '.join(select_fields)}
                 FROM main_link_samples
                 WHERE COALESCE(
                     NULLIF(peer_mac, ''), NULLIF(peer_mac_normalized, ''),

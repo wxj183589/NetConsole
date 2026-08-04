@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
-import { Delete, Download, Files, FolderOpened, Refresh, Search, Tickets } from '@element-plus/icons-vue'
+import { Delete, Download, Files, FolderOpened, Refresh, Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -219,6 +219,7 @@ const sessionColumns: NcTableColumn<OnlineMrSessionSummary>[] = [
   { key: 'stopped_at', label: '结束时间', valueType: 'datetime', widthMode: 'content', minWidth: 220 },
   { key: 'duration_minutes', label: '时长(分钟)', valueType: 'number', displayValue: (row) => display(row.duration_minutes) },
   { key: 'data_integrity', label: '数据状态', valueType: 'status', displayValue: (row) => row.finalization_complete == null ? '无数据' : row.finalization_complete ? '完整' : '部分' },
+  { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['打开本地目录', '删除'], width: 180, fixed: 'right' },
 ]
 const mainLinkColumns: NcTableColumn<BusinessRow>[] = [
   { key: 'index', label: '序号', type: 'index', valueType: 'index', width: 70, fixed: 'left' },
@@ -649,8 +650,8 @@ function selectSession(row: OnlineMrSessionSummary): void {
   sessionId.value = row.session_id
   void loadAnalysis()
 }
-async function openSessionLocation(): Promise<void> {
-  const selected = detail.value
+async function openSessionLocation(row?: OnlineMrSessionSummary | OnlineMrSessionDetail): Promise<void> {
+  const selected = row || detail.value
   if (!selected || deleteBusy.value) return
   const bridge = window.netconsoleDesktop?.openOnlineMrSessionLocation
   if (!bridge || !desktopLocationAvailable.value) {
@@ -719,6 +720,11 @@ function taskResultStrings(value: RailTransitTask, key: string): string[] {
   const rows = value.result_summary[key]
   return Array.isArray(rows) ? rows.filter((item): item is string => typeof item === 'string') : []
 }
+function sessionIntegrityLabel(selected: OnlineMrSessionSummary | OnlineMrSessionDetail): string {
+  if ('data_integrity' in selected && selected.data_integrity) return selected.data_integrity
+  if ('finalization_complete' in selected && selected.finalization_complete != null) return selected.finalization_complete ? 'complete' : 'partial'
+  return 'unknown'
+}
 async function finishDeleteTask(updated: RailTransitTask): Promise<void> {
   const target = pendingDeleteTarget.value
   pendingDeleteTarget.value = null
@@ -741,8 +747,8 @@ async function finishDeleteTask(updated: RailTransitTask): Promise<void> {
     ElMessage.warning(`会话主体已删除，部分关联项处理失败：${issues.join('；') || updated.message || '请在任务中心查看详情。'}`)
   }
 }
-async function deleteCurrentSession(): Promise<void> {
-  const selected = detail.value
+async function deleteCurrentSession(row?: OnlineMrSessionSummary | OnlineMrSessionDetail): Promise<void> {
+  const selected = row || detail.value
   if (!selected || sessionResourceBusy.value || !isFeatureEnabled('web.online_mr_session_delete')) return
   const selectedIndex = Math.max(0, sessions.value.findIndex((item) => item.session_id === selected.session_id))
   const duration = selected.duration_minutes == null ? '无数据' : `${formatNumber(selected.duration_minutes, 3)} min`
@@ -754,13 +760,13 @@ async function deleteCurrentSession(): Promise<void> {
       `会话 ID：${selected.session_id}`,
       `开始时间：${selected.started_at || '无数据'}`,
       `采集时长：${duration}`,
-      `数据完整性：${selected.data_integrity || 'unknown'}`,
+      `数据完整性：${sessionIntegrityLabel(selected)}`,
       '',
       '删除后将移除该会话的解析数据、缓存、报告记录及 NetConsole 管理的本地会话文件，此操作不可撤销。',
     ].join('\n'),
     confirmText: '确认删除',
   })
-  if (!accepted || detail.value?.session_id !== selected.session_id) return
+  if (!accepted) return
   deleting.value = true
   error.value = ''
   try {
@@ -870,10 +876,9 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
         <el-button :icon="Refresh" :loading="loading" :disabled="deleteBusy" @click="loadSessions()">刷新</el-button>
         <el-button data-testid="parse-session" :disabled="!canParse || parsedStatus === 'parsing' || sessionActionsDisabled || reportBusy || parseBusy" :loading="parseBusy" @click="startParse(false)">{{ parsedStatus === 'missing' ? '解析当前会话' : '重新解析' }}</el-button>
         <el-button data-testid="force-reparse-session" :disabled="!canParse || parsedStatus === 'parsing' || sessionActionsDisabled || reportBusy || parseBusy" :loading="parseBusy" @click="startParse(true)">强制重新解析</el-button>
-        <el-button data-testid="open-session-location" :icon="FolderOpened" :loading="openingLocation" :disabled="sessionActionsDisabled || openingLocation || !desktopLocationAvailable" :title="openLocationTitle" @click="openSessionLocation">打开本地目录</el-button>
+        <el-button data-testid="open-session-location" :icon="FolderOpened" :loading="openingLocation" :disabled="sessionActionsDisabled || openingLocation || !desktopLocationAvailable" :title="openLocationTitle" @click="openSessionLocation()">打开本地目录</el-button>
         <el-button data-testid="generate-report" type="primary" :icon="Download" :loading="reportBusy" :disabled="reportDisabled || sessionActionsDisabled || sessionResourceBusy" :title="reportDisabled ? parsedMessage : ''" @click="startReport">生成 XLSX 报告</el-button>
-        <el-button :icon="Tickets" @click="openTaskWindow">打开任务中心</el-button>
-        <el-button data-testid="delete-session" type="danger" plain :icon="Delete" :loading="deleteBusy" :disabled="sessionActionsDisabled || sessionResourceBusy || !isFeatureEnabled('web.online_mr_session_delete')" @click="deleteCurrentSession">删除</el-button>
+        <el-button data-testid="delete-session" type="danger" plain :icon="Delete" :loading="deleteBusy" :disabled="sessionActionsDisabled || sessionResourceBusy || !isFeatureEnabled('web.online_mr_session_delete')" @click="deleteCurrentSession()">删除</el-button>
       </div>
     </header>
 
@@ -915,7 +920,12 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
       <div ref="analysisTabsHost" class="analysis-tabs-host">
       <el-tabs :model-value="activeTab" class="analysis-tabs" @tab-change="changeTab">
         <el-tab-pane name="session-history" label="会话记录">
-          <NcDataTable table-id="online-mr-analysis-session-history" route-key="/rail-transit/online-mr-analysis" :data="sessions" :columns="sessionColumns" row-key="session_id" :current-row-key="sessionId" highlight-current-row border :height="tableHeight" empty-text="暂无会话" @row-click="selectSession" />
+          <NcDataTable table-id="online-mr-analysis-session-history" route-key="/rail-transit/online-mr-analysis" :data="sessions" :columns="sessionColumns" row-key="session_id" :current-row-key="sessionId" highlight-current-row border :height="tableHeight" empty-text="暂无会话" @row-click="selectSession">
+            <template #cell-actions="{ row }">
+              <el-button :data-testid="`row-open-session-location-${row.session_id}`" link type="primary" :icon="FolderOpened" :loading="openingLocation && row.session_id === sessionId" :disabled="deleteBusy || !desktopLocationAvailable" :title="openLocationTitle" @click.stop="openSessionLocation(row)">打开本地目录</el-button>
+              <el-button :data-testid="`row-delete-session-${row.session_id}`" link type="danger" :icon="Delete" :loading="deleteBusy && row.session_id === sessionId" :disabled="sessionResourceBusy || !isFeatureEnabled('web.online_mr_session_delete')" @click.stop="deleteCurrentSession(row)">删除</el-button>
+            </template>
+          </NcDataTable>
         </el-tab-pane>
 
         <el-tab-pane name="mesh-link" label="主链路信息">

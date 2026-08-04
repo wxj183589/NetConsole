@@ -1177,6 +1177,7 @@ class OnlineMrQueryService:
             canonical_ap_mac = normalize_mac(
                 row_data.get("canonical_ap_mac") or row_data.get("peer_ap_mac")
             ) or ""
+            identity_status = self._text_or_none(row_data.get("identity_status")) or ("matched" if canonical_ap_mac else "unresolved")
             peer_name = self._business_peer_name(
                 row_data.get("resolved_peer_name") if canonical_ap_mac else "",
                 row_data.get("peer_name") if canonical_ap_mac else "",
@@ -1188,7 +1189,7 @@ class OnlineMrQueryService:
                 "peer_name": peer_name,
                 "peer_mac": peer_mac,
                 "canonical_ap_mac": canonical_ap_mac,
-                "identity_status": "matched" if canonical_ap_mac else "unresolved",
+                "identity_status": identity_status,
                 "identity_source": row_data.get("identity_source") or "",
                 "identity_reason": row_data.get("identity_reason") or ("缺少明确 AP MAC 映射" if not canonical_ap_mac else ""),
                 "mr_rssi": row_data.get("mr_rssi"),
@@ -1248,6 +1249,7 @@ class OnlineMrQueryService:
             canonical_ap_mac = normalize_mac(
                 row_data.get("canonical_ap_mac") or row_data.get("peer_ap_mac")
             ) or ""
+            identity_status = self._text_or_none(row_data.get("identity_status")) or ("matched" if canonical_ap_mac else "unresolved")
             peer_name = self._business_peer_name(
                 row_data.get("resolved_peer_name") if canonical_ap_mac else "",
                 row_data.get("peer_name") if canonical_ap_mac else "",
@@ -1262,7 +1264,7 @@ class OnlineMrQueryService:
                     "peer_name": peer_name,
                     "ap_mac": canonical_ap_mac,
                     "canonical_ap_mac": canonical_ap_mac,
-                    "identity_status": "matched" if canonical_ap_mac else "unresolved",
+                    "identity_status": identity_status,
                     "identity_source": row_data.get("identity_source") or "",
                     "identity_reason": row_data.get("identity_reason") or ("缺少明确 AP MAC 映射" if not canonical_ap_mac else ""),
                     "belong_station": self._text_or_none(row_data.get("belong_station")),
@@ -1779,6 +1781,12 @@ class OnlineMrQueryService:
                 "peer_mac",
                 "peer_mac_normalized",
                 "resolved_peer_name",
+                "peer_ap_mac",
+                "canonical_ap_mac",
+                "peer_radio_mac",
+                "identity_status",
+                "identity_source",
+                "identity_reason",
                 "peer_name",
                 "mr_rssi",
                 "bssid",
