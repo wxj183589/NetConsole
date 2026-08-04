@@ -175,6 +175,49 @@ class ApIdentityRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def exact_alias_snapshot(
+        self,
+        mac_keys: Sequence[str],
+        *,
+        site_id: str = "current",
+    ) -> tuple[dict[str, object] | None, int, list[dict[str, object]]]:
+        keys = tuple(dict.fromkeys(str(key or "").strip() for key in mac_keys))
+        keys = tuple(key for key in keys if key)
+        with self.database.connect_readonly() as connection:
+            connection.execute("BEGIN")
+            state = connection.execute(
+                "SELECT * FROM ap_identity_index_state WHERE site_id = ?",
+                (site_id,),
+            ).fetchone()
+            source_revision = self._source_revision(
+                connection,
+                site_id=site_id,
+            )
+            rows: list[sqlite3.Row] = []
+            for start in range(0, len(keys), 900):
+                chunk = keys[start : start + 900]
+                placeholders = ", ".join("?" for _ in chunk)
+                rows.extend(
+                    connection.execute(
+                        f"""
+                        SELECT a.*, e.*
+                        FROM ap_identity_mac_aliases a
+                        JOIN ap_identity_entities e ON e.entity_id = a.entity_id
+                        WHERE a.site_id = ?
+                          AND a.mac_key IN ({placeholders})
+                          AND a.is_active = 1
+                        ORDER BY a.mac_key, a.match_priority DESC, a.alias_id
+                        """,
+                        (site_id, *chunk),
+                    ).fetchall()
+                )
+            connection.commit()
+        return (
+            dict(state) if state is not None else None,
+            source_revision,
+            [dict(row) for row in rows],
+        )
+
     def prefix_rows(
         self,
         mac_key: str,

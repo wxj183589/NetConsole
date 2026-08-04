@@ -2,15 +2,13 @@ from __future__ import annotations
 
 import ipaddress
 import shutil
-import sqlite3
-import threading
-import time
 import uuid
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.ground_unattended import (
@@ -65,6 +63,7 @@ from netconsole.services.ground_unattended.deep_scheduler import (
 from netconsole.services.ground_unattended.ap_resolver import (
     GroundApDisplayResolver,
 )
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.ground_unattended.inventory import TrainInventorySyncService
 from netconsole.services.ground_unattended.identity import (
     GroundIdentityResolutionError,
@@ -132,6 +131,7 @@ class GroundUnattendedApplicationService:
         desktop_action_service: DesktopActionPort | None = None,
         network_service: SystemNetworkApplicationService | None = None,
         process_adapter: GroundDeletionProcessPort | None = None,
+        ap_identity_query_service: ApIdentityQueryService | None = None,
     ) -> None:
         self.paths = paths
         self.site_id = site_id
@@ -147,13 +147,19 @@ class GroundUnattendedApplicationService:
             app_root=str(paths.app_root),
             data_root=str(paths.data_root),
         )
-        self._ap_display_cache = GroundApDisplayResolver()
-        self._ap_display_base_rows: list[Any] = []
-        self._ap_display_resource_rows: list[Any] = []
-        self._ap_display_cache_loaded_at = float("-inf")
-        self._ap_display_cache_ttl_seconds = 30.0
-        self._ap_display_cache_lock = threading.Lock()
-        self._ap_display_refresh_thread: threading.Thread | None = None
+        shared_identity_query = getattr(
+            supervisor,
+            "ap_identity_query_service",
+            None,
+        )
+        self.ap_identity_query_service = (
+            ap_identity_query_service
+            or shared_identity_query
+            or ApIdentityQueryService(Database(paths.site_db_path(site_id)))
+        )
+        self._ap_display_cache = GroundApDisplayResolver(
+            self.ap_identity_query_service
+        )
         self.inventory_sync = (
             TrainInventorySyncService(
                 paths,
@@ -1416,6 +1422,7 @@ class GroundUnattendedApplicationService:
             result = self.raw_query.syslog_records(**filters)
             resolver = self._ap_display_resolver()
             parser = WmeshRealtimeParser()
+            parsed_items: list[tuple[dict[str, Any], dict[str, Any], bool]] = []
             for item in result.get("items", []):
                 parsed = None
                 display_enriched = bool(item.get("display_enriched"))
@@ -1437,6 +1444,9 @@ class GroundUnattendedApplicationService:
                     }
                 if parsed is None:
                     continue
+                parsed_items.append((item, parsed, display_enriched))
+            resolver.preload_parsed(parsed for _, parsed, _ in parsed_items)
+            for item, parsed, display_enriched in parsed_items:
                 enriched = resolver.enrich_parsed(parsed)
                 details = dict(enriched.get("details") or {})
                 item.update(
@@ -1790,33 +1800,35 @@ class GroundUnattendedApplicationService:
         }
         items = []
         resolver = self._ap_display_resolver()
-        for row in rows:
+        parsed_rows = [
+            {
+                "event_type": str(row.get("event_type") or "").upper(),
+                "peer_name": (row.get("details") or {}).get("peer_ap_name")
+                or "",
+                "peer_mac": (row.get("details") or {}).get("new_peer_mac")
+                or (row.get("details") or {}).get("peer_mac")
+                or "",
+                "previous_peer_name": (row.get("details") or {}).get(
+                    "previous_peer_ap_name"
+                )
+                or "",
+                "previous_peer_mac": (row.get("details") or {}).get(
+                    "old_peer_mac"
+                )
+                or "",
+                "details": dict(row.get("details") or {}),
+            }
+            for row in rows
+        ]
+        resolver.preload_parsed(parsed_rows)
+        for row, parsed in zip(rows, parsed_rows, strict=True):
             details = dict(row.get("details") or {})
             mr_id = str(row.get("mr_id") or "")
             train_id_value = str(row.get("train_id") or "")
             train = train_by_id.get(train_id_value) or {}
             endpoint = endpoint_by_id.get(mr_id) or {}
             suffix = mr_id[-8:] if mr_id else ""
-            ap_display = resolver.enrich_parsed(
-                {
-                    "event_type": str(row.get("event_type") or "").upper(),
-                    "peer_name": details.get("peer_ap_name") or "",
-                    "peer_mac": details.get("peer_ap_mac")
-                    or details.get("new_peer_mac")
-                    or details.get("peer_mac")
-                    or "",
-                    "previous_peer_name": details.get(
-                        "previous_peer_ap_name"
-                    )
-                    or "",
-                    "previous_peer_mac": details.get(
-                        "previous_peer_ap_mac"
-                    )
-                    or details.get("old_peer_mac")
-                    or "",
-                    "details": details,
-                }
-            )
+            ap_display = resolver.enrich_parsed(parsed)
             details = dict(ap_display.get("details") or details)
             current_name = str(ap_display.get("peer_name") or "")
             previous_name = str(
@@ -2573,77 +2585,7 @@ class GroundUnattendedApplicationService:
         return dict(receiver.health_snapshot())
 
     def _ap_display_resolver(self) -> GroundApDisplayResolver:
-        if self.base_query is None:
-            return self._ap_display_cache
-        now = time.monotonic()
-        if (
-            now - self._ap_display_cache_loaded_at
-            < self._ap_display_cache_ttl_seconds
-        ):
-            return self._ap_display_cache
-        with self._ap_display_cache_lock:
-            now = time.monotonic()
-            if (
-                now - self._ap_display_cache_loaded_at
-                < self._ap_display_cache_ttl_seconds
-            ):
-                return self._ap_display_cache
-            try:
-                self._ap_display_base_rows = list(
-                    self.base_query.list_ap_location_items(self.site_id)
-                )
-            except (OSError, ValueError, RuntimeError, sqlite3.Error):
-                pass
-            self._ap_display_cache = GroundApDisplayResolver(
-                self._ap_display_base_rows,
-                resources=self._ap_display_resource_rows,
-            )
-            self._ap_display_cache_loaded_at = now
-            resolver = self._ap_display_cache
-        self._schedule_ap_display_resource_refresh()
-        return resolver
-
-    def _schedule_ap_display_resource_refresh(self) -> None:
-        if self.base_query is None:
-            return
-        ac_query = getattr(self.base_query, "ac_query", None)
-        list_details = getattr(ac_query, "list_all_ap_details", None)
-        if not callable(list_details):
-            return
-        with self._ap_display_cache_lock:
-            active = self._ap_display_refresh_thread
-            if active is not None and active.is_alive():
-                return
-            thread = threading.Thread(
-                target=self._refresh_ap_display_resources,
-                args=(list_details,),
-                name="ground-ap-display-refresh",
-                daemon=True,
-            )
-            self._ap_display_refresh_thread = thread
-            thread.start()
-
-    def _refresh_ap_display_resources(self, list_details: Any) -> None:
-        resources: list[Any] | None = None
-        try:
-            resources = list(list_details(self.site_id))
-        except Exception:
-            pass
-        resolver: GroundApDisplayResolver | None = None
-        if resources is not None:
-            try:
-                resolver = GroundApDisplayResolver(
-                    self._ap_display_base_rows,
-                    resources=resources,
-                )
-            except Exception:
-                pass
-        with self._ap_display_cache_lock:
-            if resources is not None and resolver is not None:
-                self._ap_display_resource_rows = resources
-                self._ap_display_cache = resolver
-                self._ap_display_cache_loaded_at = time.monotonic()
-            self._ap_display_refresh_thread = None
+        return self._ap_display_cache
 
     @staticmethod
     def _parse_datetime(value: object) -> datetime | None:

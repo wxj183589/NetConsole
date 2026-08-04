@@ -1,123 +1,71 @@
 from __future__ import annotations
 
-from collections import defaultdict
-from typing import Any, Iterable
+import sqlite3
+import threading
+import time
+from collections.abc import Iterable, Mapping
+from typing import Any, Callable
 
+from netconsole.models.ap_identity_index import ApIdentityMatch
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.ap_identity.normalizers import (
     normalize_mac as canonical_normalize_mac,
+    normalize_mac_key,
 )
 
 
 class GroundApDisplayResolver:
-    """把 WMESH peer/radio 标识解析为唯一的轨旁 AP 展示身份。"""
+    """通过统一 AP Identity 查询补全 WMESH 轨旁 AP 展示身份。"""
 
     def __init__(
         self,
-        rows: Iterable[Any] = (),
+        query_service: ApIdentityQueryService | None = None,
         *,
-        resources: Iterable[Any] = (),
+        revision_check_interval_seconds: float = 30.0,
+        monotonic_provider: Callable[[], float] = time.monotonic,
     ) -> None:
-        by_ap_mac: dict[str, list[dict[str, str]]] = defaultdict(list)
-        by_radio_mac: dict[str, list[dict[str, str]]] = defaultdict(list)
-        by_alias_mac: dict[str, list[dict[str, str]]] = defaultdict(list)
-        for row in rows:
-            name = str(getattr(row, "name", "") or "")
-            point_code = str(getattr(row, "point_code", "") or "")
-            ap_mac = _mac_key(getattr(row, "mac", ""))
-            value = {
-                "peer_ap_id": str(getattr(row, "id", "") or ""),
-                "peer_ap_name": name or point_code or ap_mac,
-                "peer_ap_mac": ap_mac,
-                "station": str(getattr(row, "station", "") or ""),
-                "section": str(getattr(row, "section", "") or ""),
-                "display_name_source": (
-                    "BASE_NAME"
-                    if name
-                    else "POINT_CODE"
-                    if point_code
-                    else "MAC_FALLBACK"
-                ),
-            }
-            metadata = getattr(row, "base_metadata", {}) or {}
-            if ap_mac:
-                by_ap_mac[ap_mac].append(value)
-            for radio in getattr(row, "radios", []) or []:
-                radio_mac = _mac_key(getattr(radio, "bssid", ""))
-                if radio_mac:
-                    by_radio_mac[radio_mac].append(value)
-            if isinstance(metadata, dict):
-                for item in _text_values(metadata.get("bssid_aliases")):
-                    radio_mac = _mac_key(item)
-                    if radio_mac:
-                        by_radio_mac[radio_mac].append(value)
-                for item in _text_values(metadata.get("mac_aliases")):
-                    alias_mac = _mac_key(item)
-                    if alias_mac:
-                        by_alias_mac[alias_mac].append(value)
-        self._by_ap_mac, self._ambiguous_ap_macs = _unique_index(by_ap_mac)
-        self._by_radio_mac, self._ambiguous_radio_macs = _unique_index(
-            by_radio_mac
+        self.query_service = query_service
+        self._revision_check_interval_seconds = max(
+            0.0,
+            float(revision_check_interval_seconds),
         )
-        self._by_alias_mac, self._ambiguous_alias_macs = _unique_index(
-            by_alias_mac
-        )
-        resource_by_ap_mac: dict[str, list[dict[str, str]]] = defaultdict(list)
-        resource_by_radio_mac: dict[str, list[dict[str, str]]] = defaultdict(
-            list
-        )
-        for detail in resources:
-            ap = getattr(detail, "ap", detail)
-            ap_mac = _mac_key(getattr(ap, "mac", ""))
-            trackside_name = str(
-                getattr(ap, "trackside_ap_name", "") or ""
-            ).strip()
-            point_code = str(getattr(ap, "point_code", "") or "").strip()
-            configured_name = str(getattr(ap, "name", "") or "").strip()
-            display_name = (
-                trackside_name
-                or point_code
-                or configured_name
-                or ap_mac
+        self._monotonic = monotonic_provider
+        self._matches: dict[str, ApIdentityMatch] = {}
+        self._identity_revision: int | None = None
+        self._last_revision_checked_at = float("-inf")
+        self._lock = threading.RLock()
+
+    @property
+    def identity_revision(self) -> int:
+        return int(self._identity_revision or 0)
+
+    def refresh_revision(self, *, force: bool = False) -> int:
+        with self._lock:
+            self._refresh_revision_if_due(force=force)
+            return self.identity_revision
+
+    def preload_parsed(self, parsed_rows: Iterable[Mapping[str, Any]]) -> None:
+        keys: list[str] = []
+        for parsed in parsed_rows:
+            details = parsed.get("details") or {}
+            if not isinstance(details, Mapping):
+                details = {}
+            keys.extend(
+                _observed_keys(
+                    parsed.get("peer_mac") or details.get("new_peer_mac"),
+                    details.get("peer_radio_mac")
+                    or details.get("new_peer_radio_mac"),
+                )
             )
-            value = {
-                "peer_ap_id": str(getattr(ap, "id", "") or ""),
-                "peer_ap_name": display_name,
-                "peer_ap_mac": ap_mac,
-                "station": str(getattr(ap, "station", "") or ""),
-                "section": str(getattr(ap, "section", "") or ""),
-                "display_name_source": (
-                    "TRACKSIDE_AP_NAME"
-                    if trackside_name
-                    else "POINT_CODE"
-                    if point_code
-                    else "AC_AP_NAME"
-                    if configured_name
-                    else "MAC_FALLBACK"
-                ),
-            }
-            if ap_mac:
-                resource_by_ap_mac[ap_mac].append(value)
-            for radio in getattr(detail, "radios", []) or []:
-                radio_mac = _mac_key(getattr(radio, "bssid", ""))
-                if radio_mac:
-                    resource_by_radio_mac[radio_mac].append(
-                        {
-                            **value,
-                            "resolved_radio_id": str(
-                                getattr(radio, "radio_id", "") or ""
-                            ),
-                            "resolution_rule": "ac_radio_bssid_exact",
-                            "resolution_confidence": "100",
-                        }
-                    )
-        (
-            self._resource_by_ap_mac,
-            self._ambiguous_resource_ap_macs,
-        ) = _unique_index(resource_by_ap_mac)
-        (
-            self._resource_by_radio_mac,
-            self._ambiguous_resource_radio_macs,
-        ) = _unique_index(resource_by_radio_mac)
+            keys.extend(
+                _observed_keys(
+                    parsed.get("previous_peer_mac")
+                    or details.get("old_peer_mac"),
+                    details.get("previous_peer_radio_mac")
+                    or details.get("old_peer_radio_mac"),
+                )
+            )
+        self._resolve_keys(keys)
 
     def resolve(
         self,
@@ -125,92 +73,57 @@ class GroundApDisplayResolver:
         name: object = "",
         mac: object = "",
         radio_mac: object = "",
-    ) -> dict[str, str]:
+    ) -> dict[str, object]:
         name_text = str(name or "").strip()
-        mac_key = _mac_key(mac)
-        radio_mac_key = _mac_key(radio_mac)
-        observed_base_radio_key = radio_mac_key or mac_key
-        value = self._by_radio_mac.get(observed_base_radio_key)
-        resolution_status = "RADIO_BSSID"
-        resolution_rule = "base_radio_bssid_exact"
-        if value is None and observed_base_radio_key in self._ambiguous_radio_macs:
-            return _unresolved_result(name_text, mac, radio_mac, ambiguous=True)
-        if value is None:
-            value = self._by_alias_mac.get(mac_key)
-            resolution_status = "AP_ALIAS"
-            resolution_rule = "base_ap_mac_alias"
-            if value is None and mac_key in self._ambiguous_alias_macs:
-                return _unresolved_result(
-                    name_text, mac, radio_mac, ambiguous=True
-                )
-        if value is not None:
-            return {
-                **value,
-                "resolution_status": resolution_status,
-                "resolution_rule": resolution_rule,
-                "resolution_confidence": "100",
-            }
-
-        value = self._by_ap_mac.get(mac_key)
-        if value is not None:
-            return {
-                **value,
-                "resolution_status": "PEER_MAC_EXACT",
-                "resolution_rule": "base_ap_mac_exact",
-                "resolution_confidence": "92",
-            }
-
-        observed_radio_key = radio_mac_key or mac_key
-        value = self._resource_by_radio_mac.get(observed_radio_key)
-        resolution_status = "RADIO_BSSID"
-        if (
-            value is None
-            and observed_radio_key in self._ambiguous_resource_radio_macs
-        ):
-            return _unresolved_result(name_text, mac, radio_mac, ambiguous=True)
-        if value is not None:
-            return {**value, "resolution_status": resolution_status}
-
-        if mac_key in self._ambiguous_ap_macs or mac_key in self._ambiguous_resource_ap_macs:
-            return _unresolved_result(name_text, mac, radio_mac, ambiguous=True)
-
-        return _unresolved_result(name_text, mac, radio_mac, ambiguous=False)
+        observed_key = normalize_mac_key(radio_mac) or normalize_mac_key(mac)
+        if not observed_key:
+            return _unresolved_result(
+                name_text,
+                mac,
+                radio_mac,
+                reason="invalid_peer_mac",
+            )
+        match = self._resolve_keys((observed_key,)).get(observed_key)
+        if match is None:
+            return _unresolved_result(
+                name_text,
+                mac,
+                radio_mac,
+                reason="identity_query_unavailable",
+                identity_revision=self.identity_revision,
+            )
+        return _match_result(name_text, mac, radio_mac, match)
 
     def enrich_parsed(self, parsed: dict[str, Any]) -> dict[str, Any]:
+        self.preload_parsed((parsed,))
         result = dict(parsed)
         details = dict(result.get("details") or {})
         current_name = result.get("peer_name")
         current_mac = result.get("peer_mac") or details.get("new_peer_mac")
-        current_radio_mac = details.get(
-            "peer_radio_mac"
-        ) or details.get("new_peer_radio_mac")
+        current_radio_mac = details.get("peer_radio_mac") or details.get(
+            "new_peer_radio_mac"
+        )
         current = self.resolve(
             name=current_name,
             mac=current_mac,
             radio_mac=current_radio_mac,
         )
         previous_name = result.get("previous_peer_name")
-        previous_mac = result.get(
-            "previous_peer_mac"
-        ) or details.get("old_peer_mac")
-        previous_radio_mac = details.get(
-            "previous_peer_radio_mac"
-        ) or details.get("old_peer_radio_mac")
+        previous_mac = result.get("previous_peer_mac") or details.get(
+            "old_peer_mac"
+        )
+        previous_radio_mac = details.get("previous_peer_radio_mac") or details.get(
+            "old_peer_radio_mac"
+        )
         previous = self.resolve(
             name=previous_name,
             mac=previous_mac,
             radio_mac=previous_radio_mac,
         )
-        if str(result.get("event_type") or "").upper() == (
-            "MESH_ACTIVELINK_SWITCH"
-        ):
+        if str(result.get("event_type") or "").upper() == "MESH_ACTIVELINK_SWITCH":
             if not any(
                 str(value or "").strip()
-                for value in (
-                    current_name,
-                    current_mac,
-                    current_radio_mac,
-                )
+                for value in (current_name, current_mac, current_radio_mac)
             ):
                 current = _no_active_link("switch_new_peer_missing")
             if details.get("old_active_link_missing"):
@@ -235,9 +148,19 @@ class GroundApDisplayResolver:
                 "peer_ap_id": current["peer_ap_id"],
                 "peer_ap_name": current["peer_ap_name"],
                 "peer_ap_mac": current["peer_ap_mac"],
+                "identity_entity_id": current["identity_entity_id"],
+                "identity_revision": current["identity_revision"],
+                "identity_status": current["identity_status"],
+                "identity_source": current["identity_source"],
+                "identity_reason": current["identity_reason"],
                 "previous_peer_ap_id": previous["peer_ap_id"],
                 "previous_peer_ap_name": previous["peer_ap_name"],
                 "previous_peer_ap_mac": previous["peer_ap_mac"],
+                "previous_identity_entity_id": previous["identity_entity_id"],
+                "previous_identity_revision": previous["identity_revision"],
+                "previous_identity_status": previous["identity_status"],
+                "previous_identity_source": previous["identity_source"],
+                "previous_identity_reason": previous["identity_reason"],
                 "peer_radio_mac": normalize_mac(
                     details.get("peer_radio_mac")
                     or details.get("new_peer_radio_mac")
@@ -252,7 +175,7 @@ class GroundApDisplayResolver:
                 "resolution_rule": current["resolution_rule"],
                 "resolution_confidence": current["resolution_confidence"],
                 "display_name_source": current["display_name_source"],
-                "resolved_radio_id": current.get("resolved_radio_id", ""),
+                "resolved_radio_id": current["resolved_radio_id"],
                 "previous_resolution_status": previous["resolution_status"],
                 "previous_resolution_rule": previous["resolution_rule"],
                 "previous_resolution_confidence": previous[
@@ -261,17 +184,132 @@ class GroundApDisplayResolver:
                 "previous_display_name_source": previous[
                     "display_name_source"
                 ],
-                "previous_resolved_radio_id": previous.get(
-                    "resolved_radio_id", ""
-                ),
+                "previous_resolved_radio_id": previous["resolved_radio_id"],
             }
         )
         result["details"] = details
         return result
 
+    def _resolve_keys(self, keys: Iterable[str]) -> dict[str, ApIdentityMatch]:
+        compact_keys = tuple(
+            dict.fromkeys(
+                key
+                for value in keys
+                if (key := normalize_mac_key(value)) is not None
+            )
+        )
+        if not compact_keys:
+            return {}
+        with self._lock:
+            self._refresh_revision_if_due()
+            missing = [key for key in compact_keys if key not in self._matches]
+            if missing:
+                matches = self._query_missing(missing)
+                revisions = {
+                    match.identity_revision for match in matches.values()
+                }
+                batch_revision = (
+                    next(iter(revisions))
+                    if len(revisions) == 1
+                    else int(self._identity_revision or 0)
+                )
+                if (
+                    self._identity_revision is not None
+                    and batch_revision != self._identity_revision
+                ):
+                    self._matches.clear()
+                self._identity_revision = batch_revision
+                self._last_revision_checked_at = self._monotonic()
+                self._matches.update(matches)
+            return {
+                key: self._matches[key]
+                for key in compact_keys
+                if key in self._matches
+            }
+
+    def _query_missing(self, keys: list[str]) -> dict[str, ApIdentityMatch]:
+        if self.query_service is None:
+            return _unavailable_matches(
+                keys,
+                identity_revision=self.identity_revision,
+            )
+        try:
+            return self.query_service.resolve_peer_macs(
+                keys,
+                ap_role="trackside",
+            )
+        except (sqlite3.Error, OSError, RuntimeError):
+            return _unavailable_matches(
+                keys,
+                identity_revision=self.identity_revision,
+            )
+
+    def _refresh_revision_if_due(self, *, force: bool = False) -> None:
+        if self.query_service is None or self._identity_revision is None:
+            return
+        now = self._monotonic()
+        if not force and (
+            now - self._last_revision_checked_at
+            < self._revision_check_interval_seconds
+        ):
+            return
+        try:
+            state = self.query_service.index_state() or {}
+        except (sqlite3.Error, OSError, RuntimeError):
+            self._last_revision_checked_at = now
+            return
+        revision = int(state.get("revision") or 0)
+        if revision != self._identity_revision:
+            self._matches.clear()
+            self._identity_revision = revision
+        self._last_revision_checked_at = now
+
 
 def normalize_mac(value: object) -> str:
     return canonical_normalize_mac(value) or ""
+
+
+def _observed_keys(mac: object, radio_mac: object) -> tuple[str, ...]:
+    key = normalize_mac_key(radio_mac) or normalize_mac_key(mac)
+    return (key,) if key else ()
+
+
+def _match_result(
+    name_text: str,
+    mac: object,
+    radio_mac: object,
+    match: ApIdentityMatch,
+) -> dict[str, object]:
+    if not match.matched:
+        return _unresolved_result(
+            name_text,
+            mac,
+            radio_mac,
+            ambiguous=match.status == "ambiguous",
+            reason=match.unresolved_reason or "exact_alias_not_found",
+            identity_revision=match.identity_revision,
+        )
+    return {
+        "peer_ap_id": match.matched_entity_id,
+        "peer_ap_name": match.effective_ap_name
+        or name_text
+        or normalize_mac(radio_mac)
+        or normalize_mac(mac),
+        "peer_ap_mac": normalize_mac(match.effective_ap_mac),
+        "canonical_ap_mac": normalize_mac(match.effective_ap_mac),
+        "station": match.station,
+        "section": match.section,
+        "resolution_status": "RADIO_BSSID",
+        "resolution_rule": match.match_rule or match.matched_alias_type,
+        "resolution_confidence": str(int(match.match_confidence or 0)),
+        "identity_entity_id": match.matched_entity_id,
+        "identity_revision": match.identity_revision,
+        "identity_status": match.status,
+        "identity_source": match.matched_source,
+        "identity_reason": match.data_quality_warning or match.unresolved_reason,
+        "display_name_source": _display_name_source(match),
+        "resolved_radio_id": str(match.radio_id or ""),
+    }
 
 
 def _unresolved_result(
@@ -279,8 +317,10 @@ def _unresolved_result(
     mac: object,
     radio_mac: object,
     *,
-    ambiguous: bool,
-) -> dict[str, str]:
+    ambiguous: bool = False,
+    reason: str,
+    identity_revision: int = 0,
+) -> dict[str, object]:
     return {
         "peer_ap_id": "",
         "peer_ap_name": name_text
@@ -293,23 +333,41 @@ def _unresolved_result(
         "resolution_status": "AMBIGUOUS" if ambiguous else "UNRESOLVED",
         "resolution_rule": "",
         "resolution_confidence": "",
+        "identity_entity_id": "",
+        "identity_revision": identity_revision,
         "identity_status": "ambiguous" if ambiguous else "unresolved",
         "identity_source": "",
-        "identity_reason": "MAC 关联到多个候选" if ambiguous else "缺少明确 Radio/BSSID 映射",
+        "identity_reason": reason,
         "display_name_source": "RAW_OBSERVATION",
         "resolved_radio_id": "",
     }
 
 
-def _mac_key(value: object) -> str:
-    return canonical_normalize_mac(value) or ""
+def _unavailable_matches(
+    keys: Iterable[str],
+    *,
+    identity_revision: int,
+) -> dict[str, ApIdentityMatch]:
+    return {
+        key: ApIdentityMatch(
+            status="unresolved",
+            identity_revision=identity_revision,
+            query_mac=key,
+            unresolved_reason="identity_query_unavailable",
+        )
+        for key in keys
+    }
 
 
-def _mac_compact(value: object) -> str:
-    return _mac_key(value).replace(":", "")
+def _display_name_source(match: ApIdentityMatch) -> str:
+    if match.matched_source == "ac_runtime":
+        return "AC_AP_NAME"
+    if match.matched_source in {"base_data", "legacy_cache"}:
+        return "BASE_NAME"
+    return "AP_IDENTITY_INDEX"
 
 
-def _no_active_link(rule: str) -> dict[str, str]:
+def _no_active_link(rule: str) -> dict[str, object]:
     return {
         "peer_ap_id": "",
         "peer_ap_name": "无主链路",
@@ -319,40 +377,14 @@ def _no_active_link(rule: str) -> dict[str, str]:
         "resolution_status": "NO_ACTIVE_LINK",
         "resolution_rule": rule,
         "resolution_confidence": "100",
+        "identity_entity_id": "",
+        "identity_revision": 0,
+        "identity_status": "not_applicable",
+        "identity_source": "",
+        "identity_reason": rule,
         "display_name_source": "EVENT_STATE",
         "resolved_radio_id": "",
     }
-
-
-def _text_values(value: object) -> set[str]:
-    if isinstance(value, str):
-        return {value}
-    if isinstance(value, (list, tuple, set)):
-        return {str(item) for item in value if str(item or "").strip()}
-    return set()
-
-
-def _unique(values: list[dict[str, str]]) -> bool:
-    return (
-        len(
-            {
-                value["peer_ap_id"] or value["peer_ap_name"]
-                for value in values
-            }
-        )
-        == 1
-    )
-
-
-def _unique_index(
-    values: dict[str, list[dict[str, str]]],
-) -> tuple[dict[str, dict[str, str]], set[str]]:
-    unique = {
-        key: candidates[0]
-        for key, candidates in values.items()
-        if _unique(candidates)
-    }
-    return unique, set(values) - set(unique)
 
 
 __all__ = ["GroundApDisplayResolver", "normalize_mac"]

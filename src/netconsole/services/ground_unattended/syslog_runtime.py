@@ -17,6 +17,7 @@ from typing import Any
 from netconsole.repositories.ground_unattended_repository import (
     GroundUnattendedRepository,
 )
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.ground_unattended.ap_resolver import (
     GroundApDisplayResolver,
 )
@@ -414,6 +415,7 @@ class SyslogUdpReceiver:
         repository: GroundUnattendedRepository,
         site_id: str,
         parser: WmeshRealtimeParser | None = None,
+        ap_identity_query_service: ApIdentityQueryService | None = None,
     ) -> None:
         self.repository = repository
         self.site_id = site_id
@@ -447,7 +449,9 @@ class SyslogUdpReceiver:
         self._source_receive_sequences: dict[tuple[str, int], int] = {}
         self._batch_duration_ms = 0.0
         self._reported_dropped_count = 0
-        self._ap_resolver = GroundApDisplayResolver()
+        self._ap_resolver = GroundApDisplayResolver(
+            ap_identity_query_service
+        )
 
     def start(
         self,
@@ -609,8 +613,8 @@ class SyslogUdpReceiver:
         self._endpoint_by_ip = by_ip
         self._endpoint_by_hostname = by_host
 
-    def update_ap_locations(self, rows: list[Any]) -> None:
-        self._ap_resolver = GroundApDisplayResolver(rows)
+    def refresh_ap_identity(self) -> int:
+        return self._ap_resolver.refresh_revision()
 
     def health_snapshot(self) -> dict[str, Any]:
         elapsed = max(0.001, time.monotonic() - self._started_monotonic) if self._started_monotonic else 1.0

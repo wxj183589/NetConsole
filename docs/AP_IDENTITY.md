@@ -7,13 +7,16 @@ H3C Radio 衍生索引的生产实现。它统一读取当前局点的基础资�
 AC/FIT-AP/Radio 数据和历史兼容缓存，将物理 AP、AP 基础 MAC、
 Radio/BSSID/BBSSID、位置和来源证据分开保存。
 
-2026-07-31 起，以下生产查询统一通过 `ApIdentityQueryService`：
+生产消费者按 [AP Identity 消费者审计](AP_IDENTITY_CONSUMER_AUDIT.md)
+分阶段接管。当前已完成的生产路径是：
 
-- MR 原始 MESH PeerMac 匹配和解析结果回填；
-- Online MR、Vehicle MR 和列车在线相关 AP 匹配；
-- 无线扫描、BSSID 分析和轨旁信号位置快照；
-- 基础资料、AC/FIT-AP 和轨旁 AP 业务的 MAC 搜索；
-- AC Mesh-Link 查询和 AP Identity 数据质量问题。
+- MR 原始 MESH distinct Peer 的批量匹配、持久化投影和 identity-only remap；
+- 地面无人值守实时与历史 WMESH Peer 的批量匹配和 revision 缓存；
+- AC/FIT-AP 与轨旁 AP 搜索的统一查询入口；
+- 部分 Online MR、Vehicle MR、无线扫描和轨旁业务单值查询。
+
+AC Mesh-Link、车载 MR 历史分析及基础资料的直接 Identity JOIN 等遗留入口
+仍在审计白名单内，不能视为已经完成统一。新增消费者不得复制这些遗留实现。
 
 普通查询只读取 `devices.db` 中已生成的统一索引，不连接 AC，不执行
 SSH、SNMP 或采集，不要求 `ac_device_uuid`，也不在请求期间重建索引。
@@ -100,7 +103,8 @@ AC 与基础资料 MAC 或名称不一致时：
 
 ## 5. 匹配优先级
 
-通用 `resolve_mac()` 只查询完整 48 位精确别名，按层短路：
+物理 AP 查询使用 `resolve_ap_mac()`；`resolve_mac()` 仅作为现有调用点的兼容
+别名。两者只查询完整 48 位精确别名，按层短路：
 
 1. AC 实际 Radio MAC；
 2. AC 实际 BSSID；
@@ -120,6 +124,11 @@ MESH Peer 使用独立的 `resolve_peer_mac()`。Peer 是 Radio/BSSID 观测，
 优先级精确 alias 指向多个实体时返回 `ambiguous`。同一完整 alias 由
 实际值和衍生值共同指向同一物理实体时可正常匹配；不同物理实体重复
 占用该 alias 时不得按名称、站点或来源优先级静默消歧。
+
+高数据量消费者使用 `resolve_peer_macs()` 或 `resolve_ap_macs()`。批量入口先
+规范化并去重，在同一个只读事务中读取 index state、source revision 和 alias，
+返回以 12 位紧凑 MAC 为键的结果。单批健康检查只执行一次，每个
+`ApIdentityMatch` 携带同一 `identity_revision`；不得再按原始事实逐行查询。
 
 ## 6. 持久化结构
 
@@ -175,6 +184,7 @@ checkpoint 或其他补写。
 - 命中别名类型、来源、规则、置信度和 Radio ID；
 - AC AP MAC、基础资料 AP MAC、基础资料记录 ID；
 - 冲突状态和 `AP_IDENTITY_AC_BASE_CONFLICT`。
+- 本次查询快照的 `identity_revision`。
 
 搜索 Radio/BSSID 或完整 H3C R1/R2 衍生 alias 时，结果返回对应物理
 AP，并区分“查询/命中 MAC”和“有效 AP MAC”。业务 DTO 可以按现有
@@ -195,6 +205,12 @@ MESH DTO、页面和导出必须同时保留原始 Peer、规范化 Peer Radio �
 `exact_alias_not_found`、`duplicate_exact_alias`、
 `physical_ap_missing` 和 `station_topology_missing`，页面和报告不得把这些
 原因重新折叠成无法诊断的单一“未关联”。
+
+地面无人值守不再读取基础资料和 AC 明细后自行建立 AP/Radio/Alias 字典。
+历史页先对当前页观测 MAC 去重并批量解析；实时 Receiver 只缓存统一查询结果，
+Identity revision 变化后清空缓存并在下一批解析。实时事件的既有
+`parsed_details` 保存 entity、revision、状态、来源和原因；历史 NDJSON 保持
+只读，只在返回投影中补充当前身份。
 
 ## 9. 兼容与回滚边界
 

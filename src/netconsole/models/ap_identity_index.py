@@ -110,6 +110,7 @@ class ApIdentityBuildResult:
 @dataclass(frozen=True)
 class ApIdentityMatch:
     status: str
+    identity_revision: int = 0
     query_mac: str = ""
     query_mac_display: str = ""
     matched_entity_id: str = ""

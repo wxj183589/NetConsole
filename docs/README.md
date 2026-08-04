@@ -99,6 +99,7 @@
 | [Web 本地 Online MR 受控启停](ONLINE_MR_WEB_CONTROL.md) | Desktop WebHost 的 LOCAL 启停、安全开关、请求白名单和幂等 | Online MR Web 控制开发 | `web_control_service.py`、控制 Router/Vue、ApplicationService | Web 控制路由、安全条件、DTO 或状态变化 |
 | [MR/Mesh 日志分析](mr_mesh_log_analysis_rules.md) | 导入、解析、阈值、切换/乒乓、报表 | Mesh 分析开发 | `mesh_*`、规则 JSON、页面/测试 | parser、阈值、图表或报告变化 |
 | [AP Identity 总览](AP_IDENTITY.md) | 局点统一索引、AC/Base 优先级、H3C 反查、只读查询与写事件刷新 | AP Identity/接入域开发 | `ap_identity*`、MESH/Vehicle/Wireless/搜索消费者、测试 | schema、来源、优先级、刷新边界或接管入口变化 |
+| [AP Identity 消费者审计](AP_IDENTITY_CONSUMER_AUDIT.md) | 各业务 MAC 输入、Resolver、私有 Alias、直查表、revision 与 remap 状态 | AP Identity 消费者收口 | MESH、Ground、Vehicle、Wireless、AC Mesh-Link、轨旁业务 | 新增消费者、批量接口、旁路白名单或整改状态变化 |
 | [AP Identity 展示评估](AP_IDENTITY_DISPLAY_ASSESSMENT.md) | 允许字段、风险、flag 和不可用状态 | 诊断展示评估 | diagnostics ViewModel、评估测试 | ViewModel、flag、脱敏或展示准入变化 |
 | [AP Identity Job 宿主评估（冻结历史）](AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md) | 旧 Qt 宿主评估与否决边界，只作历史证据 | 历史维护 | Git 历史、当前全局任务中心与诊断模型 | 不再作为新增 Qt 宿主授权 |
 | [设备版本兼容性基线](DEVICE_COMPATIBILITY.md) | 代码内置兼容基线、确定性解析、开发期脱敏候选扫描和 Dashboard 适配范围来源 | 设备兼容/命令/parser 开发 | `resources/device_compatibility_profiles.json`、`src/netconsole/services/device_compatibility/`、定向测试 | 新增型号、平台大版本、Release、命令 Profile 或 parser Profile 映射 |

@@ -25,6 +25,13 @@ fping 进程仍由统一 `ShutdownManager` 登记和回收，Online MR Worker �
 功能关闭时不创建无人值守 Repository 或 Supervisor；索引库初始化失败也只让本功能 API 返回结构化
 `GROUND_UNATTENDED_UNAVAILABLE`，不会阻断人工 Online MR 或整个 Backend 启动。
 
+WMESH Syslog 的 AP 展示身份统一通过 `ApIdentityQueryService` 查询。Peer、Radio MAC 和 BSSID
+使用 `resolve_peer_macs(ap_role="trackside")`，物理 AP MAC 本身不能作为 Peer 命中证据。历史查询
+按当前页 distinct MAC 批量预加载；实时 Receiver 缓存已经解析的 MAC，并以 Identity revision 为
+失效边界。实时记录在既有 `parsed_details` 中保存 entity ID、revision、状态、来源和原因；历史原始
+NDJSON 不改写，只在读取投影中补充当前身份。Ground 不再从基础资料和 AC 明细建立第二套
+AP/Radio/Alias 字典。
+
 ## 运行状态与查看上下文
 
 `/status` 分开返回服务状态、活动运行、最近运行、活动操作和最近终态操作。没有活动运行时，页面只按

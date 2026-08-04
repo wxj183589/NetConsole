@@ -491,6 +491,72 @@ def test_mesh_peer_does_not_fall_back_to_prefix_name_or_base_ap_mac(
     assert exact_base.status == "unresolved"
 
 
+def test_batch_query_preserves_peer_and_ap_semantics_with_one_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _database, repository, service = _fixture(tmp_path)
+    _base_ap(repository, name="AP-A", mac="74ad-cb9d-3320")
+    _base_ap(repository, name="AP-B", mac="74ad-cb9d-3330")
+    built = service.rebuild_index("base_data_saved")
+    snapshot_calls = 0
+    original_snapshot = service.repository.exact_alias_snapshot
+
+    def counted_snapshot(*args, **kwargs):
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        return original_snapshot(*args, **kwargs)
+
+    monkeypatch.setattr(
+        service.repository,
+        "exact_alias_snapshot",
+        counted_snapshot,
+    )
+    monkeypatch.setattr(
+        service.repository,
+        "exact_alias_rows",
+        lambda *_args, **_kwargs: pytest.fail(
+            "batch query must not issue one alias query per MAC"
+        ),
+    )
+    monkeypatch.setattr(
+        service.repository,
+        "index_health",
+        lambda **_kwargs: pytest.fail(
+            "batch query must read health from the same snapshot"
+        ),
+    )
+
+    peer_matches = service.resolve_peer_macs(
+        [
+            "74ad-cb9d-332f",
+            "74ad-cb9d-333f",
+            "74ad-cb9d-3320",
+            "74ad-cb9d-332f",
+            "invalid",
+        ],
+        ap_role="trackside",
+    )
+    ap_matches = service.resolve_ap_macs(
+        ["74ad-cb9d-3320", "74ad-cb9d-3320"]
+    )
+
+    assert snapshot_calls == 2
+    assert set(peer_matches) == {
+        "74adcb9d332f",
+        "74adcb9d333f",
+        "74adcb9d3320",
+    }
+    assert peer_matches["74adcb9d332f"].status == "matched"
+    assert peer_matches["74adcb9d333f"].status == "ambiguous"
+    assert peer_matches["74adcb9d3320"].status == "unresolved"
+    assert ap_matches["74adcb9d3320"].status == "matched"
+    assert {
+        match.identity_revision
+        for match in (*peer_matches.values(), *ap_matches.values())
+    } == {built.revision}
+
+
 def test_ac_actual_radio_alias_wins_over_derived_prefix(tmp_path: Path) -> None:
     _database, repository, service = _fixture(tmp_path)
     _base_ap(repository, name="AP0208", mac="4873-97cc-e0e0")
