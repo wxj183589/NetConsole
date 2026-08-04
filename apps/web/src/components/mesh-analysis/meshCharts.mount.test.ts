@@ -1368,6 +1368,140 @@ describe('MESH charts mount and render', () => {
     wrapper.unmount()
   })
 
+  it('reapplies the local viewport after replacing trackside data on the same full domain', async () => {
+    const sharedTimeDomain = {
+      full_start_time: '2026-07-20T09:00:00.000Z',
+      full_end_time: '2026-07-20T12:00:00.000Z',
+    }
+    const viewport = {
+      start_time: '2026-07-20T10:00:01.000Z',
+      end_time: '2026-07-20T10:00:08.000Z',
+      start_percent: 0,
+      end_percent: 100,
+      ...sharedTimeDomain,
+      source: 'programmatic' as const,
+      source_chart: 'active-rssi' as const,
+      revision: 17,
+    }
+    const wrapper = mount(MeshTracksideSignalChart, {
+      props: {
+        series: tracksideSeries,
+        initialViewport: viewport,
+        syncViewport: viewport,
+        sharedTimeDomain,
+      },
+    })
+    await flushPromises()
+
+    const initialOption = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
+      xAxis: { min: string; max: string }
+      dataZoom: Array<{ startValue: string; endValue: string }>
+    }
+    expect(initialOption.xAxis).toMatchObject({
+      min: sharedTimeDomain.full_start_time,
+      max: sharedTimeDomain.full_end_time,
+    })
+    expect(initialOption.dataZoom).toEqual(expect.arrayContaining([
+      expect.objectContaining({ startValue: viewport.start_time, endValue: viewport.end_time }),
+    ]))
+
+    echartsMock.chart.clear.mockClear()
+    echartsMock.chart.dispatchAction.mockClear()
+    await wrapper.setProps({
+      series: tracksideSeries.map((series, seriesIndex) => ({
+        ...series,
+        points: series.points.map((point, pointIndex) => ({
+          ...point,
+          sample_id: 100 + seriesIndex * 10 + pointIndex,
+          peer_rssi: (point.peer_rssi ?? -50) - 1,
+        })),
+      })),
+    })
+    await flushPromises()
+
+    expect(echartsMock.chart.clear).toHaveBeenCalled()
+    expect(echartsMock.chart.dispatchAction).toHaveBeenCalledWith({
+      type: 'dataZoom',
+      batch: [0, 1].map((dataZoomIndex) => ({
+        dataZoomIndex,
+        startValue: viewport.start_time,
+        endValue: viewport.end_time,
+      })),
+    }, { silent: true })
+    const replacedOption = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
+      xAxis: { min: string; max: string }
+      dataZoom: Array<{ startValue: string; endValue: string }>
+    }
+    expect(replacedOption.xAxis).toMatchObject({
+      min: sharedTimeDomain.full_start_time,
+      max: sharedTimeDomain.full_end_time,
+    })
+    expect(replacedOption.dataZoom[0]).toMatchObject({
+      startValue: viewport.start_time,
+      endValue: viewport.end_time,
+    })
+    wrapper.unmount()
+  })
+
+  it('reapplies the local viewport after replacing main RSSI data on the same full domain', async () => {
+    const sharedTimeDomain = {
+      full_start_time: '2026-07-20T09:00:00.000Z',
+      full_end_time: '2026-07-20T12:00:00.000Z',
+    }
+    const viewport = {
+      start_time: '2026-07-20T10:00:01.000Z',
+      end_time: '2026-07-20T10:00:08.000Z',
+      start_percent: 0,
+      end_percent: 100,
+      ...sharedTimeDomain,
+      source: 'programmatic' as const,
+      source_chart: 'trackside-rssi' as const,
+      revision: 23,
+    }
+    const points = [chartPoint, chartPointAfterGap]
+    const wrapper = mount(MeshRssiChart, {
+      props: {
+        points,
+        initialViewport: viewport,
+        syncViewport: viewport,
+        sharedTimeDomain,
+      },
+    })
+    await flushPromises()
+
+    echartsMock.chart.dispatchAction.mockClear()
+    await wrapper.setProps({
+      points: points.map((point, index) => ({
+        ...point,
+        link_id: 200 + index,
+        local_rssi: (point.local_rssi ?? 30) + 1,
+      })),
+    })
+    await flushPromises()
+
+    expect(echartsMock.chart.dispatchAction).toHaveBeenCalledWith({
+      type: 'dataZoom',
+      batch: [0, 1].map((dataZoomIndex) => ({
+        dataZoomIndex,
+        startValue: viewport.start_time,
+        endValue: viewport.end_time,
+      })),
+    }, { silent: true })
+    const replacedOption = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
+      xAxis: { min: string; max: string }
+      dataZoom: Array<{ startValue: string; endValue: string }>
+    }
+    expect(replacedOption.xAxis).toMatchObject({
+      min: sharedTimeDomain.full_start_time,
+      max: sharedTimeDomain.full_end_time,
+    })
+    expect(replacedOption.dataZoom[1]).toMatchObject({
+      startValue: viewport.start_time,
+      endValue: viewport.end_time,
+    })
+    wrapper.unmount()
+  })
+
   it('silently corrects a main RSSI dataZoom before emitting one shared 1-second viewport', async () => {
     const sharedTimeDomain = {
       full_start_time: '2026-07-20T09:00:00.000Z',
@@ -1545,7 +1679,14 @@ describe('MESH charts mount and render', () => {
     await wrapper.setProps({ showPeer: true, showSwitchLines: true, showLocationBand: false })
     await flushPromises()
 
-    expect(echartsMock.chart.dispatchAction.mock.calls.some(([action]) => action.type === 'dataZoom')).toBe(false)
+    expect(echartsMock.chart.dispatchAction).toHaveBeenCalledWith({
+      type: 'dataZoom',
+      batch: [0, 1].map((dataZoomIndex) => ({
+        dataZoomIndex,
+        startValue: points[1].timestamp,
+        endValue: points[2].timestamp,
+      })),
+    }, { silent: true })
     expect((wrapper.vm as unknown as { getVisibleTimeRange: () => { start_time: string; end_time: string } }).getVisibleTimeRange()).toMatchObject({
       start_time: points[1].timestamp,
       end_time: points[2].timestamp,
@@ -1555,7 +1696,14 @@ describe('MESH charts mount and render', () => {
     window.dispatchEvent(new CustomEvent('netconsole:theme-change'))
     window.dispatchEvent(new Event('resize'))
     await flushPromises()
-    expect(echartsMock.chart.dispatchAction.mock.calls.some(([action]) => action.type === 'dataZoom')).toBe(false)
+    expect(echartsMock.chart.dispatchAction).toHaveBeenCalledWith({
+      type: 'dataZoom',
+      batch: [0, 1].map((dataZoomIndex) => ({
+        dataZoomIndex,
+        startValue: points[1].timestamp,
+        endValue: points[2].timestamp,
+      })),
+    }, { silent: true })
     expect((wrapper.vm as unknown as { getVisibleTimeRange: () => { start_time: string; end_time: string } }).getVisibleTimeRange()).toMatchObject({
       start_time: points[1].timestamp,
       end_time: points[2].timestamp,

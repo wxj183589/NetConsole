@@ -54,6 +54,8 @@ const emit = defineEmits<{
   'viewport-change': [viewport: MeshChartViewport]
   'viewport-ready': [viewport: MeshChartViewport]
   'pointer-change': [pointer: MeshSharedPointerChange]
+  'viewport-interaction-start': []
+  'viewport-interaction-end': []
 }>()
 
 const container = ref<HTMLDivElement | null>(null)
@@ -66,10 +68,24 @@ let resizeFrame: number | null = null
 let pendingRenderReason: 'data' | 'display' | 'theme' | 'reset' | null = null
 let disposed = false
 let currentViewport: MeshChartViewport | null = null
+let appliedViewport: MeshChartViewport | null = null
+let chartRenderEpoch = 0
+let appliedViewportEpoch = -1
 let viewportReady = false
 let viewportFrame: number | null = null
 let pendingViewport: MeshChartViewport | null = null
 let pointerGlobalOut: (() => void) | null = null
+
+function invalidateAppliedViewport(): void {
+  chartRenderEpoch += 1
+  appliedViewport = null
+  appliedViewportEpoch = -1
+}
+
+function markViewportApplied(viewport: MeshChartViewport): void {
+  appliedViewport = { ...viewport }
+  appliedViewportEpoch = chartRenderEpoch
+}
 
 const timestamps = (): string[] => props.points.map((point) => point.timestamp)
 const pointCount = (): number => props.points.length
@@ -140,6 +156,7 @@ async function ensureChart(): Promise<boolean> {
     chart = core.init(container.value, undefined, createTimeChartInitOptions(pointCount(), {
       useDirtyRect: false,
     }))
+    invalidateAppliedViewport()
     chart.on('click', handleChartClick)
     chart.on('datazoom', handleDataZoom)
     chart.on('restore', handleRestore)
@@ -209,6 +226,7 @@ onBeforeUnmount(() => {
   pointerGlobalOut = null
   chart?.dispose()
   chart = null
+  invalidateAppliedViewport()
 })
 
 watch(() => props.points, () => scheduleChartUpdate('data'))
@@ -230,7 +248,7 @@ watch(() => props.lockedViewport, (viewport, previous) => {
 }, { deep: true })
 watch(() => props.initialViewport, (viewport) => { if (viewport && !currentViewport) void nextTick(() => applyViewport(viewport)) }, { deep: true })
 watch(() => props.syncViewport, (viewport) => {
-  if (props.active && viewport && !meshViewportRangeEquals(currentViewport, viewport)) void nextTick(() => applyViewport(viewport))
+  if (props.active && viewport) void nextTick(() => applyViewport(viewport))
 }, { deep: true })
 watch(() => props.sharedTimeDomain, () => scheduleChartUpdate('display'), { deep: true })
 watch(() => [props.syncPointerTime, props.syncPointerSource] as const, ([time, source]) => {
@@ -273,6 +291,7 @@ function handleDataZoom(raw: unknown): void {
     }, { silent: true })
   }
   currentViewport = viewport
+  markViewportApplied(viewport)
   pendingViewport = viewport
   if (viewportFrame !== null) return
   viewportFrame = requestAnimationFrame(() => {
@@ -288,7 +307,17 @@ function handleRestore(): void {
   const viewport = fullViewport('user_zoom')
   if (!viewport) return
   currentViewport = { ...viewport, revision: (currentViewport?.revision ?? 0) + 1 }
+  markViewportApplied(currentViewport)
   emit('viewport-change', { ...currentViewport })
+}
+
+function beginViewportInteraction(): void {
+  if (!props.active) return
+  emit('viewport-interaction-start')
+}
+
+function endViewportInteraction(): void {
+  emit('viewport-interaction-end')
 }
 
 function handleAxisPointer(raw: unknown): void {
@@ -334,13 +363,18 @@ function applyViewport(viewport: MeshChartViewport): void {
     revision: viewport.revision,
   })
   if (!normalized) return
-  if (meshViewportRangeEquals(currentViewport, normalized) && currentViewport?.revision === normalized.revision) return
   currentViewport = normalized
   if (!chart) return
+  if (
+    appliedViewportEpoch === chartRenderEpoch
+    && meshViewportRangeEquals(appliedViewport, normalized)
+    && appliedViewport?.revision === normalized.revision
+  ) return
   chart.dispatchAction({
     type: 'dataZoom',
     batch: [0, 1].map((dataZoomIndex) => ({ dataZoomIndex, startValue: normalized.start_time, endValue: normalized.end_time })),
   }, { silent: true })
+  markViewportApplied(normalized)
 }
 
 function resetViewport(): void {
@@ -354,7 +388,9 @@ function resize(): void {
 
 function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
   if (!chart) return
-  const previous = reason !== 'reset' && props.preserveViewport ? getViewport() : null
+  const previous = reason !== 'reset' && props.preserveViewport && currentViewport
+    ? { ...currentViewport }
+    : null
   const theme = readNetConsoleChartTokens()
   const series = buildMeshRssiSeries(props.points, props.showPeer, props.scope)
   primarySeriesData = series[0]?.data || []
@@ -377,6 +413,7 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
     fullDomain: props.sharedTimeDomain,
     viewport: target,
   })
+  invalidateAppliedViewport()
   chart.setOption({
     ...baseOption,
     color: [theme.primary, theme.info, theme.warning, theme.danger],
@@ -472,7 +509,16 @@ defineExpose({
 
 <template>
   <div class="chart-shell">
-    <div ref="container" class="chart"></div>
+    <div
+      ref="container"
+      class="chart"
+      @pointerdown.capture="beginViewportInteraction"
+      @pointerup.capture="endViewportInteraction"
+      @pointercancel.capture="endViewportInteraction"
+      @touchstart.passive="beginViewportInteraction"
+      @touchend.passive="endViewportInteraction"
+      @touchcancel.passive="endViewportInteraction"
+    ></div>
     <el-empty v-if="!points.length" class="empty" description="暂无 RSSI 数据" :image-size="60" />
   </div>
 </template>
