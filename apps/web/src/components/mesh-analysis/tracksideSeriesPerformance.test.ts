@@ -13,6 +13,7 @@ import { buildTracksideSeriesCache } from './tracksideSeriesCache'
 const SERIES_COUNT = 140
 const POINT_COUNT = 14_581
 const RUN_COUNT = 6_264
+const PERFORMANCE_BUDGET_MULTIPLIER = process.env.CI ? 2 : 1
 
 const theme: NetConsoleChartTokens = {
   series: ['#1677ff', '#52c41a', '#faad14', '#ff4d4f', '#909399'],
@@ -129,13 +130,14 @@ describe('trackside chart fixed-scale performance', () => {
       payload_transform_ms: Number(payloadTransformMs.toFixed(3)),
       base_option_build_ms: Number(baseOptionBuildMs.toFixed(3)),
       heap_delta_bytes: heapDeltaBytes,
+      performance_budget_multiplier: PERFORMANCE_BUDGET_MULTIPLIER,
     }))
 
     expect(cache.series).toHaveLength(SERIES_COUNT)
     expect(cache.totalRenderedPoints).toBe(POINT_COUNT)
     expect(cache.unorderedSeriesIds).toEqual([])
-    expect(payloadTransformMs).toBeLessThan(200)
-    expect(baseOptionBuildMs).toBeLessThan(50)
+    expect(payloadTransformMs).toBeLessThan(200 * PERFORMANCE_BUDGET_MULTIPLIER)
+    expect(baseOptionBuildMs).toBeLessThan(50 * PERFORMANCE_BUDGET_MULTIPLIER)
     expect(heapDeltaBytes).toBeLessThan(64 * 1024 * 1024)
   })
 })

@@ -70,7 +70,7 @@ Netmiko 当前既有定向基线为 `20 passed, 2 failed`，失败位于 `tests/
 - `Web typecheck, tests, and build`：完整 Vitest 与 `vue-tsc -b && vite build`；
 - `Electron contract and build`：完整 Vitest、TypeScript typecheck 和 Main/Preload build。
 
-Web 门禁在共享 Windows runner 上固定最多两个 Vitest worker，并把单测/Hook 超时设为 20 秒；不跳过用例。轨旁图 481/770 序列颜色分配微基准在本地继续使用 50/100 ms 阈值，`CI=true` 时允许两倍 runner 系数，同时仍验证全部冲突边、颜色映射和 44,251 个链路点，避免把共享硬件抖动误判为业务回归。
+Web 门禁在共享 Windows runner 上固定最多两个 Vitest worker，并把单测/Hook 超时设为 20 秒；不跳过用例。MESH 纯 JS 微基准在本地继续使用原始 50/100 ms 颜色分配和 200/50 ms cache/option 阈值，`CI=true` 时统一允许两倍 runner 系数；序列数、链路点数、冲突边、颜色映射、顺序和内存上限断言保持原值，避免把共享硬件抖动误判为业务回归。
 
 仓库管理员必须在 GitHub Branch protection / Ruleset 中禁止 `main` 直接推送、要求 Pull Request，并把上述三个 check 设为 required。Workflow 只能生成检查结果，不能单独阻止具备直推权限的账号。当前没有把 Playwright 计入 required check；只有关键页面 smoke 的真实脚本和稳定断言落地后才可加入，不能用 Vitest 或 build 名称替代。
 
