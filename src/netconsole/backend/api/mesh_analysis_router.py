@@ -54,10 +54,12 @@ from netconsole.models.api.mesh_analysis import (
 )
 from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 from netconsole.services.rail_transit.mesh_analysis_query_service import (
+    MeshAnalysisPayloadLimitError,
     MeshAnalysisQueryError,
     MeshAnalysisQueryService,
     MeshAnalysisTimeRangeError,
 )
+from netconsole.services.mesh_chart_payload import MeshChartSelectionLimitError
 
 
 router = APIRouter(prefix="/rail-transit/mesh-analysis", tags=["rail-transit-mesh-analysis"])
@@ -101,6 +103,8 @@ def _query(callback: Callable[[], T]) -> T:
             return callback()
         except MeshAnalysisTimeRangeError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except (MeshAnalysisPayloadLimitError, MeshChartSelectionLimitError) as exc:
+            raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=str(exc)) from exc
         except MeshAnalysisQueryError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
@@ -544,7 +548,11 @@ def active_build_order(
     "/sessions/{session_id}/charts/active-path",
     response_model=MeshPathChartDTO,
     summary="读取全 ACTIVE 主链路动态图数据",
-    responses={404: {"description": "分析会话或 compact v3 结果不存在"}, 422: {"description": "时间范围无效"}},
+    responses={
+        404: {"description": "分析会话或 compact v3 结果不存在"},
+        413: {"description": "关键点、链路点或响应体超过图表安全上限"},
+        422: {"description": "时间范围无效"},
+    },
 )
 def active_path_chart(
     request: Request,
@@ -571,7 +579,11 @@ def active_path_chart(
     "/sessions/{session_id}/charts/trackside-signal",
     response_model=MeshTracksideSignalChartDTO,
     summary="读取轨旁 AP 信号组合图数据",
-    responses={404: {"description": "分析会话或 compact v3 结果不存在"}, 422: {"description": "时间范围无效"}},
+    responses={
+        404: {"description": "分析会话或 compact v3 结果不存在"},
+        413: {"description": "关键帧、链路点或响应体超过图表安全上限"},
+        422: {"description": "时间范围无效"},
+    },
 )
 def trackside_signal_chart(
     request: Request,
@@ -602,7 +614,11 @@ def trackside_signal_chart(
     "/sessions/{session_id}/charts/peer-segment",
     response_model=MeshPathChartDTO,
     summary="读取单 Peer 连续经过时段动态图数据",
-    responses={404: {"description": "分析会话、锚点或 compact v3 结果不存在"}, 422: {"description": "时间范围无效"}},
+    responses={
+        404: {"description": "分析会话、锚点或 compact v3 结果不存在"},
+        413: {"description": "关键点或响应体超过图表安全上限"},
+        422: {"description": "时间范围无效"},
+    },
 )
 def peer_segment_chart(
     request: Request,

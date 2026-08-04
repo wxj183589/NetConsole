@@ -606,6 +606,8 @@ class MeshPathChartDTO(ApiModel):
     first_sample_time: str | None = None
     last_sample_time: str | None = None
     total_points_in_range: int = 0
+    payload_bytes: int = 0
+    query_duration_ms: float = 0
 
 
 class MeshTracksideSignalPointDTO(ApiModel):
@@ -704,6 +706,8 @@ class MeshTracksideSignalChartDTO(ApiModel):
         default_factory=lambda: ["ACTIVE", "STANDBY"]
     )
     include_standby: bool = True
+    payload_bytes: int = 0
+    query_duration_ms: float = 0
 
 
 class MeshLinkTimelineDTO(ApiModel):

@@ -62,6 +62,18 @@ Netmiko 当前既有定向基线为 `20 passed, 2 failed`，失败位于 `tests/
 
 全量测试只在合并后的真实代码组合上作为最终门槛；单个并行任务不重复执行全量套件。
 
+## GitHub 自动门禁
+
+`.github/workflows/quality-gate.yml` 在 Pull Request 和 `main` 推送上执行三组 Windows 检查：
+
+- `Python core and API`：Ruff、`compileall`，以及数据库、统一数据根迁移、路径、Backend 启动/路由/API 组合 smoke、MESH 查询和 MESH Web API 定向测试；
+- `Web typecheck, tests, and build`：完整 Vitest 与 `vue-tsc -b && vite build`；
+- `Electron contract and build`：完整 Vitest、TypeScript typecheck 和 Main/Preload build。
+
+Web 门禁在共享 Windows runner 上固定最多两个 Vitest worker，并把单测/Hook 超时设为 20 秒；不跳过用例。MESH 纯 JS 微基准在本地继续使用原始 50/100 ms 颜色分配和 200/50 ms cache/option 阈值，`CI=true` 时统一允许两倍 runner 系数；序列数、链路点数、冲突边、颜色映射、顺序和内存上限断言保持原值，避免把共享硬件抖动误判为业务回归。
+
+仓库管理员必须在 GitHub Branch protection / Ruleset 中禁止 `main` 直接推送、要求 Pull Request，并把上述三个 check 设为 required。Workflow 只能生成检查结果，不能单独阻止具备直推权限的账号。当前没有把 Playwright 计入 required check；只有关键页面 smoke 的真实脚本和稳定断言落地后才可加入，不能用 Vitest 或 build 名称替代。
+
 架构 Guard 必须在 Qt 删除和非 Qt 全量测试之后再次执行。启发式命中需要人工分类和证据；不得用目录级忽略、删除测试或无到期时间的例外换取通过。P0/P1 架构问题为零是 Electron-only 发布门。
 
 ## 架构九门

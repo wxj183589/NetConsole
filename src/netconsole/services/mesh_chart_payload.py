@@ -12,6 +12,18 @@ from matplotlib.dates import date2num
 from netconsole.models.mesh_log_models import LINK_STATE_ACTIVE
 
 
+class MeshChartSelectionLimitError(ValueError):
+    """The requested chart window cannot contain all critical samples safely."""
+
+    def __init__(self, *, critical_count: int, max_points: int) -> None:
+        self.critical_count = int(critical_count)
+        self.max_points = int(max_points)
+        super().__init__(
+            "MESH 图表关键业务点超过安全渲染上限，已停止返回不完整结果；请缩小时间窗口。"
+            f"关键点 {self.critical_count} 个，安全上限 {self.max_points} 个。"
+        )
+
+
 @dataclass(frozen=True)
 class ActiveRun:
     peer_mac: str
@@ -238,6 +250,47 @@ def render_indices(
     candidates = (index for index in range(total_count) if index not in excluded)
     sampled = _spread_indices(candidates, limit - len(required))
     return np.asarray(sorted({*required, *(int(index) for index in sampled)}), dtype=np.int32)
+
+
+def prioritized_render_indices(
+    total_count: int,
+    max_points: int,
+    *,
+    critical_indices: Iterable[int] = (),
+    trend_indices: Iterable[int] = (),
+    ordinary_indices: Iterable[int] = (),
+) -> np.ndarray:
+    """Select samples with a strict critical > trend > ordinary priority."""
+    if total_count <= 0:
+        return np.asarray([], dtype=np.int32)
+    limit = max(int(max_points), 2)
+
+    def valid(values: Iterable[int]) -> set[int]:
+        return {int(value) for value in values if 0 <= int(value) < total_count}
+
+    critical = valid(critical_indices)
+    critical.update({0, total_count - 1})
+    if len(critical) > limit:
+        raise MeshChartSelectionLimitError(
+            critical_count=len(critical),
+            max_points=limit,
+        )
+
+    trend = valid(trend_indices) - critical
+    ordinary = valid(ordinary_indices) - critical - trend
+    selected = set(critical)
+    remaining = limit - len(selected)
+    for tier in (trend, ordinary):
+        if remaining <= 0:
+            break
+        selected.update(int(value) for value in _spread_indices(tier, remaining))
+        remaining = limit - len(selected)
+    if remaining > 0:
+        selected.update(
+            int(value)
+            for value in _spread_indices(set(range(total_count)) - selected, remaining)
+        )
+    return np.asarray(sorted(selected), dtype=np.int32)
 
 
 def _spread_indices(values: Iterable[int], limit: int, *, pinned: tuple[int, ...] = ()) -> np.ndarray:

@@ -1897,6 +1897,34 @@ describe('Mesh analysis detail behavior', () => {
     expect(wrapper.text()).toContain(`最新 ${fullEnd}`)
     expect(wrapper.find('.sessions-toggle').attributes('aria-expanded')).toBe('false')
 
+    const zoomStart = '2026-07-20 10:00:05.000'
+    const zoomEnd = '2026-07-20 10:00:20.000'
+    await activeRssiChart!.vm.$emit('viewport-change', {
+      start_time: zoomStart,
+      end_time: zoomEnd,
+      start_percent: 5,
+      end_percent: 20,
+      full_start_time: fullStart,
+      full_end_time: fullEnd,
+      source: 'user_zoom',
+      source_chart: 'active',
+      revision: 10,
+    })
+    await vi.waitFor(() => {
+      expect(mocks.getActivePath).toHaveBeenCalledWith('session-1', {
+        max_points: 600,
+        radio: 1,
+        time_from: zoomStart,
+        time_to: zoomEnd,
+      }, expect.any(AbortSignal))
+      expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-1', {
+        max_points: 600,
+        radio: 1,
+        time_from: zoomStart,
+        time_to: zoomEnd,
+      }, expect.anything())
+    })
+
     const initialActiveCalls = mocks.getActivePath.mock.calls.length
     const initialTracksideCalls = mocks.getTracksideSignal.mock.calls.length
     const initialCache = tracksideChart?.props('seriesCache')
@@ -1954,8 +1982,8 @@ describe('Mesh analysis detail behavior', () => {
       time_to: undefined,
     }, expect.anything())
     expect(activeRssiChart?.props('syncViewport')).toMatchObject({
-      start_time: fullStart,
-      end_time: '2026-07-20 10:00:15.000',
+      start_time: zoomStart,
+      end_time: zoomEnd,
     })
 
     await wrapper.findAll('button').find((button) => button.text() === '重置视图')!.trigger('click')

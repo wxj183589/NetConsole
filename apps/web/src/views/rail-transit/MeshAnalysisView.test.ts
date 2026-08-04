@@ -58,7 +58,7 @@ describe('Mesh analysis view', () => {
     expect(source).toContain('getMeshTracksideSignalChart')
     expect(source).toContain('MeshTracksideSignalChartData')
     expect(source).toContain('<MeshTracksideSignalChart')
-    expect(source).toContain('轨旁图按内部物理链路身份与本地 Radio 建立稳定序列')
+    expect(source).toContain('轨旁图按完整 frame 返回主备链路')
     expect(source).not.toContain('轨旁图按 Peer Radio MAC / AP MAC / Peer MAC')
     expect(source).toContain('<MeshRssiChartWorkspace')
     expect(source).toContain("const rssiLayoutMode = ref<MeshRssiLayoutMode>(DEFAULT_MESH_RSSI_LAYOUT_MODE)")

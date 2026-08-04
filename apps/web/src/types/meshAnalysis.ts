@@ -217,7 +217,7 @@ export interface MeshPathChart {
   total_points: number; returned_points: number; downsampled: boolean; requested_max_points: number; effective_max_points: number; downsample_warning: string | null
   summary: MeshPathChartSummary; time_from: string | null; time_to: string | null
   requested_time_from: string | null; requested_time_to: string | null; effective_time_from: string | null; effective_time_to: string | null
-  first_sample_time: string | null; last_sample_time: string | null; total_points_in_range: number
+  first_sample_time: string | null; last_sample_time: string | null; total_points_in_range: number; payload_bytes: number; query_duration_ms: number
 }
 
 export interface MeshTracksideSignalPointData extends MeshIdentityMetadata {
@@ -250,7 +250,7 @@ export interface MeshTracksideSignalChartData {
   sustained_zero_total_duration_ms: number; sustained_zero_longest_duration_ms: number
   downsampled: boolean; requested_max_frames: number; effective_max_frames: number
   requested_max_points: number; effective_max_points?: number; top_n: number
-  included_roles: Array<'ACTIVE' | 'STANDBY'>; include_standby: boolean
+  included_roles: Array<'ACTIVE' | 'STANDBY'>; include_standby: boolean; payload_bytes: number; query_duration_ms: number
 }
 
 export interface MeshTimelineItem extends MeshIdentityMetadata { segment_id: number; start_time: string; end_time: string; duration_seconds: number | null; peer_ap_name: string | null; peer_ap_mac: string | null; local_radio: number | null; rssi_min: number | null; rssi_avg: number | null; rssi_max: number | null; station: string | null; section: string | null; mileage: string | null; line_side: string | null; event_type: string | null; warning: string | null }

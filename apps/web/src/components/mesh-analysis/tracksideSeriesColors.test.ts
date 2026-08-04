@@ -149,16 +149,17 @@ describe('trackside conflict-aware series colors', () => {
     const started = performance.now()
     const assignment = assignTracksideSeriesColors(cache, createTracksideSeriesPalette())
     const elapsed = performance.now() - started
+    const effectiveTargetMs = targetMs * (process.env.CI ? 2 : 1)
     console.info(
       `trackside colors: series=${seriesCount} points=${pointCount} edges=${assignment.conflictEdgeCount} `
       + `colors=${assignment.usedColorCount} graph=${assignment.conflictGraphBuildMs.toFixed(3)}ms `
       + `assignment=${assignment.colorAssignmentMs.toFixed(3)}ms total=${assignment.totalMs.toFixed(3)}ms `
-      + `measured=${elapsed.toFixed(3)}ms`,
+      + `measured=${elapsed.toFixed(3)}ms target=${effectiveTargetMs}ms`,
     )
 
     expectEveryConflictUsesDifferentColors(assignment)
     expect(assignment.colorBySeriesId.size).toBe(seriesCount)
-    expect(assignment.totalMs).toBeLessThan(targetMs)
+    expect(assignment.totalMs).toBeLessThan(effectiveTargetMs)
   })
 
   it('clears the conflict graph and color maps when a chart is disposed', () => {

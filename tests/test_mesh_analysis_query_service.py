@@ -9,13 +9,18 @@ from pathlib import Path
 import pytest
 
 from netconsole.services.rail_transit.mesh_analysis_query_service import (
+    MeshAnalysisPayloadLimitError,
     MeshAnalysisQueryError,
     MeshAnalysisQueryService,
     MeshAnalysisTimeRangeError,
 )
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
 from netconsole.services.job_center.job_registry import registered_task_types
-from netconsole.services.mesh_chart_payload import render_indices
+from netconsole.services.mesh_chart_payload import (
+    MeshChartSelectionLimitError,
+    prioritized_render_indices,
+    render_indices,
+)
 from netconsole.services.mesh_catalog_index_service import MeshCatalogIndexService
 from tests.mesh_analysis_test_support import EmptyBaseQuery, create_mesh_analysis_fixture
 
@@ -280,8 +285,9 @@ def test_active_chart_keeps_representative_points_when_key_points_fill_budget(
     )
 
     assert chart.total_points == 240
-    assert chart.returned_points == 240
-    assert chart.downsampled is False
+    assert chart.returned_points == 160
+    assert chart.downsampled is True
+    assert chart.returned_points < chart.total_points
 
 
 def test_real_peer_observation_stays_unresolved_across_mesh_dtos(tmp_path: Path) -> None:
@@ -1462,12 +1468,12 @@ def test_trackside_signal_chart_preserves_short_zero_recovery_and_trend_samples(
         if point.timestamp >= "2026-07-15 11:00:40.000"
     ]
     assert recovery_time in returned_times
-    assert len(later_trend_points) == 40
+    assert 1 < len(later_trend_points) < 40
     assert chart.suppressed_zero_sample_count == 1
     assert chart.suppressed_zero_run_count == 1
     assert chart.total_frames == 80
-    assert chart.returned_frames == 80
-    assert chart.downsampled is False
+    assert chart.returned_frames == 10
+    assert chart.downsampled is True
 
 
 def test_trackside_signal_chart_breaks_when_link_disappears_from_radio_frames(tmp_path: Path) -> None:
@@ -1574,7 +1580,7 @@ def test_trackside_signal_chart_run_sampling_is_not_capped_at_legacy_2000(tmp_pa
 
     expected_total = ap_count * runs_per_ap * points_per_run
     expected_runs = ap_count * runs_per_ap
-    minimum_required_points = expected_runs * 4
+    minimum_required_points = expected_runs * 2
     run_counts: dict[str, int] = defaultdict(int)
     for series in chart.series:
         for point in series.points:
@@ -1584,13 +1590,14 @@ def test_trackside_signal_chart_run_sampling_is_not_capped_at_legacy_2000(tmp_pa
     assert chart.total_series == ap_count
     assert chart.returned_series == ap_count
     assert len(run_counts) == expected_runs
-    assert min(run_counts.values()) >= 4
+    assert min(run_counts.values()) >= 2
     assert chart.effective_max_points >= minimum_required_points
     assert chart.returned_points >= minimum_required_points
     assert chart.returned_points > 2_000
-    assert chart.effective_max_points == 20_000
+    assert chart.effective_max_points == minimum_required_points
     assert chart.returned_frames <= 20_000
-    assert any("安全渲染上限" in warning for warning in chart.warnings)
+    assert chart.returned_points <= 20_000
+    assert any("最终返回" in warning for warning in chart.warnings)
 
 
 def test_chart_budget_preserves_switch_points_and_expands_requested_limit() -> None:
@@ -1634,19 +1641,75 @@ def test_natural_second_sampling_prefers_a_real_nonzero_rssi_point() -> None:
     ) == {1, 2, 3}
 
 
-def test_chart_budget_reports_uniform_sampling_when_valid_switches_exceed_safe_cap() -> None:
+def test_chart_budget_rejects_valid_switches_exceeding_safe_cap() -> None:
     switch_indices = set(range(1, 25_001))
-    requested, effective, rendered_switches, warning = MeshAnalysisQueryService._chart_render_budget(
-        30_000,
-        600,
-        switch_indices,
+    with pytest.raises(MeshChartSelectionLimitError):
+        MeshAnalysisQueryService._chart_render_budget(
+            30_000,
+            600,
+            switch_indices,
+        )
+
+
+def test_prioritized_render_indices_never_trades_critical_for_natural_seconds() -> None:
+    selected = set(
+        int(index)
+        for index in prioritized_render_indices(
+            10_000,
+            300,
+            critical_indices={101, 5_001, 9_900},
+            trend_indices={200, 5_100, 9_800},
+            ordinary_indices=set(range(10_000)),
+        )
     )
 
-    assert requested == 600
-    assert effective == 20_000
-    assert len(rendered_switches) == 19_998
-    assert rendered_switches <= switch_indices
-    assert warning == "切换事件过多，已按时间均匀抽样显示 19998/25000 个有效切换节点。"
+    assert {0, 101, 5_001, 9_900, 9_999} <= selected
+    assert len(selected) == 300
+
+
+def test_trackside_frame_budget_limits_link_points_and_rejects_critical_overflow() -> None:
+    weights = {index: 100 for index in range(1_000)}
+    selected, effective, warning = MeshAnalysisQueryService._select_trackside_frames(
+        1_000,
+        600,
+        critical_frames={10, 990},
+        trend_frames=set(range(1_000)),
+        ordinary_frames=set(),
+        frame_weights=weights,
+    )
+
+    assert {0, 10, 990, 999} <= selected
+    assert sum(weights[index] for index in selected) <= 50_000
+    assert effective == len(selected)
+    assert warning and "50,000" in warning
+
+    with pytest.raises(MeshAnalysisPayloadLimitError):
+        MeshAnalysisQueryService._select_trackside_frames(
+            1_000,
+            600,
+            critical_frames=set(range(600)),
+            trend_frames=set(),
+            ordinary_frames=set(),
+            frame_weights={index: 100 for index in range(1_000)},
+        )
+
+
+def test_chart_payload_byte_limit_fails_instead_of_returning_oversized_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    service = MeshAnalysisQueryService(
+        paths,
+        base_query=EmptyBaseQuery(),  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(
+        "netconsole.services.rail_transit.mesh_analysis_query_service._MAX_CHART_PAYLOAD_BYTES",
+        1,
+    )
+
+    with pytest.raises(MeshAnalysisPayloadLimitError):
+        service.get_active_path_chart("demo", session_id, radio=1, max_points=10)
 
 
 def test_chart_does_not_render_zero_rssi_switch_anchor(tmp_path: Path) -> None:

@@ -7,6 +7,7 @@ import logging
 import math
 import re
 import sqlite3
+from time import perf_counter
 from bisect import bisect_right
 from collections import defaultdict
 from contextlib import closing
@@ -67,7 +68,11 @@ from netconsole.models.mesh_analysis_params import mesh_analysis_params_from_jso
 from netconsole.models.mesh_log_models import LINK_STATE_ACTIVE, LINK_STATE_STANDBY
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository, MeshSchemaRebuildRequired, SCHEMA_VERSION
 from netconsole.services.mesh_analysis_params_service import load_site_mesh_analysis_params
-from netconsole.services.mesh_chart_payload import build_chart_payload, render_indices
+from netconsole.services.mesh_chart_payload import (
+    MeshChartSelectionLimitError,
+    build_chart_payload,
+    prioritized_render_indices,
+)
 from netconsole.services.mesh_rssi_zero_runs import analyze_rssi_zero_runs
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.mesh_ap_location_service import (
@@ -83,6 +88,8 @@ _MR_IDENTITY_RE = re.compile(r"^(?P<train>.+?)[-_ ]*MR[-_ ]*(?P<role>CT|TC|CW)$"
 _ALLOWED_OUTPUT_SUFFIXES = {".xlsx", ".zip", ".csv", ".json", ".md"}
 _MAX_PAGE_SIZE = 1_000
 _MAX_CHART_RENDER_POINTS = 20_000
+_MAX_TRACKSIDE_LINK_POINTS = 50_000
+_MAX_CHART_PAYLOAD_BYTES = 16 * 1024 * 1024
 LOGGER = logging.getLogger(__name__)
 _DETAIL_CAPABILITY_TABLES = {
     "links": frozenset({"mesh_links"}),
@@ -99,6 +106,10 @@ class MeshAnalysisQueryError(RuntimeError):
 
 
 class MeshAnalysisTimeRangeError(ValueError):
+    pass
+
+
+class MeshAnalysisPayloadLimitError(ValueError):
     pass
 
 
@@ -1258,6 +1269,7 @@ class MeshAnalysisQueryService:
         time_to: str = "",
         max_points: int = 1_000,
     ) -> MeshPathChartDTO:
+        started = perf_counter()
         self._validate_chart_time_range(time_from, time_to)
         context = self._context(site_id, session_id)
         if context.detail_db is None:
@@ -1273,7 +1285,7 @@ class MeshAnalysisQueryService:
             time_from=time_from,
             time_to=time_to,
         )
-        return self._chart_dto(
+        result = self._chart_dto(
             site_id,
             context,
             payload,
@@ -1282,6 +1294,7 @@ class MeshAnalysisQueryService:
             time_from=time_from,
             time_to=time_to,
         )
+        return self._with_chart_metrics(result, started)
 
     def get_trackside_signal_chart(
         self,
@@ -1297,6 +1310,7 @@ class MeshAnalysisQueryService:
     ) -> MeshTracksideSignalChartDTO:
         # 兼容保留旧查询参数；新轨旁链路语义始终包含主备链路，也不按 top N 截断。
         _ = include_standby, top_n
+        started = perf_counter()
         self._validate_chart_time_range(time_from, time_to)
         context = self._context(site_id, session_id)
         max_points = max(int(max_points), 10)
@@ -1320,7 +1334,7 @@ class MeshAnalysisQueryService:
             time_from=time_from,
             time_to=time_to,
         )
-        return self._trackside_signal_chart_dto(
+        result = self._trackside_signal_chart_dto(
             context,
             payload,
             radio=radio,
@@ -1328,6 +1342,7 @@ class MeshAnalysisQueryService:
             time_to=time_to,
             max_points=max_points,
         )
+        return self._with_chart_metrics(result, started)
 
     def get_peer_segment_chart(
         self,
@@ -1340,6 +1355,7 @@ class MeshAnalysisQueryService:
         max_points: int = 1_000,
         all_visits: bool = False,
     ) -> MeshPathChartDTO:
+        started = perf_counter()
         self._validate_chart_time_range(time_from, time_to)
         context = self._context(site_id, session_id)
         if context.detail_db is None:
@@ -1376,7 +1392,7 @@ class MeshAnalysisQueryService:
                 margin_samples=60,
                 source_file_id=context.detail_source_id,
             )
-        return self._chart_dto(
+        result = self._chart_dto(
             site_id,
             context,
             payload,
@@ -1385,6 +1401,7 @@ class MeshAnalysisQueryService:
             time_from=time_from,
             time_to=time_to,
         )
+        return self._with_chart_metrics(result, started)
 
     def _all_peer_visit_payload(
         self,
@@ -2279,6 +2296,29 @@ class MeshAnalysisQueryService:
             time_to=time_to,
         )
 
+    @staticmethod
+    def _with_chart_metrics(
+        result: MeshPathChartDTO | MeshTracksideSignalChartDTO,
+        started: float,
+    ) -> MeshPathChartDTO | MeshTracksideSignalChartDTO:
+        result = result.model_copy(update={"query_duration_ms": round((perf_counter() - started) * 1000, 3)})
+        payload_bytes = len(result.model_dump_json(exclude_none=True).encode("utf-8"))
+        result = result.model_copy(update={"payload_bytes": payload_bytes})
+        payload_bytes = len(result.model_dump_json(exclude_none=True).encode("utf-8"))
+        if payload_bytes > _MAX_CHART_PAYLOAD_BYTES:
+            raise MeshAnalysisPayloadLimitError(
+                "MESH 图表响应超过 16 MiB 安全上限，请缩小时间窗口或降低显示范围。"
+            )
+        result = result.model_copy(update={"payload_bytes": payload_bytes})
+        LOGGER.info(
+            "MESH_CHART_QUERY_METRICS type=%s duration_ms=%.3f payload_bytes=%d returned_points=%d",
+            type(result).__name__,
+            result.query_duration_ms,
+            payload_bytes,
+            result.returned_points,
+        )
+        return result
+
     def _chart_payload_dto(
         self,
         site_id: str,
@@ -2432,68 +2472,48 @@ class MeshAnalysisQueryService:
             if str(row["event"].get("event_type") or "") == "ACTIVE_SWITCH"
             and index is not None
         }
-        important_values = chart.get("important_indices")
-        important = {int(value) for value in (important_values if important_values is not None else [])}
-        important.update(self._important_chart_row_indices(point_rows))
+        critical_indices: set[int] = set()
+        for key in ("switch_indices", "no_active_indices", "multi_active_indices", "rapid_flap_indices"):
+            values = chart.get(key)
+            if values is not None:
+                critical_indices.update(int(value) for value in values)
+        critical_indices.update(
+            index
+            for index, point in enumerate(point_rows)
+            if point.get("is_switch") or point.get("is_anomaly") or point.get("gap_before")
+        )
+        trend_indices = self._chart_trend_row_indices(point_rows)
+        peer_change_values = chart.get("peer_change_indices")
+        if peer_change_values is not None:
+            trend_indices.update(int(value) for value in peer_change_values)
         natural_second_indices = self._natural_second_indices(
             point_rows,
             value_key="local_rssi",
         )
-        important.update(natural_second_indices)
-        important.update(sustained_zero_boundaries)
-        important.update(suppressed_zero_recoveries)
-        important.difference_update(ambiguous_active_bridge_indices)
-        requested_max_points, effective_max_points, rendered_switch_indices, downsample_warning = (
-            self._chart_render_budget(total_points, max_points, valid_switch_indices)
-        )
-        required_display_indices = {
-            *important,
-            *rendered_switch_indices,
-            *sustained_zero_boundaries,
-            *suppressed_zero_recoveries,
-            *({0, total_points - 1} if total_points else set()),
-        }
-        budget_warnings = [downsample_warning] if downsample_warning else []
-        if len(required_display_indices) > effective_max_points:
-            if len(required_display_indices) <= _MAX_CHART_RENDER_POINTS:
-                previous_effective = effective_max_points
-                effective_max_points = len(required_display_indices)
-                budget_warnings.append(
-                    "为保留持续无 RSSI 区间边界、短时 0 恢复点和现有关键点，"
-                    f"图表目标点数已从 {previous_effective} 提升到 {effective_max_points}。"
-                )
-            else:
-                budget_warnings.append(
-                    f"持续无 RSSI 区间和其他关键点共 {len(required_display_indices)} 个，"
-                    f"超过安全渲染上限 {_MAX_CHART_RENDER_POINTS}，已按时间保留代表性边界。"
-                )
-        representative_effective = min(
-            total_points,
+        critical_indices.update(sustained_zero_boundaries)
+        critical_indices.update(suppressed_zero_recoveries)
+        critical_indices.update(valid_switch_indices)
+        critical_indices.difference_update(ambiguous_active_bridge_indices)
+        requested_max_points = min(max(int(max_points), 10), _MAX_CHART_RENDER_POINTS)
+        effective_max_points = min(
             _MAX_CHART_RENDER_POINTS,
-            len(required_display_indices) + requested_max_points,
+            max(requested_max_points, len(critical_indices) + (2 if total_points else 0)),
         )
-        if representative_effective > effective_max_points:
-            previous_effective = effective_max_points
-            effective_max_points = representative_effective
+        budget_warnings: list[str] = []
+        if effective_max_points > requested_max_points:
             budget_warnings.append(
-                "为避免关键点占满预算后丢失连续趋势，"
-                f"图表目标点数已从 {previous_effective} 提升到 {effective_max_points}。"
+                "为保留全部一级业务边界，"
+                f"图表目标点数已从 {requested_max_points} 提升到 {effective_max_points}。"
             )
         downsample_warning = " ".join(budget_warnings) or None
         indices = [
             int(index)
-            for index in render_indices(
+            for index in prioritized_render_indices(
                 total_points,
-                0,
-                0,
-                important,
                 effective_max_points,
-                pinned_indices={
-                    *rendered_switch_indices,
-                    *natural_second_indices,
-                    *sustained_zero_boundaries,
-                    *suppressed_zero_recoveries,
-                },
+                critical_indices=critical_indices,
+                trend_indices=trend_indices,
+                ordinary_indices=natural_second_indices,
             )
         ]
         returned_indices = set(indices)
@@ -2584,7 +2604,7 @@ class MeshAnalysisQueryService:
         first_time = str(point_rows[0]["timestamp"]) if point_rows else None
         last_time = str(point_rows[-1]["timestamp"]) if point_rows else None
         zero_summary = local_zero_analysis.summary
-        return MeshPathChartDTO(
+        result = MeshPathChartDTO(
             mode="active_path" if mode == "active_path" else "peer_segment",
             anchor=anchor,
             points=returned,
@@ -2626,6 +2646,12 @@ class MeshAnalysisQueryService:
             last_sample_time=last_time,
             total_points_in_range=total_points,
         )
+        payload_bytes = len(result.model_dump_json(exclude_none=True).encode("utf-8"))
+        if payload_bytes > _MAX_CHART_PAYLOAD_BYTES:
+            raise MeshAnalysisPayloadLimitError(
+                "MESH 图表响应超过 16 MiB 安全上限，请缩小时间窗口或降低显示范围。"
+            )
+        return result.model_copy(update={"payload_bytes": payload_bytes})
 
     def _trackside_signal_chart_dto(
         self,
@@ -2995,30 +3021,28 @@ class MeshAnalysisQueryService:
         total_frames = len(ordered_frames)
         total_link_points = len(materialized)
         requested_max_frames = min(max(int(max_points), 10), _MAX_CHART_RENDER_POINTS)
-        effective_max_frames = requested_max_frames
-        required_frames: set[int] = set(
+        critical_frames: set[int] = set(
             transition_frames
             | active_switch_frames
             | anomaly_frames
             | sustained_zero_boundary_frames
             | suppressed_zero_recovery_frames
         )
-        required_frames.update(
-            self._natural_second_indices(ordered_frames)
-        )
+        trend_frames: set[int] = set()
+        ordinary_frames = self._natural_second_indices(ordered_frames)
         if total_frames:
-            required_frames.update({0, total_frames - 1})
+            critical_frames.update({0, total_frames - 1})
         for group in groups.values():
             items = list(group["items"])
             if items:
-                required_frames.update(
+                trend_frames.update(
                     {int(items[0]["frame_index"]), int(items[-1]["frame_index"])}
                 )
         for run in runs.values():
             items = list(run["items"])
             if not items:
                 continue
-            required_frames.update(
+            trend_frames.update(
                 {int(items[0]["frame_index"]), int(items[-1]["frame_index"])}
             )
             valued = [
@@ -3027,55 +3051,31 @@ class MeshAnalysisQueryService:
                 if item.get("value") is not None and item.get("value") != 0
             ]
             if valued:
-                required_frames.add(
+                trend_frames.add(
                     int(min(valued, key=lambda item: item["value"])["frame_index"])
                 )
-                required_frames.add(
+                trend_frames.add(
                     int(max(valued, key=lambda item: item["value"])["frame_index"])
                 )
-
-        if len(required_frames) > effective_max_frames:
-            previous_effective = effective_max_frames
-            effective_max_frames = min(len(required_frames), _MAX_CHART_RENDER_POINTS)
-            if effective_max_frames > previous_effective:
-                warnings.append(
-                    "为保留链路出现、消失、角色切换、短时 0 恢复点和 RSSI 极值，"
-                    f"轨旁图目标采样时刻已从 {requested_max_frames} 提升到 "
-                    f"{effective_max_frames}。"
-                )
-            if len(required_frames) > _MAX_CHART_RENDER_POINTS:
-                warnings.append(
-                    f"自然秒和其他关键帧共 {len(required_frames)} 个，"
-                    f"超过安全渲染上限 {_MAX_CHART_RENDER_POINTS}，已按时间抽样。"
-                )
-        representative_effective = min(
-            total_frames,
-            _MAX_CHART_RENDER_POINTS,
-            len(required_frames) + requested_max_frames,
-        )
-        if representative_effective > effective_max_frames:
-            previous_effective = effective_max_frames
-            effective_max_frames = representative_effective
-            warnings.append(
-                "为避免关键帧占满预算后丢失连续趋势，"
-                f"轨旁图目标采样时刻已从 {previous_effective} 提升到 "
-                f"{effective_max_frames}。"
-            )
         if total_frames == 0:
             warnings.append("当前日志没有任何有效 peer_rssi / peer_signal。")
             selected_frame_indices: set[int] = set()
+            effective_max_frames = requested_max_frames
         else:
-            selected_frame_indices = set(
-                int(index)
-                for index in render_indices(
-                    total_frames,
-                    0,
-                    0,
-                    required_frames,
-                    effective_max_frames,
-                    pinned_indices=required_frames,
-                )
+            frame_weights = {
+                int(frame["index"]): len(frame.get("items") or [])
+                for frame in ordered_frames
+            }
+            selected_frame_indices, effective_max_frames, budget_warning = self._select_trackside_frames(
+                total_frames,
+                requested_max_frames,
+                critical_frames=critical_frames,
+                trend_frames=trend_frames,
+                ordinary_frames=ordinary_frames,
+                frame_weights=frame_weights,
             )
+            if budget_warning:
+                warnings.append(budget_warning)
         selected_items = [
             item
             for item in materialized
@@ -3156,7 +3156,7 @@ class MeshAnalysisQueryService:
         )
         downsampled = returned_frames < total_frames
 
-        return MeshTracksideSignalChartDTO(
+        result = MeshTracksideSignalChartDTO(
             source_id=context.session_id,
             radio=radio,
             time_range=MeshTracksideSignalRangeDTO(
@@ -3198,6 +3198,12 @@ class MeshAnalysisQueryService:
             included_roles=[LINK_STATE_ACTIVE, LINK_STATE_STANDBY],
             include_standby=True,
         )
+        payload_bytes = len(result.model_dump_json(exclude_none=True).encode("utf-8"))
+        if payload_bytes > _MAX_CHART_PAYLOAD_BYTES:
+            raise MeshAnalysisPayloadLimitError(
+                "轨旁图响应超过 16 MiB 安全上限，请缩小时间窗口或降低显示范围。"
+            )
+        return result.model_copy(update={"payload_bytes": payload_bytes})
 
     def _trackside_rows_with_standby_fallback(
         self,
@@ -3439,14 +3445,94 @@ class MeshAnalysisQueryService:
                     f"图表目标点数已从 {requested} 提升到 {effective}。"
                 )
             return requested, effective, valid_switches, warning
-        available = max(_MAX_CHART_RENDER_POINTS - len(endpoints), 0)
-        sampled_switches = cls._evenly_spread_indices(valid_switches - endpoints, available)
-        rendered = (valid_switches & endpoints) | sampled_switches
-        warning = (
-            f"切换事件过多，已按时间均匀抽样显示 "
-            f"{len(rendered)}/{len(valid_switches)} 个有效切换节点。"
+        raise MeshChartSelectionLimitError(
+            critical_count=required_count,
+            max_points=_MAX_CHART_RENDER_POINTS,
         )
-        return requested, _MAX_CHART_RENDER_POINTS, rendered, warning
+
+    @classmethod
+    def _select_trackside_frames(
+        cls,
+        total_frames: int,
+        requested_max_frames: int,
+        *,
+        critical_frames: set[int],
+        trend_frames: set[int],
+        ordinary_frames: set[int],
+        frame_weights: dict[int, int],
+    ) -> tuple[set[int], int, str | None]:
+        critical = {index for index in critical_frames if 0 <= index < total_frames}
+        critical.update({0, total_frames - 1})
+        trend = {
+            index
+            for index in trend_frames
+            if 0 <= index < total_frames and index not in critical
+        }
+        ordinary = {
+            index
+            for index in ordinary_frames
+            if 0 <= index < total_frames and index not in critical and index not in trend
+        }
+        if len(critical) > _MAX_CHART_RENDER_POINTS:
+            raise MeshChartSelectionLimitError(
+                critical_count=len(critical),
+                max_points=_MAX_CHART_RENDER_POINTS,
+            )
+        critical_link_points = sum(frame_weights.get(index, 0) for index in critical)
+        if critical_link_points > _MAX_TRACKSIDE_LINK_POINTS:
+            raise MeshAnalysisPayloadLimitError(
+                "轨旁图一级关键帧包含的链路点超过 50,000 个，请缩小时间窗口。"
+            )
+        effective = min(
+            _MAX_CHART_RENDER_POINTS,
+            max(int(requested_max_frames), len(critical)),
+        )
+        candidates = set(
+            int(index)
+            for index in prioritized_render_indices(
+                total_frames,
+                effective,
+                critical_indices=critical,
+                trend_indices=trend,
+                ordinary_indices=ordinary,
+            )
+        )
+        if sum(frame_weights.get(index, 0) for index in candidates) <= _MAX_TRACKSIDE_LINK_POINTS:
+            warning = (
+                "轨旁图关键帧优先，"
+                f"目标采样时刻从 {requested_max_frames} 调整为 {effective}。"
+                if effective > requested_max_frames
+                else None
+            )
+            return candidates, effective, warning
+
+        selected = set(critical)
+        remaining_frames = max(effective - len(selected), 0)
+        remaining_link_points = _MAX_TRACKSIDE_LINK_POINTS - critical_link_points
+        for tier in (
+            trend,
+            ordinary,
+            set(range(total_frames)) - selected - trend - ordinary,
+        ):
+            if remaining_frames <= 0 or remaining_link_points <= 0:
+                break
+            pool_limit = min(len(tier), max(remaining_frames * 2, remaining_frames))
+            pool = cls._evenly_spread_indices(tier, pool_limit)
+            for value in sorted(pool):
+                index = int(value)
+                weight = frame_weights.get(index, 0)
+                if weight > remaining_link_points:
+                    continue
+                selected.add(index)
+                remaining_frames -= 1
+                remaining_link_points -= weight
+                if remaining_frames <= 0 or remaining_link_points <= 0:
+                    break
+        warning = (
+            "轨旁图链路点超过 50,000 个安全上限，已优先保留一级关键帧并减少普通趋势帧；"
+            f"最终返回 {len(selected)} 个采样时刻、{sum(frame_weights.get(i, 0) for i in selected)} 个链路点。"
+        )
+        return selected, len(selected), warning
 
     @staticmethod
     def _evenly_spread_indices(values: set[int], limit: int) -> set[int]:
@@ -3796,6 +3882,29 @@ class MeshAnalysisQueryService:
                 important.add(min(values, key=lambda item: item[1])[0])
                 important.add(max(values, key=lambda item: item[1])[0])
         return important
+
+    @staticmethod
+    def _chart_trend_row_indices(points: list[dict[str, Any]]) -> set[int]:
+        """Return tier-two link/role boundaries and RSSI extrema."""
+        trend: set[int] = set()
+        for index in range(1, len(points)):
+            previous = points[index - 1]
+            current = points[index]
+            if current.get("segment_sequence") != previous.get("segment_sequence"):
+                trend.update((index - 1, index))
+            if current.get("peer_mac") != previous.get("peer_mac"):
+                trend.update((index - 1, index))
+        for field in ("local_rssi", "peer_rssi", "local_tx_busy", "local_rx_busy", "peer_tx_busy", "peer_rx_busy"):
+            values = [
+                (index, point.get(field))
+                for index, point in enumerate(points)
+                if point.get(field) is not None
+                and (field not in {"local_rssi", "peer_rssi"} or point.get(field) != 0)
+            ]
+            if values:
+                trend.add(min(values, key=lambda item: item[1])[0])
+                trend.add(max(values, key=lambda item: item[1])[0])
+        return trend
 
     @classmethod
     def _chart_array_number(cls, values: object, index: int) -> float | None:
