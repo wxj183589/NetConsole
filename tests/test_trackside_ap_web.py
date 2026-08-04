@@ -1184,6 +1184,7 @@ def test_trackside_application_validates_update_scope_and_ap_identity(tmp_path: 
     assert all_job.params["station"] == ""
     assert all_job.params["ap_uuid"] == ""
     assert all_job.params["resource_keys"] == [
+        "site:demo|trackside_ap_business_data",
         f"site:demo|ac:{ac_uuid_1}|fit_ap_optical",
         f"site:demo|ac:{ac_uuid_2}|fit_ap_optical",
         "site:demo|trackside_ap_optical|scope:all",
@@ -1191,6 +1192,7 @@ def test_trackside_application_validates_update_scope_and_ap_identity(tmp_path: 
     assert station_job.params["station"] == "站点A"
     assert station_job.params["ap_uuid"] == ""
     assert station_job.params["resource_keys"] == [
+        "site:demo|trackside_ap_business_data",
         f"site:demo|ac:{ac_uuid_1}|fit_ap_optical",
         "site:demo|trackside_ap_optical|scope:station:站点a",
     ]
@@ -1202,6 +1204,7 @@ def test_trackside_application_validates_update_scope_and_ap_identity(tmp_path: 
         assert job.params["ac_uuid"] == ac_uuid_1
         assert job.params["device_uuid"] == ac_uuid_1
         assert job.params["resource_keys"] == [
+            "site:demo|trackside_ap_business_data",
             f"site:demo|ac:{ac_uuid_1}|fit_ap_optical",
             (
                 "site:demo|trackside_ap_optical|scope:"

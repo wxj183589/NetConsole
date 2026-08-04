@@ -723,6 +723,7 @@ class RailTransitWebApplicationService:
             job,
             "trackside_ap_business_export",
             reservation,
+            resource_keys=[self._trackside_ap_business_data_resource_key(site_id)],
         )
 
     def open_trackside_ap_business_export(
@@ -2297,7 +2298,11 @@ class RailTransitWebApplicationService:
         )
         resource_keys = fit_ap_optical_resource_keys(site_id, ac_uuids)
         scope_key = self._trackside_ap_update_scope_resource_key(site_id, params)
-        params["resource_keys"] = [*resource_keys, scope_key]
+        params["resource_keys"] = [
+            self._trackside_ap_business_data_resource_key(site_id),
+            *resource_keys,
+            scope_key,
+        ]
         params["reuse_equivalent_task"] = True
         existing = self._active_equivalent_trackside_task(
             site_id,
@@ -2330,6 +2335,10 @@ class RailTransitWebApplicationService:
         else:
             scope = "all"
         return f"site:{site_id}|trackside_ap_optical|scope:{scope}"
+
+    @staticmethod
+    def _trackside_ap_business_data_resource_key(site_id: str) -> str:
+        return f"site:{site_id}|trackside_ap_business_data"
 
     def _active_equivalent_trackside_task(
         self,
@@ -3500,6 +3509,14 @@ class RailTransitWebApplicationService:
                 resource_keys=resource_keys,
                 on_complete=completed,
             )
+        except TaskResourceConflictError as exc:
+            self.artifact_store.fail(reservation)
+            code = (
+                "TRACKSIDE_AP_OPTICAL_UPDATE_RUNNING"
+                if exc.task.task_type == "trackside_ap_optical_update"
+                else "TASK_RESOURCE_BUSY"
+            )
+            raise RailTransitWebError(code, str(exc)) from exc
         except Exception:
             self.artifact_store.fail(reservation)
             raise

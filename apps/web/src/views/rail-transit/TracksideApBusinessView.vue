@@ -280,7 +280,7 @@ onMounted(() => {
         >更新全部光衰</el-button>
         <el-button
           :loading="taskSubmitting"
-          :disabled="exportTaskRunning || !isFeatureEnabled('web.rail_trackside_ap_business_export') || !isFeatureEnabled('web.rail_task_control')"
+          :disabled="updateTaskRunning || exportTaskRunning || !isFeatureEnabled('web.rail_trackside_ap_business_export') || !isFeatureEnabled('web.rail_task_control')"
           @click="exportBusiness"
         >导出表格</el-button>
       </div>

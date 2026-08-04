@@ -13,6 +13,7 @@ from web_parity_test_support import FakeExportProcessAdapter, FakeLocalProcessAd
 from netconsole.application.rail_transit import web_application_service as rail_transit_web_application_service
 from netconsole.application.rail_transit.web_application_service import (
     RailTransitWebApplicationService,
+    RailTransitWebError,
 )
 from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
@@ -25,6 +26,7 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.ap_online_overview import AP_ONLINE_OVERVIEW_COLUMNS
 from netconsole.services.export.export_job import ExportJob
 from netconsole.services.file_contract import attach_export_metadata
+from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.offline_ap_ledger import (
     OFFLINE_AP_LEDGER_COLUMNS,
     OFFLINE_AP_STATS_COLUMNS,
@@ -70,6 +72,34 @@ def test_trackside_business_export_name_uses_site_display_name_and_sanitizes_win
     assert ".xlsx.xlsx" not in build_trackside_ap_business_export_name("测试.xlsx", created_at)
     with pytest.raises(ValueError, match="缺少局点名称"):
         build_trackside_ap_business_export_name("", created_at)
+
+
+def test_trackside_business_export_waits_for_optical_update(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.ensure_site_dirs("demo")
+    SiteManager(paths).save_site_metadata("demo", {"display_name": "测试局点"})
+    tasks = TaskApplicationService(paths=paths, site_name="demo")
+    process = FakeLocalProcessAdapter(tasks)
+    export = FakeExportProcessAdapter(tasks)
+    service = RailTransitWebApplicationService(
+        paths,
+        tasks,
+        process_adapter=process,  # type: ignore[arg-type]
+        export_adapter=export,  # type: ignore[arg-type]
+    )
+
+    service.start_trackside_ap_update("demo")
+
+    with pytest.raises(RailTransitWebError) as error:
+        service.start_trackside_ap_business_export("demo")
+
+    assert error.value.code == "TRACKSIDE_AP_OPTICAL_UPDATE_RUNNING"
+    assert not any(
+        item.task_type == "web_export_trackside_ap_business"
+        for item in tasks.repository("demo").list(limit=100)
+    )
 
 
 def test_trackside_business_export_api_uses_owned_artifact_and_supports_cancel(

@@ -690,6 +690,18 @@ describe('TracksideApBusinessView mounted behavior', () => {
     exportWrapper.unmount()
   })
 
+  it('does not start an export while a trackside update is running', async () => {
+    taskApi.listTasks.mockResolvedValueOnce([
+      globalTask('update-running', 'RUNNING'),
+    ])
+    const wrapper = await mountView()
+
+    expect(button(wrapper, '导出表格').attributes('disabled')).toBeDefined()
+    expect(api.getTracksideApBusinessExportProposal).not.toHaveBeenCalled()
+    expect(api.startTracksideApBusinessExport).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('refreshes completed update tasks without resetting filters or page', async () => {
     api.listTracksideApBusiness.mockResolvedValueOnce(page(rows, 1, ['01-小洋江站', '02-云龙火车站']))
     api.startTracksideApUpdate.mockResolvedValueOnce(task('update-running', 'RUNNING', 'trackside_ap_optical_update'))
