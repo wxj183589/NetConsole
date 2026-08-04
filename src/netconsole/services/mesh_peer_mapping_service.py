@@ -103,12 +103,21 @@ class MeshPeerMappingService:
         service = self._get_query_service()
         if service is not None:
             service.ensure_index("mesh_peer_mapping_refresh")
-        rows = self.build_rows(repo.distinct_peer_macs())
-        self.last_remap_summary = repo.replace_peer_identity_mappings(rows)
         revision = self.current_identity_revision()
+        rows = self.build_rows(repo.distinct_peer_macs())
+        self.last_remap_summary = repo.replace_peer_identity_mappings(
+            rows,
+            identity_index_revision=revision,
+        )
+        remap_verified = (
+            self.last_remap_summary.get("validation_status") == "passed"
+            and bool(self.last_remap_summary.get("facts_unchanged"))
+        )
         self.last_remap_summary.update(
             identity_index_revision=revision,
-            identity_mapping_status="ready" if revision > 0 else "unavailable",
+            identity_mapping_status=(
+                "ready" if revision > 0 and remap_verified else "unavailable"
+            ),
             identity_mapped_at=datetime.now().isoformat(timespec="seconds"),
         )
         return int(self.last_remap_summary.get("mapping_count") or len(rows))

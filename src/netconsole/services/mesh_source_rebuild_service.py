@@ -68,6 +68,10 @@ class MeshSourceRebuildService:
             mapping_service = MeshPeerMappingService(site_id, self.paths)
             mapping_service.refresh_repository(detail)
             remap = mapping_service.last_remap_summary
+            _require_verified_identity_remap(
+                remap,
+                expected_link_count=int(before.get("link_record_count") or 0),
+            )
             detail.update_identity_mapping_metadata(
                 identity_index_revision=int(remap.get("identity_index_revision") or 0),
                 identity_mapped_at=str(remap.get("identity_mapped_at") or ""),
@@ -83,8 +87,9 @@ class MeshSourceRebuildService:
             after = detail.summary()
             if int(after.get("link_record_count") or 0) != int(before.get("link_record_count") or 0):
                 raise RuntimeError("MESH 身份重映射改变了原始链路记录数量")
+            remap_message = _identity_remap_completion_message(remap)
             if progress:
-                progress("mesh_source_done", 1, 1, "当前 MESH 来源身份重映射完成")
+                progress("mesh_source_done", 1, 1, remap_message)
             return {
                 "archive_sha256": str(source.get("archive_sha256") or ""),
                 "raw_archived_count": 0,
@@ -94,6 +99,7 @@ class MeshSourceRebuildService:
                 "created_session_ids": [session_id],
                 "recovery_source": "identity_only_remap",
                 "identity_remap": dict(mapping_service.last_remap_summary),
+                "message": remap_message,
             }
 
         location = self.locator.locate(site_id, profile, source)
@@ -160,6 +166,10 @@ class MeshSourceRebuildService:
         mapping_service = MeshPeerMappingService(site_id, self.paths)
         mapping_service.refresh_repository(detail)
         remap = mapping_service.last_remap_summary
+        _require_verified_identity_remap(
+            remap,
+            expected_link_count=len(records),
+        )
         detail.update_identity_mapping_metadata(
             identity_index_revision=int(remap.get("identity_index_revision") or 0),
             identity_mapped_at=str(remap.get("identity_mapped_at") or ""),
@@ -240,6 +250,8 @@ class MeshSourceRebuildService:
             "issue_count": len(issues),
             "created_session_ids": [session_id],
             "recovery_source": "bundle_archive" if recovered else location.recovery_source,
+            "identity_remap": dict(remap),
+            "message": _identity_remap_completion_message(remap),
         }
 
     def _source(self, site_id: str, session_id: str):
@@ -367,6 +379,32 @@ class MeshSourceRebuildService:
     def _require_inside(candidate: Path, root: Path) -> None:
         if candidate != root and not candidate.is_relative_to(root):
             raise ValueError("MESH 来源路径越过允许目录")
+
+
+def _require_verified_identity_remap(
+    remap: Mapping[str, object],
+    *,
+    expected_link_count: int,
+) -> None:
+    if remap.get("validation_status") != "passed" or not remap.get(
+        "facts_unchanged"
+    ):
+        raise RuntimeError("MESH 身份重映射数据库回读验证未通过")
+    if int(remap.get("link_row_count") or 0) != int(expected_link_count):
+        raise RuntimeError("MESH 身份重映射改变了原始链路记录数量")
+    if int(remap.get("updated_link_row_count") or 0) != int(
+        remap.get("covered_link_row_count") or 0
+    ):
+        raise RuntimeError("MESH 身份重映射投影状态与映射摘要不一致")
+
+
+def _identity_remap_completion_message(remap: Mapping[str, object]) -> str:
+    return (
+        "AP 身份重映射完成："
+        f"{int(remap.get('matched_mapping_count') or 0)} 个 Peer 已映射，"
+        f"{int(remap.get('updated_link_row_count') or 0)} 条链路身份投影已更新，"
+        f"Identity revision {int(remap.get('identity_index_revision') or 0)}。"
+    )
 
 
 __all__ = ["MeshSourceRebuildCancelled", "MeshSourceRebuildService"]
