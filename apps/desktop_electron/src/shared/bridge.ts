@@ -51,6 +51,7 @@ export interface ChooseSavePathResult {
 export interface NativeActionResult {
   success: boolean
   error?: string
+  availability?: 'AVAILABLE' | 'MISSING' | 'INVALID'
 }
 
 export type ExternalToolStatus = 'AVAILABLE' | 'MISSING' | 'INVALID' | 'WORKDIR_MISSING'

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { createPinia } from 'pinia'
-import { flushPromises, shallowMount } from '@vue/test-utils'
+import { flushPromises, mount, shallowMount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useTaskStore } from '../../stores/tasks'
@@ -14,6 +14,9 @@ import jobCenterSource from '../../views/job-center/JobCenterView.vue?raw'
 const mocks = vi.hoisted(() => ({
   getTask: vi.fn(),
   getTaskLogs: vi.fn(),
+  downloadBackendResource: vi.fn(),
+  openPath: vi.fn(),
+  showItemInFolder: vi.fn(),
 }))
 
 vi.mock('../../api/tasks', () => ({
@@ -28,11 +31,11 @@ vi.mock('../../api/tasks', () => ({
 }))
 
 vi.mock('../../platform/runtime', () => ({
-  downloadBackendResource: vi.fn(),
+  downloadBackendResource: mocks.downloadBackendResource,
   resolveWebSocketUrl: (path: string) => `ws://127.0.0.1${path}`,
   getPlatformAdapter: () => ({
-    openPath: vi.fn(),
-    showItemInFolder: vi.fn(),
+    openPath: mocks.openPath,
+    showItemInFolder: mocks.showItemInFolder,
   }),
 }))
 
@@ -129,6 +132,82 @@ describe('TaskDetailDrawer', () => {
     expect(store.selected).toBeNull()
     expect(store.logs).toEqual([])
     expect(store.logsExpanded).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('keeps COMPLETED visible while hiding Artifact actions for a missing output', async () => {
+    mocks.getTask.mockResolvedValue({
+      ...task('task-missing'),
+      status: 'COMPLETED',
+      error_code: '',
+      error_summary: '',
+      message: '导出完成',
+      artifact_available: false,
+      artifact_availability: 'MISSING',
+      missing_reason: '输出文件已不存在，可能已在资源管理器中删除。',
+      downloadable: false,
+      artifact_download: null,
+    })
+    const pinia = createPinia()
+    const wrapper = mount(TaskDetailDrawer, {
+      props: { modelValue: true, taskId: 'task-missing' },
+      global: { plugins: [pinia] },
+    })
+
+    await flushPromises()
+    expect(useTaskStore(pinia).selected?.status).toBe('COMPLETED')
+    expect(document.querySelector('[data-testid="artifact-unavailable-alert"]')).not.toBeNull()
+    expect(document.querySelector('[data-testid="artifact-download-button"]')).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('refreshes Artifact availability when a download races with external deletion', async () => {
+    const available = {
+      ...task('task-race'),
+      status: 'COMPLETED' as const,
+      error_code: '',
+      error_summary: '',
+      artifact_available: true,
+      artifact_availability: 'AVAILABLE' as const,
+      downloadable: true,
+      artifact_download: {
+        artifact_id: 'artifact-1',
+        display_name: '链路明细.xlsx',
+        size_bytes: 10,
+        media_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        api_path: '/api/job-center/artifacts/artifact-1',
+        query: {},
+      },
+    }
+    mocks.getTask
+      .mockResolvedValueOnce(available)
+      .mockResolvedValueOnce({
+        ...available,
+        artifact_available: false,
+        artifact_availability: 'MISSING',
+        missing_reason: '输出文件已不存在，可能已在资源管理器中删除。',
+        downloadable: false,
+        artifact_download: null,
+      })
+    mocks.downloadBackendResource.mockResolvedValue({
+      status: 'failed',
+      errorCode: 'ARTIFACT_NOT_FOUND',
+      error: '导出文件已失效，请重新导出。',
+    })
+    const wrapper = mount(TaskDetailDrawer, {
+      props: { modelValue: true, taskId: 'task-race' },
+      global: { plugins: [createPinia()] },
+    })
+
+    await flushPromises()
+    const downloadButton = document.querySelector<HTMLElement>('[data-testid="artifact-download-button"]')
+    expect(downloadButton).not.toBeNull()
+    downloadButton?.click()
+    await flushPromises()
+
+    expect(mocks.downloadBackendResource).toHaveBeenCalledOnce()
+    expect(mocks.getTask).toHaveBeenCalledTimes(2)
+    expect(document.querySelector('[data-testid="artifact-unavailable-alert"]')).not.toBeNull()
     wrapper.unmount()
   })
 })

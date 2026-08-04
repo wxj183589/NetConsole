@@ -11,6 +11,9 @@ from uuid import UUID, uuid4
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
+from netconsole.services.job_center.artifact_reconciliation import (
+    ArtifactReconciliationService,
+)
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 
 
@@ -43,6 +46,7 @@ class WebArtifactStore:
     def __init__(self, paths: PathResolver, task_service: TaskApplicationService) -> None:
         self.paths = paths
         self.task_service = task_service
+        self.reconciliation = ArtifactReconciliationService(paths)
 
     def reserve(
         self,
@@ -340,32 +344,32 @@ class WebArtifactStore:
             return None
         try:
             task = self._trusted_task(data)
-            if data.get("completed") is not True:
-                path = self._validated_output(data)
-                if task.status is TaskState.COMPLETED and (
-                    not path.is_file() or path.is_symlink()
-                ):
-                    return {
-                        **data,
-                        "artifact_state": "MISSING",
-                        "artifact_message": "导出文件已不存在",
-                    }
-                return {**data, "artifact_state": "PENDING", "artifact_message": "导出文件尚未完成"}
-            path = self._validated_output(data)
-            if not path.is_file() or path.is_symlink():
-                return {
-                    **data,
-                    "artifact_state": "MISSING",
-                    "artifact_message": "导出文件已不存在",
-                }
-            self._validate_completed(data, task_result=task.result)
+            state = self.reconciliation.reconcile_managed_artifact(
+                site_id,
+                task_id=task_id,
+                task_type=task.task_type,
+                owner=task.owner,
+                result=task.result,
+                downloadable=True,
+                verify_digest=True,
+                manifest=data,
+            )
         except (OSError, TypeError, ValueError, WebArtifactError) as exc:
             return {
                 **data,
                 "artifact_state": "INVALID",
                 "artifact_message": str(exc) or "导出 Artifact 校验失败",
             }
-        return {**data, "artifact_state": "AVAILABLE", "artifact_message": ""}
+        return {
+            **data,
+            "artifact_state": state.artifact_availability.value,
+            "artifact_message": (
+                "导出文件已不存在"
+                if state.artifact_availability.value == "MISSING"
+                else state.missing_reason or ""
+            ),
+            "available": state.artifact_available,
+        }
 
     def reconcile_completed_task(
         self,
@@ -406,35 +410,26 @@ class WebArtifactStore:
         source_task_types: dict[str, str],
         succeeded: bool,
     ) -> bool:
-        current = self.task_metadata(
-            site_id,
-            task_id,
-            owner=owner,
-            source_task_types=source_task_types,
-        )
-        if succeeded and current is not None and current.get("completed") is True:
-            return False
-        data = self._find_task_manifest(
-            site_id,
-            task_id,
-            owner=owner,
-            source_task_types=source_task_types,
-        )
-        if data is None:
-            return False
+        _ = succeeded
         try:
-            reservation = self._reservation(data)
-            if succeeded:
-                self.complete(reservation)
-            else:
-                self.fail(reservation, "报告所属任务未成功完成")
-        except (OSError, WebArtifactError):
-            try:
-                reservation = self._reservation(data)
-            except WebArtifactError:
-                return False
-            self.fail(reservation, "报告恢复校验失败")
-        return True
+            snapshot = self.task_service.repository(self._site(site_id)).get(task_id)
+        except WebArtifactError:
+            return False
+        if snapshot is None or snapshot.status not in TERMINAL_TASK_STATES:
+            return False
+        if snapshot.status is TaskState.COMPLETED:
+            return self.reconcile_completed_task(
+                site_id,
+                task_id,
+                owner=owner,
+                source_task_types=source_task_types,
+            )
+        return self.discard_incomplete_terminal_task(
+            site_id,
+            task_id,
+            owner=owner,
+            source_task_types=source_task_types,
+        )
 
     def open(
         self,
@@ -638,29 +633,9 @@ class WebArtifactStore:
         return resolved
 
     def _source_root(self, site_id: str, source: str) -> Path:
-        roots = {
-            "ac_extension_export": self.paths.trackside_ap_outputs_dir(site_id),
-            "ac_omnipeek_export": self.paths.trackside_ap_outputs_dir(site_id),
-            "ac_fit_ap_resource_export": self.paths.trackside_ap_outputs_dir(site_id),
-            "command_reference_export": self.paths.site_files_dir(site_id) / "command_reference",
-            "device_csv_export": self.paths.site_files_dir(site_id) / "web_artifacts",
-            "online_mr_report": self.paths.online_mr_root(site_id),
-            "mesh_analysis_report": self.paths.site_mesh_root(site_id),
-            "mesh_link_detail_export": self.paths.site_mesh_root(site_id),
-            "switch_vendor_sample": self.paths.trackside_ap_outputs_dir(site_id)
-            / "vendor_samples",
-            "trackside_ap_business": self.paths.trackside_ap_outputs_dir(site_id),
-            "trackside_ap_base": self.paths.trackside_ap_outputs_dir(site_id),
-            "trackside_ap_rename_commands": self.paths.trackside_ap_outputs_dir(site_id),
-            "trackside_ap_plan": self.paths.trackside_ap_outputs_dir(site_id),
-            "system_logs_current": self.paths.site_files_dir(site_id) / "system_maintenance" / "outputs",
-            "system_logs_all": self.paths.site_files_dir(site_id) / "system_maintenance" / "outputs",
-            "system_open_source_txt": self.paths.site_files_dir(site_id) / "system_maintenance" / "outputs",
-            "system_open_source_xlsx": self.paths.site_files_dir(site_id) / "system_maintenance" / "outputs",
-        }
         try:
-            return roots[source]
-        except KeyError as exc:
+            return self.reconciliation.source_root(site_id, source)
+        except ValueError as exc:
             raise WebArtifactError("报告来源不受支持") from exc
 
     def _manifest_root(self, site_id: str) -> Path:

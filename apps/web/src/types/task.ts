@@ -80,6 +80,12 @@ export interface TaskItem {
     query: Record<string, string>
   } | null
   artifact_reason?: string
+  artifact_available?: boolean
+  artifact_availability?: 'AVAILABLE' | 'MISSING' | 'INVALID' | 'NOT_APPLICABLE'
+  missing_reason?: string | null
+  downloadable?: boolean
+  openable?: boolean
+  parent_directory_openable?: boolean
   details?: Record<string, unknown>
 }
 

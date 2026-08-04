@@ -49,6 +49,10 @@ function createHarness(overrides: {
   windowForEvent?: (event: { sender: unknown }) => unknown
   fetchImpl?: typeof fetch
   externalToolService?: ExternalToolServiceLike
+  artifactLstat?: (path: string) => Promise<{
+    isFile(): boolean
+    isSymbolicLink(): boolean
+  }>
 } = {}) {
   const ipcMain = new FakeIpcMain()
   const sender = {}
@@ -95,6 +99,10 @@ function createHarness(overrides: {
     setSiteSwitching: overrides.setSiteSwitching,
     fetchImpl: overrides.fetchImpl,
     externalToolService: overrides.externalToolService,
+    artifactLstat: overrides.artifactLstat ?? (async () => ({
+      isFile: () => true,
+      isSymbolicLink: () => false,
+    })),
   })
   return { ipcMain, sender, selectedFile, selectedDirectory, savedFile, shell, pathRegistry, dialog }
 }
@@ -498,6 +506,44 @@ describe('desktop IPC', () => {
     now += 10
     expect(() => registry.requireCapability(isolated, 'selected-file', 'open')).toThrow('已过期')
     expect(() => registry.requireCapability('00000000-0000-4000-8000-000000000000', 'artifact-download', 'open')).toThrow('已失效')
+  })
+
+  it('returns structured unavailable results when an Artifact disappears after capability grant', async () => {
+    const missing = Object.assign(new Error('missing'), { code: 'ENOENT' })
+    const artifactLstat = vi.fn(async () => { throw missing })
+    const { ipcMain, sender, selectedFile, pathRegistry, shell } = createHarness({ artifactLstat })
+    const capability = pathRegistry.grantCapability(selectedFile)!
+
+    await expect(ipcMain.handlers.get(DESKTOP_IPC.openPath)!({ sender }, capability)).resolves.toEqual({
+      success: false,
+      availability: 'MISSING',
+      error: '已保存的文件不存在，请重新下载后再试',
+    })
+    await expect(ipcMain.handlers.get(DESKTOP_IPC.showItemInFolder)!({ sender }, capability)).resolves.toEqual({
+      success: false,
+      availability: 'MISSING',
+      error: '已保存的文件不存在，请重新下载后再试',
+    })
+    expect(shell.openPath).not.toHaveBeenCalled()
+    expect(shell.showItemInFolder).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['directory', false, false],
+    ['symbolic link', true, true],
+  ])('rejects a replaced Artifact %s before invoking the shell', async (_kind, isFile, isSymbolicLink) => {
+    const artifactLstat = vi.fn(async () => ({
+      isFile: () => isFile,
+      isSymbolicLink: () => isSymbolicLink,
+    }))
+    const { ipcMain, sender, selectedFile, pathRegistry, shell } = createHarness({ artifactLstat })
+    const capability = pathRegistry.grantCapability(selectedFile)!
+
+    await expect(ipcMain.handlers.get(DESKTOP_IPC.openPath)!({ sender }, capability)).resolves.toMatchObject({
+      success: false,
+      availability: 'INVALID',
+    })
+    expect(shell.openPath).not.toHaveBeenCalled()
   })
 
   it('validates dialog DTOs at the main-process boundary', async () => {

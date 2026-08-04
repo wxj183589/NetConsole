@@ -47,6 +47,10 @@ from netconsole.services.network_tools.job_handlers import (
     NETWORK_TOOL_OWNER,
 )
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text
+from netconsole.services.job_center.artifact_reconciliation import (
+    ArtifactReconciliationService,
+    ArtifactTaskBinding,
+)
 from netconsole.services.traffic.application_service import TRAFFIC_CONTROLLER_TASK_TYPES
 from netconsole.services.job_center.handlers.site_jobs import (
     SITE_STORAGE_NONCANCELLABLE_TASK_TYPES,
@@ -103,6 +107,7 @@ class JobCenterQueryService:
     ) -> None:
         self.paths = paths
         self._config_cancel_capability = config_cancel_capability
+        self._artifact_reconciliation = ArtifactReconciliationService(paths)
 
     def current_site_id(self, default: str = "demo") -> str:
         try:
@@ -384,6 +389,20 @@ class JobCenterQueryService:
             status,
             artifact_result,
         )
+        artifact = self._artifact_reconciliation.reconcile_task(
+            site_name,
+            ArtifactTaskBinding(
+                task_id=task_id,
+                task_type=task_type,
+                owner=owner,
+                status=status,
+                result=artifact_result,
+                downloadable=artifact_download is not None,
+            ),
+            verify_digest=include_result,
+        )
+        if not artifact.downloadable:
+            artifact_download = None
         text_integrity, text_integrity_reason = self._text_integrity(row)
         business = project_business_result(
             business_result,
@@ -481,7 +500,18 @@ class JobCenterQueryService:
             cancellable=cancellable,
             cancel_reason=cancel_reason,
             artifact_download=artifact_download,
-            artifact_reason="" if artifact_download else "当前任务 owner 未提供可下载 Artifact",
+            artifact_reason=(
+                ""
+                if artifact_download
+                else artifact.missing_reason
+                or "当前任务 owner 未提供可下载 Artifact"
+            ),
+            artifact_available=artifact.artifact_available,
+            artifact_availability=artifact.artifact_availability.value,
+            missing_reason=artifact.missing_reason,
+            downloadable=artifact.downloadable,
+            openable=artifact.openable,
+            parent_directory_openable=artifact.parent_directory_openable,
             details=self._task_details(task_type, row, result) if include_result else {},
         )
 

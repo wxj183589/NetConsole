@@ -329,6 +329,16 @@ function taskCanDismiss(task: TaskItem): boolean {
   return TERMINAL_STATUSES.has(task.status) && !taskNeedsAcknowledgement(task)
 }
 
+function taskSummaryMessage(task: TaskItem): string {
+  if (task.artifact_availability === 'MISSING') {
+    return task.missing_reason || '输出文件已不存在，可能已在资源管理器中删除。'
+  }
+  if (task.artifact_availability === 'INVALID') {
+    return task.missing_reason || '输出文件校验失败，当前不可下载。'
+  }
+  return task.error_summary || task.message || task.phase || '等待任务状态更新'
+}
+
 function handleTaskMenu(command: string, task: TaskItem): void {
   if (command === 'detail') openTaskDetail(task.id)
   else if (command === 'acknowledge') void acknowledgeTask(task)
@@ -539,7 +549,7 @@ function terminalTitle(task: TaskItem, kind: 'success' | 'warning' | 'failure'):
             :show-text="true"
           />
           <p :class="{ error: task.status === 'FAILED' || task.status === 'ABORTED' }">
-            {{ task.error_summary || task.message || task.phase || '等待任务状态更新' }}
+            {{ taskSummaryMessage(task) }}
           </p>
           <div class="task-item-actions">
             <el-button
