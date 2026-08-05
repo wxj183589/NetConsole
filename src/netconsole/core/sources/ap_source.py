@@ -6,7 +6,16 @@ rx_power / port_status.
 """
 from __future__ import annotations
 
+import math
+import re
+
+from netconsole.core.ap_optical_capability import (
+    OPTICAL_NOT_APPLICABLE_STATUS,
+    is_ap_optical_applicable,
+)
 from netconsole.core.optical_severity_engine import compute_optical_severity
+
+AP_BUSINESS_RX_MIN_DBM = -13.90
 
 
 def compute_ap_status(
@@ -20,7 +29,10 @@ def compute_ap_status(
     if fit_ap_row is None:
         return "unknown"
 
-    return compute_optical_severity(
+    if not is_ap_optical_applicable(fit_ap_row.get("model")):
+        return OPTICAL_NOT_APPLICABLE_STATUS
+
+    severity_result = compute_optical_severity(
         {
             "ap_rx_power": fit_ap_row.get("rx_power"),
             "ap_port_status": fit_ap_row.get("ap_port_status"),
@@ -35,4 +47,58 @@ def compute_ap_status(
             "warning_low": fit_ap_row.get("rx_low_warning"),
             "device_type": "ap",
         }
-    ).severity
+    )
+    result = severity_result.severity
+    if result in {"no_module", "link_abnormal", "link_down"}:
+        return result
+    rx_power = _parse_rx_power(fit_ap_row.get("rx_power"))
+    if rx_power is not None and rx_power < AP_BUSINESS_RX_MIN_DBM:
+        return "abnormal"
+    reported_status = str(
+        fit_ap_row.get("optical_alarm_status")
+        or fit_ap_row.get("module_status")
+        or fit_ap_row.get("transceiver_status")
+        or ""
+    ).strip().casefold()
+    explicit_status = {
+        "no_light": "no_light",
+        "no light": "no_light",
+        "no-light": "no_light",
+        "无光": "no_light",
+        "link_abnormal": "link_abnormal",
+        "link abnormal": "link_abnormal",
+        "link-abnormal": "link_abnormal",
+        "链路异常": "link_abnormal",
+        "link_down": "link_down",
+        "link down": "link_down",
+        "link-down": "link_down",
+        "链路断开": "link_down",
+        "critical": "abnormal",
+        "严重告警": "abnormal",
+        "alarm": "alarm",
+        "warning": "warning",
+        "abnormal": "abnormal",
+        "功率异常": "abnormal",
+    }.get(reported_status)
+    if explicit_status:
+        return explicit_status
+    if rx_power is not None:
+        return "normal"
+    return (
+        "no_light"
+        if result == "no_light" and severity_result.rx_power is not None
+        else "unknown"
+    )
+
+
+def _parse_rx_power(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    match = re.search(r"[-+]?\d+(?:\.\d+)?", str(value))
+    if not match:
+        return None
+    try:
+        result = float(match.group(0))
+    except ValueError:
+        return None
+    return result if math.isfinite(result) else None

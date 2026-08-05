@@ -48,7 +48,7 @@ revision 校验 + SQLite BEGIN IMMEDIATE 单事务
 - `center_mileage_text` 保留业务原文，`center_mileage_m` 保存安全解析结果；支持 `ZDK12+345`、`YDK12+345`、`K12+345`、`12+345` 和纯米数。本字段用于后续站点定位、区间设计与方向分析，本阶段不作为 MR 方向判断硬条件，也不冒充 AP 实际覆盖里程。
 - `ap_extension_points` 可能包含站点标题、设计起点等定位辅助行。Web 轨旁 AP 列表只纳入具有 `ap_name`、有效 MAC 或非空且非 `-` 的 `ap_point_code` 的记录；站点和区间派生仍读取全部定位行。
 - AP 正式名称与 AP 点位编号分字段保留。AP 名称优先显示 AC 当前真实 FIT-AP 名称，未匹配时才回退基础资料名称；点位编号不写回 AP 名称。
-- 轨旁 AP 子页中的 FIT-AP 运行态是业务投影：从 AC/FIT-AP 资源读取最新原始 AP Rx，严格小于 `-13.90 dBm` 为业务异常，等于或高于门限为正常，空值、无效值和过期值为未知。页面分别显示 AP Rx、设备模块状态和 FIT-AP 业务光衰；设备模块状态仍来自 AC 按模块自身门限得出的结果，固定业务门限不写回 AC 资源或基础资料。
+- 轨旁 AP 子页中的 FIT-AP 运行态是业务投影：从 AC/FIT-AP 资源读取最新原始 AP Rx，严格小于 `-13.90 dBm` 显示“光衰大”，等于或高于门限为正常，空值、无效值和过期值为“光诊断未采集”或未知。型号标准化后等于 `WA6522` 时显示“不适用”，不参与光衰异常数量、筛选或导出。固定业务门限和型号能力不会写回 AC 资源、历史或基础资料。
 - `AP厂商`/`ap_vendor` 是轨旁 AP 的正式可选字段，支持模板、导入预览、手工维护、DTO 和当前资料导出。只有明确填写 `H3C` 且物理 MAC 合法、末位为 `0` 时，AP Identity 才生成 H3C Radio 1/2 完整 alias；空值和其他厂商不推导。
 - 列车和车载 MR 来自 `devices` 与 `device_groups`；只读取显式安全字段，不读取账号、密码、Community、Token 或隧道凭据。
 - 车载 MR 的 `mr_position_code`、`physical_end` 和 `car_number` 是独立的固定安装资料：`MR-CT = CT / 1车厢端 / 1`，`MR-CW = CW / 6车厢端 / 6`。兼容字段 `role` 仍返回原名称解析结果，但不再表示运行头尾。当前运行角色只能由“实际运行方向 + `increasing_direction_leading_end` + 物理安装位置”计算为 `leading_end / trailing_end / turnback_transition / unknown`；RSSI 信号模型只做一致性验证，不能静默交换 CT/CW。

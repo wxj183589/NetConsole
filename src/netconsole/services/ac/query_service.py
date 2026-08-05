@@ -11,6 +11,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from netconsole.core.database import Database
+from netconsole.core.ap_optical_capability import (
+    OPTICAL_NOT_APPLICABLE_REASON,
+    OPTICAL_NOT_APPLICABLE_STATUS,
+    is_ap_optical_applicable,
+)
 from netconsole.core.optical_severity_engine import (
     classify_optical_freshness,
     classify_optical_health,
@@ -850,10 +855,11 @@ class AcManagementQueryService:
             switch_interface=lldp.interface_name,
             lldp_status=lldp.match_status,
             optical_status=optical.optical_status,
+            optical_applicable=optical.optical_applicable,
             optical_severity=optical.optical_severity,
             optical_data_freshness=optical.data_freshness,
             optical_is_current_anomaly=optical.is_current_anomaly,
-            optical_rx_power=optical.rx_power or optical.switch_rx_power,
+            optical_rx_power=optical.rx_power,
             updated_at=self._latest_text(row.get("updated_at"), optical.updated_at, lldp.updated_at),
         )
 
@@ -899,6 +905,23 @@ class AcManagementQueryService:
         optical_by_ap: dict[tuple[str, str], dict[str, object | None]],
         context: dict[str, Any],
     ) -> AcOpticalDTO:
+        if not is_ap_optical_applicable(resource.get("model")):
+            offline = is_fit_ap_offline(resource)
+            return AcOpticalDTO(
+                optical_applicable=False,
+                optical_status=OPTICAL_NOT_APPLICABLE_STATUS,
+                optical_severity=OPTICAL_NOT_APPLICABLE_STATUS,
+                raw_status=OPTICAL_NOT_APPLICABLE_STATUS,
+                ap_rx_status=OPTICAL_NOT_APPLICABLE_STATUS,
+                switch_rx_status=OPTICAL_NOT_APPLICABLE_STATUS,
+                tx_power_status=OPTICAL_NOT_APPLICABLE_STATUS,
+                ap_online_status=(
+                    "offline" if offline else self._online_status(resource)
+                ),
+                data_freshness=OPTICAL_NOT_APPLICABLE_STATUS,
+                anomaly_reason=OPTICAL_NOT_APPLICABLE_REASON,
+                threshold_status="不适用",
+            )
         row = self._indexed_row(resource, optical_by_ap)
         if row is None:
             return AcOpticalDTO(anomaly_reason="未采集光衰数据")
@@ -919,24 +942,65 @@ class AcManagementQueryService:
                 updated_at=str(row.get("updated_at") or row.get("collected_at") or ""),
             )
         if module:
-            switch_status = compute_switch_status(
-                switch_rx_power=module.get("rx_power"),
-                switch_port_status=port.get("port_status") or port.get("link_status"),
-                alarm_low=module.get("rx_low_alarm"),
-                alarm_high=module.get("rx_high_alarm"),
-                warning_low=module.get("rx_low_warning"),
-                module_present=module.get("module_present") if "module_present" in module else module.get("has_module"),
-                no_module=module.get("no_module"),
-                module_status=module.get("module_status") or module.get("status"),
+            module_status = module.get("module_status") or module.get("status")
+            module_rx = module.get("rx_power")
+            explicit_module_state = str(module_status or "").strip().casefold()
+            has_switch_evidence = bool(
+                re.search(r"[-+]?\d+(?:\.\d+)?", str(module_rx or ""))
+                or str(port.get("port_status") or port.get("link_status") or "")
+                .strip()
+                .casefold()
+                == "down"
+                or module.get("module_present") is False
+                or module.get("has_module") is False
+                or module.get("no_module")
+                or explicit_module_state
+                in {
+                    "no_module",
+                    "no module",
+                    "no_light",
+                    "no light",
+                    "link_down",
+                    "link down",
+                    "link_abnormal",
+                    "link abnormal",
+                    "alarm",
+                    "abnormal",
+                    "warning",
+                }
+            )
+            switch_status = (
+                compute_switch_status(
+                    switch_rx_power=module_rx,
+                    switch_port_status=port.get("port_status")
+                    or port.get("link_status"),
+                    alarm_low=module.get("rx_low_alarm"),
+                    alarm_high=module.get("rx_high_alarm"),
+                    warning_low=module.get("rx_low_warning"),
+                    module_present=(
+                        module.get("module_present")
+                        if "module_present" in module
+                        else module.get("has_module")
+                    ),
+                    no_module=module.get("no_module"),
+                    module_status=module_status,
+                )
+                if has_switch_evidence
+                else "unknown"
             )
             switch_rx = str(module.get("rx_power") or "")
-        else:
+        elif row.get("neighbor_rx_power") not in (None, ""):
             switch_status = compute_switch_status(switch_rx_power=row.get("neighbor_rx_power"))
             switch_rx = str(row.get("neighbor_rx_power") or "")
+        else:
+            switch_status = "unknown"
+            switch_rx = ""
         ap_status = compute_ap_status(row)
         raw_status = worse_optical_severity(switch_status, ap_status)
         offline = is_fit_ap_offline(resource)
         status = classify_optical_health(raw_status)
+        if ap_status == "abnormal":
+            status = "critical"
         freshness = self._optical_freshness(row, module, raw_status, ap_status, switch_status)
         is_current_anomaly = status in {"warning", "critical"} and freshness == "fresh"
         label = display_optical_status(raw_status)

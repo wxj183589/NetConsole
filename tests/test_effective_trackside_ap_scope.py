@@ -81,7 +81,8 @@ def _resolve(
             str(station.get("station_name") or ""),
             str(metadata.get("canonical_station_name") or ""),
         ):
-            station_ids_by_name.setdefault(name, []).append(station_id)
+            if station_id not in station_ids_by_name.setdefault(name, []):
+                station_ids_by_name[name].append(station_id)
     for row in [*plans, *references]:
         if row.get("station_id"):
             continue
@@ -264,13 +265,11 @@ def test_missing_plan_with_online_ap_marks_total_anomalous() -> None:
         ],
     )
 
-    row = scope.station_statistics()[0]
-    assert row["planning_missing"] is True
-    assert row["count_anomaly"] is True
-    assert row["online_rate"] is None
     overview = scope.overview_export_rows()
-    assert overview[0]["total"] is None
-    assert overview[-1]["online_rate"] == "—"
+    assert scope.station_statistics() == []
+    assert overview == [overview[-1]]
+    assert overview[-1]["total"] == 0
+    assert overview[-1]["online"] == 0
 
 
 def test_scope_excludes_non_service_cross_project_and_ambiguous_station_rows() -> None:
@@ -337,10 +336,10 @@ def test_scope_excludes_non_service_cross_project_and_ambiguous_station_rows() -
     )
 
     rows = scope.station_statistics()
-    assert len(rows) == 3
+    assert len(rows) == 1
     by_name = {row["station_name"]: row for row in rows}
     assert by_name["18-仁和南站"]["planned_ap_count"] == 0
-    assert by_name["18-仁和南站"]["actual_online_count"] == 1
+    assert by_name["18-仁和南站"]["actual_online_count"] == 0
     assert by_name["18-仁和南站"]["online_rate"] is None
     assert by_name["18-仁和南站"]["status"] == "unplanned_online"
     reasons = {item.reason for item in scope.excluded_items}
@@ -383,7 +382,7 @@ def test_over_planned_rate_is_not_exported_as_a_large_percentage() -> None:
     )
 
     row = scope.station_statistics()[0]
-    assert row["actual_online_count"] == 2
+    assert row["actual_online_count"] == 1
     assert row["online_rate"] is None
     assert row["status"] == "over_planned"
     overview = scope.overview_export_rows()
@@ -585,7 +584,7 @@ def test_unmatched_online_resources_are_diagnostics_not_exclusions() -> None:
     stations = [_station(1, "01站点", "node-1", 1)]
     scope = _resolve(
         stations=stations,
-        plans=[{"station_name": "站点", "ap_count": 2, "sequence_no": 1}],
+        plans=[{"station_id": stations[0]["station_id"], "station_name": "站点", "ap_count": 2, "sequence_no": 1}],
         references=[],
         resources=[
             _resource(
@@ -604,17 +603,95 @@ def test_unmatched_online_resources_are_diagnostics_not_exclusions() -> None:
     assert scope.excluded_device_count == 0
     assert len(scope.excluded_items) == 0
     overview = scope.overview_export_rows()
-    assert [row["site"] for row in overview] == [
-        "01-站点",
-        "基础资料待补充",
-        "合计",
-    ]
-    assert overview[-2]["online"] == 3
-    assert overview[-1]["online"] == 3
-    assert overview[-1]["offline"] == 0
+    assert [row["site"] for row in overview] == ["01-站点", "合计"]
+    assert overview[-1]["online"] == 0
+    assert overview[-1]["offline"] == 2
     assert "AC AP 资源 3 个" in str(overview[-1]["remark"])
     assert "已关联上线 0 个" in str(overview[-1]["remark"])
-    assert "基础资料待补充 3 个" in str(overview[-1]["remark"])
+    assert "3 个 AC 在线 AP" in str(overview[-1]["remark"])
+
+
+def test_business_totals_use_only_planned_station_scope_and_keep_ac_resource_totals() -> None:
+    station = _station(1, "01-站点", "node-1", 1)
+    station_id = str(station["station_id"])
+    matched_references = [
+        _reference(
+            index,
+            f"AP-{index:04d}",
+            "站点",
+            f"{index:012x}",
+            station_node_uid="node-1",
+            operation_status="in_service",
+            project_id="extension",
+            construction_phase_id="phase_2",
+        )
+        for index in range(1, 932)
+    ]
+    matched_resources = [
+        _resource(
+            index,
+            f"AP-{index:04d}",
+            f"{index:012x}",
+            ap_uuid=f"online-{index}",
+        )
+        for index in range(1, 932)
+    ]
+    unmatched_online = [
+        _resource(
+            None,
+            f"UNMATCHED-{index:02d}",
+            f"{10_000 + index:012x}",
+            ap_uuid=f"unmatched-{index}",
+        )
+        for index in range(46)
+    ]
+    offline = [
+        _resource(
+            None,
+            f"OFFLINE-{index:02d}",
+            f"{20_000 + index:012x}",
+            ap_uuid=f"offline-{index}",
+            state="Idle",
+        )
+        for index in range(15)
+    ]
+    duplicate = _resource(
+        1,
+        "AP-0001-DUPLICATE",
+        "00:00:00:00:00:01",
+        ap_uuid="duplicate-record",
+    )
+
+    scope = _resolve(
+        stations=[station],
+        plans=[
+            {
+                "station_id": station_id,
+                "station_name": "站点",
+                "ap_count": 945,
+                "sequence_no": 1,
+            }
+        ],
+        references=matched_references,
+        resources=[*matched_resources, *unmatched_online, *offline, duplicate],
+    )
+
+    station_row = scope.station_statistics()[0]
+    total = scope.overview_export_rows()[-1]
+    assert station_row["planned_ap_count"] == 945
+    assert station_row["actual_online_count"] == 931
+    assert station_row["offline_count"] == 14
+    assert station_row["online_rate"] == 98.5
+    assert total["total"] == 945
+    assert total["online"] == 931
+    assert total["offline"] == 14
+    assert total["online_rate"] == "98.5%"
+    assert [row["site"] for row in scope.overview_export_rows()] == ["01-站点", "合计"]
+    assert scope.fit_ap_resource_total_count == 992
+    assert scope.fit_ap_online_total_count == 977
+    assert scope.fit_ap_unmatched_online_count == 46
+    assert "46 个 AC 在线 AP" in str(total["remark"])
+    assert "未计入业务统计" in str(total["remark"])
 
 
 def test_conflicting_ac_lldp_reports_evidence_gap_without_name_or_ip_fallback() -> None:
@@ -625,9 +702,10 @@ def test_conflicting_ac_lldp_reports_evidence_gap_without_name_or_ip_fallback() 
         ap_uuid="ap-conflict",
     )
     resource["lldp_match_status"] = "conflict"
+    station = _station(1, "01站点", "node-1", 1)
     scope = _resolve(
-        stations=[_station(1, "01站点", "node-1", 1)],
-        plans=[{"station_name": "站点", "ap_count": 1, "sequence_no": 1}],
+        stations=[station],
+        plans=[{"station_id": station["station_id"], "station_name": "站点", "ap_count": 1, "sequence_no": 1}],
         references=[],
         resources=[resource],
     )
@@ -646,7 +724,7 @@ def test_unique_lldp_station_evidence_projects_runtime_ap_into_station() -> None
     station_id = str(station["station_id"])
     scope = _resolve(
         stations=[station],
-        plans=[{"station_name": "站点", "ap_count": 1, "sequence_no": 1}],
+        plans=[{"station_id": station_id, "station_name": "站点", "ap_count": 1, "sequence_no": 1}],
         references=[],
         resources=[
             _resource(
@@ -868,7 +946,7 @@ def test_runtime_resources_with_same_name_but_different_macs_are_not_deduped() -
     station = _station(1, "01站点", "node-1", 1)
     scope = _resolve(
         stations=[station],
-        plans=[{"station_name": "站点", "ap_count": 2, "sequence_no": 1}],
+        plans=[{"station_id": station["station_id"], "station_name": "站点", "ap_count": 2, "sequence_no": 1}],
         references=[
             _reference(
                 1,
@@ -907,7 +985,12 @@ def test_site_equivalent_fixture_keeps_switch_ports_and_unmatched_online_resourc
         for index in range(1, 16)
     ]
     plans = [
-        {"station_name": f"站点{index}", "sequence_no": index, "ap_count": 50}
+        {
+            "station_id": stations[index - 1]["station_id"],
+            "station_name": f"站点{index}",
+            "sequence_no": index,
+            "ap_count": 50,
+        }
         for index in range(1, 16)
     ]
     scope = _resolve(

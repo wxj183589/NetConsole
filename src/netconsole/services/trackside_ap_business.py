@@ -9,6 +9,11 @@ from time import perf_counter
 
 from netconsole.adapters.trackside_switch import resolve_trackside_switch_adapter
 from netconsole.core import app_logger
+from netconsole.core.ap_optical_capability import (
+    OPTICAL_NOT_APPLICABLE_REASON,
+    OPTICAL_NOT_APPLICABLE_STATUS,
+    is_ap_optical_applicable,
+)
 from netconsole.core.optical_severity_engine import (
     classify_optical_freshness,
     compute_optical_severity,
@@ -269,6 +274,7 @@ TRACKSIDE_OPTICAL_COLOR_RGB = {
     "no_module": "F3F4F6",
     "skipped": "F3F4F6",
     "offline": "E5E7EB",
+    "not_applicable": "F3F4F6",
 }
 TRACKSIDE_EXPORT_HEADER_FILL = "DBEAFE"
 TRACKSIDE_EXPORT_NORMAL_FILL = TRACKSIDE_OPTICAL_COLOR_RGB["normal"]
@@ -335,6 +341,20 @@ def normalize_trackside_ap_business_row(
         normalized.get("ap_device_optical_status")
         or normalized.get("ap_optical_status")
     )
+    optical_applicable = is_ap_optical_applicable(
+        normalized.get("model") or normalized.get("ap_model")
+    )
+    normalized["ap_optical_applicable"] = optical_applicable
+    if not optical_applicable:
+        normalized["ap_rx_power"] = None
+        normalized["ap_tx_power"] = None
+        normalized["ap_device_optical_status"] = OPTICAL_NOT_APPLICABLE_STATUS
+        normalized["ap_business_optical_status"] = OPTICAL_NOT_APPLICABLE_STATUS
+        normalized["ap_business_threshold_dbm"] = None
+        normalized["ap_business_reason"] = OPTICAL_NOT_APPLICABLE_REASON
+        normalized["ap_optical_status"] = OPTICAL_NOT_APPLICABLE_STATUS
+        normalized["optical_severity"] = OPTICAL_NOT_APPLICABLE_STATUS
+        return normalized
     if not business_projection:
         normalized["ap_optical_status"] = device_status
         normalized["optical_severity"] = _trackside_row_status_with_ap_status(
@@ -843,10 +863,19 @@ def build_trackside_ap_business_rows(
                 "ap_rx_power": fit_ap.get("rx_power"),
                 "ap_tx_power": fit_ap.get("tx_power"),
             }
+            ap_model = fit_ap.get("model")
+            ap_optical_applicable = is_ap_optical_applicable(ap_model)
+            if not ap_optical_applicable:
+                ap_candidate["ap_rx_power"] = None
+                ap_candidate["ap_tx_power"] = None
             ac_idle = _is_ac_idle(fit_ap)
             ac_offline = _is_ac_offline(fit_ap)
             ap_identity_known = any(ap_candidate.get(field) for field in ("ap_mac", "ap_name"))
-            ap_side_has_data = _has_ap_side_optical_data(fit_ap, ap_candidate) or ac_offline or (switch_offline and ap_identity_known)
+            ap_side_has_data = ap_optical_applicable and (
+                _has_ap_side_optical_data(fit_ap, ap_candidate)
+                or ac_offline
+                or (switch_offline and ap_identity_known)
+            )
             ap_status = ""
             offline_reason = ""
             status_reason = ""
@@ -943,6 +972,8 @@ def build_trackside_ap_business_rows(
                     "ac_device_uuid": fit_ap.get("ac_device_uuid"),
                     "ap_uuid": fit_ap.get("ap_uuid") or (historical_lldp or {}).get("ap_uuid"),
                     "serial_number": fit_ap.get("serial_number") or fit_ap_resource_by_identity.get(ap_identity_key(fit_ap) or ("", ""), {}).get("serial_number"),
+                    "model": ap_model,
+                    "ap_optical_applicable": ap_optical_applicable,
                     "device_uuid": device_uuid,
                     "device_name": device.name,
                     "switch_vendor": device.device_vendor,
@@ -1924,6 +1955,8 @@ def _trackside_row_status_with_ap_status(
 
 
 def trackside_row_status(row: dict[str, object | None]) -> str:
+    if not is_ap_optical_applicable(row.get("model") or row.get("ap_model")):
+        return OPTICAL_NOT_APPLICABLE_STATUS
     ap_status = (
         str(
             row.get("ap_business_optical_status")
@@ -1949,6 +1982,8 @@ def is_trackside_optical_abnormal_status(status: object) -> bool:
 def has_ap_side_optical_data(row: dict[str, object | None]) -> bool:
     if not row:
         return False
+    if not is_ap_optical_applicable(row.get("model") or row.get("ap_model")):
+        return False
     if bool(row.get("is_ap_offline")):
         return True
     if "ap_side_has_data" in row:
@@ -1961,6 +1996,8 @@ def has_ap_side_optical_data(row: dict[str, object | None]) -> bool:
 
 
 def format_ap_side_alarm(row: dict[str, object | None], language: str = "zh") -> str:
+    if not is_ap_optical_applicable(row.get("model") or row.get("ap_model")):
+        return display_optical_status(OPTICAL_NOT_APPLICABLE_STATUS, language)
     status = str(
         row.get("ap_business_optical_status")
         or evaluate_ap_business_rx(
@@ -2824,7 +2861,7 @@ def ap_identity_filter(row: dict[str, object | None]) -> dict[str, str]:
 
 def _normal_abnormal_key(status: object) -> str:
     text = str(status or "").strip().casefold()
-    if not text or text in {"unknown", "not_collected", "skipped", "offline", "failed", "timeout", "no_module", "-"}:
+    if not text or text in {"unknown", "not_collected", "not_applicable", "skipped", "offline", "failed", "timeout", "no_module", "-"}:
         return ""
     if text == "normal":
         return "normal"
@@ -2833,7 +2870,7 @@ def _normal_abnormal_key(status: object) -> str:
 
 def _normal_abnormal_state(status: object) -> str:
     text = str(status or "").strip().casefold()
-    if not text or text in {"unknown", "not_collected", "skipped", "offline", "failed", "timeout", "no_module", "-"}:
+    if not text or text in {"unknown", "not_collected", "not_applicable", "skipped", "offline", "failed", "timeout", "no_module", "-"}:
         return ""
     if text == "normal":
         return "正常"
@@ -3124,6 +3161,8 @@ def _is_ap_offline_abnormal(row: dict[str, object | None]) -> bool:
 
 
 def _is_ap_side_current_abnormal(row: dict[str, object | None]) -> bool:
+    if not is_ap_optical_applicable(row.get("model") or row.get("ap_model")):
+        return False
     if not has_valid_ap_binding(row):
         return False
     status = evaluate_ap_business_rx(
@@ -3181,6 +3220,8 @@ def current_optical_abnormal_reason(row: dict[str, object | None]) -> dict[str, 
 
 
 def is_current_optical_abnormal_export_row(row: dict[str, object | None]) -> bool:
+    if not is_ap_optical_applicable(row.get("model") or row.get("ap_model")):
+        return False
     freshness = str(row.get("data_freshness") or "").strip().casefold()
     if freshness == "stale" or classify_optical_freshness(row.get("updated_at"), row.get("collected_at")) == "stale":
         return False
