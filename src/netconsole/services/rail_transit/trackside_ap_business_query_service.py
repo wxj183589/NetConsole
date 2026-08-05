@@ -267,6 +267,16 @@ class TracksideApBusinessQueryService:
             ap_name=str(row.get("ap_name") or ""),
             ap_rx_power=row.get("ap_rx_power"),
             ap_tx_power=row.get("ap_tx_power"),
+            ap_device_optical_status=str(
+                row.get("ap_device_optical_status") or ""
+            ),
+            ap_business_optical_status=str(
+                row.get("ap_business_optical_status") or "unknown"
+            ),
+            ap_business_threshold_dbm=float(
+                row.get("ap_business_threshold_dbm") or -13.90
+            ),
+            ap_business_reason=str(row.get("ap_business_reason") or ""),
             ap_optical_status=str(row.get("ap_optical_status") or ""),
             ap_match_source=str(row.get("ap_match_source") or ""),
             ap_match_confidence=int(row.get("ap_match_confidence") or 0),

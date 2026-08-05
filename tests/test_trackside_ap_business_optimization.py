@@ -348,16 +348,16 @@ def test_trackside_optical_change_ignores_same_abnormal_boundary_without_normal(
 
 
 def test_trackside_optical_change_reports_recovery_from_earlier_abnormal():
-    rows = [{"ap_uuid": "ap-1", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "ap_optical_status": "normal", "updated_at": "2026-01-04"}]
+    rows = [{"ap_uuid": "ap-1", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "ap_rx_power": "-10", "ap_optical_status": "normal", "updated_at": "2026-01-04"}]
     history = [
-        {"ap_uuid": "ap-1", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "optical_alarm_status": "alarm", "collected_at": "2026-01-01", "id": 1},
-        {"ap_uuid": "ap-1", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "optical_alarm_status": "normal", "collected_at": "2026-01-02", "id": 2},
-        {"ap_uuid": "ap-1", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "optical_alarm_status": "normal", "collected_at": "2026-01-03", "id": 3},
+        {"ap_uuid": "ap-1", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "rx_power": "-17.80", "optical_alarm_status": "alarm", "collected_at": "2026-01-01", "id": 1},
+        {"ap_uuid": "ap-1", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "rx_power": "-10", "optical_alarm_status": "normal", "collected_at": "2026-01-02", "id": 2},
+        {"ap_uuid": "ap-1", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "rx_power": "-10", "optical_alarm_status": "normal", "collected_at": "2026-01-03", "id": 3},
     ]
 
     enriched = enrich_trackside_export_rows(rows, ap_optical_history_rows=history)
 
-    assert enriched[0]["ap_optical_change"] == optical_change_text("alarm", "normal")
+    assert enriched[0]["ap_optical_change"] == optical_change_text("abnormal", "normal")
     assert enriched[0]["history_compared_at"] == "2026-01-01"
 
 

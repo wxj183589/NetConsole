@@ -13,7 +13,9 @@ export interface TracksideApBusinessRow {
   switch_interface_updated_at: string; switch_optical_updated_at: string
   switch_interface_data_status: 'current' | 'stale' | 'missing' | 'unknown'
   switch_optical_data_status: 'current' | 'stale' | 'missing' | 'unknown'
-  ap_uuid: string; ap_mac: string; ap_name: string; ap_rx_power: unknown; ap_tx_power: unknown; ap_optical_status: string
+  ap_uuid: string; ap_mac: string; ap_name: string; ap_rx_power: unknown; ap_tx_power: unknown
+  ap_device_optical_status?: string; ap_business_optical_status?: string; ap_business_threshold_dbm?: number; ap_business_reason?: string
+  ap_optical_status: string
   ap_match_source: string; ap_match_confidence: number; lldp_match_status: string
   ap_identity_entity_id?: string; identity_match_status?: string; identity_match_rule?: string; lldp_observed_neighbor_mac?: string
   lldp_history_status?: string; runtime_snapshot_status?: string; fit_ap_snapshot_collected_at?: string

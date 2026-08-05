@@ -416,6 +416,28 @@ def test_detail_returns_only_existing_fact_task_collection_and_sanitized_errors(
     assert "raw_log" not in response.text
 
 
+def test_device_detail_requests_device_threshold_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _service, _adapter, _devices, _facts, _mr, switch = _fixture(tmp_path)
+    captured: dict[str, object] = {}
+
+    def capture_projection(*_args, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(
+        "netconsole.services.trackside_ap_business.build_trackside_ap_business_rows",
+        capture_projection,
+    )
+
+    response = client.get(f"/api/device-management/devices/{switch.device_uuid}")
+
+    assert response.status_code == 200
+    assert captured["business_projection"] is False
+
+
 def test_device_history_uses_real_fact_repository_and_paginates(tmp_path: Path) -> None:
     client, _service, _adapter, _devices, facts, mr, _sw = _fixture(tmp_path)
     for collected_at, link_status in (

@@ -74,10 +74,13 @@ const businessColumns: NcTableColumn<TracksideApBusinessRow>[] = [
   { key: 'switch_optical_updated_at', label: t('trackside.snapshot.optical_time', '模块采集时间'), valueType: 'datetime', displayValue: (row) => displayTracksideSnapshotTime(row.switch_optical_updated_at, row.switch_optical_data_status) },
   { key: 'ap_mac', label: 'AP MAC', valueType: 'mac', stretch: 'priority' },
   { key: 'ap_name', label: '当前轨旁 AP', valueType: 'name' },
-  { key: 'ap_rx_power', label: '对端 Rx (dBm)', valueType: 'number' },
-  { key: 'ap_tx_power', label: '对端 Tx (dBm)', valueType: 'number' },
-  { key: 'ap_optical_status', label: 'AP 模块状态', valueType: 'status', cellKind: 'tag' },
-  { key: 'optical_severity', label: '综合', valueType: 'status', cellKind: 'tag' },
+  { key: 'ap_rx_power', label: 'AP Rx (dBm)', valueType: 'number' },
+  { key: 'ap_tx_power', label: 'AP Tx (dBm)', valueType: 'number' },
+  { key: 'ap_device_optical_status', label: t('trackside.ap_device_optical_status', 'AP 设备模块状态'), valueType: 'status', cellKind: 'tag' },
+  { key: 'ap_optical_status', label: t('trackside.ap_optical_status', 'AP 业务光衰'), valueType: 'status', cellKind: 'tag' },
+  { key: 'ap_business_threshold_dbm', label: t('trackside.ap_business_threshold', 'AP 业务门限'), minWidth: 165, displayValue: (row) => `AP Rx ≥ ${Number(row.ap_business_threshold_dbm ?? -13.90).toFixed(2)} dBm` },
+  { key: 'ap_business_reason', label: t('trackside.ap_business_reason', 'AP 业务判定原因'), valueType: 'description', align: 'left', alignmentReason: 'long-text', minWidth: 300, showOverflowTooltip: true },
+  { key: 'optical_severity', label: t('trackside.business_overall_status', '业务综合状态'), valueType: 'status', cellKind: 'tag' },
   { key: 'updated_at', label: t('trackside.snapshot.business_time', '业务更新时间'), valueType: 'datetime' },
   { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['更新站点', '更新 AP'] },
 ]
@@ -146,7 +149,7 @@ function businessRowKey(row: TracksideApBusinessRow): string {
   ].map(cleanIdentity).join('|')
 }
 function excludedRowKey(row: TracksideApScopeExcluded): string { return cleanIdentity(row.item_id) }
-function unmatchedRowKey(row: TracksideApUnmatchedOnline): string { return cleanIdentity(row.item_id) }
+function onlineResourceRowKey(row: TracksideApUnmatchedOnline): string { return cleanIdentity(row.item_id) }
 function handleStationChange(): void { filters.page = 1; void loadRows() }
 function singleApUpdatePayload(row: TracksideApBusinessRow): TracksideApUpdateRequest | null {
   const apUuid = cleanIdentity(row.ap_uuid)
@@ -306,7 +309,7 @@ onMounted(() => {
 <template>
   <section class="trackside-page">
     <header class="page-heading">
-      <div><p class="eyebrow">RAIL TRANSIT · TRACKSIDE AP</p><h1>轨旁 AP 业务</h1><p>交换机端口、当前 AP、光功率与异常状态来自正式设备事实和轨旁业务维护规则。</p></div>
+      <div><p class="eyebrow">RAIL TRANSIT · TRACKSIDE AP</p><h1>轨旁 AP 业务</h1><p>交换机侧沿用设备模块门限，AP 侧业务光衰按固定业务门限投影。</p></div>
       <div class="actions">
         <el-button :loading="refreshing" :disabled="initialLoading" @click="loadRows()">刷新</el-button>
         <el-button
@@ -358,7 +361,7 @@ onMounted(() => {
       <el-button v-if="page.excluded_device_count" link type="warning" @click="excludedVisible = true">查看排除项</el-button>
     </div>
     <div class="summary-grid">
-      <article><span>站点交换机</span><strong>{{ metricValue(page?.device_count, ['switch_devices']) }}</strong></article><article><span>候选 AP 端口</span><strong>{{ metricValue(page?.candidate_interface_count, ['switch_devices', 'interfaces', 'planning']) }}</strong></article><article><span>AC AP 资源</span><strong>{{ metricValue(page?.fit_ap_resource_count, ['fit_ap_resources']) }}</strong></article><article><span>{{ unmatchedLabel }}</span><strong>{{ metricValue(page?.fit_ap_unmatched_online_count, ['fit_ap_resources']) }}</strong></article><article><span>光衰异常</span><strong>{{ metricValue(page?.optical_abnormal_count, ['interfaces', 'switch_optical', 'fit_ap_optical']) }}</strong></article>
+      <article><span>站点交换机</span><strong>{{ metricValue(page?.device_count, ['switch_devices']) }}</strong></article><article><span>候选 AP 端口</span><strong>{{ metricValue(page?.candidate_interface_count, ['switch_devices', 'interfaces', 'planning']) }}</strong></article><article><span>AC AP 资源</span><strong>{{ metricValue(page?.fit_ap_resource_count, ['fit_ap_resources']) }}</strong></article><article><span>{{ unmatchedLabel }}</span><strong>{{ metricValue(page?.fit_ap_unmatched_online_count, ['fit_ap_resources']) }}</strong></article><article><span>业务光衰异常</span><strong>{{ metricValue(page?.optical_abnormal_count, ['interfaces', 'switch_optical', 'fit_ap_optical']) }}</strong></article>
       <template v-if="page?.runtime_snapshot">
         <article><span>FIT-AP 总数</span><strong>{{ metricValue(page?.fit_ap_resource_total_count ?? page?.fit_ap_resource_count, ['fit_ap_resources']) }}</strong></article><article><span>实际在线</span><strong>{{ metricValue(page?.fit_ap_online_total_count ?? ((page?.fit_ap_matched_online_count || 0) + (page?.fit_ap_unmatched_online_count || 0)), ['fit_ap_resources']) }}</strong></article><article><span>实际离线</span><strong>{{ metricValue(page?.fit_ap_offline_total_count, ['fit_ap_resources']) }}</strong></article><article><span>状态未知</span><strong>{{ metricValue(page?.fit_ap_unknown_total_count, ['fit_ap_resources']) }}</strong></article><article><span>等待 LLDP 同步</span><strong>{{ metricValue(lldpPendingCount, ['fit_ap_resources']) }}</strong></article><article><span>当前 LLDP 冲突</span><strong>{{ metricValue(lldpConflictCount, ['fit_ap_resources']) }}</strong></article><article><span>真实资料缺失</span><strong>{{ metricValue(planningMissingCount, ['fit_ap_resources']) }}</strong></article>
       </template>
@@ -383,7 +386,7 @@ onMounted(() => {
             :title="station"
           />
         </el-select>
-        <el-checkbox v-model="filters.optical_anomaly_only">仅光衰异常</el-checkbox>
+        <el-checkbox v-model="filters.optical_anomaly_only">仅业务光衰异常</el-checkbox>
         <el-button type="primary" :loading="refreshing" :disabled="initialLoading" @click="loadRows(true)">查询</el-button>
         <span v-if="refreshing" class="refresh-indicator">正在刷新，当前数据保持显示</span>
         <span class="work-scope-filter-hint">设备管理与 AC 生成业务行；基础资料仅补充站点和工程属性</span>
@@ -404,8 +407,9 @@ onMounted(() => {
           <template #cell-switch_tx_power="{ row }"><span :class="tracksideOpticalPresentation(row.switch_optical_status).className">{{ displayTracksideValue(row.switch_tx_power) }}</span></template>
           <template #cell-switch_optical_status="{ row }"><el-tag :type="tracksideOpticalPresentation(row.switch_optical_status).tagType" :class="tracksideOpticalPresentation(row.switch_optical_status).className">{{ tracksideOpticalPresentation(row.switch_optical_status).label }}</el-tag></template>
           <template #cell-ap_rx_power="{ row }"><span :class="tracksideOpticalPresentation(row.ap_optical_status).className">{{ displayTracksideValue(row.ap_rx_power) }}</span></template>
-          <template #cell-ap_tx_power="{ row }"><span :class="tracksideOpticalPresentation(row.ap_optical_status).className">{{ displayTracksideValue(row.ap_tx_power) }}</span></template>
-          <template #cell-ap_optical_status="{ row }"><el-tag :type="tracksideOpticalPresentation(row.ap_optical_status).tagType" :class="tracksideOpticalPresentation(row.ap_optical_status).className">{{ tracksideOpticalPresentation(row.ap_optical_status).label }}</el-tag></template>
+          <template #cell-ap_tx_power="{ row }"><span :class="tracksideOpticalPresentation(row.ap_device_optical_status || row.ap_optical_status).className">{{ displayTracksideValue(row.ap_tx_power) }}</span></template>
+          <template #cell-ap_device_optical_status="{ row }"><el-tag :type="tracksideOpticalPresentation(row.ap_device_optical_status || row.ap_optical_status).tagType" :class="tracksideOpticalPresentation(row.ap_device_optical_status || row.ap_optical_status).className">{{ tracksideOpticalPresentation(row.ap_device_optical_status || row.ap_optical_status).label }}</el-tag></template>
+          <template #cell-ap_optical_status="{ row }"><el-tooltip :content="row.ap_business_reason || '无业务判定说明'"><el-tag :type="tracksideOpticalPresentation(row.ap_business_optical_status || row.ap_optical_status).tagType" :class="tracksideOpticalPresentation(row.ap_business_optical_status || row.ap_optical_status).className">{{ tracksideOpticalPresentation(row.ap_business_optical_status || row.ap_optical_status).label }}</el-tag></el-tooltip></template>
           <template #cell-optical_severity="{ row }"><el-tag :type="tracksideOpticalPresentation(row.optical_severity).tagType" :class="tracksideOpticalPresentation(row.optical_severity).className">{{ tracksideOpticalPresentation(row.optical_severity).label }}</el-tag></template>
           <template #cell-actions="{ row }"><el-button link type="primary" :disabled="updateTaskRunning || !row.site || !updateFeatureEnabled" @click="updateStation(row)">更新站点</el-button><el-button link type="primary" :title="hasApIdentity(row) ? '' : '缺少 AP 身份，无法定向更新'" :disabled="updateTaskRunning || !hasApIdentity(row) || !updateFeatureEnabled" @click="updateAp(row)">更新 AP</el-button></template>
         </NcDataTable>
@@ -429,7 +433,7 @@ onMounted(() => {
         route-key="/rail-transit/trackside-ap-business"
         :data="page?.unmatched_online_items || []"
         :columns="unmatchedColumns"
-        :row-key="unmatchedRowKey"
+        :row-key="onlineResourceRowKey"
         height="460"
         empty-text="没有待补充基础资料的在线 AP"
       />

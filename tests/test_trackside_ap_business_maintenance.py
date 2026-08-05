@@ -6,10 +6,10 @@ import pytest
 from openpyxl import load_workbook
 
 from netconsole.core.optical_severity_engine import compute_zte_optical_severity
+from netconsole.services.ap_business_optical import evaluate_ap_business_rx
 from netconsole.services.trackside_ap_business import (
     TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
     TRACKSIDE_RX_NORMAL_MIN_DBM,
-    compute_trackside_rx_business_status,
     export_trackside_ap_business_xlsx,
     is_current_optical_abnormal_row,
     normalize_trackside_ap_business_row,
@@ -55,29 +55,10 @@ def test_trackside_rx_maintenance_boundary(
     expected: str,
 ) -> None:
     assert TRACKSIDE_RX_NORMAL_MIN_DBM == -13.90
-    assert compute_trackside_rx_business_status("normal", rx_power) == expected
+    assert evaluate_ap_business_rx(rx_power) == expected
 
 
-@pytest.mark.parametrize(
-    "status",
-    [
-        "no_module",
-        "no_light",
-        "offline",
-        "link_down",
-        "link_abnormal",
-        "dom_unavailable",
-        "not_collected",
-        "unverified",
-    ],
-)
-def test_trackside_rx_maintenance_does_not_hide_more_specific_states(
-    status: str,
-) -> None:
-    assert compute_trackside_rx_business_status(status, -10) == status
-
-
-def test_trackside_business_overlay_preserves_native_tx_alarm() -> None:
+def test_trackside_switch_keeps_native_tx_alarm() -> None:
     native = compute_zte_optical_severity(
         {
             "status": "normal",
@@ -91,7 +72,6 @@ def test_trackside_business_overlay_preserves_native_tx_alarm() -> None:
     )
 
     assert native.severity == "abnormal"
-    assert compute_trackside_rx_business_status(native.severity, -10) == "abnormal"
 
 
 def test_trackside_row_status_preserves_critical_native_alarm() -> None:
@@ -106,7 +86,7 @@ def test_trackside_row_status_preserves_critical_native_alarm() -> None:
     ) == "critical"
 
 
-def test_trackside_business_overlay_does_not_change_zte_native_threshold_result() -> None:
+def test_trackside_switch_keeps_zte_native_threshold_result() -> None:
     native = compute_zte_optical_severity(
         {
             "status": "normal",
@@ -120,10 +100,9 @@ def test_trackside_business_overlay_does_not_change_zte_native_threshold_result(
     )
 
     assert native.severity == "normal"
-    assert compute_trackside_rx_business_status(native.severity, -24.7) == "abnormal"
 
 
-def test_trackside_row_normalization_applies_both_sides_and_keeps_pvid() -> None:
+def test_trackside_row_normalization_applies_business_threshold_only_to_ap() -> None:
     row = normalize_trackside_ap_business_row(
         {
             "pvid": 71,
@@ -141,8 +120,12 @@ def test_trackside_row_normalization_applies_both_sides_and_keeps_pvid() -> None
 
     assert row["pvid"] == 71
     assert row["vlan"] == "Tagged 201"
-    assert row["switch_optical_status"] == "abnormal"
+    assert row["switch_optical_status"] == "normal"
+    assert row["ap_device_optical_status"] == "normal"
+    assert row["ap_business_optical_status"] == "abnormal"
     assert row["ap_optical_status"] == "abnormal"
+    assert row["ap_business_threshold_dbm"] == -13.90
+    assert "-26.80 dBm 低于业务门限 -13.90 dBm" in row["ap_business_reason"]
     assert row["optical_severity"] == "abnormal"
     assert trackside_row_status(row) == "abnormal"
     assert is_current_optical_abnormal_row(row) is True
@@ -164,8 +147,8 @@ def test_trackside_export_has_no_bidirectional_column_and_uses_normalized_vlan(
     columns = (
         ("PVID", "pvid"),
         ("VLAN", "vlan"),
-        ("模块状态", "switch_optical_status"),
-        ("综合", "optical_severity"),
+        ("交换机模块状态", "switch_optical_status"),
+        ("业务综合状态", "optical_severity"),
         ("更新时间", "updated_at"),
     )
     row = normalize_trackside_ap_business_row(
@@ -191,5 +174,5 @@ def test_trackside_export_has_no_bidirectional_column_and_uses_normalized_vlan(
     values = [cell.value for cell in sheet[2]]
     assert "双向光衰" not in headers
     assert "calculation_status" not in headers
-    assert headers == ["PVID", "VLAN", "模块状态", "综合", "更新时间"]
-    assert values[:4] == ["71", "Tagged 201", "功率异常", "abnormal"]
+    assert headers == ["PVID", "VLAN", "交换机模块状态", "业务综合状态", "更新时间"]
+    assert values[:4] == ["71", "Tagged 201", "正常", "normal"]

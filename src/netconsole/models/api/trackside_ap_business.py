@@ -46,6 +46,10 @@ class TracksideApBusinessRowDTO(ApiModel):
     ap_name: str = ""
     ap_rx_power: Any = None
     ap_tx_power: Any = None
+    ap_device_optical_status: str = ""
+    ap_business_optical_status: str = "unknown"
+    ap_business_threshold_dbm: float = -13.90
+    ap_business_reason: str = ""
     ap_optical_status: str = ""
     ap_match_source: str = ""
     ap_match_confidence: int = 0

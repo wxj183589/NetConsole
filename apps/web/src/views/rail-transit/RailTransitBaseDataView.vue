@@ -558,7 +558,9 @@ const apBaseColumns: NcTableColumn<TracksideAp>[] = [
   { key: 'direction', label: '行车方向', width: 110, displayValue: (row) => display(row.direction) },
   { key: 'remark', label: '备注', valueType: 'description', minWidth: 180, alignmentReason: 'long-text', displayValue: (row) => display(row.remark) },
   { key: 'fit_ap_status', label: 'FIT-AP 状态', valueType: 'status', width: 120 },
-  { key: 'optical_status', label: '光衰', valueType: 'status', width: 105 },
+  { key: 'ap_rx_power', label: 'AP Rx (dBm)', valueType: 'number', width: 120 },
+  { key: 'device_optical_status', label: '设备模块状态', valueType: 'status', width: 130 },
+  { key: 'optical_status', label: 'FIT-AP 业务光衰', valueType: 'status', width: 145 },
   { key: 'source_file', label: '数据来源', align: 'left', alignmentReason: 'path', minWidth: 150, showOverflowTooltip: true },
   { key: 'issues', label: '问题', valueType: 'status', width: 90 },
   { key: 'actions', label: '操作', valueType: 'actions', width: 190, fixed: 'right', hideable: false },
@@ -2031,7 +2033,7 @@ function withOriginalIdentity(type: BaseDataChange['entity_type'], values: Recor
   if (type === 'section') return { ...values, old_name: baseline.name, old_start_station: baseline.start_station, old_end_station: baseline.end_station, old_line_side: baseline.line_side }
   return values
 }
-function emptyRuntime() { return { fit_ap_id: '', fit_ap_ac_id: '', fit_ap_name: '', fit_ap_match_status: 'unmatched', fit_ap_status: 'unknown', optical_status: 'no_data', mesh_status: 'unknown', mesh_related_name: '', latest_session_id: '', latest_session_status: '', updated_at: '' } }
+function emptyRuntime() { return { fit_ap_id: '', fit_ap_ac_id: '', fit_ap_name: '', fit_ap_match_status: 'unmatched', fit_ap_status: 'unknown', optical_status: 'unknown', ap_rx_power: '', device_optical_status: 'no_data', business_optical_status: 'unknown', business_threshold_dbm: -13.90, business_reason: '', mesh_status: 'unknown', mesh_related_name: '', latest_session_id: '', latest_session_status: '', updated_at: '' } }
 function message(cause: unknown, fallback: string): string { return cause instanceof Error && cause.message ? cause.message : fallback }
 function isStationSourceCandidateSelected(candidate: StationSourceCandidate): boolean {
   return selectedStationSourceIds.value.includes(candidate.candidate_id)
@@ -2944,7 +2946,7 @@ function diffSummary(diffs: Array<{ field_name: string; action: string }>): stri
 }
 function stateType(value: string): 'success' | 'danger' | 'warning' | 'info' {
   if (['online', 'normal', 'fresh'].includes(value)) return 'success'
-  if (['offline', 'critical', 'error'].includes(value)) return 'danger'
+  if (['offline', 'critical', 'error', 'abnormal'].includes(value)) return 'danger'
   if (['stale', 'warning', 'unauthenticated'].includes(value)) return 'warning'
   return 'info'
 }
@@ -3539,7 +3541,9 @@ function sectionSourceLabel(row: Section): string {
             <template #cell-direction="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.direction" @input="markAp(row)" /><span v-else>{{ display(row.direction) }}</span></template>
             <template #cell-remark="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.remark" @input="markAp(row)" /><span v-else>{{ display(row.remark) }}</span></template>
             <template #cell-fit_ap_status="{ row }"><el-tag :type="stateType(row.runtime.fit_ap_status)">{{ row.runtime.fit_ap_status }}</el-tag></template>
-            <template #cell-optical_status="{ row }"><el-tag :type="stateType(row.runtime.optical_status)">{{ row.runtime.optical_status }}</el-tag></template>
+            <template #cell-ap_rx_power="{ row }"><span>{{ display(row.runtime.ap_rx_power) }}</span></template>
+            <template #cell-device_optical_status="{ row }"><el-tag :type="stateType(row.runtime.device_optical_status || 'no_data')">{{ row.runtime.device_optical_status || 'no_data' }}</el-tag></template>
+            <template #cell-optical_status="{ row }"><el-tooltip :content="row.runtime.business_reason || '无业务判定结果'"><el-tag :type="stateType(row.runtime.business_optical_status || row.runtime.optical_status)">{{ row.runtime.business_optical_status || row.runtime.optical_status }}</el-tag></el-tooltip></template>
             <template #cell-issues="{ row }"><el-tag v-if="row.issue_count" :type="issueType(row.highest_issue_severity)">{{ row.issue_count }}</el-tag><span v-else>--</span></template>
             <template #cell-actions="{ row }"><el-button link type="primary" @click="openApAc(row)">FIT-AP</el-button><template v-if="editing"><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('trackside_ap', row)">移除</el-button><template v-if="isPendingDelete('trackside_ap', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('trackside_ap', row)">撤销</el-button></template><el-button v-else-if="!row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('trackside_ap', row)">删除</el-button></template></template>
           </NcDataTable>

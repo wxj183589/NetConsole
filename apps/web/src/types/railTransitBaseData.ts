@@ -14,6 +14,11 @@ export interface RuntimeStatus {
   fit_ap_match_status: string
   fit_ap_status: string
   optical_status: string
+  ap_rx_power?: string
+  device_optical_status?: string
+  business_optical_status?: string
+  business_threshold_dbm?: number
+  business_reason?: string
   mesh_status: string
   mesh_related_name: string
   latest_session_id: string
