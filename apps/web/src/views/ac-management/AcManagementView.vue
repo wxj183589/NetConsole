@@ -39,7 +39,8 @@ import type {
 import { displayInterfaceName } from '../../utils/interfaceName'
 import {
   apOpticalStatusPresentation,
-  apOpticalValuePresentation,
+  dualOpticalReason,
+  dualOpticalStatusPresentation,
   formatOpticalPower,
   opticalStatusPresentation,
   opticalValuePresentation,
@@ -621,44 +622,55 @@ function apOpticalPresentation(ap: AcAp) {
   })
 }
 
-function detailApOpticalPresentation(optical: AcOptical) {
+function detailDualOpticalPresentation(optical: AcOptical) {
   const ap = store.selected?.ap
-  return apOpticalStatusPresentation({
-    backendStatus: optical.optical_status,
-    rxPower: optical.rx_power,
+  return dualOpticalStatusPresentation({
+    apBackendStatus: optical.ap_rx_status || optical.raw_status || optical.optical_status,
+    apRxPower: optical.rx_power,
+    switchBackendStatus: optical.switch_rx_status || optical.raw_status || optical.optical_status,
+    switchRxPower: optical.switch_rx_power,
     model: ap?.model,
     opticalApplicable: optical.optical_applicable ?? ap?.optical_applicable,
     freshness: optical.data_freshness,
   })
+}
+
+function detailApOpticalPresentation(optical: AcOptical) {
+  return detailDualOpticalPresentation(optical).overall
 }
 
 function detailApOpticalValuePresentation(optical: AcOptical) {
-  const ap = store.selected?.ap
-  return apOpticalValuePresentation({
-    backendStatus: optical.ap_rx_status || optical.optical_status,
-    rxPower: optical.rx_power,
-    model: ap?.model,
-    opticalApplicable: optical.optical_applicable ?? ap?.optical_applicable,
-    freshness: optical.data_freshness,
-  })
+  return opticalValuePresentation(
+    detailDualOpticalPresentation(optical).ap.status,
+    optical.data_freshness,
+  )
+}
+
+function detailSwitchOpticalValuePresentation(optical: AcOptical) {
+  return opticalValuePresentation(
+    detailDualOpticalPresentation(optical).switch.status,
+    optical.data_freshness,
+  )
 }
 
 function detailThresholdPresentation(optical: AcOptical) {
+  return opticalValuePresentation(
+    detailDualOpticalPresentation(optical).overall.status,
+    optical.data_freshness,
+  )
+}
+
+function opticalAlertTitle(optical: AcOptical): string {
   const ap = store.selected?.ap
-  return apOpticalValuePresentation({
-    backendStatus: optical.raw_status || optical.optical_status,
-    rxPower: optical.rx_power,
+  return dualOpticalReason({
+    apBackendStatus: optical.ap_rx_status || optical.raw_status || optical.optical_status,
+    apRxPower: optical.rx_power,
+    switchBackendStatus: optical.switch_rx_status || optical.raw_status || optical.optical_status,
+    switchRxPower: optical.switch_rx_power,
     model: ap?.model,
     opticalApplicable: optical.optical_applicable ?? ap?.optical_applicable,
     freshness: optical.data_freshness,
   })
-}
-
-function opticalAlertTitle(optical: AcOptical): string {
-  if (detailApOpticalPresentation(optical).status === 'not_applicable') {
-    return '该型号使用网口接入，不适用 AP 光模块光衰检测。'
-  }
-  return optical.anomaly_reason || detailApOpticalPresentation(optical).label
 }
 
 function opticalJudgement(optical: AcOptical): string {
@@ -666,7 +678,20 @@ function opticalJudgement(optical: AcOptical): string {
   if (presentation.status === 'not_applicable') return '不适用'
   if (optical.data_freshness === 'stale') return '数据已过期'
   if (presentation.tone === 'danger' || optical.is_current_anomaly) return '异常'
-  return presentation.status === 'not_collected' ? '光诊断未采集' : '正常'
+  if (presentation.status === 'not_collected') {
+    const dual = detailDualOpticalPresentation(optical)
+    return [dual.ap.status, dual.switch.status].includes('normal')
+      ? '数据不完整'
+      : '光诊断未采集'
+  }
+  return '正常'
+}
+
+function opticalAlarmLevel(optical: AcOptical): string {
+  const presentation = detailApOpticalPresentation(optical)
+  if (presentation.status === 'not_applicable') return '不适用'
+  if (presentation.tone === 'danger') return '严重告警'
+  return presentation.label
 }
 
 function opticalFreshnessLabel(value: string): string {
@@ -1021,7 +1046,7 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
               >
                 <span
                   data-testid="optical-switch-rx-power"
-                  :class="opticalValuePresentation(store.selected.optical.switch_rx_status, store.selected.optical.data_freshness).className"
+                  :class="detailSwitchOpticalValuePresentation(store.selected.optical).className"
                 >{{ formatOpticalPower(store.selected.optical.switch_rx_power) }}</span>
               </el-tooltip>
             </el-descriptions-item>
@@ -1035,7 +1060,7 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
             </el-descriptions-item>
             <el-descriptions-item label="AP 在线状态">{{ statusLabel(store.selected.optical.ap_online_status) }}</el-descriptions-item>
             <el-descriptions-item label="光衰判定"><span data-testid="optical-judgement">{{ opticalJudgement(store.selected.optical) }}</span></el-descriptions-item>
-            <el-descriptions-item label="告警等级">{{ detailApOpticalPresentation(store.selected.optical).label }}</el-descriptions-item>
+            <el-descriptions-item label="告警等级">{{ opticalAlarmLevel(store.selected.optical) }}</el-descriptions-item>
             <el-descriptions-item label="数据状态">{{ opticalFreshnessLabel(store.selected.optical.data_freshness) }}</el-descriptions-item>
             <el-descriptions-item label="温度">{{ display(store.selected.optical.temperature) }}</el-descriptions-item>
             <el-descriptions-item label="电压">{{ display(store.selected.optical.voltage) }}</el-descriptions-item>

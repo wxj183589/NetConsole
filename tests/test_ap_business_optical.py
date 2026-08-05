@@ -6,6 +6,7 @@ from netconsole.services.ap_business_optical import (
     AP_BUSINESS_RX_MIN_DBM,
     evaluate_ap_business_rx,
     evaluate_ap_business_rx_detail,
+    evaluate_dual_rx_business_detail,
 )
 
 
@@ -40,3 +41,44 @@ def test_ap_business_rx_stale_measurement_is_unknown() -> None:
 
     assert result.status == "unknown"
     assert "已过期" in result.reason
+
+
+@pytest.mark.parametrize(
+    ("ap_rx", "switch_rx", "expected"),
+    [
+        (-7.72, -19.10, "abnormal"),
+        (-19.10, -7.72, "abnormal"),
+        (-13.90, -13.90, "normal"),
+        (-13.91, -13.90, "abnormal"),
+        (-13.90, -13.91, "abnormal"),
+        (-13.89, -13.89, "normal"),
+        (-13.89, None, "unknown"),
+    ],
+)
+def test_dual_rx_business_requires_both_sides_to_pass(
+    ap_rx: object,
+    switch_rx: object,
+    expected: str,
+) -> None:
+    result = evaluate_dual_rx_business_detail(
+        ap_rx,
+        switch_rx,
+        ap_reported_status="normal",
+        switch_reported_status="normal",
+    )
+
+    assert result.status == expected
+
+
+def test_dual_rx_business_overrides_stale_switch_normal_status() -> None:
+    result = evaluate_dual_rx_business_detail(
+        -7.72,
+        -19.10,
+        ap_reported_status="normal",
+        switch_reported_status="normal",
+    )
+
+    assert result.ap_status == "normal"
+    assert result.switch_status == "abnormal"
+    assert result.status == "abnormal"
+    assert "交换机侧收光 -19.10 dBm 低于业务门限 -13.90 dBm" in result.reason

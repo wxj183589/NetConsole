@@ -276,6 +276,7 @@ const NcDataTableStub = defineComponent({
     <div class="nc-data-table nc-data-table__scroll" :data-table-id="tableId" :data-height="height">
       <div v-for="(row, index) in data" :key="index" class="table-row">
         <slot name="cell-switch_rx_power" :row="row" />
+        <slot name="cell-switch_tx_power" :row="row" />
         <slot name="cell-switch_optical_status" :row="row" />
         <slot name="cell-ap_rx_power" :row="row" />
         <slot name="cell-ap_tx_power" :row="row" />
@@ -728,7 +729,10 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(byKey.get('lldp_match_status')?.displayValue?.(zteRow)).toBe(
       '待真实样本验证',
     )
-    expect(columns.map((column) => column.label)).toContain('模块状态')
+    expect(byKey.get('ap_business_threshold_dbm')?.displayValue?.(zteRow)).toBe(
+      'AP Rx ≥ -13.90 dBm 且交换机 Rx ≥ -13.90 dBm',
+    )
+    expect(columns.map((column) => column.label)).toContain('交换机侧业务光衰')
     expect(columns.map((column) => column.label)).not.toContain('双向光衰')
     expect(columns.map((column) => column.key)).not.toContain('calculation_status')
     expect(columns.map((column) => column.key).slice(
@@ -765,6 +769,33 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(table.get('.el-tooltip').attributes('data-content')).toContain(
       '-17.80 dBm 低于业务门限 -13.90 dBm',
     )
+    wrapper.unmount()
+  })
+
+  it('marks switch Rx and the combined status abnormal when backend normal is stale', async () => {
+    api.listTracksideApBusiness.mockResolvedValueOnce(page([{
+      ...rows[0],
+      model: 'WA6528X-E',
+      ap_rx_power: '-7.72',
+      ap_tx_power: '-19.10',
+      ap_device_optical_status: 'normal',
+      ap_optical_status: 'normal',
+      switch_rx_power: '-19.10',
+      switch_tx_power: '-20.00',
+      switch_device_optical_status: 'normal',
+      switch_optical_status: 'normal',
+      ap_business_optical_status: 'normal',
+      optical_severity: 'normal',
+    }]))
+
+    const wrapper = await mountView()
+    const table = wrapper.get('[data-table-id="trackside-ap-business"]')
+
+    expect(table.get('[data-testid="trackside-ap-rx"]').classes()).toContain('optical-normal')
+    expect(table.get('[data-testid="trackside-switch-rx"]').classes()).toContain('optical-alarm')
+    expect(table.get('[data-testid="trackside-switch-tx"]').classes()).not.toContain('optical-alarm')
+    expect(table.get('[data-testid="trackside-ap-tx"]').classes()).not.toContain('optical-alarm')
+    expect(table.text()).toContain('光衰大')
     wrapper.unmount()
   })
 
