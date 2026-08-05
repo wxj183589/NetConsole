@@ -60,6 +60,16 @@ describe('Web route ownership', () => {
     expect(route?.meta?.hiddenRoute).toBe(true)
   })
 
+  it('keeps one cached trackside AP business workspace', () => {
+    const route = routes.find((item) => item.name === 'rail-trackside-ap-business')
+
+    expect(route?.meta?.workspace).toEqual({
+      identity: 'singleton',
+      cache: true,
+      allowDuplicate: false,
+    })
+  })
+
   it('keeps the complete task center inside the main application shell', () => {
     const taskCenter = routes.find((route) => route.name === 'tasks')
     expect(taskCenter?.path).toBe('tasks')

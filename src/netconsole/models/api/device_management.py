@@ -548,6 +548,23 @@ class DeviceExternalTerminalBatchDTO(ApiModel):
     failures: list[str] = Field(default_factory=list)
 
 
+class DeviceExternalTerminalPreflightRequestDTO(ApiModel):
+    device_uuids: list[str] = Field(min_length=1, max_length=200)
+    terminal_type: Literal["securecrt", "putty", "xshell"] = "securecrt"
+
+
+class DeviceExternalTerminalPreflightItemDTO(ApiModel):
+    device_uuid: str
+    available: bool = False
+    reason: str = ""
+
+
+class DeviceExternalTerminalPreflightDTO(ApiModel):
+    terminal_type: Literal["securecrt", "putty", "xshell"]
+    launchable_devices: list[str] = Field(default_factory=list)
+    skipped_devices: list[DeviceExternalTerminalPreflightItemDTO] = Field(default_factory=list)
+
+
 class DeviceExternalTerminalSettingsDTO(ApiModel):
     terminal_type: Literal["securecrt", "putty", "xshell"] = "securecrt"
     securecrt_path: str = ""

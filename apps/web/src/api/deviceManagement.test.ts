@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getBatchRefresh, getDeviceDetailSection, getDeviceEditProfile, getDeviceInterfaceDetail, getDeviceOverview, previewDeviceImport } from './deviceManagement'
+import { getBatchRefresh, getDeviceDetailSection, getDeviceEditProfile, getDeviceInterfaceDetail, getDeviceOverview, getDeviceTerminalPreflight, previewDeviceImport } from './deviceManagement'
 
 describe('device detail API client', () => {
   afterEach(() => vi.unstubAllGlobals())
@@ -79,6 +79,22 @@ describe('device detail API client', () => {
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/device-management/batch-refreshes/batch%2F1',
       expect.objectContaining({ credentials: 'same-origin' }),
+    )
+  })
+
+  it('preflights external terminals with semantic device targets only', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await getDeviceTerminalPreflight(['device-1', 'device-2'], 'securecrt')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/device-management/external-terminal/preflight',
+      expect.objectContaining({
+        method: 'POST',
+        credentials: 'same-origin',
+        body: JSON.stringify({ device_uuids: ['device-1', 'device-2'], terminal_type: 'securecrt' }),
+      }),
     )
   })
 

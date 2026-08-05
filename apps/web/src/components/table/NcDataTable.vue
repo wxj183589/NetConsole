@@ -356,7 +356,14 @@ async function handleRowContextMenu(row: Row, column: { property?: string; colum
       rowIndex,
       columnKey,
       cellValue: column?.property ? (row as Record<string, unknown>)[column.property] : undefined,
-    },
+      },
+  }
+  if (!props.contextMenuItems.some((item) => {
+    const context = contextMenu.value.context
+    return context && (typeof item.visible === 'function' ? item.visible(context) : item.visible !== false)
+  })) {
+    closeContextMenu()
+    return
   }
   await nextTick()
   if (generation !== contextMenuGeneration) return
@@ -385,6 +392,12 @@ function contextItemDisabled(item: NcDataTableContextMenuItem<Row>): boolean {
   const context = contextMenu.value.context
   if (!context) return true
   return typeof item.disabled === 'function' ? item.disabled(context) : Boolean(item.disabled)
+}
+
+function contextItemVisible(item: NcDataTableContextMenuItem<Row>): boolean {
+  const context = contextMenu.value.context
+  if (!context) return false
+  return typeof item.visible === 'function' ? item.visible(context) : item.visible !== false
 }
 
 function contextItemReason(item: NcDataTableContextMenuItem<Row>): string {
@@ -609,18 +622,20 @@ defineExpose({ tableRef, availableWidth, resolvedTableWidth, recalculate, resetL
         @contextmenu.prevent.stop
       >
         <template v-for="item in contextMenuItems" :key="item.key">
-          <span v-if="item.separatorBefore" class="nc-data-table__context-separator" />
-          <button
-            type="button"
-            :class="{ danger: item.danger }"
-            :disabled="contextItemDisabled(item)"
-            :title="contextItemReason(item)"
-            role="menuitem"
-            @click="runContextItem(item)"
-          >
-            <span>{{ item.label }}</span>
-            <small v-if="contextItemReason(item)">{{ contextItemReason(item) }}</small>
-          </button>
+          <template v-if="contextItemVisible(item)">
+            <span v-if="item.separatorBefore" class="nc-data-table__context-separator" />
+            <button
+              type="button"
+              :class="{ danger: item.danger }"
+              :disabled="contextItemDisabled(item)"
+              :title="contextItemReason(item)"
+              role="menuitem"
+              @click="runContextItem(item)"
+            >
+              <span>{{ item.label }}</span>
+              <small v-if="contextItemReason(item)">{{ contextItemReason(item) }}</small>
+            </button>
+          </template>
         </template>
       </div>
     </Teleport>

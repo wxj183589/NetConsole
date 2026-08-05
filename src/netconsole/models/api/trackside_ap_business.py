@@ -18,6 +18,9 @@ class TracksideApBusinessRowDTO(ApiModel):
     station_consistency_reason: str = ""
     site: str = ""
     device_name: str = ""
+    switch_device_uuid: str = ""
+    switch_terminal_available: bool = False
+    switch_terminal_unavailable_reason: str = ""
     switch_vendor: str = ""
     interface_name: str = ""
     link_status: str = ""
@@ -44,6 +47,9 @@ class TracksideApBusinessRowDTO(ApiModel):
     ap_uuid: str = ""
     ap_mac: str = ""
     ap_name: str = ""
+    ap_terminal_device_uuid: str = ""
+    ap_terminal_available: bool = False
+    ap_terminal_unavailable_reason: str = ""
     ap_rx_power: Any = None
     ap_tx_power: Any = None
     ap_device_optical_status: str = ""

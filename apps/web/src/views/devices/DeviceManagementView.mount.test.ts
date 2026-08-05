@@ -10,6 +10,9 @@ const mocks = vi.hoisted(() => ({
   revealDeviceCredential: vi.fn(),
   getDeviceConnectionTest: vi.fn(),
   getDeviceExportTask: vi.fn(),
+  getExternalTerminalSettings: vi.fn(),
+  getDeviceTerminalPreflight: vi.fn(),
+  launchExternalTerminals: vi.fn(),
   updateDevice: vi.fn(),
   startBatchRefreshDetails: vi.fn(),
   startBatchConnectionTests: vi.fn(),
@@ -43,6 +46,9 @@ vi.mock('../../api/deviceManagement', async (importOriginal) => ({
   revealDeviceCredential: mocks.revealDeviceCredential,
   getDeviceConnectionTest: mocks.getDeviceConnectionTest,
   getDeviceExportTask: mocks.getDeviceExportTask,
+  getExternalTerminalSettings: mocks.getExternalTerminalSettings,
+  getDeviceTerminalPreflight: mocks.getDeviceTerminalPreflight,
+  launchExternalTerminals: mocks.launchExternalTerminals,
   updateDevice: mocks.updateDevice,
   startBatchRefreshDetails: mocks.startBatchRefreshDetails,
   startBatchConnectionTests: mocks.startBatchConnectionTests,
@@ -446,6 +452,19 @@ beforeEach(() => {
     result_status: 'ok', failure_category: '', message: 'SSH 连接成功', safe_message: 'SSH 连接成功', method: 'primary_direct', host: '192.0.2.12', port: 22, latency_ms: 3, elapsed_ms: 3, tested_at: '2026-07-22T00:00:00Z', system_name: 'MR-02',
     model: '', os_family: '', interface_count: null, error_type: '', suggestion: '', created_time: '', updated_time: '',
   })
+  mocks.getExternalTerminalSettings.mockResolvedValue({
+    terminal_type: 'securecrt',
+    securecrt_path: 'C:/Tools/SecureCRT.exe',
+    xshell_path: '',
+    putty_path: '',
+    pass_password: false,
+  })
+  mocks.getDeviceTerminalPreflight.mockResolvedValue({
+    terminal_type: 'securecrt',
+    launchable_devices: ['device-1'],
+    skipped_devices: [],
+  })
+  mocks.launchExternalTerminals.mockResolvedValue({ success: 1, failed: 0, failures: [] })
   const store = reactive({
     tasks: [] as Array<Record<string, unknown>>,
     refresh: vi.fn(async () => undefined),
@@ -538,6 +557,33 @@ describe('DeviceManagementView mounted interactions', () => {
     expect(mocks.clipboardWrite).toHaveBeenNthCalledWith(1, 'SSH')
     expect(mocks.clipboardWrite).toHaveBeenNthCalledWith(2, '未测试')
     expect(mocks.messages.success).toHaveBeenCalledWith('已复制')
+    wrapper.unmount()
+  })
+
+  it('preflights and launches a context-menu terminal target once through the shared launcher', async () => {
+    const wrapper = await renderView()
+    const deviceTable = wrapper.findComponent(NcDataTable) as unknown as VueWrapper
+    const items = (deviceTable.vm.$props as unknown as { contextMenuItems: Array<{
+      key: string
+      action: (context: { row: typeof listItem; rowIndex: number; columnKey: string; cellValue: unknown }) => void | Promise<void>
+    }> }).contextMenuItems
+
+    await items.find((item) => item.key === 'external-terminal')!.action({
+      row: listItem,
+      rowIndex: 0,
+      columnKey: 'name',
+      cellValue: listItem.name,
+    })
+    await flushPromises()
+
+    expect(mocks.getExternalTerminalSettings).toHaveBeenCalledTimes(1)
+    expect(mocks.getDeviceTerminalPreflight).toHaveBeenCalledTimes(1)
+    expect(mocks.getDeviceTerminalPreflight).toHaveBeenCalledWith(['device-1'], 'securecrt')
+
+    await (wrapper.vm as unknown as { launchTerminalTargets: () => Promise<void> }).launchTerminalTargets()
+    expect(mocks.launchExternalTerminals).toHaveBeenCalledTimes(1)
+    expect(mocks.launchExternalTerminals).toHaveBeenCalledWith(['device-1'], 'securecrt', '')
+    expect(mocks.messages.success).toHaveBeenCalledWith('已启动 1 个外部终端')
     wrapper.unmount()
   })
 

@@ -76,6 +76,10 @@ FIT-AP 运行态由 AC 原始状态统一判定：`R/M`、`R/B` 为在线，其�
 
 轨旁 AP 全部、站点和单 AP 更新均刷新目标 ZTE 交换机的接口 brief 与光模块 brief。接口 brief 的当前管理、物理和协议状态覆盖旧运行态；该命令不返回的 PVID、Native/Tagged/Untagged VLAN 和端口模式继续按规范化接口名继承最近有效快照。轻量更新不追加逐端口详情命令，也不以空或解析失败的接口结果覆盖上一份有效接口数据。
 
+轨旁 AP 业务工作区使用 `singleton` KeepAlive 保存同一次运行中的查询条件、成功结果、分页、范围弹窗、当前任务和表格滚动位置。普通页面往返不重新读取；数据超过五分钟或相关设备详情/光模块、AC FIT-AP 资源/详情/光衰、轨旁光衰任务完成时，页面保留旧结果并后台刷新，失败继续展示最后成功数据。同一任务终态只触发一次失效；局点切换立即清空旧局点投影并递增请求代次，迟到响应不能回写。
+
+业务行的外部终端目标与 FIT-AP 资源身份分离。交换机终端只使用生成业务行时已确定的 `devices.device_uuid`；AP 终端只在设备管理的 `Cloud-AP/FAT-AP/AP` 记录中按完整 MAC 或管理 IP 精确匹配，多个精确候选保持不可用。`ap_uuid`、AP 名称、MAC 前缀和首条同名记录均不作为终端目标。DTO 只返回设备 UUID、可用状态和不可用原因，不返回凭据；Renderer 通过设备管理通用预检与批量启动接口执行受控启动。
+
 ## 5. 迁移与兼容
 
 数据库初始化幂等增加物理关系列和索引，并为已有正式站点/区间主记录补齐确定性 ID。跨表关系由 `scripts/maintenance/backfill_trackside_ap_station_identity.py` 在数据库副本上迁移：默认 dry-run；apply 必须提供报告哈希和 `APPLY_RAIL_BASE_IDENTITY_BACKFILL` 显式确认。报告分别列出主记录、设备绑定、AP 站点/区间和规划关系的既有、安全、歧义、未解析与已应用数量；歧义项不写入。
@@ -100,4 +104,4 @@ FIT-AP 运行态由 AC 原始状态统一判定：`R/M`、`R/B` 为在线，其�
 | `StationSourceCandidateDTO` | `matched_station_id(s)`、`proposed_station.id` | `candidate_id`、issues | `source_device_ids` 与选定 ID 一起进入草稿 |
 | `TracksideApDTO` | `station_id`、`section_id`、`identity_entity_id` | 名称、关联状态、LLDP 建议证据 | LLDP 建议只有用户应用后才进入草稿 |
 | `TracksideApPlanRowDTO` | `station_id` | 名称、relation status、候选 ID | 无有效 ID 的历史行必须返回，不得过滤或自动绑定 |
-| `TracksideApBusinessRowDTO` | switch/AP/planning/effective 四类站点 ID | Identity、LLDP、一致性原因 | 只读，不反写基础资料或规划 |
+| `TracksideApBusinessRowDTO` | switch/AP/planning/effective 四类站点 ID；交换机/AP 终端设备 UUID | Identity、LLDP、一致性原因、终端可用状态 | 只读，不反写基础资料、规划或设备凭据 |

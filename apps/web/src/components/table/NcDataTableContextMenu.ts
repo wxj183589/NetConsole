@@ -9,6 +9,7 @@ export interface NcDataTableContextMenuItem<Row extends object> {
   key: string
   label: string
   action: (context: NcDataTableContext<Row>) => void | Promise<void>
+  visible?: boolean | ((context: NcDataTableContext<Row>) => boolean)
   disabled?: boolean | ((context: NcDataTableContext<Row>) => boolean)
   disabledReason?: string | ((context: NcDataTableContext<Row>) => string)
   danger?: boolean
