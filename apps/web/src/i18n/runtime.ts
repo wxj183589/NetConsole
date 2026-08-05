@@ -18,6 +18,7 @@ const en: Record<string, string> = {
   'nav.files.device-diagnostics': 'Device Diagnostics Download',
   'nav.settings': 'System Settings',
   'nav.tools': 'Tool Collection',
+  'nav.tools.external-tools': 'External Tools',
   'nav.tools.traffic': 'Traffic Test',
   'nav.tools.connectivity': 'Utilities & Connectivity',
   'nav.tools.wireless-scan': 'Wireless Scan',
