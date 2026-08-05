@@ -63,6 +63,30 @@ FIT-AP 运行态只把 AC 的 `R/M`、`R/B` 计为在线，其余明确状态计
 
 完整主数据边界见 [轨旁 AP 主数据与关联模型](rail-transit/TRACKSIDE_AP_DOMAIN_MODEL.md)。
 
+## 运行态与拓扑快照一致性
+
+轨旁 AP 的三个事实维度保持独立：FIT-AP `state/raw_state` 只决定 AP
+`online/offline/unknown`；AP/交换机光模块只决定光衰健康；站点和端口是
+当前拓扑投影。光衰异常、LLDP 冲突、Mesh Radio 状态和规划资料不得覆盖
+FIT-AP 在线状态。
+
+业务查询以只读 `TracksideApRuntimeSnapshot` 记录本次使用的来源时间和
+`collect_run_uuid`。LLDP 早于 FIT-AP 时状态为 `lldp_stale`，在线 AP 分类
+为 `lldp_snapshot_stale`/“等待 LLDP 同步”，不再伪装成基础资料缺失。当前
+LLDP 只取每台交换机最近一次成功批次；旧接口留在历史，接口迁移后新接口
+是 current，历史冲突不会污染当前冲突。`merged` 与 `ap_direct_lldp` 表达
+同一事实时先去重。
+
+“基础资料待补充”只表示真实的 station master、AP 主资料或规划缺失。新增
+上线 AP 以 `identity_entity_id` 优先、物理 AP MAC 其次比较历史在线状态，
+站点尚未解析时仍可计入新增上线。
+
+本节替代上文将所有未关联在线 AP 统称为“基础资料待补充”的兼容描述。活动
+页面、上线概览和导出必须分别列出 FIT-AP 总数、实际在线/离线/未知、已关联
+上线、等待 LLDP 同步、当前 LLDP 冲突和真实基础资料缺失；旧 DTO 中的
+`fit_ap_matched_count` 只表示已关联资源数，实际在线使用
+`fit_ap_matched_online_count`/`fit_ap_online_total_count`。
+
 ## PVID 与历史数据边界
 
 PVID 候选和核验只读取当前逐站规划的 `management_vlan`。完成 AP 身份解析后，只按 AP 自身的 `station_id` 读取所属站点 VLAN。多个站使用相同 VLAN 合法；核验不能把 VLAN 当作唯一站点身份，也不能通过 VLAN 反推 AP 归属。

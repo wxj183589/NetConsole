@@ -1115,15 +1115,24 @@ class RailTransitWebApplicationService:
         ]
         planned_total = sum(row.planned_ap_count for row in result)
         matched_online_total = sum(row.actual_online_count for row in result)
-        actual_online_total = (
-            matched_online_total + scope.fit_ap_unmatched_online_count
-        )
+        # 统计范围内的实际在线：已纳入站点的在线 + 当前范围内等待关联的在线。
+        # 被项目/工作状态明确排除的 FIT-AP 不进入业务合计。
+        actual_online_total = matched_online_total + scope.fit_ap_unmatched_online_count
         anomaly = any(row.count_anomaly for row in result)
         warning_parts = []
         if scope.fit_ap_unmatched_online_count:
-            warning_parts.append(
-                f"当前有 {scope.fit_ap_unmatched_online_count} 个待关联在线轨旁 AP。"
+            pending_count = (
+                scope.fit_ap_lldp_snapshot_stale_count
+                + scope.fit_ap_lldp_exact_match_pending_count
             )
+            if pending_count:
+                warning_parts.append(
+                    f"当前有 {pending_count} 个在线 AP 等待 LLDP 同步。"
+                )
+            else:
+                warning_parts.append(
+                    f"当前有 {scope.fit_ap_unmatched_online_count} 个待关联在线轨旁 AP。"
+                )
         if scope.excluded_device_count:
             warning_parts.append(
                 f"已按项目、当前工作状态、站点关联和稳定身份排除 {scope.excluded_device_count} 项。"
@@ -1152,14 +1161,29 @@ class RailTransitWebApplicationService:
             excluded_items=[],
             fit_ap_resource_total_count=scope.fit_ap_resource_total_count,
             fit_ap_matched_count=scope.fit_ap_matched_count,
+            fit_ap_matched_online_count=scope.fit_ap_matched_online_count,
+            fit_ap_online_total_count=scope.fit_ap_online_total_count,
+            fit_ap_offline_total_count=scope.fit_ap_offline_total_count,
+            fit_ap_unknown_total_count=scope.fit_ap_unknown_total_count,
             fit_ap_unmatched_online_count=scope.fit_ap_unmatched_online_count,
             fit_ap_unresolved_online_count=scope.fit_ap_unmatched_online_count,
-            fit_ap_ambiguous_online_count=scope.ambiguous_online_total_count,
+            fit_ap_lldp_snapshot_stale_count=scope.fit_ap_lldp_snapshot_stale_count,
+            fit_ap_lldp_exact_match_pending_count=scope.fit_ap_lldp_exact_match_pending_count,
+            fit_ap_current_conflict_count=scope.fit_ap_current_conflict_count,
+            fit_ap_planning_missing_count=scope.fit_ap_planning_missing_count,
+            fit_ap_ambiguous_online_count=scope.fit_ap_ambiguous_online_count,
+            fit_ap_station_master_missing_count=scope.fit_ap_station_master_missing_count,
+            fit_ap_unknown_association_count=scope.fit_ap_unknown_association_count,
             unmatched_online_items=[],
             generated_at=datetime.now().astimezone().isoformat(timespec="seconds"),
             revision=revision,
             source_revision=source_revision,
             cache_hit=False,
+            snapshot_status=scope.runtime_snapshot.snapshot_status,
+            snapshot_age_seconds=scope.runtime_snapshot.snapshot_age_seconds,
+            snapshot_warnings=list(scope.runtime_snapshot.warnings),
+            fit_ap_collected_at=scope.runtime_snapshot.fit_ap_collected_at,
+            switch_lldp_collected_at=scope.runtime_snapshot.switch_lldp_collected_at,
         )
         serialization_ms = (time.perf_counter() - serialization_started) * 1000
         with self._trackside_online_cache_lock:
@@ -2088,16 +2112,69 @@ class RailTransitWebApplicationService:
                 }
                 for row in status.items
             ]
-            if status.unassigned_count:
+            pending_count = (
+                status.fit_ap_lldp_snapshot_stale_count
+                + status.fit_ap_lldp_exact_match_pending_count
+            )
+            if pending_count:
+                status_rows.append(
+                    {
+                        "station_name": "等待 LLDP 同步",
+                        "planned_ap_count": None,
+                        "actual_online_count": pending_count,
+                        "offline_count": None,
+                        "online_rate": None,
+                        "remark": (
+                            f"FIT-AP 已在线；FIT-AP 快照 {status.fit_ap_collected_at or '未知'}；"
+                            f"交换机 LLDP 快照 {status.switch_lldp_collected_at or '未知'}；"
+                            "等待当前完整 LLDP 快照同步，已计入合计实际上线数。"
+                        ),
+                        "__row_kind": "lldp_pending",
+                    }
+                )
+            planning_missing_count = status.fit_ap_planning_missing_count
+            if not pending_count and not planning_missing_count:
+                # Keep the legacy DTO contract usable for older callers that only
+                # populate ``unassigned_count``.
+                planning_missing_count = status.unassigned_count
+            if planning_missing_count:
                 status_rows.append(
                     {
                         "station_name": "基础资料待补充",
                         "planned_ap_count": None,
-                        "actual_online_count": status.unassigned_count,
+                        "actual_online_count": planning_missing_count,
                         "offline_count": None,
                         "online_rate": None,
-                        "remark": "在线 AP 尚未关联有效站点，已计入合计实际上线数。",
+                        "remark": "在线 AP 缺少可用的正式站点或 AP 基础资料，已计入合计实际上线数。",
                         "__row_kind": "unassigned",
+                    }
+                )
+            conflict_count = (
+                status.fit_ap_current_conflict_count
+                + status.fit_ap_ambiguous_online_count
+            )
+            if conflict_count:
+                status_rows.append(
+                    {
+                        "station_name": "当前 LLDP 冲突",
+                        "planned_ap_count": None,
+                        "actual_online_count": conflict_count,
+                        "offline_count": None,
+                        "online_rate": None,
+                        "remark": "当前完整 LLDP 快照存在多个有效站点或接口候选，已计入合计实际上线数。",
+                        "__row_kind": "lldp_conflict",
+                    }
+                )
+            if status.fit_ap_unknown_association_count:
+                status_rows.append(
+                    {
+                        "station_name": "状态未知",
+                        "planned_ap_count": None,
+                        "actual_online_count": status.fit_ap_unknown_association_count,
+                        "offline_count": None,
+                        "online_rate": None,
+                        "remark": "FIT-AP 在线状态缺少明确运行态证据，未计入实际上线数。",
+                        "__row_kind": "unknown",
                     }
                 )
             status_rows.append(
@@ -2332,7 +2409,14 @@ class RailTransitWebApplicationService:
             site_id,
             "trackside_ap_optical_update",
             params,
+            on_complete=lambda _value: self.invalidate_trackside_ap_runtime_views(site_id),
         )
+
+    def invalidate_trackside_ap_runtime_views(self, site_id: str) -> None:
+        """清理轨旁运行态内存视图；数据库事实仍由下一次只读查询读取。"""
+
+        with self._trackside_online_cache_lock:
+            self._trackside_online_cache.pop(self._site(site_id), None)
 
     @staticmethod
     def _trackside_ap_update_scope_resource_key(

@@ -35,6 +35,12 @@ from netconsole.services.offline_ap_ledger import (
     write_offline_ap_stats_sheet,
 )
 from netconsole.services.ac.fit_ap_resource_identity import coalesce_fit_ap_resource_rows
+from netconsole.services.rail_transit.trackside_ap_runtime_snapshot import (
+    TracksideApRuntimeSnapshot,
+    classify_lldp_history_status,
+    deduplicate_lldp_snapshot_rows,
+    select_latest_lldp_snapshot_rows,
+)
 from netconsole.services.ap_identity.normalizers import format_mac, normalize_mac_key
 from netconsole.utils.interface_normalize import display_interface_name, normalize_interface_name
 from netconsole.utils.interface_sort import interface_sort_key
@@ -166,6 +172,9 @@ NEW_ONLINE_AP_OVERVIEW_COLUMNS = (
     ("ap.serial_number", "serial_number"),
     ("ac.group_name", "group_name"),
     ("ac.state", "state_display"),
+    ("trackside.export.identity_entity_id", "identity_entity_id"),
+    ("trackside.export.baseline_collected_at", "baseline_collected_at"),
+    ("trackside.export.current_collected_at", "current_collected_at"),
     ("trackside.export.suggestion", "suggestion"),
 )
 
@@ -174,6 +183,11 @@ TRACKSIDE_AP_UNMATCHED_ONLINE_COLUMNS = (
     ("trackside.export.unmatched_ap_mac", "mac"),
     ("trackside.export.unmatched_ac_status", "ac_status"),
     ("trackside.export.unmatched_runtime_station", "runtime_station_text"),
+    ("trackside.export.unmatched_association_status", "association_status"),
+    ("trackside.export.unmatched_reason_code", "reason_code"),
+    ("trackside.export.unmatched_fit_ap_collected_at", "fit_ap_collected_at"),
+    ("trackside.export.unmatched_lldp_collected_at", "lldp_collected_at"),
+    ("trackside.export.unmatched_lldp_candidate_count", "lldp_candidate_count"),
     ("trackside.export.unmatched_reason", "reason"),
     ("trackside.export.unmatched_suggestion", "suggested_action"),
 )
@@ -595,9 +609,18 @@ def build_trackside_ap_business_rows(
     historical_lldp_rows: list[dict[str, object | None]] | None = None,
     station_names: Mapping[str, str] | None = None,
     latest_switch_collect_runs: Mapping[str, str] | None = None,
+    runtime_snapshot: TracksideApRuntimeSnapshot | None = None,
 ) -> list[dict[str, object | None]]:
     optical_indexes = {device_uuid: _latest_rows_by_normalized_interface(rows, "interface_name") for device_uuid, rows in optical_by_device.items()}
-    lldp_indexes = {device_uuid: _latest_rows_by_normalized_interface(rows, "local_interface") for device_uuid, rows in (lldp_by_device or {}).items()}
+    lldp_indexes = {
+        device_uuid: _latest_rows_by_normalized_interface(
+            deduplicate_lldp_snapshot_rows(
+                select_latest_lldp_snapshot_rows(rows)
+            ),
+            "local_interface",
+        )
+        for device_uuid, rows in (lldp_by_device or {}).items()
+    }
     fit_ap_optical_rows = merge_fit_ap_rows_by_identity(fit_ap_optical_rows)
     fit_ap_resource_rows = coalesce_fit_ap_resource_rows(fit_ap_resource_rows or [])
     fit_ap_resource_rows = merge_fit_ap_rows_by_identity(fit_ap_resource_rows)
@@ -734,19 +757,19 @@ def build_trackside_ap_business_rows(
                 resource_from_identity = None
             elif resource_from_current_lldp:
                 fit_ap = (
-                    fit_ap_from_identity
-                    or _merge_resource_with_optical(resource_from_neighbor, fit_ap_optical_by_mac)
+                    _merge_resource_with_optical(resource_from_neighbor, fit_ap_optical_by_mac)
                     or resource_from_identity
+                    or fit_ap_from_identity
                     or resource_from_neighbor
                     or {}
                 )
             else:
                 fit_ap = (
-                    fit_ap_optical_by_mac.get(neighbor_mac)
-                    or fit_ap_from_identity
-                ) or (
                     _merge_resource_with_optical(resource_from_neighbor, fit_ap_optical_by_mac)
                     or resource_from_identity
+                    or resource_from_neighbor
+                    or fit_ap_from_identity
+                    or fit_ap_optical_by_mac.get(neighbor_mac)
                     or fit_ap_optical_by_name_mac.get(neighbor_mac)
                     or {}
                 )
@@ -968,6 +991,24 @@ def build_trackside_ap_business_rows(
                     **pvid_projection,
                 }
             _ensure_ap_optical_status(row)
+            if runtime_snapshot is not None and not lldp:
+                if runtime_snapshot.snapshot_status == "lldp_stale":
+                    row["lldp_match_status"] = "LLDP_SNAPSHOT_STALE"
+                elif runtime_snapshot.has_current_lldp:
+                    row["lldp_match_status"] = "LLDP_EXACT_MATCH_PENDING"
+                else:
+                    row["lldp_match_status"] = "NO_CURRENT_EVIDENCE"
+            row["lldp_history_status"] = classify_lldp_history_status(
+                [lldp] if lldp else [],
+                [historical_lldp] if historical_lldp else [],
+            )
+            if runtime_snapshot is not None:
+                row["runtime_snapshot_status"] = runtime_snapshot.snapshot_status
+                row["fit_ap_snapshot_collected_at"] = runtime_snapshot.fit_ap_collected_at
+                row["lldp_snapshot_collected_at"] = runtime_snapshot.switch_lldp_collected_at
+                row["lldp_snapshot_generation"] = runtime_snapshot.switch_lldp_generation
+            elif historical_lldp_used and not lldp:
+                row["lldp_history_status"] = "stale_snapshot"
             result.append(row)
     result.extend(
         _offline_ledger_to_trackside_rows(
@@ -1180,42 +1221,81 @@ def build_new_online_ap_overview_rows(
     unauthenticated_rows: list[dict[str, object | None]] | None = None,
     unauthenticated_history_rows: list[dict[str, object | None]] | None = None,
 ) -> list[dict[str, object | None]]:
-    if unauthenticated_rows is not None:
-        return _build_unauthenticated_new_online_rows(
-            current_resource_rows,
-            trackside_rows,
-            unauthenticated_rows or [],
-        )
+    del unauthenticated_history_rows
+    transition_rows = _build_runtime_transition_new_online_rows(
+        current_resource_rows,
+        resource_history_rows,
+        trackside_rows,
+    )
+    if unauthenticated_rows is None:
+        return transition_rows
+    unauthenticated = _build_unauthenticated_new_online_rows(
+        current_resource_rows,
+        trackside_rows,
+        unauthenticated_rows or [],
+    )
+    merged = _new_online_identity_index(unauthenticated)
+    rows = list(unauthenticated)
+    for row in transition_rows:
+        keys = _new_online_identity_keys(row)
+        if keys and keys[0] in merged:
+            continue
+        rows.append(row)
+        for key in keys:
+            merged[key] = row
+    return sorted(
+        rows,
+        key=lambda row: (
+            str(row.get("site") or ""),
+            str(row.get("ap_name") or ""),
+            str(row.get("ap_mac") or ""),
+        ),
+    )
+
+
+def _build_runtime_transition_new_online_rows(
+    current_resource_rows: list[dict[str, object | None]],
+    resource_history_rows: list[dict[str, object | None]],
+    trackside_rows: list[dict[str, object | None]],
+) -> list[dict[str, object | None]]:
     history_by_identity: dict[tuple[str, str], list[dict[str, object | None]]] = {}
     for row in resource_history_rows or []:
-        key = ap_identity_key(row)
-        if key:
+        for key in _new_online_identity_keys(row):
             history_by_identity.setdefault(key, []).append(row)
-    trackside_by_identity = _trackside_rows_by_ap_identity(trackside_rows)
+    trackside_by_identity = _trackside_rows_by_online_identity(trackside_rows)
     rows: list[dict[str, object | None]] = []
     for resource in current_resource_rows or []:
         if _ap_state(resource) != "online":
             continue
-        key = ap_identity_key(resource)
-        if not key:
+        keys = _new_online_identity_keys(resource)
+        if not keys:
             continue
         current_collect_run = str(resource.get("collect_run_uuid") or "")
         current_collected_at = str(resource.get("collected_at") or resource.get("updated_at") or "")
-        had_previous_history = False
-        for history in history_by_identity.get(key, []):
+        previous_rows: list[dict[str, object | None]] = []
+        for key in keys:
+            candidates = history_by_identity.get(key, [])
+            if candidates:
+                previous_rows = candidates
+                break
+        eligible_history: list[dict[str, object | None]] = []
+        for history in previous_rows:
             if current_collect_run and str(history.get("collect_run_uuid") or "") == current_collect_run:
                 continue
             history_collected_at = str(history.get("collected_at") or history.get("created_at") or "")
             if current_collected_at and history_collected_at >= current_collected_at:
                 continue
-            had_previous_history = True
-            break
-        if had_previous_history:
+            eligible_history.append(history)
+        baseline = max(eligible_history, key=_new_online_history_sort_key, default=None)
+        if baseline is not None and _ap_state(baseline) != "offline":
             continue
-        trackside = trackside_by_identity.get(key, {})
+        trackside = next(
+            (trackside_by_identity.get(candidate_key, {}) for candidate_key in keys if trackside_by_identity.get(candidate_key)),
+            {},
+        )
         rows.append(
             {
-                "site": resource.get("site") or resource.get("site_name") or trackside.get("site"),
+                "site": resource.get("site") or resource.get("site_name") or trackside.get("site") or "等待 LLDP 同步",
                 "device_name": trackside.get("device_name") or "-",
                 "interface_name": trackside.get("interface_name") or "-",
                 "link_status": trackside.get("link_status") or "-",
@@ -1244,10 +1324,25 @@ def build_new_online_ap_overview_rows(
                 "serial_number": resource.get("serial_number"),
                 "group_name": resource.get("group_name"),
                 "state_display": resource.get("state_display") or resource.get("state_raw") or resource.get("state"),
+                "identity_entity_id": resource.get("identity_entity_id") or resource.get("ap_identity_entity_id") or "",
+                "baseline_collected_at": (
+                    str(baseline.get("collected_at") or baseline.get("created_at") or "")
+                    if baseline is not None
+                    else ""
+                ),
+                "current_collected_at": current_collected_at,
                 "suggestion": "新上线Auto AP，确认点位后在AC手动固化AP",
             }
         )
     return sorted(rows, key=lambda row: (str(row.get("site") or ""), str(row.get("ap_name") or ""), str(row.get("ap_mac") or "")))
+
+
+def _new_online_history_sort_key(row: dict[str, object | None]) -> tuple[str, str, int]:
+    return (
+        str(row.get("collected_at") or row.get("created_at") or ""),
+        str(row.get("created_at") or ""),
+        _int_value(row.get("id")),
+    )
 
 
 def _build_unauthenticated_new_online_rows(
@@ -1272,7 +1367,12 @@ def _build_unauthenticated_new_online_rows(
                 "identity_source": "AC未固化Auto AP",
                 "register_status": "未固化",
                 "new_online_status": "当前新上线Auto AP",
-                "site": (resource or {}).get("site") or (resource or {}).get("site_name") or trackside.get("site"),
+                "site": (
+                    (resource or {}).get("site")
+                    or (resource or {}).get("site_name")
+                    or trackside.get("site")
+                    or "等待 LLDP 同步"
+                ),
                 "device_name": trackside.get("device_name") or "-",
                 "interface_name": trackside.get("interface_name") or "-",
                 "link_status": trackside.get("link_status") or "-",
@@ -1303,6 +1403,9 @@ def _build_unauthenticated_new_online_rows(
                 "last_unauthenticated_at": source.get("collected_at") or source.get("created_at"),
                 "suggestion": "新上线Auto AP，确认点位后在AC手动固化AP",
                 "first_seen_at": source.get("collected_at") or source.get("created_at"),
+                "identity_entity_id": (resource or {}).get("identity_entity_id") or "",
+                "baseline_collected_at": "",
+                "current_collected_at": (resource or {}).get("collected_at") or source.get("collected_at") or "",
             }
         )
     return sorted(rows, key=lambda row: (str(row.get("site") or ""), str(row.get("ap_name") or "")))
@@ -1318,9 +1421,14 @@ def _new_online_identity_index(rows: list[dict[str, object | None]]) -> dict[tup
 
 def _new_online_identity_keys(row: dict[str, object | None]) -> list[tuple[str, str]]:
     keys: list[tuple[str, str]] = []
-    serial = str(row.get("serial_number") or row.get("serial") or "").strip()
-    if serial and serial not in {"-", "N/A", "n/a"}:
-        keys.append(("serial", serial.casefold()))
+    entity_id = str(
+        row.get("identity_entity_id")
+        or row.get("ap_identity_entity_id")
+        or row.get("identity_entity_uuid")
+        or ""
+    ).strip()
+    if entity_id:
+        keys.append(("entity", entity_id.casefold()))
     mac = normalize_mac_key(
         row.get("inferred_ap_mac")
         or row.get("ap_mac")
@@ -1329,13 +1437,16 @@ def _new_online_identity_keys(row: dict[str, object | None]) -> list[tuple[str, 
     )
     if mac:
         keys.append(("mac", mac.casefold()))
-    ap_name = str(row.get("ap_name") or "").strip()
-    if ap_name and ap_name not in {"-", "N/A", "n/a"}:
-        keys.append(("name", ap_name.casefold()))
+    serial = str(row.get("serial_number") or row.get("serial") or "").strip()
+    if serial and serial not in {"-", "N/A", "n/a"}:
+        keys.append(("serial", serial.casefold()))
     ac_uuid = str(row.get("ac_device_uuid") or "").strip()
     apid = str(row.get("apid") or row.get("ap_id") or "").strip()
     if ac_uuid and apid:
         keys.append(("apid", f"{ac_uuid.casefold()}:{apid.casefold()}"))
+    ap_name = str(row.get("ap_name") or "").strip()
+    if ap_name and ap_name not in {"-", "N/A", "n/a"}:
+        keys.append(("name", ap_name.casefold()))
     return keys
 
 
@@ -1761,6 +1872,15 @@ def _trackside_rows_by_ap_identity(rows: list[dict[str, object | None]]) -> dict
     return result
 
 
+def _trackside_rows_by_online_identity(rows: list[dict[str, object | None]]) -> dict[tuple[str, str], dict[str, object | None]]:
+    result: dict[tuple[str, str], dict[str, object | None]] = {}
+    for row in rows or []:
+        for key in _new_online_identity_keys(row):
+            if key not in result or _trackside_ap_row_prefer_score(row) >= _trackside_ap_row_prefer_score(result[key]):
+                result[key] = row
+    return result
+
+
 def _trackside_rows_by_switch_interface(rows: list[dict[str, object | None]]) -> dict[tuple[str, str], dict[str, object | None]]:
     result: dict[tuple[str, str], dict[str, object | None]] = {}
     for row in rows or []:
@@ -2179,7 +2299,13 @@ def _merge_resource_with_optical(resource: dict[str, object | None] | None, opti
     if not resource:
         return {}
     optical = optical_by_mac.get(normalize_mac_key(resource.get("ap_mac")), {})
-    return {**resource, **optical}
+    merged = {**resource, **optical}
+    # FIT-AP runtime state is authoritative; optical payloads may carry stale
+    # or unrelated status fields but must never replace state evidence.
+    for field in ("state", "state_raw", "state_display", "is_online"):
+        if field in resource and resource.get(field) not in (None, ""):
+            merged[field] = resource[field]
+    return merged
 
 
 def _match_fit_ap_resource_from_lldp(
@@ -2941,8 +3067,14 @@ def _normalized_optical_status(value: object) -> str:
 def _is_ap_offline_abnormal(row: dict[str, object | None]) -> bool:
     if not has_valid_ap_binding(row):
         return False
-    status = _normalized_optical_status(row.get("ap_optical_status") or row.get("optical_alarm_status") or row.get("alarm_status"))
-    return bool(row.get("is_ap_offline")) or row.get("offline_reason") in _AP_OFFLINE_REASONS or status == "offline"
+    # AP 在线态只能来自 FIT-AP runtime state。光衰的 ``offline``/``no_light``
+    # 是链路观测，不得把仍处于 R/M、Run、Up 的 AP 改判为离线。
+    runtime_state = _ap_state(row)
+    if runtime_state == "online":
+        return False
+    if runtime_state == "offline":
+        return True
+    return bool(row.get("is_ap_offline"))
 
 
 def _is_ap_side_current_abnormal(row: dict[str, object | None]) -> bool:
