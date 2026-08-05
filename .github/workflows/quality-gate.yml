@@ -68,7 +68,7 @@ jobs:
           cache-dependency-path: apps/web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - name: Run complete Web test suite
-        run: pnpm exec vitest run --maxWorkers=2 --testTimeout=20000 --hookTimeout=20000
+        run: pnpm exec vitest run --maxWorkers=1 --testTimeout=20000 --hookTimeout=20000
       - run: pnpm build
 
   electron:

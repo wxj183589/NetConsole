@@ -43,8 +43,10 @@ jobs:
           node-version: "24"
           cache: pnpm
           cache-dependency-path: apps/web/pnpm-lock.yaml
+      - name: Create isolated Python environment
+        run: python -m venv .venv
       - name: Install development dependencies
-        run: python -m pip install -c constraints.txt -r requirements-dev.txt
+        run: .venv\Scripts\python.exe -m pip install -c constraints.txt -r requirements-dev.txt
       - name: Build Web assets for runtime checks
         shell: pwsh
         working-directory: apps/web
@@ -53,6 +55,6 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
       - name: Run complete Python test suite
-        run: python -m pytest -q --tb=short
+        run: .venv\Scripts\python.exe -m pytest -q --tb=short
         env:
           PYTHONPATH: ${{ github.workspace }}/src

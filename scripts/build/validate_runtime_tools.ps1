@@ -39,7 +39,20 @@ function Assert-FileHash {
         throw "Required runtime tool file is missing: $path"
     }
 
-    $actualHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [System.IO.File]::OpenRead($path)
+        try {
+            $hashBytes = $sha256.ComputeHash($stream)
+        }
+        finally {
+            $stream.Dispose()
+        }
+    }
+    finally {
+        $sha256.Dispose()
+    }
+    $actualHash = ([System.BitConverter]::ToString($hashBytes) -replace "-", "").ToLowerInvariant()
     if ($actualHash -ne $ExpectedHash.ToLowerInvariant()) {
         throw "SHA-256 mismatch for $path. Expected $ExpectedHash, got $actualHash."
     }
