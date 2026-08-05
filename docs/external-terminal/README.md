@@ -14,6 +14,6 @@ Electron Main 根据共享定义生成仅限 `exe` 的原生文件过滤器，�
 
 外部终端真实启动仍使用既有 Python Desktop/Application Service 和 `shell=False` 参数链；本规则不改变通用设备连接协议、设备命令或密码传递策略。AC/FIT-AP 行菜单是独立业务入口，固定由后端生成 Telnet 23 连接参数，并强制不传递 FIT-AP 用户名和密码。
 
-设备管理通用链路先调用 `POST /api/device-management/external-terminal/preflight`。预检只根据设备 UUID 构建并校验白名单启动描述，返回可启动 UUID 与有界不可用原因，不启动进程、不返回程序参数或凭据；确认后才调用批量启动接口。设备管理页和轨旁 AP 业务页共用该前端协调逻辑，并在请求进行中拒绝重复提交。轨旁 AP 业务投影只把精确解析到设备管理记录的交换机/AP `device_uuid` 交给预检，不把 FIT-AP `ap_uuid`、名称或 MAC 当作启动目标。
+设备管理通用链路先调用 `POST /api/device-management/external-terminal/preflight`。预检只根据设备 UUID 构建并校验白名单启动描述，返回可启动 UUID 与有界不可用原因，不启动进程、不返回程序参数或凭据；确认后才调用批量启动接口。设备管理页和轨旁 AP 业务中的车站交换机共用该链路，轨旁投影只提交生成业务行时已经确定的交换机 `device_uuid`，不按显示名称二次查询。
 
-上述通用设备终端与 AC/FIT-AP 固定 Telnet 入口是两套明确边界：轨旁页面找不到独立 AP 设备管理记录时菜单保持禁用，不继承 AC 的地址或凭据，也不回退打开 AC；AC/FIT-AP 页面仍按既有固定 Telnet 23 规则运行。
+AC/FIT-AP 固定 Telnet 入口与上述通用设备链路保持明确边界。AC/FIT-AP 页面和轨旁 AP 业务共用 `useExternalTerminalLauncher.ts` 的 options、终端选择、launch、提示与防重复逻辑；轨旁 AP 只提交业务行精确关联的 `ac_device_uuid + ap_uuid`，由后端再次校验 FIT-AP 归属、管理 IP 与在线状态。AP MAC 和当前轨旁 AP 两列使用同一目标，不查询设备管理 AP、不打开 AC 或交换机，也不把名称、MAC、Radio MAC 或 AP Identity shadow ID 当作启动 ID。现有 FIT-AP 启动仍固定 Telnet 23 且不读取、不返回、不传递 FIT-AP 凭据。

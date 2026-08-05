@@ -18,11 +18,11 @@ describe('trackside AP business display', () => {
     ['link_down', '链路断开', 'danger'],
     ['no_light', '无光', 'danger'],
     ['no_module', '无光模块', 'info'],
-    ['abnormal', '功率异常', 'danger'],
+    ['abnormal', '光衰大', 'danger'],
     ['unverified', '状态未知/第三方模块', 'warning'],
     ['dom_unavailable', '不支持 DOM', 'info'],
     ['skipped', '未检查', 'info'],
-    ['not_collected', '未采集', 'info'],
+    ['not_collected', '光诊断未采集', 'info'],
     ['unknown', '未知', 'info'],
     ['offline', '离线', 'danger'],
   ])('maps %s to a Chinese label and explicit color', (status, label, tagType) => {

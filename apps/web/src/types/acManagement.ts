@@ -80,6 +80,7 @@ export interface AcAp {
   switch_interface: string
   lldp_status: string
   optical_status: string
+  optical_applicable?: boolean
   optical_severity: string
   optical_data_freshness: string
   optical_is_current_anomaly: boolean
@@ -133,6 +134,7 @@ export interface AcLldp {
 }
 
 export interface AcOptical {
+  optical_applicable?: boolean
   optical_status: string
   optical_severity: string
   raw_status: string

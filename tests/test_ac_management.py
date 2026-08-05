@@ -10,6 +10,7 @@ from netconsole.core.database import Database
 from netconsole.core.feature_flags import FeatureGate
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
+from netconsole.core.sources.ap_source import compute_ap_status
 from netconsole.core.sources.switch_source import build_switch_data_lookup
 from netconsole.core.state_engine import compute_state, STATUS_COLORS
 from netconsole.models.device import Device
@@ -107,6 +108,7 @@ from netconsole.services.trackside_ap_business import (
     build_ap_optical_treatment_records,
     build_new_online_ap_overview_rows,
     build_trackside_ap_business_rows,
+    count_current_optical_abnormal_aps,
     description_contains_ap,
     enrich_trackside_export_rows,
     export_trackside_ap_business_xlsx,
@@ -117,6 +119,7 @@ from netconsole.services.trackside_ap_business import (
     is_current_optical_abnormal_row,
     is_trackside_ap_interface,
     normalize_link_state,
+    normalize_trackside_ap_business_row,
     normalize_vlan_text,
     parse_vlan_set,
     sort_trackside_ap_business_rows,
@@ -4620,7 +4623,7 @@ def test_trackside_ap_side_normal_and_notice_format_from_computed_status():
     notice = {**normal, "ap_rx_power": "-14.35", "ap_optical_status": "notice"}
 
     assert format_ap_side_alarm(normal) == "正常"
-    assert format_ap_side_alarm(notice) == "功率异常"
+    assert format_ap_side_alarm(notice) == "光衰大"
 
 
 def test_trackside_ap_side_unknown_with_rx_power_recomputes_for_display():
@@ -4632,8 +4635,8 @@ def test_trackside_ap_side_unknown_with_rx_power_recomputes_for_display():
         "ap_side_has_data": True,
     }
 
-    assert format_ap_side_alarm(row) == "功率异常"
-    assert format_trackside_display_value("ap_optical_status", row) == "功率异常"
+    assert format_ap_side_alarm(row) == "光衰大"
+    assert format_trackside_display_value("ap_optical_status", row) == "光衰大"
 
 
 def test_trackside_history_unknown_with_rx_power_recomputes_ap_status():
@@ -4671,7 +4674,42 @@ def test_trackside_ap_optical_status_uses_default_profile_without_thresholds():
 
     assert rows[0]["ap_rx_power"] == "-14.41"
     assert rows[0]["ap_optical_status"] == "abnormal"
-    assert format_trackside_display_value("ap_optical_status", rows[0]) == "功率异常"
+    assert format_trackside_display_value("ap_optical_status", rows[0]) == "光衰大"
+
+
+def test_trackside_wa6522_is_not_applicable_and_excluded_from_optical_anomalies():
+    row = normalize_trackside_ap_business_row(
+        {
+            "model": " wa6522 ",
+            "ap_mac": "0011-2233-4455",
+            "ap_name": "AP-WA6522",
+            "ap_rx_power": "-30",
+            "ap_optical_status": "no_light",
+            "switch_rx_power": "-30",
+            "switch_optical_status": "alarm",
+            "ap_side_has_data": True,
+        }
+    )
+
+    assert row["ap_optical_applicable"] is False
+    assert row["ap_optical_status"] == "not_applicable"
+    assert row["optical_severity"] == "not_applicable"
+    assert row["ap_business_reason"] == "该型号使用网口接入，不适用 AP 光模块光衰检测。"
+    assert is_current_optical_abnormal_row(row) is False
+    assert count_current_optical_abnormal_aps([row]) == 0
+
+
+def test_trackside_wa6522_display_is_not_applicable_before_row_normalization():
+    row = {
+        "model": "WA6522",
+        "ap_name": "AP-WA6522",
+        "ap_mac": "0011-2233-4455",
+        "ap_rx_power": "-30",
+        "ap_optical_status": "alarm",
+    }
+
+    assert format_ap_side_alarm(row) == "不适用"
+    assert format_trackside_display_value("ap_optical_status", row) == "不适用"
 
 
 def test_trackside_row_status_ignores_missing_ap_side_data():
@@ -6254,14 +6292,14 @@ def test_state_engine_compute_state_returns_unified_result():
     )
     assert isinstance(result, StateResult)
     assert result.switch_status == "notice"
-    assert result.ap_status == "alarm"
-    assert result.optical_status == "alarm"  # worse of notice/alarm
+    assert result.ap_status == "abnormal"
+    assert result.optical_status == "abnormal"  # fixed AP business threshold
     assert result.severity > 0
     assert result.color == STATUS_COLORS["alarm"]
 
 
-def test_state_engine_minus_36_96_no_light_unified():
-    """rx_power = -36.96 must produce no_light with unified gray colour."""
+def test_state_engine_minus_36_96_is_below_ap_business_threshold():
+    """A valid AP RX value below -13.90 dBm is treated as attenuation."""
     fit_ap_row = {
         "rx_power": "-36.96",
         "rx_low_alarm": "-20.00",
@@ -6269,22 +6307,35 @@ def test_state_engine_minus_36_96_no_light_unified():
         "optical_alarm_status": "no_light",
     }
     result = compute_state({"fit_ap_row": fit_ap_row})
-    assert result.ap_status == "no_light"
-    assert result.color == STATUS_COLORS["no_light"]
-    assert result.color == "E5E7EB"
+    assert result.ap_status == "abnormal"
+    assert result.color == STATUS_COLORS["abnormal"]
+    assert result.color == "FEE2E2"
 
 
-def test_state_engine_minus_20_32_alarm_unified():
-    """rx_power = -20.32 with alarm_low = -20.00 must produce alarm (below threshold)."""
+def test_state_engine_minus_20_32_uses_fixed_ap_business_threshold():
+    """rx_power = -20.32 is below the fixed AP business threshold."""
     fit_ap_row = {
         "rx_power": "-20.32",
         "rx_low_alarm": "-20.00",
         "rx_low_warning": "-17.00",
     }
     result = compute_state({"fit_ap_row": fit_ap_row})
-    assert result.ap_status == "alarm"
-    assert result.color == STATUS_COLORS["alarm"]
+    assert result.ap_status == "abnormal"
+    assert result.color == STATUS_COLORS["abnormal"]
     assert result.color == "FEE2E2"
+
+
+@pytest.mark.parametrize(
+    ("reported_status", "expected"),
+    [("critical", "abnormal"), ("no_light", "no_light"), ("链路断开", "link_down")],
+)
+def test_ap_status_preserves_explicit_backend_abnormal_statuses(
+    reported_status: str,
+    expected: str,
+) -> None:
+    assert compute_ap_status(
+        {"rx_power": "-10.00", "optical_alarm_status": reported_status}
+    ) == expected
 
 
 def test_state_engine_link_down_unified_pink():
@@ -6336,7 +6387,7 @@ def test_state_engine_three_pages_same_input_same_output():
     # FIT-AP ViewModel
     fit_ap_result = fit_ap_vm.populate_row(fit_ap_row)
     assert fit_ap_result.switch_status == "alarm"
-    assert fit_ap_result.ap_status == "notice"
+    assert fit_ap_result.ap_status == "abnormal"
 
     # Trackside ViewModel (using same FIT-AP row)
     trackside_row = {

@@ -413,30 +413,26 @@ class EffectiveTracksideApScope:
 
         rows: list[dict[str, object | None]] = []
         for station_id in sorted(
-            self.station_scope_ids,
+            self.plans_by_station,
             key=lambda value: (
                 self.station_sort_orders.get(value, 2**31 - 1),
                 self.station_names.get(value, ""),
             ),
         ):
-            plan = self.plans_by_station.get(station_id)
-            planning_missing = plan is None
-            planned = int((plan or {}).get("ap_count") or 0)
-            actual = online_by_station.get(station_id, 0)
+            plan = self.plans_by_station[station_id]
+            planning_missing = False
+            planned = max(int(plan.get("ap_count") or 0), 0)
+            observed_online = online_by_station.get(station_id, 0)
+            actual = min(observed_online, planned)
             status = "normal"
             warning = ""
-            if planning_missing:
-                status = "planning_missing"
-                warning = "缺少规划资料。"
-            elif planned == 0 and actual > 0:
+            if planned == 0 and observed_online > 0:
                 status = "unplanned_online"
                 warning = "存在未纳入规划的在线 AP。"
-            elif actual > planned:
+            elif observed_online > planned:
                 status = "over_planned"
                 warning = "实际上线 AP 数量超过当前规划数量，请检查规划资料或 AP 归属关系。"
-            count_anomaly = status in {"unplanned_online", "over_planned"} or (
-                planning_missing and actual > 0
-            )
+            count_anomaly = status in {"unplanned_online", "over_planned"}
             rows.append(
                 {
                     "station_id": station_id,
@@ -487,60 +483,10 @@ class EffectiveTracksideApScope:
         matched_online_total = sum(
             int(row["actual_online_count"] or 0) for row in station_rows
         )
-        unmatched_online_total = self.fit_ap_unmatched_online_count
         stale_total = self.fit_ap_lldp_snapshot_stale_count + self.fit_ap_lldp_exact_match_pending_count
         conflict_total = self.fit_ap_current_conflict_count + self.fit_ap_ambiguous_online_count
         real_missing_total = self.fit_ap_planning_missing_count + self.fit_ap_station_master_missing_count
-        unknown_total = self.fit_ap_unknown_association_count
-        if stale_total:
-            result.append(
-                {
-                    "site": "等待 LLDP 同步",
-                    "total": None,
-                    "online": stale_total,
-                    "offline": None,
-                    "online_rate": "—",
-                    "remark": "FIT-AP 已在线，车站交换机 LLDP 快照较旧或尚未完成当前精确关联，已计入合计实际上线数。",
-                    "status": "lldp_snapshot_stale",
-                }
-            )
-        if real_missing_total:
-            result.append(
-                {
-                    "site": "基础资料待补充",
-                    "total": None,
-                    "online": real_missing_total,
-                    "offline": None,
-                    "online_rate": "—",
-                    "remark": "在线 AP 缺少可用的正式站点或 AP 基础资料，已计入合计实际上线数。",
-                    "status": "unassigned",
-                }
-            )
-        if conflict_total:
-            result.append(
-                {
-                    "site": "当前 LLDP 冲突",
-                    "total": None,
-                    "online": conflict_total,
-                    "offline": None,
-                    "online_rate": "—",
-                    "remark": "当前完整 LLDP 快照存在多个有效站点或接口候选，已计入合计实际上线数。",
-                    "status": "lldp_conflict_current",
-                }
-            )
-        if unknown_total:
-            result.append(
-                {
-                    "site": "状态未知",
-                    "total": None,
-                    "online": unknown_total,
-                    "offline": None,
-                    "online_rate": "—",
-                    "remark": "FIT-AP 在线状态缺少明确运行态证据，未计入实际上线数。",
-                    "status": "unknown",
-                }
-            )
-        online_total = matched_online_total + unmatched_online_total
+        online_total = min(matched_online_total, planned_total)
         total_anomaly = any(bool(row.get("count_anomaly")) for row in station_rows)
         total_remark = (
             f"AC AP 资源 {self.fit_ap_resource_total_count} 个；"
@@ -549,6 +495,11 @@ class EffectiveTracksideApScope:
             f"等待 LLDP 同步 {stale_total} 个；当前 LLDP 冲突 {conflict_total} 个；"
             f"基础资料待补充 {real_missing_total} 个；状态未知 {self.fit_ap_unknown_total_count} 个。"
         )
+        if self.fit_ap_unmatched_online_count:
+            total_remark = (
+                f"{total_remark} 数据质量提示：另有 {self.fit_ap_unmatched_online_count} 个 AC 在线 AP "
+                "未关联到 AP 规划维护中的有效站点，未计入业务统计。"
+            )
         if total_anomaly:
             total_remark = f"{total_remark} 统计范围存在数量异常，请查看分站状态。"
         result.append(

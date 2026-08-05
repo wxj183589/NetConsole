@@ -226,7 +226,7 @@ def _snapshot() -> TracksideApBusinessLoadResult:
     )
 
 
-def test_trackside_terminal_targets_use_exact_device_uuid_mac_or_ip() -> None:
+def test_trackside_terminal_targets_use_exact_switch_and_fit_ap_ids() -> None:
     switch = Device(
         device_uuid="switch-device-1",
         name="同名设备",
@@ -245,60 +245,29 @@ def test_trackside_terminal_targets_use_exact_device_uuid_mac_or_ip() -> None:
         ssh_username="admin",
         ssh_password="secret",
     )
-    ap_by_mac = Device(
-        device_uuid="ap-terminal-mac",
-        name="AP-OTHER-NAME",
-        mac_address="00:11:22:33:44:55",
-        device_type="Cloud-AP",
-        primary_address="192.0.2.20",
-        ssh_enabled=True,
-        ssh_username="admin",
-        ssh_password="secret",
-    )
-    ap_by_ip = Device(
-        device_uuid="ap-terminal-ip",
-        name="AP-IP",
-        device_type="AP",
-        primary_address="192.0.2.21",
-        ssh_enabled=True,
-        ssh_username="admin",
-        ssh_password="secret",
-    )
-    fit_resource_uuid = Device(
-        device_uuid="fit-resource-uuid",
-        name="AP-DISPLAY-NAME",
-        device_type="Cloud-AP",
-        primary_address="192.0.2.22",
-        ssh_enabled=True,
-        ssh_username="admin",
-        ssh_password="secret",
-    )
-    indexes = trackside_ap_business_query_service.TracksideApBusinessQueryService._terminal_device_indexes(
-        [switch, same_name, ap_by_mac, ap_by_ip, fit_resource_uuid]
+    terminal_devices = trackside_ap_business_query_service.TracksideApBusinessQueryService._terminal_devices_by_uuid(
+        [switch, same_name]
     )
 
-    mac_row = trackside_ap_business_query_service.TracksideApBusinessQueryService._row(
+    linked_row = trackside_ap_business_query_service.TracksideApBusinessQueryService._row(
         {
             "device_uuid": "switch-device-1",
             "device_name": "同名设备",
-            "ap_uuid": "fit-resource-uuid",
+            "ac_device_uuid": "ac-device-1",
+            "ap_uuid": "fit-ap-1",
             "ap_name": "AP-DISPLAY-NAME",
             "ap_mac": "0011-2233-4455",
+            "ap_ip": "192.0.2.20",
+            "ap_state": "R/M",
         },
         "normal",
-        None,
-        indexes,
+        terminal_devices,
     )
-    assert mac_row.switch_device_uuid == "switch-device-1"
-    assert mac_row.switch_terminal_available is True
-    assert mac_row.ap_terminal_device_uuid == "ap-terminal-mac"
-    assert mac_row.ap_terminal_available is True
-
-    ip_device, reason = trackside_ap_business_query_service.TracksideApBusinessQueryService._ap_terminal_device(
-        {"ap_ip": "192.0.2.21"}, indexes
-    )
-    assert ip_device is ap_by_ip
-    assert reason == ""
+    assert linked_row.switch_device_uuid == "switch-device-1"
+    assert linked_row.switch_terminal_available is True
+    assert linked_row.ap_terminal_ac_id == "ac-device-1"
+    assert linked_row.ap_terminal_ap_id == "fit-ap-1"
+    assert linked_row.ap_terminal_available is True
 
     missing_row = trackside_ap_business_query_service.TracksideApBusinessQueryService._row(
         {
@@ -307,37 +276,36 @@ def test_trackside_terminal_targets_use_exact_device_uuid_mac_or_ip() -> None:
             "ap_name": "AP-DISPLAY-NAME",
         },
         "normal",
-        None,
-        indexes,
+        terminal_devices,
     )
     assert missing_row.switch_device_uuid == ""
     assert missing_row.switch_terminal_available is False
-    assert missing_row.ap_terminal_device_uuid == ""
+    assert missing_row.ap_terminal_ac_id == ""
+    assert missing_row.ap_terminal_ap_id == ""
     assert missing_row.ap_terminal_available is False
-    assert "未找到" in missing_row.ap_terminal_unavailable_reason
+    assert missing_row.ap_terminal_unavailable_reason == "未关联到 FIT-AP 资源"
 
 
-def test_trackside_terminal_target_rejects_multiple_exact_ap_devices() -> None:
-    first = Device(
-        device_uuid="ap-1",
-        mac_address="0011-2233-4455",
-        device_type="Cloud-AP",
+def test_trackside_fit_ap_terminal_rejects_missing_ip_or_offline_state() -> None:
+    missing_ip = trackside_ap_business_query_service.TracksideApBusinessQueryService._fit_ap_terminal_status(
+        {"ac_device_uuid": "ac-1", "ap_uuid": "ap-1", "ap_state": "R/M"}
     )
-    second = Device(
-        device_uuid="ap-2",
-        mac_address="00:11:22:33:44:55",
-        device_type="FAT-AP",
-    )
-    indexes = trackside_ap_business_query_service.TracksideApBusinessQueryService._terminal_device_indexes(
-        [first, second]
+    offline = trackside_ap_business_query_service.TracksideApBusinessQueryService._fit_ap_terminal_status(
+        {"ac_device_uuid": "ac-1", "ap_uuid": "ap-1", "ap_ip": "192.0.2.20", "ap_state": "Idle"}
     )
 
-    device, reason = trackside_ap_business_query_service.TracksideApBusinessQueryService._ap_terminal_device(
-        {"ap_mac": "0011-2233-4455"}, indexes
+    assert missing_ip == (
+        "ac-1",
+        "ap-1",
+        False,
+        "当前 AP 没有 IP，无法打开外部终端",
     )
-
-    assert device is None
-    assert reason == "AP 终端目标存在多个精确设备记录"
+    assert offline == (
+        "ac-1",
+        "ap-1",
+        False,
+        "当前 AP 离线或状态异常，无法打开外部终端",
+    )
 
 
 def test_business_snapshot_and_online_overview_share_effective_scope(
@@ -1531,16 +1499,14 @@ def test_trackside_plan_preview_save_export_and_artifact_download(tmp_path: Path
     ]
     assert [
         [overview.cell(row, column).value for column in range(1, 6)]
-        for row in range(2, 6)
-    ] == [
-        ["站点A", 20, 0, 20, 0],
-        ["站点B", None, 0, 0, None],
-        ["小洋江站", None, 0, 0, None],
-        ["合计", 20, 0, 20, 0.0],
-    ]
-    assert overview.max_row == 5
-    assert overview["E5"].number_format == "0.0%"
-    assert overview["E5"].font.bold is True
+            for row in range(2, 4)
+        ] == [
+            ["站点A", 20, 0, 20, 0],
+            ["合计", 20, 0, 20, 0.0],
+        ]
+    assert overview.max_row == 3
+    assert overview["E3"].number_format == "0.0%"
+    assert overview["E3"].font.bold is True
     metadata = json.loads(current_workbook["_netconsole_meta"]["B1"].value)
     assert current_workbook["_netconsole_meta"].sheet_state == "hidden"
     assert metadata["template_type"] == "trackside_ap_station_plan"
@@ -2142,11 +2108,11 @@ def test_trackside_ap_online_status_uses_planned_targets_and_weighted_total(
     status = service.get_trackside_ap_online_status("demo")
 
     assert status.planned_ap_count == 945
-    assert status.actual_online_count == 720
-    assert status.offline_count == 225
-    assert status.online_rate == 76.2
+    assert status.actual_online_count == 719
+    assert status.offline_count == 226
+    assert status.online_rate == 76.1
     assert status.unassigned_count == 1
-    assert "当前有 1 个待关联在线轨旁 AP。" in status.warning
+    assert "1 个 AC 在线 AP" in status.warning
     assert status.excluded_device_count == 2
     assert status.fit_ap_resource_total_count == 948
     assert status.fit_ap_matched_count == 945
@@ -2218,20 +2184,15 @@ def test_trackside_ap_online_status_uses_planned_targets_and_weighted_total(
         0,
     ]
     assert [overview.cell(13, column).value for column in range(1, 5)] == [
-        "基础资料待补充",
-        None,
-        1,
-        None,
-    ]
-    assert [overview.cell(14, column).value for column in range(1, 5)] == [
         "合计",
         945,
-        720,
-        225,
+        719,
+        226,
     ]
-    assert overview["E14"].value == pytest.approx(0.762)
-    assert overview["E14"].number_format == "0.0%"
-    assert overview["E14"].font.bold is True
+    assert "未计入业务统计" in str(overview.cell(13, 6).value)
+    assert overview["E13"].value == pytest.approx(0.761)
+    assert overview["E13"].number_format == "0.0%"
+    assert overview["E13"].font.bold is True
     workbook.close()
 
 
@@ -2288,7 +2249,7 @@ def test_trackside_online_status_refreshes_from_exact_switch_lldp_station_eviden
     )
 
     before = service.get_trackside_ap_online_status("demo")
-    assert before.actual_online_count == 1
+    assert before.actual_online_count == 0
     assert before.fit_ap_unmatched_online_count == 1
 
     DeviceFactRepository(database).replace_lldp_neighbors(
@@ -2354,7 +2315,7 @@ def test_trackside_ap_online_status_ignores_reference_count_and_flags_excess(
     assert by_name["站点A"].actual_online_count == 1
     assert by_name["站点A"].offline_count == 4
     assert by_name["站点A"].online_rate == 20.0
-    assert by_name["站点B"].actual_online_count == 2
+    assert by_name["站点B"].actual_online_count == 1
     assert by_name["站点B"].offline_count == 0
     assert by_name["站点B"].online_rate is None
     assert by_name["站点B"].count_anomaly is True
@@ -2364,13 +2325,13 @@ def test_trackside_ap_online_status_ignores_reference_count_and_flags_excess(
         == "实际上线 AP 数量超过当前规划数量，请检查规划资料或 AP 归属关系。"
     )
     assert by_name["站点C"].planned_ap_count == 0
-    assert by_name["站点C"].actual_online_count == 1
+    assert by_name["站点C"].actual_online_count == 0
     assert by_name["站点C"].offline_count == 0
     assert by_name["站点C"].online_rate is None
     assert by_name["站点C"].count_anomaly is True
     assert status.planned_ap_count == 6
-    assert status.actual_online_count == 4
-    assert status.offline_count == 2
+    assert status.actual_online_count == 2
+    assert status.offline_count == 4
     assert status.online_rate is None
     assert status.count_anomaly is True
     assert status.scope_device_count == 5

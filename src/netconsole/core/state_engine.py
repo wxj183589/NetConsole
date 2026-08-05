@@ -46,7 +46,11 @@ def compute_state(context: dict) -> StateResult:
     else:
         switch_status = "unknown"
     ap_status = compute_ap_status(fit_ap_row)
-    optical_status = worse_optical_severity(switch_status, ap_status)
+    optical_status = (
+        ap_status
+        if ap_status == "not_applicable"
+        else worse_optical_severity(switch_status, ap_status)
+    )
     return StateResult(
         switch_status=switch_status,
         ap_status=ap_status,

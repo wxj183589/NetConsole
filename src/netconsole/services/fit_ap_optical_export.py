@@ -3,6 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
+from netconsole.core.ap_optical_capability import (
+    OPTICAL_NOT_APPLICABLE_STATUS,
+    is_ap_optical_applicable,
+)
 from netconsole.core.optical_severity_engine import compute_optical_severity, worse_optical_severity
 from netconsole.core.sources.ap_source import compute_ap_status
 from netconsole.core.state_engine import compute_state, display_optical_status
@@ -22,10 +26,13 @@ OPTICAL_EXPORT_COLOR_RGB = {
     "link_down": "FFE4E6",
     "no_light": "E5E7EB",
     "skipped": "F3F4F6",
+    "not_applicable": "F3F4F6",
 }
 
 
 def evaluate_fit_ap_row_status(row: dict[str, object | None], neighbor_optical: dict[str, object | None] | None = None) -> str:
+    if not is_ap_optical_applicable(row.get("model")):
+        return OPTICAL_NOT_APPLICABLE_STATUS
     if neighbor_optical:
         ap_status = compute_ap_status(row)
         switch_status = _evaluate_neighbor_status(row.get("neighbor_rx_power"), neighbor_optical)
@@ -41,9 +48,11 @@ def evaluate_fit_ap_row_status(row: dict[str, object | None], neighbor_optical: 
 
 
 def evaluate_fit_ap_ap_status(row: dict[str, object | None]) -> str:
+    if not is_ap_optical_applicable(row.get("model")):
+        return OPTICAL_NOT_APPLICABLE_STATUS
     if bool(row.get("is_ap_offline")):
         return "offline"
-    return _evaluate_ap_result(row).severity
+    return compute_ap_status(row)
 
 
 def evaluate_fit_ap_switch_status(row: dict[str, object | None], neighbor_optical: dict[str, object | None] | None = None) -> str:

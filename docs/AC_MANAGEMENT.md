@@ -53,7 +53,7 @@ AC 总览、轨旁 AP 业务和 AP 扩展的本地重建终态也只保留行数
 - 单 AP 定向更新接受 H3C 常见 `xxxx-xxxx-xxxx` MAC，后端统一规范化为标准格式；前端提交时优先使用 `ap_uuid`，其次 `ap_mac`，最后 `ap_name`，避免展示格式差异误拦稳定目标。
 - 真实 AC 写操作：只保留历史产品契约中的“固化新 AP”和“开启 AP 远程登录”两项固定命令；Feature `web.ac_dangerous_actions` 是正式客户版默认功能，仍必须经过命令预览、摘要校验、二次确认、真实后台 Task、取消和持久化审计；不在 AC 页扩展单独 `save force`；
 - OmniPeek 名称表：Feature `ac.omnipeek_name_table_export` 是正式客户版默认功能。窗口提供线路名、输出目录、三类数据源及真实数量、轨旁/车载导出内容、Radio 模式、颜色、结构化逐行预览、状态筛选、搜索、分页、选择和受控强制导出；AP 扩展信息只匹配当前 AC 的 FIT-AP，车载 MR 由用户决定是否加入。预览和 `.nam` 导出分别进入 Job Center 与 Export Process，继续复用共享 MAC 推导、冲突校验、导出日志、Artifact 清单、取消和恢复规则；
-- 单 AP 外部终端：FIT-AP 行菜单由 `NcDataTable` 的类型安全菜单模型统一渲染，保留详情、光衰更新和复制动作。Feature `web.ac_fit_ap_external_terminal` 与 `desktop.native_bridge` 均为正式 Electron 默认功能；Python 只接受 AC/AP/终端类型语义 ID。H3C FIT-AP 外部终端使用固定 Telnet 23 端口直接打开，不保存、不读取、不传递 FIT-AP 用户名和密码，也不依赖设备管理中同 IP 设备或 SSH 配置。工具集中的外部终端配置仍由 `available_external_terminal_configs` 管理，再通过 `DesktopActionService` 启动。Browser/Server、离线和无 IP 场景拒绝，API 不接收或返回程序路径、参数、协议、端口、用户名和密码；
+- 单 AP 外部终端：FIT-AP 行菜单由 `NcDataTable` 的类型安全菜单模型统一渲染，保留详情、光衰更新和复制动作。Feature `web.ac_fit_ap_external_terminal` 与 `desktop.native_bridge` 均为正式 Electron 默认功能；Python 只接受 AC/AP/终端类型语义 ID。H3C FIT-AP 外部终端使用固定 Telnet 23 端口直接打开，不保存、不读取、不传递 FIT-AP 用户名和密码，也不依赖设备管理中同 IP 设备或 SSH 配置。AC 管理与轨旁 AP 业务共用 `useExternalTerminalLauncher.ts` 的 options、终端选择、launch、提示和防重复逻辑；轨旁 AP 只提交精确关联的 AC/AP ID。工具集中的外部终端配置仍由 `available_external_terminal_configs` 管理，再通过 `DesktopActionService` 启动。Browser/Server、离线和无 IP 场景拒绝，API 不接收或返回程序路径、参数、协议、端口、用户名和密码；
 - 配置快照：历史列表、受控正文分块、行号、搜索和同批次 running/saved 差异；
 - 刷新：总览和详情 15 秒，FIT-AP 与快照历史 30 秒；页面隐藏或卸载后停止，连续失败三次后降为 60 秒并保留最后一次成功数据。
 - Mesh-Link 底层能力：AC 管理只保留受控采集、Parser、结构化快照、raw 和基础设施查询，不再呈现列车监控页面。列车、CT/TC 端点、当前 AP、RSSI、位置、匹配状态和两侧收光统一由“轨道交通 / 列车在线情况”展示。
@@ -86,7 +86,9 @@ FIT-AP 在线状态统一使用 AC 返回的明确运行态：`R/M`（运行/主
 
 ## 光衰关联规则
 
-AC 管理 / FIT-AP 资源及其详情、资源 XLSX 继续复用 `compute_ap_status`、`compute_switch_status` 与 `classify_optical_health()`，按照模块返回的 RX/TX 门限、端口状态和设备告警判断；Vue 不重复计算。固定 `-13.90 dBm` 不进入本模块，也不改写资源表、光衰历史或设备告警。基础资料中的 FIT-AP 业务投影和轨旁 AP 业务会读取这里的最新原始 AP Rx 后另行计算业务状态，因此允许同一 AP 在资源详情显示“模块正常”，同时在两个业务模块显示“业务光衰异常”。
+AC 管理 / FIT-AP 资源及其详情、资源 XLSX 复用 `compute_ap_status`、`compute_switch_status` 与 `classify_optical_health()`。AP 侧最新有效 Rx 使用统一业务门限：严格低于 `-13.90 dBm` 为“光衰大”，等于或高于门限为正常；该数值判定优先于后端陈旧的 `normal`，但不会写回资源表、光衰历史或设备原始告警。后端明确的无光、链路断开或模块异常继续保留；缺失、空字符串、占位符或非法数值为“光诊断未采集”，不能默认为正常。Vue 使用同一门限做旧接口兼容兜底。
+
+型号去除首尾空格并忽略大小写后等于 `WA6522` 时，`optical_applicable=false`，状态固定为 `not_applicable` / “不适用”，说明为“该型号使用网口接入，不适用 AP 光模块光衰检测。”。该型号不使用交换机 Rx 回填 AP Rx，不进入关联光衰异常数量、异常筛选或异常导出；详情保留光衰区块但使用中性状态。
 
 AP 在线状态和光模块健康状态是两个独立维度：在线 AP 的一般/严重光功率告警同样进入 AC 当前异常和概览；轨旁 AP 业务只把该结果作为“AP 设备模块状态”展示，不直接用它代替 AP 业务光衰。离线 AP 的正常光功率不会伪造为 AC 光衰异常。Web 展示状态为：
 
@@ -96,8 +98,9 @@ AP 在线状态和光模块健康状态是两个独立维度：在线 AP 的一�
 | `warning` | 最新有效样本为关注、提示或一般光功率告警 |
 | `critical` | 最新有效样本为严重告警、链路异常、链路断开或无光 |
 | `no_data` | 没有可用光衰结果，或设备明确返回无光模块 |
+| `not_applicable` | AP 型号不适用 AP 光模块诊断；当前为 `WA6522` |
 
-“关联光衰异常”只统计 `data_freshness=fresh` 的 `warning` 和 `critical`，按 AP 身份去重；同 AP 多个异常接口仍保留全部明细。当前有效期为 24 小时，超期样本标记 `stale`，保留在历史中但不作为实时正常或当前异常计数。设备明确返回 `no_module` 时显示“无光模块”，不计入光衰异常；`no_light` 仅在模块存在且接收光功率缺失或低于无光阈值时按严重异常处理。详情页同时展示 AP 在线状态、光衰判定、告警等级、原因、数据状态与最近更新时间。
+“关联光衰异常”只统计 `optical_applicable=true` 且 `data_freshness=fresh` 的 `warning` 和 `critical`，按 AP 身份去重；同 AP 多个异常接口仍保留全部明细。当前有效期为 24 小时，超期样本标记 `stale`，保留在历史中但不作为实时正常或当前异常计数。设备明确返回 `no_module` 时显示“无光模块”，不计入光衰异常；缺少数值且没有明确异常证据时返回 `no_data`。详情页同时展示 AP 在线状态、光衰判定、告警等级、原因、数据状态与最近更新时间。
 
 ## 配置查看
 

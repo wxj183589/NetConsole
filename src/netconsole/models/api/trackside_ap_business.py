@@ -48,7 +48,8 @@ class TracksideApBusinessRowDTO(ApiModel):
     ap_uuid: str = ""
     ap_mac: str = ""
     ap_name: str = ""
-    ap_terminal_device_uuid: str = ""
+    ap_terminal_ac_id: str = ""
+    ap_terminal_ap_id: str = ""
     ap_terminal_available: bool = False
     ap_terminal_unavailable_reason: str = ""
     ap_rx_power: Any = None

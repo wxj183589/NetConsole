@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { Download, Refresh, View } from '@element-plus/icons-vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
+import { useRoute } from 'vue-router'
 
 import { getAcApHistory } from '../../api/acManagement'
 import { listStations } from '../../api/railTransitBaseData'
@@ -12,8 +12,6 @@ import {
   executeAcActionPlan,
   getAcActionAudit,
   getAcActionPlan,
-  getAcExternalTerminalOptions,
-  openAcFitApExternalTerminal,
   acFitApResourceArtifactDownloadRequest,
   startAcFitApResourceExport,
 } from '../../api/acWebParity'
@@ -25,6 +23,7 @@ import { useConfirm } from '../../components/feedback/useConfirm'
 import { useTaskStore } from '../../stores/tasks'
 import { t } from '../../i18n/runtime'
 import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
+import { useExternalTerminalLauncher } from '../../composables/useExternalTerminalLauncher'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import ConfigDiffViewer from '../../components/config-diff/ConfigDiffViewer.vue'
 import type { NcDataTableContextMenuItem } from '../../components/table/NcDataTableContextMenu'
@@ -35,19 +34,31 @@ import type { Station } from '../../types/railTransitBaseData'
 import type {
   AcActionAudit,
   AcActionPlan,
-  AcTerminalType,
   AcWebTask,
 } from '../../types/acWebParity'
 import { displayInterfaceName } from '../../utils/interfaceName'
-import { formatOpticalPower, opticalStatusPresentation, opticalValuePresentation } from '../../utils/opticalPresentation'
+import {
+  apOpticalStatusPresentation,
+  apOpticalValuePresentation,
+  formatOpticalPower,
+  opticalStatusPresentation,
+  opticalValuePresentation,
+} from '../../utils/opticalPresentation'
 import { acConfigDiffModel } from './configDiffAdapter'
 
 const store = useAcManagementStore()
 const taskStore = useTaskStore()
 const route = useRoute()
-const router = useRouter()
 const { confirm } = useConfirm()
 const userSelectedExport = useUserSelectedExport()
+const {
+  busy: terminalLoading,
+  fitApTerminalVisible: terminalVisible,
+  fitApTerminalType: terminalType,
+  fitApTerminalOptions: terminalOptions,
+  requestFitApTerminal,
+  launchSelectedFitApTerminal,
+} = useExternalTerminalLauncher()
 const activeTab = ref('aps')
 const detailVisible = ref(false)
 const configVisible = ref(false)
@@ -73,11 +84,6 @@ const omniPeekScopeIds = ref<string[]>([])
 const resourceExportBusy = ref(false)
 const resourceExportSaving = ref(false)
 const lastResourceExportTask = ref<AcWebTask | null>(null)
-const terminalVisible = ref(false)
-const terminalLoading = ref(false)
-const terminalTarget = ref<AcAp | null>(null)
-const terminalType = ref<AcTerminalType>('securecrt')
-const terminalOptions = ref<Array<{ terminal_type: AcTerminalType; label: string }>>([])
 const historyTitle = computed(() => ({ radio: 'Radio 历史', lldp: 'LLDP 历史', optical: '光衰历史' }[historyKind.value]))
 
 function acColumn<Row extends object>(
@@ -569,53 +575,7 @@ async function copyApRow(row: AcAp): Promise<void> {
 async function requestExternalTerminal(row: AcAp): Promise<void> {
   const disabledReason = externalTerminalDisabledReason(row)
   if (disabledReason) return void ElMessage.warning(disabledReason)
-  terminalLoading.value = true
-  terminalTarget.value = row
-  try {
-    const result = await getAcExternalTerminalOptions()
-    if (!result.options.length) {
-      await promptExternalTerminalSettings()
-      return
-    }
-    terminalOptions.value = result.options
-    terminalType.value = result.default_terminal_type || result.options[0].terminal_type
-    if (result.options.length === 1) await launchExternalTerminal()
-    else terminalVisible.value = true
-  } catch (cause) {
-    ElMessage.error(safeError(cause, t('ac.terminal.open_failed', '打开外部终端失败')))
-  } finally {
-    terminalLoading.value = false
-  }
-}
-
-async function launchExternalTerminal(): Promise<void> {
-  const row = terminalTarget.value
-  if (!row || !store.filters.ac_id) return
-  terminalLoading.value = true
-  try {
-    const result = await openAcFitApExternalTerminal(row.id, store.filters.ac_id, terminalType.value)
-    terminalVisible.value = false
-    ElMessage.success(result.message)
-  } catch (cause) {
-    if (cause instanceof Error && 'code' in cause && cause.code === 'TERMINAL_NOT_CONFIGURED') {
-      await promptExternalTerminalSettings()
-      return
-    }
-    ElMessage.error(safeError(cause, t('ac.terminal.open_failed', '打开外部终端失败')))
-  } finally {
-    terminalLoading.value = false
-  }
-}
-
-async function promptExternalTerminalSettings(): Promise<void> {
-  try {
-    await ElMessageBox.confirm('尚未配置可用的外部终端程序。请先到工具集配置 SecureCRT、PuTTY 或 Xshell。', '外部终端未配置', {
-      confirmButtonText: '打开工具集', cancelButtonText: '取消', type: 'warning',
-    })
-    await router.push({ name: 'tool-collection', query: { section: 'external-terminal' } })
-  } catch {
-    // 用户取消。
-  }
+  await requestFitApTerminal({ apId: row.id, acId: store.filters.ac_id })
 }
 
 function safeError(cause: unknown, fallback: string): string {
@@ -651,10 +611,62 @@ function opticalLabel(value: string, freshness = 'fresh'): string {
   return freshness === 'stale' ? `${label}（数据已过期）` : label
 }
 
-function opticalJudgement(optical: { optical_status: string; data_freshness: string; is_current_anomaly: boolean }): string {
+function apOpticalPresentation(ap: AcAp) {
+  return apOpticalStatusPresentation({
+    backendStatus: ap.optical_status,
+    rxPower: ap.optical_rx_power,
+    model: ap.model,
+    opticalApplicable: ap.optical_applicable,
+    freshness: ap.optical_data_freshness,
+  })
+}
+
+function detailApOpticalPresentation(optical: AcOptical) {
+  const ap = store.selected?.ap
+  return apOpticalStatusPresentation({
+    backendStatus: optical.optical_status,
+    rxPower: optical.rx_power,
+    model: ap?.model,
+    opticalApplicable: optical.optical_applicable ?? ap?.optical_applicable,
+    freshness: optical.data_freshness,
+  })
+}
+
+function detailApOpticalValuePresentation(optical: AcOptical) {
+  const ap = store.selected?.ap
+  return apOpticalValuePresentation({
+    backendStatus: optical.ap_rx_status || optical.optical_status,
+    rxPower: optical.rx_power,
+    model: ap?.model,
+    opticalApplicable: optical.optical_applicable ?? ap?.optical_applicable,
+    freshness: optical.data_freshness,
+  })
+}
+
+function detailThresholdPresentation(optical: AcOptical) {
+  const ap = store.selected?.ap
+  return apOpticalValuePresentation({
+    backendStatus: optical.raw_status || optical.optical_status,
+    rxPower: optical.rx_power,
+    model: ap?.model,
+    opticalApplicable: optical.optical_applicable ?? ap?.optical_applicable,
+    freshness: optical.data_freshness,
+  })
+}
+
+function opticalAlertTitle(optical: AcOptical): string {
+  if (detailApOpticalPresentation(optical).status === 'not_applicable') {
+    return '该型号使用网口接入，不适用 AP 光模块光衰检测。'
+  }
+  return optical.anomaly_reason || detailApOpticalPresentation(optical).label
+}
+
+function opticalJudgement(optical: AcOptical): string {
+  const presentation = detailApOpticalPresentation(optical)
+  if (presentation.status === 'not_applicable') return '不适用'
   if (optical.data_freshness === 'stale') return '数据已过期'
-  if (optical.is_current_anomaly) return '异常'
-  return optical.optical_status === 'no_data' ? '无数据' : '正常'
+  if (presentation.tone === 'danger' || optical.is_current_anomaly) return '异常'
+  return presentation.status === 'not_collected' ? '光诊断未采集' : '正常'
 }
 
 function opticalFreshnessLabel(value: string): string {
@@ -836,7 +848,7 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
           >
             <template #cell-selection="{ row }"><el-checkbox :model-value="selectedApIds.has(row.id)" @change="setApSelected(row.id, Boolean($event))" /></template>
             <template #cell-status="{ row }"><el-tag :type="statusType(row.status)" effect="light">{{ statusLabel(row.status) }}</el-tag></template>
-            <template #cell-optical_status="{ row }"><el-tag :type="statusType(row.optical_status)" effect="light">{{ opticalLabel(row.optical_status, row.optical_data_freshness) }}</el-tag></template>
+            <template #cell-optical_status="{ row }"><el-tag :type="apOpticalPresentation(row).tagType" effect="light">{{ apOpticalPresentation(row).label }}</el-tag></template>
             <template #cell-actions="{ row }"><el-button link type="primary" :icon="View" @click="openDetail(row)">详情</el-button></template>
           </NcDataTable>
           <div class="pagination-row">
@@ -901,7 +913,7 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
 
     <el-dialog v-model="terminalVisible" :title="t('ac.terminal.select', '选择外部终端')" width="420px">
       <el-select v-model="terminalType" style="width: 100%"><el-option v-for="option in terminalOptions" :key="option.terminal_type" :label="option.label" :value="option.terminal_type" /></el-select>
-      <template #footer><el-button @click="terminalVisible = false">{{ t('common.cancel', '取消') }}</el-button><el-button type="primary" :loading="terminalLoading" @click="launchExternalTerminal">{{ t('ac.terminal.open', '打开终端') }}</el-button></template>
+      <template #footer><el-button @click="terminalVisible = false">{{ t('common.cancel', '取消') }}</el-button><el-button type="primary" :loading="terminalLoading" @click="launchSelectedFitApTerminal">{{ t('ac.terminal.open', '打开终端') }}</el-button></template>
     </el-dialog>
 
     <el-drawer v-model="detailVisible" title="FIT-AP 详情" size="min(920px, 95vw)">
@@ -978,7 +990,7 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
           </el-descriptions>
 
           <div class="section-heading"><h3>光衰</h3><el-button v-if="isFeatureEnabled('web.ac_fit_ap_history')" link type="primary" @click="openHistory('optical')">查看历史</el-button></div>
-          <el-alert :title="store.selected.optical.anomaly_reason" :type="statusType(store.selected.optical.optical_status)" :closable="false" show-icon />
+          <el-alert :title="opticalAlertTitle(store.selected.optical)" :type="detailApOpticalPresentation(store.selected.optical).tagType" :closable="false" show-icon />
           <el-descriptions :column="2" border class="optical-detail">
             <el-descriptions-item label="Tx Power">
               <el-tooltip
@@ -998,7 +1010,7 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
               >
                 <span
                   data-testid="optical-ap-rx-power"
-                  :class="opticalValuePresentation(store.selected.optical.ap_rx_status, store.selected.optical.data_freshness).className"
+                  :class="detailApOpticalValuePresentation(store.selected.optical).className"
                 >{{ formatOpticalPower(store.selected.optical.rx_power) }}</span>
               </el-tooltip>
             </el-descriptions-item>
@@ -1016,14 +1028,14 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
             <el-descriptions-item label="阈值状态">
               <el-tag
                 data-testid="optical-threshold-status"
-                :type="opticalValuePresentation(store.selected.optical.raw_status, store.selected.optical.data_freshness).tagType"
-                :class="opticalValuePresentation(store.selected.optical.raw_status, store.selected.optical.data_freshness).className"
+                :type="detailThresholdPresentation(store.selected.optical).tagType"
+                :class="detailThresholdPresentation(store.selected.optical).className"
                 effect="light"
-              >{{ display(store.selected.optical.threshold_status || opticalValuePresentation(store.selected.optical.raw_status, store.selected.optical.data_freshness).label) }}</el-tag>
+              >{{ detailThresholdPresentation(store.selected.optical).label }}</el-tag>
             </el-descriptions-item>
             <el-descriptions-item label="AP 在线状态">{{ statusLabel(store.selected.optical.ap_online_status) }}</el-descriptions-item>
             <el-descriptions-item label="光衰判定"><span data-testid="optical-judgement">{{ opticalJudgement(store.selected.optical) }}</span></el-descriptions-item>
-            <el-descriptions-item label="告警等级">{{ opticalLabel(store.selected.optical.optical_status) }}</el-descriptions-item>
+            <el-descriptions-item label="告警等级">{{ detailApOpticalPresentation(store.selected.optical).label }}</el-descriptions-item>
             <el-descriptions-item label="数据状态">{{ opticalFreshnessLabel(store.selected.optical.data_freshness) }}</el-descriptions-item>
             <el-descriptions-item label="温度">{{ display(store.selected.optical.temperature) }}</el-descriptions-item>
             <el-descriptions-item label="电压">{{ display(store.selected.optical.voltage) }}</el-descriptions-item>

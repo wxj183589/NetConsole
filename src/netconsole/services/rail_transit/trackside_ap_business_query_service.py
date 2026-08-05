@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
@@ -15,8 +14,7 @@ from netconsole.models.api.trackside_ap_business import (
 from netconsole.models.device import Device
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.adapters.trackside_switch import resolve_trackside_switch_adapter
-from netconsole.services.ap_identity.normalizers import normalize_mac_key
-from netconsole.services.ap_identity import ApIdentityQueryService
+from netconsole.parsers.h3c.ac.state_mapper import classify_fit_ap_state
 from netconsole.models.device_address import normalize_ip_address
 from netconsole.services.netmiko_connection import connection_targets
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
@@ -38,14 +36,6 @@ from netconsole.services.rail_transit.trackside_ap_business_snapshot import (
 from netconsole.services.rail_transit.effective_trackside_ap_scope import (
     TracksideApScopeContext,
 )
-
-
-@dataclass(frozen=True)
-class _TerminalDeviceIndexes:
-    by_uuid: Mapping[str, Device]
-    by_mac: Mapping[str, Sequence[Device]]
-    by_ip: Mapping[str, Sequence[Device]]
-
 
 class TracksideApBusinessQueryService:
     """读取 Qt 轨旁 AP 业务页同一份 Repository 与光衰规则。"""
@@ -133,9 +123,9 @@ class TracksideApBusinessQueryService:
         current_page = max(1, int(page))
         size = max(1, min(int(page_size), 200))
         start = (current_page - 1) * size
-        terminal_indexes = self._terminal_device_indexes(snapshot.all_devices)
+        terminal_devices = self._terminal_devices_by_uuid(snapshot.all_devices)
         items = [
-            self._row(row, severity, terminal_indexes)
+            self._row(row, severity, terminal_devices)
             for row, severity in enriched[start : start + size]
         ]
         scope = snapshot.scope
@@ -220,23 +210,15 @@ class TracksideApBusinessQueryService:
         )
 
     @staticmethod
-    def _terminal_device_indexes(
+    def _terminal_devices_by_uuid(
         devices: Sequence[Device],
-    ) -> _TerminalDeviceIndexes:
+    ) -> Mapping[str, Device]:
         by_uuid: dict[str, Device] = {}
-        by_mac: dict[str, list[Device]] = {}
-        by_ip: dict[str, list[Device]] = {}
         for device in devices:
             device_uuid = str(device.device_uuid or "").strip()
             if device_uuid:
                 by_uuid[device_uuid] = device
-            mac_key = normalize_mac_key(device.mac_address)
-            if mac_key:
-                by_mac.setdefault(mac_key, []).append(device)
-            ip_key = normalize_ip_address(device.primary_address)
-            if ip_key:
-                by_ip.setdefault(ip_key, []).append(device)
-        return _TerminalDeviceIndexes(by_uuid=by_uuid, by_mac=by_mac, by_ip=by_ip)
+        return by_uuid
 
     @staticmethod
     def _device_terminal_status(
@@ -255,57 +237,43 @@ class TracksideApBusinessQueryService:
         return device_uuid, True, ""
 
     @staticmethod
-    def _ap_terminal_device(
+    def _fit_ap_terminal_status(
         row: Mapping[str, object | None],
-        indexes: _TerminalDeviceIndexes,
-    ) -> tuple[Device | None, str]:
-        candidates: dict[str, Device] = {}
-        ap_types = {"cloud-ap", "fat-ap", "ap"}
-        mac_key = normalize_mac_key(row.get("ap_mac"))
-        ip_key = normalize_ip_address(row.get("ap_ip"))
-        for candidate in [
-            *(indexes.by_mac.get(mac_key or "", [])),
-            *(indexes.by_ip.get(ip_key or "", [])),
-        ]:
-            if str(candidate.device_type or "").strip().casefold() in ap_types:
-                device_uuid = str(candidate.device_uuid or "").strip()
-                if device_uuid:
-                    candidates[device_uuid] = candidate
-        if len(candidates) > 1:
-            return None, "AP 终端目标存在多个精确设备记录"
-        if not candidates:
-            return None, "未找到可启动终端的 AP 设备记录"
-        return next(iter(candidates.values())), ""
+    ) -> tuple[str, str, bool, str]:
+        ac_id = str(row.get("ac_device_uuid") or "").strip()
+        ap_id = str(row.get("ap_uuid") or "").strip()
+        if not ac_id or not ap_id:
+            return "", "", False, "未关联到 FIT-AP 资源"
+        if not normalize_ip_address(row.get("ap_ip")):
+            return ac_id, ap_id, False, "当前 AP 没有 IP，无法打开外部终端"
+        status = classify_fit_ap_state(
+            row.get("ap_state"),
+            row.get("ap_state_display"),
+        )
+        if status != "online":
+            return ac_id, ap_id, False, "当前 AP 离线或状态异常，无法打开外部终端"
+        return ac_id, ap_id, True, ""
 
     @staticmethod
     def _row(
         row: dict[str, object | None],
         severity: str,
-        identity_or_terminal_indexes: ApIdentityQueryService | _TerminalDeviceIndexes | None,
-        terminal_indexes: _TerminalDeviceIndexes | None = None,
+        terminal_devices: Mapping[str, Device],
     ) -> TracksideApBusinessRowDTO:
-        terminal_indexes = terminal_indexes or identity_or_terminal_indexes
-        if not isinstance(terminal_indexes, _TerminalDeviceIndexes):
-            terminal_indexes = _TerminalDeviceIndexes({}, {}, {})
         observed_neighbor_mac = str(row.get("lldp_observed_neighbor_mac") or "")
         lldp_match_status = str(row.get("lldp_match_status") or "")
         effective_station_id = str(
             row.get("effective_station_id") or row.get("station_id") or ""
         )
-        switch_device = terminal_indexes.by_uuid.get(
+        switch_device = terminal_devices.get(
             str(row.get("device_uuid") or "").strip()
         )
         switch_uuid, switch_available, switch_reason = TracksideApBusinessQueryService._device_terminal_status(
             switch_device
         )
-        ap_device, ap_resolution_reason = TracksideApBusinessQueryService._ap_terminal_device(
-            row, terminal_indexes
+        ap_ac_id, ap_id, ap_available, ap_reason = (
+            TracksideApBusinessQueryService._fit_ap_terminal_status(row)
         )
-        ap_uuid, ap_available, ap_reason = TracksideApBusinessQueryService._device_terminal_status(
-            ap_device
-        )
-        if ap_device is None:
-            ap_uuid, ap_available, ap_reason = "", False, ap_resolution_reason
         return TracksideApBusinessRowDTO(
             row_id=str(row.get("business_row_id") or ""),
             station_id=effective_station_id,
@@ -358,7 +326,8 @@ class TracksideApBusinessQueryService:
             ap_uuid=str(row.get("ap_uuid") or ""),
             ap_mac=str(row.get("ap_mac") or ""),
             ap_name=str(row.get("ap_name") or ""),
-            ap_terminal_device_uuid=ap_uuid,
+            ap_terminal_ac_id=ap_ac_id,
+            ap_terminal_ap_id=ap_id,
             ap_terminal_available=ap_available,
             ap_terminal_unavailable_reason=ap_reason,
             ap_rx_power=row.get("ap_rx_power"),
