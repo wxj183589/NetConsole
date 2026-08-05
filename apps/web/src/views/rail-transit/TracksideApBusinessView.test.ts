@@ -37,9 +37,14 @@ const platformMocks = vi.hoisted(() => ({
   hostType: 'browser' as 'browser' | 'electron',
 }))
 const terminalMocks = vi.hoisted(() => ({
-  busy: { value: false },
+  busy: { __v_isRef: true, value: false },
+  fitApTerminalVisible: { __v_isRef: true, value: false },
+  fitApTerminalType: { __v_isRef: true, value: 'securecrt' },
+  fitApTerminalOptions: { __v_isRef: true, value: [] },
   preflightDeviceTerminalTargets: vi.fn(),
   launchDeviceTerminalTargets: vi.fn(),
+  requestFitApTerminal: vi.fn(),
+  launchSelectedFitApTerminal: vi.fn(),
   showPreflightSkipped: vi.fn(),
   showLaunchResult: vi.fn(),
 }))
@@ -50,8 +55,8 @@ vi.mock('../../platform/runtime', () => ({
   downloadBackendResource: platformMocks.downloadBackendResource,
   getPlatformAdapter: () => ({ hostType: platformMocks.hostType }),
 }))
-vi.mock('../../composables/useDeviceTerminalLauncher', () => ({
-  useDeviceTerminalLauncher: () => terminalMocks,
+vi.mock('../../composables/useExternalTerminalLauncher', () => ({
+  useExternalTerminalLauncher: () => terminalMocks,
 }))
 
 import TracksideApBusinessView from './TracksideApBusinessView.vue'
@@ -116,7 +121,8 @@ const rows: TracksideApBusinessRow[] = [
     switch_device_uuid: 'switch-device-1',
     switch_terminal_available: true,
     switch_terminal_unavailable_reason: '',
-    ap_terminal_device_uuid: 'ap-terminal-1',
+    ap_terminal_ac_id: 'ac-1',
+    ap_terminal_ap_id: 'ap-1',
     ap_terminal_available: true,
     ap_terminal_unavailable_reason: '',
   },
@@ -146,9 +152,10 @@ const rows: TracksideApBusinessRow[] = [
     switch_device_uuid: 'switch-device-2',
     switch_terminal_available: false,
     switch_terminal_unavailable_reason: '缺少管理地址',
-    ap_terminal_device_uuid: '',
+    ap_terminal_ac_id: '',
+    ap_terminal_ap_id: '',
     ap_terminal_available: false,
-    ap_terminal_unavailable_reason: '未找到可启动终端的 AP 设备记录',
+    ap_terminal_unavailable_reason: '未关联到 FIT-AP 资源',
   },
 ]
 
@@ -322,6 +329,8 @@ describe('TracksideApBusinessView mounted behavior', () => {
       'web.rail_trackside_ap_business_export': { visible: true, enabled: true },
       'web.rail_task_control': { visible: true, enabled: true },
       'web.device_management_desktop': { visible: true, enabled: true },
+      'web.ac_fit_ap_external_terminal': { visible: true, enabled: true },
+      'desktop.native_bridge': { visible: true, enabled: true },
       'rail.zte_trackside_switch_adapter': { visible: true, enabled: true },
     })
     api.listTracksideApBusiness.mockResolvedValue(page())
@@ -343,6 +352,8 @@ describe('TracksideApBusinessView mounted behavior', () => {
     platformMocks.hostType = 'browser'
     terminalMocks.preflightDeviceTerminalTargets.mockReset()
     terminalMocks.launchDeviceTerminalTargets.mockReset()
+    terminalMocks.requestFitApTerminal.mockReset()
+    terminalMocks.launchSelectedFitApTerminal.mockReset()
     terminalMocks.showPreflightSkipped.mockReset()
     terminalMocks.showLaunchResult.mockReset()
     terminalMocks.preflightDeviceTerminalTargets.mockResolvedValue({
@@ -351,6 +362,11 @@ describe('TracksideApBusinessView mounted behavior', () => {
       skippedDevices: [],
     })
     terminalMocks.launchDeviceTerminalTargets.mockResolvedValue({ success: 1, failed: 0, failures: [] })
+    terminalMocks.requestFitApTerminal.mockResolvedValue(null)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    })
     localStorage.clear()
     delete (window as Window & { netconsoleDesktop?: unknown }).netconsoleDesktop
   })
@@ -509,21 +525,23 @@ describe('TracksideApBusinessView mounted behavior', () => {
     wrapper.unmount()
   })
 
-  it('shows terminal actions only on target columns and launches exact device UUIDs', async () => {
+  it('shows the shared terminal label only on target columns and uses exact switch or FIT-AP targets', async () => {
     platformMocks.hostType = 'electron'
     terminalMocks.preflightDeviceTerminalTargets
       .mockResolvedValueOnce({ terminalType: 'securecrt', launchableDevices: ['switch-device-1'], skippedDevices: [] })
-      .mockResolvedValueOnce({ terminalType: 'securecrt', launchableDevices: ['ap-terminal-1'], skippedDevices: [] })
     const wrapper = await mountView()
     const items = wrapper.getComponent(NcDataTableStub).props('contextMenuItems') as Array<{
       key: string
+      label: string
       visible: (context: { row: TracksideApBusinessRow; columnKey: string }) => boolean
       disabled: (context: { row: TracksideApBusinessRow; columnKey: string }) => boolean
       disabledReason: (context: { row: TracksideApBusinessRow; columnKey: string }) => string
-      action: (context: { row: TracksideApBusinessRow; columnKey: string }) => Promise<void>
+      action: (context: { row: TracksideApBusinessRow; columnKey: string; cellValue?: unknown }) => Promise<void>
     }>
     const switchAction = items.find((item) => item.key === 'switch-external-terminal')!
     const apAction = items.find((item) => item.key === 'ap-external-terminal')!
+    const copyCell = items.find((item) => item.key === 'copy-cell')!
+    const copyRow = items.find((item) => item.key === 'copy-row')!
     const context = (row: TracksideApBusinessRow, columnKey: string) => ({ row, columnKey })
 
     expect(switchAction.visible(context(rows[0], 'device_name'))).toBe(true)
@@ -531,18 +549,26 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(apAction.visible(context(rows[0], 'ap_mac'))).toBe(true)
     expect(apAction.visible(context(rows[0], 'ap_name'))).toBe(true)
     expect(apAction.visible(context(rows[0], 'interface_name'))).toBe(false)
+    expect(switchAction.label).toBe('打开外部终端')
+    expect(apAction.label).toBe('打开外部终端')
     expect(switchAction.disabled(context(rows[1], 'device_name'))).toBe(true)
     expect(switchAction.disabledReason(context(rows[1], 'device_name'))).toBe('缺少管理地址')
-    expect(apAction.disabledReason(context(rows[1], 'ap_mac'))).toBe('未找到可启动终端的 AP 设备记录')
+    expect(apAction.disabledReason(context(rows[1], 'ap_mac'))).toBe('未关联到 FIT-AP 资源')
 
     await switchAction.action(context(rows[0], 'device_name'))
+    await apAction.action(context(rows[0], 'ap_mac'))
     await apAction.action(context(rows[0], 'ap_name'))
+    await copyCell.action({ ...context(rows[0], 'ap_mac'), cellValue: rows[0].ap_mac })
+    await copyRow.action(context(rows[0], 'ap_name'))
 
-    expect(terminalMocks.preflightDeviceTerminalTargets).toHaveBeenNthCalledWith(1, ['switch-device-1'])
-    expect(terminalMocks.preflightDeviceTerminalTargets).toHaveBeenNthCalledWith(2, ['ap-terminal-1'])
+    expect(terminalMocks.preflightDeviceTerminalTargets).toHaveBeenCalledWith(['switch-device-1'])
     expect(terminalMocks.preflightDeviceTerminalTargets).not.toHaveBeenCalledWith(['ap-1'])
     expect(terminalMocks.preflightDeviceTerminalTargets).not.toHaveBeenCalledWith(['bc5a-3457-8cc0'])
-    expect(terminalMocks.launchDeviceTerminalTargets).toHaveBeenCalledTimes(2)
+    expect(terminalMocks.launchDeviceTerminalTargets).toHaveBeenCalledTimes(1)
+    expect(terminalMocks.requestFitApTerminal).toHaveBeenNthCalledWith(1, { acId: 'ac-1', apId: 'ap-1' })
+    expect(terminalMocks.requestFitApTerminal).toHaveBeenNthCalledWith(2, { acId: 'ac-1', apId: 'ap-1' })
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('bc5a-3457-8cc0')
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('SW-A\tXGE1/0/1'))
     wrapper.unmount()
   })
 

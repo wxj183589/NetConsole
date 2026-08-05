@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { Download, Refresh, View } from '@element-plus/icons-vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
+import { useRoute } from 'vue-router'
 
 import { getAcApHistory } from '../../api/acManagement'
 import { listStations } from '../../api/railTransitBaseData'
@@ -12,8 +12,6 @@ import {
   executeAcActionPlan,
   getAcActionAudit,
   getAcActionPlan,
-  getAcExternalTerminalOptions,
-  openAcFitApExternalTerminal,
   acFitApResourceArtifactDownloadRequest,
   startAcFitApResourceExport,
 } from '../../api/acWebParity'
@@ -25,6 +23,7 @@ import { useConfirm } from '../../components/feedback/useConfirm'
 import { useTaskStore } from '../../stores/tasks'
 import { t } from '../../i18n/runtime'
 import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
+import { useExternalTerminalLauncher } from '../../composables/useExternalTerminalLauncher'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import ConfigDiffViewer from '../../components/config-diff/ConfigDiffViewer.vue'
 import type { NcDataTableContextMenuItem } from '../../components/table/NcDataTableContextMenu'
@@ -35,7 +34,6 @@ import type { Station } from '../../types/railTransitBaseData'
 import type {
   AcActionAudit,
   AcActionPlan,
-  AcTerminalType,
   AcWebTask,
 } from '../../types/acWebParity'
 import { displayInterfaceName } from '../../utils/interfaceName'
@@ -45,9 +43,16 @@ import { acConfigDiffModel } from './configDiffAdapter'
 const store = useAcManagementStore()
 const taskStore = useTaskStore()
 const route = useRoute()
-const router = useRouter()
 const { confirm } = useConfirm()
 const userSelectedExport = useUserSelectedExport()
+const {
+  busy: terminalLoading,
+  fitApTerminalVisible: terminalVisible,
+  fitApTerminalType: terminalType,
+  fitApTerminalOptions: terminalOptions,
+  requestFitApTerminal,
+  launchSelectedFitApTerminal,
+} = useExternalTerminalLauncher()
 const activeTab = ref('aps')
 const detailVisible = ref(false)
 const configVisible = ref(false)
@@ -73,11 +78,6 @@ const omniPeekScopeIds = ref<string[]>([])
 const resourceExportBusy = ref(false)
 const resourceExportSaving = ref(false)
 const lastResourceExportTask = ref<AcWebTask | null>(null)
-const terminalVisible = ref(false)
-const terminalLoading = ref(false)
-const terminalTarget = ref<AcAp | null>(null)
-const terminalType = ref<AcTerminalType>('securecrt')
-const terminalOptions = ref<Array<{ terminal_type: AcTerminalType; label: string }>>([])
 const historyTitle = computed(() => ({ radio: 'Radio 历史', lldp: 'LLDP 历史', optical: '光衰历史' }[historyKind.value]))
 
 function acColumn<Row extends object>(
@@ -569,53 +569,7 @@ async function copyApRow(row: AcAp): Promise<void> {
 async function requestExternalTerminal(row: AcAp): Promise<void> {
   const disabledReason = externalTerminalDisabledReason(row)
   if (disabledReason) return void ElMessage.warning(disabledReason)
-  terminalLoading.value = true
-  terminalTarget.value = row
-  try {
-    const result = await getAcExternalTerminalOptions()
-    if (!result.options.length) {
-      await promptExternalTerminalSettings()
-      return
-    }
-    terminalOptions.value = result.options
-    terminalType.value = result.default_terminal_type || result.options[0].terminal_type
-    if (result.options.length === 1) await launchExternalTerminal()
-    else terminalVisible.value = true
-  } catch (cause) {
-    ElMessage.error(safeError(cause, t('ac.terminal.open_failed', '打开外部终端失败')))
-  } finally {
-    terminalLoading.value = false
-  }
-}
-
-async function launchExternalTerminal(): Promise<void> {
-  const row = terminalTarget.value
-  if (!row || !store.filters.ac_id) return
-  terminalLoading.value = true
-  try {
-    const result = await openAcFitApExternalTerminal(row.id, store.filters.ac_id, terminalType.value)
-    terminalVisible.value = false
-    ElMessage.success(result.message)
-  } catch (cause) {
-    if (cause instanceof Error && 'code' in cause && cause.code === 'TERMINAL_NOT_CONFIGURED') {
-      await promptExternalTerminalSettings()
-      return
-    }
-    ElMessage.error(safeError(cause, t('ac.terminal.open_failed', '打开外部终端失败')))
-  } finally {
-    terminalLoading.value = false
-  }
-}
-
-async function promptExternalTerminalSettings(): Promise<void> {
-  try {
-    await ElMessageBox.confirm('尚未配置可用的外部终端程序。请先到工具集配置 SecureCRT、PuTTY 或 Xshell。', '外部终端未配置', {
-      confirmButtonText: '打开工具集', cancelButtonText: '取消', type: 'warning',
-    })
-    await router.push({ name: 'tool-collection', query: { section: 'external-terminal' } })
-  } catch {
-    // 用户取消。
-  }
+  await requestFitApTerminal({ apId: row.id, acId: store.filters.ac_id })
 }
 
 function safeError(cause: unknown, fallback: string): string {
@@ -901,7 +855,7 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
 
     <el-dialog v-model="terminalVisible" :title="t('ac.terminal.select', '选择外部终端')" width="420px">
       <el-select v-model="terminalType" style="width: 100%"><el-option v-for="option in terminalOptions" :key="option.terminal_type" :label="option.label" :value="option.terminal_type" /></el-select>
-      <template #footer><el-button @click="terminalVisible = false">{{ t('common.cancel', '取消') }}</el-button><el-button type="primary" :loading="terminalLoading" @click="launchExternalTerminal">{{ t('ac.terminal.open', '打开终端') }}</el-button></template>
+      <template #footer><el-button @click="terminalVisible = false">{{ t('common.cancel', '取消') }}</el-button><el-button type="primary" :loading="terminalLoading" @click="launchSelectedFitApTerminal">{{ t('ac.terminal.open', '打开终端') }}</el-button></template>
     </el-dialog>
 
     <el-drawer v-model="detailVisible" title="FIT-AP 详情" size="min(920px, 95vw)">

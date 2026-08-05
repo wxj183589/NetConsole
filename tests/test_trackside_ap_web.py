@@ -226,7 +226,7 @@ def _snapshot() -> TracksideApBusinessLoadResult:
     )
 
 
-def test_trackside_terminal_targets_use_exact_device_uuid_mac_or_ip() -> None:
+def test_trackside_terminal_targets_use_exact_switch_and_fit_ap_ids() -> None:
     switch = Device(
         device_uuid="switch-device-1",
         name="同名设备",
@@ -245,60 +245,30 @@ def test_trackside_terminal_targets_use_exact_device_uuid_mac_or_ip() -> None:
         ssh_username="admin",
         ssh_password="secret",
     )
-    ap_by_mac = Device(
-        device_uuid="ap-terminal-mac",
-        name="AP-OTHER-NAME",
-        mac_address="00:11:22:33:44:55",
-        device_type="Cloud-AP",
-        primary_address="192.0.2.20",
-        ssh_enabled=True,
-        ssh_username="admin",
-        ssh_password="secret",
-    )
-    ap_by_ip = Device(
-        device_uuid="ap-terminal-ip",
-        name="AP-IP",
-        device_type="AP",
-        primary_address="192.0.2.21",
-        ssh_enabled=True,
-        ssh_username="admin",
-        ssh_password="secret",
-    )
-    fit_resource_uuid = Device(
-        device_uuid="fit-resource-uuid",
-        name="AP-DISPLAY-NAME",
-        device_type="Cloud-AP",
-        primary_address="192.0.2.22",
-        ssh_enabled=True,
-        ssh_username="admin",
-        ssh_password="secret",
-    )
-    indexes = trackside_ap_business_query_service.TracksideApBusinessQueryService._terminal_device_indexes(
-        [switch, same_name, ap_by_mac, ap_by_ip, fit_resource_uuid]
+    terminal_devices = trackside_ap_business_query_service.TracksideApBusinessQueryService._terminal_devices_by_uuid(
+        [switch, same_name]
     )
 
-    mac_row = trackside_ap_business_query_service.TracksideApBusinessQueryService._row(
+    linked_row = trackside_ap_business_query_service.TracksideApBusinessQueryService._row(
         {
             "device_uuid": "switch-device-1",
             "device_name": "同名设备",
-            "ap_uuid": "fit-resource-uuid",
+            "ac_device_uuid": "ac-device-1",
+            "ap_uuid": "fit-ap-1",
             "ap_name": "AP-DISPLAY-NAME",
             "ap_mac": "0011-2233-4455",
+            "ap_ip": "192.0.2.20",
+            "ap_state": "R/M",
         },
         "normal",
         None,
-        indexes,
+        terminal_devices,
     )
-    assert mac_row.switch_device_uuid == "switch-device-1"
-    assert mac_row.switch_terminal_available is True
-    assert mac_row.ap_terminal_device_uuid == "ap-terminal-mac"
-    assert mac_row.ap_terminal_available is True
-
-    ip_device, reason = trackside_ap_business_query_service.TracksideApBusinessQueryService._ap_terminal_device(
-        {"ap_ip": "192.0.2.21"}, indexes
-    )
-    assert ip_device is ap_by_ip
-    assert reason == ""
+    assert linked_row.switch_device_uuid == "switch-device-1"
+    assert linked_row.switch_terminal_available is True
+    assert linked_row.ap_terminal_ac_id == "ac-device-1"
+    assert linked_row.ap_terminal_ap_id == "fit-ap-1"
+    assert linked_row.ap_terminal_available is True
 
     missing_row = trackside_ap_business_query_service.TracksideApBusinessQueryService._row(
         {
@@ -308,36 +278,36 @@ def test_trackside_terminal_targets_use_exact_device_uuid_mac_or_ip() -> None:
         },
         "normal",
         None,
-        indexes,
+        terminal_devices,
     )
     assert missing_row.switch_device_uuid == ""
     assert missing_row.switch_terminal_available is False
-    assert missing_row.ap_terminal_device_uuid == ""
+    assert missing_row.ap_terminal_ac_id == ""
+    assert missing_row.ap_terminal_ap_id == ""
     assert missing_row.ap_terminal_available is False
-    assert "未找到" in missing_row.ap_terminal_unavailable_reason
+    assert missing_row.ap_terminal_unavailable_reason == "未关联到 FIT-AP 资源"
 
 
-def test_trackside_terminal_target_rejects_multiple_exact_ap_devices() -> None:
-    first = Device(
-        device_uuid="ap-1",
-        mac_address="0011-2233-4455",
-        device_type="Cloud-AP",
+def test_trackside_fit_ap_terminal_rejects_missing_ip_or_offline_state() -> None:
+    missing_ip = trackside_ap_business_query_service.TracksideApBusinessQueryService._fit_ap_terminal_status(
+        {"ac_device_uuid": "ac-1", "ap_uuid": "ap-1", "ap_state": "R/M"}
     )
-    second = Device(
-        device_uuid="ap-2",
-        mac_address="00:11:22:33:44:55",
-        device_type="FAT-AP",
-    )
-    indexes = trackside_ap_business_query_service.TracksideApBusinessQueryService._terminal_device_indexes(
-        [first, second]
+    offline = trackside_ap_business_query_service.TracksideApBusinessQueryService._fit_ap_terminal_status(
+        {"ac_device_uuid": "ac-1", "ap_uuid": "ap-1", "ap_ip": "192.0.2.20", "ap_state": "Idle"}
     )
 
-    device, reason = trackside_ap_business_query_service.TracksideApBusinessQueryService._ap_terminal_device(
-        {"ap_mac": "0011-2233-4455"}, indexes
+    assert missing_ip == (
+        "ac-1",
+        "ap-1",
+        False,
+        "当前 AP 没有 IP，无法打开外部终端",
     )
-
-    assert device is None
-    assert reason == "AP 终端目标存在多个精确设备记录"
+    assert offline == (
+        "ac-1",
+        "ap-1",
+        False,
+        "当前 AP 离线或状态异常，无法打开外部终端",
+    )
 
 
 def test_business_snapshot_and_online_overview_share_effective_scope(
