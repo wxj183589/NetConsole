@@ -48,6 +48,9 @@ const BRIDGE_TABLE_KEYS: Record<string, UiPreferenceKey> = {
   'mesh-analysis-switch-events:v3': 'mesh-analysis.table.switch-events:v3',
   'mesh-analysis-artifacts:v2': 'mesh-analysis.table.artifacts:v2',
   'mesh-analysis-sources:v2': 'mesh-analysis.table.sources:v2',
+  'trackside-ap-business': 'rail.trackside-ap-business.table.main',
+  'trackside-ap-business-scope-excluded': 'rail.trackside-ap-business.table.scope-excluded',
+  'trackside-ap-business-unmatched-online': 'rail.trackside-ap-business.table.unmatched-online',
 }
 
 const PREVIOUS_TABLE_IDS: Record<string, string> = {
@@ -94,6 +97,11 @@ export function tablePreferenceKey(identity: NcTablePreferenceIdentity): string 
 
 function bridgeTableKey(identity: NcTablePreferenceIdentity): UiPreferenceKey | undefined {
   return BRIDGE_TABLE_KEYS[identity.tableId]
+}
+
+export function waitsForDesktopTablePreference(identity: NcTablePreferenceIdentity): boolean {
+  const bridge = typeof window === 'undefined' ? undefined : window.netconsoleDesktop
+  return Boolean(bridgeTableKey(identity) && bridge?.getUiPreference)
 }
 
 export function migrateVersionedPreference(identity: NcTablePreferenceIdentity, value: NcTablePreferences): NcTablePreferences {

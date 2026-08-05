@@ -211,6 +211,7 @@ const NcDataTableStub = defineComponent({
     emptyText: String,
     height: String,
     tableId: String,
+    rowKey: [String, Function],
   },
   template: `
     <div class="nc-data-table" :data-table-id="tableId" :data-height="height">
@@ -321,6 +322,9 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(buttons(wrapper, '打开任务中心')).toHaveLength(0)
     expect(wrapper.find('.business-table-host').exists()).toBe(true)
     expect(wrapper.find('[data-table-id="trackside-ap-business"]').attributes('data-height')).toBe('100%')
+    const mainTable = wrapper.getComponent(NcDataTableStub)
+    const mainRowKey = mainTable.props('rowKey') as (row: TracksideApBusinessRow) => string
+    expect(mainRowKey(rows[0])).toContain(`${rows[0].device_name}|${rows[0].interface_name}`)
     const tableColumns = wrapper.getComponent(NcDataTableStub).props('columns') as Array<Record<string, unknown>>
     expect(tableColumns.find((column) => column.key === 'description')).toMatchObject({
       width: 90,

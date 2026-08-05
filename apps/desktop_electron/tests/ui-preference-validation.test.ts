@@ -40,6 +40,9 @@ describe('UI preference validation', () => {
       'device-detail.lldp',
       'device-detail.task-records',
       'device-detail.related-businesses',
+      'rail.trackside-ap-business.table.main',
+      'rail.trackside-ap-business.table.scope-excluded',
+      'rail.trackside-ap-business.table.unmatched-online',
     ] as const) {
       expect(validateUiPreferenceKey(key)).toBe(key)
       expect(validateUiPreferenceValue(key, preference)).toEqual(preference)
