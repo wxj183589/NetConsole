@@ -131,6 +131,41 @@ def test_rejects_malicious_tool_paths_and_stale_versions(tmp_path: Path) -> None
     assert client.get("/api/settings").json()["values"]["theme"] == "dark"
 
 
+def test_network_components_endpoint_supports_custom_and_builtin_modes(tmp_path: Path) -> None:
+    client, paths = _client(tmp_path)
+    initial = client.get("/api/settings/network-components")
+    assert initial.status_code == 200
+    snapshot = initial.json()
+    assert [item["component_name"] for item in snapshot["components"]] == ["iperf3", "fping"]
+
+    custom = _exe(tmp_path, "fping.exe")
+    saved = client.put(
+        "/api/settings/network-components/fping",
+        json={"mode": "custom", "custom_path": custom, "expected_version": snapshot["version"]},
+    )
+    assert saved.status_code == 200
+    fping = next(item for item in saved.json()["components"] if item["component_name"] == "fping")
+    assert fping["mode"] == "custom"
+    assert fping["source"] == "custom"
+    assert fping["effective_path"].endswith("fping.exe")
+
+    restored = client.put(
+        "/api/settings/network-components/fping",
+        json={"mode": "builtin", "custom_path": "", "expected_version": saved.json()["version"]},
+    )
+    assert restored.status_code == 200
+    assert next(item for item in restored.json()["components"] if item["component_name"] == "fping")["mode"] == "builtin"
+    persisted = json.loads(paths.settings_path.read_text(encoding="utf-8"))
+    assert persisted["online_mr.fping_path"] == ""
+    assert persisted["network_components/fping_mode"] == "builtin"
+
+    stale = client.put(
+        "/api/settings/network-components/fping",
+        json={"mode": "builtin", "custom_path": "", "expected_version": snapshot["version"]},
+    )
+    assert stale.status_code == 409
+
+
 def test_legacy_ipop_path_round_trips_without_blocking_other_settings(
     tmp_path: Path,
 ) -> None:

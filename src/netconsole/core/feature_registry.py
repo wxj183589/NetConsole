@@ -104,6 +104,13 @@ FEATURES: tuple[FeatureItem, ...] = (
         "web.network_tools",
         "page",
     ),
+    FeatureItem(
+        "web.network_test_components",
+        "网络测试组件（Web）",
+        "web.network_tools",
+        "page",
+        runtime_toggleable=False,
+    ),
     FeatureItem("web.network_tools_tcp_port_test", "TCP 端口测试（Web）", "web.network_tools_toolbox", "action"),
     FeatureItem(
         "web.tool_collection",

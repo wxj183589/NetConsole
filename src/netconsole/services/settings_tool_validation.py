@@ -51,7 +51,10 @@ def validate_settings_tool_path(tool_id: SettingsToolId, value: str | Path) -> P
             raise SettingsToolPathError(f"{display_name} 文件不存在")
         if not path.is_file():
             raise SettingsToolPathError(f"{display_name} 路径必须是普通文件")
-        return path.resolve(strict=True)
+        resolved = path.resolve(strict=True)
+        with resolved.open("rb"):
+            pass
+        return resolved
     except OSError as exc:
         raise SettingsToolPathError(f"{display_name} 路径不可访问：{exc}") from exc
 

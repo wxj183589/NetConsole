@@ -338,7 +338,7 @@ describe('SystemSettingsView mounted behavior', () => {
 
     expect(wrapper.find('[data-testid="select-ipop"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="launch-ipop"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('网络测试组件')
+    expect(wrapper.text()).not.toContain('网络测试组件')
     await wrapper.find('[data-testid="save"]').trigger('click')
     await flushPromises()
     expect(api.saveSystemSettings).toHaveBeenCalledWith(
@@ -350,13 +350,9 @@ describe('SystemSettingsView mounted behavior', () => {
 
   it('shows controlled errors for rejected native bridge operations', async () => {
     const { wrapper } = await mounted()
-    settingsBridge.selectSettingsTool.mockRejectedValueOnce(new Error('tool bridge failed'))
     settingsBridge.selectSettingsColor.mockRejectedValueOnce(new Error('color bridge failed'))
     settingsBridge.executeSettingsAction.mockRejectedValueOnce(new Error('action bridge failed'))
 
-    wrapper.findAllComponents({ name: 'NcExecutablePathField' })[0]!.vm.$emit('select')
-    await flushPromises()
-    expect(wrapper.text()).toContain('tool bridge failed')
     await wrapper.find('[data-testid="select-color"]').trigger('click'); await flushPromises()
     expect(wrapper.text()).toContain('color bridge failed')
     await wrapper.find('[data-testid="open-settings-config"]').trigger('click'); await flushPromises()

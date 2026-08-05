@@ -17,8 +17,8 @@
 | `module.rail_transit` | 轨道交通 | `ENABLED` | MR、Mesh、轨旁 AP、车载网络 |
 | `module.config_collection` | 配置采集 | `ENABLED` | 快照、比较、批量采集 |
 | `module.file_management` | 文件管理 | `ENABLED` | 局点文件和下载 |
-| `module.network_tools` | 网络工具 | `ENABLED` | Ping/fping、iPerf、无线扫描和工具箱 |
-| `module.tools` | 工具集 | `ENABLED` | Electron Desktop 本机第三方 EXE、系统终端引用、分类与受控权限启动 |
+| `module.network_tools` | 网络工具 | `ENABLED` | 网络测试能力的兼容模块标识；页面统一归入工具集 |
+| `module.tools` | 工具集 | `ENABLED` | 流量测试、连通性检测、无线扫描、网络测试组件和 Electron 第三方 EXE 管理 |
 | `module.command_reference` | 命令参考 | `ENABLED` | 命令、解析器与消费者索引 |
 | `module.logs` | 日志 | `ENABLED` | 应用日志 |
 | `module.system_settings` | 系统设置 | `ENABLED` | 设置、清理、版本等 |
@@ -40,6 +40,8 @@ Registry 当前显式登记的主要子功能包括：设备管理页面、连�
 `module.snmp_center` 与 `module.wifi_survey` 已从 Registry、profile、入口、业务代码和资源中删除，并进入 `REMOVED_FEATURE_IDS` 防御集合。历史 profile 即使仍携带这两个 key，也必须被忽略且不能重新启用。设备管理 SNMP v1/v2c 和网络工具无线扫描分别属于现有模块，不得借此恢复已删除平台。
 
 状态语义：`ENABLED` 进入正常 Gate/profile 判定；`DISABLED` 强制隐藏、禁用且不进入客户包，任何 profile 不能重开；`DEVELOPMENT` 只允许源码开发环境；`HIDDEN` 保留登记但不提供用户入口。运行时的 `enabled/visible` 与 Registry 状态不同：`enabled=true, visible=false` 表示能力仍可被依赖和调用但不生成导航入口；`enabled=false` 必须同时 `visible=false`，前端路由、后端 API 和任务入口均按统一 Gate 拒绝新访问。
+
+`web.network_test_components` 是 `module.tools` 下的 Electron Desktop 配置页，读取 `/api/settings/network-components` 并保存 `builtin/custom` 模式；内置组件缺失或自定义组件失效时，解析器返回可见回退原因，不由 Agent 配置路径覆盖。
 
 ## 4. 新功能登记流程
 

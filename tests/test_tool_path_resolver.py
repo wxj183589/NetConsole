@@ -11,6 +11,7 @@ from netconsole.services.tool_path_resolver import (
     get_tool_executable,
     get_tools_root,
     platform_tools_dir_name,
+    resolve_network_tool,
     resolve_tool_path,
 )
 
@@ -18,6 +19,11 @@ from netconsole.services.tool_path_resolver import (
 def _write_tool(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("fake", encoding="utf-8")
+    if path.parent.name == "fping":
+        (path.parent / "cygwin1.dll").write_bytes(b"fake")
+    elif path.parent.name == "iperf3":
+        for companion in ("cygwin1.dll", "cygcrypto-3.dll", "cygz.dll"):
+            (path.parent / companion).write_bytes(b"fake")
     return path
 
 
@@ -57,6 +63,7 @@ def test_resolver_prefers_custom_settings_path(tmp_path: Path) -> None:
     paths = PathResolver(app_root)
     settings = SettingsStore(paths)
     settings.set_value("online_mr.fping_path", str(custom))
+    settings.set_value("network_components/fping_mode", "custom")
 
     assert resolve_tool_path("fping", paths, settings=settings, project_root=tmp_path / "missing") == custom.resolve()
     assert packaged.exists()
@@ -73,6 +80,53 @@ def test_resolver_prefers_explicit_custom_path_before_settings(tmp_path: Path) -
         resolve_tool_path("iperf3", paths, settings=settings, custom_path=explicit, project_root=tmp_path / "missing")
         == explicit.resolve()
     )
+
+
+def test_network_resolver_defaults_to_builtin_without_configuration(tmp_path: Path) -> None:
+    builtin = _write_tool(tmp_path / "resources" / "tools" / "windows-x64" / "fping" / "fping.exe")
+
+    result = resolve_network_tool("fping", PathResolver(tmp_path), project_root=tmp_path)
+
+    assert result.mode == "builtin"
+    assert result.source == "builtin"
+    assert result.effective_path == builtin.resolve()
+
+
+def test_network_resolver_custom_mode_falls_back_to_builtin(tmp_path: Path) -> None:
+    builtin = _write_tool(tmp_path / "resources" / "tools" / "windows-x64" / "fping" / "fping.exe")
+    settings = SettingsStore(PathResolver(tmp_path))
+    settings.set_value("network_components/fping_mode", "custom")
+    settings.set_value("online_mr.fping_path", str(tmp_path / "missing" / "fping.exe"))
+
+    result = resolve_network_tool("fping", PathResolver(tmp_path), settings=settings, project_root=tmp_path)
+
+    assert result.source == "builtin"
+    assert result.fallback_used is True
+    assert result.effective_path == builtin.resolve()
+
+
+def test_network_resolver_builtin_mode_falls_back_to_valid_custom(tmp_path: Path) -> None:
+    custom = _write_tool(tmp_path / "custom" / "fping.exe")
+    settings = SettingsStore(PathResolver(tmp_path))
+    settings.set_value("network_components/fping_mode", "builtin")
+    settings.set_value("online_mr.fping_path", str(custom))
+
+    result = resolve_network_tool("fping", PathResolver(tmp_path), settings=settings, project_root=tmp_path / "missing")
+
+    assert result.source == "custom"
+    assert result.fallback_used is True
+    assert result.effective_path == custom.resolve()
+
+
+def test_network_resolver_reports_both_unavailable(tmp_path: Path) -> None:
+    settings = SettingsStore(PathResolver(tmp_path))
+    settings.set_value("network_components/fping_mode", "custom")
+    settings.set_value("online_mr.fping_path", str(tmp_path / "missing" / "fping.exe"))
+
+    result = resolve_network_tool("fping", PathResolver(tmp_path), settings=settings, project_root=tmp_path)
+
+    assert result.available is False
+    assert "fping" in result.validation_message
 
 
 def test_resolver_finds_packaged_app_tools(tmp_path: Path) -> None:

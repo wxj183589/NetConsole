@@ -221,6 +221,12 @@
       "client_package": true,
       "internal_only": false
     },
+    "web.network_test_components": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
     "web.network_tools_tcp_port_test": {
       "visible": true,
       "enabled": true,

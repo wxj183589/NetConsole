@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -12,7 +11,7 @@ from typing import Callable, Iterable
 from netconsole.services.network_tools.toolbox.ping_tools import PingResult, _decode_output
 from netconsole.core.shutdown_manager import shutdown_manager
 from netconsole.core.paths import PathResolver
-from netconsole.services.tool_path_resolver import candidate_tool_paths
+from netconsole.services.tool_path_resolver import resolve_network_tool
 
 
 ProgressCallback = Callable[[PingResult], None]
@@ -27,22 +26,26 @@ class FpingAvailability:
     error: str = ""
     supports_json: bool = False
     supports_source_ip: bool = False
+    source: str = ""
+    fallback_used: bool = False
+    fallback_reason: str = ""
 
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
-def discover_fping(root: Path | None = None, env: dict[str, str] | None = None) -> FpingAvailability:
-    env = env or os.environ
-    for candidate in _candidate_paths(root, env):
-        if not candidate.is_file():
-            continue
-        check = _check_fping(candidate)
-        if check.available:
-            return check
-        if check.error:
-            return check
-    return FpingAvailability(False, error="未找到 resources/tools/windows-x64/fping/fping.exe 或发布包内 tools/windows-x64/fping/fping.exe")
+def discover_fping(root: Path | None = None) -> FpingAvailability:
+    project_root = Path(root).resolve() if root else None
+    paths = PathResolver(project_root) if project_root else PathResolver()
+    resolution = resolve_network_tool("fping", paths, project_root=project_root)
+    if not resolution.available or resolution.effective_path is None:
+        return FpingAvailability(False, error=resolution.validation_message, source=resolution.source)
+    return _check_fping(
+        resolution.effective_path,
+        source=resolution.source,
+        fallback_used=resolution.fallback_used,
+        fallback_reason=resolution.fallback_reason,
+    )
 
 
 def scan_targets(
@@ -177,49 +180,39 @@ def parse_fping_json_line(line: str) -> PingResult | None:
     return None
 
 
-def _candidate_paths(root: Path | None, env: dict[str, str]) -> list[Path]:
-    env_path = env.get("NETCONSOLE_FPING_EXE", "").strip()
-    project_root = Path(root).resolve() if root else None
-    if project_root is not None:
-        candidates = ([Path(env_path)] if env_path else []) + [
-            project_root / "resources" / "tools" / "windows-x64" / "fping" / "fping.exe",
-        ]
-        if (project_root / "_internal").is_dir():
-            candidates.extend(
-                [
-                    project_root / "tools" / "windows-x64" / "fping" / "fping.exe",
-                    project_root / "_internal" / "tools" / "windows-x64" / "fping" / "fping.exe",
-                ]
-            )
-    else:
-        candidates = candidate_tool_paths("fping", PathResolver(), custom_path=env_path or None)
-    unique: list[Path] = []
-    seen: set[Path] = set()
-    for item in candidates:
-        resolved = item.resolve()
-        if resolved not in seen:
-            unique.append(resolved)
-            seen.add(resolved)
-    return unique
-
-
-def _check_fping(path: Path) -> FpingAvailability:
+def _check_fping(
+    path: Path,
+    *,
+    source: str,
+    fallback_used: bool,
+    fallback_reason: str,
+) -> FpingAvailability:
     try:
         version = subprocess.run([str(path), "-v"], cwd=path.parent, capture_output=True, timeout=5, creationflags=CREATE_NO_WINDOW)
         help_result = subprocess.run([str(path), "--help"], cwd=path.parent, capture_output=True, timeout=5, creationflags=CREATE_NO_WINDOW)
     except OSError as exc:
-        return FpingAvailability(False, path, error=f"fping 执行失败：{exc}")
+        return FpingAvailability(False, path, error=f"fping 执行失败：{exc}", source=source)
     except subprocess.TimeoutExpired:
-        return FpingAvailability(False, path, error="fping 检查超时")
+        return FpingAvailability(False, path, error="fping 检查超时", source=source)
     version_text = _decode_output(version.stdout + version.stderr).strip()
     help_text = _decode_output(help_result.stdout + help_result.stderr)
     json_supported = "-J" in help_text or "--json" in help_text
     source_supported = "-S" in help_text or "--src" in help_text
     if version.returncode != 0 or help_result.returncode != 0:
-        return FpingAvailability(False, path, version_text, "fping version/help 检查失败", json_supported, source_supported)
+        return FpingAvailability(False, path, version_text, "fping version/help 检查失败", json_supported, source_supported, source)
     if not json_supported:
-        return FpingAvailability(False, path, version_text, "fping 不支持 JSON 输出", False, source_supported)
-    return FpingAvailability(True, path, version_text, "", True, source_supported)
+        return FpingAvailability(False, path, version_text, "fping 不支持 JSON 输出", False, source_supported, source)
+    return FpingAvailability(
+        True,
+        path,
+        version_text,
+        "",
+        True,
+        source_supported,
+        source,
+        fallback_used,
+        fallback_reason,
+    )
 
 
 def _build_args(availability: FpingAvailability, *, count: int, size: int, timeout_ms: int, source_ip: str) -> list[str]:

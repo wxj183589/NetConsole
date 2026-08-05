@@ -39,11 +39,11 @@ from netconsole.services.network_tools.iperf_runner import (
     build_iperf_server_args,
     run_iperf_client_preflight,
 )
-from netconsole.services.network_tools.iperf_tool_service import find_iperf_tool
 from netconsole.services.network_tools.toolbox.ping_tools import run_tcp_ping
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
 from netconsole.services.traffic.event_hub import TrafficEventHub
 from netconsole.services.traffic.event_store import TrafficEventStore
+from netconsole.services.tool_path_resolver import resolve_network_tool
 
 
 TASK_IPERF_SERVER = "traffic_local_iperf_server"
@@ -373,9 +373,10 @@ class LocalTrafficAdapter:
             raise error from exc
 
     def _run_iperf(self, context: JobContext, run: TrafficRun, mode: str) -> dict[str, object]:
-        tool = find_iperf_tool(context.paths)
+        resolution = resolve_network_tool("iperf3", context.paths)
+        tool = resolution.effective_path
         if tool is None:
-            raise TrafficTestError(TrafficErrorCode.TOOL_NOT_FOUND, "未找到 iPerf3 工具")
+            raise TrafficTestError(TrafficErrorCode.TOOL_NOT_FOUND, resolution.validation_message)
         config_value = dict(context.params.get("config") or {})
         if mode == "server":
             config: IperfServerConfig | IperfClientConfig = _server_config(config_value)
@@ -455,7 +456,10 @@ class LocalTrafficAdapter:
                     if runner.process is None
                     else TrafficErrorCode.PROCESS_EXITED
                 )
-                raise TrafficTestError(code, f"iPerf 进程执行失败：{exc}") from exc
+                raise TrafficTestError(
+                    code,
+                    f"iPerf 进程执行失败（来源：{resolution.source}）：{exc}",
+                ) from exc
         finally:
             monitor_done.set()
             monitor.join(timeout=1)
@@ -486,9 +490,15 @@ class LocalTrafficAdapter:
                 TrafficErrorCode.CAPABILITY_UNSUPPORTED,
                 "本地 fping 暂不支持指定源地址",
             )
-        availability = check_fping_v5_available(project_root=context.paths.app_root)
+        resolution = resolve_network_tool("fping", context.paths)
+        if resolution.effective_path is None:
+            raise TrafficTestError(TrafficErrorCode.TOOL_NOT_FOUND, resolution.validation_message)
+        availability = check_fping_v5_available(fping_path=resolution.effective_path)
         if not availability.available:
-            raise TrafficTestError(TrafficErrorCode.TOOL_NOT_FOUND, availability.error or "fping v5 不可用")
+            raise TrafficTestError(
+                TrafficErrorCode.TOOL_NOT_FOUND,
+                f"fping v5 不可用（来源：{resolution.source}）：{availability.error}",
+            )
 
         run_dir = context.paths.traffic_run_dir(self.site_name, run.traffic_run_id)
         raw_dir = run_dir / "raw"
@@ -505,7 +515,7 @@ class LocalTrafficAdapter:
             key = hashlib.sha1(target.encode("utf-8")).hexdigest()[:12]
             thread = threading.Thread(
                 target=self._collect_fping_target,
-                args=(context, config, target, raw_dir, key, stop_event, output),
+                args=(context, config, target, raw_dir, key, resolution.effective_path, stop_event, output),
                 name=f"traffic-fping-{key}",
                 daemon=True,
             )
@@ -638,6 +648,7 @@ class LocalTrafficAdapter:
         target: str,
         raw_dir: Path,
         key: str,
+        fping_path: Path,
         stop_event: threading.Event,
         output: queue.Queue[tuple[str, str, object | None]],
     ) -> None:
@@ -651,7 +662,7 @@ class LocalTrafficAdapter:
                 output_jsonl_path=raw_dir / f"fping_{key}.jsonl",
                 output_raw_log_path=raw_dir / f"fping_{key}.log",
                 stop_event=stop_event,
-                project_root=context.paths.app_root,
+                fping_path=fping_path,
             ):
                 if not sample.target:
                     sample = replace(sample, target=target)
