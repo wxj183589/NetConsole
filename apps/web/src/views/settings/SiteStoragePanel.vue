@@ -229,8 +229,8 @@ function openSiteEditor(site: SiteRecord, mode: 'full' | 'rename'): void {
   editMode.value = mode
   editForm.value = {
     display_name: String(site.display_name || ''),
-    line_name: normalizedSiteInfo(site.line_name),
-    project_type: normalizedSiteInfo(site.project_type),
+    line_name: siteInfoText(site.line_name),
+    project_type: siteInfoText(site.project_type),
   }
   editDialogVisible.value = true
 }
@@ -499,7 +499,7 @@ function classificationLabel(value: string): string { return ({ active_site: '�
 function actionLabel(value: string): string { return ({ audit_required: '需要审计', safe_delete_to_recycle: '可安全移入回收区', backup_then_rebuild: '备份后重建 Demo', keep_and_review: '保留并复核' } as Record<string, string>)[value] || value }
 function integrityLabel(value: SiteRecord['data_integrity']): string { return ({ ok: '正常', failed: '异常', unknown: '待审计' } as const)[value] || '待审计' }
 function classificationTag(site: SiteRecord): 'success' | 'warning' | 'danger' | 'info' { const value = site.classification || 'unknown'; if (value === 'managed_demo') return 'success'; if (value === 'empty_shell') return 'danger'; if (value.startsWith('legacy')) return 'warning'; return 'info' }
-function normalizedSiteInfo(value: string | null | undefined): string { return String(value || '').trim() }
+function siteInfoText(value: string | null | undefined): string { return String(value || '').trim() }
 function deleteDisabled(site: SiteRecord): boolean { return site.active || site.site_kind === 'demo' || site.classification === 'empty_shell' || busy.value }
 function deleteDisabledReason(site: SiteRecord): string {
   if (site.active) return '当前局点不可删除，请先切换到其他局点。'
@@ -565,9 +565,9 @@ function displayValue(value: unknown): string { if (value === null || value === 
             <el-tag size="small" :type="classificationTag(site)">{{ classificationLabel(site.classification || 'unknown') }}</el-tag>
           </div>
           <div class="site-info-tags">
-            <el-tag v-if="normalizedSiteInfo(site.line_name)" size="small" effect="plain">线路：{{ normalizedSiteInfo(site.line_name) }}</el-tag>
+            <el-tag v-if="siteInfoText(site.line_name)" size="small" effect="plain">线路：{{ siteInfoText(site.line_name) }}</el-tag>
             <el-tag v-else size="small" type="warning" effect="plain">线路未填写</el-tag>
-            <el-tag v-if="normalizedSiteInfo(site.project_type)" size="small" effect="plain">项目类型：{{ normalizedSiteInfo(site.project_type) }}</el-tag>
+            <el-tag v-if="siteInfoText(site.project_type)" size="small" effect="plain">项目类型：{{ siteInfoText(site.project_type) }}</el-tag>
             <el-tag v-else size="small" type="warning" effect="plain">项目类型未填写</el-tag>
           </div>
           <div class="site-facts"><code>{{ site.site_id }}</code><span>{{ formatBytes(site.size_bytes) }}</span><span>完整性：{{ integrityLabel(site.data_integrity) }}</span></div>
