@@ -3,7 +3,7 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { defineComponent } from 'vue'
+import { defineComponent, ref } from 'vue'
 
 import { resetWebFeaturesForTest, setWebFeaturesForTest } from '../../features'
 import { resetUserSelectedExportForTests } from '../../composables/useUserSelectedExport'
@@ -34,13 +34,24 @@ const taskApi = vi.hoisted(() => ({
 }))
 const platformMocks = vi.hoisted(() => ({
   downloadBackendResource: vi.fn(),
+  hostType: 'browser' as 'browser' | 'electron',
+}))
+const terminalMocks = vi.hoisted(() => ({
+  busy: { value: false },
+  preflightDeviceTerminalTargets: vi.fn(),
+  launchDeviceTerminalTargets: vi.fn(),
+  showPreflightSkipped: vi.fn(),
+  showLaunchResult: vi.fn(),
 }))
 
 vi.mock('../../api/tracksideApBusiness', () => api)
 vi.mock('../../api/tasks', () => taskApi)
 vi.mock('../../platform/runtime', () => ({
   downloadBackendResource: platformMocks.downloadBackendResource,
-  getPlatformAdapter: () => ({ hostType: 'browser' }),
+  getPlatformAdapter: () => ({ hostType: platformMocks.hostType }),
+}))
+vi.mock('../../composables/useDeviceTerminalLauncher', () => ({
+  useDeviceTerminalLauncher: () => terminalMocks,
 }))
 
 import TracksideApBusinessView from './TracksideApBusinessView.vue'
@@ -102,6 +113,12 @@ const rows: TracksideApBusinessRow[] = [
     ap_optical_status: 'normal',
     updated_at: '2026-07-21T10:00:00+08:00',
     optical_severity: 'normal',
+    switch_device_uuid: 'switch-device-1',
+    switch_terminal_available: true,
+    switch_terminal_unavailable_reason: '',
+    ap_terminal_device_uuid: 'ap-terminal-1',
+    ap_terminal_available: true,
+    ap_terminal_unavailable_reason: '',
   },
   {
     ...extendedRowDefaults,
@@ -126,6 +143,12 @@ const rows: TracksideApBusinessRow[] = [
     ap_optical_status: 'unknown',
     updated_at: '',
     optical_severity: 'warning',
+    switch_device_uuid: 'switch-device-2',
+    switch_terminal_available: false,
+    switch_terminal_unavailable_reason: '缺少管理地址',
+    ap_terminal_device_uuid: '',
+    ap_terminal_available: false,
+    ap_terminal_unavailable_reason: '未找到可启动终端的 AP 设备记录',
   },
 ]
 
@@ -220,9 +243,10 @@ const NcDataTableStub = defineComponent({
     height: String,
     tableId: String,
     rowKey: [String, Function],
+    contextMenuItems: { type: Array, default: () => [] },
   },
   template: `
-    <div class="nc-data-table" :data-table-id="tableId" :data-height="height">
+    <div class="nc-data-table nc-data-table__scroll" :data-table-id="tableId" :data-height="height">
       <div v-for="(row, index) in data" :key="index" class="table-row">
         <slot name="cell-switch_rx_power" :row="row" />
         <slot name="cell-switch_optical_status" :row="row" />
@@ -292,10 +316,12 @@ describe('TracksideApBusinessView mounted behavior', () => {
     setActivePinia(createPinia())
     resetUserSelectedExportForTests()
     resetWebFeaturesForTest()
+    for (const method of Object.values(api)) method.mockReset()
     setWebFeaturesForTest({
       'web.rail_trackside_ap_business_update': { visible: true, enabled: true },
       'web.rail_trackside_ap_business_export': { visible: true, enabled: true },
       'web.rail_task_control': { visible: true, enabled: true },
+      'web.device_management_desktop': { visible: true, enabled: true },
       'rail.zte_trackside_switch_adapter': { visible: true, enabled: true },
     })
     api.listTracksideApBusiness.mockResolvedValue(page())
@@ -314,6 +340,17 @@ describe('TracksideApBusinessView mounted behavior', () => {
       suggestedName: artifactName,
     }))
     platformMocks.downloadBackendResource.mockResolvedValue({ status: 'saved', capabilityId: 'cap-1' })
+    platformMocks.hostType = 'browser'
+    terminalMocks.preflightDeviceTerminalTargets.mockReset()
+    terminalMocks.launchDeviceTerminalTargets.mockReset()
+    terminalMocks.showPreflightSkipped.mockReset()
+    terminalMocks.showLaunchResult.mockReset()
+    terminalMocks.preflightDeviceTerminalTargets.mockResolvedValue({
+      terminalType: 'securecrt',
+      launchableDevices: ['device-1'],
+      skippedDevices: [],
+    })
+    terminalMocks.launchDeviceTerminalTargets.mockResolvedValue({ success: 1, failed: 0, failures: [] })
     localStorage.clear()
     delete (window as Window & { netconsoleDesktop?: unknown }).netconsoleDesktop
   })
@@ -350,6 +387,162 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(wrapper.find('[data-table-id="trackside-ap-business-task-result"]').exists()).toBe(false)
     expect(wrapper.find('input[placeholder="站点"]').exists()).toBe(false)
     expect(wrapper.find('select').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('keeps filters, successful rows and scroll offsets across KeepAlive navigation', async () => {
+    const host = await mountCachedView()
+    expect(api.listTracksideApBusiness).toHaveBeenCalledTimes(1)
+    let view = host.getComponent(TracksideApBusinessView)
+    const vm = view.vm as unknown as {
+      filters: { query: string; station: string; optical_anomaly_only: boolean; page: number; page_size: number }
+      excludedVisible: boolean
+      unmatchedVisible: boolean
+      currentTaskId: string
+    }
+    vm.filters.query = '0011-2233-4455'
+    vm.filters.station = '站点A'
+    vm.filters.optical_anomaly_only = true
+    vm.filters.page = 2
+    vm.filters.page_size = 100
+    vm.excludedVisible = true
+    vm.unmatchedVisible = true
+    vm.currentTaskId = 'task-observed'
+    const scroll = view.get('.nc-data-table__scroll').element as HTMLElement
+    scroll.scrollTop = 240
+    scroll.scrollLeft = 360
+
+    ;(host.vm as unknown as { active: boolean }).active = false
+    await host.vm.$nextTick()
+    scroll.scrollTop = 0
+    scroll.scrollLeft = 0
+    ;(host.vm as unknown as { active: boolean }).active = true
+    await flushPromises()
+    view = host.getComponent(TracksideApBusinessView)
+    const restored = view.vm as unknown as typeof vm
+
+    expect(restored.filters).toMatchObject({
+      query: '0011-2233-4455',
+      station: '站点A',
+      optical_anomaly_only: true,
+      page: 2,
+      page_size: 100,
+    })
+    expect(restored.excludedVisible).toBe(true)
+    expect(restored.unmatchedVisible).toBe(true)
+    expect(restored.currentTaskId).toBe('task-observed')
+    expect(view.getComponent(NcDataTableStub).props('data')).toEqual(rows)
+    expect(scroll.scrollTop).toBe(240)
+    expect(scroll.scrollLeft).toBe(360)
+    expect(api.listTracksideApBusiness).toHaveBeenCalledTimes(1)
+    host.unmount()
+  })
+
+  it('keeps old rows visible while a stale background refresh fails', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-05T10:00:00+08:00'))
+    const host = await mountCachedView()
+    const view = host.getComponent(TracksideApBusinessView)
+    api.listTracksideApBusiness.mockClear()
+    api.listTracksideApBusiness.mockRejectedValueOnce(new Error('刷新失败'))
+
+    ;(host.vm as unknown as { active: boolean }).active = false
+    await host.vm.$nextTick()
+    vi.advanceTimersByTime(5 * 60 * 1000 + 1)
+    ;(host.vm as unknown as { active: boolean }).active = true
+    await flushPromises()
+
+    expect(api.listTracksideApBusiness).toHaveBeenCalledTimes(1)
+    expect(view.getComponent(NcDataTableStub).props('data')).toEqual(rows)
+    expect(view.text()).toContain('部分数据不可用，已保留最后成功数据。')
+    host.unmount()
+  })
+
+  it('refreshes once after a related task completes while the page is inactive', async () => {
+    const host = await mountCachedView()
+    api.listTracksideApBusiness.mockClear()
+    api.listTracksideApBusiness.mockResolvedValue(page(rows))
+
+    ;(host.vm as unknown as { active: boolean }).active = false
+    await host.vm.$nextTick()
+    taskApi.listTasks.mockResolvedValueOnce([
+      globalTask('lldp-refresh', 'COMPLETED', 'device_detail_collect'),
+    ])
+    await useTaskStore().refresh()
+    await flushPromises()
+    expect(api.listTracksideApBusiness).not.toHaveBeenCalled()
+
+    ;(host.vm as unknown as { active: boolean }).active = true
+    await flushPromises()
+    expect(api.listTracksideApBusiness).toHaveBeenCalledTimes(1)
+
+    ;(host.vm as unknown as { active: boolean }).active = false
+    await host.vm.$nextTick()
+    ;(host.vm as unknown as { active: boolean }).active = true
+    await flushPromises()
+    expect(api.listTracksideApBusiness).toHaveBeenCalledTimes(1)
+    host.unmount()
+  })
+
+  it('discards the current site page and ignores a request that finishes after site switch', async () => {
+    let resolveRows!: (value: TracksideApBusinessPage) => void
+    api.listTracksideApBusiness.mockReset()
+    api.listTracksideApBusiness.mockReturnValueOnce(new Promise((resolve) => { resolveRows = resolve }))
+    const wrapper = mount(TracksideApBusinessView, {
+      global: {
+        directives: { loading: () => undefined },
+        stubs: { ...ElementStubs, NcDataTable: NcDataTableStub },
+      },
+    })
+    await wrapper.vm.$nextTick()
+    const vm = wrapper.vm as unknown as { filters: { station: string; page: number } }
+    vm.filters.station = '旧站点'
+    vm.filters.page = 3
+
+    window.dispatchEvent(new CustomEvent('netconsole:before-site-switch', { detail: { targetSiteId: 'new-site' } }))
+    resolveRows(page())
+    await flushPromises()
+
+    expect(vm.filters.station).toBe('')
+    expect(vm.filters.page).toBe(1)
+    expect(wrapper.getComponent(NcDataTableStub).props('data')).toEqual([])
+    wrapper.unmount()
+  })
+
+  it('shows terminal actions only on target columns and launches exact device UUIDs', async () => {
+    platformMocks.hostType = 'electron'
+    terminalMocks.preflightDeviceTerminalTargets
+      .mockResolvedValueOnce({ terminalType: 'securecrt', launchableDevices: ['switch-device-1'], skippedDevices: [] })
+      .mockResolvedValueOnce({ terminalType: 'securecrt', launchableDevices: ['ap-terminal-1'], skippedDevices: [] })
+    const wrapper = await mountView()
+    const items = wrapper.getComponent(NcDataTableStub).props('contextMenuItems') as Array<{
+      key: string
+      visible: (context: { row: TracksideApBusinessRow; columnKey: string }) => boolean
+      disabled: (context: { row: TracksideApBusinessRow; columnKey: string }) => boolean
+      disabledReason: (context: { row: TracksideApBusinessRow; columnKey: string }) => string
+      action: (context: { row: TracksideApBusinessRow; columnKey: string }) => Promise<void>
+    }>
+    const switchAction = items.find((item) => item.key === 'switch-external-terminal')!
+    const apAction = items.find((item) => item.key === 'ap-external-terminal')!
+    const context = (row: TracksideApBusinessRow, columnKey: string) => ({ row, columnKey })
+
+    expect(switchAction.visible(context(rows[0], 'device_name'))).toBe(true)
+    expect(switchAction.visible(context(rows[0], 'ap_mac'))).toBe(false)
+    expect(apAction.visible(context(rows[0], 'ap_mac'))).toBe(true)
+    expect(apAction.visible(context(rows[0], 'ap_name'))).toBe(true)
+    expect(apAction.visible(context(rows[0], 'interface_name'))).toBe(false)
+    expect(switchAction.disabled(context(rows[1], 'device_name'))).toBe(true)
+    expect(switchAction.disabledReason(context(rows[1], 'device_name'))).toBe('缺少管理地址')
+    expect(apAction.disabledReason(context(rows[1], 'ap_mac'))).toBe('未找到可启动终端的 AP 设备记录')
+
+    await switchAction.action(context(rows[0], 'device_name'))
+    await apAction.action(context(rows[0], 'ap_name'))
+
+    expect(terminalMocks.preflightDeviceTerminalTargets).toHaveBeenNthCalledWith(1, ['switch-device-1'])
+    expect(terminalMocks.preflightDeviceTerminalTargets).toHaveBeenNthCalledWith(2, ['ap-terminal-1'])
+    expect(terminalMocks.preflightDeviceTerminalTargets).not.toHaveBeenCalledWith(['ap-1'])
+    expect(terminalMocks.preflightDeviceTerminalTargets).not.toHaveBeenCalledWith(['bc5a-3457-8cc0'])
+    expect(terminalMocks.launchDeviceTerminalTargets).toHaveBeenCalledTimes(2)
     wrapper.unmount()
   })
 
@@ -798,6 +991,26 @@ describe('TracksideApBusinessView mounted behavior', () => {
 
 async function mountView(): Promise<VueWrapper> {
   const wrapper = mount(TracksideApBusinessView, {
+    global: {
+      directives: { loading: () => undefined },
+      stubs: { ...ElementStubs, NcDataTable: NcDataTableStub },
+    },
+  })
+  await flushPromises()
+  return wrapper
+}
+
+async function mountCachedView(): Promise<VueWrapper> {
+  const CachedHost = defineComponent({
+    components: { TracksideApBusinessView },
+    setup() {
+      const active = ref(true)
+      return { active }
+    },
+    template: '<KeepAlive><TracksideApBusinessView v-if="active" /></KeepAlive>',
+  })
+  const wrapper = mount(CachedHost, {
+    attachTo: document.body,
     global: {
       directives: { loading: () => undefined },
       stubs: { ...ElementStubs, NcDataTable: NcDataTableStub },

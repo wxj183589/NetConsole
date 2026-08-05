@@ -10,7 +10,6 @@ import {
   getDeviceConnectionTest,
   getBatchRefresh,
   getExternalTerminalSettings,
-  issueExternalTerminalConfirmation,
   listDevices,
   assignDeviceGroup,
   confirmDeviceImport,
@@ -21,7 +20,6 @@ import {
   duplicateDevice,
   issueDeviceDeleteToken,
   previewDeviceImport,
-  launchExternalTerminals,
   renameDeviceGroup,
   revealDeviceCredential,
   startBatchRefreshDetails,
@@ -39,6 +37,7 @@ import {
 import {
   useUserSelectedExport,
 } from '../../composables/useUserSelectedExport'
+import { useDeviceTerminalLauncher } from '../../composables/useDeviceTerminalLauncher'
 import { downloadBackendResource, getPlatformAdapter, getRuntimeConfig } from '../../platform/runtime'
 import { useTaskStore } from '../../stores/tasks'
 import DeviceDetailPanel from '../../components/device-detail/DeviceDetailPanel.vue'
@@ -110,6 +109,12 @@ const router = useRouter()
 const { confirm } = useConfirm()
 const taskStore = useTaskStore()
 const userSelectedExport = useUserSelectedExport()
+const {
+  preflightDeviceTerminalTargets,
+  launchDeviceTerminalTargets,
+  showPreflightSkipped,
+  showLaunchResult,
+} = useDeviceTerminalLauncher()
 const loading = ref(false)
 const error = ref('')
 const pageData = ref<DevicePage>(emptyPage())
@@ -1785,7 +1790,15 @@ async function requestTerminal(deviceUuid?: string): Promise<void> {
       return
     }
     if (!configured.includes(terminalSettings.terminal_type)) terminalSettings.terminal_type = configured[0]
-    terminalTargetUuids.value = targetUuids
+    const preflight = await preflightDeviceTerminalTargets(
+      targetUuids,
+      terminalSettings.terminal_type,
+      terminalSettings,
+    )
+    if (!preflight) return
+    if (preflight.skippedDevices.length) showPreflightSkipped(preflight.skippedDevices)
+    if (!preflight.launchableDevices.length) return
+    terminalTargetUuids.value = preflight.launchableDevices
     terminalLaunchVisible.value = true
   } catch (cause) {
     if (cause === 'cancel' || cause === 'close') return
@@ -1795,27 +1808,14 @@ async function requestTerminal(deviceUuid?: string): Promise<void> {
 
 async function launchTerminalTargets(): Promise<void> {
   try {
-    let confirmationToken = ''
-    if (terminalTargetUuids.value.length > 20) {
-      if (!await confirm({ type: 'WARNING', title: '批量打开外部终端', message: `将打开 ${terminalTargetUuids.value.length} 台设备的外部终端，是否继续？`, confirmText: '确认打开终端' })) return
-      confirmationToken = (
-        await issueExternalTerminalConfirmation(
-          terminalTargetUuids.value,
-          terminalSettings.terminal_type,
-        )
-      ).confirmation_token
-    }
-    const result = await launchExternalTerminals(
+    const result = await launchDeviceTerminalTargets(
       terminalTargetUuids.value,
       terminalSettings.terminal_type,
-      confirmationToken,
+      () => confirm({ type: 'WARNING', title: '批量打开外部终端', message: `将打开 ${terminalTargetUuids.value.length} 台设备的外部终端，是否继续？`, confirmText: '确认打开终端' }),
     )
+    if (!result) return
     terminalLaunchVisible.value = false
-    if (result.failed) {
-      ElMessage.warning(`外部终端启动完成：成功 ${result.success}，失败 ${result.failed}。${result.failures.slice(0, 3).join('；')}`)
-    } else {
-      ElMessage.success(`已启动 ${result.success} 个外部终端`)
-    }
+    showLaunchResult(result)
   } catch (cause) {
     if (cause === 'cancel' || cause === 'close') return
     ElMessage.error(errorMessage(cause, '外部终端启动失败'))

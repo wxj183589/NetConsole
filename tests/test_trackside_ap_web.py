@@ -226,6 +226,120 @@ def _snapshot() -> TracksideApBusinessLoadResult:
     )
 
 
+def test_trackside_terminal_targets_use_exact_device_uuid_mac_or_ip() -> None:
+    switch = Device(
+        device_uuid="switch-device-1",
+        name="同名设备",
+        device_type="SW",
+        primary_address="192.0.2.10",
+        ssh_enabled=True,
+        ssh_username="admin",
+        ssh_password="secret",
+    )
+    same_name = Device(
+        device_uuid="switch-device-2",
+        name="同名设备",
+        device_type="SW",
+        primary_address="192.0.2.11",
+        ssh_enabled=True,
+        ssh_username="admin",
+        ssh_password="secret",
+    )
+    ap_by_mac = Device(
+        device_uuid="ap-terminal-mac",
+        name="AP-OTHER-NAME",
+        mac_address="00:11:22:33:44:55",
+        device_type="Cloud-AP",
+        primary_address="192.0.2.20",
+        ssh_enabled=True,
+        ssh_username="admin",
+        ssh_password="secret",
+    )
+    ap_by_ip = Device(
+        device_uuid="ap-terminal-ip",
+        name="AP-IP",
+        device_type="AP",
+        primary_address="192.0.2.21",
+        ssh_enabled=True,
+        ssh_username="admin",
+        ssh_password="secret",
+    )
+    fit_resource_uuid = Device(
+        device_uuid="fit-resource-uuid",
+        name="AP-DISPLAY-NAME",
+        device_type="Cloud-AP",
+        primary_address="192.0.2.22",
+        ssh_enabled=True,
+        ssh_username="admin",
+        ssh_password="secret",
+    )
+    indexes = trackside_ap_business_query_service.TracksideApBusinessQueryService._terminal_device_indexes(
+        [switch, same_name, ap_by_mac, ap_by_ip, fit_resource_uuid]
+    )
+
+    mac_row = trackside_ap_business_query_service.TracksideApBusinessQueryService._row(
+        {
+            "device_uuid": "switch-device-1",
+            "device_name": "同名设备",
+            "ap_uuid": "fit-resource-uuid",
+            "ap_name": "AP-DISPLAY-NAME",
+            "ap_mac": "0011-2233-4455",
+        },
+        "normal",
+        None,
+        indexes,
+    )
+    assert mac_row.switch_device_uuid == "switch-device-1"
+    assert mac_row.switch_terminal_available is True
+    assert mac_row.ap_terminal_device_uuid == "ap-terminal-mac"
+    assert mac_row.ap_terminal_available is True
+
+    ip_device, reason = trackside_ap_business_query_service.TracksideApBusinessQueryService._ap_terminal_device(
+        {"ap_ip": "192.0.2.21"}, indexes
+    )
+    assert ip_device is ap_by_ip
+    assert reason == ""
+
+    missing_row = trackside_ap_business_query_service.TracksideApBusinessQueryService._row(
+        {
+            "device_name": "同名设备",
+            "ap_uuid": "fit-resource-uuid",
+            "ap_name": "AP-DISPLAY-NAME",
+        },
+        "normal",
+        None,
+        indexes,
+    )
+    assert missing_row.switch_device_uuid == ""
+    assert missing_row.switch_terminal_available is False
+    assert missing_row.ap_terminal_device_uuid == ""
+    assert missing_row.ap_terminal_available is False
+    assert "未找到" in missing_row.ap_terminal_unavailable_reason
+
+
+def test_trackside_terminal_target_rejects_multiple_exact_ap_devices() -> None:
+    first = Device(
+        device_uuid="ap-1",
+        mac_address="0011-2233-4455",
+        device_type="Cloud-AP",
+    )
+    second = Device(
+        device_uuid="ap-2",
+        mac_address="00:11:22:33:44:55",
+        device_type="FAT-AP",
+    )
+    indexes = trackside_ap_business_query_service.TracksideApBusinessQueryService._terminal_device_indexes(
+        [first, second]
+    )
+
+    device, reason = trackside_ap_business_query_service.TracksideApBusinessQueryService._ap_terminal_device(
+        {"ap_mac": "0011-2233-4455"}, indexes
+    )
+
+    assert device is None
+    assert reason == "AP 终端目标存在多个精确设备记录"
+
+
 def test_business_snapshot_and_online_overview_share_effective_scope(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -337,7 +451,7 @@ def _station_option_snapshot() -> TracksideApBusinessLoadResult:
 
 def test_trackside_query_reuses_snapshot_filter_and_optical_status(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(trackside_ap_business_query_service, "Database", lambda _path: object())
-    monkeypatch.setattr(trackside_ap_business_query_service, "DeviceRepository", lambda _database: object())
+    monkeypatch.setattr(trackside_ap_business_query_service, "DeviceRepository", lambda _database: SimpleNamespace(list=lambda: []))
     monkeypatch.setattr(trackside_ap_business_query_service, "load_trackside_ap_business_snapshot", lambda *_args, **_kwargs: _snapshot())
     service = trackside_ap_business_query_service.TracksideApBusinessQueryService(
         PathResolver(app_root=tmp_path, data_root=tmp_path)
@@ -374,7 +488,7 @@ def test_trackside_query_maps_switch_snapshot_times_and_statuses(
     monkeypatch.setattr(
         trackside_ap_business_query_service,
         "DeviceRepository",
-        lambda _database: object(),
+        lambda _database: SimpleNamespace(list=lambda: []),
     )
     monkeypatch.setattr(
         trackside_ap_business_query_service,
@@ -582,7 +696,7 @@ def test_trackside_query_maps_partial_source_status(monkeypatch, tmp_path: Path)
         }],
     )
     monkeypatch.setattr(trackside_ap_business_query_service, "Database", lambda _path: object())
-    monkeypatch.setattr(trackside_ap_business_query_service, "DeviceRepository", lambda _database: object())
+    monkeypatch.setattr(trackside_ap_business_query_service, "DeviceRepository", lambda _database: SimpleNamespace(list=lambda: []))
     monkeypatch.setattr(
         trackside_ap_business_query_service,
         "load_trackside_ap_business_snapshot",
@@ -618,7 +732,7 @@ def test_trackside_query_applies_business_threshold_only_to_ap_rx(
         ],
     )
     monkeypatch.setattr(trackside_ap_business_query_service, "Database", lambda _path: object())
-    monkeypatch.setattr(trackside_ap_business_query_service, "DeviceRepository", lambda _database: object())
+    monkeypatch.setattr(trackside_ap_business_query_service, "DeviceRepository", lambda _database: SimpleNamespace(list=lambda: []))
     monkeypatch.setattr(
         trackside_ap_business_query_service,
         "load_trackside_ap_business_snapshot",
@@ -657,7 +771,7 @@ def test_trackside_query_counts_multiple_abnormal_interfaces_once_per_ap(monkeyp
         }
     )
     monkeypatch.setattr(trackside_ap_business_query_service, "Database", lambda _path: object())
-    monkeypatch.setattr(trackside_ap_business_query_service, "DeviceRepository", lambda _database: object())
+    monkeypatch.setattr(trackside_ap_business_query_service, "DeviceRepository", lambda _database: SimpleNamespace(list=lambda: []))
     monkeypatch.setattr(trackside_ap_business_query_service, "load_trackside_ap_business_snapshot", lambda *_args, **_kwargs: snapshot)
 
     page = trackside_ap_business_query_service.TracksideApBusinessQueryService(
@@ -671,7 +785,7 @@ def test_trackside_query_counts_multiple_abnormal_interfaces_once_per_ap(monkeyp
 def test_trackside_query_station_options_use_full_snapshot_before_filters(monkeypatch, tmp_path: Path) -> None:
     snapshot = _station_option_snapshot()
     monkeypatch.setattr(trackside_ap_business_query_service, "Database", lambda _path: object())
-    monkeypatch.setattr(trackside_ap_business_query_service, "DeviceRepository", lambda _database: object())
+    monkeypatch.setattr(trackside_ap_business_query_service, "DeviceRepository", lambda _database: SimpleNamespace(list=lambda: []))
     monkeypatch.setattr(trackside_ap_business_query_service, "load_trackside_ap_business_snapshot", lambda *_args, **_kwargs: snapshot)
     service = trackside_ap_business_query_service.TracksideApBusinessQueryService(
         PathResolver(app_root=tmp_path, data_root=tmp_path)

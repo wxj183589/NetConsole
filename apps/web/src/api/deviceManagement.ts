@@ -15,6 +15,7 @@ import type {
   DeviceExportRequest,
   DeviceExternalTerminalAction,
   DeviceExternalTerminalBatch,
+  DeviceExternalTerminalPreflight,
   DeviceExternalTerminalConfirmation,
   DeviceExternalTerminalSettings,
   DeviceFormConnectionTestRequest,
@@ -279,6 +280,13 @@ export function issueExternalTerminalConfirmation(deviceUuids: string[], termina
 
 export function launchExternalTerminals(deviceUuids: string[], terminalType: 'securecrt' | 'putty' | 'xshell', confirmationToken = ''): Promise<DeviceExternalTerminalBatch> {
   return apiRequest<DeviceExternalTerminalBatch>('/api/device-management/external-terminal/launch', { method: 'POST', body: JSON.stringify({ device_uuids: deviceUuids, terminal_type: terminalType, confirmation_token: confirmationToken }) })
+}
+
+export function getDeviceTerminalPreflight(deviceUuids: string[], terminalType: 'securecrt' | 'putty' | 'xshell'): Promise<DeviceExternalTerminalPreflight> {
+  return apiRequest<DeviceExternalTerminalPreflight>('/api/device-management/external-terminal/preflight', {
+    method: 'POST',
+    body: JSON.stringify({ device_uuids: deviceUuids, terminal_type: terminalType }),
+  })
 }
 
 export function getExternalTerminalSettings(): Promise<DeviceExternalTerminalSettings> {

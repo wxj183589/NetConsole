@@ -33,6 +33,8 @@ from netconsole.models.api.device_management import (
     DeviceExternalTerminalActionDTO,
     DeviceExternalTerminalBatchDTO,
     DeviceExternalTerminalBatchRequestDTO,
+    DeviceExternalTerminalPreflightDTO,
+    DeviceExternalTerminalPreflightRequestDTO,
     DeviceExternalTerminalConfirmationDTO,
     DeviceExternalTerminalConfirmationRequestDTO,
     DeviceExternalTerminalRequestDTO,
@@ -750,6 +752,18 @@ def batch_external_terminal(
     payload: DeviceExternalTerminalBatchRequestDTO,
 ) -> DeviceExternalTerminalBatchDTO:
     return _query(lambda: _service(request).launch_external_terminals(payload))
+
+
+@router.post(
+    "/external-terminal/preflight",
+    response_model=DeviceExternalTerminalPreflightDTO,
+    dependencies=[Depends(require_feature("web.device_management_desktop"))],
+)
+def external_terminal_preflight(
+    request: Request,
+    payload: DeviceExternalTerminalPreflightRequestDTO,
+) -> DeviceExternalTerminalPreflightDTO:
+    return _query(lambda: _service(request).preflight_external_terminals(payload))
 
 
 @router.post(

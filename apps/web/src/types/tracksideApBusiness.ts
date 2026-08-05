@@ -1,7 +1,7 @@
 import type { RailTransitTask } from './railTransitWeb'
 
 export interface TracksideApBusinessRow {
-  station_id?: string; site: string; device_name: string; switch_vendor: string; interface_name: string; link_status: string; port_type: string
+  station_id?: string; site: string; device_name: string; switch_device_uuid?: string; switch_terminal_available?: boolean; switch_terminal_unavailable_reason?: string; switch_vendor: string; interface_name: string; link_status: string; port_type: string
     switch_station_id?: string; ap_station_id?: string; planning_station_id?: string; effective_station_id?: string
     station_consistency_status?: string; station_consistency_reason?: string
   description: string; pvid: unknown; vlan: unknown
@@ -13,7 +13,7 @@ export interface TracksideApBusinessRow {
   switch_interface_updated_at: string; switch_optical_updated_at: string
   switch_interface_data_status: 'current' | 'stale' | 'missing' | 'unknown'
   switch_optical_data_status: 'current' | 'stale' | 'missing' | 'unknown'
-  ap_uuid: string; ap_mac: string; ap_name: string; ap_rx_power: unknown; ap_tx_power: unknown
+  ap_uuid: string; ap_mac: string; ap_name: string; ap_terminal_device_uuid?: string; ap_terminal_available?: boolean; ap_terminal_unavailable_reason?: string; ap_rx_power: unknown; ap_tx_power: unknown
   ap_device_optical_status?: string; ap_business_optical_status?: string; ap_business_threshold_dbm?: number; ap_business_reason?: string
   ap_optical_status: string
   ap_match_source: string; ap_match_confidence: number; lldp_match_status: string
