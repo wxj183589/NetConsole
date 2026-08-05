@@ -16,6 +16,7 @@ from netconsole.backend.api.edition_access import (
     unlock_customer_edition,
 )
 from netconsole.core.feature_registry import list_features
+from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.models.api.features import WebFeatureStateDTO, WebFeatureStateListDTO
 
 
@@ -55,7 +56,7 @@ def web_feature_states(request: Request) -> WebFeatureStateListDTO:
 
 @router.get("/edition", response_model=EditionRuntimeStatusDTO)
 def edition_status(request: Request) -> EditionRuntimeStatusDTO:
-    _require_loopback(request)
+    _require_desktop_session(request)
     return EditionRuntimeStatusDTO(**edition_runtime_status(request.app))
 
 
@@ -64,12 +65,12 @@ def unlock_edition(
     payload: EditionUnlockRequestDTO,
     request: Request,
 ) -> EditionRuntimeStatusDTO:
-    _require_loopback(request)
+    _require_desktop_session(request)
     try:
         unlock_customer_edition(
             request.app,
             payload.password,
-            operator="desktop-loopback",
+            operator="electron-desktop-session",
         )
     except EditionUnlockPasswordError as exc:
         raise HTTPException(
@@ -97,7 +98,7 @@ def unlock_edition(
 
 @router.post("/edition/lock", response_model=EditionRuntimeStatusDTO)
 def lock_edition(request: Request) -> EditionRuntimeStatusDTO:
-    _require_loopback(request)
+    _require_desktop_session(request)
     try:
         lock_customer_edition(request.app)
     except EditionUnlockNotAvailableError as exc:
@@ -113,16 +114,25 @@ def lock_edition(request: Request) -> EditionRuntimeStatusDTO:
     return EditionRuntimeStatusDTO(**edition_runtime_status(request.app))
 
 
-def _require_loopback(request: Request) -> None:
+def _require_desktop_session(request: Request) -> None:
     host = request.client.host if request.client is not None else ""
     try:
-        allowed = ip_address(host).is_loopback
+        loopback = ip_address(host).is_loopback
     except ValueError:
-        allowed = False
-    if not allowed:
+        loopback = False
+    desktop = request.app.state.runtime_mode is RuntimeMode.DESKTOP
+    authenticated = bool(
+        getattr(request.state, "desktop_session_authenticated", False)
+    )
+    if not loopback or not desktop:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="版本维护接口仅允许桌面本机访问",
+            detail="版本维护接口仅允许 Electron 桌面本机访问",
+        )
+    if not authenticated:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="当前请求缺少桌面短期会话",
         )
 
 
