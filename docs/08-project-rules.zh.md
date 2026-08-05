@@ -79,7 +79,7 @@
 - 地面无人值守是独立 `/rail-transit/ground-unattended` 页面和 `web.ground_unattended` Feature，不复用人工 Online MR 页面状态，也不把全天无人值守塞入单一 Online MR Session；页面卸载只停止轮询，托盘隐藏时 Backend、AC 轮询、全车 Ping 和深度采集继续。
 - 轨旁 AP 已按规范化 MAC/Registry/稳定 ID 匹配且没有特殊区域标记时默认正线；完全未匹配 AP 必须保持 `UNKNOWN/AP_UNMATCHED`，名称、alias 和站点文本不能绕过身份边界。
 - 地面无人值守调度必须独立计算正线、Ping 和深采资格，使用多目标 fping 分片、Online MR 强类型请求、并发预算、覆盖轮次、ZIP 原子归档和启动恢复；车辆段、停车场和存车线只可由默认关闭的全局开关加入长 Ping，仍排除正线统计与深采。真实 AC/MR、长时 fping、托盘隐藏持续运行和进程残留仍是人工现场门禁。
-- AP Identity 统一索引已接管已登记的 MESH、Online/Vehicle MR、无线扫描、基础资料、AC/FIT-AP、轨旁 AP 业务和 AC Mesh-Link 生产查询；普通查询只读 `devices.db` 已生成索引，不连接 AC、不执行 SSH/SNMP、不在 GET 中 `ensure/rebuild`，`unresolved/ambiguous` 必须保留原始观测和诊断原因。
+- AP Identity 统一索引已接管 MESH、Ground、Online/Vehicle MR 和无线扫描的高频 Peer/BSSID 解析；AC Mesh-Link、基础资料直接 Identity JOIN、轨旁 AP 业务、报告读取及设备/LLDP 绑定仍按消费者审计的 P1/P2 收口。普通查询只读 `devices.db` 已生成索引，不连接 AC、不执行 SSH/SNMP、不在 GET 中 `ensure/rebuild`，`unresolved/ambiguous` 必须保留原始观测和诊断原因。
 
 ## 验证与发布
 
@@ -94,7 +94,7 @@
 
 - 用户文件交互统一收口为固定动作注册表、共享导出协调器和专用导入选择器；页面不得再私建导出状态机、自动弹保存窗口或取消后创建任务。
 - Worker 协议的 1 MiB 帧上限成为领域 handler 设计边界：终态只放摘要，明细、大文本和 raw 通过分页查询或 Artifact 暴露。
-- AP Identity 已从 shadow 评估升级为生产统一索引接管已登记消费者，但索引刷新只能由明确写事件触发，普通 GET 和搜索保持只读。
+- AP Identity 已从 shadow 评估升级为生产统一索引，并完成消费者审计中的 P0 高频链路；P1/P2 仍待收口。索引刷新只能由明确写事件触发，普通 GET 和搜索保持只读。
 - 轨旁 AP 基础资料和逐站规划以稳定 ID 为唯一关系边界；站名、VLAN、AP 名称、邻居 IP、系统名和相似度都不能绕过 `station_id`、完整 MAC 与 AP Identity 精确证据。
 - ZTE C89E-4 只读 Adapter 已形成首批实机边界；该验证不自动授权 ZXR10 全系列、配置下发或逐端口重采集。
 - 桌面工具集成为独立 Electron 模块；第三方 EXE、图标、启动权限和管理员 helper 都只在 Electron userData/Native Bridge 内受控，不进入局点数据或 Python Backend。

@@ -8,17 +8,20 @@ from datetime import datetime, timedelta, time as dt_time
 from pathlib import Path
 from typing import Callable
 
+from netconsole.core.database import Database
 from netconsole.core.ping.fping_v5_parser import parse_fping_v5_json_line
 from netconsole.repositories.online_mr_diagnosis_repository import (
     OnlineMrDatabaseError,
     OnlineMrDiagnosisRepository,
 )
-from netconsole.services.mesh_peer_mapping_service import MeshPeerMappingService
 from netconsole.services.fping_legacy_parser import parse_fping_lines
 from netconsole.services.network_tools.iperf_parser import parse_iperf_error_lines, parse_iperf_lines, read_iperf_text, summarize_iperf_zero_samples
-from netconsole.services.ap_radio_mapping_service import ApRadioMappingService
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.online_mr_parser import parse_ap_radio_statistics_text, parse_channel_busy_text, parse_interface_rate_text, parse_mesh_link_text, parse_switch_history_text
 from netconsole.services.online_mr_terminal_log_parser import ActiveLinkSwitchLog, parse_active_link_switch_logs
+from netconsole.services.rail_transit.online_mr_identity_remap_service import (
+    OnlineMrIdentityRemapService,
+)
 from netconsole.utils.text_encoding import read_text_with_fallback
 
 
@@ -31,7 +34,7 @@ RX_COMMAND_RE = re.compile(
     re.IGNORECASE,
 )
 DEVICE_CLOCK_RE = re.compile(r"\b\d{2}:\d{2}:\d{2}\s+\S+\s+\w+\s+\d{1,2}/\d{1,2}/\d{4}\b", re.IGNORECASE)
-PARSER_VERSION = "online_mr_business_tables_v10_peer_identity_fields"
+PARSER_VERSION = "online_mr_business_tables_v11_identity_projection"
 ProgressCallback = Callable[[str, int, int, str], None]
 CancelCallback = Callable[[], bool]
 
@@ -242,14 +245,19 @@ class OnlineMrRawBlockSplitter:
 
 
 class OnlineMrDiagnosisParser:
-    def __init__(self, session_dir: Path) -> None:
+    def __init__(
+        self,
+        session_dir: Path,
+        *,
+        identity_query_service: ApIdentityQueryService | None = None,
+    ) -> None:
         self.session_dir = Path(session_dir)
         self.raw_dir = self.session_dir / "raw"
         self.db_path = self.session_dir / "parsed" / "online_diagnosis.sqlite"
         self.repository = OnlineMrDiagnosisRepository(self.db_path)
         self.meta = self._load_meta()
         self.splitter = OnlineMrRawBlockSplitter()
-        self._peer_resolver: MeshPeerMappingService | None = None
+        self._identity_query_service = identity_query_service
         self._progress: ProgressCallback | None = None
         self._should_cancel: CancelCallback | None = None
 
@@ -269,6 +277,7 @@ class OnlineMrDiagnosisParser:
         if not force:
             cached = self.cached_summary_if_valid()
             if cached is not None:
+                self._remap_identity()
                 self._emit_progress("完成", 12, 12, "使用已解析缓存")
                 return cached
             if self.db_path.exists():
@@ -295,6 +304,7 @@ class OnlineMrDiagnosisParser:
         self._check_cancel()
         self._emit_progress("生成主链路切换日志", 7, 12, "解析 switch-history")
         summary.switch_history_samples = self._parse_switch_history()
+        self._remap_identity()
         self._check_cancel()
         self._emit_progress("解析 fping", 8, 12, "解析 Ping 采样")
         summary.ping_samples = self._parse_fping()
@@ -412,6 +422,14 @@ class OnlineMrDiagnosisParser:
             if isinstance(value, (int, float)) and key != "cache_used"
         }
         row_counts.update(self._main_link_metadata())
+        identity_metadata = self.repository.identity_metadata(self.meta.session_id)
+        row_counts.update(
+            {
+                key: value
+                for key, value in identity_metadata.items()
+                if key != "session_id"
+            }
+        )
         self.repository.replace_parse_metadata(
             (
                 self.meta.session_id,
@@ -441,7 +459,6 @@ class OnlineMrDiagnosisParser:
             self._issue("mesh_link_raw.log", "mesh-link", "no parseable raw blocks found", "")
         for block in blocks:
             records, status, error = parse_mesh_link_text(block.text, block.collected_at)
-            self._enrich_mesh_records(records)
             device_clock = self._extract_device_clock(block.text)
             if device_clock:
                 self._write_time_sync_sample(block, device_clock, source="mesh_link_display_clock")
@@ -470,60 +487,6 @@ class OnlineMrDiagnosisParser:
                 )
             ],
         )
-
-    def _enrich_mesh_records(self, records) -> None:
-        if not records:
-            return
-        resolver = self._get_peer_resolver()
-        for record in records:
-            metrics = record.metrics
-            peer_name = str(metrics.get("peer_name") or "").strip()
-            peer_mac = record.peer_mac_raw or record.peer_mac_normalized or ""
-            bssid = str(metrics.get("bssid") or "").strip()
-            resolved = self._resolve_peer_identity(resolver, peer_mac, bssid, peer_name)
-            resolved = resolved or {}
-            resolved_name = str(resolved.get("peer_ap_name") or "").strip() or peer_name or peer_mac
-            metrics["resolved_peer_name"] = resolved_name
-            metrics["peer_ap_mac"] = resolved.get("peer_ap_mac") or ""
-            metrics["canonical_ap_mac"] = resolved.get("canonical_ap_mac") or resolved.get("peer_ap_mac") or ""
-            metrics["peer_radio_mac"] = resolved.get("peer_radio_mac") or (bssid if resolved.get("identity_status") == "matched" else "")
-            metrics["identity_status"] = resolved.get("identity_status") or "unresolved"
-            metrics["identity_source"] = resolved.get("identity_source") or ""
-            metrics["identity_reason"] = resolved.get("identity_reason") or ""
-            metrics["identity_match_rule"] = resolved.get("match_rule") or ""
-            metrics["identity_match_confidence"] = resolved.get("match_confidence") or 0
-            metrics["belong_station"] = resolved.get("peer_site") or metrics.get("peer_station") or metrics.get("peer_site") or ""
-            metrics["belong_section"] = resolved.get("peer_section") or metrics.get("belong_section") or ""
-            metrics["belong_type"] = resolved.get("belong_type") or metrics.get("belong_type") or "unknown"
-            metrics["belonging_source"] = resolved.get("belonging_source") or resolved.get("match_rule") or metrics.get("belonging_source") or ""
-
-    @staticmethod
-    def _resolve_peer_identity(
-        resolver: MeshPeerMappingService | None,
-        peer_mac: str,
-        bssid: str,
-        peer_name: str,
-    ) -> dict[str, object] | None:
-        if resolver is None:
-            return None
-        resolved = resolver.resolve(peer_mac, peer_name=peer_name) if peer_mac else None
-        if resolved and resolved.get("identity_status") == "matched":
-            return resolved
-        bssid_resolved = None
-        if bssid and bssid != peer_mac:
-            bssid_resolved = resolver.resolve(bssid, peer_name=peer_name)
-            if bssid_resolved and bssid_resolved.get("identity_status") == "matched":
-                return bssid_resolved
-        return resolved or bssid_resolved
-
-    def _get_peer_resolver(self) -> MeshPeerMappingService | None:
-        if self._peer_resolver is not None:
-            return self._peer_resolver
-        site = str(getattr(self.meta, "site", "") or "")
-        if not site:
-            return None
-        self._peer_resolver = MeshPeerMappingService(site, self._path_resolver())
-        return self._peer_resolver
 
     @staticmethod
     def _extract_device_clock(text: str) -> str | None:
@@ -759,10 +722,8 @@ class OnlineMrDiagnosisParser:
         if not rows:
             self._issue("switch_history_latest.log", "switch-history", "no switch-history rows parsed", text[:500])
             return 0
-        resolver = ApRadioMappingService(str(self.meta.site or ""), self._path_resolver())
-        enriched_rows = [self._enrich_switch_history_row(row, resolver) for row in rows]
-        self._write_switch_history_events(enriched_rows, collected_at)
-        return len(enriched_rows)
+        self._write_switch_history_events(rows, collected_at)
+        return len(rows)
 
     def _write_switch_history_events(self, rows: list[dict[str, object]], snapshot_collector_time: datetime) -> None:
         if not rows:
@@ -797,24 +758,6 @@ class OnlineMrDiagnosisParser:
             )
         self.repository.insert_rows("switch_history_events", values)
 
-    def _enrich_switch_history_row(self, row: dict[str, object], resolver: ApRadioMappingService) -> dict[str, object]:
-        enriched = dict(row)
-        from_info = self._resolve_switch_endpoint(str(row.get("from_peer_name") or ""), str(row.get("from_peer_mac") or ""), False, resolver)
-        to_info = self._resolve_switch_endpoint(str(row.get("to_peer_name") or ""), str(row.get("to_peer_mac") or ""), False, resolver)
-        if not enriched.get("from_peer_name") and from_info.get("ap_name"):
-            enriched["from_peer_name"] = from_info["ap_name"]
-        if not enriched.get("to_peer_name") and to_info.get("ap_name"):
-            enriched["to_peer_name"] = to_info["ap_name"]
-        enriched["from_peer_site"] = enriched.get("from_peer_site") or from_info["station"]
-        enriched["to_peer_site"] = enriched.get("to_peer_site") or to_info["station"]
-        enriched["from_peer_section"] = enriched.get("from_peer_section") or from_info["section"]
-        enriched["to_peer_section"] = enriched.get("to_peer_section") or to_info["section"]
-        enriched["from_belong_type"] = enriched.get("from_belong_type") or from_info["belong_type"]
-        enriched["to_belong_type"] = enriched.get("to_belong_type") or to_info["belong_type"]
-        enriched["from_resolve_rule"] = enriched.get("from_resolve_rule") or from_info["resolve_rule"]
-        enriched["to_resolve_rule"] = enriched.get("to_resolve_rule") or to_info["resolve_rule"]
-        return enriched
-
     def _parse_terminal_monitor_switch_logs(self) -> int:
         path = self.raw_dir / "terminal_monitor_raw.log"
         if not path.exists():
@@ -828,66 +771,8 @@ class OnlineMrDiagnosisParser:
         if not rows:
             self._issue("terminal_monitor_raw.log", "terminal-monitor", "WMESH 主链路切换日志格式未匹配。", text[:500])
             return 0
-        resolver = ApRadioMappingService(str(self.meta.site or ""), self._path_resolver())
-        enriched = [self._enrich_switch_log(row, resolver) for row in rows]
-        self._write_active_link_switch_logs(enriched)
-        return len(enriched)
-
-    def _enrich_switch_log(self, row: ActiveLinkSwitchLog, resolver: ApRadioMappingService) -> ActiveLinkSwitchLog:
-        from_info = self._resolve_switch_endpoint(row.from_peer_name, row.from_peer_mac, row.from_is_empty_link, resolver)
-        to_info = self._resolve_switch_endpoint(row.to_peer_name, row.to_peer_mac, row.to_is_empty_link, resolver)
-        return ActiveLinkSwitchLog(
-            log_time=row.log_time,
-            device_name=row.device_name,
-            raw_line=row.raw_line,
-            from_peer_name=from_info["ap_name"] or row.from_peer_name or row.from_peer_mac,
-            from_peer_mac=row.from_peer_mac,
-            from_peer_rssi=row.from_peer_rssi,
-            to_peer_name=to_info["ap_name"] or row.to_peer_name or row.to_peer_mac,
-            to_peer_mac=row.to_peer_mac,
-            to_peer_rssi=row.to_peer_rssi,
-            peer_quantity=row.peer_quantity,
-            link_quantity=row.link_quantity,
-            switch_reason_code=row.switch_reason_code,
-            switch_reason_text=row.switch_reason_text,
-            from_station=from_info["station"],
-            to_station=to_info["station"],
-            from_section=from_info["section"],
-            to_section=to_info["section"],
-            from_belong_type=from_info["belong_type"],
-            to_belong_type=to_info["belong_type"],
-            from_serial_number=from_info["serial_number"],
-            to_serial_number=to_info["serial_number"],
-            from_resolve_rule=from_info["resolve_rule"],
-            to_resolve_rule=to_info["resolve_rule"],
-            source=row.source,
-            from_is_empty_link=row.from_is_empty_link,
-            to_is_empty_link=row.to_is_empty_link,
-        )
-
-    def _resolve_switch_endpoint(self, peer_name: str, radio_mac: str, is_empty_link: bool, resolver: ApRadioMappingService) -> dict[str, str]:
-        if is_empty_link:
-            return {"ap_name": "", "station": "-", "section": "-", "belong_type": "empty", "serial_number": "-", "resolve_rule": "empty_link"}
-        for candidate in (radio_mac, peer_name):
-            text = str(candidate or "").strip()
-            if not text or text == "0000-0000-0000":
-                continue
-            try:
-                resolved = resolver.resolve_peer_mac(text, peer_name=peer_name or None)
-            except Exception:
-                continue
-            if str(resolved.source or "").lower() == "unresolved":
-                continue
-            if any((resolved.ap_name, resolved.site, resolved.section, resolved.serial_number, resolved.radio_mac)):
-                return {
-                    "ap_name": str(resolved.ap_name or ""),
-                    "station": str(resolved.site or "-"),
-                    "section": str(resolved.section or "-"),
-                    "belong_type": str(resolved.belong_type or "unknown"),
-                    "serial_number": str(resolved.serial_number or "-"),
-                    "resolve_rule": str(resolved.source or ""),
-                }
-        return {"ap_name": "", "station": "-", "section": "-", "belong_type": "unknown", "serial_number": "-", "resolve_rule": "unresolved"}
+        self._write_active_link_switch_logs(rows)
+        return len(rows)
 
     @staticmethod
     def _radio_statistics_summary(parsed: dict[str, object]) -> str:
@@ -925,6 +810,38 @@ class OnlineMrDiagnosisParser:
                 for row in rows
             ],
         )
+
+    def _remap_identity(self) -> None:
+        session_id = str(self.meta.session_id or "")
+        fact_fingerprint = self.repository.identity_fact_fingerprint(session_id)
+        query_service = self._identity_query_service
+        if query_service is None:
+            site = str(getattr(self.meta, "site", "") or "")
+            if not site:
+                self.repository.replace_identity_failure_metadata(
+                    session_id,
+                    status="site_unavailable",
+                    mapped_at=datetime.now().isoformat(sep=" ", timespec="milliseconds"),
+                    fact_fingerprint=fact_fingerprint,
+                )
+                return
+            query_service = ApIdentityQueryService(
+                Database(self._path_resolver().site_db_path(site))
+            )
+            self._identity_query_service = query_service
+        try:
+            OnlineMrIdentityRemapService(
+                self.repository,
+                query_service,
+            ).remap(session_id)
+        except Exception as exc:
+            self.repository.replace_identity_failure_metadata(
+                session_id,
+                status="failed",
+                mapped_at=datetime.now().isoformat(sep=" ", timespec="milliseconds"),
+                fact_fingerprint=fact_fingerprint,
+            )
+            self._issue("online_diagnosis.sqlite", "ap-identity", str(exc), "")
 
     def _path_resolver(self):
         from netconsole.core.paths import PathResolver

@@ -56,6 +56,14 @@ class WirelessScanRunResult:
     ended_at: str
     raw_file: Path
     results: list[WirelessScanResult]
+    identity_revision: int = 0
+    identity_index_status: str = "not_checked"
+    identity_requested_count: int = 0
+    identity_distinct_count: int = 0
+    identity_matched_count: int = 0
+    identity_unresolved_count: int = 0
+    identity_ambiguous_count: int = 0
+    identity_invalid_count: int = 0
 
 
 class WirelessScanService:
@@ -95,7 +103,14 @@ class WirelessScanService:
             except OSError:
                 pass
         resolver = self._trackside_resolver()
-        results = [WirelessScanResult(network=network, match=resolver.resolve(network.bssid)) for network in networks]
+        identity_batch = resolver.resolve_many([network.bssid for network in networks])
+        results = [
+            WirelessScanResult(
+                network=network,
+                match=identity_batch.match_for(network.bssid),
+            )
+            for network in networks
+        ]
         results.sort(key=lambda item: (not bool(item.match.ap_name and item.match.ap_name != "-"), -(item.network.rssi_dbm or -999), item.match.station, item.match.ap_name, item.network.bssid))
         ended = datetime.now()
         self.repository.save_scan(
@@ -111,8 +126,30 @@ class WirelessScanService:
             project_id=str(project_id or ""),
             project_name=str(project_name or ""),
             project_description=str(project_description or ""),
+            identity_revision=identity_batch.revision,
+            identity_index_status=identity_batch.index_status,
+            identity_requested_count=identity_batch.requested_count,
+            identity_distinct_count=identity_batch.distinct_count,
+            identity_matched_count=identity_batch.matched_count,
+            identity_unresolved_count=identity_batch.unresolved_count,
+            identity_ambiguous_count=identity_batch.ambiguous_count,
+            identity_invalid_count=identity_batch.invalid_count,
         )
-        return WirelessScanRunResult(scan_id, started.isoformat(sep=" ", timespec="seconds"), ended.isoformat(sep=" ", timespec="seconds"), raw_file, results)
+        return WirelessScanRunResult(
+            scan_id,
+            started.isoformat(sep=" ", timespec="seconds"),
+            ended.isoformat(sep=" ", timespec="seconds"),
+            raw_file,
+            results,
+            identity_revision=identity_batch.revision,
+            identity_index_status=identity_batch.index_status,
+            identity_requested_count=identity_batch.requested_count,
+            identity_distinct_count=identity_batch.distinct_count,
+            identity_matched_count=identity_batch.matched_count,
+            identity_unresolved_count=identity_batch.unresolved_count,
+            identity_ambiguous_count=identity_batch.ambiguous_count,
+            identity_invalid_count=identity_batch.invalid_count,
+        )
 
     def _trackside_resolver(self) -> TracksideApBssidResolver:
         device_repo = DeviceRepository(Database(self.paths.site_db_path(self.site_name)))
@@ -165,6 +202,13 @@ def result_to_row(result: WirelessScanResult) -> dict[str, object]:
     auth_method = _auth_method(network.auth)
     return {
         "match_status": match.match_status,
+        "identity_entity_id": match.identity_entity_id,
+        "identity_revision": match.identity_revision,
+        "identity_status": match.match_status,
+        "identity_source": match.identity_source,
+        "identity_reason": match.identity_reason,
+        "matched_alias_type": match.matched_alias_type,
+        "identity_match_confidence": match.confidence,
         "matched_trackside_ap": 1 if match.matched else 0,
         "matched_ap_name": match.ap_name,
         "matched_station": match.station,
