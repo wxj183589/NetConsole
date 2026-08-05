@@ -741,7 +741,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     const table = wrapper.get('[data-table-id="trackside-ap-business"]')
 
     expect(table.text()).toContain('正常')
-    expect(table.text()).toContain('功率异常')
+    expect(table.text()).toContain('光衰大')
     expect(table.get('.el-tooltip').attributes('data-content')).toContain(
       '-17.80 dBm 低于业务门限 -13.90 dBm',
     )

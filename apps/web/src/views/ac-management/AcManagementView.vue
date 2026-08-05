@@ -37,7 +37,13 @@ import type {
   AcWebTask,
 } from '../../types/acWebParity'
 import { displayInterfaceName } from '../../utils/interfaceName'
-import { formatOpticalPower, opticalStatusPresentation, opticalValuePresentation } from '../../utils/opticalPresentation'
+import {
+  apOpticalStatusPresentation,
+  apOpticalValuePresentation,
+  formatOpticalPower,
+  opticalStatusPresentation,
+  opticalValuePresentation,
+} from '../../utils/opticalPresentation'
 import { acConfigDiffModel } from './configDiffAdapter'
 
 const store = useAcManagementStore()
@@ -605,10 +611,62 @@ function opticalLabel(value: string, freshness = 'fresh'): string {
   return freshness === 'stale' ? `${label}（数据已过期）` : label
 }
 
-function opticalJudgement(optical: { optical_status: string; data_freshness: string; is_current_anomaly: boolean }): string {
+function apOpticalPresentation(ap: AcAp) {
+  return apOpticalStatusPresentation({
+    backendStatus: ap.optical_status,
+    rxPower: ap.optical_rx_power,
+    model: ap.model,
+    opticalApplicable: ap.optical_applicable,
+    freshness: ap.optical_data_freshness,
+  })
+}
+
+function detailApOpticalPresentation(optical: AcOptical) {
+  const ap = store.selected?.ap
+  return apOpticalStatusPresentation({
+    backendStatus: optical.optical_status,
+    rxPower: optical.rx_power,
+    model: ap?.model,
+    opticalApplicable: optical.optical_applicable ?? ap?.optical_applicable,
+    freshness: optical.data_freshness,
+  })
+}
+
+function detailApOpticalValuePresentation(optical: AcOptical) {
+  const ap = store.selected?.ap
+  return apOpticalValuePresentation({
+    backendStatus: optical.ap_rx_status || optical.optical_status,
+    rxPower: optical.rx_power,
+    model: ap?.model,
+    opticalApplicable: optical.optical_applicable ?? ap?.optical_applicable,
+    freshness: optical.data_freshness,
+  })
+}
+
+function detailThresholdPresentation(optical: AcOptical) {
+  const ap = store.selected?.ap
+  return apOpticalValuePresentation({
+    backendStatus: optical.raw_status || optical.optical_status,
+    rxPower: optical.rx_power,
+    model: ap?.model,
+    opticalApplicable: optical.optical_applicable ?? ap?.optical_applicable,
+    freshness: optical.data_freshness,
+  })
+}
+
+function opticalAlertTitle(optical: AcOptical): string {
+  if (detailApOpticalPresentation(optical).status === 'not_applicable') {
+    return '该型号使用网口接入，不适用 AP 光模块光衰检测。'
+  }
+  return optical.anomaly_reason || detailApOpticalPresentation(optical).label
+}
+
+function opticalJudgement(optical: AcOptical): string {
+  const presentation = detailApOpticalPresentation(optical)
+  if (presentation.status === 'not_applicable') return '不适用'
   if (optical.data_freshness === 'stale') return '数据已过期'
-  if (optical.is_current_anomaly) return '异常'
-  return optical.optical_status === 'no_data' ? '无数据' : '正常'
+  if (presentation.tone === 'danger' || optical.is_current_anomaly) return '异常'
+  return presentation.status === 'not_collected' ? '光诊断未采集' : '正常'
 }
 
 function opticalFreshnessLabel(value: string): string {
@@ -790,7 +848,7 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
           >
             <template #cell-selection="{ row }"><el-checkbox :model-value="selectedApIds.has(row.id)" @change="setApSelected(row.id, Boolean($event))" /></template>
             <template #cell-status="{ row }"><el-tag :type="statusType(row.status)" effect="light">{{ statusLabel(row.status) }}</el-tag></template>
-            <template #cell-optical_status="{ row }"><el-tag :type="statusType(row.optical_status)" effect="light">{{ opticalLabel(row.optical_status, row.optical_data_freshness) }}</el-tag></template>
+            <template #cell-optical_status="{ row }"><el-tag :type="apOpticalPresentation(row).tagType" effect="light">{{ apOpticalPresentation(row).label }}</el-tag></template>
             <template #cell-actions="{ row }"><el-button link type="primary" :icon="View" @click="openDetail(row)">详情</el-button></template>
           </NcDataTable>
           <div class="pagination-row">
@@ -932,7 +990,7 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
           </el-descriptions>
 
           <div class="section-heading"><h3>光衰</h3><el-button v-if="isFeatureEnabled('web.ac_fit_ap_history')" link type="primary" @click="openHistory('optical')">查看历史</el-button></div>
-          <el-alert :title="store.selected.optical.anomaly_reason" :type="statusType(store.selected.optical.optical_status)" :closable="false" show-icon />
+          <el-alert :title="opticalAlertTitle(store.selected.optical)" :type="detailApOpticalPresentation(store.selected.optical).tagType" :closable="false" show-icon />
           <el-descriptions :column="2" border class="optical-detail">
             <el-descriptions-item label="Tx Power">
               <el-tooltip
@@ -952,7 +1010,7 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
               >
                 <span
                   data-testid="optical-ap-rx-power"
-                  :class="opticalValuePresentation(store.selected.optical.ap_rx_status, store.selected.optical.data_freshness).className"
+                  :class="detailApOpticalValuePresentation(store.selected.optical).className"
                 >{{ formatOpticalPower(store.selected.optical.rx_power) }}</span>
               </el-tooltip>
             </el-descriptions-item>
@@ -970,14 +1028,14 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
             <el-descriptions-item label="阈值状态">
               <el-tag
                 data-testid="optical-threshold-status"
-                :type="opticalValuePresentation(store.selected.optical.raw_status, store.selected.optical.data_freshness).tagType"
-                :class="opticalValuePresentation(store.selected.optical.raw_status, store.selected.optical.data_freshness).className"
+                :type="detailThresholdPresentation(store.selected.optical).tagType"
+                :class="detailThresholdPresentation(store.selected.optical).className"
                 effect="light"
-              >{{ display(store.selected.optical.threshold_status || opticalValuePresentation(store.selected.optical.raw_status, store.selected.optical.data_freshness).label) }}</el-tag>
+              >{{ detailThresholdPresentation(store.selected.optical).label }}</el-tag>
             </el-descriptions-item>
             <el-descriptions-item label="AP 在线状态">{{ statusLabel(store.selected.optical.ap_online_status) }}</el-descriptions-item>
             <el-descriptions-item label="光衰判定"><span data-testid="optical-judgement">{{ opticalJudgement(store.selected.optical) }}</span></el-descriptions-item>
-            <el-descriptions-item label="告警等级">{{ opticalLabel(store.selected.optical.optical_status) }}</el-descriptions-item>
+            <el-descriptions-item label="告警等级">{{ detailApOpticalPresentation(store.selected.optical).label }}</el-descriptions-item>
             <el-descriptions-item label="数据状态">{{ opticalFreshnessLabel(store.selected.optical.data_freshness) }}</el-descriptions-item>
             <el-descriptions-item label="温度">{{ display(store.selected.optical.temperature) }}</el-descriptions-item>
             <el-descriptions-item label="电压">{{ display(store.selected.optical.voltage) }}</el-descriptions-item>

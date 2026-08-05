@@ -1530,16 +1530,14 @@ def test_trackside_plan_preview_save_export_and_artifact_download(tmp_path: Path
     ]
     assert [
         [overview.cell(row, column).value for column in range(1, 6)]
-        for row in range(2, 6)
-    ] == [
-        ["站点A", 20, 0, 20, 0],
-        ["站点B", None, 0, 0, None],
-        ["小洋江站", None, 0, 0, None],
-        ["合计", 20, 0, 20, 0.0],
-    ]
-    assert overview.max_row == 5
-    assert overview["E5"].number_format == "0.0%"
-    assert overview["E5"].font.bold is True
+            for row in range(2, 4)
+        ] == [
+            ["站点A", 20, 0, 20, 0],
+            ["合计", 20, 0, 20, 0.0],
+        ]
+    assert overview.max_row == 3
+    assert overview["E3"].number_format == "0.0%"
+    assert overview["E3"].font.bold is True
     metadata = json.loads(current_workbook["_netconsole_meta"]["B1"].value)
     assert current_workbook["_netconsole_meta"].sheet_state == "hidden"
     assert metadata["template_type"] == "trackside_ap_station_plan"
@@ -2141,11 +2139,11 @@ def test_trackside_ap_online_status_uses_planned_targets_and_weighted_total(
     status = service.get_trackside_ap_online_status("demo")
 
     assert status.planned_ap_count == 945
-    assert status.actual_online_count == 720
-    assert status.offline_count == 225
-    assert status.online_rate == 76.2
+    assert status.actual_online_count == 719
+    assert status.offline_count == 226
+    assert status.online_rate == 76.1
     assert status.unassigned_count == 1
-    assert "当前有 1 个待关联在线轨旁 AP。" in status.warning
+    assert "1 个 AC 在线 AP" in status.warning
     assert status.excluded_device_count == 2
     assert status.fit_ap_resource_total_count == 948
     assert status.fit_ap_matched_count == 945
@@ -2217,20 +2215,15 @@ def test_trackside_ap_online_status_uses_planned_targets_and_weighted_total(
         0,
     ]
     assert [overview.cell(13, column).value for column in range(1, 5)] == [
-        "基础资料待补充",
-        None,
-        1,
-        None,
-    ]
-    assert [overview.cell(14, column).value for column in range(1, 5)] == [
         "合计",
         945,
-        720,
-        225,
+        719,
+        226,
     ]
-    assert overview["E14"].value == pytest.approx(0.762)
-    assert overview["E14"].number_format == "0.0%"
-    assert overview["E14"].font.bold is True
+    assert "未计入业务统计" in str(overview.cell(13, 6).value)
+    assert overview["E13"].value == pytest.approx(0.761)
+    assert overview["E13"].number_format == "0.0%"
+    assert overview["E13"].font.bold is True
     workbook.close()
 
 
@@ -2287,7 +2280,7 @@ def test_trackside_online_status_refreshes_from_exact_switch_lldp_station_eviden
     )
 
     before = service.get_trackside_ap_online_status("demo")
-    assert before.actual_online_count == 1
+    assert before.actual_online_count == 0
     assert before.fit_ap_unmatched_online_count == 1
 
     DeviceFactRepository(database).replace_lldp_neighbors(
@@ -2353,7 +2346,7 @@ def test_trackside_ap_online_status_ignores_reference_count_and_flags_excess(
     assert by_name["站点A"].actual_online_count == 1
     assert by_name["站点A"].offline_count == 4
     assert by_name["站点A"].online_rate == 20.0
-    assert by_name["站点B"].actual_online_count == 2
+    assert by_name["站点B"].actual_online_count == 1
     assert by_name["站点B"].offline_count == 0
     assert by_name["站点B"].online_rate is None
     assert by_name["站点B"].count_anomaly is True
@@ -2363,13 +2356,13 @@ def test_trackside_ap_online_status_ignores_reference_count_and_flags_excess(
         == "实际上线 AP 数量超过当前规划数量，请检查规划资料或 AP 归属关系。"
     )
     assert by_name["站点C"].planned_ap_count == 0
-    assert by_name["站点C"].actual_online_count == 1
+    assert by_name["站点C"].actual_online_count == 0
     assert by_name["站点C"].offline_count == 0
     assert by_name["站点C"].online_rate is None
     assert by_name["站点C"].count_anomaly is True
     assert status.planned_ap_count == 6
-    assert status.actual_online_count == 4
-    assert status.offline_count == 2
+    assert status.actual_online_count == 2
+    assert status.offline_count == 4
     assert status.online_rate is None
     assert status.count_anomaly is True
     assert status.scope_device_count == 5

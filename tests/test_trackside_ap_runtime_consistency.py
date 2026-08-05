@@ -116,8 +116,9 @@ def test_stale_lldp_online_ap_is_waiting_sync_not_base_data_missing():
     item = scope.unmatched_online_items[0]
     assert item.association_status == "lldp_snapshot_stale"
     assert item.reason_code == "LLDP_SNAPSHOT_STALE"
-    assert scope.overview_export_rows()[-2]["site"] == "等待 LLDP 同步"
-    assert "基础资料待补充 0 个" in str(scope.overview_export_rows()[-1]["remark"])
+    overview = scope.overview_export_rows()
+    assert [row["site"] for row in overview] == ["01-站点A", "合计"]
+    assert "未计入业务统计" in str(overview[-1]["remark"])
 
 
 def test_current_exact_lldp_resolves_same_ap_after_refresh():
@@ -294,8 +295,8 @@ def test_overview_reports_actual_online_independently_of_association():
     scope = _scope([_resource()], [])
     total = scope.overview_export_rows()[-1]
     assert len(scope.runtime_resources) == 1
-    assert total["online"] == 1
-    assert "实际上线 1 个" in str(total["remark"])
+    assert total["online"] == 0
+    assert "已关联上线 0 个" in str(total["remark"])
 
 
 def test_runtime_totals_keep_all_305_fit_aps_independent_of_station_association():
@@ -309,7 +310,7 @@ def test_runtime_totals_keep_all_305_fit_aps_independent_of_station_association(
     assert scope.fit_ap_online_total_count == 300
     assert scope.fit_ap_offline_total_count == 5
     assert scope.fit_ap_unknown_total_count == 0
-    assert scope.overview_export_rows()[-1]["online"] == 300
+    assert scope.overview_export_rows()[-1]["online"] == 0
 
 
 def test_matched_resource_count_is_distinct_from_matched_online_count():
