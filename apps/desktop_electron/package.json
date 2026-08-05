@@ -21,7 +21,11 @@
     "build:web": "pnpm --dir ../web build",
     "package:prepare": "pnpm run build:main && node scripts/package.mjs",
     "package:dir": "pnpm run package:prepare && electron-builder --dir --win --x64",
-    "package": "node scripts/build-installer.mjs",
+    "package": "pnpm run package:all",
+    "package:all": "node scripts/build-edition-installer.mjs both",
+    "package:full": "node scripts/build-edition-installer.mjs full",
+    "package:customer": "node scripts/build-edition-installer.mjs customer",
+    "package:legacy": "node scripts/build-installer.mjs",
     "smoke:package": "pnpm run package:dir && node scripts/package-smoke.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run"
