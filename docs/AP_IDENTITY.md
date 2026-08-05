@@ -12,10 +12,11 @@ Radio/BSSID/BBSSID、位置和来源证据分开保存。
 
 - MR 原始 MESH distinct Peer 的批量匹配、持久化投影和 identity-only remap；
 - 地面无人值守实时与历史 WMESH Peer 的批量匹配和 revision 缓存；
+- 车载 MR 实时采样、Online MR 历史 parsed DB 与无线扫描的批量匹配和 revision 投影；
 - AC/FIT-AP 与轨旁 AP 搜索的统一查询入口；
-- 部分 Online MR、Vehicle MR、无线扫描和轨旁业务单值查询。
+- 轨旁业务等仍保留的兼容查询。
 
-AC Mesh-Link、车载 MR 历史分析及基础资料的直接 Identity JOIN 等遗留入口
+AC Mesh-Link、基础资料的直接 Identity JOIN、轨旁业务与报告读取等遗留入口
 仍在审计白名单内，不能视为已经完成统一。新增消费者不得复制这些遗留实现。
 
 普通查询只读取 `devices.db` 中已生成的统一索引，不连接 AC，不执行

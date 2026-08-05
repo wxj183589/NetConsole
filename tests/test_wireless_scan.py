@@ -5,6 +5,7 @@ import subprocess
 from openpyxl import load_workbook
 
 from netconsole.core.paths import PathResolver
+from netconsole.models.ap_identity_index import ApIdentityBatchResult, ApIdentityMatch
 from netconsole.models.wireless_scan_models import (
     TracksideBssidMatch,
     WirelessAdapter,
@@ -14,6 +15,7 @@ from netconsole.models.wireless_scan_models import (
 from netconsole.repositories.wireless_scan_repository import WirelessScanRepository
 from netconsole.services.network_tools.netsh_wireless_scanner import NetshWirelessScanner, parse_netsh_networks
 from netconsole.services.network_tools.trackside_bssid_resolver import TracksideApBssidResolver
+from netconsole.services.ap_identity.normalizers import normalize_mac_key
 from netconsole.services.network_tools.hybrid_wireless_scanner import HybridWirelessScanner, merge_wireless_networks
 from netconsole.services.network_tools.wireless_channel_analyzer import band_from_frequency, frequency_to_channel, normalize_mac, rssi_level
 from netconsole.services.network_tools.wireless_ie_parser import WirelessInformationElementParser
@@ -90,54 +92,134 @@ def test_wireless_mac_normalization():
     assert normalize_mac("bad") is None
 
 
+class _FakeIdentityQueryService:
+    def __init__(self, matches: dict[str, ApIdentityMatch] | None = None) -> None:
+        self.matches = matches or {}
+        self.calls: list[tuple[list[object], str | None]] = []
+
+    def resolve_peer_macs(
+        self,
+        macs: list[object],
+        *,
+        ap_role: str | None = None,
+    ) -> ApIdentityBatchResult:
+        self.calls.append((list(macs), ap_role))
+        normalized = [key for value in macs if (key := normalize_mac_key(value))]
+        keys = tuple(dict.fromkeys(normalized))
+        results = {
+            key: self.matches.get(
+                key,
+                ApIdentityMatch(
+                    status="unresolved",
+                    identity_revision=17,
+                    query_mac=key,
+                    unresolved_reason="exact_alias_not_found",
+                ),
+            )
+            for key in keys
+        }
+        statuses = [match.status for match in results.values()]
+        return ApIdentityBatchResult(
+            revision=17,
+            index_status="ready",
+            requested_count=len(macs),
+            normalized_count=len(normalized),
+            distinct_count=len(keys),
+            matched_count=statuses.count("matched"),
+            unresolved_count=statuses.count("unresolved"),
+            ambiguous_count=statuses.count("ambiguous"),
+            invalid_count=len(macs) - len(normalized),
+            matches=results,
+        )
+
+
+def _matched_identity(
+    query_mac: str,
+    *,
+    ap_name: str,
+    ap_mac: str,
+    station: str = "",
+    section: str = "",
+    belong_type: str = "station",
+    point_code: str = "",
+    mileage: str = "",
+    direction: str = "",
+    radio_id: int | None = 1,
+    match_rule: str = "ac_radio_mac",
+) -> ApIdentityMatch:
+    return ApIdentityMatch(
+        status="matched",
+        identity_revision=17,
+        query_mac=normalize_mac_key(query_mac) or "",
+        matched_entity_id=f"entity-{ap_name or point_code}",
+        effective_ap_name=ap_name,
+        effective_ap_mac=ap_mac,
+        station=station,
+        section=section,
+        point_code=point_code,
+        mileage=mileage,
+        direction=direction,
+        belong_type=belong_type,
+        matched_alias_type="ac_radio_mac",
+        matched_source="ac_runtime",
+        match_rule=match_rule,
+        match_confidence=100,
+        radio_id=radio_id,
+    )
+
+
 def test_trackside_bssid_resolver_does_not_treat_ap_base_mac_as_bssid():
-    resolver = TracksideApBssidResolver([{"ap_name": "AP-1", "ap_mac": "083b-e9ec-da5f", "site_name": "S1", "location_note": "K1", "direction": "up"}])
+    resolver = TracksideApBssidResolver(_FakeIdentityQueryService())  # type: ignore[arg-type]
     radio1 = resolver.resolve("083b-e9ec-da5f")
-    assert radio1.match_status == "unmatched"
-    radio2 = TracksideApBssidResolver([{"ap_name": "AP-2", "ap_mac": "083b-e9ec-da40", "site_name": "S2"}]).resolve("083b-e9ec-da5f")
-    assert radio2.match_status == "unmatched"
-    second_vendor_sample = TracksideApBssidResolver([{"ap_name": "AP-3", "ap_mac": "94a7-482c-1140", "site_name": "S3"}]).resolve("94a7-482c-115f")
-    assert second_vendor_sample.match_status == "unmatched"
-    no_wrap = TracksideApBssidResolver([{"ap_name": "AP-Zero", "ap_mac": "083b-e9ec-daff"}])
-    assert no_wrap.resolve("083b-e9ec-da0f").match_status == "unmatched"
+    assert radio1.match_status == "unresolved"
+    assert resolver.resolve("083b-e9ec-da5f").identity_reason == "exact_alias_not_found"
 
 
 def test_trackside_bssid_resolver_prefers_exact_collected_radio_mac():
-    resolver = TracksideApBssidResolver(
-        [
-            {"ap_name": "AP-1", "ap_mac": "083b-e9ec-da4f", "site_name": "S1", "radio2_mac": "083b-e9ec-da6f"},
-        ]
+    query = _FakeIdentityQueryService(
+        {
+            "083be9ecda6f": _matched_identity(
+                "083b-e9ec-da6f",
+                ap_name="AP-1",
+                ap_mac="083b-e9ec-da4f",
+                station="S1",
+                radio_id=2,
+                match_rule="ac_radio_mac",
+            )
+        }
     )
+    resolver = TracksideApBssidResolver(query)  # type: ignore[arg-type]
     match = resolver.resolve("083b.e9ec.da6f")
     assert match.matched
     assert match.radio_id == 2
     assert match.ap_name == "AP-1"
     assert match.ap_mac == "083b-e9ec-da4f"
-    assert match.match_rule == "radio2_mac"
+    assert match.match_rule == "ac_radio_mac"
+    assert query.calls == [(["083b.e9ec.da6f"], "trackside")]
 
 
 def test_trackside_bssid_resolver_does_not_use_peer_name_as_fallback():
-    resolver = TracksideApBssidResolver([{"ap_name": "AP-Name-01", "ap_mac": "083b-e9ec-da4f", "site_name": "S1"}])
+    resolver = TracksideApBssidResolver(_FakeIdentityQueryService())  # type: ignore[arg-type]
 
     match = resolver.resolve("1122-3344-5566", peer_name="AP-Name-01")
 
     assert not match.matched
-    assert match.match_status == "unmatched"
+    assert match.match_status == "unresolved"
 
 
 def test_trackside_bssid_resolver_preserves_section_belonging():
-    resolver = TracksideApBssidResolver(
-        [
+    resolver = TracksideApBssidResolver(  # type: ignore[arg-type]
+        _FakeIdentityQueryService(
             {
-                "ap_name": "ap0303_a",
-                "ap_mac_display": "5866-bab3-0a40",
-                "belong_type": "section",
-                "station_name": "",
-                "section_name": "联庄-中医药大学",
-                "radio1_mac": "5866-bab3-0a4f",
-                "_identity_source": "ap_metadata",
+                "5866bab30a4f": _matched_identity(
+                    "5866-bab3-0a4f",
+                    ap_name="ap0303_a",
+                    ap_mac="5866-bab3-0a40",
+                    section="联庄-中医药大学",
+                    belong_type="section",
+                )
             }
-        ]
+        )
     )
 
     match = resolver.resolve("5866-bab3-0a4f")
@@ -148,22 +230,21 @@ def test_trackside_bssid_resolver_preserves_section_belonging():
 
 
 def test_trackside_bssid_resolver_uses_point_code_for_offline_base_data():
-    resolver = TracksideApBssidResolver(
-        [
+    resolver = TracksideApBssidResolver(  # type: ignore[arg-type]
+        _FakeIdentityQueryService(
             {
-                "ap_name": "",
-                "ap_point_code": "AP0127",
-                "ap_mac_display": "1c94-6876-8ee0",
-                "station_name": "高桥西",
-                "section_name": "高桥西-高桥",
-                "section_start_station": "高桥西",
-                "section_end_station": "高桥",
-                "mileage_text": "ZDK12+300",
-                "direction": "下行",
-                "radio1_mac": "1c94-6876-8eef",
-                "_identity_source": "ap_metadata",
+                "1c9468768eef": _matched_identity(
+                    "1c94-6876-8eef",
+                    ap_name="",
+                    point_code="AP0127",
+                    ap_mac="1c94-6876-8ee0",
+                    station="高桥西",
+                    section="高桥西-高桥",
+                    mileage="ZDK12+300",
+                    direction="下行",
+                )
             }
-        ]
+        )
     )
 
     match = resolver.resolve("1c94-6876-8eef")
@@ -176,33 +257,48 @@ def test_trackside_bssid_resolver_uses_point_code_for_offline_base_data():
 
 
 def test_trackside_bssid_resolver_rejects_unique_name_only_extension_section():
-    resolver = TracksideApBssidResolver(
-        [
-            {
-                "ap_name": "ap0303_a",
-                "belong_type": "section",
-                "section_name": "联庄-中医药大学",
-                "_identity_source": "ap_metadata",
-            }
-        ]
-    )
+    resolver = TracksideApBssidResolver(_FakeIdentityQueryService())  # type: ignore[arg-type]
 
     match = resolver.resolve("4ce9-e4f1-b880", peer_name="ap0303_a")
 
     assert not match.matched
-    assert match.match_status == "unmatched"
+    assert match.match_status == "unresolved"
 
 
 def test_trackside_bssid_resolver_multi_match_uses_status():
-    resolver = TracksideApBssidResolver(
-        [
-            {"ap_name": "AP-1", "ap_mac": "30f5-277a-5a2f"},
-            {"ap_name": "AP-2", "ap_mac": "30f5-277a-5a2a"},
-        ]
+    resolver = TracksideApBssidResolver(  # type: ignore[arg-type]
+        _FakeIdentityQueryService(
+            {
+                "30f5277a5a2b": ApIdentityMatch(
+                    status="ambiguous",
+                    identity_revision=17,
+                    query_mac="30f5277a5a2b",
+                    unresolved_reason="duplicate_exact_alias",
+                    candidates=({"entity_id": "ap-1"}, {"entity_id": "ap-2"}),
+                )
+            }
+        )
     )
     match = resolver.resolve("30f5-277a-5a2b")
-    assert match.match_status == "unmatched"
-    assert len(match.candidates) == 0
+    assert match.match_status == "ambiguous"
+    assert len(match.candidates) == 2
+
+
+def test_trackside_bssid_resolver_batches_5000_results_with_500_distinct_bssids():
+    bssids = [f"02000000{index:04x}" for index in range(500)]
+    query = _FakeIdentityQueryService()
+    resolver = TracksideApBssidResolver(query)  # type: ignore[arg-type]
+
+    batch = resolver.resolve_many(
+        [bssids[index % 500] for index in range(5000)]
+    )
+
+    assert len(query.calls) == 1
+    assert len(query.calls[0][0]) == 5000
+    assert query.calls[0][1] == "trackside"
+    assert batch.requested_count == 5000
+    assert batch.distinct_count == 500
+    assert batch.unresolved_count == 500
 
 
 def test_netsh_wireless_parser_extracts_hidden_ssid_and_bssid_fields():
@@ -488,17 +584,15 @@ def test_wireless_scan_service_resolves_trackside_after_hybrid_merge(tmp_path, m
     netsh = WirelessNetwork(bssid="aabb-cc00-0002", ssid="Mesh", auth="WPA2-Personal", encryption="CCMP", scan_source="netsh")
     scanner = HybridWirelessScanner(_FakeScanner([wlan], "wlan raw"), _FakeScanner([netsh], "netsh raw"))
     service = WirelessScanService("demo", PathResolver(tmp_path), scanner=scanner)
-    resolved: list[str] = []
-
-    class Resolver:
-        def resolve(self, bssid):
-            resolved.append(bssid)
-            return TracksideBssidMatch(matched=False, match_status="unmatched")
-
-    monkeypatch.setattr(service, "_trackside_resolver", lambda: Resolver())
+    query = _FakeIdentityQueryService()
+    monkeypatch.setattr(
+        service,
+        "_trackside_resolver",
+        lambda: TracksideApBssidResolver(query),  # type: ignore[arg-type]
+    )
     result = service.scan()
     assert len(result.results) == 1
-    assert resolved == ["aabbcc000002"]
+    assert query.calls == [(["aabbcc000002"], "trackside")]
     assert result.results[0].network.scan_source == "hybrid"
 
 

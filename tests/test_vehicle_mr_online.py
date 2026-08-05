@@ -7,10 +7,14 @@ from pathlib import Path
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
+from netconsole.models.ap_identity_index import ApIdentityBatchResult, ApIdentityMatch
 from netconsole.models.device import Device
+from netconsole.models.online_mr_models import OnlineMrConnectionConfig
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.ap_identity import ApIdentityQueryService
+from netconsole.services.ap_identity.normalizers import normalize_mac_key
+from netconsole.services import vehicle_mr_online as vehicle_mr_online_service
 from netconsole.services.export.export_handlers import run_generic_export_handler
 from netconsole.services.export.export_task_builders import vehicle_mr_history_xlsx_spec
 from netconsole.services.export_task_models import ExportJob
@@ -22,6 +26,7 @@ from netconsole.services.vehicle_mr_online import (
     ONLINE_POLICY_SINGLE_TC1,
     ONLINE_POLICY_SINGLE_TC2,
     UNKNOWN_STATION,
+    VehicleMrIdentitySnapshot,
     VehicleMrMeshLink,
     VehicleMrMeshParseResult,
     VehicleMrEndState,
@@ -33,7 +38,6 @@ from netconsole.services.vehicle_mr_online import (
     build_canonical_train_key,
     build_train_states,
     choose_best_links,
-    is_same_or_h3c_radio_mac,
     load_trackside_ap_lookup,
     load_vehicle_mr_mapping_trains,
     match_ap,
@@ -41,6 +45,7 @@ from netconsole.services.vehicle_mr_online import (
     normalize_train_no,
     parse_ac_clock_line,
     parse_train_identity,
+    resolve_vehicle_mr_identity_snapshot,
     resolve_ap_station,
 )
 from netconsole.services.job_center.handlers.legacy_tasks import (
@@ -440,14 +445,19 @@ def test_vehicle_mr_does_not_match_same_name_or_ap_base_mac(tmp_path: Path) -> N
         )
         conn.commit()
     ApIdentityQueryService(database).rebuild_index("test_ac_refresh_succeeded")
-    lookup = load_trackside_ap_lookup(repository)
+    query_service = load_trackside_ap_lookup(repository)
     result = VehicleMrMeshParseResult("00:22:05", [VehicleMrMeshLink("bc5a-3457-a740", "列车06-MR-CT", local_mac="bc5a-3457-a740", rssi=46)])
-    trains = build_train_states({"列车06": VehicleMrTrainState("列车06", "06", True)}, result, lookup)
+    identity_snapshot = resolve_vehicle_mr_identity_snapshot(query_service, result.links)
+    trains = build_train_states(
+        {"列车06": VehicleMrTrainState("列车06", "06", True)},
+        result,
+        identity_snapshot,
+    )
 
     assert trains[0].current_station == UNKNOWN_STATION
     assert trains[0].tc1.display() == "未知车站 / bc5a-3457-a740 / 46"
     store = VehicleMrOnlineStore(paths, "demo")
-    store.persist_snapshot("s1", 1, result, trains, lookup, 10)
+    store.persist_snapshot("s1", 1, result, trains, identity_snapshot, 10)
     with sqlite3.connect(store.db_path) as conn:
         row = conn.execute("SELECT matched_station, matched_ap_name, match_method, match_score FROM vehicle_mr_online_links").fetchone()
     assert row == (
@@ -579,10 +589,15 @@ def test_online_vehicle_mr_uses_optical_site_for_station_display(tmp_path: Path)
         conn.execute("INSERT INTO ac_fit_ap_optical (ac_device_uuid, ap_uuid, ap_name, ap_mac, site) VALUES ('ac1', 'ap1', '30f5-2787-a560', '30f5-2787-a560', '11云龙车辆段')")
         conn.commit()
     ApIdentityQueryService(database).rebuild_index("test_legacy_optical_loaded")
-    lookup = load_trackside_ap_lookup(repository)
+    query_service = load_trackside_ap_lookup(repository)
     result = VehicleMrMeshParseResult("00:22:05", [VehicleMrMeshLink("30f5-2787-a560", "NBL12-LC06-MR-CT", local_mac="30f5-2787-a56f", rssi=45)])
 
-    trains = build_train_states({"列车06": VehicleMrTrainState("列车06", "06", True)}, result, lookup)
+    identity_snapshot = resolve_vehicle_mr_identity_snapshot(query_service, result.links)
+    trains = build_train_states(
+        {"列车06": VehicleMrTrainState("列车06", "06", True)},
+        result,
+        identity_snapshot,
+    )
 
     assert trains[0].current_station == "11云龙车辆段"
     assert trains[0].tc1.display() == "11云龙车辆段 / 30f5-2787-a560 / 45"
@@ -607,23 +622,378 @@ def test_vehicle_mr_lookup_job_payload_is_json_safe(tmp_path: Path) -> None:
         load_trackside_ap_lookup(DeviceRepository(database))
     )
 
-    assert "__ap_identity_query_service__" not in payload
-    assert payload["__ap_identity_entities__"][0]["station"] == "鼓楼站"
+    assert payload["identity_entities"][0]["station"] == "鼓楼站"
     json.dumps(payload, ensure_ascii=False)
 
 
 def test_radio_mac_different_from_canonical_mac_stays_unresolved() -> None:
-    lookup = {
-        "__resources__": [MatchedAp("Y01-02", "鼓楼站", "resource", 0, "bc5a3457a740")],
-    }
+    snapshot = VehicleMrIdentitySnapshot()
 
-    matched = match_ap("unknown-ap", lookup, "bc5a-3457-a750")
+    matched = match_ap("unknown-ap", snapshot, "bc5a-3457-a750")
 
     assert normalize_mac("BC5A-3457-A740") == "bc:5a:34:57:a7:40"
-    assert not is_same_or_h3c_radio_mac("bc5a-3457-a740", "bc5a-3457-a750")
     assert matched is None
 
 
+
+
+def test_vehicle_mr_identity_snapshot_batches_50000_facts_once() -> None:
+    macs = [f"02000000{index:04x}" for index in range(200)]
+    links = [
+        VehicleMrMeshLink(
+            local_ap_name=f"AP-{index % 200}",
+            peer_name="NBL12-LC06-MR-CT",
+            local_mac=macs[index % 200],
+            rssi=40,
+        )
+        for index in range(50_000)
+    ]
+
+    class QueryService:
+        def __init__(self) -> None:
+            self.calls: list[tuple[list[object], str | None]] = []
+
+        def resolve_peer_macs(self, values, *, ap_role=None):
+            self.calls.append((list(values), ap_role))
+            keys = tuple(
+                dict.fromkeys(
+                    key for value in values if (key := normalize_mac_key(value))
+                )
+            )
+            matches = {
+                key: ApIdentityMatch(
+                    status="matched",
+                    identity_revision=41,
+                    query_mac=key,
+                    matched_entity_id=f"entity-{key}",
+                    effective_ap_name=f"AP-{key[-2:]}",
+                    effective_ap_mac=key,
+                    station="鼓楼站",
+                    section="鼓楼-东门口",
+                    matched_alias_type="ac_radio_mac",
+                    matched_source="ac_runtime",
+                    match_rule="ac_radio_mac",
+                    match_confidence=100,
+                    radio_id=1,
+                )
+                for key in keys
+            }
+            return ApIdentityBatchResult(
+                revision=41,
+                index_status="ready",
+                requested_count=len(values),
+                normalized_count=len(values),
+                distinct_count=len(keys),
+                matched_count=len(keys),
+                unresolved_count=0,
+                ambiguous_count=0,
+                invalid_count=0,
+                matches=matches,
+            )
+
+    query = QueryService()
+    snapshot = resolve_vehicle_mr_identity_snapshot(query, links)  # type: ignore[arg-type]
+
+    assert len(query.calls) == 1
+    assert query.calls[0][1] == "trackside"
+    assert len(query.calls[0][0]) == 50_000
+    assert snapshot.revision == 41
+    assert snapshot.requested_count == 50_000
+    assert snapshot.distinct_count == 200
+
+
+def test_vehicle_mr_identity_snapshot_preserves_ambiguous_invalid_and_revision(tmp_path: Path) -> None:
+    ambiguous_mac = "020000000001"
+    unresolved_mac = "020000000002"
+    links = [
+        VehicleMrMeshLink("AP-A", "NBL12-LC06-MR-CT", local_mac=ambiguous_mac, rssi=40),
+        VehicleMrMeshLink("AP-B", "NBL12-LC06-MR-CW", local_mac=unresolved_mac, rssi=41),
+        VehicleMrMeshLink("AP-C", "NBL12-LC07-MR-CT", local_mac="invalid", rssi=42),
+    ]
+
+    class QueryService:
+        def resolve_peer_macs(self, values, *, ap_role=None):
+            assert ap_role == "trackside"
+            return ApIdentityBatchResult(
+                revision=52,
+                index_status="ready",
+                requested_count=len(values),
+                normalized_count=2,
+                distinct_count=2,
+                matched_count=0,
+                unresolved_count=1,
+                ambiguous_count=1,
+                invalid_count=1,
+                matches={
+                    ambiguous_mac: ApIdentityMatch(
+                        status="ambiguous",
+                        identity_revision=52,
+                        query_mac=ambiguous_mac,
+                        unresolved_reason="duplicate_exact_alias",
+                    ),
+                    unresolved_mac: ApIdentityMatch(
+                        status="unresolved",
+                        identity_revision=52,
+                        query_mac=unresolved_mac,
+                        unresolved_reason="exact_alias_not_found",
+                    ),
+                },
+            )
+
+    snapshot = resolve_vehicle_mr_identity_snapshot(QueryService(), links)  # type: ignore[arg-type]
+    assert snapshot.match_for("invalid").status == "invalid"
+
+    store = VehicleMrOnlineStore(PathResolver(tmp_path), "demo")
+    store.persist_snapshot(
+        "s1",
+        1,
+        VehicleMrMeshParseResult("2026-06-28 10:00:00", links),
+        [],
+        snapshot,
+        20,
+    )
+    with sqlite3.connect(store.db_path) as conn:
+        rows = conn.execute(
+            "SELECT local_ap_name, identity_status, identity_reason, identity_revision FROM vehicle_mr_online_links ORDER BY id"
+        ).fetchall()
+        metadata = conn.execute(
+            "SELECT identity_ambiguous_count, identity_unresolved_count, identity_invalid_count FROM vehicle_mr_online_snapshots"
+        ).fetchone()
+    assert rows == [
+        ("AP-A", "ambiguous", "duplicate_exact_alias", 52),
+        ("AP-B", "unresolved", "exact_alias_not_found", 52),
+        ("AP-C", "invalid", "invalid_peer_mac", 52),
+    ]
+    assert metadata == (1, 1, 1)
+
+
+def test_vehicle_mr_next_sample_observes_new_identity_revision() -> None:
+    link = VehicleMrMeshLink(
+        "AP-A",
+        "NBL12-LC06-MR-CT",
+        local_mac="020000000001",
+        rssi=40,
+    )
+
+    class QueryService:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def resolve_peer_macs(self, values, *, ap_role=None):
+            self.calls += 1
+            revision = 60 + self.calls
+            key = normalize_mac_key(values[0]) or ""
+            match = ApIdentityMatch(
+                status="matched",
+                identity_revision=revision,
+                query_mac=key,
+                matched_entity_id="entity-1",
+                effective_ap_name="AP-A",
+                effective_ap_mac="020000000000",
+                station="鼓楼站",
+                matched_alias_type="ac_radio_mac",
+                matched_source="ac_runtime",
+                match_rule="ac_radio_mac",
+                match_confidence=100,
+            )
+            return ApIdentityBatchResult(
+                revision=revision,
+                index_status="ready",
+                requested_count=1,
+                normalized_count=1,
+                distinct_count=1,
+                matched_count=1,
+                unresolved_count=0,
+                ambiguous_count=0,
+                invalid_count=0,
+                matches={key: match},
+            )
+
+    query = QueryService()
+    first = resolve_vehicle_mr_identity_snapshot(query, [link])  # type: ignore[arg-type]
+    second = resolve_vehicle_mr_identity_snapshot(query, [link])  # type: ignore[arg-type]
+
+    assert query.calls == 2
+    assert first.revision == 61
+    assert first.match_for(link.local_mac).identity_revision == 61
+    assert second.revision == 62
+    assert second.match_for(link.local_mac).identity_revision == 62
+
+
+def test_vehicle_mr_store_upgrades_legacy_identity_columns_idempotently(tmp_path: Path) -> None:
+    paths = PathResolver(tmp_path)
+    db_path = paths.online_mr_root("demo") / "parsed" / "vehicle_mr_online.sqlite"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE vehicle_mr_online_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                sample_index INTEGER,
+                ac_time TEXT,
+                local_time TEXT,
+                command_duration_ms INTEGER,
+                link_count INTEGER,
+                parse_status TEXT,
+                error_message TEXT,
+                created_at TEXT
+            );
+            CREATE TABLE vehicle_mr_online_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                snapshot_id INTEGER,
+                ac_time TEXT,
+                peer_name TEXT,
+                peer_mac TEXT,
+                local_ap_name TEXT,
+                local_mac TEXT,
+                status TEXT,
+                rssi INTEGER,
+                rx_packets INTEGER,
+                tx_packets INTEGER,
+                train_id TEXT,
+                train_display_name TEXT,
+                train_no TEXT,
+                car_end TEXT,
+                car_end_label TEXT,
+                matched_station TEXT,
+                matched_ap_name TEXT,
+                match_method TEXT,
+                match_score INTEGER,
+                station_source TEXT,
+                created_at TEXT
+            );
+            """
+        )
+
+    VehicleMrOnlineStore(paths, "demo")
+    VehicleMrOnlineStore(paths, "demo")
+
+    with sqlite3.connect(db_path) as conn:
+        snapshot_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(vehicle_mr_online_snapshots)")
+        }
+        link_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(vehicle_mr_online_links)")
+        }
+    assert {
+        "identity_revision",
+        "identity_index_status",
+        "identity_matched_count",
+        "identity_invalid_count",
+        "identity_mapped_at",
+    } <= snapshot_columns
+    assert {
+        "identity_entity_id",
+        "identity_revision",
+        "identity_status",
+        "identity_source",
+        "identity_reason",
+        "matched_alias_type",
+        "matched_ap_mac",
+        "matched_radio_id",
+        "matched_section",
+    } <= link_columns
+
+
+def test_vehicle_mr_collector_reuses_one_identity_snapshot(monkeypatch) -> None:
+    link = VehicleMrMeshLink(
+        "AP-A",
+        "NBL12-LC06-MR-CT",
+        local_mac="020000000001",
+        rssi=40,
+    )
+    parse_result = VehicleMrMeshParseResult("2026-06-28 10:00:00", [link])
+
+    class QueryService:
+        def resolve_peer_macs(self, values, *, ap_role=None):
+            key = normalize_mac_key(values[0]) or ""
+            return ApIdentityBatchResult(
+                revision=71,
+                index_status="ready",
+                requested_count=1,
+                normalized_count=1,
+                distinct_count=1,
+                matched_count=1,
+                unresolved_count=0,
+                ambiguous_count=0,
+                invalid_count=0,
+                matches={
+                    key: ApIdentityMatch(
+                        status="matched",
+                        identity_revision=71,
+                        query_mac=key,
+                        matched_entity_id="entity-1",
+                        effective_ap_name="AP-A",
+                        effective_ap_mac="020000000000",
+                        station="鼓楼站",
+                        matched_alias_type="ac_radio_mac",
+                        matched_source="ac_runtime",
+                        match_rule="ac_radio_mac",
+                        match_confidence=100,
+                    )
+                },
+            )
+
+    class Store:
+        def __init__(self) -> None:
+            self.persisted_snapshot = None
+
+        def load_current_states(self):
+            return {}
+
+        def persist_snapshot(self, _session_id, _sample_index, _result, _trains, snapshot, _duration):
+            self.persisted_snapshot = snapshot
+            return 1
+
+        def update_session(self, *_args, **_kwargs):
+            return None
+
+    built_snapshots = []
+    original_build_train_states = vehicle_mr_online_service.build_train_states
+
+    def tracked_build_train_states(*args, **kwargs):
+        built_snapshots.append(args[2])
+        return original_build_train_states(*args, **kwargs)
+
+    monkeypatch.setattr(
+        vehicle_mr_online_service,
+        "build_train_states",
+        tracked_build_train_states,
+    )
+    store = Store()
+    collector = vehicle_mr_online_service.VehicleMrOnlineCollector(
+        ac=Device(name="AC-1", device_type="AC", primary_address="192.0.2.1"),
+        site_name="demo",
+        interval_seconds=10,
+        store=store,  # type: ignore[arg-type]
+        registered_trains={"列车06": VehicleMrTrainState("列车06", "06", True)},
+        identity_query_service=QueryService(),  # type: ignore[arg-type]
+        mapping_lookup={},
+        connection_config=OnlineMrConnectionConfig(
+            site="demo",
+            mr_id="ac-1",
+            mr_name="AC-1",
+            safe_mr_name="ac-1",
+            device_id=1,
+            device_name="AC-1",
+            host="192.0.2.1",
+        ),
+        parser=type("Parser", (), {"parse": lambda _self, _raw: parse_result})(),
+    )
+    collector.connection = type(
+        "Connection",
+        (),
+        {"send_command": lambda _self, _command, _timeout: "ok"},
+    )()
+    collector.session_id = "s1"
+
+    collector.run_once()
+
+    assert len(built_snapshots) == 1
+    assert built_snapshots[0] is store.persisted_snapshot
+    assert store.persisted_snapshot.revision == 71
 
 
 def test_pass_events_are_persisted_for_online_ap_station_and_offline_changes(tmp_path: Path) -> None:

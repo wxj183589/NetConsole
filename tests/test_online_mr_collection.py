@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from netconsole.core.paths import PathResolver
+from netconsole.models.ap_identity_index import ApIdentityBatchResult, ApIdentityMatch
 from netconsole.models.device import Device
 from netconsole.models.online_mr_models import (
     CONFIG_COLLECT_COMMANDS,
@@ -2610,51 +2611,84 @@ def test_online_mr_diagnosis_parser_splits_prompted_mesh_stream_into_samples(tmp
 def test_online_mr_diagnosis_parser_enriches_peer_identity_from_bssid(tmp_path: Path) -> None:
     paths, config = _config(tmp_path)
     session = OnlineMrSessionStore(paths).create_session(config)
-    parser = OnlineMrDiagnosisParser(session.session_dir)
 
-    class FakeResolver:
-        def resolve(self, peer_mac: object, peer_name: object | None = None) -> dict[str, object]:
-            del peer_name
-            if peer_mac == "74ad-cb9d-318f":
-                return {
-                    "peer_ap_name": "轨旁AP-01",
-                    "peer_ap_mac": "30f5277a1680",
-                    "canonical_ap_mac": "30f5277a1680",
-                    "peer_radio_mac": "74adcb9d318f",
-                    "peer_site": "站点A",
-                    "peer_section": "区间A",
-                    "belong_type": "station",
-                    "belonging_source": "ac_runtime",
-                    "identity_status": "matched",
-                    "identity_source": "ac_runtime",
-                    "identity_reason": "",
-                    "match_rule": "ac_bssid",
-                    "match_confidence": 100,
-                }
-            return {
-                "identity_status": "unresolved",
-                "identity_reason": "exact_alias_not_found",
-                "match_rule": "unresolved",
-                "match_confidence": 0,
-            }
+    class FakeQueryService:
+        def resolve_peer_macs(self, values, *, ap_role=None):
+            assert list(values) == ["30f5277a1680", "74adcb9d318f"]
+            assert ap_role == "trackside"
+            return ApIdentityBatchResult(
+                revision=12,
+                index_status="ready",
+                requested_count=2,
+                normalized_count=2,
+                distinct_count=2,
+                matched_count=1,
+                unresolved_count=1,
+                ambiguous_count=0,
+                invalid_count=0,
+                matches={
+                    "30f5277a1680": ApIdentityMatch(
+                        status="unresolved",
+                        identity_revision=12,
+                        query_mac="30f5277a1680",
+                        unresolved_reason="exact_alias_not_found",
+                    ),
+                    "74adcb9d318f": ApIdentityMatch(
+                        status="matched",
+                        identity_revision=12,
+                        query_mac="74adcb9d318f",
+                        matched_entity_id="entity-1",
+                        effective_ap_name="轨旁AP-01",
+                        effective_ap_mac="30f5277a1680",
+                        station="站点A",
+                        section="区间A",
+                        belong_type="station",
+                        matched_alias_type="ac_bssid",
+                        matched_source="ac_runtime",
+                        match_rule="ac_bssid",
+                        match_confidence=100,
+                    ),
+                },
+            )
 
-    parser._peer_resolver = FakeResolver()  # type: ignore[assignment]
-    record = SimpleNamespace(
-        peer_mac_raw="30f5-277a-1680",
-        peer_mac_normalized="30f5277a1680",
-        metrics={"peer_name": "30f5-277a-1680", "bssid": "74ad-cb9d-318f"},
+    parser = OnlineMrDiagnosisParser(
+        session.session_dir,
+        identity_query_service=FakeQueryService(),  # type: ignore[arg-type]
     )
+    parser._ensure_tables()
+    with sqlite3.connect(parser.db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO main_link_samples (
+                session_id, collector_time, link_state, peer_name, peer_mac,
+                peer_mac_normalized, bssid
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (session.meta.session_id, "2026-07-06 21:00:00", "ACTIVE", "30f5-277a-1680", "30f5-277a-1680", "30f5277a1680", "74ad-cb9d-318f"),
+        )
 
-    parser._enrich_mesh_records([record])
+    parser._remap_identity()
 
     assert parser._path_resolver().data_root == paths.data_root
-    assert record.metrics["resolved_peer_name"] == "轨旁AP-01"
-    assert record.metrics["canonical_ap_mac"] == "30f5277a1680"
-    assert record.metrics["peer_radio_mac"] == "74adcb9d318f"
-    assert record.metrics["identity_status"] == "matched"
-    assert record.metrics["identity_source"] == "ac_runtime"
-    assert record.metrics["identity_match_rule"] == "ac_bssid"
-    assert record.metrics["belong_station"] == "站点A"
+    with sqlite3.connect(parser.db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT resolved_peer_name, canonical_ap_mac, peer_radio_mac,
+                   identity_status, identity_source, identity_match_rule,
+                   belong_station, identity_revision
+            FROM main_link_samples
+            """
+        ).fetchone()
+    assert row == (
+        "轨旁AP-01",
+        "30f5277a1680",
+        "74adcb9d318f",
+        "matched",
+        "ac_runtime",
+        "ac_bssid",
+        "站点A",
+        12,
+    )
 
 
 def test_online_mr_cached_summary_rejects_collapsed_mesh_sample_parse(tmp_path: Path) -> None:

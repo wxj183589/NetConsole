@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal, run_sqlite_with_retry
 
 
 OnlineMrDatabaseError = sqlite3.Error
-ONLINE_MR_DIAGNOSIS_SCHEMA_VERSION = "online_mr_business_tables_v10_peer_identity_fields"
+ONLINE_MR_DIAGNOSIS_SCHEMA_VERSION = "online_mr_business_tables_v11_identity_projection"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS main_link_samples (
@@ -30,9 +31,14 @@ CREATE TABLE IF NOT EXISTS main_link_samples (
     peer_ap_mac TEXT,
     canonical_ap_mac TEXT,
     peer_radio_mac TEXT,
+    identity_entity_id TEXT,
+    identity_revision INTEGER DEFAULT 0,
+    identity_index_status TEXT,
     identity_status TEXT,
     identity_source TEXT,
     identity_reason TEXT,
+    matched_alias_type TEXT,
+    matched_radio_id INTEGER,
     identity_match_rule TEXT,
     identity_match_confidence INTEGER,
     mr_rssi INTEGER,
@@ -200,6 +206,21 @@ CREATE TABLE IF NOT EXISTS online_parse_metadata (
     status TEXT NOT NULL,
     error_summary TEXT DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS online_identity_metadata (
+    session_id TEXT PRIMARY KEY,
+    identity_index_revision INTEGER DEFAULT 0,
+    identity_index_status TEXT,
+    identity_mapped_at TEXT,
+    identity_mapping_status TEXT,
+    identity_requested_count INTEGER DEFAULT 0,
+    identity_distinct_count INTEGER DEFAULT 0,
+    identity_matched_count INTEGER DEFAULT 0,
+    identity_unresolved_count INTEGER DEFAULT 0,
+    identity_ambiguous_count INTEGER DEFAULT 0,
+    identity_invalid_count INTEGER DEFAULT 0,
+    identity_updated_rows INTEGER DEFAULT 0,
+    fact_fingerprint TEXT
+);
 CREATE TABLE IF NOT EXISTS switch_history_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT,
@@ -214,11 +235,33 @@ CREATE TABLE IF NOT EXISTS switch_history_events (
     old_rssi INTEGER,
     old_belong_station TEXT,
     old_belong_section TEXT,
+    old_identity_entity_id TEXT,
+    old_identity_revision INTEGER DEFAULT 0,
+    old_identity_status TEXT,
+    old_identity_source TEXT,
+    old_identity_reason TEXT,
+    old_matched_alias_type TEXT,
+    old_matched_ap_name TEXT,
+    old_matched_ap_mac TEXT,
+    old_matched_radio_id INTEGER,
+    old_identity_match_rule TEXT,
+    old_identity_match_confidence INTEGER,
     new_peer_name TEXT,
     new_peer_mac TEXT,
     new_rssi INTEGER,
     new_belong_station TEXT,
     new_belong_section TEXT,
+    new_identity_entity_id TEXT,
+    new_identity_revision INTEGER DEFAULT 0,
+    new_identity_status TEXT,
+    new_identity_source TEXT,
+    new_identity_reason TEXT,
+    new_matched_alias_type TEXT,
+    new_matched_ap_name TEXT,
+    new_matched_ap_mac TEXT,
+    new_matched_radio_id INTEGER,
+    new_identity_match_rule TEXT,
+    new_identity_match_confidence INTEGER,
     peer_quantity INTEGER,
     link_quantity INTEGER,
     switch_reason_code INTEGER,
@@ -237,11 +280,33 @@ CREATE TABLE IF NOT EXISTS switch_realtime_events (
     old_rssi INTEGER,
     old_belong_station TEXT,
     old_belong_section TEXT,
+    old_identity_entity_id TEXT,
+    old_identity_revision INTEGER DEFAULT 0,
+    old_identity_status TEXT,
+    old_identity_source TEXT,
+    old_identity_reason TEXT,
+    old_matched_alias_type TEXT,
+    old_matched_ap_name TEXT,
+    old_matched_ap_mac TEXT,
+    old_matched_radio_id INTEGER,
+    old_identity_match_rule TEXT,
+    old_identity_match_confidence INTEGER,
     new_peer_name TEXT,
     new_peer_mac TEXT,
     new_rssi INTEGER,
     new_belong_station TEXT,
     new_belong_section TEXT,
+    new_identity_entity_id TEXT,
+    new_identity_revision INTEGER DEFAULT 0,
+    new_identity_status TEXT,
+    new_identity_source TEXT,
+    new_identity_reason TEXT,
+    new_matched_alias_type TEXT,
+    new_matched_ap_name TEXT,
+    new_matched_ap_mac TEXT,
+    new_matched_radio_id INTEGER,
+    new_identity_match_rule TEXT,
+    new_identity_match_confidence INTEGER,
     peer_quantity INTEGER,
     link_quantity INTEGER,
     switch_reason_code INTEGER,
@@ -360,6 +425,7 @@ RESET_TABLES = (
     "active_segment_metrics",
     "online_parse_issues",
     "online_parse_metadata",
+    "online_identity_metadata",
 )
 
 REQUIRED_CACHE_TABLES = frozenset(
@@ -428,6 +494,52 @@ INSERT_SQL = {
 }
 
 
+def _switch_identity_column_definitions() -> dict[str, str]:
+    definitions: dict[str, str] = {}
+    for prefix in ("old", "new"):
+        definitions.update(
+            {
+                f"{prefix}_identity_entity_id": "TEXT",
+                f"{prefix}_identity_revision": "INTEGER DEFAULT 0",
+                f"{prefix}_identity_status": "TEXT",
+                f"{prefix}_identity_source": "TEXT",
+                f"{prefix}_identity_reason": "TEXT",
+                f"{prefix}_matched_alias_type": "TEXT",
+                f"{prefix}_matched_ap_name": "TEXT",
+                f"{prefix}_matched_ap_mac": "TEXT",
+                f"{prefix}_matched_radio_id": "INTEGER",
+                f"{prefix}_identity_match_rule": "TEXT",
+                f"{prefix}_identity_match_confidence": "INTEGER",
+            }
+        )
+    return definitions
+
+
+def _switch_identity_update_sql(table: str) -> str:
+    if table not in {"switch_history_events", "switch_realtime_events"}:
+        raise ValueError(f"不支持的 Online MR 切换表：{table}")
+    assignments: list[str] = []
+    for prefix in ("old", "new"):
+        assignments.extend(
+            (
+                f"{prefix}_belong_station = ?",
+                f"{prefix}_belong_section = ?",
+                f"{prefix}_identity_entity_id = ?",
+                f"{prefix}_identity_revision = ?",
+                f"{prefix}_identity_status = ?",
+                f"{prefix}_identity_source = ?",
+                f"{prefix}_identity_reason = ?",
+                f"{prefix}_matched_alias_type = ?",
+                f"{prefix}_matched_ap_name = ?",
+                f"{prefix}_matched_ap_mac = ?",
+                f"{prefix}_matched_radio_id = ?",
+                f"{prefix}_identity_match_rule = ?",
+                f"{prefix}_identity_match_confidence = ?",
+            )
+        )
+    return f"UPDATE {table} SET {', '.join(assignments)} WHERE id = ? AND session_id = ?"
+
+
 class OnlineMrDiagnosisRepository:
     """Online MR 会话分析库的 schema、事务和查询边界。"""
 
@@ -441,7 +553,7 @@ class OnlineMrDiagnosisRepository:
     def initialize(self) -> None:
         with self._connect() as conn:
             conn.executescript(SCHEMA)
-            self._ensure_main_link_identity_columns(conn)
+            self._ensure_identity_columns(conn)
             conn.execute(
                 "INSERT OR REPLACE INTO online_schema_meta (key, value) VALUES ('schema_version', ?)",
                 (ONLINE_MR_DIAGNOSIS_SCHEMA_VERSION,),
@@ -596,24 +708,255 @@ class OnlineMrDiagnosisRepository:
         with self._connect() as conn:
             conn.executemany(statement, values)
 
-    @staticmethod
-    def _ensure_main_link_identity_columns(conn: sqlite3.Connection) -> None:
-        columns = {
-            str(row[1])
-            for row in conn.execute("PRAGMA table_info(main_link_samples)").fetchall()
+    def load_identity_observations(self, session_id: str) -> dict[str, list[dict[str, object]]]:
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            main_rows = conn.execute(
+                """
+                SELECT id, peer_name, peer_mac, peer_mac_normalized, bssid
+                FROM main_link_samples
+                WHERE session_id = ?
+                ORDER BY id
+                """,
+                (session_id,),
+            ).fetchall()
+            switch_history_rows = conn.execute(
+                """
+                SELECT id, old_peer_name, old_peer_mac, new_peer_name, new_peer_mac
+                FROM switch_history_events
+                WHERE session_id = ?
+                ORDER BY id
+                """,
+                (session_id,),
+            ).fetchall()
+            switch_realtime_rows = conn.execute(
+                """
+                SELECT id, old_peer_name, old_peer_mac, new_peer_name, new_peer_mac
+                FROM switch_realtime_events
+                WHERE session_id = ?
+                ORDER BY id
+                """,
+                (session_id,),
+            ).fetchall()
+        return {
+            "main_link_samples": [dict(row) for row in main_rows],
+            "switch_history_events": [dict(row) for row in switch_history_rows],
+            "switch_realtime_events": [dict(row) for row in switch_realtime_rows],
         }
-        for column, definition in {
-            "peer_ap_mac": "TEXT",
-            "canonical_ap_mac": "TEXT",
-            "peer_radio_mac": "TEXT",
-            "identity_status": "TEXT",
-            "identity_source": "TEXT",
-            "identity_reason": "TEXT",
-            "identity_match_rule": "TEXT",
-            "identity_match_confidence": "INTEGER",
-        }.items():
-            if column not in columns:
-                conn.execute(f"ALTER TABLE main_link_samples ADD COLUMN {column} {definition}")
+
+    def identity_fact_fingerprint(self, session_id: str) -> str:
+        with self._connect() as conn:
+            return self._identity_fact_fingerprint(conn, session_id)
+
+    def apply_identity_projection(
+        self,
+        session_id: str,
+        updates: Mapping[str, Sequence[Sequence[object]]],
+        metadata: Mapping[str, object],
+        *,
+        expected_fact_fingerprint: str,
+        matched_updated_rows: int,
+    ) -> dict[str, object]:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            before = self._identity_fact_fingerprint(conn, session_id)
+            if before != expected_fact_fingerprint:
+                raise RuntimeError("Online MR 原始事实已在身份映射前发生变化")
+
+            statements = {
+                "main_link_samples": """
+                    UPDATE main_link_samples SET
+                        resolved_peer_name = ?, peer_ap_mac = ?, canonical_ap_mac = ?,
+                        peer_radio_mac = ?, identity_entity_id = ?, identity_revision = ?,
+                        identity_index_status = ?, identity_status = ?, identity_source = ?,
+                        identity_reason = ?, matched_alias_type = ?, matched_radio_id = ?,
+                        identity_match_rule = ?, identity_match_confidence = ?,
+                        belong_station = ?, belong_section = ?, belong_type = ?,
+                        belonging_source = ?
+                    WHERE id = ? AND session_id = ?
+                """,
+                "switch_history_events": _switch_identity_update_sql(
+                    "switch_history_events"
+                ),
+                "switch_realtime_events": _switch_identity_update_sql(
+                    "switch_realtime_events"
+                ),
+            }
+            updated_rows = 0
+            for dataset, statement in statements.items():
+                values = list(updates.get(dataset, ()))
+                if not values:
+                    continue
+                cursor = conn.executemany(statement, values)
+                updated_rows += max(int(cursor.rowcount or 0), 0)
+
+            if int(metadata.get("identity_matched_count") or 0) > 0 and matched_updated_rows <= 0:
+                raise RuntimeError("Online MR 身份映射存在 matched 结果但没有写回任何事实行")
+
+            after = self._identity_fact_fingerprint(conn, session_id)
+            if after != before:
+                raise RuntimeError("Online MR identity-only remap 改变了原始事实")
+
+            mapped_at = str(metadata.get("identity_mapped_at") or "")
+            conn.execute(
+                """
+                INSERT INTO online_identity_metadata (
+                    session_id, identity_index_revision, identity_index_status,
+                    identity_mapped_at, identity_mapping_status,
+                    identity_requested_count, identity_distinct_count,
+                    identity_matched_count, identity_unresolved_count,
+                    identity_ambiguous_count, identity_invalid_count,
+                    identity_updated_rows, fact_fingerprint
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    identity_index_revision = excluded.identity_index_revision,
+                    identity_index_status = excluded.identity_index_status,
+                    identity_mapped_at = excluded.identity_mapped_at,
+                    identity_mapping_status = excluded.identity_mapping_status,
+                    identity_requested_count = excluded.identity_requested_count,
+                    identity_distinct_count = excluded.identity_distinct_count,
+                    identity_matched_count = excluded.identity_matched_count,
+                    identity_unresolved_count = excluded.identity_unresolved_count,
+                    identity_ambiguous_count = excluded.identity_ambiguous_count,
+                    identity_invalid_count = excluded.identity_invalid_count,
+                    identity_updated_rows = excluded.identity_updated_rows,
+                    fact_fingerprint = excluded.fact_fingerprint
+                """,
+                (
+                    session_id,
+                    int(metadata.get("identity_index_revision") or 0),
+                    str(metadata.get("identity_index_status") or ""),
+                    mapped_at,
+                    str(metadata.get("identity_mapping_status") or ""),
+                    int(metadata.get("identity_requested_count") or 0),
+                    int(metadata.get("identity_distinct_count") or 0),
+                    int(metadata.get("identity_matched_count") or 0),
+                    int(metadata.get("identity_unresolved_count") or 0),
+                    int(metadata.get("identity_ambiguous_count") or 0),
+                    int(metadata.get("identity_invalid_count") or 0),
+                    updated_rows,
+                    after,
+                ),
+            )
+            conn.commit()
+        return {
+            "updated_rows": updated_rows,
+            "fact_fingerprint_before": before,
+            "fact_fingerprint_after": after,
+        }
+
+    def replace_identity_failure_metadata(
+        self,
+        session_id: str,
+        *,
+        status: str,
+        mapped_at: str,
+        fact_fingerprint: str,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO online_identity_metadata (
+                    session_id, identity_mapped_at, identity_mapping_status,
+                    fact_fingerprint
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    identity_mapped_at = excluded.identity_mapped_at,
+                    identity_mapping_status = excluded.identity_mapping_status,
+                    fact_fingerprint = excluded.fact_fingerprint
+                """,
+                (session_id, mapped_at, status, fact_fingerprint),
+            )
+
+    def identity_metadata(self, session_id: str) -> dict[str, object]:
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM online_identity_metadata WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        return dict(row) if row is not None else {}
+
+    @staticmethod
+    def _identity_fact_fingerprint(
+        conn: sqlite3.Connection,
+        session_id: str,
+    ) -> str:
+        digest = hashlib.sha256()
+        queries = (
+            (
+                "main_link_samples",
+                """
+                SELECT id, session_id, collector_time, device_time, device_clock,
+                       time_source, radio, link_state, peer_name, peer_mac,
+                       peer_mac_normalized, mr_rssi, bssid, mesh_interface, online_time
+                FROM main_link_samples WHERE session_id = ? ORDER BY id
+                """,
+            ),
+            (
+                "switch_history_events",
+                """
+                SELECT id, session_id, snapshot_collector_time, snapshot_device_clock,
+                       event_time_device, event_time_local, time_source, radio,
+                       old_peer_name, old_peer_mac, old_rssi, new_peer_name,
+                       new_peer_mac, new_rssi, peer_quantity, link_quantity,
+                       switch_reason_code, switch_reason_text, active_duration
+                FROM switch_history_events WHERE session_id = ? ORDER BY id
+                """,
+            ),
+            (
+                "switch_realtime_events",
+                """
+                SELECT id, session_id, device_time, time_source, device_name,
+                       old_peer_name, old_peer_mac, old_rssi, new_peer_name,
+                       new_peer_mac, new_rssi, peer_quantity, link_quantity,
+                       switch_reason_code, switch_reason_text
+                FROM switch_realtime_events WHERE session_id = ? ORDER BY id
+                """,
+            ),
+        )
+        for dataset, statement in queries:
+            digest.update(dataset.encode("utf-8"))
+            for row in conn.execute(statement, (session_id,)).fetchall():
+                digest.update(
+                    json.dumps(
+                        list(row),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                )
+                digest.update(b"\n")
+        return digest.hexdigest()
+
+    @staticmethod
+    def _ensure_identity_columns(conn: sqlite3.Connection) -> None:
+        additions = {
+            "main_link_samples": {
+                "peer_ap_mac": "TEXT",
+                "canonical_ap_mac": "TEXT",
+                "peer_radio_mac": "TEXT",
+                "identity_entity_id": "TEXT",
+                "identity_revision": "INTEGER DEFAULT 0",
+                "identity_index_status": "TEXT",
+                "identity_status": "TEXT",
+                "identity_source": "TEXT",
+                "identity_reason": "TEXT",
+                "matched_alias_type": "TEXT",
+                "matched_radio_id": "INTEGER",
+                "identity_match_rule": "TEXT",
+                "identity_match_confidence": "INTEGER",
+            },
+            "switch_history_events": _switch_identity_column_definitions(),
+            "switch_realtime_events": _switch_identity_column_definitions(),
+        }
+        for table, definitions in additions.items():
+            columns = {
+                str(row[1])
+                for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            for column, definition in definitions.items():
+                if column not in columns:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def replace_switch_realtime_events(
         self,

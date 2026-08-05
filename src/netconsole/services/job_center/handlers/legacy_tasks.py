@@ -894,11 +894,14 @@ def _vehicle_mr_history_query(params: dict[str, Any], progress: ProgressCallback
     return {"rows": rows, "limit": int(params.get("limit") or 1000)}
 
 
-def _jsonable_vehicle_ap_lookup(ap_lookup: dict[str, object]) -> dict[str, object]:
+def _jsonable_vehicle_ap_lookup(ap_lookup: object) -> dict[str, object]:
+    list_entities = getattr(ap_lookup, "list_entities", None)
+    if callable(list_entities):
+        return {"identity_entities": [dict(row) for row in list_entities()]}
+    if not isinstance(ap_lookup, dict):
+        return {}
     result: dict[str, object] = {}
     for key, value in ap_lookup.items():
-        if key == "__ap_identity_query_service__":
-            continue
         if isinstance(value, list):
             result[key] = [asdict(item) if hasattr(item, "__dataclass_fields__") else item for item in value]
         elif hasattr(value, "__dataclass_fields__"):

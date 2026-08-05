@@ -56,6 +56,11 @@ class WirelessNetwork:
 class TracksideBssidMatch:
     matched: bool
     match_status: str
+    identity_entity_id: str = ""
+    identity_revision: int = 0
+    identity_source: str = ""
+    identity_reason: str = ""
+    matched_alias_type: str = ""
     ap_name: str = "-"
     point_code: str = ""
     ap_mac: str = ""

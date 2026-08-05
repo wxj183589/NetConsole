@@ -12,13 +12,13 @@ DIRECT_IDENTITY_TABLE_ALLOWLIST = {
     "rail_transit/base_data_query_service.py",
     "rail_transit/mesh_analysis_query_service.py",
     "site_lifecycle.py",
-    "vehicle_mr_online.py",
 }
 
-LEGACY_RESOLVER_ALLOWLIST = {
-    "ap_radio_mapping_service.py",
-    "rail_transit/online_mr_diagnosis_parser.py",
+PHASE2_CONSUMERS = {
     "vehicle_mr_online.py",
+    "rail_transit/online_mr_diagnosis_parser.py",
+    "rail_transit/online_mr_identity_remap_service.py",
+    "network_tools/trackside_bssid_resolver.py",
 }
 
 
@@ -61,4 +61,28 @@ def test_new_consumers_cannot_use_legacy_ap_radio_resolver() -> None:
         if pattern.search(path.read_text(encoding="utf-8"))
     }
 
-    assert found - LEGACY_RESOLVER_ALLOWLIST == set()
+    assert found == set()
+
+
+def test_phase2_consumers_use_only_batch_identity_projection_contract() -> None:
+    sources = {
+        relative: (SERVICES / relative).read_text(encoding="utf-8")
+        for relative in PHASE2_CONSUMERS
+    }
+    for relative, source in sources.items():
+        if relative != "rail_transit/online_mr_diagnosis_parser.py":
+            assert "resolve_peer_macs" in source, relative
+        for forbidden in (
+            "resolve_peer_mac(",
+            "resolve_ap_mac(",
+            "ApRadioMappingService",
+            "MeshPeerMappingService",
+            "h3c_radio_mac_match_method",
+            "radio_mac_map",
+            "by_bssid",
+            "by_radio_mac",
+            "by_alias_mac",
+            "__ap_identity_entities__",
+            "_AP_IDENTITY_ENTITIES_KEY",
+        ):
+            assert forbidden not in source, f"{relative}: {forbidden}"
