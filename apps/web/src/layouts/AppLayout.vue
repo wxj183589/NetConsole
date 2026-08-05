@@ -13,9 +13,14 @@ import {
   Operation,
   Setting,
 } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 import { getHealth, getWebBuildMeta } from '../api/client'
+import {
+  getEditionRuntimeStatus,
+  lockCustomerEdition,
+  unlockCustomerEdition,
+} from '../api/edition'
 import { isFeatureEnabled, isFeatureVisible, loadWebFeatures } from '../features'
 import {
   findNavigation,
@@ -52,6 +57,7 @@ const viewportWidth = ref(window.innerWidth)
 const manualCollapsed = ref(sessionStorage.getItem(COLLAPSED_KEY) === '1')
 const drawerOpen = ref(false)
 const openGroups = ref<string[]>(loadOpenGroups())
+const editionActionBusy = ref(false)
 let removeTraySiteSwitchListener: (() => void) | undefined
 
 const iconComponents = {
@@ -123,6 +129,64 @@ function closeGroup(groupId: string): void {
 
 async function openChangelog(): Promise<void> {
   await workspace.openOrActivateRoute('/logs?tab=changelog')
+}
+
+async function handleVersionClick(event: MouseEvent): Promise<void> {
+  if (!event.shiftKey || editionActionBusy.value) return
+  event.preventDefault()
+  event.stopPropagation()
+  editionActionBusy.value = true
+  try {
+    const status = await getEditionRuntimeStatus()
+    if (status.edition === 'full') {
+      ElMessage.info('当前已经是完整版本')
+      return
+    }
+    if (status.edition !== 'customer') {
+      ElMessage.info('当前运行版本未配置客户版功能维护')
+      return
+    }
+    if (status.relock_available) {
+      await ElMessageBox.confirm(
+        '当前客户版已临时开启完整功能。恢复客户模式后，未交付功能将重新隐藏。',
+        '恢复客户模式',
+        {
+          type: 'warning',
+          confirmButtonText: '恢复客户模式',
+          cancelButtonText: '取消',
+        },
+      )
+      await lockCustomerEdition()
+      await loadWebFeatures(true)
+      ElMessage.success('已恢复客户模式')
+      window.location.reload()
+      return
+    }
+    if (!status.admin_unlock_available) {
+      ElMessage.warning('当前客户版未配置维护密码，无法开启完整功能')
+      return
+    }
+    const { value } = await ElMessageBox.prompt(
+      '请输入客户版打包时配置的维护密码。完整功能仅在本次运行中生效，重启后自动恢复客户模式。',
+      '开启完整功能',
+      {
+        confirmButtonText: '验证并开启',
+        cancelButtonText: '取消',
+        inputType: 'password',
+        inputPlaceholder: '维护密码',
+        inputValidator: (input) => Boolean(String(input || '').trim()) || '请输入维护密码',
+      },
+    )
+    await unlockCustomerEdition(String(value))
+    await loadWebFeatures(true)
+    ElMessage.success('完整功能已临时开启')
+    window.location.reload()
+  } catch (cause) {
+    if (cause === 'cancel' || cause === 'close') return
+    ElMessage.error(cause instanceof Error ? cause.message : '版本功能维护失败')
+  } finally {
+    editionActionBusy.value = false
+  }
 }
 
 function updateViewport(): void {
@@ -266,7 +330,13 @@ onBeforeUnmount(() => {
           <span :class="['status-dot', backendOnline ? 'online' : 'offline']"></span>
           <span>{{ backendOnline ? t('shell.backend_online', 'Backend Online') : t('shell.backend_offline', 'Backend Offline') }}</span>
           <el-divider direction="vertical" />
-          <el-button text title="双击打开版本更新日志" @dblclick="openChangelog">v{{ version || '--' }}</el-button>
+          <el-button
+            text
+            :loading="editionActionBusy"
+            title="双击打开版本更新日志；Shift+单击进入版本功能维护"
+            @click="handleVersionClick"
+            @dblclick="openChangelog"
+          >v{{ version || '--' }}</el-button>
         </div>
       </el-header>
       <WorkspaceTabBar />
