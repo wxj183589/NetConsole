@@ -44,7 +44,7 @@ def ensure_edition_gate(app: Any) -> FeatureGate:
         if gate.edition != "full" or not gate.packaged_policy.active:
             return gate
         replacement = _new_session_gate(gate)
-        app.state.feature_gate = replacement
+        _replace_gate(app, replacement)
         app_logger.log_info(
             "FULL_EDITION_FEATURE_GATE_ACTIVATED",
             (
@@ -81,7 +81,7 @@ def unlock_customer_edition(
             reason="customer_edition_admin_unlock",
             operator=operator,
         )
-        app.state.feature_gate = replacement
+        _replace_gate(app, replacement)
         _clear_failed_attempts(app)
         app_logger.log_info(
             "CUSTOMER_EDITION_FULL_MODE_ENABLED",
@@ -104,7 +104,7 @@ def lock_customer_edition(app: Any) -> FeatureGate:
             packaged_runtime=True,
             runtime_path=gate.runtime_path,
         )
-        app.state.feature_gate = replacement
+        _replace_gate(app, replacement)
         _clear_failed_attempts(app)
         app_logger.log_info(
             "CUSTOMER_EDITION_FULL_MODE_DISABLED",
@@ -144,6 +144,13 @@ def _new_session_gate(gate: FeatureGate) -> FeatureGate:
     )
 
 
+def _replace_gate(app: Any, replacement: FeatureGate) -> None:
+    app.state.feature_gate = replacement
+    settings_service = getattr(app.state, "settings_application_service", None)
+    if settings_service is not None and hasattr(settings_service, "feature_gate"):
+        settings_service.feature_gate = replacement
+
+
 def _require_gate(app: Any) -> FeatureGate:
     gate = getattr(app.state, "feature_gate", None)
     if not isinstance(gate, FeatureGate):
@@ -151,9 +158,9 @@ def _require_gate(app: Any) -> FeatureGate:
     return gate
 
 
-def _lock_for(app: Any) -> RLock:
+def _lock_for(app: Any) -> Any:
     lock = getattr(app.state, _LOCK_ATTRIBUTE, None)
-    if isinstance(lock, type(RLock())):
+    if lock is not None and hasattr(lock, "__enter__") and hasattr(lock, "__exit__"):
         return lock
     lock = RLock()
     setattr(app.state, _LOCK_ATTRIBUTE, lock)
