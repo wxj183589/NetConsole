@@ -133,7 +133,7 @@ def test_lldp_pending_status_is_distinct_from_planning_missing():
 
 
 def test_optical_alarm_does_not_override_online_runtime_state():
-    row = {"ap_mac": "0011-2233-4455", "ap_state": "R/M", "ap_optical_status": "no_light", "is_ap_offline": False}
+    row = {"ap_mac": "0011-2233-4455", "ap_state": "R/M", "ap_rx_power": "-17.80", "ap_optical_status": "no_light", "is_ap_offline": False}
     result = current_optical_abnormal_reason(row)
     assert result["ap_online_status"] == "在线"
     assert result["judgement"] == "异常"

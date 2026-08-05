@@ -227,6 +227,10 @@ const DataTableStub = defineComponent({
         <slot name="cell-track_facilities" :row="row" />
         <slot name="cell-structure_platform" :row="row" />
         <slot name="cell-result" :row="row" />
+        <slot name="cell-fit_ap_status" :row="row" />
+        <slot name="cell-ap_rx_power" :row="row" />
+        <slot name="cell-device_optical_status" :row="row" />
+        <slot name="cell-optical_status" :row="row" />
       </div>
       <slot />
     </div>
@@ -257,6 +261,7 @@ const elementStubs = {
   ElTabPane: Passthrough,
   ElTabs: Passthrough,
   ElTag: Passthrough,
+  ElTooltip: Passthrough,
   NcDataTable: DataTableStub,
   TracksideApPlanningTab: PlanningStub,
 }
@@ -307,7 +312,12 @@ const tracksideApRow = (id: string, locationClass: 'MAINLINE' | 'DEPOT') => ({
     fit_ap_name: '',
     fit_ap_match_status: 'unmatched',
     fit_ap_status: 'unknown',
-    optical_status: 'no_data',
+    optical_status: 'unknown',
+    ap_rx_power: '',
+    device_optical_status: 'no_data',
+    business_optical_status: 'unknown',
+    business_threshold_dbm: -13.90,
+    business_reason: '',
     mesh_status: 'unknown',
     mesh_related_name: '',
     latest_session_id: '',
@@ -1131,6 +1141,29 @@ describe('轨道交通基础资料编辑闭环', () => {
       ap_vendor: 'H3C',
       remark: '已编辑',
     }))
+    wrapper.unmount()
+  })
+
+  it('FIT-AP 业务同时显示设备模块状态和独立业务光衰', async () => {
+    const item = tracksideApRow('ap:business-optical', 'MAINLINE')
+    item.runtime = {
+      ...item.runtime,
+      fit_ap_status: 'online',
+      optical_status: 'abnormal',
+      ap_rx_power: '-17.80',
+      device_optical_status: 'normal',
+      business_optical_status: 'abnormal',
+      business_threshold_dbm: -13.90,
+      business_reason: 'AP接收光功率 -17.80 dBm 低于业务门限 -13.90 dBm',
+    }
+    mocks.tracksideApsPage.mockResolvedValue({ items: [item], total: 1, page: 1, page_size: 50 })
+
+    const wrapper = await mountView()
+    const table = wrapper.get('[data-table-id="rail-base-trackside-aps"]')
+
+    expect(table.text()).toContain('-17.80')
+    expect(table.text()).toContain('normal')
+    expect(table.text()).toContain('abnormal')
     wrapper.unmount()
   })
 

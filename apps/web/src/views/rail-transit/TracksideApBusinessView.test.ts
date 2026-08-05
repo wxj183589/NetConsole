@@ -95,6 +95,10 @@ const rows: TracksideApBusinessRow[] = [
     ap_mac: 'bc5a-3457-8cc0',
     ap_name: 'AP-A',
     ap_rx_power: '-11.2',
+    ap_device_optical_status: 'normal',
+    ap_business_optical_status: 'normal',
+    ap_business_threshold_dbm: -13.90,
+    ap_business_reason: 'AP接收光功率 -11.20 dBm 达到业务门限 -13.90 dBm',
     ap_optical_status: 'normal',
     updated_at: '2026-07-21T10:00:00+08:00',
     optical_severity: 'normal',
@@ -115,7 +119,11 @@ const rows: TracksideApBusinessRow[] = [
     ap_mac: '305f-277a-1880',
     ap_name: '',
     ap_rx_power: '',
-    ap_optical_status: 'not_collected',
+    ap_device_optical_status: 'not_collected',
+    ap_business_optical_status: 'unknown',
+    ap_business_threshold_dbm: -13.90,
+    ap_business_reason: 'AP接收光功率无有效值，业务状态未知',
+    ap_optical_status: 'unknown',
     updated_at: '',
     optical_severity: 'warning',
   },
@@ -219,6 +227,8 @@ const NcDataTableStub = defineComponent({
         <slot name="cell-switch_rx_power" :row="row" />
         <slot name="cell-switch_optical_status" :row="row" />
         <slot name="cell-ap_rx_power" :row="row" />
+        <slot name="cell-ap_tx_power" :row="row" />
+        <slot name="cell-ap_device_optical_status" :row="row" />
         <slot name="cell-ap_optical_status" :row="row" />
         <slot name="cell-optical_severity" :row="row" />
         <slot name="cell-actions" :row="row" />
@@ -274,6 +284,7 @@ const ElementStubs = {
     `,
   }),
   ElTag: defineComponent({ template: '<span class="el-tag"><slot /></span>' }),
+  ElTooltip: defineComponent({ props: { content: String }, template: '<span class="el-tooltip" :data-content="content"><slot /></span>' }),
 }
 
 describe('TracksideApBusinessView mounted behavior', () => {
@@ -482,10 +493,39 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(columns.map((column) => column.label)).not.toContain('双向光衰')
     expect(columns.map((column) => column.key)).not.toContain('calculation_status')
     expect(columns.map((column) => column.key).slice(
-      columns.findIndex((column) => column.key === 'ap_optical_status'),
+      columns.findIndex((column) => column.key === 'ap_device_optical_status'),
       columns.findIndex((column) => column.key === 'updated_at') + 1,
-    )).toEqual(['ap_optical_status', 'optical_severity', 'updated_at'])
+    )).toEqual([
+      'ap_device_optical_status',
+      'ap_optical_status',
+      'ap_business_threshold_dbm',
+      'ap_business_reason',
+      'optical_severity',
+      'updated_at',
+    ])
     expect(columns.map((column) => column.label)).not.toContain('交换机光衰')
+    wrapper.unmount()
+  })
+
+  it('renders device module and AP business optical states independently', async () => {
+    api.listTracksideApBusiness.mockResolvedValueOnce(page([{
+      ...rows[0],
+      ap_rx_power: '-17.80',
+      ap_device_optical_status: 'normal',
+      ap_business_optical_status: 'abnormal',
+      ap_optical_status: 'abnormal',
+      ap_business_reason: 'AP接收光功率 -17.80 dBm 低于业务门限 -13.90 dBm',
+      optical_severity: 'abnormal',
+    }]))
+
+    const wrapper = await mountView()
+    const table = wrapper.get('[data-table-id="trackside-ap-business"]')
+
+    expect(table.text()).toContain('正常')
+    expect(table.text()).toContain('功率异常')
+    expect(table.get('.el-tooltip').attributes('data-content')).toContain(
+      '-17.80 dBm 低于业务门限 -13.90 dBm',
+    )
     wrapper.unmount()
   })
 

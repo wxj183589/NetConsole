@@ -598,7 +598,7 @@ def test_trackside_query_maps_partial_source_status(monkeypatch, tmp_path: Path)
     assert page.unavailable_sources[0].code == "FIT_AP_RESOURCES_UNAVAILABLE"
 
 
-def test_trackside_query_recalculates_legacy_normal_status_with_business_threshold(
+def test_trackside_query_applies_business_threshold_only_to_ap_rx(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -633,8 +633,12 @@ def test_trackside_query_recalculates_legacy_normal_status_with_business_thresho
     assert page.optical_abnormal_count == 1
     assert page.items[0].pvid == 71
     assert page.items[0].vlan == "Tagged 201"
-    assert page.items[0].switch_optical_status == "abnormal"
+    assert page.items[0].switch_optical_status == "normal"
+    assert page.items[0].ap_device_optical_status == "normal"
+    assert page.items[0].ap_business_optical_status == "abnormal"
     assert page.items[0].ap_optical_status == "abnormal"
+    assert page.items[0].ap_business_threshold_dbm == -13.90
+    assert "-26.80 dBm 低于业务门限 -13.90 dBm" in page.items[0].ap_business_reason
     assert page.items[0].optical_severity == "abnormal"
 
 

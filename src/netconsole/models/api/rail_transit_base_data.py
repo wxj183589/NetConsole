@@ -180,7 +180,12 @@ class RelatedRuntimeStatusDTO(ApiModel):
     fit_ap_name: str = ""
     fit_ap_match_status: str = "unmatched"
     fit_ap_status: str = "unknown"
-    optical_status: str = "no_data"
+    optical_status: str = "unknown"
+    ap_rx_power: str = ""
+    device_optical_status: str = "no_data"
+    business_optical_status: str = "unknown"
+    business_threshold_dbm: float = -13.90
+    business_reason: str = ""
     mesh_status: str = "unknown"
     mesh_related_name: str = ""
     latest_session_id: str = ""

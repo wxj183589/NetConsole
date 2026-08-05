@@ -341,7 +341,13 @@ def test_trackside_ap_runtime_uses_unique_mac_and_marks_ambiguous_matches(tmp_pa
                 model="WA6638",
             ),
             radios=[],
-            optical=SimpleNamespace(optical_status="normal"),
+            optical=SimpleNamespace(
+                optical_status="normal",
+                ap_rx_status="normal",
+                rx_power="-17.80",
+                data_freshness="fresh",
+                updated_at="2026-07-24T12:00:01",
+            ),
         )
 
     class FakeAcQuery:
@@ -388,6 +394,12 @@ def test_trackside_ap_runtime_uses_unique_mac_and_marks_ambiguous_matches(tmp_pa
     assert by_point_code["AP001"].runtime.fit_ap_ac_id == "ac-1"
     assert by_point_code["AP001"].runtime.fit_ap_name == "AC-REAL-1"
     assert by_point_code["AP001"].runtime.fit_ap_match_status == "matched"
+    assert by_point_code["AP001"].runtime.ap_rx_power == "-17.80"
+    assert by_point_code["AP001"].runtime.device_optical_status == "normal"
+    assert by_point_code["AP001"].runtime.business_optical_status == "abnormal"
+    assert by_point_code["AP001"].runtime.optical_status == "abnormal"
+    assert by_point_code["AP001"].runtime.business_threshold_dbm == -13.90
+    assert "-17.80 dBm 低于业务门限 -13.90 dBm" in by_point_code["AP001"].runtime.business_reason
     assert by_point_code["AP002"].runtime.fit_ap_id == ""
     assert by_point_code["AP002"].runtime.fit_ap_name == ""
     assert by_point_code["AP002"].runtime.fit_ap_match_status == "conflict"

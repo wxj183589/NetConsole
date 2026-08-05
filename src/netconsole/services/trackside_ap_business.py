@@ -30,11 +30,15 @@ from netconsole.services.ap_online_overview import AP_ONLINE_OVERVIEW_COLUMNS, w
 from netconsole.services.offline_ap_ledger import (
     OFFLINE_AP_LEDGER_COLUMNS,
     OFFLINE_AP_STATS_COLUMNS,
-    OFFLINE_AP_STATUS_TEXT,
     write_offline_ap_ledger_sheet,
     write_offline_ap_stats_sheet,
 )
 from netconsole.services.ac.fit_ap_resource_identity import coalesce_fit_ap_resource_rows
+from netconsole.services.ap_business_optical import (
+    AP_BUSINESS_RX_MIN_DBM,
+    evaluate_ap_business_rx,
+    evaluate_ap_business_rx_detail,
+)
 from netconsole.services.rail_transit.trackside_ap_runtime_snapshot import (
     TracksideApRuntimeSnapshot,
     classify_lldp_history_status,
@@ -49,7 +53,7 @@ from netconsole.utils.station_normalize import normalize_station_value
 
 
 TRACKSIDE_ATTENUATION_SAMPLE_WINDOW = timedelta(minutes=30)
-TRACKSIDE_RX_NORMAL_MIN_DBM = -13.90
+TRACKSIDE_RX_NORMAL_MIN_DBM = AP_BUSINESS_RX_MIN_DBM
 _AP_OFFLINE_REASONS = frozenset({"switch_offline", "ac_idle", "ac_offline"})
 _PRESERVED_SWITCH_MODULE_STATUSES = {
     "abnormal",
@@ -57,20 +61,6 @@ _PRESERVED_SWITCH_MODULE_STATUSES = {
     "dom_unavailable",
     "offline",
     "no_module",
-}
-_TRACKSIDE_RX_STATUS_PRESERVE = {
-    "critical",
-    "dom_unavailable",
-    "failed",
-    "link_abnormal",
-    "link_down",
-    "no_light",
-    "no_module",
-    "not_collected",
-    "offline",
-    "skipped",
-    "timeout",
-    "unverified",
 }
 _TRACKSIDE_NATIVE_PVID_SEGMENT_RE = re.compile(
     r"^native\s*/\s*pvid\s*[:=]?\s*\d{1,4}$",
@@ -120,7 +110,10 @@ TRACKSIDE_AP_BUSINESS_VISIBLE_COLUMNS = (
     ("ac.ap_mac", "ap_mac"),
     ("ac.ap_name", "ap_name"),
     ("ac.ap_side_rx_power", "ap_rx_power"),
+    ("trackside.ap_device_optical_status", "ap_device_optical_status"),
     ("trackside.ap_optical_status", "ap_optical_status"),
+    ("trackside.ap_business_threshold", "ap_business_threshold_dbm"),
+    ("trackside.ap_business_reason", "ap_business_reason"),
     ("trackside_ap.last_collected_at", "updated_at"),
 )
 
@@ -136,7 +129,10 @@ TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS = (
     ("ac.ap_mac", "ap_mac"),
     ("ac.ap_name", "ap_name"),
     ("ac.ap_side_rx_power", "ap_rx_power"),
+    ("trackside.ap_device_optical_status", "ap_device_optical_status"),
     ("trackside.ap_optical_status", "ap_optical_status"),
+    ("trackside.ap_business_threshold", "ap_business_threshold_dbm"),
+    ("trackside.ap_business_reason", "ap_business_reason"),
     ("trackside_ap.last_collected_at", "updated_at"),
     ("trackside.export.switch_optical_change", "switch_optical_change"),
     ("trackside.export.ap_optical_change", "ap_optical_change"),
@@ -156,7 +152,10 @@ NEW_ONLINE_AP_OVERVIEW_COLUMNS = (
     ("ac.ap_mac", "ap_mac"),
     ("ac.ap_name", "ap_name"),
     ("ac.ap_side_rx_power", "ap_rx_power"),
+    ("trackside.ap_device_optical_status", "ap_device_optical_status"),
     ("trackside.ap_optical_status", "ap_optical_status"),
+    ("trackside.ap_business_threshold", "ap_business_threshold_dbm"),
+    ("trackside.ap_business_reason", "ap_business_reason"),
     ("trackside_ap.last_collected_at", "updated_at"),
     ("ac.register_status", "register_status"),
     ("ac.new_online_status", "new_online_status"),
@@ -251,7 +250,10 @@ TRACKSIDE_AP_DEVICE_COLUMNS = (
     ("ac.ap_mac", "ap_mac"),
     ("ac.ap_name", "ap_name"),
     ("ac.ap_side_rx_power", "ap_rx_power"),
+    ("trackside.ap_device_optical_status", "ap_device_optical_status"),
     ("trackside.ap_optical_status", "ap_optical_status"),
+    ("trackside.ap_business_threshold", "ap_business_threshold_dbm"),
+    ("trackside.ap_business_reason", "ap_business_reason"),
     ("field.updated_at", "updated_at"),
 )
 
@@ -303,25 +305,12 @@ def normalize_trackside_vlan_display(value: object) -> str:
     return "; ".join(parts) or "—"
 
 
-def compute_trackside_rx_business_status(
-    status: object,
-    rx_power: object,
-) -> str:
-    """Overlay the trackside maintenance RX line without changing native thresholds."""
-
-    normalized = _normalized_optical_status(status)
-    rx_value = _float_value(rx_power)
-    if rx_value is None or normalized in _TRACKSIDE_RX_STATUS_PRESERVE:
-        return normalized
-    if rx_value < TRACKSIDE_RX_NORMAL_MIN_DBM:
-        return worse_optical_severity(normalized, "abnormal")
-    return normalized
-
-
 def normalize_trackside_ap_business_row(
     row: dict[str, object | None],
+    *,
+    business_projection: bool = True,
 ) -> dict[str, object | None]:
-    """Return one row with trackside-only display and maintenance semantics."""
+    """Return one row with normalized device facts and optional business semantics."""
 
     normalized = dict(row)
     normalized["vlan"] = normalize_trackside_vlan_display(normalized.get("vlan"))
@@ -339,14 +328,35 @@ def normalize_trackside_ap_business_row(
         ):
             normalized[field] = None
         normalized["switch_optical_status"] = "not_collected"
-    normalized["switch_optical_status"] = compute_trackside_rx_business_status(
-        normalized.get("switch_optical_status"),
-        normalized.get("switch_rx_power"),
+    normalized["switch_optical_status"] = _normalized_optical_status(
+        normalized.get("switch_optical_status")
     )
-    normalized["ap_optical_status"] = compute_trackside_rx_business_status(
-        normalized.get("ap_optical_status"),
+    device_status = _normalized_optical_status(
+        normalized.get("ap_device_optical_status")
+        or normalized.get("ap_optical_status")
+    )
+    if not business_projection:
+        normalized["ap_optical_status"] = device_status
+        normalized["optical_severity"] = _trackside_row_status_with_ap_status(
+            normalized,
+            device_status if has_ap_side_optical_data(normalized) else "",
+        )
+        return normalized
+
+    evaluation = evaluate_ap_business_rx_detail(
         normalized.get("ap_rx_power"),
+        data_freshness=(
+            normalized.get("ap_optical_data_freshness")
+            or normalized.get("data_freshness")
+        ),
     )
+    normalized["ap_device_optical_status"] = device_status or "unknown"
+    normalized["ap_business_optical_status"] = evaluation.status
+    normalized["ap_business_threshold_dbm"] = evaluation.threshold_dbm
+    normalized["ap_business_reason"] = evaluation.reason
+    # Compatibility field for existing trackside consumers. This is explicitly
+    # the AP business projection, not the FIT-AP resource module status.
+    normalized["ap_optical_status"] = evaluation.status
     normalized["optical_severity"] = trackside_row_status(normalized)
     return normalized
 
@@ -610,6 +620,7 @@ def build_trackside_ap_business_rows(
     station_names: Mapping[str, str] | None = None,
     latest_switch_collect_runs: Mapping[str, str] | None = None,
     runtime_snapshot: TracksideApRuntimeSnapshot | None = None,
+    business_projection: bool = True,
 ) -> list[dict[str, object | None]]:
     optical_indexes = {device_uuid: _latest_rows_by_normalized_interface(rows, "interface_name") for device_uuid, rows in optical_by_device.items()}
     lldp_indexes = {
@@ -969,6 +980,7 @@ def build_trackside_ap_business_rows(
                     "ap_rx_low_alarm": fit_ap.get("rx_low_alarm"),
                     "ap_rx_low_warning": fit_ap.get("rx_low_warning"),
                     "ap_optical_status": ap_status,
+                    "ap_optical_data_freshness": fit_ap.get("data_freshness"),
                     "ap_side_has_data": ap_side_has_data,
                     "updated_at": fit_ap.get("updated_at") or optical.get("updated_at") or interface.get("updated_at") or interface.get("collected_at"),
                     "source_device": fit_ap.get("device_name") or fit_ap.get("neighbor_device_name") or device.name,
@@ -1019,7 +1031,10 @@ def build_trackside_ap_business_rows(
         )
     )
     result = [
-        normalize_trackside_ap_business_row(row)
+        normalize_trackside_ap_business_row(
+            row,
+            business_projection=business_projection,
+        )
         for row in _merge_duplicate_trackside_rows(result)
     ]
     _log_trackside_identity_coverage(
@@ -1891,7 +1906,10 @@ def _trackside_rows_by_switch_interface(rows: list[dict[str, object | None]]) ->
     return result
 
 
-def trackside_row_status(row: dict[str, object | None]) -> str:
+def _trackside_row_status_with_ap_status(
+    row: dict[str, object | None],
+    ap_status: str,
+) -> str:
     if (
         row.get("offline_reason") == "switch_offline"
         or _is_switch_collection_offline(row.get("switch_collection_status"))
@@ -1899,21 +1917,28 @@ def trackside_row_status(row: dict[str, object | None]) -> str:
         return "offline"
     if normalize_link_state(row.get("link_status")) == "DOWN":
         return "link_down"
-    switch_status = compute_trackside_rx_business_status(
-        row.get("switch_optical_status"),
-        row.get("switch_rx_power"),
-    )
+    switch_status = _normalized_optical_status(row.get("switch_optical_status"))
+    if "critical" in {switch_status, ap_status}:
+        return "critical"
+    return worse_optical_severity(switch_status, ap_status)
+
+
+def trackside_row_status(row: dict[str, object | None]) -> str:
     ap_status = (
-        compute_trackside_rx_business_status(
-            row.get("ap_optical_status"),
-            row.get("ap_rx_power"),
+        str(
+            row.get("ap_business_optical_status")
+            or evaluate_ap_business_rx(
+                row.get("ap_rx_power"),
+                data_freshness=(
+                    row.get("ap_optical_data_freshness")
+                    or row.get("data_freshness")
+                ),
+            )
         )
         if has_ap_side_optical_data(row)
         else ""
     )
-    if "critical" in {switch_status, ap_status}:
-        return "critical"
-    return worse_optical_severity(switch_status, ap_status)
+    return _trackside_row_status_with_ap_status(row, ap_status)
 
 
 def is_trackside_optical_abnormal_status(status: object) -> bool:
@@ -1936,12 +1961,17 @@ def has_ap_side_optical_data(row: dict[str, object | None]) -> bool:
 
 
 def format_ap_side_alarm(row: dict[str, object | None], language: str = "zh") -> str:
-    status = _ap_optical_status_for_display(row)
-    if not has_ap_side_optical_data(row) and not _has_valid_rx_power(row.get("ap_rx_power")):
-        return AP_SIDE_MISSING_DISPLAY
-    if status == "unknown":
-        return AP_SIDE_MISSING_DISPLAY
-    return display_optical_status(status, language) if status else AP_SIDE_MISSING_DISPLAY
+    status = str(
+        row.get("ap_business_optical_status")
+        or evaluate_ap_business_rx(
+            row.get("ap_rx_power"),
+            data_freshness=(
+                row.get("ap_optical_data_freshness")
+                or row.get("data_freshness")
+            ),
+        )
+    )
+    return display_optical_status(status, language)
 
 
 def _ensure_ap_optical_status(row: dict[str, object | None]) -> None:
@@ -2005,9 +2035,12 @@ def format_trackside_display_value(field: str, row: dict[str, object | None], la
     if field == "vlan":
         return normalize_trackside_vlan_display(row.get("vlan"))
     if field == "ap_optical_status":
-        if bool(row.get("is_ap_offline")) or row.get("offline_reason") in _AP_OFFLINE_REASONS:
-            return OFFLINE_AP_STATUS_TEXT
         return format_ap_side_alarm(row, language)
+    if field == "ap_device_optical_status":
+        value = row.get(field)
+        return display_optical_status(str(value), language) if value else AP_SIDE_MISSING_DISPLAY
+    if field == "ap_business_threshold_dbm":
+        return f"AP Rx ≥ {AP_BUSINESS_RX_MIN_DBM:.2f} dBm"
     if field in AP_SIDE_DISPLAY_FIELDS and not has_ap_side_optical_data(row):
         return AP_SIDE_MISSING_DISPLAY
     value = row.get(field)
@@ -2704,10 +2737,21 @@ def _apply_ap_optical_change(
         row["ap_optical_data_source"] = "沿用历史"
         row["ap_optical_missing_reason"] = "not_collected" if str(row.get("collection_status") or "").casefold() in {"", "not_collected"} else "overwritten_by_failed_row"
         _ensure_ap_optical_status(row)
-    baseline = _optical_transition_baseline_before(history_rows, row.get("updated_at"), row.get("ap_optical_status"), "ap")
+    current_status = evaluate_ap_business_rx(
+        row.get("ap_rx_power"),
+        data_freshness=(
+            row.get("ap_optical_data_freshness") or row.get("data_freshness")
+        ),
+    )
+    baseline = _optical_transition_baseline_before(
+        history_rows,
+        row.get("updated_at"),
+        current_status,
+        "ap",
+    )
     if baseline:
         baseline_status = _optical_status_from_history(baseline, "ap")
-        row["ap_optical_change"] = optical_change_text(baseline_status, row.get("ap_optical_status"))
+        row["ap_optical_change"] = optical_change_text(baseline_status, current_status)
         row["history_compared_at"] = baseline.get("collected_at") or baseline.get("created_at") or row.get("history_compared_at")
         return
     if ac_repository is None:
@@ -2719,7 +2763,7 @@ def _apply_ap_optical_change(
     if not previous:
         return
     previous_status = _optical_status_from_history(previous, "ap")
-    row["ap_optical_change"] = optical_change_text(previous_status, row.get("ap_optical_status"))
+    row["ap_optical_change"] = optical_change_text(previous_status, current_status)
     if row["ap_optical_change"] != "-":
         row["history_compared_at"] = previous.get("collected_at") or previous.get("created_at") or row.get("history_compared_at")
 
@@ -2797,6 +2841,8 @@ def _normal_abnormal_state(status: object) -> str:
 
 
 def _optical_status_from_history(row: dict[str, object | None], device_type: str) -> str:
+    if device_type == "ap":
+        return evaluate_ap_business_rx(row.get("rx_power"))
     status = row.get("alarm_status") or row.get("optical_alarm_status") or row.get("status")
     normalized_status = str(status or "").strip().casefold()
     if normalized_status in {"normal", "notice", "warning", "alarm", "link_abnormal", "link_down", "no_light", "no_module", "not_collected", "skipped", "offline"}:
@@ -3080,26 +3126,19 @@ def _is_ap_offline_abnormal(row: dict[str, object | None]) -> bool:
 def _is_ap_side_current_abnormal(row: dict[str, object | None]) -> bool:
     if not has_valid_ap_binding(row):
         return False
-    status = compute_trackside_rx_business_status(
-        row.get("ap_optical_status")
-        or row.get("optical_alarm_status")
-        or row.get("alarm_status"),
+    status = evaluate_ap_business_rx(
         row.get("ap_rx_power"),
+        data_freshness=(
+            row.get("ap_optical_data_freshness") or row.get("data_freshness")
+        ),
     )
-    if is_optical_health_abnormal(status):
-        return True
-    if status in {"", "unknown"} and _has_valid_rx_power(row.get("ap_rx_power")):
-        return is_optical_health_abnormal(_compute_ap_optical_status_from_row(row))
-    return False
+    return status == "abnormal"
 
 
 def _is_switch_side_current_abnormal(row: dict[str, object | None]) -> bool:
     if not has_valid_ap_binding(row):
         return False
-    status = compute_trackside_rx_business_status(
-        row.get("switch_optical_status"),
-        row.get("switch_rx_power"),
-    )
+    status = _normalized_optical_status(row.get("switch_optical_status"))
     if is_optical_health_abnormal(status):
         return True
     if status in {"", "unknown"} and _has_valid_rx_power(row.get("switch_rx_power")):
@@ -3120,16 +3159,23 @@ def current_optical_abnormal_reason(row: dict[str, object | None]) -> dict[str, 
     ap_state = _ap_state(row)
     ap_online_status = "离线" if _is_ap_offline_abnormal(row) or ap_state == "offline" else "在线" if ap_state == "online" else "未知"
     if _is_ap_side_current_abnormal(row):
-        status = compute_trackside_rx_business_status(
-            row.get("ap_optical_status") or _compute_ap_optical_status_from_row(row),
+        evaluation = evaluate_ap_business_rx_detail(
             row.get("ap_rx_power"),
+            data_freshness=(
+                row.get("ap_optical_data_freshness")
+                or row.get("data_freshness")
+            ),
         )
-        return {"ap_online_status": ap_online_status, "judgement": "异常", "reason": "AP侧光衰告警", "side": "AP侧", "level": display_optical_status(status), "detail": ""}
+        return {
+            "ap_online_status": ap_online_status,
+            "judgement": "异常",
+            "reason": "AP侧业务光衰异常",
+            "side": "AP侧",
+            "level": display_optical_status(evaluation.status),
+            "detail": evaluation.reason,
+        }
     if _is_switch_side_current_abnormal(row):
-        status = compute_trackside_rx_business_status(
-            row.get("switch_optical_status"),
-            row.get("switch_rx_power"),
-        )
+        status = _normalized_optical_status(row.get("switch_optical_status"))
         return {"ap_online_status": ap_online_status, "judgement": "异常", "reason": "交换机侧光衰告警", "side": "交换机侧", "level": display_optical_status(status), "detail": ""}
     return {"ap_online_status": ap_online_status, "judgement": "", "reason": "", "side": "", "level": "", "detail": ""}
 

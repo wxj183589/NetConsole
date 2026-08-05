@@ -2017,6 +2017,7 @@ class DeviceManagementWebService:
             latest_switch_collect_runs={
                 device_uuid: str((latest_fact or {}).get("collect_run_uuid") or "")
             },
+            business_projection=False,
         )
 
     @staticmethod

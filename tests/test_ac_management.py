@@ -97,7 +97,6 @@ from netconsole.services.neighbor_matcher import (
     match_neighbor_device,
     normalize_interface_name,
 )
-from netconsole.services.offline_ap_ledger import OFFLINE_AP_STATUS_TEXT
 from netconsole.services.trackside_ap_business import (
     AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
     NEW_ONLINE_AP_OVERVIEW_COLUMNS,
@@ -2829,7 +2828,7 @@ def test_build_new_online_ap_overview_rows_uses_current_online_without_prior_res
     assert [row["ap_name"] for row in rows] == ["AP-New"]
     assert rows[0]["device_name"] == "SW-1"
     assert rows[0]["interface_name"] == "GigabitEthernet1/0/1"
-    assert [field for _key, field in NEW_ONLINE_AP_OVERVIEW_COLUMNS][:15] == [
+    assert [field for _key, field in NEW_ONLINE_AP_OVERVIEW_COLUMNS][:18] == [
         "site",
         "device_name",
         "interface_name",
@@ -2843,7 +2842,10 @@ def test_build_new_online_ap_overview_rows_uses_current_online_without_prior_res
         "ap_mac",
         "ap_name",
         "ap_rx_power",
+        "ap_device_optical_status",
         "ap_optical_status",
+        "ap_business_threshold_dbm",
+        "ap_business_reason",
         "updated_at",
     ]
     assert [field for _key, field in NEW_ONLINE_AP_OVERVIEW_COLUMNS][-1] == "suggestion"
@@ -3301,7 +3303,12 @@ def test_trackside_ap_business_export_adds_current_optical_abnormal_sheet(tmp_pa
         for row in range(2, abnormal_sheet.max_row + 1)
     ] == ["GE1/0/2", "GE1/0/3", "GE1/0/4"]
     reason_column = abnormal_headers.index("异常原因") + 1
-    assert abnormal_sheet.cell(row=3, column=reason_column).value == "AP侧光衰告警"
+    assert abnormal_sheet.cell(row=3, column=reason_column).value == "AP侧业务光衰异常"
+    detail_column = abnormal_headers.index("异常说明") + 1
+    assert "-40.00 dBm 低于业务门限 -13.90 dBm" in abnormal_sheet.cell(
+        row=3,
+        column=detail_column,
+    ).value
     assert abnormal_sheet.cell(row=4, column=reason_column).value == "交换机侧光衰告警"
     online_status_column = abnormal_headers.index("AP 在线状态") + 1
     assert [
@@ -3311,7 +3318,7 @@ def test_trackside_ap_business_export_adds_current_optical_abnormal_sheet(tmp_pa
     assert (
         abnormal_sheet["A2"].fill.fgColor.rgb
         == source_sheet["A3"].fill.fgColor.rgb
-        == "00FEE2E2"
+        == "00FEF9C3"
     )
     assert abnormal_sheet["A1"].font.bold
     assert abnormal_sheet.freeze_panes == "A2"
@@ -4389,7 +4396,7 @@ def test_trackside_ap_business_offline_ap_keeps_link_state():
     assert format_trackside_display_value("port_type", rows[0]) == "access"
     assert (
         format_trackside_display_value("ap_optical_status", rows[0])
-        == OFFLINE_AP_STATUS_TEXT
+        == "未知"
     )
 
 
@@ -4469,9 +4476,9 @@ def test_trackside_ap_business_matches_fit_ap_resource_by_lldp_neighbor_mac():
     assert rows[0]["ap_name"] == "Renamed-AP-23"
     assert rows[0]["ap_rx_power"] is None
     assert rows[0]["switch_optical_status"] == "unknown"
-    assert rows[0]["ap_optical_status"] == ""
+    assert rows[0]["ap_optical_status"] == "unknown"
     assert has_ap_side_optical_data(rows[0]) is False
-    assert format_ap_side_alarm(rows[0]) == "-"
+    assert format_ap_side_alarm(rows[0]) == "未知"
 
 
 def test_trackside_ap_business_keeps_neighbor_mac_when_fit_ap_not_found():
@@ -4497,9 +4504,9 @@ def test_trackside_ap_business_keeps_neighbor_mac_when_fit_ap_not_found():
     assert rows[0]["ap_name"] is None
     assert rows[0]["ap_rx_power"] is None
     assert rows[0]["switch_optical_status"] == "notice"
-    assert rows[0]["ap_optical_status"] == ""
+    assert rows[0]["ap_optical_status"] == "unknown"
     assert has_ap_side_optical_data(rows[0]) is False
-    assert format_ap_side_alarm(rows[0]) == "-"
+    assert format_ap_side_alarm(rows[0]) == "未知"
 
 
 def test_trackside_ap_business_keeps_switch_and_ap_status_separate():
@@ -4530,8 +4537,9 @@ def test_trackside_ap_business_keeps_switch_and_ap_status_separate():
     )
 
     assert rows[0]["switch_optical_status"] == "unknown"
-    assert rows[0]["ap_optical_status"] == "alarm"
-    assert trackside_row_status(rows[0]) == "alarm"
+    assert rows[0]["ap_optical_status"] == "abnormal"
+    assert rows[0]["ap_device_optical_status"] == "alarm"
+    assert trackside_row_status(rows[0]) == "abnormal"
 
 
 def test_trackside_ap_business_row_status_uses_more_severe_side():
@@ -4545,11 +4553,12 @@ def test_trackside_ap_business_row_status_uses_more_severe_side():
         trackside_row_status(
             {
                 "switch_optical_status": "normal",
+                "ap_rx_power": "-17.80",
                 "ap_optical_status": "alarm",
                 "ap_side_has_data": True,
             }
         )
-        == "alarm"
+        == "abnormal"
     )
 
 
@@ -4564,7 +4573,7 @@ def test_trackside_ap_side_missing_data_formats_as_dash():
     }
 
     assert has_ap_side_optical_data(row) is False
-    assert format_ap_side_alarm(row) == "-"
+    assert format_ap_side_alarm(row) == "未知"
     assert format_trackside_display_value("ap_mac", row) == "-"
     assert format_trackside_display_value("ap_name", row) == "-"
     assert format_trackside_display_value("ap_rx_power", row) == "-"
@@ -4581,7 +4590,7 @@ def test_trackside_ap_side_unmatched_optical_record_formats_as_dash():
     }
 
     assert has_ap_side_optical_data(row) is False
-    assert format_ap_side_alarm(row) == "-"
+    assert format_ap_side_alarm(row) == "未知"
 
 
 def test_trackside_ap_side_explicit_no_module_keeps_no_module_label():
@@ -4596,7 +4605,7 @@ def test_trackside_ap_side_explicit_no_module_keeps_no_module_label():
     }
 
     assert has_ap_side_optical_data(row) is True
-    assert format_ap_side_alarm(row) == "无光模块"
+    assert format_ap_side_alarm(row) == "未知"
 
 
 def test_trackside_ap_side_normal_and_notice_format_from_computed_status():
@@ -4611,7 +4620,7 @@ def test_trackside_ap_side_normal_and_notice_format_from_computed_status():
     notice = {**normal, "ap_rx_power": "-14.35", "ap_optical_status": "notice"}
 
     assert format_ap_side_alarm(normal) == "正常"
-    assert format_ap_side_alarm(notice) == "偏低关注"
+    assert format_ap_side_alarm(notice) == "功率异常"
 
 
 def test_trackside_ap_side_unknown_with_rx_power_recomputes_for_display():
@@ -4623,8 +4632,8 @@ def test_trackside_ap_side_unknown_with_rx_power_recomputes_for_display():
         "ap_side_has_data": True,
     }
 
-    assert format_ap_side_alarm(row) == "偏低关注"
-    assert format_trackside_display_value("ap_optical_status", row) == "偏低关注"
+    assert format_ap_side_alarm(row) == "功率异常"
+    assert format_trackside_display_value("ap_optical_status", row) == "功率异常"
 
 
 def test_trackside_history_unknown_with_rx_power_recomputes_ap_status():
@@ -4635,7 +4644,7 @@ def test_trackside_history_unknown_with_rx_power_recomputes_ap_status():
         "optical_alarm_status": "unknown",
     }
 
-    assert _optical_status_from_history(row, "ap") == "alarm"
+    assert _optical_status_from_history(row, "ap") == "abnormal"
 
 
 def test_trackside_ap_optical_status_uses_default_profile_without_thresholds():
@@ -5540,17 +5549,17 @@ def test_trackside_ap_business_export_formats_missing_ap_side_as_dash(tmp_path):
 
     sheet = load_workbook(export_path).active
     headers = [cell.value for cell in sheet[1]]
-    alarm_column = headers.index("AP侧光告警") + 1
+    alarm_column = headers.index("AP业务光衰") + 1
     ap_mac_column = headers.index("AP_MAC") + 1
     ap_name_column = headers.index("AP名称") + 1
     ap_rx_column = headers.index("AP侧收光(dBm)") + 1
     assert "TX功率" not in headers
-    assert sheet.cell(2, alarm_column).value == "-"
+    assert sheet.cell(2, alarm_column).value == "未知"
     assert sheet.cell(2, ap_mac_column).value == "-"
     assert sheet.cell(2, ap_name_column).value == "-"
     assert sheet.cell(2, ap_rx_column).value == "-"
     assert sheet.cell(2, alarm_column).value != "无光模块"
-    assert sheet.cell(3, alarm_column).value == "无光模块"
+    assert sheet.cell(3, alarm_column).value == "未知"
 
 
 def test_trackside_export_backfills_latest_valid_ap_rx_from_history():
@@ -6179,10 +6188,49 @@ def test_trackside_ap_optical_status_computes_from_raw_data():
             }
         ],
     )
-    # ap_optical_status is computed real-time: -20.32 < -20.00 → alarm
-    assert rows[0]["ap_optical_status"] == "alarm"
+    # AP business status is independent of the FIT-AP resource module threshold.
+    assert rows[0]["ap_device_optical_status"] == "alarm"
+    assert rows[0]["ap_optical_status"] == "abnormal"
     # switch_optical_status is computed real-time: -6.10 → normal
     assert rows[0]["switch_optical_status"] == "unknown"
+
+
+def test_device_management_projection_keeps_fit_ap_module_threshold():
+    switch = Device(name="HX_1", station="Station A", device_uuid="sw-1")
+
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {
+            "sw-1": [
+                {
+                    "interface_name": "GigabitEthernet2/0/10",
+                    "description": "To_AP10",
+                    "pvid": 71,
+                    "vlan": "Native/PVID 71; Tagged 201",
+                }
+            ]
+        },
+        {},
+        [
+            {
+                "ap_uuid": "ap-10",
+                "ap_mac": "bc5a-3457-cbe0",
+                "ap_name": "AP10",
+                "neighbor_device_name": "HX_1",
+                "neighbor_interface": "GigabitEthernet2/0/10",
+                "rx_power": "-17.80",
+                "rx_low_alarm": "-28.20",
+                "rx_low_warning": "-25.00",
+                "data_freshness": "fresh",
+            }
+        ],
+        business_projection=False,
+    )
+
+    assert rows[0]["vlan"] == "Tagged 201"
+    assert rows[0]["ap_optical_status"] == "normal"
+    assert "ap_business_optical_status" not in rows[0]
+    assert "ap_business_threshold_dbm" not in rows[0]
 
 
 # ── Unified State Architecture tests ──────────────────────────────────────────

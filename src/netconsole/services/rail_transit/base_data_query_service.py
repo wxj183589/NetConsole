@@ -47,6 +47,7 @@ from netconsole.repositories.rail_transit_base_data_repository import (
 from netconsole.models.device import Device
 from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryService
 from netconsole.services.ac.query_service import AcManagementQueryService
+from netconsole.services.ap_business_optical import evaluate_ap_business_rx_detail
 from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.ap_identity.normalizers import normalize_mac, normalize_mac_key
@@ -75,6 +76,35 @@ from netconsole.utils.mileage import parse_track_mileage
 T = TypeVar("T")
 _SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2, "": 3}
 _LOGGER = logging.getLogger(__name__)
+
+
+def _related_runtime_optical_values(ac: Any | None) -> dict[str, object]:
+    optical = getattr(ac, "optical", None) if ac is not None else None
+    rx_power = getattr(optical, "rx_power", "") if optical is not None else ""
+    freshness = getattr(optical, "data_freshness", "") if optical is not None else ""
+    evaluation = evaluate_ap_business_rx_detail(
+        rx_power,
+        data_freshness=freshness,
+    )
+    device_status = "no_data"
+    if optical is not None:
+        device_status = str(
+            getattr(optical, "ap_rx_status", "")
+            or getattr(optical, "raw_status", "")
+            or getattr(optical, "optical_status", "")
+            or "no_data"
+        )
+    return {
+        # Compatibility field consumed by the existing FIT-AP business table.
+        "optical_status": evaluation.status,
+        "ap_rx_power": str(rx_power or ""),
+        "device_optical_status": device_status,
+        "business_optical_status": evaluation.status,
+        "business_threshold_dbm": evaluation.threshold_dbm,
+        "business_reason": evaluation.reason,
+    }
+
+
 _AP_FIELDS = (
     "id",
     "belong_type",
@@ -754,12 +784,13 @@ class RailTransitBaseDataQueryService:
                 fit_ap_name=ac.ap.name if ac else "",
                 fit_ap_match_status="matched" if ac else "conflict" if len(matches) > 1 else "unmatched",
                 fit_ap_status=ac.ap.status if ac else "unknown",
-                optical_status=ac.optical.optical_status if ac else "no_data",
+                **_related_runtime_optical_values(ac),
                 mesh_status="online" if mesh else "unknown",
                 mesh_related_name="、".join(names),
                 updated_at=max(
                     str(mesh.get("updated_at") or ""),
                     ac.ap.updated_at if ac else "",
+                    getattr(ac.optical, "updated_at", "") if ac else "",
                 ),
             )
             identity_match = (
@@ -1285,10 +1316,17 @@ class RailTransitBaseDataQueryService:
                 fit_ap_name=ac.ap.name if ac else "",
                 fit_ap_match_status="matched" if ac else "conflict" if len(ac_matches) > 1 else "unmatched",
                 fit_ap_status=ac.ap.status if ac else "unknown",
-                optical_status=ac.optical.optical_status if ac else "no_data",
+                **_related_runtime_optical_values(ac),
                 mesh_status="online" if links else "unknown",
                 mesh_related_name="、".join(related_names),
-                updated_at=max([*(link.last_seen_at for link in links), ac.ap.updated_at if ac else ""], default=""),
+                updated_at=max(
+                    [
+                        *(link.last_seen_at for link in links),
+                        ac.ap.updated_at if ac else "",
+                        getattr(ac.optical, "updated_at", "") if ac else "",
+                    ],
+                    default="",
+                ),
             )
             result.append(
                 TracksideApDTO(

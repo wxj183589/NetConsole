@@ -3,7 +3,6 @@ from netconsole.models.device import Device
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.services.offline_ap_ledger import (
     OFFLINE_AP_LEDGER_COLUMNS,
-    OFFLINE_AP_STATUS_TEXT,
     build_device_lookup_by_name,
     build_latest_ap_history_indexes,
     build_offline_ap_ledger,
@@ -370,10 +369,7 @@ def test_trackside_switch_offline_forces_downstream_ap_offline_even_when_ac_run(
     assert row["status_reason"] == "室内交换机离线，轨旁AP跟随离线"
     assert row["switch_collection_status"] == "offline"
     assert format_trackside_display_value("switch_optical_status", row) == "交换机离线"
-    assert (
-        format_trackside_display_value("ap_optical_status", row)
-        == OFFLINE_AP_STATUS_TEXT
-    )
+    assert format_trackside_display_value("ap_optical_status", row) == "未知"
     assert format_trackside_display_value("link_status", row) == "DOWN"
     assert format_trackside_display_value("port_type", row) == "access"
     assert format_trackside_display_value("port_type", row) != "DOWN"
@@ -417,10 +413,7 @@ def test_trackside_ac_idle_marks_ap_offline_when_switch_online():
 
     row = rows[0]
     assert row["offline_reason"] == "ac_idle"
-    assert (
-        format_trackside_display_value("ap_optical_status", row)
-        == OFFLINE_AP_STATUS_TEXT
-    )
+    assert format_trackside_display_value("ap_optical_status", row) == "未知"
     assert format_trackside_display_value("link_status", row) == "UP"
     assert format_trackside_display_value("port_type", row) == "trunk"
 
